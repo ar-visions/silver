@@ -1,0 +1,5 @@
+.vscode/*
+.vscode
+lib/*
+lib
+obj-test
