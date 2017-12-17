@@ -21,6 +21,31 @@ static inline LBlock *llist_block_find(LList *list) {
 	return NULL;
 }
 
+void llist_add(LList *list, LItem *item) {
+	if (!list->last) {
+		list->first = list->last = item;
+		item->prev = NULL;
+	} else {
+		list->last->next = item;
+		item->prev = list->last;
+		list->last = item;
+	}
+	item->next = NULL;
+	list->count++;
+}
+
+void llist_remove(LList *list, LItem *item) {
+	if (item->prev)
+		item->prev->next = item->next;
+	else
+		list->first = item->next;
+	if (item->next)
+		item->next->prev = item->prev;
+	else
+		list->last = item->prev;
+	list->count--;
+}
+
 static inline LItem *llist_init_item(LList *list) {
 	LBlock *b = llist_block_find(list);
 	if (!b)
@@ -115,7 +140,7 @@ void *llist_pop(LList *list) {
 int llist_index_of_data(LList *list, void *data) {
 	int index = 0;
 	void *d = NULL;
-    ll_each(list, d) {
+    llist_each(list, d) {
         if (d == data)
             return index;
         index++;
@@ -146,7 +171,7 @@ static LItem *llist_split(LItem *head) {
 	return temp;
 }
 
-static LItem *llist_merge(LList *list, LItem *first, LItem *second, bool asc, LSort sortf) {
+static LItem *llist_merge(LList *list, LItem *first, LItem *second, bool asc, SortMethod sortf) {
     if (!first)
         return second;
     if (!second)
@@ -165,7 +190,7 @@ static LItem *llist_merge(LList *list, LItem *first, LItem *second, bool asc, LS
     }
 }
 
-static LItem *llist_merge_sort(LList *list, LItem *first, bool asc, LSort sortf) {
+static LItem *llist_merge_sort(LList *list, LItem *first, bool asc, SortMethod sortf) {
     if (!first || !first->next)
         return first;
 	LItem *second = llist_split(first);
@@ -174,7 +199,7 @@ static LItem *llist_merge_sort(LList *list, LItem *first, bool asc, LSort sortf)
     return llist_merge(list, first, second, asc, sortf);
 }
 
-void llist_sort(LList *list, bool asc, LSort sortf) {
+void llist_sort(LList *list, bool asc, SortMethod sortf) {
 	LItem *first = llist_merge_sort(list, list->first, asc, sortf);
 	LItem *last = first;
 	for (LItem *f = first; f; f = f->next)

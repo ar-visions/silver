@@ -6,38 +6,38 @@ static const int base_count = 32;
 static const int block_size = 32;
 static const int ordered_block = block_size * 4;
 
-void Pairs_init(Pairs this) {
-    this->list_count = base_count;
-    this->lists = (LList *)alloc_bytes(sizeof(LList) * this->list_count);
-    for (int i = 0; i < this->list_count; i++)
-        llist(&this->lists[i], 0, block_size);
-    llist(&this->ordered_list, 0, ordered_block);
+void Pairs_init(Pairs self) {
+    self->list_count = base_count;
+    self->lists = (LList *)alloc_bytes(sizeof(LList) * self->list_count);
+    for (int i = 0; i < self->list_count; i++)
+        llist(&self->lists[i], 0, block_size);
+    llist(&self->ordered_list, 0, ordered_block);
 }
 
-void Pairs_clear(Pairs this) {
-    for (int i = 0; i < this->list_count; i++) {
-        LList *list = &this->lists[i];
+void Pairs_clear(Pairs self) {
+    for (int i = 0; i < self->list_count; i++) {
+        LList *list = &self->lists[i];
         for (LItem *item = list->first; item; item = item->next) {
-            KeyValue kv = item->data;
+            KeyValue kv = (KeyValue)item->data;
             release(kv);
         }
-        ll_clear(&this->lists[i], false);
-        ll_clear(&this->ordered_list, false);
+        llist_clear(&self->lists[i], false);
+        llist_clear(&self->ordered_list, false);
     }
 }
 
-void Pairs_add(Pairs this, Base key, Base value) {
+void Pairs_add(Pairs self, Base key, Base value) {
     KeyValue kv = new(KeyValue);
     kv->key = retain(key);
     kv->value = retain(value);
-    ulong hash = call(key, hash) % this->list_count;
-    kv->ordered = ll_push(&this->lists[hash], kv);
-    ll_push(&this->ordered_list, kv);
+    ulong hash = call(key, hash) % self->list_count;
+    kv->ordered = (LItem *)llist_push(&self->lists[hash], kv);
+    llist_push(&self->ordered_list, kv);
 }
 
-bool Pairs_remove(Pairs this, Base key) {
-    ulong hash = call(key, hash) % this->list_count;
-    LList *list = &this->lists[hash];
+bool Pairs_remove(Pairs self, Base key) {
+    ulong hash = call(key, hash) % self->list_count;
+    LList *list = &self->lists[hash];
     LItem *next = NULL;
     bool ret = false;
     for (LItem *item = list->first; item; item = next) {
@@ -45,7 +45,7 @@ bool Pairs_remove(Pairs this, Base key) {
         KeyValue kv = (KeyValue)item->data;
         if (call(kv->key, compare, key) == 0) {
             llist_remove(list, item);
-            llist_remove(&this->ordered_list, kv->ordered);
+            llist_remove(&self->ordered_list, kv->ordered);
             release(kv);
             ret = true;
         }
@@ -53,9 +53,9 @@ bool Pairs_remove(Pairs this, Base key) {
     return ret;
 }
 
-Base Pairs_value(Pairs this, Base key) {
-    ulong hash = call(key, hash) % this->list_count;
-    LList *list = &this->lists[hash];
+Base Pairs_value(Pairs self, Base key) {
+    ulong hash = call(key, hash) % self->list_count;
+    LList *list = &self->lists[hash];
     for (LItem *item = list->first; item; item = item->next) {
         KeyValue kv = (KeyValue)item->data;
         if (call(kv->key, compare, key) == 0)
@@ -64,38 +64,38 @@ Base Pairs_value(Pairs this, Base key) {
     return NULL;
 }
 
-Pairs Pairs_copy(Pairs this) {
+Pairs Pairs_copy(Pairs self) {
     Pairs c = new(Pairs);
-    for (int i = 0; i < this->list_count; i++) {
-        LList *list = &this->lists[i];
+    for (int i = 0; i < self->list_count; i++) {
+        LList *list = &self->lists[i];
         for (LItem *item = list->first; item; item = item->next) {
-            KeyValue kv = item->data;
+            KeyValue kv = (KeyValue)item->data;
             call(c, add, kv->key, kv->value);
         }
     }
     return c;
 }
 
-void Pairs_free(Pairs this) {
+void Pairs_free(Pairs self) {
     self(clear);
-    free_ptr(this->lists);
+    free_ptr(self->lists);
 }
 
 Pairs Pairs_from_string(String value) {
     return NULL;
 }
 
-String Pairs_to_string(Pairs this) {
+String Pairs_to_string(Pairs self) {
     return string("");
 }
 
 implement(KeyValue);
 
-ulong KeyValue_hash(KeyValue this) {
-    return call(this->key, hash);
+ulong KeyValue_hash(KeyValue self) {
+    return call(self->key, hash);
 }
 
-void KeyValue_free(KeyValue this) {
-    release(this->key);
-    release(this->value);
+void KeyValue_free(KeyValue self) {
+    release(self->key);
+    release(self->value);
 }

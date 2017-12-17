@@ -4,9 +4,9 @@
 
 implement(Base)
 
-void Base_class_preinit(class c) { }
+void Base_class_preinit(Class c) { }
 
-void Base_class_init(class c) {
+void Base_class_init(Class c) {
     class_Base cbase = (class_Base)c;
     if (!cbase->meta)
         cbase->meta = new(Pairs);
@@ -53,13 +53,13 @@ void Base_class_init(class c) {
     }
 }
 
-void Base_init(Base this) { }
+void Base_init(Base self) { }
 
 int Base_compare(Base a, Base b) {
     return (long long)a - (long long)b;
 }
 
-const char *Base_to_cstring(Base this) {
+const char *Base_to_cstring(Base self) {
     String str = self(to_string);
     return str ? str->buffer : NULL;
 }
@@ -68,11 +68,11 @@ Base Base_from_cstring(const char *value) {
     return NULL;
 }
 
-bool Base_is_logging(Base this) {
+bool Base_is_logging(Base self) {
     return true;
 }
 
-void Base_log(Base this, char *format, ...) {
+void Base_log(Base self, char *format, ...) {
     /*
     va_list args;
     va_start(args, format);
@@ -115,8 +115,8 @@ void Base_log(Base this, char *format, ...) {
     */
 }
 
-void Base_set_property(Base this, const char *name, Base base_value) {
-    Pairs props = pairs_value(this->class->meta, string("props"), Pairs);
+void Base_set_property(Base self, const char *name, Base base_value) {
+    Pairs props = pairs_value(self->cl->meta, string("props"), Pairs);
     if (!props)
         return;
     Prop p = pairs_value(props, string(name), Prop);
@@ -128,73 +128,73 @@ void Base_set_property(Base this, const char *name, Base base_value) {
     switch (p->enum_type->ordinal) {
         case Type_Bool: {
             bool v = (value && strcmp(value->buffer, "true") == 0) ? true : false;
-            p->setter(this, (void *)(size_t)v);
+            p->setter(self, (void *)(size_t)v);
             break;
         }
         case Type_Int8: {
             char v = (char)atoi(value->buffer);
-            p->setter(this, (void *)(size_t)v);
+            p->setter(self, (void *)(size_t)v);
             break;
         }
         case Type_UInt8: {
             unsigned char v = (unsigned char)atoi(value->buffer);
-            p->setter(this, (void *)(size_t)v);
+            p->setter(self, (void *)(size_t)v);
             break;
         }
         case Type_Int16: {
             short v = (short)atoi(value->buffer);
-            p->setter(this, (void *)(size_t)v);
+            p->setter(self, (void *)(size_t)v);
             break;
         }
         case Type_UInt16: {
             unsigned short v = (unsigned short)atoi(value->buffer);
-            p->setter(this, (void *)(size_t)v);
+            p->setter(self, (void *)(size_t)v);
             break;
         }
         case Type_Int32: {
             int v = (int)atoi(value->buffer);
-            p->setter(this, (void *)(size_t)v);
+            p->setter(self, (void *)(size_t)v);
             break;
         }
         case Type_UInt32: {
             unsigned int v = (unsigned int)atoi(value->buffer);
-            p->setter(this, (void *)(size_t)v);
+            p->setter(self, (void *)(size_t)v);
             break;
         }
         case Type_Int64: {
             long long v = (long long)strtoll(value->buffer, NULL, 10);
-            ((void (*)(Base, long long))p->setter)(this, v);
+            ((void (*)(Base, long long))p->setter)(self, v);
             break;
         }
         case Type_UInt64: {
             unsigned long long v = (unsigned long long)strtoull(value->buffer, NULL, 10);
-            ((void (*)(Base, unsigned long long))p->setter)(this, v);
+            ((void (*)(Base, unsigned long long))p->setter)(self, v);
             break;
         }
         case Type_Long: {
             long v = (long)strtoul(value->buffer, NULL, 10);
-            p->setter(this, (void *)v);
+            p->setter(self, (void *)v);
             break;
         }
         case Type_ULong: {
             unsigned long v = (unsigned long)strtoul(value->buffer, NULL, 10);
-            p->setter(this, (void *)v);
+            p->setter(self, (void *)v);
             break;
         }
         case Type_Float: {
             float v = (float)atof(value->buffer);
-            ((void (*)(Base, float))p->setter)(this, v);
+            ((void (*)(Base, float))p->setter)(self, v);
             break;
         }
         case Type_Double: {
             double v = (double)atof(value->buffer);
-            ((void (*)(Base, double))p->setter)(this, v);
+            ((void (*)(Base, double))p->setter)(self, v);
             break;
         }
         case Type_Object: {
             class_Base c = (class_Base)p->class_type;
             if (c)
-                p->setter(this, c->from_string(value));
+                p->setter(self, c->from_string(value));
             break;
         }
         default:
@@ -202,38 +202,38 @@ void Base_set_property(Base this, const char *name, Base base_value) {
     }
 }
 
-Base Base_get_property(Base this, const char *name) {
-    Pairs props = pairs_value(this->class->meta, string("props"), Pairs);
+Base Base_get_property(Base self, const char *name) {
+    Pairs props = pairs_value(self->cl->meta, string("props"), Pairs);
     if (!props)
         return NULL;
     Prop p = pairs_value(props, string(name), Prop);
     if (!p || !p->enum_type)
         return NULL;
     switch (p->enum_type->ordinal) {
-        case Type_Object:   return (Base)p->getter(this);
-        case Type_Bool:     return (Base)bool_object((bool)((size_t (*)(Base))p->getter)(this));
-        case Type_Int8:     return (Base)int8_object(((int8 (*)(Base))p->getter)(this));
-        case Type_UInt8:    return (Base)uint8_object(((uint8 (*)(Base))p->getter)(this));
-        case Type_Int16:    return (Base)int16_object(((int16 (*)(Base))p->getter)(this));
-        case Type_UInt16:   return (Base)uint16_object(((uint16 (*)(Base))p->getter)(this));
+        case Type_Object:   return (Base)p->getter(self);
+        case Type_Bool:     return (Base)bool_object((bool)((size_t (*)(Base))p->getter)(self));
+        case Type_Int8:     return (Base)int8_object(((int8 (*)(Base))p->getter)(self));
+        case Type_UInt8:    return (Base)uint8_object(((uint8 (*)(Base))p->getter)(self));
+        case Type_Int16:    return (Base)int16_object(((int16 (*)(Base))p->getter)(self));
+        case Type_UInt16:   return (Base)uint16_object(((uint16 (*)(Base))p->getter)(self));
         case Type_Int32:
-            return (Base)int32_object(((int32 (*)(Base))p->getter)(this));
-        case Type_UInt32:   return (Base)uint32_object(((uint32 (*)(Base))p->getter)(this));
-        case Type_Int64:    return (Base)int64_object(((int64 (*)(Base))p->getter)(this));
-        case Type_UInt64:   return (Base)uint64_object(((uint64 (*)(Base))p->getter)(this));
-        case Type_Long:     return (Base)long_object(((long (*)(Base))p->getter)(this));
-        case Type_ULong:    return (Base)ulong_object(((ulong (*)(Base))p->getter)(this));
-        case Type_Float:    return (Base)float_object(((float (*)(Base))p->getter)(this));
-        case Type_Double:   return (Base)double_object(((double (*)(Base))p->getter)(this));
+            return (Base)int32_object(((int32 (*)(Base))p->getter)(self));
+        case Type_UInt32:   return (Base)uint32_object(((uint32 (*)(Base))p->getter)(self));
+        case Type_Int64:    return (Base)int64_object(((int64 (*)(Base))p->getter)(self));
+        case Type_UInt64:   return (Base)uint64_object(((uint64 (*)(Base))p->getter)(self));
+        case Type_Long:     return (Base)long_object(((long (*)(Base))p->getter)(self));
+        case Type_ULong:    return (Base)ulong_object(((ulong (*)(Base))p->getter)(self));
+        case Type_Float:    return (Base)float_object(((float (*)(Base))p->getter)(self));
+        case Type_Double:   return (Base)double_object(((double (*)(Base))p->getter)(self));
         default:
             break;
     }
     return NULL;
 }
 
-Base Base_copy(Base this) {
-    Base c = (Base)malloc(this->alloc_size);
-    memcpy(c, this, this->alloc_size);
+Base Base_copy(Base self) {
+    Base c = (Base)malloc(self->alloc_size);
+    memcpy(c, self, self->alloc_size);
     c->refs = 1;
     return c;
 }
@@ -244,41 +244,41 @@ Base Base_from_string(String value) {
     return class_call(Base, from_cstring, value->buffer);
 }
 
-String Base_to_string(Base this) {
+String Base_to_string(Base self) {
     return string("N/A");
 }
 
-Base Base_retain(Base this) {
-    if (this->refs++ == 0) {
+Base Base_retain(Base self) {
+    if (self->refs++ == 0) {
         // remove from ar
         AutoRelease ar = AutoRelease_cl->current();
-        call(ar, remove, this);
+        call(ar, remove, self);
     }
-    return this;
+    return self;
 }
 
-void Base_release(Base this) {
-    if (this->refs-- == 0) {
+void Base_release(Base self) {
+    if (self->refs-- == 0) {
         AutoRelease ar = AutoRelease_cl->current();
-        call(ar, remove, this);
+        call(ar, remove, self);
     }
-    if (this->refs <= 0)
-        free_obj(this);
+    if (self->refs <= 0)
+        free_obj(self);
 }
 
-Base Base_autorelease(Base this) {
+Base Base_autorelease(Base self) {
     AutoRelease ar = AutoRelease_cl->current();
-    if (ar && !this->ar_node) {
-        this->refs = 1;
-        call(ar, add, this);
+    if (ar && !self->ar_node) {
+        self->refs = 1;
+        call(ar, add, self);
     }
-    return this;
+    return self;
 }
 
-void Base_free(Base this) {
-    free(this);
+void Base_free(Base self) {
+    free(self);
 }
 
-ulong Base_hash(Base this) {
+ulong Base_hash(Base self) {
     return 0;
 }

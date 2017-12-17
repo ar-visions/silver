@@ -99,8 +99,8 @@ declare(Bool, Primitive)
 #define implement_primitive(C)  \
 implement(C)                    \
                                 \
-void C##_init(C this) {         \
-    this->enum_type = Type_##C; \
+void C##_init(C self) {         \
+    self->enum_type = Type_##C; \
 }
 
 extern Int8 int8_object(int8);

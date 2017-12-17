@@ -5,8 +5,8 @@ struct _object_Enum;
 struct _object_String;
 
 #define _Base(D,T,C)                                            \
-    method(D,T,C,void,class_preinit,(class))                    \
-    method(D,T,C,void,class_init,(class))                       \
+    method(D,T,C,void,class_preinit,(Class))                    \
+    method(D,T,C,void,class_init,(Class))                       \
     method(D,T,C,void,init,(C))                                 \
     method(D,T,C,void,free,(C))                                 \
     method(D,T,C,void,log,(C,char *, ...))                      \

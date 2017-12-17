@@ -36,83 +36,83 @@ static char *strupr(char *str) {
     return str;
 }
 
-void String_init(String this) {
+void String_init(String self) {
 }
 
-void String_free(String this) {
-    free_ptr(this->buffer);
+void String_free(String self) {
+    free_ptr(self->buffer);
 }
 
-int String_char_index(String this, int c) {
-    char *p = strchr(this->buffer, c);
+int String_char_index(String self, int c) {
+    char *p = strchr(self->buffer, c);
     if (!p) return -1;
-    return p - this->buffer;
+    return p - self->buffer;
 }
 
-int String_str_index(String this, const char *str) {
-    char *p = strstr(this->buffer, str);
+int String_str_index(String self, const char *str) {
+    char *p = strstr(self->buffer, str);
     if (!p) return -1;
-    return p - this->buffer;
+    return p - self->buffer;
 }
 
-int String_str_rindex(String this, const char *str) {
-    char *p = strrstr(this->buffer, str);
+int String_str_rindex(String self, const char *str) {
+    char *p = strrstr(self->buffer, str);
     if (!p) return -1;
-    return p - this->buffer;
+    return p - self->buffer;
 }
 
-String String_copy(String this) {
+String String_copy(String self) {
     String c = (String)super(copy);
-    c->buffer = malloc(this->buffer_size);
-    memcpy(c->buffer, this->buffer, this->buffer_size);
+    c->buffer = (char *)malloc(self->buffer_size);
+    memcpy(c->buffer, self->buffer, self->buffer_size);
     return c;
 }
 
-int String_compare(String this, String b) {
-    return strcmp(this->buffer, b->buffer);
+int String_compare(String self, String b) {
+    return strcmp(self->buffer, b->buffer);
 }
 
-int String_cmp(String this, const char *str) {
-    return strcmp(this->buffer, str);
+int String_cmp(String self, const char *str) {
+    return strcmp(self->buffer, str);
 }
 
-ulong String_hash(String this) {
+ulong String_hash(String self) {
    ulong h = 0;
-   for (uint8 *p = (uint8 *)this->buffer; *p; p++)
+   for (uint8 *p = (uint8 *)self->buffer; *p; p++)
       h = 31 * h + *p;
    return h;
 }
 
 String String_new_string(const char *buffer) {
-    String this = new(String);
-    this->length = strlen(buffer);
-    this->buffer_size = this->length + 1;
-    this->buffer = (char *)malloc(this->buffer_size);
-    memcpy(this->buffer, buffer, this->buffer_size);
-    return this;
+    String self = new(String);
+    self->length = strlen(buffer);
+    self->buffer_size = self->length + 1;
+    self->buffer = (char *)malloc(self->buffer_size);
+    memcpy(self->buffer, buffer, self->buffer_size);
+    return self;
 }
 
 String String_from_cstring(const char *buffer) {
-    String this = class_call(String, new_string, buffer);
-    return autorelease(this);
+    String self = class_call(String, new_string, buffer);
+    return autorelease(self);
 }
 
 String String_from_string(String value) {
     return class_call(String, from_cstring, value->buffer);
 }
 
-String String_to_string(String this) {
-    return class_call(String, from_cstring, this->buffer);
+String String_to_string(String self) {
+    return class_call(String, from_cstring, self->buffer);
 }
 
-String String_lower(String this) {
-    String c = cp(this);
+String String_lower(String self) {
+    String c = cp(self);
     strlwr(c->buffer);
     return autorelease(c);
 }
 
-String String_upper(String this) {
-    String c = cp(this);
+String String_upper(String self) {
+    String c = cp(self);
     strupr(c->buffer);
     return autorelease(c);
 }
