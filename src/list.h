@@ -6,6 +6,7 @@
     override(D,T,C,void,free,(C))                   \
     method(D,T,C,void,push,(C,Base))                \
     method(D,T,C,Base,pop,(C))                      \
+    method(D,T,C,void,sort,(C,bool,SortMethod))     \
     method(D,T,C,bool,remove,(C,Base))              \
     method(D,T,C,int,index_of,(C,Base))             \
     var(D,T,C,int,test_prop)                        \
@@ -17,8 +18,8 @@ declare(List, Base);
     method(D,T,C,void,test1,(C))
 declare(List2, List);
 
-#define instances(O,C,V)  ll_each(&O->list, V) if (inherits(V,C))
-#define each(O,V)         ll_each(&O->list, V)
-#define push(L,O)         call(L, push, base(O))
-#define pop(L)            call(L, pop)
+#define instances(O,C,V)  llist_each(&O->list, V) if (inherits(V,C))
+#define each(O,V)         llist_each(&O->list, V)
+#define push(L,O)         call((L), push, base(O))
+#define pop(L)            call((L), pop)
 #endif

@@ -25,6 +25,20 @@ int main() {
     set_prop(r, "z", int32_object(10));
 
     printf("%s + %s = %s\n", cstring(v), cstring(z), cstring(r));
+
+    push(list, v);
+    push(list, z);
+    push(list, r);
+
+    Vec3 i = NULL;
+    each(list, i) {
+        printf("i = %s\n", cstring(i));
+    }
+    call(list, sort, true, NULL);
+    each(list, i) {
+        printf("i = %s\n", cstring(i));
+    }
+
     call(ar, drain);
     return 0;
 }

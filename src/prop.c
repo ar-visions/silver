@@ -34,7 +34,7 @@ Prop Prop_new_with(char *type, char *name, Getter getter, Setter setter) {
     const char *type_ = var_to_obj_type(type);
     if (!type_)
         type_ = type;
-    class c = class_find(type_);
+    Class c = class_find(type_);
     Type t = enum_find(Type, type_);
     if (!c && !t)
         return NULL;
@@ -45,11 +45,4 @@ Prop Prop_new_with(char *type, char *name, Getter getter, Setter setter) {
     p->getter = getter;
     p->setter = setter;
     return p;
-}
-
-void Prop_set_for_object(Prop this, Base obj, Base value) {
-}
-
-Base Prop_get_for_object(Prop this, Base obj) {
-    return NULL;
 }

@@ -7,11 +7,13 @@
     method(D,T,C,C,scale,(C,double))                 \
     method(D,T,C,C,mul,(C,C))                        \
     method(D,T,C,double,dot,(C,C))                   \
-    method(D,T,C,C,with,(class,...))                 \
+    method(D,T,C,C,with,(Class,...))                 \
     method(D,T,C,C,with_count,(int))                 \
+    method(D,T,C,double,length,(C))                  \
     override(D,T,C,void,init,(C))                    \
     override(D,T,C,C,from_cstring,(const char *))    \
     override(D,T,C,String,to_string,(C))             \
+    override(D,T,C,int,compare,(C,C))                \
     override(D,T,C,ulong,hash,(C))                   \
     var(D,T,C,int,count)                             \
     var(D,T,C,double *,vec)                          \
@@ -30,9 +32,9 @@ declare(Vec3, Vec)
 declare(Vec4, Vec3)
 
 #define Vec2 Vec
-#define vec2(X,Y)        ((Vec2)Vec_with((class)Vec2_cl,(double)(X),(double)(Y)))
-#define vec3(X,Y,Z)      ((Vec3)Vec_with((class)Vec3_cl,(double)(X),(double)(Y),(double)(Z)))
-#define vec4(X,Y,Z,W)    ((Vec4)Vec_with((class)Vec4_cl,(double)(X),(double)(Y),(double)(Z),(double)(W)))
+#define vec2(X,Y)        ((Vec2)Vec_with(class_object(Vec2),(double)(X),(double)(Y)))
+#define vec3(X,Y,Z)      ((Vec3)Vec_with(class_object(Vec3),(double)(X),(double)(Y),(double)(Z)))
+#define vec4(X,Y,Z,W)    ((Vec4)Vec_with(class_object(Vec4),(double)(X),(double)(Y),(double)(Z),(double)(W)))
 
 #define vadd(A,B)        ((typeof(A))call((A), add, B))
 #define vsub(A,B)        ((typeof(A))call((A), sub, B))

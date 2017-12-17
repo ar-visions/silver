@@ -30,161 +30,161 @@ Float float_object(float v)     { Float  o = new(Float);    o->value = v; return
 Double double_object(double v)  { Double o = new(Double);   o->value = v; return autorelease(o); }
 
 UInt64 UInt64_from_string(String value) {
-    UInt64 this = new(UInt64);
-    this->value = value ? strtoull(value->buffer, NULL, 10) : 0;
-    return autorelease(this);
+    UInt64 self = new(UInt64);
+    self->value = value ? strtoull(value->buffer, NULL, 10) : 0;
+    return autorelease(self);
 }
 
-String UInt64_to_string(UInt64 this) {
+String UInt64_to_string(UInt64 self) {
     char str[32];
-    sprintf(str, "%lld", this->value);
+    sprintf(str, "%lld", self->value);
     return string(str);
 }
 
 Int64 Int64_from_string(String value) {
-    Int64 this = new(Int64);
-    this->value = value ? strtoll(value->buffer, NULL, 10) : 0;
-    return autorelease(this);
+    Int64 self = new(Int64);
+    self->value = value ? strtoll(value->buffer, NULL, 10) : 0;
+    return autorelease(self);
 }
 
-String Int64_to_string(Int64 this) {
+String Int64_to_string(Int64 self) {
     char str[32];
-    sprintf(str, "%llu", this->value);
+    sprintf(str, "%llu", self->value);
     return string(str);
 }
 
 UInt32 UInt32_from_string(String value) {
-    UInt32 this = new(UInt32);
-    this->value = value ? strtoul(value->buffer, NULL, 10) : 0;
-    return autorelease(this);
+    UInt32 self = new(UInt32);
+    self->value = value ? strtoul(value->buffer, NULL, 10) : 0;
+    return autorelease(self);
 }
 
-String UInt32_to_string(UInt32 this) {
+String UInt32_to_string(UInt32 self) {
     char str[16];
-    sprintf(str, "%u", this->value);
+    sprintf(str, "%u", self->value);
     return string(str);
 }
 
 Int32 Int32_from_string(String value) {
-    Int32 this = new(Int32);
-    this->value = value ? strtol(value->buffer, NULL, 10) : 0;
-    return autorelease(this);
+    Int32 self = new(Int32);
+    self->value = value ? strtol(value->buffer, NULL, 10) : 0;
+    return autorelease(self);
 }
 
-String Int32_to_string(Int32 this) {
+String Int32_to_string(Int32 self) {
     char str[16];
-    sprintf(str, "%d", this->value);
+    sprintf(str, "%d", self->value);
     return string(str);
 }
 
 UInt16 UInt16_from_string(String value) {
-    UInt16 this = new(UInt16);
-    this->value = value ? strtoul(value->buffer, NULL, 10) : 0;
-    return autorelease(this);
+    UInt16 self = new(UInt16);
+    self->value = value ? strtoul(value->buffer, NULL, 10) : 0;
+    return autorelease(self);
 }
 
-String UInt16_to_string(UInt16 this) {
+String UInt16_to_string(UInt16 self) {
     char str[8];
-    sprintf(str, "%hu", this->value);
+    sprintf(str, "%hu", self->value);
     return string(str);
 }
 
 Int16 Int16_from_string(String value) {
-    Int16 this = new(Int16);
-    this->value = value ? strtol(value->buffer, NULL, 10) : 0;
-    return autorelease(this);
+    Int16 self = new(Int16);
+    self->value = value ? strtol(value->buffer, NULL, 10) : 0;
+    return autorelease(self);
 }
 
-String Int16_to_string(Int16 this) {
+String Int16_to_string(Int16 self) {
     char str[8];
-    sprintf(str, "%hu", this->value);
+    sprintf(str, "%hu", self->value);
     return string(str);
 }
 
 UInt8 UInt8_from_string(String value) {
-    UInt8 this = new(UInt8);
-    this->value = value ? strtoul(value->buffer, NULL, 10) : 0;
-    return autorelease(this);
+    UInt8 self = new(UInt8);
+    self->value = value ? strtoul(value->buffer, NULL, 10) : 0;
+    return autorelease(self);
 }
 
-String UInt8_to_string(UInt8 this) {
+String UInt8_to_string(UInt8 self) {
     char str[8];
-    sprintf(str, "%u", this->value);
+    sprintf(str, "%u", self->value);
     return string(str);
 }
 
 Int8 Int8_from_string(String value) {
-    Int8 this = new(Int8);
-    this->value = value ? strtol(value->buffer, NULL, 10) : 0;
-    return autorelease(this);
+    Int8 self = new(Int8);
+    self->value = value ? strtol(value->buffer, NULL, 10) : 0;
+    return autorelease(self);
 }
 
-String Int8_to_string(Int8 this) {
+String Int8_to_string(Int8 self) {
     char str[8];
-    sprintf(str, "%d", this->value);
+    sprintf(str, "%d", self->value);
     return string(str);
 }
 
 Long Long_from_string(String value) {
-    Long this = new(Long);
-    this->value = value ? strtol(value->buffer, NULL, 10) : 0;
-    return autorelease(this);
+    Long self = new(Long);
+    self->value = value ? strtol(value->buffer, NULL, 10) : 0;
+    return autorelease(self);
 }
 
-String Long_to_string(Long this) {
+String Long_to_string(Long self) {
     char str[8];
-    sprintf(str, "%ld", this->value);
+    sprintf(str, "%ld", self->value);
     return string(str);
 }
 
 ULong ULong_from_string(String value) {
-    ULong this = new(ULong);
-    this->value = value ? strtol(value->buffer, NULL, 10) : 0;
-    return autorelease(this);
+    ULong self = new(ULong);
+    self->value = value ? strtol(value->buffer, NULL, 10) : 0;
+    return autorelease(self);
 }
 
-String ULong_to_string(ULong this) {
+String ULong_to_string(ULong self) {
     char str[8];
-    sprintf(str, "%lu", this->value);
+    sprintf(str, "%lu", self->value);
     return string(str);
 }
 
 Float Float_from_string(String value) {
-    Float this = new(Float);
-    this->value = value ? atof(value->buffer) : 0;
-    return autorelease(this);
+    Float self = new(Float);
+    self->value = value ? atof(value->buffer) : 0;
+    return autorelease(self);
 }
 
-String Float_to_string(Float this) {
+String Float_to_string(Float self) {
     char str[256];
-    sprintf(str, "%f", this->value);
+    sprintf(str, "%f", self->value);
     return string(str);
 }
 
 Double Double_from_string(String value) {
-    Double this = new(Double);
-    this->value = value ? atof(value->buffer) : 0;
-    return autorelease(this);
+    Double self = new(Double);
+    self->value = value ? atof(value->buffer) : 0;
+    return autorelease(self);
 }
 
-String Double_to_string(Double this) {
+String Double_to_string(Double self) {
     char str[256];
-    sprintf(str, "%f", this->value);
+    sprintf(str, "%f", self->value);
     return string(str);
 }
 
 Bool Bool_from_string(String value) {
-    Bool this = new(Bool);
+    Bool self = new(Bool);
     if (value->buffer) {
         String lower = call(value, lower);
         if (call(lower, cmp, "true") == 0 || call(lower, cmp, "1") == 0)
-            this->value = true;
+            self->value = true;
     }
-    return autorelease(this);
+    return autorelease(self);
 }
 
-String Bool_to_string(Bool this) {
+String Bool_to_string(Bool self) {
     char str[256];
-    sprintf(str, "%s", this->value == false ? "false" : "true");
+    sprintf(str, "%s", self->value == false ? "false" : "true");
     return string(str);
 }

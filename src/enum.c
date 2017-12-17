@@ -3,7 +3,7 @@
 
 implement(Enum)
 
-void Enum_class_preinit(class cself) {
+void Enum_class_preinit(Class cself) {
     if (!Enum_cl->meta) {
         Enum_cl->meta = new(Pairs);
     }
@@ -13,7 +13,7 @@ void Enum_class_preinit(class cself) {
         enums = new(Pairs);
         pairs_add(Enum_cl->meta, string("enums"), enums);
     }
-    if (c->parent == class_object(Base))
+    if ((Class)c->parent == class_object(Base))
         return;
     String cname = new_string(c->name);
     Pairs class_enums = new(Pairs);
@@ -53,7 +53,7 @@ void Enum_class_preinit(class cself) {
             if (enum_obj) {
                 String str_name = new_string(name);
                 enum_obj->symbol = str_name;
-                enum_obj->ordinal = (int)(c->m[i])();
+                enum_obj->ordinal = (int)(ulong)(c->m[i])();
                 printf("-> added enum: %s:%s\n", cname->buffer, str_name->buffer);
                 pairs_add(class_enums, str_name, enum_obj);
             }
@@ -61,7 +61,7 @@ void Enum_class_preinit(class cself) {
     }
 }
 
-Enum Enum_find(class c, const char *symbol) {
+Enum Enum_find(Class c, const char *symbol) {
     if (!Enum_cl->meta)
         return NULL;
     String key = new_string("enums");
@@ -80,15 +80,15 @@ Enum Enum_find(class c, const char *symbol) {
     return en;
 }
 
-Pairs Enum_enums(class cself) {
+Pairs Enum_enums(Class cself) {
     Pairs enums = pairs_value(Enum_cl->meta, string("enums"), Pairs);
     if (!enums)
         return NULL;
     return pairs_value(enums, string(cself->name), Pairs);
 }
 
-void Enum_free(Enum this) {
-    release(this->symbol);
+void Enum_free(Enum self) {
+    release(self->symbol);
 }
 
 implement(Type)

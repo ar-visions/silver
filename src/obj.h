@@ -2,7 +2,9 @@
 #define _OBJ_
 
 #include <stdlib.h>
+#ifndef __cplusplus
 #include <stdbool.h>
+#endif
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -13,7 +15,7 @@
 
 struct _object_Base;
 
-typedef struct _class *class;
+typedef struct _Class *Class;
 typedef void *(*Method)();
 typedef void (*Setter)(struct _object_Base *, void *);
 typedef void *(*Getter)(struct _object_Base *);
@@ -32,9 +34,8 @@ typedef signed char     int8;
 struct _object_Prop;
 struct _class_Pairs;
 
-struct _class {
-    struct _class *next;
-    struct _class *parent;
+struct _Class {
+    struct _Class *parent;
     const char *name;
     const char *super_name;
     unsigned int flags;
@@ -46,13 +47,19 @@ struct _class {
     Method m[0];
 };
 
+#ifdef __cplusplus
+#define EXPORT extern "C"
+#else
+#define EXPORT
+#endif
+
 // ------------------------ var ---------------------------
 #define var_cls_implement(C, TYPE, NAME)                        \
-    void C##_set_##NAME(C this, TYPE value) {                   \
-        this->NAME = value;                                     \
+    void C##_set_##NAME(C self, TYPE value) {                   \
+        self->NAME = value;                                     \
     }                                                           \
-    TYPE C##_get_##NAME(C this) {                               \
-        return this->NAME;                                      \
+    TYPE C##_get_##NAME(C self) {                               \
+        return self->NAME;                                      \
     }
 #define var_cls_class_def(C, TYPE, N)                           \
     c->set_##N = (typeof(c->set_##N))C##_set_##N;     \
@@ -63,15 +70,15 @@ struct _class {
 #define var_cls_enum_def(C, TYPE, NAME)
 #define var_cls_forward_dec(C, TYPE, NAME)
 #define var_cls_mname_dec(C, TYPE, NAME)                        \
-    char *set_##NAME;                                           \
-    char *get_##NAME;
+    const char *set_##NAME;                                     \
+    const char *get_##NAME;
 #define var_cls_mname_def(C, TYPE, NAME)                        \
     c->mnames->set_##NAME = "void set_" #NAME " (" #C "," #TYPE ")"; \
     c->mnames->get_##NAME = #TYPE " get_" #NAME " (" #C ")";
 #define var_cls_object_dec(C, TYPE, NAME)          TYPE NAME;
 #define var_cls_proto(C, TYPE, NAME)                            \
-    void C##_set_##NAME(C this, TYPE value);                    \
-    TYPE C##_get_##NAME(C this);
+    void C##_set_##NAME(C self, TYPE value);                    \
+    TYPE C##_get_##NAME(C self);
 #define var_cls_override(C, TYPE, NAME)
 #define var_spr_implement(C, TYPE, NAME)
 #define var_spr_class_def(C, TYPE, N)
@@ -80,8 +87,8 @@ struct _class {
     void (*set_##NAME)(C, TYPE);
 #define var_spr_forward_dec(C, TYPE, NAME)
 #define var_spr_mname_dec(C, TYPE, NAME)                        \
-    char *set_##NAME;                                           \
-    char *get_##NAME;
+    const char *set_##NAME;                                     \
+    const char *get_##NAME;
 #define var_spr_mname_def(C, TYPE, NAME)                        \
     c->mnames->set_##NAME = "void set_" #NAME " (" #C "," #TYPE ")"; \
     c->mnames->get_##NAME = #TYPE " get_" #NAME " (" #C ")";
@@ -115,14 +122,14 @@ struct _class {
 
 // ------------------------- obj --------------------------
 #define object_cls_implement(C, TYPE, NAME)                     \
-    void C##_set_##NAME(C this, TYPE value) {                   \
-        if (this->NAME != value) {                              \
-            release(this->NAME);                                \
-            this->NAME = retain(value);                         \
+    void C##_set_##NAME(C self, TYPE value) {                   \
+        if (self->NAME != value) {                              \
+            release(self->NAME);                                \
+            self->NAME = retain(value);                         \
         }                                                       \
     }                                                           \
-    TYPE C##_get_##NAME(C this) {                               \
-        return this->NAME;                                      \
+    TYPE C##_get_##NAME(C self) {                               \
+        return self->NAME;                                      \
     }
 #define object_cls_class_def(C, TYPE, N)                        \
     c->set_##N = (typeof(c->set_##N))C##_set_##N;               \
@@ -133,15 +140,15 @@ struct _class {
 #define object_cls_enum_def(C, TYPE, NAME)
 #define object_cls_forward_dec(C, TYPE, NAME)
 #define object_cls_mname_dec(C, TYPE, NAME)                     \
-    char *set_##NAME;                                           \
-    char *get_##NAME;
+    const char *set_##NAME;                                     \
+    const char *get_##NAME;
 #define object_cls_mname_def(C, TYPE, NAME)                     \
     c->mnames->set_##NAME = "void set_" #NAME " (" #C "," #TYPE ")"; \
     c->mnames->get_##NAME = #TYPE " get_" #NAME " (" #C ")";
 #define object_cls_object_dec(C, TYPE, NAME)          TYPE NAME;
 #define object_cls_proto(C, TYPE, NAME)                         \
-    void C##_set_##NAME(C this, TYPE value);                    \
-    TYPE C##_get_##NAME(C this);
+    void C##_set_##NAME(C self, TYPE value);                    \
+    TYPE C##_get_##NAME(C self);
 #define object_cls_override(C, TYPE, NAME)
 #define object_spr_implement(C, TYPE, NAME)
 #define object_spr_class_def(C, TYPE, N)
@@ -186,8 +193,8 @@ struct _class {
     TYPE (*set_NAME)(C *);                                      \
     TYPE (*get_NAME)(C *, TYPE);
 #define prop_cls_proto(C, TYPE, NAME)                           \
-    void C##_set_##NAME(C *this, TYPE *value)                   \
-    TYPE C##_get_##NAME(C *this)
+    void C##_set_##NAME(C *self, TYPE *value)                   \
+    TYPE C##_get_##NAME(C *self)
 #define prop_cls_object_dec(C, TYPE, NAME)                TYPE NAME;
 
 // ------------------------- method -----------------------------
@@ -196,19 +203,19 @@ struct _class {
 #define method_cls_class_dec(C, R, N, A)           R (*N)A;
 #define method_cls_enum_def(C, R, N, A)
 #define method_cls_forward_dec(C, R, N, A)
-#define method_cls_mname_dec(C, R, N, A)           char *N;
-#define method_cls_mname_def(C, R, N, A)           c->mnames->N = #R " " #N " " #A;
+#define method_cls_mname_dec(C, R, N, A)           const char *N;
+#define method_cls_mname_def(C, R, N, A)           c->mnames->N = (const char *)(#R " " #N " " #A);
 #define method_cls_object_dec(C, R, N, A)
 #define method_cls_override(C, R, N, A)
-#define method_cls_proto(C, R, N, A)               R C##_##N A;
+#define method_cls_proto(C, R, N, A)               EXPORT R C##_##N A;
 
 #define method_spr_implement(C, R, N, A)
 #define method_spr_class_def(C, R, N, A)
 #define method_spr_class_dec(C, R, N, A)           R (*N)A;
 #define method_spr_enum_def(C, R, N, A)
 #define method_spr_forward_dec(C, R, N, A)
-#define method_spr_mname_dec(C, R, N, A)           char *N;
-#define method_spr_mname_def(C, R, N, A)           c->mnames->N = #R " " #N " " #A;
+#define method_spr_mname_dec(C, R, N, A)           const char *N;
+#define method_spr_mname_def(C, R, N, A)           c->mnames->N = (const char *)(#R " " #N " " #A);
 #define method_spr_object_dec(C, R, N, A)
 #define method_spr_override(C, R, N, A)
 #define method_spr_proto(C, R, N, A)
@@ -247,7 +254,7 @@ struct _class {
 #define override_cls_mname_dec(C, R, N, A)
 #define override_cls_mname_def(C, R, N, A)
 #define override_cls_object_dec(C, R, N, A)
-#define override_cls_proto(C, R, N, A)                    R C##_##N A;
+#define override_cls_proto(C, R, N, A)                    EXPORT R C##_##N A;
 #define override_cls_override(C, R, N, A)                 c->N = C##_##N;
 
 #define override_spr_implement(C, R, N, A)
@@ -262,23 +269,23 @@ struct _class {
 #define override_spr_override(C, R, N, A)
 #define override(D, T, C, R, N, A)                      override_##D##_##T(C, R, N, A)
 
-#define enum_object_cls_implement(C,E,O)                  inline enum C##Enum C##_enum_##E() { return O; } 
+#define enum_object_cls_implement(C,E,O)                  inline enum C##Enum C##_enum_##E() { return (enum C##Enum)O; } 
 #define enum_object_cls_class_def(C,E,O)                  c->enum_##E = C##_enum_##E;
 #define enum_object_cls_class_dec(C,E,O)                  enum C##Enum (*enum_##E)();
 #define enum_object_cls_enum_def(C,E,O)                   C##_##E = O,
 #define enum_object_cls_forward_dec(C,E,O)
-#define enum_object_cls_mname_dec(C,E,O)                  char *enum_##E;
+#define enum_object_cls_mname_dec(C,E,O)                  const char *enum_##E;
 #define enum_object_cls_mname_def(C,E,O)                  c->mnames->enum_##E = "int enum_" #E " ()";
 #define enum_object_cls_object_dec(C,E,O)
 #define enum_object_cls_proto(C,E,O)                      extern inline enum C##Enum C##_enum_##E();
 #define enum_object_cls_override(C,E,O)
 
-#define enum_object_spr_implement(C,E,O)                  inline enum C##Enum C##_enum_##E() { return O; } 
+#define enum_object_spr_implement(C,E,O)                  inline enum C##Enum C##_enum_##E() { return (enum C##Enum)O; } 
 #define enum_object_spr_class_def(C,E,O)                  c->enum_##E = C##_enum_##E;
 #define enum_object_spr_class_dec(C,E,O)                  enum C##Enum (*enum_##E)();
 #define enum_object_spr_enum_def(C,E,O)                   C##_##E = O,
 #define enum_object_spr_forward_dec(C,E,O)
-#define enum_object_spr_mname_dec(C,E,O)                  char *enum_##E;
+#define enum_object_spr_mname_dec(C,E,O)                  const char *enum_##E;
 #define enum_object_spr_mname_def(C,E,O)                  c->mnames->enum_##E = #E;
 #define enum_object_spr_object_dec(C,E,O)
 #define enum_object_spr_proto(C,E,O)                      extern inline enum C##Enum C##_enum_##E();
@@ -308,7 +315,7 @@ enum ClassFlags {
         _##C(cls,override, C)                                   \
         _##C(cls,class_def, C)                                  \
         _##C(cls,mname_def,C)                                   \
-        class_assemble((class)c);                               \
+        class_assemble((Class)c);                               \
     }                                                           \
     _##C(cls, implement, C)
 
@@ -327,7 +334,6 @@ enum ClassFlags {
         _##C(cls,mname_dec,C)                                   \
     };                                                          \
     struct _class_##C {                                         \
-        struct _class *next;                                    \
         struct _class_##S *parent;                              \
         const char *name;                                       \
         const char *super_name;                                 \
@@ -341,7 +347,7 @@ enum ClassFlags {
         _##C(cls,class_dec,C)                                   \
     };                                                          \
     struct _object_##C {                                        \
-        class_##C class;                                        \
+        class_##C cl;                                        \
         struct _object_##S *super_object;                       \
         LItem *ar_node;                                         \
         int refs;                                               \
@@ -368,32 +374,31 @@ enum ClassFlags {
 #include <vec.h>
 #include <primitives.h>
 
-void *alloc_bytes(size_t);
-Base new_obj(class_Base, size_t);
-void stack_obj(class_Base, Base);
-void free_obj(Base);
-void class_assemble(class);
-void class_init();
-bool class_inherits(class, class);
-class class_find(const char *name);
-Base object_inherits(Base o, class c);
+EXPORT void *alloc_bytes(size_t);
+EXPORT Base new_obj(class_Base, size_t);
+EXPORT void free_obj(Base);
+EXPORT void class_assemble(Class);
+EXPORT void class_init();
+EXPORT bool class_inherits(Class, Class);
+EXPORT Class class_find(const char *name);
+EXPORT Base object_inherits(Base o, Class c);
 
 #define new(C)                  ((C)new_obj((class_Base)C##_cl, 0))
-#define object_new(O)           ((typeof(O))((O) ? new_obj((class_Base)(O)->class, 0) : NULL))
-#define class_of(C,I)           (class_inherits((class)C,(class)I##_cl))
-#define inherits(O,C)           ((C)object_inherits((Base)O,(class)C##_cl))
-#define super(M,A...)           (this->class->parent->M(((typeof(this->super_object))this, ##A)))
-#define call(C,M,A...)          ((C)->class->M(C, ##A))
-#define self(M,A...)            (this->class->M(this, ##A))
+#define object_new(O)           ((typeof(O))((O) ? new_obj((class_Base)(O)->cl, 0) : NULL))
+#define class_of(C,I)           (class_inherits((Class)C,(Class)I##_cl))
+#define inherits(O,C)           ((C)object_inherits((Base)O,(Class)C##_cl))
+#define super(M,A...)           (self->cl->parent->M(((typeof(self->super_object))self, ##A)))
+#define call(C,M,A...)          ((C)->cl->M(C, ##A))
+#define self(M,A...)            (self->cl->M(self, ##A))
 #define class_call(C,M,A...)    (C##_##M(A))
-#define class_object(C)         (C##_cl)
-#define set(C,M,V)              ((C)->class->set_##M(C, V))
-#define get(C,M)                ((C)->class->get_##M(C))
+#define class_object(C)         ((Class)C##_cl)
+#define set(C,M,V)              ((C)->cl->set_##M(C, V))
+#define get(C,M)                ((C)->cl->get_##M(C))
 #define cp(C)                   (call((C), copy))
-#define priv_call(M,A...)       (M(this, ##A))
-#define priv_set(M,V)           (set_##M(this, V))
-#define priv_get(M)             (get_##M(this))
-#define base(O)                 ((Base)&(O->class))
+#define priv_call(M,A...)       (M(self, ##A))
+#define priv_set(M,V)           (set_##M(self, V))
+#define priv_get(M)             (get_##M(self))
+#define base(O)                 ((Base)&(O->cl))
 #define retain(o)               ((typeof(o))call(o, retain))
 #define release(o)              (call(o, release))
 #define autorelease(o)          ((typeof(o))call(o, autorelease))
@@ -402,9 +407,8 @@ Base object_inherits(Base o, class c);
 #define free_ptr(p)             ({ if (p) { free(p); p = NULL; } })
 #define max(a,b)                ({ typeof(a) _a = (a); typeof(b) _b = (b); _a > _b ? _a : _b; })
 #define min(a,b)                ({ typeof(a) _a = (a); typeof(b) _b = (b); _a < _b ? _a : _b; })
+#define sqr(v)                  ((v) * (v))
 #define string(cstring)         (class_call(String, from_cstring, cstring))
 #define new_string(cstring)     (class_call(String, new_string, cstring))
 #define cstring(O)              ({String _s = call((O), to_string); (_s ? _s->buffer : 0);})
-#define stack(C,V)              struct _object_##C V; stack_obj((class_Base)C##_cl, (Base)&V);
-
 #endif

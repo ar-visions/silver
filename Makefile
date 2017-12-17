@@ -4,7 +4,14 @@ else
     OPTFLAGS = -g3
 endif
 
-CFLAGS  = $(OPTFLAGS) -std=c99 -Wall -Werror -fPIC
+ifndef cpp
+    XFLAGS = -x c++
+	STD = c++11
+else
+	STD = c99
+endif
+
+CFLAGS  = $(OPTFLAGS) -std=$(STD) -Wall -Werror -fPIC
 SOURCES = $(wildcard src/*.c)
 OBJECTS = $(SOURCES:src/%.c=lib/%.o)
 
@@ -17,14 +24,14 @@ all: libdir lib/libobj.so
 
 .PHONY: test
 test:
-	$(CC) -o obj-test $(CFLAGS) $(INCLUDES) $(wildcard test/src/*.c) -lobj -lm
+	$(CC) -o obj-test $(CFLAGS) $(XFLAGS) $(INCLUDES) $(wildcard test/src/*.c) -lobj -lm
 
 .PHONY: libdir
 libdir:
 	mkdir -p lib
 
 $(OBJECTS): $(@F:%.o=src/%.c)
-	$(CC) $(CFLAGS) $(INCLUDES) -c -o $@ $(@F:%.o=src/%.c)
+	$(CC) $(CFLAGS) $(XFLAGS) $(INCLUDES) -c -o $@ $(@F:%.o=src/%.c)
 
 lib/libobj.so: $(OBJECTS)
 	$(CC) -shared -o $@ $(OBJECTS) $(LIBS)
