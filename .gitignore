@@ -6,6 +6,8 @@ CMakeCache.txt
 obj/CMakeFiles
 obj/CMakeCache.txt
 obj/cmake_install.cmake
+obj/libobj.a
 obj-test/CMakeFiles
 obj-test/CMakeCache.txt
 obj-test/cmake_install.cmake
+obj-test/obj-test
