@@ -1,5 +1,4 @@
 .vscode
-obj-test
 Makefile
 cmake_install.cmake
 CMakeFiles
