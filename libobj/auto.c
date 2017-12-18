@@ -1,5 +1,5 @@
 #include <obj.h>
-#include <autorelease.h>
+#include <auto.h>
 
 static const int block_size = 4096;
 

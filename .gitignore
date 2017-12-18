@@ -1,5 +1,13 @@
 .vscode/*
 .vscode
-lib/*
-lib
 obj-test
+Makefile
+cmake_install.cmake
+CMakeFiles
+CMakeCache.txt
+libobj/CMakeFiles
+libobj/CMakeCache.txt
+libobj/cmake_install.cmake
+libobj-test/CMakeFiles
+libobj-test/CMakeCache.txt
+libobj-test/cmake_install.cmake

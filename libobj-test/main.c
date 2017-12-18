@@ -1,5 +1,4 @@
-#include <libobj/obj.h>
-#include <libobj/autorelease.h>
+#include <obj.h>
 
 int main() {
     class_init();

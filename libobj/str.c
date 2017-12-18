@@ -3,11 +3,11 @@
 
 implement(String);
 
-static char tolower(char in) {
+static char tolowercase(char in) {
     return (in >= 'A' && in <= 'Z') ? 'a' + (in - 'A') : in;
 }
 
-static char toupper(char in) {
+static char touppercase(char in) {
     return (in >= 'a' && in <= 'z') ? 'A' + (in - 'a') : in;
 }
 
@@ -26,13 +26,13 @@ static char *strrstr(const char *s1, const char *s2) {
 
 static char *strlwr(char *str) {
     for (char *p = str; *p; p++)
-        *p = tolower(*p);
+        *p = tolowercase(*p);
     return str;
 }
 
 static char *strupr(char *str) {
     for (char *p = str; *p; p++)
-        *p = toupper(*p);
+        *p = touppercase(*p);
     return str;
 }
 
