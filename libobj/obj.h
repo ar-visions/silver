@@ -269,7 +269,7 @@ struct _Class {
 #define override_spr_override(C, R, N, A)
 #define override(D, T, C, R, N, A)                      override_##D##_##T(C, R, N, A)
 
-#define enum_object_cls_implement(C,E,O)                  inline enum C##Enum C##_enum_##E() { return (enum C##Enum)O; } 
+#define enum_object_cls_implement(C,E,O)                  enum C##Enum C##_enum_##E() { return (enum C##Enum)O; } 
 #define enum_object_cls_class_def(C,E,O)                  c->enum_##E = C##_enum_##E;
 #define enum_object_cls_class_dec(C,E,O)                  enum C##Enum (*enum_##E)();
 #define enum_object_cls_enum_def(C,E,O)                   C##_##E = O,
@@ -277,10 +277,10 @@ struct _Class {
 #define enum_object_cls_mname_dec(C,E,O)                  const char *enum_##E;
 #define enum_object_cls_mname_def(C,E,O)                  c->mnames->enum_##E = "int enum_" #E " ()";
 #define enum_object_cls_object_dec(C,E,O)
-#define enum_object_cls_proto(C,E,O)                      extern inline enum C##Enum C##_enum_##E();
+#define enum_object_cls_proto(C,E,O)                      enum C##Enum C##_enum_##E();
 #define enum_object_cls_override(C,E,O)
 
-#define enum_object_spr_implement(C,E,O)                  inline enum C##Enum C##_enum_##E() { return (enum C##Enum)O; } 
+#define enum_object_spr_implement(C,E,O)                  enum C##Enum C##_enum_##E() { return (enum C##Enum)O; } 
 #define enum_object_spr_class_def(C,E,O)                  c->enum_##E = C##_enum_##E;
 #define enum_object_spr_class_dec(C,E,O)                  enum C##Enum (*enum_##E)();
 #define enum_object_spr_enum_def(C,E,O)                   C##_##E = O,
@@ -288,7 +288,7 @@ struct _Class {
 #define enum_object_spr_mname_dec(C,E,O)                  const char *enum_##E;
 #define enum_object_spr_mname_def(C,E,O)                  c->mnames->enum_##E = #E;
 #define enum_object_spr_object_dec(C,E,O)
-#define enum_object_spr_proto(C,E,O)                      extern inline enum C##Enum C##_enum_##E();
+#define enum_object_spr_proto(C,E,O)                      enum C##Enum C##_enum_##E();
 #define enum_object_spr_override(C,E,O)
 #define enum_object(D,T,C,E,O)                            enum_object_##D##_##T(C,E,O)
 
@@ -397,12 +397,12 @@ enum ClassFlags {
 #include <base.h>
 #include <str.h>
 #include <prop.h>
-#include <autorelease.h>
+#include <auto.h>
 #include <list.h>
 #include <enum.h>
 #include <pairs.h>
 #include <vec.h>
-#include <primitives.h>
+#include <prim.h>
 
 EXPORT void *alloc_bytes(size_t);
 EXPORT Base new_obj(class_Base, size_t);

@@ -1,0 +1,5 @@
+cmake_minimum_required (VERSION 2.8.11)
+project (LIBOBJ)
+add_subdirectory (libobj)
+add_subdirectory (libobj-test)
+set_property(TARGET libobj PROPERTY C_STANDARD 99)

@@ -4,7 +4,7 @@ implement(Pairs)
 
 static const int base_count = 32;
 static const int block_size = 32;
-static const int ordered_block = block_size * 4;
+static const int ordered_block = 64;
 
 void Pairs_init(Pairs self) {
     self->list_count = base_count;
