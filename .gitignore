@@ -4,9 +4,9 @@ Makefile
 cmake_install.cmake
 CMakeFiles
 CMakeCache.txt
-libobj/CMakeFiles
-libobj/CMakeCache.txt
-libobj/cmake_install.cmake
-libobj-test/CMakeFiles
-libobj-test/CMakeCache.txt
-libobj-test/cmake_install.cmake
+obj/CMakeFiles
+obj/CMakeCache.txt
+obj/cmake_install.cmake
+obj-test/CMakeFiles
+obj-test/CMakeCache.txt
+obj-test/cmake_install.cmake
