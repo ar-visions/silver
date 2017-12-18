@@ -36,9 +36,7 @@ UInt64 UInt64_from_string(String value) {
 }
 
 String UInt64_to_string(UInt64 self) {
-    char str[32];
-    sprintf(str, "%lld", self->value);
-    return string(str);
+    return class_call(String, format, "%llu", self->value);
 }
 
 Int64 Int64_from_string(String value) {
@@ -48,9 +46,7 @@ Int64 Int64_from_string(String value) {
 }
 
 String Int64_to_string(Int64 self) {
-    char str[32];
-    sprintf(str, "%llu", self->value);
-    return string(str);
+    return class_call(String, format, "%lld", self->value);
 }
 
 UInt32 UInt32_from_string(String value) {
@@ -60,9 +56,7 @@ UInt32 UInt32_from_string(String value) {
 }
 
 String UInt32_to_string(UInt32 self) {
-    char str[16];
-    sprintf(str, "%u", self->value);
-    return string(str);
+    return class_call(String, format, "%u", self->value);
 }
 
 Int32 Int32_from_string(String value) {
@@ -72,9 +66,7 @@ Int32 Int32_from_string(String value) {
 }
 
 String Int32_to_string(Int32 self) {
-    char str[16];
-    sprintf(str, "%d", self->value);
-    return string(str);
+    return class_call(String, format, "%d", self->value);
 }
 
 UInt16 UInt16_from_string(String value) {
@@ -84,9 +76,7 @@ UInt16 UInt16_from_string(String value) {
 }
 
 String UInt16_to_string(UInt16 self) {
-    char str[8];
-    sprintf(str, "%hu", self->value);
-    return string(str);
+    return class_call(String, format, "%hu", self->value);
 }
 
 Int16 Int16_from_string(String value) {
@@ -96,9 +86,7 @@ Int16 Int16_from_string(String value) {
 }
 
 String Int16_to_string(Int16 self) {
-    char str[8];
-    sprintf(str, "%hu", self->value);
-    return string(str);
+    return class_call(String, format, "%hd", self->value);
 }
 
 UInt8 UInt8_from_string(String value) {
@@ -108,9 +96,7 @@ UInt8 UInt8_from_string(String value) {
 }
 
 String UInt8_to_string(UInt8 self) {
-    char str[8];
-    sprintf(str, "%u", self->value);
-    return string(str);
+    return class_call(String, format, "%u", self->value);
 }
 
 Int8 Int8_from_string(String value) {
@@ -120,9 +106,7 @@ Int8 Int8_from_string(String value) {
 }
 
 String Int8_to_string(Int8 self) {
-    char str[8];
-    sprintf(str, "%d", self->value);
-    return string(str);
+    return class_call(String, format, "%d", self->value);
 }
 
 Long Long_from_string(String value) {
@@ -132,9 +116,7 @@ Long Long_from_string(String value) {
 }
 
 String Long_to_string(Long self) {
-    char str[8];
-    sprintf(str, "%ld", self->value);
-    return string(str);
+    return class_call(String, format, "%ld", self->value);
 }
 
 ULong ULong_from_string(String value) {
@@ -144,9 +126,7 @@ ULong ULong_from_string(String value) {
 }
 
 String ULong_to_string(ULong self) {
-    char str[8];
-    sprintf(str, "%lu", self->value);
-    return string(str);
+    return class_call(String, format, "%lu", self->value);
 }
 
 Float Float_from_string(String value) {
@@ -156,9 +136,7 @@ Float Float_from_string(String value) {
 }
 
 String Float_to_string(Float self) {
-    char str[256];
-    sprintf(str, "%f", self->value);
-    return string(str);
+    return class_call(String, format, "%f", self->value);
 }
 
 Double Double_from_string(String value) {
@@ -168,9 +146,7 @@ Double Double_from_string(String value) {
 }
 
 String Double_to_string(Double self) {
-    char str[256];
-    sprintf(str, "%f", self->value);
-    return string(str);
+    return class_call(String, format, "%f", self->value);
 }
 
 Bool Bool_from_string(String value) {
@@ -184,7 +160,5 @@ Bool Bool_from_string(String value) {
 }
 
 String Bool_to_string(Bool self) {
-    char str[256];
-    sprintf(str, "%s", self->value == false ? "false" : "true");
-    return string(str);
+    return class_call(String, format, "%s", self->value == false ? "false" : "true");
 }
