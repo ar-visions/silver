@@ -15,24 +15,24 @@ implement_primitive(Float)
 implement_primitive(Double)
 implement_primitive(Bool)
 
-Int8 int8_object(int8 v)        { Int8   o = new(Int8);     o->value = v; return autorelease(o); }
-UInt8 uint8_object(uint8 v)     { UInt8  o = new(UInt8);    o->value = v; return autorelease(o); }
-Int16 int16_object(int16 v)     { Int16  o = new(Int16);    o->value = v; return autorelease(o); }
-UInt16 uint16_object(uint16 v)  { UInt16 o = new(UInt16);   o->value = v; return autorelease(o); }
-Int32 int32_object(int32 v)     { Int32  o = new(Int32);    o->value = v; return autorelease(o); }
-UInt32 uint32_object(uint32 v)  { UInt32 o = new(UInt32);   o->value = v; return autorelease(o); }
-Int64 int64_object(int64 v)     { Int64  o = new(Int64);    o->value = v; return autorelease(o); }
-UInt64 uint64_object(uint64 v)  { UInt64 o = new(UInt64);   o->value = v; return autorelease(o); }
-Long long_object(long v)        { Long   o = new(Long);     o->value = v; return autorelease(o); }
-ULong ulong_object(ulong v)     { ULong  o = new(ULong);    o->value = v; return autorelease(o); }
-Bool bool_object(bool v)        { Bool   o = new(Bool);     o->value = v; return autorelease(o); }
-Float float_object(float v)     { Float  o = new(Float);    o->value = v; return autorelease(o); }
-Double double_object(double v)  { Double o = new(Double);   o->value = v; return autorelease(o); }
+Int8 int8_object(int8 v)        { Int8   o = auto(Int8);     o->value = v; return o; }
+UInt8 uint8_object(uint8 v)     { UInt8  o = auto(UInt8);    o->value = v; return o; }
+Int16 int16_object(int16 v)     { Int16  o = auto(Int16);    o->value = v; return o; }
+UInt16 uint16_object(uint16 v)  { UInt16 o = auto(UInt16);   o->value = v; return o; }
+Int32 int32_object(int32 v)     { Int32  o = auto(Int32);    o->value = v; return o; }
+UInt32 uint32_object(uint32 v)  { UInt32 o = auto(UInt32);   o->value = v; return o; }
+Int64 int64_object(int64 v)     { Int64  o = auto(Int64);    o->value = v; return o; }
+UInt64 uint64_object(uint64 v)  { UInt64 o = auto(UInt64);   o->value = v; return o; }
+Long long_object(long v)        { Long   o = auto(Long);     o->value = v; return o; }
+ULong ulong_object(ulong v)     { ULong  o = auto(ULong);    o->value = v; return o; }
+Bool bool_object(bool v)        { Bool   o = auto(Bool);     o->value = v; return o; }
+Float float_object(float v)     { Float  o = auto(Float);    o->value = v; return o; }
+Double double_object(double v)  { Double o = auto(Double);   o->value = v; return o; }
 
 UInt64 UInt64_from_string(String value) {
-    UInt64 self = new(UInt64);
+    UInt64 self = auto(UInt64);
     self->value = value ? strtoull(value->buffer, NULL, 10) : 0;
-    return autorelease(self);
+    return self;
 }
 
 String UInt64_to_string(UInt64 self) {
@@ -40,9 +40,9 @@ String UInt64_to_string(UInt64 self) {
 }
 
 Int64 Int64_from_string(String value) {
-    Int64 self = new(Int64);
+    Int64 self = auto(Int64);
     self->value = value ? strtoll(value->buffer, NULL, 10) : 0;
-    return autorelease(self);
+    return self;
 }
 
 String Int64_to_string(Int64 self) {
@@ -50,9 +50,9 @@ String Int64_to_string(Int64 self) {
 }
 
 UInt32 UInt32_from_string(String value) {
-    UInt32 self = new(UInt32);
+    UInt32 self = auto(UInt32);
     self->value = value ? strtoul(value->buffer, NULL, 10) : 0;
-    return autorelease(self);
+    return self;
 }
 
 String UInt32_to_string(UInt32 self) {
@@ -60,9 +60,9 @@ String UInt32_to_string(UInt32 self) {
 }
 
 Int32 Int32_from_string(String value) {
-    Int32 self = new(Int32);
+    Int32 self = auto(Int32);
     self->value = value ? strtol(value->buffer, NULL, 10) : 0;
-    return autorelease(self);
+    return self;
 }
 
 String Int32_to_string(Int32 self) {
@@ -70,9 +70,9 @@ String Int32_to_string(Int32 self) {
 }
 
 UInt16 UInt16_from_string(String value) {
-    UInt16 self = new(UInt16);
+    UInt16 self = auto(UInt16);
     self->value = value ? strtoul(value->buffer, NULL, 10) : 0;
-    return autorelease(self);
+    return self;
 }
 
 String UInt16_to_string(UInt16 self) {
@@ -80,9 +80,9 @@ String UInt16_to_string(UInt16 self) {
 }
 
 Int16 Int16_from_string(String value) {
-    Int16 self = new(Int16);
+    Int16 self = auto(Int16);
     self->value = value ? strtol(value->buffer, NULL, 10) : 0;
-    return autorelease(self);
+    return self;
 }
 
 String Int16_to_string(Int16 self) {
@@ -90,9 +90,9 @@ String Int16_to_string(Int16 self) {
 }
 
 UInt8 UInt8_from_string(String value) {
-    UInt8 self = new(UInt8);
+    UInt8 self = auto(UInt8);
     self->value = value ? strtoul(value->buffer, NULL, 10) : 0;
-    return autorelease(self);
+    return self;
 }
 
 String UInt8_to_string(UInt8 self) {
@@ -100,9 +100,9 @@ String UInt8_to_string(UInt8 self) {
 }
 
 Int8 Int8_from_string(String value) {
-    Int8 self = new(Int8);
+    Int8 self = auto(Int8);
     self->value = value ? strtol(value->buffer, NULL, 10) : 0;
-    return autorelease(self);
+    return self;
 }
 
 String Int8_to_string(Int8 self) {
@@ -110,9 +110,9 @@ String Int8_to_string(Int8 self) {
 }
 
 Long Long_from_string(String value) {
-    Long self = new(Long);
+    Long self = auto(Long);
     self->value = value ? strtol(value->buffer, NULL, 10) : 0;
-    return autorelease(self);
+    return self;
 }
 
 String Long_to_string(Long self) {
@@ -120,9 +120,9 @@ String Long_to_string(Long self) {
 }
 
 ULong ULong_from_string(String value) {
-    ULong self = new(ULong);
+    ULong self = auto(ULong);
     self->value = value ? strtol(value->buffer, NULL, 10) : 0;
-    return autorelease(self);
+    return self;
 }
 
 String ULong_to_string(ULong self) {
@@ -130,9 +130,9 @@ String ULong_to_string(ULong self) {
 }
 
 Float Float_from_string(String value) {
-    Float self = new(Float);
+    Float self = auto(Float);
     self->value = value ? atof(value->buffer) : 0;
-    return autorelease(self);
+    return self;
 }
 
 String Float_to_string(Float self) {
@@ -140,9 +140,9 @@ String Float_to_string(Float self) {
 }
 
 Double Double_from_string(String value) {
-    Double self = new(Double);
+    Double self = auto(Double);
     self->value = value ? atof(value->buffer) : 0;
-    return autorelease(self);
+    return self;
 }
 
 String Double_to_string(Double self) {
@@ -150,13 +150,13 @@ String Double_to_string(Double self) {
 }
 
 Bool Bool_from_string(String value) {
-    Bool self = new(Bool);
+    Bool self = auto(Bool);
     if (value->buffer) {
         String lower = call(value, lower);
         if (call(lower, cmp, "true") == 0 || call(lower, cmp, "1") == 0)
             self->value = true;
     }
-    return autorelease(self);
+    return self;
 }
 
 String Bool_to_string(Bool self) {
