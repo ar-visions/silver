@@ -177,7 +177,7 @@ static LItem *llist_merge(LList *list, LItem *first, LItem *second, bool asc, So
     if (!second)
         return first;
  
-    if ((!asc) ^ sortf(first->data, second->data)) {
+    if (asc ^ (sortf(first->data, second->data) > 0)) {
         first->next = llist_merge(list, first->next, second, asc, sortf);
         first->next->prev = first;
         first->prev = NULL;

@@ -364,25 +364,6 @@ enum ClassFlags {
         T##_last = (T)V;                                        \
     }
 
-#include <base.h>
-#include <str.h>
-#include <prop.h>
-#include <autorelease.h>
-#include <list.h>
-#include <enum.h>
-#include <pairs.h>
-#include <vec.h>
-#include <primitives.h>
-
-EXPORT void *alloc_bytes(size_t);
-EXPORT Base new_obj(class_Base, size_t);
-EXPORT void free_obj(Base);
-EXPORT void class_assemble(Class);
-EXPORT void class_init();
-EXPORT bool class_inherits(Class, Class);
-EXPORT Class class_find(const char *name);
-EXPORT Base object_inherits(Base o, Class c);
-
 #define new(C)                  ((C)new_obj((class_Base)C##_cl, 0))
 #define object_new(O)           ((typeof(O))((O) ? new_obj((class_Base)(O)->cl, 0) : NULL))
 #define class_of(C,I)           (class_inherits((Class)C,(Class)I##_cl))
@@ -407,8 +388,29 @@ EXPORT Base object_inherits(Base o, Class c);
 #define free_ptr(p)             ({ if (p) { free(p); p = NULL; } })
 #define max(a,b)                ({ typeof(a) _a = (a); typeof(b) _b = (b); _a > _b ? _a : _b; })
 #define min(a,b)                ({ typeof(a) _a = (a); typeof(b) _b = (b); _a < _b ? _a : _b; })
+#define clamp(V,L,H)            (min(H,max(L,V)))
 #define sqr(v)                  ((v) * (v))
+#define cstring(O)              ({String _s = call((O), to_string); (_s ? _s->buffer : 0);})
 #define string(cstring)         (class_call(String, from_cstring, cstring))
 #define new_string(cstring)     (class_call(String, new_string, cstring))
-#define cstring(O)              ({String _s = call((O), to_string); (_s ? _s->buffer : 0);})
+
+#include <base.h>
+#include <str.h>
+#include <prop.h>
+#include <autorelease.h>
+#include <list.h>
+#include <enum.h>
+#include <pairs.h>
+#include <vec.h>
+#include <primitives.h>
+
+EXPORT void *alloc_bytes(size_t);
+EXPORT Base new_obj(class_Base, size_t);
+EXPORT void free_obj(Base);
+EXPORT void class_assemble(Class);
+EXPORT void class_init();
+EXPORT bool class_inherits(Class, Class);
+EXPORT Class class_find(const char *name);
+EXPORT Base object_inherits(Base o, Class c);
+
 #endif

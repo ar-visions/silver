@@ -14,13 +14,14 @@ void Vec3_init(Vec3 self) {
     self->count = 3;
 }
 
-void Vec4_init(Vec4 self) { self->count = 4; }
+void Vec4_init(Vec4 self) {
+    self->count = 4;
+}
 
 ulong Vec_hash(Vec self) {
     ulong ret = 0;
-    ulong p = 1;
     for (int i = 0; i < self->count; i++)
-        ret += self->vec[i] * pow(31, p++);
+        ret += self->vec[i] * 100.0 * 31.0;
     return ret;
 }
 

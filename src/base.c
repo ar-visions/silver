@@ -4,6 +4,8 @@
 
 implement(Base)
 
+static bool enable_logging = true;
+
 void Base_class_preinit(Class c) { }
 
 void Base_class_init(Class c) {
@@ -32,7 +34,6 @@ void Base_class_init(Class c) {
             continue;
         char *mname = strchr(start, ' ');
         if (mname && strncmp(mname, " get_", 5) == 0) {
-            printf("adding property: %s\n", mname);
             mname++;
             char *args = strchr(mname, ' ');
             if (!args)
@@ -46,7 +47,6 @@ void Base_class_init(Class c) {
             strncpy(name, &mname[4], name_len);
             name[name_len] = 0;
             Prop p = class_call(Prop, new_with, type, name, (Getter)cbase->m[i], (Setter)cbase->m[i - 1]);
-            printf("added property: %s, %s\n", type, name);
             if (p)
                 pairs_add(props, string(name), p);
         }
@@ -56,12 +56,12 @@ void Base_class_init(Class c) {
 void Base_init(Base self) { }
 
 int Base_compare(Base a, Base b) {
-    return (long long)a - (long long)b;
+    return (long long)b - (long long)a;
 }
 
 const char *Base_to_cstring(Base self) {
     String str = self(to_string);
-    return str ? str->buffer : NULL;
+    return (const char *)(str ? str->buffer : NULL);
 }
 
 Base Base_from_cstring(const char *value) {
@@ -69,50 +69,18 @@ Base Base_from_cstring(const char *value) {
 }
 
 bool Base_is_logging(Base self) {
-    return true;
+    return enable_logging;
 }
 
-void Base_log(Base self, char *format, ...) {
-    /*
-    va_list args;
-    va_start(args, format);
+String Base_identity(Base self) {
+    return string(self->cl->name);
+}
 
-    // scan through format; for each valid formatter % given, call sprintf
-    int f_start = -1;
-    for (int i = 0, len = strlen(format); i < len; i++) {
-        char c = format[i];
-        if (c == '%') {
-            f_start = (f_start == -1) ? i : -1;
-        } else if (f_start != -1) {
-            switch (c) {
-                case 'i':
-                case 'd':
-                    switch ()
-                    break;
-
-                case 'o':
-                    break;
-
-                case 's':
-                    break;
-
-                case '':
-                    break;
-                
-                case 'p':
-                    break;
-            }
-        }
-            
-            // sprintf
-        }
-        int type = va_arg(args, enum mytypes);
+void Base_print(Base self, String str) {
+    if (str) {
+        String identity = call(self, identity);
+        printf("%s: %s\n", (const char *)identity->buffer, (const char *)str->buffer);
     }
-    va_end(args);
-    
-    va_start(args, format);
-    vprintf(format, args);
-    */
 }
 
 void Base_set_property(Base self, const char *name, Base base_value) {
@@ -127,67 +95,67 @@ void Base_set_property(Base self, const char *name, Base base_value) {
         return;
     switch (p->enum_type->ordinal) {
         case Type_Bool: {
-            bool v = (value && strcmp(value->buffer, "true") == 0) ? true : false;
+            bool v = (value && strcmp((char *)value->buffer, "true") == 0) ? true : false;
             p->setter(self, (void *)(size_t)v);
             break;
         }
         case Type_Int8: {
-            char v = (char)atoi(value->buffer);
+            char v = (char)atoi((char *)value->buffer);
             p->setter(self, (void *)(size_t)v);
             break;
         }
         case Type_UInt8: {
-            unsigned char v = (unsigned char)atoi(value->buffer);
+            unsigned char v = (unsigned char)atoi((char *)value->buffer);
             p->setter(self, (void *)(size_t)v);
             break;
         }
         case Type_Int16: {
-            short v = (short)atoi(value->buffer);
+            short v = (short)atoi((char *)value->buffer);
             p->setter(self, (void *)(size_t)v);
             break;
         }
         case Type_UInt16: {
-            unsigned short v = (unsigned short)atoi(value->buffer);
+            unsigned short v = (unsigned short)atoi((char *)value->buffer);
             p->setter(self, (void *)(size_t)v);
             break;
         }
         case Type_Int32: {
-            int v = (int)atoi(value->buffer);
+            int v = (int)atoi((char *)value->buffer);
             p->setter(self, (void *)(size_t)v);
             break;
         }
         case Type_UInt32: {
-            unsigned int v = (unsigned int)atoi(value->buffer);
+            unsigned int v = (unsigned int)atoi((char *)value->buffer);
             p->setter(self, (void *)(size_t)v);
             break;
         }
         case Type_Int64: {
-            long long v = (long long)strtoll(value->buffer, NULL, 10);
+            long long v = (long long)strtoll((char *)value->buffer, NULL, 10);
             ((void (*)(Base, long long))p->setter)(self, v);
             break;
         }
         case Type_UInt64: {
-            unsigned long long v = (unsigned long long)strtoull(value->buffer, NULL, 10);
+            unsigned long long v = (unsigned long long)strtoull((char *)value->buffer, NULL, 10);
             ((void (*)(Base, unsigned long long))p->setter)(self, v);
             break;
         }
         case Type_Long: {
-            long v = (long)strtoul(value->buffer, NULL, 10);
+            long v = (long)strtoul((char *)value->buffer, NULL, 10);
             p->setter(self, (void *)v);
             break;
         }
         case Type_ULong: {
-            unsigned long v = (unsigned long)strtoul(value->buffer, NULL, 10);
+            unsigned long v = (unsigned long)strtoul((char *)value->buffer, NULL, 10);
             p->setter(self, (void *)v);
             break;
         }
         case Type_Float: {
-            float v = (float)atof(value->buffer);
+            float v = (float)atof((char *)value->buffer);
             ((void (*)(Base, float))p->setter)(self, v);
             break;
         }
         case Type_Double: {
-            double v = (double)atof(value->buffer);
+            double v = (double)atof((char *)value->buffer);
             ((void (*)(Base, double))p->setter)(self, v);
             break;
         }
@@ -241,7 +209,7 @@ Base Base_copy(Base self) {
 Base Base_from_string(String value) {
     if (!value)
         return NULL;
-    return class_call(Base, from_cstring, value->buffer);
+    return class_call(Base, from_cstring, (const char *)value->buffer);
 }
 
 String Base_to_string(Base self) {

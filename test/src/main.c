@@ -26,19 +26,11 @@ int main() {
 
     printf("%s + %s = %s\n", cstring(v), cstring(z), cstring(r));
 
-    push(list, v);
-    push(list, z);
-    push(list, r);
+    push(list, int32_object(10));
+    push(list, int32_object(30));
+    push(list, int32_object(5));
 
-    Vec3 i = NULL;
-    each(list, i) {
-        printf("i = %s\n", cstring(i));
-    }
-    call(list, sort, true, NULL);
-    each(list, i) {
-        printf("i = %s\n", cstring(i));
-    }
-
+    print(r, "r = %p", v);
     call(ar, drain);
     return 0;
 }

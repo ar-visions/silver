@@ -9,6 +9,14 @@
     method(D,T,C,C,lower,(C))                        \
     method(D,T,C,C,new_string,(const char *))        \
     method(D,T,C,int,cmp,(C,const char *))           \
+    method(D,T,C,void,check_resize,(C, int))         \
+    method(D,T,C,void,concat_char,(C, const char))   \
+    method(D,T,C,void,concat_chars,(C, const char *, int)) \
+    method(D,T,C,void,concat_long,(C, long, const char *)) \
+    method(D,T,C,void,concat_long_long,(C, uint64, const char *)) \
+    method(D,T,C,void,concat_double,(C, double, const char *)) \
+    method(D,T,C,void,concat_object,(C, Base))       \
+    method(D,T,C,C,format,(const char *,...))        \
     override(D,T,C,C,from_cstring,(const char *))    \
     override(D,T,C,void,init,(C))                    \
     override(D,T,C,C,to_string,(C))                  \
@@ -21,5 +29,4 @@
     private_var(D,T,C,size_t,buffer_size)            \
     private_var(D,T,C,size_t,length)
 declare(String, Base);
-
 #endif

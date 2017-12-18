@@ -38,11 +38,11 @@ Prop Prop_new_with(char *type, char *name, Getter getter, Setter setter) {
     Type t = enum_find(Type, type_);
     if (!c && !t)
         return NULL;
-    Prop p = new(Prop);
-    p->name = new_string(name);
-    p->enum_type = (Enum)t;
-    p->class_type = c;
-    p->getter = getter;
-    p->setter = setter;
-    return p;
+    Prop self = new(Prop);
+    self->name = new_string(name);
+    self->enum_type = (Enum)t;
+    self->class_type = c;
+    self->getter = getter;
+    self->setter = setter;
+    return self;
 }

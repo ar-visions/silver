@@ -105,6 +105,135 @@ String String_to_string(String self) {
     return class_call(String, from_cstring, self->buffer);
 }
 
+void String_check_resize(String self, int chars) {
+    if (self->buffer_size <= chars + 1) {
+        int buffer_size = self->buffer_size + chars + 1 + clamp(((self->buffer_size - 1) << 1), 32, 1024);
+        char *copy = (char *)malloc(buffer_size);
+        if (self->buffer)
+            memcpy(copy, self->buffer, self->length);
+        copy[buffer_size] = 0;
+        free(self->buffer);
+        self->buffer = copy;
+        self->buffer_size = buffer_size;
+    }
+}
+
+void String_concat_char(String self, char c) {
+    call(self, check_resize, self->length + 1);
+    self->buffer[self->length] = c;
+    self->buffer[++self->length] = 0;
+}
+
+void String_concat_chars(String self, const char *p, int len) {
+    call(self, check_resize, self->length + len);
+    memcpy(&self->buffer[self->length], p, len + 1);
+    self->length += len;
+}
+
+void String_concat_long(String self, long v, const char *format) {
+    char buffer[64];
+    sprintf(buffer, format, v);
+    call(self, concat_chars, buffer, strlen(buffer));
+}
+
+void String_concat_long_long(String self, uint64 v, const char *format) {
+    char buffer[128];
+    sprintf(buffer, format, v);
+    call(self, concat_chars, buffer, strlen(buffer));
+}
+
+void String_concat_double(String self, double v, const char *format) {
+    char buffer[64];
+    sprintf(buffer, format, v);
+    call(self, concat_chars, buffer, strlen(buffer));
+}
+
+void String_concat_object(String self, Base o) {
+    String str = call(o, to_string);
+    char *v = str ? str->buffer : (char *)"[null]";
+    call(self, concat_chars, v, strlen(v));
+}
+
+String String_format(const char *format, ...) {
+    if (!format)
+        return NULL;
+    String self = new(String);
+    int flen = strlen(format);
+    va_list args;
+    va_start(args, format);
+    int f_start = -1;
+    int char_start = -1;
+    bool sign = true;
+    int width = 0;
+    for (int i = 0; i <= flen; i++) {
+        char c = format[i];
+        if (c == '%' || c == 0) {
+            sign = true;
+            width = 0;
+            if (char_start >= 0) {
+                int len = (i - char_start);
+                call(self, concat_chars, &format[char_start], len);
+                char_start = -1;
+                if (c == 0)
+                    break;
+            }
+            if (f_start >= 0) {
+                call(self, concat_char, c);
+            } else {
+                f_start = i;
+                continue;
+            }
+        } else if (f_start >= 0) {
+            switch (c) {
+                case 'l':
+                    width++;
+                    break;
+                default: {
+                    int flen = i - f_start;
+                    char formatter[flen + 2];
+                    memcpy(formatter, &format[f_start], flen + 1);
+                    formatter[flen + 1] = 0;
+                    switch (c) {
+                        case 's': {
+                            char *chars = va_arg(args, char *);
+                            call(self, concat_chars, chars, strlen(chars));
+                            f_start = -1;
+                            break;
+                        }
+                        case 'f':
+                            call(self, concat_double, va_arg(args, double), formatter);
+                            f_start = -1;
+                            break;
+                        case 'u':
+                            if (width == 2)
+                                call(self, concat_long_long, va_arg(args, long long), formatter);
+                            else 
+                                call(self, concat_long, va_arg(args, int), formatter);
+                            f_start = -1;
+                            break;
+                        case 'd':
+                            if (width == 2)
+                                call(self, concat_long_long, va_arg(args, long long), formatter);
+                            else 
+                                call(self, concat_long, va_arg(args, int), formatter);
+                            f_start = -1;
+                            break;
+                        case 'p':
+                            call(self, concat_object, va_arg(args, Base));
+                            f_start = -1;
+                            break;
+                    }
+                    break;
+                }
+            }
+        } else if (char_start == -1) {
+            char_start = i;
+        }
+    }
+    va_end(args);
+    return self;
+}
+
 String String_lower(String self) {
     String c = cp(self);
     strlwr(c->buffer);

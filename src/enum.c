@@ -18,7 +18,6 @@ void Enum_class_preinit(Class cself) {
     String cname = new_string(c->name);
     Pairs class_enums = new(Pairs);
     pairs_add(enums, cname, class_enums);
-    printf("added class enum: %s\n", cname->buffer);
     int enum_count = 0;
     char **mnames = (char **)c->mnames;
     for (int i = 0; i < c->mcount; i++) {
@@ -54,7 +53,6 @@ void Enum_class_preinit(Class cself) {
                 String str_name = new_string(name);
                 enum_obj->symbol = str_name;
                 enum_obj->ordinal = (int)(ulong)(c->m[i])();
-                printf("-> added enum: %s:%s\n", cname->buffer, str_name->buffer);
                 pairs_add(class_enums, str_name, enum_obj);
             }
         }
