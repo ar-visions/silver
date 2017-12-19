@@ -1,6 +1,6 @@
 add_library (obj obj.c base.c enum.c list.c str.c vec.c prop.c prim.c pairs.c matrix.c auto.c llist.c)
-SET_SOURCE_FILES_PROPERTIES( obj.c base.c enum.c list.c str.c vec.c prop.c prim.c pairs.c matrix.c auto.c llist.c PROPERTIES LANGUAGE CXX )
 if(MSVC)
+set_source_files_properties (obj.c base.c enum.c list.c str.c vec.c prop.c prim.c pairs.c matrix.c auto.c llist.c PROPERTIES LANGUAGE CXX)
 add_definitions(-DNOMINMAX -D_CRT_SECURE_NO_WARNINGS)
 endif()
 set_property(TARGET obj PROPERTY POSITION_INDEPENDENT_CODE ON)
