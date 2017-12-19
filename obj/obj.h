@@ -24,7 +24,7 @@
 #define max std::max
 #define _thread_local_  __declspec(thread)
 #else
-#define _thread_local_  _thread
+#define _thread_local_  __thread
 #define max(a,b) ({ typeof(a) _a = (a); typeof(b) _b = (b); _a > _b ? _a : _b; })
 #define min(a,b) ({ typeof(a) _a = (a); typeof(b) _b = (b); _a < _b ? _a : _b; })
 #endif
@@ -408,17 +408,26 @@ enum ClassFlags {
 #define object_new(O)           ((typeof(O))((O) ? new_obj((class_Base)(O)->cl, 0) : NULL))
 #define class_of(C,I)           (class_inherits((Class)C,(Class)I##_cl))
 #define inherits(O,C)           ((C)object_inherits((Base)O,(Class)C##_cl))
-#define super(M,...)            (self->cl->parent->M(((typeof(self->super_object))self, __VA_ARGS__)))
-#define call(C,M,...)           ((C)->cl->M(C, __VA_ARGS__))
-#define self(M,...)             (self->cl->M(self, __VA_ARGS__))
-#define class_call(C,M,...)     (C##_##M(__VA_ARGS__))
+#ifdef _MSC_VER
+    #define super(M,...)            (self->cl->parent->M(((typeof(self->super_object))self, __VA_ARGS__)))
+    #define call(C,M,...)           ((C)->cl->M(C, __VA_ARGS__))
+    #define self(M,...)             (self->cl->M(self, __VA_ARGS__))
+    #define class_call(C,M,...)     (C##_##M(__VA_ARGS__))
+    #define priv_call(M,...)        (M(self, __VA_ARGS__))
+    #define priv_set(M,V)           (set_##M(self, V))
+#else
+    #define super(M,A...)           (self->cl->parent->M(((typeof(self->super_object))self, ##A)))
+    #define call(C,M,A...)          ((C)->cl->M(C, ##A))
+    #define self(M,A...)            (self->cl->M(self, ##A))
+    #define class_call(C,M,A...)    (C##_##M(A))
+    #define priv_call(M,A...)       (M(self, ##A))
+    #define priv_set(M,V)           (set_##M(self, V))
+#endif
+#define priv_get(M)             (get_##M(this))
 #define class_object(C)         ((Class)C##_cl)
 #define set(C,M,V)              ((C)->cl->set_##M(C, V))
 #define get(C,M)                ((C)->cl->get_##M(C))
 #define cp(C)                   (call((C), copy))
-#define priv_call(M,...)        (M(self, __VA_ARGS__))
-#define priv_set(M,V)           (set_##M(self, V))
-#define priv_get(M)             (get_##M(self))
 #define base(O)                 ((Base)&(O->cl))
 #define retain(o)               ((typeof(o))call(o, retain))
 #define release(o)              (call(o, release))
