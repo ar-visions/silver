@@ -42,11 +42,11 @@ void Enum_class_preinit(Class cself) {
                 continue;
             int type_len = mname - start - 1;
             int name_len = args - mname - 5;
-            char type[type_len + 1];
-            strncpy(type, start, type_len);
+            char *type = (char *)alloc_bytes(type_len + 1);
+            char *name = (char *)alloc_bytes(name_len + 1);
+            memcpy(type, start, type_len);
             type[type_len] = 0;
-            char name[name_len + 1];
-            strncpy(name, &mname[5], name_len);
+            memcpy(name, &mname[5], name_len);
             name[name_len] = 0;
             Enum enum_obj = (Enum)new_obj((class_Base)c, 0);
             if (enum_obj) {
@@ -55,6 +55,8 @@ void Enum_class_preinit(Class cself) {
                 enum_obj->ordinal = (int)(ulong)(c->m[i])();
                 pairs_add(class_enums, str_name, enum_obj);
             }
+            free(type);
+            free(name);
         }
     }
 }
@@ -83,6 +85,10 @@ Pairs Enum_enums(Class cself) {
     if (!enums)
         return NULL;
     return pairs_value(enums, string(cself->name), Pairs);
+}
+
+String Enum_to_string(Enum self) {
+    return class_call(String, format, "%s:%p", self->cl->name, self->symbol);
 }
 
 void Enum_free(Enum self) {

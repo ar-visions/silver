@@ -9,7 +9,7 @@
     method(D,T,C,C,lower,(C))                        \
     method(D,T,C,C,new_string,(const char *))        \
     method(D,T,C,int,cmp,(C,const char *))           \
-    method(D,T,C,void,check_resize,(C, int))         \
+    method(D,T,C,void,check_resize,(C, uint))        \
     method(D,T,C,void,concat_char,(C, const char))   \
     method(D,T,C,void,concat_chars,(C, const char *, int)) \
     method(D,T,C,void,concat_long,(C, long, const char *)) \

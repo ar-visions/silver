@@ -9,13 +9,13 @@ static const int ordered_block = 64;
 void Pairs_init(Pairs self) {
     self->list_count = base_count;
     self->lists = (LList *)alloc_bytes(sizeof(LList) * self->list_count);
-    for (int i = 0; i < self->list_count; i++)
+    for (int i = 0; i < (int)self->list_count; i++)
         llist(&self->lists[i], 0, block_size);
     llist(&self->ordered_list, 0, ordered_block);
 }
 
 void Pairs_clear(Pairs self) {
-    for (int i = 0; i < self->list_count; i++) {
+    for (int i = 0; i < (int)self->list_count; i++) {
         LList *list = &self->lists[i];
         for (LItem *item = list->first; item; item = item->next) {
             KeyValue kv = (KeyValue)item->data;
@@ -66,7 +66,7 @@ Base Pairs_value(Pairs self, Base key) {
 
 Pairs Pairs_copy(Pairs self) {
     Pairs c = new(Pairs);
-    for (int i = 0; i < self->list_count; i++) {
+    for (int i = 0; i < (int)self->list_count; i++) {
         LList *list = &self->lists[i];
         for (LItem *item = list->first; item; item = item->next) {
             KeyValue kv = (KeyValue)item->data;

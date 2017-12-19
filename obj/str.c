@@ -24,13 +24,13 @@ static char *strrstr(const char *s1, const char *s2) {
     return NULL;
 }
 
-static char *strlwr(char *str) {
+static char *strlwrcase(char *str) {
     for (char *p = str; *p; p++)
         *p = tolowercase(*p);
     return str;
 }
 
-static char *strupr(char *str) {
+static char *struprcase(char *str) {
     for (char *p = str; *p; p++)
         *p = touppercase(*p);
     return str;
@@ -105,9 +105,9 @@ String String_to_string(String self) {
     return class_call(String, from_cstring, self->buffer);
 }
 
-void String_check_resize(String self, int chars) {
+void String_check_resize(String self, uint chars) {
     if (self->buffer_size <= chars + 1) {
-        int buffer_size = self->buffer_size + chars + 1 + clamp(((self->buffer_size - 1) << 1), 32, 1024);
+        int buffer_size = self->buffer_size + chars + 1 + clamp((int)((self->buffer_size - 1) << 1), 32, 1024);
         char *copy = (char *)malloc(buffer_size);
         if (self->buffer)
             memcpy(copy, self->buffer, self->length);
@@ -165,6 +165,8 @@ String String_format(const char *format, ...) {
     int char_start = -1;
     bool sign = true;
     int width = 0;
+    char formatter[32];
+
     for (int i = 0; i <= flen; i++) {
         char c = format[i];
         if (c == '%' || c == 0) {
@@ -190,7 +192,8 @@ String String_format(const char *format, ...) {
                     break;
                 default: {
                     int flen = i - f_start;
-                    char formatter[flen + 2];
+                    if (flen + 1 >= sizeof(formatter))
+                        break;
                     memcpy(formatter, &format[f_start], flen + 1);
                     formatter[flen + 1] = 0;
                     switch (c) {
@@ -236,12 +239,12 @@ String String_format(const char *format, ...) {
 
 String String_lower(String self) {
     String c = cp(self);
-    strlwr(c->buffer);
+    strlwrcase(c->buffer);
     return autorelease(c);
 }
 
 String String_upper(String self) {
     String c = cp(self);
-    strupr(c->buffer);
+    struprcase(c->buffer);
     return autorelease(c);
 }

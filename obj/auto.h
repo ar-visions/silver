@@ -12,5 +12,5 @@
     private_var(D,T,C,LList,list)
 declare(AutoRelease, Base);
 
-extern __thread AutoRelease *pool;
+extern _thread_local_ AutoRelease *pool;
 #endif
