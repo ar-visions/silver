@@ -348,8 +348,9 @@ enum ClassFlags {
         c->name = #C;                                           \
         c->obj_size = sizeof(struct _object_##C);               \
         c->super_name = C##_super_class;                        \
-        c->mcount = (void **)(&c[1]) -                          \
-                         (void **)((c->m));                     \
+        c->m = ((Method *)&c->m) + 1;                           \
+        c->mcount = ((void **)(&c[1]) -                         \
+                         (void **)(c->m));                      \
         c->mnames = (mnames_##C)alloc_bytes(                    \
                         sizeof(char *) * c->mcount);            \
         _##C(cls,override, C)                                   \
@@ -383,11 +384,11 @@ enum ClassFlags {
         int mcount;                                             \
         mnames_##C mnames;                                      \
         int pcount;                                             \
-        Method m[1];                                            \
+        Method *m;                                              \
         _##C(cls,class_dec,C)                                   \
     };                                                          \
     struct _object_##C {                                        \
-        class_##C cl;                                        \
+        class_##C cl;                                           \
         struct _object_##S *super_object;                       \
         LItem *ar_node;                                         \
         int refs;                                               \
