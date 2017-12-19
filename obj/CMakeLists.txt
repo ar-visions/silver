@@ -1,4 +1,4 @@
-add_library (obj obj.c base.c enum.c list.c str.c vec.c prop.c prim.c pairs.c matrix.c auto.c llist.c)
+add_library (obj SHARED obj.c base.c enum.c list.c str.c vec.c prop.c prim.c pairs.c matrix.c auto.c llist.c)
 if(MSVC)
 set_source_files_properties (obj.c base.c enum.c list.c str.c vec.c prop.c prim.c pairs.c matrix.c auto.c llist.c PROPERTIES LANGUAGE CXX)
 add_definitions(-DNOMINMAX -D_CRT_SECURE_NO_WARNINGS)
@@ -8,3 +8,4 @@ target_include_directories (obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 if(UNIX)
 target_link_libraries(obj m)
 endif()
+
