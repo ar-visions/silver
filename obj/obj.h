@@ -91,7 +91,7 @@ struct _Class {
 #ifdef __cplusplus
 #define EXPORT extern "C"
 #else
-#define EXPORT
+#define EXPORT extern
 #endif
 
 // ------------------------ var ---------------------------
@@ -369,7 +369,7 @@ enum ClassFlags {
     typedef struct _class_##C * class_##C;                      \
     typedef struct _mnames_##C *mnames_##C;                     \
     typedef struct _object_##C * C;                             \
-    extern class_##C C##_cl;                                    \
+    EXPORT class_##C C##_cl;                                    \
     _##C(cls,forward_dec,C)                                     \
     struct _mnames_##C {                                        \
         _##C(cls,mname_dec,C)                                   \
@@ -396,14 +396,6 @@ enum ClassFlags {
         _##C(cls,object_dec,C)                                  \
     };                                                          \
     _##C(cls,proto,C)                                           \
-
-#define list_add(T,V)                                           \
-    if (!T##_first)                                             \
-        T##_first = T##_last = (T)V;                            \
-    else {                                                      \
-        T##_last->next = (T)V;                                  \
-        T##_last = (T)V;                                        \
-    }
 
 #define new(C)                  ((C)new_obj((class_Base)C##_cl, 0))
 #define object_new(O)           ((typeof(O))((O) ? new_obj((class_Base)(O)->cl, 0) : NULL))
