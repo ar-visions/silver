@@ -6,7 +6,7 @@
 #include <stdbool.h>
 #endif
 #include <string.h>
-#include <malloc.h>
+#include <stdlib.h>
 
 typedef struct _LItem {
 	struct _LItem *next, *prev;
