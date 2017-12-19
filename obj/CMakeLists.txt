@@ -1,11 +1,18 @@
-add_library (obj SHARED obj.c base.c enum.c list.c str.c vec.c prop.c prim.c pairs.c matrix.c auto.c llist.c)
-if(MSVC)
-set_source_files_properties (obj.c base.c enum.c list.c str.c vec.c prop.c prim.c pairs.c matrix.c auto.c llist.c PROPERTIES LANGUAGE CXX)
-add_definitions(-DNOMINMAX -D_CRT_SECURE_NO_WARNINGS)
+file(GLOB src "*.c")
+add_library (obj SHARED ${src})
+
+if(CPP)
+    set_source_files_properties (${src} PROPERTIES LANGUAGE CXX)
 endif()
+
+if(MSVC)
+    add_definitions(-DNOMINMAX -D_CRT_SECURE_NO_WARNINGS)
+endif()
+
 set_property(TARGET obj PROPERTY POSITION_INDEPENDENT_CODE ON)
 target_include_directories (obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
 if(UNIX)
-target_link_libraries(obj m)
+    target_link_libraries(obj m)
 endif()
 
