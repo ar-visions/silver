@@ -21,7 +21,7 @@ void Vec4_init(Vec4 self) {
 ulong Vec_hash(Vec self) {
     ulong ret = 0;
     for (int i = 0; i < self->count; i++)
-        ret += self->vec[i] * 100.0 * 31.0;
+        ret += (ulong)(self->vec[i] * 100.0 * 31.0);
     return ret;
 }
 
@@ -84,13 +84,15 @@ Vec Vec_from_cstring(const char *value) {
 }
 
 String Vec_to_string(Vec self) {
-    char buf[64 + 64 * self->count];
+    char *buf = (char *)alloc_bytes(64 + 64 * self->count);
     int len = 0;
     buf[0] = 0;
     for (int i = 0; i < self->count; i++) {
         len += sprintf(&buf[len], "%lf%s", self->vec[i], i < (self->count - 1) ? "," : "");
     }
-    return class_call(String, from_cstring, buf);
+    String ret = class_call(String, from_cstring, buf);
+    free(buf);
+    return ret;
 }
 
 Vec Vec_add(Vec self, Vec b) {

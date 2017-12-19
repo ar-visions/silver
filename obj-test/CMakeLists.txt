@@ -1,2 +1,6 @@
 add_executable (obj-test main.c)
+SET_SOURCE_FILES_PROPERTIES( main.c PROPERTIES LANGUAGE CXX )
+if(MSVC)
+add_definitions(-DNOMINMAX -D_CRT_SECURE_NO_WARNINGS)
+endif()
 target_link_libraries (obj-test LINK_PUBLIC obj)

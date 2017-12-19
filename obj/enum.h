@@ -4,6 +4,7 @@
 #define _Enum(D,T,C) _Base(spr,T,C)        \
     method(D,T,C,C,find,(Class,const char *)) \
     method(D,T,C,struct _object_Pairs *,enums,(Class)) \
+    override(D,T,C,String,to_string,(C))    \
     override(D,T,C,void,class_preinit,(Class)) \
     override(D,T,C,void,free,(C))           \
     var(D,T,C,String,symbol)                \
@@ -33,7 +34,7 @@ declare(Enum, Base);
     enum_object(D,T,C,Double,  13)
 enum_declare(Type, Enum);
 
-#define enum_find(C,N)  ((typeof(C))class_call(Enum, find, (Class)class_object(C), N));
+#define enum_find(C,N)  ((C)class_call(Enum, find, (Class)class_object(C), N));
 #define enums(C)        (Enum_enums((Class)class_object(C)))
 
 extern bool enum_init;

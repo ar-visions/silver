@@ -71,7 +71,7 @@ String Int32_to_string(Int32 self) {
 
 UInt16 UInt16_from_string(String value) {
     UInt16 self = auto(UInt16);
-    self->value = value ? strtoul(value->buffer, NULL, 10) : 0;
+    self->value = value ? (uint16)strtoul(value->buffer, NULL, 10) : 0;
     return self;
 }
 
@@ -81,7 +81,7 @@ String UInt16_to_string(UInt16 self) {
 
 Int16 Int16_from_string(String value) {
     Int16 self = auto(Int16);
-    self->value = value ? strtol(value->buffer, NULL, 10) : 0;
+    self->value = value ? (int16)strtol(value->buffer, NULL, 10) : 0;
     return self;
 }
 
@@ -91,7 +91,7 @@ String Int16_to_string(Int16 self) {
 
 UInt8 UInt8_from_string(String value) {
     UInt8 self = auto(UInt8);
-    self->value = value ? strtoul(value->buffer, NULL, 10) : 0;
+    self->value = value ? (uint8)strtoul(value->buffer, NULL, 10) : 0;
     return self;
 }
 
@@ -101,7 +101,7 @@ String UInt8_to_string(UInt8 self) {
 
 Int8 Int8_from_string(String value) {
     Int8 self = auto(Int8);
-    self->value = value ? strtol(value->buffer, NULL, 10) : 0;
+    self->value = value ? (int8)strtol(value->buffer, NULL, 10) : 0;
     return self;
 }
 
@@ -131,7 +131,7 @@ String ULong_to_string(ULong self) {
 
 Float Float_from_string(String value) {
     Float self = auto(Float);
-    self->value = value ? atof(value->buffer) : 0;
+    self->value = value ? (float)atof(value->buffer) : 0;
     return self;
 }
 

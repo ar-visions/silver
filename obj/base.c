@@ -40,15 +40,17 @@ void Base_class_init(Class c) {
                 continue;
             int type_len = mname - start - 1;
             int name_len = args - mname - 4;
-            char type[type_len + 1];
-            strncpy(type, start, type_len);
+            char *type = (char *)alloc_bytes(type_len + 1);
+            char *name = (char *)alloc_bytes(name_len + 1);
+            memcpy(type, start, type_len);
             type[type_len] = 0;
-            char name[name_len + 1];
-            strncpy(name, &mname[4], name_len);
+            memcpy(name, &mname[4], name_len);
             name[name_len] = 0;
             Prop p = class_call(Prop, new_with, type, name, (Getter)cbase->m[i], (Setter)cbase->m[i - 1]);
             if (p)
                 pairs_add(props, string(name), p);
+            free(type);
+            free(name);
         }
     }
 }

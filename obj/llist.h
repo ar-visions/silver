@@ -52,8 +52,16 @@ int   llist_index_of_data(LList *list, void *data);
 void  llist_add(LList *list, LItem *item);
 void  llist_remove(LList *list, LItem *item);
 
+#ifndef typeof
+#ifdef _MSC_VER
+#define typeof decltype
+#else
+#define typeof __typeof__
+#endif
+#endif
+
 #define llist_each(list, ptr) \
-	ptr = (list)->first ? (__typeof__(ptr))(list)->first->data : NULL; \
-	if (ptr) for (LItem *_i = (list)->first; _i; _i = _i->next, ptr = _i ? (__typeof__(ptr))_i->data : NULL)
+	ptr = (list)->first ? (typeof(ptr))(list)->first->data : NULL; \
+	if (ptr) for (LItem *_i = (list)->first; _i; _i = _i->next, ptr = _i ? (typeof(ptr))_i->data : NULL)
 
 #endif

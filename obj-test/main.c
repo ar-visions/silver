@@ -9,7 +9,7 @@ int main() {
     each_pair(enums(Type), p) {
         Type t = inherits(p->value, Type);
         if (t)
-            printf("Type:%s = %d\n", cstring(t->symbol), t->ordinal);
+            print(t, "%d", t->ordinal);
     }
 
     Vec3 v = vec3(0,1,2);

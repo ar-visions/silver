@@ -3,7 +3,7 @@
 
 static const int block_size = 4096;
 
-static __thread LList ars;
+static _thread_local_ LList ars;
 
 implement(AutoRelease)
 

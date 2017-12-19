@@ -10,7 +10,48 @@
 #include <string.h>
 #include <llist.h>
 
+#ifndef typeof
+#ifdef _MSC_VER
+#define typeof decltype
+#else
 #define typeof __typeof__
+#endif
+#endif
+
+#ifdef _MSC_VER
+#include <algorithm>
+#define min std::min
+#define max std::max
+#define _thread_local_  __declspec(thread)
+#else
+#define _thread_local_  _thread
+#define max(a,b) ({ typeof(a) _a = (a); typeof(b) _b = (b); _a > _b ? _a : _b; })
+#define min(a,b) ({ typeof(a) _a = (a); typeof(b) _b = (b); _a < _b ? _a : _b; })
+#endif
+
+#ifdef __cplusplus
+    #define global_construct(f) \
+        static void f(void); \
+        struct f##_t_ { f##_t_(void) { f(); } }; static f##_t_ f##_; \
+        static void f(void)
+#elif defined(_MSC_VER)
+    #pragma section(".CRT$XCU",read)
+    #define global_construct2_(f,p) \
+        static void f(void); \
+        __declspec(allocate(".CRT$XCU")) void (*f##_)(void) = f; \
+        __pragma(comment(linker,"/include:" p #f "_")) \
+        static void f(void)
+    #ifdef _WIN64
+        #define global_construct(f) global_construct2_(f,"")
+    #else
+        #define global_construct(f) global_construct2_(f,"_")
+    #endif
+#else
+    #define global_construct(f) \
+        static void f(void) __attribute__((constructor)); \
+        static void f(void)
+#endif
+
 #define alloc(T) ((T *)alloc_bytes(sizeof(T)))
 
 struct _object_Base;
@@ -44,7 +85,7 @@ struct _Class {
     int mcount;
     char **mnames;
     int pcount;
-    Method m[0];
+    Method m[1];
 };
 
 #ifdef __cplusplus
@@ -302,8 +343,7 @@ enum ClassFlags {
 #define implement(C)                                            \
     struct _class_##C;                                          \
     class_##C C##_cl;                                           \
-    static __attribute__ ((constructor))                        \
-    void _##C##_def() {                                         \
+    global_construct(_##C##_def) {                              \
         class_##C c = C##_cl = alloc(struct _class_##C);        \
         c->name = #C;                                           \
         c->obj_size = sizeof(struct _object_##C);               \
@@ -343,7 +383,7 @@ enum ClassFlags {
         int mcount;                                             \
         mnames_##C mnames;                                      \
         int pcount;                                             \
-        Method m[0];                                            \
+        Method m[1];                                            \
         _##C(cls,class_dec,C)                                   \
     };                                                          \
     struct _object_##C {                                        \
@@ -368,15 +408,15 @@ enum ClassFlags {
 #define object_new(O)           ((typeof(O))((O) ? new_obj((class_Base)(O)->cl, 0) : NULL))
 #define class_of(C,I)           (class_inherits((Class)C,(Class)I##_cl))
 #define inherits(O,C)           ((C)object_inherits((Base)O,(Class)C##_cl))
-#define super(M,A...)           (self->cl->parent->M(((typeof(self->super_object))self, ##A)))
-#define call(C,M,A...)          ((C)->cl->M(C, ##A))
-#define self(M,A...)            (self->cl->M(self, ##A))
-#define class_call(C,M,A...)    (C##_##M(A))
+#define super(M,...)            (self->cl->parent->M(((typeof(self->super_object))self, __VA_ARGS__)))
+#define call(C,M,...)           ((C)->cl->M(C, __VA_ARGS__))
+#define self(M,...)             (self->cl->M(self, __VA_ARGS__))
+#define class_call(C,M,...)     (C##_##M(__VA_ARGS__))
 #define class_object(C)         ((Class)C##_cl)
 #define set(C,M,V)              ((C)->cl->set_##M(C, V))
 #define get(C,M)                ((C)->cl->get_##M(C))
 #define cp(C)                   (call((C), copy))
-#define priv_call(M,A...)       (M(self, ##A))
+#define priv_call(M,...)        (M(self, __VA_ARGS__))
 #define priv_set(M,V)           (set_##M(self, V))
 #define priv_get(M)             (get_##M(self))
 #define base(O)                 ((Base)&(O->cl))
@@ -385,12 +425,9 @@ enum ClassFlags {
 #define autorelease(o)          ((typeof(o))call(o, autorelease))
 #define auto(C)                 (autorelease(new(C)))
 #define object_auto(O)          (autorelease(object_new(O)))
-#define free_ptr(p)             ({ if (p) { free(p); p = NULL; } })
-#define max(a,b)                ({ typeof(a) _a = (a); typeof(b) _b = (b); _a > _b ? _a : _b; })
-#define min(a,b)                ({ typeof(a) _a = (a); typeof(b) _b = (b); _a < _b ? _a : _b; })
+#define free_ptr(p)             if (p) free(p); p = NULL;
 #define clamp(V,L,H)            (min(H,max(L,V)))
 #define sqr(v)                  ((v) * (v))
-#define cstring(O)              ({String _s = call((O), to_string); (_s ? _s->buffer : 0);})
 #define string(cstring)         (class_call(String, from_cstring, cstring))
 #define new_string(cstring)     (class_call(String, new_string, cstring))
 
