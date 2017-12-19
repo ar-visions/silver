@@ -50,6 +50,7 @@ void Enum_class_preinit(Class cself) {
             name[name_len] = 0;
             Enum enum_obj = (Enum)new_obj((class_Base)c, 0);
             if (enum_obj) {
+                printf("type: %s, name = %s\n", type, name);
                 String str_name = new_string(name);
                 enum_obj->symbol = str_name;
                 enum_obj->ordinal = (int)(ulong)(c->m[i])();
