@@ -9,7 +9,7 @@ int main() {
     each_pair(enums(Type), p) {
         Type t = inherits(p->value, Type);
         if (t)
-            print(t, "%d", t->ordinal);
+            print(t, "%p %d", t, t->ordinal);
     }
 
     Vec3 v = vec3(0,1,2);
@@ -22,7 +22,7 @@ int main() {
     push(list, int32_object(30));
     push(list, int32_object(5));
 
-    print(r, "r = %p", v);
+    print(r, "r = %p", r);
     call(ar, drain);
     return 0;
 }
