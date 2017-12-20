@@ -3,31 +3,11 @@
 
 int main() {
     class_init();
-    AutoRelease ar = class_call(AutoRelease, current);
-    List list = new(List);
-
-    KeyValue p;
-    each_pair(enums(Type), p) {
-        Type t = inherits(p->value, Type);
-        if (t)
-            print(t, "%p %d", t, t->ordinal);
-    }
-
-    Vec3 v = vec3(0,1,2);
-    Vec3 z = vec3(0,2,3);
-    Vec3 r = vadd(v, z);
-
-    set_prop(r, "z", int32_object(10));
-
-    list_push(list, int32_object(10));
-    list_push(list, int32_object(30));
-    list_push(list, int32_object(5));
-
     Window window = new(Window);
+    window->title = new_string("Hello World");
+    set(window, resizable, true);
     call(window, show);
     call(app, loop);
-
-    print(r, "r = %p", r);
-    call(ar, drain);
+    release(window);
     return 0;
 }
