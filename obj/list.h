@@ -9,18 +9,14 @@
     method(D,T,C,void,sort,(C,bool,SortMethod))     \
     method(D,T,C,bool,remove,(C,Base))              \
     method(D,T,C,int,index_of,(C,Base))             \
-    var(D,T,C,int,test_prop)                        \
+    method(D,T,C,int,count,(C))                     \
     private_method(D,T,C,void,update_blocks,(C))    \
     private_var(D,T,C,LList,list)
 declare(List, Base);
 
-#define _List2(D,T,C) _List(spr,T,C)                \
-    method(D,T,C,void,test1,(C))
-declare(List2, List);
-
 #define instances(O,C,V)  llist_each(&O->list, V) if (inherits(V,C))
 #define each(O,V)         llist_each(&O->list, V)
-#define push(L,O)         call((L), push, base(O))
-#define remove(L,O)       call((L), remove, base(O))
-#define pop(L)            call((L), pop)
+#define list_push(L,O)    call((L), push, base(O))
+#define list_remove(L,O)  call((L), remove, base(O))
+#define list_pop(L)       call((L), pop)
 #endif

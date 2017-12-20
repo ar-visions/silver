@@ -96,7 +96,7 @@ void Base_set_property(Base self, const char *name, Base base_value) {
     if (!p->enum_type)
         return;
     switch (p->enum_type->ordinal) {
-        case Type_Bool: {
+        case Type_Boolean: {
             bool v = (value && strcmp((char *)value->buffer, "true") == 0) ? true : false;
             p->setter(self, (void *)(size_t)v);
             break;
@@ -181,7 +181,7 @@ Base Base_get_property(Base self, const char *name) {
         return NULL;
     switch (p->enum_type->ordinal) {
         case Type_Object:   return (Base)p->getter(self);
-        case Type_Bool:     return (Base)bool_object((bool)((size_t (*)(Base))p->getter)(self));
+        case Type_Boolean:  return (Base)bool_object((bool)((size_t (*)(Base))p->getter)(self));
         case Type_Int8:     return (Base)int8_object(((int8 (*)(Base))p->getter)(self));
         case Type_UInt8:    return (Base)uint8_object(((uint8 (*)(Base))p->getter)(self));
         case Type_Int16:    return (Base)int16_object(((int16 (*)(Base))p->getter)(self));

@@ -17,6 +17,10 @@ void List_free(List self) {
     llist_clear(&self->list, false);
 }
 
+int List_count(List self) {
+    return self->list.count;
+}
+
 void List_push(List self, Base obj) {
     if (obj) {
         llist_push(&self->list, obj);
@@ -75,10 +79,4 @@ int List_generic_sort(Base a, Base b) {
 
 void List_sort(List self, bool asc, SortMethod sortf) {
     llist_sort(&self->list, asc, sortf ? sortf : (SortMethod)List_generic_sort);
-}
-
-implement(List2);
-
-void List2_test1(List2 self) {
-    printf("test1!\n");
 }

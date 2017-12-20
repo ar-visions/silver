@@ -1,4 +1,5 @@
 #include <obj.h>
+#include <ui.h>
 
 int main() {
     class_init();
@@ -18,9 +19,13 @@ int main() {
 
     set_prop(r, "z", int32_object(10));
 
-    push(list, int32_object(10));
-    push(list, int32_object(30));
-    push(list, int32_object(5));
+    list_push(list, int32_object(10));
+    list_push(list, int32_object(30));
+    list_push(list, int32_object(5));
+
+    Window window = new(Window);
+    call(window, show);
+    call(app, loop);
 
     print(r, "r = %p", r);
     call(ar, drain);

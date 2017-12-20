@@ -8,7 +8,7 @@ typedef struct _TypeAssoc {
 } TypeAssoc;
 
 static TypeAssoc assoc[] = {
-    { "Bool",       "bool" },
+    { "Boolean",    "bool" },
     { "Int8",       "char" },
     { "UInt8",      "unsigned char" },
     { "Int16",      "short" },

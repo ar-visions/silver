@@ -441,6 +441,7 @@ enum ClassFlags {
 #include <enum.h>
 #include <pairs.h>
 #include <vec.h>
+#include <app.h>
 #include <prim.h>
 
 EXPORT void *alloc_bytes(size_t);

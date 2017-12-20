@@ -27,3 +27,4 @@ obj-test/Debug/.vs/obj-test/v15/.suo
 *.lib
 *.obj
 *.dylib
+*.so
