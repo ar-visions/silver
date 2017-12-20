@@ -93,6 +93,14 @@ declare(ULong, Primitive)
     var(D,T,C,float,value)
 declare(Float, Primitive)
 
+#define _Boolean(D,T,C) _Primitive(spr,T,C)                   \
+    override(D,T,C,void,init,(C))                             \
+    override(D,T,C,String,to_string,(C))                      \
+    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,int,compare,(C,C))                         \
+    var(D,T,C,bool,value)
+declare(Boolean, Primitive)
+
 #define _Double(D,T,C) _Primitive(spr,T,C)                    \
     override(D,T,C,void,init,(C))                             \
     override(D,T,C,String,to_string,(C))                      \
@@ -100,14 +108,6 @@ declare(Float, Primitive)
     override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,double,value)
 declare(Double, Primitive)
-
-#define _Bool(D,T,C) _Primitive(spr,T,C)                     \
-    override(D,T,C,void,init,(C))                            \
-    override(D,T,C,String,to_string,(C))                     \
-    override(D,T,C,C,from_string,(String))                   \
-    override(D,T,C,int,compare,(C,C))                        \
-    var(D,T,C,bool,value)
-declare(Bool, Primitive)
 
 #define implement_primitive(C)  \
 implement(C)                    \
@@ -132,7 +132,7 @@ extern Int64    int64_object(int64);
 extern UInt64   uint64_object(uint64);
 extern Long     long_object(long);
 extern ULong    ulong_object(ulong);
-extern Bool     bool_object(bool);
+extern Boolean  bool_object(bool);
 extern Float    float_object(float);
 extern Double   double_object(double);
 

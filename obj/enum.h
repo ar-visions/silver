@@ -19,7 +19,7 @@ declare(Enum, Base);
 
 #define _Type(D,T,C) _Enum(spr,T,C)        \
     enum_object(D,T,C,Object,   0)         \
-    enum_object(D,T,C,Bool,     1)         \
+    enum_object(D,T,C,Boolean,  1)         \
     enum_object(D,T,C,Int8,     2)         \
     enum_object(D,T,C,UInt8,    3)         \
     enum_object(D,T,C,Int16,    4)         \

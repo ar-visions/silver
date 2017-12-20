@@ -13,7 +13,7 @@ implement_primitive(Long)
 implement_primitive(ULong)
 implement_primitive(Float)
 implement_primitive(Double)
-implement_primitive(Bool)
+implement_primitive(Boolean)
 
 Int8 int8_object(int8 v)        { Int8   o = auto(Int8);     o->value = v; return o; }
 UInt8 uint8_object(uint8 v)     { UInt8  o = auto(UInt8);    o->value = v; return o; }
@@ -25,7 +25,7 @@ Int64 int64_object(int64 v)     { Int64  o = auto(Int64);    o->value = v; retur
 UInt64 uint64_object(uint64 v)  { UInt64 o = auto(UInt64);   o->value = v; return o; }
 Long long_object(long v)        { Long   o = auto(Long);     o->value = v; return o; }
 ULong ulong_object(ulong v)     { ULong  o = auto(ULong);    o->value = v; return o; }
-Bool bool_object(bool v)        { Bool   o = auto(Bool);     o->value = v; return o; }
+Boolean bool_object(bool v)     { Boolean o = auto(Boolean); o->value = v; return o; }
 Float float_object(float v)     { Float  o = auto(Float);    o->value = v; return o; }
 Double double_object(double v)  { Double o = auto(Double);   o->value = v; return o; }
 
@@ -149,8 +149,8 @@ String Double_to_string(Double self) {
     return class_call(String, format, "%f", self->value);
 }
 
-Bool Bool_from_string(String value) {
-    Bool self = auto(Bool);
+Boolean Boolean_from_string(String value) {
+    Boolean self = auto(Boolean);
     if (value->buffer) {
         String lower = call(value, lower);
         if (call(lower, cmp, "true") == 0 || call(lower, cmp, "1") == 0)
@@ -159,6 +159,6 @@ Bool Bool_from_string(String value) {
     return self;
 }
 
-String Bool_to_string(Bool self) {
+String Boolean_to_string(Boolean self) {
     return class_call(String, format, "%s", self->value == false ? "false" : "true");
 }

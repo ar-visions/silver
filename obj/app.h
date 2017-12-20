@@ -15,12 +15,15 @@ declare(AppDelegate, Base);
 declare(Timer, AppDelegate);
 
 #define _App(D,T,C) _Base(spr,T,C)                   \
+    override(D,T,C,void,class_init,(Class))          \
     override(D,T,C,void,init,(C))                    \
     override(D,T,C,void,free,(C))                    \
-    method(D,T,C,void,push,(C,AppDelegate))          \
-    method(D,T,C,void,remove,(C,AppDelegate))        \
+    method(D,T,C,void,push_delegate,(C,AppDelegate))          \
+    method(D,T,C,void,remove_delegate,(C,AppDelegate))        \
     method(D,T,C,void,loop,(C))                      \
     private_var(D,T,C,List,delegates)
 declare(App, Base);
+
+EXPORT App app;
 
 #endif
