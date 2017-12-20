@@ -21,5 +21,6 @@ declare(List2, List);
 #define instances(O,C,V)  llist_each(&O->list, V) if (inherits(V,C))
 #define each(O,V)         llist_each(&O->list, V)
 #define push(L,O)         call((L), push, base(O))
+#define remove(L,O)       call((L), remove, base(O))
 #define pop(L)            call((L), pop)
 #endif
