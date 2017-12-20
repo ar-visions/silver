@@ -1,5 +1,4 @@
-#include <obj.h>
-#include <math.h>
+#include <obj-math.h>
 
 implement(Vec)
 implement(Vec3)

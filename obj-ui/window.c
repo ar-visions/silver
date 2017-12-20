@@ -1,4 +1,4 @@
-#include <ui.h>
+#include <obj-ui.h>
 
 implement(Window)
 
@@ -45,7 +45,7 @@ void Window_destroy(Window self) {
     glfwSetWindowUserPointer(self->window, NULL);
     glfwDestroyWindow(self->window);
     self->window = NULL;
-    call(app, remove_delegate, inherits(self, AppDelegate));
+    call(app, remove_delegate, (AppDelegate)self);
 }
 
 void Window_show(Window self) {
@@ -55,29 +55,28 @@ void Window_show(Window self) {
         glfwWindowHint(GLFW_RESIZABLE, (int)self->resizable);
         glfwWindowHint(GLFW_DOUBLEBUFFER, (int)self->double_buffer);
         self->window = glfwCreateWindow(self->width, self->height,
-            self->title ? self->title->buffer : "GL", NULL, NULL);
+            self->title ? self->title->buffer : self->cl->name, NULL, NULL);
         glfwSetWindowUserPointer(self->window, self);
         glfwSetWindowSizeCallback(self->window, Window_sized);
         glfwMakeContextCurrent(self->window);
         glfwSwapInterval((int)self->vsync);
-        call(app, push_delegate, inherits(self, AppDelegate));
+        call(app, push_delegate, (AppDelegate)self);
     } else
         glfwShowWindow(self->window);
 }
 
 void Window_render(Window self) {
-	GLFWwindow *window = self->window;
-	glClear(GL_COLOR_BUFFER_BIT);
-	//drawing_test(gfx);
-    glfwSwapBuffers(self->window);
-    glfwPollEvents();
 }
 
 void Window_loop(Window self) {
     if (self->window) {
-        if (!glfwWindowShouldClose(self->window))
+        if (!glfwWindowShouldClose(self->window)) {
+            GLFWwindow *window = self->window;
+            glClear(GL_COLOR_BUFFER_BIT);
             call(self, render);
-        else
+            glfwSwapBuffers(self->window);
+            glfwPollEvents();
+        } else
             call(self, destroy);
     }
 }
