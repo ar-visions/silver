@@ -1,6 +1,7 @@
 cmake_minimum_required (VERSION 3.0)
 project (LIBOBJ)
 add_subdirectory (obj)
+add_subdirectory (obj-math)
 add_subdirectory (obj-ui)
 add_subdirectory (obj-test)
 

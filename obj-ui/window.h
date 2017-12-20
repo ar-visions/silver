@@ -9,7 +9,8 @@
     method(D,T,C,void,show,(C))                      \
     method(D,T,C,void,destroy,(C))                   \
     method(D,T,C,void,render,(C))                    \
-    var(D,T,C,String,title)                          \
+    object(D,T,C,String,title)                       \
+    object(D,T,C,Element,root)                       \
     var(D,T,C,bool,resizable)                        \
     var(D,T,C,bool,vsync)                            \
     var(D,T,C,bool,double_buffer)                    \

@@ -18,6 +18,8 @@ void App_free(App self) {
 }
 
 void App_loop(App self) {
+    if (!self)
+        self = app;
     for (;;) {
         AutoRelease ar = class_call(AutoRelease, current);
         AppDelegate d = NULL;
@@ -25,11 +27,11 @@ void App_loop(App self) {
             call(d, loop);
         }
         call(ar, drain);
+#ifdef EMSCRIPTEN
+        break;
+#endif
         if (call(self->delegates, count) == 0)
             break;
-        #ifdef EMSCRIPTEN
-        break;
-        #endif
     }
 }
 
@@ -45,7 +47,6 @@ void App_remove_delegate(App self, AppDelegate d) {
 implement(AppDelegate)
 
 void AppDelegate_loop(AppDelegate self) { }
-
 
 implement(Timer)
 
