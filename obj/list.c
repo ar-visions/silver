@@ -1,5 +1,5 @@
-#include <obj.h>
-#include <list.h>
+#include <obj/obj.h>
+#include <obj/list.h>
 
 static const int block_size = 32;
 

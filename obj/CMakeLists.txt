@@ -10,7 +10,7 @@ if(MSVC)
 endif()
 
 set_property(TARGET obj PROPERTY POSITION_INDEPENDENT_CODE ON)
-target_include_directories (obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories (obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 if(UNIX)
     target_link_libraries(obj m)
