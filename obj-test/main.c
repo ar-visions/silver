@@ -1,5 +1,5 @@
-#include <obj.h>
-#include <obj-ui.h>
+#include <obj/obj.h>
+#include <obj-ui/ui.h>
 
 int main() {
     class_init();

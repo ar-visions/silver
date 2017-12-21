@@ -1,5 +1,9 @@
-#include <obj.h>
+#include <obj-ui/ui.h>
 
+implement(Font)
+implement(Rect)
+implement(KeyEvent)
+implement(TouchEvent)
 implement(Element)
 
 void Element_init(Element self) {
@@ -11,6 +15,9 @@ void Element_init(Element self) {
     pairs_add(self->relayout, string("left"), bool_object(true));
 }
 
+void Element_free(Element self) {
+}
+
 void Element_push(Element self, Base o) {
     Element child = inherits(o, Element);
     if (!child)
@@ -19,10 +26,10 @@ void Element_push(Element self, Base o) {
     super(push, o);
 }
 
-void Element_remove(Element self, Base o) {
+bool Element_remove(Element self, Base o) {
     Element child = inherits(o, Element);
     if (!child)
-        return;
+        return false;
     release(child->parent);
     child->parent = NULL;
     super(remove, o);

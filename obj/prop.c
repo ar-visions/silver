@@ -1,4 +1,4 @@
-#include <obj.h>
+#include <obj/obj.h>
 
 implement(Prop)
 

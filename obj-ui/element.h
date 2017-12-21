@@ -11,13 +11,39 @@ struct _object_Element;
 
 #define _ElementFlag(D,T,C) _Enum(spr,T,C)           \
     enum_object(D,T,C,LayoutChange,1)
-enum_declare(ElementFlag, Enum);
+enum_declare(ElementFlag, Enum)
+
+#define _TouchEvent(D,T,C) _Base(spr,T,C)            \
+    var(D,T,C,int,x)                                 \
+    var(D,T,C,int,y)                                 \
+    var(D,T,C,bool,down)                             \
+    var(D,T,C,bool,move)                             \
+    var(D,T,C,bool,up)
+declare(TouchEvent, Base)
+
+#define _KeyEvent(D,T,C) _Base(spr,T,C)              \
+    var(D,T,C,int,key)                               \
+    var(D,T,C,bool,down)                             \
+    var(D,T,C,bool,repeat)                           \
+    var(D,T,C,bool,up)
+declare(KeyEvent, Base)
+
+#define _Rect(D,T,C) _Base(spr,T,C)                  \
+    var(D,T,C,int,x)                                 \
+    var(D,T,C,int,y)                                 \
+    var(D,T,C,int,w)                                 \
+    var(D,T,C,int,h)
+declare(Rect, Base)
+
+#define _Font(D,T,C) _Base(spr,T,C)                  \
+    var(D,T,C,String,name)
+declare(Font, Base)
 
 #define _Element(D,T,C) _List(spr,T,C)               \
     override(D,T,C,void,init,(C))                    \
     override(D,T,C,void,free,(C))                    \
     override(D,T,C,void,push,(C,Base))               \
-    override(D,T,C,void,remove,(C,Base))             \
+    override(D,T,C,bool,remove,(C,Base))             \
     method(D,T,C,void,layout,(C))                    \
     method(D,T,C,void,render,(C))                    \
     method(D,T,C,void,touch,(C,TouchEvent))          \
@@ -46,6 +72,6 @@ enum_declare(ElementFlag, Enum);
     var(D,T,C,enum OverflowEnum,overflow_x)          \
     var(D,T,C,enum OverflowEnum,overflow_y)          \
     private_var(D,T,C,uint,flags)
-declare(Element, List);
+declare(Element, List)
 
 #endif

@@ -1,4 +1,4 @@
-#include <obj-ui.h>
+#include <obj-ui/ui.h>
 
 implement(Window)
 

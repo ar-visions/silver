@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
-#include <llist.h>
+#include <obj/llist.h>
 
 #ifndef typeof
 #ifdef _MSC_VER
@@ -402,14 +402,14 @@ enum ClassFlags {
 #define class_of(C,I)           (class_inherits((Class)C,(Class)I##_cl))
 #define inherits(O,C)           ((C)object_inherits((Base)O,(Class)C##_cl))
 #ifdef _MSC_VER
-    #define super(M,...)            (self->cl->parent->M(((typeof(self->super_object))self, __VA_ARGS__)))
+    #define super(M,...)            (self->cl->parent->M(self->super_object, __VA_ARGS__))
     #define call(C,M,...)           ((C)->cl->M(C, __VA_ARGS__))
     #define self(M,...)             (self->cl->M(self, __VA_ARGS__))
     #define class_call(C,M,...)     (C##_##M(__VA_ARGS__))
     #define priv_call(M,...)        (M(self, __VA_ARGS__))
     #define priv_set(M,V)           (set_##M(self, V))
 #else
-    #define super(M,A...)           (self->cl->parent->M(((typeof(self->super_object))self, ##A)))
+    #define super(M,A...)           (self->cl->parent->M(self->super_object, ##A))
     #define call(C,M,A...)          ((C)->cl->M(C, ##A))
     #define self(M,A...)            (self->cl->M(self, ##A))
     #define class_call(C,M,A...)    (C##_##M(A))
@@ -433,16 +433,15 @@ enum ClassFlags {
 #define string(cstring)         (class_call(String, from_cstring, cstring))
 #define new_string(cstring)     (class_call(String, new_string, cstring))
 
-#include <base.h>
-#include <str.h>
-#include <prop.h>
-#include <auto.h>
-#include <list.h>
-#include <enum.h>
-#include <pairs.h>
-#include <vec.h>
-#include <app.h>
-#include <prim.h>
+#include <obj/base.h>
+#include <obj/string.h>
+#include <obj/prop.h>
+#include <obj/auto.h>
+#include <obj/list.h>
+#include <obj/enum.h>
+#include <obj/pairs.h>
+#include <obj/app.h>
+#include <obj/prim.h>
 
 EXPORT void *alloc_bytes(size_t);
 EXPORT Base new_obj(class_Base, size_t);

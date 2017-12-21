@@ -1,4 +1,10 @@
-#include <obj-ui.h>
+#include <obj-ui/ui.h>
+
+implement(Mixable)
+
+Mixable Mixable_mix(Mixable self, Mixable b, double amount) {
+    return self;
+}
 
 implement(Color)
 
@@ -30,9 +36,9 @@ void hextobin(const char *str, int len, uint8 *bytes, size_t blen) {
 Color Color_from_cstring(const char *str) {
     Color self = auto(Color);
     if (strncmp(str, "rgba(", 5) == 0) {
-        int i = sscanf(str, "rgba(%f,%f,%f", &self->r, &self->g, &self->a);
+        int i = sscanf(str, "rgba(%lf,%lf,%lf", &self->r, &self->g, &self->a);
         if (i > 0)
-            sscanf(&str[i], "%f", &self->a);
+            sscanf(&str[i], "%lf", &self->a);
         self->r /= 255.0;
         self->g /= 255.0;
         self->b /= 255.0;

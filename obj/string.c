@@ -1,5 +1,5 @@
-#include <obj.h>
-#include <str.h>
+#include <obj/obj.h>
+#include <obj/string.h>
 
 implement(String);
 

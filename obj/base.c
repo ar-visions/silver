@@ -1,6 +1,6 @@
-#include <obj.h>
-#include <prop.h>
-#include <prim.h>
+#include <obj/obj.h>
+#include <obj/prop.h>
+#include <obj/prim.h>
 
 implement(Base)
 

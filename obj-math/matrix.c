@@ -1,2 +1,2 @@
-#include <obj-math.h>
+#include <obj-math/math.h>
 

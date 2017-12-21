@@ -1,5 +1,5 @@
-#include <obj.h>
-#include <pairs.h>
+#include <obj/obj.h>
+#include <obj/pairs.h>
 
 implement(Enum)
 
