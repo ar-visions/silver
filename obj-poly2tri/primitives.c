@@ -86,6 +86,9 @@ Edge Edge_with_points(Point p1, Point p2, bool edge_list) {
 	return self;
 }
 
+void Edge_free(Edge self) {
+}
+
 implement(Tri)
 
 Tri Tri_with_points(Point a, Point b, Point c) {

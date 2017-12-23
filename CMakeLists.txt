@@ -3,6 +3,7 @@ project (LIBOBJ)
 add_subdirectory (obj)
 add_subdirectory (obj-math)
 add_subdirectory (obj-poly2tri)
+add_subdirectory (obj-ui)
 add_subdirectory (obj-test)
 
 if(MSVC)

@@ -1,6 +1,35 @@
 #include <obj-poly2tri/poly2tri.h>
 #include <assert.h>
 
+const float PI_3div4 = 3 * M_PI / 4;
+const float PI_div2 = (M_PI / 2.0);
+const float EPSILON = 1e-12;
+
+enum Orientation { CW, CCW, COLLINEAR };
+
+static inline enum Orientation orient_2d(Point pa, Point pb, Point pc) {
+	float detleft = (pa->x - pc->x) * (pb->y - pc->y);
+	float detright = (pa->y - pc->y) * (pb->x - pc->x);
+	float val = detleft - detright;
+	if (val > -EPSILON && val < EPSILON)
+    	return COLLINEAR;
+	else if (val > 0)
+		return CCW;
+  return CW;
+}
+
+static inline bool in_scan_area(Point pa, Point pb, Point pc, Point pd) {
+	float oadb = (pa->x - pb->x)*(pd->y - pb->y) - (pd->x - pb->x)*(pa->y - pb->y);
+	if (oadb >= -EPSILON)
+		return false;
+	float oadc = (pa->x - pc->x)*(pd->y - pc->y) - (pd->x - pc->x)*(pa->y - pc->y);
+	if (oadc <= EPSILON)
+		return false;
+	return true;
+}
+
+implement(Sweep)
+
 void Sweep_init(Sweep self) {
     self->nodes = new(List);
 }
@@ -9,16 +38,16 @@ void Sweep_free(Sweep self) {
     release(self->nodes);
 }
 
-void Sweep_sweep_points(Sweep self, SweepContext tcx) {
+void Sweep_points(Sweep self, SweepContext tcx) {
 	int i = 0;
-    Point point;
+  Point point;
 	each(tcx->points, point) {
 		if (i == 0) {
 			i++;
 			continue;
 		}
 		AFNode node = Sweep_point_event(self, tcx, point);
-        Edge edge;
+    Edge edge;
 		each(point->edge_list, edge)
 			Sweep_edge_event_en(self, tcx, edge, node);
 	}
@@ -26,8 +55,8 @@ void Sweep_sweep_points(Sweep self, SweepContext tcx) {
 
 void Sweep_triangulate(Sweep self, SweepContext tcx) {
   SweepContext_init_triangulation(tcx);
-  SweepContext_create_advancing_front(tcx, &self->nodes);
-  Sweep_sweep_points(self, tcx);
+  SweepContext_create_advancing_front(tcx, self->nodes);
+  Sweep_points(self, tcx);
   Sweep_finalization_polygon(self, tcx);
 }
 
@@ -119,12 +148,12 @@ bool Sweep_is_edge_side_of_triangle(Sweep self, Tri triangle, Point ep, Point eq
 }
 
 AFNode Sweep_new_front_triangle(Sweep self, SweepContext tcx, Point point, AFNode node) {
-  Tri  triangle = tri(point, node->point, node->next->point);
+  Tri  triangle = class_call(Tri, with_points, point, node->point, node->next->point);
 
   Tri_mark_neighbor_tri(triangle, node->triangle);
   list_push(tcx->map, triangle);
 
-  AFNode new_node = node_with_point(point);
+  AFNode new_node = class_call(AFNode, with_point, point);
 	list_push(self->nodes, new_node);
 
   new_node->next = node->next;
@@ -138,7 +167,7 @@ AFNode Sweep_new_front_triangle(Sweep self, SweepContext tcx, Point point, AFNod
 }
 
 void Sweep_fill(Sweep self, SweepContext tcx, AFNode node) {
-  Tri  triangle = tri(node->prev->point, node->point, node->next->point);
+  Tri  triangle = class_call(Tri, with_points, node->prev->point, node->point, node->next->point);
 
   Tri_mark_neighbor_tri(triangle, node->prev->triangle);
   Tri_mark_neighbor_tri(triangle, node->triangle);
@@ -309,7 +338,7 @@ bool Sweep_incircle(Sweep self, Point pa, Point pb, Point pc, Point pd) {
 }
 
 void Sweep_rotate_triangle_pair(Sweep self, Tri t, Point p, Tri ot, Point op) {
-  Tri  n1, *n2, *n3, *n4;
+  Tri  n1, n2, n3, n4;
   n1 = Tri_neighbor_ccw(t, p);
   n2 = Tri_neighbor_cw(t, p);
   n3 = Tri_neighbor_ccw(ot, op);
@@ -497,6 +526,11 @@ void Sweep_fill_left_concave_edge_event(Sweep self, SweepContext tcx, Edge edge,
 
 void Sweep_flip_edge_event(Sweep self, SweepContext tcx, Point ep, Point eq, Tri  t, Point p) {
   Tri ot = Tri_neighbor_across(t, p);
+  if (!ot) {
+    int test = 0;
+    test++;
+    ot = Tri_neighbor_across(t, p);
+  }
   Point op = Tri_opposite_point(ot, t, p);
 
   if (ot == NULL)
