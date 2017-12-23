@@ -18,7 +18,8 @@ declare(List, Base);
 
 #define instances(O,C,V)  llist_each(&O->list, V) if (inherits(V,C))
 #define each(O,V)         llist_each(&O->list, V)
+#define list_count(L)     ((L) ? ((L)->list.count) : 0)
 #define list_push(L,O)    call((L), push, base(O))
 #define list_remove(L,O)  call((L), remove, base(O))
-#define list_pop(L)       call((L), pop)
+#define list_pop(L,C)     inherits(call((L), pop), C)
 #endif
