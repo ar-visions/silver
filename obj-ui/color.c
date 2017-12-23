@@ -2,7 +2,7 @@
 
 implement(Mixable)
 
-Mixable Mixable_mix(Mixable self, Mixable b, double amount) {
+Mixable Mixable_mix_with(Mixable self, Mixable b, double amount) {
     return self;
 }
 
@@ -81,11 +81,32 @@ String Color_to_string(Color self) {
         (int)(self->r * 255.0), (int)(self->g * 255.0), (int)(self->b * 255.0), self->a);
 }
 
-Color Color_mix(Color self, Color b, double amount) {
+Color Color_new_rgba(double r, double g, double b, double a) {
+    Color self = new(Color);
+    self->r = r;
+    self->g = g;
+    self->b = b;
+    self->a = a;
+    return self;
+}
+
+Color Color_mix_with(Color self, Color b, double amount) {
     Color ret = auto(Color);
     ret->r = mix(self->r, b->r, amount);
     ret->g = mix(self->g, b->g, amount);
     ret->b = mix(self->b, b->b, amount);
     ret->a = mix(self->a, b->a, amount);
+    return ret;
+}
+
+implement(Fill)
+
+void Fill_init(Fill self) {
+    self->color = rgba(0.0, 0.0, 0.0, 1.0);
+}
+
+Fill Fill_mix_with(Fill self, Fill b, double amount) {
+    Fill ret = auto(Fill);
+    ret->color = call(self->color, mix_with, b->color, amount);
     return ret;
 }

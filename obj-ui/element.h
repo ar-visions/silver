@@ -10,7 +10,8 @@ enum_declare(Overflow, Enum);
 struct _object_Element;
 
 #define _ElementFlag(D,T,C) _Enum(spr,T,C)           \
-    enum_object(D,T,C,LayoutChange,1)
+    enum_object(D,T,C,Init,1)                        \
+    enum_object(D,T,C,LayoutChange,2)                \
 enum_declare(ElementFlag, Enum)
 
 #define _TouchEvent(D,T,C) _Base(spr,T,C)            \
@@ -48,6 +49,7 @@ declare(Font, Base)
     method(D,T,C,void,render,(C))                    \
     method(D,T,C,void,touch,(C,TouchEvent))          \
     method(D,T,C,void,key,(C,KeyEvent))              \
+    method(D,T,C,C,root,(C))                         \
     object(D,T,C,Pairs,relayout)                     \
     object(D,T,C,Pairs,state)                        \
     object(D,T,C,String,name)                        \
@@ -62,6 +64,7 @@ declare(Font, Base)
     object(D,T,C,Fill,foreground)                    \
     object(D,T,C,Fill,border)                        \
     object(D,T,C,Vec2,scale)                         \
+    object(D,T,C,Vec2,scroll)                        \
     object(D,T,C,Vec2,transform_origin)              \
     var(D,T,C,double,opacity)                        \
     var(D,T,C,double,blur)                           \

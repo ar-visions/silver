@@ -11,7 +11,7 @@
     method(D,T,C,int,index_of,(C,Base))             \
     method(D,T,C,int,count,(C))                     \
     private_method(D,T,C,void,update_blocks,(C))    \
-    private_var(D,T,C,LList,list)
+    var(D,T,C,LList,list)
 declare(List, Base);
 
 #define instances(O,C,V)  llist_each(&O->list, V) if (inherits(V,C))
