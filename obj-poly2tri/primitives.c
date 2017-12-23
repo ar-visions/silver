@@ -1,5 +1,6 @@
 #include <obj-poly2tri/poly2tri.h>
 #include <assert.h>
+#include <obj-poly2tri/primitives.h>
 
 implement(Point)
 
@@ -26,45 +27,45 @@ bool Point_cmp(Point self, Point b) {
 }
 
 Point Point_add(Point a, Point b) {
-	return point(a.x + b.x, a.y + b.y);
+	return point(a->x + b->x, a->y + b->y);
 }
 
 Point Point_sub(Point a, Point b) {
-	return point(a.x - b.x, a.y - b.y);
+	return point(a->x - b->x, a->y - b->y);
 }
 
 Point Point_scale(float s, Point a) {
-	return point(s * a.x, s * a.y);
+	return point(s * a->x, s * a->y);
 }
 
 bool Point_equals(Point a, Point b) {
-	return a.x == b.x && a.y == b.y;
+	return a->x == b->x && a->y == b->y;
 }
 
 bool Point_not_equal(Point a, Point b) {
-	return !(a.x == b.x) && !(a.y == b.y);
+	return !(a->x == b->x) && !(a->y == b->y);
 }
 
 float Point_dot(Point a, Point b) {
-	return a.x * b.x + a.y * b.y;
+	return a->x * b->x + a->y * b->y;
 }
 
 float Point_cross(Point a, Point b) {
-	return a.x * b.y - a.y * b.x;
+	return a->x * b->y - a->y * b->x;
 }
 
 Point Point_cross_scalar_sv(Point a, float s) {
-	return point(s * a.y, -s * a.x);
+	return point(s * a->y, -s * a->x);
 }
 
 Point Point_cross_scalar_vs(float s, Point a) {
-	return point(-s * a.y, s * a.x);
+	return point(-s * a->y, s * a->x);
 }
 
 implement(Edge)
 
 Edge Edge_with_points(Point p1, Point p2, bool edge_list) {
-	Edge *self = auto(Edge);
+	Edge self = auto(Edge);
 	self->p = p1;
 	self->q = p2;
 	self->user_data = 0;
@@ -77,11 +78,11 @@ Edge Edge_with_points(Point p1, Point p2, bool edge_list) {
         self->p = p2;
       } else if (p1->x == p2->x) {
         // Repeat points
-        assert(FALSE);
+        assert(false);
       }
     }
     if (edge_list)
-        push(self->q->edge_list, self);
+        list_push(self->q->edge_list, self);
 	return self;
 }
 
@@ -232,7 +233,7 @@ int Tri_edge_index(Tri self, Point p1, Point p2) {
 }
 
 void Tri_mark_constrained_edge_index(Tri self, const int index) {
-	self->constrained[index] = TRUE;
+	self->constrained[index] = true;
 }
 
 void Tri_mark_constrained_edge(Tri self, Edge edge) {
@@ -242,11 +243,11 @@ void Tri_mark_constrained_edge(Tri self, Edge edge) {
 void Tri_mark_constrained_edge_pq(Tri self, Point p, Point q) {
 	Point *points = self->points;
 	if ((q == points[0] && p == points[1]) || (q == points[1] && p == points[0]))
-		self->constrained[2] = TRUE;
+		self->constrained[2] = true;
 	else if ((q == points[0] && p == points[2]) || (q == points[2] && p == points[0]))
-		self->constrained[1] = TRUE;
+		self->constrained[1] = true;
 	else if ((q == points[1] && p == points[2]) || (q == points[2] && p == points[1]))
-		self->constrained[0] = TRUE;
+		self->constrained[0] = true;
 }
 
 Point Tri_point_cw(Tri self, Point p) {

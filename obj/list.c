@@ -50,6 +50,16 @@ bool List_remove(List self, Base obj) {
     return false;
 }
 
+Base List_first(List self) {
+    LItem *item = self->list.first;
+    return item ? (Base)item->data : NULL;
+}
+
+Base List_last(List self) {
+    LItem *item = self->list.last;
+    return item ? (Base)item->data : NULL;
+}
+
 int List_index_of(List self, Base obj) {
     return llist_index_of_data(&self->list, obj);
 }

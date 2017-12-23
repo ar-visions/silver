@@ -10,6 +10,8 @@
     method(D,T,C,bool,remove,(C,Base))              \
     method(D,T,C,int,index_of,(C,Base))             \
     method(D,T,C,int,count,(C))                     \
+    method(D,T,C,Base,first,(C))                    \
+    method(D,T,C,Base,last,(C))                     \
     private_method(D,T,C,void,update_blocks,(C))    \
     var(D,T,C,LList,list)
 declare(List, Base);

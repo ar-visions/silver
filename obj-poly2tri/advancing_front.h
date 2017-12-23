@@ -1,9 +1,6 @@
 #ifndef _ADVANCING_FRONT_H_
 #define _ADVANCING_FRONT_H_
 
-#include "primitives.h"
-#include <stdlib.h>
-
 #define _AFNode(D,T,C) _Base(spr,T,C)           \
     method(D,T,C,C,with_point,(Point))          \
     method(D,T,C,C,with_tri,(Point, Tri))       \

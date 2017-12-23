@@ -20,7 +20,7 @@ void Sweep_sweep_points(Sweep self, SweepContext tcx) {
 		AFNode node = Sweep_point_event(self, tcx, point);
         Edge edge;
 		each(point->edge_list, edge)
-			sweep_edge_event_en(self, tcx, edge, node);
+			Sweep_edge_event_en(self, tcx, edge, node);
 	}
 }
 
@@ -122,10 +122,10 @@ AFNode Sweep_new_front_triangle(Sweep self, SweepContext tcx, Point point, AFNod
   Tri  triangle = tri(point, node->point, node->next->point);
 
   Tri_mark_neighbor_tri(triangle, node->triangle);
-  push(tcx->map, triangle);
+  list_push(tcx->map, triangle);
 
   AFNode new_node = node_with_point(point);
-	push(self->nodes, new_node);
+	list_push(self->nodes, new_node);
 
   new_node->next = node->next;
   new_node->prev = node;
@@ -143,7 +143,7 @@ void Sweep_fill(Sweep self, SweepContext tcx, AFNode node) {
   Tri_mark_neighbor_tri(triangle, node->prev->triangle);
   Tri_mark_neighbor_tri(triangle, node->triangle);
 
-  push(tcx->map, triangle);
+  list_push(tcx->map, triangle);
 
   node->prev->next = node->next;
   node->next->prev = node->prev;
