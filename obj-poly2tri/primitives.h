@@ -73,5 +73,7 @@ declare(Tri,Base)
 
 #define point(x,y)              (class_call(Point, with_xy, x, y, false))
 #define point_with_edges(x,y)   (class_call(Point, with_xy, x, y, true))
+#define edge(p1,p2)             (class_call(Edge, with_points, (p1), (p2), true))
+#define edge_simple(p1,p2)      (class_call(Edge, with_points, (p1), (p2), false))
 
 #endif

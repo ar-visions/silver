@@ -53,12 +53,12 @@ void SweepContext_init_triangulation(SweepContext self) {
 	self->tail = point_with_edges(xmin - dx, ymin - dy);
 
 	// Sort points along y-axis
-	call(self->points, sort, true, (SortMethod)point_cmp); // [todo] this was flipped, probably change to false
+	call(self->points, sort, true, (SortMethod)Point_cmp); // [todo] this was flipped, probably change to false
 }
 
 void SweepContext_init_edges(SweepContext self, List polyline) {
 	Point f = (Point)call(polyline, first);
-    Point p = NULL;
+    Point p = NULL, j = NULL;
     each(polyline, j) {
         if (p)
             list_push(self->edge_list, edge(p, j));
@@ -81,7 +81,7 @@ void SweepContext_create_advancing_front(SweepContext self, List nodes) {
     self->af_head = class_call(AFNode, with_tri, tri->points[1], tri);
     self->af_middle = class_call(AFNode, with_tri, tri->points[0], tri);
     self->af_tail = class_call(AFNode, with_point, tri->points[2]);
-    self->front = class_call(AdvancingFront, self->af_head, self->af_tail);
+    self->front = class_call(AdvancingFront, with_nodes, self->af_head, self->af_tail);
 
     self->af_head->next = self->af_middle;
     self->af_middle->next = self->af_tail;
@@ -96,7 +96,7 @@ void SweepContext_remove_node(SweepContext self, AFNode node) {
 void SweepContext_map_triangle_to_nodes(SweepContext self, Tri t) {
 	for (int i = 0; i < 3; i++) {
 		if (!t->neighbors[i]) {
-			AFNode n = call(self->front, locate_point, tri_point_cw(t, t->points[i]));
+			AFNode n = call(self->front, locate_point, Tri_point_cw(t, t->points[i]));
 			if (n)
 				n->triangle = t;
 		}
@@ -107,8 +107,8 @@ void SweepContext_mesh_clean(SweepContext self, Tri tri) {
 	List triangles = new(List);
 	list_push(triangles, tri);
 
-	while (triangles->count > 0) {
-		Tri t = pop(triangles);
+	while (list_count(triangles) > 0) {
+		Tri t = list_pop(triangles, Tri);
 		if (t != NULL && !t->interior) {
 			t->interior = true;
 			list_push(self->triangles, t);
