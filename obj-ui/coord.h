@@ -5,13 +5,14 @@
     enum_object(D,T,C,Start,0)                       \
     enum_object(D,T,C,End,1)                         \
     enum_object(D,T,C,Center,2)
-enum_declare(Align, Enum);
+enum_declare(Align, Enum)
 
 #define _Coord(D,T,C) _Base(spr,T,C)                 \
+    method(D,T,C,double,compute,(C,double,double,double,double)) \
     var(D,T,C,enum AlignEnum,align)                  \
     var(D,T,C,bool,relative)                         \
     var(D,T,C,double,value)                          \
     var(D,T,C,bool,scale)
-declare(Coord, Base);
+declare(Coord, Base)
 
 #endif

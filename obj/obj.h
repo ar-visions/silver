@@ -25,8 +25,12 @@
 #define _thread_local_  __declspec(thread)
 #else
 #define _thread_local_  __thread
+#ifndef max
 #define max(a,b) ({ typeof(a) _a = (a); typeof(b) _b = (b); _a > _b ? _a : _b; })
+#endif
+#ifndef min
 #define min(a,b) ({ typeof(a) _a = (a); typeof(b) _b = (b); _a < _b ? _a : _b; })
+#endif
 #endif
 
 #ifdef __cplusplus
@@ -428,10 +432,15 @@ enum ClassFlags {
 #define auto(C)                 (autorelease(new(C)))
 #define object_auto(O)          (autorelease(object_new(O)))
 #define free_ptr(p)             if (p) free(p); p = NULL;
+#ifndef clamp
 #define clamp(V,L,H)            (min(H,max(L,V)))
+#endif
+#ifndef sqr
 #define sqr(v)                  ((v) * (v))
+#endif
 #define string(cstring)         (class_call(String, from_cstring, cstring))
 #define new_string(cstring)     (class_call(String, new_string, cstring))
+#define mix(a,b,f)              (((double)(a) * (double)(f)) + ((double)(b) * (double)(1.0 - (double)(f))))
 
 #include <obj/base.h>
 #include <obj/string.h>

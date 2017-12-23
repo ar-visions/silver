@@ -26,6 +26,14 @@ void Element_push(Element self, Base o) {
     super(push, o);
 }
 
+Element Element_root(Element self) {
+    for (Element e = self; e; e = e->parent) {
+        if (!e->parent)
+            return e;
+    }
+    return NULL;
+}
+
 bool Element_remove(Element self, Base o) {
     Element child = inherits(o, Element);
     if (!child)
@@ -38,8 +46,26 @@ bool Element_remove(Element self, Base o) {
 void Element_touch(Element self, TouchEvent e) { }
 void Element_key(Element self, KeyEvent e) { }
 
+void layout(Element root, Element self) {
+    Element child;
+    // set rect on element relative to its parent rect
+    each(self, child) {
+        layout(root, child);
+    }
+}
+
 void Element_layout(Element self) {
+    Element root = call(self, root);
+    if (root && root != self)
+        return;
+}
+
+void render(Element root, Element self) {
 }
 
 void Element_render(Element self) {
+    Element root = call(self, root);
+    if (root && root != self)
+        return;
+    render(root, self);
 }
