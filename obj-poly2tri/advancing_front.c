@@ -7,7 +7,7 @@ AFNode AFNode_with_point(Point p) {
 	AFNode self = auto(AFNode);
 	self->point = p;
 	self->value = p->x;
-	return n;
+	return self;
 }
 
 AFNode AFNode_with_tri(Point p, Tri t) {
@@ -15,7 +15,7 @@ AFNode AFNode_with_tri(Point p, Tri t) {
 	self->point = p;
     self->triangle = t;
 	self->value = p->x;
-	return n;
+	return self;
 }
 
 implement(AdvancingFront)
