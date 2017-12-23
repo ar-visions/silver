@@ -1,5 +1,7 @@
 #include <obj-poly2tri/poly2tri.h>
 
+implement(CDT)
+
 CDT CDT_with_polyline(List polyline) {
 	CDT self = auto(CDT);
 	self->sweep_context = retain(class_call(SweepContext, with_polyline, polyline));

@@ -3,6 +3,9 @@
 
 static const float kAlpha = 0.3;
 
+implement(Basin)
+implement(EdgeEvent)
+
 implement(SweepContext)
 
 SweepContext SweepContext_with_polyline(List polyline) {
@@ -49,11 +52,11 @@ void SweepContext_init_triangulation(SweepContext self) {
 
 	float dx = kAlpha * (xmax - xmin);
 	float dy = kAlpha * (ymax - ymin);
-	self->head = point_with_edges(xmax + dx, ymin - dy); // [x] [todo] all code to prot with point() must become point_with_edges()
-	self->tail = point_with_edges(xmin - dx, ymin - dy);
+	self->head = retain(point_with_edges(xmax + dx, ymin - dy)); // [x] [todo] all code to prot with point() must become point_with_edges()
+	self->tail = retain(point_with_edges(xmin - dx, ymin - dy));
 
 	// Sort points along y-axis
-	call(self->points, sort, true, (SortMethod)Point_cmp); // [todo] this was flipped, probably change to false
+	call(self->points, sort, false, (SortMethod)Point_cmp); // [todo] this was flipped, probably change to false
 }
 
 void SweepContext_init_edges(SweepContext self, List polyline) {
@@ -78,10 +81,10 @@ void SweepContext_create_advancing_front(SweepContext self, List nodes) {
 
     list_push(self->map, tri);
 
-    self->af_head = class_call(AFNode, with_tri, tri->points[1], tri);
-    self->af_middle = class_call(AFNode, with_tri, tri->points[0], tri);
-    self->af_tail = class_call(AFNode, with_point, tri->points[2]);
-    self->front = class_call(AdvancingFront, with_nodes, self->af_head, self->af_tail);
+    self->af_head = retain(class_call(AFNode, with_tri, tri->points[1], tri));
+    self->af_middle = retain(class_call(AFNode, with_tri, tri->points[0], tri));
+    self->af_tail = retain(class_call(AFNode, with_point, tri->points[2]));
+    self->front = retain(class_call(AdvancingFront, with_nodes, self->af_head, self->af_tail));
 
     self->af_head->next = self->af_middle;
     self->af_middle->next = self->af_tail;

@@ -426,9 +426,9 @@ enum ClassFlags {
 #define get(C,M)                ((C)->cl->get_##M(C))
 #define cp(C)                   (call((C), copy))
 #define base(O)                 ((Base)&(O->cl))
-#define retain(o)               ((typeof(o))call(o, retain))
-#define release(o)              (call(o, release))
-#define autorelease(o)          ((typeof(o))call(o, autorelease))
+#define retain(o)               ((o) ? ((typeof(o))call(o, retain)) : NULL)
+#define release(o)              ((o) ? call(o, release) : NULL)
+#define autorelease(o)          ((o) ? (typeof(o))call(o, autorelease) : NULL)
 #define auto(C)                 (autorelease(new(C)))
 #define object_auto(O)          (autorelease(object_new(O)))
 #define free_ptr(p)             if (p) free(p); p = NULL;

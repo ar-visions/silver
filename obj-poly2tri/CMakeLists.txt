@@ -1,5 +1,4 @@
-file(GLOB src "*.c")
-add_library (obj-poly2tri SHARED primitives.c advancing_front.c sweep_context.c)
+add_library (obj-poly2tri SHARED primitives.c advancing_front.c sweep_context.c sweep.c cdt.c)
 
 if(CPP)
     set_source_files_properties (${src} PROPERTIES LANGUAGE CXX)
