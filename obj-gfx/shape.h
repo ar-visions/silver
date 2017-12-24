@@ -14,12 +14,12 @@
 declare(Outline,Base)
 
 #define _Shape(D,T,C) _Base(spr,T,C)    \
+    override(D,T,C,void,init,(C))       \
     override(D,T,C,void,free,(C))       \
     method(D,T,C,C,from_path,(Gfx, List)) \
     method(D,T,C,bool,poly_contains_point,(List, float2)) \
     private_var(D,T,C,List,outlines)    \
-    private_var(D,T,C,List,edges)       \
-    private_var(D,T,C,List,points)
+    private_var(D,T,C,List,edges)
 declare(Shape,Base)
 
 #endif

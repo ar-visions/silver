@@ -1,16 +1,21 @@
 #include <obj/obj.h>
 #include <obj/list.h>
 
-static const int block_size = 32;
-
 implement(List);
 
-static void update_blocks(List self) {
-    self->list.block_size = (self->list.count < block_size) ? max(self->list.count, block_size) : max(block_size, self->list.count / 4);
+void List_init(List self) {
+    self->min_block_size = 32;
+    llist(&self->list, 0, block_size);
 }
 
-void List_init(List self) {
-    llist(&self->list, 0, block_size);
+List List_with_item_size(List self, int item_size) {
+    List self = auto(List);
+    llist(&self->list, item_size, block_size);
+}
+
+static void update_blocks(List self) {
+    self->list.block_size = (self->list.count < self->min_block_size) ? 
+        self->min_block_size : max(self->min_block_size, self->list.count / 4);
 }
 
 void List_free(List self) {
@@ -21,12 +26,14 @@ int List_count(List self) {
     return self->list.count;
 }
 
-void List_push(List self, Base obj) {
-    if (obj) {
-        llist_push(&self->list, obj);
+void *List_push(List self, Base obj) {
+    void *bytes = NULL;
+    if (obj || self->list.item_size) {
+        bytes = llist_push(&self->list, obj);
         retain(obj);
         priv_call(update_blocks);
     }
+    return self->list.item_size > 0 ? bytes : NULL;
 }
 
 Base List_pop(List self) {
@@ -34,7 +41,8 @@ Base List_pop(List self) {
     if (item) {
         Base obj = (Base)item->data;
         llist_remove(&self->list, item);
-        release(obj);
+        if (self->list.item_size == 0)
+            release(obj);
         priv_call(update_blocks);
         return obj;
     }
@@ -43,7 +51,8 @@ Base List_pop(List self) {
 
 bool List_remove(List self, Base obj) {
     if (obj && llist_remove_data(&self->list, obj)) {
-        release(obj);
+        if (self->list.item_size == 0)
+            release(obj);
         priv_call(update_blocks);
         return true;
     }

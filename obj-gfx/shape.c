@@ -1,17 +1,10 @@
 #include "gfx.h"
 #include <poly2tri/cdt.h>
 
-static void outline_init(Outline *outline, int n_alloc) {
-	outline->holes = (LL *)malloc(sizeof(LL) * n_alloc);
-	memset(outline->holes, 0, sizeof(LL) * n_alloc);
-	ll(&outline->outline, 0, 10);
-	outline->init = TRUE;
-}
-
-BOOL poly_contains_point(LL *list, Point *point) {
+bool poly_contains_point(LL *list, Point *point) {
 	Point *j = (Point *)ll_last(list);
     float px = point->x, py = point->y;
-    BOOL contains = FALSE;
+    bool contains = false;
 	
 	ll_each(list, Point, p) {
         if( (p->y > py) != (j->y > py)
@@ -22,30 +15,12 @@ BOOL poly_contains_point(LL *list, Point *point) {
     return contains;
 }
 
-void shape_free(Shape *shape) {
-	for (int i = 0; i < shape->n_outlines; i++) {
-		Outline *o = &shape->outlines[i];
-		for (int h = 0; h < o->n_holes; h++) {
-			ll_clear(&o->holes[h], FALSE);
-		}
-		free(o->holes);
-		cdt_free(o->cdt);
-		//ll_clear(&o->outline, FALSE);
-	}
-	ll_clear(&shape->edges, TRUE);
-	free(shape->outlines);
-	for (int i = 0; i < shape->n_points; i++) {
-		ll_clear(&shape->points[i].edge_list, FALSE);
-	}
-	free(shape->points);
-	free(shape);
-}
-
-void gfx_path_bbox(Gfx *gfx, LL *in, GfxRect *r) {
-	BOOL first = TRUE;
+void gfx_path_bbox(Gfx gfx, List in, GfxRect r) {
+	bool first = true;
 	float _min_x=0, _max_x=0;
 	float _min_y=0, _max_y=0;
-	ll_each(in, Segment, s) {
+	Segment *s;
+	each(in, s) {
 		float min_x=0, max_x=0;
 		float min_y=0, max_y=0;
 		switch (s->type) {
@@ -71,7 +46,7 @@ void gfx_path_bbox(Gfx *gfx, LL *in, GfxRect *r) {
 			_max_x = max_x;
 			_min_y = min_y;
 			_max_y = max_y;
-			first = FALSE;
+			first = false;
 		} else {
 			if (_min_x > min_x) _min_x = min_x;
 			if (_max_x < max_x) _max_x = max_x;
@@ -82,9 +57,9 @@ void gfx_path_bbox(Gfx *gfx, LL *in, GfxRect *r) {
 	*r = (GfxRect) { _min_x, _min_y, _max_x - _min_x, _max_y - _min_y };
 }
 
-BOOL is_rect_path(Gfx *gfx, LL *in, float *radius_x, float *radius_y, GfxRect *r) {
+bool is_rect_path(Gfx gfx, List in, float *radius_x, float *radius_y, GfxRect *r) {
 	if (in->count != 1)
-		return FALSE;
+		return false;
 	ll_each(in, Segment, s) {
 		switch (s->type) {
 			case SEGMENT_ARC: {
@@ -94,7 +69,7 @@ BOOL is_rect_path(Gfx *gfx, LL *in, float *radius_x, float *radius_y, GfxRect *r
 					r->w = (s->center.x + s->radius) - r->x;
 					r->h = (s->center.y + s->radius) - r->y;
 					*radius_x = *radius_y = s->radius;
-					return TRUE;
+					return true;
 				}
 				break;
 			}
@@ -106,7 +81,7 @@ BOOL is_rect_path(Gfx *gfx, LL *in, float *radius_x, float *radius_y, GfxRect *r
 					r->h = s->b.y - s->a.y;
 					if (radius_x)
 						*radius_x = *radius_y = s->radius;
-					return TRUE;
+					return true;
 				}
 				break;
 			}
@@ -114,21 +89,20 @@ BOOL is_rect_path(Gfx *gfx, LL *in, float *radius_x, float *radius_y, GfxRect *r
 				break;
 		}
 	}
-	return FALSE;
+	return false;
 }
 
-LL *lines_from_path(Gfx *gfx, LL *in, BOOL close_paths) {
-	LL *out = (LL *)malloc(sizeof(LL));
-	memset(out, 0, sizeof(LL));
-	ll(out, sizeof(Segment), 10);
-	V2 a;
-	V2 b;
+List lines_from_path(Gfx gfx, List in, bool close_paths) {
+	List out = auto(List);
+	float2 a, b;
 	Segment *start = NULL;
 	Segment *last_seg = NULL;
 	const float EPS = 0.001;
 	float sx, sy;
 	gfx_get_scales(gfx, &sx, &sy);
-	ll_each(in, Segment, s_) {
+
+	Segment *s_;
+	each(in, s_) {
 		if (!start || s_->moved) {
 			a = s_->a;
 			start = NULL;
@@ -160,14 +134,14 @@ LL *lines_from_path(Gfx *gfx, LL *in, BOOL close_paths) {
 			if (y1 - r < y0 + r)
 				r = fabs(y1 - y0) / 2;
 			// if rounded rect, make 4 arcs out of this (with moved start, and closed end)
-			V2 b0 = gfx_arc_seg(gfx, &stack[0], &s_->a, x1 - r, y0 + r, r, radians(-90), radians(90.0));
-			V2 b1 = gfx_arc_seg(gfx, &stack[1], &b0, x1 - r, y1 - r, r, radians(0), radians(90.0));
-			V2 b2 = gfx_arc_seg(gfx, &stack[2], &b1, x0 + r, y1 - r, r, radians(90), radians(90.0));
-			gfx_arc_seg(gfx, &stack[3], &b2, x0 + r, y0 + r, r, radians(180), radians(90.0));
+			float2 b0 = gfx_arc_seg(gfx, &stack[0], s_->a, x1 - r, y0 + r, r, radians(-90), radians(90.0));
+			float2 b1 = gfx_arc_seg(gfx, &stack[1], b0, x1 - r, y1 - r, r, radians(0), radians(90.0));
+			float2 b2 = gfx_arc_seg(gfx, &stack[2], b1, x0 + r, y1 - r, r, radians(90), radians(90.0));
+			gfx_arc_seg(gfx, &stack[3], b2, x0 + r, y0 + r, r, radians(180), radians(90.0));
 			for (int i = 0; i < 4; i++)
 				subs[i] = &stack[i];
-			subs[0]->moved = TRUE;
-			subs[3]->close = TRUE;
+			subs[0]->moved = true;
+			subs[3]->close = true;
 			n_subs = 4;
 		}
 		for (int ii = 0; ii < n_subs; ii++) {
@@ -175,35 +149,35 @@ LL *lines_from_path(Gfx *gfx, LL *in, BOOL close_paths) {
 			b = s->b;
 			switch (s->type) {
 				case SEGMENT_RECT: {
-					Segment *ss = ll_push(out, NULL);
+					Segment *ss = (Segment *)list_push(out, NULL);
 					ss->type = SEGMENT_LINE;
 					ss->a = a;
-					ss->b = (V2) { b.x, a.y };
-					ss->no_feather = TRUE;
+					ss->b = (float2) { b.x, a.y };
+					ss->no_feather = true;
 					ss->moved = s->moved;
-					ss->close = FALSE;
+					ss->close = false;
 					if (!start) start = ss;
 
-					ss = ll_push(out, NULL);
+					ss = (Segment *)list_push(out, NULL);
 					ss->type = SEGMENT_LINE;
-					ss->a = (V2) { b.x, a.y };
-					ss->b = (V2) { b.x, b.y };
-					ss->no_feather = TRUE;
-					ss->moved = FALSE;
-					ss->close = FALSE;
+					ss->a = (float2) { b.x, a.y };
+					ss->b = (float2) { b.x, b.y };
+					ss->no_feather = true;
+					ss->moved = false;
+					ss->close = false;
 
-					ss = ll_push(out, NULL);
+					ss = (Segment *)list_push(out, NULL);
 					ss->type = SEGMENT_LINE;
 					ss->a = b;
-					ss->b = (V2) { a.x, b.y };
-					ss->no_feather = TRUE;
-					ss->moved = FALSE;
-					ss->close = TRUE;
+					ss->b = (float2) { a.x, b.y };
+					ss->no_feather = true;
+					ss->moved = false;
+					ss->close = true;
 					last_seg = ss;
 					break;
 				}
 				case SEGMENT_LINE: {
-					Segment *ss = ll_push(out, NULL);
+					Segment *ss = (Segment *)list_push(out, NULL);
 					if (!start) start = ss;
 					ss->type = SEGMENT_LINE;
 					ss->a = a;
@@ -214,7 +188,7 @@ LL *lines_from_path(Gfx *gfx, LL *in, BOOL close_paths) {
 					break;
 				}
 				case SEGMENT_ARC: {
-					float cir = (s->radius + (gfx->state.stroke_width * gfx->state.stroke_scale) / 2) * 2.0 * M_PI;
+					float cir = (s->radius + (gfx->state->stroke_width * gfx->state->stroke_scale) / 2) * 2.0 * M_PI;
 					float pixel_threshold = 0.10 * sx; // scale higher for stroke ops?
 					float d = fabs(s->rads);
 					float amount = min(1.0, d / (M_PI * 2.0));
@@ -225,22 +199,22 @@ LL *lines_from_path(Gfx *gfx, LL *in, BOOL close_paths) {
 						float f = ((float)i / (float)steps);
 						float rads = s->rads_from + s->rads * f;
 						float ox = cos(rads), oy = sin(rads);
-						V2 p = { s->center.x + s->radius * ox, s->center.y + s->radius * oy };
+						float2 p = { s->center.x + s->radius * ox, s->center.y + s->radius * oy };
 						if (i > 0) {
-							BOOL added_move = FALSE;
+							bool added_move = false;
 							if (i == 1) {
-								if (!s->moved && vec2_dist(a, b) > EPS) {
-									Segment *ss = ll_push(out, NULL);
+								if (!s->moved && float2_dist(a, b) > EPS) {
+									Segment *ss = (Segment *)list_push(out, NULL);
 									if (!start) start = ss;
 									ss->type = SEGMENT_LINE;
 									ss->a = a;
 									ss->b = b;
-									ss->moved = FALSE;
-									added_move = TRUE;
+									ss->moved = false;
+									added_move = true;
 									last_seg = ss;
 								}
 							}
-							Segment *ss = ll_push(out, NULL);
+							Segment *ss = (Segment *)list_push(out, NULL);
 							if (!start) start = ss;
 							ss->type = SEGMENT_LINE;
 							ss->a = b;
@@ -255,20 +229,20 @@ LL *lines_from_path(Gfx *gfx, LL *in, BOOL close_paths) {
 					break;
 				}
 				case SEGMENT_BEZIER: {
-					Bezier bz = { .p1 = a, .h1 = s->cp1, .h2 = s->cp2, .p2 = b };
-					float len = bezier_approx_length(&bz, 8);
+					Bezier bz = bezier(a, s->cp1, s->cp2, b);
+					float len = Bezier_approx_length(bz, 8);
 					float pixel_threshold = 0.10;
 					int steps = max(4, fabs(sx) * len * pixel_threshold);
 					for (int i = 0; i < steps; i++) {
 						float f = (float)i / (float)(steps - 1);
-						V2 p = bezier_point_at(&bz, f);
+						float2 p = Bezier_point_at(bz, f);
 						if (i > 0) {
-							Segment *ss = ll_push(out, NULL);
+							Segment *ss = (Segment *)list_push(out, NULL);
 							if (!start) start = ss;
 							ss->type = SEGMENT_LINE;
 							ss->a = b;
 							ss->b = p;
-							ss->moved = FALSE;
+							ss->moved = false;
 							last_seg = ss;
 						}
 						b = p;
@@ -280,9 +254,9 @@ LL *lines_from_path(Gfx *gfx, LL *in, BOOL close_paths) {
 			}
 			a = b;
 			if (close_paths && last_seg && start && last_seg->close) {
-				float dist = vec2_dist(last_seg->b, start->a);
+				float dist = float2_dist(last_seg->b, start->a);
 				if (dist > EPS) {
-					Segment *ss = ll_push(out, NULL);
+					Segment *ss = (Segment *)list_push(out, NULL);
 					ss->type = SEGMENT_LINE;
 					ss->a = last_seg->b;
 					ss->b = start->a;
@@ -296,107 +270,113 @@ LL *lines_from_path(Gfx *gfx, LL *in, BOOL close_paths) {
 	return out;
 }
 
-BOOL shape_from_path(Gfx *gfx, LL *path, Shape **p_shape) {
-	int alloc = 1;
-	ll_each(path, Segment, _pe) {
-		if (_pe->moved)
-			alloc++;
-	}
-	Shape *shape = (Shape *)malloc(sizeof(Shape));
-	memset(shape, 0, sizeof(Shape));
-	shape->outlines = (Outline *)malloc(sizeof(Outline) * alloc);
-	memset(shape->outlines, 0, sizeof(Outline) * alloc);
-	shape->n_alloc = alloc;
-	ll(&shape->edges, 0, 10);
+implement(Shape)
 
-	Outline *o = shape->outlines;
-	BOOL first = TRUE;
-	Point *p_last = NULL;
-	Point *p_first = NULL;
-	LL *list = NULL;
+void Shape_init(Shape self) {
+	self->outlines = new(List);
+	self->edges = new(List);
+}
+
+void Shape_free(Shape self) {
+	release(self->outlines);
+	release(self->edges);
+}
+
+Shape Shape_from_path(Gfx gfx, List path) {
+	Shape self = auto(Shape);
+	Outline o = NULL;
+	bool first = true;
+	Point p_last = NULL;
+	Point p_first = NULL;
+	List list = NULL;
 	float sx, sy;
 	gfx_get_scales(gfx, &sx, &sy);
 	float eps_sqr = sqr(0.001 * sx);
-	LL *line_segments = lines_from_path(gfx, path, FALSE);
+	List line_segments = lines_from_path(gfx, path, false);
 	Segment *pe_first = NULL;
-	shape->points_alloc = line_segments->count * 2 + 1;
-	shape->points = (Point *)malloc(sizeof(Point) * shape->points_alloc);
-	memset(shape->points, 0, sizeof(Point) * shape->points_alloc);
-	ll_each(line_segments, Segment, pe) {
+
+	Segment *pe;
+	each(line_segments, pe) {
 		if (!pe_first)
 			pe_first = pe;
 		if (first || pe->moved) {
 			if (p_last) {
-				Edge *edge = edge_simple(p_last, p_first);
-				ll_push(&shape->edges, edge);
+				Edge edge = edge_simple(p_last, p_first);
+				list_push(self->edges, edge);
+
+				assert(p_first->n_edges < 4 && p_last->n_edges < 4);
+
 				p_last->edges[p_last->n_edges++] = edge;
 				p_first->edges[p_first->n_edges++] = edge;
 				p_first = NULL;
 				list = NULL;
 			}
-			Point *p = point_init(&shape->points[shape->n_points++], pe->a.x, pe->a.y);
+			Point p = point(pe->a.x, pe->a.y);
 			p_first = p;
-			if (o->init) {
-				if (poly_contains_point(&o->outline, p)) {
-					BOOL inside_hole = FALSE;
-					for (int i = 0; i < o->n_holes; i++) {
-						inside_hole = poly_contains_point(&o->holes[i], p);
+			if (o) {
+				if (poly_contains_point(o->outline, p)) {
+					bool inside_hole = false;
+					List h;
+					each(o->outline, h) {
+						inside_hole = poly_contains_point(h, p);
 						if (inside_hole)
 							break;
 					}
 					if (inside_hole) {
-						shape->n_outlines++;
-						outline_init(++o, shape->n_alloc);
-						list = &o->outline;
+						o = auto(Outline);
+						list_push(self->outlines, o);
+						list = o->outline;
 					} else {
-						list = &o->holes[o->n_holes++];
-						ll(list, 0, 10);
+						list = auto(List);
+						list_push(o->holes, list);
 					}
 				} else {
-					shape->n_outlines++;
-					outline_init(++o, shape->n_alloc);
-					list = &o->outline;
+					o = auto(Outline);
+					list_push(self->outlines, o);
+					list = o->outline;
 				}
 			} else {
-				shape->n_outlines++;
-				outline_init(o, shape->n_alloc);
-				list = &o->outline;
+				o = auto(Outline);
+				list_push(self->outlines, o);
+				list = o->outline;
 				o->no_feather = pe->no_feather;
 			}
-			ll_push(list, p);
-			first = FALSE;
+			list_push(list, p);
+			first = false;
 			p_last = p;
 		}
-		Point *p = point_init(&shape->points[shape->n_points++], pe->b.x, pe->b.y);
-		Edge *edge = edge_simple(p_last, p);
-		ll_push(&shape->edges, edge);
+		Point p = point(pe->b.x, pe->b.y);
+		Edge edge = edge_simple(p_last, p);
+		list_push(self->edges, edge);
 
-		if (p_first && vec2_dist_sqr(pe->b, (V2){p_first->x, p_first->y}) <= eps_sqr)
+		if (p_first && float2_dist_sqr(pe->b, (float2){p_first->x, p_first->y}) <= eps_sqr)
 			continue;
 
-		ll_push(list, p);
+		list_push(list, p);
+		
+		assert(p->n_edges < 4);
+
 		p->edges[p->n_edges++] = edge;
-		if (p_last && p_last->n_edges < 6) {
+		if (p_last && p_last->n_edges < 4) {
 			p_last->edges[p_last->n_edges++] = edge;
 		}
 		p_last = p;
 	}
+	
 	if (p_last) {
-		Edge *edge = edge_simple(p_last, p_first);
-		ll_push(&shape->edges, edge);
+		Edge edge = edge_simple(p_last, p_first);
+		list_push(self->edges, edge);
 		p_last->edges[p_last->n_edges++] = edge;
 		p_first->edges[p_first->n_edges++] = edge;
 	}
-	for (int i = 0; i < shape->n_outlines; i++) {
-		Outline *o = &shape->outlines[i];
-		o->cdt = cdt(&o->outline);
-		for (int h = 0; h < o->n_holes; h++)
-			cdt_add_hole(o->cdt, &o->holes[h]);
-		cdt_triangulate(o->cdt);
-		o->tris = cdt_get_triangles(o->cdt);
+
+	each(self->outlines, o) {
+		o->cdt = cdt(o->outline);
+		List h;
+		each(o->holes, h)
+			CDT_add_hole(o->cdt, h);
+		CDT_triangulate(o->cdt);
+		o->tris = CDT_get_triangles(o->cdt);
 	}
-	ll_clear(line_segments, FALSE);
-	free(line_segments);
-	*p_shape = shape;
-	return TRUE;
+	return self;
 }
