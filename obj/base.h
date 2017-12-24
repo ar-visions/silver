@@ -2,7 +2,9 @@
 
 struct _class_Base;
 struct _object_Enum;
+struct _object_Prop;
 struct _object_String;
+struct _object_Pairs;
 
 #define _Base(D,T,C)                                            \
     method(D,T,C,void,class_preinit,(Class))                    \
@@ -22,8 +24,11 @@ struct _object_String;
     method(D,T,C,C,from_string,(struct _object_String *))       \
     method(D,T,C,void,set_property,(C,const char *,Base))       \
     method(D,T,C,Base,get_property,(C,const char *))            \
+    method(D,T,C,Base,prop_value,(C, struct _object_Prop *))    \
     method(D,T,C,int,compare,(C,C))                             \
-    method(D,T,C,ulong,hash,(C))
+    method(D,T,C,ulong,hash,(C))                                \
+    method(D,T,C,void,serialize,(C,struct _object_Pairs *))     \
+    var(D,T,C,bool,string_serialize)
 declare(Base, Base)
 
 #define set_prop(O,P,V) (call(O, set_property, P, base(V)))

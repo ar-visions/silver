@@ -55,6 +55,39 @@ void Base_class_init(Class c) {
     }
 }
 
+void Base_serialize(Base self, Pairs pairs) {
+    Pairs props = pairs_value(self->cl->meta, string("props"), Pairs);
+    KeyValue kv;
+    each_pair(props, kv) {
+        String name  = inherits(kv->key, String);
+        if (call(name, cmp, "string_serialize") == 0)
+            continue;
+        Prop   prop  = inherits(kv->value, Prop);
+        Base   value = call(self, prop_value, prop);
+        List   vlist = inherits(value, List);
+        if (value == NULL || value->string_serialize) {
+            pairs_add(pairs, name, value);
+        } else if (vlist) {
+            List out = auto(List);
+            Base v;
+            each(vlist, v) {
+                if (v == NULL || v->string_serialize)
+                    list_push(out, v);
+                else {
+                    Pairs p = auto(Pairs);
+                    call(v, serialize, p);
+                    list_push(out, p);
+                }
+            }
+            pairs_add(pairs, name, out);
+        } else {
+            Pairs p = auto(Pairs);
+            call(value, serialize, p);
+            pairs_add(pairs, name, p);
+        }
+    }
+}
+
 void Base_init(Base self) { }
 
 int Base_compare(Base a, Base b) {
@@ -172,11 +205,7 @@ void Base_set_property(Base self, const char *name, Base base_value) {
     }
 }
 
-Base Base_get_property(Base self, const char *name) {
-    Pairs props = pairs_value(self->cl->meta, string("props"), Pairs);
-    if (!props)
-        return NULL;
-    Prop p = pairs_value(props, string(name), Prop);
+Base Base_prop_value(Base self, Prop p) {
     if (!p || !p->enum_type)
         return NULL;
     switch (p->enum_type->ordinal) {
@@ -199,6 +228,14 @@ Base Base_get_property(Base self, const char *name) {
             break;
     }
     return NULL;
+}
+
+Base Base_get_property(Base self, const char *name) {
+    Pairs props = pairs_value(self->cl->meta, string("props"), Pairs);
+    if (!props)
+        return NULL;
+    Prop p = pairs_value(props, string(name), Prop);
+    return call(self, prop_value, p);
 }
 
 Base Base_copy(Base self) {

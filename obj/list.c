@@ -5,12 +5,12 @@ implement(List);
 
 void List_init(List self) {
     self->min_block_size = 32;
-    llist(&self->list, 0, block_size);
+    llist(&self->list, 0, self->min_block_size);
 }
 
-List List_with_item_size(List self, int item_size) {
+List List_with_item_size(int item_size) {
     List self = auto(List);
-    llist(&self->list, item_size, block_size);
+    llist(&self->list, item_size, self->min_block_size);
 }
 
 static void update_blocks(List self) {
@@ -79,7 +79,7 @@ void List_clear(List self) {
         if (obj)
             release(obj);
     }
-    self->list.block_size = block_size;
+    self->list.block_size = self->min_block_size;
     llist_clear(&self->list, false);
 }
 
