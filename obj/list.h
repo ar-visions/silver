@@ -5,7 +5,7 @@
     override(D,T,C,void,init,(C))                   \
     override(D,T,C,void,free,(C))                   \
     method(D,T,C,C,with_item_size,(int))            \
-    method(D,T,C,void,push,(C,Base))                \
+    method(D,T,C,void *,push,(C,Base))              \
     method(D,T,C,Base,pop,(C))                      \
     method(D,T,C,void,sort,(C,bool,SortMethod))     \
     method(D,T,C,bool,remove,(C,Base))              \

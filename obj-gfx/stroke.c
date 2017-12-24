@@ -174,7 +174,7 @@ int Gfx_stroke_shape(Gfx self) {
 	GfxState st = self->state;
 	float sw = st->stroke_width * st->stroke_scale;
 	List line_segments = class_call(Shape, lines_from_path, self, &self->path, true);
-	int polys_len = sizeof(StrokePoly) * line_segments->count;
+	int polys_len = sizeof(StrokePoly) * list_count(line_segments);
 	StrokePoly *polys = (StrokePoly *)malloc(polys_len);
 	memset(polys, 0, polys_len);
 	float sx, sy;
@@ -347,8 +347,6 @@ int Gfx_stroke_shape(Gfx self) {
 	}
 	// vertex count
 	free(polys);
-	ll_clear(line_segments, false);
-	free(line_segments);
 	return n_verts;
 }
 

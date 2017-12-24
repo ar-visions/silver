@@ -18,12 +18,12 @@ void Element_init(Element self) {
 void Element_free(Element self) {
 }
 
-void Element_push(Element self, Base o) {
+void *Element_push(Element self, Base o) {
     Element child = inherits(o, Element);
     if (!child)
-        return;
+        return NULL;
     child->parent = retain(self);
-    super(push, o);
+    return super(push, o);
 }
 
 Element Element_root(Element self) {

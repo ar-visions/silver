@@ -37,6 +37,7 @@ static char *struprcase(char *str) {
 }
 
 void String_init(String self) {
+    self->string_serialize = true;
 }
 
 void String_free(String self) {

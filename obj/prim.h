@@ -113,6 +113,7 @@ declare(Double, Primitive)
 implement(C)                    \
                                 \
 void C##_init(C self) {         \
+    self->string_serialize = true; \
     self->enum_type = Type_##C; \
 }                               \
 int C##_compare(C self, C b) {  \

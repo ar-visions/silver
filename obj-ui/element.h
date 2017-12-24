@@ -43,7 +43,7 @@ declare(Font, Base)
 #define _Element(D,T,C) _List(spr,T,C)               \
     override(D,T,C,void,init,(C))                    \
     override(D,T,C,void,free,(C))                    \
-    override(D,T,C,void,push,(C,Base))               \
+    override(D,T,C,void *,push,(C,Base))             \
     override(D,T,C,bool,remove,(C,Base))             \
     method(D,T,C,void,layout,(C))                    \
     method(D,T,C,void,render,(C))                    \
