@@ -173,7 +173,7 @@ void Gfx_stroke_scale(Gfx self, float sc) {
 int Gfx_stroke_shape(Gfx self) {
 	GfxState st = self->state;
 	float sw = st->stroke_width * st->stroke_scale;
-	LL *line_segments = class_call(Shape, lines_from_path, self, &self->path, true);
+	List line_segments = class_call(Shape, lines_from_path, self, &self->path, true);
 	int polys_len = sizeof(StrokePoly) * line_segments->count;
 	StrokePoly *polys = (StrokePoly *)malloc(polys_len);
 	memset(polys, 0, polys_len);
@@ -182,7 +182,8 @@ int Gfx_stroke_shape(Gfx self) {
 	int count = 0;
 
 	StrokePoly *start = &polys[0];
-	ll_each(line_segments, Segment, segment) {
+	Segment *segment;
+	each(line_segments, segment) {
 		StrokePoly *p = &polys[count++];
 		p->seg		= (LineSegment){ segment->a, segment->b };
 		p->moved 	= segment->moved;
