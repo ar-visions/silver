@@ -1,8 +1,16 @@
 #include <obj/obj.h>
+#include <obj-math/math.h>
 #include <obj-ui/ui.h>
 
 int main() {
     class_init();
+
+    Vec2 v2 = vec2(1,2);
+    String json = call(v2, to_json);
+    printf("json = %s\n", json->buffer);
+
+    // take this json, and convert back into v2 object
+
     Window window = new(Window);
     window->title = new_string("Hello World");
     set(window, resizable, true);

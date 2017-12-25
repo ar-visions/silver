@@ -106,6 +106,16 @@ String String_to_string(String self) {
     return class_call(String, from_cstring, self->buffer);
 }
 
+String String_from_bytes(const char *bytes, size_t length) {
+    String self = auto(String);
+    self->length = length;
+    self->buffer_size = length + 1;
+    self->buffer = (char *)malloc(self->buffer_size);
+    memcpy(self->buffer, buffer, self->buffer_size);
+    self->buffer[length] = 0;
+    return self;
+}
+
 void String_check_resize(String self, uint chars) {
     if (self->buffer_size <= chars + 1) {
         int buffer_size = self->buffer_size + chars + 1 + clamp((int)((self->buffer_size - 1) << 1), 32, 1024);
@@ -129,6 +139,11 @@ void String_concat_chars(String self, const char *p, int len) {
     call(self, check_resize, self->length + len);
     memcpy(&self->buffer[self->length], p, len + 1);
     self->length += len;
+}
+
+void String_concat_string(String self, String b) {
+    if (b)
+        call(self, concat_chars, b->buffer, b->length);
 }
 
 void String_concat_long(String self, long v, const char *format) {

@@ -11,6 +11,8 @@
 #define A(row, col) a[(col << 2) + row]
 #define B(row, col) b[(col << 2) + row]
 
+implement(Matrix44)
+
 Matrix44 Matrix44_mul(Matrix44 self, Matrix44 mat_b) {
     Matrix44 product = auto(Matrix44);
 	float *m = product->m;

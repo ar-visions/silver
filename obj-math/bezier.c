@@ -7,6 +7,8 @@
 #define	DEGREE		3
 #define	W_DEGREE 	5
 
+implement(Bezier)
+
 Bezier Bezier_new_bezier(float2 p1, float2 h1, float2 h2, float2 p2) {
     Bezier self = new(Bezier);
     self->p1 = p1;
@@ -266,7 +268,7 @@ float2 Bezier_point_at(Bezier self, float p) {
 	return point;
 }
 
-float bezier_percent_from_point(Bezier self, float2 point) {
+float Bezier_percent_from_point(Bezier self, float2 point) {
     const unsigned int steps = 20;
     const unsigned int depth = 20;
     float per = 0.0;
