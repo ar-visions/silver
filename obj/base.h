@@ -28,6 +28,7 @@ struct _object_Pairs;
     method(D,T,C,int,compare,(C,C))                             \
     method(D,T,C,ulong,hash,(C))                                \
     method(D,T,C,void,serialize,(C,struct _object_Pairs *))     \
+    method(D,T,C,struct _object_String *,to_json,(C))           \
     var(D,T,C,bool,string_serialize)
 declare(Base, Base)
 

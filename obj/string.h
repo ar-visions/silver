@@ -12,10 +12,12 @@
     method(D,T,C,void,check_resize,(C, uint))        \
     method(D,T,C,void,concat_char,(C, const char))   \
     method(D,T,C,void,concat_chars,(C, const char *, int)) \
+    method(D,T,C,void,concat_string,(C, C))          \
     method(D,T,C,void,concat_long,(C, long, const char *)) \
     method(D,T,C,void,concat_long_long,(C, uint64, const char *)) \
     method(D,T,C,void,concat_double,(C, double, const char *)) \
     method(D,T,C,void,concat_object,(C, Base))       \
+    method(D,T,C,C,from_bytes,(const char *, size_t)) \
     method(D,T,C,C,format,(const char *,...))        \
     override(D,T,C,C,from_cstring,(const char *))    \
     override(D,T,C,void,init,(C))                    \
