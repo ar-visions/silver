@@ -249,7 +249,6 @@ typedef struct _JsonMode {
 Base Base_from_json(Class c, String value) {
     const int max_key_len = 1024;
     const char *s = value->buffer;
-    const char *expect = "\"}";
     JsMode *modes = (JsMode *)malloc(value->length * sizeof(JsMode));
     JsMode *modes_origin = modes;
 
@@ -281,57 +280,59 @@ Base Base_from_json(Class c, String value) {
                     case ']':
                         if (modes->mode != MODE_ARRAY || modes->parse != PARSE_VALUE)
                             return NULL;
-                        --modes; // deassociate array
+                        --modes;
                         s++;
                         break;
                     case '}':
-                        s++;
                         if (modes->mode != MODE_OBJECT)
                             return NULL;
+                        s++;
                         if (--modes == modes_origin) {
                             br = true;
                             break;
                         }
                         break;
                     default: {
-                        if (modes->mode == MODE_OBJECT) {
-                            if (modes->parse == PARSE_KEY) {
-                                modes->key = parse_quoted_string(s, max_key_len, &s);
-                                if (!modes->key)
-                                    return NULL;
-                                modes->parse = PARSE_COLON;
-                                break;
-                            }
+                        if (modes->mode == MODE_OBJECT && modes->parse == PARSE_KEY) {
+                            modes->key = parse_quoted_string(s, max_key_len, &s);
+                            if (!modes->key)
+                                return NULL;
+                            modes->parse = PARSE_COLON;
+                            break;
                         }
                         if (modes->parse != PARSE_VALUE)
                             return NULL;
                         // must be an object {, array [, string ", numeric, or true/false boolean
                         parse_ws(&s);
                         switch (*s) {
-                            case '{':
+                            case '{': {
+                                // if in object mode (key must be set); create object based on class of prop
+                                modes->parse = PARSE_COMMA;
                                 ++modes;
                                 modes->mode = MODE_OBJECT;
                                 modes->parse = PARSE_KEY;
                                 // todo: store object, setting previous prop or adding to array
                                 break;
+                            }
                             case '[':
                                 // set array mode at this stack depth; in this mode values are 
+                                modes->parse = PARSE_COMMA;
                                 ++modes;
                                 modes->mode = MODE_ARRAY;
                                 modes->parse = PARSE_VALUE;
                                 modes->object = NULL; // todo, set from object_new class of prop on object
                                 break;
-                            case '"': {
-                                String value = parse_quoted_string(s, 0, &s);
-                                if (!value)
-                                    return NULL;
-                                break;
-                            }
                             default:
                                 if (*s == '-' || isdigit(*s)) {
                                     String numeric = parse_numeric(&s);
                                     if (!numeric)
                                         return NULL;
+                                    // add to list, or set prop
+                                } else if (*s == '"') {
+                                    String value = parse_quoted_string(s, 0, &s);
+                                    if (!value)
+                                        return NULL;
+                                    // add to list, or set prop
                                 } else {
                                     String symbol = parse_symbol(&s);
                                     if (!symbol)
@@ -341,6 +342,7 @@ Base Base_from_json(Class c, String value) {
                                         bool_value = true;
                                     else if (call(symbol, cmp, "false") != 0)
                                         return NULL;
+                                    // add to list, or set prop
                                 }
                                 mode->parse = PARSE_COMMA;
                                 break;
