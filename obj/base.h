@@ -25,11 +25,12 @@ struct _object_Pairs;
     method(D,T,C,void,set_property,(C,const char *,Base))       \
     method(D,T,C,Base,get_property,(C,const char *))            \
     method(D,T,C,Base,prop_value,(C, struct _object_Prop *))    \
+    method(D,T,C,struct _object_Prop *,find_prop,(Class, const char *)) \
     method(D,T,C,int,compare,(C,C))                             \
     method(D,T,C,ulong,hash,(C))                                \
     method(D,T,C,void,serialize,(C,struct _object_Pairs *))     \
     method(D,T,C,struct _object_String *,to_json,(C))           \
-    var(D,T,C,bool,string_serialize)
+    method(D,T,C,C,from_json,(Class, struct _object_String *))
 declare(Base, Base)
 
 #define set_prop(O,P,V) (call(O, set_property, P, base(V)))

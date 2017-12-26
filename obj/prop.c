@@ -36,11 +36,12 @@ Prop Prop_new_with(char *type, char *name, Getter getter, Setter setter) {
         type_ = type;
     Class c = class_find(type_);
     Type t = enum_find(Type, type_);
+    Type t_object = enum_find(Type, "Object");
     if (!c && !t)
         return NULL;
     Prop self = new(Prop);
     self->name = new_string(name);
-    self->enum_type = (Enum)t;
+    self->enum_type = t ? (Enum)t : (c ? (Enum)t_object : NULL);
     self->class_type = c;
     self->getter = getter;
     self->setter = setter;
