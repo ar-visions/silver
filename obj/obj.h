@@ -158,7 +158,7 @@ struct _Class {
 #define private_var_spr_forward_dec(C, TYPE, NAME)
 #define private_var_spr_mname_dec(C, TYPE, NAME)
 #define private_var_spr_mname_def(C, TYPE, NAME)
-#define private_var_spr_object_dec(C, TYPE, NAME)         TYPE ___##NAME;
+#define private_var_spr_object_dec(C, TYPE, NAME)         TYPE NAME;
 #define private_var_spr_proto(C, TYPE, NAME)
 #define private_var_spr_override(C, TYPE, NAME)
 
@@ -442,6 +442,7 @@ enum ClassFlags {
 #define string(cstring)         (class_call(String, from_cstring, cstring))
 #define new_string(cstring)     (class_call(String, new_string, cstring))
 #define mix(a,b,f)              (((double)(a) * (double)(f)) + ((double)(b) * (double)(1.0 - (double)(f))))
+#define from_json(C,S)          ((C)class_call(Base, from_json, class_object(C), json))
 
 #include <obj/base.h>
 #include <obj/string.h>
