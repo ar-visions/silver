@@ -15,7 +15,7 @@ int main() {
     String json = call(v2, to_json);
     printf("json = %s\n", json->buffer);
 
-    Vec2 v2_f = (Vec2)class_call(Base, from_json, class_object(Vec2), json);
+    Vec2 v2_f = from_json(Vec2, json);
 
     String json_2 = call(v2_f, to_json);
     printf("json_2 = %s\n", json_2->buffer);

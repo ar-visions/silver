@@ -25,10 +25,10 @@ struct _object_Test;
     override(D,T,C,String,to_string,(C))             \
     override(D,T,C,int,compare,(C,C))                \
     override(D,T,C,ulong,hash,(C))                   \
+    private_var(D,T,C,int,count)                     \
+    private_var(D,T,C,double *,vec)                  \
     var(D,T,C,List,list)                             \
     var(D,T,C,Test,test)                             \
-    var(D,T,C,int,count)                             \
-    var(D,T,C,double *,vec)                          \
     var(D,T,C,double,x)                              \
     var(D,T,C,double,y)
 declare(Vec, Base)
