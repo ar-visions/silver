@@ -1,5 +1,5 @@
 #include "gfx.h"
-#include <poly2tri/cdt.h>
+#include <poly2tri/poly2tri.h>
 
 bool poly_contains_point(LL *list, Point *point) {
 	Point *j = (Point *)ll_last(list);
@@ -371,12 +371,12 @@ Shape Shape_from_path(Gfx gfx, List path) {
 	}
 
 	each(self->outlines, o) {
-		o->cdt = cdt(o->outline);
+		o->poly2tri = poly2tri(o->outline);
 		List h;
 		each(o->holes, h)
-			CDT_add_hole(o->cdt, h);
-		CDT_triangulate(o->cdt);
-		o->tris = CDT_get_triangles(o->cdt);
+			Poly2Tri_add_hole(o->poly2tri, h);
+		Poly2Tri_triangulate(o->poly2tri);
+		o->tris = Poly2Tri_get_triangles(o->poly2tri);
 	}
 	return self;
 }

@@ -33,18 +33,18 @@ int main() {
     list_push(points, point_with_edges(10, 10));
     list_push(points, point_with_edges(0, 10));
 
-    CDT cdt = class_call(CDT, with_polyline, points);
+    Poly2Tri poly2tri = class_call(Poly2Tri, with_polyline, points);
 
     List hole = new(List);
     list_push(hole, point_with_edges(2, 2));
     list_push(hole, point_with_edges(8, 2));
     list_push(hole, point_with_edges(8, 8));
     list_push(hole, point_with_edges(2, 8));
-    call(cdt, add_hole, hole);
+    call(poly2tri, add_hole, hole);
 
     release(points);
-    call(cdt, triangulate);
-    List tris = call(cdt, get_triangles);
+    call(poly2tri, triangulate);
+    List tris = call(poly2tri, get_triangles);
 
     call(app, loop);
     release(window);
