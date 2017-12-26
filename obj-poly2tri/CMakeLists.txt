@@ -1,4 +1,4 @@
-add_library (obj-poly2tri SHARED primitives.c advancing_front.c sweep_context.c sweep.c cdt.c)
+add_library (obj-poly2tri SHARED primitives.c advancing_front.c sweep_context.c sweep.c poly2tri.c)
 
 if(CPP)
     set_source_files_properties (${src} PROPERTIES LANGUAGE CXX)

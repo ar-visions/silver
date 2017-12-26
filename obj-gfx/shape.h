@@ -2,13 +2,13 @@
 #define _GFX_SHAPE_H_
 
 #include <obj/obj.h>
-#include <obj-poly2tri/cdt.h>
+#include <obj-poly2tri/poly2tri.h>
 
 #define _Outline(D,T,C) _Base(spr,T,C)  \
     private_var(D,T,C,List,outline)     \
     private_var(D,T,C,List,holes)       \
     private_var(D,T,C,bool,is_init)     \
-    private_var(D,T,C,CDT,cdt)          \
+    private_var(D,T,C,Poly2Tri,poly2tri)          \
     private_var(D,T,C,List,tris)        \
     private_var(D,T,C,bool,no_feather)
 declare(Outline,Base)
