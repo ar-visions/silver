@@ -13,6 +13,12 @@ List List_with_item_size(int item_size) {
     llist(&self->list, item_size, self->min_block_size);
 }
 
+List List_new_list_of(Class list_class, Class item_class) {
+    List self = (List)new_obj((class_Base)list_class, 0);
+    self->item_class = item_class;
+    return self;
+}
+
 static void update_blocks(List self) {
     self->list.block_size = (self->list.count < self->min_block_size) ? 
         self->min_block_size : max(self->min_block_size, self->list.count / 4);

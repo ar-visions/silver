@@ -431,6 +431,7 @@ enum ClassFlags {
 #define autorelease(o)          ((o) ? (typeof(o))call(o, autorelease) : NULL)
 #define auto(C)                 (autorelease(new(C)))
 #define object_auto(O)          (autorelease(object_new(O)))
+#define new_list_of(C,I)        (class_call(C, new_list_of, class_object(C), class_object(I)))
 #define free_ptr(p)             if (p) free(p); p = NULL;
 #ifndef clamp
 #define clamp(V,L,H)            (min(H,max(L,V)))

@@ -1,6 +1,16 @@
 #ifndef _VEC_
 #define _VEC_
 
+#define _Test(D,T,C) _Base(spr,T,C)                  \
+    override(D,T,C,C,from_string,(String))           \
+    override(D,T,C,String,to_string,(C))             \
+    var(D,T,C,int,prop1)                             \
+    var(D,T,C,int,prop2)
+
+declare(Test, Base)
+
+struct _object_Test;
+
 #define _Vec(D,T,C) _Base(spr,T,C)                   \
     method(D,T,C,C,add,(C,C))                        \
     method(D,T,C,C,sub,(C,C))                        \
@@ -15,6 +25,8 @@
     override(D,T,C,String,to_string,(C))             \
     override(D,T,C,int,compare,(C,C))                \
     override(D,T,C,ulong,hash,(C))                   \
+    var(D,T,C,List,list)                             \
+    var(D,T,C,Test,test)                             \
     var(D,T,C,int,count)                             \
     var(D,T,C,double *,vec)                          \
     var(D,T,C,double,x)                              \

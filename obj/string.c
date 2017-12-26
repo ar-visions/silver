@@ -36,10 +36,6 @@ static char *struprcase(char *str) {
     return str;
 }
 
-void String_init(String self) {
-    self->string_serialize = true;
-}
-
 void String_free(String self) {
     free_ptr(self->buffer);
 }
@@ -111,7 +107,7 @@ String String_from_bytes(const char *bytes, size_t length) {
     self->length = length;
     self->buffer_size = length + 1;
     self->buffer = (char *)malloc(self->buffer_size);
-    memcpy(self->buffer, buffer, self->buffer_size);
+    memcpy(self->buffer, bytes, length);
     self->buffer[length] = 0;
     return self;
 }

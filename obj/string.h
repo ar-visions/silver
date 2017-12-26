@@ -20,7 +20,6 @@
     method(D,T,C,C,from_bytes,(const char *, size_t)) \
     method(D,T,C,C,format,(const char *,...))        \
     override(D,T,C,C,from_cstring,(const char *))    \
-    override(D,T,C,void,init,(C))                    \
     override(D,T,C,C,to_string,(C))                  \
     override(D,T,C,C,from_string,(C))                \
     override(D,T,C,void,free,(C))                    \

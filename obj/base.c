@@ -1,6 +1,7 @@
 #include <obj/obj.h>
 #include <obj/prop.h>
 #include <obj/prim.h>
+#include <ctype.h>
 
 implement(Base)
 
@@ -55,23 +56,25 @@ void Base_class_init(Class c) {
     }
 }
 
+bool implements_serialize(class_Base cl) {
+    return cl->to_string != Base_to_string && cl->from_string != Base_from_string;
+}
+
 void Base_serialize(Base self, Pairs pairs) {
     Pairs props = pairs_value(self->cl->meta, string("props"), Pairs);
     KeyValue kv;
     each_pair(props, kv) {
         String name  = inherits(kv->key, String);
-        if (call(name, cmp, "string_serialize") == 0)
-            continue;
         Prop   prop  = inherits(kv->value, Prop);
         Base   value = call(self, prop_value, prop);
         List   vlist = inherits(value, List);
-        if (value == NULL || value->string_serialize) {
+        if (value == NULL || implements_serialize((class_Base)value->cl)) {
             pairs_add(pairs, name, value);
         } else if (vlist) {
             List out = auto(List);
             Base v;
             each(vlist, v) {
-                if (v == NULL || v->string_serialize)
+                if (v == NULL || implements_serialize((class_Base)v->cl))
                     list_push(out, v);
                 else {
                     Pairs p = auto(Pairs);
@@ -100,7 +103,7 @@ String to_json(Pairs p, String str) {
         List   vlist = inherits(value, List);
         if (!key)
             continue;
-        if (value == NULL || value->string_serialize) {
+        if (value == NULL || implements_serialize((class_Base)value->cl)) {
             if (!f) call(str, concat_char, ',');
             String s = NULL;
             String svalue = value ? call(value, to_string) : NULL;
@@ -116,35 +119,37 @@ String to_json(Pairs p, String str) {
             f = false;
         } else if (inherits(value, Pairs)) {
             if (!f) call(str, concat_char, ',');
-            String s = class_call(String, format, "\"%s\":{", key->buffer);
+            String s = class_call(String, format, "\"%s\":", key->buffer);
             call(str, concat_string, s);
             to_json((Pairs)value, str);
-            call(str, concat_char, '}');
             f = false;
         } else if (vlist) {
             if (!f) call(str, concat_char, ',');
+            String skey = class_call(String, format, "\"%s\":[", key->buffer);
+            call(str, concat_string, skey);
             Base v;
             bool first = true;
             each(vlist, v) {
-                if (v == NULL || v->string_serialize) {
-                    String svalue = value ? call(value, to_string) : NULL;
+                if (v == NULL || implements_serialize((class_Base)v->cl)) {
+                    String svalue = v ? call(v, to_string) : NULL;
                     bool prim = inherits(v, Primitive) != NULL;
                     String s = NULL;
                     if (svalue) {
                         const char *q = !prim ? "\"" : "";
-                        s = class_call(String, format, "\"%s\":%s%s%s", key->buffer,
+                        s = class_call(String, format, "%s%s%s",
                             q, svalue->buffer, q);
                     } else {
-                        s = class_call(String, format, "\"%s\":null", key->buffer);
+                        s = class_call(String, format, "null");
                     }
                     if (!first)
                         call(str, concat_char, ',');
                     call(str, concat_string, s);
                     first = false;
                 } else if (inherits(v, Pairs)) {
-                    to_json(v, str);
+                    to_json((Pairs)v, str);
                 }
             }
+            call(str, concat_char, ']');
             f = false;
         }
     }
@@ -167,15 +172,16 @@ enum JsonMode {
 
 bool parse_ws(const char **cursor) {
     const char *s = *cursor;
-    for (++s; isspace(*s); ++s) { }
-    if (*s == NULL)
-        return false;
+    while (isspace(*s))
+        s++;
     *cursor = s;
+    if (*s == 0)
+        return false;
     return true;
 }
 
-String parse_numeric(char **cursor) {
-    char *s = *cursor;
+String parse_numeric(const char **cursor) {
+    const char *s = *cursor;
     if (*s != '-' && !isdigit(*s))
         return NULL;
 
@@ -198,12 +204,13 @@ String parse_numeric(char **cursor) {
     return class_call(String, from_bytes, number_start, number_len);
 }
 
-String parse_quoted_string(char *from, size_t max_len, const char **cursor) {
-    if (*from != '"')
+String parse_quoted_string(const char **cursor, size_t max_len) {
+    const char *first = *cursor;
+    if (*first != '"')
         return NULL;
     bool last_slash = false;
-    const char *start = ++from;
-    char *s = start;
+    const char *start = ++(*cursor);
+    const char *s = start;
     for (; *s != 0; ++s) {
         if (*s == '\\')
             last_slash = true;
@@ -212,7 +219,7 @@ String parse_quoted_string(char *from, size_t max_len, const char **cursor) {
         else
             last_slash = false;
     }
-    if (*s == NULL)
+    if (*s == 0)
         return NULL;
     size_t len = (size_t)(s - start);
     if (max_len > 0 && len > max_len)
@@ -224,11 +231,14 @@ String parse_quoted_string(char *from, size_t max_len, const char **cursor) {
 String parse_symbol(const char **cursor) {
     const int max_sane_symbol = 128;
     const char *sym_start = *cursor;
-    for (++s; isalpha(*s); ++s) { }
-    size_t sym_len = s - bool_start;
+    const char *s = *cursor;
+    while (isalpha(*s))
+        s++;
+    *cursor = s;
+    size_t sym_len = s - sym_start;
     if (sym_len == 0 || sym_len > max_sane_symbol)
         return NULL;
-    
+    return class_call(String, from_bytes, sym_start, sym_len);
 }
 
 enum JsonParse {
@@ -244,7 +254,17 @@ typedef struct _JsonMode {
     String key;
     List assoc_list;
     Base object;
+    Class cl;
 } JsMode;
+
+void modes_push(JsMode **m) {
+    (*m)++;
+    memset(*m, 0, sizeof(JsMode));
+}
+
+void modes_pop(JsMode **m) {
+    (*m)--;
+}
 
 Base Base_from_json(Class c, String value) {
     const int max_key_len = 1024;
@@ -253,12 +273,16 @@ Base Base_from_json(Class c, String value) {
     JsMode *modes_origin = modes;
 
     parse_ws(&s);
+    Base obj = autorelease(new_obj((class_Base)c, 0));
+    memset(modes, 0, sizeof(JsMode));
+    modes->cl = c;
     modes->mode = MODE_OBJECT;
     modes->parse = PARSE_KEY;
-    modes->object = autorelease(new_obj((class_Base)c, 0));
+    modes->object = obj;
     switch (*s) {
         case '{': {
             bool br = false;
+            s++;
             while (!br) {
                 parse_ws(&s);
                 switch (*s) {
@@ -278,23 +302,24 @@ Base Base_from_json(Class c, String value) {
                         s++;
                         break;
                     case ']':
-                        if (modes->mode != MODE_ARRAY || modes->parse != PARSE_VALUE)
+                        if (modes->mode != MODE_ARRAY || (modes->parse != PARSE_COMMA && modes->parse != PARSE_VALUE))
                             return NULL;
-                        --modes;
+                        modes_pop(&modes);
                         s++;
                         break;
                     case '}':
                         if (modes->mode != MODE_OBJECT)
                             return NULL;
                         s++;
-                        if (--modes == modes_origin) {
+                        if (modes == modes_origin) {
                             br = true;
                             break;
                         }
+                        modes_pop(&modes);
                         break;
                     default: {
                         if (modes->mode == MODE_OBJECT && modes->parse == PARSE_KEY) {
-                            modes->key = parse_quoted_string(s, max_key_len, &s);
+                            modes->key = parse_quoted_string(&s, max_key_len);
                             if (!modes->key)
                                 return NULL;
                             modes->parse = PARSE_COLON;
@@ -302,65 +327,87 @@ Base Base_from_json(Class c, String value) {
                         }
                         if (modes->parse != PARSE_VALUE)
                             return NULL;
-                        // must be an object {, array [, string ", numeric, or true/false boolean
                         parse_ws(&s);
                         switch (*s) {
                             case '{': {
-                                // if in object mode (key must be set); create object based on class of prop
+                                Class cl = modes->cl;
+                                Base obj = modes->object;
+                                List assoc_list = modes->assoc_list;
+                                String key = modes->key;
                                 modes->parse = PARSE_COMMA;
-                                ++modes;
+                                modes_push(&modes);
                                 modes->mode = MODE_OBJECT;
                                 modes->parse = PARSE_KEY;
-                                // todo: store object, setting previous prop or adding to array
+                                if (assoc_list) {
+                                    class_Base item_class = (class_Base)assoc_list->item_class;
+                                    modes->object = autorelease(new_obj(item_class, 0));
+                                    list_push(assoc_list, modes->object);
+                                } else {
+                                    Prop prop = class_call(Base, find_prop, cl,
+                                        (const char *)key->buffer);
+                                    if (!prop || !prop->class_type)
+                                        return NULL;
+                                    modes->object = autorelease(new_obj((class_Base)prop->class_type, 0));
+                                    prop->setter(obj, modes->object);
+                                }
+                                s++;
                                 break;
                             }
-                            case '[':
-                                // set array mode at this stack depth; in this mode values are 
+                            case '[': {
+                                Base obj = modes->object;
+                                String key = modes->key;
                                 modes->parse = PARSE_COMMA;
-                                ++modes;
+                                modes_push(&modes);
                                 modes->mode = MODE_ARRAY;
                                 modes->parse = PARSE_VALUE;
-                                modes->object = NULL; // todo, set from object_new class of prop on object
+                                modes->assoc_list = get_prop(obj, key->buffer, List);
+                                modes->object = NULL;
+                                s++;
                                 break;
-                            default:
-                                if (*s == '-' || isdigit(*s)) {
-                                    String numeric = parse_numeric(&s);
-                                    if (!numeric)
-                                        return NULL;
-                                    // add to list, or set prop
-                                } else if (*s == '"') {
-                                    String value = parse_quoted_string(s, 0, &s);
+                            }
+                            default: {
+                                bool is_numeric = (*s == '-' || isdigit(*s));
+                                bool is_str = *s == '"';
+                                if (is_numeric || is_str) {
+                                    String value = is_numeric ? parse_numeric(&s) : parse_quoted_string(&s, 0);
                                     if (!value)
                                         return NULL;
-                                    // add to list, or set prop
+                                    if (modes->assoc_list) {
+                                        class_Base item_class = (class_Base)modes->assoc_list->item_class;
+                                        Base item = item_class->from_string(value);
+                                        list_push(modes->assoc_list, item);
+                                    } else
+                                        call(modes->object, set_property, modes->key->buffer, base(value));
                                 } else {
                                     String symbol = parse_symbol(&s);
                                     if (!symbol)
                                         return NULL;
-                                    bool bool_value = false;
-                                    if (call(symbol, cmp, "true") == 0)
-                                        bool_value = true;
-                                    else if (call(symbol, cmp, "false") != 0)
-                                        return NULL;
-                                    // add to list, or set prop
+                                    if (call(symbol, cmp, "null") == 0) {
+                                        call(modes->object, set_property, modes->key->buffer, NULL);
+                                    } else {
+                                        bool bool_value = false;
+                                        if (call(symbol, cmp, "true") == 0)
+                                            bool_value = true;
+                                        else if (call(symbol, cmp, "false") != 0)
+                                            return NULL;
+                                        String bool_str = string(bool_value ? "true" : "false");
+                                        call(modes->object, set_property, modes->key->buffer, base(bool_str));
+                                    }
                                 }
-                                mode->parse = PARSE_COMMA;
+                                modes->parse = PARSE_COMMA;
                                 break;
+                            }
                         }
-                        // could be array, object, string, or integer
                         break;
                     }
-                    default:
-                        return NULL;
                 }
             }
-            // expect no remaining characters other than whitespace
             break;
         }
         default:
             return NULL;
     }
-    return NULL;
+    return obj;
 }
 
 void Base_init(Base self) { }
@@ -393,13 +440,22 @@ void Base_print(Base self, String str) {
     }
 }
 
-void Base_set_property(Base self, const char *name, Base base_value) {
-    Pairs props = pairs_value(self->cl->meta, string("props"), Pairs);
+Prop Base_find_prop(Class cl, const char *name) {
+    Pairs props = pairs_value(cl->meta, string("props"), Pairs);
     if (!props)
-        return;
+        return NULL;
     Prop p = pairs_value(props, string(name), Prop);
+    return p;
+}
+
+void Base_set_property(Base self, const char *name, Base base_value) {
+    Prop p = class_call(Base, find_prop, (Class)self->cl, name);
     if (!p)
         return;
+    if (!base_value) {
+        p->setter(self, (void *)NULL);
+        return;
+    }
     String value = call(base_value, to_string);
     if (!p->enum_type)
         return;
