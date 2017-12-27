@@ -3,10 +3,8 @@
 
 #define GLFW_INCLUDE_ES3
 #include <GLFW/glfw3.h>
+#include <obj-poly2tri/poly2tri.h>
 #include <obj-math/math.h>
-
-#ifndef _GFX_H_
-#define _GFX_H_
 
 #if !defined(_XOPEN_SOURCE) || (_XOPEN_SOURCE < 600)
 #if __STDC_VERSION__ >= 199901L
@@ -22,16 +20,11 @@
 #endif
 #include <time.h>
 #include <stdio.h>
-#include "bool.h"
+#include <stdbool.h>
 #include <stdlib.h>
 #include <memory.h>
 #include "shaders.h"
-#include "vec3.h"
-#include "vec2.h"
-#include "bezier.h"
-#include "mat44.h"
 #include "color.h"
-#include "ll.h"
 #include "drawing.h"
 #include "stroke.h"
 #ifndef EMSCRIPTEN

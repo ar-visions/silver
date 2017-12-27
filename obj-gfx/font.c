@@ -9,13 +9,13 @@ static FT_Library ft_library;
 
 #define GFX_FONT_VERSION 2
 
-void GfxFont_class_init(Class c) {
+void Font_class_init(Class c) {
 #ifndef __EMSCRIPTEN__
 	FT_Init_FreeType(&ft_library);
 #endif
 }
 
-void GfxFont_free(GfxFont self) {
+void Font_free(Font self) {
     release(self->surface);
     release(self->ranges);
 	release(font->char_ranges);
