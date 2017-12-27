@@ -299,7 +299,7 @@ gfx_fill_shape(Gfx gfx, bool debug_interior) {
 void Gfx_render_pass(Gfx gfx, int n_verts, enum ShaderType shader, int vsize, bool blend) {
 	glBindBuffer(GL_ARRAY_BUFFER, gfx->vbo);
 	glBufferData(GL_ARRAY_BUFFER, n_verts * vsize, gfx->vbuffer, GL_STATIC_DRAW);
-	gfx_shaders_use(gfx, shader, NULL, false);
+	call(gfx, shaders_use, shader, NULL, false);
 	GfxClip *clip = ll_last(&gfx->clips);
 	gfx_clip_surface(gfx, shader, clip);
 	if (blend || gfx->state->surface_src)
@@ -318,7 +318,7 @@ void gv_debug_lines(Gfx gfx, int n_verts) {
 	gfx_color(gfx, 0.3, 0.3, 0.3, 1.0);
 	glBindBuffer(GL_ARRAY_BUFFER, gfx->vbo);
 	glBufferData(GL_ARRAY_BUFFER, n_verts * sizeof(VertexNew), gfx->vbuffer, GL_STATIC_DRAW);
-	gfx_shaders_use(gfx, SHADER_NEW, NULL, false);
+	call(gfx, shaders_use, SHADER_NEW, NULL, false);
 	GfxClip *clip = ll_last(&gfx->clips);
 	gfx_clip_surface(gfx, SHADER_NEW, clip);
 	glEnable(GL_BLEND);

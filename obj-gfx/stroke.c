@@ -203,7 +203,7 @@ int Gfx_stroke_shape(Gfx self) {
 	}
 
 	start = &polys[0];
-	float miter_limit_sqr = sqr(self->state->miter_limit + sw / 2);
+	float miter_limit_sqr = sqr(st->miter_limit + sw / 2);
 	int n_verts = 0;
 	for (int i = 0; i < count; i++) {
 		StrokePoly *p = &polys[i];
@@ -214,14 +214,14 @@ int Gfx_stroke_shape(Gfx self) {
 			n = NULL;
 		if (p->moved)
 			start = p;
-		if (start == p && !start->loop && self->state->stroke_cap != STROKE_CAP_NONE) {
+		if (start == p && !start->loop && st->stroke_cap != STROKE_CAP_NONE) {
 			// place end (a) cap
-			if (self->state->stroke_cap == STROKE_CAP_ROUNDED) {
+			if (st->stroke_cap == STROKE_CAP_ROUNDED) {
 				p->start_cap = round(float2_dist(p->left.a, p->right.a) * sx / 3.0);
 				if (p->start_cap == 1)
 					p->start_cap = 0;
 			}
-			n_verts += (self->state->stroke_cap == STROKE_CAP_ROUNDED ? 3 : 9) + p->start_cap * 3;
+			n_verts += (st->stroke_cap == STROKE_CAP_ROUNDED ? 3 : 9) + p->start_cap * 3;
 		}
 		if (n) {
 			float angle = angle_diff(p->rads, n->rads);
@@ -235,9 +235,9 @@ int Gfx_stroke_shape(Gfx self) {
 					p->right.b = i_right;
 					n->right.a = i_right;
 					float miter = float2_dist_sqr(i_left, i_right);
-					if (self->state->stroke_join != STROKE_JOIN_MITER || miter > miter_limit_sqr) {
-						p->wedge = self->state->stroke_join != STROKE_JOIN_ROUNDED ? 1 : max(1, round(float2_dist(n->left.a, p->left.b) * sx / 3.0));
-					} else if (self->state->stroke_join == STROKE_JOIN_MITER) {
+					if (st->stroke_join != STROKE_JOIN_MITER || miter > miter_limit_sqr) {
+						p->wedge = st->stroke_join != STROKE_JOIN_ROUNDED ? 1 : max(1, round(float2_dist(n->left.a, p->left.b) * sx / 3.0));
+					} else if (st->stroke_join == STROKE_JOIN_MITER) {
 						p->left.b = i_left;
 						n->left.a = i_left;
 						p->wedge = 0;
@@ -248,9 +248,9 @@ int Gfx_stroke_shape(Gfx self) {
 					p->left.b = i_left;
 					n->left.a = i_left;
 					float miter = float2_dist_sqr(i_left, i_right);
-					if (self->state->stroke_join != STROKE_JOIN_MITER || miter > miter_limit_sqr)
-						p->wedge = self->state->stroke_join != STROKE_JOIN_ROUNDED ? -1 : -max(1, round(float2_dist(n->right.a, p->right.b) * sx / 3.0));
-					else if (self->state->stroke_join == STROKE_JOIN_MITER) {
+					if (st->stroke_join != STROKE_JOIN_MITER || miter > miter_limit_sqr)
+						p->wedge = st->stroke_join != STROKE_JOIN_ROUNDED ? -1 : -max(1, round(float2_dist(n->right.a, p->right.b) * sx / 3.0));
+					else if (st->stroke_join == STROKE_JOIN_MITER) {
 						p->right.b = i_right;
 						n->right.a = i_right;
 						p->wedge = 0;
@@ -259,14 +259,14 @@ int Gfx_stroke_shape(Gfx self) {
 			} else {
 				p->wedge = 0;
 			}
-		} else if (!p->close && self->state->stroke_cap != STROKE_CAP_NONE) {
+		} else if (!p->close && st->stroke_cap != STROKE_CAP_NONE) {
 			// place end (b) cap
-			if (self->state->stroke_cap == STROKE_CAP_ROUNDED) {
+			if (st->stroke_cap == STROKE_CAP_ROUNDED) {
 				p->end_cap = round(float2_dist(p->left.b, p->right.b) * sx / 3.0);
 				if (p->end_cap == 1)
 					p->end_cap = 0;
 			}
-			n_verts += (self->state->stroke_cap == STROKE_CAP_ROUNDED ? 3 : 9) + p->end_cap * 3;
+			n_verts += (st->stroke_cap == STROKE_CAP_ROUNDED ? 3 : 9) + p->end_cap * 3;
 		}
 		n_verts += 6 + abs(p->wedge) * 3;
 	}
@@ -287,7 +287,7 @@ int Gfx_stroke_shape(Gfx self) {
 		if (p->moved)
 			start = p;
 		if (start == p && !start->loop) {
-			if (self->state->stroke_cap != STROKE_CAP_NONE) {
+			if (st->stroke_cap != STROKE_CAP_NONE) {
 				v += push_stroke_cap(self, v, p, p->start_cap, true, &left_seg, &right_seg);
 				segs = true;
 			} else {
@@ -308,7 +308,7 @@ int Gfx_stroke_shape(Gfx self) {
 		
 		for (int i = 0; i < 6; i++) {
 			VertexNew *sv = &start_v[i];
-			if (self->state->stroke_cap == STROKE_CAP_NONE) {
+			if (st->stroke_cap == STROKE_CAP_NONE) {
 				if (!start->loop && start == p)
 					push_edge(sv, (LineSegment) { p->left.a, p->right.a });
 				else if (!n && !p->close)

@@ -29,9 +29,9 @@ typedef struct _Segment {
 	float rads_from;
 	float rads;
 	float radius;
-	BOOL moved;
-	BOOL close;
-	BOOL no_feather;
+	bool moved;
+	bool close;
+	bool no_feather;
 } Segment;
 
 #endif

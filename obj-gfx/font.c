@@ -25,10 +25,10 @@ void Font_free(Font self) {
 	free(font->pixels);
 }
 
-BOOL Gfx_save_fonts(Gfx self, char *index_file) {
+bool Gfx_save_fonts(Gfx self, char *index_file) {
 	if (list_count(self->fonts) == 0)
 		return false;
-    GfxFont font;
+    Font font;
 	each(self->fonts, font) {
 		if (!font->pixels)
 			return false;
@@ -65,7 +65,7 @@ BOOL Gfx_save_fonts(Gfx self, char *index_file) {
 	return TRUE;
 }
 
-BOOL gfx_font_load_database(Gfx *gfx, char *index_file) {
+bool Font_load_database(Gfx gfx, char *index_file) {
 	FILE *f = fopen(index_file, "r");
 	if (!f)
 		return FALSE;
@@ -77,16 +77,14 @@ BOOL gfx_font_load_database(Gfx *gfx, char *index_file) {
 	u_char count = 0;
 	if (fread(&count, sizeof(u_char), 1, f) != 1)
 		return FALSE;
-	BOOL err = FALSE;
+	bool err = FALSE;
 	for (int i = 0; i < count; i++) {
 		u_char face_len = 0;
 		if (fread(&face_len, sizeof(u_char), 1, f) != 1) {
 			err = TRUE;
 			break;
 		}
-		GfxFont *font = (GfxFont *)malloc(sizeof(GfxFont));
-		memset(font, 0, sizeof(GfxFont));
-		font->n_users = 1;
+		Font font = auto(Font);
 		font->family_name = (char *)malloc(face_len + 1);
 		if (fread(font->family_name, face_len, 1, f) != 1) { err = TRUE; break; }
 		font->family_name[face_len] = 0;
@@ -119,7 +117,7 @@ BOOL gfx_font_load_database(Gfx *gfx, char *index_file) {
 	}
 	fclose(f);
 	if (err) {
-		ll_each(&gfx->fonts, GfxFont, font) {
+		ll_each(&gfx->fonts, Font, font) {
 			if (!font->surface) {
 				font->from_database = FALSE;
 				gfx_font_destroy(gfx, font);
@@ -141,7 +139,7 @@ overlap_amount(int a_0, int a_1, int b_0, int b_1) {
 }
 
 static
-GfxFont *gfx_font_find(Gfx *gfx, char *family_name, u_short point_size, GfxCharRange **ranges, int *range_count, GfxFont **augment) {
+Font gfx_font_find(Gfx *gfx, char *family_name, u_short point_size, GfxCharRange **ranges, int *range_count, Font *augment) {
 	if (!(*ranges)) {
 		*ranges = &ansi_range;
 		if (*range_count >= 128)
@@ -157,7 +155,7 @@ GfxFont *gfx_font_find(Gfx *gfx, char *family_name, u_short point_size, GfxCharR
 	for (int i = 0; i < count; i++) {
 		n_glyphs += (r[i].to - r[i].from) + 1;
 	}
-	ll_each(&gfx->fonts, GfxFont, f) {
+	ll_each(&gfx->fonts, Font, f) {
 		if (strcmp(family_name, f->family_name) == 0 && f->point_size == point_size) {
 			GfxCharRange *r = *ranges;
 			// check if full range is contained in font
@@ -179,17 +177,17 @@ GfxFont *gfx_font_find(Gfx *gfx, char *family_name, u_short point_size, GfxCharR
 	return NULL;
 }
 
-GfxFont *gfx_font_closest(Gfx *gfx, char *family_name, u_short point_size) {
-	BOOL face_found = FALSE;
-	ll_each(&gfx->fonts, GfxFont, f) {
+Font gfx_font_closest(Gfx *gfx, char *family_name, u_short point_size) {
+	bool face_found = FALSE;
+	ll_each(&gfx->fonts, Font, f) {
 		if (strcmp(family_name, f->family_name) == 0) {
 			face_found = TRUE;
 			if (f->point_size == point_size)
 				return f;
 		}
 	}
-	GfxFont *closest = NULL;
-	ll_each(&gfx->fonts, GfxFont, ff) {
+	Font closest = NULL;
+	ll_each(&gfx->fonts, Font, ff) {
 		if (face_found && strcmp(family_name, ff->family_name) != 0)
 			continue;
 		if (!closest || abs(closest->point_size - point_size) > abs(ff->point_size - point_size))
@@ -198,8 +196,8 @@ GfxFont *gfx_font_closest(Gfx *gfx, char *family_name, u_short point_size) {
 	return closest;
 }
 
-GfxFont *gfx_font_open(Gfx *gfx, char *font_face, u_short point_size, GfxCharRange *ranges, int range_count) {
-	GfxFont *augment = NULL;
+Font gfx_font_open(Gfx *gfx, char *font_face, u_short point_size, GfxCharRange *ranges, int range_count) {
+	Font augment = NULL;
 	char *family_name = font_face;
 #ifndef __EMSCRIPTEN__
 	char *file_name = NULL;
@@ -213,7 +211,7 @@ GfxFont *gfx_font_open(Gfx *gfx, char *font_face, u_short point_size, GfxCharRan
 			return NULL;
 	}
 #endif
-	GfxFont *font = gfx_font_find(gfx, family_name, point_size, &ranges, &range_count, &augment);
+	Font font = gfx_font_find(gfx, family_name, point_size, &ranges, &range_count, &augment);
 #ifdef __EMSCRIPTEN__
         if (font)
             ++font->n_users;
@@ -228,8 +226,8 @@ GfxFont *gfx_font_open(Gfx *gfx, char *font_face, u_short point_size, GfxCharRan
 #endif
 #ifndef __EMSCRIPTEN__
 	if (!augment) {
-		font = (GfxFont *)malloc(sizeof(GfxFont));
-		memset(font, 0, sizeof(GfxFont));
+		font = (Font )malloc(sizeof(Font));
+		memset(font, 0, sizeof(Font));
 		font->n_users = 1;
 	} else {
 		font = augment;
@@ -320,7 +318,7 @@ GfxFont *gfx_font_open(Gfx *gfx, char *font_face, u_short point_size, GfxCharRan
 	return font;
 }
 
-void gfx_font_select(Gfx *gfx, GfxFont *font) {
+void gfx_font_select(Gfx *gfx, Font font) {
 	gfx->state.font = font;
 }
 
@@ -329,7 +327,7 @@ void gfx_text_color(Gfx *gfx, float r, float g, float b, float a) {
 }
 
 // todo: implement UTF-8 decoding
-void gfx_text_scan(Gfx *gfx, GfxFont *font, char *text, int len, void *arg, void(*pf_callback)(Gfx *, GfxGlyph *, void *, int)) {
+void gfx_text_scan(Gfx *gfx, Font font, char *text, int len, void *arg, void(*pf_callback)(Gfx *, GfxGlyph *, void *, int)) {
 	if (!text || !font)
 		return;
 	for (int i = 0; i < len; i++) {
@@ -369,7 +367,7 @@ void gfx_text_extents(Gfx *gfx, char *text, int length, GfxTextExtents *ext) {
 	if (!text)
 		return;
 	int len = length == -1 ? strlen(text) : length;
-	GfxFont *font = gfx->state.font;
+	Font font = gfx->state.font;
 	if (!font)
 		return;
 	GfxMeasureTextArgs args = { .x = 0 };
@@ -414,40 +412,40 @@ void gfx_draw_text(Gfx *gfx, char *text, int length, Color *palette, u_char *col
 	if (!text)
 		return;
 	int len = length == -1 ? strlen(text) : length;
-	GfxFont *font = gfx->state.font;
+	Font font = gfx->state.font;
 	if (!font)
 		return;
-	GfxFont *font_prev = font;
+	Font font_prev = font;
 	float sx = 0, sy = 0;
 	float allowance = 0.25;
-	gfx_get_scales(gfx, &sx, &sy);
+	call(gfx, get_scales, &sx, &sy);
 	float s = (sx + sy) / 2.0;
-	BOOL perform_scale = FALSE;
-	BOOL up_scale = fabs(s - 1.0) > allowance;
-	BOOL second_scale = FALSE;
+	bool perform_scale = FALSE;
+	bool up_scale = fabs(s - 1.0) > allowance;
+	bool second_scale = FALSE;
 	if (up_scale || gfx->state.arb_rotation) {
 		if (!up_scale) {
 			s = max(2.0, s);
-			gfx_push(gfx);
-			gfx_scale(gfx, 1.0 / s, 1.0 / s);
+			call(gfx, push);
+			call(gfx, scale, 1.0 / s, 1.0 / s);
 			second_scale = TRUE;
 		}
 		float scaled_size = (float)font->point_size * s;
-		GfxFont *scaled_font = NULL;
+		Font scaled_font = NULL;
 		if (font->scaled && font->scaled->point_size == (u_short)scaled_size)
 			scaled_font = font->scaled;
 		if (!scaled_font) {
 			int range_count = font->n_ranges;
-			GfxFont *augment;
+			Font augment;
 			scaled_font = gfx_font_find(gfx, font->family_name, scaled_size,
 				&font->char_ranges, &range_count, &augment);
 		}
 		if (!scaled_font) {
 			if (font->scaled) {
-				gfx_font_destroy(gfx, font->scaled);
+				release(font->scaled);
 				font->scaled = NULL;
 			}
-			scaled_font = gfx_font_open(gfx,
+			scaled_font = class_call(Font, open, gfx,
 				font->file_name ? font->file_name : font->family_name,
 				scaled_size, font->char_ranges, font->n_ranges);
 		}
@@ -455,7 +453,7 @@ void gfx_draw_text(Gfx *gfx, char *text, int length, Color *palette, u_char *col
 			font->scaled = scaled_font;
 			font = scaled_font;
 			perform_scale = TRUE;
-			gfx_push(gfx);
+			call(gfx, push);
 			gfx_scale(gfx, 1.0 / sx, 1.0 / sy);
 		}
 	}
@@ -471,7 +469,7 @@ void gfx_draw_text(Gfx *gfx, char *text, int length, Color *palette, u_char *col
 	gfx_text_scan(gfx, font, text, len, &args, gfx_draw_glyph);
 	glBindBuffer(GL_ARRAY_BUFFER, gfx->vbo);
 	glBufferData(GL_ARRAY_BUFFER, n_verts * sizeof(VertexText), gfx->vbuffer, GL_STATIC_DRAW);
-	gfx_shaders_use(gfx, SHADER_TEXT, NULL, FALSE);
+	call(gfx, shaders_use, SHADER_TEXT, NULL, FALSE);
 	GfxClip *clip = ll_last(&gfx->clips);
 	gfx_clip_surface(gfx, SHADER_TEXT, clip);
 	glEnable(GL_BLEND);
@@ -481,9 +479,9 @@ void gfx_draw_text(Gfx *gfx, char *text, int length, Color *palette, u_char *col
 	glDrawArrays(GL_TRIANGLES, 0, n_verts);
 	gfx->state.font = font_prev;
 	if (perform_scale)
-		gfx_pop(gfx);
+		call(gfx, pop);
 	if (second_scale)
-		gfx_pop(gfx);
+		call(gfx, pop);
 }
 
 void gfx_text_ellipsis(Gfx *gfx, char *text, int len, char *output, int max_w, GfxTextExtents *pext) {

@@ -10,9 +10,9 @@ typedef struct _StrokePoly {
 	Vec2 left_intersect;
 	Vec2 right_intersect;
 	float rads;
-	BOOL moved;
-	BOOL close;
-	BOOL loop;
+	bool moved;
+	bool close;
+	bool loop;
 	int wedge;
 	int start_cap;
 	int end_cap;
