@@ -58,6 +58,39 @@ int String_str_rindex(String self, const char *str) {
     return p - self->buffer;
 }
 
+String String_from_file(const char *file) {
+    FILE *f = fopen(file, "w");
+    if (!f)
+        return NULL;
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    if (len < 0) {
+        fclose(f);
+        return NULL;
+    }
+    char *bytes = (char *)malloc(len + 1);
+    if (fread(bytes, len, 1, f) != 1) {
+        fclose(f);
+        free(bytes);
+        return NULL;
+    }
+    fclose(f);
+    bytes[len] = 0;
+    String self = class_call(String, from_bytes, bytes, len);
+    free(bytes);
+    return self;
+}
+
+bool String_to_file(String self, const char *file) {
+    FILE *f = fopen(file, "w");
+    bool success = false;
+    if (f) {
+        success = fwrite(self->buffer, self->length, 1, f) == 1;
+        fclose(f);
+    }
+    return success;
+}
+
 String String_copy(String self) {
     String c = (String)super(copy);
     c->buffer = (char *)malloc(self->buffer_size);
