@@ -9,6 +9,8 @@ static FT_Library ft_library;
 
 #define GFX_FONT_VERSION 2
 
+implement(Font)
+
 void Font_class_init(Class c) {
 #ifndef __EMSCRIPTEN__
 	FT_Init_FreeType(&ft_library);
@@ -23,6 +25,18 @@ void Font_free(Font self) {
 	release(font->family_name);
 	release(font->file_name);
 	free(font->pixels);
+}
+
+bool Gfx_save_fonts(Gfx gfx, const char *file) {
+	String json = call(gfx->fonts, to_json);
+	if (!json)
+		return false;
+	return call(json, to_file, file);
+	// fonts needs to be a List class with an item_class set to class_object(Font); i.e. new_list_of(List, Font)
+}
+
+void Gfx_load_fonts(Gfx gfx, const char *file) {
+	List 
 }
 
 bool Gfx_save_fonts(Gfx self, char *index_file) {
@@ -139,7 +153,7 @@ overlap_amount(int a_0, int a_1, int b_0, int b_1) {
 }
 
 static
-Font gfx_font_find(Gfx *gfx, char *family_name, u_short point_size, GfxCharRange **ranges, int *range_count, Font *augment) {
+Font font_find(Gfx gfx, char *family_name, u_short point_size, GfxCharRange **ranges, int *range_count, Font *augment) {
 	if (!(*ranges)) {
 		*ranges = &ansi_range;
 		if (*range_count >= 128)
@@ -310,24 +324,24 @@ Font gfx_font_open(Gfx *gfx, char *font_face, u_short point_size, GfxCharRange *
 			pen_x += bmp->width + pad;
 		}
 	}
-	font->surface = gfx_surface_create_gray(gfx, tex_width, tex_height, pixels, tex_width, TRUE);
-	gfx_surface_clamp(gfx, font->surface, FALSE);
-	ll_push(&gfx->fonts, font);
+	font->surface = class_call(Surface, new_gray, gfx, tex_width, tex_height, pixels, tex_width, TRUE);
+	call(font->surface, texture_clamp, FALSE);
+	list_push(gfx->fonts, font);
 	FT_Done_Face(ft_face);
 #endif
 	return font;
 }
 
-void gfx_font_select(Gfx *gfx, Font font) {
+void Gfx_font_select(Gfx gfx, Font font) {
 	gfx->state.font = font;
 }
 
-void gfx_text_color(Gfx *gfx, float r, float g, float b, float a) {
+void Gfx_text_color(Gfx gfx, float r, float g, float b, float a) {
 	gfx->state.text_color = (Color) { r, g, b, a };
 }
 
 // todo: implement UTF-8 decoding
-void gfx_text_scan(Gfx *gfx, Font font, char *text, int len, void *arg, void(*pf_callback)(Gfx *, GfxGlyph *, void *, int)) {
+void Gfx_text_scan(Gfx gfx, Font font, char *text, int len, void *arg, void(*pf_callback)(Gfx *, GfxGlyph *, void *, int)) {
 	if (!text || !font)
 		return;
 	for (int i = 0; i < len; i++) {
@@ -358,12 +372,12 @@ typedef struct _GfxMeasureTextArgs {
 	float x, y;
 } GfxMeasureTextArgs;
 
-void gfx_measure_glyph(Gfx *gfx, GfxGlyph *g, void *v_args, int str_index) {
+void Gfx_measure_glyph(Gfx gfx, GfxGlyph *g, void *v_args, int str_index) {
 	GfxMeasureTextArgs *args = v_args;
 	args->x += g->advance + gfx->state.letter_spacing;
 }
 
-void gfx_text_extents(Gfx *gfx, char *text, int length, GfxTextExtents *ext) {
+void Gfx_text_extents(Gfx gfx, char *text, int length, GfxTextExtents *ext) {
 	if (!text)
 		return;
 	int len = length == -1 ? strlen(text) : length;
@@ -387,7 +401,7 @@ typedef struct _GfxDrawTextArgs {
 	u_char *colors;
 } GfxDrawTextArgs;
 
-void gfx_draw_glyph(Gfx *gfx, GfxGlyph *g, void *v_args, int str_index) {
+void Gfx_draw_glyph(Gfx gfx, Glyph g, void *v_args, int str_index) {
 	GfxDrawTextArgs *args = v_args;
 	Color c = args->palette ? args->palette[args->colors[str_index]] : gfx->state.text_color;
 	float ox = args->x + g->x_off, oy = args->y - g->y_off;
@@ -514,3 +528,18 @@ void gfx_draw_text_ellipsis(Gfx *gfx, char *text, int len, int max_w) {
     gfx_text_ellipsis(gfx, text, len, buf, max_w, &ext);
     gfx_draw_text(gfx, buf, -1, NULL, NULL);
 }
+
+implement(CharRange)
+
+implement(GlyphRange)
+
+implement(Glyph)
+
+void Glyph_init(Glyph self) {
+	self->uv = new_list_of(List, Vec2);
+}
+
+void Glyph_free(Glyph self) {
+	release(self->uv);
+}
+

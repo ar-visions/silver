@@ -23,10 +23,10 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <memory.h>
-#include "shaders.h"
-#include "color.h"
-#include "drawing.h"
-#include "stroke.h"
+#include <obj-gfx/shaders.h>
+#include <obj-gfx/color.h>
+#include <obj-gfx/drawing.h>
+#include <obj-gfx/stroke.h>
 #ifndef EMSCRIPTEN
 #include <pthread.h>
 #endif
@@ -264,30 +264,6 @@ declare(Gfx, Base)
     var(D,T,C,long,cached_at)
 declare(Surface, Base)
 
-#define _Font(D,T,C) _Base(spr,T,C)                 \
-    override(D,T,C,void,init,(C))                   \
-    override(D,T,C,void,free,(C))                   \
-    override(D,T,C,void,class_init,(Class))         \
-    method(D,T,C,C,closest,(Gfx, char *, ushort))   \
-    method(D,T,C,C,open,(Gfx, char *, ushort, List)) \
-    method(D,T,C,bool,save_db,(Gfx, char *))        \
-    method(D,T,C,bool,load_db,(Gfx, char *))        \
-    var(D,T,C,String,family_name)                   \
-    var(D,T,C,String,file_name)                     \
-    var(D,T,C,ushort,point_size)                    \
-    var(D,T,C,Surface,surface)                      \
-    var(D,T,C,List,ranges)                          \
-    var(D,T,C,GfxGlyphRange,ascii)                  \
-    var(D,T,C,List,char_ranges)                     \
-    var(D,T,C,int,n_glyphs)                         \
-    var(D,T,C,int,ascent)                           \
-    var(D,T,C,int,descent)                          \
-    var(D,T,C,int,height)                           \
-    var(D,T,C,bool,from_database)                   \
-    var(D,T,C,uchar *,pixels)                       \
-    var(D,T,C,struct _object_Font *,scaled)
-declare(Font, Base)
-
 #define _Clip(D,T,C) _Base(spr,T,C)                 \
 	private_var(D,T,C,Surface,surface)              \
 	private_var(D,T,C,Surface,last_surface)         \
@@ -297,22 +273,6 @@ declare(Font, Base)
 	private_var(D,T,C,float,u[4])
 declare(Clip,Base)
 
-#define _CharRange(D,T,C) _Base(spr,T,C)            \
-	private_var(D,T,C,int,from)                     \
-	private_var(D,T,C,int,to)
-declare(CharRange,Base)
-
-#define _Glyph(D,T,C) _Base(spr,T,C)                \
-	private_var(D,T,C,float,uv[2 * 3 * 2])          \
-	private_var(D,T,C,float,advance)                \
-    private_var(D,T,C,float2,offset)                \
-    private_var(D,T,C,float2,size)
-declare(Glyph,Base)
-
-#define _GlyphRange(D,T,C) _Base(spr,T,C)           \
-	private_var(D,T,C,int,from)                     \
-	private_var(D,T,C,int,to)                       \
-    private_var(D,T,C,List,glyphs)
-declare(GlyphRange,Base)
+#include <obj-gfx/font.h>
 
 #endif

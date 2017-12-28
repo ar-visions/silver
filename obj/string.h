@@ -19,6 +19,8 @@
     method(D,T,C,void,concat_object,(C, Base))       \
     method(D,T,C,C,from_bytes,(const char *, size_t)) \
     method(D,T,C,C,format,(const char *,...))        \
+    method(D,T,C,bool,to_file,(C, const char *))     \
+    method(D,T,C,C,from_file,(const char *))         \
     override(D,T,C,C,from_cstring,(const char *))    \
     override(D,T,C,C,to_string,(C))                  \
     override(D,T,C,C,from_string,(C))                \
