@@ -33,6 +33,8 @@
 #endif
 #endif
 
+#define OBJ_VERSION "1.0.0"
+
 #ifdef __cplusplus
     #define global_construct(f) \
         static void f(void); \
