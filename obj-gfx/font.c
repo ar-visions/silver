@@ -9,6 +9,28 @@ static FT_Library ft_library;
 
 #define GFX_FONT_VERSION 2
 
+implement(Fonts)
+
+void Fonts_init(Fonts self) {
+	self->fonts = new_list_of(List, Font);
+}
+
+void Fonts_free(Fonts self) {
+	release(self->fonts);
+}
+
+bool Fonts_save(Fonts self, const char *file) {
+	String json = call(self, to_json);
+	if (!json)
+		return false;
+	return call(json, to_file, file);
+}
+
+Fonts Fonts_load(const char *file) {
+	String json = class_call(String, from_file, file);
+	return from_json(Fonts, json);
+}
+
 implement(Font)
 
 void Font_class_init(Class c) {
@@ -28,15 +50,13 @@ void Font_free(Font self) {
 }
 
 bool Gfx_save_fonts(Gfx gfx, const char *file) {
-	String json = call(gfx->fonts, to_json);
-	if (!json)
-		return false;
-	return call(json, to_file, file);
+	return call(gfx->fonts, save, file);
 	// fonts needs to be a List class with an item_class set to class_object(Font); i.e. new_list_of(List, Font)
 }
 
 void Gfx_load_fonts(Gfx gfx, const char *file) {
-	List 
+	release(gfx->fonts);
+	gfx->fonts = retain(class_call(Fonts, load, file));
 }
 
 bool Gfx_save_fonts(Gfx self, char *index_file) {
