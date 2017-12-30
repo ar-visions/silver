@@ -12,6 +12,9 @@ int main() {
     List test_list = new(List);
     Boolean meta = prop_meta(test_list, "min_block_size", "test", Boolean);
     print(test_list, "list meta = %p", meta);
+
+    List containing_meta = props_with_meta("test", List);
+
     list_push(v2->list, t);
 
     String json = call(v2, to_json);

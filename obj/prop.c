@@ -32,6 +32,22 @@ const char *var_to_obj_type(char *vtype) {
     return NULL;
 }
 
+List Prop_props_with_meta(Class cl_filter, const char *meta) {
+    if (!prop_meta)
+        return NULL;
+    String smeta = string(meta);
+    List list = pairs_value(prop_meta, smeta, List);
+    if (!list || !cl_filter || cl_filter == class_object(Base))
+        return list;
+    List filtered = auto(List);
+    Prop p;
+    each(list, p) {
+        if (class_inherits(p->prop_of, cl_filter))
+            list_push(filtered, p);
+    }
+    return filtered;
+}
+
 Prop Prop_new_with(Class cl, char *type, char *name, Getter getter, Setter setter, char *meta) {
     const char *type_ = var_to_obj_type(type);
     if (!type_)
@@ -53,13 +69,15 @@ Prop Prop_new_with(Class cl, char *type, char *name, Getter getter, Setter sette
         if (self->meta) {
             if (!prop_meta)
                 prop_meta = new(Pairs);
-            String smeta = string(meta);
-            List list = pairs_value(prop_meta, smeta, List);
-            if (!list) {
-                list = auto(List);
-                pairs_add(prop_meta, smeta, list);
+            KeyValue kv;
+            each_pair(self->meta, kv) {
+                List list = pairs_value(prop_meta, kv->key, List);
+                if (!list) {
+                    list = auto(List);
+                    pairs_add(prop_meta, kv->key, list);
+                }
+                list_push(list, self);
             }
-            list_push(list, self);
             // if meta is specified, add this property to a class-based Pairs with same key
         }
     }
