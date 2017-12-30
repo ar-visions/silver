@@ -52,7 +52,6 @@ void Base_class_init(Class c) {
         if (strchr(start, '*'))
             continue;
         char *mname = strchr(start, ' ');
-        printf("start = %s\n", start);
         if (mname && strncmp(mname, " get_", 5) == 0) {
             mname++;
             char *args = strchr(mname, ' ');
@@ -74,7 +73,7 @@ void Base_class_init(Class c) {
             type[type_len] = 0;
             memcpy(name, &mname[4], name_len);
             name[name_len] = 0;
-            Prop p = class_call(Prop, new_with, type, name, (Getter)cbase->m[i], (Setter)cbase->m[i - 1], *hash ? hash : NULL);
+            Prop p = class_call(Prop, new_with, (Class)cbase, type, name, (Getter)cbase->m[i], (Setter)cbase->m[i - 1], *hash ? hash : NULL);
             if (p)
                 pairs_add(props, string(name), p);
             free(type);
@@ -594,6 +593,14 @@ Base Base_get_property(Base self, const char *name) {
         return NULL;
     Prop p = pairs_value(props, string(name), Prop);
     return call(self, prop_value, p);
+}
+
+Base Base_property_meta(Base self, const char *name, const char *meta) {
+    Pairs props = pairs_value(self->cl->meta, string("props"), Pairs);
+    if (!props)
+        return NULL;
+    Prop p = pairs_value(props, string(name), Prop);
+    return p ? pairs_value(p->meta, string(meta), Base) : NULL;
 }
 
 Base Base_copy(Base self) {

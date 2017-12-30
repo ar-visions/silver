@@ -7,6 +7,8 @@ typedef struct _TypeAssoc {
     const char *primitive;
 } TypeAssoc;
 
+static Pairs prop_meta = NULL;
+
 static TypeAssoc assoc[] = {
     { "Boolean",    "bool" },
     { "Int8",       "char" },
@@ -30,7 +32,7 @@ const char *var_to_obj_type(char *vtype) {
     return NULL;
 }
 
-Prop Prop_new_with(char *type, char *name, Getter getter, Setter setter, char *meta) {
+Prop Prop_new_with(Class cl, char *type, char *name, Getter getter, Setter setter, char *meta) {
     const char *type_ = var_to_obj_type(type);
     if (!type_)
         type_ = type;
@@ -40,11 +42,26 @@ Prop Prop_new_with(char *type, char *name, Getter getter, Setter setter, char *m
     if (!c && !t)
         return NULL;
     Prop self = new(Prop);
+    self->prop_of = cl;
     self->name = new_string(name);
     self->enum_type = t ? (Enum)t : (c ? (Enum)t_object : NULL);
     self->class_type = c;
     self->getter = getter;
     self->setter = setter;
-    self->meta = meta ? class_call(Pairs, from_cstring, meta) : NULL;
+    if (meta) {
+        self->meta = class_call(Pairs, from_cstring, meta);
+        if (self->meta) {
+            if (!prop_meta)
+                prop_meta = new(Pairs);
+            String smeta = string(meta);
+            List list = pairs_value(prop_meta, smeta, List);
+            if (!list) {
+                list = auto(List);
+                pairs_add(prop_meta, smeta, list);
+            }
+            list_push(list, self);
+            // if meta is specified, add this property to a class-based Pairs with same key
+        }
+    }
     return self;
 }

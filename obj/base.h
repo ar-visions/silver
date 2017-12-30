@@ -24,6 +24,7 @@ struct _object_Pairs;
     method(D,T,C,C,from_string,(struct _object_String *))       \
     method(D,T,C,void,set_property,(C,const char *,Base))       \
     method(D,T,C,Base,get_property,(C,const char *))            \
+    method(D,T,C,Base,property_meta,(C,const char *,const char *)) \
     method(D,T,C,Base,prop_value,(C, struct _object_Prop *))    \
     method(D,T,C,struct _object_Prop *,find_prop,(Class, const char *)) \
     method(D,T,C,int,compare,(C,C))                             \
@@ -35,6 +36,7 @@ declare(Base, Base)
 
 #define set_prop(O,P,V) (call(O, set_property, P, base(V)))
 #define get_prop(O,P,C) (inherits(call(O, get_property, P), C))
+#define prop_meta(O,P,M,C) (inherits(call(O, property_meta, P, M), C))
 
 #define print(C,...)                                          \
     if (C && call(C, is_logging))                             \
