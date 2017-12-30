@@ -190,6 +190,22 @@ char *file_def(char *file) {
     return f;
 }
 
+char *delimit_quotes(char *in) {
+    int len = strlen(in);
+    char *out = (char *)malloc(len * 2 + 1);
+    int cursor = 0;
+    for (int i = 0; i < len; i++) {
+        if (in[i] == '"') {
+            out[cursor++] = '\\';
+            out[cursor++] = '"';
+        } else {
+            out[cursor++] = in[i];
+        }
+    }
+    out[cursor++] = 0;
+    return out;
+}
+
 void main(int argc, char *argv[]) {
     if (argc != 3) {
         printf("libobj header preprocessor -- version %s\n", HEADER_VERSION);
@@ -285,6 +301,22 @@ void main(int argc, char *argv[]) {
             for (int e = 0; e < expr_count; e++) {
                 cur = expr[e];
                 for (cur; isspace(*cur); ++cur) { }
+                char *meta = NULL;
+                if (*cur == '[') {
+                    bool bracket = false;
+                    char *hash = copy_to(&cur[1], "]", &bracket, NULL);
+                    if (!bracket) {
+                        fprintf(stderr, "expected end bracket start\n");
+                        exit_code(1);
+                    }
+                    char *hash_delimit = delimit_quotes(hash);
+                    cur += strlen(hash) + 2;
+                    for (cur; isspace(*cur); ++cur) { }
+                    meta = (char *)malloc(strlen(hash_delimit) + 32);
+                    sprintf(meta, ",\"%s\"", hash_delimit);
+                    free(hash_delimit);
+                    free(hash);
+                }
                 if (sscanf(cur, "%s%n", token, &index) == 1) {
                     cur = &cur[index];
                     bool override = false;
@@ -341,17 +373,17 @@ void main(int argc, char *argv[]) {
                         fprintf(stderr, "unexpected character '%c'\n", *trailing);
                         exit_code(1);
                     }
-
                     if (args) {
-                        fprintf(fout, "\t%s(D,T,C,%s,%s,%s) %s\n",
-                            (override ? "override" : "method"), type, name, args, e < (expr_count - 1) ? "\\" : "");
+                        fprintf(fout, "\t%s(D,T,C,%s,%s,%s%s) %s\n",
+                            (override ? "override" : "method"), type, name, args, meta ? meta : "", e < (expr_count - 1) ? "\\" : "");
                     } else {
-                        fprintf(fout, "\t%s(D,T,C,%s,%s) %s\n",
-                            (delegate ? "object" : "var"), type, name, e < (expr_count - 1) ? "\\" : "");
+                        fprintf(fout, "\t%s(D,T,C,%s,%s%s) %s\n",
+                            (delegate ? "object" : "var"), type, name, meta ? meta : "", e < (expr_count - 1) ? "\\" : "");
                     }
                     free(type);
                     free(name);
                 }
+                free(meta);
             }
             free(block);
             free(expr);

@@ -101,74 +101,74 @@ struct _Class {
 #endif
 
 // ------------------------ var ---------------------------
-#define var_cls_implement(C, TYPE, NAME)                        \
+#define var_cls_implement(C, TYPE, NAME, ...)                   \
     void C##_set_##NAME(C self, TYPE value) {                   \
         self->NAME = value;                                     \
     }                                                           \
     TYPE C##_get_##NAME(C self) {                               \
         return self->NAME;                                      \
     }
-#define var_cls_class_def(C, TYPE, N)                           \
-    c->set_##N = (typeof(c->set_##N))C##_set_##N;     \
-    c->get_##N = (typeof(c->get_##N))C##_get_##N;
-#define var_cls_class_dec(C, TYPE, NAME)                        \
+#define var_cls_class_def(C, TYPE, NAME, ...)                   \
+    c->set_##NAME = (typeof(c->set_##NAME))C##_set_##NAME;      \
+    c->get_##NAME = (typeof(c->get_##NAME))C##_get_##NAME;
+#define var_cls_class_dec(C, TYPE, NAME, ...)                        \
     void (*set_##NAME)(C, TYPE);                                \
     TYPE (*get_##NAME)(C);
-#define var_cls_enum_def(C, TYPE, NAME)
-#define var_cls_forward_dec(C, TYPE, NAME)
-#define var_cls_mname_dec(C, TYPE, NAME)                        \
+#define var_cls_enum_def(C, TYPE, NAME, ...)
+#define var_cls_forward_dec(C, TYPE, NAME, ...)
+#define var_cls_mname_dec(C, TYPE, NAME, ...)                        \
     const char *set_##NAME;                                     \
     const char *get_##NAME;
-#define var_cls_mname_def(C, TYPE, NAME)                        \
-    c->mnames->set_##NAME = "void set_" #NAME " (" #C "," #TYPE ")"; \
-    c->mnames->get_##NAME = #TYPE " get_" #NAME " (" #C ")";
-#define var_cls_object_dec(C, TYPE, NAME)          TYPE NAME;
-#define var_cls_proto(C, TYPE, NAME)                            \
+#define var_cls_mname_def(C, TYPE, NAME, ...)                        \
+    c->mnames->set_##NAME = "void set_" #NAME " (" #C "," #TYPE ") " __VA_ARGS__; \
+    c->mnames->get_##NAME = #TYPE " get_" #NAME " (" #C ") " __VA_ARGS__;
+#define var_cls_object_dec(C, TYPE, NAME, ...)          TYPE NAME;
+#define var_cls_proto(C, TYPE, NAME, ...)                            \
     void C##_set_##NAME(C self, TYPE value);                    \
     TYPE C##_get_##NAME(C self);
-#define var_cls_override(C, TYPE, NAME)
-#define var_spr_implement(C, TYPE, NAME)
-#define var_spr_class_def(C, TYPE, N)
-#define var_spr_class_dec(C, TYPE, NAME)                        \
+#define var_cls_override(C, TYPE, NAME, ...)
+#define var_spr_implement(C, TYPE, NAME, ...)
+#define var_spr_class_def(C, TYPE, NAME, ...)
+#define var_spr_class_dec(C, TYPE, NAME, ...)                        \
     TYPE (*get_##NAME)(C);                                      \
     void (*set_##NAME)(C, TYPE);
-#define var_spr_forward_dec(C, TYPE, NAME)
-#define var_spr_mname_dec(C, TYPE, NAME)                        \
+#define var_spr_forward_dec(C, TYPE, NAME, ...)
+#define var_spr_mname_dec(C, TYPE, NAME, ...)                        \
     const char *set_##NAME;                                     \
     const char *get_##NAME;
-#define var_spr_mname_def(C, TYPE, NAME)                        \
-    c->mnames->set_##NAME = "void set_" #NAME " (" #C "," #TYPE ")"; \
-    c->mnames->get_##NAME = #TYPE " get_" #NAME " (" #C ")";
-#define var_spr_enum_def(C, TYPE, NAME)
-#define var_spr_object_dec(C, TYPE, NAME)          TYPE NAME;
-#define var_spr_proto(C, TYPE, NAME)
-#define var_spr_override(C, TYPE, NAME)
+#define var_spr_mname_def(C, TYPE, NAME, ...)                   \
+    c->mnames->set_##NAME = "void set_" #NAME " (" #C "," #TYPE ") " __VA_ARGS__; \
+    c->mnames->get_##NAME = #TYPE " get_" #NAME " (" #C ") " __VA_ARGS__;
+#define var_spr_enum_def(C, TYPE, NAME, ...)
+#define var_spr_object_dec(C, TYPE, NAME, ...)          TYPE NAME;
+#define var_spr_proto(C, TYPE, NAME, ...)
+#define var_spr_override(C, TYPE, NAME, ...)
 
-#define private_var_cls_implement(C, TYPE, NAME)
-#define private_var_cls_class_def(C, TYPE, N)
-#define private_var_cls_class_dec(C, TYPE, NAME)
-#define private_var_cls_enum_def(C, TYPE, NAME)
-#define private_var_cls_forward_dec(C, TYPE, NAME)
-#define private_var_cls_mname_dec(C, TYPE, NAME)
-#define private_var_cls_mname_def(C, TYPE, NAME)
-#define private_var_cls_object_dec(C, TYPE, NAME)         TYPE NAME;
-#define private_var_cls_proto(C, TYPE, NAME)
-#define private_var_cls_override(C, TYPE, NAME)
-#define private_var_spr_implement(C, TYPE, NAME)
-#define private_var_spr_class_def(C, TYPE, N)
-#define private_var_spr_class_dec(C, TYPE, NAME)
-#define private_var_spr_forward_dec(C, TYPE, NAME)
-#define private_var_spr_mname_dec(C, TYPE, NAME)
-#define private_var_spr_mname_def(C, TYPE, NAME)
-#define private_var_spr_object_dec(C, TYPE, NAME)         TYPE NAME;
-#define private_var_spr_proto(C, TYPE, NAME)
-#define private_var_spr_override(C, TYPE, NAME)
+#define private_var_cls_implement(C, TYPE, NAME, ...)
+#define private_var_cls_class_def(C, TYPE, NAME, ...)
+#define private_var_cls_class_dec(C, TYPE, NAME, ...)
+#define private_var_cls_enum_def(C, TYPE, NAME, ...)
+#define private_var_cls_forward_dec(C, TYPE, NAME, ...)
+#define private_var_cls_mname_dec(C, TYPE, NAME, ...)
+#define private_var_cls_mname_def(C, TYPE, NAME, ...)
+#define private_var_cls_object_dec(C, TYPE, NAME, ...)         TYPE NAME;
+#define private_var_cls_proto(C, TYPE, NAME, ...)
+#define private_var_cls_override(C, TYPE, NAME, ...)
+#define private_var_spr_implement(C, TYPE, NAME, ...)
+#define private_var_spr_class_def(C, TYPE, NAME, ...)
+#define private_var_spr_class_dec(C, TYPE, NAME, ...)
+#define private_var_spr_forward_dec(C, TYPE, NAME, ...)
+#define private_var_spr_mname_dec(C, TYPE, NAME, ...)
+#define private_var_spr_mname_def(C, TYPE, NAME, ...)
+#define private_var_spr_object_dec(C, TYPE, NAME, ...)         TYPE NAME;
+#define private_var_spr_proto(C, TYPE, NAME, ...)
+#define private_var_spr_override(C, TYPE, NAME, ...)
 
-#define var(D, T, C, TYPE, NAME)                        var_##D##_##T(C, TYPE, NAME)
-#define private_var(D, T, C, TYPE, NAME)                private_var_##D##_##T(C, TYPE, NAME)
+#define var(D, T, C, TYPE, NAME, ...)                        var_##D##_##T(C, TYPE, NAME, __VA_ARGS__)
+#define private_var(D, T, C, TYPE, NAME, ...)                private_var_##D##_##T(C, TYPE, NAME, __VA_ARGS__)
 
 // ------------------------- obj --------------------------
-#define object_cls_implement(C, TYPE, NAME)                     \
+#define object_cls_implement(C, TYPE, NAME, ...)                     \
     void C##_set_##NAME(C self, TYPE value) {                   \
         if (self->NAME != value) {                              \
             release(self->NAME);                                \
@@ -178,119 +178,119 @@ struct _Class {
     TYPE C##_get_##NAME(C self) {                               \
         return self->NAME;                                      \
     }
-#define object_cls_class_def(C, TYPE, N)                        \
-    c->set_##N = (typeof(c->set_##N))C##_set_##N;               \
-    c->get_##N = (typeof(c->get_##N))C##_get_##N;
-#define object_cls_class_dec(C, TYPE, NAME)                     \
+#define object_cls_class_def(C, TYPE, NAME, ...)                        \
+    c->set_##NAME = (typeof(c->set_##NAME))C##_set_##NAME;               \
+    c->get_##NAME = (typeof(c->get_##NAME))C##_get_##NAME;
+#define object_cls_class_dec(C, TYPE, NAME, ...)                     \
     void (*set_##NAME)(C, TYPE);                                \
     TYPE (*get_##NAME)(C);
-#define object_cls_enum_def(C, TYPE, NAME)
-#define object_cls_forward_dec(C, TYPE, NAME)
-#define object_cls_mname_dec(C, TYPE, NAME)                     \
+#define object_cls_enum_def(C, TYPE, NAME, ...)
+#define object_cls_forward_dec(C, TYPE, NAME, ...)
+#define object_cls_mname_dec(C, TYPE, NAME, ...)                     \
     const char *set_##NAME;                                     \
     const char *get_##NAME;
-#define object_cls_mname_def(C, TYPE, NAME)                     \
-    c->mnames->set_##NAME = "void set_" #NAME " (" #C "," #TYPE ")"; \
-    c->mnames->get_##NAME = #TYPE " get_" #NAME " (" #C ")";
-#define object_cls_object_dec(C, TYPE, NAME)          TYPE NAME;
-#define object_cls_proto(C, TYPE, NAME)                         \
+#define object_cls_mname_def(C, TYPE, NAME, ...)                     \
+    c->mnames->set_##NAME = "void set_" #NAME " (" #C "," #TYPE ") " __VA_ARGS__; \
+    c->mnames->get_##NAME = #TYPE " get_" #NAME " (" #C ") " __VA_ARGS__;
+#define object_cls_object_dec(C, TYPE, NAME, ...)          TYPE NAME;
+#define object_cls_proto(C, TYPE, NAME, ...)                         \
     void C##_set_##NAME(C self, TYPE value);                    \
     TYPE C##_get_##NAME(C self);
-#define object_cls_override(C, TYPE, NAME)
-#define object_spr_implement(C, TYPE, NAME)
-#define object_spr_class_def(C, TYPE, N)
-#define object_spr_class_dec(C, TYPE, NAME)                     \
+#define object_cls_override(C, TYPE, NAME, ...)
+#define object_spr_implement(C, TYPE, NAME, ...)
+#define object_spr_class_def(C, TYPE, NAME, ...)
+#define object_spr_class_dec(C, TYPE, NAME, ...)                     \
     TYPE (*set_##NAME)(C);                                      \
     void (*get_##NAME)(C, TYPE);
-#define object_spr_enum_def(C, TYPE, NAME)
-#define object_spr_forward_dec(C, TYPE, NAME)
-#define object_spr_mname_dec(C, TYPE, NAME)
-#define object_spr_mname_def(C, TYPE, NAME)
-#define object_spr_object_dec(C, TYPE, NAME)          TYPE NAME;
-#define object_spr_proto(C, TYPE, NAME)
-#define object_spr_override(C, TYPE, NAME)
+#define object_spr_enum_def(C, TYPE, NAME, ...)
+#define object_spr_forward_dec(C, TYPE, NAME, ...)
+#define object_spr_mname_dec(C, TYPE, NAME, ...)
+#define object_spr_mname_def(C, TYPE, NAME, ...)
+#define object_spr_object_dec(C, TYPE, NAME, ...)          TYPE NAME;
+#define object_spr_proto(C, TYPE, NAME, ...)
+#define object_spr_override(C, TYPE, NAME, ...)
 
-#define private_object_cls_implement(C, TYPE, NAME)
-#define private_object_cls_class_def(C, TYPE, N)
-#define private_object_cls_class_dec(C, TYPE, NAME)
-#define private_object_cls_enum_def(C, TYPE, NAME)
-#define private_object_cls_forward_dec(C, TYPE, NAME)
-#define private_object_cls_mname_dec(C, TYPE, NAME)
-#define private_object_cls_mname_def(C, TYPE, NAME)
-#define private_object_cls_object_dec(C, TYPE, NAME)         TYPE NAME;
-#define private_object_cls_proto(C, TYPE, NAME)
-#define private_object_cls_override(C, TYPE, NAME)
-#define private_object_spr_implement(C, TYPE, NAME)
-#define private_object_spr_class_def(C, TYPE, N)
-#define private_object_spr_class_dec(C, TYPE, NAME)
-#define private_object_spr_forward_dec(C, TYPE, NAME)
-#define private_object_spr_mname_dec(C, TYPE, NAME)
-#define private_object_spr_mname_def(C, TYPE, NAME)
-#define private_object_spr_object_dec(C, TYPE, NAME)         TYPE ___##NAME;
-#define private_object_spr_proto(C, TYPE, NAME)
-#define private_object_spr_override(C, TYPE, NAME)
+#define private_object_cls_implement(C, TYPE, NAME, ...)
+#define private_object_cls_class_def(C, TYPE, NAME, ...)
+#define private_object_cls_class_dec(C, TYPE, NAME, ...)
+#define private_object_cls_enum_def(C, TYPE, NAME, ...)
+#define private_object_cls_forward_dec(C, TYPE, NAME, ...)
+#define private_object_cls_mname_dec(C, TYPE, NAME, ...)
+#define private_object_cls_mname_def(C, TYPE, NAME, ...)
+#define private_object_cls_object_dec(C, TYPE, NAME, ...)         TYPE NAME;
+#define private_object_cls_proto(C, TYPE, NAME, ...)
+#define private_object_cls_override(C, TYPE, NAME, ...)
+#define private_object_spr_implement(C, TYPE, NAME, ...)
+#define private_object_spr_class_def(C, TYPE, NAME, ...)
+#define private_object_spr_class_dec(C, TYPE, NAME, ...)
+#define private_object_spr_forward_dec(C, TYPE, NAME, ...)
+#define private_object_spr_mname_dec(C, TYPE, NAME, ...)
+#define private_object_spr_mname_def(C, TYPE, NAME, ...)
+#define private_object_spr_object_dec(C, TYPE, NAME, ...)         TYPE ___##NAME;
+#define private_object_spr_proto(C, TYPE, NAME, ...)
+#define private_object_spr_override(C, TYPE, NAME, ...)
 
-#define object(D, T, C, TYPE, NAME)                        object_##D##_##T(C, TYPE, NAME)
-#define private_object(D, T, C, TYPE, NAME)                private_object_##D##_##T(C, TYPE, NAME)
+#define object(D, T, C, TYPE, NAME, ...)                        object_##D##_##T(C, TYPE, NAME, ## __VA_ARGS__)
+#define private_object(D, T, C, TYPE, NAME, ...)                private_object_##D##_##T(C, TYPE, NAME, ## __VA_ARGS__)
 
 // ------------------------- prop -------------------------------
-#define prop_cls_implement(C, TYPE, NAME)
-#define prop_cls_class_def(C, TYPE, NAME)
-#define prop_cls_class_dec(C, TYPE, NAME)                       \
+#define prop_cls_implement(C, TYPE, NAME, ...)
+#define prop_cls_class_def(C, TYPE, NAME, ...)
+#define prop_cls_class_dec(C, TYPE, NAME, ...)                       \
     TYPE (*set_NAME)(C *);                                      \
     TYPE (*get_NAME)(C *, TYPE);
-#define prop_cls_proto(C, TYPE, NAME)                           \
+#define prop_cls_proto(C, TYPE, NAME, ...)                           \
     void C##_set_##NAME(C *self, TYPE *value)                   \
     TYPE C##_get_##NAME(C *self)
-#define prop_cls_object_dec(C, TYPE, NAME)                TYPE NAME;
+#define prop_cls_object_dec(C, TYPE, NAME, ...)                TYPE NAME;
 
 // ------------------------- method -----------------------------
-#define method_cls_implement(C, R, N, A)
-#define method_cls_class_def(C, R, N, A)           c->N = (typeof(c->N))C##_##N;
-#define method_cls_class_dec(C, R, N, A)           R (*N)A;
-#define method_cls_enum_def(C, R, N, A)
-#define method_cls_forward_dec(C, R, N, A)
-#define method_cls_mname_dec(C, R, N, A)           const char *N;
-#define method_cls_mname_def(C, R, N, A)           c->mnames->N = (const char *)(#R " " #N " " #A);
-#define method_cls_object_dec(C, R, N, A)
-#define method_cls_override(C, R, N, A)
-#define method_cls_proto(C, R, N, A)               EXPORT R C##_##N A;
+#define method_cls_implement(C, R, N, A, ...)
+#define method_cls_class_def(C, R, N, A, ...)           c->N = (typeof(c->N))C##_##N;
+#define method_cls_class_dec(C, R, N, A, ...)           R (*N)A;
+#define method_cls_enum_def(C, R, N, A, ...)
+#define method_cls_forward_dec(C, R, N, A, ...)
+#define method_cls_mname_dec(C, R, N, A, ...)           const char *N;
+#define method_cls_mname_def(C, R, N, A, ...)           c->mnames->N = (const char *)(#R " " #N " " #A " "  __VA_ARGS__);
+#define method_cls_object_dec(C, R, N, A, ...)
+#define method_cls_override(C, R, N, A, ...)
+#define method_cls_proto(C, R, N, A, ...)               EXPORT R C##_##N A;
 
-#define method_spr_implement(C, R, N, A)
-#define method_spr_class_def(C, R, N, A)
-#define method_spr_class_dec(C, R, N, A)           R (*N)A;
-#define method_spr_enum_def(C, R, N, A)
-#define method_spr_forward_dec(C, R, N, A)
-#define method_spr_mname_dec(C, R, N, A)           const char *N;
-#define method_spr_mname_def(C, R, N, A)           c->mnames->N = (const char *)(#R " " #N " " #A);
-#define method_spr_object_dec(C, R, N, A)
-#define method_spr_override(C, R, N, A)
-#define method_spr_proto(C, R, N, A)
+#define method_spr_implement(C, R, N, A, ...)
+#define method_spr_class_def(C, R, N, A, ...)
+#define method_spr_class_dec(C, R, N, A, ...)           R (*N)A;
+#define method_spr_enum_def(C, R, N, A, ...)
+#define method_spr_forward_dec(C, R, N, A, ...)
+#define method_spr_mname_dec(C, R, N, A, ...)           const char *N;
+#define method_spr_mname_def(C, R, N, A, ...)           c->mnames->N = (const char *)(#R " " #N " " #A " "  __VA_ARGS__);
+#define method_spr_object_dec(C, R, N, A, ...)
+#define method_spr_override(C, R, N, A, ...)
+#define method_spr_proto(C, R, N, A, ...)
 
-#define private_method_cls_implement(C, R, N, A)          static R N A;
-#define private_method_cls_class_def(C, R, N, A)
-#define private_method_cls_class_dec(C, R, N, A)
-#define private_method_cls_enum_def(C, R, N, A)
-#define private_method_cls_forward_dec(C, R, N, A)
-#define private_method_cls_mname_dec(C, R, N, A)
-#define private_method_cls_mname_def(C, R, N, A)
-#define private_method_cls_object_dec(C, R, N, A)
-#define private_method_cls_override(C, R, N, A)
-#define private_method_cls_proto(C, R, N, A)
+#define private_method_cls_implement(C, R, N, A, ...)          static R N A;
+#define private_method_cls_class_def(C, R, N, A, ...)
+#define private_method_cls_class_dec(C, R, N, A, ...)
+#define private_method_cls_enum_def(C, R, N, A, ...)
+#define private_method_cls_forward_dec(C, R, N, A, ...)
+#define private_method_cls_mname_dec(C, R, N, A, ...)
+#define private_method_cls_mname_def(C, R, N, A, ...)
+#define private_method_cls_object_dec(C, R, N, A, ...)
+#define private_method_cls_override(C, R, N, A, ...)
+#define private_method_cls_proto(C, R, N, A, ...)
 
-#define private_method_spr_implement(C, R, N, A)
-#define private_method_spr_class_def(C, R, N, A)
-#define private_method_spr_class_dec(C, R, N, A)
-#define private_method_spr_enum_def(C, R, N, A)
-#define private_method_spr_forward_dec(C, R, N, A)
-#define private_method_spr_mname_dec(C, R, N, A)
-#define private_method_spr_mname_def(C, R, N, A)
-#define private_method_spr_object_dec(C, R, N, A)
-#define private_method_spr_override(C, R, N, A)
-#define private_method_spr_proto(C, R, N, A)
+#define private_method_spr_implement(C, R, N, A, ...)
+#define private_method_spr_class_def(C, R, N, A, ...)
+#define private_method_spr_class_dec(C, R, N, A, ...)
+#define private_method_spr_enum_def(C, R, N, A, ...)
+#define private_method_spr_forward_dec(C, R, N, A, ...)
+#define private_method_spr_mname_dec(C, R, N, A, ...)
+#define private_method_spr_mname_def(C, R, N, A, ...)
+#define private_method_spr_object_dec(C, R, N, A, ...)
+#define private_method_spr_override(C, R, N, A, ...)
+#define private_method_spr_proto(C, R, N, A, ...)
 
-#define method(D, T, C, R, N, A)                        method_##D##_##T(C, R, N, A)
-#define private_method(D, T, C, R, N, A)                private_method_##D##_##T(C, R, N, A)
+#define method(D, T, C, R, N, A, ...)                        method_##D##_##T(C, R, N, A, ##  __VA_ARGS__)
+#define private_method(D, T, C, R, N, A, ...)                private_method_##D##_##T(C, R, N, A, ##  __VA_ARGS__)
 
 // ------------------------- override ---------------------------
 #define override_cls_implement(C, R, N, A)

@@ -30,7 +30,7 @@ const char *var_to_obj_type(char *vtype) {
     return NULL;
 }
 
-Prop Prop_new_with(char *type, char *name, Getter getter, Setter setter) {
+Prop Prop_new_with(char *type, char *name, Getter getter, Setter setter, char *meta) {
     const char *type_ = var_to_obj_type(type);
     if (!type_)
         type_ = type;
@@ -45,5 +45,6 @@ Prop Prop_new_with(char *type, char *name, Getter getter, Setter setter) {
     self->class_type = c;
     self->getter = getter;
     self->setter = setter;
+    self->meta = meta ? class_call(Pairs, from_cstring, meta) : NULL;
     return self;
 }

@@ -3,7 +3,7 @@
 
 #define _Test(D,T,C) _SuperTest(spr,T,C) \
 	override(D,T,C,void,init,()) \
-	var(D,T,C,int,var_test) 
+	var(D,T,C,int,var_test,"key:true key_isolate key2:\"string\"") 
 declare(Test,SuperTest)
 
 #define _EnumTest(D,T,C) _Enum(spr,T,C) \

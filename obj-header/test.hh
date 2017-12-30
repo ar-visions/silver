@@ -1,5 +1,7 @@
 class Test : SuperTest {
     override void init();
+
+    [key:true key_isolate key2:"string"]
     int var_test; //...
 }
 

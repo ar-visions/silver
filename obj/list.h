@@ -16,7 +16,7 @@
     method(D,T,C,C,new_list_of,(Class,Class))       \
     private_method(D,T,C,void,update_blocks,(C))    \
     var(D,T,C,Class,item_class)                     \
-    var(D,T,C,int,min_block_size)                   \
+    var(D,T,C,int,min_block_size,"test:true test2:false") \
     var(D,T,C,LList,list)
 declare(List, Base);
 

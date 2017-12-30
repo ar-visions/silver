@@ -21,6 +21,7 @@
     method(D,T,C,C,format,(const char *,...))        \
     method(D,T,C,bool,to_file,(C, const char *))     \
     method(D,T,C,C,from_file,(const char *))         \
+    method(D,T,C,Base,infer_object,(C))              \
     override(D,T,C,C,from_cstring,(const char *))    \
     override(D,T,C,C,to_string,(C))                  \
     override(D,T,C,C,from_string,(C))                \
