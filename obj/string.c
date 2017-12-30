@@ -1,5 +1,6 @@
 #include <obj/obj.h>
 #include <obj/string.h>
+#include <ctype.h>
 
 implement(String);
 
@@ -133,6 +134,37 @@ String String_from_string(String value) {
 
 String String_to_string(String self) {
     return class_call(String, from_cstring, self->buffer);
+}
+
+Base String_infer_object(String self) {
+    if (self->length == 4 && call(self, cmp, "true") == 0)
+        return base(bool_object(true));
+    else if (self->length == 5 && call(self, cmp, "false") == 0)
+        return base(bool_object(true));
+    
+    int pnt = 0;
+    bool numeric = self->length > 0;
+    for (int i = 0; i < self->length; i++) {
+        char c = self->buffer[i];
+        if (c == '.' && i > 0 && i < (self->length - 1))
+            pnt++;
+        else if (!((i == 0 && c == '-') || isdigit(c))) {
+            numeric = false;
+            break;
+        }
+    }
+    if (numeric && pnt <= 1) {
+        if (pnt == 0) {
+            int val = 0;
+            sscanf(self->buffer, "%d", &val);
+            return base(int32_object(val));
+        } else {
+            double val = 0;
+            sscanf(self->buffer, "%lf", &val);
+            return base(double_object(val));
+        }
+    }
+    return base(string(self->buffer));
 }
 
 String String_from_bytes(const char *bytes, size_t length) {

@@ -9,6 +9,24 @@ static bool enable_logging = true;
 
 void Base_class_preinit(Class c) { }
 
+bool read_past_args(char *in, int *index) {
+    int len = strlen(in);
+    int depth = 0;
+    for (int i = 0; i < len; i++) {
+        if (in[i] == '(') {
+            depth++;
+        }
+        if (in[i] == ')') {
+            if (--depth == 0) {
+                *index = i + 1;
+                return true;
+            }
+        }
+    }
+    *index = 0;
+    return false;
+}
+
 void Base_class_init(Class c) {
     class_Base cbase = (class_Base)c;
     if (!cbase->meta)
@@ -34,10 +52,19 @@ void Base_class_init(Class c) {
         if (strchr(start, '*'))
             continue;
         char *mname = strchr(start, ' ');
+        printf("start = %s\n", start);
         if (mname && strncmp(mname, " get_", 5) == 0) {
             mname++;
             char *args = strchr(mname, ' ');
             if (!args)
+                continue;
+            int args_end = 0;
+            if (!read_past_args(args, &args_end))
+                continue;
+            char *hash = &args[args_end];
+            if (*hash == ' ')
+                hash++;
+            else
                 continue;
             int type_len = mname - start - 1;
             int name_len = args - mname - 4;
@@ -47,7 +74,7 @@ void Base_class_init(Class c) {
             type[type_len] = 0;
             memcpy(name, &mname[4], name_len);
             name[name_len] = 0;
-            Prop p = class_call(Prop, new_with, type, name, (Getter)cbase->m[i], (Setter)cbase->m[i - 1]);
+            Prop p = class_call(Prop, new_with, type, name, (Getter)cbase->m[i], (Setter)cbase->m[i - 1], *hash ? hash : NULL);
             if (p)
                 pairs_add(props, string(name), p);
             free(type);

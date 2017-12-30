@@ -1,4 +1,5 @@
 #include <obj/obj.h>
+#include <ctype.h>
 
 implement(Pairs)
 
@@ -81,8 +82,68 @@ void Pairs_free(Pairs self) {
     free_ptr(self->lists);
 }
 
-Pairs Pairs_from_string(String value) {
-    return NULL;
+typedef struct _StrRange {
+    int from;
+    int to;
+} StrRange;
+
+Pairs Pairs_from_cstring(const char *value) {
+    if (!value)
+        return NULL;
+    Pairs self = auto(Pairs);
+    StrRange key_range = { -1, -1 };
+    StrRange val_range = { -1, -1 };
+    bool sep = false, quote = false, last = 0;
+    for (const char *c = value; ; c++) {
+        if (key_range.from == -1) {
+            if (isalnum(*c))
+                key_range.from = (int)(size_t)(c - value);
+        } else if (key_range.to == -1) {
+            if (isspace(*c) || *c == ':') {
+                key_range.to = (int)(size_t)(c - value) - 1;
+            }
+        }
+        if (key_range.to >= 0) {
+            if (val_range.from == -1) {
+                if (sep && !isspace(*c)) {
+                    val_range.from = (int)(size_t)(c - value);
+                    if (*c == '"') {
+                        val_range.from++;
+                        quote = true;
+                    }
+                } else if (*c == ':') {
+                    sep = true;
+                }
+            } else if (val_range.to == -1) {
+                if (!quote) {
+                    if (*c == 0 || isspace(*c)) {
+                        val_range.to = (int)(size_t)(c - value) - 1;
+                    }
+                } else {
+                    if (*c == 0 || (*c == '"' && last != '\\')) {
+                        val_range.to = (int)(size_t)(c - value) - 1;
+                    }
+                }
+                if (val_range.to != -1) {
+                    String key = class_call(String, from_bytes, &value[key_range.from], key_range.to - key_range.from + 1);
+                    String val = class_call(String, from_bytes, &value[val_range.from], val_range.to - val_range.from + 1);
+                    Base bval = call(val, infer_object);
+                    call(self, add, base(key), bval);
+
+                    key_range.from = -1;
+                    key_range.to = -1;
+                    val_range.from = -1;
+                    val_range.to = -1;
+                    quote = false;
+                    sep = false;
+                }
+            }
+        }
+        last = *c;
+        if (*c == 0)
+            break;
+    }
+    return self;
 }
 
 String Pairs_to_string(Pairs self) {

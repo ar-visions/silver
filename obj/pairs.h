@@ -18,7 +18,7 @@ declare(KeyValue, Base);
     override(D,T,C,void,free,(C))                    \
     override(D,T,C,C,copy,(C))                       \
     override(D,T,C,String,to_string,(C))             \
-    override(D,T,C,C,from_string,(String))           \
+    override(D,T,C,C,from_cstring,(const char *))    \
     private_var(D,T,C,LList,ordered_list)            \
     private_var(D,T,C,LList *,lists)                 \
     private_var(D,T,C,size_t,list_count)
