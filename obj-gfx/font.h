@@ -1,5 +1,12 @@
 #ifndef _GFX_FONT_
 
+#define _Fonts(D,T,C) _Base(spr,T,C)                \
+    override(D,T,C,void,init,(C))                   \
+    method(D,T,C,bool,save,(C, const char *))       \
+    method(D,T,C,C,load,(const char *))             \
+    var(D,T,C,List,fonts)
+declare(Fonts, Base)
+
 #define _Font(D,T,C) _Base(spr,T,C)                 \
     override(D,T,C,void,init,(C))                   \
     override(D,T,C,void,free,(C))                   \
