@@ -448,6 +448,7 @@ enum ClassFlags {
 
 #include <obj/base.h>
 #include <obj/string.h>
+#include <obj/data.h>
 #include <obj/prop.h>
 #include <obj/auto.h>
 #include <obj/list.h>
