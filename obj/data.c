@@ -20,6 +20,8 @@ String Data_to_string(Data self) {
 	String str = auto(String);
     int clength = 0;
     uint8 *cbytes = stbi_zlib_compress(self->bytes, self->length, &clength, 0);
+    if (!cbytes)
+        return NULL;
     int divis = clength / 3 * 3;
     
     for (int x = 0; x < divis; x += 3) {
