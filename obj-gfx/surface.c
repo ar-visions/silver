@@ -159,7 +159,7 @@ Surface Surface_image(Gfx gfx, char *filename, bool store) {
 
 Surface Surface_image_with_bytes(Gfx gfx, uchar *bytes, int length, bool store) {
 	int w = 0, h = 0, comp = 4;
-	unsigned char *data = stbi_load_from_memory(bytes, length, &w, &h, &comp, 0);
+	uint8 *data = stbi_load_from_memory(bytes, length, &w, &h, &comp, 0);
 	if (!data)
 		return NULL;
 	Surface self = gfx_surface_create_rgba(gfx, w, h, (RGBA *)data, w, store);
