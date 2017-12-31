@@ -2,6 +2,7 @@
 #define _GFX_SURFACE_
 
 #define _Surface(D,T,C) _Base(spr,T,C)  \
+    override(D,T,C,String,to_string,(C)) \
     method(D,T,C,int,divisible,(int n, int d)) \
     method(D,T,C,uint,framebuffer,(C)) \
     method(D,T,C,C,cache_fetch,(Gfx gfx, int w, int h, enum SurfaceType type)) \
@@ -19,9 +20,9 @@
     method(D,T,C,void,yuvp,(Gfx gfx, int w, int h, uchar *y_plane, int y_stride, \
         uchar *u_plane, int u_stride, uchar *v_plane, int v_stride)) \
     method(D,T,C,void,update_yuvp,(C, int w, int h, \
-		uchar *y_plane, int y_stride, uchar *u_plane, int u_stride, uchar *v_plane, int v_stride)) \
+    uchar *y_plane, int y_stride, uchar *u_plane, int u_stride, uchar *v_plane, int v_stride)) \
     method(D,T,C,C,create_yuvp,(Gfx *gfx, int w, int h, \
-		uchar *y_plane, int y_stride, uchar *u_plane, int u_stride, uchar *v_plane, int v_stride)) \
+    uchar *y_plane, int y_stride, uchar *u_plane, int u_stride, uchar *v_plane, int v_stride)) \
     method(D,T,C,GLenum,gl_type,(C)) \
     method(D,T,C,void,readable,(C, bool readable)) \
     method(D,T,C,int,read,(C)) \

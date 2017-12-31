@@ -13,6 +13,10 @@
 
 implement(Surface)
 
+String Surface_to_string(Surface self) {
+	
+}
+
 int Surface_divisible(int n, int d) {
 	if (n % d == 0)
 		return n;
