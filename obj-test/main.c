@@ -35,6 +35,12 @@ int main() {
 
     list_push(v2->list, t);
 
+    List strings_list = list_of(List, Int16, string("65537"), string("32"));
+    Int16 str;
+    each(strings_list, str) {
+        print(str, "str = %p", str);
+    }
+
     String json = call(v2, to_json);
     printf("json = %s\n", json->buffer);
 

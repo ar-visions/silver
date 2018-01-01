@@ -1,12 +1,5 @@
 #ifndef _GFX_FONT_
 
-#define _Fonts(D,T,C) _Base(spr,T,C)                \
-    override(D,T,C,void,init,(C))                   \
-    method(D,T,C,bool,save,(C, const char *))       \
-    method(D,T,C,C,load,(const char *))             \
-    var(D,T,C,List,fonts)
-declare(Fonts, Base)
-
 #define _Font(D,T,C) _Base(spr,T,C)                 \
     override(D,T,C,void,init,(C))                   \
     override(D,T,C,void,free,(C))                   \
@@ -20,16 +13,24 @@ declare(Fonts, Base)
     var(D,T,C,ushort,point_size)                    \
     var(D,T,C,Surface,surface)                      \
     var(D,T,C,List,ranges)                          \
-    var(D,T,C,GfxGlyphRange,ascii)                  \
+    var(D,T,C,struct _object_GlyphRange *,ascii)    \
     var(D,T,C,List,char_ranges)                     \
     var(D,T,C,int,n_glyphs)                         \
     var(D,T,C,int,ascent)                           \
     var(D,T,C,int,descent)                          \
     var(D,T,C,int,height)                           \
     var(D,T,C,bool,from_database)                   \
-    var(D,T,C,uchar *,pixels)                       \
+    var(D,T,C,uint8 *,pixels)                       \
     var(D,T,C,struct _object_Font *,scaled)
 declare(Font, Base)
+
+#define _Fonts(D,T,C) _Base(spr,T,C)                \
+    override(D,T,C,void,init,(C))                   \
+    method(D,T,C,bool,save,(C, const char *))       \
+    method(D,T,C,C,load,(const char *))             \
+    method(D,T,C,Font,find,(C, const char *))       \
+    var(D,T,C,List,fonts)
+declare(Fonts, Base)
 
 #define _Glyph(D,T,C) _Base(spr,T,C)                \
     override(D,T,C,void,init,(C))                   \
@@ -46,6 +47,9 @@ declare(Glyph,Base)
 declare(GlyphRange,Base)
 
 #define _CharRange(D,T,C) _Base(spr,T,C)            \
+    method(D,T,C,C,new_range,(int, int, const char *)) \
+    method(D,T,C,C,with_range,(int, int))           \
+    private_var(D,T,C,String,name)                  \
 	private_var(D,T,C,int,from)                     \
 	private_var(D,T,C,int,to)
 declare(CharRange,Base)

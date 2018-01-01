@@ -13,7 +13,7 @@
     method(D,T,C,int,count,(C))                     \
     method(D,T,C,Base,first,(C))                    \
     method(D,T,C,Base,last,(C))                     \
-    method(D,T,C,C,new_list_of,(Class,Class))       \
+    method(D,T,C,C,new_list_of,(Class,Class,...))   \
     private_method(D,T,C,void,update_blocks,(C))    \
     var(D,T,C,Class,item_class)                     \
     var(D,T,C,int,min_block_size,"test:true test2:false") \
@@ -27,4 +27,6 @@ declare(List, Base);
 #define list_push(L,O)    call((L), push, base(O))
 #define list_remove(L,O)  call((L), remove, base(O))
 #define list_pop(L,C)     inherits(call((L), pop), C)
+#define new_list_of(C,I,...)  (class_call(C, new_list_of, class_object(C), class_object(I), ## __VA_ARGS__, NULL))
+#define list_of(C,I,...)      (autorelease(class_call(C, new_list_of, class_object(C), class_object(I), ## __VA_ARGS__, NULL)))
 #endif

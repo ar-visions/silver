@@ -24,7 +24,7 @@ Surface gaussian_reduce(Gfx gfx, GfxGaussianArgs *g_args, Surface surf, float am
 	while (ss / 2 > r_size) {
 		ss /= 2;
 		Surface prev = reduction;
-		//gfx_surface_clamp(gfx, reduction, TRUE);
+		//gfx_surface_clamp(gfx, reduction, true);
 		reduction = call(reduction, resample, ss * fw, ss * fh, !reduction->image);
 		if (prev != surf)
 			release(gfx, prev);
@@ -33,7 +33,7 @@ Surface gaussian_reduce(Gfx gfx, GfxGaussianArgs *g_args, Surface surf, float am
 	reduction = call(reduction, resample, r_size * fw, r_size * fh, !reduction->image);
 	if (prev != surf)
 		release(prev);
-	call(reduction, texture_clamp, TRUE);
+	call(reduction, texture_clamp, true);
 	return reduction;
 }
 
@@ -99,7 +99,7 @@ compute_gaussian_kernel(double sigma, int kernel_size, double *r) {
 
 		List tap_samples = calc_samples_for_range(samples_per_bin, sigma, left, left + 1);
 		double tap_weight = integrate_simphson(tap_samples);
-		ll_clear(tap_samples, FALSE);
+		ll_clear(tap_samples, false);
 		free(tap_samples);
 		r[i++] = tap_weight;
 		weight_sum += tap_weight;
@@ -156,7 +156,7 @@ void Gfx_gaussian(Gfx gfx, float amount) {
 	glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 	//glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-	call(reduction0, texture_clamp, TRUE);
+	call(reduction0, texture_clamp, true);
 
 	call(gfx, surface_src, reduction0, 0, 0);
 	call(gfx, surface_dst, y_pass);
@@ -189,11 +189,11 @@ void Gfx_gaussian(Gfx gfx, float amount) {
 	g_args.offsets[6] = 7.0;
 	g_args.offsets[7] = 8.0;
 
-	call(gfx, shaders_use, SHADER_GAUSSIAN_Y, &g_args, FALSE);
+	call(gfx, shaders_use, SHADER_GAUSSIAN_Y, &g_args, false);
 	glDrawArrays(GL_TRIANGLES, 0, 6);
 
 	GfxSurface *reduction1 = gaussian_reduce(gfx, &g_args, y_pass, amount, min_scale, base, &size);
-	call(reduction1, texture_clamp, TRUE);
+	call(reduction1, texture_clamp, true);
 
 	call(gfx, surface_dst, dst);
 	call(gfx, surface_src, reduction1, 0, 0);
@@ -202,7 +202,7 @@ void Gfx_gaussian(Gfx gfx, float amount) {
 		gfx_translate(gfx, 0, src->h);
 		gfx_scale(gfx, 1, -1);
 	}*/
-	call(gfx, shaders_use, SHADER_GAUSSIAN_X, &g_args, FALSE);
+	call(gfx, shaders_use, SHADER_GAUSSIAN_X, &g_args, false);
 	glEnable(GL_BLEND);
 	glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 	glDrawArrays(GL_TRIANGLES, 0, 6);
@@ -213,12 +213,12 @@ void Gfx_gaussian(Gfx gfx, float amount) {
 	if (reduction0 != src)
 		release(reduction0);
 	else
-		call(reduction0, texture_clamp, FALSE);
+		call(reduction0, texture_clamp, false);
 	
 	if (reduction1 != y_pass)
 		release(gfx, reduction1);
 	else
-		call(reduction1, texture_clamp, FALSE);
+		call(reduction1, texture_clamp, false);
 	
 	release(gfx, y_pass);
 }

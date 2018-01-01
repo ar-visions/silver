@@ -13,9 +13,29 @@ List List_with_item_size(int item_size) {
     llist(&self->list, item_size, self->min_block_size);
 }
 
-List List_new_list_of(Class list_class, Class item_class) {
+List List_new_list_of(Class list_class, Class item_class, ...) {
     List self = (List)new_obj((class_Base)list_class, 0);
     self->item_class = item_class;
+    va_list args;
+    va_start(args, item_class);
+    for (;;) {
+        Base o = va_arg(args, Base);
+        if (!o)
+            break;
+        if (object_inherits(o, self->item_class))
+            list_push(self, o);
+        else {
+            String str = inherits(o, String);
+            if (!str)
+                str = call(o, to_string);
+            if (str) {
+                Base item = ((class_Base)self->item_class)->from_string(str);
+                if (item)
+                    list_push(self, item);
+            }
+        }
+    }
+    va_end(args);
     return self;
 }
 
