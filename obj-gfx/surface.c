@@ -1,13 +1,4 @@
 #include <obj-gfx/gfx.h>
-#define STB_IMAGE_IMPLEMENTATION
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#define STBI_NO_BMP
-#define STBI_NO_PSD
-#define STBI_NO_TGA
-#define STBI_NO_GIF
-#define STBI_NO_HDR
-#define STBI_NO_PIC
-#define STBI_NO_PNM
 #include <obj-gfx/stb_image.h>
 #include <obj-gfx/stb_image_write.h>
 
@@ -25,15 +16,15 @@ int Surface_divisible(int n, int d) {
 
 uint Surface_framebuffer(Surface self) {
 	if (self) {
-		if (self->framebuffer == 0) {
+		if (self->fb == 0) {
 			GLuint framebuffer;
 			glGetIntegerv(GL_FRAMEBUFFER_BINDING, (GLint *)&framebuffer);
-			glGenFramebuffers(1, &self->framebuffer);
-			glBindFramebuffer(GL_FRAMEBUFFER, self->framebuffer);
+			glGenFramebuffers(1, &self->fb);
+			glBindFramebuffer(GL_FRAMEBUFFER, self->fb);
 			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, self->tx, 0);
 			glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
 		}
-		return self->framebuffer;
+		return self->fb;
 	}
 	return 0;
 }
@@ -43,7 +34,7 @@ Surface Surface_cache_fetch(Gfx gfx, int w, int h, enum SurfaceType type) {
 		GfxSurface *s = gfx->surface_cache[i];
 		if (s && s->w == w && s->h == h && s->type == type) {
 			gfx->surface_cache[i] = NULL;
-			s->image = FALSE;
+			s->image = false;
 			s->refs = 1;
 			return s;
 		}
@@ -71,8 +62,8 @@ void Surface_cache_update(Surface self) {
 		if (surf_free) {
 			if (surf_free->tx)
 				glDeleteTextures(1, &surf_free->tx);
-			if (surf_free->framebuffer)
-				glDeleteFramebuffers(1, &surf_free->framebuffer);
+			if (surf_free->fb)
+				glDeleteFramebuffers(1, &surf_free->fb);
 			free(surf_free);
 		}
 		self->cached_at = gfx_millis();
@@ -137,7 +128,7 @@ Surface Surface_resample(Surface self, int w, int h, bool flip) {
 	gfx->state->surface_src = surf;
 	glBindBuffer(GL_ARRAY_BUFFER, gfx->vbo);
 	glBufferData(GL_ARRAY_BUFFER, 6 * sizeof(VertexTexture), gfx->vbuffer, GL_STATIC_DRAW);
-	call(gfx, shaders_use, SHADER_RESAMPLE, NULL, FALSE);
+	call(gfx, shaders_use, SHADER_RESAMPLE, NULL, false);
 	glDrawArrays(GL_TRIANGLES, 0, 6);
 	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
 	call(gfx, pop);
@@ -151,20 +142,20 @@ Surface Surface_image(Gfx gfx, char *filename, bool store) {
 		return NULL;
 	Surface self = class_call(Surface, new_rgba, gfx, w, h, (RGBA *)data, w * 4, store);
 	if (self)
-		self->image = TRUE;
+		self->image = true;
 	if (!store)
 		free(data);
 	return self;
 }
 
-Surface Surface_image_with_bytes(Gfx gfx, uchar *bytes, int length, bool store) {
+Surface Surface_image_with_bytes(Gfx gfx, uint8 *bytes, int length, bool store) {
 	int w = 0, h = 0, comp = 4;
 	uint8 *data = stbi_load_from_memory(bytes, length, &w, &h, &comp, 0);
 	if (!data)
 		return NULL;
 	Surface self = gfx_surface_create_rgba(gfx, w, h, (RGBA *)data, w, store);
 	if (self)
-		self->image = TRUE;
+		self->image = true;
 	if (!store)
 		free(data);
 	return self;
@@ -172,11 +163,11 @@ Surface Surface_image_with_bytes(Gfx gfx, uchar *bytes, int length, bool store) 
 
 bool Surface_write(Surface self, char *filename) {
 	if (!self)
-		return FALSE;
+		return false;
 	if (!self->bytes) {
 		call(self, read);
 		if (!self->bytes)
-			return FALSE;
+			return false;
 	}
 	return stbi_write_png((char const *)filename, self->w, self->h, 4, self->bytes,
 		call(self, stride)) >= 0;
@@ -184,11 +175,11 @@ bool Surface_write(Surface self, char *filename) {
 
 bool Surface_write_callback(Surface self, void(*callback_func)(void *, void *, int), void *context) {
 	if (!self)
-		return FALSE;
+		return false;
 	if (!self->bytes) {
 		call(self, read);
 		if (!self->bytes)
-			return FALSE;
+			return false;
 	}
 	return stbi_write_png_to_func(callback_func, context, self->w, self->h, 4, self->bytes,
 		call(self, stride)) >= 0;
@@ -225,8 +216,8 @@ void Surface_update_rgba(Surface self, int w, int h, RGBA *rgba, int stride, boo
 	self->stride = stride > 0 ? stride : gfx_surface_stride(gfx, self);
 }
 
-void Surface_yuvp(Gfx gfx, int w, int h, uchar *y_plane, int y_stride,
-        uchar *u_plane, int u_stride, uchar *v_plane, int v_stride) {
+void Surface_yuvp(Gfx gfx, int w, int h, uint8 *y_plane, int y_stride,
+        uint8 *u_plane, int u_stride, uint8 *v_plane, int v_stride) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST); 
@@ -274,14 +265,14 @@ void Surface_yuvp(Gfx gfx, int w, int h, uchar *y_plane, int y_stride,
 	
 	glBindBuffer(GL_ARRAY_BUFFER, gfx->vbo);
 	glBufferData(GL_ARRAY_BUFFER, 6 * sizeof(VertexTexture), gfx->vbuffer, GL_STATIC_DRAW);
-	call(gfx, shaders_use, SHADER_PLANAR, NULL, FALSE);
+	call(gfx, shaders_use, SHADER_PLANAR, NULL, false);
 	glDrawArrays(GL_TRIANGLES, 0, 6);
 	for (int i = 0; i < 3; i++)
 		release(tx[i]);
 }
 
 void Surface_update_yuvp(Surface self, int w, int h,
-		uchar *y_plane, int y_stride, uchar *u_plane, int u_stride, uchar *v_plane, int v_stride) {
+		uint8 *y_plane, int y_stride, uint8 *u_plane, int u_stride, uint8 *v_plane, int v_stride) {
 	uint framebuffer;
 	self->w = w;
 	self->h = h; // resize texture if changed
@@ -298,14 +289,14 @@ void Surface_update_yuvp(Surface self, int w, int h,
 }
 
 Surface Surface_new_yuvp(Gfx gfx, int w, int h,
-		uchar *y_plane, int y_stride, uchar *u_plane, int u_stride, uchar *v_plane, int v_stride) {
+		uint8 *y_plane, int y_stride, uint8 *u_plane, int u_stride, uint8 *v_plane, int v_stride) {
 	uint framebuffer;
 	glGetIntegerv(GL_FRAMEBUFFER_BINDING, (GLint *)&framebuffer);
 	Surface self = class_call(Surface, cache_fetch, gfx, w, h, SURFACE_RGBA);
 	if (!self)
-		self = class_call(Surface, new_rgba, gfx, w, h, NULL, gfx_divisible(w, 16), FALSE);
+		self = class_call(Surface, new_rgba, gfx, w, h, NULL, gfx_divisible(w, 16), false);
 	self->type = SURFACE_YUVP;
-	self->image = TRUE;
+	self->image = true;
 	if (y_plane && u_plane && v_plane)
 		call(self, update_yuvp, w, h, y_plane, y_stride, u_plane, u_stride, v_plane, v_stride);
 	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
@@ -352,7 +343,7 @@ void Surface_free(Surface self) {
 }
 
 int Surface_read(Surface self) {
-	call(self, readable, TRUE);
+	call(self, readable, true);
 	GLenum format = call(self, gl_type);
 	if (surface->ppo_len == 0)
 		return 0;
@@ -383,7 +374,7 @@ int Surface_read(Surface self) {
 
 bool Surface_resize(Surface self, int w, int h) {
 	if (self && self->w == w && self->h == h)
-		return TRUE;
+		return true;
 	self->w = w;
 	self->h = h;
 	GLenum type = call(self, gl_type);
@@ -395,10 +386,10 @@ bool Surface_resize(Surface self, int w, int h) {
 	}
 	surface->stride = w;
 	if (surface->ppo_len) {
-		call(self, readable, FALSE);
-		call(self, readable, TRUE);
+		call(self, readable, false);
+		call(self, readable, true);
 	}
-	return TRUE;
+	return true;
 }
 
 void Surface_linear(Surface self, bool linear) {
@@ -407,9 +398,9 @@ void Surface_linear(Surface self, bool linear) {
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, linear ? GL_LINEAR : GL_NEAREST);
 }
 
-Surface Surface_new_gray(Gfx gfx, int w, int h, uchar *bytes, int stride, bool store) {
+Surface Surface_new_gray(Gfx gfx, int w, int h, uint8 *bytes, int stride, bool store) {
 	Surface self = class_call(Surface, alloc, gfx, w, h, stride, SURFACE_GRAY);
-	call(self, linear, TRUE);
+	call(self, linear, true);
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, stride);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, w, h, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, (u_char *)bytes);
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
@@ -421,7 +412,7 @@ Surface Surface_new_gray(Gfx gfx, int w, int h, uchar *bytes, int stride, bool s
 
 Surface Surface_new_rgba(Gfx gfx, int w, int h, RGBA *bytes, int stride, bool store) {
 	Surface self = class_call(Surface, alloc, gfx, w, h, stride, SURFACE_RGBA);
-	call(self, linear, TRUE);
+	call(self, linear, true);
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, stride / 4);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, (u_char *)bytes);
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
@@ -433,6 +424,6 @@ Surface Surface_new_rgba(Gfx gfx, int w, int h, RGBA *bytes, int stride, bool st
 }
 
 Surface Surface_new_rgba_empty(Gfx gfx, int w, int h) {
-	Surface self = class_call(Surface, new_rgba, gfx, w, h, NULL, call(self, divisible, w * 4, 16), FALSE);
+	Surface self = class_call(Surface, new_rgba, gfx, w, h, NULL, call(self, divisible, w * 4, 16), false);
 	return self;
 }

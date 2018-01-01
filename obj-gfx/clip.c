@@ -32,10 +32,10 @@ void Gfx_clip_perform(Gfx gfx, bool clear, bool stroke) {
 			clip_R = clamp(clip_R, 0, gfx->w);
 		}
 		Surface surface_clip = !is_rect ? class_call(Surface, cache_fetch, gfx, clip_w, clip_h, SURFACE_RGBA) : NULL;
-		bool new = FALSE;
+		bool new = false;
 		if (!is_rect && !surface_clip) {
-			surface_clip = class_call(Surface, new_rgba, gfx, clip_w, clip_h, NULL, 0, FALSE);
-			new = TRUE;
+			surface_clip = class_call(Surface, new_rgba, gfx, clip_w, clip_h, NULL, 0, false);
+			new = true;
 		}
         Clip *clip = list_push(gfx->clips, NULL);
 		clip->scale = scale;
@@ -45,9 +45,9 @@ void Gfx_clip_perform(Gfx gfx, bool clear, bool stroke) {
 		clip->u[1] = 0;
 		clip->u[2] = 1;
 		clip->u[3] = 1;
-		bool copy_coords = FALSE;
+		bool copy_coords = false;
 		if (is_rect) {
-			new = TRUE;
+			new = true;
 			float L = r.x, T = r.y;
 			float R = r.x + r.w, B = r.y + r.h;
 			call(gfx, to_screen, L, T, &clip_L, &clip_T);
@@ -58,7 +58,7 @@ void Gfx_clip_perform(Gfx gfx, bool clear, bool stroke) {
 			clip->u[3] = clip_B / (float)gfx->h;
 		} else if (last_clip) {
 			memcpy(clip->u, last_clip->u, sizeof(clip->u));
-			copy_coords = TRUE;
+			copy_coords = true;
 		}
 		if (last_clip && !copy_coords) {
 			clip->u[0] = max(clip->u[0], last_clip->u[0]);
@@ -78,7 +78,7 @@ void Gfx_clip_perform(Gfx gfx, bool clear, bool stroke) {
 				glClearColor(cc[0], cc[1], cc[2], cc[3]);
 			}
 			enum ShaderType shader = SHADER_NEW;
-			bool blend = FALSE;
+			bool blend = false;
 			int vsize = sizeof(VertexNew), n_verts = stroke ?
                 call(gfx, stroke_shape) : call(gfx, fill_verts, &vsize, &shader, &blend);
 			glBindBuffer(GL_ARRAY_BUFFER, gfx->vbo);
@@ -86,7 +86,7 @@ void Gfx_clip_perform(Gfx gfx, bool clear, bool stroke) {
 			glEnable(GL_BLEND);
 			glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 			//glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-			call(gfx, shaders_use, shader, NULL, TRUE);
+			call(gfx, shaders_use, shader, NULL, true);
 			gfx_clip_surface(gfx, shader, last_clip);
 			glDrawArrays(GL_TRIANGLES, 0, n_verts);
 			glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
@@ -97,11 +97,11 @@ void Gfx_clip_perform(Gfx gfx, bool clear, bool stroke) {
 }
 
 void Gfx_clip_stroke(Gfx gfx, bool clear) {
-	gfx_clip_perform(gfx, clear, TRUE);
+	gfx_clip_perform(gfx, clear, true);
 }
 
 void Gfx_clip(Gfx gfx, bool clear) {
-	gfx_clip_perform(gfx, clear, FALSE);
+	gfx_clip_perform(gfx, clear, false);
 }
 
 bool gfx_unclip(Gfx gfx) {
@@ -112,5 +112,5 @@ bool gfx_unclip(Gfx gfx) {
 	}
 	Clip *last = list_last(gfx->clips);
 	glBindTexture(GL_TEXTURE_2D, (last && last->last_surface) ? last->last_surface->tx : 0);
-	return TRUE;
+	return true;
 }

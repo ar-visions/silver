@@ -72,12 +72,12 @@ typedef struct _GaussianArgs {
 } GaussianArgs;
 
 typedef struct _LinearArgs {
-	Surface *src;
+	struct _object_Surface *src;
 	float src_blend;
-	GfxColor color_from;
-	GfxColor color_to;
-	V2 from;
-	V2 to;
+	struct _object_Color *color_from;
+	struct _object_Color *color_to;
+	float2 from;
+	float2 to;
 } LinearArgs;
 
 typedef struct _TextExtents {
@@ -87,16 +87,18 @@ typedef struct _TextExtents {
 	float descent;
 } TextExtents;
 
+struct _GfxClip;
+
 #define _GfxState(D,T,C) _Base(spr,T,C)             \
-    private_var(D,T,C,int w)                        \
+    private_var(D,T,C,int,w)                        \
     private_var(D,T,C,int,h)                        \
     private_var(D,T,C,float2,cursor)                \
     private_var(D,T,C,bool,moved)                   \
     private_var(D,T,C,bool,new_path)                \
     private_var(D,T,C,Color,color)                  \
     private_var(D,T,C,Color,text_color)             \
-    private_var(D,T,C,Mat44,mat)                    \
-    private_var(D,T,C,Mat44,proj)                   \
+    private_var(D,T,C,struct _object_Mat44 *,mat)   \
+    private_var(D,T,C,struct _object_Mat44 *,proj)  \
     private_var(D,T,C,float2,surface_v00)           \
     private_var(D,T,C,float2,surface_v10)           \
     private_var(D,T,C,float2,surface_v11)           \
@@ -106,11 +108,11 @@ typedef struct _TextExtents {
     private_var(D,T,C,float,stroke_width)           \
     private_var(D,T,C,float,stroke_scale)           \
     private_var(D,T,C,float,miter_limit)            \
-    private_var(D,T,C,Surface,surface_src)       \
-    private_var(D,T,C,Surface,surface_dst)       \
+    private_var(D,T,C,struct _object_Surface *,surface_src)          \
+    private_var(D,T,C,struct _object_Surface *,surface_dst)          \
     private_var(D,T,C,enum StrokeJoin,stroke_join)  \
     private_var(D,T,C,enum StrokeCap,stroke_cap)    \
-    private_var(D,T,C,Font,font)                    \
+    private_var(D,T,C,struct _object_Font *,font)                    \
     private_var(D,T,C,float,letter_spacing)         \
     private_var(D,T,C,float,line_scale)             \
     private_var(D,T,C,Color,linear_color_from)      \
@@ -119,7 +121,7 @@ typedef struct _TextExtents {
     private_var(D,T,C,float2,linear_to)             \
     private_var(D,T,C,float,linear_blend)           \
     private_var(D,T,C,float,linear_multiply)        \
-    private_var(D,T,C,Surface,clip)              \
+    private_var(D,T,C,struct _object_Surface *,clip)              \
     private_var(D,T,C,float,opacity)                \
     private_var(D,T,C,float,prev_opacity)           \
     private_var(D,T,C,bool,arb_rotation)            \
@@ -131,7 +133,6 @@ typedef struct _TextExtents {
     private_var(D,T,C,Pairs,shaders)                \
     private_var(D,T,C,uint,vbo)                     \
     private_var(D,T,C,VertexNew *,vbuffer)          \
-    private_var(D,T,C,List,fonts)                   \
     private_var(D,T,C,List,surface_cache)           \
     private_var(D,T,C,int,surface_cache_size)       \
     private_var(D,T,C,bool,debug)                   \
@@ -165,8 +166,8 @@ declare(GfxState, Base)
     method(D,T,C,void,surface_dest,(C, struct _object_Surface *)) \
     method(D,T,C,int,fill_verts,(C, int *, enum ShaderType *, bool *)) \
     method(D,T,C,void,font_select,(Gfx, char *, u_short)) \
-    method(D,T,C,void,get_matrix,(C, Mat44)) \
-    method(D,T,C,void,set_matrix,(C, Mat44)) \
+    method(D,T,C,void,get_matrix,(C, struct _object_Mat44 *)) \
+    method(D,T,C,void,set_matrix,(C, struct _object_Mat44 *)) \
     method(D,T,C,void,draw_text,(C, char *, int, Color, u_char *)) \
     method(D,T,C,void,text_color,(C, Color)) \
     method(D,T,C,void,text_extents,(C, char *, int, TextExtents *)) \
@@ -212,6 +213,11 @@ declare(GfxState, Base)
     method(D,T,C,List,lines_from_path,(Gfx, List, bool)) \
     method(D,T,C,bool,is_rect_path,(Gfx, List, float *, float *, GfxRect *)) \
     method(D,T,C,void,path_bbox,(Gfx, List, GfxRect *)) \
+    method(D,T,C,int,shaders_init,(C)) \
+    method(D,T,C,void,shaders_use,(C, enum ShaderType type, void *shader_args, bool clipping_op)) \
+    method(D,T,C,void,feather_ab,(C, enum ShaderType type, float a, float b)) \
+    method(D,T,C,void,clip_surface,(C, enum ShaderType type, struct _GfxClip *clip)) \
+    method(D,T,C,Shader *,shaders_lookup,(C, enum ShaderType type)) \
     var(D,T,C,GfxState,state)               \
     var(D,T,C,List,stack)                   \
     var(D,T,C,float2,path)                  \
@@ -220,59 +226,14 @@ declare(GfxState, Base)
     var(D,T,C,Pairs,shaders)                \
     var(D,T,C,uint,vbo)                     \
     var(D,T,C,VertexNew *,vbuffer)          \
-    var(D,T,C,List,fonts)                   \
+    var(D,T,C,struct _object_Fonts *,fonts) \
     var(D,T,C,List,surface_cache)           \
     var(D,T,C,int,surface_cache_size)       \
     var(D,T,C,bool,debug)                   \
     var(D,T,C,GfxSync,sync)
 declare(Gfx, Base)
 
-#define _Surface(D,T,C) _Base(spr,T,C)           \
-    override(D,T,C,void,free,(C))                   \
-    method(D,T,C,C,new_with_size,(Gfx, int, int))   \
-    method(D,T,C,C,new_yuvp,(Gfx, int, int, u_char *, int, u_char *, int, u_char *, int)) \
-    method(D,T,C,C,new_rgba,(Gfx, int, int, RGBA *, int, bool)) \
-    method(D,T,C,C,new_gray,(Gfx,int,int,u_char *, int, bool)) \
-    method(D,T,C,void,update_yuvp,(C, int, int, u_char *, int, u_char *, int, u_char *, int)) \
-    method(D,T,C,void,update_rgba,(C,int,int,RGBA *,int,bool)) \
-    method(D,T,C,C,new_with_image,(Gfx, char *, bool)) \
-    method(D,T,C,C,new_with_image_bytes,(Gfx, u_char *, int, bool)) \
-    method(D,T,C,C,resample,(C, int, int, bool)) \
-    method(D,T,C,C,cache_fetch,(Gfx, int, int, enum SurfaceType)) \
-    method(D,T,C,int,get_channels,(C))              \
-    method(D,T,C,int,get_stride,(C))                \
-    method(D,T,C,bool,resize,(C,int,int))           \
-    method(D,T,C,void,cache_update,(C))             \
-    method(D,T,C,void,texture_clamp,(C, bool))      \
-    method(D,T,C,void,destroy,(C))                  \
-    method(D,T,C,uint,get_framebuffer,(C))          \
-    method(D,T,C,void,readable,(C,bool))            \
-    method(D,T,C,void,linear,(C,bool))              \
-    method(D,T,C,int,read,(C))                      \
-    method(D,T,C,bool,write,(C,char *))             \
-    method(D,T,C,bool,write_callback,(C,void(*)(void *, void *, int), void *)) \
-    var(D,T,C,uint,tx)                              \
-    var(D,T,C,int,w)                                \
-    var(D,T,C,int,h)                                \
-    var(D,T,C,bool,image)                           \
-    var(D,T,C,uint,framebuffer)                     \
-    var(D,T,C,uint,ppo)                             \
-    var(D,T,C,int,ppo_len)                          \
-    var(D,T,C,u_char *,bytes)                       \
-    var(D,T,C,int,stride)                           \
-    var(D,T,C,enum SurfaceType,type)                \
-    var(D,T,C,long,cached_at)
-declare(Surface, Base)
-
-#define _Clip(D,T,C) _Base(spr,T,C)                 \
-	private_var(D,T,C,Surface,surface)              \
-	private_var(D,T,C,Surface,last_surface)         \
-	private_var(D,T,C,GfxRect rect)                 \
-	private_var(D,T,C,float2,scale)                 \
-	private_var(D,T,C,float2,offset)                \
-	private_var(D,T,C,float,u[4])
-declare(Clip,Base)
-
+#include <obj-gfx/surface.h>
 #include <obj-gfx/font.h>
 
 #endif
