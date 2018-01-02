@@ -3,6 +3,25 @@
 
 implement(Data)
 
+Data Data_with_bytes(uint8 *bytes, uint length) {
+    Data self = auto(Data);
+    self->bytes = bytes;
+    self->length = length;
+    return self;
+}
+
+Data Data_with_size(uint length) {
+    Data self = auto(Data);
+    self->bytes = (uint8 *)malloc(length);
+    self->length = length;
+    return self;
+}
+
+String Data_get_vector(Data self, void **buf, size_t type_size, uint *count) {
+    *buf = (void *)self->bytes;
+    *count = self->length / type_size;
+}
+
 String Data_to_string(Data self) {
     const uint8 *b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 	const uint8 pad = '=';

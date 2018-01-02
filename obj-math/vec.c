@@ -51,6 +51,14 @@ int Vec_compare(Vec self, Vec b) {
     return 0;
 }
 
+Data Vec_to_float_data(Vec self) {
+    size_t byte_count = sizeof(float) * self->count;
+    float *floats = (float *)malloc(byte_count);
+    for (int i = 0; i < self->count; i++)
+        floats[i] = (float)self->vec[i];
+    return class_call(Data, with_bytes, (uint8 *)floats, byte_count);
+}
+
 Vec Vec_with_count(int count) {
     Vec self = (Vec)new_obj((class_Base)Vec_cl, sizeof(double) * max(0, count - 2));
     return autorelease(self);
