@@ -12,10 +12,8 @@
     var(D,T,C,String,file_name)                     \
     var(D,T,C,ushort,point_size)                    \
     var(D,T,C,Surface,surface)                      \
-    var(D,T,C,List,ranges)                          \
-    var(D,T,C,struct _object_GlyphRange *,ascii)    \
-    var(D,T,C,List,char_ranges)                     \
-    var(D,T,C,int,n_glyphs)                         \
+    var(D,T,C,List,glyph_sets)                      \
+    var(D,T,C,int,glyph_total)                      \
     var(D,T,C,int,ascent)                           \
     var(D,T,C,int,descent)                          \
     var(D,T,C,int,height)                           \
@@ -40,18 +38,17 @@ declare(Fonts, Base)
     var(D,T,C,Vec2,size)
 declare(Glyph,Base)
 
-#define _GlyphRange(D,T,C) _Base(spr,T,C)           \
-	var(D,T,C,int,from)                             \
-	var(D,T,C,int,to)                               \
-    var(D,T,C,List,glyphs)
-declare(GlyphRange,Base)
-
 #define _CharRange(D,T,C) _Base(spr,T,C)            \
     method(D,T,C,C,new_range,(int, int, const char *)) \
-    method(D,T,C,C,with_range,(int, int))           \
+    method(D,T,C,C,with_string,(String))            \
     private_var(D,T,C,String,name)                  \
 	private_var(D,T,C,int,from)                     \
 	private_var(D,T,C,int,to)
 declare(CharRange,Base)
+
+#define _GlyphSet(D,T,C) _Base(spr,T,C)             \
+	var(D,T,C,CharRange,range)                      \
+    var(D,T,C,List,glyphs)
+declare(GlyphSet,Base)
 
 #endif

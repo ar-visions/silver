@@ -10,11 +10,15 @@
     method(D,T,C,void,sort,(C,bool,SortMethod))     \
     method(D,T,C,bool,remove,(C,Base))              \
     method(D,T,C,int,index_of,(C,Base))             \
+    method(D,T,C,Base,object_at,(C,int))            \
     method(D,T,C,int,count,(C))                     \
     method(D,T,C,Base,first,(C))                    \
     method(D,T,C,Base,last,(C))                     \
     method(D,T,C,C,new_list_of,(Class,Class,...))   \
+    method(D,T,C,void,create_index,(C))             \
     private_method(D,T,C,void,update_blocks,(C))    \
+    private_var(D,T,C,Base *,index)                 \
+    var(D,T,C,bool,indexed)                         \
     var(D,T,C,Class,item_class)                     \
     var(D,T,C,int,min_block_size,"test:true test2:false") \
     var(D,T,C,LList,list)

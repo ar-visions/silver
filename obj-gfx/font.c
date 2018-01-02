@@ -31,10 +31,11 @@ Fonts Fonts_load(const char *file) {
 	return from_json(Fonts, json);
 }
 
-Font Fonts_find(Fonts self, char *family_name) {
+Font Fonts_find(Fonts self, char *family_name, ushort point_size) {
 	Font f;
 	each(self->fonts, f) {
-		if (strcmp(family_name, f->family_name) == 0)
+		if (f->point_size == point_size && 
+				strcmp(family_name, f->family_name) == 0)
 			return f;
 	}
 	return NULL;
@@ -72,7 +73,109 @@ bool Font_load_database(Gfx gfx, char *index_file) {
 	return false;
 }
 
-Font Font_open(Gfx *gfx, char *font_face, u_short point_size) {
+Font Font_open(Gfx gfx, char *font_face, ushort point_size) {
+	char *family_name = font_face;
+	char *file_name = NULL;
+	FT_Face ft_face = NULL;
+	char *file_name = NULL;
+	if (strstr(font_face, ".ttf")) {
+		file_name = font_face;
+		FT_New_Face(ft_library, font_face, 0, &ft_face);
+		file_name = font_face;
+		if (ft_face && ft_face->family_name)
+			family_name = ft_face->family_name;
+		else
+			return NULL;
+	}
+	Font font = call(gfx->fonts, find, family_name, point_size);
+	if (font) {
+		if (ft_face)
+			FT_Done_Face(ft_face);
+		return font;
+	}
+
+	font = auto(Font);
+	font->family_name = new_string(family_name);
+	font->file_name = file ? new_string(file_name) : NULL;
+	if (!ranges)
+		ranges = new_list_of(List, CharRange, string("Basic Latin"));
+	font->glyph_sets = new(List);
+	font->glyph_total = 0;
+	CharRange range;
+	each(ranges, range) {
+		GlyphSet gs = auto(GlyphSet);
+		gs->range = retain(range);
+		gs->list = new_list_of(List, Glyph);
+		set(gs->list, indexed, true);
+		int glyphs = (range->to - range->from) + 1;
+		font->glyph_total += glyphs;
+		list_push(font->glyph_sets, gs);
+	}
+
+	FT_Set_Char_Size(ft_face, 0, point_size << 6, 0, 0);
+	FT_Size_Metrics *size = &ft_face->size->metrics;
+	
+	font->height = size->height >> 6;
+	font->ascent = size->ascender >> 6;
+	font->descent = abs((int)size->descender) >> 6;
+	const int pad = 3;
+	int max_dim = (pad + (ft_face->size->metrics.height >> 6)) * ceilf(sqrtf(font->n_glyphs)) + pad;
+	int tex_width = 1;
+	while(tex_width < max_dim) tex_width <<= 1;
+	int tex_height = tex_width;
+	u_char *pixels = (u_char *)malloc(tex_width * tex_height);
+	int pen_x = pad, pen_y = pad;
+	font->pixels = pixels;
+
+	GlyphSet gs;
+	each(font->glyph_sets, gs) {
+		Glyph g;
+		int char_index = gs->range->from;
+		each(gs->list, g) {
+			FT_Load_Char(ft_face, char_index++, FT_LOAD_RENDER | FT_LOAD_FORCE_AUTOHINT | FT_LOAD_TARGET_LIGHT);
+			FT_Bitmap* bmp = &ft_face->glyph->bitmap;
+			GfxGlyph *g = &glyph_range->glyphs[i];
+
+			if (pen_x + bmp->width >= tex_width) {
+				pen_x = pad;
+				pen_y += ((ft_face->size->metrics.height >> 6) + pad);
+			}
+			for (int row = 0; row < bmp->rows; ++row) {
+				for (int col = 0; col < bmp->width; ++col) {
+					int x = pen_x + col;
+					int y = pen_y + row;
+					pixels[y * tex_width + x] = bmp->buffer[row * bmp->pitch + col];
+				}
+			}
+			float left = (float)pen_x / (float)tex_width;
+			float top = (float)pen_y / (float)tex_height;
+			float right = (float)(pen_x + bmp->width) / (float)tex_width;
+			float bot = (float)(pen_y + bmp->rows) / (float)tex_height;
+			int ii = 0;
+			g->uv = class_call(Vec, with_count, class_object(Float), 24);
+			float *uv = g->uv->fvec;
+			*(uv++) = left;  *(uv++) = top;	// 00
+			*(uv++) = right; *(uv++) = top;	// 10
+			*(uv++) = right; *(uv++) = bot;	// 11
+			*(uv++) = left;  *(uv++) = top;	// 00
+			*(uv++) = right; *(uv++) = bot;	// 11
+			*(uv++) = left;  *(uv++) = bot;	// 01
+			g->w = bmp->width;
+			g->h = bmp->rows;
+			g->x_off = ft_face->glyph->bitmap_left;
+			g->y_off = ft_face->glyph->bitmap_top;
+			g->advance = ft_face->glyph->advance.x >> 6;
+			pen_x += bmp->width + pad;
+		}
+	}
+	font->surface = class_call(Surface, new_gray, gfx, tex_width, tex_height, pixels, tex_width, true);
+	call(font->surface, texture_clamp, false);
+	list_push(gfx->fonts, font);
+	FT_Done_Face(ft_face);
+	return font;
+}
+
+Font Font_open(Gfx *gfx, char *font_face, ushort point_size) {
 	Font augment = NULL;
 	char *family_name = font_face;
 #ifndef __EMSCRIPTEN__
@@ -531,9 +634,8 @@ void CharRange_new_range(int from, int to, const char *name) {
 	return self;
 }
 
-void CharRange_from_name(const char *name) {
-	String str_name = string(name);
-	CharRange self = pairs_value(unicode_ranges, str_name, CharRange);
+CharRange CharRange_with_string(String value) {
+	CharRange self = pairs_value(unicode_ranges, value, CharRange);
 	return self;
 }
 

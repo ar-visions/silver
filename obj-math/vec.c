@@ -1,17 +1,5 @@
 #include <obj-math/math.h>
 
-implement(Test)
-
-Test Test_from_string(String value) {
-    Test self = auto(Test);
-    sscanf(value->buffer, "%d,%d", &self->prop1, &self->prop2);
-    return self;
-}
-
-String Test_to_string(Test self) {
-    return class_call(String, format, "%d,%d", self->prop1, self->prop2);
-}
-
 implement(Vec)
 implement(Vec3)
 implement(Vec4)
@@ -19,7 +7,6 @@ implement(Vec4)
 void Vec_init(Vec self) {
     self->vec = &self->x;
     self->count = 2;
-    self->list = new_list_of(List, Test);
 }
 
 void Vec3_init(Vec3 self) {
