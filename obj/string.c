@@ -39,6 +39,7 @@ static char *struprcase(char *str) {
 
 void String_free(String self) {
     free_ptr(self->buffer);
+    free_ptr(self->utf8_buffer);
 }
 
 int String_char_index(String self, int c) {
@@ -57,6 +58,54 @@ int String_str_rindex(String self, const char *str) {
     char *p = strrstr(self->buffer, str);
     if (!p) return -1;
     return p - self->buffer;
+}
+
+uint *String_decode_utf8(String self, uint *length) {
+    if (self->utf8_buffer) {
+        *length = self->utf8_length;
+        return self->utf8_buffer;
+    }
+    uint char_width;
+	uint char_count = 0;
+    self->utf8_buffer = (uint *)malloc(sizeof(uint) * (self->length + 1));
+    if (self->length > 0)
+        for (uint i = 0;; i += char_width) {
+            char_width = 1;
+            uint8 b0 = self->buffer[i];
+            uint code = 0;
+            if (b0 == 0)
+                break;
+            else if (b0 & 0x80 == 0) {
+                code = (uint)b0;
+            } else if (b0 & 0xE0 == 0xC0) {
+                uint8 b1 = self->buffer[i + 1];
+                if (b1 == 0) break;
+                code = ((uint)(b0 & ~(0xE0)) << 6) | (uint)(b1 & ~(0xC0));
+                char_width = 2;
+            } else if (b0 & 0xF0 == 0xE0) {
+                uint8 b1 = self->buffer[i + 1];
+                if (b1 == 0) break;
+                uint8 b2 = self->buffer[i + 2];
+                if (b2 == 0) break;
+                code = ((uint)(b0 & ~(0xF0)) << 12) | ((uint)(b1 & ~(0xC0)) << 6) | (uint)(b2 & ~(0xC0));
+                char_width = 3;
+            } else if (b0 & 0xF8 == 0xF0) {
+                uint8 b1 = self->buffer[i + 1];
+                if (b1 == 0) break;
+                uint8 b2 = self->buffer[i + 2];
+                if (b2 == 0) break;
+                uint8 b3 = self->buffer[i + 3];
+                if (b3 == 0) break;
+                code = ((uint)(b0 & ~(0xF8)) << 18) | ((uint)(b1 & ~(0xC0)) << 6) | ((uint)(b2 & ~(0xC0)) << 6) | (uint)(b3 & ~(0xC0));
+                char_width = 4;
+            } else
+                break;
+            self->utf8_buffer[char_count++] = code;
+        }
+    self->utf8_buffer[char_count] = 0;
+    self->utf8_length = char_count;
+    *length = self->utf8_length;
+    return self->utf8_buffer;
 }
 
 String String_from_file(const char *file) {
@@ -167,7 +216,7 @@ Base String_infer_object(String self) {
     return base(string(self->buffer));
 }
 
-String String_from_bytes(const char *bytes, size_t length) {
+String String_from_bytes(const uint8 *bytes, size_t length) {
     String self = auto(String);
     self->length = length;
     self->buffer_size = length + 1;
@@ -194,41 +243,56 @@ void String_concat_char(String self, char c) {
     call(self, check_resize, self->length + 1);
     self->buffer[self->length] = c;
     self->buffer[++self->length] = 0;
+    free_ptr(self->utf8_buffer);
+    self->utf8_length = 0;
 }
 
 void String_concat_chars(String self, const char *p, int len) {
     call(self, check_resize, self->length + len);
     memcpy(&self->buffer[self->length], p, len + 1);
     self->length += len;
+    free_ptr(self->utf8_buffer);
+    self->utf8_length = 0;
 }
 
 void String_concat_string(String self, String b) {
-    if (b)
+    if (b) {
         call(self, concat_chars, b->buffer, b->length);
+        free_ptr(self->utf8_buffer);
+        self->utf8_length = 0;
+    }
 }
 
 void String_concat_long(String self, long v, const char *format) {
     char buffer[64];
     sprintf(buffer, format, v);
     call(self, concat_chars, buffer, strlen(buffer));
+    free_ptr(self->utf8_buffer);
+    self->utf8_length = 0;
 }
 
 void String_concat_long_long(String self, uint64 v, const char *format) {
     char buffer[128];
     sprintf(buffer, format, v);
     call(self, concat_chars, buffer, strlen(buffer));
+    free_ptr(self->utf8_buffer);
+    self->utf8_length = 0;
 }
 
 void String_concat_double(String self, double v, const char *format) {
     char buffer[64];
     sprintf(buffer, format, v);
     call(self, concat_chars, buffer, strlen(buffer));
+    free_ptr(self->utf8_buffer);
+    self->utf8_length = 0;
 }
 
 void String_concat_object(String self, Base o) {
     String str = call(o, to_string);
     char *v = str ? str->buffer : (char *)"[null]";
     call(self, concat_chars, v, strlen(v));
+    free_ptr(self->utf8_buffer);
+    self->utf8_length = 0;
 }
 
 String String_format(const char *format, ...) {

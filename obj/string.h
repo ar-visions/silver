@@ -17,9 +17,10 @@
     method(D,T,C,void,concat_long_long,(C, uint64, const char *)) \
     method(D,T,C,void,concat_double,(C, double, const char *)) \
     method(D,T,C,void,concat_object,(C, Base))       \
-    method(D,T,C,C,from_bytes,(const char *, size_t)) \
+    method(D,T,C,C,from_bytes,(const uint8 *, size_t)) \
     method(D,T,C,C,format,(const char *,...))        \
     method(D,T,C,bool,to_file,(C, const char *))     \
+    method(D,T,C,uint *,decode_utf8,(C, uint *))     \
     method(D,T,C,C,from_file,(const char *))         \
     method(D,T,C,Base,infer_object,(C))              \
     override(D,T,C,C,from_cstring,(const char *))    \
@@ -29,6 +30,8 @@
     override(D,T,C,C,copy,(C))                       \
     override(D,T,C,ulong,hash,(C))                   \
     override(D,T,C,int,compare,(C,C))                \
+    private_var(D,T,C,uint,utf8_length)              \
+    private_var(D,T,C,uint *,utf8_buffer)            \
     private_var(D,T,C,char *,buffer)                 \
     private_var(D,T,C,size_t,buffer_size)            \
     private_var(D,T,C,size_t,length)

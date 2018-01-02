@@ -49,6 +49,10 @@ void Font_class_init(Class c) {
 #endif
 }
 
+void Font_init(Font self) {
+	self->max_surfaces = 16;
+}
+
 void Font_free(Font self) {
     release(self->surface);
     release(self->ranges);
@@ -73,34 +77,42 @@ bool Font_load_database(Gfx gfx, char *index_file) {
 	return false;
 }
 
-Font Font_open(Gfx gfx, char *font_face, ushort point_size) {
-	char *family_name = font_face;
-	char *file_name = NULL;
-	FT_Face ft_face = NULL;
-	char *file_name = NULL;
-	if (strstr(font_face, ".ttf")) {
-		file_name = font_face;
-		FT_New_Face(ft_library, font_face, 0, &ft_face);
-		file_name = font_face;
-		if (ft_face && ft_face->family_name)
-			family_name = ft_face->family_name;
-		else
-			return NULL;
-	}
-	Font font = call(gfx->fonts, find, family_name, point_size);
-	if (font) {
-		if (ft_face)
-			FT_Done_Face(ft_face);
-		return font;
-	}
+int sort_glyph_sets(GlyphSet a, GlyphSet b) {
+	return b->range->from - a->range->from;
+}
 
-	font = auto(Font);
-	font->family_name = new_string(family_name);
-	font->file_name = file ? new_string(file_name) : NULL;
+void Font_transfer_surfaces(Font self, Gfx gfx) {
+	if (self->surfaces)
+		return;
+	self->surfaces = new_list_of(List, Surface);
+	Data data;
+	each(self->surface_data, data) {
+		Surface surface = class_call(Surface, new_gray, gfx,
+			data->length, data->length, data->bytes, sqrt(data->length), true);
+		if (!surface)
+			break;
+		call(surface, texture_clamp, false);
+		list_push(self->surfaces, surface);
+	}
+	release(self->surface_data);
+	self->surface_data = NULL;
+}
+
+GlyphSet Font_load_ranges(Font self, List ranges) {
+	FT_Face ft_face = NULL;
+	FT_New_Face(ft_library, self->file_name->buffer, 0, &ft_face);
+
+	if (!ft_face)
+		return NULL;
+
+	release(self->surfaces);
+	release(self->glyph_sets);
+
+	self->surfaces = new(List);
 	if (!ranges)
 		ranges = new_list_of(List, CharRange, string("Basic Latin"));
-	font->glyph_sets = new(List);
-	font->glyph_total = 0;
+	self->glyph_sets = new(List);
+	self->glyph_total = 0;
 	CharRange range;
 	each(ranges, range) {
 		GlyphSet gs = auto(GlyphSet);
@@ -108,234 +120,207 @@ Font Font_open(Gfx gfx, char *font_face, ushort point_size) {
 		gs->list = new_list_of(List, Glyph);
 		set(gs->list, indexed, true);
 		int glyphs = (range->to - range->from) + 1;
-		font->glyph_total += glyphs;
-		list_push(font->glyph_sets, gs);
+		self->glyph_total += glyphs;
+		list_push(self->glyph_sets, gs);
 	}
+	call(self->glyph_sets, sort, true, (SortMethod)sort_glyph_sets);
 
 	FT_Set_Char_Size(ft_face, 0, point_size << 6, 0, 0);
 	FT_Size_Metrics *size = &ft_face->size->metrics;
-	
-	font->height = size->height >> 6;
-	font->ascent = size->ascender >> 6;
-	font->descent = abs((int)size->descender) >> 6;
+
+	self->height = size->height >> 6;
+	self->ascent = size->ascender >> 6;
+	self->descent = abs((int)size->descender) >> 6;
 	const int pad = 3;
-	int max_dim = (pad + (ft_face->size->metrics.height >> 6)) * ceilf(sqrtf(font->n_glyphs)) + pad;
-	int tex_width = 1;
-	while(tex_width < max_dim) tex_width <<= 1;
-	int tex_height = tex_width;
-	u_char *pixels = (u_char *)malloc(tex_width * tex_height);
-	int pen_x = pad, pen_y = pad;
-	font->pixels = pixels;
+	int glyph_height = ft_face->size->metrics.height >> 6;
+	int max_dim = (pad + glyph_height) * ceil(sqrt(self->n_glyphs)) + pad;
+	int total_size = 1;
+	while(total_size < max_dim) total_size <<= 1;
+	int total_area = sqr(total_size);
 
-	GlyphSet gs;
-	each(font->glyph_sets, gs) {
-		Glyph g;
-		int char_index = gs->range->from;
-		each(gs->list, g) {
-			FT_Load_Char(ft_face, char_index++, FT_LOAD_RENDER | FT_LOAD_FORCE_AUTOHINT | FT_LOAD_TARGET_LIGHT);
-			FT_Bitmap* bmp = &ft_face->glyph->bitmap;
-			GfxGlyph *g = &glyph_range->glyphs[i];
+	const int min_surface_size = 256;
+	const int max_surface_size = 2048;
+	int area_remaining = total_area;
+	int char_cursor = -1;
+	int surface_index = 0;
+	bool finished = false;
 
-			if (pen_x + bmp->width >= tex_width) {
-				pen_x = pad;
-				pen_y += ((ft_face->size->metrics.height >> 6) + pad);
-			}
-			for (int row = 0; row < bmp->rows; ++row) {
-				for (int col = 0; col < bmp->width; ++col) {
-					int x = pen_x + col;
-					int y = pen_y + row;
-					pixels[y * tex_width + x] = bmp->buffer[row * bmp->pitch + col];
-				}
-			}
-			float left = (float)pen_x / (float)tex_width;
-			float top = (float)pen_y / (float)tex_height;
-			float right = (float)(pen_x + bmp->width) / (float)tex_width;
-			float bot = (float)(pen_y + bmp->rows) / (float)tex_height;
-			int ii = 0;
-			g->uv = class_call(Vec, with_count, class_object(Float), 24);
-			float *uv = g->uv->fvec;
-			*(uv++) = left;  *(uv++) = top;	// 00
-			*(uv++) = right; *(uv++) = top;	// 10
-			*(uv++) = right; *(uv++) = bot;	// 11
-			*(uv++) = left;  *(uv++) = top;	// 00
-			*(uv++) = right; *(uv++) = bot;	// 11
-			*(uv++) = left;  *(uv++) = bot;	// 01
-			g->w = bmp->width;
-			g->h = bmp->rows;
-			g->x_off = ft_face->glyph->bitmap_left;
-			g->y_off = ft_face->glyph->bitmap_top;
-			g->advance = ft_face->glyph->advance.x >> 6;
-			pen_x += bmp->width + pad;
+	while (!finished && area_remaining > 0) {
+		atlas_size = max_surface_size;
+		for (;;) {
+			int eval = atlas_size >> 1;
+			if (eval == min_surface_size) {
+				atlas_size = eval;
+				break;
+			} else if (eval < area_remaining)
+				break;
+			atlas_size = eval;
 		}
+		area_remaining -= sqr(atlas_size);
+		Data data = class_call(Data, with_size, atlas_size * atlas_size);
+		list_add(self->surface_data, data);
+		char *pixels = data->bytes;
+		int pen_x = pad, pen_y = pad;
+		Glyph gs_last = call(self->glyph_sets, last);
+		each(self->glyph_sets, gs) {
+			if (char_cursor > gs->range_to)
+				continue;
+			int char_index = gs->range_from;
+			bool surface_filled = false;
+			Glyph g;
+			Glyph g_last = call(gs->list, last);
+			bool set_finished = false;
+			each(gs->list, g) {
+				if (char_index < char_cursor) {
+					char_index++;
+					continue;
+				}
+				FT_Load_Char(ft_face, char_index, FT_LOAD_RENDER | FT_LOAD_FORCE_AUTOHINT | FT_LOAD_TARGET_LIGHT);
+				FT_Bitmap* bmp = &ft_face->glyph->bitmap;
+				if ((pen_x + bmp->width) >= atlas_size) {
+					pen_x = pad;
+					pen_y += ((ft_face->size->metrics.height >> 6) + pad);
+					if ((pen_y + glyph_height) >= atlas_size) {
+						next_surface = true;
+						break;
+					}
+				}
+				for (int row = 0; row < bmp->rows; ++row) {
+					for (int col = 0; col < bmp->width; ++col) {
+						int x = pen_x + col;
+						int y = pen_y + row;
+						pixels[y * atlas_size + x] = bmp->buffer[row * bmp->pitch + col];
+					}
+				}
+				double left	 = (double)pen_x / (double)atlas_size;
+				double top   = (double)pen_y / (double)atlas_size;
+				double right = (double)(pen_x + bmp->width) / (double)atlas_size;
+				double bot   = (double)(pen_y + bmp->rows) / (double)atlas_size;
+				int ii = 0;
+				g->uv = retain(class_call(Vec, with_count, 12));
+				double *uv = g->uv->vec;
+				*(uv++) = left;  *(uv++) = top;	// 00
+				*(uv++) = right; *(uv++) = top;	// 10
+				*(uv++) = right; *(uv++) = bot;	// 11
+				*(uv++) = left;  *(uv++) = top;	// 00
+				*(uv++) = right; *(uv++) = bot;	// 11
+				*(uv++) = left;  *(uv++) = bot;	// 01
+				g->w = bmp->width;
+				g->h = bmp->rows;
+				g->x_offset = ft_face->glyph->bitmap_left;
+				g->y_offset = ft_face->glyph->bitmap_top;
+				g->advance = ft_face->glyph->advance.x >> 6;
+				g->surface_index = surface_index;
+				pen_x += bmp->width + pad;
+				char_cursor = ++char_index;
+				if (g_last == g)
+					set_finished = true;
+			}
+			if (surface_filled)
+				break;
+			if (set_finished && gs_last == gs)
+				finished = true;
+		}
+		if (++surface_index >= self->max_surfaces)
+			break;
 	}
-	font->surface = class_call(Surface, new_gray, gfx, tex_width, tex_height, pixels, tex_width, true);
-	call(font->surface, texture_clamp, false);
-	list_push(gfx->fonts, font);
+	set(self->surface_data, indexed, true);
 	FT_Done_Face(ft_face);
-	return font;
 }
 
-Font Font_open(Gfx *gfx, char *font_face, ushort point_size) {
-	Font augment = NULL;
-	char *family_name = font_face;
-#ifndef __EMSCRIPTEN__
-	char *file_name = NULL;
+Font Font_with_ttf(const char *file_name, ushort point_size, List ranges) {
+	char *family_name = NULL;
 	FT_Face ft_face = NULL;
 	if (strstr(font_face, ".ttf")) {
 		FT_New_Face(ft_library, font_face, 0, &ft_face);
-		file_name = font_face;
 		if (ft_face && ft_face->family_name)
 			family_name = ft_face->family_name;
 		else
 			return NULL;
+		FT_Done_Face(ft_face);
 	}
-#endif
-	Font font = call(gfx->fonts, find, family_name);
-#ifdef __EMSCRIPTEN__
-        if (font)
-            ++font->n_users;
-#else
-	if (font) {
-		font->n_users++;
-		if (ft_face)
-			FT_Done_Face(ft_face);
-		return font;
-	} else if (!ft_face)
+	if (!family_name)
 		return NULL;
-#endif
-#ifndef __EMSCRIPTEN__
-	if (!augment) {
-		font = (Font )malloc(sizeof(Font));
-		memset(font, 0, sizeof(Font));
-		font->n_users = 1;
-	} else {
-		font = augment;
-		int n_users = font->n_users;
-		gfx_font_free_contents(gfx, font);
-		font->n_users = 1 + n_users;
-	}
-	font->family_name = copy_string(family_name);
-	font->file_name = copy_string(file_name);
-	font->point_size = point_size;
-	if (ranges) {
-		int size = sizeof(GfxCharRange) * range_count;
-		font->char_ranges = (GfxCharRange *)malloc(size);
-		memcpy(font->char_ranges, ranges, size);
-	}
-	font->n_ranges = range_count;
-	font->ranges = (GfxGlyphRange *)malloc(sizeof(GfxGlyphRange) * range_count);
-	font->ascii = &font->ranges[0];
-	memset(font->ranges, 0, sizeof(GfxGlyphRange) * range_count);
-	font->n_glyphs = 0;
-	for (int r = 0; r < range_count; r++) {
-		GfxGlyphRange *glyph_range = &font->ranges[r];
-		glyph_range->from = min(ranges[r].to, ranges[r].from);
-		glyph_range->to = max(ranges[r].to, ranges[r].from);
-		glyph_range->n_glyphs = (glyph_range->to - glyph_range->from) + 1;
-		glyph_range->glyphs = (GfxGlyph *)malloc(glyph_range->n_glyphs * sizeof(GfxGlyph));
-		memset(glyph_range->glyphs, 0, glyph_range->n_glyphs * sizeof(GfxGlyph));
-		font->n_glyphs += glyph_range->n_glyphs;
-	}
-
-	FT_Set_Char_Size(ft_face, 0, point_size << 6, 0, 0);
-	FT_Size_Metrics *size = &ft_face->size->metrics;
-	
-	font->height = size->height >> 6;
-	font->ascent = size->ascender >> 6;
-	font->descent = abs((int)size->descender) >> 6;
-	const int pad = 3;
-	int max_dim = (pad + (ft_face->size->metrics.height >> 6)) * ceilf(sqrtf(font->n_glyphs)) + pad;
-	int tex_width = 1;
-	while(tex_width < max_dim) tex_width <<= 1;
-	int tex_height = tex_width;
-	u_char *pixels = (u_char *)malloc(tex_width * tex_height);
-	int pen_x = pad, pen_y = pad;
-	font->pixels = pixels;
-	for (int r = 0; r < range_count; r++) {
-		GfxGlyphRange *glyph_range = &font->ranges[r];
-		for(int i = 0; i < glyph_range->n_glyphs; ++i) {
-			int char_index = glyph_range->from + i;
-			FT_Load_Char(ft_face, char_index, FT_LOAD_RENDER | FT_LOAD_FORCE_AUTOHINT | FT_LOAD_TARGET_LIGHT);
-			FT_Bitmap* bmp = &ft_face->glyph->bitmap;
-			GfxGlyph *g = &glyph_range->glyphs[i];
-
-			if (pen_x + bmp->width >= tex_width) {
-				pen_x = pad;
-				pen_y += ((ft_face->size->metrics.height >> 6) + pad);
-			}
-			for (int row = 0; row < bmp->rows; ++row) {
-				for (int col = 0; col < bmp->width; ++col) {
-					int x = pen_x + col;
-					int y = pen_y + row;
-					pixels[y * tex_width + x] = bmp->buffer[row * bmp->pitch + col];
-				}
-			}
-			float left = (float)pen_x / (float)tex_width;
-			float top = (float)pen_y / (float)tex_height;
-			float right = (float)(pen_x + bmp->width) / (float)tex_width;
-			float bot = (float)(pen_y + bmp->rows) / (float)tex_height;
-			int ii = 0;
-			g->uv[ii++] = left;  g->uv[ii++] = top;	// 00
-			g->uv[ii++] = right; g->uv[ii++] = top;	// 10
-			g->uv[ii++] = right; g->uv[ii++] = bot;	// 11
-			g->uv[ii++] = left;  g->uv[ii++] = top;	// 00
-			g->uv[ii++] = right; g->uv[ii++] = bot;	// 11
-			g->uv[ii++] = left;  g->uv[ii++] = bot;	// 01
-			g->w = bmp->width;
-			g->h = bmp->rows;
-			g->x_off = ft_face->glyph->bitmap_left;
-			g->y_off = ft_face->glyph->bitmap_top;
-			g->advance = ft_face->glyph->advance.x >> 6;
-			pen_x += bmp->width + pad;
-		}
-	}
-	font->surface = class_call(Surface, new_gray, gfx, tex_width, tex_height, pixels, tex_width, true);
-	call(font->surface, texture_clamp, false);
-	list_push(gfx->fonts, font);
-	FT_Done_Face(ft_face);
-#endif
-	return font;
+	Font self = auto(Font);
+	self->point_size = point_size;
+	self->family_name = new_string(family_name);
+	self->file_name = new_string(file_name);
+	call(self, reload, ranges);
+	return self;
 }
 
 void Gfx_font_select(Gfx gfx, Font font) {
-	gfx->state.font = font;
+	gfx->state->font = font;
 }
 
 void Gfx_text_color(Gfx gfx, float r, float g, float b, float a) {
-	gfx->state.text_color = (Color) { r, g, b, a };
+	gfx->state->text_color = (Color) { r, g, b, a };
 }
 
-// todo: implement UTF-8 decoding
-void Gfx_text_scan(Gfx gfx, Font font, char *text, int len, void *arg, void(*pf_callback)(Gfx *, GfxGlyph *, void *, int)) {
+void Gfx_text_scan(Gfx gfx, Font font, const uint8 *text, int len, void *arg, void(*pf_callback)(Gfx, Glyph, void *, int)) {
 	if (!text || !font)
 		return;
-	for (int i = 0; i < len; i++) {
-		int ig = text[i];
-		GfxGlyphRange *range = NULL;
-		for (int r = 0; r < font->n_ranges; r++) {
-			GfxGlyphRange *gr = &font->ranges[r];
-			if (ig >= gr->from && ig <= gr->to) {
-				range = gr;
-				break;
+	String str = class_call(String, from_bytes, text, len);
+	uint char_count = 0;
+	uint *unicode = call(str, decode_utf8, &char_count);
+	if (!char_count)
+		return;
+	GlyphSet gs_cache = NULL;
+	GlyphSet *gs_chars = (GlyphSet)malloc(sizeof(GlyphSet) * char_count);
+	bool reload = false;
+
+	for (int attempt = 0; attempt < char_count; attempt++) {
+		reload = false;
+		for (uint i = 0; i < char_count; i++) {
+			uint code = unicode[i];
+			if (gs_cache && code >= gs_cache->range->from && code <= gs_cache->range->to)
+				gs_chars[i] = gs_cache;
+			else {
+				GlyphSet gs = NULL, gs_found = NULL;
+				each(font->glyph_sets, gs) {
+					if (code >= gs->range->from && code <= gs->range->to) {
+						gs_chars[i] = gs;
+						gs_cache = gs;
+						gs_found = gs;
+						break;
+					}
+				}
+				if (!gs_found) {
+					CharRange cr = class_call(CharRange, find, code);
+					if (cr) {
+						List ranges = auto(List);
+						each(font->glyph_sets, gs)
+							list_push(ranges, gs->range);
+						list_push(ranges, cr);
+						call(self, load_ranges, ranges);
+						reload = true;
+						break;
+					}
+				}
 			}
 		}
-		if (!range) {
-			ig = 32;
-			range = font->ascii;
-			if (!range)
-				continue;
-		}
-		int glyph_index = ig - range->from;
-		if (glyph_index < 0 || glyph_index >= range->n_glyphs)
-			continue;
-		GfxGlyph *g = &range->glyphs[glyph_index];
-		pf_callback(gfx, g, arg, i);
+		if (!reload)
+			break;
 	}
+	if (!reload) {
+		call(self, transfer_surfaces);
+		for (uint i = 0; i < char_count; i++) {
+			uint code = unicode[i];
+			GlyphSet gs = gs_chars[i];
+			if (!gs) {
+				code = 32;
+				gs = font->ascii;
+				if (!gs)
+					continue;
+			}
+			int glyph_index = code - gs_found->range->from;
+			Glyph g = call(gs_found, object_at, glyph_index);
+			if (g)
+				pf_callback(gfx, g, arg, i);
+		}
+	}
+	free(gs_chars);
 }
-
-typedef struct _GfxMeasureTextArgs {
-	float x, y;
-} GfxMeasureTextArgs;
 
 void Gfx_measure_glyph(Gfx gfx, GfxGlyph *g, void *v_args, int str_index) {
 	GfxMeasureTextArgs *args = v_args;
@@ -354,7 +339,7 @@ void Gfx_text_extents(Gfx gfx, char *text, int length, GfxTextExtents *ext) {
 	if (args.x > 0.0)
 		args.x -= gfx->state.letter_spacing;
 	ext->w = args.x;
-	ext->h = (float)(font->ascent + font->descent) * gfx->state.line_scale;
+	ext->h = (double)(font->ascent + font->descent) * gfx->state.line_scale;
 	ext->ascent = font->ascent;
 	ext->descent = font->descent;
 }
@@ -387,13 +372,15 @@ void Gfx_draw_glyph(Gfx gfx, Glyph g, void *v_args, int str_index) {
 	}
 	args->x += g->advance + gfx->state.letter_spacing;
 }
-void gfx_draw_text(Gfx *gfx, char *text, int length, Color *palette, u_char *colors) {
+void Gfx_draw_text(Gfx gfx, char *text, int length, Color *palette, u_char *colors) {
 	if (!text)
 		return;
 	int len = length == -1 ? strlen(text) : length;
-	Font font = gfx->state.font;
+	Font font = gfx->state->font;
 	if (!font)
 		return;
+
+	// fix function to perform one render pass per glyph set
 	Font font_prev = font;
 	float sx = 0, sy = 0;
 	float allowance = 0.25;
@@ -402,7 +389,7 @@ void gfx_draw_text(Gfx *gfx, char *text, int length, Color *palette, u_char *col
 	bool perform_scale = false;
 	bool up_scale = fabs(s - 1.0) > allowance;
 	bool second_scale = false;
-	if (up_scale || gfx->state.arb_rotation) {
+	if (up_scale || gfx->state->arb_rotation) {
 		if (!up_scale) {
 			s = max(2.0, s);
 			call(gfx, push);
@@ -413,57 +400,50 @@ void gfx_draw_text(Gfx *gfx, char *text, int length, Color *palette, u_char *col
 		Font scaled_font = NULL;
 		if (font->scaled && font->scaled->point_size == (u_short)scaled_size)
 			scaled_font = font->scaled;
-		if (!scaled_font) {
-			int range_count = font->n_ranges;
-			Font augment;
-			scaled_font = gfx_font_find(gfx, font->family_name, scaled_size,
-				&font->char_ranges, &range_count, &augment);
-		}
-		if (!scaled_font) {
+		if (!scaled_font)
+			scaled_font = call(gfx->fonts, find, font->family_name, scaled_size);
+		if (!scaled_font)
+			scaled_font = class_call(Font, from_ttf, gfx, font->file_name ? font->file_name : font->family_name, scaled_size);
+		if (scaled_font) {
 			if (font->scaled) {
 				release(font->scaled);
 				font->scaled = NULL;
 			}
-			scaled_font = class_call(Font, open, gfx,
-				font->file_name ? font->file_name : font->family_name,
-				scaled_size, font->char_ranges, font->n_ranges);
-		}
-		if (scaled_font) {
-			font->scaled = scaled_font;
+			font->scaled = retain(scaled_font);
 			font = scaled_font;
 			perform_scale = true;
 			call(gfx, push);
-			gfx_scale(gfx, 1.0 / sx, 1.0 / sy);
+			call(gfx, scale, 1.0 / sx, 1.0 / sy);
 		}
 	}
-	gfx->state.font = font;
+	gfx->state->font = font;
 	// find scale in matrix
 	int n_verts = len * 6;
-	gfx_realloc_buffer(gfx, n_verts);
+	call(gfx, realloc_buffer, n_verts);
 	GfxDrawTextArgs args = {
 		.palette = palette, .colors = colors,
 		.x = 0, .y = 0,
 		.v = (VertexText *)gfx->vbuffer
 	};
-	gfx_text_scan(gfx, font, text, len, &args, gfx_draw_glyph);
+	call(gfx, text_scan, font, text, len, &args, gfx_draw_glyph);
 	glBindBuffer(GL_ARRAY_BUFFER, gfx->vbo);
 	glBufferData(GL_ARRAY_BUFFER, n_verts * sizeof(VertexText), gfx->vbuffer, GL_STATIC_DRAW);
 	call(gfx, shaders_use, SHADER_TEXT, NULL, false);
-	GfxClip *clip = ll_last(&gfx->clips);
-	gfx_clip_surface(gfx, SHADER_TEXT, clip);
+	Clip clip = call(gfx->clips, last);
+	call(gfx, clip_surface, SHADER_TEXT, clip);
 	glEnable(GL_BLEND);
 	glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 	//glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	gfx_surface_clamp(gfx, font->surface, true);
+	call(font->surface, texture_clamp, true);
 	glDrawArrays(GL_TRIANGLES, 0, n_verts);
-	gfx->state.font = font_prev;
+	gfx->state->font = font_prev;
 	if (perform_scale)
 		call(gfx, pop);
 	if (second_scale)
 		call(gfx, pop);
 }
 
-void gfx_text_ellipsis(Gfx *gfx, char *text, int len, char *output, int max_w, GfxTextExtents *pext) {
+void Gfx_text_ellipsis(Gfx gfx, char *text, int len, char *output, int max_w, GfxTextExtents *pext) {
     const char *ellipsis = "...";
     if (len == -1)
         len = strlen(text);
@@ -477,7 +457,7 @@ void gfx_text_ellipsis(Gfx *gfx, char *text, int len, char *output, int max_w, G
             slen = i + 3;
             buf[slen] = 0;
         }
-        gfx_text_extents(gfx, buf, slen, pext);
+        call(gfx, text_extents, buf, slen, pext);
         if (pext->w < max_w) {
             memcpy(output, buf, slen);
             output[slen] = 0;
@@ -486,12 +466,12 @@ void gfx_text_ellipsis(Gfx *gfx, char *text, int len, char *output, int max_w, G
     }
 }
 
-void gfx_draw_text_ellipsis(Gfx *gfx, char *text, int len, int max_w) {
+void Gfx_draw_text_ellipsis(Gfx gfx, char *text, int len, int max_w) {
     GfxTextExtents ext;
     char buf[len + 32];
     buf[0] = 0;
-    gfx_text_ellipsis(gfx, text, len, buf, max_w, &ext);
-    gfx_draw_text(gfx, buf, -1, NULL, NULL);
+    call(gfx, text_ellipsis, text, len, buf, max_w, &ext);
+    call(gfx, draw_text, buf, -1, NULL, NULL);
 }
 
 implement(CharRange)
@@ -623,6 +603,16 @@ void CharRange_class_init(Class cself) {
 	class_call(CharRange, new_range, 0xE0000, 0xE007F, "Tags");
 }
 
+void CharRange_find(uint code) {
+	KeyValue kv;
+	each_pair(unicode_ranges, kv) {
+		CharRange range = (CharRange)kv.value;
+		if (code >= range->from && code <= range->to)
+			return range;
+	}
+	return NULL;
+}
+
 void CharRange_new_range(int from, int to, const char *name) {
 	CharRange self = new(CharRange);
 	self->from = from;
@@ -637,6 +627,10 @@ void CharRange_new_range(int from, int to, const char *name) {
 CharRange CharRange_with_string(String value) {
 	CharRange self = pairs_value(unicode_ranges, value, CharRange);
 	return self;
+}
+
+uint CharRange_hash(CharRange self) {
+	return (self->from + self->to) / 2;
 }
 
 implement(GlyphRange)
