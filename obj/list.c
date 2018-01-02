@@ -46,6 +46,7 @@ static void update_blocks(List self) {
 
 void List_free(List self) {
     llist_clear(&self->list, false);
+    free_ptr(self->index);
 }
 
 int List_count(List self) {
@@ -59,12 +60,14 @@ void *List_push(List self, Base obj) {
         retain(obj);
         priv_call(update_blocks);
     }
+    free_ptr(self->index);
     return self->list.item_size > 0 ? bytes : NULL;
 }
 
 Base List_pop(List self) {
     LItem *item = self->list.last;
     if (item) {
+        free_ptr(self->index);
         Base obj = (Base)item->data;
         llist_remove(&self->list, item);
         if (self->list.item_size == 0)
@@ -77,6 +80,7 @@ Base List_pop(List self) {
 
 bool List_remove(List self, Base obj) {
     if (obj && llist_remove_data(&self->list, obj)) {
+        free_ptr(self->index);
         if (self->list.item_size == 0)
             release(obj);
         priv_call(update_blocks);
@@ -107,6 +111,36 @@ void List_clear(List self) {
     }
     self->list.block_size = self->min_block_size;
     llist_clear(&self->list, false);
+    free_ptr(self->index);
+}
+
+void List_create_index(List self) {
+    self->indexed = true;
+    if (self->list.count == 0)
+        return;
+    free_ptr(self->index);
+    self->index = (Base *)malloc(self->list.count * sizeof(Base));
+    int i = 0;
+    Base b;
+    each(self, b)
+        self->index[i++] = b;
+}
+
+Base List_object_at(List self, int index) {
+    if (index < 0 || index >= self->list.count)
+        return NULL;
+    if (self->indexed) {
+        if (!self->index)
+            call(self, create_index);
+        return self->index[index];
+    }
+    int i = 0;
+    Base b;
+    each(self, b) {
+        if (i++ == index)
+            return b;
+    }
+    return NULL;
 }
 
 int List_generic_sort(Base a, Base b) {
@@ -123,5 +157,6 @@ int List_generic_sort(Base a, Base b) {
 }
 
 void List_sort(List self, bool asc, SortMethod sortf) {
+    free_ptr(self->index);
     llist_sort(&self->list, asc, sortf ? sortf : (SortMethod)List_generic_sort);
 }

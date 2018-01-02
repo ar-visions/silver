@@ -1,41 +1,29 @@
 #ifndef _VEC_
 #define _VEC_
 
-#define _Test(D,T,C) _Base(spr,T,C)                  \
-    override(D,T,C,C,from_string,(String))           \
-    override(D,T,C,String,to_string,(C))             \
-    var(D,T,C,int,prop1)                             \
-    var(D,T,C,int,prop2)
-
-declare(Test, Base)
-
-struct _object_Test;
-
-#define _Vec(D,T,C) _Base(spr,T,C)                   \
+#define _Vec(D,T,C,X) _Base(spr,T,C)                 \
     method(D,T,C,C,add,(C,C))                        \
     method(D,T,C,C,sub,(C,C))                        \
-    method(D,T,C,C,scale,(C,double))                 \
+    method(D,T,C,C,scale,(C,X))                      \
     method(D,T,C,C,mul,(C,C))                        \
-    method(D,T,C,double,dot,(C,C))                   \
+    method(D,T,C,X,dot,(C,C))                        \
     method(D,T,C,C,with,(Class,...))                 \
     method(D,T,C,C,with_count,(int))                 \
-    method(D,T,C,double,length,(C))                  \
+    method(D,T,C,X,length,(C))                       \
     override(D,T,C,void,init,(C))                    \
     override(D,T,C,C,from_cstring,(const char *))    \
     override(D,T,C,String,to_string,(C))             \
     override(D,T,C,int,compare,(C,C))                \
     override(D,T,C,ulong,hash,(C))                   \
     private_var(D,T,C,int,count)                     \
-    private_var(D,T,C,double *,vec)                  \
-    var(D,T,C,List,list)                             \
-    var(D,T,C,Test,test)                             \
-    var(D,T,C,double,x)                              \
-    var(D,T,C,double,y)
-declare(Vec, Base)
+    private_var(D,T,C,X *,vec)                       \
+    var(D,T,C,X,x)                                   \
+    var(D,T,C,X,y)
+declare_vector(Vec, Base, double)
 
-#define _Vec3(D,T,C) _Vec(spr,T,C)                   \
+#define _Vec3(D,T,C,X) _Vec(spr,T,C,X)               \
     override(D,T,C,void,init,(C))                    \
-    var(D,T,C,double,z)
+    var(D,T,C,X,z)
 declare(Vec3, Vec)
 
 #define _Vec4(D,T,C) _Vec3(spr,T,C)                  \

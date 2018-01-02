@@ -4,11 +4,7 @@
 
 int main() {
     class_init();
-    Test t = new(Test);
     Vec2 v2 = vec2(1,2);
-    t->prop1 = 10;
-    t->prop2 = 20;
-    v2->test = t;
     List test_list = new(List);
     Boolean meta = prop_meta(test_list, "min_block_size", "test", Boolean);
     print(test_list, "list meta = %p", meta);
@@ -32,8 +28,6 @@ int main() {
     printf("leasure: %s\n", leasure_data->bytes);
 
     List containing_meta = props_with_meta("test", List);
-
-    list_push(v2->list, t);
 
     List strings_list = list_of(List, Int16, string("65537"), string("32"));
     Int16 str;
