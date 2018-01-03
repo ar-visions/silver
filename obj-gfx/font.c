@@ -105,15 +105,25 @@ GlyphSet Font_load_ranges(Font self, List ranges) {
 	if (!ft_face)
 		return NULL;
 
+	release(self->ascii);
 	release(self->surfaces);
 	release(self->glyph_sets);
 
 	self->surfaces = new(List);
+	CharRange ascii_range = class_call(ascii, find, 64);
 	if (!ranges)
-		ranges = new_list_of(List, CharRange, string("Basic Latin"));
+		ranges = new_list_of(List, CharRange, ascii_range);
 	self->glyph_sets = new(List);
 	self->glyph_total = 0;
+	bool found_ascii = false;
 	CharRange range;
+	each(ranges, range) {
+		if (range == ascii_range)
+			found_ascii = true;
+	}
+	if (!found_ascii)
+		list_push(ranges, ascii_range);
+	GlyphSet ascii = NULL;
 	each(ranges, range) {
 		GlyphSet gs = auto(GlyphSet);
 		gs->range = retain(range);
@@ -122,12 +132,15 @@ GlyphSet Font_load_ranges(Font self, List ranges) {
 		int glyphs = (range->to - range->from) + 1;
 		self->glyph_total += glyphs;
 		list_push(self->glyph_sets, gs);
+		if (range == ascii_range)
+			ascii = gs;
 	}
 	call(self->glyph_sets, sort, true, (SortMethod)sort_glyph_sets);
 
 	FT_Set_Char_Size(ft_face, 0, point_size << 6, 0, 0);
 	FT_Size_Metrics *size = &ft_face->size->metrics;
 
+	self->ascii = retain(ascii);
 	self->height = size->height >> 6;
 	self->ascent = size->ascender >> 6;
 	self->descent = abs((int)size->descender) >> 6;

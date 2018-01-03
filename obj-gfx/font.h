@@ -20,6 +20,7 @@ typedef struct _GfxMeasureTextArgs {
     var(D,T,C,String,family_name)                   \
     var(D,T,C,String,file_name)                     \
     var(D,T,C,ushort,point_size)                    \
+    var(D,T,C,_object_GlyphSet *,ascii)             \
     var(D,T,C,List,glyph_sets)                      \
     var(D,T,C,List,surface_data)                    \
     var(D,T,C,List,surfaces)                        \
