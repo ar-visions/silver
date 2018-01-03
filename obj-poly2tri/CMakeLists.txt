@@ -9,5 +9,4 @@ if(MSVC)
 endif()
 
 set_property(TARGET obj-poly2tri PROPERTY POSITION_INDEPENDENT_CODE ON)
-target_include_directories (obj-poly2tri PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries (obj-poly2tri LINK_PUBLIC obj-math m)

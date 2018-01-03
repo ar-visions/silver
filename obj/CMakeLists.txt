@@ -1,4 +1,4 @@
-file(GLOB src "*.c")
+file(GLOB src "build/obj/*.c")
 add_library (obj SHARED ${src})
 
 if(CPP)
@@ -10,7 +10,6 @@ if(MSVC)
 endif()
 
 set_property(TARGET obj PROPERTY POSITION_INDEPENDENT_CODE ON)
-target_include_directories (obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 if(UNIX)
     target_link_libraries(obj m)

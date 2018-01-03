@@ -13,5 +13,4 @@ if(MSVC)
 endif()
 
 set_property(TARGET obj-gfx PROPERTY POSITION_INDEPENDENT_CODE ON)
-target_include_directories (obj-gfx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries (obj-gfx LINK_PUBLIC obj-math m glfw GLESv2 freetype2)

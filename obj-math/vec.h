@@ -1,6 +1,8 @@
 #ifndef _VEC_
 #define _VEC_
 
+// make Vec store an array of Primitives
+
 #define _Vec(D,T,C) _Base(spr,T,C)                   \
     method(D,T,C,C,add,(C,C))                        \
     method(D,T,C,C,sub,(C,C))                        \
@@ -34,9 +36,9 @@ declare(Vec4, Vec3)
 #define Vec2 Vec
 #define Vec2_cl Vec_cl
 
-#define vec2(X,Y)        ((Vec2)Vec_with(class_object(Vec2),(double)(X),(double)(Y)))
-#define vec3(X,Y,Z)      ((Vec3)Vec_with(class_object(Vec3),(double)(X),(double)(Y),(double)(Z)))
-#define vec4(X,Y,Z,W)    ((Vec4)Vec_with(class_object(Vec4),(double)(X),(double)(Y),(double)(Z),(double)(W)))
+#define vec2(X,Y)        ((Vec2)class_call(Vec, with, class_object(Vec2),(double)(X),(double)(Y)))
+#define vec3(X,Y,Z)      ((Vec3)class_call(Vec, with, class_object(Vec3),(double)(X),(double)(Y),(double)(Z)))
+#define vec4(X,Y,Z,W)    ((Vec4)class_call(Vec, with, class_object(Vec4),(double)(X),(double)(Y),(double)(Z),(double)(W)))
 
 #define vadd(A,B)        ((typeof(A))call((A), add, B))
 #define vsub(A,B)        ((typeof(A))call((A), sub, B))

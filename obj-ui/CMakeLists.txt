@@ -10,5 +10,4 @@ if(MSVC)
 endif()
 
 set_property(TARGET obj-ui PROPERTY POSITION_INDEPENDENT_CODE ON)
-target_include_directories (obj-ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries (obj-ui LINK_PUBLIC obj-poly2tri m gfx glfw GLESv2)

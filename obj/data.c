@@ -17,7 +17,7 @@ Data Data_with_size(uint length) {
     return self;
 }
 
-String Data_get_vector(Data self, void **buf, size_t type_size, uint *count) {
+void Data_get_vector(Data self, void **buf, size_t type_size, uint *count) {
     *buf = (void *)self->bytes;
     *count = self->length / type_size;
 }
