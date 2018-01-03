@@ -7,7 +7,7 @@
     override(D,T,C,C,from_string,(String)) \
     method(D,T,C,C,with_size,(uint))       \
     method(D,T,C,C,with_bytes,(uint8 *, uint)) \
-    method(D,T,C,C,get_vector,(void **, size_t, uint *)) \
+    method(D,T,C,void,get_vector,(C, void **, size_t, uint *)) \
     var(D,T,C,uint8 *,bytes)               \
     var(D,T,C,uint,length)
 declare(Data, Base);

@@ -1,4 +1,4 @@
-file(GLOB src "*.c")
+file(GLOB src "build/obj-test/*.c")
 add_executable (obj-test ${src})
 
 if(CPP)
