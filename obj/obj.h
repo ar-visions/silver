@@ -339,12 +339,11 @@ struct _Class {
 #define enum_object_spr_override(C,E,O)
 #define enum_object(D,T,C,E,O)                            enum_object_##D##_##T(C,E,O)
 
-enum ClassFlags {
-    CLASS_FLAG_ASSEMBLED   = 1,
-    CLASS_FLAG_PREINIT     = 2,
-    CLASS_FLAG_INIT        = 4,
-    CLASS_FLAG_NO_INIT     = 8
-};
+
+#define CLASS_FLAG_ASSEMBLED   1
+#define CLASS_FLAG_PREINIT     2
+#define CLASS_FLAG_INIT        4
+#define CLASS_FLAG_NO_INIT     8
 
 #define implement(C)                                            \
     struct _class_##C;                                          \
