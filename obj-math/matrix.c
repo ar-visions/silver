@@ -93,6 +93,12 @@ Matrix44 Matrix44_ident() {
     return self;
 }
 
+Matrix44 Matrix44_copy(Matrix44 self) {
+	Matrix44 c = new(Matrix44);
+	memcpy(c->m, self->m, sizeof(c->m));
+	return c;
+}
+
 Matrix44 Matrix44_ortho(float l, float r, float b, float t, float n, float f) {
     Matrix44 self = auto(Matrix44);
 	float *m = self->m;
