@@ -235,19 +235,53 @@ char *trim(char *in) {
     return ret;
 }
 
+char *replace_string(char *orig, char *rep, char *with) {
+    char *result;
+    char *ins;
+    char *tmp;
+    int len_rep;
+    int len_with;
+    int len_front;
+    int count;
+
+    if (!orig || !rep)
+        return NULL;
+    len_rep = strlen(rep);
+    if (len_rep == 0)
+        return NULL;
+    if (!with)
+        with = "";
+    len_with = strlen(with);
+    ins = orig;
+    for (count = 0; tmp = strstr(ins, rep); ++count)
+        ins = tmp + len_rep;
+    tmp = result = malloc(strlen(orig) + (len_with - len_rep) * count + 1);
+    if (!result)
+        return NULL;
+    while (count--) {
+        ins = strstr(orig, rep);
+        len_front = ins - orig;
+        tmp = strncpy(tmp, orig, len_front) + len_front;
+        tmp = strcpy(tmp, with) + len_with;
+        orig += len_front + len_rep;
+    }
+    strcpy(tmp, orig);
+    return result;
+}
 
 static LList forwards;
 
-bool is_forward(char *type) {
+char *is_forward(char *type) {
+    char *orig_type = type;
     if (forwards.count == 0)
-        return false;
+        return NULL;
     for (type; *type && isspace(*type); type++) { };
     int len = strlen(type);
     char *word = (char *)malloc(len + 1);
     int n = 0;
     char *non_const = NULL;
     while (sscanf(type, "%s%n", word, &n) == 1) {
-        if (strcmp(word, "const") != 0) {
+        if (!non_const && strcmp(word, "const") != 0 && strcmp(word, "*") != 0) {
             non_const = copy_string(word);
         } else if (strcmp(word, "struct") == 0 || strcmp(word, "enum") == 0) {
             non_const = NULL;
@@ -257,12 +291,30 @@ bool is_forward(char *type) {
         if (type[0] == 0)
             break;
     }
+    char *ret = NULL;
+    if (non_const) {
+        char *p = strchr(non_const, '*');
+        if (p)
+            *p = NULL;
+        printf("non_const = %s\n", non_const);
+        char *forward;
+        llist_each(&forwards, forward) {
+            if (strcmp(forward, non_const) == 0) {
+                char *buf = (char *)malloc(strlen(non_const) + 64);
+                sprintf(buf, "struct _object_%s *", forward);
+                ret = replace_string(orig_type, non_const, buf);
+                printf("replaced: %s -> %s\n", non_const, ret);
+                free(buf);
+                break;
+            }
+        }
+    }
     free(word);
     free(non_const);
+    return ret;
 }
 
 bool read_forwards(char *line, int *bytes_ahead) {
-    printf("line: %s\n", line);
     char *origin = line;
     for (line; *line && isspace(*line); line++) { };
     int len = strlen(line);
@@ -284,7 +336,8 @@ bool read_forwards(char *line, int *bytes_ahead) {
                 printf("pch = %s\n", pch);
                 while (pch != NULL) {
                     if (pch[0] && !isspace(pch[0])) {
-                        printf("forward: %s\n", pch);
+                        char *forward = copy_string(pch);
+                        llist_push(&forwards, (void *)forward);
                         valid_forwards++;
                     }
                     pch = strtok(NULL, " ,\r\n\t");
@@ -304,6 +357,7 @@ void main(int argc, char *argv[]) {
         printf("usage: obj-header input.hh output.h\n");
         exit(1);
     }
+    llist(&forwards, 0, 32);
     int code = 0;
     char *input = argv[1];
     char *output = argv[2];
@@ -344,29 +398,39 @@ void main(int argc, char *argv[]) {
     bool was_space = true;
     bool was_new_line = true;
     bool in_define = false;
+    bool multi_comment = false;
+    bool comment = false;
     for (int i = 0; i < (int)file_len; i += block_len) {
         block_len = 1;
         char c = in[i];
         bool new_line = c == '\n';
+        if (new_line)
+            comment = false;
         bool end = i == file_len - 1;
         rn = (c == '\r' && in[i + 1] == '\n');
         char *start = &in[i];
         int stop_at = 0;
         bool token_read = sscanf(start, "%s%n", buf, &stop_at) == 1;
-
-        if (new_line && in_define) {
+        if (strncmp(start, "//", 2) == 0)
+            comment = true;
+        if (strncmp(start, "/*", 2) == 0)
+            multi_comment = true;
+        else if (strncmp(start, "*/", 2) == 0) {
+            multi_comment = false;
+            in_define = false;
+        } else if (!multi_comment && new_line && in_define) {
             in_define = i > 0 && (in[i - 1] == '\\');
         }
-        if (was_new_line && token_read && strcmp(buf, "#define") == 0) {
+        if (!multi_comment && !comment && was_new_line && token_read && strcmp(buf, "#define") == 0) {
             fprintf(fout, "%c", c);
             in_define = true;
             was_space = false;
-        } else if (!in_define && token_read && strcmp(buf, "forward") == 0) {
+        } else if (!multi_comment && !comment && !in_define && token_read && strcmp(buf, "forward") == 0) {
             if (!read_forwards(start, &block_len)) {
                 fprintf(stderr, "syntax error on forward\n");
                 exit(1);
             }
-        } else if (!in_define && was_space && !new_line && token_read && strcmp(buf, "class") == 0) {
+        } else if (!multi_comment && !comment && !in_define && was_space && !new_line && token_read && strcmp(buf, "class") == 0) {
             int len = strlen(start);
             int index = 0;
             char *cname = (char *)malloc(len + 1);
@@ -470,6 +534,12 @@ void main(int argc, char *argv[]) {
                                         name = trim(name_untrimmed);
                                         free(name_untrimmed);
                                         free(type_untrimmed);
+
+                                        char *rep = is_forward(type);
+                                        if (rep) {
+                                            free(type);
+                                            type = rep;
+                                        }
                                     }
                                     break;
                                 }
@@ -487,7 +557,8 @@ void main(int argc, char *argv[]) {
                         fprintf(stderr, "expected parens in override declaration\n");
                         exit_code(1);
                     }
-                    cur += strlen(whole);
+                    int len_whole = strlen(whole);
+                    cur += len_whole;
                     free(whole);
                     bool has_semi = false;
                     char *trailing = copy_to(cur, ";", &has_semi, NULL);
@@ -513,11 +584,24 @@ void main(int argc, char *argv[]) {
                     }
                     for (trailing; isspace(*trailing); ++trailing) { }
                     if (*trailing != 0) {
-                        printf("trailing = %s, type = %s, name = %s\n", orig_trailing, type, name);
                         fprintf(stderr, "unexpected character '%c'\n", *trailing);
                         exit_code(1);
                     }
                     if (args) {
+                        // replace args if forwards exist
+                        char *forward;
+                        llist_each(&forwards, forward) {
+                            if (strstr(args, forward)) {
+                                char *replace_with = (char *)malloc(strlen(forward) + 64);
+                                sprintf(replace_with, "struct _object_%s *", forward);
+                                char *replaced = replace_string(args, forward, replace_with);
+                                if (replaced) {
+                                    free(args);
+                                    args = replaced;
+                                }
+                                free(replace_with);
+                            }
+                        }
                         fprintf(fout, "\t%s(D,T,C,%s,%s,%s%s) %s\n",
                             (override ? "override" : (private ? "private_method" : "method")), type, name, args, meta ? meta : "", e < (expr_count - 1) ? "\\" : "");
                     } else {
@@ -536,7 +620,7 @@ void main(int argc, char *argv[]) {
             fprintf(fout, "declare(%s,%s)", cname, *sname != 0 ? sname : (char *)"Base");
             free(cname);
             free(sname);
-        } else if (!in_define && was_space && !new_line && token_read && strcmp(buf, "enum") == 0) {
+        } else if (!multi_comment && !comment && !in_define && was_space && !new_line && token_read && strcmp(buf, "enum") == 0) {
             int len = strlen(start);
             int index = 0;
             char *ename = (char *)malloc(len + 1);

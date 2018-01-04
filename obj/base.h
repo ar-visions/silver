@@ -17,9 +17,9 @@ class Base {
     void class_preinit(Class);
     void class_init(Class);
     void init(C);
-    String * identity(C);
+    String identity(C);
     void free(C);
-    void print(C, String *);
+    void print(C, String);
     bool is_logging(C);
     C retain(C);
     void release(C);
@@ -27,18 +27,18 @@ class Base {
     C copy(C);
     const char * to_cstring(C);
     C from_cstring(const char *);
-    String * to_string(C);
+    String to_string(C);
     C from_string(String);
     void set_property(C,const char *,Base);
     Base get_property(C,const char *);
     Base property_meta(C,const char *,const char *);
-    Base prop_value(C, Prop *);
-    Prop * find_prop(Class, const char *);
+    Base prop_value(C, Prop);
+    Prop find_prop(Class, const char *);
     int compare(C,C);
     ulong hash(C);
-    void serialize(C,Pairs *);
-    String * to_json(C);
-    C from_json(Class, String *);
+    void serialize(C,Pairs);
+    String to_json(C);
+    C from_json(Class, String);
 }
 
 #define set_prop(O,P,V) (call(O, set_property, P, base(V)))
