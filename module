@@ -1,0 +1,49 @@
+
+if(module_lib)
+    set(module_name ${module_lib})
+else()
+    set(module_name ${module_exe})
+endif()
+
+file(GLOB c_files "${CMAKE_CURRENT_SOURCE_DIR}/*.c")
+file(COPY ${c_files} DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/build/${module_name})
+
+file(GLOB c_files_build "${CMAKE_CURRENT_SOURCE_DIR}/build/${module_name}/*.c")
+file(GLOB h_files "*.h")
+
+if(module_lib)
+    add_library(${module_name} SHARED ${c_files_build})
+else()
+    add_executable(${module_name} ${c_files_build})
+endif()
+
+foreach(h_file ${h_files})
+    string(REPLACE "${CMAKE_CURRENT_SOURCE_DIR}/" "" h_file_isolate "${h_file}")
+    string(REPLACE "/" "_" target_name "target_header_${h_file_isolate}")
+    string(REPLACE "." "_" target_name "${target_name}")
+
+    add_custom_target(
+        ${target_name}
+        COMMAND obj-header "${CMAKE_CURRENT_SOURCE_DIR}/${h_file_isolate}" "${CMAKE_CURRENT_SOURCE_DIR}/build/${module_name}/${h_file_isolate}"
+    )
+    add_dependencies(${module_name} ${target_name})
+endforeach()
+
+set_property(TARGET ${module_name} PROPERTY POSITION_INDEPENDENT_CODE ON)
+
+if(CPP)
+    set_source_files_properties (${src} PROPERTIES LANGUAGE CXX)
+endif()
+
+if(MSVC)
+    add_definitions(-DNOMINMAX -D_CRT_SECURE_NO_WARNINGS)
+endif()
+
+if(UNIX)
+    set(sys_depends "m")
+endif()
+
+if(depends)
+    target_link_libraries (${module_name} LINK_PUBLIC ${depends} ${sys_depends})
+endif()
+

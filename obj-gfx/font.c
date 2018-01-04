@@ -91,7 +91,7 @@ void Font_transfer_surfaces(Font self, Gfx gfx) {
 			data->length, data->length, data->bytes, sqrt(data->length), true);
 		if (!surface)
 			break;
-		call(surface, texture_clamp, false);
+		//call(surface, texture_clamp, false);
 		list_push(self->surfaces, surface);
 	}
 	release(self->surface_data);

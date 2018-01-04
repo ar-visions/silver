@@ -2,28 +2,21 @@ cmake_minimum_required (VERSION 3.0)
 project (LIBOBJ)
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wfatal-errors")
-
 set(include_dirs "")
 set(mods "")
 
 macro(mod module_name)
-    file(GLOB c_files "${module_name}/*.c")
-    file(GLOB h_files "${module_name}/*.h")
-    file(COPY ${c_files} DESTINATION ${module_name}/build/${module_name})
-    file(COPY ${h_files} DESTINATION ${module_name}/build/${module_name})
-    file(GLOB h_files_build "${module_name}/build/${module_name}/*.h")
-    message("add dir: " ${module_name})
     add_subdirectory(${module_name})
-    foreach(h_file ${h_files_build})
-        add_custom_command(TARGET ${module_name} COMMAND obj-header/obj-header ${h_file} ${h_file})
-    endforeach()
     list(APPEND include_dirs "${CMAKE_CURRENT_SOURCE_DIR}/${module_name}/build")
     list(APPEND mods ${module_name})
 endmacro()
 
+# get header parsing working
+
+add_subdirectory(obj-header)
+
 mod(obj)
 mod(obj-math)
-add_subdirectory(obj-header)
 #mod(obj-poly2tri)
 #mod(obj-gfx)
 #mod(obj-ui)
