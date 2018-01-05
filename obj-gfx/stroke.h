@@ -1,7 +1,5 @@
-#ifndef _GFX_STROKE_
-#define _GFX_STROKE_
 
-typedef struct _StrokePoly {
+struct StrokePoly {
 	LineSegment seg;
 	LineSegment left;
 	LineSegment right;
@@ -16,8 +14,6 @@ typedef struct _StrokePoly {
 	int wedge;
 	int start_cap;
 	int end_cap;
-} StrokePoly;
+}
 
 float angle_diff(float a, float b);
-
-#endif

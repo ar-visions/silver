@@ -1,17 +1,4 @@
-struct _class_Base;
-struct _object_Enum;
-struct _object_Prop;
-struct _object_String;
-struct _object_Pairs;
-
 forward String, Prop, Pairs;
-
-/*
-    implicit forward declarations:
-    go through all headers, gather up all classes and structs
-    If the structs or classes are referenced in a struct or class, automatically prepend forward declarations and replace the declaration with the:
-        _struct or _class
-*/
 
 class Base {
     void class_preinit(Class);
@@ -39,7 +26,7 @@ class Base {
     void serialize(C,Pairs);
     String to_json(C);
     C from_json(Class, String);
-}
+};
 
 #define set_prop(O,P,V) (call(O, set_property, P, base(V)))
 #define get_prop(O,P,C) (inherits(call(O, get_property, P), C))

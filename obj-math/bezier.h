@@ -21,7 +21,7 @@ class Bezier {
     float2 h1;
     float2 h2;
     float2 p2;
-}
+};
 
 #define new_bezier(P1,H1,H2,P2)     (class_call(Bezier, new_bezier, (P1), (H1), (H2), (P2)))
 #define bezier(P1,H1,H2,P2)         (autorelease(new_bezier(P1,H1,H2,P2)))

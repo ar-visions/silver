@@ -1,6 +1,3 @@
-#ifndef _GFX_SHADERS_H_
-#define _GFX_SHADERS_H_
-
 #include <obj-math/vec.h>
 #include <obj-math/float2.h>
 #include <obj-gfx/color.h>
@@ -16,6 +13,7 @@ enum ShaderType {
 	SHADER_RESAMPLE,
 	SHADER_COUNT
 };
+
 enum ShaderNew {
 	SN_POSITION,
 	SN_EDGE_COUNT,
@@ -32,36 +30,44 @@ enum ShaderNew {
 	SN_EDGE5_A,
 	SN_EDGE5_B
 };
+
 enum ShaderRect {
 	SRT_POSITION,
 	SRT_CENTER,
 	SRT_RADIUS,
 	SRT_DISTANCE
 };
+
 enum ShaderPlanar {
 	SP_POSITION
 };
+
 enum ShaderText {
 	ST_POSITION,
 	ST_UV,
 	ST_COLOR
 };
+
 enum ShaderLinear {
 	SL_POSITION,
 	SL_UV
 };
+
 enum ShaderGaussianX {
 	SGX_POSITION,
 	SGX_UV
 };
+
 enum ShaderGaussianY {
 	SGY_POSITION,
 	SGY_UV
 };
+
 enum ShaderResample {
 	SR_POSITION,
 	SR_UV
 };
+
 enum ShaderUniform {
 	U_MATRIX,
 	U_SURFACE_V00,
@@ -95,10 +101,6 @@ enum ShaderUniform {
 	U_CUBIC_SAMPLING,
 	U_COUNT
 };
-typedef struct Shader {
-	GLuint program;
-	GLint uniforms[U_COUNT];
-} Shader;
 
 enum ShaderError {
 	SHADER_ERROR_NONE,
@@ -107,32 +109,35 @@ enum ShaderError {
 	SHADER_ERROR_LINKING
 };
 
-typedef struct _VertexNew {
+struct Shader {
+	GLuint program;
+	GLint uniforms[U_COUNT];
+};
+
+struct VertexNew {
 	float2 pos;
 	float edge_count;
 	LineSegment edge[6];
-} VertexNew;
+};
 
-typedef struct _VertexRect {
+struct VertexRect {
 	float2 pos;
 	float2 center;
 	float radius;
 	float distance;
-} VertexRect;
+};
 
-typedef struct _VertexText {
+struct VertexText {
 	float2 pos;
 	float u, v;
 	Color color;
-} VertexText;
+};
 
-typedef struct _VertexTexture {
+struct VertexTexture {
 	float2 pos;
 	float u, v;
-} VertexTexture;
+};
 
-typedef struct _VertexClipTransfer {
+struct VertexClipTransfer {
 	float2 pos;
-} VertexClipTransfer;
-
-#endif
+};

@@ -7,6 +7,6 @@ class AutoRelease {
     void remove(C,Base);
     void drain(C);
     private LList list;
-}
+};
 
 extern _thread_local_ AutoRelease *pool;
