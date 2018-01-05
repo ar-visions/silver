@@ -1,5 +1,5 @@
 class Primitive : Base {
-    enum TypeEnum enum_type;
+    enum Type enum_type;
 };
 
 class UInt64 : Primitive {

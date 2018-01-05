@@ -1,6 +1,3 @@
-#ifndef _GFX_DRAWING_H_
-#define _GFX_DRAWING_H_
-
 enum StrokeCap {
 	STROKE_CAP_NONE,
 	STROKE_CAP_BLUNT,
@@ -20,7 +17,7 @@ enum SegmentType {
 	SEGMENT_ARC
 };
 
-typedef struct _Segment {
+struct Segment {
 	enum SegmentType type;
 	Vec2 a, b;
 	Vec2 normal;
@@ -32,6 +29,4 @@ typedef struct _Segment {
 	bool moved;
 	bool close;
 	bool no_feather;
-} Segment;
-
-#endif
+};

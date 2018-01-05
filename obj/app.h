@@ -1,6 +1,6 @@
 class AppDelegate {
     void loop(C);
-}
+};
 
 class Timer : AppDelegate {
     override void loop(C);
@@ -9,7 +9,7 @@ class Timer : AppDelegate {
     int running;
     int interval;
     int wake;
-}
+};
 
 class App {
     override void class_init(Class);
@@ -19,6 +19,6 @@ class App {
     void push_delegate(C, AppDelegate);
     void remove_delegate(C, AppDelegate);
     private List delegates;
-}
+};
 
 EXPORT App app;

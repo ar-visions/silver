@@ -1,37 +1,33 @@
-#ifndef _VEC_
-#define _VEC_
 
-// make Vec store an array of Primitives
+class Vec {
+    C add(C,C);
+    C sub(C,C);
+    C scale(C,double);
+    C mul(C,C);
+    double dot(C,C);
+    C with(Class,...);
+    C with_count(int);
+    double length(C);
+    override void init(C);
+    override C from_cstring(const char *);
+    override String to_string(C);
+    override int compare(C,C);
+    override ulong hash(C);
+    private int count;
+    private double * vec;
+    double x;
+    double y;
+};
 
-#define _Vec(D,T,C) _Base(spr,T,C)                   \
-    method(D,T,C,C,add,(C,C))                        \
-    method(D,T,C,C,sub,(C,C))                        \
-    method(D,T,C,C,scale,(C,double))                 \
-    method(D,T,C,C,mul,(C,C))                        \
-    method(D,T,C,double,dot,(C,C))                   \
-    method(D,T,C,C,with,(Class,...))                 \
-    method(D,T,C,C,with_count,(int))                 \
-    method(D,T,C,double,length,(C))                  \
-    override(D,T,C,void,init,(C))                    \
-    override(D,T,C,C,from_cstring,(const char *))    \
-    override(D,T,C,String,to_string,(C))             \
-    override(D,T,C,int,compare,(C,C))                \
-    override(D,T,C,ulong,hash,(C))                   \
-    private_var(D,T,C,int,count)                     \
-    private_var(D,T,C,double *,vec)                  \
-    var(D,T,C,double,x)                              \
-    var(D,T,C,double,y)
-declare(Vec, Base)
+class Vec3 : Vec {
+    override void init(C);
+    double z;
+};
 
-#define _Vec3(D,T,C) _Vec(spr,T,C)                   \
-    override(D,T,C,void,init,(C))                    \
-    var(D,T,C,double,z)
-declare(Vec3, Vec)
-
-#define _Vec4(D,T,C) _Vec3(spr,T,C)                  \
-    override(D,T,C,void,init,(C))                    \
-    var(D,T,C,double,w)
-declare(Vec4, Vec3)
+class Vec4 : Vec3 {
+    override void init(C);
+    double w;
+};
 
 #define Vec2 Vec
 #define Vec2_cl Vec_cl
@@ -44,5 +40,3 @@ declare(Vec4, Vec3)
 #define vsub(A,B)        ((typeof(A))call((A), sub, B))
 #define vmul(A,B)        ((typeof(A))call((A), mul, B))
 #define vscale(A,B)      ((typeof(A))call((A), scale, B))
-
-#endif
