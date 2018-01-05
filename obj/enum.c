@@ -96,4 +96,4 @@ void Enum_free(Enum self) {
     release(self->symbol);
 }
 
-implement(Type)
+enum_implement(Type)

@@ -53,8 +53,8 @@ Prop Prop_new_with(Class cl, char *type, char *name, Getter getter, Setter sette
     if (!type_)
         type_ = type;
     Class c = class_find(type_);
-    Type t = enum_find(Type, type_);
-    Type t_object = enum_find(Type, "Object");
+    TypeEnum t = enum_find(TypeEnum, type_);
+    TypeEnum t_object = enum_find(TypeEnum, "Object");
     if (!c && !t)
         return NULL;
     Prop self = new(Prop);

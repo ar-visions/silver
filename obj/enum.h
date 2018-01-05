@@ -10,11 +10,14 @@ class Enum {
     int ordinal;
 };
 
+#define enum_implement(C)                  \
+    implement_class(C##Enum,C)
+
 #define enum_declare(C,S)                  \
     enum C {                               \
         _##C(cls,enum_def,C)               \
     };                                     \
-    declare(C##Enum,S)
+    declare_class(C##Enum,S,C)
 
 enum Type {
     Object = 0,
@@ -33,7 +36,7 @@ enum Type {
     Double
 };
 
-#define enum_find(C,N)  ((C)class_call(Enum, find, (Class)class_object(C##Enum), N));
+#define enum_find(C,N)  ((C)class_call(Enum, find, (Class)class_object(C), N));
 #define enums(C)        (Enum_enums((Class)class_object(C##Enum)))
 
 extern bool enum_init;

@@ -345,7 +345,7 @@ struct _Class {
 #define CLASS_FLAG_INIT        4
 #define CLASS_FLAG_NO_INIT     8
 
-#define implement(C)                                            \
+#define implement_class(C,M)                                    \
     struct _class_##C;                                          \
     class_##C C##_cl;                                           \
     global_construct(_##C##_def) {                              \
@@ -365,7 +365,10 @@ struct _Class {
     }                                                           \
     _##C(cls, implement, C)
 
-#define declare(C,S)                                            \
+#define implement(C)                                            \
+    implement_class(C,C)
+
+#define declare_class(C,S,M)                                    \
     struct _class_##C;                                          \
     struct _mnames_##C;                                         \
     struct _object_##C;                                         \
@@ -375,9 +378,9 @@ struct _Class {
     typedef struct _mnames_##C *mnames_##C;                     \
     typedef struct _object_##C * C;                             \
     EXPORT class_##C C##_cl;                                    \
-    _##C(cls,forward_dec,C)                                     \
+    _##M(cls,forward_dec,C)                                     \
     struct _mnames_##C {                                        \
-        _##C(cls,mname_dec,C)                                   \
+        _##M(cls,mname_dec,C)                                   \
     };                                                          \
     struct _class_##C {                                         \
         struct _class_##S *parent;                              \
@@ -390,7 +393,7 @@ struct _Class {
         mnames_##C mnames;                                      \
         int pcount;                                             \
         Method *m;                                              \
-        _##C(cls,class_dec,C)                                   \
+        _##M(cls,class_dec,C)                                   \
     };                                                          \
     struct _object_##C {                                        \
         class_##C cl;                                           \
@@ -398,9 +401,12 @@ struct _Class {
         LItem *ar_node;                                         \
         int refs;                                               \
         int alloc_size;                                         \
-        _##C(cls,object_dec,C)                                  \
+        _##M(cls,object_dec,C)                                  \
     };                                                          \
-    _##C(cls,proto,C)                                           \
+    _##M(cls,proto,C)                                           \
+
+#define declare(C,S)                                            \
+    declare_class(C,S,C)
 
 #define new(C)                  ((C)new_obj((class_Base)C##_cl, 0))
 #define object_new(O)           ((typeof(O))((O) ? new_obj((class_Base)(O)->cl, 0) : NULL))

@@ -296,14 +296,12 @@ char *is_forward(char *type) {
         char *p = strchr(non_const, '*');
         if (p)
             *p = NULL;
-        printf("non_const = %s\n", non_const);
         char *forward;
         llist_each(&forwards, forward) {
             if (strcmp(forward, non_const) == 0) {
                 char *buf = (char *)malloc(strlen(non_const) + 64);
                 sprintf(buf, "struct _object_%s *", forward);
                 ret = replace_string(orig_type, non_const, buf);
-                printf("replaced: %s -> %s\n", non_const, ret);
                 free(buf);
                 break;
             }
@@ -314,13 +312,13 @@ char *is_forward(char *type) {
     return ret;
 }
 
-bool read_forwards(char *line, int *bytes_ahead) {
+char *read_forwards(char *line, int *bytes_ahead) {
     char *origin = line;
     for (line; *line && isspace(*line); line++) { };
     int len = strlen(line);
     char *word = (char *)malloc(len + 1);
     int n = 0;
-    bool ret = false;
+    char *ret = NULL;
     *bytes_ahead = 0;
     if (sscanf(line, "%s%n", word, &n) == 1) {
         if (strcmp(word, "forward") == 0) {
@@ -333,16 +331,28 @@ bool read_forwards(char *line, int *bytes_ahead) {
                 for (line2; *line2 && isspace(*line2); line2++) { };
                 char *pch = strtok(line2, " ,\r\n\t");
                 int valid_forwards = 0;
-                printf("pch = %s\n", pch);
+                int total_len = 0;
+                char *forward_declares = (char *)malloc(len * 16 + 64);
+                forward_declares[0] = 0;
                 while (pch != NULL) {
                     if (pch[0] && !isspace(pch[0])) {
                         char *forward = copy_string(pch);
                         llist_push(&forwards, (void *)forward);
+                        char *dec = (char *)malloc(total_len);
+                        sprintf(dec, "struct _object_%s; ", forward);
+                        strcat(forward_declares, dec);
+                        free(dec);
+                        total_len += len;
                         valid_forwards++;
                     }
                     pch = strtok(NULL, " ,\r\n\t");
                 }
-                ret = valid_forwards > 0;
+                ret = valid_forwards > 0 ? forward_declares : NULL;
+                if (valid_forwards > 0) {
+                    ret = forward_declares;
+                } else {
+                    free(forward_declares);
+                }
             }
             free(orig);
         }
@@ -426,10 +436,12 @@ void main(int argc, char *argv[]) {
             in_define = true;
             was_space = false;
         } else if (!multi_comment && !comment && !in_define && token_read && strcmp(buf, "forward") == 0) {
-            if (!read_forwards(start, &block_len)) {
+            char *forward_declares = read_forwards(start, &block_len);
+            if (!forward_declares) {
                 fprintf(stderr, "syntax error on forward\n");
                 exit(1);
             }
+            fprintf(fout, "%s", forward_declares);
         } else if (!multi_comment && !comment && !in_define && was_space && !new_line && token_read && strcmp(buf, "class") == 0) {
             int len = strlen(start);
             int index = 0;

@@ -1,3 +1,4 @@
+
 class AutoRelease {
     override void class_init(Class);
     override void init(C);
