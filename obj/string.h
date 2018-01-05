@@ -28,9 +28,9 @@ class String {
     uint * decode_utf8(C, uint *);
     C from_file(const char *);
     Base infer_object(C);
-    private uint utf8_length);
-    private uint * utf8_buffer);
-    private char * buffer);
-    private size_t buffer_size);
-    private size_t length);
+    private uint utf8_length;
+    private uint * utf8_buffer;
+    private char * buffer;
+    private size_t buffer_size;
+    private size_t length;
 };

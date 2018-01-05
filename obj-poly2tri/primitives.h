@@ -1,5 +1,3 @@
-#ifndef _POLY2TRI_PRIMITIVES_
-#define _POLY2TRI_PRIMITIVES_
 
 forward Edge;
 
@@ -77,5 +75,3 @@ class Tri {
 #define point_with_edges(x,y)   (class_call(Point, with_xy, x, y, true))
 #define edge(p1,p2)             (class_call(Edge, with_points, (p1), (p2), true))
 #define edge_simple(p1,p2)      (class_call(Edge, with_points, (p1), (p2), false))
-
-#endif

@@ -1,7 +1,7 @@
 
 class KeyValue {
-    override void,free,(C);
-    override ulong,hash,(C);
+    override void free(C);
+    override ulong hash(C);
     private LItem * ordered;
     private Base key;
     private Base value;
@@ -17,9 +17,9 @@ class Pairs {
     override C copy(C);
     override String to_string(C);
     override C from_cstring(const char *);
-    private LList ordered_list);
-    private LList *lists);
-    private size_t list_count);
+    private LList ordered_list;
+    private LList *lists;
+    private size_t list_count;
 };
 
 #define pairs_add(O,K,V)    (call(O, add, base(K), base(V)))
