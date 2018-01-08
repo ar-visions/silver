@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <ctype.h>
 #include <obj/llist.h>
 
 #ifndef typeof
@@ -403,6 +404,8 @@ struct _Class {
     _##C(cls,proto,C)                                           \
 
 #define new(C)                  ((C)new_obj((class_Base)C##_cl, 0))
+#define alloc_struct(T)         ((T *)alloc_bytes(sizeof(T)))
+#define array_struct(T,C)       ((T *)alloc_bytes(sizeof(T) * C))
 #define object_new(O)           ((typeof(O))((O) ? new_obj((class_Base)(O)->cl, 0) : NULL))
 #define class_of(C,I)           (class_inherits((Class)C,(Class)I##_cl))
 #define inherits(O,C)           ((C)object_inherits((Base)O,(Class)C##_cl))

@@ -78,12 +78,6 @@ void free_obj(Base o) {
     call(o, free);
 }
 
-Base new_struct(int size, void **p) {
-    Base self = new_obj(Base_cl, size);
-    *p = (void*)(&self[1]);
-    return self;
-}
-
 static bool _class_assemble(Class c) {
     Class cc = c;
     for (;;) {

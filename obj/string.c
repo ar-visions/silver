@@ -109,7 +109,7 @@ uint *String_decode_utf8(String self, uint *length) {
 }
 
 String String_from_file(const char *file) {
-    FILE *f = fopen(file, "w");
+    FILE *f = fopen(file, "r");
     if (!f)
         return NULL;
     fseek(f, 0, SEEK_END);
@@ -118,8 +118,10 @@ String String_from_file(const char *file) {
         fclose(f);
         return NULL;
     }
+    fseek(f, 0, SEEK_SET);
     char *bytes = (char *)malloc(len + 1);
-    if (fread(bytes, len, 1, f) != 1) {
+    size_t blocks_read = fread(bytes, len, 1, f);
+    if (blocks_read != 1) {
         fclose(f);
         free(bytes);
         return NULL;
