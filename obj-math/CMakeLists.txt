@@ -1,5 +1,4 @@
-
-file(GLOB src "build/obj-math/*.c")
+file(GLOB src "*.c")
 add_library (obj-math SHARED ${src})
 
 if(CPP)
@@ -11,4 +10,5 @@ if(MSVC)
 endif()
 
 set_property(TARGET obj-math PROPERTY POSITION_INDEPENDENT_CODE ON)
+target_include_directories (obj-math PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries (obj-math LINK_PUBLIC obj m)

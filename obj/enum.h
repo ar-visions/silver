@@ -1,42 +1,41 @@
-forward Pairs;
+#ifndef _ENUM_
+#define _ENUM_
 
-class Enum {
-    C find(Class,const char *);
-    Pairs enums(Class);
-    override String to_string(C);
-    override void class_preinit(Class);
-    override void free(C);
-    String symbol;
-    int ordinal;
-};
-
-#define enum_implement(C)                  \
-    implement_class(C##Enum,C)
+#define _Enum(D,T,C) _Base(spr,T,C)        \
+    method(D,T,C,C,find,(Class,const char *)) \
+    method(D,T,C,struct _object_Pairs *,enums,(Class)) \
+    override(D,T,C,String,to_string,(C))    \
+    override(D,T,C,void,class_preinit,(Class)) \
+    override(D,T,C,void,free,(C))           \
+    var(D,T,C,String,symbol)                \
+    var(D,T,C,int,ordinal)
+declare(Enum, Base);
 
 #define enum_declare(C,S)                  \
-    enum C {                               \
+    enum C##Enum {                         \
         _##C(cls,enum_def,C)               \
     };                                     \
-    declare_class(C##Enum,S,C)
+    declare(C,S)
 
-enum Type {
-    Object = 0,
-    Boolean,
-    Int8,
-    UInt8,
-    Int16,
-    UInt16,
-    Int32,
-    UInt32,
-    Int64,
-    UInt64,
-    Long,
-    ULong,
-    Float,
-    Double
-};
+#define _Type(D,T,C) _Enum(spr,T,C)        \
+    enum_object(D,T,C,Object,   0)         \
+    enum_object(D,T,C,Boolean,  1)         \
+    enum_object(D,T,C,Int8,     2)         \
+    enum_object(D,T,C,UInt8,    3)         \
+    enum_object(D,T,C,Int16,    4)         \
+    enum_object(D,T,C,UInt16,   5)         \
+    enum_object(D,T,C,Int32,    6)         \
+    enum_object(D,T,C,UInt32,   7)         \
+    enum_object(D,T,C,Int64,    8)         \
+    enum_object(D,T,C,UInt64,   9)         \
+    enum_object(D,T,C,Long,    10)         \
+    enum_object(D,T,C,ULong,   11)         \
+    enum_object(D,T,C,Float,   12)         \
+    enum_object(D,T,C,Double,  13)
+enum_declare(Type, Enum);
 
 #define enum_find(C,N)  ((C)class_call(Enum, find, (Class)class_object(C), N));
-#define enums(C)        (Enum_enums((Class)class_object(C##Enum)))
+#define enums(C)        (Enum_enums((Class)class_object(C)))
 
 extern bool enum_init;
+#endif

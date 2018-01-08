@@ -1,111 +1,113 @@
+#ifndef _PRIMITIVES_
+#define _PRIMITIVES_
 
-class Primitive {
-    enum Type enum_type;
-};
+#define _Primitive(D,T,C) _Base(spr,T,C)                      \
+    var(D,T,C,enum TypeEnum,enum_type)
+declare(Primitive, Base)
 
-class UInt64 : Primitive {
-    override void init(C);
-    override String to_string(C);
-    override C from_string(String);
-    override int compare(C,C);
+#define _UInt64(D,T,C) _Primitive(spr,T,C)                    \
+    override(D,T,C,void,init,(C))                             \
+    override(D,T,C,String,to_string,(C))                      \
+    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,uint64,value)
-};
+declare(UInt64, Primitive)
 
-class Int64 : Primitive  {
-    override void init(C);
-    override String to_string(C);
-    override C from_string(String);
-    override int compare(C,C);
+#define _Int64(D,T,C) _Primitive(spr,T,C)                     \
+    override(D,T,C,void,init,(C))                             \
+    override(D,T,C,String,to_string,(C))                      \
+    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,int64,value)
-};
+declare(Int64, Primitive)
 
-class UInt32 : Primitive  {
-    override void init(C);
-    override String to_string(C);
-    override C from_string(String);
-    override int compare(C,C);
+#define _UInt32(D,T,C) _Primitive(spr,T,C)                    \
+    override(D,T,C,void,init,(C))                             \
+    override(D,T,C,String,to_string,(C))                      \
+    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,uint32,value)
-};
+declare(UInt32, Primitive)
 
-class Int32 : Primitive  {
-    override void init(C);
-    override String to_string(C);
-    override C from_string(String);
-    override int compare(C,C);
+#define _Int32(D,T,C) _Primitive(spr,T,C)                     \
+    override(D,T,C,void,init,(C))                             \
+    override(D,T,C,String,to_string,(C))                      \
+    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,int32,value)
-};
+declare(Int32, Primitive)
 
-class UInt16 : Primitive  {
-    override void init(C);
-    override String to_string(C);
-    override C from_string(String);
-    override int compare(C,C);
+#define _UInt16(D,T,C) _Primitive(spr,T,C)                    \
+    override(D,T,C,void,init,(C))                             \
+    override(D,T,C,String,to_string,(C))                      \
+    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,uint16,value)
-};
+declare(UInt16, Primitive)
 
-class Int16 : Primitive  {
-    override void init(C);
-    override String to_string(C);
-    override C from_string(String);
-    override int compare(C,C);
+#define _Int16(D,T,C) _Primitive(spr,T,C)                     \
+    override(D,T,C,void,init,(C))                             \
+    override(D,T,C,String,to_string,(C))                      \
+    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,int16,value)
-};
+declare(Int16, Primitive)
 
-class UInt8 : Primitive  {
-    override void init(C);
-    override String to_string(C);
-    override C from_string(String);
-    override int compare(C,C);
+#define _UInt8(D,T,C) _Primitive(spr,T,C)                     \
+    override(D,T,C,void,init,(C))                             \
+    override(D,T,C,String,to_string,(C))                      \
+    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,uint8,value)
-};
+declare(UInt8, Primitive)
 
-class Int8 : Primitive  {
-    override void init(C);
-    override String to_string(C);
-    override C from_string(String);
-    override int compare(C,C);
+#define _Int8(D,T,C) _Primitive(spr,T,C)                      \
+    override(D,T,C,void,init,(C))                             \
+    override(D,T,C,String,to_string,(C))                      \
+    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,int8,value)
-};
+declare(Int8, Primitive)
 
-class Long : Primitive  {
-    override void init(C);
-    override String to_string(C);
-    override C from_string(String);
-    override int compare(C,C);
+#define _Long(D,T,C) _Primitive(spr,T,C)                      \
+    override(D,T,C,void,init,(C))                             \
+    override(D,T,C,String,to_string,(C))                      \
+    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,long,value)
-};
+declare(Long, Primitive)
 
-class ULong : Primitive  {
-    override void init(C);
-    override String to_string(C);
-    override C from_string(String);
-    override int compare(C,C);
+#define _ULong(D,T,C) _Primitive(spr,T,C)                     \
+    override(D,T,C,void,init,(C))                             \
+    override(D,T,C,String,to_string,(C))                      \
+    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,ulong,value)
-};
+declare(ULong, Primitive)
 
-class Float : Primitive  {
-    override void init(C);
-    override String to_string(C);
-    override C from_string(String);
-    override int compare(C,C);
+#define _Float(D,T,C) _Primitive(spr,T,C)                     \
+    override(D,T,C,void,init,(C))                             \
+    override(D,T,C,String,to_string,(C))                      \
+    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,float,value)
-};
+declare(Float, Primitive)
 
-class Boolean : Primitive  {
-    override void init(C);
-    override String to_string(C);
-    override C from_string(String);
-    override int compare(C,C);
+#define _Boolean(D,T,C) _Primitive(spr,T,C)                   \
+    override(D,T,C,void,init,(C))                             \
+    override(D,T,C,String,to_string,(C))                      \
+    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,bool,value)
-};
+declare(Boolean, Primitive)
 
-class Double : Primitive  {
-    override void init(C);
-    override String to_string(C);
-    override C from_string(String);
-    override int compare(C,C);
+#define _Double(D,T,C) _Primitive(spr,T,C)                    \
+    override(D,T,C,void,init,(C))                             \
+    override(D,T,C,String,to_string,(C))                      \
+    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,double,value)
-};
+declare(Double, Primitive)
 
 #define implement_primitive(C)  \
 implement(C)                    \
@@ -136,3 +138,5 @@ extern Double   double_object(double);
 
 #define Int     Int32
 #define UInt    UInt32
+
+#endif
