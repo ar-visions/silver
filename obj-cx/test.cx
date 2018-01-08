@@ -1,0 +1,7 @@
+# line 1 "test.cx"
+
+void main(int test) {
+    int i = 0;
+    printf("This is a test!", i++)
+    return i;
+}

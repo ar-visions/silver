@@ -9,6 +9,7 @@ add_subdirectory (obj-math)
 #add_subdirectory (obj-poly2tri)
 #add_subdirectory (obj-gfx)
 #add_subdirectory (obj-ui)
+add_subdirectory (obj-cx)
 add_subdirectory (obj-test)
 
 if(MSVC)
