@@ -3,27 +3,6 @@
 
 implement(CX)
 
-// 1. run the compiler preprocessor
-//      ** verify that these preprocessors do not error with CX syntax
-// 2. run cx with this preprocessed file, outputting post-preprocessed file, inserting new # [line] [file]'s
-
-/**
- * 
- * read tokens from file in list form
- * 
- * example:
- * 
- * void main(int *test) {
- *  // this is a comment!
- *      printf("hi");
- * }
- * 
- * 
- * tokens:
- * void,main,(,int,*,test,),{,// this is a comment,printf,(,"hi",),;,}
- */
-
-
 Token *CX_read_tokens(CX self, String str, int *n_tokens) {
     Token *tokens = array_struct(Token, str->length + 1);
     int nt = 0;
