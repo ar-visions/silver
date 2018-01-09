@@ -1,1 +1,4 @@
-test->value
+
+define Vector <double, float> : Base {
+    private int test [key:value];
+}

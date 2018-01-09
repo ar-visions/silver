@@ -24,6 +24,7 @@
     method(D,T,C,void,concat_long_long,(C, uint64, const char *)); \
     method(D,T,C,void,concat_double,(C, double, const char *)); \
     method(D,T,C,void,concat_object,(C, Base));     \
+    method(D,T,C,C,new_from_bytes,(const uint8 *, size_t)); \
     method(D,T,C,C,from_bytes,(const uint8 *, size_t)); \
     method(D,T,C,C,format,(const char *,...));      \
     method(D,T,C,bool,to_file,(C, const char *));   \

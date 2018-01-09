@@ -218,6 +218,16 @@ Base String_infer_object(String self) {
     return base(string(self->buffer));
 }
 
+String String_new_from_bytes(const uint8 *bytes, size_t length) {
+    String self = new(String);
+    self->length = length;
+    self->buffer_size = length + 1;
+    self->buffer = (char *)malloc(self->buffer_size);
+    memcpy(self->buffer, bytes, length);
+    self->buffer[length] = 0;
+    return self;
+}
+
 String String_from_bytes(const uint8 *bytes, size_t length) {
     String self = auto(String);
     self->length = length;
