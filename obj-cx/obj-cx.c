@@ -214,13 +214,13 @@ bool CX_process(CX self, const char *file) {
             // read optional keywords such as static and private
 
             // type
-            expect(token[cursor], TT_Identifier);
+            expect_type(token[cursor], TT_Identifier);
             String str_type = class_call(String, new_from_bytes, token[cursor].value, token[cursor].length);
             MemberDec member = new(MemberDec);
             member->type = &token[cursor++];
 
             // name
-            expect(token[cursor], TT_Identifier);
+            expect_type(token[cursor], TT_Identifier);
             String str_name = class_call(String, new_from_bytes, token[cursor].value, token[cursor].length);
             member->name = &token[cursor++];
             pairs_add(cd->methods, str_name, member);
