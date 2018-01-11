@@ -1,4 +1,4 @@
 
 declare Vector <double, float> : Base {
-    private int test [key:value];
+    private int test ^[key:value];
 }
