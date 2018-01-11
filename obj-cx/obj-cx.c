@@ -7,6 +7,15 @@ implement(CX)
 implement(ClassDec)
 implement(MemberDec)
 
+MemberDec ClassDec_member_lookup(ClassDec self, String name) {
+    for (ClassDec cd = self; cd; cd = cd->parent) {
+        MemberDec md = pairs_value(cd->members, name, MemberDec);
+        if (md)
+            return md;
+    }
+    return NULL;
+}
+
 Token *CX_read_tokens(CX self, String str, int *n_tokens) {
     Token *tokens = array_struct(Token, str->length + 1);
     int nt = 0;
@@ -28,6 +37,15 @@ Token *CX_read_tokens(CX self, String str, int *n_tokens) {
         1, 1, 0, 0,
         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
         0, 0, 0, 1,
+        0, 0, 0, 0, 0, 0
+    };
+    const char punct_is_assign[] = {
+        0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0,
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        0, 0, 0, 0,
         0, 0, 0, 0, 0, 0
     };
     const char *keywords[] = {
@@ -151,6 +169,7 @@ find_punct:
                             t->type = TT_Punctuator;
                             t->length = punct_len;
                             t->operator = (bool)punct_is_op[p];
+                            t->assign = (bool)punct_is_assign[p];
                             cont  = true;
                             break;
                         }
@@ -227,15 +246,13 @@ bool CX_read_template_types(CX self, ClassDec cd, Token **pt) {
     return true;
 }
 
-int CX_read_expression(CX self, Token *t, Token **first_op, const char *op) {
+int CX_read_expression(CX self, Token *t) {
     int brace_depth = 0;
     int count = 0;
     int paren_depth = 0;
 
-    if (first_op)
-        *first_op = NULL;
     while (t->value) {
-        if (brace_depth == 0 && t->punct == ";") {
+        if (brace_depth == 0 && (t->punct == ";" || t->punct == ")" || t->punct == ",")) {
             if (paren_depth != 0) {
                 printf("expected ')' before ';' in expression\n");
                 exit(0);
@@ -255,8 +272,6 @@ int CX_read_expression(CX self, Token *t, Token **first_op, const char *op) {
                 printf("unexpected ')' in expression\n");
                 exit(0);
             }
-        } else if (t->operator && first_op && (t->punct == op) && !(*first_op)) {
-            *first_op = t;
         }
         t++;
         count++;
@@ -275,11 +290,14 @@ void expect_type(Token *token, enum TokenType type) {
     }
 }
 
-bool CX_collect_classes(CX self) {
+bool CX_read_declarations(CX self) {
+    self->classes = new(Pairs);
     for (Token *t = self->tokens; t->value; t++) {
         if (t->length == 7 && strncmp(t->value, "declare", t->length) == 0) {
             ClassDec cd = new(ClassDec);
             cd->name = ++t; // validate
+            String class_str = class_call(String, new_from_bytes, t->value, t->length);
+            pairs_add(self->classes, class_str, cd);
             cd->members = new(Pairs);
             t++;
             call(self, read_template_types, cd, &t);
@@ -310,7 +328,7 @@ bool CX_collect_classes(CX self) {
                     }
                 }
                 Token *equals = NULL;
-                int token_count = call(self, read_expression, t, &equals, "=");
+                int token_count = call(self, read_expression, t);
                 if (token_count == 0) {
                     if (md->is_static || md->is_private) {
                         printf("expected expression\n");
@@ -438,18 +456,109 @@ bool CX_collect_classes(CX self) {
     return true;
 }
 
+bool CX_replace_declarations(CX self) {
+}
+
+String CX_str_from_token(CX self, Token *t) {
+    if (!t->value)
+        return NULL;
+    return class_call(String, new_from_bytes, t->value, t->length);
+}
+
+bool CX_replace_class_op(CX self, Token *t_start, Token *t,
+        ClassDec cd, String s_inst) {
+    String s_token = call(self, token_string, t);
+    MemberDec md = call(cd, member_lookup, s_token);
+    if (!md) {
+        prinf("member: %s not found on class: %s\n", s_token, s_inst);
+        exit(0);
+    }
+    if ((++t)->punct == "(") {
+        // method call
+        // expect md->type == TT_Method
+        if (md->type != MT_Method) {
+            printf("invalid call to property\n");
+            exit(0);
+        }
+        t++;
+        int n = call(self, read_expression, t);
+        // perform call replacement here
+    } else if (t->assign) {
+        Token *t_assign = t++;
+        int n = call(self, read_expression, t);
+        // perform assigment replacement here
+    } else {
+        // get
+        int n = 0;
+        // perform get replacement
+    }
+    return true;
+}
+
+bool CX_replace_definitions(CX self) {
+    List scope = new(List);
+    list_push(scope, new(Pairs));
+    for (Token *t = self->tokens; t->value; t++) {
+        // find 
+        if (t->punct == "{" || t->keyword == "for") {
+            list_push(scope, new(Pairs));
+        } else if (t->punct == "}") {
+            list_pop(scope, Pairs);
+        } else if (t->type == TT_Identifier) {
+            // check if identifier exists as class
+            String str_ident = class_call(String, new_from_bytes, t->value, t->length);
+            ClassDec cd = pairs_value(self->classes, str_ident, ClassDec);
+            if (cd) {
+                t++;
+                if (t->type == TT_Identifier) {
+                    String str_name = class_call(String, new_from_bytes, t->value, t->length);
+                    // associate identifier to scope as cd
+                    Pairs top = (Pairs)call(scope, last);
+                    pairs_add(top, str_name, cd);
+                } else if (t->punct == "::") {
+                    // this can be a get, set, or method call
+                    // create method call containing the parser below
+                    // facilitate object-scope or class-scope
+                }
+                // check for identifier
+                // associate type to identifier
+            } else {
+                ClassDec cd;
+                LList *list = &scope->list;
+                Pairs p = (Pairs)list->last->data;
+                for (LItem *_i = list->last; _i; _i = _i->prev,
+                        p = _i ? (typeof(p))_i->data : NULL) {
+                    ClassDec cd = pairs_value(p, str_ident, ClassDec);
+                    if (cd) {
+                        Token *t_start;
+                        if ((++t)->punct == ".") {
+                            if ((++t)->type == TT_Identifier) {
+                                call(self, class_op_replacement, t_start, t, cd, str_ident);
+                            }
+                        }
+                        break;
+                    }
+                }
+                // check if var associated to scope
+            }
+        }
+        //
+    }
+}
+
 bool CX_process(CX self, const char *file) {
     String str = class_call(String, from_file, file);
     int n_tokens = 0;
     self->tokens = call(self, read_tokens, str, &n_tokens);
 
     // 1: collect classes
-    call(self, collect_classes);
+    call(self, read_declarations);
 
     // 2: replace classes sections
-    
+    //call(self, replace_declarations);
 
     // 3: find and replace method sections
+    call(self, replace_definitions);
 
     // replace declare blocks with C99 declarations
     /*
@@ -494,7 +603,7 @@ bool CX_process(CX self, const char *file) {
     upon exiting scope, pop the pairs out of the scope
 
     for (type_possible; x; x) {
-        // quirk: type_possible is within this scope, even though it was before the bracket
+        // for statements can have TWO scopes
     }
     
     once you read a for keyword, expect ( ), then the scope will be defined as the expression after

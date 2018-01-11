@@ -21,6 +21,7 @@ typedef struct _Token {
     const char *punct;
     const char *keyword;
     const char *type_keyword;
+    bool assign;
     bool operator;
     size_t length;
     char string_term;
@@ -31,9 +32,16 @@ struct _object_ClassDec;
 #define _CX(D,T,C) _Base(spr,T,C)   \
     method(D,T,C,Token *,read_tokens,(C,String,int *)) \
     method(D,T,C,bool,read_template_types,(C,struct _object_ClassDec *, Token **)) \
-    method(D,T,C,int,read_expression,(C, Token *, Token **, const char *)) \
+    method(D,T,C,int,read_expression,(C, Token *)) \
+    method(D,T,C,bool,read_declarations,(C)) \
+    method(D,T,C,bool,replace_declarations,(C)) \
+    method(D,T,C,bool,replace_definitions,(C)) \
+    method(D,T,C,bool,replace_class_op,(C, Token *, Token *, \
+        struct _object_ClassDec *, String)) \
+    method(D,T,C,String,token_string,(C, Token *)) \
     method(D,T,C,bool,process,(C, const char *)) \
-    var(D,T,C,Token *,tokens)
+    var(D,T,C,Token *,tokens) \
+    var(D,T,C,Pairs,classes)
 declare(CX, Base)
 
 #define _MemberDec(D,T,C) _Base(spr,T,C)   \
@@ -53,6 +61,8 @@ declare(CX, Base)
 declare(MemberDec, Base)
 
 #define _ClassDec(D,T,C) _Base(spr,T,C)    \
+    method(D,T,C,MemberDec,member_lookup,(C,String)) \
+    var(D,T,C,C,parent)                    \
     var(D,T,C,Token *,name)                \
     var(D,T,C,String,super_class)          \
     var(D,T,C,List,templates)              \
