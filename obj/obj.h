@@ -91,7 +91,6 @@ struct _Class {
     int obj_size;
     int mcount;
     char **mnames;
-    int pcount;
     Method m[1];
 };
 
@@ -389,7 +388,6 @@ struct _Class {
         int obj_size;                                           \
         int mcount;                                             \
         mnames_##C mnames;                                      \
-        int pcount;                                             \
         Method *m;                                              \
         _##C(cls,class_dec,C)                                   \
     };                                                          \
