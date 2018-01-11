@@ -23,11 +23,13 @@ typedef struct _Token {
     char string_term;
 } Token;
 
+struct _object_ClassDec;
+
 #define _CX(D,T,C) _Base(spr,T,C)   \
     method(D,T,C,Token *,read_tokens,(C,String,int *)) \
-    method(D,T,C,bool,read_template_types,(C,ClassDec, int *)) \
+    method(D,T,C,bool,read_template_types,(C,struct _object_ClassDec *, Token **)) \
     method(D,T,C,bool,process,(C, const char *)) \
-    var(D,T,C,Token *,tokens) \
+    var(D,T,C,Token *,tokens)
 declare(CX, Base)
 
 #define _MemberDec(D,T,C) _Base(spr,T,C)   \
