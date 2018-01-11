@@ -13,21 +13,21 @@ Token *CX_read_tokens(CX self, String str, int *n_tokens) {
     enum TokenType seps[256];
     const char *separators = "[](){}.,+-&*~!/%<>=^|&?:;#";
     const char *puncts[] = {
-        "[", "]", "(", ")", "{", "}", ".", "->", "^[", // <-- custom ^[meta]
+        "[", "]", "(", ")", "{", "}", ".", "->", // <-- custom ^[meta]
         "++", "--", "&", "*", "+", "-", "~", "!",
         "/", "%", "<<", ">>", "<", ">", "<=", ">=", "==", "!=", "^", "|", "&&", "||",
         "?", ":", ";", "...",
         "=", "*=", "/=", "%=", "+=", "-=", "<<=", ">>=", "&=", "^=", "|=",
-        ",", "#", "##",
+        ",", "#", "##", "^[",
         "<:", ":>", "<%", "%>", "%:", "%:%:"
     };
     const char punct_is_op[] = {
-        0, 0, 0, 0, 0, 0, 1, 1, 0,
+        0, 0, 0, 0, 0, 0, 1, 1,
         1, 1, 1, 1, 1, 1, 1, 1,
         0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
         1, 1, 0, 0,
         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-        0, 0, 0,
+        0, 0, 0, 1,
         0, 0, 0, 0, 0, 0
     };
     const char *keywords[] = {
@@ -140,11 +140,13 @@ Token *CX_read_tokens(CX self, String str, int *n_tokens) {
             size_t length = (size_t)(value - t->value) + 1;
             if (sep) {
                 bool cont = false;
+                bool punct_find = true;
+find_punct:
                 if (t->sep) {
                     for (int p = 0; p < n_puncts; p++) {
                         const char *punct = puncts[p];
                         int punct_len = punct_lens[p];
-                        if (punct_len == length && memcmp(value, punct, punct_len) == 0) {
+                        if (punct_len == length && memcmp(t->value, punct, punct_len) == 0) {
                             t->punct = punct;
                             t->type = TT_Punctuator;
                             t->length = punct_len;
@@ -162,14 +164,28 @@ Token *CX_read_tokens(CX self, String str, int *n_tokens) {
                     t->sep = sep;
                     t->value = value;
                     t->length = 1;
+                    length = 1;
                     t->string_term = (t->type == TT_String_Literal) ? b : 0;
+
                     if (t->string_term)
                         continue;
+                    if (punct_find) {
+                        punct_find = false;
+                        goto find_punct;
+                    }
                 }
             }
         }
         was_backslash = b == backslash;
     }
+    for (int i = 0; i < nt; i++) {
+        Token *t = &tokens[i];
+        char buf[256];
+        memcpy(buf, t->value, t->length);
+        buf[t->length] = 0;
+        printf("token:%s\n", buf);
+    }
+
     *n_tokens = nt;
     return tokens;
 }
@@ -263,9 +279,6 @@ bool CX_process(CX self, const char *file) {
     String str = class_call(String, from_file, file);
     int n_tokens = 0;
     self->tokens = call(self, read_tokens, str, &n_tokens);
-    // gather up all class declarations
-    
-    printf("tokens:\n");
 
     // pass 1: collect classes
     for (Token *t = self->tokens; t->value; t++) {
@@ -313,39 +326,47 @@ bool CX_process(CX self, const char *file) {
                 }
                 Token *t_last = &t[token_count - 1];
                 if (t_last->punct == "]") {
-                    // meta data
-                    Token *found = NULL;
+                    bool found_meta = false;
                     for (Token *tt = t_last; tt != t; tt--) {
                         if (tt->punct == "^[") {
-                            found = tt;
-                            bool expect_sep = false;
-                            int kv = 0;
-                            String key = NULL;
-                            String value = NULL;
-                            for (Token *p = tt; p != t_last; p++) {
-                                if (expect_sep && p->punct != ":") {
-                                    printf("expected ':' in meta data\n");
-                                    exit(0);
-                                } else if (!expect_sep) {
-                                    String v = class_call(String, new_from_bytes, p->value, p->length);
-                                    if (!key) {
-                                        key = v;
-                                    } else {
-                                        value = v;
-                                        if (!md->meta)
-                                            md->meta = new(Pairs);
-                                        pairs_add(md->meta, key, value);
-                                        key = value = NULL;
-                                    }
-                                }
-                                expect_sep = !expect_sep;
-                            }
+                            found_meta = true;
                             break;
                         }
                     }
-                    if (found)
-                        t_last = --found;
-                    // read backwards until you see a [
+                    if (found_meta) {
+                        // ^[meta data]
+                        Token *found = NULL;
+                        for (Token *tt = t_last; tt != t; tt--) {
+                            if (tt->punct == "^[") {
+                                found = tt;
+                                bool expect_sep = false;
+                                int kv = 0;
+                                String key = NULL;
+                                String value = NULL;
+                                for (Token *p = ++tt; p != t_last; p++) {
+                                    if (expect_sep && p->punct != ":") {
+                                        printf("expected ':' in meta data\n");
+                                        exit(0);
+                                    } else if (!expect_sep) {
+                                        String v = class_call(String, new_from_bytes, p->value, p->length);
+                                        if (!key) {
+                                            key = v;
+                                        } else {
+                                            value = v;
+                                            if (!md->meta)
+                                                md->meta = new(Pairs);
+                                            pairs_add(md->meta, key, value);
+                                            key = value = NULL;
+                                        }
+                                    }
+                                    expect_sep = !expect_sep;
+                                }
+                                break;
+                            }
+                        }
+                        if (found)
+                            t_last = --found;
+                    }
                 }
                 if (t_last->punct == ")") {
                     // method
@@ -399,7 +420,6 @@ bool CX_process(CX self, const char *file) {
                     printf("expected member name\n");
                     exit(0);
                 }
-
                 if (t_last->type != TT_Identifier) {
                     printf("expected identifier (member name)\n");
                     exit(0);
@@ -416,11 +436,21 @@ bool CX_process(CX self, const char *file) {
                     exit(0);
                 }
                 pairs_add(cd->members, str_name, md);
+                t += token_count + 1;
             }
         }
     }
 
-    // read expressions, look for class declarations
+    // replace declare blocks with C99 declarations
+    /*
+
+    if there is anything assigned at all, an init is created
+
+    declare Vector <double, float> : Base {
+        private int test ^[key:value];
+    }
+
+    */
 }
 
 int main(int argc, char *argv[]) {
