@@ -275,12 +275,7 @@ void expect_type(Token *token, enum TokenType type) {
     }
 }
 
-bool CX_process(CX self, const char *file) {
-    String str = class_call(String, from_file, file);
-    int n_tokens = 0;
-    self->tokens = call(self, read_tokens, str, &n_tokens);
-
-    // pass 1: collect classes
+bool CX_collect_classes(CX self) {
     for (Token *t = self->tokens; t->value; t++) {
         if (t->length == 7 && strncmp(t->value, "declare", t->length) == 0) {
             ClassDec cd = new(ClassDec);
@@ -440,6 +435,21 @@ bool CX_process(CX self, const char *file) {
             }
         }
     }
+    return true;
+}
+
+bool CX_process(CX self, const char *file) {
+    String str = class_call(String, from_file, file);
+    int n_tokens = 0;
+    self->tokens = call(self, read_tokens, str, &n_tokens);
+
+    // 1: collect classes
+    call(self, collect_classes);
+
+    // 2: replace classes sections
+    
+
+    // 3: find and replace method sections
 
     // replace declare blocks with C99 declarations
     /*
@@ -474,6 +484,41 @@ bool CX_process(CX self, const char *file) {
 
     // Output one global constructor per module; gather up code as the module is built, and the last module will be the ctor.c
     // Use the framework implementation to allow for different parsing features, effectively using the framework to add to the language
+
+    class var identification within scope:
+
+    look for tokens that equal one of the names of the classes
+    in each case, look to the right of that and find a possible identifier
+        if identifier found, associate identifier to this class within this scope
+    
+    upon exiting scope, pop the pairs out of the scope
+
+    for (type_possible; x; x) {
+        // quirk: type_possible is within this scope, even though it was before the bracket
+    }
+    
+    once you read a for keyword, expect ( ), then the scope will be defined as the expression after
+
+
+    should you have a unique syntax for explicit getter and setter?
+
+    property defines:
+
+        Object::property {
+            get {
+                return self->property;
+            }
+            set (value) {
+                self->property = value;
+                .property = value;
+            }
+        }
+
+    method defines:
+
+        Type Object::method(arg, arg2) {
+            
+        }
 
     */
 }
