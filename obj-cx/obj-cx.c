@@ -13,13 +13,22 @@ Token *CX_read_tokens(CX self, String str, int *n_tokens) {
     enum TokenType seps[256];
     const char *separators = "[](){}.,+-&*~!/%<>=^|&?:;#";
     const char *puncts[] = {
-        "[", "]", "(", ")", "{", "}", ".", "->",
+        "[", "]", "(", ")", "{", "}", ".", "->", "^[", // <-- custom ^[meta]
         "++", "--", "&", "*", "+", "-", "~", "!",
         "/", "%", "<<", ">>", "<", ">", "<=", ">=", "==", "!=", "^", "|", "&&", "||",
         "?", ":", ";", "...",
         "=", "*=", "/=", "%=", "+=", "-=", "<<=", ">>=", "&=", "^=", "|=",
         ",", "#", "##",
         "<:", ":>", "<%", "%>", "%:", "%:%:"
+    };
+    const char punct_is_op[] = {
+        0, 0, 0, 0, 0, 0, 1, 1, 0,
+        1, 1, 1, 1, 1, 1, 1, 1,
+        0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1, 1, 0, 0,
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        0, 0, 0,
+        0, 0, 0, 0, 0, 0
     };
     const char *keywords[] = {
         "lignas","alignof","and","and_eq","asm","atomic_cancel","atomic_commit",
@@ -36,6 +45,22 @@ Token *CX_read_tokens(CX self, String str, int *n_tokens) {
         "synchronized","template","this","thread_local","throw","true","try",
         "typedef","typeid","typename","union","unsigned","using","virtual",
         "void","volatile","wchar_t","while","xor","xor_eq"
+    };
+    const char type_keywords[] = {
+        0,0,0,0,0,0,0,
+        0,0,0,0,0,0,
+        0,0,1,1,1,0,0,
+        0,0,0,0,0,0,
+        0,0,0,0,0,0,1,
+        0,0,1,0,0,0,0,
+        1,0,0,0,0,0,0,1,1,
+        0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,
+        0,0,0,0,0,0,
+        0,0,0,0,1,0,
+        0,0,0,0,0,0,0,
+        0,0,0,0,1,0,0,
+        0,0,1,0,0,0
     };
     int n_keywords = sizeof(keywords) / sizeof(const char *);
     int keyword_lens[n_keywords];
@@ -84,8 +109,11 @@ Token *CX_read_tokens(CX self, String str, int *n_tokens) {
                 if (t->type == TT_Identifier) {
                     for (int k = 0; k < n_keywords; k++) {
                         const char *keyword = keywords[k];
-                        if (length == keyword_lens[k] && memcmp(t->value, keyword, length) == 0)
+                        if (length == keyword_lens[k] && memcmp(t->value, keyword, length) == 0) {
+                            t->type_keyword = type_keywords[k] ? keyword : NULL;
                             t->type = TT_Keyword;
+                            t->keyword = keyword;
+                        }
                     }
                 }
                 t->length = length;
@@ -117,8 +145,10 @@ Token *CX_read_tokens(CX self, String str, int *n_tokens) {
                         const char *punct = puncts[p];
                         int punct_len = punct_lens[p];
                         if (punct_len == length && memcmp(value, punct, punct_len) == 0) {
+                            t->punct = punct;
                             t->type = TT_Punctuator;
                             t->length = punct_len;
+                            t->operator = (bool)punct_is_op[p];
                             cont  = true;
                             break;
                         }
@@ -150,7 +180,7 @@ bool CX_read_template_types(CX self, ClassDec cd, Token **pt) {
         return true;
     // read template types
     bool expect_identifier = true;
-    for (; t->value; t++) {
+    for (t++; t->value; t++) {
         Token *tname = t;
         if (tname->punct == ">") {
             if (!cd->templates) {
@@ -177,8 +207,49 @@ bool CX_read_template_types(CX self, ClassDec cd, Token **pt) {
         }
         expect_identifier = !expect_identifier;
     }
-    *pt = t;
+    *pt = ++t;
     return true;
+}
+
+int CX_read_expression(CX self, Token *t, Token **first_op, const char *op) {
+    int brace_depth = 0;
+    int count = 0;
+    int paren_depth = 0;
+
+    if (first_op)
+        *first_op = NULL;
+    while (t->value) {
+        if (brace_depth == 0 && t->punct == ";") {
+            if (paren_depth != 0) {
+                printf("expected ')' before ';' in expression\n");
+                exit(0);
+            }
+            return count;
+        } else if (t->punct == "{") {
+            brace_depth++;
+        } else if (t->punct == "}") {
+            if (--brace_depth < 0) {
+                printf("unexpected '}' in expression\n");
+                exit(0);
+            }
+        } else if (t->punct == "(") {
+            paren_depth++;
+        } else if (t->punct == ")") {
+            if (--paren_depth < 0) {
+                printf("unexpected ')' in expression\n");
+                exit(0);
+            }
+        } else if (t->operator && first_op && (t->punct == op) && !(*first_op)) {
+            *first_op = t;
+        }
+        t++;
+        count++;
+    }
+    if (t->value == NULL) {
+        printf("expected end of expression\n");
+        exit(0);
+    }
+    return count;
 }
 
 void expect_type(Token *token, enum TokenType type) {
@@ -202,27 +273,150 @@ bool CX_process(CX self, const char *file) {
             ClassDec cd = new(ClassDec);
             cd->name = ++t; // validate
             cd->members = new(Pairs);
+            t++;
             call(self, read_template_types, cd, &t);
+            if (t->punct == ":") {
+                t++;
+                if (t->type != TT_Identifier) {
+                    printf("expected super class identifier after :\n");
+                    exit(0);
+                }
+                String str_super = class_call(String, new_from_bytes, t->value, t->length);
+                cd->super_class = str_super;
+                t++;
+            }
             if ((t++)->punct != "{") {
                 printf("expected '{' character\n");
                 exit(0);
             }
-
             // read optional keywords such as static and private
+            while (t->punct != "}") {
+                MemberDec md = new(MemberDec);
+                for (int i = 0; i < 3; i++) {
+                    if (t->keyword == "static") {
+                        md->is_static = true;
+                        t++;
+                    } else if (t->keyword == "private") {
+                        md->is_private = true;
+                        t++;
+                    }
+                }
+                Token *equals = NULL;
+                int token_count = call(self, read_expression, t, &equals, "=");
+                if (token_count == 0) {
+                    if (md->is_static || md->is_private) {
+                        printf("expected expression\n");
+                        exit(0);
+                    }
+                    t++;
+                    continue;
+                }
+                Token *t_last = &t[token_count - 1];
+                if (t_last->punct == "]") {
+                    // meta data
+                    Token *found = NULL;
+                    for (Token *tt = t_last; tt != t; tt--) {
+                        if (tt->punct == "^[") {
+                            found = tt;
+                            bool expect_sep = false;
+                            int kv = 0;
+                            String key = NULL;
+                            String value = NULL;
+                            for (Token *p = tt; p != t_last; p++) {
+                                if (expect_sep && p->punct != ":") {
+                                    printf("expected ':' in meta data\n");
+                                    exit(0);
+                                } else if (!expect_sep) {
+                                    String v = class_call(String, new_from_bytes, p->value, p->length);
+                                    if (!key) {
+                                        key = v;
+                                    } else {
+                                        value = v;
+                                        if (!md->meta)
+                                            md->meta = new(Pairs);
+                                        pairs_add(md->meta, key, value);
+                                        key = value = NULL;
+                                    }
+                                }
+                                expect_sep = !expect_sep;
+                            }
+                            break;
+                        }
+                    }
+                    if (found)
+                        t_last = --found;
+                    // read backwards until you see a [
+                }
+                if (t_last->punct == ")") {
+                    // method
+                    int paren_depth = 1;
+                    for (Token *tt = t_last; tt != t; tt--) {
+                        if (tt->punct == "(") {
+                            if (--paren_depth == 0) {
+                                md->args = ++tt;
+                                paren_depth = 1;
+                                for (; tt != t_last; tt++) {
+                                    if (tt->punct == "(") {
+                                        paren_depth++;
+                                    } else if (tt->punct == ")") {
+                                        paren_depth--;
+                                    }
+                                    md->args_count++;
+                                }
+                                // parse arguments
+                            }
+                        } else if (tt->punct == ")") {
+                            paren_depth++;
+                        }
+                    }
+                    if (!md->args) {
+                        printf("expected '(' before ')'\n");
+                        exit(0);
+                    }
+                    t_last = md->args - 1;
+                    md->member_type = MT_Method;
+                } else {
+                    // property
+                    md->member_type = MT_Prop;
+                    if (equals) {
+                        Token *tt = ++equals;
+                        if (tt->punct == ";") {
+                            printf("expected rvalue in property assignment\n");
+                            exit(0);
+                        }
+                        md->assign = tt;
+                        md->assign_count = 1;
+                        for (tt++; tt->value && tt->punct != ";"; tt++) {
+                            md->assign_count++;
+                        }
+                    }
+                }
+                if (t_last == t) {
+                    printf("expected member\n");
+                    exit(0);
+                }
+                if (!((t_last->type == TT_Keyword && !t_last->type_keyword) || t_last->type == TT_Identifier)) {
+                    printf("expected member name\n");
+                    exit(0);
+                }
 
-            // type
-            expect_type(t, TT_Identifier);
-            String str_type = class_call(String, new_from_bytes, t->value, t->length);
-            MemberDec member = new(MemberDec);
-            member->type = t++;
-
-            // name
-            expect_type(t, TT_Identifier);
-            String str_name = class_call(String, new_from_bytes, t->value, t->length);
-            member->name = t++;
-            pairs_add(cd->members, str_name, member);
-
-            // expect meta ('[' or ';') for property, or ('[' or '(') for method
+                if (t_last->type != TT_Identifier) {
+                    printf("expected identifier (member name)\n");
+                    exit(0);
+                }
+                String str_name = class_call(String, new_from_bytes, t_last->value, t_last->length);
+                md->str_name = str_name;
+                md->name = t_last;
+                md->type = t;
+                for (Token *tt = t; tt != t_last; tt++) {
+                    md->type_count++;
+                }
+                if (md->type_count == 0) {
+                    printf("expected type (member)\n");
+                    exit(0);
+                }
+                pairs_add(cd->members, str_name, md);
+            }
         }
     }
 

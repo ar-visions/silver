@@ -1,4 +1,4 @@
 
-define Vector <double, float> : Base {
+declare Vector <double, float> : Base {
     private int test [key:value];
 }
