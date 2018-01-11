@@ -144,14 +144,14 @@ Token *CX_read_tokens(CX self, String str, int *n_tokens) {
     return tokens;
 }
 
-bool CX_read_template_types(CX self, ClassDec cd, int *cursor) {
-    Token *tokens = self->tokens;
-    if (tokens[*cursor].punct != "<")
+bool CX_read_template_types(CX self, ClassDec cd, Token **pt) {
+    Token *t = *pt;
+    if (t->punct != "<")
         return true;
     // read template types
     bool expect_identifier = true;
-    for (int t = tokens[*cursor]; t < n_tokens; t++) {
-        Token *tname = &tokens[t];
+    for (; t->value; t++) {
+        Token *tname = t;
         if (tname->punct == ">") {
             if (!cd->templates) {
                 printf("expected template type\n");
@@ -176,13 +176,13 @@ bool CX_read_template_types(CX self, ClassDec cd, int *cursor) {
             }
         }
         expect_identifier = !expect_identifier;
-        (*cursor)++;
     }
+    *pt = t;
     return true;
 }
 
-inline void expect_type(Token token, enum TokenType type) {
-    if (token.type != type) {
+void expect_type(Token *token, enum TokenType type) {
+    if (token->type != type) {
         printf("wrong token type\n");
         exit(0);
     }
@@ -192,21 +192,18 @@ bool CX_process(CX self, const char *file) {
     String str = class_call(String, from_file, file);
     int n_tokens = 0;
     self->tokens = call(self, read_tokens, str, &n_tokens);
-    Token *tokens = self->tokens;
     // gather up all class declarations
     
     printf("tokens:\n");
 
     // pass 1: collect classes
-    for (int i = 0; i < n_tokens; i++) {
-        Token *t = &tokens[i];
+    for (Token *t = self->tokens; t->value; t++) {
         if (t->length == 7 && strncmp(t->value, "declare", t->length) == 0) {
             ClassDec cd = new(ClassDec);
-            cd->name = &tokens[i + 1]; // validate
-            cd->methods = new(Pairs);
-            int cursor = i + 2;
-            call(self, read_template_types, cd, &cursor);
-            if (tokens[cursor++].punct != "{") {
+            cd->name = ++t; // validate
+            cd->members = new(Pairs);
+            call(self, read_template_types, cd, &t);
+            if ((t++)->punct != "{") {
                 printf("expected '{' character\n");
                 exit(0);
             }
@@ -214,16 +211,16 @@ bool CX_process(CX self, const char *file) {
             // read optional keywords such as static and private
 
             // type
-            expect_type(token[cursor], TT_Identifier);
-            String str_type = class_call(String, new_from_bytes, token[cursor].value, token[cursor].length);
+            expect_type(t, TT_Identifier);
+            String str_type = class_call(String, new_from_bytes, t->value, t->length);
             MemberDec member = new(MemberDec);
-            member->type = &token[cursor++];
+            member->type = t++;
 
             // name
-            expect_type(token[cursor], TT_Identifier);
-            String str_name = class_call(String, new_from_bytes, token[cursor].value, token[cursor].length);
-            member->name = &token[cursor++];
-            pairs_add(cd->methods, str_name, member);
+            expect_type(t, TT_Identifier);
+            String str_name = class_call(String, new_from_bytes, t->value, t->length);
+            member->name = t++;
+            pairs_add(cd->members, str_name, member);
 
             // expect meta ('[' or ';') for property, or ('[' or '(') for method
         }
