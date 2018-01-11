@@ -27,6 +27,7 @@ declare(List, Base);
 #define list_with_item(S) (class_call(List, with_item_size, sizeof(S)))
 #define instances(O,C,V)  llist_each(&O->list, V) if (inherits(V,C))
 #define each(O,V)         llist_each(&O->list, V)
+#define reverse(O,V)      llist_each2(&O->list, V)
 #define list_count(L)     ((L) ? ((L)->list.count) : 0)
 #define list_push(L,O)    call((L), push, base(O))
 #define list_remove(L,O)  call((L), remove, base(O))
