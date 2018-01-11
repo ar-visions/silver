@@ -36,17 +36,6 @@ void Base_class_init(Class c) {
     release(props);
 
     char **mnames = (char **)cbase->mnames;
-    cbase->pcount = 0;
-    for (int i = 0; i < cbase->mcount; i++) {
-        char *start = mnames[i];
-        if (strchr(start, '*'))
-            continue;
-        char *mname = strchr(start, ' ');
-        if (mname && strncmp(mname, " get_", 5) == 0)
-            cbase->pcount++;
-    }
-    if (!cbase->pcount)
-        return;
     for (int i = 0; i < cbase->mcount; i++) {
         char *start = mnames[i];
         if (strchr(start, '*'))

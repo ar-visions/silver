@@ -447,8 +447,33 @@ bool CX_process(CX self, const char *file) {
     if there is anything assigned at all, an init is created
 
     declare Vector <double, float> : Base {
-        private int test ^[key:value];
+        int test ^[key:value];
     }
+
+    struct _class_Vector {
+        struct _class_Base *parent;
+        const char *name;
+        const char *super_name;
+        unsigned int flags;
+        struct _object_Pairs *meta;
+        int obj_size;
+        int mcount;
+        char **mnames;
+        Method m[1];
+        int (*get_test)(struct _object_Vector *);
+        void (*set_test)(struct _object_Vector *, int);
+    }
+
+    new Object  -> new_object(Object_cl, 0)
+    auto Object -> obj->cl->autorelease(new_object(Object_cl, 0))
+    retain      -> obj->cl->retain(obj)
+    release     -> obj->cl->release(obj)
+    autorelease -> obj->cl->autorelease(obj)
+    object.method_call(arguments) -> object->cl->method_call(arguments)
+    .prop = value -> self->cl->set_prop(self, value)
+
+    // Output one global constructor per module; gather up code as the module is built, and the last module will be the ctor.c
+    // Use the framework implementation to allow for different parsing features, effectively using the framework to add to the language
 
     */
 }
