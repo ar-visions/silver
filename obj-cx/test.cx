@@ -1,4 +1,0 @@
-
-declare Vector <double, float> : Base {
-    private int test ^[key:value];
-}

@@ -290,6 +290,15 @@ void expect_type(Token *token, enum TokenType type) {
     }
 }
 
+void CX_resolve_supers(CX self) {
+    KeyValue kv;
+    each_pair(self->classes, kv) {
+        ClassDec cd = (ClassDec)kv->value;
+        if (cd->super_class)
+            cd->parent = pairs_value(self->classes, cd->super_class, ClassDec);
+    }
+}
+
 bool CX_read_declarations(CX self) {
     self->classes = new(Pairs);
     for (Token *t = self->tokens; t->value; t++) {
@@ -298,6 +307,7 @@ bool CX_read_declarations(CX self) {
             cd->name = ++t; // validate
             String class_str = class_call(String, new_from_bytes, t->value, t->length);
             pairs_add(self->classes, class_str, cd);
+            cd->class_name = class_str;
             cd->members = new(Pairs);
             t++;
             call(self, read_template_types, cd, &t);
@@ -459,7 +469,7 @@ bool CX_read_declarations(CX self) {
 bool CX_replace_declarations(CX self) {
 }
 
-String CX_str_from_token(CX self, Token *t) {
+String CX_token_string(CX self, Token *t) {
     if (!t->value)
         return NULL;
     return class_call(String, new_from_bytes, t->value, t->length);
@@ -470,13 +480,13 @@ bool CX_replace_class_op(CX self, Token *t_start, Token *t,
     String s_token = call(self, token_string, t);
     MemberDec md = call(cd, member_lookup, s_token);
     if (!md) {
-        prinf("member: %s not found on class: %s\n", s_token, s_inst);
+        printf("member: %s not found on class: %s\n", s_token->buffer, cd->class_name->buffer);
         exit(0);
     }
     if ((++t)->punct == "(") {
         // method call
         // expect md->type == TT_Method
-        if (md->type != MT_Method) {
+        if (md->member_type != MT_Method) {
             printf("invalid call to property\n");
             exit(0);
         }
@@ -516,6 +526,7 @@ bool CX_replace_definitions(CX self) {
                     Pairs top = (Pairs)call(scope, last);
                     pairs_add(top, str_name, cd);
                 } else if (t->punct == "::") {
+                    bool base_scope = list_count(scope) == 1;
                     // this can be a get, set, or method call
                     // create method call containing the parser below
                     // facilitate object-scope or class-scope
@@ -533,7 +544,7 @@ bool CX_replace_definitions(CX self) {
                         Token *t_start;
                         if ((++t)->punct == ".") {
                             if ((++t)->type == TT_Identifier) {
-                                call(self, class_op_replacement, t_start, t, cd, str_ident);
+                                call(self, replace_class_op, t_start, t, cd, str_ident);
                             }
                         }
                         break;
@@ -553,6 +564,7 @@ bool CX_process(CX self, const char *file) {
 
     // 1: collect classes
     call(self, read_declarations);
+    call(self, resolve_supers);
 
     // 2: replace classes sections
     //call(self, replace_declarations);

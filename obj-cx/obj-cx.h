@@ -39,6 +39,7 @@ struct _object_ClassDec;
     method(D,T,C,bool,replace_class_op,(C, Token *, Token *, \
         struct _object_ClassDec *, String)) \
     method(D,T,C,String,token_string,(C, Token *)) \
+    method(D,T,C,void,resolve_supers,(C)) \
     method(D,T,C,bool,process,(C, const char *)) \
     var(D,T,C,Token *,tokens) \
     var(D,T,C,Pairs,classes)
@@ -64,6 +65,7 @@ declare(MemberDec, Base)
     method(D,T,C,MemberDec,member_lookup,(C,String)) \
     var(D,T,C,C,parent)                    \
     var(D,T,C,Token *,name)                \
+    var(D,T,C,String,class_name)           \
     var(D,T,C,String,super_class)          \
     var(D,T,C,List,templates)              \
     var(D,T,C,Pairs,members)               \
