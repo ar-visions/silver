@@ -1,0 +1,8 @@
+
+class Test {
+    int value;
+
+    void method(int arg, int arg2) {
+        printf("value = %d\n", self.value);
+    }
+}
