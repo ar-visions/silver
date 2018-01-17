@@ -6,7 +6,7 @@ class Test {
             return self.value;
         }
         set(value) {
-            self.value = value;
+            self.value = (self.value + value) + 1;
         }
     };
 
