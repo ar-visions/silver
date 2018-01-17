@@ -502,7 +502,7 @@ String CX_token_string(CX self, Token *t) {
 }
 
 bool CX_class_op_out(CX self, Token *t_start, Token *t,
-        ClassDec cd, Token *t_ident, bool is_instance) {
+        ClassDec cd, Token *t_ident, bool is_instance, Token **t_after) {
     String s_token = call(self, token_string, t);
     String s_ident = call(self, token_string, t_ident);
     Token *t_member = t;
@@ -533,6 +533,7 @@ bool CX_class_op_out(CX self, Token *t_start, Token *t,
             exit(0);
         }
         call(self, token_out, t, ' ');
+        *t_after = t;
         // perform call replacement here
     } else if (t->assign) {
         Token *t_assign = t++;
@@ -547,6 +548,7 @@ bool CX_class_op_out(CX self, Token *t_start, Token *t,
             for (int i = 0; i < n; i++)
                 call(self, token_out, &t[i], ' ');
             fprintf(stdout, ")");
+            *t_after = t + n - 1;
         } else {
             // set object var
             if (is_instance) {
@@ -555,9 +557,11 @@ bool CX_class_op_out(CX self, Token *t_start, Token *t,
             } else {
                 fprintf(stdout, "%s_cl.", cd->class_name->buffer);
             }
-            call(self, token_out, t_member, '=');
+            call(self, token_out, t_member, 0);
+            call(self, token_out, t_assign, 0);
             for (int i = 0; i < n; i++)
                 call(self, token_out, &t[i], ' ');
+            *t_after = t + n - 1;
         }
         // call setter if it exists (note: allow setters to be sub-classable, calling super.prop = value; and such)
     } else {
@@ -578,6 +582,7 @@ bool CX_class_op_out(CX self, Token *t_start, Token *t,
             }
             call(self, token_out, t_member, ' ');
         }
+        *t_after = t_member;
     }
     return true;
 }
@@ -610,7 +615,7 @@ void CX_code_out(CX self, List scope, Token *method_start, Token *method_end) {
                     pairs_add(top, str_name, cd);
                 } else if (t->punct == ".") {
                     if ((++t)->type == TT_Identifier)
-                        call(self, class_op_out, t_start, t, cd, t_ident, false);
+                        call(self, class_op_out, t_start, t, cd, t_ident, false, &t);
                 } else {
                     call(self, token_out, t - 1, ' ');
                     call(self, token_out, t, ' ');
@@ -627,7 +632,7 @@ void CX_code_out(CX self, List scope, Token *method_start, Token *method_end) {
                         Token *t_start = t;
                         if ((++t)->punct == ".") {
                             if ((++t)->type == TT_Identifier) {
-                                call(self, class_op_out, t_start, t, cd, t_ident, true);
+                                call(self, class_op_out, t_start, t, cd, t_ident, true, &t);
                                 found = true;
                             }
                         }
@@ -638,7 +643,7 @@ void CX_code_out(CX self, List scope, Token *method_start, Token *method_end) {
                     call(self, token_out, t, ' ');
             }
         } else {
-            call(self, token_out, t, ' ');
+            call(self, token_out, t, 0);
         }
         if (t == method_end)
             break;
@@ -660,7 +665,7 @@ void CX_token_out(CX self, Token *t, int sep) {
         fprintf(stdout, "%c", *after);
         after++;
     }
-    if (sep > 0)
+    if (sep != ' ' && sep > 0)
         fprintf(stdout, "%c", sep);
 }
 
@@ -693,6 +698,7 @@ bool CX_replace_classes(CX self) {
                 call(self, token_out, &md->args[a], ' ');
             fprintf(stdout, ")");
             call(self, code_out, scope, md->block_start, md->block_end);
+            fprintf(stdout, "\n");
         }
     }
 }

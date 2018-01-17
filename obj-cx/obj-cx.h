@@ -37,7 +37,7 @@ struct _object_ClassDec;
     method(D,T,C,bool,read_classes,(C)) \
     method(D,T,C,bool,replace_classes,(C)) \
     method(D,T,C,bool,class_op_out,(C, Token *, Token *, \
-        struct _object_ClassDec *, Token *, bool)) \
+        struct _object_ClassDec *, Token *, bool, Token **)) \
     method(D,T,C,String,token_string,(C, Token *)) \
     method(D,T,C,void,resolve_supers,(C)) \
     method(D,T,C,void,token_out,(C, Token *, int)) \
