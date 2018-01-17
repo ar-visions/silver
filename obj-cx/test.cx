@@ -1,6 +1,14 @@
+module outside as o
 
 class Test {
-    int value;
+    int value {
+        get {
+            return self.value;
+        }
+        set(value) {
+            self.value = value;
+        }
+    };
 
     void method(int arg, int arg2) {
         printf("value = %d\n", self.value);

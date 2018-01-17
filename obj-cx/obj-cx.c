@@ -197,6 +197,7 @@ find_punct:
         }
         was_backslash = b == backslash;
     }
+    #if 0
     for (int i = 0; i < nt; i++) {
         Token *t = &tokens[i];
         char buf[256];
@@ -204,7 +205,7 @@ find_punct:
         buf[t->length] = 0;
         printf("token:%s\n", buf);
     }
-
+    #endif
     *n_tokens = nt;
     return tokens;
 }
@@ -261,9 +262,9 @@ int CX_read_expression(CX self, Token *t, Token **b_start, Token **b_end) {
                 exit(0);
             }
         }
-        if (brace_depth == 0 && (t->punct == ";" || t->punct == ")" || t->punct == ",")) {
+        if (brace_depth == 0 && (t->punct == "{" || t->punct == ";" || t->punct == ")" || t->punct == ",")) {
             if (paren_depth == 0) {
-                if ((++t)->punct == "{") {
+                if (t->punct == "{" || (++t)->punct == "{") {
                     brace_depth = 1;
                     *b_start = t;
                     while ((++t)->value) {
@@ -373,6 +374,10 @@ bool CX_read_classes(CX self) {
                     continue;
                 }
                 Token *t_last = &t[token_count - 1];
+                if (t[token_count].punct == ")") {
+                    t_last++;
+                    token_count++;
+                }
                 if (t_last->punct == "]") {
                     bool found_meta = false;
                     for (Token *tt = t_last; tt != t; tt--) {
@@ -418,21 +423,14 @@ bool CX_read_classes(CX self) {
                 }
                 if (t_last->punct == ")") {
                     // method
-                    int paren_depth = 1;
-                    for (Token *tt = t_last; tt != t; tt--) {
+                    int paren_depth = 0;
+                    int n_args = -1;
+                    for (Token *tt = t_last; tt != t; tt--, n_args++) {
                         if (tt->punct == "(") {
                             if (--paren_depth == 0) {
                                 md->args = ++tt;
-                                paren_depth = 1;
-                                for (; tt != t_last; tt++) {
-                                    if (tt->punct == "(") {
-                                        paren_depth++;
-                                    } else if (tt->punct == ")") {
-                                        paren_depth--;
-                                    }
-                                    md->args_count++;
-                                }
-                                // parse arguments
+                                md->args_count = n_args;
+                                break;
                             }
                         } else if (tt->punct == ")") {
                             paren_depth++;
@@ -442,7 +440,7 @@ bool CX_read_classes(CX self) {
                         printf("expected '(' before ')'\n");
                         exit(0);
                     }
-                    t_last = md->args - 1;
+                    t_last = md->args - 2;
                     md->member_type = MT_Method;
                 } else {
                     // property
@@ -503,15 +501,22 @@ String CX_token_string(CX self, Token *t) {
     return class_call(String, new_from_bytes, t->value, t->length);
 }
 
-bool CX_replace_class_op(CX self, Token *t_start, Token *t,
-        ClassDec cd, String s_inst) {
+bool CX_class_op_out(CX self, Token *t_start, Token *t,
+        ClassDec cd, Token *t_ident, bool is_instance) {
     String s_token = call(self, token_string, t);
+    String s_ident = call(self, token_string, t_ident);
+    Token *t_member = t;
     MemberDec md = call(cd, member_lookup, s_token);
     if (!md) {
         printf("member: %s not found on class: %s\n", s_token->buffer, cd->class_name->buffer);
         exit(0);
     }
     if ((++t)->punct == "(") {
+        fprintf(stdout, "%s_cl.", cd->class_name->buffer);
+        call(self, token_out, t, ' ');
+        if (is_instance) {
+            call(self, token_out, t_ident, t->punct == ")" ? ',' : ' ');
+        }
         // method call
         // expect md->type == TT_Method
         if (md->member_type != MT_Method) {
@@ -520,67 +525,143 @@ bool CX_replace_class_op(CX self, Token *t_start, Token *t,
         }
         t++;
         int n = call(self, read_expression, t, NULL, NULL);
+        for (int i = 0; i < n; i++) {
+            call(self, token_out, &t[i], ' ');
+        }
+        if ((++t)->punct != ")") {
+            printf("expected ')'\n");
+            exit(0);
+        }
+        call(self, token_out, t, ' ');
         // perform call replacement here
     } else if (t->assign) {
         Token *t_assign = t++;
         int n = call(self, read_expression, t, NULL, NULL);
-        // perform assigment replacement here
+        if (md->setter_start) {
+            // call explicit setter
+            fprintf(stdout, "%s_cl.set_", cd->class_name->buffer);
+            call(self, token_out, t_member, '(');
+            if (is_instance)
+                call(self, token_out, t_ident, ',');
+            fprintf(stdout, "(");
+            for (int i = 0; i < n; i++)
+                call(self, token_out, &t[i], ' ');
+            fprintf(stdout, ")");
+        } else {
+            // set object var
+            if (is_instance) {
+                call(self, token_out, t_ident, 0);
+                fprintf(stdout, "->");
+            } else {
+                fprintf(stdout, "%s_cl.", cd->class_name->buffer);
+            }
+            call(self, token_out, t_member, '=');
+            for (int i = 0; i < n; i++)
+                call(self, token_out, &t[i], ' ');
+        }
+        // call setter if it exists (note: allow setters to be sub-classable, calling super.prop = value; and such)
     } else {
-        // get
-        int n = 0;
-        // perform get replacement
+        if (md->getter_start) {
+            // call explicit getter (class or instance)
+            fprintf(stdout, "%s_cl.get_", cd->class_name->buffer);
+            call(self, token_out, t_member, '(');
+            if (is_instance)
+                call(self, token_out, t_ident, ',');
+            fprintf(stdout, ")");
+        } else {
+            // get object->var (class or instance)
+            if (is_instance) {
+                call(self, token_out, t_ident, 0);
+                fprintf(stdout, "->");
+            } else {
+                fprintf(stdout, "%s_cl.", cd->class_name->buffer);
+            }
+            call(self, token_out, t_member, ' ');
+        }
     }
     return true;
 }
 
-void CX_replace_method_block(CX self, List scope,
-        Token *method_start, Token *method_end, Token **replace, int *replace_count) {
+void CX_code_out(CX self, List scope, Token *method_start, Token *method_end) {
     int brace_depth = 0;
     for (Token *t = method_start; ; t++) {
         // find 
         if (t->punct == "{" || t->keyword == "for") {
+            call(self, token_out, t, ' ');
             if (brace_depth++ != 0)
                 list_push(scope, new(Pairs));
         } else if (t->punct == "}") {
+            call(self, token_out, t, ' ');
             brace_depth--;
             list_pop(scope, Pairs);
         } else if (t->type == TT_Identifier) {
+            Token *t_ident = t;
             // check if identifier exists as class
             String str_ident = class_call(String, new_from_bytes, t->value, t->length);
             ClassDec cd = pairs_value(self->classes, str_ident, ClassDec);
             if (cd) {
                 Token *t_start = t;
                 if ((++t)->type == TT_Identifier) {
+                    call(self, token_out, t - 1, ' ');
+                    call(self, token_out, t, ' ');
                     // variable declared
                     String str_name = class_call(String, new_from_bytes, t->value, t->length);
                     Pairs top = (Pairs)call(scope, last);
                     pairs_add(top, str_name, cd);
                 } else if (t->punct == ".") {
-                    // member access
                     if ((++t)->type == TT_Identifier)
-                        call(self, replace_class_op, t_start, t, cd, str_ident);
+                        call(self, class_op_out, t_start, t, cd, t_ident, false);
+                } else {
+                    call(self, token_out, t - 1, ' ');
+                    call(self, token_out, t, ' ');
                 }
             } else {
                 ClassDec cd;
                 LList *list = &scope->list;
                 Pairs p = (Pairs)list->last->data;
+                bool found = false;
                 for (LItem *_i = list->last; _i; _i = _i->prev,
                         p = _i ? (typeof(p))_i->data : NULL) {
                     ClassDec cd = pairs_value(p, str_ident, ClassDec);
                     if (cd) {
                         Token *t_start = t;
                         if ((++t)->punct == ".") {
-                            if ((++t)->type == TT_Identifier)
-                                call(self, replace_class_op, t_start, t, cd, str_ident);
+                            if ((++t)->type == TT_Identifier) {
+                                call(self, class_op_out, t_start, t, cd, t_ident, true);
+                                found = true;
+                            }
                         }
                         break;
                     }
                 }
+                if (!found)
+                    call(self, token_out, t, ' ');
             }
+        } else {
+            call(self, token_out, t, ' ');
         }
         if (t == method_end)
             break;
     }
+}
+
+static Token *t_token_last;
+
+void CX_token_out(CX self, Token *t, int sep) {
+    if (t_token_last == t) {
+        int test = 0;
+        test++;
+    }
+    for (int i = 0; i < t->length; i++) {
+        fprintf(stdout, "%c", t->value[i]);
+    }
+    const char *after = &t->value[t->length];
+    while (*after && isspace(*after)) {
+        fprintf(stdout, "%c", *after);
+        after++;
+    }
+    if (sep > 0)
+        fprintf(stdout, "%c", sep);
 }
 
 // verify the code executes as planned
@@ -597,11 +678,21 @@ bool CX_replace_classes(CX self) {
                 continue;
             Pairs top = new(Pairs);
             list_push(scope, top);
-            if (!md->is_static)
-                pairs_add(top, new_string("self"), cd);
             Token *out = NULL;
             int count = 0;
-            call(self, replace_method_block, scope, md->block_start, md->block_end, &out, &count);
+            call(self, token_out, md->type, ' '); // <-- must output all of the type info; such as const Type *
+            call(self, token_out, md->name, '(');
+            if (!md->is_static) {
+                pairs_add(top, new_string("self"), cd);
+                call(self, token_out, cd->name, ' ');
+                fprintf(stdout, "self");
+                if (md->args_count)
+                    fprintf(stdout, ", ");
+            }
+            for (int a = 0; a < md->args_count; a++)
+                call(self, token_out, &md->args[a], ' ');
+            fprintf(stdout, ")");
+            call(self, code_out, scope, md->block_start, md->block_end);
         }
     }
 }
