@@ -501,7 +501,7 @@ String CX_token_string(CX self, Token *t) {
     return class_call(String, new_from_bytes, t->value, t->length);
 }
 
-bool CX_class_op_out(CX self, Token *t_start, Token *t,
+bool CX_class_op_out(CX self, List scope, Token *t_start, Token *t,
         ClassDec cd, Token *t_ident, bool is_instance, Token **t_after) {
     String s_token = call(self, token_string, t);
     String s_ident = call(self, token_string, t_ident);
@@ -545,10 +545,9 @@ bool CX_class_op_out(CX self, Token *t_start, Token *t,
             if (is_instance)
                 call(self, token_out, t_ident, ',');
             fprintf(stdout, "(");
-            for (int i = 0; i < n; i++)
-                call(self, token_out, &t[i], ' ');
+            call(self, code_out, scope, t, &t[n]);
             fprintf(stdout, ")");
-            *t_after = t + n - 1;
+            *t_after = t + n;
         } else {
             // set object var
             if (is_instance) {
@@ -559,9 +558,8 @@ bool CX_class_op_out(CX self, Token *t_start, Token *t,
             }
             call(self, token_out, t_member, 0);
             call(self, token_out, t_assign, 0);
-            for (int i = 0; i < n; i++)
-                call(self, token_out, &t[i], ' ');
-            *t_after = t + n - 1;
+            call(self, code_out, scope, t, &t[n]);
+            *t_after = t + n;
         }
         // call setter if it exists (note: allow setters to be sub-classable, calling super.prop = value; and such)
     } else {
@@ -615,7 +613,7 @@ void CX_code_out(CX self, List scope, Token *method_start, Token *method_end) {
                     pairs_add(top, str_name, cd);
                 } else if (t->punct == ".") {
                     if ((++t)->type == TT_Identifier)
-                        call(self, class_op_out, t_start, t, cd, t_ident, false, &t);
+                        call(self, class_op_out, scope, t_start, t, cd, t_ident, false, &t);
                 } else {
                     call(self, token_out, t - 1, ' ');
                     call(self, token_out, t, ' ');
@@ -632,7 +630,7 @@ void CX_code_out(CX self, List scope, Token *method_start, Token *method_end) {
                         Token *t_start = t;
                         if ((++t)->punct == ".") {
                             if ((++t)->type == TT_Identifier) {
-                                call(self, class_op_out, t_start, t, cd, t_ident, true, &t);
+                                call(self, class_op_out, scope, t_start, t, cd, t_ident, true, &t);
                                 found = true;
                             }
                         }
