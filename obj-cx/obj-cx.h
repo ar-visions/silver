@@ -28,12 +28,14 @@ typedef struct _Token {
 } Token;
 
 struct _object_ClassDec;
+struct _object_MemberDec;
 
 #define _CX(D,T,C) _Base(spr,T,C)   \
     method(D,T,C,Token *,read_tokens,(C,String,int *)) \
     method(D,T,C,bool,read_template_types,(C,struct _object_ClassDec *, Token **)) \
     method(D,T,C,void,code_out,(C, List, Token *, Token *)) \
     method(D,T,C,int,read_expression,(C, Token *, Token **, Token **)) \
+    method(D,T,C,void,read_property_blocks,(C, struct _object_ClassDec *, struct _object_MemberDec *)) \
     method(D,T,C,bool,read_classes,(C)) \
     method(D,T,C,bool,replace_classes,(C)) \
     method(D,T,C,bool,class_op_out,(C, List, Token *, Token *, \
@@ -51,6 +53,7 @@ declare(CX, Base)
     var(D,T,C,Token *,type)                \
     var(D,T,C,int,type_count)              \
     var(D,T,C,String,str_name)             \
+    var(D,T,C,Token *,setter_var)          \
     var(D,T,C,Token *,getter_start)        \
     var(D,T,C,Token *,getter_end)          \
     var(D,T,C,Token *,setter_start)        \
