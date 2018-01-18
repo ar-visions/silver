@@ -62,7 +62,8 @@ Token *CX_read_tokens(CX self, String str, int *n_tokens) {
         "sizeof","static","static_assert","static_cast","struct","switch",
         "synchronized","template","this","thread_local","throw","true","try",
         "typedef","typeid","typename","union","unsigned","using","virtual",
-        "void","volatile","wchar_t","while","xor","xor_eq"
+        "void","volatile","wchar_t","while","xor","xor_eq",
+        "get","set"
     };
     const char type_keywords[] = {
         0,0,0,0,0,0,0,
@@ -316,6 +317,48 @@ void CX_resolve_supers(CX self) {
     }
 }
 
+void CX_read_property_blocks(CX self, ClassDec cd, MemberDec md) {
+    int brace_depth = 0;
+    int parens_depth = 0;
+    const char *keyword_found = NULL;
+    Token *start = NULL;
+    for (Token *t = md->block_start; t->value; t++) {
+        if (t->punct == "{") {
+            if (++brace_depth == 2) {
+                // read backwards to find signature
+                if (!keyword_found) {
+                    fprintf(stderr, "expected get/set\n");
+                    exit(0);
+                }
+                start = t;
+            }
+        } else if (t->punct == "}") {
+            if (--brace_depth == 1) {
+                if (keyword_found == "get") {
+                    md->getter_start = start;
+                    md->getter_end = t;
+                } else {
+                    md->setter_start = start;
+                    md->setter_end = t;
+                }
+            }
+            if (brace_depth == 0)
+                break;
+        } else if (t->punct == "(") {
+            parens_depth++;
+        } else if (t->punct == ")") {
+            parens_depth--;
+        } else if (parens_depth == 1 && (t->type == TT_Identifier || t->type == TT_Keyword)) {
+            if (keyword_found == "set")
+                md->setter_var = t;
+        }
+        if (brace_depth == 1 && parens_depth == 0) {
+            if (t->keyword == "get" || t->keyword == "set")
+                keyword_found = t->keyword;
+        }
+    }
+}
+
 /* read class information, including method and property blocks */
 /* method expressions in the class must include a code block; this is optional for properties */
 bool CX_read_classes(CX self) {
@@ -483,6 +526,10 @@ bool CX_read_classes(CX self) {
                     printf("expected type (member)\n");
                     exit(0);
                 }
+                if (md->member_type == MT_Prop && block_start) {
+                    // read get and set blocks
+                    call(self, read_property_blocks, cd, md);
+                }
                 pairs_add(cd->members, str_name, md);
                 if (block_end) {
                     t = block_end + 1;
@@ -568,7 +615,7 @@ bool CX_class_op_out(CX self, List scope, Token *t_start, Token *t,
             fprintf(stdout, "%s_cl.get_", cd->class_name->buffer);
             call(self, token_out, t_member, '(');
             if (is_instance)
-                call(self, token_out, t_ident, ',');
+                call(self, token_out, t_ident, 0);
             fprintf(stdout, ")");
         } else {
             // get object->var (class or instance)
@@ -596,7 +643,8 @@ void CX_code_out(CX self, List scope, Token *method_start, Token *method_end) {
         } else if (t->punct == "}") {
             call(self, token_out, t, ' ');
             brace_depth--;
-            list_pop(scope, Pairs);
+            if (brace_depth != 0)
+                list_pop(scope, Pairs);
         } else if (t->type == TT_Identifier) {
             Token *t_ident = t;
             // check if identifier exists as class
@@ -681,22 +729,66 @@ bool CX_replace_classes(CX self) {
                 continue;
             Pairs top = new(Pairs);
             list_push(scope, top);
-            Token *out = NULL;
-            int count = 0;
-            call(self, token_out, md->type, ' '); // <-- must output all of the type info; such as const Type *
-            call(self, token_out, md->name, '(');
-            if (!md->is_static) {
-                pairs_add(top, new_string("self"), cd);
-                call(self, token_out, cd->name, ' ');
-                fprintf(stdout, "self");
-                if (md->args_count)
-                    fprintf(stdout, ", ");
+            if (md->member_type == MT_Method) {
+                call(self, token_out, md->type, ' '); // <-- must output all of the type info; such as const Type *
+                call(self, token_out, md->name, '(');
+                if (!md->is_static) {
+                    call(self, token_out, cd->name, ' ');
+                    fprintf(stdout, "self");
+                    pairs_add(top, new_string("self"), cd);
+                    if (md->args_count)
+                        fprintf(stdout, ", ");
+                }
+                for (int a = 0; a < md->args_count; a++)
+                    call(self, token_out, &md->args[a], ' ');
+                fprintf(stdout, ")");
+                call(self, code_out, scope, md->block_start, md->block_end);
+                fprintf(stdout, "\n");
+            } else if (md->member_type == MT_Prop) {
+                for (int i = 0; i < 2; i++) {
+                    Token *block_start, *block_end;
+                    if (i == 0) {
+                        block_start = md->getter_start;
+                        block_end = md->getter_end;
+                    } else {
+                        block_start = md->setter_start;
+                        block_end = md->setter_end;
+                    }
+                    if (!block_start)
+                        continue;
+                    if (i == 0) {
+                        call(self, token_out, md->type, ' ');
+                        fprintf(stdout, "get_");
+                        call(self, token_out, md->name, '(');
+                    } else {
+                        fprintf(stdout, "void ");
+                        fprintf(stdout, "set_");
+                        call(self, token_out, md->name, '(');
+                    }
+                    if (!md->is_static) {
+                        call(self, token_out, cd->name, ' ');
+                        fprintf(stdout, "self");
+                        pairs_add(top, new_string("self"), cd);
+                        if (i == 1) {
+                            fprintf(stdout, ", ");
+                        }
+                    }
+                    if (i == 1) {
+                        call(self, token_out, md->type, ' ');
+                        call(self, token_out, md->setter_var, ' ');
+                        String s_type = call(self, token_string, md->setter_var);
+                        ClassDec cd_type = pairs_value(self->classes, s_type, ClassDec);
+                        if (cd_type) {
+                            String s_var = call(self, token_string, md->setter_var);
+                            pairs_add(top, s_var, cd_type);
+                        }
+                    }
+                    fprintf(stdout, ")");
+                    call(self, code_out, scope, block_start, block_end);
+                    fprintf(stdout, "\n");
+                    call(top, clear);
+                }
             }
-            for (int a = 0; a < md->args_count; a++)
-                call(self, token_out, &md->args[a], ' ');
-            fprintf(stdout, ")");
-            call(self, code_out, scope, md->block_start, md->block_end);
-            fprintf(stdout, "\n");
         }
     }
 }

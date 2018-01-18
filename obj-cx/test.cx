@@ -5,11 +5,10 @@ class Test {
         get {
             return self.value;
         }
-        set(value) {
-            self.value = (self.value + value) + 1;
+        set (value) {
+            return self.value;
         }
-    };
-
+    }
     void method(int arg, int arg2) {
         printf("value = %d\n", self.value);
     }
