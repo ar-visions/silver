@@ -11,7 +11,8 @@ enum TokenType {
 
 enum MemberType {
     MT_Prop = 0,
-    MT_Method
+    MT_Method,
+    MT_Constructor
 };
 
 typedef struct _Token {
@@ -60,6 +61,9 @@ declare(CX, Base)
     var(D,T,C,Token *,setter_end)          \
     var(D,T,C,Token *,block_start)         \
     var(D,T,C,Token *,block_end)           \
+    var(D,T,C,Token **,arg_types)          \
+    var(D,T,C,int,arg_types_count)         \
+    var(D,T,C,int *,at_token_count)        \
     var(D,T,C,Token *,name)                \
     var(D,T,C,Token *,assign)              \
     var(D,T,C,int,assign_count)            \

@@ -63,7 +63,7 @@ Token *CX_read_tokens(CX self, String str, int *n_tokens) {
         "synchronized","template","this","thread_local","throw","true","try",
         "typedef","typeid","typename","union","unsigned","using","virtual",
         "void","volatile","wchar_t","while","xor","xor_eq",
-        "get","set"
+        "get","set","construct"
     };
     const char type_keywords[] = {
         0,0,0,0,0,0,0,
@@ -465,7 +465,7 @@ bool CX_read_classes(CX self) {
                     }
                 }
                 if (t_last->punct == ")") {
-                    // method
+                    // method (or constructor)
                     int paren_depth = 0;
                     int n_args = -1;
                     for (Token *tt = t_last; tt != t; tt--, n_args++) {
@@ -477,6 +477,32 @@ bool CX_read_classes(CX self) {
                             }
                         } else if (tt->punct == ")") {
                             paren_depth++;
+                        }
+                    }
+                    if (n_args > 0) {
+                        md->arg_types = alloc_bytes(sizeof(Token *) * n_args);
+                        md->at_token_count = alloc_bytes(sizeof(int) * n_args);
+                        Token *t_start = md->args;
+                        Token *t_cur = md->args;
+                        int paren_depth = 0;
+                        int type_tokens = 0;
+                        while (paren_depth >= 0) {
+                            if (t_cur->punct == "," || (paren_depth == 0 && t_cur->punct == ")")) {
+                                int tc = md->arg_types_count;
+                                md->arg_types[tc] = t_start;
+                                md->at_token_count[tc] = type_tokens - 1;
+                                md->arg_types_count++;
+                                t_start = t_cur + 1;
+                                type_tokens = 0;
+                            } else {
+                                type_tokens++;
+                            }
+                            if (t_cur->punct == "(") {
+                                paren_depth++;
+                            } else if (t_cur->punct == ")") {
+                                paren_depth--;
+                            }
+                            t_cur++;
                         }
                     }
                     if (!md->args) {
@@ -501,30 +527,43 @@ bool CX_read_classes(CX self) {
                         }
                     }
                 }
+                bool constructor = false;
                 if (t_last == t) {
-                    printf("expected member\n");
-                    exit(0);
+                    if (t->keyword == "construct") {
+                        constructor = true;
+                        md->member_type = MT_Constructor;
+                    } else {
+                        printf("expected member\n");
+                        exit(0);
+                    }
                 }
-                if (!((t_last->type == TT_Keyword && !t_last->type_keyword) || t_last->type == TT_Identifier)) {
-                    printf("expected member name\n");
-                    exit(0);
-                }
-                if (t_last->type != TT_Identifier) {
-                    printf("expected identifier (member name)\n");
-                    exit(0);
+                if (!constructor) {
+                    if (!((t_last->type == TT_Keyword && !t_last->type_keyword) || t_last->type == TT_Identifier)) {
+                        printf("expected member name\n");
+                        exit(0);
+                    }
+                    if (t_last->type != TT_Identifier) {
+                        printf("expected identifier (member name)\n");
+                        exit(0);
+                    }
                 }
                 String str_name = class_call(String, new_from_bytes, t_last->value, t_last->length);
                 md->str_name = str_name;
                 md->name = t_last;
-                md->type = t;
                 md->block_start = block_start;
                 md->block_end = block_end;
-                for (Token *tt = t; tt != t_last; tt++) {
-                    md->type_count++;
-                }
-                if (md->type_count == 0) {
-                    printf("expected type (member)\n");
-                    exit(0);
+                if (constructor) {
+                    md->type = t_name;
+                    md->type_count = 1;
+                } else {
+                    md->type = t;
+                    for (Token *tt = t; tt != t_last; tt++) {
+                        md->type_count++;
+                    }
+                    if (md->type_count == 0) {
+                        printf("expected type (member)\n");
+                        exit(0);
+                    }
                 }
                 if (md->member_type == MT_Prop && block_start) {
                     // read get and set blocks

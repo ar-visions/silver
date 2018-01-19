@@ -20,6 +20,7 @@ struct Test struct_Test_construct_int(Test *self, int p) {
     // code output
 }
 
+// automatic casting if object inherits from object required
 // problem will be generating inline uses of structs such as 
 
 struct Test {
@@ -84,18 +85,4 @@ class Vector <double, float> {
     String method(int arg) {
         return (String)self; // <-- conversion method called; these conversion methods are a different animal than operator overloads in that they allow return
     }
-}
-
-
-
-
-
-
-
-
-
-int test_template(int a) {
-    int t = 0;
-    t++;
-    return t;
 }
