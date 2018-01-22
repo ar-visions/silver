@@ -26,6 +26,7 @@ typedef struct _Token {
     bool operator;
     size_t length;
     char string_term;
+    char *stack_var;
 } Token;
 
 struct _object_ClassDec;
@@ -35,12 +36,13 @@ struct _object_MemberDec;
     method(D,T,C,Token *,read_tokens,(C,String,int *)) \
     method(D,T,C,bool,read_template_types,(C,struct _object_ClassDec *, Token **)) \
     method(D,T,C,void,code_out,(C, List, Token *, Token *)) \
-    method(D,T,C,int,read_expression,(C, Token *, Token **, Token **)) \
+    method(D,T,C,int,read_expression,(C, Token *, Token **, Token **, const char *)) \
     method(D,T,C,void,read_property_blocks,(C, struct _object_ClassDec *, struct _object_MemberDec *)) \
     method(D,T,C,bool,read_classes,(C)) \
     method(D,T,C,bool,replace_classes,(C)) \
     method(D,T,C,bool,class_op_out,(C, List, Token *, Token *, \
-        struct _object_ClassDec *, Token *, bool, Token **)) \
+        struct _object_ClassDec *, Token *, bool, Token **, const char *)) \
+    method(D,T,C,void,args_out,(C, Pairs, struct _object_ClassDec *, struct _object_MemberDec *, bool, int)) \
     method(D,T,C,String,token_string,(C, Token *)) \
     method(D,T,C,void,resolve_supers,(C)) \
     method(D,T,C,void,token_out,(C, Token *, int)) \
@@ -61,6 +63,7 @@ declare(CX, Base)
     var(D,T,C,Token *,setter_end)          \
     var(D,T,C,Token *,block_start)         \
     var(D,T,C,Token *,block_end)           \
+    var(D,T,C,Token **,arg_names)          \
     var(D,T,C,Token **,arg_types)          \
     var(D,T,C,int,arg_types_count)         \
     var(D,T,C,int *,at_token_count)        \

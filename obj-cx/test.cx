@@ -1,6 +1,9 @@
 module outside as o
 
 class Test {
+    construct () {
+        printf("default constructor\n");
+    }
     construct i(int arg) {
         self.value = arg;
     }
@@ -17,6 +20,6 @@ class Test {
     }
     void method(int arg, int arg2) {
         printf("value = %d\n", self.value);
-        Test t = new Test.i(1);
+        Test t = new Test(test1,test2);
     }
 }
