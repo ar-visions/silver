@@ -994,6 +994,7 @@ bool CX_replace_classes(CX self) {
                     fprintf(stdout, "%s self = object_alloc(&%s_cl, 0);\n",
                         cd->class_name->buffer, cd->class_name->buffer);
                     fprintf(stdout, "object_init(self);\n");
+                    pairs_add(top, new_string("self"), cd);
                     if (md->block_start != md->block_end)
                         call(self, code_out, scope, md->block_start + 1, md->block_end - 1);
                     fprintf(stdout, "return ar ? object_auto(self) : self;\n}\n");
