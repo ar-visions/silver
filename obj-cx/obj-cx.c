@@ -827,21 +827,39 @@ void CX_effective_methods(CX self, ClassDec cd, Pairs *pairs) {
     if (cd->parent)
         call(self, effective_methods, cd->parent);
     KeyValue kv;
+
     each_pair(cd->members, kv) {
         MemberDec md = (MemberDec)kv->value;
         String method_name;
         String method_key = md->str_name->buffer;
         switch (md->member_type) {
             case MT_Method:
+                method_key = md->str_name;
                 method_name = class_call(String, format, "%s_%s",
                     cd->class_name->buffer, md->str_name->buffer);
                 pairs_add(*pairs, method_key, method_name);
                 break;
             case MT_Constructor:
+                method_key = md->str_name;
+                method_name = class_call(String, format, "construct_%s_%s",
+                    cd->class_name->buffer, md->str_name->buffer);
+                pairs_add(*pairs, method_key, method_name);
                 break;
             case MT_Prop:
+                method_key = class_call(String, format, "get_%p", md->str_name);
+                method_name = class_call(String, format, "%s_get_%s",
+                    cd->class_name->buffer, md->str_name->buffer);
+                pairs_add(*pairs, method_key, method_name);
                 break;
         }
+    }
+}
+
+void CX_forward_classes(CX self) {
+    KeyValue kv;
+    each_pair(self->classes, kv) {
+        String class_name = (String)kv->key;
+        fprintf(stdout, "struct _class_%s;\n", class_name->buffer);
     }
 }
 
@@ -859,7 +877,11 @@ void CX_declare_classes(CX self) {
             "\tint *mcount;\n"                  \
             "\tconst char **mnames;\n"          \
             "\tMethod **m[1];\n", class_name->buffer);
-        
+
+        // it will require forward declarations of all class structs        
+        // why not declare the class variables first, then perform all of the sets in a ctor defined last
+
+        // print out methods
         // output methods
         Pairs m = NULL;
         call(self, effective_methods, cd, &m);
@@ -960,6 +982,7 @@ bool CX_process(CX self, const char *file) {
 
     call(self, read_classes);
     call(self, resolve_supers);
+    call(self, forward_classes);
     call(self, declare_classes);
     call(self, replace_classes);
 
