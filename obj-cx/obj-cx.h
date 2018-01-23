@@ -40,6 +40,9 @@ struct _object_MemberDec;
     method(D,T,C,void,read_property_blocks,(C, struct _object_ClassDec *, struct _object_MemberDec *)) \
     method(D,T,C,bool,read_classes,(C)) \
     method(D,T,C,bool,replace_classes,(C)) \
+    method(D,T,C,void,declare_classes,(C)) \
+    method(D,T,C,void,effective_methods,(C, struct _object_ClassDec *, Pairs *)) \
+    method(D,T,C,void,forward_classes,(C)) \
     method(D,T,C,bool,class_op_out,(C, List, Token *, Token *, \
         struct _object_ClassDec *, Token *, bool, Token **, const char *)) \
     method(D,T,C,void,args_out,(C, Pairs, struct _object_ClassDec *, struct _object_MemberDec *, bool, int)) \
