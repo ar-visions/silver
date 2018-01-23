@@ -1,6 +1,12 @@
 module outside as o
 
-class Test {
+class Super {
+    void method(int arg, int arg2) {
+        printf("original function");
+    }
+}
+
+class Test : Super {
     construct () {
         printf("default constructor\n");
     }

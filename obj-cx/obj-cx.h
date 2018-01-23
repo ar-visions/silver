@@ -41,11 +41,11 @@ struct _object_MemberDec;
     method(D,T,C,bool,read_classes,(C)) \
     method(D,T,C,bool,replace_classes,(C)) \
     method(D,T,C,void,declare_classes,(C)) \
+    method(D,T,C,void,define_module_constructor,(C)) \
     method(D,T,C,void,effective_methods,(C, struct _object_ClassDec *, Pairs *)) \
-    method(D,T,C,void,forward_classes,(C)) \
     method(D,T,C,bool,class_op_out,(C, List, Token *, Token *, \
         struct _object_ClassDec *, Token *, bool, Token **, const char *)) \
-    method(D,T,C,void,args_out,(C, Pairs, struct _object_ClassDec *, struct _object_MemberDec *, bool, int)) \
+    method(D,T,C,void,args_out,(C, Pairs, struct _object_ClassDec *, struct _object_MemberDec *, bool, bool, int)) \
     method(D,T,C,String,token_string,(C, Token *)) \
     method(D,T,C,void,resolve_supers,(C)) \
     method(D,T,C,void,token_out,(C, Token *, int)) \
@@ -55,6 +55,7 @@ struct _object_MemberDec;
 declare(CX, Base)
 
 #define _MemberDec(D,T,C) _Base(spr,T,C)   \
+    var(D,T,C,struct _object_ClassDec *,cd) \
     var(D,T,C,enum MemberType,member_type) \
     var(D,T,C,Token *,type)                \
     var(D,T,C,int,type_count)              \
@@ -84,6 +85,7 @@ declare(MemberDec, Base)
 #define _ClassDec(D,T,C) _Base(spr,T,C)    \
     method(D,T,C,MemberDec,member_lookup,(C,String)) \
     var(D,T,C,C,parent)                    \
+    var(D,T,C,Pairs,effective)             \
     var(D,T,C,Token *,start)               \
     var(D,T,C,Token *,end)                 \
     var(D,T,C,Token *,name)                \
