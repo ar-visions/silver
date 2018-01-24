@@ -33,8 +33,8 @@ void Pairs_add(Pairs self, Base key, Base value) {
     kv->key = retain(key);
     kv->value = retain(value);
     ulong hash = call(key, hash) % self->list_count;
-    kv->ordered = (LItem *)llist_push(&self->lists[hash], kv);
-    llist_push(&self->ordered_list, kv);
+    kv->hashed = (LItem *)llist_push(&self->lists[hash], kv); // this is the hash item, not the ordered one
+    kv->ordered = (LItem *)llist_push(&self->ordered_list, kv);
 }
 
 bool Pairs_remove(Pairs self, Base key) {
@@ -46,7 +46,7 @@ bool Pairs_remove(Pairs self, Base key) {
         next = item->next;
         KeyValue kv = (KeyValue)item->data;
         if (call(kv->key, compare, key) == 0) {
-            llist_remove(list, item);
+            llist_remove(list, kv->hashed);
             llist_remove(&self->ordered_list, kv->ordered);
             release(kv);
             ret = true;

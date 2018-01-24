@@ -19,6 +19,7 @@ class Test : Super {
     construct s(String arg) {
         self.value = 1;
     }
+    int test1 = 1;
     int value {
         get {
             return self.value;
@@ -26,7 +27,7 @@ class Test : Super {
         set (value) {
             return self.value;
         }
-    }
+    } = 2;
     void method(int arg, int arg2) {
         printf("value = %d\n", self.value);
         Test t = new Test(test1,test2);
