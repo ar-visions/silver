@@ -4,6 +4,7 @@
 #define _KeyValue(D,T,C) _Base(spr,T,C)              \
     override(D,T,C,void,free,(C))                    \
     override(D,T,C,ulong,hash,(C))                   \
+    private_var(D,T,C,LItem *,hashed)                \
     private_var(D,T,C,LItem *,ordered)               \
     private_var(D,T,C,Base,key)                      \
     private_var(D,T,C,Base,value)
