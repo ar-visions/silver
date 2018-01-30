@@ -57,42 +57,31 @@ void llist_remove(LList *list, LItem *item) {
 	else
 		list->last = item->prev;
 	list->count--;
-	llist_add((LList *)item->block, item);
-
-	LBlock *b = item->block;
-	if (list->block_count > 1 && (((b->available + b->floating) == 0 || ((b->count + b->available) == list->block_size - 1)))) {
-		//llist_block_remove((LList *)&list->first_block, (LItem *)b);
-		//free(b);
+	
+	LBlock *b = item->block; 
+	// add item back to block
+	llist_add((LList *)&b->first, (LItem *)item);
+	b->floating--;
+	if (((b->available + b->floating) == 0 || ((b->count + b->available) == b->size))) {
+		if (list->block_count > 1) {
+			llist_block_remove((LList *)&list->first_block, (LItem *)b);
+			free(b);
+		}
 	}
 }
 
-static int counter = 0;
-
 static inline LItem *llist_init_item(LList *list) {
 	LBlock *b = llist_block_find(list);
-	if (counter == 8210) {
-		int test = 0;
-		test++;
-	}
 	if (!b)
 		b = llist_block_init(list);
 	LItem *item;
-	counter++;
 	if (b->available) {
 		item = (LItem *)b->space;
-		if (!item) {
-			int test = 0;
-			test++;
-		}
 		b->space += b->struct_size;
 		b->available--;
 		item->block = b;
 	} else {
 		item = b->last;
-		if (!item) {
-			int test = 0;
-			test++;
-		}
 		if (b->last != b->first) {
 			b->last = b->last->prev;
 			b->last->next = NULL;
@@ -133,10 +122,6 @@ bool llist_remove_data(LList *list, void *data) {
 
 void *llist_push(LList *list, void *data) {
 	LItem *item = llist_init_item(list);
-	if (!item) {
-		int test = 0;
-		test++;
-	}
 	item->next = item->prev = NULL;
 	void *ret = (void *)item;
 	if (list->item_size) {
@@ -160,18 +145,6 @@ void *llist_pop(LList *list) {
 		LBlock *b = last->block;
 		void *data = last->data;
 		llist_remove(list, last);
-
-		// redundant block check
-		// would be useful to know [quickly] if the other blocks have space
-		/*if (((b->available + b->floating) == 0 || ((b->count + b->available) == list->block_size - 1))) {
-			llist_block_remove((LList *)&list->first_block, (LItem *)b);
-			free(b);
-		} else {*/
-
-			// add item back to block
-			llist_add((LList *)&b->first, (LItem *)last);
-			b->floating--;
-		//}
 		return data;
 	}
 	return NULL;
