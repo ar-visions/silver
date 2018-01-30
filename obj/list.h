@@ -14,6 +14,7 @@
     method(D,T,C,int,count,(C))                     \
     method(D,T,C,Base,first,(C))                    \
     method(D,T,C,Base,last,(C))                     \
+    method(D,T,C,void,clear,(C))                    \
     method(D,T,C,C,new_list_of,(Class,Class,...))   \
     method(D,T,C,void,create_index,(C))             \
     private_method(D,T,C,void,update_blocks,(C))    \

@@ -23,6 +23,7 @@ typedef struct _LBlock {
 	int struct_size;
 	int available;
 	int floating;
+	int size;
 	char data[1];
 } LBlock;
 
