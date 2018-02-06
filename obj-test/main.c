@@ -50,15 +50,12 @@ int main() {
     printf("json_2 = %s\n", json_2->buffer);
 
     List list = new(List);
-    //list->list.block_size = 20000 * 1000;
-    for (int ii = 0; ii < 1000; ii++) {
-        for (int i = 0; i < 20000; i++) {
-            String test = new_string("test!");
-            //llist_push(&list->list, (void *)1);
+    for (int ii = 0; ii < 70000; ii++) {
+        for (int i = 0; i < 1; i++) {
+            String test = string("test!");
             call(list, push, (Base)test);
         }
-        if (false)
-        for (int i = 0; i < 1000; i++) {
+        /*for (int i = 0; i < 1000; i++) {
             int rem = randnum(0, list->list.count - 1);
             Base item = call(list, object_at, rem);
             if (!item) {
@@ -66,8 +63,7 @@ int main() {
                 exit(0);
             }
             call(list, remove, item);
-        }
-        
+        }*/
     }
     printf("list block count: %d\n", list->list.block_count);
     return 0;
