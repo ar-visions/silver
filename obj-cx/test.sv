@@ -35,10 +35,7 @@ class Test : Super {
         printf("value = %d\n", self.value);
         Test t = new Test(test1,test2);
     }
-}
-
-class MyApp : App {
-    int main(List args) {
-        
+    static int Main() {
+        return 0;
     }
 }

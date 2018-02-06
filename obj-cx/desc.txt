@@ -1,0 +1,38 @@
+module dir / module.json
+
+compilation process:
+
+find all module.json
+    concatenate all files referenced in file block, inserting # X "file.cx" entries
+    run entire block through silver-pre -i "temp_concat_file.sv" -c "c_file_out.c" -h "module_output.h"
+        process outputs C code for module as well as header for module
+
+    you may want the idea of private/public headers to allow a module to use a C include without exposing
+
+    its going to a bad idea to simply have a preprocessor stamp out all lines from C includes, and include them possibly multiple times in a project. compilation will fail
+
+        instead, output all #include in the module header
+
+
+#ifndef _SV_MODULE_NAME
+
+// public includes
+#include <gfx.h>
+
+struct _class_module_ClassName {
+    // members (props and methods)
+}
+struct _object_module_ClassName {
+    struct _class_module_ClassName *isa;
+    // members (ivars)
+}
+
+#endif
+
+do not allow any preprocessor keywords in the .sv file, ONLY class blocks
+
+manual CMakeFile not needed in the module directory, since all compilation can be described in the module.json
+    it will probably still create a CMakeFile, but this will be dynamic and likely hidden
+
+private includes:
+insert #include's at top of module.c

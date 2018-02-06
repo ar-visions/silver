@@ -860,8 +860,6 @@ void CX_effective_methods(CX self, ClassDec cd, Pairs *pairs) {
     }
 }
 
-
-
 void CX_declare_classes(CX self) {
     KeyValue kv;
     each_pair(self->classes, kv) {
@@ -1076,6 +1074,22 @@ bool CX_replace_classes(CX self) {
                     fprintf(stdout, ")");
                     call(self, code_out, scope, md->block_start, md->block_end);
                     fprintf(stdout, "\n");
+                    // C#-style Main entry point; todo: use List or Pairs class instead of const char **
+                    if (md->is_static && call(md->str_name, cmp, "Main") == 0) {
+                        for (int i = 0; i < md->type_count; i++)
+                            call(self, token_out, &md->type[i], ' ');
+                        fprintf(stdout, "main(");
+                        call(self, args_out, top, cd, md, !md->is_static, true, 0);
+                        fprintf(stdout, ") {\n");
+                        fprintf(stdout, "\treturn %s_%s(", cd->class_name->buffer, md->str_name->buffer);
+                        for (int i = 0; i < md->arg_types_count; i++) {
+                            if (i > 0)
+                                fprintf(stdout, ", ");
+                            Token *t_name = md->arg_names[i];
+                            call(self, token_out, t_name, ' ');
+                        }
+                        fprintf(stdout, ");\n}\n");
+                    }
                     break;
                 case MT_Prop:
                     for (int i = 0; i < 2; i++) {
@@ -1143,8 +1157,8 @@ bool CX_process(CX self, const char *file) {
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
-        printf("libobj CX processor -- version %s\n", CX_VERSION);
-        printf("usage: obj-cx input.cx\n");
+        printf("silver module preprocessor -- version %s\n", CX_VERSION);
+        printf("usage: silver-mod module.json\n");
         exit(1);
     }
     const char *input = (const char *)argv[1];
