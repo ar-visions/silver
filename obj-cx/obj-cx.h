@@ -50,8 +50,9 @@ struct _object_MemberDec;
     method(D,T,C,void,resolve_supers,(C)) \
     method(D,T,C,void,token_out,(C, Token *, int)) \
     method(D,T,C,bool,process,(C, const char *)) \
-    var(D,T,C,Token *,tokens) \
-    var(D,T,C,Pairs,classes)
+    var(D,T,C,Token *,tokens)              \
+    var(D,T,C,Pairs,classes)               \
+    var(D,T,C,Pairs,processed)             \
 declare(CX, Base)
 
 #define _MemberDec(D,T,C) _Base(spr,T,C)   \
