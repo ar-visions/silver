@@ -1,16 +1,4 @@
-module outside as o
-
-// load external module dynamically or statically
-// module constructor will simply wait on all of the other modules that it depends on to load, then grab their classes
-
-class Super {
-    void super_only(int test) {
-        printf("super only");
-    }
-    void method(int arg, int arg2) {
-        printf("original function");
-    }
-}
+module supermod;
 
 class Test : Super {
     construct () {
@@ -49,8 +37,5 @@ class Test : Super {
         t.method(1, 2);
         t.value = 1;
         return 0;
-    }
-    void destruct() {
-
     }
 }

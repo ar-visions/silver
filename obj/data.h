@@ -1,4 +1,4 @@
-#ifndef _DATA
+#ifndef _DATA_
 #define _DATA_
 
 #define _Data(D,T,C) _Base(spr,T,C)        \

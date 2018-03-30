@@ -1173,11 +1173,35 @@ bool CX_replace_classes(CX self) {
     }
 }
 
-bool CX_process(CX self, const char *file) {
+static List modules;
+static CX find_module(const char *name) {
+    CX m;
+    each(modules, m)
+        if (call(m, cmp, name) == 0)
+            return m;
+
+    return NULL;
+}
+
+void CX_process_module(CX self, const char *location) {
+}
+
+bool CX_read_modules(CX self) {
+    self->classes = new(Pairs);
+    for (Token *t = self->tokens; t->value; t++) {
+        if (strncmp(t->value, "module", t->length) == 0) {
+        }
+    }
+}
+
+bool CX_process(CX self, const char *location) {
+    // read in module location, not a file
     String str = class_call(String, from_file, file);
     int n_tokens = 0;
     self->tokens = call(self, read_tokens, str, &n_tokens);
 
+    // read modules and includes first
+    call(self, read_modules);
     call(self, read_classes);
     call(self, resolve_supers);
     call(self, declare_classes);
