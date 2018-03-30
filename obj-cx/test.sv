@@ -23,19 +23,26 @@ class Test : Super {
         self.value = 1;
     }
     int test1 = 1;
+    int value_intern;
     int value {
         get {
             return self.value;
         }
         set (value) {
-            return self.value;
+            self.value_intern = value;
         }
     } = 2;
     void method(int arg, int arg2) {
         printf("value = %d\n", self.value);
-        Test t = new Test(test1,test2);
+        Test t = new Test(test1, test2);
     }
     static int Main() {
+        Test t = new Test();
+        t.method(1, 2);
+        t.value = 1;
         return 0;
+    }
+    void destruct() {
+
     }
 }
