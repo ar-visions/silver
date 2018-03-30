@@ -11,6 +11,7 @@ void List_init(List self) {
 List List_with_item_size(int item_size) {
     List self = auto(List);
     llist(&self->list, item_size, self->min_block_size);
+    return self;
 }
 
 List List_new_list_of(Class list_class, Class item_class, ...) {

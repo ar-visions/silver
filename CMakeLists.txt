@@ -1,7 +1,7 @@
 cmake_minimum_required (VERSION 3.0)
 project (LIBOBJ)
 
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wfatal-errors")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wfatal-errors -Wno-string-compare")
 
 add_subdirectory (obj)
 add_subdirectory (obj-math)

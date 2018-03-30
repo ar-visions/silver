@@ -23,7 +23,7 @@ void Data_get_vector(Data self, void **buf, size_t type_size, uint *count) {
 }
 
 String Data_to_string(Data self) {
-    const uint8 *b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const uint8 *b64 = (const uint8 *)"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 	const uint8 pad = '=';
 	String str = auto(String);
     int clength = 0;
@@ -39,7 +39,7 @@ String Data_to_string(Data self) {
         buf[1] = b64[((b0 & 0x03) << 4) | ((b1 & 0xF0) >> 4)];
         buf[2] = b64[((b1 & 0x0F) << 2) | (b2 >> 6)];
         buf[3] = b64[b2 & 0x3F];
-        call(str, concat_chars, buf, 4);
+        call(str, concat_chars, (const char *)buf, 4);
     }
     int remaining = clength - divis;
     if (remaining > 0) {
@@ -119,7 +119,7 @@ Data Data_from_string(String value) {
         clength -= pad;
     }
 
-    self->bytes = stbi_zlib_decode_malloc(cbytes, clength, (int *)&self->length);
+    self->bytes = (uint8 *)stbi_zlib_decode_malloc((const char *)cbytes, clength, (int *)&self->length);
     free_ptr(cbytes);
 
     if (!self->bytes || pfound != pad)

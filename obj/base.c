@@ -216,7 +216,7 @@ String parse_numeric(const char **cursor) {
     if (number_len == 0 || number_len > max_sane_number)
         return NULL;
     *cursor = &number_start[number_len];
-    return class_call(String, from_bytes, number_start, number_len);
+    return class_call(String, from_bytes, (uint8 *)number_start, number_len);
 }
 
 String parse_quoted_string(const char **cursor, size_t max_len) {
@@ -240,7 +240,7 @@ String parse_quoted_string(const char **cursor, size_t max_len) {
     if (max_len > 0 && len > max_len)
         return NULL;
     *cursor = s + 1;
-    return class_call(String, from_bytes, start, len);
+    return class_call(String, from_bytes, (uint8 *)start, len);
 }
 
 String parse_symbol(const char **cursor) {
@@ -253,7 +253,7 @@ String parse_symbol(const char **cursor) {
     size_t sym_len = s - sym_start;
     if (sym_len == 0 || sym_len > max_sane_symbol)
         return NULL;
-    return class_call(String, from_bytes, sym_start, sym_len);
+    return class_call(String, from_bytes, (uint8 *)sym_start, sym_len);
 }
 
 enum JsonParse {

@@ -94,7 +94,8 @@ Pairs Pairs_from_cstring(const char *value) {
     Pairs self = auto(Pairs);
     StrRange key_range = { -1, -1 };
     StrRange val_range = { -1, -1 };
-    bool sep = false, quote = false, last = 0;
+    bool sep = false, quote = false;
+    char last = 0;
     for (const char *c = value; ; c++) {
         if (key_range.from == -1) {
             if (isalnum(*c))
@@ -126,8 +127,8 @@ Pairs Pairs_from_cstring(const char *value) {
                     }
                 }
                 if (val_range.to != -1) {
-                    String key = class_call(String, from_bytes, &value[key_range.from], key_range.to - key_range.from + 1);
-                    String val = class_call(String, from_bytes, &value[val_range.from], val_range.to - val_range.from + 1);
+                    String key = class_call(String, from_bytes, (uint8 *)&value[key_range.from], key_range.to - key_range.from + 1);
+                    String val = class_call(String, from_bytes, (uint8 *)&value[val_range.from], val_range.to - val_range.from + 1);
                     Base bval = call(val, infer_object);
                     call(self, add, base(key), bval);
 

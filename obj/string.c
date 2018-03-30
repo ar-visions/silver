@@ -75,21 +75,21 @@ uint *String_decode_utf8(String self, uint *length) {
             uint code = 0;
             if (b0 == 0)
                 break;
-            else if (b0 & 0x80 == 0) {
+            else if ((b0 & 0x80) == 0) {
                 code = (uint)b0;
-            } else if (b0 & 0xE0 == 0xC0) {
+            } else if ((b0 & 0xE0) == 0xC0) {
                 uint8 b1 = self->buffer[i + 1];
                 if (b1 == 0) break;
                 code = ((uint)(b0 & ~(0xE0)) << 6) | (uint)(b1 & ~(0xC0));
                 char_width = 2;
-            } else if (b0 & 0xF0 == 0xE0) {
+            } else if ((b0 & 0xF0) == 0xE0) {
                 uint8 b1 = self->buffer[i + 1];
                 if (b1 == 0) break;
                 uint8 b2 = self->buffer[i + 2];
                 if (b2 == 0) break;
                 code = ((uint)(b0 & ~(0xF0)) << 12) | ((uint)(b1 & ~(0xC0)) << 6) | (uint)(b2 & ~(0xC0));
                 char_width = 3;
-            } else if (b0 & 0xF8 == 0xF0) {
+            } else if ((b0 & 0xF8) == 0xF0) {
                 uint8 b1 = self->buffer[i + 1];
                 if (b1 == 0) break;
                 uint8 b2 = self->buffer[i + 2];
@@ -128,7 +128,7 @@ String String_from_file(const char *file) {
     }
     fclose(f);
     bytes[len] = 0;
-    String self = class_call(String, from_bytes, bytes, len);
+    String self = class_call(String, from_bytes, (uint8 *)bytes, len);
     free(bytes);
     return self;
 }
