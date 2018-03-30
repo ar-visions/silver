@@ -24,9 +24,17 @@ class Test : Super {
     }
     int test1 = 1;
     int value_intern;
+    static int value_test {
+        get {
+            return 1;
+        }
+        set (value) {
+            do_nothing;
+        }
+    }
     int value {
         get {
-            return self.value;
+            return self.value_intern;
         }
         set (value) {
             self.value_intern = value;

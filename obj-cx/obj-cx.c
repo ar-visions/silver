@@ -586,6 +586,13 @@ bool CX_read_classes(CX self) {
                         exit(0);
                     }
                 }
+                if (md->type_count > 0) {
+                    md->type_str = new(String);
+                    for (int i = 0; i < md->type_count; i++) {
+                        call(md->type_str, concat_chars, md->type[i].value, md->type[i].length);
+                        call(md->type_str, concat_char, ' ');
+                    }
+                }
                 if (md->member_type == MT_Prop && block_start) {
                     // read get and set blocks
                     call(self, read_property_blocks, cd, md);
@@ -1045,8 +1052,22 @@ bool CX_replace_classes(CX self) {
 
         each_pair(cd->members, mkv) {
             MemberDec md = (MemberDec)mkv->value;
-            if (!md->block_start)
+            if (!md->block_start) {
+                // for normal var declarations, output stub for getter / setter
+                if (md->member_type == MT_Prop && !md->is_private && md->type_str) {
+                    const char *tn = md->type_str->buffer;
+                    const char *cn = cd->class_name->buffer;
+                    const char *vn = md->str_name->buffer;
+                    if (md->is_static) {
+                        fprintf(stdout, "%s %s_get_%s() { return %s_cl.%s; }\n", tn, cn, vn, cn, vn);
+                        fprintf(stdout, "%s %s_set_%s(%s self, %s value) { return %s_cl.%s = value; }\n", tn, cn, vn, cn, vn, cn, vn);
+                    } else {
+                        fprintf(stdout, "%s %s_get_%s(%s self) { return self->%s; }\n", tn, cn, vn, cn, vn);
+                        fprintf(stdout, "%s %s_set_%s(%s self, %s value) { return self->%s = value; }\n", tn, cn, vn, cn, vn, vn);
+                    }
+                }
                 continue;
+            }
             Pairs top = new(Pairs);
             list_push(scope, top);
             switch (md->member_type) {
@@ -1108,7 +1129,8 @@ bool CX_replace_classes(CX self) {
                             fprintf(stdout, "%s_get_", cd->class_name->buffer);
                             call(self, token_out, md->name, '(');
                         } else {
-                            fprintf(stdout, "void ");
+                            for (int i = 0; i < md->type_count; i++)
+                                call(self, token_out, &md->type[i], ' ');
                             fprintf(stdout, "%s_set_", cd->class_name->buffer);
                             call(self, token_out, md->name, '(');
                         }
@@ -1132,7 +1154,16 @@ bool CX_replace_classes(CX self) {
                             }
                         }
                         fprintf(stdout, ")");
-                        call(self, code_out, scope, block_start, block_end);
+                        if (i == 0)
+                            call(self, code_out, scope, block_start, block_end);
+                        else {
+                            call(self, code_out, scope, block_start, block_end - 1);
+                            if (md->is_static)
+                                fprintf(stdout, "return %s_cl.get_%s();", cd->class_name->buffer, md->str_name->buffer);
+                            else
+                                fprintf(stdout, "return self->get_%s(self);", md->str_name->buffer);
+                            call(self, code_out, scope, block_end, block_end);
+                        }
                         fprintf(stdout, "\n");
                         call(top, clear);
                     }
