@@ -33,11 +33,13 @@ struct _object_ClassDec;
 struct _object_MemberDec;
 
 #define _CX(D,T,C) _Base(spr,T,C)   \
-    method(D,T,C,Token *,read_tokens,(C,String,int *)) \
+    override(D,T,C,void,init,(C)) \
+    method(D,T,C,Token *,read_tokens,(C,List,int *)) \
     method(D,T,C,bool,read_template_types,(C,struct _object_ClassDec *, Token **)) \
     method(D,T,C,void,code_out,(C, List, Token *, Token *)) \
     method(D,T,C,int,read_expression,(C, Token *, Token **, Token **, const char *)) \
     method(D,T,C,void,read_property_blocks,(C, struct _object_ClassDec *, struct _object_MemberDec *)) \
+    method(D,T,C,bool,read_modules,(C)) \
     method(D,T,C,bool,read_classes,(C)) \
     method(D,T,C,bool,replace_classes,(C)) \
     method(D,T,C,void,declare_classes,(C)) \
@@ -50,9 +52,11 @@ struct _object_MemberDec;
     method(D,T,C,void,resolve_supers,(C)) \
     method(D,T,C,void,token_out,(C, Token *, int)) \
     method(D,T,C,bool,process,(C, const char *)) \
+    var(D,T,C,String,name)                 \
     var(D,T,C,Token *,tokens)              \
+    var(D,T,C,List,modules)                \
     var(D,T,C,Pairs,classes)               \
-    var(D,T,C,Pairs,processed)             \
+    var(D,T,C,Pairs,processed)
 declare(CX, Base)
 
 #define _MemberDec(D,T,C) _Base(spr,T,C)   \

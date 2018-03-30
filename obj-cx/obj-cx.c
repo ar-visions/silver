@@ -1,5 +1,7 @@
 #include <obj/obj.h>
 #include <obj-cx/obj-cx.h>
+#include <stdio.h>
+#include <dirent.h>
 
 #define CX_VERSION  "0.4.0"
 
@@ -16,8 +18,13 @@ MemberDec ClassDec_member_lookup(ClassDec self, String name) {
     return NULL;
 }
 
-Token *CX_read_tokens(CX self, String str, int *n_tokens) {
-    Token *tokens = array_struct(Token, str->length + 1);
+Token *CX_read_tokens(CX self, List module_contents, int *n_tokens) {
+    int total_len = 0;
+    String contents;
+    each(module_contents, contents) {
+        total_len += contents->length;
+    }
+    Token *tokens = array_struct(Token, total_len + 1);
     int nt = 0;
     enum TokenType seps[256];
     const char *separators = "[](){}.,+-&*~!/%<>=^|&?:;#";
@@ -106,97 +113,99 @@ Token *CX_read_tokens(CX self, String str, int *n_tokens) {
     const char backslash = '\\';
     bool was_backslash = false;
     Token *t = NULL;
-    for (int i = 0; i < (str->length + 1); i++) {
-        const char *value = &str->buffer[i];
-        const char b = *value;
-        bool ws = isspace(b) || (b == 0);
-        enum TokenType sep = seps[b];
+    each(module_contents, contents) {
+        for (int i = 0; i < (contents->length + 1); i++) {
+            const char *value = &contents->buffer[i];
+            const char b = *value;
+            bool ws = isspace(b) || (b == 0);
+            enum TokenType sep = seps[b];
 
-        if (t && t->type == TT_String_Literal) {
-            if (t->string_term == b && !was_backslash) {
-                size_t length = (size_t)(value - t->value) + 1;
-                t->length = length;
-                was_backslash = b == backslash;
-                nt++;
-                t = NULL;
-            }
-            continue;
-        }
-        if (ws) {
-            if (t) {
-                size_t length = (size_t)(value - t->value);
-                if (t->type == TT_Identifier) {
-                    for (int k = 0; k < n_keywords; k++) {
-                        const char *keyword = keywords[k];
-                        if (length == keyword_lens[k] && memcmp(t->value, keyword, length) == 0) {
-                            t->type_keyword = type_keywords[k] ? keyword : NULL;
-                            t->type = TT_Keyword;
-                            t->keyword = keyword;
-                        }
-                    }
-                }
-                t->length = length;
-                nt++;
-                t = NULL;
-            }
-        } else {
-            if (t && sep != t->sep) {
-                size_t length = (size_t)(value - t->value);
-                t->length = length;
-                nt++;
-                t = NULL;
-            }
-            if (!t) {
-                t = (Token *)&tokens[nt];
-                t->type = (b == '"' || b == '\'') ? TT_String_Literal : TT_Identifier;
-                t->sep = sep;
-                t->value = value;
-                t->length = 1;
-                t->string_term = (t->type == TT_String_Literal) ? b : 0;
-                if (t->string_term)
-                    continue;
-            }
-            size_t length = (size_t)(value - t->value) + 1;
-            if (sep) {
-                bool cont = false;
-                bool punct_find = true;
-find_punct:
-                if (t->sep) {
-                    for (int p = 0; p < n_puncts; p++) {
-                        const char *punct = puncts[p];
-                        int punct_len = punct_lens[p];
-                        if (punct_len == length && memcmp(t->value, punct, punct_len) == 0) {
-                            t->punct = punct;
-                            t->type = TT_Punctuator;
-                            t->length = punct_len;
-                            t->operator = (bool)punct_is_op[p];
-                            t->assign = (bool)punct_is_assign[p];
-                            cont  = true;
-                            break;
-                        }
-                    }
-                }
-                if (!cont) {
-                    t->length = length - 1;
+            if (t && t->type == TT_String_Literal) {
+                if (t->string_term == b && !was_backslash) {
+                    size_t length = (size_t)(value - t->value) + 1;
+                    t->length = length;
+                    was_backslash = b == backslash;
                     nt++;
+                    t = NULL;
+                }
+                continue;
+            }
+            if (ws) {
+                if (t) {
+                    size_t length = (size_t)(value - t->value);
+                    if (t->type == TT_Identifier) {
+                        for (int k = 0; k < n_keywords; k++) {
+                            const char *keyword = keywords[k];
+                            if (length == keyword_lens[k] && memcmp(t->value, keyword, length) == 0) {
+                                t->type_keyword = type_keywords[k] ? keyword : NULL;
+                                t->type = TT_Keyword;
+                                t->keyword = keyword;
+                            }
+                        }
+                    }
+                    t->length = length;
+                    nt++;
+                    t = NULL;
+                }
+            } else {
+                if (t && sep != t->sep) {
+                    size_t length = (size_t)(value - t->value);
+                    t->length = length;
+                    nt++;
+                    t = NULL;
+                }
+                if (!t) {
                     t = (Token *)&tokens[nt];
                     t->type = (b == '"' || b == '\'') ? TT_String_Literal : TT_Identifier;
                     t->sep = sep;
                     t->value = value;
                     t->length = 1;
-                    length = 1;
                     t->string_term = (t->type == TT_String_Literal) ? b : 0;
-
                     if (t->string_term)
                         continue;
-                    if (punct_find) {
-                        punct_find = false;
-                        goto find_punct;
+                }
+                size_t length = (size_t)(value - t->value) + 1;
+                if (sep) {
+                    bool cont = false;
+                    bool punct_find = true;
+find_punct:
+                    if (t->sep) {
+                        for (int p = 0; p < n_puncts; p++) {
+                            const char *punct = puncts[p];
+                            int punct_len = punct_lens[p];
+                            if (punct_len == length && memcmp(t->value, punct, punct_len) == 0) {
+                                t->punct = punct;
+                                t->type = TT_Punctuator;
+                                t->length = punct_len;
+                                t->operator = (bool)punct_is_op[p];
+                                t->assign = (bool)punct_is_assign[p];
+                                cont  = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!cont) {
+                        t->length = length - 1;
+                        nt++;
+                        t = (Token *)&tokens[nt];
+                        t->type = (b == '"' || b == '\'') ? TT_String_Literal : TT_Identifier;
+                        t->sep = sep;
+                        t->value = value;
+                        t->length = 1;
+                        length = 1;
+                        t->string_term = (t->type == TT_String_Literal) ? b : 0;
+
+                        if (t->string_term)
+                            continue;
+                        if (punct_find) {
+                            punct_find = false;
+                            goto find_punct;
+                        }
                     }
                 }
             }
+            was_backslash = b == backslash;
         }
-        was_backslash = b == backslash;
     }
     #if 0
     for (int i = 0; i < nt; i++) {
@@ -231,7 +240,7 @@ bool CX_read_template_types(CX self, ClassDec cd, Token **pt) {
             if (tname->type == TT_Identifier) {
                 if (!cd->templates)
                     cd->templates = new(List);
-                list_push(cd->templates, class_call(String, new_from_bytes, tname->value, tname->length));
+                list_push(cd->templates, class_call(String, new_from_bytes, (uint8 *)tname->value, tname->length));
             } else {
                 printf("expected identifier in template expression\n");
                 exit(0);
@@ -371,7 +380,7 @@ bool CX_read_classes(CX self) {
         if (strncmp(t->value, "class", t->length) == 0) {
             Token *t_start = t;
             Token *t_name = ++t;
-            String class_str = class_call(String, new_from_bytes, t_name->value, t_name->length);
+            String class_str = class_call(String, new_from_bytes, (uint8 *)t_name->value, t_name->length);
             ClassDec cd = pairs_value(self->classes, class_str, ClassDec);
             if (!cd) {
                 cd = new(ClassDec);
@@ -389,7 +398,7 @@ bool CX_read_classes(CX self) {
                     printf("expected super class identifier after :\n");
                     exit(0);
                 }
-                String str_super = class_call(String, new_from_bytes, t->value, t->length);
+                String str_super = class_call(String, new_from_bytes, (uint8 *)t->value, t->length);
                 cd->super_class = str_super;
                 t++;
             }
@@ -459,7 +468,7 @@ bool CX_read_classes(CX self) {
                                         printf("expected ':' in meta data\n");
                                         exit(0);
                                     } else if (!expect_sep) {
-                                        String v = class_call(String, new_from_bytes, p->value, p->length);
+                                        String v = class_call(String, new_from_bytes, (uint8 *)p->value, p->length);
                                         if (!key) {
                                             key = v;
                                         } else {
@@ -567,7 +576,7 @@ bool CX_read_classes(CX self) {
                         exit(0);
                     }
                 }
-                String str_name = class_call(String, new_from_bytes, t_name->value, t_name->length);
+                String str_name = class_call(String, new_from_bytes, (uint8 *)t_name->value, t_name->length);
                 md->str_name = str_name;
                 md->name = t_name;
                 md->block_start = block_start;
@@ -621,7 +630,7 @@ bool CX_read_classes(CX self) {
 String CX_token_string(CX self, Token *t) {
     if (!t->value)
         return NULL;
-    return class_call(String, new_from_bytes, t->value, t->length);
+    return class_call(String, new_from_bytes, (uint8 *)t->value, t->length);
 }
 
 // create stack space at the root of the method; simplest form of line # mapping
@@ -635,6 +644,7 @@ Pairs CX_stack_map(CX self, Token *from, Token *to) {
     change of plans on stack-based classes:
         there will be none, but there will be structs with member functions, operator overloading, and reflection/serialization
     */
+   return NULL;
 }
 
 bool CX_class_op_out(CX self, List scope, Token *t_start, Token *t,
@@ -756,7 +766,7 @@ void CX_code_out(CX self, List scope, Token *method_start, Token *method_end) {
         } else if (t->type == TT_Identifier) {
             Token *t_ident = t;
             // check if identifier exists as class
-            String str_ident = class_call(String, new_from_bytes, t->value, t->length);
+            String str_ident = class_call(String, new_from_bytes, (uint8 *)t->value, t->length);
             ClassDec cd = pairs_value(self->classes, str_ident, ClassDec);
             if (cd) {
                 // check for new/auto keyword before
@@ -765,7 +775,7 @@ void CX_code_out(CX self, List scope, Token *method_start, Token *method_end) {
                     call(self, token_out, t - 1, ' ');
                     call(self, token_out, t, ' ');
                     // variable declared
-                    String str_name = class_call(String, new_from_bytes, t->value, t->length);
+                    String str_name = class_call(String, new_from_bytes, (uint8 *)t->value, t->length);
                     Pairs top = (Pairs)call(scope, last);
                     pairs_add(top, str_name, cd);
                 } else if (t->punct == ".") {
@@ -1171,13 +1181,14 @@ bool CX_replace_classes(CX self) {
             }
         }
     }
+    return true;
 }
 
 static List modules;
 static CX find_module(const char *name) {
     CX m;
     each(modules, m)
-        if (call(m, cmp, name) == 0)
+        if (call(m->name, cmp, name) == 0)
             return m;
 
     return NULL;
@@ -1189,27 +1200,88 @@ void CX_process_module(CX self, const char *location) {
 bool CX_read_modules(CX self) {
     self->classes = new(Pairs);
     for (Token *t = self->tokens; t->value; t++) {
-        if (strncmp(t->value, "module", t->length) == 0) {
+        if (strncmp(t->value, "module", t->length) == 0 && (t == self->tokens || (t - 1)->punct == ";")) {
+            // check if module has already been read in
+            Token *b_start = NULL, *b_end = NULL;
+            int count = call(self, read_expression, t + 1, &b_start, &b_end, ";");
+            bool expect_comma = false;
+            for (int i = 0; i < count; i++) {
+                Token *tt = &b_start[i];
+                if (expect_comma) {
+                    if (tt->punct != ",") {
+                        fprintf(stderr, "expected separator ',' between modules");
+                        exit(0);
+                    }
+                } else {
+                    // expect module name (TT_Identifier)
+                    if (tt->type != TT_Identifier || tt->length >= 256) {
+                        fprintf(stderr, "expected identifier for module name");
+                        exit(0);
+                    }
+                    char mod[256];
+                    memcpy(mod, tt->value, tt->length);
+                    mod[tt->length] = 0;
+                    CX m = find_module(mod);
+                    if (!m) {
+                        m = new(CX);
+                        list_push(self->modules, m); // should be a pair, where key is what the module is referred to as
+                        list_push(modules, m);
+                        release(m);
+                        call(m, process, mod);
+                    } else {
+                        list_push(self->modules, m);
+                    }
+                }
+                expect_comma = !expect_comma;
+            }
         }
     }
+    return true;
+}
+
+void CX_init(CX self) {
+    self->modules = new(List);
 }
 
 bool CX_process(CX self, const char *location) {
     // read in module location, not a file
-    String str = class_call(String, from_file, file);
+    // open all files in directory
+    self->name = retain(class_call(String, from_cstring, location));
+    DIR *dir = opendir(location);
+    if (!dir) {
+        fprintf(stderr, "cannot open module '%s'\n", location);
+        exit(0);
+    }
+    struct dirent *ent;
+    List module_contents = NULL;
+    while ((ent = readdir(dir))) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+            continue;
+        String file = class_call(String, format, "%s/%s", location, ent->d_name);
+        String contents = class_call(String, from_file, file->buffer);
+        if (!module_contents)
+            module_contents = new(List);
+        list_push(module_contents, contents);
+    }
+    
     int n_tokens = 0;
-    self->tokens = call(self, read_tokens, str, &n_tokens);
+    self->tokens = call(self, read_tokens, module_contents, &n_tokens);
 
     // read modules and includes first
     call(self, read_modules);
     call(self, read_classes);
     call(self, resolve_supers);
+    // header output
     call(self, declare_classes);
+
+    // c module output
     call(self, replace_classes);
     call(self, define_module_constructor);
+    return true;
 }
 
 int main(int argc, char *argv[]) {
+    sleep(5);
     if (argc != 2) {
         printf("silver module preprocessor -- version %s\n", CX_VERSION);
         printf("usage: silver-mod module.json\n");
