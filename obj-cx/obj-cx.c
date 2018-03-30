@@ -642,9 +642,9 @@ bool CX_class_op_out(CX self, List scope, Token *t_start, Token *t,
     }
     if ((++t)->punct == "(") {
         fprintf(stdout, "%s_cl.", cd->class_name->buffer);
-        call(self, token_out, t_member, ' ');
+        call(self, token_out, t_member, '(');
         if (is_instance) {
-            call(self, token_out, t_ident, t->punct == ")" ? ',' : ' ');
+            call(self, token_out, t_ident, t->punct != ")" ? ',' : ' ');
         }
         bool prepend_arg = false;
         // method call
@@ -653,7 +653,6 @@ bool CX_class_op_out(CX self, List scope, Token *t_start, Token *t,
             printf("invalid call to property\n");
             exit(0);
         }
-        fprintf(stdout, "(");
         if (md->member_type == MT_Constructor) {
             prepend_arg = true;
             fprintf(stdout, "&%s_cl, %s", cd->class_name->buffer,

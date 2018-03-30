@@ -2,6 +2,9 @@ module dir / module.json
 
 compilation process:
 
+named arguments? (optional?)
+inheritable structures, be able to pass sub-structures without a cast; obviously do the same for classes
+
 find all module.json
     concatenate all files referenced in file block, inserting # X "file.cx" entries
     run entire block through silver-pre -i "temp_concat_file.sv" -c "c_file_out.c" -h "module_output.h"
@@ -36,3 +39,6 @@ manual CMakeFile not needed in the module directory, since all compilation can b
 
 private includes:
 insert #include's at top of module.c
+
+(?) investigate removing CMake from the mix entirely by making silver a proper Make / SLN generator
+    -> not the greatest idea; CMake is good at what it does and is already established
