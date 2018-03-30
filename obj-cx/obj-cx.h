@@ -59,6 +59,7 @@ declare(CX, Base)
     var(D,T,C,enum MemberType,member_type) \
     var(D,T,C,Token *,type)                \
     var(D,T,C,int,type_count)              \
+    var(D,T,C,String,type_str)             \
     var(D,T,C,String,str_name)             \
     var(D,T,C,Token *,setter_var)          \
     var(D,T,C,Token *,getter_start)        \
