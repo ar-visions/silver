@@ -36,25 +36,26 @@ struct _object_MemberDec;
     override(D,T,C,void,init,(C)) \
     method(D,T,C,Token *,read_tokens,(C,List,int *)) \
     method(D,T,C,bool,read_template_types,(C,struct _object_ClassDec *, Token **)) \
-    method(D,T,C,void,code_out,(C, List, Token *, Token *)) \
+    method(D,T,C,void,code_out,(C, List, Token *, Token *, FILE *)) \
     method(D,T,C,int,read_expression,(C, Token *, Token **, Token **, const char *)) \
     method(D,T,C,void,read_property_blocks,(C, struct _object_ClassDec *, struct _object_MemberDec *)) \
     method(D,T,C,bool,read_modules,(C)) \
     method(D,T,C,bool,read_classes,(C)) \
-    method(D,T,C,bool,replace_classes,(C)) \
-    method(D,T,C,void,declare_classes,(C)) \
-    method(D,T,C,void,define_module_constructor,(C)) \
+    method(D,T,C,bool,replace_classes,(C, FILE *)) \
+    method(D,T,C,void,declare_classes,(C, FILE *)) \
+    method(D,T,C,void,define_module_constructor,(C, FILE *)) \
     method(D,T,C,void,effective_methods,(C, struct _object_ClassDec *, Pairs *)) \
     method(D,T,C,bool,class_op_out,(C, List, Token *, Token *, \
-        struct _object_ClassDec *, Token *, bool, Token **, const char *)) \
-    method(D,T,C,void,args_out,(C, Pairs, struct _object_ClassDec *, struct _object_MemberDec *, bool, bool, int)) \
+        struct _object_ClassDec *, Token *, bool, Token **, const char *, FILE *)) \
+    method(D,T,C,void,args_out,(C, Pairs, struct _object_ClassDec *, struct _object_MemberDec *, bool, bool, int, FILE *)) \
     method(D,T,C,String,token_string,(C, Token *)) \
     method(D,T,C,void,resolve_supers,(C)) \
-    method(D,T,C,void,token_out,(C, Token *, int)) \
+    method(D,T,C,void,token_out,(C, Token *, int, FILE *)) \
     method(D,T,C,bool,process,(C, const char *)) \
     var(D,T,C,String,name)                 \
     var(D,T,C,Token *,tokens)              \
     var(D,T,C,List,modules)                \
+    var(D,T,C,List,includes)               \
     var(D,T,C,Pairs,classes)               \
     var(D,T,C,Pairs,processed)
 declare(CX, Base)

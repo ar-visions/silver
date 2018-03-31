@@ -24,7 +24,7 @@ Token *CX_read_tokens(CX self, List module_contents, int *n_tokens) {
     each(module_contents, contents) {
         total_len += contents->length;
     }
-    Token *tokens = array_struct(Token, total_len + 1);
+    Token *tokens = array_struct(Token, total_len + 32 + 1);
     int nt = 0;
     enum TokenType seps[256];
     const char *separators = "[](){}.,+-&*~!/%<>=^|&?:;#";
@@ -648,7 +648,7 @@ Pairs CX_stack_map(CX self, Token *from, Token *to) {
 }
 
 bool CX_class_op_out(CX self, List scope, Token *t_start, Token *t,
-        ClassDec cd, Token *t_ident, bool is_instance, Token **t_after, const char *prev_keyword) {
+        ClassDec cd, Token *t_ident, bool is_instance, Token **t_after, const char *prev_keyword, FILE *output) {
     String s_token = call(self, token_string, t);
     String s_ident = t_ident ? call(self, token_string, t_ident) : NULL;
     Token *t_member = t;
@@ -658,10 +658,10 @@ bool CX_class_op_out(CX self, List scope, Token *t_start, Token *t,
         exit(0);
     }
     if ((++t)->punct == "(") {
-        fprintf(stdout, "%s_cl.", cd->class_name->buffer);
-        call(self, token_out, t_member, '(');
+        fprintf(output, "%s_cl.", cd->class_name->buffer);
+        call(self, token_out, t_member, '(', output);
         if (is_instance) {
-            call(self, token_out, t_ident, t->punct != ")" ? ',' : ' ');
+            call(self, token_out, t_ident, t->punct != ")" ? ',' : ' ', output);
         }
         bool prepend_arg = false;
         // method call
@@ -672,7 +672,7 @@ bool CX_class_op_out(CX self, List scope, Token *t_start, Token *t,
         }
         if (md->member_type == MT_Constructor) {
             prepend_arg = true;
-            fprintf(stdout, "&%s_cl, %s", cd->class_name->buffer,
+            fprintf(output, "&%s_cl, %s", cd->class_name->buffer,
                 prev_keyword == "auto" ? "true" : "false");
         }
         // issue with stack spaced vars is you'll need to crawl ahead and find all instances of stack vars, and create associative space for each */
@@ -680,15 +680,15 @@ bool CX_class_op_out(CX self, List scope, Token *t_start, Token *t,
         int n = call(self, read_expression, t, NULL, NULL, ")");
         for (int i = 1; i < n; i++) {
             if (i == 1 && prepend_arg)
-                fprintf(stdout, ",");
-            call(self, token_out, &t[i], ' ');
+                fprintf(output, ",");
+            call(self, token_out, &t[i], ' ', output);
         }
         t += n;
         if (t->punct != ")") {
             printf("expected ')'\n");
             exit(0);
         }
-        call(self, token_out, t, ' ');
+        call(self, token_out, t, ' ', output);
         *t_after = t;
         // perform call replacement here
     } else if (t->assign) {
@@ -700,52 +700,52 @@ bool CX_class_op_out(CX self, List scope, Token *t_start, Token *t,
         }
         if (md->setter_start) {
             // call explicit setter
-            fprintf(stdout, "%s_cl.set_", cd->class_name->buffer);
-            call(self, token_out, t_member, '(');
+            fprintf(output, "%s_cl.set_", cd->class_name->buffer);
+            call(self, token_out, t_member, '(', output);
             if (is_instance)
-                call(self, token_out, t_ident, ',');
-            call(self, code_out, scope, t, &t[n - 1]);
-            fprintf(stdout, ")");
-            call(self, token_out, &t[n], 0);
+                call(self, token_out, t_ident, ',', output);
+            call(self, code_out, scope, t, &t[n - 1], output);
+            fprintf(output, ")");
+            call(self, token_out, &t[n], 0, output);
             *t_after = t + n;
         } else {
             // set object var
             if (is_instance) {
-                call(self, token_out, t_ident, 0);
-                fprintf(stdout, "->");
+                call(self, token_out, t_ident, 0, output);
+                fprintf(output, "->");
             } else {
-                fprintf(stdout, "%s_cl.", cd->class_name->buffer);
+                fprintf(output, "%s_cl.", cd->class_name->buffer);
             }
-            call(self, token_out, t_member, 0);
-            call(self, token_out, t_assign, 0);
-            call(self, code_out, scope, t, &t[n]);
+            call(self, token_out, t_member, 0, output);
+            call(self, token_out, t_assign, 0, output);
+            call(self, code_out, scope, t, &t[n], output);
             *t_after = t + n;
         }
         // call setter if it exists (note: allow setters to be sub-classable, calling super.prop = value; and such)
     } else {
         if (md->getter_start) {
             // call explicit getter (class or instance)
-            fprintf(stdout, "%s_cl.get_", cd->class_name->buffer);
-            call(self, token_out, t_member, '(');
+            fprintf(output, "%s_cl.get_", cd->class_name->buffer);
+            call(self, token_out, t_member, '(', output);
             if (is_instance)
-                call(self, token_out, t_ident, 0);
-            fprintf(stdout, ")");
+                call(self, token_out, t_ident, 0, output);
+            fprintf(output, ")");
         } else {
             // get object->var (class or instance)
             if (is_instance) {
-                call(self, token_out, t_ident, 0);
-                fprintf(stdout, "->");
+                call(self, token_out, t_ident, 0, output);
+                fprintf(output, "->");
             } else {
-                fprintf(stdout, "%s_cl.", cd->class_name->buffer);
+                fprintf(output, "%s_cl.", cd->class_name->buffer);
             }
-            call(self, token_out, t_member, ' ');
+            call(self, token_out, t_member, ' ', output);
         }
         *t_after = t_member;
     }
     return true;
 }
 
-void CX_code_out(CX self, List scope, Token *method_start, Token *method_end) {
+void CX_code_out(CX self, List scope, Token *method_start, Token *method_end, FILE *output) {
     int brace_depth = 0;
     for (Token *t = method_start; ; t++) {
         // find 
@@ -755,11 +755,11 @@ void CX_code_out(CX self, List scope, Token *method_start, Token *method_end) {
             t++;
         }
         if (t->punct == "{" || t->keyword == "for") {
-            call(self, token_out, t, ' ');
+            call(self, token_out, t, ' ', output);
             if (brace_depth++ != 0)
                 list_push(scope, new(Pairs));
         } else if (t->punct == "}") {
-            call(self, token_out, t, ' ');
+            call(self, token_out, t, ' ', output);
             brace_depth--;
             if (brace_depth != 0)
                 list_pop(scope, Pairs);
@@ -772,21 +772,21 @@ void CX_code_out(CX self, List scope, Token *method_start, Token *method_end) {
                 // check for new/auto keyword before
                 Token *t_start = t;
                 if ((++t)->type == TT_Identifier) {
-                    call(self, token_out, t - 1, ' ');
-                    call(self, token_out, t, ' ');
+                    call(self, token_out, t - 1, ' ', output);
+                    call(self, token_out, t, ' ', output);
                     // variable declared
                     String str_name = class_call(String, new_from_bytes, (uint8 *)t->value, t->length);
                     Pairs top = (Pairs)call(scope, last);
                     pairs_add(top, str_name, cd);
                 } else if (t->punct == ".") {
                     if ((++t)->type == TT_Identifier)
-                        call(self, class_op_out, scope, t_start, t, cd, t_ident, false, &t, prev_keyword);
+                        call(self, class_op_out, scope, t_start, t, cd, t_ident, false, &t, prev_keyword, output);
                 } else if (t->punct == "(") {
                     // construct (default)
-                    call(self, class_op_out, scope, t_start, t - 1, cd, t_ident, false, &t, prev_keyword);
+                    call(self, class_op_out, scope, t_start, t - 1, cd, t_ident, false, &t, prev_keyword, output);
                 } else {
-                    call(self, token_out, t - 1, ' ');
-                    call(self, token_out, t, ' ');
+                    call(self, token_out, t - 1, ' ', output);
+                    call(self, token_out, t, ' ', output);
                 }
             } else {
                 ClassDec cd;
@@ -800,7 +800,7 @@ void CX_code_out(CX self, List scope, Token *method_start, Token *method_end) {
                         Token *t_start = t;
                         if ((++t)->punct == ".") {
                             if ((++t)->type == TT_Identifier) {
-                                call(self, class_op_out, scope, t_start, t, cd, t_ident, true, &t, NULL);
+                                call(self, class_op_out, scope, t_start, t, cd, t_ident, true, &t, NULL, output);
                                 found = true;
                             }
                         }
@@ -808,52 +808,52 @@ void CX_code_out(CX self, List scope, Token *method_start, Token *method_end) {
                     }
                 }
                 if (!found)
-                    call(self, token_out, t, ' ');
+                    call(self, token_out, t, ' ', output);
             }
         } else {
-            call(self, token_out, t, 0);
+            call(self, token_out, t, 0, output);
         }
         if (t == method_end)
             break;
     }
 }
 
-void CX_token_out(CX self, Token *t, int sep) {
+void CX_token_out(CX self, Token *t, int sep, FILE *output) {
     for (int i = 0; i < t->length; i++) {
-        fprintf(stdout, "%c", t->value[i]);
+        fprintf(output, "%c", t->value[i]);
     }
     const char *after = &t->value[t->length];
     while (*after && isspace(*after)) {
-        fprintf(stdout, "%c", *after);
+        fprintf(output, "%c", *after);
         after++;
     }
     if (sep != ' ' && sep > 0)
-        fprintf(stdout, "%c", sep);
+        fprintf(output, "%c", sep);
 }
 
-void CX_args_out(CX self, Pairs top, ClassDec cd, MemberDec md, bool inst, bool names, int aout) {
+void CX_args_out(CX self, Pairs top, ClassDec cd, MemberDec md, bool inst, bool names, int aout, FILE *output) {
     if (inst) {
         if (aout > 0)
-            fprintf(stdout, ", ");
-        fprintf(stdout, "struct _object_");
-        call(self, token_out, cd->name, ' ');
-        fprintf(stdout, " *");
+            fprintf(output, ", ");
+        fprintf(output, "struct _");
+        call(self, token_out, cd->name, ' ', output);
+        fprintf(output, " *");
         if (names)
-            fprintf(stdout, "self");
+            fprintf(output, "self");
         if (top)
             pairs_add(top, new_string("self"), cd);
         aout++;
     }
     for (int i = 0; i < md->arg_types_count; i++) {
         if (aout > 0)
-            fprintf(stdout, ", ");
+            fprintf(output, ", ");
         
         for (int ii = 0; ii < md->at_token_count[i]; ii++) {
-            call(self, token_out, &(md->arg_types[i])[ii], ' ');
+            call(self, token_out, &(md->arg_types[i])[ii], ' ', output);
         }
         if (names) {
             Token *t_name = md->arg_names[i];
-            call(self, token_out, t_name, ' ');
+            call(self, token_out, t_name, ' ', output);
             if (top && md->at_token_count[i] == 1) {
                 String s_type = call(self, token_string, md->arg_types[0]);
                 ClassDec cd_type = pairs_value(self->classes, s_type, ClassDec);
@@ -876,19 +876,19 @@ void CX_effective_methods(CX self, ClassDec cd, Pairs *pairs) {
     }
 }
 
-void CX_declare_classes(CX self) {
+void CX_declare_classes(CX self, FILE *output) {
     KeyValue kv;
     each_pair(self->classes, kv) {
         String class_name = (String)kv->key;
         ClassDec cd = (ClassDec)kv->value;
         String super_name = cd->parent ? cd->parent->class_name : new_string("Base");
-        fprintf(stdout,
+        fprintf(output,
             "\ntypedef struct _class_%s {\n"    \
             "\tstruct _class_%s *parent;\n"   \
             "\tconst char *class_name;\n"       \
             "\tunsigned int flags;\n"           \
             "\tint obj_size;\n"                 \
-            "\tvoid (*_init)(struct _object_%s *);" \
+            "\tvoid (*_init)(struct _%s *);" \
             "\tint *mcount;\n"                  \
             "\tunsigned char *mtypes;\n"        \
             "\tconst char **mnames;\n"          \
@@ -905,34 +905,36 @@ void CX_declare_classes(CX self) {
             switch (md->member_type) {
                 case MT_Constructor:
                 case MT_Method:
-                    fprintf(stdout, "\t");
+                    fprintf(output, "\t");
                     if (md->member_type == MT_Constructor) {
-                        fprintf(stdout, "%s", cd->class_name->buffer);
+                        fprintf(output, "%s", cd->class_name->buffer);
                     } else {
                         for (int i = 0; i < md->type_count; i++)
-                            call(self, token_out, &md->type[i], ' ');
+                            call(self, token_out, &md->type[i], ' ', output);
                     }
-                    fprintf(stdout, " (*%s)(", md->str_name->buffer);
-                    call(self, args_out, NULL, cd, md, md->member_type == MT_Method && !md->is_static, false, 0);
-                    fprintf(stdout, ");\n");
+                    fprintf(output, " (*%s)(", md->str_name->buffer);
+                    call(self, args_out, NULL, cd, md, md->member_type == MT_Method && !md->is_static, false, 0, output);
+                    fprintf(output, ");\n");
                     break;
                 case MT_Prop:
-                    fprintf(stdout, "\t");
+                    fprintf(output, "\t");
                     for (int i = 0; i < md->type_count; i++)
-                        call(self, token_out, &md->type[i], ' ');
-                    fprintf(stdout, " (*get_%s)();\n", md->str_name->buffer);
-                    fprintf(stdout, "\t");
-                    fprintf(stdout, "void (*set_%s)(", md->str_name->buffer);
+                        call(self, token_out, &md->type[i], ' ', output);
+                    fprintf(output, " (*get_%s)();\n", md->str_name->buffer);
+                    fprintf(output, "\t");
+                    fprintf(output, "void (*set_%s)(", md->str_name->buffer);
                     for (int i = 0; i < md->type_count; i++)
-                        call(self, token_out, &md->type[i], ' ');
-                    fprintf(stdout, ");\n");
+                        call(self, token_out, &md->type[i], ' ', output);
+                    fprintf(output, ");\n");
                     break;
             }
         }
-        fprintf(stdout, "} class_%s %s_cl;\n\n", cd->class_name->buffer, cd->class_name->buffer);
+        fprintf(output, "} class_%s;\n\n", cd->class_name->buffer);
 
-        fprintf(stdout,
-            "\ntypedef struct _object_%s {\n"   \
+        fprintf(output, "extern class_%s %s_cl;\n\n", cd->class_name->buffer, cd->class_name->buffer);
+
+        fprintf(output,
+            "\ntypedef struct _%s {\n"   \
             "\tstruct _class_%s *cl;\n"         \
             "\tLItem *ar_node;\n"               \
             "\tint refs;\n",
@@ -942,28 +944,35 @@ void CX_declare_classes(CX self) {
                 MemberDec md = (MemberDec)mkv->value;
                 if (md->member_type == MT_Prop && !md->getter_start) {
                     for (int i = 0; i < md->type_count; i++)
-                        call(self, token_out, &md->type[i], ' ');
-                    fprintf(stdout, "%s;\n", md->str_name->buffer);
+                        call(self, token_out, &md->type[i], ' ', output);
+                    fprintf(output, "%s;\n", md->str_name->buffer);
                 }
             }
         }
-        fprintf(stdout, "} object_%s;\n\n", cd->class_name->buffer);
+        fprintf(output, "} %s;\n\n", cd->class_name->buffer);
     }
 }
 
-void CX_define_module_constructor(CX self) {
-    fprintf(stdout, "static void module_constructor(void) __attribute__(constructor) {\n");
+void CX_define_module_constructor(CX self, FILE *output) {
     KeyValue kv;
+    {
+        each_pair(self->classes, kv) {
+            ClassDec cd = (ClassDec)kv->value;
+            fprintf(output, "class_%s %s_cl;\n", cd->class_name->buffer, cd->class_name->buffer);
+        }
+    }
+    fprintf(output, "\n");
+    fprintf(output, "static void module_constructor(void) __attribute__(constructor) {\n");
     each_pair(self->classes, kv) {
         ClassDec cd = (ClassDec)kv->value;
         int method_count = 0;
         KeyValue mkv;
         // function pointers
         if (cd->parent) {
-            fprintf(stdout, "\t%s_cl.parent = &%s_cl;\n",
+            fprintf(output, "\t%s_cl.parent = &%s_cl;\n",
                 cd->class_name->buffer, cd->parent->class_name->buffer);
         }
-        fprintf(stdout, "\t%s_cl._init = %s__init;\n",
+        fprintf(output, "\t%s_cl._init = %s__init;\n",
             cd->class_name->buffer, cd->class_name->buffer);
         each_pair(cd->effective, mkv) {
             MemberDec md = (MemberDec)mkv->value;
@@ -972,18 +981,18 @@ void CX_define_module_constructor(CX self) {
                 case MT_Constructor:
                 case MT_Method:
                     if (md->member_type == MT_Constructor) {
-                        fprintf(stdout, "\t%s_cl.%s = construct_%s_%s;\n",
+                        fprintf(output, "\t%s_cl.%s = construct_%s_%s;\n",
                             cd->class_name->buffer, md->str_name->buffer, origin->class_name->buffer, md->str_name->buffer);
                     } else {
-                        fprintf(stdout, "\t%s_cl.%s = %s_%s;\n",
+                        fprintf(output, "\t%s_cl.%s = %s_%s;\n",
                             cd->class_name->buffer, md->str_name->buffer, origin->class_name->buffer, md->str_name->buffer);
                     }
                     method_count++;
                     break;
                 case MT_Prop:
-                    fprintf(stdout, "\t%s_cl.get_%s = %s_get_%s;\n",
+                    fprintf(output, "\t%s_cl.get_%s = %s_get_%s;\n",
                         cd->class_name->buffer, md->str_name->buffer, origin->class_name->buffer, md->str_name->buffer);
-                    fprintf(stdout, "\t%s_cl.set_%s = %s_set_%s;\n",
+                    fprintf(output, "\t%s_cl.set_%s = %s_set_%s;\n",
                         cd->class_name->buffer, md->str_name->buffer, origin->class_name->buffer, md->str_name->buffer);
                     method_count += 2;
                     break;
@@ -991,47 +1000,47 @@ void CX_define_module_constructor(CX self) {
         }
         // member types
         {
-            fprintf(stdout, "\t%s_cl.mtypes = (char *)malloc(%d);\n", cd->class_name->buffer, method_count);
+            fprintf(output, "\t%s_cl.mtypes = (char *)malloc(%d);\n", cd->class_name->buffer, method_count);
             int mc = 0;
             each_pair(cd->effective, mkv) {
                 MemberDec md = (MemberDec)mkv->value;
                 switch (md->member_type) {
                     case MT_Constructor:
                     case MT_Method:
-                        fprintf(stdout, "\t%s_cl.mtypes[%d] = %d;\n", cd->class_name->buffer, mc, md->member_type); mc++;
+                        fprintf(output, "\t%s_cl.mtypes[%d] = %d;\n", cd->class_name->buffer, mc, md->member_type); mc++;
                         break;
                     case MT_Prop:
-                        fprintf(stdout, "\t%s_cl.mtypes[%d] = %d;\n", cd->class_name->buffer, mc, md->member_type); mc++;
-                        fprintf(stdout, "\t%s_cl.mtypes[%d] = %d;\n", cd->class_name->buffer, mc, md->member_type); mc++;
+                        fprintf(output, "\t%s_cl.mtypes[%d] = %d;\n", cd->class_name->buffer, mc, md->member_type); mc++;
+                        fprintf(output, "\t%s_cl.mtypes[%d] = %d;\n", cd->class_name->buffer, mc, md->member_type); mc++;
                         break;
                 }
             }
         }
         // member names
         {
-            fprintf(stdout, "\t%s_cl.mnames = (const char **)malloc(%d * sizeof(const char *));\n", cd->class_name->buffer, method_count);
+            fprintf(output, "\t%s_cl.mnames = (const char **)malloc(%d * sizeof(const char *));\n", cd->class_name->buffer, method_count);
             int mc = 0;
             each_pair(cd->effective, mkv) {
                 MemberDec md = (MemberDec)mkv->value;
                 switch (md->member_type) {
                     case MT_Constructor:
                     case MT_Method:
-                        fprintf(stdout, "\t%s_cl.mnames[%d] = \"%s\";\n", cd->class_name->buffer, mc, md->str_name->buffer); mc++;
+                        fprintf(output, "\t%s_cl.mnames[%d] = \"%s\";\n", cd->class_name->buffer, mc, md->str_name->buffer); mc++;
                         break;
                     case MT_Prop:
-                        fprintf(stdout, "\t%s_cl.mnames[%d] = \"%s\";\n", cd->class_name->buffer, mc, md->str_name->buffer); mc++;
-                        fprintf(stdout, "\t%s_cl.mnames[%d] = \"%s\";\n", cd->class_name->buffer, mc, md->str_name->buffer); mc++;
+                        fprintf(output, "\t%s_cl.mnames[%d] = \"%s\";\n", cd->class_name->buffer, mc, md->str_name->buffer); mc++;
+                        fprintf(output, "\t%s_cl.mnames[%d] = \"%s\";\n", cd->class_name->buffer, mc, md->str_name->buffer); mc++;
                         break;
                 }
             }
         }
-        fprintf(stdout, "\t%s_cl.mcount = %d;\n", cd->class_name->buffer, method_count);
+        fprintf(output, "\t%s_cl.mcount = %d;\n", cd->class_name->buffer, method_count);
     }
-    fprintf(stdout, "}\n");
+    fprintf(output, "}\n");
 }
 
 // verify the code executes as planned
-bool CX_replace_classes(CX self) {
+bool CX_replace_classes(CX self, FILE *output) {
     List scope = new(List);
     list_push(scope, new(Pairs));
     KeyValue kv;
@@ -1039,7 +1048,7 @@ bool CX_replace_classes(CX self) {
         ClassDec cd = (ClassDec)kv->value;
         KeyValue mkv;
         // output init
-        fprintf(stdout, "void %s__init(%s self) {\n",
+        fprintf(output, "void %s__init(%s self) {\n",
             cd->class_name->buffer, cd->class_name->buffer);
         Pairs m = new(Pairs);
         call(self, effective_methods, cd, &m);
@@ -1048,17 +1057,17 @@ bool CX_replace_classes(CX self) {
                 MemberDec md = (MemberDec)mkv->value;
                 if (md->member_type == MT_Prop && md->assign) {
                     if (md->setter_start)
-                        fprintf(stdout, "self->cl->set_%s(self, ", md->str_name->buffer);
+                        fprintf(output, "self->cl->set_%s(self, ", md->str_name->buffer);
                     else
-                        fprintf(stdout, "self->%s = ", md->str_name->buffer);
-                    call(self, code_out, scope, md->assign, &md->assign[md->assign_count - 1]);
+                        fprintf(output, "self->%s = ", md->str_name->buffer);
+                    call(self, code_out, scope, md->assign, &md->assign[md->assign_count - 1], output);
                     if (md->setter_start)
-                        fprintf(stdout, ")");
-                    fprintf(stdout, ";\n");
+                        fprintf(output, ")");
+                    fprintf(output, ";\n");
                 }
             }
         }
-        fprintf(stdout, "}\n");
+        fprintf(output, "}\n");
 
         each_pair(cd->members, mkv) {
             MemberDec md = (MemberDec)mkv->value;
@@ -1069,11 +1078,11 @@ bool CX_replace_classes(CX self) {
                     const char *cn = cd->class_name->buffer;
                     const char *vn = md->str_name->buffer;
                     if (md->is_static) {
-                        fprintf(stdout, "%s %s_get_%s() { return %s_cl.%s; }\n", tn, cn, vn, cn, vn);
-                        fprintf(stdout, "%s %s_set_%s(%s self, %s value) { return %s_cl.%s = value; }\n", tn, cn, vn, cn, vn, cn, vn);
+                        fprintf(output, "%s %s_get_%s() { return %s_cl.%s; }\n", tn, cn, vn, cn, vn);
+                        fprintf(output, "%s %s_set_%s(%s self, %s value) { return %s_cl.%s = value; }\n", tn, cn, vn, cn, vn, cn, vn);
                     } else {
-                        fprintf(stdout, "%s %s_get_%s(%s self) { return self->%s; }\n", tn, cn, vn, cn, vn);
-                        fprintf(stdout, "%s %s_set_%s(%s self, %s value) { return self->%s = value; }\n", tn, cn, vn, cn, vn, vn);
+                        fprintf(output, "%s %s_get_%s(%s self) { return self->%s; }\n", tn, cn, vn, cn, vn);
+                        fprintf(output, "%s %s_set_%s(%s self, %s value) { return self->%s = value; }\n", tn, cn, vn, cn, vn, vn);
                     }
                 }
                 continue;
@@ -1082,43 +1091,43 @@ bool CX_replace_classes(CX self) {
             list_push(scope, top);
             switch (md->member_type) {
                 case MT_Constructor:
-                    call(self, token_out, cd->name, ' ');
-                    fprintf(stdout, "%s_construct_%s(", cd->class_name->buffer, md->str_name->buffer);
-                    fprintf(stdout, "struct _class_%s *cl, bool ar", cd->class_name->buffer);
-                    call(self, args_out, top, cd, md, false, true, 1);
-                    fprintf(stdout, ") {\n");
-                    fprintf(stdout, "%s self = object_alloc(cl, 0);\n",
+                    call(self, token_out, cd->name, ' ', output);
+                    fprintf(output, "%s_construct_%s(", cd->class_name->buffer, md->str_name->buffer);
+                    fprintf(output, "struct _class_%s *cl, bool ar", cd->class_name->buffer);
+                    call(self, args_out, top, cd, md, false, true, 1, output);
+                    fprintf(output, ") {\n");
+                    fprintf(output, "%s self = object_alloc(cl, 0);\n",
                         cd->class_name->buffer);
-                    fprintf(stdout, "self->cl->_init(self);\n");
+                    fprintf(output, "self->cl->_init(self);\n");
                     pairs_add(top, new_string("self"), cd);
                     if (md->block_start != md->block_end)
-                        call(self, code_out, scope, md->block_start + 1, md->block_end - 1);
-                    fprintf(stdout, "return ar ? object_auto(self) : self;\n}\n");
-                    fprintf(stdout, "\n");
+                        call(self, code_out, scope, md->block_start + 1, md->block_end - 1, output);
+                    fprintf(output, "return ar ? object_auto(self) : self;\n}\n");
+                    fprintf(output, "\n");
                     break;
                 case MT_Method:
                     for (int i = 0; i < md->type_count; i++)
-                        call(self, token_out, &md->type[i], ' ');
-                    fprintf(stdout, "%s_%s(", cd->class_name->buffer, md->str_name->buffer);
-                    call(self, args_out, top, cd, md, !md->is_static, true, 0);
-                    fprintf(stdout, ")");
-                    call(self, code_out, scope, md->block_start, md->block_end);
-                    fprintf(stdout, "\n");
+                        call(self, token_out, &md->type[i], ' ', output);
+                    fprintf(output, "%s_%s(", cd->class_name->buffer, md->str_name->buffer);
+                    call(self, args_out, top, cd, md, !md->is_static, true, 0, output);
+                    fprintf(output, ")");
+                    call(self, code_out, scope, md->block_start, md->block_end, output);
+                    fprintf(output, "\n");
                     // C#-style Main entry point; todo: use List or Pairs class instead of const char **
                     if (md->is_static && call(md->str_name, cmp, "Main") == 0) {
                         for (int i = 0; i < md->type_count; i++)
-                            call(self, token_out, &md->type[i], ' ');
-                        fprintf(stdout, "main(");
-                        call(self, args_out, top, cd, md, !md->is_static, true, 0);
-                        fprintf(stdout, ") {\n");
-                        fprintf(stdout, "\treturn %s_%s(", cd->class_name->buffer, md->str_name->buffer);
+                            call(self, token_out, &md->type[i], ' ', output);
+                        fprintf(output, "main(");
+                        call(self, args_out, top, cd, md, !md->is_static, true, 0, output);
+                        fprintf(output, ") {\n");
+                        fprintf(output, "\treturn %s_%s(", cd->class_name->buffer, md->str_name->buffer);
                         for (int i = 0; i < md->arg_types_count; i++) {
                             if (i > 0)
-                                fprintf(stdout, ", ");
+                                fprintf(output, ", ");
                             Token *t_name = md->arg_names[i];
-                            call(self, token_out, t_name, ' ');
+                            call(self, token_out, t_name, ' ', output);
                         }
-                        fprintf(stdout, ");\n}\n");
+                        fprintf(output, ");\n}\n");
                     }
                     break;
                 case MT_Prop:
@@ -1135,27 +1144,27 @@ bool CX_replace_classes(CX self) {
                             continue;
                         if (i == 0) {
                             for (int i = 0; i < md->type_count; i++)
-                                call(self, token_out, &md->type[i], ' ');
-                            fprintf(stdout, "%s_get_", cd->class_name->buffer);
-                            call(self, token_out, md->name, '(');
+                                call(self, token_out, &md->type[i], ' ', output);
+                            fprintf(output, "%s_get_", cd->class_name->buffer);
+                            call(self, token_out, md->name, '(', output);
                         } else {
                             for (int i = 0; i < md->type_count; i++)
-                                call(self, token_out, &md->type[i], ' ');
-                            fprintf(stdout, "%s_set_", cd->class_name->buffer);
-                            call(self, token_out, md->name, '(');
+                                call(self, token_out, &md->type[i], ' ', output);
+                            fprintf(output, "%s_set_", cd->class_name->buffer);
+                            call(self, token_out, md->name, '(', output);
                         }
                         if (!md->is_static) {
-                            call(self, token_out, cd->name, ' ');
-                            fprintf(stdout, "self");
+                            call(self, token_out, cd->name, ' ', output);
+                            fprintf(output, "self");
                             pairs_add(top, new_string("self"), cd);
                             if (i == 1) {
-                                fprintf(stdout, ", ");
+                                fprintf(output, ", ");
                             }
                         }
                         if (i == 1) {
                             for (int i = 0; i < md->type_count; i++)
-                                call(self, token_out, &md->type[i], ' ');
-                            call(self, token_out, md->setter_var, ' ');
+                                call(self, token_out, &md->type[i], ' ', output);
+                            call(self, token_out, md->setter_var, ' ', output);
                             String s_type = call(self, token_string, md->setter_var);
                             ClassDec cd_type = pairs_value(self->classes, s_type, ClassDec);
                             if (cd_type) {
@@ -1163,18 +1172,18 @@ bool CX_replace_classes(CX self) {
                                 pairs_add(top, s_var, cd_type);
                             }
                         }
-                        fprintf(stdout, ")");
+                        fprintf(output, ")");
                         if (i == 0)
-                            call(self, code_out, scope, block_start, block_end);
+                            call(self, code_out, scope, block_start, block_end, output);
                         else {
-                            call(self, code_out, scope, block_start, block_end - 1);
+                            call(self, code_out, scope, block_start, block_end - 1, output);
                             if (md->is_static)
-                                fprintf(stdout, "return %s_cl.get_%s();", cd->class_name->buffer, md->str_name->buffer);
+                                fprintf(output, "return %s_cl.get_%s();", cd->class_name->buffer, md->str_name->buffer);
                             else
-                                fprintf(stdout, "return self->get_%s(self);", md->str_name->buffer);
-                            call(self, code_out, scope, block_end, block_end);
+                                fprintf(output, "return self->get_%s(self);", md->str_name->buffer);
+                            call(self, code_out, scope, block_end, block_end, output);
                         }
-                        fprintf(stdout, "\n");
+                        fprintf(output, "\n");
                         call(top, clear);
                     }
                     break;
@@ -1187,10 +1196,10 @@ bool CX_replace_classes(CX self) {
 static List modules;
 static CX find_module(const char *name) {
     CX m;
-    each(modules, m)
+    each(modules, m) {
         if (call(m->name, cmp, name) == 0)
             return m;
-
+    }
     return NULL;
 }
 
@@ -1198,38 +1207,43 @@ void CX_process_module(CX self, const char *location) {
 }
 
 bool CX_read_modules(CX self) {
-    self->classes = new(Pairs);
     for (Token *t = self->tokens; t->value; t++) {
-        if (strncmp(t->value, "module", t->length) == 0 && (t == self->tokens || (t - 1)->punct == ";")) {
-            // check if module has already been read in
-            Token *b_start = NULL, *b_end = NULL;
-            int count = call(self, read_expression, t + 1, &b_start, &b_end, ";");
+        bool is_include = t->length == 7 && strncmp(t->value, "include", t->length) == 0;
+        bool is_module = t->length == 6 && strncmp(t->value, "module", t->length) == 0;
+        if (is_include || is_module) {
+            int count = call(self, read_expression, t, NULL, NULL, ";");
             bool expect_comma = false;
-            for (int i = 0; i < count; i++) {
-                Token *tt = &b_start[i];
+            for (int i = 1; i < count; i++) {
+                Token *tt = &t[i];
                 if (expect_comma) {
                     if (tt->punct != ",") {
-                        fprintf(stderr, "expected separator ',' between modules");
+                        fprintf(stderr, "expected separator ',' between %s", (is_include ? "includes" : "modules"));
                         exit(0);
                     }
                 } else {
                     // expect module name (TT_Identifier)
                     if (tt->type != TT_Identifier || tt->length >= 256) {
-                        fprintf(stderr, "expected identifier for module name");
+                        fprintf(stderr, "expected identifier for %s name", (is_include ? "include" : "module"));
                         exit(0);
                     }
-                    char mod[256];
-                    memcpy(mod, tt->value, tt->length);
-                    mod[tt->length] = 0;
-                    CX m = find_module(mod);
-                    if (!m) {
-                        m = new(CX);
-                        list_push(self->modules, m); // should be a pair, where key is what the module is referred to as
-                        list_push(modules, m);
-                        release(m);
-                        call(m, process, mod);
+                    char name[256];
+                    memcpy(name, tt->value, tt->length);
+                    name[tt->length] = 0;
+                    if (is_include) {
+                        list_push(self->includes, string(name));
                     } else {
-                        list_push(self->modules, m);
+                        CX m = find_module(name);
+                        if (!m) {
+                            m = new(CX);
+                            list_push(self->modules, m); // should be a pair, where key is what the module is referred to as
+                            if (!modules)
+                                modules = new(List);
+                            list_push(modules, m);
+                            call(m, process, name);
+                            release(m);
+                        } else {
+                            list_push(self->modules, m);
+                        }
                     }
                 }
                 expect_comma = !expect_comma;
@@ -1241,6 +1255,13 @@ bool CX_read_modules(CX self) {
 
 void CX_init(CX self) {
     self->modules = new(List);
+    self->includes = new(List);
+}
+
+FILE *module_file(const char *module_name, const char *file, const char *mode) {
+    char buffer[256];
+    sprintf(buffer, "%s/%s", module_name, file);
+    return fopen(buffer, mode);
 }
 
 bool CX_process(CX self, const char *location) {
@@ -1257,31 +1278,55 @@ bool CX_process(CX self, const char *location) {
     while ((ent = readdir(dir))) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
             continue;
-        String file = class_call(String, format, "%s/%s", location, ent->d_name);
-        String contents = class_call(String, from_file, file->buffer);
+        int len = strlen(ent->d_name);
+        if (len < 3)
+            continue;
+        if (strcmp(&ent->d_name[len - 3], ".sv") != 0)
+            continue;
+        char file[256];
+        sprintf(file, "%s/%s", location, ent->d_name);
+        //String file = class_call(String, format, "%s/%s", location, ent->d_name); [todo: fix bug somewhere in format, stepping on stack/memory somehow]
+        String contents = class_call(String, from_file, string(file)->buffer);//file->buffer);
         if (!module_contents)
             module_contents = new(List);
         list_push(module_contents, contents);
     }
-    
+    closedir(dir);
     int n_tokens = 0;
     self->tokens = call(self, read_tokens, module_contents, &n_tokens);
 
     // read modules and includes first
-    call(self, read_modules);
+    call(self, read_modules); // read includes as well
     call(self, read_classes);
     call(self, resolve_supers);
-    // header output
-    call(self, declare_classes);
 
-    // c module output
-    call(self, replace_classes);
-    call(self, define_module_constructor);
+    // header output
+    FILE *module_header = module_file(location, "module.h", "w+");
+    String upper = call(self->name, upper);
+    fprintf(module_header, "#ifndef __%s_H__\n", upper->buffer);
+    fprintf(module_header, "#define __%s_H__\n", upper->buffer);
+    CX mod;
+    each(self->modules, mod) {
+        fprintf(module_header, "#include <%s/module.h>\n", mod->name->buffer);
+    }
+    String include;
+    each(self->includes, include) {
+        fprintf(module_header, "#include <%s.h>\n", include->buffer);
+    }
+    call(self, declare_classes, module_header);
+    fprintf(module_header, "#endif\n");
+    fclose(module_header);
+
+    // c code output
+    FILE *module_code = module_file(location, "module.c", "w+");
+    fprintf(module_code, "#include \"module.h\"\n");
+    call(self, replace_classes, module_code);
+    call(self, define_module_constructor, module_code);
+    fclose(module_code);
     return true;
 }
 
 int main(int argc, char *argv[]) {
-    sleep(5);
     if (argc != 2) {
         printf("silver module preprocessor -- version %s\n", CX_VERSION);
         printf("usage: silver-mod module.json\n");
@@ -1289,6 +1334,7 @@ int main(int argc, char *argv[]) {
     }
     const char *input = (const char *)argv[1];
     CX cx = new(CX);
+    cx->name = retain(string(input));
     if (!call(cx, process, input))
         return 1;
     return 0;
