@@ -62,7 +62,7 @@ void  llist_remove(LList *list, LItem *item);
 #endif
 
 #define llist_each(list, ptr) \
-	ptr = (list)->first ? (typeof(ptr))(list)->first->data : NULL; \
+	ptr = ((list) && (list)->first) ? (typeof(ptr))(list)->first->data : NULL; \
 	if (ptr) for (LItem *_i = (list)->first; _i; _i = _i->next, ptr = _i ? (typeof(ptr))_i->data : NULL)
 
 #endif
