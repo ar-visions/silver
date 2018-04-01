@@ -82,6 +82,8 @@ typedef struct _Class {
 #define CLASS_FLAG_INIT        4
 #define CLASS_FLAG_NO_INIT     8
 
+#define null NULL
+
 EXPORT void *alloc_bytes(size_t);
 EXPORT Base new_object(Class, size_t);
 EXPORT void free_object(Base);

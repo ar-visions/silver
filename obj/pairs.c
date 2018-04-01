@@ -28,6 +28,7 @@ void Pairs_clear(Pairs self) {
 }
 
 void Pairs_add(Pairs self, Base key, Base value) {
+    String skey = inherits(key, String);
     call(self, remove, key);
     KeyValue kv = new(KeyValue);
     kv->key = retain(key);
