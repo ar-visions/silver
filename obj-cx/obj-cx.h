@@ -35,6 +35,7 @@ struct _object_MemberDec;
 #define _CX(D,T,C) _Base(spr,T,C)   \
     override(D,T,C,void,init,(C)) \
     method(D,T,C,Token *,read_tokens,(C,List,int *)) \
+    method(D,T,C,struct _object_ClassDec *,find_class,(String)) \
     method(D,T,C,bool,read_template_types,(C,struct _object_ClassDec *, Token **)) \
     method(D,T,C,void,code_out,(C, List, Token *, Token *, FILE *)) \
     method(D,T,C,int,read_expression,(C, Token *, Token **, Token **, const char *)) \
@@ -47,7 +48,7 @@ struct _object_MemberDec;
     method(D,T,C,void,effective_methods,(C, struct _object_ClassDec *, Pairs *)) \
     method(D,T,C,bool,class_op_out,(C, List, Token *, Token *, \
         struct _object_ClassDec *, Token *, bool, Token **, const char *, FILE *)) \
-    method(D,T,C,void,args_out,(C, Pairs, struct _object_ClassDec *, struct _object_MemberDec *, bool, bool, int, FILE *)) \
+    method(D,T,C,void,args_out,(C, Pairs, struct _object_ClassDec *, struct _object_MemberDec *, bool, bool, int, FILE *, bool)) \
     method(D,T,C,String,token_string,(C, Token *)) \
     method(D,T,C,void,resolve_supers,(C)) \
     method(D,T,C,void,token_out,(C, Token *, int, FILE *)) \
@@ -74,6 +75,8 @@ declare(CX, Base)
     var(D,T,C,Token *,setter_end)          \
     var(D,T,C,Token *,block_start)         \
     var(D,T,C,Token *,block_end)           \
+    var(D,T,C,Token *,array_start)         \
+    var(D,T,C,Token *,array_end)           \
     var(D,T,C,Token **,arg_names)          \
     var(D,T,C,Token **,arg_types)          \
     var(D,T,C,int,arg_types_count)         \
