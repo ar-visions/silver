@@ -10,7 +10,7 @@ class Base {
 
     void init() {
     }
-    Base release(int x, int y) {
+    Base release() {
         int this_is_a_test = self.retain().release().arg_test(self.refs);
         if (--self.refs == 0) {
             Base.free_object(self);
