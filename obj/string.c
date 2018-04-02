@@ -251,23 +251,32 @@ void String_check_resize(String self, uint chars) {
     }
 }
 
-void String_concat_char(String self, char c) {
+int String_concat_char(String self, char c) {
     call(self, check_resize, self->length + 1);
     self->buffer[self->length] = c;
     self->buffer[++self->length] = 0;
     free_ptr(self->utf8_buffer);
     self->utf8_length = 0;
+    return 1;
 }
 
-void String_concat_chars(String self, const char *p, int len) {
+int String_concat_chars(String self, const char *p, int len) {
+    if (len == 0)
+        return 0;
     call(self, check_resize, self->length + len);
     memcpy(&self->buffer[self->length], p, len + 1);
     self->length += len;
     free_ptr(self->utf8_buffer);
     self->utf8_length = 0;
+    return len;
 }
 
-void String_concat_string(String self, String b) {
+int String_concat_cstring(String self, const char *p) {
+    int len = strlen(p);
+    call(self, concat_chars, p, len);
+}
+
+int String_concat_string(String self, String b) {
     if (b) {
         call(self, concat_chars, b->buffer, b->length);
         free_ptr(self->utf8_buffer);
@@ -275,36 +284,44 @@ void String_concat_string(String self, String b) {
     }
 }
 
-void String_concat_long(String self, long v, const char *format) {
+int String_concat_long(String self, long v, const char *format) {
     char buffer[64];
     sprintf(buffer, format, v);
-    call(self, concat_chars, buffer, strlen(buffer));
+    int len = strlen(buffer);
+    call(self, concat_chars, buffer, len);
     free_ptr(self->utf8_buffer);
     self->utf8_length = 0;
+    return len;
 }
 
-void String_concat_long_long(String self, uint64 v, const char *format) {
+int String_concat_long_long(String self, uint64 v, const char *format) {
     char buffer[128];
     sprintf(buffer, format, v);
-    call(self, concat_chars, buffer, strlen(buffer));
+    int len = strlen(buffer);
+    call(self, concat_chars, buffer, len);
     free_ptr(self->utf8_buffer);
     self->utf8_length = 0;
+    return len;
 }
 
-void String_concat_double(String self, double v, const char *format) {
+int String_concat_double(String self, double v, const char *format) {
     char buffer[64];
     sprintf(buffer, format, v);
-    call(self, concat_chars, buffer, strlen(buffer));
+    int len = strlen(buffer);
+    call(self, concat_chars, buffer, len);
     free_ptr(self->utf8_buffer);
     self->utf8_length = 0;
+    return len;
 }
 
-void String_concat_object(String self, Base o) {
+int String_concat_object(String self, Base o) {
     String str = call(o, to_string);
     char *v = str ? str->buffer : (char *)"[null]";
-    call(self, concat_chars, v, strlen(v));
+    int len = strlen(v);
+    call(self, concat_chars, v, len);
     free_ptr(self->utf8_buffer);
     self->utf8_length = 0;
+    return len;
 }
 
 String String_format(const char *format, ...) {

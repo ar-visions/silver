@@ -37,7 +37,7 @@ struct _object_MemberDec;
     method(D,T,C,Token *,read_tokens,(C,List,int *)) \
     method(D,T,C,struct _object_ClassDec *,find_class,(String)) \
     method(D,T,C,bool,read_template_types,(C,struct _object_ClassDec *, Token **)) \
-    method(D,T,C,void,code_out,(C, List, Token *, Token *, FILE *)) \
+    method(D,T,C,String,code_out,(C, List, Token *, Token *, Token **)) \
     method(D,T,C,int,read_expression,(C, Token *, Token **, Token **, const char *)) \
     method(D,T,C,void,read_property_blocks,(C, struct _object_ClassDec *, struct _object_MemberDec *)) \
     method(D,T,C,bool,read_modules,(C)) \
@@ -46,12 +46,12 @@ struct _object_MemberDec;
     method(D,T,C,void,declare_classes,(C, FILE *)) \
     method(D,T,C,void,define_module_constructor,(C, FILE *)) \
     method(D,T,C,void,effective_methods,(C, struct _object_ClassDec *, Pairs *)) \
-    method(D,T,C,bool,class_op_out,(C, List, Token *, Token *, \
-        struct _object_ClassDec *, Token *, bool, Token **, const char *, FILE *)) \
-    method(D,T,C,void,args_out,(C, Pairs, struct _object_ClassDec *, struct _object_MemberDec *, bool, bool, int, FILE *, bool)) \
+    method(D,T,C,String,class_op_out,(C, List, Token *, \
+        struct _object_ClassDec *, String, bool, Token **)) \
+    method(D,T,C,String,args_out,(C, Pairs, struct _object_ClassDec *, struct _object_MemberDec *, bool, bool, int, bool)) \
     method(D,T,C,String,token_string,(C, Token *)) \
     method(D,T,C,void,resolve_supers,(C)) \
-    method(D,T,C,void,token_out,(C, Token *, int, FILE *)) \
+    method(D,T,C,void,token_out,(C, Token *, int, String)) \
     method(D,T,C,bool,process,(C, const char *)) \
     var(D,T,C,String,name)                 \
     var(D,T,C,Token *,tokens)              \
