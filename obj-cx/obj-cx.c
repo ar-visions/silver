@@ -425,6 +425,10 @@ bool CX_read_classes(CX self) {
                 cd->class_name = class_str;
                 cd->members = new(Pairs);
                 cd->start = t_start;
+                // add _init
+                MemberDec md = new(MemberDec);
+                md->member_type = MT_Method;
+                pairs_add(cd->members, string("_init"), md);
             }
             t++;
             call(self, read_template_types, cd, &t);
@@ -724,7 +728,7 @@ bool CX_class_op_out(CX self, List scope, Token *t_start, Token *t,
         exit(0);
     }
     if ((++t)->punct == "(") {
-        fprintf(output, "%s_cl.", cd->class_name->buffer);
+        fprintf(output, "%s_cl->", cd->class_name->buffer);
         call(self, token_out, t_member, '(', output);
         if (is_instance) {
             call(self, token_out, t_ident, t->punct != ")" ? ',' : ' ', output);
@@ -738,7 +742,7 @@ bool CX_class_op_out(CX self, List scope, Token *t_start, Token *t,
         }
         if (md->member_type == MT_Constructor) {
             prepend_arg = true;
-            fprintf(output, "&%s_cl, %s", cd->class_name->buffer,
+            fprintf(output, "%s_cl, %s", cd->class_name->buffer,
                 prev_keyword == "auto" ? "true" : "false");
         }
         // issue with stack spaced vars is you'll need to crawl ahead and find all instances of stack vars, and create associative space for each */
@@ -766,7 +770,7 @@ bool CX_class_op_out(CX self, List scope, Token *t_start, Token *t,
         }
         if (md->setter_start) {
             // call explicit setter
-            fprintf(output, "%s_cl.set_", cd->class_name->buffer);
+            fprintf(output, "%s_cl->set_", cd->class_name->buffer);
             call(self, token_out, t_member, '(', output);
             if (is_instance)
                 call(self, token_out, t_ident, ',', output);
@@ -780,7 +784,7 @@ bool CX_class_op_out(CX self, List scope, Token *t_start, Token *t,
                 call(self, token_out, t_ident, 0, output);
                 fprintf(output, "->");
             } else {
-                fprintf(output, "%s_cl.", cd->class_name->buffer);
+                fprintf(output, "%s_cl->", cd->class_name->buffer);
             }
             call(self, token_out, t_member, 0, output);
             call(self, token_out, t_assign, 0, output);
@@ -791,7 +795,7 @@ bool CX_class_op_out(CX self, List scope, Token *t_start, Token *t,
     } else {
         if (md->getter_start) {
             // call explicit getter (class or instance)
-            fprintf(output, "%s_cl.get_", cd->class_name->buffer);
+            fprintf(output, "%s_cl->get_", cd->class_name->buffer);
             call(self, token_out, t_member, '(', output);
             if (is_instance)
                 call(self, token_out, t_ident, 0, output);
@@ -802,7 +806,7 @@ bool CX_class_op_out(CX self, List scope, Token *t_start, Token *t,
                 call(self, token_out, t_ident, 0, output);
                 fprintf(output, "->");
             } else {
-                fprintf(output, "%s_cl.", cd->class_name->buffer);
+                fprintf(output, "%s_cl->", cd->class_name->buffer);
             }
             call(self, token_out, t_member, ' ', output);
         }
@@ -948,7 +952,9 @@ void CX_effective_methods(CX self, ClassDec cd, Pairs *pairs) {
         call(self, effective_methods, cd->parent, pairs);
     KeyValue kv;
     each_pair(cd->members, kv) {
-        pairs_add(*pairs, kv->key, kv->value);
+        String skey = inherits(kv->key, String);
+        if (call(skey, cmp, "_init") != 0)
+            pairs_add(*pairs, kv->key, kv->value);
     }
 }
 
@@ -1086,7 +1092,10 @@ void CX_define_module_constructor(CX self, FILE *output) {
     {
         each_pair(self->classes, kv) {
             ClassDec cd = (ClassDec)kv->value;
-            fprintf(output, "class_%s %s_cl;\n", cd->class_name->buffer, cd->class_name->buffer);
+            const char *class_name = cd->class_name->buffer;
+            fprintf(output, "%s%s %s_cl;\n",
+                class_name, strcmp(class_name, "Class") == 0 ? "" : "Class",
+                class_name);
         }
     }
     fprintf(output, "\n");
@@ -1095,13 +1104,15 @@ void CX_define_module_constructor(CX self, FILE *output) {
         ClassDec cd = (ClassDec)kv->value;
         int method_count = 0;
         KeyValue mkv;
+        const char *class_name = cd->class_name->buffer;
         // function pointers
+        fprintf(output, "\t%s_cl = (typeof(%s_cl))alloc_bytes(sizeof(*%s_cl));\n",
+            class_name, class_name, class_name);
         if (cd->parent) {
-            fprintf(output, "\t%s_cl.parent = &%s_cl;\n",
-                cd->class_name->buffer, cd->parent->class_name->buffer);
+            fprintf(output, "\t%s_cl->parent = &%s_cl;\n",
+                class_name, cd->parent->class_name->buffer);
         }
-        fprintf(output, "\t%s_cl._init = %s__init;\n",
-            cd->class_name->buffer, cd->class_name->buffer);
+        fprintf(output, "\t%s_cl->_init = %s__init;\n", class_name, class_name);
         each_pair(cd->effective, mkv) {
             MemberDec md = (MemberDec)mkv->value;
             ClassDec origin = md->cd;
@@ -1109,60 +1120,68 @@ void CX_define_module_constructor(CX self, FILE *output) {
                 case MT_Constructor:
                 case MT_Method:
                     if (md->member_type == MT_Constructor) {
-                        fprintf(output, "\t%s_cl.%s = construct_%s_%s;\n",
-                            cd->class_name->buffer, md->str_name->buffer, origin->class_name->buffer, md->str_name->buffer);
+                        fprintf(output, "\t%s_cl->%s = construct_%s_%s;\n",
+                            class_name, md->str_name->buffer, origin->class_name->buffer, md->str_name->buffer);
                     } else {
-                        fprintf(output, "\t%s_cl.%s = %s_%s;\n",
-                            cd->class_name->buffer, md->str_name->buffer, origin->class_name->buffer, md->str_name->buffer);
+                        fprintf(output, "\t%s_cl->%s = %s_%s;\n",
+                            class_name, md->str_name->buffer, origin->class_name->buffer, md->str_name->buffer);
                     }
                     method_count++;
                     break;
                 case MT_Prop:
-                    fprintf(output, "\t%s_cl.get_%s = %s_get_%s;\n",
-                        cd->class_name->buffer, md->str_name->buffer, origin->class_name->buffer, md->str_name->buffer);
-                    fprintf(output, "\t%s_cl.set_%s = %s_set_%s;\n",
-                        cd->class_name->buffer, md->str_name->buffer, origin->class_name->buffer, md->str_name->buffer);
+                    fprintf(output, "\t%s_cl->get_%s = %s_get_%s;\n",
+                        class_name, md->str_name->buffer, origin->class_name->buffer, md->str_name->buffer);
+                    fprintf(output, "\t%s_cl->set_%s = %s_set_%s;\n",
+                        class_name, md->str_name->buffer, origin->class_name->buffer, md->str_name->buffer);
                     method_count += 2;
                     break;
             }
         }
         // member types
         {
-            fprintf(output, "\t%s_cl.mtypes = (char *)malloc(%d);\n", cd->class_name->buffer, method_count);
+            fprintf(output, "\t%s_cl->member_types = (char *)malloc(%d);\n",
+                class_name, method_count);
             int mc = 0;
             each_pair(cd->effective, mkv) {
                 MemberDec md = (MemberDec)mkv->value;
                 switch (md->member_type) {
                     case MT_Constructor:
                     case MT_Method:
-                        fprintf(output, "\t%s_cl.mtypes[%d] = %d;\n", cd->class_name->buffer, mc, md->member_type); mc++;
+                        fprintf(output, "\t%s_cl->member_types[%d] = %d;\n",
+                            class_name, mc, md->member_type); mc++;
                         break;
                     case MT_Prop:
-                        fprintf(output, "\t%s_cl.mtypes[%d] = %d;\n", cd->class_name->buffer, mc, md->member_type); mc++;
-                        fprintf(output, "\t%s_cl.mtypes[%d] = %d;\n", cd->class_name->buffer, mc, md->member_type); mc++;
+                        fprintf(output, "\t%s_cl->member_types[%d] = %d;\n",
+                            class_name, mc, md->member_type); mc++;
+                        fprintf(output, "\t%s_cl->member_types[%d] = %d;\n",
+                            class_name, mc, md->member_type); mc++;
                         break;
                 }
             }
         }
         // member names
         {
-            fprintf(output, "\t%s_cl.mnames = (const char **)malloc(%d * sizeof(const char *));\n", cd->class_name->buffer, method_count);
+            fprintf(output, "\t%s_cl->member_names = (const char **)malloc(%d * sizeof(const char *));\n",
+                class_name, method_count);
             int mc = 0;
             each_pair(cd->effective, mkv) {
                 MemberDec md = (MemberDec)mkv->value;
                 switch (md->member_type) {
                     case MT_Constructor:
                     case MT_Method:
-                        fprintf(output, "\t%s_cl.mnames[%d] = \"%s\";\n", cd->class_name->buffer, mc, md->str_name->buffer); mc++;
+                        fprintf(output, "\t%s_cl->member_names[%d] = \"%s\";\n",
+                            class_name, mc, md->str_name->buffer); mc++;
                         break;
                     case MT_Prop:
-                        fprintf(output, "\t%s_cl.mnames[%d] = \"%s\";\n", cd->class_name->buffer, mc, md->str_name->buffer); mc++;
-                        fprintf(output, "\t%s_cl.mnames[%d] = \"%s\";\n", cd->class_name->buffer, mc, md->str_name->buffer); mc++;
+                        fprintf(output, "\t%s_cl->member_names[%d] = \"%s\";\n",
+                            class_name, mc, md->str_name->buffer); mc++;
+                        fprintf(output, "\t%s_cl->member_names[%d] = \"%s\";\n",
+                            class_name, mc, md->str_name->buffer); mc++;
                         break;
                 }
             }
         }
-        fprintf(output, "\t%s_cl.mcount = %d;\n", cd->class_name->buffer, method_count);
+        fprintf(output, "\t%s_cl->member_count = %d;\n", class_name, method_count);
     }
     fprintf(output, "}\n");
 }
@@ -1206,11 +1225,15 @@ bool CX_replace_classes(CX self, FILE *output) {
                     const char *cn = cd->class_name->buffer;
                     const char *vn = md->str_name->buffer;
                     if (md->is_static) {
-                        fprintf(output, "%s %s_get_%s() { return %s_cl.%s; }\n", tn, cn, vn, cn, vn);
-                        fprintf(output, "%s %s_set_%s(%s self, %s value) { return %s_cl.%s = value; }\n", tn, cn, vn, cn, vn, cn, vn);
+                        fprintf(output, "%s %s_get_%s() { return (%s)%s_cl->%s; }\n",
+                            tn, cn, vn, tn, cn, vn);
+                        fprintf(output, "%s %s_set_%s(%s self, %s value) { return (%s)(%s_cl->%s = (typeof(self->%s))value); }\n",
+                            tn, cn, vn, cn, vn, tn, cn, vn, vn);
                     } else {
-                        fprintf(output, "%s %s_get_%s(%s self) { return self->%s; }\n", tn, cn, vn, cn, vn);
-                        fprintf(output, "%s %s_set_%s(%s self, %s value) { return self->%s = value; }\n", tn, cn, vn, cn, vn, vn);
+                        fprintf(output, "%s %s_get_%s(%s self) { return (%s)self->%s; }\n",
+                            tn, cn, vn, cn, tn, vn);
+                        fprintf(output, "%s %s_set_%s(%s self, %s value) { return (%s)(self->%s = (typeof(self->%s))value); }\n",
+                            tn, cn, vn, cn, tn, tn, vn, vn);
                     }
                 }
                 continue;
@@ -1221,16 +1244,15 @@ bool CX_replace_classes(CX self, FILE *output) {
                 case MT_Constructor:
                     call(self, token_out, cd->name, ' ', output);
                     fprintf(output, "%s_construct_%s(", cd->class_name->buffer, md->str_name->buffer);
-                    fprintf(output, "struct _class_%s *cl, bool ar", cd->class_name->buffer);
+                    fprintf(output, "struct _%sClass *cl, bool ar", cd->class_name->buffer);
                     call(self, args_out, top, cd, md, false, true, 1, output, false);
                     fprintf(output, ") {\n");
-                    fprintf(output, "%s self = object_alloc(cl, 0);\n",
+                    fprintf(output, "%s self = Base_cl->object_new(cl, 0);\n",
                         cd->class_name->buffer);
-                    fprintf(output, "self->cl->_init(self);\n");
                     pairs_add(top, new_string("self"), cd);
                     if (md->block_start != md->block_end)
                         call(self, code_out, scope, md->block_start + 1, md->block_end - 1, output);
-                    fprintf(output, "return ar ? object_auto(self) : self;\n}\n");
+                    fprintf(output, "return ar ? self->cl->auto(self) : self;\n}\n");
                     fprintf(output, "\n");
                     break;
                 case MT_Method:
@@ -1306,7 +1328,7 @@ bool CX_replace_classes(CX self, FILE *output) {
                         else {
                             call(self, code_out, scope, block_start, block_end - 1, output);
                             if (md->is_static)
-                                fprintf(output, "return %s_cl.get_%s();", cd->class_name->buffer, md->str_name->buffer);
+                                fprintf(output, "return %s_cl->get_%s();", cd->class_name->buffer, md->str_name->buffer);
                             else
                                 fprintf(output, "return self->get_%s(self);", md->str_name->buffer);
                             call(self, code_out, scope, block_end, block_end, output);

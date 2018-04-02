@@ -24,6 +24,7 @@ class Base {
             i = Base.init_object(obj, with_cl.parent);
         if (i != with_cl.init)
             with_cl.init(obj);
+        with_cl._init(obj);
         return with_cl.init;
     }
     static Base new_object(Class cl, size_t extra_size) {
