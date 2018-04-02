@@ -3,16 +3,24 @@ include base;
 class Base {
     Class cl;
     int refs;
+    int x, y;
+
+    Base right operator + (int i) {
+    }
 
     void init() {
     }
-    Base release() {
+    Base release(int x, int y) {
+        int this_is_a_test = self.retain().release().arg_test(self.refs);
         if (--self.refs == 0) {
             Base.free_object(self);
         }
     }
     Base retain() {
         self.refs++;
+        return self;
+    }
+    Base arg_test(int arg) {
         return self;
     }
     void dealloc() {

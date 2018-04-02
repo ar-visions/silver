@@ -18,17 +18,18 @@ typedef struct _SuperClass {
 	void (*set_cl)(struct _Super *, struct _Class *);
 	int  (*get_refs)(struct _Super *);
 	void (*set_refs)(struct _Super *, int );
-	void  (*init)(struct _Super *);
-	struct _Base * (*release)(struct _Super *);
-	struct _Base * (*retain)(struct _Super *);
-	void  (*dealloc)(struct _Super *);
-	BaseMethod  (*init_object)(struct _Base *, struct _Class *);
-	struct _Base * (*new_object)(struct _Class *, size_t );
-	struct _Base * (*free_object)(struct _Base *);
+	void  (*init)(p_@›‚);
+	struct _Base * (*release)(p_@›‚);
+	struct _Base * (*retain)(p_@›‚);
+	struct _Base * (*arg_test)(p_@›‚);
+	void  (*dealloc)(p_@›‚);
+	BaseMethod  (*init_object)(p_@›‚);
+	struct _Base * (*new_object)(p_@›‚);
+	struct _Base * (*free_object)(p_@›‚);
 	int  (*get_test_me)(struct _Super *);
 	void (*set_test_me)(struct _Super *, int );
-	void  (*super_only)(struct _Super *, int );
-	void  (*method)(struct _Super *, int , int );
+	void  (*super_only)(p_@›‚);
+	void  (*method)(p_@›‚);
 } *SuperClass;
 
 extern SuperClass Super_cl;
