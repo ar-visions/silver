@@ -719,98 +719,111 @@ Pairs CX_stack_map(CX self, Token *from, Token *to) {
 
 bool CX_class_op_out(CX self, List scope, Token *t_start, Token *t,
         ClassDec cd, Token *t_ident, bool is_instance, Token **t_after, const char *prev_keyword, FILE *output) {
-    String s_token = call(self, token_string, t);
-    String s_ident = t_ident ? call(self, token_string, t_ident) : NULL;
-    Token *t_member = t;
-    MemberDec md = call(cd, member_lookup, s_token);
-    if (!md) {
-        printf("member: %s not found on class: %s\n", s_token->buffer, cd->class_name->buffer);
-        exit(0);
-    }
-    if ((++t)->punct == "(") {
-        fprintf(output, "%s_cl->", cd->class_name->buffer);
-        call(self, token_out, t_member, '(', output);
-        if (is_instance) {
-            call(self, token_out, t_ident, t->punct != ")" ? ',' : ' ', output);
-        }
-        bool prepend_arg = false;
-        // method call
-        // expect md->type == TT_Method
-        if (md->member_type == MT_Prop) {
-            printf("invalid call to property\n");
+    for (;cd;) {
+        String s_token = call(self, token_string, t);
+        Token *t_member = t;
+        MemberDec md = call(cd, member_lookup, s_token);
+        if (!md) {
+            printf("member: %s not found on class: %s\n", s_token->buffer, cd->class_name->buffer);
             exit(0);
         }
-        if (md->member_type == MT_Constructor) {
-            prepend_arg = true;
-            fprintf(output, "%s_cl, %s", cd->class_name->buffer,
-                prev_keyword == "auto" ? "true" : "false");
-        }
-        // issue with stack spaced vars is you'll need to crawl ahead and find all instances of stack vars, and create associative space for each */
-        // output stack * (if stack mode), and auto (true/false)
-        int n = call(self, read_expression, t, NULL, NULL, ")");
-        for (int i = 1; i < n; i++) {
-            if (i == 1 && prepend_arg)
-                fprintf(output, ",");
-            call(self, token_out, &t[i], ' ', output);
-        }
-        t += n;
-        if (t->punct != ")") {
-            printf("expected ')'\n");
-            exit(0);
-        }
-        call(self, token_out, t, ' ', output);
-        *t_after = t;
-        // perform call replacement here
-    } else if (t->assign) {
-        Token *t_assign = t++;
-        int n = call(self, read_expression, t, NULL, NULL, "{;),");
-        if (n <= 0) {
-            fprintf(stderr, "expected token after %s\n", t->punct);
-            exit(0);
-        }
-        if (md->setter_start) {
-            // call explicit setter
-            fprintf(output, "%s_cl->set_", cd->class_name->buffer);
+        if ((++t)->punct == "(") {
+            fprintf(output, "%s_cl->", cd->class_name->buffer);
             call(self, token_out, t_member, '(', output);
-            if (is_instance)
-                call(self, token_out, t_ident, ',', output);
-            call(self, code_out, scope, t, &t[n - 1], output);
-            fprintf(output, ")");
-            call(self, token_out, &t[n], 0, output);
-            *t_after = t + n;
-        } else {
-            // set object var
             if (is_instance) {
-                call(self, token_out, t_ident, 0, output);
-                fprintf(output, "->");
-            } else {
-                fprintf(output, "%s_cl->", cd->class_name->buffer);
+                call(self, token_out, t_ident, t->punct != ")" ? ',' : ' ', output);
             }
-            call(self, token_out, t_member, 0, output);
-            call(self, token_out, t_assign, 0, output);
-            call(self, code_out, scope, t, &t[n], output);
-            *t_after = t + n;
-        }
-        // call setter if it exists (note: allow setters to be sub-classable, calling super.prop = value; and such)
-    } else {
-        if (md->getter_start) {
-            // call explicit getter (class or instance)
-            fprintf(output, "%s_cl->get_", cd->class_name->buffer);
-            call(self, token_out, t_member, '(', output);
-            if (is_instance)
-                call(self, token_out, t_ident, 0, output);
-            fprintf(output, ")");
+            bool prepend_arg = false;
+            if (md->member_type == MT_Prop) {
+                fprintf(stderr, "invalid call to property\n");
+                exit(0);
+            }
+            if (md->member_type == MT_Constructor) {
+                prepend_arg = true;
+                fprintf(output, "%s_cl, %s", cd->class_name->buffer,
+                    prev_keyword == "auto" ? "true" : "false");
+            }
+            int n = call(self, read_expression, t, NULL, NULL, ")");
+            if (n > 1) {
+                if (prepend_arg)
+                    fprintf(output, ", ");
+                call(self, code_out, scope, &t[1], &t[n - 1], output);
+            }
+            t += n;
+            if (t->punct != ")") {
+                printf("expected ')'\n");
+                exit(0);
+            }
+            call(self, token_out, t, ' ', output);
+            // check
+            // check if t + 1 is punctuator '.'
+            
+            *t_after = t;
+            cd = NULL;
+        } else if (t->assign) {
+            Token *t_assign = t++;
+            int n = call(self, read_expression, t, NULL, NULL, "{;),");
+            if (n <= 0) {
+                fprintf(stderr, "expected token after %s\n", t->punct);
+                exit(0);
+            }
+            if (md->setter_start) {
+                // call explicit setter [todo: handle the various assigner operators]
+                fprintf(output, "%s_cl->set_", cd->class_name->buffer);
+                call(self, token_out, t_member, '(', output);
+                if (is_instance)
+                    call(self, token_out, t_ident, ',', output);
+                call(self, code_out, scope, t, &t[n - 1], output);
+                fprintf(output, ")");
+                call(self, token_out, &t[n], 0, output);
+                t = *t_after = t + n;
+            } else {
+                // set object var
+                if (is_instance) {
+                    call(self, token_out, t_ident, 0, output);
+                    fprintf(output, "->");
+                } else {
+                    fprintf(output, "%s_cl->", cd->class_name->buffer);
+                }
+                call(self, token_out, t_member, 0, output);
+                call(self, token_out, t_assign, 0, output);
+                call(self, code_out, scope, t, &t[n], output);
+                t = *t_after = t + n;
+            }
+            cd = NULL;
+            // call setter if it exists (note: allow setters to be sub-classable, calling super.prop = value; and such)
         } else {
-            // get object->var (class or instance)
-            if (is_instance) {
-                call(self, token_out, t_ident, 0, output);
-                fprintf(output, "->");
+            if (md->getter_start) {
+                // call explicit getter (class or instance)
+                fprintf(output, "%s_cl->get_", cd->class_name->buffer);
+                call(self, token_out, t_member, '(', output);
+                if (is_instance)
+                    call(self, token_out, t_ident, 0, output);
+                fprintf(output, ")");
             } else {
-                fprintf(output, "%s_cl->", cd->class_name->buffer);
+                // get object->var (class or instance)
+                if (is_instance) {
+                    call(self, token_out, t_ident, 0, output);
+                    fprintf(output, "->");
+                } else {
+                    fprintf(output, "%s_cl->", cd->class_name->buffer);
+                }
+                call(self, token_out, t_member, ' ', output);
             }
-            call(self, token_out, t_member, ' ', output);
+            t = *t_after = t_member;
+            // lookup cd for t_member
         }
-        *t_after = t_member;
+        // check if t_after is
+        cd = NULL;
+        if ((t + 1)->punct == ".") {
+            for (int i = 0; i < md->type_count; i++) {
+                String s = call(self, token_string, &md->type[i]);
+                cd = CX_find_class(s);
+                fprintf(output, "->");
+                t += 2;
+                break;
+            }
+        }
     }
     return true;
 }
@@ -838,6 +851,9 @@ void CX_code_out(CX self, List scope, Token *method_start, Token *method_end, FI
             // check if identifier exists as class
             String str_ident = class_call(String, new_from_bytes, (uint8 *)t->value, t->length);
             ClassDec cd = CX_find_class(str_ident);
+
+            
+
             if (cd) {
                 // check for new/auto keyword before
                 Token *t_start = t;
@@ -867,10 +883,9 @@ void CX_code_out(CX self, List scope, Token *method_start, Token *method_end, FI
                         p = _i ? (typeof(p))_i->data : NULL) {
                     ClassDec cd = pairs_value(p, str_ident, ClassDec);
                     if (cd) {
-                        Token *t_start = t;
-                        if ((++t)->punct == ".") {
-                            if ((++t)->type == TT_Identifier) {
-                                call(self, class_op_out, scope, t_start, t, cd, t_ident, true, &t, NULL, output);
+                        if ((t + 1)->punct == ".") {
+                            if ((t + 2)->type == TT_Identifier) {
+                                call(self, class_op_out, scope, t, t + 2, cd, t_ident, true, &t, NULL, output);
                                 found = true;
                             }
                         }
