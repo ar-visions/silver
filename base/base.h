@@ -61,21 +61,10 @@
 
 struct _Base;
 typedef void *(*Method)();
+typedef void *(*InitMethod)(struct _Base *);
 typedef void (*BaseMethod)(struct _Base *);
 typedef void *(*Setter)(struct _Base *, void *);
 typedef void *(*Getter)(struct _Base *);
-
-typedef struct _Class {
-	struct _Class *parent;
-	const char *class_name;
-	unsigned int flags;
-	int object_size;
-	InitMethod _init;
-    int *mcount;
-	unsigned char *mtypes;
-	const char **mnames;
-	Method **m[1];
-} Class;
 
 #define CLASS_FLAG_ASSEMBLED   1
 #define CLASS_FLAG_PREINIT     2
@@ -83,14 +72,21 @@ typedef struct _Class {
 #define CLASS_FLAG_NO_INIT     8
 
 #define null NULL
+#ifdef __cplusplus
+#define EXPORT extern "C"
+#else
+#define EXPORT extern
+#endif
 
-EXPORT void *alloc_bytes(size_t);
-EXPORT Base new_object(Class, size_t);
-EXPORT void free_object(Base);
-EXPORT void class_assemble(Class);
-EXPORT void class_init();
-EXPORT bool class_inherits(Class, Class);
-EXPORT Class class_find(const char *name);
-EXPORT Base object_inherits(Base o, Class c);
+typedef uint32_t uint_t;
+struct _Base;
+struct _Class;
+
+static void *alloc_bytes(size_t count) {
+    void *p = malloc(count);
+    if (p)
+        memset(p, 0, count);
+    return p;
+}
 
 #endif
