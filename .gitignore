@@ -14,8 +14,6 @@ obj-test/obj-test
 **/build
 **/module.c
 **/module.h
-**/*.so
-**/*.dylib
 **/*.dSYM
 *.user
 *.vcxproj
