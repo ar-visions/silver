@@ -12,6 +12,10 @@ obj-test/CMakeCache.txt
 obj-test/cmake_install.cmake
 obj-test/obj-test
 **/build
+**/module.c
+**/module.h
+**/*.so
+**/*.dylib
 **/*.dSYM
 *.user
 *.vcxproj
