@@ -244,7 +244,7 @@ void String_check_resize(String self, uint chars) {
         char *copy = (char *)malloc(buffer_size);
         if (self->buffer)
             memcpy(copy, self->buffer, self->length);
-        copy[buffer_size] = 0;
+        copy[buffer_size - 1] = 0;
         free(self->buffer);
         self->buffer = copy;
         self->buffer_size = buffer_size;
