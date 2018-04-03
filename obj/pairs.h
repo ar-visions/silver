@@ -25,8 +25,11 @@ declare(KeyValue, Base);
     private_var(D,T,C,size_t,list_count)
 declare(Pairs, Base);
 
+#define pairs_var2(A,B)     A ## B
+#define pairs_var(B)        pairs_var2(__pairs_each_,B)
+
 #define pairs_add(O,K,V)    (call(O, add, base(K), base(V)))
 #define pairs_value(O,K,C)  (inherits(call(O, value, base(K)),C))
-#define each_pair(O, ptr)   typeof(O) __pairs_each_ ## __LINE__ = O; ptr = (__pairs_each_ ## __LINE__ && __pairs_each_ ## __LINE__->ordered_list.first) ? (typeof(ptr))__pairs_each_ ## __LINE__->ordered_list.first->data : NULL; if (ptr) for (LItem *_i = __pairs_each_ ## __LINE__->ordered_list.first; _i; _i = _i->next, ptr = _i ? (typeof(ptr))_i->data : NULL)
+#define each_pair(O, ptr)   typeof(O) pairs_var(__LINE__) = O; ptr = (pairs_var(__LINE__) && pairs_var(__LINE__)->ordered_list.first) ? (typeof(ptr))pairs_var(__LINE__)->ordered_list.first->data : NULL; if (ptr) for (LItem *_i = pairs_var(__LINE__)->ordered_list.first; _i; _i = _i->next, ptr = _i ? (typeof(ptr))_i->data : NULL)
 
 #endif
