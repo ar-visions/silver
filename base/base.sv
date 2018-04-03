@@ -41,8 +41,9 @@ class Base {
         obj.cl = (BaseClass)cl;
         Base.init_object(obj, (Class)obj.cl, true);
         Base.init_object(obj, (Class)obj.cl, false);
+        return obj;
     }
-    static Base free_object(Base obj) {
+    static void free_object(Base obj) {
         Class c_parent = obj.cl.parent;
         BaseMethod last_method = null;
         for (Class c = (Class)obj.cl; c; c = c.parent) {
@@ -65,4 +66,13 @@ class Class : Base {
     const char *member_types;
     const char **member_names;
     Method *members;
+}
+
+class Module : Base {
+    static Module find_module(const char *name) {
+        return null;
+    }
+    Class find_class(const char *name) {
+        return null;
+    }
 }
