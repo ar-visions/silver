@@ -1042,7 +1042,7 @@ void CX_declare_classes(CX self, FILE *file_output) {
                 "\tint refs;\n"                     \
                 "\tstruct _%sClass *parent;\n"      \
                 "\tconst char *class_name;\n"       \
-                "\tvoid(*_init)(%s);"               \
+                "\tvoid(*_init)(struct _%s *);"     \
                 "\tuint_t flags;\n"                 \
                 "\tuint_t object_size;\n"           \
                 "\tuint_t *member_count;\n"         \
@@ -1439,7 +1439,7 @@ bool CX_replace_classes(CX self, FILE *file_output) {
                     String code = call(self, args_out, top, cd, md, !md->is_static, true, 0, false);
                     call(output, concat_string, code);
 
-                    sprintf(buf, ")");
+                    sprintf(buf, ") ");
                     call(output, concat_cstring, buf);
 
                     code = call(self, code_out, scope, md->block_start, md->block_end, NULL, super_mode);
@@ -1525,7 +1525,7 @@ bool CX_replace_classes(CX self, FILE *file_output) {
                                 pairs_add(top, s_var, cd_type);
                             }
                         }
-                        sprintf(buf, ")");
+                        sprintf(buf, ") ");
                         call(output, concat_cstring, buf);
                         if (i == 0) {
                             String code = call(self, code_out, scope, block_start, block_end, NULL, super_mode);
@@ -1543,7 +1543,6 @@ bool CX_replace_classes(CX self, FILE *file_output) {
                         }
                         sprintf(buf, "\n");
                         call(output, concat_cstring, buf);
-
                         call(top, clear);
                     }
                     break;
@@ -1672,7 +1671,7 @@ bool CX_process(CX self, const char *location) {
     // c code output
     FILE *module_code = module_file(location, "module.c", "w+");
     fprintf(module_code, "#include \"module.h\"\n");
-    fprintf(module_header, "\n");
+    fprintf(module_code, "\n");
     call(self, replace_classes, module_code);
     call(self, define_module_constructor, module_code);
     fclose(module_code);
