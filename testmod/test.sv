@@ -29,8 +29,9 @@ class Test : Super {
         }
     } = 2;
     void method(int arg, int arg2) {
+        super.method(arg, arg2);
         printf("value = %d\n", self.value);
-        Test t = new Test(test1, test2);
+        Test t = new Test();
     }
     static int Main() {
         Test t = new Test();

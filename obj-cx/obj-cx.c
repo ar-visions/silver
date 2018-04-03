@@ -347,10 +347,6 @@ void CX_resolve_supers(CX self) {
     CX m;
     each_pair(self->classes, kv) {
         ClassDec cd = (ClassDec)kv->value;
-        if (strncmp(cd->name->value, "Super", 5) == 0) {
-            int test = 0;
-            test++;
-        }
         if (!cd->parent && cd->super_class) {
             each(modules, m) {
                 cd->parent = pairs_value(m->classes, cd->super_class, ClassDec);
@@ -1045,10 +1041,10 @@ void CX_declare_classes(CX self, FILE *file_output) {
                 "\tvoid(*_init)(struct _%s *);"     \
                 "\tuint_t flags;\n"                 \
                 "\tuint_t object_size;\n"           \
-                "\tuint_t *member_count;\n"         \
+                "\tuint_t member_count;\n"          \
                 "\tchar *member_types;\n"           \
                 "\tconst char **member_names;\n"    \
-                "\tMethod **members[1];\n",
+                "\tMethod *members;\n",
                     !is_class ? class_name->buffer : "Class",
                     !is_class ? "Class" : "",
                     !is_class ? "" : "Base",
@@ -1196,21 +1192,25 @@ void CX_define_module_constructor(CX self, FILE *file_output) {
     sprintf(buf, "\n");
     call(output, concat_cstring, buf);
 
-    sprintf(buf, "static void module_constructor(void) __attribute__(constructor) {\n");
+    sprintf(buf, "global_construct(module_constructor) {\n");
     call(output, concat_cstring, buf);
+
+    each_pair(self->classes, kv) {
+        ClassDec cd = (ClassDec)kv->value;
+        const char *class_name = cd->class_name->buffer;
+        sprintf(buf, "\t%s_cl = (typeof(%s_cl))alloc_bytes(sizeof(*%s_cl));\n",
+            class_name, class_name, class_name);
+        call(output, concat_cstring, buf);
+    }
 
     each_pair(self->classes, kv) {
         ClassDec cd = (ClassDec)kv->value;
         int method_count = 0;
         KeyValue mkv;
         const char *class_name = cd->class_name->buffer;
-        // function pointers
-        sprintf(buf, "\t%s_cl = (typeof(%s_cl))alloc_bytes(sizeof(*%s_cl));\n",
-            class_name, class_name, class_name);
-        call(output, concat_cstring, buf);
         if (cd->parent) {
-            sprintf(buf, "\t%s_cl->parent = %s_cl;\n",
-                class_name, cd->parent->class_name->buffer);
+            sprintf(buf, "\t%s_cl->parent = (typeof(%s_cl->parent))%s_cl;\n",
+                class_name, class_name, cd->parent->class_name->buffer);
             call(output, concat_cstring, buf);
         }
         sprintf(buf, "\t%s_cl->_init = %s__init;\n", class_name, class_name);
@@ -1223,22 +1223,30 @@ void CX_define_module_constructor(CX self, FILE *file_output) {
                 case MT_Constructor:
                 case MT_Method:
                     if (md->member_type == MT_Constructor) {
-                        sprintf(buf, "\t%s_cl->%s = construct_%s_%s;\n",
-                            class_name, md->str_name->buffer, origin->class_name->buffer, md->str_name->buffer);
+                        sprintf(buf, "\t%s_cl->%s = (typeof(%s_cl->%s))construct_%s_%s;\n",
+                            class_name, md->str_name->buffer,
+                            class_name, md->str_name->buffer,
+                            origin->class_name->buffer, md->str_name->buffer);
                         call(output, concat_cstring, buf);
                     } else {
-                        sprintf(buf, "\t%s_cl->%s = %s_%s;\n",
-                            class_name, md->str_name->buffer, origin->class_name->buffer, md->str_name->buffer);
+                        sprintf(buf, "\t%s_cl->%s = (typeof(%s_cl->%s))%s_%s;\n",
+                            class_name, md->str_name->buffer,
+                            class_name, md->str_name->buffer,
+                            origin->class_name->buffer, md->str_name->buffer);
                         call(output, concat_cstring, buf);
                     }
                     method_count++;
                     break;
                 case MT_Prop:
-                    sprintf(buf, "\t%s_cl->get_%s = %s_get_%s;\n",
-                        class_name, md->str_name->buffer, origin->class_name->buffer, md->str_name->buffer);
+                    sprintf(buf, "\t%s_cl->get_%s = (typeof(%s_cl->get_%s))%s_get_%s;\n",
+                        class_name, md->str_name->buffer,
+                        class_name, md->str_name->buffer,
+                        origin->class_name->buffer, md->str_name->buffer);
                     call(output, concat_cstring, buf);
-                    sprintf(buf, "\t%s_cl->set_%s = %s_set_%s;\n",
-                        class_name, md->str_name->buffer, origin->class_name->buffer, md->str_name->buffer);
+                    sprintf(buf, "\t%s_cl->set_%s = (typeof(%s_cl->set_%s))%s_set_%s;\n",
+                        class_name, md->str_name->buffer,
+                        class_name, md->str_name->buffer,
+                        origin->class_name->buffer, md->str_name->buffer);
                     call(output, concat_cstring, buf);
                     method_count += 2;
                     break;
@@ -1310,16 +1318,15 @@ void CX_define_module_constructor(CX self, FILE *file_output) {
 }
 
 String CX_super_out(CX self, List scope, ClassDec cd, Token *t_start, Token *t_end) {
-    if (!cd->parent)
+    Pairs top = (Pairs)call(scope, last);
+    if (!cd->parent || !top)
         return NULL;
     for (Token *t = t_start; ; t++) {
-        if (t->type == TT_Identifier && t->length == 5 && strcmp(t->value, "super") == 0) {
-            Pairs top = new(Pairs);
-            list_push(scope, top);
-            pairs_add(top, new_string("super"), cd);
-            release(top);
+        if (t->type == TT_Identifier && t->length == 5 && strncmp(t->value, "super", 5) == 0) {
+            pairs_add(top, new_string("super"), cd->parent);
             char buf[1024];
-            sprintf(buf, "%s %s; ", cd->parent->class_name->buffer, "super");
+            const char *super = cd->parent->class_name->buffer;
+            sprintf(buf, "%s super = (%s)self; ", super, super);
             return string(buf);
         }
         if (t == t_end)
