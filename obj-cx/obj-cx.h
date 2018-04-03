@@ -40,7 +40,7 @@ struct _object_MemberDec;
     method(D,T,C,Token *,read_tokens,(C,List,List,int *)) \
     method(D,T,C,struct _object_ClassDec *,find_class,(String)) \
     method(D,T,C,bool,read_template_types,(C,struct _object_ClassDec *, Token **)) \
-    method(D,T,C,String,code_out,(C, List, Token *, Token *, Token **, struct _object_ClassDec *)) \
+    method(D,T,C,String,code_out,(C, List, Token *, Token *, Token **, struct _object_ClassDec *, bool)) \
     method(D,T,C,int,read_expression,(C, Token *, Token **, Token **, const char *)) \
     method(D,T,C,void,read_property_blocks,(C, struct _object_ClassDec *, struct _object_MemberDec *)) \
     method(D,T,C,bool,read_modules,(C)) \
@@ -59,6 +59,7 @@ struct _object_MemberDec;
     var(D,T,C,String,name)                 \
     var(D,T,C,Token *,tokens)              \
     var(D,T,C,List,modules)                \
+    var(D,T,C,List,forward_structs)        \
     var(D,T,C,List,includes)               \
     var(D,T,C,Pairs,classes)               \
     var(D,T,C,Pairs,processed)
