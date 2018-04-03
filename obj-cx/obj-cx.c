@@ -750,7 +750,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 sprintf(buf, ", ");
                 call(output, concat_cstring, buf);
             }
-            String code = call(self, code_out, scope, &t[1], &t[n - 1], t_after);
+            String code = call(self, code_out, scope, &t[1], &t[n - 1], t_after, NULL);
             call(output, concat_string, code);
         }
         t += n;
@@ -783,7 +783,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 sprintf(buf, "%s,", target->buffer);
                 call(output, concat_cstring, buf);
             }
-            String code = call(self, code_out, scope, t, &t[n - 1], t_after);
+            String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL);
             call(output, concat_string, code);
 
             sprintf(buf, ")");
@@ -804,7 +804,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
             call(self, token_out, t_member, 0, output);
             call(self, token_out, t_assign, 0, output);
 
-            String code = call(self, code_out, scope, t, &t[n], t_after);
+            String code = call(self, code_out, scope, t, &t[n], t_after, NULL);
             call(output, concat_string, code);
             t = *t_after;
         }
@@ -849,17 +849,22 @@ String CX_class_op_out(CX self, List scope, Token *t,
     return output;
 }
 
-String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, Token **t_after) {
+String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, Token **t_after, ClassDec super_mode) {
     String output = new(String);
     char buf[1024];
     int brace_depth = 0;
-    int iter = 0;
+
+    if (super_mode) {
+        String super_code = call(self, super_out, scope, super_mode, method_start, method_end);
+        if (super_code) {
+            call(output, concat_string, super_code);
+            release(super_code);
+        }
+    }
     for (Token *t = method_start; ; t++) {
-        iter++;
         // find 
         if (t->keyword == "new" || t->keyword == "auto")
             t++;
-        
         if (t->punct == "{" || t->keyword == "for") {
             call(self, token_out, t, ' ', output);
             if (brace_depth++ != 0)
@@ -1304,6 +1309,25 @@ void CX_define_module_constructor(CX self, FILE *file_output) {
     fprintf(file_output, "%s", output->buffer);
 }
 
+String CX_super_out(CX self, List scope, ClassDec cd, Token *t_start, Token *t_end) {
+    if (!cd->parent)
+        return NULL;
+    for (Token *t = t_start; ; t++) {
+        if (t->type == TT_Identifier && t->length == 5 && strcmp(t->value, "super") == 0) {
+            Pairs top = new(Pairs);
+            list_push(scope, top);
+            pairs_add(top, new_string("super"), cd);
+            release(top);
+            char buf[1024];
+            sprintf(buf, "%s %s; ", cd->parent->class_name->buffer, "super");
+            return string(buf);
+        }
+        if (t == t_end)
+            break;
+    }
+    return NULL;
+}
+
 // verify the code executes as planned
 bool CX_replace_classes(CX self, FILE *file_output) {
     String output = new(String);
@@ -1333,7 +1357,7 @@ bool CX_replace_classes(CX self, FILE *file_output) {
                         sprintf(buf, "self->%s = ", md->str_name->buffer);
                         call(output, concat_cstring, buf);
                     }
-                    String code = call(self, code_out, scope, md->assign, &md->assign[md->assign_count - 1], NULL);
+                    String code = call(self, code_out, scope, md->assign, &md->assign[md->assign_count - 1], NULL, NULL);
                     call(output, concat_string, code);
 
                     if (md->setter_start) {
@@ -1350,6 +1374,7 @@ bool CX_replace_classes(CX self, FILE *file_output) {
 
         each_pair(cd->members, mkv) {
             MemberDec md = (MemberDec)mkv->value;
+            ClassDec super_mode = !md->is_static ? cd : NULL;
             if (!md->block_start) {
                 // for normal var declarations, output stub for getter / setter
                 if (md->member_type == MT_Prop && !md->is_private && md->type_str) {
@@ -1399,7 +1424,7 @@ bool CX_replace_classes(CX self, FILE *file_output) {
 
                     pairs_add(top, new_string("self"), cd);
                     if (md->block_start != md->block_end) {
-                        String code = call(self, code_out, scope, md->block_start + 1, md->block_end - 1, NULL);
+                        String code = call(self, code_out, scope, md->block_start + 1, md->block_end - 1, NULL, super_mode);
                         call(output, concat_string, code);
                     }
                     sprintf(buf, "return ar ? self->cl->auto(self) : self;\n}\n\n");
@@ -1417,7 +1442,7 @@ bool CX_replace_classes(CX self, FILE *file_output) {
                     sprintf(buf, ")");
                     call(output, concat_cstring, buf);
 
-                    code = call(self, code_out, scope, md->block_start, md->block_end, NULL);
+                    code = call(self, code_out, scope, md->block_start, md->block_end, NULL, super_mode);
                     call(output, concat_string, code);
 
                     sprintf(buf, "\n");
@@ -1503,17 +1528,17 @@ bool CX_replace_classes(CX self, FILE *file_output) {
                         sprintf(buf, ")");
                         call(output, concat_cstring, buf);
                         if (i == 0) {
-                            String code = call(self, code_out, scope, block_start, block_end, NULL);
+                            String code = call(self, code_out, scope, block_start, block_end, NULL, super_mode);
                             call(output, concat_string, code);
                         } else {
-                            String code = call(self, code_out, scope, block_start, block_end - 1, NULL);
+                            String code = call(self, code_out, scope, block_start, block_end - 1, NULL, super_mode);
                             if (md->is_static)
                                 sprintf(buf, "return %s_cl->get_%s();", cd->class_name->buffer, md->str_name->buffer);
                             else
                                 sprintf(buf, "return self->get_%s(self);", md->str_name->buffer);
                             call(output, concat_cstring, buf);
 
-                            code = call(self, code_out, scope, block_end, block_end, NULL);
+                            code = call(self, code_out, scope, block_end, block_end, NULL, NULL);
                             call(output, concat_string, code);
                         }
                         sprintf(buf, "\n");

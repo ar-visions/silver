@@ -261,7 +261,7 @@ int String_concat_char(String self, char c) {
 }
 
 int String_concat_chars(String self, const char *p, int len) {
-    if (len == 0)
+    if (!p || len == 0)
         return 0;
     call(self, check_resize, self->length + len);
     memcpy(&self->buffer[self->length], p, len + 1);
@@ -272,6 +272,8 @@ int String_concat_chars(String self, const char *p, int len) {
 }
 
 int String_concat_cstring(String self, const char *p) {
+    if (!p)
+        return 0;
     int len = strlen(p);
     call(self, concat_chars, p, len);
 }
