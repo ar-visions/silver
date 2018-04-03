@@ -726,7 +726,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
         call(output, concat_cstring, buf);
 
         call(self, token_out, t_member, '(', output);
-        if (is_instance) {
+        if (is_instance && call(cd->class_name, cmp, "Class") != 0) {
             call(output, concat_string, target);
             if (t->punct == ")")
                 call(output, concat_char, ' ');
@@ -754,6 +754,12 @@ String CX_class_op_out(CX self, List scope, Token *t,
             call(output, concat_string, code);
         }
         t += n;
+        if (*t_after < t)
+            *t_after = t;
+        if ((t + 1)->punct == "^") {
+            int test = 0;
+            test++;
+        }
         if (t->punct != ")") {
             printf("expected ')'\n");
             exit(0);
@@ -1031,6 +1037,7 @@ void CX_declare_classes(CX self, FILE *file_output) {
                 "\tint refs;\n"                     \
                 "\tstruct _%sClass *parent;\n"      \
                 "\tconst char *class_name;\n"       \
+                "\tvoid(*_init)(%s);"               \
                 "\tuint_t flags;\n"                 \
                 "\tuint_t object_size;\n"           \
                 "\tuint_t *member_count;\n"         \
@@ -1040,7 +1047,8 @@ void CX_declare_classes(CX self, FILE *file_output) {
                     !is_class ? class_name->buffer : "Class",
                     !is_class ? "Class" : "",
                     !is_class ? "" : "Base",
-                    !is_class ? (!cd->parent ? "" : cd->parent->class_name->buffer) : "");
+                    !is_class ? (!cd->parent ? "" : cd->parent->class_name->buffer) : "",
+                    class_name->buffer);
             call(output, concat_cstring, buf);
 
             each_pair(m, mkv) {
@@ -1069,7 +1077,7 @@ void CX_declare_classes(CX self, FILE *file_output) {
                             }
                         }
                         String args = call(self, args_out, NULL, cd, md, md->member_type == MT_Method && !md->is_static, false, 0, true);
-                        sprintf(buf, " (*%s)(%s);\n", md->str_name->buffer, args);
+                        sprintf(buf, " (*%s)(%s);\n", md->str_name->buffer, args->buffer);
                         call(output, concat_cstring, buf);
                         break;
                     case MT_Prop:
@@ -1639,6 +1647,7 @@ bool CX_process(CX self, const char *location) {
     // c code output
     FILE *module_code = module_file(location, "module.c", "w+");
     fprintf(module_code, "#include \"module.h\"\n");
+    fprintf(module_header, "\n");
     call(self, replace_classes, module_code);
     call(self, define_module_constructor, module_code);
     fclose(module_code);
