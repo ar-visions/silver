@@ -39,7 +39,7 @@ FILE *module_file(const char *module_name, const char *file, const char *mode) {
     return fopen(buffer, mode);
 }
 
-Token *CX_read_tokens(CX self, List module_contents, int *n_tokens) {
+Token *CX_read_tokens(CX self, List module_contents, List module_files, int *n_tokens) {
     int total_len = 0;
     String contents;
     each(module_contents, contents) {
@@ -134,13 +134,18 @@ Token *CX_read_tokens(CX self, List module_contents, int *n_tokens) {
     const char backslash = '\\';
     bool was_backslash = false;
     Token *t = NULL;
+    int content_index = 0;
+
     each(module_contents, contents) {
+        String current_file = (String)call(module_files, object_at, content_index++);
+        int line_number = 1;
         for (int i = 0; i < (contents->length + 1); i++) {
             const char *value = &contents->buffer[i];
             const char b = *value;
             bool ws = isspace(b) || (b == 0);
             enum TokenType sep = seps[b];
-
+            if (b == 10)
+                line_number++;
             if (t && t->type == TT_String_Literal) {
                 if (t->string_term == b && !was_backslash) {
                     size_t length = (size_t)(value - t->value) + 1;
@@ -177,6 +182,8 @@ Token *CX_read_tokens(CX self, List module_contents, int *n_tokens) {
                 }
                 if (!t) {
                     t = (Token *)&tokens[nt];
+                    t->file = retain(current_file);
+                    t->line = line_number;
                     t->type = (b == '"' || b == '\'') ? TT_String_Literal : TT_Identifier;
                     t->sep = sep;
                     t->value = value;
@@ -209,6 +216,8 @@ find_punct:
                         t->length = length - 1;
                         nt++;
                         t = (Token *)&tokens[nt];
+                        t->file = retain(current_file);
+                        t->line = line_number;
                         t->type = (b == '"' || b == '\'') ? TT_String_Literal : TT_Identifier;
                         t->sep = sep;
                         t->value = value;
@@ -849,20 +858,37 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
     String output = new(String);
     char buf[1024];
     int brace_depth = 0;
-
-    if (super_mode) {
-        String super_code = call(self, super_out, scope, super_mode, method_start, method_end);
-        if (super_code) {
-            call(output, concat_string, super_code);
-            release(super_code);
-        }
-    }
+    bool first = true;
     for (Token *t = method_start; ; t++) {
         // find 
         if (t->keyword == "new" || t->keyword == "auto")
             t++;
         if (t->punct == "{" || t->keyword == "for") {
             call(self, token_out, t, ' ', output);
+            if (first && super_mode) {
+                String super_code = call(self, super_out, scope, super_mode, method_start, method_end);
+                if (super_code) {
+                    call(output, concat_string, super_code);
+                    release(super_code);
+                }
+                while (output->length > 0) {
+                    if (isspace(output->buffer[output->length - 1])) {
+                        output->length--;
+                        output->buffer[output->length] = 0;
+                    } else {
+                        break;
+                    }
+                }
+                char line_number[1024];
+                int extra_lines = 1;
+                if (output->length > 0 && output->buffer[output->length - 1] != '\n') {
+                    call(output, concat_char, '\n');
+                    //extra_lines = 0;
+                }
+                sprintf(line_number, "# %d \"%s\"\n", method_start->line + extra_lines, method_start->file->buffer);
+                call(output, concat_cstring, line_number);
+                first = false;
+            }
             if (brace_depth++ != 0)
                 list_push(scope, new(Pairs));
         } else if (t->punct == "}") {
@@ -1633,6 +1659,7 @@ bool CX_process(CX self, const char *location) {
     }
     struct dirent *ent;
     List module_contents = NULL;
+    List module_files = NULL;
     while ((ent = readdir(dir))) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
             continue;
@@ -1644,14 +1671,18 @@ bool CX_process(CX self, const char *location) {
         char file[256];
         sprintf(file, "%s/%s", location, ent->d_name);
         //String file = class_call(String, format, "%s/%s", location, ent->d_name); [todo: fix bug somewhere in format, stepping on stack/memory somehow]
-        String contents = class_call(String, from_file, string(file)->buffer);//file->buffer);
-        if (!module_contents)
+        String file_name = string(file);
+        String contents = class_call(String, from_file, file_name->buffer);//file->buffer);
+        if (!module_contents) {
             module_contents = new(List);
+            module_files = new(List);
+        }
         list_push(module_contents, contents);
+        list_push(module_files, file_name);
     }
     closedir(dir);
     int n_tokens = 0;
-    self->tokens = call(self, read_tokens, module_contents, &n_tokens);
+    self->tokens = call(self, read_tokens, module_contents, module_files, &n_tokens);
 
     // read modules and includes first
     call(self, read_modules); // read includes as well

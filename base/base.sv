@@ -13,11 +13,13 @@ class Base {
         }
         return self;
     }
-    Base retain() {
+    Base retain()
+    {
         self.refs++;
         return self;
     }
-    int arg_test(int arg) {
+    int arg_test(int arg)
+    {
         return self.refs;
     }
     void dealloc() {

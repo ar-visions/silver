@@ -27,6 +27,8 @@ typedef struct _Token {
     size_t length;
     char string_term;
     char *stack_var;
+    int line;
+    String file;
 } Token;
 
 struct _object_ClassDec;
@@ -35,7 +37,7 @@ struct _object_MemberDec;
 #define _CX(D,T,C) _Base(spr,T,C)   \
     override(D,T,C,void,init,(C)) \
     method(D,T,C,String,super_out,(C,List,struct _object_ClassDec *,Token *,Token *)) \
-    method(D,T,C,Token *,read_tokens,(C,List,int *)) \
+    method(D,T,C,Token *,read_tokens,(C,List,List,int *)) \
     method(D,T,C,struct _object_ClassDec *,find_class,(String)) \
     method(D,T,C,bool,read_template_types,(C,struct _object_ClassDec *, Token **)) \
     method(D,T,C,String,code_out,(C, List, Token *, Token *, Token **, struct _object_ClassDec *)) \
