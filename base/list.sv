@@ -12,7 +12,7 @@ class List : Base {
             if (prev) {
                 if (prev_size > 0)
                     memcpy(self.buffer, prev, prev_size * sizeof(Base *));
-                free(self.buffer);
+                free(prev);
             }
         }
     }

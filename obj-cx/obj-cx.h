@@ -11,8 +11,7 @@ enum TokenType {
 
 enum MemberType {
     MT_Prop = 0,
-    MT_Method,
-    MT_Constructor
+    MT_Method
 };
 
 typedef struct _Token {

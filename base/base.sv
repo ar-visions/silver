@@ -17,6 +17,9 @@ class Base {
         self.refs++;
         return self;
     }
+    Base autorelease() {
+        return self;
+    }
     int arg_test(int arg) {
         return self.refs;
     }
@@ -57,7 +60,6 @@ class Base {
 class Class : Base {
     private Class parent;
     private const char *name;
-    private const char *super_name;
     private BaseMethod _init;
     private uint_t flags;
     private uint_t object_size;
@@ -68,6 +70,10 @@ class Class : Base {
 }
 
 class Module : Base {
+    private Module *next;
+    private bool loaded;
+    private Method module_load;
+    
     static Module find_module(const char *name) {
         return null;
     }
