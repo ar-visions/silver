@@ -1,4 +1,5 @@
 include base;
+private include module_loader;
 
 class Base {
     Class cl;
@@ -55,6 +56,9 @@ class Base {
             }
         }
     }
+    static bool load_module(const char *name) {
+        return false;
+    }
 }
 
 class Class : Base {
@@ -69,15 +73,3 @@ class Class : Base {
     private Method *members;
 }
 
-class Module : Base {
-    private Module *next;
-    private bool loaded;
-    private Method module_load;
-    
-    static Module find_module(const char *name) {
-        return null;
-    }
-    Class find_class(const char *name) {
-        return null;
-    }
-}

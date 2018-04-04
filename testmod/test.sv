@@ -15,6 +15,13 @@ class Test : Super {
 
     void method(int arg, int arg2) {
         super.method(arg, arg2);
+        Super.super_static();
+        Super.super_static();
+        Super.super_static();
+        Super.super_static();
+        Super.super_static();
+        Super.super_static();
+        
         printf("value = %d\n", self.value);
     }
 
