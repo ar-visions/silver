@@ -764,7 +764,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
             call(output, concat_cstring, buf);
             call(self, token_out, t_member, '(', output);
 
-            ClassDec cd_target = CX_find_class(target);
+            ClassDec cd_target = pairs_value(self->static_class_map, target, ClassDec);
             if (cd_target) {
                 call(output, concat_string, cd_target->class_var);
             } else {
@@ -938,14 +938,22 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
         } else if (t->type == TT_Identifier) {
             String target = call(self, token_string, t);
             // check if identifier exists as class
-            String str_ident = class_call(String, new_from_bytes, (uint8 *)t->value, t->length);
-            ClassDec cd = CX_find_class(str_ident);
+            String str_ident = class_call(String, new_from_bytes, (uint8 *)t->value, t->length);;
+            ClassDec cd = NULL;
+            bool is_class = false;
+            // check for 'Class' in the token
+            if (str_ident->length > 5 && strcmp(&str_ident->buffer[str_ident->length - 5], "Class") == 0) {
+                String sub = class_call(String, new_from_bytes, (uint8 *)str_ident->buffer, t->length - 5); 
+                cd = CX_find_class(sub);
+                is_class = cd != NULL;
+            } else
+                cd = CX_find_class(str_ident);
 
             if (cd) {
                 // check for new/auto keyword before
                 Token *t_start = t;
                 if ((++t)->type == TT_Identifier) {
-                    call(output, concat_string, cd->struct_object);
+                    call(output, concat_string, is_class ? cd->struct_class : cd->struct_object);
                     call(output, concat_char, ' ');
                     call(self, token_out, t, ' ', output);
                     // variable declared
@@ -958,11 +966,15 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         call(output, concat_string, out);
                     }
                 } else if (t->punct == "(") {
+                    if (is_class) {
+                        fprintf(stderr, "constructor cannot be called directly on class type\n");
+                        exit(1);
+                    }
                     // construct (default)
                     String out = call(self, class_op_out, scope, t - 1, cd, target, false, &t);
                     call(output, concat_string, out);
                 } else {
-                    call(output, concat_string, cd->struct_object);
+                    call(output, concat_string, is_class ? cd->struct_class : cd->struct_object);
                     call(output, concat_char, ' ');
                     call(self, token_out, t, ' ', output);
                 }
@@ -1039,7 +1051,7 @@ String CX_args_out(CX self, Pairs top, ClassDec cd, MemberDec md, bool inst, boo
     if (names)
         call(output, concat_cstring, self_var);
     if (top)
-        pairs_add(top,string(self_var), cd);
+        pairs_add(top, string(self_var), cd);
     aout++;
 
     for (int i = 0; i < md->arg_types_count; i++) {
@@ -1049,7 +1061,7 @@ String CX_args_out(CX self, Pairs top, ClassDec cd, MemberDec md, bool inst, boo
         for (int ii = 0; ii < md->at_token_count[i]; ii++) {
             Token *t = &(md->arg_types[i])[ii];
             String ts = call(self, token_string, t);
-            ClassDec cd_2 = CX_find_class(ts); // todo: choke point'ish
+            ClassDec cd_2 = pairs_value(self->static_class_map, ts, ClassDec);
 
             if (forwards) {
                 if (cd_2) {
@@ -1069,7 +1081,7 @@ String CX_args_out(CX self, Pairs top, ClassDec cd, MemberDec md, bool inst, boo
             call(self, token_out, t_name, ' ', output);
             if (top && md->at_token_count[i] == 1) {
                 String s_type = call(self, token_string, md->arg_types[i]);
-                ClassDec cd_type = CX_find_class(s_type);
+                ClassDec cd_type = pairs_value(self->static_class_map, s_type, ClassDec);
                 if (cd_type) {
                     String s_var = call(self, token_string, t_name);
                     pairs_add(top, s_var, cd_type);
@@ -1137,7 +1149,7 @@ void CX_declare_classes(CX self, FILE *file_output) {
                         call(output, concat_cstring, buf);
                         for (int i = 0; i < md->type_count; i++) {
                             String ts = call(self, token_string, &md->type[i]);
-                            ClassDec forward = CX_find_class(ts);
+                            ClassDec forward = pairs_value(self->static_class_map, ts, ClassDec);
                             if (forward) {
                                 sprintf(buf, "struct _%s *", forward->struct_object->buffer);
                                 call(output, concat_cstring, buf);
@@ -1156,7 +1168,7 @@ void CX_declare_classes(CX self, FILE *file_output) {
                         for (int i = 0; i < md->type_count; i++) {
                             Token *t = &md->type[i];
                             String ts = call(self, token_string, t);
-                            ClassDec forward = CX_find_class(ts);
+                            ClassDec forward = pairs_value(self->static_class_map, ts, ClassDec);
                             if (forward) {
                                 sprintf(buf, "struct _%s *", forward->struct_object->buffer);
                                 call(output, concat_cstring, buf);
@@ -1186,7 +1198,7 @@ void CX_declare_classes(CX self, FILE *file_output) {
                         for (int i = 0; i < md->type_count; i++) {
                             Token *t = &md->type[i];
                             String ts = call(self, token_string, t);
-                            ClassDec forward = CX_find_class(ts);
+                            ClassDec forward = pairs_value(self->static_class_map, ts, ClassDec);
                             if (forward) {
                                 sprintf(buf, "struct _%s *", forward->class_name->buffer);
                                 call(output, concat_cstring, buf);
@@ -1208,7 +1220,7 @@ void CX_declare_classes(CX self, FILE *file_output) {
         }
 
         if (!is_class) {
-            sprintf(buf, "\ntypedef struct _%s {\n", cd->struct_object);
+            sprintf(buf, "\ntypedef struct _%s {\n", cd->struct_object->buffer);
             call(output, concat_cstring, buf);
 
             each_pair(m, mkv) {
@@ -1224,16 +1236,18 @@ void CX_declare_classes(CX self, FILE *file_output) {
                         for (int i = 0; i < md->type_count; i++) {
                             Token *t = &md->type[i];
                             if (t->length == cd->class_name->length &&
-                                strncmp(t->value, cd->class_name->buffer, t->length) == 0)
-                                    is_self = i;
-                        }
-                        for (int i = 0; i < md->type_count; i++) {
-                            Token *t = &md->type[i];
-                            if (i == is_self) {
-                                sprintf(buf, "struct _%s *", cd->struct_object->buffer);
+                                    strncmp(t->value, cd->class_name->buffer, t->length) == 0) {
+                                        sprintf(buf, "struct _%s *", cd->struct_object->buffer);
                                 call(output, concat_cstring, buf);
-                            } else
-                                call(self, token_out, t, ' ', output);
+                            } else {
+                                String s_token = call(self, token_string, t);
+                                ClassDec found = pairs_value(self->static_class_map, s_token, ClassDec);
+                                if (found) {
+                                    call(output, concat_string, found);
+                                    call(output, concat_char, ' ');
+                                } else
+                                    call(self, token_out, t, ' ', output);
+                            }
                         }
                         sprintf(buf, " %s;\n", md->str_name->buffer);
                         call(output, concat_cstring, buf);
@@ -1668,7 +1682,7 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                                 call(self, token_out, &md->type[i], ' ', output);
                             call(self, token_out, md->setter_var, ' ', output);
                             String s_type = call(self, token_string, md->setter_var);
-                            ClassDec cd_type = CX_find_class(s_type);
+                            ClassDec cd_type = pairs_value(self->static_class_map, s_type, ClassDec);
                             if (cd_type) {
                                 String s_var = call(self, token_string, md->setter_var);
                                 pairs_add(top, s_var, cd_type);
@@ -1782,7 +1796,7 @@ void CX_init(CX self) {
     self->forward_structs = new(List);
 }
 
-void emit_module_statics(CX self, CX module, FILE *file_output, Pairs emitted, Pairs vars, String alias) {
+void emit_module_statics(CX self, CX module, FILE *file_output, Pairs emitted, Pairs vars, Pair class_map, String alias) {
     ClassDec cd;
     KeyValue kv;
     each_pair(module->classes, kv) {
@@ -1794,11 +1808,20 @@ void emit_module_statics(CX self, CX module, FILE *file_output, Pairs emitted, P
                 cd->class_name->buffer);
             pairs_add(emitted, cd->class_var, cd);
             pairs_add(vars, cd, (alias ? alias : string("")));
+            if (!alias)
+                pairs_add(class_map, cd->class_name, cd);
+            else {
+                String whole = new(String);
+                call(whole, concat_string, alias);
+                call(whole, concat_char, '.');
+                call(whole, concat_string, cd->class_name);
+                pairs_add(class_map, whole, cd);
+            }
         }
     }
     CX m;
     each(module->modules, m) {
-        emit_module_statics(self, m, file_output, emitted, vars, alias);
+        emit_module_statics(self, m, file_output, emitted, vars, class_map, alias);
     }
 }
 
@@ -1807,8 +1830,9 @@ bool CX_emit_module_statics(CX self, FILE *file_output) {
     bool first = true;
     Pairs emitted = new(Pairs);
     Pairs vars = new(Pairs);
+    Pairs class_map = new(Pairs);
 
-    emit_module_statics(self, self, file_output, emitted, vars, string(""));
+    emit_module_statics(self, self, file_output, emitted, vars, class_map, string(""));
     
     each(self->modules, m) {
         if (!first)
@@ -1816,18 +1840,19 @@ bool CX_emit_module_statics(CX self, FILE *file_output) {
         String alias = pairs_value(m->aliases, self->name, String);
         if (alias) {
             fprintf(file_output, "typedef struct _alias_%s {\n", alias->buffer);
-            emit_module_statics(self, m, file_output, emitted, vars, alias);
+            emit_module_statics(self, m, file_output, emitted, vars, class_map, alias);
             fprintf(file_output, "} alias_%s;\n", alias->buffer);
             fprintf(file_output, "static alias_%s %s;\n",
                 alias->buffer, alias->buffer);
         } else {
-            emit_module_statics(self, m, file_output, emitted, vars, string(""));
+            emit_module_statics(self, m, file_output, emitted, vars, class_map, string(""));
         }
         first = false;
     }
     fprintf(file_output, "\n");
     self->using_classes = emitted;
     self->static_class_vars = vars;
+    self->static_class_map = class_map;
     return true;
 }
 

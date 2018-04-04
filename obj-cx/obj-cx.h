@@ -64,6 +64,7 @@ struct _object_MemberDec;
     var(D,T,C,List,private_includes)       \
     var(D,T,C,Pairs,using_classes)         \
     var(D,T,C,Pairs,static_class_vars)     \
+    var(D,T,C,Pairs,static_class_map)      \
     var(D,T,C,Pairs,aliases)               \
     var(D,T,C,Pairs,classes)               \
     var(D,T,C,Pairs,processed)
