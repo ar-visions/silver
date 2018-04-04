@@ -19,6 +19,7 @@ obj-cx/obj-cx
 *.user
 *.vcxproj
 *.filters
+testmod/testmod
 *.db
 .vs/LIBOBJ/v15/.suo
 *.sln
