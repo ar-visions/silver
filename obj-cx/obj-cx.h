@@ -44,7 +44,7 @@ struct _object_MemberDec;
     method(D,T,C,void,read_property_blocks,(C, struct _object_ClassDec *, struct _object_MemberDec *)) \
     method(D,T,C,bool,read_modules,(C)) \
     method(D,T,C,bool,read_classes,(C)) \
-    method(D,T,C,bool,replace_classes,(C, FILE *)) \
+    method(D,T,C,bool,emit_implementation,(C, FILE *)) \
     method(D,T,C,void,declare_classes,(C, FILE *)) \
     method(D,T,C,void,define_module_constructor,(C, FILE *)) \
     method(D,T,C,void,effective_methods,(C, struct _object_ClassDec *, Pairs *)) \
@@ -55,11 +55,16 @@ struct _object_MemberDec;
     method(D,T,C,void,resolve_supers,(C)) \
     method(D,T,C,void,token_out,(C, Token *, int, String)) \
     method(D,T,C,bool,process,(C, const char *)) \
+    method(D,T,C,bool,emit_module_statics,(C, FILE *)) \
     var(D,T,C,String,name)                 \
     var(D,T,C,Token *,tokens)              \
     var(D,T,C,List,modules)                \
     var(D,T,C,List,forward_structs)        \
     var(D,T,C,List,includes)               \
+    var(D,T,C,List,private_includes)       \
+    var(D,T,C,Pairs,using_classes)         \
+    var(D,T,C,Pairs,static_class_vars)     \
+    var(D,T,C,Pairs,aliases)               \
     var(D,T,C,Pairs,classes)               \
     var(D,T,C,Pairs,processed)
 declare(CX, Base)
@@ -104,6 +109,9 @@ declare(MemberDec, Base)
     var(D,T,C,Token *,name)                \
     var(D,T,C,String,class_name)           \
     var(D,T,C,String,super_class)          \
+    var(D,T,C,String,struct_class)         \
+    var(D,T,C,String,struct_object)        \
+    var(D,T,C,String,class_var)            \
     var(D,T,C,List,templates)              \
     var(D,T,C,Pairs,members)               \
     var(D,T,C,Pairs,meta)

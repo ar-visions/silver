@@ -65,6 +65,7 @@ typedef void *(*InitMethod)(struct _Base *);
 typedef void (*BaseMethod)(struct _Base *);
 typedef void *(*Setter)(struct _Base *, void *);
 typedef void *(*Getter)(struct _Base *);
+typedef bool *(*ModuleLoadMethod)();
 
 #define CLASS_FLAG_ASSEMBLED   1
 #define CLASS_FLAG_PREINIT     2
