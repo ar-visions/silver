@@ -18,7 +18,7 @@ class Test : Super {
         printf("value = %d\n", self.value);
     }
 
-    static int Main() {
+    static int main(List args) {
         Test t = new Test();
         t.method(1, 2);
         t.value = 1;
