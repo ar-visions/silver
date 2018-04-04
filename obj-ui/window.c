@@ -23,7 +23,7 @@ static void Window_sized(GLFWwindow* window, int w, int h) {
 void Window_class_init(Class c) {
     glfwSetErrorCallback(Window_error);
     if (!glfwInit())
-        exit(0);
+        exit(1);
 }
 
 void Window_init(Window self) {

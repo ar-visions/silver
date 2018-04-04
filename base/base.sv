@@ -13,13 +13,11 @@ class Base {
         }
         return self;
     }
-    Base retain()
-    {
+    Base retain() {
         self.refs++;
         return self;
     }
-    int arg_test(int arg)
-    {
+    int arg_test(int arg) {
         return self.refs;
     }
     void dealloc() {
@@ -36,7 +34,7 @@ class Base {
         }
         return i;
     }
-    static Base new_object(Class cl, size_t extra_size) {
+    static Base new_object(Class cl, size_t extra_size, bool auto_release) {
         Base obj = (Base)alloc_bytes(cl.object_size + extra_size);
         obj.cl = (BaseClass)cl;
         Base.init_object(obj, (Class)obj.cl, true);
@@ -57,15 +55,16 @@ class Base {
 }
 
 class Class : Base {
-    Class parent;
-    const char *class_name;
-    BaseMethod _init;
-    uint_t flags;
-    uint_t object_size;
-    uint_t member_count;
-    const char *member_types;
-    const char **member_names;
-    Method *members;
+    private Class parent;
+    private const char *name;
+    private const char *super_name;
+    private BaseMethod _init;
+    private uint_t flags;
+    private uint_t object_size;
+    private uint_t member_count;
+    private const char *member_types;
+    private const char **member_names;
+    private Method *members;
 }
 
 class Module : Base {

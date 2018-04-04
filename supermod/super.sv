@@ -6,6 +6,20 @@ class Super : Base {
         printf("super only");
     }
     void method(int arg, int arg2) {
-        printf("original function: %d", self.test_me);
+        printf("super function: %d\n", self.test_me);
+    }
+    static void super_static() {
+        printf("this method is static, but still there's context: %s\n", self.name);
+        int a;
+        typedef struct {
+            int a;
+        } stack;
+        Future f = new Future();
+        self.method2((arg) ^{
+            # 20 "super.sv"
+            printf("hi: %d", a);
+            f.complete(true);
+        });
+        return f;
     }
 }

@@ -60,7 +60,7 @@ int main() {
             Base item = call(list, object_at, rem);
             if (!item) {
                 printf("shouldnt happen\n");
-                exit(0);
+                exit(1);
             }
             call(list, remove, item);
         }*/

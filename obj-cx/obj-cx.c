@@ -261,7 +261,7 @@ bool CX_read_template_types(CX self, ClassDec cd, Token **pt) {
         if (tname->punct == ">") {
             if (!cd->templates) {
                 printf("expected template type\n");
-                exit(0);
+                exit(1);
             }
             break;
         }
@@ -273,12 +273,12 @@ bool CX_read_template_types(CX self, ClassDec cd, Token **pt) {
                 list_push(cd->templates, class_call(String, new_from_bytes, (uint8 *)tname->value, tname->length));
             } else {
                 printf("expected identifier in template expression\n");
-                exit(0);
+                exit(1);
             }
         } else {
             if (tname->punct != ",") {
                 printf("expected ',' separator in template expression\n");
-                exit(0);
+                exit(1);
             }
         }
         expect_identifier = !expect_identifier;
@@ -303,7 +303,7 @@ int CX_read_expression(CX self, Token *t, Token **b_start, Token **b_end, const 
         } else if (t->punct == ")") {
             if (--paren_depth < 0) {
                 printf("unexpected ')' in expression\n");
-                exit(0);
+                exit(1);
             }
         }
         if (brace_depth == 0 && (t->punct == p1 || t->punct == p2 || t->punct == p3 || t->punct == p4)) {
@@ -322,7 +322,7 @@ int CX_read_expression(CX self, Token *t, Token **b_start, Token **b_end, const 
                         }
                     }
                     printf("expected '}' to end block\n");
-                    exit(0);
+                    exit(1);
                 }
                 return count;
             }
@@ -331,7 +331,7 @@ int CX_read_expression(CX self, Token *t, Token **b_start, Token **b_end, const 
         } else if (t->punct == "}") {
             if (--brace_depth < 0) {
                 printf("unexpected '}' in expression\n");
-                exit(0);
+                exit(1);
             }
         }
         t++;
@@ -339,7 +339,7 @@ int CX_read_expression(CX self, Token *t, Token **b_start, Token **b_end, const 
     }
     if (t->value == NULL) {
         printf("expected end of expression\n");
-        exit(0);
+        exit(1);
     }
     return count;
 }
@@ -347,7 +347,7 @@ int CX_read_expression(CX self, Token *t, Token **b_start, Token **b_end, const 
 void expect_type(Token *token, enum TokenType type) {
     if (token->type != type) {
         printf("wrong token type\n");
-        exit(0);
+        exit(1);
     }
 }
 
@@ -377,7 +377,7 @@ void CX_read_property_blocks(CX self, ClassDec cd, MemberDec md) {
                 // read backwards to find signature
                 if (!keyword_found) {
                     fprintf(stderr, "expected get/set\n");
-                    exit(0);
+                    exit(1);
                 }
                 start = t;
             }
@@ -445,7 +445,7 @@ bool CX_read_classes(CX self) {
                 t++;
                 if (t->type != TT_Identifier) {
                     printf("expected super class identifier after :\n");
-                    exit(0);
+                    exit(1);
                 }
                 String str_super = class_call(String, new_from_bytes, (uint8 *)t->value, t->length);
                 cd->super_class = str_super;
@@ -453,7 +453,7 @@ bool CX_read_classes(CX self) {
             }
             if ((t++)->punct != "{") {
                 printf("expected '{' character\n");
-                exit(0);
+                exit(1);
             }
             // read optional keywords such as static and private
             while (t->punct != "}") {
@@ -477,7 +477,7 @@ bool CX_read_classes(CX self) {
                 if (token_count == 0) {
                     if (md->is_static || md->is_private) {
                         printf("expected expression\n");
-                        exit(0);
+                        exit(1);
                     }
                     t++;
                     continue;
@@ -521,7 +521,7 @@ bool CX_read_classes(CX self) {
                                 for (Token *p = ++tt; p != t_last; p++) {
                                     if (expect_sep && p->punct != ":") {
                                         printf("expected ':' in meta data\n");
-                                        exit(0);
+                                        exit(1);
                                     } else if (!expect_sep) {
                                         String v = class_call(String, new_from_bytes, (uint8 *)p->value, p->length);
                                         if (!key) {
@@ -559,7 +559,7 @@ bool CX_read_classes(CX self) {
                                     break;
                                 } else if (tt->punct != "]") {
                                     printf("Invalid array definition\n");
-                                    exit(0);
+                                    exit(1);
                                 }
                             }
                         }
@@ -611,7 +611,7 @@ bool CX_read_classes(CX self) {
                     }
                     if (!md->args) {
                         printf("expected '(' before ')'\n");
-                        exit(0);
+                        exit(1);
                     }
                     t_last = md->args - 2;
                     md->member_type = MT_Method;
@@ -622,7 +622,7 @@ bool CX_read_classes(CX self) {
                         Token *tt = equals + 1;
                         if (tt->punct == ";") {
                             printf("expected rvalue in property assignment\n");
-                            exit(0);
+                            exit(1);
                         }
                         md->assign = tt;
                         md->assign_count = 1;
@@ -637,7 +637,7 @@ bool CX_read_classes(CX self) {
                 if (t_last == t) {
                     if (t->keyword != "construct") {
                         printf("expected member\n");
-                        exit(0);
+                        exit(1);
                     } else {
                         // default constructor has its name set as the class
                         t_name = cd->name;
@@ -648,11 +648,11 @@ bool CX_read_classes(CX self) {
                     // possible issue where arrays without identifiers could pass through; check above
                     if (!((t_last->type == TT_Keyword && !t_last->type_keyword) || t_last->type == TT_Identifier)) {
                         printf("expected member name\n");
-                        exit(0);
+                        exit(1);
                     }
                     if (t_last->type != TT_Identifier) {
                         printf("expected identifier (member name)\n");
-                        exit(0);
+                        exit(1);
                     }
                 }
                 String str_name = class_call(String, new_from_bytes, (uint8 *)t_name->value, t_name->length);
@@ -671,7 +671,7 @@ bool CX_read_classes(CX self) {
                     }
                     if (md->type_count == 0) {
                         printf("expected type (member)\n");
-                        exit(0);
+                        exit(1);
                     }
                 }
                 if (md->type_count > 0) {
@@ -720,62 +720,79 @@ String CX_class_op_out(CX self, List scope, Token *t,
     String s_token = call(self, token_string, t);
     Token *t_member = t;
     MemberDec md = call(cd, member_lookup, s_token);
-    
+    bool constructor = false;
+    const char *class_name = cd->class_name->buffer;
+
     if (!md) {
-        printf("member: %s not found on class: %s\n", s_token->buffer, cd->class_name->buffer);
-        exit(0);
+        if (s_token->length == cd->class_name->length && 
+                call(s_token, compare, cd->class_name) == 0) {
+            constructor = true;
+        } else {
+            printf("member: %s not found on class: %s\n", s_token->buffer, class_name);
+            exit(1);
+        }
     }
     if ((++t)->punct == "(") {
-        sprintf(buf, "%s_cl->", cd->class_name->buffer);
-        call(output, concat_cstring, buf);
-
-        call(self, token_out, t_member, '(', output);
-        if (is_instance && call(cd->class_name, cmp, "Class") != 0) {
-            call(output, concat_string, target);
-            if (t->punct == ")")
-                call(output, concat_char, ' ');
-            else if (md->args_count > 0)
-                call(output, concat_char, ',');
-        }
-        bool prepend_arg = false;
-        if (md->member_type == MT_Prop) {
-            fprintf(stderr, "invalid call to property\n");
-            exit(0);
-        }
-        if (md->member_type == MT_Constructor) {
-            prepend_arg = true;
-            sprintf(buf, "%s_cl, %s", cd->class_name->buffer,
+        if (constructor) {
+            sprintf(buf, "(%s)Base_cl->new_object((Class)%s_cl, 0, %s",
+                class_name, class_name,
                 is_token(t_start - 1, "auto") ? "true" : "false");
             call(output, concat_cstring, buf);
-        }
-        int n = call(self, read_expression, t, NULL, NULL, ")");
-        if (n > 1) {
-            if (prepend_arg) {
-                sprintf(buf, ", ");
+            t++;
+        } else {
+            sprintf(buf, "%s_cl->", class_name);
+            call(output, concat_cstring, buf);
+            call(self, token_out, t_member, '(', output);
+            if (is_instance && call(cd->class_name, cmp, "Class") != 0) {
+                call(output, concat_string, target);
+                if (t->punct == ")")
+                    call(output, concat_char, ' ');
+                else if (md->args_count > 0)
+                    call(output, concat_char, ',');
+            }
+            bool prepend_arg = false;
+            if (md->member_type == MT_Prop) {
+                fprintf(stderr, "invalid call to property\n");
+                exit(1);
+            }
+            // todo: 
+            if (md->member_type == MT_Constructor) {
+                prepend_arg = true;
+                sprintf(buf, "%s_cl, %s", class_name,
+                    is_token(t_start - 1, "auto") ? "true" : "false");
                 call(output, concat_cstring, buf);
             }
-            String code = call(self, code_out, scope, &t[1], &t[n - 1], t_after, NULL, false);
-            call(output, concat_string, code);
+            int n = call(self, read_expression, t, NULL, NULL, ")");
+            if (n > 1) {
+                if (prepend_arg) {
+                    sprintf(buf, ", ");
+                    call(output, concat_cstring, buf);
+                }
+                String code = call(self, code_out, scope, &t[1], &t[n - 1], t_after, NULL, false);
+                call(output, concat_string, code);
+            }
+            t += n;
         }
-        t += n;
+
         if (*t_after < t)
             *t_after = t;
-        if ((t + 1)->punct == "^") {
-            int test = 0;
-            test++;
-        }
+
         if (t->punct != ")") {
-            printf("expected ')'\n");
-            exit(0);
+            fprintf(stderr, "%s:%d: expected ')'\n",
+                t->file->buffer, t->line);
+            exit(1);
         }
         call(self, token_out, t, ' ', output);
         //*t_after = t;
+    } else if (constructor) {
+        fprintf(stderr, "expected '(' for constructor\n", t->punct);
+        exit(1);
     } else if (t->assign) {
         Token *t_assign = t++;
         int n = call(self, read_expression, t, NULL, NULL, "{;),");
         if (n <= 0) {
             fprintf(stderr, "expected token after %s\n", t->punct);
-            exit(0);
+            exit(1);
         }
         if (md->setter_start) {
             // call explicit setter [todo: handle the various assigner operators]
@@ -802,7 +819,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 sprintf(buf, "->");
                 call(output, concat_cstring, buf);
             } else {
-                sprintf(buf, "%s_cl->", cd->class_name->buffer);
+                sprintf(buf, "%s_cl->", class_name);
                 call(output, concat_cstring, buf);
             }
             call(self, token_out, t_member, 0, output);
@@ -816,7 +833,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
     } else {
         if (md->getter_start) {
             // call explicit getter (class or instance)
-            sprintf(buf, "%s_cl->get_", cd->class_name->buffer);
+            sprintf(buf, "%s_cl->get_", class_name);
             call(output, concat_cstring, buf);
             call(self, token_out, t_member, '(', output);
             if (is_instance)
@@ -830,7 +847,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 sprintf(buf, "->");
                 call(output, concat_cstring, buf);
             } else {
-                sprintf(buf, "%s_cl->", cd->class_name->buffer);
+                sprintf(buf, "%s_cl->", class_name);
                 call(output, concat_cstring, buf);
             }
             call(self, token_out, t_member, ' ', output);
@@ -1098,7 +1115,7 @@ void CX_declare_classes(CX self, FILE *file_output) {
                         sprintf(buf, "\t");
                         call(output, concat_cstring, buf);
                         if (md->member_type == MT_Constructor) {
-                            sprintf(buf, "%s", cd->class_name->buffer);
+                            sprintf(buf, "struct _%s", cd->class_name->buffer);
                             call(output, concat_cstring, buf);
                         } else {
                             for (int i = 0; i < md->type_count; i++) {
@@ -1113,7 +1130,13 @@ void CX_declare_classes(CX self, FILE *file_output) {
                             }
                         }
                         String args = call(self, args_out, NULL, cd, md, md->member_type == MT_Method && !md->is_static, false, 0, true);
-                        sprintf(buf, " (*%s)(%s);\n", md->str_name->buffer, args->buffer);
+                        if (md->member_type == MT_Constructor) {
+                            sprintf(buf, " (*construct_%s_%s)(%s);\n",
+                                md->str_name->buffer, args->buffer ? args->buffer : "");
+                        } else {
+                            sprintf(buf, " (*%s)(%s);\n",
+                                md->str_name->buffer, args->buffer ? args->buffer : "");
+                        }
                         call(output, concat_cstring, buf);
                         break;
                     case MT_Prop:
@@ -1244,6 +1267,9 @@ void CX_define_module_constructor(CX self, FILE *file_output) {
         sprintf(buf, "\t%s_cl = (typeof(%s_cl))alloc_bytes(sizeof(*%s_cl));\n",
             class_name, class_name, class_name);
         call(output, concat_cstring, buf);
+        sprintf(buf, "\tmemset(%s_cl, 0, sizeof(*%s_cl));\n",
+            class_name, class_name);
+        call(output, concat_cstring, buf);
     }
 
     each_pair(self->classes, kv) {
@@ -1262,38 +1288,39 @@ void CX_define_module_constructor(CX self, FILE *file_output) {
         each_pair(cd->effective, mkv) {
             MemberDec md = (MemberDec)mkv->value;
             ClassDec origin = md->cd;
-            switch (md->member_type) {
-                case MT_Constructor:
-                case MT_Method:
-                    if (md->member_type == MT_Constructor) {
-                        sprintf(buf, "\t%s_cl->%s = (typeof(%s_cl->%s))construct_%s_%s;\n",
+            if (md->cd == cd && !md->is_private)
+                switch (md->member_type) {
+                    case MT_Constructor:
+                    case MT_Method:
+                        if (md->member_type == MT_Constructor) {
+                            sprintf(buf, "\t%s_cl->%s = (typeof(%s_cl->%s))construct_%s_%s;\n",
+                                class_name, md->str_name->buffer,
+                                class_name, md->str_name->buffer,
+                                origin->class_name->buffer, md->str_name->buffer);
+                            call(output, concat_cstring, buf);
+                        } else {
+                            sprintf(buf, "\t%s_cl->%s = (typeof(%s_cl->%s))%s_%s;\n",
+                                class_name, md->str_name->buffer,
+                                class_name, md->str_name->buffer,
+                                origin->class_name->buffer, md->str_name->buffer);
+                            call(output, concat_cstring, buf);
+                        }
+                        method_count++;
+                        break;
+                    case MT_Prop:
+                        sprintf(buf, "\t%s_cl->get_%s = (typeof(%s_cl->get_%s))%s_get_%s;\n",
                             class_name, md->str_name->buffer,
                             class_name, md->str_name->buffer,
                             origin->class_name->buffer, md->str_name->buffer);
                         call(output, concat_cstring, buf);
-                    } else {
-                        sprintf(buf, "\t%s_cl->%s = (typeof(%s_cl->%s))%s_%s;\n",
+                        sprintf(buf, "\t%s_cl->set_%s = (typeof(%s_cl->set_%s))%s_set_%s;\n",
                             class_name, md->str_name->buffer,
                             class_name, md->str_name->buffer,
                             origin->class_name->buffer, md->str_name->buffer);
                         call(output, concat_cstring, buf);
-                    }
-                    method_count++;
-                    break;
-                case MT_Prop:
-                    sprintf(buf, "\t%s_cl->get_%s = (typeof(%s_cl->get_%s))%s_get_%s;\n",
-                        class_name, md->str_name->buffer,
-                        class_name, md->str_name->buffer,
-                        origin->class_name->buffer, md->str_name->buffer);
-                    call(output, concat_cstring, buf);
-                    sprintf(buf, "\t%s_cl->set_%s = (typeof(%s_cl->set_%s))%s_set_%s;\n",
-                        class_name, md->str_name->buffer,
-                        class_name, md->str_name->buffer,
-                        origin->class_name->buffer, md->str_name->buffer);
-                    call(output, concat_cstring, buf);
-                    method_count += 2;
-                    break;
-            }
+                        method_count += 2;
+                        break;
+                }
         }
         // member types
         {
@@ -1304,23 +1331,24 @@ void CX_define_module_constructor(CX self, FILE *file_output) {
             int mc = 0;
             each_pair(cd->effective, mkv) {
                 MemberDec md = (MemberDec)mkv->value;
-                switch (md->member_type) {
-                    case MT_Constructor:
-                    case MT_Method:
-                        sprintf(buf, "\t%s_cl->member_types[%d] = %d;\n",
-                            class_name, mc, md->member_type); mc++;
-                        call(output, concat_cstring, buf);
-                        break;
-                    case MT_Prop:
-                        sprintf(buf, "\t%s_cl->member_types[%d] = %d;\n",
-                            class_name, mc, md->member_type); mc++;
-                        call(output, concat_cstring, buf);
+                if (md->cd == cd && !md->is_private)
+                    switch (md->member_type) {
+                        case MT_Constructor:
+                        case MT_Method:
+                            sprintf(buf, "\t%s_cl->member_types[%d] = %d;\n",
+                                class_name, mc, md->member_type); mc++;
+                            call(output, concat_cstring, buf);
+                            break;
+                        case MT_Prop:
+                            sprintf(buf, "\t%s_cl->member_types[%d] = %d;\n",
+                                class_name, mc, md->member_type); mc++;
+                            call(output, concat_cstring, buf);
 
-                        sprintf(buf, "\t%s_cl->member_types[%d] = %d;\n",
-                            class_name, mc, md->member_type); mc++;
-                        call(output, concat_cstring, buf);
-                        break;
-                }
+                            sprintf(buf, "\t%s_cl->member_types[%d] = %d;\n",
+                                class_name, mc, md->member_type); mc++;
+                            call(output, concat_cstring, buf);
+                            break;
+                    }
             }
         }
         // member names
@@ -1550,12 +1578,15 @@ bool CX_replace_classes(CX self, FILE *file_output) {
                                 call(self, token_out, &md->type[i], ' ', output);
                             sprintf(buf, "%s_set_", cd->class_name->buffer);
                             call(output, concat_cstring, buf);
-
                             call(self, token_out, md->name, '(', output);
                         }
                         if (!md->is_static) {
-                            call(self, token_out, cd->name, ' ', output);
-                            sprintf(buf, "self");
+                            if (md->is_static) {
+                                sprintf(buf, "%s%s self", cd->class_name,
+                                    call(cd->class_name, "Class") == 0 ? "" : cd->class_name);
+                            } else
+                                sprintf(buf, "%s self", cd->class_name);
+                            
                             call(output, concat_cstring, buf);
 
                             pairs_add(top, new_string("self"), cd);
@@ -1575,23 +1606,32 @@ bool CX_replace_classes(CX self, FILE *file_output) {
                                 pairs_add(top, s_var, cd_type);
                             }
                         }
-                        sprintf(buf, ") ");
+
+                        /*
+                            static methods on classes to be able to access the class in the form of self
+                            ----
+                            Class.method(1) would essentially map to: Class_cl->method(Class_cl, 1)
+                        */
+
+                        sprintf(buf, ") {\n");
                         call(output, concat_cstring, buf);
+                        if (block_start->punct == "{")
+                            block_start++;
+                        if (block_end->punct == "}")
+                            block_end--;
                         if (i == 0) {
                             String code = call(self, code_out, scope, block_start, block_end, NULL, super_mode, true);
                             call(output, concat_string, code);
                         } else {
-                            String code = call(self, code_out, scope, block_start, block_end - 1, NULL, super_mode, true);
+                            String code = call(self, code_out, scope, block_start, block_end, NULL, super_mode, true);
                             if (md->is_static)
                                 sprintf(buf, "return %s_cl->get_%s();", cd->class_name->buffer, md->str_name->buffer);
                             else
-                                sprintf(buf, "return self->get_%s(self);", md->str_name->buffer);
-                            call(output, concat_cstring, buf);
-
-                            code = call(self, code_out, scope, block_end, block_end, NULL, NULL, false);
+                                sprintf(buf, "return self->cl->get_%s(self);", md->str_name->buffer);
                             call(output, concat_string, code);
+                            call(output, concat_cstring, buf);
                         }
-                        sprintf(buf, "\n");
+                        sprintf(buf, "\n}\n");
                         call(output, concat_cstring, buf);
                         call(top, clear);
                     }
@@ -1639,13 +1679,13 @@ bool CX_read_modules(CX self) {
                 if (expect_comma) {
                     if (tt->punct != ",") {
                         fprintf(stderr, "expected separator ',' between %s", (is_include ? "includes" : "modules"));
-                        exit(0);
+                        exit(1);
                     }
                 } else {
                     // expect module name (TT_Identifier)
                     if (tt->type != TT_Identifier || tt->length >= 256) {
                         fprintf(stderr, "expected identifier for %s name", (is_include ? "include" : "module"));
-                        exit(0);
+                        exit(1);
                     }
                     char name[256];
                     memcpy(name, tt->value, tt->length);
@@ -1676,7 +1716,7 @@ bool CX_process(CX self, const char *location) {
     DIR *dir = opendir(location);
     if (!dir) {
         fprintf(stderr, "cannot open module '%s'\n", location);
-        exit(0);
+        exit(1);
     }
     struct dirent *ent;
     List module_contents = NULL;
