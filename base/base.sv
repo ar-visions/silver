@@ -26,7 +26,7 @@ class Base {
     void dealloc() {
         free(self);
     }
-    static Base inherits(Base obj) {
+    static Base instance(Base obj) {
         Class c = (Class)obj.cl;
         while (c) {
             if (c == (Class)class)
@@ -71,7 +71,7 @@ class Base {
     }
 }
 
-class Class : Base {
+class Class {
     private Class parent;
     private const char *name;
     private BaseMethod _init;

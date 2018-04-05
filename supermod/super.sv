@@ -1,6 +1,6 @@
 include stdlib;
 
-class Super : Base {
+class Super {
     int test_me = 1;
     void super_only(int test) {
         printf("super only");

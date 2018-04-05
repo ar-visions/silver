@@ -34,7 +34,7 @@ class Test : Super {
         }
         
         Test t = new Test();
-        if (Test.inherits((Base)str1)) {
+        if (Test.instance((Base)str1)) {
             printf("test inherits\n");
         }
         t.method(1, 2);
