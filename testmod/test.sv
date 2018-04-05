@@ -27,14 +27,17 @@ class Test : Super {
     }
 
     static int main(Array args) {
-        String str1 = (String)args.buffer[0];
+        Test b = new Test();
+        Array a = new Array();
+        a.push(b);
+        String str1 = String.instance(args.buffer[0]);
         for (int i = 0; i < args.count; i++) {
-            String str = (String)args.buffer[i];
-            printf("arg[%d] = %s\n", i, str->buffer);
+            String str = String.instance(args.buffer[i]);
+            printf("arg[%d] = %s\n", i, str.buffer);
         }
         
         Test t = new Test();
-        if (Test.instance((Base)str1)) {
+        if (Test.instance(str1)) {
             printf("test inherits\n");
         }
         t.method(1, 2);

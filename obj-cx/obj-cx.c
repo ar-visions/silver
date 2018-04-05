@@ -34,7 +34,6 @@ ulong ClassDec_hash(ClassDec self) {
     return call(self->class_name, hash);
 }
 
-
 static List modules;
 static CX find_module(const char *name) {
     CX m;
@@ -329,10 +328,10 @@ bool CX_read_template_types(CX self, ClassDec cd, Token **pt) {
     return true;
 }
 
-int CX_read_expression(CX self, Token *t, Token **b_start, Token **b_end, const char *end) {
+int CX_read_expression(CX self, Token *t, Token **b_start, Token **b_end, const char *end, int p_depth, bool args) {
     int brace_depth = 0;
     int count = 0;
-    int paren_depth = 0;
+    int paren_depth = p_depth;
     bool mark_block = b_start != NULL;
     const char *p1 = strchr(end, '{') ? "{" : "N/A";
     const char *p2 = strchr(end, ';') ? ";" : "N/A";
@@ -344,14 +343,17 @@ int CX_read_expression(CX self, Token *t, Token **b_start, Token **b_end, const 
         if (t->punct == "(") {
             paren_depth++;
         } else if (t->punct == ")") {
-            if (--paren_depth < 0) {
-                printf("unexpected ')' in expression\n");
-                exit(1);
+            paren_depth--;
+        } else if (args) {
+            if (t->punct == p4) {
+                if (p_depth == paren_depth) {
+                    paren_depth--;
+                }
             }
         }
         if (brace_depth == 0 && (t->punct == p1 || t->punct == p2 || t->punct == p3 || t->punct == p4)) {
-            if (paren_depth == 0) {
-                if (t->punct == "{" || (token_next(&t))->punct == "{") {
+            if (paren_depth <= 0) {
+                if (mark_block && (t->punct == "{" || (token_next(&t))->punct == "{")) {
                     brace_depth = 1;
                     *b_start = t;
                     while (token_next(&t)->value) {
@@ -538,7 +540,7 @@ bool CX_read_classes(CX self) {
                     }
                 }
                 Token *block_start = NULL, *block_end = NULL;
-                int token_count = call(self, read_expression, t, &block_start, &block_end, "{;),");
+                int token_count = call(self, read_expression, t, &block_start, &block_end, "{;),", 0, false);
                 if (token_count == 0) {
                     if (md->is_static || md->is_private) {
                         printf("expected expression\n");
@@ -771,7 +773,7 @@ bool CX_read_classes(CX self) {
                             md->assign = token_next(&t);
                             Token *assign_start = NULL;
                             Token *assign_end = NULL;
-                            md->assign_count = call(self, read_expression, t, &assign_start, &assign_end, ";");
+                            md->assign_count = call(self, read_expression, t, &assign_start, &assign_end, ";", 0, false);
                             t += md->assign_count;
                         }
                     }
@@ -785,7 +787,7 @@ bool CX_read_classes(CX self) {
 }
 
 String CX_class_op_out(CX self, List scope, Token *t,
-        ClassDec cd, String target, bool is_instance, Token **t_after) {
+        ClassDec cd, String target, bool is_instance, Token **t_after, ClassDec *cd_last) {
     String output = new(String);
     char buf[1024];
     Token *t_start = t;
@@ -797,6 +799,11 @@ String CX_class_op_out(CX self, List scope, Token *t,
         cd = CX_find_class(string("Class"));
 
     md = call(cd, member_lookup, s_token);
+    if (md) {
+        *cd_last = md->type_cd;
+    } else {
+        *cd_last = NULL;
+    }
     bool constructor = false;
     const char *class_name = cd->class_name->buffer;
     const char *class_var = cd->class_var->buffer;
@@ -818,6 +825,11 @@ String CX_class_op_out(CX self, List scope, Token *t,
             call(output, concat_cstring, buf);
             token_next(&t);
         } else {
+            // implement auto-casting here
+            // i need the resultant type of the last operation
+            // that should be passed from this function, to code_out
+            
+
             sprintf(buf, "%s->", class_var);
             call(output, concat_cstring, buf);
             call(self, token_out, t_member, '(', output);
@@ -833,21 +845,62 @@ String CX_class_op_out(CX self, List scope, Token *t,
             else if (md->args_count > 0)
                 call(output, concat_char, ',');
 
-            bool prepend_arg = false;
             if (md->member_type == MT_Prop) {
                 fprintf(stderr, "invalid call to property\n");
                 exit(1);
             }
-            int n = call(self, read_expression, t, NULL, NULL, ")");
-            if (n > 1) {
-                if (prepend_arg) {
-                    sprintf(buf, ", ");
-                    call(output, concat_cstring, buf);
-                }
-                String code = call(self, code_out, scope, &t[1], &t[n - 1], t_after, NULL, false);
-                call(output, concat_string, code);
+            // iterate through arguments on MethodDec as you move along
+            int c_arg = 0;
+
+            if (strcmp(md->str_name->buffer, "push") == 0) {
+                int test = 0;
+                test++;
             }
-            t += n;
+            
+            t++;
+            for (;;) {
+                String arg_output = new(String);
+                int n = call(self, read_expression, t, NULL, NULL, ",)", 1, true);
+                if (n == 0)
+                    break;
+                if (c_arg > 0)
+                    call(output, concat_cstring, ", ");
+                
+                // better way is to split the expression up by its commas, perform code_out each time!
+                ClassDec cd_returned = NULL;
+                String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false, &cd_returned);
+                call(arg_output, concat_string, code);
+                
+                if (cd_returned && c_arg < md->arg_types_count) {
+                    Token *t = md->arg_types[c_arg];
+                    if (t && t->str) {
+                        String type_expected = t->str;
+                        if (call(type_expected, compare, cd_returned->class_name) != 0) {
+                            // check if member_returned inherits type_expected
+                            ClassDec cd_cur = cd_returned;
+                            ClassDec expected_cd = pairs_value(self->static_class_map, type_expected, ClassDec);
+                            
+                            while (cd_cur != expected_cd) {
+                                cd_cur = cd_cur->parent;
+                            }
+                            if (cd_cur) {
+                                sprintf(buf, "(%s)(", cd_cur->struct_object->buffer);
+                                call(output, concat_cstring, buf);
+                                call(arg_output, concat_char, ')');
+                            }
+                        }
+                    }
+                }
+                call(output, concat_string, arg_output);
+                release(arg_output);
+                
+                t += n;
+                if (t->punct == ")")
+                    break;
+                else
+                    t++;
+                c_arg++;
+            }
         }
 
         if (*t_after < t)
@@ -866,7 +919,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
     } else if (t->assign) {
         Token *t_assign = t;
         token_next(&t);
-        int n = call(self, read_expression, t, NULL, NULL, "{;),");
+        int n = call(self, read_expression, t, NULL, NULL, "{;),", 0, false);
         if (n <= 0) {
             fprintf(stderr, "expected token after %s\n", t->punct);
             exit(1);
@@ -881,7 +934,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 sprintf(buf, "%s, ", target->buffer);
                 call(output, concat_cstring, buf);
             }
-            String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false);
+
+            String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false, cd_last);
             call(output, concat_string, code);
 
             sprintf(buf, ")");
@@ -901,7 +955,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
             call(self, token_out, t_member, 0, output);
             call(self, token_out, t_assign, 0, output);
 
-            String code = call(self, code_out, scope, t, &t[n], t_after, NULL, false);
+            String code = call(self, code_out, scope, t, &t[n], t_after, NULL, false, cd_last);
             call(output, concat_string, code);
             t = *t_after;
         }
@@ -936,7 +990,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
             cd = CX_find_class(s);
             if (cd) {
                 // needs to handle non-instance, something that returns Classes would be the case to handle
-                output = call(self, class_op_out, scope, t + 2, cd, output, true, t_after); 
+                output = call(self, class_op_out, scope, t + 2, cd, output, true, t_after, cd_last); 
                 break;
             }
             t += 2;
@@ -946,7 +1000,21 @@ String CX_class_op_out(CX self, List scope, Token *t,
     return output;
 }
 
-String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, Token **t_after, ClassDec super_mode, bool line_no) {
+ClassDec CX_scope_lookup(CX self, List scope, String var) {
+    LList *list = &scope->list;
+    Pairs p = (Pairs)list->last->data;
+    for (LItem *_i = list->last; _i; _i = _i->prev,
+            p = _i ? (typeof(p))_i->data : NULL) {
+        ClassDec cd = pairs_value(p, var, ClassDec);
+        if (cd)
+            return cd;
+    }
+    return NULL;
+}
+
+String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, Token **t_after,
+        ClassDec super_mode, bool line_no, ClassDec *cd_last) {
+    *cd_last = NULL;
     String output = new(String);
     char buf[1024];
     int brace_depth = 0;
@@ -1022,7 +1090,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 } else if (t->punct == ".") {
                     token_next(&t);
                     if (t->type == TT_Identifier) {
-                        String out = call(self, class_op_out, scope, t, cd, target, false, &t);
+                        String out = call(self, class_op_out, scope, t, cd, target, false, &t, cd_last);
                         call(output, concat_string, out);
                     }
                 } else if (t->punct == "(") {
@@ -1031,7 +1099,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         exit(1);
                     }
                     // construct (default)
-                    String out = call(self, class_op_out, scope, t - 1, cd, target, false, &t);
+                    String out = call(self, class_op_out, scope, t - 1, cd, target, false, &t, cd_last);
                     call(output, concat_string, out);
                 } else {
                     call(output, concat_string, is_class ? cd->struct_class : cd->struct_object);
@@ -1039,22 +1107,15 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     call(self, token_out, t, ' ', output);
                 }
             } else {
-                ClassDec cd;
-                LList *list = &scope->list;
-                Pairs p = (Pairs)list->last->data;
+                ClassDec cd = call(self, scope_lookup, scope, target);
                 bool found = false;
-                for (LItem *_i = list->last; _i; _i = _i->prev,
-                        p = _i ? (typeof(p))_i->data : NULL) {
-                    ClassDec cd = pairs_value(p, target, ClassDec);
-                    if (cd) {
-                        if ((t + 1)->punct == ".") {
-                            if ((t + 2)->type == TT_Identifier) {
-                                String out = call(self, class_op_out, scope, t + 2, cd, target, true, &t);
-                                call(output, concat_string, out);
-                                found = true;
-                            }
+                if (cd) {
+                    if ((t + 1)->punct == ".") {
+                        if ((t + 2)->type == TT_Identifier) {
+                            String out = call(self, class_op_out, scope, t + 2, cd, target, true, &t, cd_last);
+                            call(output, concat_string, out);
+                            found = true;
                         }
-                        break;
                     }
                 }
                 if (!found)
@@ -1067,6 +1128,10 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             *t_after = t;
         if (t >= method_end)
             break;
+    }
+    if (!*cd_last && output->length > 0) {
+        ClassDec cd_found = call(self, scope_lookup, scope, output);
+        *cd_last = cd_found;
     }
     return output;
 }
@@ -1609,7 +1674,8 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                         sprintf(buf, "self->%s = ", md->str_name->buffer);
                         call(output, concat_cstring, buf);
                     }
-                    String code = call(self, code_out, scope, md->assign, &md->assign[md->assign_count - 1], NULL, NULL, false);
+                    ClassDec cd_last = NULL;
+                    String code = call(self, code_out, scope, md->assign, &md->assign[md->assign_count - 1], NULL, NULL, false, &cd_last);
                     call(output, concat_string, code);
 
                     if (md->setter_start) {
@@ -1639,9 +1705,10 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                     if (!first)
                         call(type_str, concat_char, ' ');
                     ClassDec cd_found = pairs_value(self->static_class_map, tt->str, ClassDec);
-                    if (cd_found)
+                    if (cd_found) {
                         call(type_str, concat_string, cd_found->struct_object);
-                    else
+                        md->type_cd = cd_found;
+                    } else
                         call(type_str, concat_string, tt->str);
                     first = false;
                 }
@@ -1692,8 +1759,8 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
 
                     sprintf(buf, ") ");
                     call(output, concat_cstring, buf);
-
-                    code = call(self, code_out, scope, md->block_start, md->block_end, NULL, super_mode, true);
+                    ClassDec cd_last = NULL;
+                    code = call(self, code_out, scope, md->block_start, md->block_end, NULL, super_mode, true, &cd_last);
                     call(output, concat_string, code);
 
                     sprintf(buf, "\n");
@@ -1791,11 +1858,12 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                             block_end--;
                         sprintf(buf, "# %d \"%s\"\n", block_start->line, block_start->file->buffer);
                         call(output, concat_cstring, buf);
+                        ClassDec cd_last = NULL;
                         if (i == 0) {
-                            String code = call(self, code_out, scope, block_start, block_end, NULL, super_mode, true);
+                            String code = call(self, code_out, scope, block_start, block_end, NULL, super_mode, true, &cd_last);
                             call(output, concat_string, code);
                         } else {
-                            String code = call(self, code_out, scope, block_start, block_end, NULL, super_mode, true);
+                            String code = call(self, code_out, scope, block_start, block_end, NULL, super_mode, true, &cd_last);
                             if (md->is_static)
                                 sprintf(buf, "return %s->get_%s();", class_name, md->str_name->buffer);
                             else
@@ -1852,7 +1920,7 @@ bool CX_read_modules(CX self) {
                     is_private = strncmp(tt->value, "private", tt->length) == 0;
                 }
             }
-            int count = call(self, read_expression, t, NULL, NULL, ";");
+            int count = call(self, read_expression, t, NULL, NULL, ";", 0, false);
             bool expect_comma = false;
             for (int i = 1; i < count; i++) {
                 Token *tt = &t[i];

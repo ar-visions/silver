@@ -1,4 +1,4 @@
-class String : Base {
+class String {
     int length;
     int alloc_size;
     char *buffer;

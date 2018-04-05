@@ -1,4 +1,4 @@
-class Array : Base {
+class Array {
     Base *buffer;
     int alloc_size;
     int count;
