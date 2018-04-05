@@ -43,8 +43,8 @@ typedef struct _Token {
     method(D,T,C,void,merge_class_tokens,(C,Token *,int *)) \
     method(D,T,C,struct _object_ClassDec *,find_class,(String)) \
     method(D,T,C,bool,read_template_types,(C,struct _object_ClassDec *, Token **)) \
-    method(D,T,C,String,code_out,(C, List, Token *, Token *, Token **, struct _object_ClassDec *, bool)) \
-    method(D,T,C,int,read_expression,(C, Token *, Token **, Token **, const char *)) \
+    method(D,T,C,String,code_out,(C, List, Token *, Token *, Token **, struct _object_ClassDec *, bool, struct _object_ClassDec **)) \
+    method(D,T,C,int,read_expression,(C, Token *, Token **, Token **, const char *, int, bool)) \
     method(D,T,C,void,read_property_blocks,(C, struct _object_ClassDec *, struct _object_MemberDec *)) \
     method(D,T,C,bool,read_modules,(C)) \
     method(D,T,C,bool,read_classes,(C)) \
@@ -53,8 +53,9 @@ typedef struct _Token {
     method(D,T,C,void,define_module_constructor,(C, FILE *)) \
     method(D,T,C,void,effective_methods,(C, struct _object_ClassDec *, Pairs *)) \
     method(D,T,C,String,class_op_out,(C, List, Token *, \
-        struct _object_ClassDec *, String, bool, Token **)) \
+        struct _object_ClassDec *, String, bool, Token **, struct _object_ClassDec **)) \
     method(D,T,C,String,args_out,(C, Pairs, struct _object_ClassDec *, struct _object_MemberDec *, bool, bool, int, bool)) \
+    method(D,T,C,struct _object_ClassDec *,scope_lookup,(C,List,String)) \
     method(D,T,C,void,resolve_supers,(C)) \
     method(D,T,C,void,token_out,(C, Token *, int, String)) \
     method(D,T,C,bool,process,(C, const char *)) \
@@ -78,6 +79,7 @@ declare(CX, Base)
     var(D,T,C,enum MemberType,member_type) \
     var(D,T,C,Token *,type)                \
     var(D,T,C,int,type_count)              \
+    var(D,T,C,struct _object_ClassDec *,type_cd) \
     var(D,T,C,String,type_str)             \
     var(D,T,C,String,str_name)             \
     var(D,T,C,Token *,setter_var)          \
