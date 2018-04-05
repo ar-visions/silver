@@ -14,6 +14,9 @@ enum MemberType {
     MT_Method
 };
 
+struct _object_ClassDec;
+struct _object_MemberDec;
+
 typedef struct _Token {
     enum TokenType type;
     enum TokenType sep;
@@ -27,16 +30,17 @@ typedef struct _Token {
     char string_term;
     char *stack_var;
     int line;
+    String str;
     String file;
+    bool skip;
+    struct _object_ClassDec *cd;
 } Token;
-
-struct _object_ClassDec;
-struct _object_MemberDec;
 
 #define _CX(D,T,C) _Base(spr,T,C)   \
     override(D,T,C,void,init,(C)) \
     method(D,T,C,String,super_out,(C,List,struct _object_ClassDec *,Token *,Token *)) \
     method(D,T,C,Token *,read_tokens,(C,List,List,int *)) \
+    method(D,T,C,void,merge_class_tokens,(C,Token *,int *)) \
     method(D,T,C,struct _object_ClassDec *,find_class,(String)) \
     method(D,T,C,bool,read_template_types,(C,struct _object_ClassDec *, Token **)) \
     method(D,T,C,String,code_out,(C, List, Token *, Token *, Token **, struct _object_ClassDec *, bool)) \
@@ -51,11 +55,10 @@ struct _object_MemberDec;
     method(D,T,C,String,class_op_out,(C, List, Token *, \
         struct _object_ClassDec *, String, bool, Token **)) \
     method(D,T,C,String,args_out,(C, Pairs, struct _object_ClassDec *, struct _object_MemberDec *, bool, bool, int, bool)) \
-    method(D,T,C,String,token_string,(C, Token *)) \
     method(D,T,C,void,resolve_supers,(C)) \
     method(D,T,C,void,token_out,(C, Token *, int, String)) \
     method(D,T,C,bool,process,(C, const char *)) \
-    method(D,T,C,bool,emit_module_statics,(C, FILE *)) \
+    method(D,T,C,bool,emit_module_statics,(C, FILE *, bool)) \
     var(D,T,C,String,name)                 \
     var(D,T,C,Token *,tokens)              \
     var(D,T,C,List,modules)                \
@@ -102,6 +105,7 @@ declare(CX, Base)
 declare(MemberDec, Base)
 
 #define _ClassDec(D,T,C) _Base(spr,T,C)    \
+    override(D,T,C,ulong,hash,(C))         \
     method(D,T,C,MemberDec,member_lookup,(C,String)) \
     var(D,T,C,C,parent)                    \
     var(D,T,C,Pairs,effective)             \

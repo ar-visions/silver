@@ -2,6 +2,7 @@
 #define _STRING_
 
 #define _String(D,T,C) _Base(spr,T,C)               \
+    override(D,T,C,void,init,(C))                   \
     override(D,T,C,C,from_cstring,(const char *));  \
     override(D,T,C,C,to_string,(C));                \
     override(D,T,C,C,from_string,(C));              \
