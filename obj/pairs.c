@@ -57,6 +57,7 @@ bool Pairs_remove(Pairs self, Base key) {
 }
 
 Base Pairs_value(Pairs self, Base key) {
+    String skey = (String)key;
     ulong hash = call(key, hash) % self->list_count;
     LList *list = &self->lists[hash];
     for (LItem *item = list->first; item; item = item->next) {

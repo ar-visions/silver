@@ -37,6 +37,11 @@ static char *struprcase(char *str) {
     return str;
 }
 
+void String_init(String self) {
+    self->buffer = (char *)malloc(1);
+    self->buffer_size = 1;
+}
+
 void String_free(String self) {
     free_ptr(self->buffer);
     free_ptr(self->utf8_buffer);
@@ -264,8 +269,9 @@ int String_concat_chars(String self, const char *p, int len) {
     if (!p || len == 0)
         return 0;
     call(self, check_resize, self->length + len);
-    memcpy(&self->buffer[self->length], p, len + 1);
+    memcpy(&self->buffer[self->length], p, len);
     self->length += len;
+    self->buffer[self->length] = 0;
     free_ptr(self->utf8_buffer);
     self->utf8_length = 0;
     return len;

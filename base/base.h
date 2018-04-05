@@ -59,13 +59,13 @@
 
 #define alloc(T) ((T *)alloc_bytes(sizeof(T)))
 
-struct _Base;
+struct _base_Base;
 typedef void *(*Method)();
-typedef void *(*InitMethod)(struct _Base *);
-typedef void (*BaseMethod)(struct _Base *);
-typedef void *(*Setter)(struct _Base *, void *);
-typedef void *(*Getter)(struct _Base *);
-typedef bool *(*ModuleLoadMethod)();
+typedef void *(*InitMethod)(struct _base_Base *);
+typedef void (*BaseMethod)(struct _base_Base *);
+typedef void *(*Setter)(struct _base_Base *, void *);
+typedef void *(*Getter)(struct _base_Base *);
+typedef bool (*ModuleLoadMethod)();
 
 #define CLASS_FLAG_ASSEMBLED   1
 #define CLASS_FLAG_PREINIT     2
@@ -78,6 +78,8 @@ typedef bool *(*ModuleLoadMethod)();
 #else
 #define EXPORT extern
 #endif
+
+EXPORT void module_loader_continue(ModuleLoadMethod ml_add);
 
 typedef uint32_t uint_t;
 struct _Base;

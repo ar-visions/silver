@@ -8,7 +8,6 @@ class Base {
     void init() {
     }
     Base release() {
-        int this_is_a_test = self.retain().release().arg_test(self.refs);
         if (--self.refs == 0) {
             Base.free_object(self);
         }
@@ -27,10 +26,21 @@ class Base {
     void dealloc() {
         free(self);
     }
+    static Base inherits(Base obj) {
+        Class c = (Class)obj.cl;
+        while (c) {
+            if (c == (Class)class)
+                return obj;
+            if (c == Class.parent)
+                break;
+            c = c.parent;
+        }
+        return NULL;
+    }
     static BaseMethod init_object(Base obj, Class with_cl, bool _init) {
         BaseMethod i = null;
         if (with_cl.parent)
-            i = Base.init_object(obj, with_cl.parent, _init);
+            i = Base.init_object(obj, (Class)with_cl.parent, _init);
         BaseMethod next = _init ? (BaseMethod)with_cl._init : (BaseMethod)with_cl.init;
         if (next && i != next) {
             i = next;
