@@ -38,7 +38,7 @@ class Base {
         }
         return NULL;
     }
-    static BaseMethod init_object(Base obj, Class with_cl, bool _init) {
+    private static BaseMethod init_object(Base obj, Class with_cl, bool _init) {
         BaseMethod i = null;
         if (with_cl.parent)
             i = Base.init_object(obj, (Class)with_cl.parent, _init);
