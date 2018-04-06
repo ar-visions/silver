@@ -80,16 +80,6 @@ typedef bool (*ModuleLoadMethod)();
 #endif
 
 EXPORT void module_loader_continue(ModuleLoadMethod ml_add);
-
-typedef uint32_t uint_t;
-struct _Base;
-struct _Class;
-
-static void *alloc_bytes(size_t count) {
-    void *p = malloc(count);
-    if (p)
-        memset(p, 0, count);
-    return p;
-}
+EXPORT void *alloc_bytes(size_t count);
 
 #endif

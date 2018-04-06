@@ -7,6 +7,13 @@ ModuleLoadMethod *ml_list;
 int ml_count;
 int ml_alloc_size;
 
+void *alloc_bytes(size_t count) {
+    void *p = malloc(count);
+    if (p)
+        memset(p, 0, count);
+    return p;
+}
+
 void module_loader_continue(ModuleLoadMethod ml_add) {
     if (ml_add) {
         ModuleLoadMethod *ml_prev = ml_list;

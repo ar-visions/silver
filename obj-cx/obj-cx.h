@@ -60,6 +60,7 @@ typedef struct _Token {
     method(D,T,C,void,token_out,(C, Token *, int, String)) \
     method(D,T,C,bool,process,(C, const char *)) \
     method(D,T,C,bool,emit_module_statics,(C, FILE *, bool)) \
+    method(D,T,C,String,cast_for,(C,String,struct _object_ClassDec *)) \
     var(D,T,C,String,name)                 \
     var(D,T,C,Token *,tokens)              \
     var(D,T,C,List,modules)                \

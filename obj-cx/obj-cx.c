@@ -786,6 +786,18 @@ bool CX_read_classes(CX self) {
     return true;
 }
 
+String CX_cast_for(CX self, String expected, ClassDec given) {
+    if (expected && given && call(expected, compare, given->class_name) != 0) {
+        ClassDec cd_cur = given;
+        ClassDec expected_cd = pairs_value(self->static_class_map, expected, ClassDec);
+        while (cd_cur != expected_cd)
+            cd_cur = cd_cur->parent;
+        if (cd_cur)
+            return cd_cur->struct_object;
+    }
+    return NULL;
+}
+
 String CX_class_op_out(CX self, List scope, Token *t,
         ClassDec cd, String target, bool is_instance, Token **t_after, ClassDec *cd_last) {
     String output = new(String);
@@ -808,6 +820,11 @@ String CX_class_op_out(CX self, List scope, Token *t,
     const char *class_name = cd->class_name->buffer;
     const char *class_var = cd->class_var->buffer;
 
+    if (call(target, cmp, "String") == 0) {
+        int test = 0;
+        test++;
+    }
+
     if (!md) {
         if (s_token->length == cd->class_name->length && 
                 call(s_token, compare, cd->class_name) == 0) {
@@ -825,11 +842,6 @@ String CX_class_op_out(CX self, List scope, Token *t,
             call(output, concat_cstring, buf);
             token_next(&t);
         } else {
-            // implement auto-casting here
-            // i need the resultant type of the last operation
-            // that should be passed from this function, to code_out
-            
-
             sprintf(buf, "%s->", class_var);
             call(output, concat_cstring, buf);
             call(self, token_out, t_member, '(', output);
@@ -849,14 +861,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 fprintf(stderr, "invalid call to property\n");
                 exit(1);
             }
-            // iterate through arguments on MethodDec as you move along
             int c_arg = 0;
-
-            if (strcmp(md->str_name->buffer, "push") == 0) {
-                int test = 0;
-                test++;
-            }
-            
             t++;
             for (;;) {
                 String arg_output = new(String);
@@ -866,29 +871,17 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 if (c_arg > 0)
                     call(output, concat_cstring, ", ");
                 
-                // better way is to split the expression up by its commas, perform code_out each time!
                 ClassDec cd_returned = NULL;
                 String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false, &cd_returned);
                 call(arg_output, concat_string, code);
+                String cast = NULL;
                 
                 if (cd_returned && c_arg < md->arg_types_count) {
-                    Token *t = md->arg_types[c_arg];
-                    if (t && t->str) {
-                        String type_expected = t->str;
-                        if (call(type_expected, compare, cd_returned->class_name) != 0) {
-                            // check if member_returned inherits type_expected
-                            ClassDec cd_cur = cd_returned;
-                            ClassDec expected_cd = pairs_value(self->static_class_map, type_expected, ClassDec);
-                            
-                            while (cd_cur != expected_cd) {
-                                cd_cur = cd_cur->parent;
-                            }
-                            if (cd_cur) {
-                                sprintf(buf, "(%s)(", cd_cur->struct_object->buffer);
-                                call(output, concat_cstring, buf);
-                                call(arg_output, concat_char, ')');
-                            }
-                        }
+                    cast = call(self, cast_for, md->arg_types[c_arg]->str, cd_returned);
+                    if (cast) {
+                        sprintf(buf, "(%s)(", cast->buffer);
+                        call(output, concat_cstring, buf);
+                        call(arg_output, concat_char, ')');
                     }
                 }
                 call(output, concat_string, arg_output);
@@ -912,7 +905,6 @@ String CX_class_op_out(CX self, List scope, Token *t,
             exit(1);
         }
         call(self, token_out, t, ' ', output);
-        //*t_after = t;
     } else if (constructor) {
         fprintf(stderr, "expected '(' for constructor\n");
         exit(1);
@@ -924,41 +916,49 @@ String CX_class_op_out(CX self, List scope, Token *t,
             fprintf(stderr, "expected token after %s\n", t->punct);
             exit(1);
         }
+        String set_str = new(String);
         if (md->setter_start) {
             // call explicit setter [todo: handle the various assigner operators]
             sprintf(buf, "%s->set_", class_var);
-            call(output, concat_cstring, buf);
+            call(set_str, concat_cstring, buf);
 
-            call(self, token_out, t_member, '(', output);
+            call(self, token_out, t_member, '(', set_str);
             if (is_instance) {
                 sprintf(buf, "%s, ", target->buffer);
-                call(output, concat_cstring, buf);
+                call(set_str, concat_cstring, buf);
             }
-
-            String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false, cd_last);
-            call(output, concat_string, code);
-
-            sprintf(buf, ")");
-            call(output, concat_cstring, buf);
-
-            t = *t_after;
         } else {
             // set object var
             if (is_instance) {
-                call(output, concat_string, target);
+                call(set_str, concat_string, target);
                 sprintf(buf, "->");
-                call(output, concat_cstring, buf);
+                call(set_str, concat_cstring, buf);
             } else {
                 sprintf(buf, "%s->", class_var);
-                call(output, concat_cstring, buf);
+                call(set_str, concat_cstring, buf);
             }
-            call(self, token_out, t_member, 0, output);
-            call(self, token_out, t_assign, 0, output);
-
-            String code = call(self, code_out, scope, t, &t[n], t_after, NULL, false, cd_last);
-            call(output, concat_string, code);
-            t = *t_after;
+            call(self, token_out, t_member, 0, set_str);
+            call(self, token_out, t_assign, 0, set_str);
         }
+
+        ClassDec cd_returned = NULL;
+        String code = call(self, code_out, scope, t, &t[n], t_after, NULL, false, &cd_returned);
+        t = *t_after;
+
+        String cast = call(self, cast_for, md->type_str, cd_returned);
+        if (cast) {
+            sprintf(buf, "(%s)(%s)", cast->buffer, code->buffer);
+            call(output, concat_cstring, buf);
+        } else {
+            call(set_str, concat_string, code);
+        }
+        call(output, concat_string, set_str);
+        if (md->setter_start) {
+            sprintf(buf, ")");
+            call(output, concat_cstring, buf);
+        }
+        release(set_str);
+        t = *t_after;
         // call setter if it exists (note: allow setters to be sub-classable, calling super.prop = value; and such)
     } else {
         if (md->getter_start) {
@@ -1250,9 +1250,9 @@ void CX_declare_classes(CX self, FILE *file_output) {
                 "\tstruct _%s_%sClass *parent;\n"      \
                 "\tconst char *name;\n"             \
                 "\tvoid(*_init)(struct _%s *);\n"   \
-                "\tuint_t flags;\n"                 \
-                "\tuint_t object_size;\n"           \
-                "\tuint_t member_count;\n"          \
+                "\tuint32_t flags;\n"                 \
+                "\tuint32_t object_size;\n"           \
+                "\tuint32_t member_count;\n"          \
                 "\tchar *member_types;\n"           \
                 "\tconst char **member_names;\n"    \
                 "\tMethod *members;\n",
@@ -1328,7 +1328,7 @@ void CX_declare_classes(CX self, FILE *file_output) {
                             String ts = t->str;
                             ClassDec forward = pairs_value(self->static_class_map, ts, ClassDec);
                             if (forward) {
-                                sprintf(buf, "struct _%s *", forward->class_name->buffer);
+                                sprintf(buf, "struct _%s *", forward->struct_object->buffer);
                                 call(output, concat_cstring, buf);
                             } else
                                 call(self, token_out, t, ' ', output);
