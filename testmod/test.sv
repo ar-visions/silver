@@ -27,9 +27,8 @@ class Test : Super {
             String str = String.instance(args.buffer[i]);
             printf("arg[%d] = %s\n", i, str.buffer);
         }
-        
         Test t = new Test();
-
+        Test failed = t.release();
         if (Test.instance(str1)) {
             printf("test inherits\n");
         }
