@@ -26,6 +26,7 @@ class Base {
     void dealloc() {
         free(self);
     }
+    static void class_init() { }
     static Base instance(Base obj) {
         Class c = (Class)obj.cl;
         while (c) {
@@ -75,9 +76,9 @@ class Class {
     private Class parent;
     private const char *name;
     private BaseMethod _init;
-    private uint_t flags;
-    private uint_t object_size;
-    private uint_t member_count;
+    private uint32_t flags;
+    private uint32_t object_size;
+    private uint32_t member_count;
     private const char *member_types;
     private const char **member_names;
     private Method *members;
