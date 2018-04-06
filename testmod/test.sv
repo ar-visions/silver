@@ -18,14 +18,6 @@ class Test : Super {
         printf("value = %d\n", self.value);
     }
 
-    Test *gen_array(int count) {
-        Test *ret = (Test *)malloc(sizeof(Test *) * count);
-        for (int i = 0; i < count; i++) {
-            ret[i] = new Test();
-        }
-        return ret;
-    }
-
     static int main(Array args) {
         Test b = new Test();
         Array a = new Array();
@@ -37,12 +29,12 @@ class Test : Super {
         }
         
         Test t = new Test();
+
         if (Test.instance(str1)) {
             printf("test inherits\n");
         }
         t.method(1, 2);
         t.value = 1;
-        Test *a = t.gen_array(10);
         printf("value = %d\n", t.value);
         return 0;
     }
