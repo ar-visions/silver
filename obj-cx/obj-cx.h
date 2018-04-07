@@ -43,7 +43,7 @@ typedef struct _Token {
     method(D,T,C,void,merge_class_tokens,(C,Token *,int *)) \
     method(D,T,C,struct _object_ClassDec *,find_class,(String)) \
     method(D,T,C,bool,read_template_types,(C,struct _object_ClassDec *, Token **)) \
-    method(D,T,C,String,code_out,(C, List, Token *, Token *, Token **, struct _object_ClassDec *, bool, struct _object_ClassDec **)) \
+    method(D,T,C,String,code_out,(C, List, Token *, Token *, Token **, struct _object_ClassDec *, bool, String *)) \
     method(D,T,C,int,read_expression,(C, Token *, Token **, Token **, const char *, int, bool)) \
     method(D,T,C,void,read_property_blocks,(C, struct _object_ClassDec *, struct _object_MemberDec *)) \
     method(D,T,C,bool,read_modules,(C)) \
@@ -53,14 +53,15 @@ typedef struct _Token {
     method(D,T,C,void,define_module_constructor,(C, FILE *)) \
     method(D,T,C,void,effective_methods,(C, struct _object_ClassDec *, Pairs *)) \
     method(D,T,C,String,class_op_out,(C, List, Token *, \
-        struct _object_ClassDec *, String, bool, Token **, struct _object_ClassDec **)) \
+        struct _object_ClassDec *, String, bool, Token **, String *)) \
     method(D,T,C,String,args_out,(C, Pairs, struct _object_ClassDec *, struct _object_MemberDec *, bool, bool, int, bool)) \
     method(D,T,C,struct _object_ClassDec *,scope_lookup,(C,List,String)) \
     method(D,T,C,void,resolve_supers,(C)) \
     method(D,T,C,void,token_out,(C, Token *, int, String)) \
     method(D,T,C,bool,process,(C, const char *)) \
     method(D,T,C,bool,emit_module_statics,(C, FILE *, bool)) \
-    method(D,T,C,String,cast_for,(C,String,struct _object_ClassDec *)) \
+    method(D,T,C,String,cast_for,(C,String,String)) \
+    method(D,T,C,String,casting_name,(C,String,String)) \
     var(D,T,C,String,name)                 \
     var(D,T,C,Token *,tokens)              \
     var(D,T,C,List,modules)                \
@@ -96,7 +97,6 @@ declare(CX, Base)
     var(D,T,C,Token **,arg_types)          \
     var(D,T,C,int,arg_types_count)         \
     var(D,T,C,int *,at_token_count)        \
-    var(D,T,C,Token *,name)                \
     var(D,T,C,Token *,assign)              \
     var(D,T,C,int,assign_count)            \
     var(D,T,C,Token *,args)                \
