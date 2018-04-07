@@ -20,11 +20,7 @@ class Base {
     Base autorelease() {
         return self;
     }
-    int arg_test(int arg) {
-        return self.refs;
-    }
     void dealloc() {
-        free(self);
     }
     static void class_init() { }
     static Base instance(Base obj) {
@@ -38,7 +34,7 @@ class Base {
         }
         return NULL;
     }
-    private static BaseMethod init_object(Base obj, Class with_cl, bool _init) {
+    static BaseMethod init_object(Base obj, Class with_cl, bool _init) {
         BaseMethod i = null;
         if (with_cl.parent)
             i = Base.init_object(obj, (Class)with_cl.parent, _init);
@@ -66,6 +62,7 @@ class Base {
                 last_method = dealloc;
             }
         }
+        free(obj);
     }
     static bool load_module(const char *name) {
         return false;
