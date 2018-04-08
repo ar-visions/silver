@@ -13,7 +13,7 @@ class Test : Super {
     } = 2;
 
     Test cast(char *input) {
-        return new Test(value:input arg:1);
+        return new Test();
     }
 
     void method(int arg, int arg2) {
@@ -25,8 +25,10 @@ class Test : Super {
     static int main(Array args) {
         Test b = new Test();
         Array a = new Array();
-        
+        String s = (String)"hi";
         int i = (int)b;
+        char *str = (char *)s;
+        printf("str = %s\n", str);
 
         a.push(b);
         String str1 = String.instance(args.buffer[0]);
@@ -39,7 +41,7 @@ class Test : Super {
         if (Test.instance(str1)) {
             printf("test inherits\n");
         }
-        t.method((Test)1, 2);
+        t.method(1, 2);
         t.value = 1;
         printf("value = %d\n", t.value);
         return 0;

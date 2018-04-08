@@ -3,6 +3,12 @@ class String {
     int alloc_size;
     char *buffer;
 
+    char *cast(String s) {
+        return s ? s.buffer : NULL;
+    }
+    String cast(char *cstr) {
+        return String.from_cstring(cstr);
+    }
     void init() {
         self.resize(self.length + 1, true, false);
         self.buffer[0] = 0;
