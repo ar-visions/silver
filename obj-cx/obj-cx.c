@@ -352,7 +352,7 @@ int CX_read_expression(CX self, Token *t, Token **b_start, Token **b_end, const 
             }
         }
         if (brace_depth == 0 && (t->punct == p1 || t->punct == p2 || t->punct == p3 || t->punct == p4)) {
-            if (paren_depth <= 0) {
+            if (paren_depth < 0 || (paren_depth == 0 && (t->punct == p1 || t->punct == p2 || t->punct == p4))) {
                 if (mark_block && (t->punct == "{" || (token_next(&t))->punct == "{")) {
                     brace_depth = 1;
                     *b_start = t;
@@ -765,14 +765,15 @@ bool CX_read_classes(CX self) {
                     call(self, read_property_blocks, cd, md);
                 }
                 if (call(md->str_name, cmp, "cast") == 0) {
+                    md->is_static = true;
                     String arg_str = new(String);
                     for (int i = 0; i < md->args_count - 1; i++) {
                         call(arg_str, concat_string, md->args[i].str);
                     }
-                    md->str_name = call(self, casting_name, arg_str, md->type_str);
+                    md->str_name = call(self, casting_name, cd, arg_str, md->type_str);
                     release(arg_str);
                 }
-                pairs_add(cd->members, str_name, md);
+                pairs_add(cd->members, md->str_name, md);
                 if (block_end) {
                     t = block_end + 1;
                     if (md->member_type == MT_Prop) {
@@ -793,11 +794,10 @@ bool CX_read_classes(CX self) {
     return true;
 }
 
-String CX_cast_for(CX self, String expected, String given) {
-    if (expected && given && call(expected, compare, given) != 0) {
-        ClassDec cd_cur = pairs_value(self->static_class_map, given, ClassDec);
-        ClassDec expected_cd = pairs_value(self->static_class_map, expected, ClassDec);
-        while (cd_cur != expected_cd)
+String CX_inheritance_cast(CX self, ClassDec expected, ClassDec given) {
+    if (expected && given && (expected != given)) {
+        ClassDec cd_cur = given;
+        while (cd_cur && cd_cur != expected)
             cd_cur = cd_cur->parent;
         if (cd_cur)
             return cd_cur->struct_object;
@@ -814,22 +814,25 @@ void concat_cast_name(String out, String type) {
                 call(out, concat_char, '_');
                 a = true;
             }
+            call(out, concat_char, b);
         } else if (b == '*') {
             b = 'p';
-            if (a) {
-                call(out, concat_char, '_');
-                a = false;
-            }
+            call(out, concat_char, '_');
+            call(out, concat_char, 'p');
+            a = false;
         }
-        call(out, concat_char, b);
     }
 }
 
-String CX_casting_name(CX self, String from, String to) {
+String CX_casting_name(CX self, ClassDec cd, String from, String to) {
     String out = new(String);
     call(out, concat_cstring, "__cast__");
+    if (call(from, compare, cd->class_name) == 0)
+        from = string("Class");
     concat_cast_name(out, from);
     call(out, concat_cstring, "__");
+    if (call(to, compare, cd->class_name) == 0)
+        to = string("Class");
     concat_cast_name(out, to);
     return out;
 }
@@ -897,48 +900,34 @@ String CX_class_op_out(CX self, List scope, Token *t,
             t++;
             for (;;) {
                 String arg_output = new(String);
-                int n = call(self, read_expression, t, NULL, NULL, ",)", 1, true);
+                int n = call(self, read_expression, t, NULL, NULL, ",)", 0, true);
                 if (n == 0)
                     break;
                 if (c_arg > 0)
                     call(output, concat_cstring, ", ");
                 
-                ClassDec cd_returned = NULL;
-                ClassDec cd_expected = NULL;
+
                 String type_returned = NULL;
                 String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false, &type_returned);
                 call(arg_output, concat_string, code);
                 String cast = NULL;
-                if (type_returned)
-                    cd_returned = pairs_value(self->static_class_map, type_returned, ClassDec);
-                String type_expected = c_arg < md->arg_types_count ? md->arg_types[c_arg]->str : NULL;
-                if (type_expected)
-                    cd_expected = pairs_value(self->static_class_map, type_expected, ClassDec);
-                
-                if (cd_returned && cd_expected) {
-                    cast = call(self, cast_for, type_expected, type_returned);
-                    if (cast) {
-                        sprintf(buf, "(%s)(", cast->buffer);
-                        call(output, concat_cstring, buf);
-                        call(arg_output, concat_char, ')');
-                    }
-                } else if (type_returned && type_expected) {
-                    ClassDec cd_from = cd_returned;
-                    ClassDec cd_to = pairs_value(self->static_class_map, type_expected, ClassDec);
-                    if (!cd_from != !cd_to) {
-                        ClassDec cd;
-                        if (cd_from) {
-                            // Class to primitive
-                            cd = cd_from;
-                        } else {
-                            // primitive to Class
-                            cd = cd_to;
+
+                if (type_returned && c_arg < md->arg_types_count) {
+                    ClassDec cd_returned = pairs_value(self->static_class_map, type_returned, ClassDec);
+                    ClassDec cd_expected = NULL;
+                    for (int ii = 0; ii < md->at_token_count[c_arg]; ii++) {
+                        Token *t = &(md->arg_types[c_arg])[ii];
+                        if (t->cd) {
+                            cd_expected = t->cd;
+                            break;
                         }
-                        String name = call(self, casting_name, type_returned, type_expected);
-                        MemberDec md_cast = pairs_value(cd->members, name, MemberDec);
-                        if (md_cast) {
-                            int test = 0;
-                            test++;
+                    }
+                    if (cd_returned && cd_expected) {
+                        cast = call(self, inheritance_cast, cd_expected, cd_returned);
+                        if (cast) {
+                            sprintf(buf, "(%s)(", cast->buffer);
+                            call(output, concat_cstring, buf);
+                            call(arg_output, concat_char, ')');
                         }
                     }
                 }
@@ -1004,7 +993,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 } else {
                     ClassDec cd_lookup = call(self, scope_lookup, scope, target);
                     if (cd_lookup)
-                        expected_type = cd_lookup->struct_object;
+                        expected_type = cd_lookup->class_name;
                 }
                 call(self, token_out, t_member, 0, set_str);
                 call(self, token_out, t_assign, 0, set_str);
@@ -1013,8 +1002,12 @@ String CX_class_op_out(CX self, List scope, Token *t,
             String type_returned = NULL;
             String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false, &type_returned);
             t = *t_after;
-
-            String cast = call(self, cast_for, expected_type, type_returned);
+            String cast = NULL;
+            if (type_returned) {
+                ClassDec cd_returned = pairs_value(self->static_class_map, type_returned, ClassDec);
+                ClassDec cd_expected = pairs_value(self->static_class_map, expected_type, ClassDec);
+                cast = call(self, inheritance_cast, cd_expected, cd_returned);
+            }
             if (cast) {
                 sprintf(buf, "(%s)(%s)", cast->buffer, code->buffer);
                 call(output, concat_cstring, buf);
@@ -1130,8 +1123,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         call(output, concat_char, '\n');
                         //extra_lines = 0;
                     }
-                    //sprintf(line_number, "# %d \"%s\"\n", method_start->line + extra_lines, method_start->file->buffer);
-                    //call(output, concat_cstring, line_number);
+                    sprintf(line_number, "# %d \"%s\"\n", method_start->line + extra_lines, method_start->file->buffer);
+                    call(output, concat_cstring, line_number);
                 }
             }
 
@@ -1145,9 +1138,71 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 list_pop(scope, Pairs);
         } else if (t->punct == "(") {
             Token *t_prev = t - 1;
-            if (t_prev->type != TT_Identifier && t_prev->type != TT_Punctuator) {
-                
+            Token *t_next = t + 1;
+            if (strncmp(t_next->value, "char", 4) == 0) {
+                int test = 0;
+                test++;
             }
+            bool token_out = true;
+            if ((t_next->type == TT_Identifier || t_next->type_keyword) && t_prev->type != TT_Identifier && t_prev->type != TT_Keyword) {
+                Token *t_from;
+                String type_expected = new(String);
+                bool first = true;
+                for (Token *t_search = t + 1; t_search; t_search++) {
+                    if (t_search == method_end)
+                        break;
+                    else if (t_search->punct == ")") {
+                        t_from = t_search + 1;
+                        break;
+                    }
+                    if (!first)
+                        call(type_expected, concat_char, ' ');
+                    call(type_expected, concat_string, t_search->str);
+                    first = false;
+                }
+                if (t_after)
+                    *t_after = t_from;
+                int token_count = call(self, read_expression, t_from, NULL, NULL, "{;),", 0, false);
+                String code = call(self, code_out, scope, t_from, &t_from[token_count - 1], t_after, NULL, false, type_last);
+                String type_returned = *type_last;
+                
+                if (type_returned && type_expected && call(type_returned, compare, type_expected) != 0) {
+                    ClassDec cd_from = pairs_value(self->static_class_map, type_returned, ClassDec);
+                    ClassDec cd_to = pairs_value(self->static_class_map, type_expected, ClassDec);
+                    bool class_to = true;
+                    if (!cd_from != !cd_to) {
+                        ClassDec cd;
+                        if (cd_from) {
+                            // Class to primitive
+                            cd = cd_from;
+                            class_to = false;
+                        } else {
+                            // primitive to Class
+                            cd = cd_to;
+                        }
+                        String name = call(self, casting_name, cd, type_returned, type_expected);
+                        ClassDec cd_search = cd;
+                        MemberDec md_cast = NULL;
+                        while (cd_search) {
+                            md_cast = pairs_value(cd_search->members, name, MemberDec);
+                            if (md_cast)
+                                break;
+                            cd_search = cd_search->parent;
+                        }
+                        if (md_cast) {
+                            sprintf(buf, "(%s->%s(%s, (%s)))",
+                                cd->class_name->buffer, md_cast->str_name->buffer,
+                                cd->class_name->buffer, code->buffer);
+                            call(output, concat_cstring, buf);
+                            t = &t_from[token_count - 1];
+                            token_out = false;
+                        }
+                    }
+                }
+                release(type_expected);
+            }
+            if (token_out)
+                call(self, token_out, t, 0, output);
         } else if (t->type == TT_Identifier) {
             String target = t->str;
             ClassDec cd = NULL;
@@ -1209,6 +1264,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     call(self, token_out, t, ' ', output);
             }
         } else {
+            if (t->type == TT_String_Literal)
+                *type_last = string("char *");
             call(self, token_out, t, 0, output);
         }
         if (t_after)
@@ -1244,6 +1301,7 @@ void CX_token_out(CX self, Token *t, int sep, String output) {
 }
 
 String CX_args_out(CX self, Pairs top, ClassDec cd, MemberDec md, bool inst, bool names, int aout, bool forwards) {
+    ClassDec cd_origin = md->cd;
     String output = new(String);
     char buf[1024];
     char scope_class[256];
@@ -1266,6 +1324,7 @@ String CX_args_out(CX self, Pairs top, ClassDec cd, MemberDec md, bool inst, boo
     if (top)
         pairs_add(top, string(self_var), cd);
     aout++;
+    bool preserve = false;
 
     for (int i = 0; i < md->arg_types_count; i++) {
         if (aout > 0)
@@ -1273,8 +1332,15 @@ String CX_args_out(CX self, Pairs top, ClassDec cd, MemberDec md, bool inst, boo
         
         for (int ii = 0; ii < md->at_token_count[i]; ii++) {
             Token *t = &(md->arg_types[i])[ii];
+            if (call(t->str, cmp, "preserve") == 0) {
+                preserve = true;
+                continue;
+            }
             if (t->skip) continue;
             String ts = t->str;
+            if (!preserve && call(t->str, compare, cd_origin->class_name) == 0) {
+                ts = cd->class_name;
+            }
             ClassDec cd_2 = pairs_value(self->static_class_map, ts, ClassDec);
 
             if (forwards) {
@@ -1287,8 +1353,10 @@ String CX_args_out(CX self, Pairs top, ClassDec cd, MemberDec md, bool inst, boo
             if (cd_2) {
                 sprintf(buf, "%s ", cd_2->struct_object->buffer);
                 call(output, concat_cstring, buf);
-            } else
-                call(self, token_out, t, ' ', output);
+            } else {
+                call(output, concat_string, ts);
+                call(output, concat_cstring, " ");
+            }
         }
         if (names) {
             Token *t_name = md->arg_names[i];

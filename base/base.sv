@@ -5,6 +5,9 @@ class Base {
     Class cl;
     int refs;
 
+    int cast(Base obj) {
+        return 1;
+    }
     void init() {
     }
     Base release() {
@@ -23,7 +26,8 @@ class Base {
     void dealloc() {
     }
     static void class_init() { }
-    static Base instance(Base obj) {
+    static Base instance(preserve Base obj) {
+        int test = (int)obj;
         Class c = (Class)obj.cl;
         while (c) {
             if (c == (Class)class)
