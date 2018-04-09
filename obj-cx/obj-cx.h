@@ -67,6 +67,7 @@ typedef struct _Token {
     method(D,T,C,String,inheritance_cast,(C, struct _object_ClassDec *, struct _object_ClassDec *)) \
     method(D,T,C,String,casting_name,(C, struct _object_ClassDec *, String, String)) \
     method(D,T,C,String,gen_var,(C, List, struct _object_ClassDec *)) \
+    method(D,T,C,String,start_tracking,(C, List, String)) \
     var(D,T,C,String,name)                 \
     var(D,T,C,Token *,tokens)              \
     var(D,T,C,List,modules)                \
