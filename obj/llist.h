@@ -65,4 +65,8 @@ void  llist_remove(LList *list, LItem *item);
 	ptr = ((list) && (list)->first) ? (typeof(ptr))(list)->first->data : NULL; \
 	if (ptr) for (LItem *_i = (list)->first; _i; _i = _i->next, ptr = _i ? (typeof(ptr))_i->data : NULL)
 
+#define llist_reverse(list, ptr) \
+	ptr = ((list) && (list)->last) ? (typeof(ptr))(list)->last->data : NULL; \
+	if (ptr) for (LItem *_i = (list)->last; _i; _i = _i->prev, ptr = _i ? (typeof(ptr))_i->data : NULL)
+
 #endif
