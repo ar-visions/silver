@@ -12,7 +12,7 @@ class Base {
     }
     Base release() {
         if (--self.refs == 0) {
-            Base.free_object(self);
+            Base.free_object(new Base());
         }
         return self;
     }

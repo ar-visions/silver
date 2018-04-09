@@ -29,7 +29,7 @@ declare(Pairs, Base);
 #define pairs_var(B)        pairs_var2(__pairs_each_,B)
 
 #define pairs_add(O,K,V)    (call(O, add, base(K), base(V)))
-#define pairs_value(O,K,C)  (inherits(call(O, value, base(K)),C))
+#define pairs_value(O,K,C)  ((O && K) ? inherits(call(O, value, base(K)),C) : NULL)
 #define each_pair(O, ptr)   typeof(O) pairs_var(__LINE__) = O; ptr = (pairs_var(__LINE__) && pairs_var(__LINE__)->ordered_list.first) ? (typeof(ptr))pairs_var(__LINE__)->ordered_list.first->data : NULL; if (ptr) for (LItem *_i = pairs_var(__LINE__)->ordered_list.first; _i; _i = _i->next, ptr = _i ? (typeof(ptr))_i->data : NULL)
 
 #endif
