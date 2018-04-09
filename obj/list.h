@@ -22,6 +22,7 @@
     var(D,T,C,bool,indexed)                         \
     var(D,T,C,Class,item_class)                     \
     var(D,T,C,int,min_block_size,"test:true test2:false") \
+    var(D,T,C,Base,user_data)                       \
     var(D,T,C,LList,list)
 declare(List, Base);
 

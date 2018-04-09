@@ -82,6 +82,7 @@ Pairs Pairs_copy(Pairs self) {
 
 void Pairs_free(Pairs self) {
     self(clear);
+    release(self->user_data);
     free_ptr(self->lists);
 }
 

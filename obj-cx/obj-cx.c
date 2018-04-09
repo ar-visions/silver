@@ -837,12 +837,23 @@ String CX_casting_name(CX self, ClassDec cd, String from, String to) {
     return out;
 }
 
+String CX_start_tracking(CX self, List scope, String var) {
+    Pairs top = (Pairs)call(scope, last);
+    Pairs tracking = (Pairs)top->user_data;
+    if (!top) {
+        tracking = (Pairs)(top->user_data = (Base)new(Pairs));
+    }
+    pairs_add(tracking, var, string("true"));
+    return NULL;
+}
+
 String CX_gen_var(CX self, List scope, ClassDec cd) {
     Pairs top = (Pairs)call(scope, last);
     char buf[64];
     sprintf(buf, "_gen_%d", ++self->gen_vars);
     String ret = string(buf);
     pairs_add(top, ret, cd);
+    call(self, start_tracking, scope, ret);
     return ret;
 }
 
@@ -980,25 +991,6 @@ String CX_class_op_out(CX self, List scope, Token *t,
         exit(1);
     } else {
         if (t->assign) {
-            // if there is assignment:
-            //      check tracking state (duplicate vars up the scope will create their own identity with false as a boolean)
-
-            /*
-
-                another issue:
-
-                obj _i = m2();
-                obj test = m1(_i);
-                _i.release();
-                ^- m2 must get released
-
-                this definitely means that all arguments involving a call will need to be set elsewhere
-
-                this may be easier than you think.  you will need generated variable names with the types, but its just injection into the scope
-                when the scope leaves, the vars are released
-
-             */
-
             int n = call(self, read_expression, t, NULL, NULL, "{;),", 0, false);
             Token *t_assign = t;
             token_next(&t);
