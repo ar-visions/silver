@@ -1125,6 +1125,28 @@ ClassDec CX_scope_lookup(CX self, List scope, String var) {
     return NULL;
 }
 
+String CX_scope_end(CX self, List scope, Token *end_marker) {
+    String output = NULL;
+    Pairs top;
+    if ((top = (Pairs)call(scope, last))) {
+        char buf[1024];
+        String output = new(String);
+        KeyValue kv;
+        call(output, concat_cstring, "\n// <scope release>\n");
+        each_pair(top, kv) {
+            String name = (String)kv->key;
+            ClassDec cd_var = (ClassDec)kv->value;
+            sprintf(buf, "if (%s) %s->release(%s);\n", name->buffer, cd_var->class_name->buffer, name->buffer);
+            call(output, concat_cstring, buf);
+        }
+        call(output, concat_cstring, "// </scope release>\n");
+        list_pop(scope, Pairs);
+        sprintf(buf, "# %d \"%s\"\n", end_marker->line, end_marker->file->buffer);
+        call(output, concat_cstring, buf);
+    }
+    return output;
+}
+
 String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, Token **t_after,
         ClassDec super_mode, bool line_no, String *type_last, MemberDec method, int *flags) {
     *type_last = NULL;
@@ -1179,6 +1201,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 // code out with injected block {'s
                 int token_count = call(self, read_expression, t_if, NULL, NULL, ";", 0, false);
                 if (token_count > 0) {
+                    list_push(scope, new(Pairs));
                     int if_code_flags = 0;
                     String if_code = call(self, code_out, scope, t + 2, &t[n - 1], t_after, NULL, false, type_last, method, &if_code_flags);
                     if_code_flags = 0;
@@ -1189,28 +1212,23 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     call(self, token_out, t_if - 1, ' ', output);
                     call(output, concat_cstring, "{\n");
                     call(output, concat_string, code);
-                    t = &t_if[token_count - 1];
-
+                    String scope_end = call(self, scope_end, scope, &t_if[token_count + 1]);
+                    if (scope_end) {
+                        call(output, concat_string, scope_end);
+                        release(scope_end);
+                    }
+                    call(output, concat_cstring, ";\n}\n");
+                    t = &t_if[token_count];
                 }
             }
         } else if (t->punct == "}") {
             brace_depth--;
             if (brace_depth != 0) {
                 // release last scope
-                Pairs top;
-                if ((top = (Pairs)call(scope, last))) {
-                    KeyValue kv;
-                    call(output, concat_cstring, "\n// <scope release>\n");
-                    each_pair(top, kv) {
-                        String name = (String)kv->key;
-                        ClassDec cd_var = (ClassDec)kv->value;
-                        sprintf(buf, "if (%s) %s->release(%s);\n", name->buffer, cd_var->class_name->buffer, name->buffer);
-                        call(output, concat_cstring, buf);
-                    }
-                    call(output, concat_cstring, "// </scope release>\n");
-                    list_pop(scope, Pairs);
-                    sprintf(buf, "# %d \"%s\"\n", t->line, t->file->buffer);
-                    call(output, concat_cstring, buf);
+                String scope_end = call(self, scope_end, scope, t);
+                if (scope_end) {
+                    call(output, concat_string, scope_end);
+                    release(scope_end);
                 }
             }
             call(self, token_out, t, ' ', output);
