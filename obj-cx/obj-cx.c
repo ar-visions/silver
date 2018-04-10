@@ -840,7 +840,7 @@ String CX_casting_name(CX self, ClassDec cd, String from, String to) {
 String CX_start_tracking(CX self, List scope, String var) {
     Pairs top = (Pairs)call(scope, last);
     Pairs tracking = (Pairs)top->user_data;
-    if (!top) {
+    if (!tracking) {
         tracking = (Pairs)(top->user_data = (Base)new(Pairs));
     }
     pairs_add(tracking, var, string("true"));
@@ -1171,6 +1171,28 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             if (brace_depth++ != 0)
                 list_push(scope, new(Pairs));
             first = false;
+        } else if (t->keyword == "if") {
+            // check for beginning block
+            int n = call(self, read_expression, t, NULL, NULL, ")", -1, true);
+            Token *t_if = &t[n + 1];
+            if (t_if->punct != "{") {
+                // code out with injected block {'s
+                int token_count = call(self, read_expression, t_if, NULL, NULL, ";", 0, false);
+                if (token_count > 0) {
+                    int if_code_flags = 0;
+                    String if_code = call(self, code_out, scope, t + 2, &t[n - 1], t_after, NULL, false, type_last, method, &if_code_flags);
+                    if_code_flags = 0;
+                    String code = call(self, code_out, scope, t_if, &t_if[token_count - 1], t_after, NULL, false, type_last, method, &if_code_flags);
+                    call(self, token_out, t, ' ', output);
+                    call(self, token_out, t + 1, ' ', output);
+                    call(output, concat_string, if_code);
+                    call(self, token_out, t_if - 1, ' ', output);
+                    call(output, concat_cstring, "{\n");
+                    call(output, concat_string, code);
+                    t = &t_if[token_count - 1];
+
+                }
+            }
         } else if (t->punct == "}") {
             brace_depth--;
             if (brace_depth != 0) {
@@ -1178,42 +1200,21 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 Pairs top;
                 if ((top = (Pairs)call(scope, last))) {
                     KeyValue kv;
-                    call(output, concat_cstring, "// begin of scope release --------------------- \n");
+                    call(output, concat_cstring, "\n// <scope release>\n");
                     each_pair(top, kv) {
                         String name = (String)kv->key;
                         ClassDec cd_var = (ClassDec)kv->value;
                         sprintf(buf, "if (%s) %s->release(%s);\n", name->buffer, cd_var->class_name->buffer, name->buffer);
                         call(output, concat_cstring, buf);
                     }
-                    call(output, concat_cstring, "// end of scope release --------------------- \n");
+                    call(output, concat_cstring, "// </scope release>\n");
                     list_pop(scope, Pairs);
-
                     sprintf(buf, "# %d \"%s\"\n", t->line, t->file->buffer);
                     call(output, concat_cstring, buf);
                 }
             }
             call(self, token_out, t, ' ', output);
         } else if (t->keyword == "return") {
-            /*
-                in a return, convert the statement to a var assignment
-                release all of the appropriate objects after the assignment
-                then return the var
-                -----------------------------------------------------------
-                obj b = new obj();
-                obj a = new obj(a);
-                return a.method(1);
-
-                obj b = new obj(); // 1
-                obj a = new obj(); // 1
-                ReturnType _ret = a.method(b); // 1 <- code_out()
-                _ret.retain(); // 2
-                b.release(); // 0: dealloc
-                a.release(); // 1
-                // issue is, what if a.method(b) returns a?
-                // retain it on _ret :)
-
-                return _ret.decrement_refs(); // caller deferred release: 0, any assignment brings it to 1
-            */
             // pass pairs to code out to find out if vars are referenced
             // release entire scope
             if (method && method->type_cd) {
@@ -1225,7 +1226,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     String code = call(self, code_out, scope, t + 1, &t[token_count - 2], t_after, NULL, false, type_last, method, &ret_code_flags);
 
                     ClassDec cd_ret = pairs_value(self->static_class_map, method->type_str, ClassDec);
-                    sprintf(buf, "%s ret = %s;\n", method->type_cd->struct_object->buffer, buf, code->buffer);
+                    sprintf(buf, "%s ret = %s;\n", method->type_cd->struct_object->buffer, code->buffer);
                     call(output, concat_cstring, buf);
 
                     Pairs sc;
@@ -1262,12 +1263,11 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 String type_expected = new(String);
                 bool first = true;
                 for (Token *t_search = t + 1; t_search; t_search++) {
-                    if (t_search == method_end)
-                        break;
-                    else if (t_search->punct == ")") {
+                    if (t_search->punct == ")") {
                         t_from = t_search + 1;
                         break;
-                    }
+                    } else if (t_search == method_end)
+                        break;
                     if (!first)
                         call(type_expected, concat_char, ' ');
                     call(type_expected, concat_string, t_search->str);
@@ -1936,7 +1936,6 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
     char buf[1024];
 
     List scope = new(List);
-    list_push(scope, new(Pairs));
     KeyValue kv;
     each_pair(self->classes, kv) {
         ClassDec cd = (ClassDec)kv->value;
@@ -1951,30 +1950,30 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
 
         Pairs m = new(Pairs);
         call(self, effective_methods, cd, &m);
-        {
-            each_pair(m, mkv) {
-                MemberDec md = (MemberDec)mkv->value;
-                if (md->member_type == MT_Prop && md->assign) {
-                    if (md->setter_start) {
-                        sprintf(buf, "self->cl->set_%s(self, ", md->str_name->buffer);
-                        call(output, concat_cstring, buf);
-                    } else {
-                        sprintf(buf, "self->%s = ", md->str_name->buffer);
-                        call(output, concat_cstring, buf);
-                    }
-                    String type_last = NULL;
-                    int init_code_flags = 0;
-                    String code = call(self, code_out, scope, md->assign, &md->assign[md->assign_count - 1],
-                        NULL, NULL, false, &type_last, md, &init_code_flags);
-                    call(output, concat_string, code);
-
-                    if (md->setter_start) {
-                        sprintf(buf, ")");
-                        call(output, concat_cstring, buf);
-                    }
-                    sprintf(buf, ";\n");
+        each_pair(m, mkv) {
+            list_clear(scope);
+            list_push(scope, new(Pairs));
+            MemberDec md = (MemberDec)mkv->value;
+            if (md->member_type == MT_Prop && md->assign) {
+                if (md->setter_start) {
+                    sprintf(buf, "self->cl->set_%s(self, ", md->str_name->buffer);
+                    call(output, concat_cstring, buf);
+                } else {
+                    sprintf(buf, "self->%s = ", md->str_name->buffer);
                     call(output, concat_cstring, buf);
                 }
+                String type_last = NULL;
+                int init_code_flags = 0;
+                String code = call(self, code_out, scope, md->assign, &md->assign[md->assign_count - 1],
+                    NULL, NULL, false, &type_last, md, &init_code_flags);
+                call(output, concat_string, code);
+
+                if (md->setter_start) {
+                    sprintf(buf, ")");
+                    call(output, concat_cstring, buf);
+                }
+                sprintf(buf, ";\n");
+                call(output, concat_cstring, buf);
             }
         }
         sprintf(buf, "}\n");
@@ -2037,6 +2036,7 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                 continue;
             }
             Pairs top = new(Pairs);
+            list_clear(scope);
             list_push(scope, top);
             switch (md->member_type) {
                 case MT_Method: {

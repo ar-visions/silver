@@ -31,6 +31,7 @@ declare(List, Base);
 #define each(O,V)         llist_each((O) ? (&O->list) : NULL, V)
 #define reverse(O,V)      llist_reverse((O) ? (&O->list) : NULL, V)
 #define list_count(L)     ((L) ? ((L)->list.count) : 0)
+#define list_clear(L)     call((L), clear)
 #define list_push(L,O)    call((L), push, base(O))
 #define list_remove(L,O)  call((L), remove, base(O))
 #define list_pop(L,C)     inherits(call((L), pop), C)
