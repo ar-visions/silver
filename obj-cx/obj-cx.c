@@ -328,6 +328,25 @@ bool CX_read_template_types(CX self, ClassDec cd, Token **pt) {
     return true;
 }
 
+int CX_read_block(CX self, Token *t, Token **start, Token **end) {
+    int c = 0, brace_depth = 1;
+    *start = t;
+    while (token_next(&t)->value) {
+        c++;
+        if (t->punct == "{") {
+            brace_depth++;
+        } else if (t->punct == "}") {
+            if (--brace_depth == 0) {
+                *end = t;
+                return c;
+            }
+        }
+    }
+    printf("expected '}' to end block\n");
+    exit(1);
+    return 0;
+}
+
 int CX_read_expression(CX self, Token *t, Token **b_start, Token **b_end, const char *end, int p_depth, bool args) {
     int brace_depth = 0;
     int count = 0;
@@ -353,22 +372,8 @@ int CX_read_expression(CX self, Token *t, Token **b_start, Token **b_end, const 
         }
         if (brace_depth == 0 && (t->punct == p1 || t->punct == p2 || t->punct == p3 || t->punct == p4)) {
             if (paren_depth < 0 || (paren_depth == 0 && (t->punct == p1 || t->punct == p2 || t->punct == p4))) {
-                if (mark_block && (t->punct == "{" || (token_next(&t))->punct == "{")) {
-                    brace_depth = 1;
-                    *b_start = t;
-                    while (token_next(&t)->value) {
-                        if (t->punct == "{") {
-                            brace_depth++;
-                        } else if (t->punct == "}") {
-                            if (--brace_depth == 0) {
-                                *b_end = t;
-                                return count;
-                            }
-                        }
-                    }
-                    printf("expected '}' to end block\n");
-                    exit(1);
-                }
+                if (mark_block && (t->punct == "{" || (token_next(&t))->punct == "{"))
+                    call(self, read_block, t, b_start, b_end);
                 return count;
             }
         } else if (t->punct == "{") {
@@ -1148,11 +1153,10 @@ String CX_scope_end(CX self, List scope, Token *end_marker) {
 }
 
 String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, Token **t_after,
-        ClassDec super_mode, bool line_no, String *type_last, MemberDec method, int *flags) {
+        ClassDec super_mode, bool line_no, String *type_last, MemberDec method, int *brace_depth, int *flags) {
     *type_last = NULL;
     String output = new(String);
     char buf[1024];
-    int brace_depth = 0;
     bool first = true;
     for (Token *t = method_start; ; t++) {
         if (t->skip)
@@ -1178,6 +1182,11 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         release(super_code);
                     }
                 }
+            }
+            if ((*brace_depth)++ != 0)
+                list_push(scope, new(Pairs));
+            first = false;
+            if (t->punct == "{") {
                 if (line_no) {
                     char line_number[1024];
                     int extra_lines = 1;
@@ -1188,11 +1197,15 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     sprintf(line_number, "# %d \"%s\"\n", method_start->line + extra_lines, method_start->file->buffer);
                     call(output, concat_cstring, line_number);
                 }
-            }
+                Token *b_start = NULL, *b_end = NULL;
+                int token_count = call(self, read_block, t, &b_start, &b_end);
+                t = &t[token_count];
 
-            if (brace_depth++ != 0)
-                list_push(scope, new(Pairs));
-            first = false;
+                int code_block_flags = 0;
+                String code = call(self, code_out, scope, b_start + 1, b_end, t_after,
+                    super_mode, line_no, type_last, method, brace_depth, &code_block_flags);
+                call(output, concat_string, code);
+            }
         } else if (t->keyword == "if") {
             // check for beginning block
             int n = call(self, read_expression, t, NULL, NULL, ")", -1, true);
@@ -1203,9 +1216,11 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 if (token_count > 0) {
                     list_push(scope, new(Pairs));
                     int if_code_flags = 0;
-                    String if_code = call(self, code_out, scope, t + 2, &t[n - 1], t_after, NULL, false, type_last, method, &if_code_flags);
+                    String if_code = call(self, code_out, scope, t + 2, &t[n - 1], t_after,
+                        NULL, false, type_last, method, brace_depth, &if_code_flags);
                     if_code_flags = 0;
-                    String code = call(self, code_out, scope, t_if, &t_if[token_count - 1], t_after, NULL, false, type_last, method, &if_code_flags);
+                    String code = call(self, code_out, scope, t_if, &t_if[token_count - 1], t_after,
+                        NULL, false, type_last, method, brace_depth, &if_code_flags);
                     call(self, token_out, t, ' ', output);
                     call(self, token_out, t + 1, ' ', output);
                     call(output, concat_string, if_code);
@@ -1222,8 +1237,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 }
             }
         } else if (t->punct == "}") {
-            brace_depth--;
-            if (brace_depth != 0) {
+            (*brace_depth)--;
+            if ((*brace_depth) != 0) {
                 // release last scope
                 String scope_end = call(self, scope_end, scope, t);
                 if (scope_end) {
@@ -1241,7 +1256,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 if (token_count > 0) {
                     call(output, concat_cstring, "// begin of return --------------------- \n");
                     int ret_code_flags = 0;
-                    String code = call(self, code_out, scope, t + 1, &t[token_count - 2], t_after, NULL, false, type_last, method, &ret_code_flags);
+                    String code = call(self, code_out, scope, t + 1, &t[token_count - 2], t_after,
+                        NULL, false, type_last, method, brace_depth, &ret_code_flags);
 
                     ClassDec cd_ret = pairs_value(self->static_class_map, method->type_str, ClassDec);
                     sprintf(buf, "%s ret = %s;\n", method->type_cd->struct_object->buffer, code->buffer);
@@ -1294,7 +1310,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 if (t_after)
                     *t_after = t_from;
                 int token_count = call(self, read_expression, t_from, NULL, NULL, "{;),", 0, false);
-                String code = call(self, code_out, scope, t_from, &t_from[token_count - 1], t_after, NULL, false, type_last, method, flags);
+                String code = call(self, code_out, scope, t_from, &t_from[token_count - 1], t_after,
+                    NULL, false, type_last, method, brace_depth, flags);
                 String type_returned = *type_last;
                 
                 if (type_returned && type_expected && call(type_returned, compare, type_expected) != 0) {
@@ -2069,7 +2086,8 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                     call(output, concat_cstring, buf);
                     String type_last = NULL;
                     int method_code_flags;
-                    code = call(self, code_out, scope, md->block_start, md->block_end, NULL, super_mode, true, &type_last, md, &method_code_flags);
+                    code = call(self, code_out, scope, md->block_start, md->block_end, NULL, super_mode,
+                        true, &type_last, md, &method_code_flags);
                     call(output, concat_string, code);
 
                     sprintf(buf, "\n");

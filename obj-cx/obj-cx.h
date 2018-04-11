@@ -69,6 +69,7 @@ typedef struct _Token {
     method(D,T,C,String,gen_var,(C, List, struct _object_ClassDec *)) \
     method(D,T,C,String,start_tracking,(C, List, String)) \
     method(D,T,C,String,scope_end,(C, List, Token *)) \
+    method(D,T,C,int,read_block,(C,Token *,Token **,Token **)) \
     var(D,T,C,String,name)                 \
     var(D,T,C,Token *,tokens)              \
     var(D,T,C,List,modules)                \
