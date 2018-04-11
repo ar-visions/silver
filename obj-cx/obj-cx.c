@@ -852,6 +852,16 @@ String CX_start_tracking(CX self, List scope, String var) {
     return NULL;
 }
 
+bool CX_is_tracking(CX self, Pairs top, String var) {
+    Pairs tracking = (Pairs)top->user_data;
+    if (tracking) {
+        String b = pairs_value(tracking, var, String);
+        if (b)
+            return call(b, cmp, "true") == 0;
+    }
+    return false;
+}
+
 String CX_gen_var(CX self, List scope, ClassDec cd) {
     Pairs top = (Pairs)call(scope, last);
     char buf[64];
@@ -863,7 +873,7 @@ String CX_gen_var(CX self, List scope, ClassDec cd) {
 }
 
 String CX_class_op_out(CX self, List scope, Token *t,
-        ClassDec cd, String target, bool is_instance, Token **t_after, String *type_last, MemberDec method, int *flags) {
+        ClassDec cd, String target, bool is_instance, Token **t_after, String *type_last, MemberDec method, int *brace_depth, int *flags) {
     String output = new(String);
     char buf[1024];
     Token *t_start = t;
@@ -939,7 +949,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 String type_returned = NULL;
                 // code_out needs to be aware that this is being received into a var (generated var)
                 int arg_code_flags = 0;
-                String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false, &type_returned, method, &arg_code_flags);
+                String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false,
+                    &type_returned, method, brace_depth, &arg_code_flags);
                 ClassDec cd_returned = pairs_value(self->static_class_map, type_returned, ClassDec);
                 if (((arg_code_flags & CODE_FLAG_ALLOC) > 0) && cd_returned) {
                     // generate virtually scoped var; this value must be released when this scope exits
@@ -1043,7 +1054,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
             String type_returned = NULL;
             // code_out needs to be aware that this is being received into a var
             int assign_code_flags = 0;
-            String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false, &type_returned, method, &assign_code_flags);
+            String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false, &type_returned,
+                method, brace_depth, &assign_code_flags);
             t = *t_after;
             String cast = NULL;
             if (type_returned) {
@@ -1097,24 +1109,10 @@ String CX_class_op_out(CX self, List scope, Token *t,
             t = *t_after = t_member;
         }
     }
-    // unsure about this one -- i need to use the effective type eval'd from this code above
-    // that should be cd_lookup
     if (cd_last && (t + 1)->punct == ".") {
-        output = call(self, class_op_out, scope, t + 2, cd_last, output, true, t_after, type_last, method, flags); 
+        output = call(self, class_op_out, scope, t + 2, cd_last, output, true,
+            t_after, type_last, method, brace_depth, flags); 
     }
-    /*
-    if (md && (t + 1)->punct == ".") {
-        for (int i = 0; i < md->type_count; i++) {
-            String s = md->type[i].str;
-            cd = CX_find_class(s);
-            if (cd) {
-                output = call(self, class_op_out, scope, t + 2, cd, output, true, t_after, cd_last, method, flags); 
-                break;
-            }
-            t += 2;
-            break;
-        }
-    }*/
     return output;
 }
 
@@ -1201,15 +1199,52 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 int token_count = call(self, read_block, t, &b_start, &b_end);
                 t = &t[token_count];
 
+                // output generated var declarations here, init as NULL
+                Pairs top = (Pairs)call(scope, last);
+                
                 int code_block_flags = 0;
-                String code = call(self, code_out, scope, b_start + 1, b_end, t_after,
+                String code = call(self, code_out, scope, b_start + 1, b_end - 1, t_after,
                     super_mode, line_no, type_last, method, brace_depth, &code_block_flags);
+
+                KeyValue kv;
+                Pairs types = new(Pairs);
+                String types_str = new(String);
+                each_pair(top, kv) {
+                    String var = (String)kv->key;
+                    if (call(self, is_tracking, top, var)) {
+                        ClassDec cd = (ClassDec)kv->value;
+                        List types_for = pairs_value(types, cd, List);
+                        if (!types_for) {
+                            types_for = new(List);
+                            pairs_add(types, cd, types_for);
+                            release(types_for);
+                        }
+                        list_push(types_for, var);
+                    }
+                }
+                each_pair(types, kv) {
+                    ClassDec cd = (ClassDec)kv->key;
+                    List types_for = (List)kv->value;
+                    String var;
+                    call(types_str, concat_string, cd->struct_object); // todo: Lookup alias name
+                    call(types_str, concat_char, ' ');
+                    bool f = true;
+                    each(types_for, var) {
+                        if (!f)
+                            call(types_str, concat_cstring, ", ");
+                        call(types_str, concat_string, var);
+                        f = false;
+                    }
+                    call(types_str, concat_cstring, ";\n");
+                }
+                call(output, concat_string, types_str);
                 call(output, concat_string, code);
             }
-        } else if (t->keyword == "if") {
+        } else if (t->keyword == "if" || t->keyword == "while") {
             // check for beginning block
             int n = call(self, read_expression, t, NULL, NULL, ")", -1, true);
             Token *t_if = &t[n + 1];
+            call(self, token_out, t, ' ', output);
             if (t_if->punct != "{") {
                 // code out with injected block {'s
                 int token_count = call(self, read_expression, t_if, NULL, NULL, ";", 0, false);
@@ -1221,7 +1256,6 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     if_code_flags = 0;
                     String code = call(self, code_out, scope, t_if, &t_if[token_count - 1], t_after,
                         NULL, false, type_last, method, brace_depth, &if_code_flags);
-                    call(self, token_out, t, ' ', output);
                     call(self, token_out, t + 1, ' ', output);
                     call(output, concat_string, if_code);
                     call(self, token_out, t_if - 1, ' ', output);
@@ -1234,16 +1268,21 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     }
                     call(output, concat_cstring, ";\n}\n");
                     t = &t_if[token_count];
+                    if (t->punct == ";")
+                        t++;
                 }
             }
         } else if (t->punct == "}") {
             (*brace_depth)--;
             if ((*brace_depth) != 0) {
                 // release last scope
-                String scope_end = call(self, scope_end, scope, t);
-                if (scope_end) {
-                    call(output, concat_string, scope_end);
-                    release(scope_end);
+                Pairs top = (Pairs)call(scope, last);
+                if ((top->user_flags & 1) == 0) {
+                    String scope_end = call(self, scope_end, scope, t);
+                    if (scope_end) {
+                        call(output, concat_string, scope_end);
+                        release(scope_end);
+                    }
                 }
             }
             call(self, token_out, t, ' ', output);
@@ -1283,7 +1322,9 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     }
                     call(output, concat_cstring, "\treturn ret;\n");
                     call(output, concat_cstring, "// end of return --------------------- \n");
-                    t = &t[token_count - 1];
+                    t = &t[token_count + 1];
+                    Pairs top = (Pairs)call(scope, last);
+                    top->user_flags = 1;
                 }
             } else {
                 call(self, token_out, t, 0, output);
@@ -1375,12 +1416,14 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     Pairs top = (Pairs)call(scope, last);
                     target = t->str;
                     pairs_add(top, str_name, cd);
-                    String out = call(self, class_op_out, scope, t, cd, target, false, &t, type_last, method, flags);
+                    String out = call(self, class_op_out, scope, t, cd, target, false, &t,
+                        type_last, method, brace_depth, flags);
                     call(output, concat_string, out);
                 } else if (t->punct == ".") {
                     token_next(&t);
                     if (t->type == TT_Identifier) {
-                        String out = call(self, class_op_out, scope, t, cd, target, false, &t, type_last, method, flags);
+                        String out = call(self, class_op_out, scope, t, cd, target, false, &t,
+                            type_last, method, brace_depth, flags);
                         call(output, concat_string, out);
                     }
                 } else if (t->punct == "(") {
@@ -1389,7 +1432,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         exit(1);
                     }
                     // construct (default)
-                    String out = call(self, class_op_out, scope, t - 1, cd, target, false, &t, type_last, method, flags);
+                    String out = call(self, class_op_out, scope, t - 1, cd, target, false, &t,
+                        type_last, method, brace_depth, flags);
                     call(output, concat_string, out);
                 } else {
                     call(output, concat_string, is_class ? cd->struct_class : cd->struct_object);
@@ -1402,7 +1446,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 if (cd) {
                     if ((t + 1)->punct == ".") {
                         if ((t + 2)->type == TT_Identifier) {
-                            String out = call(self, class_op_out, scope, t + 2, cd, target, true, &t, type_last, method, flags);
+                            String out = call(self, class_op_out, scope, t + 2, cd, target, true, &t,
+                                type_last, method, brace_depth, flags);
                             call(output, concat_string, out);
                             found = true;
                         }
@@ -1999,8 +2044,9 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                 }
                 String type_last = NULL;
                 int init_code_flags = 0;
+                int brace_depth = 0;
                 String code = call(self, code_out, scope, md->assign, &md->assign[md->assign_count - 1],
-                    NULL, NULL, false, &type_last, md, &init_code_flags);
+                    NULL, NULL, false, &type_last, md, &brace_depth, &init_code_flags);
                 call(output, concat_string, code);
 
                 if (md->setter_start) {
@@ -2086,8 +2132,9 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                     call(output, concat_cstring, buf);
                     String type_last = NULL;
                     int method_code_flags;
+                    int brace_depth = 0;
                     code = call(self, code_out, scope, md->block_start, md->block_end, NULL, super_mode,
-                        true, &type_last, md, &method_code_flags);
+                        true, &type_last, md, &brace_depth, &method_code_flags);
                     call(output, concat_string, code);
 
                     sprintf(buf, "\n");
@@ -2188,11 +2235,14 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                         call(output, concat_cstring, buf);
                         String type_last = NULL;
                         int prop_code_flags = 0;
+                        int brace_depth = 0;
                         if (i == 0) {
-                            String code = call(self, code_out, scope, block_start, block_end, NULL, super_mode, true, &type_last, md, &prop_code_flags);
+                            String code = call(self, code_out, scope, block_start, block_end, NULL, super_mode, true,
+                                &type_last, md, &brace_depth, &prop_code_flags);
                             call(output, concat_string, code);
                         } else {
-                            String code = call(self, code_out, scope, block_start, block_end, NULL, super_mode, true, &type_last, md, &prop_code_flags);
+                            String code = call(self, code_out, scope, block_start, block_end, NULL, super_mode, true,
+                                &type_last, md, &brace_depth, &prop_code_flags);
                             if (md->is_static)
                                 sprintf(buf, "return %s->get_%s();", class_name, md->str_name->buffer);
                             else
