@@ -21,6 +21,7 @@ declare(KeyValue, Base);
     override(D,T,C,String,to_string,(C))             \
     override(D,T,C,C,from_cstring,(const char *))    \
     private_var(D,T,C,Base,user_data)                \
+    private_var(D,T,C,int,user_flags)                \
     private_var(D,T,C,LList,ordered_list)            \
     private_var(D,T,C,LList *,lists)                 \
     private_var(D,T,C,size_t,list_count)

@@ -46,7 +46,7 @@ typedef struct _Token {
     method(D,T,C,struct _object_ClassDec *,find_class,(String)) \
     method(D,T,C,bool,read_template_types,(C,struct _object_ClassDec *, Token **)) \
     method(D,T,C,String,code_out,(C, List, Token *, Token *, Token **, struct _object_ClassDec *, \
-                bool, String *, struct _object_MemberDec *, int *)) \
+                bool, String *, struct _object_MemberDec *, int *, int *)) \
     method(D,T,C,int,read_expression,(C, Token *, Token **, Token **, const char *, int, bool)) \
     method(D,T,C,void,read_property_blocks,(C, struct _object_ClassDec *, struct _object_MemberDec *)) \
     method(D,T,C,bool,read_modules,(C)) \
@@ -56,7 +56,7 @@ typedef struct _Token {
     method(D,T,C,void,define_module_constructor,(C, FILE *)) \
     method(D,T,C,void,effective_methods,(C, struct _object_ClassDec *, Pairs *)) \
     method(D,T,C,String,class_op_out,(C, List, Token *, \
-        struct _object_ClassDec *, String, bool, Token **, String *, struct _object_MemberDec *, int *)) \
+        struct _object_ClassDec *, String, bool, Token **, String *, struct _object_MemberDec *, int *, int *)) \
     method(D,T,C,String,args_out,(C, Pairs, struct _object_ClassDec *, \
                 struct _object_MemberDec *, bool, bool, int, bool)) \
     method(D,T,C,struct _object_ClassDec *,scope_lookup,(C,List,String)) \
@@ -70,6 +70,7 @@ typedef struct _Token {
     method(D,T,C,String,start_tracking,(C, List, String)) \
     method(D,T,C,String,scope_end,(C, List, Token *)) \
     method(D,T,C,int,read_block,(C,Token *,Token **,Token **)) \
+    method(D,T,C,bool,is_tracking,(C, Pairs, String)) \
     var(D,T,C,String,name)                 \
     var(D,T,C,Token *,tokens)              \
     var(D,T,C,List,modules)                \

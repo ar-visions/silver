@@ -11,9 +11,8 @@ class Base {
     void init() {
     }
     Base release() {
-        if (--self.refs == 0) {
-            Base.free_object(new Base());
-        }
+        if (--self.refs == 0)
+            Base.free_object(new Base()) + 1;
         return self;
     }
     Base retain() {
