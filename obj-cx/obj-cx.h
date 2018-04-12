@@ -59,7 +59,7 @@ typedef struct _Token {
         struct _object_ClassDec *, String, bool, Token **, String *, struct _object_MemberDec *, int *, int *)) \
     method(D,T,C,String,args_out,(C, Pairs, struct _object_ClassDec *, \
                 struct _object_MemberDec *, bool, bool, int, bool)) \
-    method(D,T,C,struct _object_ClassDec *,scope_lookup,(C,List,String)) \
+    method(D,T,C,struct _object_ClassDec *,scope_lookup,(C,List,String,Pairs *)) \
     method(D,T,C,void,resolve_supers,(C)) \
     method(D,T,C,void,token_out,(C, Token *, int, String)) \
     method(D,T,C,bool,process,(C, const char *)) \

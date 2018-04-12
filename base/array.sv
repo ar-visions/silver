@@ -4,6 +4,7 @@ class Array {
     int count;
     
     void resize() {
+        self.pop();
         if (self.count + 1 > self.alloc_size) {
             int prev_size = self.alloc_size;
             Base *prev = self.buffer;
