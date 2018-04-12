@@ -944,25 +944,13 @@ String CX_class_op_out(CX self, List scope, Token *t,
                     break;
                 if (c_arg > 0)
                     call(output, concat_cstring, ", ");
-                
-
                 String type_returned = NULL;
                 // code_out needs to be aware that this is being received into a var (generated var)
                 int arg_code_flags = 0;
                 String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false,
                     &type_returned, method, brace_depth, &arg_code_flags);
                 ClassDec cd_returned = pairs_value(self->static_class_map, type_returned, ClassDec);
-                if (((arg_code_flags & CODE_FLAG_ALLOC) > 0) && cd_returned) {
-                    // generate virtually scoped var; this value must be released when this scope exits
-                    String gen_var = call(self, gen_var, scope, cd_returned);
-                    sprintf(buf, "(%s = ", gen_var->buffer);
-                    call(arg_output, concat_cstring, buf);
-                    call(arg_output, concat_string, code);
-                    call(arg_output, concat_char, ')');
-                } else {
-                    call(arg_output, concat_string, code);
-                }
-                
+                call(arg_output, concat_string, code);
                 if (type_returned && c_arg < md->arg_types_count) {
                     ClassDec cd_expected = NULL;
                     for (int ii = 0; ii < md->at_token_count[c_arg]; ii++) {
@@ -1020,8 +1008,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 expected_type = md->type_str;
             }
             if (md && md->setter_start) {
-                if (md->type_cd)
-                    *flags |= CODE_FLAG_ALLOC;
+                //if (md->type_cd)
+                //    *flags |= CODE_FLAG_ALLOC; <- do not tell the caller to handle this object with a gen var!
                 // call explicit setter [todo: handle the various assigner operators]
                 sprintf(buf, "%s->set_", class_var);
                 call(set_str, concat_cstring, buf);
@@ -1043,7 +1031,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                         call(set_str, concat_cstring, buf);
                     }
                 } else {
-                    ClassDec cd_lookup = call(self, scope_lookup, scope, target);
+                    ClassDec cd_lookup = call(self, scope_lookup, scope, target, NULL);
                     if (cd_lookup)
                         expected_type = cd_lookup->class_name;
                 }
@@ -1078,8 +1066,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
             t = *t_after;
         } else if (md) {
             if (md->getter_start) {
-                if (md->type_cd)
-                    *flags |= CODE_FLAG_ALLOC;
+                //if (md->type_cd)
+                //    *flags |= CODE_FLAG_ALLOC; do not tell the caller to wrap this in some gen var to later release
                 // call explicit getter (class or instance)
                 sprintf(buf, "%s->get_", class_var);
                 call(output, concat_cstring, buf);
@@ -1102,7 +1090,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
             }
             t = *t_after = t_member;
         } else {
-            ClassDec cd_lookup = call(self, scope_lookup, scope, target);
+            ClassDec cd_lookup = call(self, scope_lookup, scope, target, NULL);
             cd_last = cd_lookup;
             *type_last = cd_lookup->class_name; // todo: map to aliased name
             call(self, token_out, t_member, ' ', output);
@@ -1116,15 +1104,20 @@ String CX_class_op_out(CX self, List scope, Token *t,
     return output;
 }
 
-ClassDec CX_scope_lookup(CX self, List scope, String var) {
+ClassDec CX_scope_lookup(CX self, List scope, String var, Pairs *found) {
     LList *list = &scope->list;
     Pairs p = (Pairs)list->last->data;
     for (LItem *_i = list->last; _i; _i = _i->prev,
             p = _i ? (typeof(p))_i->data : NULL) {
         ClassDec cd = pairs_value(p, var, ClassDec);
-        if (cd)
+        if (cd) {
+            if (found)
+                *found = p;
             return cd;
+        }
     }
+    if (found)
+        *found = NULL;
     return NULL;
 }
 
@@ -1441,7 +1434,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     call(self, token_out, t, ' ', output);
                 }
             } else {
-                ClassDec cd = call(self, scope_lookup, scope, target);
+                ClassDec cd = call(self, scope_lookup, scope, target, NULL);
                 bool found = false;
                 if (cd) {
                     if ((t + 1)->punct == ".") {
@@ -1467,10 +1460,25 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             break;
     }
     if (!*type_last && output->length > 0) {
-        ClassDec cd_found = call(self, scope_lookup, scope, output);
-        if (cd_found)
+        Pairs scope_at = NULL;
+        ClassDec cd_found = call(self, scope_lookup, scope, output, &scope_at);
+        if (cd_found) {
+            // if this scoped var was tracked, set CODE_FLAG_ALLOC
+            if (call(self, is_tracking, scope_at, output))
+                *flags |= CODE_FLAG_ALLOC;
             *type_last = cd_found->class_name;
+        }
     }
+    
+    if (((*flags & CODE_FLAG_ALLOC) > 0) && cd_returned) {
+        // generate virtually scoped var; this value must be released when this scope exits
+        String gen_var = call(self, gen_var, scope, cd_returned);
+        sprintf(buf, "(%s = ", gen_var->buffer);
+        call(arg_output, concat_cstring, buf);
+        call(arg_output, concat_string, code);
+        call(arg_output, concat_char, ')');
+    }
+
     return output;
 }
 
