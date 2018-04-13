@@ -10,9 +10,36 @@ class Base {
     }
     void init() {
     }
+    Base test() {
+        return self;
+    }
     Base release() {
-        if (--self.refs == 0)
-            Base.free_object(new Base()) + 1;
+        int i;
+        
+        
+        
+        
+
+
+
+        
+        
+        self.test();
+
+
+
+
+
+
+
+
+
+
+
+        if (--self.refs == 0) {
+            Base.free_object(new Base());
+            self.free_object2(self);
+        }
         return self;
     }
     Base retain() {
@@ -55,7 +82,10 @@ class Base {
         Base.init_object(obj, (Class)obj.cl, false);
         return obj;
     }
-    static void free_object(Base obj) {
+    Base free_object2(Base obj) {
+        return obj;
+    }
+    static Base free_object(Base obj) {
         Class c_parent = obj.cl.parent;
         BaseMethod last_method = null;
         for (Class c = (Class)obj.cl; c; c = c.parent) {
@@ -66,6 +96,7 @@ class Base {
             }
         }
         free(obj);
+        return obj;
     }
     static bool load_module(const char *name) {
         return false;
