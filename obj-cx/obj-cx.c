@@ -872,8 +872,34 @@ String CX_gen_var(CX self, List scope, ClassDec cd) {
     return ret;
 }
 
+String CX_var_gen_out(CX self, List scope, Token *t,
+        ClassDec cd, String target, bool is_instance, Token **t_after, String *type_last,
+        MemberDec method, int *brace_depth, bool assign) {
+    int flags = 0;
+    String code = call(self, class_op_out, scope, t, cd, target, false, &t,
+                        type_last, method, brace_depth, &flags, false);
+    if (!assign && *type_last && (flags & CODE_FLAG_ALLOC) != 0) {
+        ClassDec cd_returned = pairs_value(self->static_class_map, (*type_last), ClassDec);
+        if (cd_returned) {
+            char buf[1024];
+            String gen_out = new(String);
+            // generate virtually scoped var; this value must be released when this scope exits
+            String gen_var = call(self, gen_var, scope, cd_returned);
+            sprintf(buf, "(%s = ", gen_var->buffer);
+            call(gen_out, concat_cstring, buf);
+            call(gen_out, concat_string, code);
+            call(gen_out, concat_char, ')');
+            release(code);
+            return gen_out;
+        }
+    }
+    return code;
+}
+                    
+
 String CX_class_op_out(CX self, List scope, Token *t,
-        ClassDec cd, String target, bool is_instance, Token **t_after, String *type_last, MemberDec method, int *brace_depth, int *flags) {
+        ClassDec cd, String target, bool is_instance, Token **t_after, String *type_last,
+        MemberDec method, int *brace_depth, int *flags, bool assign) {
     String output = new(String);
     char buf[1024];
     Token *t_start = t;
@@ -948,7 +974,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 // code_out needs to be aware that this is being received into a var (generated var)
                 int arg_code_flags = 0;
                 String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false,
-                    &type_returned, method, brace_depth, &arg_code_flags);
+                    &type_returned, method, brace_depth, &arg_code_flags, false);
                 ClassDec cd_returned = pairs_value(self->static_class_map, type_returned, ClassDec);
                 call(arg_output, concat_string, code);
                 if (type_returned && c_arg < md->arg_types_count) {
@@ -1043,7 +1069,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
             // code_out needs to be aware that this is being received into a var
             int assign_code_flags = 0;
             String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false, &type_returned,
-                method, brace_depth, &assign_code_flags);
+                method, brace_depth, &assign_code_flags, true);
             t = *t_after;
             String cast = NULL;
             if (type_returned) {
@@ -1098,8 +1124,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
         }
     }
     if (cd_last && (t + 1)->punct == ".") {
-        output = call(self, class_op_out, scope, t + 2, cd_last, output, true,
-            t_after, type_last, method, brace_depth, flags); 
+        output = call(self, var_gen_out, scope, t + 2, cd_last, output, true,
+            t_after, type_last, method, brace_depth, false); 
     }
     return output;
 }
@@ -1144,7 +1170,7 @@ String CX_scope_end(CX self, List scope, Token *end_marker) {
 }
 
 String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, Token **t_after,
-        ClassDec super_mode, bool line_no, String *type_last, MemberDec method, int *brace_depth, int *flags) {
+        ClassDec super_mode, bool line_no, String *type_last, MemberDec method, int *brace_depth, int *flags, bool assign) {
     *type_last = NULL;
     String output = new(String);
     char buf[1024];
@@ -1197,7 +1223,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 
                 int code_block_flags = 0;
                 String code = call(self, code_out, scope, b_start + 1, b_end - 1, t_after,
-                    super_mode, line_no, type_last, method, brace_depth, &code_block_flags);
+                    super_mode, line_no, type_last, method, brace_depth, &code_block_flags, assign);
 
                 KeyValue kv;
                 Pairs types = new(Pairs);
@@ -1245,10 +1271,10 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     list_push(scope, new(Pairs));
                     int if_code_flags = 0;
                     String if_code = call(self, code_out, scope, t + 2, &t[n - 1], t_after,
-                        NULL, false, type_last, method, brace_depth, &if_code_flags);
+                        NULL, false, type_last, method, brace_depth, &if_code_flags, false);
                     if_code_flags = 0;
                     String code = call(self, code_out, scope, t_if, &t_if[token_count - 1], t_after,
-                        NULL, false, type_last, method, brace_depth, &if_code_flags);
+                        NULL, false, type_last, method, brace_depth, &if_code_flags, false);
                     call(self, token_out, t + 1, ' ', output);
                     call(output, concat_string, if_code);
                     call(self, token_out, t_if - 1, ' ', output);
@@ -1289,7 +1315,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     call(output, concat_cstring, "// begin of return --------------------- \n");
                     int ret_code_flags = 0;
                     String code = call(self, code_out, scope, t + 1, &t[token_count - 2], t_after,
-                        NULL, false, type_last, method, brace_depth, &ret_code_flags);
+                        NULL, false, type_last, method, brace_depth, &ret_code_flags, true);
 
                     ClassDec cd_ret = pairs_value(self->static_class_map, method->type_str, ClassDec);
                     sprintf(buf, "%s ret = %s;\n", method->type_cd->struct_object->buffer, code->buffer);
@@ -1345,7 +1371,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     *t_after = t_from;
                 int token_count = call(self, read_expression, t_from, NULL, NULL, "{;),", 0, false);
                 String code = call(self, code_out, scope, t_from, &t_from[token_count - 1], t_after,
-                    NULL, false, type_last, method, brace_depth, flags);
+                    NULL, false, type_last, method, brace_depth, flags, false);
                 String type_returned = *type_last;
                 
                 if (type_returned && type_expected && call(type_returned, compare, type_expected) != 0) {
@@ -1409,14 +1435,14 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     Pairs top = (Pairs)call(scope, last);
                     target = t->str;
                     pairs_add(top, str_name, cd);
-                    String out = call(self, class_op_out, scope, t, cd, target, false, &t,
-                        type_last, method, brace_depth, flags);
+                    String out = call(self, var_gen_out, scope, t, cd, target, false, &t,
+                        type_last, method, brace_depth, false);
                     call(output, concat_string, out);
                 } else if (t->punct == ".") {
                     token_next(&t);
                     if (t->type == TT_Identifier) {
-                        String out = call(self, class_op_out, scope, t, cd, target, false, &t,
-                            type_last, method, brace_depth, flags);
+                        String out = call(self, var_gen_out, scope, t, cd, target, false, &t,
+                            type_last, method, brace_depth, assign);
                         call(output, concat_string, out);
                     }
                 } else if (t->punct == "(") {
@@ -1425,8 +1451,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         exit(1);
                     }
                     // construct (default)
-                    String out = call(self, class_op_out, scope, t - 1, cd, target, false, &t,
-                        type_last, method, brace_depth, flags);
+                    String out = call(self, var_gen_out, scope, t - 1, cd, target, false, &t,
+                        type_last, method, brace_depth, assign);
                     call(output, concat_string, out);
                 } else {
                     call(output, concat_string, is_class ? cd->struct_class : cd->struct_object);
@@ -1439,8 +1465,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 if (cd) {
                     if ((t + 1)->punct == ".") {
                         if ((t + 2)->type == TT_Identifier) {
-                            String out = call(self, class_op_out, scope, t + 2, cd, target, true, &t,
-                                type_last, method, brace_depth, flags);
+                            String out = call(self, var_gen_out, scope, t + 2, cd, target, true, &t,
+                                type_last, method, brace_depth, assign);
                             call(output, concat_string, out);
                             found = true;
                         }
@@ -1469,16 +1495,6 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             *type_last = cd_found->class_name;
         }
     }
-    
-    if (((*flags & CODE_FLAG_ALLOC) > 0) && cd_returned) {
-        // generate virtually scoped var; this value must be released when this scope exits
-        String gen_var = call(self, gen_var, scope, cd_returned);
-        sprintf(buf, "(%s = ", gen_var->buffer);
-        call(arg_output, concat_cstring, buf);
-        call(arg_output, concat_string, code);
-        call(arg_output, concat_char, ')');
-    }
-
     return output;
 }
 
@@ -2054,7 +2070,7 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                 int init_code_flags = 0;
                 int brace_depth = 0;
                 String code = call(self, code_out, scope, md->assign, &md->assign[md->assign_count - 1],
-                    NULL, NULL, false, &type_last, md, &brace_depth, &init_code_flags);
+                    NULL, NULL, false, &type_last, md, &brace_depth, &init_code_flags, false);
                 call(output, concat_string, code);
 
                 if (md->setter_start) {
@@ -2142,7 +2158,7 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                     int method_code_flags;
                     int brace_depth = 0;
                     code = call(self, code_out, scope, md->block_start, md->block_end, NULL, super_mode,
-                        true, &type_last, md, &brace_depth, &method_code_flags);
+                        true, &type_last, md, &brace_depth, &method_code_flags, false);
                     call(output, concat_string, code);
 
                     sprintf(buf, "\n");
@@ -2246,11 +2262,11 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                         int brace_depth = 0;
                         if (i == 0) {
                             String code = call(self, code_out, scope, block_start, block_end, NULL, super_mode, true,
-                                &type_last, md, &brace_depth, &prop_code_flags);
+                                &type_last, md, &brace_depth, &prop_code_flags, false);
                             call(output, concat_string, code);
                         } else {
                             String code = call(self, code_out, scope, block_start, block_end, NULL, super_mode, true,
-                                &type_last, md, &brace_depth, &prop_code_flags);
+                                &type_last, md, &brace_depth, &prop_code_flags, false);
                             if (md->is_static)
                                 sprintf(buf, "return %s->get_%s();", class_name, md->str_name->buffer);
                             else
