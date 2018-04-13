@@ -73,6 +73,7 @@ typedef struct _Token {
     method(D,T,C,bool,is_tracking,(C, Pairs, String)) \
     method(D,T,C,String,var_gen_out,(C, List , Token *, struct _object_ClassDec *, String, \
         bool, Token **, String *, struct _object_MemberDec *, int *, bool)) \
+    method(D,T,C,void,resolve_member_types,(C, struct _object_ClassDec *)) \
     var(D,T,C,String,name)                 \
     var(D,T,C,Token *,tokens)              \
     var(D,T,C,List,modules)                \

@@ -876,7 +876,7 @@ String CX_var_gen_out(CX self, List scope, Token *t,
         ClassDec cd, String target, bool is_instance, Token **t_after, String *type_last,
         MemberDec method, int *brace_depth, bool assign) {
     int flags = 0;
-    String code = call(self, class_op_out, scope, t, cd, target, false, &t,
+    String code = call(self, class_op_out, scope, t, cd, target, is_instance, t_after,
                         type_last, method, brace_depth, &flags, false);
     if (!assign && *type_last && (flags & CODE_FLAG_ALLOC) != 0) {
         ClassDec cd_returned = pairs_value(self->static_class_map, (*type_last), ClassDec);
@@ -911,8 +911,28 @@ String CX_class_op_out(CX self, List scope, Token *t,
     if (call(target, cmp, "class") == 0)
         cd = CX_find_class(string("Class"));
 
-    if (cd)
+    if (cd) {
         md = call(cd, member_lookup, s_token);
+        if (call(s_token, cmp, "free_object2") == 0) {
+            int test = 0;
+            test++;
+            // how to insert an immediate release when the alloc is not used (wait till end of scope)
+            // what is certainly needed is when an already tracked var gets set again, it must be released
+            // how to properly track member vars
+            // cases like:
+            // obj.call().prop = obj2.call().prop3;
+            /*
+                you want to do the following: 
+                
+                (gen2 = (gen1 = Obj_call(obj))->prop); // gets the current property value
+
+                (gen4 = (gen3 = Obj_call(obj2))->prop3); // gets the value to set to
+                
+                gen1->prop = Obj_retain(gen4); // performs set
+                Obj_release(gen2);
+            */
+        }
+    }
     if (md) {
         cd_last = md->type_cd;
         *type_last = md->type_cd ? md->type_cd->class_name : NULL;
@@ -1625,6 +1645,7 @@ void CX_declare_classes(CX self, FILE *file_output) {
     call(classes, sort, true, (SortMethod)sort_classes);
     ClassDec cd;
     each(classes, cd) {
+        call(self, resolve_member_types, cd);
         String class_name = cd->class_name;
         bool is_class = call(class_name, cmp, "Class") == 0;
         Pairs m = new(Pairs);
@@ -2034,6 +2055,39 @@ String CX_super_out(CX self, List scope, ClassDec cd, Token *t_start, Token *t_e
     return NULL;
 }
 
+void CX_resolve_member_types(CX self, ClassDec cd) {
+    KeyValue mkv;
+    each_pair(cd->members, mkv) {
+        MemberDec md = (MemberDec)mkv->value;
+        ClassDec super_mode = !md->is_static ? cd : NULL;
+
+        // resolve types
+        String type_str = new(String);
+        if (md->type_count > 0) {
+            bool first = true;
+            for (int i = 0; i < md->type_count; i++) {
+                Token *tt = &md->type[i];
+                if (tt->skip)
+                    continue;
+                if (!first)
+                    call(type_str, concat_char, ' ');
+                if (call(tt->str, cmp, "Base") == 0) {
+                    int test = 0;
+                    test++;
+                }
+                ClassDec cd_found = pairs_value(self->static_class_map, tt->str, ClassDec);
+                if (cd_found) {
+                    call(type_str, concat_string, cd_found->struct_object);
+                    md->type_cd = cd_found;
+                } else
+                    call(type_str, concat_string, tt->str);
+                first = false;
+            }
+            md->type_str = type_str;
+        }
+    }
+}
+
 // verify the code executes as planned
 bool CX_emit_implementation(CX self, FILE *file_output) {
     String output = new(String);
@@ -2088,31 +2142,10 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
             MemberDec md = (MemberDec)mkv->value;
             ClassDec super_mode = !md->is_static ? cd : NULL;
 
-            // resolve types
-            String type_str = new(String);
-            if (md->type_count > 0) {
-                bool first = true;
-                for (int i = 0; i < md->type_count; i++) {
-                    Token *tt = &md->type[i];
-                    if (tt->skip)
-                        continue;
-                    if (!first)
-                        call(type_str, concat_char, ' ');
-                    ClassDec cd_found = pairs_value(self->static_class_map, tt->str, ClassDec);
-                    if (cd_found) {
-                        call(type_str, concat_string, cd_found->struct_object);
-                        md->type_cd = cd_found;
-                    } else
-                        call(type_str, concat_string, tt->str);
-                    first = false;
-                }
-                md->type_str = type_str;
-            }
-
             if (!md->block_start) {
                 // for normal var declarations, output stub for getter / setter
                 if (md->member_type == MT_Prop && !md->is_private) {
-                    const char *tn = type_str->buffer;
+                    const char *tn = md->type_str->buffer;
                     const char *cn = class_name;
                     const char *vn = md->str_name->buffer;
                     ClassDec cd_tn = pairs_value(self->static_class_map, string(tn), ClassDec);
@@ -2145,7 +2178,7 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
             list_push(scope, top);
             switch (md->member_type) {
                 case MT_Method: {
-                    call(output, concat_string, type_str);
+                    call(output, concat_string, md->type_str);
                     sprintf(buf, " %s_%s(", class_name, md->str_name->buffer);
                     call(output, concat_cstring, buf);
 
