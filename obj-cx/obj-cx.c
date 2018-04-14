@@ -1140,8 +1140,28 @@ String CX_class_op_out(CX self, List scope, Token *t,
                     call(output, concat_cstring, buf);
                 } else if (!tracked) {
                     call(self, start_tracking, scope, target);
-                    // do not retain ALLOC'd objects, because you must handle things like methods returning an already ref'd object such as a member; its retained upon return
-                    // if there is no receiver, the object MUST be released
+
+                    // proof:
+                    // obj.member (1)
+                    // Base b = obj.member; (2)
+                    // Base ret = b; (2)
+                    // release(b); (1)
+                    // return ret; (1)
+                    //
+                    // Base b = caller(); // (2) retained
+                    // 
+                    // caller().check_release() // (1) still exists as a member
+                    //
+                    //
+                    // Base b = new Base(); // (0 on new, retained and becomes 1)
+                    // Base ret = b; // (1)
+                    // release(b) // (0) (b == ret, decrement, but defer due to equality with return value)
+                    //
+                    // Base b = caller(); // (1)
+                    // caller().check_release() // (0) (release)
+                    // the receiver doesnt decrement if its not set; it merely checks if it should be released based on its value
+                    // ANY set is incrementing the ref count; non-sets just check the ref count
+
                     if (cast)
                         sprintf(buf, "%s = (%s)%s", set_str->buffer, cast->buffer, code->buffer);
                     else {
