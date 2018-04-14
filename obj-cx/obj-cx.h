@@ -67,10 +67,10 @@ typedef struct _Token {
     method(D,T,C,String,inheritance_cast,(C, struct _object_ClassDec *, struct _object_ClassDec *)) \
     method(D,T,C,String,casting_name,(C, struct _object_ClassDec *, String, String)) \
     method(D,T,C,String,gen_var,(C, List, struct _object_ClassDec *)) \
-    method(D,T,C,String,start_tracking,(C, List, String)) \
+    method(D,T,C,String,start_tracking,(C, List, String, bool)) \
     method(D,T,C,String,scope_end,(C, List, Token *)) \
     method(D,T,C,int,read_block,(C,Token *,Token **,Token **)) \
-    method(D,T,C,bool,is_tracking,(C, Pairs, String)) \
+    method(D,T,C,bool,is_tracking,(C, Pairs, String, bool *)) \
     method(D,T,C,String,var_gen_out,(C, List , Token *, struct _object_ClassDec *, String, \
         bool, Token **, String *, struct _object_MemberDec *, int *, bool)) \
     method(D,T,C,void,resolve_member_types,(C, struct _object_ClassDec *)) \

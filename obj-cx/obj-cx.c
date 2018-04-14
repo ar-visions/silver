@@ -844,22 +844,24 @@ String CX_casting_name(CX self, ClassDec cd, String from, String to) {
     return out;
 }
 
-String CX_start_tracking(CX self, List scope, String var) {
+String CX_start_tracking(CX self, List scope, String var, bool check_only) {
     Pairs top = (Pairs)call(scope, last);
     Pairs tracking = (Pairs)top->user_data;
     if (!tracking) {
         tracking = (Pairs)(top->user_data = (Base)new(Pairs));
     }
-    pairs_add(tracking, var, string("true"));
+    pairs_add(tracking, var, string(check_only ? "true" : "false"));
     return NULL;
 }
 
-bool CX_is_tracking(CX self, Pairs top, String var) {
+bool CX_is_tracking(CX self, Pairs top, String var, bool *check_only) {
     Pairs tracking = (Pairs)top->user_data;
     if (tracking) {
         String b = pairs_value(tracking, var, String);
-        if (b)
-            return call(b, cmp, "true") == 0;
+        if (b) {
+            *check_only = call(b, cmp, "true") == 0;
+            return true;
+        }
     }
     return false;
 }
@@ -870,7 +872,7 @@ String CX_gen_var(CX self, List scope, ClassDec cd) {
     sprintf(buf, "_gen_%d", ++self->gen_vars);
     String ret = string(buf);
     pairs_add(top, ret, cd);
-    call(self, start_tracking, scope, ret);
+    call(self, start_tracking, scope, ret, true);
     return ret;
 }
 
@@ -1121,7 +1123,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 call(self, token_out, t_member, 0, set_str);
             }
             String cast = NULL;
-            bool tracked = call(self, is_tracking, sc, target);
+            bool check_only = false;
+            bool tracked = call(self, is_tracking, sc, target, &check_only);
             if (type_returned) {
                 ClassDec cd_returned = pairs_value(self->static_class_map, type_returned, ClassDec);
                 ClassDec cd_expected = pairs_value(self->static_class_map, expected_type, ClassDec);
@@ -1139,7 +1142,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                     }
                     call(output, concat_cstring, buf);
                 } else if (!tracked) {
-                    call(self, start_tracking, scope, target);
+                    call(self, start_tracking, scope, target, true);
 
                     // proof:
                     // obj.member (1)
@@ -1163,13 +1166,16 @@ String CX_class_op_out(CX self, List scope, Token *t,
                     // ANY set is incrementing the ref count; non-sets just check the ref count
 
                     if (cast)
-                        sprintf(buf, "%s = (%s)%s", set_str->buffer, cast->buffer, code->buffer);
+                        sprintf(buf, "%s = (%s)(%s->retain(%s))", set_str->buffer, cast->buffer,
+                            cd_returned->class_name->buffer, code->buffer);
                     else {
                         // let compiler warn or error
-                        sprintf(buf, "%s = %s", set_str->buffer, code->buffer);
+                        sprintf(buf, "%s = (%s->retain(%s))", set_str->buffer,
+                            cd_returned->class_name->buffer, code->buffer);
                     }
                     call(output, concat_cstring, buf);
                 } else {
+                    assert(!check_only);
                     if (cast)
                         sprintf(buf, "(%s)update_var((Base *)&(%s), (Base)(%s))", cast->buffer, set_str->buffer, code->buffer);
                     else {
@@ -1332,7 +1338,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 String types_str = new(String);
                 each_pair(top, kv) {
                     String var = (String)kv->key;
-                    if (call(self, is_tracking, top, var)) {
+                    bool check_only = false;
+                    if (call(self, is_tracking, top, var, &check_only)) {
                         ClassDec cd = (ClassDec)kv->value;
                         List types_for = pairs_value(types, cd, List);
                         if (!types_for) {
@@ -1433,9 +1440,12 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         each_pair(sc, kv) {
                             String name = (String)kv->key;
                             ClassDec cd_var = (ClassDec)kv->value;
+                            bool check_only = false;
+                            call(self, is_tracking, sc, var, &check_only);
                             if (call(code, compare, name) != 0) {
-                                sprintf(buf, "\tif (%s) %s->release(%s);\n",
-                                    name->buffer, cd_var->class_name->buffer, name->buffer);
+                                sprintf(buf, "\tif (%s) %s->%s(%s);\n",
+                                    name->buffer, cd_var->class_name->buffer,
+                                    check_only ? "check_release" : "release", name->buffer);
                                 call(output, concat_cstring, buf);
                             }
                         }
@@ -1592,7 +1602,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
         ClassDec cd_found = call(self, scope_lookup, scope, output, &scope_at);
         if (cd_found) {
             // if this scoped var was tracked, set CODE_FLAG_ALLOC
-            if (call(self, is_tracking, scope_at, output))
+            bool check_only = false;
+            if (call(self, is_tracking, scope_at, output, &check_only))
                 *flags |= CODE_FLAG_ALLOC;
             *type_last = cd_found->class_name;
         }
