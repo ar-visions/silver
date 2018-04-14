@@ -38,7 +38,14 @@ class Base {
 
 
 
-        if (--self.refs == 0) {
+        if (--self.refs <= 0) {
+            Base.free_object(new Base());
+            self.free_object2(self);
+        }
+        return self;
+    }
+    Base check_release() {
+        if (self.refs <= 0) {
             Base.free_object(new Base());
             self.free_object2(self);
         }
