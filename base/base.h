@@ -81,5 +81,14 @@ typedef bool (*ModuleLoadMethod)();
 
 EXPORT void module_loader_continue(ModuleLoadMethod ml_add);
 EXPORT void *alloc_bytes(size_t count);
+static inline Base update_var(struct _base_Base **var, struct _base_Base *value) {
+    struct _base_Base *before = *var;
+    *var = value;
+    if (value)
+        value->cl->retain(value);
+    if (before)
+        before->cl->release(before);
+    return value;
+}
 
 #endif

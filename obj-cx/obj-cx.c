@@ -800,6 +800,8 @@ bool CX_read_classes(CX self) {
 }
 
 String CX_inheritance_cast(CX self, ClassDec expected, ClassDec given) {
+    if (expected && expected == given)
+        return expected->struct_object;
     if (expected && given && (expected != given)) {
         ClassDec cd_cur = given;
         while (cd_cur && cd_cur != expected)
@@ -928,8 +930,30 @@ String CX_class_op_out(CX self, List scope, Token *t,
 
                 (gen4 = (gen3 = Obj_call(obj2))->prop3); // gets the value to set to
                 
-                gen1->prop = Obj_retain(gen4); // performs set
+                gen1->prop = Obj_retain(gen4); // performs set; if this value is the same, it gets retained, then released later, keeping the same ref count
                 Obj_release(gen2);
+
+                // how to do this in one expression?
+
+                Obj_set_prop(Obj_get_prop3(Obj_call(obj2)))
+
+                inline Base update_var(Base *var, Base value) {
+                    Base before = *var;
+                    *var = value;
+                    if (value)
+                        value->refs++;
+                    if (before)
+                        Base_release(before);
+                    return value;
+                }
+
+                the above works for non-block props and scoped vars
+
+                Base b = self.test(); // start tracking
+                b = self.test2(); // update_var, because this is tracked and contains an object already
+
+                Base b = Base_test(self);
+                b = update_var(&b, Base_test2(self)); // this is injectable into any expression
             */
         }
     }
@@ -1041,6 +1065,10 @@ String CX_class_op_out(CX self, List scope, Token *t,
         exit(1);
     } else {
         if (t->assign) {
+            // check if var is tracked
+            Pairs sc = NULL;
+            ClassDec cd_lookup = call(self, scope_lookup, scope, target, &sc);
+
             int n = call(self, read_expression, t, NULL, NULL, "{;),", 0, false);
             Token *t_assign = t;
             token_next(&t);
@@ -1053,9 +1081,19 @@ String CX_class_op_out(CX self, List scope, Token *t,
             if (md) {
                 expected_type = md->type_str;
             }
+            bool setter_method = false;
+            String type_returned = NULL;
+            // code_out needs to be aware that this is being received into a var (true)
+            int assign_code_flags = 0;
+            String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false, &type_returned,
+                method, brace_depth, &assign_code_flags, true);
+            if (call(code, cmp, "b") == 0) {
+                int test = 0;
+                test++;
+            }
+            t = *t_after;
             if (md && md->setter_start) {
-                //if (md->type_cd)
-                //    *flags |= CODE_FLAG_ALLOC; <- do not tell the caller to handle this object with a gen var!
+                setter_method = true;
                 // call explicit setter [todo: handle the various assigner operators]
                 sprintf(buf, "%s->set_", class_var);
                 call(set_str, concat_cstring, buf);
@@ -1077,39 +1115,63 @@ String CX_class_op_out(CX self, List scope, Token *t,
                         call(set_str, concat_cstring, buf);
                     }
                 } else {
-                    ClassDec cd_lookup = call(self, scope_lookup, scope, target, NULL);
                     if (cd_lookup)
                         expected_type = cd_lookup->class_name;
                 }
                 call(self, token_out, t_member, 0, set_str);
-                call(self, token_out, t_assign, 0, set_str);
             }
-
-            String type_returned = NULL;
-            // code_out needs to be aware that this is being received into a var
-            int assign_code_flags = 0;
-            String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false, &type_returned,
-                method, brace_depth, &assign_code_flags, true);
-            t = *t_after;
             String cast = NULL;
+            bool tracked = call(self, is_tracking, sc, target);
             if (type_returned) {
                 ClassDec cd_returned = pairs_value(self->static_class_map, type_returned, ClassDec);
                 ClassDec cd_expected = pairs_value(self->static_class_map, expected_type, ClassDec);
                 cast = call(self, inheritance_cast, cd_expected, cd_returned);
-            }
-            if (cast) {
-                sprintf(buf, "(%s)(%s)", cast->buffer, code->buffer);
-                call(output, concat_cstring, buf);
+                if (t_assign->punct != "=") {
+                    fprintf(stderr, "Invalid assignment on object: %s\n", t_assign->punct);
+                    exit(1);
+                }
+                // start tracking if not
+                if (setter_method) {
+                    if (cast) {
+                        sprintf(buf, "%s (%s)%s)", set_str->buffer, cast->buffer, code->buffer);
+                    } else {
+                        sprintf(buf, "%s %s)", set_str->buffer, code->buffer);
+                    }
+                    call(output, concat_cstring, buf);
+                } else if (!tracked) {
+                    call(self, start_tracking, scope, target);
+                    // do not retain ALLOC'd objects, because you must handle things like methods returning an already ref'd object such as a member; its retained upon return
+                    // if there is no receiver, the object MUST be released
+                    if (cast)
+                        sprintf(buf, "%s = (%s)%s", set_str->buffer, cast->buffer, code->buffer);
+                    else {
+                        // let compiler warn or error
+                        sprintf(buf, "%s = %s", set_str->buffer, code->buffer);
+                    }
+                    call(output, concat_cstring, buf);
+                } else {
+                    if (cast)
+                        sprintf(buf, "(%s)update_var((Base *)&(%s), (Base)(%s))", cast->buffer, set_str->buffer, code->buffer);
+                    else {
+                        fprintf(stderr, "Invalid object assignment\n");
+                        exit(1);
+                    }
+                    call(output, concat_cstring, buf);
+                }
             } else {
-                call(set_str, concat_string, code);
-            }
-            call(output, concat_string, set_str);
-            if (md && md->setter_start) {
-                sprintf(buf, ")");
-                call(output, concat_cstring, buf);
+                if (tracked) {
+                    // usually this is going to be something like setting the object to null
+                    sprintf(buf, "update_var((Base *)&(%s), (Base)(%s))", set_str->buffer, code->buffer);
+                    call(output, concat_cstring, buf);
+                } else {
+                    call(output, concat_string, set_str);
+                    call(self, token_out, t_assign, 0, output);
+                    call(output, concat_string, code);
+                }
+                if (setter_method)
+                    call(output, concat_char, ')');
             }
             release(set_str);
-            t = *t_after;
         } else if (md) {
             if (md->getter_start) {
                 //if (md->type_cd)

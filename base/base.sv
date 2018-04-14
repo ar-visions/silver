@@ -18,7 +18,9 @@ class Base {
         
         
         
-        
+        Base b = self.test();
+        Base c = b;
+        c = null;
 
 
 
