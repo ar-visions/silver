@@ -1425,8 +1425,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     int ret_code_flags = 0;
                     String code = call(self, code_out, scope, t + 1, &t[token_count - 2], t_after,
                         NULL, false, type_last, method, brace_depth, &ret_code_flags, true);
-
-                    ClassDec cd_ret = pairs_value(self->static_class_map, method->type_str, ClassDec);
+                    ClassDec cd_scope = call(self, scope_lookup, scope, code, NULL);
+                    ClassDec cd_ret = pairs_value(self->static_class_map, method->type_str, ClassDec); // perform scope lookup
                     sprintf(buf, "%s ret = %s;\n", method->type_cd->struct_object->buffer, code->buffer);
                     call(output, concat_cstring, buf);
 
@@ -1445,7 +1445,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                             if (call(code, compare, name) != 0) {
                                 sprintf(buf, "\tif (%s) %s->%s(%s);\n",
                                     name->buffer, cd_var->class_name->buffer,
-                                    check_only ? "check_release" : "release", name->buffer);
+                                    check_only ? "check_release" : "release", name->buffer);  // defer release if flagged as such
                                 call(output, concat_cstring, buf);
                             }
                         }
