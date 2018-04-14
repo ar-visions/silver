@@ -44,11 +44,13 @@ class Base {
         }
         return self;
     }
+    Base defer_release() {
+        self.refs--;
+        return self;
+    }
     Base check_release() {
-        if (self.refs <= 0) {
-            Base.free_object(new Base());
-            self.free_object2(self);
-        }
+        if (self.refs <= 0)
+            Base.free_object(self);
         return self;
     }
     Base retain() {

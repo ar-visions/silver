@@ -1175,7 +1175,10 @@ String CX_class_op_out(CX self, List scope, Token *t,
                     }
                     call(output, concat_cstring, buf);
                 } else {
-                    assert(!check_only);
+                    if (check_only) {
+                        fprintf(stderr, "check_only == true\n");
+                        exit(1);
+                    }
                     if (cast)
                         sprintf(buf, "(%s)update_var((Base *)&(%s), (Base)(%s))", cast->buffer, set_str->buffer, code->buffer);
                     else {
@@ -1266,11 +1269,19 @@ String CX_scope_end(CX self, List scope, Token *end_marker) {
         each_pair(top, kv) {
             String name = (String)kv->key;
             ClassDec cd_var = (ClassDec)kv->value;
-            sprintf(buf, "if (%s) %s->release(%s);\n", name->buffer, cd_var->class_name->buffer, name->buffer);
+            bool check_only = false; // gen_var's are check_only
+            call(self, is_tracking, top, name, &check_only);
+            sprintf(buf, "\tif (%s) %s->%s(%s);\n",
+                name->buffer, cd_var->class_name->buffer,
+                check_only ? "check_release" : "release", name->buffer);
             call(output, concat_cstring, buf);
         }
         call(output, concat_cstring, "// </scope release>\n");
         list_pop(scope, Pairs);
+        if (end_marker->line == 18) {
+            int test = 0;
+            test++;
+        }
         sprintf(buf, "# %d \"%s\"\n", end_marker->line, end_marker->file->buffer);
         call(output, concat_cstring, buf);
     }
@@ -1318,6 +1329,10 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     if (output->length > 0 && output->buffer[output->length - 1] != '\n') {
                         call(output, concat_char, '\n');
                         //extra_lines = 0;
+                    }
+                    if (method_start->line == 18) {
+                        int test = 0;
+                        test++;
                     }
                     sprintf(line_number, "# %d \"%s\"\n", method_start->line + extra_lines, method_start->file->buffer);
                     call(output, concat_cstring, line_number);
@@ -1426,6 +1441,9 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     String code = call(self, code_out, scope, t + 1, &t[token_count - 2], t_after,
                         NULL, false, type_last, method, brace_depth, &ret_code_flags, true);
                     ClassDec cd_scope = call(self, scope_lookup, scope, code, NULL);
+                    // if found, flag as defer_release()
+                    // gen vars should be released if their ref count is 0
+                    // normal scoped vars should be released normally
                     ClassDec cd_ret = pairs_value(self->static_class_map, method->type_str, ClassDec); // perform scope lookup
                     sprintf(buf, "%s ret = %s;\n", method->type_cd->struct_object->buffer, code->buffer);
                     call(output, concat_cstring, buf);
@@ -1440,14 +1458,17 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         each_pair(sc, kv) {
                             String name = (String)kv->key;
                             ClassDec cd_var = (ClassDec)kv->value;
-                            bool check_only = false;
-                            call(self, is_tracking, sc, var, &check_only);
+                            bool check_only = false; // gen_var's are check_only
+                            call(self, is_tracking, sc, name, &check_only);
                             if (call(code, compare, name) != 0) {
                                 sprintf(buf, "\tif (%s) %s->%s(%s);\n",
                                     name->buffer, cd_var->class_name->buffer,
-                                    check_only ? "check_release" : "release", name->buffer);  // defer release if flagged as such
-                                call(output, concat_cstring, buf);
+                                    check_only ? "check_release" : "release", name->buffer);
+                            } else {
+                                sprintf(buf, "\tif (%s) %s->defer_release(%s);\n",
+                                    name->buffer, cd_var->class_name->buffer, name->buffer);
                             }
+                            call(output, concat_cstring, buf);
                         }
                         sc_index--;
                     }
@@ -2381,6 +2402,10 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                             block_start++;
                         if (block_end->punct == "}")
                             block_end--;
+                        if (block_start->line == 18) {
+                            int test = 0;
+                            test++;
+                        }
                         sprintf(buf, "# %d \"%s\"\n", block_start->line, block_start->file->buffer);
                         call(output, concat_cstring, buf);
                         String type_last = NULL;
