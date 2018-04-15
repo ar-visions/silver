@@ -18,8 +18,8 @@ class Base {
         
         
         
-        Base b = self.test();
-        Base c = b;
+        Base bb = self.test();
+        Base c = bb;
         c = null;
 
 
@@ -49,8 +49,8 @@ class Base {
         return self;
     }
     Base check_release() {
-        if (self.refs <= 0)
-            Base.free_object(self);
+        if (self.refs <= 0) {
+            Base.free_object(self); }
         return self;
     }
     Base retain() {

@@ -1142,7 +1142,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                     }
                     call(output, concat_cstring, buf);
                 } else if (!tracked) {
-                    call(self, start_tracking, scope, target, true);
+                    call(self, start_tracking, scope, target, false);
 
                     // proof:
                     // obj.member (1)
@@ -1263,7 +1263,7 @@ String CX_scope_end(CX self, List scope, Token *end_marker) {
     Pairs top;
     if ((top = (Pairs)call(scope, last))) {
         char buf[1024];
-        String output = new(String);
+        output = new(String);
         KeyValue kv;
         call(output, concat_cstring, "\n// <scope release>\n");
         each_pair(top, kv) {
@@ -1319,8 +1319,10 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     }
                 }
             }
-            if ((*brace_depth)++ != 0)
-                list_push(scope, new(Pairs));
+            Pairs top_before = (Pairs)call(scope, last);
+            (*brace_depth)++;
+            list_push(scope, new(Pairs));
+            
             first = false;
             if (t->punct == "{") {
                 if (line_no) {
@@ -1329,10 +1331,6 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     if (output->length > 0 && output->buffer[output->length - 1] != '\n') {
                         call(output, concat_char, '\n');
                         //extra_lines = 0;
-                    }
-                    if (method_start->line == 18) {
-                        int test = 0;
-                        test++;
                     }
                     sprintf(line_number, "# %d \"%s\"\n", method_start->line + extra_lines, method_start->file->buffer);
                     call(output, concat_cstring, line_number);
@@ -1345,8 +1343,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 Pairs top = (Pairs)call(scope, last);
                 
                 int code_block_flags = 0;
-                String code = call(self, code_out, scope, b_start + 1, b_end - 1, t_after,
-                    super_mode, line_no, type_last, method, brace_depth, &code_block_flags, assign);
+                String code = call(self, code_out, scope, b_start + 1, b_end, t_after,
+                    super_mode, false, type_last, method, brace_depth, &code_block_flags, assign);
 
                 KeyValue kv;
                 Pairs types = new(Pairs);
@@ -1354,7 +1352,11 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 each_pair(top, kv) {
                     String var = (String)kv->key;
                     bool check_only = false;
-                    if (call(self, is_tracking, top, var, &check_only)) {
+                    if (call(self, is_tracking, top, var, &check_only) && check_only) {
+                        if (call(var, cmp, "bb") == 0) {
+                            int test = 0;
+                            test++;
+                        }
                         ClassDec cd = (ClassDec)kv->value;
                         List types_for = pairs_value(types, cd, List);
                         if (!types_for) {
@@ -1365,7 +1367,12 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         list_push(types_for, var);
                     }
                 }
+                bool types_first = true;
                 each_pair(types, kv) {
+                    if (types_first) {
+                        call(types_str, concat_cstring, "\n");
+                        types_first = false;
+                    }
                     ClassDec cd = (ClassDec)kv->key;
                     List types_for = (List)kv->value;
                     String var;
@@ -1416,8 +1423,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 }
             }
         } else if (t->punct == "}") {
-            (*brace_depth)--;
-            if ((*brace_depth) != 0) {
+            if (--(*brace_depth) != 0) {
                 // release last scope
                 Pairs top = (Pairs)call(scope, last);
                 if ((top->user_flags & 1) == 0) {
