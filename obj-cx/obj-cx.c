@@ -878,7 +878,7 @@ String CX_gen_var(CX self, List scope, ClassDec cd) {
 
 String CX_var_gen_out(CX self, List scope, Token *t,
         ClassDec cd, String target, bool is_instance, Token **t_after, String *type_last,
-        MemberDec method, int *brace_depth, bool assign) {
+        int *p_flags, MemberDec method, int *brace_depth, bool assign) {
     int flags = 0;
     String code = call(self, class_op_out, scope, t, cd, target, is_instance, t_after,
                         type_last, method, brace_depth, &flags, false);
@@ -896,6 +896,8 @@ String CX_var_gen_out(CX self, List scope, Token *t,
             release(code);
             return gen_out;
         }
+    } else if (assign) {
+        *p_flags |= flags;
     }
     return code;
 }
@@ -915,8 +917,13 @@ String CX_class_op_out(CX self, List scope, Token *t,
     if (call(target, cmp, "class") == 0)
         cd = CX_find_class(string("Class"));
 
-    if (cd && (t - 1)->punct == ".")
+    if (cd && (t - 1)->punct == ".") {
         md = call(cd, member_lookup, s_token);
+        if (!md) {
+            int test = 0;
+            test++;
+        }
+    }
     if (md) {
         cd_last = md->type_cd;
         *type_last = md->type_cd ? md->type_cd->class_name : NULL;
@@ -1082,7 +1089,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
             }
             String cast = NULL;
             bool check_only = false;
-            bool tracked = call(self, is_tracking, sc, target, &check_only);
+            bool tracked = !md && call(self, is_tracking, sc, target, &check_only);
+            bool possible_alloc = (assign_code_flags & CODE_FLAG_ALLOC) != 0;
             if (type_returned) {
                 ClassDec cd_returned = pairs_value(self->static_class_map, type_returned, ClassDec);
                 ClassDec cd_expected = pairs_value(self->static_class_map, expected_type, ClassDec);
@@ -1099,7 +1107,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                         sprintf(buf, "%s %s)", set_str->buffer, code->buffer);
                     }
                     call(output, concat_cstring, buf);
-                } else if (!tracked) {
+                } else if (!tracked && possible_alloc) {
                     call(self, start_tracking, scope, target, false);
 
                     // proof:
@@ -1132,7 +1140,17 @@ String CX_class_op_out(CX self, List scope, Token *t,
                             cd_returned->class_name->buffer, code->buffer);
                     }
                     call(output, concat_cstring, buf);
-                } else {
+                } else if (!tracked) {
+                    if (cast)
+                        sprintf(buf, "%s = (%s)(%s)", set_str->buffer, cast->buffer,
+                            code->buffer);
+                    else {
+                        // let compiler warn or error
+                        sprintf(buf, "%s = (%s)", set_str->buffer,
+                            code->buffer);
+                    }
+                    call(output, concat_cstring, buf);
+                }else {
                     if (check_only) {
                         fprintf(stderr, "check_only == true\n");
                         exit(1);
@@ -1194,7 +1212,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
     }
     if (cd_last && (t + 1)->punct == ".") {
         output = call(self, var_gen_out, scope, t + 2, cd_last, output, true,
-            t_after, type_last, method, brace_depth, false); 
+            t_after, type_last, flags, method, brace_depth, false); 
     }
     return output;
 }
@@ -1223,18 +1241,16 @@ String CX_scope_end(CX self, List scope, Token *end_marker) {
         char buf[1024];
         output = new(String);
         KeyValue kv;
-        call(output, concat_cstring, "\n// <scope release>\n");
         each_pair(top, kv) {
             String name = (String)kv->key;
             ClassDec cd_var = (ClassDec)kv->value;
             bool check_only = false; // gen_var's are check_only
             call(self, is_tracking, top, name, &check_only);
-            sprintf(buf, "\tif (%s) %s->%s(%s);\n",
-                name->buffer, cd_var->class_name->buffer,
+            sprintf(buf, "\t%s->%s(%s);\n",
+                cd_var->class_name->buffer,
                 check_only ? "check_release" : "release", name->buffer);
             call(output, concat_cstring, buf);
         }
-        call(output, concat_cstring, "// </scope release>\n");
         list_pop(scope, Pairs);
         call(self, line_directive, end_marker, output);
     }
@@ -1254,6 +1270,90 @@ void CX_line_directive(CX self, Token *t, String output) {
     self->directive_last_file = t->file;
 }
 
+String CX_code_block_out(CX self, List scope, ClassDec super_mode, Token *b_start, Token *b_end, Token **t_after, MemberDec method, int *brace_depth) {
+    String output = new(String);
+    if ((*brace_depth)++ == 0) {
+        while (output->length > 0) {
+            if (isspace(output->buffer[output->length - 1])) {
+                output->length--;
+                output->buffer[output->length] = 0;
+            } else {
+                break;
+            }
+        }
+        if (super_mode) {
+            String super_code = call(self, super_out, scope, super_mode, b_start, b_end);
+            if (super_code) {
+                call(output, concat_string, super_code);
+                release(super_code);
+            }
+        }
+    }
+    list_push(scope, new(Pairs));
+    Pairs top = (Pairs)call(scope, last);
+    String type_last = NULL;
+    int code_block_flags = 0;
+    String code = call(self, code_out, scope, b_start, b_end, t_after,
+        super_mode, false, &type_last, method, brace_depth, &code_block_flags, false);
+
+    KeyValue kv;
+    Pairs types = new(Pairs);
+    String types_str = new(String);
+    each_pair(top, kv) {
+        String var = (String)kv->key;
+        bool check_only = false;
+        if (call(self, is_tracking, top, var, &check_only) && check_only) {
+            ClassDec cd = (ClassDec)kv->value;
+            List types_for = pairs_value(types, cd, List);
+            if (!types_for) {
+                types_for = new(List);
+                pairs_add(types, cd, types_for);
+                release(types_for);
+            }
+            list_push(types_for, var);
+        }
+    }
+    bool types_first = true;
+    each_pair(types, kv) {
+        if (types_first) {
+            call(types_str, concat_cstring, "\n");
+            types_first = false;
+        }
+        ClassDec cd = (ClassDec)kv->key;
+        List types_for = (List)kv->value;
+        String var;
+        call(types_str, concat_string, cd->struct_object); // todo: Lookup alias name
+        call(types_str, concat_char, ' ');
+        bool f = true;
+        each(types_for, var) {
+            if (!f)
+                call(types_str, concat_cstring, ", ");
+            call(types_str, concat_string, var);
+            f = false;
+        }
+        call(types_str, concat_cstring, ";\n");
+    }
+    
+    call(output, concat_string, types_str);
+    call(self, line_directive, b_start, output);
+    call(output, concat_string, code);
+    return output;
+}
+
+void CX_code_block_end(CX self, List scope, Token *t, int *brace_depth, String output) {
+    if (--(*brace_depth) != 0) {
+        // release last scope
+        Pairs top = (Pairs)call(scope, last);
+        if ((top->user_flags & 1) == 0) {
+            String scope_end = call(self, scope_end, scope, t);
+            if (scope_end) {
+                call(output, concat_string, scope_end);
+                release(scope_end);
+            }
+        }
+    }
+}
+
 String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, Token **t_after,
         ClassDec super_mode, bool line_no, String *type_last, MemberDec method, int *brace_depth, int *flags, bool assign) {
     *type_last = NULL;
@@ -1263,90 +1363,18 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
     for (Token *t = method_start; ; t++) {
         if (t->skip)
             continue;
-        // find 
-        if (t->keyword == "new" || t->keyword == "auto")
+        if (t->keyword == "new")
             token_next(&t);
         if (t->punct == "{" || t->keyword == "for") {
             call(self, token_out, t, ' ', output);
-            if (first) {
-                while (output->length > 0) {
-                    if (isspace(output->buffer[output->length - 1])) {
-                        output->length--;
-                        output->buffer[output->length] = 0;
-                    } else {
-                        break;
-                    }
-                }
-                if (super_mode) {
-                    String super_code = call(self, super_out, scope, super_mode, method_start, method_end);
-                    if (super_code) {
-                        call(output, concat_string, super_code);
-                        release(super_code);
-                    }
-                }
-            }
-            Pairs top_before = (Pairs)call(scope, last);
-            (*brace_depth)++;
-            list_push(scope, new(Pairs));
-            
-            first = false;
             if (t->punct == "{") {
                 Token *b_start = NULL, *b_end = NULL;
                 int token_count = call(self, read_block, t, &b_start, &b_end);
                 t = &t[token_count];
-
-                // output generated var declarations here, init as NULL
-                Pairs top = (Pairs)call(scope, last);
-                
-                int code_block_flags = 0;
-                String code = call(self, code_out, scope, b_start + 1, b_end, t_after,
-                    super_mode, false, type_last, method, brace_depth, &code_block_flags, assign);
-
-                KeyValue kv;
-                Pairs types = new(Pairs);
-                String types_str = new(String);
-                each_pair(top, kv) {
-                    String var = (String)kv->key;
-                    bool check_only = false;
-                    if (call(self, is_tracking, top, var, &check_only) && check_only) {
-                        if (call(var, cmp, "bb") == 0) {
-                            int test = 0;
-                            test++;
-                        }
-                        ClassDec cd = (ClassDec)kv->value;
-                        List types_for = pairs_value(types, cd, List);
-                        if (!types_for) {
-                            types_for = new(List);
-                            pairs_add(types, cd, types_for);
-                            release(types_for);
-                        }
-                        list_push(types_for, var);
-                    }
-                }
-                bool types_first = true;
-                each_pair(types, kv) {
-                    if (types_first) {
-                        call(types_str, concat_cstring, "\n");
-                        types_first = false;
-                    }
-                    ClassDec cd = (ClassDec)kv->key;
-                    List types_for = (List)kv->value;
-                    String var;
-                    call(types_str, concat_string, cd->struct_object); // todo: Lookup alias name
-                    call(types_str, concat_char, ' ');
-                    bool f = true;
-                    each(types_for, var) {
-                        if (!f)
-                            call(types_str, concat_cstring, ", ");
-                        call(types_str, concat_string, var);
-                        f = false;
-                    }
-                    call(types_str, concat_cstring, ";\n");
-                }
-                
-                call(output, concat_string, types_str);
-                call(self, line_directive, b_start + 1, output);
+                String code = call(self, code_block_out, scope, super_mode, b_start + 1, b_end, t_after, method, brace_depth);
                 call(output, concat_string, code);
+            } else {
+                list_push(scope, new(Pairs)); // new scope in for expression
             }
         } else if (t->keyword == "if" || t->keyword == "while") {
             // check for beginning block
@@ -1361,38 +1389,25 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     int if_code_flags = 0;
                     String if_code = call(self, code_out, scope, t + 2, &t[n - 1], t_after,
                         NULL, false, type_last, method, brace_depth, &if_code_flags, false);
-                    if_code_flags = 0;
-                    String code = call(self, code_out, scope, t_if, &t_if[token_count], t_after,
-                        NULL, false, type_last, method, brace_depth, &if_code_flags, false);
+
                     call(self, token_out, t + 1, ' ', output);
                     call(output, concat_string, if_code);
                     call(self, token_out, t_if - 1, ' ', output);
                     call(output, concat_cstring, "{\n");
-                    call(self, line_directive, t_if, output);
-                    call(output, concat_string, code);
-                    String scope_end = call(self, scope_end, scope, &t_if[token_count + 1]);
-                    if (scope_end) {
-                        call(output, concat_string, scope_end);
-                        release(scope_end);
-                    }
+
+                    Token *b_start = NULL, *b_end = NULL;
+                    String block_code = call(self, code_block_out, scope, super_mode, t_if, &t_if[token_count], t_after, method, brace_depth);
+                    call(output, concat_string, block_code);
+                    call(self, code_block_end, scope, NULL, brace_depth, output);
                     call(output, concat_cstring, "\n}\n");
+                    
                     t = &t_if[token_count];
-                    //if (t->punct == ";")
-                    //    t++;
+
+                    call(self, line_directive, t + 1, output);
                 }
             }
         } else if (t->punct == "}") {
-            if (--(*brace_depth) != 0) {
-                // release last scope
-                Pairs top = (Pairs)call(scope, last);
-                if ((top->user_flags & 1) == 0) {
-                    String scope_end = call(self, scope_end, scope, t);
-                    if (scope_end) {
-                        call(output, concat_string, scope_end);
-                        release(scope_end);
-                    }
-                }
-            }
+            call(self, code_block_end, scope, t, brace_depth, output);
             call(self, token_out, t, ' ', output);
         } else if (t->keyword == "return") {
             // pass pairs to code out to find out if vars are referenced
@@ -1401,7 +1416,6 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 int token_count = call(self, read_expression, t + 1, NULL, NULL, ";", 0, false);
 
                 if (token_count > 0) {
-                    call(output, concat_cstring, "// begin of return --------------------- \n");
                     int ret_code_flags = 0;
                     String code = call(self, code_out, scope, t + 1, &t[token_count - 2], t_after,
                         NULL, false, type_last, method, brace_depth, &ret_code_flags, true);
@@ -1424,21 +1438,22 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                             String name = (String)kv->key;
                             ClassDec cd_var = (ClassDec)kv->value;
                             bool check_only = false; // gen_var's are check_only
-                            call(self, is_tracking, sc, name, &check_only);
-                            if (call(code, compare, name) != 0) {
-                                sprintf(buf, "\tif (%s) %s->%s(%s);\n",
-                                    name->buffer, cd_var->class_name->buffer,
-                                    check_only ? "check_release" : "release", name->buffer);
-                            } else {
-                                sprintf(buf, "\tif (%s) %s->defer_release(%s);\n",
-                                    name->buffer, cd_var->class_name->buffer, name->buffer);
+                            bool tracking = call(self, is_tracking, sc, name, &check_only);
+                            if (tracking) {
+                                if (call(code, compare, name) != 0) {
+                                    sprintf(buf, "\t%s->%s(%s);\n",
+                                        cd_var->class_name->buffer,
+                                        check_only ? "check_release" : "release", name->buffer);
+                                } else {
+                                    sprintf(buf, "\t%s->defer_release(%s);\n",
+                                        cd_var->class_name->buffer, name->buffer);
+                                }
+                                call(output, concat_cstring, buf);
                             }
-                            call(output, concat_cstring, buf);
                         }
                         sc_index--;
                     }
                     call(output, concat_cstring, "\treturn ret;\n");
-                    call(output, concat_cstring, "// end of return --------------------- \n");
                     t = &t[token_count + 1];
                     Pairs top = (Pairs)call(scope, last);
                     top->user_flags = 1;
@@ -1534,13 +1549,13 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     target = t->str;
                     pairs_add(top, str_name, cd);
                     String out = call(self, var_gen_out, scope, t, cd, target, false, &t,
-                        type_last, method, brace_depth, false);
+                        type_last, flags, method, brace_depth, false);
                     call(output, concat_string, out);
                 } else if (t->punct == ".") {
                     token_next(&t);
                     if (t->type == TT_Identifier) {
                         String out = call(self, var_gen_out, scope, t, cd, target, false, &t,
-                            type_last, method, brace_depth, assign);
+                            type_last, flags, method, brace_depth, assign);
                         call(output, concat_string, out);
                     }
                 } else if (t->punct == "(") {
@@ -1550,7 +1565,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     }
                     // construct (default)
                     String out = call(self, var_gen_out, scope, t - 1, cd, target, false, &t,
-                        type_last, method, brace_depth, assign);
+                        type_last, flags, method, brace_depth, assign);
                     call(output, concat_string, out);
                 } else {
                     call(output, concat_string, is_class ? cd->struct_class : cd->struct_object);
@@ -1564,13 +1579,13 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     if ((t + 1)->punct == ".") {
                         if ((t + 2)->type == TT_Identifier) {
                             String out = call(self, var_gen_out, scope, t + 2, cd, target, true, &t,
-                                type_last, method, brace_depth, assign);
+                                type_last, flags, method, brace_depth, assign);
                             call(output, concat_string, out);
                             found = true;
                         }
                     } else {
                         String out = call(self, var_gen_out, scope, t, cd, target, true, &t,
-                            type_last, method, brace_depth, assign);
+                            type_last, flags, method, brace_depth, assign);
                         call(output, concat_string, out);
                         found = true;
                     }
@@ -1588,7 +1603,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
         if (t >= method_end)
             break;
     }
-    if (!*type_last && output->length > 0) {
+    if (output->length > 0) {
         Pairs scope_at = NULL;
         ClassDec cd_found = call(self, scope_lookup, scope, output, &scope_at);
         if (cd_found) {

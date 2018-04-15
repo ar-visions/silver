@@ -18,7 +18,7 @@ class String {
         String self = new String();
         self.resize(len + 1, true, false);
         memcpy(self.buffer, value, len + 1);
-        return (String)self.autorelease();
+        return self;
     }
     void resize(int new_size, bool tight, bool copy) {
         if (new_size >= self.alloc_size) {
