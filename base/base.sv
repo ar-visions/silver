@@ -16,27 +16,14 @@ class Base {
     Base release() {
         int i;
         
-        
-        
         Base bb = self.test();
-        Base c = bb;
-        c = null;
+        Base cc = bb;
+        cc = null;
 
-
-
-        
-        
         self.test();
 
-
-
-
-
-
-
-
-
-
+        if (--self.refs <= 0)
+            Base.free_object(new Base());
 
         if (--self.refs <= 0) {
             Base.free_object(new Base());

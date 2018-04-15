@@ -915,50 +915,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
     if (call(target, cmp, "class") == 0)
         cd = CX_find_class(string("Class"));
 
-    if (cd) {
+    if (cd && (t - 1)->punct == ".")
         md = call(cd, member_lookup, s_token);
-        if (call(s_token, cmp, "free_object2") == 0) {
-            int test = 0;
-            test++;
-            // how to insert an immediate release when the alloc is not used (wait till end of scope)
-            // what is certainly needed is when an already tracked var gets set again, it must be released
-            // how to properly track member vars
-            // cases like:
-            // obj.call().prop = obj2.call().prop3;
-            /*
-                you want to do the following: 
-                
-                (gen2 = (gen1 = Obj_call(obj))->prop); // gets the current property value
-
-                (gen4 = (gen3 = Obj_call(obj2))->prop3); // gets the value to set to
-                
-                gen1->prop = Obj_retain(gen4); // performs set; if this value is the same, it gets retained, then released later, keeping the same ref count
-                Obj_release(gen2);
-
-                // how to do this in one expression?
-
-                Obj_set_prop(Obj_get_prop3(Obj_call(obj2)))
-
-                inline Base update_var(Base *var, Base value) {
-                    Base before = *var;
-                    *var = value;
-                    if (value)
-                        value->refs++;
-                    if (before)
-                        Base_release(before);
-                    return value;
-                }
-
-                the above works for non-block props and scoped vars
-
-                Base b = self.test(); // start tracking
-                b = self.test2(); // update_var, because this is tracked and contains an object already
-
-                Base b = Base_test(self);
-                b = update_var(&b, Base_test2(self)); // this is injectable into any expression
-            */
-        }
-    }
     if (md) {
         cd_last = md->type_cd;
         *type_last = md->type_cd ? md->type_cd->class_name : NULL;
@@ -1089,7 +1047,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
             int assign_code_flags = 0;
             String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false, &type_returned,
                 method, brace_depth, &assign_code_flags, true);
-            if (call(code, cmp, "b") == 0) {
+            if (call(code, cmp, "cc") == 0) {
                 int test = 0;
                 test++;
             }
@@ -1180,7 +1138,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                         exit(1);
                     }
                     if (cast)
-                        sprintf(buf, "(%s)update_var((Base *)&(%s), (Base)(%s))", cast->buffer, set_str->buffer, code->buffer);
+                        sprintf(buf, "(%s)update_var((base_Base *)&(%s), (base_Base)(%s))", cast->buffer, set_str->buffer, code->buffer);
                     else {
                         fprintf(stderr, "Invalid object assignment\n");
                         exit(1);
@@ -1190,7 +1148,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
             } else {
                 if (tracked) {
                     // usually this is going to be something like setting the object to null
-                    sprintf(buf, "update_var((Base *)&(%s), (Base)(%s))", set_str->buffer, code->buffer);
+                    sprintf(buf, "update_var((base_Base *)&(%s), (base_Base)(%s))", set_str->buffer, code->buffer);
                     call(output, concat_cstring, buf);
                 } else {
                     call(output, concat_string, set_str);
@@ -1278,14 +1236,22 @@ String CX_scope_end(CX self, List scope, Token *end_marker) {
         }
         call(output, concat_cstring, "// </scope release>\n");
         list_pop(scope, Pairs);
-        if (end_marker->line == 18) {
-            int test = 0;
-            test++;
-        }
-        sprintf(buf, "# %d \"%s\"\n", end_marker->line, end_marker->file->buffer);
-        call(output, concat_cstring, buf);
+        call(self, line_directive, end_marker, output);
     }
     return output;
+}
+
+void CX_line_directive(CX self, Token *t, String output) {
+    return;
+    if (self->directive_last_line == t->line && self->directive_last_file && 
+            call(t->file, compare, self->directive_last_file) == 0)
+        return;
+    char buf[1024];
+    int last_char = max(0, output->length - 1);
+    sprintf(buf, "%s# %d \"%s\"\n", (output->buffer[last_char] == '\n' ? "" : "\n"), t->line, t->file->buffer);
+    call(output, concat_cstring, buf);
+    self->directive_last_line = t->line;
+    self->directive_last_file = t->file;
 }
 
 String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, Token **t_after,
@@ -1325,16 +1291,6 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             
             first = false;
             if (t->punct == "{") {
-                if (line_no) {
-                    char line_number[1024];
-                    int extra_lines = 1;
-                    if (output->length > 0 && output->buffer[output->length - 1] != '\n') {
-                        call(output, concat_char, '\n');
-                        //extra_lines = 0;
-                    }
-                    sprintf(line_number, "# %d \"%s\"\n", method_start->line + extra_lines, method_start->file->buffer);
-                    call(output, concat_cstring, line_number);
-                }
                 Token *b_start = NULL, *b_end = NULL;
                 int token_count = call(self, read_block, t, &b_start, &b_end);
                 t = &t[token_count];
@@ -1387,7 +1343,9 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     }
                     call(types_str, concat_cstring, ";\n");
                 }
+                
                 call(output, concat_string, types_str);
+                call(self, line_directive, b_start + 1, output);
                 call(output, concat_string, code);
             }
         } else if (t->keyword == "if" || t->keyword == "while") {
@@ -1404,22 +1362,23 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     String if_code = call(self, code_out, scope, t + 2, &t[n - 1], t_after,
                         NULL, false, type_last, method, brace_depth, &if_code_flags, false);
                     if_code_flags = 0;
-                    String code = call(self, code_out, scope, t_if, &t_if[token_count - 1], t_after,
+                    String code = call(self, code_out, scope, t_if, &t_if[token_count], t_after,
                         NULL, false, type_last, method, brace_depth, &if_code_flags, false);
                     call(self, token_out, t + 1, ' ', output);
                     call(output, concat_string, if_code);
                     call(self, token_out, t_if - 1, ' ', output);
                     call(output, concat_cstring, "{\n");
+                    call(self, line_directive, t_if, output);
                     call(output, concat_string, code);
                     String scope_end = call(self, scope_end, scope, &t_if[token_count + 1]);
                     if (scope_end) {
                         call(output, concat_string, scope_end);
                         release(scope_end);
                     }
-                    call(output, concat_cstring, ";\n}\n");
+                    call(output, concat_cstring, "\n}\n");
                     t = &t_if[token_count];
-                    if (t->punct == ";")
-                        t++;
+                    //if (t->punct == ";")
+                    //    t++;
                 }
             }
         } else if (t->punct == "}") {
@@ -1609,6 +1568,11 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                             call(output, concat_string, out);
                             found = true;
                         }
+                    } else {
+                        String out = call(self, var_gen_out, scope, t, cd, target, true, &t,
+                            type_last, method, brace_depth, assign);
+                        call(output, concat_string, out);
+                        found = true;
                     }
                 }
                 if (!found)
@@ -2408,12 +2372,6 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                             block_start++;
                         if (block_end->punct == "}")
                             block_end--;
-                        if (block_start->line == 18) {
-                            int test = 0;
-                            test++;
-                        }
-                        sprintf(buf, "# %d \"%s\"\n", block_start->line, block_start->file->buffer);
-                        call(output, concat_cstring, buf);
                         String type_last = NULL;
                         int prop_code_flags = 0;
                         int brace_depth = 0;
@@ -2641,6 +2599,18 @@ bool CX_process(CX self, const char *location) {
     }
     call(self, emit_module_statics, NULL, false);
     call(self, declare_classes, module_header);
+
+    if (call(self->name, cmp, "base") == 0) {
+        fprintf(module_header, "\nstatic inline base_Base update_var(base_Base *var, base_Base value) {\n");
+        fprintf(module_header, "\tbase_Base before = *var;\n");
+        fprintf(module_header, "\t*var = value;\n");
+        fprintf(module_header, "\tif (value)\n");
+        fprintf(module_header, "\t\tvalue->cl->retain(value);\n");
+        fprintf(module_header, "\tif (before)\n");
+        fprintf(module_header, "\t\tbefore->cl->release(before);\n");
+        fprintf(module_header, "\treturn value;\n");
+        fprintf(module_header, "}\n");
+    }
     fprintf(module_header, "#endif\n");
     fclose(module_header);
 
