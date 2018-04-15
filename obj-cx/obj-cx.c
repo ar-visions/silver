@@ -1110,7 +1110,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 } else if (!tracked && possible_alloc) {
                     call(self, start_tracking, scope, target, false);
 
-                    // proof:
+                    // proof: [logic has been augmented to not start tracking when setting to member on object]
                     // obj.member (1)
                     // Base b = obj.member; (2)
                     // Base ret = b; (2)
@@ -1424,7 +1424,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     // gen vars should be released if their ref count is 0
                     // normal scoped vars should be released normally
                     ClassDec cd_ret = pairs_value(self->static_class_map, method->type_str, ClassDec); // perform scope lookup
-                    sprintf(buf, "%s ret = %s;\n", method->type_cd->struct_object->buffer, code->buffer);
+                    sprintf(buf, "%s __ret = %s;\n", method->type_cd->struct_object->buffer, code->buffer);
                     call(output, concat_cstring, buf);
 
                     Pairs sc;
@@ -1453,7 +1453,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         }
                         sc_index--;
                     }
-                    call(output, concat_cstring, "\treturn ret;\n");
+                    call(output, concat_cstring, "\treturn __ret;\n");
                     t = &t[token_count + 1];
                     Pairs top = (Pairs)call(scope, last);
                     top->user_flags = 1;
