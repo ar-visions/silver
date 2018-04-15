@@ -40,6 +40,8 @@ typedef struct _Token {
 
 #define _CX(D,T,C) _Base(spr,T,C)   \
     override(D,T,C,void,init,(C)) \
+    method(D,T,C,String,code_block_out,(C, List, struct _object_ClassDec *, Token *, Token *, Token **, struct _object_MemberDec *, int *)) \
+    method(D,T,C,void,code_block_end,(C, List, Token *, int *, String)) \
     method(D,T,C,String,super_out,(C,List,struct _object_ClassDec *,Token *,Token *)) \
     method(D,T,C,Token *,read_tokens,(C,List,List,int *)) \
     method(D,T,C,void,merge_class_tokens,(C,Token *,int *)) \
@@ -72,7 +74,7 @@ typedef struct _Token {
     method(D,T,C,int,read_block,(C,Token *,Token **,Token **)) \
     method(D,T,C,bool,is_tracking,(C, Pairs, String, bool *)) \
     method(D,T,C,String,var_gen_out,(C, List , Token *, struct _object_ClassDec *, String, \
-        bool, Token **, String *, struct _object_MemberDec *, int *, bool)) \
+        bool, Token **, String *, int *, struct _object_MemberDec *, int *, bool)) \
     method(D,T,C,void,resolve_member_types,(C, struct _object_ClassDec *)) \
     method(D,T,C,void,line_directive,(C, Token *, String)) \
     var(D,T,C,int,directive_last_line)     \

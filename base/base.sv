@@ -14,15 +14,18 @@ class Base {
         return self;
     }
     Base release() {
+        if (!self)
+            return null;
         int i;
         
+        Base aa = self.cl;
         Base bb = self.test();
         Base cc = bb;
         cc = null;
 
         self.test();
 
-        if (--self.refs <= 0)
+        if (atest)
             Base.free_object(new Base());
 
         if (--self.refs <= 0) {
@@ -32,19 +35,22 @@ class Base {
         return self;
     }
     Base defer_release() {
+        if (!self)
+            return null;
         self.refs--;
         return self;
     }
     Base check_release() {
+        if (!self)
+            return null;
         if (self.refs <= 0) {
             Base.free_object(self); }
         return self;
     }
     Base retain() {
+        if (!self)
+            return null;
         self.refs++;
-        return self;
-    }
-    Base autorelease() {
         return self;
     }
     void dealloc() {
@@ -76,6 +82,7 @@ class Base {
     static Base new_object(Class cl, size_t extra_size, bool auto_release) {
         Base obj = (Base)alloc_bytes(cl.object_size + extra_size);
         obj.cl = (BaseClass)cl;
+        obj.refs = 1;
         Base.init_object(obj, (Class)obj.cl, true);
         Base.init_object(obj, (Class)obj.cl, false);
         return obj;
