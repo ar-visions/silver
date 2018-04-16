@@ -113,12 +113,14 @@ declare(CX, Base)
     var(D,T,C,Token *,array_end)           \
     var(D,T,C,Token **,arg_names)          \
     var(D,T,C,Token **,arg_types)          \
+    var(D,T,C,bool *,arg_preserve)         \
     var(D,T,C,int,arg_types_count)         \
     var(D,T,C,int *,at_token_count)        \
     var(D,T,C,Token *,assign)              \
     var(D,T,C,int,assign_count)            \
     var(D,T,C,Token *,args)                \
     var(D,T,C,int,args_count)              \
+    var(D,T,C,bool,is_weak)                \
     var(D,T,C,bool,is_private)             \
     var(D,T,C,bool,is_static)              \
     var(D,T,C,bool,is_const)               \
