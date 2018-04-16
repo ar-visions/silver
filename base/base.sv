@@ -3,10 +3,24 @@ private include module_loader;
 
 class Base {
     Class cl;
+    weak Base weakish;
+    Base nonweak;
     int refs;
 
     int cast(Base obj) {
         return 1;
+    }
+    static Base instance(preserve Base obj) {
+        int test = (int)obj;
+        Class c = (Class)obj.cl;
+        while (c) {
+            if (c == (Class)class)
+                return obj;
+            if (c == Class.parent)
+                break;
+            c = c.parent;
+        }
+        return NULL;
     }
     void init() {
     }
@@ -14,19 +28,20 @@ class Base {
         return self;
     }
     Base release() {
-        if (!self)
+        if (!self) {
             return null;
+        }
         int i;
         
         Base aa = self.cl;
         Base bb = self.test();
         Base cc = bb;
+        self.weakish = self.test();
+        self.nonweak = self.test();
+        self.nonweak = self.test();
         cc = null;
 
         self.test();
-
-        if (atest)
-            Base.free_object(new Base());
 
         if (--self.refs <= 0) {
             Base.free_object(new Base());
@@ -56,18 +71,6 @@ class Base {
     void dealloc() {
     }
     static void class_init() { }
-    static Base instance(preserve Base obj) {
-        int test = (int)obj;
-        Class c = (Class)obj.cl;
-        while (c) {
-            if (c == (Class)class)
-                return obj;
-            if (c == Class.parent)
-                break;
-            c = c.parent;
-        }
-        return NULL;
-    }
     static BaseMethod init_object(Base obj, Class with_cl, bool _init) {
         BaseMethod i = null;
         if (with_cl.parent)

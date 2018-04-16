@@ -102,7 +102,7 @@ Token *CX_read_tokens(CX self, List module_contents, List module_files, int *n_t
         "synchronized","template","this","thread_local","throw","true","try",
         "typedef","typeid","typename","union","unsigned","using","virtual",
         "void","volatile","wchar_t","while","xor","xor_eq",
-        "get","set","construct"
+        "get","set","construct","weak","preserve"
     };
     const char type_keywords[] = {
         0,0,0,0,0,0,0,
@@ -118,7 +118,7 @@ Token *CX_read_tokens(CX self, List module_contents, List module_files, int *n_t
         0,0,0,0,1,0,
         0,0,0,0,0,0,0,
         0,0,0,0,1,0,0,
-        0,0,1,0,0,0
+        0,0,1,0,0,0,0,0
     };
     int n_keywords = sizeof(keywords) / sizeof(const char *);
     int keyword_lens[n_keywords];
@@ -191,6 +191,16 @@ Token *CX_read_tokens(CX self, List module_contents, List module_files, int *n_t
                     size_t length = (size_t)(value - t->value);
                     t->length = length;
                     t->str = class_call(String, new_from_bytes, (uint8 *)t->value, t->length);
+                    if (t->type == TT_Identifier) {
+                        for (int k = 0; k < n_keywords; k++) {
+                            const char *keyword = keywords[k];
+                            if (length == keyword_lens[k] && memcmp(t->value, keyword, length) == 0) {
+                                t->type_keyword = type_keywords[k] ? keyword : NULL;
+                                t->type = TT_Keyword;
+                                t->keyword = keyword;
+                            }
+                        }
+                    }
                     nt++;
                     t = NULL;
                 }
@@ -229,6 +239,10 @@ find_punct:
                     if (!cont) {
                         t->length = length - 1;
                         t->str = class_call(String, new_from_bytes, (uint8 *)t->value, t->length);
+                        if (call(t->str, cmp, "int") == 0) {
+                            int test = 0;
+                            test++;
+                        }
                         nt++;
                         t = (Token *)&tokens[nt];
                         t->file = retain(current_file);
@@ -535,20 +549,27 @@ bool CX_read_classes(CX self) {
             while (t->punct != "}") {
                 MemberDec md = new(MemberDec);
                 md->cd = cd;
-                for (int i = 0; i < 3; i++) {
-                    if (t->keyword == "static") {
-                        md->is_static = true;
-                        token_next(&t);
-                    } else if (t->keyword == "private") {
-                        md->is_private = true;
-                        token_next(&t);
+                if (t->keyword == "static") {
+                    md->is_static = true;
+                    token_next(&t);
+                }
+                if (t->keyword == "private") {
+                    md->is_private = true;
+                    token_next(&t);
+                }
+                if (t->keyword == "weak") {
+                    if (md->type != MT_Prop) {
+                        fprintf(stderr, "weak keyword is only allowed on vars\n");
+                        exit(1);
                     }
+                    md->is_weak = true;
+                    token_next(&t);
                 }
                 Token *block_start = NULL, *block_end = NULL;
                 int token_count = call(self, read_expression, t, &block_start, &block_end, "{;),", 0, false);
                 if (token_count == 0) {
                     if (md->is_static || md->is_private) {
-                        printf("expected expression\n");
+                        fprintf(stderr, "expected expression\n");
                         exit(1);
                     }
                     token_next(&t);
@@ -666,6 +687,7 @@ bool CX_read_classes(CX self) {
                     if (n_args > 0) {
                         md->arg_names = alloc_bytes(sizeof(Token *) * n_args);
                         md->arg_types = alloc_bytes(sizeof(Token *) * n_args);
+                        md->arg_preserve = alloc_bytes(sizeof(bool) * n_args);
                         md->at_token_count = alloc_bytes(sizeof(int) * n_args);
                         Token *t_start = md->args;
                         Token *t_cur = md->args;
@@ -674,9 +696,11 @@ bool CX_read_classes(CX self) {
                         while (paren_depth >= 0) {
                             if (t_cur->punct == "," || (paren_depth == 0 && t_cur->punct == ")")) {
                                 int tc = md->arg_types_count;
+                                bool is_preserve = (t_start && t_start->keyword == "preserve");
                                 md->arg_names[tc] = t_cur - 1;
-                                md->arg_types[tc] = t_start;
-                                md->at_token_count[tc] = type_tokens - 1;
+                                md->arg_types[tc] = is_preserve ? t_start + 1 : t_start;
+                                md->arg_preserve[tc] = is_preserve;
+                                md->at_token_count[tc] = type_tokens - 1 - (is_preserve ? 1 : 0);
                                 md->arg_types_count++;
                                 t_start = t_cur + 1;
                                 type_tokens = 0;
@@ -888,7 +912,12 @@ String CX_var_gen_out(CX self, List scope, Token *t,
             char buf[1024];
             String gen_out = new(String);
             // generate virtually scoped var; this value must be released when this scope exits
+            Pairs top = (Pairs)call(scope, last);
             String gen_var = call(self, gen_var, scope, cd_returned);
+            if (call(gen_var, cmp, "_gen_1") == 0) {
+                int test = 0;
+                test++;
+            }
             sprintf(buf, "(%s = ", gen_var->buffer);
             call(gen_out, concat_cstring, buf);
             call(gen_out, concat_string, code);
@@ -1054,10 +1083,6 @@ String CX_class_op_out(CX self, List scope, Token *t,
             int assign_code_flags = 0;
             String code = call(self, code_out, scope, t, &t[n - 1], t_after, NULL, false, &type_returned,
                 method, brace_depth, &assign_code_flags, true);
-            if (call(code, cmp, "cc") == 0) {
-                int test = 0;
-                test++;
-            }
             t = *t_after;
             if (md && md->setter_start) {
                 setter_method = true;
@@ -1090,7 +1115,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
             String cast = NULL;
             bool check_only = false;
             bool tracked = !md && call(self, is_tracking, sc, target, &check_only);
-            bool possible_alloc = (assign_code_flags & CODE_FLAG_ALLOC) != 0;
+            bool possible_alloc = ((assign_code_flags & CODE_FLAG_ALLOC) != 0) && (!md || !md->is_weak);
             if (type_returned) {
                 ClassDec cd_returned = pairs_value(self->static_class_map, type_returned, ClassDec);
                 ClassDec cd_expected = pairs_value(self->static_class_map, expected_type, ClassDec);
@@ -1259,6 +1284,8 @@ String CX_scope_end(CX self, List scope, Token *end_marker) {
 
 void CX_line_directive(CX self, Token *t, String output) {
     return;
+    if (!t)
+        return;
     if (self->directive_last_line == t->line && self->directive_last_file && 
             call(t->file, compare, self->directive_last_file) == 0)
         return;
@@ -1295,6 +1322,7 @@ String CX_code_block_out(CX self, List scope, ClassDec super_mode, Token *b_star
     int code_block_flags = 0;
     String code = call(self, code_out, scope, b_start, b_end, t_after,
         super_mode, false, &type_last, method, brace_depth, &code_block_flags, false);
+    Pairs top2 = (Pairs)call(scope, last);
 
     KeyValue kv;
     Pairs types = new(Pairs);
@@ -1350,7 +1378,11 @@ void CX_code_block_end(CX self, List scope, Token *t, int *brace_depth, String o
                 call(output, concat_string, scope_end);
                 release(scope_end);
             }
+        } else {
+            list_pop(scope, Pairs);
         }
+    } else {
+        list_pop(scope, Pairs);
     }
 }
 
@@ -1385,7 +1417,6 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 // code out with injected block {'s
                 int token_count = call(self, read_expression, t_if, NULL, NULL, ";", 0, false);
                 if (token_count > 0) {
-                    list_push(scope, new(Pairs));
                     int if_code_flags = 0;
                     String if_code = call(self, code_out, scope, t + 2, &t[n - 1], t_after,
                         NULL, false, type_last, method, brace_depth, &if_code_flags, false);
@@ -1465,6 +1496,10 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             Token *t_prev = t - 1;
             Token *t_next = t + 1;
             bool token_out = true;
+            if (t_next->keyword == "int") {
+                int test = 0;
+                test++;
+            }
             if ((t_next->type == TT_Identifier || t_next->type_keyword) && t_prev->type != TT_Identifier && t_prev->type != TT_Keyword) {
                 Token *t_from;
                 String type_expected = new(String);
@@ -1660,18 +1695,12 @@ String CX_args_out(CX self, Pairs top, ClassDec cd, MemberDec md, bool inst, boo
     if (top)
         pairs_add(top, string(self_var), cd);
     aout++;
-    bool preserve = false;
-
     for (int i = 0; i < md->arg_types_count; i++) {
         if (aout > 0)
             call(output, concat_cstring, ", ");
-        
+        bool preserve = md->arg_preserve[i];
         for (int ii = 0; ii < md->at_token_count[i]; ii++) {
             Token *t = &(md->arg_types[i])[ii];
-            if (call(t->str, cmp, "preserve") == 0) {
-                preserve = true;
-                continue;
-            }
             if (t->skip) continue;
             String ts = t->str;
             if (!preserve && call(t->str, compare, cd_origin->class_name) == 0) {
@@ -1697,7 +1726,7 @@ String CX_args_out(CX self, Pairs top, ClassDec cd, MemberDec md, bool inst, boo
         if (names) {
             Token *t_name = md->arg_names[i];
             call(self, token_out, t_name, ' ', output);
-            if (top && md->at_token_count[i] == 1) {
+            if (top && (md->at_token_count[i] == 1)) {
                 String s_type = md->arg_types[i]->str;
                 ClassDec cd_type = pairs_value(self->static_class_map, s_type, ClassDec);
                 if (cd_type) {
