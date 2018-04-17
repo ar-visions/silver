@@ -21,11 +21,22 @@ Token *token_next(Token **t) {
     return *t;
 }
 
-MemberDec ClassDec_member_lookup(ClassDec self, String name) {
+MemberDec ClassDec_member_lookup(ClassDec self, String name, ClassDec *type) {
+    *type = NULL;
     for (ClassDec cd = self; cd; cd = cd->parent) {
         MemberDec md = pairs_value(cd->members, name, MemberDec);
-        if (md)
+        if (md) {
+            if (md->type_cd == cd) {
+                if (md->is_preserve) {
+                    *type = md->type_cd;
+                } else {
+                    *type = self;
+                }
+            } else {
+                *type = md->type_cd;
+            }
             return md;
+        }
     }
     return NULL;
 }
@@ -239,10 +250,6 @@ find_punct:
                     if (!cont) {
                         t->length = length - 1;
                         t->str = class_call(String, new_from_bytes, (uint8 *)t->value, t->length);
-                        if (call(t->str, cmp, "int") == 0) {
-                            int test = 0;
-                            test++;
-                        }
                         nt++;
                         t = (Token *)&tokens[nt];
                         t->file = retain(current_file);
@@ -555,6 +562,10 @@ bool CX_read_classes(CX self) {
                 }
                 if (t->keyword == "private") {
                     md->is_private = true;
+                    token_next(&t);
+                }
+                if (t->keyword == "preserve") {
+                    md->is_preserve = true;
                     token_next(&t);
                 }
                 if (t->keyword == "weak") {
@@ -945,17 +956,13 @@ String CX_class_op_out(CX self, List scope, Token *t,
     
     if (call(target, cmp, "class") == 0)
         cd = CX_find_class(string("Class"));
-
+    ClassDec md_type = NULL;
     if (cd && (t - 1)->punct == ".") {
-        md = call(cd, member_lookup, s_token);
-        if (!md) {
-            int test = 0;
-            test++;
-        }
+        md = call(cd, member_lookup, s_token, &md_type);
     }
     if (md) {
-        cd_last = md->type_cd;
-        *type_last = md->type_cd ? md->type_cd->class_name : NULL;
+        cd_last = md_type;
+        *type_last = md_type ? md_type->class_name : NULL;
     }
     bool constructor = false;
     if (cd && !md) {
@@ -980,7 +987,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
             token_next(&t);
             *type_last = cd->class_name;
         } else {
-            if (md->type_cd)
+            if (md_type)
                 *flags |= CODE_FLAG_ALLOC;
             sprintf(buf, "%s->", class_var);
             call(output, concat_cstring, buf);
@@ -1175,7 +1182,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                             code->buffer);
                     }
                     call(output, concat_cstring, buf);
-                }else {
+                } else {
                     if (check_only) {
                         fprintf(stderr, "check_only == true\n");
                         exit(1);
@@ -1189,7 +1196,10 @@ String CX_class_op_out(CX self, List scope, Token *t,
                     call(output, concat_cstring, buf);
                 }
             } else {
-                if (tracked) {
+                if (setter_method) {
+                    sprintf(buf, "%s %s)", set_str->buffer, code->buffer);
+                    call(output, concat_cstring, buf);
+                } else if (tracked) {
                     // usually this is going to be something like setting the object to null
                     sprintf(buf, "update_var((base_Base *)&(%s), (base_Base)(%s))", set_str->buffer, code->buffer);
                     call(output, concat_cstring, buf);
@@ -1198,8 +1208,6 @@ String CX_class_op_out(CX self, List scope, Token *t,
                     call(self, token_out, t_assign, 0, output);
                     call(output, concat_string, code);
                 }
-                if (setter_method)
-                    call(output, concat_char, ')');
             }
             release(set_str);
         } else if (md) {
@@ -1407,6 +1415,23 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 call(output, concat_string, code);
             } else {
                 list_push(scope, new(Pairs)); // new scope in for expression
+                Token *block_start = NULL, *block_end = NULL;
+                int n = call(self, read_expression, t + 1, &block_start, &block_end, ")", -1, true);
+                if (!n) {
+                    fprintf(stderr, "Invalid for statement\n");
+                    exit(1);
+                }
+                token_next(&t);
+                int for_code_flags = 0;
+                String for_code = call(self, code_out, scope, t, &t[n], t_after,
+                    NULL, false, type_last, method, brace_depth, &for_code_flags, false);
+                call(output, concat_string, for_code);
+                int for_block_flags = 0;
+                String for_block = call(self, code_out, scope, block_start, block_end, t_after,
+                    NULL, false, type_last, method, brace_depth, &for_block_flags, false);
+                call(output, concat_string, for_block);
+                list_pop(scope, Pairs);
+                t = &t[n];
             }
         } else if (t->keyword == "if" || t->keyword == "while") {
             // check for beginning block
@@ -1496,10 +1521,6 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             Token *t_prev = t - 1;
             Token *t_next = t + 1;
             bool token_out = true;
-            if (t_next->keyword == "int") {
-                int test = 0;
-                test++;
-            }
             if ((t_next->type == TT_Identifier || t_next->type_keyword) && t_prev->type != TT_Identifier && t_prev->type != TT_Keyword) {
                 Token *t_from;
                 String type_expected = new(String);
@@ -1559,7 +1580,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             }
             if (token_out)
                 call(self, token_out, t, 0, output);
-        } else if (t->type == TT_Identifier) {
+        } else if (t->type == TT_Identifier || t->keyword == "class") {
             String target = t->str;
             ClassDec cd = NULL;
             bool is_class = false;
@@ -1570,7 +1591,6 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 is_class = cd != NULL;
             } else
                 cd = t->cd;
-
             if (cd) {
                 // check for new/auto keyword before
                 Token *t_start = t;
@@ -2199,10 +2219,6 @@ void CX_resolve_member_types(CX self, ClassDec cd) {
                     continue;
                 if (!first)
                     call(type_str, concat_char, ' ');
-                if (call(tt->str, cmp, "Base") == 0) {
-                    int test = 0;
-                    test++;
-                }
                 ClassDec cd_found = pairs_value(self->static_class_map, tt->str, ClassDec);
                 if (cd_found) {
                     call(type_str, concat_string, cd_found->struct_object);
