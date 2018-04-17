@@ -6,7 +6,8 @@ class Super {
         printf("super only");
     }
     void method(int arg, int arg2) {
-        printf("super function: %d\n", self.test_me);
+        int test_me = self.test_me;
+        printf("super function: %d\n", test_me);
     }
     static void super_static() {
         printf("this method is static, but still there's context: %s\n", class.name);

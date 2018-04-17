@@ -2,9 +2,7 @@ include base;
 private include module_loader;
 
 class Base {
-    Class cl;
-    weak Base weakish;
-    Base nonweak;
+    weak Class cl;
     int refs;
 
     int cast(Base obj) {
@@ -24,28 +22,12 @@ class Base {
     }
     void init() {
     }
-    Base test() {
-        return self;
-    }
     Base release() {
         if (!self) {
             return null;
         }
-        int i;
-        
-        Base aa = self.cl;
-        Base bb = self.test();
-        Base cc = bb;
-        self.weakish = self.test();
-        self.nonweak = self.test();
-        self.nonweak = self.test();
-        cc = null;
-
-        self.test();
-
         if (--self.refs <= 0) {
-            Base.free_object(new Base());
-            self.free_object2(self);
+            Base.free_object(self);
         }
         return self;
     }
@@ -90,9 +72,6 @@ class Base {
         Base.init_object(obj, (Class)obj.cl, false);
         return obj;
     }
-    Base free_object2(Base obj) {
-        return obj;
-    }
     static Base free_object(Base obj) {
         Class c_parent = obj.cl.parent;
         BaseMethod last_method = null;
@@ -112,7 +91,7 @@ class Base {
 }
 
 class Class {
-    private Class parent;
+    private weak Class parent;
     private const char *name;
     private BaseMethod _init;
     private uint32_t flags;

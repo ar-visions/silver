@@ -124,12 +124,13 @@ declare(CX, Base)
     var(D,T,C,bool,is_private)             \
     var(D,T,C,bool,is_static)              \
     var(D,T,C,bool,is_const)               \
+    var(D,T,C,bool,is_preserve)            \
     var(D,T,C,Pairs,meta)
 declare(MemberDec, Base)
 
 #define _ClassDec(D,T,C) _Base(spr,T,C)    \
     override(D,T,C,ulong,hash,(C))         \
-    method(D,T,C,MemberDec,member_lookup,(C,String)) \
+    method(D,T,C,MemberDec,member_lookup,(C,String,C *)) \
     var(D,T,C,C,parent)                    \
     var(D,T,C,Pairs,effective)             \
     var(D,T,C,Token *,start)               \
