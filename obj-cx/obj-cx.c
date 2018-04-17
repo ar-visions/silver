@@ -1417,7 +1417,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 list_push(scope, new(Pairs)); // new scope in for expression
                 Token *block_start = NULL, *block_end = NULL;
                 int n = call(self, read_expression, t + 1, &block_start, &block_end, ")", -1, true);
-                if (!n) {
+                if (!n || !block_start) {
                     fprintf(stderr, "Invalid for statement\n");
                     exit(1);
                 }
@@ -1431,7 +1431,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     NULL, false, type_last, method, brace_depth, &for_block_flags, false);
                 call(output, concat_string, for_block);
                 list_pop(scope, Pairs);
-                t = &t[n];
+                t = block_end;
             }
         } else if (t->keyword == "if" || t->keyword == "while") {
             // check for beginning block
@@ -1765,8 +1765,8 @@ void CX_effective_methods(CX self, ClassDec cd, Pairs *pairs) {
         call(self, effective_methods, cd->parent, pairs);
     KeyValue kv;
     each_pair(cd->members, kv) {
-        String skey = inherits(kv->key, String);
-        if (call(skey, cmp, "_init") != 0)
+        MemberDec md = pairs_value(*pairs, kv->key, MemberDec);
+        if (!md)
             pairs_add(*pairs, kv->key, kv->value);
     }
 }

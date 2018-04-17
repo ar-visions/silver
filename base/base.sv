@@ -72,7 +72,7 @@ class Base {
         Base.init_object(obj, (Class)obj.cl, false);
         return obj;
     }
-    static Base free_object(Base obj) {
+    static void free_object(Base obj) {
         Class c_parent = obj.cl.parent;
         BaseMethod last_method = null;
         for (Class c = (Class)obj.cl; c; c = c.parent) {
@@ -83,7 +83,6 @@ class Base {
             }
         }
         free(obj);
-        return obj;
     }
     static bool load_module(const char *name) {
         return false;
