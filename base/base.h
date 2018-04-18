@@ -64,6 +64,13 @@ typedef void *(*Method)();
 typedef void *(*InitMethod)(struct _base_Base *);
 typedef void (*BaseMethod)(struct _base_Base *);
 typedef void *(*Setter)(struct _base_Base *, void *);
+typedef float (*SetterFloat)(struct _base_Base *, float);
+typedef double (*SetterDouble)(struct _base_Base *, double);
+typedef char (*SetterChar)(struct _base_Base *, char);
+typedef short (*SetterShort)(struct _base_Base *, short);
+typedef int (*SetterInt)(struct _base_Base *, int);
+typedef long (*SetterLong)(struct _base_Base *, long);
+typedef struct _base_Base * (*SetterObject)(struct _base_Base *, struct _base_Base *);
 typedef void *(*Getter)(struct _base_Base *);
 typedef bool (*ModuleLoadMethod)();
 
@@ -81,5 +88,89 @@ typedef bool (*ModuleLoadMethod)();
 
 EXPORT void module_loader_continue(ModuleLoadMethod ml_add);
 EXPORT void *alloc_bytes(size_t count);
+
+static inline struct _base_Base *set_float(struct _base_Base *obj, float *m, float value) {
+    *m = value;
+    return obj;
+}
+
+static inline struct _base_Base *set_double(struct _base_Base *obj, double *m, double value) {
+    *m = value;
+    return obj;
+}
+
+static inline struct _base_Base *set_char(struct _base_Base *obj, char *m, char value) {
+    *m = value;
+    return obj;
+}
+
+static inline struct _base_Base *set_short(struct _base_Base *obj, short *m, short value) {
+    *m = value;
+    return obj;
+}
+
+static inline struct _base_Base *set_long(struct _base_Base *obj, long *m, long value) {
+    *m = value;
+    return obj;
+}
+
+static inline struct _base_Base *set_int(struct _base_Base *obj, int *m, int value) {
+    *m = value;
+    return obj;
+}
+
+static inline struct _base_Base *set_arb(struct _base_Base *obj, void **m, void *value) {
+    *m = value;
+    return obj;
+}
+
+static inline struct _base_Base *set_object(struct _base_Base *obj, struct _base_Base **m, struct _base_Base *value) {
+    struct _base_Base *p = *m;
+    if (v) v->cl->retain(value);
+    *m = value;
+    if (p) p->cl->release(p);
+    return obj;
+}
+
+
+static inline struct _base_Base *set_float_setter(struct _base_Base *obj, SetterFloat m, float value) {
+    m(obj, value);
+    return obj;
+}
+
+static inline struct _base_Base *set_double_setter(struct _base_Base *obj, SetterDouble m, double value) {
+    m(obj, value);
+    return obj;
+}
+
+static inline struct _base_Base *set_char_setter(struct _base_Base *obj, SetterChar m, char value) {
+    m(obj, value);
+    return obj;
+}
+
+static inline struct _base_Base *set_short_setter(struct _base_Base *obj, SetterShort m, short value) {
+    m(obj, value);
+    return obj;
+}
+
+static inline struct _base_Base *set_long_setter(struct _base_Base *obj, SetterLong m, long value) {
+    m(obj, value);
+    return obj;
+}
+
+static inline struct _base_Base *set_int_setter(struct _base_Base *obj, SetterInt m, int value) {
+    m(obj, value);
+    return obj;
+}
+
+static inline struct _base_Base *set_arb_setter(struct _base_Base *obj, Setter m, void *value) {
+    m(obj, value);
+    return obj;
+}
+
+static inline struct _base_Base *set_object_setter(struct _base_Base *obj, SetterObject *m, struct _base_Base *value) {
+    m(obj, value);
+    return obj;
+}
 
 #endif

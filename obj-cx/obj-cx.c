@@ -901,13 +901,14 @@ bool CX_is_tracking(CX self, Pairs top, String var, bool *check_only) {
     return false;
 }
 
-String CX_gen_var(CX self, List scope, ClassDec cd) {
+String CX_gen_var(CX self, List scope, ClassDec cd, bool hidden) {
     Pairs top = (Pairs)call(scope, last);
     char buf[64];
     sprintf(buf, "_gen_%d", ++self->gen_vars);
     String ret = string(buf);
     pairs_add(top, ret, cd);
-    call(self, start_tracking, scope, ret, true);
+    if (!hidden)
+        call(self, start_tracking, scope, ret, true);
     return ret;
 }
 
@@ -924,11 +925,7 @@ String CX_var_gen_out(CX self, List scope, Token *t,
             String gen_out = new(String);
             // generate virtually scoped var; this value must be released when this scope exits
             Pairs top = (Pairs)call(scope, last);
-            String gen_var = call(self, gen_var, scope, cd_returned);
-            if (call(gen_var, cmp, "_gen_1") == 0) {
-                int test = 0;
-                test++;
-            }
+            String gen_var = call(self, gen_var, scope, cd_returned, false);
             sprintf(buf, "(%s = ", gen_var->buffer);
             call(gen_out, concat_cstring, buf);
             call(gen_out, concat_string, code);
@@ -974,18 +971,103 @@ String CX_class_op_out(CX self, List scope, Token *t,
             printf("member: %s not found on class: %s\n", s_token->buffer, class_name);
             exit(1);
         }*/
+        for (;;) {
+            String arg_output = new(String);
+            int n = call(self, read_expression, t, NULL, NULL, ",)", 0, true);
+        }
     }
     const char *class_var = cd ? cd->class_var->buffer : NULL;
     token_next(&t);
     if (cd && t->punct == "(") {
         if (constructor) {
             *flags |= CODE_FLAG_ALLOC;
-            sprintf(buf, "(%s)Base->new_object(Base, (base_Class)%s, 0, %s",
-                cd->struct_object->buffer, class_var,
-                is_token(t_start - 1, "auto") ? "true" : "false");
-            call(output, concat_cstring, buf);
+            String ctor = new(String);
+            sprintf(buf, "(%s)Base->new_object(Base, (base_Class)%s, 0)",
+                cd->struct_object->buffer, class_var);
+            call(ctor, concat_cstring, buf);
             token_next(&t);
             *type_last = cd->class_name;
+            String gen_var = NULL;
+            String last_set = NULL;
+            bool first = true;
+            for (;;) {
+                int n = call(self, read_expression, t, NULL, NULL, ",)", 0, true);
+                if (n == 0)
+                    break;
+                if (first) {
+                    gen_var = call(self, gen_var, scope, cd, true);
+                    first = false;
+                    String new_ctor = new(String);
+                    sprintf(buf, "(%s = %s)", gen_var->buffer, ctor->buffer);
+                    call(new_ctor, concat_cstring, buf);
+                    release(ctor);
+                    ctor = new_ctor;
+                }
+                Token *var = t;
+                Token *assign = t + 1;
+                Token *value_start = t + 2;
+                if (n < 3 || assign->punct != "=" || var->type != TT_Identifier) {
+                    fprintf(stderr, "Expected constructor inline setter syntax: prop=val\n");
+                    exit(1);
+                }
+                int value_code_flags = 0;
+                String value_type_returned = NULL;
+                String value_code = call(self, code_out, scope, value_start, &t[n - 1], t_after, NULL, false,
+                    &value_type_returned, method, brace_depth, &value_code_flags, false);
+                ClassDec cd_returned = pairs_value(self->static_class_map, value_type_returned, ClassDec);
+                ClassDec setter_cd_type;
+                MemberDec setter_lookup = call(cd, member_lookup, var->str, &setter_cd_type);
+                String generic_type;
+                if (!setter_lookup) {
+                    fprintf(stderr, "inline setter: property %s::%s not found\n", cd->class_name->buffer, var->str->buffer);
+                    exit(1);
+                }
+                if (setter_cd_type) {
+                    generic_type = string("object");
+                } else {
+                    generic_type = setter_lookup->type_str;
+                }
+
+                if (cd_returned) {
+                    ClassDec cd_expected = setter_lookup->type_cd;
+                    String cast = call(self, inheritance_cast, cd_expected, cd_returned);
+                    if (!cast) {
+                        fprintf(stderr, "inline setter: incompatible object (%s) given to property %s:%s (%s)\n",
+                            cd_returned->class_name->buffer,
+                            cd->class_name->buffer, var->str->buffer,
+                            cd_expected->class_name->buffer);
+                        exit(1);
+                    }
+                }
+                String setter_call = new(String);
+                if (setter_lookup->setter_start) {
+                    call(setter_call, concat_cstring, "set_");
+                    call(setter_call, concat_string, generic_type);
+                    call(setter_call, concat_cstring, "_setter((base_Base)(");
+                    call(setter_call, concat_string, ctor);
+                    call(setter_call, concat_cstring, "), ");
+                    sprintf(buf, "%s->%s, ", setter_cd_type->class_name->buffer, var->str->buffer);
+                } else {
+                    call(setter_call, concat_cstring, "set_");
+                    call(setter_call, concat_string, generic_type);
+                    call(setter_call, concat_cstring, "((base_Base)(");
+                    call(setter_call, concat_string, ctor);
+                    call(setter_call, concat_cstring, "), ");
+                    sprintf(buf, "&%s->%s, ", gen_var->buffer, var->str->buffer);
+                }
+                call(setter_call, concat_cstring, buf);
+                call(setter_call, concat_string, value_code);
+                call(setter_call, concat_cstring, ")");
+                release(ctor);
+                ctor = setter_call;
+
+                t += n;
+                if (t->punct == ")")
+                    break;
+                else
+                    t++;
+            }
+            call(output, concat_string, ctor);
         } else {
             if (md_type)
                 *flags |= CODE_FLAG_ALLOC;
@@ -1053,16 +1135,16 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 c_arg++;
             }
         }
-
-        if (*t_after < t)
-            *t_after = t;
-
         if (t->punct != ")") {
             fprintf(stderr, "%s:%d: expected ')'\n",
                 t->file->buffer, t->line);
             exit(1);
         }
-        call(self, token_out, t, ' ', output);
+        if (*t_after < t)
+            *t_after = t;
+        if (!constructor)
+            call(self, token_out, t, ' ', output);
+
     } else if (constructor) {
         fprintf(stderr, "expected '(' for constructor\n");
         exit(1);
@@ -1307,7 +1389,7 @@ void CX_line_directive(CX self, Token *t, String output) {
 
 String CX_code_block_out(CX self, List scope, ClassDec super_mode, Token *b_start, Token *b_end, Token **t_after, MemberDec method, int *brace_depth) {
     String output = new(String);
-    if ((*brace_depth)++ == 0) {
+    if (++(*brace_depth) == 1) {
         while (output->length > 0) {
             if (isspace(output->buffer[output->length - 1])) {
                 output->length--;
@@ -1377,7 +1459,7 @@ String CX_code_block_out(CX self, List scope, ClassDec super_mode, Token *b_star
 }
 
 void CX_code_block_end(CX self, List scope, Token *t, int *brace_depth, String output) {
-    if (--(*brace_depth) != 0) {
+    if (--(*brace_depth) >= 0) {
         // release last scope
         Pairs top = (Pairs)call(scope, last);
         if ((top->user_flags & 1) == 0) {
@@ -1389,9 +1471,60 @@ void CX_code_block_end(CX self, List scope, Token *t, int *brace_depth, String o
         } else {
             list_pop(scope, Pairs);
         }
-    } else {
-        list_pop(scope, Pairs);
     }
+}
+
+void CX_code_return(CX self, List scope, Token *t, Token **t_out, Token **t_after, MemberDec method, String *type_last, int *brace_depth, String output) {
+    char buf[1024];
+    Token *t_ret = t;
+    token_next(&t);
+    int token_count = call(self, read_expression, t, NULL, NULL, ";", 0, false);
+    String ret_code = NULL;
+    if (token_count > 0) {
+        int ret_code_flags = 0;
+        ret_code = call(self, code_out, scope, t, &t[token_count - 1], t_after,
+            NULL, false, type_last, method, brace_depth, &ret_code_flags, true);
+        String ret_type = (method && method->type_cd) ? method->type_cd->struct_object : method->type_str;
+        sprintf(buf, "%s __ret = %s;\n", ret_type->buffer, ret_code->buffer);
+        call(output, concat_cstring, buf);
+    }
+    Pairs sc;
+    int sc_count = list_count(scope);
+    int sc_index = sc_count - 1;
+    bool single = false;
+    reverse(scope, sc) {
+        if (sc_index == 0) // do NOT release the args
+            break;
+        KeyValue kv;
+        each_pair(sc, kv) {
+            String name = (String)kv->key;
+            ClassDec cd_var = (ClassDec)kv->value;
+            bool check_only = false; // gen_var's are check_only
+            bool tracking = call(self, is_tracking, sc, name, &check_only);
+            if (tracking) {
+                single = true;
+                if (!ret_code || call(ret_code, compare, name) != 0) {
+                    sprintf(buf, "\t%s->%s(%s);\n",
+                        cd_var->class_name->buffer,
+                        check_only ? "check_release" : "release", name->buffer);
+                } else {
+                    sprintf(buf, "\t%s->defer_release(%s);\n",
+                        cd_var->class_name->buffer, name->buffer);
+                }
+                call(output, concat_cstring, buf);
+            }
+        }
+        sc_index--;
+    }
+    if (single)
+        call(output, concat_cstring, "\t");
+    if (token_count > 0)
+        call(output, concat_cstring, "return __ret;\n");
+    else
+        call(output, concat_cstring, "return;\n");
+    *t_out = &t[token_count];
+    Pairs top = (Pairs)call(scope, last);
+    top->user_flags = 1;
 }
 
 String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, Token **t_after,
@@ -1408,6 +1541,10 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
         if (t->punct == "{" || t->keyword == "for") {
             call(self, token_out, t, ' ', output);
             if (t->punct == "{") {
+                if (call(method->str_name, cmp, "main2") == 0) {
+                    int test = 0;
+                    test++;
+                }
                 Token *b_start = NULL, *b_end = NULL;
                 int token_count = call(self, read_block, t, &b_start, &b_end);
                 t = &t[token_count];
@@ -1466,57 +1603,9 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             call(self, code_block_end, scope, t, brace_depth, output);
             call(self, token_out, t, ' ', output);
         } else if (t->keyword == "return") {
-            // pass pairs to code out to find out if vars are referenced
-            // release entire scope
-            if (method && method->type_cd) {
-                int token_count = call(self, read_expression, t + 1, NULL, NULL, ";", 0, false);
-
-                if (token_count > 0) {
-                    int ret_code_flags = 0;
-                    String code = call(self, code_out, scope, t + 1, &t[token_count - 2], t_after,
-                        NULL, false, type_last, method, brace_depth, &ret_code_flags, true);
-                    ClassDec cd_scope = call(self, scope_lookup, scope, code, NULL);
-                    // if found, flag as defer_release()
-                    // gen vars should be released if their ref count is 0
-                    // normal scoped vars should be released normally
-                    ClassDec cd_ret = pairs_value(self->static_class_map, method->type_str, ClassDec); // perform scope lookup
-                    sprintf(buf, "%s __ret = %s;\n", method->type_cd->struct_object->buffer, code->buffer);
-                    call(output, concat_cstring, buf);
-
-                    Pairs sc;
-                    int sc_count = list_count(scope);
-                    int sc_index = sc_count - 1;
-                    reverse(scope, sc) {
-                        if (sc_index == 0) // do NOT release the args
-                            break;
-                        KeyValue kv;
-                        each_pair(sc, kv) {
-                            String name = (String)kv->key;
-                            ClassDec cd_var = (ClassDec)kv->value;
-                            bool check_only = false; // gen_var's are check_only
-                            bool tracking = call(self, is_tracking, sc, name, &check_only);
-                            if (tracking) {
-                                if (call(code, compare, name) != 0) {
-                                    sprintf(buf, "\t%s->%s(%s);\n",
-                                        cd_var->class_name->buffer,
-                                        check_only ? "check_release" : "release", name->buffer);
-                                } else {
-                                    sprintf(buf, "\t%s->defer_release(%s);\n",
-                                        cd_var->class_name->buffer, name->buffer);
-                                }
-                                call(output, concat_cstring, buf);
-                            }
-                        }
-                        sc_index--;
-                    }
-                    call(output, concat_cstring, "\treturn __ret;\n");
-                    t = &t[token_count + 1];
-                    Pairs top = (Pairs)call(scope, last);
-                    top->user_flags = 1;
-                }
-            } else {
-                call(self, token_out, t, 0, output);
-            }
+            call(self, code_return, scope, t, &t, t_after, method, type_last, brace_depth, output);
+            if (t + 1 < method_end)
+                call(self, line_directive, t + 1, output);
         } else if (t->punct == "(") {
             Token *t_prev = t - 1;
             Token *t_next = t + 1;
@@ -1765,9 +1854,12 @@ void CX_effective_methods(CX self, ClassDec cd, Pairs *pairs) {
         call(self, effective_methods, cd->parent, pairs);
     KeyValue kv;
     each_pair(cd->members, kv) {
-        MemberDec md = pairs_value(*pairs, kv->key, MemberDec);
-        if (!md)
-            pairs_add(*pairs, kv->key, kv->value);
+        String skey = inherits(kv->key, String);
+        if (call(skey, cmp, "_init") != 0) {
+            MemberDec md = pairs_value(*pairs, kv->key, MemberDec);
+            if (!md)
+                pairs_add(*pairs, kv->key, kv->value);
+        }
     }
 }
 
@@ -2354,7 +2446,7 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                         }
                         sprintf(buf, "%s main(int argc, char *argv[]) {\n", s_ret->buffer);
                         call(output, concat_cstring, buf);
-                        sprintf(buf, "\tbase_Array args = (base_Array)Base->new_object(Base, (base_Class)Array, 0, false);\n");
+                        sprintf(buf, "\tbase_Array args = (base_Array)Base->new_object(Base, (base_Class)Array, 0);\n");
                         call(output, concat_cstring, buf);
                         sprintf(buf, "\tfor (int i = 0; i < argc; i++) {\n");
                         call(output, concat_cstring, buf);

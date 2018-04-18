@@ -22,6 +22,20 @@ class Test : Super {
         printf("value = %d\n", self.value);
     }
 
+    static void main2(Array args) {
+        Test b = new Test(prop=val, prop2=val);
+        /*
+
+        (((Test)object_new(Test_class_var, 0))->inline_set_prop(val)->inline_set_prop2(val))
+
+        set_float(set_float_setter(set_object(&gen_var->obj, new_obj), 1.0, Test->set_prop), &gen_var->float, 1.0));
+
+        Array a = new Array();
+        a.push((Base)i);
+        int i = (int)a.pop();
+        */
+    }
+
     static int main(Array args) {
         Test b = new Test();
         Array a = new Array();
