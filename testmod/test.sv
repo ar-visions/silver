@@ -11,6 +11,7 @@ class Test : Super {
             self.value_intern = value;
         }
     } = 2;
+    int another;
 
     Test cast(char *input) {
         return new Test();
@@ -23,17 +24,19 @@ class Test : Super {
     }
 
     static void main2(Array args) {
-        Test b = new Test(prop=val, prop2=val);
-        /*
-
-        (((Test)object_new(Test_class_var, 0))->inline_set_prop(val)->inline_set_prop2(val))
-
-        set_float(set_float_setter(set_object(&gen_var->obj, new_obj), 1.0, Test->set_prop), &gen_var->float, 1.0));
-
-        Array a = new Array();
-        a.push((Base)i);
-        int i = (int)a.pop();
-        */
+        Test b = new Test(value=1, another=2);
+    }
+    void Test_main2(testmod_TestClass class, base_Array args) {
+        testmod_Test b  = (testmod_Test)(Test->retain(
+            (testmod_Test)set_int((base_Base)(
+                (testmod_Test)set_int((base_Base)((testmod_Test)
+                    Base->new_object(Base, (base_Class)testmod_Test_var, 0)),
+                    Test->set_value,
+                    1
+                )), Test->set_another, 2)
+            )
+        );
+        Test->release(b);
     }
 
     static int main(Array args) {

@@ -971,10 +971,6 @@ String CX_class_op_out(CX self, List scope, Token *t,
             printf("member: %s not found on class: %s\n", s_token->buffer, class_name);
             exit(1);
         }*/
-        for (;;) {
-            String arg_output = new(String);
-            int n = call(self, read_expression, t, NULL, NULL, ",)", 0, true);
-        }
     }
     const char *class_var = cd ? cd->class_var->buffer : NULL;
     token_next(&t);
@@ -989,20 +985,10 @@ String CX_class_op_out(CX self, List scope, Token *t,
             *type_last = cd->class_name;
             String gen_var = NULL;
             String last_set = NULL;
-            bool first = true;
             for (;;) {
                 int n = call(self, read_expression, t, NULL, NULL, ",)", 0, true);
                 if (n == 0)
                     break;
-                if (first) {
-                    gen_var = call(self, gen_var, scope, cd, true);
-                    first = false;
-                    String new_ctor = new(String);
-                    sprintf(buf, "(%s = %s)", gen_var->buffer, ctor->buffer);
-                    call(new_ctor, concat_cstring, buf);
-                    release(ctor);
-                    ctor = new_ctor;
-                }
                 Token *var = t;
                 Token *assign = t + 1;
                 Token *value_start = t + 2;
@@ -1027,7 +1013,6 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 } else {
                     generic_type = setter_lookup->type_str;
                 }
-
                 if (cd_returned) {
                     ClassDec cd_expected = setter_lookup->type_cd;
                     String cast = call(self, inheritance_cast, cd_expected, cd_returned);
@@ -1040,21 +1025,13 @@ String CX_class_op_out(CX self, List scope, Token *t,
                     }
                 }
                 String setter_call = new(String);
-                if (setter_lookup->setter_start) {
-                    call(setter_call, concat_cstring, "set_");
-                    call(setter_call, concat_string, generic_type);
-                    call(setter_call, concat_cstring, "_setter((base_Base)(");
-                    call(setter_call, concat_string, ctor);
-                    call(setter_call, concat_cstring, "), ");
-                    sprintf(buf, "%s->%s, ", setter_cd_type->class_name->buffer, var->str->buffer);
-                } else {
-                    call(setter_call, concat_cstring, "set_");
-                    call(setter_call, concat_string, generic_type);
-                    call(setter_call, concat_cstring, "((base_Base)(");
-                    call(setter_call, concat_string, ctor);
-                    call(setter_call, concat_cstring, "), ");
-                    sprintf(buf, "&%s->%s, ", gen_var->buffer, var->str->buffer);
-                }
+                sprintf(buf, "(%s)set_", cd->struct_object->buffer);
+                call(setter_call, concat_cstring, buf);
+                call(setter_call, concat_string, generic_type);
+                call(setter_call, concat_cstring, "((base_Base)(");
+                call(setter_call, concat_string, ctor);
+                call(setter_call, concat_cstring, "), ");
+                sprintf(buf, "%s->set_%s, ", cd->class_name->buffer, var->str->buffer);
                 call(setter_call, concat_cstring, buf);
                 call(setter_call, concat_string, value_code);
                 call(setter_call, concat_cstring, ")");
@@ -1389,7 +1366,7 @@ void CX_line_directive(CX self, Token *t, String output) {
 
 String CX_code_block_out(CX self, List scope, ClassDec super_mode, Token *b_start, Token *b_end, Token **t_after, MemberDec method, int *brace_depth) {
     String output = new(String);
-    if (++(*brace_depth) == 1) {
+    if ((*brace_depth)++ == 0) {
         while (output->length > 0) {
             if (isspace(output->buffer[output->length - 1])) {
                 output->length--;
@@ -1459,9 +1436,9 @@ String CX_code_block_out(CX self, List scope, ClassDec super_mode, Token *b_star
 }
 
 void CX_code_block_end(CX self, List scope, Token *t, int *brace_depth, String output) {
-    if (--(*brace_depth) >= 0) {
-        // release last scope
-        Pairs top = (Pairs)call(scope, last);
+    // release last scope
+    Pairs top = (Pairs)call(scope, last);
+    if (top) {
         if ((top->user_flags & 1) == 0) {
             String scope_end = call(self, scope_end, scope, t);
             if (scope_end) {
