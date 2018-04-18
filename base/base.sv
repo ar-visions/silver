@@ -64,7 +64,7 @@ class Base {
         }
         return i;
     }
-    static Base new_object(Class cl, size_t extra_size, bool auto_release) {
+    static Base new_object(Class cl, size_t extra_size) {
         Base obj = (Base)alloc_bytes(cl.object_size + extra_size);
         obj.cl = (BaseClass)cl;
         obj.refs = 1;
