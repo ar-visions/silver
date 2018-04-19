@@ -40,6 +40,7 @@ typedef struct _Token {
 
 #define _CX(D,T,C) _Base(spr,T,C)   \
     override(D,T,C,void,init,(C)) \
+    method(D,T,C,struct _object_ClassDec *,read_type_at,(C, Token *, String *)) \
     method(D,T,C,String,code_block_out,(C, List, struct _object_ClassDec *, Token *, Token *, Token **, struct _object_MemberDec *, int *)) \
     method(D,T,C,void,code_block_end,(C, List, Token *, int *, String)) \
     method(D,T,C,String,super_out,(C,List,struct _object_ClassDec *,Token *,Token *)) \

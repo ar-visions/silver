@@ -113,7 +113,7 @@ Token *CX_read_tokens(CX self, List module_contents, List module_files, int *n_t
         "synchronized","template","this","thread_local","throw","true","try",
         "typedef","typeid","typename","union","unsigned","using","virtual",
         "void","volatile","wchar_t","while","xor","xor_eq",
-        "get","set","construct","weak","preserve"
+        "get","set","construct","weak","preserve","uint","ulong","uchar","ushort"
     };
     const char type_keywords[] = {
         0,0,0,0,0,0,0,
@@ -129,7 +129,7 @@ Token *CX_read_tokens(CX self, List module_contents, List module_files, int *n_t
         0,0,0,0,1,0,
         0,0,0,0,0,0,0,
         0,0,0,0,1,0,0,
-        0,0,1,0,0,0,0,0
+        0,0,1,0,0,0,0,0,1,1,1,1
     };
     int n_keywords = sizeof(keywords) / sizeof(const char *);
     int keyword_lens[n_keywords];
@@ -1335,7 +1335,9 @@ String CX_scope_end(CX self, List scope, Token *end_marker) {
         KeyValue kv;
         each_pair(top, kv) {
             String name = (String)kv->key;
-            ClassDec cd_var = (ClassDec)kv->value;
+            ClassDec cd_var = inherits(kv->value, ClassDec);
+            if (!cd_var)
+                continue;
             bool check_only = false; // gen_var's are check_only
             call(self, is_tracking, top, name, &check_only);
             sprintf(buf, "\t%s->%s(%s);\n",
@@ -1396,9 +1398,11 @@ String CX_code_block_out(CX self, List scope, ClassDec super_mode, Token *b_star
     String types_str = new(String);
     each_pair(top, kv) {
         String var = (String)kv->key;
+        ClassDec cd = inherits(kv->value, ClassDec);
+        if (!cd)
+            continue;
         bool check_only = false;
         if (call(self, is_tracking, top, var, &check_only) && check_only) {
-            ClassDec cd = (ClassDec)kv->value;
             List types_for = pairs_value(types, cd, List);
             if (!types_for) {
                 types_for = new(List);
@@ -1414,7 +1418,9 @@ String CX_code_block_out(CX self, List scope, ClassDec super_mode, Token *b_star
             call(types_str, concat_cstring, "\n");
             types_first = false;
         }
-        ClassDec cd = (ClassDec)kv->key;
+        ClassDec cd = inherits(kv->key, ClassDec);
+        if (!cd)
+            continue;
         List types_for = (List)kv->value;
         String var;
         call(types_str, concat_string, cd->struct_object); // todo: Lookup alias name
@@ -1475,7 +1481,9 @@ void CX_code_return(CX self, List scope, Token *t, Token **t_out, Token **t_afte
         KeyValue kv;
         each_pair(sc, kv) {
             String name = (String)kv->key;
-            ClassDec cd_var = (ClassDec)kv->value;
+            ClassDec cd_var = inherits(kv->value, ClassDec);
+            if (!cd_var)
+                continue;
             bool check_only = false; // gen_var's are check_only
             bool tracking = call(self, is_tracking, sc, name, &check_only);
             if (tracking) {
@@ -1509,6 +1517,28 @@ void CX_gen_closure(CX self, List scope, Token *b_start, Token *b_end) {
     // for each match, set key value pair
     // this pairs instance will constitute the structure defined, and instanced in memory
     // extend scope to that of parent closure's structured scope
+    // probe for
+    Pairs p = NULL;
+    for (Token *t = b_start; t->value; t++) {
+        if (t->type == TT_Identifier) {
+            String type = NULL;
+            call(self, scope_lookup, scope, t->str, NULL, &type);
+            if (!type) {
+
+            }
+        }
+        // find punctuator (;,= etc)
+        // check if t - 1 == identifier
+        // from t - 1, read back until you find punctuator that is not '*'
+        // move one ahead
+        // cannot be '*'
+        // must be a single type keyword 
+
+        // 
+
+        if (t == b_end)
+            break;
+    }
 }
 
 String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, Token **t_after,
@@ -1665,6 +1695,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             String target = t->str;
             ClassDec cd = NULL;
             bool is_class = false;
+            Pairs top = (Pairs)call(scope, last);
+
             // check for 'Class' in the token
             if (target->length > 5 && strcmp(&target->buffer[target->length - 5], "Class") == 0) {
                 String sub = class_call(String, new_from_bytes, (uint8 *)target->buffer, t->length - 5); 
@@ -1672,6 +1704,12 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 is_class = cd != NULL;
             } else
                 cd = t->cd;
+            if (!cd) {
+                String type_name = NULL;
+                call(self, read_type_at, t, &type_name);
+                if (type_name)
+                    pairs_add(top, t->str, type_name);
+            }
             if (cd) {
                 // check for new/auto keyword before
                 Token *t_start = t;
@@ -1681,7 +1719,6 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     call(output, concat_char, ' ');
                     // variable declared
                     String str_name = class_call(String, new_from_bytes, (uint8 *)t->value, t->length);
-                    Pairs top = (Pairs)call(scope, last);
                     target = t->str;
                     pairs_add(top, str_name, cd);
                     String out = call(self, var_gen_out, scope, t, cd, target, false, &t,
@@ -1772,6 +1809,40 @@ void CX_token_out(CX self, Token *t, int sep, String output) {
     call(output, concat_cstring, buf);
 }
 
+ClassDec CX_read_type_at(CX self, Token *t, String *type_name) {
+    *type_name = NULL;
+    if (t->type != TT_Identifier && t->keyword != "class" && t->keyword != "this")
+        return NULL;
+    Token *cur = t - 1;
+    int type_keywords = 0;
+    ClassDec cd = NULL;
+    while (cur->type != TT_Punctuator && cur->punct != "*") {
+        if (cur->cd)
+            cd = cur->cd;
+        if (cur->type_keyword)
+            type_keywords++;
+        cur--;
+    }
+    cur++;
+    if (cur >= t)
+        return NULL;
+    if (cd) {
+        *type_name = cd->class_name;
+        return cd;
+    } else if (type_keywords == 0)
+        return NULL;
+    *type_name = new(String);
+    bool first = true;
+    do {
+        if (!first)
+            call((*type_name), concat_char, ' ');
+        first = false;
+        call((*type_name), concat_string, cur->str);
+        cur++;
+    } while (cur < t);
+    return NULL;
+}
+
 String CX_args_out(CX self, Pairs top, ClassDec cd, MemberDec md, bool inst, bool names, int aout, bool forwards) {
     ClassDec cd_origin = md->cd;
     String output = new(String);
@@ -1827,13 +1898,13 @@ String CX_args_out(CX self, Pairs top, ClassDec cd, MemberDec md, bool inst, boo
         if (names) {
             Token *t_name = md->arg_names[i];
             call(self, token_out, t_name, ' ', output);
-            if (top && (md->at_token_count[i] == 1)) {
-                String s_type = md->arg_types[i]->str;
-                ClassDec cd_type = pairs_value(self->static_class_map, s_type, ClassDec);
-                if (cd_type) {
-                    String s_var = t_name->str;
-                    pairs_add(top, s_var, cd_type);
-                }
+            if (top) {
+                String type_name = NULL;
+                ClassDec cd_type = call(self, read_type_at, t_name, &type_name);
+                if (cd_type)
+                    pairs_add(top, t_name->str, cd_type);
+                else
+                    pairs_add(top, t_name->str, type_name);
             }
         }
         aout++;
@@ -2506,8 +2577,9 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                             String s_type = md->setter_var->str;
                             ClassDec cd_type = pairs_value(self->static_class_map, s_type, ClassDec);
                             if (cd_type) {
-                                String s_var = md->setter_var->str;
-                                pairs_add(top, s_var, cd_type);
+                                pairs_add(top, s_type, cd_type);
+                            } else {
+                                pairs_add(top, s_type, md->str_type);
                             }
                         }
                         sprintf(buf, ") {\n");
