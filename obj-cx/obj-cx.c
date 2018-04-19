@@ -1031,7 +1031,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 call(setter_call, concat_cstring, "((base_Base)(");
                 call(setter_call, concat_string, ctor);
                 call(setter_call, concat_cstring, "), ");
-                sprintf(buf, "%s->set_%s, ", cd->class_name->buffer, var->str->buffer);
+                sprintf(buf, "(Setter_%s)%s->set_%s, ", generic_type->buffer, cd->class_name->buffer, var->str->buffer);
                 call(setter_call, concat_cstring, buf);
                 call(setter_call, concat_string, value_code);
                 call(setter_call, concat_cstring, ")");
@@ -1129,7 +1129,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
         if (t->assign) {
             // check if var is tracked
             Pairs sc = NULL;
-            ClassDec cd_lookup = call(self, scope_lookup, scope, target, &sc);
+            ClassDec cd_lookup = call(self, scope_lookup, scope, target, &sc, NULL);
 
             int n = call(self, read_expression, t, NULL, NULL, "{;),", 0, false);
             Token *t_assign = t;
@@ -1295,7 +1295,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
             }
             t = *t_after = t_member;
         } else {
-            ClassDec cd_lookup = call(self, scope_lookup, scope, target, NULL);
+            ClassDec cd_lookup = call(self, scope_lookup, scope, target, NULL, NULL);
             cd_last = cd_lookup;
             *type_last = cd_lookup->class_name; // todo: map to aliased name
             call(self, token_out, t_member, ' ', output);
@@ -1309,18 +1309,32 @@ String CX_class_op_out(CX self, List scope, Token *t,
     return output;
 }
 
-ClassDec CX_scope_lookup(CX self, List scope, String var, Pairs *found) {
+ClassDec CX_scope_lookup(CX self, List scope, String var, Pairs *found, String *name) {
     LList *list = &scope->list;
     Pairs p = (Pairs)list->last->data;
     for (LItem *_i = list->last; _i; _i = _i->prev,
             p = _i ? (typeof(p))_i->data : NULL) {
         ClassDec cd = pairs_value(p, var, ClassDec);
         if (cd) {
-            if (found)
+            if (found) {
+                if (name)
+                    *name = cd->class_name;
                 *found = p;
+            }
             return cd;
         }
+        if (name) {
+            String type_name = pairs_value(p, var, String);
+            if (type_name) {
+                *name = type_name;
+                if (found)
+                    *found = NULL;
+                return NULL;
+            }
+        }
     }
+    if (name)
+        *name = NULL;
     if (found)
         *found = NULL;
     return NULL;
@@ -1339,11 +1353,12 @@ String CX_scope_end(CX self, List scope, Token *end_marker) {
             if (!cd_var)
                 continue;
             bool check_only = false; // gen_var's are check_only
-            call(self, is_tracking, top, name, &check_only);
-            sprintf(buf, "\t%s->%s(%s);\n",
-                cd_var->class_name->buffer,
-                check_only ? "check_release" : "release", name->buffer);
-            call(output, concat_cstring, buf);
+            if (call(self, is_tracking, top, name, &check_only)) {
+                sprintf(buf, "\t%s->%s(%s);\n",
+                    cd_var->class_name->buffer,
+                    check_only ? "check_release" : "release", name->buffer);
+                call(output, concat_cstring, buf);
+            }
         }
         list_pop(scope, Pairs);
         call(self, line_directive, end_marker, output);
@@ -1704,12 +1719,6 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 is_class = cd != NULL;
             } else
                 cd = t->cd;
-            if (!cd) {
-                String type_name = NULL;
-                call(self, read_type_at, t, &type_name);
-                if (type_name)
-                    pairs_add(top, t->str, type_name);
-            }
             if (cd) {
                 // check for new/auto keyword before
                 Token *t_start = t;
@@ -1746,7 +1755,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     call(self, token_out, t, ' ', output);
                 }
             } else {
-                ClassDec cd = call(self, scope_lookup, scope, target, NULL);
+                ClassDec cd = call(self, scope_lookup, scope, target, NULL, NULL);
                 bool found = false;
                 if (cd) {
                     if ((t + 1)->punct == ".") {
@@ -1762,6 +1771,11 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         call(output, concat_string, out);
                         found = true;
                     }
+                } else {
+                    String type_name = NULL;
+                    call(self, read_type_at, t, &type_name);
+                    if (type_name)
+                        pairs_add(top, t->str, type_name);
                 }
                 if (!found)
                     call(self, token_out, t, ' ', output);
@@ -1778,7 +1792,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
     }
     if (output->length > 0) {
         Pairs scope_at = NULL;
-        ClassDec cd_found = call(self, scope_lookup, scope, output, &scope_at);
+        ClassDec cd_found = call(self, scope_lookup, scope, output, &scope_at, NULL);
         if (cd_found) {
             // if this scoped var was tracked, set CODE_FLAG_ALLOC
             bool check_only = false;
@@ -1938,6 +1952,27 @@ int sort_classes(ClassDec a, ClassDec b) {
     return 0;
 }
 
+String CX_forward_type(CX self, ClassDec cd, MemberDec md) {
+    String output = new(String);
+    char buf[1024];
+    for (int i = 0; i < md->type_count; i++) {
+        String ts = md->type[i].str;
+        ClassDec forward = pairs_value(self->static_class_map, ts, ClassDec);
+        // if this return type is st
+        if (forward == md->cd) {
+            // read through type to be sure it should be [forwardable?]
+            forward = cd;
+        }
+        if (forward) {
+            sprintf(buf, "struct _%s *", forward->struct_object->buffer);
+            call(output, concat_cstring, buf);
+        } else {
+            call(self, token_out, &md->type[i], ' ', output);
+        }
+    }
+    return output;
+}
+
 void CX_declare_classes(CX self, FILE *file_output) {
     String output = new(String);
     char buf[1024];
@@ -1980,27 +2015,13 @@ void CX_declare_classes(CX self, FILE *file_output) {
             each_pair(m, mkv) {
                 MemberDec md = (MemberDec)mkv->value;
                 ClassDec origin = md->cd;
+                String forward_type = call(self, forward_type, cd, md);
                 // need to find actual symbol name
                 switch (md->member_type) {
                     case MT_Method:
                         // need a way to gather forwards referenced in method returns, arguments, and property types
-                        sprintf(buf, "\t");
+                        sprintf(buf, "\t%s", forward_type->buffer);
                         call(output, concat_cstring, buf);
-                        for (int i = 0; i < md->type_count; i++) {
-                            String ts = md->type[i].str;
-                            ClassDec forward = pairs_value(self->static_class_map, ts, ClassDec);
-                            // if this return type is st
-                            if (forward == origin) {
-                                // read through type to be sure it should be [forwardable?]
-                                forward = cd;
-                            }
-                            if (forward) {
-                                sprintf(buf, "struct _%s *", forward->struct_object->buffer);
-                                call(output, concat_cstring, buf);
-                            } else {
-                                call(self, token_out, &md->type[i], ' ', output);
-                            }
-                        }
                         String args = call(self, args_out, NULL, cd, md, md->member_type == MT_Method && !md->is_static, false, 0, true);
                         sprintf(buf, " (*%s)(%s);\n",
                             md->str_name->buffer, args->buffer ? args->buffer : "");
@@ -2032,11 +2053,11 @@ void CX_declare_classes(CX self, FILE *file_output) {
                         sprintf(buf, "\t");
                         call(output, concat_cstring, buf);
                         if (md->is_static) {
-                            sprintf(buf, "void (*set_%s)(struct _%s *, ", md->str_name->buffer,
+                            sprintf(buf, "%s (*set_%s)(struct _%s *, ", forward_type->buffer, md->str_name->buffer,
                                 cd->struct_class->buffer);
                             call(output, concat_cstring, buf);
                         } else {
-                            sprintf(buf, "void (*set_%s)(struct _%s *, ", md->str_name->buffer,
+                            sprintf(buf, "%s (*set_%s)(struct _%s *, ", forward_type->buffer, md->str_name->buffer,
                                 cd->struct_object->buffer);
                             call(output, concat_cstring, buf);
                         }
@@ -2159,8 +2180,14 @@ void CX_define_module_constructor(CX self, FILE *file_output) {
         sprintf(buf, "\t\treturn false;\n\n");
         call(output, concat_cstring, buf);
     }
-    each_pair(self->classes, kv) {
-        ClassDec cd = (ClassDec)kv->value;
+    
+    List classes = new(List);
+    each_pair(self->classes, kv)
+        list_push(classes, kv->value);
+    call(classes, sort, true, (SortMethod)sort_classes);
+
+    ClassDec cd;
+    each(classes, cd) {
         const char *class_name = cd->class_name->buffer;
         const char *struct_class = cd->struct_class->buffer;
         const char *struct_object = cd->struct_object->buffer;
@@ -2198,8 +2225,7 @@ void CX_define_module_constructor(CX self, FILE *file_output) {
     call(output, concat_cstring, buf);
 
     // set class members
-    each_pair(self->classes, kv) {
-        ClassDec cd = (ClassDec)kv->value;
+    each(classes, cd) {
         int method_count = 0;
         KeyValue mkv;
         const char *class_name = cd->class_name->buffer;
@@ -2579,7 +2605,7 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                             if (cd_type) {
                                 pairs_add(top, s_type, cd_type);
                             } else {
-                                pairs_add(top, s_type, md->str_type);
+                                pairs_add(top, s_type, md->type_str);
                             }
                         }
                         sprintf(buf, ") {\n");

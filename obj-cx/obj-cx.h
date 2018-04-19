@@ -40,6 +40,7 @@ typedef struct _Token {
 
 #define _CX(D,T,C) _Base(spr,T,C)   \
     override(D,T,C,void,init,(C)) \
+    method(D,T,C,String,forward_type,(C,struct _object_ClassDec *,struct _object_MemberDec *)) \
     method(D,T,C,struct _object_ClassDec *,read_type_at,(C, Token *, String *)) \
     method(D,T,C,String,code_block_out,(C, List, struct _object_ClassDec *, Token *, Token *, Token **, struct _object_MemberDec *, int *)) \
     method(D,T,C,void,code_block_end,(C, List, Token *, int *, String)) \
@@ -62,7 +63,7 @@ typedef struct _Token {
         struct _object_ClassDec *, String, bool, Token **, String *, struct _object_MemberDec *, int *, int *, bool)) \
     method(D,T,C,String,args_out,(C, Pairs, struct _object_ClassDec *, \
                 struct _object_MemberDec *, bool, bool, int, bool)) \
-    method(D,T,C,struct _object_ClassDec *,scope_lookup,(C,List,String,Pairs *)) \
+    method(D,T,C,struct _object_ClassDec *,scope_lookup,(C,List,String,Pairs *,String *)) \
     method(D,T,C,void,resolve_supers,(C)) \
     method(D,T,C,void,token_out,(C, Token *, int, String)) \
     method(D,T,C,bool,process,(C, const char *)) \
