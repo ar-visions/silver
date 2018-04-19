@@ -12,6 +12,8 @@ obj-test/CMakeCache.txt
 obj-test/cmake_install.cmake
 obj-test/obj-test
 obj-cx/obj-cx
+base/base
+testobj/testobj
 **/build
 **/module.c
 **/module.h
