@@ -8,6 +8,7 @@
 implement(CX)
 implement(ClassDec)
 implement(MemberDec)
+implement(ClosureDec)
 
 bool is_token(Token *t, const char *str) {
     int len = strlen(str);
@@ -19,6 +20,25 @@ Token *token_next(Token **t) {
         (*t)++;
     } while ((*t)->skip);
     return *t;
+}
+
+void token_out(Token *t, int sep, String output) {
+    char buf[1024];
+    int n = 0;
+    buf[0] = 0;
+
+    for (int i = 0; i < t->length; i++) {
+        n += sprintf(buf + n, "%c", t->value[i]);
+    }
+    const char *after = &t->value[t->length];
+    while (*after && isspace(*after)) {
+        n += sprintf(buf + n, "%c", *after);
+        after++;
+    }
+    if (sep != ' ' && sep > 0)
+        n += sprintf(buf + n, "%c", sep);
+
+    call(output, concat_cstring, buf);
 }
 
 MemberDec ClassDec_member_lookup(ClassDec self, String name, ClassDec *type) {
@@ -53,6 +73,44 @@ static CX find_module(const char *name) {
             return m;
     }
     return NULL;
+}
+
+void MemberDec_read_args(MemberDec self, Token *t, int n_tokens) {
+    MemberDec md = self;
+    md->args = t;
+    md->arg_names = alloc_bytes(sizeof(Token *) * n_tokens);
+    md->arg_types = alloc_bytes(sizeof(Token *) * n_tokens);
+    md->arg_preserve = alloc_bytes(sizeof(bool) * n_tokens);
+    md->at_token_count = alloc_bytes(sizeof(int) * n_tokens);
+    Token *t_start = md->args;
+    Token *t_cur = md->args;
+    int paren_depth = 0;
+    int type_tokens = 0;
+    md->str_args = new(String);
+    for (int i = 0; i < n_tokens; i++) {
+        token_out(&t[i], 0, md->str_args);
+    }
+    while (paren_depth >= 0) {
+        if (t_cur->punct == "," || (paren_depth == 0 && t_cur->punct == ")")) {
+            int tc = md->arg_types_count;
+            bool is_preserve = (t_start && t_start->keyword == "preserve");
+            md->arg_names[tc] = t_cur - 1;
+            md->arg_types[tc] = is_preserve ? t_start + 1 : t_start;
+            md->arg_preserve[tc] = is_preserve;
+            md->at_token_count[tc] = type_tokens - 1 - (is_preserve ? 1 : 0);
+            md->arg_types_count++;
+            t_start = t_cur + 1;
+            type_tokens = 0;
+        } else {
+            type_tokens++;
+        }
+        if (t_cur->punct == "(") {
+            paren_depth++;
+        } else if (t_cur->punct == ")") {
+            paren_depth--;
+        }
+        t_cur++;
+    }
 }
 
 FILE *module_file(const char *module_name, const char *file, const char *mode) {
@@ -696,35 +754,7 @@ bool CX_read_classes(CX self) {
                         }
                     }
                     if (n_args > 0) {
-                        md->arg_names = alloc_bytes(sizeof(Token *) * n_args);
-                        md->arg_types = alloc_bytes(sizeof(Token *) * n_args);
-                        md->arg_preserve = alloc_bytes(sizeof(bool) * n_args);
-                        md->at_token_count = alloc_bytes(sizeof(int) * n_args);
-                        Token *t_start = md->args;
-                        Token *t_cur = md->args;
-                        int paren_depth = 0;
-                        int type_tokens = 0;
-                        while (paren_depth >= 0) {
-                            if (t_cur->punct == "," || (paren_depth == 0 && t_cur->punct == ")")) {
-                                int tc = md->arg_types_count;
-                                bool is_preserve = (t_start && t_start->keyword == "preserve");
-                                md->arg_names[tc] = t_cur - 1;
-                                md->arg_types[tc] = is_preserve ? t_start + 1 : t_start;
-                                md->arg_preserve[tc] = is_preserve;
-                                md->at_token_count[tc] = type_tokens - 1 - (is_preserve ? 1 : 0);
-                                md->arg_types_count++;
-                                t_start = t_cur + 1;
-                                type_tokens = 0;
-                            } else {
-                                type_tokens++;
-                            }
-                            if (t_cur->punct == "(") {
-                                paren_depth++;
-                            } else if (t_cur->punct == ")") {
-                                paren_depth--;
-                            }
-                            t_cur++;
-                        }
+                        call(md, read_args, md->args, n_args);
                     }
                     if (!md->args) {
                         printf("expected '(' before ')'\n");
@@ -1527,33 +1557,50 @@ void CX_code_return(CX self, List scope, Token *t, Token **t_out, Token **t_afte
     top->user_flags = 1;
 }
 
-void CX_gen_closure(CX self, List scope, Token *b_start, Token *b_end) {
-    // for each identifier in b_start -> b_end, check scope for existence
-    // for each match, set key value pair
-    // this pairs instance will constitute the structure defined, and instanced in memory
-    // extend scope to that of parent closure's structured scope
-    // probe for
-    Pairs p = NULL;
+void CX_gen_closure(CX self, List scope, Token *b_arg_start, int n_arg_tokens, Token *b_start, Token *b_end, MemberDec method) {
+    Pairs ref_scope = new(Pairs);
+    bool skip_ident = false;
+    // cheap way to gather up scoped references; be sure to avoid sub-closures
     for (Token *t = b_start; t->value; t++) {
-        if (t->type == TT_Identifier) {
-            String type = NULL;
-            call(self, scope_lookup, scope, t->str, NULL, &type);
-            if (!type) {
-
+        if (!skip_ident) {
+            if (t->type == TT_Identifier) {
+                String type = NULL;
+                ClassDec cd = call(self, scope_lookup, scope, t->str, NULL, &type);
+                if (cd || type) {
+                    if (cd)
+                        pairs_add(ref_scope, t->str, cd);
+                    else
+                        pairs_add(ref_scope, t->str, type);
+                }
             }
         }
-        // find punctuator (;,= etc)
-        // check if t - 1 == identifier
-        // from t - 1, read back until you find punctuator that is not '*'
-        // move one ahead
-        // cannot be '*'
-        // must be a single type keyword 
-
-        // 
-
+        if (t->punct == "." || t->punct == "->")
+            skip_ident = true;
         if (t == b_end)
             break;
     }
+    Token *t_after = NULL;
+    String type_last = NULL;
+    int brace_depth = 0;
+    int closure_flags = 0;
+    char buf[1024];
+    sprintf(buf, "__closure_%d", self->closures->list.count);
+
+    // needs a gen_var for the ref_scope, and that needs to be injected on all of the locals (including self, etc)
+    ClosureDec closure_dec = new(ClosureDec);
+    closure_dec->str_name = new_string(buf); 
+    closure_dec->ref_scope = cp(ref_scope);
+    closure_dec->block_start = b_start;
+    closure_dec->block_end = b_end;
+    closure_dec->parent = inherits(method, ClosureDec);
+    List new_scope = new(List);
+    list_push(new_scope, ref_scope);
+    closure_dec->code = call(self, code_out, new_scope, b_start, b_end, &t_after, false, false, &type_last,
+        (MemberDec)closure_dec, &brace_depth, &closure_flags, false);
+    call(closure_dec, read_args, b_arg_start, n_arg_tokens);
+    list_push(self->closures, closure_dec);
+    release(new_scope);
+    // call code_out within here, which of course will generate more closures if they exist
 }
 
 String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, Token **t_after,
@@ -1643,6 +1690,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 Token *t_from = NULL;
                 String type_expected = new(String);
                 bool first = true;
+                int n_arg_tokens = 1;
                 for (Token *t_search = t + 1; t_search; t_search++) {
                     if (t_search->punct == ")") {
                         t_from = t_search + 1;
@@ -1653,11 +1701,16 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         call(type_expected, concat_char, ' ');
                     call(type_expected, concat_string, t_search->str);
                     first = false;
+                    n_arg_tokens++;
                 }
                 if (t_from) {
-                    if (t_from->punct == "^{") {
+                    if (t_from->punct == "{") {
                         Token *b_start = NULL, *b_end = NULL;
-                        int n_block_tokens = call(self, read_block, t_from, &b_start, &b_end);
+                        call(self, read_block, t_from, &b_start, &b_end);
+                        call(self, gen_closure, scope, t + 1, n_arg_tokens, b_start, b_end, method);
+                        token_out = false;
+                        t = b_end;
+                        // output constructor for closure, setting function pointer to the static that will be declared above
                         // generate static function 
                     } else {
                         if (t_after)
@@ -2417,7 +2470,6 @@ void CX_resolve_member_types(CX self, ClassDec cd) {
 bool CX_emit_implementation(CX self, FILE *file_output) {
     String output = new(String);
     char buf[1024];
-
     List scope = new(List);
     KeyValue kv;
     each_pair(self->classes, kv) {
@@ -2640,6 +2692,28 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
             }
         }
     }
+    ClosureDec closure_dec;
+    fprintf(file_output, "// ---------- closures ----------\n");
+    each(self->closures, closure_dec) {
+        KeyValue kv;
+        fprintf(file_output, "struct %s {\n", closure_dec->str_name->buffer);
+        each_pair(closure_dec->ref_scope, kv) {
+            String var = (String)kv->key;
+            ClassDec cd = inherits(kv->value, ClassDec);
+            if (cd) {
+                fprintf(file_output, "\t%s %s;\n", cd->struct_object->buffer, var->buffer);
+            } else {
+                String type = inherits(kv->value, String);
+                fprintf(file_output, "\t%s %s;\n", type->buffer, var->buffer);
+            }
+        }
+        fprintf(file_output, "};\n");
+        fprintf(file_output, "void %s(struct %s *scope, %s) %s\n",
+            closure_dec->str_name->buffer,
+            closure_dec->str_name->buffer,
+            closure_dec->str_args->buffer,
+            closure_dec->code->buffer);
+    }
     fprintf(file_output, "%s", output->buffer);
     return true;
 }
@@ -2715,6 +2789,7 @@ bool CX_read_modules(CX self) {
 
 void CX_init(CX self) {
     self->modules = new(List);
+    self->closures = new(List);
     self->classes = new(Pairs);
     self->aliases = new(Pairs); // key = module, value = alias that this module is referred to as; each alias will create a static struct with all of the classes of that module contained inside
     self->includes = new(List);

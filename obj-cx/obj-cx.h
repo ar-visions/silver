@@ -40,6 +40,7 @@ typedef struct _Token {
 
 #define _CX(D,T,C) _Base(spr,T,C)   \
     override(D,T,C,void,init,(C)) \
+    method(D,T,C,void,gen_closure,(C,List,Token *,int,Token *,Token *,struct _object_MemberDec *)) \
     method(D,T,C,String,forward_type,(C,struct _object_ClassDec *,struct _object_MemberDec *)) \
     method(D,T,C,struct _object_ClassDec *,read_type_at,(C, Token *, String *)) \
     method(D,T,C,String,code_block_out,(C, List, struct _object_ClassDec *, Token *, Token *, Token **, struct _object_MemberDec *, int *)) \
@@ -94,10 +95,12 @@ typedef struct _Token {
     var(D,T,C,Pairs,static_class_map)      \
     var(D,T,C,Pairs,aliases)               \
     var(D,T,C,Pairs,classes)               \
+    var(D,T,C,List,closures)               \
     var(D,T,C,Pairs,processed)
 declare(CX, Base)
 
 #define _MemberDec(D,T,C) _Base(spr,T,C)   \
+    method(D,T,C,void,read_args,(C, Token *, int)) \
     var(D,T,C,struct _object_ClassDec *,cd) \
     var(D,T,C,enum MemberType,member_type) \
     var(D,T,C,Token *,type)                \
@@ -105,6 +108,7 @@ declare(CX, Base)
     var(D,T,C,struct _object_ClassDec *,type_cd) \
     var(D,T,C,String,type_str)             \
     var(D,T,C,String,str_name)             \
+    var(D,T,C,String,str_args)             \
     var(D,T,C,Token *,setter_var)          \
     var(D,T,C,Token *,getter_start)        \
     var(D,T,C,Token *,getter_end)          \
@@ -130,6 +134,12 @@ declare(CX, Base)
     var(D,T,C,bool,is_preserve)            \
     var(D,T,C,Pairs,meta)
 declare(MemberDec, Base)
+
+#define _ClosureDec(D,T,C) _MemberDec(spr,T,C)   \
+    var(D,T,C,C,parent)                     \
+    var(D,T,C,Pairs,ref_scope)              \
+    var(D,T,C,String,code)
+declare(ClosureDec, MemberDec)
 
 #define _ClassDec(D,T,C) _Base(spr,T,C)    \
     override(D,T,C,ulong,hash,(C))         \
