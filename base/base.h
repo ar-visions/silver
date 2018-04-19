@@ -64,13 +64,13 @@ typedef void *(*Method)();
 typedef void *(*InitMethod)(struct _base_Base *);
 typedef void (*BaseMethod)(struct _base_Base *);
 typedef void *(*Setter)(struct _base_Base *, void *);
-typedef float (*SetterFloat)(struct _base_Base *, float);
-typedef double (*SetterDouble)(struct _base_Base *, double);
-typedef char (*SetterChar)(struct _base_Base *, char);
-typedef short (*SetterShort)(struct _base_Base *, short);
-typedef int (*SetterInt)(struct _base_Base *, int);
-typedef long (*SetterLong)(struct _base_Base *, long);
-typedef struct _base_Base * (*SetterObject)(struct _base_Base *, struct _base_Base *);
+typedef float (*Setter_float)(struct _base_Base *, float);
+typedef double (*Setter_double)(struct _base_Base *, double);
+typedef char (*Setter_char)(struct _base_Base *, char);
+typedef short (*Setter_short)(struct _base_Base *, short);
+typedef int (*Setter_int)(struct _base_Base *, int);
+typedef long (*Setter_long)(struct _base_Base *, long);
+typedef struct _base_Base * (*Setter_object)(struct _base_Base *, struct _base_Base *);
 typedef void *(*Getter)(struct _base_Base *);
 typedef bool (*ModuleLoadMethod)();
 
@@ -89,32 +89,32 @@ typedef bool (*ModuleLoadMethod)();
 EXPORT void module_loader_continue(ModuleLoadMethod ml_add);
 EXPORT void *alloc_bytes(size_t count);
 
-static inline struct _base_Base *set_float(struct _base_Base *obj, SetterFloat m, float value) {
+static inline struct _base_Base *set_float(struct _base_Base *obj, Setter_float m, float value) {
     m(obj, value);
     return obj;
 }
 
-static inline struct _base_Base *set_double(struct _base_Base *obj, SetterDouble m, double value) {
+static inline struct _base_Base *set_double(struct _base_Base *obj, Setter_double m, double value) {
     m(obj, value);
     return obj;
 }
 
-static inline struct _base_Base *set_char(struct _base_Base *obj, SetterChar m, char value) {
+static inline struct _base_Base *set_char(struct _base_Base *obj, Setter_char m, char value) {
     m(obj, value);
     return obj;
 }
 
-static inline struct _base_Base *set_short(struct _base_Base *obj, SetterShort m, short value) {
+static inline struct _base_Base *set_short(struct _base_Base *obj, Setter_short m, short value) {
     m(obj, value);
     return obj;
 }
 
-static inline struct _base_Base *set_long(struct _base_Base *obj, SetterLong m, long value) {
+static inline struct _base_Base *set_long(struct _base_Base *obj, Setter_long m, long value) {
     m(obj, value);
     return obj;
 }
 
-static inline struct _base_Base *set_int(struct _base_Base *obj, SetterInt m, int value) {
+static inline struct _base_Base *set_int(struct _base_Base *obj, Setter_int m, int value) {
     m(obj, value);
     return obj;
 }
@@ -124,7 +124,7 @@ static inline struct _base_Base *set_arb(struct _base_Base *obj, Setter m, void 
     return obj;
 }
 
-static inline struct _base_Base *set_object(struct _base_Base *obj, SetterObject *m, struct _base_Base *value) {
+static inline struct _base_Base *set_object(struct _base_Base *obj, Setter_object m, struct _base_Base *value) {
     m(obj, value);
     return obj;
 }
