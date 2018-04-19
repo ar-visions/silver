@@ -26,18 +26,6 @@ class Test : Super {
     static void main2(Array args) {
         Test b = new Test(value=1, another=2);
     }
-    void Test_main2(testmod_TestClass class, base_Array args) {
-        testmod_Test b  = (testmod_Test)(Test->retain(
-            (testmod_Test)set_int((base_Base)(
-                (testmod_Test)set_int((base_Base)((testmod_Test)
-                    Base->new_object(Base, (base_Class)testmod_Test_var, 0)),
-                    Test->set_value,
-                    1
-                )), Test->set_another, 2)
-            )
-        );
-        Test->release(b);
-    }
 
     static int main(Array args) {
         Test b = new Test();
