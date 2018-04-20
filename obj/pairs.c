@@ -56,6 +56,18 @@ bool Pairs_remove(Pairs self, Base key) {
     return ret;
 }
 
+Base Pairs_key(Pairs self, Base key) {
+    String skey = (String)key;
+    ulong hash = call(key, hash) % self->list_count;
+    LList *list = &self->lists[hash];
+    for (LItem *item = list->first; item; item = item->next) {
+        KeyValue kv = (KeyValue)item->data;
+        if (call(kv->key, compare, key) == 0)
+            return kv->key;
+    }
+    return NULL;
+}
+
 Base Pairs_value(Pairs self, Base key) {
     String skey = (String)key;
     ulong hash = call(key, hash) % self->list_count;

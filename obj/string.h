@@ -33,6 +33,7 @@
     method(D,T,C,uint *,decode_utf8,(C, uint *));   \
     method(D,T,C,C,from_file,(const char *));       \
     method(D,T,C,Base,infer_object,(C));            \
+    private_var(D,T,C,uint,flags)                   \
     private_var(D,T,C,uint,utf8_length);            \
     private_var(D,T,C,uint *,utf8_buffer);          \
     private_var(D,T,C,char *,buffer);               \
