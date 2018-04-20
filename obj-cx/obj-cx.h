@@ -1,4 +1,6 @@
 
+#define CLOSURE_FLAG_SCOPED 1
+
 enum TokenType {
     TT_None = 0,
     TT_Separator,
@@ -41,7 +43,7 @@ typedef struct _Token {
 
 #define _CX(D,T,C) _Base(spr,T,C)   \
     override(D,T,C,void,init,(C)) \
-    method(D,T,C,String,closure_out,(C, struct _object_ClosureDec *)) \
+    method(D,T,C,String,closure_out,(C, List, struct _object_ClosureDec *, bool)) \
     method(D,T,C,struct _object_ClosureDec *,gen_closure,(C,List,Token *,int,Token *,Token *,struct _object_MemberDec *)) \
     method(D,T,C,String,forward_type,(C,struct _object_ClassDec *,struct _object_MemberDec *)) \
     method(D,T,C,struct _object_ClassDec *,read_type_at,(C, Token *, String *)) \
@@ -63,10 +65,10 @@ typedef struct _Token {
     method(D,T,C,void,define_module_constructor,(C, FILE *)) \
     method(D,T,C,void,effective_methods,(C, struct _object_ClassDec *, Pairs *)) \
     method(D,T,C,String,class_op_out,(C, List, Token *, \
-        struct _object_ClassDec *, String, bool, Token **, String *, struct _object_MemberDec *, int *, int *, bool)) \
+        struct _object_ClassDec *, String, bool, Token **, String *, struct _object_MemberDec *, int *, int *, bool, bool)) \
     method(D,T,C,String,args_out,(C, Pairs, struct _object_ClassDec *, \
                 struct _object_MemberDec *, bool, bool, int, bool)) \
-    method(D,T,C,struct _object_ClassDec *,scope_lookup,(C,List,String,Pairs *,String *)) \
+    method(D,T,C,struct _object_ClassDec *,scope_lookup,(C,List,String,Pairs *,String *,bool *)) \
     method(D,T,C,void,resolve_supers,(C)) \
     method(D,T,C,void,token_out,(C, Token *, int, String)) \
     method(D,T,C,bool,process,(C, const char *)) \
@@ -78,8 +80,9 @@ typedef struct _Token {
     method(D,T,C,String,scope_end,(C, List, Token *)) \
     method(D,T,C,int,read_block,(C,Token *,Token **,Token **)) \
     method(D,T,C,bool,is_tracking,(C, Pairs, String, bool *)) \
-    method(D,T,C,String,var_gen_out,(C, List , Token *, struct _object_ClassDec *, String, \
-        bool, Token **, String *, int *, struct _object_MemberDec *, int *, bool)) \
+    method(D,T,C,String,var_op_out,(C, List , Token *, struct _object_ClassDec *, String, \
+        bool, Token **, String *, int *, struct _object_MemberDec *, int *, bool, bool)) \
+    method(D,T,C,String,var_gen_out,(C, List, struct _object_ClassDec *, String)) \
     method(D,T,C,void,resolve_member_types,(C, struct _object_ClassDec *)) \
     method(D,T,C,void,line_directive,(C, Token *, String)) \
     method(D,T,C,void,code_return,(C, List, Token *, Token **, Token **, struct _object_MemberDec *, String *, int *, String)) \

@@ -942,24 +942,27 @@ String CX_gen_var(CX self, List scope, ClassDec cd, bool hidden) {
     return ret;
 }
 
-String CX_var_gen_out(CX self, List scope, Token *t,
+String CX_var_gen_out(CX self, List scope, ClassDec cd, String code) {
+    char buf[1024];
+    String output = new(String);
+    String gen_var = call(self, gen_var, scope, cd, false);
+    sprintf(buf, "(%s = ", gen_var->buffer);
+    call(output, concat_cstring, buf);
+    call(output, concat_string, code);
+    call(output, concat_char, ')');
+    return output;
+}
+
+String CX_var_op_out(CX self, List scope, Token *t,
         ClassDec cd, String target, bool is_instance, Token **t_after, String *type_last,
-        int *p_flags, MemberDec method, int *brace_depth, bool assign) {
+        int *p_flags, MemberDec method, int *brace_depth, bool assign, bool closure_scoped) {
     int flags = 0;
     String code = call(self, class_op_out, scope, t, cd, target, is_instance, t_after,
-                        type_last, method, brace_depth, &flags, false);
+                        type_last, method, brace_depth, &flags, false, closure_scoped);
     if (!assign && *type_last && (flags & CODE_FLAG_ALLOC) != 0) {
         ClassDec cd_returned = pairs_value(self->static_class_map, (*type_last), ClassDec);
         if (cd_returned) {
-            char buf[1024];
-            String gen_out = new(String);
-            // generate virtually scoped var; this value must be released when this scope exits
-            Pairs top = (Pairs)call(scope, last);
-            String gen_var = call(self, gen_var, scope, cd_returned, false);
-            sprintf(buf, "(%s = ", gen_var->buffer);
-            call(gen_out, concat_cstring, buf);
-            call(gen_out, concat_string, code);
-            call(gen_out, concat_char, ')');
+            String gen_out = call(self, var_gen_out, scope, cd_returned, code);
             release(code);
             return gen_out;
         }
@@ -972,7 +975,7 @@ String CX_var_gen_out(CX self, List scope, Token *t,
 
 String CX_class_op_out(CX self, List scope, Token *t,
         ClassDec cd, String target, bool is_instance, Token **t_after, String *type_last,
-        MemberDec method, int *brace_depth, int *flags, bool assign) {
+        MemberDec method, int *brace_depth, int *flags, bool assign, bool closure_scoped) {
     String output = new(String);
     char buf[1024];
     Token *t_start = t;
@@ -1159,7 +1162,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
         if (t->assign) {
             // check if var is tracked
             Pairs sc = NULL;
-            ClassDec cd_lookup = call(self, scope_lookup, scope, target, &sc, NULL);
+            ClassDec cd_lookup = call(self, scope_lookup, scope, target, &sc, NULL, NULL);
 
             int n = call(self, read_expression, t, NULL, NULL, "{;),", 0, false);
             Token *t_assign = t;
@@ -1188,6 +1191,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
 
                 call(self, token_out, t_member, '(', set_str);
                 if (is_instance) {
+                    if (closure_scoped)
+                        call(set_str, concat_cstring, "scope->");
                     sprintf(buf, "%s, ", target->buffer);
                     call(set_str, concat_cstring, buf);
                 }
@@ -1195,6 +1200,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 if (md) {
                     // set object var
                     if (is_instance) {
+                        if (closure_scoped)
+                            call(set_str, concat_cstring, "scope->");
                         call(set_str, concat_string, target);
                         sprintf(buf, "->");
                         call(set_str, concat_cstring, buf);
@@ -1202,11 +1209,14 @@ String CX_class_op_out(CX self, List scope, Token *t,
                         sprintf(buf, "%s->", class_var);
                         call(set_str, concat_cstring, buf);
                     }
+                    call(self, token_out, t_member, 0, set_str);
                 } else {
                     if (cd_lookup)
                         expected_type = cd_lookup->class_name;
+                    if (closure_scoped)
+                        call(set_str, concat_cstring, "scope->");
+                    call(self, token_out, t_member, 0, set_str);
                 }
-                call(self, token_out, t_member, 0, set_str);
             }
             String cast = NULL;
             bool check_only = false;
@@ -1307,6 +1317,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 sprintf(buf, "%s->get_", class_var);
                 call(output, concat_cstring, buf);
                 call(self, token_out, t_member, '(', output);
+                if (closure_scoped)
+                    call(output, concat_cstring, "scope->");
                 if (is_instance)
                     call(output, concat_string, target);
                 sprintf(buf, ")");
@@ -1314,6 +1326,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
             } else {
                 // get object->var (class or instance)
                 if (is_instance) {
+                    if (closure_scoped)
+                        call(output, concat_cstring, "scope->");
                     call(output, concat_string, target);
                     sprintf(buf, "->");
                     call(output, concat_cstring, buf);
@@ -1325,44 +1339,54 @@ String CX_class_op_out(CX self, List scope, Token *t,
             }
             t = *t_after = t_member;
         } else {
-            ClassDec cd_lookup = call(self, scope_lookup, scope, target, NULL, NULL);
+            ClassDec cd_lookup = call(self, scope_lookup, scope, target, NULL, NULL, NULL);
             cd_last = cd_lookup;
             *type_last = cd_lookup->class_name; // todo: map to aliased name
+            if (closure_scoped)
+                call(output, concat_cstring, "scope->");
             call(self, token_out, t_member, ' ', output);
             t = *t_after = t_member;
         }
     }
     if (cd_last && (t + 1)->punct == ".") {
-        output = call(self, var_gen_out, scope, t + 2, cd_last, output, true,
-            t_after, type_last, flags, method, brace_depth, false); 
+        output = call(self, var_op_out, scope, t + 2, cd_last, output, true,
+            t_after, type_last, flags, method, brace_depth, false, false); 
     }
     return output;
 }
 
-ClassDec CX_scope_lookup(CX self, List scope, String var, Pairs *found, String *name) {
+ClassDec CX_scope_lookup(CX self, List scope, String var, Pairs *found, String *name, bool *closure_scoped) {
     LList *list = &scope->list;
     Pairs p = (Pairs)list->last->data;
     for (LItem *_i = list->last; _i; _i = _i->prev,
             p = _i ? (typeof(p))_i->data : NULL) {
-        ClassDec cd = pairs_value(p, var, ClassDec);
-        if (cd) {
-            if (found) {
+        String key = pairs_key(p, var, String);
+        if (key) {
+            ClassDec cd = pairs_value(p, key, ClassDec);
+            if (cd) {
+                if (closure_scoped)
+                    *closure_scoped = ((key->flags & CLOSURE_FLAG_SCOPED) != 0);
                 if (name)
                     *name = cd->class_name;
-                *found = p;
-            }
-            return cd;
-        }
-        if (name) {
-            String type_name = pairs_value(p, var, String);
-            if (type_name) {
-                *name = type_name;
                 if (found)
-                    *found = NULL;
-                return NULL;
+                    *found = p;
+                return cd;
+            } else {
+                String type_name = pairs_value(p, key, String);
+                if (type_name) {
+                    if (closure_scoped)
+                        *closure_scoped = ((key->flags & CLOSURE_FLAG_SCOPED) != 0);
+                    if (name)
+                        *name = type_name;
+                    if (found)
+                        *found = NULL;
+                    return NULL;
+                }
             }
         }
     }
+    if (closure_scoped)
+        *closure_scoped = false;
     if (name)
         *name = NULL;
     if (found)
@@ -1565,12 +1589,14 @@ ClosureDec CX_gen_closure(CX self, List scope, Token *b_arg_start, int n_arg_tok
         if (!skip_ident) {
             if (t->type == TT_Identifier) {
                 String type = NULL;
-                ClassDec cd = call(self, scope_lookup, scope, t->str, NULL, &type);
+                ClassDec cd = call(self, scope_lookup, scope, t->str, NULL, &type, NULL);
                 if (cd || type) {
+                    String key = cp(t->str);
+                    key->flags = CLOSURE_FLAG_SCOPED;
                     if (cd)
-                        pairs_add(ref_scope, t->str, cd);
+                        pairs_add(ref_scope, key, cd);
                     else
-                        pairs_add(ref_scope, t->str, type);
+                        pairs_add(ref_scope, key, type);
                 }
             }
         }
@@ -1595,6 +1621,8 @@ ClosureDec CX_gen_closure(CX self, List scope, Token *b_arg_start, int n_arg_tok
     closure_dec->parent = inherits(method, ClosureDec);
     List new_scope = new(List);
     list_push(new_scope, ref_scope);
+
+    // have a different type associated to virtually scoped strings
     closure_dec->code = call(self, code_out, new_scope, b_start, b_end, &t_after, false, false, &type_last,
         (MemberDec)closure_dec, &brace_depth, &closure_flags, false);
     call(closure_dec, read_args, b_arg_start, n_arg_tokens);
@@ -1603,7 +1631,7 @@ ClosureDec CX_gen_closure(CX self, List scope, Token *b_arg_start, int n_arg_tok
     return closure_dec;
 }
 
-String CX_closure_out(CX self, ClosureDec closure_dec) {
+String CX_closure_out(CX self, List scope, ClosureDec closure_dec, bool assign) {
     /* implement init function that takes in struct literal and outputs allocated copy, as well as retains all object members */
     char *name = closure_dec->str_name->buffer;
     char buf[1024];
@@ -1668,7 +1696,12 @@ String CX_closure_out(CX self, ClosureDec closure_dec) {
         name, name, literal->buffer, name);
     call(output, concat_cstring, buf);
     release(literal);
-    return output;
+
+    String closure_class = new_string("Closure");
+    ClassDec cd_closure = pairs_value(self->static_class_map, closure_class, ClassDec);
+    String gen_out = call(self, var_gen_out, scope, cd_closure, output);
+    release(output);
+    return gen_out;
 }
 
 String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, Token **t_after,
@@ -1685,10 +1718,6 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
         if (t->punct == "{" || t->keyword == "for") {
             call(self, token_out, t, ' ', output);
             if (t->punct == "{") {
-                if (call(method->str_name, cmp, "main2") == 0) {
-                    int test = 0;
-                    test++;
-                }
                 Token *b_start = NULL, *b_end = NULL;
                 int token_count = call(self, read_block, t, &b_start, &b_end);
                 t = &t[token_count];
@@ -1777,7 +1806,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         call(self, read_block, t_from, &b_start, &b_end);
                         ClosureDec closure_dec = call(self, gen_closure, scope, t + 1, n_arg_tokens, b_start, b_end, method);
                         if (closure_dec) {
-                            String closure_out = call(self, closure_out, closure_dec);
+                            String closure_out = call(self, closure_out, scope, closure_dec, assign);
                             call(output, concat_string, closure_out);
                             *type_last = new_string("Closure");
                             *flags |= CODE_FLAG_ALLOC;
@@ -1857,14 +1886,14 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     String str_name = class_call(String, new_from_bytes, (uint8 *)t->value, t->length);
                     target = t->str;
                     pairs_add(top, str_name, cd);
-                    String out = call(self, var_gen_out, scope, t, cd, target, false, &t,
-                        type_last, flags, method, brace_depth, false);
+                    String out = call(self, var_op_out, scope, t, cd, target, false, &t,
+                        type_last, flags, method, brace_depth, false, false);
                     call(output, concat_string, out);
                 } else if (t->punct == ".") {
                     token_next(&t);
                     if (t->type == TT_Identifier) {
-                        String out = call(self, var_gen_out, scope, t, cd, target, false, &t,
-                            type_last, flags, method, brace_depth, assign);
+                        String out = call(self, var_op_out, scope, t, cd, target, false, &t,
+                            type_last, flags, method, brace_depth, assign, false);
                         call(output, concat_string, out);
                     }
                 } else if (t->punct == "(") {
@@ -1873,8 +1902,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         exit(1);
                     }
                     // construct (default)
-                    String out = call(self, var_gen_out, scope, t - 1, cd, target, false, &t,
-                        type_last, flags, method, brace_depth, assign);
+                    String out = call(self, var_op_out, scope, t - 1, cd, target, false, &t,
+                        type_last, flags, method, brace_depth, assign, false);
                     call(output, concat_string, out);
                 } else {
                     call(output, concat_string, is_class ? cd->struct_class : cd->struct_object);
@@ -1882,27 +1911,27 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     call(self, token_out, t, ' ', output);
                 }
             } else {
-                ClassDec cd = call(self, scope_lookup, scope, target, NULL, NULL);
+                String type_name = NULL;
+                call(self, read_type_at, t, &type_name);
+                bool closure_scoped = false;
+                ClassDec cd = call(self, scope_lookup, scope, target, NULL, NULL, (type_name ? NULL : &closure_scoped));
                 bool found = false;
                 if (cd) {
                     if ((t + 1)->punct == ".") {
                         if ((t + 2)->type == TT_Identifier) {
-                            String out = call(self, var_gen_out, scope, t + 2, cd, target, true, &t,
-                                type_last, flags, method, brace_depth, assign);
+                            String out = call(self, var_op_out, scope, t + 2, cd, target, true, &t,
+                                type_last, flags, method, brace_depth, assign, closure_scoped);
                             call(output, concat_string, out);
                             found = true;
                         }
                     } else {
-                        String out = call(self, var_gen_out, scope, t, cd, target, true, &t,
-                            type_last, flags, method, brace_depth, assign);
+                        String out = call(self, var_op_out, scope, t, cd, target, true, &t,
+                            type_last, flags, method, brace_depth, assign, closure_scoped);
                         call(output, concat_string, out);
                         found = true;
                     }
-                } else {
-                    String type_name = NULL;
-                    call(self, read_type_at, t, &type_name);
-                    if (type_name)
-                        pairs_add(top, t->str, type_name);
+                } else if (type_name) {
+                    pairs_add(top, t->str, type_name);
                 }
                 if (!found)
                     call(self, token_out, t, ' ', output);
@@ -1918,8 +1947,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             break;
     }
     if (output->length > 0) {
-        Pairs scope_at = NULL;
-        ClassDec cd_found = call(self, scope_lookup, scope, output, &scope_at, NULL);
+        Pairs scope_at = NULL; // needs to check if var is within closure scope
+        ClassDec cd_found = call(self, scope_lookup, scope, output, &scope_at, NULL, NULL);
         if (cd_found) {
             // if this scoped var was tracked, set CODE_FLAG_ALLOC
             bool check_only = false;

@@ -53,6 +53,9 @@ class Test : Super {
         (int arg) {
             int ii = 0;
             printf("hey there %s\n", s.buffer);
+            (int arg2) {
+                printf("another test:%s %d", s.buffer, t.value);
+            };
         };
         return 0;
     }
