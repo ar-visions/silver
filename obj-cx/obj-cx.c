@@ -1080,7 +1080,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 *flags |= CODE_FLAG_ALLOC;
             sprintf(buf, "%s->", class_var);
             call(output, concat_cstring, buf);
-            call(self, token_out, t_member, '(', output);
+            token_out(t_member, '(', output);
 
             ClassDec cd_target = pairs_value(self->static_class_map, target, ClassDec);
             if (cd_target) {
@@ -1557,7 +1557,7 @@ void CX_code_return(CX self, List scope, Token *t, Token **t_out, Token **t_afte
     top->user_flags = 1;
 }
 
-void CX_gen_closure(CX self, List scope, Token *b_arg_start, int n_arg_tokens, Token *b_start, Token *b_end, MemberDec method) {
+ClosureDec CX_gen_closure(CX self, List scope, Token *b_arg_start, int n_arg_tokens, Token *b_start, Token *b_end, MemberDec method) {
     Pairs ref_scope = new(Pairs);
     bool skip_ident = false;
     // cheap way to gather up scoped references; be sure to avoid sub-closures
@@ -1600,7 +1600,75 @@ void CX_gen_closure(CX self, List scope, Token *b_arg_start, int n_arg_tokens, T
     call(closure_dec, read_args, b_arg_start, n_arg_tokens);
     list_push(self->closures, closure_dec);
     release(new_scope);
-    // call code_out within here, which of course will generate more closures if they exist
+    return closure_dec;
+}
+
+String CX_closure_out(CX self, ClosureDec closure_dec) {
+    /* implement init function that takes in struct literal and outputs allocated copy, as well as retains all object members */
+    char *name = closure_dec->str_name->buffer;
+    char buf[1024];
+    String init_out = new(String);
+    sprintf(buf, "static void *%s_init(struct %s lit) {\n", name, name);
+    call(init_out, concat_cstring, buf);
+    sprintf(buf, "\tstruct %s *value = (struct %s *)malloc(sizeof(lit));\n", name, name);
+    call(init_out, concat_cstring, buf);
+    sprintf(buf, "\tmemcpy(value, &lit, sizeof(lit));\n");
+    call(init_out, concat_cstring, buf);
+    KeyValue kv;
+    each_pair(closure_dec->ref_scope, kv) {
+        String var = (String)kv->key;
+        ClassDec cd = inherits(kv->value, ClassDec);
+        if (cd) {
+            sprintf(buf, "\t%s->retain(value->%s);\n", cd->class_name->buffer, var->buffer);
+            call(init_out, concat_cstring, buf);
+        }
+    }
+    sprintf(buf, "\treturn value;\n");
+    call(init_out, concat_cstring, buf);
+    sprintf(buf, "}\n");
+    call(init_out, concat_cstring, buf);
+    list_push(self->misc_code, init_out);
+    release(init_out);
+
+    /* create dealloc function */
+    String dealloc_out = new(String);
+    sprintf(buf, "static void *%s_dealloc(struct %s *value) {\n", name, name);
+    call(dealloc_out, concat_cstring, buf);
+    each_pair(closure_dec->ref_scope, kv) {
+        String var = (String)kv->key;
+        ClassDec cd = inherits(kv->value, ClassDec);
+        if (cd) {
+            sprintf(buf, "\t%s->release(value->%s);\n", cd->class_name->buffer, var->buffer);
+            call(dealloc_out, concat_cstring, buf);
+        }
+    }
+    sprintf(buf, "}\n");
+    call(dealloc_out, concat_cstring, buf);
+    list_push(self->misc_code, dealloc_out);
+    release(dealloc_out);
+
+    /* create struct literal string */
+    String literal = new(String);
+    sprintf(buf, "(struct %s){", name);
+    call(literal, concat_cstring, buf);
+    bool first = true;
+    each_pair(closure_dec->ref_scope, kv) {
+        String var = (String)kv->key;
+        if (!first) {
+            call(literal, concat_char, ',');
+        }
+        call(literal, concat_string, var);
+        first = false;
+    }
+    call(literal, concat_char, '}');
+
+    String output = new(String);
+    /* construct new closure with init call given struct literal, and dealloc function */
+    sprintf(buf, "Closure->init_closure((base_Closure)Base->new_object(Base, (base_Class)Closure, 0), (ClosureFunc)%s, (void *)%s_init(%s), (ClosureDealloc)%s_dealloc)",
+        name, name, literal->buffer, name);
+    call(output, concat_cstring, buf);
+    release(literal);
+    return output;
 }
 
 String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, Token **t_after,
@@ -1707,7 +1775,13 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     if (t_from->punct == "{") {
                         Token *b_start = NULL, *b_end = NULL;
                         call(self, read_block, t_from, &b_start, &b_end);
-                        call(self, gen_closure, scope, t + 1, n_arg_tokens, b_start, b_end, method);
+                        ClosureDec closure_dec = call(self, gen_closure, scope, t + 1, n_arg_tokens, b_start, b_end, method);
+                        if (closure_dec) {
+                            String closure_out = call(self, closure_out, closure_dec);
+                            call(output, concat_string, closure_out);
+                            *type_last = new_string("Closure");
+                            *flags |= CODE_FLAG_ALLOC;
+                        }
                         token_out = false;
                         t = b_end;
                         // output constructor for closure, setting function pointer to the static that will be declared above
@@ -2692,27 +2766,36 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
             }
         }
     }
-    ClosureDec closure_dec;
-    fprintf(file_output, "// ---------- closures ----------\n");
-    each(self->closures, closure_dec) {
-        KeyValue kv;
-        fprintf(file_output, "struct %s {\n", closure_dec->str_name->buffer);
-        each_pair(closure_dec->ref_scope, kv) {
-            String var = (String)kv->key;
-            ClassDec cd = inherits(kv->value, ClassDec);
-            if (cd) {
-                fprintf(file_output, "\t%s %s;\n", cd->struct_object->buffer, var->buffer);
-            } else {
-                String type = inherits(kv->value, String);
-                fprintf(file_output, "\t%s %s;\n", type->buffer, var->buffer);
-            }
+    if (list_count(self->closures) > 0) {
+        fprintf(file_output, "// ---------- closures ----------\n");
+        ClosureDec closure_dec;
+        each(self->closures, closure_dec) {
+            fprintf(file_output, "struct %s;\n", closure_dec->str_name->buffer);
         }
-        fprintf(file_output, "};\n");
-        fprintf(file_output, "void %s(struct %s *scope, %s) %s\n",
-            closure_dec->str_name->buffer,
-            closure_dec->str_name->buffer,
-            closure_dec->str_args->buffer,
-            closure_dec->code->buffer);
+        String misc_code;
+        each(self->misc_code, misc_code) {
+            fprintf(file_output, "%s", misc_code->buffer);
+        }
+        each(self->closures, closure_dec) {
+            KeyValue kv;
+            fprintf(file_output, "struct %s {\n", closure_dec->str_name->buffer);
+            each_pair(closure_dec->ref_scope, kv) {
+                String var = (String)kv->key;
+                ClassDec cd = inherits(kv->value, ClassDec);
+                if (cd) {
+                    fprintf(file_output, "\t%s %s;\n", cd->struct_object->buffer, var->buffer);
+                } else {
+                    String type = inherits(kv->value, String);
+                    fprintf(file_output, "\t%s %s;\n", type->buffer, var->buffer);
+                }
+            }
+            fprintf(file_output, "};\n");
+            fprintf(file_output, "void %s(struct %s *scope, %s) %s\n",
+                closure_dec->str_name->buffer,
+                closure_dec->str_name->buffer,
+                closure_dec->str_args->buffer,
+                closure_dec->code->buffer);
+        }
     }
     fprintf(file_output, "%s", output->buffer);
     return true;
@@ -2789,12 +2872,13 @@ bool CX_read_modules(CX self) {
 
 void CX_init(CX self) {
     self->modules = new(List);
-    self->closures = new(List);
     self->classes = new(Pairs);
     self->aliases = new(Pairs); // key = module, value = alias that this module is referred to as; each alias will create a static struct with all of the classes of that module contained inside
     self->includes = new(List);
     self->private_includes = new(List);
     self->forward_structs = new(List);
+    self->closures = new(List);
+    self->misc_code = new(List);
 }
 
 void emit_module_statics(CX self, CX module, FILE *file_output, Pairs emitted, Pairs vars, Pairs class_map, String alias, bool collect_only) {
