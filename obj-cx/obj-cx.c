@@ -1600,6 +1600,7 @@ ClosureDec CX_gen_closure(CX self, List scope, Token *b_arg_start, int n_arg_tok
                 }
             }
         }
+        skip_ident = false;
         if (t->punct == "." || t->punct == "->")
             skip_ident = true;
         if (t == b_end)
@@ -1621,12 +1622,13 @@ ClosureDec CX_gen_closure(CX self, List scope, Token *b_arg_start, int n_arg_tok
     closure_dec->parent = inherits(method, ClosureDec);
     List new_scope = new(List);
     list_push(new_scope, ref_scope);
+    list_push(self->closures, closure_dec);
 
     // have a different type associated to virtually scoped strings
     closure_dec->code = call(self, code_out, new_scope, b_start, b_end, &t_after, false, false, &type_last,
         (MemberDec)closure_dec, &brace_depth, &closure_flags, false);
     call(closure_dec, read_args, b_arg_start, n_arg_tokens);
-    list_push(self->closures, closure_dec);
+    
     release(new_scope);
     return closure_dec;
 }
@@ -1685,6 +1687,8 @@ String CX_closure_out(CX self, List scope, ClosureDec closure_dec, bool assign) 
         if (!first) {
             call(literal, concat_char, ',');
         }
+        if (var->flags & CLOSURE_FLAG_SCOPED)
+            call(literal, concat_cstring, "scope->");
         call(literal, concat_string, var);
         first = false;
     }
@@ -1912,11 +1916,15 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 }
             } else {
                 String type_name = NULL;
+                if (call(t->str, cmp, "t") == 0) {
+                    int test = 0;
+                    test++;
+                }
                 call(self, read_type_at, t, &type_name);
                 bool closure_scoped = false;
                 ClassDec cd = call(self, scope_lookup, scope, target, NULL, NULL, (type_name ? NULL : &closure_scoped));
                 bool found = false;
-                if (cd) {
+                if (cd && !type_name) {
                     if ((t + 1)->punct == ".") {
                         if ((t + 2)->type == TT_Identifier) {
                             String out = call(self, var_op_out, scope, t + 2, cd, target, true, &t,
@@ -1931,6 +1939,10 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         found = true;
                     }
                 } else if (type_name) {
+                    if (call(t->str, cmp, "t") == 0) {
+                        int test = 0;
+                        test++;
+                    }
                     pairs_add(top, t->str, type_name);
                 }
                 if (!found)
