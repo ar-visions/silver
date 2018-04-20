@@ -16,6 +16,7 @@ enum MemberType {
 
 struct _object_ClassDec;
 struct _object_MemberDec;
+struct _object_ClosureDec;
 
 typedef struct _Token {
     enum TokenType type;
@@ -40,7 +41,8 @@ typedef struct _Token {
 
 #define _CX(D,T,C) _Base(spr,T,C)   \
     override(D,T,C,void,init,(C)) \
-    method(D,T,C,void,gen_closure,(C,List,Token *,int,Token *,Token *,struct _object_MemberDec *)) \
+    method(D,T,C,String,closure_out,(C, struct _object_ClosureDec *)) \
+    method(D,T,C,struct _object_ClosureDec *,gen_closure,(C,List,Token *,int,Token *,Token *,struct _object_MemberDec *)) \
     method(D,T,C,String,forward_type,(C,struct _object_ClassDec *,struct _object_MemberDec *)) \
     method(D,T,C,struct _object_ClassDec *,read_type_at,(C, Token *, String *)) \
     method(D,T,C,String,code_block_out,(C, List, struct _object_ClassDec *, Token *, Token *, Token **, struct _object_MemberDec *, int *)) \
@@ -96,6 +98,7 @@ typedef struct _Token {
     var(D,T,C,Pairs,aliases)               \
     var(D,T,C,Pairs,classes)               \
     var(D,T,C,List,closures)               \
+    var(D,T,C,List,misc_code)              \
     var(D,T,C,Pairs,processed)
 declare(CX, Base)
 

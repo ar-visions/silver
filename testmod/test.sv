@@ -50,12 +50,10 @@ class Test : Super {
         t.value = 1;
         printf("value = %d\n", t.value);
 
-        struct __closure_0 c = { s };
-        Closure c = (int arg) {
+        (int arg) {
             int ii = 0;
             printf("hey there %s\n", s.buffer);
         };
-        c(1);
         return 0;
     }
 }
