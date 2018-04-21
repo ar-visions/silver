@@ -41,8 +41,11 @@ typedef struct _Token {
 
 #define CODE_FLAG_ALLOC 1
 
+
 #define _CX(D,T,C) _Base(spr,T,C)   \
     override(D,T,C,void,init,(C)) \
+    method(D,T,C,void,pretty_token,(C,int,Token *,String)) \
+    method(D,T,C,String,pretty_print,(C,String)) \
     method(D,T,C,String,closure_out,(C, List, struct _object_ClosureDec *, bool)) \
     method(D,T,C,struct _object_ClosureDec *,gen_closure,(C,List,Token *,int,Token *,Token *,struct _object_MemberDec *)) \
     method(D,T,C,String,forward_type,(C,struct _object_ClassDec *,struct _object_MemberDec *)) \
@@ -155,6 +158,7 @@ declare(ClosureDec, MemberDec)
     var(D,T,C,Token *,start)               \
     var(D,T,C,Token *,end)                 \
     var(D,T,C,Token *,name)                \
+    var(D,T,C,String,type_str)             \
     var(D,T,C,String,class_name)           \
     var(D,T,C,String,super_class)          \
     var(D,T,C,String,struct_class)         \
@@ -168,6 +172,11 @@ declare(ClassDec, Base)
 
 #define _ClosureClass(D,T,C) _ClassDec(spr,T,C)    \
     override(D,T,C,void,init,(C))                  \
-    var(D,T,C,List,args)                           \
-    var(D,T,C,String,type_str)
+    var(D,T,C,List,args)
 declare(ClosureClass, ClassDec)
+
+#define _ArrayClass(D,T,C) _ClassDec(spr,T,C)    \
+    override(D,T,C,void,init,(C))                \
+    var(D,T,C,Token *,delim_start)               \
+    var(D,T,C,Token *,delim_end)
+declare(ArrayClass, ClassDec)
