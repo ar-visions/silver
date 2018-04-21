@@ -46,7 +46,7 @@ typedef struct _Token {
     method(D,T,C,String,closure_out,(C, List, struct _object_ClosureDec *, bool)) \
     method(D,T,C,struct _object_ClosureDec *,gen_closure,(C,List,Token *,int,Token *,Token *,struct _object_MemberDec *)) \
     method(D,T,C,String,forward_type,(C,struct _object_ClassDec *,struct _object_MemberDec *)) \
-    method(D,T,C,struct _object_ClassDec *,read_type_at,(C, Token *, String *)) \
+    method(D,T,C,Base,read_type_at,(C, Token *)) \
     method(D,T,C,String,code_block_out,(C, List, struct _object_ClassDec *, Token *, Token *, Token **, struct _object_MemberDec *, int *)) \
     method(D,T,C,void,code_block_end,(C, List, Token *, int *, String)) \
     method(D,T,C,String,super_out,(C,List,struct _object_ClassDec *,Token *,Token *)) \
@@ -106,7 +106,7 @@ typedef struct _Token {
 declare(CX, Base)
 
 #define _MemberDec(D,T,C) _Base(spr,T,C)   \
-    method(D,T,C,void,read_args,(C, Token *, int)) \
+    method(D,T,C,void,read_args,(C, Token *, int, bool)) \
     var(D,T,C,struct _object_ClassDec *,cd) \
     var(D,T,C,enum MemberType,member_type) \
     var(D,T,C,Token *,type)                \
@@ -164,3 +164,10 @@ declare(ClosureDec, MemberDec)
     var(D,T,C,Pairs,members)               \
     var(D,T,C,Pairs,meta)
 declare(ClassDec, Base)
+
+
+#define _ClosureClass(D,T,C) _ClassDec(spr,T,C)    \
+    override(D,T,C,void,init,(C))                  \
+    var(D,T,C,List,args)                           \
+    var(D,T,C,String,type_str)
+declare(ClosureClass, ClassDec)
