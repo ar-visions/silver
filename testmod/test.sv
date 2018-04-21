@@ -50,14 +50,17 @@ class Test : Super {
         t.value = 1;
         printf("value = %d\n", t.value);
 
-        (int arg) {
+        int testme(int) = (int arg) {
             int ii = 0;
             int t = 5;
             printf("hey there %s\n", s.buffer);
             (int arg2) {
-                printf("another test:%s %d", s.buffer, t);
+                Test test1 = new Test();
+                printf("another test:%s %d %d", s.buffer, t, test1.value);
             };
         };
+
+        const int i = 1 + (leave_alone1 leave_alone2)testing;
         return 0;
     }
 }
