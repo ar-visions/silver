@@ -54,13 +54,15 @@ class Test : Super {
             int ii = 0;
             int t = 5;
             printf("hey there %s\n", s.buffer);
-            (int arg2) {
+            (int[] arg2) {
                 Test test1 = new Test();
                 printf("another test:%s %d %d", s.buffer, t, test1.value);
             };
         };
 
         const int i = 1 + (leave_alone1 leave_alone2)testing;
+        wchar_t[] test_array;
+        test_array.push(null);
         return 0;
     }
 }
