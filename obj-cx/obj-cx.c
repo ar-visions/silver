@@ -1898,12 +1898,16 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 type = call(self, read_type_at, tt);
                 if (type) {
                     pairs_add(top, tt->str, type);
+                    target = tt->str;
                     t = tt;
                     declared = true;
+                    cd = inherits(type, ClassDec);
                 }
             }
-            for (Token *tt = t_start; tt < t; tt++) {
-                token_out(tt, 0, output);
+            if (!inherits(type, ClassDec)) {
+                for (Token *tt = t_start; tt < t; tt++) {
+                    token_out(tt, 0, output);
+                }
             }
 
             if (cd) {
@@ -2033,6 +2037,11 @@ Base CX_read_type_at(CX self, Token *t) {
     else if (type_keywords > 0 && ahead->punct == "(") {
         // this is a closure type
         closure = new(ClosureClass);
+        closure->class_name = new_string("Closure");
+        closure->struct_object = new_string("base_Closure");
+        closure->struct_class = new_string("base_ClosureClass");
+        closure->class_var = new_string("base_Closure_var");
+        
         int p = 0;
         Token *t_start = t + 2;
         for (Token *tt = t + 2; tt->value; tt++) {
