@@ -437,6 +437,7 @@ int CX_read_expression(CX self, Token *t, Token **b_start, Token **b_end, const 
     const char *p2 = strchr(end, ';') ? ";" : "N/A";
     const char *p3 = strchr(end, ')') ? ")" : "N/A";
     const char *p4 = strchr(end, ',') ? "," : "N/A";
+    const char *p5 = strchr(end, ']') ? "]" : "N/A";
     Token *t_start = t;
 
     while (t->value) {
@@ -451,8 +452,8 @@ int CX_read_expression(CX self, Token *t, Token **b_start, Token **b_end, const 
                 }
             }
         }
-        if (brace_depth == 0 && (t->punct == p1 || t->punct == p2 || t->punct == p3 || t->punct == p4)) {
-            if (paren_depth < 0 || (paren_depth == 0 && (t->punct == p1 || t->punct == p2 || t->punct == p4))) {
+        if (brace_depth == 0 && (t->punct == p1 || t->punct == p2 || t->punct == p3 || t->punct == p4 || t->punct == p5)) {
+            if (paren_depth < 0 || (paren_depth == 0 && (t->punct == p1 || t->punct == p2 || t->punct == p4 || t->punct == p5))) {
                 if (mark_block && (t->punct == "{" || (token_next(&t))->punct == "{"))
                     call(self, read_block, t, b_start, b_end);
                 return count;
@@ -1000,20 +1001,12 @@ String CX_class_op_out(CX self, List scope, Token *t,
         cd_last = md_type;
         *type_last = md_type ? md_type->class_name : NULL;
     }
-    bool constructor = false;
-    if (cd && !md) {
-        if (s_token->length == cd->class_name->length && 
-                call(s_token, compare, cd->class_name) == 0) {
-            constructor = true;
-        }/* else {
-            const char *class_name = cd->class_name->buffer;
-            printf("member: %s not found on class: %s\n", s_token->buffer, class_name);
-            exit(1);
-        }*/
-    }
+    bool constructor = (t - 1)->keyword == "new";
     const char *class_var = cd ? cd->class_var->buffer : NULL;
     token_next(&t);
-    if (cd && t->punct == "(") {
+    bool is_array = cd && inherits(cd, ArrayClass);
+    bool use_braces = (is_array && t->punct == "[");
+    if (cd && (t->punct == "(" || use_braces)) {
         if (constructor) {
             *flags |= CODE_FLAG_ALLOC;
             String ctor = new(String);
@@ -1025,7 +1018,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
             String gen_var = NULL;
             String last_set = NULL;
             for (;;) {
-                int n = call(self, read_expression, t, NULL, NULL, ",)", 0, true);
+                int n = call(self, read_expression, t, NULL, NULL, use_braces ? ",]" : ",)", 0, true);
                 if (n == 0)
                     break;
                 Token *var = t;
@@ -1151,7 +1144,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 c_arg++;
             }
         }
-        if (t->punct != ")") {
+        if ((!use_braces && t->punct != ")") || (use_braces && t->punct != "]")) {
             fprintf(stderr, "%s:%d: expected ')'\n",
                 t->file->buffer, t->line);
             exit(1);
@@ -1727,8 +1720,11 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
     for (Token *t = method_start; ; t++) {
         if (t->skip)
             continue;
-        if (t->keyword == "new")
+        bool is_new = false;
+        if (t->keyword == "new") {
+            is_new = true;
             token_next(&t);
+        }
         if (t->punct == "{" || t->keyword == "for") {
             call(self, token_out, t, ' ', output);
             if (t->punct == "{") {
@@ -1895,7 +1891,15 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             while (tt->type == TT_Identifier || tt->type == TT_Keyword)
                 tt++;
             Base type = NULL;
-            if (call((t + 1)->str, cmp, "testme") == 0) {
+            if (call((t + 0)->str, cmp, "Test") == 0) {
+                int test = 0;
+                test++;
+            }
+            if (call((t + 1)->str, cmp, "Test") == 0) {
+                int test = 0;
+                test++;
+            }
+            if (call((t + 1)->str, cmp, "wchar_t") == 0) {
                 int test = 0;
                 test++;
             }
@@ -1903,20 +1907,27 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 int test = 0;
                 test++;
             }
-            if (call((t + 1)->str, cmp, "testme2") == 0) {
-                int test = 0;
-                test++;
-            }
             bool declared = false;
             if (((tt != t + 1) || (((tt - 1)->cd || (tt - 1)->type_keyword) && tt->punct == "[")) && tt->type != TT_Keyword) {
+                if ((((tt - 1)->cd || (tt - 1)->type_keyword) && tt->punct == "[") && tt->type != TT_Keyword) {
+                    int test = 0;
+                    test++;
+                }
                 tt--;
                 type = call(self, read_type_at, tt);
                 if (type) {
-                    pairs_add(top, tt->str, type);
-                    target = tt->str;
                     t = tt;
-                    declared = true;
                     cd = inherits(type, ClassDec);
+                    if (!is_new) {
+                        if (inherits(type, ArrayClass)) {
+                            while (t->punct != "]")
+                                t++;
+                            t++;
+                        }
+                        pairs_add(top, t->str, type);
+                        target = t->str;
+                        declared = true;
+                    }
                 }
             }
             if (!inherits(type, ClassDec)) {
@@ -1930,7 +1941,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 Token *t_start = t;
                 if (!declared)
                     token_next(&t);
-                if (t->type == TT_Identifier) {
+                if ((inherits(type, ArrayClass) && t->punct != "[") || t->type == TT_Identifier) {
                     call(output, concat_string, is_class ? cd->struct_class : cd->struct_object);
                     call(output, concat_char, ' ');
                     // variable declared
@@ -1947,10 +1958,14 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                             type_last, flags, method, brace_depth, assign, false);
                         call(output, concat_string, out);
                     }
-                } else if (t->punct == "(") {
+                } else if (t->punct == "(" || t->punct == "[") {
                     if (is_class) {
                         fprintf(stderr, "constructor cannot be called directly on class type\n");
                         exit(1);
+                    }
+                    if (t->punct == "[") {
+                        int test = 0;
+                        test++;
                     }
                     // construct (default)
                     String out = call(self, var_op_out, scope, t - 1, cd, target, false, &t,
@@ -2014,6 +2029,11 @@ void CX_token_out(CX self, Token *t, int sep, String output) {
     int n = 0;
     buf[0] = 0;
 
+    if (call(t->str, cmp, "wchar_t") == 0) {
+        int test = 0;
+        test++;
+    }
+
     for (int i = 0; i < t->length; i++) {
         n += sprintf(buf + n, "%c", t->value[i]);
     }
@@ -2036,9 +2056,10 @@ Base CX_read_type_at(CX self, Token *t) {
     Token *ahead = t + 1;
     if (ahead->punct != "[" && ahead->punct != "(" && ahead->punct == ";" && !ahead->assign)
         return NULL;
-    if (!t->type_keyword || (t->type != TT_Identifier && t->keyword != "class" && t->keyword != "this"))
+    if (!t->type_keyword && (t->type != TT_Identifier && t->keyword != "class" && t->keyword != "this"))
         return NULL;
-    Token *cur = t - 1;
+    Token *cur = (t->type_keyword || t->cd) ? t : t - 1;
+    Token *t_end = cur + 1;
     int type_keywords = 0;
     ClassDec cd = NULL;
     while (cur->type != TT_Punctuator && cur->punct != "*") {
@@ -2050,9 +2071,9 @@ Base CX_read_type_at(CX self, Token *t) {
     }
     ClassDec class_type = NULL;
     cur++;
-    if (cur >= t)
+    if (cur >= t_end)
         return NULL;
-    else if (type_keywords > 0 && ahead->punct == "(") {
+    else if ((type_keywords > 0 || cd) && ahead->punct == "(") {
         ClosureClass closure = new(ClosureClass);
         closure->class_name = new_string("Closure");
         closure->struct_object = new_string("base_Closure");
@@ -2087,18 +2108,19 @@ Base CX_read_type_at(CX self, Token *t) {
             }
         }
         class_type = (ClassDec)closure;
-    } else if (type_keywords > 0 && ahead->punct == "[") {
+    } else if ((type_keywords > 0 || cd) && ahead->punct == "[") {
+        ClassDec a = CX_find_class(string("Array"));
         ArrayClass array = new(ArrayClass);
-        array->class_name = new_string("Array");
-        array->struct_object = new_string("base_Array");
-        array->struct_class = new_string("base_ArrayClass");
-        array->class_var = new_string("base_Array_var");
+        array->class_name = retain(a->class_name);
+        array->struct_object = retain(a->struct_object);
+        array->struct_class = retain(a->struct_class);
+        array->class_var = retain(a->class_var);
+        array->members = retain(a->members);
         array->delim_start = ahead;
         int d = 0;
-        Token *t_start = t + 2;
-        for (Token *tt = t + 2; tt->value; tt++) {
+        for (Token *tt = t + 1; tt->value; tt++) {
             bool push = false, br = false;
-            tt->skip = true;
+            //tt->skip = true;
             if (tt->punct == "[") {
                 ++d;
             } else if (tt->punct == "]") {
@@ -2126,7 +2148,7 @@ Base CX_read_type_at(CX self, Token *t) {
         first = false;
         call(type_name, concat_string, cur->str);
         cur++;
-    } while (cur < t);
+    } while (cur < t_end);
     if (class_type) {
         class_type->type_str = type_name;
     }
