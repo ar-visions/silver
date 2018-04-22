@@ -61,8 +61,9 @@ class Test : Super {
         };
 
         const int i = 1 + (leave_alone1 leave_alone2)testing;
-        wchar_t[] test_array;
+        wchar_t[] test_array = new wchar_t[];
         test_array.push(null);
+        test_array[0] = a;
         return 0;
     }
 }
