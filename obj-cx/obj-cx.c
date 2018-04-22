@@ -1004,8 +1004,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
     bool constructor = (t - 1)->keyword == "new";
     const char *class_var = cd ? cd->class_var->buffer : NULL;
     token_next(&t);
-    bool is_array = cd && inherits(cd, ArrayClass);
-    bool use_braces = (is_array && t->punct == "[");
+    ArrayClass array = inherits(cd, ArrayClass);
+    bool use_braces = (array && constructor && t->punct == "[");
     if (cd && (t->punct == "(" || use_braces)) {
         if (constructor) {
             *flags |= CODE_FLAG_ALLOC;
@@ -1158,6 +1158,9 @@ String CX_class_op_out(CX self, List scope, Token *t,
         fprintf(stderr, "expected '(' for constructor\n");
         exit(1);
     } else {
+        String array_code = NULL;
+        // if array & delim, read ahead past delim
+
         if (t->assign) {
             // check if var is tracked
             Pairs sc = NULL;
@@ -1173,6 +1176,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
             String expected_type;
             if (md) {
                 expected_type = md->type_str;
+            } else if (array) {
+                expected_type = array->type_str;
             }
             bool setter_method = false;
             String type_returned = NULL;
@@ -1238,28 +1243,6 @@ String CX_class_op_out(CX self, List scope, Token *t,
                     call(output, concat_cstring, buf);
                 } else if (!tracked && possible_alloc) {
                     call(self, start_tracking, scope, target, false);
-
-                    // proof: [logic has been augmented to not start tracking when setting to member on object]
-                    // obj.member (1)
-                    // Base b = obj.member; (2)
-                    // Base ret = b; (2)
-                    // release(b); (1)
-                    // return ret; (1)
-                    //
-                    // Base b = caller(); // (2) retained
-                    // 
-                    // caller().check_release() // (1) still exists as a member
-                    //
-                    //
-                    // Base b = new Base(); // (0 on new, retained and becomes 1)
-                    // Base ret = b; // (1)
-                    // release(b) // (0) (b == ret, decrement, but defer due to equality with return value)
-                    //
-                    // Base b = caller(); // (1)
-                    // caller().check_release() // (0) (release)
-                    // the receiver doesnt decrement if its not set; it merely checks if it should be released based on its value
-                    // ANY set is incrementing the ref count; non-sets just check the ref count
-
                     if (cast)
                         sprintf(buf, "%s = (%s)(%s->retain(%s))", set_str->buffer, cast->buffer,
                             cd_returned->class_name->buffer, code->buffer);
@@ -1307,8 +1290,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 }
             }
             release(set_str);
-        } else if (md) {
-            if (md->getter_start) {
+        } else if (array || md) {
+            if (md && md->getter_start) {
                 //if (md->type_cd)
                 //    *flags |= CODE_FLAG_ALLOC; do not tell the caller to wrap this in some gen var to later release
                 // call explicit getter (class or instance)
@@ -1334,6 +1317,21 @@ String CX_class_op_out(CX self, List scope, Token *t,
                     call(output, concat_cstring, buf);
                 }
                 call(self, token_out, t_member, ' ', output);
+                if (array) {
+                    // eval delim
+                    int delim_code_flags = 0;
+                    String type_last = NULL;
+                    Token *t_after = NULL;
+                    Token *delim_start = t;
+                    Token *delim_end = t;
+                    while (delim_end->punct != "]")
+                        delim_end++;
+                    String delim_code = call(self, code_out, scope, delim_start + 1, delim_end - 1, &t_after,
+                        NULL, false, &type_last, method, brace_depth, &delim_code_flags, false);
+                    sprintf(buf, "->buffer[%s]", delim_code->buffer);
+                    call(output, concat_cstring, buf);
+                    t_member = delim_end;
+                }
             }
             t = *t_after = t_member;
         } else {
