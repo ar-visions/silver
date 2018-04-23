@@ -23,13 +23,13 @@ class Test : Super {
         printf("value = %d\n", self.value);
     }
 
-    static void main2(Array args) {
+    static void main2(Array<String> args) {
         Test b = new Test(value=1, another=2);
     }
 
-    static int main(Array args) {
+    static int main(Array<String> args) {
         Test b = new Test();
-        Array a = new Array();
+        Array<int> a = new Array<int>();
         String s = (String)"hi";
         int i = (int)b;
         char *str = (char *)s;
@@ -63,7 +63,7 @@ class Test : Super {
         const int i = 1 + (leave_alone1 leave_alone2)testing;
         wchar_t[] test_array = new wchar_t[];
         test_array.push(null);
-        test_array[0] = a;
+        wchar_t c = test_array[0];
         return 0;
     }
 }

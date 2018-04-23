@@ -22,6 +22,9 @@ class Base {
     }
     void init() {
     }
+    long hash() {
+        return 0L;
+    }
     Base release() {
         if (!self) {
             return null;
