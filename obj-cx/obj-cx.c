@@ -496,8 +496,10 @@ bool CX_read_template_types(CX self, ClassDec cd, Token **pt) {
 int CX_read_block(CX self, Token *t, Token **start, Token **end) {
     int c = 0, brace_depth = 1;
     *start = t;
-    while (token_next(&t)->value) {
+    while ((++t)->value) {
         c++;
+        if (t->skip)
+            continue;
         if (t->punct == "{") {
             brace_depth++;
         } else if (t->punct == "}") {
@@ -1820,6 +1822,10 @@ String CX_closure_out(CX self, List scope, ClosureDec closure_dec, bool assign) 
 
 String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, Token **t_after,
         ClassDec super_mode, bool line_no, String *type_last, MemberDec method, int *brace_depth, int *flags, bool assign) {
+    if (call(method->str_name, cmp, "testme") == 0) {
+        int test = 0;
+        test++;
+    }
     *type_last = NULL;
     String output = new(String);
     char buf[1024];
