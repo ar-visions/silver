@@ -63,6 +63,7 @@ class Test : Super {
         const int i = 1 + (leave_alone1 leave_alone2)testing;
         wchar_t[] test_array = new wchar_t[];
         test_array.push(null);
+
         wchar_t c = test_array[0];
         return 0;
     }
