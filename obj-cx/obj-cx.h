@@ -75,6 +75,7 @@ typedef struct _Token {
     method(D,T,C,void,resolve_supers,(C)) \
     method(D,T,C,void,token_out,(C, Token *, int, String)) \
     method(D,T,C,bool,process,(C, const char *)) \
+    method(D,T,C,bool,output,(C, const char *)) \
     method(D,T,C,bool,emit_module_statics,(C, FILE *, bool)) \
     method(D,T,C,String,inheritance_cast,(C, struct _object_ClassDec *, struct _object_ClassDec *)) \
     method(D,T,C,String,casting_name,(C, struct _object_ClassDec *, String, String)) \
@@ -93,6 +94,7 @@ typedef struct _Token {
     var(D,T,C,String,directive_last_file)  \
     var(D,T,C,String,name)                 \
     var(D,T,C,Token *,tokens)              \
+    var(D,T,C,int,n_tokens)                \
     var(D,T,C,List,modules)                \
     var(D,T,C,int,gen_vars)                \
     var(D,T,C,List,forward_structs)        \
@@ -105,6 +107,7 @@ typedef struct _Token {
     var(D,T,C,Pairs,classes)               \
     var(D,T,C,List,closures)               \
     var(D,T,C,List,misc_code)              \
+    var(D,T,C,const char *,location)       \
     var(D,T,C,Pairs,processed)
 declare(CX, Base)
 
@@ -153,6 +156,9 @@ declare(ClosureDec, MemberDec)
 #define _ClassDec(D,T,C) _Base(spr,T,C)    \
     override(D,T,C,ulong,hash,(C))         \
     method(D,T,C,MemberDec,member_lookup,(C,String,C *)) \
+    method(D,T,C,C,templated_instance,(C, Token *, List)) \
+    var(D,T,C,List,template_instances)     \
+    var(D,T,C,List,instance_args)          \
     var(D,T,C,C,parent)                    \
     var(D,T,C,Pairs,effective)             \
     var(D,T,C,Token *,start)               \
@@ -164,7 +170,7 @@ declare(ClosureDec, MemberDec)
     var(D,T,C,String,struct_class)         \
     var(D,T,C,String,struct_object)        \
     var(D,T,C,String,class_var)            \
-    var(D,T,C,List,templates)              \
+    var(D,T,C,List,template_args)          \
     var(D,T,C,Pairs,members)               \
     var(D,T,C,Pairs,meta)
 declare(ClassDec, Base)
