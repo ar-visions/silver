@@ -41,9 +41,9 @@ typedef struct _Token {
 
 #define CODE_FLAG_ALLOC 1
 
-
 #define _CX(D,T,C) _Base(spr,T,C)   \
     override(D,T,C,void,init,(C)) \
+    method(D,T,C,void,classdec_info,(C,struct _object_ClassDec *,String)) \
     method(D,T,C,void,pretty_token,(C,int,Token *,String)) \
     method(D,T,C,String,pretty_print,(C,String)) \
     method(D,T,C,String,closure_out,(C, List, struct _object_ClosureDec *, bool)) \
@@ -90,6 +90,8 @@ typedef struct _Token {
     method(D,T,C,void,resolve_member_types,(C, struct _object_ClassDec *)) \
     method(D,T,C,void,line_directive,(C, Token *, String)) \
     method(D,T,C,void,code_return,(C, List, Token *, Token **, Token **, struct _object_MemberDec *, String *, int *, String)) \
+    method(D,T,C,C,find,(String))          \
+    method(D,T,C,void,define_template_users,(C)) \
     var(D,T,C,int,directive_last_line)     \
     var(D,T,C,String,directive_last_file)  \
     var(D,T,C,String,name)                 \
@@ -154,11 +156,15 @@ declare(MemberDec, Base)
 declare(ClosureDec, MemberDec)
 
 #define _ClassDec(D,T,C) _Base(spr,T,C)    \
+    override(D,T,C,void,init,(C))          \
     override(D,T,C,ulong,hash,(C))         \
     method(D,T,C,MemberDec,member_lookup,(C,String,C *)) \
-    method(D,T,C,C,templated_instance,(C, Token *, List)) \
+    method(D,T,C,C,templated_instance,(C, CX, Token *, List)) \
+    method(D,T,C,void,register_template_user,(C, List)) \
     var(D,T,C,List,template_instances)     \
+    var(D,T,C,List,defined_instances)      \
     var(D,T,C,List,instance_args)          \
+    var(D,T,C,List,template_users)         \
     var(D,T,C,C,parent)                    \
     var(D,T,C,Pairs,effective)             \
     var(D,T,C,Token *,start)               \
@@ -166,6 +172,7 @@ declare(ClosureDec, MemberDec)
     var(D,T,C,Token *,name)                \
     var(D,T,C,String,type_str)             \
     var(D,T,C,String,class_name)           \
+    var(D,T,C,String,class_name_c)         \
     var(D,T,C,String,super_class)          \
     var(D,T,C,String,struct_class)         \
     var(D,T,C,String,struct_object)        \
