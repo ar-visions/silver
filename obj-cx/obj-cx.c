@@ -118,7 +118,11 @@ ClassDec ClassDec_templated_instance(ClassDec self, CX m, Token *t_name, List ar
     }
     if (!self->template_instances)
         self->template_instances = new(List);
-    ClassDec cd_inst = new(ClassDec);
+    ClassDec cd_inst;
+    if (call(self->class_name, cmp, "Array") == 0)
+        cd_inst = (ClassDec)new(ArrayClass);
+    else
+        cd_inst = new(ClassDec);
     cd_inst->instance_args = retain(args);
     cd_inst->name = t_name;
     cd_inst->members = self->members;
@@ -423,15 +427,19 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
         Token *t = &tokens[i];
         if (t->skip)
             continue;
-        if (t->type == TT_Identifier) {
+        if (t->type == TT_Identifier || t->type_keyword) {
             t->cd = pairs_value(self->static_class_map, t->str, ClassDec);
-            if (t->cd && (t + 1)->punct == "[") {
+            if ((t->cd || t->type_keyword) && (t + 1)->punct == "[") {
                 // String[]
                 if ((t + 2)->type == TT_Identifier) {
                     // pairs!
                 } else {
+                    if (call(t->str, cmp, "wchar_t") == 0) {
+                        int test = 0;
+                        test++;
+                    }
                     Token *t_arg = t;
-                    ClassDec array = CX_find_class(t_arg->str);
+                    ClassDec array = CX_find_class(string("Array"));
                     List args = new(List);
                     list_push(args, t_arg->str);
                     String templated_name = new(String);
@@ -439,10 +447,12 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                     call(templated_name, concat_cstring, buf);
                     Token *t_name = token_from_string(templated_name, TT_Identifier);
                     t->cd = call(array, templated_instance, self, t_name, args);
+                    pairs_add(self->static_class_map, templated_name, t->cd);
+
                     (t + 1)->skip = true;
                     (t + 2)->skip = true;
                 }
-            } else if (t->cd && (t + 1)->punct == "<") {
+            } else if (t->type == TT_Identifier && t->cd && (t + 1)->punct == "<") {
                 if (!t->cd->template_args) {
                     fprintf(stderr, "class %s does not take template arguments\n", t->cd->class_name->buffer);
                     exit(1);
@@ -480,7 +490,7 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                     }
                 }
                 //release(args);
-            } else if (t->cd && t->cd->template_args) {
+            } else if (t->type == TT_Identifier && t->cd && t->cd->template_args) {
                 fprintf(stderr, "class %s requires %d template arguments\n", t->cd->class_name->buffer, list_count(t->cd->template_args));
                 exit(1);
             }
@@ -1153,9 +1163,11 @@ String CX_class_op_out(CX self, List scope, Token *t,
     }
     bool constructor = token_goto(t, -1)->keyword == "new";
     const char *class_var = cd ? cd->class_var->buffer : NULL;
-    token_next(&t);
+    
     ArrayClass array = inherits(cd, ArrayClass);
-    bool use_braces = (array && constructor && t->punct == "[");
+    bool use_braces = (array && constructor && inherits(t->cd, ArrayClass));
+    if (!use_braces)
+        token_next(&t);
     if (cd && (t->punct == "(" || use_braces)) {
         if (constructor) {
             *flags |= CODE_FLAG_ALLOC;
@@ -1167,65 +1179,66 @@ String CX_class_op_out(CX self, List scope, Token *t,
             *type_last = cd->class_name;
             String gen_var = NULL;
             String last_set = NULL;
-            for (;;) {
-                int n = call(self, read_expression, t, NULL, NULL, use_braces ? ",]" : ",)", 0, true);
-                if (n == 0)
-                    break;
-                Token *var = t;
-                Token *assign = token_goto(t, 1);
-                Token *value_start = token_goto(t, 2);
-                if (n < 3 || assign->punct != "=" || var->type != TT_Identifier) {
-                    fprintf(stderr, "Expected constructor inline setter syntax: prop=val\n");
-                    exit(1);
-                }
-                int value_code_flags = 0;
-                String value_type_returned = NULL;
-                String value_code = call(self, code_out, scope, value_start, &t[n - 1], t_after, NULL, false,
-                    &value_type_returned, method, brace_depth, &value_code_flags, false);
-                ClassDec cd_returned = pairs_value(self->static_class_map, value_type_returned, ClassDec);
-                ClassDec setter_cd_type;
-                MemberDec setter_lookup = call(cd, member_lookup, var->str, &setter_cd_type);
-                String generic_type;
-                if (!setter_lookup) {
-                    fprintf(stderr, "inline setter: property %s::%s not found\n", cd->class_name->buffer, var->str->buffer);
-                    exit(1);
-                }
-                if (setter_cd_type) {
-                    generic_type = string("object");
-                } else {
-                    generic_type = setter_lookup->type_str;
-                }
-                if (cd_returned) {
-                    ClassDec cd_expected = setter_lookup->type_cd;
-                    String cast = call(self, inheritance_cast, cd_expected, cd_returned);
-                    if (!cast) {
-                        fprintf(stderr, "inline setter: incompatible object (%s) given to property %s:%s (%s)\n",
-                            cd_returned->class_name->buffer,
-                            cd->class_name->buffer, var->str->buffer,
-                            cd_expected->class_name->buffer);
+            if (!use_braces)
+                for (;;) {
+                    int n = call(self, read_expression, t, NULL, NULL, ",)", 0, true);
+                    if (n == 0)
+                        break;
+                    Token *var = t;
+                    Token *assign = token_goto(t, 1);
+                    Token *value_start = token_goto(t, 2);
+                    if (n < 3 || assign->punct != "=" || var->type != TT_Identifier) {
+                        fprintf(stderr, "Expected constructor inline setter syntax: prop=val\n");
                         exit(1);
                     }
-                }
-                String setter_call = new(String);
-                sprintf(buf, "(%s)set_", cd->struct_object->buffer);
-                call(setter_call, concat_cstring, buf);
-                call(setter_call, concat_string, generic_type);
-                call(setter_call, concat_cstring, "((base_Base)(");
-                call(setter_call, concat_string, ctor);
-                call(setter_call, concat_cstring, "), ");
-                sprintf(buf, "(Setter_%s)%s->set_%s, ", generic_type->buffer, cd->class_name->buffer, var->str->buffer);
-                call(setter_call, concat_cstring, buf);
-                call(setter_call, concat_string, value_code);
-                call(setter_call, concat_cstring, ")");
-                release(ctor);
-                ctor = setter_call;
+                    int value_code_flags = 0;
+                    String value_type_returned = NULL;
+                    String value_code = call(self, code_out, scope, value_start, &t[n - 1], t_after, NULL, false,
+                        &value_type_returned, method, brace_depth, &value_code_flags, false);
+                    ClassDec cd_returned = pairs_value(self->static_class_map, value_type_returned, ClassDec);
+                    ClassDec setter_cd_type;
+                    MemberDec setter_lookup = call(cd, member_lookup, var->str, &setter_cd_type);
+                    String generic_type;
+                    if (!setter_lookup) {
+                        fprintf(stderr, "inline setter: property %s::%s not found\n", cd->class_name->buffer, var->str->buffer);
+                        exit(1);
+                    }
+                    if (setter_cd_type) {
+                        generic_type = string("object");
+                    } else {
+                        generic_type = setter_lookup->type_str;
+                    }
+                    if (cd_returned) {
+                        ClassDec cd_expected = setter_lookup->type_cd;
+                        String cast = call(self, inheritance_cast, cd_expected, cd_returned);
+                        if (!cast) {
+                            fprintf(stderr, "inline setter: incompatible object (%s) given to property %s:%s (%s)\n",
+                                cd_returned->class_name->buffer,
+                                cd->class_name->buffer, var->str->buffer,
+                                cd_expected->class_name->buffer);
+                            exit(1);
+                        }
+                    }
+                    String setter_call = new(String);
+                    sprintf(buf, "(%s)set_", cd->struct_object->buffer);
+                    call(setter_call, concat_cstring, buf);
+                    call(setter_call, concat_string, generic_type);
+                    call(setter_call, concat_cstring, "((base_Base)(");
+                    call(setter_call, concat_string, ctor);
+                    call(setter_call, concat_cstring, "), ");
+                    sprintf(buf, "(Setter_%s)%s->set_%s, ", generic_type->buffer, cd->class_name->buffer, var->str->buffer);
+                    call(setter_call, concat_cstring, buf);
+                    call(setter_call, concat_string, value_code);
+                    call(setter_call, concat_cstring, ")");
+                    release(ctor);
+                    ctor = setter_call;
 
-                t += n;
-                if (t->punct == ")")
-                    break;
-                else
-                    t++;
-            }
+                    t += n;
+                    if (t->punct == ")")
+                        break;
+                    else
+                        t++;
+                }
             call(output, concat_string, ctor);
         } else {
             if (md_type)
@@ -1294,7 +1307,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 c_arg++;
             }
         }
-        if ((!use_braces && t->punct != ")") || (use_braces && t->punct != "]")) {
+        if (!use_braces && t->punct != ")") {
             fprintf(stderr, "%s:%d: expected ')'\n",
                 t->file->buffer, t->line);
             exit(1);
@@ -1516,7 +1529,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
         if (delim_code) {
             t_member = delim_end;
         }
-        if (t < t_member)
+        if (t <= (t_member + 1))
             t = *t_after = t_member;
     }
     if (cd_last && token_goto(t, 1)->punct == ".") {
@@ -2056,6 +2069,11 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             bool is_class = false;
             Pairs top = (Pairs)call(scope, last);
 
+            if (call((t)->str, cmp, "args") == 0 && call((t + 1)->str, cmp, ".") == 0 && call((t + 2)->str, cmp, "count") == 0) {
+                int test = 0;
+                test++;
+            }
+
             // check for 'Class' in the token
             if (target->length > 5 && strcmp(&target->buffer[target->length - 5], "Class") == 0) {
                 String sub = class_call(String, new_from_bytes, (uint8 *)target->buffer, t->length - 5); 
@@ -2064,20 +2082,18 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             } else
                 cd = t->cd;
 
-            Token *tt = t;
-            while (tt->type == TT_Identifier || tt->type == TT_Keyword)
-                tt = token_goto(tt, 1);
             Base type = NULL;
-            Token *tt_n1 = token_goto(tt, -1);
-            if (((tt != token_goto(t, 1)) || ((tt_n1->cd || tt_n1->type_keyword) && tt->punct == "[")) && tt->type != TT_Keyword) {
-                tt = token_goto(tt, -1);
-                type = call(self, read_type_at, tt);
-                if (type) {
-                    cd = inherits(type, ClassDec);
-                    target = tt->str;
-                    pairs_add(top, target, type);
-                }
+
+            Token *t_next = token_goto(t, 1);
+            type = call(self, read_type_at, t_next);
+            bool declared = false;
+            if (type) {
+                cd = inherits(type, ClassDec);
+                target = t_next->str;
+                pairs_add(top, target, type);
+                declared = true;
             }
+
             if (!inherits(type, ClassDec)) {
                 Token *t_to = t;
                 if (inherits(type, ClosureClass))
@@ -2092,8 +2108,9 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             if (cd) {
                 // check for new/auto keyword before
                 Token *t_start = t;
+                ArrayClass array = inherits(t->cd, ArrayClass);
                 token_next(&t);
-                if ((inherits(type, ArrayClass) && t->punct != "[") || t->type == TT_Identifier) {
+                if (declared) {
                     call(output, concat_string, is_class ? cd->struct_class : cd->struct_object);
                     call(output, concat_char, ' ');
                     // variable declared
@@ -2110,17 +2127,14 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                             type_last, flags, method, brace_depth, assign, false);
                         call(output, concat_string, out);
                     }
-                } else if (t->punct == "(" || t->punct == "[") {
+                } else if (t->punct == "(" || array) {
                     if (is_class) {
                         fprintf(stderr, "constructor cannot be called directly on class type\n");
                         exit(1);
                     }
-                    if (t->punct == "[") {
-                        int test = 0;
-                        test++;
-                    }
+                    t = token_goto(t, -1);
                     // construct (default)
-                    String out = call(self, var_op_out, scope, token_goto(t, -1), cd, target, false, &t,
+                    String out = call(self, var_op_out, scope, t, cd, target, false, &t,
                         type_last, flags, method, brace_depth, assign, false);
                     call(output, concat_string, out);
                 } else {
@@ -2274,6 +2288,8 @@ Base CX_read_type_at(CX self, Token *t) {
     if (cur >= t_end)
         return NULL;
     else if ((type_keywords > 0 || cd) && ahead->punct == "(") {
+        if (t->cd)
+            return NULL;
         ClosureClass closure = new(ClosureClass);
         CX base = CX_find(string("base"));
         call(base, classdec_info, (ClassDec)closure, string("Closure"));
@@ -2310,14 +2326,19 @@ Base CX_read_type_at(CX self, Token *t) {
             }
         }
         class_type = (ClassDec)closure;
-    } else if ((type_keywords > 0 || cd) && ahead->punct == "[") {
-        class_type = (ClassDec)call(self, instance_array_dec, t->str, ahead);
-    } else if (cd && call(cd->class_name, cmp, "Array<String>") == 0) {
-        class_type = (ClassDec)t->cd;
-    } else if (cd)
-        return base(cd);
-    else if (type_keywords == 0)
-        return NULL;
+    } else {
+        Token *a = token_goto(t, 1);
+        if (!a->assign && a->punct != ";" && a->punct != "," && a->punct != ")")
+            return NULL;
+        
+        // handle primitive array
+        if (type_keywords > 0 && ahead->punct == "[") {
+            class_type = (ClassDec)call(self, instance_array_dec, t->str, ahead);
+        } else if (cd)
+            return base(cd);
+        else if (type_keywords == 0)
+            return NULL;
+    }
     
     String type_name = new(String);
     bool first = true;
@@ -2399,7 +2420,7 @@ String CX_args_out(CX self, Pairs top, ClassDec cd, MemberDec md, bool inst, boo
                     int test = 0;
                     test++;
                 }
-                Base type = call(self, read_type_at, token_goto(t_name, -1));
+                Base type = call(self, read_type_at, t_name);
                 pairs_add(top, t_name->str, type);
             }
         }
