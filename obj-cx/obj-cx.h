@@ -19,6 +19,7 @@ enum MemberType {
 struct _object_ClassDec;
 struct _object_MemberDec;
 struct _object_ClosureDec;
+struct _object_ArrayClass;
 
 typedef struct _Token {
     enum TokenType type;
@@ -92,6 +93,7 @@ typedef struct _Token {
     method(D,T,C,void,code_return,(C, List, Token *, Token **, Token **, struct _object_MemberDec *, String *, int *, String)) \
     method(D,T,C,C,find,(String))          \
     method(D,T,C,void,define_template_users,(C)) \
+    method(D,T,C,struct _object_ArrayClass *,instance_array_dec,(C, String, Token *)) \
     var(D,T,C,int,directive_last_line)     \
     var(D,T,C,String,directive_last_file)  \
     var(D,T,C,String,name)                 \
@@ -178,6 +180,7 @@ declare(ClosureDec, MemberDec)
     var(D,T,C,String,struct_object)        \
     var(D,T,C,String,class_var)            \
     var(D,T,C,List,template_args)          \
+    var(D,T,C,List,type_args)              \
     var(D,T,C,Pairs,members)               \
     var(D,T,C,Pairs,meta)
 declare(ClassDec, Base)
@@ -190,6 +193,7 @@ declare(ClosureClass, ClassDec)
 
 #define _ArrayClass(D,T,C) _ClassDec(spr,T,C)    \
     override(D,T,C,void,init,(C))                \
+    var(D,T,C,String,array_type)                 \
     var(D,T,C,Token *,delim_start)               \
     var(D,T,C,Token *,delim_end)
 declare(ArrayClass, ClassDec)

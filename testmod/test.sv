@@ -23,11 +23,7 @@ class Test : Super {
         printf("value = %d\n", self.value);
     }
 
-    static void main2(Array<String> args) {
-        Test b = new Test(value=1, another=2);
-    }
-
-    static int main(Array<String> args) {
+    static int main(String[] args) {
         Test b = new Test();
         Array<int> a = new Array<int>();
         String s = (String)"hi";
@@ -50,7 +46,7 @@ class Test : Super {
         t.value = 1;
         printf("value = %d\n", t.value);
 
-        int testme(int) = (int arg) {
+        int testme(short,int,char,short) = (long test, int arg) {
             int ii = 0;
             int t = 5;
             printf("hey there %s\n", s.buffer);
@@ -59,6 +55,8 @@ class Test : Super {
                 printf("another test:%s %d %d", s.buffer, t, test1.value);
             };
         };
+
+        String[] ss = new String[];
 
         const int i = 1 + (leave_alone1 leave_alone2)testing;
         wchar_t[] test_array = new wchar_t[];
