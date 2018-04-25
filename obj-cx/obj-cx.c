@@ -2068,38 +2068,14 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             while (tt->type == TT_Identifier || tt->type == TT_Keyword)
                 tt = token_goto(tt, 1);
             Base type = NULL;
-            bool declared = false;
             Token *tt_n1 = token_goto(tt, -1);
-            if (call(tt_n1->str, cmp, "a") == 0) {
-                int test = 0;
-                test++;
-            }
             if (((tt != token_goto(t, 1)) || ((tt_n1->cd || tt_n1->type_keyword) && tt->punct == "[")) && tt->type != TT_Keyword) {
                 tt = token_goto(tt, -1);
                 type = call(self, read_type_at, tt);
                 if (type) {
-                    t = tt;
                     cd = inherits(type, ClassDec);
-                    if (!is_new) {
-                        if (inherits(type, ArrayClass)) {
-                            while (t->punct != "]")
-                                t = token_goto(t, 1);
-                            t = token_goto(t, 1);
-                        }
-                        pairs_add(top, t->str, type);
-                        Pairs sc = NULL;
-                        if (call(t->str, cmp, "a") == 0) {
-                            int test = 0;
-                            test++;
-                        }
-                        ClassDec cd_lookup = call(self, scope_lookup, scope, t->str, &sc, NULL, NULL);
-                        if (!cd_lookup) {
-                            int test = 0;
-                            test++;
-                        }
-                        target = t->str;
-                        declared = true;
-                    }
+                    target = tt->str;
+                    pairs_add(top, target, type);
                 }
             }
             if (!inherits(type, ClassDec)) {
@@ -2116,8 +2092,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             if (cd) {
                 // check for new/auto keyword before
                 Token *t_start = t;
-                if (!declared)
-                    token_next(&t);
+                token_next(&t);
                 if ((inherits(type, ArrayClass) && t->punct != "[") || t->type == TT_Identifier) {
                     call(output, concat_string, is_class ? cd->struct_class : cd->struct_object);
                     call(output, concat_char, ' ');
