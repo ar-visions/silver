@@ -37,6 +37,7 @@ typedef struct _Token {
     String str;
     String file;
     bool skip;
+    bool use_braces;
     struct _object_ClassDec *cd;
 } Token;
 
@@ -94,6 +95,8 @@ typedef struct _Token {
     method(D,T,C,C,find,(String))          \
     method(D,T,C,void,define_template_users,(C)) \
     method(D,T,C,struct _object_ArrayClass *,instance_array_dec,(C, String, Token *)) \
+    method(D,T,C,struct _object_ClassDec *,read_class_from,(C, Token *, struct _object_ClassDec *)) \
+    var(D,T,C,Pairs,referenced_templates)  \
     var(D,T,C,int,directive_last_line)     \
     var(D,T,C,String,directive_last_file)  \
     var(D,T,C,String,name)                 \
@@ -163,8 +166,11 @@ declare(ClosureDec, MemberDec)
     method(D,T,C,MemberDec,member_lookup,(C,String,C *)) \
     method(D,T,C,C,templated_instance,(C, CX, Token *, List)) \
     method(D,T,C,void,register_template_user,(C, List)) \
+    method(D,T,C,void,replace_template_tokens,(C)) \
+    var(D,T,C,CX,m)                        \
     var(D,T,C,List,template_instances)     \
     var(D,T,C,List,defined_instances)      \
+    var(D,T,C,C,instance_of)               \
     var(D,T,C,List,instance_args)          \
     var(D,T,C,List,template_users)         \
     var(D,T,C,C,parent)                    \
@@ -179,6 +185,7 @@ declare(ClosureDec, MemberDec)
     var(D,T,C,String,struct_class)         \
     var(D,T,C,String,struct_object)        \
     var(D,T,C,String,class_var)            \
+    var(D,T,C,bool,is_template_dec)        \
     var(D,T,C,List,template_args)          \
     var(D,T,C,List,type_args)              \
     var(D,T,C,Pairs,members)               \
