@@ -2,6 +2,7 @@
 #include <obj-cx/obj-cx.h>
 #include <stdio.h>
 #include <dirent.h>
+#include <stdint.h>
 
 #define CX_VERSION  "0.4.0"
 
@@ -51,7 +52,6 @@ void token_out(Token *t, int sep, String output) {
     char buf[1024];
     int n = 0;
     buf[0] = 0;
-
     for (int i = 0; i < t->length; i++) {
         n += sprintf(buf + n, "%c", t->value[i]);
     }
@@ -118,7 +118,10 @@ ClassDec ClassDec_templated_instance(ClassDec self, CX m, Token *t_name, List ar
     }
     if (!self->template_instances)
         self->template_instances = new(List);
-    ClassDec cd_inst = new(ClassDec);
+    ClassDec arr = CX_find_class(string("Array"));
+    ClassDec cd_inst = ((self == arr) ? (ClassDec)new(ArrayClass) : new(ClassDec));
+    cd_inst->m = self->m;
+    cd_inst->instance_of = self;
     cd_inst->instance_args = retain(args);
     cd_inst->name = t_name;
     cd_inst->members = self->members;
@@ -130,10 +133,59 @@ ClassDec ClassDec_templated_instance(ClassDec self, CX m, Token *t_name, List ar
         ClassDec cd_found = CX_find_class(arg);
         list_push(cd_inst->template_args, (cd_found ? string("Base") : arg));
     }
+    call(self->m, classdec_info, cd_inst, t_name->str);
+    call(cd_inst, replace_template_tokens);
     cd_inst->type_args = cp(args);
-    call(m, classdec_info, cd_inst, t_name->str);
+    
     list_push(self->template_instances, cd_inst);
+    pairs_add(m->static_class_map, t_name->str, cd_inst);
+    // flag this as a template used by the module m
+    pairs_add(m->referenced_templates, t_name->str, cd_inst);
     return cd_inst;
+}
+
+void ClassDec_replace_template_tokens(ClassDec self) {
+    Pairs p = new(Pairs);
+    int index = 0;
+    String a, b;
+    each(self->instance_of->template_args, a) {
+        each(self->instance_args, b) {
+            pairs_add(p, a, b);
+        }
+    }
+    // copy all tokens
+    int n_tokens = 0;
+    for (Token *t = self->instance_of->start; ; t++) {
+        n_tokens++;
+        if (t == self->instance_of->end)
+            break;
+    }
+    Token *copy = (Token *)malloc(sizeof(Token) * n_tokens);
+    memcpy(copy, self->instance_of->start, sizeof(Token) * n_tokens);
+    self->start = copy;
+    self->end = &copy[n_tokens - 1];
+    for (Token *t = self->start; ; t++) {
+        if (t->type == TT_Identifier) {
+            String b = pairs_value(p, t->str, String);
+            if (b) {
+                char buf[1024];
+                int n = b->length;
+                sprintf(buf, "%s", b->buffer);
+                const char *after = &t->value[t->length];
+                while (*after && isspace(*after)) {
+                    n += sprintf(buf + n, "%c", *after);
+                    after++;
+                }
+                t->value = (char *)malloc(n + 1);
+                t->length = b->length;
+                memcpy((void *)t->value, buf, n + 1);
+                t->str = new_string(buf);
+            }
+        }
+        if (t == self->end)
+            break;
+    }
+    call(self->m, read_class_from, copy, self);
 }
 
 static List modules;
@@ -423,15 +475,19 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
         Token *t = &tokens[i];
         if (t->skip)
             continue;
-        if (t->type == TT_Identifier) {
+        if (t->type == TT_Identifier || t->type_keyword) {
             t->cd = pairs_value(self->static_class_map, t->str, ClassDec);
-            if (t->cd && (t + 1)->punct == "[") {
+            if ((t->cd || t->type_keyword) && (t + 1)->punct == "[") {
                 // String[]
                 if ((t + 2)->type == TT_Identifier) {
                     // pairs!
                 } else {
                     Token *t_arg = t;
-                    ClassDec array = CX_find_class(t_arg->str);
+                    if (!t->cd) {
+                        int test = 0;
+                        test++;
+                    }
+                    ClassDec array = CX_find_class(string("Array"));
                     List args = new(List);
                     list_push(args, t_arg->str);
                     String templated_name = new(String);
@@ -439,10 +495,18 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                     call(templated_name, concat_cstring, buf);
                     Token *t_name = token_from_string(templated_name, TT_Identifier);
                     t->cd = call(array, templated_instance, self, t_name, args);
+                    t->use_braces = true;
                     (t + 1)->skip = true;
                     (t + 2)->skip = true;
+                    Token *t1 = t + 1;
+                    Token *t2 = t + 2;
+                    Token *t3 = t + 3;
+                    if (strncmp(t->value, "String[]", 8) == 0) {
+                        int test = 0;
+                        test++;
+                    }
                 }
-            } else if (t->cd && (t + 1)->punct == "<") {
+            } else if (t->cd && (t + 1)->punct == "<" && t != t->cd->name) {
                 if (!t->cd->template_args) {
                     fprintf(stderr, "class %s does not take template arguments\n", t->cd->class_name->buffer);
                     exit(1);
@@ -466,7 +530,6 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                         }
                         t->str = class_call(String, new_from_bytes, (uint8 *)t->value, t->length);
                         t->cd = call(t->cd, templated_instance, self, t, args);
-                        pairs_add(self->static_class_map, t->cd->class_name, t->cd);
                         break;
                     } else {
                         if (t->punct == ",") {
@@ -480,7 +543,7 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                     }
                 }
                 //release(args);
-            } else if (t->cd && t->cd->template_args) {
+            } else if (t->cd && t->cd->template_args && t != t->cd->name) {
                 fprintf(stderr, "class %s requires %d template arguments\n", t->cd->class_name->buffer, list_count(t->cd->template_args));
                 exit(1);
             }
@@ -519,6 +582,7 @@ bool CX_read_template_types(CX self, ClassDec cd, Token **pt) {
         // expect identifier at even iterations
         if (expect_identifier) {
             if (tname->type == TT_Identifier) {
+                cd->is_template_dec = true;
                 if (!cd->template_args)
                     cd->template_args = new(List);
                 list_push(cd->template_args, class_call(String, new_from_bytes, (uint8 *)tname->value, tname->length));
@@ -720,298 +784,316 @@ void CX_classdec_info(CX self, ClassDec cd, String class_str) {
     call(cd->class_var, concat_cstring, "_var");
 }
 
+ClassDec CX_read_class_from(CX self, Token *t, ClassDec cd_use) {
+    Token *t_start = t;
+    Token *t_name = t + 1;
+    String class_str = class_call(String, new_from_bytes, (uint8 *)t_name->value, t_name->length);
+    ClassDec cd = cd_use ? NULL : pairs_value(self->classes, class_str, ClassDec); // only augment classes within module, so do not search globally
+    if (!cd) {
+        if (cd_use) {
+            cd = cd_use;
+        } else {
+            cd = new(ClassDec);
+            cd->m = self;
+            pairs_add(self->classes, class_str, cd);
+        }
+        cd->name = t_name; // validate
+        if (!cd_use)
+            call(self, classdec_info, cd, class_str);
+
+        cd->members = new(Pairs);
+        cd->start = t_start;
+        // add _init
+        MemberDec md = new(MemberDec);
+        md->member_type = MT_Method;
+        pairs_add(cd->members, string("_init"), md);
+    }
+    t++;
+    token_next(&t);
+    call(self, read_template_types, cd, &t);
+    if (cd_use) {
+        cd_use->is_template_dec = false;
+    }
+    if (t->punct == ":") {
+        token_next(&t);
+        if (t->type != TT_Identifier) {
+            printf("expected super class identifier after :\n");
+            exit(1);
+        }
+        String str_super = class_call(String, new_from_bytes, (uint8 *)t->value, t->length);
+        cd->super_class = str_super;
+        token_next(&t);
+    } else if (call(class_str, cmp, "Base") != 0) {
+        cd->super_class = new_string("Base");
+    }
+    if (t->punct != "{") {
+        printf("expected '{' character\n");
+        exit(1);
+    }
+    token_next(&t);
+    // read optional keywords such as static and private
+    while (t->punct != "}") {
+        MemberDec md = new(MemberDec);
+        md->cd = cd;
+        if (t->keyword == "static") {
+            md->is_static = true;
+            token_next(&t);
+        }
+        if (t->keyword == "private") {
+            md->is_private = true;
+            token_next(&t);
+        }
+        if (t->keyword == "preserve") {
+            md->is_preserve = true;
+            token_next(&t);
+        }
+        if (t->keyword == "weak") {
+            if (md->type != MT_Prop) {
+                fprintf(stderr, "weak keyword is only allowed on vars\n");
+                exit(1);
+            }
+            md->is_weak = true;
+            token_next(&t);
+        }
+        Token *block_start = NULL, *block_end = NULL;
+        int token_count = call(self, read_expression, t, &block_start, &block_end, "{;),", 0, false);
+        if (token_count == 0) {
+            if (md->is_static || md->is_private) {
+                fprintf(stderr, "expected expression\n");
+                exit(1);
+            }
+            token_next(&t);
+            continue;
+        }
+        Token *equals = NULL;
+        bool fail_if_prop = false;
+        if (!block_end) {
+            for (int e = 0; e < token_count; e++) {
+                if (t[e].punct == "=") {
+                    equals = &t[e]; // set t_new_last here maybe
+                    break;
+                }
+            }
+        } else
+            fail_if_prop = true;
+        Token *t_last = &t[token_count - 1];
+        if (t[token_count].punct == ")") {
+            t_last++;
+            token_count++;
+        }
+        Token *t_new_last = t_last;
+        if (t_last->punct == "]") {
+            bool found_meta = false;
+            for (Token *tt = t_last; tt != t; tt--) {
+                if (tt->skip)
+                    continue;
+                if (tt->punct == "^[") {
+                    found_meta = true;
+                    t_new_last = token_goto(tt, -1);
+                    break;
+                }
+            }
+            if (found_meta) {
+                // ^[meta data]
+                Token *found = NULL;
+                for (Token *tt = t_last; tt != t; tt--) {
+                    if (tt->skip)
+                        continue;
+                    if (tt->punct == "^[") {
+                        found = tt;
+                        bool expect_sep = false;
+                        int kv = 0;
+                        String key = NULL;
+                        String value = NULL;
+                        for (Token *p = ++tt; p != t_last; p++) {
+                            if (p->skip)
+                                continue;
+                            if (expect_sep && p->punct != ":") {
+                                printf("expected ':' in meta data\n");
+                                exit(1);
+                            } else if (!expect_sep) {
+                                String v = class_call(String, new_from_bytes, (uint8 *)p->value, p->length);
+                                if (!key) {
+                                    key = v;
+                                } else {
+                                    value = v;
+                                    if (!md->meta)
+                                        md->meta = new(Pairs);
+                                    pairs_add(md->meta, key, value);
+                                    key = value = NULL;
+                                }
+                            }
+                            expect_sep = !expect_sep;
+                        }
+                        break;
+                    }
+                }
+                if (found)
+                    t_last = --found;
+            }
+
+            // parse array if this is one
+            if (t_new_last->punct == "]") {
+                bool check_start = false;
+                for (Token *tt = t_new_last; tt != t; tt--) {
+                    if (tt->skip)
+                        continue;
+                    if (tt->punct == "[") {
+                        check_start = true;
+                        continue;
+                    }
+                    if (check_start) {
+                        if (tt->type == TT_Identifier) {
+                            md->array_start = token_goto(tt, 1);;
+                            md->array_end = t_new_last;
+                            t_new_last = tt;
+                            break;
+                        } else if (tt->punct != "]") {
+                            printf("Invalid array definition\n");
+                            exit(1);
+                        }
+                    }
+                }
+            }
+        }
+        t_last = t_new_last;
+        if (t_last->punct == ")") {
+            // method (or constructor)
+            int paren_depth = 0;
+            int n_args = -1;
+            for (Token *tt = t_last; tt != t; tt--, n_args++) {
+                if (tt->skip)
+                    continue;
+                if (tt->punct == "(") {
+                    if (--paren_depth == 0) {
+                        md->args = ++tt;
+                        md->args_count = n_args;
+                        break;
+                    }
+                } else if (tt->punct == ")") {
+                    paren_depth++;
+                }
+            }
+            if (n_args > 0) {
+                call(md, read_args, md->args, n_args, true);
+            }
+            if (!md->args) {
+                printf("expected '(' before ')'\n");
+                exit(1);
+            }
+            t_last = md->args - 2;
+            md->member_type = MT_Method;
+        } else {
+            // property
+            md->member_type = MT_Prop;
+            if (equals) {
+                Token *tt = equals + 1;
+                if (tt->punct == ";") {
+                    printf("expected rvalue in property assignment\n");
+                    exit(1);
+                }
+                md->assign = tt;
+                md->assign_count = 1;
+                for (tt++; tt->value && tt->punct != ";"; tt++) {
+                    if (tt->skip)
+                        continue;
+                    md->assign_count++;
+                }
+                t_last = equals - 1;
+            }
+        }
+        Token *t_name = t_last;
+        bool construct_default = false;
+        if (t_last == t) {
+            if (t->keyword != "construct") {
+                printf("expected member\n");
+                exit(1);
+            } else {
+                // default constructor has its name set as the class
+                t_name = cd->name;
+                construct_default = true;
+            }
+        }
+        if (!construct_default && !md->array_start) {
+            // possible issue where arrays without identifiers could pass through; check above
+            if (!((t_last->type == TT_Keyword && !t_last->type_keyword) || t_last->type == TT_Identifier)) {
+                printf("expected member name\n");
+                exit(1);
+            }
+            if (t_last->type != TT_Identifier) {
+                printf("expected identifier (member name)\n");
+                exit(1);
+            }
+        }
+        String str_name = class_call(String, new_from_bytes, (uint8 *)t_name->value, t_name->length);
+        md->str_name = str_name;
+        md->block_start = block_start;
+        md->block_end = block_end;
+        md->type = t;
+        for (Token *tt = t; tt != t_last; tt++) {
+            if (tt->skip)
+                continue;
+            md->type_count++;
+        }
+        if (md->type_count == 0) {
+            printf("expected type (member)\n");
+            exit(1);
+        }
+        if (md->type_count > 0) {
+            md->type_str = new(String);
+            bool first = true;
+            for (int i = 0; i < md->type_count; i++) {
+                if (md->type[i].skip)
+                    continue;
+                if (!first)
+                    call(md->type_str, concat_char, ' ');
+                call(md->type_str, concat_chars, md->type[i].value, md->type[i].length);
+                first = false;
+            }
+        }
+        if (md->member_type == MT_Prop && block_start) {
+            // read get and set blocks
+            call(self, read_property_blocks, cd, md);
+        }
+        if (call(md->str_name, cmp, "cast") == 0) {
+            md->is_static = true;
+            String arg_str = new(String);
+            for (int i = 0; i < md->args_count - 1; i++) {
+                call(arg_str, concat_string, md->args[i].str);
+            }
+            md->str_name = call(self, casting_name, cd, arg_str, md->type_str);
+            release(arg_str);
+        }
+        pairs_add(cd->members, md->str_name, md);
+        if (block_end) {
+            t = block_end + 1;
+            if (md->member_type == MT_Prop) {
+                if (t->punct == "=") {
+                    md->assign = token_next(&t);
+                    Token *assign_start = NULL;
+                    Token *assign_end = NULL;
+                    md->assign_count = call(self, read_expression, t, &assign_start, &assign_end, ";", 0, false);
+                    t += md->assign_count;
+                }
+            }
+        } else
+            t += token_count + 1;
+    }
+    cd->end = t;
+    return cd;
+}
+
 /* read class information, including method and property blocks */
 /* method expressions in the class must include a code block; this is optional for properties */
 bool CX_read_classes(CX self) {
     for (Token *t = self->tokens; t->value; t++) {
         if (t->skip)
             continue;
-        if (strncmp(t->value, "class", t->length) == 0) {
-            Token *t_start = t;
-            Token *t_name = token_next(&t);
-            String class_str = class_call(String, new_from_bytes, (uint8 *)t_name->value, t_name->length);
-            ClassDec cd = pairs_value(self->classes, class_str, ClassDec); // only augment classes within module, so do not search globally
-            if (!cd) {
-                cd = new(ClassDec);
-                pairs_add(self->classes, class_str, cd);
-                cd->name = t_name; // validate
-                call(self, classdec_info, cd, class_str);
-
-                cd->members = new(Pairs);
-                cd->start = t_start;
-                // add _init
-                MemberDec md = new(MemberDec);
-                md->member_type = MT_Method;
-                pairs_add(cd->members, string("_init"), md);
+        if (t->length == 5 && strncmp(t->value, "class", t->length) == 0) {
+            ClassDec cd = call(self, read_class_from, t, NULL);
+            if (cd) {
+                t = cd->end;
             }
-            token_next(&t);
-            call(self, read_template_types, cd, &t);
-            if (t->punct == ":") {
-                token_next(&t);
-                if (t->type != TT_Identifier) {
-                    printf("expected super class identifier after :\n");
-                    exit(1);
-                }
-                String str_super = class_call(String, new_from_bytes, (uint8 *)t->value, t->length);
-                cd->super_class = str_super;
-                token_next(&t);
-            } else if (call(class_str, cmp, "Base") != 0) {
-                cd->super_class = new_string("Base");
-            }
-            if (t->punct != "{") {
-                printf("expected '{' character\n");
-                exit(1);
-            }
-            token_next(&t);
-            // read optional keywords such as static and private
-            while (t->punct != "}") {
-                MemberDec md = new(MemberDec);
-                md->cd = cd;
-                if (t->keyword == "static") {
-                    md->is_static = true;
-                    token_next(&t);
-                }
-                if (t->keyword == "private") {
-                    md->is_private = true;
-                    token_next(&t);
-                }
-                if (t->keyword == "preserve") {
-                    md->is_preserve = true;
-                    token_next(&t);
-                }
-                if (t->keyword == "weak") {
-                    if (md->type != MT_Prop) {
-                        fprintf(stderr, "weak keyword is only allowed on vars\n");
-                        exit(1);
-                    }
-                    md->is_weak = true;
-                    token_next(&t);
-                }
-                Token *block_start = NULL, *block_end = NULL;
-                int token_count = call(self, read_expression, t, &block_start, &block_end, "{;),", 0, false);
-                if (token_count == 0) {
-                    if (md->is_static || md->is_private) {
-                        fprintf(stderr, "expected expression\n");
-                        exit(1);
-                    }
-                    token_next(&t);
-                    continue;
-                }
-                Token *equals = NULL;
-                bool fail_if_prop = false;
-                if (!block_end) {
-                    for (int e = 0; e < token_count; e++) {
-                        if (t[e].punct == "=") {
-                            equals = &t[e]; // set t_new_last here maybe
-                            break;
-                        }
-                    }
-                } else
-                    fail_if_prop = true;
-                Token *t_last = &t[token_count - 1];
-                if (t[token_count].punct == ")") {
-                    t_last++;
-                    token_count++;
-                }
-                Token *t_new_last = t_last;
-                if (t_last->punct == "]") {
-                    bool found_meta = false;
-                    for (Token *tt = t_last; tt != t; tt--) {
-                        if (tt->skip)
-                            continue;
-                        if (tt->punct == "^[") {
-                            found_meta = true;
-                            t_new_last = token_goto(tt, -1);
-                            break;
-                        }
-                    }
-                    if (found_meta) {
-                        // ^[meta data]
-                        Token *found = NULL;
-                        for (Token *tt = t_last; tt != t; tt--) {
-                            if (tt->skip)
-                                continue;
-                            if (tt->punct == "^[") {
-                                found = tt;
-                                bool expect_sep = false;
-                                int kv = 0;
-                                String key = NULL;
-                                String value = NULL;
-                                for (Token *p = ++tt; p != t_last; p++) {
-                                    if (p->skip)
-                                        continue;
-                                    if (expect_sep && p->punct != ":") {
-                                        printf("expected ':' in meta data\n");
-                                        exit(1);
-                                    } else if (!expect_sep) {
-                                        String v = class_call(String, new_from_bytes, (uint8 *)p->value, p->length);
-                                        if (!key) {
-                                            key = v;
-                                        } else {
-                                            value = v;
-                                            if (!md->meta)
-                                                md->meta = new(Pairs);
-                                            pairs_add(md->meta, key, value);
-                                            key = value = NULL;
-                                        }
-                                    }
-                                    expect_sep = !expect_sep;
-                                }
-                                break;
-                            }
-                        }
-                        if (found)
-                            t_last = --found;
-                    }
-
-                    // parse array if this is one
-                    if (t_new_last->punct == "]") {
-                        bool check_start = false;
-                        for (Token *tt = t_new_last; tt != t; tt--) {
-                            if (tt->skip)
-                                continue;
-                            if (tt->punct == "[") {
-                                check_start = true;
-                                continue;
-                            }
-                            if (check_start) {
-                                if (tt->type == TT_Identifier) {
-                                    md->array_start = token_goto(tt, 1);;
-                                    md->array_end = t_new_last;
-                                    t_new_last = tt;
-                                    break;
-                                } else if (tt->punct != "]") {
-                                    printf("Invalid array definition\n");
-                                    exit(1);
-                                }
-                            }
-                        }
-                    }
-                }
-                t_last = t_new_last;
-                if (t_last->punct == ")") {
-                    // method (or constructor)
-                    int paren_depth = 0;
-                    int n_args = -1;
-                    for (Token *tt = t_last; tt != t; tt--, n_args++) {
-                        if (tt->skip)
-                            continue;
-                        if (tt->punct == "(") {
-                            if (--paren_depth == 0) {
-                                md->args = ++tt;
-                                md->args_count = n_args;
-                                break;
-                            }
-                        } else if (tt->punct == ")") {
-                            paren_depth++;
-                        }
-                    }
-                    if (n_args > 0) {
-                        call(md, read_args, md->args, n_args, true);
-                    }
-                    if (!md->args) {
-                        printf("expected '(' before ')'\n");
-                        exit(1);
-                    }
-                    t_last = md->args - 2;
-                    md->member_type = MT_Method;
-                } else {
-                    // property
-                    md->member_type = MT_Prop;
-                    if (equals) {
-                        Token *tt = equals + 1;
-                        if (tt->punct == ";") {
-                            printf("expected rvalue in property assignment\n");
-                            exit(1);
-                        }
-                        md->assign = tt;
-                        md->assign_count = 1;
-                        for (tt++; tt->value && tt->punct != ";"; tt++) {
-                            if (tt->skip)
-                                continue;
-                            md->assign_count++;
-                        }
-                        t_last = equals - 1;
-                    }
-                }
-                Token *t_name = t_last;
-                bool construct_default = false;
-                if (t_last == t) {
-                    if (t->keyword != "construct") {
-                        printf("expected member\n");
-                        exit(1);
-                    } else {
-                        // default constructor has its name set as the class
-                        t_name = cd->name;
-                        construct_default = true;
-                    }
-                }
-                if (!construct_default && !md->array_start) {
-                    // possible issue where arrays without identifiers could pass through; check above
-                    if (!((t_last->type == TT_Keyword && !t_last->type_keyword) || t_last->type == TT_Identifier)) {
-                        printf("expected member name\n");
-                        exit(1);
-                    }
-                    if (t_last->type != TT_Identifier) {
-                        printf("expected identifier (member name)\n");
-                        exit(1);
-                    }
-                }
-                String str_name = class_call(String, new_from_bytes, (uint8 *)t_name->value, t_name->length);
-                md->str_name = str_name;
-                md->block_start = block_start;
-                md->block_end = block_end;
-                md->type = t;
-                for (Token *tt = t; tt != t_last; tt++) {
-                    if (tt->skip)
-                        continue;
-                    md->type_count++;
-                }
-                if (md->type_count == 0) {
-                    printf("expected type (member)\n");
-                    exit(1);
-                }
-                if (md->type_count > 0) {
-                    md->type_str = new(String);
-                    bool first = true;
-                    for (int i = 0; i < md->type_count; i++) {
-                        if (md->type[i].skip)
-                            continue;
-                        if (!first)
-                            call(md->type_str, concat_char, ' ');
-                        call(md->type_str, concat_chars, md->type[i].value, md->type[i].length);
-                        first = false;
-                    }
-                }
-                if (md->member_type == MT_Prop && block_start) {
-                    // read get and set blocks
-                    call(self, read_property_blocks, cd, md);
-                }
-                if (call(md->str_name, cmp, "cast") == 0) {
-                    md->is_static = true;
-                    String arg_str = new(String);
-                    for (int i = 0; i < md->args_count - 1; i++) {
-                        call(arg_str, concat_string, md->args[i].str);
-                    }
-                    md->str_name = call(self, casting_name, cd, arg_str, md->type_str);
-                    release(arg_str);
-                }
-                pairs_add(cd->members, md->str_name, md);
-                if (block_end) {
-                    t = block_end + 1;
-                    if (md->member_type == MT_Prop) {
-                        if (t->punct == "=") {
-                            md->assign = token_next(&t);
-                            Token *assign_start = NULL;
-                            Token *assign_end = NULL;
-                            md->assign_count = call(self, read_expression, t, &assign_start, &assign_end, ";", 0, false);
-                            t += md->assign_count;
-                        }
-                    }
-                } else
-                    t += token_count + 1;
-            }
-            cd->end = t;
         }
     }
     return true;
@@ -1128,6 +1210,12 @@ String CX_var_op_out(CX self, List scope, Token *t,
     }
     return code;
 }
+
+Token *get_t_after(Token *t) {
+    if (t->punct == ";" && (t - 1)->skip)
+        return t - 1;
+    return t;
+}
                     
 
 String CX_class_op_out(CX self, List scope, Token *t,
@@ -1155,7 +1243,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
     const char *class_var = cd ? cd->class_var->buffer : NULL;
     token_next(&t);
     ArrayClass array = inherits(cd, ArrayClass);
-    bool use_braces = (array && constructor && t->punct == "[");
+    bool use_braces = (array && constructor);
     if (cd && (t->punct == "(" || use_braces)) {
         if (constructor) {
             *flags |= CODE_FLAG_ALLOC;
@@ -1163,68 +1251,75 @@ String CX_class_op_out(CX self, List scope, Token *t,
             sprintf(buf, "(%s)Base->new_object(Base, (base_Class)%s, 0)",
                 cd->struct_object->buffer, class_var);
             call(ctor, concat_cstring, buf);
-            token_next(&t);
+            if (!t_start->use_braces)
+                token_next(&t);
             *type_last = cd->class_name;
             String gen_var = NULL;
             String last_set = NULL;
-            for (;;) {
-                int n = call(self, read_expression, t, NULL, NULL, use_braces ? ",]" : ",)", 0, true);
-                if (n == 0)
-                    break;
-                Token *var = t;
-                Token *assign = token_goto(t, 1);
-                Token *value_start = token_goto(t, 2);
-                if (n < 3 || assign->punct != "=" || var->type != TT_Identifier) {
-                    fprintf(stderr, "Expected constructor inline setter syntax: prop=val\n");
-                    exit(1);
-                }
-                int value_code_flags = 0;
-                String value_type_returned = NULL;
-                String value_code = call(self, code_out, scope, value_start, &t[n - 1], t_after, NULL, false,
-                    &value_type_returned, method, brace_depth, &value_code_flags, false);
-                ClassDec cd_returned = pairs_value(self->static_class_map, value_type_returned, ClassDec);
-                ClassDec setter_cd_type;
-                MemberDec setter_lookup = call(cd, member_lookup, var->str, &setter_cd_type);
-                String generic_type;
-                if (!setter_lookup) {
-                    fprintf(stderr, "inline setter: property %s::%s not found\n", cd->class_name->buffer, var->str->buffer);
-                    exit(1);
-                }
-                if (setter_cd_type) {
-                    generic_type = string("object");
-                } else {
-                    generic_type = setter_lookup->type_str;
-                }
-                if (cd_returned) {
-                    ClassDec cd_expected = setter_lookup->type_cd;
-                    String cast = call(self, inheritance_cast, cd_expected, cd_returned);
-                    if (!cast) {
-                        fprintf(stderr, "inline setter: incompatible object (%s) given to property %s:%s (%s)\n",
-                            cd_returned->class_name->buffer,
-                            cd->class_name->buffer, var->str->buffer,
-                            cd_expected->class_name->buffer);
+            if (!array) {
+                for (;;) {
+                    if (strncmp(t_start->value, "String[]", 8) == 0) {
+                        int test = 0;
+                        test++;
+                    }
+                    int n = call(self, read_expression, t, NULL, NULL, ",)", 0, true);
+                    if (n == 0)
+                        break;
+                    Token *var = t;
+                    Token *assign = token_goto(t, 1);
+                    Token *value_start = token_goto(t, 2);
+                    if (n < 3 || assign->punct != "=" || var->type != TT_Identifier) {
+                        fprintf(stderr, "Expected constructor inline setter syntax: prop=val\n");
                         exit(1);
                     }
-                }
-                String setter_call = new(String);
-                sprintf(buf, "(%s)set_", cd->struct_object->buffer);
-                call(setter_call, concat_cstring, buf);
-                call(setter_call, concat_string, generic_type);
-                call(setter_call, concat_cstring, "((base_Base)(");
-                call(setter_call, concat_string, ctor);
-                call(setter_call, concat_cstring, "), ");
-                sprintf(buf, "(Setter_%s)%s->set_%s, ", generic_type->buffer, cd->class_name->buffer, var->str->buffer);
-                call(setter_call, concat_cstring, buf);
-                call(setter_call, concat_string, value_code);
-                call(setter_call, concat_cstring, ")");
-                release(ctor);
-                ctor = setter_call;
+                    int value_code_flags = 0;
+                    String value_type_returned = NULL;
+                    String value_code = call(self, code_out, scope, value_start, &t[n - 1], t_after, NULL, false,
+                        &value_type_returned, method, brace_depth, &value_code_flags, false);
+                    ClassDec cd_returned = pairs_value(self->static_class_map, value_type_returned, ClassDec);
+                    ClassDec setter_cd_type;
+                    MemberDec setter_lookup = call(cd, member_lookup, var->str, &setter_cd_type);
+                    String generic_type;
+                    if (!setter_lookup) {
+                        fprintf(stderr, "inline setter: property %s::%s not found\n", cd->class_name->buffer, var->str->buffer);
+                        exit(1);
+                    }
+                    if (setter_cd_type) {
+                        generic_type = string("object");
+                    } else {
+                        generic_type = setter_lookup->type_str;
+                    }
+                    if (cd_returned) {
+                        ClassDec cd_expected = setter_lookup->type_cd;
+                        String cast = call(self, inheritance_cast, cd_expected, cd_returned);
+                        if (!cast) {
+                            fprintf(stderr, "inline setter: incompatible object (%s) given to property %s:%s (%s)\n",
+                                cd_returned->class_name->buffer,
+                                cd->class_name->buffer, var->str->buffer,
+                                cd_expected->class_name->buffer);
+                            exit(1);
+                        }
+                    }
+                    String setter_call = new(String);
+                    sprintf(buf, "(%s)set_", cd->struct_object->buffer);
+                    call(setter_call, concat_cstring, buf);
+                    call(setter_call, concat_string, generic_type);
+                    call(setter_call, concat_cstring, "((base_Base)(");
+                    call(setter_call, concat_string, ctor);
+                    call(setter_call, concat_cstring, "), ");
+                    sprintf(buf, "(Setter_%s)%s->set_%s, ", generic_type->buffer, cd->class_name_c->buffer, var->str->buffer);
+                    call(setter_call, concat_cstring, buf);
+                    call(setter_call, concat_string, value_code);
+                    call(setter_call, concat_cstring, ")");
+                    release(ctor);
+                    ctor = setter_call;
 
-                t += n;
-                if (t->punct == ")")
-                    break;
-                else
-                    t++;
+                    t += n;
+                    if (t->punct == ")")
+                        break;
+                    else
+                        t++;
+                }
             }
             call(output, concat_string, ctor);
         } else {
@@ -1294,13 +1389,15 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 c_arg++;
             }
         }
-        if ((!use_braces && t->punct != ")") || (use_braces && t->punct != "]")) {
+        if ((!t_start->use_braces && t->punct != ")") && !t_start->use_braces) {
             fprintf(stderr, "%s:%d: expected ')'\n",
                 t->file->buffer, t->line);
             exit(1);
         }
         if (*t_after < t)
-            *t_after = t;
+            *t_after = get_t_after(t);
+        if (t_start->use_braces && t_start == *t_after - 1)
+            *t_after = get_t_after(t_start);
         if (!constructor)
             call(self, token_out, t, ' ', output);
 
@@ -1507,7 +1604,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
             if (closure_scoped)
                 call(output, concat_cstring, "__scope->");
             call(self, token_out, t_member, ' ', output);
-            t = *t_after = t_member;
+            t = t_member;
+            *t_after = get_t_after(t_member);
             if (delim_code) {
                 call(output, concat_string, delim_code);
                 *type_last = array->type_str;
@@ -1516,8 +1614,10 @@ String CX_class_op_out(CX self, List scope, Token *t,
         if (delim_code) {
             t_member = delim_end;
         }
-        if (t < t_member)
-            t = *t_after = t_member;
+        if (*t_after < t) {
+            t = t_member;
+            *t_after = get_t_after(t_member);
+        }
     }
     if (cd_last && token_goto(t, 1)->punct == ".") {
         output = call(self, var_op_out, scope, token_goto(t, 2), cd_last, output, true,
@@ -2004,7 +2104,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         // generate static function 
                     } else {
                         if (t_after)
-                            *t_after = t_from;
+                            *t_after = get_t_after(t_from);
                         int token_count = call(self, read_expression, t_from, NULL, NULL, "{;),", 0, false);
                         String code = call(self, code_out, scope, t_from, &t_from[token_count - 1], t_after,
                             NULL, false, type_last, method, brace_depth, flags, false);
@@ -2050,6 +2150,12 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             if (token_out)
                 call(self, token_out, t, 0, output);
         } else if (t->type == TT_Keyword || t->type == TT_Identifier || t->keyword == "class") {
+
+            if (strncmp(t->value, "t.value5", 6) == 0) {
+                int test = 0;
+                test++;
+            }
+
             Token *t_start = t;
             String target = t->str;
             ClassDec cd = NULL;
@@ -2069,7 +2175,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 tt = token_goto(tt, 1);
             Base type = NULL;
             Token *tt_n1 = token_goto(tt, -1);
-            if (((tt != token_goto(t, 1)) || ((tt_n1->cd || tt_n1->type_keyword) && tt->punct == "[")) && tt->type != TT_Keyword) {
+            bool has_delim = tt->punct == "[";
+            if (((tt != token_goto(t, 1)) || ((tt_n1->cd || tt_n1->type_keyword) && has_delim)) && tt->type != TT_Keyword) {
                 tt = token_goto(tt, -1);
                 type = call(self, read_type_at, tt);
                 if (type) {
@@ -2088,7 +2195,6 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     token_out(tt, 0, output);
                 }
             }
-
             if (cd) {
                 // check for new/auto keyword before
                 Token *t_start = t;
@@ -2105,12 +2211,20 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     call(output, concat_string, out);
                 } else if (t->punct == ".") {
                     token_next(&t);
+                    if (strncmp(t->value, "value5", 6) == 0) {
+                        int test = 0;
+                        test++;
+                    }
                     if (t->type == TT_Identifier) {
                         String out = call(self, var_op_out, scope, t, cd, target, false, &t,
                             type_last, flags, method, brace_depth, assign, false);
                         call(output, concat_string, out);
                     }
-                } else if (t->punct == "(" || t->punct == "[") {
+                } else if (is_new || t->punct == "(" || t->punct == "[") {
+                    if (is_new) {
+                        int test = 0;
+                        test++;
+                    }
                     if (is_class) {
                         fprintf(stderr, "constructor cannot be called directly on class type\n");
                         exit(1);
@@ -2158,7 +2272,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             call(self, token_out, t, 0, output);
         }
         if (t_after)
-            *t_after = t;
+            *t_after = get_t_after(t);
         if (t >= method_end)
             break;
     }
@@ -2177,27 +2291,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
 }
 
 void CX_token_out(CX self, Token *t, int sep, String output) {
-    char buf[1024];
-    int n = 0;
-    buf[0] = 0;
-
-    if (call(t->str, cmp, "wchar_t") == 0) {
-        int test = 0;
-        test++;
-    }
-
-    for (int i = 0; i < t->length; i++) {
-        n += sprintf(buf + n, "%c", t->value[i]);
-    }
-    const char *after = &t->value[t->length];
-    while (*after && isspace(*after)) {
-        n += sprintf(buf + n, "%c", *after);
-        after++;
-    }
-    if (sep != ' ' && sep > 0)
-        n += sprintf(buf + n, "%c", sep);
-
-    call(output, concat_cstring, buf);
+    token_out(t, sep, output);
 }
 
 ArrayClass CX_instance_array_dec(CX self, String arr_type, Token *ahead) {
@@ -2310,6 +2404,8 @@ Base CX_read_type_at(CX self, Token *t) {
             }
         }
         class_type = (ClassDec)closure;
+    } else if (cur->cd) {
+        return base(cur->cd);
     } else if ((type_keywords > 0 || cd) && ahead->punct == "[") {
         class_type = (ClassDec)call(self, instance_array_dec, t->str, ahead);
     } else if (cd && call(cd->class_name, cmp, "Array<String>") == 0) {
@@ -2318,7 +2414,6 @@ Base CX_read_type_at(CX self, Token *t) {
         return base(cd);
     else if (type_keywords == 0)
         return NULL;
-    
     String type_name = new(String);
     bool first = true;
     do {
@@ -2473,6 +2568,8 @@ void CX_declare_classes(CX self, FILE *file_output) {
         cd_class->defined_instances = instances;
         ClassDec cd;
         each(cd_class->defined_instances, cd) {
+            if (cd->is_template_dec)
+                continue;
             call(self, resolve_member_types, cd);
             String class_name = cd->class_name;
             bool is_class = call(class_name, cmp, "Class") == 0;
@@ -2498,7 +2595,7 @@ void CX_declare_classes(CX self, FILE *file_output) {
                         self->name->buffer,
                         !is_class ? "" : "Base",
                         self->name->buffer,
-                        !is_class ? (!cd->parent ? "" : cd->parent->class_name->buffer) : "",
+                        !is_class ? (!cd->parent ? "" : cd->parent->class_name_c->buffer) : "",
                         cd->struct_object->buffer);
                 call(output, concat_cstring, buf);
 
@@ -2624,6 +2721,8 @@ void CX_declare_classes(CX self, FILE *file_output) {
     each(classes, cd_class) {
         ClassDec cd;
         each(cd_class->defined_instances, cd) {
+            if (cd->is_template_dec)
+                continue;
             fprintf(file_output, "struct _%s;\n", cd->struct_class->buffer);
             fprintf(file_output, "struct _%s;\n", cd->struct_object->buffer);
         }
@@ -2642,7 +2741,6 @@ void CX_define_module_constructor(CX self, FILE *file_output) {
     KeyValue kv;
     each_pair(self->classes, kv) {
         ClassDec cd = (ClassDec)kv->value;
-        const char *class_name = cd->class_name->buffer;
         sprintf(buf, "%s %s;\n",
             cd->struct_class->buffer,
             cd->class_var->buffer);
@@ -2680,18 +2778,29 @@ void CX_define_module_constructor(CX self, FILE *file_output) {
         list_push(classes, kv->value);
     call(classes, sort, true, (SortMethod)sort_classes);
 
-    ClassDec cd;
-    each(classes, cd) {
-        const char *class_name = cd->class_name->buffer;
-        const char *struct_class = cd->struct_class->buffer;
-        const char *struct_object = cd->struct_object->buffer;
-        const char *class_var = cd->class_var->buffer;
-        sprintf(buf, "\t%s = (%s)alloc_bytes(sizeof(*%s));\n",
-            class_var, struct_class, class_var);
-        call(output, concat_cstring, buf);
-        sprintf(buf, "\tmemset(%s, 0, sizeof(*%s));\n",
-            class_var, class_var);
-        call(output, concat_cstring, buf);
+    ClassDec cd_class;
+    each(classes, cd_class) {
+        List instances = cd_class->template_instances;
+        if (!cd_class->template_instances) {
+            instances = new(List);
+            list_push(instances, cd_class);
+        }
+        cd_class->defined_instances = instances;
+        ClassDec cd;
+        each(cd_class->defined_instances, cd) {
+            if (cd->is_template_dec)
+                continue;
+            const char *class_name = cd->class_name_c->buffer;
+            const char *struct_class = cd->struct_class->buffer;
+            const char *struct_object = cd->struct_object->buffer;
+            const char *class_var = cd->class_var->buffer;
+            sprintf(buf, "\t%s = (%s)alloc_bytes(sizeof(*%s));\n",
+                class_var, struct_class, class_var);
+            call(output, concat_cstring, buf);
+            sprintf(buf, "\tmemset(%s, 0, sizeof(*%s));\n",
+                class_var, class_var);
+            call(output, concat_cstring, buf);
+        }
     }
 
     sprintf(buf, "\n");
@@ -2701,15 +2810,17 @@ void CX_define_module_constructor(CX self, FILE *file_output) {
     each_pair(self->static_class_vars, kv) {
         ClassDec cd = (ClassDec)kv->key;
         String alias = (String)kv->value;
+        if (cd->is_template_dec)
+            continue;
         if (alias->length > 0) {
             sprintf(buf, "\t%s.%s = %s;\n",
                 alias->buffer,
-                cd->class_name->buffer,
+                cd->class_name_c->buffer,
                 cd->class_var->buffer);
             call(output, concat_cstring, buf);
         } else {
             sprintf(buf, "\t%s = %s;\n",
-                cd->class_name->buffer,
+                cd->class_name_c->buffer,
                 cd->class_var->buffer);
             call(output, concat_cstring, buf);
         }
@@ -2719,126 +2830,139 @@ void CX_define_module_constructor(CX self, FILE *file_output) {
     call(output, concat_cstring, buf);
 
     // set class members
-    each(classes, cd) {
-        int method_count = 0;
-        KeyValue mkv;
-        const char *class_name = cd->class_name->buffer;
-        const char *struct_class = cd->struct_class->buffer;
-        const char *struct_object = cd->struct_object->buffer;
-        const char *class_var = cd->class_var->buffer;
+    each(classes, cd_class) {
+        List instances = cd_class->template_instances;
+        if (!cd_class->template_instances) {
+            instances = new(List);
+            list_push(instances, cd_class);
+        }
+        cd_class->defined_instances = instances;
+        ClassDec cd;
+        each(cd_class->defined_instances, cd) {
+            if (cd->is_template_dec)
+                continue;
+            int method_count = 0;
+            KeyValue mkv;
+            const char *class_name = cd->class_name_c->buffer;
+            const char *struct_class = cd->struct_class->buffer;
+            const char *struct_object = cd->struct_object->buffer;
+            const char *class_var = cd->class_var->buffer;
 
-        sprintf(buf, "\t%s->name = \"%s\";\n", class_name, class_name);
-        call(output, concat_cstring, buf);
-        sprintf(buf, "\t%s->cl = (typeof(%s->cl))%s;\n", class_name, class_name,
-            strcmp(class_name, "Class") == 0 ? "base_Base_var" : "base_Class_var");
-        call(output, concat_cstring, buf);
-        if (cd->parent) {
-            const char *parent_name = cd->parent->class_name->buffer;
-            sprintf(buf, "\t%s->parent = (typeof(%s->parent))%s;\n",
-                class_name, class_name, cd->parent->class_var->buffer);
+            sprintf(buf, "\t%s->name = \"%s\";\n", class_name, class_name);
+            call(output, concat_cstring, buf);
+            sprintf(buf, "\t%s->cl = (typeof(%s->cl))%s;\n", class_name, class_name,
+                strcmp(class_name, "Class") == 0 ? "base_Base_var" : "base_Class_var");
+            call(output, concat_cstring, buf);
+            if (cd->parent) {
+                const char *parent_name = cd->parent->class_name_c->buffer;
+                sprintf(buf, "\t%s->parent = (typeof(%s->parent))%s;\n",
+                    class_name, class_name, cd->parent->class_var->buffer);
+                call(output, concat_cstring, buf);
+            }
+            sprintf(buf, "\t%s->object_size = sizeof(struct _%s);\n", class_name, struct_object);
+            call(output, concat_cstring, buf);
+            sprintf(buf, "\t%s->_init = %s__init;\n", class_name, class_name);
+            call(output, concat_cstring, buf);
+
+            each_pair(cd->effective, mkv) {
+                MemberDec md = (MemberDec)mkv->value;
+                ClassDec origin = md->cd;
+                if (origin->is_template_dec)
+                    origin = cd;
+                char ptr[256];
+                if (!md->is_private)
+                    switch (md->member_type) {
+                        case MT_Method:
+                            if (md->cd == cd)
+                                sprintf(ptr, "%s_%s", origin->class_name_c->buffer, md->str_name->buffer);
+                            else
+                                sprintf(ptr, "%s->%s", origin->class_name_c->buffer, md->str_name->buffer);
+                            sprintf(buf, "\t%s->%s = (typeof(%s->%s))%s;\n",
+                                class_name, md->str_name->buffer,
+                                class_name, md->str_name->buffer,
+                                ptr);
+                            call(output, concat_cstring, buf);
+                            method_count++;
+                            break;
+                        case MT_Prop:
+                            if (md->cd == cd)
+                                sprintf(ptr, "%s_get_%s", origin->class_name_c->buffer, md->str_name->buffer);
+                            else
+                                sprintf(ptr, "%s->get_%s", origin->class_name_c->buffer, md->str_name->buffer);
+                            sprintf(buf, "\t%s->get_%s = (typeof(%s->get_%s))%s;\n",
+                                class_name, md->str_name->buffer,
+                                class_name, md->str_name->buffer,
+                                ptr);
+                            call(output, concat_cstring, buf);
+                            if (md->cd == cd)
+                                sprintf(ptr, "%s_set_%s", origin->class_name_c->buffer, md->str_name->buffer);
+                            else
+                                sprintf(ptr, "%s->set_%s", origin->class_name_c->buffer, md->str_name->buffer);
+                            sprintf(buf, "\t%s->set_%s = (typeof(%s->set_%s))%s;\n",
+                                class_name, md->str_name->buffer,
+                                class_name, md->str_name->buffer,
+                                ptr);
+                            call(output, concat_cstring, buf);
+                            method_count += 2;
+                            break;
+                    }
+            }
+            // member types
+            sprintf(buf, "\t%s->member_types = (char *)malloc(%d);\n",
+                class_name, method_count);
+            call(output, concat_cstring, buf);
+
+            int mc = 0;
+            each_pair(cd->effective, mkv) {
+                MemberDec md = (MemberDec)mkv->value;
+                if (!md->is_private)
+                    switch (md->member_type) {
+                        case MT_Method:
+                            sprintf(buf, "\t%s->member_types[%d] = %d;\n",
+                                class_name, mc, md->member_type); mc++;
+                            call(output, concat_cstring, buf);
+                            break;
+                        case MT_Prop:
+                            sprintf(buf, "\t%s->member_types[%d] = %d;\n",
+                                class_name, mc, md->member_type); mc++;
+                            call(output, concat_cstring, buf);
+
+                            sprintf(buf, "\t%s->member_types[%d] = %d;\n",
+                                class_name, mc, md->member_type); mc++;
+                            call(output, concat_cstring, buf);
+                            break;
+                    }
+            }
+            // member names
+            sprintf(buf, "\t%s->member_names = (const char **)malloc(%d * sizeof(const char *));\n",
+                class_name, method_count);
+            call(output, concat_cstring, buf);
+
+            mc = 0;
+            each_pair(cd->effective, mkv) {
+                MemberDec md = (MemberDec)mkv->value;
+                if (!md->is_private)
+                    switch (md->member_type) {
+                        case MT_Method:
+                            sprintf(buf, "\t%s->member_names[%d] = \"%s\";\n",
+                                class_name, mc, md->str_name->buffer); mc++;
+                            call(output, concat_cstring, buf);
+                            break;
+                        case MT_Prop:
+                            sprintf(buf, "\t%s->member_names[%d] = \"%s\";\n",
+                                class_name, mc, md->str_name->buffer); mc++;
+                            call(output, concat_cstring, buf);
+
+                            sprintf(buf, "\t%s->member_names[%d] = \"%s\";\n",
+                                class_name, mc, md->str_name->buffer); mc++;
+                            call(output, concat_cstring, buf);
+                            break;
+                    }
+            }
+
+            sprintf(buf, "\t%s->member_count = %d;\n", class_name, method_count);
             call(output, concat_cstring, buf);
         }
-        sprintf(buf, "\t%s->object_size = sizeof(struct _%s);\n", class_name, struct_object);
-        call(output, concat_cstring, buf);
-        sprintf(buf, "\t%s->_init = %s__init;\n", class_name, class_name);
-        call(output, concat_cstring, buf);
-
-        each_pair(cd->effective, mkv) {
-            MemberDec md = (MemberDec)mkv->value;
-            ClassDec origin = md->cd;
-            char ptr[256];
-            if (!md->is_private)
-                switch (md->member_type) {
-                    case MT_Method:
-                        if (md->cd == cd)
-                            sprintf(ptr, "%s_%s", origin->class_name->buffer, md->str_name->buffer);
-                        else
-                            sprintf(ptr, "%s->%s", origin->class_name->buffer, md->str_name->buffer);
-                        sprintf(buf, "\t%s->%s = (typeof(%s->%s))%s;\n",
-                            class_name, md->str_name->buffer,
-                            class_name, md->str_name->buffer,
-                            ptr);
-                        call(output, concat_cstring, buf);
-                        method_count++;
-                        break;
-                    case MT_Prop:
-                        if (md->cd == cd)
-                            sprintf(ptr, "%s_get_%s", origin->class_name->buffer, md->str_name->buffer);
-                        else
-                            sprintf(ptr, "%s->get_%s", origin->class_name->buffer, md->str_name->buffer);
-                        sprintf(buf, "\t%s->get_%s = (typeof(%s->get_%s))%s;\n",
-                            class_name, md->str_name->buffer,
-                            class_name, md->str_name->buffer,
-                            ptr);
-                        call(output, concat_cstring, buf);
-                        if (md->cd == cd)
-                            sprintf(ptr, "%s_set_%s", origin->class_name->buffer, md->str_name->buffer);
-                        else
-                            sprintf(ptr, "%s->set_%s", origin->class_name->buffer, md->str_name->buffer);
-                        sprintf(buf, "\t%s->set_%s = (typeof(%s->set_%s))%s;\n",
-                            class_name, md->str_name->buffer,
-                            class_name, md->str_name->buffer,
-                            ptr);
-                        call(output, concat_cstring, buf);
-                        method_count += 2;
-                        break;
-                }
-        }
-        // member types
-        sprintf(buf, "\t%s->member_types = (char *)malloc(%d);\n",
-            class_name, method_count);
-        call(output, concat_cstring, buf);
-
-        int mc = 0;
-        each_pair(cd->effective, mkv) {
-            MemberDec md = (MemberDec)mkv->value;
-            if (!md->is_private)
-                switch (md->member_type) {
-                    case MT_Method:
-                        sprintf(buf, "\t%s->member_types[%d] = %d;\n",
-                            class_name, mc, md->member_type); mc++;
-                        call(output, concat_cstring, buf);
-                        break;
-                    case MT_Prop:
-                        sprintf(buf, "\t%s->member_types[%d] = %d;\n",
-                            class_name, mc, md->member_type); mc++;
-                        call(output, concat_cstring, buf);
-
-                        sprintf(buf, "\t%s->member_types[%d] = %d;\n",
-                            class_name, mc, md->member_type); mc++;
-                        call(output, concat_cstring, buf);
-                        break;
-                }
-        }
-        // member names
-        sprintf(buf, "\t%s->member_names = (const char **)malloc(%d * sizeof(const char *));\n",
-            class_name, method_count);
-        call(output, concat_cstring, buf);
-
-        mc = 0;
-        each_pair(cd->effective, mkv) {
-            MemberDec md = (MemberDec)mkv->value;
-            if (!md->is_private)
-                switch (md->member_type) {
-                    case MT_Method:
-                        sprintf(buf, "\t%s->member_names[%d] = \"%s\";\n",
-                            class_name, mc, md->str_name->buffer); mc++;
-                        call(output, concat_cstring, buf);
-                        break;
-                    case MT_Prop:
-                        sprintf(buf, "\t%s->member_names[%d] = \"%s\";\n",
-                            class_name, mc, md->str_name->buffer); mc++;
-                        call(output, concat_cstring, buf);
-
-                        sprintf(buf, "\t%s->member_names[%d] = \"%s\";\n",
-                            class_name, mc, md->str_name->buffer); mc++;
-                        call(output, concat_cstring, buf);
-                        break;
-                }
-        }
-
-        sprintf(buf, "\t%s->member_count = %d;\n", class_name, method_count);
-        call(output, concat_cstring, buf);
     }
     sprintf(buf, "\tmodule_%s = true;\n", self->name->buffer);
     call(output, concat_cstring, buf);
@@ -2970,19 +3094,22 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
     List scope = new(List);
     KeyValue kv;
     each_pair(self->classes, kv) {
-        // must not emit every single template instance here as the referenced classes may not be described
-        // -- actually, there is no need to emit a permutation for a class-based template argument other than Base
-        // for those, you would use introspection in the class.  the only duplication is happening for primitives
-        // in this way it will make it super simple to emit; do it once at the location of the template class
         ClassDec cd_class = (ClassDec)kv->value;
         ClassDec cd;
         each(cd_class->defined_instances, cd) {
+            if (strcmp(cd->class_name->buffer, "Array<T>") == 0) {
+                int test = 0;
+                test++;
+            }
+            if (cd->is_template_dec)
+                continue;
+
             KeyValue mkv;
             // output init
             sprintf(buf, "void %s__init(%s self) {\n",
-                cd->class_name->buffer, cd->struct_object->buffer);
+                cd->class_name_c->buffer, cd->struct_object->buffer);
             call(output, concat_cstring, buf);
-            const char *class_name = cd->class_name->buffer;
+            const char *class_name = cd->class_name_c->buffer;
             const char *class_type = cd->struct_object->buffer;
             const char *class_var = cd->class_var->buffer;
 
@@ -3314,6 +3441,7 @@ void CX_init(CX self) {
     self->modules = new(List);
     self->classes = new(Pairs);
     self->aliases = new(Pairs); // key = module, value = alias that this module is referred to as; each alias will create a static struct with all of the classes of that module contained inside
+    self->referenced_templates = new(Pairs);
     self->includes = new(List);
     self->private_includes = new(List);
     self->forward_structs = new(List);
@@ -3328,21 +3456,45 @@ void emit_module_statics(CX self, CX module, FILE *file_output, Pairs emitted, P
         cd = (ClassDec)kv->value;
         if (!pairs_value(emitted, cd->class_var, ClassDec)) {
             if (file_output) {
-                fprintf(file_output, "static %s%s %s;\n",
-                    alias ? "\t" : "",
-                    cd->struct_class->buffer,
-                    cd->class_name->buffer);
+                if (!cd->is_template_dec) {
+                    fprintf(file_output, "static %s%s %s;\n",
+                        alias ? "\t" : "",
+                        cd->struct_class->buffer,
+                        cd->class_name_c->buffer);
+                }
+                ClassDec cd_inst;
+                each(cd->template_instances, cd_inst) {
+                    fprintf(file_output, "static %s%s %s;\n",
+                        alias ? "\t" : "",
+                        cd_inst->struct_class->buffer,
+                        cd_inst->class_name_c->buffer);
+                }
             }
             pairs_add(emitted, cd->class_var, cd);
             pairs_add(vars, cd, (alias ? alias : string("")));
-            if (!alias || alias->length == 0)
+            ClassDec cd_inst;
+            each(cd->template_instances, cd_inst) {
+                pairs_add(emitted, cd_inst->class_var, cd);
+                pairs_add(vars, cd_inst, (alias ? alias : string("")));
+            }
+            if (!alias || alias->length == 0) {
                 pairs_add(class_map, cd->class_name, cd);
-            else {
+                each(cd->template_instances, cd_inst) {
+                    pairs_add(class_map, cd_inst->class_name, cd);
+                }
+            } else {
                 String whole = new(String);
                 call(whole, concat_string, alias);
                 call(whole, concat_char, '.');
                 call(whole, concat_string, cd->class_name);
                 pairs_add(class_map, whole, cd);
+                each(cd->template_instances, cd_inst) {
+                    String whole = new(String);
+                    call(whole, concat_string, alias);
+                    call(whole, concat_char, '.');
+                    call(whole, concat_string, cd_inst->class_name);
+                    pairs_add(class_map, whole, cd_inst);
+                }
             }
         }
     }
@@ -3498,8 +3650,8 @@ bool CX_output(CX self, const char *location) {
         fprintf(module_code, "#include \"%s.h\"\n", include->buffer);
     }
     fprintf(module_code, "\n");
-    call(self, emit_module_statics, module_code, true);
     call(self, merge_class_tokens, self->tokens, &self->n_tokens);
+    call(self, emit_module_statics, module_code, true);
     call(self, emit_implementation, module_code);
     call(self, define_module_constructor, module_code);
     fclose(module_code);

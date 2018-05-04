@@ -3,7 +3,7 @@ module supermod;
 class Test : Super {
     private int value_intern;
 
-    int value {
+    int value5 {
         get {
             return self.value_intern;
         }
@@ -43,8 +43,8 @@ class Test : Super {
             printf("test inherits\n");
         }
         t.method(1, 2);
-        t.value = 1;
-        printf("value = %d\n", t.value);
+        t.value5 = 1;
+        printf("value = %d\n", t.value5);
 
         int testme(short,int,char,short) = (long test, int arg) {
             int ii = 0;
@@ -52,7 +52,7 @@ class Test : Super {
             printf("hey there %s\n", s.buffer);
             (int[] arg2) {
                 Test test1 = new Test();
-                printf("another test:%s %d %d", s.buffer, t, test1.value);
+                printf("another test:%s %d %d", s.buffer, t, test1.value5);
             };
         };
 
@@ -60,9 +60,6 @@ class Test : Super {
 
         const int i = 1 + (leave_alone1 leave_alone2)testing;
         wchar_t[] test_array = new wchar_t[];
-        test_array.push(null);
-
-        wchar_t c = test_array[0];
         return 0;
     }
 }
