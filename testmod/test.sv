@@ -32,9 +32,9 @@ class Test : Super {
         printf("str = %s\n", str);
 
         a.push(b);
-        String str1 = String.instance(args.buffer[0]);
+        String str1 = String.instance(args[0]);
         for (int i = 0; i < args.count; i++) {
-            String str = String.instance(args.buffer[i]);
+            String str = String.instance(args[i]);
             printf("arg[%d] = %s\n", i, str.buffer);
         }
         Test t = new Test();
