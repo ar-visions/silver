@@ -179,7 +179,7 @@ void ClassDec_replace_template_tokens(ClassDec self) {
                 t->value = (char *)malloc(n + 1);
                 t->length = b->length;
                 memcpy((void *)t->value, buf, n + 1);
-                t->str = new_string(buf);
+                t->str = new_string(b->buffer);
             }
         }
         if (t == self->end)
@@ -1423,7 +1423,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
             delim_code = new(String);
             sprintf(buf, "->buffer[%s]", code->buffer);
             call(delim_code, concat_cstring, buf);
-            t = delim_end + 1;
+            t = delim_end + 1; // type_last needs to be set to the element type
         }
 
         if (t->assign) {
@@ -1613,8 +1613,10 @@ String CX_class_op_out(CX self, List scope, Token *t,
         }
         if (delim_code) {
             t_member = delim_end;
+        } else {
+            t_member = t_member;
         }
-        if (*t_after < t) {
+        if (*t_after < t_member) {
             t = t_member;
             *t_after = get_t_after(t_member);
         }
@@ -2151,7 +2153,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                 call(self, token_out, t, 0, output);
         } else if (t->type == TT_Keyword || t->type == TT_Identifier || t->keyword == "class") {
 
-            if (strncmp(t->value, "t.value5", 6) == 0) {
+            if (strncmp(t->value, "args2", 5) == 0) {
                 int test = 0;
                 test++;
             }
