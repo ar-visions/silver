@@ -24,6 +24,8 @@ class Test : Super {
     }
 
     static int main(String[] args) {
+        String[] args2 = new String[];
+        String test_arg = args2[0];
         Test b = new Test();
         Array<int> a = new Array<int>();
         String s = (String)"hi";
