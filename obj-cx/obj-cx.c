@@ -1410,7 +1410,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
         Token *delim_end = NULL;
         // if array & delim, read ahead past delim
 
-        if (array && t->punct == "[") {
+        if (array && !md && t->punct == "[") {
             int delim_code_flags = 0;
             String type_last = NULL;
             Token *t_after = NULL;
