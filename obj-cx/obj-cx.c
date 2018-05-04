@@ -482,10 +482,6 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                 if ((t + 2)->type == TT_Identifier) {
                     // pairs!
                 } else {
-                    if (call(t->str, cmp, "wchar_t") == 0) {
-                        int test = 0;
-                        test++;
-                    }
                     Token *t_arg = t;
                     if (!t->cd) {
                         int test = 0;
@@ -1245,7 +1241,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
     }
     bool constructor = token_goto(t, -1)->keyword == "new";
     const char *class_var = cd ? cd->class_var->buffer : NULL;
-    
+    token_next(&t);
     ArrayClass array = inherits(cd, ArrayClass);
     bool use_braces = (array && constructor);
     if (cd && (t->punct == "(" || use_braces)) {
@@ -2166,11 +2162,6 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             bool is_class = false;
             Pairs top = (Pairs)call(scope, last);
 
-            if (call((t)->str, cmp, "args") == 0 && call((t + 1)->str, cmp, ".") == 0 && call((t + 2)->str, cmp, "count") == 0) {
-                int test = 0;
-                test++;
-            }
-
             // check for 'Class' in the token
             if (target->length > 5 && strcmp(&target->buffer[target->length - 5], "Class") == 0) {
                 String sub = class_call(String, new_from_bytes, (uint8 *)target->buffer, t->length - 5); 
@@ -2179,6 +2170,9 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             } else
                 cd = t->cd;
 
+            Token *tt = t;
+            while (tt->type == TT_Identifier || tt->type == TT_Keyword)
+                tt = token_goto(tt, 1);
             Base type = NULL;
             Token *tt_n1 = token_goto(tt, -1);
             bool has_delim = tt->punct == "[";
@@ -2191,7 +2185,6 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     pairs_add(top, target, type);
                 }
             }
-
             if (!inherits(type, ClassDec)) {
                 Token *t_to = t;
                 if (inherits(type, ClosureClass))
@@ -2205,9 +2198,8 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             if (cd) {
                 // check for new/auto keyword before
                 Token *t_start = t;
-                ArrayClass array = inherits(t->cd, ArrayClass);
                 token_next(&t);
-                if (declared) {
+                if ((inherits(type, ArrayClass) && t->punct != "[") || t->type == TT_Identifier) {
                     call(output, concat_string, is_class ? cd->struct_class : cd->struct_object);
                     call(output, concat_char, ' ');
                     // variable declared
@@ -2237,9 +2229,12 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         fprintf(stderr, "constructor cannot be called directly on class type\n");
                         exit(1);
                     }
-                    t = token_goto(t, -1);
+                    if (t->punct == "[") {
+                        int test = 0;
+                        test++;
+                    }
                     // construct (default)
-                    String out = call(self, var_op_out, scope, t, cd, target, false, &t,
+                    String out = call(self, var_op_out, scope, token_goto(t, -1), cd, target, false, &t,
                         type_last, flags, method, brace_depth, assign, false);
                     call(output, concat_string, out);
                 } else {
@@ -2373,8 +2368,6 @@ Base CX_read_type_at(CX self, Token *t) {
     if (cur >= t_end)
         return NULL;
     else if ((type_keywords > 0 || cd) && ahead->punct == "(") {
-        if (t->cd)
-            return NULL;
         ClosureClass closure = new(ClosureClass);
         CX base = CX_find(string("base"));
         call(base, classdec_info, (ClassDec)closure, string("Closure"));
@@ -2501,7 +2494,7 @@ String CX_args_out(CX self, Pairs top, ClassDec cd, MemberDec md, bool inst, boo
                     int test = 0;
                     test++;
                 }
-                Base type = call(self, read_type_at, t_name);
+                Base type = call(self, read_type_at, token_goto(t_name, -1));
                 pairs_add(top, t_name->str, type);
             }
         }
