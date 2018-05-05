@@ -16,6 +16,7 @@ declare(KeyValue, Base);
     method(D,T,C,void,clear,(C))                     \
     method(D,T,C,Base,key,(C,Base))                  \
     method(D,T,C,Base,value,(C,Base))                \
+    method(D,T,C,KeyValue,find,(C,Base))             \
     override(D,T,C,void,init,(C))                    \
     override(D,T,C,void,free,(C))                    \
     override(D,T,C,C,copy,(C))                       \
@@ -34,6 +35,7 @@ declare(Pairs, Base);
 #define pairs_add(O,K,V)    (call(O, add, base(K), base(V)))
 #define pairs_value(O,K,C)  ((O && K) ? inherits(call(O, value, base(K)),C) : NULL)
 #define pairs_key(O,K,C)    ((O && K) ? inherits(call(O, key, base(K)),C) : NULL)
+#define pairs_find(O,K)     ((O && K) ? call(O, find, base(K)) : NULL)
 #define each_pair(O, ptr)   typeof(O) pairs_var(__LINE__) = O; ptr = (pairs_var(__LINE__) && pairs_var(__LINE__)->ordered_list.first) ? (typeof(ptr))pairs_var(__LINE__)->ordered_list.first->data : NULL; if (ptr) for (LItem *_i = pairs_var(__LINE__)->ordered_list.first; _i; _i = _i->next, ptr = _i ? (typeof(ptr))_i->data : NULL)
 
 #endif

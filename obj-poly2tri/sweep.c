@@ -527,8 +527,6 @@ void Sweep_fill_left_concave_edge_event(Sweep self, SweepContext tcx, Edge edge,
 void Sweep_flip_edge_event(Sweep self, SweepContext tcx, Point ep, Point eq, Tri  t, Point p) {
   Tri ot = Tri_neighbor_across(t, p);
   if (!ot) {
-    int test = 0;
-    test++;
     ot = Tri_neighbor_across(t, p);
   }
   Point op = Tri_opposite_point(ot, t, p);
