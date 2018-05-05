@@ -44,6 +44,8 @@ class Test : Super {
         t.value5 = 1;
         printf("value = %d\n", t.value5);
 
+        int testme(long, int)[] test;
+
         int testme(long, int) = (long test, int arg) {
             int ii = 0;
             int tt = 5;

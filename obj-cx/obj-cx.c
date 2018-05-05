@@ -2355,7 +2355,7 @@ Base CX_read_type_at(CX self, Token *t) {
     Token *t_end = token_goto(cur, 1);
     int type_keywords = 0;
     ClassDec cd = NULL;
-    while (cur->type != TT_Punctuator && cur->punct != "*") {
+    while (cur->type != TT_Punctuator || cur->punct == "*") {
         if (cur->cd)
             cd = cur->cd;
         if (cur->type_keyword)
