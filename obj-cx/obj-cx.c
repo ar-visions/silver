@@ -482,20 +482,121 @@ find_punct:
     return tokens;
 }
 
+void CX_resolve_token(CX self, Token *t) {
+    if (!t->cd) {
+        t->cd = pairs_value(self->static_class_map, t->str, ClassDec);
+        if (!t->cd) {
+            t->cd = CX_find_class(t->str);
+        }
+    }
+}
+
 void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
     char buf[1024];
+    Token *t_last = tokens + (*n_tokens - 1);
     // merge multiple tokens that assemble a single class identity together
     // also flag tokens as classes with their corresponding ClassDec
     for (int i = 0; i < *n_tokens; i++) {
         Token *t = &tokens[i];
         if (t->skip)
             continue;
-        if (t->type == TT_Identifier || t->type_keyword) {
-            t->cd = pairs_value(self->static_class_map, t->str, ClassDec);
-            if (!t->cd) {
-                t->cd = CX_find_class(t->str);
+        if ((t->type == TT_Identifier || t->type_keyword) && t <= token_goto(t_last, -3)) {
+            call(self, resolve_token, t);
+            // read type from closure at the beginning
+            if (t->cd || t->type_keyword) {
+                // check for punct
+                Token *t_start = t;
+                Token *tt = t + 1;
+                do {
+                    if (tt->skip) {
+                        tt++;
+                        continue;
+                    }
+                    call(self, resolve_token, tt);
+                    if (!(tt->cd || tt->type_keyword || tt->punct == "*"))
+                        break;
+                    tt++;
+                } while (tt < t_last);
+                Token *t_name = NULL;
+                if (tt < t_last && (tt->type == TT_Identifier || tt->punct == "(")) {
+                    if (tt->type == TT_Identifier) {
+                        t_name = tt;
+                        tt = token_goto(tt, 1);
+                    }
+                    Token *t_paren = tt;
+                    if (tt != t_last && tt->punct == "(" && (token_goto(t_start, 1) < t_paren)) {
+                        // must be entirely type_keyword or cd
+                        int n = call(self, read_expression, tt, NULL, NULL, ")", -1, true);
+                        Token *t_arg_first = token_goto(tt, 1);
+                        Token *t_arg_last = token_goto(tt, n);
+                        if (t_arg_last <= t_last) {
+                            call(self, merge_class_tokens, tt, &n);
+                            bool valid = true;
+                            bool comma = false;
+                            List args = new(List);
+                            int *at_token_count = (int *)malloc(sizeof(int *) * 1024);
+                            Token **arg_types = (Token **)malloc(sizeof(Token **) * 1024);
+                            Token *c_arg = NULL;
+                            int c_count = 1;
+                            int n_args = 0;
+                            for (int ii = 0; ii < n; ii++) {
+                                tt = token_goto(tt, 1);
+                                if (!c_arg)
+                                    c_arg = tt;
+                                if (!(tt->type_keyword || tt->cd)) {
+                                    if (!comma && tt->punct != ",") {
+                                        valid = false;
+                                        break;
+                                    }
+                                    if (tt->punct == "," || tt->punct == ")") {
+                                        at_token_count[n_args] = c_count;
+                                        arg_types[n_args++] = c_arg;
+                                        list_push(args, c_arg->str); // TODO merge these tokens
+                                        comma = false;
+                                        c_arg = token_goto(tt, 1);
+                                        c_count = 0;
+                                        continue;
+                                    }
+                                }
+                                c_count++;
+                                if (tt->punct != ",")
+                                    comma = true;
+                            }
+                            if (valid) {
+                                Token *t_end = token_goto(tt, 1);
+                                while (t_start->type_keyword || t_start->cd) {
+                                    t_start = token_goto(t_start, -1);
+                                }
+                                t_start = token_goto(t_start, 1);
+
+                                ClosureClass closure = new(ClosureClass);
+                                CX base = CX_find(string("base"));
+                                call(base, classdec_info, (ClassDec)closure, string("Closure"));
+                                
+                                closure->args = args;
+                                closure->md = new(MemberDec);
+                                closure->md->str_name = t_name->str;
+                                closure->md->member_type = MT_Method;
+                                closure->md->at_token_count = at_token_count;
+                                closure->md->arg_types = arg_types;
+                                closure->md->arg_types_count = list_count(args);
+                                t_start->cd = (ClassDec)closure;
+                                t_start->skip = false;
+                                for (Token *t_scan = t_start + 1; t_scan <= t_end; t_scan++) {
+                                    t_scan->skip = !(t_scan == t_name);
+                                }
+                                // now you have the type start, type end, identifier (optionally) and args
+                            } else {
+                                release(args);
+                                free(at_token_count);
+                                free(arg_types);
+                            }
+                        }
+                    }
+                }
             }
-            if ((t->cd || t->type_keyword) && (t + 1)->punct == "[") {
+
+            if ((t->cd || t->type_keyword) && token_goto(t, 1)->punct == "[") {
                 // String[]
                 if ((t + 2)->type == TT_Identifier) {
                     // pairs!
@@ -512,9 +613,6 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                     t->use_braces = true;
                     (t + 1)->skip = true;
                     (t + 2)->skip = true;
-                    Token *t1 = t + 1;
-                    Token *t2 = t + 2;
-                    Token *t3 = t + 3;
                 }
             } else if (t->cd && (t + 1)->punct == "<" && t != t->cd->name) {
                 if (!t->cd->template_args) {
@@ -557,7 +655,7 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                 fprintf(stderr, "class %s requires %d template arguments\n", t->cd->class_name->buffer, list_count(t->cd->template_args));
                 exit(1);
             }
-        } else if (t->punct == "." && i > 0 && (t - 1)->length < 512 && (t + 1)->length < 512) {
+        } else if (t->punct == "." && i > 0 && (t - 1)->length < 512 && (t + 1)->length < 512) { // < move to resolve!
             int total = (t - 1)->length + 1 + (t + 1)->length;
             memcpy(buf, (t - 1)->value, total);
             buf[total] = 0;

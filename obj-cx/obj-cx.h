@@ -96,6 +96,7 @@ typedef struct _Token {
     method(D,T,C,void,define_template_users,(C)) \
     method(D,T,C,struct _object_ArrayClass *,instance_array_dec,(C, String, Token *)) \
     method(D,T,C,struct _object_ClassDec *,read_class_from,(C, Token *, struct _object_ClassDec *)) \
+    method(D,T,C,void,resolve_token,(C, Token *)) \
     var(D,T,C,Pairs,referenced_templates)  \
     var(D,T,C,int,directive_last_line)     \
     var(D,T,C,String,directive_last_file)  \
