@@ -20,27 +20,23 @@ class Test : Super {
     void method(int arg, int arg2) {
         super.method(arg, arg2);
         Super.super_static();
-        printf("value = %d\n", self.value);
+        printf("value = %d\n", self.value5);
     }
 
     static int main(String[] args) {
         String[] args2 = new String[];
-        String test_arg = args2[0];
         Test b = new Test();
-        Array<int> a = new Array<int>();
         String s = (String)"hi";
         int i = (int)b;
         char *str = (char *)s;
         printf("str = %s\n", str);
 
-        a.push(b);
         String str1 = String.instance(args[0]);
         for (int i = 0; i < args.count; i++) {
             String str = String.instance(args[i]);
             printf("arg[%d] = %s\n", i, str.buffer);
         }
         Test t = new Test();
-        Test failed = t.release();
         if (Test.instance(str1)) {
             printf("test inherits\n");
         }
@@ -50,17 +46,16 @@ class Test : Super {
 
         int testme(short,int,char,short) = (long test, int arg) {
             int ii = 0;
-            int t = 5;
+            int tt = 5;
             printf("hey there %s\n", s.buffer);
             (int[] arg2) {
                 Test test1 = new Test();
-                printf("another test:%s %d %d", s.buffer, t, test1.value5);
+                printf("another test:%s %d %d", s.buffer, tt, test1.value5);
             };
         };
 
         String[] ss = new String[];
 
-        const int i = 1 + (leave_alone1 leave_alone2)testing;
         wchar_t[] test_array = new wchar_t[];
         return 0;
     }

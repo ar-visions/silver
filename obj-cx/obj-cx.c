@@ -100,6 +100,7 @@ void ClassDec_register_template_user(ClassDec self, List args) {
 
 ClassDec ClassDec_templated_instance(ClassDec self, CX m, Token *t_name, List args) {
     ClassDec cd;
+    String first_arg = (String)call(args, object_at, 0);
     each(self->template_instances, cd) {
         String a;
         bool match = true;
@@ -128,13 +129,16 @@ ClassDec ClassDec_templated_instance(ClassDec self, CX m, Token *t_name, List ar
     cd_inst->meta = self->meta;
     cd_inst->parent = self->parent;
     cd_inst->template_args = new(List);
+    if (self == arr) {
+        cd_inst->type_str = first_arg;
+    }
     String arg;
     each(args, arg) {
         ClassDec cd_found = CX_find_class(arg);
         list_push(cd_inst->template_args, (cd_found ? string("Base") : arg));
     }
     call(self->m, classdec_info, cd_inst, t_name->str);
-    call(cd_inst, replace_template_tokens);
+    call(cd_inst, replace_template_tokens, m);
     cd_inst->type_args = cp(args);
     
     list_push(self->template_instances, cd_inst);
@@ -144,7 +148,7 @@ ClassDec ClassDec_templated_instance(ClassDec self, CX m, Token *t_name, List ar
     return cd_inst;
 }
 
-void ClassDec_replace_template_tokens(ClassDec self) {
+void ClassDec_replace_template_tokens(ClassDec self, CX caller) {
     Pairs p = new(Pairs);
     int index = 0;
     String a, b;
@@ -168,6 +172,10 @@ void ClassDec_replace_template_tokens(ClassDec self) {
         if (t->type == TT_Identifier) {
             String b = pairs_value(p, t->str, String);
             if (b) {
+                ClassDec cd_lookup = pairs_value(caller->static_class_map, b, ClassDec);
+                if (cd_lookup) {
+                    b = cd_lookup->struct_object;
+                }
                 char buf[1024];
                 int n = b->length;
                 sprintf(buf, "%s", b->buffer);
@@ -211,7 +219,14 @@ void MemberDec_read_args(MemberDec self, Token *t, int n_tokens, bool names) {
     int type_tokens = 0;
     md->str_args = new(String);
     for (int i = 0; i < n_tokens; i++) {
-        token_out(&t[i], 0, md->str_args);
+        Token *tt = &t[i];
+        if (tt->skip)
+            continue;
+        if (tt->cd && tt->cd->struct_object) {
+            call(md->str_args, concat_string, tt->cd->struct_object);
+            call(md->str_args, concat_char, ' ');
+        } else
+            token_out(tt, 0, md->str_args);
     }
     while (paren_depth >= 0) {
         if (t_cur->punct == "," || (paren_depth == 0 && t_cur->punct == ")")) {
@@ -476,17 +491,20 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
         if (t->skip)
             continue;
         if (t->type == TT_Identifier || t->type_keyword) {
+            if (strcmp(t->str->buffer, "Base") == 0) {
+                int test = 0;
+                test++;
+            }
             t->cd = pairs_value(self->static_class_map, t->str, ClassDec);
+            if (!t->cd) {
+                t->cd = CX_find_class(t->str);
+            }
             if ((t->cd || t->type_keyword) && (t + 1)->punct == "[") {
                 // String[]
                 if ((t + 2)->type == TT_Identifier) {
                     // pairs!
                 } else {
                     Token *t_arg = t;
-                    if (!t->cd) {
-                        int test = 0;
-                        test++;
-                    }
                     ClassDec array = CX_find_class(string("Array"));
                     List args = new(List);
                     list_push(args, t_arg->str);
@@ -1364,8 +1382,11 @@ String CX_class_op_out(CX self, List scope, Token *t,
                     ClassDec cd_expected = NULL;
                     for (int ii = 0; ii < md->at_token_count[c_arg]; ii++) {
                         Token *t = &(md->arg_types[c_arg])[ii];
-                        if (t->cd) {
-                            cd_expected = t->cd;
+                        ClassDec t_cd = t->cd;
+                        if (!t_cd)
+                            t_cd = CX_find_class(t->str);
+                        if (t_cd) {
+                            cd_expected = t_cd;
                             break;
                         }
                     }
@@ -2265,8 +2286,11 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                         found = true;
                     }
                 }
-                if (!found)
+                if (!found) {
+                    if (closure_scoped)
+                        call(output, concat_cstring, "__scope->");
                     call(self, token_out, t, ' ', output);
+                }
             }
         } else {
             if (t->type == TT_String_Literal)
@@ -2611,6 +2635,10 @@ void CX_declare_classes(CX self, FILE *file_output) {
                             // need a way to gather forwards referenced in method returns, arguments, and property types
                             sprintf(buf, "\t%s", forward_type->buffer);
                             call(output, concat_cstring, buf);
+                            if (strstr(md->str_name->buffer, "cast") != 0) {
+                                int test = 0;
+                                test++;
+                            }
                             String args = call(self, args_out, NULL, cd, md, md->member_type == MT_Method && !md->is_static, false, 0, true);
                             sprintf(buf, " (*%s)(%s);\n",
                                 md->str_name->buffer, args->buffer ? args->buffer : "");
@@ -2735,19 +2763,30 @@ void CX_declare_classes(CX self, FILE *file_output) {
 void CX_define_module_constructor(CX self, FILE *file_output) {
     String output = new(String);
     char buf[1024];
+    List classes = new(List);
+    KeyValue kv;
+    ClassDec cd_class;
+
+    each_pair(self->classes, kv)
+        list_push(classes, kv->value);
+    call(classes, sort, true, (SortMethod)sort_classes);
 
     sprintf(buf, "\nbool module_%s;\n",
         self->name->buffer);
     call(output, concat_cstring, buf);
-
-    KeyValue kv;
-    each_pair(self->classes, kv) {
-        ClassDec cd = (ClassDec)kv->value;
-        sprintf(buf, "%s %s;\n",
-            cd->struct_class->buffer,
-            cd->class_var->buffer);
-        call(output, concat_cstring, buf);
+    
+    each(classes, cd_class) {
+        ClassDec cd;
+        each(cd_class->defined_instances, cd) {
+            if (cd->is_template_dec)
+                continue;
+            sprintf(buf, "%s %s;\n",
+                cd->struct_class->buffer,
+                cd->class_var->buffer);
+            call(output, concat_cstring, buf);
+        }
     }
+
     sprintf(buf, "\n");
     call(output, concat_cstring, buf);
 
@@ -2774,13 +2813,7 @@ void CX_define_module_constructor(CX self, FILE *file_output) {
         sprintf(buf, "\t\treturn false;\n\n");
         call(output, concat_cstring, buf);
     }
-    
-    List classes = new(List);
-    each_pair(self->classes, kv)
-        list_push(classes, kv->value);
-    call(classes, sort, true, (SortMethod)sort_classes);
 
-    ClassDec cd_class;
     each(classes, cd_class) {
         List instances = cd_class->template_instances;
         if (!cd_class->template_instances) {
@@ -2798,9 +2831,6 @@ void CX_define_module_constructor(CX self, FILE *file_output) {
             const char *class_var = cd->class_var->buffer;
             sprintf(buf, "\t%s = (%s)alloc_bytes(sizeof(*%s));\n",
                 class_var, struct_class, class_var);
-            call(output, concat_cstring, buf);
-            sprintf(buf, "\tmemset(%s, 0, sizeof(*%s));\n",
-                class_var, class_var);
             call(output, concat_cstring, buf);
         }
     }
@@ -3219,13 +3249,13 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                             }
                             sprintf(buf, "%s main(int argc, char *argv[]) {\n", s_ret->buffer);
                             call(output, concat_cstring, buf);
-                            sprintf(buf, "\tbase_Array args = (base_Array)Base->new_object(Base, (base_Class)Array, 0);\n");
+                            sprintf(buf, "\tbase_Array_String_ args = (base_Array_String_)Base->new_object(Base, (base_Class)Array_String_, 0);\n");
                             call(output, concat_cstring, buf);
                             sprintf(buf, "\tfor (int i = 0; i < argc; i++) {\n");
                             call(output, concat_cstring, buf);
                             sprintf(buf, "\t\tbase_String str = String->from_cstring(String, argv[i]);\n");
                             call(output, concat_cstring, buf);
-                            sprintf(buf, "\t\tArray->push((base_Array)args, (base_Base)str);\n");
+                            sprintf(buf, "\t\tArray_String_->push((base_Array_String_)args, str);\n");
                             call(output, concat_cstring, buf);
                             sprintf(buf, "\t}\n");
                             call(output, concat_cstring, buf);
@@ -3329,14 +3359,6 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
         fprintf(file_output, "// ---------- closures ----------\n");
         ClosureDec closure_dec;
         each(self->closures, closure_dec) {
-            fprintf(file_output, "struct %s;\n", closure_dec->str_name->buffer);
-        }
-        String misc_code;
-        each(self->misc_code, misc_code) {
-            String pretty = call(self, pretty_print, misc_code);
-            fprintf(file_output, "%s", pretty->buffer);
-        }
-        each(self->closures, closure_dec) {
             KeyValue kv;
             fprintf(file_output, "struct %s {\n", closure_dec->str_name->buffer);
             each_pair(closure_dec->ref_scope, kv) {
@@ -3349,9 +3371,22 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                     fprintf(file_output, "\t%s %s;\n", type->buffer, var->buffer);
                 }
             }
-            String pretty = call(self, pretty_print, closure_dec->code);
             fprintf(file_output, "};\n");
-            fprintf(file_output, "void %s(struct %s *__scope, %s) %s\n",
+        }
+        String misc_code;
+        each(self->misc_code, misc_code) {
+            String pretty = call(self, pretty_print, misc_code);
+            fprintf(file_output, "%s", pretty->buffer);
+        }
+        each(self->closures, closure_dec) {
+            fprintf(file_output, "void %s(struct %s *__scope, %s;\n",
+                closure_dec->str_name->buffer,
+                closure_dec->str_name->buffer,
+                closure_dec->str_args->buffer);
+        }
+        each(self->closures, closure_dec) {
+            String pretty = call(self, pretty_print, closure_dec->code);
+            fprintf(file_output, "void %s(struct %s *__scope, %s %s\n",
                 closure_dec->str_name->buffer,
                 closure_dec->str_name->buffer,
                 closure_dec->str_args->buffer,
@@ -3482,7 +3517,7 @@ void emit_module_statics(CX self, CX module, FILE *file_output, Pairs emitted, P
             if (!alias || alias->length == 0) {
                 pairs_add(class_map, cd->class_name, cd);
                 each(cd->template_instances, cd_inst) {
-                    pairs_add(class_map, cd_inst->class_name, cd);
+                    pairs_add(class_map, cd_inst->class_name, cd_inst);
                 }
             } else {
                 String whole = new(String);
