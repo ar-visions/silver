@@ -62,7 +62,7 @@
 struct _base_Base;
 typedef void *(*Method)();
 typedef void (*ClosureDealloc)(void *);
-typedef void (*ClosureFunc)(...);
+typedef void (*ClosureFunc)(void *, ...);
 typedef void *(*InitMethod)(struct _base_Base *);
 typedef void (*BaseMethod)(struct _base_Base *);
 typedef void *(*Setter)(struct _base_Base *, void *);

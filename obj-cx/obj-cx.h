@@ -166,7 +166,7 @@ declare(ClosureDec, MemberDec)
     method(D,T,C,MemberDec,member_lookup,(C,String,C *)) \
     method(D,T,C,C,templated_instance,(C, CX, Token *, List)) \
     method(D,T,C,void,register_template_user,(C, List)) \
-    method(D,T,C,void,replace_template_tokens,(C)) \
+    method(D,T,C,void,replace_template_tokens,(C, CX)) \
     var(D,T,C,CX,m)                        \
     var(D,T,C,List,template_instances)     \
     var(D,T,C,List,defined_instances)      \

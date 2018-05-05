@@ -70,7 +70,7 @@ class Base {
     static Base new_object(Class cl, size_t extra_size) {
         Base obj = (Base)alloc_bytes(cl.object_size + extra_size);
         obj.cl = (BaseClass)cl;
-        obj.refs = 1;
+        obj.refs = 0;
         Base.init_object(obj, (Class)obj.cl, true);
         Base.init_object(obj, (Class)obj.cl, false);
         return obj;

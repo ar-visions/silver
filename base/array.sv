@@ -24,9 +24,9 @@ class Array<T> {
     }
     T pop() {
         if (self.count == 0)
-            return null;
+            return 0;
         T item = self.buffer[--self.count];
-        self.buffer[self.count] = null;
+        self.buffer[self.count] = 0;
         return item;
     }
     int index_of(T item) {
