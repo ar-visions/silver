@@ -1,6 +1,12 @@
 module supermod;
 
 class Test : Super {
+    void method2(int arg, int arg2) {
+        int total_closure(int,long) = (int i, long l) {
+            printf("body\n");
+        };
+    }
+
     private int value_intern;
 
     int value5 {
