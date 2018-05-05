@@ -44,7 +44,7 @@ class Test : Super {
         t.value5 = 1;
         printf("value = %d\n", t.value5);
 
-        int testme(short,int,char,short) = (long test, int arg) {
+        int testme(long, int) = (long test, int arg) {
             int ii = 0;
             int tt = 5;
             printf("hey there %s\n", s.buffer);
@@ -53,6 +53,7 @@ class Test : Super {
                 printf("another test:%s %d %d", s.buffer, tt, test1.value5);
             };
         };
+        testme(1, 2);
 
         String[] ss = new String[];
 

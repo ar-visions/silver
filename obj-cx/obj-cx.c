@@ -491,10 +491,6 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
         if (t->skip)
             continue;
         if (t->type == TT_Identifier || t->type_keyword) {
-            if (strcmp(t->str->buffer, "Base") == 0) {
-                int test = 0;
-                test++;
-            }
             t->cd = pairs_value(self->static_class_map, t->str, ClassDec);
             if (!t->cd) {
                 t->cd = CX_find_class(t->str);
@@ -519,10 +515,6 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                     Token *t1 = t + 1;
                     Token *t2 = t + 2;
                     Token *t3 = t + 3;
-                    if (strncmp(t->value, "String[]", 8) == 0) {
-                        int test = 0;
-                        test++;
-                    }
                 }
             } else if (t->cd && (t + 1)->punct == "<" && t != t->cd->name) {
                 if (!t->cd->template_args) {
@@ -1188,10 +1180,6 @@ String CX_gen_var(CX self, List scope, ClassDec cd, bool hidden) {
     Pairs top = (Pairs)call(scope, last);
     char buf[64];
     sprintf(buf, "_gen_%d", ++self->gen_vars);
-    if (self->gen_vars == 3) {
-        int test = 0;
-        test++;
-    }
     String ret = string(buf);
     pairs_add(top, ret, cd);
     if (!hidden)
@@ -1276,10 +1264,6 @@ String CX_class_op_out(CX self, List scope, Token *t,
             String last_set = NULL;
             if (!array) {
                 for (;;) {
-                    if (strncmp(t_start->value, "String[]", 8) == 0) {
-                        int test = 0;
-                        test++;
-                    }
                     int n = call(self, read_expression, t, NULL, NULL, ",)", 0, true);
                     if (n == 0)
                         break;
@@ -1343,22 +1327,43 @@ String CX_class_op_out(CX self, List scope, Token *t,
         } else {
             if (md_type)
                 *flags |= CODE_FLAG_ALLOC;
-            sprintf(buf, "%s->", class_var);
-            call(output, concat_cstring, buf);
-            token_out(t_member, '(', output);
-
-            ClassDec cd_target = pairs_value(self->static_class_map, target, ClassDec);
-            if (cd_target) {
-                call(output, concat_string, cd_target->class_var);
+            ClosureClass closure = inherits(cd, ClosureClass);
+            if (closure) {
+                String fname = new(String);
+                char cbuf[1024];
+                if (closure_scoped)
+                    call(fname, concat_cstring, "__scope->");
+                call(fname, concat_string, t_member->str);
+                String args = new(String);
+                String a;
+                call(args, concat_cstring, "void *");
+                each(closure->args, a) {
+                    call(args, concat_char, ','); 
+                    call(args, concat_string, a);
+                }
+                sprintf(cbuf, "((%s(*)(%s))%s->func)(%s->memory", closure->type_str->buffer, args->buffer, fname->buffer, fname->buffer);
+                call(output, concat_cstring, cbuf);
+                if (list_count(closure->args) > 0)
+                    call(output, concat_char, ',');
+                md = closure->md;
             } else {
-                call(output, concat_string, target);
-            }
-            if (t->punct == ")")
-                call(output, concat_char, ' ');
-            else if (md->args_count > 0)
-                call(output, concat_char, ',');
+                sprintf(buf, "%s->", class_var);
+                call(output, concat_cstring, buf);
+                token_out(t_member, '(', output);
 
-            if (md->member_type == MT_Prop) {
+                ClassDec cd_target = pairs_value(self->static_class_map, target, ClassDec);
+                if (cd_target) {
+                    call(output, concat_string, cd_target->class_var);
+                } else {
+                    call(output, concat_string, target);
+                }
+                if (t->punct == ")")
+                    call(output, concat_char, ' ');
+                else if (md && md->args_count > 0)
+                    call(output, concat_char, ',');
+            }
+
+            if (md && md->member_type == MT_Prop) {
                 fprintf(stderr, "invalid call to property\n");
                 exit(1);
             }
@@ -1448,10 +1453,6 @@ String CX_class_op_out(CX self, List scope, Token *t,
         }
 
         if (t->assign) {
-            if (md && call(md->str_name, cmp, "value") == 0) {
-                int test = 0;
-                test++;
-            }
             // check if var is tracked
             Pairs sc = NULL;
             ClassDec cd_lookup = call(self, scope_lookup, scope, target, &sc, NULL, NULL);
@@ -1583,10 +1584,6 @@ String CX_class_op_out(CX self, List scope, Token *t,
             }
             release(set_str);
         } else if (md) {
-            if (delim_code) {
-                int test = 0;
-                test++;
-            }
             if (md && md->getter_start) {
                 //if (md->type_cd)
                 //    *flags |= CODE_FLAG_ALLOC; do not tell the caller to wrap this in some gen var to later release
@@ -1966,6 +1963,8 @@ String CX_closure_out(CX self, List scope, ClosureDec closure_dec, bool assign) 
             call(dealloc_out, concat_cstring, buf);
         }
     }
+    sprintf(buf, "\tprintf(\"closure dealloc!\\n\");\n");
+    call(dealloc_out, concat_cstring, buf);
     sprintf(buf, "}\n");
     call(dealloc_out, concat_cstring, buf);
     list_push(self->misc_code, dealloc_out);
@@ -2009,10 +2008,6 @@ String CX_closure_out(CX self, List scope, ClosureDec closure_dec, bool assign) 
 
 String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, Token **t_after,
         ClassDec super_mode, bool line_no, String *type_last, MemberDec method, int *brace_depth, int *flags, bool assign) {
-    if (call(method->str_name, cmp, "testme") == 0) {
-        int test = 0;
-        test++;
-    }
     *type_last = NULL;
     String output = new(String);
     char buf[1024];
@@ -2173,12 +2168,6 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             if (token_out)
                 call(self, token_out, t, 0, output);
         } else if (t->type == TT_Keyword || t->type == TT_Identifier || t->keyword == "class") {
-
-            if (strncmp(t->value, "args2", 5) == 0) {
-                int test = 0;
-                test++;
-            }
-
             Token *t_start = t;
             String target = t->str;
             ClassDec cd = NULL;
@@ -2234,27 +2223,15 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     call(output, concat_string, out);
                 } else if (t->punct == ".") {
                     token_next(&t);
-                    if (strncmp(t->value, "value5", 6) == 0) {
-                        int test = 0;
-                        test++;
-                    }
                     if (t->type == TT_Identifier) {
                         String out = call(self, var_op_out, scope, t, cd, target, false, &t,
                             type_last, flags, method, brace_depth, assign, false);
                         call(output, concat_string, out);
                     }
                 } else if (is_new || t->punct == "(" || t->punct == "[") {
-                    if (is_new) {
-                        int test = 0;
-                        test++;
-                    }
                     if (is_class) {
                         fprintf(stderr, "constructor cannot be called directly on class type\n");
                         exit(1);
-                    }
-                    if (t->punct == "[") {
-                        int test = 0;
-                        test++;
                     }
                     // construct (default)
                     String out = call(self, var_op_out, scope, token_goto(t, -1), cd, target, false, &t,
@@ -2369,10 +2346,6 @@ ArrayClass CX_instance_array_dec(CX self, String arr_type, Token *ahead) {
 }
 
 Base CX_read_type_at(CX self, Token *t) {
-    if (call(t->str, cmp, "args") == 0) {
-        int test = 0;
-        test++;
-    }
     Token *ahead = token_goto(t, 1);
     if (ahead->punct != "[" && ahead->punct != "(" && ahead->punct == ";" && !ahead->assign) // ??
         return NULL;
@@ -2390,20 +2363,27 @@ Base CX_read_type_at(CX self, Token *t) {
         cur--;
     }
     ClassDec class_type = NULL;
+    ClosureClass closure = NULL;
     cur++;
     if (cur >= t_end)
         return NULL;
     else if ((type_keywords > 0 || cd) && ahead->punct == "(") {
-        ClosureClass closure = new(ClosureClass);
+        closure = new(ClosureClass);
         CX base = CX_find(string("base"));
         call(base, classdec_info, (ClassDec)closure, string("Closure"));
+        
+        closure->md = new(MemberDec);
+        closure->md->member_type = MT_Method;
+        closure->md->at_token_count = (int *)malloc(sizeof(int *) * 1024);
+        closure->md->arg_types = (Token **)malloc(sizeof(Token **) * 1024);
+        closure->md->arg_types[0] = t + 2;
         
         ahead->skip = true; /* prevent parser getting thrown off from this from looking like a method invokation */
         int p = 0;
         Token *t_start = t + 1;
+        int index = 0;
+        Token *t_arg_start = t_start + 1;
         for (Token *tt = t_start; tt->value; tt++) {
-            if (tt->skip)
-                continue;
             bool push = false, br = false;
             tt->skip = true;
             if (tt->punct == "(") {
@@ -2417,18 +2397,18 @@ Base CX_read_type_at(CX self, Token *t) {
                 push = true;
             }
             if (push) {
+                closure->md->arg_types[++index] = tt + 1;
                 String arg = new(String);
-                for (Token *z = t_start; z < tt; z++) {
-                    if (z->skip)
-                        continue;
+                for (Token *z = t_arg_start; z < tt; z++) {
                     token_out(z, 0, arg);
                 }
                 list_push(closure->args, arg);
-                t_start = token_goto(tt, 1);
+                t_arg_start = tt + 1;
                 if (br)
                     break;
             }
         }
+        closure->md->arg_types_count = list_count(closure->args);
         class_type = (ClassDec)closure;
     } else if (cur->cd) {
         return base(cur->cd);
@@ -2456,6 +2436,8 @@ Base CX_read_type_at(CX self, Token *t) {
     if (class_type) {
         class_type->type_str = type_name;
     }
+    if (closure)
+        closure->md->type_str = type_name;
     return class_type ? base(class_type) : base(type_name);
 }
 
@@ -2516,10 +2498,6 @@ String CX_args_out(CX self, Pairs top, ClassDec cd, MemberDec md, bool inst, boo
             Token *t_name = md->arg_names[i];
             call(self, token_out, t_name, ' ', output);
             if (top) {
-                if (call(t_name->str, cmp, "args") == 0) {
-                    int test = 0;
-                    test++;
-                }
                 Base type = call(self, read_type_at, token_goto(t_name, -1));
                 pairs_add(top, t_name->str, type);
             }
@@ -2539,6 +2517,13 @@ void CX_effective_methods(CX self, ClassDec cd, Pairs *pairs) {
             MemberDec md = pairs_value(*pairs, kv->key, MemberDec);
             if (!md)
                 pairs_add(*pairs, kv->key, kv->value);
+            else {
+                KeyValue kvp = pairs_find(*pairs, kv->key);
+                if (kvp && kvp->value != kv->value) {
+                    release(kvp->value);
+                    kvp->value = base(retain(kv->value));
+                }
+            }
         }
     }
 }
@@ -2635,10 +2620,6 @@ void CX_declare_classes(CX self, FILE *file_output) {
                             // need a way to gather forwards referenced in method returns, arguments, and property types
                             sprintf(buf, "\t%s", forward_type->buffer);
                             call(output, concat_cstring, buf);
-                            if (strstr(md->str_name->buffer, "cast") != 0) {
-                                int test = 0;
-                                test++;
-                            }
                             String args = call(self, args_out, NULL, cd, md, md->member_type == MT_Method && !md->is_static, false, 0, true);
                             sprintf(buf, " (*%s)(%s);\n",
                                 md->str_name->buffer, args->buffer ? args->buffer : "");
@@ -3129,10 +3110,6 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
         ClassDec cd_class = (ClassDec)kv->value;
         ClassDec cd;
         each(cd_class->defined_instances, cd) {
-            if (strcmp(cd->class_name->buffer, "Array<T>") == 0) {
-                int test = 0;
-                test++;
-            }
             if (cd->is_template_dec)
                 continue;
 

@@ -195,6 +195,7 @@ declare(ClassDec, Base)
 
 #define _ClosureClass(D,T,C) _ClassDec(spr,T,C)    \
     override(D,T,C,void,init,(C))                  \
+    var(D,T,C,MemberDec,md)                        \
     var(D,T,C,List,args)
 declare(ClosureClass, ClassDec)
 
