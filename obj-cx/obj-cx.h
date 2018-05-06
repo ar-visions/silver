@@ -18,7 +18,7 @@ enum MemberType {
 
 struct _object_ClassDec;
 struct _object_MemberDec;
-struct _object_ClosureDec;
+struct _object_ClosureInst;
 struct _object_ArrayClass;
 
 typedef struct _Token {
@@ -48,8 +48,8 @@ typedef struct _Token {
     method(D,T,C,void,classdec_info,(C,struct _object_ClassDec *,String)) \
     method(D,T,C,void,pretty_token,(C,int,Token *,String)) \
     method(D,T,C,String,pretty_print,(C,String)) \
-    method(D,T,C,String,closure_out,(C, List, struct _object_ClosureDec *, bool)) \
-    method(D,T,C,struct _object_ClosureDec *,gen_closure,(C,List,Token *,int,Token *,Token *,struct _object_MemberDec *)) \
+    method(D,T,C,String,closure_out,(C, List, struct _object_ClosureInst *, bool)) \
+    method(D,T,C,struct _object_ClosureInst *,gen_closure,(C,List,Token *,int,Token *,Token *,struct _object_MemberDec *)) \
     method(D,T,C,String,forward_type,(C,struct _object_ClassDec *,struct _object_MemberDec *)) \
     method(D,T,C,Base,read_type_at,(C, Token *)) \
     method(D,T,C,String,code_block_out,(C, List, struct _object_ClassDec *, Token *, Token *, Token **, struct _object_MemberDec *, int *)) \
@@ -155,11 +155,11 @@ declare(CX, Base)
     var(D,T,C,Pairs,meta)
 declare(MemberDec, Base)
 
-#define _ClosureDec(D,T,C) _MemberDec(spr,T,C)   \
+#define _ClosureInst(D,T,C) _MemberDec(spr,T,C)   \
     var(D,T,C,C,parent)                     \
     var(D,T,C,Pairs,ref_scope)              \
     var(D,T,C,String,code)
-declare(ClosureDec, MemberDec)
+declare(ClosureInst, MemberDec)
 
 #define _ClassDec(D,T,C) _Base(spr,T,C)    \
     override(D,T,C,void,init,(C))          \
@@ -204,5 +204,6 @@ declare(ClosureClass, ClassDec)
     override(D,T,C,void,init,(C))                \
     var(D,T,C,String,array_type)                 \
     var(D,T,C,Token *,delim_start)               \
-    var(D,T,C,Token *,delim_end)
+    var(D,T,C,Token *,delim_end)                 \
+    var(D,T,C,ClassDec,object_container)
 declare(ArrayClass, ClassDec)

@@ -1,6 +1,11 @@
 module supermod;
 
 class Test : Super {
+
+    Test cast(char *input) {
+        return new Test();
+    }
+
     void method2(int arg, int arg2) {
         int total_closure(int,long) = (int i, long l) {
             printf("body\n");
@@ -19,9 +24,6 @@ class Test : Super {
     } = 2;
     int another;
 
-    Test cast(char *input) {
-        return new Test();
-    }
 
     void method(int arg, int arg2) {
         super.method(arg, arg2);
@@ -66,6 +68,7 @@ class Test : Super {
         String[] ss = new String[];
 
         wchar_t[] test_array = new wchar_t[];
+        test_array[0] = 1;
         return 0;
     }
 }
