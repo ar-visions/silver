@@ -88,6 +88,10 @@ void token_out(Token *t, int sep, String output) {
 
 MemberDec ClassDec_member_lookup(ClassDec self, String name, ClassDec *type) {
     *type = NULL;
+    if (call(name, cmp, "pop") == 0) {
+        int test = 0;
+        test++;
+    }
     for (ClassDec cd = self; cd; cd = cd->parent) {
         MemberDec md = pairs_value(cd->members, name, MemberDec);
         if (md) {
@@ -162,6 +166,7 @@ ClassDec ClassDec_templated_instance(ClassDec self, CX m, Token *t_name, List ar
     }
     call(self->m, classdec_info, cd_inst, t_name->str);
     call(cd_inst, replace_template_tokens, m);
+    call(self->m, resolve_member_types, cd_inst);
     cd_inst->type_args = cp(args);
     
     list_push(self->template_instances, cd_inst);
@@ -1477,6 +1482,10 @@ String CX_class_op_out(CX self, List scope, Token *t,
             if (md_type)
                 *flags |= CODE_FLAG_ALLOC;
             ClosureClass closure = inherits(cd, ClosureClass);
+            if (strcmp(t_member->str->buffer, "pop") == 0) {
+                int test = 0;
+                test++;
+            }
             if (closure) {
                 String fname = new(String);
                 char cbuf[1024];
@@ -3086,6 +3095,10 @@ void CX_resolve_member_types(CX self, ClassDec cd) {
                 if (!first)
                     call(type_str, concat_char, ' ');
                 ClassDec cd_found = pairs_value(self->static_class_map, tt->str, ClassDec);
+                if (call(md->str_name, cmp, "pop") == 0) {
+                    int test = 0;
+                    test++;
+                }
                 if (cd_found) {
                     call(type_str, concat_string, cd_found->struct_object);
                     md->type_cd = cd_found;
