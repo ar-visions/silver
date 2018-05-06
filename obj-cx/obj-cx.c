@@ -9,13 +9,21 @@
 implement(CX)
 implement(ClassDec)
 implement(MemberDec)
-implement(ClosureDec)
+implement(ClosureInst)
 implement(ClosureClass)
 implement(ArrayClass)
 
 bool is_token(Token *t, const char *str) {
     int len = strlen(str);
     return t->length == len && strncmp(t->value, str, len) == 0;
+}
+
+void token_skip(Token *t) {
+    t->skip = true;
+    if (t->punct == "{") {
+        int test = 0;
+        test++;
+    }
 }
 
 Token *token_from_string(String s, enum TokenType tt) {
@@ -26,6 +34,18 @@ Token *token_from_string(String s, enum TokenType tt) {
     t->length = s->length;
     t->str = retain(s);
     return t;
+}
+
+String tokens_combine_string(Token *from, Token *to) {
+    String ret = new(String);
+    for (Token *t = from; t <= to; t++) {
+        if (t->skip)
+            continue;
+        call(ret, concat_string, t->str);
+        if (t != to)
+            call(ret, concat_char, ' ');
+    }
+    return ret;
 }
 
 Token *token_next(Token **t) {
@@ -129,13 +149,16 @@ ClassDec ClassDec_templated_instance(ClassDec self, CX m, Token *t_name, List ar
     cd_inst->meta = self->meta;
     cd_inst->parent = self->parent;
     cd_inst->template_args = new(List);
-    if (self == arr) {
-        cd_inst->type_str = first_arg;
-    }
     String arg;
+    ClassDec cd_found = NULL;
     each(args, arg) {
-        ClassDec cd_found = CX_find_class(arg);
+        cd_found = CX_find_class(arg);
         list_push(cd_inst->template_args, (cd_found ? string("Base") : arg));
+    }
+    if (self == arr) {
+        ArrayClass array = (ArrayClass)cd_inst;
+        array->type_str = first_arg;
+        array->object_container = cd_found;
     }
     call(self->m, classdec_info, cd_inst, t_name->str);
     call(cd_inst, replace_template_tokens, m);
@@ -563,7 +586,8 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                                     comma = true;
                             }
                             if (valid) {
-                                Token *t_end = token_goto(tt, 1);
+                                Token *t_end = tt;
+                                Token *t_start_to = t_start;
                                 while (t_start->type_keyword || t_start->cd) {
                                     t_start = token_goto(t_start, -1);
                                 }
@@ -580,10 +604,14 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                                 closure->md->at_token_count = at_token_count;
                                 closure->md->arg_types = arg_types;
                                 closure->md->arg_types_count = list_count(args);
+                                closure->type_str = tokens_combine_string(t_start, t_start_to);
+                                closure->md->type_str = retain(closure->type_str);
+                                // set type_str
                                 t_start->cd = (ClassDec)closure;
                                 t_start->skip = false;
                                 for (Token *t_scan = t_start + 1; t_scan <= t_end; t_scan++) {
-                                    t_scan->skip = !(t_scan == t_name);
+                                    if (!(t_scan == t_name))
+                                        token_skip(t_scan);
                                 }
                                 // now you have the type start, type end, identifier (optionally) and args
                             } else {
@@ -595,8 +623,8 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                     }
                 }
             }
-
-            if ((t->cd || t->type_keyword) && token_goto(t, 1)->punct == "[") {
+            Token *t_next = t + 1;//token_goto(t, 1);
+            if ((t->cd || t->type_keyword) && t_next->punct == "[") {
                 // String[]
                 if ((t + 2)->type == TT_Identifier) {
                     // pairs!
@@ -611,8 +639,8 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                     Token *t_name = token_from_string(templated_name, TT_Identifier);
                     t->cd = call(array, templated_instance, self, t_name, args);
                     t->use_braces = true;
-                    (t + 1)->skip = true;
-                    (t + 2)->skip = true;
+                    token_skip(t + 1);
+                    token_skip(t + 2);
                 }
             } else if (t->cd && (t + 1)->punct == "<" && t != t->cd->name) {
                 if (!t->cd->template_args) {
@@ -620,14 +648,14 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                     exit(1);
                 }
                 List args = new(List);
-                (t + 1)->skip = true;
+                token_skip(t + 1);
                 t->length += 1;
                 // must be template instance; read until >, merging tokens
                 String a = new(String);
                 for (int ii = i + 2; ii < *n_tokens; ii++) {
                     Token *tt = &tokens[ii];
                     t->length += tt->length;
-                    tt->skip = true;
+                    token_skip(tt);
                     if (tt->punct == ">") { // intentionally dont allow for embedded template instances
                         if (a->length > 0) {
                             list_push(args, a);
@@ -663,8 +691,8 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
             if (cd) {
                 Token *t_start = t - 1;
                 t_start->cd = cd;
-                t->skip = true;
-                (t + 1)->skip = true;
+                token_skip(t);
+                token_skip(t + 1);
                 t->length = total;
             }
         }
@@ -677,6 +705,7 @@ bool CX_read_template_types(CX self, ClassDec cd, Token **pt) {
         return true;
     // read template types
     bool expect_identifier = true;
+    int before = list_count(cd->template_args);
     for (t++; t->value; t++) {
         if (t->skip) continue;
         Token *tname = t;
@@ -694,6 +723,10 @@ bool CX_read_template_types(CX self, ClassDec cd, Token **pt) {
                 if (!cd->template_args)
                     cd->template_args = new(List);
                 list_push(cd->template_args, class_call(String, new_from_bytes, (uint8 *)tname->value, tname->length));
+                if (list_count(cd->template_args) == 2) {
+                    int test = 0;
+                    test++;
+                }
             } else {
                 printf("expected identifier in template expression\n");
                 exit(1);
@@ -896,7 +929,8 @@ ClassDec CX_read_class_from(CX self, Token *t, ClassDec cd_use) {
     Token *t_start = t;
     Token *t_name = t + 1;
     String class_str = class_call(String, new_from_bytes, (uint8 *)t_name->value, t_name->length);
-    ClassDec cd = cd_use ? NULL : pairs_value(self->classes, class_str, ClassDec); // only augment classes within module, so do not search globally
+    ClassDec cd_lookup = pairs_value(self->classes, class_str, ClassDec);
+    ClassDec cd = cd_use ? NULL : cd_lookup; // only augment classes within module, so do not search globally
     if (!cd) {
         if (cd_use) {
             cd = cd_use;
@@ -918,7 +952,15 @@ ClassDec CX_read_class_from(CX self, Token *t, ClassDec cd_use) {
     }
     t++;
     token_next(&t);
-    call(self, read_template_types, cd, &t);
+    if (!cd_use)
+        call(self, read_template_types, cd, &t);
+    else {
+        if (cd_lookup && !cd_use->template_args)
+            cd_use->template_args = retain(cd_lookup->template_args);
+        while (t->value && t->punct != ">")
+            t++;
+        t++;
+    }
     if (cd_use) {
         cd_use->is_template_dec = false;
     }
@@ -1670,7 +1712,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 if (setter_method) {
                     sprintf(buf, "%s %s)", set_str->buffer, code->buffer);
                     call(output, concat_cstring, buf);
-                } else if (tracked) {
+                } else if (tracked && (!delim_code || (array && array->object_container))) {
                     // usually this is going to be something like setting the object to null
                     sprintf(buf, "update_var((base_Base *)&(%s), (base_Base)(%s))", set_str->buffer, code->buffer);
                     call(output, concat_cstring, buf);
@@ -1804,6 +1846,10 @@ String CX_scope_end(CX self, List scope, Token *end_marker) {
             }
         }
         list_pop(scope, Pairs);
+        if (scope->list.count == 0) {
+            int test = 0;
+            test++;
+        }
         call(self, line_directive, end_marker, output);
     }
     return output;
@@ -1911,6 +1957,10 @@ void CX_code_block_end(CX self, List scope, Token *t, int *brace_depth, String o
             }
         } else {
             list_pop(scope, Pairs);
+            if (scope->list.count == 0) {
+                int test = 0;
+                test++;
+            }
         }
     }
 }
@@ -1970,7 +2020,7 @@ void CX_code_return(CX self, List scope, Token *t, Token **t_out, Token **t_afte
     top->user_flags = 1;
 }
 
-ClosureDec CX_gen_closure(CX self, List scope, Token *b_arg_start, int n_arg_tokens, Token *b_start, Token *b_end, MemberDec method) {
+ClosureInst CX_gen_closure(CX self, List scope, Token *b_arg_start, int n_arg_tokens, Token *b_start, Token *b_end, MemberDec method) {
     Pairs ref_scope = new(Pairs);
     bool skip_ident = false;
     // cheap way to gather up scoped references; be sure to avoid sub-closures
@@ -2003,12 +2053,12 @@ ClosureDec CX_gen_closure(CX self, List scope, Token *b_arg_start, int n_arg_tok
     sprintf(buf, "__closure_%d", self->closures->list.count);
 
     // needs a gen_var for the ref_scope, and that needs to be injected on all of the locals (including self, etc)
-    ClosureDec closure_dec = new(ClosureDec);
+    ClosureInst closure_dec = new(ClosureInst);
     closure_dec->str_name = new_string(buf); 
     closure_dec->ref_scope = cp(ref_scope);
     closure_dec->block_start = b_start;
     closure_dec->block_end = b_end;
-    closure_dec->parent = inherits(method, ClosureDec);
+    closure_dec->parent = inherits(method, ClosureInst);
     List new_scope = new(List);
     list_push(new_scope, ref_scope);
     list_push(self->closures, closure_dec);
@@ -2022,7 +2072,7 @@ ClosureDec CX_gen_closure(CX self, List scope, Token *b_arg_start, int n_arg_tok
     return closure_dec;
 }
 
-String CX_closure_out(CX self, List scope, ClosureDec closure_dec, bool assign) {
+String CX_closure_out(CX self, List scope, ClosureInst closure_dec, bool assign) {
     /* implement init function that takes in struct literal and outputs allocated copy, as well as retains all object members */
     char *name = closure_dec->str_name->buffer;
     char buf[1024];
@@ -2144,6 +2194,10 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     NULL, false, type_last, method, brace_depth, &for_block_flags, false);
                 call(output, concat_string, for_block);
                 list_pop(scope, Pairs);
+                if (scope->list.count == 0) {
+                    int test = 0;
+                    test++;
+                }
                 t = block_end;
             }
         } else if (t->keyword == "if" || t->keyword == "while") {
@@ -2207,9 +2261,9 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     if (t_from->punct == "{") {
                         Token *b_start = NULL, *b_end = NULL;
                         call(self, read_block, t_from, &b_start, &b_end);
-                        ClosureDec closure_dec = call(self, gen_closure, scope, token_goto(t, 1), n_arg_tokens, b_start, b_end, method);
-                        if (closure_dec) {
-                            String closure_out = call(self, closure_out, scope, closure_dec, assign);
+                        ClosureInst closure_inst = call(self, gen_closure, scope, token_goto(t, 1), n_arg_tokens, b_start, b_end, method);
+                        if (closure_inst) {
+                            String closure_out = call(self, closure_out, scope, closure_inst, assign);
                             call(output, concat_string, closure_out);
                             *type_last = new_string("Closure");
                             *flags |= CODE_FLAG_ALLOC;
@@ -2272,7 +2326,7 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             bool is_class = false;
             Pairs top = (Pairs)call(scope, last);
 
-            // check for 'Class' in the token
+            // check for 'Class' in the token [todo: move to merge_class_tokens]
             if (target->length > 5 && strcmp(&target->buffer[target->length - 5], "Class") == 0) {
                 String sub = class_call(String, new_from_bytes, (uint8 *)target->buffer, t->length - 5); 
                 cd = pairs_value(self->static_class_map, sub, ClassDec);
@@ -2280,42 +2334,16 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
             } else
                 cd = t->cd;
 
-            Token *tt = t;
-            while (tt->type == TT_Identifier || tt->type == TT_Keyword)
-                tt = token_goto(tt, 1);
-            Base type = NULL;
-            Token *tt_n1 = token_goto(tt, -1);
-            bool has_delim = tt->punct == "[";
-            if (((tt != token_goto(t, 1)) || ((tt_n1->cd || tt_n1->type_keyword) && has_delim)) && tt->type != TT_Keyword) {
-                tt = token_goto(tt, -1);
-                type = call(self, read_type_at, tt);
-                if (type) {
-                    cd = inherits(type, ClassDec);
-                    target = tt->str;
-                    pairs_add(top, target, type);
-                }
-            }
-            if (!inherits(type, ClassDec)) {
-                Token *t_to = t;
-                if (inherits(type, ClosureClass))
-                    t_to--;
-                for (Token *tt = t_start; tt < t_to; tt++) {
-                    if (tt->skip)
-                        continue;
-                    token_out(tt, 0, output);
-                }
-            }
             if (cd) {
                 // check for new/auto keyword before
-                Token *t_start = t;
                 token_next(&t);
-                if ((inherits(type, ArrayClass) && t->punct != "[") || t->type == TT_Identifier) {
+                if (t->type == TT_Identifier) {
                     call(output, concat_string, is_class ? cd->struct_class : cd->struct_object);
                     call(output, concat_char, ' ');
                     // variable declared
                     String str_name = class_call(String, new_from_bytes, (uint8 *)t->value, t->length);
                     target = t->str;
-                    //pairs_add(top, str_name, cd);
+                    pairs_add(top, str_name, cd);
                     String out = call(self, var_op_out, scope, t, cd, target, false, &t,
                         type_last, flags, method, brace_depth, false, false);
                     call(output, concat_string, out);
@@ -2341,7 +2369,14 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     call(self, token_out, t, ' ', output);
                 }
             } else {
-                String type_name = NULL;
+                Base type = NULL;
+                if (t->type == TT_Identifier && !t->cd) {
+                    type = call(self, read_type_at, token_goto(t, -1));
+                    if (type) {
+                        cd = inherits(type, ClassDec);
+                        pairs_add(top, target, type);
+                    }
+                }
                 bool closure_scoped = false;
                 ClassDec cd = call(self, scope_lookup, scope, target, NULL, NULL, (type ? NULL : &closure_scoped));
                 bool found = false;
@@ -2444,99 +2479,11 @@ ArrayClass CX_instance_array_dec(CX self, String arr_type, Token *ahead) {
 }
 
 Base CX_read_type_at(CX self, Token *t) {
-    Token *ahead = token_goto(t, 1);
-    if (ahead->punct != "[" && ahead->punct != "(" && ahead->punct == ";" && !ahead->assign) // ??
-        return NULL;
-    if (!t->type_keyword && (t->type != TT_Identifier && t->keyword != "class" && t->keyword != "this"))
-        return NULL;
-    Token *cur = (t->type_keyword || t->cd) ? t : token_goto(t, -1);
-    Token *t_end = token_goto(cur, 1);
-    int type_keywords = 0;
-    ClassDec cd = NULL;
-    while (cur->type != TT_Punctuator || cur->punct == "*") {
-        if (cur->cd)
-            cd = cur->cd;
-        if (cur->type_keyword)
-            type_keywords++;
-        cur--;
-    }
-    ClassDec class_type = NULL;
-    ClosureClass closure = NULL;
-    cur++;
-    if (cur >= t_end)
-        return NULL;
-    else if ((type_keywords > 0 || cd) && ahead->punct == "(") {
-        closure = new(ClosureClass);
-        CX base = CX_find(string("base"));
-        call(base, classdec_info, (ClassDec)closure, string("Closure"));
-        
-        closure->md = new(MemberDec);
-        closure->md->member_type = MT_Method;
-        closure->md->at_token_count = (int *)malloc(sizeof(int *) * 1024);
-        closure->md->arg_types = (Token **)malloc(sizeof(Token **) * 1024);
-        closure->md->arg_types[0] = t + 2;
-        
-        ahead->skip = true; /* prevent parser getting thrown off from this from looking like a method invokation */
-        int p = 0;
-        Token *t_start = t + 1;
-        int index = 0;
-        Token *t_arg_start = t_start + 1;
-        for (Token *tt = t_start; tt->value; tt++) {
-            bool push = false, br = false;
-            tt->skip = true;
-            if (tt->punct == "(") {
-                ++p;
-            } else if (tt->punct == ")") {
-                if (--p <= 0) {
-                    push = true;
-                    br = true;
-                }
-            } else if (tt->punct == "," && p == 1) {
-                push = true;
-            }
-            if (push) {
-                closure->md->arg_types[++index] = tt + 1;
-                String arg = new(String);
-                for (Token *z = t_arg_start; z < tt; z++) {
-                    token_out(z, 0, arg);
-                }
-                list_push(closure->args, arg);
-                t_arg_start = tt + 1;
-                if (br)
-                    break;
-            }
-        }
-        closure->md->arg_types_count = list_count(closure->args);
-        class_type = (ClassDec)closure;
-    } else if (cur->cd) {
-        return base(cur->cd);
-    } else if ((type_keywords > 0 || cd) && ahead->punct == "[") {
-        class_type = (ClassDec)call(self, instance_array_dec, t->str, ahead);
-    } else if (cd && call(cd->class_name, cmp, "Array<String>") == 0) {
-        class_type = (ClassDec)t->cd;
-    } else if (cd)
-        return base(cd);
-    else if (type_keywords == 0)
-        return NULL;
-    String type_name = new(String);
-    bool first = true;
-    do {
-        if (cur->skip) {
-            cur++;
-            continue;
-        }
-        if (!first)
-            call(type_name, concat_char, ' ');
-        first = false;
-        call(type_name, concat_string, cur->str);
-        cur++;
-    } while (cur < t_end);
-    if (class_type) {
-        class_type->type_str = type_name;
-    }
-    if (closure)
-        closure->md->type_str = type_name;
-    return class_type ? base(class_type) : base(type_name);
+    if (t->cd)
+        return base(t->cd);
+    if (t->type_keyword)
+        return base(t->str);
+    return NULL;
 }
 
 String CX_args_out(CX self, Pairs top, ClassDec cd, MemberDec md, bool inst, bool names, int aout, bool forwards) {
@@ -3432,11 +3379,11 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
     }
     if (list_count(self->closures) > 0) {
         fprintf(file_output, "// ---------- closures ----------\n");
-        ClosureDec closure_dec;
-        each(self->closures, closure_dec) {
+        ClosureInst closure;
+        each(self->closures, closure) {
             KeyValue kv;
-            fprintf(file_output, "struct %s {\n", closure_dec->str_name->buffer);
-            each_pair(closure_dec->ref_scope, kv) {
+            fprintf(file_output, "struct %s {\n", closure->str_name->buffer);
+            each_pair(closure->ref_scope, kv) {
                 String var = (String)kv->key;
                 ClassDec cd = inherits(kv->value, ClassDec);
                 if (cd) {
@@ -3453,18 +3400,18 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
             String pretty = call(self, pretty_print, misc_code);
             fprintf(file_output, "%s", pretty->buffer);
         }
-        each(self->closures, closure_dec) {
+        each(self->closures, closure) {
             fprintf(file_output, "void %s(struct %s *__scope, %s;\n",
-                closure_dec->str_name->buffer,
-                closure_dec->str_name->buffer,
-                closure_dec->str_args->buffer);
+                closure->str_name->buffer,
+                closure->str_name->buffer,
+                closure->str_args->buffer);
         }
-        each(self->closures, closure_dec) {
-            String pretty = call(self, pretty_print, closure_dec->code);
+        each(self->closures, closure) {
+            String pretty = call(self, pretty_print, closure->code);
             fprintf(file_output, "void %s(struct %s *__scope, %s %s\n",
-                closure_dec->str_name->buffer,
-                closure_dec->str_name->buffer,
-                closure_dec->str_args->buffer,
+                closure->str_name->buffer,
+                closure->str_name->buffer,
+                closure->str_args->buffer,
                 pretty->buffer);
         }
     }
