@@ -521,12 +521,14 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
     // also flag tokens as classes with their corresponding ClassDec
     for (int i = 0; i < *n_tokens; i++) {
         Token *t = &tokens[i];
+        Token *t2 = t;
         if (t->skip)
             continue;
-        if ((t->type == TT_Identifier || t->type_keyword) && t <= token_goto(t_last, -3)) {
+        if ((t->type == TT_Identifier || t->type_keyword)) {
             call(self, resolve_token, t);
+            ClassDec cd = t->cd;
             // read type from closure at the beginning
-            if (t->cd || t->type_keyword) {
+            if ((cd || t->type_keyword) && t <= token_goto(t_last, -3)) {
                 // check for punct
                 Token *t_start = t;
                 Token *tt = t + 1;
@@ -547,7 +549,7 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                         tt = token_goto(tt, 1);
                     }
                     Token *t_paren = tt;
-                    if (tt != t_last && tt->punct == "(" && (token_goto(t_start, 1) < t_paren)) {
+                    if (tt != t_last && tt->punct == "(" && (token_goto(t_start, 1) <= t_paren)) {
                         // must be entirely type_keyword or cd
                         int n = call(self, read_expression, tt, NULL, NULL, ")", -1, true);
                         Token *t_arg_first = token_goto(tt, 1);
@@ -598,8 +600,9 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                                 call(base, classdec_info, (ClassDec)closure, string("Closure"));
                                 
                                 closure->args = args;
+                                closure->name = token_from_string(string("Closure"), TT_Identifier);
                                 closure->md = new(MemberDec);
-                                closure->md->str_name = t_name->str;
+                                closure->md->str_name = t_name ? t_name->str : NULL;
                                 closure->md->member_type = MT_Method;
                                 closure->md->at_token_count = at_token_count;
                                 closure->md->arg_types = arg_types;
@@ -613,6 +616,8 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                                     if (!(t_scan == t_name))
                                         token_skip(t_scan);
                                 }
+                                cd = (ClassDec)closure;
+                                t2 = t_end;
                                 // now you have the type start, type end, identifier (optionally) and args
                             } else {
                                 release(args);
@@ -623,13 +628,17 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                     }
                 }
             }
-            Token *t_next = t + 1;//token_goto(t, 1);
-            if ((t->cd || t->type_keyword) && t_next->punct == "[") {
+            Token *t_next = token_goto(t2, 1);
+            if (strcmp(t->str->buffer, "testme3") == 0) {
+                int test = 0;
+                test++;
+            }
+            if ((cd || t->type_keyword) && t_next->punct == "[") {
                 // String[]
-                if ((t + 2)->type == TT_Identifier) {
+                if ((t_next + 1)->type == TT_Identifier) {
                     // pairs!
                 } else {
-                    Token *t_arg = t;
+                    Token *t_arg = cd ? cd->name : t;
                     ClassDec array = CX_find_class(string("Array"));
                     List args = new(List);
                     list_push(args, t_arg->str);
@@ -639,10 +648,10 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                     Token *t_name = token_from_string(templated_name, TT_Identifier);
                     t->cd = call(array, templated_instance, self, t_name, args);
                     t->use_braces = true;
-                    token_skip(t + 1);
-                    token_skip(t + 2);
+                    token_skip(t_next);
+                    token_skip(t_next + 1);
                 }
-            } else if (t->cd && (t + 1)->punct == "<" && t != t->cd->name) {
+            } else if (t->cd && t_next->punct == "<" && t != t->cd->name) {
                 if (!t->cd->template_args) {
                     fprintf(stderr, "class %s does not take template arguments\n", t->cd->class_name->buffer);
                     exit(1);
@@ -679,10 +688,10 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                     }
                 }
                 //release(args);
-            } else if (t->cd && t->cd->template_args && t != t->cd->name) {
+            }/* else if (t->cd && t->cd->template_args && t != t->cd->name) {
                 fprintf(stderr, "class %s requires %d template arguments\n", t->cd->class_name->buffer, list_count(t->cd->template_args));
                 exit(1);
-            }
+            }*/
         } else if (t->punct == "." && i > 0 && (t - 1)->length < 512 && (t + 1)->length < 512) { // < move to resolve!
             int total = (t - 1)->length + 1 + (t + 1)->length;
             memcpy(buf, (t - 1)->value, total);
