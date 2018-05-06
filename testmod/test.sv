@@ -52,7 +52,7 @@ class Test : Super {
         t.value5 = 1;
         printf("value = %d\n", t.value5);
 
-        int testme(long, int)[] test;
+        int testme3(long, int)[] = new int(long,int)[];
 
         int testme(long, int) = (long test, int arg) {
             int ii = 0;
@@ -64,6 +64,10 @@ class Test : Super {
             };
         };
         testme(1, 2);
+        testme3.push(testme);
+
+        int testme4(long, int) = testme3.pop();
+        testme4(3, 4);
 
         String[] ss = new String[];
 
