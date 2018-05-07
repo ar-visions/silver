@@ -25,6 +25,9 @@ class Base {
     long hash() {
         return 0L;
     }
+    int compare(Base o) {
+        return (int)(self == o);
+    }
     Base release() {
         if (!self) {
             return null;

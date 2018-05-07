@@ -1,3 +1,4 @@
+
 class Array<T> {
     T *buffer;
     int alloc_size;
@@ -39,3 +40,28 @@ class Array<T> {
     }
 }
 
+class Pairs<K,V> {
+    K[] keys;
+    V[] values;
+    V push(K key, V value) {
+        long hash = key.hash();
+        for (int i = 0; i < self.keys.count; i++) {
+            K k = keys[i];
+            if (k.hash() == hash) {
+                if (k.compare(key) == 0) {
+                    values[i] = value;
+                    return value;
+                }
+            }
+        }
+        self.keys.push(key);
+        self.values.push(value);
+        return value;
+    }
+    V value_for(K key) {
+        int index = self.keys.index_of(key);
+        if (index)
+            return self.values[index];
+        return 0;
+    }
+}

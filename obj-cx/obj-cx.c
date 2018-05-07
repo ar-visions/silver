@@ -11,7 +11,7 @@ implement(ClassDec)
 implement(MemberDec)
 implement(ClosureInst)
 implement(ClosureClass)
-implement(ArrayClass)
+implement(ContainerClass)
 
 bool is_token(Token *t, const char *str) {
     int len = strlen(str);
@@ -125,6 +125,7 @@ void ClassDec_register_template_user(ClassDec self, List args) {
 ClassDec ClassDec_templated_instance(ClassDec self, CX m, Token *t_name, List args) {
     ClassDec cd;
     String first_arg = (String)call(args, object_at, 0);
+    String second_arg = (String)call(args, object_at, 1);
     each(self->template_instances, cd) {
         String a;
         bool match = true;
@@ -144,7 +145,8 @@ ClassDec ClassDec_templated_instance(ClassDec self, CX m, Token *t_name, List ar
     if (!self->template_instances)
         self->template_instances = new(List);
     ClassDec arr = CX_find_class(string("Array"));
-    ClassDec cd_inst = ((self == arr) ? (ClassDec)new(ArrayClass) : new(ClassDec));
+    ClassDec pairs = CX_find_class(string("Pairs"));
+    ClassDec cd_inst = ((self == arr || self == pairs) ? (ClassDec)new(ContainerClass) : new(ClassDec));
     cd_inst->m = self->m;
     cd_inst->instance_of = self;
     cd_inst->instance_args = retain(args);
@@ -159,10 +161,13 @@ ClassDec ClassDec_templated_instance(ClassDec self, CX m, Token *t_name, List ar
         cd_found = CX_find_class(arg);
         list_push(cd_inst->template_args, (cd_found ? string("Base") : arg));
     }
-    if (self == arr) {
-        ArrayClass array = (ArrayClass)cd_inst;
-        array->type_str = first_arg;
-        array->object_container = cd_found;
+    if (self == arr || self == pairs) {
+        ClassDec cd_0 = CX_find_class(first_arg);
+        ClassDec cd_1 = CX_find_class(second_arg);
+        ContainerClass cc = (ContainerClass)cd_inst;
+        cc->type_str = self == arr ? first_arg : second_arg;
+        cc->key_type_str = self == pairs ? first_arg : NULL;
+        cc->object_container = self == arr ? cd_0 : cd_1;
     }
     call(self->m, classdec_info, cd_inst, t_name->str);
     call(cd_inst, replace_template_tokens, m);
@@ -185,17 +190,18 @@ void ClassDec_replace_template_tokens(ClassDec self, CX caller) {
             pairs_add(p, a, b);
         }
     }
-    // copy all tokens
+    // copy all ORIGINAL tokens
     int n_tokens = 0;
-    for (Token *t = self->instance_of->start; ; t++) {
+    for (Token *t = self->instance_of->start_copy; ; t++) {
         n_tokens++;
-        if (t == self->instance_of->end)
+        if (t == self->instance_of->end_copy)
             break;
     }
-    Token *copy = (Token *)malloc(sizeof(Token) * n_tokens);
-    memcpy(copy, self->instance_of->start, sizeof(Token) * n_tokens);
+    Token *copy = (Token *)malloc(sizeof(Token) * (n_tokens + 1));
+    memcpy(copy, self->instance_of->start_copy, sizeof(Token) * n_tokens);
     self->start = copy;
     self->end = &copy[n_tokens - 1];
+    (self->end + 1)->value = 0;
     for (Token *t = self->start; ; t++) {
         if (t->type == TT_Identifier) {
             String b = pairs_value(p, t->str, String);
@@ -216,11 +222,24 @@ void ClassDec_replace_template_tokens(ClassDec self, CX caller) {
                 t->length = b->length;
                 memcpy((void *)t->value, buf, n + 1);
                 t->str = new_string(b->buffer);
+                if (call(t->str, cmp, "int") == 0) { // set this proper
+                    t->type == TT_Keyword;
+                    t->type_keyword = "int";
+                }
             }
         }
         if (t == self->end)
             break;
     }
+    int offset = 0;
+    for (int i = 0; i < n_tokens; i++) {
+        Token *t = &self->start[i];
+        if (t->punct == "{")
+            break;
+        offset++;
+    }
+    n_tokens -= offset;
+    call(self->m, merge_class_tokens, self->start + offset, &n_tokens);
     call(self->m, read_class_from, copy, self);
 }
 
@@ -640,8 +659,24 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
             }
             if ((cd || t->type_keyword) && t_next->punct == "[") {
                 // String[]
-                if ((t_next + 1)->type == TT_Identifier) {
+                if ((t_next + 1)->punct != "]") {
                     // pairs!
+                    call(self, resolve_token, t_next + 1);
+                    Token *t_key = t_next + 1;
+                    Token *t_value = cd ? cd->name : t;
+                    ClassDec array = CX_find_class(string("Pairs"));
+                    List args = new(List);
+                    list_push(args, t_key->str);
+                    list_push(args, t_value->str);
+                    String templated_name = new(String);
+                    sprintf(buf, "Pairs<%s,%s>", t_key->str->buffer, t_value->str->buffer);
+                    call(templated_name, concat_cstring, buf);
+                    Token *t_name = token_from_string(templated_name, TT_Identifier);
+                    t->cd = call(array, templated_instance, self, t_name, args);
+                    t->use_braces = true;
+                    token_skip(t_next);
+                    token_skip(t_next + 1);
+                    token_skip(t_next + 2);
                 } else {
                     Token *t_arg = cd ? cd->name : t;
                     ClassDec array = CX_find_class(string("Array"));
@@ -903,6 +938,8 @@ CX CX_find(String name) {
 }
 
 ClassDec CX_find_class(String name) {
+    if (!name)
+        return NULL;
     CX m;
     each(modules, m) {
         ClassDec cd = pairs_value(m->classes, name, ClassDec);
@@ -1203,15 +1240,19 @@ ClassDec CX_read_class_from(CX self, Token *t, ClassDec cd_use) {
             printf("expected type (member)\n");
             exit(1);
         }
-        if (md->type_count > 0) {
+        if (md->type_count > 0) { // why is this done in two places?
             md->type_str = new(String);
             bool first = true;
             for (int i = 0; i < md->type_count; i++) {
-                if (md->type[i].skip)
+                Token *tt = &md->type[i];
+                if (tt->skip)
                     continue;
                 if (!first)
                     call(md->type_str, concat_char, ' ');
-                call(md->type_str, concat_chars, md->type[i].value, md->type[i].length);
+                if (tt->cd)
+                    call(md->type_str, concat_string, tt->cd->struct_object);
+                else
+                    call(md->type_str, concat_chars, tt->value, tt->length);
                 first = false;
             }
         }
@@ -1244,6 +1285,16 @@ ClassDec CX_read_class_from(CX self, Token *t, ClassDec cd_use) {
             t += token_count + 1;
     }
     cd->end = t;
+    if (!cd_use) {
+        int tc = 0;
+        for (Token *t = cd->start; t <= cd->end; t++)
+            tc++;
+        cd->start_copy = (Token *)malloc(sizeof(Token) * (tc + 1));
+        memset(cd->start_copy, 0, sizeof(Token) * (tc + 1));
+        memcpy(cd->start_copy, cd->start, tc * sizeof(Token));
+        cd->end_copy = &cd->start_copy[tc - 1];
+        (cd->end_copy + 1)->value = 0;
+    }
     return cd;
 }
 
@@ -1402,8 +1453,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
     bool constructor = token_goto(t, -1)->keyword == "new";
     const char *class_var = cd ? cd->class_var->buffer : NULL;
     token_next(&t);
-    ArrayClass array = inherits(cd, ArrayClass);
-    bool use_braces = (array && constructor);
+    ContainerClass container = inherits(cd, ContainerClass);
+    bool use_braces = (container && constructor);
     if (cd && (t->punct == "(" || use_braces)) {
         if (constructor) {
             *flags |= CODE_FLAG_ALLOC;
@@ -1416,7 +1467,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
             *type_last = cd->class_name;
             String gen_var = NULL;
             String last_set = NULL;
-            if (!array) {
+            if (!container) {
                 for (;;) {
                     int n = call(self, read_expression, t, NULL, NULL, ",)", 0, true);
                     if (n == 0)
@@ -1594,7 +1645,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
         Token *delim_end = NULL;
         // if array & delim, read ahead past delim
 
-        if (array && !md && t->punct == "[") {
+        if (container && !md && t->punct == "[") {
             int delim_code_flags = 0;
             String type_last = NULL;
             Token *t_after = NULL;
@@ -1625,8 +1676,8 @@ String CX_class_op_out(CX self, List scope, Token *t,
             String expected_type;
             if (md) {
                 expected_type = md->type_str;
-            } else if (array) {
-                expected_type = array->type_str;
+            } else if (container) {
+                expected_type = container->type_str;
             }
             bool setter_method = false;
             String type_returned = NULL;
@@ -1730,7 +1781,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 if (setter_method) {
                     sprintf(buf, "%s %s)", set_str->buffer, code->buffer);
                     call(output, concat_cstring, buf);
-                } else if (tracked && (!delim_code || (array && array->object_container))) {
+                } else if (tracked && (!delim_code || (container && container->object_container))) {
                     // usually this is going to be something like setting the object to null
                     sprintf(buf, "update_var((base_Base *)&(%s), (base_Base)(%s))", set_str->buffer, code->buffer);
                     call(output, concat_cstring, buf);
@@ -1771,7 +1822,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
             }
             if (delim_code) {
                 call(output, concat_string, delim_code);
-                *type_last = array->type_str;
+                *type_last = container->type_str;
             }
         } else {
             ClassDec cd_lookup = call(self, scope_lookup, scope, target, NULL, NULL, NULL);
@@ -1784,7 +1835,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
             *t_after = get_t_after(t_member);
             if (delim_code) {
                 call(output, concat_string, delim_code);
-                *type_last = array->type_str;
+                *type_last = container->type_str;
             }
         }
         if (delim_code) {
@@ -2448,54 +2499,6 @@ void CX_token_out(CX self, Token *t, int sep, String output) {
     token_out(t, sep, output);
 }
 
-ArrayClass CX_instance_array_dec(CX self, String arr_type, Token *ahead) {
-    char buf[1024];
-    ClassDec a = CX_find_class(string("Array"));
-    ClassDec cd_item = CX_find_class(arr_type);
-    String template_param = arr_type;
-    if (cd_item)
-        template_param = string("Base");
-    sprintf(buf, "Array<%s>", template_param->buffer);
-    String class_name = new_string(buf);
-    List template_use = new(List);
-    list_push(template_use, arr_type);
-    call(a, register_template_user, template_use);
-
-    ArrayClass array = new(ArrayClass);
-    array->template_args = new(List);
-    list_push(array->template_args, template_param);
-    array->type_args = new(List);
-    list_push(array->type_args, arr_type);
-    CX m = CX_find(string("base"));
-    call(m, classdec_info, (ClassDec)array, class_name);
-    array->parent = (ArrayClass)a->parent;
-    array->array_type = arr_type;
-    array->members = retain(a->members);
-    array->delim_start = ahead;
-    pairs_add(self->static_class_map, class_name, array);
-    if (ahead) {
-        int d = 0;
-        for (Token *tt = ahead; tt->value; tt++) {
-            if (tt->skip)
-                continue;
-            bool push = false, br = false;
-            if (tt->punct == "[") {
-                ++d;
-            } else if (tt->punct == "]") {
-                if (--d == 0) {
-                    array->delim_end = tt;
-                    break;
-                }
-            }
-        }
-        if (!array->delim_end) {
-            fprintf(stderr, "expected delimeter end ']'\n");
-            exit(1);
-        }
-    }
-    return array;
-}
-
 Base CX_read_type_at(CX self, Token *t) {
     if (t->cd)
         return base(t->cd);
@@ -3094,8 +3097,8 @@ void CX_resolve_member_types(CX self, ClassDec cd) {
                     continue;
                 if (!first)
                     call(type_str, concat_char, ' ');
-                ClassDec cd_found = pairs_value(self->static_class_map, tt->str, ClassDec);
-                if (call(md->str_name, cmp, "pop") == 0) {
+                ClassDec cd_found = tt->cd;
+                if (call(md->str_name, cmp, "values") == 0) {
                     int test = 0;
                     test++;
                 }
@@ -3225,6 +3228,10 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                 MemberDec md = (MemberDec)mkv->value;
                 ClassDec super_mode = !md->is_static ? cd : NULL;
 
+                if (md->str_name && call(md->str_name, cmp, "values") == 0) {
+                    int test = 0;
+                    test++;
+                }
                 if (!md->block_start) {
                     // for normal var declarations, output stub for getter / setter
                     if (md->member_type == MT_Prop && !md->is_private) {
@@ -3511,7 +3518,7 @@ bool CX_read_modules(CX self) {
     return true;
 }
 
-void ArrayClass_init(ArrayClass self) {
+void ContainerClass_init(ContainerClass self) {
 }
 
 void ClosureClass_init(ClosureClass self) {
@@ -3708,6 +3715,8 @@ bool CX_output(CX self, const char *location) {
 
     call(self, define_template_users);
     call(self, emit_module_statics, NULL, false);
+    call(self, merge_class_tokens, self->tokens, &self->n_tokens);
+
     call(self, declare_classes, module_header);
 
     if (call(self->name, cmp, "base") == 0) {
@@ -3731,7 +3740,7 @@ bool CX_output(CX self, const char *location) {
         fprintf(module_code, "#include \"%s.h\"\n", include->buffer);
     }
     fprintf(module_code, "\n");
-    call(self, merge_class_tokens, self->tokens, &self->n_tokens);
+    
     call(self, emit_module_statics, module_code, true);
     call(self, emit_implementation, module_code);
     call(self, define_module_constructor, module_code);
