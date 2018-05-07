@@ -2,6 +2,8 @@ module supermod;
 
 class Test : Super {
 
+    int[] silly;
+    
     Test cast(char *input) {
         return new Test();
     }
@@ -73,6 +75,10 @@ class Test : Super {
 
         wchar_t[] test_array = new wchar_t[];
         test_array[0] = 1;
+
+        int[String] test_pairs = new int[String];
+
+
         return 0;
     }
 }

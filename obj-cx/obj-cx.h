@@ -19,7 +19,7 @@ enum MemberType {
 struct _object_ClassDec;
 struct _object_MemberDec;
 struct _object_ClosureInst;
-struct _object_ArrayClass;
+struct _object_ContainerClass;
 
 typedef struct _Token {
     enum TokenType type;
@@ -94,7 +94,6 @@ typedef struct _Token {
     method(D,T,C,void,code_return,(C, List, Token *, Token **, Token **, struct _object_MemberDec *, String *, int *, String)) \
     method(D,T,C,C,find,(String))          \
     method(D,T,C,void,define_template_users,(C)) \
-    method(D,T,C,struct _object_ArrayClass *,instance_array_dec,(C, String, Token *)) \
     method(D,T,C,struct _object_ClassDec *,read_class_from,(C, Token *, struct _object_ClassDec *)) \
     method(D,T,C,void,resolve_token,(C, Token *)) \
     var(D,T,C,Pairs,referenced_templates)  \
@@ -178,6 +177,8 @@ declare(ClosureInst, MemberDec)
     var(D,T,C,Pairs,effective)             \
     var(D,T,C,Token *,start)               \
     var(D,T,C,Token *,end)                 \
+    var(D,T,C,Token *,start_copy)          \
+    var(D,T,C,Token *,end_copy)            \
     var(D,T,C,Token *,name)                \
     var(D,T,C,String,type_str)             \
     var(D,T,C,String,class_name)           \
@@ -200,10 +201,10 @@ declare(ClassDec, Base)
     var(D,T,C,List,args)
 declare(ClosureClass, ClassDec)
 
-#define _ArrayClass(D,T,C) _ClassDec(spr,T,C)    \
+#define _ContainerClass(D,T,C) _ClassDec(spr,T,C)    \
     override(D,T,C,void,init,(C))                \
-    var(D,T,C,String,array_type)                 \
+    var(D,T,C,String,key_type_str)               \
     var(D,T,C,Token *,delim_start)               \
     var(D,T,C,Token *,delim_end)                 \
     var(D,T,C,ClassDec,object_container)
-declare(ArrayClass, ClassDec)
+declare(ContainerClass, ClassDec)
