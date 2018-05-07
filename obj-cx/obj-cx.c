@@ -20,10 +20,6 @@ bool is_token(Token *t, const char *str) {
 
 void token_skip(Token *t) {
     t->skip = true;
-    if (t->punct == "{") {
-        int test = 0;
-        test++;
-    }
 }
 
 Token *token_from_string(String s, enum TokenType tt) {
@@ -88,10 +84,6 @@ void token_out(Token *t, int sep, String output) {
 
 MemberDec ClassDec_member_lookup(ClassDec self, String name, ClassDec *type) {
     *type = NULL;
-    if (call(name, cmp, "pop") == 0) {
-        int test = 0;
-        test++;
-    }
     for (ClassDec cd = self; cd; cd = cd->parent) {
         MemberDec md = pairs_value(cd->members, name, MemberDec);
         if (md) {
@@ -593,7 +585,7 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                                 if (!c_arg)
                                     c_arg = tt;
                                 if (!(tt->type_keyword || tt->cd)) {
-                                    if (!comma && tt->punct != ",") {
+                                    if (!comma || tt->punct != ",") {
                                         valid = false;
                                         break;
                                     }
@@ -653,10 +645,6 @@ void CX_merge_class_tokens(CX self, Token *tokens, int *n_tokens) {
                 }
             }
             Token *t_next = token_goto(t2, 1);
-            if (strcmp(t->str->buffer, "testme3") == 0) {
-                int test = 0;
-                test++;
-            }
             if ((cd || t->type_keyword) && t_next->punct == "[") {
                 // String[]
                 if ((t_next + 1)->punct != "]") {
@@ -772,10 +760,6 @@ bool CX_read_template_types(CX self, ClassDec cd, Token **pt) {
                 if (!cd->template_args)
                     cd->template_args = new(List);
                 list_push(cd->template_args, class_call(String, new_from_bytes, (uint8 *)tname->value, tname->length));
-                if (list_count(cd->template_args) == 2) {
-                    int test = 0;
-                    test++;
-                }
             } else {
                 printf("expected identifier in template expression\n");
                 exit(1);
@@ -1058,6 +1042,7 @@ ClassDec CX_read_class_from(CX self, Token *t, ClassDec cd_use) {
         }
         Token *block_start = NULL, *block_end = NULL;
         int token_count = call(self, read_expression, t, &block_start, &block_end, "{;),", 0, false);
+
         if (token_count == 0) {
             if (md->is_static || md->is_private) {
                 fprintf(stderr, "expected expression\n");
@@ -1070,16 +1055,17 @@ ClassDec CX_read_class_from(CX self, Token *t, ClassDec cd_use) {
         bool fail_if_prop = false;
         if (!block_end) {
             for (int e = 0; e < token_count; e++) {
-                if (t[e].punct == "=") {
-                    equals = &t[e]; // set t_new_last here maybe
+                Token *te = token_goto(t, e);
+                if (te->punct == "=") {
+                    equals = te; // set t_new_last here maybe
                     break;
                 }
             }
         } else
             fail_if_prop = true;
-        Token *t_last = &t[token_count - 1];
+        Token *t_last = token_goto(t, token_count - 1);//was: &t[token_count - 1];
         if (t[token_count].punct == ")") {
-            t_last++;
+            t_last = token_goto(t_last, 1);
             token_count++;
         }
         Token *t_new_last = t_last;
@@ -1282,7 +1268,7 @@ ClassDec CX_read_class_from(CX self, Token *t, ClassDec cd_use) {
                 }
             }
         } else
-            t += token_count + 1;
+            t = token_goto(t, token_count + 1);
     }
     cd->end = t;
     if (!cd_use) {
@@ -1533,10 +1519,6 @@ String CX_class_op_out(CX self, List scope, Token *t,
             if (md_type)
                 *flags |= CODE_FLAG_ALLOC;
             ClosureClass closure = inherits(cd, ClosureClass);
-            if (strcmp(t_member->str->buffer, "pop") == 0) {
-                int test = 0;
-                test++;
-            }
             if (closure) {
                 String fname = new(String);
                 char cbuf[1024];
@@ -1915,10 +1897,6 @@ String CX_scope_end(CX self, List scope, Token *end_marker) {
             }
         }
         list_pop(scope, Pairs);
-        if (scope->list.count == 0) {
-            int test = 0;
-            test++;
-        }
         call(self, line_directive, end_marker, output);
     }
     return output;
@@ -2026,10 +2004,6 @@ void CX_code_block_end(CX self, List scope, Token *t, int *brace_depth, String o
             }
         } else {
             list_pop(scope, Pairs);
-            if (scope->list.count == 0) {
-                int test = 0;
-                test++;
-            }
         }
     }
 }
@@ -2263,10 +2237,6 @@ String CX_code_out(CX self, List scope, Token *method_start, Token *method_end, 
                     NULL, false, type_last, method, brace_depth, &for_block_flags, false);
                 call(output, concat_string, for_block);
                 list_pop(scope, Pairs);
-                if (scope->list.count == 0) {
-                    int test = 0;
-                    test++;
-                }
                 t = block_end;
             }
         } else if (t->keyword == "if" || t->keyword == "while") {
@@ -3098,10 +3068,6 @@ void CX_resolve_member_types(CX self, ClassDec cd) {
                 if (!first)
                     call(type_str, concat_char, ' ');
                 ClassDec cd_found = tt->cd;
-                if (call(md->str_name, cmp, "values") == 0) {
-                    int test = 0;
-                    test++;
-                }
                 if (cd_found) {
                     call(type_str, concat_string, cd_found->struct_object);
                     md->type_cd = cd_found;
@@ -3228,10 +3194,6 @@ bool CX_emit_implementation(CX self, FILE *file_output) {
                 MemberDec md = (MemberDec)mkv->value;
                 ClassDec super_mode = !md->is_static ? cd : NULL;
 
-                if (md->str_name && call(md->str_name, cmp, "values") == 0) {
-                    int test = 0;
-                    test++;
-                }
                 if (!md->block_start) {
                     // for normal var declarations, output stub for getter / setter
                     if (md->member_type == MT_Prop && !md->is_private) {
