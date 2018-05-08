@@ -178,9 +178,13 @@ void ClassDec_replace_template_tokens(ClassDec self, CX caller) {
     int index = 0;
     String a, b;
     each(self->instance_of->template_args, a) {
+        int index_2 = 0;
         each(self->instance_args, b) {
-            pairs_add(p, a, b);
+            if (index_2 == index)
+                pairs_add(p, a, b);
+            index_2++;
         }
+        index++;
     }
     // copy all ORIGINAL tokens
     int n_tokens = 0;
@@ -198,10 +202,6 @@ void ClassDec_replace_template_tokens(ClassDec self, CX caller) {
         if (t->type == TT_Identifier) {
             String b = pairs_value(p, t->str, String);
             if (b) {
-                ClassDec cd_lookup = pairs_value(caller->static_class_map, b, ClassDec);
-                if (cd_lookup) {
-                    b = cd_lookup->struct_object;
-                }
                 char buf[1024];
                 int n = b->length;
                 sprintf(buf, "%s", b->buffer);
@@ -1425,6 +1425,11 @@ String CX_class_op_out(CX self, List scope, Token *t,
     Token *t_member = t;
     MemberDec md = NULL;
     ClassDec cd_last = NULL;
+
+    if (call(t->str, cmp, "keys") == 0) {
+        int test = 0;
+        test++;
+    }
     
     if (call(target, cmp, "class") == 0)
         cd = CX_find_class(string("Class"));
@@ -1625,22 +1630,30 @@ String CX_class_op_out(CX self, List scope, Token *t,
         String delim_code = NULL;
         Token *delim_start = NULL;
         Token *delim_end = NULL;
-        // if array & delim, read ahead past delim
+        bool has_delim = t->punct == "[";
+        bool delim_array = false;
 
-        if (container && !md && t->punct == "[") {
+        // array container only; read delim and inject buffer->
+        if (container && has_delim) {
             int delim_code_flags = 0;
-            String type_last = NULL;
+            String type_delim = NULL;
             Token *t_after = NULL;
             delim_start = t;
             delim_end = t;
             while (delim_end->punct != "]")
                 delim_end++;
             String code = call(self, code_out, scope, delim_start + 1, delim_end - 1, &t_after,
-                NULL, false, &type_last, method, brace_depth, &delim_code_flags, false);
-            delim_code = new(String);
-            sprintf(buf, "->buffer[%s]", code->buffer);
-            call(delim_code, concat_cstring, buf);
+                NULL, false, &type_delim, method, brace_depth, &delim_code_flags, false);
+            if (container->key_type_str) {
+                delim_code = code;
+            } else {
+                delim_code = new(String);
+                sprintf(buf, "->buffer[%s]", code->buffer);
+                call(delim_code, concat_cstring, buf);
+                delim_array = true;
+            }
             t = delim_end + 1; // type_last needs to be set to the element type
+            *type_last = container->type_str;
         }
 
         if (t->assign) {
@@ -1682,7 +1695,12 @@ String CX_class_op_out(CX self, List scope, Token *t,
                     call(set_str, concat_cstring, buf);
                 }
             } else {
-                if (md) {
+                if (has_delim && container && container->key_type_str) {
+                    // invoke pairs push 
+                    sprintf(buf, "%s->push(%s%s, %s, ", cd->class_var->buffer,
+                        closure_scoped ? "__scope->" : "", target->buffer, delim_code->buffer);
+                    call(set_str, concat_cstring, buf);
+                } else if (md) {
                     // set object var
                     if (is_instance) {
                         if (closure_scoped)
@@ -1702,13 +1720,19 @@ String CX_class_op_out(CX self, List scope, Token *t,
                         call(set_str, concat_cstring, "__scope->");
                     call(self, token_out, t_member, 0, set_str);
                 }
-                if (delim_code)
+                if (delim_array)
                     call(set_str, concat_string, delim_code);
             }
             String cast = NULL;
             bool check_only = false;
             bool tracked = !md && call(self, is_tracking, sc, target, &check_only);
             bool possible_alloc = ((assign_code_flags & CODE_FLAG_ALLOC) != 0) && (!md || !md->is_weak);
+
+            if (strcmp(target->buffer, "test_pairs2") == 0) {
+                int test = 0;
+                test++;
+            }
+
             if (type_returned) {
                 ClassDec cd_returned = pairs_value(self->static_class_map, type_returned, ClassDec);
                 ClassDec cd_expected = pairs_value(self->static_class_map, expected_type, ClassDec);
@@ -1725,24 +1749,35 @@ String CX_class_op_out(CX self, List scope, Token *t,
                         sprintf(buf, "%s %s)", set_str->buffer, code->buffer);
                     }
                     call(output, concat_cstring, buf);
+                } else if (has_delim && container && container->key_type_str) {
+                    if (cast)
+                        sprintf(buf, "%s (%s)%s)", set_str->buffer, cast->buffer, code->buffer);
+                    else
+                        sprintf(buf, "%s %s)", set_str->buffer, code->buffer);
+                    call(output, concat_cstring, buf);
+                    *flags |= CODE_FLAG_ALLOC;
                 } else if (!tracked && possible_alloc) {
+                    if (strcmp(target->buffer, "sv") == 0) {
+                        int test = 0;
+                        test++;
+                    }
                     call(self, start_tracking, scope, target, false);
                     if (cast)
-                        sprintf(buf, "%s = (%s)(%s->retain(%s))", set_str->buffer, cast->buffer,
+                        sprintf(buf, "%s %s (%s)(%s->retain(%s))", set_str->buffer, t_assign->str->buffer, cast->buffer,
                             cd_returned->class_name_c->buffer, code->buffer);
                     else {
                         // let compiler warn or error
-                        sprintf(buf, "%s = (%s->retain(%s))", set_str->buffer,
+                        sprintf(buf, "%s %s (%s->retain(%s))", set_str->buffer, t_assign->str->buffer, 
                             cd_returned->class_name_c->buffer, code->buffer);
                     }
                     call(output, concat_cstring, buf);
                 } else if (!tracked) {
                     if (cast)
-                        sprintf(buf, "%s = (%s)(%s)", set_str->buffer, cast->buffer,
+                        sprintf(buf, "%s %s (%s)(%s)", set_str->buffer, cast->buffer, t_assign->str->buffer, 
                             code->buffer);
                     else {
                         // let compiler warn or error
-                        sprintf(buf, "%s = (%s)", set_str->buffer,
+                        sprintf(buf, "%s %s (%s)", set_str->buffer, t_assign->str->buffer, 
                             code->buffer);
                     }
                     call(output, concat_cstring, buf);
@@ -1763,6 +1798,10 @@ String CX_class_op_out(CX self, List scope, Token *t,
                 if (setter_method) {
                     sprintf(buf, "%s %s)", set_str->buffer, code->buffer);
                     call(output, concat_cstring, buf);
+                } else if (has_delim && container && container->key_type_str) {
+                    sprintf(buf, "%s %s)", set_str->buffer, code->buffer);
+                    call(output, concat_cstring, buf);
+                    *flags |= CODE_FLAG_ALLOC;
                 } else if (tracked && (!delim_code || (container && container->object_container))) {
                     // usually this is going to be something like setting the object to null
                     sprintf(buf, "update_var((base_Base *)&(%s), (base_Base)(%s))", set_str->buffer, code->buffer);
