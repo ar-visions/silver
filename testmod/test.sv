@@ -1,7 +1,6 @@
 module supermod;
 
 class Test : Super {
-
     int[] silly;
     
     Test cast(char *input) {
@@ -25,7 +24,6 @@ class Test : Super {
         }
     } = 2;
     int another;
-
 
     void method(int arg, int arg2) {
         super.method(arg, arg2);
@@ -77,8 +75,11 @@ class Test : Super {
         test_array[0] = 1;
 
         int[String] test_pairs = new int[String];
-
-
+        String s = (String)"Hi";
+        test_pairs[s] = 1;
+    
+        String[int] test_pairs2 = new String[int];
+        test_pairs2[10] = s;
         return 0;
     }
 }

@@ -46,10 +46,10 @@ class Pairs<K,V> {
     V push(K key, V value) {
         long hash = key.hash();
         for (int i = 0; i < self.keys.count; i++) {
-            K k = keys[i];
+            K k = self.keys[i];
             if (k.hash() == hash) {
                 if (k.compare(key) == 0) {
-                    values[i] = value;
+                    self.values[i] = value;
                     return value;
                 }
             }
