@@ -1367,6 +1367,7 @@ bool CX_is_tracking(CX self, Pairs top, String var, bool *check_only) {
     return false;
 }
 
+/*
 String CX_gen_var(CX self, List scope, ClassDec cd, bool hidden) {
     Pairs top = (Pairs)call(scope, last);
     char buf[64];
@@ -1376,16 +1377,13 @@ String CX_gen_var(CX self, List scope, ClassDec cd, bool hidden) {
     if (!hidden)
         call(self, start_tracking, scope, ret, true);
     return ret;
-}
+}*/
 
 String CX_var_gen_out(CX self, List scope, ClassDec cd, String code) {
     char buf[1024];
     String output = new(String);
-    String gen_var = call(self, gen_var, scope, cd, false);
-    sprintf(buf, "(%s = ", gen_var->buffer);
+    sprintf(buf, "((%s)arc_push(%s, false))", cd->class_name_c->buffer, code->buffer);
     call(output, concat_cstring, buf);
-    call(output, concat_string, code);
-    call(output, concat_char, ')');
     return output;
 }
 
@@ -1763,12 +1761,14 @@ String CX_class_op_out(CX self, List scope, Token *t,
                     }
                     call(self, start_tracking, scope, target, false);
                     if (cast)
-                        sprintf(buf, "%s %s (%s)(%s->retain(%s))", set_str->buffer, t_assign->str->buffer, cast->buffer,
-                            cd_returned->class_name_c->buffer, code->buffer);
+                        //sprintf(buf, "%s %s (%s)(%s->retain(%s))", set_str->buffer, t_assign->str->buffer, cast->buffer,
+                        //    cd_returned->class_name_c->buffer, code->buffer);
+                        sprintf(buf, "(%s)arc_push((base_Base)(%s) = (base_Base)(%s), true)", cast->buffer, set_str->buffer, code->buffer);
                     else {
                         // let compiler warn or error
-                        sprintf(buf, "%s %s (%s->retain(%s))", set_str->buffer, t_assign->str->buffer, 
-                            cd_returned->class_name_c->buffer, code->buffer);
+                        //sprintf(buf, "%s %s (%s->retain(%s))", set_str->buffer, t_assign->str->buffer, 
+                        //    cd_returned->class_name_c->buffer, code->buffer);
+                        sprintf(buf, "arc_push((base_Base)(%s) = (base_Base)(%s), true)", set_str->buffer, code->buffer);
                     }
                     call(output, concat_cstring, buf);
                 } else if (!tracked) {
@@ -1787,7 +1787,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                         exit(1);
                     }
                     if (cast)
-                        sprintf(buf, "(%s)update_var((base_Base *)&(%s), (base_Base)(%s))", cast->buffer, set_str->buffer, code->buffer);
+                        sprintf(buf, "(%s)arc_update((base_Base *)&(%s), (base_Base)(%s))", cast->buffer, set_str->buffer, code->buffer);
                     else {
                         fprintf(stderr, "Invalid object assignment\n");
                         exit(1);
@@ -1804,7 +1804,7 @@ String CX_class_op_out(CX self, List scope, Token *t,
                     *flags |= CODE_FLAG_ALLOC;
                 } else if (tracked && (!delim_code || (container && container->object_container))) {
                     // usually this is going to be something like setting the object to null
-                    sprintf(buf, "update_var((base_Base *)&(%s), (base_Base)(%s))", set_str->buffer, code->buffer);
+                    sprintf(buf, "arc_update((base_Base *)&(%s), (base_Base)(%s))", set_str->buffer, code->buffer);
                     call(output, concat_cstring, buf);
                 } else {
                     call(output, concat_string, set_str);
@@ -3719,9 +3719,9 @@ bool CX_output(CX self, const char *location) {
     call(self, merge_class_tokens, self->tokens, &self->n_tokens);
 
     call(self, declare_classes, module_header);
-
+    /*
     if (call(self->name, cmp, "base") == 0) {
-        fprintf(module_header, "\nstatic inline base_Base update_var(base_Base *var, base_Base value) {\n");
+        fprintf(module_header, "\nstatic inline base_Base arc_update(base_Base *var, base_Base value) {\n");
         fprintf(module_header, "\tbase_Base before = *var;\n");
         fprintf(module_header, "\t*var = value;\n");
         fprintf(module_header, "\tif (value)\n");
@@ -3730,7 +3730,7 @@ bool CX_output(CX self, const char *location) {
         fprintf(module_header, "\t\tbefore->cl->release(before);\n");
         fprintf(module_header, "\treturn value;\n");
         fprintf(module_header, "}\n");
-    }
+    }*/
     fprintf(module_header, "#endif\n");
     fclose(module_header);
 

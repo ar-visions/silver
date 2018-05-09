@@ -1,5 +1,6 @@
 include base;
 private include module_loader;
+private include arc;
 
 class Base {
     weak Class cl;

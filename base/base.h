@@ -131,4 +131,8 @@ static inline struct _base_Base *set_object(struct _base_Base *obj, Setter_objec
     return obj;
 }
 
+struct _base_Base *arc_push(struct _base_Base o, bool retain);
+void arc_release(int from);
+struct _base_Base *arc_update(struct _base_Base **ptr, struct _base_Base *value);
+
 #endif

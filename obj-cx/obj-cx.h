@@ -81,7 +81,6 @@ typedef struct _Token {
     method(D,T,C,bool,emit_module_statics,(C, FILE *, bool)) \
     method(D,T,C,String,inheritance_cast,(C, struct _object_ClassDec *, struct _object_ClassDec *)) \
     method(D,T,C,String,casting_name,(C, struct _object_ClassDec *, String, String)) \
-    method(D,T,C,String,gen_var,(C, List, struct _object_ClassDec *, bool)) \
     method(D,T,C,String,start_tracking,(C, List, String, bool)) \
     method(D,T,C,String,scope_end,(C, List, Token *)) \
     method(D,T,C,int,read_block,(C,Token *,Token **,Token **)) \
