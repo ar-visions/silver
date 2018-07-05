@@ -15,4 +15,3 @@ target_include_directories (obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 if(UNIX)
     target_link_libraries(obj m)
 endif()
-

@@ -9,4 +9,5 @@ if(MSVC)
     add_definitions(-DNOMINMAX -D_CRT_SECURE_NO_WARNINGS)
 endif()
 
-target_link_libraries (obj-test LINK_PUBLIC obj-math)
+target_link_libraries (obj-test LINK_PUBLIC obj)
+target_include_directories (obj-test PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

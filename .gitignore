@@ -3,17 +3,6 @@ Makefile
 cmake_install.cmake
 CMakeFiles
 CMakeCache.txt
-obj/CMakeFiles
-obj/CMakeCache.txt
-obj/cmake_install.cmake
-obj/libobj.a
-obj-test/CMakeFiles
-obj-test/CMakeCache.txt
-obj-test/cmake_install.cmake
-obj-test/obj-test
-obj-cx/obj-cx
-base/base
-testobj/testobj
 **/build
 **/module.c
 **/module.h
@@ -22,6 +11,7 @@ testobj/testobj
 *.vcxproj
 *.filters
 testmod/testmod
+obj-test/obj-test
 *.db
 .vs/LIBOBJ/v15/.suo
 *.sln
@@ -30,7 +20,7 @@ testmod/testmod
 *.pdb
 *.exe
 *.ilk
-obj-test/Debug/.vs/obj-test/v15/.suo
+Debug/.vs/obj-test/v15/.suo
 *.log
 *.lib
 *.obj

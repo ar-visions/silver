@@ -1,6 +1,4 @@
 #include <obj/obj.h>
-#include <obj-math/math.h>
-//#include <obj-ui/ui.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -10,7 +8,6 @@
 
 int main() {
     class_init();
-    Vec2 v2 = vec2(1,2);
     List test_list = new(List);
     Boolean meta = prop_meta(test_list, "min_block_size", "test", Boolean);
     print(test_list, "list meta = %p", meta);
@@ -40,31 +37,5 @@ int main() {
     each(strings_list, str) {
         print(str, "str = %p", str);
     }
-
-    String json = call(v2, to_json);
-    printf("json = %s\n", json->buffer);
-
-    Vec2 v2_f = from_json(Vec2, json);
-
-    String json_2 = call(v2_f, to_json);
-    printf("json_2 = %s\n", json_2->buffer);
-
-    List list = new(List);
-    for (int ii = 0; ii < 70000; ii++) {
-        for (int i = 0; i < 1; i++) {
-            String test = string("test!");
-            call(list, push, (Base)test);
-        }
-        /*for (int i = 0; i < 1000; i++) {
-            int rem = randnum(0, list->list.count - 1);
-            Base item = call(list, object_at, rem);
-            if (!item) {
-                printf("shouldnt happen\n");
-                exit(1);
-            }
-            call(list, remove, item);
-        }*/
-    }
-    printf("list block count: %d\n", list->list.block_count);
     return 0;
 }
