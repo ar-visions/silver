@@ -433,7 +433,7 @@ struct _Class {
 #define object_auto(O)          (autorelease(object_new(O)))
 #define free_ptr(p)             if (p) free(p); p = NULL;
 #ifndef clamp
-#define clamp(V,L,H)            (min(H,max(L,V)))
+#define clamp(V,L,H)            (min((H),max((L),(V))))
 #endif
 #ifndef sqr
 #define sqr(v)                  ((v) * (v))
