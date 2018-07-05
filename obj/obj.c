@@ -60,9 +60,24 @@ init_call call_inits(Base o, class_Base c, init_call *pf) {
     return *pf;
 }
 
+typedef void (*free_call)(Base);
+free_call call_frees(Base o, class_Base c, free_call *pf) {
+    if (!c)
+        return *pf;
+    if (c->free != *pf) {
+        free_call f = (c->parent != c) ? call_frees(o, c->parent, pf) : *pf;
+        if (c->free != f) {
+            c->free(o);
+            *pf = c->free;
+            return c->free;
+        }
+    }
+    return *pf;
+}
+
 Base new_obj(class_Base c, size_t extra) {
     size_t alloc_size = c->obj_size + extra;
-    Base self = (Base)alloc_bytes(alloc_size);
+    Base self = (Base)c->alloc(alloc_size);
     self->refs = 1;
     self->alloc_size = alloc_size;
     self->cl = (class_Base const)c;
@@ -75,7 +90,12 @@ Base new_obj(class_Base c, size_t extra) {
 }
 
 void free_obj(Base o) {
-    call(o, free);
+    class_Base c = o->cl;
+    if (c->free != Base_free) {
+        free_call f = NULL;
+        call_frees(o, c, &f);
+    }
+    o->cl->dealloc(o);
 }
 
 static bool _class_assemble(Class c) {
