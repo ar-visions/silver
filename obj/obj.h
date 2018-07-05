@@ -59,8 +59,6 @@
         static void f(void)
 #endif
 
-#define alloc(T) ((T *)alloc_bytes(sizeof(T)))
-
 struct _object_Base;
 
 typedef struct _Class *Class;
@@ -349,7 +347,7 @@ struct _Class {
     struct _class_##C;                                          \
     class_##C C##_cl;                                           \
     global_construct(_##C##_def) {                              \
-        class_##C c = C##_cl = alloc(struct _class_##C);        \
+        class_##C c = C##_cl = calloc(1,sizeof(struct _class_##C)); \
         c->name = #C;                                           \
         c->obj_size = sizeof(struct _object_##C);               \
         c->super_name = C##_super_class;                        \

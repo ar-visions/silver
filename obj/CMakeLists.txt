@@ -15,3 +15,12 @@ target_include_directories (obj PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 if(UNIX)
     target_link_libraries(obj m)
 endif()
+
+file(GLOB src "*.c")
+
+file(GLOB include_files "*.h")
+
+foreach ( file ${include_files} )
+    get_filename_component( name ${file} NAME )
+    install( FILES ${file} DESTINATION include/obj )
+endforeach()

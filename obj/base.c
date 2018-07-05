@@ -27,6 +27,14 @@ bool read_past_args(char *in, int *index) {
     return false;
 }
 
+void *Base_alloc(size_t size) {
+    return calloc(1, size);
+}
+
+void Base_dealloc(void *ptr) {
+    free(ptr);
+}
+
 void Base_class_init(Class c) {
     class_Base cbase = (class_Base)c;
     if (!cbase->meta)
@@ -593,7 +601,7 @@ Base Base_property_meta(Base self, const char *name, const char *meta) {
 }
 
 Base Base_copy(Base self) {
-    Base c = (Base)malloc(self->alloc_size);
+    Base c = (Base)self->cl->alloc(self->alloc_size);
     memcpy(c, self, self->alloc_size);
     c->refs = 1;
     return c;
