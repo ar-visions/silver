@@ -1,20 +1,33 @@
 #include <obj/obj.h>
-#include <obj/list.h>
 
-implement(List);
+implement(List)
 
-void List_init(List self) {
-    self->min_block_size = 32;
-    llist(&self->list, 0, self->min_block_size);
+Base List_placeholder;
+
+void List_class_init() {
 }
 
-List List_with_item_size(int item_size) {
-    List self = auto(List);
-    llist(&self->list, item_size, self->min_block_size);
+void List_free(List self) {
+    call(self, clear);
+    class_call(List, dealloc, self->buffer);
+}
+
+void *List_alloc(Class cl, size_t count) {
+    return calloc(1, count);
+}
+
+void List_dealloc(Class cl, void *ptr) {
+    free_ptr(ptr);
+}
+
+List List_new_prealloc(Class cl, int count) {
+    List self = new(List);
+    self->buffer = class_call(List, alloc, count * sizeof(List));
+    self->remaining = count;
     return self;
 }
 
-List List_new_list_of(Class list_class, Class item_class, ...) {
+List List_new_list_of_objects(Class list_class, Class item_class, ...) {
     List self = (List)new_obj((class_Base)list_class, 0);
     self->item_class = item_class;
     va_list args;
@@ -30,7 +43,7 @@ List List_new_list_of(Class list_class, Class item_class, ...) {
             if (!str)
                 str = call(o, to_string);
             if (str) {
-                Base item = ((class_Base)self->item_class)->from_string(str);
+                Base item = ((class_Base)self->item_class)->from_string((Class)self->item_class, str);
                 if (item)
                     list_push(self, item);
             }
@@ -40,124 +53,71 @@ List List_new_list_of(Class list_class, Class item_class, ...) {
     return self;
 }
 
-static void update_blocks(List self) {
-    self->list.block_size = (self->list.count < self->min_block_size) ? 
-        self->min_block_size : max(self->min_block_size, self->list.count / 4);
-}
-
-void List_free(List self) {
-    llist_clear(&self->list, false);
-    free_ptr(self->index);
-}
-
 int List_count(List self) {
-    return self->list.count;
+    return self->count;
 }
 
-void *List_push(List self, Base obj) {
-    void *bytes = NULL;
-    if (obj || self->list.item_size) {
-        bytes = llist_push(&self->list, obj);
-        retain(obj);
-        priv_call(update_blocks);
+void List_push(List self, Base obj) {
+    if (self->remaining <= 0) {
+        size_t size = ((self->count & ~15) | 16) << 1;
+        Base *buffer = class_call(List, alloc, sizeof(Base) * size);
+        memcpy(buffer, self->buffer, sizeof(Base) * self->count);
+        self->remaining = size - self->count;
+        class_call(List, dealloc, self->buffer);
+        self->buffer = buffer;
     }
-    free_ptr(self->index);
-    return self->list.item_size > 0 ? bytes : NULL;
+    self->buffer[self->count++] = retain(obj);
+    self->remaining--;
 }
 
 Base List_pop(List self) {
-    LItem *item = self->list.last;
-    if (item) {
-        free_ptr(self->index);
-        Base obj = (Base)item->data;
-        llist_remove(&self->list, item);
-        if (self->list.item_size == 0)
-            release(obj);
-        priv_call(update_blocks);
-        return obj;
-    }
-    return NULL;
+    if (self->count == 0)
+        return NULL;
+    self->remaining++;
+    return self->buffer[--self->count];
 }
 
 bool List_remove(List self, Base obj) {
-    if (obj && llist_remove_data(&self->list, obj)) {
-        free_ptr(self->index);
-        if (self->list.item_size == 0)
-            release(obj);
-        priv_call(update_blocks);
+    int index = call(self, index_of, obj);
+    if (index >= 0) {
+        Base o = self->buffer[index];
+        release(o);
+        for (int i = index + 1; i < self->count; i++)
+            self->buffer[i - 1] = self->buffer[i];
+        self->remaining++;
+        self->count--;
         return true;
     }
     return false;
 }
 
 Base List_first(List self) {
-    LItem *item = self->list.first;
-    return item ? (Base)item->data : NULL;
+    if (self->count == 0)
+        return NULL;
+    return self->buffer[0];
 }
 
 Base List_last(List self) {
-    LItem *item = self->list.last;
-    return item ? (Base)item->data : NULL;
+    if (self->count == 0)
+        return NULL;
+    return self->buffer[self->count - 1];
 }
 
 int List_index_of(List self, Base obj) {
-    return llist_index_of_data(&self->list, obj);
+    for (int i = 0; i < self->count; i++) {
+        if (self->buffer[i] == obj)
+            return i;
+    }
+    return -1;
 }
 
 void List_clear(List self) {
-    for (LItem *i = self->list.first; i; i = i->next) {
-        Base obj = (Base)i->data;
-        if (obj)
-            release(obj);
-    }
-    self->list.block_size = self->min_block_size;
-    llist_clear(&self->list, false);
-    free_ptr(self->index);
-}
-
-void List_create_index(List self) {
-    self->indexed = true;
-    if (self->list.count == 0)
-        return;
-    free_ptr(self->index);
-    self->index = (Base *)malloc(self->list.count * sizeof(Base));
-    int i = 0;
-    Base b;
-    each(self, b)
-        self->index[i++] = b;
+    for (int i = 0; i < self->count; i++)
+        release(self->buffer[i]);
 }
 
 Base List_object_at(List self, int index) {
-    if (index < 0 || index >= self->list.count)
+    if (index < 0 || index >= self->count)
         return NULL;
-    if (self->indexed) {
-        if (!self->index)
-            call(self, create_index);
-        return self->index[index];
-    }
-    int i = 0;
-    Base b;
-    each(self, b) {
-        if (i++ == index)
-            return b;
-    }
-    return NULL;
-}
-
-int List_generic_sort(Base a, Base b) {
-    if (a && b) {
-        if (a->cl == b->cl)
-            return call(a, compare, b);
-        else
-            return 0;
-    } else if (a)
-        return 1;
-    else if (b)
-        return -1;
-    return 0;
-}
-
-void List_sort(List self, bool asc, SortMethod sortf) {
-    free_ptr(self->index);
-    llist_sort(&self->list, asc, sortf ? sortf : (SortMethod)List_generic_sort);
+    return self->buffer[index];
 }

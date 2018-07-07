@@ -29,7 +29,7 @@ Boolean bool_object(bool v)     { Boolean o = auto(Boolean); o->value = v; retur
 Float float_object(float v)     { Float  o = auto(Float);    o->value = v; return o; }
 Double double_object(double v)  { Double o = auto(Double);   o->value = v; return o; }
 
-UInt64 UInt64_from_string(String value) {
+UInt64 UInt64_from_string(Class cl, String value) {
     UInt64 self = auto(UInt64);
     self->value = value ? strtoull(value->buffer, NULL, 10) : 0;
     return self;
@@ -39,7 +39,7 @@ String UInt64_to_string(UInt64 self) {
     return class_call(String, format, "%llu", self->value);
 }
 
-Int64 Int64_from_string(String value) {
+Int64 Int64_from_string(Class cl, String value) {
     Int64 self = auto(Int64);
     self->value = value ? strtoll(value->buffer, NULL, 10) : 0;
     return self;
@@ -49,7 +49,7 @@ String Int64_to_string(Int64 self) {
     return class_call(String, format, "%lld", self->value);
 }
 
-UInt32 UInt32_from_string(String value) {
+UInt32 UInt32_from_string(Class cl, String value) {
     UInt32 self = auto(UInt32);
     self->value = value ? strtoul(value->buffer, NULL, 10) : 0;
     return self;
@@ -59,7 +59,7 @@ String UInt32_to_string(UInt32 self) {
     return class_call(String, format, "%u", self->value);
 }
 
-Int32 Int32_from_string(String value) {
+Int32 Int32_from_string(Class cl, String value) {
     Int32 self = auto(Int32);
     self->value = value ? strtol(value->buffer, NULL, 10) : 0;
     return self;
@@ -69,7 +69,7 @@ String Int32_to_string(Int32 self) {
     return class_call(String, format, "%d", self->value);
 }
 
-UInt16 UInt16_from_string(String value) {
+UInt16 UInt16_from_string(Class cl, String value) {
     UInt16 self = auto(UInt16);
     self->value = value ? (uint16)strtoul(value->buffer, NULL, 10) : 0;
     return self;
@@ -79,7 +79,7 @@ String UInt16_to_string(UInt16 self) {
     return class_call(String, format, "%hu", self->value);
 }
 
-Int16 Int16_from_string(String value) {
+Int16 Int16_from_string(Class cl, String value) {
     Int16 self = auto(Int16);
     self->value = value ? (int16)strtol(value->buffer, NULL, 10) : 0;
     return self;
@@ -89,7 +89,7 @@ String Int16_to_string(Int16 self) {
     return class_call(String, format, "%hd", self->value);
 }
 
-UInt8 UInt8_from_string(String value) {
+UInt8 UInt8_from_string(Class cl, String value) {
     UInt8 self = auto(UInt8);
     self->value = value ? (uint8)strtoul(value->buffer, NULL, 10) : 0;
     return self;
@@ -99,7 +99,7 @@ String UInt8_to_string(UInt8 self) {
     return class_call(String, format, "%u", self->value);
 }
 
-Int8 Int8_from_string(String value) {
+Int8 Int8_from_string(Class cl, String value) {
     Int8 self = auto(Int8);
     self->value = value ? (int8)strtol(value->buffer, NULL, 10) : 0;
     return self;
@@ -109,7 +109,7 @@ String Int8_to_string(Int8 self) {
     return class_call(String, format, "%d", self->value);
 }
 
-Long Long_from_string(String value) {
+Long Long_from_string(Class cl, String value) {
     Long self = auto(Long);
     self->value = value ? strtol(value->buffer, NULL, 10) : 0;
     return self;
@@ -119,7 +119,7 @@ String Long_to_string(Long self) {
     return class_call(String, format, "%ld", self->value);
 }
 
-ULong ULong_from_string(String value) {
+ULong ULong_from_string(Class cl, String value) {
     ULong self = auto(ULong);
     self->value = value ? strtol(value->buffer, NULL, 10) : 0;
     return self;
@@ -129,7 +129,7 @@ String ULong_to_string(ULong self) {
     return class_call(String, format, "%lu", self->value);
 }
 
-Float Float_from_string(String value) {
+Float Float_from_string(Class cl, String value) {
     Float self = auto(Float);
     self->value = value ? (float)atof(value->buffer) : 0;
     return self;
@@ -139,7 +139,7 @@ String Float_to_string(Float self) {
     return class_call(String, format, "%f", self->value);
 }
 
-Double Double_from_string(String value) {
+Double Double_from_string(Class cl, String value) {
     Double self = auto(Double);
     self->value = value ? atof(value->buffer) : 0;
     return self;
@@ -149,7 +149,7 @@ String Double_to_string(Double self) {
     return class_call(String, format, "%f", self->value);
 }
 
-Boolean Boolean_from_string(String value) {
+Boolean Boolean_from_string(Class cl, String value) {
     Boolean self = auto(Boolean);
     if (value->buffer) {
         String lower = call(value, lower);

@@ -34,7 +34,7 @@ declare(Enum, Base);
     enum_object(D,T,C,Double,  13)
 enum_declare(Type, Enum);
 
-#define enum_find(C,N)  ((C)class_call(Enum, find, (Class)class_object(C), N));
+#define enum_find(C,N)  ((C)Enum_cl->find((Class)class_object(C), N))
 #define enums(C)        (Enum_enums((Class)class_object(C)))
 
 extern bool enum_init;

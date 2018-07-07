@@ -4,7 +4,7 @@
 #define _Data(D,T,C) _Base(spr,T,C)        \
     override(D,T,C,void,free,(C))          \
     override(D,T,C,String,to_string,(C))   \
-    override(D,T,C,C,from_string,(String)) \
+    override(D,T,C,C,from_string,(Class, String)) \
     method(D,T,C,C,with_size,(uint))       \
     method(D,T,C,C,with_bytes,(uint8 *, uint)) \
     method(D,T,C,void,get_vector,(C, void **, size_t, uint *)) \

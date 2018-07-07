@@ -27,11 +27,11 @@ bool read_past_args(char *in, int *index) {
     return false;
 }
 
-void *Base_alloc(size_t size) {
+void *Base_alloc(Class cl, size_t size) {
     return calloc(1, size);
 }
 
-void Base_dealloc(void *ptr) {
+void Base_dealloc(Class cl, void *ptr) {
     free(ptr);
 }
 
@@ -40,7 +40,9 @@ void Base_class_init(Class c) {
     if (!cbase->meta)
         cbase->meta = new(Pairs);
     Pairs props = new(Pairs);
-    pairs_add(cbase->meta, string("props"), props);
+    String props_str = new_string("props");
+    pairs_add(cbase->meta, props_str, props);
+    release(props_str);
     release(props);
 
     char **mnames = (char **)cbase->mnames;
@@ -64,15 +66,19 @@ void Base_class_init(Class c) {
                 continue;
             int type_len = mname - start - 1;
             int name_len = args - mname - 4;
-            char *type = (char *)alloc_bytes(type_len + 1);
-            char *name = (char *)alloc_bytes(name_len + 1);
+            char *type = (char *)calloc(1, type_len + 1);
+            char *name = (char *)calloc(1, name_len + 1);
             memcpy(type, start, type_len);
             type[type_len] = 0;
             memcpy(name, &mname[4], name_len);
             name[name_len] = 0;
-            Prop p = class_call(Prop, new_with, (Class)cbase, type, name, (Getter)cbase->m[i], (Setter)cbase->m[i - 1], *hash ? hash : NULL);
-            if (p)
-                pairs_add(props, string(name), p);
+            Prop p = class_call(Prop, new_with, (Class)cbase, type, name,
+                (Getter)cbase->m[i], (Setter)cbase->m[i - 1], *hash ? hash : NULL);
+            if (p) {
+                String name_str = new_string("name");
+                pairs_add(props, name_str, p);
+                release(name_str);
+            }
             free(type);
             free(name);
         }
@@ -353,7 +359,7 @@ Base Base_from_json(Class c, String value) {
                         parse_ws(&s);
                         switch (*s) {
                             case '{': {
-                                Class cl = modes->cl;
+                                class_Base cl = (class_Base)modes->cl;
                                 Base obj = modes->object;
                                 List assoc_list = modes->assoc_list;
                                 String key = modes->key;
@@ -366,8 +372,7 @@ Base Base_from_json(Class c, String value) {
                                     modes->object = autorelease(new_obj(item_class, 0));
                                     list_push(assoc_list, modes->object);
                                 } else {
-                                    Prop prop = class_call(Base, find_prop, cl,
-                                        (const char *)key->buffer);
+                                    Prop prop = cl->find_prop((Class)cl, (const char *)key->buffer);
                                     if (!prop || !prop->class_type)
                                         return NULL;
                                     modes->object = autorelease(new_obj((class_Base)prop->class_type, 0));
@@ -397,7 +402,7 @@ Base Base_from_json(Class c, String value) {
                                         return NULL;
                                     if (modes->assoc_list) {
                                         class_Base item_class = (class_Base)modes->assoc_list->item_class;
-                                        Base item = item_class->from_string(value);
+                                        Base item = item_class->from_string((Class)item_class, value);
                                         list_push(modes->assoc_list, item);
                                     } else
                                         call(modes->object, set_property, modes->key->buffer, base(value));
@@ -444,7 +449,7 @@ const char *Base_to_cstring(Base self) {
     return (const char *)(str ? str->buffer : NULL);
 }
 
-Base Base_from_cstring(const char *value) {
+Base Base_from_cstring(Class cl, const char *value) {
     return NULL;
 }
 
@@ -472,7 +477,7 @@ Prop Base_find_prop(Class cl, const char *name) {
 }
 
 void Base_set_property(Base self, const char *name, Base base_value) {
-    Prop p = class_call(Base, find_prop, (Class)self->cl, name);
+    Prop p = self->cl->find_prop((Class)self->cl, name);
     if (!p)
         return;
     if (!base_value) {
@@ -551,7 +556,7 @@ void Base_set_property(Base self, const char *name, Base base_value) {
         case Type_Object: {
             class_Base c = (class_Base)p->class_type;
             if (c)
-                p->setter(self, c->from_string(value));
+                p->setter(self, c->from_string((Class)c, value));
             break;
         }
         default:
@@ -601,16 +606,16 @@ Base Base_property_meta(Base self, const char *name, const char *meta) {
 }
 
 Base Base_copy(Base self) {
-    Base c = (Base)self->cl->alloc(self->alloc_size);
+    Base c = (Base)object_alloc(self, self->alloc_size);
     memcpy(c, self, self->alloc_size);
     c->refs = 1;
     return c;
 }
 
-Base Base_from_string(String value) {
+Base Base_from_string(Class cl, String value) {
     if (!value)
         return NULL;
-    return class_call(Base, from_cstring, (const char *)value->buffer);
+    return ((class_Base)cl)->from_cstring(cl, (const char *)value->buffer);
 }
 
 String Base_to_string(Base self) {
@@ -618,34 +623,28 @@ String Base_to_string(Base self) {
 }
 
 Base Base_retain(Base self) {
-    if (self->refs++ == 0) {
-        // remove from ar
-        AutoRelease ar = AutoRelease_cl->current();
-        call(ar, remove, self);
-    }
+    __atomic_fetch_add(&self->refs, 1, __ATOMIC_SEQ_CST);
     return self;
 }
 
-void Base_release(Base self) {
-    if (self->refs-- == 0) {
-        AutoRelease ar = AutoRelease_cl->current();
-        call(ar, remove, self);
-    }
-    if (self->refs <= 0)
+Base Base_release(Base self) {
+    __atomic_fetch_add(&self->refs, -1, __ATOMIC_SEQ_CST);
+    if (self->refs == 0)
         free_obj(self);
+    return self;
 }
 
 Base Base_autorelease(Base self) {
     AutoRelease ar = AutoRelease_cl->current();
-    if (ar && !self->ar_node) {
-        self->refs = 1;
-        call(ar, add, self);
+    if (!ar) {
+        fprintf(stderr, "No autorelease pool found!\n");
+        exit(1);
     }
-    return self;
+    list_push(ar, self);
+    return release(self);
 }
 
 void Base_free(Base self) {
-    free(self);
 }
 
 ulong Base_hash(Base self) {

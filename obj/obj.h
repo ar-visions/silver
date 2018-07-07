@@ -354,7 +354,7 @@ struct _Class {
         c->m = ((Method *)&c->m) + 1;                           \
         c->mcount = ((void **)(&c[1]) -                         \
                          (void **)(c->m));                      \
-        c->mnames = (mnames_##C)alloc_bytes(                    \
+        c->mnames = (mnames_##C)calloc(1,                       \
                         sizeof(char *) * c->mcount);            \
         _##C(cls,override, C)                                   \
         _##C(cls,class_def, C)                                  \
@@ -392,7 +392,6 @@ struct _Class {
     struct _object_##C {                                        \
         class_##C cl;                                           \
         struct _object_##S *super_object;                       \
-        LItem *ar_node;                                         \
         int refs;                                               \
         int alloc_size;                                         \
         _##C(cls,object_dec,C)                                  \
@@ -400,8 +399,8 @@ struct _Class {
     _##C(cls,proto,C)                                           \
 
 #define new(C)                  ((C)new_obj((class_Base)C##_cl, 0))
-#define alloc_struct(T)         ((T *)alloc_bytes(sizeof(T)))
-#define array_struct(T,C)       ((T *)alloc_bytes(sizeof(T) * C))
+#define alloc_struct(T)         ((T *)calloc(1, sizeof(T)))
+#define array_struct(T,C)       ((T *)calloc(1, sizeof(T) * C))
 #define object_new(O)           ((typeof(O))((O) ? new_obj((class_Base)(O)->cl, 0) : NULL))
 #define class_of(C,I)           (class_inherits((Class)C,(Class)I##_cl))
 #define inherits(O,C)           ((C)object_inherits((Base)O,(Class)C##_cl))
@@ -409,14 +408,14 @@ struct _Class {
     #define super(M,...)            (self->cl->parent->M(self->super_object, __VA_ARGS__))
     #define call(C,M,...)           ((C)->cl->M(C, __VA_ARGS__))
     #define self(M,...)             (self->cl->M(self, __VA_ARGS__))
-    #define class_call(C,M,...)     (C##_##M(__VA_ARGS__))
+    #define class_call(C,M,...)     (C##_cl->M((Class)&C##_cl, __VA_ARGS__))
     #define priv_call(M,...)        (M(self, __VA_ARGS__))
     #define priv_set(M,V)           (set_##M(self, V))
 #else
     #define super(M,A...)           (self->cl->parent->M(self->super_object, ##A))
     #define call(C,M,A...)          ((C)->cl->M(C, ##A))
     #define self(M,A...)            (self->cl->M(self, ##A))
-    #define class_call(C,M,A...)    (C##_##M(A))
+    #define class_call(C,M,A...)    (C##_cl->M((Class)&C##_cl, ##A))
     #define priv_call(M,A...)       (M(self, ##A))
     #define priv_set(M,V)           (set_##M(self, V))
 #endif
@@ -438,23 +437,25 @@ struct _Class {
 #ifndef sqr
 #define sqr(v)                  ((v) * (v))
 #endif
-#define string(cstring)         (class_call(String, from_cstring, cstring))
-#define new_string(cstring)     (class_call(String, new_string, cstring))
+#define string(cstring)         (String_cl->from_cstring((Class)&String_cl, cstring))
+#define new_string(cstring)     (String_cl->new_from_cstring((Class)&String_cl, cstring))
 #define mix(a,b,f)              (((double)(a) * (double)(f)) + ((double)(b) * (double)(1.0 - (double)(f))))
 #define from_json(C,S)          ((C)class_call(Base, from_json, class_object(C), json))
-
+#define class_alloc(C,S)        ((C)->alloc((Class)(C), S))
+#define object_alloc(C,S)       ((C)->cl->alloc((Class)(C)->cl, S))
+#define class_dealloc(C,P)      ((C)->dealloc((Class)(C), P))
+#define object_dealloc(C,P)     ((C)->cl->dealloc((Class)(C)->cl, P))
 #include <obj/base.h>
 #include <obj/string.h>
 #include <obj/data.h>
 #include <obj/prop.h>
-#include <obj/auto.h>
 #include <obj/list.h>
+#include <obj/auto.h>
 #include <obj/enum.h>
 #include <obj/pairs.h>
 #include <obj/app.h>
 #include <obj/prim.h>
 
-EXPORT void *alloc_bytes(size_t);
 EXPORT Base new_obj(class_Base, size_t);
 EXPORT void free_obj(Base);
 EXPORT void class_assemble(Class);

@@ -4,102 +4,70 @@
 implement(Pairs)
 
 static const int base_count = 32;
-static const int block_size = 32;
+static const int prealloc_size = 32;
 static const int ordered_block = 64;
 
 void Pairs_init(Pairs self) {
     self->list_count = base_count;
-    self->lists = (LList *)alloc_bytes(sizeof(LList) * self->list_count);
+    self->lists = (List *)class_call(Pairs, alloc, sizeof(List) * self->list_count);
     for (int i = 0; i < (int)self->list_count; i++)
-        llist(&self->lists[i], 0, block_size);
-    llist(&self->ordered_list, 0, ordered_block);
+        self->lists[i] = class_call(List, new_prealloc, prealloc_size);
+    self->ordered_list = new(List);
 }
 
 void Pairs_clear(Pairs self) {
     for (int i = 0; i < (int)self->list_count; i++) {
-        LList *list = &self->lists[i];
-        for (LItem *item = list->first; item; item = item->next) {
-            KeyValue kv = (KeyValue)item->data;
-            release(kv);
-        }
-        llist_clear(&self->lists[i], false);
-        llist_clear(&self->ordered_list, false);
+        list_clear(self->lists[i]);
+        list_clear(self->ordered_list);
     }
 }
 
 void Pairs_add(Pairs self, Base key, Base value) {
-    String skey = inherits(key, String);
     call(self, remove, key);
     KeyValue kv = new(KeyValue);
-    kv->key = retain(key);
-    kv->value = retain(value);
-    ulong hash = call(key, hash) % self->list_count;
-    kv->hashed = (LItem *)llist_push(&self->lists[hash], kv); // this is the hash item, not the ordered one
-    kv->ordered = (LItem *)llist_push(&self->ordered_list, kv);
-}
-
-bool Pairs_remove(Pairs self, Base key) {
-    ulong hash = call(key, hash) % self->list_count;
-    LList *list = &self->lists[hash];
-    LItem *next = NULL;
-    bool ret = false;
-    for (LItem *item = list->first; item; item = next) {
-        next = item->next;
-        KeyValue kv = (KeyValue)item->data;
-        if (call(kv->key, compare, key) == 0) {
-            llist_remove(list, kv->hashed);
-            llist_remove(&self->ordered_list, kv->ordered);
-            release(kv);
-            ret = true;
-        }
+    for (int i = 0; i < 2; i++) {
+        kv->key = retain(key);
+        kv->value = retain(value);
     }
-    return ret;
-}
-
-Base Pairs_key(Pairs self, Base key) {
-    String skey = (String)key;
     ulong hash = call(key, hash) % self->list_count;
-    LList *list = &self->lists[hash];
-    for (LItem *item = list->first; item; item = item->next) {
-        KeyValue kv = (KeyValue)item->data;
-        if (call(kv->key, compare, key) == 0)
-            return kv->key;
-    }
-    return NULL;
+    list_push(self->lists[hash], kv);
+    list_push(self->ordered_list, kv);
+    release(kv);
 }
 
 KeyValue Pairs_find(Pairs self, Base key) {
-    String skey = (String)key;
     ulong hash = call(key, hash) % self->list_count;
-    LList *list = &self->lists[hash];
-    for (LItem *item = list->first; item; item = item->next) {
-        KeyValue kv = (KeyValue)item->data;
+    List list = self->lists[hash];
+    KeyValue kv;
+    each(list, kv)
         if (call(kv->key, compare, key) == 0)
             return kv;
-    }
     return NULL;
 }
 
-Base Pairs_value(Pairs self, Base key) {
-    String skey = (String)key;
-    ulong hash = call(key, hash) % self->list_count;
-    LList *list = &self->lists[hash];
-    for (LItem *item = list->first; item; item = item->next) {
-        KeyValue kv = (KeyValue)item->data;
-        if (call(kv->key, compare, key) == 0)
-            return kv->value;
+bool Pairs_remove(Pairs self, Base key) {
+    KeyValue kv = call(self, find, key);
+    if (kv) {
+        ulong hash = call(key, hash) % self->list_count;
+        list_remove(self->lists[hash], kv);
+        list_remove(self->ordered_list, kv);
+        return true;
     }
-    return NULL;
+    return false;
+}
+
+Base Pairs_value(Pairs self, Base key) {
+    KeyValue kv = call(self, find, key);
+    return kv ? kv->value : NULL;
 }
 
 Pairs Pairs_copy(Pairs self) {
     Pairs c = new(Pairs);
     for (int i = 0; i < (int)self->list_count; i++) {
-        LList *list = &self->lists[i];
-        for (LItem *item = list->first; item; item = item->next) {
-            KeyValue kv = (KeyValue)item->data;
+        List list = self->lists[i];
+        KeyValue kv;
+        each(list, kv)
             call(c, add, kv->key, kv->value);
-        }
     }
     return c;
 }
@@ -115,7 +83,7 @@ typedef struct _StrRange {
     int to;
 } StrRange;
 
-Pairs Pairs_from_cstring(const char *value) {
+Pairs Pairs_from_cstring(Class cl, const char *value) {
     if (!value)
         return NULL;
     Pairs self = auto(Pairs);
