@@ -8,7 +8,7 @@ declare(Primitive, Base)
 #define _UInt64(D,T,C) _Primitive(spr,T,C)                    \
     override(D,T,C,void,init,(C))                             \
     override(D,T,C,String,to_string,(C))                      \
-    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,C,from_string,(Class,String))              \
     override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,uint64,value)
 declare(UInt64, Primitive)
@@ -16,7 +16,7 @@ declare(UInt64, Primitive)
 #define _Int64(D,T,C) _Primitive(spr,T,C)                     \
     override(D,T,C,void,init,(C))                             \
     override(D,T,C,String,to_string,(C))                      \
-    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,C,from_string,(Class,String))              \
     override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,int64,value)
 declare(Int64, Primitive)
@@ -24,7 +24,7 @@ declare(Int64, Primitive)
 #define _UInt32(D,T,C) _Primitive(spr,T,C)                    \
     override(D,T,C,void,init,(C))                             \
     override(D,T,C,String,to_string,(C))                      \
-    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,C,from_string,(Class,String))              \
     override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,uint32,value)
 declare(UInt32, Primitive)
@@ -32,7 +32,7 @@ declare(UInt32, Primitive)
 #define _Int32(D,T,C) _Primitive(spr,T,C)                     \
     override(D,T,C,void,init,(C))                             \
     override(D,T,C,String,to_string,(C))                      \
-    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,C,from_string,(Class,String))              \
     override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,int32,value)
 declare(Int32, Primitive)
@@ -40,7 +40,7 @@ declare(Int32, Primitive)
 #define _UInt16(D,T,C) _Primitive(spr,T,C)                    \
     override(D,T,C,void,init,(C))                             \
     override(D,T,C,String,to_string,(C))                      \
-    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,C,from_string,(Class,String))              \
     override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,uint16,value)
 declare(UInt16, Primitive)
@@ -48,7 +48,7 @@ declare(UInt16, Primitive)
 #define _Int16(D,T,C) _Primitive(spr,T,C)                     \
     override(D,T,C,void,init,(C))                             \
     override(D,T,C,String,to_string,(C))                      \
-    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,C,from_string,(Class,String))              \
     override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,int16,value)
 declare(Int16, Primitive)
@@ -56,7 +56,7 @@ declare(Int16, Primitive)
 #define _UInt8(D,T,C) _Primitive(spr,T,C)                     \
     override(D,T,C,void,init,(C))                             \
     override(D,T,C,String,to_string,(C))                      \
-    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,C,from_string,(Class,String))              \
     override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,uint8,value)
 declare(UInt8, Primitive)
@@ -64,7 +64,7 @@ declare(UInt8, Primitive)
 #define _Int8(D,T,C) _Primitive(spr,T,C)                      \
     override(D,T,C,void,init,(C))                             \
     override(D,T,C,String,to_string,(C))                      \
-    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,C,from_string,(Class,String))              \
     override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,int8,value)
 declare(Int8, Primitive)
@@ -72,7 +72,7 @@ declare(Int8, Primitive)
 #define _Long(D,T,C) _Primitive(spr,T,C)                      \
     override(D,T,C,void,init,(C))                             \
     override(D,T,C,String,to_string,(C))                      \
-    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,C,from_string,(Class,String))              \
     override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,long,value)
 declare(Long, Primitive)
@@ -80,7 +80,7 @@ declare(Long, Primitive)
 #define _ULong(D,T,C) _Primitive(spr,T,C)                     \
     override(D,T,C,void,init,(C))                             \
     override(D,T,C,String,to_string,(C))                      \
-    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,C,from_string,(Class,String))              \
     override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,ulong,value)
 declare(ULong, Primitive)
@@ -88,7 +88,7 @@ declare(ULong, Primitive)
 #define _Float(D,T,C) _Primitive(spr,T,C)                     \
     override(D,T,C,void,init,(C))                             \
     override(D,T,C,String,to_string,(C))                      \
-    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,C,from_string,(Class,String))              \
     override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,float,value)
 declare(Float, Primitive)
@@ -96,7 +96,7 @@ declare(Float, Primitive)
 #define _Boolean(D,T,C) _Primitive(spr,T,C)                   \
     override(D,T,C,void,init,(C))                             \
     override(D,T,C,String,to_string,(C))                      \
-    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,C,from_string,(Class,String))              \
     override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,bool,value)
 declare(Boolean, Primitive)
@@ -104,7 +104,7 @@ declare(Boolean, Primitive)
 #define _Double(D,T,C) _Primitive(spr,T,C)                    \
     override(D,T,C,void,init,(C))                             \
     override(D,T,C,String,to_string,(C))                      \
-    override(D,T,C,C,from_string,(String))                    \
+    override(D,T,C,C,from_string,(Class,String))              \
     override(D,T,C,int,compare,(C,C))                         \
     var(D,T,C,double,value)
 declare(Double, Primitive)

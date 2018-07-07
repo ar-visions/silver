@@ -62,12 +62,12 @@ String Data_to_string(Data self) {
     return str;
 }
 
-Data Data_from_string(String value) {
+Data Data_from_string(Class cl, String value) {
     if (!value || value->length % 4)
         return NULL;
     size_t alloc_len = (size_t)value->length / 4 * 3;
     Data self = auto(Data);
-    uint8 *cbytes = alloc_bytes(alloc_len);
+    uint8 *cbytes = calloc(1, alloc_len);
     int cursor = 0;
     int pfound = 0;
 

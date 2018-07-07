@@ -170,7 +170,7 @@ ulong String_hash(String self) {
    return h;
 }
 
-String String_new_string(const char *buffer) {
+String String_new_from_cstring(Class cl, const char *buffer) {
     String self = new(String);
     self->length = strlen(buffer);
     self->buffer_size = self->length + 1;
@@ -179,13 +179,13 @@ String String_new_string(const char *buffer) {
     return self;
 }
 
-String String_from_cstring(const char *buffer) {
-    String self = class_call(String, new_string, buffer);
+String String_from_cstring(Class cl, const char *buffer) {
+    String self = String_new_from_cstring((Class)cl, buffer);
     return autorelease(self);
 }
 
-String String_from_string(String value) {
-    return class_call(String, from_cstring, value->buffer);
+String String_from_string(Class cl, String value) {
+    return String_from_cstring(cl, value->buffer);
 }
 
 String String_to_string(String self) {
@@ -223,7 +223,7 @@ Base String_infer_object(String self) {
     return base(string(self->buffer));
 }
 
-String String_new_from_bytes(const uint8 *bytes, size_t length) {
+String String_new_from_bytes(Class cl, const uint8 *bytes, size_t length) {
     String self = new(String);
     self->length = length;
     self->buffer_size = length + 1;
@@ -233,7 +233,7 @@ String String_new_from_bytes(const uint8 *bytes, size_t length) {
     return self;
 }
 
-String String_from_bytes(const uint8 *bytes, size_t length) {
+String String_from_bytes(Class cl, const uint8 *bytes, size_t length) {
     String self = auto(String);
     self->length = length;
     self->buffer_size = length + 1;
@@ -332,7 +332,7 @@ int String_concat_object(String self, Base o) {
     return len;
 }
 
-String String_format(const char *format, ...) {
+String String_format(Class cl, const char *format, ...) {
     if (!format)
         return NULL;
     String self = new(String);
@@ -399,10 +399,15 @@ String String_format(const char *format, ...) {
                                 call(self, concat_long, va_arg(args, int), formatter);
                             f_start = -1;
                             break;
-                        case 'p':
-                            call(self, concat_object, va_arg(args, Base));
+                        case 'p': {
+                            Base b = va_arg(args, Base);
+                            if (b)
+                                call(self, concat_object, b);
+                            else
+                                call(self, concat_cstring, "[null]");
                             f_start = -1;
                             break;
+                        }
                     }
                     break;
                 }

@@ -21,12 +21,11 @@ void App_loop(App self) {
     if (!self)
         self = app;
     for (;;) {
-        AutoRelease ar = class_call(AutoRelease, current);
+        AutoRelease ar = new(AutoRelease);
         AppDelegate d = NULL;
-        each(self->delegates, d) {
+        each(self->delegates, d)
             call(d, loop);
-        }
-        call(ar, drain);
+        release(ar);
 #ifdef EMSCRIPTEN
         break;
 #endif

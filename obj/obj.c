@@ -1,6 +1,8 @@
 #include <obj/obj.h>
 
-static LList classes;
+static Class *classes;
+static int classes_count;
+static int classes_size;
 
 static void class_set_methods(Class c) {
     for (int i = 0; i < c->mcount; i++) {
@@ -21,9 +23,11 @@ static void class_set_methods(Class c) {
 
 Class class_find(const char *name) {
     Class c = NULL;
-    llist_each(&classes, c)
+    for (int i = 0; i < classes_count; i++) {
+        Class c = classes[i];
         if (strcmp(name, c->name) == 0)
             return c;
+    }
     return NULL;
 }
 
@@ -77,7 +81,7 @@ free_call call_frees(Base o, class_Base c, free_call *pf) {
 
 Base new_obj(class_Base c, size_t extra) {
     size_t alloc_size = c->obj_size + extra;
-    Base self = (Base)c->alloc(alloc_size);
+    Base self = (Base)class_alloc(c, alloc_size);
     self->refs = 1;
     self->alloc_size = alloc_size;
     self->cl = (class_Base const)c;
@@ -95,7 +99,7 @@ void free_obj(Base o) {
         free_call f = NULL;
         call_frees(o, c, &f);
     }
-    o->cl->dealloc(o);
+    class_dealloc(c, o);
 }
 
 static bool _class_assemble(Class c) {
@@ -116,14 +120,25 @@ static bool _class_assemble(Class c) {
 }
 
 void class_assemble(Class c) {
-    if (!classes.block_size)
-        llist(&classes, 0, 256);
-    llist_push(&classes, c);
+    if (!classes) {
+        classes_count = 0;
+        classes_size = 128;
+        classes = (Class *)calloc(sizeof(Class), classes_size);
+    }
+    if (classes_size == classes_count) {
+        size_t size_new = classes_size + classes_count;
+        Class *classes_new = (Class *)calloc(sizeof(Class), size_new);
+        memcpy(classes_new, classes, classes_count * sizeof(Class));
+        free(classes);
+        classes = classes_new;
+        classes_size = size_new;
+    }
+    classes[classes_count++] = c;
     _class_assemble(c);
     for (;;) {
         bool change = false;
-        Class cc = NULL;
-        llist_each(&classes, cc) {
+        for (int i = 0; i < classes_count; i++) {
+            Class cc = classes[i];
             if ((cc->flags & CLASS_FLAG_ASSEMBLED) == 0)
                 change |= _class_assemble(cc);
         }
@@ -137,8 +152,8 @@ void class_init() {
 
     do {
         found = false;
-        Class c = NULL;
-        llist_each(&classes, c) {
+        for (int i = 0; i < classes_count; i++) {
+            Class c = classes[i];
             class_Base c_init = NULL;
             for (Class cc = c; cc; cc = cc->parent) {
                 if ((cc->flags & CLASS_FLAG_PREINIT) == 0) {
@@ -156,8 +171,8 @@ void class_init() {
     } while (found);
     do {
         found = false;
-        Class c = NULL;
-        llist_each(&classes, c) {
+        for (int i = 0; i < classes_count; i++) {
+            Class c = classes[i];
             class_Base c_init = NULL;
             for (Class cc = c; cc; cc = cc->parent) {
                 if ((cc->flags & CLASS_FLAG_INIT) == 0) {
@@ -173,11 +188,4 @@ void class_init() {
             }
         }
     } while (found);
-}
-
-void *alloc_bytes(size_t size) {
-    void *m = malloc(size);
-    if (m)
-        memset(m, 0, size);
-    return m;
 }

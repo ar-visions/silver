@@ -8,11 +8,13 @@ void Enum_class_preinit(Class cself) {
         Enum_cl->meta = new(Pairs);
     }
     class_Enum c = (class_Enum)cself;
-    Pairs enums = pairs_value(Enum_cl->meta, string("enums"), Pairs);
+    String enums_str = new_string("enums");
+    Pairs enums = pairs_value(Enum_cl->meta, enums_str, Pairs);
     if (!enums) {
         enums = new(Pairs);
-        pairs_add(Enum_cl->meta, string("enums"), enums);
+        pairs_add(Enum_cl->meta, enums_str, enums);
     }
+    release(enums_str);
     if ((Class)c->parent == class_object(Base))
         return;
     String cname = new_string(c->name);
@@ -42,8 +44,8 @@ void Enum_class_preinit(Class cself) {
                 continue;
             int type_len = mname - start - 1;
             int name_len = args - mname - 5;
-            char *type = (char *)alloc_bytes(type_len + 1);
-            char *name = (char *)alloc_bytes(name_len + 1);
+            char *type = (char *)calloc(1, type_len + 1);
+            char *name = (char *)calloc(1, name_len + 1);
             memcpy(type, start, type_len);
             type[type_len] = 0;
             memcpy(name, &mname[5], name_len);
@@ -76,7 +78,9 @@ Enum Enum_find(Class c, const char *symbol) {
     if (!e)
         return NULL;
     key = new_string(symbol);
-    Enum en = (Enum)pairs_value(e, string(symbol), Enum);
+    String sym_str = new_string(symbol);
+    Enum en = (Enum)pairs_value(e, sym_str, Enum);
+    release(sym_str);
     release(key);
     return en;
 }

@@ -9,21 +9,21 @@ struct _object_Pairs;
 #define _Base(D,T,C)                                            \
     method(D,T,C,void,class_preinit,(Class))                    \
     method(D,T,C,void,class_init,(Class))                       \
-    method(D,T,C,void *,alloc,(size_t))                         \
-    method(D,T,C,void,dealloc,(void *))                         \
+    method(D,T,C,void *,alloc,(Class,size_t))                   \
+    method(D,T,C,void,dealloc,(Class,void *))                   \
     method(D,T,C,void,init,(C))                                 \
     method(D,T,C,struct _object_String *,identity,(C))          \
     method(D,T,C,void,free,(C))                                 \
     method(D,T,C,void,print,(C, struct _object_String *))       \
     method(D,T,C,bool,is_logging,(C))                           \
     method(D,T,C,C,retain,(C))                                  \
-    method(D,T,C,void,release,(C))                              \
+    method(D,T,C,C,release,(C))                                 \
     method(D,T,C,C,autorelease,(C))                             \
     method(D,T,C,C,copy,(C))                                    \
     method(D,T,C,const char *,to_cstring,(C))                   \
-    method(D,T,C,C,from_cstring,(const char *))                 \
+    method(D,T,C,C,from_cstring,(Class,const char *))           \
     method(D,T,C,struct _object_String *,to_string,(C))         \
-    method(D,T,C,C,from_string,(struct _object_String *))       \
+    method(D,T,C,C,from_string,(Class,struct _object_String *)) \
     method(D,T,C,void,set_property,(C,const char *,Base))       \
     method(D,T,C,Base,get_property,(C,const char *))            \
     method(D,T,C,Base,property_meta,(C,const char *,const char *)) \

@@ -32,7 +32,7 @@ const char *var_to_obj_type(char *vtype) {
     return NULL;
 }
 
-List Prop_props_with_meta(Class cl_filter, const char *meta) {
+List Prop_props_with_meta(Class prop_class, Class cl_filter, const char *meta) {
     if (!prop_meta)
         return NULL;
     String smeta = string(meta);
@@ -48,7 +48,7 @@ List Prop_props_with_meta(Class cl_filter, const char *meta) {
     return filtered;
 }
 
-Prop Prop_new_with(Class cl, char *type, char *name, Getter getter, Setter setter, char *meta) {
+Prop Prop_new_with(Class pclass, Class cl, char *type, char *name, Getter getter, Setter setter, char *meta) {
     const char *type_ = var_to_obj_type(type);
     if (!type_)
         type_ = type;
