@@ -9,7 +9,6 @@
 #include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
-#include <obj/llist.h>
 
 #ifndef typeof
 #ifdef _MSC_VER
@@ -408,14 +407,14 @@ struct _Class {
     #define super(M,...)            (self->cl->parent->M(self->super_object, __VA_ARGS__))
     #define call(C,M,...)           ((C)->cl->M(C, __VA_ARGS__))
     #define self(M,...)             (self->cl->M(self, __VA_ARGS__))
-    #define class_call(C,M,...)     (C##_cl->M((Class)&C##_cl, __VA_ARGS__))
+    #define class_call(C,M,...)     (C##_cl->M((Class)C##_cl, __VA_ARGS__))
     #define priv_call(M,...)        (M(self, __VA_ARGS__))
     #define priv_set(M,V)           (set_##M(self, V))
 #else
     #define super(M,A...)           (self->cl->parent->M(self->super_object, ##A))
     #define call(C,M,A...)          ((C)->cl->M(C, ##A))
     #define self(M,A...)            (self->cl->M(self, ##A))
-    #define class_call(C,M,A...)    (C##_cl->M((Class)&C##_cl, ##A))
+    #define class_call(C,M,A...)    (C##_cl->M((Class)C##_cl, ##A))
     #define priv_call(M,A...)       (M(self, ##A))
     #define priv_set(M,V)           (set_##M(self, V))
 #endif
@@ -440,11 +439,10 @@ struct _Class {
 #define string(cstring)         (String_cl->from_cstring((Class)&String_cl, cstring))
 #define new_string(cstring)     (String_cl->new_from_cstring((Class)&String_cl, cstring))
 #define mix(a,b,f)              (((double)(a) * (double)(f)) + ((double)(b) * (double)(1.0 - (double)(f))))
-#define from_json(C,S)          ((C)class_call(Base, from_json, class_object(C), json))
 #define class_alloc(C,S)        ((C)->alloc((Class)(C), S))
 #define object_alloc(C,S)       ((C)->cl->alloc((Class)(C)->cl, S))
-#define class_dealloc(C,P)      ((C)->dealloc((Class)(C), P))
-#define object_dealloc(C,P)     ((C)->cl->dealloc((Class)(C)->cl, P))
+#define class_dealloc(C,P)      ((C)->deallocx((Class)(C), P))
+#define object_dealloc(C,P)     ((C)->cl->deallocx((Class)(C)->cl, P))
 #include <obj/base.h>
 #include <obj/string.h>
 #include <obj/data.h>

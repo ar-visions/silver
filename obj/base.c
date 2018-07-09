@@ -31,7 +31,7 @@ void *Base_alloc(Class cl, size_t size) {
     return calloc(1, size);
 }
 
-void Base_dealloc(Class cl, void *ptr) {
+void Base_deallocx(Class cl, void *ptr) {
     free(ptr);
 }
 
@@ -302,6 +302,7 @@ Base Base_from_json(Class c, String value) {
     JsMode *modes_origin = modes;
 
     parse_ws(&s);
+    bool pairs_result = c == class_object(Pairs);
     Base obj = autorelease(new_obj((class_Base)c, 0));
     memset(modes, 0, sizeof(JsMode));
     modes->cl = c;
@@ -368,15 +369,21 @@ Base Base_from_json(Class c, String value) {
                                 modes->mode = MODE_OBJECT;
                                 modes->parse = PARSE_KEY;
                                 if (assoc_list) {
-                                    class_Base item_class = (class_Base)assoc_list->item_class;
+                                    class_Base item_class = pairs_result ? (class_Base)Pairs_cl : 
+                                        (class_Base)assoc_list->item_class;
                                     modes->object = autorelease(new_obj(item_class, 0));
                                     list_push(assoc_list, modes->object);
                                 } else {
-                                    Prop prop = cl->find_prop((Class)cl, (const char *)key->buffer);
-                                    if (!prop || !prop->class_type)
-                                        return NULL;
-                                    modes->object = autorelease(new_obj((class_Base)prop->class_type, 0));
-                                    prop->setter(obj, modes->object);
+                                    if (pairs_result) {
+                                        modes->object = (Base)auto(Pairs);
+                                        pairs_add(((Pairs)obj), key, modes->object);
+                                    } else {
+                                        Prop prop = cl->find_prop((Class)cl, (const char *)key->buffer);
+                                        if (!prop || !prop->class_type)
+                                            return NULL;
+                                        modes->object = autorelease(new_obj((class_Base)prop->class_type, 0));
+                                        prop->setter(obj, modes->object);
+                                    }
                                 }
                                 s++;
                                 break;
@@ -388,7 +395,16 @@ Base Base_from_json(Class c, String value) {
                                 modes_push(&modes);
                                 modes->mode = MODE_ARRAY;
                                 modes->parse = PARSE_VALUE;
-                                modes->assoc_list = get_prop(obj, key->buffer, List);
+                                modes->assoc_list = pairs_result ? auto(List) : 
+                                    get_prop(obj, key->buffer, List);
+                                if (pairs_result) {
+                                    if (inherits(obj, Pairs)) {
+                                        if (!key)
+                                            return NULL;
+                                        pairs_add(((Pairs)obj), key, modes->assoc_list);
+                                    } else if (modes->object)
+                                        list_push(((List)obj), modes->assoc_list);
+                                }
                                 modes->object = NULL;
                                 s++;
                                 break;
@@ -401,25 +417,41 @@ Base Base_from_json(Class c, String value) {
                                     if (!value)
                                         return NULL;
                                     if (modes->assoc_list) {
-                                        class_Base item_class = (class_Base)modes->assoc_list->item_class;
-                                        Base item = item_class->from_string((Class)item_class, value);
+                                        Base item;
+                                        if (pairs_result) {
+                                            if (is_numeric)
+                                                item = (Base)int32_object(atoi(value->buffer));
+                                            else if (is_str)
+                                                item = (Base)value;
+                                        } else {
+                                            class_Base item_class = (class_Base)modes->assoc_list->item_class;
+                                            item = item_class->from_string((Class)item_class, value);
+                                        }
                                         list_push(modes->assoc_list, item);
-                                    } else
+                                    } else if (pairs_result)
+                                        pairs_add(((Pairs)modes->object), modes->key, value);
+                                    else
                                         call(modes->object, set_property, modes->key->buffer, base(value));
                                 } else {
                                     String symbol = parse_symbol(&s);
                                     if (!symbol)
                                         return NULL;
                                     if (call(symbol, cmp, "null") == 0) {
-                                        call(modes->object, set_property, modes->key->buffer, NULL);
+                                        if (!pairs_result) {
+                                            call(modes->object, set_property, modes->key->buffer, NULL);
+                                        }
                                     } else {
                                         bool bool_value = false;
                                         if (call(symbol, cmp, "true") == 0)
                                             bool_value = true;
                                         else if (call(symbol, cmp, "false") != 0)
                                             return NULL;
-                                        String bool_str = string(bool_value ? "true" : "false");
-                                        call(modes->object, set_property, modes->key->buffer, base(bool_str));
+                                        if (pairs_result) {
+                                            pairs_add(((Pairs)modes->object), modes->key, bool_object(bool_value));
+                                        } else {
+                                            String bool_str = string(bool_value ? "true" : "false");
+                                            call(modes->object, set_property, modes->key->buffer, base(bool_str));
+                                        }
                                     }
                                 }
                                 modes->parse = PARSE_COMMA;

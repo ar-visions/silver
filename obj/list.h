@@ -4,7 +4,7 @@
 #define _List(D,T,C) _Base(spr,T,C)                 \
     override(D,T,C,void,free,(C))                   \
     override(D,T,C,void *,alloc,(Class,size_t))     \
-    override(D,T,C,void,dealloc,(Class,void *))     \
+    override(D,T,C,void,deallocx,(Class,void *))    \
     method(D,T,C,void,push,(C,Base))                \
     method(D,T,C,Base,pop,(C))                      \
     method(D,T,C,bool,remove,(C,Base))              \
@@ -18,6 +18,7 @@
     method(D,T,C,C,new_prealloc,(Class,int))        \
     var(D,T,C,Class,item_class)                     \
     var(D,T,C,Base,user_data)                       \
+    var(D,T,C,bool,weak_refs)                       \
     private_var(D,T,C,Base *,buffer)                \
     private_var(D,T,C,int,count)                    \
     private_var(D,T,C,int,remaining)

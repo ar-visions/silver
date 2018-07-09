@@ -53,6 +53,15 @@ int String_char_index(String self, int c) {
     return p - self->buffer;
 }
 
+int String_char_count(String self, int c) {
+    int count = 0;
+    for (int i = 0; i < self->length; i++) {
+        if (self->buffer[i] == c)
+            count++;
+    }
+    return count;
+}
+
 int String_str_index(String self, const char *str) {
     char *p = strstr(self->buffer, str);
     if (!p) return -1;
@@ -113,7 +122,7 @@ uint *String_decode_utf8(String self, uint *length) {
     return self->utf8_buffer;
 }
 
-String String_from_file(const char *file) {
+String String_from_file(Class cl, const char *file) {
     FILE *f = fopen(file, "r");
     if (!f)
         return NULL;

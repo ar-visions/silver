@@ -13,8 +13,10 @@ AutoRelease AutoRelease_current() {
 }
 
 void AutoRelease_init(AutoRelease self) {
-    if (!ars)
+    if (!ars) {
         ars = new(List);
+        ars->weak_refs = true;
+    }
     list_push(ars, self);
 }
 

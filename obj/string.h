@@ -13,6 +13,7 @@ struct _object_String;
     override(D,T,C,ulong,hash,(C))                 \
     override(D,T,C,int,compare,(C,C))              \
     method(D,T,C,int,char_index,(C,int))           \
+    method(D,T,C,int,char_count,(C,int))           \
     method(D,T,C,int,str_index,(C,const char *))   \
     method(D,T,C,int,str_rindex,(C,const char *))  \
     method(D,T,C,C,upper,(C))                      \
@@ -33,7 +34,7 @@ struct _object_String;
     method(D,T,C,C,format,(Class,const char *,...))\
     method(D,T,C,bool,to_file,(C, const char *))   \
     method(D,T,C,uint *,decode_utf8,(C, uint *))   \
-    method(D,T,C,C,from_file,(const char *))       \
+    method(D,T,C,C,from_file,(Class, const char *)) \
     method(D,T,C,Base,infer_object,(C))            \
     private_var(D,T,C,uint,flags)                   \
     private_var(D,T,C,uint,utf8_length)            \
