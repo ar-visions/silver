@@ -24,3 +24,5 @@ foreach ( file ${include_files} )
     get_filename_component( name ${file} NAME )
     install( FILES ${file} DESTINATION include/obj )
 endforeach()
+
+install (TARGETS obj LIBRARY DESTINATION lib)

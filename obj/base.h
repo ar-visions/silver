@@ -7,10 +7,10 @@ struct _object_String;
 struct _object_Pairs;
 
 #define _Base(D,T,C)                                            \
+    method(D,T,C,void *,alloc,(Class,size_t))                   \
+    method(D,T,C,void,deallocx,(Class,void *))                  \
     method(D,T,C,void,class_preinit,(Class))                    \
     method(D,T,C,void,class_init,(Class))                       \
-    method(D,T,C,void *,alloc,(Class,size_t))                   \
-    method(D,T,C,void,dealloc,(Class,void *))                   \
     method(D,T,C,void,init,(C))                                 \
     method(D,T,C,struct _object_String *,identity,(C))          \
     method(D,T,C,void,free,(C))                                 \

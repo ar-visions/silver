@@ -22,12 +22,12 @@ void Data_get_vector(Data self, void **buf, size_t type_size, uint *count) {
     *count = self->length / type_size;
 }
 
-String Data_to_string(Data self) {
+String Data_base64_encode(Class cl, uint8 *input, int length, int primitive_size) {
     const uint8 *b64 = (const uint8 *)"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 	const uint8 pad = '=';
 	String str = auto(String);
     int clength = 0;
-    uint8 *cbytes = stbi_zlib_compress(self->bytes, self->length, &clength, 0);
+    uint8 *cbytes = stbi_zlib_compress(input, length, &clength, 0);
     if (!cbytes)
         return NULL;
     int divis = clength / 3 * 3;
@@ -62,12 +62,16 @@ String Data_to_string(Data self) {
     return str;
 }
 
-Data Data_from_string(Class cl, String value) {
-    if (!value || value->length % 4)
+String Data_to_string(Data self) {
+    return class_call(Data, base64_encode, self->bytes, self->length, 1);
+}
+
+uint8 *Data_base64_decode(Class cl, const char *input, int input_len,
+        int *output_len, int primitive_size) {
+    if (!input || input_len % 4)
         return NULL;
-    size_t alloc_len = (size_t)value->length / 4 * 3;
-    Data self = auto(Data);
-    uint8 *cbytes = calloc(1, alloc_len);
+    size_t alloc_len = (size_t)input_len / 4 * 3;
+    uint8 *cbytes = class_alloc((class_Base)cl, alloc_len);
     int cursor = 0;
     int pfound = 0;
 
@@ -83,10 +87,10 @@ Data Data_from_string(Class cl, String value) {
         49, 50, 51, -1, -1, -1, -1, -1, -1, -1    // 120
     };
 
-    for (int i = 0; i < value->length; i += 4) {
+    for (int i = 0; i < input_len; i += 4) {
         uint8 x[4];
         for (int ii = 0; ii < 4; ii++) {
-            uint8 b = value->buffer[i + ii];
+            uint8 b = input[i + ii];
             if (b < 40 || b >= 130)
                 return NULL;
             int16 v;
@@ -110,23 +114,32 @@ Data Data_from_string(Class cl, String value) {
     }
     int pad = 0;
     int clength = alloc_len;
-    if (value->length >= 4) {
-        if (value->buffer[value->length - 1] == '=') {
+    if (input_len >= 4) {
+        if (input[input_len - 1] == '=') {
             pad++;
-            if (value->buffer[value->length - 2] == '=')
+            if (input[input_len - 2] == '=')
                 pad++;
         }
         clength -= pad;
     }
 
-    self->bytes = (uint8 *)stbi_zlib_decode_malloc((const char *)cbytes, clength, (int *)&self->length);
-    free_ptr(cbytes);
+    uint8 *output = (uint8 *)stbi_zlib_decode_malloc((const char *)cbytes, clength, output_len);
+    class_dealloc((class_Base)cl, cbytes);
 
-    if (!self->bytes || pfound != pad)
+    if (!output || pfound != pad)
         return NULL;
-    return self;
+    return output;
+}
+
+Data Data_from_string(Class cl, String value) {
+    if (!value || value->length % 4)
+        return NULL;
+    Data self = (Data)autorelease(new_obj((class_Base)cl, 0));
+    class_Data data_class = (class_Data)cl;
+    self->bytes = data_class->base64_decode(cl, value->buffer, value->length, &self->length, 1);
+    return self->bytes ? self : NULL;
 }
 
 void Data_free(Data self) {
-    free_ptr(self->bytes);
+    object_dealloc(self, self->bytes);
 }

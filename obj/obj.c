@@ -8,7 +8,7 @@ static void class_set_methods(Class c) {
     for (int i = 0; i < c->mcount; i++) {
         if (!c->m[i]) {
             for (Class cc = c->parent; cc; cc = cc->parent) {
-                if (cc->mcount <= i)
+                if (cc->mcount < i)
                     break;
                 if (cc->m[i]) {
                     c->m[i] = cc->m[i];

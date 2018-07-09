@@ -9,14 +9,13 @@ void List_class_init() {
 
 void List_free(List self) {
     call(self, clear);
-    class_call(List, dealloc, self->buffer);
 }
 
 void *List_alloc(Class cl, size_t count) {
     return calloc(1, count);
 }
 
-void List_dealloc(Class cl, void *ptr) {
+void List_deallocx(Class cl, void *ptr) {
     free_ptr(ptr);
 }
 
@@ -63,10 +62,10 @@ void List_push(List self, Base obj) {
         Base *buffer = class_call(List, alloc, sizeof(Base) * size);
         memcpy(buffer, self->buffer, sizeof(Base) * self->count);
         self->remaining = size - self->count;
-        class_call(List, dealloc, self->buffer);
+        class_call(List, deallocx, self->buffer);
         self->buffer = buffer;
     }
-    self->buffer[self->count++] = retain(obj);
+    self->buffer[self->count++] = self->weak_refs ? obj : retain(obj);
     self->remaining--;
 }
 
@@ -81,7 +80,8 @@ bool List_remove(List self, Base obj) {
     int index = call(self, index_of, obj);
     if (index >= 0) {
         Base o = self->buffer[index];
-        release(o);
+        if (!self->weak_refs)
+            release(o);
         for (int i = index + 1; i < self->count; i++)
             self->buffer[i - 1] = self->buffer[i];
         self->remaining++;
@@ -112,8 +112,14 @@ int List_index_of(List self, Base obj) {
 }
 
 void List_clear(List self) {
-    for (int i = 0; i < self->count; i++)
-        release(self->buffer[i]);
+    if (!self->weak_refs)
+        for (int i = 0; i < self->count; i++) {
+            Base obj = self->buffer[i];
+            release(obj);
+            self->remaining++;
+        }
+    self->count = 0;
+
 }
 
 Base List_object_at(List self, int index) {
