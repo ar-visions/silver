@@ -37,8 +37,8 @@ struct _object_Pairs;
 declare(Base, Base)
 
 #define set_prop(O,P,V)         (call(O, set_property, P, base(V)))
-#define get_prop(C,O,P)         (instance(call((O), get_property, P), C))
-#define prop_meta(O,P,M,C)      (instance(call((O), property_meta, P, M), C))
+#define get_prop(C,O,P)         (instance(C,call((O), get_property, P)))
+#define prop_meta(O,P,M,C)      (instance(C,call((O), property_meta, P, M)))
 #define props_with_meta(M,C)    (class_call(Prop, props_with_meta, class_object(C), M))
 
 #define print(C,...)                                          \
