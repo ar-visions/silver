@@ -29,6 +29,7 @@ declare(Pairs, Base);
 
 #define pairs_add(O,K,V)    (call(O, add, base(K), base(V)))
 #define pairs_value(C,O,K)  ((O && K) ? instance(C,call(O, value, base(K))) : NULL)
+#define pairs(C,O,K)        ((O && K) ? instance(C,call(O, value, base(string(K)))) : NULL)
 #define pairs_find(O,K)     ((O && K) ? call(O, find, base(K)) : NULL)
 #define each_pair(O, KV)     if (O) each((O)->ordered_list, KV)
 

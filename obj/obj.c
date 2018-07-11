@@ -31,15 +31,15 @@ Class class_find(const char *name) {
     return NULL;
 }
 
-bool class_inherits(Class check, Class c) {
+Class class_inherits(Class check, Class c) {
     while (check) {
         if (c == check)
-            return true;
+            return c;
         if (check == check->parent)
-            return false;
+            return NULL;
         check = check->parent;
     }
-    return false;
+    return NULL;
 }
 
 Base object_inherits(Base o, Class c) {

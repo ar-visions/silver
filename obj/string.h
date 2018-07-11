@@ -44,4 +44,7 @@ struct _object_String;
     private_var(D,T,C,size_t,length)
 declare(String,Base)
 
+#define string_eq(C,S)  (call(C,cmp,S) == 0)
+#define string_cmp(C,S) (call(C,cmp,S))
+
 #endif
