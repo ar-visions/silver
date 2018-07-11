@@ -390,6 +390,7 @@ Base Base_from_json(Class c, String value) {
                             }
                             case '[': {
                                 Base obj = modes->object;
+                                List prev_list = modes->assoc_list;
                                 String key = modes->key;
                                 modes->parse = PARSE_COMMA;
                                 modes_push(&modes);
@@ -402,8 +403,8 @@ Base Base_from_json(Class c, String value) {
                                         if (!key)
                                             return NULL;
                                         pairs_add(((Pairs)obj), key, modes->assoc_list);
-                                    } else if (modes->object)
-                                        list_push(((List)obj), modes->assoc_list);
+                                    } else if (prev_list)
+                                        list_push(prev_list, modes->assoc_list);
                                 }
                                 modes->object = NULL;
                                 s++;
