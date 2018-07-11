@@ -10,4 +10,5 @@
 /usr/local/include/obj/prop.h
 /usr/local/include/obj/stb_zlib.h
 /usr/local/include/obj/string.h
+/usr/local/include/obj/vec.h
 /usr/local/lib/libobj.so

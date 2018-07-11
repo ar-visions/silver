@@ -5,6 +5,7 @@
     override(D,T,C,void,free,(C))                   \
     override(D,T,C,void *,alloc,(Class,size_t))     \
     override(D,T,C,void,deallocx,(Class,void *))    \
+    override(D,T,C,String,to_string,(C))            \
     method(D,T,C,void,push,(C,Base))                \
     method(D,T,C,Base,pop,(C))                      \
     method(D,T,C,bool,remove,(C,Base))              \
