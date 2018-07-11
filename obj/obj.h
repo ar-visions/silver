@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
+#include <math.h>
 
 #ifndef typeof
 #ifdef _MSC_VER

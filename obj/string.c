@@ -1,5 +1,4 @@
 #include <obj/obj.h>
-#include <obj/string.h>
 #include <ctype.h>
 
 implement(String);
