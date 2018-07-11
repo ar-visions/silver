@@ -36,10 +36,10 @@ struct _object_Pairs;
     method(D,T,C,C,from_json,(Class, struct _object_String *))
 declare(Base, Base)
 
-#define set_prop(O,P,V) (call(O, set_property, P, base(V)))
-#define get_prop(O,P,C) (inherits(call(O, get_property, P), C))
-#define prop_meta(O,P,M,C) (inherits(call(O, property_meta, P, M), C))
-#define props_with_meta(M,C) (class_call(Prop, props_with_meta, class_object(C), M))
+#define set_prop(O,P,V)         (call(O, set_property, P, base(V)))
+#define get_prop(C,O,P)         (instance(call((O), get_property, P), C))
+#define prop_meta(O,P,M,C)      (instance(call((O), property_meta, P, M), C))
+#define props_with_meta(M,C)    (class_call(Prop, props_with_meta, class_object(C), M))
 
 #define print(C,...)                                          \
     if (C && call(C, is_logging))                             \

@@ -38,7 +38,7 @@ List List_new_list_of_objects(Class list_class, Class item_class, ...) {
         if (object_inherits(o, self->item_class))
             list_push(self, o);
         else {
-            String str = inherits(o, String);
+            String str = instance(String, o);
             if (!str)
                 str = call(o, to_string);
             if (str) {
@@ -122,7 +122,7 @@ void List_clear(List self) {
 
 }
 
-Base List_object_at(List self, int index) {
+Base List_get(List self, int index) {
     if (index < 0 || index >= self->count)
         return NULL;
     return self->buffer[index];

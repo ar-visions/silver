@@ -9,7 +9,7 @@
     method(D,T,C,Base,pop,(C))                      \
     method(D,T,C,bool,remove,(C,Base))              \
     method(D,T,C,int,index_of,(C,Base))             \
-    method(D,T,C,Base,object_at,(C,int))            \
+    method(D,T,C,Base,get,(C,int))                  \
     method(D,T,C,int,count,(C))                     \
     method(D,T,C,Base,first,(C))                    \
     method(D,T,C,Base,last,(C))                     \
@@ -29,14 +29,15 @@ declare(List, Base);
 
 extern Base List_placeholder;
 
-#define instances(O,C,V)  llist_each(&O->list, V) if (inherits(V,C))
+#define instances(C,O,V)  llist_each(&O->list, V) if (instance(C,V))
 
 #define each(O,V)         if ((O)->count > 0) for (int list_var(__LINE__) = 0; (list_var(__LINE__) < (O)->count) && ((void *)((V) = (typeof(V))(((O)->buffer[list_var(__LINE__)]))) != (void *)&List_placeholder); list_var(__LINE__)++)
 #define list_count(L)     ((L) ? ((L)->list.count) : 0)
 #define list_clear(L)     call((L), clear)
 #define list_push(L,O)    call((L), push, base(O))
 #define list_remove(L,O)  call((L), remove, base(O))
-#define list_pop(L,C)     inherits(call((L), pop), C)
+#define list_pop(L,C)     instance(C, call((L), pop))
+#define list_get(C,L,I)        
 #define new_list_of(C,I,...)  (C##_cl->new_list_of_objects((Class)C##_cl, (Class)I##_cl, ## __VA_ARGS__, NULL))
 #define list_of(C,I,...)      (autorelease(C##_cl->new_list_of_objects((Class)C##_cl, (Class)I##_cl, ## __VA_ARGS__, NULL)))
 #endif

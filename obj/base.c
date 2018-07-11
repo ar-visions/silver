@@ -90,13 +90,13 @@ bool implements_serialize(class_Base cl) {
 }
 
 void Base_serialize(Base self, Pairs pairs) {
-    Pairs props = pairs_value(self->cl->meta, string("props"), Pairs);
+    Pairs props = pairs_value(Pairs, self->cl->meta, string("props"));
     KeyValue kv;
     each_pair(props, kv) {
-        String name  = inherits(kv->key, String);
-        Prop   prop  = inherits(kv->value, Prop);
+        String name  = instance(String, kv->key);
+        Prop   prop  = instance(Prop, kv->value);
         Base   value = call(self, prop_value, prop);
-        List   vlist = inherits(value, List);
+        List   vlist = instance(List, value);
         if (value == NULL || implements_serialize((class_Base)value->cl)) {
             pairs_add(pairs, name, value);
         } else if (vlist) {
@@ -127,16 +127,16 @@ String to_json(Pairs p, String str) {
     call(str, concat_char, '{');
     bool f = true;
     each_pair(p, kv) {
-        String   key = inherits(kv->key, String);
+        String   key = instance(String, kv->key);
         Base   value = kv->value;
-        List   vlist = inherits(value, List);
+        List   vlist = instance(List, value);
         if (!key)
             continue;
         if (value == NULL || implements_serialize((class_Base)value->cl)) {
             if (!f) call(str, concat_char, ',');
             String s = NULL;
             String svalue = value ? call(value, to_string) : NULL;
-            bool prim = inherits(value, Primitive) != NULL;
+            bool prim = instance(Primitive, value) != NULL;
             if (svalue) {
                 const char *q = !prim ? "\"" : "";
                 s = class_call(String, format, "\"%s\":%s%s%s", key->buffer,
@@ -146,7 +146,7 @@ String to_json(Pairs p, String str) {
             }
             call(str, concat_string, s);
             f = false;
-        } else if (inherits(value, Pairs)) {
+        } else if (instance(Pairs, value)) {
             if (!f) call(str, concat_char, ',');
             String s = class_call(String, format, "\"%s\":", key->buffer);
             call(str, concat_string, s);
@@ -161,7 +161,7 @@ String to_json(Pairs p, String str) {
             each(vlist, v) {
                 if (v == NULL || implements_serialize((class_Base)v->cl)) {
                     String svalue = v ? call(v, to_string) : NULL;
-                    bool prim = inherits(v, Primitive) != NULL;
+                    bool prim = instance(Primitive, v) != NULL;
                     String s = NULL;
                     if (svalue) {
                         const char *q = !prim ? "\"" : "";
@@ -174,7 +174,7 @@ String to_json(Pairs p, String str) {
                         call(str, concat_char, ',');
                     call(str, concat_string, s);
                     first = false;
-                } else if (inherits(v, Pairs)) {
+                } else if (instance(Pairs, v)) {
                     to_json((Pairs)v, str);
                 }
             }
@@ -396,9 +396,9 @@ Base Base_from_json(Class c, String value) {
                                 modes->mode = MODE_ARRAY;
                                 modes->parse = PARSE_VALUE;
                                 modes->assoc_list = pairs_result ? auto(List) : 
-                                    get_prop(obj, key->buffer, List);
+                                    get_prop(List, obj, key->buffer);
                                 if (pairs_result) {
-                                    if (inherits(obj, Pairs)) {
+                                    if (instance(Pairs, obj)) {
                                         if (!key)
                                             return NULL;
                                         pairs_add(((Pairs)obj), key, modes->assoc_list);
@@ -501,10 +501,10 @@ void Base_print(Base self, String str) {
 }
 
 Prop Base_find_prop(Class cl, const char *name) {
-    Pairs props = pairs_value(cl->meta, string("props"), Pairs);
+    Pairs props = pairs_value(Pairs, cl->meta, string("props"));
     if (!props)
         return NULL;
-    Prop p = pairs_value(props, string(name), Prop);
+    Prop p = pairs_value(Prop, props, string(name));
     return p;
 }
 
@@ -622,19 +622,19 @@ Base Base_prop_value(Base self, Prop p) {
 }
 
 Base Base_get_property(Base self, const char *name) {
-    Pairs props = pairs_value(self->cl->meta, string("props"), Pairs);
+    Pairs props = pairs_value(Pairs, self->cl->meta, string("props"));
     if (!props)
         return NULL;
-    Prop p = pairs_value(props, string(name), Prop);
+    Prop p = pairs_value(Prop, props, string(name));
     return call(self, prop_value, p);
 }
 
 Base Base_property_meta(Base self, const char *name, const char *meta) {
-    Pairs props = pairs_value(self->cl->meta, string("props"), Pairs);
+    Pairs props = pairs_value(Pairs, self->cl->meta, string("props"));
     if (!props)
         return NULL;
-    Prop p = pairs_value(props, string(name), Prop);
-    return p ? pairs_value(p->meta, string(meta), Base) : NULL;
+    Prop p = pairs_value(Prop, props, string(name));
+    return p ? pairs_value(Base, p->meta, string(meta)) : NULL;
 }
 
 Base Base_copy(Base self) {
