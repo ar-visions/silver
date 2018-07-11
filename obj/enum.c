@@ -9,7 +9,7 @@ void Enum_class_preinit(Class cself) {
     }
     class_Enum c = (class_Enum)cself;
     String enums_str = new_string("enums");
-    Pairs enums = pairs_value(Enum_cl->meta, enums_str, Pairs);
+    Pairs enums = pairs_value(Pairs, Enum_cl->meta, enums_str);
     if (!enums) {
         enums = new(Pairs);
         pairs_add(Enum_cl->meta, enums_str, enums);
@@ -68,28 +68,28 @@ Enum Enum_find(Class c, const char *symbol) {
     if (!Enum_cl->meta)
         return NULL;
     String key = new_string("enums");
-    Pairs enums = pairs_value(Enum_cl->meta, key, Pairs);
+    Pairs enums = pairs_value(Pairs, Enum_cl->meta, key);
     release(key);
     if (!enums)
         return NULL;
     key = new_string(c->name);
-    Pairs e = pairs_value(enums, key, Pairs);
+    Pairs e = pairs_value(Pairs, enums, key);
     release(key);
     if (!e)
         return NULL;
     key = new_string(symbol);
     String sym_str = new_string(symbol);
-    Enum en = (Enum)pairs_value(e, sym_str, Enum);
+    Enum en = (Enum)pairs_value(Enum, e, sym_str);
     release(sym_str);
     release(key);
     return en;
 }
 
 Pairs Enum_enums(Class cself) {
-    Pairs enums = pairs_value(Enum_cl->meta, string("enums"), Pairs);
+    Pairs enums = pairs_value(Pairs, Enum_cl->meta, string("enums"));
     if (!enums)
         return NULL;
-    return pairs_value(enums, string(cself->name), Pairs);
+    return pairs_value(Pairs, enums, string(cself->name));
 }
 
 String Enum_to_string(Enum self) {

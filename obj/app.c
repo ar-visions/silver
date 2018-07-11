@@ -53,12 +53,12 @@ void Timer_loop(Timer self) { }
 void Timer_start(Timer self) {
     if (!self->running) {
         self->running = true;
-        call(app, push_delegate, inherits(self, AppDelegate));
+        call(app, push_delegate, instance(AppDelegate, self));
     }
 }
 void Timer_stop(Timer self) {
     if (self->running) {
         self->running = false;
-        call(app, remove_delegate, inherits(self, AppDelegate));
+        call(app, remove_delegate, instance(AppDelegate, self));
     }
 }

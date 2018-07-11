@@ -36,7 +36,7 @@ List Prop_props_with_meta(Class prop_class, Class cl_filter, const char *meta) {
     if (!prop_meta)
         return NULL;
     String smeta = string(meta);
-    List list = pairs_value(prop_meta, smeta, List);
+    List list = pairs_value(List, prop_meta, smeta);
     if (!list || !cl_filter || cl_filter == class_object(Base))
         return list;
     List filtered = auto(List);
@@ -71,7 +71,7 @@ Prop Prop_new_with(Class pclass, Class cl, char *type, char *name, Getter getter
                 prop_meta = new(Pairs);
             KeyValue kv;
             each_pair(self->meta, kv) {
-                List list = pairs_value(prop_meta, kv->key, List);
+                List list = pairs_value(List, prop_meta, kv->key);
                 if (!list) {
                     list = auto(List);
                     pairs_add(prop_meta, kv->key, list);
