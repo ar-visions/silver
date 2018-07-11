@@ -119,11 +119,24 @@ void List_clear(List self) {
             self->remaining++;
         }
     self->count = 0;
-
 }
 
 Base List_object_at(List self, int index) {
     if (index < 0 || index >= self->count)
         return NULL;
     return self->buffer[index];
+}
+
+String List_to_string(List self) {
+    String result = auto(String);
+    Base o;
+    bool multi = false;
+    each(self, o) {
+        if (multi)
+            call(result, concat_char, ',');
+        String s = call(o, to_string);
+        call(result, concat_string, s);
+        multi = true;
+    }
+    return result;
 }

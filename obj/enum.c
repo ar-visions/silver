@@ -53,6 +53,7 @@ void Enum_class_preinit(Class cself) {
             Enum enum_obj = (Enum)new_obj((class_Base)c, 0);
             if (enum_obj) {
                 printf("type: %s, name = %s\n", type, name);
+                strlwrcase(name);
                 String str_name = new_string(name);
                 enum_obj->symbol = str_name;
                 enum_obj->ordinal = (int)(ulong)(c->m[i])();
@@ -62,6 +63,29 @@ void Enum_class_preinit(Class cself) {
             free(name);
         }
     }
+}
+
+Enum Enum_from_ordinal(Class c, int ordinal) {
+    if (!Enum_cl->meta)
+        return NULL;
+    String key = new_string("enums");
+    Pairs enums = pairs_value(Pairs, Enum_cl->meta, key);
+    release(key);
+    if (!enums)
+        return NULL;
+    key = new_string(c->name);
+    Pairs e = pairs_value(Pairs, enums, key);
+    release(key);
+    if (!e)
+        return NULL;
+    KeyValue kv;
+    each_pair(e, kv) {
+        Enum en = (Enum)kv->value;
+        if (en->ordinal == ordinal) {
+            return en;
+        }
+    }
+    return NULL;
 }
 
 Enum Enum_find(Class c, const char *symbol) {
@@ -79,6 +103,7 @@ Enum Enum_find(Class c, const char *symbol) {
         return NULL;
     key = new_string(symbol);
     String sym_str = new_string(symbol);
+    strlwrcase(sym_str->buffer);
     Enum en = (Enum)pairs_value(Enum, e, sym_str);
     release(sym_str);
     release(key);

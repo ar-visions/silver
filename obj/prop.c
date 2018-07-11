@@ -48,11 +48,14 @@ List Prop_props_with_meta(Class prop_class, Class cl_filter, const char *meta) {
     return filtered;
 }
 
-Prop Prop_new_with(Class pclass, Class cl, char *type, char *name, Getter getter, Setter setter, char *meta) {
+Prop Prop_new_with(Class pclass, Class cl, bool is_enum, char *type, char *name, Getter getter, Setter setter, char *meta) {
     const char *type_ = var_to_obj_type(type);
     if (!type_)
         type_ = type;
     Class c = class_find(type_);
+    if (is_enum) {
+        type_ = "Enum";
+    }
     Type t = enum_find(Type, type_);
     Type t_object = enum_find(Type, "Object");
     if (!c && !t)

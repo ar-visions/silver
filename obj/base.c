@@ -50,7 +50,10 @@ void Base_class_init(Class c) {
         char *start = mnames[i];
         if (strchr(start, '*'))
             continue;
-        char *mname = strchr(start, ' ');
+        int offset = 0;
+        if (strncmp(start, "enum ", 5) == 0)
+            offset = 5;
+        char *mname = strchr(start + offset, ' ');
         if (mname && strncmp(mname, " get_", 5) == 0) {
             mname++;
             char *args = strchr(mname, ' ');
@@ -72,10 +75,17 @@ void Base_class_init(Class c) {
             type[type_len] = 0;
             memcpy(name, &mname[4], name_len);
             name[name_len] = 0;
-            Prop p = class_call(Prop, new_with, (Class)cbase, type, name,
+            int offset = 0;
+            bool is_enum = false;
+            if (strncmp(type, "enum ", 5) == 0) {
+                type[strlen(type) - 4] = 0; // hackish
+                offset = 5;
+                is_enum = true;
+            }
+            Prop p = class_call(Prop, new_with, (Class)cbase, is_enum, type + offset, name,
                 (Getter)cbase->m[i], (Setter)cbase->m[i - 1], *hash ? hash : NULL);
             if (p) {
-                String name_str = new_string("name");
+                String name_str = new_string(name);
                 pairs_add(props, name_str, p);
                 release(name_str);
             }
@@ -429,9 +439,13 @@ Base Base_from_json(Class c, String value) {
                                             item = item_class->from_string((Class)item_class, value);
                                         }
                                         list_push(modes->assoc_list, item);
-                                    } else if (pairs_result)
+                                    } else if (pairs_result) {
+                                        if (call(modes->key, compare, string("filter_count")) == 0) {
+                                            int test = 0;
+                                            test++;
+                                        }
                                         pairs_add(((Pairs)modes->object), modes->key, value);
-                                    else
+                                    } else
                                         call(modes->object, set_property, modes->key->buffer, base(value));
                                 } else {
                                     String symbol = parse_symbol(&s);
@@ -531,6 +545,13 @@ void Base_set_property(Base self, const char *name, Base base_value) {
             p->setter(self, (void *)(size_t)v);
             break;
         }
+        case Type_Enum: {
+            class_Base c = (class_Base)p->class_type;
+            Enum e = value ? Enum_cl->find((Class)c, value->buffer) : NULL;
+            if (e)
+                p->setter(self, (void *)(size_t)e->ordinal);
+            break;
+        }
         case Type_Int8: {
             char v = (char)atoi((char *)value->buffer);
             p->setter(self, (void *)(size_t)v);
@@ -607,6 +628,7 @@ Base Base_prop_value(Base self, Prop p) {
         return NULL;
     switch (p->enum_type->ordinal) {
         case Type_Object:   return (Base)p->getter(self);
+        case Type_Enum:     return (Base)Enum_cl->from_ordinal((Class)p->class_type, (int)((int (*)(Base))p->getter)(self));
         case Type_Boolean:  return (Base)bool_object((bool)((size_t (*)(Base))p->getter)(self));
         case Type_Int8:     return (Base)int8_object(((int8 (*)(Base))p->getter)(self));
         case Type_UInt8:    return (Base)uint8_object(((uint8 (*)(Base))p->getter)(self));

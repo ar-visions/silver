@@ -47,4 +47,7 @@ declare(String,Base)
 #define string_eq(C,S)  (call(C,cmp,S) == 0)
 #define string_cmp(C,S) (call(C,cmp,S))
 
+char *strlwrcase(char *str);
+char *struprcase(char *str);
+
 #endif

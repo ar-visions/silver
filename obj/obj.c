@@ -32,9 +32,10 @@ Class class_find(const char *name) {
 }
 
 Class class_inherits(Class check, Class c) {
+    Class orig = check;
     while (check) {
         if (c == check)
-            return c;
+            return orig;
         if (check == check->parent)
             return NULL;
         check = check->parent;

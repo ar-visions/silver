@@ -24,13 +24,13 @@ static char *strrstr(const char *s1, const char *s2) {
     return NULL;
 }
 
-static char *strlwrcase(char *str) {
+char *strlwrcase(char *str) {
     for (char *p = str; *p; p++)
         *p = tolowercase(*p);
     return str;
 }
 
-static char *struprcase(char *str) {
+char *struprcase(char *str) {
     for (char *p = str; *p; p++)
         *p = touppercase(*p);
     return str;
