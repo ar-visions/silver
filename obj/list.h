@@ -9,7 +9,7 @@
     method(D,T,C,Base,pop,(C))                      \
     method(D,T,C,bool,remove,(C,Base))              \
     method(D,T,C,int,index_of,(C,Base))             \
-    method(D,T,C,Base,get,(C,int))                  \
+    method(D,T,C,Base,object_at,(C,int))            \
     method(D,T,C,int,count,(C))                     \
     method(D,T,C,Base,first,(C))                    \
     method(D,T,C,Base,last,(C))                     \
@@ -37,7 +37,7 @@ extern Base List_placeholder;
 #define list_push(L,O)    call((L), push, base(O))
 #define list_remove(L,O)  call((L), remove, base(O))
 #define list_pop(L,C)     instance(C, call((L), pop))
-#define list_get(C,L,I)        
+#define list_get(C,L,I)   instance(C,call((L), object_at, (I)))
 #define new_list_of(C,I,...)  (C##_cl->new_list_of_objects((Class)C##_cl, (Class)I##_cl, ## __VA_ARGS__, NULL))
 #define list_of(C,I,...)      (autorelease(C##_cl->new_list_of_objects((Class)C##_cl, (Class)I##_cl, ## __VA_ARGS__, NULL)))
 #endif

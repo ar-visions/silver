@@ -447,7 +447,12 @@ Base Base_from_json(Class c, String value) {
                                         else if (call(symbol, cmp, "false") != 0)
                                             return NULL;
                                         if (pairs_result) {
-                                            pairs_add(((Pairs)modes->object), modes->key, bool_object(bool_value));
+                                            if (modes->assoc_list)
+                                                list_push(modes->assoc_list, bool_object(bool_value));
+                                            else if (!modes->object)
+                                                return NULL;
+                                            else
+                                                pairs_add(((Pairs)modes->object), modes->key, bool_object(bool_value));
                                         } else {
                                             String bool_str = string(bool_value ? "true" : "false");
                                             call(modes->object, set_property, modes->key->buffer, base(bool_str));

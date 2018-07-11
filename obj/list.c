@@ -122,7 +122,7 @@ void List_clear(List self) {
 
 }
 
-Base List_get(List self, int index) {
+Base List_object_at(List self, int index) {
     if (index < 0 || index >= self->count)
         return NULL;
     return self->buffer[index];
