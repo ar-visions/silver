@@ -8,7 +8,7 @@
     method(D,T,C,uint8 *,base64_decode,(Class, const char *, int, int *, int)) \
     method(D,T,C,String,base64_encode,(Class, uint8 *, int, int)) \
     method(D,T,C,C,with_size,(uint))       \
-    method(D,T,C,C,with_bytes,(uint8 *, uint)) \
+    method(D,T,C,C,with_bytes,(Class, uint8 *, uint)) \
     method(D,T,C,void,get_vector,(C, void **, size_t, uint *)) \
     var(D,T,C,uint8 *,bytes)               \
     var(D,T,C,uint,length)

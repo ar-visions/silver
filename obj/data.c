@@ -3,7 +3,7 @@
 
 implement(Data)
 
-Data Data_with_bytes(uint8 *bytes, uint length) {
+Data Data_with_bytes(Class cl, uint8 *bytes, uint length) {
     Data self = auto(Data);
     self->bytes = bytes;
     self->length = length;
