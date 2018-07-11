@@ -29,9 +29,9 @@ declare(List, Base);
 
 extern Base List_placeholder;
 
-#define instances(C,O,V)  llist_each(&O->list, V) if (instance(C,V))
 
 #define each(O,V)         if ((O)->count > 0) for (int list_var(__LINE__) = 0; (list_var(__LINE__) < (O)->count) && ((void *)((V) = (typeof(V))(((O)->buffer[list_var(__LINE__)]))) != (void *)&List_placeholder); list_var(__LINE__)++)
+#define instances(C,O,V)  each(O,V) if (instance(C,V))
 #define list_count(L)     ((L) ? ((L)->list.count) : 0)
 #define list_clear(L)     call((L), clear)
 #define list_push(L,O)    call((L), push, base(O))

@@ -401,7 +401,7 @@ struct _Class {
 #define alloc_struct(T)         ((T *)calloc(1, sizeof(T)))
 #define array_struct(T,C)       ((T *)calloc(1, sizeof(T) * C))
 #define object_new(O)           ((typeof(O))((O) ? new_obj((class_Base)(O)->cl, 0) : NULL))
-#define class_of(C,I)           ((class_##I)class_inherits((Class)C,(Class)I##_cl))
+#define class_of(I,C)           ((class_##I)class_inherits((Class)C,(Class)I##_cl))
 #define instance(C,O)           ((C)object_inherits((Base)(O),(Class)C##_cl))
 #ifdef _MSC_VER
     #define super(M,...)            (self->cl->parent->M(self->super_object, __VA_ARGS__))
@@ -453,6 +453,7 @@ struct _Class {
 #include <obj/pairs.h>
 #include <obj/app.h>
 #include <obj/prim.h>
+#include <obj/vec.h>
 
 EXPORT Base new_obj(class_Base, size_t);
 EXPORT void free_obj(Base);
