@@ -25,7 +25,7 @@ Class class_find(const char *name) {
     Class c = NULL;
     for (int i = 0; i < classes_count; i++) {
         Class c = classes[i];
-        if (strcmp(name, c->name) == 0)
+        if (strcasecmp(name, c->name) == 0)
             return c;
     }
     return NULL;

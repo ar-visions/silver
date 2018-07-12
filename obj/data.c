@@ -22,6 +22,14 @@ void Data_get_vector(Data self, void **buf, size_t type_size, uint *count) {
     *count = self->length / type_size;
 }
 
+void Data_free_data(Data self, void *ptr) {
+    free(ptr);
+}
+
+void *Data_alloc_data(Data self, size_t size) {
+    return malloc(size);
+}
+
 String Data_base64_encode(Class cl, uint8 *input, int length, int primitive_size, bool compress) {
     const uint8 *b64 = (const uint8 *)"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 	const uint8 pad = '=';
@@ -73,6 +81,8 @@ uint8 *Data_base64_decode(Class cl, const char *input, int input_len,
         int *output_len, int primitive_size) {
     bool compressed = false;
     int input_len_ = input_len;
+    class_Data dcl = (class_Data)cl;
+
     if (input && input[0] == '^') {
         input_len--;
         input++;
@@ -81,7 +91,7 @@ uint8 *Data_base64_decode(Class cl, const char *input, int input_len,
     if (!input || input_len % 4)
         return NULL;
     size_t alloc_len = (size_t)input_len / 4 * 3;
-    uint8 *cbytes = class_alloc((class_Base)cl, alloc_len);
+    uint8 *cbytes = dcl->alloc_data(NULL, alloc_len);
     int cursor = 0;
     int pfound = 0;
 
@@ -135,8 +145,14 @@ uint8 *Data_base64_decode(Class cl, const char *input, int input_len,
 
     uint8 *output;
     if (compressed) {
-        output = (uint8 *)stbi_zlib_decode_malloc((const char *)cbytes, clength, output_len);
-        class_dealloc((class_Base)cl, cbytes);
+        void *output_decoded = (uint8 *)stbi_zlib_decode_malloc((const char *)cbytes, clength, output_len);
+        dcl->free_data(NULL, cbytes);
+        if (dcl->alloc_data != Data_alloc_data) {
+            output = dcl->alloc_data(NULL, (size_t)*output_len);
+            memcpy(output, output_decoded, (size_t)*output_len);
+            free(output_decoded);
+        } else
+            output = output_decoded;
     } else {
         output = (uint8 *)cbytes;
         *output_len = clength;
@@ -156,5 +172,5 @@ Data Data_from_string(Class cl, String value) {
 }
 
 void Data_free(Data self) {
-    object_dealloc(self, self->bytes);
+    call(self, free_data, self->bytes);
 }
