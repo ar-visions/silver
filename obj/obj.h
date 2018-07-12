@@ -10,6 +10,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
+#include <strings.h>
 
 #ifndef typeof
 #ifdef _MSC_VER

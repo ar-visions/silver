@@ -5,6 +5,8 @@
     override(D,T,C,void,free,(C))          \
     override(D,T,C,String,to_string,(C))   \
     override(D,T,C,C,from_string,(Class, String)) \
+    method(D,T,C,void *,alloc_data,(C,size_t)) \
+    method(D,T,C,void,free_data,(C,void *)) \
     method(D,T,C,uint8 *,base64_decode,(Class, const char *, int, int *, int)) \
     method(D,T,C,String,base64_encode,(Class, uint8 *, int, int, bool)) \
     method(D,T,C,C,with_size,(uint))       \
