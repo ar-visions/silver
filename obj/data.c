@@ -22,7 +22,7 @@ void Data_get_vector(Data self, void **buf, size_t type_size, uint *count) {
     *count = self->length / type_size;
 }
 
-String Data_base64_encode(Class cl, uint8 *input, int length, int primitive_size) {
+String Data_base64_encode(Class cl, uint8 *input, int length, int primitive_size, bool compress) {
     const uint8 *b64 = (const uint8 *)"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 	const uint8 pad = '=';
 	String str = auto(String);
@@ -32,6 +32,9 @@ String Data_base64_encode(Class cl, uint8 *input, int length, int primitive_size
         return NULL;
     int divis = clength / 3 * 3;
     
+    if (compress)
+        call(str, concat_char, '^');
+
     for (int x = 0; x < divis; x += 3) {
         uint8 b0 = cbytes[x], b1 = cbytes[x + 1], b2 = cbytes[x + 2];
         uint8 buf[4];
@@ -63,11 +66,18 @@ String Data_base64_encode(Class cl, uint8 *input, int length, int primitive_size
 }
 
 String Data_to_string(Data self) {
-    return class_call(Data, base64_encode, self->bytes, self->length, 1);
+    return class_call(Data, base64_encode, self->bytes, self->length, 1, true);
 }
 
 uint8 *Data_base64_decode(Class cl, const char *input, int input_len,
         int *output_len, int primitive_size) {
+    bool compressed = false;
+    int input_len_ = input_len;
+    if (input && input[0] == '^') {
+        input_len--;
+        input++;
+        compressed = true;
+    }
     if (!input || input_len % 4)
         return NULL;
     size_t alloc_len = (size_t)input_len / 4 * 3;
@@ -123,9 +133,14 @@ uint8 *Data_base64_decode(Class cl, const char *input, int input_len,
         clength -= pad;
     }
 
-    uint8 *output = (uint8 *)stbi_zlib_decode_malloc((const char *)cbytes, clength, output_len);
-    class_dealloc((class_Base)cl, cbytes);
-
+    uint8 *output;
+    if (compressed) {
+        output = (uint8 *)stbi_zlib_decode_malloc((const char *)cbytes, clength, output_len);
+        class_dealloc((class_Base)cl, cbytes);
+    } else {
+        output = (uint8 *)cbytes;
+        *output_len = clength;
+    }
     if (!output || pfound != pad)
         return NULL;
     return output;

@@ -6,7 +6,7 @@
     override(D,T,C,String,to_string,(C))   \
     override(D,T,C,C,from_string,(Class, String)) \
     method(D,T,C,uint8 *,base64_decode,(Class, const char *, int, int *, int)) \
-    method(D,T,C,String,base64_encode,(Class, uint8 *, int, int)) \
+    method(D,T,C,String,base64_encode,(Class, uint8 *, int, int, bool)) \
     method(D,T,C,C,with_size,(uint))       \
     method(D,T,C,C,with_bytes,(Class, uint8 *, uint)) \
     method(D,T,C,void,get_vector,(C, void **, size_t, uint *)) \

@@ -41,4 +41,6 @@ extern Base List_placeholder;
 #define list_get(C,L,I)   instance(C,call((L), object_at, (I)))
 #define new_list_of(C,I,...)  (C##_cl->new_list_of_objects((Class)C##_cl, (Class)I##_cl, ## __VA_ARGS__, NULL))
 #define list_of(C,I,...)      (autorelease(C##_cl->new_list_of_objects((Class)C##_cl, (Class)I##_cl, ## __VA_ARGS__, NULL)))
+#define new_list(...)     (List_cl->new_list_of_objects((Class)List_cl, (Class)Base_cl, ## __VA_ARGS__, NULL))
+#define list(...)         (autorelease(List_cl->new_list_of_objects((Class)List_cl, (Class)Base_cl, ## __VA_ARGS__, NULL)))
 #endif
