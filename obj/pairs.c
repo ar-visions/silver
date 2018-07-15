@@ -18,17 +18,16 @@ void Pairs_init(Pairs self) {
 void Pairs_clear(Pairs self) {
     for (int i = 0; i < (int)self->list_count; i++) {
         list_clear(self->lists[i]);
-        list_clear(self->ordered_list);
     }
+    list_clear(self->ordered_list);
 }
 
 void Pairs_add(Pairs self, Base key, Base value) {
     call(self, remove, key);
     KeyValue kv = new(KeyValue);
-    for (int i = 0; i < 2; i++) {
-        kv->key = retain(key);
-        kv->value = retain(value);
-    }
+    self->str_test = (String)value;
+    kv->key = retain(key);
+    kv->value = retain(value);
     ulong hash = call(key, hash) % self->list_count;
     list_push(self->lists[hash], kv);
     list_push(self->ordered_list, kv);
@@ -73,9 +72,17 @@ Pairs Pairs_copy(Pairs self) {
 }
 
 void Pairs_free(Pairs self) {
+    if (self->testme) {
+        int test = 0;
+        test++;
+    }
     self(clear);
     release(self->user_data);
-    free_ptr(self->lists);
+    String *str = self->str_test;
+    for (int i = 0; i < (int)self->list_count; i++)
+        release(self->lists[i]);
+    class_call(Pairs, deallocx, self->lists);
+    release(self->ordered_list);
 }
 
 typedef struct _StrRange {

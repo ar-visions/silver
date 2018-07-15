@@ -313,7 +313,9 @@ Base Base_from_json(Class c, String value) {
 
     parse_ws(&s);
     bool pairs_result = c == class_object(Pairs);
-    Base obj = autorelease(new_obj((class_Base)c, 0));
+    Base obj = new_obj((class_Base)c, 0);
+    obj = autorelease(obj);
+    obj->testme = 1;
     memset(modes, 0, sizeof(JsMode));
     modes->cl = c;
     modes->mode = MODE_OBJECT;
@@ -328,13 +330,13 @@ Base Base_from_json(Class c, String value) {
                 switch (*s) {
                     case ':':
                         if (modes->mode != MODE_OBJECT || modes->parse != PARSE_COLON)
-                            return NULL;
+                            goto error;
                         modes->parse = PARSE_VALUE;
                         s++;
                         break;
                     case ',':
                         if (modes->parse != PARSE_COMMA)
-                            return NULL;
+                            goto error;
                         if (modes->mode == MODE_OBJECT)
                             modes->parse = PARSE_KEY;
                         else if (modes->mode == MODE_ARRAY)
@@ -343,13 +345,13 @@ Base Base_from_json(Class c, String value) {
                         break;
                     case ']':
                         if (modes->mode != MODE_ARRAY || (modes->parse != PARSE_COMMA && modes->parse != PARSE_VALUE))
-                            return NULL;
+                            goto error;
                         modes_pop(&modes);
                         s++;
                         break;
                     case '}':
                         if (modes->mode != MODE_OBJECT)
-                            return NULL;
+                            goto error;
                         s++;
                         if (modes == modes_origin) {
                             br = true;
@@ -361,12 +363,12 @@ Base Base_from_json(Class c, String value) {
                         if (modes->mode == MODE_OBJECT && modes->parse == PARSE_KEY) {
                             modes->key = parse_quoted_string(&s, max_key_len);
                             if (!modes->key)
-                                return NULL;
+                                goto error;
                             modes->parse = PARSE_COLON;
                             break;
                         }
                         if (modes->parse != PARSE_VALUE)
-                            return NULL;
+                            goto error;
                         parse_ws(&s);
                         switch (*s) {
                             case '{': {
@@ -381,7 +383,8 @@ Base Base_from_json(Class c, String value) {
                                 if (assoc_list) {
                                     class_Base item_class = pairs_result ? (class_Base)Pairs_cl : 
                                         (class_Base)assoc_list->item_class;
-                                    modes->object = autorelease(new_obj(item_class, 0));
+                                    Base o = new_obj(item_class, 0);
+                                    modes->object = autorelease(o);
                                     list_push(assoc_list, modes->object);
                                 } else {
                                     if (pairs_result) {
@@ -390,8 +393,9 @@ Base Base_from_json(Class c, String value) {
                                     } else {
                                         Prop prop = cl->find_prop((Class)cl, (const char *)key->buffer);
                                         if (!prop || !prop->class_type)
-                                            return NULL;
-                                        modes->object = autorelease(new_obj((class_Base)prop->class_type, 0));
+                                            goto error;
+                                        Base o = new_obj((class_Base)prop->class_type, 0);
+                                        modes->object = autorelease(o);
                                         prop->setter(obj, modes->object);
                                     }
                                 }
@@ -411,7 +415,7 @@ Base Base_from_json(Class c, String value) {
                                 if (pairs_result) {
                                     if (instance(Pairs, obj)) {
                                         if (!key)
-                                            return NULL;
+                                            goto error;
                                         pairs_add(((Pairs)obj), key, modes->assoc_list);
                                     } else if (prev_list)
                                         list_push(prev_list, modes->assoc_list);
@@ -426,7 +430,7 @@ Base Base_from_json(Class c, String value) {
                                 if (is_numeric || is_str) {
                                     String value = is_numeric ? parse_numeric(&s) : parse_quoted_string(&s, 0);
                                     if (!value)
-                                        return NULL;
+                                        goto error;
                                     if (modes->assoc_list) {
                                         Base item;
                                         if (pairs_result) {
@@ -440,17 +444,13 @@ Base Base_from_json(Class c, String value) {
                                         }
                                         list_push(modes->assoc_list, item);
                                     } else if (pairs_result) {
-                                        if (call(modes->key, compare, string("filter_count")) == 0) {
-                                            int test = 0;
-                                            test++;
-                                        }
                                         pairs_add(((Pairs)modes->object), modes->key, value);
                                     } else
                                         call(modes->object, set_property, modes->key->buffer, base(value));
                                 } else {
                                     String symbol = parse_symbol(&s);
                                     if (!symbol)
-                                        return NULL;
+                                        goto error;
                                     if (call(symbol, cmp, "null") == 0) {
                                         if (!pairs_result) {
                                             call(modes->object, set_property, modes->key->buffer, NULL);
@@ -460,12 +460,12 @@ Base Base_from_json(Class c, String value) {
                                         if (call(symbol, cmp, "true") == 0)
                                             bool_value = true;
                                         else if (call(symbol, cmp, "false") != 0)
-                                            return NULL;
+                                            goto error;
                                         if (pairs_result) {
                                             if (modes->assoc_list)
                                                 list_push(modes->assoc_list, bool_object(bool_value));
                                             else if (!modes->object)
-                                                return NULL;
+                                                goto error;
                                             else
                                                 pairs_add(((Pairs)modes->object), modes->key, bool_object(bool_value));
                                         } else {
@@ -485,9 +485,13 @@ Base Base_from_json(Class c, String value) {
             break;
         }
         default:
-            return NULL;
+            goto error;
     }
+    free(modes_origin);
     return obj;
+error:
+    free(modes_origin);
+    return NULL;
 }
 
 void Base_init(Base self) { }
@@ -695,7 +699,7 @@ Base Base_release(Base self) {
 }
 
 Base Base_autorelease(Base self) {
-    AutoRelease ar = AutoRelease_cl->current();
+    AutoRelease ar = class_call(AutoRelease, current);
     if (!ar) {
         fprintf(stderr, "No autorelease pool found!\n");
         exit(1);

@@ -8,7 +8,7 @@ void AutoRelease_class_init(Class c) {
     new(AutoRelease);
 }
 
-AutoRelease AutoRelease_current() {
+AutoRelease AutoRelease_current(Class c) {
     return (AutoRelease)call(ars, last);
 }
 
