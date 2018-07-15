@@ -86,6 +86,7 @@ Base new_obj(class_Base c, size_t extra) {
     self->refs = 1;
     self->alloc_size = alloc_size;
     self->cl = (class_Base const)c;
+    self->cl->object_count++;
     self->super_object = self;
     if (c->init != Base_init) {
         init_call init = NULL;
@@ -94,12 +95,22 @@ Base new_obj(class_Base c, size_t extra) {
     return self;
 }
 
+Base auto_obj(class_Base c, size_t extra) {
+    Base o = new_obj(c, extra);
+    return autorelease(o);
+}
+
 void free_obj(Base o) {
     class_Base c = o->cl;
     if (c->free != Base_free) {
         free_call f = NULL;
         call_frees(o, c, &f);
     }
+    if (o->testme) {
+        int test = 0;
+        test++;
+    }
+    o->cl->object_count--;
     class_dealloc(c, o);
 }
 

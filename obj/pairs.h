@@ -24,7 +24,8 @@ declare(KeyValue, Base);
     private_var(D,T,C,int,user_flags)                \
     private_var(D,T,C,List,ordered_list)             \
     private_var(D,T,C,List *,lists)                  \
-    private_var(D,T,C,size_t,list_count)
+    private_var(D,T,C,size_t,list_count)             \
+    private_var(D,T,C,String,str_test)
 declare(Pairs, Base);
 
 #define pairs_add(O,K,V)    (call(O, add, base(K), base(V)))

@@ -87,6 +87,7 @@ struct _Class {
     const char *super_name;
     unsigned int flags;
     struct _object_Pairs *meta;
+    int object_count;
     int obj_size;
     int mcount;
     char **mnames;
@@ -167,7 +168,7 @@ struct _Class {
 #define private_var(D, T, C, TYPE, NAME, ...)                private_var_##D##_##T(C, TYPE, NAME, __VA_ARGS__)
 
 // ------------------------- obj --------------------------
-#define object_cls_implement(C, TYPE, NAME, ...)                     \
+#define object_cls_implement(C, TYPE, NAME, ...)                   \
     void C##_set_##NAME(C self, TYPE value) {                   \
         if (self->NAME != value) {                              \
             release(self->NAME);                                \
@@ -177,60 +178,43 @@ struct _Class {
     TYPE C##_get_##NAME(C self) {                               \
         return self->NAME;                                      \
     }
-#define object_cls_class_def(C, TYPE, NAME, ...)                        \
-    c->set_##NAME = (typeof(c->set_##NAME))C##_set_##NAME;               \
+#define object_cls_class_def(C, TYPE, NAME, ...)                   \
+    c->set_##NAME = (typeof(c->set_##NAME))C##_set_##NAME;      \
     c->get_##NAME = (typeof(c->get_##NAME))C##_get_##NAME;
-#define object_cls_class_dec(C, TYPE, NAME, ...)                     \
+#define object_cls_class_dec(C, TYPE, NAME, ...)                        \
     void (*set_##NAME)(C, TYPE);                                \
     TYPE (*get_##NAME)(C);
 #define object_cls_enum_def(C, TYPE, NAME, ...)
 #define object_cls_forward_dec(C, TYPE, NAME, ...)
-#define object_cls_mname_dec(C, TYPE, NAME, ...)                     \
+#define object_cls_mname_dec(C, TYPE, NAME, ...)                        \
     const char *set_##NAME;                                     \
     const char *get_##NAME;
-#define object_cls_mname_def(C, TYPE, NAME, ...)                     \
+#define object_cls_mname_def(C, TYPE, NAME, ...)                        \
     c->mnames->set_##NAME = "void set_" #NAME " (" #C "," #TYPE ") " __VA_ARGS__; \
     c->mnames->get_##NAME = #TYPE " get_" #NAME " (" #C ") " __VA_ARGS__;
 #define object_cls_object_dec(C, TYPE, NAME, ...)          TYPE NAME;
-#define object_cls_proto(C, TYPE, NAME, ...)                         \
+#define object_cls_proto(C, TYPE, NAME, ...)                            \
     void C##_set_##NAME(C self, TYPE value);                    \
     TYPE C##_get_##NAME(C self);
 #define object_cls_override(C, TYPE, NAME, ...)
 #define object_spr_implement(C, TYPE, NAME, ...)
 #define object_spr_class_def(C, TYPE, NAME, ...)
-#define object_spr_class_dec(C, TYPE, NAME, ...)                     \
-    TYPE (*set_##NAME)(C);                                      \
-    void (*get_##NAME)(C, TYPE);
-#define object_spr_enum_def(C, TYPE, NAME, ...)
+#define object_spr_class_dec(C, TYPE, NAME, ...)                        \
+    TYPE (*get_##NAME)(C);                                      \
+    void (*set_##NAME)(C, TYPE);
 #define object_spr_forward_dec(C, TYPE, NAME, ...)
-#define object_spr_mname_dec(C, TYPE, NAME, ...)
-#define object_spr_mname_def(C, TYPE, NAME, ...)
+#define object_spr_mname_dec(C, TYPE, NAME, ...)                        \
+    const char *set_##NAME;                                     \
+    const char *get_##NAME;
+#define object_spr_mname_def(C, TYPE, NAME, ...)                   \
+    c->mnames->set_##NAME = "void set_" #NAME " (" #C "," #TYPE ") " __VA_ARGS__; \
+    c->mnames->get_##NAME = #TYPE " get_" #NAME " (" #C ") " __VA_ARGS__;
+#define object_spr_enum_def(C, TYPE, NAME, ...)
 #define object_spr_object_dec(C, TYPE, NAME, ...)          TYPE NAME;
 #define object_spr_proto(C, TYPE, NAME, ...)
 #define object_spr_override(C, TYPE, NAME, ...)
 
-#define private_object_cls_implement(C, TYPE, NAME, ...)
-#define private_object_cls_class_def(C, TYPE, NAME, ...)
-#define private_object_cls_class_dec(C, TYPE, NAME, ...)
-#define private_object_cls_enum_def(C, TYPE, NAME, ...)
-#define private_object_cls_forward_dec(C, TYPE, NAME, ...)
-#define private_object_cls_mname_dec(C, TYPE, NAME, ...)
-#define private_object_cls_mname_def(C, TYPE, NAME, ...)
-#define private_object_cls_object_dec(C, TYPE, NAME, ...)         TYPE NAME;
-#define private_object_cls_proto(C, TYPE, NAME, ...)
-#define private_object_cls_override(C, TYPE, NAME, ...)
-#define private_object_spr_implement(C, TYPE, NAME, ...)
-#define private_object_spr_class_def(C, TYPE, NAME, ...)
-#define private_object_spr_class_dec(C, TYPE, NAME, ...)
-#define private_object_spr_forward_dec(C, TYPE, NAME, ...)
-#define private_object_spr_mname_dec(C, TYPE, NAME, ...)
-#define private_object_spr_mname_def(C, TYPE, NAME, ...)
-#define private_object_spr_object_dec(C, TYPE, NAME, ...)         TYPE ___##NAME;
-#define private_object_spr_proto(C, TYPE, NAME, ...)
-#define private_object_spr_override(C, TYPE, NAME, ...)
-
-#define object(D, T, C, TYPE, NAME, ...)                        object_##D##_##T(C, TYPE, NAME, ## __VA_ARGS__)
-#define private_object(D, T, C, TYPE, NAME, ...)                private_object_##D##_##T(C, TYPE, NAME, ## __VA_ARGS__)
+#define object(D, T, C, TYPE, NAME, ...)                        object_##D##_##T(C, TYPE, NAME, __VA_ARGS__)
 
 // ------------------------- prop -------------------------------
 #define prop_cls_implement(C, TYPE, NAME, ...)
@@ -384,6 +368,7 @@ struct _Class {
         const char *super_name;                                 \
         unsigned int flags;                                     \
         struct _object_Pairs *meta;                             \
+        int object_count;                                       \
         int obj_size;                                           \
         int mcount;                                             \
         mnames_##C mnames;                                      \
@@ -395,11 +380,13 @@ struct _Class {
         struct _object_##S *super_object;                       \
         int refs;                                               \
         int alloc_size;                                         \
+        int testme;                                             \
         _##C(cls,object_dec,C)                                  \
     };                                                          \
     _##C(cls,proto,C)                                           \
 
 #define new(C)                  ((C)new_obj((class_Base)C##_cl, 0))
+#define auto(C)                 ((C)auto_obj((class_Base)C##_cl, 0))
 #define alloc_struct(T)         ((T *)calloc(1, sizeof(T)))
 #define array_struct(T,C)       ((T *)calloc(1, sizeof(T) * C))
 #define object_new(O)           ((typeof(O))((O) ? new_obj((class_Base)(O)->cl, 0) : NULL))
@@ -426,12 +413,10 @@ struct _Class {
 #define get(C,M)                ((C)->cl->get_##M(C))
 #define cp(C)                   (call((C), copy))
 #define base(O)                 ((Base)&(O->cl))
-#define retain(o)               ((o) ? ((typeof(o))call(o, retain)) : NULL)
-#define release(o)              ((o) ? call(o, release) : NULL)
-#define autorelease(o)          ((o) ? (typeof(o))call(o, autorelease) : NULL)
-#define auto(C)                 (autorelease(new(C)))
+#define retain(o)               ({ typeof(o) _o = o; (_o) ? ((typeof(_o))call(_o, retain)) : NULL; })
+#define release(o)              ({ typeof(o) _o = o; (_o) ? ((typeof(_o))call(_o, release)) : NULL; })
+#define autorelease(o)          ({ typeof(o) _o = o; (_o) ? ((typeof(_o))call(_o, autorelease)) : NULL; })
 #define object_auto(O)          (autorelease(object_new(O)))
-#define free_ptr(p)             if (p) free(p); p = NULL;
 #ifndef clamp
 #define clamp(V,L,H)            (min((H),max((L),(V))))
 #endif
@@ -458,6 +443,7 @@ struct _Class {
 #include <obj/vec.h>
 
 EXPORT Base new_obj(class_Base, size_t);
+EXPORT Base auto_obj(class_Base, size_t);
 EXPORT void free_obj(Base);
 EXPORT void class_assemble(Class);
 EXPORT void class_init();

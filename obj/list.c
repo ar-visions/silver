@@ -9,6 +9,7 @@ void List_class_init() {
 
 void List_free(List self) {
     call(self, clear);
+    class_call(List, deallocx, self->buffer);
 }
 
 void *List_alloc(Class cl, size_t count) {
@@ -16,7 +17,7 @@ void *List_alloc(Class cl, size_t count) {
 }
 
 void List_deallocx(Class cl, void *ptr) {
-    free_ptr(ptr);
+    free(ptr);
 }
 
 List List_new_prealloc(Class cl, int count) {

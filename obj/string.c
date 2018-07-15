@@ -37,13 +37,14 @@ char *struprcase(char *str) {
 }
 
 void String_init(String self) {
-    self->buffer = (char *)malloc(1);
-    self->buffer_size = 1;
+    //self->buffer = (char *)malloc(1);
+    //*self->buffer = 0;
+    self->buffer_size = 0;
 }
 
 void String_free(String self) {
-    free_ptr(self->buffer);
-    free_ptr(self->utf8_buffer);
+    free(self->buffer);
+    free(self->utf8_buffer);
 }
 
 int String_char_index(String self, int c) {
@@ -253,7 +254,7 @@ String String_from_bytes(Class cl, const uint8 *bytes, size_t length) {
 
 void String_check_resize(String self, uint chars) {
     if (self->buffer_size <= chars + 1) {
-        int buffer_size = self->buffer_size + chars + 1 + clamp((int)((self->buffer_size - 1) << 1), 32, 1024);
+        int buffer_size = self->buffer_size + chars + 1 + clamp((((int)self->buffer_size - 1) << 1), 32, 1024);
         char *copy = (char *)malloc(buffer_size);
         if (self->buffer)
             memcpy(copy, self->buffer, self->length);
@@ -268,7 +269,7 @@ int String_concat_char(String self, char c) {
     call(self, check_resize, self->length + 1);
     self->buffer[self->length] = c;
     self->buffer[++self->length] = 0;
-    free_ptr(self->utf8_buffer);
+    free(self->utf8_buffer);
     self->utf8_length = 0;
     return 1;
 }
@@ -280,7 +281,7 @@ int String_concat_chars(String self, const char *p, int len) {
     memcpy(&self->buffer[self->length], p, len);
     self->length += len;
     self->buffer[self->length] = 0;
-    free_ptr(self->utf8_buffer);
+    free(self->utf8_buffer);
     self->utf8_length = 0;
     return len;
 }
@@ -295,7 +296,7 @@ int String_concat_cstring(String self, const char *p) {
 int String_concat_string(String self, String b) {
     if (b) {
         call(self, concat_chars, b->buffer, b->length);
-        free_ptr(self->utf8_buffer);
+        free(self->utf8_buffer);
         self->utf8_length = 0;
     }
 }
@@ -305,7 +306,7 @@ int String_concat_long(String self, long v, const char *format) {
     sprintf(buffer, format, v);
     int len = strlen(buffer);
     call(self, concat_chars, buffer, len);
-    free_ptr(self->utf8_buffer);
+    free(self->utf8_buffer);
     self->utf8_length = 0;
     return len;
 }
@@ -315,7 +316,7 @@ int String_concat_long_long(String self, uint64 v, const char *format) {
     sprintf(buffer, format, v);
     int len = strlen(buffer);
     call(self, concat_chars, buffer, len);
-    free_ptr(self->utf8_buffer);
+    free(self->utf8_buffer);
     self->utf8_length = 0;
     return len;
 }
@@ -325,7 +326,7 @@ int String_concat_double(String self, double v, const char *format) {
     sprintf(buffer, format, v);
     int len = strlen(buffer);
     call(self, concat_chars, buffer, len);
-    free_ptr(self->utf8_buffer);
+    free(self->utf8_buffer);
     self->utf8_length = 0;
     return len;
 }
@@ -335,7 +336,7 @@ int String_concat_object(String self, Base o) {
     char *v = str ? str->buffer : (char *)"[null]";
     int len = strlen(v);
     call(self, concat_chars, v, len);
-    free_ptr(self->utf8_buffer);
+    free(self->utf8_buffer);
     self->utf8_length = 0;
     return len;
 }
