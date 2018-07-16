@@ -344,7 +344,7 @@ int String_concat_object(String self, Base o) {
 String String_format(Class cl, const char *format, ...) {
     if (!format)
         return NULL;
-    String self = new(String);
+    String self = auto(String);
     int flen = strlen(format);
     va_list args;
     va_start(args, format);
