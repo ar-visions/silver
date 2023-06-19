@@ -7,7 +7,7 @@ Roadmap!
 ## Transpilation
 C++17 output is likely for now; but C99 is end goal
 However you will see a language that uses modules to define and allow for code generation in C99 from an efficient component lifecycle as outputted from silver language module.  
-I want it to be as reflective and mulable as silver actually is.  Also conductive.  Its not the best but it will be pretty conductive.
+It shall be as reflective and malleable as Silver actually is.  Also conductive.  Its not the best but it will be pretty conductive compared to something made of Rust.
 
 ## Design Features in Works
 
