@@ -1,6 +1,4 @@
-# silver
-Light weight C-based object model library with introspection
-Silver Programming Language
+# Silver Programming Language
 
 Welcome to the Silver programming language project, a new initiative that aims to take the power and flexibility of C++ to the next level while simplifying its syntax and making it more intuitive and user-friendly. We are setting out to create a language that makes it easier to write efficient, reliable, and maintainable code.
 
