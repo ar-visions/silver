@@ -1,13 +1,8 @@
 # Silver Programming Language
-
-Welcome to the Silver programming language project, a new initiative that aims to take the power and flexibility of C++ to the next level while simplifying its syntax and making it more intuitive and user-friendly. We are setting out to create a language that makes it easier to write efficient, reliable, and maintainable code.
+Silver is to be a transpiled language to start out. 
+C++17 output is likely for now; but C99 is end goal.  Investigating GNU Bison prior to doing that optimization though.
 
 Roadmap!
-
-## Transpilation
-C++17 output is likely for now; but C99 is end goal
-However you will see a language that uses modules to define and allow for code generation in C99 from an efficient component lifecycle as outputted from silver language module.  
-It shall be as reflective and malleable as Silver actually is.  Also conductive.  Its not the best but it will be pretty conductive compared to something made of Rust.
 
 ## Design Features in Works
 
@@ -33,3 +28,16 @@ Silver will provide a way to define functions that can optimize their memory all
 
 ### Unique Static Inside Functions
 The language will allow for the definition of unique statics inside functions that are generated per call. This will create more opportunities for optimization, making your programs run faster and use resources more efficiently.
+
+using ux;
+
+int    i = 2
+future f = i.call_http_method() # lol, ... just showing the wonderful stupidity possible in the design-mode
+
+# i just want more to be possible in programming, and more common ways of doing it.  just work, of course.. just read and just write.
+# meaning matters and letting the user be as succinct as possible lets the meaning of code come through.
+
+# python style comments only, no semi colon
+alias int = bc;
+
+if (typeof(bc) != typeof(
