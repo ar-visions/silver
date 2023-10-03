@@ -1,5 +1,5 @@
 # Silver Programming Language
-C99 objects from module definitions; no globals.  No casting either, named args most certainly because we want it to look like reflective web development with type driven context.  Silver seems to be the most reflective and succinct way of getting there.  Reduce, and improve is the idea here.  Base on C99, so it compiles fast and compiles everywhere.  GDB/LLDB will both work fine when the symbol names are the same on data.
+C99 objects from module definitions; no globals.  No casting either, named args most certainly because we want it to look like reflective web development with type driven context.  Silver seems to be the most reflective and succinct way of getting there.  Reduce, and improve is the idea here.  Base on C99, so it compiles fast and compiles everywhere.
 
 # object is a generic type.. may use var.
 mod attrib {
