@@ -1,0 +1,138 @@
+{
+    "name":   "ion",
+    "version":"dev",
+    "import": [
+        "mx",
+        "vulkan",
+        {
+            "name":     "gsl",
+            "version":  "2.7",
+            "url":      "https://github.com/ampl/gsl",
+            "commit":   "47862078af4a204c4220f028656a19ddd3922144",
+            "platforms": ["lin", "mac"]
+        },
+        {
+            "name":     "opus",
+            "version":  "1.4",
+            "url":      "https://github.com/xiph/opus",
+            "commit":   "82ac57d",
+            "cmake": {
+                "args": ["-DOPUS_DISABLE_INTRINSICS=1", "-DOPUS_BUILD_SHARED_LIBRARY=0"],
+                "path": "."
+            }
+        },
+        {
+            "name":     "depot_tools",
+            "version":  "aug7-23",
+            "url":      "https://chromium.googlesource.com/chromium/tools/depot_tools.git",
+            "commit":   "02e70b435732a41d3d251f7c861110c6ee91f65b",
+            "resource": true
+        },
+        {
+            "name":     "skia",
+            "version":  "m116",
+            "url":      "https://skia.googlesource.com/skia.git",
+            "commit":   "bb40886d43b5fcbcdfb5587a2d20db418622990a"
+        },
+        {
+            "name":     "pthread-w32",
+            "version":  "3.1.0",
+            "commit":   "73024cf",
+            "url":      "https://github.com/GerHobbelt/pthread-win32",
+            "platforms": ["win"]
+        },
+        {
+            "name":     "mbedtls",
+            "version":  "3.4.0",
+            "commit":   "1873d3b",
+            "url":      "https://github.com/Mbed-TLS/mbedtls",
+            "cmake": {
+                "args": ["-DENABLE_TESTING=0", "-DMSVC_STATIC_RUNTIME=1", "-DLINK_WITH_PTHREAD=1"]
+            }
+        },
+        {
+            "name":     "libssh",
+            "version":  "0.8.4",
+            "commit":   "5d792a3b5a5fc2331cb52d6febdd886c5df580e3",
+            "url":      "https://git.libssh.org/projects/libssh.git",
+            "resource": true
+        },
+        {
+            "name":     "juice",
+            "version":  "1.2.3",
+            "url":      "https://github.com/paullouisageneau/libjuice",
+            "commit":   "8c23cc8"
+        },
+        {
+            "name":     "srtp",
+            "version":  "2.5.0",
+            "url":      "https://github.com/cisco/libsrtp",
+            "commit":   "a566a9c"
+        },
+        {
+            "name":     "plog",
+            "version":  "1.1.9",
+            "url":      "https://github.com/SergiusTheBest/plog",
+            "commit":   "f471494"
+        },
+        {
+            "name":     "usrsctp",
+            "version":  "0.9.5.0",
+            "url":      "https://github.com/sctplab/usrsctp",
+            "commit":   "07f871b",
+            "cmake": {
+                "args-win": ["-DCMAKE_C_FLAGS=/MT"]
+            }
+        },
+        {
+            "name":     "ogg",
+            "version":  "1.3.5",
+            "url":      "https://github.com/xiph/ogg",
+            "commit":   "e1774cd",
+            "cmake": {
+                "args-win": ["-DCMAKE_C_FLAGS=/MT"]
+            }
+        },
+        {
+            "name":     "opusfile",
+            "version":  "0.12",
+            "url":      "https://github.com/xiph/opusfile",
+            "commit":   "9d718345ce03b2fad5d7d28e0bcd1cc69ab2b166",
+            "cmake": {
+                "args": ["-DOP_DISABLE_HTTP=Yes","-DOP_DISABLE_DOCS=Yes","-DOP_DISABLE_EXAMPLES=Yes"],
+                "path": "."
+            }
+        },
+        {
+            "name":     "shine",
+            "version":  "3.1.1",
+            "url":      "https://github.com/toots/shine",
+            "commit":   "97f188e"
+        },
+        {
+            "name":     "speexdsp",
+            "version":  "1.2.1",
+            "url":      "https://github.com/xiph/speexdsp",
+            "commit":   "1b28a0f"
+        },
+        {
+            "name":     "opusenc",
+            "version":  "0.21",
+            "url":      "https://github.com/xiph/libopusenc",
+            "commit":   "b19e1b14",
+            "cmake": {
+                "args": ["-DOP_DISABLE_HTTP=Yes","-DOP_DISABLE_DOCS=Yes"],
+                "path": "."
+            }
+        },
+        {
+            "name":     "bzip2",
+            "version":  "1.0.8",
+            "commit":   "2d8393924b9f3e014000c7420c7da7c3ddb74e2c",
+            "url":      "https://gitlab.com/bzip2/bzip2",
+            "cmake":    {
+                "args": ["-DENABLE_STATIC_LIB=Yes"]
+            }
+        }
+    ]
+}

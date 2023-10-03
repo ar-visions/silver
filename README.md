@@ -1,43 +1,61 @@
 # Silver Programming Language
-Silver is to be a transpiled language to start out. 
-C++17 output is likely for now; but C99 is end goal.  Investigating GNU Bison prior to doing that optimization though.
+C99 objects from module definitions; no globals.
 
-Roadmap!
+# object is a generic type.. may use var.
+mod attrib {
+    str     name
+    var     value
+}
 
-## Design Features in Works
+# shell script / python comments
+mod Object {
+    xyz pos
+}
 
-The main features we envision for Silver are:
+# there should be a default, null instance for each type
+# zero-mem is undefined, nullable not actual null-token
 
-### Function Uniformity
-Functions in Silver should behave the same way everywhere, regardless of their context. This standardization of behavior will simplify the language, making it more understandable and user-friendly.
+# no 'return' keyword; void optional
 
-### Improved Template System
-Silver aims to have an enhanced template system. We're learning from the challenges and successes of C++ templates, but our goal is to create a system that is more intuitive to use and provides better compile-time error messages.
+# this is the data that incorporates it
+mod Character inc Object {
+    str         name
+    Object[]    attribs
 
-### Powerful Macro System
-In Silver, macros will have the capacity to generate code that can be inspected by the compiler. This feature is inspired by Lisp macros, but will be adapted to work with C++-like syntax, making it easier to create and modify complex code structures at compile time.
+    # the auto is where templates come in; auto a keyword you
+    # would want to use when you wnat generics of optional! [type, restrictions]
+    int method(auto[int, short] a, int b) {
+        if (typeof(a) == int)
+            -> b + a
+        else
+            -> b + int(a) * 2
+    }
 
-### Enhanced Generic Programming
-Silver is designed to support powerful and flexible generic programming. While we draw inspiration from C++, our aim is to make generic programming simpler and safer in Silver.
+    # consider this a text replacement with a bit more it can do
+    # crucially its not enforcing a global token replacement, and 
+    # REQUIRES [] invocation, and is NOTICABLE as different from function
+    define macro[x, y] {
+        if (x > 1)
+            -> x + 1
+        else
+            -> x + 2
+    }
 
-### Integrated Metaprogramming
-Metaprogramming capabilities will be an integral part of Silver. Instead of being added as an afterthought, these capabilities will be designed into the language from the start.
+    # convert to string (if explicit)
+    explicit str -> name
 
-### Optimized Allocation in Functions
-Silver will provide a way to define functions that can optimize their memory allocation behavior, allowing for increased performance and efficiency.
+    # initialization
+    this {
+        if undef(name) {
+            # "double-quotes" are opaque to variables
+            # 'char' is now used for formatting; char("A") gives you character values; char is int32; cast to 8bit if you want ascii data
+            # honor the world with character and all of its codepages
+            name = "could set a default above instead.."
+        } else {
+            # doing something extra i dont need to just to show off a formatter; this is inline C99 at the expression depth we can put it
+            name = '{name}'
+        }
+    }
+}
 
-### Unique Static Inside Functions
-The language will allow for the definition of unique statics inside functions that are generated per call. This will create more opportunities for optimization, making your programs run faster and use resources more efficiently.
 
-using ux;
-
-int    i = 2
-future f = i.call_http_method() # lol, ... just showing the wonderful stupidity possible in the design-mode
-
-# i just want more to be possible in programming, and more common ways of doing it.  just work, of course.. just read and just write.
-# meaning matters and letting the user be as succinct as possible lets the meaning of code come through.
-
-# python style comments only, no semi colon
-alias int = bc;
-
-if (typeof(bc) != typeof(
