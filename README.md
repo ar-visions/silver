@@ -1,5 +1,5 @@
 # Silver Programming Language
-C99 objects from module definitions; no globals.
+C99 objects from module definitions; no globals.  No casting either
 
 # object is a generic type.. may use var.
 mod attrib {
