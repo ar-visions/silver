@@ -1,0 +1,25 @@
+import the third party libraries. also import silver modules too.
+
+
+# im not so sure about the arg because it prevents us from passing our own fields in a orthogonal way
+# we have the functions load in this .o global; imports must be compiled seperately in silver (makes sense to allow each their own global)
+
+# <- if no string arg is given to import it may still know the top module importing
+module zlib {
+	# this is less tokens
+	import as i {
+		name: 'zlib' # import would use zlib if undefined, since thats the module def name at top
+		deps: [c_lib, another] # run these in this order so it knows how to build them
+		src:  'https://zlib.org/repo'
+	}
+
+
+	#
+	void func() {
+		# functions are variables and types; if assigning to another you may omit the name
+		# isolated no-op functions that do not call themselves would have to be warned about
+		void func2() {
+		}
+	}
+	
+}
