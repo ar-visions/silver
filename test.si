@@ -1,0 +1,76 @@
+import entity from "entity.si"  # source name would be implicit entity.si
+import * from "another.h"       # this is just a C header, we can link against C libs and then import them here (rather than a separate json)
+
+lifeform : entity [
+    int health: 100
+
+    lifeform [
+        print["abc %d"  % [1]] # python style/C style string interpolation
+    ]
+]
+
+# all args are constant and in their own scope
+person : lifeform [
+    str  name # we need some way to allow for named vars in construction; not allowing mutable doesnt make sense, because we wouldnt be able to change these
+    num  age
+    intern num jumped
+    intern int array_of_int[32] : [1,2,3,4] # rest will be default of the type int, or 0
+
+    person : lifeform [
+        health: 100
+    ]
+
+    # constructors are implicit mutable
+    person [int age] : person [
+        age: age
+    ]
+
+    person [person man, person woman] : person [0] [
+        name: '{woman.name}-{man.name}'
+    ]
+
+    # returns how actually high
+    int jump [int how_high] mutable [
+        mutable int[int] lambda_r
+        mutable int[0] test1 # this is an array of 0; any array can be appended; the number is the reserve count
+
+        int lambda [int i][int how_high = how_high*2] [  # the second dimension is the optional copy-in-lambda; since it has the same arg syntax it can allow for pointers
+            print['i = {i}, how_high = {how_high}'] # scope-based interpolation with 'single quoted', think of the single as allowing scope to flow in
+            # we would implictly scope 'lambda' as itself; if its anonymous then i think no recursion possible; sure we could scope 'this' but then we have clash and adopt a terrible pattern
+            return how_high / 2.2
+        ]
+        int v  : 2
+        int[v] : [1, 2]
+        jumped++
+        lambda_r : lambda # same prototype, so this is compatible
+        return lambda_r[1]
+    ]
+
+    op : [int age] mutable [ # assignment can never return any other memory other than itself; we have more restrictive type signatures on operators as a result
+        age      : age # we can do this because age is a constant and we cannot assign it; logically that moves to object scope
+        this.age : age # same thing
+    ]
+
+    person op + [person p] [ # + must return an object
+        return person[name:name, age:p.age]
+    ]
+
+    op += [person p] mutable [ # like : assignment, it is a method on itself, implicit returns of self if invoked (like any void 'method' on object)
+        age += p.age
+    ]
+
+    op ++ mutable [
+        age++
+    ]
+
+]
+
+person p: person[name:"picard", age:34]
+
+person p[name:"picard", age:34] # same
+
+print[p]
+
+# we would never have a forward declarative syntax, and would not need it.  things of the same exact definition are not allowed as a basic enabler
+
+
