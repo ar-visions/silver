@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.20)
+include(../prefix/ci/bootstrap.cmake)
+get_name("project.json" name)
+project(${name})
+main()

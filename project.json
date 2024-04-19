@@ -2,12 +2,5 @@
     "name":   "ion",
     "version":"dev",
     "import": [
-        {
-            "name":     "bison",
-            "version":  "3.8.2",
-            "url":      "https://github.com/akimd/bison",
-            "commit":   "25b3d0e1a3f97a33615099e4b211f3953990c203",
-            "platforms": ["lin", "mac"]
-        }
     ]
 }
