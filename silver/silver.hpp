@@ -25,18 +25,11 @@ using     r64 = double;
 
 #define typeof(mod, t) mod::types[mod::id::t]
 
-/// base runtime for silver
-#include <silver/silver.hpp>
-
 // FNV-1a constants for 64-bit hash
 static constexpr uint64_t FNV_PRIME    = 0x100000001b3;
 static constexpr uint64_t OFFSET_BASIS = 0xcbf29ce484222325;
 
 u64 fnv1a_hash(const void* data, size_t length, u64 hash = OFFSET_BASIS);
-
-enum intern {
-    placeholder
-};
 
 struct silver {
     struct type* info;
