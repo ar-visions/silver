@@ -188,6 +188,7 @@ array* test::meta() {
     return res;
 }
 
+/// pattern: module::init 
 void silver::init() {
     silver::types = (type**)calloc(64, sizeof(type*));
     silver::types[id::boolean] = new type { "bool", sizeof(bool) };
@@ -200,11 +201,11 @@ void silver::init() {
     silver::types[id::u64]     = new type { "u64",  sizeof(u64)  };
     silver::types[id::i64]     = new type { "i64",  sizeof(i64)  };
     
-    silver::types[id::array]   = new type { "array", sizeof(array), new ::array() };
-    silver::types[id::str]     = new type { "str",   sizeof(str),   new ::str()   };
-    silver::types[id::prop]    = new type { "prop",  sizeof(prop),  new ::prop()  };
-    silver::types[id::field]   = new type { "field", sizeof(field), new ::field() };
-    silver::types[id::map]     = new type { "map",   sizeof(map),   new ::map()   };
+    silver::types[id::array]   = new type { "array", sizeof(array), new array() };
+    silver::types[id::str]     = new type { "str",   sizeof(str),   new str()   };
+    silver::types[id::prop]    = new type { "prop",  sizeof(prop),  new prop()  };
+    silver::types[id::field]   = new type { "field", sizeof(field), new field() };
+    silver::types[id::map]     = new type { "map",   sizeof(map),   new map()   };
 
     silver::types[id::test]    = new type { "test",  sizeof(test),  new test()  }; // one entry per user type
 }
