@@ -1,65 +1,153 @@
-import entity from "entity.si"  # source name would be implicit entity.si
-import * from "another.h"       # this is just a C header, we can link against C libs and then import them here (rather than a separate json)
+import 'entity.si'  # source name would be implicit entity.si
+import 'another.h' with lib # this is just a C header, we can link against C libs and then import them here (rather than a separate json)
 
-lifeform : entity [
+class lifeform : entity [
     int health: 100
 
     lifeform [
-        print["abc %d"  % [1]] # python style/C style string interpolation
+        str a = '123'
+        print['abc {a}'] # string interpolation with single quoted strings
     ]
 ]
 
+enum etype [
+    one = 1, two = 2
+]
+
+/* ----------------------------
+// enum data in C99:
+struct symbol {
+    const char* name;
+    int value;
+};
+
+struct enum_data {
+    const char* name;
+    array_symbol* symbols;
+}
+
+enum_data* etype_data;
+
+enum_data* etype_new() {
+  enum_data* res = calloc(sizeof(enum_data), 1)
+  res->name = "etype";
+  res->symbols = array_symbol_new(2);
+  res->symbols->count = 2;
+  res->symbols->elements[0]->name = "one";
+  res->symbols->elements[0]->value = 1;
+  res->symbols->elements[1]->name = "two";
+  res->symbols->elements[1]->value = 2;
+  return res;
+}
+ ---------------------------- */
+
+struct basic [
+    int one
+    int two
+]
+
 # all args are constant and in their own scope
-person : lifeform [
-    str  name # we need some way to allow for named vars in construction; not allowing mutable doesnt make sense, because we wouldnt be able to change these
+# members are public by default in silver in struct and class (no possible way to make private Anything in structs)
+
+# also, structs when placed in struct or in classes, will always take up that amount of memory
+# they are also copied on assignment, not referenced
+# when given by argument, they are ALWAYS references, NEVER value-based
+# when assigning, a copy will take place then
+# this is useful so we dont have to use syntax for pointers
+# the only complication here is handling C apis. ** is a array, and * is our normal operation for arguments.  if value, we can allow for that
+# of course we have more than what we need
+
+/*
+C99 runtime for silver classes, this would be subsided in the calloc() and its actual member space would be offset
+struct A {
+    int refs;
+    id* type;
+};
+*/
+
+class person : lifeform [
+    str  name
     num  age
+    int[] attribs
+    basic b = [two:2, one:1] # named construction allowed on structs; constructors on structs are not allowed!
+    # both are put on heap (unlike swift)
+    # constructors perform initialization, so its a broken feature to allow for it in both
+    # class maker designs interface for construction
+    # structs should not allow for inheritance either, same as C99
+
     intern num jumped
-    intern int array_of_int[32] : [1,2,3,4] # rest will be default of the type int, or 0
+    intern int[32] array_of_int : [1,2,3,4] # rest will be default of the type int, or 0
+
+    # []int <- this is how we identify a lambda with no args
+    # int[] <- this is how we identify an array thats dynamic
 
     person : lifeform [
-        health: 100
+        .health: 100
+        .attribs: [1,2,3]
     ]
 
-    # constructors are implicit mutable
     person [int age] : person [
-        age: age
+        .age: age
     ]
 
     person [person man, person woman] : person [0] [
         name: '{woman.name}-{man.name}'
     ]
 
-    # returns how actually high
-    int jump [int how_high] mutable [
-        mutable int[int] lambda_r
-        mutable int[0] test1 # this is an array of 0; any array can be appended; the number is the reserve count
+    # 
+    int[] one_line  [int a] return [a + 22, a + 2, a + 2]
+    int   one_line2 [int a] return a + 2
 
+    # returns how actually high
+    int jump [int how_high] [
+        
+        int[] lambda_r[int arg] [
+            return [arg + 1, arg + 2]
+        ]
+
+        class_name var_name: [ initializer ]
+
+        int[] test1 # this is an array of 0; any array can be appended; the number is the reserve count
         int lambda [int i][int how_high = how_high*2] [  # the second dimension is the optional copy-in-lambda; since it has the same arg syntax it can allow for pointers
             print['i = {i}, how_high = {how_high}'] # scope-based interpolation with 'single quoted', think of the single as allowing scope to flow in
             # we would implictly scope 'lambda' as itself; if its anonymous then i think no recursion possible; sure we could scope 'this' but then we have clash and adopt a terrible pattern
             return how_high / 2.2
         ]
-        int v  : 2
-        int[v] : [1, 2]
-        jumped++
+        int v : 2
+
+        if [v = 2] return 1
+
+        if [v > 3] [
+            v += 1
+            return v
+        ]
+
+        while [v < 10] [
+            v += 1
+            if [v < 2] break
+        ]
+
+        int[v] arr: [1, 2]
+        jumped += 1
         lambda_r : lambda # same prototype, so this is compatible
         return lambda_r[1]
     ]
 
-    op : [int age] mutable [ # assignment can never return any other memory other than itself; we have more restrictive type signatures on operators as a result
-        age      : age # we can do this because age is a constant and we cannot assign it; logically that moves to object scope
-        this.age : age # same thing
+    assign [int age] [
+        .age : age
     ]
 
-    person op + [person p] [ # + must return an object
-        return person[name:name, age:p.age]
+    person addition [person p] [
+        return person[name:name, age:p.age] # skipping constructors is good and bad; selecting or not selecting constructors based on named arguments is too much!
     ]
 
-    op += [person p] mutable [ # like : assignment, it is a method on itself, implicit returns of self if invoked (like any void 'method' on object)
+    # shortcuts: += is append, var++ is increment
+
+    increment [person p] [ # like : assignment, it is a method on itself, implicit returns of self if invoked (like any void 'method' on object)
         age += p.age
     ]
 
-    op ++ mutable [
+    append [
         age++
     ]
 
