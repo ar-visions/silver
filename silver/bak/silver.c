@@ -1,78 +1,242 @@
-#include <silver/silver.hpp>
+#include <silver/silver.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <assert.h>
 
-/// use mx internally
-#include <mx/mx.hpp>
+typedef  int64_t i64;
+typedef uint64_t u64;
 
-namespace ion {
-
-struct Ident:A {
-    vector<str> strings;
-
-    Ident()                     : A(typeof(Ident)) { }
-    Ident(const   M &m)         : Ident() {
-        if (m.type() == typeof(String))
-            strings = strings = vector<str> { str(m) };
-        else if (m.type() == typeof(Ident))
-            strings = ((Ident*)m.a)->strings;
-        else if (m.type() == typeof(Vector<M>))
-            for (String &s: *(Vector<M>*)m.a)
-                strings += s;
-        else if (m.type() == typeof(Vector<str>))
-            for (String &s: *(Vector<str>*)m.a)
-                strings += s;
-    }
-    String *to_string() override {
-        str res(1024);
-        for (String &s: strings) {
-            if (res)
-                res += ".";
-            res += s;
-        }
-        return res;
-    }
-    int compare(const M &m) const override {
-        bool same;
-        if (m.type() == typeof(Ident)) {
-            Ident &b = (Ident&)m;
-            if (b.strings->len() == strings->len()) {
-                int i = 0;
-                same = true;
-                for (str &s: strings) {
-                    if (s != b.strings[i++]) {
-                        same = false;
-                        break;
-                    }
-                }
-            } else
-                same = false;
-        } else {
-            str b = m;
-            if (strings->len() == 1)
-                same = strings[0] == b;
-            else
-                same = false;
-        }
-        return same ? 0 : -1;
-    }
-    u64 hash() override {
-        u64 h = OFFSET_BASIS;
-        for (str &fs: strings) {
-            h *= FNV_PRIME;
-            h ^= fs->hash();
-        }
-        return h;
-    }
-    bool operator==(const str &s) const {
-        if (len() == 1 && strings[0] == s)
-            return true;
-        return false;
-    }
-    str &operator[](int i) const { return strings[i]; }
-    int len()              const { return strings->len(); }
-    operator bool()        const { return strings->len() > 0; }
+struct A {
+    int         refs;
+    struct id*  type;
 };
 
+struct A* hold(struct A* a) {
+    a->refs++;
+}
 
+int drop(struct A* a) {
+    return --a->refs == 0;
+}
+
+struct id {
+    struct A     a;
+    char*        name;
+    struct map*  meta;
+};
+
+struct item {
+    struct A     a;
+    struct item* next;
+    struct item* prev;
+    struct item* peer;
+    A*           element;
+};
+
+struct list {
+    struct A     a;
+    struct item* first;
+    struct item* last;
+    int          count;
+};
+
+struct array {
+    A            a;
+    int          alloc;
+    int          count;
+    A**          elements;
+};
+
+/// all types should be encapsulated in structs; that includes primitive values of any size
+struct map {
+    struct A     a;
+    struct list* hashlist;
+    struct list  ordered;
+    int          count;
+    int          sz;
+};
+
+struct str {
+    struct A    a;
+    char*       chars;
+    int         len;
+    int         alloc;
+};
+
+/// we want the most simple way to introduce silver, so we can use A-type for allocation, vectorization, and reflection
+/// regarding the vectorization, it can only happen if A is implicit to allocation by offsetting
+//A* alloc(id* type, int type_sz, int count) {
+//}
+
+array* array_alloc(int alloc) {
+    array *res    = (array*)calloc(1, sizeof(array));
+    res->a.refs   = 1;
+    res->elements = (A**)calloc(alloc, sizeof(A*));
+    return res;
+}
+
+void array_push(struct array* a, A* item) {
+    if (a->count == a->alloc) {
+        int alloc_n = 128 + (a->count << 1);
+        A** n = (A**)calloc(alloc_n, sizeof(A*));
+        memcpy(n, a->elements, sizeof(A*) * a->count);
+        free(a->elements);
+        a->elements = n;
+        a->alloc = alloc_n;
+    }
+    a->elements[a->count++] = hold(item);
+}
+
+A* array_pop(struct array* a) {
+    assert(a->count > 0);
+    A* element = a->elements[a->count--];
+    return element;
+}
+
+void str_free(struct str* a) {
+    free(a->chars);
+    free(a);
+}
+
+int str_compare(struct str* a, struct str* b) {
+    if (a->len != b->len)
+        return (int)a->chars[0] - (int)b->chars[0];
+    return strcmp(a->chars, b->chars);
+}
+
+struct str* str_alloc(int alloc) {
+    str* res   = (str*) calloc(1, sizeof(str));
+    res->a.refs = 1;
+    res->chars = (char*)calloc(1, alloc);
+    res->alloc = alloc;
+    res->len   = 0;
+}
+
+struct str* str_chars(char* chars) {
+    int len = strlen(chars);
+    str*  a = str_alloc(len + 128);
+    memcpy(a->chars, chars, len);
+    return a;
+}
+
+u64 str_hash(struct str* a) {
+    return fnv1a_hash(a->chars, a->len);
+}
+
+void str_append(struct str* a, char* chars) {
+    int len = strlen(chars);
+    if (a->len + len >= a->count) {
+        int alloc_n = 128 + (a->len + len) << 1;
+        char* n = (char*)calloc(1, alloc_n);
+        memcpy(n, a->chars, a->len);
+        free(a->chars);
+        a->chars = n;
+        a->alloc = alloc_n;
+    }
+    memcpy(&a->chars[a->len], chars, len + 1);
+    a->len += len;
+}
+
+int str_index_of(struct str* a, char* find) {
+    char* f = strstr(a->chars, find);
+    if (f)
+        return (int)(size_t)(f - a->chars);
+    return -1;
+}
+
+struct ident {
+    struct A    a;
+    struct str**strings;
+    int         count;
+};
+
+void ident_drop(struct ident* id) {
+    if (drop(&id.a)) {
+        free(id->strings);
+        free(id);
+    }
+}
+
+char* ident_string(struct ident* id) {
+    int alloc = 1;
+    for (int i = 0; i < id->count; i++)
+        alloc += id->strings[i]->len + 1;
+    str* res = str_alloc(alloc);
+    for (int i = 0; i < id->count; i++) {
+        if (i)
+            str_append(res, ".");
+        str_append(res, id->strings[i]->chars);
+    }
+    return res;
+}
+
+u64 ident_hash(struct ident* id) {
+    u64 h = OFFSET_BASIS;
+    for (int i = 0; i < count; i++) {
+        h *= FNV_PRIME;
+        h ^= str_hash(strings[i]);
+    }
+    return h;
+}
+
+int ident_compare(struct ident* a, struct ident* b) {
+    if (a->count != b->count)
+        return a->count - b->count;
+    for (int i = 0; i < a->count; i++) {
+        int cmp = str_compare(a->strings[i], b->strings[i]);
+        if (cmp != 0)
+            return cmp;
+    }
+    return 0;
+}
+
+struct method {
+    char*       name;
+    struct id*  rtype;
+    struct id** args;
+    int         arg_count;
+    int         is_static;
+    A*(*pointer)(...);
+};
+
+struct prop {
+    char*       name;
+    struct id*  type;
+    size_t      offset;
+    int         is_static;
+};
+
+struct meta {
+    struct meta*   super;
+    struct method* methods;
+    int            n_methods;
+};
+
+extern struct A_info*;
+
+struct A_meta* A_info = 0;
+
+struct method {
+    array* args; /// element = id*
+};
+
+__attribute__((constructor))
+void A_init() {
+    A_info = (struct A_meta*)calloc(1, sizeof(A_meta));
+    A_info->compare     = A_compare;
+    A_info->hash        = A_hash;
+    A_info->to_string   = A_to_string;
+    map* methods;
+}
+
+struct ident_meta {
+    struct A_meta* super;
+    method*     methods;
+    int         n_methods;
+    int         (*compare)  (A*, A*);
+    u64         (*hash)     (A*);
+    struct str* (*to_string)(A*);
+};
 
 static vector<str> keywords = { "method", "import" };
 
@@ -80,6 +244,7 @@ struct ident {
     A_decl(ident, Ident)
     str &operator[](int i) const { return (*data)[i]; }
 };
+
 
 A_impl(ident, Ident)
 
@@ -299,163 +464,10 @@ struct ENode:A {
     operator bool() { return etype != null; }
 };
 
-enums(Access, Public,
-    Public, Intern)
-
 struct enode {
     A_decl(enode, ENode)
 };
 A_impl(enode, ENode)
-
-
-
-struct EProp:A {
-    str             name;
-    Access          access;
-    vector<ident>   type;
-    vector<ident>   value;
-
-    EProp() : A(typeof(EProp)) { }
-    operator bool() { return bool(name); }
-};
-
-struct eprop {
-    A_decl(eprop, EProp)
-};
-A_impl(eprop, EProp)
-
-struct EnumSymbol:A {
-    str             name;
-    int             value;
-    EnumSymbol() : A(typeof(EnumSymbol)) { }
-    operator bool() { return bool(name); }
-};
-
-struct enum_symbol {
-    A_decl(enum_symbol, EnumSymbol)
-};
-A_impl(enum_symbol, EnumSymbol)
-
-struct EnumDef:A {
-    str             name;
-    vector<enum_symbol> symbols;
-
-    EnumDef() : A(typeof(EnumDef)) { }
-    operator bool() { return bool(name); }
-};
-
-struct enum_def {
-    A_decl(enum_def, EnumDef)
-};
-A_impl(enum_def, EnumDef)
-
-
-struct EArg:A {
-    str             name;
-    str             type;
-    vector<ident>   default_value;
-
-    EArg() : A(typeof(EArg)) { }
-    operator bool() { return bool(name); }
-};
-
-struct earg {
-    A_decl(earg, EArg)
-};
-A_impl(earg, EArg)
-
-struct EConstruct:A {
-    Access          access;
-    vector<earg>    args;
-    vector<vector<ident>> initializers;
-    vector<ident>   body;
-
-    EConstruct() : A(typeof(EConstruct)) { }
-    operator bool() { return bool(body); }
-};
-
-struct econstruct {
-    A_decl(econstruct, EConstruct)
-};
-A_impl(econstruct, EConstruct)
-
-
-struct EMethod:A {
-    str             name;
-    Access          access;
-    vector<earg>    args;
-    vector<ident>   body;
-
-    EMethod() : A(typeof(EMethod)) { }
-    operator bool() { return bool(name); }
-};
-
-struct emethod {
-    A_decl(emethod, EMethod)
-};
-A_impl(emethod, EMethod)
-
-struct EClass:A {
-    EClass() : A(typeof(EClass)) { }
-    str         name;
-    bool        internal;
-    bool        is_class; // if false, is struct
-    map         econstructs;
-    map         eprops;
-    map         emethods;
-    map         friends; // these friends have to exist in the module
-    operator bool() { return bool(name); }
-};
-struct eclass {
-    A_decl(eclass, EClass)
-};
-A_impl(eclass, EClass)
-
-
-struct EImport:A {
-    EImport() : A(typeof(EImport)) { }
-    str         name;
-    path        module_path;
-    operator bool() { return bool(name); }
-};
-struct eimport {
-    A_decl(eimport, EImport)
-};
-A_impl(eimport, EImport)
-
-
-struct EInclude:A {
-    EInclude() : A(typeof(EInclude)) { }
-    vector<str> library; /// optional libraries
-    path        include_file;
-    operator bool() { return bool(include_file); }
-};
-struct einclude {
-    A_decl(einclude, EInclude)
-};
-A_impl(einclude, EInclude)
-
-
-struct EModule:A {
-    EModule() : A(typeof(EModule)) { }
-    vector<eimport>  imports;
-    vector<einclude> includes;
-    map         classes; /// key by name alone, doesnt need to be a full identifier, just a string
-    map         data;
-
-    static EModule *parse(path module_path) {
-        EModule *m = new EModule();
-        str contents = module_path->read<str>();
-        vector<Line> lines = Line::read_tokens(contents);
-
-        return m;
-    }
-};
-
-struct emodule {
-    A_decl(emodule, EModule)
-};
-A_impl(emodule, EModule)
 
 struct Descent {
     vector<type_t> types = { typeof(path) };    
@@ -571,7 +583,7 @@ struct Descent {
 
         if (next() == "(") {
             consume();
-            enode op = parse_expression();
+            enode op = parse();
             expect(str(")"));
             consume();
             return op;
@@ -579,12 +591,8 @@ struct Descent {
         return {};
     }
 
-    enode parse_expression() {
+    enode parse() {
         return parse_add();
-    }
-
-    emodule parse() {
-
     }
 };
 
@@ -703,34 +711,13 @@ struct Expression:A {
     }
 };
 
-A_impl(expression, Expression)
-
-}
-
-using namespace ion;
 
 int main(int argc, char **argv) {
-    map  def     {field { "source",  path(".") }, field { "build", path(".") }, field { "project", str("project") }};
-    map  args    { map::args(argc, argv, def) };
-    str  project { args["project"] };
-    path source  { args["source"]  };
-    path build   { args["build"]   };
-    path ta      { source / (project + str(".ta")) };
-    str  str_path = ta->string();
 
-    if (!ta->exists()) {
-        console.fault("tapestry project not found: {0}", { str_path });
-        return -1;
-    }
-    console.log("project is {0}", { str_path });
-
-    /// we should only have 1 mode, which will generate build instructions, then build everytime; it will always check for differences in generation
-    /// it could generate ninja too, but i think thats too easy to implement to rely on something like that
+    char* file = "silver.si"
 
     /// the script will have access to our types, and their methods
-    vector<expression> e = Expression::parse(ta);
-    
-
+    array* e = Expression::parse(ta);
     
     //Expression::exec(e);
     return e ? 0 : -1;
