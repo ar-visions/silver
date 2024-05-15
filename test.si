@@ -69,6 +69,9 @@ class person : lifeform [
     str  name
     num  age
     int[] attribs
+    int[str] map
+    int lambda[int arg]
+    
     basic b = [two:2, one:1] # named construction allowed on structs; constructors on structs are not allowed!
     # both are put on heap (unlike swift)
     # constructors perform initialization, so its a broken feature to allow for it in both
@@ -98,10 +101,12 @@ class person : lifeform [
     int[] one_line  [int a] return [a + 22, a + 2, a + 2]
     int   one_line2 [int a] return a + 2
 
+    
+
     # returns how actually high
     int jump [int how_high] [
         
-        int[] lambda_r[int arg] [
+        int[] lambda_r [int arg] [
             return [arg + 1, arg + 2]
         ]
 
