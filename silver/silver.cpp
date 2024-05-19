@@ -214,6 +214,48 @@ struct Index {
     }
 };
 
+
+struct TypeIdent;
+struct type_ident {
+    A_decl(type_ident, TypeIdent)
+};
+struct TypeIdent:A {
+    ident base_type;
+    TypeIdent* map;
+    int   array;
+    vector<TypeIdent*> dims; /// array, map of int, array, map of string  <- would be from  type[][int][][type[string]]
+    TypeIdent() : A(typeof(TypeIdent)) {
+        map = null;
+        array = 0;
+    }
+};
+
+A_impl(type_ident, TypeIdent)
+
+struct EMember;
+struct emember {
+    A_decl(emember, EMember)
+};
+
+struct EMember:A {
+    enums(Type, Undefined,
+        Undefined, Variable, Lambda, Method)
+    bool            intern; /// intern is not reflectable
+    Type            member_type; /// this could perhaps be inferred from the members alone but its good to have an enum
+    str             name;
+    type_ident      type;  /// for lambda, this is the return result
+    str             base_class;
+    vector<ident>   value; /// code for methods go here; for lambda, this is the default lambda instance; lambdas of course can be undefined
+    vector<emember> args;  /// args for both methods and lambda; methods will be on the class model alone, not in the 'instance' memory of the class
+    vector<ident>   base_forward;
+    bool            is_ctr;
+    EMember() : A(typeof(EMember)) { }
+    operator bool() { return bool(name); }
+};
+
+
+A_impl(emember, EMember)
+
 struct Parser {
     static inline vector<ident> assign = {":", "+=", "-=", "*=", "/=", "|=", "&=", "^=", ">>=", "<<=", "%="};
     vector<ident> tokens;
@@ -233,10 +275,14 @@ struct Parser {
         tokens = vector<ident>(256 + input->len() / 8);
         ///
         while (*(++cur)) {
+            bool is_ws = false;
             if (!until) {
                 if (new_line)
                     new_line = false;
-                ws(cur);
+                if (*cur == ' ' || *cur == '\t' || *cur == '\n' || *cur == '\r') {
+                    is_ws = true;
+                    ws(cur);
+                }
             }
             if (!*cur) break;
             bool add_str = false;
@@ -259,7 +305,7 @@ struct Parser {
                 int type = sp->index_of(*cur);
                 new_line |= *cur == '\n';
 
-                if (start && (add_str || (token_type != (type >= 0) || token_type) || new_line)) {
+                if (start && (is_ws || add_str || (token_type != (type >= 0) || token_type) || new_line)) {
                     tokens += parse_token(start, (sz_t)(rel - start), line_num);
                     if (!add_str) {
                         if (*cur == '$' && *(cur + 1) == '(') // shell
@@ -301,6 +347,85 @@ struct Parser {
         str all { start, len };
         char t = all[0];
         return (t == '-' || (t >= '0' && t <= '9')) ? Ident(all, line_num) : Ident(all->split("."), line_num); /// mr b: im a token!
+    }
+
+    vector<ident> parse_raw_block() {
+        assertion(next() == "[", "expected beginning of block [");
+        pop();
+        vector<ident> res;
+        res += pop();
+        int level = 1;
+        for (;;) {
+            if (next() == "[") {
+                level++;
+            } else of (next() == "]") {
+                level--;
+            }
+            res += pop();
+            if (level == 0)
+                break;
+        }
+        return res;
+    }
+
+    emember parse_member(A* object);
+
+    /// parse members from a block
+    vector<emember> parse_args() {
+        vector<emember> result;
+        assertion(pop() == "[", "expected [ for arguments");
+        /// parse all symbols at level 0 (levels increased by [, decreased by ]) until ,
+
+        /// # [ int arg, int arg2[int, string] ]
+        /// # args look like this, here we have a lambda as a 2nd arg
+        /// 
+        while (next() && next() != "]") {
+            emember a = parse_member();
+            a->type = parse_type();
+            a->name = pop();
+            assertion(next() == "]" || next() == ",", ", or ] in arguments");
+        }
+        assertion(pop() == "]", "expected end of args ]");
+        return result;
+    }
+
+    type_ident parse_type() {
+        lambda<void(TypeIdent*)> parse_next;
+        parse_next = [&](TypeIdent *type_ident) {
+            if (is_alpha_ident(next()))
+                type_ident->base_type = pop();
+            if (next() != "[") return;
+            int level = 1;
+            while (next()) {
+                if (next() == "]") {
+                    assertion(level > 0, "unexpected ] when parsing type");
+                    if (!type_ident->map)
+                        type_ident->array = 1;
+                    level--;
+                    if (next() != "[" && level == 0)
+                        break;
+                } else if (next() == ",") {
+                    int dims = 1;
+                    while (next() == ",") {
+                        dims++;
+                        pop();
+                    }
+                    type_ident->array = dims;
+                    assertion(next() == "]", "expected array ] declaration");
+                } else {
+                    if (level == 0)
+                        break; /// wandering off
+                    type_ident->map = new TypeIdent();
+                    parse_next(type_ident->map);
+                }
+            }
+            assertion(level == 0, "expected valid type identifier");
+        };
+
+        assertion(is_alpha_ident(next()), "expected identifier for type");
+        type_ident type;
+        parse_next(type);
+        return type;
     }
 
     ident token_at(int rel) {
@@ -603,26 +728,11 @@ struct enum_def {
 };
 A_impl(enum_def, EnumDef)
 
-
-struct EArg:A {
-    str             name;
-    str             type;
-    vector<ident>   default_value;
-
-    EArg() : A(typeof(EArg)) { }
-    operator bool() { return bool(name); }
-};
-
-struct earg {
-    A_decl(earg, EArg)
-};
-A_impl(earg, EArg)
-
 struct EConstruct:A {
     Access          access;
-    vector<earg>    args;
+    vector<emember> args;
     vector<vector<ident>> initializers;
-    vector<ident>   body;
+    vector<ident>   body; /// we create an enode out of this once we parse all EConstructs
 
     EConstruct() : A(typeof(EConstruct)) { }
     operator bool() { return bool(body); }
@@ -637,7 +747,7 @@ A_impl(econstruct, EConstruct)
 struct EMethod:A {
     str             name;
     Access          access;
-    vector<earg>    args;
+    vector<emember> args;
     vector<ident>   body;
 
     EMethod() : A(typeof(EMethod)) { }
@@ -664,6 +774,43 @@ struct EClass:A {
     EClass(Parser &parser, bool intern) : EClass(intern) {
         /// parse class members, which includes econstructs, eprops and emethods
         assertion(parser.pop() == "class", "expected class");
+        if (parser.next() == ":") {
+            parser.consume();
+            from = parser.pop();
+        }
+        assertion(parser.is_alpha_ident(parser.next()), "expected class identifier");
+        name = parser.pop();
+        assertion(parser.pop() == "[", "expected beginning of class");
+        for (;;) {
+            ident t = parser.next();
+            if (!t || t == "]")
+                break;
+            /// expect intern, or type-name token
+            bool intern = false;
+            if (parser.next() == "intern") {
+                parser.pop();
+                intern = true;
+            }
+
+            ident m0 = parser.next();
+            assertion(parser.is_alpha_ident(m0), "expected type identifier");
+            bool is_construct = m0 == ident(name);
+            type_ident member_type;
+
+            if (!is_construct) {
+                bool is_cast = m0 == "cast";
+                if (is_cast)
+                    parser.pop();
+
+                members += parser.parse_member(this);
+            }
+
+            /// int [] name [int arg] [ ... ]
+            /// int [] array
+            /// int [int] map
+        }
+        assertion(parser.next() == "]", "expected end of class");
+        /// classes and structs
     }
     operator bool() { return bool(name); }
 };
@@ -687,6 +834,60 @@ struct EStruct:A {
 A_impl(estruct, EStruct)
 
 
+emember Parser::parse_member(A* obj_type) {
+    EStruct* st = null;
+    EClass*  cl = null;
+    str parent_name;
+    if (obj_type->type == typeof(EStruct))
+        parent_name = ((EStruct*)obj_type)->name;
+    else if (obj_type->type == typeof(EClass))
+        parent_name = ((EClass*)obj_type)->name;
+    emember result;
+    bool is_ctr = false;
+
+    if (next() == parent_name) {
+        assertion(obj_type->type == typeof(EClass), "expected class when defining constructor");
+        result->name = pop();
+        is_ctr = true;
+    } else {
+        result->type = parse_type(); /// lets test this first.
+        assertion(is_alpha_ident(next()), "expected identifier for member, found {0}", { next() });
+        result->name = pop();
+    }
+    ident n = next();
+    assertion((n == "[" && is_ctr) || !is_ctr, "invalid syntax for constructor; expected [args]");
+    if (n == "[") {
+        // [args] this is a lambda or method
+        result->args = parse_args();
+        if (is_ctr) {
+            if (next() == ":") {
+                pop();
+                ident class_name = pop();
+                assertion(class_name == cl->from || class_name == parent_name, "invalid constructor base call");
+                result->base_class = class_name;
+                result->base_forward = parse_raw_block();
+                result->value = parse_raw_block();
+            }
+        } else {
+            if (next() == ":" || next() != "[") {
+                result->member_type = EMember::Type::Lambda;
+                if (next() == ":") {
+                    pop();
+                    assertion(next() == "[", "given assignment, expected [lambda code block]");
+                    /// we need to parse the tokens alone here, since this is the first pass
+                    result->value = parse_raw_block();
+                }
+            } else {
+                assertion(next() == "[", "expected [method code block]");
+                result->member_type = EMember::Type::Method;
+            }
+        }
+    } else if (n == ":") {
+    } else {
+        // not assigning variable
+    }
+    return result;
+}
 
 struct EVar;
 struct evar { A_decl(evar, EVar) };
@@ -785,7 +986,7 @@ struct EModule:A {
                 enum_def edef(parser, intern);
                 push_implementation(token, edef->name, edef);
             } else if (token == "class") {
-                eclass cl(parser, intern); /// we have consumed [intern] class name
+                eclass cl(parser, intern);
                 push_implementation(token, cl->name, cl);
             } else if (token == "struct") {
                 estruct st(parser, intern);
