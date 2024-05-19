@@ -358,7 +358,7 @@ struct Parser {
         for (;;) {
             if (next() == "[") {
                 level++;
-            } else of (next() == "]") {
+            } else if (next() == "]") {
                 level--;
             }
             res += pop();
@@ -371,7 +371,7 @@ struct Parser {
     emember parse_member(A* object);
 
     /// parse members from a block
-    vector<emember> parse_args() {
+    vector<emember> parse_args(A* object) {
         vector<emember> result;
         assertion(pop() == "[", "expected [ for arguments");
         /// parse all symbols at level 0 (levels increased by [, decreased by ]) until ,
@@ -380,7 +380,7 @@ struct Parser {
         /// # args look like this, here we have a lambda as a 2nd arg
         /// 
         while (next() && next() != "]") {
-            emember a = parse_member();
+            emember a = parse_member(object);
             a->type = parse_type();
             a->name = pop();
             assertion(next() == "]" || next() == ",", ", or ] in arguments");
@@ -765,10 +765,8 @@ struct EClass:A {
     str         name;
     bool        intern;
     str         from; /// inherits from
-    map         econstructs;
-    map         eprops;
-    map         emethods;
-    map         friends; // these friends have to exist in the module
+    vector<ident> members;
+    vector<ident> friends; // these friends have to exist in the module
 
     EClass(bool intern = false)         : A(typeof(EClass)) { }
     EClass(Parser &parser, bool intern) : EClass(intern) {
@@ -845,7 +843,7 @@ emember Parser::parse_member(A* obj_type) {
     emember result;
     bool is_ctr = false;
 
-    if (next() == parent_name) {
+    if (next() == ident(parent_name)) {
         assertion(obj_type->type == typeof(EClass), "expected class when defining constructor");
         result->name = pop();
         is_ctr = true;
@@ -858,12 +856,12 @@ emember Parser::parse_member(A* obj_type) {
     assertion((n == "[" && is_ctr) || !is_ctr, "invalid syntax for constructor; expected [args]");
     if (n == "[") {
         // [args] this is a lambda or method
-        result->args = parse_args();
+        result->args = parse_args(obj_type);
         if (is_ctr) {
             if (next() == ":") {
                 pop();
                 ident class_name = pop();
-                assertion(class_name == cl->from || class_name == parent_name, "invalid constructor base call");
+                assertion(class_name == ident(cl->from) || class_name == ident(parent_name), "invalid constructor base call");
                 result->base_class = class_name;
                 result->base_forward = parse_raw_block();
                 result->value = parse_raw_block();
