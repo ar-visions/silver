@@ -5,27 +5,20 @@
 
 namespace ion {
 
-struct Ident;
-struct ident {
-    A_decl(ident, Ident)
-    str &operator[](int i) const;
-};
+/// we will describe keywords in here first
+/// a_for, a_while, a_if and we make them design-time operators
 
+struct ident;
 struct Ident:A {
     vector<str> strings;
     int line_num;
 
-    Ident(null_t = null) : A(typeof(Ident)) { }
-    Ident(const M &m, int line = 0) : Ident() {
-        if (m.type() == typeof(String))
-            strings = strings = vector<str> { str(m) };
-        else if (m.type() == typeof(Ident))
-            strings = ((Ident*)m.a)->strings;
-        else if (m.type() == typeof(Vector<M>))
-            for (String &s: *(Vector<M>*)m.a)
-                strings += s;
-        else if (m.type() == typeof(Vector<str>))
-            for (String &s: *(Vector<str>*)m.a)
+    Ident(null_t = null) : A(typeof(ident)) { }
+    Ident(object m, int line = 0) : Ident() {
+        if (m.type() == typeof(str))
+            strings = vector<str> { m.to_string() };
+        else if (m.type() == typeof(vector<str>))
+            for (str &s: *(vector<str>*)m)
                 strings += s;
         line_num = line;
     }
@@ -38,10 +31,10 @@ struct Ident:A {
         }
         return res;
     }
-    int compare(const M &m) const override {
+    int compare(const object& m) override {
         bool same;
         if (m.type() == typeof(Ident)) {
-            Ident &b = (Ident&)m;
+            Ident &b = m;
             if (b.strings->len() == strings->len()) {
                 int i = 0;
                 same = true;
@@ -80,9 +73,15 @@ struct Ident:A {
     operator bool()        const { return strings->len() > 0; }
 };
 
-A_impl(ident, Ident)
+struct ident {
+    /// making all A-based classed called M inside of the user type; we support modular internals this way still
+    UA_decl(ident, Ident)
+    str &operator[](int i) const;
+};
 
-str &ident::operator[](int i) const { return (*data)[i]; }
+UA_impl(ident, Ident)
+
+str &ident::operator[](int i) const { return a->strings[i]; }
 
 void assertion(bool cond, const str& m, const array& a = {}) {
     if (!cond)
@@ -91,29 +90,56 @@ void assertion(bool cond, const str& m, const array& a = {}) {
 
 static vector<str> keywords = { "class", "struct", "import", "return", "asm", "if", "switch", "while", "for", "do" };
 
+struct EClass;
+struct EStruct;
+
+struct unique_type {
+    object type; // object can be anything! // it could be an array [ typeof(int) ] // lets make the simplest model even if it takes a bit more run-time
+    // more here later
+};
+
+/// twins; just data and user
+struct var_bind;
+struct Var_Bind:A {
+    ident       name;
+    unique_type utype;
+    bool        read_only;
+    Var_Bind() : A(typeof(var_bind)) { }
+};
+
+struct var_bind {
+    UA_decl(var_bind, Var_Bind);
+};
+
+UA_impl(var_bind, Var_Bind);
+
+using var_binds = vector<var_bind>;
+
 struct enode {
-    A_decl(enode, ENode)
+    UA_decl(enode, ENode)
 };
 
 struct ENode:A {
     enums(Type, Undefined,
         Undefined, 
         Statements, Assign, AssignAdd, AssignSub, AssignMul, AssignDiv, AssignOr, AssignAnd, AssignXor, AssignShiftR, AssignShiftL, AssignMod,
-        If, For, While, DoWhile,
+        If, For, While, DoWhile, Break,
         LiteralReal, LiteralInt, LiteralStr, LiteralStrInterp, Array, AlphaIdent, Var, Add, Sub, Mul, Div, Or, And, Xor, MethodDef, MethodCall, MethodReturn)
-
+   
     Type    etype;
-    M       value;
+    object  value;
     vector<enode> operands;
+    var_binds vars;
 
-    static enode create_operation(Type etype, const vector<enode>& operands) {
+    static enode create_operation(Type etype, const vector<enode>& operands, var_binds vars = {}) {
         ENode* op = new ENode;
         op->etype    = etype;
         op->operands = operands;
+        op->vars     = vars;
         return op;
     }
 
-    static enode create_value(Type etype, const M& value) {
+    static enode create_value(Type etype, const object& value) {
         ENode* op = new ENode;
         op->etype    = etype;
         op->value    = value;
@@ -127,7 +153,7 @@ struct ENode:A {
         value = id_var;
     }
 
-    static M lookup(const vector<map> &stack, ident id, bool top_only, bool &found) {
+    static object lookup(const vector<map> &stack, ident id, bool top_only, bool &found) {
         for (int i = stack->len() - 1; i >= 0; i--) {
             map &m = stack[i];
             Field *f = m->fetch(id);
@@ -142,12 +168,12 @@ struct ENode:A {
         return null;
     }
 
-    static str string_interpolate(const M &m_input, const vector<map> &stack) {
+    static str string_interpolate(const object &m_input, const vector<map> &stack) {
         str input = str(m_input);
         str output = input->interpolate([&](const str &arg) -> str {
             ident f = arg;
             bool found = false;
-            M m = lookup(stack, f, false, found);
+            object m = lookup(stack, f, false, found);
             if (!found)
                 return arg;
             return str(m.to_string());
@@ -175,7 +201,7 @@ struct ENode:A {
             case Type::Var: {
                 assert(op->value.type() == typeof(Ident));
                 bool found = false;
-                M m = lookup(stack, op->value, false, found);
+                object m = lookup(stack, op->value, false, found);
                 if (found)
                     return var(m); /// in key results, we return its field
                 console.fault("variable not declared: {0}", { op->value });
@@ -201,7 +227,7 @@ struct ENode:A {
 enums(Access, Public,
     Public, Intern)
 
-A_impl(enode, ENode)
+UA_impl(enode, ENode)
 
 struct Index {
     int i;
@@ -214,55 +240,49 @@ struct Index {
     }
 };
 
-
 struct TypeIdent;
-struct type_ident {
-    A_decl(type_ident, TypeIdent)
-};
-struct TypeIdent:A {
-    ident base_type;
-    TypeIdent* map;
-    int   array;
-    vector<TypeIdent*> dims; /// array, map of int, array, map of string  <- would be from  type[][int][][type[string]]
-    TypeIdent() : A(typeof(TypeIdent)) {
-        map = null;
-        array = 0;
-    }
-};
 
-A_impl(type_ident, TypeIdent)
 
 struct EMember;
 struct emember {
-    A_decl(emember, EMember)
+    UA_decl(emember, EMember)
 };
 
 struct EMember:A {
     enums(Type, Undefined,
-        Undefined, Variable, Lambda, Method)
+        Undefined, Variable, Lambda, Method, Constructor)
     bool            intern; /// intern is not reflectable
+    bool            is_static;
     Type            member_type; /// this could perhaps be inferred from the members alone but its good to have an enum
     str             name;
-    type_ident      type;  /// for lambda, this is the return result
+    unique_type     type;  /// for lambda, this is the return result
     str             base_class;
     vector<ident>   value; /// code for methods go here; for lambda, this is the default lambda instance; lambdas of course can be undefined
     vector<emember> args;  /// args for both methods and lambda; methods will be on the class model alone, not in the 'instance' memory of the class
+    var_binds       arg_vars; /// these are pushed into the parser vspace stack when translating a method; lambdas will need another set of read vars
     vector<ident>   base_forward;
     bool            is_ctr;
+    enode           translation;
     EMember() : A(typeof(EMember)) { }
+    String* to_string() {
+        return name; /// needs weak reference to class
+    }
     operator bool() { return bool(name); }
 };
 
 
-A_impl(emember, EMember)
+UA_impl(emember, EMember)
 
 struct Parser {
     static inline vector<ident> assign = {":", "+=", "-=", "*=", "/=", "|=", "&=", "^=", ">>=", "<<=", "%="};
     vector<ident> tokens;
+    vector<var_binds> bind_stack;
     int cur = 0;
 
+    Parser(vector<ident> tokens) : tokens(tokens) { }
+
     Parser(str input) {
-        str           sp         = "$()![]/+-*:\"\'#"; /// needs string logic in here to make a token out of the entire "string inner part" without the quotes; those will be tokens neighboring
+        str           sp         = "$,<>()![]/+-*:\"\'#"; /// needs string logic in here to make a token out of the entire "string inner part" without the quotes; those will be tokens neighboring
         char          until      = 0; /// either ) for $(script) ", ', f or i
         sz_t          len        = input->len();
         char*         origin     = input->cs();
@@ -272,6 +292,7 @@ struct Parser {
         bool          new_line   = true;
         bool          token_type = false;
         bool          found_null = false;
+        bool          multi_comment = false;
         tokens = vector<ident>(256 + input->len() / 8);
         ///
         while (*(++cur)) {
@@ -288,10 +309,13 @@ struct Parser {
             bool add_str = false;
             char *rel = cur;
             if (*cur == '#') { // comment
+                if (cur[1] == '#')
+                    multi_comment = !multi_comment;
                 while (*cur && *cur != '\n')
                     cur++;
                 found_null = !*cur;
                 new_line = true;
+                until = 0; // requires further processing if not 0
             }
             if (until) {
                 if (*cur == until && *(cur - 1) != '/') {
@@ -301,7 +325,7 @@ struct Parser {
                     rel = cur;
                 }
             }
-            if (!until) {
+            if (!until && !multi_comment) {
                 int type = sp->index_of(*cur);
                 new_line |= *cur == '\n';
 
@@ -335,6 +359,8 @@ struct Parser {
                     break;
             }
         }
+        if (start && (cur - start))
+            tokens += parse_token(start, (sz_t)(cur - start), line_num);
     }
 
     static void ws(char *&cur) {
@@ -346,12 +372,16 @@ struct Parser {
             len--;
         str all { start, len };
         char t = all[0];
-        return (t == '-' || (t >= '0' && t <= '9')) ? Ident(all, line_num) : Ident(all->split("."), line_num); /// mr b: im a token!
+        bool is_number = (t == '-' || (t >= '0' && t <= '9'));
+        return is_number ?
+            Ident(all, line_num) : 
+            Ident(all->split(str(".")), line_num); /// mr b: im a token!
     }
 
     vector<ident> parse_raw_block() {
+        if (next() != "[")
+            return vector<ident> { pop() };
         assertion(next() == "[", "expected beginning of block [");
-        pop();
         vector<ident> res;
         res += pop();
         int level = 1;
@@ -381,51 +411,18 @@ struct Parser {
         /// 
         while (next() && next() != "]") {
             emember a = parse_member(object);
-            a->type = parse_type();
-            a->name = pop();
-            assertion(next() == "]" || next() == ",", ", or ] in arguments");
+            ident n = next();
+            assertion(n == "]" || n == ",", ", or ] in arguments");
+            if (n == "]")
+                break;
+            pop();
         }
         assertion(pop() == "]", "expected end of args ]");
         return result;
     }
 
-    type_ident parse_type() {
-        lambda<void(TypeIdent*)> parse_next;
-        parse_next = [&](TypeIdent *type_ident) {
-            if (is_alpha_ident(next()))
-                type_ident->base_type = pop();
-            if (next() != "[") return;
-            int level = 1;
-            while (next()) {
-                if (next() == "]") {
-                    assertion(level > 0, "unexpected ] when parsing type");
-                    if (!type_ident->map)
-                        type_ident->array = 1;
-                    level--;
-                    if (next() != "[" && level == 0)
-                        break;
-                } else if (next() == ",") {
-                    int dims = 1;
-                    while (next() == ",") {
-                        dims++;
-                        pop();
-                    }
-                    type_ident->array = dims;
-                    assertion(next() == "]", "expected array ] declaration");
-                } else {
-                    if (level == 0)
-                        break; /// wandering off
-                    type_ident->map = new TypeIdent();
-                    parse_next(type_ident->map);
-                }
-            }
-            assertion(level == 0, "expected valid type identifier");
-        };
-
-        assertion(is_alpha_ident(next()), "expected identifier for type");
-        type_ident type;
-        parse_next(type);
-        return type;
+    unique_type parse_type() {
+        return unique_type(); // we need to start again, from the tokens alone; we 
     }
 
     ident token_at(int rel) {
@@ -467,12 +464,14 @@ struct Parser {
     };
 
     ENode::Type is_alpha_ident(ident token) { /// type, var, or method (all the same); its a name that isnt a keyword
+        if (!token)
+            return ENode::Type(ENode::Type::Undefined);
         char t = token[0][0];
         if (isalpha(t) && keywords->index_of(token[0]) == -1) {
             /// lookup against variable table; declare if in isolation
             return ENode::Type::AlphaIdent; /// will be Var, or Type after
         }
-        return ENode::Type::Undefined;
+        return ENode::Type(ENode::Type::Undefined);
     };
 
     ident &next(int rel = 0) const {
@@ -489,6 +488,11 @@ struct Parser {
     enode parse_statements() {
         vector<enode> block;
         bool multiple = next() == "[";
+        if (multiple) {
+            pop(); /// add space for variables (both cases, actually, since a singular expression can create temporaries)
+        }
+        var_binds vars {};
+        bind_stack->push(vars); /// statements alone constitute new variable space
         while (next()) {
             enode n = parse_statement();
             assertion(n, "expected statement or expression");
@@ -498,11 +502,16 @@ struct Parser {
             else if (next() == "]")
                 break;
         }
+        bind_stack->pop();
         if (multiple) {
             assertion(next() == "]", "expected end of block ']'");
             consume();
         }
-        return ENode::create_operation(ENode::Type::Statements, block);
+        return ENode::create_operation(ENode::Type::Statements, block, vars);
+    }
+
+    enode parse_expression() {
+        return parse_add();
     }
 
     enode parse_statement() {
@@ -514,57 +523,76 @@ struct Parser {
                 consume();
                 consume();
                 return ENode::create_operation(assign, { t0, parse_expression() });
-            } else {
-                if (t0 == "for") {
-                    consume();
-                    assertion(next() == "[", "expected condition expression '['"); consume();
-                    enode statement = parse_statement();
-                    assertion(next() == ";", "expected ;"); consume();
-                    enode condition = parse_expression();
-                    assertion(next() == ";", "expected ;"); consume();
-                    enode post_iteration = parse_expression();
-                    assertion(next() == "]", "expected ]"); consume();
-                    return ENode::create_operation(ENode::Type::For, vector<enode> { statement, condition, post_iteration });
-                } else if (t0 == "while") {
-                    consume();
-                    assertion(next() == "[", "expected condition expression '['"); consume();
-                    enode condition  = parse_expression();
-                    assertion(next() == "]", "expected condition expression ']'"); consume();
-                    enode statements = parse_statements();
-                    return ENode::create_operation(ENode::Type::While, { condition, statements });
-                } else if (t0 == "if") {
-                    consume();
-                    assertion(next() == "[", "expected condition expression '['"); consume();
-                    enode condition  = parse_expression();
-                    assertion(next() == "]", "expected condition expression ']'"); consume();
-                    enode statements = parse_statements();
-                    enode else_statements;
-                    bool else_if = false;
-                    if (next() == "else") { /// if there is no 'if' following this, then there may be no other else's following
-                        consume();
-                        else_if = next() == "if";
-                        else_statements = parse_statements();
-                        assertion(!else_if && next() == "else", "else proceeding else");
-                    }
-                    return ENode::create_operation(ENode::Type::If, { condition, statements, else_statements });
-                } else if (t0 == "do") {
-                    consume();
-                    enode statements = parse_statements();
-                    assertion(next() == "while", "expected while");                consume();
-                    assertion(next() == "[", "expected condition expression '['"); consume();
-                    enode condition  = parse_expression();
-                    assertion(next() == "]", "expected condition expression '['");
-                    consume();
-                    return ENode::create_operation(ENode::Type::DoWhile, { condition, statements });
-                } else {
-                    return parse_expression();
-                }
+            } else if (t1 == "[") {
+                /// method call / array lookup
+                /// determine if its a method
+                bool is_static;
+                //type = lookup_type(t0, is_static);
+                //vspaces
             }
+            return parse_expression();
+        } else if (t0 == "return") {
+            consume();
+            enode result = parse_expression();
+            return ENode::create_operation(ENode::Type::MethodReturn, { result });
+        } else if (t0 == "break") {
+            consume();
+            enode levels;
+            if (next() == "[") {
+                consume();
+                levels = parse_expression();
+                assertion(pop() == "]", "expected ] after break[expression...");
+            }
+            return ENode::create_operation(ENode::Type::Break, { levels });
+        } else if (t0 == "for") {
+            consume();
+            assertion(next() == "[", "expected condition expression '['"); consume();
+            enode statement = parse_statements();
+            assertion(next() == ";", "expected ;"); consume();
+            bind_stack->push(statement->vars);
+            enode condition = parse_expression();
+            assertion(next() == ";", "expected ;"); consume();
+            enode post_iteration = parse_expression();
+            assertion(next() == "]", "expected ]"); consume();
+            enode for_block = parse_statements();
+            bind_stack->pop(); /// the vspace is manually pushed above, and thus remains for the parsing of these
+            enode for_statement = ENode::create_operation(ENode::Type::For, vector<enode> { statement, condition, post_iteration, for_block });
+            return for_statement;
+        } else if (t0 == "while") {
+            consume();
+            assertion(next() == "[", "expected condition expression '['"); consume();
+            enode condition  = parse_expression();
+            assertion(next() == "]", "expected condition expression ']'"); consume();
+            enode statements = parse_statements();
+            return ENode::create_operation(ENode::Type::While, { condition, statements });
+        } else if (t0 == "if") {
+            consume();
+            assertion(next() == "[", "expected condition expression '['"); consume();
+            enode condition  = parse_expression();
+            assertion(next() == "]", "expected condition expression ']'"); consume();
+            enode statements = parse_statements();
+            enode else_statements;
+            bool else_if = false;
+            if (next() == "else") { /// if there is no 'if' following this, then there may be no other else's following
+                consume();
+                else_if = next() == "if";
+                else_statements = parse_statements();
+                assertion(!else_if && next() == "else", "else proceeding else");
+            }
+            return ENode::create_operation(ENode::Type::If, { condition, statements, else_statements });
+        } else if (t0 == "do") {
+            consume();
+            enode statements = parse_statements();
+            assertion(next() == "while", "expected while");                consume();
+            assertion(next() == "[", "expected condition expression '['"); consume();
+            enode condition  = parse_expression();
+            assertion(next() == "]", "expected condition expression '['");
+            consume();
+            return ENode::create_operation(ENode::Type::DoWhile, { condition, statements });
         } else {
             return parse_expression();
         }
     }
-
 
     i64 parse_numeric(ident &token) {
         char *e;
@@ -613,7 +641,7 @@ struct Parser {
             cstr cs = f[0]->cs();
             bool is_int = n == ENode::Type::LiteralInt;
             consume();
-            return ENode::create_value(n, M::from_string(cs, is_int ? typeof(i64) : typeof(double)));
+            return ENode::create_value(n, object::from_string(cs, is_int ? typeof(i64) : typeof(double)));
         }
         ENode::Type s = is_string(id);
         if (s) {
@@ -621,7 +649,9 @@ struct Parser {
             assert(f->len() == 1);
             cstr cs = f[0]->cs();
             consume();
-            str str_literal = M::from_string(cs, typeof(String));
+            struct id* t = typeof(str);
+            auto v = object::from_string(cs, t);
+            str str_literal = v;
             assert(str_literal->len() >= 2);
             str_literal = str_literal->mid(1, str_literal->len() - 2);
             return ENode::create_value(s, str_literal);
@@ -643,10 +673,6 @@ struct Parser {
         return {};
     }
 
-    enode parse_expression() {
-        return parse_add();
-    }
-
     bool expect(const ident &token) {
         if (token != tokens[cur])
             console.fault("expected token: {0}", {token});
@@ -666,9 +692,9 @@ struct EProp:A {
 };
 
 struct eprop {
-    A_decl(eprop, EProp)
+    UA_decl(eprop, EProp)
 };
-A_impl(eprop, EProp)
+UA_impl(eprop, EProp)
 
 struct EnumSymbol:A {
     str             name;
@@ -679,9 +705,9 @@ struct EnumSymbol:A {
 };
 
 struct enum_symbol {
-    A_decl(enum_symbol, EnumSymbol)
+    UA_decl(enum_symbol, EnumSymbol)
 };
-A_impl(enum_symbol, EnumSymbol)
+UA_impl(enum_symbol, EnumSymbol)
 
 struct EnumDef:A {
     str                 name;
@@ -707,7 +733,7 @@ struct EnumDef:A {
             if (peek == ":") {
                 parser.pop();
                 enode enum_expr = parser.parse_expression();
-                M enum_value = ENode::exec(enum_expr, {});
+                object enum_value = ENode::exec(enum_expr, {});
                 assertion(enum_value.type()->traits & traits::integral,
                     "expected integer value for enum symbol {0}, found {1}", { symbol, enum_value });
                 prev_value = i64(enum_value);
@@ -724,53 +750,22 @@ struct EnumDef:A {
 };
 
 struct enum_def {
-    A_decl(enum_def, EnumDef)
+    UA_decl(enum_def, EnumDef)
 };
-A_impl(enum_def, EnumDef)
-
-struct EConstruct:A {
-    Access          access;
-    vector<emember> args;
-    vector<vector<ident>> initializers;
-    vector<ident>   body; /// we create an enode out of this once we parse all EConstructs
-
-    EConstruct() : A(typeof(EConstruct)) { }
-    operator bool() { return bool(body); }
-};
-
-struct econstruct {
-    A_decl(econstruct, EConstruct)
-};
-A_impl(econstruct, EConstruct)
-
-
-struct EMethod:A {
-    str             name;
-    Access          access;
-    vector<emember> args;
-    vector<ident>   body;
-
-    EMethod() : A(typeof(EMethod)) { }
-    operator bool() { return bool(name); }
-};
-
-struct emethod {
-    A_decl(emethod, EMethod)
-};
-A_impl(emethod, EMethod)
+UA_impl(enum_def, EnumDef)
 
 struct EClass;
-struct eclass { A_decl(eclass, EClass) };
+struct eclass { UA_decl(eclass, EClass) };
 struct EClass:A {
-    str         name;
-    bool        intern;
-    str         from; /// inherits from
-    vector<ident> members;
-    vector<ident> friends; // these friends have to exist in the module
+    str             name;
+    bool            intern;
+    str             from; /// inherits from
+    vector<emember> members;
+    vector<ident>   friends; // these friends have to exist in the module
 
     EClass(bool intern = false)         : A(typeof(EClass)) { }
     EClass(Parser &parser, bool intern) : EClass(intern) {
-        /// parse class members, which includes econstructs, eprops and emethods
+        /// parse class members
         assertion(parser.pop() == "class", "expected class");
         if (parser.next() == ":") {
             parser.consume();
@@ -789,34 +784,44 @@ struct EClass:A {
                 parser.pop();
                 intern = true;
             }
+            bool is_static = false;
+            if (parser.next() == "static") {
+                parser.pop();
+                is_static = true;
+            }
 
             ident m0 = parser.next();
             assertion(parser.is_alpha_ident(m0), "expected type identifier");
             bool is_construct = m0 == ident(name);
-            type_ident member_type;
+            unique_type member_type;
+            bool is_cast = false;
 
             if (!is_construct) {
-                bool is_cast = m0 == "cast";
+                is_cast = m0 == "cast";
                 if (is_cast)
                     parser.pop();
-
-                members += parser.parse_member(this);
             }
+
+            members += parser.parse_member(this);
+            emember last = members->last();
+            last->intern = intern;
+            last->is_static = is_static;
 
             /// int [] name [int arg] [ ... ]
             /// int [] array
             /// int [int] map
         }
-        assertion(parser.next() == "]", "expected end of class");
+        ident n = parser.pop();
+        assertion(n == "]", "expected end of class");
         /// classes and structs
     }
     operator bool() { return bool(name); }
 };
-A_impl(eclass, EClass)
+UA_impl(eclass, EClass)
 
 
 struct EStruct;
-struct estruct { A_decl(estruct, EStruct) };
+struct estruct { UA_decl(estruct, EStruct) };
 struct EStruct:A {
     str         name;
     bool        intern;
@@ -829,8 +834,7 @@ struct EStruct:A {
     }
     operator bool() { return bool(name); }
 };
-A_impl(estruct, EStruct)
-
+UA_impl(estruct, EStruct)
 
 emember Parser::parse_member(A* obj_type) {
     EStruct* st = null;
@@ -857,30 +861,40 @@ emember Parser::parse_member(A* obj_type) {
     if (n == "[") {
         // [args] this is a lambda or method
         result->args = parse_args(obj_type);
+        //var_bind args_vars;
+        //for (emember& member: result->args) {
+        //    args_vars->vtypes += member->member_type;
+        //    args_vars->vnames += member->name;
+        //}
         if (is_ctr) {
             if (next() == ":") {
                 pop();
                 ident class_name = pop();
                 assertion(class_name == ident(cl->from) || class_name == ident(parent_name), "invalid constructor base call");
-                result->base_class = class_name;
+                result->base_class = class_name; /// should be assertion checked above
                 result->base_forward = parse_raw_block();
-                result->value = parse_raw_block();
             }
+            ident n = next();
+            assertion(n == "[", "expected [constructor code block], found {0}", { n });
+            result->member_type = EMember::Type::Constructor;
+            result->value = parse_raw_block();
         } else {
             if (next() == ":" || next() != "[") {
                 result->member_type = EMember::Type::Lambda;
-                if (next() == ":") {
+                if (next() == ":")
                     pop();
-                    assertion(next() == "[", "given assignment, expected [lambda code block]");
-                    /// we need to parse the tokens alone here, since this is the first pass
-                    result->value = parse_raw_block();
-                }
             } else {
-                assertion(next() == "[", "expected [method code block]");
                 result->member_type = EMember::Type::Method;
+            }
+            ident n = next();
+            if (result->member_type == EMember::Type::Method || n == "[") {
+                assertion(n == "[", "expected [method code block], found {0}", { n });
+                result->value = parse_raw_block();
             }
         }
     } else if (n == ":") {
+        pop();
+        result->value = parse_raw_block();
     } else {
         // not assigning variable
     }
@@ -888,7 +902,7 @@ emember Parser::parse_member(A* obj_type) {
 }
 
 struct EVar;
-struct evar { A_decl(evar, EVar) };
+struct evar { UA_decl(evar, EVar) };
 struct EVar:A {
     EVar(bool intern = false) : A(typeof(EVar)), intern(intern) { }
     EVar(Parser &parser, bool intern) : EVar(intern) {
@@ -910,10 +924,10 @@ struct EVar:A {
     bool        intern;
     operator bool() { return bool(name); }
 };
-A_impl(evar, EVar)
+UA_impl(evar, EVar)
 
 struct EImport;
-struct eimport { A_decl(eimport, EImport) };
+struct eimport { UA_decl(eimport, EImport) };
 struct EImport:A {
     EImport() : A(typeof(EImport)) { }
     EImport(Parser& parser) : EImport() {
@@ -925,50 +939,113 @@ struct EImport:A {
             isolate_namespace = parser.pop();
         }
         assertion(parser.is_string(mod), "expected type identifier, found {0}", { type });
-        name = parser.pop();
+        str s_mod = mod;
+        name = s_mod->mid(1, s_mod->length - 2);
         assertion(parser.is_alpha_ident(name), "expected variable identifier, found {0}", { name });
     }
     str         name;
     str         isolate_namespace;
     path        module_path;
+    struct EModule* module;
     operator bool() { return bool(name); }
 };
-A_impl(eimport, EImport)
+UA_impl(eimport, EImport)
 
-struct einclude { A_decl(einclude, EInclude) };
-struct EInclude:A {
-    EInclude() : A(typeof(EInclude)) { }
-    vector<str> library; /// optional libraries
-    path        include_file;
-    map         defines;
-    operator bool() { return bool(include_file); }
+struct eincludes { UA_decl(eincludes, EIncludes) };
+struct EIncludes:A {
+    EIncludes() : A(typeof(EIncludes)) { }
+    EIncludes(Parser& parser) : EIncludes() {
+        assertion(parser.pop() == "includes", "expected includes");
+        assertion(parser.pop() == "<", "expected < after includes");
+        for (;;) {
+            ident inc = parser.pop();
+            assertion(parser.is_alpha_ident(inc), "expected include file, found {0}", { inc });
+            path include = str(inc);
+            includes += include;
+            if (parser.next() == ",") {
+                parser.pop();
+                continue;
+            } else {
+                assertion(parser.pop() == ">", "expected > after includes");
+                break;
+            }
+        }
+        /// read optional fields for defines, libs
+    }
+    vector<str>  library; /// optional library identifiers (these will omit the lib prefix & ext, as defined regularly in builds)
+    vector<path> includes;
+    map          defines;
+    operator bool() { return bool(includes); }
 };
-A_impl(einclude, EInclude)
+UA_impl(eincludes, EIncludes)
 
 struct EModule;
-struct emodule { A_decl(emodule, EModule) };
+struct emodule { UA_decl(emodule, EModule) };
 struct EModule:A {
     EModule() : A(typeof(EModule)) { }
-    vector<eimport>  imports;
-    vector<einclude> includes;
-    map              implementation;
+    vector<eimport>   imports;
+    vector<eincludes> includes;
+    map               implementation;
+    //vector<eclass>    classes;
+    //vector<estruct>   structs;
+    //vector<enum_def>  enumerables;
+    bool              translated = false;
 
-    /// i think its a better idea to not have embedded classes and structs, which may be hilarious coming from me (see: mx model)
-    /// its more than just being unable to really parse it effectively on first pass.  with modules, you simply dont need this
+    bool graph() {
+        lambda<void(EModule*)> graph;
+        graph = [&](EModule *module) {
+            if (module->translated)
+                return;
+            for (eimport& import: module->imports)
+                graph(import->module);
+
+            for (Field& f: module->implementation) {
+                if (f.value.type() == typeof(EClass)) {
+                    eclass cl = f.value;
+                    for (emember& member: cl->members) {
+                        auto convert_enode = [&](emember& member) -> enode {
+                            vector<ident> code = member->value;
+                            Parser parser(code);
+                            console.log("parsing {0}", { member->name });
+                            parser.bind_stack->push(member->arg_vars);
+                            enode n = parser.parse_statements();
+                            return n;
+                        };
+                        if (member->member_type == EMember::Type::Method) {
+                            assertion(member->value, "method {0} has no value", { member });
+                            member->translation = convert_enode(member);
+                        }
+                    }
+                }
+            }
+            module->translated = true;
+            /// the ENode schema is bound to the classes stored in module
+        };
+        for (eimport& import: imports) {
+            graph(import->module);
+        }
+        graph(this);
+        return true;
+    }
+
     static EModule *parse(path module_path) {
         EModule *m = new EModule();
         str contents = module_path->read<str>();
         Parser parser = Parser(contents);
+
         int imports = 0;
+        int includes = 0;
         for (;;) {
             ident token = parser.next();
+            if (!token)
+                break;
             bool intern = false;
             if (token == "intern") {
                 parser.consume();
                 token  = parser.pop();
                 intern = true;
             }
-            auto push_implementation = [&](ident keyword, ident name, M value) {
+            auto push_implementation = [&](ident keyword, ident name, object value) {
                 assertion(!m->implementation->fetch(name),  "duplicate identifier for {0}: {1}", { keyword, name });
                 m->implementation[name] = value;
             };
@@ -980,6 +1057,18 @@ struct EModule:A {
                 str import_str = "import{0}";
                 str import_id = import_str->format({ imports });
                 push_implementation(token, import_id, import);
+                str  loc = "{0}.si";
+                path si_path = loc->format({ import->name });
+                assertion(si_path->exists(), "path does not exist for silver module: {0}", { si_path });
+                import->module_path = si_path;
+                import->module = parse(si_path); /// needs to be found relative to the location of this module
+            } else if (token == "includes") {
+                assertion(!intern, "intern keyword not applicable to includes");
+                eincludes includes_obj(parser);
+                includes++;
+                str includes_str = "includes{0}";
+                str includes_id  = includes_str->format({ includes });
+                push_implementation(token, includes_id, includes_obj);
             } else if (token == "enum") {
                 enum_def edef(parser, intern);
                 push_implementation(token, edef->name, edef);
@@ -997,8 +1086,7 @@ struct EModule:A {
         return m;
     }
 };
-A_impl(emodule, EModule)
-
+UA_impl(emodule, EModule)
 }
 
 using namespace ion;
@@ -1008,10 +1096,8 @@ int main(int argc, char **argv) {
     map  args    { map::args(argc, argv, def, "source") };
     path source  { args["source"]  };
 
-    /// the script will have access to our types, and their methods
-    /// we should be fine with having just 1 software source given, no 'project' json or anything of the sort.  why would that be needed?
-    /// similarly to python, we only need a root module given and a whole program can be built and run
-
     emodule m = EModule::parse(source);
+    m->graph();
+    m->run();
     return 0;
 }

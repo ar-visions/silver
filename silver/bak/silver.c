@@ -241,12 +241,12 @@ struct ident_meta {
 static vector<str> keywords = { "method", "import" };
 
 struct ident {
-    A_decl(ident, Ident)
+    UA_decl(ident, Ident)
     str &operator[](int i) const { return (*data)[i]; }
 };
 
 
-A_impl(ident, Ident)
+UA_impl(ident, Ident)
 
 struct Line {
     vector<ident> tokens;
@@ -465,9 +465,9 @@ struct ENode:A {
 };
 
 struct enode {
-    A_decl(enode, ENode)
+    UA_decl(enode, ENode)
 };
-A_impl(enode, ENode)
+UA_impl(enode, ENode)
 
 struct Descent {
     vector<type_t> types = { typeof(path) };    
@@ -598,7 +598,7 @@ struct Descent {
 
 struct Expression;
 struct expression {
-    A_decl(expression, Expression)
+    UA_decl(expression, Expression)
 };
 
 struct Expression:A {
