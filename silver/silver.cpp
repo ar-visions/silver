@@ -20,6 +20,9 @@ struct Ident:A {
         else if (m.type() == typeof(vector<str>))
             for (str &s: *(vector<str>*)m)
                 strings += s;
+        else if (m.type() == typeof(vector<object>))
+            for (str  s: *(vector<object>*)m)
+                strings += s;
         line_num = line;
     }
     String *to_string() override {
@@ -88,9 +91,16 @@ void assertion(bool cond, const str& m, const array& a = {}) {
         console.fault(m, a);
 };
 
-static vector<str> keywords = { "class", "struct", "import", "return", "asm", "if", "switch", "while", "for", "do" };
+/// we want the generic, or template keyword to be handled by translation at run-time
+/// we do not want the code instantiated a bunch of times; we can perform lookups at runtime for the T'emplate args
+/// its probably quite important not to re-instantiate the code a bunch of times.  once only, even with templates
+/// you simply host your own object-based types
 
-struct EClass;
+/// why cant templated keywords simply be object, then?
+
+static vector<str> keywords = { "mod", "struct", "import", "return", "asm", "if", "switch", "while", "for", "do" };
+
+struct EMod;
 struct EStruct;
 
 struct unique_type {
@@ -248,19 +258,24 @@ struct emember {
     UA_decl(emember, EMember)
 };
 
+using tokens = vector<ident>;
+
 struct EMember:A {
     enums(Type, Undefined,
         Undefined, Variable, Lambda, Method, Constructor)
     bool            intern; /// intern is not reflectable
     bool            is_static;
     Type            member_type; /// this could perhaps be inferred from the members alone but its good to have an enum
+    type_t          runtime; /// some allocated runtime for method translation
+    type_t          r_type;
     str             name;
     unique_type     type;  /// for lambda, this is the return result
     str             base_class;
-    vector<ident>   value; /// code for methods go here; for lambda, this is the default lambda instance; lambdas of course can be undefined
+    tokens          r_type_tokens;
+    tokens          value; /// code for methods go here; for lambda, this is the default lambda instance; lambdas of course can be undefined
     vector<emember> args;  /// args for both methods and lambda; methods will be on the class model alone, not in the 'instance' memory of the class
     var_binds       arg_vars; /// these are pushed into the parser vspace stack when translating a method; lambdas will need another set of read vars
-    vector<ident>   base_forward;
+    tokens          base_forward;
     bool            is_ctr;
     enode           translation;
     EMember() : A(typeof(EMember)) { }
@@ -373,9 +388,10 @@ struct Parser {
         str all { start, len };
         char t = all[0];
         bool is_number = (t == '-' || (t >= '0' && t <= '9'));
+        Vector<object> *sp = all->split(str("."));
         return is_number ?
-            Ident(all, line_num) : 
-            Ident(all->split(str(".")), line_num); /// mr b: im a token!
+            ident(all, line_num) : 
+            ident(sp, line_num); /// mr b: im a token!
     }
 
     vector<ident> parse_raw_block() {
@@ -754,71 +770,147 @@ struct enum_def {
 };
 UA_impl(enum_def, EnumDef)
 
-struct EClass;
-struct eclass { UA_decl(eclass, EClass) };
-struct EClass:A {
+struct emodule;
+struct EModule;
+struct EMod;
+
+enums(EMembership, normal, normal, internal, inlay)
+
+/// this is the basis for the modeling of data
+/// mods use alloated reference by default, but can embed inside primitive data by specifying a primitive type
+/// this lets us sub-class our basic mod types for numerics and boolean
+enums(EModel, allocated,
+    allocated,
+    boolean_32,
+    unsigned_8, unsigned_16, unsigned_32, unsigned_64,
+    signed_8, signed_16, signed_32, signed_64,
+    real_32, real_64, real_128)
+
+/// this was class. now its emod, which is very confusing compared to emodule
+struct emod { UA_decl(emod, EMod) };
+struct EMod:A {
+    vector<emember> template_args; /// if nothing in here, no template args [ template ... ctr ] -- lets parse type variables
     str             name;
     bool            intern;
+    EModel          model; /// model types are primitive types of bit length
     str             from; /// inherits from
     vector<emember> members;
-    vector<ident>   friends; // these friends have to exist in the module
+    EModule*        module;
+    EMod*           composed_last;
+    type_t          composed_type;
+    ident           composed_ident; /// these are the proto mods we conform to
+    type_t          base_type; /// if classes have a base type, we likely wont support members, as 'this' becomes the type of base*
 
-    EClass(bool intern = false)         : A(typeof(EClass)) { }
-    EClass(Parser &parser, bool intern) : EClass(intern) {
+    emod composed();
+
+    vector<ident>   friends; // these friends have to exist in the module
+    type_t          runtime = null; // we create our own run-time type, in our language (this is not registered in actual A types, though)
+    /// different modules can have the same named mods, but those are different
+    /// of course, anyone can augment a class already made; for this we fetching the EMod made, not a new one!
+    /// mod module-name.mod-inside ... override functionality this way, precedence goes closest to user
+
+    EMod(bool intern = false)         : A(typeof(EMod)) { }
+    EMod(Parser &parser, EMembership membership) : EMod(intern) { // replace intern with enum for normal, inlay, intern -- its a membership type
         /// parse class members
-        assertion(parser.pop() == "class", "expected class");
-        if (parser.next() == ":") {
-            parser.consume();
-            from = parser.pop();
-        }
+        assertion(parser.pop() == "mod", "expected mod");
         assertion(parser.is_alpha_ident(parser.next()), "expected class identifier");
         name = parser.pop();
-        assertion(parser.pop() == "[", "expected beginning of class");
-        for (;;) {
-            ident t = parser.next();
-            if (!t || t == "]")
-                break;
-            /// expect intern, or type-name token
-            bool intern = false;
-            if (parser.next() == "intern") {
-                parser.pop();
-                intern = true;
-            }
-            bool is_static = false;
-            if (parser.next() == "static") {
-                parser.pop();
-                is_static = true;
-            }
 
-            ident m0 = parser.next();
-            assertion(parser.is_alpha_ident(m0), "expected type identifier");
-            bool is_construct = m0 == ident(name);
-            unique_type member_type;
-            bool is_cast = false;
-
-            if (!is_construct) {
-                is_cast = m0 == "cast";
-                if (is_cast)
-                    parser.pop();
-            }
-
-            members += parser.parse_member(this);
-            emember last = members->last();
-            last->intern = intern;
-            last->is_static = is_static;
-
-            /// int [] name [int arg] [ ... ]
-            /// int [] array
-            /// int [int] map
+        if (parser.next() == ":") {
+            parser.consume();
+            if (parser.next() == ":") {
+                parser.consume();
+                model = str(parser.pop());
+                /// boolean-32 is a model-type, integer-i32, integer-u32, object is another (implicit); 
+                /// one can inherit over a model-bound mod; this is essentially the allocation size for 
+                /// its membership identity; for classes that is pointer-based, but with boolean, integers, etc we use the value alone
+                /// mods have a 'model' for storage; the models change what forms its identity, by value or reference
+                /// [u8 1] [u8 2]   would be values [ 1, 2 ] in a u8 array; these u8's have callable methods on them
+                /// so we can objectify anything if we have facilities around how the object is referenced, inline or by allocation
+                /// this means there is no reference counts on these value models
+            } else
+                from = parser.pop();
         }
-        ident n = parser.pop();
-        assertion(n == "]", "expected end of class");
+        if (parser.next() == "[") {
+            assertion(parser.pop() == "[", "expected beginning of class");
+            for (;;) {
+                ident t = parser.next();
+                if (!t || t == "]")
+                    break;
+                /// expect intern, or type-name token
+                bool intern = false;
+                if (parser.next() == "intern") {
+                    parser.pop();
+                    intern = true;
+                }
+                bool is_static = false;
+                if (parser.next() == "static") {
+                    parser.pop();
+                    is_static = true;
+                }
+
+                ident m0 = parser.next();
+                assertion(parser.is_alpha_ident(m0), "expected type identifier");
+                bool is_construct = m0 == ident(name);
+                unique_type member_type;
+                bool is_cast = false;
+
+                if (!is_construct) {
+                    is_cast = m0 == "cast";
+                    if (is_cast)
+                        parser.pop();
+                }
+
+                members += parser.parse_member(this);
+                emember last = members->last();
+                last->intern = intern;
+                last->is_static = is_static;
+
+                /// int [] name [int arg] [ ... ]
+                /// int [] array
+                /// int [int] map
+            }
+            ident n = parser.pop();
+            assertion(n == "]", "expected end of class");
+        }
         /// classes and structs
     }
     operator bool() { return bool(name); }
-};
-UA_impl(eclass, EClass)
 
+    /// called when it translates
+    type_t create_method(emember& member) {
+        type_t graphed = (type_t)calloc(1, sizeof(id));
+
+        graphed->method = new method_info {
+            .args      = (id**)calloc(graphed->method->arg_count, sizeof(id*)),
+            .r_type    = member->runtime,
+            .arg_count = member->args->len()
+        };
+
+        /// fill out args from the types we have translated the runtime for the given emember it references
+        for (int a = 0; a < graphed->method->arg_count; a++) {
+            assert ( member->args[a]->runtime );
+            graphed->method->args[a] = member->args[a]->runtime; /// assert this is set
+        }
+
+        /// *a is the instance; in silver we only have instance, default (when called via class only -- singular instance) or otherwise by instance
+        graphed->method->call = [member](void* a, object* args, int arg_count) mutable -> A* {
+            object a_object = ((A*)a)->hold();
+            assert(a_object.type());
+            const vector<map> stack = vector<map> {
+                map { field { "this", a_object } } /// A-class pointer; its 'this' location [ we must have type info on this stack value ]
+            };
+            A* a_result = ENode::exec(member->translation, stack);
+            return a_result;
+        };
+
+        return graphed;
+    }
+
+    /// assemble a class with methods that are invoke the translation with arguments
+    type_t create_type();
+};
+UA_impl(emod, EMod)
 
 struct EStruct;
 struct estruct { UA_decl(estruct, EStruct) };
@@ -838,17 +930,17 @@ UA_impl(estruct, EStruct)
 
 emember Parser::parse_member(A* obj_type) {
     EStruct* st = null;
-    EClass*  cl = null;
+    EMod*  cl = null;
     str parent_name;
     if (obj_type->type == typeof(EStruct))
         parent_name = ((EStruct*)obj_type)->name;
-    else if (obj_type->type == typeof(EClass))
-        parent_name = ((EClass*)obj_type)->name;
+    else if (obj_type->type == typeof(EMod))
+        parent_name = ((EMod*)obj_type)->name;
     emember result;
     bool is_ctr = false;
 
     if (next() == ident(parent_name)) {
-        assertion(obj_type->type == typeof(EClass), "expected class when defining constructor");
+        assertion(obj_type->type == typeof(EMod), "expected class when defining constructor");
         result->name = pop();
         is_ctr = true;
     } else {
@@ -926,6 +1018,18 @@ struct EVar:A {
 };
 UA_impl(evar, EVar)
 
+struct ISpec;
+struct ispec {
+    UA_decl(ispec, ISpec)
+};
+struct ISpec:A {
+    bool   inlay;
+    object value;
+    ISpec() : A(typeof(ISpec)) { };
+    ISpec(bool inlay, object value) : A(typeof(ISpec)), inlay(inlay), value(value) { };
+};
+UA_impl(ispec, ISpec)
+
 struct EImport;
 struct eimport { UA_decl(eimport, EImport) };
 struct EImport:A {
@@ -945,7 +1049,8 @@ struct EImport:A {
     }
     str         name;
     str         isolate_namespace;
-    path        module_path;
+    path        module_path; // we need includes
+    vector<path> includes;
     struct EModule* module;
     operator bool() { return bool(name); }
 };
@@ -985,12 +1090,71 @@ struct EModule:A {
     EModule() : A(typeof(EModule)) { }
     vector<eimport>   imports;
     vector<eincludes> includes;
+    emod            app;
     map               implementation;
-    //vector<eclass>    classes;
-    //vector<estruct>   structs;
-    //vector<enum_def>  enumerables;
     bool              translated = false;
 
+    emodule find_module(str name) {
+        for (eimport &i: imports)
+            if (i->name == name)
+                return i->module;
+        return { };
+    }
+
+    ispec find_implement(ident name) {
+        EModule* m = this;
+        int n_len = name->len();
+        if (n_len == 1 || n_len == 2) {
+            str module_ref = name->len() > 1 ? name[0] : null;
+            str name_ref   = name->len() > 1 ? name[1] : name[0]; 
+            if (module_ref) {
+                for (eimport i: imports) {
+                    if (i->name == name_ref && i->module)
+                        return i->module->implementation->contains(name_ref) ?
+                            ispec(i->module->implementation->value(name_ref)) : ispec();
+                }
+            }
+            if (!module_ref && implementation->contains(name_ref)) {
+                return implementation->value(name_ref);
+            }
+        }
+        return ispec();
+    }
+
+    emod find_class(ident name) {
+        // for referencing classes and types:
+        // its not possible to have anymore than module.class
+        // thats by design and it reduces the amount that we acn be overwhelmed with
+        // arbitrary trees are not good on the human brain
+        ispec impl = find_implement(name);
+        if (impl->value.type() == typeof(emod))
+            return emod((const object &)impl->value);
+        return emod();
+    }
+    /// a given module will have type uniform identity at its baseline
+    /// since we do not allow embedding of types within mods, this is easier for us -- the only argument is our EModule instance
+    /// we should run this across all mods
+    type_t type_lookup(tokens ident) {
+        /// find type from name
+        /// match with vector[T:numeric] ident: vector[int]
+        /// if there is braces in the ident you can look those up
+        return null;
+    }
+
+    bool run() {
+        /// app / run method must translate
+        /// static object method(T& obj, const struct str &name, const vector<object> &args);
+        /// parser must have ability to run any method we describe too.. here this is a user invocation
+        if (app) {
+            /// create a type called app under a namespace
+            type_t app_type = app->create_type();
+            object app_inst = object::create(app_type);
+            object::method(app_inst, "run", {});
+        } else
+            printf("no app with run method defined\n");
+        return true;
+    }
+    
     bool graph() {
         lambda<void(EModule*)> graph;
         graph = [&](EModule *module) {
@@ -1000,8 +1164,9 @@ struct EModule:A {
                 graph(import->module);
 
             for (Field& f: module->implementation) {
-                if (f.value.type() == typeof(EClass)) {
-                    eclass cl = f.value;
+                if (f.value.type() == typeof(EMod)) {
+                    emod cl = f.value;
+                    cl->module = module;
                     for (emember& member: cl->members) {
                         auto convert_enode = [&](emember& member) -> enode {
                             vector<ident> code = member->value;
@@ -1016,6 +1181,11 @@ struct EModule:A {
                             member->translation = convert_enode(member);
                         }
                     }
+                    cl->runtime = cl->create_type();
+                    /// when its methods are translated, we can construct and run this
+                    /// we are creating with UA model;
+                    /// any server setting for instance can get
+                    /// both in-script and in-code methods with introspectable args, components, their pareants etc
                 }
             }
             module->translated = true;
@@ -1032,9 +1202,11 @@ struct EModule:A {
         EModule *m = new EModule();
         str contents = module_path->read<str>();
         Parser parser = Parser(contents);
-
+        
         int imports = 0;
         int includes = 0;
+        bool inlay = false;
+        ///
         for (;;) {
             ident token = parser.next();
             if (!token)
@@ -1045,9 +1217,11 @@ struct EModule:A {
                 token  = parser.pop();
                 intern = true;
             }
-            auto push_implementation = [&](ident keyword, ident name, object value) {
+            auto push_implementation = [&](ident keyword, ident name, object value) mutable {
                 assertion(!m->implementation->fetch(name),  "duplicate identifier for {0}: {1}", { keyword, name });
-                m->implementation[name] = value;
+                m->implementation[name] = ispec(inlay, value);
+                if (name == "app")
+                    m->app = value;
             };
 
             if (token == "import") {
@@ -1072,21 +1246,60 @@ struct EModule:A {
             } else if (token == "enum") {
                 enum_def edef(parser, intern);
                 push_implementation(token, edef->name, edef);
-            } else if (token == "class") {
-                eclass cl(parser, intern);
-                push_implementation(token, cl->name, cl);
+            } else if (token == "mod") {
+                emod mod(parser, intern);
+                push_implementation(token, mod->name, mod);
             } else if (token == "struct") {
                 estruct st(parser, intern);
                 push_implementation(token, st->name, st);
-            } else {
+            } else if (token != "inlay") {
                 evar data(parser, intern);
                 push_implementation(token, data->name, data);
             }
+            inlay = (token == "inlay");
         }
         return m;
     }
 };
 UA_impl(emodule, EModule)
+
+/// we of course need this for enum, and struct
+/// structs cannot have methods in them, they are just data and 
+type_t EMod::create_type() {
+    if (runtime) return runtime;
+    /// create our own id* 
+    runtime = (type_t)calloc(1, sizeof(id));
+    runtime->name = (char*)calloc(name->len() + 1, 1);
+    memcpy(runtime->name, name->cs(), name->len() + 1);
+    runtime->meta = new hashmap(16);
+    /// we need to be able to create from any constructor provided, too; 
+    /// for that we can construct by allocation, 
+    /// set default properties and then call the constructor method on the instance
+    for (emember &m: members) {
+        if (m->member_type == EMember::Type::Method) {
+            /// lookup the silver type used, for a given set of tokens
+            m->r_type = module->type_lookup(m->r_type_tokens);
+            m->runtime = create_method(m);
+            assert(m->runtime);
+            object o_prop = prop { m->name, m->runtime, array() }; /// todo: set default args in method
+            prop &test_prop = o_prop;
+            assert(test_prop.type == m->runtime);
+            (*runtime->meta)->set(m->name, o_prop);
+        }
+        /// we need meta properties
+    }
+    return runtime;
+}
+
+emod EMod::composed() {
+    if (composed_ident && !composed_last) {
+        composed_last = module->find_class(composed_ident);
+        assert(composed_last);
+    }
+    return composed_last;
+}
+
+
 }
 
 using namespace ion;

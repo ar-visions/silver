@@ -1,0 +1,54 @@
+
+# inlay puts them in both container and 'inlaid' in the module below
+# makes no sense when its hard to tell if a compile was successful or not
+inlay mod bool     ::  boolean-32
+inlay mod i8       ::   signed-16
+inlay mod u8, byte :: unsigned-16 # we can give them two names, one identity right away
+inlay mod char     ::   signed-32 # its fair to have char be all of unicode, as a primitive
+inlay mod short    ::   signed-16
+inlay mod ushort   :: unsigned-16
+inlay mod int      ::   signed-32
+inlay mod uint     :: unsigned-32
+inlay mod i64      ::   signed-64
+inlay mod u64      :: unsigned-64
+inlay mod num      ::   signed-64
+inlay mod half     ::     real-16  # we rarely have access to crazy types like this; if we are using it in a map for shading you would want to have access
+inlay mod float    ::     real-32  # float can get-real 32 times
+inlay mod double   ::     real-64  # double does twice that..
+inlay mod quad     ::     real-128 # and then theres this type
+# 'object' would be the hidden basis of all objects
+
+# c++ is a bit hindered by the double naming of U & A; its more mixed than Obj::M was because M was a trivial struct and not constructable directly
+# what we have now is far better, and far more standardized in terms of virtual method support by being based on an A type.
+# however, we cannot 'see' two names, or we have a cross-up.  we reference code that uses internal or top user class
+
+# no template aliasing, not for silver-1
+
+# since git allows us to checkout and then overlay:
+#    then we leave it to git to 'overlay', that facility not needed at this level!
+# so this reduces our build system to not require overlay; its a mere checkout and build
+# we need a type identifier that links us to the actual type at runtime (type_t as well as its mod)
+##
+inlay mod import [
+	public token 	name
+	public url  	source
+	public string   shell
+	public string[] links
+	public string[] includes
+	public var      defines 
+	import [ token name ]
+	init [ @import [ name, source, shell, links, includes, defines ] ]
+	# init would always be called following constructor call; it makes sense from a control flow
+	# it would call after exceptions were handled, its a reason why could be named finally
+	# its more complex, but also dual purpose and complementary
+	# its a 2nd way to work silver mods: init and use based on non default status
+	# i would not want to call it start since that implies its connected graph-form, but there is no contextual access for that
+]
+##
+
+struct struct-test [
+	int i
+]
+
+# illegal to specify struct, mod, enum, etc. no need to disambiguate
+struct-test	 		some-model-data

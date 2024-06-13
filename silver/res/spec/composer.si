@@ -1,0 +1,32 @@
+import math
+import mouse
+
+# char = 32bit unicode now
+mod event [
+    public node             target // this ones public, so you can have it in arg form on constructors
+    char                    unicode
+    int                     key
+    str                     text
+    vec2d                   wheel_delta
+    vec2d                   cursor
+    states[mouse]           buttons
+    states[keyboard]        modifiers
+    size                    resize
+    mouse                   button_id
+    bool                    prevent_default
+    bool                    stop_prop
+
+    void prevent_default[]   [         prevent_default = true ]
+    bool is_default[]        [ return !prevent_default ]
+    bool should-propagate[]  [ return !stop_prop ]
+    bool stop-propagation[]  [ return  stop_prop = true ]
+    vec2d cursor_pos[]       [ return  cursor ]
+    bool mouse_down[mouse m] [ return  buttons[m] ]
+    bool mouse_up  [mouse m] [ return !buttons[m] ]
+    num  unicode   []        [ return  key.unicode ]
+    num  scan_code []        [ return  key.scan_code ]
+    bool key_down  [num u]   [ return  key.unicode   == u && !key.up ]
+    bool key_up    [num u]   [ return  key.unicode   == u &&  key.up ]
+    bool scan_down [num s]   [ return  key.scan_code == s && !key.up ]
+    bool scan_up   [num s]   [ return  key.scan_code == s &&  key.up ]
+]
