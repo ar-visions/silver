@@ -1,169 +1,76 @@
-import 'entity.si'  # source name would be implicit entity.si
-import 'another.h' with lib # this is just a C header, we can link against C libs and then import them here (rather than a separate json)
+import silver
+import console
 
-class lifeform : entity [
-    int health: 100
-
-    lifeform [
-        str a = '123'
-        print['abc {a}'] # string interpolation with single quoted strings
-    ]
+mod simple-two [
+    int var2: 1
+    int method2[int arg] [ return var2 + arg ]
 ]
 
-enum etype [
-    one = 1, two = 2
-]
+proto key
+    object data
+    u64    hash[]
+        return data.hash # method call, with no-args we never-provide '[]', only definitions (thats an error in silver)
+    key[ object data ]
 
-/* ----------------------------
-// enum data in C99:
-struct symbol {
-    const char* name;
-    int value;
-};
+# express your primitives with mod
+# these types of mods with described data are virtually-instanced in any value reference
+# we write over the user's scope, thats what inlay is for and only for things like this
+# its best not let the user do it, its best done by the designer
 
-struct enum_data {
-    const char* name;
-    array_symbol* symbols;
-}
 
-enum_data* etype_data;
 
-enum_data* etype_new() {
-  enum_data* res = calloc(sizeof(enum_data), 1)
-  res->name = "etype";
-  res->symbols = array_symbol_new(2);
-  res->symbols->count = 2;
-  res->symbols->elements[0]->name = "one";
-  res->symbols->elements[0]->value = 1;
-  res->symbols->elements[1]->name = "two";
-  res->symbols->elements[1]->value = 2;
-  return res;
-}
- ---------------------------- */
+# any value given that reduces bits covered will not be warned by default,
+# however can be changed to more strict type checks with --strict
+# two modes are better than one
 
-struct basic [
-    int one
-    int two
-]
+# map has these args in a constructor, and template args here will flow into map there
+# express observing proto'd args (for key, value is any at all)
+template [ K:key, V:object ]
+inlay alias V[K]: map
 
-# all args are constant and in their own scope
-# members are public by default in silver in struct and class (no possible way to make private Anything in structs)
+# the single letter variable names in upper case as Template args; i think its ok for generics
+# when its upper case you can further define what sort of incoming type it is:traits
+# it may replace all of these with a simple object or type
+# the main thing, is i dont want templated types cluttering up memory.  i dont think it will save time it will cost time.
+# even exec wouldnt be that much better in majority of cases
+# the idea is to save code bloat creation, and show how flexible the language is
 
-# also, structs when placed in struct or in classes, will always take up that amount of memory
-# they are also copied on assignment, not referenced
-# when given by argument, they are ALWAYS references, NEVER value-based
-# when assigning, a copy will take place then
-# this is useful so we dont have to use syntax for pointers
-# the only complication here is handling C apis. ** is a array, and * is our normal operation for arguments.  if value, we can allow for that
-# of course we have more than what we need
 
-/*
-C99 runtime for silver classes, this would be subsided in the calloc() and its actual member space would be offset
-struct A {
-    int refs;
-    id* type;
-};
-*/
+mod map
+    map [ K:key, V:object ] # you will always have different letters in these types, so one can use them as 
 
-class person : lifeform [
-    str  name
-    num  age
-    int[] attribs
-    int[str] map
-    int lambda[int arg]
+mod simple [
+    int         var:  1
+    int[]       ar:   [1, 2, 3, 4]
+    string[int] map:  [0:'one', 100:'two']
+    int[string] map2: ['one':2, 'two':102]
+
+    int func[ int arg, short arg2 ] [ return arg + arg2 ]
+
+    simple[ int var, int[] ar ]
     
-    basic b = [two:2, one:1] # named construction allowed on structs; constructors on structs are not allowed!
-    # both are put on heap (unlike swift)
-    # constructors perform initialization, so its a broken feature to allow for it in both
-    # class maker designs interface for construction
-    # structs should not allow for inheritance either, same as C99
-
-    intern num jumped
-    intern int[32] array_of_int : [1,2,3,4] # rest will be default of the type int, or 0
-
-    # []int <- this is how we identify a lambda with no args
-    # int[] <- this is how we identify an array thats dynamic
-
-    person : lifeform [
-        .health: 100
-        .attribs: [1,2,3]
-    ]
-
-    person [int age] : person [
-        .age: age
-    ]
-
-    person [person man, person woman] : person [0] [
-        name: '{woman.name}-{man.name}'
-    ]
-
-    # 
-    int[] one_line  [int a] return [a + 22, a + 2, a + 2]
-    int   one_line2 [int a] return a + 2
-
+    # automatic: [ var : var, ar : ar ]
+    # redundant, it sets these automatically if there is a type and name binding in membership
+    # but then you dont have a function block so you cant do anything else
+    # declare does it for you if a simple set is all you need
+    # in silver, no method body means automatic
     
-
-    # returns how actually high
-    int jump [int how_high] [
-        
-        int[] lambda_r [int arg] [
-            return [arg + 1, arg + 2]
-        ]
-
-        class_name var_name: [ initializer ]
-
-        int[] test1 # this is an array of 0; any array can be appended; the number is the reserve count
-        int lambda [int i][int how_high = how_high*2] [  # the second dimension is the optional copy-in-lambda; since it has the same arg syntax it can allow for pointers
-            print['i = {i}, how_high = {how_high}'] # scope-based interpolation with 'single quoted', think of the single as allowing scope to flow in
-            # we would implictly scope 'lambda' as itself; if its anonymous then i think no recursion possible; sure we could scope 'this' but then we have clash and adopt a terrible pattern
-            return how_high / 2.2
-        ]
-        int v : 2
-
-        if [v = 2] return 1
-
-        if [v > 3] [
-            v += 1
-            return v
-        ]
-
-        while [v < 10] [
-            v += 1
-            if [v < 2] break
-        ]
-
-        int[v] arr: [1, 2]
-        jumped += 1
-        lambda_r : lambda # same prototype, so this is compatible
-        return lambda_r[1]
+    int method[] [
+        simple-two state
+        return var + state.method2[1]
     ]
-
-    assign [int age] [
-        .age : age
-    ]
-
-    person addition [person p] [
-        return person[name:name, age:p.age] # skipping constructors is good and bad; selecting or not selecting constructors based on named arguments is too much!
-    ]
-
-    # shortcuts: += is append, var++ is increment
-
-    increment [person p] [ # like : assignment, it is a method on itself, implicit returns of self if invoked (like any void 'method' on object)
-        age += p.age
-    ]
-
-    append [
-        age++
-    ]
-
 ]
 
-person p: person[name:"picard", age:34]
-
-person p[name:"picard", age:34] # same
-
-print[p]
-
-# we would never have a forward declarative syntax, and would not need it.  things of the same exact definition are not allowed as a basic enabler
 
 
+
+mod app [
+    int      int_argument : 1
+    string[] strings      : ["default"]
+    simple   simpleton    : [2, [2,3,4,5]]
+
+    int run[] [
+        console.log['int argument is {int_argument}, and strings is {strings}']
+        return 0
+    ]
+]

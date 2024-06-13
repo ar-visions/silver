@@ -1,0 +1,37 @@
+includes <stdio.h>
+
+# inlay puts them in both container and 'inlaid' in the module below
+inlay mod bool      boolean[32]
+inlay mod i8         signed[16]
+inlay mod u8, byte unsigned[16] # we can give them two names, one identity right away
+inlay mod char       signed[32] # its fair to have char be all of unicode, as a primitive
+inlay mod short      signed[16]
+inlay mod ushort   unsigned[16]
+inlay mod int        signed[32]
+inlay mod uint     unsigned[32]
+inlay mod i64        signed[64]
+inlay mod u64      unsigned[64]
+inlay mod num        signed[64]
+inlay mod half         real[16]  # we rarely have access to crazy types like this; if we are using it in a map for shading you would want to have access
+inlay mod float        real[32]  # float can get-real 32 times
+inlay mod double       real[64]  # double does twice that..
+inlay mod quad         real[128] # and then theres this type
+
+mod console [
+    FILE in
+    FILE out
+    
+    console[FILE in, FILE out]
+    # to figure out how to use it with this syntax, would be very ideal; 
+    # pointers as struct identity is something people may not like,
+    # but its truly the only way to do it without adding pointer type.
+    # ref is merely pointing to another var in our space
+    # so the value of these structs are indeed being passed in, and those are assigned to our members
+    # constructing them inline would be the same as well.  its always a pointer behind the call
+
+    # has to parse as a method with a this return
+    log[string] [
+        printf("%s\n", string.cstr)
+        return this # default instance if someone did console.log
+    ]
+]

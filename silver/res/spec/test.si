@@ -1,0 +1,58 @@
+import silver
+import console
+
+import 
+    name:     skia # this is a token type, you are allowed to express yourself including-hyphens
+    source:   '//skia.googlesource.com/skia@f4f4f4'
+    shell:    "build.sh"  # cmake, meson, shell args exists for compilation facility
+    links:    "skia"
+    includes: ["skia/skia.h", "skia/skia2.h"]
+    defines:  [DEF:1]
+
+mod simple-two [
+    int var2: 1
+    int method2[int arg] [ return var2 + arg ]
+]
+
+proto key
+    object data
+    u64    hash[]
+        return data.hash # method call, with no-args we never-provide '[]', only definitions (thats an error in silver)
+    key[ object data ]
+
+
+mod simple [
+    int         var:  1
+    int[]       ar:   [1, 2, 3, 4]
+    string[int] map:  [0:'one', 100:'two']
+    int[string] map2: ['one':2, 'two':102]
+
+    int func[ int arg, short arg2 ] [ return arg + arg2 ]
+
+    # even set as a prefix is too much; 
+    # this is fine and comfortable between i'll do it and you do it
+    # no keyword swapping which you cross up
+    simple[ int var, int[] ar ]
+    
+    # automatic: [ var : var, ar : ar ]
+    # redundant, it sets these automatically if there is a type and name binding in membership
+    # but then you dont have a function block so you cant do anything else
+    # declare does it for you if a simple set is all you need
+    # in silver, no method body means automatic
+    
+    int method[] [
+        simple-two state
+        return var + state.method2[1]
+    ]
+]
+
+mod app [
+    int      int_argument : 1
+    string[] strings      : ["default"]
+    simple   simpleton    : [2, [2,3,4,5]]
+
+    int run[] [
+        console.log['int argument is {int_argument}, and strings is {strings}']
+        return 0
+    ]
+]
