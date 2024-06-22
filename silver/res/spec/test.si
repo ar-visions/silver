@@ -1,38 +1,42 @@
 import silver
 import console
 
-import 
+##
+import [
     name:     skia # this is a token type, you are allowed to express yourself including-hyphens
     source:   '//skia.googlesource.com/skia@f4f4f4'
     shell:    "build.sh"  # cmake, meson, shell args exists for compilation facility
     links:    "skia"
     includes: ["skia/skia.h", "skia/skia2.h"]
     defines:  [DEF:1]
+]
+##
 
-mod simple-two [
+class simple-two [
     int var2: 1
     int method2[int arg] [ return var2 + arg ]
 ]
 
-proto key
+proto key [
     object data
-    u64    hash[]
+    u64 hash[] [
         return data.hash # method call, with no-args we never-provide '[]', only definitions (thats an error in silver)
-    key[ object data ]
+    ]
+    construct[ object data ]
+]
 
-
-mod simple [
+class simple [
     int         var:  1
     int[]       ar:   [1, 2, 3, 4]
     string[int] map:  [0:'one', 100:'two']
-    int[string] map2: ['one':2, 'two':102]
+    map::int::string map2: ['one':2, 'two':102]
 
     int func[ int arg, short arg2 ] [ return arg + arg2 ]
 
     # even set as a prefix is too much; 
     # this is fine and comfortable between i'll do it and you do it
     # no keyword swapping which you cross up
-    simple[ int var, int[] ar ]
+    construct[ int var, int[] ar ]
     
     # automatic: [ var : var, ar : ar ]
     # redundant, it sets these automatically if there is a type and name binding in membership
@@ -46,12 +50,58 @@ mod simple [
     ]
 ]
 
-mod app [
+# eventually we want name replacement in templates
+# this allows us to create a for statement if we also expose the member to the expression with the name
+# template [T name-here:int] # EMember needs template letter; lets use EMember for template args data
+class app [
     int      int_argument : 1
-    string[] strings      : ["default"]
+    array::string::another strings : ["default"]
     simple   simpleton    : [2, [2,3,4,5]]
 
     int run[] [
+        # creating array of app?
+        # app[] apps
+
+        # not ambiguous, class name, and then args after the :: that we never want to use very often
+        # its also just classier way of using template
+        # since we may not embed types inside classes anyway, its not in anyone elses domain
+        # it frees up the [ ] for args, and thus makes a good fit for template args
+        array::app apps
+
+        # we'll make these optional on methods
+        apps.push app[]
+
+        # we make the type reader, and everything else just works after that
+        # types are first.
+        # the logic is plain for types, now
+        # we ONLY have mod space / ONLY have enum space, ONLY have struct space.. ok so its only 3 lists in each module thats visible
+        # we match template args with :: separators.  if there is a template type without default args, they must be specified in the order of template arg definition
+        # the model for type is purely enode
+        # the enode of type, operand of an identity
+        # but more specifically its an ident pointer, as created from name, and args
+        # these we would instance and keep in store
+        # type::another-type::another
+        # array::map::string::int
+        # array< map< string, int >>
+        # #1 is clearer to me and you dont get a bunch of >>'s
+        # at heart we give ourselves template ability and express it without stepping on >'s
+        # check needed for if instancable type
+
+        # alternative -- it makes default template args too strange to make them start with :: right after [:: ]
+        # array[app :: arg1, arg2] apps
+        # one character would be more preferred
+
+        array::app another
+
+        # design orbiter view first -- 3d rendering and just linked to the sync state, compilation, build error, maybe environment not setup right
+        # has to be written in silver, too.
+        # porting all of that syntax coloring was a mistake, as its beneficial to syntax highlight one language to support at a time, along with its info lookups on the tokens
+        # some kind of dream notes can be made for that, we can call them that from the runtime
+        # if you write a debugger for something, then it can be token colored for foreground and background, selection color, grid style (on:default)
+        # i do not believe in its schema (grammar engine).  its so overblown and complicated in ways that at an aside to actually performing syntax highlighting
+        # in effect, its regex.  thats not enough context to get it done.
+        # i just think its better to bake color into language parsing; and that is a feature made better than using a grammar engine.  its an Integrated environment, so we should do that
+        # 
         console.log['int argument is {int_argument}, and strings is {strings}']
         return 0
     ]
