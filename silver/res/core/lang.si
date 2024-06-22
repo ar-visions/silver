@@ -313,7 +313,7 @@ mod import
     import [ token module-name ]
 	import [ ]
     operator [ as alias ] alias:alias
-	embedded [ ]
+	immediate [ ] # called immediately after parsed; its class-def instance being the principle context
 		if [ import-extra ]
 			@import[ module-name, alias ]
 		else 
@@ -338,7 +338,7 @@ mod array
 	label int size, count  # you can't write to labels as externs
 	array [ int size ]
 		elements: @new-null [ E, size ]   # @new-null is a basic run-time for managing our own vector allocations
-		size: size
+	int size[] return @size [ elements ]
 	E operator [ int index ]  return @element-at [ elements, index ]
 	delete [ int index ]
 		for [ int i :: index + 1 to count ]

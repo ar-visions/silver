@@ -59,9 +59,11 @@ enum member_type {
     undefined,
     mod,
     enumerable,
-    ctr,
+    construct,
+    dealloc,
     method,
-    prop
+    prop,
+    operator
 };
 
 enum model_type {
@@ -75,24 +77,21 @@ enum model_type {
     model_i64,
     model_u64,
     model_bool,
+    model_r16,
     model_r32,
     model_r64,
 };
 
-typedef struct {
+typedef struct _module_member_t {
     enum member_type type;
     bool            intern;
     bool            inlay;
     char*           name;
     list_t          members;
-} module_member_t;
-
-typedef struct _type_t {
-    struct _type_t* map_key; 
-    struct _type_t* map_value; 
-    struct _type_t* array_of; 
-    struct _module_mod* mod;
-} type_t;
+    struct _module_member_t* map_key; 
+    struct _module_member_t* map_value; 
+    struct _module_member_t* array_of; 
+} module_member_t, type_t;
 
 typedef struct {
     module_member_t info;
@@ -158,19 +157,44 @@ typedef struct {
 
 typedef struct {
     module_member_t info;
-    type_t*         rtype;
-    array_t*        args;
-} method_t;
-
-typedef struct {
-    module_member_t info;
-    type_t*         prop_type;
-} prop_t;
+    type_t*         type;
+    array_t*        args; /// only methods / operators get args -> no cast, when operator can fulfill with no args
+} member_t;
 
 typedef struct {
     array_t*        tokens;
     int             current;
 } parser_t;
+
+enum enode_type {
+    Undefined, 
+    Statements, Assign, AssignAdd, AssignSub, AssignMul, AssignDiv, AssignOr, AssignAnd, AssignXor, AssignShiftR, AssignShiftL, AssignMod,
+    If, For, While, DoWhile, Break,
+    LiteralReal, LiteralInt, LiteralStr, LiteralStrInterp, Array, AlphaIdent, Var, Add, Sub, Mul, Div, Or, And, Xor, MethodDef, MethodCall, MethodReturn
+};
+
+typedef struct _object_t {
+    
+} object_t;
+
+typedef struct _var_bind_t {
+    char*           name;
+    type_t*         type;
+    bool            read_only;
+} var_bind_t;
+
+typedef struct _enode_t {
+    enum enode_type type;
+    object_t*       value;
+    array_t*        operands; // vector of enode_t (inline)
+    array_t*        vars;     // array of array of var_bind_t
+} enode_t;
+
+/// read all modules first with mods, enums, etc #1, then we read data, default args and methods in #2
+/// we can only make enode with type info known
+enode_t* parser_statements(parser_t* parser);
+enode_t* parser_statement(parser_t* parser);
+enode_t* parser_expression(parser_t* parser);
 
 #define FNV_PRIME    0x100000001b3
 #define OFFSET_BASIS 0xcbf29ce484222325
@@ -190,7 +214,9 @@ field_t*  map_fetch(map_t* map, char* key);
 void*     map_get(map_t* map, char* key);
 void*     map_set(map_t* map, char* key, void* value);
 char*     copy_string(char *start, int len);
+bool      token_isalpha(token_t* token);
 void      token_set(token_t* ident, char* name, int line_num);
+int       token_compare(token_t* ident, char* b);
 void      parse_token(token_t* result, char *start, int len, int line_num);
 void      ws(char **cur);
 char*     contents(char* file);
@@ -201,4 +227,3 @@ parser_t* parser_with_tokens(array_t* tokens);
 token_t*  parser_expect_next(parser_t* parser, char* name, char* assertion);
 token_t*  parser_next(parser_t* parser);
 token_t*  parser_pop(parser_t* parser);
-int       token_compare(token_t* ident, char* b);

@@ -259,7 +259,7 @@ array_t* tokenize(char* file) {
     int len = strlen(input);
     array_t *result = array_with_sizes(256 + len / 8, sizeof(token_t)); // can be contiguous data or references; the element and push apis support this
 
-    char*         sp         = "$,.<>()![]/+-*:\"\'#"; /// needs string logic in here to make a token out of the entire "string inner part" without the quotes; those will be tokens neighboring
+    char*         sp         = "$,<>()![]/+-*:\"\'#"; /// needs string logic in here to make a token out of the entire "string inner part" without the quotes; those will be tokens neighboring
     char          until      = 0; /// either ) for $(script) ", ', f or i
     char*         origin     = input;
     char*         start      = 0;
@@ -346,6 +346,10 @@ array_t* tokenize(char* file) {
     }
     free(input);
     return result;
+}
+
+bool token_isalpha(token_t* token) {
+    return isalpha(*token->name);
 }
 
 bool is_abs(char *path) {
