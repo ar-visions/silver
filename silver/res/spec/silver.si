@@ -1,67 +1,50 @@
-inlay class bool     ::  boolean-32
-inlay class i8       ::   signed-16
-inlay class u8       :: unsigned-16 # we can give them two names, one identity right away
-inlay class char     ::   signed-32 # its fair to have char be all of unicode, as a primitive
-inlay class short    ::   signed-16
-inlay class ushort   :: unsigned-16
-inlay class int      ::   signed-32
-inlay class uint     :: unsigned-32
-inlay class i64      ::   signed-64
-inlay class u64      :: unsigned-64
-inlay class num      ::   signed-64
-inlay class half     ::     real-16  # we rarely have access to crazy types like this; if we are using it in a map for shading you would want to have access
-inlay class float    ::     real-32  # float can get-real 32 times
-inlay class double   ::     real-64  # double does twice that..
-inlay class quad     ::     real-128
-
-template [ E var-name: any ]
-
+class bool     ::  boolean-32
+class i8       ::   signed-16
+class u8       :: unsigned-16 # we can give them two names, one identity right away
+class char     ::   signed-32 # its fair to have char be all of unicode, as a primitive
+class short    ::   signed-16
+class ushort   :: unsigned-16
+class int      ::   signed-32
+class uint     :: unsigned-32
+class i64      ::   signed-64
+class u64      :: unsigned-64
+class num      ::   signed-64
+class half     ::     real-16  # we rarely have access to crazy types like this; if we are using it in a map for shading you would want to have access
+class float    ::     real-32  # float can get-real 32 times
+class double   ::     real-64  # double does twice that..
+class quad     ::     real-128
 # so why are traits preferred to subclassing?  and why is this two separate things still? 
-`# traits are from the interfaces, and we get that.  its an enumerable set of interfaces implemented
+# traits are from the interfaces, and we get that.  its an enumerable set of interfaces implemented
 # it would be nice if we could do either one, but how
 # & is a good operator, or |
 # silver 2.0: E:trait1 | [trait2 & trait3]
 # for now we simply check against proto or inheritance
 
-inlay class array [
-	intern ref E elements      # references hide inside any
-	intern int array-size, array-count  # you can't write to labels as externs
+template [ E ]
+class array [
+	intern ref E elements
+	intern int array-size, array-count
 
 	array [ int size ] [
-		elements: @new-vector [ E, size ]   # @new-vector is a basic run-time for managing our own vector allocations
+		elements: @new-vector [ E, size ]
 		array-size: size
 		array-count: 0
 	]
 
-	# types cannot contain [ and ] (until we support match-based aliases)
-	# 
-	# no default arguments for now -- just data integrity across a port, i think its wise to have no default argument
-	# also the challenge of added ambiguity
 	int count[] return array-count
 	int size[]  return array-size
+
 	E operator [ int index ]  return @element-at [ elements, index ]
+
+	a-user-method [ int arg ] [
+	]
+
 	delete [ int index ] [
-		# is this the alias for -= ?
-		# 
-		# this is allowed, its an expression (assignment)
-		# important that we make this parse the same regardless of new lines and white-space
-		# that line can go on the end of for [] ... or far away.  its still one expression
 		for [ int i :: index + 1 to array-count ]
 			elements[ i - 1 ]: elements[ i ]
+		return  # this is converted to return this
 	]
-	# type is omitted here, for methods that do this, it cannot conflict with a type less we want args mixing up with template args
-	# in case of a conflict you would have to be more explicit: array append [ E e ]
-	# how do we express array without E?
-	# is array aliased inside?
-	# it would seem logical for it not to be aliased
-	# otherwise, can be distinguish array with args?
-	# { template } or < template > may be required if this is not solvable
-	# 
-	# the need of [ for blocks on code and data, is we need to distinguish silver from json ]
-	# silver would make use of tokenized keys so no strings would be needed
-	# infact, the presence of a string could be an informative key type
-	# need to get the calls working into the runtime, thats using the A class method invocation
-	# parser incomplete for methods as well
+
 	append [ E e ] [
 		if [ array-size = array-count ] [
 			array-size: 32 + array-size * 4
@@ -72,18 +55,15 @@ inlay class array [
 	]
 ]
 
-inlay class field [
+class field [
 	object key
 	object value
 ]
 
 # dont quite want map to be templated; lets use object
-inlay class map [
+class map [
 	array::field fields
-
 ]
-
-
 
 # no template aliasing, not for silver-1
 
@@ -91,21 +71,17 @@ inlay class map [
 #    then we leave it to git to 'overlay', that facility not needed at this level!
 # so this reduces our build system to not require overlay; its a mere checkout and build
 # we need a type identifier that links us to the actual type at runtime (type_t as well as its class)
+
 ##
-inlay class import [
+# reserved for silver 2, hard code in import for now
+class import [
 	public token 	name
 	public url  	source
 	public string   shell
-	public string[] links
-	public string[] includes
+	public array::string links
+	public array::string includes
 	public var      defines 
 	import [ token name ]
-
-	# this is not parseable lol.
-	# we will need to call the constructors 'construct'
-	# unless we cannot have an array of our own class onboard, which does not seem unlawful
-
-	import[] array_member
 
 	init [ @import [ name, source, shell, links, includes, defines ] ]
 	# init would always be called following constructor call; it makes sense from a control flow

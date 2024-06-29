@@ -1,16 +1,14 @@
 import silver
 import console
 
-##
 import [
-    name:     skia # this is a token type, you are allowed to express yourself including-hyphens
-    source:   '//skia.googlesource.com/skia@f4f4f4'
-    shell:    "build.sh"  # cmake, meson, shell args exists for compilation facility
-    links:    "skia"
+    name:     skia,
+    source:   '//skia.googlesource.com/skia@f4f4f4',
+    shell:    "build.sh",
+    links:    ["skia"],
     includes: ["skia/skia.h", "skia/skia2.h"]
-    defines:  [DEF:1]
+    # defines:  [DEF:1]
 ]
-##
 
 class simple-two [
     int var2: 1
@@ -22,21 +20,23 @@ proto key [
     u64 hash[] [
         return data.hash # method call, with no-args we never-provide '[]', only definitions (thats an error in silver)
     ]
-    construct[ object data ]
+    key[ object data ]
 ]
 
 class simple [
     int         var:  1
-    int[]       ar:   [1, 2, 3, 4]
-    string[int] map:  [0:'one', 100:'two']
-    map::int::string map2: ['one':2, 'two':102]
+    array::int   ar:  [1, 2, 3, 4]
+    map map:  [0:'one', 100:'two']
+    map map2: ['one':2, 'two':102]
 
     int func[ int arg, short arg2 ] [ return arg + arg2 ]
 
     # even set as a prefix is too much; 
     # this is fine and comfortable between i'll do it and you do it
     # no keyword swapping which you cross up
-    construct[ int var, int[] ar ]
+    simple [ int var, array::int ar ] [
+
+    ]
     
     # automatic: [ var : var, ar : ar ]
     # redundant, it sets these automatically if there is a type and name binding in membership
