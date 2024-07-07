@@ -55,7 +55,7 @@ class simple [
 # template [T name-here:int] # EMember needs template letter; lets use EMember for template args data
 class app [
     int      int_argument : 1
-    array::string::another strings : ["default"]
+    array::string strings : ["default"]
     simple   simpleton    : [2, [2,3,4,5]]
 
     int run[] [
