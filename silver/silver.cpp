@@ -1344,9 +1344,9 @@ struct EModule:A {
         resolve = [&](string& key_name) -> silver {
             /// pull the type requested, and the template args for it at depth
             string class_name = pull_sp(); /// resolve from template args, needs 
-            eclass class_def  = module_instance->find_class(class_name);
-            assertion(bool(class_def), "class not found: {0}", { class_name });
-            int class_t_args = class_def->template_args->len();
+            eclass class_t  = module_instance->find_class(class_name);
+            assertion(bool(class_t), "class not found: {0}", { class_name });
+            int class_t_args = class_t->template_args->len();
             assertion(class_t_args <= remain, "template args mismatch");
             key_name += class_name;
             vector<silver> template_args;
@@ -1359,13 +1359,13 @@ struct EModule:A {
                 key_name += "::";
                 key_name += k;
             }
-            if (class_def->module) {
-                if (class_def->module->cache->contains(key_name))
-                    return class_def->module->cache[key_name];
+            if (class_t->module) {
+                if (class_t->module->cache->contains(key_name))
+                    return class_t->module->cache[key_name];
             }
             /// translation means applying template, then creating enode operations for the methods and initializers
-            silver res = silver(parse_tokens(key_name), class_def->translate(template_args));
-            class_def->module->cache[key_name] = res;
+            silver res = silver(parse_tokens(key_name), class_t->translate(template_args));
+            class_t->module->cache[key_name] = res;
             return res;
         };
 
