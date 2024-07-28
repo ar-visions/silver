@@ -1,0 +1,87 @@
+
+# import A           ['https://github.com/ar-visions/A']
+# import glfw3       ['https://github.com/glfw/glfw']
+# import m           ['m.a']
+# import wgpu-native ['wgpu_native.so']
+# import wgpu        ['framework.c', 'wgpu.c']
+# import with_winit  ['https://github.com/linebender/vello']
+# import example     ['example.rs']
+
+# the following doesnt generate more and more code based on permutations of T
+# arg types cannot be used in the design-mode, but rather the code
+# they are offsets on the instance type
+# again we do not permute the class definition for each unique arg set
+# rather this is used as run-time information (debug and use)
+
+# would have to allow pass-through to super
+# this argument cannot change the member formats
+# although honestly it can, since we have ffi on our objects we can invoke generically
+# i dont like the name args
+# we have interface for invoking with an array of arguments.
+# the method-call fn uses that, its part of silver app (all of A-type is)
+# 
+
+# so this permutes the type definition, but not the implementation
+# so silver can indeed act on an api-level at runtime
+# so a method to cast to T can remain software-based
+# when not using generic, compile to calls by direct expression
+# how does a method returning these ATypes work (notice: all are AType, we are not handling primitives without containment)
+# i would actually like to use this as our only output, in a way..
+
+# ------------------------------
+# meta cannot change types used in membership
+# it is merely higher level arguments you are working with!
+# this is important to understand about meta.
+# we can implement meta into runtime membership, but thats very involved
+# we want to put that off for silver 2.0; the main problem with it
+# is its debugability not being certain
+# ------------------------------
+
+# this will import from the A-type runtime
+# import @array
+# redundant, what we can do is export in C
+# the code will be emitted, thats all that actually matters. create class_t
+# basic example into enode
+# example method calls another method
+# meta[T]
+class uses-meta [
+    # this can actually be T.  
+    # in global construct the T would resolve to the type, 
+    # and its operation is a construct with args.
+    # so in no way does this object occupy different space,
+    # its simply array with
+    array::object i: [2,2,2,2] # member conversion ops are still needed
+    # doesnt seem possible to have more than 2 steps in an implicit conversion routine
+
+    # construct type of T (uses_meta_t.meta.arg_0)
+    cast object [
+        # we need to associate this symbol to type at this arg #
+        # i seem to be adding constructor ability to primitive
+        # where as before it was [int]1 casting only
+        # technically we may need the apis for this generically on the primitive class
+        # these are on A-type
+
+        # there must be two paths when we have constructors + casts
+        # that means primitives can be both cast-to and created-from as they would be
+        # in C++ ... however, they would be calling different run-time routine here in silver
+        # 
+        return i32[1]
+    ]
+]
+
+class app [
+    public int    arg: 0
+    public string another
+    intern string hidden: 'dragon'
+
+    # called by run
+    num something[ num x, real mag ] [ return i * 1 * mag ]
+
+    # app entrance method; one could override init as well
+    num run[] [
+        num i: 2 + arg
+        num a: 2
+        num n: 1
+        return n + something[ a + i, 2 ]
+    ]
+]

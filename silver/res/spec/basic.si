@@ -1,57 +1,110 @@
+class base [
+    short method-name[int arg, bool arg2] [
+        return 1
+    ]
+    init [
+        console.log['base initialized']
+    ]
 
-# no templates?
-# eh why have them come on.
-# objects are just objects and you check for what they are yourself.
-# its way less code, and thats better!
-# why would we want to 'generate' more code?
-# seriously. its an ignorant approach that leads to bloat
-# if we want to never allow for things that can cause scalability problems we dont use templates
-# the point of silver is to intelligently generate code that works, and generate FAR less than typical C++
-# if we are mimmicking C++ templates then its the same anti-pattern
+    int subscript[short s] [
+        return [int]0
+    ]
 
-class base {
-    init() {
-        console.log('base initialized')
-    }
-}
+    bool [
+        return true
+    ]
 
+    # assign-add operator
+    base assign-add [base b] [
+        return this
+    ]
+]
+
+##
 # parse this
-class aclass : base {
+class aclass : base [
     public short i
+    # its important to use the brackets everywhere
 
-    aclass(num i) {
+    int[] member-data: [ 1, 2, 3, 4 ]
+
+    # nameless function type
+    int*[int,int] method-name[int arg, int arg2] [
+        # we are nameless!
+        int named[int,int]: [int x, int y] [ return x + y + 1 ] 
+        return [int, int] [ return named[0, 0] ]
+    ]
+
+    # using .. for namespace navigation
+    lambda-name method-name[int arg, int arg2] [
+        # copies of these arg, arg2 are made at runtime
+        # for each member referenced, copies are made into struct
+        lambda-name r: [int arg, arg2] [
+            int a: arg  + ..arg
+            int b: arg2 + ..arg2
+            return a + b
+        ]
+        return r
+    ]
+
+    int[] lambda[var v, i8 i]: [
+
+        // lambda forms:
+        // anonymous: r-type*[arg-1, arg-2]
+        // named:     replace * with a alpha-ident token separate from r-type
+        
+        //lambda::r-type::arg-1::arg-2
+        
+        //r-type[arg-1, arg-2]
+
+        // class[ named-arg1:2, arg2:2 ]
+        // type:arg1:arg2
+        // 
+        // class[ named-arg: type::arg1::arg2[] ]
+        // --------------
+        // 
+        // 
+        return [[int]v + i]
+    ]
+
+    int lambda[var v, i8 i, int lambda_type[string]]: null
+
+    int[string] map
+
+    int[] array_state
+
+    aclass[num i] [
         i:i
-    }
+    ]
 
-    aclass add(aclass b) {
-        return aclass(i + b.i)
-    }
+    int[] [
+    ]
 
-    ##
-    init() {
-        # all members with initializers are constructed, otherwise its default instance (0 for primitives, )
-        # vars set by user by name (initializing by values only is not allowed, thats why we have constructors)
-        # seems not possible to blend both named arguments and ability to construct with named arguments
-    }
+    int[] array_of_objects: [
+        1, 2, 3, 4
+    ]
 
+    int[] array_function [
+        return [ 1, 2, 3, 4 ]
+    ]
 
-    short { # <- this is an instance conversion method, no args allowed so no parenthesis
-        return i
-    }
+    i64[] valid: [1,2]
 
-    short operator(num i) {
-        # syntax: instance[1]
-        # thats an operator. you can also have multiple args
-    }
-    ##
-}
+    int a_lambda[int i]: none
+
+    aclass add[aclass b] [
+        return aclass[i + b.i]
+    ]
+]
+##
 
 ##
 a = aclass(i: 1) # all members set except for i, then i set, then init called (no constructor called -- but what about base?)
 b = aclass(1)
 ##
 
-class bclass {
+##
+class bclass [
     aclass[] instances
 
     i32, aclass dosomething2(aclass a, aclass another, aclass another2) {
@@ -63,20 +116,21 @@ class bclass {
         return 1, another2 # another2 gets a ref increased here # we can handle this with a goto in C99
     }
 
-    num dosomething1() {
+    num dosomething1[] [
         aclass another # default constructed (always possible with these objects)
-        if (true) {
+        if [true] [
             aclass arg1 = aclass(2)
             i32 v0, aclass v1 = dosomething2(arg1 + another + another, another, aclass(1))
             # aclass(1) will drop here
             num some_other = 2
             # arg1 will drop here
             # v1 will drop here (actually dropping aclass(1))
-        }
+        ]
         # another will drop here
         return 1
-    }
-}
+    ]
+]
+##
 
 ##
 C99 version:
