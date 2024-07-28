@@ -1036,7 +1036,7 @@ emember Parser::parse_member(A* obj_type, emember peer, bool template_mode) {
         if (peer) {
             result->type_tokens = peer->type_tokens;
         } else {
-
+""
             auto read_type_tokens = [&]() -> vector<ident> {
                 vector<ident> res;
                 if (next() == "ref")

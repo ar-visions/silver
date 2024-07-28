@@ -1,0 +1,16 @@
+class app [
+    public int    arg: 0
+    public string another
+    intern string hidden: 'dragon'
+
+    # called by run
+    num something[ num x, real mag ] [ return i * 1 * mag ]
+
+    # app entrance method; one could override init as well
+    num run[] [
+        num i: 2 + arg
+        num a: 2
+        num n: 1
+        return n + something[ a + i, 2 ]
+    ]
+]

@@ -12,6 +12,11 @@ CMakeCache.txt
 *.filters
 testmod/testmod
 obj-test/obj-test
+silver-build
+*.o
+*.ll
+*.bc
+*.rmeta
 *.db
 .vs/LIBOBJ/v15/.suo
 *.sln
