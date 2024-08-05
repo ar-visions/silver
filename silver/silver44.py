@@ -113,12 +113,6 @@ class EModule(ENode):
         module_emit(self, '%s.c' % self.name)
 
 @dataclass
-class EAccess:
-    member: 'EMember'
-    access_name: str
-    def __repr__(self): return f"EAccess(member={self.member}, access_name={self.access_name})"
-
-@dataclass
 class EModel:
     name:str
     size:int
@@ -170,8 +164,9 @@ class EMember(ENode):
     name: str
     type: EType
     value: ENode
+    access: str
     visibility: str
-    def __repr__(self): return f"EProp(name={self.name}, type={self.type}, value={self.value}, visibility={self.visibility})"
+    def __repr__(self): return f"EProp(name={self.name}, access={self.access} type={self.type}, value={self.value}, visibility={self.visibility})"
 
 # EProp will have an initializer ENode
 @dataclass
@@ -190,7 +185,7 @@ class EConstruct(ENode):
 @dataclass
 class EProp(EMember):
     def __repr__(self):
-        return f"EProp(name={self.name}, type={self.type}, value={self.value}, visibility={self.visibility})"
+        return f"EProp(name={self.name}, access={self.access} type={self.type}, value={self.value}, visibility={self.visibility})"
 
 @dataclass
 class EUndefined(ENode):
@@ -199,13 +194,12 @@ class EUndefined(ENode):
 @dataclass
 class EDeclaration(ENode):
     member:EMember
-    def __repr__(self): return f"EDeclaration(type={self.type}, name={self.name})"
+    def __repr__(self): return f"EDeclaration(member={self.member})"
 
 @dataclass
 class EAssign(ENode):
     target:ENode
     value:ENode
-    declaration:EDeclaration = None
     def __repr__(self): return f"EAssign(target={self.target}, value={self.value})"
 
 @dataclass
@@ -432,7 +426,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
     index = 0
     tokens = _tokens
     token_bank = []
-    member_stack:List[OrderedDict[str, EAccess]] = []  # we must push to this for available members in class, lambda, etc
+    member_stack:List[OrderedDict[str, EMember]] = []  # we must push to this for available members in class, lambda, etc
 
     def push_token_state(new_tokens):
         nonlocal index, tokens
@@ -533,7 +527,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
         return tokens and str(tokens[0]) in module.defs
     
     # lookup access to member
-    def lookup_access(s:str):
+    def lookup_member(s:str):
         for i in range(len(member_stack)):
             index = len(member_stack) - 1 - i
             map = member_stack[index]
@@ -554,7 +548,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
     
     def resolve_member(member_path:List[str]): # example object-var-name.something-inside
         # we want to output the EType, and its EMember
-        f = lookup_access(member_path[0])
+        f = lookup_member(member_path[0])
         if f:
             member_type = f.type
             # access_name = f.access_name
@@ -735,10 +729,10 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
     def pop_member_depth():
         return member_stack.pop()
 
-    def push_member(m:EMember, access_name:str = None):
+    def push_member(member:EMember, access_name:str = None):
         nonlocal member_stack
-        assert(m.name not in member_stack[-1])
-        member_stack[-1][m.name] = EAccess(member=m, access_name=access_name)
+        assert(member.name not in member_stack[-1])
+        member_stack[-1][member.name] = member
 
     def parse_statement():
         t0 = peek_token()
@@ -751,7 +745,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
         # if type is found
         if is_type([t0]):
             type_tokens = parse_type_tokens()
-            type = resolve_type(type_tokens)
+            type, s_type = resolve_type(type_tokens)
             name = None
             after_type = peek_token()
             s_member_path = [str(type_tokens[0])]
@@ -788,6 +782,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
                 return EMethodCall()
             else:
                 if is_alpha(after_type):
+                    # do we need access node or can we put access parent into EMember?
                     member = EMember(name=str(after_type), type=type, value=None, visibility='public')
                     decl   = EDeclaration(member=member)
                     consume()
@@ -796,17 +791,19 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
                     push_member(member)
                     if assign:
                         consume()
-                        return EAssign(declaration=decl, target=after_type, value=parse_expression())
+                        return EAssign(target=decl, value=parse_expression())
                     else:
                         return decl
 
         elif is_alpha(t0): # and non-keyword, so this is a variable that must be in stack
             #next_token()
-            t1 = peek_token(1)
+            t1 = peek_token(1) # this will need to allow for class static
             assign = t1 == ':'
             if assign:
                 next_token()  # Consume '='
-                return EAssign(target=t0, value=parse_expression())
+                member = lookup_member(str(t0))
+                assert member, "member lookup failed: %s" % (str(t0))
+                return EAssign(target=member, value=parse_expression())
             elif t1 == '[':
                 next_token()
                 next_token()  # Consume '['
@@ -949,11 +946,11 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
                     next_token()  # Consume the ':'
                     value_token = next_token()
                     prop_node = EProp(
-                        type=type, name=name_token.value,
+                        type=type, name=name_token.value, access='self',
                         value=value_token.value, visibility=visibility)
                 else:
                     prop_node = EProp(
-                        type=type, name=name_token.value,
+                        type=type, name=name_token.value, access='self',
                         value=None, visibility=visibility)
                 class_node.members[str(name_token)] = prop_node
             elif is_type([token]):
@@ -979,7 +976,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
                         assert is_alpha(arg_name_token), "arg-name (%s) read is not an identifier" % (arg_name_token)
                         arg_type, s_arg_type = resolve_type(arg_type_token)
                         assert arg_type, "arg could not resolve type: %s" % (arg_type_token[0].value)
-                        args[arg_name] = EProp(name=str(arg_name_token), type=arg_type, value=None, visibility='public')
+                        args[arg_name] = EProp(name=str(arg_name_token), access=None, type=arg_type, value=None, visibility='public')
                         if peek_token() == ',':
                             next_token()  # Consume ','
                         else:
@@ -1145,6 +1142,19 @@ def header_emit(self, h_module_file = None):
             else:
                 file.write('declare_class(%s)\n' % (cl.name))
 
+def enode_emit(self, file):
+    def emit(self, n:ENode):
+        t = type(n)
+        method = f"emit_{t.__name__}"
+        if hasattr(self, method): return getattr(self, method)(node)
+        raise 'not implemented: %s' % (t.__name__) 
+    def emit_EAssign(self, n:EAssign):
+        pass
+    def emit_EMethodReturn(self, n:EMethodReturn):
+        pass
+    def emit_EMethodCall(self, n:EMethodCall):
+        pass
+
 def module_emit(self, c_module_file = None):
     if not c_module_file: c_module_file = self.name + '.c'
     assert index_of(c_module_file, '.c') >= 0, 'can only emit .c (C99) source.'
@@ -1167,6 +1177,7 @@ def module_emit(self, c_module_file = None):
                     file.write('%s %s_%s(%s self%s) {\n' % (
                         member.type.definition.name, cl.name, member.name, cl.name, args))
                     file.write('\t/* todo */\n')
+                    enode_emit(self, member.code)
                     file.write('}\n')
             file.write('\n')
             if cl.inherits:
@@ -1227,9 +1238,7 @@ m.defs['real'] = EClass(module=m, name='real', model=models['real-64'])
 m.defs['string'] = EClass(module=m, name='string', model=models['atype'])
 
 m.parse(t)
-
 print('-----------------------')
-
 app = m.defs['app']
 for name, member in app.members.items():
     if isinstance(member, EMethod):
