@@ -282,6 +282,12 @@ class EType(ENode):
     definition: EClass # eclass is resolved here, and we form
     meta_types: List['EType'] = field(default_factory=list)
     id:int = None
+    def name(self):
+        res = self.definition.name
+        for m in self.meta_types:
+            if res: res += '_'
+            res += m.name()
+        return res
 
 @hashify
 @dataclass
@@ -868,6 +874,17 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
             id = peek_token()
         print("parse_primary: %s" % (id.value))
 
+        if id == 'typeof':
+            consume()
+            assert peek_token() == '[', 'expected [ after typeof'
+            consume()
+            type_tokens = parse_type_tokens()
+            assert len(type_tokens), 'expected type after typeof'
+            type = resolve_type(type_tokens)
+            assert peek_token() == ']', 'expected ] after type-identifier'
+            consume()
+            return type
+
         if id == '[':
             consume()
             cast_expr = parse_expression()
@@ -928,7 +945,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
                 type,  member  = resolve_member( member_path) # for car.door.open  we want door (target) and open (method)
                 enode_args = parse_args()
                 conv_args = convert_args(member, enode_args)
-                return EMethodCall(type=type, target=imember, method=member, args=conv_args)
+                return EMethodCall(type=type, target=imember.access, method=member, args=conv_args)
         
         # read member stack
         i = is_reference(id) # line: 1085 in example.py: this is where its wrong -- n is defined as a u32 but its not returning reference here
@@ -950,7 +967,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
     def pop_member_depth():
         return member_stack.pop()
 
-    def push_member(member:EMember, access_name:str = None):
+    def push_member(member:EMember, access:EMember = None):
         nonlocal member_stack
         assert(member.name not in member_stack[-1])
         member_stack[-1][member.name] = member
@@ -1360,10 +1377,12 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
         # since translate is inside the read_module() method we must have separate token context here
         push_token_state(method.body)
         reset_member_depth()
-
+        # when we parse our class, however its runtime we dont need to call the method; its on the instance
+        type = resolve_type([Token(name=class_def.name, line_num=0)])
+        self_context = EMember(name='self', type=type, value=None, access=None, visibility='public')
         for name, a_members in class_def.members.items():
             for member in a_members:
-                push_member(member, 'self') # if context name not given, we will perform memory management (for args in our case)
+                push_member(member, self_context) # if context name not given, we will perform memory management (for args in our case)
         push_member_depth()
         for name, member in method.args.items():
             push_member(member)
@@ -1520,7 +1539,14 @@ class enode_emit:
         res = self.emit(enode)
         return res
     
-    def emit_EType(self, n:EType): return n.symbol_name
+    # type signature in C99 is exactly the same
+    # however we need to process meta information to form:
+    # Type_meta0_meta1_meta3
+    # array_int -- for example
+    def emit_EType(self, n:EType): return n.name()
+
+    def emit_EExplicitCast(self, n:EExplicitCast):
+        return '(%s)(%s)' % (self.emit(n.type), self.emit(n.value))
     
     def emit_EMul(self, n:EMul): return self.emit(n.left) + ' * ' + self.emit(n.right)
     def emit_EDiv(self, n:EDiv): return self.emit(n.left) + ' / ' + self.emit(n.right)
@@ -1559,14 +1585,14 @@ class enode_emit:
         return 'return %s\n' % self.emit(n.value)
 
     def emit_EMethodCall(self, n:EMethodCall):
-        s_args = ''
-        arg_keys = list(n.args.keys())
+        s_args   = ''
+        arg_keys = list(n.method.args.keys())
         arg_len  = len(arg_keys)
         assert arg_len == len(n.args) # this is already done above
         for i in range(arg_len):
             if s_args: s_args += ', '
             s_args += self.emit(n.args[i])
-        return '%s_type.%s(%s)' % (n.type.symbol_name, n.method, s_args)
+        return '%s_type.%s(%s)' % (n.target.type.name(), n.method.name, s_args)
 
 def module_emit(self, c_module_file = None):
     if not c_module_file: c_module_file = self.name + '.c'
