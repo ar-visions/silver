@@ -315,6 +315,12 @@ class EConstruct(ENode):
 
 @hashify
 @dataclass
+class EExplicitCast(ENode):
+    type: EType
+    value: ENode
+
+@hashify
+@dataclass
 class EProp(EMember):
     pass
 
@@ -335,6 +341,7 @@ class EAssign(ENode):
     type:EType
     target:ENode
     value:ENode
+    declare:bool = False
 
 @hashify
 @dataclass
@@ -554,7 +561,7 @@ def is_alpha(s):
 # that is in transpile
 
 def etype(n):
-    return n.type if isinstance(n, ENode) else n
+    return n if isinstance(n, EType) else n.type if isinstance(n, ENode) else n
 
 def parse_tokens(*, module:EModule, _tokens:List['Token']):
     index = 0
@@ -760,7 +767,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
 
     def is_primitive(enode):
         type = etype(enode)
-        return type.model != 'allocated' and type.model.size > 0
+        return type.definition.model != 'allocated' and type.definition.model.size > 0
     
     # select the larger of realistic vs int, with a preference on realistic numbers so 32bit float is selected over 64bit int
     def preferred_type(etype0, etype1):
@@ -963,7 +970,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
     def castable(fr, to:EType):
         fr = etype(fr)
         cast_methods = casts(fr)
-        if fr == to:
+        if fr == to or (is_primitive(fr) and is_primitive(to)):
             return True
         for method in cast_methods:
             if method.type == to:
@@ -991,7 +998,13 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
         assert enode.type, "code has no type. thats trash code"
         if enode.type != type:
             cast_m      = castable(enode, type)
-            if cast_m:      return EConstruct(type=type, method=cast_m,      args=[enode]) # convert args to List[ENode] (same as EMethod)
+            # type is the same, or its a primitive -> primitive conversion
+            if cast_m == True: return EExplicitCast(type=type, value=enode)
+
+            # there is a cast method defined
+            if cast_m: return EConstruct(type=type, method=cast_m, args=[enode]) # convert args to List[ENode] (same as EMethod)
+            
+            # check if constructable
             construct_m = constructable(enode, type)
             if construct_m: return EConstruct(type=type, method=construct_m, args=[enode])
             assert False, 'type conversion not found'
@@ -1069,7 +1082,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
                     push_member(member)
                     if assign:
                         consume()
-                        return EAssign(type=member.type, target=member, value=parse_expression())
+                        return EAssign(type=member.type, target=member, declare=True, value=parse_expression())
                     else:
                         return member
 
@@ -1080,7 +1093,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
                 next_token()  # Consume '='
                 member = lookup_member(str(t0))
                 assert member, "member lookup failed: %s" % (str(t0))
-                return EAssign(target=member, value=parse_expression())
+                return EAssign(type=member.type, target=member, value=parse_expression())
             elif t1 == '[':
                 next_token()
                 next_token()  # Consume '['
@@ -1507,6 +1520,8 @@ class enode_emit:
         res = self.emit(enode)
         return res
     
+    def emit_EType(self, n:EType): return n.symbol_name
+    
     def emit_EMul(self, n:EMul): return self.emit(n.left) + ' * ' + self.emit(n.right)
     def emit_EDiv(self, n:EDiv): return self.emit(n.left) + ' / ' + self.emit(n.right)
     def emit_EAdd(self, n:EAdd): return self.emit(n.left) + ' + ' + self.emit(n.right)
@@ -1522,11 +1537,19 @@ class enode_emit:
     def emit_EStatements(self, n:EStatements):
         res = ''
         for enode in n.value:
-            res += self.emit(enode)
+            v = self.emit(enode)
+            if v == None:
+                v = self.emit(enode)
+            res += v
         return res
     
     def emit_EAssign(self, n:EAssign):
-        pass
+        # no assignment in args; that adds ambiguity to named args
+        # we can support an isolated assignment here if a property is set by the parser
+        if n.declare:
+            return '%s %s = %s;\n' % (self.emit(n.type), n.target.name, self.emit(n.value))
+        else:
+            return    '%s = %s;\n' %                    (n.target.name, self.emit(n.value))
 
     def emit_EMethodReturn(self, n:EMethodReturn):
         #result_member = EMember(name='_result_', type=self.method.type, access=None, value=None, visibility='public')
@@ -1536,7 +1559,14 @@ class enode_emit:
         return 'return %s\n' % self.emit(n.value)
 
     def emit_EMethodCall(self, n:EMethodCall):
-        pass
+        s_args = ''
+        arg_keys = list(n.args.keys())
+        arg_len  = len(arg_keys)
+        assert arg_len == len(n.args) # this is already done above
+        for i in range(arg_len):
+            if s_args: s_args += ', '
+            s_args += self.emit(n.args[i])
+        return '%s_type.%s(%s)' % (n.type.symbol_name, n.method, s_args)
 
 def module_emit(self, c_module_file = None):
     if not c_module_file: c_module_file = self.name + '.c'
