@@ -1,0 +1,62 @@
+import WGPU [
+    source:     'https://github.com/ar-visions/dawn@2e9297c45f48df8be17b4f3d2595063504dac16c',
+    build:      ['-DDAWN_ENABLE_INSTALL=1', '-DBUILD_SHARED_LIBS=0'],
+    includes:   ['dawn/webgpu', 'dawn/dawn_proc_table'],
+    links:      ['webgpu_dawn']
+]
+
+import <stdlib, stdint, stdio, assert>
+
+class app [
+
+    bool init_webgpu1[] [
+        return true
+    ]
+
+    void onAdapterRequestEnded[ WGPURequestAdapterStatus status, WGPUAdapter adapter, symbol message, raw_t userdata ] [
+        ref WGPUAdapter[ userdata ] : adapter
+    ]
+
+    void onDeviceRequestEnded[ WGPURequestDeviceStatus status, WGPUDevice device, symbol message, ref WGPUDevice userdata ] [
+        ref userdata:    device
+        ref userdata[0]: device # same
+    ]
+
+    bool init_webgpu[] [
+        # create an instance
+        WGPUInstanceDescriptor instanceDesc # always inserts {} for struct in C99
+        WGPUInstance instance = wgpuCreateInstance[ ref instanceDesc ]
+        assert[ instance ]
+
+        # request an adapter
+        WGPURequestAdapterOptions adapterOpts: []
+        adapterOpts.powerPreference: WGPUPowerPreference_HighPerformance # test 1-off member assignment
+
+        WGPUAdapter adapter: null
+        wgpuInstanceRequestAdapter[ instance, ref adapterOpts, onAdapterRequestEnded, ref adapter ]
+        assert[ adapter ]
+
+        # Request a device
+        WGPUDeviceDescriptor deviceDesc: [
+            requiredFeatureCount:   0,
+            requiredLimits:         null,
+            label:                 'Default Queue'
+        ]
+
+        WGPUDevice device
+        wgpuAdapterRequestDevice[ adapter, ref deviceDesc, onDeviceRequestEnded, ref device ]
+        assert[ device ]
+
+        printf['WebGPU initialization successful!\n']
+
+        # clean up
+        wgpuDeviceRelease[ device ]
+        wgpuAdapterRelease[ adapter ]
+        wgpuInstanceRelease[ instance ]
+    ]
+
+    num run[] [
+        init_webgpu[]
+        return 0
+    ]
+]
