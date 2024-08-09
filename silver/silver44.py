@@ -695,12 +695,6 @@ class EImport(ENode):
         return BuildState.built
 
     def process(self, module):
-        # parse all headers with libclang
-        if self.includes:
-            module.clang_headers = ClangHeaders.with_module(module)
-            for inc in self.includes:
-                module.clang_headers.parse_header(inc)
-        
         if (self.name and not self.source and not self.includes):
             attempt = ['','spec/']
             exists = False;
@@ -778,6 +772,11 @@ class EImport(ENode):
                     self.library_exports = []
                 # only do this if it exists
                 self.library_exports.append(self.name)
+        # parse all headers with libclang
+        if self.includes:
+            module.clang_headers = ClangHeaders.with_module(module)
+            for inc in self.includes:
+                module.clang_headers.parse_header(inc)
         
 @hashify
 @dataclass
