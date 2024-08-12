@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field, fields, is_dataclass
-from typing import Type, List, OrderedDict, Tuple, Any
+from typing import Union, Type, List, OrderedDict, Tuple, Any
 from pathlib import Path
 import numpy as np
 import os, sys, subprocess, platform
@@ -7,6 +7,10 @@ from clang.cindex import Index, CursorKind, TypeKind
 
 build_root = ''
 is_debug = False
+
+no_arg_methods = [
+    'init', 'dealloc'
+]
 
 operators = {
     '+':   'add',
@@ -31,174 +35,198 @@ operators = {
     '%=':  'mod_assign'
 }
 
+
+keywords = [ 'class',  'proto',    'struct', 'import',
+             'init',   'destruct', 'ref',    'const',  'volatile',
+             'return', 'asm',      'if',     'switch',
+             'while',  'for',      'do',     'signed', 'unsigned' ]
+assign   = [ ':',  '+=', '-=',  '*=',  '/=', '|=',
+             '&=', '^=', '>>=', '<<=', '%=' ]
+
+# non-plain Tokens are defined as ones that have combined these keywords into a decoration map
+consumables = ['ref', 'struct', 'class', 'enum', 'const', 'volatile', 'signed', 'unsigned', 'dim', 'import'] # countof is used for i32[4] == 4
+
+def is_assign(t):
+    i = index_of(assign, str(t))
+    if (i == -1): return None
+    return assign[i]
+
+def is_alpha(s):
+    s = str(s)
+    if index_of(keywords, s) >= 0:
+        return False
+    if len(s) > 0:  # Ensure the string is not empty
+        return s[0].isalpha() or s[0] == '_'
+    return False  # Return False for an empty string
+
 _next_id = 0  # Class variable to keep track of the next available ID
+_default_paths = ['/usr/include/', '/usr/local/include']
 
-class ClangHeaders:
-    module:'EModule'
-    paths:List = ['/usr/include/', '/usr/local/include']
-    defs:OrderedDict = field(default_factory=OrderedDict)
-    def with_module(module):
-        self = ClangHeaders()
+def index_of(a, e):
+    try:
+        return a.index(e)
+    except ValueError:
+        return -1
+
+def remove_spaces(text):
+    text = text.replace('* ', '*')
+    text = text.replace(' *', '*')
+    return text
+
+def _make_hashable(value: Any) -> Any:
+    if isinstance(value, list):
+        return tuple(map(_make_hashable, value))
+    elif isinstance(value, dict):
+        return tuple(sorted((k, _make_hashable(v)) for k, v in value.items()))
+    elif isinstance(value, set):
+        return frozenset(map(_make_hashable, value))
+    return value
+
+def hashify(cls):
+    #def __hash__(self):
+    #    return hash(tuple(_make_hashable(getattr(self, field.name)) for field in fields(self)))
+    
+    #cls.__hash__ = __hash__
+    return cls
+
+def make_hashable(item):
+    if isinstance(item, list):
+        return tuple(make_hashable(sub_item) for sub_item in item)
+    elif isinstance(item, dict):
+        return tuple(sorted((make_hashable(k), make_hashable(v)) for k, v in item.items()))
+    elif isinstance(item, set):
+        return frozenset(make_hashable(sub_item) for sub_item in item)
+    return item
+
+# tokens can be decorated with any data
+@hashify
+@dataclass
+class Tokens:
+    decorators: OrderedDict     = field(default_factory=OrderedDict)
+    list:       List['Token']   = field(default_factory=list)
+    ident:      str             = None
+    module:    'EModule'        = None
+
+    def __init__(self, tokens: Union[str, 'EMember', 'Token', List['Token']] = None, decorators:OrderedDict = OrderedDict(), module:'EModule' = None):
         self.module = module
-        return self
-    def __init__(self):
-        # all systems (in silver C99 implementation side):
-        self.translation_map = {
-            'void':                     'none',
-            'char':                     'i32', # important distinction in silver.  A-type strings give you unicode int32's
-            'signed char':              'i8',
-            'short':                    'i16',
-            'short int':                'i16',
-            'int':                      'i32',
-            'long':                     'i32',  # Note: This assumes 32-bit longs. Adjust if your system uses 64-bit longs.
-            'long long':                'i64',
-            'long long int':            'i64',
-            '__int64':                  'i64',  # For some Windows compilers
-            'unsigned char':            'u8',
-            'unsigned short':           'u16',
-            'unsigned short int':       'u16',
-            'unsigned':                 'u32',
-            'unsigned int':             'u32',
-            'unsigned long':            'u32',
-            'unsigned long long':       'u64',
-            'unsigned long long int':   'u64',
-            'float':                    'f32',
-            'double':                   'f64',
-            'long double':              'f128',
-            '_Bool':                    'bool',  # C99 boolean type
-            'long long':                'num',
-            'double':                   'real',
-            'void*':                    'handle',
-            'char*':                    'cstr'
-        }
-
-    # map a C primitive type to our type primitive
-    # if its a struct we need to treat it as such
-    def translate_type(self, module, t):
-        if hasattr(t, 'name'): return t.name
-        if 'underlying_type' in t:
-            i = t['underlying_type'][1].replace('* ', '*').replace(' *', '*')
+        assert module, "module must be given to Tokens, as we lookup types here for use in decorating"
+        self.decorators = decorators or OrderedDict()
+        if isinstance(tokens, Tokens):
+            self.decorators = tokens.decorators.copy() if tokens.decorators else OrderedDict()
+            self.list       = tokens.list.copy() if tokens.list else []
+        elif isinstance(tokens, EMember):
+            if isinstance(tokens, EClass):  self.decorators['class']  = True
+            if isinstance(tokens, EStruct): self.decorators['struct'] = True
+            if isinstance(tokens, EEnum):   self.decorators['enum']   = True
+            if tokens.static: self.decorators['static'] = True
+            self.list       = [Token(value=tokens.name, line_num=0)]
+        elif isinstance(tokens, Token):
+            self.list       = [tokens]  # Initialize with a single Token
+        elif isinstance(tokens, list):
+            self.list       = tokens
+        elif isinstance(tokens, str): # we have decorators inside list until we 'peek' to resolve
+            tokens          = read_plain_tokens(tokens, module)
+            tokens, _       = module.peek_type_tokens(tokens, 0)
+            self.decorators = tokens.decorators.copy() if tokens.decorators else OrderedDict()
+            self.list       = tokens.list.copy() if tokens.list else []
         else:
-            i = t['name']
-        assert i in self.translation_map, 'no C-type translation found'
-        return self.translation_map[i]
+            self.list = []
+        self.updated()
 
-    def find_def(self, module, name):
-        for header, self.defs in module.include_defs.items():
-            if name in self.defs:
-                return self.defs[name]
+    # make an identity thats compatible with C99
+    # we index based on type to decorator meta, for const/state keywords, sizes, etc.
+    # for now, our identity is based on the type itself, and the sizing will be known in meta on Tokens for our type-tokens
+    def updated(self):
+        ref = self.decorators['ref'] if self.decorators and 'ref' in self.decorators else 0
+        ident_name = ' '.join(str(token) for token in self.list) # + ('*' * ref)
+        #ident_size = ''
+        #if 'dim' in self.decorators:
+        #    for sz_int in self.decorators['dim']:
+        #        ident_size += '[%s]' % sz_int
+        self.ident = ident_name # + ident_size
 
-    def get_base_type(self, type):
-        while True:
-            if type.kind == TypeKind.TYPEDEF:
-                type = type.get_canonical()
-            elif type.kind == TypeKind.ELABORATED:
-                type = type.get_named_type()
-            else:
-                return type
 
-    def type_identity(self, type):
-        if hasattr(type, 'kind'):
-            base_type = self.get_base_type(type)
-            return base_type.kind, base_type.spelling
-        if 'underlying_type' in type:
-            return type['underlying_type'][0], type['underlying_type'][1]
-        if 'name' in type:
-            return type['kind'], type['name']
-        assert False, f'Unexpected type structure: {type}'
+    def __repr__(self):
+        return self.ident
+    """
+    def is_value(self, decorator, value):
+        if not decorator in self.decorators: return value == None
+        return self.decorators[decorator] == value
+    
+    def matches(self, b):
+        a = self
+        if len(a) != len(b) or a.list != b.list: return -1
+        if a.decorators == b.decorators:         return  0
+        if a['ref'] != b['ref']:
+            return -1 # if refs are different, this is different
+        if a['class'] == True and b['class'] == True:
+            return 1 # exact matches take ordered precedence
+        if a['struct'] == True and b['struct'] == True:
+            return 1 # exact matches take ordered precedence
+        if a['enum'] == True and b['enum'] == True:
+            return 1 # exact matches take ordered precedence
+        return 2
+    """    
+    def __hash__(self):
+        return hash(self.ident)
 
-    def function_info(self, cursor):
-        function_name = cursor.spelling
-        return_type   = cursor.result_type
-        params        = [(param.spelling, param.type) for param in cursor.get_arguments()]
-        return {
-            'kind':        'function',
-            'name':        function_name,
-            'return_type': self.type_identity(return_type),
-            'parameters':  [(name, self.type_identity(type)) for name, type in params]
-        }
-
-    def struct_info(self, cursor):
-        fields = []
-        for field in cursor.get_children():
-            if field.kind == CursorKind.FIELD_DECL:
-                fields.append((field.spelling, self.type_identity(field.type)))
-        return {
-            'kind': 'struct',
-            'name': cursor.spelling,
-            'fields': fields
-        }
-
-    def enum_info(self, cursor):
-        enumerators = []
-        for enum in cursor.get_children():
-            if enum.kind == CursorKind.ENUM_CONSTANT_DECL:
-                enumerators.append((enum.spelling, enum.enum_value))
-        return {
-            'kind': 'enum',
-            'name': cursor.spelling,
-            'enumerators': enumerators
-        }
-
-    def typedef_info(self, cursor):
-        underlying_type = cursor.underlying_typedef_type
-        return {
-            'kind': 'typedef',
-            'name': cursor.spelling,
-            'underlying_type': self.type_identity(underlying_type)
-        }
-
-    # parse header with libclang (can use directly in C, as well)
-    def parse_header(self, header_file):
-        module = self.module
-        h_key = header_file
-        if not header_file.endswith('.h'):
-            header_file += '.h'
-        index = Index.create()
-        header_path = None
-
-        include_paths = []
-        include_paths.append(Path(os.path.join(install_dir(), "include/")))
-        for inc in self.paths:
-            include_paths.append(Path(inc))
-
-        for path in include_paths:
-            full_path = os.path.join(path, header_file)
-            if os.path.exists(full_path):
-                header_path = full_path
-                break
-        assert header_path, f'header-not-found: {header_file}'
-        translation_unit = index.parse(header_path, args=['-x', 'c'])
-        fn = OrderedDict()
-        for cursor in translation_unit.cursor.walk_preorder():
-            if cursor.kind == CursorKind.FUNCTION_DECL:
-                fn[cursor.spelling] = self.function_info(cursor)
-            elif cursor.kind == CursorKind.STRUCT_DECL:
-                fn[cursor.spelling] = self.struct_info(cursor)
-            elif cursor.kind == CursorKind.ENUM_DECL:
-                fn[cursor.spelling] = self.enum_info(cursor)
-            elif cursor.kind == CursorKind.TYPEDEF_DECL:
-                fn[cursor.spelling] = self.typedef_info(cursor)
-        module.include_defs[h_key] = fn
-        return module.include_defs[h_key]
+    def __eq__(self, other):
+        if isinstance(other, Tokens):
+            return self.ident == other.ident
+        return False
+    
+    def __bool__(self):
+        return bool(self.ident)
+    
+    def __len__(self):
+        return len(self.list)
+    
+    def __getitem__(self, index:Union[int, slice, str]):
+        if isinstance(index, str):
+            if not self.decorators: return None
+            return self.decorators[index] if index in self.decorators else None
+        else:
+            return self.list[index]
+    
+    def __iadd__(self, value):
+        if isinstance(value, list):
+            self.list.extend(value)
+        else:
+            self.list.append(value)
+        return self
+    
+    def append(self, v):
+        return self.__iadd__(v)
+    
+    def __setitem__(self, index, value):
+        if isinstance(index, str):
+            if not self.decorators: self.decorators = OrderedDict()
+            self.decorators[index] = value
+        else:
+            self.list[index] = value
 
 class Token:
     def __init__(self, value, line_num=0):
         self.value = value
         self.line_num = line_num
+    def __hash__(self):
+        return hash((self.value))
+    def __eq__(self, other):
+        if isinstance(other, Token):
+            return self.value == other.value
+        return False
     def split(ch):              return self.value.split(ch)
     def __str__(self):          return self.value
     def __repr__(self):         return f'Token({self.value}, line {self.line_num})'
     def __getitem__(self, key): return self.value[key]
-    
     def __eq__(self, other):
         if isinstance(other, Token): return self.value == other.value
         elif isinstance(other, str): return self.value == other
         return False
 
-def tokens(input_string):
+def read_plain_tokens(input_string, module:'EModule'):
     special_chars = '$,<>()![]/+*:=#'
-    tokens = []
+    tokens = Tokens(module=module)
     line_num = 1
     length = len(input_string)
     index = 0
@@ -255,22 +283,6 @@ def tokens(input_string):
         tokens.append(Token(input_string[start:index], line_num))
 
     return tokens
-
-def _make_hashable(value: Any) -> Any:
-    if isinstance(value, list):
-        return tuple(map(_make_hashable, value))
-    elif isinstance(value, dict):
-        return tuple(sorted((k, _make_hashable(v)) for k, v in value.items()))
-    elif isinstance(value, set):
-        return frozenset(map(_make_hashable, value))
-    return value
-
-def hashify(cls):
-    #def __hash__(self):
-    #    return hash(tuple(_make_hashable(getattr(self, field.name)) for field in fields(self)))
-    
-    #cls.__hash__ = __hash__
-    return cls
 
 @hashify
 class ENode:
@@ -329,6 +341,25 @@ class ENode:
         if not isinstance(other, ENode):
             return False
         return self.id == other.id
+
+# move to ENode.print
+def print_enodes(node, indent=0):
+    # handle [array]
+    if isinstance(node, list):
+        for n in node:
+            print_enodes(n, indent)
+        return
+    # handle specific AST Node class now:
+    print(' ' * 4 * indent + str(node))
+    if isinstance(node, EClass):
+        for name, a_members in node.members.items():
+            for member in a_members:
+                print_enodes(member, indent + 1)
+    elif isinstance(node, EMethod):
+        for param in node.parameters:
+            print(' ' * 4 * (indent + 1) + f'Parameter: {param}')
+        for body_stmt in node.body:
+            print_enodes(body_stmt, indent + 1)
 
 def contains_main(obj_file):
     try:
@@ -400,22 +431,110 @@ class EContext:
 class ERef(ENode):
     type:      'EType' = None
     value:      ENode  = None
+    index:      ENode  = None
+
+@hashify
+@dataclass
+class EType(ENode):
+    name:str
+    definition: 'EMember'
+    tokens: Tokens # reference depth
+    meta_types: List['EType'] = None
+    def get_name(self):
+        res = self.definition.name
+        if self.meta_types:
+            for m in self.meta_types:
+                if res: res += '_'
+                res += m.get_name()
+        return res
+    def emit(self, ctx:EContext): return self.get_name()
+
+@hashify
+@dataclass
+class EMember(ENode):
+    name: str
+    type: EType      = None
+    type_tokens:Tokens = None
+    module:'EModule' = None
+    value:  ENode    = None
+    parent:'EClass'  = None
+    access: str      = None
+    imported:bool    = False
+    types:OrderedDict[Tokens, 'EType'] = field(default_factory=OrderedDict)
+    members:OrderedDict = None # lambda would be a member of a EMethod, in one example
+    args:OrderedDict[str,'EMember'] = None
+    meta_types:List[ENode] = None
+    static:bool = None
+    visibility: str = 'extern'
+    def emit(self, ctx:EContext): return '%s->%s' % (self.access, self.name) if self.access else self.name
+
+@hashify
+@dataclass
+class EMethod(EMember):
+    method_type:str = None
+    type_expressed:bool = False
+    body:Tokens = None
+    code:ENode = None
+
+@hashify
+@dataclass
+class EClass(EMember):
+    model:          'EModel' = None
+    inherits:       'EClass' = None
+    block_tokens:    Tokens  = None
+    def __repr__(self):
+        return 'EClass(%s)' % self.name
+    def print(self):
+        for name, a_members in self.members.items():
+            for member in a_members:
+                if isinstance(member, EMethod):
+                    print('method: %s' % (name))
+                    print_enodes(node=member.code, indent=0)
+
+@hashify
+@dataclass
+class EStruct(EMember):
+    def __repr__(self): return 'EStruct(%s)' % self.name
+    
+@hashify
+@dataclass
+class EFunctionPointer(EMember):
+    def __repr__(self): return 'EStruct(%s)' % self.name
+
+@hashify
+@dataclass
+class EEnum(EMember):
+    def __repr__(self): return 'EEnum(%s)' % self.name
+
+@hashify
+@dataclass
+class EAlias(EMember):
+    to:EMember=None
+    def __repr__(self): return 'EAlias(%s -> %s)' % (self.name, self.to.name) 
 
 @hashify
 @dataclass
 class EModule(ENode):
-    path:       Path = None
-    name:       str = None
-    tokens:     List[Token] = field(default_factory=list)
-    clang_headers:ClangHeaders = None
-    clang_cache:OrderedDict  = field(default_factory=OrderedDict)
-    include_defs:OrderedDict = field(default_factory=OrderedDict)
+    path:           Path                        = None
+    name:           str                         = None
+    tokens:         Tokens                      = None
+    include_paths:  List                        = field(default_factory=list)
+    clang_cache:    OrderedDict[str,  object]   = field(default_factory=OrderedDict)
+    include_defs:   OrderedDict[str,  object]   = field(default_factory=OrderedDict)
     parent_modules: OrderedDict[str, 'EModule'] = field(default_factory=OrderedDict)
-    defs:       OrderedDict[str, 'ENode'] = field(default_factory=OrderedDict)
-    type_cache: OrderedDict[str, 'EType'] = field(default_factory=OrderedDict)
-    id:int = None
-    finished:bool = False
+    defs:           OrderedDict[str, 'ENode']   = field(default_factory=OrderedDict)
+    type_cache:     OrderedDict[str, 'EType']   = field(default_factory=OrderedDict)
+    id:             int                         = None
+    finished:       bool                        = False
 
+    def __hash__(self):
+        return hash(id(self))
+
+    def __eq__(self, other):
+        if isinstance(other, EModule):
+            return id(self) == id(other)
+        return False
+    
     def __post_init__(self):
         if not self.tokens:
             assert self.path, 'no path given'
@@ -423,21 +542,143 @@ class EModule(ENode):
                 self.name = self.path.stem
             f = open(self.path, 'r')
             f_text   = f.read()
-            self.tokens = tokens(f_text)
+            self.tokens = read_plain_tokens(f_text, self)
+        if not self.include_paths:
+            global _default_paths
+            self.include_paths = _default_paths
+
         self.initialize()              # define primitives first
         self.parse(self.tokens)        # parse tokens
         self.complete()                # compile things imported
 
-    def parse(self, tokens:List[Token]):
+    # best to put the parsing logic in EModule; it was sure nice having all complexity 
+    # contained in the parser def, but you cannot access those methods without a call into it, 
+    # and then it has caching inside..
+
+    def peek_type_tokens(self, tokens:Tokens, offset=0):
+        module = self
+        if isinstance(tokens, str):
+            t = Tokens(module=self)
+            for token in tokens.split():
+                t += Token(value=token)
+            tokens = t
+        def peek_token(offset):
+            nonlocal tokens
+            return tokens[offset]
+        result = Tokens(module=self)
+        ahead = offset
+        proceed = True
+        while proceed:
+            proceed = False
+            global consumables
+            for con in consumables:
+                if peek_token(ahead) == con:
+                    result[con] = 1
+                    ahead += 1
+                    proceed = True
+                    if ahead >= len(tokens):
+                        return result, ahead - offset
+        ref = 0
+        while True:
+            t = peek_token(ahead)
+            is_extend = t.value in ['long', 'short', 'unsigned', 'signed']
+            is_ext = t.value in ['unsigned', 'signed']
+            if not is_extend and not is_alpha(t.value):
+                result = Tokens(module=self)
+                ahead = offset
+                break
+            result.list.append(t)
+            ahead += 1
+            if ahead >= len(tokens):
+                break
+            p = peek_token(ahead)
+            while (p == '*'):
+                #result.append(p) -- refs are part of the model
+                ref += 1
+                ahead += 1
+                if ahead >= len(tokens):
+                    break
+                p = peek_token(ahead)
+            if ahead < len(tokens):
+                p = peek_token(ahead)
+                if p == '[':
+                    dim = []
+                    while (p == '['):
+                        ahead += 1
+                        p = peek_token(ahead)
+                        if p == ']':
+                            v = -1
+                            break
+                        v = peek_token(ahead)
+                        ahead += 1
+                        assert peek_token(ahead) == ']', 'expected ] character in C dimensional array declaration'
+                        ahead += 1
+                        dim.append(int(v.value))
+                        assert str(int(v.value) == v.value), 'incorrect numeric format given'
+                        if ahead >= len(tokens):
+                            break
+                        p = peek_token(ahead)
+                    result['dim'] = dim
+            if ref: break
+            if not p or (not p.value in ['::'] and not is_ext): break # this keyword requires single token types for now
+            ahead += 1
+            if ahead >= len(tokens):
+                result = None
+                ahead  = offset
+                break
+        if ref > 0: # ref string* list  would be string**; we are now allowing *'s in the EType identity with ref:True == *
+            result['ref'] = (1 + result['ref']) if 'ref' in result else ref
+        result.updated()
+        return result, ahead - offset
+    
+    def parse(self, tokens:Tokens):
         parse_tokens(module=self, _tokens=tokens)
-    def find_class(self, class_name):
-        class_name = str(class_name)
+    
+    def find_clang_def(self, name):
+        if isinstance(name, tuple):
+            name = name[1]
+        # we need to lookup the path via our own space + C space
+        # since we are defined after, we will lookup ours first
+        a = name.split()
+        name = a[0]
+        search_struct = True
+        search_enum   = True
+        is_struct     = False
+        is_enum       = False
+        if a[0] == 'struct':
+            name = a[1]
+            search_enum = False
+            is_struct   = True
+        elif a[0] == 'enum':
+            name = a[1]
+            search_struct = False
+            is_enum       = True
+        sp = name.split('*')
+        name = sp[0]
+        refs = len(sp) - 1
+        decorators = OrderedDict([('ref', refs), ('struct', is_struct), ('enum', is_enum)])
+        tokens = Tokens(tokens=name, decorators=decorators, module=self)
+        for header, defs in self.include_defs.items():
+            if name in defs:
+                return defs[name], tokens
+
+    def get_tokens(self, type_name:object):
+        if isinstance(type_name, Tokens): return type_name
+        Tokens
+            
+    def find_def(self, type_tokens:object): # we have a map on Tokens for class, struct, etc already
+        orig = type_tokens
+        if not isinstance(type_tokens, Tokens):
+            type_tokens = Tokens(type_tokens, module=self)
+
         for iname, enode in self.parent_modules:
             if isinstance(enode, 'EModule'):
-                f = enode.find_class(class_name)
-                if f: return f
-        if class_name in self.defs: return self.defs[class_name]
-        return None
+                f, tokens = enode.find_def(type_tokens)
+                if f: return f, tokens
+
+        assert type_tokens.ident in self.defs, 'definition not found: %s' % type_tokens.ident
+        edef = self.defs[type_tokens.ident]
+        return edef, edef.type_tokens
     
     def emit(self, app_def):
         os.chdir(build_root)
@@ -464,12 +705,17 @@ class EModule(ENode):
                 for member_name, a_members in cl.members.items():
                     for member in a_members:
                         if isinstance(member, EMethod):
-                            args = ''
+                            args = ', ' if not member.static else ''
                             for arg_name, a in member.args.items():
-                                args += ', %s %s' % (
+                                if args: args += ', '
+                                args += '%s %s' % (
                                     a.type.definition.name, a.name)
-                            file.write('%s %s_%s(%s self%s) {\n' % (
-                                member.type.definition.name, cl.name, member.name, cl.name, args))
+                            file.write('%s %s_%s(%s%s) {\n' % (
+                                member.type.definition.name,
+                                cl.name,
+                                member.name,
+                                '' if member.static else cl.name + ' self',
+                                args))
                             file.write(member.code.emit(EContext(module=self, method=member))) # method code should first contain references to the args
                             file.write('}\n')
                 file.write('\n')
@@ -490,28 +736,147 @@ int main(int argc, char* argv[]) {
     def __repr__(self):
         return 'EModule(%s)' % self.name
     
+    
     def initialize(self):
         global models
+        
         # define primitives first
         m = self
-        m.defs['bool'] = EClass(module=m, name='bool', model=models['boolean-32'])
-        m.defs['u8']   = EClass(module=m, name='u8',   model=models['unsigned-8'])
-        m.defs['u16']  = EClass(module=m, name='u16',  model=models['unsigned-16'])
-        m.defs['u32']  = EClass(module=m, name='u32',  model=models['unsigned-32'])
-        m.defs['u64']  = EClass(module=m, name='u64',  model=models['unsigned-64'])
-        m.defs['i8']   = EClass(module=m, name='i8',   model=models['signed-8'])
-        m.defs['i16']  = EClass(module=m, name='i16',  model=models['signed-16'])
-        m.defs['i32']  = EClass(module=m, name='i32',  model=models['signed-32'])
-        m.defs['i64']  = EClass(module=m, name='i64',  model=models['signed-64'])
-        m.defs['f32']  = EClass(module=m, name='f32',  model=models['real-32'])
-        m.defs['f64']  = EClass(module=m, name='f64',  model=models['real-64'])
-        m.defs['int']  = EClass(module=m, name='i32',  model=models['signed-32'])
-        m.defs['num']  = EClass(module=m, name='i64',  model=models['signed-64'])
-        m.defs['real'] = EClass(module=m, name='real', model=models['real-64'])
-        m.defs['void'] = EClass(module=m, name='void', model=models['void'])
+        m.defs['bool']   = EClass(module=m, name='bool', visibility='intern', model=models['boolean-32'])
+        m.defs['u8']     = EClass(module=m, name='u8',   visibility='intern', model=models['unsigned-8'])
+        m.defs['u16']    = EClass(module=m, name='u16',  visibility='intern', model=models['unsigned-16'])
+        m.defs['u32']    = EClass(module=m, name='u32',  visibility='intern', model=models['unsigned-32'])
+        m.defs['u64']    = EClass(module=m, name='u64',  visibility='intern', model=models['unsigned-64'])
+        m.defs['i8']     = EClass(module=m, name='i8',   visibility='intern', model=models['signed-8'])
+        m.defs['i16']    = EClass(module=m, name='i16',  visibility='intern', model=models['signed-16'])
+        m.defs['i32']    = EClass(module=m, name='i32',  visibility='intern', model=models['signed-32'])
+        m.defs['i64']    = EClass(module=m, name='i64',  visibility='intern', model=models['signed-64'])
+        m.defs['f32']    = EClass(module=m, name='f32',  visibility='intern', model=models['real-32'])
+        m.defs['f64']    = EClass(module=m, name='f64',  visibility='intern', model=models['real-64'])
+        m.defs['f128']   = EClass(module=m, name='f128', visibility='intern', model=models['real-128'])
+        m.defs['int']    = m.defs['i32']
+        m.defs['num']    = m.defs['i64']
+        m.defs['real']   = m.defs['f64']
+        m.defs['void']   = EClass(module=m, name='void', visibility='intern', model=models['void'])
+        m.defs['cstr']   = EClass(module=m, name='cstr', visibility='intern', model=models['cstr'])
+        m.defs['symbol'] = EClass(module=m, name='symbol', visibility='intern', model=models['symbol'])
+        m.defs['handle'] = EClass(module=m, name='handle', visibility='intern', model=models['handle'])
+        m.defs['none']   = m.defs['void']
+
+        translation_map = {
+            'void':                     'none',
+            'char':                     'i32', # important distinction in silver.  A-type strings give you unicode int32's
+            'signed char':              'i8',
+            'short':                    'i16',
+            'short int':                'i16',
+            'int':                      'i32',
+            'long':                     'i32',
+            'long long':                'i64',
+            'long long int':            'i64',
+            '__int64':                  'i64',  # For some Windows compilers
+            'unsigned char':            'u8',
+            'unsigned short':           'u16',
+            'unsigned short int':       'u16',
+            'unsigned':                 'u32',
+            'unsigned int':             'u32',
+            'unsigned long':            'u32',
+            'unsigned long long':       'u64',
+            'unsigned long long int':   'u64',
+            'float':                    'f32',
+            'double':                   'f64',
+            'long double':              'f128',
+            '_Bool':                    'bool',
+            'long long':                'num',
+            'double':                   'real',
+            'void*':                    'handle',
+            'char*':                    'cstr',
+            'const char*':              'symbol'
+        }
+        for c_type, our_type in translation_map.items():
+            m.defs[c_type] = m.defs[our_type]
 
         # declare these but do not emit, as they are in A
-        m.defs['string'] = EClass(module=m, name='string', model=models['atype'])
+        m.defs[Tokens(module=self, tokens='string')] = EClass(module=m, name='string', visibility='intern', model=models['atype'])
+
+    def process_includes(self, includes):
+        if not includes: return
+        for inc in includes:
+            self.parse_header(inc)
+
+    # instance cached EType from tokens or simple class definitions (when not using meta)
+    def resolve_type(self, tokens:Tokens):   # example: array::num
+        module = self
+        prev = tokens
+        if isinstance(tokens, EMember):
+            if tokens.type:
+                return tokens.type
+            inst = tokens
+            tokens = Tokens(inst, module=module) # technically lose the struct, class, enum decorator
+        
+        assert isinstance(tokens, Tokens), "resolve_type: expected tokens instance"
+        
+        cursor = 0
+        remain = len(tokens) if isinstance(tokens, list) else 1
+
+        def pull_token():
+            nonlocal cursor, remain
+            assert cursor < len(tokens)
+            remain -= 1
+            res = tokens[cursor]
+            cursor += 1
+            return res
+
+        def resolve() -> Tuple[EType, str]:
+            nonlocal remain
+            nonlocal tokens, cursor
+            nonlocal module
+
+            if isinstance(tokens, EAlias):
+                last_def = tokens.to
+                type   = None
+                s_type = None
+                while last_def:
+                    type = module.resolve_type(last_def)
+                return type
+            
+            if isinstance(tokens, EMember):
+                definition = tokens
+                key_name = definition.name
+                if key_name in module.type_cache: # type-cache is a map cache of the stored EType
+                    return module.type_cache[key_name], key_name
+                type = EType(name=key_name, tokens=Tokens(key_name, module=module), definition=definition)
+                module.type_cache[key_name] = type
+                return type
+
+            key_name   = ''                             # initialize key as empty (sets to the value given by user)
+            class_name = pull_token()                   # read token
+            class_def, class_tokens = module.find_def(class_name)    # lookup type in our module
+            assert class_def != None                    # its a compilation error if it does not exist
+
+            meta_len = len(class_def.meta_types) if class_def.meta_types else 0 # get length of meta types on the class def
+            assert meta_len <= remain, 'meta types mismatch'
+
+            key_name += str(class_name)
+            meta_types:List[EType] = []
+            for i in range(meta_len):
+                type_from_arg, k = resolve(k)
+                assert(type_from_arg)
+                assert(k)
+                meta_types += type_from_arg
+                key_name += '::'
+                key_name += k
+            
+            # return type if it exists in cache
+            assert class_def.module
+            if key_name in class_def.module.type_cache: # type-cache is a map cache of the stored EType
+                return class_def.module.type_cache[key_name], key_name
+            
+            # create instance of EType from class definition and meta types
+            type = EType(name=key_name, tokens=Tokens(key_name, module=module), definition=class_def, meta_types=meta_types)
+            class_def.module.type_cache[key_name] = type
+            return type
+
+        return resolve()
 
     def complete(self):
         assert not self.finished, 'EModule: invalid call to complete'
@@ -554,6 +919,213 @@ int main(int argc, char* argv[]) {
             print('%s > %s\n', cwd, link)
             assert(system(link) == 0)
 
+    def get_base_type(self, type):
+        while True:
+            if type.kind == TypeKind.TYPEDEF:
+                type = type.get_canonical()
+            elif type.kind == TypeKind.ELABORATED:
+                type = type.get_named_type()
+            else:
+                return type
+
+    def type_identity(self, type):
+        if isinstance(type, tuple):
+            return type
+        if hasattr(type, 'kind'):
+            base_type = self.get_base_type(type)
+            return base_type.kind, Tokens(tokens=remove_spaces(base_type.spelling), module=self)
+        if 'underlying_type' in type:
+            return type['underlying_type'], Tokens(tokens=remove_spaces(type['underlying_type'][1]), module=self)
+        if 'name' in type:
+            return type['kind'], Tokens(tokens=remove_spaces(type['name']), module=self)
+        assert False, f'Unexpected type structure: {type}'
+
+    def function_info(self, cursor):
+        function_name = cursor.spelling
+        return_type   = cursor.result_type
+        params        = [(param.spelling, param.type) for param in cursor.get_arguments()]
+        return {
+            'kind':        'function',
+            'name':        function_name,
+            'return_type': self.type_identity(return_type),
+            'parameters':  [(name, self.type_identity(type)) for name, type in params]
+        }
+
+    def struct_info(self, cursor):
+        fields = []
+        for field in cursor.get_children():
+            if field.kind == CursorKind.FIELD_DECL:
+                fields.append((field.spelling, self.type_identity(field.type)))
+        return {
+            'kind': 'struct',
+            'name': cursor.spelling,
+            'fields': fields
+        }
+
+    def enum_info(self, cursor):
+        enumerators = []
+        for enum in cursor.get_children():
+            if enum.kind == CursorKind.ENUM_CONSTANT_DECL:
+                enumerators.append((enum.spelling, enum.enum_value))
+        return {
+            'kind': 'enum',
+            'name': cursor.spelling,
+            'enumerators': enumerators
+        }
+
+    def typedef_info(self, cursor):
+        underlying_type = cursor.underlying_typedef_type
+        return {
+            'kind': 'typedef',
+            'name': cursor.spelling,
+            'underlying_type': self.type_identity(underlying_type)
+        }
+
+    # parse header with libclang (can use directly in C, as well)
+    def parse_header(self, header_file):
+        module = self
+        h_key = header_file
+        if not header_file.endswith('.h'):
+            header_file += '.h'
+        index = Index.create()
+        header_path = None
+
+        include_paths = []
+        include_paths.append(Path(os.path.join(install_dir(), "include/")))
+        for inc in self.include_paths:
+            include_paths.append(Path(inc))
+
+        for path in include_paths:
+            full_path = os.path.join(path, header_file)
+            if os.path.exists(full_path):
+                header_path = full_path
+                break
+        assert header_path, f'header-not-found: {header_file}'
+        translation_unit = index.parse(header_path, args=['-x', 'c'])
+
+        clang_defs = OrderedDict()
+        for cursor in translation_unit.cursor.walk_preorder():
+            name = cursor.spelling
+            if name in module.defs: # handle is in another header, so we'll just keep our definition of it (which comes prior)
+                continue
+            assert not name in module.defs, 'C99 headers: duplicate definition: %s' % name
+            if cursor.kind == CursorKind.FUNCTION_DECL:
+                clang_defs[name] = self.function_info(cursor)
+            elif cursor.kind == CursorKind.STRUCT_DECL:
+                clang_defs[name] = self.struct_info(cursor)
+            elif cursor.kind == CursorKind.ENUM_DECL:
+                clang_defs[name] = self.enum_info(cursor)
+            elif cursor.kind == CursorKind.TYPEDEF_DECL:
+                clang_defs[name] = self.typedef_info(cursor)
+
+        def edef_for(clang_def): 
+            # there will be cases where 'spelling' wont be there and we have a struct name*
+            name = None
+            if isinstance(clang_def, tuple):
+                name = clang_def[1].ident
+                kind = clang_def[0]
+            else:
+                name = clang_def['name']
+                kind = clang_def['kind']
+
+            name_tokens = Tokens(name, module=self)
+
+            if name in module.defs:
+                return module.defs[name], name_tokens # verify we have no others above!
+            
+            # tokens of a simple type name can now store its multi dimensional attributes, as well as if it comes from enum, struct, etc
+            id = name_tokens.ident
+            is_unnamed = index_of(name, '(unnamed at') >= 0
+            assert is_unnamed or name == id, 'identity mismatch'
+            if is_unnamed:
+                name = 'null'
+                name_tokens= Tokens('null', module=self)
+            
+            # most of these TypeKind explicits we dont need; we can form the type from reading it
+            #if kind == TypeKind.CONSTANTARRAY:
+            #    module.defs[name_tokens] = EAlias(imported=True, name=name, to=OrderedDict(), module=module)
+
+            if not isinstance(kind, str) and not id in module.defs:
+                assert id in clang_defs
+                edef_for(clang_defs[id])
+                assert id in module.defs
+                
+            mdef = module.defs[id] if id in module.defs else None
+            if kind == TypeKind.POINTER:
+                ref = name_tokens['ref']
+                name_tokens['ref'] = ref + 1 if ref else 1
+                return mdef, name_tokens
+            elif kind == TypeKind.ENUM:   return mdef, name_tokens
+            elif kind == TypeKind.RECORD: return mdef, name_tokens
+            elif kind == TypeKind.VOID:   return mdef, name_tokens
+            elif kind == 'enum':
+                assert not mdef, 'duplicate definition for %s' % name
+                module.defs[id] = EEnum(imported=True, name=name, members=OrderedDict(), module=module)
+                enum_def = module.defs[id]
+                for child in clang_def['enumerators']:
+                    enum_name  = child[0]
+                    enum_value = child[1]  # this gets the value assigned to the enum
+                    enum_def.members[enum_name] = EMember(
+                        imported=True,
+                        name=enum_name,
+                        type=None,  # enums don't have a 'type' in the same sense; you might store their value type
+                        parent=enum_def,
+                        access=None,
+                        value=ELiteralInt(type=module.resolve_type(module.defs['i32']), value=enum_value),
+                        visibility='intern')
+            elif kind == 'typedef':
+                assert 'underlying_type' in clang_def, 'object mismatch'
+                to_type, to_type_tokens = edef_for(clang_def['underlying_type'])
+                module.defs[id] = EAlias(imported=True, name=name, to=to_type, module=module)
+            elif kind == 'struct':
+                module.defs[id] = EStruct(imported=True, name=name, members=OrderedDict(), module=module)
+                members = module.defs[id].members
+                for struct_m, member_clang_def in clang_def['fields']:
+                    if member_clang_def[1].ident == 'WGPUSType':
+                        member_clang_def
+                    edef, tokens = edef_for(member_clang_def) # we need the ref data here too
+                    # tokens is more useful than just refs
+                    assert edef, 'definition not found' 
+                    etype = self.resolve_type(tokens)
+                    members[struct_m] = EMember(
+                        imported=True,
+                        name=struct_m,
+                        type=etype,
+                        parent=None,
+                        access=None,
+                        visibility='intern')
+            elif kind == 'function':
+                rtype_clang, rtype_tokens = edef_for(clang_def['return_type'])
+                etype = module.resolve_type(rtype_tokens)
+                assert etype, 'Clang translation failed'
+                args = OrderedDict()
+                for arg_name, arg_type_info in clang_def['parameters']:
+                    arg_def, arg_tokens = edef_for(arg_type_info)
+                    # char != i32 because its going to source -- we may want to continue to use typedef aliasing and not shortcut
+                    #assert arg_tokens.ident == arg_def.name, 'name mismatch'
+                    arg_etype = EType(name=arg_def.name, definition=arg_def, tokens=arg_tokens)
+                    args[arg_name] = EMember(
+                        imported=True,
+                        name=arg_name,
+                        type=arg_etype,
+                        parent=None,
+                        access=None,
+                        visibility='intern')
+                module.defs[id] = EMethod(
+                    imported=True, static=True, visibility='intern', type=etype, name=name, args=args)
+            else:
+                return None, None
+
+            return module.defs[id], name_tokens
+        
+        # create ENode definitions (EClass, EStruct, EMethod, EEnum) from Clang data
+        for name, clang_def in clang_defs.items():
+            edef_for(clang_def)
+        
+        # create EMember for each of the above
+        module.include_defs[h_key] = clang_defs
+        return module.include_defs[h_key]
+    
 @dataclass
 class BuildState:
     none=0
@@ -772,11 +1344,9 @@ class EImport(ENode):
                     self.library_exports = []
                 # only do this if it exists
                 self.library_exports.append(self.name)
+
         # parse all headers with libclang
-        if self.includes:
-            module.clang_headers = ClangHeaders.with_module(module)
-            for inc in self.includes:
-                module.clang_headers.parse_header(inc)
+        module.process_includes(self.includes)
         
 @hashify
 @dataclass
@@ -811,62 +1381,11 @@ models['signed-32']   = EModel(name='signed_32',   size=4, integral=1, realistic
 models['signed-64']   = EModel(name='signed_64',   size=8, integral=1, realistic=0, type=np.int64)
 models['real-32']     = EModel(name='real_32',     size=4, integral=0, realistic=1, type=np.float32)
 models['real-64']     = EModel(name='real_64',     size=8, integral=0, realistic=1, type=np.float64)
+models['real-128']    = EModel(name='real_128',    size=16, integral=0, realistic=1, type=np.float128)
 models['void']        = EModel(name='void',        size=0, integral=0, realistic=1, type=Void)
-@hashify
-@dataclass
-class EClass(ENode):
-    module: EModule
-    name: str
-    model: EModel = None
-    inherits: 'EClass' = None
-    block_tokens: List[Token] = field(default_factory=list)
-    meta_types:List[ENode] = field(default_factory=list)
-    members:OrderedDict[str, List['EMember']] = field(default_factory=OrderedDict)
-    id:int = None
-    def __repr__(self):
-        return 'EClass(%s)' % self.name
-    def print(self):
-        for name, a_members in self.members.items():
-            for member in a_members:
-                if isinstance(member, EMethod):
-                    print('method: %s' % (name))
-                    print_enodes(node=member.code, indent=0)
-
-@hashify
-@dataclass
-class EType(ENode):
-    definition: EClass # eclass is resolved here, and we form
-    meta_types: List['EType'] = field(default_factory=list)
-    id:int = None
-    def name(self):
-        res = self.definition.name
-        for m in self.meta_types:
-            if res: res += '_'
-            res += m.name()
-        return res
-    def emit(self, ctx:EContext): return self.name()
-
-# lambda to be based on EClass as well as Enum'
-
-@hashify
-@dataclass
-class EMember(ENode):
-    name: str
-    type: EType
-    value: ENode    = None
-    parent:EClass   = None
-    access: str     = None
-    visibility: str = 'extern'
-    def emit(self, ctx:EContext): return '%s->%s' % (self.access, self.name) if self.access else self.name
-
-@hashify
-@dataclass
-class EMethod(EMember):
-    method_type:str = None
-    type_expressed:bool = False
-    body:List[Token] = field(default_factory=list)
-    args:OrderedDict[str,EMember] = field(default_factory=OrderedDict)
-    code:ENode = None
+models['cstr']        = EModel(name='cstr',        size=8, integral=0, realistic=0, type=np.uint64)
+models['symbol']      = EModel(name='symbol',      size=8, integral=0, realistic=0, type=np.uint64)
+models['handle']      = EModel(name='handle',      size=8, integral=0, realistic=0, type=np.uint64)
 
 @hashify
 @dataclass
@@ -1070,6 +1589,15 @@ def value_for_type(type, token):
 class ELiteralStrInterp(ENode):
     type: EType     # string
     value:str
+    args:Union[List[ENode] | OrderedDict[str,ENode]] = None
+    # todo:
+    def emit(self, n:EContext): return '"%s"' % self.value[1:len(self.value) - 1]
+
+@dataclass
+class ELiteralBool(ENode):
+    type: EType
+    value:bool
+    def emit(self,  n:EContext):  return 'true' if self.value else 'false'
 
 # these EOperator's are emitted only for basic primitive ops
 # class operators have their methods called with EMethodCall
@@ -1177,30 +1705,6 @@ class EStatements(ENode):
             res += ctx.indent() + enode.emit(ctx) + ';\n'
         ctx.decrease_indent()
         return res
-    
-keywords = [ 'class',  'proto', 'struct', 'import', 'init', 'destruct', 'ref',
-             'return', 'asm',   'if',     'switch', 'while', 'for', 'do' ]
-assign   = [ ':',  '+=', '-=',  '*=',  '/=', '|=',
-             '&=', '^=', '>>=', '<<=', '%=' ]
-
-def index_of(a, e):
-    try:
-        return a.index(e)
-    except ValueError:
-        return -1
-
-def is_assign(t):
-    i = index_of(assign, str(t))
-    if (i == -1): return None
-    return assign[i]
-
-def is_alpha(s):
-    s = str(s)
-    if index_of(keywords, s) >= 0:
-        return False
-    if len(s) > 0:  # Ensure the string is not empty
-        return s[0].isalpha()
-    return False  # Return False for an empty string
 
 def etype(n):
     return n if isinstance(n, EType) else n.type if isinstance(n, ENode) else n
@@ -1228,6 +1732,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
         if index < len(tokens):
             token = tokens[index]
             index += 1
+            print('next token: %s' % token.value)
             return token
         return None
     
@@ -1252,24 +1757,10 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
         if not cond:
             print(text)
             exit(1)
-
-    def parse_type_tokens():
-        tokens = []
-        if peek_token() == 'ref':
-            tokens.append(next_token())
-        while True:
-            t = next_token()
-            if not is_alpha(t.value):
-                t = peek_token()
-            assert is_alpha(t.value), 'enodes / parse_type / is_alpha'
-            tokens.append(t)
-            p = peek_token()
-            if not p.value == '::': break
-        return tokens
     
     # its useful that types are never embedded in other types. theres no reason for extra complexity
     def parse_member_tokens():
-        tokens = []
+        tokens = Tokens(module=module)
         while True:
             t = next_token()
             assert is_alpha(t.value), 'enodes / parse_type / is_alpha'
@@ -1279,12 +1770,12 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
         return tokens
     
     def peek_member_path():
-        tokens = []
+        tokens = Tokens(module=module)
         ahead = 0
         while True:
             t = peek_token(ahead)
             if not is_alpha(t.value):
-                tokens = []
+                tokens = Tokens(module=module)
                 break
             assert is_alpha(t.value), 'enodes / parse_type / is_alpha'
             tokens.append(str(t))
@@ -1294,7 +1785,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
         return tokens
     
     def parse_member_tokens_2():
-        tokens = []
+        tokens = Tokens(module=module)
         ctx = None
         while True:
             t = next_token()
@@ -1307,31 +1798,15 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
             if not p.value == '.': break
         return tokens
     
-    # used by the primary parsing mechanism
-    def peek_type_tokens(offset=0):
-        tokens = []
-        if peek_token(offset) == 'ref':
-            tokens.append(peek_token(offset))
-            offset += 1
-        ahead = offset
-        while True:
-            t = peek_token(ahead)
-            if not is_alpha(t.value):
-                tokens = []
-                break
-            assert is_alpha(t.value), 'enodes / parse_type / is_alpha'
-            tokens.append(t)
-            p = peek_token(ahead + 1)
-            if not p or not p.value == '::': break
-            ahead += 2
-        return tokens
-    
     # this wont actually validate the meta ordering which resolve_type subsequently performs
-    def is_type(tokens:List[Token]):
-        return tokens and str(tokens[0]) in module.defs
+    def is_type(tokens:Tokens):
+        if not tokens:
+            return None
+        return Tokens(tokens, module=module).ident in module.defs
     
     # lookup access to member
     def lookup_member(s:str):
+        s = str(s)
         for i in range(len(member_stack)):
             index = len(member_stack) - 1 - i
             map = member_stack[index]
@@ -1347,9 +1822,10 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
                 return t, cl.members[name][0]
             if not cl.inherits:
                 break
-            cl = cl.module.find_class(cl.inherits)
+            cl = cl.module.find_def(cl.inherits)
         return None, None
     
+    # all Clang types should be ready for resolve_member; which means i dont believe we lazy load the EMember
     def resolve_member(member_path:List): # example object-var-name.something-inside
         # we want to output the EType, and its EMember
         f = lookup_member(member_path[0])
@@ -1362,61 +1838,8 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
                 t, m = member_lookup(t, s)
                 assert t and m, 'member lookup failed on %s.%s' % (t.definition.name, s)
             return t, m
-        return None, None
-
-    # instance cached EType from tokens
-    def resolve_type(tokens:List[Token]):   # example: array::num
-        tokens, is_clang = translate_type_tokens(tokens) # translate with clang types we read in
-        cursor = 0
-        remain = len(tokens)
-
-        def pull_token():
-            nonlocal cursor, remain
-            assert cursor < len(tokens)
-            remain -= 1
-            res = tokens[cursor]
-            cursor += 1
-            return res
-
-        def resolve() -> Tuple[EType, str]:
-            nonlocal remain
-            nonlocal is_clang, tokens
-            if is_clang:
-                key_name = str(tokens[0])
-                type = EType(definition=is_clang, meta_types=[])
-                module.clang_cache[module.clang_headers.type_identity(is_clang)[1]] = is_clang
-                return type, key_name
-            key_name   = ''                             # initialize key as empty (sets to the value given by user)
-            class_name = pull_token()                   # read token
-            class_def  = module.find_class(class_name)  # lookup type in our module
-            if not class_def:
-                is_clang = translate_type_tokens(tokens) 
-            assert class_def != None                    # its a compilation error if it does not exist
-
-            meta_len = len(class_def.meta_types)        # get length of meta types on the class def
-            assert meta_len <= remain, 'meta types mismatch'
-
-            key_name += str(class_name)
-            meta_types:List[EType] = []
-            for i in range(meta_len):
-                type_from_arg, k = resolve(k)
-                assert(type_from_arg)
-                assert(k)
-                meta_types += type_from_arg
-                key_name += '::'
-                key_name += k
-            
-            # return type if it exists in cache
-            assert class_def.module
-            if key_name in class_def.module.type_cache: # type-cache is a map cache of the stored EType
-                return class_def.module.type_cache[key_name], key_name
-            
-            # create instance of EType from class definition and meta types
-            type = EType(definition=class_def, meta_types=meta_types)
-            class_def.module.type_cache[key_name] = type
-            return type, key_name
-
-        return resolve()
+        
+        return None, 0
     
     def parse_expression():
         return parse_add()
@@ -1476,6 +1899,10 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
         t_state = peek_token()
         return parse_operator(parse_primary, '*', '/', EMul, EDiv)
     
+    def is_bool(token):
+        t = str(token)
+        return ELiteralBool if t in ['true', 'false'] else EUndefined
+    
     def is_numeric(token):
         is_digit = token.value[0] >= '0' and token.value[0] <= '9'
         has_dot  = index_of(token.value, '.') >= 0
@@ -1498,7 +1925,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
                 return member # EReference(member=member)
         return EUndefined
 
-    def parse_args():
+    def parse_args(): # needs to be given target args
         assertion(peek_token() == '[', 'expected [ for args')
         consume()
         enode_args = []
@@ -1512,22 +1939,15 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
         assertion(peek_token() == ']', 'expected ] after args')
         consume()
         return enode_args
-    
-    def translate_type_tokens(t):
-        if len(t) > 1: return t, None # obviously a silver type
-        t_name = str(t[0])
-        n = module.clang_headers.find_def(module, t_name)
-        if n: return [Token(value=module.clang_headers.type_identity(n)[1], line_num=0)], n
-        return t, None
         
     def type_of(value):
         tokens = None
         if isinstance(value, ENode):
             return value.type
         if isinstance(value, str):
-            tokens = [Token(value=value, line_num=0)]
+            tokens = Tokens(Token(value=value, line_num=0))
         assert tokens, 'not implemented'
-        type, type_s = resolve_type(tokens)
+        type = module.resolve_type(tokens)
         return type
 
     # List/array is tuple
@@ -1539,39 +1959,51 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
 
         # ref keyword allows one to declare [args, not here], assign, or retrieve pointer
         if id == 'ref':
-            consume()
             type_tokens = parse_type_tokens()
             member = lookup_member(type_tokens[0])
+            indexing_node = None
             if member:
                 # this is letting us access or assign the ref on the right
+                peek = peek_token()
+                if peek == '[':
+                    consume('[')
+                    indexing_node = parse_expression()
+                    consume(']')
                 t = peek_token()
-                if t == ':':
+                ref = ERef(type=member.type, value=member, index=indexing_node)
+                if t == ':': # handle = consts
                     consume(':')
                     r = parse_expression()
-                    return EAssign(type=type, target=ERef(type=member.type, value=member), value=r)
+                    return EAssign(type=member.type, target=ref, value=r)
                 else:
-                    return ERef(type=member.type, value=member)
+                    return ref
             else:
-                type, s_type = resolve_type(type_tokens)
+                type = module.resolve_type(type_tokens)
                 t = next_token()
                 assert t == '[', 'reference must be given a Type[ value ]'
                 i = parse_expression()
                 t = peek_token()
+                if t == '[':
+                    consume('[')
+                    indexing_node = parse_expression()
+                    consume(']')
+                ref = ERef(type=i.type, value=i, index=indexing_node) # indexing baked into the expression value
                 if t == ':':
                     consume(':')
                     r = parse_expression()
-                    return EAssign(type=type, target=ERef(type=i.type, value=i), value=r)
+                    return EAssign(type=type, target=ref, value=r)
                 else:
-                    return ERef(type=i.type, value=i)
+                    return ref
         
         # typeof[ type ]
         if id == 'typeof':
             consume()
             assert peek_token() == '[', 'expected [ after typeof'
             consume()
-            type_tokens = parse_type_tokens()
+            type_tokens, token_inc = module.parse_type_tokens(tokens, index)
+            index += token_inc
             assert len(type_tokens), 'expected type after typeof'
-            type = resolve_type(type_tokens)
+            type = module.resolve_type(type_tokens)
             assert peek_token() == ']', 'expected ] after type-identifier'
             consume()
             return type
@@ -1590,16 +2022,19 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
     
         n = is_numeric(id)
         if n != EUndefined:
-            f = peek_token()
-            consume()
+            f = next_token()
             type = type_of('f64' if n == ELiteralReal else 'i64')
             return n(type=type, value=value_for_type(type=n, token=f))
         
         s = is_string(id)
         if s != EUndefined:
-            f = peek_token()
-            consume()
+            f = next_token()
             return s(type=type_of('string'), value=f.value) # remove the quotes
+        
+        b = is_bool(id)
+        if b != EUndefined:
+            f = next_token()
+            return ELiteralBool(type=type_of('bool'), value=id == 'true')
         
         # we may attempt to peek at an entire type signature (will still need to peek against member access, too)
         # contructors require args.. thats why you define them, to construct 'with' things
@@ -1607,11 +2042,14 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
         t = peek_token()
         type_tokens = peek_type_tokens()
         len_type_tokens = len(type_tokens) * 2 - 1
+        if type_tokens and type_tokens[0] == 'WGPUInstanceDescriptor':
+            print('desc')
+
         if is_type(type_tokens):
-            type = resolve_type(type_tokens)
+            type = module.resolve_type(type_tokens)
             if peek_token(len_type_tokens + 1) == '[':
                 # construction
-                enode_args = parse_args()
+                enode_args = parse_args(type.definition.members['ctr']) # we need to give a signature list of the constructors
                 conv = enode_args
                 method = None
                 # if args are given, we use a type-matched constructor (first arg is primary)
@@ -1720,7 +2158,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
             assert False, 'type conversion not found'
         else:
             return enode
-
+        
     def convert_args(method, args):
         conv = []
         len_args = len(args)
@@ -1750,7 +2188,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
         # if type is found
         if is_type([t0]):
             type_tokens = parse_type_tokens()
-            type, s_type = resolve_type(type_tokens)
+            type = module.resolve_type(type_tokens)
             name = None
             after_type = peek_token()
             s_member_path = [str(type_tokens[0])]
@@ -1929,7 +2367,17 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
         # Return a combined operation of type EType_Statements
         return EStatements(type=None, value=block)
 
-    def finish_method(cl, token, method_type):
+    def parse_type_tokens():
+        nonlocal index
+        type_tokens, token_inc = module.peek_type_tokens(tokens, index)
+        index += token_inc
+        return type_tokens
+    
+    def peek_type_tokens():
+        type_tokens, token_inc = module.peek_type_tokens(tokens, index)
+        return type_tokens
+    
+    def finish_method(cl, token, method_type, is_static):
         is_ctr  = method_type == 'ctr'
         is_cast = method_type == 'cast'
         is_no_args = method_type in ('init', 'dealloc', 'cast')
@@ -1959,7 +2407,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
                 arg_name_token = next_token()
                 arg_name = str(arg_name_token)
                 assert is_alpha(arg_name_token), 'arg-name (%s) read is not an identifier' % (arg_name_token)
-                arg_type, s_arg_type = resolve_type(arg_type_token)
+                arg_type = module.resolve_type(arg_type_token)
                 assert arg_type, 'arg could not resolve type: %s' % (arg_type_token[0].value)
                 args[arg_name] = EProp(name=str(arg_name_token), access=None, type=arg_type, value=None, visibility='extern')
                 if peek_token() == ',':
@@ -1989,7 +2437,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
         #else:
         #   body = parse_expression_tokens -- do this in 1.0, however its difficult to lazy load this without error
         
-        rtype, s_rtype = resolve_type(return_type)
+        rtype = module.resolve_type(return_type)
         if method_type == 'method':
             id = str(name_token)
         else:
@@ -2007,7 +2455,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
             name = id
         method = EMethod(
             name=name, type=rtype, method_type=method_type, value=None, access='self', parent=cl, type_expressed=has_type,
-            args=args, body=body, visibility='extern') # help here.. so, for access we need to create an EType to self, somehow.  EType is EClass + List[EType] for Meta runtime.  We dont Permute EClasses!  We give them extra Types at Runtime..  Help me figure this one out
+            static=is_static, args=args, body=body, visibility='extern') # help here.. so, for access we need to create an EType to self, somehow.  EType is EClass + List[EType] for Meta runtime.  We dont Permute EClasses!  We give them extra Types at Runtime..  Help me figure this one out
 
         if not id in cl.members:
             cl.members[id] = [method] # we may also retain the with_%s pattern in A-Type
@@ -2020,24 +2468,44 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
         if not cl.block_tokens: return
         push_token_state(cl.block_tokens)
         consume('[')
+        cl.members = OrderedDict()
+        cl.members['ctr']  = []
+        cl.members['cast'] = []
         while (token := peek_token()) != ']':
+            is_static = token == 'static'
+            if is_static:
+                consume('static')
+                token = peek_token()
             visibility = 'extern'
             if str(token) in ('extern', 'intern'):
                 visibility = str(token)
                 token = next_token()
+            if not is_static:
+                is_static = token == 'static'
+                if is_static:
+                    consume('static')
+                    token = peek_token()
             # next is type token
-            offset = 0
+            offset = 1
             if token == 'cast':
+                assert not is_static, 'cast must be defined as non-static'
                 offset += 1
-            type_tokens = peek_type_tokens(offset)
+            type_tokens = peek_type_tokens()
             is_method = type_tokens and peek_token(offset + (len(type_tokens) * 2 - 1) if type_tokens else 1) == '['
-            if token == 'init': is_method = True # cast and init have no-args
+            global no_arg_methods
+            if token.value in no_arg_methods: is_method = True # cast and init have no-args
+
+
+
+            if not is_type([Token(value='bool')]):
+                is_type([Token(value='bool')])
+
 
             if not is_method:
                 # property
                 type_tokens0 = parse_type_tokens()
                 assert len(type_tokens) == len(type_tokens0), 'type misread (internal)'
-                type, s_type = resolve_type(tokens=type_tokens)
+                type = module.resolve_type(tokens=type_tokens)
                 
                 name_token  = next_token()
                 next_token_value = peek_token().value
@@ -2055,13 +2523,13 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
                 assert not id in cl.members, 'member exists' # we require EMethod != EProp checks too
                 cl.members[id] = [prop_node]
             elif token == cl.name:
-                finish_method(cl, token, 'ctr')
-            elif token == 'init':
-                finish_method(cl, token, 'init')
+                finish_method(cl, token, 'ctr', is_static)
+            elif str(token) in no_arg_methods:
+                finish_method(cl, token, str(token))
             elif token == 'cast':
-                finish_method(cl, token, 'cast')
+                finish_method(cl, token, 'cast', is_static)
             elif is_type([token]):
-                finish_method(cl, token, 'method')
+                finish_method(cl, token, 'method', is_static)
             else:
                 assert False, 'could not parse class method around token %s' % (str(token))
         pop_token_state()
@@ -2179,6 +2647,11 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
         token = next_token()
         assert token == 'class', f"Expected 'class', got {token.value} at line {token.line_num}"
         name_token = next_token()
+        if 'app' in module.defs:
+            'found an app'
+        is_ty = is_type(name_token)
+        assert not is_ty, 'duplicate definition in module'
+
         assert name_token is not None
         class_node = EClass(module=module, name=name_token.value)
 
@@ -2197,7 +2670,7 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
 
         if peek_token() == ':':
             consume()
-            class_node.inherits = module.find_class(next_token())
+            class_node.inherits = module.find_def(next_token())
         
         if read_block:
             block_tokens = [next_token()]
@@ -2261,6 +2734,8 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
             module.defs[import_node.name] = import_node
             import_node.process(module)
             continue
+
+    #module.finish_clang_imports()
         
     # finish parsing classes once all identities are known
     for name, enode in module.defs.items():
@@ -2277,24 +2752,6 @@ def parse_tokens(*, module:EModule, _tokens:List['Token']):
                         print_enodes(member.code)
         elif isinstance(enode, EImport):
             pass # 
-
-def print_enodes(node, indent=0):
-    # handle [array]
-    if isinstance(node, list):
-        for n in node:
-            print_enodes(n, indent)
-        return
-    # handle specific AST Node class now:
-    print(' ' * 4 * indent + str(node))
-    if isinstance(node, EClass):
-        for name, a_members in node.members.items():
-            for member in a_members:
-                print_enodes(member, indent + 1)
-    elif isinstance(node, EMethod):
-        for param in node.parameters:
-            print(' ' * 4 * (indent + 1) + f'Parameter: {param}')
-        for body_stmt in node.body:
-            print_enodes(body_stmt, indent + 1)
 
 def change_ext(f: str, ext_to: str) -> str:
     base, _ = os.path.splitext(f)
@@ -2329,17 +2786,24 @@ def header_emit(self, id, h_module_file = None):#
                 for member in a_members:
                     if isinstance(member, EProp):
                         # todo: handle public / priv / intern
-                        file.write('\ti_public(X,Y,Z, %s, %s)\\\n' % (self.clang_headers.translate_type(self, member.type.definition), member.name))
+                        base_type = member.type.base_type()
+                        file.write('\ti_public(X,Y,Z, %s, %s)\\\n' % (
+                            base_type.name, member.name))
             for member_name, a_members in cl.members.items():
                 for member in a_members:
                     if isinstance(member, EMethod):
                         arg_types = ''
                         for arg_name, a in member.args.items():
-                            arg_types += ', %s' % str(a.type.definition.name) # will need a suffix on extra member functions (those defined after the first will get _2, _3, _4)
+                            arg_types += ', %s' % str(a.type.definition.name)
+                            # will need a suffix on extra member functions 
+                            # (those defined after the first will get _2, _3, _4)
                         if member_name == 'cast':
-                            file.write('\ti_cast(X,Y,Z, %s)\\\n' % (member.type.definition.name))
+                            file.write('\ti_cast(X,Y,Z, %s)\\\n' % (
+                                member.type.definition.name))
                         else:
-                            file.write('\ti_method(X,Y,Z, %s, %s%s)\\\n' % (member.type.definition.name, member.name, arg_types))
+                            file.write('\t%s_method(X,Y,Z, %s, %s%s)\\\n' % (
+                                's' if member.static else 'i',
+                                member.type.definition.name, member.name, arg_types))
             file.write('\n')
             if cl.inherits:
                 file.write('declare_mod(%s, %s)\n' % (cl.name, cl.inherits))
@@ -2407,14 +2871,14 @@ class app [
 # disable any 'app' or 'main' class found in module if its not top-level
 # compilation is separate for different end-points
 
-# silver44 (0.4.4) is python, but 1.0.0 will be C
+# silver44 (0.4.4) is python, but 1.0.0 will be C (lol maybe)
 
 build_root    = os.getcwd()
-source_tokens = tokens(input)
-#module        = EModule.with_tokens(name='example', tokens=source_tokens)
 first         = sys.argv[1]
 module        = EModule(path=Path(first)) # path is relative from our build root (cwd)
-app           = module.defs['app'] if 'app' in module.defs else None
+source_tokens = read_plain_tokens(input, module=module)
+app_key       = Tokens('app', module)
+app           = module.defs[app_key] if 'app' in module.defs else None
 
 if app: app.print()
 
