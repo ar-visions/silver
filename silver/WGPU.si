@@ -5,15 +5,32 @@ import WGPU [
     links:      ['webgpu_dawn']
 ]
 
-import <stdlib, stdint, stdio, assert>
+import <stdlib, stdint, stdio>
 
 class app [
 
-    bool init_webgpu[] [
+    int64_t assert[ bool cond, cstr text ] [
+        if not cond [
+            exit[ 0 ]
+        ]
+    ]
+
+    # all arguments are constants, we need code in silver to handle that
+    # assignment would not be allowed on members of argument
+    static void onDeviceRequestEnded[ WGPURequestDeviceStatus status, WGPUDevice device, symbol message, ref WGPUDevice userdata ] [
+        ref userdata:    device
+        # (*userdata) = device
+        ref userdata[0]: device # same
+        # writing existing is deref and declaration & reading is ref
+        # its why we need to have code in EAssign to handle that with ERef
+    ]
+
+    int32_t init_webgpu[] [
         # create an instance
         WGPUInstanceDescriptor instanceDesc # always inserts {} for struct in C99
         WGPUInstance instance: wgpuCreateInstance[ ref instanceDesc ]
-        assert[ instance ]
+
+        assert[ instance, 'could not create instance' ]
 
         # request an adapter
         WGPURequestAdapterOptions adapterOpts: []
@@ -24,7 +41,7 @@ class app [
         # do we allocate a function call that calls our own instance?
         # technically in that way you wouldnt need any additional context for an instance
         wgpuInstanceRequestAdapter[ instance, ref adapterOpts, onAdapterRequestEnded, ref adapter ]
-        assert[ adapter ]
+        assert[ adapter, 'adapter not set' ]
 
         # Request a device
         WGPUDeviceDescriptor deviceDesc: [
@@ -45,13 +62,8 @@ class app [
         wgpuInstanceRelease[ instance ]
     ]
 
-    static void onAdapterRequestEnded[ WGPURequestAdapterStatus status, WGPUAdapter adapter, symbol message, raw_t userdata ] [
+    static void onAdapterRequestEnded[ WGPURequestAdapterStatus status, WGPUAdapter adapter, symbol message, handle userdata ] [
         ref WGPUAdapter[ userdata ] : adapter
-    ]
-
-    static void onDeviceRequestEnded[ WGPURequestDeviceStatus status, WGPUDevice device, symbol message, ref WGPUDevice userdata ] [
-        ref userdata:    device
-        ref userdata[0]: device # same
     ]
 
     num run[] [
