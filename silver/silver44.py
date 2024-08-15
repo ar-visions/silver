@@ -229,8 +229,6 @@ class EIdent(ENode):
             if index_of(tokens, '*)') >= 0:
                 tokens
             ident           = EIdent.parse(module, read_tokens, 0)
-            if ident['ref'] == 2:
-                ident
             self.decorators = ident.decorators.copy() if ident.decorators else OrderedDict()
             self.list       = ident.list.copy() if ident.list else []
         else:
@@ -394,7 +392,7 @@ class EIdent(ENode):
         
         return result
 
-    def emit(self, ctx:'EContext'): return self.get_name()
+    def emit(self, ctx:'EContext'): return self.get_name() + '*' * (self['ref'] or 0)
 
     # apply all ref
     def ref_total(self):
@@ -624,7 +622,7 @@ class ERef(ENode):
         if isinstance(self.index, ELiteralInt) and self.index.value != 0: # based on if its a C99 type or not, we will add another *
             return '(%s*)&%s[%d]' % (type_name, self.value.name, self.index.value)
         elif not self.index:
-            return '(%s*)%s' % (type_name, self.value.name)
+            return '(%s*)&%s' % (type_name, self.value.name)
         elif not self.value:
             return '(%s*)null' % type_name
         else:
@@ -649,6 +647,13 @@ class EMember(ENode):
             return '%s' % (self.name)
         else:
             return '%s->%s' % (self.access, self.name)
+
+@dataclass
+class EDeclaration(ENode):
+    type:  EIdent  = None
+    target:EMember = None
+    def emit(self, ctx:EContext):
+        return '%s %s' % (self.type.emit(ctx), self.target.name)
 
 
 @dataclass
@@ -1012,7 +1017,8 @@ class EAssign(ENode):
                 assert False, 'ref declaration with assignment not handled'
                 return '%s %s %s %s' % (self.type.emit(ctx), self.target.name, op, self.value.emit(ctx))
             else:
-                return    '((*%s) %s %s)' % (self.target.value.name, op, self.value.emit(ctx))
+                return '*(%s)%s %s %s' % (
+                    self.type.emit(ctx), self.target.value.name, op, self.value.emit(ctx))
         else:
             
             if self.declare:
@@ -1061,6 +1067,20 @@ class EAssignShiftL(EAssign): pass
 class EAssignMod(EAssign):    pass
 
 
+assign_map = {
+    ':':   EAssign,
+    '+=':  EAssignAdd,
+    '-=':  EAssignSub,
+    '*=':  EAssignMul,
+    '/=':  EAssignDiv,
+    '|=':  EAssignOr,
+    '&=':  EAssignAnd,
+    '^=':  EAssignXor,
+    '>>=': EAssignShiftR,
+    '<<=': EAssignShiftL,
+    '%=':  EAssignMod
+}
+
 @dataclass
 class EIf(ENode):
     type: EIdent # None; can be the last statement in body?
@@ -1069,8 +1089,8 @@ class EIf(ENode):
     else_body:ENode
     def emit(self, ctx:EContext):
         e  = ''
-        e += ctx.indent() + 'if (%s) {\n' % self.condition.emit(ctx)
-        e += self.body.emit(ctx)
+        e += 'if (%s) {\n' % self.condition.emit(ctx)
+        e += self.body.emit(ctx) # Statements increases the indent, and we already outputted our indent level above?
         e += ctx.indent() + '}'
         if self.else_body:
             e += ' else {\n'
@@ -1240,7 +1260,14 @@ class EMethodCall(ENode):
             if s_args: s_args += ', '
             str_e = self.args[i].emit(ctx)
             s_args += str_e
-        return 'call(%s, %s, %s)' % (self.target, self.method.name, s_args)
+        if not self.target:
+            return '%s(%s)' % (self.method.name, s_args)
+        else:
+            return 'call(%s, %s%s%s)' % (
+                self.target,
+                self.method.name,
+                ', ' if s_args else '',
+                s_args)
     
 
 @dataclass
@@ -1263,7 +1290,11 @@ class EStatements(ENode):
         res = ''
         ctx.increase_indent()
         for enode in self.value:
-            res += ctx.indent() + enode.emit(ctx) + ';\n'
+            res += ctx.indent()
+            code = enode.emit(ctx)
+            res += code
+            if code[-2:] != '}\n':
+                res += ';\n'
         ctx.decrease_indent()
         return res
 
@@ -1298,7 +1329,7 @@ class EModule(ENode):
     finished:       bool                        = False
     recur:          int = 0
     clang_defs:     OrderedDict                 = field(default_factory=OrderedDict)
-
+    expr_level:     int                         = 0
     # moving the parser inside of EModule
     # move to EModule (all of these methods)
     index:int          = 0
@@ -1496,8 +1527,8 @@ class EModule(ENode):
                             args = ', ' if not member.static and len(member.args) else ''
                             for arg_name, a in member.args.items():
                                 if args and args != ', ': args += ', '
-                                args += '%s %s' % (
-                                    a.type.get_def().name, a.name)
+                                args += '%s%s %s' % (
+                                    a.type.get_def().name, '*' * a.type.ref(), a.name)
                             file.write('%s %s_%s(%s%s) {\n' % (
                                 member.type.get_def().name,
                                 cl.name,
@@ -1591,76 +1622,8 @@ int main(int argc, char* argv[]) {
         for inc in includes:
             self.parse_header(inc)
 
-    # instance cached EIdent from tokens or simple class definitions (when not using meta)
-    def resolve_type(self, tokens:EIdent):   # example: array::num
-        module = self
-        prev = tokens
-        if isinstance(tokens, EMember):
-            if tokens.type:
-                return tokens.type
-            inst = tokens
-            tokens = EIdent(inst, module=self) # technically lose the struct, class, enum decorator
-        
-        assert isinstance(tokens, EIdent), "resolve_type: expected tokens instance"
-        
-        cursor = 0
-        remain = len(tokens) if isinstance(tokens, list) else 1
-
-        def pull_token():
-            nonlocal cursor, remain
-            assert cursor < len(tokens)
-            remain -= 1
-            res = tokens[cursor]
-            cursor += 1
-            return res
-
-        def resolve() -> EIdent:
-            if isinstance(tokens, EAlias):
-                last_def = tokens.to[1]
-                type   = None
-                s_type = None
-                while last_def:
-                    type = self.resolve_type(last_def)
-                return type
-            
-            if isinstance(tokens, EMember):
-                definition = tokens
-                key_name = definition.name
-                if key_name in self.type_cache: # type-cache is a map cache of the stored EIdent
-                    return self.type_cache[key_name]
-                type = EIdent(key_name, module=self)
-                self.type_cache[key_name] = type
-                return type
-
-            key_name   = ''                             # initialize key as empty (sets to the value given by user)
-            class_name = pull_token()                   # read token
-            class_def  = self.find_def(class_name)      # lookup type in our module
-            assert class_def != None                    # its a compilation error if it does not exist
-
-            meta_len = len(class_def.meta_types) if class_def.meta_types else 0 # get length of meta types on the class def
-            assert meta_len <= remain, 'meta types mismatch'
-
-            key_name += str(class_name)
-            meta_types:List[EIdent] = []
-            for i in range(meta_len):
-                type_from_arg, k = resolve(k)
-                assert(type_from_arg)
-                assert(k)
-                meta_types += type_from_arg
-                key_name += '::'
-                key_name += k
-            
-            # return type if it exists in cache
-            assert class_def.module
-            if key_name in class_def.module.type_cache: # type-cache is a map cache of the stored EIdent
-                return class_def.module.type_cache[key_name]
-            
-            # create instance of EIdent from class definition and meta types
-            type = EIdent(key_name, module=self, meta_types=meta_types)
-            class_def.module.type_cache[key_name] = type
-            return type
-
-        return resolve()
+    # this was needed for module registration of types but we already have defs, and Ident is Identifying a def along with its meta.  It need not have central identity on its instance.
+    #def resolve_type(self, tokens:EIdent):
 
     def complete(self):
         assert not self.finished, 'EModule: invalid call to complete'
@@ -1869,7 +1832,7 @@ int main(int argc, char* argv[]) {
             enum_def = self.defs[id]
             for enum_name, enum_value in clang_def['enumerators']:
                 assert enum_name and enum_value != None
-                i32_type = self.resolve_type(self.defs['i32'])
+                i32_type = EIdent('i32', module=self)
                 enum_def.members[enum_name] = EMember(
                     imported=True,
                     name=enum_name,
@@ -1888,11 +1851,10 @@ int main(int argc, char* argv[]) {
                 edef, ftype = self.edef_for(member_clang_def)
                 if not edef:
                     continue # on-error-resume-next
-                etype = self.resolve_type(ftype)
                 members[m] = EMember(
                     imported=True,
                     name=m,
-                    type=etype,
+                    type=ftype,
                     parent=None,
                     access=None,
                     visibility='extern')
@@ -1911,19 +1873,17 @@ int main(int argc, char* argv[]) {
 
             members = self.defs[id].members
             for struct_m, member_clang_def in clang_def['fields']:
-                edef, edef_ident = self.edef_for(member_clang_def) # we need the ref data here too
+                edef, etype = self.edef_for(member_clang_def) # we need the ref data here too
                 if not edef:
                     continue # we cannot resolve anonymous members at the moment; it will need to embed them in the various EMembers such as EUnion and EStruct
                 # EIdent is more useful than just refs
                 assert edef, 'definition not found' 
-                etype = self.resolve_type(edef_ident)
                 members[struct_m] = EMember(
                     imported=True, name=struct_m, type=etype,
                     parent=None, access=None, visibility='intern')
             
         elif kind == 'function':
-            rtype_edef, rtype_tokens = self.edef_for(clang_def['return_type'])
-            rtype_ident = self.resolve_type(rtype_tokens)
+            rtype_edef, rtype_ident = self.edef_for(clang_def['return_type'])
             assert rtype_ident, 'Clang translation failed'
             args = OrderedDict()
             for arg_name, arg_type_info in clang_def['parameters']:
@@ -2124,7 +2084,10 @@ int main(int argc, char* argv[]) {
         return None, 0
     
     def parse_expression(self):
-        return self.parse_add()
+        self.expr_level += 1
+        result = self.parse_add()
+        self.expr_level -= 1
+        return result
     
     def consume(self, peek=None):
         if isinstance(peek, int):
@@ -2219,16 +2182,17 @@ int main(int argc, char* argv[]) {
                 return member # EReference(member=member)
         return EUndefined
 
+    # handle named arguments here
     def parse_args(self, signature:EMethod, C99:bool = False): # needs to be given target args
         #b = '(' if C99 else '['
         e = ')' if C99 else ']'
-        #self.assertion(self.peek_token() == b, 'expected [ for args found %s' % str(self.peek_token()))
-        #self.consume()
         enode_args = []
         arg_count  = -1 if not signature else len(signature.args)
         arg_index  = 0
         if arg_count:
             while (1):
+                if self.peek_token() == ']':
+                    assert False, 'not enough arguments given to %s' % signature.name
                 op = self.parse_expression()
                 enode_args.append(op)
                 arg_index += 1
@@ -2242,14 +2206,12 @@ int main(int argc, char* argv[]) {
         return enode_args
         
     def type_of(self, value):
-        tokens = None
+        ident = None
         if isinstance(value, ENode):
             return value.type
-        if isinstance(value, str):
-            tokens = EIdent(value, module=self)
-        assert tokens, 'not implemented'
-        type = self.resolve_type(tokens)
-        return type
+        elif value:
+            ident = EIdent(value, module=self)
+        return ident
 
     # List/array is tuple
     def parse_primary(self):
@@ -2259,8 +2221,8 @@ int main(int argc, char* argv[]) {
         #print('parse_primary: %s' % (id.value))
         # ref keyword allows one to declare [args, not here], assign, or retrieve pointer
         if id == 'ref':
-            tokens = EIdent.parse(self)
-            member = self.lookup_member(tokens[0])
+            ident = EIdent.parse(self)
+            member = self.lookup_member(ident[0])
             indexing_node = None
             if member:
                 # this is letting us access or assign the ref on the right
@@ -2271,27 +2233,32 @@ int main(int argc, char* argv[]) {
                     self.consume(']')
                 t = self.peek_token()
                 ref = ERef(type=member.type, value=member, index=indexing_node)
-                if t == ':': # handle = consts
-                    self.consume(':')
+                if is_assign(t): # handle = consts
+                    assert self.expr_level == 0, 'assignments allowed only at statement level'
+                    self.consume(t)
                     r = self.parse_expression()
-                    return EAssign(type=member.type, target=ref, value=r)
+                    return assign_map[str(t)](type=member.type, target=ref, value=r)
                 else:
                     return ref
             else:
-                type = self.resolve_type(tokens)
                 t = self.next_token()
                 assert t == '[', 'reference must be given a Type[ value ]'
                 i = self.parse_expression()
+                t = self.next_token()
+                assert t == ']', 'expected ] after reference of Type [ pointer-expr ] [ index-expr ]'
                 t = self.peek_token()
+                indexing_node = None
                 if t == '[':
                     self.consume('[')
                     indexing_node = self.parse_expression()
                     self.consume(']')
-                ref = ERef(type=i.type, value=i, index=indexing_node) # indexing baked into the expression value
-                if t == ':':
-                    self.consume(':')
+                    t = self.peek_token()
+                ref = ERef(type=ident, value=i, index=indexing_node) # indexing baked into the expression value
+                if is_assign(t):
+                    assert self.expr_level == 0, 'assignments allowed only at statement level'
+                    self.consume(t)
                     r = self.parse_expression()
-                    return EAssign(type=type, target=ref, value=r)
+                    return assign_map[str(t)](type=ident, target=ref, value=r)
                 else:
                     return ref
         
@@ -2311,12 +2278,11 @@ int main(int argc, char* argv[]) {
             self.consume()
             assert self.peek_token() == '[', 'expected [ after typeof'
             self.consume()
-            tokens = self.parse_type_ident()
-            assert len(tokens), 'expected type after typeof'
-            type = self.resolve_type(tokens)
+            ident = EIdent.parse(self)
+            assert len(ident), 'expected type after typeof'
             assert self.peek_token() == ']', 'expected ] after type-identifier'
             self.consume()
-            return type
+            return ident
 
         # casting
         if id == '[': # translate all C types to our own
@@ -2365,30 +2331,29 @@ int main(int argc, char* argv[]) {
         else:
 
             self.push_token_state(self.tokens, self.index)
-            tokens = EIdent.parse(self)
-            type_def = self.is_defined(tokens)
+            ident = EIdent.parse(self)
+            type_def = self.is_defined(ident)
             if type_def:
                 self.transfer_token_state() # this is a pop and index update; it means continue from here (we only do this if we are consuming this resource)
-                type = self.resolve_type(tokens)
                 token_after = self.peek_token()
                 if token_after == '[':
                     self.consume()
-                    if self.is_method(tokens):
+                    if self.is_method(ident):
                         enode_args = self.parse_args(type_def)
                         assert type_def.type, 'type required on EMethod'
                         return EMethodCall(type=type_def.type, target=type_def.access, method=type_def, args=enode_args)
                     else:
                         # construction
-                        enode_args = self.parse_args(type.get_def().members['ctr']) # we need to give a signature list of the constructors
+                        enode_args = self.parse_args(ident.get_def().members['ctr']) # we need to give a signature list of the constructors
                         conv = enode_args
                         method = None
                         # if args are given, we use a type-matched constructor (first arg is primary)
                         if len(enode_args):
-                            method = self.constructable(enode_args[0], type)
+                            method = self.constructable(enode_args[0], ident)
                             assert method, 'cannot construct with type %s' % enode_args[0].type.get_def().name
                             conv = self.convert_args(method, enode_args)
                         # return construction node; if no method is defined its a simple new and optionally initialized
-                        return EConstruct(type=type, method=method, args=conv)
+                        return EConstruct(type=ident, method=method, args=conv)
                 else:
                     self.consume()
                     return type
@@ -2526,12 +2491,11 @@ int main(int argc, char* argv[]) {
         # something.another: convertible[arg:1, arg2:convertible[]]
         
         # if type is found
-        type_def = self.is_defined([t0])
+        type_def = self.is_defined(t0)
         if type_def: # [ array? ]
             if isinstance(type_def, EMethod):
                 return self.parse_expression()
             ident  = EIdent.parse(self)
-            type   = self.resolve_type(ident)
             name   = None
             after_type = self.peek_token()
             s_member_path = [str(ident[0])] # this is incomplete
@@ -2561,13 +2525,13 @@ int main(int argc, char* argv[]) {
                     conv = self.convert_args(method, args)
 
                     # args must be the same count and convertible, type-wise
-                    return EMethodCall(target=type, method=method, args=conv)
+                    return EMethodCall(target=ident, method=method, args=conv)
             else:
                 if is_alpha(after_type):
                     # do we need access node or can we put access parent into EMember?
                     # access:None == local, lexical access
                     member = EMember(
-                        name=str(after_type), access=None, type=type, value=None, visibility='extern')
+                        name=str(after_type), access=None, type=ident, value=None, visibility='extern')
                     self.consume()
                     after  = self.peek_token()
                     assign = is_assign(after)
@@ -2576,7 +2540,7 @@ int main(int argc, char* argv[]) {
                         self.consume()
                         return EAssign(type=member.type, target=member, declare=True, value=self.parse_expression())
                     else:
-                        return member
+                        return EDeclaration(type=member.type, target=member)
 
         elif is_alpha(t0):
             # and non-keyword and non-function, would be an isolated variable perhaps so we can return that if its an acessible member
@@ -2609,6 +2573,9 @@ int main(int argc, char* argv[]) {
             self.next_token()  # Consume 'return'
             result = self.parse_expression()
             return EMethodReturn(type=self.type_of(result), value=result)
+        
+        elif t0 == 'ref':
+            return self.parse_primary() # this should be the only accessible way to assign; todo: we must have an expression level known
         
         elif t0 == 'break':
             self.next_token()  # Consume 'break'
@@ -2706,6 +2673,8 @@ int main(int argc, char* argv[]) {
                 self.push_member_depth()
                 self.consume()
                 continue
+            global debug
+            debug += 1
             n = self.parse_statement()  # Parse the next statement
             assert n is not None, 'expected statement or expression'
             block.append(n)
@@ -2725,22 +2694,20 @@ int main(int argc, char* argv[]) {
         args:OrderedDict[str, EProp] = OrderedDict()
         if self.peek_token() == e:
             return args
-        arg_type_token = None if is_no_args else EIdent.peek(self)
+        arg_type = None if is_no_args else EIdent.peek(self)
         if is_C99:
             is_C99
         n_args = 0
-        while arg_type_token:
-            arg_type_token = EIdent.parse(self)
-            assert arg_type_token, 'failed to parse type in arg'
+        while arg_type:
+            arg_type = EIdent.parse(self)
+            assert arg_type, 'failed to parse type in arg'
             arg_name_token = str(n_args) if is_C99 else None
             if not is_C99 and is_alpha(self.peek_token()):
                 arg_name_token = self.next_token()
             if not is_C99:
                 assert is_alpha(arg_name_token), 'arg-name (%s) read is not an identifier' % (arg_name_token)
             arg_name = str(arg_name_token)
-            n2 = self.peek_token()
-            arg_type = self.resolve_type(arg_type_token)
-            assert arg_type, 'arg could not resolve type: %s' % (arg_type_token[0].value)
+            assert arg_type.get_def(), 'arg could not resolve type: %s' % (arg_type[0].value)
             args[arg_name] = EProp(
                 name=str(arg_name_token), access='const',
                 type=arg_type, value=None, visibility='extern')
@@ -2791,7 +2758,6 @@ int main(int argc, char* argv[]) {
         #else:
         #   body = parse_expression_tokens -- do this in 1.0, however its difficult to lazy load this without error
         
-        rtype = self.resolve_type(return_type)
         if method_type == 'method':
             id = str(name_token)
         else:
@@ -2802,13 +2768,13 @@ int main(int argc, char* argv[]) {
         #    id = method_type
 
         if is_cast:
-            name = 'cast_%s' % str(return_type[0])
+            name = 'cast_%s' % str(return_type.ident)
         elif is_ctr:
             name = 'ctr_%s' % str(args[0].type.identifier.name)
         else:
             name = id
         method = EMethod(
-            name=name, type=rtype, method_type=method_type, value=None, access='self', parent=cl, type_expressed=has_type,
+            name=name, type=return_type, method_type=method_type, value=None, access='self', parent=cl, type_expressed=has_type,
             static=is_static, args=args, body=body, visibility='extern')
     
         if not id in cl.members:
@@ -2844,8 +2810,10 @@ int main(int argc, char* argv[]) {
             if token == 'cast':
                 assert not is_static, 'cast must be defined as non-static'
                 offset += 1
-            tokens = EIdent.peek(self)
-            is_method0 = tokens and self.peek_token(offset + (len(tokens) * 2 - 1) if tokens else 1) == '['
+            self.push_token_state(self.tokens, self.index)
+            ident = EIdent.parse(self)
+            is_method0 = ident and self.peek_token(1) == '['
+            self.pop_token_state()
             global no_arg_methods
             if token.value in no_arg_methods: is_method0 = True # cast and init have no-args
 
@@ -2854,21 +2822,18 @@ int main(int argc, char* argv[]) {
 
             if not is_method0:
                 # property
-                tokens0 = self.parse_type_ident()
-                assert len(tokens) == len(tokens0), 'type misread (internal)'
-                type = self.resolve_type(tokens=tokens)
-                
+                ident = EIdent.parse(self)
                 name_token  = self.next_token()
                 next_token_value = self.peek_token().value
                 if next_token_value == ':':
                     self.next_token()  # Consume the ':'
                     value_token = self.next_token()
                     prop_node = EProp(
-                        type=type, name=name_token.value, access='self',
+                        type=ident, name=name_token.value, access='self',
                         value=value_token.value, visibility=visibility, parent=cl)
                 else:
                     prop_node = EProp(
-                        type=type, name=name_token.value, access='self',
+                        type=ident, name=name_token.value, access='self',
                         value=None, visibility=visibility, parent=cl)
                 id = str(name_token)
                 assert not id in cl.members, 'member exists' # we require EMethod != EProp checks too
