@@ -9,7 +9,7 @@ import <stdlib, stdint, stdio>
 
 class app [
 
-    int64_t assert[ bool cond, cstr text ] [
+    void assert[ bool cond, cstr text ] [
         if not cond [
             exit[ 0 ]
         ]
@@ -17,10 +17,9 @@ class app [
 
     # all arguments are constants, we need code in silver to handle that
     # assignment would not be allowed on members of argument
-    static void onDeviceRequestEnded[ WGPURequestDeviceStatus status, WGPUDevice device, symbol message, ref WGPUDevice userdata ] [
-        ref userdata:    device
-        # (*userdata) = device
-        ref userdata[0]: device # same
+    static void onDeviceRequestEnded[ WGPURequestDeviceStatus status, WGPUDevice device, symbol message, ref void* userdata ] [
+        ref WGPUDevice[userdata]: device
+        #ref userdata[0]: device # same
         # writing existing is deref and declaration & reading is ref
         # its why we need to have code in EAssign to handle that with ERef
     ]
