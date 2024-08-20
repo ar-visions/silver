@@ -7,66 +7,118 @@ import WGPU [
 
 import <stdlib, stdint, stdio>
 
+# there is 'string {formatting}' and '%s' % [formatting]
+# 
+# there is also the header service [which we dont want really]
+# there is the structs in silver and C99 interops to confirm
+# no typedef keyword please,
+# struct Identifier is fine, for identifying structs that have typedefs
+# const logic needs to be confirmed
+# ref needs to be in parse_primary, as well.
+
 class app [
 
-    void assert[ bool cond, cstr text ] [
-        if not cond [
-            exit[ 0 ]
-        ]
+    # WGPUAdapter in C99 is a struct WGPUAdapterImpl* type (opaque-reference)
+    static void onAdapterRequestEnded[WGPURequestAdapterStatus status, WGPUAdapter adapter, symbol message, handle userdata] [
+        # this sets data at a reference position without declaring a variable
+        # [[ ref WGPUAdapter ]userdata] [ 0 ]: adapter
+        ref WGPUAdapter[ userdata ][ 2 ]: adapter
+
+        # C99: ((WGPUAdapter*)userdata)[0] = adapter
+
+        # we are declaring a mutable member
+        # lambdas
+        # yeah, lets.. lol.
+        ref WGPUAdapter udata2: ref WGPUAdapter [ userdata ]
+        
+        #ref WGPUAdapter udata2: userdata # would it be a crime to not have to cast handle, or void* ?
+
+        # C99: WGPUAdapter* udata2 = (WGPUAdapter)
+
+        # lets set it to null, and back
+        #ref udata2: null
+        # C99: udata = null
+
+        #ref udata2: userdata
+        # C99: udata = userdata
+
+        # this is going to be udata2[0] = WGPUAdapter[] [default opaque type is null pointer]
+        #udata2 : WGPUAdapter[]
+        # C99: *udata2 = (WGPUAdapter)null
+
+        # same
+        #udata2[0]: WGPUAdapter[]
+        # C99: udata2[0] = (WGPUAdapter)null
+
+        # this is the syntax for changing our ref to a new pointer value
+        #ref udata2 : [ref WGPUAdapter]userdata  
+
+        # declares constant with =
+        #ref WGPUAdapter udata4 = userdata
+
+        # NOT ALLOWED with constants
+        #ref udata4 : [ref WGPUAdapter]userdata
+
+        # NOT ALLOWED with constants
+        #ref udata4 = [ref WGPUAdapter]userdata  
+
+        # can a ref be null?  why not, if you want to make that an option.  that happens, ALOT.
+        # C99: if (!value) {
+        #if [ not ref value ] [ # ref value[0] is allowed to give us a pointer to it, so we cannot have if ref value [ returns-int ]
+        #    # this is a null reference
+        #    printf('...')
+        #]
+
+        # C99: if (value) {
+        #if [ ref value ][ # this gets the pointer, ref value in C is just value
+        #    printf('...')
+        #]
+
+        # C99: if (&value[0]) {
+        #if [ ref value[0] ][ # this is the pointer of the first element
+        #    printf('...')
+        #]
+
+        # C99: if (value[0]) {
+        #if [ value[0] ] # this is the actual value of the first element in memory
+        #[
+        #    printf('...')
+        #]
+
+        # C99: if (*value) {
+        #if [ value ][   # so is this
+        #    printf('...')
+        #]
     ]
 
-    # all arguments are constants, we need code in silver to handle that
-    # assignment would not be allowed on members of argument
-    static void onDeviceRequestEnded[ WGPURequestDeviceStatus status, WGPUDevice device, symbol message, ref void* userdata ] [
-        ref WGPUDevice[userdata]: device
-        #ref userdata[0]: device # same
-        # writing existing is deref and declaration & reading is ref
-        # its why we need to have code in EAssign to handle that with ERef
+    # this needs to be converted to more than a pointer, but something to hold onto sub address and data
+    #int lambda_desc[ int, short ]
+
+    #void set_lambda[ int fn[ int, short ] ] [
+       #lambda_desc = fn
+    #]
+
+    void call_lambda[] [
+        #lambda_desc[ 2, 2 ]
+        return
     ]
 
-    int32_t init_webgpu[] [
-        # create an instance
-        WGPUInstanceDescriptor instanceDesc # always inserts {} for struct in C99
-        WGPUInstance instance: wgpuCreateInstance[ ref instanceDesc ]
+    # we want lambdas flat on the method, to prevent pyramid syntax; 
+    # even 2 levels of lambda is fairly unacceptable so why allow it?
 
-        assert[ instance, 'could not create instance' ]
+    #int my_callback [ int arg1, short arg2 :: int some_context, int more ] [
+    #    printf['my_callback called: %i %i, %i %i\n', arg1, arg2, some_context, more]
+    #]
 
-        # request an adapter
-        WGPURequestAdapterOptions adapterOpts: []
-        adapterOpts.powerPreference: WGPUPowerPreference_HighPerformance # test 1-off member assignment
+    #int my_callback2 [ int arg1, short arg2 ] [
+    #    printf['my_callback2 called\n']
+    #]
 
-        WGPUAdapter adapter: null
-        # what happens when we give an instance member to one that receives a function pointer
-        # do we allocate a function call that calls our own instance?
-        # technically in that way you wouldnt need any additional context for an instance
-        wgpuInstanceRequestAdapter[ instance, ref adapterOpts, onAdapterRequestEnded, ref adapter ]
-        assert[ adapter, 'adapter not set' ]
-
-        # Request a device
-        WGPUDeviceDescriptor deviceDesc: [
-            requiredFeatureCount:   0,
-            requiredLimits:         null,
-            label:                 'Default Queue'
-        ]
-
-        WGPUDevice device
-        wgpuAdapterRequestDevice[ adapter, ref deviceDesc, onDeviceRequestEnded, ref device ]
-        assert[ device ]
-
-        printf['WebGPU initialization successful!\n']
-
-        # clean up
-        wgpuDeviceRelease[ device ]
-        wgpuAdapterRelease[ adapter ]
-        wgpuInstanceRelease[ instance ]
-    ]
-
-    static void onAdapterRequestEnded[ WGPURequestAdapterStatus status, WGPUAdapter adapter, symbol message, handle userdata ] [
-        ref WGPUAdapter[ userdata ] : adapter
-    ]
-
-    num run[] [
-        init_webgpu[]
+    int run [] [
+        #set_lambda  [ sub my_callback[ some_context:22, more:44 ] ]
+        #call_lambda [ ]
+        #set_lambda  [ sub my_callback2 ]
+        #call_lambda [ ]
         return 0
     ]
 ]
