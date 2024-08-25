@@ -1,13 +1,14 @@
-from dataclasses import dataclass, field, fields, is_dataclass
-from typing import Union, Type, List, OrderedDict, Tuple, Any
-from pathlib import Path
-import numpy as np
-import os, sys, subprocess, platform
-import copy
-from clang.cindex import Index, CursorKind, TypeKind
+from    dataclasses import dataclass, field, fields, is_dataclass
+from    typing      import Union, Type, List, OrderedDict, Tuple, Any
+from    pathlib     import Path
+import  numpy as np
+import  os, subprocess, platform
+import  argparse
+from    clang.cindex import Index, CursorKind, TypeKind
 
 build_root = ''
 is_debug = False
+verbose  = False
 
 no_arg_methods = [
     'init', 'dealloc'
@@ -26,6 +27,7 @@ operators = {
     '>>':  'right',
     '<<':  'left',
     ':':   'assign',
+    '=':   'assign',
     '+=':  'assign_add',
     '-=':  'assign_sub',
     '*=':  'assign_mul',
@@ -54,6 +56,10 @@ _next_id        = 0
 
 # default paths for Clang and gcc
 _default_paths  = ['/usr/include/', '/usr/local/include']
+
+def first_key_value(ordered:OrderedDict):
+    assert len(ordered), 'no items'
+    return next(iter(ordered.items()))
 
 def make_hashable(item):
     if isinstance(item, list):
@@ -114,6 +120,12 @@ def is_alpha(s):
         return s[0].isalpha() or s[0] == '_'
     return False  # Return False for an empty string
 
+def is_numeric(s):
+    s = str(s)
+    if len(s) > 0:  # Ensure the string is not empty
+        return s[0].isnumeric() or s[0] == '-'
+    return False  # Return False for an empty string
+
 def index_of(a, e):
     try:
         return a.index(e)
@@ -162,7 +174,7 @@ models['signed-64']   = EModel(name='signed_64',   size=8, integral=1, realistic
 models['real-32']     = EModel(name='real_32',     size=4, integral=0, realistic=1, type=np.float32)
 models['real-64']     = EModel(name='real_64',     size=8, integral=0, realistic=1, type=np.float64)
 models['real-128']    = EModel(name='real_128',    size=16, integral=0, realistic=1, type=np.float128)
-models['void']        = EModel(name='void',        size=0, integral=0, realistic=1, type=Void)
+models['none']        = EModel(name='none',        size=0, integral=0, realistic=1, type=Void)
 models['cstr']        = EModel(name='cstr',        size=8, integral=0, realistic=0, type=np.uint64)
 models['symbol']      = EModel(name='symbol',      size=8, integral=0, realistic=0, type=np.uint64)
 models['handle']      = EModel(name='handle',      size=8, integral=0, realistic=0, type=np.uint64)
@@ -183,6 +195,7 @@ class EIdent(ENode):
     meta_types: List['EIdent']   = field(default_factory=list)
     args:       OrderedDict      = None
     members:    List['EMember']  = None
+    ref_keyword: bool            = False
     #
     def __init__(
             self,
@@ -253,6 +266,15 @@ class EIdent(ENode):
                 break
             cl = cl.inherits
         return None
+    
+    def ref_type(self, count = 1):
+        res = EIdent(self, module=self.module)
+        if not res['ref']:
+            assert count > 0, 'invalid dereference'
+            res['ref']  = count
+        else:
+            res['ref'] += count
+        return res
 
     def peek(module):
         module.push_token_state(module.tokens, module.index)
@@ -292,21 +314,21 @@ class EIdent(ENode):
             ref    += 1
             proceed = True
             module.consume(f)
-            #f       = module.next_token()
+            f       = module.peek_token()
         else:
             ff = str(f)
             if ff in keywords and not ff in ['unsigned', 'signed', 'volatile', 'const', 'struct', 'class', 'union']:
                 return result
             opaque_compatible = ff in ['class', 'struct', 'union']
         
-        member = module.lookup_stack_member(f)
-        if member:
+        members = module.lookup_all_stack_members(f) # this isnt right, we're making two lists without knowing what separates them
+        if members:
+            member = members[0]
             last = member
             module.consume(f)
             len_dec = len(result.decorators)
             assert len_dec == 0 or (result['ref'] and len_dec == 1), 'unexpected decorators'
             result.list.append(member.name)
-            members = [member]
             while module.peek_token() == '.':
                 module.consume('.')
                 n = module.next_token()
@@ -318,6 +340,7 @@ class EIdent(ENode):
                 result.list.append(n)
             c_parse  = False
             parse_fn = False
+            proceed  = False
             result.members = members # this is not enough context obviously; we need the entire member chain
         
         # check for definition [ why not after decorators? ]
@@ -361,13 +384,11 @@ class EIdent(ENode):
             is_extend = t.value in ['long', 'short', 'unsigned', 'signed']
             is_ext = t.value in ['unsigned', 'signed']
             if not is_extend and not is_alpha(t.value):
-                #result = EIdent(module=module)
                 if t == ']': break
                 if t == '[': break
+                if is_numeric(t.value):
+                    break
                 assert False, 'debug'
-
-                # unsigned int a
-                # unsigned int b: 2         <- i believe we'll leak into this statement as-is
                 break
             result.list.append(t)
             if module.eof(): break
@@ -452,9 +473,10 @@ class EIdent(ENode):
         if push_state:
             module.pop_token_state()
         
+        result.ref_keyword = silver_ref
         return result
 
-    def emit(self, ctx:'EContext'): return self.get_name() + '*' * (self['ref'] or 0)
+    def emit(self, ctx:'EContext'): return self.get_name()
 
     # apply all ref
     def ref_total(self):
@@ -578,6 +600,9 @@ class EIdent(ENode):
                     res += m.get_name()
         else:
             res = mdef.name
+        ref = self['ref'] or 0
+        ptr = '*' * ref
+        if ptr: res += ptr
         return res
 
 # Token has a string and line-number
@@ -675,6 +700,7 @@ def folder_path(path):
 class EContext:
     module: 'EModule'
     method: 'EMember'
+    states: list = field(default_factory=list)
     indent_level:int = 0
 
     def indent(self):
@@ -684,6 +710,12 @@ class EContext:
     def decrease_indent(self):
         if self.indent_level > 0:
             self.indent_level -= 1
+    def push(self, state):
+        self.states.append(state)
+    def pop(self):
+        self.states.pop()
+    def top_state(self):
+        return self.states[len(self.states) - 1] if self.states else ''
 
 @dataclass
 class EMember(ENode):
@@ -694,16 +726,18 @@ class EMember(ENode):
     parent:'EClass'  = None
     access: str      = None
     imported:bool    = False
+    emitted:bool     = False
     members:OrderedDict = field(default_factory=OrderedDict) # lambda would be a member of a EMethod, in one example
     args:OrderedDict[str,'EMember'] = None
     meta_types:List[ENode] = None
     static:bool = None
-    visibility: str = 'extern'
+    visibility: str = None
     def emit(self, ctx:EContext):
+        is_deref = '*' if self.type.ref_keyword and not ctx.top_state() == 'declare' else ''
         if not self.access or self.access == 'const':
-            return '%s' % (self.name)
+            return '%s%s'     % (is_deref, self.name)
         else:
-            return '%s->%s' % (self.access, self.name)
+            return '%s%s->%s' % (is_deref, self.access, self.name)
 
 @dataclass
 class EDeclaration(ENode):
@@ -735,32 +769,141 @@ class EClass(EMember):
                     print('method: %s' % (name))
                     print_enodes(node=member.code, indent=0)
 
+    def emit_header(self, f):
+        name = self.name
+        cl = self
+        # we will only emit our own types
+        if cl.model.name != 'allocated': return
+        # write class declaration
+        f.write('\n/* class-declaration: %s */\n' % (name))
+        f.write('#define %s_meta(X,Y,Z) \\\n' % (name))
+        for member_name, a_members in cl.members.items():
+            for member in a_members:
+                if isinstance(member, EProp):
+                    # todo: handle public / private / intern [ even intern must declare its space in the instance less we reserve special space for intern ]
+                    base_type = member.type.get_base()
+                    f.write('\ti_%s(X,Y,Z, %s, %s)\\\n' % (
+                        member.visibility,
+                        base_type.name, member.name))
+        for name, a_members in cl.members.items():
+            for member in a_members:
+                if member.visibility != 'intern' and isinstance(member, EMethod):
+                    m          = 's' if member.static else 'i'
+                    arg_types  = ''
+                    first_type = ''
+                    mdef       = member.type.get_base()
+                    for _, a in member.args.items():
+                        arg_type = a.type.get_name()
+                        if not first_type: first_type = arg_type
+                        arg_types += ', %s' % arg_type
+                        # will need a suffix on extra member functions 
+                        # (those defined after the first will get _2, _3, _4)
+                    if   name == 'cast':  f.write('\ti_cast(     X,Y,Z, %s)\\\n'        % (mdef.name))
+                    elif name == 'ctr':   f.write('\ti_construct(X,Y,Z%s)\\\n'          % (arg_types))
+                    elif name == 'index': f.write('\ti_index(    X,Y,Z, %s%s)\\\n'      % (mdef.name, arg_types))
+                    else:                 f.write('\t%s_method(   X,Y,Z, %s, %s%s)\\\n' % (m, mdef.name, member.name, arg_types))
+        f.write('\n')
+        if cl.inherits:
+            f.write('declare_mod(%s, %s)\n' % (cl.name, cl.inherits.name))
+        else:
+            f.write('declare_class(%s)\n' % (cl.name))
+
+    def emit_source(self, file):
+        cl = self
+        # only emit silver-based implementation
+        if cl.model.name != 'allocated': return
+        def output_methods(visibility, with_body):
+            nonlocal cl, file
+            for member_name, a_members in cl.members.items():
+                for member in a_members:
+                    if isinstance(member, EMethod) and (not visibility or visibility == member.visibility):
+                        args = ', ' if not member.static and len(member.args) else ''
+                        for arg_name, a in member.args.items():
+                            if args and args != ', ': args += ', '
+                            args += '%s%s %s' % (
+                                a.type.get_def().name, '*' * a.type.ref(), a.name)
+                        file.write('%s %s_%s(%s%s)%s\n' % (
+                            member.type.get_def().name,
+                            cl.name,
+                            member.name,
+                            '' if member.static else cl.name + ' self',
+                            args,
+                            ';' if not with_body else ' {'))
+                        if with_body:
+                            file.write(member.code.emit(EContext(module=self, method=member))) # method code should first contain references to the args
+                            file.write('}\n')
+            file.write('\n')
+
+        output_methods('intern', False) # forward declaration on intern in source
+        output_methods(None,     True)  # output all methods with body
+
+        if cl.inherits:
+            file.write('define_mod(%s, %s)\n\n' % (cl.name, cl.inherits.name))
+        else:
+            file.write('define_class(%s)\n\n' % (cl.name))
 
 @dataclass
 class EStruct(EMember):
     def __repr__(self): return 'EStruct(%s)' % self.name
     def __post_init__(self):
         self.model = models['struct']
-
+    def emit_header(self, f, is_source = False):
+        if self.imported: return
+        is_intern = self.visibility == 'intern'
+        if not is_source and is_intern: return
+        f.write('typedef struct {\n' % self.name)
+        valid = False
+        for name, a_members in self.members.items():
+            for member in a_members:
+                assert isinstance(member, EProp)
+                type = member.type.get_name()
+                name = member.name
+                f.write('\t%s %s;\n' % (type, name))
+                valid = True
+        assert valid, 'struct %s must contain members' % self.name
+        f.write('} %s;\n' % self.name)
+    def emit_source(self, f):
+        if self.visibility == 'public':
+            self.emit_header(f, True)
 
 @dataclass
 class EUnion(EMember):
     def __repr__(self): return 'EUnion(%s)' % self.name
     def __post_init__(self):
         self.model = models['struct']
-
+    def emit_header(self, f, is_source = False):
+        if self.imported: return
+        assert False, 'union not supported'
+    def emit_source(self, f):
+        if self.imported: return
+        assert False, 'union not supported'
 
 @dataclass
 class EEnum(EMember):
     def __repr__(self): return 'EEnum(%s)' % self.name
     def __post_init__(self):
         self.model = models['signed-32']
-
+    def emit_header(self, f):
+        name = self.name
+        if self.imported: return
+        if self.visibility != 'public': return
+        f.write('\n/* enum-declaration: %s */\n' % (name))
+        f.write('#define %s_meta(X,Y,Z) \\\n' % (name))
+        for _, a_members in self.members.items():
+            assert len(a_members) == 1, 'invalid enumeration'
+            for member in a_members:
+                f.write('\tenum_value(X,Y, %s)\\\n' % (member.name))
+                break
+        f.write('\ndeclare_enum(%s)\n' % (name))
+    def emit_source(self, f):
+        f.write('define_enum(%s)\n' % (self.name))
 
 @dataclass
 class EAlias(EMember):
-    to:EMember=None
-    def __repr__(self): return 'EAlias(%s -> %s)' % (self.name, self.to.get_def().name) 
+    to:EIdent=None
+    def __repr__(self): return 'EAlias(%s -> %s)' % (self.name, self.to.get_name()) 
+    def emit_header(self, f): return
+    def emit_source(self, f): return
 
 @dataclass
 class BuildState:
@@ -774,21 +917,31 @@ def create_symlink(target, link_name):
     
 
 @dataclass
-class EImport(ENode):
+class EImport(ENode): # we may want a node for 'EModuleNode' that contains name, visibility and imported
     name:       str
     source:     str
     includes:   List[str] = None
     cfiles:     List[str] = field(default_factory=list)
     links:      List[str] = field(default_factory=list)
+    imported:bool = False
     build_args: List[str] = None
     import_type = 0
     library_exports:list = None
-
+    visibility:str = 'intern'
     none=0
     source=1
     library=2
     # header=3 # not likely using; .h's are selected from source
     project=4
+    main_symbol: str = None
+
+    def emit_header(self, f):
+        for inc in self.includes:
+            h_file = inc
+            if not h_file.endswith('.h'): h_file += '.h'
+            f.write('#include <%s>\n' % (h_file))
+
+    def emit_source(self, f): return
 
     def file_exists(filepath):
         return os.path.exists(filepath)
@@ -879,7 +1032,6 @@ class EImport(ENode):
         return BuildState.built
 
     def build_source(self):
-        install = install_dir()
         for cfile in self.cfiles:
             cwd = os.getcwd()
             if cfile.endswith('.rs'):
@@ -896,9 +1048,17 @@ class EImport(ENode):
                     opt,
                     cwd, cfile,
                     build_root, cfile)
-
+            
+            obj        = '%s.o' % cfile
+            obj_path   = Path(obj)
+            log_header = 'import: %s source: %s' % (self.name, cfile)
             print('%s > %s\n' % (cwd, compile))
-            assert(system(compile) == 0);
+            assert system(compile) == 0, '%s: compilation failed'    % (log_header)
+            assert obj_path.exists(),    '%s: object file not found' % (log_header)
+
+            if contains_main():
+                self.main_symbol = '%s_main' % obj_path.stem()
+                assert system('objcopy --redefine-sym main=%s %s' % (self.main_symbol, obj)) == 0, '%s: could not replace main symbol' % log_header
 
         return BuildState.built
 
@@ -949,7 +1109,7 @@ class EImport(ENode):
                 assert os.chdir(self.relative_path) == 0
                 # build this single module, linking all we have imported prior
                 self.import_type = EImport.source
-                self.build_source(self.name, self.source)
+                self.build_source()
             elif has_so:
                 assert os.chdir(self.relative_path) == 0
                 # build this single module, linking all we have imported prior
@@ -984,18 +1144,27 @@ class EImport(ENode):
         # parse all headers with libclang
         module.process_includes(self.includes)
 
-
-@dataclass
-class EContructMethod(EMethod):
-    pass
-
-
+# constructors require an argument (alloc + ctr + init), otherwise we use a new (alloc + init)
 @dataclass
 class EConstruct(ENode):
     type: EIdent
     method: EMethod
     args:List[ENode] # when selected, these should all be filled to line up with the definition
-
+    def emit(self, ctx:EContext):
+        cl = self.method.parent
+        type_name = cl.name
+        if self.args:
+            args = ''
+            f = self.args[0]
+            base0 = f.type.get_base()
+            assert base0, 'base type not resolving'
+            for a in self.args:
+                arg_emit = a.emit(ctx)
+                args += ', '
+                args += arg_emit
+            return 'construct(%s, %s%s)' % (type_name, base0.name, args)
+        else:
+            return 'new(%s)' % (type_name, args)
 
 @dataclass
 class EExplicitCast(ENode):
@@ -1008,6 +1177,10 @@ class EExplicitCast(ENode):
 @dataclass
 class EProp(EMember):
     is_prop:bool = True
+    def __post_init__(self):
+        super().__post_init__()
+        if self.id == 4501:
+            self
 
 
 @dataclass
@@ -1043,18 +1216,41 @@ class EBitwiseNot(ENode):
 class ERef(ENode):
     type:      'EIdent' = None
     value:      ENode  = None
+    def emit(self, ctx:'EContext'):
+        type_name = self.type.get_name()
+        assert self.type.ref() > 0, 'invalid type for ref'
+        if self.value:
+            value = self.value.emit(ctx)
+            return '(%s)&%s'  % (type_name, value)
+        else:
+            return '(%s)null' % type_name
+
+
+@dataclass
+class ERefCast(ENode):
+    type:      'EIdent' = None
+    value:      ENode  = None
     index:      ENode  = None
     def emit(self, ctx:'EContext'):
         type_name = self.type.get_name()
+        assert self.type.ref() > 0, 'invalid type for ref'
         if isinstance(self.index, ELiteralInt) and self.index.value != 0: # based on if its a C99 type or not, we will add another *
-            return '(%s*)&%s[%d]' % (type_name, self.value.name, self.index.value)
-        elif not self.index:
-            return '(%s*)&%s' % (type_name, self.value.name)
-        elif not self.value:
-            return '(%s*)null' % type_name
+            return '(%s)(&(*(%s))%s[%d])' % (type_name, self.value.name, self.index.value)
+        elif self.value:
+            return '(%s)%s'      % (type_name, self.value.name)
         else:
-            return '(%s*)&%s[%d]' % (type_name, self.value.name, self.index.value)
+            return '(%s)null'    % type_name
 
+@dataclass
+class EIndex(ENode):
+    type:EIdent
+    target:ENode
+    value:ENode
+    def emit(self, ctx:EContext):
+        type_str = self.type.emit(ctx)
+        value    = self.value.emit(ctx)
+        target   = self.target.emit(ctx)
+        return '(%s)%s[%s]' % (type_str, target, value)
 
 @dataclass
 class EAssign(ENode):
@@ -1084,26 +1280,23 @@ class EAssign(ENode):
             assert t in m
             op = m[t]
 
-        if isinstance(self.target, EProp) and self.target.access == 'const':
-            assert False, 'dont change the argument'
-
         type_str = self.type.emit(ctx)
-
-        value_type_str = self.value.type.emit(ctx)
+        # we need to place this in if we are converting manually
+        ctx.push('assign')
+        if self.declare:
+            ctx.push('declare') # these would be good to reduce out but EMember is doing the work here, and for references there are rules it has no context on
+        value  = self.value.emit(ctx)
+        target = self.target.emit(ctx)
+        ctx.pop()
         if isinstance(self.index, ENode):
-            value  = self.value.emit(ctx)
-            target = self.target.emit(ctx)
-            assert not self.declare, 'cannot declare with index set'
-            if self.index:
-                return '((%s)%s)[%s] %s (%s)%s' % (type_str, target, self.index.emit(ctx), op, value_type_str, value)
-            else:
-                return '*(%s)%s %s (%s)%s' % (type_str, target, op, value_type_str, value)
+            assert not self.declare, 'cannot declare with index set' # this should be a parsing error
+            return '((%s)%s)[%s] %s %s' % (type_str, target, self.index.emit(ctx), op, value)
         else:
             if self.declare:
                 assert op in [':', '='], ': or = required for assignment on new members'
-                return '%s %s = *(%s)%s' % (type_str, self.target.name, type_str, self.value.emit(ctx))
+                return '%s %s = %s' % (type_str, target, value)
             else:
-                return '%s %s *(%s)%s'   % (self.target.name, op, type_str, self.value.emit(ctx))
+                return '%s %s %s'   % (target, op, value)
 
 @dataclass
 class EAssignAdd(EAssign):    pass
@@ -1138,6 +1331,7 @@ class EAssignMod(EAssign):    pass
 
 assign_map = {
     ':':   EAssign,
+    '=':   EAssign,
     '+=':  EAssignAdd,
     '-=':  EAssignSub,
     '*=':  EAssignMul,
@@ -1269,7 +1463,8 @@ class EOperator(ENode):
             'EDiv':      '/',
             'EOr':       '|',
             'EAnd':      '&',
-            'EXor':      '^'
+            'EXor':      '^',
+            'EIs':       'is'
         }
         assert t in m
         self.op = m[t]
@@ -1311,6 +1506,30 @@ class EAnd(EOperator):
 class EXor(EOperator):
     pass
 
+@dataclass
+class EIs(EOperator):
+    def template(self): return '%s == %s'
+    def emit(self, ctx:EContext):
+        # self.left must be a EMember
+        # parse primary will be called where we can look for a class + 'is', we
+        # would return ERuntimeType
+        assert isinstance(self.left, EMember),       'expected member'
+        l_type_id = 'typeid(%s)' % self.left.emit(ctx)
+        assert isinstance(self.right, ERuntimeType), 'expected type identifier'
+        r_type_id = self.right.emit(ctx)
+        return self.template() % (l_type_id, r_type_id)
+
+@dataclass
+class EInherits(EIs): # EInherits inherits from EIs, just so we can have a different C99 template
+    def template(self): return 'inherits(%s, %s)'
+
+@dataclass
+class ERuntimeType(ENode):
+    type:EIdent
+    # this wont work with meta type, we need more because those are unique type ids
+    # i just wonder how we would name them in A, simply array_int ? for array::int ?
+    def emit(self, ctx:EContext):
+        return 'typeof(%s)' % self.type.c99_name()
 
 @dataclass
 class EMethodCall(ENode):
@@ -1332,11 +1551,21 @@ class EMethodCall(ENode):
         if not self.target:
             return '%s(%s)' % (self.method.name, s_args)
         else:
-            return 'call(%s, %s%s%s)' % (
-                self.target,
-                self.method.name,
-                ', ' if s_args else '',
-                s_args)
+            # intern should call a bit faster; we will need to perform some polymorphic lookup here
+            if self.method.visibility == 'intern':
+                assert ctx.method.parent == self.method.parent, 'intern method accessed outside type'
+                return '%s_%s(%s%s%s)' % (
+                    self.method.parent.name, # meta args must be in ctx
+                    self.method.name,
+                    self.target,
+                    ', ' if s_args else '',
+                    s_args)
+            else:
+                return 'call(%s, %s%s%s)' % (
+                    self.target,
+                    self.method.name,
+                    ', ' if s_args else '',
+                    s_args)
     
 
 @dataclass
@@ -1345,7 +1574,7 @@ class EMethodReturn(ENode): # v1.0 we will want this to be value:List[ENode]
     value:ENode
 
     def emit(self, ctx:EContext):
-        if self.type.ref() == 0 and self.type.ident == 'void':
+        if self.type.ref() == 0 and self.type.get_base().name == 'none':
             return 'return'
         else:
             return 'return %s' % self.value.emit(ctx)
@@ -1402,11 +1631,14 @@ class EModule(ENode):
     expr_level:     int                         = 0
     # moving the parser inside of EModule
     # move to EModule (all of these methods)
-    index:int          = 0
-    tokens:List[Token] = field(default_factory=list)
-    token_bank:list    = field(default_factory=list)
-
-    member_stack:List[OrderedDict[str, EMember]] = field(default_factory=list)
+    index:int             = 0
+    tokens:List[Token]    = field(default_factory=list)
+    token_bank:list       = field(default_factory=list)
+    libraries_used:list   = field(default_factory=list)
+    compiled_objects:list = field(default_factory=list)
+    main_symbols:list     = field(default_factory=list)
+    
+    member_stack:List[OrderedDict[str, List[EMember]]] = field(default_factory=list)
 
     def eof(self):
         return not self.tokens or self.index >= len(self.tokens)
@@ -1525,94 +1757,97 @@ class EModule(ENode):
     def header_emit(self, id, h_module_file = None):#
         # write includes, for each import of silver module (and others that require headers)
         ifdef_id = format_identifier(id)
-        file = open(h_module_file, 'w')
-        file.write('#ifndef _%s_\n' % ifdef_id)
-        file.write('/* generated silver C99 emission for module: %s */\n' % (self.name))
-        file.write('#include <A>\n')
+        f = open(h_module_file, 'w')
+        f.write('#ifndef _%s_\n' % ifdef_id)
+        f.write('/* generated silver C99 emission for module: %s */\n' % (self.name))
+        f.write('#include <A>\n')
         for name, mod in self.parent_modules.items():
-            file.write('#include <%s.h>\n' % (name)) # double quotes means the same path as the source
+            f.write('#include <%s.h>\n' % (name)) # double quotes means the same path as the source
+        
+        # our public imports; this is so you can expose C types else-where in public methods
+        # otherwise we must describe methods as intern, if we want to keep args that use them intern
+        # public or private is not determined automatically by design
+        # we run the risk of bloating up software without knowing
+        # plus, reading code should really tell you. the keyword is public for import
+        self.emit_includes(f, 'public')
 
-        # for each definition in module:
+        # write the forward declarations
         for name, cl in self.defs.items():
             if isinstance(cl, EClass):
                 # we will only emit our own types
                 if cl.model.name != 'allocated': continue
                 # write class declaration
-                file.write('\n/* class-declaration: %s */\n' % (name))
-                file.write('#define %s_meta(X,Y,Z) \\\n' % (name))
-                for member_name, a_members in cl.members.items():
+                f.write('\ntypedef struct %s* %s;' % (name, name))    
+        f.write('\n')
+        
+        primitive_types = []
+
+        # emit C99 for 'primitive', registered with A-type
+        f.write('\n/* register imported types with A-type */')
+        imported_defs = ''
+        imported_decl = ''
+        imported_cdef = ''
+
+        def fn(base_type):
+            if base_type.imported and not base_type.emitted:
+                primitive_types.append(base_type)
+                base_type.emitted = True
+                nonlocal imported_defs, imported_decl, imported_cdef
+                imported_defs += '\n#define %s_meta(X,Y,Z) imported_meta(X,Y,Z)' % base_type.name
+                imported_decl += '\ndeclare_primitive(%s, imported)'             % base_type.name
+                imported_cdef += '\ndefine_primitive(%s, imported, 0)'           % base_type.name
+
+        for name, cl in self.defs.items():
+            if isinstance(cl, EClass):
+                if cl.model.name != 'allocated': continue
+                for name, a_members in cl.members.items():
                     for member in a_members:
                         if isinstance(member, EProp):
-                            # todo: handle public / priv / intern
-                            base_type = member.type.base_type()
-                            file.write('\ti_public(X,Y,Z, %s, %s)\\\n' % (
-                                base_type.name, member.name))
-                for member_name, a_members in cl.members.items():
-                    for member in a_members:
-                        if isinstance(member, EMethod):
-                            arg_types = ''
-                            for arg_name, a in member.args.items():
-                                arg_types += ', %s' % str(a.type.get_def().name)
-                                # will need a suffix on extra member functions 
-                                # (those defined after the first will get _2, _3, _4)
-                            if member_name == 'cast':
-                                file.write('\ti_cast(X,Y,Z, %s)\\\n' % (
-                                    member.type.get_def().name))
-                            else:
-                                file.write('\t%s_method(X,Y,Z, %s, %s%s)\\\n' % (
-                                    's' if member.static else 'i',
-                                    member.type.get_def().name, member.name, arg_types))
-                file.write('\n')
-                if cl.inherits:
-                    file.write('declare_mod(%s, %s)\n' % (cl.name, cl.inherits.name))
-                else:
-                    file.write('declare_class(%s)\n' % (cl.name))
-        file.write('#endif\n')
+                            fn(member.type.get_def())
+                        elif member.args:
+                            for _, a in member.args.items():
+                                fn(a.type.get_def())
+        f.write(imported_defs)
+        f.write(imported_decl)
+        f.write('\n')
+
+        # write the declarations
+        for name, cl in self.defs.items():
+            if cl.imported: continue
+            cl.emit_header(f)
+
+        f.write('#endif\n')
+        return imported_cdef
         
+    def emit_includes(self, file, visibility):
+        for name, im in self.defs.items():
+            if isinstance(im, EImport) and len(im.includes) and im.visibility == visibility:
+                for inc in im.includes:
+                    h_file = inc
+                    if not h_file.endswith('.h'): h_file += '.h'
+                    file.write('#include <%s>\n' % (h_file))
+
     def emit(self, app_def):
         os.chdir(build_root)
         c_module_file = '%s.c' % self.name
         if not c_module_file: c_module_file = self.name + '.c'
         assert index_of(c_module_file, '.c') >= 0, 'can only emit .c (C99) source.'
-        print('emitting to %s/%s' % (os.getcwd(), c_module_file))
+        emit_cfile = '%s/%s' % (os.getcwd(), c_module_file)
+        print('emitting C99 to %s' % (emit_cfile))
         file = open(c_module_file, 'w')
         header = change_ext(c_module_file, 'h')
-        self.header_emit(self.name, header)
+        imported_defs = self.header_emit(self.name, header)
         file.write('#include <%s.h>\n' % (self.name))
-        for name, im in self.defs.items():
-            if isinstance(im, EImport) and len(im.includes):
-                for inc in im.includes:
-                    h_file = inc
-                    if not h_file.endswith('.h'): h_file += '.h'
-                    file.write('#include <%s>\n' % (h_file))
+        self.emit_includes(file, 'intern')
         file.write('\n')
-
+        self.emit_cfile = emit_cfile
+        file.write(imported_defs + '\n\n')
+        # emit code for classes
         for name, cl in self.defs.items():
-            if isinstance(cl, EClass):
-                # only emit silver-based implementation
-                if cl.model.name != 'allocated': continue
-                for member_name, a_members in cl.members.items():
-                    for member in a_members:
-                        if isinstance(member, EMethod):
-                            args = ', ' if not member.static and len(member.args) else ''
-                            for arg_name, a in member.args.items():
-                                if args and args != ', ': args += ', '
-                                args += '%s%s %s' % (
-                                    a.type.get_def().name, '*' * a.type.ref(), a.name)
-                            file.write('%s %s_%s(%s%s) {\n' % (
-                                member.type.get_def().name,
-                                cl.name,
-                                member.name,
-                                '' if member.static else cl.name + ' self',
-                                args))
-                            file.write(member.code.emit(EContext(module=self, method=member))) # method code should first contain references to the args
-                            file.write('}\n')
-                file.write('\n')
-                if cl.inherits:
-                    file.write('define_mod(%s, %s)\n' % (cl.name, cl.inherits.name))
-                else:
-                    file.write('define_class(%s)\n' % (cl.name))
+            if cl.imported: continue
+            cl.emit_source(file)
         
+        # output entry if we describe one
         if app_def:
             file.write("""
 int main(int argc, char* argv[]) {
@@ -1621,6 +1856,9 @@ int main(int argc, char* argv[]) {
     %s main = new(%s);
     return (int)call(main, run);
 }""" % (app_def.name, app_def.name))
+        
+        file.close()
+        return True
 
     def __repr__(self):
         return 'EModule(%s)' % self.name
@@ -1646,11 +1884,13 @@ int main(int argc, char* argv[]) {
         m.defs['int']    = m.defs['i32']
         m.defs['num']    = m.defs['i64']
         m.defs['real']   = m.defs['f64']
-        m.defs['void']   = EClass(module=m, name='void', visibility='intern', model=models['void'])
+        m.defs['none']   = EClass(module=m, name='none', visibility='intern', model=models['none'])
         m.defs['cstr']   = EClass(module=m, name='cstr', visibility='intern', model=models['cstr'])
         m.defs['symbol'] = EClass(module=m, name='symbol', visibility='intern', model=models['symbol'])
         m.defs['handle'] = EClass(module=m, name='handle', visibility='intern', model=models['handle'])
-        m.defs['none']   = m.defs['void']
+        m.defs['void']   = m.defs['none']
+        for name, edef in m.defs.items():
+            m.defs[name].emitted = True
 
         translation_map = {
             'void':                     'none',
@@ -1692,49 +1932,60 @@ int main(int argc, char* argv[]) {
         for inc in includes:
             self.parse_header(inc)
 
-    # this was needed for module registration of types but we already have defs, and Ident is Identifying a def along with its meta.  It need not have central identity on its instance.
-    #def resolve_type(self, tokens:EIdent):
+    def build(self):
+        # run gcc with emitted source
+        os.chdir(build_root)
+        has_app = 'app' in self.defs
+        link = 'gcc %s -L %s %s %s -o %s/%s' % (
+            '' if has_app else '-shared',
+            install_dir,
+            self.compiled_objects, self.libraries_used,
+            build_root, out_stem)
+        assert(system(link) == 0)
 
-    def complete(self):
+    def build_dependencies(self):
         assert not self.finished, 'EModule: invalid call to complete'
         global build_root
-        libraries_used   = ''
-        compiled_objects = ''
-        has_main         = False
         for idef in self.defs:
             obj = self.defs[idef]
             if isinstance(obj, EImport):
                 im = obj
                 if im.import_type == EImport.source:
+                    if im.main_symbol: self.main_symbols.append(im.main_symbol)
                     for source in im.source:
                         # these are built as shared library only, or, a header file is included for emitting
                         if source.endswith('.rs') or source.endswith('.h'):
                             continue
-                        if len(compiled_objects):
-                            compiled_objects.append(' ')
                         buf = '%s/%s.o' % (build_root, source)
-                        if not has_main and contains_main(buf):
-                            has_main = True
-                        compiled_objects.append(buf)
-                    break;
+                        self.compiled_objects.append(buf)
+                    break
                 elif im.import_type == EImport.library or im.import_type == EImport.project:
-                    libraries_used = ' '.join([f'-l {lib}' for lib in im.links])
+                    self.libraries_used += [lib for lib in im.links]
         
-        if compiled_objects:
-            rel = folder_path(self.path)
-            assert(os.chdir(rel) == 0)
-            cwd = os.getcwd()
-            out = self.path.with_suffix(exe_ext() if has_main else shared_ext());
-            out_stem = out.stem()
-            install = install_dir();
-            # we need to have a lib paths array
-            link = 'gcc %s -L %s %s %s -o %s/%s' % (
-                '' if has_main else '-shared',
-                install,
-                compiled_objects, libraries_used,
-                build_root, out_stem)
-            print('%s > %s\n', cwd, link)
-            assert(system(link) == 0)
+    def build(self):
+        # set if we are building a shared library or exe
+        is_app   = 'app' in self.defs or self.has_main
+
+        # change directory to build-root, set install-path for libs and headers to import
+        assert Path(build_root).exists(), 'build root does not exist'
+        os.chdir(build_root)
+        install  = install_dir()
+
+        # compile module
+        cflags   = ['-Wno-incompatible-pointer-types']
+        cflags_str = ' '.join(cflags)
+        compile  = f'gcc -std=c99 {cflags_str} -I{build_root} -I{install}/include -c {self.name}.c -o {self.name}.o'
+        assert(system(compile) == 0)
+
+        # link module with all of the objects compiled (C and Rust) and the import libraries
+        link     = f'gcc%s -L%s {self.name}.o %s %s -o %s' % (
+            '' if is_app else ' -shared',
+            install, # lib path
+            ' '.join(self.compiled_objects),  # all.o's
+            ' '.join('-l %s' % lib for lib in self.libraries_used), # -l libs
+            self.name)
+        print('%s > %s\n' % (build_root, link))
+        assert(system(link) == 0)
 
     def get_base_type(self, type):
         while True:
@@ -1911,7 +2162,7 @@ int main(int argc, char* argv[]) {
                     parent=enum_def,
                     access=None,
                     value=ELiteralInt(type=i32_type, value=enum_value),
-                    visibility='extern')
+                    visibility='public')
                 
         elif kind == 'union':
             self.defs[id] = EUnion(imported=True, name=name, members=OrderedDict(), module=self)
@@ -1928,7 +2179,7 @@ int main(int argc, char* argv[]) {
                     type=ftype,
                     parent=None,
                     access=None,
-                    visibility='extern')
+                    visibility='public')
             
         elif kind == 'typedef':
             global debug
@@ -2079,7 +2330,7 @@ int main(int argc, char* argv[]) {
         return v if isinstance(v, EMethod) else None
         
     # this wont actually validate the meta ordering which resolve_type subsequently performs
-    def is_defined(self, tokens:EIdent):
+    def is_defined(self, tokens:List[Token]):
         if not tokens:
             return None
         tokens_ident = EIdent(tokens, module=self).ident
@@ -2089,16 +2340,22 @@ int main(int argc, char* argv[]) {
         else:
             return None
     
-    # lookup access to member
+    # lookup access to member. methods must do a bit more with this
     def lookup_stack_member(self, s:str):
+        all = self.lookup_all_stack_members(s)
+        return all[0] if all else None
+    
+    def lookup_all_stack_members(self, s:str):
         s = str(s)
+        res = []
         for i in range(len(self.member_stack)):
             index = len(self.member_stack) - 1 - i
             map = self.member_stack[index]
             if s in map:
-                access = map[s]
-                return access
-        return None
+                member_array = map[s]
+                #res.insert(0, member_array)
+                res += member_array
+        return res if res else None
     
     # all Clang types should be ready for resolve_member; which means i dont believe we lazy load the EMember
     def resolve_member(self, member_path:List): # example object-var-name.something-inside
@@ -2179,14 +2436,15 @@ int main(int argc, char* argv[]) {
 
             left = etype(type=self.preferred_type(left, right), left=left, right=right)
         return left
-
+    
     def parse_add(self):
-        t_state = self.peek_token()
         return self.parse_operator(self.parse_mult,    '+', '-', EAdd, ESub)
     
     def parse_mult(self):
-        t_state = self.peek_token()
-        return self.parse_operator(self.parse_primary, '*', '/', EMul, EDiv)
+        return self.parse_operator(self.parse_is,      '*', '/', EMul, EDiv)
+    
+    def parse_is(self):
+        return self.parse_operator(self.parse_primary, 'is', 'inherits', EIs, EInherits)
     
     def is_bool(self, token):
         t = str(token)
@@ -2267,7 +2525,9 @@ int main(int argc, char* argv[]) {
             cast_ident = EIdent.parse(self)
             assert self.peek_token() == '[', 'expected closing parenthesis on cast Type[]'
             if isinstance(cast_ident, EIdent):
+                self.consume('[')
                 expr   = self.parse_expression()
+                self.consume(']')
                 method = self.castable(expr, cast_ident)
                 if method == True:
                     return EExplicitCast(type=cast_ident, value=expr)
@@ -2279,12 +2539,29 @@ int main(int argc, char* argv[]) {
                 assert False, f'cast: type not found: {id}'
         
         if id == 'ref':
+            # ref is part of the type, so we must parse the full type
+            # 
+            self.push_token_state(self.tokens, self.index)
             ident = EIdent.parse(self)
-            member, index = self.parse_anonymous_ref(ident)
-            if member:
-                return ERef(type=ident, value=member, index=index)
+            if ident and not ident.members:
+                # this is a ref cast
+                self.transfer_token_state()
+                assert ident, 'expected type-identity or member'
+                member, index = self.parse_anonymous_ref(ident)
+                if member:
+                    return ERefCast(type=ident, value=member, index=index)
+                else:
+                    assert False, 'expected member'
+            else:
+                # and here we are getting the pointer of a value from expression
+                self.pop_token_state()
+                self.consume(id)
+                expr = self.parse_expression() # expression should consume indexing operation but it does not
+                # do we actually do this in EIdent too or is that nuts
+                return ERef(type=expr.type.ref_type(), value=expr)
+
         # we do not allow arbitrary [ code blocks ] in silver;
-        # its for EStatements only
+        # its for EStatements only, those are for methods which we can put in methods
         if id == '[':
             self.consume('[')
             expr = self.parse_expression()
@@ -2314,16 +2591,53 @@ int main(int argc, char* argv[]) {
         if ident and ident.members:
             # ident is a member identity
             self.transfer_token_state()
-            imember = ident.members[len(ident.members) - 1]
+            edef = ident.get_def()
+            imember = ident.members[0] # dont believe we need to move through these unless its a method
 
             # check if member is a method, and we are calling it
             # todo: support methods without [ parens ] ... this would require a 'ref' before a method for obtaining reference to it
-            if isinstance(imember, EMethod) and self.peek_token() == '[':
+            if self.peek_token() == '[':
                 self.consume('[')
-                enode_args     = self.parse_args(imember)
+                method = None
+                if not isinstance(imember, EMethod):
+                    # now we must check for index methods
+                    enode_args = self.parse_args(None)
+                    arg_count = len(enode_args)
+                    member_def = imember.type.get_def()
+                    if not 'index' in member_def.members:
+                        assert member_def.model.name != 'allocated', 'no indexing method found on this type'
+                        assert len(enode_args) == 1, 'too many arguments for primitive indexing'
+                        assert imember.type.ref() > 0, 'attempting to index a primitive value [not a ref]'
+                        return EIndex(type=imember.type.ref_type(-1), target=imember, value=enode_args[0])
+                    convertible  = None
+                    for index_method in member_def.members['index']:
+                        arg_keys = list(index_method.args.keys())
+                        m_count = len(arg_keys)
+                        if arg_count != m_count: continue
+                        can_convert = 0
+                        same_types  = 0
+                        for name, arg in index_method.args.items():
+                            arg_type = arg.type
+                            arg_conv = self.convertible(enode_args[can_convert].type, arg.type)
+                            is_same  = enode_args[can_convert].type.get_base() == arg.type.get_base()
+                            if not arg_conv: break
+                            can_convert += 1
+                            if is_same: same_types += 1
+                        if not convertible and can_convert == arg_count:
+                            convertible = index_method
+                        elif same_types == arg_count:
+                            method = index_method
+                            break
+                    if not method:
+                        method = convertible
+                    assert method, 'no-suitable indexing method found on member type %s' % member_def.name
+                else:
+                    method = imember
+                    enode_args = self.parse_args(imember)
+                
                 self.consume(']')
-                conv_args      = self.convert_args(imember, enode_args)
-                return EMethodCall(type=ident, target=imember.access, method=imember, args=conv_args)
+                conv_args      = self.convert_args(method, enode_args)
+                return EMethodCall(type=ident, target=method.access, method=method, args=conv_args)
             else:
                 return imember # todo: we need more context than this
         else:
@@ -2342,7 +2656,7 @@ int main(int argc, char* argv[]) {
                         # construction
                         edef = ident.get_def()
                         #prim = is_primitive(ident)
-                        enode_args = self.parse_args(edef.members['ctr']) # we need to give a signature list of the constructors
+                        enode_args = self.parse_args(edef.members['ctr'][0]) # we need to give a signature list of the constructors
                         conv = enode_args
                         method = None
                         # if args are given, we use a type-matched constructor (first arg is primary)
@@ -2375,11 +2689,14 @@ int main(int argc, char* argv[]) {
 
     def push_return_type(self, type:EIdent):
         assert('.return-type' not in self.member_stack[-1])
-        self.member_stack[-1]['.return-type'] = EMember(type=type, name='.return-type')
+        self.member_stack[-1]['.return-type'] = [EMember(type=type, name='.return-type')]
 
     def push_member(self, member:EMember, access:EMember = None):
-        assert(member.name not in self.member_stack[-1])
-        self.member_stack[-1][member.name] = member
+        top = self.member_stack[-1]
+        assert(member.name not in top)
+        if not member.name in top:
+            top[member.name] = []
+        top[member.name].append(member)
 
     def casts(self, enode_or_etype):
         try:
@@ -2389,7 +2706,7 @@ int main(int argc, char* argv[]) {
             
     def constructs(self, enode_or_etype):
         try:
-            return etype(enode_or_etype).get_def().members['construct']
+            return etype(enode_or_etype).get_def().members['ctr']
         except:
             return None
         
@@ -2424,12 +2741,15 @@ int main(int argc, char* argv[]) {
         fr = etype(fr)
         assert isinstance(fr, EIdent), 'constructable fr != EIdent'
         assert isinstance(to, EIdent), 'constructable to != EIdent'
-        ctrs = self.constructs(fr)
+        b = self.defs['b']
+        ib = to.get_def()
+        ctrs = self.constructs(to) or {}
         if fr == to:
             return True
         for method in ctrs:
             assert len(method.args), 'constructor must have args'
-            if method.args[0].type == to:
+            _, f = first_key_value(method.args)
+            if f.type == fr:
                 return method
         return None
 
@@ -2567,6 +2887,12 @@ int main(int argc, char* argv[]) {
             assert ident.ref(), 'expecting anonymous reference'
             self.consume('[')
             member = self.parse_expression()
+            if isinstance(member, EProp):
+                # with anonymous ref, we lose constant state by design
+                member = EProp(
+                    name=member.name, type=member.type, module=self,
+                    value=member.value, parent=member.parent,
+                    visibility=member.visibility, is_prop=True, args=member.args)
             assert member, 'type not found: %s' % ident.ident
             self.consume(']')
             
@@ -2587,8 +2913,11 @@ int main(int argc, char* argv[]) {
         if t0 == 'if':     return self.parse_if_else(t0)
         if t0 == 'do':     return self.parse_do_while(t0)
     
+        if t0 == 'udata1':
+            self
+
         ident    = EIdent.parse(self) # should parse nothing if there is nothing to parse..  new rule anyway..
-        type_def = ident.get_def()
+        type_def = ident.get_def()    # also try not to over-parse with EIdent.  the consumables might be over doing it
         if type_def or ident.members: # [ array? ]
             if not ident.members and isinstance(type_def, EMethod):
                 return self.parse_expression()
@@ -2609,32 +2938,57 @@ int main(int argc, char* argv[]) {
                     # we cannot construct anonymous instances since its typically a mistake when we do, and they are easy to discover
                     assert False, 'compilation error: unassigned instance'
             else:
-                # anonymous assignment by reference:
-                member, indexing_node = self.parse_anonymous_ref(ident)
                 declare = False
-                # declaration:
-                if not member:
+                
+                if ident.members:
+                    assign = is_assign(after)
                     require_assign = False
-                    if is_alpha(after):
-                        # variable declaration
-                        self.consume(after)
-                        declare = True
-                        member = EMember(name=str(after), access=None, type=ident,
-                            value=None, visibility='extern')
-                    else:
-                        assert False, 'not handled'
+                    index = 0
+                    while True:
+                        if len(ident.members) <= index:
+                            assert False, 'writable member not found'
+                            break
+                        member = ident.members[index]
+                        if member.access != 'const' or not assign:
+                            break
+                        index += 1
+                    indexing_node = None # should be part of EIdent
                 else:
-                    require_assign = True
+                    # anonymous assignment by reference:
+                    member, indexing_node = self.parse_anonymous_ref(ident)
+                    after = self.peek_token()
+                    # declaration:
+                    if not member:
+                        require_assign = False
+                        if is_alpha(after):
+                            # variable declaration
+                            self.consume(after)
+                            declare = True
+                            member  = EMember(name=str(after), access=None, type=ident,
+                                value=None, visibility='public')
+                            member._is_mutable = True
+                            after   = self.peek_token()
+                            #after  = self.peek_token()
+                        else:
+                            assert False, 'not handled'
+                    else:
+                        require_assign = True
 
-                after  = self.peek_token()
                 assign = is_assign(after)
-                self.push_member(member)
+                if declare:
+                    self.push_member(member)
                 if assign:
-                    member.access = 'const' if assign == '=' else None
+                    # we need to actually change the member for assignments when we encounter a const; 
+                    # 
+                    if not member.access: # we need both object name for access and its read/write access
+                        assert not hasattr(member, '_is_mutable') or member._is_mutable, 'internal member state error (no EMember access set on registered member)'
+                        member.access = 'const' if assign == '=' else None
                     self.consume(assign)
                     value = self.parse_expression()
+                    type = ident if not ident.members else type_def.type
+
                     return assign_map[assign](
-                        type=ident, target=member,
+                        type=type, target=member,
                         index=indexing_node, declare=declare,
                         value=value)
                 else:
@@ -2698,7 +3052,7 @@ int main(int argc, char* argv[]) {
             assert arg_def, 'arg could not resolve type: %s' % (arg_type[0].value)
             args[arg_name] = EProp(
                 name=str(arg_name_token), access='const',
-                type=arg_type, value=None, visibility='extern')
+                type=arg_type, value=None, visibility='public')
             n = self.peek_token()
             if n == ',':
                 self.next_token()  # Consume ','
@@ -2710,16 +3064,17 @@ int main(int argc, char* argv[]) {
             n_args += 1
         return args
 
-    def finish_method(self, cl, token, method_type, is_static):
-        is_ctr  = method_type == 'ctr'
-        is_cast = method_type == 'cast'
+    def finish_method(self, cl, token, method_type, is_static, visibility):
+        is_ctr     = method_type == 'ctr'
+        is_cast    = method_type == 'cast'
+        is_index   = method_type == 'index'
         is_no_args = method_type in ('init', 'dealloc', 'cast')
-        if is_cast: self.consume('cast')
+        if   is_cast:  self.consume('cast')
         #prev_token()
         t = self.peek_token()
         has_type = is_alpha(t)
         return_type = EIdent.parse(self) if has_type else EIdent(value=cl.name, module=self) # read the whole type!
-        name_token = self.next_token() if (method_type == 'method') else None
+        name_token  = self.next_token() if (method_type in ['method', 'index']) else None
         if not has_type:
             self.consume(method_type)
         t = self.next_token() if not is_no_args else '['
@@ -2754,16 +3109,28 @@ int main(int argc, char* argv[]) {
         #    id = 'cast_%s' % str(return_type[0])
         #else:
         #    id = method_type
-
+        arg_keys = list(args.keys())
+        if is_index and not arg_keys:
+            assert not is_index or arg_keys, 'index methods require an argument'
+        
         if is_cast:
             name = 'cast_%s' % str(return_type.ident)
+        elif is_index:
+            arg_types = ''
+            for _, a in args.items():
+                arg_type   = a.type.get_name()
+                arg_types += '_%s' % arg_type
+            name = 'index%s' % arg_types
         elif is_ctr:
-            name = 'ctr_%s' % str(args[0].type.identifier.name)
+            assert len(arg_keys), 'constructors must have something to construct-with'
+            name = 'with_%s' % str(args[arg_keys[0]].type.get_name())
         else:
             name = id
+        
+        # we need a way of reading the public/intern state
         method = EMethod(
             name=name, type=return_type, method_type=method_type, value=None, access='self', parent=cl, type_expressed=has_type,
-            static=is_static, args=args, body=body, visibility='extern')
+            static=is_static, args=args, body=body, visibility=visibility)
     
         if not id in cl.members:
             cl.members[id] = [method] # we may also retain the with_%s pattern in A-Type
@@ -2784,8 +3151,8 @@ int main(int argc, char* argv[]) {
             if is_static:
                 self.consume('static')
                 token = self.peek_token()
-            visibility = 'extern'
-            if str(token) in ('extern', 'intern'):
+            visibility = 'public'
+            if str(token) in ('public', 'intern'):
                 visibility = str(token)
                 token = self.next_token()
             if not is_static:
@@ -2794,16 +3161,23 @@ int main(int argc, char* argv[]) {
                     self.consume('static')
                     token = self.peek_token()
             
-            offset = 1
-            if token == 'cast':
-                assert not is_static, 'cast must be defined as non-static'
-                offset += 1
+            is_method0 = False
             self.push_token_state(self.tokens, self.index)
             ident = EIdent.parse(self)
-            is_method0 = ident and self.peek_token(1) == '['
+
+            if token == 'cast':
+                assert not is_static, 'cast must be defined as non-static'
+                is_method0 = True
+            elif token == cl.name:
+                assert not is_static, 'constructor must be defined as non-static'
+                is_method0 = True
+            else:
+                is_method0 = ident and self.peek_token(1) == '['
+                token = self.peek_token()
+                global no_arg_methods
+                if token.value in no_arg_methods: is_method0 = True # cast and init have no-args
+            
             self.pop_token_state()
-            global no_arg_methods
-            if token.value in no_arg_methods: is_method0 = True # cast and init have no-args
 
             if not self.is_defined([Token(value='bool')]):
                 self.is_defined([Token(value='bool')])
@@ -2824,18 +3198,18 @@ int main(int argc, char* argv[]) {
                         type=ident, name=name_token.value, access='self',
                         value=None, visibility=visibility, parent=cl)
                 id = str(name_token)
-                assert not id in cl.members, 'member exists' # we require EMethod != EProp checks too
-                cl.members[id] = [prop_node]
-            elif token == cl.name:
-                self.finish_method(cl, token, 'ctr', is_static)
-            elif str(token) in no_arg_methods:
-                self.finish_method(cl, token, str(token))
-            elif token == 'cast':
-                self.finish_method(cl, token, 'cast', is_static)
-            elif self.is_defined([token]):
-                self.finish_method(cl, token, 'method', is_static)
-            else:
-                assert False, 'could not parse class method around token %s' % (str(token))
+                #assert not id in cl.members, 'member exists' # we require EMethod != EProp checks too
+                if not id in cl.members:
+                    cl.members[id] = []
+                cl.members[id].append(prop_node)
+                # being compatible with 2 or more member functions would be considered 'ambiguous' to silver
+                # silver does require direct cast, or construction
+                # not sure if we extend construction to public members
+            elif token == cl.name: self.finish_method(cl, token, 'ctr', is_static, visibility)
+            elif str(token) in no_arg_methods: self.finish_method(cl, token, str(token))
+            elif token == 'cast':  self.finish_method(cl, token, 'cast',   is_static, visibility)
+            elif token == 'index': self.finish_method(cl, token, 'index',  is_static, visibility)
+            else: self.finish_method(cl, token, 'method', is_static, visibility)
         self.pop_token_state()
 
     def next_is(self, value):
@@ -2901,8 +3275,8 @@ int main(int argc, char* argv[]) {
                     assert n == ']', 'expected comma or ] after arg %s' % str(arg_name)
                     break
 
-    def parse_import(self) -> 'EImport':
-        result = EImport(name='', source=[], includes=[])
+    def parse_import(self, visibility) -> 'EImport':
+        result = EImport(name='', source=[], includes=[], visibility=visibility)
         assert self.next_token() == 'import', 'expected import'
 
         is_inc = self.peek_token() == '<'
@@ -2946,17 +3320,17 @@ int main(int argc, char* argv[]) {
 
         return result
 
-    def parse_class(self):
+    def parse_class(self, visibility):
         token = self.next_token()
         assert token == 'class', f"Expected 'class', got {token.value} at line {token.line_num}"
         name_token = self.next_token()
         if 'app' in self.defs:
             'found an app'
-        is_ty = self.is_defined(name_token)
+        is_ty = self.is_defined([name_token])
         assert not is_ty, 'duplicate definition in module'
 
         assert name_token is not None
-        class_node = EClass(module=self, name=name_token.value)
+        class_node = EClass(module=self, name=name_token.value, visibility=visibility)
 
         # set 'model' of class -- this is the storage model, with default being an allocation (heap)
         # model handles storage and primitive logic
@@ -3004,8 +3378,12 @@ int main(int argc, char* argv[]) {
         # when we parse our class, however its runtime we dont need to call the method; its on the instance
         for name, a_members in class_def.members.items():
             for member in a_members:
-                self.push_member(member) # if context name not given, we will perform memory management (for args in our case)
+                if member.name != 'index':
+                    self.push_member(member) # if context name not given, we will perform memory management (for args in our case)
         self.push_member_depth()
+        self_ident = EIdent(class_def, module=self)
+        if not method.static:
+            self.push_member(EMember('self', type=self_ident, module=self, visibility='public'))
         for name, member in method.args.items():
             self.push_member(member)
         # we need to push the args in, as well as all class members (prior, so args are accessed first)
@@ -3026,22 +3404,32 @@ int main(int argc, char* argv[]) {
     def parse(self, tokens:List[Token]):
         self.push_token_state(tokens)
         # top level module parsing
+        visibility = ''
         while self.index < len(self.tokens):
             token = self.next_token()
+            
             if token == 'class':
+                if not visibility: visibility = 'public' # classes are public by default
                 self.index -= 1  # Step back to let parse_class handle 'class'
-                class_node = self.parse_class()
+                class_node = self.parse_class(visibility)
                 assert not class_node.name in self.defs, '%s duplicate definition' % (class_node.name)
                 self.defs[class_node.name] = class_node
+                visibility = ''
                 continue
 
             elif token == 'import':
+                if not visibility: visibility = 'intern' # imports are intern by default
                 self.index -= 1  # Step back to let parse_class handle 'class'
-                import_node = self.parse_import()
+                import_node = self.parse_import(visibility)
                 assert not import_node.name in self.defs, '%s duplicate definition' % (import_node.name)
                 self.defs[import_node.name] = import_node
                 import_node.process(self)
+                visibility = ''
                 continue
+
+            elif token == 'public': visibility = 'public'
+            elif token == 'intern': visibility = 'intern'
+            else: assert False, 'unexpected token in module: %s' % str(token)
 
         #self.finish_clang_imports()
         module = self
@@ -3061,11 +3449,10 @@ int main(int argc, char* argv[]) {
         if not self.include_paths:
             global _default_paths
             self.include_paths = _default_paths
-
+        # initialize types, top level parsing, and then proceed to build dependencies used by the module
         self.initialize()              # define primitives first
         self.parse(self.tokens)        # parse tokens
-        self.complete()                # compile things imported, before we translate
-
+        self.build_dependencies()      # compile things imported, before we translate
         # now we graph the methods
         for name, enode in self.defs.items():
             if isinstance(enode, EClass):
@@ -3076,19 +3463,50 @@ int main(int argc, char* argv[]) {
                             print('method: %s' % name)
                             print_enodes(member.code)
             elif isinstance(enode, EImport):
-                pass # 
+                pass
+        # check for app class, indicating entry point
+        app = self.defs['app'] if 'app' in self.defs else None
+        if verbose and app: app.print()
+        if not self.emit(app_def=app):
+            print('error during C99 emit')
+            exit(1)
+        # build the emitted C99 source
+        # its hubris to think we can catch everything in member parsing and reverse descent
+        # its possible, though and certainly testable
+        self.build()
 
 # all of the basic types come directly from A-type implementation
 # string, array, map, hash-map etc
+# we need to import these, still (with meta types)
 
 # silver44 (0.4.4) is python, but 1.0.0 will be C (lol maybe)
+def parse_bool(v):
+    if isinstance(v, bool): return v
+    s = v.lower()
+    if s == 'true'  or s == 'yes' or s == '1': return True
+    if s == 'false' or s == 'no'  or s == '0': return False
+    raise argparse.ArgumentTypeError('invalid boolean format: %s' % str(v))
 
-build_root    = os.getcwd()
-first         = sys.argv[1]
-module        = EModule(path=Path(first)) # path is relative from our build root (cwd)
-app_key       = EIdent('app', module=module)
-app           = module.defs['app'] if 'app' in module.defs else None
+# setup arguments
+build_root   = os.getcwd()
+parser       = argparse.ArgumentParser(description="Process some flags.")
+parser.add_argument('--verbose', default=verbose,    type=parse_bool, help='Increase output verbosity', const=True, nargs='?')
+parser.add_argument('--debug',   default=is_debug,   type=parse_bool, help='compile with debug info',   const=True, nargs='?')
+parser.add_argument('--cwd',     default=build_root, type=str,        help='path for relative sources (default is current-working-directory)')
+args, source = parser.parse_known_args()
 
-if app: app.print()
+# print usage if not using
+if not source:
+    print( 'silver 0.44')
+    print(f'{"-" * 32}')
+    print( 'source be given as file/path/to/silver.si [multiple sources allowed]')
+    parser.print_usage()
 
-module.emit(app_def=app)
+# update members from args
+verbose       = args.verbose
+build_root    = args.cwd
+
+# build the modules provided by user
+for i in range(len(source)):
+    src           = source[i]
+    module        = EModule(path=Path(src)) # path is relative from our build root (cwd)
