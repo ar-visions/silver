@@ -231,13 +231,8 @@ class EIdent(ENode):
     def __init__(
             self,
             tokens:     Union['EModule', 'EIdent', str, 'EMember', 'Token', List['Token']] = None,
-<<<<<<< HEAD
-            kind:       Union[str | TypeKind] = None,
-            meta_types: OrderedDict      = None, # we may provide meta in the tokens, in which case it replaces it; or, we can provide meta this way which resolves differently; in object format, it may encounter tokens or strings
-=======
             kind:       object = None,
             meta_types: List['EIdent']   = None, # we may provide meta in the tokens, in which case it replaces it; or, we can provide meta this way which resolves differently; in object format, it may encounter tokens or strings
->>>>>>> d330849a09b8b9d3cff3b99b0ffc422a7195c67b
             decorators: OrderedDict      = OrderedDict(),
             base:      'EMember'         = None,
             conforms:  'EMember'         = None,
