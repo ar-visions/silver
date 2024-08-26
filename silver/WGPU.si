@@ -60,6 +60,36 @@ class b [
 #    int member
 #]
 
+meta [K,V]
+class map [
+    # some wont like instancing an array for the variable args
+    # keep the instance bound to thread local per this method
+    # otherwise i dont see how we obtain a count
+    #void test1[int first, short second ... array::int values]
+    # we must actually allow types
+    void print[] [
+        #schema map::K::V type    = typeof map::K::V # we are assigning to a type that is our actual class-def struct in A-type; they are defined in our header
+        #schema base      generic = typeof map::K::V # lets use the def keyword in another way, so we dont need to know the exact type but require ident
+
+        #printf 'my type address is %p', cast handle[ type ]
+        return
+    ]
+]
+
+# we do not actually allow member types of types provided in meta
+# its 'possible' through mind bending techniques:
+#    the object is described as 'object' type (our A type, or base class), and all calls use reflection
+#    we just need to track the member for this
+meta [I]
+class test [
+    # I member
+    void something[] [
+        if [I is i32] [
+            printf 'I is i32\n'
+        ]
+    ]
+]
+
 class app [
 
     #intern int index[ short i ] [
