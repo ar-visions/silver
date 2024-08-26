@@ -37,19 +37,25 @@ operators = {
     '^=':  'assign_xor',
     '>>=': 'assign_right',
     '<<=': 'assign_left',
-    '%=':  'mod_assign'
+    '==':  'compare_equal',
+    '!=':  'compare_not',
+    '%=':  'mod_assign',
+    'is':       'is',      # keyword
+    'inherits': 'inherits' # if its a keyword, we do not have ability for user to override it
 }
 
-keywords = [ 'class',  'proto',    'struct', 'import',
-             'init',   'destruct', 'ref',    'const',  'volatile',
-             'return', 'asm',      'if',     'switch',
+keywords = [ 'class',  'proto',    'struct', 'import', 'typeof', 'schema', 'is', 'inherits',
+             'init',   'destruct', 'ref',    'const',  'volatile', # 'enum' <- EIdent parsing issue with enum (breaks Clang import)
+             'return', 'asm',      'if',     'switch', # no fall-through on switch, and will require [ blocks for more than one expression ]
              'while',  'for',      'do',     'signed', 'unsigned', 'cast' ]
 
 # EIdent are defined as both type identifiers and member identifiers, combined these keywords a decoration map
-consumables = [ 'ref',  'enum', 'class', 'union', 'proto', 'struct', 'const', 'volatile', 'signed', 'unsigned' ]
+consumables = [ 'ref',  'schema', 'enum', 'class', 'union', 'proto', 'struct', 'const', 'volatile', 'signed', 'unsigned' ]
 
 assign   = [ ':',   '=' , '+=',  '-=', '*=',  '/=', '|=',
              '&=', '^=', '>>=', '<<=', '%=' ]
+
+compare  = [ '==', '!=' ]
 
 # global to track next available ID (used in ENode matching)
 _next_id        = 0
@@ -181,6 +187,10 @@ models['handle']      = EModel(name='handle',      size=8, integral=0, realistic
 
 test1 = 0
 
+@dataclass
+class EMeta(ENode):
+    args:       OrderedDict      = None
+
 # tokens can be decorated with any data
 @dataclass
 class EIdent(ENode):
@@ -192,21 +202,25 @@ class EIdent(ENode):
     is_fp:      bool             = False
     kind:       Union[str | TypeKind] = None
     base:      'EMember'         = None
-    meta_types: List['EIdent']   = field(default_factory=list)
+    meta_types: OrderedDict      = field(default_factory=OrderedDict)
     args:       OrderedDict      = None
     members:    List['EMember']  = None
     ref_keyword: bool            = False
+    conforms:   'EMember'        = None
     #
     def __init__(
             self,
             tokens:     Union['EModule', 'EIdent', str, 'EMember', 'Token', List['Token']] = None,
             kind:       Union[str | TypeKind] = None,
-            meta_types: List['EIdent']   = None, # we may provide meta in the tokens, in which case it replaces it; or, we can provide meta this way which resolves differently; in object format, it may encounter tokens or strings
+            meta_types: OrderedDict      = None, # we may provide meta in the tokens, in which case it replaces it; or, we can provide meta this way which resolves differently; in object format, it may encounter tokens or strings
             decorators: OrderedDict      = OrderedDict(),
             base:      'EMember'         = None,
+            conforms:  'EMember'         = None,
             module:    'EModule'         = None):
+        
         self.module = module
-        self.meta_types = meta_types if meta_types else list()
+        self.conforms = conforms
+        self.meta_types = meta_types if meta_types else OrderedDict()
         
         assert module, "module must be given to EIdent, as we lookup types here for use in decorating"
         self.decorators = decorators or OrderedDict()
@@ -253,8 +267,6 @@ class EIdent(ENode):
         self.updated()
         if self.meta_types:
             assert self.get_def(), 'no definition for type: %s' % self.ident
-            for m in self.meta_types:
-                assert m.get_def(), 'no definition for meta: %s' % m.ident
 
     def member_lookup(self, etype:'EIdent', name:str) -> 'EMember':
         while True:
@@ -595,9 +607,9 @@ class EIdent(ENode):
         if isinstance(mdef, EClass):
             res = mdef.name # should be same as self.ident
             if self.meta_types:
-                for m in self.meta_types:
+                for symbol, type in self.meta_types.items():
                     if res: res += '_'
-                    res += m.get_name()
+                    res += type.get_name()
         else:
             res = mdef.name
         ref = self['ref'] or 0
@@ -729,7 +741,8 @@ class EMember(ENode):
     emitted:bool     = False
     members:OrderedDict = field(default_factory=OrderedDict) # lambda would be a member of a EMethod, in one example
     args:OrderedDict[str,'EMember'] = None
-    meta_types:List[ENode] = None
+    meta_types:OrderedDict    = None
+    meta_model:OrderedDict    = None # key = symbol, value = conforms (class or proto)
     static:bool = None
     visibility: str = None
     def emit(self, ctx:EContext):
@@ -739,6 +752,13 @@ class EMember(ENode):
         else:
             return '%s%s->%s' % (is_deref, self.access, self.name)
 
+@dataclass
+class EMetaMember(EMember):
+    conforms:EIdent = None
+    index:EIdent = None
+    def emit(self, ctx:EContext):
+        return '%s_type.meta[%i]' % (self.parent.name, self.index)
+    
 @dataclass
 class EDeclaration(ENode):
     type:  EIdent  = None
@@ -1464,7 +1484,8 @@ class EOperator(ENode):
             'EOr':       '|',
             'EAnd':      '&',
             'EXor':      '^',
-            'EIs':       'is'
+            'EIs':       'is',
+            'EInherits': 'inherits'
         }
         assert t in m
         self.op = m[t]
@@ -1514,7 +1535,7 @@ class EIs(EOperator):
         # parse primary will be called where we can look for a class + 'is', we
         # would return ERuntimeType
         assert isinstance(self.left, EMember),       'expected member'
-        l_type_id = 'typeid(%s)' % self.left.emit(ctx)
+        l_type_id = 'isa(%s)' % self.left.emit(ctx)
         assert isinstance(self.right, ERuntimeType), 'expected type identifier'
         r_type_id = self.right.emit(ctx)
         return self.template() % (l_type_id, r_type_id)
@@ -1637,6 +1658,7 @@ class EModule(ENode):
     libraries_used:list   = field(default_factory=list)
     compiled_objects:list = field(default_factory=list)
     main_symbols:list     = field(default_factory=list)
+    context_state:list    = field(default_factory=list)
     
     member_stack:List[OrderedDict[str, List[EMember]]] = field(default_factory=list)
 
@@ -2424,7 +2446,8 @@ int main(int argc, char* argv[]) {
             right = parse_lr_fn()
             assert op_type0 in operators, 'operator0 not found'
             assert op_type1 in operators, 'operator1 not found'
-            op_name = operators[op_type0 if self.peek_token() == op_type0 else op_type1]
+            token = self.peek_token()
+            op_name = operators[op_type0 if token == op_type0 else op_type1]
             if op_name in left.type.get_def().members:
                 ops = left.type.get_def().members[op_name]
                 for method in ops:
@@ -2461,7 +2484,7 @@ int main(int argc, char* argv[]) {
         t = token.value[0]
         if t == '"' or t == '\'': return ELiteralStr
         return EUndefined
-
+    
     # handle named arguments here
     def parse_args(self, signature:EMethod, C99:bool = False): # needs to be given target args
         #b = '(' if C99 else '['
@@ -2492,6 +2515,15 @@ int main(int argc, char* argv[]) {
         elif value:
             ident = EIdent(value, module=self)
         return ident
+    
+    def push_context_state(self, value):
+        self.context_state.append(value)
+
+    def pop_context_state(self):
+        self.context_state.pop()
+
+    def top_context_state(self):
+        return self.context_state[len(self.context_state) - 1] if self.context_state else ''
 
     # List/array is tuple
     def parse_primary(self):
@@ -2543,12 +2575,15 @@ int main(int argc, char* argv[]) {
             # 
             self.push_token_state(self.tokens, self.index)
             ident = EIdent.parse(self)
+            # lets push a context state for ref
+            self.push_context_state('ref')
             if ident and not ident.members:
                 # this is a ref cast
                 self.transfer_token_state()
                 assert ident, 'expected type-identity or member'
                 member, index = self.parse_anonymous_ref(ident)
                 if member:
+                    self.pop_context_state()
                     return ERefCast(type=ident, value=member, index=index)
                 else:
                     assert False, 'expected member'
@@ -2558,6 +2593,7 @@ int main(int argc, char* argv[]) {
                 self.consume(id)
                 expr = self.parse_expression() # expression should consume indexing operation but it does not
                 # do we actually do this in EIdent too or is that nuts
+                self.pop_context_state()
                 return ERef(type=expr.type.ref_type(), value=expr)
 
         # we do not allow arbitrary [ code blocks ] in silver;
@@ -2596,10 +2632,22 @@ int main(int argc, char* argv[]) {
 
             # check if member is a method, and we are calling it
             # todo: support methods without [ parens ] ... this would require a 'ref' before a method for obtaining reference to it
-            if self.peek_token() == '[':
-                self.consume('[')
+            is_method = isinstance(imember, EMethod)
+            is_open   = self.peek_token() == '['
+            is_ref    = self.top_context_state() == 'ref' # i think just the top is what we want here; it may need to be broken up by another mode
+
+            if is_method and is_ref:
+                assert not is_open, 'expected no method parenthesis'
+                # EMethod type on ERef tells us something.  We want a method pointer
+                # we call ref method-name  ... we expect no parenthesis
+                return ERef(type=EIdent(imember, module=self), value=imember)
+            if is_method or is_open:
+                if is_open:
+                    self.consume('[')
+                else:
+                    assert self.expr_level == 0, 'method calls beyond statement require parenthesis'
                 method = None
-                if not isinstance(imember, EMethod):
+                if not is_method:
                     # now we must check for index methods
                     enode_args = self.parse_args(None)
                     arg_count = len(enode_args)
@@ -2635,7 +2683,8 @@ int main(int argc, char* argv[]) {
                     method = imember
                     enode_args = self.parse_args(imember)
                 
-                self.consume(']')
+                if is_open:
+                    self.consume(']')
                 conv_args      = self.convert_args(method, enode_args)
                 return EMethodCall(type=ident, target=method.access, method=method, args=conv_args)
             else:
@@ -2668,7 +2717,8 @@ int main(int argc, char* argv[]) {
                         return EConstruct(type=ident, method=method, args=conv)
                 else:
                     self.consume()
-                    return type
+                    assert ident.ident and not ident.members, 'expected a type'
+                    return ident
             
             elif is_alpha(id):
                 assert False, 'unknown identifier: %s' % id
@@ -3146,6 +3196,17 @@ int main(int argc, char* argv[]) {
         cl.members = OrderedDict()
         cl.members['ctr']  = []
         cl.members['cast'] = []
+
+        # convert the basic meta_model of strings to a resolved one we call meta_types
+        if cl.meta_model:
+            cl.meta_types = OrderedDict()
+            for symbol, conforms in cl.meta_model.items(): # we are not supporting conform
+                edef_conforms = None
+                if conforms:
+                    edef_conforms = self.defs[conforms] if conforms in self.defs else None
+                    assert edef_conforms, 'no definition found for meta argument %s' % conforms
+                cl.meta_types[symbol] = EIdent(symbol, module=self, conforms=edef_conforms)
+
         while (token := self.peek_token()) != ']':
             is_static = token == 'static'
             if is_static:
@@ -3320,7 +3381,7 @@ int main(int argc, char* argv[]) {
 
         return result
 
-    def parse_class(self, visibility):
+    def parse_class(self, visibility, meta):
         token = self.next_token()
         assert token == 'class', f"Expected 'class', got {token.value} at line {token.line_num}"
         name_token = self.next_token()
@@ -3330,36 +3391,27 @@ int main(int argc, char* argv[]) {
         assert not is_ty, 'duplicate definition in module'
 
         assert name_token is not None
-        class_node = EClass(module=self, name=name_token.value, visibility=visibility)
+        class_node = EClass(module=self, name=name_token.value, visibility=visibility, meta_model=meta)
+        # we resolve meta this when we finish
 
         # set 'model' of class -- this is the storage model, with default being an allocation (heap)
         # model handles storage and primitive logic
         # for now only allocated classes have 
-        read_block = True
-        if self.peek_token() == '::':
-            self.consume()
-            model_type = str(self.next_token())
-            assert model_type in models, 'model type not found: %s' % (model_type)
-            class_node.model = models[model_type]
-            read_block = model_type == 'allocated'
-        else:
-            class_node.model = models['allocated']
+        class_node.model = models['allocated'] # we dont need the user to be able to access this, as its internal
 
         if self.peek_token() == ':':
             self.consume()
             class_node.inherits = self.find_def(self.next_token())
         
-        if read_block:
-            block_tokens = [self.next_token()]
-            assert block_tokens[0] == '[', f"Expected '[', got {token.value} at line {token.line_num}"
-            level = 1
-            while level > 0:
-                token = self.next_token()
-                if token == '[': level += 1
-                if token == ']': level -= 1
-                block_tokens.append(token)
-            class_node.block_tokens = block_tokens
-        
+        block_tokens = [self.next_token()]
+        assert block_tokens[0] == '[', f"Expected '[', got {token.value} at line {token.line_num}"
+        level = 1
+        while level > 0:
+            token = self.next_token()
+            if token == '[': level += 1
+            if token == ']': level -= 1
+            block_tokens.append(token)
+        class_node.block_tokens = block_tokens
         return class_node
 
     # we want type-var[init] to allow for construction with variable types (same as python)
@@ -3371,7 +3423,8 @@ int main(int argc, char* argv[]) {
         assert len(method.body) > 0
         # since translate is inside the read_module() method we must have separate token context here
         self.push_token_state(method.body)
-        self.reset_member_depth()
+        #self.reset_member_depth()
+        assert len(self.member_stack) == 1
 
         self.push_return_type(method.type)
 
@@ -3396,28 +3449,66 @@ int main(int argc, char* argv[]) {
             and isinstance(enode.value[len(enode.value) - 1], EMethodReturn)):
             enode.value.append(EMethodReturn(type=method.type, value=self.lookup_stack_member('self')))
 
+        self.pop_member_depth()
         self.pop_token_state()
-        print('printing enodes for method %s' % (method.name))
-        print_enodes(enode)
+        global vebose
+        if verbose:
+            print('printing enodes for method %s' % (method.name))
+            print_enodes(enode)
+        assert len(self.member_stack) == 1
         return enode
     
+    def parse_meta_model(self):
+        assert self.next_token() == 'meta', 'meta keyword expected'
+        assert self.next_token() == '[',    '[ expected after meta'
+        result:OrderedDict[str, str] = OrderedDict()
+        while True:
+            symbol   = self.next_token()
+            if symbol == ']': break
+            after    = self.peek_token()
+            conforms = None
+            if after == ':':
+                self.consume(':') # these are classes or protos
+                conforms = self.next_token()
+                # assert conforms in self.defs -- we can only do this after reading the module
+            result[symbol] = conforms
+            after = self.peek_token()
+            if after == ',':
+                self.consume(',')
+            else:
+                assert after == ']', 'expected ] after meta symbol:conforms'
+                self.consume(']')
+                break
+            if symbol == ']': break
+        assert len(result), 'meta args required for meta keyword'
+        return result
+
     def parse(self, tokens:List[Token]):
         self.push_token_state(tokens)
         # top level module parsing
         visibility = ''
+        meta_model:OrderedDict = None
         while self.index < len(self.tokens):
             token = self.next_token()
             
-            if token == 'class':
+            if token == 'meta':
+                assert not visibility, 'visibility applies to the class under meta keyword: [public, intern] class'
+                self.index -= 1
+                meta_model = self.parse_meta_model()
+                continue
+
+            elif token == 'class':
                 if not visibility: visibility = 'public' # classes are public by default
                 self.index -= 1  # Step back to let parse_class handle 'class'
-                class_node = self.parse_class(visibility)
+                class_node = self.parse_class(visibility, meta_model) # replace with a map at 3, since we are now gathering top level details
                 assert not class_node.name in self.defs, '%s duplicate definition' % (class_node.name)
                 self.defs[class_node.name] = class_node
                 visibility = ''
+                meta_model = None
                 continue
 
             elif token == 'import':
+                assert not meta_model, 'meta not applicable'
                 if not visibility: visibility = 'intern' # imports are intern by default
                 self.index -= 1  # Step back to let parse_class handle 'class'
                 import_node = self.parse_import(visibility)
@@ -3425,6 +3516,7 @@ int main(int argc, char* argv[]) {
                 self.defs[import_node.name] = import_node
                 import_node.process(self)
                 visibility = ''
+                meta_model = None
                 continue
 
             elif token == 'public': visibility = 'public'
@@ -3456,12 +3548,24 @@ int main(int argc, char* argv[]) {
         # now we graph the methods
         for name, enode in self.defs.items():
             if isinstance(enode, EClass):
+                # meta is set of runtime members of the symbol given
+                # the exception to this is when its used in place of a type
+                # in which case we use a base A-type
+                self.push_member_depth()
+                index = 0
+                if enode.meta_types:
+                    for symbol, edef_conforms in enode.meta_types.items():
+                        member = EMetaMember(name=str(symbol), parent=enode, index=index, module=self, conforms=edef_conforms) # this resolves at runtime based on the index of our type in the class's type.meta list
+                        self.push_member(member)
+                        index += 1
+                # graph methods
                 for name, a_members in enode.members.items():
                     for member in a_members:
                         if isinstance(member, EMethod):
                             member.code = self.translate(class_def=enode, method=member)
                             print('method: %s' % name)
                             print_enodes(member.code)
+                self.pop_member_depth()
             elif isinstance(enode, EImport):
                 pass
         # check for app class, indicating entry point
