@@ -76,6 +76,26 @@ def make_hashable(item):
         return frozenset(make_hashable(sub_item) for sub_item in item)
     return item
 
+def exe_ext():
+    system = platform.system().lower()
+    if system == 'windows':
+        return 'exe'
+    else:
+        return ''
+
+def shared_ext():
+    system = platform.system().lower()
+    if   system == 'linux':  return 'lib', 'so'
+    elif system == 'darwin': return 'lib', 'dylib'
+    elif system == 'win32':  return '',    'dll'
+    assert False, 'unknown platform'
+
+def static_ext():
+    if sys.platform.startswith('linux'): return 'lib', 'a'
+    elif sys.platform == 'darwin':       return 'lib', 'a'
+    elif sys.platform == 'win32':        return '',    'lib'
+    assert False, 'unknown platform'
+
 class ENode:
     def __post_init__(self):
         global _next_id
@@ -179,7 +199,7 @@ models['signed-32']   = EModel(name='signed_32',   size=4, integral=1, realistic
 models['signed-64']   = EModel(name='signed_64',   size=8, integral=1, realistic=0, type=np.int64)
 models['real-32']     = EModel(name='real_32',     size=4, integral=0, realistic=1, type=np.float32)
 models['real-64']     = EModel(name='real_64',     size=8, integral=0, realistic=1, type=np.float64)
-models['real-128']    = EModel(name='real_128',    size=16, integral=0, realistic=1, type=np.float128)
+#models['real-128']    = EModel(name='real_128',    size=16, integral=0, realistic=1, type=np.float128)
 models['none']        = EModel(name='none',        size=0, integral=0, realistic=1, type=Void)
 models['cstr']        = EModel(name='cstr',        size=8, integral=0, realistic=0, type=np.uint64)
 models['symbol']      = EModel(name='symbol',      size=8, integral=0, realistic=0, type=np.uint64)
@@ -200,7 +220,7 @@ class EIdent(ENode):
     initial:    str              = None
     module:    'EModule'         = None
     is_fp:      bool             = False
-    kind:       Union[str | TypeKind] = None
+    kind:       object = None
     base:      'EMember'         = None
     meta_types: OrderedDict      = field(default_factory=OrderedDict)
     args:       OrderedDict      = None
@@ -211,8 +231,13 @@ class EIdent(ENode):
     def __init__(
             self,
             tokens:     Union['EModule', 'EIdent', str, 'EMember', 'Token', List['Token']] = None,
+<<<<<<< HEAD
             kind:       Union[str | TypeKind] = None,
             meta_types: OrderedDict      = None, # we may provide meta in the tokens, in which case it replaces it; or, we can provide meta this way which resolves differently; in object format, it may encounter tokens or strings
+=======
+            kind:       object = None,
+            meta_types: List['EIdent']   = None, # we may provide meta in the tokens, in which case it replaces it; or, we can provide meta this way which resolves differently; in object format, it may encounter tokens or strings
+>>>>>>> d330849a09b8b9d3cff3b99b0ffc422a7195c67b
             decorators: OrderedDict      = OrderedDict(),
             base:      'EMember'         = None,
             conforms:  'EMember'         = None,
@@ -688,22 +713,6 @@ def system(command):
         print(f'error executing command: {e}')
         return -1  # Similar to how system() returns -1 on error
 
-def exe_ext():
-    system = platform.system()
-    if system == 'Windows':
-        return 'exe'
-    else:
-        return ''
-
-def shared_ext():
-    if system == 'Windows':
-        return 'dll'
-    if system == 'Darwin':
-        return 'dylib'
-    if system == 'Linux':
-        return 'so'
-    return ''
-
 def folder_path(path):
     p = Path(path)
     return p if p.is_dir() else p.parent
@@ -1036,13 +1045,13 @@ class EImport(ENode): # we may want a node for 'EModuleNode' that contains name,
                 # set effective links and verify install
                 if not self.links: self.links = [name]
                 for name in self.links:
-                    lib = os.path.join(i, 'lib', f'lib{name}.so')
-                    ext = 'so'
+                    pre, ext = shared_ext()
+                    lib = os.path.join(i, 'lib', f'{pre}{name}.{ext}')
                     if not os.path.exists(lib):
-                        lib = os.path.join(i, 'lib', f'lib{name}.a')
-                        ext = 'a'
+                        pre, ext = static_ext()
+                        lib = os.path.join(i, 'lib', f'{pre}{name}.{ext}')
                     assert os.path.exists(lib)
-                    sym = os.path.join(i, f'lib{name}.{ext}')
+                    sym = os.path.join(i, f'{pre}{name}.{ext}')
                     create_symlink(lib, sym)
 
                 built_token = open('silver-token', 'w') # im a silver token, i say we seemed to have built before -- if this is not here, we perform silver-init.sh
@@ -1455,7 +1464,7 @@ def value_for_type(type, token):
 class ELiteralStrInterp(ENode):
     type: EIdent     # string
     value:str
-    args:Union[List[ENode] | OrderedDict[str,ENode]] = None
+    args:object = None
     # todo:
     def emit(self, n:EContext): return '"%s"' % self.value[1:len(self.value) - 1]
 
@@ -1902,7 +1911,7 @@ int main(int argc, char* argv[]) {
         m.defs['i64']    = EClass(module=m, name='i64',  visibility='intern', model=models['signed-64'])
         m.defs['f32']    = EClass(module=m, name='f32',  visibility='intern', model=models['real-32'])
         m.defs['f64']    = EClass(module=m, name='f64',  visibility='intern', model=models['real-64'])
-        m.defs['f128']   = EClass(module=m, name='f128', visibility='intern', model=models['real-128'])
+        #m.defs['f128']   = EClass(module=m, name='f128', visibility='intern', model=models['real-128'])
         m.defs['int']    = m.defs['i32']
         m.defs['num']    = m.defs['i64']
         m.defs['real']   = m.defs['f64']
@@ -1935,7 +1944,7 @@ int main(int argc, char* argv[]) {
             'unsigned long long int':   'u64',
             'float':                    'f32',
             'double':                   'f64',
-            'long double':              'f128',
+            #'long double':              'f128',
             '_Bool':                    'bool',
             'long long':                'num',
             'double':                   'real',
@@ -3603,7 +3612,7 @@ args, source = parser.parse_known_args()
 if not source:
     print( 'silver 0.44')
     print(f'{"-" * 32}')
-    print( 'source be given as file/path/to/silver.si [multiple sources allowed]')
+    print( 'source be given as file/path/to/silver.si')
     parser.print_usage()
 
 # update members from args
