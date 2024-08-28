@@ -67,15 +67,6 @@ def first_key_value(ordered:OrderedDict):
     assert len(ordered), 'no items'
     return next(iter(ordered.items()))
 
-def make_hashable(item):
-    if isinstance(item, list):
-        return tuple(make_hashable(sub_item) for sub_item in item)
-    elif isinstance(item, dict):
-        return tuple(sorted((make_hashable(k), make_hashable(v)) for k, v in item.items()))
-    elif isinstance(item, set):
-        return frozenset(make_hashable(sub_item) for sub_item in item)
-    return item
-
 def exe_ext():
     system = platform.system().lower()
     if system == 'windows':
@@ -227,6 +218,7 @@ class EIdent(ENode):
     members:    List['EMember']  = None
     ref_keyword: bool            = False
     conforms:   'EMember'        = None
+    meta_member:'EMetaMember'    = None
     #
     def __init__(
             self,
@@ -355,7 +347,12 @@ class EIdent(ENode):
         
         members = module.lookup_all_stack_members(f) # this isnt right, we're making two lists without knowing what separates them
         if members:
-            member = members[0]
+            if isinstance(members[0], EMetaMember):
+                result.meta_member = members[0]
+                members = members[1:]
+                member = result.meta_member
+            else:
+                member = members[0]
             last = member
             module.consume(f)
             len_dec = len(result.decorators)
@@ -366,8 +363,11 @@ class EIdent(ENode):
                 n = module.next_token()
                 assert is_alpha(n), 'expected alpha-name identity after .'
                 key = str(n)
-                assert key in last.members, 'member "%s" not found in %s' % (key, last.name)
-                last = last.members[key]
+                assert result.meta_member or key in last.members, 'member "%s" not found in %s' % (key, last.name)
+                if result.meta_member:
+                    last = key
+                else:
+                    last = last.members[key]
                 members.append(last) # we can merge these two
                 result.list.append(n)
             c_parse  = False
@@ -412,7 +412,7 @@ class EIdent(ENode):
             if module.eof(): break
             if module.peek_token() == ')': break
             if module.peek_token() == '(': break
-            t = module.next_token()
+            t = module.peek_token()
             is_extend = t.value in ['long', 'short', 'unsigned', 'signed']
             is_ext = t.value in ['unsigned', 'signed']
             if not is_extend and not is_alpha(t.value):
@@ -420,8 +420,9 @@ class EIdent(ENode):
                 if t == '[': break
                 if is_numeric(t.value):
                     break
-                assert False, 'debug'
+                #assert False, 'debug'
                 break
+            module.consume(t)
             result.list.append(t)
             if module.eof(): break
             p = module.peek_token()
@@ -508,7 +509,17 @@ class EIdent(ENode):
         result.ref_keyword = silver_ref
         return result
 
-    def emit(self, ctx:'EContext'): return self.get_name()
+    def emit(self, ctx:'EContext'): # ctx tells is what state we are emitting in; when are are declaring a variable for instance with meta, its always object
+        if ctx.top_state() == 'runtime-type': # when we want to obtain what the type is, thats a lookup on the type::args_[0-7]
+            if self.meta_member:
+                return 'meta_t(self, %i)' % self.meta_member.index
+            else:
+                return 'typeof(%s)' % self.get_name()
+        else:
+            if self.meta_member:
+                return 'object'
+            else:
+                return self.get_name()
 
     # apply all ref
     def ref_total(self):
@@ -532,7 +543,10 @@ class EIdent(ENode):
     # for now, our identity is based on the type itself, and the sizing will be known in meta on EIdent for our type-tokens
     def updated(self):
         ref = self.decorators['ref'] if self.decorators and 'ref' in self.decorators else 0
-        ident_name = ' '.join(str(token) for token in self.list) # + ('*' * ref)
+        if self.meta_member:
+            ident_name = str(self.list[-1])
+        else:
+            ident_name = ' '.join(str(token) for token in self.list) # + ('*' * ref)
         #ident_size = ''
         #if 'dim' in self.decorators:
         #    for sz_int in self.decorators['dim']:
@@ -614,6 +628,21 @@ class EIdent(ENode):
             return None
         mdef = self.module.defs[self.ident]
         return mdef
+    
+    def get_target(self):
+        if self.meta_member: return 'self'
+        assert False, 'invalid state'
+    
+    def get_c99_members(self, access):
+        res = access if access else ''
+        for m in self.members:
+            if res: res += '->'
+            if isinstance(m, EMember):
+                res += '%s' % m.name
+            else:
+                assert isinstance(m, str), 'invalid member format'
+                res += '%s' % m
+        return res
 
     def get_base(self):
         mdef = self.get_def()
@@ -717,6 +746,7 @@ class EContext:
     module: 'EModule'
     method: 'EMember'
     states: list = field(default_factory=list)
+    values: OrderedDict = field(default_factory=OrderedDict)
     indent_level:int = 0
 
     def indent(self):
@@ -726,6 +756,10 @@ class EContext:
     def decrease_indent(self):
         if self.indent_level > 0:
             self.indent_level -= 1
+    def set_value(self, key, value):
+        self.values[key] = value
+    def get_value(self, key):
+        return self.values[key] if key in self.values else None
     def push(self, state):
         self.states.append(state)
     def pop(self):
@@ -761,8 +795,8 @@ class EMetaMember(EMember):
     conforms:EIdent = None
     index:EIdent = None
     def emit(self, ctx:EContext):
-        return '%s_type.meta[%i]' % (self.parent.name, self.index)
-    
+        return 'meta_t(self, %i)' % self.index 
+
 @dataclass
 class EDeclaration(ENode):
     type:  EIdent  = None
@@ -797,7 +831,7 @@ class EClass(EMember):
         name = self.name
         cl = self
         # we will only emit our own types
-        if cl.model.name != 'allocated': return
+        if cl.model.name != 'allocated' or cl.emitted: return
         # write class declaration
         f.write('\n/* class-declaration: %s */\n' % (name))
         f.write('#define %s_meta(X,Y,Z) \\\n' % (name))
@@ -835,7 +869,7 @@ class EClass(EMember):
     def emit_source(self, file):
         cl = self
         # only emit silver-based implementation
-        if cl.model.name != 'allocated': return
+        if cl.model.name != 'allocated' or cl.emitted: return
         def output_methods(visibility, with_body):
             nonlocal cl, file
             for member_name, a_members in cl.members.items():
@@ -1174,10 +1208,24 @@ class EConstruct(ENode):
     type: EIdent
     method: EMethod
     args:List[ENode] # when selected, these should all be filled to line up with the definition
+    meta_member:'EMetaMember' = None
     def emit(self, ctx:EContext):
-        cl = self.method.parent
-        type_name = cl.name
+        if self.meta_member:
+            if not self.args:
+                return 'A_new(%s)' % self.meta_member.emit(ctx)
+            else:
+                args = ''
+                n_args = 0
+                for a in self.args:
+                    arg_emit = a.emit(ctx)
+                    args    += ', '
+                    args    += arg_emit
+                    n_args  += 1
+                return 'A_construct(%s, %i%s)' % (self.meta_member.emit(ctx), n_args, args) # when we have explicit arg counts we want machines to only call these
+        
+        type_name = self.type.ident
         if self.args:
+            assert self.method, 'method not set in EConstruct, and type is fixed'
             args = ''
             f = self.args[0]
             base0 = f.type.get_base()
@@ -1188,7 +1236,7 @@ class EConstruct(ENode):
                 args += arg_emit
             return 'construct(%s, %s%s)' % (type_name, base0.name, args)
         else:
-            return 'new(%s)' % (type_name, args)
+            return 'new(%s)' % (type_name)
 
 @dataclass
 class EExplicitCast(ENode):
@@ -1538,10 +1586,12 @@ class EIs(EOperator):
         # self.left must be a EMember
         # parse primary will be called where we can look for a class + 'is', we
         # would return ERuntimeType
-        assert isinstance(self.left, EMember),       'expected member'
-        l_type_id = 'isa(%s)' % self.left.emit(ctx)
-        assert isinstance(self.right, ERuntimeType), 'expected type identifier'
+        assert isinstance(self.left,  EIdent), 'expected ident (left operand)'
+        assert isinstance(self.right, EIdent), 'expected ident (right operand)'
+        ctx.push('runtime-type') # should support all forms of EIdent state in its emit
+        l_type_id = self.left.emit(ctx)
         r_type_id = self.right.emit(ctx)
+        ctx.pop()
         return self.template() % (l_type_id, r_type_id)
 
 @dataclass
@@ -1566,18 +1616,63 @@ class EMethodCall(ENode):
 
     def emit(self, ctx:EContext):
         s_args   = ''
-        arg_keys = list(self.method.args.keys())
-        arg_len  = len(arg_keys)
-        assert arg_len == len(self.args) # this is already done above
-        for i in range(arg_len):
-            if s_args: s_args += ', '
-            str_e = self.args[i].emit(ctx)
-            s_args += str_e
+        if isinstance(self.method, EMethod):
+            arg_keys = list(self.method.args.keys())
+            arg_len  = len(arg_keys)
+        else:
+            arg_len = 0
+        
+        is_meta = isinstance(self.method, EIdent)
+        assert not is_meta or self.method.meta_member, 'invalid EIdent given'
+        assert is_meta or arg_len == len(self.args) # this is already done above
+        is_arr = False
+        method_id = self.method
+
+        if is_meta:
+            if self.target.meta_member:
+                s_args += 'array_of_objects(self'
+                is_arr  = True
+            else:
+                assert False, 'implement 1'
+        else:
+            assert False, 'implement 2'
+
         if not self.target:
             return '%s(%s)' % (self.method.name, s_args)
         else:
             # intern should call a bit faster; we will need to perform some polymorphic lookup here
-            if self.method.visibility == 'intern':
+            if is_meta:
+                method_name = method_id.members[-1]
+                method_key  = method_id.ident # we cannot lookup a definition, we may only use strings
+                var_name    = ctx.get_value(method_key) # should use C99 concat'd 
+                if not var_name:
+                    get_method = 'type_member_t* %s = A_member(meta_t(self, %i), A_TYPE_IMETHOD | A_TYPE_SMETHOD, "%s");' % (
+                        method_key,  method_id.meta_member.index, method_name)
+                    ctx.set_value(method_key, get_method) 
+
+                # convert args by wrapping their expression in A_convert(AType, A)
+                # using pooled release is better for our interpreter and the code it generates is smaller, more readable.
+                # its quite simple to manage your own pools in heavy usage areas
+                # auto-release pool # <- use this in statements such as a method, or loop
+                # pool.release with mod is a reasonable technique, so its 2 calls to tune your overhead/memory usage
+                # upon creation it pushes its pool onto the thread local stack
+                # on dealloc it does the opposite
+                # its probably quite useful to have anonymous classes that exist while code runs
+                # auto-release # may just use this, without a need to call a .release, we dont need the handle of it
+                # anonymous satisfies thread-local (no args) users and context consumers (with the use of args)
+                # passing by value is not quite practical, so struct's should be always by ref
+
+                for i in range(len(self.args)):
+                    if s_args: s_args += ', '
+                    str_e = self.args[i].emit(ctx)
+                    if is_arr:
+                        str_e = 'A_convert(%s->args.meta_%i, %s)' % (method_key, i, str_e)
+                    s_args += str_e
+
+                if is_arr: s_args += ')'
+
+                return 'A_method_call(%s, %s)' % (method_id.get_target(), s_args) 
+            elif self.method.visibility == 'intern':
                 assert ctx.method.parent == self.method.parent, 'intern method accessed outside type'
                 return '%s_%s(%s%s%s)' % (
                     self.method.parent.name, # meta args must be in ctx
@@ -1619,8 +1714,12 @@ class EStatements(ENode):
             res += code
             if code[-2:] != '}\n':
                 res += ';\n'
+
+        header = ''
+        for key, val in ctx.values.items():
+            header += '%s\n' % val
         ctx.decrease_indent()
-        return res
+        return header + res
 
 def etype(n):
     return n if isinstance(n, EIdent) else n.type if isinstance(n, ENode) else n
@@ -1663,14 +1762,14 @@ class EModule(ENode):
     compiled_objects:list = field(default_factory=list)
     main_symbols:list     = field(default_factory=list)
     context_state:list    = field(default_factory=list)
-    
+    current_def:'EMember' = None
     member_stack:List[OrderedDict[str, List[EMember]]] = field(default_factory=list)
 
     def eof(self):
         return not self.tokens or self.index >= len(self.tokens)
     
     def read_tokens(self, input_string) -> List[Token]: # should we call Token JR ... or Tolken?
-        special_chars:str  = '$,<>()![]/+*:=#'
+        special_chars:str  = '.$,<>()![]/+*:=#'
         tokens:List[Token] = list()
         line_num:int       = 1
         length:int         = len(input_string)
@@ -1801,7 +1900,7 @@ class EModule(ENode):
         for name, cl in self.defs.items():
             if isinstance(cl, EClass):
                 # we will only emit our own types
-                if cl.model.name != 'allocated': continue
+                if cl.model.name != 'allocated' or cl.emitted: continue
                 # write class declaration
                 f.write('\ntypedef struct %s* %s;' % (name, name))    
         f.write('\n')
@@ -1914,9 +2013,11 @@ int main(int argc, char* argv[]) {
         m.defs['cstr']   = EClass(module=m, name='cstr', visibility='intern', model=models['cstr'])
         m.defs['symbol'] = EClass(module=m, name='symbol', visibility='intern', model=models['symbol'])
         m.defs['handle'] = EClass(module=m, name='handle', visibility='intern', model=models['handle'])
+        m.defs['object'] = EClass(module=m, name='object', visibility='intern', model=models['allocated'])
         m.defs['void']   = m.defs['none']
         for name, edef in m.defs.items():
             m.defs[name].emitted = True
+            m.defs[name].type = EIdent(m.defs[name], module=self)
 
         translation_map = {
             'void':                     'none',
@@ -2452,16 +2553,20 @@ int main(int argc, char* argv[]) {
             assert op_type1 in operators, 'operator1 not found'
             token = self.peek_token()
             op_name = operators[op_type0 if token == op_type0 else op_type1]
-            if op_name in left.type.get_def().members:
-                ops = left.type.get_def().members[op_name]
-                for method in ops:
-                    # check if right-type is compatible
-                    assert len(method.args) == 1, 'operators must take in 1 argument'
-                    if self.convertible(right.type, method.args[0].type):
-                        return EMethodCall(type=method.type, target=left,
-                            method=method, args=[self.convert_enode(right, method.args[0].type)])
 
-            left = etype(type=self.preferred_type(left, right), left=left, right=right)
+            type_out = None # type conversion skipped if we dont know the type yet
+            if hasattr(left, 'type') and left.type and hasattr(right, 'type') and right.type:
+                if op_name in left.type.get_def().members:
+                    ops = left.type.get_def().members[op_name]
+                    for method in ops:
+                        # check if right-type is compatible
+                        assert len(method.args) == 1, 'operators must take in 1 argument'
+                        if self.convertible(right.type, method.args[0].type):
+                            return EMethodCall(type=method.type, target=left,
+                                method=method, args=[self.convert_enode(right, method.args[0].type)])
+                type_out = self.preferred_type(left, right)
+
+            left = etype(type=type_out, left=left, right=right) # EIs and other operators may assign this type to a ERuntimeType
         return left
     
     def parse_add(self):
@@ -2491,24 +2596,28 @@ int main(int argc, char* argv[]) {
     
     # handle named arguments here
     def parse_args(self, signature:EMethod, C99:bool = False): # needs to be given target args
+        if isinstance(signature, list):
+            signature = None # todo: handle this case, where we match based on the first argument [from constructors listing]
+        elif isinstance(signature, str):
+            signature = None # we only know the name of the method, but thats enough for run-time
         #b = '(' if C99 else '['
         e = ')' if C99 else ']'
         enode_args = []
         arg_count  = -1 if not signature else len(signature.args)
         arg_index  = 0
-        if arg_count:
-            while (1):
-                if self.peek_token() == ']':
-                    assert False, 'not enough arguments given to %s' % signature.name
-                op = self.parse_expression()
-                enode_args.append(op)
-                arg_index += 1
-                if self.peek_token() == ',':
-                    if arg_count > 0 and arg_index >= arg_count:
-                        assert False, 'too many args given to %s' % signature.name
-                    self.consume()
-                else:
-                    break
+        while (1):
+            if self.peek_token() == ']':
+                assert arg_count == -1, 'not enough arguments given to %s' % signature.name
+                break
+            op = self.parse_expression()
+            enode_args.append(op)
+            arg_index += 1
+            if self.peek_token() == ',':
+                if arg_count > 0 and arg_index >= arg_count:
+                    assert False, 'too many args given to %s' % signature.name
+                self.consume()
+            else:
+                break
         self.assertion(self.peek_token() == e, 'expected ] after args')
         return enode_args
         
@@ -2628,9 +2737,18 @@ int main(int argc, char* argv[]) {
         self.push_token_state(self.tokens, self.index)
         ident = EIdent.parse(self)
 
-        if ident and ident.members:
+        # dynamic construct
+        dynamic_construct = ident and ident.meta_member and self.peek_token() == '['
+        if ident and ident.members and not dynamic_construct:
             # ident is a member identity
             self.transfer_token_state()
+
+            if ident.meta_member: # we have EMetaMember in stack bound to this ident.meta_member
+                # its not enough to return here:
+                # we need to perform .member lookups as methods
+                # it would be nice to incorporate it below; based on meta_member it changes the operation to find the location of a method and call, rather than invoke it
+                return ident
+
             edef = ident.get_def()
             imember = ident.members[0] # dont believe we need to move through these unless its a method
 
@@ -2695,7 +2813,23 @@ int main(int argc, char* argv[]) {
                 return imember # todo: we need more context than this
         else:
             type_def = ident.get_def()
-            if type_def:
+            if isinstance(type_def, EMetaMember):
+                # can be construction, or a method call
+                self.transfer_token_state()
+                token_after = self.peek_token()
+                if token_after == '[':
+                    self.consume('[')
+                    enode_args = self.parse_args(None)
+                    self.consume(']')
+                    if ident.members:
+                        last_member = ident.members[len(ident.members) - 1]
+                        target = ident.members[len(ident.members) - 2] if len(ident.members) > 1 else self.lookup_stack_member('self')
+                        return EMethodCall(type=self.defs['object'].type, target=target, method=last_member, args=enode_args)
+                    else:
+                        return EConstruct(type=self.defs['object'].type, meta_member=type_def, method=None, args=enode_args) # at design time, we may handle object differently
+                else:
+                    return ident # it could be beneficial to put the EMetaMember where EIdent goes, the type field; however we must make it actually inherit
+            elif type_def:
                 # ident is a type
                 self.transfer_token_state() # this is a pop and index update; it means continue from here (we only do this if we are consuming this resource)
                 token_after = self.peek_token()
@@ -2709,7 +2843,7 @@ int main(int argc, char* argv[]) {
                         # construction
                         edef = ident.get_def()
                         #prim = is_primitive(ident)
-                        enode_args = self.parse_args(edef.members['ctr'][0]) # we need to give a signature list of the constructors
+                        enode_args = self.parse_args(edef.members['ctr']) # we need to give a signature list of the constructors
                         conv = enode_args
                         method = None
                         # if args are given, we use a type-matched constructor (first arg is primary)
@@ -2720,7 +2854,7 @@ int main(int argc, char* argv[]) {
                         # return construction node; if no method is defined its a simple new and optionally initialized
                         return EConstruct(type=ident, method=method, args=conv)
                 else:
-                    self.consume()
+                    #self.consume()
                     assert ident.ident and not ident.members, 'expected a type'
                     return ident
             
@@ -2973,6 +3107,7 @@ int main(int argc, char* argv[]) {
         ident    = EIdent.parse(self) # should parse nothing if there is nothing to parse..  new rule anyway..
         type_def = ident.get_def()    # also try not to over-parse with EIdent.  the consumables might be over doing it
         if type_def or ident.members: # [ array? ]
+            # simple method call
             if not ident.members and isinstance(type_def, EMethod):
                 return self.parse_expression()
             after = self.peek_token()
@@ -2980,21 +3115,26 @@ int main(int argc, char* argv[]) {
             # we need a parse member since this is parse statement; we will be reading members elsewhere
             not_member_or_ref = not ident.members and not ident.ref()
             if after == '[' and (not_member_or_ref or ident.members):
-                if ident.members:
+                if ident.meta_member and ident.members: # I.method
+                    # we parse args the same but we do not convert, tahts for runtime's method_call to perform
+                    # if we want named arguments we actually have to perform a bit of dancing around
+                    # its obviously not as advised as simply giving typed values in sequence, but it should be there to facilitate a full feature set
+                    method_str = ident.members[len(ident.members) - 1]
+                    args = self.parse_args(method_str) # List[ENode]
+                    return EMethodCall(type=None, target=ident, method=ident, args=args)
+                elif ident.members:
                     # call method
-                    method = ident.members[len(ident.members) - 1]
-                    args = self.parse_args(method) # List[ENode]
-                    conv = self.convert_args(method, args)
-
-                    # args must be the same count and convertible, type-wise
-                    return EMethodCall(target=ident, method=method, args=conv)
+                    method_edef = ident.members[len(ident.members) - 1]
+                    args = self.parse_args(method_edef) # List[ENode]
+                    conv = self.convert_args(method_edef, args) # args must be the same count and convertible, type-wise
+                    return EMethodCall(type=method_edef.type, target=ident, method=method_edef, args=conv)
                 else:
                     # we cannot construct anonymous instances since its typically a mistake when we do, and they are easy to discover
                     assert False, 'compilation error: unassigned instance'
             else:
                 declare = False
                 
-                if ident.members:
+                if ident.members and not ident.meta_member:
                     assign = is_assign(after)
                     require_assign = False
                     index = 0
@@ -3012,13 +3152,14 @@ int main(int argc, char* argv[]) {
                     member, indexing_node = self.parse_anonymous_ref(ident)
                     after = self.peek_token()
                     # declaration:
-                    if not member:
+                    if not member or ident.meta_member:
                         require_assign = False
                         if is_alpha(after):
                             # variable declaration
                             self.consume(after)
                             declare = True
-                            member  = EMember(name=str(after), access=None, type=ident,
+                            generic = self.defs['object']
+                            member  = EMember(name=str(after), access=None, type=generic.type if ident.meta_member else ident,
                                 value=None, visibility='public')
                             member._is_mutable = True
                             after   = self.peek_token()
@@ -3063,7 +3204,7 @@ int main(int argc, char* argv[]) {
         self.push_member_depth()
         while self.peek_token():
             t = self.peek_token()
-            if t == '[':    # here, this is eating my cast <----------- 
+            if multiple and t == '[':    # here, this is eating my cast <----------- 
                 depth += 1
                 self.push_member_depth()
                 self.consume()
@@ -3074,12 +3215,14 @@ int main(int argc, char* argv[]) {
             assert n is not None, 'expected statement or expression'
             block.append(n)
             if not multiple: break
-            if self.peek_token() == ']':
-                self.pop_member_depth()
+            if multiple and self.peek_token() == ']':
+                if depth > 1:
+                    self.pop_member_depth()
                 self.next_token()  # Consume ']'
                 depth -= 1
                 if depth == 0:
                     break
+        self.pop_member_depth()
         # Return a combined operation of type EType_Statements
         return EStatements(type=None, value=block)
     
@@ -3209,7 +3352,7 @@ int main(int argc, char* argv[]) {
                 if conforms:
                     edef_conforms = self.defs[conforms] if conforms in self.defs else None
                     assert edef_conforms, 'no definition found for meta argument %s' % conforms
-                cl.meta_types[symbol] = EIdent(symbol, module=self, conforms=edef_conforms)
+                cl.meta_types[symbol] = EIdent(symbol, module=self, conforms=edef_conforms) # anyone querying can check their given type against this conform
 
         while (token := self.peek_token()) != ']':
             is_static = token == 'static'
@@ -3429,7 +3572,8 @@ int main(int argc, char* argv[]) {
         self.push_token_state(method.body)
         #self.reset_member_depth()
         assert len(self.member_stack) == 1
-
+        
+        self.push_member_depth()
         self.push_return_type(method.type)
 
         # when we parse our class, however its runtime we dont need to call the method; its on the instance
@@ -3437,7 +3581,8 @@ int main(int argc, char* argv[]) {
             for member in a_members:
                 if member.name != 'index':
                     self.push_member(member) # if context name not given, we will perform memory management (for args in our case)
-        self.push_member_depth()
+        
+        self.current_def = class_def # we will never translate more than 1 at a time
         self_ident = EIdent(class_def, module=self)
         if not method.static:
             self.push_member(EMember('self', type=self_ident, module=self, visibility='public'))
@@ -3567,6 +3712,7 @@ int main(int argc, char* argv[]) {
                     for member in a_members:
                         if isinstance(member, EMethod):
                             member.code = self.translate(class_def=enode, method=member)
+                            self.member_stack
                             print('method: %s' % name)
                             print_enodes(member.code)
                 self.pop_member_depth()
