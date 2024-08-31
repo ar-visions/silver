@@ -31,13 +31,36 @@ meta [I]
 class test [
     # I member
     void something[] [
-        bool res: I is i32 # our AST can infact run to some degree and optimize its statements, but to be honest thats really too much to be doing
+        bool res: I is i32
         I dynamic: I[]
         I.method1 [ 2 ]
     ]
 ]
 
+# [ ] work on auto release
+#       import classes from A, for array, and map!
+# [x] work on auto constructors and methods
+# [ ] get lambda working
+
 class app [
+    i32 amember:  1
+    i32 amember2: 2
+
+    void set_members[i32 amember, i32 amember2] auto
+
+    void a_method[i32 a_member :: i64 a_context] [
+
+        array::int int_array
+
+        array::map::int::string array_of_maps
+        
+        # meta types need to be allowed in args, emitted as 'object'
+        
+        int_array.push[1]
+
+        return
+    ]
+
     # WGPUAdapter in C99 is a struct WGPUAdapterImpl* type (opaque-reference)
     static none onAdapterRequestEnded[
             WGPURequestAdapterStatus status, WGPUAdapter adapter,
@@ -61,6 +84,7 @@ class app [
     ]
 
     num run [] [
+        fn res: sub a_method [ 2 ]
         return 0
     ]
 ]
