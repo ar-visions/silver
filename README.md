@@ -1,70 +1,67 @@
-# Silver Programming Language
-C99 objects from module definitions; no globals.  No casting either, named args most certainly because we want it to look like reflective web development with type driven context.  Silver seems to be the most reflective and succinct way of getting there.  Reduce, and improve is the idea here.  Base on C99, so it compiles fast and compiles everywhere.
+# **silver** Language
+emit A-type library from a very succinct and modern language.  silver is designed to be the most reflective language possible, lightest weight C-based object model with almost no initialization required, yet polymorphic casts, methods, indexing and operator methods.  The actual output of silver can be debugged and mapped to our original source very easily.  A VScode gdb/llvm adapter is needed for the mapping, but Orbiter is essentially inline or development of this component first.
 
-# object is a generic type.. may use var.
-module attrib {\
-    str     name\
-    var     value\
-}
+# **import** keyword
+it starts with **import**.  import allows you to build from repositories in any language.  that makes **silver** a first class build system.  it's in-module so you only need 1 source-file for a production app.  its made to import anything, including images.  silver is project aware, and designed to get things done with less tokens, and less resources.  it's also a watcher, so changes to source are built immediately.  it makes very little sense not to keep C99 headers in memory and recompile with updates.  when it's established, a LLVM-frontend is future  architecture, with implementation of such in C++ (...one last time, C++).  For now, the C99 should compile roughly optimal to a proper LLVM frontend.
 
-# shell script / python comments
-mod Object {
-    xyz pos
-}
+```python
+# public will expose it's API, so you may just develop in C and use silver as build system
+public import WGPU [
+    source:     'https://github.com/ar-visions/dawn@2e9297c45f48df8be17b4f3d2595063504dac16c',
+    build:      ['-DDAWN_ENABLE_INSTALL=1', '-DBUILD_SHARED_LIBS=0'],
+    includes:   ['dawn/webgpu', 'dawn/dawn_proc_table'],
+    links:      ['webgpu_dawn']
+]
 
-# there should be a default, null instance for each type
-# zero-mem is undefined, nullable not actual null-token
+# ...or you can dig deeper and use its module member types, class, mod, struct, enum, union
+class app [
+    public int value : 1 # assign operator is ':' constant is '='  [ no const decorator ]
+    void run[] [
+        print 'hi -- you have given me {value}'
+    ]
+]
 
-# no 'return' keyword; void optional
-
-# this is the data that incorporates it
-module Character depends Object {
-    str         name
-    Object[]    attribs
-
-    static str  static_value = "1"          # static defined as less things, static member on a module, and that is all.
-    
-    # we dont have statics inside of functions! thats not allowed, and thus static is restricted to member domain (one large part of the langauge)
+# this is a reduced language, but we do have cast, index, and named operators
 
 
-    # module incorporates class and namespace.  this is important to be able to get rid of both to simplify with one name!
-    # oh and we can lose 30 cpp keywords.  this is opposite of problem
-
-    # the auto is where templates come in; auto a keyword you
-    # would want to use when you wnat generics of optional! [type, restrictions]
-    int method(auto[int, short] a, int b) {
-        if (typeof(a) == int)
-            -> b + a
-        else
-            -> b + int(a) * 2
-    }
-
-    # consider this a text replacement with a bit more it can do
-    # crucially its not enforcing a global token replacement, and 
-    # REQUIRES [] invocation, and is NOTICABLE as different from function
-    # supporting only expression case: (immediate return)
-    # intend to support block return case with multiple return paths per temporary
-    define macro(x, y) -> x + y + 2
-
-    # convert to string (if explicit)
-    explicit str -> name
-
-    # initialization
-    # there is no reason to have an args with props, as they have been set already
-    # what is important is the ability to have undefined restricted to unset space.  the user cannot directly effect these bits aside
-    # from setting them.  they cannot unset.  null yes, but not unsetting with an undefined.  this is important for integrity.
-
-    this {
-        if not set(name) {
-            # "double-quotes" are opaque to variables
-            # 'char' is now used for formatting; char("A") gives you character values; char is int32; cast to 8bit if you want ascii data
-            # honor the world with character and all of its codepages
-            name = "could set a default above instead.."
-        } else {
-            # show off a formatter syntax and change an input
-            name = '{str(name.len)}'
-        }
-    }
-}
+```
+| Operator | Function Name  | Description                                                   | Method Signature                              |
+|----------|----------------|---------------------------------------------------------------|-----------------------------------------------|
+| `+`      | add            | adds two numbers                                              | `T add [ T right-hand ]`                      |
+| `-`      | sub            | subtracts the second number from the first                    | `T sub [ T right-hand ]`                      |
+| `*`      | mul            | multiplies two numbers                                        | `T mul [ T right-hand ]`                      |
+| `/`      | div            | divides the first number by the second                        | `T div [ T right-hand ]`                      |
+| `\|\|`     | or             | logical or between two conditions                             | `T or [ T right-hand ]`                       |
+| `&&`     | and            | logical and between two conditions                            | `T and [ T right-hand ]`                      |
+| `^`      | xor            | bitwise xor between two numbers                               | `T xor [ T right-hand ]`                      |
+| `>>`     | right          | bitwise right shift                                           | `T right [ T right-hand ]`                    |
+| `<<`     | left           | bitwise left shift                                            | `T left [ T right-hand ]`                     |
+| `:`      | assign         | assigns a value to a variable                                 | `T assign [ T right-hand ]`                   |
+| `=`      | assign         | assigns a value to a variable (alias for `:`)                 | `T assign [ T right-hand ]`                   |
+| `+=`     | assign-add     | adds and assigns the result to the variable                   | `T assign-add [ T right-hand ]`               |
+| `-=`     | assign-sub     | subtracts and assigns the result to the variable              | `T assign-sub [ T right-hand ]`               |
+| `*=`     | assign-mul     | multiplies and assigns the result to the variable             | `T assign-mul [ T right-hand ]`               |
+| `/=`     | assign-div     | divides and assigns the result to the variable                | `T assign-div [ T right-hand ]`               |
+| `\|=`     | assign-or      | bitwise or and assigns the result to the variable             | `T assign-or [ T right-hand ]`                |
+| `&=`     | assign-and     | bitwise and and assigns the result to the variable            | `T assign-and [ T right-hand ]`               |
+| `^=`     | assign-xor     | bitwise xor and assigns the result to the variable            | `T assign-xor [ T right-hand ]`               |
+| `>>=`    | assign-right   | bitwise right shift and assigns the result to the variable    | `T assign-right [ T right-hand ]`             |
+| `<<=`    | assign-left    | bitwise left shift and assigns the result to the variable     | `T assign-left [ T right-hand ]`              |
+| `==`     | compare-equal  | checks if two values are equal                                | `bool compare-equal [ T right-hand ]`         |
+| `!=`     | compare-not    | checks if two values are not equal                            | `bool compare-not [ T right-hand ]`           |
+| `%=`     | mod-assign     | modulus operation and assigns the result to the variable      | `T mod-assign [ T right-hand ]`               |
+| `is`     | is             | checks if two references refer to the same object (keyword)   | `bool is [ T right-hand ]`                    |
+| `inherits`| inherits      | checks if a class inherits from another (keyword)             | `bool inherits [ T right-hand ]`              |
 
 
+
+# **import** keyword
+
+
+# **meta** keyword
+classes have ability to perform meta instancing.  think of it as templates but without code expansion; it simply does introspection automatically with the typed symbols.  meta is a simple idea, it's nothing more than an array of types you provide to the class when using it.  the class accepts a fixed amount of types at meta index.  
+```python
+meta [ I:any ]
+class list [
+    I type # in this context, I becomes an 'object' type, the base A-type
+]
