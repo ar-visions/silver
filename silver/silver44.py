@@ -280,6 +280,18 @@ class EIdent(ENode):
 
         self.updated()
 
+    def get_target(self):
+        if self.meta_member:
+            return self.module.lookup_stack_member('self')
+        if self.members:
+            count = len(self.members)
+            if count > 1:
+                if isinstance(self.members[count - 2], EMember):
+                    return self.members[count - 2]
+            else:
+                return self.members[0]
+        return None
+
     def member_lookup(self, etype:'EIdent', name:str) -> 'EMember':
         while True:
             cl = etype.get_def()
@@ -655,10 +667,6 @@ class EIdent(ENode):
         mdef = self.module.defs[self.ident]
         return mdef
     
-    def get_target(self):
-        if self.meta_member: return 'self'
-        assert False, 'invalid state'
-    
     def get_c99_members(self, access):
         res = access if access else ''
         for m in self.members:
@@ -772,6 +780,7 @@ class EContext:
     module: 'EModule'
     method: 'EMember'
     states: list = field(default_factory=list)
+    raw_primitives: bool = False
     values: OrderedDict = field(default_factory=OrderedDict)
     indent_level:int = 0
 
@@ -836,6 +845,7 @@ class EMethod(EMember):
     method_type:str = None
     type_expressed:bool = False
     body:EIdent = None
+    statements:'EStatements' = None
     code:ENode = None
     auto:bool = False
     context: OrderedDict[str, EMember] = None # when emitting, this should create a struct definition as well; self is passed in as an arg as our methods are 
@@ -860,8 +870,8 @@ class EClass(EMember):
         # we will only emit our own types
         if cl.model.name != 'allocated' or cl.emitted: return
         # write class declaration
-        f.write('\n/* class-declaration: %s */\n' % (name))
-        f.write('#define %s_meta(X,Y,Z) \\\n' % (name))
+        f.write('/* class-declaration: %s */\n' % (name))
+        f.write('#define %s_schema(X,Y,Z) \\\n' % (name))
         for member_name, a_members in cl.members.items():
             for member in a_members:
                 if isinstance(member, EProp):
@@ -889,72 +899,42 @@ class EClass(EMember):
                     else:                 f.write('\t%s_method(   X,Y,Z, %s, %s%s)\\\n' % (m, mdef.name, member.name, arg_types))
         f.write('\n')
         if cl.inherits:
-            f.write('declare_mod(%s, %s)\n' % (cl.name, cl.inherits.name))
+            f.write('declare_mod(%s, %s)\n\n' % (cl.name, cl.inherits.name))
         else:
-            f.write('declare_class(%s)\n' % (cl.name))
+            f.write('declare_class(%s)\n\n' % (cl.name))
 
+    def output_methods(self, file, cl, with_body):
+        for member_name, a_members in cl.members.items():
+            for member in a_members:
+                if isinstance(member, EMethod):
+                    args = ', ' if not member.static and len(member.args) else ''
+                    for arg_name, a in member.args.items():
+                        if args and args != ', ': args += ', '
+                        args += '%s%s %s' % (
+                            a.type.get_def().name, '*' * a.type.ref(), a.name)
+                    
+                    full_name = '%s_%s' % (cl.name, member.name)
+                    file.write('%s %s(%s%s)%s\n' % (
+                        member.type.get_def().name,
+                        full_name,
+                        '' if member.static else cl.name + ' self',
+                        args,
+                        ';\n' if not with_body else ' {'))
+                    if with_body:
+                        file.write(member.code.emit(EContext(module=self, method=member))) # method code should first contain references to the args
+                        file.write('}\n\n')
+    
+    def emit_source_decl(self, file):
+        cl = self
+        if cl.model.name != 'allocated' or cl.emitted: return
+        if cl.visibility == 'intern':
+            self.emit_header(file)
+        self.output_methods(file, cl, False)  # output all methods with body
+        
     def emit_source(self, file):
         cl = self
-        # only emit silver-based implementation
         if cl.model.name != 'allocated' or cl.emitted: return
-        def output_methods(visibility, with_body):
-            nonlocal cl, file
-            for member_name, a_members in cl.members.items():
-                for member in a_members:
-                    if isinstance(member, EMethod) and (not visibility or visibility == member.visibility):
-                        args = ', ' if not member.static and len(member.args) else ''
-                        for arg_name, a in member.args.items():
-                            if args and args != ', ': args += ', '
-                            args += '%s%s %s' % (
-                                a.type.get_def().name, '*' * a.type.ref(), a.name)
-                        
-                        full_name = '%s_%s' % (cl.name, member.name)
-                        if member.context_args:
-                            file.write('typedef struct %s_ctx {\n' % (full_name))
-                            #if not member.static:
-                            #    file.write('\t%s self;\n' % (cl.name))
-                            alloc_args = ''
-                            for name, arg_member in member.context_args.items():
-                                type_name = arg_member.type.get_name()
-                                file.write('\t%s %s;\n' % (type_name, name))
-                                if alloc_args: alloc_args += ', '
-                                alloc_args += '%s %s' % (type_name, name)
-                            file.write('} %s_ctx;\n\n' % (full_name))
-                            if args and args != ', ': args += ', '
-                            args += '%s_ctx* _ctx' % (full_name) # sub procedures have an extra context pointer on the end; we allocate this when we create the sub
-                            
-                            # alloc procedure
-                            file.write('%s_ctx* %s_sub(%s) {\n' % (full_name, full_name, alloc_args))
-                            file.write('\t%s_ctx* _ctx = A_struct(%s_ctx);\n' % (full_name, full_name))
-                            for name, arg_member in member.context_args.items():
-                                if arg_member.type.get_def().model == 'allocated':
-                                    file.write('\t_ctx->%s = hold(%s);\n' % (name, name)) # objects are held
-                                else:
-                                    file.write('\t_ctx->%s = %s;\n' % (name, name)) # primitives are copied
-                            file.write('\treturn _ctx;\n')
-                            file.write('}\n\n')
-                            
-                            # release procedure
-                            file.write('void %s_rel(%s_ctx* _ctx) {\n' % (full_name, full_name))
-                            for name, arg_member in member.context_args.items():
-                                if arg_member.type.get_def().model == 'allocated':
-                                    file.write('\t\tdrop(_ctx->%s);\n' % name)
-                                file.write('\tdrop(_ctx);\n')
-                            file.write('}\n\n')
-                        
-                        file.write('%s %s(%s%s)%s\n' % (
-                            member.type.get_def().name,
-                            full_name,
-                            '' if member.static else cl.name + ' self',
-                            args,
-                            ';' if not with_body else ' {'))
-                        if with_body:
-                            file.write(member.code.emit(EContext(module=self, method=member))) # method code should first contain references to the args
-                            file.write('}\n\n')
-
-        output_methods('intern', False) # forward declaration on intern in source
-        output_methods(None,     True)  # output all methods with body
-
+        self.output_methods(file, cl, True)  # output all methods with body
         if cl.inherits:
             file.write('define_mod(%s, %s)\n\n' % (cl.name, cl.inherits.name))
         else:
@@ -983,6 +963,7 @@ class EStruct(EMember):
                 valid = True
         assert valid, 'struct %s must contain members' % self.name
         f.write('} %s;\n' % self.name)
+    def emit_source_decl(self, f): return
     def emit_source(self, f):
         if self.visibility == 'public':
             self.emit_header(f, True)
@@ -995,6 +976,8 @@ class EUnion(EMember):
     def emit_header(self, f, is_source = False):
         if self.imported: return
         assert False, 'union not supported'
+    def emit_source_decl(self, f):
+        pass
     def emit_source(self, f):
         if self.imported: return
         assert False, 'union not supported'
@@ -1016,6 +999,8 @@ class EEnum(EMember):
                 f.write('\tenum_value(X,Y, %s)\\\n' % (member.name))
                 break
         f.write('\ndeclare_enum(%s)\n' % (name))
+    def emit_source_decl(self, f):
+        pass
     def emit_source(self, f):
         f.write('define_enum(%s)\n' % (self.name))
 
@@ -1024,6 +1009,7 @@ class EAlias(EMember):
     to:EIdent=None
     def __repr__(self): return 'EAlias(%s -> %s)' % (self.name, self.to.get_name()) 
     def emit_header(self, f): return
+    def emit_source_decl(self, f): return
     def emit_source(self, f): return
 
 @dataclass
@@ -1063,6 +1049,8 @@ class EImport(ENode): # we may want a node for 'EModuleNode' that contains name,
             f.write('#include <%s>\n' % (h_file))
 
     def emit_source(self, f): return
+
+    def emit_source_decl(self, f): return
 
     def file_exists(filepath):
         return os.path.exists(filepath)
@@ -1297,7 +1285,7 @@ class EConstruct(ENode):
                 arg_emit = a.emit(ctx)
                 args += ', '
                 args += arg_emit
-            return 'construct(%s, %s%s)' % (type_name, base0.name, args)
+            return 'ctr(%s, %s%s)' % (type_name, base0.name, args)
         else:
             return 'new(%s)' % (type_name)
 
@@ -1308,6 +1296,15 @@ class EExplicitCast(ENode):
     def emit(self, ctx:EContext):
         return '(%s)(%s)' % (self.type.emit(ctx), self.value.emit(ctx))
     
+@dataclass
+class EPrimitive(ENode):
+    type: EIdent
+    value: ENode
+    def emit(self, ctx:EContext):
+        if ctx.raw_primitives:
+            return self.value.emit(ctx)
+        else:
+            return 'A_%s(%s)' % (self.value.type.emit(ctx), self.value.emit(ctx))
 
 @dataclass
 class EProp(EMember):
@@ -1585,6 +1582,7 @@ class ESubProc(ENode):
     type:EIdent
     target:EMember
     method:EMember
+    context_type:EIdent
     context_args:List[ENode]
     def emit(self, ctx:EContext):
         # A_member(meta_t(self, %i), A_TYPE_IMETHOD | A_TYPE_SMETHOD, "%s");
@@ -1602,7 +1600,6 @@ class ESubProc(ENode):
             ctx_arg   = self.method.context_args[context_keys[index]]
             type_name = ctx_arg.type.get_name()
             convert   = a.type.ident != type_name
-            if (convert and edef.model != 'allocated'): str_e = 'A_%s(%s)' % (edef.name, str_e)
             if convert:
                 if edef.model != 'allocated':
                     str_e = '(%s)%s' % (ctx_arg.type.get_name(), str_e)
@@ -1610,9 +1607,12 @@ class ESubProc(ENode):
                     str_e = 'A_convert(typeof(%s), %s)' % (ctx_arg.type.get_name(), str_e)
             args     += str_e
             index    += 1
-        full_name = self.method.parent.name + '_' + self.method.name
+
         target = self.target.emit(ctx)
-        return 'A_lambda(%s, A_member(isa(%s), A_TYPE_IMETHOD | A_TYPE_SMETHOD, "%s"), %s_sub(%s))' % (target, target, self.method.name, full_name, args)
+        context_keys = list(self.method.context_args.keys())
+        first_arg = self.method.context_args[context_keys[0]].type
+        return 'A_lambda(%s, A_member(isa(%s), A_TYPE_IMETHOD | A_TYPE_SMETHOD, "%s"), ctr(%s, %s, %s))' % (
+            target, target, self.method.name, self.context_type.get_name(), first_arg.get_name(), args)
 
 # these EOperator's are emitted only for basic primitive ops
 # class operators have their methods called with EMethodCall
@@ -1633,13 +1633,25 @@ class EOperator(ENode):
             'EOr':       '|',
             'EAnd':      '&',
             'EXor':      '^',
+            'ECompareEquals': '==',
+            'ECompareNotEquals': '!=',
             'EIs':       'is',
-            'EInherits': 'inherits'
-        }
+            'EInherits': 'inherits' # should be used for evaling the order, consolidating the parse_* methods into 1
+        }                           # will not have to pair these as we do, its just calling one after the other
         assert t in m
         self.op = m[t]
         return super().__post_init__()
     def emit(self, ctx:EContext): return self.left.emit(ctx) + ' ' + self.op + ' ' + self.right.emit(ctx)
+
+
+@dataclass
+class ECompareEquals(EOperator):
+    pass
+
+
+@dataclass
+class ECompareNotEquals(EOperator):
+    pass
 
 
 @dataclass
@@ -1714,6 +1726,7 @@ def append_args(s_args, args:List[ENode], method_key:str, convert:bool, ctx:ECon
                 str_e = 'A_%s(%s)' % (edef.name, str_e)
             str_e = 'A_convert(%s->args.meta_%i, %s)' % (method_key, i, str_e)
         s_args += str_e
+    return s_args
 
 @dataclass
 class EMethodCall(ENode):
@@ -1743,8 +1756,6 @@ class EMethodCall(ENode):
                 is_arr  = True
             else:
                 assert False, 'implement 1'
-        else:
-            assert False, 'implement 2'
 
         if not self.target:
             return '%s(%s)' % (self.method.name, s_args)
@@ -1771,11 +1782,12 @@ class EMethodCall(ENode):
                 # anonymous satisfies thread-local (no args) users and context consumers (with the use of args)
                 # passing by value is not quite practical, so struct's should be always by ref
 
-                append_args(s_args, self.args, method_key, is_arr == True, ctx)
+                s_args = append_args(s_args, self.args, method_key, is_arr == True, ctx)
                 if is_arr: s_args += ')'
 
                 return 'A_method_call(%s, %s)' % (method_key, s_args) 
             elif self.method.visibility == 'intern':
+                s_args = append_args(s_args, self.args, None, False, ctx)
                 assert ctx.method.parent == self.method.parent, 'intern method accessed outside type'
                 return '%s_%s(%s%s%s)' % (
                     self.method.parent.name, # meta args must be in ctx
@@ -1784,8 +1796,9 @@ class EMethodCall(ENode):
                     ', ' if s_args else '',
                     s_args)
             else:
+                s_args = append_args(s_args, self.args, None, False, ctx)
                 return 'call(%s, %s%s%s)' % (
-                    self.target,
+                    self.target.emit(ctx),
                     self.method.name,
                     ', ' if s_args else '',
                     s_args)
@@ -1912,6 +1925,9 @@ class EModule(ENode):
                 if char == ':' and input_string[index + 1] == ':':
                     tokens.append(Token('::', line_num))
                     index += 2
+                elif char == '=' and input_string[index + 1] == '=':
+                    tokens.append(Token('==', line_num))
+                    index += 2
                 else:
                     tokens.append(Token(char, line_num))
                     index += 1
@@ -2004,6 +2020,7 @@ class EModule(ENode):
         # we run the risk of bloating up software without knowing
         # plus, reading code should really tell you. the keyword is public for import
         self.emit_includes(f, 'public')
+        #f.close()
 
         # write the forward declarations
         for name, cl in self.defs.items():
@@ -2017,11 +2034,12 @@ class EModule(ENode):
         primitive_types = []
 
         # emit C99 for 'primitive', registered with A-type
-        f.write('\n/* register imported types with A-type */')
+        f.write('\n/* register imported types with A-type */\n')
         imported_defs = ''
         imported_decl = ''
         imported_cdef = ''
 
+        # for now i want to avoid all forms of imported types from libs -- in theory it can be coupled with public imports
         def fn(base_type):
             if base_type.imported and not base_type.emitted:
                 primitive_types.append(base_type)
@@ -2036,11 +2054,19 @@ class EModule(ENode):
                 if cl.model.name != 'allocated': continue
                 for name, a_members in cl.members.items():
                     for member in a_members:
+                        if member.visibility != 'public': continue
                         if isinstance(member, EProp):
                             fn(member.type.get_def())
                         elif member.args:
                             for _, a in member.args.items():
                                 fn(a.type.get_def())
+
+        # write the declarations
+        for name, cl in self.defs.items():
+            if cl.imported: continue
+            if cl.visibility != 'public': continue
+            if isinstance(cl, EImport): cl.emit_header(f)
+        
         f.write(imported_defs)
         f.write(imported_decl)
         f.write('\n')
@@ -2048,7 +2074,8 @@ class EModule(ENode):
         # write the declarations
         for name, cl in self.defs.items():
             if cl.imported: continue
-            cl.emit_header(f)
+            if cl.visibility != 'public': continue
+            if not isinstance(cl, EImport): cl.emit_header(f)
 
         if self.meta_users:
             imported_cdef += '\n'
@@ -2062,6 +2089,7 @@ class EModule(ENode):
                 imported_cdef += '\ndefine_meta(%s, %s, %s)' % (def_name, name, types)
 
         f.write('\n#endif\n')
+        f.close()
         return imported_cdef
         
     def emit_includes(self, file, visibility):
@@ -2086,7 +2114,12 @@ class EModule(ENode):
         self.emit_includes(file, 'intern')
         file.write('\n')
         self.emit_cfile = emit_cfile
-        file.write(imported_defs + '\n\n')
+        #file.write(imported_defs + '\n\n')
+
+        for name, cl in self.defs.items():
+            if cl.imported: continue
+            cl.emit_source_decl(file)
+        
         # emit code for classes
         for name, cl in self.defs.items():
             if cl.imported: continue
@@ -2136,6 +2169,13 @@ int main(int argc, char* argv[]) {
         m.defs['object'] = EClass(module=m, name='object', visibility='intern', model=models['allocated'])
         m.defs['fn']     = EClass(module=m, name='fn',     visibility='intern', model=models['allocated'])
 
+        # should this just go direct into defs?
+        #schemas = m.parse_A_schemas('A')
+
+        #for name, edef in schemas.items():
+        #    if name == 'A': continue
+        #    m.defs[name] = edef
+        
         # need to get meta working with this; all permutations of meta must be 'alias' registered (probably should rename?)
         # here we are attempting to declare somem ethods on 'array': todo: we must do all runtime types!
         m.defs['array']  = EClass(module=m, name='array', imported=True, visibility='intern', model=models['allocated'])
@@ -2708,7 +2748,10 @@ int main(int argc, char* argv[]) {
         return self.parse_operator(self.parse_is,      '*', '/', EMul, EDiv)
     
     def parse_is(self):
-        return self.parse_operator(self.parse_primary, 'is', 'inherits', EIs, EInherits)
+        return self.parse_operator(self.parse_eq,      'is', 'inherits', EIs, EInherits)
+    
+    def parse_eq(self):
+        return self.parse_operator(self.parse_primary, '==', '!=', ECompareEquals, ECompareNotEquals)
     
     def is_bool(self, token):
         t = str(token)
@@ -2747,14 +2790,19 @@ int main(int argc, char* argv[]) {
         id = self.peek_token() # may have to peek the entire tokens set for member path
         assert id == 'sub', 'expected sub keyword'
         self.consume('sub')
-        ident = EIdent.parse(self)
+        ident = EIdent.parse(self) # needs to be in target of sub
+        self_member = self.lookup_stack_member('self')
+        self_def = self_member.type.get_def()
+        method   = self_def.members[ident.ident][0]
+        ctx_name = '%s_%s_ctx' % (self_def.name, method.name) 
+        ctx_def  = self.defs[ctx_name]
+        assert method, 'method for sub procedure not found: %s' % ident.ident
         after = self.peek_token()
         assert after == '[', 'expected context args'
         self.consume('[')
-        method = ident.get_def()
-        assert method, 'method for sub procedure not found: %s' % ident.ident
+        #method = ident.get_def()
         context_args = self.parse_call_args(ident.get_def(), False, True)
-        return ESubProc(type=self.defs['fn'], target=self.lookup_stack_member('self'), method=method, context_args=context_args)
+        return ESubProc(type=self.defs['fn'], target=self.lookup_stack_member('self'), method=method, context_type=ctx_def.type, context_args=context_args)
         # copy context_args to inline struct data?
         # ident does not parse args.  we had to draw the line somewhere for god sakes.  it cant be some overzealous class
 
@@ -2931,7 +2979,7 @@ int main(int argc, char* argv[]) {
                 if is_open:
                     self.consume(']')
                 conv_args      = self.convert_args(method, enode_args)
-                return EMethodCall(type=ident, target=method.access, method=method, args=conv_args)
+                return EMethodCall(type=ident, target=module.lookup_stack_member(method.access), method=method, args=conv_args)
             else:
                 return imember # todo: we need more context than this
         else:
@@ -3042,9 +3090,27 @@ int main(int argc, char* argv[]) {
         cast_methods = self.casts(fr)
         if fr == to or (self.is_primitive(fr) and self.is_primitive(to)):
             return True
+        
+        # code is a bit ugly in the EIdent area, and we are repeating argument emitting/conversion in various places
+        # 
+        if self.is_primitive(fr):
+            if to.get_def() == self.defs['object']:
+                return True
+
+        # we should have constructs across object for creating with various primitives, however that pollutes the polymorphic landscape quite a bit
+        a_ctr = self.constructs(to)
+        # go through constructors
+        for member in a_ctr:
+            arg_keys = list(member.args.keys())
+            assert len(arg_keys) > 0, 'invalid constructor'
+            first = member.args[arg_keys[0]]
+            if self.convertible(fr, first.type):
+                return True
+                
         for method in cast_methods:
             if method.type == to:
                 return method
+        
         return None
     
     # constructors are reduced too, first arg as how we match them, the rest are optional args by design
@@ -3071,10 +3137,16 @@ int main(int argc, char* argv[]) {
         if fr == etype: return True
         return self.castable(fr, to) or self.constructable(fr, to)
 
+    # name these functions better
     def convert_enode(self, enode, type):
         assert enode.type, 'code has no type. thats trash code'
         if enode.type != type:
             cast_m      = self.castable(enode, type)
+            # if converting to object, we sometimes wrap a primitive, otherwise its no operation
+            # its an illegal operation to cast 'object' on an object, which makes logical space for wrapping:
+            if self.is_primitive(enode.type) and type.get_base() == self.defs['object']:
+                return EPrimitive(type=type, value=enode)
+
             # type is the same, or its a primitive -> primitive conversion
             if cast_m == True: return EExplicitCast(type=type, value=enode)
 
@@ -3088,6 +3160,7 @@ int main(int argc, char* argv[]) {
         else:
             return enode
         
+    # we are converting through emit logic above, however its proper to do it in enode
     def convert_args(self, method, args):
         conv = []
         len_args = len(args)
@@ -3255,9 +3328,9 @@ int main(int argc, char* argv[]) {
                     method_edef = ident.members[len(ident.members) - 1]
                     self.consume('[')
                     args = self.parse_call_args(method_edef) # List[ENode]
-                    self.consume(']')
+                    self.consume(']') # i64 to object
                     conv = self.convert_args(method_edef, args) # args must be the same count and convertible, type-wise
-                    return EMethodCall(type=method_edef.type, target=ident, method=method_edef, args=conv)
+                    return EMethodCall(type=method_edef.type, target=ident.get_target(), method=method_edef, args=conv)
                 else:
                     # we cannot construct anonymous instances since its typically a mistake when we do, and they are easy to discover
                     assert False, 'compilation error: unassigned instance'
@@ -3323,7 +3396,7 @@ int main(int argc, char* argv[]) {
             return self.parse_expression()
 
     def parse_statements(self, prestatements = None):
-        if prestatements:
+        if prestatements != None:
             block = prestatements.value
         else:
             block = []  # List to hold enode instances
@@ -3419,7 +3492,7 @@ int main(int argc, char* argv[]) {
             assert arg_def, 'arg could not resolve type: %s' % (arg_type[0].value)
             ar = context if inside_context else args
             ar[arg_name] = EProp(
-                name=str(arg_name_token), access='_ctx' if inside_context else 'const',
+                name=str(arg_name_token), access='const' if inside_context else 'const',
                 type=arg_type, value=None, visibility='public')
             n = self.peek_token()
             if n == ',':
@@ -3452,7 +3525,8 @@ int main(int argc, char* argv[]) {
         assert t == '[', f"Expected '[', got {token.value} at line {token.line_num}"
         args, context = self.parse_defined_args(is_no_args) # context args should define a struct we use for storage
         if not is_no_args:
-            assert self.next_token() in [']', '::'], 'expected end of args'
+            n = self.next_token()
+            assert str(n) in [']', '::'], 'expected end of args'
 
         t       = self.peek_token()
         is_auto = t == 'auto'
@@ -3502,6 +3576,27 @@ int main(int argc, char* argv[]) {
             name = 'with_%s' % str(args[arg_keys[0]].type.get_name())
         else:
             name = id
+
+        if context:
+            # create def for this named cl.name '_' + name + '_' + context
+            keys      = list(context.keys())
+            first_arg = context[keys[-1]]
+            ctx_name  = '%s_%s_ctx' % (cl.name, str(name_token))
+            ctx       = self.defs[ctx_name] = EClass(name=ctx_name, module=self, model=models['allocated'], visibility='intern')
+            ctx_type  = EIdent(ctx, module=self)
+            ctx.type  = ctx_type
+            ctx_statements = EStatements(type=None, value=[])
+            target = EMember('self', type=ctx_type, module=self, visibility='public')
+            for arg_name, arg in context.items():
+                ctx_prop = EProp(name=arg.name, type=arg.type, access='self', module=self, visibility='public')
+                ctx.members[arg.name] = [ctx_prop]
+                ctx_statements.value.append(EAssign(type=ctx_prop.type, target=ctx_prop, value=arg, index=None))
+            name = id
+            # constructor with all members; 
+            ctx.members['ctr'] = [
+                EMethod('with_%s' % first_arg.type.get_name(),
+                        type=ctx_type, visibility='public', type_expressed=True, statements=ctx_statements, args=context)
+            ]
         
         # we need a way of reading the public/intern state
         method = EMethod(
@@ -3759,6 +3854,8 @@ int main(int argc, char* argv[]) {
                 can_conv = self.convertible(member_arg.type, first.type)
                 assert can_conv, 'cannot convert member %s' % (str(key))
                 enodes.append(EAssign(type=first.type, target=first, value=member_arg, index=None, declare=False))
+        elif method.statements != None:
+            prestatements = method.statements
         else:
             assert len(method.body) > 0
         
