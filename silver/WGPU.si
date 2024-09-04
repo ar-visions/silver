@@ -21,7 +21,7 @@ class app [
             symbol message, handle userdata] [
 
         # no ability to construct with var args
-        array::i64 ar : [ 1, 2, 3, 4, 5 ]
+        # array::i64 ar : [ 1, 2, 3, 4, 5 ]
 
         ref handle u: ref userdata
         handle something: userdata
