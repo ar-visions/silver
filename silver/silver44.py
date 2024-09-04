@@ -3590,6 +3590,7 @@ int main(int argc, char* argv[]) {
             for arg_name, arg in context.items():
                 ctx_prop = EProp(name=arg.name, type=arg.type, access='self', module=self, visibility='public')
                 ctx.members[arg.name] = [ctx_prop]
+                # all of these assignments come from the constructor arguments, so they must all 'grab'
                 ctx_statements.value.append(EAssign(type=ctx_prop.type, target=ctx_prop, value=arg, index=None))
             name = id
             # constructor with all members; 

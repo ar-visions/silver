@@ -20,6 +20,9 @@ class app [
             WGPURequestAdapterStatus status, WGPUAdapter adapter,
             symbol message, handle userdata] [
 
+        # no ability to construct with var args
+        array::i64 ar : [ 1, 2, 3, 4, 5 ]
+
         ref handle u: ref userdata
         handle something: userdata
 
@@ -41,7 +44,9 @@ class app [
 
     num run [] [
         # we may use fn if type assignment
-        fn lambda : sub a_context_fn [ 1 ] # verify this
+        fn lambda : sub a_context_fn [ 1 ]
+        # verify this
+        
         lambda[ 2 ] # implement this interpretation
         string a_val: 'this is a string'
         # C99: create ctx struct, and caller method
