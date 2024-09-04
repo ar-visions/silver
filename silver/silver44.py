@@ -4,7 +4,9 @@ from    pathlib     import Path
 import  numpy as np
 import  os, subprocess, platform
 import  argparse
-from    clang.cindex import Index, CursorKind, TypeKind
+from    clang.cindex import Index, Config, CursorKind, TypeKind
+
+Config.set_library_path('/usr/lib/llvm-17/lib')
 
 build_root = ''
 is_debug = False

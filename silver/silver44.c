@@ -1,4 +1,4 @@
-#include <silver44.h>
+/*#include <silver44.h>
 
 // Helper function to replace all occurrences of a character in a string
 static string string_replace_char(string s, char old_char, char new_char) {
@@ -140,6 +140,7 @@ static EContext EContext_with_EModule(EContext self, EModule module, EMember met
 
 define_class(EContext)
 
+*/
 
 int main(int n_args, const char* args[]) {
     return 0;

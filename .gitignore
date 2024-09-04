@@ -32,4 +32,6 @@ Debug/.vs/obj-test/v15/.suo
 *.dylib
 *.so
 deps/*
+install
+checkouts
 
