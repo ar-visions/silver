@@ -14,7 +14,7 @@ set                       (LLVM_VERSION "14")
 include_directories       (${LLVM_INCLUDE_DIRS} /usr/include/llvm-14) # /usr/lib/gcc/x86_64-linux-gnu/11/include
 link_directories          (${LLVM_LIBRARY_DIRS} /usr/lib/llvm-14/lib)
 link_directories          (${CMAKE_INSTALL_PREFIX}/lib)
-file                      (GLOB src                     "${CMAKE_CURRENT_SOURCE_DIR}/silver/silver44.c" "${CMAKE_CURRENT_SOURCE_DIR}/silver/silver44-IR.cc")
+file                      (GLOB src                     "${CMAKE_CURRENT_SOURCE_DIR}/silver/*.c")
 add_compile_options       (-fno-exceptions -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS)
 add_compile_options       (-Wno-write-strings -Wno-incompatible-pointer-types -Wfatal-errors -fPIC)
 #add_compile_options      (-fsanitize=address -fno-omit-frame-pointer -g)
