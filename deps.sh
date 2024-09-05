@@ -13,12 +13,12 @@ TARGET_DIR="A"
 if [ -d "$TARGET_DIR" ]; then
     echo "Directory $TARGET_DIR already exists. Pulling latest changes..."
     cd "$TARGET_DIR" || exit 1
-    #PULL_HASH_0=$(git rev-parse HEAD)
-    #git pull || exit 1
-    #PULL_HASH_1=$(git rev-parse HEAD)
-    #if [ "$PULL_HASH_0" != "$PULL_HASH_1" ]; then
-    #    rm -f silver-build/silver-token || exit 1
-    #fi
+    PULL_HASH_0=$(git rev-parse HEAD)
+    git pull || exit 1
+    PULL_HASH_1=$(git rev-parse HEAD)
+    if [ "$PULL_HASH_0" != "$PULL_HASH_1" ]; then
+        rm -f silver-build/silver-token || exit 1
+    fi
 else
     echo "cloning repository into $TARGET_DIR..."
     git clone https://github.com/ar-visions/A.git "$TARGET_DIR"

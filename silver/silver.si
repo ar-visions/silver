@@ -1,6 +1,0 @@
-# needs to know when to build executable, or shared library
-# right now for source, we look for a main exported with the nm command
-# this lets us build either an exe or shared lib
-import A       ['https://github.com/ar-visions/A']
-import runtime ['silver.c', 'silver2.c']
-import more    ['silver3.c']
