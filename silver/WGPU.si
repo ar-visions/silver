@@ -13,7 +13,28 @@ import WGPU [
 
 import <stdlib, stdint, stdio>
 
+# silver 1.0: inlay
+# they become contiguous and embedded into the instance with inlay
+# this applies to classes and primitives, classes become n-depth embeddable and this basically removes the need for struct?
+# its also a better way to design delegation in general; certainly better for cache as well
+# inlay gives you a bit of handy object design
+
+# asm/arch/feature switch
+# default required when we do features 
+
+#   asm [
+#       target [ x64 ] [
+#           mov eax, ebx
+#           xor eax, eax
+#       ]
+#       default [
+#           LLVM IR code <- not super trivial to get IR in silver
+#       ]
+]
+#   ]
 class app [
+    int member 
+    int member2
 
     # WGPUAdapter in C99 is a struct WGPUAdapterImpl* type (opaque-reference)
     static intern none onAdapterRequestEnded[

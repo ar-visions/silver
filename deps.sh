@@ -36,7 +36,7 @@ if [ ! -f "silver-token" ]; then
     BUILD_DIR=$(pwd)
     echo BUILD_DIR = $BUILD_DIR
 
-    cmake -S .. -B . -DCMAKE_INSTALL_PREFIX=$BUILD_DIR/../../../install
+    cmake -S .. -B . -DCMAKE_INSTALL_PREFIX=$BUILD_DIR/../../../install -DCMAKE_BUILD_TYPE=Debug
     if [ $? -ne 0 ]; then
         echo "A gen failure"
         exit 1
