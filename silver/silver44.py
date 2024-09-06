@@ -5,61 +5,7 @@ import  numpy as np
 import  os, subprocess, platform
 import  argparse
 from    clang.cindex import Index, Config, CursorKind, TypeKind
-from    llvmlite     import ir, binding
-import  ctypes
 
-
-# Initialize LLVM binding
-binding.initialize()
-binding.initialize_native_target()
-binding.initialize_native_asmprinter()
-
-# Create an LLVM module and a function definition
-module    = ir.Module(name='module')
-func_type = ir.FunctionType(ir.IntType(32), [])
-main_func = ir.Function(module, func_type, name='main')
-block     = main_func.append_basic_block(name='entry')
-builder   = ir.IRBuilder(block)
-
-# Return the integer 42 from the main function
-builder.ret(ir.Constant(ir.IntType(32), 42))
-
-# run graph at station
-def run():
-    # Create a target machine and a JIT execution engine
-    target   = binding.Target.from_default_triple()
-    machine  = target.create_target_machine()
-    engine   = binding.create_mcjit_compiler(binding.parse_assembly(str(module)), machine)
-    engine.finalize_object()
-    engine.run_static_constructors()
-
-    a_main   = engine.get_function_address('main')      # get main address
-    f_main   = ctypes.CFUNCTYPE(ctypes.c_int)(a_main) # cast the function pointer to a callable function
-    result   = f_main()                                   # call main
-    print('Executed main function, returned:', result)
-    return result
-
-# llvm emits .ll file
-def cerealize(file='a.ll'):
-    with open(file, 'w') as f:
-        f.write(str(module))
-    return True
-
-# Call either function
-run()  # To JIT and run the function
-# cerealize()  # Uncomment to emit the LLVM IR to a .ll file
-
-
-if(2 + 5 > 1): # dont darken the code below
-    exit(0)
-
-# Initialize the LLVM JIT engine (necessary to access version info)
-binding.initialize()
-binding.initialize_native_target()
-binding.initialize_native_asmprinter()
-
-# Print the LLVM version that llvmlite is using
-print(binding.llvm_version_info)
 
 
 Config.set_library_path('/usr/lib/llvm-17/lib')
@@ -2187,7 +2133,7 @@ class EModule(ENode):
         if app_def:
             file.write("""
 int main(int argc, char* argv[]) {
-    A_finish_types();
+    A_start();
     // todo: parse args and set in app class
     %s main = new(%s);
     return (int)call(main, run);
