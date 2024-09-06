@@ -22,16 +22,23 @@ import <stdlib, stdint, stdio>
 # asm/arch/feature switch
 # default required when we do features 
 
-#   asm [
-#       target [ x64 ] [
-#           mov eax, ebx
-#           xor eax, eax
-#       ]
-#       default [
-#           LLVM IR code <- not super trivial to get IR in silver
-#       ]
+##
+asm [
+    target [ x64 ] [
+        feature [ SSE4 ] [
+            mov eax, ebx
+            xor eax, eax
+        ] default [
+            mov eax, ebx
+            xor eax, eax
+        ]
+    ]
+    default [
+        LLVM IR code <- not super trivial to get IR in silver
+    ]
 ]
-#   ]
+##
+
 class app [
     int member 
     int member2
