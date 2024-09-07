@@ -1,0 +1,32 @@
+#ifndef _SILVER_
+#define _SILVER_
+#include <A>
+
+// it will be nice to put parser logic outside silver, parse
+// class used for module reading, parsing and llvm management.
+// helps hide weird stuff
+
+typedef struct silver* silver;
+
+#define reference_schema(X,Y,Z) \
+    i_intern(   X,Y,Z, A,      type) \
+    i_intern(   X,Y,Z, num,    refs) \
+    i_intern(   X,Y,Z, silver, module) \
+    i_construct(X,Y,Z, AType,  num, silver)
+declare_class(reference)
+
+#define ref(module, type, count) ctr1(reference, AType, type, count, module)
+
+#define function_schema(X,Y,Z) \
+    i_intern(   X,Y,Z, object, intern) \
+    i_construct(X,Y,Z, cstr, silver, AType, map)
+declare_class(function)
+
+#define silver_schema(X,Y,Z)\
+    i_intern(    X,Y,Z, object, intern)\
+    i_override_m(X,Y,Z, void,   init) \
+    i_override_m(X,Y,Z, void,   destructor) \
+    i_construct( X,Y,Z, string)
+declare_class(silver)
+
+#endif
