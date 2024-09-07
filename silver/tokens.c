@@ -1,5 +1,9 @@
 #include <tokens>
 
+bool next_is(Tokens tokens, symbol cs) {
+    return call(tokens, next_is, cs);
+}
+
 /// Loc
 Token Loc_with_path(Loc a, path source, num line, num col) {
     a->source = A_hold(source);
@@ -43,6 +47,27 @@ Tokens Tokens_with_array(Tokens a, array tokens) {
     return a;
 }
 
+Token Tokens_read(Tokens a, num rel) {
+    return a->tokens->elements[a->cursor + rel];
+}
+
+Token Tokens_next(Tokens a) {
+    if (a->cursor >= len(a->tokens))
+        return null;
+    Token res = call(a, read, 0);
+    a->cursor++;
+    return res;
+}
+
+Token Tokens_peek(Tokens a) {
+    return call(a, read, 0);
+}
+
+bool Tokens_next_is(Tokens a, symbol cs) {
+    Token n = call(a, read, 0);
+    return strcmp(n->chars, cs) == 0;
+}
+
 void Tokens_transfer(Tokens a, Tokens b) {
     assert(a->tokens == b->tokens);
     a->cursor = b->cursor;
@@ -61,6 +86,10 @@ void Tokens_pop(Tokens a) {
 
 void Tokens_push_current(Tokens a) {
     call(a, push_state, a->tokens, a->cursor);
+}
+
+bool Tokens_cast_bool(Tokens a) {
+    return a->cursor < len(a->tokens) - 1;
 }
 
 /// parse_tokens
