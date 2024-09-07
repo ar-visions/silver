@@ -2,8 +2,6 @@
 #define _TOKENS_
 #include <A>
 
-array parse_tokens(object input);
-
 #define Loc_schema(X,Y,Z) \
     i_intern(X,Y,Z, path,   source) \
     i_intern(X,Y,Z, num,    line) \
@@ -29,9 +27,17 @@ declare_class(Token)
     i_method(X,Y,Z, none,   push_state,   array, num) \
     i_method(X,Y,Z, none,   push_current) \
     i_method(X,Y,Z, none,   pop) \
+    i_method(X,Y,Z, Token,  read, num) \
+    i_method(X,Y,Z, Token,  next) \
+    i_method(X,Y,Z, Token,  peek) \
+    i_method(X,Y,Z, bool,   next_is, symbol) \
     i_method(X,Y,Z, none,   transfer, Tokens) \
     i_construct(X,Y,Z, path) \
-    i_construct(X,Y,Z, array)
+    i_construct(X,Y,Z, array) \
+    i_override_cast(X,Y,Z, bool)
 declare_class(Tokens)
+
+array parse_tokens(object input);
+bool  next_is(Tokens tokens, symbol cs);
 
 #endif

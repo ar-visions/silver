@@ -24,8 +24,9 @@ declare_class(function)
 
 #define silver_schema(X,Y,Z)\
     i_intern(    X,Y,Z, object, intern)\
-    i_override_m(X,Y,Z, void,   init) \
-    i_override_m(X,Y,Z, void,   destructor) \
+    i_intern(    X,Y,Z, map,    defs) \
+    i_override_m(X,Y,Z, none,   init) \
+    i_override_m(X,Y,Z, none,   destructor) \
     i_construct( X,Y,Z, string)
 declare_class(silver)
 
