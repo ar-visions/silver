@@ -1,0 +1,37 @@
+#ifndef _TOKENS_
+#define _TOKENS_
+#include <A>
+
+array parse_tokens(object input);
+
+#define Loc_schema(X,Y,Z) \
+    i_intern(X,Y,Z, path,   source) \
+    i_intern(X,Y,Z, num,    line) \
+    i_intern(X,Y,Z, num,    column) \
+    i_construct(X,Y,Z, path, num, num)
+declare_class(Loc)
+
+#define Token_schema(X,Y,Z) \
+    i_intern(X,Y,Z, cstr,   chars) \
+    i_intern(X,Y,Z, sz,     len) \
+    i_intern(X,Y,Z, path,   file) \
+    i_intern(X,Y,Z, num,    line) \
+    i_intern(X,Y,Z, num,    column) \
+    i_intern(X,Y,Z, Loc,    loc) \
+    i_construct(X,Y,Z, cstr, Loc) \
+    i_construct(X,Y,Z, i32,  Loc)
+declare_class(Token)
+
+#define Tokens_schema(X,Y,Z)\
+    i_intern(X,Y,Z, array,  stack) \
+    i_intern(X,Y,Z, array,  tokens) \
+    i_intern(X,Y,Z, num,    cursor) \
+    i_method(X,Y,Z, none,   push_state,   array, num) \
+    i_method(X,Y,Z, none,   push_current) \
+    i_method(X,Y,Z, none,   pop) \
+    i_method(X,Y,Z, none,   transfer, Tokens) \
+    i_construct(X,Y,Z, path) \
+    i_construct(X,Y,Z, array)
+declare_class(Tokens)
+
+#endif
