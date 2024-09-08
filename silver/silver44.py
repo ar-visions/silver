@@ -1156,7 +1156,7 @@ class EImport(ENode): # we may want a node for 'EModuleNode' that contains name,
                 # needs to know the product of the build here
             else:
                 opt = '-g2' if is_debug else '-O2'
-                compile = 'gcc -I%s/install/include %s -Wfatal-errors -Wno-write-strings -Wno-incompatible-pointer-types -fPIC -std=c99 -c %s/%s -o %s/%s.o' % (
+                compile = 'gcc -I%s/include %s -Wfatal-errors -Wno-write-strings -Wno-incompatible-pointer-types -fPIC -std=c99 -c %s/%s -o %s/%s.o' % (
                     build_root,
                     opt,
                     cwd, cfile,

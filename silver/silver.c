@@ -350,7 +350,7 @@ BuildState EImport_build_source(EImport a) {
                 is_debug ? "0" : "3", cwd, cfile, build_root);
         } else {
             cstr opt = is_debug ? "-g2" : "-O2";
-            compile = format("gcc -I%o/install/include %s -Wfatal-errors -Wno-write-strings -Wno-incompatible-pointer-types -fPIC -std=c99 -c %o/%o -o %o/%o.o",
+            compile = format("gcc -I%o/include %s -Wfatal-errors -Wno-write-strings -Wno-incompatible-pointer-types -fPIC -std=c99 -c %o/%o -o %o/%o.o",
                 build_root, opt, cwd, cfile, build_root, cfile);
         }
         
