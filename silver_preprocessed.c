@@ -9735,7 +9735,7 @@ static BuildState import_t_build_source(import_t import, string name, array cfil
         } else {
             cstr opt = is_debug ? "-g2" : "-O2";
             snprintf(compile, sizeof(compile),
-                "gcc -I%s/install/include %s -Wfatal-errors -Wno-write-strings -Wno-incompatible-pointer-types -fPIC -std=c99 -c %s/%s -o %s/%s.o",
+                "gcc -I%s/include %s -Wfatal-errors -Wno-write-strings -Wno-incompatible-pointer-types -fPIC -std=c99 -c %s/%s -o %s/%s.o",
                 build_root->chars,
                 opt,
                 cwd->chars, cfile->chars,

@@ -1,8 +1,7 @@
 #!/bin/bash
 (
     projects=(
-        "A   https://github.com/ar-visions/A.git            "
-        "ffi https://github.com/libffi/libffi.git   8e3ef96 "
+        "A   https://github.com/ar-visions/A.git"
     )
 
     # we can imagine multiple projects sharing the same build root.  thats possible if its already set, it can filter
@@ -13,7 +12,6 @@
     mkdir -p "$BUILD_ROOT" || exit 1
     cd       "$BUILD_ROOT"
     mkdir -p checkout
-    mkdir -p install
     cd       checkout
 
     # iterate through projects, cloning and building
@@ -64,7 +62,7 @@
         cd silver-build
 
         if [ ! -f "silver-token" ]; then
-            cmake -S .. -B . -DCMAKE_INSTALL_PREFIX="$BUILD_ROOT/install" -DCMAKE_BUILD_TYPE=Debug
+            cmake -S .. -B . -DCMAKE_INSTALL_PREFIX="$BUILD_ROOT" -DCMAKE_BUILD_TYPE=Debug
             if [ $? -ne 0 ]; then
                 echo "cmake gen failed for $TARGET_DIR"
                 exit 1

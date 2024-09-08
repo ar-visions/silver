@@ -2,16 +2,17 @@ cmake_minimum_required    (VERSION 2.8.12)
 enable_language           (ASM)
 project                   (silver)
 
-#set(CMAKE_PREFIX_PATH     "/usr/lib/llvm-14/lib/cmake/llvm" ${CMAKE_PREFIX_PATH})
-set(CMAKE_INSTALL_PREFIX  ${CMAKE_BINARY_DIR}/install)
+if(NOT CMAKE_INSTALL_PREFIX)
+    set(CMAKE_INSTALL_PREFIX  ${CMAKE_BINARY_DIR}/silver-import)
+endif()
 
 # effective clang usage:
 # clang++ -std=c++17 -I `llvm-config-14 --cxxflags --ldflags --libs core executionengine mcjit native`
 
-add_custom_target         (script COMMAND ${CMAKE_COMMAND} -E env bash ${CMAKE_SOURCE_DIR}/deps.sh WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_custom_target         (script COMMAND ${CMAKE_COMMAND} -E env bash ${CMAKE_SOURCE_DIR}/deps.sh ${CMAKE_INSTALL_PREFIX} WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 find_package              (LLVM 14 REQUIRED CONFIG)
 set                       (LLVM_VERSION "14")
-include_directories       (${LLVM_INCLUDE_DIRS} /usr/include/llvm-14) # /usr/lib/gcc/x86_64-linux-gnu/11/include
+include_directories       (${CMAKE_INSTALL_PREFIX}/include ${LLVM_INCLUDE_DIRS} /usr/include/llvm-14) # /usr/lib/gcc/x86_64-linux-gnu/11/include
 link_directories          (${LLVM_LIBRARY_DIRS} /usr/lib/llvm-14/lib)
 link_directories          (${CMAKE_INSTALL_PREFIX}/lib)
 file                      (GLOB src                     "${CMAKE_CURRENT_SOURCE_DIR}/silver/*.c")
