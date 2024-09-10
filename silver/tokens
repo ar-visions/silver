@@ -93,10 +93,10 @@ declare_class(EContext)
     i_prop  (   X,Y,  public, string,    name) \
     i_prop  (   X,Y,  public, AType,     type) \
     i_prop  (   X,Y,  intern, num,       id) \
-    i_method(   X,Y,  bool,      equals, X) \
-    i_method(   X,Y,  string,    emit, A) \
-    i_override(X,Y,   cast,      bool) \
-    i_override(X,Y,   method,    init)
+    i_method(   X,Y,  public, bool,      equals, X) \
+    i_method(   X,Y,  public, string,    emit, A) \
+    i_override(X,Y,   cast,   bool) \
+    i_override(X,Y,   method, init)
 declare_class(ENode)
 
 #define EUndefined_schema(X,Y)
@@ -107,7 +107,7 @@ declare_mod(EUndefined, ENode)
 declare_mod(ELiteralInt, ENode);
 
 #define ELiteralReal_schema(X,Y) \
-    i_prop(X,Y, public, real, value)
+    i_prop(X,Y, public, f64, value)
 declare_mod(ELiteralReal, ENode);
 
 #define ELiteralStr_schema(X,Y) \
@@ -143,9 +143,9 @@ declare_enum(Visibility)
 declare_class(Token)
 
 #define Tokens_schema(X,Y)\
-    i_prop  (X,Y, public, cpath,   file) \
-    i_prop  (X,Y, public, carray,  tokens) \
-    i_prop  (X,Y, public, cnum,    cursor) \
+    i_prop  (X,Y, public, path,   file) \
+    i_prop  (X,Y, public, array,  tokens) \
+    i_prop  (X,Y, public, num,    cursor) \
     i_prop  (X,Y, intern, array,  stack) \
     i_method(X,Y, public, none,   push_state,   array, num) \
     i_method(X,Y, public, none,   push_current) \
