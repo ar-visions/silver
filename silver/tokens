@@ -3,9 +3,9 @@
 #include <A>
 
 #define Loc_schema(X,Y) \
-    i_public(X,Y, path,   source) \
-    i_public(X,Y, num,    line) \
-    i_public(X,Y, num,    column) \
+    i_prop    (X,Y, public, path,   source) \
+    i_prop    (X,Y, public, num,    line) \
+    i_prop    (X,Y, public, num,    column) \
     i_override(X,Y, method, init)
 declare_class(Loc)
 
@@ -74,25 +74,25 @@ typedef struct Token*                   Token;
 
 
 #define EContext_schema(X,Y) \
-    i_intern(   X,Y,  EModule,   module) \
-    i_intern(   X,Y,  EMember,   method) \
-    i_intern(   X,Y,  array,     states) \
-    i_intern(   X,Y,  bool,    raw_primitives) \
-    i_intern(   X,Y,  map,       values) \
-    i_intern(   X,Y,  num,       indent_level) \
-    i_method(   X,Y,  string,    indent) \
-    i_method(   X,Y,  none,      set_value, A, A) \
-    i_method(   X,Y,  A,         get_value, A) \
-    i_method(   X,Y,  none,      push, string) \
-    i_method(   X,Y,  none,      pop) \
-    i_method(   X,Y,  string,    top_state)
+    i_prop  (   X,Y,  public, EModule,   module) \
+    i_prop  (   X,Y,  public, EMember,   method) \
+    i_prop  (   X,Y,  public, array,     states) \
+    i_prop  (   X,Y,  public, bool,    raw_primitives) \
+    i_prop  (   X,Y,  public, map,       values) \
+    i_prop  (   X,Y,  public, num,       indent_level) \
+    i_method(   X,Y,  public, string,    indent) \
+    i_method(   X,Y,  public, none,      set_value, A, A) \
+    i_method(   X,Y,  public, A,         get_value, A) \
+    i_method(   X,Y,  public, none,      push, string) \
+    i_method(   X,Y,  public, none,      pop) \
+    i_method(   X,Y,  public, string,    top_state)
 declare_class(EContext)
 
 
 #define ENode_schema(X,Y) \
-    i_public(   X,Y,  string,    name) \
-    i_public(   X,Y,  AType,     type) \
-    i_intern(   X,Y,  num,       id) \
+    i_prop  (   X,Y,  public, string,    name) \
+    i_prop  (   X,Y,  public, AType,     type) \
+    i_prop  (   X,Y,  intern, num,       id) \
     i_method(   X,Y,  bool,      equals, X) \
     i_method(   X,Y,  string,    emit, A) \
     i_override(X,Y,   cast,      bool) \
@@ -103,19 +103,19 @@ declare_class(ENode)
 declare_mod(EUndefined, ENode)
 
 #define ELiteralInt_schema(X,Y) \
-    i_intern(X,Y, num, value)
+    i_prop(X,Y, public, num, value)
 declare_mod(ELiteralInt, ENode);
 
 #define ELiteralReal_schema(X,Y) \
-    i_intern(X,Y, real, value)
+    i_prop(X,Y, public, real, value)
 declare_mod(ELiteralReal, ENode);
 
 #define ELiteralStr_schema(X,Y) \
-    i_intern(X,Y, string, value)
+    i_prop(X,Y, public, string, value)
 declare_mod(ELiteralStr, ENode);
 
 #define ELiteralBool_schema(X,Y) \
-    i_intern(X,Y, bool, value)
+    i_prop(X,Y, public, bool, value)
 declare_mod(ELiteralBool, ENode);
 
 
@@ -126,36 +126,36 @@ declare_mod(ELiteralBool, ENode);
 declare_enum(Visibility)
 
 #define Token_schema(X,Y) \
-    i_public(X,Y, cstr,   chars) \
-    i_intern(X,Y, sz,     len) \
-    i_intern(X,Y, path,   file) \
-    i_intern(X,Y, num,    line) \
-    i_intern(X,Y, num,    column) \
-    i_intern(X,Y, Loc,    loc) \
-    i_public(X,Y, i32,    chr) \
-    i_method(X,Y, bool,   eq, cstr) \
-    i_method(X,Y, num,    cmp, cstr) \
-    i_method(X,Y, AType,  is_string) \
-    i_method(X,Y, A,      convert_literal) \
+    i_prop  (X,Y, public, cstr,   chars) \
+    i_prop  (X,Y, public, i32,    chr) \
+    i_prop  (X,Y, intern, sz,     len) \
+    i_prop  (X,Y, intern, path,   file) \
+    i_prop  (X,Y, intern, num,    line) \
+    i_prop  (X,Y, intern, num,    column) \
+    i_prop  (X,Y, intern, Loc,    loc) \
+    i_method(X,Y, public, bool,   eq, cstr) \
+    i_method(X,Y, public, num,    cmp, cstr) \
+    i_method(X,Y, public, AType,  is_string) \
+    i_method(X,Y, public, A,      convert_literal) \
     i_override(X,Y, method, init) \
     i_override(X,Y, method, compare) \
     i_override(X,Y, cast,   bool)
 declare_class(Token)
 
 #define Tokens_schema(X,Y)\
-    i_public(X,Y, path,   file) \
-    i_public(X,Y, array,  tokens) \
-    i_public(X,Y, num,    cursor) \
-    i_intern(X,Y, array,  stack) \
-    i_method(X,Y, none,   push_state,   array, num) \
-    i_method(X,Y, none,   push_current) \
-    i_method(X,Y, none,   pop) \
-    i_method(X,Y, Token,  read, num) \
-    i_method(X,Y, Token,  next) \
-    i_method(X,Y, Token,  consume) \
-    i_method(X,Y, Token,  peek) \
-    i_method(X,Y, bool,   next_is, symbol) \
-    i_method(X,Y, none,   transfer, Tokens) \
+    i_prop  (X,Y, public, cpath,   file) \
+    i_prop  (X,Y, public, carray,  tokens) \
+    i_prop  (X,Y, public, cnum,    cursor) \
+    i_prop  (X,Y, intern, array,  stack) \
+    i_method(X,Y, public, none,   push_state,   array, num) \
+    i_method(X,Y, public, none,   push_current) \
+    i_method(X,Y, public, none,   pop) \
+    i_method(X,Y, public, Token,  read, num) \
+    i_method(X,Y, public, Token,  next) \
+    i_method(X,Y, public, Token,  consume) \
+    i_method(X,Y, public, Token,  peek) \
+    i_method(X,Y, public, bool,   next_is, symbol) \
+    i_method(X,Y, public, none,   transfer, Tokens) \
     i_override(X,Y, method, init) \
     i_override(X,Y, cast,   bool)
 declare_class(Tokens)

@@ -16,24 +16,24 @@ declare_enum(ImportType)
 declare_enum(BuildState)
 
 #define EImport_schema(X,Y) \
-    i_public  (X,Y,   Tokens,       tokens) \
-    i_intern  (X,Y,   silver,       module) \
-    i_intern  (X,Y,   string,       name) \
-    i_intern  (X,Y,   array,        source) \
-    i_intern  (X,Y,   string,       shell) \
-    i_intern  (X,Y,   string,       isolate_namespace) \
-    i_intern  (X,Y,   path,         module_path) \
-    i_intern  (X,Y,   bool,         imported) \
-    i_intern  (X,Y,   array,        includes) \
-    i_intern  (X,Y,   array,        cfiles) \
-    i_intern  (X,Y,   array,        links) \
-    i_intern  (X,Y,   array,        build_args) \
-    i_intern  (X,Y,   ImportType,   import_type) \
-    i_intern  (X,Y,   array,        library_exports) \
-    i_intern  (X,Y,   Visibility,   visibility) \
-    i_intern  (X,Y,   string,       main_symbol) \
-    i_method  (X,Y,   none,         process) \
-    i_override(X,Y,   method,       init)
+    i_prop    (X,Y, public, Tokens,     tokens) \
+    i_prop    (X,Y, intern, silver,     module) \
+    i_prop    (X,Y, intern, string,     name) \
+    i_prop    (X,Y, intern, array,      source) \
+    i_prop    (X,Y, intern, string,     shell) \
+    i_prop    (X,Y, intern, string,     isolate_namespace) \
+    i_prop    (X,Y, intern, path,       module_path) \
+    i_prop    (X,Y, intern, bool,       imported) \
+    i_prop    (X,Y, intern, array,      includes) \
+    i_prop    (X,Y, intern, array,      cfiles) \
+    i_prop    (X,Y, intern, array,      links) \
+    i_prop    (X,Y, intern, array,      build_args) \
+    i_prop    (X,Y, intern, ImportType, import_type) \
+    i_prop    (X,Y, intern, array,      library_exports) \
+    i_prop    (X,Y, intern, Visibility, visibility) \
+    i_prop    (X,Y, intern, string,     main_symbol) \
+    i_method  (X,Y, public, none,       process) \
+    i_override(X,Y, method, init)
 declare_class(EImport)
 
 #endif
