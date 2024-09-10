@@ -1,0 +1,39 @@
+#ifndef _IMPORT_
+#define _IMPORT_
+#include <silver>
+#include <tokens>
+
+#define ImportType_schema(X,Y) \
+    enum_value(X,Y, none) \
+    enum_value(X,Y, source) \
+    enum_value(X,Y, library) \
+    enum_value(X,Y, project)
+declare_enum(ImportType)
+
+#define BuildState_schema(X,Y) \
+    enum_value(X,Y, none) \
+    enum_value(X,Y, built)
+declare_enum(BuildState)
+
+#define EImport_schema(X,Y) \
+    i_public  (X,Y,   Tokens,       tokens) \
+    i_intern  (X,Y,   silver,       module) \
+    i_intern  (X,Y,   string,       name) \
+    i_intern  (X,Y,   array,        source) \
+    i_intern  (X,Y,   string,       shell) \
+    i_intern  (X,Y,   string,       isolate_namespace) \
+    i_intern  (X,Y,   path,         module_path) \
+    i_intern  (X,Y,   bool,         imported) \
+    i_intern  (X,Y,   array,        includes) \
+    i_intern  (X,Y,   array,        cfiles) \
+    i_intern  (X,Y,   array,        links) \
+    i_intern  (X,Y,   array,        build_args) \
+    i_intern  (X,Y,   ImportType,   import_type) \
+    i_intern  (X,Y,   array,        library_exports) \
+    i_intern  (X,Y,   Visibility,   visibility) \
+    i_intern  (X,Y,   string,       main_symbol) \
+    i_method  (X,Y,   none,         process) \
+    i_override(X,Y,   method,       init)
+declare_class(EImport)
+
+#endif

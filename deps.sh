@@ -4,7 +4,8 @@
         "A   https://github.com/ar-visions/A.git"
     )
 
-    # we can imagine multiple projects sharing the same build root.  thats possible if its already set, it can filter
+    # we can imagine multiple projects sharing the same build root
+    # thats possible if its already set, it can filter
     # down from cmake's binary elder directory
     SCRIPT_DIR=$(dirname "$(realpath "$0")")
     cd      $SCRIPT_DIR || exit 1
@@ -22,20 +23,21 @@
         REPO_URL="${REPO_STRING%@*}"      # get the part before @ (repository URL)
         CHECKOUT_ID="${REPO_STRING##*@}"  # get the part after  @ (checkout ID)
 
-        # If there's no @ in the string, CHECKOUT_ID will be the same as the URL, so we reset it
+        # if there's no @ in the string, CHECKOUT_ID will be the same as the URL, so we reset it
         if [ "$CHECKOUT_ID" = "$REPO_URL" ]; then
             CHECKOUT_ID=""
         fi
 
         if [ -d "$TARGET_DIR" ]; then
-            echo "cwd = $(pwd)"
-            echo "directory $TARGET_DIR already exists. Pulling latest changes for $TARGET_DIR..."
             cd "$TARGET_DIR" || exit 1
-            PULL_HASH_0=$(git rev-parse HEAD)
-            git pull || exit 1
-            PULL_HASH_1=$(git rev-parse HEAD)
-            if [ "$PULL_HASH_0" != "$PULL_HASH_1" ]; then
-                rm -f "silver-build/silver-token" || exit 1
+            if [ "$PULL" == "1" ]; then
+                echo "pulling latest changes for $TARGET_DIR..."
+                PULL_HASH_0=$(git rev-parse HEAD)
+                git pull || { echo "git pull failed, exiting." >&2; exit 1; }
+                PULL_HASH_1=$(git rev-parse HEAD)
+                if [ "$PULL_HASH_0" != "$PULL_HASH_1" ]; then
+                    rm -f "silver-build/silver-token" || { echo "silver-token failed to rm" >&2; exit 1; }
+                fi
             fi
         else
             echo "cloning repository $REPO_URL into $TARGET_DIR..."
@@ -48,7 +50,7 @@
             cd "$TARGET_DIR"
         fi
 
-        # Check out the specific commit, branch, or tag if provided
+        # check out the specific commit, branch, or tag if provided
         if [ -n "$CHECKOUT_ID" ]; then
             echo "checking out $CHECKOUT_ID for $TARGET_DIR..."
             git checkout "$CHECKOUT_ID"

@@ -1,13 +1,7 @@
 #include <e-nodes.h>
 
-/*
-num Token_compare(Token a, Token b) {
-    return call(a->value, compare, b->value);
-}
 
-bool32 Token_cast_bool32(Token a) {
-    return cast(a->value, bool32);
-}
+/*
 
 define_class(ENode)
 define_class(EContext)

@@ -8,26 +8,37 @@
 
 typedef struct silver* silver;
 
-#define reference_schema(X,Y,Z) \
-    i_intern(   X,Y,Z, A,      type) \
-    i_intern(   X,Y,Z, num,    refs) \
-    i_intern(   X,Y,Z, silver, module) \
-    i_construct(X,Y,Z, AType,  num, silver)
+#define reference_schema(X,Y) \
+    i_intern(  X,Y, AType,  type) \
+    i_intern(  X,Y, num,    refs) \
+    i_intern(  X,Y, silver, module) \
+    i_override(X,Y, method, init)
 declare_class(reference)
 
-#define ref(module, type, count) ctr1(reference, AType, type, count, module)
+#define ref(m, t, c) new(reference, type, t, refs, c, module, m)
 
-#define function_schema(X,Y,Z) \
-    i_intern(   X,Y,Z, object, intern) \
-    i_construct(X,Y,Z, cstr, silver, AType, map)
+#define function_schema(X,Y) \
+    i_intern   (X,Y, object, intern) \
+    i_public   (X,Y, cstr,   name) \
+    i_public   (X,Y, silver, module) \
+    i_public   (X,Y, AType,  rtype) \
+    i_public   (X,Y, array,  args) \
+    i_override (X,Y, method, init)
 declare_class(function)
 
-#define silver_schema(X,Y,Z)\
-    i_intern(    X,Y,Z, object, intern)\
-    i_intern(    X,Y,Z, map,    defs) \
-    i_override_m(X,Y,Z, none,   init) \
-    i_override_m(X,Y,Z, none,   destructor) \
-    i_construct( X,Y,Z, string)
+#define silver_schema(X,Y)\
+    i_public  (X,Y, path,   install) \
+    i_public  (X,Y, path,   source) \
+    i_public  (X,Y, bool,   debug) \
+    i_intern  (X,Y, object, intern)\
+    i_intern  (X,Y, map,    defs) \
+    i_intern  (X,Y, string, source_file) \
+    i_intern  (X,Y, path,   source_path) \
+    i_intern  (X,Y, array,  main_symbols) \
+    i_intern  (X,Y, array,  compiled_objects) \
+    i_intern  (X,Y, array,  libraries_used) \
+    i_override(X,Y, method, init) \
+    i_override(X,Y, method, destructor)
 declare_class(silver)
 
 #endif

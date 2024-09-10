@@ -1,24 +1,43 @@
 #include <tokens>
 
-bool next_is(Tokens tokens, symbol cs) {
-    return call(tokens, next_is, cs);
+static array keywords;
+static array consumables;
+static array assign;
+static array compare;
+
+void init() {
+    keywords = array_of_cstr(
+        "class",  "proto",    "struct", "import", "typeof", "schema", "is", "inherits",
+        "init",   "destruct", "ref",    "const",  "volatile",
+        "return", "asm",      "if",     "switch",
+        "while",  "for",      "do",     "signed", "unsigned", "cast", null);
+    consumables = array_of_cstr(
+        "ref", "schema", "enum", "class", "union", "proto", "struct",
+        "const", "volatile", "signed", "unsigned", null);
+    assign  = array_of_cstr(":", "=" , "+=",  "-=", "*=",  "/=", "|=",
+                "&=", "^=", ">>=", "<<=", "%=", null);
+    compare = array_of_cstr("==", "!=", null);
 }
 
-/// Loc
-Token Loc_with_path(Loc a, path source, num line, num col) {
-    a->source = A_hold(source);
-    a->line   = line;
-    a->column = col;
+bool next_is(Tokens tokens, symbol cs) {
+    return M(tokens, next_is, cs);
 }
 
 /// Token
-Token Token_with_cstr(Token a, cstr chars, Loc loc) {
-    sz length = strlen(chars);
-    a->chars  = (cstr)calloc(length + 1, 1);
-    a->len    = length;
-    a->loc    = A_hold(loc);
-    memcpy(a->chars, chars, length);
-    return a;
+void Token_init(Token a) {
+    cstr prev = a->chars;
+    sz length = strlen(prev);
+    if (prev) {
+        a->chars  = (cstr)calloc(length + 1, 1);
+        a->len    = length;
+        memcpy(a->chars, prev, length);
+    } else if (a->chr) {
+        a->chars = (cstr)calloc(2, 1);
+        a->chars[0] = a->chr;
+        a->len   = 1;
+    } else {
+        assert (false, "required: chars or chr");
+    }
 }
 
 Token Token_with_i32(Token a, i32 chr, Loc loc) {
@@ -29,22 +48,79 @@ Token Token_with_i32(Token a, i32 chr, Loc loc) {
     return a;
 }
 
+bool Token_eq(Token a, cstr cs) {
+    return strcmp(a->chars, cs) == 0;
+}
+
+num Token_cmp(Token a, cstr cs) {
+    return strcmp(a->chars, cs);
+}
+
+AType Token_is_bool(Token a) {
+    string t = cast(a, string);
+    return (M(t, cmp, "true") || M(t, cmp, "false")) ? typeid(ELiteralBool) : typeid(EUndefined);
+}
+
+AType Token_is_numeric(Token a) {
+    bool is_digit = a->chars[0] >= '0' && a->chars[0] <= '9';
+    bool has_dot  = strstr(a->chars, ".") != 0;
+    if (!is_digit && !has_dot) return typeid(EUndefined);
+    if (!has_dot) return typeid(ELiteralInt);
+    return typeid(ELiteralReal);
+}
+
+AType Token_is_string(Token a) {
+    char t = a->chars[0];
+    if (t == '"' || t == '\'') return typeid(ELiteralStr);
+    return typeid(EUndefined);
+}
+
+string Token_convert_literal(Token a) {
+    assert(M(a, is_string) == typeid(ELiteralStr), "not given a string literal");
+    string entire = str(a->chars);
+    string result = M(entire, mid, 1, a->len - 2);
+    return result;
+}
+
+num Token_compare(Token a, Token b) {
+    return strcmp(a->chars, b->chars);
+}
+
+bool Token_cast_bool(Token a) {
+    return a->len > 0;
+}
+
+bool is_alpha(A any) {
+    AType  type = isa(any);
+    string s;
+    if (type == typeid(string)) {
+        s = any;
+    } else if (type == typeid(Token)) {
+        Token token = any;
+        s = new(string, chars, token->chars);
+    }
+    
+    if (index_of_cstr(keywords, s->chars) >= 0)
+        return false;
+    
+    if (len(s) > 0) {
+        char first = s->chars[0];
+        return isalpha(first) || first == '_';
+    }
+    return false;
+}
+
 /// Tokens
 typedef struct tokens_data {
     array tokens;
     num   cursor;
 } *tokens_data;
 
-Tokens Tokens_with_path(Tokens a, path file) {
-    a->tokens = parse_tokens(file);
-    a->cursor = 0;
-    return a;
-}
-
-Tokens Tokens_with_array(Tokens a, array tokens) {
-    a->tokens = hold(tokens);
-    a->cursor = 0;
-    return a;
+none Tokens_init(Tokens a) {
+    if (a->file)
+        a->tokens = parse_tokens(a->file);
+    else if (!a->tokens)
+        assert (false, "file/tokens not set");
 }
 
 Token Tokens_read(Tokens a, num rel) {
@@ -54,22 +130,26 @@ Token Tokens_read(Tokens a, num rel) {
 Token Tokens_next(Tokens a) {
     if (a->cursor >= len(a->tokens))
         return null;
-    Token res = call(a, read, 0);
+    Token res = M(a, read, 0);
     a->cursor++;
     return res;
 }
 
+Token Tokens_consume(Tokens a) {
+    return Tokens_next(a);
+}
+
 Token Tokens_peek(Tokens a) {
-    return call(a, read, 0);
+    return M(a, read, 0);
 }
 
 bool Tokens_next_is(Tokens a, symbol cs) {
-    Token n = call(a, read, 0);
+    Token n = M(a, read, 0);
     return strcmp(n->chars, cs) == 0;
 }
 
 void Tokens_transfer(Tokens a, Tokens b) {
-    assert(a->tokens == b->tokens);
+    assert(a->tokens == b->tokens, "token list identity difference upon transfer");
     a->cursor = b->cursor;
 }
 
@@ -77,15 +157,15 @@ void Tokens_push_state(Tokens a, array tokens, num cursor) {
     tokens_data state = A_struct(tokens_data);
     state->tokens = tokens;
     state->cursor = cursor;
-    call(a->stack, push, state);
+    M(a->stack, push, state);
 }
 
 void Tokens_pop(Tokens a) {
-    call(a->stack, pop);
+    M(a->stack, pop);
 }
 
 void Tokens_push_current(Tokens a) {
-    call(a, push_state, a->tokens, a->cursor);
+    M(a, push_state, a->tokens, a->cursor);
 }
 
 bool Tokens_cast_bool(Tokens a) {
@@ -99,14 +179,14 @@ array parse_tokens(A input) {
     path   file = null;
     if (type == typeid(path)) {
         file = input;
-        input_string = call(file, read, typeid(string));
+        input_string = M(file, read, typeid(string));
     } else if (type == typeid(string))
         input_string = input;
     else
-        assert(false);
+        assert(false, "can only parse from path");
     
     string  special_chars   = str(".$,<>()![]/+*:=#");
-    array   tokens          = ctr(array, sz, 128);
+    array   tokens          = new(array, alloc, 128);
     num     line_num        = 1;
     num     length          = len(input_string);
     num     index           = 0;
@@ -140,16 +220,16 @@ array parse_tokens(A input) {
         }
         
         char sval[2] = { chr, 0 };
-        if (call(special_chars, index_of, sval) >= 0) {
-            Loc lc = ctr(Loc, path, file, line_num, 0);
+        if (M(special_chars, index_of, sval) >= 0) {
+            Loc lc = new(Loc, source, file, line, line_num, column, 0);
             if (chr == ':' && idx(input_string, index + 1) == ':') {
-                call(tokens, push, ctr(Token, cstr, "::", lc));
+                M(tokens, push, new(Token, chars, "::", loc, lc));
                 index += 2;
             } else if (chr == '=' && idx(input_string, index + 1) == '=') {
-                call(tokens, push, ctr(Token, cstr, "==", lc));
+                M(tokens, push, new(Token, chars, "==", loc, lc));
                 index += 2;
             } else {
-                call(tokens, push, ctr(Token, i32, chr, lc));
+                M(tokens, push, new(Token, chr, chr, loc, lc));
                 index += 1;
             }
             continue;
@@ -167,9 +247,13 @@ array parse_tokens(A input) {
                     index += 1;
             }
             index         += 1;
-            string crop    = call(input_string, mid, start, index - start);
-            Loc    lc      = ctr(Loc, path, file, line_num, start);
-            call(tokens, push, ctr(Token, cstr, crop->chars, lc));
+            string crop    = M(input_string, mid, start, index - start);
+            Loc    lc      = new(Loc,
+                source, file,
+                line,   line_num,
+                column, start);
+            Token token    = new(Token, chars, crop->chars, loc, lc);
+            M(tokens, push, token);
             continue;
         }
 
@@ -177,18 +261,49 @@ array parse_tokens(A input) {
         while (index < length) {
             i32 v = idx(input_string, index);
             char sval[2] = { v, 0 };
-            if (isspace(v) || call(special_chars, index_of, sval) >= 0)
+            if (isspace(v) || M(special_chars, index_of, sval) >= 0)
                 break;
             index += 1;
         }
         
-        Loc    lc   = ctr(Loc, path, file, line_num, start);
-        string crop = call(input_string, mid, start, index - start);
-        call(tokens, push, ctr(Token, cstr, crop->chars, lc));
+        Loc    lc   = new(Loc, source, file, line, line_num, column, start);
+        string crop = M(input_string, mid, start, index - start);
+        M(tokens, push, new(Token, chars, crop->chars, loc, lc));
     }
     return tokens;
 }
 
+bool ENode_equals(ENode a, object b) {
+    return (A)a == (A)b;
+}
+
+bool ENode_cast_bool(ENode a) {
+    return a->type || cast(a->name, bool);
+}
+
+string ENode_emit(ENode a) {
+    fault("emit not implemented for ENode %s", isa(a)->name);
+    return null;
+}
+
+void ENode_init(ENode a) {
+}
+
+void Loc_init(Loc a) {
+}
+
+define_class(ENode)
+define_class(EUndefined)
+
+define_mod(ELiteralBool, ENode);
+define_mod(ELiteralStr,  ENode);
+define_mod(ELiteralInt,  ENode);
+define_mod(ELiteralReal, ENode);
+
+define_enum(Visibility)
+
 define_class(Token)
 define_class(Loc)
 define_class(Tokens)
+
+module_init(init)
