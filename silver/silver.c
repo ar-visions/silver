@@ -25,7 +25,7 @@ typedef struct isilver {
     LLVMDIBuilderRef    dbg;
     LLVMMetadataRef     scope;
     map                 imports;
-    array               tokens;
+    Tokens              tokens;
 } isilver;
 
 typedef struct ifunction {
@@ -233,7 +233,7 @@ void silver_init(silver a) {
         cast(a->source_file, sz), 0, "", 0,
         3, "", 0, LLVMDWARFEmissionFull, 0, 0, 0, "/", 1, "", 0);
 
-    i->tokens = parse_tokens(full_path);
+    i->tokens = new(Tokens, file, full_path);
     /// create definitions with tokens inside for further processing
     /// top is just about getting the map to tokens
     isilver(a, parse_top);

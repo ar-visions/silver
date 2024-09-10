@@ -109,6 +109,7 @@ void EImport_import_fields(EImport a, Tokens tokens) {
 }
 
 none EImport_init(EImport a) {
+    assert(isa(a->tokens) == typeid(Tokens), "tokens mismatch: class is %s", isa(a->tokens)->name);
     Tokens tokens = a->tokens;
     if (tokens) {
         a->name       = str("");
@@ -116,9 +117,12 @@ none EImport_init(EImport a) {
         a->includes   = array_of(typeid(string), NULL);
         a->visibility = Visibility_undefined;
         assert(M(tokens, next_is, "import"), "expected import");
+        M(tokens, consume);
         bool is_inc = M(tokens, next_is, "<");
-        if (is_inc)
+        if (is_inc) {
+            Tokens_f* type = isa(tokens);
             M(tokens, consume);
+        }
         string module_name = M(tokens, next);
         assert(is_alpha(module_name), "expected module name identifier");
 
@@ -133,7 +137,7 @@ none EImport_init(EImport a) {
             }
         }
 
-        if (M(tokens, next_is, "as") == 0) {
+        if (M(tokens, next_is, "as")) {
             M(tokens, consume);
             a->isolate_namespace = M(tokens, next);
         }
@@ -141,7 +145,7 @@ none EImport_init(EImport a) {
         assert(is_alpha(module_name), format("expected variable identifier, found %o", module_name));
 
         a->name = module_name;
-        if (M(tokens, next_is, "[") == 0) {
+        if (M(tokens, next_is, "[")) {
             M(tokens, next);
             Token n = M(tokens, peek);
             AType s = M(n, is_string);

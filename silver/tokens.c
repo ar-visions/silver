@@ -26,7 +26,7 @@ bool next_is(Tokens tokens, symbol cs) {
 /// Token
 void Token_init(Token a) {
     cstr prev = a->chars;
-    sz length = strlen(prev);
+    sz length = prev ? strlen(prev) : 0;
     if (prev) {
         a->chars  = (cstr)calloc(length + 1, 1);
         a->len    = length;
@@ -111,68 +111,6 @@ bool is_alpha(A any) {
 }
 
 /// Tokens
-typedef struct tokens_data {
-    array tokens;
-    num   cursor;
-} *tokens_data;
-
-none Tokens_init(Tokens a) {
-    if (a->file)
-        a->tokens = parse_tokens(a->file);
-    else if (!a->tokens)
-        assert (false, "file/tokens not set");
-}
-
-Token Tokens_read(Tokens a, num rel) {
-    return a->tokens->elements[a->cursor + rel];
-}
-
-Token Tokens_next(Tokens a) {
-    if (a->cursor >= len(a->tokens))
-        return null;
-    Token res = M(a, read, 0);
-    a->cursor++;
-    return res;
-}
-
-Token Tokens_consume(Tokens a) {
-    return Tokens_next(a);
-}
-
-Token Tokens_peek(Tokens a) {
-    return M(a, read, 0);
-}
-
-bool Tokens_next_is(Tokens a, symbol cs) {
-    Token n = M(a, read, 0);
-    return strcmp(n->chars, cs) == 0;
-}
-
-void Tokens_transfer(Tokens a, Tokens b) {
-    assert(a->tokens == b->tokens, "token list identity difference upon transfer");
-    a->cursor = b->cursor;
-}
-
-void Tokens_push_state(Tokens a, array tokens, num cursor) {
-    tokens_data state = A_struct(tokens_data);
-    state->tokens = tokens;
-    state->cursor = cursor;
-    M(a->stack, push, state);
-}
-
-void Tokens_pop(Tokens a) {
-    M(a->stack, pop);
-}
-
-void Tokens_push_current(Tokens a) {
-    M(a, push_state, a->tokens, a->cursor);
-}
-
-bool Tokens_cast_bool(Tokens a) {
-    return a->cursor < len(a->tokens) - 1;
-}
-
-/// parse_tokens
 array parse_tokens(A input) {
     string input_string;
     AType  type = isa(input);
@@ -271,6 +209,67 @@ array parse_tokens(A input) {
         M(tokens, push, new(Token, chars, crop->chars, loc, lc));
     }
     return tokens;
+}
+
+none Tokens_init(Tokens a) {
+    if (a->file)
+        a->tokens = parse_tokens(a->file);
+    else if (!a->tokens)
+        assert (false, "file/tokens not set");
+}
+
+Token Tokens_read(Tokens a, num rel) {
+    return a->tokens->elements[a->cursor + rel];
+}
+
+Token Tokens_next(Tokens a) {
+    if (a->cursor >= len(a->tokens))
+        return null;
+    Token res = M(a, read, 0);
+    a->cursor++;
+    return res;
+}
+
+Token Tokens_consume(Tokens a) {
+    return Tokens_next(a);
+}
+
+Token Tokens_peek(Tokens a) {
+    return M(a, read, 0);
+}
+
+bool Tokens_next_is(Tokens a, symbol cs) {
+    Token n = M(a, read, 0);
+    return strcmp(n->chars, cs) == 0;
+}
+
+void Tokens_transfer(Tokens a, Tokens b) {
+    assert(a->tokens == b->tokens, "token list identity difference upon transfer");
+    a->cursor = b->cursor;
+}
+
+typedef struct tokens_data {
+    array tokens;
+    num   cursor;
+} *tokens_data;
+
+void Tokens_push_state(Tokens a, array tokens, num cursor) {
+    tokens_data state = A_struct(tokens_data);
+    state->tokens = tokens;
+    state->cursor = cursor;
+    M(a->stack, push, state);
+}
+
+void Tokens_pop(Tokens a) {
+    M(a->stack, pop);
+}
+
+void Tokens_push_current(Tokens a) {
+    M(a, push_state, a->tokens, a->cursor);
+}
+
+bool Tokens_cast_bool(Tokens a) {
+    return a->cursor < len(a->tokens) - 1;
 }
 
 bool ENode_equals(ENode a, object b) {
