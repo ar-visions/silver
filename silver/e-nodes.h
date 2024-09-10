@@ -77,7 +77,7 @@ declare_class(Token)
     i_public(   X,Y,Z,  EModule,   module) \
     i_public(   X,Y,Z,  EMember,   method) \
     i_public(   X,Y,Z,  array,     states) \
-    i_public(   X,Y,Z,  bool32,    raw_primitives) \
+    i_public(   X,Y,Z,  bool,    raw_primitives) \
     i_public(   X,Y,Z,  map,       values) \
     i_public(   X,Y,Z,  num,       indent_level) \
     i_method(   X,Y,Z,  string,    indent) \
@@ -92,8 +92,8 @@ declare_class(EContext)
 #define ENode_schema(X,Y,Z) \
     i_public(   X,Y,Z,  AType,     type) \
     i_public(   X,Y,Z,  num,       id) \
-    i_method(   X,Y,Z,  bool32,    equals, X) \
-    i_method(   X,Y,Z,  bool32,    to_bool) \
+    i_method(   X,Y,Z,  bool,    equals, X) \
+    i_method(   X,Y,Z,  bool,    to_bool) \
     i_method(   X,Y,Z,  string,    emit, A) \
     i_override_cast(X,Y,Z,  string) \
     i_construct(X,Y,Z,  AType)
@@ -106,13 +106,13 @@ declare_class(ENode)
     i_public(  X,Y,Z, string,      ident)                 \
     i_public(  X,Y,Z, string,      initial)               \
     i_public(  X,Y,Z, EModule,     module)                \
-    i_public(  X,Y,Z, bool32,      is_fp)                 \
+    i_public(  X,Y,Z, bool,      is_fp)                 \
     i_public(  X,Y,Z, AType,       kind)                  \
     i_public(  X,Y,Z, EMember,     base)                  \
     i_public(  X,Y,Z, hashmap,     meta_types)            \
     i_public(  X,Y,Z, hashmap,     args)                  \
     i_public(  X,Y,Z, array,       members)               \
-    i_public(  X,Y,Z, bool32,      ref_keyword)           \
+    i_public(  X,Y,Z, bool,      ref_keyword)           \
     i_public(  X,Y,Z, EMember,     conforms)              \
     i_public(  X,Y,Z, EMetaMember, meta_member)           \
     i_method(  X,Y,Z, EMember,     get_target)            \
@@ -141,7 +141,7 @@ declare_mod(EIdent, ENode)
     i_public(  X,Y,Z, hashmap,     parent_modules)        \
     i_public(  X,Y,Z, hashmap,     defs)                  \
     i_public(  X,Y,Z, hashmap,     type_cache)            \
-    i_public(  X,Y,Z, bool32,      finished)              \
+    i_public(  X,Y,Z, bool,      finished)              \
     i_public(  X,Y,Z, num,         recur)                 \
     i_public(  X,Y,Z, hashmap,     clang_defs)            \
     i_public(  X,Y,Z, num,         expr_level)            \
@@ -155,7 +155,7 @@ declare_mod(EIdent, ENode)
     i_public(  X,Y,Z, array,       member_stack)          \
     i_public(  X,Y,Z, hashmap,     meta_users)            \
     i_method(  X,Y,Z, none,        register_meta_user, EIdent) \
-    i_method(  X,Y,Z, bool32,      eof)                   \
+    i_method(  X,Y,Z, bool,      eof)                   \
     i_method(  X,Y,Z, array,       read_tokens, string)   \
     i_method(  X,Y,Z, AType,       find_clang_def, A)     \
     i_method(  X,Y,Z, AType,       find_def, A)           \
@@ -172,7 +172,7 @@ declare_mod(EIdent, ENode)
     i_method(  X,Y,Z, hashmap,     struct_info, A)        \
     i_method(  X,Y,Z, hashmap,     union_info, A)         \
     i_method(  X,Y,Z, hashmap,     enum_info, A)          \
-    i_method(  X,Y,Z, bool32,      has_function_pointer, A) \
+    i_method(  X,Y,Z, bool,      has_function_pointer, A) \
     i_method(  X,Y,Z, hashmap,     typedef_info, A)       \
     i_method(  X,Y,Z, A,           edef_for, A)           \
     i_method(  X,Y,Z, none,        parse_header, string)  \
@@ -184,7 +184,7 @@ declare_mod(EIdent, ENode)
     i_method(  X,Y,Z, A,           debug_tokens)          \
     i_method(  X,Y,Z, Token,       peek_token, num)       \
     i_method(  X,Y,Z, none,        parse_method, A, A)    \
-    i_method(  X,Y,Z, none,        assertion, bool32, string) \
+    i_method(  X,Y,Z, none,        assertion, bool, string) \
     i_method(  X,Y,Z, EMethod,     is_method, EIdent)     \
     i_method(  X,Y,Z, AType,       is_defined, array)     \
     i_method(  X,Y,Z, EMember,     lookup_stack_member, string) \
@@ -193,7 +193,7 @@ declare_mod(EIdent, ENode)
     i_method(  X,Y,Z, ENode,       parse_expression)      \
     i_method(  X,Y,Z, none,        consume, A)            \
     i_method(  X,Y,Z, EModel,      model, AType)          \
-    i_method(  X,Y,Z, bool32,      is_primitive, EIdent)  \
+    i_method(  X,Y,Z, bool,      is_primitive, EIdent)  \
     i_method(  X,Y,Z, EIdent,      preferred_type, A, A)  \
     i_method(  X,Y,Z, ENode,       parse_operator, A, string, string, AType, AType) \
     i_method(  X,Y,Z, ENode,       parse_add)             \
@@ -218,7 +218,7 @@ declare_mod(EIdent, ENode)
     i_method(  X,Y,Z, array,       constructs, A)         \
     i_method(  X,Y,Z, A,           castable, EIdent, EIdent) \
     i_method(  X,Y,Z, EMethod,     constructable, EIdent, EIdent) \
-    i_method(  X,Y,Z, bool32,      convertible, EIdent, EIdent) \
+    i_method(  X,Y,Z, bool,      convertible, EIdent, EIdent) \
     i_method(  X,Y,Z, ENode,       convert_enode, ENode, EIdent) \
     i_method(  X,Y,Z, array,       convert_args, EMethod, array) \
     i_method(  X,Y,Z, ENode,       parse_while, Token)    \
@@ -230,11 +230,11 @@ declare_mod(EIdent, ENode)
     i_method(  X,Y,Z, A,           parse_anonymous_ref, EIdent) \
     i_method(  X,Y,Z, ENode,       parse_statement)       \
     i_method(  X,Y,Z, EStatements, parse_statements, EStatements) \
-    i_method(  X,Y,Z, array,       parse_call_args, EMethod, bool32, bool32) \
-    i_method(  X,Y,Z, A,           parse_defined_args, bool32, bool32) \
-    i_method(  X,Y,Z, EMethod,     finish_method, A, Token, string, bool32, string) \
+    i_method(  X,Y,Z, array,       parse_call_args, EMethod, bool, bool) \
+    i_method(  X,Y,Z, A,           parse_defined_args, bool, bool) \
+    i_method(  X,Y,Z, EMethod,     finish_method, A, Token, string, bool, string) \
     i_method(  X,Y,Z, none,        finish_class, A)       \
-    i_method(  X,Y,Z, bool32,      next_is, string)       \
+    i_method(  X,Y,Z, bool,      next_is, string)       \
     i_method(  X,Y,Z, string,      convert_literal, Token) \
     i_method(  X,Y,Z, array,       import_list, A, string) \
     i_method(  X,Y,Z, none,        parse_import_fields, A) \
@@ -255,14 +255,14 @@ declare_mod(EModule, ENode)
     i_public(  X,Y,Z, ENode,       value)                 \
     i_public(  X,Y,Z, EClass,      parent)                \
     i_public(  X,Y,Z, string,      access)                \
-    i_public(  X,Y,Z, bool32,      imported)              \
-    i_public(  X,Y,Z, bool32,      emitted)               \
+    i_public(  X,Y,Z, bool,      imported)              \
+    i_public(  X,Y,Z, bool,      emitted)               \
     i_public(  X,Y,Z, hashmap,     members)               \
     i_public(  X,Y,Z, hashmap,     args)                  \
     i_public(  X,Y,Z, hashmap,     context_args)          \
     i_public(  X,Y,Z, hashmap,     meta_types)            \
     i_public(  X,Y,Z, hashmap,     meta_model)            \
-    i_public(  X,Y,Z, bool32,      is_static)             \
+    i_public(  X,Y,Z, bool,      is_static)             \
     i_public(  X,Y,Z, string,      visibility)            \
     i_override_m(X,Y,Z, string,    emit) \
     i_override_cast(X,Y,Z, string) \
@@ -278,15 +278,17 @@ declare_mod(EMember, ENode)
     i_construct(X,Y,Z, string, EIdent, EModule, EIdent, EIdent)
 declare_mod(EMetaMember, ENode)
 
+// todo: cleanup constructors; lets somehow make named arguments if we can lol
+// ok gpt
 
 #define EMethod_schema(X,Y,Z) \
     EMember_schema(X,Y,Z)                                 \
     i_public(  X,Y,Z, string,      method_type)           \
-    i_public(  X,Y,Z, bool32,      type_expressed)        \
+    i_public(  X,Y,Z, bool,        type_expressed)        \
     i_public(  X,Y,Z, EIdent,      body)                  \
     i_public(  X,Y,Z, EStatements, statements)            \
     i_public(  X,Y,Z, ENode,       code)                  \
-    i_public(  X,Y,Z, bool32,      auto)                  \
+    i_public(  X,Y,Z, bool,        auto)                  \
     i_public(  X,Y,Z, hashmap,     context)               \
     i_construct(X,Y,Z, string, EIdent, EModule, string)
 declare_mod(EMethod, EMember)
@@ -294,7 +296,7 @@ declare_mod(EMethod, EMember)
 
 #define EStruct_schema(X,Y,Z) \
     EMember_schema(X,Y,Z)                                 \
-    i_method(  X,Y,Z, none,        emit_header, A, bool32) \
+    i_method(  X,Y,Z, none,        emit_header, A, bool) \
     i_method(  X,Y,Z, none,        emit_source_decl, A)   \
     i_method(  X,Y,Z, none,        emit_source, A)        \
     i_construct(X,Y,Z, string, EModule)
@@ -308,7 +310,7 @@ declare_mod(EStruct, EMember)
     i_public(  X,Y,Z, EIdent,      block_tokens)          \
     i_method(  X,Y,Z, none,        print)                 \
     i_method(  X,Y,Z, none,        emit_header, A)        \
-    i_method(  X,Y,Z, none,        output_methods, A, A, bool32) \
+    i_method(  X,Y,Z, none,        output_methods, A, A, bool) \
     i_method(  X,Y,Z, none,        emit_source_decl, A)   \
     i_method(  X,Y,Z, none,        emit_source, A)        \
     i_construct(X,Y,Z, string, EModule, string)
@@ -317,7 +319,7 @@ declare_mod(EClass, EMember)
 
 #define EProp_schema(X,Y,Z) \
     EMember_schema(X,Y,Z)                                 \
-    i_public(  X,Y,Z, bool32,      is_prop)               \
+    i_public(  X,Y,Z, bool,      is_prop)               \
     i_construct(X,Y,Z, string, EIdent, EModule)
 declare_mod(EProp, EMember)
 
@@ -398,7 +400,7 @@ declare_mod(EInherits, EIs)
     i_public(  X,Y,Z, array,       includes)              \
     i_public(  X,Y,Z, array,       cfiles)                \
     i_public(  X,Y,Z, array,       links)                 \
-    i_public(  X,Y,Z, bool32,      imported)              \
+    i_public(  X,Y,Z, bool,      imported)              \
     i_public(  X,Y,Z, array,       build_args)            \
     i_public(  X,Y,Z, num,         import_type)           \
     i_public(  X,Y,Z, array,       library_exports)       \
@@ -424,10 +426,10 @@ declare_mod(EStatements, ENode)
     ENode_schema(X,Y,Z)                                   \
     i_public(  X,Y,Z, string,      name)                  \
     i_public(  X,Y,Z, num,         size)                  \
-    i_public(  X,Y,Z, bool32,      integral)              \
-    i_public(  X,Y,Z, bool32,      realistic)             \
+    i_public(  X,Y,Z, bool,      integral)              \
+    i_public(  X,Y,Z, bool,      realistic)             \
     i_public(  X,Y,Z, AType,       type)                  \
-    i_construct(X,Y,Z, string, num, bool32, bool32, AType)
+    i_construct(X,Y,Z, string, num, bool, bool, AType)
 declare_mod(EModel, ENode)
 
 
@@ -536,9 +538,9 @@ declare_mod(EIndex, ENode)
     i_public(  X,Y,Z, ENode,       target)                \
     i_public(  X,Y,Z, ENode,       value)                 \
     i_public(  X,Y,Z, ENode,       index)                 \
-    i_public(  X,Y,Z, bool32,      declare)               \
+    i_public(  X,Y,Z, bool,      declare)               \
     i_override_m(X,Y,Z, string,    emit) \
-    i_construct(X,Y,Z, EIdent, ENode, ENode, ENode, bool32)
+    i_construct(X,Y,Z, EIdent, ENode, ENode, ENode, bool)
 declare_mod(EAssign, ENode)
 
 
@@ -633,9 +635,9 @@ declare_mod(ELiteralStrInterp, ENode)
 #define ELiteralBool_schema(X,Y,Z) \
     ENode_schema(X,Y,Z)                                   \
     i_public(  X,Y,Z, EIdent,      type)                  \
-    i_public(  X,Y,Z, bool32,      value)                 \
+    i_public(  X,Y,Z, bool,      value)                 \
     i_override_m(X,Y,Z, string,    emit) \
-    i_construct(X,Y,Z, EIdent, bool32)
+    i_construct(X,Y,Z, EIdent, bool)
 declare_mod(ELiteralBool, ENode)
 
 

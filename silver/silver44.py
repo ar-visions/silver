@@ -2235,17 +2235,6 @@ int main(int argc, char* argv[]) {
         for inc in includes:
             self.parse_header(inc)
 
-    def build(self):
-        # run gcc with emitted source
-        os.chdir(build_root)
-        has_app = 'app' in self.defs
-        link = 'gcc %s -L %s %s %s -o %s/%s' % (
-            '' if has_app else '-shared',
-            install_dir,
-            self.compiled_objects, self.libraries_used,
-            build_root, out_stem)
-        assert(system(link) == 0)
-
     def build_dependencies(self):
         assert not self.finished, 'EModule: invalid call to complete'
         global build_root

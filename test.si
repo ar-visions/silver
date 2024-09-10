@@ -39,12 +39,21 @@ inlay alias V[K]: map
 mod map
     map [ K:key, V:object ] # you will always have different letters in these types, so one can use them as 
 
-mod simple [
+# without constructors, we have more options for init. correct?
+# 
+
+mod simple {
     int         var:  1
     int[]       ar:   [1, 2, 3, 4]
     string[int] map:  [0:'one', 100:'two']
-    int[string] map2: ['one':2, 'two':102]
 
+    map::int::string map2: ['one':2, 'two':102]
+
+    init [
+        # post-init here
+        # everything is named args, and arrays are elements
+        map2 = ['key-object': 'value-object'] # the meta would need some influence on type conversion
+    ]
     int func[ int arg, short arg2 ] [ return arg + arg2 ]
 
     simple[ int var, int[] ar ]
@@ -59,7 +68,7 @@ mod simple [
         simple-two state
         return var + state.method2[1]
     ]
-]
+}
 
 
 

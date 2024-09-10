@@ -2,42 +2,166 @@
 #define _TOKENS_
 #include <A>
 
-#define Loc_schema(X,Y,Z) \
-    i_intern(X,Y,Z, path,   source) \
-    i_intern(X,Y,Z, num,    line) \
-    i_intern(X,Y,Z, num,    column) \
-    i_construct(X,Y,Z, path, num, num)
+#define Loc_schema(X,Y) \
+    i_public(X,Y, path,   source) \
+    i_public(X,Y, num,    line) \
+    i_public(X,Y, num,    column) \
+    i_override(X,Y, method, init)
 declare_class(Loc)
 
-#define Token_schema(X,Y,Z) \
-    i_intern(X,Y,Z, cstr,   chars) \
-    i_intern(X,Y,Z, sz,     len) \
-    i_intern(X,Y,Z, path,   file) \
-    i_intern(X,Y,Z, num,    line) \
-    i_intern(X,Y,Z, num,    column) \
-    i_intern(X,Y,Z, Loc,    loc) \
-    i_construct(X,Y,Z, cstr, Loc) \
-    i_construct(X,Y,Z, i32,  Loc)
+
+typedef struct ENode*                   ENode;
+typedef struct EIdent*                  EIdent;
+typedef struct EModule*                 EModule;
+typedef struct EMember*                 EMember;
+typedef struct EMetaMember*             EMetaMember;
+typedef struct EMethod*                 EMethod;
+typedef struct EClass*                  EClass;
+typedef struct EProp*                   EProp;
+typedef struct EStruct*                 EStruct;
+typedef struct EOperator*               EOperator;
+typedef struct ECompareEquals*          ECompareEquals;
+typedef struct ECompareNotEquals*       ECompareNotEquals;
+typedef struct EAdd*                    EAdd;
+typedef struct ESub*                    ESub;
+typedef struct EMul*                    EMul;
+typedef struct EDiv*                    EDiv;
+typedef struct EOr*                     EOr;
+typedef struct EAnd*                    EAnd;
+typedef struct EXor*                    EXor;
+typedef struct EIs*                     EIs;
+typedef struct EInherits*               EInherits;
+typedef struct EImport*                 EImport;
+typedef struct EStatements*             EStatements;
+typedef struct EModel*                  EModel;
+typedef struct EDeclaration*            EDeclaration;
+typedef struct EConstruct*              EConstruct;
+typedef struct EExplicitCast*           EExplicitCast;
+typedef struct EPrimitive*              EPrimitive;
+typedef struct EUndefined*              EUndefined;
+typedef struct EParenthesis*            EParenthesis;
+typedef struct ELogicalNot*             ELogicalNot;
+typedef struct EBitwiseNot*             EBitwiseNot;
+typedef struct ERef*                    ERef;
+typedef struct ERefCast*                ERefCast;
+typedef struct EIndex*                  EIndex;
+typedef struct EAssign*                 EAssign;
+typedef struct EAssignAdd*              EAssignAdd;
+typedef struct EAssignSub*              EAssignSub;
+typedef struct EAssignMul*              EAssignMul;
+typedef struct EAssignDiv*              EAssignDiv;
+typedef struct EAssignOr*               EAssignOr;
+typedef struct EAssignAnd*              EAssignAnd;
+typedef struct EAssignXor*              EAssignXor;
+typedef struct EAssignShiftR*           EAssignShiftR;
+typedef struct EAssignShiftL*           EAssignShiftL;
+typedef struct EAssignMod*              EAssignMod;
+typedef struct EIf*                     EIf;
+typedef struct EFor*                    EFor;
+typedef struct EWhile*                  EWhile;
+typedef struct EDoWhile*                EDoWhile;
+typedef struct EBreak*                  EBreak;
+typedef struct ELiteralReal*            ELiteralReal;
+typedef struct ELiteralInt*             ELiteralInt;
+typedef struct ELiteralStr*             ELiteralStr;
+typedef struct ELiteralStrInterp*       ELiteralStrInterp;
+typedef struct ELiteralBool*            ELiteralBool;
+typedef struct ESubProc*                ESubProc;
+typedef struct ERuntimeType*            ERuntimeType;
+typedef struct EMethodCall*             EMethodCall;
+typedef struct EMethodReturn*           EMethodReturn;
+typedef struct Token*                   Token;
+
+
+#define EContext_schema(X,Y) \
+    i_intern(   X,Y,  EModule,   module) \
+    i_intern(   X,Y,  EMember,   method) \
+    i_intern(   X,Y,  array,     states) \
+    i_intern(   X,Y,  bool,    raw_primitives) \
+    i_intern(   X,Y,  map,       values) \
+    i_intern(   X,Y,  num,       indent_level) \
+    i_method(   X,Y,  string,    indent) \
+    i_method(   X,Y,  none,      set_value, A, A) \
+    i_method(   X,Y,  A,         get_value, A) \
+    i_method(   X,Y,  none,      push, string) \
+    i_method(   X,Y,  none,      pop) \
+    i_method(   X,Y,  string,    top_state)
+declare_class(EContext)
+
+
+#define ENode_schema(X,Y) \
+    i_public(   X,Y,  string,    name) \
+    i_public(   X,Y,  AType,     type) \
+    i_intern(   X,Y,  num,       id) \
+    i_method(   X,Y,  bool,      equals, X) \
+    i_method(   X,Y,  string,    emit, A) \
+    i_override(X,Y,   cast,      bool) \
+    i_override(X,Y,   method,    init)
+declare_class(ENode)
+
+#define EUndefined_schema(X,Y)
+declare_mod(EUndefined, ENode)
+
+#define ELiteralInt_schema(X,Y) \
+    i_intern(X,Y, num, value)
+declare_mod(ELiteralInt, ENode);
+
+#define ELiteralReal_schema(X,Y) \
+    i_intern(X,Y, real, value)
+declare_mod(ELiteralReal, ENode);
+
+#define ELiteralStr_schema(X,Y) \
+    i_intern(X,Y, string, value)
+declare_mod(ELiteralStr, ENode);
+
+#define ELiteralBool_schema(X,Y) \
+    i_intern(X,Y, bool, value)
+declare_mod(ELiteralBool, ENode);
+
+
+#define Visibility_schema(X,Y) \
+    enum_value(X,Y, undefined) \
+    enum_value(X,Y, intern) \
+    enum_value(X,Y, public)
+declare_enum(Visibility)
+
+#define Token_schema(X,Y) \
+    i_public(X,Y, cstr,   chars) \
+    i_intern(X,Y, sz,     len) \
+    i_intern(X,Y, path,   file) \
+    i_intern(X,Y, num,    line) \
+    i_intern(X,Y, num,    column) \
+    i_intern(X,Y, Loc,    loc) \
+    i_public(X,Y, i32,    chr) \
+    i_method(X,Y, bool,   eq, cstr) \
+    i_method(X,Y, num,    cmp, cstr) \
+    i_method(X,Y, AType,  is_string) \
+    i_method(X,Y, A,      convert_literal) \
+    i_override(X,Y, method, init) \
+    i_override(X,Y, method, compare) \
+    i_override(X,Y, cast,   bool)
 declare_class(Token)
 
-#define Tokens_schema(X,Y,Z)\
-    i_intern(X,Y,Z, array,  stack) \
-    i_intern(X,Y,Z, array,  tokens) \
-    i_intern(X,Y,Z, num,    cursor) \
-    i_method(X,Y,Z, none,   push_state,   array, num) \
-    i_method(X,Y,Z, none,   push_current) \
-    i_method(X,Y,Z, none,   pop) \
-    i_method(X,Y,Z, Token,  read, num) \
-    i_method(X,Y,Z, Token,  next) \
-    i_method(X,Y,Z, Token,  peek) \
-    i_method(X,Y,Z, bool,   next_is, symbol) \
-    i_method(X,Y,Z, none,   transfer, Tokens) \
-    i_construct(X,Y,Z, path) \
-    i_construct(X,Y,Z, array) \
-    i_override_cast(X,Y,Z, bool)
+#define Tokens_schema(X,Y)\
+    i_public(X,Y, path,   file) \
+    i_public(X,Y, array,  tokens) \
+    i_public(X,Y, num,    cursor) \
+    i_intern(X,Y, array,  stack) \
+    i_method(X,Y, none,   push_state,   array, num) \
+    i_method(X,Y, none,   push_current) \
+    i_method(X,Y, none,   pop) \
+    i_method(X,Y, Token,  read, num) \
+    i_method(X,Y, Token,  next) \
+    i_method(X,Y, Token,  consume) \
+    i_method(X,Y, Token,  peek) \
+    i_method(X,Y, bool,   next_is, symbol) \
+    i_method(X,Y, none,   transfer, Tokens) \
+    i_override(X,Y, method, init) \
+    i_override(X,Y, cast,   bool)
 declare_class(Tokens)
 
 array parse_tokens(object input);
 bool  next_is(Tokens tokens, symbol cs);
+bool  is_alpha(A any);
 
 #endif
