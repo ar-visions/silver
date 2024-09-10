@@ -17,7 +17,9 @@ int main(int argc, char **argv) {
     string name     = M(args, get, mkey);
     path   n        = new(path, chars, name->chars);
     path   source   = M(n, absolute);
+
     assert (M(source, exists), "source %o does not exist", n);
+    
     silver module   = new(silver, source, source, install, install);
     drop(pool);
 }
