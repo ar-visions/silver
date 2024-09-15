@@ -1,5 +1,23 @@
 #!/bin/bash
 (
+    # parse args
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --src)
+                SRC_DIR="$2"
+                shift 2
+                ;;
+            *)
+                BUILD_ROOT="$1"
+                shift
+                ;;
+        esac
+    done
+
+    SRC_DIR="${SRC_DIR:-$SRC}"
+    BUILD_ROOT="${BUILD_ROOT:-silver-build}"
+   #BUILD_ROOT="${1:-silver-build}"
+
     projects=(
         "A   https://github.com/ar-visions/A.git"
     )
@@ -9,7 +27,6 @@
     # down from cmake's binary elder directory
     SCRIPT_DIR=$(dirname "$(realpath "$0")")
     cd      $SCRIPT_DIR || exit 1
-    BUILD_ROOT="${1:-silver-build}"
     mkdir -p "$BUILD_ROOT" || exit 1
     cd       "$BUILD_ROOT"
     mkdir -p checkout
@@ -28,42 +45,48 @@
             CHECKOUT_ID=""
         fi
 
-        if [ -d "$TARGET_DIR" ]; then
-            cd "$TARGET_DIR" || exit 1
-            if [ "$PULL" == "1" ]; then
-                echo "pulling latest changes for $TARGET_DIR..."
-                PULL_HASH_0=$(git rev-parse HEAD)
-                git pull || { echo "git pull failed, exiting." >&2; exit 1; }
-                PULL_HASH_1=$(git rev-parse HEAD)
-                if [ "$PULL_HASH_0" != "$PULL_HASH_1" ]; then
-                    rm -f "silver-build/silver-token" || { echo "silver-token failed to rm" >&2; exit 1; }
-                fi
-            fi
-        else
-            echo "cloning repository $REPO_URL into $TARGET_DIR..."
-            echo "repo-url = $REPO_URL, target-dir = $TARGET_DIR"
-            git clone "$REPO_URL" "$TARGET_DIR"
-            if [ $? -ne 0 ]; then
-                echo "clone failed for $TARGET_DIR"
-                exit 1
-            fi
+        # Check if --src directory and project exist, then symlink
+        if [ -n "$SRC_DIR" ] && [ -d "$SRC_DIR/$TARGET_DIR" ]; then
+            rm -rf "$TARGET_DIR"
+            echo "symlinking $SRC_DIR/$TARGET_DIR to $TARGET_DIR..."
+            ln -s "$SRC_DIR/$TARGET_DIR" "$TARGET_DIR" || exit 1
             cd "$TARGET_DIR"
-        fi
-
-        # check out the specific commit, branch, or tag if provided
-        if [ -n "$CHECKOUT_ID" ]; then
-            echo "checking out $CHECKOUT_ID for $TARGET_DIR..."
-            git checkout "$CHECKOUT_ID"
-            if [ $? -ne 0 ]; then
-                echo "checkout failed for $TARGET_DIR at $CHECKOUT_ID"
-                exit 1
+        else
+            if [ -d "$TARGET_DIR" ]; then
+                cd "$TARGET_DIR" || exit 1
+                if [ "$PULL" == "1" ]; then
+                    echo "pulling latest changes for $TARGET_DIR..."
+                    PULL_HASH_0=$(git rev-parse HEAD)
+                    git pull || { echo "git pull failed, exiting." >&2; exit 1; }
+                    PULL_HASH_1=$(git rev-parse HEAD)
+                    if [ "$PULL_HASH_0" != "$PULL_HASH_1" ]; then
+                        rm -f "silver-build/silver-token" || { echo "silver-token failed to rm" >&2; exit 1; }
+                    fi
+                fi
+            else
+                echo "cloning repository $REPO_URL into $TARGET_DIR..."
+                git clone "$REPO_URL" "$TARGET_DIR"
+                if [ $? -ne 0 ]; then
+                    echo "clone failed for $TARGET_DIR"
+                    exit 1
+                fi
+                cd "$TARGET_DIR"
+            fi
+            # check out the specific commit, branch, or tag if provided
+            if [ -n "$CHECKOUT_ID" ]; then
+                echo "checking out $CHECKOUT_ID for $TARGET_DIR..."
+                git checkout "$CHECKOUT_ID"
+                if [ $? -ne 0 ]; then
+                    echo "checkout failed for $TARGET_DIR at $CHECKOUT_ID"
+                    exit 1
+                fi
             fi
         fi
 
         mkdir -p silver-build
         cd silver-build
 
-        if [ ! -f "silver-token" ]; then
+        if [ ! -f "silver-token" ] || find .. -type f -newer "silver-token" | grep -q . ; then
             cmake -S .. -B . -DCMAKE_INSTALL_PREFIX="$BUILD_ROOT" -DCMAKE_BUILD_TYPE=Debug
             if [ $? -ne 0 ]; then
                 echo "cmake gen failed for $TARGET_DIR"
