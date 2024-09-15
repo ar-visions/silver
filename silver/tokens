@@ -139,6 +139,7 @@ declare_enum(Visibility)
     i_method(X,Y, public, A,      convert_literal) \
     i_override(X,Y, method, init) \
     i_override(X,Y, method, compare) \
+    i_override(X,Y, cast,   string) \
     i_override(X,Y, cast,   bool)
 declare_class(Token)
 

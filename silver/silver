@@ -8,23 +8,58 @@
 
 typedef struct silver* silver;
 
-#define reference_schema(X,Y) \
-    i_prop(    X,Y, intern, AType,  type) \
-    i_prop(    X,Y, intern, num,    refs) \
-    i_prop(    X,Y, intern, silver, module) \
+/// models of C types
+#define model_schema(X,Y) \
+    enum_value(X,Y, bool)  \
+    enum_value(X,Y, i8)  \
+    enum_value(X,Y, i16) \
+    enum_value(X,Y, i32) \
+    enum_value(X,Y, i64) \
+    enum_value(X,Y, u8)  \
+    enum_value(X,Y, u16) \
+    enum_value(X,Y, u32) \
+    enum_value(X,Y, u64) \
+    enum_value(X,Y, f32) \
+    enum_value(X,Y, f64) \
+    enum_value(X,Y, void) \
+    enum_value(X,Y, union) \
+    enum_value(X,Y, struct) \
+    enum_value(X,Y, class) \
+    enum_value(X,Y, function) \
+    enum_value(X,Y, typedef)
+declare_enum(model)
+
+typedef struct dim*       dim;
+typedef struct Token*     Token;
+typedef struct type*      type;
+
+#define type_schema(X,Y) \
+    i_prop(X,Y, intern, object,     intern) \
+    i_prop(X,Y, public, string,     name) \
+    i_prop(X,Y, public, model,      mdl) \
+    i_prop(X,Y, public, AType,      imported) \
+    i_prop(X,Y, public, A,          rtype) \
+    i_prop(X,Y, public, map,        args) \
+    i_prop(X,Y, public, type,       origin) \
+    i_prop(X,Y, public, i32,        size) \
+    i_prop(X,Y, public, map,        members) \
+    i_prop(X,Y, public, silver,     module) \
+    i_prop(X,Y, public, Token,      token) \
     i_override(X,Y, method, init)
-declare_class(reference)
+declare_class(type)
 
-#define ref(m, t, c) new(reference, type, t, refs, c, module, m)
+typedef struct Tokens* Tokens;
 
-#define function_schema(X,Y) \
-    i_prop     (X,Y, intern, object, intern) \
-    i_prop     (X,Y, public, cstr,   name) \
-    i_prop     (X,Y, public, silver, module) \
-    i_prop     (X,Y, public, AType,  rtype) \
-    i_prop     (X,Y, public, array,  args) \
-    i_override (X,Y, method, init)
-declare_class(function)
+// class defs would be mods on type
+// all operations are done on 'dim' not just type alone.  members store 'reference'
+#define dim_schema(X,Y) \
+    i_prop(    X,Y, public, type,       type) \
+    i_prop(    X,Y, public, num,        depth) \
+    i_prop(    X,Y, intern, array,      shape) \
+    i_override(X,Y, method, init)
+declare_class(dim)
+
+#define module_def(m, n)   call0(m->defs, get, str(n))
 
 #define silver_schema(X,Y)\
     i_prop    (X,Y, public, path,   install) \
@@ -37,6 +72,7 @@ declare_class(function)
     i_prop    (X,Y, intern, array,  main_symbols) \
     i_prop    (X,Y, intern, array,  compiled_objects) \
     i_prop    (X,Y, intern, array,  libraries_used) \
+    i_method  (X,Y, public, map,    include) \
     i_override(X,Y, method, init) \
     i_override(X,Y, method, destructor)
 declare_class(silver)

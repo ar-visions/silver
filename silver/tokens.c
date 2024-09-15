@@ -20,7 +20,7 @@ void init() {
 }
 
 bool next_is(Tokens tokens, symbol cs) {
-    return M(tokens, next_is, cs);
+    return call(tokens, next_is, cs);
 }
 
 /// Token
@@ -56,9 +56,13 @@ num Token_cmp(Token a, cstr cs) {
     return strcmp(a->chars, cs);
 }
 
+string Token_cast_string(Token a) {
+    return new(string, chars, a->chars);
+}
+
 AType Token_is_bool(Token a) {
     string t = cast(a, string);
-    return (M(t, cmp, "true") || M(t, cmp, "false")) ? typeid(ELiteralBool) : typeid(EUndefined);
+    return (call(t, cmp, "true") || call(t, cmp, "false")) ? typeid(ELiteralBool) : typeid(EUndefined);
 }
 
 AType Token_is_numeric(Token a) {
@@ -76,9 +80,9 @@ AType Token_is_string(Token a) {
 }
 
 string Token_convert_literal(Token a) {
-    assert(M(a, is_string) == typeid(ELiteralStr), "not given a string literal");
+    assert(call(a, is_string) == typeid(ELiteralStr), "not given a string literal");
     string entire = str(a->chars);
-    string result = M(entire, mid, 1, a->len - 2);
+    string result = call(entire, mid, 1, a->len - 2);
     return result;
 }
 
@@ -117,7 +121,7 @@ array parse_tokens(A input) {
     path   file = null;
     if (type == typeid(path)) {
         file = input;
-        input_string = M(file, read, typeid(string));
+        input_string = call(file, read, typeid(string));
     } else if (type == typeid(string))
         input_string = input;
     else
@@ -158,16 +162,16 @@ array parse_tokens(A input) {
         }
         
         char sval[2] = { chr, 0 };
-        if (M(special_chars, index_of, sval) >= 0) {
+        if (call(special_chars, index_of, sval) >= 0) {
             Loc lc = new(Loc, source, file, line, line_num, column, 0);
             if (chr == ':' && idx(input_string, index + 1) == ':') {
-                M(tokens, push, new(Token, chars, "::", loc, lc));
+                call(tokens, push, new(Token, chars, "::", loc, lc));
                 index += 2;
             } else if (chr == '=' && idx(input_string, index + 1) == '=') {
-                M(tokens, push, new(Token, chars, "==", loc, lc));
+                call(tokens, push, new(Token, chars, "==", loc, lc));
                 index += 2;
             } else {
-                M(tokens, push, new(Token, chr, chr, loc, lc));
+                call(tokens, push, new(Token, chr, chr, loc, lc));
                 index += 1;
             }
             continue;
@@ -185,13 +189,13 @@ array parse_tokens(A input) {
                     index += 1;
             }
             index         += 1;
-            string crop    = M(input_string, mid, start, index - start);
+            string crop    = call(input_string, mid, start, index - start);
             Loc    lc      = new(Loc,
                 source, file,
                 line,   line_num,
                 column, start);
             Token token    = new(Token, chars, crop->chars, loc, lc);
-            M(tokens, push, token);
+            call(tokens, push, token);
             continue;
         }
 
@@ -199,14 +203,14 @@ array parse_tokens(A input) {
         while (index < length) {
             i32 v = idx(input_string, index);
             char sval[2] = { v, 0 };
-            if (isspace(v) || M(special_chars, index_of, sval) >= 0)
+            if (isspace(v) || call(special_chars, index_of, sval) >= 0)
                 break;
             index += 1;
         }
         
         Loc    lc   = new(Loc, source, file, line, line_num, column, start);
-        string crop = M(input_string, mid, start, index - start);
-        M(tokens, push, new(Token, chars, crop->chars, loc, lc));
+        string crop = call(input_string, mid, start, index - start);
+        call(tokens, push, new(Token, chars, crop->chars, loc, lc));
     }
     return tokens;
 }
@@ -225,7 +229,7 @@ Token Tokens_read(Tokens a, num rel) {
 Token Tokens_next(Tokens a) {
     if (a->cursor >= len(a->tokens))
         return null;
-    Token res = M(a, read, 0);
+    Token res = call(a, read, 0);
     a->cursor++;
     return res;
 }
@@ -235,11 +239,11 @@ Token Tokens_consume(Tokens a) {
 }
 
 Token Tokens_peek(Tokens a) {
-    return M(a, read, 0);
+    return call(a, read, 0);
 }
 
 bool Tokens_next_is(Tokens a, symbol cs) {
-    Token n = M(a, read, 0);
+    Token n = call(a, read, 0);
     return strcmp(n->chars, cs) == 0;
 }
 
@@ -257,15 +261,15 @@ void Tokens_push_state(Tokens a, array tokens, num cursor) {
     tokens_data state = A_struct(tokens_data);
     state->tokens = tokens;
     state->cursor = cursor;
-    M(a->stack, push, state);
+    call(a->stack, push, state);
 }
 
 void Tokens_pop(Tokens a) {
-    M(a->stack, pop);
+    call(a->stack, pop);
 }
 
 void Tokens_push_current(Tokens a) {
-    M(a, push_state, a->tokens, a->cursor);
+    call(a, push_state, a->tokens, a->cursor);
 }
 
 bool Tokens_cast_bool(Tokens a) {
