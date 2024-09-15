@@ -105,14 +105,19 @@ void type_init(type a) {
             assert(a->args,   "args");
             int n_args = a->args->count;
             int index  = 0;
-            LLVMTypeRef* param_types = calloc(n_args, sizeof(LLVMTypeRef));
-            cstr*        param_names = calloc(n_args, sizeof(cstr));
+            LLVMTypeRef* arg_types = calloc(n_args, sizeof(LLVMTypeRef));
+            cstr*        arg_names = calloc(n_args, sizeof(cstr));
 
-            // create function type
+            enumerate(a->args, arg) {
+                arg_types[index] = dim_type_ref(idx_1(a->args, sz, index));
+                index++;
+            }
+
             f->type_ref  = LLVMFunctionType(dim_type_ref(a->rtype), NULL, 0, false);
             f->value_ref = LLVMAddFunction(i->module, a->name, f->type_ref);
 
             // set arg names
+            index = 0;
             enumerate(a->args, arg) {
                 string arg_name = arg->key;
                 dim    arg_type = arg->value;
@@ -123,8 +128,8 @@ void type_init(type a) {
                 index++;
             }
 
-            free(param_types);
-            free(param_names);
+            free(arg_types);
+            free(arg_names);
             break;
         }
         case model_bool:   f->type_ref = LLVMInt1TypeInContext  (i->llvm_context); break;
@@ -301,14 +306,15 @@ void silver_define_C99(silver a) {
 
     /// test out basic type system with code generation in functions outside of classes.
     /// implement function first!
-    map args = new(map);
-    dim dim_i32 = new(dim, type, module_def(a, "i32"));
+    map        args = new(map);
+    dim     dim_i32 = new(dim, type, module_def(a, "i32"));
+    string    test1 = str("arg1");
     call(args, set, str("arg1"), dim_i32);
 
     type      i32_t = module_def(a, "i32");
-    dim      rtype = new(dim, type, i32_t, depth, 0);
-    itype* i_i32_t = i32_t->intern;
-    type      fn    = new(type,
+    dim       rtype = new(dim, type, i32_t, depth, 0);
+    itype*  i_i32_t = i32_t->intern;
+    type         fn = new(type,
         name,     str("func_name"), 
         module,   a,
         mdl,      model_function,

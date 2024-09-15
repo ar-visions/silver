@@ -2,9 +2,9 @@
 #define _SILVER_
 #include <A>
 
-// it will be nice to put parser logic outside silver, parse
-// class used for module reading, parsing and llvm management.
-// helps hide weird stuff
+// it will be nice to put parser logic outside 
+// silver, parse class used for module reading,
+// parsing and llvm management. helps hide weird stuff
 
 typedef struct silver* silver;
 

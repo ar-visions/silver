@@ -1,6 +1,6 @@
 #include <silver>
 
-int main2(int argc, char **argv) {
+int main(int argc, char **argv) {
     A_start();
     AF     pool     = allocate(AF);
     map    defaults = map_of(
