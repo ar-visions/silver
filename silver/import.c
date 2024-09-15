@@ -6,7 +6,7 @@ path create_folder(silver module, cstr name, cstr sub) {
     string dir = format(
         "%o/%s%s%s", module->source_path, name, sub ? "/" : "", sub ? sub : "");
     path   res = cast(dir, path);
-    M(res, make_dir);
+    call(res, make_dir);
     return res;
 }
 
@@ -45,126 +45,139 @@ string lib_prefix() {
 
 array EImport_import_list(EImport a, Tokens tokens) {
     array list = new(array);
-    if (M(tokens, next_is, "[")) {
-        M(tokens, consume);
+    if (call(tokens, next_is, "[")) {
+        call(tokens, consume);
         while (true) {
-            Token arg = M(tokens, next);
-            if (M(arg, eq, "]")) break;
-            assert (M(arg, is_string) == typeid(ELiteralStr), "expected build-arg in string literal");
-            A l = M(arg, convert_literal);
-            M(list, push, l);
-            if (M(tokens, next_is, ",")) {
-                M(tokens, consume);
+            Token arg = call(tokens, next);
+            print("arg = %o", arg);
+            if (call(arg, eq, "]")) break;
+            assert (call(arg, is_string) == typeid(ELiteralStr), "expected build-arg in string literal");
+            A l = call(arg, convert_literal);
+            call(list, push, l);
+            if (call(tokens, next_is, ",")) {
+                call(tokens, consume);
                 continue;
             }
             break;
         }
-        assert (M(tokens, next_is, "]"), "expected ] after build flags");
+        assert (call(tokens, next_is, "]"), "expected ] after build flags");
+        call(tokens, consume);
     } else {
-        Token next = M(tokens, next);
-        A l = M(next, convert_literal);
-        M(list, push, l);
+        Token next = call(tokens, next);
+        string l = call(next, convert_literal);
+        call(list, push, l);
     }
     return list;
 }
 
 void EImport_import_fields(EImport a, Tokens tokens) {
     while (true) {
-        if (M(tokens, next_is, "]")) {
-            M(tokens, consume);
+        if (call(tokens, next_is, "]")) {
+            call(tokens, consume);
             break;
         }
-        Token arg_name = M(tokens, next);
-        if (M(arg_name, is_string) == typeid(ELiteralStr))
+        Token arg_name = call(tokens, next);
+        if (call(arg_name, is_string) == typeid(ELiteralStr))
             a->source = array_of(typeid(string), str(arg_name), null);
         else {
             assert (is_alpha(arg_name), "expected identifier for import arg");
-            assert (M(tokens, next_is, ":"), "expected : after import arg (argument assignment)");
-            if (M(arg_name, eq, "name")) {
-                Token token_name = M(tokens, next);
-                assert (! M(token_name, is_string), "expected token for import name");
+            assert (call(tokens, next_is, ":"), "expected : after import arg (argument assignment)");
+            call(tokens, consume);
+            if (call(arg_name, eq, "name")) {
+                Token token_name = call(tokens, next);
+                assert (! call(token_name, is_string), "expected token for import name");
                 a->name = str(token_name);
-            } else if (M(arg_name, eq, "links"))    a->links      = intern(a, import_list, tokens);
-              else if (M(arg_name, eq, "includes")) a->includes   = intern(a, import_list, tokens);
-              else if (M(arg_name, eq, "source"))   a->source     = intern(a, import_list, tokens);
-              else if (M(arg_name, eq, "build"))    a->build_args = intern(a, import_list, tokens);
-              else if (M(arg_name, eq, "shell")) {
-                Token token_shell = M(tokens, next);
-                assert (M(token_shell, is_string), "expected shell invocation for building");
+            } else if (call(arg_name, eq, "links"))    a->links      = intern(a, import_list, tokens);
+              else if (call(arg_name, eq, "includes")) a->includes   = intern(a, import_list, tokens);
+              else if (call(arg_name, eq, "source"))   a->source     = intern(a, import_list, tokens);
+              else if (call(arg_name, eq, "build"))    a->build_args = intern(a, import_list, tokens);
+              else if (call(arg_name, eq, "shell")) {
+                Token token_shell = call(tokens, next);
+                assert (call(token_shell, is_string), "expected shell invocation for building");
                 a->shell = str(token_shell);
-            } else if (M(arg_name, eq, "defines")) {
+            } else if (call(arg_name, eq, "defines")) {
                 // none is a decent name for null.
                 assert (false, "not implemented");
             } else
                 assert (false, "unknown arg: %o", arg_name);
 
-            if (M(tokens, next_is, ","))
-                M(tokens, next);
+            if (call(tokens, next_is, ","))
+                call(tokens, next);
             else {
-                assert (M(tokens, next_is, "]"), "expected comma or ] after arg %o", arg_name);
+                assert (call(tokens, next_is, "]"), "expected comma or ] after arg %o", arg_name);
                 break;
             }
         }
     }
 }
 
+/// get import keyword working to build into build-root (silver-import)
 none EImport_init(EImport a) {
     assert(isa(a->tokens) == typeid(Tokens), "tokens mismatch: class is %s", isa(a->tokens)->name);
     Tokens tokens = a->tokens;
     if (tokens) {
-        a->name       = str("");
-        a->source     = array_of(typeid(string), NULL);
-        a->includes   = array_of(typeid(string), NULL);
-        a->visibility = Visibility_undefined;
-        assert(M(tokens, next_is, "import"), "expected import");
-        M(tokens, consume);
-        bool is_inc = M(tokens, next_is, "<");
+        assert(call(tokens, next_is, "import"), "expected import");
+        call(tokens, consume);
+        //Token n_token = call(tokens, next);
+        bool is_inc = call(tokens, next_is, "<");
         if (is_inc) {
             Tokens_f* type = isa(tokens);
-            M(tokens, consume);
-        }
-        string module_name = M(tokens, next);
-        assert(is_alpha(module_name), "expected module name identifier");
-
-        if (is_inc) {
-            M(a->includes, push, module_name);
-            while (true) {
-                Token t = M(tokens, next);
-                assert(M(t, eq, ",") || M(t, eq, ">"), "expected > or , in <include> syntax, found %o", t);
-                if (M(t, eq, ">")) break;
-                string proceeding = M(tokens, next);
-                M(a->includes, push, proceeding);
+            call(tokens, consume);
+            a->includes = new(array, alloc, 8);
+            while (1) {
+                Token inc = call(tokens, next);
+                assert (is_alpha(inc), "expected alpha-identifier for header");
+                call(a->includes, push, inc);
+                bool is_inc = call(tokens, next_is, ">");
+                if (is_inc) break;
             }
         }
+        Token t_next = call(tokens, next);
+        string module_name = cast(t_next, string);
+        a->name = hold(module_name);
+        assert(is_alpha(module_name), "expected module name identifier");
 
-        if (M(tokens, next_is, "as")) {
-            M(tokens, consume);
-            a->isolate_namespace = M(tokens, next);
+        /// <c, includes, here>
+        if (is_inc) {
+            a->includes   = new(array);
+            call(a->includes, push, module_name);
+            while (true) {
+                Token t = call(tokens, next);
+                assert(call(t, eq, ",") || call(t, eq, ">"), "expected > or , in <include> syntax, found %o", t);
+                if (call(t, eq, ">")) break;
+                string proceeding = call(tokens, next);
+                call(a->includes, push, proceeding);
+            }
+        }
+        if (call(tokens, next_is, "as")) {
+            call(tokens, consume);
+            a->isolate_namespace = call(tokens, next);
         }
 
         assert(is_alpha(module_name), format("expected variable identifier, found %o", module_name));
-
-        a->name = module_name;
-        if (M(tokens, next_is, "[")) {
-            M(tokens, next);
-            Token n = M(tokens, peek);
-            AType s = M(n, is_string);
+        
+        if (call(tokens, next_is, "[")) {
+            call(tokens, next);
+            Token n = call(tokens, peek);
+            AType s = call(n, is_string);
             if (s == typeid(ELiteralStr)) {
-                a->source = array_of(typeid(string), NULL);
+                a->source = new(array);
                 while (true) {
-                    Token    inner = M(tokens, next);
+                    Token    inner = call(tokens, next);
                     string s_inner = cast(inner, string);
-                    assert(M(inner, is_string) == typeid(ELiteralStr), "expected a string literal");
-                    string  source = M(s_inner, mid, 1, len(s_inner) - 2);
-                    M(a->source, push, source);
-                    string       e = M(tokens, next);
-                    if (M(e, eq, ","))
+                    assert(call(inner, is_string) == typeid(ELiteralStr), "expected a string literal");
+                    string  source = call(s_inner, mid, 1, len(s_inner) - 2);
+                    call(a->source, push, source);
+                    string       e = call(tokens, next);
+                    if (call(e, eq, ","))
                         continue;
-                    assert(M(e, eq, "]"), "expected closing bracket");
+                    assert(call(e, eq, "]"), "expected closing bracket");
                     break;
                 }
             } else {
                 intern(a, import_fields, a->tokens);
+                Token cur = call(a->tokens, peek);
+                call(a->tokens, consume);
             }
         }
     }
@@ -176,15 +189,15 @@ BuildState EImport_build_project(EImport a, string name, string url) {
     path b        = form(path, "%o/%s", checkout, "silver-build");
 
     /// clone if empty
-    if (M(checkout, is_empty)) {
+    if (call(checkout, is_empty)) {
         char   at[2]  = { '@', 0 };
         string f      = form(string, "%s", at);
-        num    find   = M(url, index_of, at);
+        num    find   = call(url, index_of, at);
         string branch = null;
         string s_url  = url;
         if (find > -1) {
-            s_url     = M(url, mid, 0, find);
-            branch    = M(url, mid, find + 1, len(url) - (find + 1));
+            s_url     = call(url, mid, 0, find);
+            branch    = call(url, mid, find + 1, len(url) - (find + 1));
         }
         string cmd = format("git clone %o %o", s_url, checkout);
         assert (system(cmd->chars) == 0, "git clone failure");
@@ -193,10 +206,10 @@ BuildState EImport_build_project(EImport a, string name, string url) {
             cmd = form(string, "git checkout %o", branch);
             assert (system(cmd->chars) == 0, "git checkout failure");
         }
-        M(b, make_dir);
+        call(b, make_dir);
     }
     /// intialize and build
-    if (!M(checkout, is_empty)) { /// above op can add to checkout; its not an else
+    if (!call(checkout, is_empty)) { /// above op can add to checkout; its not an else
         chdir(checkout->chars);
 
         bool build_success = file_exists("%o/silver-token", b);
@@ -211,7 +224,7 @@ BuildState EImport_build_project(EImport a, string name, string url) {
         if (is_rust) {
             cstr rel_or_debug = "release";
             path package = form(path, "%o/%s/%o", i, "rust", name);
-            M(package, make_dir);
+            call(package, make_dir);
             ///
             setenv("RUSTFLAGS", "-C save-temps", 1);
             setenv("CARGO_TARGET_DIR", package->chars, 1);
@@ -241,8 +254,8 @@ BuildState EImport_build_project(EImport a, string name, string url) {
             string cmake_flags = str("");
             each(a->build_args, string, arg) {
                 if (cast(cmake_flags, bool))
-                    M(cmake_flags, append, " ");
-                M(cmake_flags, append, arg->chars);
+                    call(cmake_flags, append, " ");
+                call(cmake_flags, append, arg->chars);
             }
             if (!build_success) {
                 string cmake = str(
@@ -298,7 +311,7 @@ BuildState EImport_build_source(EImport a) {
     each (a->cfiles, string, cfile) {
         path cwd = invoke(path, cwd, 1024);
         string compile;
-        if (M(cfile, has_suffix, ".rs")) {
+        if (call(cfile, has_suffix, ".rs")) {
             // rustc integrated for static libs only in this use-case
             compile = format("rustc --crate-type=staticlib -C opt-level=%s %o/%o --out-dir %o",
                 is_debug ? "0" : "3", cwd, cfile, build_root);
@@ -316,7 +329,7 @@ BuildState EImport_build_source(EImport a) {
         assert (file_exists(obj_path), "%o: object file not found", log_header);
 
         if (contains_main(obj_path)) {
-            a->main_symbol = format("%o_main", M(obj_path, stem));
+            a->main_symbol = format("%o_main", call(obj_path, stem));
             string cmd = format("objcopy --redefine-sym main=%o %o",
                 a->main_symbol, obj_path);
             assert (system(cmd->chars) == 0,
@@ -343,7 +356,7 @@ void EImport_process(EImport a) {
         bool  exists  = false;
         each(attempt, string, pre) {
             path module_path = form(path, "%o%o.si", pre, a->name);
-            if (!M(module_path, exists)) continue;
+            if (!call(module_path, exists)) continue;
             a->module_path = module_path;
             print("module-path %o", module_path);
             exists = true;
@@ -354,11 +367,11 @@ void EImport_process(EImport a) {
         bool has_c  = false, has_h = false, has_rs = false,
              has_so = false, has_a = false;
         each(a->source, string, i0) {
-            if (M(i0, has_suffix, str(".c")))   has_c  = true;
-            if (M(i0, has_suffix, str(".h")))   has_h  = true;
-            if (M(i0, has_suffix, str(".rs")))  has_rs = true;
-            if (M(i0, has_suffix, str(".so")))  has_so = true;
-            if (M(i0, has_suffix, str(".a")))   has_a  = true;
+            if (call(i0, has_suffix, str(".c")))   has_c  = true;
+            if (call(i0, has_suffix, str(".h")))   has_h  = true;
+            if (call(i0, has_suffix, str(".rs")))  has_rs = true;
+            if (call(i0, has_suffix, str(".so")))  has_so = true;
+            if (call(i0, has_suffix, str(".a")))   has_a  = true;
         }
         if (has_h)
             a->import_type = ImportType_source;
@@ -370,16 +383,16 @@ void EImport_process(EImport a) {
             if (!a->library_exports)
                  a->library_exports = array_of(typeid(string), str(""), NULL);
             each(a->source, string, lib) {
-                string rem = M(lib, mid, 0, len(lib) - 3);
-                M(a->library_exports, push, rem);
+                string rem = call(lib, mid, 0, len(lib) - 3);
+                call(a->library_exports, push, rem);
             }
         } else if (has_a) {
             a->import_type = ImportType_library;
             if (!a->library_exports)
                  a->library_exports = array_of(typeid(string), str(""), NULL);
             each(a->source, string, lib) {
-                string rem = M(lib, mid, 0, len(lib) - 2);
-                M(a->library_exports, push, rem);
+                string rem = call(lib, mid, 0, len(lib) - 2);
+                call(a->library_exports, push, rem);
             }
         } else {
             assert(len(a->source) == 1, "source size mismatch");
