@@ -6,6 +6,7 @@
 #define ImportType_schema(X,Y) \
     enum_value(X,Y, none) \
     enum_value(X,Y, source) \
+    enum_value(X,Y, includes) \
     enum_value(X,Y, library) \
     enum_value(X,Y, project)
 declare_enum(ImportType)
@@ -15,7 +16,7 @@ declare_enum(ImportType)
     enum_value(X,Y, built)
 declare_enum(BuildState)
 
-#define EImport_schema(X,Y) \
+#define Import_schema(X,Y) \
     i_prop    (X,Y, public, Tokens,     tokens) \
     i_prop    (X,Y, intern, silver,     module) \
     i_prop    (X,Y, intern, string,     name) \
@@ -34,6 +35,6 @@ declare_enum(BuildState)
     i_prop    (X,Y, intern, string,     main_symbol) \
     i_method  (X,Y, public, none,       process) \
     i_override(X,Y, method, init)
-declare_class(EImport)
+declare_class(Import)
 
 #endif

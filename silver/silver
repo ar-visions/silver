@@ -7,6 +7,10 @@
 // parsing and llvm management. helps hide weird stuff
 
 typedef struct silver* silver;
+typedef struct dim*    dim;
+typedef struct Token*  Token;
+typedef struct type*   type;
+typedef struct Tokens* Tokens;
 
 /// models of C types
 #define model_schema(X,Y) \
@@ -21,6 +25,7 @@ typedef struct silver* silver;
     enum_value(X,Y, u64) \
     enum_value(X,Y, f32) \
     enum_value(X,Y, f64) \
+    enum_value(X,Y, cstr) \
     enum_value(X,Y, void) \
     enum_value(X,Y, union) \
     enum_value(X,Y, struct) \
@@ -29,50 +34,63 @@ typedef struct silver* silver;
     enum_value(X,Y, typedef)
 declare_enum(model)
 
-typedef struct dim*       dim;
-typedef struct Token*     Token;
-typedef struct type*      type;
+#define Visibility_schema(X,Y) \
+    enum_value(X,Y, undefined) \
+    enum_value(X,Y, intern) \
+    enum_value(X,Y, public)
+declare_enum(Visibility)
 
 #define type_schema(X,Y) \
-    i_prop(X,Y, intern, object,     intern) \
-    i_prop(X,Y, public, string,     name) \
-    i_prop(X,Y, public, model,      mdl) \
-    i_prop(X,Y, public, AType,      imported) \
-    i_prop(X,Y, public, A,          rtype) \
-    i_prop(X,Y, public, map,        args) \
-    i_prop(X,Y, public, type,       origin) \
-    i_prop(X,Y, public, i32,        size) \
-    i_prop(X,Y, public, map,        members) \
-    i_prop(X,Y, public, silver,     module) \
-    i_prop(X,Y, public, Token,      token) \
+    i_prop(    X,Y, intern, object,     intern) \
+    i_prop(    X,Y, public, string,     name) \
+    i_prop(    X,Y, public, model,      mdl) \
+    i_prop(    X,Y, public, AType,      imported) \
+    i_prop(    X,Y, public, A,          rtype) \
+    i_prop(    X,Y, public, map,        args) \
+    i_prop(    X,Y, public, type,       origin) \
+    i_prop(    X,Y, public, i32,        size) \
+    i_prop(    X,Y, public, map,        members) \
+    i_prop(    X,Y, public, silver,     module) \
+    i_prop(    X,Y, public, Token,      token) \
+    i_prop(    X,Y, public, A,          info) \
+    i_prop(    X,Y, intern, Tokens,     body) \
     i_override(X,Y, method, init)
 declare_class(type)
 
-typedef struct Tokens* Tokens;
-
-// class defs would be mods on type
-// all operations are done on 'dim' not just type alone.  members store 'reference'
+// y-u-so-dimm: greg during Baldeck's lecture on so-dimm
+// select [wrap] based on the shape read
+// mapping args could be nice to give here, 
+// in the same way an array may allocate a size
+// its a query for the wrap
 #define dim_schema(X,Y) \
-    i_prop(    X,Y, public, type,       type) \
-    i_prop(    X,Y, public, num,        depth) \
-    i_prop(    X,Y, intern, array,      shape) \
-    i_override(X,Y, method, init)
+    i_prop(    X,Y, public,   type,       type) \
+    i_prop(    X,Y, public,   Tokens,     tokens) \
+    i_prop(    X,Y, required, silver,     module) \
+    i_prop(    X,Y, required, map,        context) \
+    i_prop(    X,Y, intern,   string,     name) \
+    i_prop(    X,Y, intern,   num,        depth) \
+    i_prop(    X,Y, intern,   bool,       is_static) \
+    i_prop(    X,Y, intern,   Visibility, visibility) \
+    i_prop(    X,Y, intern,   type,       wrap) \
+    i_prop(    X,Y, intern,   array,      shape) \
+    i_override(X,Y, method,   init)
 declare_class(dim)
 
 #define module_def(m, n)   call0(m->defs, get, str(n))
 
 #define silver_schema(X,Y)\
-    i_prop    (X,Y, public, path,   install) \
-    i_prop    (X,Y, public, path,   source) \
-    i_prop    (X,Y, public, bool,   debug) \
-    i_prop    (X,Y, intern, object, intern)\
-    i_prop    (X,Y, intern, map,    defs) \
-    i_prop    (X,Y, intern, string, source_file) \
-    i_prop    (X,Y, intern, path,   source_path) \
-    i_prop    (X,Y, intern, array,  main_symbols) \
-    i_prop    (X,Y, intern, array,  compiled_objects) \
-    i_prop    (X,Y, intern, array,  libraries_used) \
-    i_method  (X,Y, public, map,    include) \
+    i_prop    (X,Y, public, path,       install) \
+    i_prop    (X,Y, public, path,       source) \
+    i_prop    (X,Y, public, bool,       debug) \
+    i_prop    (X,Y, intern, object,     intern)\
+    i_prop    (X,Y, intern, array,      imports) \
+    i_prop    (X,Y, intern, map,        defs) \
+    i_prop    (X,Y, intern, string,     source_file) \
+    i_prop    (X,Y, intern, path,       source_path) \
+    i_prop    (X,Y, intern, array,      main_symbols) \
+    i_prop    (X,Y, intern, array,      compiled_objects) \
+    i_prop    (X,Y, intern, array,      libraries_used) \
+    i_method  (X,Y, public, map,        include) \
     i_override(X,Y, method, init) \
     i_override(X,Y, method, destructor)
 declare_class(silver)

@@ -12,7 +12,7 @@
 #include <clang-c/Index.h>
 
 item first_key_value(map ordered) {
-    assert (len(ordered), "no items");
+    verify (len(ordered), "no items");
     return (pair)ordered->first->value;
 }
 
@@ -36,22 +36,11 @@ typedef struct itype {
     LLVMBasicBlockRef   entry;
 } itype;
 
-#define isilver(I,N,...)   silver_##N(I, ## __VA_ARGS__)
+#define isilver(I,N,...)     silver_##N(I, ## __VA_ARGS__)
 #define ifunction(I,N,...) function_##N(I, ## __VA_ARGS__)
-#define itype(I,N,...)     type_##N(I, ## __VA_ARGS__)
-
-dim dim_init(dim a) {
-    assert(a->type, "type (required arg) not set");
-    return a;
-}
-
-LLVMTypeRef dim_type_ref(dim a) {
-    itype*       f = a->type->intern;
-    LLVMTypeRef  t = f->type_ref;
-    for (int i = 0; i < a->depth; i++)
-        t = LLVMPointerType(t, 0);
-    return t;
-}
+#define itype(I,N,...)         type_##N(I, ## __VA_ARGS__)
+#define idim(I,N,...)           dim_##N(I, ## __VA_ARGS__)
+LLVMTypeRef dim_type_ref(dim a);
 
 LLVMValueRef type_dbg(type t) {
     itype* f = t->intern;
@@ -62,7 +51,7 @@ void type_set_body(type a) {
     isilver* i = a->module->intern;
     itype*   f = a->intern;
 
-    assert(a->mdl == model_function, "set_body must be called on a function type");
+    verify(a->mdl == model_function, "set_body must be called on a function type");
 
     // Create debug info for function type
     f->sub_routine = LLVMDIBuilderCreateSubroutineType(i->dbg, i->file, NULL, 0, 0);
@@ -91,64 +80,81 @@ void type_set_body(type a) {
 }
 
 void type_init(type a) {
-    assert(a->module, "module not set");
-    assert(a->name,   "name not set");
+
+    verify(a->module, "module not set");
+    verify(a->name,   "name not set");
 
     a->intern  = A_struct(itype);
+    a->members = new(map, hsize, 8);
     isilver* i = a->module->intern;
     itype*   f = a->intern;
     bool handled_members = false;
 
     switch (a->mdl) {
+        case model_class:
+            verify(false, "not implemented");
+            break;
+        
         case model_function: {
-            assert(a->rtype,  "rtype");
-            assert(a->args,   "args");
+            verify(a->rtype,  "rtype");
+            verify(a->args,   "args");
             int n_args = a->args->count;
-            int index  = 0;
+            int arg_index = 0;
             LLVMTypeRef* arg_types = calloc(n_args, sizeof(LLVMTypeRef));
             cstr*        arg_names = calloc(n_args, sizeof(cstr));
-
+            
+            print("making function for %o", a->name);
             enumerate(a->args, arg) {
-                arg_types[index] = dim_type_ref(idx_1(a->args, sz, index));
-                index++;
+                LLVMTypeRef ref = dim_type_ref(idx_1(a->args, sz, (sz)arg_index));
+                arg_types[arg_index] = ref;
+                arg_index++;
             }
 
-            f->type_ref  = LLVMFunctionType(dim_type_ref(a->rtype), NULL, 0, false);
-            f->value_ref = LLVMAddFunction(i->module, a->name, f->type_ref);
+            LLVMTypeRef return_ref = dim_type_ref(a->rtype);
+            f->type_ref  = LLVMFunctionType(return_ref, arg_types, arg_index, false);
+            f->value_ref = LLVMAddFunction(i->module, a->name->chars, f->type_ref);
+            dim info = a->info;
+            LLVMSetLinkage(f->value_ref, info->visibility == Visibility_public
+                ? LLVMExternalLinkage : LLVMInternalLinkage);
 
             // set arg names
-            index = 0;
+            arg_index = 0;
             enumerate(a->args, arg) {
                 string arg_name = arg->key;
                 dim    arg_type = arg->value;
                 AType     arg_t = isa(arg_type);
-                assert(arg_t == typeid(dim), "type mismatch");
-                LLVMValueRef param = LLVMGetParam(f->value_ref, index);
+                verify(arg_t == typeid(dim), "type mismatch");
+                LLVMValueRef param = LLVMGetParam(f->value_ref, arg_index);
                 LLVMSetValueName2(param, arg_name->chars, arg_name->len);
-                index++;
+                arg_index++;
             }
 
             free(arg_types);
             free(arg_names);
             break;
         }
-        case model_bool:   f->type_ref = LLVMInt1TypeInContext  (i->llvm_context); break;
-        case model_i8:     f->type_ref = LLVMInt8TypeInContext  (i->llvm_context); break;
-        case model_i16:    f->type_ref = LLVMInt16TypeInContext (i->llvm_context); break;
-        case model_i32:    f->type_ref = LLVMInt32TypeInContext (i->llvm_context); break;
-        case model_i64:    f->type_ref = LLVMInt64TypeInContext (i->llvm_context); break;
-        case model_u8:     f->type_ref = LLVMInt8TypeInContext  (i->llvm_context); break;
-        case model_u16:    f->type_ref = LLVMInt16TypeInContext (i->llvm_context); break;
-        case model_u32:    f->type_ref = LLVMInt32TypeInContext (i->llvm_context); break;
-        case model_u64:    f->type_ref = LLVMInt64TypeInContext (i->llvm_context); break;
-        case model_f32:    f->type_ref = LLVMFloatTypeInContext (i->llvm_context); break;
-        case model_f64:    f->type_ref = LLVMDoubleTypeInContext(i->llvm_context); break;
-        case model_void:   f->type_ref = LLVMVoidTypeInContext  (i->llvm_context); break;
+        case model_bool:   f->type_ref = LLVMInt1Type  (); break;
+        case model_i8:     f->type_ref = LLVMInt8Type  (); break;
+        case model_i16:    f->type_ref = LLVMInt16Type (); break;
+        case model_i32:    f->type_ref = LLVMInt32Type (); break;
+        case model_i64: {
+            f->type_ref = LLVMInt64Type ();
+            print("f->type_ref = %p", f->type_ref);
+            break;
+        }
+        case model_u8:     f->type_ref = LLVMInt8Type  (); break;
+        case model_u16:    f->type_ref = LLVMInt16Type (); break;
+        case model_u32:    f->type_ref = LLVMInt32Type (); break;
+        case model_u64:    f->type_ref = LLVMInt64Type (); break;
+        case model_f32:    f->type_ref = LLVMFloatType (); break;
+        case model_f64:    f->type_ref = LLVMDoubleType(); break;
+        case model_void:   f->type_ref = LLVMVoidType  (); break;
+        case model_cstr:   f->type_ref = LLVMPointerType(LLVMInt8Type(), 0); break;
         case model_typedef: {
-            assert (a->origin && isa(a->origin) == typeid(dim), "origin must be a reference");
+            verify (a->origin && isa(a->origin) == typeid(dim), "origin must be a reference");
             f->type_ref = dim_type_ref(a->origin);
             if (i->dbg) {
-                assert(type_dbg(a->origin), "no debug info set on origin");
+                verify(type_dbg(a->origin), "no debug info set on origin");
                 f->dbg = LLVMDIBuilderCreateTypedef(
                     i->dbg, type_dbg(a->origin), a->name->chars, len(a->name),
                     i->file, a->token ? a->token->line : 0, i->scope, LLVMDIFlagZero);
@@ -160,7 +166,7 @@ void type_init(type a) {
             int index = 0;
             enumerate(a->members, member_pair) {
                 dim member_r = member_pair->value;
-                assert(isa(member_r) == typeid(dim), "mismatch");
+                verify(isa(member_r) == typeid(dim), "mismatch");
                 member_types[index] = dim_type_ref(member_r);
                 index++;
             }
@@ -170,11 +176,11 @@ void type_init(type a) {
             break;
         }
         case model_union: {
-            assert (false, "not implemented");
+            verify (false, "not implemented");
             break;
         }
     }
-    assert (!a->members || handled_members, "members given and not processed");
+    verify (!call(a->members, count) || handled_members, "members given and not processed");
 }
 
 
@@ -206,12 +212,12 @@ map silver_include(silver a, string include) {
             break;
         }
     }
-    assert (full_path, "include path not found for %o", include);
+    verify (full_path, "include path not found for %o", include);
     CXIndex index = clang_createIndex(0, 0);
     CXTranslationUnit unit = clang_parseTranslationUnit(
         index, full_path->chars, NULL, 0, NULL, 0, CXTranslationUnit_None);
 
-    assert(unit, "unable to parse translation unit %o", include);
+    verify(unit, "unable to parse translation unit %o", include);
     
     CXCursor cursor = clang_getTranslationUnitCursor(unit);
     clang_visitChildren(cursor, visit, NULL);
@@ -265,71 +271,231 @@ void silver_destructor(silver a) {
     LLVMDisposeModule(i->module);
 }
 
-/// set_body must be called after the top pass; thats when we have the imports and top level definitions read
-/// again silver will not have embedded structs, classes and enums its very inaccessible to do so
-/// for internals its better to use intern on enums and classes
+/// this reads a num var
+/// --------------------
+/// num[2] name
+/// num[2] name [ num arg1, ... num[] extra ] expr | [ statements ]
+/// map[string, object] name   # good idea to always define that the value is object, and no default 'map' usage?
+/// array[meta][string, object] name   #
+/// --------------------
+
+LLVMTypeRef dim_type_ref(dim a) {
+    itype*       f = a->type->intern;
+    LLVMTypeRef  t = f->type_ref;
+    for (int i = 0; i < a->depth; i++)
+        t = LLVMPointerType(t, 0);
+    return t;
+}
+
+void dim_bind(dim a) {
+    Tokens tokens = a->tokens;
+    silver module = a->module;
+    if (!call(tokens, next_is, "["))
+        return;
+    call(tokens, consume);
+    a->wrap  = call(module->defs, get, str("array"));
+    a->shape = new(array); /// shape is there but not given data 
+    if (!call(tokens, next_is, "]")) {
+        type wdef = call(tokens, read_type, module);
+        if (wdef) {
+            /// must be map
+            for (;;) {
+                call(a->shape, push, wdef);
+                Token n = call(tokens, peek);
+                if (call(n, eq, ",")) {
+                    wdef = call(tokens, read_type, module);
+                    continue;
+                }
+                break;
+            }
+        } else {
+            /// must be array
+            for (;;) {
+                i64 dim_size = 0;
+                object n = call(tokens, read_numeric);
+                verify(n && isa(n) == typeid(i64), "expected integer");
+                call(tokens, consume);
+                call(a->shape, push, A_i64(dim_size));
+                Token next = call(tokens, peek);
+                if (call(next, eq, ",")) {
+                    call(tokens, consume);
+                    continue;
+                }
+                break;
+            }
+        }
+        Token next = call(tokens, peek);
+        verify (call(next, eq, "]"), "expected ] in type usage expression");
+    }
+    call(tokens, consume);
+}
+
+void A_test() {
+    num         types_len;
+    A_f**       types = A_types(&types_len);
+
+    /// iterate through types
+    for (num i = 0; i < types_len; i++) {
+        A_f* type = types[i];
+        if (type->traits & A_TRAIT_ABSTRACT) continue;
+        /// for each member of type
+        for (num m = 0; m < type->member_count; m++) {
+            type_member_t* mem = &type->members[m];
+            if (mem->member_type & (A_TYPE_PROP)) {
+                verify(!mem->required, "found required?");
+            }
+        }
+    }
+}
+
+void dim_create_fn(dim a) {
+    silver module  = a->module;
+    Tokens tokens  = a->tokens;
+    map    context = a->context;
+    if (call(tokens, next_is, "[")) {
+        call(tokens, consume);
+        map args = new(map, hsize, 8);
+        while (true) {
+            dim arg = new(dim, module, module, tokens, tokens, context, a->type->members);
+            verify (arg, "member failed to read");
+            verify (arg->name, "name not set after member recursion");
+            if (call(tokens, next_is, "]"))
+                break;
+            verify (call(tokens, next_is, ","), "expected separator");
+            call(tokens, consume);
+            call(args, set, arg->name, arg);
+        }
+        call(tokens, consume);
+        dim rtype_dim = new(dim,
+            module,     module,    type,       a->type,
+            depth,      a->depth,  shape,      a->shape,
+            wrap,       a->wrap,   context,    context);
+        type f_def = new(type,
+            name,     str(a->name->chars),  module,   module,
+            mdl,      model_function,       rtype,    rtype_dim,
+            args,     args,                 info,     a);
+        call(context, set, f_def->name, f_def);
+        drop(a->type);
+        a->type = hold(f_def);
+        array body = new(array, alloc, 32);
+        verify (call(tokens, next_is, "["), "expected function body");
+        int depth = 0;
+        do {
+            Token token = call(tokens, next);
+            verify (token, "expected end of function body ( too many ['s )");
+            call(body, push, token);
+            if (call(token, eq, "["))
+                depth++;
+            else if (call(token, eq, "]"))
+                depth--;
+        } while (depth > 0);
+        a->type->body = new(Tokens, cursor, 0, tokens, body);
+    }
+}
+
+dim dim_init(dim a) {
+    silver module  = a->module;
+    Tokens tokens  = a->tokens;
+    map    context = a->context;
+    verify(a->context, "context required");
+    if (tokens) {
+        call(tokens, push_current);
+        if (call(tokens, next_is, "static")) {
+            call(tokens, consume);
+            a->is_static = true;
+        }
+        /// look for visibility (default is possibly provided)
+        for (int i = 1; i < Visibility_type.member_count; i++) {
+            type_member_t* enum_v = &Visibility_type.members[i];
+            if (call(tokens, next_is, enum_v->name)) {
+                call(tokens, consume);
+                a->visibility = i;
+                break;
+            }
+        }
+        if (!a->is_static) {
+            if (call(tokens, next_is, "static")) {
+                call(tokens, consume);
+                a->is_static = true;
+            }
+        }
+        Token  n = call(tokens, peek);
+        print("dim_read: next token = %o", n);
+        type def = call(tokens, read_type, module);
+        if (!def) {
+            call(tokens, pop, false);
+            return null;
+        }
+        a->type = hold(def);
+        
+        // may be [, or alpha-id  (its an error if its neither)
+        if (call(tokens, next_is, "["))
+            idim(a, bind);
+
+        /// members must be named
+        verify(call(tokens, next_alpha), "expected identifier for member");
+
+        Token    name = call(tokens, next);
+        string s_name = cast(name, string);
+        a->name       = hold(s_name);
+
+        if (call(tokens, next_is, "["))
+            idim(a, create_fn);
+        
+        call(tokens, pop, true);
+    }
+    return a;
+}
+
 void silver_parse_top(silver a) {
     isilver* i      = a->intern;
     Tokens   tokens = i->tokens;
     while (cast(tokens, bool)) {
         if (next_is(tokens, "import")) {
-            EImport def = new(EImport, tokens, tokens);
-            assert (len(def->name) > 0, "import requires name");
-            call(a->defs, set, def->name, def);
+            Import import  = new(Import, module, a, tokens, tokens);
+            call(a->imports, push, import);
             continue;
         } else if (next_is(tokens, "class")) {
-            assert (false, "not implemented");
+            verify (false, "not implemented");
             //EClass def = new(EClass, tokens, tokens);
             //call(a->defs, set, def->name, def);
             continue;
         } else {
-            assert (false, "unexpected: %o", call(tokens, peek));
+            dim member = new(dim,
+                module,     a,
+                tokens,     tokens,
+                context,    a->defs);
+            call(a->defs, set, member->name, member);
         }
+        /// support member functions and a 'main' basic functionality for entrance, 
+        /// then add support for classes.  main is more basic than a class and people 
+        /// may like to change the args on main to suit a data schematic too
     }
 }
 
 void silver_define_C99(silver a) {
-    isilver* i = a->intern;
-    map defs = a->defs = new(map, hsize, 64);
+    isilver* i    = a->intern;
+    map      defs = a->defs = new(map, hsize, 64);
     
-    type def = new(type, module, a, name, str("bool"), mdl, model_bool, imported, typeid(bool));
-    call(defs, set, str("bool"), def);
-    call(defs, set, str("i8"),   new(type, module, a, name, str("i8"),   mdl, model_i8,   imported, typeid(i8)));
-    call(defs, set, str("i16"),  new(type, module, a, name, str("i16"),  mdl, model_i16,  imported, typeid(i16)));
-    call(defs, set, str("i32"),  new(type, module, a, name, str("i32"),  mdl, model_i32,  imported, typeid(i32)));
-    call(defs, set, str("i64"),  new(type, module, a, name, str("i64"),  mdl, model_i64,  imported, typeid(i64)));
-    call(defs, set, str("u8"),   new(type, module, a, name, str("u8"),   mdl, model_u8,   imported, typeid(u8)));
-    call(defs, set, str("u16"),  new(type, module, a, name, str("u16"),  mdl, model_u16,  imported, typeid(u16)));
-    call(defs, set, str("u32"),  new(type, module, a, name, str("u32"),  mdl, model_u32,  imported, typeid(u32)));
-    call(defs, set, str("u64"),  new(type, module, a, name, str("u64"),  mdl, model_u64,  imported, typeid(u64)));
-    call(defs, set, str("void"), new(type, module, a, name, str("void"), mdl, model_void, imported, typeid(none)));
+    call(defs, set, str("bool"),    new(type, module, a, name, str("bool"), mdl, model_bool, imported, typeid(bool)));
+    call(defs, set, str("i8"),      new(type, module, a, name, str("i8"),   mdl, model_i8,   imported, typeid(i8)));
+    call(defs, set, str("i16"),     new(type, module, a, name, str("i16"),  mdl, model_i16,  imported, typeid(i16)));
+    call(defs, set, str("i32"),     new(type, module, a, name, str("i32"),  mdl, model_i32,  imported, typeid(i32)));
+    call(defs, set, str("i64"),     new(type, module, a, name, str("i64"),  mdl, model_i64,  imported, typeid(i64)));
+    call(defs, set, str("u8"),      new(type, module, a, name, str("u8"),   mdl, model_u8,   imported, typeid(u8)));
+    call(defs, set, str("u16"),     new(type, module, a, name, str("u16"),  mdl, model_u16,  imported, typeid(u16)));
+    call(defs, set, str("u32"),     new(type, module, a, name, str("u32"),  mdl, model_u32,  imported, typeid(u32)));
+    call(defs, set, str("u64"),     new(type, module, a, name, str("u64"),  mdl, model_u64,  imported, typeid(u64)));
+    call(defs, set, str("void"),    new(type, module, a, name, str("void"), mdl, model_void, imported, typeid(none)));
+    call(defs, set, str("symbol"),  new(type, module, a, name, str("symbol"), mdl, model_cstr, imported, typeid(symbol)));
+    call(defs, set, str("cstr"),    new(type, module, a, name, str("cstr"),   mdl, model_cstr, imported, typeid(cstr)));
 
-    /// test out basic type system with code generation in functions outside of classes.
-    /// implement function first!
-    map        args = new(map);
-    dim     dim_i32 = new(dim, type, module_def(a, "i32"));
-    string    test1 = str("arg1");
-    call(args, set, str("arg1"), dim_i32);
-
-    type      i32_t = module_def(a, "i32");
-    dim       rtype = new(dim, type, i32_t, depth, 0);
-    itype*  i_i32_t = i32_t->intern;
-    type         fn = new(type,
-        name,     str("func_name"), 
-        module,   a,
-        mdl,      model_function,
-        rtype,    rtype,
-        args,     args);
-    call(defs, set, str("func_name"), fn);
+    call(defs, set, str("int"),     call0(defs, get, str("i64")));
+    call(defs, set, str("uint"),    call0(defs, get, str("u64")));
 }
 
 bool silver_build_dependencies(silver a) {
-    //global build_root
-    enumerate(a->defs, e) {
-        string key = e->key;
-        if (!inherits(e->value, EImport))
-            continue;
-        EImport im = e->value;
+    each(a->imports, Import, im) {
         call(im, process);
         switch (im->import_type) {
             case ImportType_source:
@@ -346,28 +512,97 @@ bool silver_build_dependencies(silver a) {
             case ImportType_project:
                 call(a->libraries_used, concat, im->links);
                 break;
+            case ImportType_includes:
+                break;
             default:
-                assert(false, "not handled: %i", im->import_type);
+                verify(false, "not handled: %i", im->import_type);
         }
     }
     return true;
 }
 
+/*
+typedef struct itype {
+    LLVMTypeRef         type_ref;
+    LLVMValueRef        value_ref;
+    LLVMMetadataRef     sub_routine;
+    LLVMMetadataRef     dbg;
+    LLVMBasicBlockRef   entry;
+} itype;
+
+# previous reference code.. (we will not use prestatements)
+def parse_statements(self, prestatements = None):
+    if prestatements != None:
+        block = prestatements.value
+    else:
+        block = []  # List to hold enode instances
+    multiple = self.peek_token() == '['
+
+    tokens, index = self.debug_tokens()
+    if multiple:
+        self.next_token()  # Consume '['
+
+    depth = 1
+    self.push_member_depth()
+    while self.peek_token():
+        t = self.peek_token()
+        if multiple and t == '[':    # here, this is eating my cast <----------- 
+            depth += 1
+            self.push_member_depth()
+            self.consume()
+            continue
+        global debug
+        debug += 1
+        n = self.parse_statement()  # Parse the next statement
+        assert n is not None, 'expected statement or expression'
+        block.append(n)
+        if not multiple: break
+        if multiple and self.peek_token() == ']':
+            if depth > 1:
+                self.pop_member_depth()
+            self.next_token()  # Consume ']'
+            depth -= 1
+            if depth == 0:
+                break
+    self.pop_member_depth()
+    # Return a combined operation of type EType_Statements
+    return prestatements if prestatements else EStatements(type=None, value=block)
+
+*/
+
+LLVMValueRef silver_compile_statements(silver a) {
+    LLVMValueRef result = null;
+    return result;
+}
+
+void silver_compile_function(silver a, type fn) {
+    isilver*     i = a->intern;
+    itype*       f = fn->intern;
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlock(f->value_ref, "entry");
+    LLVMPositionBuilderAtEnd(i->builder, entry);
+    LLVMValueRef arg1 = LLVMGetParam(f->value_ref, 0);
+    LLVMValueRef arg2 = LLVMGetParam(f->value_ref, 1);
+    LLVMValueRef result = LLVMBuildAdd(i->builder, arg1, arg2, "result");
+    LLVMBuildRet(i->builder, result);
+}
+
 void silver_init(silver a) {
-    assert(a->source, "module name not set");
+    verify(a->source, "module name not set");
 
     a->intern      = A_struct(isilver);
     isilver*     i = a->intern;
+    a->imports     = new(array, alloc, 32);
     a->source_path = call(a->source, directory);
     a->source_file = call(a->source, filename);
+    a->libraries_used = new(array);
 
     print("LLVM Version: %d.%d.%d",
         LLVM_VERSION_MAJOR,
         LLVM_VERSION_MINOR,
         LLVM_VERSION_PATCH);
 
-    path full_path = form(path, "%o/%o", a->source_path, a->source_file);
-    assert(call(full_path, exists), "source (%o) does not exist", full_path);
+    path  full_path = form(path, "%o/%o", a->source_path, a->source_file);
+    verify(call(full_path, exists), "source (%o) does not exist", full_path);
 
     i->module       = LLVMModuleCreateWithName(a->source_file->chars);
     i->llvm_context = LLVMGetModuleContext(i->module);
@@ -391,91 +626,23 @@ void silver_init(silver a) {
     isilver(a, define_C99);
     isilver(a, parse_top);
     isilver(a, include, str("stdio.h"));
-    // we want to include stdio and perform syntax parsing on a function
-    // isolated reverse decent for just a sub-set of assignment and expressions.
-    // no operators yet
     isilver(a, build_dependencies);
-
-    // define a struct type in the custom language
-    LLVMTypeRef structType = LLVMStructCreateNamed(i->llvm_context, "MyStruct");
-    LLVMTypeRef elementTypes[] = {
-        LLVMInt32Type(), LLVMInt32Type(),
-        LLVMInt32Type(), LLVMInt32Type()
-    };
-    LLVMStructSetBody(structType, elementTypes, 4, 0);
-
-    // create debug info for struct
-    LLVMMetadataRef memberDebugTypes[4];
-    for (int m = 0; m < 4; m++) {
-        memberDebugTypes[m] = LLVMDIBuilderCreateBasicType(
-            i->dbg, "int", 3, 32, 
-            (LLVMDWARFTypeEncoding)0x05,
-            (LLVMDIFlags)0); /// signed 0x05 (not defined somehwo) DW_ATE_signed
-    }
-
-    LLVMMetadataRef structDebugType = LLVMDIBuilderCreateStructType(
-        i->dbg, i->compile_unit, "MyStruct", 8, i->file, 1, 
-        128, 32, 0, NULL, 
-        memberDebugTypes, 4, 0, NULL, "", 0);
-
-    // create a function and access the struct member
-    map args = new(map);
-    call(args, set, str("argc"), new(dim, type, module_def(a, "i32"),  depth, 0));
-    call(args, set, str("argv"), new(dim, type, module_def(a, "cstr"), depth, 1));
-    dim rtype = new(dim, type, call(a->defs, get, str("i32")));
-    type  fn = new(type,
-        name,  "main",
-        module, a,
-        rtype,  rtype,
-        args,   args);
-
-    //call(fn, from_tokens) -- lets import parse_statements -> parse_expression
-    LLVMBuilderRef builder = LLVMCreateBuilder();
-
-    /// this is 'finalize' for a method, after we call parse on module, parsing all members in each class or struct
-    // Create a pointer to MyStruct (simulate `self` in your custom language)
-    LLVMValueRef structPtr = LLVMBuildAlloca(builder, structType, "self");
-
-    // Create debug info for the local variable
-    LLVMMetadataRef localVarDIType = LLVMDIBuilderCreatePointerType(
-        i->dbg, structDebugType, 64, 0, 0, "MyStruct*", 9);
-    LLVMMetadataRef localVarDbgInfo = LLVMDIBuilderCreateAutoVariable(
-        i->dbg, type_dbg(fn), "self", 4, i->file, 2, localVarDIType, 1, 0, 0);
     
-    LLVMDIBuilderInsertDeclareAtEnd(
-        i->dbg,
-        structPtr,
-        localVarDbgInfo,
-        LLVMDIBuilderCreateExpression(i->dbg, NULL, 0),
-        LLVMDIBuilderCreateDebugLocation(i->llvm_context, 2, 0, type_dbg(fn), NULL),
-        LLVMGetInsertBlock(builder));
-
-    // Set values for struct members
-    symbol memberNames[]  = { "member1", "member2", "member3", "member4" };
-    int    memberValues[] = { 42, 44, 46, 48 };
-    LLVMTypeRef int32Type = LLVMInt32TypeInContext(i->llvm_context);
-
-    for (int m = 0; m < 4; m++) {
-        LLVMValueRef memberPtr = LLVMBuildStructGEP2(builder, structType, structPtr, m, memberNames[m]);
-        LLVMBuildStore(builder, LLVMConstInt(int32Type, memberValues[m], 0), memberPtr);
-
-        // Create debug info for each member
-        LLVMMetadataRef memberDebugInfo = LLVMDIBuilderCreateAutoVariable(
-            i->dbg, type_dbg(fn), memberNames[m], strlen(memberNames[m]),
-            i->file, m + 3, memberDebugTypes[m], 0, 0, 0);
-        LLVMDIBuilderInsertDeclareAtEnd(i->dbg, memberPtr, memberDebugInfo,
-            LLVMDIBuilderCreateExpression(i->dbg, NULL, 0),
-            LLVMDIBuilderCreateDebugLocation(i->llvm_context, m + 3, 0, type_dbg(fn), NULL),
-            LLVMGetInsertBlock(builder));
-
-        isilver(a, set_line, 3 + m, 0);
+    enumerate (a->defs, e) {
+        type def = e->value;
+        // for each type def with a body to compile
+        if (def->mdl == model_function) {
+            isilver(a, compile_function, def);
+        } else if (def->mdl == model_class) {
+            enumerate_ (def->members, m) {
+                dim member = m->value;
+                if (member->type->mdl == model_function)
+                    isilver(a, compile_function, member->type);
+            }
+        }
     }
-    isilver(a, set_line, 7, 0);
 
-    // Return from main
-    LLVMBuildRet(builder, LLVMConstInt(LLVMInt32Type(), 0, false));
-    LLVMDIBuilderFinalize(i->dbg);
-    isilver(a, write);
+    isilver(a, write); /// write module we just read in; if we can get away with bulk LLVM code it may be alright to stay direct
 }
 
 define_enum(model)

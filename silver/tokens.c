@@ -1,9 +1,12 @@
 #include <tokens>
+#include <silver>
 
 static array keywords;
 static array consumables;
 static array assign;
 static array compare;
+
+#define intern(I,M,...) Token_ ## M(I, ## __VA_ARGS__)
 
 void init() {
     keywords = array_of_cstr(
@@ -62,15 +65,22 @@ string Token_cast_string(Token a) {
 
 AType Token_is_bool(Token a) {
     string t = cast(a, string);
-    return (call(t, cmp, "true") || call(t, cmp, "false")) ? typeid(ELiteralBool) : typeid(EUndefined);
+    return (call(t, cmp, "true") || call(t, cmp, "false")) ?
+        (AType)typeid(ELiteralBool) : (AType)typeid(EUndefined);
 }
 
-AType Token_is_numeric(Token a) {
+A Token_is_numeric(Token a) {
     bool is_digit = a->chars[0] >= '0' && a->chars[0] <= '9';
     bool has_dot  = strstr(a->chars, ".") != 0;
-    if (!is_digit && !has_dot) return typeid(EUndefined);
-    if (!has_dot) return typeid(ELiteralInt);
-    return typeid(ELiteralReal);
+    if (!is_digit && !has_dot)
+        return null;
+    char* e = null;
+    if (!has_dot) {
+        i64 v = strtoll(a->chars, &e, 10);
+        return A_primitive(typeid(i64), &v);
+    }
+    f64 v = strtod(a->chars, &e);
+    return A_primitive(typeid(f64), &v);
 }
 
 AType Token_is_string(Token a) {
@@ -220,6 +230,32 @@ none Tokens_init(Tokens a) {
         a->tokens = parse_tokens(a->file);
     else if (!a->tokens)
         assert (false, "file/tokens not set");
+    a->stack = new(array, alloc, 4);
+}
+
+object Tokens_read_numeric(Tokens tokens) {
+    Token first = call(tokens, peek);
+    object    n = intern(first, is_numeric);
+    if (n)
+        call(tokens, consume);
+    return n;
+}
+
+// does not read past the type into [ model-query ]
+type Tokens_read_type(Tokens tokens, silver module) {
+    bool is_ref = false;
+    Token first = call(tokens, peek);
+    if (call(first, eq, "ref")) {
+        call(tokens, consume);
+        is_ref = true;
+        first  = call(tokens, peek);
+    }
+    string  key = cast(first, string);
+    type    def = call(module->defs, get, key);
+    assert(def || !is_ref, "type-identifier expected after ref keyword, found: %o", key);
+    if (def)
+        call(tokens, consume);
+    return def;
 }
 
 Token Tokens_read(Tokens a, num rel) {
@@ -247,9 +283,9 @@ bool Tokens_next_is(Tokens a, symbol cs) {
     return strcmp(n->chars, cs) == 0;
 }
 
-void Tokens_transfer(Tokens a, Tokens b) {
-    assert(a->tokens == b->tokens, "token list identity difference upon transfer");
-    a->cursor = b->cursor;
+bool Tokens_next_alpha(Tokens a) {
+    Token n = call(a, read, 0);
+    return is_alpha(n);
 }
 
 typedef struct tokens_data {
@@ -264,8 +300,13 @@ void Tokens_push_state(Tokens a, array tokens, num cursor) {
     call(a->stack, push, state);
 }
 
-void Tokens_pop(Tokens a) {
+void Tokens_pop(Tokens a, bool transfer) {
+    int len = a->stack->len;
+    assert (len, "expected stack");
+    tokens_data state = (tokens_data)call(a->stack, last); // we should call this element or ele
     call(a->stack, pop);
+    if(!transfer)
+        a->cursor = state->cursor;
 }
 
 void Tokens_push_current(Tokens a) {
