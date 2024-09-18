@@ -3,6 +3,9 @@
 int main(int argc, char **argv) {
     A_start();
     AF     pool     = allocate(AF);
+
+    //chdir("/home/kalen/src/silver-import/checkout/dawn/silver-build");
+
     map    defaults = map_of(
         "module",  str(""),
         "install", new(path, chars, "/home/kalen/src/silver-import"), null);

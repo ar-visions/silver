@@ -31,7 +31,7 @@ typedef struct EAnd*                    EAnd;
 typedef struct EXor*                    EXor;
 typedef struct EIs*                     EIs;
 typedef struct EInherits*               EInherits;
-typedef struct EImport*                 EImport;
+typedef struct Import*                  Import;
 typedef struct EStatements*             EStatements;
 typedef struct EModel*                  EModel;
 typedef struct EDeclaration*            EDeclaration;
@@ -119,12 +119,6 @@ declare_mod(ELiteralStr, ENode);
 declare_mod(ELiteralBool, ENode);
 
 
-#define Visibility_schema(X,Y) \
-    enum_value(X,Y, undefined) \
-    enum_value(X,Y, intern) \
-    enum_value(X,Y, public)
-declare_enum(Visibility)
-
 #define Token_schema(X,Y) \
     i_prop  (X,Y, public, cstr,   chars) \
     i_prop  (X,Y, public, i32,    chr) \
@@ -143,6 +137,9 @@ declare_enum(Visibility)
     i_override(X,Y, cast,   bool)
 declare_class(Token)
 
+typedef struct type*   type;
+typedef struct silver* silver;
+
 #define Tokens_schema(X,Y)\
     i_prop  (X,Y, public, path,   file) \
     i_prop  (X,Y, public, array,  tokens) \
@@ -150,13 +147,15 @@ declare_class(Token)
     i_prop  (X,Y, intern, array,  stack) \
     i_method(X,Y, public, none,   push_state,   array, num) \
     i_method(X,Y, public, none,   push_current) \
-    i_method(X,Y, public, none,   pop) \
+    i_method(X,Y, public, none,   pop, bool) \
     i_method(X,Y, public, Token,  read, num) \
     i_method(X,Y, public, Token,  next) \
     i_method(X,Y, public, Token,  consume) \
     i_method(X,Y, public, Token,  peek) \
     i_method(X,Y, public, bool,   next_is, symbol) \
-    i_method(X,Y, public, none,   transfer, Tokens) \
+    i_method(X,Y, public, bool,   next_alpha) \
+    i_method(X,Y, public, object, read_numeric) \
+    i_method(X,Y, public, type,   read_type, silver) \
     i_override(X,Y, method, init) \
     i_override(X,Y, cast,   bool)
 declare_class(Tokens)
