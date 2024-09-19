@@ -2,22 +2,23 @@
 
 int main(int argc, char **argv) {
     A_start();
-    AF     pool     = allocate(AF);
-
-    //chdir("/home/kalen/src/silver-import/checkout/dawn/silver-build");
-
+    AF         pool = allocate(AF);
+    cstr        src = getenv("SRC");
+    cstr     import = getenv("SILVER_IMPORT");
     map    defaults = map_of(
         "module",  str(""),
-        "install", new(path, chars, "/home/kalen/src/silver-import"), null);
+        "install", import ? form(path, "%s", import) : 
+                            form(path, "%s/silver-import", src ? src : "."),
+        null);
     print("defaults = %o", defaults);
 
     string ikey     = str("install");
     map    args     = A_args(argc, argv, defaults, ikey);
     print("args = %o", args);
 
-    path   install  = call(args, get, ikey);
+    path   install  = get(args, ikey);
     string mkey     = str("module");
-    string name     = call(args, get, mkey);
+    string name     = get(args, mkey);
     path   n        = new(path, chars, name->chars);
     path   source   = call(n, absolute);
 
@@ -25,4 +26,5 @@ int main(int argc, char **argv) {
     
     silver module   = new(silver, source, source, install, install);
     drop(pool);
+    // we only use silver to build the library for .c, of course.  this was our use-case
 }

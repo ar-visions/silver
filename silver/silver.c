@@ -24,59 +24,46 @@ typedef struct isilver {
     LLVMMetadataRef     compile_unit;
     LLVMDIBuilderRef    dbg;
     LLVMMetadataRef     scope;
-    map                 imports;
-    Tokens              tokens;
+    array               imports;        // processed imports
+    Tokens              tokens;         // tokens state with cursor and stack
+    array               member_stack;   // working member stack used as we parse
+    map                 defs;           // the types we describe in here
+    map                 members;        // module members in order
+    string              source_file;
+    path                source_path;
+    array               main_symbols;
+    array               compiled_objects;
+    array               libraries_used;
+    map                 include;
+
 } isilver;
 
 typedef struct itype {
     LLVMTypeRef         type_ref;
-    LLVMValueRef        value_ref;
+    //LLVMValueRef      value_ref; -- in dim (member space is always there for functions!)
     LLVMMetadataRef     sub_routine;
     LLVMMetadataRef     dbg;
     LLVMBasicBlockRef   entry;
 } itype;
 
+typedef struct idim {
+    LLVMValueRef        value_ref;
+} idim;
+
 #define isilver(I,N,...)     silver_##N(I, ## __VA_ARGS__)
 #define ifunction(I,N,...) function_##N(I, ## __VA_ARGS__)
 #define itype(I,N,...)         type_##N(I, ## __VA_ARGS__)
 #define idim(I,N,...)           dim_##N(I, ## __VA_ARGS__)
+
+#define next_is(s) call(tokens, next_is, s)
+#define next()     call(tokens, next)
+#define consume()  call(tokens, consume)
+
 LLVMTypeRef dim_type_ref(dim a);
 
 LLVMValueRef type_dbg(type t) {
     itype* f = t->intern;
     return f->dbg;
-}
-
-void type_set_body(type a) {
-    isilver* i = a->module->intern;
-    itype*   f = a->intern;
-
-    verify(a->mdl == model_function, "set_body must be called on a function type");
-
-    // Create debug info for function type
-    f->sub_routine = LLVMDIBuilderCreateSubroutineType(i->dbg, i->file, NULL, 0, 0);
-    f->dbg = LLVMDIBuilderCreateFunction(
-        i->dbg, i->compile_unit,
-        a->name->chars, a->name->len,
-        a->name->chars, a->name->len,
-        i->file, 1, f->sub_routine, 0, 1, 1, 0, LLVMDIFlagPrototyped);
-
-    LLVMSetSubprogram(f->value_ref, f->dbg); // Set the debug info for the function
-    LLVMBasicBlockRef entry   = LLVMAppendBasicBlock(f->value_ref, "entry"); // Create a basic block to hold the function body
-    LLVMBuilderRef    builder = LLVMCreateBuilder(); // Create a builder to add instructions
-    LLVMPositionBuilderAtEnd(builder, entry); // Create a global string constant for "Hello, World!"
-    LLVMValueRef      hello_world   = LLVMBuildGlobalStringPtr(builder, "Hello, World!", "hello_str");
-    LLVMTypeRef  printf_arg_types[] = { LLVMPointerType(LLVMInt8Type(), 0) };
-    LLVMTypeRef  printf_type        = LLVMFunctionType(LLVMInt32Type(), printf_arg_types, 1, true);
-    LLVMValueRef printf_func        = LLVMGetNamedFunction(i->module, "printf");
-    if (!printf_func)
-         printf_func = LLVMAddFunction(i->module, "printf", printf_type);
-
-    // Call printf
-    LLVMValueRef args[] = { hello_world };
-    LLVMBuildCall2(builder, printf_type, printf_func, args, 1, "");
-    LLVMBuildRet(builder, hello_world);
-    LLVMDisposeBuilder(builder);
 }
 
 void type_init(type a) {
@@ -88,6 +75,8 @@ void type_init(type a) {
     a->members = new(map, hsize, 8);
     isilver* i = a->module->intern;
     itype*   f = a->intern;
+    dim   info = a->info;
+    idim*    m = info ? info->intern : null;
     bool handled_members = false;
 
     switch (a->mdl) {
@@ -112,9 +101,8 @@ void type_init(type a) {
 
             LLVMTypeRef return_ref = dim_type_ref(a->rtype);
             f->type_ref  = LLVMFunctionType(return_ref, arg_types, arg_index, false);
-            f->value_ref = LLVMAddFunction(i->module, a->name->chars, f->type_ref);
-            dim info = a->info;
-            LLVMSetLinkage(f->value_ref, info->visibility == Visibility_public
+            m->value_ref = LLVMAddFunction(i->module, a->name->chars, f->type_ref);
+            LLVMSetLinkage(m->value_ref, info->visibility == Visibility_public
                 ? LLVMExternalLinkage : LLVMInternalLinkage);
 
             // set arg names
@@ -124,7 +112,7 @@ void type_init(type a) {
                 dim    arg_type = arg->value;
                 AType     arg_t = isa(arg_type);
                 verify(arg_t == typeid(dim), "type mismatch");
-                LLVMValueRef param = LLVMGetParam(f->value_ref, arg_index);
+                LLVMValueRef param = LLVMGetParam(m->value_ref, arg_index);
                 LLVMSetValueName2(param, arg_name->chars, arg_name->len);
                 arg_index++;
             }
@@ -194,6 +182,43 @@ enum CXChildVisitResult visit(CXCursor cursor, CXCursor parent, CXClientData cli
         clang_disposeString(funcName);
     }
     return CXChildVisit_Recurse;
+}
+
+path silver_source_path(silver a) {
+    isilver* i = a->intern;
+    return i->source_path;
+}
+
+type silver_get_type(silver a, string key) {
+    isilver* i = a->intern;
+    return get(i->defs, key);
+}
+
+dim silver_get_member(silver a, string key) {
+    isilver* i = a->intern;
+    return get(i->members, key);
+}
+
+/// lookup value ref for member in stack
+LLVMValueRef silver_member_stack_lookup(silver a, string name) {
+    isilver* i = a->intern;
+    for (int m = i->member_stack->len - 1; m >= 0; m--) {
+        map members = i->member_stack->elements[m];
+        object f = get(members, name);
+        if    (f) return f;
+    }
+    return null;
+}
+
+void silver_push_member_stack(silver a) {
+    isilver* i = a->intern;
+    map m = new(map, hsize, 16);
+    push(i->member_stack, m);
+}
+
+void silver_pop_member_stack(silver a) {
+    isilver* i = a->intern;
+    pop(i->member_stack);
 }
 
 /// return a map of defs found by their name (we can isolate the namespace this way by having separate maps)
@@ -287,22 +312,28 @@ LLVMTypeRef dim_type_ref(dim a) {
     return t;
 }
 
+LLVMValueRef dim_value_ref(dim a) {
+    idim* m = a->intern;
+    assert(m->value_ref, "value_ref not set when read\n");
+    return m->value_ref;
+}
+
 void dim_bind(dim a) {
     Tokens tokens = a->tokens;
     silver module = a->module;
-    if (!call(tokens, next_is, "["))
+    if (!next_is("["))
         return;
-    call(tokens, consume);
-    a->wrap  = call(module->defs, get, str("array"));
+    consume();
+    a->wrap  = call(module, get_type, str("array"));
     a->shape = new(array); /// shape is there but not given data 
-    if (!call(tokens, next_is, "]")) {
+    if (!next_is("]")) {
         type wdef = call(tokens, read_type, module);
         if (wdef) {
             /// must be map
             for (;;) {
-                call(a->shape, push, wdef);
-                Token n = call(tokens, peek);
-                if (call(n, eq, ",")) {
+                push(a->shape, wdef);
+                Token n = peek(tokens);
+                if (eq(n, ",")) {
                     wdef = call(tokens, read_type, module);
                     continue;
                 }
@@ -314,20 +345,20 @@ void dim_bind(dim a) {
                 i64 dim_size = 0;
                 object n = call(tokens, read_numeric);
                 verify(n && isa(n) == typeid(i64), "expected integer");
-                call(tokens, consume);
-                call(a->shape, push, A_i64(dim_size));
-                Token next = call(tokens, peek);
-                if (call(next, eq, ",")) {
-                    call(tokens, consume);
+                consume();
+                push(a->shape, A_i64(dim_size));
+                Token next = peek(tokens);
+                if (eq(next, ",")) {
+                    consume();
                     continue;
                 }
                 break;
             }
         }
-        Token next = call(tokens, peek);
-        verify (call(next, eq, "]"), "expected ] in type usage expression");
+        Token next = peek(tokens);
+        verify (eq(next, "]"), "expected ] in type usage expression");
     }
-    call(tokens, consume);
+    consume();
 }
 
 void A_test() {
@@ -352,20 +383,20 @@ void dim_create_fn(dim a) {
     silver module  = a->module;
     Tokens tokens  = a->tokens;
     map    context = a->context;
-    if (call(tokens, next_is, "[")) {
-        call(tokens, consume);
+    if (next_is("[")) {
+        consume();
         map args = new(map, hsize, 8);
         while (true) {
             dim arg = new(dim, module, module, tokens, tokens, context, a->type->members);
             verify (arg, "member failed to read");
             verify (arg->name, "name not set after member recursion");
-            if (call(tokens, next_is, "]"))
+            if (next_is("]"))
                 break;
-            verify (call(tokens, next_is, ","), "expected separator");
-            call(tokens, consume);
-            call(args, set, arg->name, arg);
+            verify (next_is(","), "expected separator");
+            consume();
+            set(args, arg->name, arg);
         }
-        call(tokens, consume);
+        consume();
         dim rtype_dim = new(dim,
             module,     module,    type,       a->type,
             depth,      a->depth,  shape,      a->shape,
@@ -374,19 +405,19 @@ void dim_create_fn(dim a) {
             name,     str(a->name->chars),  module,   module,
             mdl,      model_function,       rtype,    rtype_dim,
             args,     args,                 info,     a);
-        call(context, set, f_def->name, f_def);
+        set(context, f_def->name, f_def);
         drop(a->type);
         a->type = hold(f_def);
         array body = new(array, alloc, 32);
-        verify (call(tokens, next_is, "["), "expected function body");
+        verify (next_is("["), "expected function body");
         int depth = 0;
         do {
-            Token token = call(tokens, next);
+            Token token = next();
             verify (token, "expected end of function body ( too many ['s )");
-            call(body, push, token);
-            if (call(token, eq, "["))
+            push(body, token);
+            if (eq(token, "["))
                 depth++;
-            else if (call(token, eq, "]"))
+            else if (eq(token, "]"))
                 depth--;
         } while (depth > 0);
         a->type->body = new(Tokens, cursor, 0, tokens, body);
@@ -394,55 +425,60 @@ void dim_create_fn(dim a) {
 }
 
 dim dim_init(dim a) {
+    a->intern      = A_struct(idim);
+    idim*  intern  = a->intern;
     silver module  = a->module;
     Tokens tokens  = a->tokens;
     map    context = a->context;
+    if (!a->visibility)
+        a->visibility = Visibility_public;
     verify(a->context, "context required");
     if (tokens) {
         call(tokens, push_current);
-        if (call(tokens, next_is, "static")) {
-            call(tokens, consume);
+        if (next_is("static")) {
+            consume();
             a->is_static = true;
         }
         /// look for visibility (default is possibly provided)
         for (int i = 1; i < Visibility_type.member_count; i++) {
             type_member_t* enum_v = &Visibility_type.members[i];
-            if (call(tokens, next_is, enum_v->name)) {
-                call(tokens, consume);
+            if (next_is(enum_v->name)) {
+                consume();
                 a->visibility = i;
                 break;
             }
         }
         if (!a->is_static) {
-            if (call(tokens, next_is, "static")) {
-                call(tokens, consume);
+            if (next_is("static")) {
+                consume();
                 a->is_static = true;
             }
         }
-        Token  n = call(tokens, peek);
+        Token  n = peek(tokens);
         print("dim_read: next token = %o", n);
         type def = call(tokens, read_type, module);
         if (!def) {
-            call(tokens, pop, false);
+            print("info: could not read type at position %i", tokens->cursor);
+            pop(tokens, false); // we may 'info' here
             return null;
         }
         a->type = hold(def);
         
         // may be [, or alpha-id  (its an error if its neither)
-        if (call(tokens, next_is, "["))
+        if (next_is("["))
             idim(a, bind);
 
         /// members must be named
         verify(call(tokens, next_alpha), "expected identifier for member");
 
-        Token    name = call(tokens, next);
+        Token    name = next();
         string s_name = cast(name, string);
         a->name       = hold(s_name);
 
-        if (call(tokens, next_is, "["))
+        if (next_is("["))
             idim(a, create_fn);
         
-        call(tokens, pop, true);
+        pop(tokens, true);
     }
     return a;
 }
@@ -451,66 +487,68 @@ void silver_parse_top(silver a) {
     isilver* i      = a->intern;
     Tokens   tokens = i->tokens;
     while (cast(tokens, bool)) {
-        if (next_is(tokens, "import")) {
+        if (next_is("import")) {
             Import import  = new(Import, module, a, tokens, tokens);
-            call(a->imports, push, import);
+            push(i->imports, import);
             continue;
-        } else if (next_is(tokens, "class")) {
+        } else if (next_is("class")) {
             verify (false, "not implemented");
             //EClass def = new(EClass, tokens, tokens);
             //call(a->defs, set, def->name, def);
             continue;
         } else {
+            /// functions are a 'member' of the module
+            /// so are classes, but we have a i->defs for the type alone
+            /// so we may have class contain in a 'member' of definition type
+            /// so its name could be the name of the class and the type would be the same name
             dim member = new(dim,
                 module,     a,
                 tokens,     tokens,
-                context,    a->defs);
-            call(a->defs, set, member->name, member);
+                context,    i->defs);
+            string key = member->name ? member->name : (string)format("$m%i", call(i->defs, count));
+            set(i->members, key, member);
         }
-        /// support member functions and a 'main' basic functionality for entrance, 
-        /// then add support for classes.  main is more basic than a class and people 
-        /// may like to change the args on main to suit a data schematic too
     }
 }
 
 void silver_define_C99(silver a) {
     isilver* i    = a->intern;
-    map      defs = a->defs = new(map, hsize, 64);
+    map      defs = i->defs = new(map, hsize, 64);
     
-    call(defs, set, str("bool"),    new(type, module, a, name, str("bool"), mdl, model_bool, imported, typeid(bool)));
-    call(defs, set, str("i8"),      new(type, module, a, name, str("i8"),   mdl, model_i8,   imported, typeid(i8)));
-    call(defs, set, str("i16"),     new(type, module, a, name, str("i16"),  mdl, model_i16,  imported, typeid(i16)));
-    call(defs, set, str("i32"),     new(type, module, a, name, str("i32"),  mdl, model_i32,  imported, typeid(i32)));
-    call(defs, set, str("i64"),     new(type, module, a, name, str("i64"),  mdl, model_i64,  imported, typeid(i64)));
-    call(defs, set, str("u8"),      new(type, module, a, name, str("u8"),   mdl, model_u8,   imported, typeid(u8)));
-    call(defs, set, str("u16"),     new(type, module, a, name, str("u16"),  mdl, model_u16,  imported, typeid(u16)));
-    call(defs, set, str("u32"),     new(type, module, a, name, str("u32"),  mdl, model_u32,  imported, typeid(u32)));
-    call(defs, set, str("u64"),     new(type, module, a, name, str("u64"),  mdl, model_u64,  imported, typeid(u64)));
-    call(defs, set, str("void"),    new(type, module, a, name, str("void"), mdl, model_void, imported, typeid(none)));
-    call(defs, set, str("symbol"),  new(type, module, a, name, str("symbol"), mdl, model_cstr, imported, typeid(symbol)));
-    call(defs, set, str("cstr"),    new(type, module, a, name, str("cstr"),   mdl, model_cstr, imported, typeid(cstr)));
-
-    call(defs, set, str("int"),     call0(defs, get, str("i64")));
-    call(defs, set, str("uint"),    call0(defs, get, str("u64")));
+    set(defs, str("bool"),    new(type, module, a, name, str("bool"), mdl, model_bool, imported, typeid(bool)));
+    set(defs, str("i8"),      new(type, module, a, name, str("i8"),   mdl, model_i8,   imported, typeid(i8)));
+    set(defs, str("i16"),     new(type, module, a, name, str("i16"),  mdl, model_i16,  imported, typeid(i16)));
+    set(defs, str("i32"),     new(type, module, a, name, str("i32"),  mdl, model_i32,  imported, typeid(i32)));
+    set(defs, str("i64"),     new(type, module, a, name, str("i64"),  mdl, model_i64,  imported, typeid(i64)));
+    set(defs, str("u8"),      new(type, module, a, name, str("u8"),   mdl, model_u8,   imported, typeid(u8)));
+    set(defs, str("u16"),     new(type, module, a, name, str("u16"),  mdl, model_u16,  imported, typeid(u16)));
+    set(defs, str("u32"),     new(type, module, a, name, str("u32"),  mdl, model_u32,  imported, typeid(u32)));
+    set(defs, str("u64"),     new(type, module, a, name, str("u64"),  mdl, model_u64,  imported, typeid(u64)));
+    set(defs, str("void"),    new(type, module, a, name, str("void"), mdl, model_void, imported, typeid(none)));
+    set(defs, str("symbol"),  new(type, module, a, name, str("symbol"), mdl, model_cstr, imported, typeid(symbol)));
+    set(defs, str("cstr"),    new(type, module, a, name, str("cstr"),   mdl, model_cstr, imported, typeid(cstr)));
+    set(defs, str("int"),     get(defs, str("i64")));
+    set(defs, str("uint"),    get(defs, str("u64")));
 }
 
 bool silver_build_dependencies(silver a) {
-    each(a->imports, Import, im) {
-        call(im, process);
+    isilver* i = a->intern;
+    each(i->imports, Import, im) {
+        process(im);
         switch (im->import_type) {
             case ImportType_source:
                 if (len(im->main_symbol))
-                    call(a->main_symbols, push, im->main_symbol);
+                    push(i->main_symbols, im->main_symbol);
                 each(im->source, string, source) {
                     // these are built as shared library only, or, a header file is included for emitting
                     if (call(source, has_suffix, ".rs") || call(source, has_suffix, ".h"))
                         continue;
                     string buf = format("%o/%s.o", a->install, source);
-                    call(a->compiled_objects, push, buf);
+                    push(i->compiled_objects, buf);
                 }
             case ImportType_library:
             case ImportType_project:
-                call(a->libraries_used, concat, im->links);
+                concat(i->libraries_used, im->links);
                 break;
             case ImportType_includes:
                 break;
@@ -567,58 +605,114 @@ def parse_statements(self, prestatements = None):
     self.pop_member_depth()
     # Return a combined operation of type EType_Statements
     return prestatements if prestatements else EStatements(type=None, value=block)
-
 */
 
-LLVMValueRef silver_compile_statements(silver a) {
+LLVMValueRef silver_build_assignment(silver a) {
+    isilver*    i = a->intern;
+    Tokens tokens = i->tokens;
+    
+    // Assume we have tokens for the assignment: x = 5
+    Token var = next();  // variable (e.g., 'x')
+    Token eq  = next();  // '='
+    Token val = next();  // value (e.g., '5')
+
+    // Example LLVM IR for a variable assignment
+    string s_var = cast(var, string);
+    LLVMValueRef lhs = isilver(a, member_stack_lookup, s_var);  // Get the LHS (variable)
+    assert(lhs, "member lookup failed for var: %o", var);
+    LLVMValueRef rhs = LLVMConstInt(LLVMInt32Type(), atoi(val->chars), 0);  // Convert value to LLVM constant
+    
+    // Build the store instruction: store i32 5, i32* %x
+    return LLVMBuildStore(i->builder, rhs, lhs);
+}
+
+LLVMValueRef silver_build_statements(silver a) {
     LLVMValueRef result = null;
     return result;
 }
 
-void silver_compile_function(silver a, type fn) {
+map silver_top_members(silver a) {
+    isilver* i = a->intern;
+    assert (i->member_stack->len, "stack is empty");
+    return i->member_stack->elements[i->member_stack->len - 1];
+}
+
+void silver_init_member(silver a, dim member) {
+    map members = isilver(a, top_members);
+    set(members, member->name, member);
+}
+
+void silver_build_function(silver a, type fn) {
     isilver*     i = a->intern;
     itype*       f = fn->intern;
-    LLVMBasicBlockRef entry = LLVMAppendBasicBlock(f->value_ref, "entry");
+    dim       info = fn->info;
+    idim*        m = info->intern;
+    
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlock(m->value_ref, "entry");
     LLVMPositionBuilderAtEnd(i->builder, entry);
-    LLVMValueRef arg1 = LLVMGetParam(f->value_ref, 0);
-    LLVMValueRef arg2 = LLVMGetParam(f->value_ref, 1);
-    LLVMValueRef result = LLVMBuildAdd(i->builder, arg1, arg2, "result");
+    
+    isilver(a, push_member_stack);
+    /// push args, they are just members
+    enumerate(fn->args, e) {
+        dim arg_member = e->value;
+        isilver(a, init_member, e->value);
+        int test = 1;
+    }
+    Tokens tokens = i->tokens;
+    while(peek(tokens)) {
+        
+    }
+    isilver(a, pop_member_stack);
+    
+
+    //LLVMValueRef arg1 = LLVMGetParam(m->value_ref, 0);
+    //LLVMValueRef arg2 = LLVMGetParam(m->value_ref, 1);
+    //LLVMValueRef result = LLVMBuildAdd(i->builder, arg1, arg2, "result");
+
+    LLVMValueRef one = LLVMConstInt(LLVMInt64Type(), 22, 0); // Create a constant integer with value 1
+    LLVMValueRef two = LLVMConstInt(LLVMInt64Type(), 22, 0); // Create a constant integer with value 2
+
+    LLVMValueRef result = LLVMBuildAdd(i->builder, one, two, "result"); // Add the two constants
+
     LLVMBuildRet(i->builder, result);
 }
 
 void silver_init(silver a) {
     verify(a->source, "module name not set");
 
-    a->intern      = A_struct(isilver);
-    isilver*     i = a->intern;
-    a->imports     = new(array, alloc, 32);
-    a->source_path = call(a->source, directory);
-    a->source_file = call(a->source, filename);
-    a->libraries_used = new(array);
+    a->intern       = A_struct(isilver);
+    isilver*      i = a->intern;
+    i->members      = new(map,   hsize, 32);
+    i->member_stack = new(array, alloc, 32);
+    i->imports      = new(array, alloc, 32);
+    i->source_path  = call(a->source, directory);
+    i->source_file  = call(a->source, filename);
+    i->libraries_used = new(array);
 
     print("LLVM Version: %d.%d.%d",
         LLVM_VERSION_MAJOR,
         LLVM_VERSION_MINOR,
         LLVM_VERSION_PATCH);
 
-    path  full_path = form(path, "%o/%o", a->source_path, a->source_file);
+    path  full_path = form(path, "%o/%o", i->source_path, i->source_file);
     verify(call(full_path, exists), "source (%o) does not exist", full_path);
 
-    i->module       = LLVMModuleCreateWithName(a->source_file->chars);
+    i->module       = LLVMModuleCreateWithName(i->source_file->chars);
     i->llvm_context = LLVMGetModuleContext(i->module);
     i->dbg          = LLVMCreateDIBuilder(i->module);
+    i->builder      = LLVMCreateBuilder();
 
     isilver(a, llflag, "Dwarf Version",      5);
     isilver(a, llflag, "Debug Info Version", 3);
 
     i->file = LLVMDIBuilderCreateFile( // create a file reference (the source file for debugging)
         i->dbg,
-        cast(a->source_file, cstr), cast(a->source_file, sz),
-        cast(a->source_path, cstr), cast(a->source_path, sz));
+        cast(i->source_file, cstr), cast(i->source_file, sz),
+        cast(i->source_path, cstr), cast(i->source_path, sz));
     i->compile_unit = LLVMDIBuilderCreateCompileUnit(
         i->dbg, LLVMDWARFSourceLanguageC, i->file,
-        cast(a->source_file, cstr),
-        cast(a->source_file, sz), 0, "", 0,
+        cast(i->source_file, cstr),
+        cast(i->source_file, sz), 0, "", 0,
         3, "", 0, LLVMDWARFEmissionFull, 0, 0, 0, "/", 1, "", 0);
 
     i->tokens = new(Tokens, file, full_path);
@@ -628,16 +722,16 @@ void silver_init(silver a) {
     isilver(a, include, str("stdio.h"));
     isilver(a, build_dependencies);
     
-    enumerate (a->defs, e) {
+    enumerate (i->defs, e) {
         type def = e->value;
-        // for each type def with a body to compile
+        // for each type def with a body to build
         if (def->mdl == model_function) {
-            isilver(a, compile_function, def);
+            isilver(a, build_function, def);
         } else if (def->mdl == model_class) {
             enumerate_ (def->members, m) {
                 dim member = m->value;
                 if (member->type->mdl == model_function)
-                    isilver(a, compile_function, member->type);
+                    isilver(a, build_function, member->type);
             }
         }
     }
@@ -646,6 +740,7 @@ void silver_init(silver a) {
 }
 
 define_enum(model)
+define_enum(Visibility)
 
 define_class(type)
 define_class(dim)
