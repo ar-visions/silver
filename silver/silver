@@ -63,6 +63,7 @@ declare_class(type)
 // in the same way an array may allocate a size
 // its a query for the wrap
 #define dim_schema(X,Y) \
+    i_prop(    X,Y, intern,   A,          intern) \
     i_prop(    X,Y, public,   type,       type) \
     i_prop(    X,Y, public,   Tokens,     tokens) \
     i_prop(    X,Y, required, silver,     module) \
@@ -79,20 +80,14 @@ declare_class(dim)
 #define module_def(m, n)   call0(m->defs, get, str(n))
 
 #define silver_schema(X,Y)\
-    i_prop    (X,Y, public, path,       install) \
-    i_prop    (X,Y, public, path,       source) \
-    i_prop    (X,Y, public, bool,       debug) \
-    i_prop    (X,Y, intern, object,     intern)\
-    i_prop    (X,Y, intern, array,      imports) \
-    i_prop    (X,Y, intern, map,        defs) \
-    i_prop    (X,Y, intern, string,     source_file) \
-    i_prop    (X,Y, intern, path,       source_path) \
-    i_prop    (X,Y, intern, array,      main_symbols) \
-    i_prop    (X,Y, intern, array,      compiled_objects) \
-    i_prop    (X,Y, intern, array,      libraries_used) \
-    i_method  (X,Y, public, map,        include) \
-    i_override(X,Y, method, init) \
-    i_override(X,Y, method, destructor)
+    i_prop    (X,Y, required, path,       install) \
+    i_prop    (X,Y, required, path,       source) \
+    i_prop    (X,Y, public,   bool,       debug) \
+    i_prop    (X,Y, intern,   object,     intern)\
+    i_method  (X,Y, public,   path,       source_path) \
+    i_method  (X,Y, public,   type,       get_type, string) \
+    i_override(X,Y, method,   init) \
+    i_override(X,Y, method,   destructor)
 declare_class(silver)
 
 #endif
