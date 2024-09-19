@@ -66,7 +66,7 @@ string Token_cast_string(Token a) {
 AType Token_is_bool(Token a) {
     string t = cast(a, string);
     return (cmp(t, "true") || cmp(t, "false")) ?
-        (AType)typeid(ELiteralBool) : (AType)typeid(EUndefined);
+        (AType)typeid(bool) : null;
 }
 
 A Token_is_numeric(Token a) {
@@ -83,14 +83,8 @@ A Token_is_numeric(Token a) {
     return A_primitive(typeid(f64), &v);
 }
 
-AType Token_is_string(Token a) {
-    char t = a->chars[0];
-    if (t == '"' || t == '\'') return typeid(ELiteralStr);
-    return typeid(EUndefined);
-}
-
 string Token_convert_literal(Token a) {
-    assert(call(a, is_string) == typeid(ELiteralStr), "not given a string literal");
+    assert(call(a, get_type) == typeid(string), "not given a string literal");
     string entire = str(a->chars);
     string result = mid(entire, 1, a->len - 2);
     return result;
@@ -103,6 +97,7 @@ num Token_compare(Token a, Token b) {
 bool Token_cast_bool(Token a) {
     return a->len > 0;
 }
+
 
 bool is_alpha(A any) {
     AType  type = isa(any);
@@ -283,6 +278,12 @@ bool Tokens_next_is(Tokens a, symbol cs) {
     return strcmp(n->chars, cs) == 0;
 }
 
+AType Token_get_type(Token a) {
+    char t = a->chars[0];
+    if (t == '"' || t == '\'') return typeid(string);
+    return null;
+}
+
 bool Tokens_next_alpha(Tokens a) {
     Token n = read(a, 0);
     return is_alpha(n);
@@ -317,32 +318,8 @@ bool Tokens_cast_bool(Tokens a) {
     return a->cursor < len(a->tokens) - 1;
 }
 
-bool ENode_equals(ENode a, object b) {
-    return (A)a == (A)b;
-}
-
-bool ENode_cast_bool(ENode a) {
-    return a->type || cast(a->name, bool);
-}
-
-string ENode_emit(ENode a) {
-    fault("emit not implemented for ENode %s", isa(a)->name);
-    return null;
-}
-
-void ENode_init(ENode a) {
-}
-
 void Loc_init(Loc a) {
 }
-
-define_class(ENode)
-define_class(EUndefined)
-
-define_mod(ELiteralBool, ENode);
-define_mod(ELiteralStr,  ENode);
-define_mod(ELiteralInt,  ENode);
-define_mod(ELiteralReal, ENode);
 
 define_class(Token)
 define_class(Loc)

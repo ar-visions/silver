@@ -55,7 +55,7 @@ array Import_import_list(Import a, Tokens tokens) {
         while (true) {
             Token arg = next();
             if (eq(arg, "]")) break;
-            assert (call(arg, is_string) == typeid(ELiteralStr), "expected build-arg in string literal");
+            assert (call(arg, get_type) == typeid(string), "expected build-arg in string literal");
             A l = call(arg, convert_literal);
             push(list, l);
             if (next_is(",")) {
@@ -81,7 +81,7 @@ void Import_import_fields(Import a, Tokens tokens) {
             break;
         }
         Token arg_name = next();
-        if (call(arg_name, is_string) == typeid(ELiteralStr))
+        if (call(arg_name, get_type) == typeid(string))
             a->source = array_of(typeid(string), str(arg_name), null);
         else {
             assert (is_alpha(arg_name), "expected identifier for import arg");
@@ -89,7 +89,7 @@ void Import_import_fields(Import a, Tokens tokens) {
             consume();
             if (eq(arg_name, "name")) {
                 Token token_name = next();
-                assert (! call(token_name, is_string), "expected token for import name");
+                assert (! call(token_name, get_type), "expected token for import name");
                 a->name = str(token_name);
             } else if (eq(arg_name, "links"))    a->links      = intern(a, import_list, tokens);
               else if (eq(arg_name, "includes")) a->includes   = intern(a, import_list, tokens);
@@ -97,7 +97,7 @@ void Import_import_fields(Import a, Tokens tokens) {
               else if (eq(arg_name, "build"))    a->build_args = intern(a, import_list, tokens);
               else if (eq(arg_name, "shell")) {
                 Token token_shell = next();
-                assert (call(token_shell, is_string), "expected shell invocation for building");
+                assert (call(token_shell, get_type), "expected shell invocation for building");
                 a->shell = str(token_shell);
             } else if (eq(arg_name, "defines")) {
                 // none is a decent name for null.
@@ -158,13 +158,13 @@ none Import_init(Import a) {
             if (next_is("[")) {
                 next();
                 Token n = peek(tokens);
-                AType s = call(n, is_string);
-                if (s == typeid(ELiteralStr)) {
+                AType s = call(n, get_type);
+                if (s == typeid(string)) {
                     a->source = new(array);
                     while (true) {
                         Token    inner = next();
                         string s_inner = cast(inner, string);
-                        assert(call(inner, is_string) == typeid(ELiteralStr), "expected a string literal");
+                        assert(call(inner, get_type) == typeid(string), "expected a string literal");
                         string  source = mid(s_inner, 1, len(s_inner) - 2);
                         push(a->source, source);
                         string       e = next();

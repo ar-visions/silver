@@ -88,37 +88,6 @@ typedef struct Token*                   Token;
     i_method(   X,Y,  public, string,    top_state)
 declare_class(EContext)
 
-
-#define ENode_schema(X,Y) \
-    i_prop  (   X,Y,  public, string,    name) \
-    i_prop  (   X,Y,  public, AType,     type) \
-    i_prop  (   X,Y,  intern, num,       id) \
-    i_method(   X,Y,  public, bool,      equals, X) \
-    i_method(   X,Y,  public, string,    emit, A) \
-    i_override(X,Y,   cast,   bool) \
-    i_override(X,Y,   method, init)
-declare_class(ENode)
-
-#define EUndefined_schema(X,Y)
-declare_mod(EUndefined, ENode)
-
-#define ELiteralInt_schema(X,Y) \
-    i_prop(X,Y, public, num, value)
-declare_mod(ELiteralInt, ENode);
-
-#define ELiteralReal_schema(X,Y) \
-    i_prop(X,Y, public, f64, value)
-declare_mod(ELiteralReal, ENode);
-
-#define ELiteralStr_schema(X,Y) \
-    i_prop(X,Y, public, string, value)
-declare_mod(ELiteralStr, ENode);
-
-#define ELiteralBool_schema(X,Y) \
-    i_prop(X,Y, public, bool, value)
-declare_mod(ELiteralBool, ENode);
-
-
 #define Token_schema(X,Y) \
     i_prop  (X,Y, public, cstr,   chars) \
     i_prop  (X,Y, public, i32,    chr) \
@@ -129,7 +98,7 @@ declare_mod(ELiteralBool, ENode);
     i_prop  (X,Y, intern, Loc,    loc) \
     i_method(X,Y, public, bool,   eq, cstr) \
     i_method(X,Y, public, num,    cmp, cstr) \
-    i_method(X,Y, public, AType,  is_string) \
+    i_method(X,Y, public, AType,  get_type) \
     i_method(X,Y, public, A,      convert_literal) \
     i_override(X,Y, method, init) \
     i_override(X,Y, method, compare) \
