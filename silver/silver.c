@@ -399,7 +399,7 @@ void dim_create_fn(dim a) {
         tokens(consume);
         map args = new(map, hsize, 8);
         while (true) {
-            dim arg = new(dim, module, module, parse, true, context, a->type->members);
+            dim arg = dim_parse(module, a->type->members);
             verify (arg, "member failed to read");
             verify (arg->name, "name not set after member recursion");
             if (tokens(next_is, "]"))
@@ -447,10 +447,23 @@ void dim_init(dim a) {
         a->visibility = Visibility_public;
 }
 
+/// this now looks up from stack, to find a member we already used
+/// this should be easier to resolve code than we did in python
 dim dim_parse(silver module, map context) {
     isilver* i = module->intern;
-    dim      a = new(dim, module, module, context, context);
     tokens(push_current);
+    string alpha;
+    if((alpha = tokens(next_alpha))) {
+        if (alpha) {
+            /// find in stack
+            dim cached = isilver(module, member_stack_lookup, alpha);
+            verify (cached, "unknown identifier: %o", alpha);
+            cached->cached = true;
+            return cached;
+        }
+    }
+    dim      a = new(dim, module, module, context, context);
+    
     if (tokens(next_is, "static")) {
         tokens(consume);
         a->is_static = true;
@@ -495,6 +508,7 @@ dim dim_parse(silver module, map context) {
         idim(a, create_fn);
     
     tokens(pop_state, true);
+    return a;
 }
 
 void silver_parse_top(silver a) {
@@ -515,10 +529,7 @@ void silver_parse_top(silver a) {
             /// so are classes, but we have a i->defs for the type alone
             /// so we may have class contain in a 'member' of definition type
             /// so its name could be the name of the class and the type would be the same name
-            dim member = new(dim,
-                module,     a,
-                parse,      true,
-                context,    i->defs);
+            dim member = dim_parse(a, i->defs);
             string key = member->name ? member->name : (string)format("$m%i", call(i->defs, count));
             set(i->members, key, member);
         }
@@ -913,6 +924,18 @@ LLVMValueRef silver_parse_statement(silver a) {
 
     map members = isilver(a, top_members);
     dim member  = dim_parse(a, members);
+    if (member->cached) {
+        /// we can know if member was found in stack
+        /// it would not be a 'new' instance in that case
+        /// this was a critical juncture for A-type because we were going to 
+        /// allow init to modify or nullify the object.  not a good idea though!
+        /// imagine if any 'new' could do this?
+        /// we also cleaned up the way statics are used in A-type
+        /// there was no macro convention to use them
+        print("found a cached member: %o", member->name);
+    } else {
+        print("new member: %o of type %o", member->name, member->type->name);
+    }
     /// if the member is cached we may obtain the same value that we have in memory, this brings ambiguity to 'new' though
     /// still, we may convert this to dim(parse, ...
     if (cast(member, bool)) {
