@@ -44,30 +44,29 @@ string lib_prefix() {
 }
 
 /// tokens is reserved name for our tokens state, which we only have 1 of.
-#define next_is(s) call(tokens, next_is, s)
-#define next()     call(tokens, next)
-#define consume()  call(tokens, consume)
+#undef  peek
+#define tokens(...)     call(tokens, __VA_ARGS__)
 
 array Import_import_list(Import a, Tokens tokens) {
     array list = new(array);
-    if (next_is("[")) {
-        consume();
+    if (tokens(next_is, "[")) {
+        tokens(consume);
         while (true) {
-            Token arg = next();
+            Token arg = tokens(next);
             if (eq(arg, "]")) break;
             assert (call(arg, get_type) == typeid(string), "expected build-arg in string literal");
             A l = call(arg, convert_literal);
             push(list, l);
-            if (next_is(",")) {
-                consume();
+            if (tokens(next_is, ",")) {
+                tokens(consume);
                 continue;
             }
             break;
         }
-        assert (next_is("]"), "expected ] after build flags");
-        consume();
+        assert (tokens(next_is, "]"), "expected ] after build flags");
+        tokens(consume);
     } else {
-        Token next = next();
+        Token next = tokens(next);
         string l = call(next, convert_literal);
         push(list, l);
     }
@@ -76,19 +75,19 @@ array Import_import_list(Import a, Tokens tokens) {
 
 void Import_import_fields(Import a, Tokens tokens) {
     while (true) {
-        if (next_is("]")) {
-            consume();
+        if (tokens(next_is, "]")) {
+            tokens(consume);
             break;
         }
-        Token arg_name = next();
+        Token arg_name = tokens(next);
         if (call(arg_name, get_type) == typeid(string))
             a->source = array_of(typeid(string), str(arg_name), null);
         else {
             assert (is_alpha(arg_name), "expected identifier for import arg");
-            assert (next_is(":"), "expected : after import arg (argument assignment)");
-            consume();
+            assert (tokens(next_is, ":"), "expected : after import arg (argument assignment)");
+            tokens(consume);
             if (eq(arg_name, "name")) {
-                Token token_name = next();
+                Token token_name = tokens(next);
                 assert (! call(token_name, get_type), "expected token for import name");
                 a->name = str(token_name);
             } else if (eq(arg_name, "links"))    a->links      = intern(a, import_list, tokens);
@@ -96,7 +95,7 @@ void Import_import_fields(Import a, Tokens tokens) {
               else if (eq(arg_name, "source"))   a->source     = intern(a, import_list, tokens);
               else if (eq(arg_name, "build"))    a->build_args = intern(a, import_list, tokens);
               else if (eq(arg_name, "shell")) {
-                Token token_shell = next();
+                Token token_shell = tokens(next);
                 assert (call(token_shell, get_type), "expected shell invocation for building");
                 a->shell = str(token_shell);
             } else if (eq(arg_name, "defines")) {
@@ -105,10 +104,10 @@ void Import_import_fields(Import a, Tokens tokens) {
             } else
                 assert (false, "unknown arg: %o", arg_name);
 
-            if (next_is(","))
-                next();
+            if (tokens(next_is, ","))
+                tokens(next);
             else {
-                assert (next_is("]"), "expected comma or ] after arg %o", arg_name);
+                assert (tokens(next_is, "]"), "expected comma or ] after arg %o", arg_name);
                 break;
             }
         }
@@ -121,53 +120,53 @@ none Import_init(Import a) {
     a->includes = new(array, alloc, 32);
     Tokens tokens = a->tokens;
     if (tokens) {
-        assert(next_is("import"), "expected import");
-        consume();
-        //Token n_token = next();
-        bool is_inc = next_is("<");
+        assert(tokens(next_is, "import"), "expected import");
+        tokens(consume);
+        //Token n_token = tokens(next);
+        bool is_inc = tokens(next_is, "<");
         if (is_inc) {
             a->import_type = ImportType_includes;
             Tokens_f* type = isa(tokens);
-            consume();
+            tokens(consume);
             a->includes = new(array, alloc, 8);
             while (1) {
-                Token inc = next();
+                Token inc = tokens(next);
                 assert (is_alpha(inc), "expected alpha-identifier for header");
                 push(a->includes, inc);
-                bool is_inc = next_is(">");
+                bool is_inc = tokens(next_is, ">");
                 if (is_inc) {
-                    consume();
+                    tokens(consume);
                     break;
                 }
-                Token comma = next();
+                Token comma = tokens(next);
                 assert (eq(comma, ","), "expected comma-separator or end-of-includes >");
             }
         } else {
-            Token t_next = next();
+            Token t_next = tokens(next);
             string module_name = cast(t_next, string);
             a->name = hold(module_name);
             assert(is_alpha(module_name), "expected module name identifier");
 
-            if (next_is("as")) {
-                consume();
-                a->isolate_namespace = next();
+            if (tokens(next_is, "as")) {
+                tokens(consume);
+                a->isolate_namespace = tokens(next);
             }
 
             assert(is_alpha(module_name), format("expected variable identifier, found %o", module_name));
             
-            if (next_is("[")) {
-                next();
-                Token n = peek(tokens);
+            if (tokens(next_is, "[")) {
+                tokens(next);
+                Token n = tokens(peek);
                 AType s = call(n, get_type);
                 if (s == typeid(string)) {
                     a->source = new(array);
                     while (true) {
-                        Token    inner = next();
+                        Token    inner = tokens(next);
                         string s_inner = cast(inner, string);
                         assert(call(inner, get_type) == typeid(string), "expected a string literal");
                         string  source = mid(s_inner, 1, len(s_inner) - 2);
                         push(a->source, source);
-                        string       e = next();
+                        string       e = tokens(next);
                         if (eq(e, ","))
                             continue;
                         assert(eq(e, "]"), "expected closing bracket");
@@ -175,8 +174,7 @@ none Import_init(Import a) {
                     }
                 } else {
                     intern(a, import_fields, a->tokens);
-                    Token cur = peek(a->tokens);
-                    consume();
+                    tokens(consume);
                 }
             }
         }

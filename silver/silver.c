@@ -35,8 +35,15 @@ typedef struct isilver {
     array               compiled_objects;
     array               libraries_used;
     map                 include;
-
+    map                 type_refs;
+    map                 operators;
+    int                 expr_level;
 } isilver;
+
+#define builder_ref(module) ((struct isilver*)a->intern)->builder;
+#define     dbg_ref(module) ((struct isilver*)a->intern)->dbg;
+#define   scope_ref(module) ((struct isilver*)a->intern)->scope;
+#define context_ref(module) ((struct isilver*)a->intern)->context;
 
 typedef struct itype {
     LLVMTypeRef         type_ref;
@@ -50,14 +57,15 @@ typedef struct idim {
     LLVMValueRef        value_ref;
 } idim;
 
+
+
 #define isilver(I,N,...)     silver_##N(I, ## __VA_ARGS__)
 #define ifunction(I,N,...) function_##N(I, ## __VA_ARGS__)
 #define itype(I,N,...)         type_##N(I, ## __VA_ARGS__)
 #define idim(I,N,...)           dim_##N(I, ## __VA_ARGS__)
 
-#define next_is(s) call(tokens, next_is, s)
-#define next()     call(tokens, next)
-#define consume()  call(tokens, consume)
+#undef  peek
+#define tokens(...)     call(i->tokens, __VA_ARGS__) /// no need to pass around the same tokens arg when the class supports a stack
 
 LLVMTypeRef dim_type_ref(dim a);
 
@@ -66,8 +74,23 @@ LLVMValueRef type_dbg(type t) {
     return f->dbg;
 }
 
-void type_init(type a) {
+string type_ref_key(LLVMTypeRef type_ref) {
+    return format("%p", type_ref);
+}
 
+void type_associate(type a, LLVMTypeRef type_ref) {
+    isilver* i = a->module->intern;
+    string key = type_ref_key(type_ref);
+    assert (!call(i->type_refs, contains, key), "already associated");
+    set(i->type_refs, key, a);
+}
+
+dim type_find_member(type a, string key) {
+    if (!a->members) return null;
+    return get(a->members, key);
+}
+
+void type_init(type a) {
     verify(a->module, "module not set");
     verify(a->name,   "name not set");
 
@@ -93,7 +116,7 @@ void type_init(type a) {
             cstr*        arg_names = calloc(n_args, sizeof(cstr));
             
             print("making function for %o", a->name);
-            enumerate(a->args, arg) {
+            pairs(a->args, arg) {
                 LLVMTypeRef ref = dim_type_ref(idx_1(a->args, sz, (sz)arg_index));
                 arg_types[arg_index] = ref;
                 arg_index++;
@@ -107,7 +130,7 @@ void type_init(type a) {
 
             // set arg names
             arg_index = 0;
-            enumerate(a->args, arg) {
+            pairs(a->args, arg) {
                 string arg_name = arg->key;
                 dim    arg_type = arg->value;
                 AType     arg_t = isa(arg_type);
@@ -152,7 +175,7 @@ void type_init(type a) {
         case model_struct: {
             LLVMTypeRef* member_types = calloc(len(a->members), sizeof(LLVMTypeRef));
             int index = 0;
-            enumerate(a->members, member_pair) {
+            pairs(a->members, member_pair) {
                 dim member_r = member_pair->value;
                 verify(isa(member_r) == typeid(dim), "mismatch");
                 member_types[index] = dim_type_ref(member_r);
@@ -167,6 +190,7 @@ void type_init(type a) {
             verify (false, "not implemented");
             break;
         }
+        itype(a, associate, f->type_ref);
     }
     verify (!call(a->members, count) || handled_members, "members given and not processed");
 }
@@ -199,6 +223,12 @@ dim silver_get_member(silver a, string key) {
     return get(i->members, key);
 }
 
+map silver_top_members(silver a) {
+    isilver* i = a->intern;
+    assert (i->member_stack->len, "stack is empty");
+    return i->member_stack->elements[i->member_stack->len - 1];
+}
+
 /// lookup value ref for member in stack
 LLVMValueRef silver_member_stack_lookup(silver a, string name) {
     isilver* i = a->intern;
@@ -210,10 +240,11 @@ LLVMValueRef silver_member_stack_lookup(silver a, string name) {
     return null;
 }
 
-void silver_push_member_stack(silver a) {
+map silver_push_member_stack(silver a) {
     isilver* i = a->intern;
-    map m = new(map, hsize, 16);
-    push(i->member_stack, m);
+    map members = new(map, hsize, 16);
+    push(i->member_stack, members);
+    return members;
 }
 
 void silver_pop_member_stack(silver a) {
@@ -319,22 +350,22 @@ LLVMValueRef dim_value_ref(dim a) {
 }
 
 void dim_bind(dim a) {
-    Tokens tokens = a->tokens;
     silver module = a->module;
-    if (!next_is("["))
+    isilver* i = module->intern;
+    if (!tokens(next_is, "["))
         return;
-    consume();
+    tokens(consume);
     a->wrap  = call(module, get_type, str("array"));
     a->shape = new(array); /// shape is there but not given data 
-    if (!next_is("]")) {
-        type wdef = call(tokens, read_type, module);
+    if (!tokens(next_is, "]")) {
+        type wdef = tokens(read_type, module);
         if (wdef) {
             /// must be map
             for (;;) {
                 push(a->shape, wdef);
-                Token n = peek(tokens);
+                Token n = tokens(peek);
                 if (eq(n, ",")) {
-                    wdef = call(tokens, read_type, module);
+                    wdef = tokens(read_type, module);
                     continue;
                 }
                 break;
@@ -343,76 +374,58 @@ void dim_bind(dim a) {
             /// must be array
             for (;;) {
                 i64 dim_size = 0;
-                object n = call(tokens, read_numeric);
+                object n = tokens(read_numeric);
                 verify(n && isa(n) == typeid(i64), "expected integer");
-                consume();
+                tokens(consume);
                 push(a->shape, A_i64(dim_size));
-                Token next = peek(tokens);
+                Token next = tokens(peek);
                 if (eq(next, ",")) {
-                    consume();
+                    tokens(consume);
                     continue;
                 }
                 break;
             }
         }
-        Token next = peek(tokens);
-        verify (eq(next, "]"), "expected ] in type usage expression");
+        verify (tokens(next_is, "]"), "expected ] in type usage expression");
     }
-    consume();
-}
-
-void A_test() {
-    num         types_len;
-    A_f**       types = A_types(&types_len);
-
-    /// iterate through types
-    for (num i = 0; i < types_len; i++) {
-        A_f* type = types[i];
-        if (type->traits & A_TRAIT_ABSTRACT) continue;
-        /// for each member of type
-        for (num m = 0; m < type->member_count; m++) {
-            type_member_t* mem = &type->members[m];
-            if (mem->member_type & (A_TYPE_PROP)) {
-                verify(!mem->required, "found required?");
-            }
-        }
-    }
+    tokens(consume);
 }
 
 void dim_create_fn(dim a) {
     silver module  = a->module;
-    Tokens tokens  = a->tokens;
-    map    context = a->context;
-    if (next_is("[")) {
-        consume();
+    map    members = a->context;
+    isilver*  i    = module->intern;
+    if (tokens(next_is, "[")) {
+        tokens(consume);
         map args = new(map, hsize, 8);
         while (true) {
-            dim arg = new(dim, module, module, tokens, tokens, context, a->type->members);
+            dim arg = new(dim, module, module, parse, true, context, a->type->members);
             verify (arg, "member failed to read");
             verify (arg->name, "name not set after member recursion");
-            if (next_is("]"))
+            if (tokens(next_is, "]"))
                 break;
-            verify (next_is(","), "expected separator");
-            consume();
+            verify (tokens(next_is, ","), "expected separator");
+            tokens(consume);
             set(args, arg->name, arg);
         }
-        consume();
+        tokens(consume);
         dim rtype_dim = new(dim,
             module,     module,    type,       a->type,
             depth,      a->depth,  shape,      a->shape,
-            wrap,       a->wrap,   context,    context);
+            wrap,       a->wrap,   context,    members);
         type f_def = new(type,
             name,     str(a->name->chars),  module,   module,
             mdl,      model_function,       rtype,    rtype_dim,
             args,     args,                 info,     a);
-        set(context, f_def->name, f_def);
+        //assert(count(members, f_def->name) == 0, "duplicate member: %o", f_def->name);
+        set(members, f_def->name, f_def);
         drop(a->type);
         a->type = hold(f_def);
         array body = new(array, alloc, 32);
-        verify (next_is("["), "expected function body");
+        verify (tokens(next_is, "["), "expected function body");
         int depth = 0;
         do {
-            Token token = next();
+            Token token = tokens(next);
             verify (token, "expected end of function body ( too many ['s )");
             push(body, token);
             if (eq(token, "["))
@@ -424,74 +437,75 @@ void dim_create_fn(dim a) {
     }
 }
 
-dim dim_init(dim a) {
+void dim_init(dim a) {
     a->intern      = A_struct(idim);
     idim*  intern  = a->intern;
     silver module  = a->module;
-    Tokens tokens  = a->tokens;
     map    context = a->context;
+    isilver* i     = module->intern;
     if (!a->visibility)
         a->visibility = Visibility_public;
-    verify(a->context, "context required");
-    if (tokens) {
-        call(tokens, push_current);
-        if (next_is("static")) {
-            consume();
+}
+
+dim dim_parse(silver module, map context) {
+    isilver* i = module->intern;
+    dim      a = new(dim, module, module, context, context);
+    tokens(push_current);
+    if (tokens(next_is, "static")) {
+        tokens(consume);
+        a->is_static = true;
+    }
+    /// look for visibility (default is possibly provided)
+    for (int m = 1; m < Visibility_type.member_count; m++) {
+        type_member_t* enum_v = &Visibility_type.members[m];
+        if (tokens(next_is, enum_v->name)) {
+            tokens(consume);
+            a->visibility = m;
+            break;
+        }
+    }
+    if (!a->is_static) {
+        if (tokens(next_is, "static")) {
+            tokens(consume);
             a->is_static = true;
         }
-        /// look for visibility (default is possibly provided)
-        for (int i = 1; i < Visibility_type.member_count; i++) {
-            type_member_t* enum_v = &Visibility_type.members[i];
-            if (next_is(enum_v->name)) {
-                consume();
-                a->visibility = i;
-                break;
-            }
-        }
-        if (!a->is_static) {
-            if (next_is("static")) {
-                consume();
-                a->is_static = true;
-            }
-        }
-        Token  n = peek(tokens);
-        print("dim_read: next token = %o", n);
-        type def = call(tokens, read_type, module);
-        if (!def) {
-            print("info: could not read type at position %i", tokens->cursor);
-            pop(tokens, false); // we may 'info' here
-            return null;
-        }
-        a->type = hold(def);
-        
-        // may be [, or alpha-id  (its an error if its neither)
-        if (next_is("["))
-            idim(a, bind);
-
-        /// members must be named
-        verify(call(tokens, next_alpha), "expected identifier for member");
-
-        Token    name = next();
-        string s_name = cast(name, string);
-        a->name       = hold(s_name);
-
-        if (next_is("["))
-            idim(a, create_fn);
-        
-        pop(tokens, true);
     }
-    return a;
+    Token  n = tokens(peek);
+    print("dim_read: next token = %o", n);
+    type def = tokens(read_type, module);
+    if (!def) {
+        print("info: could not read type at position %o", tokens(location));
+        tokens(pop_state, false); // we may 'info' here
+        return null;
+    }
+    a->type = hold(def);
+    
+    // may be [, or alpha-id  (its an error if its neither)
+    if (tokens(next_is, "["))
+        idim(a, bind);
+
+    /// members must be named
+    verify(tokens(next_alpha), "expected identifier for member");
+
+    Token    name = tokens(next);
+    string s_name = cast(name, string);
+    a->name       = hold(s_name);
+
+    if (tokens(next_is, "["))
+        idim(a, create_fn);
+    
+    tokens(pop_state, true);
 }
 
 void silver_parse_top(silver a) {
     isilver* i      = a->intern;
     Tokens   tokens = i->tokens;
     while (cast(tokens, bool)) {
-        if (next_is("import")) {
+        if (tokens(next_is, "import")) {
             Import import  = new(Import, module, a, tokens, tokens);
             push(i->imports, import);
             continue;
-        } else if (next_is("class")) {
+        } else if (tokens(next_is, "class")) {
             verify (false, "not implemented");
             //EClass def = new(EClass, tokens, tokens);
             //call(a->defs, set, def->name, def);
@@ -503,7 +517,7 @@ void silver_parse_top(silver a) {
             /// so its name could be the name of the class and the type would be the same name
             dim member = new(dim,
                 module,     a,
-                tokens,     tokens,
+                parse,      true,
                 context,    i->defs);
             string key = member->name ? member->name : (string)format("$m%i", call(i->defs, count));
             set(i->members, key, member);
@@ -559,62 +573,14 @@ bool silver_build_dependencies(silver a) {
     return true;
 }
 
-/*
-typedef struct itype {
-    LLVMTypeRef         type_ref;
-    LLVMValueRef        value_ref;
-    LLVMMetadataRef     sub_routine;
-    LLVMMetadataRef     dbg;
-    LLVMBasicBlockRef   entry;
-} itype;
-
-# previous reference code.. (we will not use prestatements)
-def parse_statements(self, prestatements = None):
-    if prestatements != None:
-        block = prestatements.value
-    else:
-        block = []  # List to hold enode instances
-    multiple = self.peek_token() == '['
-
-    tokens, index = self.debug_tokens()
-    if multiple:
-        self.next_token()  # Consume '['
-
-    depth = 1
-    self.push_member_depth()
-    while self.peek_token():
-        t = self.peek_token()
-        if multiple and t == '[':    # here, this is eating my cast <----------- 
-            depth += 1
-            self.push_member_depth()
-            self.consume()
-            continue
-        global debug
-        debug += 1
-        n = self.parse_statement()  # Parse the next statement
-        assert n is not None, 'expected statement or expression'
-        block.append(n)
-        if not multiple: break
-        if multiple and self.peek_token() == ']':
-            if depth > 1:
-                self.pop_member_depth()
-            self.next_token()  # Consume ']'
-            depth -= 1
-            if depth == 0:
-                break
-    self.pop_member_depth()
-    # Return a combined operation of type EType_Statements
-    return prestatements if prestatements else EStatements(type=None, value=block)
-*/
-
 LLVMValueRef silver_build_assignment(silver a) {
     isilver*    i = a->intern;
     Tokens tokens = i->tokens;
     
     // Assume we have tokens for the assignment: x = 5
-    Token var = next();  // variable (e.g., 'x')
-    Token eq  = next();  // '='
-    Token val = next();  // value (e.g., '5')
+    Token var = tokens(next);  // variable (e.g., 'x')
+    Token eq  = tokens(next);  // '='
+    Token val = tokens(next);  // value (e.g., '5')
 
     // Example LLVM IR for a variable assignment
     string s_var = cast(var, string);
@@ -631,63 +597,430 @@ LLVMValueRef silver_build_statements(silver a) {
     return result;
 }
 
-map silver_top_members(silver a) {
+LLVMValueRef silver_parse_return(silver a) {
     isilver* i = a->intern;
-    assert (i->member_stack->len, "stack is empty");
-    return i->member_stack->elements[i->member_stack->len - 1];
+    tokens(consume);
+    LLVMValueRef vr = null;
+    return null;
 }
 
-void silver_init_member(silver a, dim member) {
+LLVMValueRef silver_parse_break(silver a) {
+    isilver* i = a->intern;
+    tokens(consume);
+    LLVMValueRef vr = null;
+    return null;
+}
+
+LLVMValueRef silver_parse_for(silver a) {
+    isilver* i = a->intern;
+    tokens(consume);
+    LLVMValueRef vr = null;
+    return null;
+}
+
+LLVMValueRef silver_parse_while(silver a) {
+    isilver* i = a->intern;
+    tokens(consume);
+    LLVMValueRef vr = null;
+    return null;
+}
+
+LLVMValueRef silver_parse_if_else(silver a) {
+    isilver* i = a->intern;
+    tokens(consume);
+    LLVMValueRef vr = null;
+    return null;
+}
+
+LLVMValueRef silver_parse_do_while(silver a) {
+    isilver* i = a->intern;
+    tokens(consume);
+    LLVMValueRef vr = null;
+    return null;
+}
+
+type silver_type_from_llvm(silver a, LLVMTypeRef type_ref) {
+    isilver* i = a->intern;
+    string key = type_ref_key(type_ref);
+    type   res = get(i->type_refs, key);
+    assert(res, "expected associated type");
+    return res;
+}
+
+type preferred_type(silver a, type t0, type t1) {
+    if (t0 == t1) return t0;
+    bool f0 = t0->mdl == model_f32 || t0->mdl == model_f64;
+    bool f1 = t1->mdl == model_f32 || t1->mdl == model_f64;
+    if (f0) {
+        if (f1)
+            return (t1->mdl == model_f64) ? t1 : t0;
+        return t0;
+    }
+    if (f1)
+        return t1;
+    if (t0->mdl > t1->mdl)
+        return t0;
+    return t1;
+}
+
+typedef LLVMValueRef(*builder_fn)(silver, type, type, type, LLVMValueRef, LLVMValueRef);
+typedef LLVMValueRef(*parse_fn)(silver, cstr, cstr, builder_fn, builder_fn);
+
+#define resolve_type(llvm_type_ref) isilver(a, type_from_llvm, llvm_type_ref);
+
+LLVMValueRef parse_ops(
+        silver a, parse_fn descent, symbol op0, symbol op1, builder_fn b0, builder_fn b1) {
+    isilver* i = a->intern;
+    LLVMValueRef left = descent(a, op0, op1, b0, b1);
+    while(tokens(next_is, op0) || tokens(next_is, op1)) {
+        tokens(consume);
+        LLVMValueRef right = descent(a, op0, op1, b0, b1);
+        bool         use0 = tokens(next_is, op0);
+        symbol    op_code = use0 ? op0 : op1;
+        builder_fn    bfn = use0 ? b0  : b1;
+
+        assert (call(i->operators, contains, str(op_code)), "op (%s) not registered", op_code);
+        string  op_name   = get(i->operators, str(op_code));
+        type    left_type = resolve_type(left);
+        dim     method    = itype(left_type, find_member, op_name);
+
+        if (method) {
+            assert (false, "not implemented: overload for %o", method->name);
+        }
+        /*
+        if (method) {
+            assert len(method->type->args) == 1, 'operators must take in 1 argument'
+            if self.convertible(right.type, method.args[0].type):
+                return EMethodCall(type=method.type, target=left,
+                    method=method, args=[self.convert_enode(right, method.args[0].type)])
+
+
+        }
+        */
+        /// fix this (we will want to use dim, or, merge refs into type (unlikely!)
+        /// we may return an inline instance of type with meta args and such to use, thats dim.
+        /// its more than just a definition!  its not a 'new type' when you have int* const**
+        ///
+        type r_left   = resolve_type(LLVMTypeOf(left));
+        type r_right  = resolve_type(LLVMTypeOf(right));
+        type type_out = preferred_type(a, r_left, r_right); /// should work for primitives however we must handle more in each
+        left          = bfn(a, type_out, r_left, r_right, left, right); 
+    }
+    return left;
+}
+
+LLVMValueRef op_is(silver a, dim m, type t0, type t1, LLVMValueRef v0,  LLVMValueRef v1) {
+    isilver* i = a->intern;
+    assert(m->type->mdl == model_bool, "inherits operator must return a boolean type");
+    assert(LLVMGetTypeKind(LLVMTypeOf(v0))  == LLVMFunctionTypeKind &&
+           LLVMGetTypeKind(LLVMTypeOf(v1)) == LLVMFunctionTypeKind, 
+           "is operator expects function type or initializer");
+    bool equals = t0 == t1;
+    return LLVMConstInt(LLVMInt1Type(), equals, 0);
+}
+
+LLVMValueRef op_inherits(silver a, dim m, type t0, type t1, LLVMValueRef v0,  LLVMValueRef v1) {
+    isilver* i = a->intern;
+    assert(m->type->mdl == model_bool, "inherits operator must return a boolean type");
+    assert(LLVMGetTypeKind(LLVMTypeOf(v0))  == LLVMFunctionTypeKind &&
+           LLVMGetTypeKind(LLVMTypeOf(v1)) == LLVMFunctionTypeKind, 
+           "is operator expects function type or initializer");
+    bool      equals = t0 == t1;
+    LLVMValueRef yes = LLVMConstInt(LLVMInt1Type(), 1, 0);
+    LLVMValueRef no  = LLVMConstInt(LLVMInt1Type(), 0, 0);
+    type cur = t0;
+    while (cur) {
+        if (cur == t1)
+            return yes;
+        cur = cur->origin;
+    }
+    return no;
+}
+
+LLVMValueRef op_add(silver a, dim m, type t0, type t1, LLVMValueRef v0,  LLVMValueRef v1) {
+    isilver* i = a->intern;
+    return LLVMBuildAdd(i->builder, v0, v1, "add");
+}
+
+LLVMValueRef op_sub(silver a, dim m, type t0, type t1, LLVMValueRef v0,  LLVMValueRef v1) {
+    isilver* i = a->intern;
+    return LLVMBuildSub(i->builder, v0, v1, "add");
+}
+
+LLVMValueRef op_mul(silver a, dim m, type t0, type t1, LLVMValueRef v0,  LLVMValueRef v1) {
+    isilver* i = a->intern;
+    assert (false, "op_mul: implement more design here");
+    return null;
+}
+
+LLVMValueRef op_div(silver a, dim m, type t0, type t1, LLVMValueRef v0,  LLVMValueRef v1) {
+    isilver* i = a->intern;
+    assert (false, "op_div: implement more design here");
+    return null;
+}
+
+LLVMValueRef op_eq(silver a, dim m, type t0, type t1, LLVMValueRef v0,  LLVMValueRef v1) {
+    isilver* i = a->intern;
+    bool    i0 = t0->mdl >= model_bool && t0->mdl <= model_i64;
+    bool    f0 = t0->mdl >= model_f32  && t0->mdl <= model_f64;
+    if      (i0) return LLVMBuildICmp(i->builder, LLVMIntEQ,   v0, v1, "eq-i");
+    else if (f0) return LLVMBuildFCmp(i->builder, LLVMRealOEQ, v0, v1, "eq-f");
+    else {
+        assert (false, "op_eq: implement more design here");
+        return null;
+    }
+}
+
+LLVMValueRef op_not_eq(silver a, dim m, type t0, type t1, LLVMValueRef v0,  LLVMValueRef v1) {
+    isilver* i = a->intern;
+    bool    i0 = t0->mdl >= model_bool && t0->mdl <= model_i64;
+    bool    f0 = t0->mdl >= model_f32  && t0->mdl <= model_f64;
+    if      (i0) return LLVMBuildICmp(i->builder, LLVMIntNE,   v0, v1, "not-eq-i");
+    else if (f0) return LLVMBuildFCmp(i->builder, LLVMRealONE, v0, v1, "not-eq-f");
+    else {
+        assert (false, "op_not_eq: implement more design here");
+        return null;
+    }
+}
+
+LLVMValueRef silver_parse_primary(silver a);
+
+LLVMValueRef silver_parse_eq  (silver a) { return parse_ops(a, silver_parse_primary, "==", "!=",         op_eq,  op_not_eq); }
+LLVMValueRef silver_parse_is  (silver a) { return parse_ops(a, silver_parse_eq,      "is", "inherits",   op_is,  op_is);     }
+LLVMValueRef silver_parse_mult(silver a) { return parse_ops(a, silver_parse_is,      "*",  "/",          op_is,  op_is);     }
+LLVMValueRef silver_parse_add (silver a) { return parse_ops(a, silver_parse_mult,    "+",  "-",          op_add, op_sub);    }
+
+LLVMValueRef silver_parse_expression(silver a) {
+    isilver* i = a->intern;
+    ///
+    i->expr_level++;
+    LLVMValueRef vr = isilver(a, parse_add);
+    i->expr_level--;
+    return vr;
+}
+
+LLVMValueRef silver_parse_primary(silver a) {
+    isilver* i = a->intern;
+
+    // handle the logical NOT operator (e.g., '!')
+    if (tokens(next_is, "!") || tokens(next_is, "not")) {
+        tokens(consume); // Consume '!' or 'not'
+        LLVMValueRef expr = silver_parse_expression(a); // Parse the following expression
+        return LLVMBuildNot(i->builder, expr, "logical_not");
+    }
+
+    // bitwise NOT operator
+    if (tokens(next_is, "~")) {
+        tokens(consume); // Consume '~'
+        LLVMValueRef expr = silver_parse_expression(a);
+        return LLVMBuildNot(i->builder, expr, "bitwise_not");
+    }
+
+    // 'typeof' operator
+    if (tokens(next_is, "typeof")) {
+        tokens(consume); // Consume 'typeof'
+        assert(tokens(next_is, "["), "Expected '[' after 'typeof'");
+        tokens(consume); // Consume '['
+        LLVMValueRef type_ref = silver_parse_expression(a); // Parse the type expression
+        assert(tokens(next_is, "]"), "Expected ']' after type expression");
+        tokens(consume); // Consume ']'
+        return type_ref; // Return the type reference
+    }
+
+    // 'cast' operator
+    if (tokens(next_is, "cast")) {
+        tokens(consume); // Consume 'cast'
+        dim cast_ident = tokens(read_type, a); // Read the type to cast to
+        assert(tokens(next_is, "["), "Expected '[' for cast");
+        tokens(consume); // Consume '['
+        LLVMValueRef expr = silver_parse_expression(a); // Parse the expression to cast
+        tokens(consume); // Consume ']'
+        if (cast_ident) {
+            return LLVMBuildCast(i->builder, LLVMBitCast, cast_ident, expr, "explicit_cast");
+        }
+    }
+
+    // 'ref' operator (reference)
+    if (tokens(next_is, "ref")) {
+        tokens(consume); // Consume 'ref'
+        LLVMValueRef expr = silver_parse_expression(a);
+        return LLVMBuildLoad(i->builder, expr, "ref_expr"); // Build the reference
+    }
+
+    // numeric constants
+    object v_num = tokens(next_numeric);
+    if (v_num) {
+        tokens(consume); // Consume the numeric token
+        if (isa(v_num) == typeid(i8))  return LLVMConstInt( LLVMInt8Type(),  *( i8*)v_num, 0);
+        if (isa(v_num) == typeid(i16)) return LLVMConstInt(LLVMInt16Type(),  *(i16*)v_num, 0);
+        if (isa(v_num) == typeid(i32)) return LLVMConstInt(LLVMInt32Type(),  *(i32*)v_num, 0);
+        if (isa(v_num) == typeid(i64)) return LLVMConstInt(LLVMInt64Type(),  *(i64*)v_num, 0);
+        if (isa(v_num) == typeid(u8))  return LLVMConstInt( LLVMInt8Type(),  *( u8*)v_num, 0);
+        if (isa(v_num) == typeid(u16)) return LLVMConstInt(LLVMInt16Type(),  *(u16*)v_num, 0);
+        if (isa(v_num) == typeid(u32)) return LLVMConstInt(LLVMInt32Type(),  *(u32*)v_num, 0);
+        if (isa(v_num) == typeid(u64)) return LLVMConstInt(LLVMInt64Type(),  *(u64*)v_num, 0);
+        if (isa(v_num) == typeid(f32)) return LLVMConstInt(LLVMFloatType(),  *(f32*)v_num, 0);
+        if (isa(v_num) == typeid(f64)) return LLVMConstInt(LLVMDoubleType(), *(f64*)v_num, 0);
+        assert (false, "numeric literal not handling primitive: %s", isa(v_num)->name);
+    }
+
+    // strings
+    Token str_token = tokens(next_string);
+    if (str_token) {
+        tokens(consume);
+        return LLVMBuildGlobalString(i->builder, str_token->chars, "str");
+    }
+
+    // boolean values
+    object v_bool = tokens(next_bool);
+    if (v_bool) {
+        tokens(consume);
+        if (isa(v_bool) == typeid(bool)) return LLVMConstInt(LLVMInt1Type(), *(bool*)v_bool, 0);
+        return LLVMConstInt(LLVMInt1Type(), tokens(next_is, "true"), 0);
+    }
+
+    // parenthesized expressions
+    if (tokens(next_is, "[")) {
+        tokens(consume);
+        LLVMValueRef expr = silver_parse_expression(a); // Parse the expression
+        assert(tokens(next_is, "]"), "Expected closing parenthesis");
+        tokens(consume);
+        return expr;
+    }
+
+    // handle identifiers (variables or function calls)
+    Token ident = tokens(next_alpha);
+    if (ident) {
+        tokens(consume); // Consume the identifier token
+        LLVMValueRef var = silver_member_stack_lookup(a, ident->chars); // Look up variable
+        assert(var, "Variable %s not found", ident->chars);
+        return var;
+    }
+
+    fault("unexpected token %o in primary expression", tokens(peek));
+    return null;
+}
+
+LLVMValueRef silver_parse_statement(silver a) {
+    isilver* i = a->intern;
+    Token t = tokens(peek);
+    if (tokens(next_is, "return")) return isilver(a, parse_return);
+    if (tokens(next_is, "break"))  return isilver(a, parse_break);
+    if (tokens(next_is, "for"))    return isilver(a, parse_for);
+    if (tokens(next_is, "while"))  return isilver(a, parse_while);
+    if (tokens(next_is, "if"))     return isilver(a, parse_if_else);
+    if (tokens(next_is, "do"))     return isilver(a, parse_do_while);
+
     map members = isilver(a, top_members);
-    set(members, member->name, member);
+    dim member  = dim_parse(a, members);
+    /// if the member is cached we may obtain the same value that we have in memory, this brings ambiguity to 'new' though
+    /// still, we may convert this to dim(parse, ...
+    if (cast(member, bool)) {
+        if (member->type->mdl == model_function) {
+            /// expect [
+        }
+    }
+    LLVMValueRef vr = null;
+    return vr;
 }
 
-void silver_build_function(silver a, type fn) {
+LLVMValueRef silver_parse_statements(silver a) {
+    isilver* i = a->intern;
+    /// 
+    map  members    = isilver(a, push_member_stack);
+    bool multiple   = tokens(next_is, "[");
+    if  (multiple)    tokens(consume);
+    int  depth      = 1;
+    LLVMValueRef vr = null;
+    ///
+    while(tokens(cast_bool)) {
+        if(multiple && tokens(next_is, "[")) {
+            depth += 1;
+            isilver(a, push_member_stack);
+            tokens(consume);
+        }
+        vr = isilver(a, parse_statement);
+        if(!multiple) break;
+        if(tokens(next_is, "]")) {
+            if (depth > 1)
+                isilver(a, pop_member_stack);
+            tokens(next);
+            if ((depth -= 1) == 0) break;
+        }
+    }
+    isilver(a, pop_member_stack);
+    return vr;
+}
+
+static void silver_build_function(silver a, type fn) {
     isilver*     i = a->intern;
     itype*       f = fn->intern;
     dim       info = fn->info;
     idim*        m = info->intern;
+
+    tokens(push_state, fn->body->tokens, fn->body->cursor);
     
     LLVMBasicBlockRef entry = LLVMAppendBasicBlock(m->value_ref, "entry");
     LLVMPositionBuilderAtEnd(i->builder, entry);
     
-    isilver(a, push_member_stack);
-    /// push args, they are just members
-    enumerate(fn->args, e) {
-        dim arg_member = e->value;
-        isilver(a, init_member, e->value);
-        int test = 1;
-    }
-    Tokens tokens = i->tokens;
-    while(peek(tokens)) {
-        
-    }
+    /// push args, they are constant members (we need 'const' flag on them when we read from args)
+    map members = isilver(a, push_member_stack);
+    concat(members, fn->args);
+    
+    /// iterate through tokens to parse statements
+    isilver(a, parse_statements);
     isilver(a, pop_member_stack);
     
-
     //LLVMValueRef arg1 = LLVMGetParam(m->value_ref, 0);
     //LLVMValueRef arg2 = LLVMGetParam(m->value_ref, 1);
     //LLVMValueRef result = LLVMBuildAdd(i->builder, arg1, arg2, "result");
-
-    LLVMValueRef one = LLVMConstInt(LLVMInt64Type(), 22, 0); // Create a constant integer with value 1
-    LLVMValueRef two = LLVMConstInt(LLVMInt64Type(), 22, 0); // Create a constant integer with value 2
-
+    LLVMValueRef one    = LLVMConstInt(LLVMInt64Type(), 22, 0); // Create a constant integer with value 1
+    LLVMValueRef two    = LLVMConstInt(LLVMInt64Type(), 22, 0); // Create a constant integer with value 2
     LLVMValueRef result = LLVMBuildAdd(i->builder, one, two, "result"); // Add the two constants
-
     LLVMBuildRet(i->builder, result);
+
+    tokens(pop_state, false);
 }
 
-void silver_init(silver a) {
+static void silver_init(silver a) {
     verify(a->source, "module name not set");
 
     a->intern       = A_struct(isilver);
     isilver*      i = a->intern;
-    i->members      = new(map,   hsize, 32);
     i->member_stack = new(array, alloc, 32);
+    i->members      = isilver(a, push_member_stack); /// our base members is the first stack item that we keep after building
     i->imports      = new(array, alloc, 32);
     i->source_path  = call(a->source, directory);
     i->source_file  = call(a->source, filename);
     i->libraries_used = new(array);
+    i->type_refs    = new(map, hsize, 64);
+    i->operators    = map_of(
+        "+",        str("add"),
+        "-",        str("sub"),
+        "*",        str("mul"),
+        "/",        str("div"),
+        "||",       str("or"),
+        "&&",       str("and"),
+        "^",        str("xor"),
+        ">>",       str("right"),
+        "<<",       str("left"),
+        ":",        str("assign"),
+        "=",        str("assign"),
+        "+=",       str("assign_add"),
+        "-=",       str("assign_sub"),
+        "*=",       str("assign_mul"),
+        "/=",       str("assign_div"),
+        "|=",       str("assign_or"),
+        "&=",       str("assign_and"),
+        "^=",       str("assign_xor"),
+        ">>=",      str("assign_right"),
+        "<<=",      str("assign_left"),
+        "==",       str("compare_equal"),
+        "!=",       str("compare_not"),
+        "%=",       str("mod_assign"),
+        "is",       str("is"),
+        "inherits", str("inherits"), null
+    );
 
     print("LLVM Version: %d.%d.%d",
         LLVM_VERSION_MAJOR,
@@ -722,13 +1055,13 @@ void silver_init(silver a) {
     isilver(a, include, str("stdio.h"));
     isilver(a, build_dependencies);
     
-    enumerate (i->defs, e) {
+    pairs (i->defs, e) {
         type def = e->value;
         // for each type def with a body to build
         if (def->mdl == model_function) {
             isilver(a, build_function, def);
         } else if (def->mdl == model_class) {
-            enumerate_ (def->members, m) {
+            pairs_ (def->members, m) {
                 dim member = m->value;
                 if (member->type->mdl == model_function)
                     isilver(a, build_function, member->type);

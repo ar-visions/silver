@@ -3289,12 +3289,6 @@ int main(int argc, char* argv[]) {
         if t0 == 'while':  return self.parse_while(t0)
         if t0 == 'if':     return self.parse_if_else(t0)
         if t0 == 'do':     return self.parse_do_while(t0)
-    
-        if t0 == 'udata1':
-            self
-
-        if t0 == 'array':
-            self
             
         ident    = EIdent.parse(self) # should parse nothing if there is nothing to parse..  new rule anyway..
         type_def = ident.get_def()    # also try not to over-parse with EIdent.  the consumables might be over doing it

@@ -275,7 +275,7 @@ Token Tokens_peek(Tokens a) {
 
 bool Tokens_next_is(Tokens a, symbol cs) {
     Token n = read(a, 0);
-    return strcmp(n->chars, cs) == 0;
+    return n && strcmp(n->chars, cs) == 0;
 }
 
 AType Token_get_type(Token a) {
@@ -284,9 +284,45 @@ AType Token_get_type(Token a) {
     return null;
 }
 
-bool Tokens_next_alpha(Tokens a) {
+string Tokens_next_string(Tokens a) {
+    Token  n = read(a, 0);
+    AType  t = Token_get_type(a);
+    if (t == typeid(string)) {
+        string token_s = str(n->chars);
+        string result  = mid(token_s, 1, token_s->len - 2);
+        return result;
+    }
+    return null;
+}
+
+object Tokens_next_numeric(Tokens a) {
+    object num = Tokens_read_numeric(a);
+    if (num) {
+        Tokens_consume(a);
+        return num;
+    }
+    return null;
+}
+
+string Tokens_next_alpha(Tokens a) {
     Token n = read(a, 0);
-    return is_alpha(n);
+    return is_alpha(n) ? str(n->chars) : null;
+}
+
+object Tokens_next_bool(Tokens a) {
+    Token  n       = read(a, 0);
+    bool   is_true = strcmp(n->chars, "true")  == 0;
+    bool   is_bool = strcmp(n->chars, "false") == 0 || is_true;
+    return is_bool ? A_bool(is_true) : null;
+}
+
+object Tokens_next_literal(Tokens a) {
+    Token n = read(a, 0);
+    object res;
+    res = Tokens_next_bool   (a); if (res) return res;
+    res = Tokens_next_numeric(a); if (res) return res;
+    res = Tokens_next_string (a);
+    return res;
 }
 
 typedef struct tokens_data {
@@ -296,12 +332,14 @@ typedef struct tokens_data {
 
 void Tokens_push_state(Tokens a, array tokens, num cursor) {
     tokens_data state = A_struct(tokens_data);
-    state->tokens = tokens;
-    state->cursor = cursor;
+    state->tokens = a->tokens;
+    state->cursor = a->cursor;
     push(a->stack, state);
+    a->tokens = hold(tokens);
+    a->cursor = cursor;
 }
 
-void Tokens_pop(Tokens a, bool transfer) {
+void Tokens_pop_state(Tokens a, bool transfer) {
     int len = a->stack->len;
     assert (len, "expected stack");
     tokens_data state = (tokens_data)call(a->stack, last); // we should call this element or ele
@@ -316,6 +354,17 @@ void Tokens_push_current(Tokens a) {
 
 bool Tokens_cast_bool(Tokens a) {
     return a->cursor < len(a->tokens) - 1;
+}
+
+Loc Token_location(Token a) {
+    return new(Loc,
+        source, a->loc->source,
+        line,   a->loc->line,
+        column, a->loc->column);
+}
+
+Loc Tokens_location(Token a) {
+    return call(Tokens_peek(a), location);
 }
 
 void Loc_init(Loc a) {
