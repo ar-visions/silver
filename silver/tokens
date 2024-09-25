@@ -66,6 +66,7 @@ typedef struct silver* silver;
     i_method    (X,Y,  public,  Token,      prev)\
     i_method    (X,Y,  public,  Token,      consume) \
     i_method    (X,Y,  public,  Token,      peek) \
+    i_method    (X,Y,  public,  num,        line) \
     i_method    (X,Y,  public,  bool,       next_is, symbol) \
     i_method    (X,Y,  public,  string,     next_string) \
     i_method    (X,Y,  public,  string,     next_alpha) \

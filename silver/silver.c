@@ -8,13 +8,12 @@
 #define tokens(...)     call(mod->tokens, __VA_ARGS__) /// no need to pass around the redundant tokens args when the class supports a stack
 
 LLVMMetadataRef dbg_info(LLVMDIBuilderRef D, const char *typeName, uint64_t sizeInBits) {
-    // Create basic type debug metadata using LLVMDIBuilderCreateBasicType
     LLVMMetadataRef primitiveMeta = LLVMDIBuilderCreateBasicType(
         D,                             // Debug info builder
         typeName,                      // Name of the primitive type (e.g., "int32", "float64")
         strlen(typeName),              // Length of the name
         sizeInBits,                    // Size in bits (e.g., 32 for int, 64 for double)
-        typeName[0] == 'f' ? 0x04 : 0x05,
+        typeName[0] == 'f' ? 0x04 : 0x05, // switching based on f float or u/i int (on primitives)
         0
     );
     return primitiveMeta;
@@ -46,17 +45,13 @@ LLVMMetadataRef dim_meta_ref(dim member) {
     silver mod = member->mod;
     if (member->meta_ref)
         return member->meta_ref;
-    
-    // Get the base type's debug metadata (already stored in f->meta_ref)
     LLVMMetadataRef t = member->type->meta_ref;
-
-    // If depth > 0, create pointer types for the debug metadata
+    int ptr_size = LLVMPointerSize(mod->target_data) * 8;
     for (int ii = 0; ii < member->depth; ii++) {
-        // Create pointer type metadata based on the current type
         t = LLVMDIBuilderCreatePointerType(
-            mod->builder,     // Debug info builder
+            mod->dbg,       // Debug info builder
             t,              // Base type (which will become pointer)
-            64,             // Pointer size in bits (change for your target)
+            ptr_size,       // Pointer size in bits (change for your target)
             0,              // Pointer alignment (use 0 to let LLVM infer)
             0,              // address space (default)
             NULL,           // Optional type name (can be NULL for anonymous)
@@ -98,7 +93,7 @@ void type_init(type ty) {
             verify(ty->args,   "args");
             int              n_args    = ty->args->count;
             int              arg_index = 0;
-            LLVMMetadataRef* arg_meta  = calloc(n_args, sizeof(LLVMMetadataRef));
+            LLVMMetadataRef* arg_meta  = calloc(1 + n_args, sizeof(LLVMMetadataRef));
             LLVMTypeRef*     arg_types = calloc(n_args, sizeof(LLVMTypeRef));
             cstr*            arg_names = calloc(n_args, sizeof(cstr));
             
@@ -113,19 +108,21 @@ void type_init(type ty) {
                 LLVMTypeRef       tr = dim_type_ref(arg);
                 LLVMMetadataRef meta = dim_meta_ref(arg);
                 arg_types[arg_index] = tr;
-                arg_meta[arg_index]  = meta;
+                arg_meta[1 + arg_index]  = meta;
                 arg_index++;
                 
             }
-
-            LLVMTypeRef return_ref = dim_type_ref(ty->rtype);
-            ty->sub_ref  = LLVMDIBuilderCreateSubroutineType(mod->builder, mod->file, arg_meta, arg_index, LLVMDIFlagZero);
+            
+            LLVMMetadataRef rmeta = dim_meta_ref(ty->rtype);
+            arg_meta[0]  = rmeta;
+            ty->sub_ref  = LLVMDIBuilderCreateSubroutineType(mod->dbg, mod->file, arg_meta, 1 + arg_index, LLVMDIFlagZero);
             ty->fn_ref   = LLVMDIBuilderCreateFunction(
-                mod->builder,     mod->compile_unit,
+                mod->dbg,        mod->compile_unit,
                 ty->name->chars, ty->name->len,
                 ty->name->chars, ty->name->len, mod->file,
                 1, ty->sub_ref, false, true, 1, 0, false);
-            ty->type_ref = LLVMFunctionType(return_ref, arg_types, arg_index, ty->va_args);
+            LLVMTypeRef rtype = dim_type_ref(ty->rtype);
+            ty->type_ref = LLVMFunctionType(rtype, arg_types, arg_index, ty->va_args);
             
             LLVMValueRef existing = LLVMGetNamedFunction(ty->mod->module_ref, ty->name->chars);
             verify (!existing, "parallel creation of function: %o", ty->name);
@@ -136,7 +133,7 @@ void type_init(type ty) {
                 print  ("existing function found: %o", ty->name);
             } else {
                 verify (!existing, "found existing function for %o", ty->name);
-                print  ("return type: %s", LLVMPrintTypeToString(return_ref));
+                print  ("return type: %s", LLVMPrintTypeToString(rtype));
                 for (int i = 0; i < arg_index; i++)
                     print("arg %d type: %s", i, LLVMPrintTypeToString(arg_types[i]));
 
@@ -578,7 +575,7 @@ void dim_allocate(dim member, silver mod, bool create_debug) {
     LLVMTypeRef tr = dim_type_ref(member);
     member->value_ref   = LLVMBuildAlloca(mod->builder, tr, "alloc-dim");
     member->meta_ref    = LLVMDIBuilderCreateAutoVariable(
-        mod->builder,
+        mod->dbg,
         mod->current_scope,
         member->name->chars,
         member->name->len,
@@ -586,6 +583,18 @@ void dim_allocate(dim member, silver mod, bool create_debug) {
         2,
         member->type->meta_ref,
         true, 0, 0);
+
+    // Now insert this variable into the IR, associating it with the debug metadata
+    /*
+    LLVMDIBuilderInsertDeclareBefore(
+        mod->dbg,                     // Debug info builder
+        member->value_ref,            // The actual LLVM IR value (allocated variable)
+        member->meta_ref,             // Debug variable metadata
+        LLVMDIBuilderCreateExpression(mod->dbg, NULL, 0),  // No specific expression
+        LLVMDIBuilderCreateDebugLocation(mod->llvm_context, member->line, 0, mod->current_scope, NULL),  // Debug location
+        LLVMGetInsertBlock(mod->builder)  // Insert point at the end of the basic block
+    );
+    */
 }
 
 void dim_create_fn(dim member) {
@@ -605,9 +614,10 @@ void dim_create_fn(dim member) {
             set    (args, arg->name, arg);
             arg_index++;
         }
+        num line = tokens(line);
         tokens(consume);
         dim rtype_dim = new(dim,
-            mod,     member->mod, type,       member->type,
+            mod,        member->mod,    type,       member->type,   line, line,
             depth,      member->depth,  shape,      member->shape,
             wrap,       member->wrap,   context,    members);
         type f_def = new(type,
@@ -1231,7 +1241,7 @@ static void silver_scope_pop(silver mod) {
 }
 
 static void silver_build_function(silver mod, type fn) {
-    silver_scope_push(mod, fn->fn_ref);
+    isilver (scope_push, fn->fn_ref);
     mod->current_scope = fn->fn_ref;
     tokens  (push_state, fn->body->tokens, fn->body->cursor);
     dim info = fn->info;
@@ -1243,7 +1253,7 @@ static void silver_build_function(silver mod, type fn) {
     isilver (parse_statements);
     isilver (pop_member_stack);
     tokens  (pop_state, false);
-    silver_scope_pop(mod);
+    isilver (scope_pop);
 }
 
 static void silver_init(silver mod) {
@@ -1252,6 +1262,7 @@ static void silver_init(silver mod) {
     LLVMInitializeNativeTarget();
     LLVMInitializeNativeAsmPrinter();
     
+    mod->scope        = new(array, alloc, 32, unmanaged, true);
     mod->member_stack = new(array, alloc, 32);
     mod->members      = isilver(push_member_stack); /// our base members is the first stack item that we keep after building
     mod->imports      = new(array, alloc, 32);

@@ -94,6 +94,7 @@ declare_class(type)
     i_prop(    X,Y, intern,     bool,               cached) \
     i_prop(    X,Y, intern,     LLVMValueRef,       value_ref) \
     i_prop(    X,Y, intern,     LLVMMetadataRef,    meta_ref) \
+    i_prop(    X,Y, public,     num,                line) \
     s_method(  X,Y, public,     dim,        read, silver, map, bool) \
     i_override(X,Y, method,     init)
 declare_class(dim)
