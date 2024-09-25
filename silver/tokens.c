@@ -87,6 +87,11 @@ AType Token_is_bool(Token a) {
         (AType)typeid(bool) : null;
 }
 
+num Tokens_line(Tokens a) {
+    Token  t = idx(a->tokens, 0);
+    return t->loc ? t->loc->line : 0;
+}
+
 A Token_is_numeric(Token a) {
     bool is_digit = a->chars[0] >= '0' && a->chars[0] <= '9';
     bool has_dot  = strstr(a->chars, ".") != 0;
