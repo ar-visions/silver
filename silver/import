@@ -3,6 +3,8 @@
 #include <silver>
 #include <tokens>
 
+
+
 #define ImportType_schema(X,Y) \
     enum_value(X,Y, none) \
     enum_value(X,Y, source) \
@@ -18,7 +20,7 @@ declare_enum(BuildState)
 
 #define Import_schema(X,Y) \
     i_prop    (X,Y, public, Tokens,     tokens) \
-    i_prop    (X,Y, intern, silver,     module) \
+    i_prop    (X,Y, intern, silver,     mod) \
     i_prop    (X,Y, intern, string,     name) \
     i_prop    (X,Y, intern, array,      source) \
     i_prop    (X,Y, intern, string,     shell) \

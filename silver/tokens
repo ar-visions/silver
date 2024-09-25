@@ -2,79 +2,21 @@
 #define _TOKENS_
 #include <A>
 
+typedef struct silver* silver;
+typedef struct type*   type;
+typedef struct dim*    dim;
+
 #define Loc_schema(X,Y) \
     i_prop    (X,Y, public, path,   source) \
     i_prop    (X,Y, public, num,    line) \
     i_prop    (X,Y, public, num,    column) \
+    i_override(X,Y, cast,   string) \
     i_override(X,Y, method, init)
 declare_class(Loc)
 
-
-typedef struct ENode*                   ENode;
-typedef struct EIdent*                  EIdent;
-typedef struct EModule*                 EModule;
-typedef struct EMember*                 EMember;
-typedef struct EMetaMember*             EMetaMember;
-typedef struct EMethod*                 EMethod;
-typedef struct EClass*                  EClass;
-typedef struct EProp*                   EProp;
-typedef struct EStruct*                 EStruct;
-typedef struct EOperator*               EOperator;
-typedef struct ECompareEquals*          ECompareEquals;
-typedef struct ECompareNotEquals*       ECompareNotEquals;
-typedef struct EAdd*                    EAdd;
-typedef struct ESub*                    ESub;
-typedef struct EMul*                    EMul;
-typedef struct EDiv*                    EDiv;
-typedef struct EOr*                     EOr;
-typedef struct EAnd*                    EAnd;
-typedef struct EXor*                    EXor;
-typedef struct EIs*                     EIs;
-typedef struct EInherits*               EInherits;
-typedef struct Import*                  Import;
-typedef struct EStatements*             EStatements;
-typedef struct EModel*                  EModel;
-typedef struct EDeclaration*            EDeclaration;
-typedef struct EConstruct*              EConstruct;
-typedef struct EExplicitCast*           EExplicitCast;
-typedef struct EPrimitive*              EPrimitive;
-typedef struct EUndefined*              EUndefined;
-typedef struct EParenthesis*            EParenthesis;
-typedef struct ELogicalNot*             ELogicalNot;
-typedef struct EBitwiseNot*             EBitwiseNot;
-typedef struct ERef*                    ERef;
-typedef struct ERefCast*                ERefCast;
-typedef struct EIndex*                  EIndex;
-typedef struct EAssign*                 EAssign;
-typedef struct EAssignAdd*              EAssignAdd;
-typedef struct EAssignSub*              EAssignSub;
-typedef struct EAssignMul*              EAssignMul;
-typedef struct EAssignDiv*              EAssignDiv;
-typedef struct EAssignOr*               EAssignOr;
-typedef struct EAssignAnd*              EAssignAnd;
-typedef struct EAssignXor*              EAssignXor;
-typedef struct EAssignShiftR*           EAssignShiftR;
-typedef struct EAssignShiftL*           EAssignShiftL;
-typedef struct EAssignMod*              EAssignMod;
-typedef struct EIf*                     EIf;
-typedef struct EFor*                    EFor;
-typedef struct EWhile*                  EWhile;
-typedef struct EDoWhile*                EDoWhile;
-typedef struct EBreak*                  EBreak;
-typedef struct ELiteralReal*            ELiteralReal;
-typedef struct ELiteralInt*             ELiteralInt;
-typedef struct ELiteralStr*             ELiteralStr;
-typedef struct ELiteralStrInterp*       ELiteralStrInterp;
-typedef struct ELiteralBool*            ELiteralBool;
-typedef struct ESubProc*                ESubProc;
-typedef struct ERuntimeType*            ERuntimeType;
-typedef struct EMethodCall*             EMethodCall;
-typedef struct EMethodReturn*           EMethodReturn;
-typedef struct Token*                   Token;
-
 #define EContext_schema(X,Y) \
-    i_prop      (X,Y,  public,  EModule,    module) \
-    i_prop      (X,Y,  public,  EMember,    method) \
+    i_prop      (X,Y,  public,  silver,     module) \
+    i_prop      (X,Y,  public,  dim,        method) \
     i_prop      (X,Y,  public,  array,      states) \
     i_prop      (X,Y,  public,  bool,       raw_primitives) \
     i_prop      (X,Y,  public,  map,        values) \
@@ -100,6 +42,7 @@ declare_class(EContext)
     i_method    (X,Y,  public,  AType,      get_type) \
     i_method    (X,Y,  public,  A,          convert_literal) \
     i_method    (X,Y,  public,  Loc,        location) \
+    s_method    (X,Y,  public,  string,     op_name, string) \
     i_override  (X,Y,  method,  init) \
     i_override  (X,Y,  method,  compare) \
     i_override  (X,Y,  cast,    string) \
@@ -120,6 +63,7 @@ typedef struct silver* silver;
     i_method    (X,Y,  public,  none,       pop_state, bool) \
     i_method    (X,Y,  public,  Token,      read, num) \
     i_method    (X,Y,  public,  Token,      next) \
+    i_method    (X,Y,  public,  Token,      prev)\
     i_method    (X,Y,  public,  Token,      consume) \
     i_method    (X,Y,  public,  Token,      peek) \
     i_method    (X,Y,  public,  bool,       next_is, symbol) \
@@ -128,6 +72,7 @@ typedef struct silver* silver;
     i_method    (X,Y,  public,  object,     next_bool) \
     i_method    (X,Y,  public,  object,     next_numeric) \
     i_method    (X,Y,  public,  object,     next_literal) \
+    i_method    (X,Y,  public,  string,     next_assign) \
     i_method    (X,Y,  public,  object,     read_numeric) \
     i_method    (X,Y,  public,  type,       read_type, silver) \
     i_override  (X,Y,  method,  init) \
