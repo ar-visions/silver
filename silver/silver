@@ -1,16 +1,31 @@
 #ifndef _SILVER_
 #define _SILVER_
+
 #include <A>
 
-// it will be nice to put parser logic outside 
-// silver, parse class used for module reading,
-// parsing and llvm management. helps hide weird stuff
+#include <llvm-c/DebugInfo.h>
+#include <llvm-c/Core.h>
+#include <llvm-c/ExecutionEngine.h>
+#include <llvm-c/Target.h>
+#include <llvm-c/Analysis.h>
+#include <llvm-c/TargetMachine.h>
+#include <llvm-c/BitWriter.h>
+#include <clang-c/Index.h>
 
 typedef struct silver* silver;
 typedef struct dim*    dim;
 typedef struct Token*  Token;
 typedef struct type*   type;
 typedef struct Tokens* Tokens;
+
+#define Visibility_schema(X,Y) \
+    enum_value(X,Y, undefined) \
+    enum_value(X,Y, intern) \
+    enum_value(X,Y, public)
+declare_enum(Visibility)
+
+#include <tokens>
+#include <import>
 
 /// models of C types
 /// order primitives of precedence when combined
@@ -36,28 +51,28 @@ typedef struct Tokens* Tokens;
     enum_value(X,Y, typedef)
 declare_enum(model)
 
-#define Visibility_schema(X,Y) \
-    enum_value(X,Y, undefined) \
-    enum_value(X,Y, intern) \
-    enum_value(X,Y, public)
-declare_enum(Visibility)
-
 #define type_schema(X,Y) \
-    i_prop(    X,Y, intern, object,     intern) \
-    i_prop(    X,Y, public, string,     name) \
-    i_prop(    X,Y, public, model,      mdl) \
-    i_prop(    X,Y, public, AType,      imported) \
-    i_prop(    X,Y, public, A,          rtype) \
-    i_prop(    X,Y, public, map,        args) \
-    i_prop(    X,Y, public, type,       origin) \
-    i_prop(    X,Y, public, i32,        size) \
-    i_prop(    X,Y, public, map,        members) \
-    i_prop(    X,Y, public, silver,     module) \
-    i_prop(    X,Y, public, Token,      token) \
-    i_prop(    X,Y, public, A,          info) \
-    i_prop(    X,Y, intern, Tokens,     body) \
-    i_method(  X,Y, public, dim,        find_member) \
-    i_override(X,Y, method, init)
+    i_prop(    X,Y, public,     bool,               va_args) \
+    i_prop(    X,Y, public,     string,             name) \
+    i_prop(    X,Y, public,     model,              mdl) \
+    i_prop(    X,Y, public,     AType,              imported) \
+    i_prop(    X,Y, public,     string,             from_include) \
+    i_prop(    X,Y, public,     A,                  rtype) \
+    i_prop(    X,Y, public,     map,                args) \
+    i_prop(    X,Y, public,     type,               origin) \
+    i_prop(    X,Y, public,     i32,                size) \
+    i_prop(    X,Y, public,     map,                members) \
+    i_prop(    X,Y, public,     silver,             mod) \
+    i_prop(    X,Y, public,     Token,              token) \
+    i_prop(    X,Y, public,     A,                  info) \
+    i_prop(    X,Y, intern,     Tokens,             body) \
+    i_prop(    X,Y, intern,     LLVMTypeRef,        type_ref) \
+    i_prop(    X,Y, intern,     LLVMMetadataRef,    sub_ref) \
+    i_prop(    X,Y, intern,     LLVMMetadataRef,    fn_ref) \
+    i_prop(    X,Y, intern,     LLVMMetadataRef,    meta_ref) \
+    i_prop(    X,Y, intern,     LLVMBasicBlockRef,  entry) \
+    i_method(  X,Y, public,     dim,                find_member, string) \
+    i_override(X,Y, method,     init)
 declare_class(type)
 
 // y-u-so-dimm: greg during Baldeck's lecture on so-dimm
@@ -66,33 +81,66 @@ declare_class(type)
 // in the same way an array may allocate a size
 // its a query for the wrap
 #define dim_schema(X,Y) \
-    i_prop(    X,Y, intern,   A,          intern) \
-    i_prop(    X,Y, public,   type,       type) \
-    i_prop(    X,Y, public,   bool,       parse) \
-    i_prop(    X,Y, required, silver,     module) \
-    i_prop(    X,Y, required, map,        context) \
-    i_prop(    X,Y, intern,   string,     name) \
-    i_prop(    X,Y, intern,   num,        depth) \
-    i_prop(    X,Y, intern,   bool,       is_static) \
-    i_prop(    X,Y, intern,   Visibility, visibility) \
-    i_prop(    X,Y, intern,   type,       wrap) \
-    i_prop(    X,Y, intern,   array,      shape) \
-    i_prop(    X,Y, intern,   bool,       cached) \
-    s_method(  X,Y, public,   dim,        parse, silver, map) \
-    i_override(X,Y, method,   init)
+    i_prop(    X,Y, public,     type,               type) \
+    i_prop(    X,Y, required,   silver,             mod) \
+    i_prop(    X,Y, required,   map,                context) \
+    i_prop(    X,Y, intern,     string,             name) \
+    i_prop(    X,Y, intern,     num,                depth) \
+    i_prop(    X,Y, intern,     bool,               is_static) \
+    i_prop(    X,Y, intern,     bool,               is_const) \
+    i_prop(    X,Y, intern,     Visibility,         visibility) \
+    i_prop(    X,Y, intern,     type,               wrap) \
+    i_prop(    X,Y, intern,     array,              shape) \
+    i_prop(    X,Y, intern,     bool,               cached) \
+    i_prop(    X,Y, intern,     LLVMValueRef,       value_ref) \
+    i_prop(    X,Y, intern,     LLVMMetadataRef,    meta_ref) \
+    s_method(  X,Y, public,     dim,        read, silver, map, bool) \
+    i_override(X,Y, method,     init)
 declare_class(dim)
 
 #define module_def(m, n)   call0(m->defs, get, str(n))
 
 #define silver_schema(X,Y)\
-    i_prop    (X,Y, required, path,       install) \
-    i_prop    (X,Y, required, path,       source) \
-    i_prop    (X,Y, public,   bool,       debug) \
-    i_prop    (X,Y, intern,   object,     intern)\
-    i_method  (X,Y, public,   path,       source_path) \
-    i_method  (X,Y, public,   type,       get_type, string) \
-    i_override(X,Y, method,   init) \
-    i_override(X,Y, method,   destructor)
+    i_prop    (X,Y, required,   path,                 install) \
+    i_prop    (X,Y, required,   path,                 source) \
+    i_prop    (X,Y, intern,     LLVMModuleRef,        module_ref) \
+    i_prop    (X,Y, intern,     LLVMContextRef,       llvm_context) \
+    i_prop    (X,Y, intern,     LLVMBuilderRef,       builder) \
+    i_prop    (X,Y, intern,     LLVMMetadataRef,      file) \
+    i_prop    (X,Y, intern,     LLVMMetadataRef,      compile_unit) \
+    i_prop    (X,Y, intern,     LLVMDIBuilderRef,     dbg) \
+    i_prop    (X,Y, intern,     LLVMMetadataRef,      current_scope) \
+    i_prop    (X,Y, intern,     LLVMTargetRef,        target) \
+    i_prop    (X,Y, intern,     LLVMTargetDataRef,    target_data) \
+    i_prop    (X,Y, intern,     LLVMTargetMachineRef, target_machine) \
+    i_prop    (X,Y, intern,     array,                scope) \
+    i_prop    (X,Y, intern,     symbol,               target_triple) \
+    i_prop    (X,Y, intern,     array,                imports) \
+    i_prop    (X,Y, intern,     Tokens,               tokens) \
+    i_prop    (X,Y, intern,     array,                member_stack) \
+    i_prop    (X,Y, intern,     map,                  defs) \
+    i_prop    (X,Y, intern,     map,                  members) \
+    i_prop    (X,Y, intern,     string,               source_file) \
+    i_prop    (X,Y, intern,     path,                 source_path) \
+    i_prop    (X,Y, intern,     array,                main_symbols) \
+    i_prop    (X,Y, intern,     array,                compiled_objects) \
+    i_prop    (X,Y, intern,     array,                libraries_used) \
+    i_prop    (X,Y, intern,     map,                  include) \
+    i_prop    (X,Y, intern,     map,                  type_refs) \
+    i_prop    (X,Y, intern,     map,                  operators) \
+    i_prop    (X,Y, intern,     int,                  expr_level) \
+    i_prop    (X,Y, intern,     string,               current_include) \
+    i_prop    (X,Y, public,     bool,                 debug) \
+    i_method  (X,Y, public,     none,                 write) \
+    i_method  (X,Y, public,     path,                 source_path) \
+    i_method  (X,Y, public,     type,                 get_type, string) \
+    i_override(X,Y, method,     init) \
+    i_override(X,Y, method,     destructor)
 declare_class(silver)
+
+
+/// for imported handles we can register the type
+#define LLVMValueRef_schema(X,Y) raw_schema(X,Y)
+declare_primitive(LLVMValueRef, raw)
 
 #endif

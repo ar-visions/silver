@@ -3,7 +3,7 @@
 
 static array keywords;
 static array consumables;
-static array assign;
+static map   assign;
 static array compare;
 
 #define intern(I,M,...) Token_ ## M(I, ## __VA_ARGS__)
@@ -17,13 +17,31 @@ void init() {
     consumables = array_of_cstr(
         "ref", "schema", "enum", "class", "union", "proto", "struct",
         "const", "volatile", "signed", "unsigned", null);
-    assign  = array_of_cstr(":", "=" , "+=",  "-=", "*=",  "/=", "|=",
-                "&=", "^=", ">>=", "<<=", "%=", null);
+    //assign  = array_of_cstr(":", "=" , "+=",  "-=", "*=",  "/=", "|=",
+    //            "&=", "^=", ">>=", "<<=", "%=", null);
+    assign = map_of(
+        ":",   allocate(string, chars, "assign"),
+        "=",   allocate(string, chars, "assign_const"),
+        "+=",  allocate(string, chars, "assign_add"),
+        "-=",  allocate(string, chars, "assign_sub"),
+        "*=",  allocate(string, chars, "assign_mul"),
+        "/=",  allocate(string, chars, "assign_div"),
+        "|=",  allocate(string, chars, "assign_or"),
+        "&=",  allocate(string, chars, "assign_and"),
+        "^=",  allocate(string, chars, "assign_xor"),
+        ">>=", allocate(string, chars, "assign_right"),
+        "<<=", allocate(string, chars, "assign_left"),
+        "%=",  allocate(string, chars, "assign_mod"),
+    null);
     compare = array_of_cstr("==", "!=", null);
 }
 
 bool next_is(Tokens tokens, symbol cs) {
     return call(tokens, next_is, cs);
+}
+
+string Token_op_name(string op) {
+    return get(assign, op);
 }
 
 /// Token
@@ -137,13 +155,16 @@ array parse_tokens(A input) {
     num     line_num        = 1;
     num     length          = len(input_string);
     num     index           = 0;
+    num     line_start      = 0;
 
     while (index < length) {
         i32 chr = idx(input_string, index);
         
         if (isspace(chr)) {
-            if (chr == '\n')
+            if (chr == '\n') {
                 line_num += 1;
+                line_start = index + 1;
+            }
             index += 1;
             continue;
         }
@@ -198,7 +219,7 @@ array parse_tokens(A input) {
             Loc    lc      = new(Loc,
                 source, file,
                 line,   line_num,
-                column, start);
+                column, start - line_start);
             Token token    = new(Token, chars, crop->chars, loc, lc);
             push(tokens, token);
             continue;
@@ -213,7 +234,7 @@ array parse_tokens(A input) {
             index += 1;
         }
         
-        Loc    lc   = new(Loc, source, file, line, line_num, column, start);
+        Loc    lc   = new(Loc, source, file, line, line_num, column, start - line_start);
         string crop = mid(input_string, start, index - start);
         push(tokens, new(Token, chars, crop->chars, loc, lc));
     }
@@ -254,7 +275,15 @@ type Tokens_read_type(Tokens tokens, silver module) {
 }
 
 Token Tokens_read(Tokens a, num rel) {
-    return a->tokens->elements[a->cursor + rel];
+    return a->tokens->elements[clamp(a->cursor + rel, 0, a->tokens->len)];
+}
+
+Token Tokens_prev(Tokens a) {
+    if (a->cursor <= 0)
+        return null;
+    a->cursor--;
+    Token res = read(a, 0);
+    return res;
 }
 
 Token Tokens_next(Tokens a) {
@@ -286,10 +315,11 @@ AType Token_get_type(Token a) {
 
 string Tokens_next_string(Tokens a) {
     Token  n = read(a, 0);
-    AType  t = Token_get_type(a);
+    AType  t = Token_get_type(n);
     if (t == typeid(string)) {
         string token_s = str(n->chars);
         string result  = mid(token_s, 1, token_s->len - 2);
+        a->cursor ++;
         return result;
     }
     return null;
@@ -297,27 +327,35 @@ string Tokens_next_string(Tokens a) {
 
 object Tokens_next_numeric(Tokens a) {
     object num = Tokens_read_numeric(a);
-    if (num) {
-        Tokens_consume(a);
-        return num;
-    }
-    return null;
+    return num;
+}
+
+string Tokens_next_assign(Tokens a) {
+    Token  n = read(a, 0);
+    string k = str(n->chars);
+    string m = get(assign, k);
+    if (m) a->cursor ++;
+    return k;
 }
 
 string Tokens_next_alpha(Tokens a) {
     Token n = read(a, 0);
-    return is_alpha(n) ? str(n->chars) : null;
+    if (is_alpha(n)) {
+        a->cursor ++;
+        return str(n->chars);
+    }
+    return null;
 }
 
 object Tokens_next_bool(Tokens a) {
     Token  n       = read(a, 0);
     bool   is_true = strcmp(n->chars, "true")  == 0;
     bool   is_bool = strcmp(n->chars, "false") == 0 || is_true;
+    if (is_bool) a->cursor ++;
     return is_bool ? A_bool(is_true) : null;
 }
 
 object Tokens_next_literal(Tokens a) {
-    Token n = read(a, 0);
     object res;
     res = Tokens_next_bool   (a); if (res) return res;
     res = Tokens_next_numeric(a); if (res) return res;
@@ -368,6 +406,10 @@ Loc Tokens_location(Token a) {
 }
 
 void Loc_init(Loc a) {
+}
+
+string Loc_cast_string(Loc a) {
+    return format("%o:%i:%i", a->source, a->line, a->column);
 }
 
 define_class(Token)

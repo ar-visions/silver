@@ -2,9 +2,9 @@
 
 #define intern(I,M,...) Import_ ## M(I, ## __VA_ARGS__)
 
-path create_folder(silver module, cstr name, cstr sub) {
+path create_folder(silver mod, cstr name, cstr sub) {
     string dir = format(
-        "%o/%s%s%s", call(module, source_path), name, sub ? "/" : "", sub ? sub : "");
+        "%o/%s%s%s", call(mod, source_path), name, sub ? "/" : "", sub ? sub : "");
     path   res = cast(dir, path);
     call(res, make_dir);
     return res;
@@ -145,7 +145,7 @@ none Import_init(Import a) {
             Token t_next = tokens(next);
             string module_name = cast(t_next, string);
             a->name = hold(module_name);
-            assert(is_alpha(module_name), "expected module name identifier");
+            assert(is_alpha(module_name), "expected mod name identifier");
 
             if (tokens(next_is, "as")) {
                 tokens(consume);
@@ -182,9 +182,11 @@ none Import_init(Import a) {
 }
 
 BuildState Import_build_project(Import a, string name, string url) {
-    path checkout = create_folder(a->module, "checkouts", name->chars);
-    path i        = create_folder(a->module, a->module->debug ? "debug" : "install", null);
+    path checkout = create_folder(a->mod, "checkouts", name->chars);
+    path i        = create_folder(a->mod, a->mod->debug ? "debug" : "install", null);
     path b        = form(path, "%o/%s", checkout, "silver-build");
+
+    path cwd = path_cwd(2048);
 
     /// clone if empty
     if (call(checkout, is_empty)) {
@@ -308,6 +310,8 @@ BuildState Import_build_project(Import a, string name, string url) {
             }
         }
     }
+
+    chdir(cwd->chars);
     return BuildState_built;
 }
 
@@ -327,8 +331,8 @@ bool contains_main(path obj_file) {
 }
 
 BuildState Import_build_source(Import a) {
-    bool is_debug = a->module->debug;
-    string build_root = call(a->module, source_path);
+    bool is_debug = a->mod->debug;
+    string build_root = call(a->mod, source_path);
     each (a->cfiles, string, cfile) {
         path cwd = invoke(path, cwd, 1024);
         string compile;
@@ -379,11 +383,11 @@ void Import_process(Import a) {
             path module_path = form(path, "%o%o.si", pre, a->name);
             if (!call(module_path, exists)) continue;
             a->module_path = module_path;
-            print("module-path %o", module_path);
+            print("mod-path %o", module_path);
             exists = true;
             break;
         }
-        assert(exists, "path does not exist for silver module: %o", a->name);
+        assert(exists, "path does not exist for silver mod: %o", a->name);
     } else if (len(a->name) && len(a->source)) {
         bool has_c  = false, has_h = false, has_rs = false,
              has_so = false, has_a = false;
