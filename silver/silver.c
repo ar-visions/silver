@@ -21,7 +21,7 @@ LLVMMetadataRef dbg_info(LLVMDIBuilderRef D, const char *typeName, uint64_t size
 
 LLVMTypeRef dim_type_ref(dim member);
 
-LLVMValueRef type_dbg(type f) { return f->meta_ref; }
+LLVMMetadataRef type_dbg(type f) { return f->meta_ref; }
 
 string type_ref_key(LLVMTypeRef type_ref) {
     return format("%p", type_ref);
@@ -39,7 +39,9 @@ dim type_find_member(type ty, string key) {
     return get(ty->members, key);
 }
 
-sz type_size_of(type ty) { return LLVMSizeOfTypeInBits(ty->mod->target_data, ty->type_ref); }
+sz type_size_of(type ty) {
+    return LLVMSizeOfTypeInBits(ty->mod->target_data, ty->type_ref);
+}
 
 LLVMMetadataRef dim_meta_ref(dim member) {
     silver mod = member->mod;
@@ -64,8 +66,17 @@ LLVMMetadataRef dim_meta_ref(dim member) {
 
 LLVMTypeRef dim_type_ref(dim member) {
     LLVMTypeRef t = member->type->type_ref;
+    if (member->depth > 0 && t == LLVMVoidType())
+        t = LLVMInt8Type();
+    
+    static int debug = 0; debug++;
+    if (debug == 48)
+        debug++;
+    print("type string = %s", LLVMPrintTypeToString(t));
+
     for (int i = 0; i < member->depth; i++)
         t = LLVMPointerType(t, 0);
+    
     return t;
 }
 
@@ -89,45 +100,38 @@ void type_init(type ty) {
             break;
         
         case model_function: {
+            print("making function for %o", ty->name);
+
+            //if (!eq(ty->name, "main"))
+            //    break;
+
             verify(ty->rtype,  "rtype");
             verify(ty->args,   "args");
+            bool             is_main   = eq(ty->name, "main");
             int              n_args    = ty->args->count;
+            dim              info      = ty->info;
             int              arg_index = 0;
             LLVMMetadataRef* arg_meta  = calloc(1 + n_args, sizeof(LLVMMetadataRef));
             LLVMTypeRef*     arg_types = calloc(n_args, sizeof(LLVMTypeRef));
             cstr*            arg_names = calloc(n_args, sizeof(cstr));
             
-            print("making function for %o", ty->name);
-            if (eq(ty->name, "tmpnam")) {
-                int test = 0;
-            }
 
             pairs(ty->args, e) {
                 dim arg = e->value;
-                
                 LLVMTypeRef       tr = dim_type_ref(arg);
                 LLVMMetadataRef meta = dim_meta_ref(arg);
                 arg_types[arg_index] = tr;
                 arg_meta[1 + arg_index]  = meta;
                 arg_index++;
-                
             }
-            
-            LLVMMetadataRef rmeta = dim_meta_ref(ty->rtype);
-            arg_meta[0]  = rmeta;
-            ty->sub_ref  = LLVMDIBuilderCreateSubroutineType(mod->dbg, mod->file, arg_meta, 1 + arg_index, LLVMDIFlagZero);
-            ty->fn_ref   = LLVMDIBuilderCreateFunction(
-                mod->dbg,        mod->compile_unit,
-                ty->name->chars, ty->name->len,
-                ty->name->chars, ty->name->len, mod->file,
-                1, ty->sub_ref, false, true, 1, 0, false);
-            LLVMTypeRef rtype = dim_type_ref(ty->rtype);
-            ty->type_ref = LLVMFunctionType(rtype, arg_types, arg_index, ty->va_args);
-            
+
+            LLVMTypeRef rtype     = dim_type_ref(ty->rtype);
+            ty->type_ref          = LLVMFunctionType(rtype, arg_types, arg_index, ty->va_args);
             LLVMValueRef existing = LLVMGetNamedFunction(ty->mod->module_ref, ty->name->chars);
+            
             verify (!existing, "parallel creation of function: %o", ty->name);
-            dim info = ty->info;
-            verify (info, "anonymous member not set on type for function");
+            verify (info,      "anonymous member not set on type for function");
+            
             if (existing) {
                 info->value_ref = existing;
                 print  ("existing function found: %o", ty->name);
@@ -138,7 +142,9 @@ void type_init(type ty) {
                     print("arg %d type: %s", i, LLVMPrintTypeToString(arg_types[i]));
 
                 info->value_ref = LLVMAddFunction(ty->mod->module_ref, ty->name->chars, ty->type_ref);
-                LLVMSetLinkage(info->value_ref, info->visibility == Visibility_public
+                LLVMValueRef function = info->value_ref;
+
+                LLVMSetLinkage(function, info->visibility == Visibility_public
                     ? LLVMExternalLinkage : LLVMInternalLinkage);
 
                 // set arg names
@@ -147,15 +153,37 @@ void type_init(type ty) {
                     string arg_name = arg->key;
                     dim    arg_type = arg->value;
                     AType     arg_t = isa(arg_type);
+
                     verify(arg_t == typeid(dim), "type mismatch");
-                    LLVMValueRef param = LLVMGetParam(info->value_ref, arg_index);
-                    LLVMSetValueName2(param, arg_name->chars, arg_name->len);
+                    //LLVMValueRef param = LLVMGetParam(function, arg_index);
+                    //LLVMSetValueName2(param, arg_name->chars, arg_name->len);
                     arg_index++;
                 }
+
+                LLVMMetadataRef  rmeta = dim_meta_ref(ty->rtype);
+                arg_meta[0]            = rmeta;
+                const char *symbolName = strdup(LLVMGetValueName(function));
+                size_t   symbolNameLen = strlen(symbolName);
+
+                if (!ty->from_include) {
+                    ty->entry_ref = LLVMAppendBasicBlockInContext(
+                        mod->context, info->value_ref, "entry");
+
+                    ty->sub_ref  = LLVMDIBuilderCreateSubroutineType(
+                        mod->dbg, mod->file, arg_meta, 1 + arg_index, LLVMDIFlagZero);
+                    
+                    ty->fn_ref   = LLVMDIBuilderCreateFunction(
+                        mod->dbg, mod->compile_unit,
+                        strdup("main"), 4,
+                        strdup("main"), 4, mod->file,
+                        1, ty->sub_ref, false, !ty->from_include, 1, 0, false);
+
+                    LLVMSetSubprogram(function, ty->fn_ref);
+                }
             }
-            free(arg_meta);
-            free(arg_types);
-            free(arg_names);
+            //free(arg_meta);
+            //free(arg_types);
+            //free(arg_names);
             break;
         }
         case model_bool:   ty->type_ref = LLVMInt1Type  (); break;
@@ -217,6 +245,9 @@ void type_init(type ty) {
 
     /// create debug info for primitives
     if (ty->mdl >= model_bool && ty->mdl <= model_f64) {
+        if (ty->mdl == model_i64) {
+            debug();
+        }
         ty->meta_ref = dbg_info(mod->dbg, ty->name->chars, type_size_of(ty));
     }
 
@@ -349,7 +380,7 @@ enum CXChildVisitResult visit(CXCursor cursor, CXCursor parent, CXClientData cli
             if (eq(name, "printf"))
                 assert(is_var, "expected var arg");
             def = new(type,
-                mod,         mod,
+                mod,            mod,
                 from_include,   mod->current_include,
                 info,           member,
                 name,           name,
@@ -469,7 +500,7 @@ map silver_include(silver mod, string include) {
     
     CXCursor cursor = clang_getTranslationUnitCursor(unit);
     mod->current_include = include;
-    clang_visitChildren(cursor, visit, (CXClientData)mod);
+    //clang_visitChildren(cursor, visit, (CXClientData)mod);
     clang_disposeTranslationUnit(unit);
     clang_disposeIndex(index);
     mod->current_include = null;
@@ -478,13 +509,13 @@ map silver_include(silver mod, string include) {
 
 void silver_set_line(silver mod, i32 line, i32 column) {
     LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(
-        mod->llvm_context, line, column, mod->scope, null);
+        mod->context, line, column, mod->scope, null);
     LLVMSetCurrentDebugLocation2(mod->dbg, loc);
 }
 
 void silver_llflag(silver mod, symbol flag, i32 ival) {
     LLVMMetadataRef v = LLVMValueAsMetadata(
-        LLVMConstInt(LLVMInt32TypeInContext(mod->llvm_context), ival, 0));
+        LLVMConstInt(LLVMInt32TypeInContext(mod->context), ival, 0));
     LLVMAddModuleFlag(
         mod->module_ref, LLVMModuleFlagBehaviorError, flag, strlen(flag), v);
 }
@@ -574,36 +605,44 @@ void dim_bind(dim member) {
 void dim_allocate(dim member, silver mod, bool create_debug) {
     LLVMTypeRef tr = dim_type_ref(member);
     member->value_ref   = LLVMBuildAlloca(mod->builder, tr, "alloc-dim");
-    member->meta_ref    = LLVMDIBuilderCreateAutoVariable(
+    /*member->meta_ref    = LLVMDIBuilderCreateAutoVariable(
         mod->dbg,
-        mod->current_scope,
+        mod->scope,
         member->name->chars,
         member->name->len,
         mod->file,
         2,
         member->type->meta_ref,
-        true, 0, 0);
+        true, 0, 0);*/
 
+
+    LLVMBasicBlockRef block = LLVMGetInsertBlock(mod->builder);
+    LLVMValueRef      head  = LLVMGetFirstInstruction(block);
+
+    verify (block && head, "LLVM is a block head");
+    verify (head == member->value_ref, "LLVM is a block head");
     // Now insert this variable into the IR, associating it with the debug metadata
-    /*
-    LLVMDIBuilderInsertDeclareBefore(
-        mod->dbg,                     // Debug info builder
-        member->value_ref,            // The actual LLVM IR value (allocated variable)
-        member->meta_ref,             // Debug variable metadata
-        LLVMDIBuilderCreateExpression(mod->dbg, NULL, 0),  // No specific expression
-        LLVMDIBuilderCreateDebugLocation(mod->llvm_context, member->line, 0, mod->current_scope, NULL),  // Debug location
-        LLVMGetInsertBlock(mod->builder)  // Insert point at the end of the basic block
-    );
-    */
+    /*LLVMDIBuilderInsertDeclareBefore(
+        mod->dbg,
+        member->value_ref,
+        member->meta_ref,
+        LLVMDIBuilderCreateExpression(mod->dbg, NULL, 0),
+        LLVMDIBuilderCreateDebugLocation(mod->llvm_context, member->line, 0, mod->scope, NULL),  // Debug location
+        head
+    );*/
 }
 
 void dim_create_fn(dim member) {
     silver mod = member->mod;
     map    members = member->context;
-    if (tokens(next_is, "[")) {
-        tokens(consume);
-        map args = new(map, hsize, 8);
-        int arg_index = 0;
+    verify (tokens(next_is, "["), "expected function args");
+    tokens (consume);
+    map args = new(map, hsize, 8);
+    int arg_index = 0;
+    
+    silver_tokens(mod);
+
+    if (!tokens(next_is, "]"))
         while (true) {
             dim arg = dim_read(member->mod, member->type->members, false);
             verify (arg,       "member failed to read");
@@ -614,32 +653,31 @@ void dim_create_fn(dim member) {
             set    (args, arg->name, arg);
             arg_index++;
         }
-        num line = tokens(line);
-        tokens(consume);
-        dim rtype_dim = new(dim,
-            mod,        member->mod,    type,       member->type,   line, line,
-            depth,      member->depth,  shape,      member->shape,
-            wrap,       member->wrap,   context,    members);
-        type f_def = new(type,
-            name,     str(member->name->chars),  mod,   member->mod,
-            mdl,      model_function,       rtype,    rtype_dim,
-            args,     args,                 info,     member);
-        //assert(count(members, f_def->name) == 0, "duplicate member: %o", f_def->name);
-        set (members, f_def->name, f_def);
-        drop(member->type);
-        member->type    = hold(f_def);
-        array body = new(array, alloc, 32);
-        verify (tokens(next_is, "["), "expected function body");
-        int depth = 0;
-        do {
-            Token   token = tokens(next);
-            verify (token, "expected end of function body ( too many ['s )");
-            push   (body, token);
-            if      (eq(token, "[")) depth++;
-            else if (eq(token, "]")) depth--;
-        } while (depth > 0);
-        member->type->body = new(Tokens, cursor, 0, tokens, body);
-    }
+    num line = tokens(line);
+    tokens(consume);
+    dim rtype_dim = new(dim,
+        mod,        member->mod,    type,       member->type,   line, line,
+        depth,      member->depth,  shape,      member->shape,
+        wrap,       member->wrap,   context,    members);
+    type f_def = new(type,
+        name,     str(member->name->chars),  mod,   member->mod,
+        mdl,      model_function,       rtype,    rtype_dim,
+        args,     args,                 info,     member);
+    //assert(count(members, f_def->name) == 0, "duplicate member: %o", f_def->name);
+    set (members, f_def->name, f_def);
+    drop(member->type);
+    member->type    = hold(f_def);
+    array body = new(array, alloc, 32);
+    verify (tokens(next_is, "["), "expected function body");
+    int depth = 0;
+    do {
+        Token   token = tokens(next);
+        verify (token, "expected end of function body ( too many ['s )");
+        push   (body, token);
+        if      (eq(token, "[")) depth++;
+        else if (eq(token, "]")) depth--;
+    } while (depth > 0);
+    member->type->body = new(Tokens, cursor, 0, tokens, body);
 }
 
 void dim_init(dim member) {
@@ -749,6 +787,7 @@ void silver_parse_top(silver mod) {
             /// so are classes, but we have a a->defs for the type alone
             /// so we may have class contain in a 'member' of definition type
             /// so its name could be the name of the class and the type would be the same name
+            //break;
             silver_tokens(mod);
             dim member = dim_read(mod, mod->defs, false);
             string key = member->name ? member->name : (string)format("$m%i", count(mod->defs));
@@ -898,7 +937,7 @@ LLVMValueRef parse_ops(
 
         if (method) { /// and convertible(r_right, method.args[0].type):
             LLVMValueRef args[2] = { left, right };
-            left = LLVMBuildCall(mod->builder, dim_value_ref(method), args, 2, "operator");
+            left = LLVMBuildCall2(mod->builder, method->type->type_ref, dim_value_ref(method), args, 2, "operator");
         } else {
             type type_out = preferred_type(mod, r_left, r_right); /// should work for primitives however we must handle more in each
             left          = bfn(mod, type_out, r_left, r_right, left, right); 
@@ -1032,7 +1071,7 @@ LLVMValueRef silver_parse_primary(silver mod) {
     if (tokens(next_is, "ref")) {
         tokens(consume); // Consume 'ref'
         LLVMValueRef expr = silver_parse_expression(mod);
-        return LLVMBuildLoad(mod->builder, expr, "ref_expr"); // Build the reference
+        return LLVMBuildLoad2(mod->builder, LLVMTypeOf(expr), expr, "ref_expr"); // Build the reference
     }
 
     // numeric constants
@@ -1054,9 +1093,8 @@ LLVMValueRef silver_parse_primary(silver mod) {
 
     // strings
     string str_token = tokens(next_string);
-    if (str_token) {
-        return LLVMBuildGlobalString(mod->builder, str_token->chars, "str");
-    }
+    if (str_token)
+        return LLVMBuildGlobalStringPtr(mod->builder, str_token->chars, "str");
 
     // boolean values
     object v_bool = tokens(next_bool);
@@ -1080,8 +1118,9 @@ LLVMValueRef silver_parse_primary(silver mod) {
         LLVMValueRef vr = dim_value_ref(member);
         if (member->type->mdl >= model_bool && member->type->mdl <= model_f64) {
             LLVMTypeRef type = LLVMTypeOf(vr);
+            print ("vr type = %s", LLVMPrintTypeToString(LLVMTypeOf(vr)));
             verify (LLVMGetTypeKind(type) == LLVMPointerTypeKind, "expected member address");
-            vr = LLVMBuildLoad2(mod->builder, LLVMGetElementType(type), vr, "load-member");
+            vr = LLVMBuildLoad2(mod->builder, member->type->type_ref, vr, "load-member");
         }
         return vr;
     }
@@ -1103,7 +1142,7 @@ LLVMValueRef silver_parse_assignment(silver mod, dim member, string op) {
 
     if (method) {
         LLVMValueRef args[2] = { L, R };
-        res = LLVMBuildCall(B, dim_value_ref(method), args, 2, "assign");
+        res = LLVMBuildCall2(B, dim_type_ref(method), dim_value_ref(method), args, 2, "assign");
     } else {
         member->is_const = eq(op, "=");
         bool e = member->is_const;
@@ -1144,15 +1183,22 @@ LLVMValueRef silver_parse_function_call(silver mod, dim fn) {
 
     LLVMTypeRef fn_type = dim_type_ref(fn);
     
+    dim last_arg = null;
     while(arg_index < arg_count || def->va_args) {
         dim          arg      = arg_index < fn->type->args->count ? idx_1(fn->type->args, sz, arg_index) : null;
         LLVMValueRef expr     = isilver(parse_expression);
         LLVMTypeRef  arg_type = arg ? dim_type_ref(arg) : null;
-        LLVMTypeRef  e_type   = LLVMTypeOf(expr);
+        LLVMTypeRef  e_type   = LLVMTypeOf(expr); /// this should be 'someting' member
+
+        if (LLVMGetTypeKind(e_type) == LLVMPointerTypeKind) {
+            expr = LLVMBuildLoad2(mod->builder, arg ? dim_type_ref(arg) : LLVMPointerType(LLVMInt8Type(), 0), expr, "load-arg");
+        }
+
         if (arg_type && e_type != arg_type)
             expr = LLVMBuildBitCast(mod->builder, expr, arg_type, "bitcast");
         
         print("argument %i: %s", arg_index, LLVMPrintValueToString(expr));
+
         //push(v_args, &expr);
         values[arg_index] = expr;
         arg_index++;
@@ -1171,13 +1217,13 @@ LLVMValueRef silver_parse_function_call(silver mod, dim fn) {
         verify(tokens(next_is, "]"), "expected ] end of function call");
         tokens(consume);
     }
-    return LLVMBuildCall(mod->builder, dim_value_ref(fn), values, arg_index, "fn-call");
+    return LLVMBuildCall2(mod->builder, dim_type_ref(fn), dim_value_ref(fn), values, arg_index, "fn-call");
 }
 
 LLVMValueRef silver_parse_statement(silver mod) {
     Token t = tokens(peek);
     if (tokens(next_is, "return")) return isilver(parse_return);
-    if (tokens(next_is, "break"))  return isilver( parse_break);
+    if (tokens(next_is, "break"))  return isilver(parse_break);
     if (tokens(next_is, "for"))    return isilver(parse_for);
     if (tokens(next_is, "while"))  return isilver(parse_while);
     if (tokens(next_is, "if"))     return isilver(parse_if_else);
@@ -1195,12 +1241,9 @@ LLVMValueRef silver_parse_statement(silver mod) {
             string assign = tokens(next_assign);
             if    (assign) return isilver(parse_assignment, member, assign);
         }
-    } else {
-        /// must handle a string literal if thats all we see..
-        fault ("invalid operation");
     }
-    LLVMValueRef vr = null;
-    return vr;
+    fault ("implement"); /// implement as we need them
+    return null;
 }
 
 LLVMValueRef silver_parse_statements(silver mod) {
@@ -1231,30 +1274,63 @@ LLVMValueRef silver_parse_statements(silver mod) {
 }
 
 static void silver_scope_push(silver mod, LLVMMetadataRef meta_ref) {
-    push    (mod->scope, meta_ref);
-    mod->current_scope = meta_ref;
+    push    (mod->scope_stack, meta_ref);
+    mod->scope = meta_ref;
 }
 
 static void silver_scope_pop(silver mod) {
-    pop     (mod->scope);
-    mod->current_scope = len(mod->scope) ? call(mod->scope, last) : null;
+    pop     (mod->scope_stack);
+    mod->scope = len(mod->scope_stack) ? last(mod->scope_stack) : null;
 }
 
 static void silver_build_function(silver mod, type fn) {
     isilver (scope_push, fn->fn_ref);
-    mod->current_scope = fn->fn_ref;
+    mod->scope = fn->fn_ref;
     tokens  (push_state, fn->body->tokens, fn->body->cursor);
-    dim info = fn->info;
-    LLVMBasicBlockRef entry = LLVMAppendBasicBlock(info->value_ref, "entry");
-    LLVMPositionBuilderAtEnd(mod->builder, entry);
+    LLVMPositionBuilderAtEnd(mod->builder, fn->entry_ref);
     map      members = isilver(push_member_stack);
     concat  (members, fn->args);
     set     (members, str("#rtype"), (dim)fn->rtype);
+    //LLVMBuildRetVoid(mod->builder);
     isilver (parse_statements);
     isilver (pop_member_stack);
     tokens  (pop_state, false);
     isilver (scope_pop);
 }
+
+static map operators;
+
+static void init() {
+    operators    = map_of(
+        "+",        str("add"),
+        "-",        str("sub"),
+        "*",        str("mul"),
+        "/",        str("div"),
+        "||",       str("or"),
+        "&&",       str("and"),
+        "^",        str("xor"),
+        ">>",       str("right"),
+        "<<",       str("left"),
+        ":",        str("assign"),
+        "=",        str("assign"),
+        "+=",       str("assign_add"),
+        "-=",       str("assign_sub"),
+        "*=",       str("assign_mul"),
+        "/=",       str("assign_div"),
+        "|=",       str("assign_or"),
+        "&=",       str("assign_and"),
+        "^=",       str("assign_xor"),
+        ">>=",      str("assign_right"),
+        "<<=",      str("assign_left"),
+        "==",       str("compare_equal"),
+        "!=",       str("compare_not"),
+        "%=",       str("mod_assign"),
+        "is",       str("is"),
+        "inherits", str("inherits"), null
+    );
+}
+
+module_init(init);
 
 static void silver_init(silver mod) {
     verify(mod->source, "mod name not set");
@@ -1262,7 +1338,7 @@ static void silver_init(silver mod) {
     LLVMInitializeNativeTarget();
     LLVMInitializeNativeAsmPrinter();
     
-    mod->scope        = new(array, alloc, 32, unmanaged, true);
+    mod->scope_stack  = new(array, alloc, 32, unmanaged, true);
     mod->member_stack = new(array, alloc, 32);
     mod->members      = isilver(push_member_stack); /// our base members is the first stack item that we keep after building
     mod->imports      = new(array, alloc, 32);
@@ -1307,9 +1383,9 @@ static void silver_init(silver mod) {
     verify(call(full_path, exists), "source (%o) does not exist", full_path);
 
     mod->module_ref    = LLVMModuleCreateWithName(mod->source_file->chars);
-    mod->llvm_context  = LLVMGetModuleContext(mod->module_ref);
+    mod->context       = LLVMGetModuleContext(mod->module_ref);
     mod->dbg           = LLVMCreateDIBuilder(mod->module_ref);
-    mod->builder       = LLVMCreateBuilder();
+    mod->builder       = LLVMCreateBuilderInContext(mod->context);
     mod->target_triple = LLVMGetDefaultTargetTriple();
     cstr error = NULL;
     if (LLVMGetTargetFromTriple(mod->target_triple, &mod->target, &error))
@@ -1326,11 +1402,11 @@ static void silver_init(silver mod) {
         mod->dbg,
         cast(mod->source_file, cstr), cast(mod->source_file, sz),
         cast(mod->source_path, cstr), cast(mod->source_path, sz));
+    
     mod->compile_unit = LLVMDIBuilderCreateCompileUnit(
         mod->dbg, LLVMDWARFSourceLanguageC, mod->file,
-        cast(mod->source_file, cstr),
-        cast(mod->source_file, sz), 0, "", 0,
-        3, "", 0, LLVMDWARFEmissionFull, 0, 0, 0, "/", 1, "", 0);
+        "silver", 6, 0, "", 0,
+        0, "", 0, LLVMDWARFEmissionFull, 0, 0, 0, "", 0, "", 0);
 
     mod->tokens = new(Tokens, file, full_path);
     isilver(define_C99);
@@ -1347,6 +1423,7 @@ static void silver_init(silver mod) {
             set(base_members, def->name, def->info);
     }
 
+    
     pairs (mod->defs, e) {
         type def = e->value;
         // for each type def with a body to build
@@ -1361,6 +1438,9 @@ static void silver_init(silver mod) {
         }
     }
     isilver(pop_member_stack);
+
+    LLVMDIBuilderFinalize(mod->dbg);
+    
     write(mod); /// write mod we just read in; if we can get away with bulk LLVM code it may be alright to stay direct
 }
 
