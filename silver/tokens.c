@@ -8,7 +8,7 @@ static array compare;
 
 #define intern(I,M,...) Token_ ## M(I, ## __VA_ARGS__)
 
-void init() {
+static void init() {
     keywords = array_of_cstr(
         "class",  "proto",    "struct", "import", "typeof", "schema", "is", "inherits",
         "init",   "destruct", "ref",    "const",  "volatile",
@@ -385,7 +385,7 @@ void Tokens_push_state(Tokens a, array tokens, num cursor) {
 void Tokens_pop_state(Tokens a, bool transfer) {
     int len = a->stack->len;
     assert (len, "expected stack");
-    tokens_data state = (tokens_data)call(a->stack, last); // we should call this element or ele
+    tokens_data state = (tokens_data)last(a->stack); // we should call this element or ele
     pop(a->stack);
     if(!transfer)
         a->cursor = state->cursor;

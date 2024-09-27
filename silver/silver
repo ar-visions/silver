@@ -1,8 +1,6 @@
 #ifndef _SILVER_
 #define _SILVER_
 
-#include <A>
-
 #include <llvm-c/DebugInfo.h>
 #include <llvm-c/Core.h>
 #include <llvm-c/ExecutionEngine.h>
@@ -11,6 +9,8 @@
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/BitWriter.h>
 #include <clang-c/Index.h>
+
+#include <A>
 
 typedef struct silver* silver;
 typedef struct dim*    dim;
@@ -67,6 +67,7 @@ declare_enum(model)
     i_prop(    X,Y, public,     A,                  info) \
     i_prop(    X,Y, intern,     Tokens,             body) \
     i_prop(    X,Y, intern,     LLVMTypeRef,        type_ref) \
+    i_prop(    X,Y, intern,     LLVMBasicBlockRef,  entry_ref) \
     i_prop(    X,Y, intern,     LLVMMetadataRef,    sub_ref) \
     i_prop(    X,Y, intern,     LLVMMetadataRef,    fn_ref) \
     i_prop(    X,Y, intern,     LLVMMetadataRef,    meta_ref) \
@@ -105,16 +106,16 @@ declare_class(dim)
     i_prop    (X,Y, required,   path,                 install) \
     i_prop    (X,Y, required,   path,                 source) \
     i_prop    (X,Y, intern,     LLVMModuleRef,        module_ref) \
-    i_prop    (X,Y, intern,     LLVMContextRef,       llvm_context) \
+    i_prop    (X,Y, intern,     LLVMContextRef,       context) \
     i_prop    (X,Y, intern,     LLVMBuilderRef,       builder) \
     i_prop    (X,Y, intern,     LLVMMetadataRef,      file) \
     i_prop    (X,Y, intern,     LLVMMetadataRef,      compile_unit) \
     i_prop    (X,Y, intern,     LLVMDIBuilderRef,     dbg) \
-    i_prop    (X,Y, intern,     LLVMMetadataRef,      current_scope) \
+    i_prop    (X,Y, intern,     LLVMMetadataRef,      scope) \
     i_prop    (X,Y, intern,     LLVMTargetRef,        target) \
     i_prop    (X,Y, intern,     LLVMTargetDataRef,    target_data) \
     i_prop    (X,Y, intern,     LLVMTargetMachineRef, target_machine) \
-    i_prop    (X,Y, intern,     array,                scope) \
+    i_prop    (X,Y, intern,     array,                scope_stack) \
     i_prop    (X,Y, intern,     symbol,               target_triple) \
     i_prop    (X,Y, intern,     array,                imports) \
     i_prop    (X,Y, intern,     Tokens,               tokens) \
