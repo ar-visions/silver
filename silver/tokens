@@ -51,6 +51,7 @@ declare_class(Token)
 
 typedef struct type*   type;
 typedef struct silver* silver;
+typedef struct def*    def;
 
 #define Tokens_schema(X,Y)\
     i_prop      (X,Y,  public,  path,       file) \
@@ -75,7 +76,7 @@ typedef struct silver* silver;
     i_method    (X,Y,  public,  object,     next_literal) \
     i_method    (X,Y,  public,  string,     next_assign) \
     i_method    (X,Y,  public,  object,     read_numeric) \
-    i_method    (X,Y,  public,  type,       read_type, silver) \
+    i_method    (X,Y,  public,  def,        read_def, silver) \
     i_override  (X,Y,  method,  init) \
     i_override  (X,Y,  cast,    bool)
 declare_class(Tokens)

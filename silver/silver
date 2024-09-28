@@ -51,61 +51,68 @@ declare_enum(Visibility)
     enum_value(X,Y, typedef)
 declare_enum(model)
 
-#define type_schema(X,Y) \
-    i_prop(    X,Y, public,     bool,               va_args) \
+/// origin changed to allow for dim, so this means def alias i = int*  is possible
+#define def_schema(X,Y) \
+    i_prop(    X,Y, public,     Visibility,         visibility) \
     i_prop(    X,Y, public,     string,             name) \
     i_prop(    X,Y, public,     model,              mdl) \
     i_prop(    X,Y, public,     AType,              imported) \
     i_prop(    X,Y, public,     string,             from_include) \
-    i_prop(    X,Y, public,     A,                  rtype) \
-    i_prop(    X,Y, public,     map,                args) \
-    i_prop(    X,Y, public,     type,               origin) \
+    i_prop(    X,Y, public,     dim,                origin) \
     i_prop(    X,Y, public,     i32,                size) \
     i_prop(    X,Y, public,     map,                members) \
     i_prop(    X,Y, public,     silver,             mod) \
     i_prop(    X,Y, public,     Token,              token) \
-    i_prop(    X,Y, public,     A,                  info) \
-    i_prop(    X,Y, intern,     Tokens,             body) \
-    i_prop(    X,Y, intern,     LLVMTypeRef,        type_ref) \
-    i_prop(    X,Y, intern,     LLVMBasicBlockRef,  entry_ref) \
-    i_prop(    X,Y, intern,     LLVMMetadataRef,    sub_ref) \
-    i_prop(    X,Y, intern,     LLVMMetadataRef,    fn_ref) \
-    i_prop(    X,Y, intern,     LLVMMetadataRef,    meta_ref) \
-    i_prop(    X,Y, intern,     LLVMBasicBlockRef,  entry) \
-    i_method(  X,Y, public,     dim,                find_member, string) \
+    i_prop(    X,Y, intern,     LLVMTypeRef,        type) \
+    i_prop(    X,Y, intern,     LLVMMetadataRef,    dbg) \
     i_override(X,Y, method,     init)
-declare_class(type)
+declare_class(def)
+
+#define function_schema(X,Y) \
+    i_prop(    X,Y, public,     bool,               va_args) \
+    i_prop(    X,Y, public,     map,                args) \
+    i_prop(    X,Y, public,     dim,                info) \
+    i_prop(    X,Y, public,     dim,                rtype) \
+    i_prop(    X,Y, public,     Tokens,             body) \
+    i_prop(    X,Y, intern,     LLVMMetadataRef,    subproc) \
+    i_prop(    X,Y, intern,     LLVMMetadataRef,    function) \
+    i_prop(    X,Y, intern,     LLVMBasicBlockRef,  entry) \
+    i_override(X,Y, method,     init)
+declare_mod(function, def)
 
 // y-u-so-dimm: greg during Baldeck's lecture on so-dimm
 // select [wrap] based on the shape read
 // mapping args could be nice to give here, 
 // in the same way an array may allocate a size
 // its a query for the wrap
+// i cant bring myself to tweak this really.. but its annoying that a basic type model is a 'dim' and not 'type'
+// having a 'type arrangement' a lame thing to put in middle, too, because then it gets shape and const, but not static
+// we want a MAX of 2 things here
+
 #define dim_schema(X,Y) \
-    i_prop(    X,Y, public,     type,               type) \
-    i_prop(    X,Y, required,   silver,             mod) \
-    i_prop(    X,Y, required,   map,                context) \
+    i_prop(    X,Y, public,     def,                def) \
+    i_prop(    X,Y, public,     silver,             mod) \
+    i_prop(    X,Y, public,     map,                context) \
     i_prop(    X,Y, intern,     string,             name) \
     i_prop(    X,Y, intern,     num,                depth) \
     i_prop(    X,Y, intern,     bool,               is_static) \
     i_prop(    X,Y, intern,     bool,               is_const) \
     i_prop(    X,Y, intern,     Visibility,         visibility) \
-    i_prop(    X,Y, intern,     type,               wrap) \
+    i_prop(    X,Y, intern,     def,                wrap) \
     i_prop(    X,Y, intern,     array,              shape) \
     i_prop(    X,Y, intern,     bool,               cached) \
-    i_prop(    X,Y, intern,     LLVMValueRef,       value_ref) \
-    i_prop(    X,Y, intern,     LLVMMetadataRef,    meta_ref) \
+    i_prop(    X,Y, intern,     LLVMTypeRef,        type) \
+    i_prop(    X,Y, intern,     LLVMValueRef,       value) \
+    i_prop(    X,Y, intern,     LLVMMetadataRef,    dbg) \
     i_prop(    X,Y, public,     num,                line) \
     s_method(  X,Y, public,     dim,        read, silver, map, bool) \
     i_override(X,Y, method,     init)
 declare_class(dim)
 
-#define module_def(m, n)   call0(m->defs, get, str(n))
-
 #define silver_schema(X,Y)\
     i_prop    (X,Y, required,   path,                 install) \
     i_prop    (X,Y, required,   path,                 source) \
-    i_prop    (X,Y, intern,     LLVMModuleRef,        module_ref) \
+    i_prop    (X,Y, intern,     LLVMModuleRef,        module) \
     i_prop    (X,Y, intern,     LLVMContextRef,       context) \
     i_prop    (X,Y, intern,     LLVMBuilderRef,       builder) \
     i_prop    (X,Y, intern,     LLVMMetadataRef,      file) \
@@ -116,7 +123,7 @@ declare_class(dim)
     i_prop    (X,Y, intern,     LLVMTargetDataRef,    target_data) \
     i_prop    (X,Y, intern,     LLVMTargetMachineRef, target_machine) \
     i_prop    (X,Y, intern,     array,                scope_stack) \
-    i_prop    (X,Y, intern,     symbol,               target_triple) \
+    i_prop    (X,Y, intern,     cstr,                 target_triple) \
     i_prop    (X,Y, intern,     array,                imports) \
     i_prop    (X,Y, intern,     Tokens,               tokens) \
     i_prop    (X,Y, intern,     array,                member_stack) \
@@ -135,7 +142,6 @@ declare_class(dim)
     i_prop    (X,Y, public,     bool,                 debug) \
     i_method  (X,Y, public,     none,                 write) \
     i_method  (X,Y, public,     path,                 source_path) \
-    i_method  (X,Y, public,     type,                 get_type, string) \
     i_override(X,Y, method,     init) \
     i_override(X,Y, method,     destructor)
 declare_class(silver)

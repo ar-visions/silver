@@ -11,7 +11,7 @@ set                       (LLVM_LA "18.1.8")
 # built LLVM 19 by debug
 #set                      (LLVM_SM "19")
 #set                      (LLVM_LA "19.1.0")
-#
+
 add_custom_target         (script COMMAND ${CMAKE_COMMAND} -E env bash ${CMAKE_SOURCE_DIR}/deps.sh ${CMAKE_INSTALL_PREFIX} WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 set                       (LLVM_DIR  "/usr/local/llvm-${LLVM_SM}/lib/cmake/llvm")
