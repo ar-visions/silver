@@ -167,16 +167,16 @@ void type_init(type ty) {
 
                 if (!ty->from_include) {
                     ty->entry_ref = LLVMAppendBasicBlockInContext(
-                        mod->context, info->value_ref, "entry");
+                        mod->context, function, "entry");
 
                     ty->sub_ref  = LLVMDIBuilderCreateSubroutineType(
-                        mod->dbg, mod->file, arg_meta, 1 + arg_index, LLVMDIFlagZero);
+                        mod->dbg, mod->file, NULL, 0, LLVMDIFlagZero);
                     
                     ty->fn_ref   = LLVMDIBuilderCreateFunction(
-                        mod->dbg, mod->compile_unit,
+                        mod->dbg, mod->file,
                         strdup("main"), 4,
                         strdup("main"), 4, mod->file,
-                        1, ty->sub_ref, false, !ty->from_include, 1, 0, false);
+                        1, ty->sub_ref, !ty->from_include, 1, 1, LLVMDIFlagZero, false);
 
                     LLVMSetSubprogram(function, ty->fn_ref);
                 }
@@ -605,7 +605,7 @@ void dim_bind(dim member) {
 void dim_allocate(dim member, silver mod, bool create_debug) {
     LLVMTypeRef tr = dim_type_ref(member);
     member->value_ref   = LLVMBuildAlloca(mod->builder, tr, "alloc-dim");
-    /*member->meta_ref    = LLVMDIBuilderCreateAutoVariable(
+    member->meta_ref    = LLVMDIBuilderCreateAutoVariable(
         mod->dbg,
         mod->scope,
         member->name->chars,
@@ -613,7 +613,7 @@ void dim_allocate(dim member, silver mod, bool create_debug) {
         mod->file,
         2,
         member->type->meta_ref,
-        true, 0, 0);*/
+        true, 0, 0);
 
 
     LLVMBasicBlockRef block = LLVMGetInsertBlock(mod->builder);
@@ -622,14 +622,14 @@ void dim_allocate(dim member, silver mod, bool create_debug) {
     verify (block && head, "LLVM is a block head");
     verify (head == member->value_ref, "LLVM is a block head");
     // Now insert this variable into the IR, associating it with the debug metadata
-    /*LLVMDIBuilderInsertDeclareBefore(
+    LLVMDIBuilderInsertDeclareBefore(
         mod->dbg,
         member->value_ref,
         member->meta_ref,
         LLVMDIBuilderCreateExpression(mod->dbg, NULL, 0),
-        LLVMDIBuilderCreateDebugLocation(mod->llvm_context, member->line, 0, mod->scope, NULL),  // Debug location
+        LLVMDIBuilderCreateDebugLocation(mod->context, member->line, 0, mod->scope, NULL),  // Debug location
         head
-    );*/
+    );
 }
 
 void dim_create_fn(dim member) {
@@ -1285,7 +1285,6 @@ static void silver_scope_pop(silver mod) {
 
 static void silver_build_function(silver mod, type fn) {
     isilver (scope_push, fn->fn_ref);
-    mod->scope = fn->fn_ref;
     tokens  (push_state, fn->body->tokens, fn->body->cursor);
     LLVMPositionBuilderAtEnd(mod->builder, fn->entry_ref);
     map      members = isilver(push_member_stack);
@@ -1394,6 +1393,7 @@ static void silver_init(silver mod) {
     mod->target_machine = LLVMCreateTargetMachine(
         mod->target, mod->target_triple, "generic", "",
         LLVMCodeGenLevelDefault, LLVMRelocDefault, LLVMCodeModelDefault);
+    
     mod->target_data = LLVMCreateTargetDataLayout(mod->target_machine);
     isilver(llflag, "Dwarf Version",      5);
     isilver(llflag, "Debug Info Version", 3);

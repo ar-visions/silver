@@ -263,20 +263,12 @@ object Tokens_read_numeric(Tokens tokens) {
 }
 
 // does not read past the type into [ model-query ]
-type Tokens_read_type(Tokens tokens, silver module) {
-    bool is_ref = false;
+def Tokens_read_def(Tokens tokens, silver module) {
     Token first = peek(tokens);
-    if (eq(first, "ref")) {
-        call(tokens, consume);
-        is_ref = true;
-        first  = peek(tokens);
-    }
     string  key = cast(first, string);
-    type    def = call(module, get_type, key);
-    assert(def || !is_ref, "type-identifier expected after ref keyword, found: %o", key);
-    if (def)
-        call(tokens, consume);
-    return def;
+    def   ident = get(module->defs, key);
+    if (ident) call(tokens, consume);
+    return ident;
 }
 
 Token Tokens_read(Tokens a, num rel) {
