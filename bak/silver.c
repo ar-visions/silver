@@ -887,7 +887,7 @@ static i64    Parser_parse_numeric(Parser parser, ident token) {
 
 static EType  Parser_is_var(Parser parser, ident token) {
     char t = token->value->chars[0];
-    if (isalpha(t) && call(keywords, index_of, token) == -1) {
+    if (isalpha(t) && index_of(keywords, token) == -1) {
         /// lookup against variable table; declare if in isolation
         return EType_Var;
         /// so types are included in var
