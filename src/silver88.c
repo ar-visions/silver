@@ -488,7 +488,7 @@ void import_process(import im) {
             }
         case import_t_library:
         case import_t_project:
-            concat(mod->libraries_used, im->links);
+            concat(mod->libs_used, im->links);
             break;
         case import_t_includes:
             break;
@@ -759,18 +759,510 @@ bool tokens_cast_bool(tokens a) {
 
 
 
-void silver_init(silver mod) {
-    mod->name = stem(mod->source);
-    ether e = new(ether, source, mod->source, lang, str("silver"), name, mod->name);
-    /// ether interface:
-    ///     node operations which create the llvm at call time
-    ///     push/pop for members (with functions creating their own)
+LLVMValueRef silver_parse_expression(silver mod);
 
-    /// silvers mission: parse tokens, reverse descent, manage calls to ether
+bool member_inherits(member member, type t) {
+    type tt = member->type;
+    while (tt) {
+        if (t == tt) return true;
+        tt = tt->origin;
+    }
+    return false;
 }
 
-void silver_write(silver mod) {
-    write(mod->e);
+node silver_parse_return(silver mod) {
+    /// should be ecall(return_type) # 'return type' from nearest context with type
+    type  rtype   = ecall(return_type);
+    type  t_void  = get(mod->defs, str("void"));
+    bool  is_void = member_inherits(rtype, t_void);
+    tok (consume);
+    return (mod->builder, isilver(parse_expression));
+}
+
+LLVMValueRef silver_parse_break(silver mod) {
+    tok(consume);
+    LLVMValueRef vr = null;
+    return null;
+}
+
+LLVMValueRef silver_parse_for(silver mod) {
+    tok(consume);
+    LLVMValueRef vr = null;
+    return null;
+}
+
+LLVMValueRef silver_parse_while(silver mod) {
+    tok(consume);
+    LLVMValueRef vr = null;
+    return null;
+}
+
+LLVMValueRef silver_parse_if_else(silver mod) {
+    tok(consume);
+    LLVMValueRef vr = null;
+    return null;
+}
+
+LLVMValueRef silver_parse_do_while(silver mod) {
+    tok(consume);
+    LLVMValueRef vr = null;
+    return null;
+}
+
+type preferred_type(silver mod, type t0, type t1) {
+
+    type     r_left    = resolve_type(LLVMTypeOf(left));
+    type     r_right   = resolve_type(LLVMTypeOf(right));
+
+    if (t0 == t1) return t0;
+    bool f0 = t0->mdl == model_f32 || t0->mdl == model_f64;
+    bool f1 = t1->mdl == model_f32 || t1->mdl == model_f64;
+    if (f0) {
+        if (f1)
+            return (t1->mdl == model_f64) ? t1 : t0;
+        return t0;
+    }
+    if (f1)
+        return t1;
+    if (t0->mdl > t1->mdl)
+        return t0;
+    return t1;
+}
+
+typedef LLVMValueRef(*builder_fn)(silver, type, type, type, LLVMValueRef, LLVMValueRef);
+typedef LLVMValueRef(*parse_fn)(silver, symbol, symbol, builder_fn, builder_fn);
+
+#define resolve_type(llvm_type_ref) isilver(type_from_llvm, llvm_type_ref);
+
+LLVMValueRef parse_ops(
+        silver mod, parse_fn descent, symbol op0, symbol op1, builder_fn b0, builder_fn b1) {
+    LLVMValueRef left = descent(mod, op0, op1, b0, b1);
+    while(tok(next_is, op0) || tok(next_is, op1)) {
+        tok(consume);
+        LLVMValueRef right = descent(mod, op0, op1, b0, b1);
+        bool         use0 = tok(next_is, op0);
+        symbol    op_code = use0 ? op0 : op1;
+        builder_fn    bfn = use0 ? b0  : b1;
+
+        assert (contains(mod->operators, str(op_code)), "op (%s) not registered", op_code);
+        string  op_name   = get(mod->operators, str(op_code));
+        type     left_type = resolve_type(left);
+        member     method    = get(left_type->members, op_name);
+        type     r_left    = resolve_type(LLVMTypeOf(left));
+        type     r_right   = resolve_type(LLVMTypeOf(right));
+
+        if (method) { /// and convertible(r_right, method.args[0].type):
+            LLVMValueRef args[2] = { left, right };
+            left = LLVMBuildCall2(mod->builder, method->type->def, method->value, args, 2, "operator");
+        } else {
+            type type_out = preferred_type(mod, left, right); /// should work for primitives however we must handle more in each
+            left          = bfn(mod, type_out, left, right); 
+        }
+    }
+    return left;
+}
+
+LLVMValueRef op_is      (silver mod, node L, node R) { return ecall(is,       L, R); }
+LLVMValueRef op_inherits(silver mod, node L, node R) { return ecall(inherits, L, R); }
+
+node op_add(silver mod, node L, node R) { return ecall(add, L, R); }
+node op_sub(silver mod, node L, node R) { return ecall(sub, L, R); }
+node op_mul(silver mod, node L, node R) { return ecall(mul, L, R); }
+node op_div(silver mod, node L, node R) {
+    return ecall(div, L, R);
+}
+node op_eq    (silver mod, node L, node R) { return ecall(eq, L, R); }
+node op_not_eq(silver mod, node L, node R) { return ecall(not_eq, L, R); }
+
+node silver_parse_primary(silver mod);
+
+node silver_parse_eq  (silver mod) { return parse_ops(mod, silver_parse_primary, "==", "!=",         op_eq,  op_not_eq); }
+node silver_parse_is  (silver mod) { return parse_ops(mod, silver_parse_eq,      "is", "inherits",   op_is,  op_is);     }
+node silver_parse_mult(silver mod) { return parse_ops(mod, silver_parse_is,      "*",  "/",          op_is,  op_is);     }
+node silver_parse_add (silver mod) { return parse_ops(mod, silver_parse_mult,    "+",  "-",          op_add, op_sub);    }
+
+node silver_parse_expression(silver mod) {
+    mod->expr_level++;
+    node vr = isilver(parse_add);
+    mod->expr_level--;
+    return vr;
+}
+
+def silver_read_def(silver mod) {
+    string name = tok(next_alpha); // Read the type to cast to
+    if (!name) return null;
+    return get(mod->defs, name);
+}
+
+LLVMValueRef silver_parse_primary(silver mod) {
+    Token t = tok(peek);
+
+    // handle the logical NOT operator (e.g., '!')
+    if (tok(next_is, "!") || tok(next_is, "not")) {
+        tok(consume); // Consume '!' or 'not'
+        LLVMValueRef expr = silver_parse_expression(mod); // Parse the following expression
+        return LLVMBuildNot(mod->builder, expr, "logical_not");
+    }
+
+    // bitwise NOT operator
+    if (tok(next_is, "~")) {
+        tok(consume); // Consume '~'
+        LLVMValueRef expr = silver_parse_expression(mod);
+        return LLVMBuildNot(mod->builder, expr, "bitwise_not");
+    }
+
+    // 'typeof' operator
+    if (tok(next_is, "typeof")) {
+        tok(consume); // Consume 'typeof'
+        assert(tok(next_is, "["), "Expected '[' after 'typeof'");
+        tok(consume); // Consume '['
+        LLVMValueRef type_ref = silver_parse_expression(mod); // Parse the type expression
+        assert(tok(next_is, "]"), "Expected ']' after type expression");
+        tok(consume); // Consume ']'
+        return type_ref; // Return the type reference
+    }
+
+    // 'cast' operator
+    if (tok(next_is, "cast")) {
+        tok(consume); // Consume 'cast'
+        def cast_ident = isilver(read_def); // Read the type to cast to
+        verify (cast_ident, "expected ident after cast");
+        assert(tok(next_is, "["), "Expected '[' for cast");
+        tok(consume); // Consume '['
+        LLVMValueRef expr = silver_parse_expression(mod); // Parse the expression to cast
+        tok(consume); // Consume ']'
+        if (cast_ident) {
+            return LLVMBuildCast(mod->builder, LLVMBitCast, cast_ident->type, expr, "explicit_cast");
+        }
+    }
+
+    // 'ref' operator (reference)
+    if (tok(next_is, "ref")) {
+        tok(consume); // Consume 'ref'
+        LLVMValueRef expr = silver_parse_expression(mod);
+        return LLVMBuildLoad2(mod->builder, LLVMTypeOf(expr), expr, "ref_expr"); // Build the reference
+    }
+
+    // numeric constants
+    object v_num = tok(next_numeric);
+    if (v_num) {
+        AType num_type = isa(v_num);
+        if (num_type == typeid(i8))  return LLVMConstInt( LLVMInt8Type(),  *( i8*)v_num, 0);
+        if (num_type == typeid(i16)) return LLVMConstInt(LLVMInt16Type(),  *(i16*)v_num, 0);
+        if (num_type == typeid(i32)) return LLVMConstInt(LLVMInt32Type(),  *(i32*)v_num, 0);
+        if (num_type == typeid(i64)) return LLVMConstInt(LLVMInt64Type(),  *(i64*)v_num, 0);
+        if (num_type == typeid(u8))  return LLVMConstInt( LLVMInt8Type(),  *( u8*)v_num, 0);
+        if (num_type == typeid(u16)) return LLVMConstInt(LLVMInt16Type(),  *(u16*)v_num, 0);
+        if (num_type == typeid(u32)) return LLVMConstInt(LLVMInt32Type(),  *(u32*)v_num, 0);
+        if (num_type == typeid(u64)) return LLVMConstInt(LLVMInt64Type(),  *(u64*)v_num, 0);
+        if (num_type == typeid(f32)) return LLVMConstInt(LLVMFloatType(),  *(f32*)v_num, 0);
+        if (num_type == typeid(f64)) return LLVMConstInt(LLVMDoubleType(), *(f64*)v_num, 0);
+        assert (false, "numeric literal not handling primitive: %s", num_type->name);
+    }
+
+    // strings
+    string str_token = tok(next_string);
+    if (str_token)
+        return LLVMBuildGlobalStringPtr(mod->builder, str_token->chars, "str");
+
+    // boolean values
+    object v_bool = tok(next_bool);
+    if (v_bool)
+        return LLVMConstInt(LLVMInt1Type(), *(bool*)v_bool, 0);
+
+    // parenthesized expressions
+    if (tok(next_is, "[")) {
+        tok(consume);
+        LLVMValueRef expr = silver_parse_expression(mod); // Parse the expression
+        assert(tok(next_is, "]"), "Expected closing parenthesis");
+        tok(consume);
+        return expr;
+    }
+
+    // handle identifiers (variables or function calls)
+    string ident = tok(next_alpha);
+    if (ident) {
+        member member = silver_member_stack_lookup(mod, ident); // Look up variable
+        // if its a primitive, we will want to get its value unless we are referencing (which we handle differently above!)
+        LLVMValueRef vr = member->value;
+        if (member->def->mdl >= model_bool && member->def->mdl <= model_f64) {
+            LLVMTypeRef type = LLVMTypeOf(vr);
+            print ("vr type = %s", LLVMPrintTypeToString(LLVMTypeOf(vr)));
+            verify (LLVMGetTypeKind(type) == LLVMPointerTypeKind, "expected member address");
+            vr = LLVMBuildLoad2(mod->builder, member->def->type, vr, "load-member");
+        }
+        return vr;
+    }
+
+    fault("unexpected token %o in primary expression", tok(peek));
+    return null;
+}
+
+node silver_parse_assignment(silver mod, member mem, string op) {
+    verify(!mem->is_assigned || !mem->is_const, "mem %o is a constant", mem->name);
+    string         op_name = Token_op_name(op);
+    member         method  = get(mem->type->members, op_name); /// op-name must be reserved for use in functions only
+    node           res     = null;
+    node           L       = mem;
+    node           R       = isilver(parse_expression);
+
+    if (method && method->type && method->type->function) {
+        array args = array_of(null, L, R, null);
+        res = ecall(method->type->function, method->value, args);
+    } else {
+        mem->is_const = eq(op, "=");
+        bool e = mem->is_const;
+        if (e || eq(op, ":"))  res = ecall(assign, R, L);     // LLVMBuildStore(B, R, L);
+        else if (eq(op, "+=")) res = ecall(assign_add, R, L); // LLVMBuildAdd  (B, R, L, "assign-add");
+        else if (eq(op, "-=")) res = ecall(assign_sub, R, L); // LLVMBuildSub  (B, R, L, "assign-sub");
+        else if (eq(op, "*=")) res = ecall(assign_mul, R, L); // LLVMBuildMul  (B, R, L, "assign-mul");
+        else if (eq(op, "/=")) res = ecall(assign_div, R, L); // LLVMBuildSDiv (B, R, L, "assign-div");
+        else if (eq(op, "%=")) res = ecall(assign_mod, R, L); // LLVMBuildSRem (B, R, L, "assign-mod");
+        else if (eq(op, "|=")) res = ecall(assign_or,  R, L); // LLVMBuildOr   (B, R, L, "assign-or"); 
+        else if (eq(op, "&=")) res = ecall(assign_and, R, L); // LLVMBuildAnd  (B, R, L, "assign-and");
+        else if (eq(op, "^=")) res = ecall(assign_xor, R, L); // LLVMBuildXor  (B, R, L, "assign-xor");
+        else fault("unsupported operator: %o", op);
+    }
+    /// update member's value_ref (or not! it was not what we expected in LLVM)
+    /// investigate
+    ///mem->value = res->value;
+    if (eq(op, "=")) mem->is_const = true;
+    return mem;
+}
+
+LLVMValueRef silver_parse_function_call(silver mod, member fn) {
+    bool allow_no_paren = mod->expr_level == 1; /// remember this decision? ... var args
+    bool expect_end_br  = false;
+    function def        = fn->def;
+    assert (def, "no definition found for function member %o", fn->name);
+    int  arg_count      = count(def->args);
+    
+    if (tok(next_is, "[")) {
+        tok(consume);
+        expect_end_br = true;
+    } else if (!allow_no_paren)
+        fault("expected [ for nested call");
+
+    vector v_args = new(vector, alloc, 32, type, typeid(LLVMValueRef));
+    int arg_index = 0;
+    LLVMValueRef values[32];
+
+    member last_arg = null;
+    while(arg_index < arg_count || def->va_args) {
+        member          arg      = arg_index < def->args->count ? idx_1(def->args, sz, arg_index) : null;
+        LLVMValueRef expr     = isilver(parse_expression);
+        LLVMTypeRef  arg_type = arg ? arg->type : null;
+        LLVMTypeRef  e_type   = LLVMTypeOf(expr); /// this should be 'someting' member
+
+        if (LLVMGetTypeKind(e_type) == LLVMPointerTypeKind) {
+            expr = LLVMBuildLoad2(mod->builder,
+                arg ? arg->type : LLVMPointerType(LLVMInt8Type(), 0), expr, "load-arg");
+        }
+
+        if (arg_type && e_type != arg_type)
+            expr = LLVMBuildBitCast(mod->builder, expr, arg_type, "bitcast");
+        
+        print("argument %i: %s", arg_index, LLVMPrintValueToString(expr));
+
+        //push(v_args, &expr);
+        values[arg_index] = expr;
+        arg_index++;
+        if (tok(next_is, ",")) {
+            tok(consume);
+            continue;
+        } else if (tok(next_is, "]")) {
+            verify (arg_index >= arg_count, "expected %i args", arg_count);
+            break;
+        } else {
+            if (arg_index >= arg_count)
+                break;
+        }
+    }
+    if (expect_end_br) {
+        verify(tok(next_is, "]"), "expected ] end of function call");
+        tok(consume);
+    }
+    return LLVMBuildCall2(
+        mod->builder, fn->type, fn->value, values, arg_index, "fn-call");
+}
+
+
+member silver_read_member(silver mod, map context, bool alloc) {
+    /// we use alloc to obtain a value-ref by means of allocation inside a function body.
+    /// if we are not there, then set false in that case.
+    /// in that case, the value_ref should be set by the user to R-type or ARG-type
+    tok(push_current);
+    member member = null;
+
+    print("dim_read:");
+    silver_print_tokens(mod);
+
+    string alpha = tok(next_alpha);
+    if(alpha) {
+        member = ecall(lookup, alpha);
+        if (member) {
+            member->is_assigned = true;
+            return member;
+        } else {
+            tok(prev);
+        }
+    }
+    member = new(member, mod, mod, context, context);
+    
+    if (tok(next_is, "static")) {
+        tok(consume);
+        member->is_static = true;
+    }
+    if (tok(next_is, "ref")) {
+        tok(consume);
+        member->depth = 1;
+    }
+    /// look for visibility (default is possibly provided)
+    for (int m = 1; m < Visibility_type.member_count; m++) {
+        type_member_t* enum_v = &Visibility_type.members[m];
+        if (tok(next_is, enum_v->name)) {
+            tok(consume);
+            member->visibility = m;
+            break;
+        }
+    }
+    if (!member->is_static) {
+        if (tok(next_is, "static")) {
+            tok(consume);
+            member->is_static = true;
+        }
+    }
+    Token   n = tok(peek);
+    def ident = isilver(read_def);
+    if (!ident) {
+        print("info: could not read type at position %o", tok(location));
+        tok(pop_state, false); // we may 'info' here
+        return null;
+    }
+    dim_set_def(member, ident);
+
+    silver_print_tokens(mod);
+    
+    // may be [, or alpha-id  (its an error if its neither)
+    if (tok(next_is, "["))
+        idim(bind);
+
+    /// members must be named
+    silver_tokens(mod);
+    string name = tok(next_alpha);
+    verify(name, "expected identifier for member");
+    member->name     = hold(name);
+
+    if (tok(next_is, "["))
+        idim(create_fn);
+    else if (alloc)
+        idim(allocate, mod, true); /// would be nice to get member context from state.. or hey, just set 1 variable and retrieve one variable.  put it in silver intern.
+
+    tok(pop_state, true);
+    map top = call(mod->e, top);
+    set(top, name, member);
+    return member;
+}
+
+LLVMValueRef silver_parse_statement(silver mod) {
+    Token t = tok(peek);
+    if (tok(next_is, "return")) return isilver(parse_return);
+    if (tok(next_is, "break"))  return isilver(parse_break);
+    if (tok(next_is, "for"))    return isilver(parse_for);
+    if (tok(next_is, "while"))  return isilver(parse_while);
+    if (tok(next_is, "if"))     return isilver(parse_if_else);
+    if (tok(next_is, "do"))     return isilver(parse_do_while);
+
+    map members = isilver(top_members);
+    member member  = silver_read_member(mod, members, true);
+    if (member) {
+        print("%s member: %o %o", member->is_assigned ? "existing" : "new", member->def->name, member->name);
+        if (member->def->mdl == model_function) {
+            if      (member->depth == 1) return member->value;
+            else if (member->depth == 0) return isilver(parse_function_call, member);
+            fault ("invalid operation");
+        } else {
+            string assign = tok(next_assign);
+            if    (assign) return isilver(parse_assignment, member, assign);
+        }
+    }
+    fault ("implement"); /// implement as we need them
+    return null;
+}
+
+LLVMValueRef silver_parse_statements(silver mod) {
+    map  members    = isilver(push_member_stack);
+    bool multiple   = tok(next_is, "[");
+    if  (multiple)    tok(consume);
+    int  depth      = 1;
+    LLVMValueRef vr = null;
+    ///
+    while(tok(cast_bool)) {
+        if(multiple && tok(next_is, "[")) {
+            depth += 1;
+            isilver(push_member_stack);
+            tok(consume);
+        }
+        print("next statement origin: %o", tok(peek));
+        vr = isilver(parse_statement);
+        if(!multiple) break;
+        if(tok(next_is, "]")) {
+            if (depth > 1)
+                isilver(pop_member_stack);
+            tok(next);
+            if ((depth -= 1) == 0) break;
+        }
+    }
+    isilver(pop_member_stack);
+    return vr;
+}
+
+static void silver_scope_push(silver mod, LLVMMetadataRef meta_ref) {
+    push    (mod->scope_stack, meta_ref);
+    mod->scope = meta_ref;
+}
+
+static void silver_scope_pop(silver mod) {
+    pop     (mod->scope_stack);
+    mod->scope = len(mod->scope_stack) ? last(mod->scope_stack) : null;
+}
+
+void silver_parse_top(silver mod) {
+    while (tok(cast_bool)) {
+        if (tok(next_is, "import")) {
+            import im = new(import, mod, mod, tokens, mod->tokens);
+            push(mod->imports, im);
+            continue;
+        } else if (tok(next_is, "class")) {
+            verify (false, "not implemented");
+            //EClass def = new(EClass, tokens, tokens);
+            //call(mod->defs, set, def->name, def);
+            continue;
+        } else {
+            silver_print_tokens(mod);
+            member member = silver_read_member(mod, mod->defs, false);
+            string key = member->name ? member->name : (string)format("$m%i", count(mod->defs));
+            set(mod->members, key, member);
+        }
+    }
+}
+
+void silver_init(silver mod) {
+    verify(exists(mod->source), "source (%o) does not exist", mod->source);
+    
+    mod->name      = stem(mod->source);
+    mod->imports   = new(array, alloc, 32);
+    mod->libs_used = new(array);
+    mod->tokens    = new(tokens, file, mod->source);
+
+    // create ether module, which manages llvm
+    mod->e = new (ether,
+        source, mod->source,
+        lang,   str("silver"),
+        name,   mod->name);
+
+    isilver(parse_top);
+    ecall  (write);
 }
 
 int main(int argc, char **argv) {
@@ -781,10 +1273,12 @@ int main(int argc, char **argv) {
     map    defaults = map_of(
         "module",  str(""),
         "install", import ? form(path, "%s", import) : 
-                            form(path, "%s/silver-import", src ? src : "."),
+                            form(path, "%s/silver-import",
+                            src ? src : "."),
         null);
     string ikey     = str("install");
-    map    args     = A_args(argc, argv, defaults, ikey); print("args = %o", args);
+    map    args     = A_args(argc, argv, defaults, ikey);
+    print("args = %o", args);
     path   install  = get(args, ikey);
     string mkey     = str("module");
     string name     = get(args, mkey);

@@ -1,0 +1,20 @@
+import <stdio, stdlib>
+
+# a class we have in argument form
+# there is a class associated to args in main (not allowing more than 1 for now)
+# syntax for more than one would require member identity at the command-line, and
+# thats too unusual
+class launcher [
+    num: int
+    str: string
+    #
+    void run[] [
+        printf['hi\n']
+    ]
+]
+
+# app will be instanced for main, and arguments from command-line will set the args
+# its important that silver reflect general use and be familiar
+int main[ launcher i ] [
+    return i.run
+]

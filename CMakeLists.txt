@@ -1,6 +1,6 @@
 cmake_minimum_required    (VERSION 2.8.12)
 enable_language           (ASM)
 project                   (silver)
-set(is_exe                FALSE)
+set(app TRUE)
 include                   (../A/cmake)
 target_link_libraries     (silver ${L}/libA.so ${L}/libether.so)

@@ -56,14 +56,13 @@ declare_class(tokens)
     i_prop    (X,Y, intern,     map,                  members) \
     i_prop    (X,Y, intern,     array,                main_symbols) \
     i_prop    (X,Y, intern,     array,                compiled_objects) \
-    i_prop    (X,Y, intern,     array,                libraries_used) \
+    i_prop    (X,Y, intern,     array,                libs_used) \
     i_prop    (X,Y, intern,     map,                  include) \
     i_prop    (X,Y, intern,     map,                  type_refs) \
     i_prop    (X,Y, intern,     map,                  operators) \
     i_prop    (X,Y, intern,     int,                  expr_level) \
     i_prop    (X,Y, intern,     string,               current_include) \
     i_prop    (X,Y, public,     bool,                 debug) \
-    i_method  (X,Y, public,     none,                 write) \
     i_override(X,Y, method,     init)
 #ifndef silver_intern
 #define silver_intern
