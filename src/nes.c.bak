@@ -189,7 +189,7 @@ int main(int argc, char **argv) {
     string ikey     = str("rom");
     map    args     = A_args(argc, argv, defaults, ikey);
     path   rom      = call(args, get, ikey);
-    assert (call(rom, exists), "rom %o does not exist", rom);
+    assert (exists(rom), "rom %o does not exist", rom);
 
     NES nes = new(NES);
     call(nes, load_rom, rom);

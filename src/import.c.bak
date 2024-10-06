@@ -1,12 +1,14 @@
+#define import_intern intern(import)
 #include <import>
+#include <silver>
 
-#define intern(I,M,...) Import_ ## M(I, ## __VA_ARGS__)
+#define icall(I,M,...) import_ ## M(I, ## __VA_ARGS__)
 
 path create_folder(silver mod, cstr name, cstr sub) {
     string dir = format(
-        "%o/%s%s%s", call(mod, source_path), name, sub ? "/" : "", sub ? sub : "");
+        "%o/%s%s%s", mod->source, name, sub ? "/" : "", sub ? sub : "");
     path   res = cast(dir, path);
-    call(res, make_dir);
+    make_dir(res);
     return res;
 }
 
@@ -45,57 +47,55 @@ string lib_prefix() {
 
 /// tokens is reserved name for our tokens state, which we only have 1 of.
 #undef  peek
-#define tokens(...)     call(tokens, __VA_ARGS__)
 
-array Import_import_list(Import a, Tokens tokens) {
+array import_import_list(import a, tokens tokens) {
     array list = new(array);
-    if (tokens(next_is, "[")) {
-        tokens(consume);
+    if (tok(next_is, "[")) {
+        tok(consume);
         while (true) {
-            Token arg = tokens(next);
+            token arg = tok(next);
             if (eq(arg, "]")) break;
             assert (call(arg, get_type) == typeid(string), "expected build-arg in string literal");
-            A l = call(arg, convert_literal);
+            A l = arg->literal; /// must be set in token_init
             push(list, l);
-            if (tokens(next_is, ",")) {
-                tokens(consume);
+            if (tok(next_is, ",")) {
+                tok(consume);
                 continue;
             }
             break;
         }
-        assert (tokens(next_is, "]"), "expected ] after build flags");
-        tokens(consume);
+        assert (tok(next_is, "]"), "expected ] after build flags");
+        tok(consume);
     } else {
-        Token next = tokens(next);
-        string l = call(next, convert_literal);
-        push(list, l);
+        token next = tok(next_string);
+        push(list, next);
     }
     return list;
 }
 
-void Import_import_fields(Import a, Tokens tokens) {
+void import_import_fields(import im, tokens tokens) {
     while (true) {
-        if (tokens(next_is, "]")) {
-            tokens(consume);
+        if (tok(next_is, "]")) {
+            tok(consume);
             break;
         }
-        Token arg_name = tokens(next);
+        token arg_name = tok(next);
         if (call(arg_name, get_type) == typeid(string))
             a->source = array_of(typeid(string), str(arg_name), null);
         else {
             assert (is_alpha(arg_name), "expected identifier for import arg");
-            assert (tokens(next_is, ":"), "expected : after import arg (argument assignment)");
-            tokens(consume);
+            assert (tok(next_is, ":"), "expected : after import arg (argument assignment)");
+            tok(consume);
             if (eq(arg_name, "name")) {
-                Token token_name = tokens(next);
+                token token_name = tok(next);
                 assert (! call(token_name, get_type), "expected token for import name");
                 a->name = str(token_name);
-            } else if (eq(arg_name, "links"))    a->links      = intern(a, import_list, tokens);
-              else if (eq(arg_name, "includes")) a->includes   = intern(a, import_list, tokens);
-              else if (eq(arg_name, "source"))   a->source     = intern(a, import_list, tokens);
-              else if (eq(arg_name, "build"))    a->build_args = intern(a, import_list, tokens);
+            } else if (eq(arg_name, "links"))    a->links      = icall(a, import_list, tokens);
+              else if (eq(arg_name, "includes")) a->includes   = icall(a, import_list, tokens);
+              else if (eq(arg_name, "source"))   a->source     = icall(a, import_list, tokens);
+              else if (eq(arg_name, "build"))    a->build_args = icall(a, import_list, tokens);
               else if (eq(arg_name, "shell")) {
-                Token token_shell = tokens(next);
+                token token_shell = tok(next);
                 assert (call(token_shell, get_type), "expected shell invocation for building");
                 a->shell = str(token_shell);
             } else if (eq(arg_name, "defines")) {
@@ -104,10 +104,10 @@ void Import_import_fields(Import a, Tokens tokens) {
             } else
                 assert (false, "unknown arg: %o", arg_name);
 
-            if (tokens(next_is, ","))
-                tokens(next);
+            if (tok(next_is, ","))
+                tok(next);
             else {
-                assert (tokens(next_is, "]"), "expected comma or ] after arg %o", arg_name);
+                assert (tok(next_is, "]"), "expected comma or ] after arg %o", arg_name);
                 break;
             }
         }
@@ -115,58 +115,58 @@ void Import_import_fields(Import a, Tokens tokens) {
 }
 
 /// get import keyword working to build into build-root (silver-import)
-none Import_init(Import a) {
-    assert(isa(a->tokens) == typeid(Tokens), "tokens mismatch: class is %s", isa(a->tokens)->name);
+none import_init(import a) {
+    assert(isa(a->tokens) == typeid(tokens), "tokens mismatch: class is %s", isa(a->tokens)->name);
     a->includes = new(array, alloc, 32);
-    Tokens tokens = a->tokens;
+    tokens tokens = a->tokens;
     if (tokens) {
-        assert(tokens(next_is, "import"), "expected import");
-        tokens(consume);
-        //Token n_token = tokens(next);
-        bool is_inc = tokens(next_is, "<");
+        assert(tok(next_is, "import"), "expected import");
+        tok(consume);
+        //token n_token = tok(next);
+        bool is_inc = tok(next_is, "<");
         if (is_inc) {
             a->import_type = ImportType_includes;
-            Tokens_f* type = isa(tokens);
-            tokens(consume);
+            tokens_f* type = isa(tokens);
+            tok(consume);
             a->includes = new(array, alloc, 8);
             while (1) {
-                Token inc = tokens(next);
+                token inc = tok(next);
                 assert (is_alpha(inc), "expected alpha-identifier for header");
                 push(a->includes, inc);
-                bool is_inc = tokens(next_is, ">");
+                bool is_inc = tok(next_is, ">");
                 if (is_inc) {
-                    tokens(consume);
+                    tok(consume);
                     break;
                 }
-                Token comma = tokens(next);
+                token comma = tok(next);
                 assert (eq(comma, ","), "expected comma-separator or end-of-includes >");
             }
         } else {
-            Token t_next = tokens(next);
+            token t_next = tok(next);
             string module_name = cast(t_next, string);
             a->name = hold(module_name);
             assert(is_alpha(module_name), "expected mod name identifier");
 
-            if (tokens(next_is, "as")) {
-                tokens(consume);
-                a->isolate_namespace = tokens(next);
+            if (tok(next_is, "as")) {
+                tok(consume);
+                a->isolate_namespace = tok(next);
             }
 
             assert(is_alpha(module_name), format("expected variable identifier, found %o", module_name));
             
-            if (tokens(next_is, "[")) {
-                tokens(next);
-                Token n = tokens(peek);
+            if (tok(next_is, "[")) {
+                tok(next);
+                token n = tok(peek);
                 AType s = call(n, get_type);
                 if (s == typeid(string)) {
                     a->source = new(array);
                     while (true) {
-                        Token    inner = tokens(next);
+                        token    inner = tok(next);
                         string s_inner = cast(inner, string);
                         assert(call(inner, get_type) == typeid(string), "expected a string literal");
                         string  source = mid(s_inner, 1, len(s_inner) - 2);
                         push(a->source, source);
-                        string       e = tokens(next);
+                        string       e = tok(next);
                         if (eq(e, ","))
                             continue;
                         assert(eq(e, "]"), "expected closing bracket");
@@ -174,14 +174,14 @@ none Import_init(Import a) {
                     }
                 } else {
                     intern(a, import_fields, a->tokens);
-                    tokens(consume);
+                    tok(consume);
                 }
             }
         }
     }
 }
 
-BuildState Import_build_project(Import a, string name, string url) {
+BuildState import_build_project(import a, string name, string url) {
     path checkout = create_folder(a->mod, "checkouts", name->chars);
     path i        = create_folder(a->mod, a->mod->debug ? "debug" : "install", null);
     path b        = form(path, "%o/%s", checkout, "silver-build");
@@ -192,7 +192,7 @@ BuildState Import_build_project(Import a, string name, string url) {
     if (call(checkout, is_empty)) {
         char   at[2]  = { '@', 0 };
         string f      = form(string, "%s", at);
-        num    find   = call(url, index_of, at);
+        num    find   = index_of(url, at);
         string branch = null;
         string s_url  = url;
         if (find > -1) {
@@ -330,11 +330,11 @@ bool contains_main(path obj_file) {
     return false;
 }
 
-BuildState Import_build_source(Import a) {
+BuildState import_build_source(import a) {
     bool is_debug = a->mod->debug;
     string build_root = call(a->mod, source_path);
     each (a->cfiles, string, cfile) {
-        path cwd = invoke(path, cwd, 1024);
+        path cwd = path_cwd(1024);
         string compile;
         if (call(cfile, has_suffix, ".rs")) {
             // rustc integrated for static libs only in this use-case
@@ -364,7 +364,7 @@ BuildState Import_build_source(Import a) {
     return BuildState_built;
 }
 
-void Import_process_includes(Import a, array includes) {
+void import_process_includes(import a, array includes) {
     /// silver = [ expressions ] and { statements } ?
     /// having a singlar expression instead of a statement would be nice for 1 line things in silver
     /// [cast] is then possible, i believe (if we dont want cast keyword)
@@ -375,13 +375,13 @@ void Import_process_includes(Import a, array includes) {
     }
 }
 
-void Import_process(Import a) {
+void import_process(import a) {
     if (len(a->name) && !len(a->source) && len(a->includes)) {
         array attempt = array_of(typeid(string), str(""), str("spec/"), NULL);
         bool  exists  = false;
         each(attempt, string, pre) {
             path module_path = form(path, "%o%o.si", pre, a->name);
-            if (!call(module_path, exists)) continue;
+            if (!exists(module_path)) continue;
             a->module_path = module_path;
             print("mod-path %o", module_path);
             exists = true;
@@ -428,10 +428,27 @@ void Import_process(Import a) {
         }
     }
     intern(a, process_includes, a->includes);
+
+    import im = a;
+    silver mod = im->mod;
+    switch (im->import_type) {
+        case ImportType_source:
+            if (len(im->main_symbol))
+                push(mod->main_symbols, im->main_symbol);
+            each(im->source, string, source) {
+                // these are built as shared library only, or, a header file is included for emitting
+                if (call(source, has_suffix, ".rs") || call(source, has_suffix, ".h"))
+                    continue;
+                string buf = format("%o/%s.o", mod->install, source);
+                push(mod->compiled_objects, buf);
+            }
+        case ImportType_library:
+        case ImportType_project:
+            concat(mod->libraries_used, im->links);
+            break;
+        case ImportType_includes:
+            break;
+        default:
+            verify(false, "not handled: %i", im->import_type);
+    }
 }
-
-
-define_enum(ImportType)
-define_enum(BuildState)
-
-define_class(Import)

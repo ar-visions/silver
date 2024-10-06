@@ -1,0 +1,97 @@
+#ifndef _silver_
+#define _silver_
+
+#include <ether>
+#include <tokens>
+
+#define import_t_schema(X,Y) \
+    enum_value(X,Y, none) \
+    enum_value(X,Y, source) \
+    enum_value(X,Y, library) \
+    enum_value(X,Y, project) \
+    enum_value(X,Y, includes)
+declare_enum(import_t)
+
+#define build_state_schema(X,Y) \
+    enum_value(X,Y, none) \
+    enum_value(X,Y, built)
+declare_enum(build_state)
+
+#define tokens_schema(X,Y)\
+    i_prop      (X,Y,  public,  path,       file) \
+    i_prop      (X,Y,  public,  array,      tokens) \
+    i_prop      (X,Y,  public,  num,        cursor) \
+    i_prop      (X,Y,  intern,  array,      stack) \
+    i_method    (X,Y,  public,  none,       push_state,   array, num) \
+    i_method    (X,Y,  public,  none,       push_current) \
+    i_method    (X,Y,  public,  none,       pop_state, bool) \
+    i_method    (X,Y,  public,  token,      read, num) \
+    i_method    (X,Y,  public,  token,      next) \
+    i_method    (X,Y,  public,  token,      prev)\
+    i_method    (X,Y,  public,  token,      consume) \
+    i_method    (X,Y,  public,  token,      peek) \
+    i_method    (X,Y,  public,  token,      element, num) \
+    i_method    (X,Y,  public,  num,        line) \
+    i_method    (X,Y,  public,  bool,       next_is, symbol) \
+    i_method    (X,Y,  public,  string,     read_string) \
+    i_method    (X,Y,  public,  string,     read_alpha) \
+    i_method    (X,Y,  public,  object,     read_bool) \
+    i_method    (X,Y,  public,  object,     read_numeric) \
+    i_method    (X,Y,  public,  string,     read_assign) \
+    i_override  (X,Y,  method,  init) \
+    i_override  (X,Y,  cast,    bool)
+#ifndef tokens_intern
+#define tokens_intern
+#endif
+declare_class(tokens)
+
+#define silver_schema(X,Y)\
+    i_prop    (X,Y, required,   path,                 install) \
+    i_prop    (X,Y, required,   path,                 source) \
+    i_prop    (X,Y, intern,     string,               name) \
+    i_prop    (X,Y, intern,     ether,                e) \
+    i_prop    (X,Y, intern,     array,                imports) \
+    i_prop    (X,Y, intern,     tokens,               tokens) \
+    i_prop    (X,Y, intern,     map,                  defs) \
+    i_prop    (X,Y, intern,     map,                  members) \
+    i_prop    (X,Y, intern,     array,                main_symbols) \
+    i_prop    (X,Y, intern,     array,                compiled_objects) \
+    i_prop    (X,Y, intern,     array,                libraries_used) \
+    i_prop    (X,Y, intern,     map,                  include) \
+    i_prop    (X,Y, intern,     map,                  type_refs) \
+    i_prop    (X,Y, intern,     map,                  operators) \
+    i_prop    (X,Y, intern,     int,                  expr_level) \
+    i_prop    (X,Y, intern,     string,               current_include) \
+    i_prop    (X,Y, public,     bool,                 debug) \
+    i_method  (X,Y, public,     none,                 write) \
+    i_override(X,Y, method,     init)
+#ifndef silver_intern
+#define silver_intern
+#endif
+declare_class(silver)
+
+#define import_schema(X,Y) \
+    i_prop    (X,Y, public, tokens,     tokens) \
+    i_prop    (X,Y, public, silver,     mod) \
+    i_prop    (X,Y, intern, string,     name) \
+    i_prop    (X,Y, intern, array,      source) \
+    i_prop    (X,Y, intern, string,     shell) \
+    i_prop    (X,Y, intern, string,     isolate_namespace) \
+    i_prop    (X,Y, intern, path,       module_path) \
+    i_prop    (X,Y, intern, bool,       imported) \
+    i_prop    (X,Y, intern, array,      includes) \
+    i_prop    (X,Y, intern, array,      cfiles) \
+    i_prop    (X,Y, intern, array,      links) \
+    i_prop    (X,Y, intern, array,      build_args) \
+    i_prop    (X,Y, intern, import_t,   import_type) \
+    i_prop    (X,Y, intern, array,      library_exports) \
+    i_prop    (X,Y, intern, interface,  visibility) \
+    i_prop    (X,Y, intern, string,     main_symbol) \
+    i_method  (X,Y, public, none,       process) \
+    i_override(X,Y, method, init)
+#ifndef import_intern
+#define import_intern
+#endif
+declare_class(import)
+
+#endif
