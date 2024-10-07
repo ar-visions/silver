@@ -25,7 +25,7 @@ declare_enum(build_state)
     i_method    (X,Y,  public,  none,       push_state,   array, num) \
     i_method    (X,Y,  public,  none,       push_current) \
     i_method    (X,Y,  public,  none,       pop_state, bool) \
-    i_method    (X,Y,  public,  token,      read, num) \
+    i_method    (X,Y,  public,  bool,       symbol, symbol) \
     i_method    (X,Y,  public,  token,      next) \
     i_method    (X,Y,  public,  token,      prev)\
     i_method    (X,Y,  public,  token,      consume) \
@@ -33,6 +33,7 @@ declare_enum(build_state)
     i_method    (X,Y,  public,  token,      element, num) \
     i_method    (X,Y,  public,  num,        line) \
     i_method    (X,Y,  public,  bool,       next_is, symbol) \
+    i_method    (X,Y,  public,  object,     read_literal) \
     i_method    (X,Y,  public,  string,     read_string) \
     i_method    (X,Y,  public,  string,     read_alpha) \
     i_method    (X,Y,  public,  object,     read_bool) \
