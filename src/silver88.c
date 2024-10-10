@@ -952,7 +952,7 @@ type cast_method(silver mod, type target, type cast) {
 static node parse_function_call(silver mod, member fn) {
     bool allow_no_paren = mod->expr_level == 1; /// remember this decision? ... var args
     bool expect_end_br  = false;
-    function def        = fn->def;
+    function def        = fn->function;
     assert (def, "no definition found for function member %o", fn->name);
     int  arg_count      = count(def->args);
     
@@ -1077,6 +1077,7 @@ static node parse_primary(silver mod) {
 
     // handle identifiers (variables or function calls)
     string ident = tok(read_alpha);
+    /// do defs need to be anonymous member entries as well?
     if (ident) {
         member mem = lookup(mod->e, ident); // Look up variable
         verify (mem, "member not found: %o", ident);
@@ -1270,14 +1271,12 @@ void silver_parse_top(silver mod) {
             continue;
         } else if (tok(next_is, "class")) {
             verify (false, "not implemented");
-            //EClass def = new(EClass, tokens, tokens);
-            //call(mod->defs, set, def->name, def);
             continue;
         } else {
             print_tokens(mod);
-            member member = read_member(mod, mod->defs, false);
-            string key = member->name ? member->name : (string)format("$m%i", count(mod->defs));
-            set(mod->members, key, member);
+            member mem = read_member(mod, mod->defs, false);
+            string key = mem->name ? mem->name : (string)format("$m%i", count(mod->defs));
+            set(mod->members, key, mem);
         }
     }
 }
