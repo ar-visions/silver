@@ -5,6 +5,15 @@
 #include <ether>
 
 #define   ecall(M,...)   call(mod->e, M, ## __VA_ARGS__)
+#define   epush(O)       ether_push(mod->e, O)
+#define   epop()         ether_pop(mod->e)
+#define   elookup(MEM)   call(mod->e, lookup, str(MEM))
+#define   emodel(MDL)    ({ \
+    member  m = ether_lookup(mod->e, str(MDL)); \
+    model mdl = m ? m->mdl : null; \
+    mdl; \
+})
+
 #define   edef(K)        get(mod->e->defs, str(K))
 #define   icall(M,...)   import_ ## M(im, ## __VA_ARGS__)
 
@@ -550,6 +559,11 @@ num tokens_line(tokens a) {
     return t->line;
 }
 
+string tokens_location(tokens a) {
+    token  t = idx(a->tokens, 0);
+    return t ? (string)call(t, location) : (string)format("n/a");
+}
+
 bool is_alpha(A any) {
     AType  type = isa(any);
     string s;
@@ -809,20 +823,11 @@ bool tokens_cast_bool(tokens a) {
     return a->cursor < len(a->tokens);
 }
 
-bool member_inherits(member member, type t) {
-    type tt = member->type;
-    while (tt) {
-        if (t == tt) return true;
-        tt = tt->origin;
-    }
-    return false;
-}
-
 node parse_return(silver mod) {
     /// should be ecall(return_type) # 'return type' from nearest context with type
-    type  rtype   = ecall(return_type);
-    type  t_void  = edef("void");
-    bool  is_void = member_inherits(rtype, t_void);
+    model rtype   = ecall(return_type);
+    model t_void  = emodel("void");
+    bool  is_void = eq(rtype, t_void);
     tok (consume);
     return ecall(freturn, parse_expression(mod));
 }
@@ -931,30 +936,163 @@ static node parse_expression(silver mod) {
     return vr;
 }
 
-type read_type(silver mod) {
+/// @brief completely inadequate
+model read_model(silver mod, bool is_ref) {
     string name = tok(read_alpha); // Read the type to cast to
     if (!name) return null;
-    return get(mod->e->defs, name);
+    return emodel(name->chars);
 }
 
-type cast_method(silver mod, type target, type cast) {
-    pairs(target->members, i) {
+member cast_method(silver mod, class class_target, model cast) {
+    record rec = class_target;
+    verify(isa(rec) == typeid(class), "cast target expected class");
+    pairs(rec->ctx->members, i) {
         member mem = i->value;
-        if (mem->type && mem->type->function && 
-            mem->type->function->rtype == cast && mem->type->function->is_cast) {
-            return mem->type;
-        }
+        model fmdl = mem->mdl;
+        if (isa(fmdl) != typeid(function)) continue;
+        function fn = fmdl;
+        if (fn->is_cast && model_eq(fn->rtype, cast))
+            return mem;
     }
     return null;
 }
 
+/// @brief modifies incoming member for the various wrap cases we will want to 
+/// serve.  its important that this be extensible
+static model parse_wrap(model mdl_src) {
+    silver mod = mdl_src->mod;
+    verify(tok(symbol, "["), "expected [");
+    array shape = new(array, alloc, 32);
+    while (true) {
+        if (tok(next_is, "]")) break;
+        node n = parse_expression(mod);
+        /// check to be sure its a literal
+        push(shape, n);
+    }
+    model mdl_wrap = model_alias(mdl_src, null, 0, shape);
+    verify(tok(symbol, "]"), "expected ]");
+    return mdl_wrap;
+}
 
-static node parse_function_call(silver mod, member fn) {
+static function parse_fn(model rtype, token name);
+
+/// @brief this reads entire function definition, member we lookup, new member
+static member read_member(silver mod) {
+    /// we use alloc to obtain a value-ref by means of allocation inside a function body.
+    /// if we are not there, then set false in that case.
+    /// in that case, the value_ref should be set by the user to R-type or ARG-type
+    tok(push_current);
+    print("read_member:");
+    print_tokens(mod);
+    string alpha = tok(read_alpha);
+    if(alpha) {
+        member mem = lookup(mod->e, alpha);
+        if (mem) {
+            mem->is_assigned = true;
+            return mem;
+        }
+    }
+    interface access = interface_undefined;
+    for (int m = 1; m < interface_type.member_count; m++) {
+        type_member_t* enum_v = &interface_type.members[m];
+        if (tok(symbol, enum_v->name)) {
+            access = m;
+            break;
+        }
+    }
+    bool  is_static = tok(symbol, "static");
+    bool  is_ref    = tok(symbol, "ref");
+    token n         = tok(peek);
+    model mdl       = read_model(mod, is_ref);
+    if (!mdl) {
+        print("info: could not read type at position %o", tok(location));
+        tok(pop_state, false); // we may 'info' here
+        return null;
+    }
+    print_tokens(mod);
+    
+    // may be [, or alpha-id  (its an error if its neither)
+    if (tok(next_is, "["))
+        mdl = parse_wrap(mdl);
+
+    /// read member name
+    print_tokens(mod);
+    string s_name = tok(read_alpha);
+    verify(s_name, "expected alpha-numeric name");
+    tok(prev);
+    token name = tok(next);
+
+    /// convert model to function parse_fn takes in rtype and token name
+    if (tok(next_is, "["))
+        mdl = parse_fn(mdl, name);
+ 
+    member mem = new(member, mod, mod, name, name, mdl, mdl, is_static, is_static, access, access);
+    ecall(push_member, mem);
+    tok(pop_state, true);
+    return mem;
+}
+
+void silver_build_fn(silver mod, object arg, function fn) {
+    print("building function: %o", fn->name);
+}
+
+function parse_fn(model rtype, token name) {
+    silver mod = rtype->mod;
+    verify (tok(next_is, "["), "expected function args");
+    tokens (consume);
+    array args = new(array, alloc, 32);
+    int arg_index = 0;
+    
+    print_tokens(mod);
+
+    if (!tok(next_is, "]")) {
+        epush(null);
+        while (true) {
+            member arg = read_member(mod);
+            verify (arg,       "member failed to read");
+            verify (arg->name, "member name not set");
+            if     (tok(next_is, "]")) break;
+            verify (tok(next_is, ","), "expected separator");
+            tokens (consume);
+            push   (args, arg);
+            arg_index++;
+        }
+        epop();
+    }
+    tok(consume);
+
+    subprocedure builder = subproc(mod, silver_build_fn, null);
+    function fn = new(function,
+        mod,    mod,    name, name,     record, mod->e->top->container,
+        args,   args,   builder, builder);
+    
+    array body = new(array, alloc, 32);
+    verify (tok(next_is, "["), "expected function body");
+    int depth  = 0;
+    do {
+        token   token = tok(next);
+        verify (token, "expected end of function body ( too many ['s )");
+        push   (body, token);
+        if      (eq(token, "[")) depth++;
+        else if (eq(token, "]")) depth--;
+    } while (depth > 0);
+
+    tokens fn_body = new(tokens, cursor, 0, tokens, body);
+    fbuilder   f = new(fbuilder, fn, fn, body, fn_body);
+    builder->ctx = f; /// safe to set after, as we'll never start building within function; we need this context in builder
+    return fn;
+}
+
+/// any-kind-of-object.function[ ... 
+///                            ^-- we are here, and the target is given::
+/// any-kind-of-object (member; with a pointer-value and mdl-type)
+/// so target is a node -- lets refrain from using target across types...
+static node parse_function_call(silver mod, node target, member fmem) {
     bool allow_no_paren = mod->expr_level == 1; /// remember this decision? ... var args
     bool expect_end_br  = false;
-    function def        = fn->function;
-    assert (def, "no definition found for function member %o", fn->name);
-    int  arg_count      = count(def->args);
+    function fn        = fmem->mdl;
+    verify(isa(fn) == typeid(function), "expected function type");
+    int  model_arg_count = len(fn->args);
     
     if (tok(next_is, "[")) {
         tok(consume);
@@ -962,45 +1100,33 @@ static node parse_function_call(silver mod, member fn) {
     } else if (!allow_no_paren)
         fault("expected [ for nested call");
 
-    int arg_index = 0;
-    LLVMValueRef values[32];
+    int    arg_index = 0;
+    array  values    = new(array, alloc, 32);
+    member last_arg  = null;
+    while(arg_index < model_arg_count || fn->va_args) {
+        member arg      = arg_index < fn->args->len ? fn->args->elements[arg_index] : null;
+        node   expr     = parse_expression(mod);
+        model  arg_mdl  = arg ? arg->mdl : null;
+        if (arg_mdl && expr->mdl != arg_mdl)
+            expr = ecall(convert, expr, arg_mdl);
+        print("argument %i: %o", arg_index, expr);
 
-    member last_arg = null;
-    while(arg_index < arg_count || def->va_args) {
-        member          arg      = arg_index < def->args->count ? idx_1(def->args, sz, arg_index) : null;
-        LLVMValueRef expr     = parse_expression(mod);
-        LLVMTypeRef  arg_type = arg ? arg->type : null;
-        LLVMTypeRef  e_type   = LLVMTypeOf(expr); /// this should be 'someting' member
-
-        if (LLVMGetTypeKind(e_type) == LLVMPointerTypeKind) {
-            expr = LLVMBuildLoad2(mod->builder,
-                arg ? arg->type : LLVMPointerType(LLVMInt8Type(), 0), expr, "load-arg");
-        }
-
-        if (arg_type && e_type != arg_type)
-            expr = ecall(convert, expr, arg_type);
-        
-        print("argument %i: %s", arg_index, LLVMPrintValueToString(expr));
-
-        values[arg_index] = expr;
+        push(values, expr);
         arg_index++;
         if (tok(next_is, ",")) {
             tok(consume);
             continue;
         } else if (tok(next_is, "]")) {
-            verify (arg_index >= arg_count, "expected %i args", arg_count);
+            verify (arg_index >= model_arg_count, "expected %i args", model_arg_count);
             break;
-        } else {
-            if (arg_index >= arg_count)
-                break;
-        }
+        } else if (arg_index >= model_arg_count)
+            break;
     }
     if (expect_end_br) {
         verify(tok(next_is, "]"), "expected ] end of function call");
         tok(consume);
     }
-    return LLVMBuildCall2(
-        mod->builder, fn->type, fn->value, values, arg_index, "fn-call");
+    return ecall(fcall, fmem, target, values);
 }
 
 static node parse_primary(silver mod) {
@@ -1036,15 +1162,22 @@ static node parse_primary(silver mod) {
 
     // 'cast' operator
     if (tok(symbol, "cast")) {
-        type cast_ident = read_type(mod); // Read the type to cast to
-        verify (cast_ident, "expected ident after cast");
+
+        // cast something[ bool ]
+        // cast bool [ something ]
+
+        member  cast_member_type = read_member(mod); // Read the type to cast to
+        verify (cast_member_type, "expected type member after cast");
+        verify (cast_member_type->is_type, "expected member to be type definition");
+        model   cast_mdl  = cast_member_type->mdl;
+        
         assert(tok(next_is, "["), "Expected '[' for cast");
         tok(consume); // Consume '['
         node expr = parse_expression(mod); // Parse the expression to cast
         tok(consume); // Consume ']'
         
         if (is_object(expr)) {
-            type method = cast_method(mod, expr->type, cast_ident);
+            model method = cast_method(mod, expr->mdl, cast_mdl);
             if (method) {
                 // object may cast because there is a method defined with is_cast and an rtype of the cast_ident
                 array args = new(array);
@@ -1052,15 +1185,16 @@ static node parse_primary(silver mod) {
             }
         }
         verify (!is_object(expr), "object %o requires a cast method for %o",
-            expr->type->name, cast_ident->name);
+            expr->mdl->name, cast_mdl->name);
         /// in this case we need to cast to a non-object which is lik
-        return ecall(basic_cast, expr, cast_ident);
+        return ecall(convert, expr, cast_mdl);
     }
 
     // 'ref' operator (reference)
     if (tok(symbol, "ref")) {
         node expr = parse_expression(mod);
-        return ecall(get_ref, expr, expr->type);
+        fault("not impl");
+        //return ecall(get_ref, expr, expr->mdl);
     }
 
     // literal values (int, float, bool, string)
@@ -1082,9 +1216,9 @@ static node parse_primary(silver mod) {
         member mem = lookup(mod->e, ident); // Look up variable
         verify (mem, "member not found: %o", ident);
         if (tok(next_is, "["))
-            return parse_function_call(mod, mem);
+            return parse_function_call(mod, null, mem);
         else
-            return ecall(load, mem);
+            return ecall(load, mem, null, null);
     }
 
     fault("unexpected token %o in primary expression", tok(peek));
@@ -1093,15 +1227,17 @@ static node parse_primary(silver mod) {
 
 node parse_assignment(silver mod, member mem, string op) {
     verify(!mem->is_assigned || !mem->is_const, "mem %o is a constant", mem->name);
-    string         op_name = token_op_name(op);
-    member         method  = get(mem->type->members, op_name); /// op-name must be reserved for use in functions only
+    string         op_name = get(operators, op);
+    member         method = null;
+    if (instanceof(mem->mdl, record))
+        method = get(((record)mem->mdl)->ctx->members, op_name); /// op-name must be reserved for use in functions only
     node           res     = null;
     node           L       = mem;
     node           R       = parse_expression(mod);
 
-    if (method && method->type && method->type->function) {
-        array args = array_of(null, L, R, null);
-        res = ecall(method->type->function, method->value, args);
+    if (method && method->mdl && instanceof(method->mdl, function)) {
+        array args = array_of(null, R, null);
+        res = ecall(fcall, method, L, args);
     } else {
         mem->is_const = eq(op, "=");
         bool e = mem->is_const;
@@ -1123,85 +1259,20 @@ node parse_assignment(silver mod, member mem, string op) {
     return mem;
 }
 
-member read_member(silver mod, map context, bool alloc) {
-    /// we use alloc to obtain a value-ref by means of allocation inside a function body.
-    /// if we are not there, then set false in that case.
-    /// in that case, the value_ref should be set by the user to R-type or ARG-type
-    tok(push_current);
-    member member = null;
-
-    print("read_member:");
-    print_tokens(mod);
-
-    string alpha = tok(next_alpha);
-    if(alpha) {
-        member = ecall(lookup, alpha);
-        if (member) {
-            member->is_assigned = true;
-            return member;
-        } else {
-            tok(prev);
-        }
-    }
-    member = new(member, mod, mod, context, context);
-    
-    if (tok(next_is, "static")) {
-        tok(consume);
-        member->is_static = true;
-    }
-    if (tok(next_is, "ref")) {
-        tok(consume);
-        member->depth = 1;
-    }
-    /// look for visibility (default is possibly provided)
-    for (int m = 1; m < Visibility_type.member_count; m++) {
-        type_member_t* enum_v = &Visibility_type.members[m];
-        if (tok(next_is, enum_v->name)) {
-            tok(consume);
-            member->visibility = m;
-            break;
-        }
-    }
-    if (!member->is_static) {
-        if (tok(next_is, "static")) {
-            tok(consume);
-            member->is_static = true;
-        }
-    }
-    token   n = tok(peek);
-    def ident = read_type(mod);
-    if (!ident) {
-        print("info: could not read type at position %o", tok(location));
-        tok(pop_state, false); // we may 'info' here
-        return null;
-    }
-    dim_set_def(member, ident);
-
-    print_tokens(mod);
-    
-    // may be [, or alpha-id  (its an error if its neither)
-    if (tok(next_is, "["))
-        idim(bind);
-
-    /// members must be named
-    silver_tokens(mod);
-    string name = tok(next_alpha);
-    verify(name, "expected identifier for member");
-    member->name     = hold(name);
-
-    if (tok(next_is, "["))
-        idim(create_fn);
-    else if (alloc)
-        idim(allocate, mod, true); /// would be nice to get member context from state.. or hey, just set 1 variable and retrieve one variable.  put it in silver intern.
-
-    tok(pop_state, true);
-    map top = call(mod->e, top);
-    set(top, name, member);
-    return member;
+node parse_if_else(silver mod) {
+    tok(consume);
+    node vr = null;
+    return null;
 }
 
-LLVMValueRef parse_statement(silver mod) {
-    Token t = tok(peek);
+node parse_do_while(silver mod) {
+    tok(consume);
+    node vr = null;
+    return null;
+}
+
+node parse_statement(silver mod) {
+    token t = tok(peek);
     if (tok(next_is, "return")) return parse_return(mod);
     if (tok(next_is, "break"))  return parse_break(mod);
     if (tok(next_is, "for"))    return parse_for(mod);
@@ -1209,61 +1280,51 @@ LLVMValueRef parse_statement(silver mod) {
     if (tok(next_is, "if"))     return parse_if_else(mod);
     if (tok(next_is, "do"))     return parse_do_while(mod);
 
-    map members = top_members(mod);
-    member member  = read_member(mod, members, true);
-    if (member) {
-        print("%s member: %o %o", member->is_assigned ? "existing" : "new", member->def->name, member->name);
-        if (member->def->mdl == model_function) {
-            if      (member->depth == 1) return member->value;
-            else if (member->depth == 0) return parse_function_call(mod, member);
-            fault ("invalid operation");
+    member mem  = read_member(mod); // we store target on member
+    if (mem) {
+        print("%s member: %o %o", mem->is_assigned ?
+            "existing" : "new", mem->mdl->name, mem->name);
+        /// mem (multi instanced, we arent looking it up here...)
+        /// to do that we need to be in member mode
+        /// todo: must support member chain with . ... code is in EIdent silver44
+        if (instanceof(mem->mdl, function)) {
+            return parse_function_call(mod, null, mem);
         } else {
-            string assign = tok(next_assign);
-            if    (assign) return parse_assignment(mod, member, assign);
+            string assign = tok(read_assign);
+            if    (assign) return parse_assignment(mod, mem, assign);
         }
     }
     fault ("implement"); /// implement as we need them
     return null;
 }
 
-LLVMValueRef parse_statements(silver mod) {
-    map  members    = push_member_stack(mod);
+node parse_statements(silver mod) {
+    context ctx     = epush(null);
     bool multiple   = tok(next_is, "[");
     if  (multiple)    tok(consume);
     int  depth      = 1;
-    LLVMValueRef vr = null;
+    node vr = null;
     ///
     while(tok(cast_bool)) {
-        if(multiple && tok(next_is, "[")) {
+        if(multiple && tok(symbol, "[")) {
             depth += 1;
-            push_member_stack(mod);
-            tok(consume);
+            epush(null);
         }
         print("next statement origin: %o", tok(peek));
         vr = parse_statement(mod);
         if(!multiple) break;
         if(tok(next_is, "]")) {
             if (depth > 1)
-                pop_member_stack(mod);
+                epop();
             tok(next);
             if ((depth -= 1) == 0) break;
         }
     }
-    pop_member_stack(mod);
+    epop();
     return vr;
 }
 
-static void silver_scope_push(silver mod, LLVMMetadataRef meta_ref) {
-    push    (mod->scope_stack, meta_ref);
-    mod->scope = meta_ref;
-}
-
-static void silver_scope_pop(silver mod) {
-    pop     (mod->scope_stack);
-    mod->scope = len(mod->scope_stack) ? last(mod->scope_stack) : null;
-}
-
-void silver_parse_top(silver mod) {
+void parse_top(silver mod) {
     while (tok(cast_bool)) {
         if (tok(next_is, "import")) {
             import im = new(import, mod, mod, tokens, mod->tokens);
@@ -1274,8 +1335,9 @@ void silver_parse_top(silver mod) {
             continue;
         } else {
             print_tokens(mod);
-            member mem = read_member(mod, mod->defs, false);
-            string key = mem->name ? mem->name : (string)format("$m%i", count(mod->defs));
+            member mem = read_member(mod);
+            /// this can be token or string, but both will hash and compare
+            string key = mem->name ? str(mem->name->chars) : form(string, "$m%i", count(mod->defs));
             set(mod->members, key, mem);
         }
     }
@@ -1296,10 +1358,12 @@ void silver_init(silver mod) {
         name,   mod->name);
 
     parse_top(mod);
-    ecall  (write);
+    write(mod->e);
 }
 
 int main(int argc, char **argv) {
+    printf("does this work\n");
+    fflush(stdout);
     A_start();
     AF         pool = allocate(AF);
     cstr        src = getenv("SRC");
@@ -1318,11 +1382,9 @@ int main(int argc, char **argv) {
     string name     = get(args, mkey);
     path   n        = new(path, chars, name->chars);
     path   source   = call(n, absolute);
-
     verify (exists(source), "source %o does not exist", n);
     silver mod = new(silver, source, source, install, install);
-    write(mod);
-
+    write(mod->e);
     drop(pool);
 }
 
@@ -1332,5 +1394,6 @@ define_class(silver)
 define_enum(import_t)
 define_enum(build_state)
 define_class(import)
+define_class(fbuilder)
 
 module_init(init)
