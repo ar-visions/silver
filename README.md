@@ -17,15 +17,28 @@ public import WGPU [
     links:      ['webgpu_dawn']
 ]
 
-# ...or you can reach for the stars and use its module member types, class, mod, struct, enum, union
-# built with security and reflection in mind
-# every object is ref-counted except for value-based primitives (bool ... i8 -> i64, f32 -> f64)
+##
+# current keywords supported are class, struct, enum, union
+# member keywords supported for access-level: [ intern, public ] and store: [ inlay ]
+# primitives are inlay by default, but one can inlay class so long as we are ok with copying trivially or by method
+# public members can be reflected by map: members [ object ]
+
+this is still a comment.
+
+# every object is alloc'd and ref-counted except for non-inlay (bool ... i8 -> i64, f32 -> f64, inlaid structs etc)
+#
 # those have member functions to access, though; either way we access members only one way: .
 # we assign with : and assign-const with =
 # silver in data form may be thought of as a type-based json, and we support this form of serialization
+#
 # the ethos of silver is we are open source developers and we do not rely on specific package managers
-# we build the entire stack ourselves as-is the most secure and open way.
-# there will never be a 'silver package manager'.  the entire idea of building binaries else-where is not our thing
+# it should be simpler than using a package manager, too.  easier because you know the entire world
+# is accessible.  thats something people actually demand.
+#
+# its also best for there to be 1 file that expresses import and logic, so we may build the entire
+# stack from one modules expression.
+# we can end the comment now with two #'s
+##
 
 class app [
     public int value : 1 # assign operator is ':' constant is '='  [ no const decorator ]
@@ -36,11 +49,12 @@ int main[ app a ] [
     int this-is-const = a.value
     int val: this-is-const
     val += 1
-    print[ 'using app with value: { this-is-const }, then added { val - this-is-const }' ]
+    print[ 'using app with value: { this-is-const }, then added { val - this-is-const } ... our int is fixed at 64bit' ]
     -> a.run > 0
 ]
 
 # this is a reduced language, but we do have cast, index, and named operators
+# with reflection its in effect more features than you use and none that you avoid anyway.  effectively more there, more with silver.
 
 
 ```
