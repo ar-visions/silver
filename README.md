@@ -23,7 +23,7 @@ public import WGPU [
 # primitives are inlay by default, but one can inlay class so long as we are ok with copying trivially or by method
 # public members can be reflected by map: members [ object ]
 
-this is still a comment... the double # does that
+this is still a comment... the double
 
 # every object is alloc'd and ref-counted except for non-inlay (bool ... i8 -> i64, f32 -> f64, inlaid structs etc)
 #
@@ -127,5 +127,5 @@ classes have ability to perform meta instancing.  think of it as templates but w
 ```python
 meta [ I:any ]
 class list [
-    I type # in this context, I becomes an 'object' type, the base A-type
+    I type # in this context, I becomes an 'object' type, the base A-type we're ABI compatible with
 ]
