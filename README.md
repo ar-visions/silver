@@ -73,7 +73,7 @@ class app [
 
     cast int [
         ref int my-func[ string ] = ref run # we may invoke without parens, but ref is simply storing its address and implicit targeting
-        int r:  my-func[ 'hi' ] ?? run
+        int r:  my-func[ 'hi' ] ?: run
         return r
     ]
 
