@@ -5,11 +5,12 @@ import <stdio, stdlib>
 # syntax for more than one would require member identity at the command-line, and
 # thats too unusual
 class launcher [
-    num: int
-    str: string
+    int    num
+    string str
     #
-    void run[] [
+    int run[] [
         printf['hi\n']
+        return 2
     ]
 ]
 

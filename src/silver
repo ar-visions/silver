@@ -47,13 +47,13 @@ declare_enum(build_state)
 #endif
 declare_class(tokens)
 
-#define fbuilder_schema(X,Y) \
-    i_prop(X,Y, required, function, fn) \
+#define completer_context_schema(X,Y) \
+    i_prop(X,Y, required, model,    data) \
     i_prop(X,Y, required, tokens,   body)
-#ifndef fbuilder_intern
-#define fbuilder_intern
+#ifndef completer_context_intern
+#define completer_context_intern
 #endif
-declare_class(fbuilder)
+declare_class(completer_context)
 
 #define silver_schema(X,Y)\
     i_prop    (X,Y, required,   path,                 install) \
