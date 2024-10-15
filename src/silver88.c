@@ -51,17 +51,17 @@ static precedence levels[] = {
     { { OPType__xor,       OPType__xor        } },
     { { OPType__right,     OPType__left       } },
     { { OPType__is,        OPType__inherits   } },
-    { { OPType__eq,        OPType__not_eq     } }
+    { { OPType__compare_equal, OPType__compare_not } }
 };
 
 static string op_lang_token(string name) {
     pairs(operators, i) {
         string token = i->key;
         string value = i->value;
-        if (eq(name, value))
+        if (eq(name, value->chars))
             return token;
     }
-    fault("invalid operator name");
+    fault("invalid operator name: %o", name);
     return null;
 }
 
@@ -549,6 +549,21 @@ void import_process(import im) {
     }
 }
 
+tokens read_body(silver mod) {
+    array body = new(array, alloc, 32);
+    verify (tok(next_is, "["), "expected function body");
+    int depth  = 0;
+    do {
+        token   token = tok(next);
+        verify (token, "expected end of function body ( too many ['s )");
+        push   (body, token);
+        if      (eq(token, "[")) depth++;
+        else if (eq(token, "]")) depth--;
+    } while (depth > 0);
+    tokens fn_body = new(tokens, cursor, 0, tokens, body);
+    return fn_body; 
+}
+
 AType tokens_isa(tokens a) {
     token  t = idx(a->tokens, 0);
     return isa(t->literal);
@@ -827,7 +842,7 @@ node parse_return(silver mod) {
     /// should be ecall(return_type) # 'return type' from nearest context with type
     model rtype   = ecall(return_type);
     model t_void  = emodel("void");
-    bool  is_void = eq(rtype, t_void);
+    bool  is_void = cmp(rtype, t_void) == 0;
     tok (consume);
     return ecall(freturn, parse_expression(mod));
 }
@@ -861,50 +876,6 @@ node silver_parse_do_while(silver mod) {
     node vr = null;
     return null;
 }
-/*
-node parse_ops(silver mod, parse_fn descent, symbol op0, symbol op1, builder_fn b0, builder_fn b1) {
-    node left = descent(mod, op0, op1, b0, b1);
-    while(tok(next_is, op0) || tok(next_is, op1)) {
-        tok(consume);
-        node        right = descent(mod, op0, op1, b0, b1);
-        bool         use0 = tok(next_is, op0);
-        symbol    op_code = use0 ? op0 : op1;
-        builder_fn    bfn = use0 ? b0  : b1;
-
-        assert (contains(mod->operators, str(op_code)), "op (%s) not registered", op_code);
-        string   op_name   = get(mod->operators, str(op_code));
-        OPType   op_type   = eval(OPType, op_name->chars);
-        member   method    = get(left->type->members, op_name);
-
-        if (method) { /// and convertible(r_right, method.args[0].type):
-            node args[2] = { left, right };
-            left = LLVMBuildCall2(mod->builder, method->type->def, method->value, args, 2, "operator");
-        } else {
-            left          = bfn(mod, type_out, left, right); 
-        }
-    }
-    return left;
-}
-
-static node op_is      (silver mod, node L, node R) { return ecall(is,       L, R); }
-static node op_inherits(silver mod, node L, node R) { return ecall(inherits, L, R); }
-static node op_add     (silver mod, node L, node R) { return ecall(add,      L, R); }
-static node op_sub     (silver mod, node L, node R) { return ecall(sub,      L, R); }
-static node op_mul     (silver mod, node L, node R) { return ecall(mul,      L, R); }
-static node op_div     (silver mod, node L, node R) { return ecall(div,      L, R); }
-static node op_eq      (silver mod, node L, node R) { return ecall(eq,       L, R); }
-static node op_not_eq  (silver mod, node L, node R) { return ecall(not_eq,   L, R); }
-
-static node parse_primary(silver mod);
-static node parse_eq  (silver mod) { return parse_ops(mod, parse_primary, "==", "!=",         op_eq,  op_not_eq); }
-static node parse_is  (silver mod) { return parse_ops(mod, parse_eq,      "is", "inherits",   op_is,  op_is);     }
-static node parse_mult(silver mod) { return parse_ops(mod, parse_is,      "*",  "/",          op_is,  op_is);     }
-static node parse_add (silver mod) { return parse_ops(mod, parse_mult,    "+",  "-",          op_add, op_sub);    }
-
-typedef node(*builder_fn)(silver, type, node, node);
-typedef node(*parse_fn)(silver, symbol, symbol, builder_fn, builder_fn);
-
-*/
 
 static node reverse_descent(silver mod) {
     node L = parse_primary(mod);
@@ -946,12 +917,12 @@ model read_model(silver mod, bool is_ref) {
 member cast_method(silver mod, class class_target, model cast) {
     record rec = class_target;
     verify(isa(rec) == typeid(class), "cast target expected class");
-    pairs(rec->ctx->members, i) {
+    pairs(rec->members, i) {
         member mem = i->value;
         model fmdl = mem->mdl;
         if (isa(fmdl) != typeid(function)) continue;
         function fn = fmdl;
-        if (fn->is_cast && model_eq(fn->rtype, cast))
+        if (fn->is_cast && model_cmp(fn->rtype, cast) == 0)
             return mem;
     }
     return null;
@@ -1032,19 +1003,11 @@ static member read_member(silver mod) {
     return mem;
 }
 
-void silver_build_fn(silver mod, object arg, function fn) {
-    print("building function: %o", fn->name);
-}
 
-function parse_fn(model rtype, token name) {
-    silver mod = rtype->mod;
-    verify (tok(next_is, "["), "expected function args");
-    tokens (consume);
+map parse_args(silver mod) {
     array args = new(array, alloc, 32);
     int arg_index = 0;
-    
     print_tokens(mod);
-
     if (!tok(next_is, "]")) {
         epush(null);
         while (true) {
@@ -1060,26 +1023,27 @@ function parse_fn(model rtype, token name) {
         epop();
     }
     tok(consume);
+    return args;
+}
 
-    subprocedure builder = subproc(mod, silver_build_fn, null);
+void build_function(silver mod, object arg, function fn) {
+    print("building function: %o", fn->name);
+}
+
+function parse_fn(model rtype, token name) {
+    silver mod = rtype->mod;
+    verify (tok(next_is, "["), "expected function args");
+    tokens (consume);
+    array args = parse_args(mod);
+    subprocedure completer = subproc(mod, build_function, null);
+    record rec_top = instanceof(mod->e->top, record) ? mod->e->top : null;
     function fn = new(function,
-        mod,    mod,    name, name,     record, mod->e->top->container,
-        args,   args,   builder, builder);
+        mod,    mod,    name, name,     record, rec_top,
+        args,   args,   completer, completer);
     
-    array body = new(array, alloc, 32);
-    verify (tok(next_is, "["), "expected function body");
-    int depth  = 0;
-    do {
-        token   token = tok(next);
-        verify (token, "expected end of function body ( too many ['s )");
-        push   (body, token);
-        if      (eq(token, "[")) depth++;
-        else if (eq(token, "]")) depth--;
-    } while (depth > 0);
-
-    tokens fn_body = new(tokens, cursor, 0, tokens, body);
-    fbuilder   f = new(fbuilder, fn, fn, body, fn_body);
-    builder->ctx = f; /// safe to set after, as we'll never start building within function; we need this context in builder
+    tokens fn_body = read_body(mod);
+    completer_context f = new(completer_context, data, fn, body, fn_body);
+    completer->ctx = f; /// safe to set after, as we'll never start building within function; we need this context in builder
     return fn;
 }
 
@@ -1230,7 +1194,7 @@ node parse_assignment(silver mod, member mem, string op) {
     string         op_name = get(operators, op);
     member         method = null;
     if (instanceof(mem->mdl, record))
-        method = get(((record)mem->mdl)->ctx->members, op_name); /// op-name must be reserved for use in functions only
+        method = get(((record)mem->mdl)->members, op_name); /// op-name must be reserved for use in functions only
     node           res     = null;
     node           L       = mem;
     node           R       = parse_expression(mod);
@@ -1299,7 +1263,8 @@ node parse_statement(silver mod) {
 }
 
 node parse_statements(silver mod) {
-    context ctx     = epush(null);
+    epush(null);
+
     bool multiple   = tok(next_is, "[");
     if  (multiple)    tok(consume);
     int  depth      = 1;
@@ -1324,19 +1289,54 @@ node parse_statements(silver mod) {
     return vr;
 }
 
+void build_class(silver mod, object arg, class cl) {
+    print("building class: %o", cl->name);
+}
+
+class parse_class(silver mod) {
+    verify(tok(symbol, "class"), "expected class");
+    token class_name  = tok(read_alpha);
+    verify(class_name, "expected alpha-numeric class identifier");
+    token parent_name = null;
+    if (tok(next_is, ":")) {
+        tok(consume);
+        parent_name = tok(read_alpha);
+        verify(parent_name, "expected alpha-numeric parent identifier");
+    }
+    verify (tok(next_is, "[") , "expected function body");
+    tokens block = read_body(mod);
+
+    subprocedure completer = subproc(mod, build_class, null);
+    class cl = new(class, mod, mod, name, class_name, completer, completer);
+
+    completer_context f = new(completer_context, data, cl, body, block);
+    completer->ctx = f; /// safe to set after, as we'll never start building within function; we need this context in builder
+    return cl;
+}
+
+
 void parse_top(silver mod) {
+    /// in top level we only need the names of classes and their blocks
+    /// technically we must do this before any functions
+    /// we did not need this before because we did not have functions before
+
+    /// first pass we read classes, and aliases
+    /// then we load the class members from their token states
+    /// 
     while (tok(cast_bool)) {
         if (tok(next_is, "import")) {
             import im = new(import, mod, mod, tokens, mod->tokens);
             push(mod->imports, im);
             continue;
         } else if (tok(next_is, "class")) {
-            verify (false, "not implemented");
+            class cl = parse_class(mod);
+            member mem = new(member, name, cl->name, mdl, cl);
+            string key = cast(cl->name, string);
+            set(mod->members, key, mem);
             continue;
         } else {
             print_tokens(mod);
             member mem = read_member(mod);
-            /// this can be token or string, but both will hash and compare
             string key = mem->name ? str(mem->name->chars) : form(string, "$m%i", count(mod->defs));
             set(mod->members, key, mem);
         }
@@ -1351,8 +1351,23 @@ void silver_init(silver mod) {
     mod->libs_used = new(array);
     mod->tokens    = new(tokens, file, mod->source);
 
+    
+
+    int offset = offsetof(struct model, name);
+    model_ft model_t = &model_type;
+
+    for (int i = 0; i < model_t->member_count; i++) {
+        type_member_t* memb = &model_t->members[i];
+        if (memb->member_type == A_TYPE_PROP)
+            printf("offset %s = %i\n", memb->name, (int)memb->offset);
+    }
+
+    int test = 0;
+    test++;
+
     // create ether module, which manages llvm
     mod->e = new (ether,
+        mod,    null,
         source, mod->source,
         lang,   str("silver"),
         name,   mod->name);
@@ -1362,8 +1377,6 @@ void silver_init(silver mod) {
 }
 
 int main(int argc, char **argv) {
-    printf("does this work\n");
-    fflush(stdout);
     A_start();
     AF         pool = allocate(AF);
     cstr        src = getenv("SRC");
@@ -1394,6 +1407,6 @@ define_class(silver)
 define_enum(import_t)
 define_enum(build_state)
 define_class(import)
-define_class(fbuilder)
+define_class(completer_context)
 
 module_init(init)
