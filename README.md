@@ -19,7 +19,7 @@ public import WGPU [
 
 ##
 # current keywords supported are class, struct, enum, union
-# member keywords supported for access-level: [ intern, public ] and store: [ inlay ]
+# member keywords supported for access-level: [ intern, public ] and store: [ read-only, inlay ]
 # primitives are inlay by default, but one can inlay class so long as we are ok with copying trivially or by method
 # public members can be reflected by map: members [ object ]
 
@@ -38,10 +38,37 @@ this is still a comment.
 # its also best for there to be 1 file that expresses import and logic, so we may build the entire
 # stack from one modules expression.
 # we can end the comment now with two #'s
+#
+# constant members of class arent read-only; constant applies to membership alone
+# for data, it should use a membership keyword: read-only
 ##
+
+string operator add [ int i, string a ] [
+    return '{ a } and { i }'
+]
+
+int a-function [ string a ] [
+    int i: 2 + cast sz a
+    print 'you just called me with %s, and ill respond with { i }', a
+    return i
+]
 
 class app [
     public int value : 1 # assign operator is ':' constant is '='  [ no const decorator ]
+
+    intern inlay struct [
+        int    a: 2
+        string b
+    ] i-am-embedded
+
+    public object[] all
+
+    cast int [
+        ref func::int = ref run # function pointers work with or without object targets
+        int    r: func ? run
+        return r
+    ]
+
     int run[] print 'hi -- you have given me {value}' -> 2
 ]
 
