@@ -2,7 +2,7 @@
 development in progress, with documentation to be added/changed
 
 # **import** keyword
-it starts with **import**.  import allows you to build from repositories in any language.  that makes **silver** a first class build system.  it's in-module so you only need 1 source-file for a production app.  import is for any resource, decentralized with git or in your own file-system.  silver is designed to get things done with less tokens, and less resources while staying away from centralized package management.  it's a watcher, so changes to source are built immediately.  it keeps large C headers in memory and recompiles with updates.  silver is the language target for the Orbiter IDE (in development)
+it starts with **import**.  import allows you to build from repositories in any language.  that makes **silver** a first class build system.  it's in-module so you only need 1 source-file for a production app.  import is designed for any resource, decentralized with git or in your own file-system.  silver is designed to get things done with less tokens, and less resources while staying away from centralized package management.  it's a watcher, so changes to source are built immediately.  it keeps large C headers in memory and recompiles with updates.  silver is the language target for the Orbiter IDE (in development)
 
 built on an object model in C called A-type.
 
