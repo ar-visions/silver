@@ -68,8 +68,8 @@ class app [
     public object[] all
 
     cast int [
-        ref func::int = ref run # function pointers work with or without object targets
-        int    r: func ? run
+        ref [int::string] my-func = ref run # function pointers work with or without object targets
+        int    r: my-func ?? run
         return r
     ]
 
