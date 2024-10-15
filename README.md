@@ -23,11 +23,10 @@ public import WGPU [
 # primitives are inlay by default, but one can inlay class so long as we are ok with copying trivially or by method
 # public members can be reflected by map: members [ object ]
 
-this is still a comment.
+this is still a comment... the double # does that
 
 # every object is alloc'd and ref-counted except for non-inlay (bool ... i8 -> i64, f32 -> f64, inlaid structs etc)
 #
-# those have member functions to access, though; either way we access members only one way: .
 # we assign with : and assign-const with =
 # silver in data form may be thought of as a type-based json, and we support this form of serialization
 #
@@ -41,6 +40,11 @@ this is still a comment.
 #
 # constant members of class arent read-only; constant applies to membership alone
 # for data, it should use a membership keyword: read-only
+#
+# methods do not require [ bracket-parens ] if we are at the first level of expression
+# ... no parens if we have no args, too.
+#
+# heres a program:
 ##
 
 string operator add [ int i, string a ] [
@@ -119,7 +123,7 @@ int main[ app a ] [
 
 
 # **meta** keyword
-classes have ability to perform meta instancing.  think of it as templates but without code expansion; it simply does introspection automatically with the typed symbols.  meta is a simple idea, it's nothing more than an array of types you provide to the class when using it.  the class accepts a fixed amount of types at meta index.  
+classes have ability to perform meta instancing.  think of it as templates but without code expansion; it simply does high-level reflection with the typed symbols.  meta is a simple idea, it's nothing more than an array of types you provide to the class when using it.  the class accepts a fixed amount of types at meta index.  
 ```python
 meta [ I:any ]
 class list [
