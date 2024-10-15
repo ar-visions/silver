@@ -60,6 +60,10 @@ int a-function [ string a ] [
 class app [
     public int value : 1 # assign operator is ':' constant is '='  [ no const decorator ]
 
+    index string [ int from-int ] [
+        return 'a string with { from-int }'
+    ]
+
     intern inlay struct [
         int    a: 2
         string b
@@ -68,12 +72,12 @@ class app [
     public object[] all
 
     cast int [
-        ref [int::string] my-func = ref run # function pointers work with or without object targets
+        ref int my-func[ string ] = ref run # we may invoke without parens, but ref is simply storing its address and implicit targeting
         int    r: my-func ?? run
         return r
     ]
 
-    int run[] print 'hi -- you have given me {value}' -> 2
+    int run[] print 'hi -- you have given me { value } .... ill call my own indexing method: { this[ 2 ] }' -> 2
 ]
 
 int main[ app a ] [
@@ -84,8 +88,7 @@ int main[ app a ] [
     -> a.run > 0
 ]
 
-# this is a reduced language, but we do have cast, index, and named operators
-# with reflection its in effect more features than you use and none that you avoid anyway.  effectively more there, more with silver.
+# this is a reduced language, but we do have cast, index, and operator overloading
 
 
 ```
