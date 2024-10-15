@@ -18,12 +18,12 @@ public import WGPU [
 ]
 
 ##
-# current keywords supported are class, struct, enum, union
+# designed for keywords import, class, struct, enum
 # member keywords supported for access-level: [ intern, public ] and store: [ read-only, inlay ]
 # primitives are inlay by default, but one can inlay class so long as we are ok with copying trivially or by method
 # public members can be reflected by map: members [ object ]
 
-this is still a comment... the double
+this is still a comment...
 
 # every object is alloc'd and ref-counted except for non-inlay (bool ... i8 -> i64, f32 -> f64, inlaid structs etc)
 #
