@@ -2,7 +2,11 @@
 development in progress, with documentation to be added/changed
 
 # **import** keyword
-it starts with **import**.  import allows you to build from repositories in any language.  that makes **silver** a first class build system.  it's in-module so you only need 1 source-file for a production app.  its made to import anything, including images.  silver is project aware, and designed to get things done with less tokens, and less resources.  it's also a watcher, so changes to source are built immediately.  it makes very little sense not to keep C99 headers in memory and recompile with updates.  when it's established, a LLVM-frontend is future  architecture, with implementation of such in C++ (...one last time, C++).  For now, the C99 should compile roughly optimal to a proper LLVM frontend.
+it starts with **import**.  import allows you to build from repositories in any language.  that makes **silver** a first class build system.  it's in-module so you only need 1 source-file for a production app.  its made to import anything, including images.  silver is project aware, and designed to get things done with less tokens, and less resources.  it's also a watcher, so changes to source are built immediately.  it makes very little sense not to keep C99 headers in memory and recompile with updates.  its meant to be the language the Orbiter IDE is going to be written in.  honestly you can't actually make a langauge without an IDE to show it off.
+
+we are about 4 months into silver.  it started as a python-based silver to C transpiler and shifted into C++, then C.  then we dropped the transpiler idea to go with direct LLVM-IR API.  why output text to compiler later when you can compile as a front-end on LLVM.  technically we're using the IR APIs in LLVM.
+
+built on an object model in C called A-type.
 
 ```python
 # public will expose it's API, so you may just develop in C and use silver as build system
@@ -13,12 +17,27 @@ public import WGPU [
     links:      ['webgpu_dawn']
 ]
 
-# ...or you can dig deeper and use its module member types, class, mod, struct, enum, union
+# ...or you can reach for the stars and use its module member types, class, mod, struct, enum, union
+# built with security and reflection in mind
+# every object is ref-counted except for value-based primitives (bool ... i8 -> i64, f32 -> f64)
+# those have member functions to access, though; either way we access members only one way: .
+# we assign with : and assign-const with =
+# silver in data form may be thought of as a type-based json, and we support this form of serialization
+# the ethos of silver is we are open source developers and we do not rely on specific package managers
+# we build the entire stack ourselves as-is the most secure and open way.
+# there will never be a 'silver package manager'.  the entire idea of building binaries else-where is not our thing
+
 class app [
     public int value : 1 # assign operator is ':' constant is '='  [ no const decorator ]
-    void run[] [
-        print 'hi -- you have given me {value}'
-    ]
+    int run[] print 'hi -- you have given me {value}' -> 2
+]
+
+int main[ app a ] [
+    int this-is-const = a.value
+    int val: this-is-const
+    val += 1
+    print[ 'using app with value: { this-is-const }, then added { val - this-is-const }' ]
+    -> a.run > 0
 ]
 
 # this is a reduced language, but we do have cast, index, and named operators
