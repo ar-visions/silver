@@ -1,5 +1,5 @@
 # **silver** Language
-emit A-type library from a very succinct and modern language.  silver is designed to be the most reflective language possible, lightest weight C-based object model with almost no initialization required, yet polymorphic casts, methods, indexing and operator methods.  The actual output of silver can be debugged and mapped to our original source very easily.  A VScode gdb/llvm adapter is needed for the mapping, but Orbiter is essentially inline or development of this component first.
+development in progress, with documentation to be added/changed
 
 # **import** keyword
 it starts with **import**.  import allows you to build from repositories in any language.  that makes **silver** a first class build system.  it's in-module so you only need 1 source-file for a production app.  its made to import anything, including images.  silver is project aware, and designed to get things done with less tokens, and less resources.  it's also a watcher, so changes to source are built immediately.  it makes very little sense not to keep C99 headers in memory and recompile with updates.  when it's established, a LLVM-frontend is future  architecture, with implementation of such in C++ (...one last time, C++).  For now, the C99 should compile roughly optimal to a proper LLVM frontend.
