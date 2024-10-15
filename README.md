@@ -2,7 +2,7 @@
 development in progress, with documentation to be added/changed
 
 # **import** keyword
-it starts with **import**.  import allows you to build from repositories in any language.  that makes **silver** a first class build system.  it's in-module so you only need 1 source-file for a production app.  its made to import anything, including images.  silver is project aware, and designed to get things done with less tokens, and less resources.  it's also a watcher, so changes to source are built immediately.  it makes very little sense not to keep C99 headers in memory and recompile with updates.  its meant to be the language the Orbiter IDE is going to be written in.  after-all you can't make a new language without an IDE
+it starts with **import**.  import allows you to build from repositories in any language.  that makes **silver** a first class build system.  it's in-module so you only need 1 source-file for a production app.  its made to import anything, including images.  silver is project aware, and designed to get things done with less tokens, and less resources.  it's also a watcher, so changes to source are built immediately.  it makes very little sense not to keep C99 headers in memory and recompile with updates.  its meant to be the language for the Orbiter IDE.  after-all you can't make a new language without an IDE
 
 we are about 4 months into silver.  it started as a python-based silver to C transpiler and shifted into C++, then C.  then we dropped the transpiler idea to go with direct LLVM-IR API.  why output text to compiler later when you can compile as a front-end on LLVM.  technically we're using the IR APIs in LLVM.
 
