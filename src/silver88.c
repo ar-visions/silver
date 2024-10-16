@@ -891,7 +891,7 @@ static node reverse_descent(silver mod) {
                 OPType op     = level->ops   [j];
                 string method = level->method[j];
                 node R = parse_primary(mod);
-                     L = ether_op     (mod, op, method, L, R);
+                     L = ether_op     (mod->e, op, method, L, R);
                 m      = true;
                 break;
             }
@@ -930,8 +930,7 @@ member cast_method(silver mod, class class_target, model cast) {
 
 /// @brief modifies incoming member for the various wrap cases we will want to 
 /// serve.  its important that this be extensible
-static model parse_wrap(model mdl_src) {
-    silver mod = mdl_src->mod;
+static model parse_wrap(silver mod, model mdl_src) {
     verify(tok(symbol, "["), "expected [");
     array shape = new(array, alloc, 32);
     while (true) {
@@ -945,7 +944,7 @@ static model parse_wrap(model mdl_src) {
     return mdl_wrap;
 }
 
-static function parse_fn(model rtype, token name);
+static function parse_fn(silver mod, model rtype, token name);
 
 /// @brief this reads entire function definition, member we lookup, new member
 static member read_member(silver mod) {
@@ -958,9 +957,11 @@ static member read_member(silver mod) {
     string alpha = tok(read_alpha);
     if(alpha) {
         member mem = lookup(mod->e, alpha);
-        if (mem) {
+        if (mem && !mem->is_type) {
             mem->is_assigned = true;
-            return mem;
+            return mem; /// will need to read.all.members.in.series
+        } else {
+            tok(prev);
         }
     }
     interface access = interface_undefined;
@@ -974,7 +975,9 @@ static member read_member(silver mod) {
     bool  is_static = tok(symbol, "static");
     bool  is_ref    = tok(symbol, "ref");
     token n         = tok(peek);
+    print_tokens(mod);
     model mdl       = read_model(mod, is_ref);
+    print_tokens(mod);
     if (!mdl) {
         print("info: could not read type at position %o", tok(location));
         tok(pop_state, false); // we may 'info' here
@@ -984,41 +987,41 @@ static member read_member(silver mod) {
     
     // may be [, or alpha-id  (its an error if its neither)
     if (tok(next_is, "["))
-        mdl = parse_wrap(mdl);
+        mdl = parse_wrap(mod, mdl);
 
     /// read member name
     print_tokens(mod);
-    string s_name = tok(read_alpha);
-    verify(s_name, "expected alpha-numeric name");
-    tok(prev);
     token name = tok(next);
+    verify(is_alpha(name), "expected alpha-numeric name");
 
     /// convert model to function parse_fn takes in rtype and token name
     if (tok(next_is, "["))
-        mdl = parse_fn(mdl, name);
+        mdl = parse_fn(mod, mdl, name);
  
-    member mem = new(member, mod, mod, name, name, mdl, mdl, is_static, is_static, access, access);
-    ecall(push_member, mem);
+    member mem = new(member, mod, mod->e,
+        name, name, mdl, mdl,
+        is_static, is_static, access, access);
     tok(pop_state, true);
     return mem;
 }
 
 
 map parse_args(silver mod) {
+    verify(tok(symbol, "["), "parse-args: expected [");
     array args = new(array, alloc, 32);
-    int arg_index = 0;
     print_tokens(mod);
     if (!tok(next_is, "]")) {
-        epush(null);
+        epush(new(non_registered, mod, mod->e)); // if we push null, then it should not actually create debug info for the members since we dont 'know' what type it is... this wil let us delay setting it on function
         while (true) {
+            print_tokens(mod);
             member arg = read_member(mod);
+            print_tokens(mod);
             verify (arg,       "member failed to read");
             verify (arg->name, "member name not set");
+            push   (args, arg);
             if     (tok(next_is, "]")) break;
             verify (tok(next_is, ","), "expected separator");
-            tokens (consume);
-            push   (args, arg);
-            arg_index++;
+            tok    (consume);
         }
         epop();
     }
@@ -1026,19 +1029,27 @@ map parse_args(silver mod) {
     return args;
 }
 
-void build_function(silver mod, object arg, function fn) {
+node parse_statements(silver mod);
+
+void build_function(silver mod, object arg, completer_context ctx) {
+    function fn = ctx->data;
+    tokens body = ctx->body;
     print("building function: %o", fn->name);
+    tok(push_state, body, 0);
+    epush(fn);
+    parse_statements(mod);
+    epop();
+    tok(pop_state, false);
 }
 
-function parse_fn(model rtype, token name) {
-    silver mod = rtype->mod;
+function parse_fn(silver mod, model rtype, token name) {
     verify (tok(next_is, "["), "expected function args");
-    tokens (consume);
+    array m = new(array, alloc, 32);
     array args = parse_args(mod);
     subprocedure completer = subproc(mod, build_function, null);
     record rec_top = instanceof(mod->e->top, record) ? mod->e->top : null;
     function fn = new(function,
-        mod,    mod,    name, name,     record, rec_top,
+        mod,    mod->e, name, name,     record, rec_top, rtype, rtype,
         args,   args,   completer, completer);
     
     tokens fn_body = read_body(mod);
@@ -1223,10 +1234,72 @@ node parse_assignment(silver mod, member mem, string op) {
     return mem;
 }
 
+/*
+
+ether defines this model:
+
+/// ether knows nothing of tokens, but we are giving the elements back to it for
+/// processing, to call ether back with more operations
+#define if_context_schema(X,Y) \
+    i_prop(X,Y, public,     object,       user_cond) \
+    i_prop(X,Y, public,     node,         user_cond_result) \
+    i_prop(X,Y, required,   object,       user_expr) \
+    i_prop(X,Y, public,     node,         user_expr_result) \
+#ifndef op_intern
+#define op_intern
+#endif
+declare_class(if_context)
+
+*/
+
+node cond_builder(silver mod, tokens cond_tokens, object unused) {
+    tok(push_state, cond_tokens, 0);
+    node cond_expr = parse_expression(mod);
+    verify(cond_tokens->cursor == len(cond_tokens->tokens), 
+        "unexpected trailing expression in single expression condition");
+    tok(pop_state, false);
+    return cond_expr;
+}
+
+node expr_builder(silver mod, tokens expr_tokens, object unused) {
+    tok(push_state, expr_tokens, 0);
+    node exprs = parse_statements(mod);
+    verify(expr_tokens->cursor == len(expr_tokens->tokens), 
+        "error: statements not fully processed");
+    tok(pop_state, false);
+    return exprs;
+}
+
+/// parses entire chain of if, [else-if, ...] [else]
 node parse_if_else(silver mod) {
-    tok(consume);
-    node vr = null;
-    return null;
+    bool  require_if   = true;
+    array tokens_cond  = new(array, alloc, 32);
+    array tokens_block = new(array, alloc, 32);
+    while (true) {
+        bool is_if  = tok(symbol, "if");
+        verify(is_if && require_if || !require_if, "expected if");
+        tokens cond  = is_if ? read_body(mod) : null;
+        tokens block = read_body(mod);
+        push(tokens_cond,  cond);
+        push(tokens_block, block);
+        if (!is_if)
+            break;
+        bool next_else = tok(symbol, "else");
+        require_if = false;
+    }
+    subprocedure build_cond = subproc(mod, cond_builder, null);
+    subprocedure build_expr = subproc(mod, expr_builder, null);
+    /// we call this way to manage the LLVM-IR control-flow
+    /// while it would be nicest to parse and place in blocks after, LLVM does not work that way
+    /// we must read-ahead
+    /// the technical issue with this one is how to parse non [ block ] single expressions
+    /// seems like a lot of parallel code -- perhaps we may perform this in parallel and obtain the tokens
+    /// ether could be 'muted' or something weird like that
+    /// that is we must read-ahead to know where expressions end, it can be a: [method-call(a,b) + 2 / 2] ? 1 : 2 / 2
+    /// i think ether must be made to be silent and return placeholder node for this
+    /// we must be careful not to register member changes such as assignment (not allowed in this level anyway!)
+    /// this is ONLY for single-expression when we dont see a [.. if we see one of those we need not do this
+    return ether_if_else(mod->e, tokens_cond, tokens_block, build_cond, build_expr);
 }
 
 node parse_do_while(silver mod) {
@@ -1289,8 +1362,26 @@ node parse_statements(silver mod) {
     return vr;
 }
 
-void build_class(silver mod, object arg, class cl) {
+void build_class(silver mod, object arg, completer_context ctx) {
+    class cl = ctx->data;
     print("building class: %o", cl->name);
+    tok(push_state, ctx->body, 0);
+    epush(cl);
+    while (tok(cast_bool)) {
+        member mem = read_member(mod);
+        /// if there is an initializer, we should emit the expression in an init function
+        /// it would be called post-args, the same as A-type
+        /// it needs to be smart about holding, though
+        verify(len(mem->name), "member must have name in class: %o", cl->name);
+        set(mod->members, mem->name, mem);
+        /// functions could be built right away when reading
+        /// however we may need to delay based on reference to type or member
+        /// that has not been built yet.
+    }
+    epop();
+    tok(pop_state, false);
+    
+    //ecall(compile, cl);
 }
 
 class parse_class(silver mod) {
@@ -1307,13 +1398,12 @@ class parse_class(silver mod) {
     tokens block = read_body(mod);
 
     subprocedure completer = subproc(mod, build_class, null);
-    class cl = new(class, mod, mod, name, class_name, completer, completer);
+    class cl = new(class, mod, mod->e, name, class_name, completer, completer);
 
     completer_context f = new(completer_context, data, cl, body, block);
     completer->ctx = f; /// safe to set after, as we'll never start building within function; we need this context in builder
     return cl;
 }
-
 
 void parse_top(silver mod) {
     /// in top level we only need the names of classes and their blocks
@@ -1322,18 +1412,15 @@ void parse_top(silver mod) {
 
     /// first pass we read classes, and aliases
     /// then we load the class members from their token states
-    /// 
     while (tok(cast_bool)) {
         if (tok(next_is, "import")) {
             import im = new(import, mod, mod, tokens, mod->tokens);
             push(mod->imports, im);
-            continue;
         } else if (tok(next_is, "class")) {
             class cl = parse_class(mod);
             member mem = new(member, name, cl->name, mdl, cl);
             string key = cast(cl->name, string);
             set(mod->members, key, mem);
-            continue;
         } else {
             print_tokens(mod);
             member mem = read_member(mod);
@@ -1350,20 +1437,7 @@ void silver_init(silver mod) {
     mod->imports   = new(array, alloc, 32);
     mod->libs_used = new(array);
     mod->tokens    = new(tokens, file, mod->source);
-
-    
-
-    int offset = offsetof(struct model, name);
-    model_ft model_t = &model_type;
-
-    for (int i = 0; i < model_t->member_count; i++) {
-        type_member_t* memb = &model_t->members[i];
-        if (memb->member_type == A_TYPE_PROP)
-            printf("offset %s = %i\n", memb->name, (int)memb->offset);
-    }
-
-    int test = 0;
-    test++;
+    mod->members   = new(map, hsize, 32); /// we should base silver on ether
 
     // create ether module, which manages llvm
     mod->e = new (ether,
@@ -1400,7 +1474,6 @@ int main(int argc, char **argv) {
     write(mod->e);
     drop(pool);
 }
-
 
 define_class(tokens)
 define_class(silver)
