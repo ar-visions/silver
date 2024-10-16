@@ -1,8 +1,10 @@
 # **silver** Language
-emit A-type library from a very succinct and modern language.  silver is designed to be the most reflective language possible, lightest weight C-based object model with almost no initialization required, yet polymorphic casts, methods, indexing and operator methods.  The actual output of silver can be debugged and mapped to our original source very easily.  A VScode gdb/llvm adapter is needed for the mapping, but Orbiter is essentially inline or development of this component first.
+development in progress, with documentation to be added/changed
 
 # **import** keyword
-it starts with **import**.  import allows you to build from repositories in any language.  that makes **silver** a first class build system.  it's in-module so you only need 1 source-file for a production app.  its made to import anything, including images.  silver is project aware, and designed to get things done with less tokens, and less resources.  it's also a watcher, so changes to source are built immediately.  it makes very little sense not to keep C99 headers in memory and recompile with updates.  when it's established, a LLVM-frontend is future  architecture, with implementation of such in C++ (...one last time, C++).  For now, the C99 should compile roughly optimal to a proper LLVM frontend.
+it starts with **import**.  import allows you to build from repositories in any language.  that makes **silver** a first class build system.  it's in-module so you only need 1 source-file for a production app.  import is designed for any resource, decentralized with git or in your own file-system.  silver is designed to get things done with less tokens, and less resources while staying away from centralized package management.  it's a watcher, so changes to source are built immediately.  it keeps large C headers in memory and recompiles with updates.  silver is the language target for the Orbiter IDE (in development)
+
+built on an object model in C called A-type.
 
 ```python
 # public will expose it's API, so you may just develop in C and use silver as build system
@@ -13,15 +15,78 @@ public import WGPU [
     links:      ['webgpu_dawn']
 ]
 
-# ...or you can dig deeper and use its module member types, class, mod, struct, enum, union
-class app [
-    public int value : 1 # assign operator is ':' constant is '='  [ no const decorator ]
-    void run[] [
-        print 'hi -- you have given me {value}'
-    ]
+##
+# designed for keywords import, class, struct, enum
+# member keywords supported for access-level: [ intern, public ] and store: [ read-only, inlay ]
+# primitives are inlay by default, but one can inlay class so long as we are ok with copying trivially or by method
+# public members can be reflected by map: members [ object ]
+
+this is still a comment...
+
+# every object is alloc'd and ref-counted except for non-inlay (bool ... i8 -> i64, f32 -> f64, inlaid structs etc)
+#
+# we assign with : and assign-const with =
+# silver in data form may be thought of as a type-based json, and we support this form of serialization
+#
+# the ethos of silver is we are open source developers and we do not rely on specific package managers
+# it should be simpler than using a package manager, too.  easier because you know the entire world
+# is accessible.  thats something people actually demand.
+#
+# its also best for there to be 1 file that expresses import and logic, so we may build the entire
+# stack from one modules expression.
+# we can end the comment now with two #'s
+#
+# constant members of class arent read-only; constant applies to membership alone
+# for data, it should use a membership keyword: read-only
+#
+# methods do not require [ bracket-parens ] if we are at the first level of expression
+# ... no parens if we have no args, too.
+#
+# heres a program:
+##
+
+string operator add [ int i, string a ] [
+    return '{ a } and { i }'
 ]
 
-# this is a reduced language, but we do have cast, index, and named operators
+int a-function [ string a ] [
+    int i: 2 + cast sz a
+    print 'you just called me with %s, and ill respond with { i }', a
+    return i
+]
+
+class app [
+    public int value : 1 # assign operator is ':' constant is '='  [ no const decorator ]
+
+    index string [ int from-int ] [
+        return 'a string with { from-int }'
+    ]
+
+    intern inlay struct [
+        int    a: 2
+        string b
+    ] i-am-embedded
+
+    public object[] all
+
+    cast int [
+        ref int my-func[ string ] = ref run # we may invoke without parens, but ref is simply storing its address and implicit targeting
+        int r:  my-func[ 'hi' ] ?: run
+        return r
+    ]
+
+    int run[] print 'hi -- you have given me { value } .... ill call my own indexing method: { this[ 2 ] }' -> 2
+]
+
+int main[ app a ] [
+    int this-is-const = a.value
+    int val: this-is-const
+    val += 1
+    print[ 'using app with value: { this-is-const }, then added { val - this-is-const } ... our int is fixed at 64bit' ]
+    -> a.run > 0
+]
+
+# this is a reduced language, but we do have cast, index, and operator overloading
 
 
 ```
@@ -55,13 +120,10 @@ class app [
 
 
 
-# **import** keyword
-
-
-# **meta** keyword
-classes have ability to perform meta instancing.  think of it as templates but without code expansion; it simply does introspection automatically with the typed symbols.  meta is a simple idea, it's nothing more than an array of types you provide to the class when using it.  the class accepts a fixed amount of types at meta index.  
+# **meta** keyword (reserved for 1.0 release)
+classes have ability to perform meta instancing.  think of it as templates but without code expansion; it simply does high-level reflection with the typed symbols.  meta is a simple idea, it's nothing more than an array of types you provide to the class when using it.  the class accepts a fixed amount of types at meta index.  
 ```python
 meta [ I:any ]
 class list [
-    I type # in this context, I becomes an 'object' type, the base A-type
+    I type # in this context, I becomes an 'object' type, the base A-type we're ABI compatible with
 ]
