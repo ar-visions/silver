@@ -1,5 +1,5 @@
 # **silver** lang
-development in progress, with documentation to be added/changed
+development in progress, with documentation to be added/changed.
 
 # **import** keyword
 **silver** starts with **import**. The **import** keyword lets you build from repositories from projects in any language. if file identifiers given, these can be **silver** modules, C/C++ or rust.  This makes **silver** not just a language but a build system one can use for non-silver language projects. **import** is simply a keyword, so we only need one source file for a production app. import is designed to work with any local or remote module, resource, project. Source folders with repository locations are prioritized before external checkouts, so you can build externals locally with your own changes.  It will recognize the various environment variables such as **CC**, **CXX**, **RUSTC**, **CPP** (type-bound pre-processor is planned for **silver** 1.0)
