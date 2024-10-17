@@ -2,7 +2,7 @@
 development in progress, with documentation to be added/changed
 
 # **import** keyword
-Silver starts with import. The import keyword lets you build from repositories in any language, making Silver a first-class build system. It's in-module, meaning you only need one source file for a production app. Import is designed to work with any resource, project, or your local file system. Source folders with repository locations are prioritized before external checkouts, so you can build externals locally with your own changes.
+Silver starts with **import**. The **import** keyword lets you build from repositories from projects in any language. if file identifiers given, these can be silver modules, or C or rust.  This makes **silver** not just a language but a build system one can use for non-silver language projects.  It's also far easier to utilize than other environments that effectively lock you into an insecure package manager with controls you do not own. **import** is simply a keyword, so we only need one source file for a production app. import is designed to work with any resource, project, or your local file system. Source folders with repository locations are prioritized before external checkouts, so you can build externals locally with your own changes.
 
 As a language, Silver is all about efficiency: fewer tokens, fewer resources, and a strong stance against centralized package management. In watch mode (or development mode), changes are built immediately, with large C headers kept in memory for faster updates. Silver is also the language target for the Orbiter IDE, which is currently in development.
 
