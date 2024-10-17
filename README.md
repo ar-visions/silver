@@ -1,4 +1,4 @@
-# **silver** Language
+# **silver** lang
 development in progress, with documentation to be added/changed
 
 # **import** keyword
