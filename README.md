@@ -2,16 +2,15 @@
 development in progress, with documentation to be added/changed
 
 # **import** keyword
-Silver starts with **import**. The **import** keyword lets you build from repositories from projects in any language. if file identifiers given, these can be silver modules, C/C++ or rust.  This makes **silver** not just a language but a build system one can use for non-silver language projects. *import** is simply a keyword, so we only need one source file for a production app. import is designed to work with any resource, project, or your local file system. Source folders with repository locations are prioritized before external checkouts, so you can build externals locally with your own changes.  It will recognize the various environment variables such as **CC**, **CXX**, **RUSTC**, **CPP** (type-bound pre-processor is planned for silver 1.0)
+silver starts with **import**. The **import** keyword lets you build from repositories from projects in any language. if file identifiers given, these can be silver modules, C/C++ or rust.  This makes **silver** not just a language but a build system one can use for non-silver language projects. **import** is simply a keyword, so we only need one source file for a production app. import is designed to work with any resource, project, or your local file system. Source folders with repository locations are prioritized before external checkouts, so you can build externals locally with your own changes.  It will recognize the various environment variables such as **CC**, **CXX**, **RUSTC**, **CPP** (type-bound pre-processor is planned for silver 1.0)
 
-As a language, Silver is all about efficiency: fewer moving parts (no direct requirement of Make, CMake for your projects), fewer tokens, and a strong stance against centralized package management. In watch mode (or development mode), changes are built immediately, with large C headers kept in memory for faster updates. Silver is also the language target for the Orbiter IDE, which is currently in development.
+As a language, silver is all about efficiency: fewer moving parts (no direct requirement of Make, CMake for your projects), fewer tokens, and a strong stance against centralized package management. In watch mode (or development mode), changes are built immediately, with large C headers kept in memory for faster updates. silver is also the language target for the Orbiter IDE, which is currently in development.
 
 # **A-type** foundation
-A-type is the foundation of Silver's compiler and reflection system. It provides compatibility and reflection capabilities that enable dynamic behavior and runtime type inspection. With A-type, you can write classes in C and seamlessly use them in Silver, similar to Python's extension protocol. A-type makes Silver adaptable and extensible, integrating deeply with both the language and its C interoperability features.
+A-type is the foundation of silver's compiler and reflection system. It provides compatibility and reflection capabilities that enable dynamic behavior and runtime type inspection. With A-type, you can write classes in C and seamlessly use them in silver, similar to Python's extension protocol. A-type makes silver adaptable and extensible, integrating deeply with both the language and its C interoperability features.
 
 ```python
-# public will expose it's API, so you may just develop in C and use silver as build system
-public import WGPU [
+import WGPU [
     source:     'https://github.com/ar-visions/dawn@2e9297c45f48df8be17b4f3d2595063504dac16c',
     build:      ['-DDAWN_ENABLE_INSTALL=1', '-DBUILD_SHARED_LIBS=0'],
     includes:   ['dawn/webgpu', 'dawn/dawn_proc_table'],
