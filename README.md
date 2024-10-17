@@ -2,9 +2,12 @@
 development in progress, with documentation to be added/changed
 
 # **import** keyword
-it starts with **import**.  import allows you to build from repositories in any language.  that makes **silver** a first class build system.  it's in-module so you only need 1 source-file for a production app.  import is designed for any resource, project or in your own file-system. source folders with repository locations are preferred before checking out, so one may build externals themselves with silver fetching those local changes. As a language, silver is designed to get things done with less tokens and less resources while staying away from centralized package management.  in watch mode (or development mode), changes to source are built immediately.  it keeps large C headers in memory and recompiles with updates.  silver is the language target for the Orbiter IDE (in development)
+Silver starts with import. The import keyword lets you build from repositories in any language, making Silver a first-class build system. It's in-module, meaning you only need one source file for a production app. Import is designed to work with any resource, project, or your local file system. Source folders with repository locations are prioritized before external checkouts, so you can build externals locally with your own changes.
 
-built on an object model in C called A-type.
+As a language, Silver is all about efficiency: fewer tokens, fewer resources, and a strong stance against centralized package management. In watch mode (or development mode), changes are built immediately, with large C headers kept in memory for faster updates. Silver is also the language target for the Orbiter IDE, which is currently in development.
+
+# **A-type** foundation
+A-type is the foundation of Silver's compiler and reflection system. It provides compatibility and reflection capabilities that enable dynamic behavior and runtime type inspection. With A-type, you can write classes in C and seamlessly use them in Silver, similar to Python's extension protocol. A-type makes Silver adaptable and extensible, integrating deeply with both the language and its C interoperability features.
 
 ```python
 # public will expose it's API, so you may just develop in C and use silver as build system
