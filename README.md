@@ -8,6 +8,7 @@ As a language, **silver** is all about efficiency: fewer moving parts (no direct
 
 # **A-type** foundation
 A-type is the foundation of **silver**'s compiler and reflection system. It provides compatibility and reflection capabilities that enable dynamic behavior and runtime type inspection. With A-type, you can write classes in C and seamlessly use them in **silver**, similar to Python's extension protocol. A-type makes **silver** adaptable and extensible, integrating deeply with both the language and its C interoperability features.
+[http://](https://github.com/ar-visions/A)
 
 ```python
 import WGPU [
