@@ -1,6 +1,7 @@
 import <stdio, stdlib>
 
-# args are read-only. so we are ok to use mocked A-type data
 int main[] [
+    i64 i: 4
+    printf[ 'this is a test: %i\n', cast i32[ i ] ]
     return 2
 ]

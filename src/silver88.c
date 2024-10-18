@@ -231,6 +231,7 @@ none import_init(import im) {
                 token inc = tok(next);
                 assert (is_alpha(inc), "expected alpha-identifier for header");
                 push(im->includes, inc);
+                ecall(include, str(inc->chars));
                 bool is_inc = tok(next_is, ">");
                 if (is_inc) {
                     tok(consume);
@@ -712,7 +713,7 @@ none tokens_init(tokens a) {
 }
 
 token tokens_element(tokens a, num rel) {
-    return a->tokens->elements[clamp(a->cursor + rel, 0, a->tokens->len)];
+    return a->tokens->elements[clamp(a->cursor + rel, 0, a->tokens->len - 1)];
 }
 
 token tokens_prev(tokens a) {
@@ -844,7 +845,9 @@ node parse_return(silver mod) {
     model t_void  = emodel("void");
     bool  is_void = cmp(rtype, t_void) == 0;
     tok (consume);
-    return ecall(freturn, parse_expression(mod));
+    node expr = parse_expression(mod);
+    AType type = isa(expr);
+    return ecall(freturn, expr);
 }
 
 node parse_break(silver mod) {
@@ -944,7 +947,45 @@ static model parse_wrap(silver mod, model mdl_src) {
     return mdl_wrap;
 }
 
-static function parse_fn(silver mod, model rtype, token name);
+static function parse_fn(silver mod, model rtype, token name, interface access);
+
+static node parse_function_call(silver mod, node target, member fmem);
+
+static model read_cast(silver mod) {
+    tok(push_current);
+    print("read_cast:");
+    print_tokens(mod);
+    if (!tok(symbol, "[")) {
+        tok(pop_state, false);
+        return null;
+    }
+    string alpha = tok(read_alpha);
+    if(!alpha) {
+        tok(pop_state, false);
+        return null;
+    }
+    member mem = lookup(mod->e, alpha);
+    if (tok(symbol, ".")) {
+        tok(pop_state, false);
+        return null;
+    }
+    if (mem && mem->is_type) {
+        model mdl = mem->mdl;
+        if (tok(next_is, "["))
+            mdl = parse_wrap(mod, mdl);
+
+        if (!tok(symbol, "]")) {
+            fault("expected ] after cast"); /// we should be able to error here unless it leaks into a statement block
+            tok(pop_state, false);
+            return null;
+        }
+        print("is_cast");
+        tok(pop_state, true); /// we pop state, saving this current
+        return mdl; // parse_function_call(mod, target, mem); (we are doing this in parse_statements)
+    }
+    tok(pop_state, false);
+    return null;
+}
 
 /// @brief this reads entire function definition, member we lookup, new member
 static member read_member(silver mod) {
@@ -956,13 +997,32 @@ static member read_member(silver mod) {
     print_tokens(mod);
     string alpha = tok(read_alpha);
     if(alpha) {
+        member target = null; // member is a node with value-ref (value)
         member mem = lookup(mod->e, alpha);
-        if (mem && !mem->is_type) {
-            mem->is_assigned = true;
-            return mem; /// will need to read.all.members.in.series
-        } else {
-            tok(prev);
+        
+        /// attempt to resolve target if there is a chain
+        while (tok(symbol, ".")) {
+            target = mem;
+            epush(mem->mdl);
+            string alpha = tok(read_alpha);
+            mem = resolve(mem, alpha);
+            verify(alpha, "expected alpha identifier");
+            epop();
         }
+        
+        if (mem && mem->is_func) {
+            tok(pop_state, true); /// we pop state, saving this current
+            return mem; // parse_function_call(mod, target, mem); (we are doing this in parse_statements)
+        }
+        if (mem && !mem->is_type) {
+            tok(pop_state, true); /// we pop state, saving this current
+            return mem; /// baked into mem is read.all.members.in.series <- where series is mem (right gpt?)
+        }
+        print_tokens(mod);
+        tok(pop_state, false); /// we pop the state to the last push
+        tok(push_current);
+        print_tokens(mod);
+        /// now we will proceed here for declaration of members
     }
     interface access = interface_undefined;
     for (int m = 1; m < interface_type.member_count; m++) {
@@ -996,11 +1056,12 @@ static member read_member(silver mod) {
 
     /// convert model to function parse_fn takes in rtype and token name
     if (tok(next_is, "["))
-        mdl = parse_fn(mod, mdl, name);
+        mdl = parse_fn(mod, mdl, name, access);
  
     member mem = new(member, mod, mod->e,
         name, name, mdl, mdl,
         is_static, is_static, access, access);
+    ecall(push_member, mem);
     tok(pop_state, true);
     return mem;
 }
@@ -1035,14 +1096,14 @@ void build_function(silver mod, object arg, completer_context ctx) {
     function fn = ctx->data;
     tokens body = ctx->body;
     print("building function: %o", fn->name);
-    tok(push_state, body, 0);
+    tok(push_state, body->tokens, 0);
     epush(fn);
     parse_statements(mod);
     epop();
     tok(pop_state, false);
 }
 
-function parse_fn(silver mod, model rtype, token name) {
+function parse_fn(silver mod, model rtype, token name, interface access) {
     verify (tok(next_is, "["), "expected function args");
     array m = new(array, alloc, 32);
     array args = parse_args(mod);
@@ -1050,7 +1111,7 @@ function parse_fn(silver mod, model rtype, token name) {
     record rec_top = instanceof(mod->e->top, record) ? mod->e->top : null;
     function fn = new(function,
         mod,    mod->e, name, name,     record, rec_top, rtype, rtype,
-        args,   args,   completer, completer);
+        args,   args,   completer, completer, access, access);
     
     tokens fn_body = read_body(mod);
     completer_context f = new(completer_context, data, fn, body, fn_body);
@@ -1084,7 +1145,7 @@ static node parse_function_call(silver mod, node target, member fmem) {
         model  arg_mdl  = arg ? arg->mdl : null;
         if (arg_mdl && expr->mdl != arg_mdl)
             expr = ecall(convert, expr, arg_mdl);
-        print("argument %i: %o", arg_index, expr);
+        print("argument %i: %o", arg_index, expr->mdl->name);
 
         push(values, expr);
         arg_index++;
@@ -1135,22 +1196,13 @@ static node parse_primary(silver mod) {
         return expr; // Return the type reference
     }
 
-    // 'cast' operator
-    if (tok(symbol, "cast")) {
+    print_tokens(mod);
 
-        // cast something[ bool ]
-        // cast bool [ something ]
-
-        member  cast_member_type = read_member(mod); // Read the type to cast to
-        verify (cast_member_type, "expected type member after cast");
-        verify (cast_member_type->is_type, "expected member to be type definition");
-        model   cast_mdl  = cast_member_type->mdl;
-        
-        assert(tok(next_is, "["), "Expected '[' for cast");
-        tok(consume); // Consume '['
+    // 'cast' operator has a type inside
+    model cast_mdl = read_cast(mod);
+    if (cast_mdl) {
+        print_tokens(mod);
         node expr = parse_expression(mod); // Parse the expression to cast
-        tok(consume); // Consume ']'
-        
         if (is_object(expr)) {
             model method = cast_method(mod, expr->mdl, cast_mdl);
             if (method) {
@@ -1161,9 +1213,11 @@ static node parse_primary(silver mod) {
         }
         verify (!is_object(expr), "object %o requires a cast method for %o",
             expr->mdl->name, cast_mdl->name);
-        /// in this case we need to cast to a non-object which is lik
+        /// cast to basic type with convert
         return ecall(convert, expr, cast_mdl);
     }
+
+    print_tokens(mod);
 
     // 'ref' operator (reference)
     if (tok(symbol, "ref")) {
@@ -1177,6 +1231,7 @@ static node parse_primary(silver mod) {
     if (n)
         return ecall(literal, n);
 
+    print_tokens(mod);
     // parenthesized expressions
     if (tok(symbol, "[")) {
         node expr = parse_expression(mod); // Parse the expression
@@ -1185,11 +1240,9 @@ static node parse_primary(silver mod) {
     }
 
     // handle identifiers (variables or function calls)
-    string ident = tok(read_alpha);
+    member mem = read_member(mod);
     /// do defs need to be anonymous member entries as well?
-    if (ident) {
-        member mem = lookup(mod->e, ident); // Look up variable
-        verify (mem, "member not found: %o", ident);
+    if (mem) {
         if (tok(next_is, "["))
             return parse_function_call(mod, null, mem);
         else
@@ -1216,15 +1269,15 @@ node parse_assignment(silver mod, member mem, string op) {
     } else {
         mem->is_const = eq(op, "=");
         bool e = mem->is_const;
-        if (e || eq(op, ":"))  res = ecall(assign, R, L);     // LLVMBuildStore(B, R, L);
-        else if (eq(op, "+=")) res = ecall(assign_add, R, L); // LLVMBuildAdd  (B, R, L, "assign-add");
-        else if (eq(op, "-=")) res = ecall(assign_sub, R, L); // LLVMBuildSub  (B, R, L, "assign-sub");
-        else if (eq(op, "*=")) res = ecall(assign_mul, R, L); // LLVMBuildMul  (B, R, L, "assign-mul");
-        else if (eq(op, "/=")) res = ecall(assign_div, R, L); // LLVMBuildSDiv (B, R, L, "assign-div");
-        else if (eq(op, "%=")) res = ecall(assign_mod, R, L); // LLVMBuildSRem (B, R, L, "assign-mod");
-        else if (eq(op, "|=")) res = ecall(assign_or,  R, L); // LLVMBuildOr   (B, R, L, "assign-or"); 
-        else if (eq(op, "&=")) res = ecall(assign_and, R, L); // LLVMBuildAnd  (B, R, L, "assign-and");
-        else if (eq(op, "^=")) res = ecall(assign_xor, R, L); // LLVMBuildXor  (B, R, L, "assign-xor");
+        if (e || eq(op, ":"))  res = ecall(assign,     L, R); // LLVMBuildStore(B, R, L);
+        else if (eq(op, "+=")) res = ecall(assign_add, L, R); // LLVMBuildAdd  (B, R, L, "assign-add");
+        else if (eq(op, "-=")) res = ecall(assign_sub, L, R); // LLVMBuildSub  (B, R, L, "assign-sub");
+        else if (eq(op, "*=")) res = ecall(assign_mul, L, R); // LLVMBuildMul  (B, R, L, "assign-mul");
+        else if (eq(op, "/=")) res = ecall(assign_div, L, R); // LLVMBuildSDiv (B, R, L, "assign-div");
+        else if (eq(op, "%=")) res = ecall(assign_mod, L, R); // LLVMBuildSRem (B, R, L, "assign-mod");
+        else if (eq(op, "|=")) res = ecall(assign_or,  L, R); // LLVMBuildOr   (B, R, L, "assign-or"); 
+        else if (eq(op, "&=")) res = ecall(assign_and, L, R); // LLVMBuildAnd  (B, R, L, "assign-and");
+        else if (eq(op, "^=")) res = ecall(assign_xor, L, R); // LLVMBuildXor  (B, R, L, "assign-xor");
         else fault("unsupported operator: %o", op);
     }
     /// update member's value_ref (or not! it was not what we expected in LLVM)
@@ -1253,7 +1306,7 @@ declare_class(if_context)
 */
 
 node cond_builder(silver mod, tokens cond_tokens, object unused) {
-    tok(push_state, cond_tokens, 0);
+    tok(push_state, cond_tokens->tokens, 0);
     node cond_expr = parse_expression(mod);
     verify(cond_tokens->cursor == len(cond_tokens->tokens), 
         "unexpected trailing expression in single expression condition");
@@ -1262,7 +1315,7 @@ node cond_builder(silver mod, tokens cond_tokens, object unused) {
 }
 
 node expr_builder(silver mod, tokens expr_tokens, object unused) {
-    tok(push_state, expr_tokens, 0);
+    tok(push_state, expr_tokens->tokens, 0);
     node exprs = parse_statements(mod);
     verify(expr_tokens->cursor == len(expr_tokens->tokens), 
         "error: statements not fully processed");
@@ -1317,9 +1370,11 @@ node parse_statement(silver mod) {
     if (tok(next_is, "if"))     return parse_if_else(mod);
     if (tok(next_is, "do"))     return parse_do_while(mod);
 
+    print_tokens(mod);
     member mem  = read_member(mod); // we store target on member
+    print_tokens(mod);
     if (mem) {
-        print("%s member: %o %o", mem->is_assigned ?
+        print("%s member: %o %o", (mem->is_assigned || mem->is_func) ?
             "existing" : "new", mem->mdl->name, mem->name);
         /// mem (multi instanced, we arent looking it up here...)
         /// to do that we need to be in member mode
@@ -1336,7 +1391,7 @@ node parse_statement(silver mod) {
 }
 
 node parse_statements(silver mod) {
-    epush(null);
+    epush(new(statements, mod, mod->e));
 
     bool multiple   = tok(next_is, "[");
     if  (multiple)    tok(consume);
@@ -1346,7 +1401,7 @@ node parse_statements(silver mod) {
     while(tok(cast_bool)) {
         if(multiple && tok(symbol, "[")) {
             depth += 1;
-            epush(null);
+            epush(new(statements, mod, mod->e));
         }
         print("next statement origin: %o", tok(peek));
         vr = parse_statement(mod);
@@ -1365,7 +1420,7 @@ node parse_statements(silver mod) {
 void build_class(silver mod, object arg, completer_context ctx) {
     class cl = ctx->data;
     print("building class: %o", cl->name);
-    tok(push_state, ctx->body, 0);
+    tok(push_state, ctx->body->tokens, 0);
     epush(cl);
     while (tok(cast_bool)) {
         member mem = read_member(mod);
@@ -1418,14 +1473,14 @@ void parse_top(silver mod) {
             push(mod->imports, im);
         } else if (tok(next_is, "class")) {
             class cl = parse_class(mod);
-            member mem = new(member, name, cl->name, mdl, cl);
+            member mem = new(member, mod, mod->e, name, cl->name, mdl, cl);
             string key = cast(cl->name, string);
-            set(mod->members, key, mem);
+            ecall(push_member, mem);
         } else {
             print_tokens(mod);
             member mem = read_member(mod);
-            string key = mem->name ? str(mem->name->chars) : form(string, "$m%i", count(mod->defs));
-            set(mod->members, key, mem);
+            string key = str(mem->name->chars);
+            ecall(push_member, mem);
         }
     }
 }
@@ -1441,13 +1496,15 @@ void silver_init(silver mod) {
 
     // create ether module, which manages llvm
     mod->e = new (ether,
-        mod,    null,
-        source, mod->source,
-        lang,   str("silver"),
-        name,   mod->name);
+        mod,     null,
+        source,  mod->source,
+        install, mod->install,
+        lang,    str("silver"),
+        name,    mod->name);
 
     parse_top(mod);
-    write(mod->e);
+    ether_build(mod->e);
+    ether_write(mod->e);
 }
 
 int main(int argc, char **argv) {
