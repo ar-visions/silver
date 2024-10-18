@@ -1,14 +1,18 @@
-# **silver** Language
-development in progress, with documentation to be added/changed
+# **silver** lang
+development in progress, with documentation to be added/changed.
 
 # **import** keyword
-it starts with **import**.  import allows you to build from repositories in any language.  that makes **silver** a first class build system.  it's in-module so you only need 1 source-file for a production app.  import is designed for any resource, decentralized with git or in your own file-system.  silver is designed to get things done with less tokens, and less resources while staying away from centralized package management.  it's a watcher, so changes to source are built immediately.  it keeps large C headers in memory and recompiles with updates.  silver is the language target for the Orbiter IDE (in development)
+**silver** starts with **import**. The **import** keyword lets you build from repositories from projects in any language.  It also uses local silver/C/C++/rust modules directly if file identifiers given. Your local checkouts are prioritized before external checkouts, so you can build externals locally with your own changes, and silver will track these changes.  The build process will recognize the various environment variables such as **CC**, **CXX**, **RUSTC**, **CPP** (type-bound pre-processor is planned for **silver** 1.0)
 
-built on an object model in C called A-type.
+As a language, **silver** is all about efficiency: fewer moving parts (no direct requirement of Make, CMake for your projects), fewer tokens, and a strong stance against centralized package management. In watch mode (or development mode), changes are built immediately, with large C headers kept in memory for faster updates. **silver** is also the language target for the Orbiter IDE, which is currently in development.
+
+# **A-type** foundation
+A-type is the foundation of **silver**'s compiler and reflection system. It provides compatibility and reflection capabilities that enable dynamic behavior and runtime type inspection. With A-type, you can write classes in C and seamlessly use them in **silver**, similar to Python's extension protocol. A-type makes **silver** adaptable and extensible, integrating deeply with both the language and its C interoperability features.
+
+see: [A-type project](https://github.com/ar-visions/A)
 
 ```python
-# public will expose it's API, so you may just develop in C and use silver as build system
-public import WGPU [
+import WGPU [
     source:     'https://github.com/ar-visions/dawn@2e9297c45f48df8be17b4f3d2595063504dac16c',
     build:      ['-DDAWN_ENABLE_INSTALL=1', '-DBUILD_SHARED_LIBS=0'],
     includes:   ['dawn/webgpu', 'dawn/dawn_proc_table'],
