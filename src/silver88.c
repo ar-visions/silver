@@ -27,8 +27,8 @@ static bool is_alpha(A any);
 static node parse_expression(silver mod);
 static node parse_primary(silver mod);
 
-static void print_tokens(silver mod) {
-    print("tokens: %o %o %o %o %o ...", 
+static void print_tokens(symbol label, silver mod) {
+    print("[%s] tokens: %o %o %o %o %o ...", label,
         element(mod->tokens, 0), element(mod->tokens, 1),
         element(mod->tokens, 2), element(mod->tokens, 3),
         element(mod->tokens, 4), element(mod->tokens, 5));
@@ -946,8 +946,7 @@ static node parse_function_call(silver mod, node target, member fmem);
 
 static model read_cast(silver mod) {
     tok(push_current);
-    print("read_cast:");
-    print_tokens(mod);
+    print_tokens("read-cast", mod);
     if (!tok(symbol, "[")) {
         tok(pop_state, false);
         return null;
@@ -986,8 +985,7 @@ static member read_member(silver mod) {
     /// if we are not there, then set false in that case.
     /// in that case, the value_ref should be set by the user to R-type or ARG-type
     tok(push_current);
-    print("read_member:");
-    print_tokens(mod);
+    print_tokens("read-member", mod);
     string alpha = tok(read_alpha);
     if(alpha) {
         member target = null; // member is a node with value-ref (value)
@@ -1003,19 +1001,12 @@ static member read_member(silver mod) {
             pop(mod);
         }
         
-        if (mem && mem->is_func) {
+        if (mem && (mem->is_func || !mem->is_type)) {
             tok(pop_state, true); /// we pop state, saving this current
             return mem; // parse_function_call(mod, target, mem); (we are doing this in parse_statements)
         }
-        if (mem && !mem->is_type) {
-            tok(pop_state, true); /// we pop state, saving this current
-            return mem; /// baked into mem is read.all.members.in.series <- where series is mem (right gpt?)
-        }
-        print_tokens(mod);
-        tok(pop_state, false); /// we pop the state to the last push
+        tok(pop_state, false);
         tok(push_current);
-        print_tokens(mod);
-        /// now we will proceed here for declaration of members
     }
     interface access = interface_undefined;
     for (int m = 1; m < interface_type.member_count; m++) {
@@ -1028,26 +1019,25 @@ static member read_member(silver mod) {
     bool  is_static = tok(symbol, "static");
     bool  is_ref    = tok(symbol, "ref");
     token n         = tok(peek);
-    print_tokens(mod);
+    print_tokens("before-read_model", mod);
     model mdl       = read_model(mod, is_ref);
-    print_tokens(mod);
     if (!mdl) {
         print("info: could not read type at position %o", tok(location));
         tok(pop_state, false); // we may 'info' here
         return null;
     }
-    print_tokens(mod);
     
     // may be [, or alpha-id  (its an error if its neither)
     if (tok(next_is, "[")) // this would be confused for a cast, but we are isolated in wrap syntax which neighbors model name
         mdl = parse_wrap(mod, mdl);
 
     /// read member name
-    print_tokens(mod);
+    print_tokens("before-member-name", mod);
     token name = tok(next);
     verify(is_alpha(name), "expected alpha-numeric name");
 
     /// convert model to function parse_fn takes in rtype and token name
+    /// cannot be a cast, again
     if (tok(next_is, "["))
         mdl = parse_fn(mod, mdl, name, access);
  
@@ -1063,13 +1053,12 @@ static member read_member(silver mod) {
 map parse_args(silver mod) {
     verify(tok(symbol, "["), "parse-args: expected [");
     array args = new(array, alloc, 32);
-    print_tokens(mod);
+    print_tokens("args", mod);
     if (!tok(next_is, "]")) {
         push(mod, new(non_registered, mod, mod)); // if we push null, then it should not actually create debug info for the members since we dont 'know' what type it is... this wil let us delay setting it on function
         while (true) {
-            print_tokens(mod);
+            print_tokens("arg", mod);
             member arg = read_member(mod);
-            print_tokens(mod);
             verify (arg,       "member failed to read");
             verify (arg->name, "member name not set");
             push   (args, arg);
@@ -1096,6 +1085,9 @@ static node parse_function_call(silver mod, node target, member fmem) {
     verify(isa(fn) == typeid(function), "expected function type");
     int  model_arg_count = len(fn->args);
     
+    model is_cast = read_cast(mod);
+    verify(!is_cast, "invalid cast detected");
+
     if (tok(next_is, "[")) {
         tok(consume);
         expect_end_br = true;
@@ -1162,12 +1154,12 @@ static node parse_primary(silver mod) {
         return expr; // Return the type reference
     }
 
-    print_tokens(mod);
+    print_tokens("before-read-cast", mod);
 
     // 'cast' operator has a type inside
     model cast_mdl = read_cast(mod);
     if (cast_mdl) {
-        print_tokens(mod);
+        print_tokens("after-read-cast", mod);
         node expr = parse_expression(mod); // Parse the expression to cast
         if (is_object(expr)) {
             model method = cast_method(mod, expr->mdl, cast_mdl);
@@ -1183,8 +1175,6 @@ static node parse_primary(silver mod) {
         return mcall(convert, expr, cast_mdl);
     }
 
-    print_tokens(mod);
-
     // 'ref' operator (reference)
     if (tok(symbol, "ref")) {
         mod->in_ref = true;
@@ -1199,7 +1189,6 @@ static node parse_primary(silver mod) {
     if (n)
         return mcall(literal, n);
 
-    print_tokens(mod);
     // parenthesized expressions
     if (tok(symbol, "[")) {
         node expr = parse_expression(mod); // Parse the expression
@@ -1335,6 +1324,8 @@ node parse_do_while(silver mod) {
 
 node parse_statement(silver mod) {
     token t = tok(peek);
+    print_tokens("parse-statement", mod);
+
     if (tok(next_is, "return")) return parse_return(mod);
     if (tok(next_is, "break"))  return parse_break(mod);
     if (tok(next_is, "for"))    return parse_for(mod);
@@ -1342,9 +1333,7 @@ node parse_statement(silver mod) {
     if (tok(next_is, "if"))     return parse_if_else(mod);
     if (tok(next_is, "do"))     return parse_do_while(mod);
 
-    print_tokens(mod);
     member mem  = read_member(mod); // we store target on member
-    print_tokens(mod);
     if (mem) {
         print("%s member: %o %o", (mem->is_assigned || mem->is_func) ?
             "existing" : "new", mem->mdl->name, mem->name);
@@ -1502,7 +1491,7 @@ void silver_parse(silver mod) {
             string key = cast(rec->name, string);
             mcall(push_member, mem);
         } else {
-            print_tokens(mod);
+            print_tokens("before-top-member", mod);
             member mem = read_member(mod);
             string key = str(mem->name->chars);
             mcall(push_member, mem);
