@@ -6,16 +6,12 @@
 
 
 #define   mcall(M,...)   call(mod, M, ## __VA_ARGS__)
-#define   epush(O)       ether_push(mod, O)
-#define   epop()         ether_pop(mod)
-#define   elookup(MEM)   call(mod, lookup, str(MEM))
 #define   emodel(MDL)    ({ \
     member  m = ether_lookup(mod, str(MDL)); \
     model mdl = m ? m->mdl : null; \
     mdl; \
 })
 
-#define   edef(K)        get(mod->defs, str(K))
 #define   icall(M,...)   import_ ## M(im, ## __VA_ARGS__)
 
 #undef  peek
@@ -840,13 +836,10 @@ bool tokens_cast_bool(tokens a) {
 }
 
 node parse_return(silver mod) {
-    /// should be mcall(return_type) # 'return type' from nearest context with type
-    model rtype   = mcall(return_type);
-    model t_void  = emodel("void");
-    bool  is_void = cmp(rtype, t_void) == 0;
+    model rtype = mcall(return_type);
+    bool  is_v  = is_void(rtype);
     tok (consume);
-    node expr = parse_expression(mod);
-    AType type = isa(expr);
+    node expr   = is_v ? null : parse_expression(mod);
     return mcall(freturn, expr);
 }
 
@@ -1003,11 +996,11 @@ static member read_member(silver mod) {
         /// attempt to resolve target if there is a chain
         while (tok(symbol, ".")) {
             target = mem;
-            epush(mem->mdl);
+            push(mod, mem->mdl);
             string alpha = tok(read_alpha);
             mem = resolve(mem, alpha);
             verify(alpha, "expected alpha identifier");
-            epop();
+            pop(mod);
         }
         
         if (mem && mem->is_func) {
@@ -1072,7 +1065,7 @@ map parse_args(silver mod) {
     array args = new(array, alloc, 32);
     print_tokens(mod);
     if (!tok(next_is, "]")) {
-        epush(new(non_registered, mod, mod)); // if we push null, then it should not actually create debug info for the members since we dont 'know' what type it is... this wil let us delay setting it on function
+        push(mod, new(non_registered, mod, mod)); // if we push null, then it should not actually create debug info for the members since we dont 'know' what type it is... this wil let us delay setting it on function
         while (true) {
             print_tokens(mod);
             member arg = read_member(mod);
@@ -1084,39 +1077,13 @@ map parse_args(silver mod) {
             verify (tok(next_is, ","), "expected separator");
             tok    (consume);
         }
-        epop();
+        pop(mod);
     }
     tok(consume);
     return args;
 }
 
 node parse_statements(silver mod);
-
-void build_function(silver mod, object arg, completer_context ctx) {
-    function fn = ctx->data;
-    tokens body = ctx->body;
-    print("building function: %o", fn->name);
-    tok(push_state, body->tokens, 0);
-
-    parse_statements(mod);
-    tok(pop_state, false);
-}
-
-function parse_fn(silver mod, model rtype, token name, interface access) {
-    verify (tok(next_is, "["), "expected function args");
-    array m = new(array, alloc, 32);
-    array args = parse_args(mod);
-    subprocedure completer = subproc(mod, build_function, null);
-    record rec_top = instanceof(mod->top, record) ? mod->top : null;
-    function fn = new(function,
-        mod,    mod, name, name,     record, rec_top, rtype, rtype,
-        args,   args,   completer, completer, access, access);
-    
-    tokens fn_body = read_body(mod);
-    completer_context f = new(completer_context, data, fn, body, fn_body);
-    completer->ctx = f; /// safe to set after, as we'll never start building within function; we need this context in builder
-    return fn;
-}
 
 /// any-kind-of-object.function[ ... 
 ///                            ^-- we are here, and the target is given::
@@ -1220,9 +1187,11 @@ static node parse_primary(silver mod) {
 
     // 'ref' operator (reference)
     if (tok(symbol, "ref")) {
+        mod->in_ref = true;
         node expr = parse_expression(mod);
+        mod->in_ref = false;
         fault("not impl");
-        //return mcall(get_ref, expr, expr->mdl);
+        return expr;
     }
 
     // literal values (int, float, bool, string)
@@ -1239,12 +1208,16 @@ static node parse_primary(silver mod) {
     }
 
     // handle identifiers (variables or function calls)
-    member mem = read_member(mod);
-    /// do defs need to be anonymous member entries as well?
+    member mem = read_member(mod); // we need target on member
     if (mem) {
-        if (tok(next_is, "["))
-            return parse_function_call(mod, null, mem);
-        else
+        if (mem->is_func) {
+            if (mod->in_ref) {
+                fault("not implemented");
+                return null; /// simple stack mechanism we need to support returnin the pointer for (is this a 'load?')
+            } else {
+                return parse_function_call(mod, mem->target, mem);
+            }
+        } else
             return mcall(load, mem, null, null);
     }
 
@@ -1390,7 +1363,7 @@ node parse_statement(silver mod) {
 }
 
 node parse_statements(silver mod) {
-    epush(new(statements, mod, mod));
+    push(mod, new(statements, mod, mod));
 
     bool multiple   = tok(next_is, "[");
     if  (multiple)    tok(consume);
@@ -1400,34 +1373,62 @@ node parse_statements(silver mod) {
     while(tok(cast_bool)) {
         if(multiple && tok(symbol, "[")) {
             depth += 1;
-            epush(new(statements, mod, mod));
+            push(mod, new(statements, mod, mod));
         }
         print("next statement origin: %o", tok(peek));
         vr = parse_statement(mod);
         if(!multiple) break;
         if(tok(next_is, "]")) {
             if (depth > 1)
-                epop();
+                pop(mod);
             tok(next);
             if ((depth -= 1) == 0) break;
         }
     }
-    epop();
+    pop(mod);
     return vr;
 }
 
+void build_function(silver mod, object arg, function fn) {
+    tokens body = instanceof(fn->user, tokens);
+    print("building function: %o", fn->name);
+    tok(push_state, body->tokens, 0);
+
+    parse_statements(mod);
+    tok(pop_state, false);
+}
+
+function parse_fn(silver mod, model rtype, token name, interface access) {
+    verify (tok(next_is, "["), "expected function args");
+    array m = new(array, alloc, 32);
+    array args = parse_args(mod);
+    subprocedure process = subproc(mod, build_function, null);
+    record rec_top = instanceof(mod->top, record) ? mod->top : null;
+    function fn = new(function,
+        mod,    mod,     name,   name,
+        record, rec_top, rtype,  rtype,
+        args,   args,    process, process,
+        access, access,  user,   read_body(mod)); /// user must process their payload for a function to effectively resolve
+    process->ctx = fn; /// safe to set after, as we'll never start building within function; we need this context in builder
+    return fn;
+}
+
 /// this has to be called when we have made all top members
-void build_record(silver mod, object arg, completer_context ctx) {
-    record rec      = ctx->data;
+/// when its called, the record type and 
+/// create the members of the struct first, then we call record_completer manually
+/// better this than create 'future' chain out of the prior, more direct control here.
+void build_record(silver mod, object arg, record rec) {
     bool   is_class = inherits(rec, class);
     symbol sname    = is_class ? "class" : "struct";
     print("building %s: %o", sname, rec->name);
-    tok(push_state, ctx->body->tokens, 0);
+    tokens body     = instanceof(rec->user, tokens);
+    tok(push_state, body->tokens, 0);
+    verify(tok(symbol, "["), "expected [");
 
-    /// context: record model
-    epush(rec);
+    push(mod, rec);
     while (tok(cast_bool)) {
         member mem = read_member(mod);
+        if   (!mem) break;
 
         verify(get(rec->members, str(mem->name->chars)), "member not added to %o", rec->name);
 
@@ -1447,8 +1448,9 @@ void build_record(silver mod, object arg, completer_context ctx) {
         /// however we may need to delay based on reference to type or member
         /// that has not been built yet.
     }
-    epop();
+    pop(mod);
 
+    verify(tok(symbol, "]"), "expected ]");
     tok(pop_state, false);
     //mcall(compile, rec);
 }
@@ -1466,17 +1468,16 @@ record parse_record(silver mod, bool is_class) {
         verify(parent_name, "expected alpha-numeric parent identifier");
     }
     verify (tok(next_is, "[") , "expected function body");
-    tokens block = read_body(mod);
+    tokens body = read_body(mod);
 
-    subprocedure completer = subproc(mod, build_record, null);
+    subprocedure process = subproc(mod, build_record, null);
     record rec;
     if (is_class)
-        rec = new(class,     mod, mod, name, name, completer, completer);
+        rec = new(class,     mod, mod, name, name, process, process);
     else
-        rec = new(structure, mod, mod, name, name, completer, completer);
-    
-    completer_context f = new(completer_context, data, rec, body, block);
-    completer->ctx = f; /// safe to set after, as we'll never start building within function; we need this context in builder
+        rec = new(structure, mod, mod, name, name, process, process);
+    process->ctx = rec;
+    rec->user = body;
     return rec;
 }
 
@@ -1552,5 +1553,4 @@ define_mod   (silver, ether)
 define_enum  (import_t)
 define_enum  (build_state)
 define_class (import)
-define_class (completer_context)
 module_init  (init)
