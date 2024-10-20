@@ -56,6 +56,7 @@ declare_class(tokens)
 declare_class(completer_context)
 
 #define silver_schema(X,Y)\
+    i_prop    (X,Y, intern,     bool,                 in_ref) \
     i_prop    (X,Y, intern,     array,                imports) \
     i_prop    (X,Y, intern,     tokens,               tokens) \
     i_prop    (X,Y, intern,     array,                main_symbols) \
