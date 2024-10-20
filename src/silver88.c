@@ -1039,7 +1039,7 @@ static member read_member(silver mod) {
     print_tokens(mod);
     
     // may be [, or alpha-id  (its an error if its neither)
-    if (tok(next_is, "["))
+    if (tok(next_is, "[")) // this would be confused for a cast, but we are isolated in wrap syntax which neighbors model name
         mdl = parse_wrap(mod, mdl);
 
     /// read member name
@@ -1365,7 +1365,10 @@ node parse_statement(silver mod) {
 node parse_statements(silver mod) {
     push(mod, new(statements, mod, mod));
 
-    bool multiple   = tok(next_is, "[");
+    model is_cast = read_cast(mod);
+    verify (!is_cast, "unexpected cast at statements level");
+
+    bool multiple   = tok(next_is, "["); // <- this simpleton processing and consumption is why we read cast first; all read_* functions revert the token stack when they dont see their data
     if  (multiple)    tok(consume);
     int  depth      = 1;
     node vr = null;
