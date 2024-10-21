@@ -838,6 +838,7 @@ bool tokens_cast_bool(tokens a) {
 node parse_return(silver mod) {
     model rtype = mcall(return_type);
     bool  is_v  = is_void(rtype);
+    model ctx = mcall(context_model, typeid(function));
     tok (consume);
     node expr   = is_v ? null : parse_expression(mod);
     return mcall(freturn, expr);
@@ -905,6 +906,7 @@ static node parse_expression(silver mod) {
 
 /// @brief completely inadequate
 model read_model(silver mod, bool is_ref) {
+    print_tokens("read-model", mod);
     string name = tok(read_alpha); // Read the type to cast to
     if (!name) return null;
     return emodel(name->chars);
@@ -957,26 +959,28 @@ static model read_cast(silver mod) {
         return null;
     }
     member mem = lookup(mod, alpha);
+    if (!mem || !mem->is_type || mem->is_func) {
+        tok(pop_state, false);
+        return null;
+    }
+
     if (tok(symbol, ".")) {
         tok(pop_state, false);
         return null;
     }
-    if (mem && mem->is_type) {
-        model mdl = mem->mdl;
-        if (tok(next_is, "["))
-            mdl = parse_wrap(mod, mdl);
 
-        if (!tok(symbol, "]")) {
-            fault("expected ] after cast"); /// we should be able to error here unless it leaks into a statement block
-            tok(pop_state, false);
-            return null;
-        }
-        print("is_cast");
-        tok(pop_state, true); /// we pop state, saving this current
-        return mdl; // parse_function_call(mod, target, mem); (we are doing this in parse_statements)
+    model mdl = mem->mdl;
+    if (tok(next_is, "["))
+        mdl = parse_wrap(mod, mdl);
+
+    if (!tok(symbol, "]")) {
+        fault("expected ] after cast"); /// we should be able to error here unless it leaks into a statement block
+        tok(pop_state, false);
+        return null;
     }
-    tok(pop_state, false);
-    return null;
+    print("is_cast");
+    tok(pop_state, true); /// we pop state, saving this current
+    return mdl; // parse_function_call(mod, target, mem); (we are doing this in parse_statements)
 }
 
 /// @brief this reads entire function definition, member we lookup, new member
@@ -984,12 +988,19 @@ static member read_member(silver mod) {
     /// we use alloc to obtain a value-ref by means of allocation inside a function body.
     /// if we are not there, then set false in that case.
     /// in that case, the value_ref should be set by the user to R-type or ARG-type
+    tokens tk = mod->tokens;
     tok(push_current);
     print_tokens("read-member", mod);
     string alpha = tok(read_alpha);
     if(alpha) {
-        member target = null; // member is a node with value-ref (value)
-        member mem = lookup(mod, alpha);
+        model  ctx      = mod->top;
+        member target   = null; // member is a node with value-ref (value)
+        static int cur  = 0;
+        cur++;
+        if (cur == 7) {
+            cur = cur;
+        }
+        member mem      = lookup(mod, alpha);
         
         /// attempt to resolve target if there is a chain
         while (tok(symbol, ".")) {
@@ -1001,12 +1012,17 @@ static member read_member(silver mod) {
             pop(mod);
         }
         
-        if (mem && (mem->is_func || !mem->is_type)) {
+        if (mem && mem->is_func) {
             tok(pop_state, true); /// we pop state, saving this current
             return mem; // parse_function_call(mod, target, mem); (we are doing this in parse_statements)
         }
-        tok(pop_state, false);
+        if (mem && !mem->is_type) {
+            tok(pop_state, true); /// we pop state, saving this current
+            return mem; /// baked into mem is read.all.members.in.series <- where series is mem (right gpt?)
+        }
+        tok(pop_state, false); /// we pop the state to the last push
         tok(push_current);
+        /// now we will proceed here for declaration of members
     }
     interface access = interface_undefined;
     for (int m = 1; m < interface_type.member_count; m++) {
@@ -1019,7 +1035,6 @@ static member read_member(silver mod) {
     bool  is_static = tok(symbol, "static");
     bool  is_ref    = tok(symbol, "ref");
     token n         = tok(peek);
-    print_tokens("before-read_model", mod);
     model mdl       = read_model(mod, is_ref);
     if (!mdl) {
         print("info: could not read type at position %o", tok(location));
@@ -1028,18 +1043,18 @@ static member read_member(silver mod) {
     }
     
     // may be [, or alpha-id  (its an error if its neither)
-    if (tok(next_is, "[")) // this would be confused for a cast, but we are isolated in wrap syntax which neighbors model name
+    if (tok(next_is, "["))
         mdl = parse_wrap(mod, mdl);
 
     /// read member name
-    print_tokens("before-member-name", mod);
+    print_tokens("read-member-name", mod);
     token name = tok(next);
     verify(is_alpha(name), "expected alpha-numeric name");
 
     /// convert model to function parse_fn takes in rtype and token name
-    /// cannot be a cast, again
-    if (tok(next_is, "["))
+    if (tok(next_is, "[")) {
         mdl = parse_fn(mod, mdl, name, access);
+    }
  
     member mem = new(member, mod, mod,
         name, name, mdl, mdl,
@@ -1050,12 +1065,13 @@ static member read_member(silver mod) {
 }
 
 
-map parse_args(silver mod) {
+arguments parse_args(silver mod) {
     verify(tok(symbol, "["), "parse-args: expected [");
-    array args = new(array, alloc, 32);
+    array       args = new(array,     alloc, 32);
+    arguments   res  = new(arguments, mod, mod, args, args);
     print_tokens("args", mod);
     if (!tok(next_is, "]")) {
-        push(mod, new(non_registered, mod, mod)); // if we push null, then it should not actually create debug info for the members since we dont 'know' what type it is... this wil let us delay setting it on function
+        push(mod, res); // if we push null, then it should not actually create debug info for the members since we dont 'know' what type it is... this wil let us delay setting it on function
         while (true) {
             print_tokens("arg", mod);
             member arg = read_member(mod);
@@ -1069,7 +1085,7 @@ map parse_args(silver mod) {
         pop(mod);
     }
     tok(consume);
-    return args;
+    return res;
 }
 
 node parse_statements(silver mod);
@@ -1085,9 +1101,6 @@ static node parse_function_call(silver mod, node target, member fmem) {
     verify(isa(fn) == typeid(function), "expected function type");
     int  model_arg_count = len(fn->args);
     
-    model is_cast = read_cast(mod);
-    verify(!is_cast, "invalid cast detected");
-
     if (tok(next_is, "[")) {
         tok(consume);
         expect_end_br = true;
@@ -1098,7 +1111,7 @@ static node parse_function_call(silver mod, node target, member fmem) {
     array  values    = new(array, alloc, 32);
     member last_arg  = null;
     while(arg_index < model_arg_count || fn->va_args) {
-        member arg      = arg_index < fn->args->len ? fn->args->elements[arg_index] : null;
+        member arg      = arg_index < len(fn->args) ? get(fn->args, arg_index) : null;
         node   expr     = parse_expression(mod);
         model  arg_mdl  = arg ? arg->mdl : null;
         if (arg_mdl && expr->mdl != arg_mdl)
@@ -1154,12 +1167,9 @@ static node parse_primary(silver mod) {
         return expr; // Return the type reference
     }
 
-    print_tokens("before-read-cast", mod);
-
     // 'cast' operator has a type inside
     model cast_mdl = read_cast(mod);
     if (cast_mdl) {
-        print_tokens("after-read-cast", mod);
         node expr = parse_expression(mod); // Parse the expression to cast
         if (is_object(expr)) {
             model method = cast_method(mod, expr->mdl, cast_mdl);
@@ -1324,8 +1334,6 @@ node parse_do_while(silver mod) {
 
 node parse_statement(silver mod) {
     token t = tok(peek);
-    print_tokens("parse-statement", mod);
-
     if (tok(next_is, "return")) return parse_return(mod);
     if (tok(next_is, "break"))  return parse_break(mod);
     if (tok(next_is, "for"))    return parse_for(mod);
@@ -1354,10 +1362,11 @@ node parse_statement(silver mod) {
 node parse_statements(silver mod) {
     push(mod, new(statements, mod, mod));
 
+    print_tokens("statements", mod);
     model is_cast = read_cast(mod);
     verify (!is_cast, "unexpected cast at statements level");
 
-    bool multiple   = tok(next_is, "["); // <- this simpleton processing and consumption is why we read cast first; all read_* functions revert the token stack when they dont see their data
+    bool multiple   = tok(next_is, "[");
     if  (multiple)    tok(consume);
     int  depth      = 1;
     node vr = null;
@@ -1383,20 +1392,25 @@ node parse_statements(silver mod) {
 
 void build_function(silver mod, object arg, function fn) {
     tokens body = instanceof(fn->user, tokens);
+    if (!call(fn, has_scope)) {
+        int test = 1;
+        test++;
+    }
+    //call(fn, finalize);
     print("building function: %o", fn->name);
     tok(push_state, body->tokens, 0);
-
+    print_tokens("body-tokens", mod);
     parse_statements(mod);
     tok(pop_state, false);
 }
 
 function parse_fn(silver mod, model rtype, token name, interface access) {
     verify (tok(next_is, "["), "expected function args");
-    array m = new(array, alloc, 32);
-    array args = parse_args(mod);
-    subprocedure process = subproc(mod, build_function, null);
-    record rec_top = instanceof(mod->top, record) ? mod->top : null;
-    function fn = new(function,
+    array           m       = new       (array, alloc, 32);
+    arguments       args    = parse_args(mod);
+    subprocedure    process = subproc   (mod, build_function, null);
+    record          rec_top = instanceof(mod->top, record) ? mod->top : null;
+    function        fn      = new       (function,
         mod,    mod,     name,   name,
         record, rec_top, rtype,  rtype,
         args,   args,    process, process,
@@ -1491,11 +1505,35 @@ void silver_parse(silver mod) {
             string key = cast(rec->name, string);
             mcall(push_member, mem);
         } else {
-            print_tokens("before-top-member", mod);
+            /// must make read-ahead mechanism for reading functions
+            print_tokens("top-member", mod);
             member mem = read_member(mod);
             string key = str(mem->name->chars);
             mcall(push_member, mem);
         }
+    }
+
+    /// finalize imported C functions first
+    pairs(mod->members, i) {
+        member mem = i->value;
+        model  mdl = mem->mdl;
+        if (instanceof(mem->mdl, function) && mdl->from_include) {
+            call(mem->mdl, process_finalize);
+        }
+    }
+
+    /// process/finalize all remaining member models 
+    /// calls process sub-procedure and poly-based finalize
+    pairs(mod->members, i) {
+        member mem = i->value;
+        if (instanceof(mem->mdl, record))
+            call(mem->mdl, process_finalize);
+    }
+
+    pairs(mod->members, i) {
+        member mem = i->value;
+        if (instanceof(mem->mdl, function))
+            call(mem->mdl, process_finalize);
     }
 }
 
@@ -1520,22 +1558,20 @@ int main(int argc, char **argv) {
     map    defaults = map_of(
         "module",  str(""),
         "install", import ? form(path, "%s", import) : 
-                            form(path, "%s/silver-import",
-                            src ? src : "."),
+                            form(path, "%s/silver-import", src ? src : "."),
         null);
 
     string ikey     = str("install");
-    map    args     = A_args(argc, argv, defaults, ikey);
-    print("args = %o", args);
-    path   install  = get(args, ikey);
     string mkey     = str("module");
+    map    args     = A_args(argc, argv, defaults, mkey);
+    print("args = %o", args);
     string name     = get(args, mkey);
     path   n        = new(path, chars, name->chars);
     path   source   = call(n, absolute);
-    verify (exists(source), "source %o does not exist", n);
-
-    string mname = stem(source);
-    silver mod = new(silver, source, source, install, install, name, mname);
+    silver mod      = new(silver,
+        source,  source,
+        install, get(args, ikey),
+        name,    stem(source));
     write(mod);
     drop(pool);
 }
