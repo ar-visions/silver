@@ -596,7 +596,6 @@ bool is_alpha(A any) {
     return false;
 }
 
-/// tokens
 array parse_tokens(A input) {
     string input_string;
     AType  type = isa(input);
@@ -675,6 +674,16 @@ array parse_tokens(A input) {
             }
             index         += 1;
             string crop    = mid(input_string, start, index - start);
+            if (crop->chars[0] == '-') {
+                char ch[2] = { crop->chars[0], 0 };
+                push(tokens, new(token,
+                    chars,  ch,
+                    source, src,
+                    line,   line_num,
+                    column, start - line_start));
+                crop = str(&crop->chars[1]);
+                line_start++;
+            }
             push(tokens, new(token,
                 chars,  crop->chars,
                 source, src,
@@ -995,19 +1004,16 @@ static member read_member(silver mod) {
     if(alpha) {
         model  ctx      = mod->top;
         member target   = null; // member is a node with value-ref (value)
-        static int cur  = 0;
-        cur++;
-        if (cur == 7) {
-            cur = cur;
-        }
         member mem      = lookup(mod, alpha);
         
         /// attempt to resolve target if there is a chain
-        while (tok(symbol, ".")) {
+        /// silver makes c->like->code a bit safer, and pointers more approachable
+        bool safe = false;
+        while ((safe = tok(symbol, "->")) || tok(symbol, ".")) {
             target = mem;
             push(mod, mem->mdl);
             string alpha = tok(read_alpha);
-            mem = resolve(mem, alpha);
+            mem = resolve(mem, alpha); /// needs an argument
             verify(alpha, "expected alpha identifier");
             pop(mod);
         }
@@ -1205,7 +1211,7 @@ static node parse_primary(silver mod) {
         verify(tok(symbol, "]"), "Expected closing parenthesis");
         return expr;
     }
-
+    
     // handle identifiers (variables or function calls)
     member mem = read_member(mod); // we need target on member
     if (mem) {
@@ -1501,7 +1507,9 @@ void silver_parse(silver mod) {
         } else if (tok(next_is, "class") || tok(next_is, "struct")) {
             bool  is_class = tok(next_is, "class");
             record rec = parse_record(mod, is_class);
-            member mem = new(member, mod, mod, name, rec->name, mdl, rec, is_type, true);
+            /// with the same name, we effectively change the model of membership, and what inlay and ref/ptr do
+            model  access_model = call(rec, alias, str(rec->name->chars), reference_pointer, null);
+            member mem = new(member, mod, mod, name, rec->name, mdl, access_model, is_type, true);
             string key = cast(rec->name, string);
             mcall(push_member, mem);
         } else {
@@ -1526,8 +1534,9 @@ void silver_parse(silver mod) {
     /// calls process sub-procedure and poly-based finalize
     pairs(mod->members, i) {
         member mem = i->value;
-        if (instanceof(mem->mdl, record))
-            call(mem->mdl, process_finalize);
+        model base = mem->mdl->ref ? mem->mdl->src : mem->mdl;
+        if (instanceof(base, record))
+            call(base, process_finalize);
     }
 
     pairs(mod->members, i) {
@@ -1572,7 +1581,6 @@ int main(int argc, char **argv) {
         source,  source,
         install, get(args, ikey),
         name,    stem(source));
-    write(mod);
     drop(pool);
 }
 
