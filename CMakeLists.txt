@@ -1,6 +1,0 @@
-cmake_minimum_required    (VERSION 2.8.12)
-enable_language           (ASM)
-project                   (silver)
-set(app TRUE)
-include                   (../A/A.cmake)
-target_link_libraries     (silver ${L}/libA.so ${L}/libether.so ${L}/libz.a ${L}/libglfw3.a m)
