@@ -1560,7 +1560,7 @@ void silver_init(silver mod) {
 
 int main(int argc, char **argv) {
     A_start();
-    
+
     AF         pool = allocate(AF);
     cstr        src = getenv("SRC");
     cstr     import = getenv("SILVER_IMPORT");
@@ -1574,6 +1574,7 @@ int main(int argc, char **argv) {
     string mkey     = str("module");
     map    args     = A_args(argc, argv, defaults, mkey);
     print("args = %o", args);
+
     string name     = get(args, mkey);
     path   n        = new(path, chars, name->chars);
     path   source   = call(n, absolute);
