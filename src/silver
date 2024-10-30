@@ -35,6 +35,7 @@ declare_enum(build_state)
     i_method    (X,Y,  public,  object,     read_literal) \
     i_method    (X,Y,  public,  string,     read_string) \
     i_method    (X,Y,  public,  string,     read_alpha) \
+    i_method    (X,Y,  public,  string,     read_keyword) \
     i_method    (X,Y,  public,  object,     read_bool) \
     i_method    (X,Y,  public,  object,     read_numeric) \
     i_method    (X,Y,  public,  string,     read_assign) \
@@ -54,19 +55,23 @@ declare_class(tokens)
 #endif
 declare_class(completer_context)
 
+/// todo: make macro column out of i_ vs s_
+/// its probably going to make a few more macros
+
 #define silver_schema(X,Y)\
     i_prop    (X,Y, intern,     bool,                 in_ref) \
     i_prop    (X,Y, intern,     array,                imports) \
     i_prop    (X,Y, intern,     tokens,               tokens) \
     i_prop    (X,Y, intern,     array,                main_symbols) \
     i_prop    (X,Y, intern,     array,                compiled_objects) \
-    i_prop    (X,Y, intern,     array,                libs_used) \
+    i_prop    (X,Y, intern,     array,                products_used) \
     i_prop    (X,Y, intern,     map,                  include) \
     i_prop    (X,Y, intern,     map,                  type_refs) \
     i_prop    (X,Y, intern,     map,                  operators) \
     i_prop    (X,Y, intern,     int,                  expr_level) \
     i_prop    (X,Y, intern,     string,               current_include) \
     i_method  (X,Y, public,     none, parse) \
+    i_method  (X,Y, public,     bool, compile) \
     i_override(X,Y, method,     init)
 #ifndef silver_intern
 #define silver_intern isize(silver)
@@ -83,17 +88,20 @@ declare_mod(silver, ether, model)
     i_prop    (X,Y, intern, path,       module_path) \
     i_prop    (X,Y, intern, bool,       imported) \
     i_prop    (X,Y, intern, array,      includes) \
-    i_prop    (X,Y, intern, array,      cfiles) \
     i_prop    (X,Y, intern, array,      links) \
+    i_prop    (X,Y, intern, array,      cfiles) \
+    i_prop    (X,Y, intern, array,      products) \
     i_prop    (X,Y, intern, array,      build_args) \
     i_prop    (X,Y, intern, import_t,   import_type) \
     i_prop    (X,Y, intern, array,      library_exports) \
     i_prop    (X,Y, intern, interface,  visibility) \
     i_prop    (X,Y, intern, string,     main_symbol) \
+    i_prop    (X,Y, intern, bool,       assemble_so) \
+    i_prop    (X,Y, intern, bool,       skip_process) \
     i_method  (X,Y, public, none,       process) \
     i_override(X,Y, method, init)
 #ifndef import_intern
-#define import_intern
+#define import_intern isize(import)
 #endif
 declare_class(import)
 

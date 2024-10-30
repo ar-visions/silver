@@ -47,7 +47,8 @@ static precedence levels[] = {
     { { OPType__xor,       OPType__xor        } },
     { { OPType__right,     OPType__left       } },
     { { OPType__is,        OPType__inherits   } },
-    { { OPType__compare_equal, OPType__compare_not } }
+    { { OPType__compare_equal, OPType__compare_not } },
+    { { OPType__value_default, OPType__cond_value } } // i find cond-value to be odd, but ?? (value_default) should work for most
 };
 
 static string op_lang_token(string name) {
@@ -65,7 +66,7 @@ static void init() {
     keywords = array_of_cstr(
         "class",  "proto",    "struct", "import", "typeof", "schema", "is", "inherits",
         "init",   "destruct", "ref",    "const",  "volatile",
-        "return", "asm",      "if",     "switch",
+        "return", "<-", "asm",      "if",     "switch",
         "while",  "for",      "do",     "signed", "unsigned", "cast", null);
     consumables = array_of_cstr(
         "ref", "schema", "enum", "class", "union", "proto", "struct",
@@ -84,6 +85,8 @@ static void init() {
         "^",        str("xor"),
         ">>",       str("right"),
         "<<",       str("left"),
+        "??",       str("value_default"),
+        "?:",       str("cond_value"),
         ":",        str("assign"),
         "=",        str("assign"),
         "+=",       str("assign_add"),
@@ -116,7 +119,9 @@ static void init() {
 
 path create_folder(silver mod, cstr name, cstr sub) {
     string dir = format(
-        "%o/%s%s%s", mod->source, name, sub ? "/" : "", sub ? sub : "");
+        "%o/%s%s%s", mod->install, name,
+            (sub && *sub) ? "/" : "",
+            (sub && *sub) ? sub : "");
     path   res = cast(dir, path);
     make_dir(res);
     return res;
@@ -139,23 +144,43 @@ exts get_exts() {
     ;
 }
 
-array import_list(import im, tokens tokens) {
+array import_list(silver mod, bool use_text) {
     array list = new(array);
-    silver mod = im->mod;
-    if (tok(next_is, "[")) {
-        tok(consume);
+    if (use_text || tok(next_is, "[")) {
+        if (!use_text)
+            tok(consume);
+        string word = new(string, alloc, 64);
+        int neighbor_x = -1;
+        int neighbor_y = -1;
         while (true) {
             token arg = tok(next);
             if (eq(arg, "]")) break;
-            assert (call(arg, get_type) == typeid(string), "expected build-arg in string literal");
-            A l = arg->literal; /// must be set in token_init
-            push(list, l);
-            if (tok(next_is, ",")) {
-                tok(consume);
-                continue;
+            if (!use_text && call(arg, get_type) == typeid(string)) {
+                push(list, arg->literal);
+            } else {
+                int x = arg->column;
+                int y = arg->line;
+                if (neighbor_x == x && neighbor_y == y) {
+                    append(word, arg->chars);
+                } else {
+                    if (word->len)
+                        push(list, word);
+                    word = new(string, chars, arg->chars);
+                }
+                neighbor_x = arg->column + strlen(arg->chars); 
+                neighbor_y = arg->line;
             }
-            break;
+            
+            if (tok(next_is, ","))
+                tok(consume);
+            
+            if (tok(next_is, "]"))
+                break;
+            
+            continue;
         }
+        if (word->len)
+            push(list, word);
         assert (tok(next_is, "]"), "expected ] after build flags");
         tok(consume);
     } else {
@@ -165,6 +190,7 @@ array import_list(import im, tokens tokens) {
     return list;
 }
 
+/// this must be basically the same as parsing named args; , should be optional for this
 void import_read_fields(import im, tokens tokens) {
     silver mod = im->mod;
     while (true) {
@@ -177,16 +203,19 @@ void import_read_fields(import im, tokens tokens) {
             im->source = array_of(typeid(string), str(arg_name), null);
         else {
             assert (is_alpha(arg_name), "expected identifier for import arg");
-            assert (tok(next_is, ":"), "expected : after import arg (argument assignment)");
+            bool    use_tokens  = tok(next_is, "[");
+            assert (use_tokens || tok(next_is, ":"),
+                "expected : after import arg (argument assignment)");
             tok(consume);
             if (eq(arg_name, "name")) {
                 token token_name = tok(next);
                 assert (! call(token_name, get_type), "expected token for import name");
                 im->name = str(token_name);
-            } else if (eq(arg_name, "links"))    im->links      = icall(list, tokens);
-              else if (eq(arg_name, "includes")) im->includes   = icall(list, tokens);
-              else if (eq(arg_name, "source"))   im->source     = icall(list, tokens);
-              else if (eq(arg_name, "build"))    im->build_args = icall(list, tokens);
+            } else if (eq(arg_name, "links"))    im->links      = import_list(im->mod, use_tokens);
+              else if (eq(arg_name, "includes")) im->includes   = import_list(im->mod, use_tokens);
+              else if (eq(arg_name, "products")) im->products   = import_list(im->mod, use_tokens);
+              else if (eq(arg_name, "source"))   im->source     = import_list(im->mod, use_tokens);
+              else if (eq(arg_name, "build"))    im->build_args = import_list(im->mod, use_tokens);
               else if (eq(arg_name, "shell")) {
                 token token_shell = tok(next);
                 assert (call(token_shell, get_type), "expected shell invocation for building");
@@ -197,12 +226,8 @@ void import_read_fields(import im, tokens tokens) {
             } else
                 assert (false, "unknown arg: %o", arg_name);
 
-            if (tok(next_is, ","))
-                tok(next);
-            else {
-                assert (tok(next_is, "]"), "expected comma or ] after arg %o", arg_name);
+            if (tok(next_is, "]"))
                 break;
-            }
         }
     }
 }
@@ -225,9 +250,9 @@ none import_init(import im) {
             im->includes = new(array, alloc, 8);
             while (1) {
                 token inc = tok(next);
-                assert (is_alpha(inc), "expected alpha-identifier for header");
+                verify (is_alpha(inc), "expected alpha-identifier for header");
                 push(im->includes, inc);
-                call(mod, include, str(inc->chars));
+                include(mod, str(inc->chars));
                 bool is_inc = tok(next_is, ">");
                 if (is_inc) {
                     tok(consume);
@@ -237,10 +262,9 @@ none import_init(import im) {
                 assert (eq(comma, ","), "expected comma-separator or end-of-includes >");
             }
         } else {
-            token t_next = tok(next);
-            string module_name = cast(t_next, string);
-            im->name = hold(module_name);
+            string module_name = tok(read_alpha);
             assert(is_alpha(module_name), "expected mod name identifier");
+            im->name = hold(module_name);
 
             if (tok(next_is, "as")) {
                 tok(consume);
@@ -276,12 +300,62 @@ none import_init(import im) {
     }
 }
 
+string configure_debug(bool debug) {
+    return debug ? str("--with-debug") : str("");
+}
+
+string cmake_debug(bool debug) {
+    return format("-DCMAKE_BUILD_TYPE=%s", debug ? "Debug" : "Release");
+}
+
+string make_debug(bool debug) {
+    return debug ? str("-g") : str("");
+}
+
+void import_extract_libs(import im, string build_dir) {
+    exts exts = get_exts();
+    path i = im->mod->install;
+    each(im->products, string, link_name) {
+        symbol n   = cs(link_name);
+        symbol pre = exts.lib_prefix;
+        symbol ext = exts.shared_ext;
+        path   lib = form(path, "%o/lib/%s%s.%s", i, pre, n, ext);
+        if (!file_exists(lib)) {
+            ext = exts.static_ext;
+            lib = form(path, "%o/lib/%s%s.%s", i, pre, n, ext);
+        }
+        bool exists = file_exists(lib);
+        assert (im->assemble_so || exists, "lib does not exist");
+        if (exists) {
+            path sym = form(path, "%o/%s%s.%s", i, pre, n, ext);
+            create_symlink(lib, sym);
+            im->assemble_so = false;
+        }
+    }
+    /// combine .a into single shared library; assume it will work
+    if (im->assemble_so) {
+        path   dawn_build = new(path, chars, build_dir->chars);
+        array  files      = ls(dawn_build, str(".a"), true);
+        string all        = str("");
+        each (files, path, f) {
+            if (all->len)
+                append(all, " ");
+            append(all, f->chars);
+        }
+        run("gcc -shared -o %o/lib/lib%o.so -Wl,--whole-archive %o -Wl,--no-whole-archive",
+            i, im->name, all);
+    }
+}
+
 build_state import_build_project(import im, string name, string url) {
-    path checkout = create_folder(im->mod, "checkouts", name->chars);
-    path i        = create_folder(im->mod, im->mod->with_debug ? "debug" : "install", null);
-    path b        = form(path, "%o/%s", checkout, "silver-build");
+    path checkout  = create_folder(im->mod, "checkout", name->chars);
+    path i         = im->mod->install;
+    path build_dir = form(path, "%o/%s", checkout,
+        im->mod->with_debug ?
+            "silver-debug" : "silver-build");
 
     path cwd = path_cwd(2048);
+    bool dbg = im->mod->with_debug;
 
     /// clone if empty
     if (is_empty(checkout)) {
@@ -301,13 +375,13 @@ build_state import_build_project(import im, string name, string url) {
             cmd = form(string, "git checkout %o", branch);
             assert (system(cmd->chars) == 0, "git checkout failure");
         }
-        make_dir(b);
+        make_dir(build_dir);
     }
     /// intialize and build
     if (!is_empty(checkout)) { /// above op can add to checkout; its not an else
         chdir(checkout->chars);
 
-        bool build_success = file_exists("%o/silver-token", b);
+        bool build_success = file_exists("%o/silver-token", build_dir);
         if (file_exists("silver-init.sh") && !build_success) {
             string cmd = format(
                 "%o/silver-init.sh \"%s\"", path_type.cwd(2048), i);
@@ -315,16 +389,15 @@ build_state import_build_project(import im, string name, string url) {
         }
     
         bool is_rust = file_exists("Cargo.toml");
-        ///
+
+        /// support for Cargo/Makefile/CMake
         if (is_rust) {
             cstr rel_or_debug = "release";
             path package = form(path, "%o/%s/%o", i, "rust", name);
             make_dir(package);
-            ///
             setenv("RUSTFLAGS", "-C save-temps", 1);
             setenv("CARGO_TARGET_DIR", package->chars, 1);
             string cmd = format("cargo build -p %o --%s", name, rel_or_debug);
-
             assert (system(cmd->chars) == 0, "cmd failed");
             path   lib = form(path,
                 "%o/%s/lib%o.so", package, rel_or_debug, name);
@@ -334,76 +407,62 @@ build_state import_build_project(import im, string name, string url) {
                 exe = form(path, "%o/%s/%o", package, rel_or_debug, name);
             if (file_exists(lib->chars)) {
                 path sym = form(path, "%o/lib%o.so", i, name);
-                im->links = array_of(typeid(string), name, null);
+                im->products = array_of(typeid(string), name, null);
                 create_symlink(lib, sym);
             }
             if (file_exists(exe->chars)) {
                 path sym = form(path, "%o/%o", i, name);
                 create_symlink(exe, sym);
             }
-        }   
-        else {
-            assert (file_exists("CMakeLists.txt"),
-                "CMake required for project builds");
-
-            string cmake_flags = str("");
-            each(im->build_args, string, arg) {
-                if (cast(cmake_flags, bool))
-                    append(cmake_flags, " ");
-                append(cmake_flags, arg->chars);
+        } else {
+            bool A_build = false;
+            im->assemble_so = false;
+            if (!im->skip_process && !len(im->products)) { // default to this when initializing
+                im->products = array_of(typeid(string), name, null);
+                im->assemble_so = true;
             }
-
-            bool assemble_so = false;
-            if (!len(im->links)) { // default to this when initializing
-                im->links = array_of(typeid(string), name, null);
-                assemble_so = true;
-            }
-            exts exts = get_exts();
-            if (!build_success) {
-                string cmake = str(
-                    "cmake -S . -DCMAKE_BUILD_TYPE=Release "
-                    "-DBUILD_SHARED_LIBS=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON");
-                string cmd   = format(
-                    "%o -B %o -DCMAKE_INSTALL_PREFIX=%o %o", cmake, b, i, cmake_flags);
-                assert (system(cmd->chars) == 0, "cmd failed");
-                chdir(b->chars);
-                assert (system("make -j16 install") == 0, "install failed");
-
-                each(im->links, string, link_name) {
-                    symbol n   = cs(link_name);
-                    symbol pre = exts.lib_prefix;
-                    symbol ext = exts.shared_ext;
-                    path   lib = form(path, "%o/lib/%s%s.%s", i, pre, n, ext);
-                    if (!file_exists(lib)) {
-                        ext = exts.static_ext;
-                        lib = form(path, "%o/lib/%s%s.%s", i, pre, n, ext);
+            if (file_exists("Makefile")) {
+                bool has_config = file_exists("configure") || file_exists("configure.ac");
+                if (has_config) {
+                    if (!file_exists("configure")) {
+                        print("running autoreconf -i in %o", im->name);
+                        run("autoupdate ..");
+                        run("autoreconf -i ..");
+                        verify(file_exists("configure"), "autoreconf run, expected configure file");
                     }
-                    bool exists = file_exists(lib);
-                    assert (assemble_so || exists, "lib does not exist");
-                    if (exists) {
-                        path sym = form(path, "%o/%s%s.%s", i, pre, n, ext);
-                        create_symlink(lib, sym);
-                        assemble_so = false;
-                    }
+                    run("configure %o --prefix=%o", configure_debug(dbg), im->mod->install);
+                } else {
+                    A_build = true;
                 }
-                /// combine .a into single shared library; assume it will work
-                if (assemble_so) {
-                    path   dawn_build = new(path, chars, b->chars);
-                    array  files      = ls(dawn_build, str(".a"), true);
-                    string all        = str("");
-                    each (files, path, f) {
-                        if (all->len)
-                            append(all, " ");
-                        append(all, f->chars);
-                    }
-                    string cmd = format(
-                        "gcc -shared -o %o/lib%o.so -Wl,--whole-archive %o -Wl,--no-whole-archive",
-                        i, name, all);
-                    system(cmd->chars);
+                if (!build_success) {
+                    chdir(build_dir->chars);
+                    verify(run("make -f ../Makefile") == 0, "Makefile build failed for %o", im->name);
                 }
-                FILE*  silver_token = fopen("silver-token", "w");
-                fclose(silver_token);
+            } else {
+                verify (file_exists("CMakeLists.txt"),
+                    "CMake required for project builds");
+
+                string cmake_flags = str("");
+                each(im->build_args, string, arg) {
+                    if (cast(cmake_flags, bool))
+                        append(cmake_flags, " ");
+                    append(cmake_flags, arg->chars);
+                }
+                
+                if (!build_success) {
+                    string cmake = str(
+                        "cmake -S . -DCMAKE_BUILD_TYPE=Release "
+                        "-DBUILD_SHARED_LIBS=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON");
+                    string cmd   = format(
+                        "%o -B %o -DCMAKE_INSTALL_PREFIX=%o %o", cmake, build_dir, i, cmake_flags);
+                    assert (system(cmd->chars) == 0, "cmd failed");
+                    chdir(build_dir->chars);
+                    assert (system("make -j16 install") == 0, "install failed");
+                }
             }
+            import_extract_libs(im, build_dir);
+            FILE*  silver_token = fopen("silver-token", "w");
+            fclose(silver_token);
         }
     }
 
@@ -427,7 +486,7 @@ bool contains_main(path obj_file) {
 }
 
 build_state import_build_source(import im) {
-    bool is_debug = im->mod->with_debug;
+    bool is_debug = im->mod->with_debug; /// needs separate debugging for imports; use environment variable for this one
     string install = im->mod->install;
     each (im->cfiles, string, cfile) {
         path cwd = path_cwd(1024);
@@ -472,6 +531,7 @@ void import_process_includes(import im, array includes) {
 
 void import_process(import im) {
     silver mod = im->mod;
+    if (im->skip_process) return;
     if (len(im->name) && !len(im->source) && len(im->includes)) {
         array attempt = array_of(typeid(string), str(""), str("spec/"), NULL);
         bool  exists  = false;
@@ -537,13 +597,29 @@ void import_process(import im) {
             }
         case import_t_library:
         case import_t_project:
-            concat(mod->libs_used, im->links);
+            concat(mod->products_used, im->products);
             break;
         case import_t_includes:
             break;
         default:
             verify(false, "not handled: %i", im->import_type);
     }
+}
+
+tokens read_expr(silver mod) {
+    mod->no_build = true; /// doesnt matter what we call it with, it wont give us back things
+    /// this is so we can send our expression parser off to do its thing and we can tell where the expression ends
+    /// just so we can process it later in our subproc
+    int  e_start = mod->tokens->cursor;
+    node is_void = parse_expression(mod);
+    int  e_len   = mod->tokens->cursor - e_start;
+    array body = new(array, alloc, e_len);
+    for (int i = 0; i < e_len; i++) {
+        push(body, mod->tokens->tokens->elements[e_start + i]);
+    }
+    tokens e_body = new(tokens, cursor, 0, tokens, body);
+    mod->no_build = false;
+    return e_body; 
 }
 
 tokens read_body(silver mod) {
@@ -574,6 +650,17 @@ num tokens_line(tokens a) {
 string tokens_location(tokens a) {
     token  t = idx(a->tokens, 0);
     return t ? (string)call(t, location) : (string)format("n/a");
+}
+
+bool is_keyword(A any) {
+    AType  type = isa(any);
+    string s;
+    if (type == typeid(string))
+        s = any;
+    else if (type == typeid(token))
+        s = new(string, chars, ((token)any)->chars);
+    
+    return index_of_cstr(keywords, s->chars) >= 0;
 }
 
 bool is_alpha(A any) {
@@ -648,14 +735,17 @@ array parse_tokens(A input) {
         char sval[2] = { chr, 0 };
         if (index_of(special_chars, sval) >= 0) {
             if (chr == ':' && idx(input_string, index + 1) == ':') {
-                token t = new(token, chars, "::", source, src, line, line_num, column, 0);
+                token t = new(token, chars, "::", source, src, line, line_num, column, index - line_start);
                 push(tokens, t);
                 index += 2;
             } else if (chr == '=' && idx(input_string, index + 1) == '=') {
-                push(tokens, new(token, chars, "==", source, src, line, line_num, column, 0));
+                push(tokens, new(token, chars, "==", source, src, line, line_num, column, index - line_start));
+                index += 2;
+            } else if (chr == '<' && idx(input_string, index + 1) == '-') {
+                push(tokens, new(token, chars, "==", source, src, line, line_num, column, index - line_start));
                 index += 2;
             } else {
-                push(tokens, new(token, chars, sval, source, src, line, line_num, column, 0));
+                push(tokens, new(token, chars, sval, source, src, line, line_num, column, index - line_start));
                 index += 1;
             }
             continue;
@@ -805,6 +895,15 @@ string tokens_read_alpha(tokens a) {
     return null;
 }
 
+string tokens_read_keyword(tokens a) {
+    token n = element(a, 0);
+    if (is_keyword(n)) {
+        a->cursor ++;
+        return str(n->chars);
+    }
+    return null;
+}
+
 object tokens_read_bool(tokens a) {
     token  n       = element(a, 0);
     bool   is_true = strcmp(n->chars, "true")  == 0;
@@ -834,6 +933,10 @@ void tokens_pop_state(tokens a, bool transfer) {
     pop(a->stack);
     if(!transfer)
         a->cursor = state->cursor;
+    if (state->tokens != a->tokens) {
+        drop(a->tokens);
+        a->tokens = state->tokens;
+    }
 }
 
 void tokens_push_current(tokens a) {
@@ -850,6 +953,8 @@ node parse_return(silver mod) {
     model ctx = mcall(context_model, typeid(function));
     tok (consume);
     node expr   = is_v ? null : parse_expression(mod);
+    log("return-type", "%o", is_v ? (object)str("void") : 
+                                    (object)expr->mdl);
     return mcall(freturn, expr);
 }
 
@@ -885,6 +990,7 @@ node silver_parse_do_while(silver mod) {
 
 static node reverse_descent(silver mod) {
     node L = parse_primary(mod);
+    mod->expr_level++;
     for (int i = 0; i < sizeof(levels) / sizeof(precedence); i++) {
         precedence *level = &levels[i];
         bool  m = true;
@@ -903,19 +1009,18 @@ static node reverse_descent(silver mod) {
             }
         }
     }
+    mod->expr_level--;
     return L;
 }
 
 static node parse_expression(silver mod) {
-    mod->expr_level++;
+    //mod->expr_level++;
     node vr = reverse_descent(mod);
-    mod->expr_level--;
+    //mod->expr_level--;
     return vr;
 }
 
-/// @brief completely inadequate
 model read_model(silver mod, bool is_ref) {
-    print_tokens("read-model", mod);
     string name = tok(read_alpha); // Read the type to cast to
     if (!name) return null;
     return emodel(name->chars);
@@ -951,13 +1056,13 @@ static model parse_wrap(silver mod, model mdl_src) {
     return mdl_wrap;
 }
 
-static function parse_fn(silver mod, model rtype, token name, interface access);
+static function parse_fn(silver mod, AFlag member_type, model rtype, object name, interface access);
 
 static node parse_function_call(silver mod, node target, member fmem);
 
-static model read_cast(silver mod) {
+static node read_cast(silver mod) {
     tok(push_current);
-    print_tokens("read-cast", mod);
+    //print_tokens("read-cast", mod);
     if (!tok(symbol, "[")) {
         tok(pop_state, false);
         return null;
@@ -982,14 +1087,29 @@ static model read_cast(silver mod) {
     if (tok(next_is, "["))
         mdl = parse_wrap(mod, mdl);
 
-    if (!tok(symbol, "]")) {
-        fault("expected ] after cast"); /// we should be able to error here unless it leaks into a statement block
+    if (!tok(symbol, ",")) {
         tok(pop_state, false);
         return null;
     }
+
+    node expr = parse_expression(mod);
+    if (is_object(expr)) {
+        model method = cast_method(mod, expr->mdl, mdl);
+        if (method) {
+            // object may cast because there is a method defined with is_cast and an rtype of the cast_ident
+            array args = new(array);
+            node mcall = call(mod, fcall, method, expr, args);
+            return mcall;
+        }
+    }
+    verify (!is_object(expr), "object %o requires a cast method for %o",
+        expr->mdl->name, mdl->name);
+    /// cast to basic type with convert
+    verify (!tok(symbol, "]"), "expected ] to complete cast");
+    node conv = convert(mod, expr, mdl);
     print("is_cast");
     tok(pop_state, true); /// we pop state, saving this current
-    return mdl; // parse_function_call(mod, target, mem); (we are doing this in parse_statements)
+    return conv;
 }
 
 /// @brief this reads entire function definition, member we lookup, new member
@@ -999,7 +1119,19 @@ static member read_member(silver mod) {
     /// in that case, the value_ref should be set by the user to R-type or ARG-type
     tokens tk = mod->tokens;
     tok(push_current);
-    print_tokens("read-member", mod);
+
+    interface access = interface_undefined;
+    for (int m = 1; m < interface_type.member_count; m++) {
+        type_member_t* enum_v = &interface_type.members[m];
+        if (tok(symbol, enum_v->name)) {
+            access = m;
+            break;
+        }
+    }
+    bool   is_static = tok(symbol, "static");
+    bool   is_ref    = tok(symbol, "ref");
+
+    //print_tokens("read-member", mod);
     string alpha = tok(read_alpha);
     if(alpha) {
         model  ctx      = mod->top;
@@ -1017,7 +1149,9 @@ static member read_member(silver mod) {
             verify(alpha, "expected alpha identifier");
             pop(mod);
         }
-        
+        verify (!is_static, "unexpected static description of member");
+
+        /// if is_ref, its an anonymous member with a mdl type +ref
         if (mem && mem->is_func) {
             tok(pop_state, true); /// we pop state, saving this current
             return mem; // parse_function_call(mod, target, mem); (we are doing this in parse_statements)
@@ -1026,20 +1160,12 @@ static member read_member(silver mod) {
             tok(pop_state, true); /// we pop state, saving this current
             return mem; /// baked into mem is read.all.members.in.series <- where series is mem (right gpt?)
         }
+        
         tok(pop_state, false); /// we pop the state to the last push
         tok(push_current);
-        /// now we will proceed here for declaration of members
+
     }
-    interface access = interface_undefined;
-    for (int m = 1; m < interface_type.member_count; m++) {
-        type_member_t* enum_v = &interface_type.members[m];
-        if (tok(symbol, enum_v->name)) {
-            access = m;
-            break;
-        }
-    }
-    bool  is_static = tok(symbol, "static");
-    bool  is_ref    = tok(symbol, "ref");
+
     token n         = tok(peek);
     model mdl       = read_model(mod, is_ref);
     if (!mdl) {
@@ -1047,19 +1173,42 @@ static member read_member(silver mod) {
         tok(pop_state, false); // we may 'info' here
         return null;
     }
+
+    print_tokens("cast1", mod);
     
     // may be [, or alpha-id  (its an error if its neither)
     if (tok(next_is, "["))
         mdl = parse_wrap(mod, mdl);
 
+    print_tokens("cast2", mod);
+
+    string keyword   = tok(read_keyword);
+    bool   is_cast   = keyword && eq(keyword, "cast");
+    
+    if (is_cast) {
+        print_tokens("cast", mod);
+        verify (!is_static, "unexpected static keyword does not apply to cast");
+        verify (!is_ref,    "unexpected ref keyword does not apply to cast");
+        
+        if (tok(next_is, "[") || tok(next_is, "return") || tok(next_is, "<-")) {
+            function cast_fn = parse_fn(mod, A_TYPE_CAST, mdl, null, access);
+            string cast_name = format("cast_%o", mdl->name);
+            member mem = new(member, mod, mod,
+                name, cast_name, mdl, cast_fn, is_static, false, access, access);
+            return mem;
+        } else
+            fault ("expected function body for cast");
+    }
+
     /// read member name
-    print_tokens("read-member-name", mod);
+    //print_tokens("read-member-name", mod);
     token name = tok(next);
     verify(is_alpha(name), "expected alpha-numeric name");
 
     /// convert model to function parse_fn takes in rtype and token name
     if (tok(next_is, "[")) {
-        mdl = parse_fn(mod, mdl, name, access);
+        mdl = parse_fn(mod, is_static ? A_TYPE_SMETHOD : A_TYPE_IMETHOD,
+            mdl, name, access);
     }
  
     member mem = new(member, mod, mod,
@@ -1075,11 +1224,10 @@ arguments parse_args(silver mod) {
     verify(tok(symbol, "["), "parse-args: expected [");
     array       args = new(array,     alloc, 32);
     arguments   res  = new(arguments, mod, mod, args, args);
-    print_tokens("args", mod);
+    //print_tokens("args", mod);
     if (!tok(next_is, "]")) {
         push(mod, res); // if we push null, then it should not actually create debug info for the members since we dont 'know' what type it is... this wil let us delay setting it on function
         while (true) {
-            print_tokens("arg", mod);
             member arg = read_member(mod);
             verify (arg,       "member failed to read");
             verify (arg->name, "member name not set");
@@ -1096,10 +1244,7 @@ arguments parse_args(silver mod) {
 
 node parse_statements(silver mod);
 
-/// any-kind-of-object.function[ ... 
-///                            ^-- we are here, and the target is given::
-/// any-kind-of-object (member; with a pointer-value and mdl-type)
-/// so target is a node -- lets refrain from using target across types...
+
 static node parse_function_call(silver mod, node target, member fmem) {
     bool allow_no_paren = mod->expr_level == 1; /// remember this decision? ... var args
     bool expect_end_br  = false;
@@ -1121,9 +1266,8 @@ static node parse_function_call(silver mod, node target, member fmem) {
         node   expr     = parse_expression(mod);
         model  arg_mdl  = arg ? arg->mdl : null;
         if (arg_mdl && expr->mdl != arg_mdl)
-            expr = mcall(convert, expr, arg_mdl);
-        print("argument %i: %o", arg_index, expr->mdl->name);
-
+            expr = convert(mod, expr, arg_mdl);
+        //print("argument %i: %o", arg_index, expr->mdl->name);
         push(values, expr);
         arg_index++;
         if (tok(next_is, ",")) {
@@ -1140,6 +1284,13 @@ static node parse_function_call(silver mod, node target, member fmem) {
         tok(consume);
     }
     return mcall(fcall, fmem, target, values);
+}
+
+static node parse_ternary(silver mod, node expr) {
+    if (!tok(symbol, "?")) return expr;
+    node expr_true  = parse_expression(mod);
+    node expr_false = parse_expression(mod);
+    return ether_ternary(mod, expr, expr_true, expr_false);
 }
 
 static node parse_primary(silver mod) {
@@ -1174,22 +1325,8 @@ static node parse_primary(silver mod) {
     }
 
     // 'cast' operator has a type inside
-    model cast_mdl = read_cast(mod);
-    if (cast_mdl) {
-        node expr = parse_expression(mod); // Parse the expression to cast
-        if (is_object(expr)) {
-            model method = cast_method(mod, expr->mdl, cast_mdl);
-            if (method) {
-                // object may cast because there is a method defined with is_cast and an rtype of the cast_ident
-                array args = new(array);
-                return mcall(fcall, method, expr, args);
-            }
-        }
-        verify (!is_object(expr), "object %o requires a cast method for %o",
-            expr->mdl->name, cast_mdl->name);
-        /// cast to basic type with convert
-        return mcall(convert, expr, cast_mdl);
-    }
+    node cast = read_cast(mod);
+    if  (cast) return cast;
 
     // 'ref' operator (reference)
     if (tok(symbol, "ref")) {
@@ -1203,13 +1340,14 @@ static node parse_primary(silver mod) {
     // literal values (int, float, bool, string)
     object n = tok(read_literal);
     if (n)
-        return mcall(literal, n);
+        return operand(mod, n);
 
     // parenthesized expressions
     if (tok(symbol, "[")) {
         node expr = parse_expression(mod); // Parse the expression
         verify(tok(symbol, "]"), "Expected closing parenthesis");
-        return expr;
+        /// now read
+        return parse_ternary(mod, expr);
     }
     
     // handle identifiers (variables or function calls)
@@ -1223,7 +1361,7 @@ static node parse_primary(silver mod) {
                 return parse_function_call(mod, mem->target, mem);
             }
         } else
-            return mcall(load, mem, null, null);
+            return load(mod, mem, null, null);
     }
 
     fault("unexpected token %o in primary expression", tok(peek));
@@ -1233,7 +1371,7 @@ static node parse_primary(silver mod) {
 node parse_assignment(silver mod, member mem, string op) {
     verify(!mem->is_assigned || !mem->is_const, "mem %o is a constant", mem->name);
     string         op_name = get(operators, op);
-    member         method = null;
+    member         method  = null;
     if (instanceof(mem->mdl, record))
         method = get(((record)mem->mdl)->members, op_name); /// op-name must be reserved for use in functions only
     node           res     = null;
@@ -1281,6 +1419,24 @@ ether defines this model:
 declare_class(if_context)
 
 */
+
+node cond_builder_ternary(silver mod, tokens cond_tokens, object unused) {
+    tok(push_state, cond_tokens->tokens, 0);
+    node cond_expr = parse_expression(mod);
+    verify(cond_tokens->cursor == len(cond_tokens->tokens), 
+        "unexpected trailing expression in single expression condition");
+    tok(pop_state, false);
+    return cond_expr;
+}
+
+node expr_builder_ternary(silver mod, tokens expr_tokens, object unused) {
+    tok(push_state, expr_tokens->tokens, 0);
+    node exprs = parse_expression(mod);
+    verify(expr_tokens->cursor == len(expr_tokens->tokens), 
+        "error: statements not fully processed");
+    tok(pop_state, false);
+    return exprs;
+}
 
 node cond_builder(silver mod, tokens cond_tokens, object unused) {
     tok(push_state, cond_tokens->tokens, 0);
@@ -1340,7 +1496,7 @@ node parse_do_while(silver mod) {
 
 node parse_statement(silver mod) {
     token t = tok(peek);
-    if (tok(next_is, "return")) return parse_return(mod);
+    if (tok(next_is, "return") || tok(next_is, "<-")) return parse_return(mod);
     if (tok(next_is, "break"))  return parse_break(mod);
     if (tok(next_is, "for"))    return parse_for(mod);
     if (tok(next_is, "while"))  return parse_while(mod);
@@ -1349,11 +1505,6 @@ node parse_statement(silver mod) {
 
     member mem  = read_member(mod); // we store target on member
     if (mem) {
-        print("%s member: %o %o", (mem->is_assigned || mem->is_func) ?
-            "existing" : "new", mem->mdl->name, mem->name);
-        /// mem (multi instanced, we arent looking it up here...)
-        /// to do that we need to be in member mode
-        /// todo: must support member chain with . ... code is in EIdent silver44
         if (instanceof(mem->mdl, function)) {
             return parse_function_call(mod, null, mem);
         } else {
@@ -1367,10 +1518,8 @@ node parse_statement(silver mod) {
 
 node parse_statements(silver mod) {
     push(mod, new(statements, mod, mod));
-
-    print_tokens("statements", mod);
-    model is_cast = read_cast(mod);
-    verify (!is_cast, "unexpected cast at statements level");
+    
+    print_tokens("parse_statements", mod);
 
     bool multiple   = tok(next_is, "[");
     if  (multiple)    tok(consume);
@@ -1382,7 +1531,6 @@ node parse_statements(silver mod) {
             depth += 1;
             push(mod, new(statements, mod, mod));
         }
-        print("next statement origin: %o", tok(peek));
         vr = parse_statement(mod);
         if(!multiple) break;
         if(tok(next_is, "]")) {
@@ -1398,26 +1546,31 @@ node parse_statements(silver mod) {
 
 void build_function(silver mod, object arg, function fn) {
     tokens body = instanceof(fn->user, tokens);
-    if (!call(fn, has_scope)) {
-        int test = 1;
-        test++;
-    }
-    //call(fn, finalize);
-    print("building function: %o", fn->name);
     tok(push_state, body->tokens, 0);
-    print_tokens("body-tokens", mod);
     parse_statements(mod);
     tok(pop_state, false);
 }
 
-function parse_fn(silver mod, model rtype, token name, interface access) {
-    verify (tok(next_is, "["), "expected function args");
-    array           m       = new       (array, alloc, 32);
-    arguments       args    = parse_args(mod);
+function parse_fn(silver mod, AFlag member_type, model rtype, object ident, interface access) {
+    token name = instanceof(ident, token);
+    if (!name) {
+        verify(member_type == A_TYPE_CAST, "expected member type of cast if there is no name");
+        print("casting to %o", rtype->name);
+        name = new(token, chars, rtype->name->chars);
+    } else
+        verify(member_type != A_TYPE_CAST, "unexpected name for cast");
+    
+    arguments       args = null;
+    if (member_type == A_TYPE_CAST)
+        verify (tok(next_is, "[") || tok(next_is, "<-") || tok(next_is, "return"), "expected body for cast");
+    else {
+        verify (tok(next_is, "["), "expected function args [");
+        args    = parse_args(mod);
+    }
     subprocedure    process = subproc   (mod, build_function, null);
     record          rec_top = instanceof(mod->top, record) ? mod->top : null;
     function        fn      = new       (function,
-        mod,    mod,     name,   name,
+        mod,    mod,     name,   name, function_type, member_type,
         record, rec_top, rtype,  rtype,
         args,   args,    process, process,
         access, access,  user,   read_body(mod)); /// user must process their payload for a function to effectively resolve
@@ -1432,13 +1585,15 @@ function parse_fn(silver mod, model rtype, token name, interface access) {
 void build_record(silver mod, object arg, record rec) {
     bool   is_class = inherits(rec, class);
     symbol sname    = is_class ? "class" : "struct";
-    print("building %s: %o", sname, rec->name);
+    log("build_record", "%s %o", sname, rec->name);
     tokens body     = instanceof(rec->user, tokens);
     tok(push_state, body->tokens, 0);
     verify(tok(symbol, "["), "expected [");
 
     push(mod, rec);
     while (tok(cast_bool)) {
+        if (tok(next_is, "]"))
+            break;
         member mem = read_member(mod);
         if   (!mem) break;
 
@@ -1485,7 +1640,7 @@ record parse_record(silver mod, bool is_class) {
     subprocedure process = subproc(mod, build_record, null);
     record rec;
     if (is_class)
-        rec = new(class,     mod, mod, name, name, process, process);
+        rec = new(class,     mod, mod, name, name, process, process, parent_name, parent_name);
     else
         rec = new(structure, mod, mod, name, name, process, process);
     process->ctx = rec;
@@ -1504,6 +1659,36 @@ void silver_parse(silver mod) {
         if (tok(next_is, "import")) {
             import im = new(import, mod, mod, tokens, mod->tokens);
             push(mod->imports, im);
+        } else if (tok(next_is, "enum")) {
+            tok(consume);
+            string ename = tok(read_alpha);
+            verify (ename, "expected alpha-numeric name for enum");
+            model mdl = emodel("i32");
+            if (tok(symbol, ":")) {
+                string mtype = tok(read_alpha);
+                verify (mtype, "expected alpha-numeric name for model type");
+                mdl = emodel(mtype->chars);
+            }
+            AType atype = isa(mdl->src->src);
+            verify(atype, "enumerables can only be based on primitive types (i32 default)");
+            verify(tok(symbol, "["), "expected [ after enum type");
+            array enums = import_list(mod, true);
+            verify(len(enums), "expected > 0 enums");
+            map members = new(map, hsize, 16);
+            i64 value = 0;
+            each(enums, token, e) {
+                string estr = cast(e, string);
+                member mem = new(member,
+                    mod, mod, name, estr, mdl, mdl, is_const, true);
+                
+                object v = A_primitive(atype, &value); /// this creates i8 to i64 data, using &value i64 addr
+                call(mem, set_value, v);
+                set(members, estr, mem);
+                value++;
+            }
+            int mlen = len(members);
+            enumerable e = new(enumerable, mod, mod, size, mdl->size, name, ename, members, members);
+            mcall(push_model, e);
         } else if (tok(next_is, "class") || tok(next_is, "struct")) {
             bool  is_class = tok(next_is, "class");
             record rec = parse_record(mod, is_class);
@@ -1514,14 +1699,21 @@ void silver_parse(silver mod) {
             mcall(push_member, mem);
         } else {
             /// must make read-ahead mechanism for reading functions
-            print_tokens("top-member", mod);
             member mem = read_member(mod);
             string key = str(mem->name->chars);
             mcall(push_member, mem);
         }
     }
 
-    /// finalize imported C functions first
+    /// finalize included structs
+    pairs(mod->members, i) {
+        member mem = i->value;
+        model base = mem->mdl->ref ? mem->mdl->src : mem->mdl;
+        if (instanceof(base, record) && base->from_include)
+            call(base, process_finalize);
+    }
+
+    /// finalize imported C functions, which use those structs perhaps literally in argument form
     pairs(mod->members, i) {
         member mem = i->value;
         model  mdl = mem->mdl;
@@ -1535,7 +1727,7 @@ void silver_parse(silver mod) {
     pairs(mod->members, i) {
         member mem = i->value;
         model base = mem->mdl->ref ? mem->mdl->src : mem->mdl;
-        if (instanceof(base, record))
+        if (instanceof(base, record) && !base->from_include)
             call(base, process_finalize);
     }
 
@@ -1546,43 +1738,73 @@ void silver_parse(silver mod) {
     }
 }
 
+build_state import_build_project(import im, string name, string url);
+
+bool silver_compile(silver mod) {
+    verify(run("llc-19 -filetype=obj %o.ll -o %o.o -relocation-model=pic", mod->name, mod->name) == 0,
+        ".ll -> .o compilation failure");
+
+    string libs = new(string, alloc, 128);
+    each (mod->imports, import, im) {
+        each_ (im->links, string, link)
+            append(libs, format("-l%o ", link)->chars);
+    }
+    each (mod->imports, import, im) {
+        each_ (im->products, string, product)
+            append(libs, format("-l%o ", product)->chars);
+    }
+    string cmd = format("clang-19 %o.o -o %o -L %o/lib %o",
+        mod->name, mod->name, mod->install, libs);
+    print("cmd: %o", cmd);
+    verify(system(cmd->chars) == 0, "compilation failed"); /// add in all import objects/libraries
+    print("compiled: %o", mod->name);
+    return true;
+}
+
 void silver_init(silver mod) {
     verify(exists(mod->source), "source (%o) does not exist", mod->source);
     
     mod->imports   = new(array, alloc, 32);
-    mod->libs_used = new(array);
+    mod->products_used = new(array);
     mod->tokens    = new(tokens, file, mod->source);
 
+    array  import_A = array_of(
+        typeid(token), new(token, chars, "import"), new(token, chars, "A"), null);
+    tokens tok      = new(tokens, tokens, import_A);
+    tok(push_state, import_A, 0);
+    import Atype    = new(import, mod, mod, tokens, tok, name, str("A"), skip_process, true);
+    tok(pop_state, false);
+    push(mod->imports, Atype);
+    import_build_project(Atype, str("A"), str("https://github.com/ar-visions/A"));
+    include(mod, str("A"));
+
     parse(mod);
+
+    /// process imported
+    each (mod->imports, import, im)
+        process(im);
+
     build(mod);
-    write(mod);
+    write(mod);   /// write the intermediate LL
+    compile(mod); /// compile the LL
 }
 
 int main(int argc, char **argv) {
     A_start();
-
-    AF         pool = allocate(AF);
     cstr        src = getenv("SRC");
     cstr     import = getenv("SILVER_IMPORT");
-    map    defaults = map_of(
+    map        args = A_args(argc, argv,
         "module",  str(""),
         "install", import ? form(path, "%s", import) : 
-                            form(path, "%s/silver-import", src ? src : "."),
-        null);
-
-    string ikey     = str("install");
+                            form(path, "%s/silver-import", src ? src : "."), null);
     string mkey     = str("module");
-    map    args     = A_args(argc, argv, defaults, mkey);
-    print("args = %o", args);
-
-    string name     = get(args, mkey);
+    string name     = get(args, str("module"));
     path   n        = new(path, chars, name->chars);
     path   source   = call(n, absolute);
     silver mod      = new(silver,
         source,  source,
-        install, get(args, ikey),
+        install, get(args, str("install")),
         name,    stem(source));
-    drop(pool);
 }
 
 define_class (tokens)
