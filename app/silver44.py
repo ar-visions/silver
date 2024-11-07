@@ -1092,7 +1092,7 @@ class EImport(ENode): # we may want a node for 'EModuleNode' that contains name,
             is_rust = os.path.exists('Cargo.toml')
             if is_rust:
                 rel_or_debug = 'release'
-                package_dir = os.path.join(i, 'rust', name)
+                package_dir = os.path.join(i, 'rust', name) # silver-imports/rust            <-- install location for all rust stuff that silver builds
                 package = Path(package_dir)
                 package.mkdir(parents=True, exist_ok=True)
                 os.environ['RUSTFLAGS'] = '-C save-temps'
