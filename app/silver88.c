@@ -342,7 +342,7 @@ void import_extract_libs(import im, string build_dir) {
                 append(all, " ");
             append(all, f->chars);
         }
-        run("gcc -shared -o %o/lib/lib%o.so -Wl,--whole-archive %o -Wl,--no-whole-archive",
+        exec("gcc -shared -o %o/lib/lib%o.so -Wl,--whole-archive %o -Wl,--no-whole-archive",
             i, im->name, all);
     }
 }
@@ -426,17 +426,17 @@ build_state import_build_project(import im, string name, string url) {
                 if (has_config) {
                     if (!file_exists("configure")) {
                         print("running autoreconf -i in %o", im->name);
-                        run("autoupdate ..");
-                        run("autoreconf -i ..");
+                        exec("autoupdate ..");
+                        exec("autoreconf -i ..");
                         verify(file_exists("configure"), "autoreconf run, expected configure file");
                     }
-                    run("configure %o --prefix=%o", configure_debug(dbg), im->mod->install);
+                    exec("configure %o --prefix=%o", configure_debug(dbg), im->mod->install);
                 } else {
                     A_build = true;
                 }
                 if (!build_success) {
                     chdir(build_dir->chars);
-                    verify(run("make -f ../Makefile") == 0, "Makefile build failed for %o", im->name);
+                    verify(exec("make -f ../Makefile") == 0, "Makefile build failed for %o", im->name);
                 }
             } else {
                 verify (file_exists("CMakeLists.txt"),
@@ -491,7 +491,7 @@ build_state import_build_source(import im) {
     each (im->cfiles, string, cfile) {
         path cwd = path_cwd(1024);
         string compile;
-        if (call(cfile, has_suffix, ".rs")) {
+        if (ends_with(cfile, ".rs")) {
             // rustc integrated for static libs only in this use-case
             compile = format("rustc --crate-type=staticlib -C opt-level=%s %o/%o --out-dir %o/lib",
                 is_debug ? "0" : "3", cwd, cfile, install);
@@ -548,11 +548,11 @@ void import_process(import im) {
         bool has_c  = false, has_h = false, has_rs = false,
              has_so = false, has_a = false;
         each(im->source, string, i0) {
-            if (call(i0, has_suffix, str(".c")))   has_c  = true;
-            if (call(i0, has_suffix, str(".h")))   has_h  = true;
-            if (call(i0, has_suffix, str(".rs")))  has_rs = true;
-            if (call(i0, has_suffix, str(".so")))  has_so = true;
-            if (call(i0, has_suffix, str(".a")))   has_a  = true;
+            if (ends_with(i0, str(".c")))   has_c  = true;
+            if (ends_with(i0, str(".h")))   has_h  = true;
+            if (ends_with(i0, str(".rs")))  has_rs = true;
+            if (ends_with(i0, str(".so")))  has_so = true;
+            if (ends_with(i0, str(".a")))   has_a  = true;
         }
         if (has_h)
             im->import_type = import_t_source;
@@ -590,7 +590,7 @@ void import_process(import im) {
                 push(mod->main_symbols, im->main_symbol);
             each(im->source, string, source) {
                 // these are built as shared library only, or, a header file is included for emitting
-                if (call(source, has_suffix, ".rs") || call(source, has_suffix, ".h"))
+                if (ends_with(source, ".rs") || ends_with(source, ".h"))
                     continue;
                 string buf = format("%o/%s.o", mod->install, source);
                 push(mod->compiled_objects, buf);
@@ -1682,7 +1682,7 @@ void silver_parse(silver mod) {
                     mod, mod, name, estr, mdl, mdl, is_const, true);
                 
                 object v = A_primitive(atype, &value); /// this creates i8 to i64 data, using &value i64 addr
-                call(mem, set_value, v);
+                set_value(mem, v);
                 set(members, estr, mem);
                 value++;
             }
@@ -1693,7 +1693,7 @@ void silver_parse(silver mod) {
             bool  is_class = tok(next_is, "class");
             record rec = parse_record(mod, is_class);
             /// with the same name, we effectively change the model of membership, and what inlay and ref/ptr do
-            model  access_model = call(rec, alias, str(rec->name->chars), reference_pointer, null);
+            model  access_model = alias(rec, str(rec->name->chars), reference_pointer, null);
             member mem = new(member, mod, mod, name, rec->name, mdl, access_model, is_type, true);
             string key = cast(rec->name, string);
             mcall(push_member, mem);
@@ -1741,7 +1741,7 @@ void silver_parse(silver mod) {
 build_state import_build_project(import im, string name, string url);
 
 bool silver_compile(silver mod) {
-    verify(run("llc-19 -filetype=obj %o.ll -o %o.o -relocation-model=pic", mod->name, mod->name) == 0,
+    verify(exec("llc-19 -filetype=obj %o.ll -o %o.o -relocation-model=pic", mod->name, mod->name) == 0,
         ".ll -> .o compilation failure");
 
     string libs = new(string, alloc, 128);
