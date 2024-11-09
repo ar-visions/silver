@@ -4,7 +4,6 @@
 #include <silver>
 #include <ether>
 
-
 #define   mcall(M,...)   call(mod, M, ## __VA_ARGS__)
 #define   emodel(MDL)    ({ \
     member  m = ether_lookup(mod, str(MDL)); \
@@ -20,7 +19,7 @@
 static map   operators;
 static array keywords;
 static array consumables;
-static map   assign;
+static array assign;
 static array compare;
 
 static bool is_alpha(A any);
@@ -75,6 +74,8 @@ static void init() {
         ":", "=", "+=", "-=", "*=", "/=", 
         "|=", "&=", "^=", ">>=", "<<=", "%=", null);
     compare = array_of_cstr("==", "!=", null);
+
+    string add = str("add");
     operators = map_of( /// ether quite needs some operator bindings, and resultantly ONE interface to use them
         "+",        str("add"),
         "-",        str("sub"),
@@ -342,8 +343,8 @@ void import_extract_libs(import im, string build_dir) {
                 append(all, " ");
             append(all, f->chars);
         }
-        exec("gcc -shared -o %o/lib/lib%o.so -Wl,--whole-archive %o -Wl,--no-whole-archive",
-            i, im->name, all);
+        exec("%o/bin/clang -shared -o %o/lib/lib%o.so -Wl,--whole-archive %o -Wl,--no-whole-archive",
+            i, i, im->name, all);
     }
 }
 
@@ -734,20 +735,15 @@ array parse_tokens(A input) {
         
         char sval[2] = { chr, 0 };
         if (index_of(special_chars, sval) >= 0) {
-            if (chr == ':' && idx(input_string, index + 1) == ':') {
-                token t = new(token, chars, "::", source, src, line, line_num, column, index - line_start);
-                push(tokens, t);
-                index += 2;
-            } else if (chr == '=' && idx(input_string, index + 1) == '=') {
-                push(tokens, new(token, chars, "==", source, src, line, line_num, column, index - line_start));
-                index += 2;
-            } else if (chr == '<' && idx(input_string, index + 1) == '-') {
-                push(tokens, new(token, chars, "==", source, src, line, line_num, column, index - line_start));
-                index += 2;
-            } else {
-                push(tokens, new(token, chars, sval, source, src, line, line_num, column, index - line_start));
-                index += 1;
-            }
+            symbol name = sval;
+            if (chr == ':' && idx(input_string, index + 1) == ':')
+                name = "::";
+            else if (chr == '=' && idx(input_string, index + 1) == '=')
+                name = "==";
+            else if (chr == '<' && idx(input_string, index + 1) == '-')
+                name = "<-";
+            push(tokens, new(token, chars, name, source, src, line, line_num, column, index - line_start));
+            index += strlen(name);
             continue;
         }
 
@@ -881,9 +877,10 @@ object tokens_read_numeric(tokens a) {
 string tokens_read_assign(tokens a) {
     token  n = element(a, 0);
     string k = str(n->chars);
-    string m = get(assign, k);
-    if (m) a->cursor ++;
-    return k;
+    num assign_index = index_of(assign, k);
+    bool found = assign_index >= 0;
+    if (found) a->cursor ++;
+    return found ? k : null;
 }
 
 string tokens_read_alpha(tokens a) {
@@ -1120,6 +1117,8 @@ static member read_member(silver mod) {
     tokens tk = mod->tokens;
     tok(push_current);
 
+    print_tokens("read_member", mod);
+
     interface access = interface_undefined;
     for (int m = 1; m < interface_type.member_count; m++) {
         type_member_t* enum_v = &interface_type.members[m];
@@ -1131,7 +1130,6 @@ static member read_member(silver mod) {
     bool   is_static = tok(symbol, "static");
     bool   is_ref    = tok(symbol, "ref");
 
-    //print_tokens("read-member", mod);
     string alpha = tok(read_alpha);
     if(alpha) {
         model  ctx      = mod->top;
@@ -1167,6 +1165,9 @@ static member read_member(silver mod) {
     }
 
     token n         = tok(peek);
+
+    print_tokens("read_model", mod);
+
     model mdl       = read_model(mod, is_ref);
     if (!mdl) {
         print("info: could not read type at position %o", tok(location));
@@ -1191,10 +1192,13 @@ static member read_member(silver mod) {
         verify (!is_ref,    "unexpected ref keyword does not apply to cast");
         
         if (tok(next_is, "[") || tok(next_is, "return") || tok(next_is, "<-")) {
+            AType ty = isa(mdl);
             function cast_fn = parse_fn(mod, A_TYPE_CAST, mdl, null, access);
             string cast_name = format("cast_%o", mdl->name);
             member mem = new(member, mod, mod,
                 name, cast_name, mdl, cast_fn, is_static, false, access, access);
+            mcall(push_member, mem);
+            tok(pop_state, true); 
             return mem;
         } else
             fault ("expected function body for cast");
@@ -1342,8 +1346,17 @@ static node parse_primary(silver mod) {
     if (n)
         return operand(mod, n);
 
-    // parenthesized expressions
+    // parenthesized expressions, or potentially named arguments
+    // named args are as simple as possible, since : is not allowed after expr_level == 0 (which we are > here)
+    // all one must do is check for alpha:
     if (tok(symbol, "[")) {
+        if (mod->in_assign) {
+            string alpha = tok(read_alpha);
+            if (alpha) {
+                string colon = tok(symbol, ":");
+            }
+            if (tok(read_
+        }
         node expr = parse_expression(mod); // Parse the expression
         verify(tok(symbol, "]"), "Expected closing parenthesis");
         /// now read
@@ -1378,6 +1391,8 @@ node parse_assignment(silver mod, member mem, string op) {
     node           L       = mem;
     node           R       = parse_expression(mod);
 
+    mod->in_assign = mem;
+
     if (method && method->mdl && instanceof(method->mdl, function)) {
         array args = array_of(null, R, null);
         res = mcall(fcall, method, L, args);
@@ -1393,12 +1408,14 @@ node parse_assignment(silver mod, member mem, string op) {
         else if (eq(op, "|=")) res = mcall(assign_or,  L, R); // LLVMBuildOr   (B, R, L, "assign-or"); 
         else if (eq(op, "&=")) res = mcall(assign_and, L, R); // LLVMBuildAnd  (B, R, L, "assign-and");
         else if (eq(op, "^=")) res = mcall(assign_xor, L, R); // LLVMBuildXor  (B, R, L, "assign-xor");
-        else fault("unsupported operator: %o", op);
+        else
+            fault("unsupported operator: %o", op);
     }
     /// update member's value_ref (or not! it was not what we expected in LLVM)
     /// investigate
     ///mem->value = res->value;
     if (eq(op, "=")) mem->is_const = true;
+    mod->in_assign = false;
     return mem;
 }
 
@@ -1503,13 +1520,25 @@ node parse_statement(silver mod) {
     if (tok(next_is, "if"))     return parse_if_else(mod);
     if (tok(next_is, "do"))     return parse_do_while(mod);
 
+    print_tokens("parse_statement", mod);
+    
+    # object[ int ]       map of key int, value object
+    # variable[ 1,2,3,4 ] dimensional array
+
     member mem  = read_member(mod); // we store target on member
+
+    print_tokens("parse_statement2", mod);
     if (mem) {
         if (instanceof(mem->mdl, function)) {
             return parse_function_call(mod, null, mem);
         } else {
+            print_tokens("parse_statement3", mod);
             string assign = tok(read_assign);
-            if    (assign) return parse_assignment(mod, mem, assign);
+            if    (assign) {
+                return parse_assignment(mod, mem, assign);
+            } else {
+                return mem;
+            }
         }
     }
     fault ("implement"); /// implement as we need them
@@ -1561,9 +1590,10 @@ function parse_fn(silver mod, AFlag member_type, model rtype, object ident, inte
         verify(member_type != A_TYPE_CAST, "unexpected name for cast");
     
     arguments       args = null;
-    if (member_type == A_TYPE_CAST)
+    if (member_type == A_TYPE_CAST) {
         verify (tok(next_is, "[") || tok(next_is, "<-") || tok(next_is, "return"), "expected body for cast");
-    else {
+        args = new(arguments);
+    } else {
         verify (tok(next_is, "["), "expected function args [");
         args    = parse_args(mod);
     }
@@ -1669,7 +1699,7 @@ void silver_parse(silver mod) {
                 verify (mtype, "expected alpha-numeric name for model type");
                 mdl = emodel(mtype->chars);
             }
-            AType atype = isa(mdl->src->src);
+            AType atype = isa(mdl->src);
             verify(atype, "enumerables can only be based on primitive types (i32 default)");
             verify(tok(symbol, "["), "expected [ after enum type");
             array enums = import_list(mod, true);
@@ -1741,8 +1771,9 @@ void silver_parse(silver mod) {
 build_state import_build_project(import im, string name, string url);
 
 bool silver_compile(silver mod) {
-    verify(exec("llc-19 -filetype=obj %o.ll -o %o.o -relocation-model=pic", mod->name, mod->name) == 0,
-        ".ll -> .o compilation failure");
+    verify(exec("%o/bin/llc -filetype=obj %o.ll -o %o.o -relocation-model=pic",
+        mod->install, mod->name, mod->name) == 0,
+            ".ll -> .o compilation failure");
 
     string libs = new(string, alloc, 128);
     each (mod->imports, import, im) {
@@ -1753,8 +1784,8 @@ bool silver_compile(silver mod) {
         each_ (im->products, string, product)
             append(libs, format("-l%o ", product)->chars);
     }
-    string cmd = format("clang-19 %o.o -o %o -L %o/lib %o",
-        mod->name, mod->name, mod->install, libs);
+    string cmd = format("%o/bin/clang %o.o -o %o -L %o/lib %o",
+        mod->install, mod->name, mod->name, mod->install, libs);
     print("cmd: %o", cmd);
     verify(system(cmd->chars) == 0, "compilation failed"); /// add in all import objects/libraries
     print("compiled: %o", mod->name);

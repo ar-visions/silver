@@ -34,7 +34,7 @@ class class3 [
     int something
     class1[] cast [
         class1 test
-        return test # class1[ a: something * 2 ]
+        return test
     ]
 ]
 
@@ -48,7 +48,7 @@ anytime we need templates in design, we may code function members for model
 vector string : i8 [
     string mid[ int start, int len ] [
         # all of our classes must use the module-level functions in memory, storage, etc
-        return copy[ start, len ]
+        return3 copy[ start, len ]
     ]
 
     void print-something[] [
@@ -69,7 +69,7 @@ vector string : i8 [
 ##
 extend cstring [
     string cast [
-        return string[ this, strlen[ this ]]
+        return4 string[ this, strlen[ this ]]
     ]
 ]
 ##
@@ -79,5 +79,5 @@ int main[ ] [
 
     #cool-teens cl : cool-teens.clint
     printf[ 'this %i is for %s\n', 1, 'clint' ]
-    return cool-teens.clint
+    return5 cool-teens.clint
 ]
