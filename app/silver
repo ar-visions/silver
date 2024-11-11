@@ -1,7 +1,9 @@
 #ifndef _silver_
 #define _silver_
 
+/// start-trim
 #include <ether>
+/// end-trim
 
 #define import_t_schema(X,Y) \
     enum_value(X,Y, none) \
@@ -24,7 +26,6 @@ declare_enum(build_state)
     i_method    (X,Y,  public,  none,       push_state,   array, num) \
     i_method    (X,Y,  public,  none,       push_current) \
     i_method    (X,Y,  public,  none,       pop_state, bool) \
-    i_method    (X,Y,  public,  bool,       symbol, symbol) \
     i_method    (X,Y,  public,  token,      next) \
     i_method    (X,Y,  public,  token,      prev)\
     i_method    (X,Y,  public,  token,      consume) \
@@ -32,6 +33,7 @@ declare_enum(build_state)
     i_method    (X,Y,  public,  token,      element, num) \
     i_method    (X,Y,  public,  num,        line) \
     i_method    (X,Y,  public,  bool,       next_is, symbol) \
+    i_method    (X,Y,  public,  bool,       read, symbol) \
     i_method    (X,Y,  public,  object,     read_literal) \
     i_method    (X,Y,  public,  string,     read_string) \
     i_method    (X,Y,  public,  string,     read_alpha) \
@@ -105,5 +107,7 @@ declare_mod(silver, ether, model)
 #define import_intern isize(import)
 #endif
 declare_class(import)
+
+//#define set(I,...) ftableI(I) -> set(I, ##__VA_ARGS__)
 
 #endif
