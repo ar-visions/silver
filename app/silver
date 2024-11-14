@@ -18,40 +18,9 @@ declare_enum(import_t)
     enum_value(X,Y, built)
 declare_enum(build_state)
 
-#define tokens_schema(X,Y)\
-    i_prop      (X,Y,  public,  path,       file) \
-    i_prop      (X,Y,  public,  array,      tokens) \
-    i_prop      (X,Y,  public,  num,        cursor) \
-    i_prop      (X,Y,  intern,  array,      stack) \
-    i_method    (X,Y,  public,  none,       push_state,   array, num) \
-    i_method    (X,Y,  public,  none,       push_current) \
-    i_method    (X,Y,  public,  none,       pop_state, bool) \
-    i_method    (X,Y,  public,  token,      next) \
-    i_method    (X,Y,  public,  token,      prev)\
-    i_method    (X,Y,  public,  token,      consume) \
-    i_method    (X,Y,  public,  token,      peek) \
-    i_method    (X,Y,  public,  token,      element, num) \
-    i_method    (X,Y,  public,  num,        line) \
-    i_method    (X,Y,  public,  bool,       next_is, symbol) \
-    i_method    (X,Y,  public,  bool,       read, symbol) \
-    i_method    (X,Y,  public,  object,     read_literal) \
-    i_method    (X,Y,  public,  string,     read_string) \
-    i_method    (X,Y,  public,  string,     read_alpha) \
-    i_method    (X,Y,  public,  string,     read_keyword) \
-    i_method    (X,Y,  public,  object,     read_bool) \
-    i_method    (X,Y,  public,  object,     read_numeric) \
-    i_method    (X,Y,  public,  string,     read_assign) \
-    i_method    (X,Y,  public,  string,     location) \
-    i_override  (X,Y,  method,  init) \
-    i_override  (X,Y,  cast,    bool)
-#ifndef tokens_intern
-#define tokens_intern
-#endif
-declare_class(tokens)
-
 #define completer_context_schema(X,Y) \
     i_prop(X,Y, required, model,    data) \
-    i_prop(X,Y, required, tokens,   body)
+    i_prop(X,Y, required, array,    body)
 #ifndef completer_context_intern
 #define completer_context_intern
 #endif
@@ -61,20 +30,42 @@ declare_class(completer_context)
 /// its probably going to make a few more macros
 
 #define silver_schema(X,Y)\
-    i_prop    (X,Y, intern,     bool,                 in_ref) \
-    i_prop    (X,Y, intern,     member,               in_assign) \
-    i_prop    (X,Y, intern,     array,                imports) \
-    i_prop    (X,Y, intern,     tokens,               tokens) \
-    i_prop    (X,Y, intern,     array,                main_symbols) \
-    i_prop    (X,Y, intern,     array,                compiled_objects) \
-    i_prop    (X,Y, intern,     array,                products_used) \
-    i_prop    (X,Y, intern,     map,                  include) \
-    i_prop    (X,Y, intern,     map,                  type_refs) \
-    i_prop    (X,Y, intern,     map,                  operators) \
-    i_prop    (X,Y, intern,     int,                  expr_level) \
-    i_prop    (X,Y, intern,     string,               current_include) \
-    i_method  (X,Y, public,     none, parse) \
-    i_method  (X,Y, public,     bool, compile) \
+    i_prop    (X,Y, intern,     bool,           in_ref) \
+    i_prop    (X,Y, intern,     member,         in_assign) \
+    i_prop    (X,Y, intern,     array,          imports) \
+    i_prop    (X,Y, intern,     array,          main_symbols) \
+    i_prop    (X,Y, intern,     array,          compiled_objects) \
+    i_prop    (X,Y, intern,     array,          products_used) \
+    i_prop    (X,Y, intern,     map,            include) \
+    i_prop    (X,Y, intern,     map,            type_refs) \
+    i_prop    (X,Y, intern,     map,            operators) \
+    i_prop    (X,Y, intern,     int,            expr_level) \
+    i_prop    (X,Y, intern,     string,         current_include) \
+    i_prop    (X,Y, public,     path,           file) \
+    i_prop    (X,Y, public,     array,          tokens) \
+    i_prop    (X,Y, public,     num,            cursor) \
+    i_prop    (X,Y, intern,     array,          stack) \
+    i_method  (X,Y, public,     none,           push_state,   array, num) \
+    i_method  (X,Y, public,     none,           push_current) \
+    i_method  (X,Y, public,     none,           pop_state, bool) \
+    i_method  (X,Y, public,     token,          next) \
+    i_method  (X,Y, public,     token,          prev)\
+    i_method  (X,Y, public,     token,          consume) \
+    i_method  (X,Y, public,     token,          peek) \
+    i_method  (X,Y, public,     token,          element, num) \
+    i_method  (X,Y, public,     num,            line) \
+    i_method  (X,Y, public,     bool,           next_is, symbol) \
+    i_method  (X,Y, public,     bool,           read, symbol) \
+    i_method  (X,Y, public,     object,         read_literal) \
+    i_method  (X,Y, public,     string,         read_string) \
+    i_method  (X,Y, public,     string,         read_alpha) \
+    i_method  (X,Y, public,     string,         read_keyword) \
+    i_method  (X,Y, public,     object,         read_bool) \
+    i_method  (X,Y, public,     object,         read_numeric) \
+    i_method  (X,Y, public,     string,         read_assign) \
+    i_method  (X,Y, public,     string,         location) \
+    i_method  (X,Y, public,     none,           parse) \
+    i_method  (X,Y, public,     bool,           compile) \
     i_override(X,Y, method,     init)
 #ifndef silver_intern
 #define silver_intern isize(silver)
@@ -82,7 +73,6 @@ declare_class(completer_context)
 declare_mod(silver, ether, model)
 
 #define import_schema(X,Y) \
-    i_prop    (X,Y, public, tokens,     tokens) \
     i_prop    (X,Y, public, silver,     mod) \
     i_prop    (X,Y, intern, string,     name) \
     i_prop    (X,Y, intern, array,      source) \
