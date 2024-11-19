@@ -13,7 +13,6 @@
 
 static map   operators;
 static array keywords;
-static array consumables;
 static array assign;
 static array compare;
 
@@ -60,11 +59,8 @@ static void init() {
     keywords = array_of_cstr(
         "class",  "proto",    "struct", "import", "typeof", "schema", "is", "inherits",
         "init",   "destruct", "ref",    "const",  "volatile", "require",
-        "return", "<-", "asm",      "if",     "switch",
+        "return", "<-", "::", "asm",      "if",     "switch",
         "while",  "for",      "do",     "signed", "unsigned", "cast", null);
-    consumables = array_of_cstr(
-        "ref", "schema", "enum", "class", "union", "proto", "struct",
-        "const", "volatile", "signed", "unsigned", null);
     assign = array_of_cstr(
         ":", "=", "+=", "-=", "*=", "/=", 
         "|=", "&=", "^=", ">>=", "<<=", "%=", null);
@@ -85,6 +81,7 @@ static void init() {
         "?:",       string("cond_value"),
         ":",        string("assign"),
         "=",        string("assign"),
+        "%=",       string("assign_mod"),
         "+=",       string("assign_add"),
         "-=",       string("assign_sub"),
         "*=",       string("assign_mul"),
@@ -96,7 +93,6 @@ static void init() {
         "<<=",      string("assign_left"),
         "==",       string("compare_equal"),
         "!=",       string("compare_not"),
-        "%=",       string("mod_assign"),
         "is",       string("is"),
         "inherits", string("inherits"), null);
     
@@ -738,12 +734,24 @@ array parse_tokens(A input) {
         char sval[2] = { chr, 0 };
         if (index_of(special_chars, sval) >= 0) {
             symbol name = sval;
-            if (chr == ':' && idx(input_string, index + 1) == ':')
-                name = "::";
-            else if (chr == '=' && idx(input_string, index + 1) == '=')
-                name = "==";
-            else if (chr == '<' && idx(input_string, index + 1) == '-')
-                name = "<-";
+            bool found = false;
+            symbol src = &input_string->chars[index];
+            pairs (operators, i) {
+                string op = i->key;
+                if (strncmp(src, op->chars, op->len) == 0) {
+                    name = op->chars;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+                each (keywords, string, k) {
+                    if (strncmp(src, k->chars, k->len) == 0) {
+                        name = k->chars;
+                        break;
+                    }
+                }
+            
             push(tokens, token(chars, name, source, src, line, line_num, column, index - line_start));
             index += strlen(name);
             continue;
@@ -1055,7 +1063,7 @@ static model parse_wrap(silver mod, model mdl_src) {
 
 static function parse_fn(silver mod, AFlag member_type, model rtype, object name, interface access);
 
-static node parse_function_call(silver mod, node target, member fmem);
+static node parse_function_call(silver mod, member fmem);
 
 static node read_cast(silver mod) {
     push_current(mod);
@@ -1091,11 +1099,13 @@ static node read_cast(silver mod) {
 
     node expr = parse_expression(mod);
     if (is_object(expr)) {
-        model method = cast_method(mod, expr->mdl, mdl);
-        if (method) {
+        /// todo: create member for this
+        /// 'method' must be a temp member with target_member of expr
+        member expr_method = cast_method(mod, expr->mdl, mdl);
+        if (expr_method) {
             // object may cast because there is a method defined with is_cast and an rtype of the cast_ident
             array args = array();
-            node mcall = fn_call(mod, method, expr, args);
+            node mcall = fn_call(mod, expr_method, args);
             return mcall;
         }
     }
@@ -1109,7 +1119,80 @@ static node read_cast(silver mod) {
     return conv;
 }
 
-/// @brief this reads entire function definition, member we lookup, new member
+/// returns a node or member and must be handled for those cases
+static node read_resolve(silver mod) {
+    string alpha = read_alpha(mod);
+    if   (!alpha) return null;
+
+    model  ctx      = mod->top;
+    member target   = null; // member is a node with value-ref (value)
+    member mem      = lookup(mod, alpha);
+
+    if (!mem) {
+        verify(mod->expr_level == 0, "member not found: %o", alpha);
+        mem = new(member, mod, mod, name, alpha); /// this calls LLVMBuildAlloca
+        push_member(mod, mem); /// if member does not have mdl defined, then we can know its a new member
+    } else if (!mem->is_type && !mem->is_func) {
+        /// from record if no value
+        if (!has_value(mem)) {
+            AType ctx_type = isa(ctx);
+            member target = lookup(mod, string("this")); // unique to the function in class, not the class
+            verify(target, "no target found in context");
+            mem = resolve(target, alpha);
+            verify(mem, "failed to resolve member in context: %o", mod->top->name);
+        }
+        /// -> pointer keyword is safe-guard here, so we are friendlier to pointers
+        bool safe = false;
+        while ((safe = read(mod, "->")) || read(mod, ".")) {
+            target = mem;
+            push(mod, mem->mdl);
+            string alpha = read_alpha(mod);
+            mem = resolve(mem, alpha); /// needs an argument
+            verify(alpha, "expected alpha identifier");
+            pop(mod);
+        }
+    }
+    /// handle compatible indexing methods and general pointer dereference @ index
+    if (next_is(mod, "[")) {
+        record r = instanceof(record, mem->mdl);
+        /// must have an indexing method, or be a reference_pointer
+        verify(mem->mdl->ref == reference_pointer || r, "no indexing available for model %o/%o",
+            mem->mdl->name, estr(reference, mem->mdl->ref));
+        
+        /// we must read the arguments given to the indexer
+        consume(mod);
+        array args = array(16);
+        while (!next_is(mod, "]")) {
+            node expr = parse_expression(mod);
+            push(args, expr);
+            verify(next_is(mod, "]") || next_is(mod, ","));
+            if (next_is(mod, ","))
+                consume(mod);
+        }
+        node index_expr = null;
+        if (r) {
+            member indexer = compatible(mod, r, null, A_TYPE_INDEX, args); /// we need to update member model to make all function members exist in an array
+            /// todo: serialize arg type names too
+            verify(indexer, "%o: no suitable indexing method", r->name);
+            function fn = instanceof(indexer->mdl, function);
+            index_expr = fn_call(mod, indexer, mem, args);
+        } else {
+            verify(len(args) == 1, "expected singular index value of integral type");
+            node i = element(args, 0);
+            index_expr = load(mod, mem, i);
+            /// we can handle multiple dimensions with model shape
+            /// could potentially support abstract for row/col major stride
+            /// an interesting idea; we need this a basic thing in our language
+        }
+        return index_expr;
+    }
+
+    return mem;
+}
+
+/// reads record members
+/// not called in functions anymore, less in argument parsing
+/// the prior use-case for functions is now used above: read_resolve
 static member read_member(silver mod, member *r_target) {
     push_current(mod);
     interface access = interface_undefined;
@@ -1125,54 +1208,12 @@ static member read_member(silver mod, member *r_target) {
     bool   is_ref     = read(mod, "ref");
 
     verify(!is_require || !is_static, "require cannot be used with static members");
-    push_current(mod);
-
-    string alpha = read_alpha(mod);
-    if(alpha) {
-        model  ctx      = mod->top;
-        member target   = null; // member is a node with value-ref (value)
-        member mem      = lookup(mod, alpha);
-
-        /// make sure this is not a constructor in context
-        if (mem && mem->mdl != mod->top) {
-            /// attempt to resolve target if there is a chain
-            /// silver makes c->like->code a bit safer, and pointers more approachable
-            bool safe = false;
-            while ((safe = read(mod, "->")) || read(mod, ".")) {
-                target = mem;
-                push(mod, mem->mdl);
-                string alpha = read_alpha(mod);
-                mem = resolve(mem, alpha); /// needs an argument
-                verify(alpha, "expected alpha identifier");
-                pop(mod);
-            }
-            if (r_target)
-                *r_target = target;
-            verify (!is_static, "unexpected static description of member");
-
-            /// if is_ref, its an anonymous member with a mdl type +ref
-            if (mem && mem->is_func) {
-                pop_state(mod, true); /// we pop state, saving this current
-                pop_state(mod, true);
-                return mem; // parse_function_call(mod, target, mem); (we are doing this in parse_statements)
-            }
-            if (mem && !mem->is_type) {
-                pop_state(mod, true); /// we pop state, saving this current
-                pop_state(mod, true);
-                return mem; /// baked into mem is read.all.members.in.series <- where series is mem (right gpt?)
-            }
-            pop_state(mod, false);
-            //pop_state(mod, false); /// we pop the state to the last push
-            push_current(mod);
-        }
-    }
 
     token n   = peek(mod);
     model mdl = read_model(mod, is_ref);
     if (!mdl) {
         print("info: could not read type at position %o", location(mod));
         pop_state(mod, false); // we may 'info' here
-        pop_state(mod, false);
         return null;
     }
 
@@ -1203,8 +1244,8 @@ static member read_member(silver mod, member *r_target) {
             verify (!is_ref,    "unexpected ref keyword does not apply to cast");
             
             if (next_is(mod, "[") || next_is(mod, "return") || next_is(mod, "<-")) {
-                name = format("cast_%o", mdl->name);
-                mdl  = parse_fn(mod, A_TYPE_CAST, mdl, null, access);
+                mdl  = parse_fn(mod, A_TYPE_CAST, mdl, name, access);
+                name = mdl->name;
             } else
                 fault("expected function body for cast");
         } else {
@@ -1227,10 +1268,6 @@ static member read_member(silver mod, member *r_target) {
             }
         }
     }
-    if (instanceof(name, token) && eq((token)name, "a")) {
-        int test = 0;
-        test++; // we want to load this one in test, so it must be associated to this record.  as a member inside, we can know that upon lookup
-    } 
     print("adding member: %o, model: %o", name, mdl->name);
     member mem = new(member,
         mod,        mod,        name,          name,
@@ -1240,11 +1277,10 @@ static member read_member(silver mod, member *r_target) {
         access,     access,     default_value, default_value);
     push_member(mod, mem);
     pop_state(mod, true);
-    pop_state(mod, true);
     return mem;
 }
 
-
+/// parses member args for a definition of a function
 arguments parse_args(silver mod) {
     verify(read(mod, "["), "parse-args: expected [");
     array       args = new(array,     alloc, 32);
@@ -1291,7 +1327,7 @@ static node parse_construct(silver mod, member mem) {
 
         /// now we need to parse the named arguments, and perform assignment on each
         /// then we separately parse 'default values' (not now, but thats in member as a body attribute)
-        res = alloc(mod, mem->mdl->src, args);
+        res = alloc(mod, mem->mdl, args);
     } else {
         /// enum [ value ] <- same as below:
         /// primitive [ value ] <- not sure if we want this, as we have cast
@@ -1299,7 +1335,7 @@ static node parse_construct(silver mod, member mem) {
     return res;
 }
 
-static node parse_function_call(silver mod, node target, member fmem) {
+static node parse_function_call(silver mod, member fmem) {
     bool allow_no_paren = mod->expr_level == 1; /// remember this decision? ... var args
     bool expect_end_br  = false;
     function fn        = fmem->mdl;
@@ -1337,7 +1373,7 @@ static node parse_function_call(silver mod, node target, member fmem) {
         verify(next_is(mod, "]"), "expected ] end of function call");
         consume(mod);
     }
-    return fn_call(mod, fmem, target, values);
+    return fn_call(mod, fmem, values);
 }
 
 static node parse_ternary(silver mod, node expr) {
@@ -1387,8 +1423,7 @@ static node parse_primary(silver mod) {
         mod->in_ref = true;
         node expr = parse_expression(mod);
         mod->in_ref = false;
-        fault("not impl");
-        return expr;
+        return addr_of(mod, expr, null);
     }
 
     // literal values (int, float, bool, string)
@@ -1405,76 +1440,51 @@ static node parse_primary(silver mod) {
 
     // handle identifiers (variables or function calls)
     print_tokens("parse_primary", mod);
-    token tk = consume(mod);
-    string ident = cast(string, tk);
-    member mem = lookup(mod, ident); // we need target on member
+    node n = read_resolve(mod);
+    member mem = instanceof(n, node); // we need target on member
+
     if (mem) {
+        member target = null;
+        /// lets 'resolve' all members
         if (mem->is_func) {
             if (mod->in_ref) {
                 fault("not implemented");
                 return null; /// simple stack mechanism we need to support returnin the pointer for (is this a 'load?')
             } else
-                return parse_function_call(mod, mem->target_member, mem);
+                return parse_function_call(mod, mem);
         } else if (mem->is_type && next_is(mod, "[")) {
             print_tokens("parse-construct", mod);
             return parse_construct(mod, mem); /// this, is the construct
+        } else if (mod->in_ref) {
+            return mem; /// we will not load when ref is being requested on a member
         } else {
-            return load(mod, mem, null, null);
+            return load(mod, mem, null); // todo: perhaps wait to AddFunction until they are used; keep the member around but do not add them until they are referenced (unless we are Exporting the import)
         }
     }
 
+    token  tk    = consume(mod);
+    string ident = cast(string, tk);
     fault("unexpected %o in primary expression", ident);
     return null;
 }
 
-node parse_assignment(silver mod, member mem, string op) {
+node parse_assignment(silver mod, member mem, string oper) {
     verify(!mem->is_assigned || !mem->is_const, "mem %o is a constant", mem->name);
-    string         op_name = get(operators, op);
-    member         method  = null;
-    if (instanceof(mem->mdl, record))
-        method = get(((record)mem->mdl)->members, op_name); /// op-name must be reserved for use in functions only
-    node           res     = null;
-    node           L       = mem;
-    print_tokens("parse_assignment", mod);
-    node           R       = parse_expression(mod);
-
-    AType Rtype = isa(R->mdl);
-    if (!mem->mdl)
-        set_model(mem, R->mdl);
-
     mod->in_assign = mem;
-
-    if (method && method->mdl && instanceof(method->mdl, function)) {
-        array args = array_of(null, R, null);
-        res = fn_call(mod, method, L, args);
-    } else {
-        mem->is_const = eq(op, "=");
-        bool e = mem->is_const;
-
-        if (e || eq(op, ":"))  res = assign(mod,     L, R); // LLVMBuildStore(B, R, L);
-        else if (eq(op, "+=")) res = assign_add(mod, L, R); // LLVMBuildAdd  (B, R, L, "assign-add");
-        else if (eq(op, "-=")) res = assign_sub(mod, L, R); // LLVMBuildSub  (B, R, L, "assign-sub");
-        else if (eq(op, "*=")) res = assign_mul(mod, L, R); // LLVMBuildMul  (B, R, L, "assign-mul");
-        else if (eq(op, "/=")) res = assign_div(mod, L, R); // LLVMBuildSDiv (B, R, L, "assign-div");
-        else if (eq(op, "%=")) res = assign_mod(mod, L, R); // LLVMBuildSRem (B, R, L, "assign-mod");
-        else if (eq(op, "|=")) res = assign_or(mod,  L, R); // LLVMBuildOr   (B, R, L, "assign-or"); 
-        else if (eq(op, "&=")) res = assign_and(mod, L, R); // LLVMBuildAnd  (B, R, L, "assign-and");
-        else if (eq(op, "^=")) res = assign_xor(mod, L, R); // LLVMBuildXor  (B, R, L, "assign-xor");
-        else
-            fault("unsupported operator: %o", op);
+    node   L       = mem;
+    print_tokens("parse_assignment", mod);
+    node   R       = parse_expression(mod); /// getting class2 as a struct not a pointer as it should be. we cant lose that pointer info
+    if (!mem->mdl) {
+        mem->is_const = eq(oper, "=");
+        set_model(mem, R->mdl, true);
     }
-    /// update member's value_ref (or not! it was not what we expected in LLVM)
-    /// investigate
-    ///mem->value = res->value;
-    if (eq(op, "=")) mem->is_const = true;
-
-    /// our grand entrance into type-inference; mdl can be null for newly created members
-    /// we just need to let this null not interfere with the assignment
-    if (!mem->mdl)
-        mem->mdl = res->mdl;
-    
+    verify(contains(operators, oper), "%o not an assignment-operator");
+    string op_name = get(operators, oper);
+    string op_form = format("_%o", op_name);
+    OPType op_val  = eval(OPType, op_form->chars);
+    node   result  = op(mod, op_val, op_name, L, R);
     mod->in_assign = null;
-    return mem;
+    return result;
 }
 
 node cond_builder_ternary(silver mod, array cond_tokens, object unused) {
@@ -1547,26 +1557,16 @@ node parse_statement(silver mod) {
     object lit = read_literal(mod);
     verify(!lit, "unexpected literal: %o", lit);
 
-    member mem    = null;
-    string ident  = read_alpha(mod);
-    if (ident) {
-        mem = lookup(mod, ident);
-        member target = null;
-        if (read(mod, ".")) {
-            navigate(mod, -2);
-            mem = read_member(mod, &target);
-        }
-        if (mem) {
-            verify (!mem->is_type, "invalid syntax");
-            if (mem->is_func)
-                return parse_function_call(mod, target, mem);
-        } else {
-            /// now we must infer the type, start with null, and please proceed governor
-            mem = new(member, mod, mod, name, ident);
-            push_member(mod, mem);
-        }
+    node n = read_resolve(mod);
+    member mem = instanceof(n, member);
+    /// member needs an index which is a big 
+    
+    if (mem) {
+        verify (!mem->is_type, "invalid syntax"); // we may want to allow anonymous constructs
+        if (mem->is_func)
+            return parse_function_call(mod, mem);
         string assign = read_assign(mod);
-        verify (assign, "expected assignment on identifier %o, found %o", ident, next(mod));
+        verify (assign, "expected assignment on identifier %o, found %o", mem->name, next(mod));
         return parse_assignment(mod, mem, assign);
     }
     fault ("parse-statement: unexpected %o", next(mod));
@@ -1613,7 +1613,7 @@ function parse_fn(silver mod, AFlag member_type, model rtype, object ident, inte
     if (!name) {
         verify(member_type == A_TYPE_CAST, "expected member type of cast if there is no name");
         print("casting to %o", rtype->name);
-        name = new(token, chars, rtype->name->chars);
+        name = form(token, "cast_%o", rtype->name);
     } else
         verify(member_type != A_TYPE_CAST, "unexpected name for cast");
     
@@ -1792,9 +1792,9 @@ void silver_parse(silver mod) {
 build_state import_build_project(import im, string name, string url);
 
 bool silver_compile(silver mod) {
-    //verify(exec("%o/bin/llc -filetype=obj %o.ll -o %o.o -relocation-model=pic",
-    //    mod->install, mod->name, mod->name) == 0,
-    //        ".ll -> .o compilation failure");
+    verify(exec("%o/bin/llc -filetype=obj %o.ll -o %o.o -relocation-model=pic",
+        mod->install, mod->name, mod->name) == 0,
+            ".ll -> .o compilation failure");
 
     string libs = string(alloc, 128);
     each (mod->imports, import, im) {
