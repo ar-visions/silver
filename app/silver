@@ -31,6 +31,8 @@ declare_class(completer_context)
 
 #define silver_schema(X,Y)\
     i_prop    (X,Y, intern,     bool,           in_ref) \
+    i_prop    (X,Y, intern,     bool,           in_top) \
+    i_prop    (X,Y, intern,     bool,           prebuild) \
     i_prop    (X,Y, intern,     member,         in_assign) \
     i_prop    (X,Y, intern,     array,          imports) \
     i_prop    (X,Y, intern,     array,          main_symbols) \
@@ -45,6 +47,7 @@ declare_class(completer_context)
     i_prop    (X,Y, public,     array,          tokens) \
     i_prop    (X,Y, public,     num,            cursor) \
     i_prop    (X,Y, intern,     array,          stack) \
+    i_method  (X,Y, public,     none,           incremental_resolve) \
     i_method  (X,Y, public,     none,           push_state,   array, num) \
     i_method  (X,Y, public,     none,           push_current) \
     i_method  (X,Y, public,     none,           pop_state, bool) \
@@ -67,18 +70,31 @@ declare_class(completer_context)
     i_method  (X,Y, public,     string,         location) \
     i_method  (X,Y, public,     none,           parse) \
     i_method  (X,Y, public,     bool,           compile) \
+    i_override(X,Y, method,     build_initializer) \
     i_override(X,Y, method,     init)
 #ifndef silver_intern
 #define silver_intern isize(silver)
 #endif
 declare_mod(silver, ether, model)
 
+#define schematic_schema(X,Y) \
+    i_prop    (X,Y, public, model,      mdl) \
+    i_prop    (X,Y, public, string,     namespace) \
+    i_prop    (X,Y, public, interface,  access) \
+    i_ctr     (X,Y, public, silver)
+#ifndef schematic_intern
+#define schematic_intern isize(schematic)
+#endif
+declare_class(schematic)
+
+/// import is a model now so it may parse as such
+/// everything is very translatable to member: type  syntax
+/// we may go type first and do simple behavior there depending
+/// on context
+
 #define import_schema(X,Y) \
-    i_prop    (X,Y, public, silver,     mod) \
-    i_prop    (X,Y, intern, string,     name) \
     i_prop    (X,Y, intern, array,      source) \
     i_prop    (X,Y, intern, string,     shell) \
-    i_prop    (X,Y, intern, string,     isolate_namespace) \
     i_prop    (X,Y, intern, path,       module_path) \
     i_prop    (X,Y, intern, bool,       imported) \
     i_prop    (X,Y, intern, array,      includes) \
@@ -92,12 +108,14 @@ declare_mod(silver, ether, model)
     i_prop    (X,Y, intern, string,     main_symbol) \
     i_prop    (X,Y, intern, bool,       assemble_so) \
     i_prop    (X,Y, intern, bool,       skip_process) \
+    i_prop    (X,Y, intern, bool,       anonymous) \
+    i_prop    (X,Y, intern, silver,     extern_mod) \
     i_method  (X,Y, public, none,       process) \
     i_override(X,Y, method, init)
 #ifndef import_intern
 #define import_intern isize(import)
 #endif
-declare_class(import)
+declare_mod(import, model)
 
 //#define set(I,...) ftableI(I) -> set(I, ##__VA_ARGS__)
 
