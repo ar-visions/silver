@@ -1175,32 +1175,58 @@ member cast_method(silver mod, class class_target, model cast) {
     return null;
 }
 
-
 static function parse_fn           (silver mod, AFlag member_type, object name);
 static node     parse_function_call(silver mod, member fmem);
 
+/// parse construct from and cast to, and named args
+static node parse_create(silver mod, model src) {
+    object n = read_literal(mod);
+    if (n) return operand(mod, n);
+    bool has_content = read(mod, "[") && !read(mod, "]");
+    node r = null;
+    bool conv = false;
 
-/// will return literals, and expressions consisting of type[ ctr-or-init-expr ]
-/// so there is no alternate syntax for casting anymore, 
-/// this is a kind of any literal in one or any expression using a type[...]
-static node read_type_expr(silver mod) {
-    print_tokens("read-cast", mod);
-    model  mdl = read_model(mod);
-    token  t   = peek(mod);
-    object n   = read_literal(mod);
-    if (n || !mdl)
-        return n ? operand(mod, n) : null;
+    if (has_content) {
+        token k = peek(mod);
+        if (is_alpha(k) && eq(element(mod, 1), ":")) {
+            /// init with members [alloc performs required check]
+            /// this converts operand to a map
+            map args  = map(hsize, 16);
+            int count = 0;
+            while (!next_is(mod, "]")) {
+                string name  = read_alpha(mod);
+                verify(read(mod, ":"), "expected : after arg %o", name);
+                node   value = parse_expression(mod);
+                set(args, name, value);
+                count++;
+                if (next_is(mod, "]")) break;
+            }
+            verify(len(args) == count, "arg count mismatch");
+            verify(read(mod, "]"), "expected ] after construction");
+            conv = true;
+            r    = args;
+        } else {
+            r    = parse_expression(mod);
+            conv = r->mdl != src;
+        }
+        verify(read(mod, "]"), "expected ] after mdl-expr %o", src->name);
+    } else {
+        r = create(mod, src, null); // default
+        conv = false;
+    }
+    if (conv)
+        r = create(mod, src, r);
+    return r;
+}
 
-    verify(mdl, "expected model");
-    bool  has_expr = n || eq(t, "[");
+/// returns a node or member and must be handled for those cases
+/// module-name.public-member
+/// class-instance.member-of-class.another-member
 
-    /// return default!
-    if (!has_expr)
-        return alloc(mod, mdl, null);
-
-    verify(!n || read(mod, "["), "expected [ for type expression");
-    node  expr = n ? alloc(mod, mdl, n) : parse_expression(mod);
-
+static node collection_of_things() {
+    node expr;
+    silver mod;
+    model  mdl;
     if (is_record(expr)) {
         member expr_method = cast_method(mod, expr->mdl, mdl);
         if (expr_method) {
@@ -1210,21 +1236,53 @@ static node read_type_expr(silver mod) {
             return mcall;
         }
     }
-    verify (!is_record(expr), "object %o requires a cast method for %o",
-        expr->mdl->name, mdl->name);
-
-    /// convert expr-mdl to declared-mdl
-    verify (!read(mod, "]"), "expected ] to complete cast");
-    node   conv = convert(mod, expr, mdl);
-    return conv;
+    return null;
 }
 
 
-/// returns a node or member and must be handled for those cases
-/// module-name.public-member
-/// class-instance.member-of-class.another-member
-/// 
+static node parse_construct(silver mod, member mem) {
+    verify(mem && mem->is_type, "expected member type");
+    verify(read(mod, "["), "expected [ after type name for construction");
+    node res = null;
+    /// it may be a dedicated constructor (for primitives or our own), or named args (not for primitives)
+    if (instanceof(mem->mdl->src, record)) {
+        AType atype = isa(mem->mdl->src);
+        map args = map(hsize, 16);
+        int count = 0;
+        while (!next_is(mod, "]")) {
+            string name  = read_alpha(mod);
+            verify(read(mod, ":"), "expected : after arg %o", name);
+            node   value = parse_expression(mod);
+            set(args, name, value);
+            count++;
+            verify(read(mod, ",") || next_is(mod, "]"), "expected , or ]");
+        }
+        verify(len(args) == count, "arg count mismatch");
+        verify(read(mod, "]"), "expected ] after construction");
+
+        /// now we need to parse the named arguments, and perform assignment on each
+        /// then we separately parse 'default values' (not now, but thats in member as a body attribute)
+        res = create(mod, mem->mdl, args);
+    } else {
+        /// enum [ value ] <- same as below:
+        /// primitive [ value ] <- not sure if we want this, as we have cast
+    }
+    return res;
+}
+
 static node read_resolve(silver mod) {
+    object n   = read_literal(mod);
+    if (n) return operand(mod, n);
+    print_tokens("read-cast", mod);
+    model  mdl = read_model(mod); /// null if no type specified
+    token  t   = peek(mod);
+    n = read_literal(mod);
+    bool  has_expr = n || (mdl && eq(t, "["));
+
+    /// type, type literal, or type[expr] handled here [cast & ctr support]
+    if (mdl && has_expr)
+        return create(mod, mdl, n ? (object)n : (object)parse_create(mod, mdl));
+
     string alpha = read_alpha(mod);
     if   (!alpha) return null;
 
@@ -1318,7 +1376,24 @@ static node read_resolve(silver mod) {
         mod->left_hand = prev_l;
         return index_expr;
     }
-
+    if (mem) {
+        member target = null;
+        /// lets 'resolve' all members
+        if (mem->is_func) {
+            if (mod->in_ref) {
+                fault("not implemented");
+                return null; /// simple stack mechanism we need to support returnin the pointer for (is this a 'load?')
+            } else
+                return parse_function_call(mod, mem);
+        } else if (mem->is_type && next_is(mod, "[")) {
+            print_tokens("parse-construct", mod);
+            return parse_construct(mod, mem); /// this, is the construct
+        } else if (mod->in_ref) {
+            return mem; /// we will not load when ref is being requested on a member
+        } else {
+            return load(mod, mem); // todo: perhaps wait to AddFunction until they are used; keep the member around but do not add them until they are referenced (unless we are Exporting the import)
+        }
+    }
     return mem;
 }
 
@@ -1363,38 +1438,6 @@ arguments parse_args(silver mod) {
     }
     return res;
 }
-
-
-static node parse_construct(silver mod, member mem) {
-    verify(mem && mem->is_type, "expected member type");
-    verify(read(mod, "["), "expected [ after type name for construction");
-    node res = null;
-    /// it may be a dedicated constructor (for primitives or our own), or named args (not for primitives)
-    if (instanceof(mem->mdl->src, record)) {
-        AType atype = isa(mem->mdl->src);
-        map args = map(hsize, 16);
-        int count = 0;
-        while (!next_is(mod, "]")) {
-            string name  = read_alpha(mod);
-            verify(read(mod, ":"), "expected : after arg %o", name);
-            node   value = parse_expression(mod);
-            set(args, name, value);
-            count++;
-            verify(read(mod, ",") || next_is(mod, "]"), "expected , or ]");
-        }
-        verify(len(args) == count, "arg count mismatch");
-        verify(read(mod, "]"), "expected ] after construction");
-
-        /// now we need to parse the named arguments, and perform assignment on each
-        /// then we separately parse 'default values' (not now, but thats in member as a body attribute)
-        res = alloc(mod, mem->mdl, args);
-    } else {
-        /// enum [ value ] <- same as below:
-        /// primitive [ value ] <- not sure if we want this, as we have cast
-    }
-    return res;
-}
-
 
 static node parse_function_call(silver mod, member fmem) {
     bool     expect_br = false;
@@ -1447,7 +1490,14 @@ static node parse_ternary(silver mod, node expr) {
 
 
 static node parse_primary(silver mod) {
-    token t = peek(mod);
+    print_tokens("parse_primary", mod);
+
+    // parenthesized expressions
+    if (read(mod, "[")) {
+        node expr = parse_expression(mod); // Parse the expression
+        verify(read(mod, "]"), "Expected closing parenthesis");
+        return parse_ternary(mod, expr);
+    }
 
     // handle the logical NOT operator (e.g., '!')
     if (read(mod, "!") || read(mod, "not")) {
@@ -1478,10 +1528,6 @@ static node parse_primary(silver mod) {
         return expr; // Return the type reference
     }
 
-    // 'cast' operator has a type inside
-    node cast = read_type_expr(mod);
-    if  (cast) return cast;
-
     // 'ref' operator (reference)
     if (read(mod, "ref")) {
         mod->in_ref = true;
@@ -1490,41 +1536,9 @@ static node parse_primary(silver mod) {
         return addr_of(mod, expr, null);
     }
 
-    // literal values (int, float, bool, string)
-    object n = read_literal(mod);
-    if (n)
-        return operand(mod, n);
-
-    // parenthesized expressions
-    if (read(mod, "[")) {
-        node expr = parse_expression(mod); // Parse the expression
-        verify(read(mod, "]"), "Expected closing parenthesis");
-        return parse_ternary(mod, expr);
-    }
-
-    // handle identifiers (variables or function calls)
-    print_tokens("parse_primary", mod);
-    member mem = read_resolve(mod); /// should perform offset() inside
-
-    if (mem) {
-        member target = null;
-        /// lets 'resolve' all members
-        if (mem->is_func) {
-            if (mod->in_ref) {
-                fault("not implemented");
-                return null; /// simple stack mechanism we need to support returnin the pointer for (is this a 'load?')
-            } else
-                return parse_function_call(mod, mem);
-        } else if (mem->is_type && next_is(mod, "[")) {
-            print_tokens("parse-construct", mod);
-            return parse_construct(mod, mem); /// this, is the construct
-        } else if (mod->in_ref) {
-            return mem; /// we will not load when ref is being requested on a member
-        } else {
-            return load(mod, mem); // todo: perhaps wait to AddFunction until they are used; keep the member around but do not add them until they are referenced (unless we are Exporting the import)
-        }
-    }
-
+    node n = read_resolve(mod); /// should perform offset() inside
+    if  (n) return n;
+    
     token  tk    = consume(mod);
     string ident = cast(string, tk);
     fault("unexpected %o in primary expression", ident);
@@ -1688,11 +1702,6 @@ member parse_model(silver mod, string n, member existing) {
     if (!is_import && !is_class && !is_struct && !is_enum && !is_alias)
         return null;
 
-    if (is_enum) {
-        int test = 2;
-        test += 2;
-    }
-    
     consume(mod);
     if (!n) n = read_alpha(mod);
     verify(is_alpha(n), "expected alpha-ident, found %o", n);
@@ -1768,8 +1777,6 @@ member parse_model(silver mod, string n, member existing) {
         pop_state(mod, false);
 
         print_tokens("overview", mod);
-        int test = 2;
-        test += 2;
     } else {
         verify(is_alias, "unknown error");
         mem->mdl = alias(mem->mdl, mem->name, reference_pointer, null);
@@ -1815,9 +1822,11 @@ node parse_statement(silver mod) {
     string     assign = null;
     if (n)     assign = read_assign  (mod);
 
-    print_tokens("before-parse_model", mod);
+    
     if(module) mem    = parse_model  (mod, n, null);
     if(!mem) {
+        if (!args)
+            print_tokens("before-read_resolve", mod);
         mem = args ? member(mod, mod, mdl, null, name, n,
                             access, read_access(mod)) :
              (member)read_resolve(mod);
