@@ -32,6 +32,7 @@ declare_class(completer_context)
 #define silver_schema(X,Y)\
     i_prop    (X,Y, intern,     bool,           in_ref) \
     i_prop    (X,Y, intern,     bool,           in_top) \
+    i_prop    (X,Y, intern,     bool,           in_const) \
     i_prop    (X,Y, intern,     bool,           prebuild) \
     i_prop    (X,Y, intern,     member,         in_assign) \
     i_prop    (X,Y, intern,     array,          imports) \
@@ -47,6 +48,7 @@ declare_class(completer_context)
     i_prop    (X,Y, public,     array,          tokens) \
     i_prop    (X,Y, public,     num,            cursor) \
     i_prop    (X,Y, intern,     array,          stack) \
+    i_method  (X,Y, public,     node,           parse_member_expr, member) \
     i_method  (X,Y, public,     none,           incremental_resolve) \
     i_method  (X,Y, public,     none,           push_state,   array, num) \
     i_method  (X,Y, public,     none,           push_current) \
