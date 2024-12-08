@@ -6,7 +6,7 @@
 /// git repos that build rust, C or C++ [ all must export C functions ]
 
 #define   emodel(MDL)    ({ \
-    member  m = ether_lookup(mod, string(MDL)); \
+    member  m = ether_lookup(mod, string(MDL), null); \
     model mdl = (m && m->is_type) ? m->mdl : null; \
     mdl; \
 })
@@ -15,12 +15,9 @@ static map   operators;
 static array keywords;
 static array assign;
 static array compare;
-
-
 static bool is_alpha(A any);
 static node parse_expression(silver mod);
 static node parse_primary(silver mod);
-
 
 static void print_tokens(symbol label, silver mod) {
     print("[%s] tokens: %o %o %o %o %o ...", label,
@@ -29,13 +26,11 @@ static void print_tokens(symbol label, silver mod) {
         element(mod, 4), element(mod, 5));
 }
 
-
 typedef struct {
     OPType ops   [2];
     string method[2];
     string token [2];
 } precedence;
-
 
 static precedence levels[] = {
     { { OPType__mul,       OPType__div        } },
@@ -132,6 +127,53 @@ static void init() {
     }
 }
 
+node parse_statements(silver mod, bool unique_members);
+node parse_statement(silver mod);
+
+void build_function(silver mod, function fn) {
+    if (!fn->body) return;
+    if (fn->record)
+        push(mod, fn->record);
+    push(mod, fn);
+    push_state(mod, fn->body, 0);
+    record cl = fn ? fn->record : null;
+    if (cl) pairs(cl->members, m) log("class", "member: %o: %o", cl->name, m->key);
+    parse_statements(mod, true);
+    pop_state(mod, false);
+    pop(mod);
+    if (fn->record) pop(mod);
+}
+
+void build_record(silver mod, record rec) {
+    if (!rec->body) return;
+    bool   is_class = instanceof(rec, class) != null;
+    symbol sname    = is_class ? "class" : "struct";
+    array  body     = rec->body;
+
+    log       ("build_record", "%s %o", sname, rec->name);
+    push_state(mod, body, 0);
+    push      (mod, rec);
+    member init_fn = initializer(rec);
+    member top = init_fn;
+    push      (mod, init_fn->mdl);
+    while     (peek(mod)) parse_statement(mod);
+    pop       (mod);
+    pop       (mod);
+    pop_state (mod, false);
+}
+
+void silver_push_member(silver mod, member mem) {
+    bool reg = mem->registered;
+    if (!reg) {
+        ether_push_member(mod, mem);
+        if (instanceof(mem->mdl, record)) {
+            build_record(mod, mem->mdl);
+        } else if (instanceof(mem->mdl, function)) {
+            build_function(mod, mem->mdl);
+        }
+        finalize(mem->mdl);
+    }
+}
 
 path create_folder(silver mod, cstr name, cstr sub) {
     string dir = format(
@@ -1114,11 +1156,19 @@ node silver_read_node(silver mod) {
         /// in that case, one will be created below
         static int seq = 0;
         seq += 1;
-        if (seq == 7) { // this should be finding stdio import!
+        if (seq == 3) { // this should be finding stdio import!
             seq = seq + 1;
         }
-        mem = (is_fn || is_cast) ? null : lookup(mod, alpha); 
-        if (mem && mem->mdl) {
+        bool ns_found = false;
+        each (mod->imports, import, im) {
+            if (im->namespace && eq(alpha, im->namespace->chars)) {
+                mem = lookup(mod, alpha, typeid(import)); // if import has no namespace assignment, we should not push it to members
+                ns_found = true;
+            }
+        }
+        if (!ns_found)
+            mem = (is_fn || is_cast) ? null : lookup(mod, alpha, null); 
+        if (mem && !mem->is_func && mem->mdl) {
             push(mod, mem->mdl);
             depth++;
         }
@@ -1132,7 +1182,7 @@ node silver_read_node(silver mod) {
         if (!mem) {
             verify(mod->expr_level == 0, "member not found: %o", alpha);
             /// check if module or record constructor
-            member rmem = lookup(mod, alpha);
+            member rmem = lookup(mod, alpha, null);
             if (module && rmem && rmem->mdl == module) {
                 verify(!is_cast && is_fn, "invalid constructor for module; use fn keyword");
                 mtype = A_TYPE_CONSTRUCT;
@@ -1145,7 +1195,6 @@ node silver_read_node(silver mod) {
                 name,       alpha,
                 mdl,        (next_is(mod, "[") || next_is(mod, "->")) ? parse_fn(mod, mtype, alpha, OPType__undefined) : null,
                 is_module,  module);
-            push_member(mod, mem); /// if member does not have mdl defined, then we can know its a new member
         } else if (!mem->is_type && !mem->is_func) {
             import im = instanceof(mem->mdl, import);
             if (im) {
@@ -1167,7 +1216,7 @@ node silver_read_node(silver mod) {
             /// from record if no value
             if (!has_value(mem)) {
                 AType ctx_type = isa(ctx);
-                member target = lookup(mod, string("this")); // unique to the function in class, not the class
+                member target = lookup(mod, string("this"), null); // unique to the function in class, not the class
                 verify(target, "no target found in context");
                 mem = resolve(target, alpha);
                 verify(mem, "failed to resolve member in context: %o", mod->top->name);
@@ -1191,6 +1240,7 @@ node silver_read_node(silver mod) {
 
         print_tokens("read-resolve-alpha", mod);
         if (!read(mod, ".")) break;
+        verify(!mem->is_func, "cannot resolve into function");
     }
 
     /// restore namespace after resolving member
@@ -1220,7 +1270,6 @@ node silver_read_node(silver mod) {
             mod->expr_level++;
             verify(mem, "member expected after seeing assignment");
             verify(mem->registered, "expected registered");
-            //push_member(mod, mem);
             print_tokens("parse_assignment", mod);
             /// membership overrides any return value
             /// besides we do not allow overriding mdl on assign anyway
@@ -1234,6 +1283,9 @@ node silver_read_node(silver mod) {
             mod->expr_level--;
         }
     }
+
+    if (mem && mem->mdl && !instanceof(mem->mdl, import))
+        push_member(mod, mem);
 
     return mem;
 }
@@ -1405,12 +1457,12 @@ model read_named_model(silver mod) {
     push_current(mod);
     bool any = read(mod, "any");
     if (any) {
-        model mdl_any = lookup(mod, string("any"))->mdl;
+        model mdl_any = lookup(mod, string("any"), null)->mdl;
         return mdl_any;
     }
     string a = read_alpha(mod);
     if (a && !next_is(mod, ".")) {
-        member f = lookup(mod, a);
+        member f = lookup(mod, a, null);
         if (f && f->is_type) mdl = f->mdl;
     }
     pop_state(mod, mdl != null); /// save if we are returning a model
@@ -1656,9 +1708,6 @@ node silver_parse_member_expr(silver mod, member mem) {
     pop_state(mod, mem != null);
     return mem;
 }
-
-node parse_statements(silver mod, bool unique_members);
-node parse_statement(silver mod);
 
 /// parses member args for a definition of a function
 arguments parse_args(silver mod) {
@@ -1967,7 +2016,7 @@ bool is_access(silver mod) {
 
 bool is_model(silver mod) {
     token  k = peek(mod);
-    member m = lookup(mod, k);
+    member m = lookup(mod, k, null);
     return m && m->is_type;
 }
 
@@ -2005,22 +2054,10 @@ schematic parse_schematic(silver mod) {
     return e;
 }
 
-void build_record(silver mod, object arg, record rec) {
-    bool   is_class = instanceof(rec, class) != null;
-    symbol sname    = is_class ? "class" : "struct";
-    array  body     = rec->body;
+/// todo: these must be called manually by silver; otherwise its not as clear
+/// do this in incremental-resolve [ now far more silver oriented ]
 
-    log       ("build_record", "%s %o", sname, rec->name);
-    push_state(mod, body, 0);
-    push      (mod, rec);
-    member init_fn = initializer(rec);
-    member top = init_fn;
-    push      (mod, init_fn->mdl);
-    while     (peek(mod)) parse_statement(mod);
-    pop       (mod);
-    pop       (mod);
-    pop_state (mod, false);
-}
+
 
 map ether_top_member_map(ether e);
 
@@ -2041,10 +2078,10 @@ member read_def(silver mod, member existing) {
 
     if (is_import) {
         import im = import(
-            mod, mod, name, mem->name, skip_process, mod->prebuild);
+            mod, mod, name, mem->name, skip_process, mod->prebuild,
+            namespace, existing ? string(existing->name->chars) : null);
         push(mod->imports, im);
         set_model(mem, im);
-        
     } else if (is_class || is_struct) {
         array schema = array();
         /// read class schematics
@@ -2054,14 +2091,12 @@ member read_def(silver mod, member existing) {
                 push(schema, parse_schematic(mod));
             consume(mod);
         }
-        array        body    = read_body(mod);
-        subprocedure process = subproc  (mod, build_record, null);
+        array body   = read_body(mod);
+        /// todo: call build_record right after this is done
         if (is_class)
-            mem->mdl = class    (mod, mod, name, n, process, process, schema, schema);
+            mem->mdl = class    (mod, mod, name, n, body, body, schema, schema);
         else
-            mem->mdl = structure(mod, mod, name, n, process, process);
-        process->ctx = mem->mdl;
-        mem->mdl->body = body;
+            mem->mdl = structure(mod, mod, name, n, body, body);
     } else if (is_enum) {
         /// read optional storage model (default: i32)
         model store = null; 
@@ -2117,7 +2152,7 @@ member read_def(silver mod, member existing) {
     verify(mem && (is_import || len(mem->name)),
         "name required for model: %s", isa(mem->mdl)->name);
 
-    if (!existing)
+    if (!existing && !is_import)
         push_member(mod, mem);
 
     return mem;
@@ -2198,13 +2233,6 @@ node parse_statements(silver mod, bool unique_members) {
 }
 
 
-void build_function(silver mod, object arg, function fn) {
-    push_state(mod, fn->body, 0);
-    parse_statements(mod, true);
-    pop_state(mod, false);
-}
-
-
 function parse_fn(silver mod, AFlag member_type, object ident, OPType assign_enum) {
     model      rtype = null;
     object     name  = instanceof(ident, token);
@@ -2238,14 +2266,11 @@ function parse_fn(silver mod, AFlag member_type, object ident, OPType assign_enu
         name = form(token, "cast_%o", rtype->name);
     }
     
-    subprocedure process = subproc   (mod, build_function, null);
     record       rec_top = instanceof(mod->top, record) ? mod->top : null;
     function     fn      = function(
         mod,    mod,     name,   name, function_type, member_type,
         record, rec_top, rtype,  rtype,
-        args,   args,    process, process,
-        body,   read_body(mod)); /// user must process their payload for a function to effectively resolve
-    process->ctx = fn; /// safe to set after, as we'll never start building within function; we need this context in builder
+        args,   args,    body,   read_body(mod));
     return fn;
 }
 
@@ -2286,6 +2311,7 @@ void silver_incremental_resolve(silver mod) {
         if (instanceof(mem->mdl, function))
             process_finalize(mem->mdl);
     }
+
     mod->in_top = in_top;
 }
 
@@ -2369,7 +2395,7 @@ void silver_init(silver mod) {
     AType mdl_type = isa(mdl); /// issue is A becomes a member
 
     /// alias A -> any
-    member mA      = lookup(mod, string("A"));
+    member mA      = lookup(mod, string("A"), null);
     AType  mA_type = isa(mA->mdl);
     string n       = string("any");
     model  mdl_A   = alias(mA->mdl, n, 0, null);
@@ -2379,23 +2405,17 @@ void silver_init(silver mod) {
     push_member(mod, any);
 
 
-    member any_obj = lookup(mod, string("any"));
+    member any_obj = lookup(mod, string("any"), null);
 
     /// we do not want to push this function to context unless it can be gracefully
     parse(mod);
+    push_model(mod, mod->fn_init);
 
     /// enumerating objects used, libs used, etc
     /// may be called earlier when the statement of import is finished
     each (mod->imports, import, im)
         process(im);
 
-    // its odd that we 'finalize' our function before we code it, right?
-    // functions should be finalized with validation of code in mind, 
-    // especially when we require it from LLVM
-
-    //model_process_finalize(mod->fn_init);
-
-    build(mod);
     write(mod);   /// write the intermediate LL
     compile(mod); /// compile the LL
 }
