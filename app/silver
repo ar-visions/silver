@@ -33,6 +33,7 @@ declare_class(completer_context)
     i_prop    (X,Y, intern,     bool,           in_ref) \
     i_prop    (X,Y, intern,     bool,           in_top) \
     i_prop    (X,Y, intern,     bool,           in_const) \
+    i_prop    (X,Y, intern,     bool,           in_left) \
     i_prop    (X,Y, intern,     bool,           prebuild) \
     i_prop    (X,Y, intern,     member,         in_assign) \
     i_prop    (X,Y, intern,     array,          imports) \
@@ -61,11 +62,14 @@ declare_class(completer_context)
     i_method  (X,Y, public,     token,          element, num) \
     i_method  (X,Y, public,     num,            line) \
     i_method  (X,Y, public,     bool,           next_is, symbol) \
+    i_method  (X,Y, public,     array,          namespace_push) \
+    i_method  (X,Y, public,     none,           namespace_pop, array) \
+    i_method  (X,Y, public,     node,           read_node) \
     i_method  (X,Y, public,     bool,           read, symbol) \
     i_method  (X,Y, public,     object,         read_literal) \
     i_method  (X,Y, public,     string,         read_string) \
     i_method  (X,Y, public,     string,         read_alpha) \
-    i_method  (X,Y, public,     string,         read_ident, ARef) \
+    i_method  (X,Y, public,     string,         peek_keyword) \
     i_method  (X,Y, public,     string,         read_keyword) \
     i_method  (X,Y, public,     object,         read_bool) \
     i_method  (X,Y, public,     object,         read_numeric) \
@@ -80,15 +84,6 @@ declare_class(completer_context)
 #endif
 declare_mod(silver, ether, model)
 
-#define schematic_schema(X,Y) \
-    i_prop    (X,Y, public, model,      mdl) \
-    i_prop    (X,Y, public, string,     namespace) \
-    i_prop    (X,Y, public, interface,  access) \
-    i_ctr     (X,Y, public, silver)
-#ifndef schematic_intern
-#define schematic_intern isize(schematic)
-#endif
-declare_class(schematic)
 
 /// import is a model now so it may parse as such
 /// everything is very translatable to member: type  syntax

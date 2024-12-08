@@ -63,16 +63,25 @@ static string op_lang_token(string name) {
 
 static void init() {
     keywords = array_of_cstr(
-        "class",  "proto",    "struct", "import", "typeof",   "schema", "is", "inherits",
-        "init",   "destruct", "ref",    "const",  "volatile", "require", "no-op",
-        "return", "->", "::", "...", "asm", "if", "switch",   "any", "enum", "ifdef", "else",
-        "while",  "for",      "do",     "signed", "unsigned", "cast", "fn", null);
+        "class",    "proto",    "struct",
+        "import",   "typeof",   "schema",
+        "is",       "inherits", "init",
+        "destruct", "ref",      "const",
+        "volatile", "require",  "no-op",
+        "return",   "->",       "::",
+        "...",      "asm",      "if",
+        "switch",   "any",      "enum",
+        "ifdef",    "else",     "while",
+        "for",      "do",       "signed",
+        "unsigned", "cast",     "fn",
+        null);
     assign = array_of_cstr(
-        ":", "=", "+=", "-=", "*=", "/=", 
-        "|=", "&=", "^=", "%=", ">>=", "<<=", null);
-    compare = array_of_cstr("=", "!=", "==", null);
-
-    string add = string("add");
+        ":",  "=",  "+=", "-=", "*=",  "/=", 
+        "|=", "&=", "^=", "%=", ">>=", "<<=",
+        null);
+    compare = array_of_cstr(
+        "=", "!=", "==", ">=", "<=", ">", "<",
+        null);
     operators = map_of( /// ether quite needs some operator bindings, and resultantly ONE interface to use them
         "+",        string("add"),
         "-",        string("sub"),
@@ -83,6 +92,10 @@ static void init() {
         "^",        string("xor"),
         ">>",       string("right"),
         "<<",       string("left"),
+        ">=",       string("greater_than_equal"),
+        ">",        string("greater_than"),
+        "<=",       string("less_than_equal"),
+        "<",        string("less_than"),
         /// greater-than, less-than  gte, lte
         "??",       string("value_default"),
         "?:",       string("cond_value"),
@@ -98,20 +111,19 @@ static void init() {
         "^=",       string("assign_xor"),
         ">>=",      string("assign_right"),
         "<<=",      string("assign_left"),
+        "->",       string("resolve_member"),
         "==",       string("compare"),
         "=",        string("equal"),
         "!=",       string("not_equal"),
         "is",       string("is"),
-        "inherits", string("inherits"), null);
+        "inherits", string("inherits"),
+        null);
     
     for (int i = 0; i < sizeof(levels) / sizeof(precedence); i++) {
         precedence *level = &levels[i];
         for (int j = 0; j < 2; j++) {
             OPType op        = level->ops[j];
             string e_name    = estr(OPType, op);
-
-            //({ __typeof__(e_name) i = e_name; ftableI(i)->len(i, ## __VA_ARGS__); })
-
             string op_name   = mid(e_name, 1, len(e_name) - 1);
             string op_token  = op_lang_token(op_name);
             level->method[j] = op_name;
@@ -245,6 +257,7 @@ void import_read_fields(import im) {
 none import_init(import im) {
     silver mod = im->mod;
     im->includes = array(32);
+    im->is_user = true;
     assert(!next_is(mod, "import"), "unexpected import");
     //consume(mod);
 
@@ -311,7 +324,7 @@ none import_init(import im) {
             path rel    = form(path, "%o.cms", module_name);
             path source = absolute(rel);
             im->extern_mod = silver(
-                name, module_name, source, source, install, mod->install);
+                name, module_name, source, source, install, mod->install, delegate, true);
         }
     }
 }
@@ -717,6 +730,30 @@ bool is_alpha(A any) {
 }
 
 
+int sfn(string a, string b) {
+    int diff = len(a) - len(b);
+    return diff;
+}
+
+string scan_map(map m, string source, int index) {
+    string s = string(alloc, 32);
+    string last_match = null;
+    int i = index;
+    while (1) {
+        if (i >= len(source))
+            break;
+        string a = mid(source, i, 1);
+        append(s, a->chars);
+        string f = get(m, s);
+        if (f) {
+            last_match = f;
+            i++;
+        } else
+            break;
+    }
+    return last_match;
+}
+
 array parse_tokens(A input) {
     string input_string;
     AType  type = isa(input);
@@ -729,7 +766,21 @@ array parse_tokens(A input) {
     else
         assert(false, "can only parse from path");
     
-    string  special_chars   = string(".$,<>()![]/+*:=#");
+    list   symbols = list();
+    string special = string(".$,<>()![]/+*:=#");
+    for (int i = 0; i < len(special); i++)
+        push(symbols, string((i32)special->chars[i]));
+    each (keywords, string, kw) push(symbols, kw);
+    each (assign,   string, a)  push(symbols, a);
+    each (compare,  string, a)  push(symbols, a);
+    pairs(operators, i)       push(symbols, (string)i->key);
+    sort(symbols, sfn);
+    map mapping = map(hsize, 32);
+    for (item i = symbols->first; i; i = i->next) {
+        string sym = i->value;
+        set(mapping, sym, sym);
+    }
+
     array   tokens          = array(128);
     num     line_num        = 1;
     num     length          = len(input_string);
@@ -781,35 +832,12 @@ array parse_tokens(A input) {
             continue;
         }
         
-        char sval[2] = { chr, 0 };
-        if (index_of(special_chars, sval) >= 0) {
-            symbol name = sval;
-            bool found = false;
-            symbol src = &input_string->chars[index];
-            pairs (operators, i) {
-                string op = i->key;
-                if (strncmp(src, op->chars, op->len) == 0) {
-                    name = op->chars;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found)
-                each (keywords, string, k) {
-                    if (strncmp(src, k->chars, k->len) == 0) {
-                        name = k->chars;
-                        break;
-                    }
-                }
-
-            if (strcmp(name, ":") == 0 && src[1] == ':') {
-                name = "::";
-            }
-            
-            push(tokens, token(chars, name, indent, indent, source, src, line, line_num, column, index - line_start));
-            index += strlen(name);
-            int test = 2;
-            test += 2;
+        string name = scan_map(mapping, input_string, index);
+        if (name) {
+            char* src = &input_string->chars[index];
+            push(tokens, token(chars, name->chars, indent, indent, source,
+                src, line, line_num, column, index - line_start));
+            index += len(name);
             continue;
         }
 
@@ -850,7 +878,7 @@ array parse_tokens(A input) {
         while (index < length) {
             i32 v = idx(input_string, index);
             char sval[2] = { v, 0 };
-            if (isspace(v) || index_of(special_chars, sval) >= 0)
+            if (isspace(v) || index_of(special, sval) >= 0)
                 break;
             index += 1;
         }
@@ -863,9 +891,12 @@ array parse_tokens(A input) {
             line,   line_num,
             column, start - line_start));
     }
+
+    each (tokens, token, t) {
+        print("token: %o", t);
+    }
     return tokens;
 }
-
 
 token silver_element(silver a, num rel) {
     int r = a->cursor + rel;
@@ -896,10 +927,6 @@ token silver_next(silver a) {
     if (a->cursor >= len(a->tokens))
         return null;
     token res = element(a, 0);
-    if (strcmp(res->chars, "simple12") == 0) {
-        int test = 0;
-        test++;
-    }
     a->cursor++;
     return res;
 }
@@ -967,18 +994,19 @@ object silver_read_numeric(silver a) {
 
 string silver_read_assign(silver a, ARef assign_type, ARef is_const) {
     token  n = element(a, 0);
-    if (!n)
-        return null;
-    string k = string(n->chars);
-    num    assign_index = index_of(assign, k);
-    bool   found        = assign_index >= 0;
+    if (!n) return null;
+    string    k            = string(n->chars);
+    num       assign_index = index_of(assign, k);
+    bool      found        = assign_index >= 0;
+    *(bool*)  is_const     = false;
+    *(OPType*)assign_type  = OPType__undefined;
     if (found) {
         if (eq(k, "=")) {
             *(bool*)is_const      = true;
             *(OPType*)assign_type = OPType__assign;
         } else {
             *(bool*)is_const      = false;
-            *(OPType*)assign_type = OPType__assign + (assign_index - 1);
+            *(OPType*)assign_type = OPType__assign + assign_index;
         }
         a->cursor ++;
     }
@@ -995,41 +1023,240 @@ string silver_read_alpha(silver a) {
     return null;
 }
 
-
-string silver_read_ident(silver a, ARef levels) {
-    int index = 0;
+array silver_namespace_push(silver mod) {
+    /// count the :: tokens in too many lines
+    int back = 0;
     token n = null;
+    array levels = array(32);
     while (1) {
-        n = element(a, 0);
+        n = element(mod, 0);
+        if (!n)
+            break;
         if (eq(n, "::")) {
-            a->cursor ++;
-            index++;
+            mod->cursor ++;
+            back++;
             continue;
         }
         if (!is_alpha(n)) {
-            verify(index == 0, "expected alpha-numeric after :: in multi-ident context");
-            return null;
+            verify(back == 0, "expected alpha-numeric after :: in multi-ident context");
+            return levels;
         }
         break;
     }
-    *(int*)levels = index;
-    a->cursor ++;
-    return string(n->chars);
+    /// push the stack with these many unique member states
+    map   mlast  = mod->top->members;
+    int   i      = 0;
+    while (back > len(levels)) {
+        int index = mod->lex->len - 1 - 1 - i++;
+        verify(index >= 0, "invalid namespace");
+        model mdl = mod->lex->elements[index];
+        if (mlast != mdl->members) {
+            mlast  = mdl->members;
+            push(levels, mdl);
+        }
+    }
+    return levels;
+}
+
+none silver_namespace_pop(silver mod, array levels) {
+    for (int i = 0; i < len(levels); i++)
+        push(mod, levels->elements[i]);
+}
+
+function parse_fn        (silver mod, AFlag  member_type, object ident, OPType assign_enum);
+member   read_def        (silver mod, member existing);
+node     parse_assignment(silver mod, member mem, string oper);
+model    read_model      (silver mod);
+
+static node parse_create(silver mod, model src);
+
+/// should not need to back out ever, since members are always being operated
+/// unless its a type, in which case we have a membership for them.. so everything is a member
+node silver_read_node(silver mod) {
+    /// only use :: keyword to navigate for code in functions
+    push_current(mod);
+    
+    string   kw       = peek_keyword(mod);
+    function fn       = instanceof(mod->top, function);
+    function in_args  = instanceof(mod->top, arguments);
+    record   rec      = context_model(mod, typeid(record));
+    silver   module   = (mod->top == mod || (fn && fn->imdl == mod)) ? mod : null;
+    bool     is_cast  = kw && eq(kw, "cast");
+    bool     is_fn    = kw && eq(kw, "fn");
+    AFlag    mtype    = is_fn ? A_TYPE_SMETHOD : is_cast ? A_TYPE_CAST : A_TYPE_IMETHOD;
+    function in_init  = (fn && fn->imdl) ? fn : null; /// no-op on levels if we are in membership only, not in a function
+    array    levels   = (in_args || in_init || is_fn || is_cast) ? array() : namespace_push(mod);
+    string   alpha    = null;
+    member   mem      = null;
+    int      back     = 0;
+    int      depth    = 0;
+
+    print_tokens("read_node", mod);
+    model mdl = read_model(mod);
+    if (mdl) {
+        print_tokens("read_node2", mod);
+        return parse_create(mod, mdl);
+    }
+
+    // L hand modal switching might be needed for load()
+    //mod->left_hand = true;
+
+    for (;;) {
+        print_tokens("read_node", mod); // parse_create ?
+        bool first = !mem;
+        if (first && (is_fn || is_cast)) consume(mod);
+        alpha = read_alpha(mod);
+        if (!alpha) {
+            verify(mem == null, "expected alpha ident after .");
+            break;
+        }
+        /// member does not have to exist [if first iteration];
+        /// in that case, one will be created below
+        static int seq = 0;
+        seq += 1;
+        if (seq == 7) { // this should be finding stdio import!
+            seq = seq + 1;
+        }
+        mem = (is_fn || is_cast) ? null : lookup(mod, alpha); 
+        if (mem && mem->mdl) {
+            push(mod, mem->mdl);
+            depth++;
+        }
+
+        /// other things such as member,  member[expr],  member.something[expr].another
+        model     ctx    = mod->top;
+        record    rec    = instanceof(mod->top, record);
+        function  fn     = instanceof(mod->top, function);
+        bool parse_index = false;
+
+        if (!mem) {
+            verify(mod->expr_level == 0, "member not found: %o", alpha);
+            /// check if module or record constructor
+            member rmem = lookup(mod, alpha);
+            if (module && rmem && rmem->mdl == module) {
+                verify(!is_cast && is_fn, "invalid constructor for module; use fn keyword");
+                mtype = A_TYPE_CONSTRUCT;
+            } else if (rec && rmem && rmem->mdl == rec) {
+                verify(!is_cast && !is_fn, "invalid constructor for class; use class-name[] [ no fn, not static ]");
+                mtype = A_TYPE_CONSTRUCT;
+            }
+            mem = member(
+                mod,        mod,
+                name,       alpha,
+                mdl,        (next_is(mod, "[") || next_is(mod, "->")) ? parse_fn(mod, mtype, alpha, OPType__undefined) : null,
+                is_module,  module);
+            push_member(mod, mem); /// if member does not have mdl defined, then we can know its a new member
+        } else if (!mem->is_type && !mem->is_func) {
+            import im = instanceof(mem->mdl, import);
+            if (im) {
+                /// import is not a type that silver may use but a namespace into a module of types
+                verify(read(mod, "."), "expected .member after module reference");
+                string module_m_name = read_alpha(mod);
+                /// C imports will go right into import model, where as silver imports are delegated inside
+                model ns = im->extern_mod ? (model)im->extern_mod : (model)im;
+                mem = get(ns->members, module_m_name);
+                verify(mem, "%o not a member in module %o", module_m_name, ns->name); 
+            } else {
+                /// if member already registered, we may assume this is an instancing of an anonymous
+                /// in the case of import, and member with the same name as type
+                /// construct can allow simple pass-through to next member if model scope if its valid
+                /// that is if the member behind's mdl and the models src (generic A-type) match
+                verify(!mem->is_func && !mem->is_type, "member-defined %o", mem->name);
+            }
+
+            /// from record if no value
+            if (!has_value(mem)) {
+                AType ctx_type = isa(ctx);
+                member target = lookup(mod, string("this")); // unique to the function in class, not the class
+                verify(target, "no target found in context");
+                mem = resolve(target, alpha);
+                verify(mem, "failed to resolve member in context: %o", mod->top->name);
+            }
+
+            bool chain = next_is(mod, ".") || next_is(mod, "->");
+            if (!chain) {
+                member m = instanceof(mem, member);
+                mem = parse_member_expr(mod, mem);
+            } else
+            if (read(mod, ".")) {
+                verify(mem->mdl, "cannot resolve from new member %o", mem->name);
+                push(mod, mem->mdl);
+                string alpha = read_alpha(mod);
+                verify(alpha, "expected alpha identifier");
+                mem = resolve(mem, alpha); /// needs an argument
+                mem = parse_member_expr(mod, mem);
+                pop(mod);
+            }
+        }
+
+        print_tokens("read-resolve-alpha", mod);
+        if (!read(mod, ".")) break;
+    }
+
+    /// restore namespace after resolving member
+    for (int i = 0; i < depth; i++)
+        pop(mod);
+
+    /// then our relative :: backward depth
+    namespace_pop(mod, levels);
+    pop_state(mod, true);
+    mod->left_hand = false;
+
+    if (mod->expr_level == 0) {
+        OPType assign_enum  = OPType__undefined;
+        bool   assign_const = false;
+        print_tokens("read_assign", mod);
+        string assign_type  = read_assign  (mod, &assign_enum, &assign_const);
+        if (in_args) {
+            verify(mem, "expected member");
+            verify(assign_enum == OPType__assign, "expected : operator in arguments");
+            verify(!mem->mdl, "duplicate member exists in arguments");
+            mem->mdl = read_model(mod);
+            verify(mem->mdl, "cannot read model for arg: %o", mem->name);
+        }
+        else if (((module || rec) && (!mem || !mem->mdl)) && peek_keyword(mod))
+            mem = read_def(mod, mem);
+        else if (mem && assign_type) {
+            mod->expr_level++;
+            verify(mem, "member expected after seeing assignment");
+            verify(mem->registered, "expected registered");
+            //push_member(mod, mem);
+            print_tokens("parse_assignment", mod);
+            /// membership overrides any return value
+            /// besides we do not allow overriding mdl on assign anyway
+            /// thats an anti-pattern to take on, and ambiguous for an api to facilitate
+            
+            /// verify we are in the initializer for the test1 class
+            function fn_init = instanceof(mod->top, function);
+            node expr = parse_assignment(mod, mem, assign_type);
+            int test = 2;
+            test += 2;
+            mod->expr_level--;
+        }
+    }
+
+    return mem;
 }
 
 
 string silver_read_keyword(silver a) {
     token n = element(a, 0);
-    if (is_keyword(n)) {
+    if (n && is_keyword(n)) {
         a->cursor ++;
         return string(n->chars);
     }
     return null;
 }
 
+string silver_peek_keyword(silver a) {
+    token   n = element(a, 0);
+    return (n && is_keyword(n)) ? string(n->chars) : null;
+}
+
 
 object silver_read_bool(silver a) {
     token  n       = element(a, 0);
+    if (!n) return null;
     bool   is_true = strcmp(n->chars, "true")  == 0;
     bool   is_bool = strcmp(n->chars, "false") == 0 || is_true;
     if (is_bool) a->cursor ++;
@@ -1158,6 +1385,13 @@ static node reverse_descent(silver mod) {
     return L;
 }
 
+static node read_expression(silver mod) {
+    mod->no_build = true;
+    node vr = reverse_descent(mod);
+    mod->no_build = false;
+    return vr;
+}
+
 
 static node parse_expression(silver mod) {
     //mod->expr_level++;
@@ -1166,37 +1400,96 @@ static node parse_expression(silver mod) {
     return vr;
 }
 
+model read_named_model(silver mod) {
+    model mdl = null;
+    push_current(mod);
+    bool any = read(mod, "any");
+    if (any) {
+        model mdl_any = lookup(mod, string("any"))->mdl;
+        return mdl_any;
+    }
+    string a = read_alpha(mod);
+    if (a && !next_is(mod, ".")) {
+        member f = lookup(mod, a);
+        if (f && f->is_type) mdl = f->mdl;
+    }
+    pop_state(mod, mdl != null); /// save if we are returning a model
+    return mdl;
+}
+
+/// define shaping syntax to create arrays, maps and a combination of both
+/// useful to facilitate more data in one place without having two variables,
+/// that is a preference for some.  and you can too.
+
+
+
+/// arrays require explicit type, we cannot just [something[1], something-else[2]]
+/// its [something-generic something[1] something[2]]
+
+/// impl
 
 model read_model(silver mod) {
+    print_tokens("read_model", mod);
+    model mdl   = null;
     push_current(mod);
-    bool wrap = false;
-    model mdl = null;
-    bool save = true;
 
-    /// wrapped types can be array and map
     if (read(mod, "[")) {
-        wrap = true;
-    }
-    
-    /// recursion handling
-    if (wrap && next_is(mod, "[")) {
-        mdl  = read_model(mod);
-        save = !!mdl;
-    } else {
-        string name = read_alpha(mod); // Read the type to cast to
-        if (!name)
-            save = false;
-        else {
-            mdl = emodel(name->chars);
-            if (read(mod, "."))
-                save = false;
-        }
-    }
+        print("found [");
+        model  type   = read_model(mod);
+        print_tokens("read_model-2nd-after", mod);
+        /// null on shape is not array or map
+        /// 0 len array is 0-sized and the type is in the model src
+        /// we will create the shape for this type now [ from here on
+        /// its either a map or an array; no chance its a 'value'
+        /// since we read a model after [ ... ]
+        if (type) {
+            array shape    = array(8);
+            bool  is_auto  = read(mod, "]");
+            bool  is_map   = false;
+            bool  is_array = is_auto;
+            verify(!read(mod, "]"), "unexpected ]; use [any] for any object");
 
-    //verify(mdl, "failed to read model");
-    pop_state(mod, mdl && save);
-    return (mdl && save) ? mdl : null;
+            /// [int] is dynamic size int
+            /// anything of a : size do not let you append to them, the point of the shape is that it persists
+            /// this is not a 'reserve' size, we could tune those with compilation flags
+            if (!is_array && read(mod, ":")) {
+                object  lit = read_literal(mod);
+                verify(!lit || instanceof(lit, i64), "invalid literal format [integral expected]");
+                if (lit) {
+                    do {
+                        push(shape, lit);
+                    } while (read(mod, ","));
+                    is_array = true;
+                } else {
+                    model  mdl_value = read_model(mod);
+                    verify(mdl_value, "expected literal or model after :"); 
+                    push(shape, type);
+                    push(shape, mdl_value); // key:value
+                    is_map = true;
+                }
+                /// array permutations
+                /// [ int : 10 ]
+                /// [ int : 10,22 ]
+                /// [ int ]
+                ///
+                /// map permutations
+                /// [ int : string ]
+                /// what about a map of maps
+                /// [ int : [ string:short ] ]
+            }
+            verify(is_map || is_array, "failed to read model plurality");
+            mdl = model_alias(type, type->name, reference_pointer, shape);
+            mdl->is_map   = is_map;
+            mdl->is_array = is_array; // redundant, but convenient!
+            verify(is_auto || read(mod, "]"), "expected ]");
+        }
+    } else
+        mdl = read_named_model(mod);
+    
+    pop_state(mod, mdl != null); /// save if we are returning a model
+    return mdl;
 }
+
 
 
 member cast_method(silver mod, class class_target, model cast) {
@@ -1213,11 +1506,10 @@ member cast_method(silver mod, class class_target, model cast) {
     return null;
 }
 
-static function parse_fn           (silver mod, AFlag member_type, object name);
-static node     parse_function_call(silver mod, member fmem);
+static node parse_function_call(silver mod, member fmem);
 
 /// parse construct from and cast to, and named args
-static node parse_create(silver mod, model src) {
+node parse_create(silver mod, model src) {
     object n = read_literal(mod);
     if (n) return operand(mod, n);
     bool has_content = read(mod, "[") && !read(mod, "]");
@@ -1314,8 +1606,6 @@ node silver_parse_member_expr(silver mod, member mem) {
 
     /// handle compatible indexing methods and general pointer dereference @ index
     if (parse_index && next_is(mod, "[")) {
-        bool prev_l = mod->left_hand;
-        mod->left_hand = false;
         record r = instanceof(mem->mdl, record);
         /// must have an indexing method, or be a reference_pointer
         verify(mem->mdl->ref == reference_pointer || r, "no indexing available for model %o/%o",
@@ -1349,14 +1639,10 @@ node silver_parse_member_expr(silver mod, member mem) {
             /// could potentially support abstract for row/col major stride
             /// an interesting idea; we need this a basic thing in our language
         }
-        mod->left_hand = prev_l;
         return index_expr;
     } else if (mem) {
         if (mem->is_func) {
-            if (mod->in_ref) {
-                fault("not implemented");
-                mem = null; /// simple stack mechanism we need to support returnin the pointer for (is this a 'load?')
-            } else
+            if (!mod->in_ref)
                 mem = parse_function_call(mod, mem);
         } else if (mem->is_type && next_is(mod, "[")) {
             print_tokens("parse-construct", mod);
@@ -1371,101 +1657,7 @@ node silver_parse_member_expr(silver mod, member mem) {
     return mem;
 }
 
-static node read_resolve(silver mod) {
-    object n   = read_literal(mod);
-    if (n) return operand(mod, n);
-    print_tokens("read-cast", mod);
-    model  mdl = read_model(mod); /// null if no type specified
-    token  t   = peek(mod);
-    print_tokens("read_literal", mod);
-    n = read_literal(mod);
-    bool  has_expr = n || (mdl && eq(t, "["));
-
-    /// type, type literal, or type[expr] handled here [cast & ctr support]
-    if (mdl && has_expr) {
-        print_tokens("create", mod);
-        return create(mod, mdl, n ? (object)n : (object)parse_create(mod, mdl));
-    }
-
-    string alpha = null;
-    member mem   = null;
-    int depth = 0;
-    for (;;) {
-        alpha = read_alpha(mod);
-        if (!alpha) {
-            mem = null;
-            break;
-        }
-        mem = lookup(mod, alpha);
-        verify(mem, "member not found in context: %o: %o", mod->top->name, alpha);
-        push(mod, mem->mdl);
-        depth++;
-        print_tokens("read-resolve-alpha", mod);
-        if (!read(mod, ".")) break;
-    }
-    for (int i = 0; i < depth; i++)
-        pop(mod);
-
-
-    model     ctx    = mod->top;
-    member    target = null; // member is a node with value-ref (value)
-    record    rec    = instanceof(mod->top, record);
-    function  fn     = instanceof(mod->top, function);
-    silver    module = (fn && fn->imdl == mod) ? mod : null;
-    bool parse_index = false;
-
-    if (!mem) {
-        verify(mod->expr_level == 0, "member not found: %o", alpha);
-        mem = new(member, mod, mod, name, alpha, is_module, module); /// this calls LLVMBuildAlloca
-        //push_member(mod, mem); /// if member does not have mdl defined, then we can know its a new member
-    } else if (!mem->is_type && !mem->is_func) {
-        import im = instanceof(mem->mdl, import);
-        if (im) {
-            /// import is not a type that silver may use but a namespace into a module of types
-            verify(read(mod, "."), "expected .member after module reference");
-            string module_m_name = read_alpha(mod);
-            /// C imports will go right into import model, where as silver imports are delegated inside
-            model ns = im->extern_mod ? (model)im->extern_mod : (model)im;
-            mem = get(ns->members, module_m_name);
-            verify(mem, "%o not a member in module %o", module_m_name, ns->name); 
-        } else {
-            /// if member already registered, we may assume this is an instancing of an anonymous
-            /// in the case of import, and member with the same name as type
-            /// construct can allow simple pass-through to next member if model scope if its valid
-            /// that is if the member behind's mdl and the models src (generic A-type) match
-            verify(!mem->is_func && !mem->is_type, "member-defined %o", mem->name);
-        }
-
-        /// from record if no value
-        if (!has_value(mem)) {
-            AType ctx_type = isa(ctx);
-            member target = lookup(mod, string("this")); // unique to the function in class, not the class
-            verify(target, "no target found in context");
-            mem = resolve(target, alpha);
-            verify(mem, "failed to resolve member in context: %o", mod->top->name);
-        }
-
-        /// -> pointer keyword is safe-guard here, so we are friendlier to pointers
-        bool safe = false;
-        bool chain = next_is(mod, ".") || next_is(mod, "->");
-        if (!chain)
-            mem = parse_member_expr(mod, mem);
-        else
-        while ((safe = read(mod, "->")) || read(mod, ".")) {
-            target = mem;
-            push(mod, mem->mdl);
-            string alpha = read_alpha(mod);
-            verify(alpha, "expected alpha identifier");
-            mem = resolve(mem, alpha); /// needs an argument
-            mem = parse_member_expr(mod, mem);
-            pop(mod);
-        }
-    }
-    return mem;
-}
-
-
-node parse_statements(silver mod);
+node parse_statements(silver mod, bool unique_members);
 node parse_statement(silver mod);
 
 /// parses member args for a definition of a function
@@ -1474,7 +1666,7 @@ arguments parse_args(silver mod) {
     array       args = new(array,     alloc, 32);
     arguments   res  = new(arguments, mod, mod, args, args);
 
-    //print_tokens("args", mod);
+    print_tokens("args", mod);
     if (!next_is(mod, "]")) {
         push(mod, res); // if we push null, then it should not actually create debug info for the members since we dont 'know' what type it is... this wil let us delay setting it on function
         int statements = 0;
@@ -1502,6 +1694,8 @@ arguments parse_args(silver mod) {
             member arg = i->value;
             push(args, arg); // todo: make sure there is no value set on these, because we have no default at the moment (we could, of course with this)
         }
+    } else {
+        consume(mod);
     }
     return res;
 }
@@ -1559,11 +1753,19 @@ static node parse_ternary(silver mod, node expr) {
 static node parse_primary(silver mod) {
     print_tokens("parse_primary", mod);
 
-    // parenthesized expressions
-    if (read(mod, "[")) {
-        node expr = parse_expression(mod); // Parse the expression
-        verify(read(mod, "]"), "Expected closing parenthesis");
-        return parse_ternary(mod, expr);
+    // parenthesized expressions, with a model check (make sure its not a type)
+    if (next_is(mod, "[")) {
+        push_current(mod);
+        model inner = read_model(mod);
+        print_tokens("parse_primary-after", mod);
+        if (!inner) {
+            pop_state(mod, true);
+            consume(mod);
+            node expr = parse_expression(mod); // Parse the expression
+            verify(read(mod, "]"), "Expected closing parenthesis");
+            return parse_ternary(mod, expr);
+        }
+        pop_state(mod, false);
     }
 
     // handle the logical NOT operator (e.g., '!')
@@ -1603,7 +1805,9 @@ static node parse_primary(silver mod) {
         return addr_of(mod, expr, null);
     }
 
-    node n = read_resolve(mod); /// should perform offset() inside
+    // we changed this around like a mixer with nukes inside
+    print_tokens("parse-primary-2", mod);
+    node n = read_node(mod); /// should perform offset() inside
     if  (n) return n;
     
     token  tk    = consume(mod);
@@ -1619,6 +1823,7 @@ node parse_assignment(silver mod, member mem, string oper) {
     node   L       = mem;
     print_tokens("parse_assignment", mod);
     node   R       = parse_expression(mod); /// getting class2 as a struct not a pointer as it should be. we cant lose that pointer info
+    print_tokens("parse_assignment2", mod);
     if (!mem->mdl) {
         mem->is_const = eq(oper, "=");
         set_model(mem, R->mdl);
@@ -1662,7 +1867,7 @@ node cond_builder(silver mod, array cond_tokens, object unused) {
 
 node expr_builder(silver mod, array expr_tokens, object unused) {
     push_state(mod, expr_tokens, 0);
-    node exprs = parse_statements(mod);
+    node exprs = parse_statements(mod, true);
     pop_state(mod, false);
     return exprs;
 }
@@ -1698,14 +1903,14 @@ node parse_ifdef_else(silver mod) {
             if (const_v && cast(bool, const_v)) {
                 push_state(mod, block, 0);
                 print_tokens("parse_ifdef_else-cond-after-new-state", mod);
-                statements = parse_statements(mod);
+                statements = parse_statements(mod, false);
                 pop_state(mod, false);
                 print_tokens("parse_ifdef_else-cond-after-new-state-after-pop", mod);
             }
         } else if (!one_truth) {
             verify(!is_if, "if statement incorrect");
             push_state(mod, block, 0);
-            statements = parse_statements(mod);
+            statements = parse_statements(mod, false); /// make sure parse-statements does not use its own members
             pop_state(mod, false);
             expect_last = true;
         }
@@ -1778,40 +1983,49 @@ interface read_access(silver mod) {
     return access;
 }
 
-/// this is a parser
-none schematic_with_silver(schematic e, silver mod) {
+schematic parse_schematic(silver mod) {
+    schematic e = schematic();
     token  k = peek(mod);
     if (is_access(k)) {
-        e->access = read_access(mod);
-        e->mdl    = read_model (mod);
+        e->namespace = null;
+        e->access    = read_access(mod);
+        e->mdl       = read_model (mod);
     } else if (is_model(k)) {
-        e->access = interface_public;
-        e->mdl    = read_model (mod);
+        e->namespace = null;
+        e->access    = interface_public;
+        e->mdl       = read_model (mod);
     } else {
         string n = read_alpha(mod);
         verify(n, "expected alpha-ident, found: %o", next(mod));
         verify(read(mod, ":"), "schematic: expected : after alpha-ident");
-        e->access = read_access(mod);
-        e->mdl    = read_model (mod);
+        e->namespace = n;
+        e->access    = read_access(mod);
+        e->mdl       = read_model (mod);
     }
+    return e;
 }
 
 void build_record(silver mod, object arg, record rec) {
     bool   is_class = instanceof(rec, class) != null;
     symbol sname    = is_class ? "class" : "struct";
-    array  body     = instanceof(rec->user, array);
+    array  body     = rec->body;
 
     log       ("build_record", "%s %o", sname, rec->name);
     push_state(mod, body, 0);
     push      (mod, rec);
-    while (peek(mod))
-        parse_statement(mod);
+    member init_fn = initializer(rec);
+    member top = init_fn;
+    push      (mod, init_fn->mdl);
+    while     (peek(mod)) parse_statement(mod);
+    pop       (mod);
     pop       (mod);
     pop_state (mod, false);
 }
 
+map ether_top_member_map(ether e);
+
 /// called after : or before, where the user has access
-member read_def(silver mod, string n, member existing) {
+member read_def(silver mod, member existing) {
     bool   is_import = next_is(mod, "import");
     bool   is_class  = next_is(mod, "class");
     bool   is_struct = next_is(mod, "struct");
@@ -1821,34 +2035,33 @@ member read_def(silver mod, string n, member existing) {
         return null;
 
     consume(mod);
-    if (!n) n = read_alpha(mod);
-    verify(is_alpha(n), "expected alpha-ident, found %o", n);
+    string n = existing ? null : read_alpha(mod);
+    verify(existing || n, "expected alpha ident for definition name");
     member mem = existing ? existing : member(mod, mod, name, n);
 
     if (is_import) {
         import im = import(
-            mod, mod, name, n, skip_process, mod->prebuild);
+            mod, mod, name, mem->name, skip_process, mod->prebuild);
         push(mod->imports, im);
-        mem->mdl = im;
-        im->name = mem->name;
+        set_model(mem, im);
+        
     } else if (is_class || is_struct) {
         array schema = array();
-        token parent_name = null;
-        if (next_is(mod, "[")) {
+        /// read class schematics
+        if (is_class && next_is(mod, "[")) {
             consume(mod);
             while (!next_is(mod, "]"))
-                push(schema, schematic(mod));
+                push(schema, parse_schematic(mod));
             consume(mod);
         }
-        verify (next_is(mod, "[") , "expected function body");
         array        body    = read_body(mod);
         subprocedure process = subproc  (mod, build_record, null);
         if (is_class)
-            mem->mdl = class    (mod, mod, name, n, process, process, parent_name, parent_name);
+            mem->mdl = class    (mod, mod, name, n, process, process, schema, schema);
         else
             mem->mdl = structure(mod, mod, name, n, process, process);
         process->ctx = mem->mdl;
-        ((record)mem->mdl)->user = body;
+        mem->mdl->body = body;
     } else if (is_enum) {
         /// read optional storage model (default: i32)
         model store = null; 
@@ -1857,6 +2070,7 @@ member read_def(silver mod, string n, member existing) {
             store = read_model(mod);
             verify(read(mod, "]"), "expected ] for enum-model");
         }
+        model top = mod->top;
         mem->mdl = store ? store : emodel("i32");
 
         /// verify model is a primitive type
@@ -1902,6 +2116,10 @@ member read_def(silver mod, string n, member existing) {
     mem->is_type = true;
     verify(mem && (is_import || len(mem->name)),
         "name required for model: %s", isa(mem->mdl)->name);
+
+    if (!existing)
+        push_member(mod, mem);
+
     return mem;
 }
 
@@ -1909,17 +2127,18 @@ member read_def(silver mod, string n, member existing) {
 /// such a big change to this one, tectonic drift'ing ...
 node parse_statement(silver mod) {
     print_tokens("parse-statement", mod);
-    token     t      = peek(mod);
 
-    /// contextual parameters that determine how statements are processed
-    record    rec         = instanceof(mod->top, record);
-    function  fn          = context_model(mod, typeid(function));
-    arguments args        = instanceof(mod->top, arguments);
-    silver    module      = 
-        (mod->prebuild || (fn && fn->imdl == mod)) ? mod : null;
-    object    lit         = read_literal(mod);                 verify(!lit, "unexpected literal: %o", lit);
-    node      initializer = null;
+    token     t            = peek(mod);
+    record    rec          = instanceof(mod->top, record);
+    function  fn           = context_model(mod, typeid(function));
+    arguments args         = instanceof(mod->top, arguments);
+    silver    module       = (mod->prebuild || (fn && fn->imdl == mod)) ? mod : null;
+    bool      is_func_def  = false;
+    string    assign_type  = null;
+    OPType    assign_enum  = 0;
+    bool      assign_const = false;
 
+    print_tokens("left-hand", mod);
     /// handle root statement expressions first
     /// yes a 'module' could be its own main with args
     /// however import would need succinct arg parsing
@@ -1937,121 +2156,20 @@ node parse_statement(silver mod) {
         if (next_is(mod, "ifdef"))
             return parse_ifdef_else(mod);
     }
-
-    print_tokens("left-hand", mod);
-    mod->left_hand    = true;
-    int        back   = 0;
-    string     n      = read_ident   (mod, &back);
-    member     mem    = null;
-    string     assign_type = null;
-    OPType     assign_enum = 0;
-    bool       assign_const = false;
-    model      mpush[32];
-
-    if (back > 0) {
-        map members_last = mod->top->members;
-        int i = 0, ii = 0;
-        while (1) {
-            int index = mod->lex->len - 1 - 1 - i++;
-            verify(index >= 0, "invalid namespace");
-            model mdl = mod->lex->elements[index];
-            if (mdl->members != members_last) {
-                mpush[ii++] = mdl;
-                members_last = mdl->members;
-                if (ii == back)
-                    break;
-            }
-        }
-        for (int i = 0; i < back; i++)
-            push(mod, mpush[i]);
-    }
-    if (n) {
-        assign_type = read_assign  (mod, &assign_enum, &assign_const);
-        if (!assign_type) {
-            /// unconsume n token. not part of an assign
-            prev(mod); /// we may read this another way now
-            n = null;
-        }
-    }
-    for (int i = 0; i < back; i++)
-        pop(mod);
-    verify(!n && !assign_type || n && assign_type, "mismatch");
-    mod->left_hand    = false;
-    
-    print_tokens("right-hand", mod);
-    bool is_model = false;
-    if (module)
-        mem = read_def(mod, n, null);
-    
-    if(!mem && assign_type) {
-        /// n is always set if there is an assign-type
-        mem = member(mod, mod, mdl, null, name, n);
-        push_member(mod, mem); /// will not yet build AddGlobal, or Alloca
-        /// this can be a lambda: add to test case:
-        print_tokens("parse_assignment", mod);
-        node expr = parse_assignment(mod, mem, assign_type);
-        return mem; /// todo: verify Alloca() call happened prior!
-    } else if (!mem) {
-        return read_resolve(mod); /// fn is going here, instead of below
-    }
-    
-    // var: fn[arg:int] > void  # lambda type [ we must read this in read_model ]
-    print_tokens("parse-statement2", mod);
-
-    /// look for fn/init/methods
-    if (mem->is_module || (!mem->is_type && !mem->is_const)) { /// this shouldnt keep running after: build-arg : e-value.one ...
-        bool   is_require = rec && read(mod, "require");
-        bool   is_ref     = read(mod, "ref");
-        bool   is_ctr     = mem->mdl == mod->top;
-        object name       = n;
-        if (is_ctr) {
-            /// transform mem->mdl [currently top model] to construct fn
-            if (next_is(mod, "[") || next_is(mod, "return")) {
-                name = mem->mdl->name;
-                mem->mdl  = parse_fn(mod, A_TYPE_CONSTRUCT, null);
-            } else
-                fault("expected function body for constructor");
-        } else {
-            string keyword   = read_keyword(mod);
-            bool   is_fn     = keyword && eq(keyword, "fn");
-            bool   is_cast   = keyword && eq(keyword, "cast");
-            mem->mdl = parse_fn(mod,
-                is_cast ? A_TYPE_CAST    : 
-                is_fn   ? A_TYPE_SMETHOD :
-                          A_TYPE_IMETHOD, name);
-            print_tokens("after-parse_fn", mod);
-            mem->is_func = true;
-        }
-    }
-
-    if (mem) {
-        if (strstr(mem->name->chars, "build-arg")) {
-            int test = 2;
-            test += 2;
-        }
-        push_member(mod, mem);
-    }
-
-    if (mem && mem->mdl) {
-        if (mem->is_const)
-            return mem;
-        verify(!assign || mem->is_type || mem->is_func, "model mismatch");
-    }
-
-    if (args && !mem->mdl) {
-        mem->mdl = read_model(mod);
-        verify(mem->mdl, "cannot read model for arg: %o", mem->name);
-    }
-    
-    return mem;
+    node   e = read_node(mod); /// at module level, supports keywords
+    return e;
 }
 
 
-node parse_statements(silver mod) {
-    push(mod, new(statements, mod, mod));
+/// this was a quick conversion to go from [ statements ] to python-based ones
+/// it gives you more freedom than python, too.
+/// you can do +2 tab and +10 tab inside or tab+2 or whatever.
+/// as long as the 4:1 values are right
+node parse_statements(silver mod, bool unique_members) {
+    if (unique_members)
+        push(mod, new(statements, mod, mod));
     
     print_tokens("parse_statements", mod);
-
     token n         = element(mod,  0);
     token p         = element(mod, -1);
     bool  multiple  = p && (n->line > p->line); /// should store indent level at each token, because there is no line model and would not like one!
@@ -2061,75 +2179,72 @@ node parse_statements(silver mod) {
     while(peek(mod)) {
         token nn    = element(mod,  0);
         token pp    = element(mod, -1);
-        bool  mm    = pp && nn->line > pp->line; // overlaps with first, but subsequently protects run-away statements spawning off singular on-line expr
-        if(multiple && mm) {
+        bool  mm    = pp && nn->line > pp->line; // protects run-away statements spawning off singular on-line expr
+        if(multiple && mm)
             depth += 1;
-            push(mod, statements(mod, mod));
-        }
         vr = parse_statement(mod);
         if(!multiple) break;
         token nnn   = element(mod,  0);
         token ppp   = element(mod, -1);
         bool  id_less = ppp && nnn->indent < ppp->indent; /// hold onto your butts
         if(id_less) {
-            if (depth > 1)
-                pop(mod);
             next(mod);
             if ((depth -= 1) == 0) break;
         }
     }
-    pop(mod);
+    if (unique_members)
+        pop(mod);
     return vr;
 }
 
 
 void build_function(silver mod, object arg, function fn) {
-    array body = instanceof(fn->user, array);
-    push_state(mod, body, 0);
-    parse_statements(mod);
+    push_state(mod, fn->body, 0);
+    parse_statements(mod, true);
     pop_state(mod, false);
 }
 
 
-function parse_fn(silver mod, AFlag member_type, object ident) {
-    model rtype = null;
-    token name = instanceof(ident, token);
-    verify(next_is(mod, "fn") || next_is(mod, "cast"), "expected fn/cast");
-    consume(mod);
-
+function parse_fn(silver mod, AFlag member_type, object ident, OPType assign_enum) {
+    model      rtype = null;
+    object     name  = instanceof(ident, token);
+    if (!name) name  = instanceof(ident, string);
     if (!name) {
-        verify(member_type == A_TYPE_CAST, "expected member type of cast if there is no name");
-        print("casting to %o", rtype->name);
-        name = form(token, "cast_%o", rtype->name);
+        if (member_type != A_TYPE_CAST) {
+            name = read_alpha(mod);
+            verify(name, "expected alpha-identifier");
+        }
     } else
         verify(member_type != A_TYPE_CAST, "unexpected name for cast");
 
-    arguments args = null;
-    if (member_type == A_TYPE_CAST) {
-        verify (next_is(mod, "[") || next_is(mod, "return"), "expected body for cast");
-        args = arguments();
-    } else {
-        
-        verify (next_is(mod, "[") || next_is(mod, "->"), "expected function args [");
-        
-        print_tokens("parse_fn-args", mod);
-        bool r0 = read(mod, "->");
-        if (!r0) 
-            args = parse_args(mod);
-        if ( r0 || read(mod, "->"))
-            rtype = read_model(mod);
-        else
-            rtype = emodel("generic");
+    arguments args = arguments();
+    verify (next_is(mod, "[") || next_is(mod, "->"), "expected function args [");
+    print_tokens("parse_fn-args", mod);
+    bool r0 = read(mod, "->");
+    if (!r0 && next_is(mod, "[")) {
+        args = parse_args(mod);
+        print_tokens("after-args", mod);
     }
     
+    if ( r0 || read(mod, "->")) {
+        rtype = read_model(mod);
+        verify(rtype, "type must proceed the -> keyword in fn");
+    } else
+        rtype = emodel("void");
+    
     verify(rtype, "rtype not set, void is something we may lookup");
+    if (!name) {
+        verify(member_type == A_TYPE_CAST, "with no name, expected cast");
+        name = form(token, "cast_%o", rtype->name);
+    }
+    
     subprocedure process = subproc   (mod, build_function, null);
     record       rec_top = instanceof(mod->top, record) ? mod->top : null;
     function     fn      = function(
         mod,    mod,     name,   name, function_type, member_type,
         record, rec_top, rtype,  rtype,
         args,   args,    process, process,
-        user,   read_body(mod)); /// user must process their payload for a function to effectively resolve
+        body,   read_body(mod)); /// user must process their payload for a function to effectively resolve
     process->ctx = fn; /// safe to set after, as we'll never start building within function; we need this context in builder
     return fn;
 }
@@ -2188,7 +2303,7 @@ void silver_parse(silver mod) {
         incremental_resolve(mod);
     }
     mod->in_top = false;
-    
+
     /// return from the initializer
     fn_return(mod, null);
     pop(mod);
@@ -2253,15 +2368,18 @@ void silver_init(silver mod) {
     model mdl = emodel("A");
     AType mdl_type = isa(mdl); /// issue is A becomes a member
 
-    /// alias A -> generic
+    /// alias A -> any
     member mA      = lookup(mod, string("A"));
     AType  mA_type = isa(mA->mdl);
-    string n       = string("generic");
+    string n       = string("any");
     model  mdl_A   = alias(mA->mdl, n, 0, null);
-    member generic = member(mod, mod, name, n, mdl, mdl_A, is_type, true);
+    member any     = member(mod, mod, name, n, mdl, mdl_A, is_type, true);
     member mem_mod = member(mod, mod, name, mod->name, mdl, mod, is_module, mod);
     push_member(mod, mem_mod);
-    push_member(mod, generic);
+    push_member(mod, any);
+
+
+    member any_obj = lookup(mod, string("any"));
 
     /// we do not want to push this function to context unless it can be gracefully
     parse(mod);
@@ -2309,6 +2427,5 @@ int main(int argc, char **argv) {
 define_mod   (silver, ether)
 define_enum  (import_t)
 define_enum  (build_state)
-define_class (schematic)
 define_mod   (import, model)
 module_init  (init)
