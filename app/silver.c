@@ -17,7 +17,6 @@ static array assign;
 static array compare;
 static bool is_alpha(A any);
 static node parse_expression(silver mod);
-static node parse_primary(silver mod);
 
 static void print_tokens(symbol label, silver mod) {
     print("[%s] tokens: %o %o %o %o %o ...", label,
@@ -829,7 +828,7 @@ array parse_tokens(A input) {
     num     index           = 0;
     num     line_start      = 0;
     num     indent          = 0;
-
+    bool    num_start       = isdigit(input_string->chars[0]);
     /// initial indent verify
     i32 chr0 = idx(input_string, index);
     verify(!isspace(chr0) || chr0 == '\n', "initial statement off indentation");
@@ -880,6 +879,7 @@ array parse_tokens(A input) {
             push(tokens, token(chars, name->chars, indent, indent, source,
                 src, line, line_num, column, index - line_start));
             index += len(name);
+            num_start = isdigit(input_string->chars[index]);
             continue;
         }
 
@@ -913,14 +913,17 @@ array parse_tokens(A input) {
                 source, src,
                 line,   line_num,
                 column, start - line_start));
+            num_start = isdigit(input_string->chars[index]);
             continue;
         }
 
         num start = index;
+        bool is_dim = false;
         while (index < length) {
             i32 v = idx(input_string, index);
             char sval[2] = { v, 0 };
-            if (isspace(v) || index_of(special, sval) >= 0)
+            is_dim = (num_start && v == 'x');
+            if (isspace(v) || index_of(special, sval) >= 0 || is_dim)
                 break;
             index += 1;
         }
@@ -932,6 +935,16 @@ array parse_tokens(A input) {
             source, src,
             line,   line_num,
             column, start - line_start));
+        if (is_dim) {
+            push(tokens, token(
+                chars,  "x",
+                indent, indent,
+                source, src,
+                line,   line_num,
+                column, index - line_start));
+            index++;
+        }
+        num_start = isdigit(input_string->chars[index]);
     }
 
     each (tokens, token, t) {
@@ -1107,7 +1120,6 @@ none silver_namespace_pop(silver mod, array levels) {
 
 function parse_fn        (silver mod, AFlag  member_type, object ident, OPType assign_enum);
 member   read_def        (silver mod, member existing);
-node     parse_assignment(silver mod, member mem, string oper);
 model    read_model      (silver mod);
 
 static node parse_create(silver mod, model src);
@@ -1116,6 +1128,63 @@ static node parse_create(silver mod, model src);
 /// unless its a type, in which case we have a membership for them.. so everything is a member
 node silver_read_node(silver mod) {
     /// only use :: keyword to navigate for code in functions
+    object lit = read_literal(mod);
+    if (lit)
+        return operand(mod, lit);
+    
+    // parenthesized expressions, with a model check (make sure its not a type)
+    if (next_is(mod, "[")) {
+        push_current(mod);
+        model inner = read_model(mod);
+        print_tokens("read_node-parens", mod);
+        if (!inner) {
+            pop_state(mod, true);
+            consume(mod);
+            node expr = parse_expression(mod); // Parse the expression
+            verify(read(mod, "]"), "Expected closing parenthesis");
+            return parse_ternary(mod, expr);
+        }
+        pop_state(mod, false);
+    }
+
+    // handle the logical NOT operator (e.g., '!')
+    else if (read(mod, "!") || read(mod, "not")) {
+        node expr = parse_expression(mod); // Parse the following expression
+        return not(mod, expr);
+    }
+
+    // bitwise NOT operator
+    else if (read(mod, "~")) {
+        node expr = parse_expression(mod);
+        return bitwise_not(mod, expr);
+    }
+
+    // 'typeof' operator
+    // should work on instances as well as direct types
+    else if (read(mod, "typeof")) {
+        bool bracket = false;
+        if (next_is(mod, "[")) {
+            assert(next_is(mod, "["), "Expected '[' after 'typeof'");
+            consume(mod); // Consume '['
+            bracket = true;
+        }
+        node expr = parse_expression(mod); // Parse the type expression
+        if (bracket) {
+            assert(next_is(mod, "]"), "Expected ']' after type expression");
+            consume(mod); // Consume ']'
+        }
+        return expr; // Return the type reference
+    }
+
+    // 'ref' operator (reference)
+    else if (read(mod, "ref")) {
+        mod->in_ref = true;
+        node expr = parse_expression(mod);
+        mod->in_ref = false;
+        return addr_of(mod, expr, null);
+    }
+
+
     push_current(mod);
     
     string   kw       = peek_keyword(mod);
@@ -1269,7 +1338,7 @@ node silver_read_node(silver mod) {
         else if (mem && assign_type) {
             mod->expr_level++;
             verify(mem, "member expected after seeing assignment");
-            verify(mem->registered, "expected registered");
+            //verify(mem->registered, "expected registered");
             print_tokens("parse_assignment", mod);
             /// membership overrides any return value
             /// besides we do not allow overriding mdl on assign anyway
@@ -1278,8 +1347,6 @@ node silver_read_node(silver mod) {
             /// verify we are in the initializer for the test1 class
             function fn_init = instanceof(mod->top, function);
             node expr = parse_assignment(mod, mem, assign_type);
-            int test = 2;
-            test += 2;
             mod->expr_level--;
         }
     }
@@ -1413,7 +1480,8 @@ node silver_parse_do_while(silver mod) {
 
 static node reverse_descent(silver mod) {
     print_tokens("reverse", mod);
-    node L = parse_primary(mod); // build-arg
+    node L = read_node(mod); // build-arg
+    verify(L, "failed to read L-value in reverse-descent");
     mod->expr_level++;
     for (int i = 0; i < sizeof(levels) / sizeof(precedence); i++) {
         precedence *level = &levels[i];
@@ -1426,7 +1494,7 @@ static node reverse_descent(silver mod) {
                     continue;
                 OPType op     = level->ops   [j];
                 string method = level->method[j];
-                node R = parse_primary(mod);
+                node R = read_node(mod);
                      L = ether_op     (mod, op, method, L, R);
                 m      = true;
                 break;
@@ -1482,7 +1550,8 @@ model read_named_model(silver mod) {
 
 model read_model(silver mod) {
     print_tokens("read_model", mod);
-    model mdl   = null;
+    model mdl        = null;
+    bool  type_infer = false;
     push_current(mod);
 
     if (read(mod, "[")) {
@@ -1502,8 +1571,15 @@ model read_model(silver mod) {
             verify(!read(mod, "]"), "unexpected ]; use [any] for any object");
 
             /// [int] is dynamic size int
-            /// anything of a : size do not let you append to them, the point of the shape is that it persists
-            /// this is not a 'reserve' size, we could tune those with compilation flags
+            /// anything of a non-auto-size do not let
+            /// you append to them.
+            /// the point of the shape is that it persists
+            /// for this silver should not deviate on,
+            /// as its more like C arrays for fixed, and
+            /// dynamic it goes from design-time to run-time
+            /// -----
+            /// this is not a 'reserve' size, we could
+            /// tune those with compilation flags for default-auto
             if (!is_array && read(mod, ":")) {
                 object  lit = read_literal(mod);
                 verify(!lit || instanceof(lit, i64), "invalid literal format [integral expected]");
@@ -1528,17 +1604,20 @@ model read_model(silver mod) {
                 /// [ int : string ]
                 /// what about a map of maps
                 /// [ int : [ string:short ] ]
+            } else {
+                is_array = true;
+                type_infer = true;
             }
             verify(is_map || is_array, "failed to read model plurality");
             mdl = model_alias(type, type->name, reference_pointer, shape);
             mdl->is_map   = is_map;
             mdl->is_array = is_array; // redundant, but convenient!
-            verify(is_auto || read(mod, "]"), "expected ]");
+            verify(type_infer || is_auto || read(mod, "]"), "expected ]");
         }
     } else
         mdl = read_named_model(mod);
     
-    pop_state(mod, mdl != null); /// save if we are returning a model
+    pop_state(mod, !type_infer && mdl != null); /// save if we are returning a model
     return mdl;
 }
 
@@ -1568,7 +1647,7 @@ node parse_create(silver mod, model src) {
     node r = null;
     bool conv = false;
 
-    if (has_content) {
+    if (has_content) { /// needs to work with [int 2 2]
         token k = peek(mod);
         if (is_alpha(k) && eq(element(mod, 1), ":")) {
             /// init with members [alloc performs required check]
@@ -1588,8 +1667,44 @@ node parse_create(silver mod, model src) {
             conv = true;
             r    = args;
         } else {
-            r    = parse_expression(mod);
-            conv = r->mdl != src;
+            /// alias the type as a pointer to mod and of an array type
+            model m   = read_model(mod);
+            model mdl = alias(m, m->name, reference_pointer, array());
+            if (mdl) {
+                /// if we read ahead, we can determine if all are const
+                /// if this is the case we can store this in a section of data
+
+                /// 2 levels for an array of a shape of int
+                /// int
+                /// src:int ptr size:2x2   [2 levels] ... is int* array to a 2x2 space
+                /// one may use array[1 1] to access the last element
+                
+                /// now lets consider the other use-case of 2x2 where our pointer is to stride over that
+                /// int
+                /// src:int value size:2x2
+                /// src:^ ptr
+
+
+                array nodes = array(64); /// initial alloc size
+                while (!next_is(mod, "]")) {
+                    node e = parse_expression(mod);
+                    if (e->mdl != mdl) e = convert(mod, e, mdl);
+                    push(nodes, e);
+                }
+                r = operand(mod, nodes);
+                /// now i want to 'fill out' the array with the node expr (LLVMValueRef's)
+                /// r->value is the allocation result
+
+            } else {
+                r = parse_expression(mod);
+            }
+
+            // mdl of array is ambiguously defined with is_array, does a mdl of ptr point to this?
+            // src of int array should be int
+            // then we have a ptr alias of that
+            // --------------------------------
+            // 
+            conv = r->mdl != src; // todo: make all shaped instances of types ident cached
         }
         verify(read(mod, "]"), "expected ] after mdl-expr %o", src->name);
     } else {
@@ -1791,7 +1906,7 @@ static node parse_function_call(silver mod, member fmem) {
 }
 
 
-static node parse_ternary(silver mod, node expr) {
+node silver_parse_ternary(silver mod, node expr) {
     if (!read(mod, "?")) return expr;
     node expr_true  = parse_expression(mod);
     node expr_false = parse_expression(mod);
@@ -1799,74 +1914,7 @@ static node parse_ternary(silver mod, node expr) {
 }
 
 
-static node parse_primary(silver mod) {
-    print_tokens("parse_primary", mod);
-
-    // parenthesized expressions, with a model check (make sure its not a type)
-    if (next_is(mod, "[")) {
-        push_current(mod);
-        model inner = read_model(mod);
-        print_tokens("parse_primary-after", mod);
-        if (!inner) {
-            pop_state(mod, true);
-            consume(mod);
-            node expr = parse_expression(mod); // Parse the expression
-            verify(read(mod, "]"), "Expected closing parenthesis");
-            return parse_ternary(mod, expr);
-        }
-        pop_state(mod, false);
-    }
-
-    // handle the logical NOT operator (e.g., '!')
-    if (read(mod, "!") || read(mod, "not")) {
-        node expr = parse_expression(mod); // Parse the following expression
-        return not(mod, expr);
-    }
-
-    // bitwise NOT operator
-    if (read(mod, "~")) {
-        node expr = parse_expression(mod);
-        return bitwise_not(mod, expr);
-    }
-
-    // 'typeof' operator
-    // should work on instances as well as direct types
-    if (read(mod, "typeof")) {
-        bool bracket = false;
-        if (next_is(mod, "[")) {
-            assert(next_is(mod, "["), "Expected '[' after 'typeof'");
-            consume(mod); // Consume '['
-            bracket = true;
-        }
-        node expr = parse_expression(mod); // Parse the type expression
-        if (bracket) {
-            assert(next_is(mod, "]"), "Expected ']' after type expression");
-            consume(mod); // Consume ']'
-        }
-        return expr; // Return the type reference
-    }
-
-    // 'ref' operator (reference)
-    if (read(mod, "ref")) {
-        mod->in_ref = true;
-        node expr = parse_expression(mod);
-        mod->in_ref = false;
-        return addr_of(mod, expr, null);
-    }
-
-    // we changed this around like a mixer with nukes inside
-    print_tokens("parse-primary-2", mod);
-    node n = read_node(mod); /// should perform offset() inside
-    if  (n) return n;
-    
-    token  tk    = consume(mod);
-    string ident = cast(string, tk);
-    fault("unexpected %o in primary expression", ident);
-    return null;
-}
-
-
-node parse_assignment(silver mod, member mem, string oper) {
+node silver_parse_assignment(silver mod, member mem, string oper) {
     verify(!mem->is_assigned || !mem->is_const, "mem %o is a constant", mem->name);
     mod->in_assign = mem;
     node   L       = mem;
@@ -2318,8 +2366,8 @@ void silver_incremental_resolve(silver mod) {
 
 void silver_parse(silver mod) {
     /// im a module!
-    member fn = initializer(mod);
-    push(mod, fn->mdl);
+    initializer(mod);
+    push(mod, mod->fn_init);
     mod->in_top = true;
     map members = mod->members;
 
@@ -2332,6 +2380,7 @@ void silver_parse(silver mod) {
 
     /// return from the initializer
     fn_return(mod, null);
+    push_model(mod, mod->fn_init); // publish initializer
     pop(mod);
 }
 
@@ -2409,7 +2458,6 @@ void silver_init(silver mod) {
 
     /// we do not want to push this function to context unless it can be gracefully
     parse(mod);
-    push_model(mod, mod->fn_init);
 
     /// enumerating objects used, libs used, etc
     /// may be called earlier when the statement of import is finished

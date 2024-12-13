@@ -65,6 +65,8 @@ declare_class(completer_context)
     i_method  (X,Y, public,     array,          namespace_push) \
     i_method  (X,Y, public,     none,           namespace_pop, array) \
     i_method  (X,Y, public,     node,           read_node) \
+    i_method  (X,Y, public,     node,           parse_ternary, node) \
+    i_method  (X,Y, public,     node,           parse_assignment, member, string) \
     i_method  (X,Y, public,     bool,           read, symbol) \
     i_method  (X,Y, public,     object,         read_literal) \
     i_method  (X,Y, public,     string,         read_string) \
