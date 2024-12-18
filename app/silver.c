@@ -129,16 +129,24 @@ static void init() {
 node parse_statements(silver mod, bool unique_members);
 node parse_statement(silver mod);
 
+static node parse_create(silver mod, model src, array expr);
+
 void build_function(silver mod, function fn) {
     if (!fn->body) return;
     if (fn->record)
         push(mod, fn->record);
     push(mod, fn);
-    push_state(mod, fn->body, 0);
-    record cl = fn ? fn->record : null;
-    if (cl) pairs(cl->members, m) log("class", "member: %o: %o", cl->name, m->key);
-    parse_statements(mod, true);
-    pop_state(mod, false);
+    if (fn->single_expr) {
+        node single = parse_create(mod, fn->rtype, fn->body);
+        fn_return(mod, single);
+    } else {
+        push_state(mod, fn->body, 0);
+        record cl = fn ? fn->record : null;
+        if (cl) pairs(cl->members, m) log("class", "member: %o: %o", cl->name, m->key);
+        parse_statements(mod, true);
+        pop_state(mod, false);
+    }
+
     pop(mod);
     if (fn->record) pop(mod);
 }
@@ -692,15 +700,24 @@ void import_process(import im) {
 }
 
 /// used for records and functions
-array read_body(silver mod) {
+array read_body(silver mod, bool inner_expr) {
     array body = array(32);
     token n    = element(mod,  0);
-    if (eq(n, "[")) {
-        int depth = 0;
+    if (eq(n, "[") || inner_expr) {
+        int depth = inner_expr ? (eq(n, "[") ? 0 : 1) : 0;
+        if (inner_expr && depth == 0) {
+            token t = token(chars, "[");
+            push(body, t);
+        }
         do {
             token inner  = next(mod);
-            if (depth > 0) push(body, inner); 
-            if (eq(inner, "]")) depth--;
+            if (depth > 0)
+                push(body, inner);
+            if (eq(inner, "]")) {
+                depth--;
+                if (depth == 0 && inner_expr)
+                    pop(body);
+            }
             if (eq(inner, "[")) depth++;
         } while (depth > 0);
         return body;
@@ -1120,23 +1137,23 @@ none silver_namespace_pop(silver mod, array levels) {
 
 function parse_fn        (silver mod, AFlag  member_type, object ident, OPType assign_enum);
 member   read_def        (silver mod, member existing);
-model    read_model      (silver mod);
-
-static node parse_create(silver mod, model src);
+model    read_model      (silver mod, array* expr);
 
 /// should not need to back out ever, since members are always being operated
 /// unless its a type, in which case we have a membership for them.. so everything is a member
 node silver_read_node(silver mod) {
+    print_tokens("read-node", mod);
+
     /// only use :: keyword to navigate for code in functions
     object lit = read_literal(mod);
     if (lit)
         return operand(mod, lit);
     
-    // parenthesized expressions, with a model check (make sure its not a type)
+    // parenthesized expressions, with a model check (make sure its not a type, which indicates array/map typed expression)
     if (next_is(mod, "[")) {
         push_current(mod);
-        model inner = read_model(mod);
-        print_tokens("read_node-parens", mod);
+        model inner = read_model(mod, null); /// if the model comes first, this is an array or map
+        
         if (!inner) {
             pop_state(mod, true);
             consume(mod);
@@ -1144,7 +1161,7 @@ node silver_read_node(silver mod) {
             verify(read(mod, "]"), "Expected closing parenthesis");
             return parse_ternary(mod, expr);
         }
-        pop_state(mod, false);
+        pop_state(mod, false); /// we may just avoid reading it twice, but i want to test the stack a bit more and make the code less prone to state issue
     }
 
     // handle the logical NOT operator (e.g., '!')
@@ -1202,18 +1219,16 @@ node silver_read_node(silver mod) {
     int      back     = 0;
     int      depth    = 0;
 
-    print_tokens("read_node", mod);
-    model mdl = read_model(mod);
+    array expr = null;
+    model mdl = read_model(mod, &expr);
     if (mdl) {
-        print_tokens("read_node2", mod);
-        return parse_create(mod, mdl);
+        return parse_create(mod, mdl, expr);
     }
 
     // L hand modal switching might be needed for load()
     //mod->left_hand = true;
 
     for (;;) {
-        print_tokens("read_node", mod); // parse_create ?
         bool first = !mem;
         if (first && (is_fn || is_cast)) consume(mod);
         alpha = read_alpha(mod);
@@ -1307,7 +1322,6 @@ node silver_read_node(silver mod) {
             }
         }
 
-        print_tokens("read-resolve-alpha", mod);
         if (!read(mod, ".")) break;
         verify(!mem->is_func, "cannot resolve into function");
     }
@@ -1324,13 +1338,12 @@ node silver_read_node(silver mod) {
     if (mod->expr_level == 0) {
         OPType assign_enum  = OPType__undefined;
         bool   assign_const = false;
-        print_tokens("read_assign", mod);
         string assign_type  = read_assign  (mod, &assign_enum, &assign_const);
         if (in_args) {
             verify(mem, "expected member");
             verify(assign_enum == OPType__assign, "expected : operator in arguments");
             verify(!mem->mdl, "duplicate member exists in arguments");
-            mem->mdl = read_model(mod);
+            mem->mdl = read_model(mod, null);
             verify(mem->mdl, "cannot read model for arg: %o", mem->name);
         }
         else if (((module || rec) && (!mem || !mem->mdl)) && peek_keyword(mod))
@@ -1339,7 +1352,6 @@ node silver_read_node(silver mod) {
             mod->expr_level++;
             verify(mem, "member expected after seeing assignment");
             //verify(mem->registered, "expected registered");
-            print_tokens("parse_assignment", mod);
             /// membership overrides any return value
             /// besides we do not allow overriding mdl on assign anyway
             /// thats an anti-pattern to take on, and ambiguous for an api to facilitate
@@ -1537,87 +1549,76 @@ model read_named_model(silver mod) {
     return mdl;
 }
 
-/// define shaping syntax to create arrays, maps and a combination of both
-/// useful to facilitate more data in one place without having two variables,
-/// that is a preference for some.  and you can too.
+/// sometimes a model has a contained expression
+/// this is the case for maps and arrays, also anything with type[ expr ]
+/// the above are utilized for single expression return/type-def
 
+/// read model must allow for combined expr to be parsed
+/// sometimes, our types have expressions inside int[ like this ] [int:1 2 or-this[1]]
+/// its obvious what the type is, and we parse this but do not process the tokens (we are not always in a position to do resolve or code)
+model read_model(silver mod, array* expr) {
+    print_tokens("read-model", mod);
+    model mdl = null;
+    bool body_set = false;
+    bool type_only = false;
 
+    if (expr) *expr = null;
 
-/// arrays require explicit type, we cannot just [something[1], something-else[2]]
-/// its [something-generic something[1] something[2]]
-
-/// impl
-
-model read_model(silver mod) {
-    print_tokens("read_model", mod);
-    model mdl        = null;
-    bool  type_infer = false;
     push_current(mod);
-
+    
     if (read(mod, "[")) {
-        print("found [");
-        model  type   = read_model(mod);
-        print_tokens("read_model-2nd-after", mod);
-        /// null on shape is not array or map
-        /// 0 len array is 0-sized and the type is in the model src
-        /// we will create the shape for this type now [ from here on
-        /// its either a map or an array; no chance its a 'value'
-        /// since we read a model after [ ... ]
+        model type = read_model(mod, null);
         if (type) {
-            array shape    = array(8);
+            array shape    = null;
             bool  is_auto  = read(mod, "]");
             bool  is_map   = false;
-            bool  is_array = is_auto;
-            verify(!read(mod, "]"), "unexpected ]; use [any] for any object");
+            bool  is_array = is_auto || read(mod, ":"); /// it may also be looking at literal x literal
+            verify(!next_is(mod, "]"), "unexpected ]; use [any] for any object");
 
-            /// [int] is dynamic size int
-            /// anything of a non-auto-size do not let
-            /// you append to them.
-            /// the point of the shape is that it persists
-            /// for this silver should not deviate on,
-            /// as its more like C arrays for fixed, and
-            /// dynamic it goes from design-time to run-time
-            /// -----
-            /// this is not a 'reserve' size, we could
-            /// tune those with compilation flags for default-auto
-            if (!is_array && read(mod, ":")) {
-                object  lit = read_literal(mod);
-                verify(!lit || instanceof(lit, i64), "invalid literal format [integral expected]");
+            /// determine if map or array
+            if (!is_auto) {
+                object lit = read_literal(mod);
                 if (lit) {
+                    is_array = true;
+                    shape = array(8);
                     do {
                         push(shape, lit);
-                    } while (read(mod, ","));
-                    is_array = true;
+                        if (!read(mod, "x"))
+                            break;
+                        lit = read_literal(mod);
+                        verify(lit, "expecting literal after x");
+                    } while (lit);
                 } else {
-                    model  mdl_value = read_model(mod);
-                    verify(mdl_value, "expected literal or model after :"); 
-                    push(shape, type);
-                    push(shape, mdl_value); // key:value
                     is_map = true;
+                    model value_type = read_model(mod, null);
+                    verify(value_type, "expected value type for map");
+                    drop(shape);
+                    shape = value_type;
                 }
-                /// array permutations
-                /// [ int : 10 ]
-                /// [ int : 10,22 ]
-                /// [ int ]
-                ///
-                /// map permutations
-                /// [ int : string ]
-                /// what about a map of maps
-                /// [ int : [ string:short ] ]
-            } else {
-                is_array = true;
-                type_infer = true;
             }
-            verify(is_map || is_array, "failed to read model plurality");
+
+            type_only = is_auto || !read(mod, ":");
+            verify(is_map || is_array, "failed to read model");
             mdl = model_alias(type, type->name, reference_pointer, shape);
-            mdl->is_map   = is_map;
-            mdl->is_array = is_array; // redundant, but convenient!
-            verify(type_infer || is_auto || read(mod, "]"), "expected ]");
+            verify(!type_only || read(mod, "]"), "expected ]");
         }
-    } else
+    } else {
         mdl = read_named_model(mod);
+        if (expr && next_is(mod, "[")) {
+            body_set = true;
+            *expr = read_body(mod, false); /// todo: read body can adapt to seeing a [, and look for another ] at balance
+        } else {
+            type_only = true;
+        }
+    }
     
-    pop_state(mod, !type_infer && mdl != null); /// save if we are returning a model
+    pop_state(mod, mdl != null); /// save if we are returning a model
+    if (expr && !body_set && !type_only)
+        *expr = read_body(mod, true);
+    else if (expr && type_only)
+        *expr = array();
+
+    verify(!expr || *expr, "expression not set to array");
     return mdl;
 }
 
@@ -1640,33 +1641,50 @@ member cast_method(silver mod, class class_target, model cast) {
 static node parse_function_call(silver mod, member fmem);
 
 /// parse construct from and cast to, and named args
-node parse_create(silver mod, model src) {
+/// expr comes from read-model;
+/// we need to do that to parse single-expr 
+/// to gather model info, and its expression body prior
+/// to builder being active on the function
+map parse_map(silver mod) {
+    map args  = map(hsize, 16);
+    int count = 0;
+    while (!next_is(mod, "]")) {
+        string name  = read_alpha(mod);
+        verify(read(mod, ":"), "expected : after arg %o", name);
+        node   value = parse_expression(mod);
+        set(args, name, value);
+        count++;
+        if (next_is(mod, "]")) break;
+    }
+    verify(len(args) == count, "arg count mismatch");
+    verify(read(mod, "]"), "expected ] after construction");
+    return args;
+}
+
+node parse_create(silver mod, model src, array expr) {
+    push_state(mod, expr ? expr : array(), 0);
     object n = read_literal(mod);
     if (n) return operand(mod, n);
     bool has_content = read(mod, "[") && !read(mod, "]");
     node r = null;
     bool conv = false;
 
-    if (has_content) { /// needs to work with [int 2 2]
+    if (has_content) { /// needs to work with [int : 2 2]
         token k = peek(mod);
-        if (is_alpha(k) && eq(element(mod, 1), ":")) {
+
+        if (src->is_array) {
+        } else if (src->is_map) {
+        }
+        /// if this looks like an initializer
+        /// maps look this way, too. 
+        bool has_init = is_alpha(k) && eq(element(mod, 1), ":");
+        if (has_init) {
             /// init with members [alloc performs required check]
             /// this converts operand to a map
-            map args  = map(hsize, 16);
-            int count = 0;
-            while (!next_is(mod, "]")) {
-                string name  = read_alpha(mod);
-                verify(read(mod, ":"), "expected : after arg %o", name);
-                node   value = parse_expression(mod);
-                set(args, name, value);
-                count++;
-                if (next_is(mod, "]")) break;
-            }
-            verify(len(args) == count, "arg count mismatch");
-            verify(read(mod, "]"), "expected ] after construction");
             conv = true;
-            r    = args;
+            r    = parse_map(mod);
         } else {
+            /// 
             /// alias the type as a pointer to mod and of an array type
             model m   = read_model(mod);
             model mdl = alias(m, m->name, reference_pointer, array());
@@ -1713,6 +1731,7 @@ node parse_create(silver mod, model src) {
     }
     if (conv)
         r = create(mod, src, r);
+    pop_state(mod, false);
     return r;
 }
 
@@ -1741,6 +1760,7 @@ static node parse_construct(silver mod, member mem) {
     verify(mem && mem->is_type, "expected member type");
     verify(read(mod, "["), "expected [ after type name for construction");
     node res = null;
+    print_tokens("parse-construct", mod);
     /// it may be a dedicated constructor (for primitives or our own), or named args (not for primitives)
     if (instanceof(mem->mdl->src, record)) {
         AType atype = isa(mem->mdl->src);
@@ -1812,7 +1832,6 @@ node silver_parse_member_expr(silver mod, member mem) {
             if (!mod->in_ref)
                 mem = parse_function_call(mod, mem);
         } else if (mem->is_type && next_is(mod, "[")) {
-            print_tokens("parse-construct", mod);
             mem = parse_construct(mod, mem); /// this, is the construct
         } else if (mod->in_ref || mem->literal) {
             mem = mem; /// we will not load when ref is being requested on a member
@@ -1830,24 +1849,19 @@ arguments parse_args(silver mod) {
     array       args = new(array,     alloc, 32);
     arguments   res  = new(arguments, mod, mod, args, args);
 
-    print_tokens("args", mod);
+    print_tokens("parse-args", mod);
     if (!next_is(mod, "]")) {
         push(mod, res); // if we push null, then it should not actually create debug info for the members since we dont 'know' what type it is... this wil let us delay setting it on function
         int statements = 0;
         for (;;) {
             /// we expect an arg-like statement when we are in this context (arguments)
-            print_tokens("parse-args", mod);
-
             if (next_is(mod, "...")) {
                 consume(mod);
                 res->is_ext = true;
                 continue;
             }
-
             parse_statement(mod);
             statements++;
-
-            print_tokens("after-parse-args", mod);
             if (next_is(mod, "]"))
                 break;
         }
@@ -1918,9 +1932,8 @@ node silver_parse_assignment(silver mod, member mem, string oper) {
     verify(!mem->is_assigned || !mem->is_const, "mem %o is a constant", mem->name);
     mod->in_assign = mem;
     node   L       = mem;
-    print_tokens("parse_assignment", mod);
+    print_tokens("parse-assignment", mod);
     node   R       = parse_expression(mod); /// getting class2 as a struct not a pointer as it should be. we cant lose that pointer info
-    print_tokens("parse_assignment2", mod);
     if (!mem->mdl) {
         mem->is_const = eq(oper, "=");
         set_model(mem, R->mdl);
@@ -1982,27 +1995,23 @@ node parse_ifdef_else(silver mod) {
         verify(!expect_last, "continuation after else");
         bool  is_if  = read(mod, "ifdef");
         verify(is_if && require_if || !require_if, "expected if");
-        array cond   = is_if ? read_body(mod) : null;
-        array block  = read_body(mod);
+        array cond   = is_if ? read_body(mod, false) : null;
+        array block  = read_body(mod, false);
         node  n_cond = null;
 
         if (cond) {
             bool prev      = mod->in_const;
             mod->in_const  = true;
             push_state(mod, cond, 0);
-            print_tokens("parse_ifdef_else-cond", mod);
             n_cond = parse_expression(mod);
             object const_v = n_cond->literal;
             pop_state(mod, false);
             mod->in_const  = prev;
             one_truth      = true;
-            print_tokens("parse_ifdef_else-cond-after", mod);
             if (const_v && cast(bool, const_v)) {
                 push_state(mod, block, 0);
-                print_tokens("parse_ifdef_else-cond-after-new-state", mod);
                 statements = parse_statements(mod, false);
                 pop_state(mod, false);
-                print_tokens("parse_ifdef_else-cond-after-new-state-after-pop", mod);
             }
         } else if (!one_truth) {
             verify(!is_if, "if statement incorrect");
@@ -2029,8 +2038,8 @@ node parse_if_else(silver mod) {
     while (true) {
         bool is_if  = read(mod, "if");
         verify(is_if && require_if || !require_if, "expected if");
-        array cond  = is_if ? read_body(mod) : null;
-        array block = read_body(mod);
+        array cond  = is_if ? read_body(mod, false) : null;
+        array block = read_body(mod, false);
         push(tokens_cond,  cond);
         push(tokens_block, block);
         if (!is_if)
@@ -2085,20 +2094,18 @@ schematic parse_schematic(silver mod) {
     token  k = peek(mod);
     if (is_access(k)) {
         e->namespace = null;
-        e->access    = read_access(mod);
-        e->mdl       = read_model (mod);
     } else if (is_model(k)) {
         e->namespace = null;
         e->access    = interface_public;
-        e->mdl       = read_model (mod);
     } else {
         string n = read_alpha(mod);
         verify(n, "expected alpha-ident, found: %o", next(mod));
         verify(read(mod, ":"), "schematic: expected : after alpha-ident");
         e->namespace = n;
-        e->access    = read_access(mod);
-        e->mdl       = read_model (mod);
     }
+    if (!e->access) e->access = read_access(mod);
+    e->mdl = instanceof(model, read_model (mod));
+    verify(e->mdl, "expected model");
     return e;
 }
 
@@ -2121,7 +2128,6 @@ member read_def(silver mod, member existing) {
 
     consume(mod);
     string n = existing ? null : read_alpha(mod);
-    verify(existing || n, "expected alpha ident for definition name");
     member mem = existing ? existing : member(mod, mod, name, n);
 
     if (is_import) {
@@ -2139,7 +2145,7 @@ member read_def(silver mod, member existing) {
                 push(schema, parse_schematic(mod));
             consume(mod);
         }
-        array body   = read_body(mod);
+        array body   = read_body(mod, false);
         /// todo: call build_record right after this is done
         if (is_class)
             mem->mdl = class    (mod, mod, name, n, body, body, schema, schema);
@@ -2150,7 +2156,8 @@ member read_def(silver mod, member existing) {
         model store = null; 
         if (next_is(mod, "[")) {
             consume(mod);
-            store = read_model(mod);
+            store = instanceof(model, read_model(mod));
+            verify(store, "expected model");
             verify(read(mod, "]"), "expected ] for enum-model");
         }
         model top = mod->top;
@@ -2162,7 +2169,7 @@ member read_def(silver mod, member existing) {
             "enumerables can only be based on primitive types (i32 default)");
 
         /// read body, create enum and parse tokens with context
-        array enum_body = read_body(mod);
+        array enum_body = read_body(mod, false);
         push_state(mod, enum_body, 0);
 
         i64   value   = 0;
@@ -2191,7 +2198,6 @@ member read_def(silver mod, member existing) {
         pop(mod);
         pop_state(mod, false);
         model_process_finalize(mem->mdl);
-        print_tokens("overview", mod);
     } else {
         verify(is_alias, "unknown error");
         mem->mdl = alias(mem->mdl, mem->name, reference_pointer, null);
@@ -2284,6 +2290,7 @@ node parse_statements(silver mod, bool unique_members) {
 function parse_fn(silver mod, AFlag member_type, object ident, OPType assign_enum) {
     model      rtype = null;
     object     name  = instanceof(ident, token);
+    array      body  = null;
     if (!name) name  = instanceof(ident, string);
     if (!name) {
         if (member_type != A_TYPE_CAST) {
@@ -2295,15 +2302,24 @@ function parse_fn(silver mod, AFlag member_type, object ident, OPType assign_enu
 
     arguments args = arguments();
     verify (next_is(mod, "[") || next_is(mod, "->"), "expected function args [");
-    print_tokens("parse_fn-args", mod);
     bool r0 = read(mod, "->");
     if (!r0 && next_is(mod, "[")) {
         args = parse_args(mod);
-        print_tokens("after-args", mod);
     }
     
+    bool single_expr = false;
     if ( r0 || read(mod, "->")) {
-        rtype = read_model(mod);
+        rtype = read_model(mod, &body); 
+        if (body) {
+            // if body is set, then parse_fn will return the parse_create call, with model of rtype, and expr of body
+            single_expr = true;
+        }
+        // this state must be
+        //
+        // solve me first:
+        // tricky here because we need to be in the function
+        // when parsing an expression (if it is, rather than just a model)
+        //
         verify(rtype, "type must proceed the -> keyword in fn");
     } else
         rtype = emodel("void");
@@ -2317,8 +2333,8 @@ function parse_fn(silver mod, AFlag member_type, object ident, OPType assign_enu
     record       rec_top = instanceof(mod->top, record) ? mod->top : null;
     function     fn      = function(
         mod,    mod,     name,   name, function_type, member_type,
-        record, rec_top, rtype,  rtype,
-        args,   args,    body,   read_body(mod));
+        record, rec_top, rtype,  rtype, single_expr, single_expr,
+        args,   args,    body,   body ? body : read_body(mod, false));
     return fn;
 }
 
@@ -2372,7 +2388,6 @@ void silver_parse(silver mod) {
     map members = mod->members;
 
     while (peek(mod)) {
-        print_tokens("module-member", mod);
         parse_statement(mod);
         incremental_resolve(mod);
     }
