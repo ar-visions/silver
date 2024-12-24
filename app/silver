@@ -34,6 +34,7 @@ declare_class(completer_context)
     i_prop    (X,Y, intern,     bool,           in_top) \
     i_prop    (X,Y, intern,     bool,           in_const) \
     i_prop    (X,Y, intern,     bool,           in_left) \
+    i_prop    (X,Y, intern,     bool,           in_inlay) \
     i_prop    (X,Y, intern,     bool,           prebuild) \
     i_prop    (X,Y, intern,     member,         in_assign) \
     i_prop    (X,Y, intern,     array,          imports) \
@@ -41,8 +42,6 @@ declare_class(completer_context)
     i_prop    (X,Y, intern,     array,          compiled_objects) \
     i_prop    (X,Y, intern,     array,          products_used) \
     i_prop    (X,Y, intern,     map,            include) \
-    i_prop    (X,Y, intern,     map,            type_refs) \
-    i_prop    (X,Y, intern,     map,            operators) \
     i_prop    (X,Y, intern,     int,            expr_level) \
     i_prop    (X,Y, intern,     string,         current_include) \
     i_prop    (X,Y, public,     path,           file) \
