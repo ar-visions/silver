@@ -135,6 +135,7 @@ void build_function(silver mod, function fn) {
     if (!fn->body) return;
     if (fn->record)
         push(mod, fn->record);
+    mod->last_return = null;
     push(mod, fn);
     if (fn->single_expr) {
         node single = parse_create(mod, fn->rtype, fn->body);
@@ -144,6 +145,17 @@ void build_function(silver mod, function fn) {
         record cl = fn ? fn->record : null;
         if (cl) pairs(cl->members, m) log("class", "member: %o: %o", cl->name, m->key);
         parse_statements(mod, true);
+        if (!mod->last_return) {
+            node r_auto = null;
+            if (fn->record && fn->target)
+                r_auto = lookup(mod, string("this"), null);
+            else if (fn->rtype == emodel("void"))
+                r_auto = node(mdl, emodel("void"));
+            else {
+                fault("return statement required for function: %o", fn->name);
+            }
+            fn_return(mod, r_auto);
+        }
         pop_state(mod, false);
     }
 
@@ -158,27 +170,34 @@ void build_record(silver mod, record rec) {
     array  body     = rec->body;
 
     log       ("build_record", "%s %o", sname, rec->name);
-    push_state(mod, body, 0);
+    print_tokens("before-build-record", mod);
+    push_state(mod, body, 0); /// measure here
+    print_tokens("during-build-record", mod);
     push      (mod, rec);
-    member init_fn = initializer(rec);
-    member top = init_fn;
-    push      (mod, init_fn->mdl);
+    function init_fn = initializer(rec);
+    push      (mod, init_fn);
     while     (peek(mod)) parse_statement(mod);
+    fn_return(mod, null);
     pop       (mod);
     pop       (mod);
-    pop_state (mod, false);
+    pop_state (mod, false); /// should be the same here after
+    print_tokens("after-build-record", mod);
+    int test = 2;
+    test += 2;
 }
 
 void silver_push_member(silver mod, member mem) {
     bool reg = mem->registered;
     if (!reg) {
         ether_push_member(mod, mem);
-        if (instanceof(mem->mdl, record)) {
-            build_record(mod, mem->mdl);
-        } else if (instanceof(mem->mdl, function)) {
-            build_function(mod, mem->mdl);
+        if (!mem->mdl->finalized) {
+            if (instanceof(mem->mdl, record)) {
+                build_record(mod, mem->mdl);
+            } else if (instanceof(mem->mdl, function)) {
+                build_function(mod, mem->mdl);
+            }
+            finalize(mem->mdl, mem);
         }
-        finalize(mem->mdl, mem);
     }
 }
 
@@ -708,6 +727,7 @@ array read_body(silver mod, bool inner_expr) {
         if (inner_expr) { /// from array/map, does not start with [, our parser uses in create
             token t = token(chars, "[");
             push(body, t);
+            depth = 1;
         }
         do {
             token inner = next(mod);
@@ -715,7 +735,7 @@ array read_body(silver mod, bool inner_expr) {
             push(body, inner);
             if (eq(inner, "]")) depth--;
             if (eq(inner, "[")) depth++;
-        } while (depth >= 0);
+        } while (depth > 0);
         if (!inner_expr) {
             array n_body = array((int)len(body) - 2);
             for (int i = 1; i < len(body) - 1; i++)
@@ -1221,14 +1241,12 @@ node silver_read_node(silver mod) {
         mod->in_inlay = false;
         return expr;
     }
-
-
     push_current(mod);
     
     string   kw       = peek_keyword(mod);
     function fn       = instanceof(mod->top, function);
     function in_args  = instanceof(mod->top, arguments);
-    record   rec      = context_model(mod, typeid(record));
+    record   rec      = context_model(mod, typeid(class));
     silver   module   = (mod->top == mod || (fn && fn->imdl == mod)) ? mod : null;
     bool     is_cast  = kw && eq(kw, "cast");
     bool     is_fn    = kw && eq(kw, "fn");
@@ -1241,9 +1259,15 @@ node silver_read_node(silver mod) {
     int      depth    = 0;
 
     array expr = null;
+    print_tokens("pre-read_model", mod);
     model mdl = read_model(mod, &expr);
+    print_tokens("post-read_model", mod);
     if (mdl) {
-        return parse_create(mod, mdl, expr);
+        pop_state(mod, true);
+        print_tokens("pre-parse_create", mod);
+        node cr = parse_create(mod, mdl, expr);
+        print_tokens("post-parse_create", mod);
+        return cr;
     }
 
     // L hand modal switching might be needed for load()
@@ -1391,6 +1415,7 @@ node silver_read_node(silver mod) {
             /// verify we are in the initializer for the test1 class
             function fn_init = instanceof(mod->top, function);
             node expr = parse_assignment(mod, mem, assign_type);
+            print_tokens("after-parse-assignment", mod);
             mod->expr_level--;
         }
     }
@@ -1663,7 +1688,9 @@ model read_model(silver mod, array* expr) {
         mdl = read_named_model(mod);
         if (expr && next_is(mod, "[")) {
             body_set = true;
+            print_tokens("pre-read-body", mod);
             *expr = read_body(mod, false); /// todo: read body can adapt to seeing a [, and look for another ] at balance
+            print_tokens("post-read-body", mod);
         } else {
             type_only = true;
         }
@@ -1701,30 +1728,27 @@ static node parse_function_call(silver mod, member fmem);
 /// we need to do that to parse single-expr 
 /// to gather model info, and its expression body prior
 /// to builder being active on the function
+/// meant to be read from a tokens state  key:value  key2:value, no [ ] brackets surrounding
 map parse_map(silver mod) {
     map args  = map(hsize, 16);
-    int count = 0;
-    while (!next_is(mod, "]")) {
+    while (peek(mod)) {
         string name  = read_alpha(mod);
         verify(read(mod, ":"), "expected : after arg %o", name);
         node   value = parse_expression(mod);
+        verify(!contains(args, name), "duplicate initialization of %o", name);
         set(args, name, value);
-        count++;
-        if (next_is(mod, "]")) break;
     }
-    verify(len(args) == count, "arg count mismatch");
-    verify(read(mod, "]"), "expected ] after construction");
     return args;
 }
 
 node parse_create(silver mod, model src, array expr) {
-    push_state(mod, expr ? expr : array(), 0);
+    push_state(mod, expr ? expr : mod->tokens, expr ? 0 : mod->cursor);
     object  n = read_literal(mod);
     if (n) {
         pop_state(mod, false); /// issue here is we lost [ array ] context, expr has no brackets and it needs them
-        return operand(mod, n, null);
+        return operand(mod, n, src);
     }
-    bool    has_content = read(mod, "[") && !read(mod, "]");
+    bool    has_content = !!expr && len(expr); //read(mod, "[") && !read(mod, "]");
     node    r           = null;
     bool    conv        = false;
     token   k           = peek(mod);
@@ -1768,11 +1792,11 @@ node parse_create(silver mod, model src, array expr) {
             conv = true;
             r    = parse_map(mod);
         } else {
+            /// this is a conversion operation
             r = parse_expression(mod);
             conv = r->mdl != src;
         }
-
-        verify(read(mod, "]"), "expected ] after mdl-expr %o", src->name);
+        //verify(read(mod, "]"), "expected ] after mdl-expr %o", src->name);
     }
     if (conv)
         r = create(mod, src, r);
@@ -1845,6 +1869,7 @@ node silver_parse_member_expr(silver mod, member mem) {
         } else {
             index_expr = offset(mod, mem, args);
         }
+        pop_state(mod, true);
         return index_expr;
     } else if (mem) {
         if (mem->is_func) {
@@ -1950,8 +1975,9 @@ node silver_parse_assignment(silver mod, member mem, string oper) {
     verify(!mem->is_assigned || !mem->is_const, "mem %o is a constant", mem->name);
     mod->in_assign = mem;
     node   L       = mem;
-    //print_tokens("parse-assignment", mod);
+    print_tokens("parse-assignment", mod);
     node   R       = parse_expression(mod); /// getting class2 as a struct not a pointer as it should be. we cant lose that pointer info
+    print_tokens("parse-assignment-after", mod);
     if (!mem->mdl) {
         mem->is_const = eq(oper, "=");
         set_model(mem, R->mdl); /// this is erroring because no 
@@ -2145,7 +2171,7 @@ member read_def(silver mod, member existing) {
         return null;
 
     consume(mod);
-    string n = existing ? null : read_alpha(mod);
+    string n = existing ? string(existing->name->chars) : read_alpha(mod);
     member mem = existing ? existing : member(mod, mod, name, n);
 
     if (is_import) {
@@ -2233,7 +2259,7 @@ member read_def(silver mod, member existing) {
 
 /// such a big change to this one, tectonic drift'ing ...
 node parse_statement(silver mod) {
-    //print_tokens("parse-statement", mod);
+    print_tokens("parse-statement", mod);
 
     token     t            = peek(mod);
     record    rec          = instanceof(mod->top, record);
@@ -2251,9 +2277,13 @@ node parse_statement(silver mod) {
     /// however import would need succinct arg parsing
     /// having a singular class or struct you give to main is intuitive
     /// its an argument because functions take args; modules really dont
+    mod->last_return = null;
     if (!module) {
         if (next_is(mod, "no-op"))  return node(mdl, emodel("void"));
-        if (next_is(mod, "return")) return parse_return(mod);
+        if (next_is(mod, "return")) {
+            mod->last_return = parse_return(mod);
+            return mod->last_return;
+        }
         if (next_is(mod, "break"))  return parse_break(mod);
         if (next_is(mod, "for"))    return parse_for(mod);
         if (next_is(mod, "while"))  return parse_while(mod);
@@ -2267,37 +2297,15 @@ node parse_statement(silver mod) {
     return e;
 }
 
-
-/// this was a quick conversion to go from [ statements ] to python-based ones
-/// it gives you more freedom than python, too.
-/// you can do +2 tab and +10 tab inside or tab+2 or whatever.
-/// as long as the 4:1 values are right
 node parse_statements(silver mod, bool unique_members) {
     if (unique_members)
         push(mod, new(statements, mod, mod));
     
     //print_tokens("parse_statements", mod);
-    token n         = element(mod,  0);
-    token p         = element(mod, -1);
-    bool  multiple  = p && (n->line > p->line); /// should store indent level at each token, because there is no line model and would not like one!
-    int   depth     = 1;
     node  vr        = null;
     ///
     while(peek(mod)) {
-        token nn    = element(mod,  0);
-        token pp    = element(mod, -1);
-        bool  mm    = pp && nn->line > pp->line; // protects run-away statements spawning off singular on-line expr
-        if(multiple && mm)
-            depth += 1;
         vr = parse_statement(mod);
-        if(!multiple) break;
-        token nnn   = element(mod,  0);
-        token ppp   = element(mod, -1);
-        bool  id_less = ppp && nnn->indent < ppp->indent; /// hold onto your butts
-        if(id_less) {
-            next(mod);
-            if ((depth -= 1) == 0) break;
-        }
     }
     if (unique_members)
         pop(mod);
@@ -2318,6 +2326,7 @@ function parse_fn(silver mod, AFlag member_type, object ident, OPType assign_enu
     } else
         verify(member_type != A_TYPE_CAST, "unexpected name for cast");
 
+    record rec = context_model(mod, typeid(class));
     arguments args = arguments();
     verify (next_is(mod, "[") || next_is(mod, "->"), "expected function args [");
     bool r0 = read(mod, "->");
@@ -2341,7 +2350,9 @@ function parse_fn(silver mod, AFlag member_type, object ident, OPType assign_enu
         // when parsing an expression (if it is, rather than just a model)
         //
         verify(rtype, "type must proceed the -> keyword in fn");
-    } else
+    } else if (member_type == A_TYPE_IMETHOD)
+        rtype = rec ? (model)pointer(rec) : emodel("generic");
+    else
         rtype = emodel("void");
     
     verify(rtype, "rtype not set, void is something we may lookup");
@@ -2350,11 +2361,11 @@ function parse_fn(silver mod, AFlag member_type, object ident, OPType assign_enu
         name = form(token, "cast_%o", rtype->name);
     }
     
-    record       rec_top = instanceof(mod->top, record) ? mod->top : null;
+    
     print("name = %o", name);
     function     fn      = function(
         mod,    mod,     name,   name, function_type, member_type,
-        record, rec_top, rtype,  rtype, single_expr, single_expr,
+        record, rec,     rtype,  rtype, single_expr, single_expr,
         args,   args,    body,   (body && len(body)) ? body : read_body(mod, false));
 
     print("body = %o", fn->body);
@@ -2418,7 +2429,7 @@ void silver_parse(silver mod) {
     mod->in_top = false;
 
     /// return from the initializer
-    fn_return(mod, null);
+    //fn_return(mod, null);
     push_model(mod, mod->fn_init); // publish initializer
     pop(mod);
 }
