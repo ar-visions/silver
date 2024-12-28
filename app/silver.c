@@ -165,6 +165,10 @@ void build_function(silver mod, function fn) {
 
 void build_record(silver mod, record rec) {
     if (!rec->body) return;
+    if (eq(rec->name, "a-class")) {
+        int test = 2;
+        test += 2;
+    }
     bool   is_class = instanceof(rec, class) != null;
     symbol sname    = is_class ? "class" : "struct";
     array  body     = rec->body;
@@ -174,30 +178,16 @@ void build_record(silver mod, record rec) {
     push_state(mod, body, 0); /// measure here
     print_tokens("during-build-record", mod);
     push      (mod, rec);
-    function init_fn = initializer(rec);
-    push      (mod, init_fn);
     while     (peek(mod)) parse_statement(mod);
-    fn_return(mod, null);
-    pop       (mod);
     pop       (mod);
     pop_state (mod, false); /// should be the same here after
     print_tokens("after-build-record", mod);
-    int test = 2;
-    test += 2;
 }
 
 void silver_push_member(silver mod, member mem) {
     bool reg = mem->registered;
     if (!reg) {
         ether_push_member(mod, mem);
-        if (!mem->mdl->finalized) {
-            if (instanceof(mem->mdl, record)) {
-                build_record(mod, mem->mdl);
-            } else if (instanceof(mem->mdl, function)) {
-                build_function(mod, mem->mdl);
-            }
-            finalize(mem->mdl, mem);
-        }
     }
 }
 
@@ -1272,6 +1262,7 @@ node silver_read_node(silver mod) {
 
     // L hand modal switching might be needed for load()
     //mod->left_hand = true;
+    record is_record = instanceof(mod->top, record);
 
     for (;;) {
         bool first = !mem;
@@ -1328,6 +1319,7 @@ node silver_read_node(silver mod) {
                 name,       alpha,
                 mdl,        (next_is(mod, "[") || next_is(mod, "->")) ? parse_fn(mod, mtype, alpha, OPType__undefined) : null,
                 is_module,  module);
+            
         } else if (!mem->is_type) {
             import im = instanceof(mem->mdl, import);
             if (im) {
@@ -1346,8 +1338,8 @@ node silver_read_node(silver mod) {
                 verify(!mem->is_type, "member-defined %o", mem->name);
             }
 
-            /// from record if no value
-            if (!mem->is_func && !has_value(mem)) { // if mem from_record_in_context
+            /// from record if no value; !is_record means its not a record definition but this is an expression within a function
+            if (!is_record && !mem->is_func && !has_value(mem)) { // if mem from_record_in_context
                 AType ctx_type = isa(ctx);
                 member target = lookup(mod, string("this"), null); // unique to the function in class, not the class
                 verify(target, "no target found in context");
@@ -1391,6 +1383,10 @@ node silver_read_node(silver mod) {
     pop_state(mod, true);
     mod->left_hand = false;
 
+    /// note:
+    /// must complete class 'struct' type-ref (with SetBody) before we finish functions
+    /// as is, we are finishing function when they are read in.  the class is incomplete at that point, although we have a type-ref for it
+
     if (mod->expr_level == 0) {
         OPType assign_enum  = OPType__undefined;
         bool   assign_const = false;
@@ -1399,29 +1395,27 @@ node silver_read_node(silver mod) {
             verify(mem, "expected member");
             verify(assign_enum == OPType__assign, "expected : operator in arguments");
             verify(!mem->mdl, "duplicate member exists in arguments");
-            mem->mdl = read_model(mod, null);
+            mem->mdl = read_model(mod, &expr);
+            verify(expr == null, "unexpected assignment in args");
             verify(mem->mdl, "cannot read model for arg: %o", mem->name);
+        }
+        else if (is_record && assign_type) {
+            mem->mdl = read_model(mod, &expr);
+            mem->initializer = hold(expr);
         }
         else if (((module || rec) && (!mem || !mem->mdl)) && peek_keyword(mod))
             mem = read_def(mod, mem);
         else if (mem && assign_type) {
             mod->expr_level++;
-            verify(mem, "member expected after seeing assignment");
-            //verify(mem->registered, "expected registered");
-            /// membership overrides any return value
-            /// besides we do not allow overriding mdl on assign anyway
-            /// thats an anti-pattern to take on, and ambiguous for an api to facilitate
-            
-            /// verify we are in the initializer for the test1 class
-            function fn_init = instanceof(mod->top, function);
-            node expr = parse_assignment(mod, mem, assign_type);
+            verify(mem, "member expected before assignment operator");
+            expr = parse_assignment(mod, mem, assign_type);
             print_tokens("after-parse-assignment", mod);
             mod->expr_level--;
         }
     }
 
     if (mem && mem->mdl && !instanceof(mem->mdl, import))
-        push_member(mod, mem);
+        push_member(mod, mem); /// do not finalize in push member
 
     return mem;
 }
@@ -1488,14 +1482,24 @@ void silver_pop_state(silver a, bool transfer) {
     }
 }
 
-/// silver must be hooked into this process 
-/// we store silver code on member default values
 void silver_build_initializer(silver mod, member mem) {
     if (mem->initializer) {
-        push_state(mod, mem->initializer, 0);
-        node expr = parse_expression(mod);
-        assign(mod, mem, expr, OPType__assign);
-        pop_state(mod, false);
+        node expr;
+        /// need to decide if we parse expressions direct in read_node 
+        /// for class members, because we do not yet have the member 
+        /// value-ref pointers at that point; we ARE in the class-init, though
+        if (instanceof(mem->initializer, node))
+            expr = mem->initializer;
+        else {
+            push_state(mod, mem->initializer, 0);
+            expr = parse_expression(mod);
+            pop_state(mod, false);
+        }
+        member target = lookup(mod, string("this"), null); // unique to the function in class, not the class
+        verify(target, "no target found in context");
+        member rmem = resolve(target, mem->name);
+        assign(mod, rmem, expr, OPType__assign);
+        
     } else {
         /// ether can memset to zero
     }
@@ -2241,7 +2245,8 @@ member read_def(silver mod, member existing) {
         }
         pop(mod);
         pop_state(mod, false);
-        model_process_finalize(mem->mdl, mem);
+        // test this:
+        //finalize(mem->mdl, mem);
     } else {
         verify(is_alias, "unknown error");
         mem->mdl = alias(mem->mdl, mem->name, reference_pointer, null);
@@ -2381,16 +2386,16 @@ void silver_incremental_resolve(silver mod) {
     pairs(mod->members, i) {
         member mem = i->value;
         model base = mem->mdl->ref ? mem->mdl->src : mem->mdl;
-        if (instanceof(base, record) && base->from_include)
-            process_finalize(base, mem);
+        if (!mem->mdl->finalized && instanceof(base, record) && base->from_include)
+            finalize(base, mem);
     }
 
     /// finalize imported C functions, which use those structs perhaps literally in argument form
     pairs(mod->members, i) {
         member mem = i->value;
         model  mdl = mem->mdl;
-        if (instanceof(mem->mdl, function) && mdl->from_include) {
-            process_finalize(mem->mdl, mem);
+        if (!mdl->finalized && instanceof(mem->mdl, function) && mdl->from_include) {
+            finalize(mem->mdl, mem);
         }
     }
 
@@ -2399,15 +2404,25 @@ void silver_incremental_resolve(silver mod) {
     pairs(mod->members, i) {
         member mem = i->value;
         model base = mem->mdl->ref ? mem->mdl->src : mem->mdl;
-        if (instanceof(base, record) && !base->from_include)
-            process_finalize(base, mem);
+        if (!base->finalized && instanceof(base, record) && !base->from_include) {
+            build_record(mod, mem->mdl);
+            pairs(mem->mdl->members, ii) {
+                member rec_mem = ii->value;
+                if (!rec_mem->mdl->finalized && instanceof(rec_mem->mdl, function)) {
+                    build_function(mod, rec_mem->mdl);
+                    finalize(mod, rec_mem->mdl);
+                }
+            }
+            finalize(base, mem);
+        }
     }
 
     /// finally, process functions (last step in parsing)
     pairs(mod->members, i) {
         member mem = i->value;
-        if (instanceof(mem->mdl, function))
-            process_finalize(mem->mdl, mem);
+        if (!mem->mdl->finalized && instanceof(mem->mdl, function)) {
+            finalize(mem->mdl, mem);
+        }
     }
 
     mod->in_top = in_top;
