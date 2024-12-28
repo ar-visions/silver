@@ -165,10 +165,6 @@ void build_function(silver mod, function fn) {
 
 void build_record(silver mod, record rec) {
     if (!rec->body) return;
-    if (eq(rec->name, "a-class")) {
-        int test = 2;
-        test += 2;
-    }
     bool   is_class = instanceof(rec, class) != null;
     symbol sname    = is_class ? "class" : "struct";
     array  body     = rec->body;
@@ -619,10 +615,6 @@ void import_process_includes(import im, array includes) {
     /// having a singlar expression instead of a statement would be nice for 1 line things in silver
     /// [cast] is then possible, i believe (if we dont want cast keyword)
     /// '{using} in strings, too, so we were using the character'
-    /// 
-    each(includes, string, e) {
-        print("e = %o", e);
-    }
 }
 
 
@@ -732,7 +724,6 @@ array read_body(silver mod, bool inner_expr) {
                 push(n_body, body->elements[i]);
             body = n_body;
         }
-        print("read_body 1 = %o", body);
         return body;
     }
     token p    = element(mod, -1);
@@ -746,8 +737,6 @@ array read_body(silver mod, bool inner_expr) {
         push(body, k);
         consume(mod);
     }
-
-    print("read_body 2 = %o", body);
     return body;
 }
 
@@ -977,10 +966,6 @@ array parse_tokens(A input) {
             index++;
         }
     }
-
-    each (tokens, token, t) {
-        print("token: %o", t);
-    }
     return tokens;
 }
 
@@ -1160,10 +1145,8 @@ node silver_read_node(silver mod) {
 
     /// only use :: keyword to navigate for code in functions
     object lit = read_literal(mod);
-    if (lit) {
-        print("lit = %o", lit);
+    if (lit)
         return operand(mod, lit, null);
-    }
     
     // parenthesized expressions, with a model check (make sure its not a type, which indicates array/map typed expression)
     if (next_is(mod, "[")) {
@@ -1620,11 +1603,6 @@ model read_named_model(silver mod) {
 /// its obvious what the type is, and we parse this but do not process the tokens (we are not always in a position to do resolve or code)
 model read_model(silver mod, array* expr) {
     //print_tokens("read-model", mod);
-    if (next_is(mod, "printf")) {
-        int test = 2;
-        test += 2;
-    }
-
     model mdl = null;
     bool body_set = false;
     bool type_only = false;
@@ -1944,12 +1922,11 @@ static node parse_function_call(silver mod, member fmem) {
     member last_arg  = null;
     while(arg_index < model_arg_count || fn->va_args) {
         member arg      = arg_index < len(fn->args) ? get(fn->args, arg_index) : null;
-        //print_tokens("before-parse-expr", mod);
         node   expr     = parse_expression(mod);
         model  arg_mdl  = arg ? arg->mdl : null;
         if (arg_mdl && expr->mdl != arg_mdl)
             expr = convert(mod, expr, arg_mdl);
-        //print("argument %i: %o", arg_index, expr->mdl->name);
+        
         push(values, expr);
         arg_index++;
         verify(!next_is(mod, ","), "unexpected comma. for arguments (and silver) the expressions separate themselves");
@@ -2366,14 +2343,11 @@ function parse_fn(silver mod, AFlag member_type, object ident, OPType assign_enu
         name = form(token, "cast_%o", rtype->name);
     }
     
-    
-    print("name = %o", name);
     function     fn      = function(
         mod,    mod,     name,   name, function_type, member_type,
         record, rec,     rtype,  rtype, single_expr, single_expr,
         args,   args,    body,   (body && len(body)) ? body : read_body(mod, false));
-
-    print("body = %o", fn->body);
+    
     return fn;
 }
 
@@ -2406,6 +2380,7 @@ void silver_incremental_resolve(silver mod) {
         model base = mem->mdl->ref ? mem->mdl->src : mem->mdl;
         if (!base->finalized && instanceof(base, record) && !base->from_include) {
             build_record(mod, mem->mdl);
+            finalize(base, mem);
             pairs(mem->mdl->members, ii) {
                 member rec_mem = ii->value;
                 if (!rec_mem->mdl->finalized && instanceof(rec_mem->mdl, function)) {
@@ -2413,14 +2388,14 @@ void silver_incremental_resolve(silver mod) {
                     finalize(mod, rec_mem->mdl);
                 }
             }
-            finalize(base, mem);
         }
     }
 
     /// finally, process functions (last step in parsing)
     pairs(mod->members, i) {
         member mem = i->value;
-        if (!mem->mdl->finalized && instanceof(mem->mdl, function)) {
+        if (!mem->mdl->finalized && instanceof(mem->mdl, function) && !mem->mdl->from_include) {
+            build_function(mod, mem->mdl);
             finalize(mem->mdl, mem);
         }
     }
@@ -2431,7 +2406,7 @@ void silver_incremental_resolve(silver mod) {
 
 void silver_parse(silver mod) {
     /// im a module!
-    initializer(mod);
+    function module_init = initializer(mod);
     push(mod, mod->fn_init);
     mod->in_top = true;
     map members = mod->members;
@@ -2443,10 +2418,9 @@ void silver_parse(silver mod) {
     }
     mod->in_top = false;
 
-    /// return from the initializer
-    //fn_return(mod, null);
-    push_model(mod, mod->fn_init); // publish initializer
+    member mem_init = push_model(mod, module_init); // publish initializer
     pop(mod);
+    finalize(module_init, mem_init);
 }
 
 
@@ -2548,8 +2522,6 @@ int main(int argc, char **argv) {
     string name     = get(args, string("module"));
     path   n        = path(chars, name->chars);
     path   source   = absolute(n);
-    printf("silver: sizeof model = %i\n", (int)sizeof(struct model));
-    printf("silver: sizeof ether = %i\n", (int)sizeof(struct ether));
     silver mod      = silver(
         source,  source,
         install, get(args, string("install")),
