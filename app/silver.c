@@ -180,13 +180,6 @@ void build_record(silver mod, record rec) {
     print_tokens("after-build-record", mod);
 }
 
-void silver_push_member(silver mod, member mem) {
-    bool reg = mem->registered;
-    if (!reg) {
-        ether_push_member(mod, mem);
-    }
-}
-
 path create_folder(silver mod, cstr name, cstr sub) {
     string dir = format(
         "%o/%s%s%s", mod->install, name,
@@ -672,9 +665,10 @@ void import_process(import im) {
         } else {
             assert(len(im->source) == 1, "source size mismatch");
             im->import_type = import_t_project;
-            build_project(im, im->name, idx(im->source, 0));
+            string im_name = string(im->name->chars);
+            build_project(im, im_name, idx(im->source, 0));
             if (!im->library_exports)
-                 im->library_exports = array_of(typeid(string), im->name, NULL);
+                 im->library_exports = array_of(typeid(string), im_name, NULL);
         }
     }
     import_process_includes(im, im->includes);
@@ -2383,7 +2377,7 @@ void silver_incremental_resolve(silver mod) {
             finalize(base, mem);
             pairs(mem->mdl->members, ii) {
                 member rec_mem = ii->value;
-                if (!rec_mem->mdl->finalized && instanceof(rec_mem->mdl, function)) {
+                if (instanceof(rec_mem->mdl, function)) {
                     build_function(mod, rec_mem->mdl);
                     finalize(mod, rec_mem->mdl);
                 }
