@@ -25,57 +25,44 @@ import WGPU
 # member keywords supported for access-level: [ intern, public ] and store: [ read-only, inlay ]
 # primitives are inlay by default, but one can inlay class so long as we are ok with copying trivially or by method
 # public members can be reflected by map: members [ object ]
-
-this is still a comment...
-
-# every object is alloc'd and ref-counted except for non-inlay (bool ... i8 -> i64, f32 -> f64, inlaid structs etc)
-#
-# we assign with : and assign-const with =
-# silver in data form may be thought of as a type-based json, and we support this form of serialization
-#
-# the ethos of silver is we are open source developers and we do not rely on specific package managers
-# it should be simpler than using a package manager, too.  easier because you know the entire world
-# is accessible.  thats something people actually demand.
-#
-# its also best for there to be 1 file that expresses import and logic, so we may build the entire
-# stack from one modules expression.
-# we can end the comment now with two #'s
-#
-# constant members of class arent read-only; constant applies to membership alone
-# for data, it should use a membership keyword: read-only
-#
-# methods do not require [ bracket-parens ] if we are at the first level of expression
-# ... no parens if we have no args, too.
-#
-# heres a program:
 ##
 
-string operator add [ int i, string a ] [
+# there are no commas in arguments, less we are expressing context arguments
+string op + [ i:int  a:string ] -> string
     return '{ a } and { i }'
-]
 
-fn a-function [ string a ] -> int
-    int i: 2 + sz[ a ]
-    print 'you just called me with %s, and ill respond with { i }', a
-    return i
+some-callback[ i:int, ctx:string ] -> int
+    print[ '{ctx}: {i}' ]
+    return i + len[ ctx ]
+
+nice: some-callback[ 'a-nice-callback' ]
+
+fn a-function [ string a ] -> string
+    i : 2 + sz[ a ]
+    r : some-callback[ i ]
+    print[ 'called-with: %s. returning: { r }'  a ]
+    return r
 
 fn a-function [ string a ] -> int [2 + sz[ a ]]
 
 class app
-    public value : short 1
+    public value     : short 1
+    intern something : 2 # default is int
 
     mk-string [ from: int ] -> 'a string with { from }'
 
     cast int
         my-func  = ref run
-        int    r = my-func[ 'hi' ] ?? run # use default-state, otherwise
+        int    r = my-func[ 'hi' ] ?? run # value or default
         string s = mk-string[ r ]
-        return len[ s ] 
-
+        return len[ s ]
+        ##
+        # methods at expression base make method calls more syntactically succinct, # it also makes it easier to refactor code around
+        ##
+    
     run[ string arg ] -> int
         print '{ arg } ... call own indexing method: { this[ 2 ] }'
         return 1
-
 
 fn module-name[ app a ] -> int
     is-const = int[ a ] # = denotes constant assignment, this calls the cast above
