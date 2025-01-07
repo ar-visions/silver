@@ -12,12 +12,13 @@ A-type is the foundation of **silver**'s compiler and reflection system. It prov
 see: [A-type project](https://github.com/ar-visions/A)
 
 ```python
-import WGPU [
-    source:     'https://github.com/ar-visions/dawn@2e9297c45f48df8be17b4f3d2595063504dac16c',
-    build:      ['-DDAWN_ENABLE_INSTALL=1', '-DBUILD_SHARED_LIBS=0'],
-    includes:   ['dawn/webgpu', 'dawn/dawn_proc_table'],
+import WGPU
+    source:     https://github.com/ar-visions/dawn@2e9297c45
+    build:      [-DDAWN_ENABLE_INSTALL=1
+                 -DBUILD_SHARED_LIBS=0]
+    includes:   ['dawn/webgpu'
+                 'dawn/dawn_proc_table']
     links:      ['webgpu_dawn']
-]
 
 ##
 # designed for keywords import, class, struct, enum
@@ -53,44 +54,35 @@ string operator add [ int i, string a ] [
     return '{ a } and { i }'
 ]
 
-int a-function [ string a ] [
-    int i: 2 + cast sz a
+fn a-function [ string a ] -> int
+    int i: 2 + sz[ a ]
     print 'you just called me with %s, and ill respond with { i }', a
     return i
-]
 
-class app [
-    public int value : 1 # assign operator is ':' constant is '='  [ no const decorator ]
+fn a-function [ string a ] -> int [2 + sz[ a ]]
 
-    index string [ int from-int ] [
-        return 'a string with { from-int }'
-    ]
+class app
+    public value : short 1
 
-    intern inlay struct [
-        int    a: 2
-        string b
-    ] i-am-embedded
+    mk-string [ from: int ] -> 'a string with { from }'
 
-    public object[] all
+    cast int
+        my-func  = ref run
+        int    r = my-func[ 'hi' ] ?? run # use default-state, otherwise
+        string s = mk-string[ r ]
+        return len[ s ] 
 
-    cast int [
-        ref int my-func[ string ] = ref run # we may invoke without parens, but ref is simply storing its address and implicit targeting
-        int r:  my-func[ 'hi' ] ?: run
-        return r
-    ]
+    run[ string arg ] -> int
+        print '{ arg } ... call own indexing method: { this[ 2 ] }'
+        return 1
 
-    int run[] print 'hi -- you have given me { value } .... ill call my own indexing method: { this[ 2 ] }' -> 2
-]
 
-int main[ app a ] [
-    int this-is-const = a.value
-    int val: this-is-const
+fn module-name[ app a ] -> int
+    is-const = int[ a ] # = denotes constant assignment, this calls the cast above
+    val : is-const      # store by assignment [mutable]
     val += 1
-    print[ 'using app with value: { this-is-const }, then added { val - this-is-const } ... our int is fixed at 64bit' ]
-    -> a.run > 0
-]
-
-# this is a reduced language, but we do have cast, index, and operator overloading
+    print[ 'using app with value: { this-is-const }, then added { val - this-is-const } ... our int is signed 64bit' ]
+    return a.run > 0
 
 
 ```
@@ -125,7 +117,7 @@ int main[ app a ] [
 
 
 # **meta** keyword (reserved for 1.0 release)
-classes have ability to perform meta instancing.  think of it as templates but without code expansion; it simply does high-level reflection with the typed symbols.  meta is a simple idea, it's nothing more than an array of types you provide to the class when using it.  the class accepts a fixed amount of types at meta index.  
+classes have ability to perform meta instancing.  think of it as templates but without code expansion; it simply does high-level reflection with the typed symbols.  meta is a simple idea, it's nothing more than an array of types you provide to the class when using it.  the class accepts types at meta index.  
 ```python
 meta [ I:any ]
 class list [
