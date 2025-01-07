@@ -31,15 +31,20 @@ import WGPU
 string op + [ i:int  a:string ] -> string
     return '{ a } and { i }'
 
-some-callback[ i:int, ctx:string ] -> int
+fn some-callback[ i:int, ctx:string ] -> int
     print[ '{ctx}: {i}' ]
     return i + len[ ctx ]
+
+# methods can exist at module-level, too.
+# for this, we may incorporate generic, 'this' is applicable to any object
+generic[ second:int ] -> string
+    return '{typeof[ this ]} generic, with arg {second}'
 
 nice: some-callback[ 'a-nice-callback' ]
 
 fn a-function [ string a ] -> string
     i : 2 + sz[ a ]
-    r : some-callback[ i ]
+    r : nice[ i ]
     print[ 'called-with: %s. returning: { r }'  a ]
     return r
 
@@ -68,7 +73,7 @@ fn module-name[ app a ] -> int
     is-const = int[ a ] # = denotes constant assignment, this calls the cast above
     val : is-const      # store by assignment [mutable]
     val += 1
-    print[ 'using app with value: { this-is-const }, then added { val - this-is-const } ... our int is signed 64bit' ]
+    print[ 'using app with value: { is-const }, then added { val - is-const } ... our int is signed 64bit' ]
     return a.run > 0
 
 
