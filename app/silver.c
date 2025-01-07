@@ -311,21 +311,15 @@ none import_init(import im) {
     //print_tokens("import_init", mod);
     
     //token n_token = next(mod);
-    bool is_inc = next_is(mod, "<");
-    if (is_inc) {
+    if (read(mod, "<")) {
         im->import_type = import_t_includes;
-        consume(mod);
         im->includes = array(8);
         while (1) {
             token inc = next(mod);
             verify (is_alpha(inc), "expected alpha-identifier for header");
             push(im->includes, inc);
             include(mod, string(inc->chars));
-            bool is_inc = next_is(mod, ">");
-            if (is_inc) {
-                consume(mod);
-                break;
-            }
+            if (read(mod, ">")) break;
             token comma = next(mod);
             assert (eq(comma, ","), "expected comma-separator or end-of-includes >");
         }
@@ -344,8 +338,7 @@ none import_init(import im) {
         assert(is_alpha(module_name), format("expected variable identifier, found %o", module_name));
         
         /// [ project fields syntax ]
-        if (next_is(mod, "[")) {
-            next(mod);
+        if (read(mod, "[")) {
             token n = peek(mod);
             AType s = get_type(n);
             if (s == typeid(string)) {
