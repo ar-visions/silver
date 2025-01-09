@@ -58,60 +58,25 @@ class app
 
     cast int
         my-func  = ref run
-        int    r = my-func[ 'hi' ] ?? run # value or default
-        string s = mk-string[ r ]
+        r:int[ my-func[ 'hi' ] ?? run ] # value or default
+        s:mk-string[ r ]
         return len[ s ]
-        ##
-        # methods at expression base make method calls more syntactically succinct, # it also makes it easier to refactor code around
-        ##
     
-    run[ string arg ] -> int
-        print '{ arg } ... call own indexing method: { this[ 2 ] }'
+    run[ arg:string ] -> int
+        print['{ arg } ... call own indexing method: { this[ 2 ] }']
         return 1
 
-fn module-name[ app a ] -> int
+fn module-name[ a:app ] -> int
     is-const = int[ a ] # = denotes constant assignment, this calls the cast above
-    val : is-const      # store by assignment [mutable]
+    val : is-const      # : assignment [mutable]
     val += 1
-    print[ 'using app with value: { is-const }, then added { val - is-const } ... our int is signed 64bit' ]
-    return a.run > 0
-
-
-```
-| Operator | Function Name  | Description                                                   | Method Signature                              |
-|----------|----------------|---------------------------------------------------------------|-----------------------------------------------|
-| `+`      | add            | adds two numbers                                              | `T add [ T right-hand ]`                      |
-| `-`      | sub            | subtracts the second number from the first                    | `T sub [ T right-hand ]`                      |
-| `*`      | mul            | multiplies two numbers                                        | `T mul [ T right-hand ]`                      |
-| `/`      | div            | divides the first number by the second                        | `T div [ T right-hand ]`                      |
-| `\|\|`     | or             | logical or between two conditions                             | `T or [ T right-hand ]`                       |
-| `&&`     | and            | logical and between two conditions                            | `T and [ T right-hand ]`                      |
-| `^`      | xor            | bitwise xor between two numbers                               | `T xor [ T right-hand ]`                      |
-| `>>`     | right          | bitwise right shift                                           | `T right [ T right-hand ]`                    |
-| `<<`     | left           | bitwise left shift                                            | `T left [ T right-hand ]`                     |
-| `:`      | assign         | assigns a value to a variable                                 | `T assign [ T right-hand ]`                   |
-| `=`      | assign         | assigns a value to a variable (alias for `:`)                 | `T assign [ T right-hand ]`                   |
-| `+=`     | assign-add     | adds and assigns the result to the variable                   | `T assign-add [ T right-hand ]`               |
-| `-=`     | assign-sub     | subtracts and assigns the result to the variable              | `T assign-sub [ T right-hand ]`               |
-| `*=`     | assign-mul     | multiplies and assigns the result to the variable             | `T assign-mul [ T right-hand ]`               |
-| `/=`     | assign-div     | divides and assigns the result to the variable                | `T assign-div [ T right-hand ]`               |
-| `\|=`     | assign-or      | bitwise or and assigns the result to the variable             | `T assign-or [ T right-hand ]`                |
-| `&=`     | assign-and     | bitwise and and assigns the result to the variable            | `T assign-and [ T right-hand ]`               |
-| `^=`     | assign-xor     | bitwise xor and assigns the result to the variable            | `T assign-xor [ T right-hand ]`               |
-| `>>=`    | assign-right   | bitwise right shift and assigns the result to the variable    | `T assign-right [ T right-hand ]`             |
-| `<<=`    | assign-left    | bitwise left shift and assigns the result to the variable     | `T assign-left [ T right-hand ]`              |
-| `==`     | compare-equal  | checks if two values are equal                                | `bool compare-equal [ T right-hand ]`         |
-| `!=`     | compare-not    | checks if two values are not equal                            | `bool compare-not [ T right-hand ]`           |
-| `%=`     | mod-assign     | modulus operation and assigns the result to the variable      | `T mod-assign [ T right-hand ]`               |
-| `is`     | is             | checks if two references refer to the same object (keyword)   | `bool is [ T right-hand ]`                    |
-| `inherits`| inherits      | checks if a class inherits from another (keyword)             | `bool inherits [ T right-hand ]`              |
-
+    print[ 'using app with value: { is-const } + { val - is-const }' ]
+    return [a.run[string[val]] > 0] ? 1 : 0
 
 
 # **meta** keyword (reserved for 1.0 release)
 classes have ability to perform meta instancing.  think of it as templates but without code expansion; it simply does high-level reflection with the typed symbols.  meta is a simple idea, it's nothing more than an array of types you provide to the class when using it.  the class accepts types at meta index.  
 ```python
 meta [ I:any ]
-class list [
+class list
     I type # in this context, I becomes an 'object' type, the base A-type we're ABI compatible with
-]
