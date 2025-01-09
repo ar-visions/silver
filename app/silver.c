@@ -239,9 +239,7 @@ array import_list(silver mod, bool use_text) {
                 neighbor_y = arg->line;
             }
             
-            if (next_is(mod, ","))
-                consume(mod);
-            
+            verify (!next_is(mod, ","), "unexpected ,");
             if (next_is(mod, "]"))
                 break;
             
@@ -258,46 +256,44 @@ array import_list(silver mod, bool use_text) {
     return list;
 }
 
-/// this must be basically the same as parsing named args; , should be optional for this
-void import_read_fields(import im) {
-    silver mod = im->mod;
-    while (true) {
-        if (next_is(mod, "]")) {
-            consume(mod);
-            break;
-        }
-        token arg_name = next(mod);
-        if (get_type(arg_name) == typeid(string)) {
-            im->source = array_of(typeid(string), string(arg_name->chars), null);
-        } else {
-            assert (is_alpha(arg_name), "expected identifier for import arg");
-            bool    use_tokens  = next_is(mod, "[");
-            assert (use_tokens || next_is(mod, ":"),
-                "expected : after import arg (argument assignment)");
-            consume(mod);
-            if (eq(arg_name, "name")) {
-                token token_name = next(mod);
-                assert (! get_type(token_name), "expected token for import name");
-                im->name = string(token_name->chars);
-            } else if (eq(arg_name, "links"))    im->links      = import_list(im->mod, use_tokens);
-              else if (eq(arg_name, "includes")) im->includes   = import_list(im->mod, use_tokens);
-              else if (eq(arg_name, "products")) im->products   = import_list(im->mod, use_tokens);
-              else if (eq(arg_name, "source"))   im->source     = import_list(im->mod, use_tokens);
-              else if (eq(arg_name, "build"))    im->build_args = import_list(im->mod, use_tokens);
-              else if (eq(arg_name, "shell")) {
-                token token_shell = next(mod);
-                assert (get_type(token_shell), "expected shell invocation for building");
-                im->shell = string(token_shell->chars);
-            } else if (eq(arg_name, "defines")) {
-                // none is a decent name for null.
-                assert (false, "not implemented");
-            } else
-                assert (false, "unknown arg: %o", arg_name);
+array read_body(silver mod, bool inner_expr);
 
-            if (next_is(mod, "]"))
-                break;
-        }
+/// this must be basically the same as parsing named args; , should be optional for this
+void import_read_fields(import im, array tokens) {
+    silver mod = im->mod;
+    //array tokens = read_body(mod, false);
+    push_state(mod, tokens, 0);
+    while (peek(mod)) {
+        token arg_name = next(mod);
+        verify(read(mod, ":"), "expected : after token %s", arg_name);
+        assert (is_alpha(arg_name), "expected identifier for import arg");
+        bool    use_tokens  = next_is(mod, "[");
+        assert (use_tokens || next_is(mod, ":"),
+            "expected : after import arg (argument assignment)");
+        consume(mod);
+        if (eq(arg_name, "name")) {
+            token token_name = next(mod);
+            assert (! get_type(token_name), "expected token for import name");
+            im->name = string(token_name->chars);
+        } else if (eq(arg_name, "links"))    im->links      = import_list(im->mod, use_tokens);
+            else if (eq(arg_name, "includes")) im->includes   = import_list(im->mod, use_tokens);
+            else if (eq(arg_name, "products")) im->products   = import_list(im->mod, use_tokens);
+            else if (eq(arg_name, "source"))   im->source     = import_list(im->mod, use_tokens);
+            else if (eq(arg_name, "build"))    im->build_args = import_list(im->mod, use_tokens);
+            else if (eq(arg_name, "shell")) {
+            token token_shell = next(mod);
+            assert (get_type(token_shell), "expected shell invocation for building");
+            im->shell = string(token_shell->chars);
+        } else if (eq(arg_name, "defines")) {
+            // none is a decent name for null.
+            assert (false, "not implemented");
+        } else
+            assert (false, "unknown arg: %o", arg_name);
+
+        if (next_is(mod, "]"))
+            break;
     }
+    pop_state(mod, false);
 }
 
 /// get import keyword working to build into build-root (silver-import)
@@ -336,33 +332,18 @@ none import_init(import im) {
             module_name = im->name;
 
         assert(is_alpha(module_name), format("expected variable identifier, found %o", module_name));
-        
-        /// [ project fields syntax ]
-        if (read(mod, "[")) {
-            token n = peek(mod);
-            AType s = get_type(n);
-            if (s == typeid(string)) {
-                im->source = new(array);
-                while (true) {
-                    token    inner = next(mod);
-                    string s_inner = cast(string, inner);
-                    assert(get_type(inner) == typeid(string), "expected a string literal");
-                    string  source = mid(s_inner, 1, len(s_inner) - 2);
-                    push(im->source, source);
-                    string       e = next(mod);
-                    if (eq(e, ","))
-                        continue;
-                    assert(eq(e, "]"), "expected closing bracket");
-                    break;
-                }
-            } else {
-                import_read_fields(im);
-                consume(mod);
-            }
-        } else if (!im->skip_process) { // should be called a kind of A-type mode
-            /// load a silver module
+        string url = read_string(mod);
+        if (url)
+            im->source = array_of(typeid(string), url, null);
+
+        array body = read_body(mod, false);
+        if (body) {
+            import_read_fields(im, body);
+        } else if (!im->skip_process) {
             path rel    = form(path, "%o.cms", module_name);
             path source = absolute(rel);
+            // should be called a kind of A-type mode
+            /// load a silver module
             im->extern_mod = silver(
                 name, module_name, source, source, install, mod->install, delegate, true);
         }
@@ -691,6 +672,7 @@ void import_process(import im) {
 array read_body(silver mod, bool inner_expr) {
     array body = array(32);
     token n    = element(mod,  0);
+    if (!n) return null;
     if (eq(n, "[") || inner_expr) {
         int depth = 0;
         if (inner_expr) { /// from array/map, does not start with [, our parser uses in create
@@ -1581,15 +1563,9 @@ model read_named_model(silver mod) {
     return mdl;
 }
 
-/// sometimes a model has a contained expression
-/// this is the case for maps and arrays, also anything with type[ expr ]
-/// the above are utilized for single expression return/type-def
+/// 
 
-/// read model must allow for combined expr to be parsed
-/// sometimes, our types have expressions inside int[ like this ] [int:1 2 or-this[1]]
-/// its obvious what the type is, and we parse this but do not process the tokens (we are not always in a position to do resolve or code)
 model read_model(silver mod, array* expr) {
-    //print_tokens("read-model", mod);
     model mdl = null;
     bool body_set = false;
     bool type_only = false;
@@ -1600,60 +1576,70 @@ model read_model(silver mod, array* expr) {
     
     if (read(mod, "[")) {
         model type = read_model(mod, null);
-        //print_tokens("read-model-2", mod);
-        if (type) {
-            array shape    = null;
-            bool  is_auto  = read(mod, "]");
-            bool  is_map   = false;
-            bool  is_array = is_auto || next_is(mod, ":"); /// it may also be looking at literal x literal
-            verify(!next_is(mod, "]"), "unexpected ']' use [any] for any object");
+        if (!type) {
+            pop_state(mod, false);
+            return null;
+        }
 
-            shape = array(8);
+        array shape    = null;
+        bool  is_auto  = read(mod, "]");
+        bool  is_map   = false;
+        bool  is_array = is_auto || next_is(mod, ":"); /// it may also be looking at literal x literal
+        verify(!next_is(mod, "]"), "unexpected ']' use [any] for any object");
 
-            /// determine if map or array if we have not already determined [is_auto]
-            if (!is_auto) {
-                //print_tokens("read-model-3-before", mod);
+        shape = array(8);
 
-                object lit = read_literal(mod);
-                //print_tokens("read-model-3", mod);
-                /// this literal may be a value if is_array is set already
-                if (lit) { 
-                    if (!is_array) {
-                        is_array = true;
-                        /// we must set shape here
-                        do {
-                            verify(isa(lit) == typeid(i64), "expected numeric for array size");
-                            push(shape, lit);
-                            if (!read(mod, "x"))
-                                break;
-                            lit = read_literal(mod);
-                            verify(lit, "expecting literal after x");
-                        } while (lit);
-                        
-                        verify(next_is(mod, ":") || next_is(mod, "]"), "expected : or ]");
-                    }
-                    /// if we specified a ] or : already we are in 'automatic' size
-                } else if (!is_array) {
+        /// determine if map or array if we have not already determined [is_auto]
+        if (!is_auto) {
+            object lit = read_literal(mod);
+
+            /// this literal may be a value if is_array is set already
+            if (lit) { 
+                if (!is_array) {
+                    is_array = true;
+                    do {
+                        verify(isa(lit) == typeid(i64), "expected numeric for array size");
+                        push(shape, lit);
+                        if (!read(mod, "x"))
+                            break;
+                        lit = read_literal(mod);
+                        verify(lit, "expecting literal after x");
+                    } while (lit);
+                    verify(next_is(mod, ":") || next_is(mod, "]"), "expected : or ]");
+                }
+                /// if we specified a ] or : already we are in 'automatic' size
+            } else {
+                
+                verify(read(mod, ":"), "expected : after type");
+                
+                model value_type = read_model(mod, null);
+                if (value_type) {
                     is_map = true;
-                    model value_type = read_model(mod, null);
+                    print_tokens("map", mod);
+                    
                     verify(value_type, "expected value type for map");
                     drop(shape);
                     shape = type;
                     type  = value_type;
-                    /// important distinction with map: its VALUE is the data we return from the map
+                } else {
+                    /// shape of 0 len is auto sized
+                    
                 }
-            }
 
-            type_only = is_auto || !read(mod, ":"); // todo: attempting to read this twice, nope!
-            verify(is_map || is_array, "failed to read model");
-            /// we use simple alias for both array and map cases
-            /// map likely needs a special model
-            mdl = alias(type, null, mod->in_inlay ?
-                reference_value : reference_pointer, shape);
-            int shape_len = len(shape);
-            mod->in_inlay = false; /// 
+                /// read expression of map
+                /// important distinction with map: its VALUE is the data we return from the map
+            }
         }
+
+        type_only = is_auto || !read(mod, ":"); // todo: attempting to read this twice, nope!
+        verify(is_map || is_array, "failed to read model");
+        /// we use simple alias for both array and map cases
+        /// map likely needs a special model
+        mdl = alias(type, null, mod->in_inlay ?
+            reference_value : reference_pointer, shape);
+        mod->in_inlay = false;
     } else {
+        /// read-body calle twice because this is inside the token state
         mdl = read_named_model(mod);
         if (expr && next_is(mod, "[")) {
             body_set = true;
