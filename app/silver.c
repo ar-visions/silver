@@ -670,28 +670,23 @@ void import_process(import im) {
 
 /// used for records and functions
 array read_body(silver mod, bool inner_expr) {
-    array body = array(32);
-    token n    = element(mod,  0);
+    array body    = array(32);
+    token n       = element(mod,  0);
+    bool  bracket = n && eq(n, "[");
     if (!n) return null;
-    if (eq(n, "[") || inner_expr) {
-        int depth = 0;
-        if (inner_expr) { /// from array/map, does not start with [, our parser uses in create
-            token t = token(chars, "[");
-            push(body, t);
-            depth = 1;
-        }
-        do {
+    if (bracket || inner_expr) {
+        if (bracket) consume(mod);
+        int depth = !!inner_expr + !!bracket; /// inner expr signals depth 1, and a bracket does too.  we need both together sometimes, as in inner expression that has parens
+        for (;;) {
             token inner = next(mod);
             if (!inner) break;
-            push(body, inner);
             if (eq(inner, "]")) depth--;
             if (eq(inner, "[")) depth++;
-        } while (depth > 0);
-        if (!inner_expr) {
-            array n_body = array((int)len(body) - 2);
-            for (int i = 1; i < len(body) - 1; i++)
-                push(n_body, body->elements[i]);
-            body = n_body;
+            if (depth > 0) {
+                push(body, inner);
+                continue;
+            }
+            break;
         }
         return body;
     }
@@ -1121,9 +1116,9 @@ node silver_read_node(silver mod) {
     if (next_is(mod, "[")) {
         push_current(mod);
         bool  in_inlay = mod->in_inlay;
-        //print_tokens("read-node2", mod);
+        print_tokens("read-node2", mod);
         model inner    = read_model(mod, null); /// if the model comes first, this is an array or map
-        
+        print_tokens("read-node3", mod);
         if (!inner) {
             pop_state(mod, true);
             consume(mod);
@@ -1354,6 +1349,10 @@ node silver_read_node(silver mod) {
         else if (is_record && assign_type) {
             mem->mdl = read_model(mod, &expr);
             mem->initializer = hold(expr);
+            if (eq(mem->name, "a-member")) {
+                int test = 2;
+                test += 2;
+            }
         }
         else if (((module || rec) && (!mem || !mem->mdl)) && peek_keyword(mod))
             mem = read_def(mod, mem);
@@ -1563,19 +1562,27 @@ model read_named_model(silver mod) {
     return mdl;
 }
 
-/// 
+void print_token_array(silver mod, array tokens) {
+    string res = string();
+    for (int i = 0, ln = len(tokens); i < ln; i++) {
+        token t = tokens->elements[i];
+        append(res, t->chars);
+        append(res, " ");
+    }
+    print("tokens = %o", res);
+}
 
 model read_model(silver mod, array* expr) {
-    model mdl = null;
-    bool body_set = false;
-    bool type_only = false;
-
+    model mdl       = null;
+    bool  body_set  = false;
+    bool  type_only = false;
+    model type      = null;
     if (expr) *expr = null;
 
     push_current(mod);
     
     if (read(mod, "[")) {
-        model type = read_model(mod, null);
+        type = read_model(mod, null);
         if (!type) {
             pop_state(mod, false);
             return null;
@@ -1584,7 +1591,9 @@ model read_model(silver mod, array* expr) {
         array shape    = null;
         bool  is_auto  = read(mod, "]");
         bool  is_map   = false;
-        bool  is_array = is_auto || next_is(mod, ":"); /// it may also be looking at literal x literal
+        bool  is_array = is_auto || next_is(mod, ","); /// it may also be looking at literal x literal
+        bool  is_row   = false;
+        bool  is_col   = false;
         verify(!next_is(mod, "]"), "unexpected ']' use [any] for any object");
 
         shape = array(8);
@@ -1595,7 +1604,7 @@ model read_model(silver mod, array* expr) {
 
             /// this literal may be a value if is_array is set already
             if (lit) { 
-                if (!is_array) {
+                if (!is_array) { /// it would have seen ] or , ... both of which are after size
                     is_array = true;
                     do {
                         verify(isa(lit) == typeid(i64), "expected numeric for array size");
@@ -1605,33 +1614,30 @@ model read_model(silver mod, array* expr) {
                         lit = read_literal(mod);
                         verify(lit, "expecting literal after x");
                     } while (lit);
+                    if (read(mod, "row")) {
+                        is_row = true;
+                    } else if (read(mod, "col"))
+                        is_col = true;
                     verify(next_is(mod, ":") || next_is(mod, "]"), "expected : or ]");
                 }
                 /// if we specified a ] or : already we are in 'automatic' size
-            } else {
-                
-                verify(read(mod, ":"), "expected : after type");
-                
-                model value_type = read_model(mod, null);
-                if (value_type) {
-                    is_map = true;
-                    print_tokens("map", mod);
-                    
-                    verify(value_type, "expected value type for map");
-                    drop(shape);
-                    shape = type;
-                    type  = value_type;
-                } else {
-                    /// shape of 0 len is auto sized
-                    
-                }
-
-                /// read expression of map
-                /// important distinction with map: its VALUE is the data we return from the map
+            } else if (read(mod, ":")) {
+                is_map = true;
+                model  value_type = read_model(mod, null);
+                verify(value_type, "expected value type for map");
+                print_tokens("map", mod);
+                drop(shape);
+                shape = type;
+                type  = value_type;
+                print_tokens("read-model 2", mod);
             }
         }
 
-        type_only = is_auto || !read(mod, ":"); // todo: attempting to read this twice, nope!
+        type_only = is_auto || !read(mod, ","); // todo: attempting to read this twice, nope!
+        
+        token t = peek(mod);
+        print("first token 1 = %o", t);
+
         verify(is_map || is_array, "failed to read model");
         /// we use simple alias for both array and map cases
         /// map likely needs a special model
@@ -1653,8 +1659,14 @@ model read_model(silver mod, array* expr) {
 
     bool has_read = mdl != null;
     pop_state(mod, has_read); /// save if we are returning a model
-    if (has_read && expr && !body_set && !type_only)
+    if (has_read && expr && !body_set && !type_only) {
+        token t = peek(mod);
+        print("first token = %o", t);
         *expr = read_body(mod, true);
+    }
+
+    if (expr && *expr)
+        print_token_array(mod, *expr);
 
     verify(!expr || (*expr || type_only), "expression not set to array");
     return mdl;
@@ -1697,6 +1709,8 @@ map parse_map(silver mod) {
 }
 
 node parse_create(silver mod, model src, array expr) {
+    if (expr)
+        print_token_array(mod, expr);
     push_state(mod, expr ? expr : mod->tokens, expr ? 0 : mod->cursor);
     object  n = read_literal(mod);
     if (n) {
@@ -1721,14 +1735,14 @@ node parse_create(silver mod, model src, array expr) {
             "unknown stride information");  
         int num_index = 0; /// shape_len is 0 on [ int 2x2 : 1 0, 2 2 ]
 
-        while (!next_is(mod, "]")) {
+        while (peek(mod)) {
             token n = peek(mod);
             node  e = parse_expression(mod);
             e = convert(mod, e, element_type);
             push(nodes, e);
             num_index++;
             if (src->top_stride && num_index == src->top_stride) {
-                verify(read(mod, ",") || next_is(mod, "]"),
+                verify(read(mod, ",") || !peek(mod),
                     "expected ',' when striding between dimensions (stride size: %o)",
                     src->top_stride);
             }
