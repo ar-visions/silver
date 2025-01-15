@@ -70,11 +70,11 @@ static void init() {
         "unsigned", "cast",     "fn",
         null);
     assign = array_of_cstr(
-        ":",  "=",  "+=", "-=", "*=",  "/=", 
+        "=",  ":",  "+=", "-=", "*=",  "/=", 
         "|=", "&=", "^=", "%=", ">>=", "<<=",
         null);
     compare = array_of_cstr(
-        "=", "!=", "==", ">=", "<=", ">", "<",
+        "==", "!=", "<=>", ">=", "<=", ">", "<",
         null);
     operators = map_of( /// ether quite needs some operator bindings, and resultantly ONE interface to use them
         "+",        string("add"),
@@ -93,8 +93,8 @@ static void init() {
         /// greater-than, less-than  gte, lte
         "??",       string("value_default"),
         "?:",       string("cond_value"),
-        ":",        string("assign"),
-        "=",        string("assign"),     /// dynamic behavior on this, turns into "equal" outside of parse-assignment
+        "=",        string("assign"),
+        ":",        string("assign"),     /// dynamic behavior on this, turns into "equal" outside of parse-assignment
         "%=",       string("assign_mod"), /// dont laugh, because == is the actual comparison operator, and thats the three way. everyone agrees this is better than something else they can think of
         "+=",       string("assign_add"),
         "-=",       string("assign_sub"),
@@ -121,7 +121,7 @@ static void init() {
             string op_name   = mid(e_name, 1, len(e_name) - 1);
             string op_token  = op_lang_token(op_name);
             level->method[j] = op_name; /// replace the placeholder; assignment is outside of precedence; the camel has spoken
-            level->token [j] = eq(op_name, "equal") ? string("=") : op_token;
+            level->token [j] = eq(op_name, "equal") ? string("==") : op_token;
         }
     }
 }
@@ -1036,7 +1036,7 @@ string silver_read_assign(silver a, ARef assign_type, ARef is_const) {
     *(bool*)  is_const     = false;
     *(OPType*)assign_type  = OPType__undefined;
     if (found) {
-        if (eq(k, "=")) {
+        if (eq(k, ":")) {
             *(bool*)is_const      = true;
             *(OPType*)assign_type = OPType__assign;
         } else {
@@ -1947,7 +1947,7 @@ node silver_parse_assignment(silver mod, member mem, string oper) {
     node   R       = parse_expression(mod); /// getting class2 as a struct not a pointer as it should be. we cant lose that pointer info
     print_tokens("parse-assignment-after", mod);
     if (!mem->mdl) {
-        mem->is_const = eq(oper, "=");
+        mem->is_const = eq(oper, ":");
         set_model(mem, R->mdl); /// this is erroring because no 
         if (mem->literal)
             drop(mem->literal);
