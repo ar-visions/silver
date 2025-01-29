@@ -5,7 +5,7 @@
 #include <ether>
 /// end-trim
 
-#define import_t_schema(X,Y) \
+#define import_t_schema(X,Y,...) \
     enum_value(X,Y, none) \
     enum_value(X,Y, source) \
     enum_value(X,Y, library) \
@@ -13,12 +13,12 @@
     enum_value(X,Y, includes)
 declare_enum(import_t)
 
-#define build_state_schema(X,Y) \
+#define build_state_schema(X,Y,...) \
     enum_value(X,Y, none) \
     enum_value(X,Y, built)
 declare_enum(build_state)
 
-#define completer_context_schema(X,Y) \
+#define completer_context_schema(X,Y,...) \
     i_prop(X,Y, required, model,    data) \
     i_prop(X,Y, required, array,    body)
 #ifndef completer_context_intern
@@ -29,7 +29,7 @@ declare_class(completer_context)
 /// todo: make macro column out of i_ vs s_
 /// its probably going to make a few more macros
 
-#define silver_schema(X,Y)\
+#define silver_schema(X,Y,...)\
     i_prop    (X,Y, intern,     bool,           in_ref) \
     i_prop    (X,Y, intern,     bool,           in_top) \
     i_prop    (X,Y, intern,     bool,           in_const) \
@@ -91,7 +91,7 @@ declare_mod(silver, ether, model)
 /// we may go type first and do simple behavior there depending
 /// on context
 
-#define import_schema(X,Y) \
+#define import_schema(X,Y,...) \
     i_prop    (X,Y, intern, array,      source) \
     i_prop    (X,Y, intern, string,     shell) \
     i_prop    (X,Y, intern, path,       module_path) \
