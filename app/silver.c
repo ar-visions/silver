@@ -143,7 +143,7 @@ void build_function(silver mod, function fn) {
     } else {
         push_state(mod, fn->body, 0);
         record cl = fn ? fn->record : null;
-        if (cl) pairs(cl->members, m) log("class", "member: %o: %o", cl->name, m->key);
+        if (cl) pairs(cl->members, m) A_log("class", "member: %o: %o", cl->name, m->key);
         parse_statements(mod, true);
         if (!mod->last_return) {
             node r_auto = null;
@@ -169,7 +169,7 @@ void build_record(silver mod, record rec) {
     symbol sname    = is_class ? "class" : "struct";
     array  body     = rec->body;
 
-    log       ("build_record", "%s %o", sname, rec->name);
+    A_log       ("build_record", "%s %o", sname, rec->name);
     print_tokens("before-build-record", mod);
     push_state(mod, body, 0); /// measure here
     print_tokens("during-build-record", mod);
@@ -1467,7 +1467,7 @@ node parse_return(silver mod) {
     model ctx = context_model(mod, typeid(function));
     consume(mod);
     node expr   = is_v ? null : parse_expression(mod);
-    log("return-type", "%o", is_v ? (object)string("void") : 
+    A_log("return-type", "%o", is_v ? (object)string("void") : 
                                     (object)expr->mdl);
     return fn_return(mod, expr);
 }
