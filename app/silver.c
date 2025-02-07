@@ -1184,7 +1184,7 @@ node silver_read_node(silver mod) {
     function fn       = instanceof(mod->top, function);
     function in_args  = instanceof(mod->top, arguments);
     record   rec      = context_model(mod, typeid(class));
-    silver   module   = (mod->top == mod || (fn && fn->imdl == mod)) ? mod : null;
+    silver   module   = (mod->top == (model)mod || (fn && fn->imdl == (model)mod)) ? mod : null;
     bool     is_cast  = kw && eq(kw, "cast");
     bool     is_fn    = kw && eq(kw, "fn");
     AFlag    mtype    = is_fn ? A_TYPE_SMETHOD : is_cast ? A_TYPE_CAST : A_TYPE_IMETHOD;
@@ -1254,10 +1254,10 @@ node silver_read_node(silver mod) {
             verify(mod->expr_level == 0, "member not found: %o", alpha);
             /// check if module or record constructor
             member rmem = lookup(mod, alpha, null);
-            if (module && rmem && rmem->mdl == module) {
+            if (module && rmem && rmem->mdl == (model)module) {
                 verify(!is_cast && is_fn, "invalid constructor for module; use fn keyword");
                 mtype = A_TYPE_CONSTRUCT;
-            } else if (rec && rmem && rmem->mdl == rec) {
+            } else if (rec && rmem && rmem->mdl == (model)rec) {
                 verify(!is_cast && !is_fn, "invalid constructor for class; use class-name[] [ no fn, not static ]");
                 mtype = A_TYPE_CONSTRUCT;
             }
@@ -2234,7 +2234,7 @@ node parse_statement(silver mod) {
     record    rec          = instanceof(mod->top, record);
     function  fn           = context_model(mod, typeid(function));
     arguments args         = instanceof(mod->top, arguments);
-    silver    module       = (mod->prebuild || (fn && fn->imdl == mod)) ? mod : null;
+    silver    module       = (mod->prebuild || (fn && fn->imdl == (model)mod)) ? mod : null;
     bool      is_func_def  = false;
     string    assign_type  = null;
     OPType    assign_enum  = 0;
