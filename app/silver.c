@@ -334,7 +334,7 @@ none import_init(import im) {
         assert(is_alpha(module_name), format("expected variable identifier, found %o", module_name));
         string url = read_string(mod);
         if (url)
-            im->source = array_of(typeid(string), url, null);
+            im->source = array_of(url, null);
 
         array body = read_body(mod, false);
         if (body) {
@@ -463,7 +463,7 @@ build_state build_project(import im, string name, string url) {
                 exe = form(path, "%o/%s/%o", package, rel_or_debug, name);
             if (file_exists(lib->chars)) {
                 path sym = form(path, "%o/lib%o.so", i, name);
-                im->products = array_of(typeid(string), name, null);
+                im->products = array_of(name, null);
                 create_symlink(lib, sym);
             }
             if (file_exists(exe->chars)) {
@@ -474,7 +474,7 @@ build_state build_project(import im, string name, string url) {
             bool A_build = false;
             im->assemble_so = false;
             if (!im->skip_process && (!im->products || !len(im->products))) { // default to this when initializing
-                im->products = array_of(typeid(string), name, null);
+                im->products = array_of(name, null);
                 im->assemble_so = true;
             }
             if (file_exists("Makefile")) {
@@ -623,7 +623,7 @@ void import_process(import im) {
         } else if (has_so) {
             im->import_type = import_t_library;
             if (!im->library_exports)
-                 im->library_exports = array_of(typeid(string), string(""), NULL);
+                 im->library_exports = array_of(string(""), NULL);
             each(im->source, string, lib) {
                 string rem = mid(lib, 0, len(lib) - 3);
                 push(im->library_exports, rem);
@@ -631,7 +631,7 @@ void import_process(import im) {
         } else if (has_a) {
             im->import_type = import_t_library;
             if (!im->library_exports)
-                 im->library_exports = array_of(typeid(string), string(""), NULL);
+                 im->library_exports = array_of(string(""), NULL);
             each(im->source, string, lib) {
                 string rem = mid(lib, 0, len(lib) - 2);
                 push(im->library_exports, rem);
@@ -642,7 +642,7 @@ void import_process(import im) {
             string im_name = string(im->name->chars);
             build_project(im, im_name, idx(im->source, 0));
             if (!im->library_exports)
-                 im->library_exports = array_of(typeid(string), im_name, NULL);
+                 im->library_exports = array_of(im_name, NULL);
         }
     }
     import_process_includes(im, im->includes);
