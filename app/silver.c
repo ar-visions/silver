@@ -181,7 +181,7 @@ void build_record(silver mod, record rec) {
 }
 
 path create_folder(silver mod, cstr name, cstr sub) {
-    string dir = format(
+    string dir = form(string,
         "%o/%s%s%s", mod->install, name,
             (sub && *sub) ? "/" : "",
             (sub && *sub) ? sub : "");
@@ -331,7 +331,7 @@ none import_init(import im) {
         } else
             module_name = im->name;
 
-        assert(is_alpha(module_name), format("expected variable identifier, found %o", module_name));
+        assert(is_alpha(module_name), form(string, "expected variable identifier, found %o", module_name));
         string url = read_string(mod);
         if (url)
             im->source = array_of(url, null);
@@ -357,7 +357,7 @@ string configure_debug(bool debug) {
 
 
 string cmake_debug(bool debug) {
-    return format("-DCMAKE_BUILD_TYPE=%s", debug ? "Debug" : "Release");
+    return form(string, "-DCMAKE_BUILD_TYPE=%s", debug ? "Debug" : "Release");
 }
 
 
@@ -407,8 +407,7 @@ build_state build_project(import im, string name, string url) {
     path checkout  = create_folder(im->mod, "checkout", name->chars);
     path i         = im->mod->install;
     path build_dir = form(path, "%o/%s", checkout,
-        im->mod->with_debug ?
-            "silver-debug" : "silver-build");
+        im->mod->with_debug ? "debug" : "build");
 
     path cwd = path_cwd(2048);
     bool dbg = im->mod->with_debug;
@@ -424,7 +423,7 @@ build_state build_project(import im, string name, string url) {
             s_url     = mid(url, 0, find);
             branch    = mid(url, find + 1, len(url) - (find + 1));
         }
-        string cmd = format("git clone %o %o", s_url, checkout);
+        string cmd = form(string, "git clone %o %o", s_url, checkout);
         assert (system(cmd->chars) == 0, "git clone failure");
         if (len(branch)) {
             chdir(checkout->chars);
@@ -439,7 +438,7 @@ build_state build_project(import im, string name, string url) {
 
         bool build_success = file_exists("%o/silver-token", build_dir);
         if (file_exists("silver-init.sh") && !build_success) {
-            string cmd = format(
+            string cmd = form(string, 
                 "%o/silver-init.sh \"%s\"", path_type.cwd(2048), i);
             assert(system(cmd->chars) == 0, "cmd failed");
         }
@@ -453,7 +452,7 @@ build_state build_project(import im, string name, string url) {
             make_dir(package);
             setenv("RUSTFLAGS", "-C save-temps", 1);
             setenv("CARGO_TARGET_DIR", package->chars, 1);
-            string cmd = format("cargo build -p %o --%s", name, rel_or_debug);
+            string cmd = form(string, "cargo build -p %o --%s", name, rel_or_debug);
             assert (system(cmd->chars) == 0, "cmd failed");
             path   lib = form(path,
                 "%o/%s/lib%o.so", package, rel_or_debug, name);
@@ -509,7 +508,7 @@ build_state build_project(import im, string name, string url) {
                     string cmake = string(
                         "cmake -S . -DCMAKE_BUILD_TYPE=Release "
                         "-DBUILD_SHARED_LIBS=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON");
-                    string cmd   = format(
+                    string cmd   = form(string, 
                         "%o -B %o -DCMAKE_INSTALL_PREFIX=%o %o", cmake, build_dir, i, cmake_flags);
                     assert (system(cmd->chars) == 0, "cmd failed");
                     chdir(build_dir->chars);
@@ -528,7 +527,7 @@ build_state build_project(import im, string name, string url) {
 
 
 bool contains_main(path obj_file) {
-    string cmd = format("nm %o", obj_file);
+    string cmd = form(string, "nm %o", obj_file);
     FILE *fp = popen(cmd->chars, "r");
     assert(fp, "failure to open %o", obj_file);
     char line[256];
@@ -551,11 +550,11 @@ build_state import_build_source(import im) {
         string compile;
         if (ends_with(cfile, ".rs")) {
             // rustc integrated for static libs only in this use-case
-            compile = format("rustc --crate-type=staticlib -C opt-level=%s %o/%o --out-dir %o/lib",
+            compile = form(string, "rustc --crate-type=staticlib -C opt-level=%s %o/%o --out-dir %o/lib",
                 is_debug ? "0" : "3", cwd, cfile, install);
         } else {
             cstr opt = is_debug ? "-g2" : "-O2";
-            compile = format(
+            compile = form(string, 
                 "gcc -I%o/include %s -Wfatal-errors -Wno-write-strings -Wno-incompatible-pointer-types -fPIC -std=c99 -c %o/%o -o %o/%o.o",
                 install, opt, cwd, cfile, install, cfile);
         }
@@ -567,8 +566,8 @@ build_state import_build_source(import im) {
         assert (file_exists(obj_path), "%o: object file not found", log_header);
 
         if (contains_main(obj_path)) {
-            im->main_symbol = format("%o_main", stem(obj_path));
-            string cmd = format("objcopy --redefine-sym main=%o %o",
+            im->main_symbol = form(string, "%o_main", stem(obj_path));
+            string cmd = form(string, "objcopy --redefine-sym main=%o %o",
                 im->main_symbol, obj_path);
             assert (system(cmd->chars) == 0,
                 "%o: could not replace main symbol", log_header);
@@ -654,7 +653,7 @@ void import_process(import im) {
                 // these are built as shared library only, or, a header file is included for emitting
                 if (ends_with(source, ".rs") || ends_with(source, ".h"))
                     continue;
-                string buf = format("%o/%s.o", mod->install, source);
+                string buf = form(string, "%o/%s.o", mod->install, source);
                 push(mod->compiled_objects, buf);
             }
         case import_t_library:
@@ -717,7 +716,7 @@ num silver_line(silver a) {
 
 string silver_location(silver a) {
     token  t = element(a, 0);
-    return t ? (string)location(t) : (string)format("n/a");
+    return t ? (string)location(t) : (string)form(string, "n/a");
 }
 
 
@@ -1098,7 +1097,7 @@ none silver_namespace_pop(silver mod, array levels) {
         push(mod, levels->elements[i]);
 }
 
-function parse_fn        (silver mod, AFlag  member_type, object ident, OPType assign_enum);
+function parse_fn        (silver mod, AMember  member_type, object ident, OPType assign_enum);
 member   read_def        (silver mod, member existing);
 model    read_model      (silver mod, array* expr);
 
@@ -1187,7 +1186,7 @@ node silver_read_node(silver mod) {
     silver   module   = (mod->top == (model)mod || (fn && fn->imdl == (model)mod)) ? mod : null;
     bool     is_cast  = kw && eq(kw, "cast");
     bool     is_fn    = kw && eq(kw, "fn");
-    AFlag    mtype    = is_fn ? A_TYPE_SMETHOD : is_cast ? A_TYPE_CAST : A_TYPE_IMETHOD;
+    AMember  mtype    = is_fn ? A_MEMBER_SMETHOD : is_cast ? A_MEMBER_CAST : A_MEMBER_IMETHOD;
     function in_init  = (fn && fn->imdl) ? fn : null; /// no-op on levels if we are in membership only, not in a function
     array    levels   = (in_args || in_init || is_fn || is_cast) ? array() : namespace_push(mod);
     string   alpha    = null;
@@ -1256,10 +1255,10 @@ node silver_read_node(silver mod) {
             member rmem = lookup(mod, alpha, null);
             if (module && rmem && rmem->mdl == (model)module) {
                 verify(!is_cast && is_fn, "invalid constructor for module; use fn keyword");
-                mtype = A_TYPE_CONSTRUCT;
+                mtype = A_MEMBER_CONSTRUCT;
             } else if (rec && rmem && rmem->mdl == (model)rec) {
                 verify(!is_cast && !is_fn, "invalid constructor for class; use class-name[] [ no fn, not static ]");
-                mtype = A_TYPE_CONSTRUCT;
+                mtype = A_MEMBER_CONSTRUCT;
             }
             mem = member(
                 mod,        mod,
@@ -1829,7 +1828,7 @@ node silver_parse_member_expr(silver mod, member mem) {
         node index_expr = null;
         if (r) {
             /// this returns a 'node' on this code path
-            member indexer = compatible(mod, r, null, A_TYPE_INDEX, args); /// we need to update member model to make all function members exist in an array
+            member indexer = compatible(mod, r, null, A_MEMBER_INDEX, args); /// we need to update member model to make all function members exist in an array
             /// todo: serialize arg type names too
             verify(indexer, "%o: no suitable indexing method", r->name);
             function fn = instanceof(indexer->mdl, function);
@@ -1955,7 +1954,7 @@ node silver_parse_assignment(silver mod, member mem, string oper) {
     }
     verify(contains(operators, oper), "%o not an assignment-operator");
     string op_name = get(operators, oper);
-    string op_form = format("_%o", op_name);
+    string op_form = form(string, "_%o", op_name);
     OPType op_val  = eval(OPType, op_form->chars);
     node   result  = op(mod, op_val, op_name, L, R);
     mod->in_assign = null;
@@ -2282,18 +2281,18 @@ node parse_statements(silver mod, bool unique_members) {
 }
 
 
-function parse_fn(silver mod, AFlag member_type, object ident, OPType assign_enum) {
+function parse_fn(silver mod, AMember member_type, object ident, OPType assign_enum) {
     model      rtype = null;
     object     name  = instanceof(ident, token);
     array      body  = null;
     if (!name) name  = instanceof(ident, string);
     if (!name) {
-        if (member_type != A_TYPE_CAST) {
+        if (member_type != A_MEMBER_CAST) {
             name = read_alpha(mod);
             verify(name, "expected alpha-identifier");
         }
     } else
-        verify(member_type != A_TYPE_CAST, "unexpected name for cast");
+        verify(member_type != A_MEMBER_CAST, "unexpected name for cast");
 
     record rec = context_model(mod, typeid(class));
     arguments args = arguments();
@@ -2319,14 +2318,14 @@ function parse_fn(silver mod, AFlag member_type, object ident, OPType assign_enu
         // when parsing an expression (if it is, rather than just a model)
         //
         verify(rtype, "type must proceed the -> keyword in fn");
-    } else if (member_type == A_TYPE_IMETHOD)
+    } else if (member_type == A_MEMBER_IMETHOD)
         rtype = rec ? (model)pointer(rec) : emodel("generic");
     else
         rtype = emodel("void");
     
     verify(rtype, "rtype not set, void is something we may lookup");
     if (!name) {
-        verify(member_type == A_TYPE_CAST, "with no name, expected cast");
+        verify(member_type == A_MEMBER_CAST, "with no name, expected cast");
         name = form(token, "cast_%o", rtype->name);
     }
     
@@ -2422,15 +2421,19 @@ bool silver_compile(silver mod) {
     string libs = string(alloc, 128);
     each (mod->imports, import, im) {
         if (im->links)
-            each_ (im->links, string, link)
-                append(libs, format("-l%o ", link)->chars);
+            each_ (im->links, string, link) {
+                string l = form(string, "-l%o ", link);
+                append(libs, l->chars);
+            }
     }
     each (mod->imports, import, im) {
         if (im->products)
-            each_ (im->products, string, product)
-                append(libs, format("-l%o ", product)->chars);
+            each_ (im->products, string, product) {
+                string l = form(string, "-l%o ", link);
+                append(libs, l->chars);
+            }
     }
-    string cmd = format("%o/bin/clang %o.o -o %o -L %o/lib %o",
+    string cmd = form(string, "%o/bin/clang %o.o -o %o -L %o/lib %o",
         mod->install, mod->name, mod->name, mod->install, libs);
     print("cmd: %o", cmd);
     verify(system(cmd->chars) == 0, "compilation failed"); /// add in all import objects/libraries
