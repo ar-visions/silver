@@ -1,7 +1,0 @@
-model component
-
-string my-text : 'some text'
-
-override element render[] [
-    return button[ text: my-text ]
-]
