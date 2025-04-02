@@ -117,7 +117,7 @@ static void init() {
         precedence *level = &levels[i];
         for (int j = 0; j < 2; j++) {
             OPType op        = level->ops[j];
-            string e_name    = estr(OPType, op);
+            string e_name    = e_str(OPType, op);
             string op_name   = mid(e_name, 1, len(e_name) - 1);
             string op_token  = op_lang_token(op_name);
             level->method[j] = op_name; /// replace the placeholder; assignment is outside of precedence; the camel has spoken
@@ -404,7 +404,7 @@ void import_extract_libs(import im, string build_dir) {
 
 
 build_state build_project(import im, string name, string url) {
-    path checkout  = create_folder(im->mod, "checkout", name->chars);
+    path checkout  = create_folder(im->mod, "checkout", cstring(name));
     path i         = im->mod->install;
     path build_dir = form(path, "%o/%s", checkout,
         im->mod->with_debug ? "debug" : "build");
@@ -728,7 +728,7 @@ bool is_keyword(A any) {
     else if (type == typeid(token))
         s = string(((token)any)->chars);
     
-    return index_of_cstr(keywords, s->chars) >= 0;
+    return index_of_cstr(keywords, cstring(s)) >= 0;
 }
 
 
@@ -744,7 +744,7 @@ bool is_alpha(A any) {
         s = string(token->chars);
     }
     
-    if (index_of_cstr(keywords, s->chars) >= 0)
+    if (index_of_cstr(keywords, cstring(s)) >= 0)
         return false;
     
     if (len(s) > 0) {
@@ -861,9 +861,12 @@ array parse_tokens(A input) {
         
         string name = scan_map(mapping, input_string, index);
         if (name) {
-            char* src = &input_string->chars[index];
-            push(tokens, token(chars, name->chars, indent, indent, source,
-                src, line, line_num, column, index - line_start));
+            cstr src = (cstr)&input_string->chars[index];
+            token t = null;
+            //t = token(chars, (cstr)name->chars, indent, indent, source,
+            //    src, line, line_num, column, index - line_start);
+
+            push(tokens, t);
             index += len(name);
             continue;
         }
@@ -1812,7 +1815,7 @@ node silver_parse_member_expr(silver mod, member mem) {
         record r = instanceof(mem->mdl, record);
         /// must have an indexing method, or be a reference_pointer
         verify(mem->mdl->ref == reference_pointer || r, "no indexing available for model %o/%o",
-            mem->mdl->name, estr(reference, mem->mdl->ref));
+            mem->mdl->name, e_str(reference, mem->mdl->ref));
         
         /// we must read the arguments given to the indexer
         consume(mod);
@@ -1955,7 +1958,7 @@ node silver_parse_assignment(silver mod, member mem, string oper) {
     verify(contains(operators, oper), "%o not an assignment-operator");
     string op_name = get(operators, oper);
     string op_form = form(string, "_%o", op_name);
-    OPType op_val  = eval(OPType, op_form->chars);
+    OPType op_val  = e_val(OPType, cstring(op_form));
     node   result  = op(mod, op_val, op_name, L, R);
     mod->in_assign = null;
     return result;

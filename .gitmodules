@@ -1,3 +1,0 @@
-[submodule "deps/mx"]
-	path = deps/mx
-	url = https://github.com/ar-visions/mx
