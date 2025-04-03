@@ -2505,18 +2505,16 @@ int main(int argc, char **argv) {
     A_start();
  
     string s = string("hi");
-    cstr        src = getenv("SRC");
-    cstr     import = getenv("IMPORT");
     map        args = A_args(argc, argv,
         "module",  string(""),
-        "install", form(path, "%s", import));
+        "import", form(path, "%s", getenv("SILVER_IMPORT")));
     string mkey     = string("module");
     string name     = get(args, string("module"));
     path   n        = path(chars, name->chars);
     path   source   = absolute(n);
     silver mod      = silver(
         source,  source,
-        install, get(args, string("install")),
+        import,  get(args, string("import")),
         name,    stem(source));
     return 0;
 }
