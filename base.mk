@@ -184,6 +184,14 @@ APPS_CFLAGS        = $(call process_cflags,app)
 TEST_CFLAGS        = $(call process_cflags,test)
 APPS_IMPORTS       = $(call process_imports,app)
 LIB_IMPORTS        = $(call process_imports,lib)
+
+LIB_IMPORTS       := $(subst $(newline), ,$(strip $(LIB_IMPORTS)))
+APPS_IMPORTS      := $(subst $(newline), ,$(strip $(APPS_IMPORTS)))
+IMPORTS            = $(LIB_IMPORTS) # todo: transition to one set of IMPORTS per build instance, apps will be another instance
+ifeq ($(strip $(IMPORTS)),)
+	IMPORTS = $(APPS_IMPORTS)
+endif
+
 release		      ?= 0
 APP			      ?= 0
 CC 			       = $(SILVER_IMPORT)/bin/clang
@@ -254,15 +262,13 @@ endif
 
 all: $(ALL_TARGETS)
 
-LIB_IMPORTS := $(subst $(newline), ,$(strip $(LIB_IMPORTS)))
-APPS_IMPORTS := $(subst $(newline), ,$(strip $(APPS_IMPORTS)))
-
-$(IMPORT_HEADER): $(PROJECT_HEADER) $(SILVER_FILE)
-	@bash $(SILVER)/base/headers.sh $(IMPORT_HEADER) $(PROJECT_HEADER) $(PROJECT) $(UPROJECT) $(LIB_IMPORTS)
+$(IMPORT_HEADER): $(PROJECT_HEADER) $(SILVER_FILE) $(SILVER)/build.mk
+	@echo "imports = $(IMPORTS)"
+	@bash $(SILVER)/base/headers.sh $(IMPORT_HEADER) $(PROJECT_HEADER) $(PROJECT) $(UPROJECT) $(IMPORTS)
 
 .PRECIOUS: *.o
 .SUFFIXES:
-.PHONY: all clean install run-import tests verify process_c_files clean $(IMPORT_HEADER)
+.PHONY: all clean install run-import tests verify process_c_files clean $(IMPORT_HEADER) $(SILVER)/build.mk
 
 $(IMPORT_HEADER): | run-import
 

@@ -34,7 +34,7 @@ if [ ! -f "$IMPORT_HEADER" ]; then
     for import in "${IMPORTS[@]}"; do
         if [ "$import" != "$PROJECT" ]; then
             if [ -f "$SILVER_IMPORT/include/${import}-methods" ]; then
-                echo "#include <${import}-public> // this was from {import}" >> "$IMPORT_HEADER"
+                echo "#include <${import}-public> // from {import}" >> "$IMPORT_HEADER"
             else
                 echo "// #include <${import}-public> // has no $SILVER_IMPORT/include/${import}-methods" >> "$IMPORT_HEADER"
             fi
@@ -145,7 +145,7 @@ if [ ! -f "$INIT_HEADER" ] || [ "$PROJECT_HEADER" -nt "$INIT_HEADER" ]; then
             continue
         fi
         
-        echo "#define ${struct_name}(...) structure(${struct_name} __VA_OPT__(,) __VA_ARGS__) _N_STRUCT_ARGS(${struct_name}, __VA_ARGS__);" >> "$INIT_HEADER"
+        echo "#define ${struct_name}(...) structure_of(${struct_name} __VA_OPT__(,) __VA_ARGS__) _N_STRUCT_ARGS(${struct_name}, __VA_ARGS__);" >> "$INIT_HEADER"
     done
     
     # Close the include guard

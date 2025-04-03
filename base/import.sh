@@ -105,6 +105,7 @@
     mkdir -p "$SILVER_IMPORT" || exit 1
     cd       "$SILVER_IMPORT"
     mkdir -p checkout
+    mkdir -p tokens
     cd       checkout
 
     OUR_PROJECTS=""
@@ -359,7 +360,25 @@
             fi
             
             # proceed if there is a newer file than silver-token, or no silver-token
-            if [ ! -f "silver-token" ] || find .. -type f -newer "silver-token" | grep -q . ; then
+            TOKEN_SYNC=0
+            TOKEN_NAME="$SILVER_IMPORT/tokens/$PROJECT_NAME"
+            if [ ! -f "silver-token" ]; then
+                TOKEN_SYNC=0  # no local token means no sync, skip install
+            elif [ -f "$TOKEN_NAME" ]; then
+                LOCAL_TIME=$(stat -c %Y silver-token)
+                IMPORT_TIME=$(stat -c %Y "$TOKEN_NAME")
+                if [ "$LOCAL_TIME" == "$IMPORT_TIME" ]; then
+                    echo "silver-token and import token timestamps are same"
+                    TOKEN_SYNC=1
+                fi
+            fi
+            if [ $TOKEN_SYNC -eq 1 ]; then
+                if find .. -type f -newer "silver-token" | grep -q . ; then
+                    TOKEN_SYNC=0
+                fi
+            fi
+
+            if [[ $TOKEN_SYNC -eq 0 ]]; then
                 BUILT="1"
 
                 # we need more than this: it needs to also check if a dependency registered to this project changes
@@ -451,9 +470,11 @@
                     export BUILT_PROJECTS="$OUR_PROJECTS"
                     make $MFLAGS -j$j -f ../Makefile || { echo "$COMPILE_ERROR"; exit 1; }
                 else
-                    cd ..
+                    echo "running regular Makefile for project $PROJECT_NAME"
+                    #cd ..
+                    #echo "pwd = $(pwd)"
                     make $MFLAGS -j$j || { echo "$COMPILE_ERROR"; exit 1; }
-                    cd $BUILD_FOLDER
+                    #cd $BUILD_FOLDER
                 fi
                 ts1=$(find . -type f -exec $STAT -c %Y {} + | sort -n | tail -1)
                 #echo "-> project $PROJECT_NAME = $ts0 $ts1"
@@ -470,8 +491,8 @@
                     echo "$PROJECT_NAME modified: (you should see a rebuild!)"
                     print "install ${TARGET_DIR}"
                     if [ -n "$IS_GCLIENT" ]; then
-                        echo "installing gclient-based project $TARGET_DIR"
-                        cp *.so *.dll *.dylib $SILVER_IMPORT/lib/ 2>/dev/null
+                        echo "installing gclient-based project $TARGET_DIR, CWD = $(shell pwd)"
+                        cp *.a *.so *.dll *.dylib $SILVER_IMPORT/lib/ 2>/dev/null
                         # better to use manual -I includes because this indeed varies per GN project
                         # this effectively was ok for skia but not others
                         #rm -rf $IMPORT/include/$TARGET_DIR
@@ -482,7 +503,7 @@
                     elif [ -n "$rust" ]; then
                         cp -r ./$build/*.so $SILVER_IMPORT/lib/
                     elif [ "$A_MAKE" = "1" ]; then
-                        NO_NEED_FOR_A=1
+                        NO_INSTALL=1
                         #make $MFLAGS -f ../Makefile install
                     else
                         cd ..
@@ -500,7 +521,13 @@
                     fi
                 fi
             fi
+
             echo "im-a-token" >> silver-token  # only create this if all steps succeed
+            cp silver-token "$TOKEN_NAME"
+            # Synchronize modified time
+            TOUCH_TIME=$(date -r silver-token +%Y%m%d%H%M.%S)
+            touch -t "$TOUCH_TIME" "$TOKEN_NAME"
+
         fi
 
         if [ -n "$BUILT" ]; then

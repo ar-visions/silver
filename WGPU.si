@@ -1,18 +1,20 @@
 # todo: should be checked out and installed without import, since A is our runtime
-import A [
-    source:     'https://github.com/ar-visions/A',
-    links:      ['A']
-]
+import A https://github.com/ar-visions/A
 
-import WGPU [
-    source:     'https://github.com/ar-visions/dawn@2e9297c45f48df8be17b4f3d2595063504dac16c',
-    build:      ['-DDAWN_ENABLE_INSTALL=1', '-DBUILD_SHARED_LIBS=0'],
-    includes:   ['dawn/webgpu', 'dawn/dawn_proc_table'],
-    links:      ['webgpu_dawn']
-]
+# includes are part of an install process, and selecting them is used with import < includes paths >
+import WGPU https://github.com/ar-visions/dawn@2e9297c4
+    build:      [ -DDAWN_ENABLE_INSTALL=1 -DBUILD_SHARED_LIBS=0 ]
+    includes:   dawn/webgpu dawn/dawn_proc_table;
+    links:      webgpu_dawn;
 
-import <stdlib, stdint, stdio>
+import <stdlib stdint stdio>
 
+
+class new-class
+    i: i32
+    init[] > none
+        print['initializing']
+    
 # silver 1.0: inlay
 # they become contiguous and embedded into the instance with inlay
 # this applies to classes and primitives, classes become n-depth embeddable and this basically removes the need for struct?
@@ -24,18 +26,15 @@ import <stdlib, stdint, stdio>
 
 ##
 asm [
-    target [ x64 ] [
-        feature [ SSE4 ] [
+    target[ x64 ]
+        feature[ SSE4 ]
             mov eax, ebx
             xor eax, eax
-        ] default [
+        default
             mov eax, ebx
             xor eax, eax
-        ]
-    ]
-    default [
+    default
         LLVM IR code <- not super trivial to get IR in silver
-    ]
 ]
 ##
 
