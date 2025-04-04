@@ -4,13 +4,19 @@
     AVOID_PROJECTS="${BUILT_PROJECTS:-}"
     CALLER_BUILD_DIR=""
 
+    
+
     # Set the NPROC_CMD variable based on the operating system
     if [ "$(uname)" = "Darwin" ]; then
         NPROC="sysctl -n hw.ncpu"
         STAT="gstat"
+        SED="gsed"
+        export SDK_ROOT="$(xcrun --sdk macosx --show-sdk-path)"
     else
         NPROC="nproc"
         STAT="stat"
+        SED="sed"
+        export SDK_ROOT="/"
     fi
 
     # parse args
@@ -60,28 +66,53 @@
     found_deps=1
     current_line=""
 
+    current_os=""
+    system_os=$(uname -s | tr '[:upper:]' '[:lower:]')  # "darwin" or "linux"
+    os_filter=""
+    within_os_block=0
+
     while IFS= read -r raw_line || [ -n "$raw_line" ]; do
-        line=$(echo "$raw_line" | tr '\t' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        line=$(echo "$raw_line" | tr '\t' ' ' | $SED 's/^[[:space:]]*//;s/[[:space:]]*$//')
         if [ -z "$line" ]; then
             continue
         fi
-        if [[ $line =~ ^[[:alnum:]][[:alnum:]]*: ]]; then
-            found_deps=0
+
+        # Stop if we hit app: or lib:
+        if [[ "$line" =~ ^(app|lib): ]]; then
+            break
         fi
-        if [[ $found_deps -eq 1 ]]; then
-            ws=$(echo "$raw_line" | tr '\t' ' ' | sed -E 's/^( *).*/\1/' | wc -c)
-            if [ $ws -le 1 ]; then
-                if [ ! -z "$current_line" ]; then
-                    projects+=("$current_line")
-                    print "import: $current_line"
+
+        # OS-specific block start
+        if [[ "$line" =~ ^(darwin|linux):$ ]]; then
+            os_filter="${line%:}"
+            within_os_block=1
+            continue
+        fi
+
+        # Indented line = config/flag
+        ws=$(echo "$raw_line" | tr '\t' ' ' | $SED -E 's/^( *).*/\1/' | wc -c)
+
+        if [ $ws -le 1 ]; then
+            # Starting new project block
+            if [ ! -z "$current_line" ]; then
+                projects+=("$current_line")
+                print "import: $current_line"
+            fi
+            current_line="$line"
+            os_filter=""
+            within_os_block=0
+        else
+            # Inside config/flag lines
+            if [ $within_os_block -eq 1 ]; then
+                if [ "$os_filter" = "$system_os" ]; then
+                    current_line="$current_line $line"
                 fi
-                current_line="$line"
-            elif [ $ws -ge 2 ]; then
+            else
                 current_line="$current_line $line"
             fi
-            
         fi
-    done < $PROJECT_IMPORT
+
+    done < "$PROJECT_IMPORT"
 
     # Add the last current_line if it exists
     if [ ! -z "$current_line" ]; then
@@ -139,11 +170,10 @@
         fi
 
         COMMIT_RAW=$( echo "$project" | cut -d ' ' -f 3)
-        COMMIT=$(echo "$COMMIT_RAW" | sed -e 's/^!//')
+        COMMIT=$(echo "$COMMIT_RAW" | $SED -e 's/^!//')
         IS_RECUR=$(echo "$COMMIT_RAW" | grep -q '^!' && echo true || echo false)
         BUILD_CONFIG_RAW=$(echo "$project" | cut -d ' ' -f 4-)
         BUILD_CONFIG=""
-
         (
         for item in $BUILD_CONFIG_RAW; do
             # Check if the item contains a $ENV_VAR
@@ -186,7 +216,9 @@
         fi
 
         # Trim leading whitespace
-        BUILD_CONFIG=$(echo "$BUILD_CONFIG" | sed 's/^ *//')
+        BUILD_CONFIG=$(echo "$BUILD_CONFIG" | $SED 's/^ *//')
+
+        #echo "actual build config for $PROJECT_NAME = $BUILD_CONFIG"
         TARGET_DIR="${PROJECT_NAME}"
         A_MAKE="0" # A-type projects use Make, but with a build-folder and no configuration; DEBUG=1 to enable debugging
         IS_DEBUG=
@@ -365,10 +397,10 @@
             if [ ! -f "silver-token" ]; then
                 TOKEN_SYNC=0  # no local token means no sync, skip install
             elif [ -f "$TOKEN_NAME" ]; then
-                LOCAL_TIME=$(stat -c %Y silver-token)
-                IMPORT_TIME=$(stat -c %Y "$TOKEN_NAME")
+                LOCAL_TIME=$($STAT -c %Y silver-token)
+                IMPORT_TIME=$($STAT -c %Y "$TOKEN_NAME")
                 if [ "$LOCAL_TIME" == "$IMPORT_TIME" ]; then
-                    echo "silver-token and import token timestamps are same"
+                    echo "$PROJECT_NAME: cached-build"
                     TOKEN_SYNC=1
                 fi
             fi
@@ -383,8 +415,9 @@
 
                 # we need more than this: it needs to also check if a dependency registered to this project changes
                 # to do that, we should run the import on the project without the make process
-                BUILD_CONFIG=$(echo "$BUILD_CONFIG" | sed "s|\$SILVER_IMPORT|$SILVER_IMPORT|g")
-                BUILD_CONFIG=$(echo "$BUILD_CONFIG" | sed ':a;N;$!ba;s/\n/ /g' | sed 's/[[:space:]]*$//')
+                # BUILD_CONFIG=$(echo "$BUILD_CONFIG" | $SED ':a;N;$!ba;s/\n/ /g' | $SED 's/[[:space:]]*$//')
+                BUILD_CONFIG=$(echo "$BUILD_CONFIG" \
+                    | $SED -E ':a;N;$!ba;s/\n/ /g; s/[[:space:]]+/ /g; s/^ +| +$//g')
 
                 if [ -n "$IS_GCLIENT" ]; then
                     cd ..
@@ -400,7 +433,8 @@
                         if [ -z "$BUILD_CONFIG" ]; then
                             BUILD_CONFIG="-S .."
                         fi
-                        cmake -B . -S .. $BUILD_TYPE $BUILD_CONFIG -DCMAKE_INSTALL_PREFIX="$SILVER_IMPORT" 
+                        eval echo cmake -B . -S .. $BUILD_TYPE $BUILD_CONFIG -DCMAKE_INSTALL_PREFIX="$SILVER_IMPORT" 
+                        eval cmake -B . -S .. $BUILD_TYPE $BUILD_CONFIG -DCMAKE_INSTALL_PREFIX="$SILVER_IMPORT" 
                     fi
                 elif [ -n "$rust" ]; then
                     rust="$rust"
@@ -420,12 +454,12 @@
                             fi
                             echo "pwd = $(pwd)"
                             echo \033[34m../configure $BUILD_TYPE --prefix=$SILVER_IMPORT $BUILD_CONFIG\033[0m
-                            ../configure $BUILD_TYPE --prefix=$SILVER_IMPORT $BUILD_CONFIG
+                            eval ../configure $BUILD_TYPE --prefix=$SILVER_IMPORT $BUILD_CONFIG
                         else
                             if [ -f "../config" ]; then
                                 if [ ! -f "Makefile" ]; then
                                     echo ../config $BUILD_TYPE --prefix=$SILVER_IMPORT $BUILD_CONFIG
-                                    ../config $BUILD_TYPE --prefix=$SILVER_IMPORT $BUILD_CONFIG
+                                    eval ../config $BUILD_TYPE --prefix=$SILVER_IMPORT $BUILD_CONFIG
                                 fi
                             else
                                 echo "no configure.ac found for $PROJECT_NAME ... will simply call make"
@@ -499,14 +533,17 @@
                         #mkdir -p $IMPORT/include/$TARGET_DIR
                         #rsync -a --include "*/" --include "*.h" --exclude="*" ../ $IMPORT/include/$TARGET_DIR/
                     elif [ -n "$cmake" ]; then
+                        echo "making $PROJECT_NAME install"
                         cmake --install .
                     elif [ -n "$rust" ]; then
                         cp -r ./$build/*.so $SILVER_IMPORT/lib/
                     elif [ "$A_MAKE" = "1" ]; then
+                        echo "making (A) $PROJECT_NAME install"
                         NO_INSTALL=1
                         #make $MFLAGS -f ../Makefile install
                     else
                         cd ..
+                        echo "making $PROJECT_NAME install"
                         make $MFLAGS install
                         cd $BUILD_FOLDER
                     fi
@@ -539,6 +576,6 @@
             bash -c "${COMMANDS}"
         fi
         ) || exit 1
-
     done
+    echo "exiting import.sh"
 ) || exit 1

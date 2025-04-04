@@ -202,7 +202,10 @@ APP_INCLUDES       = -I$(BUILD_DIR)/app  -I$(BUILD_DIR)/lib -I$(SILVER_IMPORT)/i
 TEST_INCLUDES      = -I$(BUILD_DIR)/test -I$(BUILD_DIR)/lib -I$(SILVER_IMPORT)/include
 # default behavior of -l cannot be set back once you do -Wl,-Bdynamic or -Wl,-Bstatic -- there is no -Wl,-Bdynamic-first
 # to create sanity lets establish -Wl,-Bdynamic first
-LDFLAGS 	       = -L$(BUILD_DIR) -L$(SILVER_IMPORT)/lib -Wl,-rpath,$(SILVER_IMPORT)/lib -Wl,-Bdynamic
+LDFLAGS 	       = -L$(BUILD_DIR) -L$(SILVER_IMPORT)/lib -Wl,-rpath,$(SILVER_IMPORT)/lib 
+ifneq ($(UNAME), Darwin)
+    LDFLAGS=$(LDFLAGS) -Wl,-Bdynamic
+endif
 SRCAPP_DIR 	       = $(BUILD_DIR)/app
 SRCLIB_DIR 	       = $(BUILD_DIR)/lib
 TEST_DIR           = $(BUILD_DIR)/test
@@ -263,7 +266,6 @@ endif
 all: $(ALL_TARGETS)
 
 $(IMPORT_HEADER): $(PROJECT_HEADER) $(SILVER_FILE) $(SILVER)/build.mk
-	@echo "imports = $(IMPORTS)"
 	@bash $(SILVER)/base/headers.sh $(IMPORT_HEADER) $(PROJECT_HEADER) $(PROJECT) $(UPROJECT) $(IMPORTS)
 
 .PRECIOUS: *.o
@@ -401,16 +403,14 @@ verify: $(TEST_TARGETS)
 
 # install targets and run reflect with integrity check
 install: all
-
 	@if [ -f $(BUILD_DIR)/.built ]; then \
-		echo "$(PROJECT): installing"; \
 		mkdir -p $(SILVER_IMPORT)/lib; \
 		mkdir -p $(SILVER_IMPORT)/include; \
 		mkdir -p $(SILVER_IMPORT)/bin; \
 		if [ -n "$(strip $(LIB_TARGET))" ]; then \
 			if [ -f $(BUILD_DIR)/$(PROJECT)-includes ]; then \
 				install -m 644 $(LIB_TARGET)  $(SILVER_IMPORT)/lib/; \
-			fi \
+			fi; \
 		fi; \
 		if [ -n "$(strip $(APP_TARGETS))" ]; then \
 			install -m 755 $(APP_TARGETS) $(SILVER_IMPORT)/bin/; \
@@ -430,14 +430,14 @@ install: all
 		if [ -f "$(INTERN_HEADER)" ]; then \
 			install -m 644 $(INTERN_HEADER) $(SILVER_IMPORT)/include/; \
 		fi; \
-		if [ -f $(SRCLIB_DIR)/A-reserve ]; then \
-			install -m 644 $(SRCLIB_DIR)/A-reserve $(SILVER_IMPORT)/include/; \
+		if [ -f $(SRC_ROOT)/lib/A-reserve ]; then \
+			install -m 644 $(SRC_ROOT)/lib/A-reserve $(SILVER_IMPORT)/include/; \
 		fi; \
 		if [ -f $(BUILD_DIR)/$(PROJECT)-includes ]; then \
 			install -m 644 $(BUILD_DIR)/$(PROJECT)-includes $(SILVER_IMPORT)/include/; \
 			install -m 644 $(BUILD_DIR)/$(PROJECT)-flat $(SILVER_IMPORT)/include/; \
 		fi; \
-		cd $(BUILD_DIR); # && ./$(PROJECT)-reflect || true \
+		cd $(BUILD_DIR);  \
 		if [ -f $(BUILD_DIR)/lib$(PROJECT).m ]; then \
 			install -m 644 $(BUILD_DIR)/lib$(PROJECT).m $(SILVER_IMPORT)/lib/; \
 		fi; \
