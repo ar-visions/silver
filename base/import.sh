@@ -337,7 +337,7 @@
                 if [[ ",$DEB," == *",$PROJECT_NAME,"* ]]; then
                     BUILD_TYPE="--enable-debug"
                 fi
-            elif [ -f "silver" ]; then
+            elif [ -f "build" ]; then
                 A_MAKE="1"
                 BUILD_TYPE="-g"
             elif [ -f "Makefile" ]; then
@@ -386,7 +386,7 @@
             fi
 
             # we must do this every time for A-type projects
-            if [ -d "../res" ] && [ -f "../silver" ]; then
+            if [ -d "../res" ] && [ -f "../build" ]; then
                 echo "$PROJECT_NAME: copying resource files $BUILD_DIR"
                 rsync -av --checksum --update ../res/* "$BUILD_DIR"
             fi
@@ -454,7 +454,7 @@
                             fi
                             echo "pwd = $(pwd)"
                             echo \033[34m../configure $BUILD_TYPE --prefix=$SILVER_IMPORT $BUILD_CONFIG\033[0m
-                            eval ../configure $BUILD_TYPE --prefix=$SILVER_IMPORT $BUILD_CONFIG
+                        eval ../configure $BUILD_TYPE --prefix=$SILVER_IMPORT $BUILD_CONFIG
                         else
                             if [ -f "../config" ]; then
                                 if [ ! -f "Makefile" ]; then
