@@ -1,13 +1,19 @@
 import:
-	llama.cpp https://github.com/ggerganov/llama.cpp 9f4cc8f
-		-DGGML_VULKAN=ON
-		-DLLAMA_CURL=ON
-
-	A https://github.com/ar-visions/A main
-
-	ether https://github.com/ar-visions/ether main
+	A			https://github.com/ar-visions/A 		main
+	ether		https://github.com/ar-visions/ether		main
+	tapestry	https://github.com/ar-visions/tapestry 	main
 
 app:
-	A ether
-lib:
-	A ether
+	$(bash ../A/headers.sh)
+    -fPIC
+    -fno-exceptions
+	-Wno-write-strings
+    -Wno-compare-distinct-pointer-types
+    -Wno-deprecated-declarations
+	-Wno-incompatible-pointer-types
+    -Wfatal-errors
+	-Wno-incompatible-library-redeclaration
+    -fvisibility=default
+	A
+	ether
+	tapestry
