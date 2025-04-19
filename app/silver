@@ -2,7 +2,7 @@
 #define _silver_
 
 #include <silver-intern> 
-#include <silver-public> // if we dont include this, then users cannot use the library! lol.. perhaps thats an odd wall of a feature for this boilerplate
+#include <silver-public>
 
 #define import_t_schema(X,Y,...) \
     enum_value(X,Y, none) \
@@ -22,10 +22,8 @@ declare_enum(build_state)
     i_prop(X,Y, required, array,    body)
 declare_class(completer_context)
 
-/// todo: make macro column out of i_ vs s_
-/// its probably going to make a few more macros
-
 #define silver_schema(X,Y,...)\
+    i_prop    (X,Y, intern,     bool,           no_build) \
     i_prop    (X,Y, intern,     bool,           in_ref) \
     i_prop    (X,Y, intern,     bool,           in_top) \
     i_prop    (X,Y, intern,     bool,           in_const) \
@@ -44,7 +42,6 @@ declare_class(completer_context)
     i_prop    (X,Y, public,     array,          tokens) \
     i_prop    (X,Y, public,     num,            cursor) \
     i_prop    (X,Y, intern,     array,          stack) \
-    i_prop    (X,Y, public,     path,           import) \
     i_method  (X,Y, public,     node,           parse_member_expr, member) \
     i_method  (X,Y, public,     none,           incremental_resolve) \
     i_method  (X,Y, public,     none,           push_state,   array, num) \
@@ -56,7 +53,7 @@ declare_class(completer_context)
     i_method  (X,Y, public,     token,          consume) \
     i_method  (X,Y, public,     token,          peek) \
     i_method  (X,Y, public,     token,          element, num) \
-    i_method  (X,Y, public,     num,            line) \
+    i_method  (X,Y, public,     num,            current_line) \
     i_method  (X,Y, public,     bool,           next_is, symbol) \
     i_method  (X,Y, public,     array,          namespace_push) \
     i_method  (X,Y, public,     none,           namespace_pop, array) \
@@ -81,10 +78,6 @@ declare_mod(silver, ether, model)
 
 
 /// import is a model now so it may parse as such
-/// everything is very translatable to member: type  syntax
-/// we may go type first and do simple behavior there depending
-/// on context
-
 #define import_schema(X,Y,...) \
     i_prop    (X,Y, intern, array,      source) \
     i_prop    (X,Y, intern, string,     shell) \
@@ -107,7 +100,5 @@ declare_mod(silver, ether, model)
     i_method  (X,Y, public, none,       process) \
     i_override(X,Y, method, init)
 declare_mod(import, model)
-
-//#define set(I,...) ftableI(I) -> set(I, ##__VA_ARGS__)
 
 #endif

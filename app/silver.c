@@ -19,10 +19,7 @@ static bool is_alpha(A any);
 static node parse_expression(silver mod);
 
 static void print_tokens(symbol label, silver mod) {
-    print("[%s] tokens: %o %o %o %o %o ...", label,
-        element(mod, 0), element(mod, 1),
-        element(mod, 2), element(mod, 3),
-        element(mod, 4), element(mod, 5));
+    print("[%s] tokens: %o ...", label, element(mod, 0));
 }
 
 typedef struct {
@@ -95,7 +92,7 @@ static void init() {
         "?:",       string("cond_value"),
         "=",        string("assign"),
         ":",        string("assign"),     /// dynamic behavior on this, turns into "equal" outside of parse-assignment
-        "%=",       string("assign_mod"), /// dont laugh, because == is the actual comparison operator, and thats the three way. everyone agrees this is better than something else they can think of
+        "%=",       string("assign_mod"),
         "+=",       string("assign_add"),
         "-=",       string("assign_sub"),
         "*=",       string("assign_mul"),
@@ -302,11 +299,7 @@ none import_init(import im) {
     im->includes = array(32);
     im->is_user = true;
     assert(!next_is(mod, "import"), "unexpected import");
-    //consume(mod);
 
-    //print_tokens("import_init", mod);
-    
-    //token n_token = next(mod);
     if (read(mod, "<")) {
         im->import_type = import_t_includes;
         im->includes = array(8);
@@ -593,7 +586,7 @@ void import_process(import im) {
     /// when not import <, or import name [ ... syntax: import name
     ///                 ^- c-include      ^- build             ^- silver
     if ( im->extern_mod ) {
-        array attempt = array_of(typeid(string), string(""), string("spec/"), NULL);
+        array attempt = array_of(string(""), string("spec/"), NULL);
         bool  exists  = false;
         each(attempt, string, pre) {
             path module_path = form(path, "%o%o.si", pre, im->name);
@@ -708,7 +701,7 @@ array read_body(silver mod, bool inner_expr) {
 //    return isa(t->literal);
 //}
 
-num silver_line(silver a) {
+num silver_current_line(silver a) {
     token  t = element(a, 0);
     return t->line;
 }
@@ -938,7 +931,8 @@ array parse_tokens(A input) {
 token silver_element(silver a, num rel) {
     int r = a->cursor + rel;
     if (r < 0 || r > a->tokens->len - 1) return null;
-    return a->tokens->elements[r];
+    token t = a->tokens->elements[r];
+    return t;
 }
 
 
@@ -1351,10 +1345,6 @@ node silver_read_node(silver mod) {
         else if (is_record && assign_type) {
             mem->mdl = read_model(mod, &expr);
             mem->initializer = hold(expr);
-            if (eq(mem->name, "a-member")) {
-                int test = 2;
-                test += 2;
-            }
         }
         else if (((module || rec) && (!mem || !mem->mdl)) && peek_keyword(mod))
             mem = read_def(mod, mem);
@@ -1402,15 +1392,17 @@ object silver_read_bool(silver a) {
 typedef struct tokens_data {
     array tokens;
     num   cursor;
-} *tokens_data;
+} tokens_data;
 
 
 void silver_push_state(silver a, array tokens, num cursor) {
     //struct silver_f* table = isa(a);
-    tokens_data state = A_struct(tokens_data);
+    tokens_data* state = A_struct(tokens_data);
     state->tokens = a->tokens;
     state->cursor = a->cursor;
+    print("push cursor: %i", state->cursor);
     push(a->stack, state);
+    tokens_data* state_saved = (tokens_data*)last(a->stack);
     a->tokens = hold(tokens);
     a->cursor = cursor;
 }
@@ -1419,7 +1411,7 @@ void silver_push_state(silver a, array tokens, num cursor) {
 void silver_pop_state(silver a, bool transfer) {
     int len = a->stack->len;
     assert (len, "expected stack");
-    tokens_data state = (tokens_data)last(a->stack); // we should call this element or ele
+    tokens_data* state = (tokens_data*)last(a->stack); // we should call this element or ele
     pop(a->stack);
     if(!transfer)
         a->cursor = state->cursor;
@@ -1560,7 +1552,9 @@ model read_named_model(silver mod) {
         member f = lookup(mod, a, null);
         if (f && f->is_type) mdl = f->mdl;
     }
+    print("cursor 1: %i", mod->cursor);
     pop_state(mod, mdl != null); /// save if we are returning a model
+    print("cursor 2: %i", mod->cursor);
     return mdl;
 }
 
@@ -2211,7 +2205,7 @@ member read_def(silver mod, member existing) {
         }
         pop(mod);
         pop_state(mod, false);
-        // test this:
+        // is below required or did i comment this out as test?
         //finalize(mem->mdl, mem);
     } else {
         verify(is_alias, "unknown error");
@@ -2456,7 +2450,6 @@ void silver_init(silver mod) {
     /// build a proper stack of tokens we may parse through normal means
     /// lets just set a state variable prebuild so that import->skip
     array  import_A = array_of(
-        typeid(token),
         token(chars, "import"),
         token(chars, "A"),
         null);
@@ -2507,14 +2500,14 @@ int main(int argc, char **argv) {
     string s = string("hi");
     map        args = A_args(argc, argv,
         "module",  string(""),
-        "import", form(path, "%s", getenv("SILVER_IMPORT")));
+        "install", form(path, "%s", getenv("TAPESTRY")));
     string mkey     = string("module");
     string name     = get(args, string("module"));
     path   n        = path(chars, name->chars);
     path   source   = absolute(n);
     silver mod      = silver(
         source,  source,
-        import,  get(args, string("import")),
+        install,  get(args, string("install")),
         name,    stem(source));
     return 0;
 }
