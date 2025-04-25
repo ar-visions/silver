@@ -23,6 +23,7 @@ declare_enum(build_state)
 declare_class(completer_context)
 
 #define silver_schema(X,Y,...)\
+    i_prop    (X,Y, intern,     tapestry,       tapestry) \
     i_prop    (X,Y, intern,     bool,           no_build) \
     i_prop    (X,Y, intern,     bool,           in_ref) \
     i_prop    (X,Y, intern,     bool,           in_top) \
@@ -77,8 +78,23 @@ declare_class(completer_context)
 declare_mod(silver, ether, model)
 
 
-/// import is a model now so it may parse as such
-#define import_schema(X,Y,...) \
+/// major change to model here, with most work on software import happening in tapestry
+/// process will perform actions needed by silver-only import
+/// does tapestry also perform silver compilation, or stand-alone C compilation?
+/// it might make sense to do so; inter-dependency is what is of issue.  tapestry would need
+/// to use silver at a binary level in that case (which to me is simpler)
+/// it is the interface that we do not have.  for this, do we want .m standard?  (A-reflect emission)
+/// this works for silver, C and possibly others.  the two are what we want to handle for now
+/// unclear what the path is for project imports.  clearly there would be multiple .m reflection interfaces
+/// in the case of standard C we would use typical Clang Indexer service
+
+/// import url is going to infer the project type, internal to  tapestry
+///     <header> may be part of the syntax, if we are to use a specific header
+/// import url -llibrary
+///     include <something>
+///     
+
+#define import_info_schema(X,Y,...) \
     i_prop    (X,Y, intern, array,      source) \
     i_prop    (X,Y, intern, string,     shell) \
     i_prop    (X,Y, intern, path,       module_path) \
@@ -99,6 +115,6 @@ declare_mod(silver, ether, model)
     i_prop    (X,Y, intern, silver,     extern_mod) \
     i_method  (X,Y, public, none,       process) \
     i_override(X,Y, method, init)
-declare_mod(import, model)
+declare_mod(import_info, model)
 
 #endif
