@@ -2,18 +2,3 @@ import:
 	A			https://github.com/ar-visions/A 		main
 	ether		https://github.com/ar-visions/ether		main
 	tapestry	https://github.com/ar-visions/tapestry 	main
-
-app:
-	$(bash ../A/headers.sh)
-    -fPIC
-    -fno-exceptions
-	-Wno-write-strings
-    -Wno-compare-distinct-pointer-types
-    -Wno-deprecated-declarations
-	-Wno-incompatible-pointer-types
-    -Wfatal-errors
-	-Wno-incompatible-library-redeclaration
-    -fvisibility=default
-	A
-	ether
-	tapestry

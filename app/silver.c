@@ -255,94 +255,6 @@ array import_list(silver mod, bool use_text) {
 
 array read_body(silver mod, bool inner_expr);
 
-/// this must be basically the same as parsing named args; , should be optional for this
-void import_read_fields(import im, array tokens) {
-    silver mod = im->mod;
-    //array tokens = read_body(mod, false);
-    push_state(mod, tokens, 0);
-    while (peek(mod)) {
-        token arg_name = next(mod);
-        verify(read(mod, ":"), "expected : after token %s", arg_name);
-        assert (is_alpha(arg_name), "expected identifier for import arg");
-        bool    use_tokens  = next_is(mod, "[");
-        assert (use_tokens || next_is(mod, ":"),
-            "expected : after import arg (argument assignment)");
-        consume(mod);
-        if (eq(arg_name, "name")) {
-            token token_name = next(mod);
-            assert (! get_type(token_name), "expected token for import name");
-            im->name = string(token_name->chars);
-        } else if (eq(arg_name, "links"))    im->links      = import_list(im->mod, use_tokens);
-            else if (eq(arg_name, "includes")) im->includes   = import_list(im->mod, use_tokens);
-            else if (eq(arg_name, "products")) im->products   = import_list(im->mod, use_tokens);
-            else if (eq(arg_name, "source"))   im->source     = import_list(im->mod, use_tokens);
-            else if (eq(arg_name, "build"))    im->build_args = import_list(im->mod, use_tokens);
-            else if (eq(arg_name, "shell")) {
-            token token_shell = next(mod);
-            assert (get_type(token_shell), "expected shell invocation for building");
-            im->shell = string(token_shell->chars);
-        } else if (eq(arg_name, "defines")) {
-            // none is a decent name for null.
-            assert (false, "not implemented");
-        } else
-            assert (false, "unknown arg: %o", arg_name);
-
-        if (next_is(mod, "]"))
-            break;
-    }
-    pop_state(mod, false);
-}
-
-/// get import keyword working to build into build-root (silver-import)
-none import_init(import im) {
-    silver mod = im->mod;
-    im->includes = array(32);
-    im->is_user = true;
-    assert(!next_is(mod, "import"), "unexpected import");
-
-    if (read(mod, "<")) {
-        im->import_type = import_t_includes;
-        im->includes = array(8);
-        while (1) {
-            token inc = next(mod);
-            verify (is_alpha(inc), "expected alpha-identifier for header");
-            push(im->includes, inc);
-            include(mod, string(inc->chars));
-            if (read(mod, ">")) break;
-            token comma = next(mod);
-            assert (eq(comma, ","), "expected comma-separator or end-of-includes >");
-        }
-    } else {
-        string module_name;
-        if (!im->name) {
-            module_name = read_alpha(mod);
-            assert(is_alpha(module_name), "expected mod name identifier");
-            if (!im->name) {
-                im->name = hold(module_name);
-                im->anonymous = true;
-            }
-        } else
-            module_name = im->name;
-
-        assert(is_alpha(module_name), form(string, "expected variable identifier, found %o", module_name));
-        string url = read_string(mod);
-        if (url)
-            im->source = array_of(url, null);
-
-        array body = read_body(mod, false);
-        if (body) {
-            import_read_fields(im, body);
-        } else if (!im->skip_process) {
-            path rel    = form(path, "%o.cms", module_name);
-            path source = absolute(rel);
-            // should be called a kind of A-type mode
-            /// load a silver module
-            im->extern_mod = silver(
-                name, module_name, source, source, install, mod->install, delegate, true);
-        }
-    }
-}
-
 
 string configure_debug(bool debug) {
     return debug ? string("--with-debug") : string("");
@@ -356,308 +268,6 @@ string cmake_debug(bool debug) {
 
 string make_debug(bool debug) {
     return debug ? string("-g") : string("");
-}
-
-
-void import_extract_libs(import im, string build_dir) {
-    exts exts = get_exts();
-    path i = im->mod->install;
-    if (im->products)
-    each(im->products, string, link_name) {
-        symbol n   = cstring(link_name);
-        symbol pre = exts.lib_prefix;
-        symbol ext = exts.shared_ext;
-        path   lib = form(path, "%o/lib/%s%s.%s", i, pre, n, ext);
-        if (!file_exists(lib)) {
-            ext = exts.static_ext;
-            lib = form(path, "%o/lib/%s%s.%s", i, pre, n, ext);
-        }
-        bool exists = file_exists(lib);
-        assert (im->assemble_so || exists, "lib does not exist");
-        if (exists) {
-            path sym = form(path, "%o/%s%s.%s", i, pre, n, ext);
-            create_symlink(lib, sym);
-            im->assemble_so = false;
-        }
-    }
-    /// combine .a into single shared library; assume it will work
-    if (im->assemble_so) {
-        path   dawn_build = new(path, chars, build_dir->chars);
-        array  files      = ls(dawn_build, string(".a"), true);
-        string all        = string("");
-        each (files, path, f) {
-            if (all->len)
-                append(all, " ");
-            append(all, f->chars);
-        }
-        exec("%o/bin/clang -shared -o %o/lib/lib%o.so -Wl,--whole-archive %o -Wl,--no-whole-archive",
-            i, i, im->name, all);
-    }
-}
-
-
-build_state build_project(import im, string name, string url) {
-    path checkout  = create_folder(im->mod, "checkout", cstring(name));
-    path i         = im->mod->install;
-    path build_dir = form(path, "%o/%s", checkout,
-        im->mod->with_debug ? "debug" : "build");
-
-    path cwd = path_cwd(2048);
-    bool dbg = im->mod->with_debug;
-
-    /// clone if empty
-    if (is_empty(checkout)) {
-        char   at[2]  = { '@', 0 };
-        string f      = form(string, "%s", at);
-        num    find   = index_of(url, at);
-        string branch = null;
-        string s_url  = url;
-        if (find > -1) {
-            s_url     = mid(url, 0, find);
-            branch    = mid(url, find + 1, len(url) - (find + 1));
-        }
-        string cmd = form(string, "git clone %o %o", s_url, checkout);
-        assert (system(cmd->chars) == 0, "git clone failure");
-        if (len(branch)) {
-            chdir(checkout->chars);
-            cmd = form(string, "git checkout %o", branch);
-            assert (system(cmd->chars) == 0, "git checkout failure");
-        }
-        make_dir(build_dir);
-    }
-    /// intialize and build
-    if (!is_empty(checkout)) { /// above op can add to checkout; its not an else
-        chdir(checkout->chars);
-
-        bool build_success = file_exists("%o/silver-token", build_dir);
-        if (file_exists("silver-init.sh") && !build_success) {
-            string cmd = form(string, 
-                "%o/silver-init.sh \"%s\"", path_type.cwd(2048), i);
-            assert(system(cmd->chars) == 0, "cmd failed");
-        }
-    
-        bool is_rust = file_exists("Cargo.toml");
-
-        /// support for Cargo/Makefile/CMake
-        if (is_rust) {
-            cstr rel_or_debug = "release";
-            path package = form(path, "%o/%s/%o", i, "rust", name);
-            make_dir(package);
-            setenv("RUSTFLAGS", "-C save-temps", 1);
-            setenv("CARGO_TARGET_DIR", package->chars, 1);
-            string cmd = form(string, "cargo build -p %o --%s", name, rel_or_debug);
-            assert (system(cmd->chars) == 0, "cmd failed");
-            path   lib = form(path,
-                "%o/%s/lib%o.so", package, rel_or_debug, name);
-            path   exe = form(path,
-                "%o/%s/%o_bin",   package, rel_or_debug, name);
-            if (!file_exists(exe->chars))
-                exe = form(path, "%o/%s/%o", package, rel_or_debug, name);
-            if (file_exists(lib->chars)) {
-                path sym = form(path, "%o/lib%o.so", i, name);
-                im->products = array_of(name, null);
-                create_symlink(lib, sym);
-            }
-            if (file_exists(exe->chars)) {
-                path sym = form(path, "%o/%o", i, name);
-                create_symlink(exe, sym);
-            }
-        } else {
-            bool A_build = false;
-            im->assemble_so = false;
-            if (!im->skip_process && (!im->products || !len(im->products))) { // default to this when initializing
-                im->products = array_of(name, null);
-                im->assemble_so = true;
-            }
-            if (file_exists("Makefile")) {
-                bool has_config = file_exists("configure") || file_exists("configure.ac");
-                if (has_config) {
-                    if (!file_exists("configure")) {
-                        print("running autoreconf -i in %o", im->name);
-                        exec("autoupdate ..");
-                        exec("autoreconf -i ..");
-                        verify(file_exists("configure"), "autoreconf run, expected configure file");
-                    }
-                    exec("configure %o --prefix=%o", configure_debug(dbg), im->mod->install);
-                } else {
-                    A_build = true;
-                }
-                if (!build_success) {
-                    chdir(build_dir->chars);
-                    verify(exec("make -f ../Makefile") == 0, "Makefile build failed for %o", im->name);
-                }
-            } else {
-                verify (file_exists("CMakeLists.txt"),
-                    "CMake required for project builds");
-
-                string cmake_flags = string("");
-                each(im->build_args, string, arg) {
-                    if (cast(bool, cmake_flags))
-                        append(cmake_flags, " ");
-                    append(cmake_flags, arg->chars);
-                }
-                
-                if (!build_success) {
-                    string cmake = string(
-                        "cmake -S . -DCMAKE_BUILD_TYPE=Release "
-                        "-DBUILD_SHARED_LIBS=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON");
-                    string cmd   = form(string, 
-                        "%o -B %o -DCMAKE_INSTALL_PREFIX=%o %o", cmake, build_dir, i, cmake_flags);
-                    assert (system(cmd->chars) == 0, "cmd failed");
-                    chdir(build_dir->chars);
-                    assert (system("make -j16 install") == 0, "install failed");
-                }
-            }
-            import_extract_libs(im, build_dir);
-            FILE*  silver_token = fopen("silver-token", "w");
-            fclose(silver_token);
-        }
-    }
-
-    chdir(cwd->chars);
-    return build_state_built;
-}
-
-
-bool contains_main(path obj_file) {
-    string cmd = form(string, "nm %o", obj_file);
-    FILE *fp = popen(cmd->chars, "r");
-    assert(fp, "failure to open %o", obj_file);
-    char line[256];
-    while (fgets(line, sizeof(line), fp) != NULL) {
-        if (strstr(line, " T main") != NULL) {
-            pclose(fp);
-            return true;
-        }
-    }
-    pclose(fp);
-    return false;
-}
-
-
-build_state import_build_source(import im) {
-    bool is_debug = im->mod->with_debug; /// needs separate debugging for imports; use environment variable for this one
-    string install = im->mod->install;
-    each (im->cfiles, string, cfile) {
-        path cwd = path_cwd(1024);
-        string compile;
-        if (ends_with(cfile, ".rs")) {
-            // rustc integrated for static libs only in this use-case
-            compile = form(string, "rustc --crate-type=staticlib -C opt-level=%s %o/%o --out-dir %o/lib",
-                is_debug ? "0" : "3", cwd, cfile, install);
-        } else {
-            cstr opt = is_debug ? "-g2" : "-O2";
-            compile = form(string, 
-                "gcc -I%o/include %s -Wfatal-errors -Wno-write-strings -Wno-incompatible-pointer-types -fPIC -std=c99 -c %o/%o -o %o/%o.o",
-                install, opt, cwd, cfile, install, cfile);
-        }
-        
-        path   obj_path   = form(path,   "%o.o", cfile);
-        string log_header = form(string, "import: %o source: %o", im->name, cfile);
-        print("%s > %s", cwd, compile);
-        assert (system(compile) == 0,  "%o: compilation failed",    log_header);
-        assert (file_exists(obj_path), "%o: object file not found", log_header);
-
-        if (contains_main(obj_path)) {
-            im->main_symbol = form(string, "%o_main", stem(obj_path));
-            string cmd = form(string, "objcopy --redefine-sym main=%o %o",
-                im->main_symbol, obj_path);
-            assert (system(cmd->chars) == 0,
-                "%o: could not replace main symbol", log_header);
-        }
-    }
-    return build_state_built;
-}
-
-
-void import_process_includes(import im, array includes) {
-    /// having a singlar expression instead of a statement would be nice for 1 line things in silver
-    /// [cast] is then possible, i believe (if we dont want cast keyword)
-    /// '{using} in strings, too, so we were using the character'
-}
-
-
-void import_process(import im) {
-    silver mod = im->mod;
-    if (im->skip_process) return;
-    bool has_name     = (im->name     && len(im->name));
-    bool has_source   = (im->source   && len(im->source));
-    bool has_includes = (im->includes && len(im->includes));
-    /// when not import <, or import name [ ... syntax: import name
-    ///                 ^- c-include      ^- build             ^- silver
-    if ( im->extern_mod ) {
-        array attempt = array_of(string(""), string("spec/"), NULL);
-        bool  exists  = false;
-        each(attempt, string, pre) {
-            path module_path = form(path, "%o%o.si", pre, im->name);
-            if (!exists(module_path)) continue;
-            im->module_path = module_path;
-            print("mod-path %o", module_path);
-            exists = true;
-            break;
-        }
-        assert(exists, "path does not exist for silver mod: %o", im->name);
-    } else if (has_name && has_source) {
-        bool has_c  = false, has_h = false, has_rs = false,
-             has_so = false, has_a = false;
-        each(im->source, string, i0) {
-            if (ends_with(i0, ".c"))   has_c  = true;
-            if (ends_with(i0, ".h"))   has_h  = true;
-            if (ends_with(i0, ".rs"))  has_rs = true;
-            if (ends_with(i0, ".so"))  has_so = true;
-            if (ends_with(i0, ".a"))   has_a  = true;
-        }
-        if (has_h)
-            im->import_type = import_t_source;
-        else if (has_c || has_rs) {
-            im->import_type = import_t_source;
-            import_build_source(im);
-        } else if (has_so) {
-            im->import_type = import_t_library;
-            if (!im->library_exports)
-                 im->library_exports = array_of(string(""), NULL);
-            each(im->source, string, lib) {
-                string rem = mid(lib, 0, len(lib) - 3);
-                push(im->library_exports, rem);
-            }
-        } else if (has_a) {
-            im->import_type = import_t_library;
-            if (!im->library_exports)
-                 im->library_exports = array_of(string(""), NULL);
-            each(im->source, string, lib) {
-                string rem = mid(lib, 0, len(lib) - 2);
-                push(im->library_exports, rem);
-            }
-        } else {
-            assert(len(im->source) == 1, "source size mismatch");
-            im->import_type = import_t_project;
-            string im_name = string(im->name->chars);
-            build_project(im, im_name, idx(im->source, 0));
-            if (!im->library_exports)
-                 im->library_exports = array_of(im_name, NULL);
-        }
-    }
-    import_process_includes(im, im->includes);
-    switch (im->import_type) {
-        case import_t_source:
-            if (len(im->main_symbol))
-                push(mod->main_symbols, im->main_symbol);
-            each(im->source, string, source) {
-                // these are built as shared library only, or, a header file is included for emitting
-                if (ends_with(source, ".rs") || ends_with(source, ".h"))
-                    continue;
-                string buf = form(string, "%o/%s.o", mod->install, source);
-                push(mod->compiled_objects, buf);
-            }
-        case import_t_library:
-        case import_t_project:
-            concat(mod->products_used, im->products);
-            break;
-        case import_t_includes:
-            break;
-        default:
-            verify(false, "not handled: %i", im->import_type);
-    }
 }
 
 /// used for records and functions
@@ -1220,17 +830,17 @@ node silver_read_node(silver mod) {
         bool ns_found = false;
         if (first) {
             /// if token is a module name, consume an expected . and member-name
-            each (mod->imports, import, im) {
+            /*each (mod->imports, import_info, im) {
                 if (im->namespace && eq(alpha, im->namespace->chars)) {
                     string module_name = alpha;
                     verify(read(mod, "."), "expected . after module-name: %o", alpha);
                     alpha = read_alpha(mod);
                     verify(alpha, "expected alpha-ident after module-name: %o", module_name);
-                    mem = lookup(mod, alpha, typeid(import)); // if import has no namespace assignment, we should not push it to members
+                    mem = lookup(mod, alpha, typeid(import_info)); // if import has no namespace assignment, we should not push it to members
                     verify(mem, "%o not found in module-name: %o", alpha, module_name);
                     ns_found = true;
                 }
-            }
+            }*/
         }
 
         if (!ns_found)
@@ -1264,22 +874,6 @@ node silver_read_node(silver mod) {
                 is_module,  module);
             
         } else if (!mem->is_type) {
-            import im = instanceof(mem->mdl, import);
-            if (im) {
-                /// import is not a type that silver may use but a namespace into a module of types
-                verify(read(mod, "."), "expected .member after module reference");
-                string module_m_name = read_alpha(mod);
-                /// C imports will go right into import model, where as silver imports are delegated inside
-                model ns = im->extern_mod ? (model)im->extern_mod : (model)im;
-                mem = get(ns->members, module_m_name);
-                verify(mem, "%o not a member in module %o", module_m_name, ns->name); 
-            } else {
-                /// if member already registered, we may assume this is an instancing of an anonymous
-                /// in the case of import, and member with the same name as type
-                /// construct can allow simple pass-through to next member if model scope if its valid
-                /// that is if the member behind's mdl and the models src (generic A-type) match
-                verify(!mem->is_type, "member-defined %o", mem->name);
-            }
 
             /// from record if no value; !is_record means its not a record definition but this is an expression within a function
             if (!is_record && !mem->is_func && !has_value(mem)) { // if mem from_record_in_context
@@ -1357,7 +951,7 @@ node silver_read_node(silver mod) {
         }
     }
 
-    if (mem && mem->mdl && !instanceof(mem->mdl, import))
+    if (mem && mem->mdl)
         push_member(mod, mem); /// do not finalize in push member
 
     return mem;
@@ -2139,11 +1733,11 @@ member read_def(silver mod, member existing) {
     member mem = existing ? existing : member(mod, mod, name, n);
 
     if (is_import) {
-        import im = import(
-            mod, mod, name, mem->name, skip_process, mod->prebuild,
-            namespace, existing ? string(existing->name->chars) : null);
-        push(mod->imports, im);
-        set_model(mem, im);
+        //import_info im = import_info(
+        //    mod, mod, name, mem->name, skip_process, mod->prebuild,
+        //    namespace, existing ? string(existing->name->chars) : null);
+        //push(mod->imports, im);
+        //set_model(mem, im);
     } else if (is_class || is_struct) {
         array schema = array();
         /// read class schematics
@@ -2406,39 +2000,6 @@ void silver_parse(silver mod) {
     finalize(module_init, mem_init);
 }
 
-
-build_state build_project(import im, string name, string url);
-
-
-bool silver_compile(silver mod) {
-    verify(exec("%o/bin/llc -filetype=obj %o.ll -o %o.o -relocation-model=pic",
-        mod->install, mod->name, mod->name) == 0,
-            ".ll -> .o compilation failure");
-
-    string libs = string(alloc, 128);
-    each (mod->imports, import, im) {
-        if (im->links)
-            each_ (im->links, string, link) {
-                string l = form(string, "-l%o ", link);
-                append(libs, l->chars);
-            }
-    }
-    each (mod->imports, import, im) {
-        if (im->products)
-            each_ (im->products, string, product) {
-                string l = form(string, "-l%o ", link);
-                append(libs, l->chars);
-            }
-    }
-    string cmd = form(string, "%o/bin/clang %o.o -o %o -L %o/lib %o",
-        mod->install, mod->name, mod->name, mod->install, libs);
-    print("cmd: %o", cmd);
-    verify(system(cmd->chars) == 0, "compilation failed"); /// add in all import objects/libraries
-    print("compiled: %o", mod->name);
-    return true;
-}
-
-
 void silver_init(silver mod) {
     verify(exists(mod->source), "source (%o) does not exist", mod->source);
     mod->mod = mod;
@@ -2458,12 +2019,12 @@ void silver_init(silver mod) {
     member m_Atype = parse_statement(mod);
     mod->prebuild = false;
 
-    //import Atype = import(mod, mod, name, string("A"), skip_process, true);
-    import Atype = instanceof(m_Atype->mdl, import);
+    //import Atype = import_info(mod, mod, name, string("A"), skip_process, true);
+    import_info Atype = instanceof(m_Atype->mdl, import_info);
     pop_state  (mod, false);
     push       (mod->imports, Atype);
-    build_project(Atype, string("A"), string("https://github.com/ar-visions/A"));
-    include    (mod, string("A"));
+    //build_project(Atype, f("A"), string("https://github.com/ar-visions/A"));
+    include    (mod, f("A"));
  
     model mdl = emodel("A");
     AType mdl_type = isa(mdl); /// issue is A becomes a member
@@ -2486,11 +2047,14 @@ void silver_init(silver mod) {
 
     /// enumerating objects used, libs used, etc
     /// may be called earlier when the statement of import is finished
-    each (mod->imports, import, im)
+    each (mod->imports, import_info, im)
         process(im);
 
-    write(mod);   /// write the intermediate LL
-    compile(mod); /// compile the LL
+    path ll = null, bc = null;
+    write(mod, &ll, &bc);
+    verify(bc != null, "compilation failed");
+    
+    build(mod->tapestry, bc);
 }
 
 
@@ -2512,8 +2076,11 @@ int main(int argc, char **argv) {
     return 0;
 }
 
+none import_info_init(import_info a) {
+}
+
 define_mod   (silver, ether)
 define_enum  (import_t)
 define_enum  (build_state)
-define_mod   (import, model)
+define_mod   (import_info, model)
 module_init  (init)
