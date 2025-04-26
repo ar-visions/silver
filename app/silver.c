@@ -2000,6 +2000,10 @@ void silver_parse(silver mod) {
     finalize(module_init, mem_init);
 }
 
+void import_info_process(import_info im) {
+    /// this might be returning members from field meta data to something we may understand in ether models
+}
+
 void silver_init(silver mod) {
     verify(exists(mod->source), "source (%o) does not exist", mod->source);
     mod->mod = mod;
