@@ -72,7 +72,6 @@ declare_class(completer_context)
     i_method  (X,Y, public,     string,         read_assign, ARef, ARef) \
     i_method  (X,Y, public,     string,         location) \
     i_method  (X,Y, public,     none,           parse) \
-    i_method  (X,Y, public,     bool,           compile) \
     i_override(X,Y, method,     build_initializer) \
     i_override(X,Y, method,     init)
 declare_mod(silver, ether, model)
