@@ -2027,8 +2027,8 @@ void silver_init(silver mod) {
     import_info Atype = instanceof(m_Atype->mdl, import_info);
     pop_state  (mod, false);
     push       (mod->imports, Atype);
-    //build_project(Atype, f("A"), string("https://github.com/ar-visions/A"));
-    include    (mod, f("A"));
+    //build_project(Atype, f(string, "A"), string("https://github.com/ar-visions/A"));
+    include    (mod, f(string, "A"));
  
     model mdl = emodel("A");
     AType mdl_type = isa(mdl); /// issue is A becomes a member
