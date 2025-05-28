@@ -138,7 +138,7 @@ static EContext EContext_with_EModule(EContext self, EModule module, EMember met
     return self;
 }
 
-define_class(EContext)
+define_class(EContext, A)
 
 */
 
