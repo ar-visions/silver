@@ -159,7 +159,7 @@ void Texture_resize(Texture texture, vec2i sz) {
 
 // Additional implementations for Window, Model, Pipeline, etc. would follow here...
 
-define_class(Dawn)
-define_class(Device)
-define_class(Texture)
+define_class(Dawn, A)
+define_class(Device, A)
+define_class(Texture, A)
 // define_class declarations for other types...

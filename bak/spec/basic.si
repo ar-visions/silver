@@ -139,14 +139,14 @@ C99 version:
     public(X,Y,Z, short, i) \
     imethod(X,Y,Z, T, add, aclass)
 declare_class(aclass)
-define_class(aclass)
+define_class(aclass, A)
 
 #define bclass_meta(X,Y,Z) \
     property(X,Y,Z, array, instances) \
     imethod_R2(X,Y,Z, void, dosomething2, aclass, aclass, aclass, i32*, aclass*) \
     imethod(X,Y,Z, num, dosomething1, aclass, aclass, aclass)
 declare_class(bclass)
-define_class(bclass)
+define_class(bclass, A)
 
 # -> emits:
 typedef struct aclass {

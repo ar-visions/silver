@@ -1702,26 +1702,26 @@ u64 silver_t_hash(silver_t a) {
     return call(a->tokens, hash);
 }
 
-define_class(silver_t)
-define_class(Parser)
-define_class(ident)
-define_class(enode)
-define_class(define_t)
-define_class(module_t)
-define_class(member_def)
+define_class(silver_t,      A)
+define_class(Parser,        A)
+define_class(ident,         A)
+define_class(enode,         A)
+define_class(define_t,      A)
+define_class(module_t,      A)
+define_class(member_def,    A)
 
-define_mod(class_t,  define_t)
-define_mod(enum_t,   define_t)
-define_mod(import_t, define_t)
-define_mod(struct_t, define_t)
-define_mod(var_t,    define_t)
+define_class(class_t,  define_t)
+define_class(enum_t,   define_t)
+define_class(import_t, define_t)
+define_class(struct_t, define_t)
+define_class(var_t,    define_t)
 
-define_class(meta_instance)
+define_class(meta_instance, A)
 
-declare_alias(array, array_i32)
- define_alias(array, array_i32, i32)
+declare_class(array_i32, array)
+define_class(array_i32, array, i32)
 
- define_alias(array, array_ident, ident)
+ define_class(array, array_ident, ident)
 
 int main(int argc, char **argv) {
     A_finish_types();

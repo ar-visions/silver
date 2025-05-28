@@ -32,12 +32,12 @@ declare_class(ENode)
     i_public(X,Y,Z, bool,           integral) \
     i_public(X,Y,Z, bool,           realistic) \
     i_public(X,Y,Z, AType,          type)
-declare_mod(EModel, ENode)
+declare_class_2(EModel, ENode)
 
 #define EMeta_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
     i_public(X,Y,Z, map,            args)
-declare_mod(EMeta, ENode)
+declare_class_2(EMeta, ENode)
 
 #define EIdent_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
@@ -71,7 +71,7 @@ declare_mod(EMeta, ENode)
     i_override_m(X,Y,Z, none,       emit_header) \
     i_override_m(X,Y,Z, none,       emit_source) \
     i_override_m(X,Y,Z, none,       emit_source_decl)
-declare_mod(EIdent, ENode)
+declare_class_2(EIdent, ENode)
 
 #define EMember_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
@@ -94,14 +94,14 @@ declare_mod(EIdent, ENode)
     i_override_m(X,Y,Z, none,       emit_header) \
     i_override_m(X,Y,Z, none,       emit_source) \
     i_override_m(X,Y,Z, none,       emit_source_decl)
-declare_mod(EMember, ENode)
+declare_class_2(EMember, ENode)
 
 #define EMetaMember_schema(X,Y,Z) \
     EMember_schema(X,Y,Z) \
     i_public(X,Y,Z, EIdent,         conforms) \
     i_public(X,Y,Z, EIdent,         index) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EMetaMember, EMember)
+declare_class_2(EMetaMember, EMember)
 
 #define EMethod_schema(X,Y,Z) \
     EMember_schema(X,Y,Z) \
@@ -112,7 +112,7 @@ declare_mod(EMetaMember, EMember)
     i_public(X,Y,Z, ENode,          code) \
     i_public(X,Y,Z, bool,           automatic) \
     i_public(X,Y,Z, map,            context)
-declare_mod(EMethod, EMember)
+declare_class_2(EMethod, EMember)
 
 #define EClass_schema(X,Y,Z) \
     EMember_schema(X,Y,Z) \
@@ -124,7 +124,7 @@ declare_mod(EMethod, EMember)
     i_override_m(X,Y,Z, none,       emit_header) \
     i_override_m(X,Y,Z, none,       emit_source) \
     i_override_m(X,Y,Z, none,       emit_source_decl)
-declare_mod(EClass, EMember)
+declare_class_2(EClass, EMember)
 
 #define EModule_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
@@ -240,28 +240,28 @@ declare_mod(EClass, EMember)
     i_override_m(X,Y,Z, none,       emit_header) \
     i_override_m(X,Y,Z, none,       emit_source) \
     i_override_m(X,Y,Z, none,       emit_source_decl)
-declare_mod(EModule, ENode)
+declare_class_2(EModule, ENode)
 
 #define EStruct_schema(X,Y,Z) \
     EMember_schema(X,Y,Z) \
     i_override_m(X,Y,Z, none,       emit_header) \
     i_override_m(X,Y,Z, none,       emit_source) \
     i_override_m(X,Y,Z, none,       emit_source_decl)
-declare_mod(EStruct, EMember)
+declare_class_2(EStruct, EMember)
 
 #define EUnion_schema(X,Y,Z) \
     EMember_schema(X,Y,Z) \
     i_override_m(X,Y,Z, none,       emit_header) \
     i_override_m(X,Y,Z, none,       emit_source) \
     i_override_m(X,Y,Z, none,       emit_source_decl)
-declare_mod(EUnion, EMember)
+declare_class_2(EUnion, EMember)
 
 #define EEnum_schema(X,Y,Z) \
     EMember_schema(X,Y,Z) \
     i_override_m(X,Y,Z, none,       emit_header) \
     i_override_m(X,Y,Z, none,       emit_source) \
     i_override_m(X,Y,Z, none,       emit_source_decl)
-declare_mod(EEnum, EMember)
+declare_class_2(EEnum, EMember)
 
 #define EAlias_schema(X,Y,Z) \
     EMember_schema(X,Y,Z) \
@@ -269,7 +269,7 @@ declare_mod(EEnum, EMember)
     i_override_m(X,Y,Z, none,       emit_header) \
     i_override_m(X,Y,Z, none,       emit_source) \
     i_override_m(X,Y,Z, none,       emit_source_decl)
-declare_mod(EAlias, EMember)
+declare_class_2(EAlias, EMember)
 
 #define EImport_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
@@ -291,7 +291,7 @@ declare_mod(EAlias, EMember)
     i_override_m(X,Y,Z, none,       emit_header) \
     i_override_m(X,Y,Z, none,       emit_source) \
     i_override_m(X,Y,Z, none,       emit_source_decl)
-declare_mod(EImport, ENode)
+declare_class_2(EImport, ENode)
 
 #define EConstruct_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
@@ -300,33 +300,33 @@ declare_mod(EImport, ENode)
     i_public(X,Y,Z, array,          args) \
     i_public(X,Y,Z, EMetaMember,    meta_member) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EConstruct, ENode)
+declare_class_2(EConstruct, ENode)
 
 #define EExplicitCast_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
     i_public(X,Y,Z, EIdent,         type) \
     i_public(X,Y,Z, ENode,          value) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EExplicitCast, ENode)
+declare_class_2(EExplicitCast, ENode)
 
 #define EPrimitive_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
     i_public(X,Y,Z, EIdent,         type) \
     i_public(X,Y,Z, ENode,          value) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EPrimitive, ENode)
+declare_class_2(EPrimitive, ENode)
 
 #define EProp_schema(X,Y,Z) \
     EMember_schema(X,Y,Z) \
     i_public(X,Y,Z, bool,           is_prop)
-declare_mod(EProp, EMember)
+declare_class_2(EProp, EMember)
 
 #define ERef_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
     i_public(X,Y,Z, EIdent,         type) \
     i_public(X,Y,Z, ENode,          value) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(ERef, ENode)
+declare_class_2(ERef, ENode)
 
 #define ERefCast_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
@@ -334,7 +334,7 @@ declare_mod(ERef, ENode)
     i_public(X,Y,Z, ENode,          value) \
     i_public(X,Y,Z, ENode,          index) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(ERefCast, ENode)
+declare_class_2(ERefCast, ENode)
 
 #define EIndex_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
@@ -342,7 +342,7 @@ declare_mod(ERefCast, ENode)
     i_public(X,Y,Z, ENode,          target) \
     i_public(X,Y,Z, ENode,          value) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EIndex, ENode)
+declare_class_2(EIndex, ENode)
 
 #define EAssign_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
@@ -352,7 +352,7 @@ declare_mod(EIndex, ENode)
     i_public(X,Y,Z, ENode,          index) \
     i_public(X,Y,Z, bool,           declare) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EAssign, ENode)
+declare_class_2(EAssign, ENode)
 
 #define EIf_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
@@ -361,7 +361,7 @@ declare_mod(EAssign, ENode)
     i_public(X,Y,Z, EStatements,    body) \
     i_public(X,Y,Z, ENode,          else_body) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EIf, ENode)
+declare_class_2(EIf, ENode)
 
 #define EFor_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
@@ -371,7 +371,7 @@ declare_mod(EIf, ENode)
     i_public(X,Y,Z, ENode,          update) \
     i_public(X,Y,Z, ENode,          body) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EFor, ENode)
+declare_class_2(EFor, ENode)
 
 #define EWhile_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
@@ -379,7 +379,7 @@ declare_mod(EFor, ENode)
     i_public(X,Y,Z, ENode,          condition) \
     i_public(X,Y,Z, ENode,          body) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EWhile, ENode)
+declare_class_2(EWhile, ENode)
 
 #define EDoWhile_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
@@ -387,34 +387,34 @@ declare_mod(EWhile, ENode)
     i_public(X,Y,Z, ENode,          condition) \
     i_public(X,Y,Z, ENode,          body) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EDoWhile, ENode)
+declare_class_2(EDoWhile, ENode)
 
 #define EBreak_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
     i_public(X,Y,Z, EIdent,         type) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EBreak, ENode)
+declare_class_2(EBreak, ENode)
 
 #define ELiteralReal_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
     i_public(X,Y,Z, EIdent,         type) \
     i_public(X,Y,Z, f64,            value) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(ELiteralReal, ENode)
+declare_class_2(ELiteralReal, ENode)
 
 #define ELiteralInt_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
     i_public(X,Y,Z, EIdent,         type) \
     i_public(X,Y,Z, i64,            value) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(ELiteralInt, ENode)
+declare_class_2(ELiteralInt, ENode)
 
 #define ELiteralStr_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
     i_public(X,Y,Z, EIdent,         type) \
     i_public(X,Y,Z, string,         value) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(ELiteralStr, ENode)
+declare_class_2(ELiteralStr, ENode)
 
 #define ELiteralStrInterp_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
@@ -422,14 +422,14 @@ declare_mod(ELiteralStr, ENode)
     i_public(X,Y,Z, string,         value) \
     i_public(X,Y,Z, object,         args) \
     i_method(X,Y,Z, string,         emit, EContext)
-declare_mod(ELiteralStrInterp, ENode)
+declare_class_2(ELiteralStrInterp, ENode)
 
 #define ELiteralBool_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
     i_public(X,Y,Z, EIdent,         type) \
     i_public(X,Y,Z, bool,           value) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(ELiteralBool, ENode)
+declare_class_2(ELiteralBool, ENode)
 
 #define ESubProc_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
@@ -439,7 +439,7 @@ declare_mod(ELiteralBool, ENode)
     i_public(X,Y,Z, EIdent,         context_type) \
     i_public(X,Y,Z, array,          context_args) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(ESubProc, ENode)
+declare_class_2(ESubProc, ENode)
 
 #define EOperator_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
@@ -448,24 +448,24 @@ declare_mod(ESubProc, ENode)
     i_public(X,Y,Z, ENode,          right) \
     i_public(X,Y,Z, string,         op) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EOperator, ENode)
+declare_class_2(EOperator, ENode)
 
 #define EIs_schema(X,Y,Z) \
     EOperator_schema(X,Y,Z) \
     i_method(X,Y,Z, string,         template) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EIs, EOperator)
+declare_class_2(EIs, EOperator)
 
 #define EInherits_schema(X,Y,Z) \
     EIs_schema(X,Y,Z) \
     i_method(X,Y,Z, string,         template)
-declare_mod(EInherits, EIs)
+declare_class_2(EInherits, EIs)
 
 #define ERuntimeType_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
     i_public(X,Y,Z, EIdent,         type) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(ERuntimeType, ENode)
+declare_class_2(ERuntimeType, ENode)
 
 #define EMethodCall_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
@@ -475,21 +475,21 @@ declare_mod(ERuntimeType, ENode)
     i_public(X,Y,Z, array,          args) \
     i_public(X,Y,Z, array,          arg_temp_members) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EMethodCall, ENode)
+declare_class_2(EMethodCall, ENode)
 
 #define EMethodReturn_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
     i_public(X,Y,Z, EIdent,         type) \
     i_public(X,Y,Z, ENode,          value) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EMethodReturn, ENode)
+declare_class_2(EMethodReturn, ENode)
 
 #define EStatements_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
     i_public(X,Y,Z, EIdent,         type) \
     i_public(X,Y,Z, array,          value) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EStatements, ENode)
+declare_class_2(EStatements, ENode)
 
 #define EContext_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
@@ -507,121 +507,121 @@ declare_mod(EStatements, ENode)
     i_method(X,Y,Z, none,           push, string) \
     i_method(X,Y,Z, string,         pop) \
     i_method(X,Y,Z, string,         top_state)
-declare_mod(EContext, ENode)
+declare_class_2(EContext, ENode)
 
 #define EDeclaration_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
     i_public(X,Y,Z, EIdent,         type) \
     i_public(X,Y,Z, EMember,        target) \
     i_method(X,Y,Z, string,         emit, EContext)
-declare_mod(EDeclaration, ENode)
+declare_class_2(EDeclaration, ENode)
 
 #define EUndefined_schema(X,Y,Z) \
     ENode_schema(X,Y,Z)
-declare_mod(EUndefined, ENode)
+declare_class_2(EUndefined, ENode)
 
 #define EParenthesis_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
     i_public(X,Y,Z, EIdent,         type) \
     i_public(X,Y,Z, ENode,          enode) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EParenthesis, ENode)
+declare_class_2(EParenthesis, ENode)
 
 #define ELogicalNot_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
     i_public(X,Y,Z, EIdent,         type) \
     i_public(X,Y,Z, ENode,          enode) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(ELogicalNot, ENode)
+declare_class_2(ELogicalNot, ENode)
 
 #define EBitwiseNot_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
     i_public(X,Y,Z, EIdent,         type) \
     i_public(X,Y,Z, ENode,          enode) \
     i_override_m(X,Y,Z, string,     emit)
-declare_mod(EBitwiseNot, ENode)
+declare_class_2(EBitwiseNot, ENode)
 
 #define ECompareEquals_schema(X,Y,Z) \
     EOperator_schema(X,Y,Z)
-declare_mod(ECompareEquals, EOperator)
+declare_class_2(ECompareEquals, EOperator)
 
 #define ECompareNotEquals_schema(X,Y,Z) \
     EOperator_schema(X,Y,Z)
-declare_mod(ECompareNotEquals, EOperator)
+declare_class_2(ECompareNotEquals, EOperator)
 
 #define EAdd_schema(X,Y,Z) \
     EOperator_schema(X,Y,Z)
-declare_mod(EAdd, EOperator)
+declare_class_2(EAdd, EOperator)
 
 #define ESub_schema(X,Y,Z) \
     EOperator_schema(X,Y,Z)
-declare_mod(ESub, EOperator)
+declare_class_2(ESub, EOperator)
 
 #define EMul_schema(X,Y,Z) \
     EOperator_schema(X,Y,Z)
-declare_mod(EMul, EOperator)
+declare_class_2(EMul, EOperator)
 
 #define EDiv_schema(X,Y,Z) \
     EOperator_schema(X,Y,Z)
-declare_mod(EDiv, EOperator)
+declare_class_2(EDiv, EOperator)
 
 #define EOr_schema(X,Y,Z) \
     EOperator_schema(X,Y,Z)
-declare_mod(EOr, EOperator)
+declare_class_2(EOr, EOperator)
 
 #define EAnd_schema(X,Y,Z) \
     EOperator_schema(X,Y,Z)
-declare_mod(EAnd, EOperator)
+declare_class_2(EAnd, EOperator)
 
 #define EXor_schema(X,Y,Z) \
     EOperator_schema(X,Y,Z)
-declare_mod(EXor, EOperator)
+declare_class_2(EXor, EOperator)
 
 #define EAssignAdd_schema(X,Y,Z) \
     EAssign_schema(X,Y,Z)
-declare_mod(EAssignAdd, EAssign)
+declare_class_2(EAssignAdd, EAssign)
 
 #define EAssignSub_schema(X,Y,Z) \
     EAssign_schema(X,Y,Z)
-declare_mod(EAssignSub, EAssign)
+declare_class_2(EAssignSub, EAssign)
 
 #define EAssignMul_schema(X,Y,Z) \
     EAssign_schema(X,Y,Z)
-declare_mod(EAssignMul, EAssign)
+declare_class_2(EAssignMul, EAssign)
 
 #define EAssignDiv_schema(X,Y,Z) \
     EAssign_schema(X,Y,Z)
-declare_mod(EAssignDiv, EAssign)
+declare_class_2(EAssignDiv, EAssign)
 
 #define EAssignOr_schema(X,Y,Z) \
     EAssign_schema(X,Y,Z)
-declare_mod(EAssignOr, EAssign)
+declare_class_2(EAssignOr, EAssign)
 
 #define EAssignAnd_schema(X,Y,Z) \
     EAssign_schema(X,Y,Z)
-declare_mod(EAssignAnd, EAssign)
+declare_class_2(EAssignAnd, EAssign)
 
 #define EAssignXor_schema(X,Y,Z) \
     EAssign_schema(X,Y,Z)
-declare_mod(EAssignXor, EAssign)
+declare_class_2(EAssignXor, EAssign)
 
 #define EAssignShiftR_schema(X,Y,Z) \
     EAssign_schema(X,Y,Z)
-declare_mod(EAssignShiftR, EAssign)
+declare_class_2(EAssignShiftR, EAssign)
 
 #define EAssignShiftL_schema(X,Y,Z) \
     EAssign_schema(X,Y,Z)
-declare_mod(EAssignShiftL, EAssign)
+declare_class_2(EAssignShiftL, EAssign)
 
 #define EAssignMod_schema(X,Y,Z) \
     EAssign_schema(X,Y,Z)
-declare_mod(EAssignMod, EAssign)
+declare_class_2(EAssignMod, EAssign)
 
 #define BuildState_schema(X,Y,Z) \
     ENode_schema(X,Y,Z) \
     i_public(X,Y,Z, i32,            none) \
     i_public(X,Y,Z, i32,            built)
-declare_mod(BuildState, ENode)
+declare_class_2(BuildState, ENode)
 
 
 

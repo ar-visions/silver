@@ -17,40 +17,40 @@ typedef struct define_t* define_t;
 declare_class(silver_t)
 
 #define EType_meta(X,Y) \
-    enum_value(X,Y, Undefined) \
-    enum_value(X,Y, Statements) \
-    enum_value(X,Y, Assign) \
-    enum_value(X,Y, AssignAdd) \
-    enum_value(X,Y, AssignSub) \
-    enum_value(X,Y, AssignMul) \
-    enum_value(X,Y, AssignDiv) \
-    enum_value(X,Y, AssignOr) \
-    enum_value(X,Y, AssignAnd) \
-    enum_value(X,Y, AssignXor) \
-    enum_value(X,Y, AssignShiftR) \
-    enum_value(X,Y, AssignShiftL) \
-    enum_value(X,Y, AssignMod) \
-    enum_value(X,Y, If) \
-    enum_value(X,Y, For) \
-    enum_value(X,Y, While) \
-    enum_value(X,Y, DoWhile) \
-    enum_value(X,Y, Break) \
-    enum_value(X,Y, LiteralReal) \
-    enum_value(X,Y, LiteralInt) \
-    enum_value(X,Y, LiteralStr) \
-    enum_value(X,Y, LiteralStrInterp) \
-    enum_value(X,Y, Array) \
-    enum_value(X,Y, AlphaIdent) \
-    enum_value(X,Y, Var) \
-    enum_value(X,Y, Add) \
-    enum_value(X,Y, Sub) \
-    enum_value(X,Y, Mul) \
-    enum_value(X,Y, Div) \
-    enum_value(X,Y, Or) \
-    enum_value(X,Y, And) \
-    enum_value(X,Y, Xor) \
-    enum_value(X,Y, MethodCall) \
-    enum_value(X,Y, MethodReturn)
+    enum_value(E,T,Y, Undefined,          0) \
+    enum_value(E,T,Y, Statements,         1) \
+    enum_value(E,T,Y, Assign,             2) \
+    enum_value(E,T,Y, AssignAdd,          3) \
+    enum_value(E,T,Y, AssignSub,          4) \
+    enum_value(E,T,Y, AssignMul,          5) \
+    enum_value(E,T,Y, AssignDiv,          6) \
+    enum_value(E,T,Y, AssignOr,           7) \
+    enum_value(E,T,Y, AssignAnd,          8) \
+    enum_value(E,T,Y, AssignXor,          9) \
+    enum_value(E,T,Y, AssignShiftR,       10) \
+    enum_value(E,T,Y, AssignShiftL,       11) \
+    enum_value(E,T,Y, AssignMod,          12) \
+    enum_value(E,T,Y, If,                 13) \
+    enum_value(E,T,Y, For,                14) \
+    enum_value(E,T,Y, While,              15) \
+    enum_value(E,T,Y, DoWhile,            16) \
+    enum_value(E,T,Y, Break,              17) \
+    enum_value(E,T,Y, LiteralReal,        18) \
+    enum_value(E,T,Y, LiteralInt,         19) \
+    enum_value(E,T,Y, LiteralStr,         20) \
+    enum_value(E,T,Y, LiteralStrInterp,   21) \
+    enum_value(E,T,Y, Array,              22) \
+    enum_value(E,T,Y, AlphaIdent,         23) \
+    enum_value(E,T,Y, Var,                24) \
+    enum_value(E,T,Y, Add,                25) \
+    enum_value(E,T,Y, Sub,                26) \
+    enum_value(E,T,Y, Mul,                27) \
+    enum_value(E,T,Y, Div,                28) \
+    enum_value(E,T,Y, Or,                 29) \
+    enum_value(E,T,Y, And,                30) \
+    enum_value(E,T,Y, Xor,                31) \
+    enum_value(E,T,Y, MethodCall,         32) \
+    enum_value(E,T,Y, MethodReturn)
 declare_enum(EType)
 define_enum(EType)
 
@@ -87,13 +87,13 @@ declare_alias(array, array_ident)
 declare_class(enode)
 
 #define MemberType_meta(X,Y) \
-    enum_value(X,Y, Undefined) \
-    enum_value(X,Y, Variable) \
-    enum_value(X,Y, Lambda) \
-    enum_value(X,Y, Method) \
-    enum_value(X,Y, Cast) \
-    enum_value(X,Y, Operator) \
-    enum_value(X,Y, Constructor)
+    enum_value(E,T,Y, Undefined,      0) \
+    enum_value(E,T,Y, Variable,       1) \
+    enum_value(E,T,Y, Lambda,         2) \
+    enum_value(E,T,Y, Method,         3) \
+    enum_value(E,T,Y, Cast,           4) \
+    enum_value(E,T,Y, Operator,       5) \
+    enum_value(E,T,Y, Constructor,    6)
 declare_enum(MemberType)
 define_enum(MemberType)
 
@@ -118,9 +118,9 @@ define_enum(MemberType)
 declare_class(member_def)
 
 #define EMembership_meta(X,Y) \
-    enum_value(X,Y, normal) \
-    enum_value(X,Y, internal)
-declare_enum(EMembership)
+    enum_value(E,T,Y, normal,     0) \
+    enum_value(E,T,Y, internal,   1)
+declare_enum(EMembership, i32)
 define_enum(EMembership)
 
 #define Parser_meta(X,Y,Z) \
@@ -190,40 +190,40 @@ declare_class(define_t)
 /// dont need this if we are utilizing our own types
 /// its trivial to know if we created the type with silver, or not
 #define class_model_meta(X,Y) \
-    enum_value(X,Y, allocated) \
-    enum_value(X,Y, boolean_32) \
-    enum_value(X,Y, unsigned_8) \
-    enum_value(X,Y, unsigned_16) \
-    enum_value(X,Y, unsigned_32) \
-    enum_value(X,Y, unsigned_64) \
-    enum_value(X,Y, signed_8) \
-    enum_value(X,Y, signed_16) \
-    enum_value(X,Y, signed_32) \
-    enum_value(X,Y, signed_64) \
-    enum_value(X,Y, real_32) \
-    enum_value(X,Y, real_64) \
-    enum_value(X,Y, real_128)
+    enum_value(E,T,Y, allocated) \
+    enum_value(E,T,Y, boolean_32) \
+    enum_value(E,T,Y, unsigned_8) \
+    enum_value(E,T,Y, unsigned_16) \
+    enum_value(E,T,Y, unsigned_32) \
+    enum_value(E,T,Y, unsigned_64) \
+    enum_value(E,T,Y, signed_8) \
+    enum_value(E,T,Y, signed_16) \
+    enum_value(E,T,Y, signed_32) \
+    enum_value(E,T,Y, signed_64) \
+    enum_value(E,T,Y, real_32) \
+    enum_value(E,T,Y, real_64) \
+    enum_value(E,T,Y, real_128)
 declare_enum(class_model)
 define_enum(class_model)
 
 /// projects build libs, we agree agree on that
 /// source builds objects, then makes shared module at end with those objects and exported libraries
 #define ImportType_meta(X,Y) \
-    enum_value(X,Y, undefined) \
-    enum_value(X,Y, project) \
-    enum_value(X,Y, source) \
-    enum_value(X,Y, library)
+    enum_value(E,T,Y, undefined) \
+    enum_value(E,T,Y, project) \
+    enum_value(E,T,Y, source) \
+    enum_value(E,T,Y, library)
 declare_enum(ImportType)
 define_enum(ImportType)
 
 #define struct_t_meta(X,Y,Z)  define_t_meta(define_t,Y,Z) \
     i_intern(X,Y,Z,    array,  members) \
     i_override_ctr(X,Y,Z,      Parser)
-declare_mod(struct_t, define_t)
+declare_class_2(struct_t, define_t)
 
 #define var_t_meta(X,Y,Z)  define_t_meta(define_t,Y,Z) \
     i_intern(X,Y,Z,    A, member)
-declare_mod(var_t, define_t)
+declare_class_2(var_t, define_t)
 
 #define meta_instance_meta(X,Y,Z)  define_t_meta(define_t,Y,Z) \
     i_intern(X,Y,Z,    array,  meta_types) \
@@ -241,17 +241,17 @@ declare_class(meta_instance)
     i_override_m(X,Y,Z, none, resolve_members) \
     i_override_ctr(X,Y,Z,      Parser) \
     i_construct(X,Y,Z,         AType)
-declare_mod(class_t, define_t)
+declare_class_2(class_t, define_t)
 
 #define enum_t_meta(X,Y,Z) define_t_meta(define_t,Y,Z) \
     i_intern(X,Y,Z,    array,  symbols) \
     i_override_ctr(X,Y,Z,      Parser)
-declare_mod(enum_t, define_t)
+declare_class_2(enum_t, define_t)
 
 #define BuildState_meta(X,Y) \
-    enum_value(X,Y, undefined) \
-    enum_value(X,Y, unbuilt) \
-    enum_value(X,Y, built)
+    enum_value(E,T,Y, undefined) \
+    enum_value(E,T,Y, unbuilt) \
+    enum_value(E,T,Y, built)
 declare_enum(BuildState)
 define_enum(BuildState)
 
@@ -271,6 +271,6 @@ define_enum(BuildState)
     i_method(X,Y,Z,    BuildState, build_project, string, string) \
     i_override_m(X,Y,Z, none, added) \
     i_override_ctr(X,Y,Z,      Parser)
-declare_mod(import_t, define_t)
+declare_class_2(import_t, define_t)
 
 #endif

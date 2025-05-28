@@ -7,44 +7,44 @@
 
 // Enums
 #define ClearFlags_meta(X,Y) \
-    enum_value(X,Y, Undefined) \
-    enum_value(X,Y, Color) \
-    enum_value(X,Y, Depth) \
-    enum_value(X,Y, Stencil)
+    enum_value(E,T,Y, Undefined) \
+    enum_value(E,T,Y, Color) \
+    enum_value(E,T,Y, Depth) \
+    enum_value(E,T,Y, Stencil)
 declare_enum(ClearFlags)
 
 #define Key_meta(X,Y) \
-    enum_value(X,Y, Undefined) \
-    enum_value(X,Y, Space) \
+    enum_value(E,T,Y, Undefined) \
+    enum_value(E,T,Y, Space) \
     // ... (other key definitions)
 declare_enum(Key)
 
 #define PolygonMode_meta(X,Y) \
-    enum_value(X,Y, undefined) \
-    enum_value(X,Y, tri) \
-    enum_value(X,Y, quad) \
-    enum_value(X,Y, wire) \
-    enum_value(X,Y, mixed) \
-    enum_value(X,Y, ngon)
+    enum_value(E,T,Y, undefined) \
+    enum_value(E,T,Y, tri) \
+    enum_value(E,T,Y, quad) \
+    enum_value(E,T,Y, wire) \
+    enum_value(E,T,Y, mixed) \
+    enum_value(E,T,Y, ngon)
 declare_enum(PolygonMode)
 
 #define AssetType_meta(X,Y) \
-    enum_value(X,Y, undefined) \
-    enum_value(X,Y, color) \
-    enum_value(X,Y, normal) \
-    enum_value(X,Y, material) \
-    enum_value(X,Y, reflect) \
-    enum_value(X,Y, env) \
-    enum_value(X,Y, attachment) \
-    enum_value(X,Y, depth_stencil) \
-    enum_value(X,Y, multisample)
+    enum_value(E,T,Y, undefined) \
+    enum_value(E,T,Y, color) \
+    enum_value(E,T,Y, normal) \
+    enum_value(E,T,Y, material) \
+    enum_value(E,T,Y, reflect) \
+    enum_value(E,T,Y, env) \
+    enum_value(E,T,Y, attachment) \
+    enum_value(E,T,Y, depth_stencil) \
+    enum_value(E,T,Y, multisample)
 declare_enum(AssetType)
 
 #define Sampling_meta(X,Y) \
-    enum_value(X,Y, undefined) \
-    enum_value(X,Y, nearest) \
-    enum_value(X,Y, linear) \
-    enum_value(X,Y, aniso)
+    enum_value(E,T,Y, undefined) \
+    enum_value(E,T,Y, nearest) \
+    enum_value(E,T,Y, linear) \
+    enum_value(E,T,Y, aniso)
 declare_enum(Sampling)
 
 // Structs
@@ -68,10 +68,10 @@ declare_class(Pipeline)
 declare_class(Model)
 
 #define ShaderModule_meta(X,Y) \
-    enum_value(X,Y, undefined) \
-    enum_value(X,Y, vertex) \
-    enum_value(X,Y, fragment) \
-    enum_value(X,Y, compute)
+    enum_value(E,T,Y, undefined) \
+    enum_value(E,T,Y, vertex) \
+    enum_value(E,T,Y, fragment) \
+    enum_value(E,T,Y, compute)
 declare_enum(ShaderModule)
 
 typedef void (*GraphicsGen)(Mesh* mesh, array images);

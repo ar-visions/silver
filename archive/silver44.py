@@ -903,7 +903,7 @@ class EClass(EMember):
                     else:                 f.write('\t%s_method(   X,Y,Z, %s, %s%s)\\\n' % (m, mdef.name, member.name, arg_types))
         f.write('\n')
         if cl.inherits:
-            f.write('declare_mod(%s, %s)\n\n' % (cl.name, cl.inherits.name))
+            f.write('declare_class_3(%s, %s)\n\n' % (cl.name, cl.inherits.name))
         else:
             f.write('declare_class(%s)\n\n' % (cl.name))
 
@@ -942,7 +942,7 @@ class EClass(EMember):
         if cl.inherits:
             file.write('define_mod(%s, %s)\n\n' % (cl.name, cl.inherits.name))
         else:
-            file.write('define_class(%s)\n\n' % (cl.name))
+            file.write('define_class(%s, A)\n\n' % (cl.name))
 
 # we have no map yet, so we need that.  its index takes in an A object
 # how do we get array imported?
@@ -1000,7 +1000,7 @@ class EEnum(EMember):
         for _, a_members in self.members.items():
             assert len(a_members) == 1, 'invalid enumeration'
             for member in a_members:
-                f.write('\tenum_value(X,Y, %s)\\\n' % (member.name))
+                f.write('\tenum_value(E,T,Y, %s)\\\n' % (member.name))
                 break
         f.write('\ndeclare_enum(%s)\n' % (name))
     def emit_source_decl(self, f):

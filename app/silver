@@ -4,17 +4,17 @@
 #include <silver-intern> 
 #include <silver-public>
 
-#define import_t_schema(X,Y,...) \
-    enum_value(X,Y, none) \
-    enum_value(X,Y, source) \
-    enum_value(X,Y, library) \
-    enum_value(X,Y, project) \
-    enum_value(X,Y, includes)
+#define import_t_schema(E,T,Y,...) \
+    enum_value(E,T,Y, none,       0) \
+    enum_value(E,T,Y, source,     1) \
+    enum_value(E,T,Y, library,    2) \
+    enum_value(E,T,Y, project,    3) \
+    enum_value(E,T,Y, includes,   4)
 declare_enum(import_t)
 
-#define build_state_schema(X,Y,...) \
-    enum_value(X,Y, none) \
-    enum_value(X,Y, built)
+#define build_state_schema(E,T,Y,...) \
+    enum_value(E,T,Y, none,       0) \
+    enum_value(E,T,Y, built,      1)
 declare_enum(build_state)
 
 #define completer_context_schema(X,Y,...) \
@@ -74,7 +74,7 @@ declare_class(completer_context)
     i_method  (X,Y, public,     none,           parse) \
     i_override(X,Y, method,     build_initializer) \
     i_override(X,Y, method,     init)
-declare_mod(silver, ether, model)
+declare_class_3(silver, ether, model)
 
 
 /// major change to model here, with most work on software import happening in tapestry
@@ -114,6 +114,6 @@ declare_mod(silver, ether, model)
     i_prop    (X,Y, intern, silver,     extern_mod) \
     i_method  (X,Y, public, none,       process) \
     i_override(X,Y, method, init)
-declare_mod(import_info, model)
+declare_class_3(import_info, model)
 
 #endif

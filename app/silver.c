@@ -2083,8 +2083,8 @@ int main(int argc, char **argv) {
 none import_info_init(import_info a) {
 }
 
-define_mod   (silver, ether)
+define_class   (silver, ether)
 define_enum  (import_t)
 define_enum  (build_state)
-define_mod   (import_info, model)
+define_class   (import_info, model)
 module_init  (init)
