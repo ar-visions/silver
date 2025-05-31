@@ -109,7 +109,7 @@ path reflect(string module) {
         }
         for (int m = 0; m < type->member_count; m++) {
             type_member_t* mem = &type->members[m];
-            string name_symbol = str(mem->name);
+            string name_symbol = mem->sname;
             if (!contains(name_symbols, name_symbol))
                  set     (name_symbols, name_symbol, A_u16(len(name_symbols)));
             if (!contains(type_symbols, type_symbol))
