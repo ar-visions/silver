@@ -2063,7 +2063,7 @@ void silver_init(silver mod) {
 
 
 int main(int argc, char **argv) {
-    A_start();
+    A_start(argc, argv);
  
     string s = string("hi");
     map        args = A_args(argc, argv,
