@@ -202,7 +202,7 @@ path reflect(string module) {
 }
 
 int main(int argc, cstr argv[]) {
-    A_start();
+    A_start(argc, argv);
     return 0;
     if (argc != 1)
         fault("usage: %s module-name", argv[1]);
