@@ -244,6 +244,7 @@ array import_list(silver mod, bool use_text) {
         }
         if (word->len)
             push(list, word);
+        drop(word);
         assert (next_is(mod, "]"), "expected ] after build flags");
         consume(mod);
     } else {
@@ -401,7 +402,7 @@ array parse_tokens(A input) {
     each (keywords, string, kw) push(symbols, kw);
     each (assign,   string, a)  push(symbols, a);
     each (compare,  string, a)  push(symbols, a);
-    pairs(operators, i)       push(symbols, (string)i->key);
+    pairs(operators, i)         push(symbols, i->key);
     sort(symbols, sfn);
     map mapping = map(hsize, 32);
     for (item i = symbols->first; i; i = i->next) {
@@ -468,7 +469,7 @@ array parse_tokens(A input) {
             token t = null;
             //t = token(chars, (cstr)name->chars, indent, indent, source,
             //    src, line, line_num, column, index - line_start);
-
+            assert(false);
             push(tokens, t);
             index += len(name);
             continue;
@@ -693,7 +694,7 @@ array silver_namespace_push(silver mod) {
         model mdl = mod->lex->elements[index];
         if (mlast != mdl->members) {
             mlast  = mdl->members;
-            push(levels, mdl);
+            push(levels, hold(mdl));
         }
     }
     return levels;
@@ -894,7 +895,7 @@ node silver_read_node(silver mod) {
             } else
             if (read(mod, ".")) {
                 verify(mem->mdl, "cannot resolve from new member %o", mem->name);
-                push(mod, mem->mdl);
+                push(mod, hold(mem->mdl));
                 string alpha = read_alpha(mod);
                 verify(alpha, "expected alpha identifier");
                 mem = resolve(mem, alpha); /// needs an argument
@@ -2063,12 +2064,10 @@ void silver_init(silver mod) {
 
 
 int main(int argc, char **argv) {
-    A_start(argc, argv);
- 
-    string s = string("hi");
-    map        args = A_args(argc, argv,
+    map        args = A_args(argv,
         "module",  string(""),
         "install", form(path, "%s", getenv("TAPESTRY")));
+    string s = string("hi");
     string mkey     = string("module");
     string name     = get(args, string("module"));
     path   n        = path(chars, name->chars);
