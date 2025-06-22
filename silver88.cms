@@ -1,11 +1,13 @@
 import <stdio>
 
-a-class: class
-    a-member:int[2]
-    print[]
-        printf['a-member: %i\n' a-member]
+aliens: class
+    a-prim   : int
+    a-member : int[2]
+    a-ref    : int[]
+    print []
+        printf[ 'a-member: %i\n' a-member ]
 
-fn silver88[] -> void
-    cl = a-class[a-member:4]
+fn silver88 [] -> void
+    cl = a-class[ a-member:4 ]
     cl.print
     return
