@@ -389,7 +389,7 @@ array parse_tokens(A input) {
     path    src = null;
     if (type == typeid(path)) {
         src = input;
-        input_string = read(src, typeid(string));
+        input_string = read(src, typeid(string), null);
     } else if (type == typeid(string))
         input_string = input;
     else
