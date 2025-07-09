@@ -73,13 +73,12 @@ mod simple {
 
 
 
-mod app [
+module app [
     int      int_argument : 1
     string[] strings      : ["default"]
     simple   simpleton    : [2, [2,3,4,5]]
 
-    int run[] [
+    main[]
         console.log['int argument is {int_argument}, and strings is {strings}']
         return 0
-    ]
 ]

@@ -1,4 +1,5 @@
 #include <import>
+#include <dlfcn.h>
 
 /// silver 88
 /// the goal of 88 is to support class, enum, struct with operator overloads
@@ -18,9 +19,18 @@ static array compare;
 static bool is_alpha(A any);
 static node parse_expression(silver mod);
 
-static void print_tokens(symbol label, silver mod) {
-    print("[%s] tokens: %o ...", label, element(mod, 0));
+static void print_tokens(silver mod, symbol label) {
+    print("[%s] tokens: %o %o %o...", label, element(mod, 0), element(mod, 1), element(mod, 2));
 }
+
+static void print_all(silver mod, symbol label, array list) {
+    print("[%s] tokens", label);
+    each(list, token, t)
+        put("%o ", t);
+    put("\n");
+}
+
+i32 read_enum(silver mod, i32 def, AType etype);
 
 typedef struct {
     OPType ops   [2];
@@ -52,19 +62,16 @@ static string op_lang_token(string name) {
 }
 
 
-static void init() {
+static void initialize() {
     keywords = array_of_cstr(
         "class",    "proto",    "struct",
         "import",   "typeof",   "schema",
-        "is",       "inherits", "init",
-        "destruct", "ref",      "const",  "inlay",
-        "volatile", "require",  "no-op",
-        "return",   "->",       "::",
-        "...",      "asm",      "if",
-        "switch",   "any",      "enum",
+        "is",       "inherits", "ref",
+        "const",    "inlaid",   "require",
+        "no-op",    "return",   "->",       "::",     "...",
+        "asm",      "if",       "switch",   "any",      "enum",
         "ifdef",    "else",     "while",
-        "for",      "do",       "signed",
-        "unsigned", "cast",     "fn",
+        "for",      "do",       "cast",     "fn",
         null);
     assign = array_of_cstr(
         "=",  ":",  "+=", "-=", "*=",  "/=", 
@@ -140,7 +147,7 @@ void build_function(silver mod, function fn) {
     } else {
         push_state(mod, fn->body, 0);
         record cl = fn ? fn->record : null;
-        if (cl) pairs(cl->members, m) A_log("class", "member: %o: %o", cl->name, m->key);
+        if (cl) pairs(cl->members, m) print("class member: %o: %o", cl->name, m->key);
         parse_statements(mod, true);
         if (!mod->last_return) {
             node r_auto = null;
@@ -167,14 +174,14 @@ void build_record(silver mod, record rec) {
     array  body     = rec->body;
 
     A_log       ("build_record", "%s %o", sname, rec->name);
-    print_tokens("before-build-record", mod);
+    print_tokens(mod, "before-build-record");
     push_state(mod, body, 0); /// measure here
-    print_tokens("during-build-record", mod);
+    print_tokens(mod, "during-build-record");
     push      (mod, rec);
     while     (peek(mod)) parse_statement(mod);
     pop       (mod);
     pop_state (mod, false); /// should be the same here after
-    print_tokens("after-build-record", mod);
+    print_tokens(mod, "after-build-record");
 }
 
 path create_folder(silver mod, cstr name, cstr sub) {
@@ -395,9 +402,10 @@ array parse_tokens(A input) {
     else
         assert(false, "can only parse from path");
     
-    list   symbols = list();
-    string special = string(".$,<>()![]/+*:=#");
-    for (int i = 0; i < len(special); i++)
+    list   symbols    = list();
+    string special    = string(".$,<>()![]/+*:=#");
+    i32    special_ln = len(special);
+    for (int i = 0; i < special_ln; i++)
         push(symbols, string((i32)special->chars[i]));
     each (keywords, string, kw) push(symbols, kw);
     each (assign,   string, a)  push(symbols, a);
@@ -465,11 +473,13 @@ array parse_tokens(A input) {
         
         string name = scan_map(mapping, input_string, index);
         if (name) {
-            cstr src = (cstr)&input_string->chars[index];
-            token t = null;
-            //t = token(chars, (cstr)name->chars, indent, indent, source,
-            //    src, line, line_num, column, index - line_start);
-            assert(false);
+            //cstr src = (cstr)&input_string->chars[index];
+            token  t = token(
+                chars,      (cstr)name->chars, 
+                indent,     indent,
+                source,     src,
+                line,       line_num,
+                column,     index - line_start);
             push(tokens, t);
             index += len(name);
             continue;
@@ -591,18 +601,30 @@ bool silver_next_is(silver a, symbol cs) {
     return n && strcmp(n->chars, cs) == 0;
 }
 
-
-bool silver_read(silver a, symbol cs) {
+bool silver_next_is_alpha(silver a) {
+    if (peek_keyword(a)) return false;
     token n = element(a, 0);
-    if (n && strcmp(n->chars, cs) == 0) {
-        a->cursor++;
+    return is_alpha(n) ? true : false;
+}
+
+bool silver_next_is_keyword(silver a) {
+    if (peek_keyword(a))
         return true;
-    }
     return false;
 }
 
 
-object silver_read_literal(silver a) {
+token silver_read(silver a, symbol cs) {
+    token n = element(a, 0);
+    if (n && strcmp(n->chars, cs) == 0) {
+        a->cursor++;
+        return n;
+    }
+    return null;
+}
+
+
+object silver_read_literal(silver a, AType of_type) {
     token  n = element(a, 0);
     if (n && n->literal) {
         a->cursor++;
@@ -633,7 +655,7 @@ object silver_read_numeric(silver a) {
     return null;
 }
 
-
+// this merely reads the various assignment operators if set, and gives a constant bool
 string silver_read_assign(silver a, ARef assign_type, ARef is_const) {
     token  n = element(a, 0);
     if (!n) return null;
@@ -706,16 +728,15 @@ none silver_namespace_pop(silver mod, array levels) {
 }
 
 function parse_fn        (silver mod, AMember  member_type, object ident, OPType assign_enum);
-member   read_def        (silver mod, member existing);
 model    read_model      (silver mod, array* expr);
 
 /// should not need to back out ever, since members are always being operated
 /// unless its a type, in which case we have a membership for them.. so everything is a member
-node silver_read_node(silver mod) {
-    //print_tokens("read-node", mod);
+node silver_read_node(silver mod, AType constant_result) {
+    print_tokens(mod, "read-node");
 
     /// only use :: keyword to navigate for code in functions
-    object lit = read_literal(mod);
+    object lit = read_literal(mod, null);
     if (lit)
         return operand(mod, lit, null);
     
@@ -723,9 +744,9 @@ node silver_read_node(silver mod) {
     if (next_is(mod, "[")) {
         push_current(mod);
         bool  in_inlay = mod->in_inlay;
-        print_tokens("read-node2", mod);
+        print_tokens(mod, "read-node2");
         model inner    = read_model(mod, null); /// if the model comes first, this is an array or map
-        print_tokens("read-node3", mod);
+        print_tokens(mod, "read-node3");
         if (!inner) {
             pop_state(mod, true);
             consume(mod);
@@ -803,14 +824,14 @@ node silver_read_node(silver mod) {
     int      depth    = 0;
 
     array expr = null;
-    print_tokens("pre-read_model", mod);
+    print_tokens(mod, "pre-read_model");
     model mdl = read_model(mod, &expr);
-    print_tokens("post-read_model", mod);
+    print_tokens(mod, "post-read_model");
     if (mdl) {
         pop_state(mod, true);
-        print_tokens("pre-parse_create", mod);
+        print_tokens(mod, "pre-parse_create");
         node cr = parse_create(mod, mdl, expr);
-        print_tokens("post-parse_create", mod);
+        print_tokens(mod, "post-parse_create");
         return cr;
     }
 
@@ -831,17 +852,17 @@ node silver_read_node(silver mod) {
         bool ns_found = false;
         if (first) {
             /// if token is a module name, consume an expected . and member-name
-            /*each (mod->imports, import_info, im) {
+            each (mod->imports, Import, im) {
                 if (im->namespace && eq(alpha, im->namespace->chars)) {
                     string module_name = alpha;
                     verify(read(mod, "."), "expected . after module-name: %o", alpha);
                     alpha = read_alpha(mod);
                     verify(alpha, "expected alpha-ident after module-name: %o", module_name);
-                    mem = lookup(mod, alpha, typeid(import_info)); // if import has no namespace assignment, we should not push it to members
+                    mem = lookup(mod, alpha, typeid(Import)); // if import has no namespace assignment, we should not push it to members
                     verify(mem, "%o not found in module-name: %o", alpha, module_name);
                     ns_found = true;
                 }
-            }*/
+            }
         }
 
         if (!ns_found)
@@ -857,6 +878,11 @@ node silver_read_node(silver mod) {
         function  fn     = instanceof(mod->top, function);
         bool parse_index = false;
 
+
+        // if new type; verify we are allowed to create a function here
+        // silver wont let us create context functions above level
+        // its trivial to define the args we give in context, and 
+        // it keeps the code more flat. 
         if (!mem) {
             verify(mod->expr_level == 0, "member not found: %o", alpha);
             /// check if module or record constructor
@@ -868,10 +894,14 @@ node silver_read_node(silver mod) {
                 verify(!is_cast && !is_fn, "invalid constructor for class; use class-name[] [ no fn, not static ]");
                 mtype = A_MEMBER_CONSTRUCT;
             }
+
+            token t = peek(mod);
+            /// parse new member, parsing any associated function
             mem = member(
                 mod,        mod,
                 name,       alpha,
-                mdl,        (next_is(mod, "[") || next_is(mod, "->")) ? parse_fn(mod, mtype, alpha, OPType__undefined) : null,
+                mdl,        (next_is(mod, "[") || next_is(mod, "->")) ?
+                    parse_fn(mod, mtype, alpha, OPType__undefined) : null,
                 is_module,  module);
             
         } else if (!mem->is_type) {
@@ -888,7 +918,7 @@ node silver_read_node(silver mod) {
             bool chain = next_is(mod, ".") || next_is(mod, "->");
             if (!chain) {
                 member m = instanceof(mem, member);
-                //print_tokens("before-parse_member_expr", mod);
+                print_tokens(mod, "before-parse_member_expr");
                 mem = parse_member_expr(mod, mem);
                 /// we need only the 'node' value of member; we are sometimes returning node here
                 /// todo: use node value for this mem state
@@ -904,7 +934,12 @@ node silver_read_node(silver mod) {
             } else {
                 /// implement a null guard for object -> member syntax
                 /// make pointers safe again
-                verify(false, "not implemented");
+                if (first) {
+                    /// if next is [, we are defining a fn
+                    verify(false, "not implemented 1");
+                } else {
+                    verify(false, "not implemented 2");
+                }
             }
         }
 
@@ -941,19 +976,22 @@ node silver_read_node(silver mod) {
             mem->mdl = read_model(mod, &expr);
             mem->initializer = hold(expr);
         }
-        else if (((module || rec) && (!mem || !mem->mdl)) && peek_keyword(mod))
-            mem = read_def(mod, mem);
-        else if (mem && assign_type) {
+        else if ((module || rec) && peek_def(mod)) {
+            verify(!mem, "unexpected member state when next token is def");
+            mem = read_def(mod);
+        } else if (mem && assign_type) {
             mod->expr_level++;
             verify(mem, "member expected before assignment operator");
             expr = parse_assignment(mod, mem, assign_type);
-            print_tokens("after-parse-assignment", mod);
+            print_tokens(mod, "after-parse-assignment");
             mod->expr_level--;
         }
     }
 
-    if (mem && mem->mdl)
+    if (mem && mem->mdl) {
+        AType model_type = mem->mdl ? isa(mem->mdl) : null;
         push_member(mod, mem); /// do not finalize in push member
+    }
 
     return mem;
 }
@@ -971,6 +1009,14 @@ string silver_read_keyword(silver a) {
 string silver_peek_keyword(silver a) {
     token   n = element(a, 0);
     return (n && is_keyword(n)) ? string(n->chars) : null;
+}
+
+string silver_peek_def(silver a) {
+    token n = element(a, 0);
+    if (n && is_keyword(n))
+        if (eq(n, "import") || eq(n, "fn") || eq(n, "class") || eq(n, "enum") || eq(n, "struct"))
+            return string(n->chars);
+    return null;
 }
 
 
@@ -1007,7 +1053,7 @@ void silver_pop_state(silver a, bool transfer) {
     int len = a->stack->len;
     assert (len, "expected stack");
     tokens_data* state = (tokens_data*)last(a->stack); // we should call this element or ele
-    pop(a->stack);
+    
     if(!transfer)
         a->cursor = state->cursor;
     else if (transfer && state->tokens != a->tokens) {
@@ -1020,6 +1066,7 @@ void silver_pop_state(silver a, bool transfer) {
         drop(a->tokens);
         a->tokens = state->tokens;
     }
+    pop(a->stack);
 }
 
 void silver_build_initializer(silver mod, member mem) {
@@ -1092,9 +1139,7 @@ node silver_parse_do_while(silver mod) {
 
 
 static node reverse_descent(silver mod) {
-    //print_tokens("reverse", mod);
-    node L = read_node(mod); // build-arg
-    //print_tokens("after-L", mod);
+    node L = read_node(mod, null); // build-arg
     verify(L, "failed to read L-value in reverse-descent");
     mod->expr_level++;
     for (int i = 0; i < sizeof(levels) / sizeof(precedence); i++) {
@@ -1108,7 +1153,7 @@ static node reverse_descent(silver mod) {
                     continue;
                 OPType op_type = level->ops   [j];
                 string method  = level->method[j];
-                node R = read_node(mod);
+                node R = read_node(mod, null);
                      L = op(mod, op_type, method, L, R);
                 m      = true;
                 break;
@@ -1137,7 +1182,7 @@ static node parse_expression(silver mod) {
 model read_named_model(silver mod) {
     model mdl = null;
     push_current(mod);
-    bool any = read(mod, "any");
+    bool any = read(mod, "any") != null;
     if (any) {
         model mdl_any = lookup(mod, string("any"), null)->mdl;
         return mdl_any;
@@ -1180,7 +1225,7 @@ model read_model(silver mod, array* expr) {
         }
 
         array shape    = null;
-        bool  is_auto  = read(mod, "]");
+        bool  is_auto  = read(mod, "]") != null;
         bool  is_map   = false;
         bool  is_array = is_auto || next_is(mod, ","); /// it may also be looking at literal x literal
         bool  is_row   = false;
@@ -1191,7 +1236,7 @@ model read_model(silver mod, array* expr) {
 
         /// determine if map or array if we have not already determined [is_auto]
         if (!is_auto) {
-            object lit = read_literal(mod);
+            object lit = read_literal(mod, null);
 
             /// this literal may be a value if is_array is set already
             if (lit) { 
@@ -1202,7 +1247,7 @@ model read_model(silver mod, array* expr) {
                         push(shape, lit);
                         if (!read(mod, "x"))
                             break;
-                        lit = read_literal(mod);
+                        lit = read_literal(mod, null);
                         verify(lit, "expecting literal after x");
                     } while (lit);
                     if (read(mod, "row")) {
@@ -1216,11 +1261,11 @@ model read_model(silver mod, array* expr) {
                 is_map = true;
                 model  value_type = read_model(mod, null);
                 verify(value_type, "expected value type for map");
-                print_tokens("map", mod);
+                print_tokens(mod, "map");
                 drop(shape);
                 shape = type;
                 type  = value_type;
-                print_tokens("read-model 2", mod);
+                print_tokens(mod, "read-model 2");
             }
         }
 
@@ -1240,11 +1285,15 @@ model read_model(silver mod, array* expr) {
         mdl = read_named_model(mod);
         if (expr && next_is(mod, "[")) {
             body_set = true;
-            print_tokens("pre-read-body", mod);
+            print_tokens(mod, "pre-read-body");
             *expr = read_body(mod, false); /// todo: read body can adapt to seeing a [, and look for another ] at balance
-            print_tokens("post-read-body", mod);
-        } else {
+            print_tokens(mod, "post-read-body");
+        } else if (!mdl) {
+
             type_only = true;
+            /// 
+        } else {
+
         }
     }
 
@@ -1303,7 +1352,7 @@ node parse_create(silver mod, model src, array expr) {
     if (expr)
         print_token_array(mod, expr);
     push_state(mod, expr ? expr : mod->tokens, expr ? 0 : mod->cursor);
-    object  n = read_literal(mod);
+    object  n = read_literal(mod, null);
     if (n) {
         pop_state(mod, false); /// issue here is we lost [ array ] context, expr has no brackets and it needs them
         return operand(mod, n, src);
@@ -1395,7 +1444,7 @@ static node parse_construct(silver mod, member mem) {
 }
 
 node silver_parse_member_expr(silver mod, member mem) {
-    print_tokens("parse_member_expr", mod);
+    print_tokens(mod, "parse_member_expr");
     push_current(mod);
     int parse_index = !mem->is_func;
 
@@ -1529,14 +1578,15 @@ node silver_parse_ternary(silver mod, node expr) {
     return ether_ternary(mod, expr, expr_true, expr_false);
 }
 
-
+// with constant literals, this should be able to merge the nodes into a single value
+// would be called 
 node silver_parse_assignment(silver mod, member mem, string oper) {
     verify(!mem->is_assigned || !mem->is_const, "mem %o is a constant", mem->name);
     mod->in_assign = mem;
     node   L       = mem;
-    print_tokens("parse-assignment", mod);
+    print_tokens(mod, "parse-assignment");
     node   R       = parse_expression(mod); /// getting class2 as a struct not a pointer as it should be. we cant lose that pointer info
-    print_tokens("parse-assignment-after", mod);
+    print_tokens(mod, "parse-assignment-after");
     if (!mem->mdl) {
         mem->is_const = eq(oper, ":");
         set_model(mem, R->mdl); /// this is erroring because no 
@@ -1596,7 +1646,7 @@ node parse_ifdef_else(silver mod) {
 
     while (true) {
         verify(!expect_last, "continuation after else");
-        bool  is_if  = read(mod, "ifdef");
+        bool  is_if  = read(mod, "ifdef") != null;
         verify(is_if && require_if || !require_if, "expected if");
         array cond   = is_if ? read_body(mod, false) : null;
         array block  = read_body(mod, false);
@@ -1625,7 +1675,7 @@ node parse_ifdef_else(silver mod) {
         }
         if (!is_if)
             break;
-        bool next_else = read(mod, "else");
+        bool next_else = read(mod, "else") != null;
         if (!next_else)
             break;
         require_if = false;
@@ -1639,7 +1689,7 @@ node parse_if_else(silver mod) {
     array tokens_cond  = array(32);
     array tokens_block = array(32);
     while (true) {
-        bool is_if  = read(mod, "if");
+        bool is_if  = read(mod, "if") != null;
         verify(is_if && require_if || !require_if, "expected if");
         array cond  = is_if ? read_body(mod, false) : null;
         array block = read_body(mod, false);
@@ -1647,7 +1697,7 @@ node parse_if_else(silver mod) {
         push(tokens_block, block);
         if (!is_if)
             break;
-        bool next_else = read(mod, "else");
+        bool next_else = read(mod, "else") != null;
         require_if = false;
     }
     subprocedure build_cond = subproc(mod, cond_builder, null);
@@ -1680,36 +1730,14 @@ bool is_model(silver mod) {
     return m && m->is_type;
 }
 
-interface read_access(silver mod) {
-    interface access = interface_public;
-    for (int m = 1; m < interface_type.member_count; m++) {
-        type_member_t* enum_v = &interface_type.members[m];
-        if (read(mod, enum_v->name)) {
-            access = m;
-            break;
-        }
+// these are for public, intern, etc; A-Type enums, not someting the user defines in silver in context
+i32 read_enum(silver mod, i32 def, AType etype) {
+    for (int m = 1; m < etype->member_count; m++) {
+        type_member_t* enum_v = &etype->members[m];
+        if (read(mod, enum_v->name))
+            return *(i32*)enum_v->ptr;
     }
-    return access;
-}
-
-schematic parse_schematic(silver mod) {
-    schematic e = schematic();
-    token  k = peek(mod);
-    if (is_access(k)) {
-        e->namespace = null;
-    } else if (is_model(k)) {
-        e->namespace = null;
-        e->access    = interface_public;
-    } else {
-        string n = read_alpha(mod);
-        verify(n, "expected alpha-ident, found: %o", next(mod));
-        verify(read(mod, ":"), "schematic: expected : after alpha-ident");
-        e->namespace = n;
-    }
-    if (!e->access) e->access = read_access(mod);
-    e->mdl = instanceof(read_model (mod, null), model);
-    verify(e->mdl, "expected model");
-    return e;
+    return def;
 }
 
 /// todo: these must be called manually by silver; otherwise its not as clear
@@ -1719,107 +1747,242 @@ schematic parse_schematic(silver mod) {
 
 map ether_top_member_map(ether e);
 
+path module_path(silver mod, string name) {
+    cstr exts[] = { "sf", "sr" };
+    path res    = null;
+    path cw     = path_cwd(0);
+    for (int  i = 0; i < 2; i++) {
+        path  r = f(path, "%o/%o.%s", cw, name, exts[i]);
+        if (file_exists("%o", res)) {
+            res = r;
+            break;
+        }
+    }
+    return res;
+}
+
+member register_import(
+            silver mod, string name, array _modules, array _includes)
+{
+    string fallback = len(_modules) ? first(_modules) : len(_includes) ? first(_includes) : null;
+    array includes = array(alloc, 32);
+    array modules  = array(alloc, 32);
+    each(_modules, object, m) {
+        verify(isa(m) == typeid(string),
+            "expected string identifier for module");
+        push(modules, module_path(mod, (string)m));
+    }
+    each(_includes, object, inc) {
+        verify(isa(inc) == typeid(string),
+            "expected string identifier for include");
+        push(includes, include_path(mod, (string)inc));
+    }
+    Import im = Import(
+        mod,        mod,
+        name,       name ? name : (fallback && isalpha(first(fallback)) ? fallback : null),
+        modules,    modules,
+        includes,   includes,
+        namespace,  name);
+    
+    member mem = member(mod, mod, name, im->name, context, mod->top);
+    push(mod->imports, im); // push to imports array; which is a bit redundant since the model is registered in the context as a member
+
+    set_model(mem, im);
+    push_member(mod, mem);
+    return mem;
+}
+
 /// called after : or before, where the user has access
-member read_def(silver mod, member existing) {
+member silver_read_def(silver mod) {
     bool   is_import = next_is(mod, "import");
     bool   is_class  = next_is(mod, "class");
     bool   is_struct = next_is(mod, "struct");
     bool   is_enum   = next_is(mod, "enum");
     bool   is_alias  = next_is(mod, "alias");
+
     if (!is_import && !is_class && !is_struct && !is_enum && !is_alias)
         return null;
 
     consume(mod);
-    string n = existing ? string(existing->name->chars) : read_alpha(mod);
-    member mem = existing ? existing : member(mod, mod, name, n);
 
-    if (is_import) {
-        //import_info im = import_info(
-        //    mod, mod, name, mem->name, skip_process, mod->prebuild,
-        //    namespace, existing ? string(existing->name->chars) : null);
-        //push(mod->imports, im);
-        //set_model(mem, im);
-    } else if (is_class || is_struct) {
-        array schema = array();
-        /// read class schematics
-        if (is_class && next_is(mod, "[")) {
-            consume(mod);
-            while (!next_is(mod, "]"))
-                push(schema, parse_schematic(mod));
-            consume(mod);
-        }
-        array body   = read_body(mod, false);
-        /// todo: call build_record right after this is done
-        if (is_class)
-            mem->mdl = class    (mod, mod, name, n, body, body, schema, schema);
-        else
-            mem->mdl = structure(mod, mod, name, n, body, body);
-    } else if (is_enum) {
-        /// read optional storage model (default: i32)
-        model store = null; 
-        if (next_is(mod, "[")) {
-            consume(mod);
-            store = instanceof(read_model(mod, null), model);
-            verify(store, "expected model");
-            verify(read(mod, "]"), "expected ] for enum-model");
-        }
-        model top = mod->top;
-        mem->mdl = store ? store : emodel("i32");
+    /// implement the import keyword; its a bit tricky around <stdio as std, another> ... its certainly possible to group both too with:
+    if (is_import) { // import <stdio, another> as stdan  <- we group all of them when specifying it outside
+        token inc       = read(mod, "<"); // ... silver-mode is without < >'s
+        array includes  = null; // there you may also combine:  import silio another, as silan
+        array modules   = null; // question is do we also allow this:
+        path  inc_path  = null; // anyway we can also do:  import silver as si, <another>
+        token alias     = null;
+        token t         = null;
 
-        /// verify model is a primitive type
-        AType atype = isa(mem->mdl->src);
-        verify(atype && (atype->traits & A_TRAIT_PRIMITIVE),
-            "enumerables can only be based on primitive types (i32 default)");
+        verify(next_is_alpha(mod), "expected alpha-numeric after import");
 
-        /// read body, create enum and parse tokens with context
-        array enum_body = read_body(mod, false);
-        push_state(mod, enum_body, 0);
-
-        i64   value   = 0;
-        mem->mdl      = enumerable(
-            mod, mod, size, mem->mdl->size, name, n, src, mem->mdl);
-        
-        push(mod, mem->mdl);
-        while (true) {
-            token e = next(mod);
-            if  (!e) break;
-            object v = null;
-            if (read(mod, ":")) {
-                object i64_obj = read_literal(mod);
-                verify(isa(i64_obj) == typeid(i64), "expected numeric literal");
-                v = A_primitive(atype, i64_obj);
+        while ((t = next(mod))) {
+            string n = cast(string, t);
+            if (inc) {
+                if (!includes) includes = array(alloc, 32);
+                push(includes, n);
+            } else {
+                if (!modules) modules = array(alloc, 32);
+                push(modules, n);
             }
-            string estr = cast  (string, e);
-            member emem = member(
-                mod, mod, name, estr, mdl, mem->mdl,
-                is_const, true, is_decl, true, literal, v);
-            if (!v) v = A_primitive(atype, &value); /// this creates i8 to i64 data, using &value i64 addr
-            set_value(emem, v);
-            set      (mem->mdl->members, estr, emem);
-            value = *((i64*)v) + 1;
+
+            /// we may encouner a > to end our includes 
+            bool end_of_inc   = inc && read(mod, ">");
+            bool is_as        = (end_of_inc || !inc) && (read(mod, "as") != null);
+            bool is_comma     = read(mod, ",") != null;
+
+            if (end_of_inc || is_as || is_comma) {
+                token name   = is_as ? next(mod) : null;
+                verify(len(modules) || len(includes), "no modules or includes to import");
+                register_import(mod, name, modules, includes);
+                modules      = null;
+                includes     = null;
+                end_of_inc   = false;
+                inc          = null;
+                if (!is_comma)
+                    break;
+                
+            } else if (next_is_keyword(mod) || !next_is_alpha(mod))
+                break;
+
+            verify(next_is_alpha(mod), "expected alpha-numeric continuation");
         }
-        pop(mod);
-        pop_state(mod, false);
-        // is below required or did i comment this out as test?
-        //finalize(mem->mdl, mem);
+
+        if (modules || includes) {
+            register_import(mod, null, modules, includes);
+        }
+
+        return null;
     } else {
-        verify(is_alias, "unknown error");
-        mem->mdl = alias(mem->mdl, mem->name, reference_pointer, null);
-    }
-    mem->is_type = true;
-    verify(mem && (is_import || len(mem->name)),
-        "name required for model: %s", isa(mem->mdl)->name);
+        string n   = read_alpha(mod);
+        verify(n, "expected alpha-numeric identity, found %o", next(mod));
 
-    if (!existing && !is_import)
+        member mem = member(mod, mod, name, n, context, mod->top);
+
+        if (is_class || is_struct) {
+            array schema = array();
+            /// read class schematics
+            model parent = null;
+            if (is_class && next_is(mod, "[")) {
+                consume(mod);
+                parent = instanceof(read_model(mod, null), model);
+                consume(mod);
+            }
+            array body   = read_body(mod, false);
+            /// todo: call build_record right after this is done
+            if (is_class)
+                mem->mdl = class    (mod, mod, name, n, body, body, parent, parent);
+            else
+                mem->mdl = structure(mod, mod, name, n, body, body);
+        
+        } else if (is_enum) {
+            model store = null, suffix = null;
+            if (read(mod, ",")) {
+                store  = instanceof(read_model(mod, null), model);
+                suffix = instanceof(read_model(mod, null), model);
+                verify(store, "invalid storage type");
+            }
+            array enum_body = read_body(mod, false);
+            print_all(mod, "enum-tokens", enum_body);
+            verify(len(enum_body), "expected body for enum %o", n);
+
+            mem->mdl  = enumeration(
+                mod, mod,  src, store,  name, n);
+            
+            push_state(mod, enum_body, 0);
+            push(mod, mem->mdl);
+
+            store = mem->mdl->src;
+
+            /// verify model is a primitive type
+            AType atype = isa(mem->mdl->src->src);
+            verify(atype && (atype->traits & A_TRAIT_PRIMITIVE),
+                "enumeration can only be based on primitive types (i32 default)");
+
+            i64  i64_v = 0;
+            f64  f64_v = 0;
+            f32  f32_v = 0;
+            i64* i64_value = store == emodel("i64") ? &i64_v : null;
+            i64* i32_value = store == emodel("i32") ? &i64_v : null;
+            f64* f64_value = store == emodel("f64") ? &f64_v : null;
+            f32* f32_value = store == emodel("f32") ? &f32_v : null;
+            object value = (object)(i64_value ? (A)i64_value : i32_value ? (A)i32_value :
+                                    f64_value ? (A)f64_value : (A)f32_value);
+            
+            while (true) {
+                token e = next(mod);
+                if  (!e) break;
+                object v = null;
+                
+                if (read(mod, ":")) {
+                    v = read_node(mod, atype); // i want this to parse an entire literal, with operations
+                    //verify(v && isa(v) == atype, "expected numeric literal");
+                } else
+                    v = A_primitive(atype, value); /// this creates i8 to i64 data, using &value i64 addr
+
+
+                // lets resolve operations in here
+                if (instanceof(v, node)) {
+                    // v = resolve_constant(v);
+                    int test2 = 2;
+                    test2 += 2;
+                } else if (instanceof(v, member)) {
+                    int test2 = 2;
+                    test2 += 2;
+                } else {
+                    AType res = isa(v);
+                    int test2 = 2;
+                    test2 += 2;
+                }
+                array aliases = null;
+                while(read(mod, ",")) {
+                    if (!aliases) aliases = array(alloc, 32);
+                    string a = read_alpha(mod);
+                    push(aliases, a);
+                }
+                member emem = member(
+                    mod, mod, name, e, mdl, mem->mdl,
+                    is_const, true, is_decl, true, literal, v, aliases, aliases);
+                
+                set_value(emem, v); // redundant with the first literal field; we aren't to simply store the token[0] or tokens, either
+                
+                string estr = cast(string, e);
+                set(mem->mdl->members, estr, emem);
+                if (aliases)
+                    each(aliases, string, a)
+                        set(mem->mdl->members, a, emem);
+                
+                if (i64_value) {
+                    *i64_value += 1;
+                } else if (i32_value) {
+                    *i32_value += 1;
+                } else if (f64_value) {
+                    *f64_value += 1.0;
+                } else if (f32_value) {
+                    *f32_value += 1.0f;
+                }
+            }
+            pop(mod);
+            pop_state(mod, false);
+
+            // is below required or did i comment this out as test?
+            finalize(mem->mdl, mem);
+        } else {
+            verify(is_alias, "unknown error");
+            mem->mdl = alias(mem->mdl, mem->name, reference_pointer, null);
+        }
+        mem->is_type = true;
+        verify(mem && (is_import || len(mem->name)),
+            "name required for model: %s", isa(mem->mdl)->name);
         push_member(mod, mem);
-
-    return mem;
+        return mem; // for these keywords, we have one member registered (not like our import)
+    }
 }
 
 
 /// such a big change to this one, tectonic drift'ing ...
 node parse_statement(silver mod) {
-    print_tokens("parse-statement", mod);
+    print_tokens(mod, "parse-statement");
 
     token     t            = peek(mod);
     record    rec          = instanceof(mod->top, record);
@@ -1853,7 +2016,7 @@ node parse_statement(silver mod) {
         if (next_is(mod, "ifdef"))
             return parse_ifdef_else(mod);
     }
-    node   e = read_node(mod); /// at module level, supports keywords
+    node   e = read_node(mod, null); /// at module level, supports keywords
     return e;
 }
 
@@ -1889,7 +2052,7 @@ function parse_fn(silver mod, AMember member_type, object ident, OPType assign_e
     record rec = context_model(mod, typeid(class));
     arguments args = arguments();
     verify (next_is(mod, "[") || next_is(mod, "->"), "expected function args [");
-    bool r0 = read(mod, "->");
+    bool r0 = read(mod, "->") != null;
     if (!r0 && next_is(mod, "[")) {
         args = parse_args(mod);
     }
@@ -1903,12 +2066,6 @@ function parse_fn(silver mod, AMember member_type, object ident, OPType assign_e
             // if body is set, then parse_fn will return the parse_create call, with model of rtype, and expr of body
             single_expr = true;
         }
-        // this state must be
-        //
-        // solve me first:
-        // tricky here because we need to be in the function
-        // when parsing an expression (if it is, rather than just a model)
-        //
         verify(rtype, "type must proceed the -> keyword in fn");
     } else if (member_type == A_MEMBER_IMETHOD)
         rtype = rec ? (model)pointer(rec) : emodel("generic");
@@ -1928,7 +2085,6 @@ function parse_fn(silver mod, AMember member_type, object ident, OPType assign_e
     
     return fn;
 }
-
 
 void silver_incremental_resolve(silver mod) {
     bool in_top = mod->in_top;
@@ -1992,7 +2148,7 @@ void silver_parse(silver mod) {
     while (peek(mod)) {
         parse_statement(mod);
         incremental_resolve(mod);
-        print_tokens("parse-after-resolve", mod);
+        print_tokens(mod, "parse-after-resolve");
     }
     mod->in_top = false;
 
@@ -2001,39 +2157,60 @@ void silver_parse(silver mod) {
     finalize(module_init, mem_init);
 }
 
-void import_info_process(import_info im) {
+void Import_process(Import im) {
     /// this might be returning members from field meta data to something we may understand in ether models
 }
 
+// silver uses tapestry for software we import by symbol map
+// what this looks like -- as much like tapestry as possible, to reveal silver
 void silver_init(silver mod) {
+    // always give it a file, or is code ok?  ... compilers like files!
     verify(exists(mod->source), "source (%o) does not exist", mod->source);
+    verify(mod->std == language_silver || eq(ext(mod->source), "sf"),
+        "only .sf extension supported; specify --std silver to override");
+    
     mod->mod = mod;
     mod->products_used = array();
     mod->imports = array(32);
     mod->tokens  = parse_tokens(mod->source);
     mod->stack   = array(4);
 
+    cstr      _DBG = getenv("DBG");
+    cstr _TAPESTRY = getenv("TAPESTRY");
+    verify(_TAPESTRY, "silver requires TAPESTRY environment");
+
+    path        af = path_cwd(0);
+    path   install = path(_TAPESTRY);
+    map         m  = m(
+        "path",    af,
+        "dbg",     _DBG ? string(_DBG) : string(""),
+        "install", install,
+        "src",     parent(install));
+    mod->tapestry = tapestry(m); // tapestry could certainly build the .ll assemblies for us -- we have library access
+
     /// build a proper stack of tokens we may parse through normal means
     /// lets just set a state variable prebuild so that import->skip
-    array  import_A = array_of(
+    
+    
+    
+    push_state(mod, a(
         token(chars, "import"),
+        token(chars, "<"),
         token(chars, "A"),
-        null);
-    push_state(mod, import_A, 0);
+        token(chars, ">")), 0);
     mod->prebuild = true;
-    member m_Atype = parse_statement(mod);
+    parse_statement(mod);
     mod->prebuild = false;
-
-    //import Atype = import_info(mod, mod, name, string("A"), skip_process, true);
-    import_info Atype = instanceof(m_Atype->mdl, import_info);
     pop_state  (mod, false);
-    push       (mod->imports, Atype);
-    //build_project(Atype, f(string, "A"), string("https://github.com/ar-visions/A"));
-    include    (mod, f(string, "A"));
  
     model mdl = emodel("A");
-    AType mdl_type = isa(mdl); /// issue is A becomes a member
+    verify(mdl, "A type not importing where it should be");
 
+
+
+    AType mdl_type = isa(mdl); /// A should be a member for a alias ref of struct _A, its a typedef
+
+    Import itop = mod->top;
     /// alias A -> any
     member mA      = lookup(mod, string("A"), null);
     AType  mA_type = isa(mA->mdl);
@@ -2052,7 +2229,7 @@ void silver_init(silver mod) {
 
     /// enumerating objects used, libs used, etc
     /// may be called earlier when the statement of import is finished
-    each (mod->imports, import_info, im)
+    each (mod->imports, Import, im)
         process(im);
 
     path ll = null, bc = null;
@@ -2064,9 +2241,15 @@ void silver_init(silver mod) {
 
 
 int main(int argc, char **argv) {
+    A_start(argv);
+
+    num         types_len;
+    A_f**       types = A_types(&types_len);
+    const num   max_args = 8;
+
     map        args = A_args(argv,
         "module",  string(""),
-        "install", form(path, "%s", getenv("TAPESTRY")));
+        "install", form(path, "%s", getenv("TAPESTRY")), null);
     string s = string("hi");
     string mkey     = string("module");
     string name     = get(args, string("module"));
@@ -2079,11 +2262,163 @@ int main(int argc, char **argv) {
     return 0;
 }
 
-none import_info_init(import_info a) {
+silver silver_load_module(silver mod, path uri) {
+    silver mod_load = silver(
+        source,  mod->source,
+        install, mod->install,
+        name,    stem(uri));
+    // init performs the rebuild within; so this is going to perform lots of building, including tapestry external
+    // if you need to, anyway...
+
+    return mod_load;
 }
 
-define_class   (silver, ether)
+void silver_import_types(silver mod) {
+    // import all types; even silver why not.
+    i64 types_len = 0;
+    A_f** types = A_types(&types_len);
+
+    /// iterate through types
+    for (num i = 0; i < types_len; i++) {
+        A_f* type = types[i];
+        for (num m = 0; m < type->member_count; m++) {
+            type_member_t* mem = &type->members[m];
+            if (mem->member_type & A_MEMBER_IMETHOD) {
+                
+            }
+        }
+    }
+}
+
+
+
+static none resolve_type(silver mod, model import_into, AType type) {
+
+    /// import type into model/class/structure
+    bool is_struct    = (type->traits & A_TRAIT_STRUCT    ) != 0;
+    bool is_class     = (type->traits & A_TRAIT_CLASS     ) != 0;
+    bool is_primitive = (type->traits & A_TRAIT_PRIMITIVE ) != 0;
+    bool is_abstract  = (type->traits & A_TRAIT_ABSTRACT  ) != 0;
+    bool is_enum      = (type->traits & A_TRAIT_ENUM      ) != 0;
+
+    if (is_struct || is_class) {
+        /// we use ->src to A-type heavily in ether, so we use a sort of direct translation
+        record rec = is_struct ? 
+            (record)structure(mod, mod, name, token(chars, type->name), body, null, src, type) :
+            (record)class    (mod, mod, name, token(chars, type->name), body, null, src, type);
+        
+        type->user = rec;
+        //verify(mod->top == import_into, "somethings off");
+        
+        member rtype_member = member(
+            mod, mod, name, string(type->name), context, import_into, is_type, true);
+        set_model(rtype_member, rec);
+        push_member(mod, rtype_member);
+
+        push(mod, rec);
+        for (int m = 0; m < type->member_count; m++) {
+            type_member_t* mem = &type->members[m];
+
+            // model should be associaed to the user on the type
+            model type_res = mem->type->user; // emodel(mem->type->name);
+            if (!type_res) {
+                print("lazy resolving type: %s", mem->type->name);
+                resolve_type(mod, import_into, mem->type);
+                type_res = mem->type->user;
+                verify(type_res, "resolution fail for type: %s", type->name);
+            }
+
+            member rec_member = member(
+                mod, mod, name, string(mem->name), context, rec);
+            set_model(rec_member, type->user);
+            push_member(mod, rec_member);
+            // set top to this record
+
+            set_model(rec_member, type_res); /// this is erroring because no 
+        }
+        /// return to our 'Import' space
+        pop(mod);
+    } else if (is_primitive) {
+        model mdl  = model(mod, mod, name, token(chars, type->name), src, type);
+        type->user = mdl;
+    }
+}
+
+
+
+
+
+
+none Import_init(Import a) {
+    silver mod = a->mod;
+    if (a->namespace)
+        push(mod, a);
+
+    model itop = mod->top;
+
+    /// for A-type includes, we want to merely query the dependency with tapestry
+    /// this would mean live loading the A-type libraries because we use them ourselves
+    /// we input the schemas, including properties + extra space for intern (polymorphic)
+
+    each(a->includes, path, inc) {
+        string ext = ext(inc);
+        if(len(ext) == 0) {
+            cstr preloaded[] = {"A", "silver", "ether"};
+            string project_name = stem(inc);
+            bool is_loaded = false;
+            for (int i = 0; i < sizeof(preloaded) / sizeof(cstr); i++) {
+                if (eq(project_name, preloaded[i])) {
+                    is_loaded = true;
+                    break;
+                }
+            }
+
+            /// load library (if its not already compiled into silver, or we did this already in another silver instance)
+            if (!is_loaded) {
+                path lib = f(path, "%o/lib/lib%o.so", mod->tapestry->install, project_name);
+                verify(file_exists("%o", lib), "A-type library not found");
+
+                /// needs a static map here
+                static map instances;
+                if (!instances) instances = map(hsize, 16, unmanaged, true);
+                handle f = get(instances, project_name);
+                
+                /// load library and perform an invocation to A_shift() ... A-type sister function to start.
+                if (!f) {
+                    handle f = dlopen(project_name->chars, RTLD_NOW | RTLD_GLOBAL);
+                    verify(f, "dlopen could not load: %o", project_name);
+                    set(instances, project_name, f);
+                }
+            }
+
+
+            num type_count = 0;
+            AType* types = A_types(&type_count);
+
+            for (int i = 0; i < type_count; i++) {
+                AType type = types[i];
+                if (type->user) continue; // already imported
+                if (!eq(project_name, type->module))
+                    continue;
+
+                resolve_type(mod, itop, type);
+            }
+
+        } else {
+            include(mod, inc);
+        }
+    }
+
+    each(a->modules, path, m) {
+        silver sv = load_module(mod, m);
+    }
+    if (a->namespace)
+        pop(mod);
+}
+
+define_class (silver, ether)
 define_enum  (import_t)
 define_enum  (build_state)
-define_class   (import_info, model)
-module_init  (init)
+define_enum  (language)
+define_class (Import, model)
+module_init  (initialize)
