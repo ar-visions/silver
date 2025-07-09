@@ -1,9 +1,6 @@
 #ifndef _silver_
 #define _silver_
 
-#include <silver-intern> 
-#include <silver-public>
-
 #define import_t_schema(E,T,Y,...) \
     enum_value(E,T,Y, none,       0) \
     enum_value(E,T,Y, source,     1) \
@@ -16,6 +13,10 @@ declare_enum(import_t)
     enum_value(E,T,Y, none,       0) \
     enum_value(E,T,Y, built,      1)
 declare_enum(build_state)
+
+#define language_schema(E,T,Y,...) \
+    enum_value(E,T,Y, silver, 0)
+declare_enum(language)
 
 #define completer_context_schema(X,Y,...) \
     i_prop(X,Y, required, model,    data) \
@@ -38,11 +39,12 @@ declare_class(completer_context)
     i_prop    (X,Y, intern,     array,          products_used) \
     i_prop    (X,Y, intern,     map,            include) \
     i_prop    (X,Y, intern,     int,            expr_level) \
-    i_prop    (X,Y, intern,     string,         current_include) \
     i_prop    (X,Y, public,     path,           file) \
     i_prop    (X,Y, public,     array,          tokens) \
     i_prop    (X,Y, public,     num,            cursor) \
+    i_prop    (X,Y, public,     language,       std) \
     i_prop    (X,Y, intern,     array,          stack) \
+    i_method  (X,Y, public,     silver,         load_module, path) \
     i_method  (X,Y, public,     node,           parse_member_expr, member) \
     i_method  (X,Y, public,     none,           incremental_resolve) \
     i_method  (X,Y, public,     none,           push_state,   array, num) \
@@ -55,16 +57,20 @@ declare_class(completer_context)
     i_method  (X,Y, public,     token,          peek) \
     i_method  (X,Y, public,     token,          element, num) \
     i_method  (X,Y, public,     num,            current_line) \
-    i_method  (X,Y, public,     bool,           next_is, symbol) \
+    i_method  (X,Y, public,     bool,           next_is,       symbol) \
+    i_method  (X,Y, public,     bool,           next_is_alpha) \
+    i_method  (X,Y, public,     bool,           next_is_keyword) \
     i_method  (X,Y, public,     array,          namespace_push) \
     i_method  (X,Y, public,     none,           namespace_pop, array) \
-    i_method  (X,Y, public,     node,           read_node) \
+    i_method  (X,Y, public,     node,           read_node, AType) \
     i_method  (X,Y, public,     node,           parse_ternary, node) \
     i_method  (X,Y, public,     node,           parse_assignment, member, string) \
-    i_method  (X,Y, public,     bool,           read, symbol) \
-    i_method  (X,Y, public,     object,         read_literal) \
+    i_method  (X,Y, public,     token,          read, symbol) \
+    i_method  (X,Y, public,     object,         read_literal, AType) \
     i_method  (X,Y, public,     string,         read_string) \
     i_method  (X,Y, public,     string,         read_alpha) \
+    i_method  (X,Y, public,     member,         read_def) \
+    i_method  (X,Y, public,     string,         peek_def) \
     i_method  (X,Y, public,     string,         peek_keyword) \
     i_method  (X,Y, public,     string,         read_keyword) \
     i_method  (X,Y, public,     object,         read_bool) \
@@ -93,12 +99,14 @@ declare_class_3(silver, ether, model)
 ///     include <something>
 ///     
 
-#define import_info_schema(X,Y,...) \
+#define Import_schema(X,Y,...) \
     i_prop    (X,Y, intern, array,      source) \
     i_prop    (X,Y, intern, string,     shell) \
     i_prop    (X,Y, intern, path,       module_path) \
     i_prop    (X,Y, intern, bool,       imported) \
-    i_prop    (X,Y, intern, array,      includes) \
+    i_prop    (X,Y, intern, array,      includes, meta, path) \
+    i_prop    (X,Y, intern, array,      modules,  meta, path) \
+    i_prop    (X,Y, intern, path,       include_path) \
     i_prop    (X,Y, intern, string,     namespace) \
     i_prop    (X,Y, intern, array,      links) \
     i_prop    (X,Y, intern, array,      cfiles) \
@@ -114,6 +122,6 @@ declare_class_3(silver, ether, model)
     i_prop    (X,Y, intern, silver,     extern_mod) \
     i_method  (X,Y, public, none,       process) \
     i_override(X,Y, method, init)
-declare_class_3(import_info, model)
+declare_class_2(Import, model)
 
 #endif

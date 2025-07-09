@@ -1,0 +1,58 @@
+# path for tapestry
+# effectively strings with formatter support (scope is our module space in design-mode)
+import 'https://github.com/ggml-org/llama.cpp' master
+    -DLLAMA_STATIC=OFF
+    -DBUILD_SHARED_LIBS=ON
+    -lllama
+    -lggml
+    -lggml-cpu
+    -lggml-base
+
+import silver-mod <cmodule> as together
+import a b as ab
+
+
+import <stdio> another
+
+# this will embed these ito the module namespace, with a null name anyway.
+# all collisions will be reported as errors, of course; there is no 'undefining' or the matter of it
+# being used differently depending on placement in file -- thats not what we want.  its an error
+# question is how do we term that statement? .. ok its expecting another module name, or , or as
+# so this means we cannot have this feature if the Next token is a symbol of undefined name
+# so far i dont believe this ambiguity is there:
+#       so its simply read_alpha, as, and a comma.. if not, then its done
+
+enum alien-type
+    squiddy, s: 1
+    mantis,  m: 2
+
+class aliens, f32 alien-type
+    public a-prim    : int
+    public a-map     : map   [ int string : 0:'a' ]
+    inlaid a-member  : array [ int 2x1    : 1, 1  ]
+    inlaid a-member2 : array [ int 4x1    : 1, 1, 2, 3        ]
+    inlaid a-member3 : array [ int 2x4    : 1 1 2 3,  1 1 2 3 ]
+    public a-ref     : array [ int 2x2    : 8 8,      4 4     ]
+
+    fn print []
+        std.printf[ '{a-prim} ... {a-member} ... {a-ref}\n' ]
+    
+    fn init-in-aliens []
+        if [!a-member] a-member: [ 2 2 ]
+
+fn init-in-module []
+    # we can construct this way...
+    cl = a-class
+        [ int 2 2 : 4 4, 4 4 ]
+        [ int 2   : 4 4 ]
+        44
+    cl.print[]
+
+# unit classes are a L-data-type with an associated R-enum [ maximum 2 dimensions to define ]
+a-type: class speed -> f128, enum etype[ mph kts kph c ]
+    # we merely define a map of scales, so that we may perform operations
+    mph  : 0.7 * this
+    kts  : this / 0.78
+    kph  : this * 1.0
+    c    : 122000000000.0 / this
+    # we normally define types with sub-classes as speed[ base ], so this data operator lets us design this
