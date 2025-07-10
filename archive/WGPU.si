@@ -3,8 +3,8 @@ import https://github.com/ar-visions/A
 
 # includes are part of an install process, and selecting them is used with import < includes paths >
 # easiest path is to use syntax for each type of entry, and not have field names with token parsing
-# we want it to be more tapestry-like
-# todo: <include, file, handling> inside of tapestry, to directly inject into <import>
+# we want it to be more import-like
+# todo: <include, file, handling> inside of import, to directly inject into <import>
 # A-type projects are handled currently, but we
 import https://github.com/ar-visions/dawn@2e9297c4
     -DDAWN_ENABLE_INSTALL=1

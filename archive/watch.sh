@@ -12,7 +12,7 @@ echo "watching for changes in: $WATCH_DIRS"
 
 # Function to watch files and trigger build
 watch_and_build() {
-    local dir="$TAPESTRY/../$1"
+    local dir="$IMPORT/../$1"
     local debug_dir="$dir/debug"
 
     # Ensure debug directory exists

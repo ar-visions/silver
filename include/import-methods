@@ -1,0 +1,8 @@
+#define cmake_location(I,...) ({ __typeof__(I) _i_ = I; ftableI(_i_)->cmake_location(_i_, ## __VA_ARGS__); })
+#define shell_evaluate(I,...) ({ __typeof__(I) _i_ = I; ftableI(_i_)->shell_evaluate(_i_, ## __VA_ARGS__); })
+//#define import(I,...) ({ __typeof__(I) _i_ = I; ftableI(_i_)->import(_i_, ## __VA_ARGS__); })
+#define build(I,...) ({ __typeof__(I) _i_ = I; ftableI(_i_)->build(_i_, ## __VA_ARGS__); })
+#define install(I,...) ({ __typeof__(I) _i_ = I; ftableI(_i_)->install(_i_, ## __VA_ARGS__); })
+#define cd(I,...) ({ __typeof__(I) _i_ = I; ftableI(_i_)->cd(_i_, ## __VA_ARGS__); })
+#define cp(I,...) ({ __typeof__(I) _i_ = I; ftableI(_i_)->cp(_i_, ## __VA_ARGS__); })
+#define make(I,...) ({ __typeof__(I) _i_ = I; ftableI(_i_)->make(_i_, ## __VA_ARGS__); })
