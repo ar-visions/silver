@@ -1,0 +1,246 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: silver44",
+            "type": "debugpy",
+            "args": ["WGPU.si"],
+            "request": "launch",
+            "program": "/src/silver/silver/silver44.py",
+            "console": "integratedTerminal",
+            "cwd": "/src/silver/silver"
+        },
+        {
+            "name": "Python: vision:annotate",
+            "type": "debugpy",
+            "args": ["-a", "scale", "-s", "center-offset"],
+            "request": "launch",
+            "program": "/src/hyperspace/vision-annotate.py",
+            "console": "integratedTerminal",
+            "cwd": "/src/hyperspace/"
+        },
+        {
+            "name": "Python: train:simple",
+            "type": "debugpy",
+            "args": ["-b", "1", "-m", "simple", "-s", "center-offset", "-i", "32", "-r", "1", "-e", "1", "--learning-rate", "0.0001"],
+            "request": "launch",
+            "program": "/src/hyperspace/vision-train.py",
+            "console": "integratedTerminal",
+            "cwd": "/src/hyperspace/"
+        },
+        {
+            "name": "Python: train:base",
+            "type": "debugpy",
+            "args": ["-b", "1", "-m", "base", "-s", "center-offset", "-i", "32", "-r", "4", "-e", "1", "--learning-rate", "0.0001"],
+            "request": "launch",
+            "program": "/src/hyperspace/vision-train.py",
+            "console": "integratedTerminal",
+            "cwd": "/src/hyperspace/"
+        },
+        {
+            "name": "Python: train:target",
+            "type": "debugpy",
+            "args": ["-b", "1", "-m", "target", "-s", "center-offset", "-i", "32", "-r", "16", "-e", "16", "--learning-rate", "0.0001"],
+            "request": "launch",
+            "program": "/src/hyperspace/vision-train.py",
+            "console": "integratedTerminal",
+            "cwd": "/src/hyperspace/"
+        },
+        {
+            "name": "Python: train:eyes",
+            "type": "debugpy",
+            "args": ["-b", "1", "-m", "eyes", "-s", "center-offset", "-i", "32", "-r", "32", "-e", "8", "--learning-rate", "0.001"],
+            "request": "launch",
+            "program": "/src/hyperspace/vision-train.py",
+            "console": "integratedTerminal",
+            "cwd": "/src/hyperspace/"
+        },
+        {
+            "name": "Python: train:track",
+            "type": "debugpy",
+            "args": ["-b", "2", "-m", "track", "-s", "center-offset", "-i", "32", "-r", "16", "-e", "16", "--learning-rate", "0.001"],
+            "request": "launch",
+            "program": "/src/hyperspace/vision-train.py",
+            "console": "integratedTerminal",
+            "cwd": "/src/hyperspace/"
+        },
+        {
+            "name": "Python: vision:record",
+            "type": "debugpy",
+            "args": ["-s", "vision2", "-f"],
+            "request": "launch",
+            "program": "/src/hyperspace/vision-record.py",
+            "console": "integratedTerminal",
+            "cwd": "/src/hyperspace/",
+        },
+        {
+            "name":       "silver-import (orbiter)",
+            "type":       "lldb",
+            "request":    "launch",
+            "program":    "/src/silver/bin/silver-import",
+            "args":     [ "/src/orbiter" ],
+            "cwd":        "/src/silver",
+            "env":      { "VERBOSE": "1", "CC": "clang" }
+        },
+        {
+            "name": "silver-import (trinity)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "/src/silver/bin/silver-import",
+            "args": [
+                "/src/trinity"
+            ],
+            "stopAtEntry": false,
+            "cwd": "/src/silver",
+            "environment": [
+                {
+                    "name": "VERBOSE",
+                    "value": "1"
+                },
+                {
+                    "name": "CC",
+                    "value": "clang"
+                },
+                {
+                    "name": "CXX",
+                    "value": "clang++"
+                }
+            ]
+        },
+        {
+            "name": "silver-import (mx)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "/src/silver/bin/silver-import",
+            "args": [
+                "/src/mx"
+            ],
+            "stopAtEntry": false,
+            "cwd": "/src/mx",
+            "environment": [
+                {
+                    "name": "CC",
+                    "value": "clang"
+                }
+            ]
+        },
+        {
+            "name":       "silver-import (hyperspace)",
+            "type":       "lldb",
+            "request":    "launch",
+            "program":    "/src/silver/bin/silver-import",
+            "args":     [ "/src/hyperspace" ],
+            "cwd":        "/src/silver",
+            "env":      { "VERBOSE": "1", "CC": "clang" }
+        },
+        {
+            "name":       "silver",
+            "type":       "lldb",
+            "request":    "launch",
+            "program":    "/src/silver/bin/silver",
+            "args":     [ "/src/silver/silver88.sf" ],
+            "cwd":        "/src/silver/share/silver",
+            "env":      { "VERBOSE": "1", "CC": "clang" }
+        },
+        {
+            "name": "A-generate",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "/src/A/debug/A-generate",
+            "args": [
+                "-i", "/src/A/gen-test.c.ai",
+                "-o", "/src/A/gen-test.c"
+            ],
+            "stopAtEntry": false,
+            "cwd": "/src/A/debug",
+            "environment": [
+                {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "/src/import/lib"
+                }
+            ],
+            "MIMode": "gdb"
+        },
+        {
+            "name": "hyperspace-train",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "/src/hyperspace/debug/bin/hyperspace-train",
+            "stopAtEntry": false,
+            "cwd": "/src/hyperspace/share",
+            "environment": [
+            ],
+            "MIMode": "gdb"
+        },
+        {
+            "name": "orbiter",
+            "type": "lldb",
+            "request": "launch",
+            "program": "/src/silver/bin/orbiter",
+            "cwd": "/src/silver/share/orbiter",
+            "args": [],
+            "env": {"LD_LIBRARY_PATH":"/src/silver/lib"},
+        },
+        {
+            "name": "asnes",
+            "type": "lldb",
+            "request": "launch",
+            "program": "/src/silver/bin/asnes",
+            "cwd": "/src/silver/share/asnes",
+            "args": ["--rom", "rom/mario.smc", "--spc_rom", "bin/spc700.rom"],
+            "env": {"LD_LIBRARY_PATH":"/src/silver/lib"},
+        },
+        {
+            "name": "hyperspace",
+            "type": "lldb",
+            "request": "launch",
+            "program": "/src/silver/bin/hyperspace",
+            "cwd": "/src/silver/share/hyperspace",
+            "args": [],
+            "env": {"LD_LIBRARY_PATH":"/src/silver/lib"},
+        },
+        {
+            "name": "A-test",
+            "type": "lldb",
+            "request": "launch",
+            "program": "/src/A/debug/test/a-test",
+            "cwd": "/src/A/debug/test"
+        },
+        {
+            "name": "A-reflect",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "/src/A/debug/A-reflect",
+            "args": [
+                
+            ],
+            "stopAtEntry": false,
+            "cwd": "/src/A/debug",
+            "environment": [
+            ],
+            "MIMode": "gdb"
+        },
+        {
+            "name": "quanta-hi",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "/src/quanta/debug/quanta-hi",
+            "args": [
+                "https://www.google.com"
+            ],
+            "environment": [
+                {
+                    "name": "LSAN_OPTIONS",
+                    "value": "verbosity=1:log_threads=1:print_suppressions=1:report_objects=1"
+                },
+                {
+                    "name": "ASAN_OPTIONS",
+                    "value": "detect_leaks=1:verbosity=1"
+                }
+            ],
+            "stopAtEntry": false,
+            "cwd": "/src/quanta/debug",
+            "MIMode": "gdb"
+        }
+    ]
+}

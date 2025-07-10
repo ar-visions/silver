@@ -1,6 +1,76 @@
 # **silver** lang
 development in progress, with documentation to be added/changed.
 
+# A-type runtime
+A-type is a C-based object system designed for clear maintainable code that is reflective and adaptive. Use familiar OOP patterns in C with less boilerplate.  Far more leniant than most Object-Oriented languages. It's in C, and here less code can do more. Just add a few macros. Reflective members of classes, enums methods and props enable for sophisticated control in compact design. The result of that is scalable performance you can take to more platforms. It's javascript meeting C and python in self expanding fashion.
+
+<a href="https://github.com/ar-visions/A/actions/workflows/build.yml">
+  <img src="https://github.com/ar-visions/A/actions/workflows/build.yml/badge.svg" alt="A-type build" width="444">
+</a>
+
+```c
+#include <A>
+
+int main(int argc, char **argv) {
+    cstr        src = getenv("SRC");
+    cstr     import = getenv("IMPORT");
+    map        args = A_args(argv,
+        "module",  str(""),
+        "install", form(path, "%s", import));
+    string mkey     = str("module");
+    string name     = get(args, str("module"));
+    path   n        = new(path, chars, name->chars);
+    path   source   = call(n, absolute);
+    silver mod      = new(silver,
+        source,  source,
+        install, get(args, str("install")),
+        name,    stem(source));
+}
+
+define_class (tokens)
+define_class   (silver, ether)
+```
+
+We have named arguments in our new() macro and that means 1 ctr/init to code not arbitrary amounts.  It's a far better and more productive pattern, and even more lean than Swift.  This is a post-init call, where we have already set the properties (where holds happen on non-primitives).  A-type standard destructor will also auto-drop member delegates that are object-based.  It just means you don't have to do much memory management at all.
+
+The flattened macro function interface table is one you keep adding to, and they work across all of the objects that support those method names.  This, so you don't have to use the generic 'call' macro.  The large number of defines is actually fine and lets you use variables that clash with the names.  
+
+Orbiter
+an IDE being built with silver (was C++)
+[https://github.com/ar-visions/orbiter.git]
+
+Hyperspace
+spatial dev kit, ai module & training scripts
+[https://github.com/ar-visions/hyperspace.git]
+
+
+# dbg component (A-type, universal object for C or C++)
+- componentized debugger using LLDB api; accessed by universal object
+
+# example use-case
+```c
+#include <dbg>
+
+object on_break(dbg debug, path source, u32 line, u32 column) {
+	print("breakpoint hit on %o:%i:%i", source, line, column);
+	print("arguments: %o ... locals: %o ... statics: %o ... globals: %o ... registers: %o ... this/self: %o", 
+	cont(debug);
+	return null;
+}
+
+int main(int argc, symbol argv[]) {
+	map args  = A_arguments(argc, argv);
+    	dbg debug = dbg(
+		location,  f(path, "%o", get(args, string("binary")),
+		arguments, f(string, "--an-arg %i", 1));
+	break_line(debug, 4, on_break);
+	start(debug);
+	while(running(debug)) {
+		usleep(1000000);
+	}
+}
+```
+
 # **import** keyword
 **silver** starts with **import**. The **import** keyword lets you build from repositories from projects in any language.  It also uses local silver/C/C++/rust modules directly if file identifiers given. Your local checkouts are prioritized before external checkouts, so you can build externals locally with your own changes, and silver will track these changes.  The build process will recognize the various environment variables such as **CC**, **CXX**, **RUSTC**, **CPP** (type-bound pre-processor is planned for **silver** 1.0)
 

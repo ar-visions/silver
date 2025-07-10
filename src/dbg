@@ -1,0 +1,87 @@
+#ifndef _DBG_
+#define _DBG_
+
+forward(dbg)
+
+#define cursor_schema(C,S,...)\
+    M(C,S, opaque, prop, dbg,   debug) \
+    M(C,S, public, prop, path,  source) \
+    M(C,S, public, prop, u32,   line)   \
+    M(C,S, public, prop, u32,   column)
+declare_class(cursor)
+
+#define variable_schema(C,S,...)\
+    M(C,S, opaque, prop, dbg,      debug)  \
+    M(C,S, public, prop, string,   name)   \
+    M(C,S, public, prop, string,   type)   \
+    M(C,S, public, prop, string,   value)  \
+    M(C,S, public, prop, array,    children)
+declare_class(variable)
+
+#define exited_schema(C,S,...)\
+    M(C,S, opaque, prop, dbg,   debug) \
+    M(C,S, public, prop, i32,   code)
+declare_class(exited)
+
+#define breakpoint_schema(C,S,...)\
+    M(C,S, opaque, prop, dbg,   debug) \
+    i_prop(C,S, intern, bool, removed) \
+    i_prop(C,S, intern, lldb::SBBreakpoint, lldb_bp, as, ARef) \
+    M(C,S, method, override, dealloc)
+declare_class(breakpoint)
+
+#define iobuffer_schema(C,S,...)\
+    M(C,S, opaque, prop, dbg,   debug) \
+    M(C,S, opaque, prop, cstr,  bytes) \
+    M(C,S, opaque, prop, i32,   count)
+declare_class(iobuffer)
+
+typedef char ARef16[16];
+typedef char ARef24[24];
+
+#define dbg_schema(C,S,...) \
+    M(C,S, public, prop,   path,   location) \
+    M(C,S, public, prop,   cursor, cursor) \
+    M(C,S, required, prop,   object,     target) \
+    M(C,S, public, prop,   callback,   on_stdout) \
+    M(C,S, public, prop,   callback,   on_stderr) \
+    M(C,S, public, prop,   callback,   on_break) \
+    M(C,S, public, prop,   callback,   on_exit) \
+    M(C,S, public, prop,   callback,   on_crash) \
+    M(C,S, public, prop,   bool,   auto_start) \
+    M(C,S, public, prop,   bool,   exceptions) \
+    M(C,S, public, prop,   bool,   running) \
+    M(C,S, public, prop,   async,  poll) \
+    M(C,S, public, prop,   async,  io) \
+    M(C,S, public, prop,   path,   stdout_fifo) \
+    M(C,S, public, prop,   path,   stderr_fifo) \
+    M(C,S, public, prop,   i32,    fifo_fd_out) \
+    M(C,S, public, prop,   i32,    fifo_fd_err) \
+    M(C,S, intern, prop,   bool,   active) \
+    \
+    i_prop(C,S, intern, lldb::SBDebugger, lldb_debugger, as, ARef16) \
+    i_prop(C,S, intern, lldb::SBTarget,   lldb_target,   as, ARef16) \
+    i_prop(C,S, intern, lldb::SBProcess,  lldb_process,  as, ARef16) \
+    i_prop(C,S, intern, lldb::SBListener, lldb_listener, as, ARef24) \
+    \
+    i_method(C,S, public, none,   step_into) \
+    i_method(C,S, public, none,   step_over) \
+    i_method(C,S, public, none,   step_out) \
+    i_method(C,S, public, none,   pause) \
+    i_method(C,S, public, none,   cont) \
+    i_method(C,S, public, none,   start) \
+    i_method(C,S, public, none,   stop) \
+    i_method(C,S, public, array,  read_arguments) \
+    i_method(C,S, public, array,  read_locals) \
+    i_method(C,S, public, array,  read_statics) \
+    i_method(C,S, public, array,  read_globals) \
+    i_method(C,S, public, array,  read_registers) \
+    i_method(C,S, public, breakpoint, set_breakpoint,    path, u32, u32) \
+    i_method(C,S, public, none,       remove_breakpoint, breakpoint) \
+    i_method(C,S, public, none,       enable_breakpoint, breakpoint, bool) \
+    \
+    M(C,S, method, override, init) \
+    M(C,S, method, override, dealloc)
+declare_class(dbg)
+
+#endif

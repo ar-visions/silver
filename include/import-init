@@ -1,0 +1,3 @@
+#define import(...)     new(import,   __VA_ARGS__)
+#define remote(...)     new(remote,     __VA_ARGS__)
+#define flag(...)       new(flag,       __VA_ARGS__)

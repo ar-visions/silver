@@ -1,14 +1,13 @@
 PROJECT := silver
 
-# use tapestry build system through make
-ifeq ($(strip $(TAPESTRY)),)
-ifeq ($(wildcard ../tapestry),)
-$(info required: tapestry build delegate (invoked by Makefile) -- cloning to ../tapestry)
-$(shell git clone https://github.com/ar-visions/tapestry ../tapestry)
-$(error fetched tapestry -- please re-run make)
-else
-TAPESTRY := ../tapestry
-endif
+# Get directory of this Makefile
+MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+
+# Set IMPORT if not already set
+ifeq ($(origin IMPORT), undefined)
+    IMPORT := $(MAKEFILE_DIR)
+else ifneq ($(realpath $(IMPORT)), $(realpath $(MAKEFILE_DIR)))
+    $(error IMPORT ($(IMPORT)) does not match this Makefile's directory ($(MAKEFILE_DIR)))
 endif
 
-include $(TAPESTRY)/bootstrap.mk
+include $(IMPORT)/support/import.mk

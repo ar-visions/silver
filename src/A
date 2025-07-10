@@ -1,0 +1,2984 @@
+#ifndef _A_
+#define _A_
+
+/// start-trim
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <libgen.h>
+#include <unistd.h>
+#include <signal.h>
+#include <pthread.h>
+#include <math.h>
+
+/// end-trim
+
+/// A-type runtime
+typedef void                none;
+typedef signed char         i8;
+typedef short               i16;
+typedef int                 i32;
+typedef long long           i64;
+typedef unsigned char       u8;
+typedef unsigned short      u16;
+typedef unsigned int        u32;
+typedef unsigned long long  u64;
+typedef __uint128_t         u128;
+typedef u128                AF;
+typedef long long           num;
+typedef long long           sz;      /// a signed 64 bit size lets us act like python, so this is a type for the purpose of indexing and all valid sizes
+#ifndef __cplusplus
+typedef u8                  bool;
+#endif
+typedef float               f32;
+typedef double              f64;
+typedef long double         f128;
+typedef double              real;    /// real enough
+typedef void*               handle;
+typedef char*               cstr;
+typedef const char*         symbol;
+//typedef const char*         cereal;
+
+typedef struct cereal { char* value; } cereal;
+
+//typedef struct A_f*       AType;
+typedef struct _object*     object;
+typedef struct _A**         ARef;
+typedef float*              floats;
+typedef struct _A*          A;
+typedef struct type_member_t* Member;
+typedef cstr* cstrs;
+
+typedef object (*hook)    (object);
+typedef object (*callback)(object, object); // target and argument
+
+#define forward(t) typedef struct _##t* t;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/*
+void*   calloc(size_t num, size_t size);
+void    free();
+void    exit(int);
+//int     abs(int);
+cstr    realpath(symbol, symbol);
+FILE   *popen(symbol command, symbol type);
+int     pclose(FILE*);
+i64     strtoll(symbol str, cstr* endptr, int base);
+f64     strtod (symbol str, cstr* endptr);
+int     system(symbol command);
+int     setenv(symbol key, symbol value, int);
+cstr    getenv(symbol key);
+i32       rand();
+void     srand(u32 seed);
+*/
+
+typedef struct _A_f* AType;
+
+struct type_member_t;
+struct _array;
+struct _A_f;
+
+#define a(...) array_of(__VA_ARGS__ __VA_OPT__(,) null)
+#define m(...)   map_of(__VA_ARGS__ __VA_OPT__(,) null)
+
+#define len(I,...) ({ __typeof__(I) _i_ = I; _i_ ? (num)ftableI(_i_)->len(_i_, ## __VA_ARGS__) : (num)0; })
+
+
+/// our A-type classes have many types of methods
+/// constructor, i[nstance]-method, s[tatic]-method, operator (these are enumeration!), and index.  we index by 1 argument only in C but we may allow for more in silver
+enum A_MEMBER {
+    A_MEMBER_NONE      = 0,
+    A_MEMBER_CONSTRUCT = 1,
+    A_MEMBER_PROP      = 2,
+    A_MEMBER_INLAY     = 4,
+    A_MEMBER_PRIV      = 8,
+    A_MEMBER_INTERN    = 16,
+    A_MEMBER_READ_ONLY = 32,
+    A_MEMBER_IMETHOD   = 64,
+    A_MEMBER_SMETHOD   = 128,
+    A_MEMBER_OPERATOR  = 256,
+    A_MEMBER_CAST      = 512,
+    A_MEMBER_INDEX     = 1024,
+    A_MEMBER_ENUMV     = 2048,
+    A_MEMBER_OVERRIDE  = 4096,
+    A_MEMBER_VPROP     = 8192,
+    A_MEMBER_ATTR      = 16384,
+    A_MEMBER_OPAQUE    = 32768
+};
+
+typedef enum A_MEMBER AMember;
+
+enum A_TRAIT {
+    A_TRAIT_PRIMITIVE = 1,
+    A_TRAIT_INTEGRAL  = 2,
+    A_TRAIT_REALISTIC = 4,
+    A_TRAIT_SIGNED    = 8,
+    A_TRAIT_UNSIGNED  = 16,
+    A_TRAIT_ENUM      = 32,
+    A_TRAIT_ALIAS     = 64,
+    A_TRAIT_ABSTRACT  = 128,
+    A_TRAIT_VECTOR    = 256,
+    A_TRAIT_STRUCT    = 512,
+    A_TRAIT_PTR_SIZE  = 1024,
+    A_TRAIT_PUBLIC    = 2048,
+    A_TRAIT_USER_INIT = 4096,
+    A_TRAIT_CLASS     = 8192,
+    A_TRAIT_BASE      = 16384
+};
+
+_Pragma("pack(push, 1)")
+
+typedef struct meta_t {
+    long long       count;
+    AType           meta_0, meta_1, meta_2, meta_3, 
+                    meta_4, meta_5, meta_6, meta_7, meta_8, meta_9;
+} meta_t;
+
+forward(shape)
+
+typedef struct af_recycler af_recycler;
+
+typedef struct ftable_t {
+    struct ftable_t* parent_type;
+    char*           name;
+    char*           module;
+    int             size;
+    int             msize;
+    af_recycler*    af;
+    int             magic;
+    int             global_count;
+    shape           vmember_shape;
+    int             vmember_count;
+    AType           vmember_type;
+    int             member_count;
+    struct type_member_t* members;
+    int             traits;
+    void*           user;
+    u128            required;
+    AType           src;
+    void*           arb;
+    meta_t          meta;
+} ftable_t;
+
+typedef struct _string* string;
+
+typedef struct type_member_t {
+    char*           name;
+    string          sname;
+    AType           type;
+    int             offset;
+    int             count;
+    int             member_type;
+    int             operator_type;
+    int             required;
+    meta_t          args;
+    void*           ptr;
+    void*           method;
+    i64             id;
+    i64             value;
+} type_member_t;
+
+_Pragma("pack(pop)")
+
+typedef bool(*global_init_fn)();
+
+#define true                (bool)1
+#define false               (bool)0
+#define stringify(x)        #x
+#ifdef __cplusplus
+#define null                nullptr
+#else
+#define null                ((void*)0)
+#endif
+#define FNV_PRIME           0x100000001b3
+#define OFFSET_BASIS        0xcbf29ce484222325
+
+#define   enum_value_DECL(E, T, N, VAL)             static const E E##_##N = VAL;
+#define   enum_value_COUNT(E, T, N, VAL)            1,
+#define   enum_value_METHOD(E, T, N, VAL)
+#define   enum_value_IMPL(E, T, N, VAL) \
+    E##_type.members[E## _type.member_count].name     = #N; \
+    E##_type.members[E## _type.member_count].offset   = (i32)(E##_##N);\
+    E##_type.members[E## _type.member_count].type     = &T ## _type; \
+    static T static_##N = VAL; \
+    E##_type.members[E## _type.member_count].ptr      = &static_##N;\
+    E##_type.members[E## _type.member_count].member_type = A_MEMBER_ENUMV; \
+    E##_type.member_count++;
+
+#define   enum_value(E,T,Y, N, VAL)                enum_value_##Y(E, T, N, VAL)
+
+#define   enum_method_DECL(E, T, R, N, ...)
+#define   enum_method_COUNT(E, T, R, N, ...)
+#define   enum_method_IMPL(E, T, R, N, ...) \
+    E##_type . N = & E## _ ## N; \
+    E##_type.members[E##_type.member_count].name    = #N; \
+    E##_type.members[E##_type.member_count].args    = (meta_t) { emit_types(__VA_ARGS__) }; \
+    E##_type.members[E##_type.member_count].type    = (AType)&R##_type; \
+    E##_type.members[E##_type.member_count].offset  = offsetof(E##_f, N); \
+    E##_type.members[E##_type.member_count].ptr     = (void*)& E##_##N; \
+    E##_type.members[E##_type.member_count].member_type = A_MEMBER_SMETHOD; \
+    E##_type.member_count++; 
+#define   enum_method_METHOD(E, T, R, N, ...)    R (*N)(E value __VA_OPT__(,) __VA_ARGS__);
+#define   enum_method(E,T,Y,R,N,...)            enum_method_##Y(E,T, R,N __VA_OPT__(,) __VA_ARGS__)
+
+
+
+#define   enum_value_v_DECL(E, T, N, VAL)             static const E E##_##N = VAL;
+#define   enum_value_v_COUNT(E, T, N, VAL)            1,
+#define   enum_value_v_METHOD(E, T, N, VAL)
+#define   enum_value_v_IMPL(E, T, N, VAL) \
+    E##_type.members[E## _type.member_count].name     = #N; \
+    E##_type.members[E## _type.member_count].offset   = (i64)E##_##N;\
+    E##_type.members[E## _type.member_count].type     = (AType)&T ## _type; \
+    static T static_##N = VAL; \
+    E##_type.members[E## _type.member_count].ptr      = &static_##N;\
+    E##_type.members[E## _type.member_count].member_type = A_MEMBER_ENUMV; \
+    E##_type.member_count++;
+
+#define   enum_value_vargs_DECL(E, T, N, VAL,...)             static const E E##_##N = VAL;
+#define   enum_value_vargs_COUNT(E, T, N, VAL,...)            1,
+#define   enum_value_vargs_METHOD(E, T, N, VAL,...)
+#define   enum_value_vargs_IMPL(E, T, N, VAL,...) \
+    E##_type.members[E## _type.member_count].name     = #N; \
+    E##_type.members[E## _type.member_count].offset   = (i64)E##_##N;\
+    E##_type.members[E## _type.member_count].type     = (AType)&T ## _type; \
+    E##_type.members[E## _type.member_count].member_type = A_MEMBER_ENUMV; \
+    static T static_##N = VAL; \
+    E##_type.members[E## _type.member_count].ptr      = &static_##N;\
+    E##_type.members[E## _type.member_count].args     = (meta_t) { emit_types(__VA_ARGS__) }; \
+    E##_type.member_count++;
+
+//#define   enum_value_v(E,T,Y, N,VAL)                enum_value_v_##Y(X, N,VAL)
+
+#define ARG_COUNT_HELPER(_1, _2, N, ...) N
+#define ARG_COUNT_NO_ZERO(...) \
+    ARG_COUNT_HELPER(__VA_ARGS__, 2, 1, 0)
+
+#define CONCAT_HELPER(x, y) x##y
+#define CONCAT(x, y) CONCAT_HELPER(x, y)
+
+#define   enum_value_v_1(E,T,Y, N,VAL)             enum_value_v_##Y(E, T, N,VAL)
+#define   enum_value_v_2(E,T,Y, N,VAL,T1)          enum_value_vargs_##Y(E, T, N,VAL,T1)
+#define   enum_value_v_3(E,T,Y, N,VAL,T1,T2)       enum_value_vargs_##Y(E, T, N,VAL,T1,T2)
+#define   enum_value_v_4(E,T,Y, N,VAL,T1,T2,T3)    enum_value_vargs_##Y(E, T, N,VAL,T1,T2,T3)
+#define   enum_value_v_5(E,T,Y, N,VAL,T1,T2,T3,T4) enum_value_vargs_##Y(E, T, N,VAL,T1,T2,T3,T4)
+#define   enum_value_v(E,T,Y, N,VAL, ...) \
+    CONCAT(enum_value_v_, ARG_COUNT_NO_ZERO(__VA_ARGS__))(E,T,Y, N,VAL __VA_OPT__(,) __VA_ARGS__)
+
+
+#define sqr(x) ({ \
+    __typeof__(x) a = x; \
+    a*a \
+})\
+
+// runtime type-check api
+#ifndef NDEBUG
+    #define TC(MEMBER, VALUE) VALUE
+#else
+    #define TC(MEMBER, VALUE) VALUE
+#endif
+
+#define NULL_TOKEN
+#define ARG_COUNT_NZ_IMPL(NULL_TOKEN, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20, _21, _22, N, ...) N
+
+#define ARG_COUNT_NZ(...) _ARG_COUNT_IMPL(__VA_ARGS__, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
+
+#define _ARG_COUNT_IMPL(_0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20, _21, _22, N, ...) N
+#define _ARG_COUNT_I(...) _ARG_COUNT_IMPL(__VA_ARGS__, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
+#define _ARG_COUNT(...)   _ARG_COUNT_I("A-type", ## __VA_ARGS__)
+#define _COMBINE_(A, B)   A##B
+#define _COMBINE(A, B)    _COMBINE_(A, B)
+#define _N_ARGS_0( TYPE)
+#define _N_ARGS_1( TYPE, a) _Generic((a), TYPE##_schema(TYPE, GENERICS, object) const void *: (void)0)(instance, a)
+#define _N_ARGS_2( TYPE, a,b) instance->a = TC(a,b);
+#define _N_ARGS_4( TYPE, a,b, c,d) \
+        _N_ARGS_2 (TYPE, a,b) instance->c = TC(c,d);
+#define _N_ARGS_6( TYPE, a,b, c,d, e,f) \
+        _N_ARGS_4 (TYPE, a,b, c,d) instance->e = TC(e,f);
+#define _N_ARGS_8( TYPE, a,b, c,d, e,f, g,h) \
+        _N_ARGS_6 (TYPE, a,b, c,d, e,f) instance->g = TC(g,h);
+#define _N_ARGS_10(TYPE, a,b, c,d, e,f, g,h, i,j) \
+        _N_ARGS_8 (TYPE, a,b, c,d, e,f, g,h) instance->i = TC(i,j);
+#define _N_ARGS_12(TYPE, a,b, c,d, e,f, g,h, i,j, l,m) \
+        _N_ARGS_10(TYPE, a,b, c,d, e,f, g,h, i,j) instance->l = TC(l,m);
+#define _N_ARGS_14(TYPE, a,b, c,d, e,f, g,h, i,j, l,m, n,o) \
+        _N_ARGS_12(TYPE, a,b, c,d, e,f, g,h, i,j, l,m) instance->n = TC(n,o);
+#define _N_ARGS_16(TYPE, a,b, c,d, e,f, g,h, i,j, l,m, n,o, p,q) \
+        _N_ARGS_14(TYPE, a,b, c,d, e,f, g,h, i,j, l,m, n,o) instance->p = TC(p,q);
+#define _N_ARGS_18(TYPE, a,b, c,d, e,f, g,h, i,j, l,m, n,o, p,q, r,s) \
+        _N_ARGS_16(TYPE, a,b, c,d, e,f, g,h, i,j, l,m, n,o, p,q) instance->r = TC(r,s);
+#define _N_ARGS_20(TYPE, a,b, c,d, e,f, g,h, i,j, l,m, n,o, p,q, r,s, t,u) \
+        _N_ARGS_18(TYPE, a,b, c,d, e,f, g,h, i,j, l,m, n,o, p,q, r,s) instance->t = TC(t,u);
+#define _N_ARGS_22(TYPE, a,b, c,d, e,f, g,h, i,j, l,m, n,o, p,q, r,s, t,u, v,w) \
+        _N_ARGS_20(TYPE, a,b, c,d, e,f, g,h, i,j, l,m, n,o, p,q, r,s, t,u) instance->v = TC(v,w);
+#define _N_ARGS_HELPER2(TYPE, N, ...)  _COMBINE(_N_ARGS_, N)(TYPE, ## __VA_ARGS__)
+#define _N_ARGS(TYPE,...)    _N_ARGS_HELPER2(TYPE, _ARG_COUNT(__VA_ARGS__), ## __VA_ARGS__)
+
+
+//#define _N_STRUCT_ARGS_0( TYPE) _N_ARGS_2( TYPE )
+#define _N_STRUCT_ARGS_1( TYPE, a) \
+    ({ TYPE instance = _Generic((a), TYPE##_schema(TYPE, GENERICS, object) const void *: (void)0)(a); instance; }) 
+
+#define _N_STRUCT_ARGS_2( TYPE, ...) ({ TYPE instance = (TYPE) { __VA_ARGS__ }; instance; })
+#define _N_STRUCT_ARGS_3( TYPE, ...) _N_STRUCT_ARGS_2( TYPE, __VA_ARGS__ )
+#define _N_STRUCT_ARGS_4( TYPE, ...) _N_STRUCT_ARGS_2( TYPE, __VA_ARGS__ )
+#define _N_STRUCT_ARGS_5( TYPE, ...) _N_STRUCT_ARGS_2( TYPE, __VA_ARGS__ )
+#define _N_STRUCT_ARGS_6( TYPE, ...) _N_STRUCT_ARGS_2( TYPE, __VA_ARGS__ )
+#define _N_STRUCT_ARGS_7( TYPE, ...) _N_STRUCT_ARGS_2( TYPE, __VA_ARGS__ )
+#define _N_STRUCT_ARGS_8( TYPE, ...) _N_STRUCT_ARGS_2( TYPE, __VA_ARGS__ )
+#define _N_STRUCT_ARGS_9( TYPE, ...) _N_STRUCT_ARGS_2( TYPE, __VA_ARGS__ )
+#define _N_STRUCT_ARGS_10(TYPE, ...) _N_STRUCT_ARGS_2( TYPE, __VA_ARGS__ )
+
+#define _N_STRUCT_ARGS_HELPER2(TYPE, N, ...)  _COMBINE(_N_STRUCT_ARGS_, N)(TYPE, ## __VA_ARGS__)
+#define _N_STRUCT_ARGS(TYPE,...)    _N_STRUCT_ARGS_HELPER2(TYPE, _ARG_COUNT(__VA_ARGS__), ## __VA_ARGS__)
+
+#define structure_of(TYPE, ...) _N_STRUCT_ARGS(TYPE, __VA_ARGS__);
+  
+
+
+
+
+
+
+#define new(TYPE, ...) \
+    ({ \
+        TYPE instance = (TYPE)A_alloc(typeid(TYPE), 1); \
+        _N_ARGS(TYPE, ## __VA_ARGS__); \
+        A_initialize((object)instance); \
+        instance; \
+    })
+#define new2(TYPE, ...) \
+    ({ \
+        TYPE instance = (TYPE)A_alloc(typeid(TYPE), 1); \
+        TYPE##_N_ARGS(TYPE, ## __VA_ARGS__); \
+        A_initialize((object)instance); \
+        instance; \
+    })
+
+#define _ARG_COUNT_IMPL2(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20, _21, _22, N, ...) N
+#define _ARG_COUNT2(...)        _ARG_COUNT_IMPL2(__VA_ARGS__, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1)
+#define _COMBINE_2(A, B)        A##B
+#define _COMBINE2(A, B)         _COMBINE_2(A, B)
+#define _F(T, a,b)              (((1 << (i64)T##_##a) * b)) 
+#define _F_ARGS_0(T)
+#define _F_ARGS_1(T)                  
+#define _F_ARGS_2(T, a,b)                    _F(T, a, b)
+#define _F_ARGS_4(T, a,b, c,d)               _F_ARGS_2 (a,b) | _F(T, c,d)
+#define _F_ARGS_6(T, a,b, c,d, e,f)          _F_ARGS_4 (a,b, c, d) | _F(T, e,f)
+#define _F_ARGS_8(T, a,b, c,d, e,f, g,h)     _F_ARGS_6 (a,b, c, d, e, f) | _F(T, g,h)
+#define _F_ARGS(T,...)    _F_ARGS_HELPER2(T, _ARG_COUNT2(__VA_ARGS__), __VA_ARGS__)
+#define _F_ARGS_HELPER2(T, N, ...)  _COMBINE2(_F_ARGS_, N)(T, __VA_ARGS__)
+#define flags(T, ...) _F_ARGS(T, __VA_ARGS__);
+
+/// with construct we give it a dynamic type, symbols and A-values
+#define construct(type, ...) \
+    ({ \
+        T instance = (T)A_alloc(type, 1); \
+        _N_ARGS(instance, ## __VA_ARGS__); \
+        A_initialize((A)instance); \
+        instance; \
+    })
+
+#define new0(T, ...) \
+    ({ \
+        T instance = (T)A_alloc(typeid(T), 1); \
+        _N_ARGS(instance, ## __VA_ARGS__); \
+        A_initialize((A)instance); \
+        instance; \
+    })
+
+#undef alloc
+#define alloc(T, ...) \
+    ({ \
+        T instance = (T)A_alloc(typeid(T), 1); \
+        _N_ARGS(instance, ## __VA_ARGS__); \
+        A_initialize((A)instance); \
+        instance; \
+    })
+
+
+#define ux(T, ...) \
+({ \
+    T instance = (T)A_alloc(typeid(T), 1); \
+    _N_ARGS(instance, ## __VA_ARGS__); \
+    instance; \
+})
+
+#define allocate(T, ...) \
+    ({ \
+        T instance = (T)A_alloc(typeid(T), 1); \
+        _N_ARGS(instance, ## __VA_ARGS__); \
+        instance; \
+    })
+
+#define valloc(T, N)                ((A)A_alloc(typeid(T), N))
+#define ftable(TYPE, INSTANCE)      ((TYPE##_f*)((A)INSTANCE)[-1].type)
+#define isa(INSTANCE)               (INSTANCE ? (struct _A_f*)((struct _A*)INSTANCE - 1)->type : (struct _A_f*)0)
+// see: javascript; returns null if its not an instance-of; faults if you give it a null
+#define instanceof(left, type)      A_instanceof(left, typeid(type))
+#define ftableI(I)                  ((__typeof__((I)->f)) ((A)(I))[-1].type)
+#define fcall(I,M,...)              ({ __typeof__(I) _i_ = I; ftableI(_i_)->M(_i_, ## __VA_ARGS__); })
+#define mcall(I,M,...)              ({ __typeof__(I) _i_ = I; (_i_) ? ftableI(_i_)->M(_i_, ## __VA_ARGS__) : 0; })
+#define cstring(I)                  cast(cstr, I)
+#define val(T,V)                    A_primitive(typeid(T), (&(T){V}))
+#define idx_1(I,T1,V1)              fcall(I, index ##_## T1, V1)
+#define idx_2(I,T1,T2,V1,V2)        fcall(I, index ##_## T1 ##_## T2, V1, V2)
+#define idx(I,V1)                   fcall(I, index ##_## num, V1)
+#define cast(T,I)                   fcall(I, cast_##T)
+#define meta_t(I,IDX)               isa(I) -> meta.meta_##IDX
+#define ctr(T,WITH,...)             A_initialize(T##_type.with_##WITH(A_alloc(typeid(T), 1), ## __VA_ARGS__))
+#define ctr1(T,WITH,...)            A_initialize(T##_type.with_##WITH(A_alloc(typeid(T), 1), ## __VA_ARGS__))
+#define alloc_ctr(T,WITH,...)       A_initialize(T##_type.with_##WITH(A_alloc(typeid(T), 1), ## __VA_ARGS__))
+#define str(CSTR)                   string_type.with_symbol((string)A_alloc((AType)&string_type, 1), (symbol)(CSTR))
+#define addr_validateI(I)           ({ \
+    __typeof__(I) *addr = &I; \
+    I \
+})
+
+/// arg expansion for type emission (give address of its statically defined)
+#define emit_types(...)             EXPAND_ARGS(__VA_ARGS__)
+#define combine_tokens_(A, B)       A##B
+#define combine_tokens(A, B)        combine_tokens_(A, B)
+#define EXPAND_ARGS(...)            EXPAND_ARGS_HELPER(COUNT_ARGS(__VA_ARGS__), __VA_ARGS__)
+#define EXPAND_ARGS_HELPER(N, ...)  combine_tokens(EXPAND_ARGS_, N)(__VA_ARGS__)
+#define EXPAND_ARGS_0()                                0
+#define EXPAND_ARGS_1(a)                               1, (AType)&a##_type
+#define EXPAND_ARGS_2(a, b)                            2, (AType)&a##_type, (AType)&b##_type
+#define EXPAND_ARGS_3(a, b, c)                         3, (AType)&a##_type, (AType)&b##_type, (AType)&c##_type
+#define EXPAND_ARGS_4(a, b, c, d)                      4, (AType)&a##_type, (AType)&b##_type, (AType)&c##_type, (AType)&d##_type
+#define EXPAND_ARGS_5(a, b, c, d, e)                   5, (AType)&a##_type, (AType)&b##_type, (AType)&c##_type, (AType)&d##_type, (AType)&e##_type
+#define EXPAND_ARGS_6(a, b, c, d, e, f)                6, (AType)&a##_type, (AType)&b##_type, (AType)&c##_type, (AType)&d##_type, (AType)&e##_type, (AType)&f##_type
+#define EXPAND_ARGS_7(a, b, c, d, e, f, g)             7, (AType)&a##_type, (AType)&b##_type, (AType)&c##_type, (AType)&d##_type, (AType)&e##_type, (AType)&f##_type, (AType)&g##_type
+#define EXPAND_ARGS_8(a, b, c, d, e, f, g, h)          8, (AType)&a##_type, (AType)&b##_type, (AType)&c##_type, (AType)&d##_type, (AType)&e##_type, (AType)&f##_type, (AType)&g##_type, (AType)&h##_type
+#define EXPAND_ARGS_9(a, b, c, d, e, f, g, h, ii)      9, (AType)&a##_type, (AType)&b##_type, (AType)&c##_type, (AType)&d##_type, (AType)&e##_type, (AType)&f##_type, (AType)&g##_type, (AType)&h##_type, (AType)&ii##_type
+#define EXPAND_ARGS_10(a, b, c, d, e, f, g, h, ii, j) 10, (AType)&a##_type, (AType)&b##_type, (AType)&c##_type, (AType)&d##_type, (AType)&e##_type, (AType)&f##_type, (AType)&g##_type, (AType)&h##_type, (AType)&ii##_type, (AType)&j##_type
+//#define COUNT_ARGS_IMPL(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, N, ...) N
+#define COUNT_ARGS_IMPL(_0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, N, ...) N
+#define COUNT_ARGS(...)             COUNT_ARGS_IMPL(dummy, ## __VA_ARGS__, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
+
+//#define EXPAND_ARGS2_0()                       
+#define EXPAND_ARGS2_1(a)                        a
+#define EXPAND_ARGS2_2(a, b)                     a##_##b
+#define EXPAND_ARGS2_3(a, b, c)                  a##_##b##_##c
+#define EXPAND_ARGS2_4(a, b, c, d)               a##_##b##_##c##_##d
+#define EXPAND_ARGS2_5(a, b, c, d, e)            a##_##b##_##c##_##d##_e
+#define EXPAND_ARGS2_6(a, b, c, d, e, f)         a##_##b##_##c##_##d##_e##_##f
+#define EXPAND_ARGS2_7(a, b, c, d, e, f, g)      a##_##b##_##c##_##d##_e##_##f##_##g
+#define EXPAND_ARGS2_8(a, b, c, d, e, f, g, h)   a##_##b##_##c##_##d##_e##_##f##_##g##_##h
+#define emit_idx_symbol(...)             EXPAND_ARGS2(__VA_ARGS__)
+#define EXPAND_ARGS2(...)            EXPAND_ARGS_HELPER2(COUNT_ARGS(__VA_ARGS__), __VA_ARGS__)
+#define EXPAND_ARGS_HELPER2(N, ...)  combine_tokens(EXPAND_ARGS2_, N)(__VA_ARGS__)
+
+#define   i_ctr_interface_F(X, ARG)
+#define   i_ctr_interface_F_EXTERN(X, ARG)
+#define   i_ctr_interface_INST(X, ARG)
+#define   i_ctr_interface_INST_EXTERN(X, ARG)
+#define   i_ctr_interface_DECL(X, ARG)
+#define   i_ctr_interface_MEMBER_INDEX(X, ARG)
+#define   i_ctr_interface_GENERICS(X, ARG)
+#define   i_ctr_interface_INIT(X, ARG) \
+    member_validate[validate_count++] = #ARG;
+#define   i_ctr_interface_PROTO(X, ARG)
+#define   i_ctr_interface_METHOD(X, ARG)
+
+
+
+
+
+#define   i_ctr_public_F(X, ARG)
+#define   i_ctr_public_F_EXTERN(X, ARG)
+#define   i_ctr_public_INST(X, ARG)
+#define   i_ctr_public_INST_EXTERN(X, ARG)
+#define   i_ctr_public_DECL(X, ARG) X X##_with_##ARG(X, ARG);
+#define   i_ctr_public_GENERICS(X, ARG) ARG: X##_type.with_##ARG,
+
+#define   i_ctr_public_INIT(X, ARG) \
+    X##_type.with_##ARG = & X##_with_##ARG; \
+    X##_type.members[X##_type.member_count].name        = stringify(with_##ARG); \
+    X##_type.members[X##_type.member_count].args        = (meta_t) { emit_types(ARG) }; \
+    X##_type.members[X##_type.member_count].type        = (AType)&ARG##_type; \
+    X##_type.members[X##_type.member_count].offset      = offsetof(X##_f, with_##ARG); \
+    X##_type.members[X##_type.member_count].ptr         = (void*)& X##_with_##ARG; \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_CONSTRUCT; \
+    X##_type.member_count++;  
+#define   i_ctr_public_PROTO(X, ARG)
+#define   i_ctr_public_METHOD(X, ARG)      X (*with_##ARG)(X, ARG);
+
+#define   i_ctr_intern_F(X, ARG)
+#define   i_ctr_intern_F_EXTERN(X, ARG)
+#define   i_ctr_intern_INST(X, ARG)
+#define   i_ctr_intern_INST_EXTERN(X, ARG)
+#define   i_ctr_intern_INIT(X, ARG) 
+#define   i_ctr_intern_PROTO(X, ARG)
+#define   i_ctr_intern_METHOD(X, ARG)
+#define   i_ctr(X, Y, T, ARG)              i_ctr_##T##_##Y(X, ARG)
+
+#define   i_prop_opaque_F(X, R, N)              u8 N;
+#define   i_prop_opaque_F_EXTERN(X, R, N)       u8 N;
+#define   i_prop_opaque_INST(X, R, N)           R N;
+#define   i_prop_opaque_INST_EXTERN(X, R, N)    i_prop_public_INST(X, R, N)
+#define   i_prop_opaque_DECL(X, R, N)           i_prop_public_DECL(X, R, N)
+#define   i_prop_opaque_GENERICS(X, R, N)
+#define   i_prop_opaque_INIT(X, R, N)
+#define   i_prop_opaque_PROTO(X, R, N)  
+#define   i_prop_opaque_METHOD(X, R, N)
+
+
+#define   i_prop_interface_F(X, R, N)
+#define   i_prop_interface_F_EXTERN(X, R, N)
+#define   i_prop_interface_INST(X, R, N)
+#define   i_prop_interface_INST_EXTERN(X, R, N)
+#define   i_prop_interface_DECL(X, R, N)
+#define   i_prop_interface_GENERICS(X, R, N)
+#define   i_prop_interface_INIT(X, R, N) \
+    member_validate[validate_count++] = #N;
+#define   i_prop_interface_PROTO(X, R, N)  
+#define   i_prop_interface_METHOD(X, R, N)
+
+#define   i_prop_public_F(X, R, N)              u8 N;
+#define   i_prop_public_F_EXTERN(X, R, N)       u8 N;
+#define   i_prop_public_INST(X, R, N)           R N;
+#define   i_prop_public_INST_EXTERN(X, R, N)    i_prop_public_INST(X, R, N)  
+#define   i_prop_public_DECL(X, R, N)               
+#define   i_prop_public_GENERICS(X, R, N)
+#define   i_prop_public_INIT(X, R, N) \
+    X##_type.members[X##_type.member_count].name        = #N;                                \
+    X##_type.members[X##_type.member_count].offset      = offsetof(struct _##X, N);          \
+    X##_type.members[X##_type.member_count].type        = (AType)&R##_type;                  \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_PROP;                     \
+    X##_type.members[X##_type.member_count].id          = offsetof(struct X##_fields, N);    \
+    X##_type.member_count++;
+#define   i_prop_public_PROTO(X, R, N)  
+#define   i_prop_public_METHOD(X, R, N)
+
+#define   i_prop_required_F(X, R, N)            u8 N;
+#define   i_prop_required_F_EXTERN(X, R, N)     u8 N;
+#define   i_prop_required_INST(X, R, N)         i_prop_public_INST(X, R, N)
+#define   i_prop_required_INST_EXTERN(X, R, N)  i_prop_public_INST(X, R, N)
+#define   i_prop_required_DECL(X, R, N)         i_prop_public_DECL(X, R, N)
+#define   i_prop_required_GENERICS(X, R, N)
+#define   i_prop_required_INIT(X, R, N) \
+    X##_type.members[X##_type.member_count].required = true; \
+    i_prop_public_INIT(X, R, N)
+#define   i_prop_required_PROTO(X, R, N)  
+#define   i_prop_required_METHOD(X, R, N)
+
+#define   i_prop_intern_F(X, R, N)              u8 N;
+#define   i_prop_intern_F_EXTERN(X, R, N)       
+#define   i_prop_intern_INST(X, R, N)           R N;
+#define   i_prop_intern_INST_EXTERN(X, R, N)    R _##N;
+#define   i_prop_intern_DECL(X, R, N)           i_prop_public_DECL(X, R, N)
+#define   i_prop_intern_GENERICS(X, R, N)
+#define   i_prop_intern_INIT(X, R, N)
+#define   i_prop_intern_PROTO(X, R, N)  
+#define   i_prop_intern_METHOD(X, R, N)
+
+
+
+
+
+
+#define   i_prop_public_F_field(X, R, N, M2)            u8 N;
+#define   i_prop_public_F_EXTERN_field(X, R, N, M2)     u8 N;
+#define   i_prop_public_INST_field(X, R, N, M2)         R N;
+#define   i_prop_public_INST_EXTERN_field(X, R, N, M2)  i_prop_public_INST_field(X, R, N, M2)
+#define   i_prop_public_DECL_field(X, R, N, M2) i_prop_public_DECL(X, R, N)
+#define   i_prop_public_GENERICS_field(X, R, N, M2)
+#define   i_prop_public_INIT_field(X, R, N, M2) \
+    X##_type.members[X##_type.member_count].name        = #M2;                               \
+    X##_type.members[X##_type.member_count].offset      = offsetof(struct _##X, N);          \
+    X##_type.members[X##_type.member_count].type        = (AType)&R##_type;                  \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_PROP;                     \
+    X##_type.members[X##_type.member_count].id          = offsetof(struct X##_fields, N);    \
+    X##_type.member_count++;
+
+#define   i_prop_public_PROTO_field(X, R, N, M2)  
+#define   i_prop_public_METHOD_field(X, R, N, M2)
+
+#define   i_prop_required_F_field(X, R, N, M2)              u8 N;
+#define   i_prop_required_F_EXTERN_field(X, R, N, M2)       u8 N;
+#define   i_prop_required_INST_field(X, R, N, M2)           i_prop_public_INST_field(X, R, N, M2)
+#define   i_prop_required_INST_EXTERN_field(X, R, N, M2)    i_prop_public_INST_field(X, R, N, M2)
+#define   i_prop_required_DECL_field(X, R, N, M2)           i_prop_public_DECL(X, R, N)
+#define   i_prop_required_GENERICS_field(X, R, N, M2)
+#define   i_prop_required_INIT_field(X, R, N, M2) \
+    X##_type.members[X##_type.member_count].required = true; \
+    i_prop_public_INIT_field(X, R, N, M2)
+#define   i_prop_required_PROTO_field(X, R, N, M2)  
+#define   i_prop_required_METHOD_field(X, R, N, M2)
+
+#define   i_prop_intern_F_field(X, R, N, M2)                u8 N;
+#define   i_prop_intern_F_EXTERN_field(X, R, N, M2)         
+#define   i_prop_intern_INST_field(X, R, N, M2)             R N;
+#define   i_prop_intern_INST_EXTERN_field(X, R, N, M2)      R N;
+#define   i_prop_intern_DECL_field(X, R, N, M2)     i_prop_public_DECL(X, R, N)
+#define   i_prop_intern_GENERICS_field(X, R, N, M2)
+#define   i_prop_intern_INIT_field(X, R, N, M2)          fault("field is not exposed when intern");
+#define   i_prop_intern_PROTO_field(X, R, N, M2)  
+#define   i_prop_intern_METHOD_field(X, R, N, M2)  
+
+
+
+
+
+
+#define   i_prop_public_F_meta(X, R, N, M2)             u8 N;
+#define   i_prop_public_F_EXTERN_meta(X, R, N, M2)      u8 N;
+#define   i_prop_public_INST_meta(X, R, N, M2)          R N;
+#define   i_prop_public_INST_EXTERN_meta(X, R, N, M2)   R N;
+#define   i_prop_public_DECL_meta(X, R, N, M2)        i_prop_public_DECL(X, R, N)
+#define   i_prop_public_GENERICS_meta(X, R, N, M2)
+#define   i_prop_public_INIT_meta(X, R, N, M2) \
+    X##_type.members[X##_type.member_count].args = (meta_t) { 1, (AType)&M2##_type }; \
+    i_prop_public_INIT(X, R, N)
+
+#define   i_prop_public_PROTO_meta(X, R, N, M2)  
+#define   i_prop_public_METHOD_meta(X, R, N, M2)
+
+#define   i_prop_required_F_meta(X, R, N, M2)           u8 N;
+#define   i_prop_required_F_EXTERN_meta(X, R, N, M2)    u8 N;
+#define   i_prop_required_INST_meta(X, R, N, M2)        R N;
+#define   i_prop_required_INST_EXTERN_meta(X, R, N, M2) R N;
+#define   i_prop_required_DECL_meta(X, R, N, M2)      i_prop_public_DECL(X, R, N)
+#define   i_prop_required_GENERICS_meta(X, R, N, M2)
+#define   i_prop_required_INIT_meta(X, R, N, M2) \
+    X##_type.members[X##_type.member_count].required = true; \
+    i_prop_public_INIT_meta(X, R, N, M2)
+#define   i_prop_required_PROTO_meta(X, R, N, M2)  
+#define   i_prop_required_METHOD_meta(X, R, N, M2)
+
+#define   i_prop_intern_F_meta(X, R, N, M2)             u8 N;
+#define   i_prop_intern_F_EXTERN_meta(X, R, N, M2)      
+#define   i_prop_intern_INST_meta(X, R, N, M2)           R N;
+#define   i_prop_intern_INST_EXTERN_meta(X, R, N, M2)    R _##N;
+#define   i_prop_intern_DECL_meta(X, R, N, M2)        i_prop_public_DECL(X, R, N)
+#define   i_prop_intern_GENERICS_meta(X, R, N, M2)
+#define   i_prop_intern_INIT_meta(X, R, N, M2)
+#define   i_prop_intern_PROTO_meta(X, R, N, M2)  
+#define   i_prop_intern_METHOD_meta(X, R, N, M2)  
+
+
+#define   i_prop_public_F_as(X, R, N, M2)               u8 N;
+#define   i_prop_public_F_EXTERN_as(X, R, N, M2)        u8 N;
+#define   i_prop_public_INST_as(X, R, N, M2)            R N;
+#define   i_prop_public_INST_EXTERN_as(X, R, N, M2)     M2 N;
+#define   i_prop_public_DECL_as(X, R, N, M2)        i_prop_public_DECL(X, R, N)
+#define   i_prop_public_GENERICS_as(X, R, N, M2)
+#define   i_prop_public_INIT_as(X, R, N, M2) \
+    verify(false, "'as' keyword is used for internals")
+#define   i_prop_public_PROTO_as(X, R, N, M2)  
+#define   i_prop_public_METHOD_as(X, R, N, M2)
+
+#define   i_prop_required_F_as(X, R, N, M2)             u8 N;
+#define   i_prop_required_F_EXTERN_as(X, R, N, M2)      u8 N;
+#define   i_prop_required_INST_as(X, R, N, M2)          R N;
+#define   i_prop_required_INST_EXTERN_as(X, R, N, M2)   M2 N;
+#define   i_prop_required_DECL_as(X, R, N, M2)      i_prop_public_DECL(X, R, N)
+#define   i_prop_required_GENERICS_as(X, R, N, M2)
+#define   i_prop_required_INIT_as(X, R, N, M2) \
+    verify(false, "'as' keyword used with internals and cannot be required");
+#define   i_prop_required_PROTO_as(X, R, N, M2)  
+#define   i_prop_required_METHOD_as(X, R, N, M2)
+
+#define   i_prop_intern_F_as(X, R, N, M2)               u8 N;
+#define   i_prop_intern_F_EXTERN_as(X, R, N, M2)        
+#define   i_prop_intern_INST_as(X, R, N, M2)           R N;
+#define   i_prop_intern_INST_EXTERN_as(X, R, N, M2)    M2 _##N;
+#define   i_prop_intern_DECL_as(X, R, N, M2)        i_prop_public_DECL(X, R, N)
+#define   i_prop_intern_GENERICS_as(X, R, N, M2)
+#define   i_prop_intern_INIT_as(X, R, N, M2)
+#define   i_prop_intern_PROTO_as(X, R, N, M2)  
+#define   i_prop_intern_METHOD_as(X, R, N, M2)  
+
+
+
+
+
+
+
+
+#define i_prop_1(X, Y, T, R, N, ...) \
+    i_prop_##T##_##Y(X, R, N)
+
+#define i_prop_2(X, Y, T, R, N, MODE2, M2) \
+    i_prop_##T##_##Y##_##MODE2(X, R, N, M2)
+
+#define ARG_COUNT_HELPER(_1, _2, N, ...) N
+#define ARG_COUNT_NO_ZERO(...) \
+    ARG_COUNT_HELPER(__VA_ARGS__, 2, 1, 0)
+
+#define CONCAT_HELPER(x, y) x##y
+#define CONCAT(x, y) CONCAT_HELPER(x, y)
+
+#define i_prop(X, Y, T, R, N, ...) \
+    CONCAT(i_prop_, ARG_COUNT_NO_ZERO(__VA_ARGS__))(X, Y, T, R, N __VA_OPT__(,) __VA_ARGS__)
+
+#define   i_vprop_interface_F(X, R, N)
+#define   i_vprop_interface_F_EXTERN(X, R, N)
+#define   i_vprop_interface_INST(X, R, N)
+#define   i_vprop_interface_INST_EXTERN(X, R, N)
+#define   i_vprop_interface_DECL(X, R, N)       i_prop_public_DECL(X, R, N)
+#define   i_vprop_interface_GENERICS(X, R, N) \
+    member_validate[validate_count++] = #N;
+#define   i_vprop_interface_PROTO(X, R, N)  
+#define   i_vprop_interface_METHOD(X, R, N)
+
+#define   i_vprop_public_F(X, R, N) u8 N;
+#define   i_vprop_public_F_EXTERN(X, R, N) u8 N;
+#define   i_vprop_public_INST(X, R, N)         R* N;
+#define   i_vprop_public_INST_EXTERN(X, R, N)  i_vprop_public_INST(X, R, N)
+#define   i_vprop_public_DECL(X, R, N)          i_prop_public_DECL(X, R, N)
+#define   i_vprop_public_GENERICS(X, R, N)
+#define   i_vprop_public_INIT(X, R, N) \
+    X##_type.members[X##_type.member_count].name     = #N; \
+    X##_type.members[X##_type.member_count].offset   = offsetof(struct _##X, N); \
+    X##_type.members[X##_type.member_count].type     = (AType)&ARef_type; \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_VPROP; \
+    X##_type.member_count++;
+#define   i_vprop_public_PROTO(X, R, N)  
+#define   i_vprop_public_METHOD(X, R, N)
+
+#define   i_vprop_required_F(X, R, N) u8 N;
+#define   i_vprop_required_F_EXTERN(X, R, N) u8 N;
+#define   i_vprop_required_INST(X, R, N)         i_vprop_public_INST(X, R, N)
+#define   i_vprop_required_INST_EXTERN(X, R, N)  i_vprop_public_INST(X, R, N)
+#define   i_vprop_required_DECL(X, R, N)         i_prop_public_DECL(X, R, N)
+#define   i_vprop_required_GENERICS(X, R, N)
+#define   i_vprop_required_INIT(X, R, N) \
+    X##_type.members[X##_type.member_count].required = true; \
+    i_vprop_public_INIT(X, R, N)
+#define   i_vprop_required_PROTO(X, R, N)  
+#define   i_vprop_required_METHOD(X, R, N)
+
+#define   i_vprop_intern_F(X, R, N) u8 N;
+#define   i_vprop_intern_F_EXTERN(X, R, N)
+#define   i_vprop_intern_INST(X, R, N)           R* N;
+#define   i_vprop_intern_INST_EXTERN(X, R, N)
+#define   i_vprop_intern_DECL(X, R, N)          i_prop_public_DECL(X, R, N)
+#define   i_vprop_intern_GENERICS(X, R, N)
+#define   i_vprop_intern_INIT(X, R, N)
+#define   i_vprop_intern_PROTO(X, R, N)  
+#define   i_vprop_intern_METHOD(X, R, N)  
+#define   i_vprop(X, Y, T, R, N) i_vprop_##T##_##Y(X, R, N)
+
+
+
+#define i_attr_F(           X, ENUM, ID, VALUE, ...)
+#define i_attr_F_EXTERN(    X, ENUM, ID, VALUE, ...)
+#define i_attr_INST(        X, ENUM, ID, VALUE, ...)
+#define i_attr_INST_EXTERN( X, ENUM, ID, VALUE, ...)
+#define i_attr_DECL(        X, ENUM, ID, VALUE, ...)
+#define i_attr_GENERICS(    X, ENUM, ID, VALUE, ...)
+#define i_attr_INIT(        X, ENUM, ID, VALUE, ...) \
+    X##_type.members[X##_type.member_count].name        = #ID; \
+    X##_type.members[X##_type.member_count].id          = ENUM##_##ID; \
+    X##_type.members[X##_type.member_count].value       = VALUE; \
+    X##_type.members[X##_type.member_count].type        = (AType)&ENUM##_type; \
+    X##_type.members[X##_type.member_count].args        = (meta_t) { emit_types(__VA_ARGS__) }; \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_ATTR; \
+    X##_type.member_count++;
+#define i_attr_PROTO(       X, ENUM, ID, VALUE, ...)  
+#define i_attr_METHOD(      X, ENUM, ID, VALUE, ...)  
+
+#define i_attr(X, Y, ENUM, ID, VALUE, ...) i_attr_##Y(X, ENUM, ID, VALUE, __VA_ARGS__)
+
+#define   i_array_interface_F(X, R, S, N)
+#define   i_array_interface_F_EXTERN(X, R, S, N)
+#define   i_array_interface_INST(X, R, S, N)
+#define   i_array_interface_INST_EXTERN(X, R, S, N)
+#define   i_array_interface_DECL(X, R, S, N)
+#define   i_array_interface_GENERICS(X, R, S, N)
+#define   i_array_interface_INIT(X, R, S, N) \
+    member_validate[validate_count++] = #N;
+#define   i_array_interface_PROTO(X, R, S, N)  
+#define   i_array_interface_METHOD(X, R, S, N)
+
+
+#define   i_array_public_F(X, R, S, N) u8 N;
+#define   i_array_public_F_EXTERN(X, R, S, N) u8 N;
+#define   i_array_public_INST(X, R, S, N)         R N[S];  
+#define   i_array_public_INST_EXTERN(X, R, S, N)  i_array_public_INST(X, R, S, N)
+#define   i_array_public_DECL(X, R, S, N)           i_prop_public_DECL(X, R, N)
+#define   i_array_public_GENERICS(X, R, S, N)
+#define   i_array_public_INIT(X, R, S, N) \
+    X##_type.members[X##_type.member_count].count    = S; \
+    i_prop_public_INIT(X, R, N)
+
+#define   i_array_public_PROTO(X, R, S, N)  
+#define   i_array_public_METHOD(X, R, S, N)
+
+#define   i_array_intern_F(X, R, S, N) u8 N;
+#define   i_array_intern_F_EXTERN(X, R, S, N)
+#define   i_array_intern_INST(X, R, S, N)         R N[S];
+#define   i_array_intern_INST_EXTERN(X, R, S, N)  ARef _##N[S];
+#define   i_array_intern_DECL(X, R, S, N)         i_prop_public_DECL(X, R, N)
+#define   i_array_intern_GENERICS(X, R, S, N)
+#define   i_array_intern_INIT(X, R, S, N)
+#define   i_array_intern_PROTO(X, R, S, N)  
+#define   i_array_intern_METHOD(X, R, S, N)  
+#define   i_array(X, Y, T, R, S, N) i_array_##T##_##Y(X, R, S, N)
+
+#define   i_struct_ctr_INST(X, ARG)
+#define   i_struct_ctr_INST_EXTERN(X, ARG)
+#define   i_struct_ctr_DECL(X, ARG)
+#define   i_struct_ctr_GENERICS(X, ARG) ARG*: X##_type.with_##ARG,
+#define   i_struct_ctr_INIT(X, ARG) \
+    X##_type.with_##ARG = & X##_with_##ARG; \
+    X##_type.members[X##_type.member_count].name        = stringify(with_##ARG); \
+    X##_type.members[X##_type.member_count].args        = (meta_t) { }; \
+    X##_type.members[X##_type.member_count].type        = (AType)&ARG##_type; \
+    X##_type.members[X##_type.member_count].offset      = offsetof(X##_f, with_##ARG); \
+    X##_type.members[X##_type.member_count].ptr         = (void*)& X##_with_##ARG; \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_CONSTRUCT; \
+    X##_type.member_count++;  
+#define   i_struct_ctr_PROTO(X, ARG)
+#define   i_struct_ctr_METHOD(X, ARG)      X (*with_##ARG)(ARG*);
+#define   i_struct_ctr(X, Y, ARG)          i_struct_ctr_##Y(X, ARG)
+
+#define   i_struct_ctr_obj_INST(X, ARG)
+#define   i_struct_ctr_obj_INST_EXTERN(X, ARG)
+#define   i_struct_ctr_obj_DECL(X, ARG)
+#define   i_struct_ctr_obj_GENERICS(X, ARG) ARG: X##_type.with_##ARG,
+#define   i_struct_ctr_obj_INIT(X, ARG) \
+    X##_type.with_##ARG = & X##_with_##ARG; \
+    X##_type.members[X##_type.member_count].name        = stringify(with_##ARG); \
+    X##_type.members[X##_type.member_count].args        = (meta_t) { }; \
+    X##_type.members[X##_type.member_count].type        = (AType)&ARG##_type; \
+    X##_type.members[X##_type.member_count].offset      = offsetof(X##_f, with_##ARG); \
+    X##_type.members[X##_type.member_count].ptr         = (void*)& X##_with_##ARG; \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_CONSTRUCT; \
+    X##_type.member_count++;  
+#define   i_struct_ctr_obj_PROTO(X, ARG)
+#define   i_struct_ctr_obj_METHOD(X, ARG)      X (*with_##ARG)(ARG);
+#define   i_struct_ctr_obj(X, Y, ARG)          i_struct_ctr_obj_##Y(X, ARG)
+
+
+#define   i_struct_array_INST(X, R, S, N)         R N[S];
+#define   i_struct_array_INST_EXTERN(X, R, S, N)  i_struct_array_INST(X, R, S, N)
+#define   i_struct_array_DECL(X, R, S, N)
+#define   i_struct_array_GENERICS(X, R, S, N)
+#define   i_struct_array_INIT(X, R, S, N) \
+    X##_type.members[X##_type.member_count].name     = #N; \
+    X##_type.members[X##_type.member_count].offset   = offsetof(struct _##X, N); \
+    X##_type.members[X##_type.member_count].type     = (AType)&R##_type; \
+    X##_type.members[X##_type.member_count].count    = S; \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_PROP; \
+    X##_type.member_count++;
+#define   i_struct_array_PROTO(X, R, S, N)  
+#define   i_struct_array_METHOD(X, R, S, N)        
+#define   i_struct_array(X, Y, R, S, N) i_struct_array_##Y(X, R, S, N)
+
+#define   i_struct_prop_INST(X, R, N)         R N;
+#define   i_struct_prop_INST_EXTERN(X, R, N)  i_struct_prop_INST(X, R, N)
+#define   i_struct_prop_DECL(X, R, N)
+#define   i_struct_prop_GENERICS(X, R, N)
+#define   i_struct_prop_INIT(X, R, N) \
+    X##_type.members[X##_type.member_count].name     = #N; \
+    X##_type.members[X##_type.member_count].offset   = offsetof(struct _##X, N); \
+    X##_type.members[X##_type.member_count].type     = (AType)&R##_type; \
+    X##_type.members[X##_type.member_count].count    = 1; \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_PROP; \
+    X##_type.member_count++;
+#define   i_struct_prop_PROTO(X, R, N)  
+#define   i_struct_prop_METHOD(X, R, N)      
+#define   i_struct_prop(X, Y, R, N) i_struct_prop_##Y(X, R, N)
+
+#define   i_struct_cast_INST(X, R)
+#define   i_struct_cast_INST_EXTERN(X, R)
+#define   i_struct_cast_DECL(X, R)
+#define   i_struct_cast_GENERICS(X, R)
+#define   i_struct_cast_INIT(X, R) \
+    X##_type.cast_##R = & X##_cast_##R; \
+    X##_type.members[X##_type.member_count].name    = stringify(cast_##R); \
+    X##_type.members[X##_type.member_count].args    = (meta_t) { emit_types(X) }; \
+    X##_type.members[X##_type.member_count].type    = (AType)&R##_type; \
+    X##_type.members[X##_type.member_count].offset  = offsetof(X##_f, cast_##R); \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_CAST; \
+    X##_type.member_count++;  
+#define   i_struct_cast_PROTO(X, R)
+#define   i_struct_cast_METHOD(X, R)        R (*cast_##R)(X);         
+#define   i_struct_cast(X, Y, R)                i_struct_cast_##Y(X, R)
+
+#define   i_struct_method_INST(    X, R, N, ...)
+#define   i_struct_method_INST_EXTERN(    X, R, N, ...)
+#define   i_struct_method_DECL(    X, R, N, ...)    R X##_##N(X* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_GENERICS(X, R, N, ...)
+#define   i_struct_method_INIT(    X, R, N, ...) \
+    X##_type . N = & X## _ ## N; \
+    X##_type.members[X##_type.member_count].name    = #N; \
+    X##_type.members[X##_type.member_count].args    = (meta_t) { }; \
+    X##_type.members[X##_type.member_count].type    = (AType)&R##_type; \
+    X##_type.members[X##_type.member_count].offset  = offsetof(X##_f, N); \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_IMETHOD; \
+    X##_type.member_count++;
+#define   i_struct_method_PROTO(X, R, N, ...)
+#define   i_struct_method_METHOD(X, R, N, ...)      R (*N)(X* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method(X, Y, R, N, ...)          i_struct_method_##Y(X, R, N, __VA_ARGS__)
+
+
+
+#define   i_struct_static_INST(    X, R, N, ...)
+#define   i_struct_static_INST_EXTERN(X, R, N, ...)
+#define   i_struct_static_DECL(    X, R, N, ...)    R X##_##N(__VA_ARGS__);
+#define   i_struct_static_GENERICS(X, R, N, ...)
+#define   i_struct_static_INIT(    X, R, N, ...) \
+    X##_type . N = & X## _ ## N; \
+    X##_type.members[X##_type.member_count].name    = #N; \
+    X##_type.members[X##_type.member_count].args    = (meta_t) { }; \
+    X##_type.members[X##_type.member_count].type    = (AType)&R##_type; \
+    X##_type.members[X##_type.member_count].offset  = offsetof(X##_f, N); \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_IMETHOD; \
+    X##_type.member_count++;
+#define   i_struct_static_PROTO(X, R, N, ...)
+#define   i_struct_static_METHOD(X, R, N, ...)      R (*N)(__VA_ARGS__);
+#define   i_struct_static(X, Y, R, N, ...)          i_struct_static_##Y(X, R, N, __VA_ARGS__)
+
+
+
+
+
+
+
+
+
+#define   i_inlay_public_F(X, R, N)            u8 N;
+#define   i_inlay_public_F_EXTERN(X, R, N)     u8 N;
+#define   i_inlay_public_INST(X, R, N)         struct _##R N;
+#define   i_inlay_public_INST_EXTERN(X, R, N)  struct _##R N;
+#define   i_inlay_public_DECL(X, R, N)
+#define   i_inlay_public_GENERICS(X, R, N)
+#define   i_inlay_public_INIT(X, R, N) \
+    X##_type.members[X##_type.member_count].name     = #N; \
+    X##_type.members[X##_type.member_count].offset   = offsetof(struct _##X, N); \
+    X##_type.members[X##_type.member_count].type     = (AType)&R##_type; \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_INLAY; \
+    X##_type.member_count++;
+#define   i_inlay_public_PROTO(X, R, N)  
+#define   i_inlay_public_METHOD(X, R, N)
+
+#define   i_inlay_required_F(X, R, N) u8 N;
+#define   i_inlay_required_F_EXTERN(X, R, N) u8 N;
+#define   i_inlay_required_INST(X, R, N)         i_inlay_public_INST(X, R, N)
+#define   i_inlay_required_INST_EXTERN(X, R, N)  i_inlay_public_INST_EXTERN(X, R, N)
+#define   i_inlay_required_DECL(X, R, N)
+#define   i_inlay_required_GENERICS(X, R, N)
+#define   i_inlay_required_INIT(X, R, N) \
+    X##_type.members[X##_type.member_count].required = true; \
+    i_inlay_public_INIT(X, R, N)
+#define   i_inlay_required_PROTO(X, R, N)  
+#define   i_inlay_required_METHOD(X, R, N)
+
+#define   i_inlay_intern_F(X, R, N)               u8 N;
+#define   i_inlay_intern_F_EXTERN(X, R, N)        
+#define   i_inlay_intern_INST(X, R, N)            struct _##R N;
+#define   i_inlay_intern_INST_EXTERN(X, R, N)     i_inlay_intern_INST(X, R, N)
+#define   i_inlay_intern_DECL(X, R, N)
+#define   i_inlay_intern_GENERICS(X, R, N)
+#define   i_inlay_intern_INIT(X, R, N)
+#define   i_inlay_intern_PROTO(X, R, N)  
+#define   i_inlay_intern_METHOD(X, R, N)  
+#define   i_inlay(X, Y, T, R, N) i_inlay_##T##_##Y(X, R, N)
+
+
+
+#define   s_method_interface_F(X, R, N, ...)
+#define   s_method_interface_F_EXTERN(X, R, N, ...)
+#define   s_method_interface_INST(X, R, N, ...)
+#define   s_method_interface_INST_EXTERN(X, R, N, ...)
+#define   s_method_interface_DECL(X, R, N, ...)
+#define   s_method_interface_GENERICS(X, R, N, ...)
+#define   s_method_interface_INIT(X, R, N, ...) \
+    member_validate[validate_count++] = #N;
+#define   s_method_interface_PROTO(X, R, N, ...)
+#define   s_method_interface_METHOD(X, R, N, ...)
+
+
+#define   s_method_public_F(X, R, N, ...)
+#define   s_method_public_F_EXTERN(X, R, N, ...)
+#define   s_method_public_INST(X, R, N, ...)
+#define   s_method_public_INST_EXTERN(X, R, N, ...)
+#define   s_method_public_DECL(X, R, N, ...)       R X##_##N(__VA_ARGS__);
+#define   s_method_public_GENERICS(X, R, N, ...)
+#define   s_method_public_INIT(X, R, N, ...) \
+    X##_type . N = & X## _ ## N; \
+    X##_type.members[X##_type.member_count].name    = #N; \
+    X##_type.members[X##_type.member_count].args    = (meta_t) { emit_types(__VA_ARGS__) }; \
+    X##_type.members[X##_type.member_count].type    = (AType)&R##_type; \
+    X##_type.members[X##_type.member_count].offset  = offsetof(X##_f, N); \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_SMETHOD; \
+    X##_type.member_count++;   
+#define   s_method_public_PROTO(X, R, N, ...)
+#define   s_method_public_METHOD(X, R, N, ...)    R (*N)(__VA_ARGS__);
+
+#define   s_method_intern_F(X, R, N, ...)
+#define   s_method_intern_F_EXTERN(X, R, N, ...)
+#define   s_method_intern_INST(X, R, N, ...)
+#define   s_method_intern_INST_EXTERN(X, R, N, ...)
+#define   s_method_intern_DECL(X, R, N, ...)
+#define   s_method_intern_GENERICS(X, R, N, ...)
+#define   s_method_intern_INIT(X, R, N, ...)      
+#define   s_method_intern_PROTO(X, R, N, ...)
+#define   s_method_intern_METHOD(X, R, N, ...)    
+#define   s_method(X, Y, T, R, N, ...)            s_method_##T##_##Y(X, R, N, ##__VA_ARGS__)
+
+#define   i_method_interface_F(X, R, N, ...)
+#define   i_method_interface_F_EXTERN(X, R, N, ...)
+#define   i_method_interface_INST(X, R, N, ...)
+#define   i_method_interface_INST_EXTERN(X, R, N, ...)
+#define   i_method_interface_DECL(X, R, N, ...)
+#define   i_method_interface_GENERICS(X, R, N, ...)
+#define   i_method_interface_INIT(X, R, N, ...) \
+    member_validate[validate_count++] = #N;
+#define   i_method_interface_PROTO(X, R, N, ...)
+#define   i_method_interface_METHOD(X, R, N, ...)
+
+#define   i_method_public_F(    X, R, N, ...)
+#define   i_method_public_F_EXTERN(    X, R, N, ...)
+#define   i_method_public_INST(    X, R, N, ...)
+#define   i_method_public_INST_EXTERN(  X, R, N, ...)
+#define   i_method_public_DECL(    X, R, N, ...)    R X##_##N(__VA_ARGS__);
+#define   i_method_public_GENERICS(X, R, N, ...)
+#define   i_method_public_INIT(    X, R, N, ...) \
+    X##_type . N = & X## _ ## N; \
+    X##_type.members[X##_type.member_count].name    = #N; \
+    X##_type.members[X##_type.member_count].args    = (meta_t) { emit_types(__VA_ARGS__) }; \
+    X##_type.members[X##_type.member_count].type    = (AType)&R##_type; \
+    X##_type.members[X##_type.member_count].offset  = offsetof(X##_f, N); \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_IMETHOD; \
+    X##_type.members[X##_type.member_count].ptr     = (void*)X##_type . N; \
+    X##_type.member_count++;
+#define   i_method_public_PROTO(X, R, N, ...)
+#define   i_method_public_METHOD(X, R, N, ...)      R (*N)(__VA_ARGS__);
+
+#define   i_method_intern_F(    X, R, N, ...)
+#define   i_method_intern_F_EXTERN(    X, R, N, ...)
+#define   i_method_intern_INST(    X, R, N, ...)
+#define   i_method_intern_INST_EXTERN(  X, R, N, ...)
+#define   i_method_intern_DECL(    X, R, N, ...)
+#define   i_method_intern_GENERICS(X, R, N, ...)
+#define   i_method_intern_INIT(    X, R, N, ...)    
+#define   i_method_intern_PROTO(X, R, N, ...)
+#define   i_method_intern_METHOD(X, R, N, ...)      
+
+
+
+
+typedef enum {
+    CPU_CAP_NONE      = 0,
+    CPU_CAP_SSE       = 1 << 0,  // Bit 0
+    CPU_CAP_SSE2      = 1 << 1,  // Bit 1
+    CPU_CAP_AVX       = 1 << 2,  // Bit 2
+    CPU_CAP_AVX2      = 1 << 3,  // Bit 3
+    CPU_CAP_AVX512    = 1 << 4,  // Bit 4
+    CPU_CAP_NEON32    = 1 << 5,  // Bit 5 (ARM 32-bit NEON)
+    CPU_CAP_NEON64    = 1 << 6,  // Bit 6 (ARM 64-bit NEON)
+} CPU_Caps;
+
+CPU_Caps detect_cpu_caps();
+
+#define method_member(X, R, N, ...) \
+    X##_type . N = & X## _ ## N ## _neon64; \
+    X##_type.members[X##_type.member_count].name    = #N; \
+    X##_type.members[X##_type.member_count].args    = (meta_t) { emit_types(X, ##__VA_ARGS__) }; \
+    X##_type.members[X##_type.member_count].type    = (AType)&R##_type; \
+    X##_type.members[X##_type.member_count].offset  = offsetof(X##_f, N); \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_IMETHOD; \
+    X##_type.member_count++; \
+
+#define   i_SIMD_neon64_INST(    X, R, N, ...)
+#define   i_SIMD_neon64_INST_EXTERN(  X, R, N, ...)
+#define   i_SIMD_neon64_DECL(    X, R, N, ...)
+#define   i_SIMD_neon64_GENERICS(X, R, N, ...)
+#define   i_SIMD_neon64_INIT(    X, R, N, ...) \
+    if (!X##_type . N && (detect_cpu_caps() & CPU_CAP_NEON64)) { \
+        X##_type . N = & X## _ ## N ## _neon64; \
+        method_member(X, R, N, ## __VA_ARGS__) \
+    }
+#define   i_SIMD_neon64_PROTO(X, R, N, ...)
+#define   i_SIMD_neon64_METHOD(X, R, N, ...)      R (*N)(__VA_ARGS__);
+
+#define   i_SIMD_neon32_INST(    X, R, N, ...)
+#define   i_SIMD_neon32_INST_EXTERN(  X, R, N, ...)
+#define   i_SIMD_neon32_DECL(    X, R, N, ...)
+#define   i_SIMD_neon32_GENERICS(X, R, N, ...)
+#define   i_SIMD_neon32_INIT(    X, R, N, ...) \
+    if (!X##_type . N && (detect_cpu_caps() & CPU_CAP_NEON32)) { \
+        X##_type . N = & X## _ ## N ## _neon32; \
+        method_member(X, R, N, ## __VA_ARGS__) \
+    }
+#define   i_SIMD_neon32_PROTO(X, R, N, ...)
+#define   i_SIMD_neon32_METHOD(X, R, N, ...)      R (*N)(__VA_ARGS__);
+
+#define   i_SIMD_avx512_INST(    X, R, N, ...)
+#define   i_SIMD_avx512_INST_EXTERN(  X, R, N, ...)
+#define   i_SIMD_avx512_DECL(    X, R, N, ...)
+#define   i_SIMD_avx512_GENERICS(X, R, N, ...)
+#define   i_SIMD_avx512_INIT(    X, R, N, ...) \
+    if (!X##_type . N && (detect_cpu_caps() & CPU_CAP_AVX512)) { \
+        X##_type . N = & X## _ ## N ## _avx512; \
+        method_member(X, R, N, ## __VA_ARGS__) \
+    }
+#define   i_SIMD_avx512_PROTO(X, R, N, ...)
+#define   i_SIMD_avx512_METHOD(X, R, N, ...)      R (*N)(__VA_ARGS__);
+
+#define   i_SIMD_avx2_INST(    X, R, N, ...)
+#define   i_SIMD_avx2_INST_EXTERN(  X, R, N, ...)
+#define   i_SIMD_avx2_DECL(    X, R, N, ...)
+#define   i_SIMD_avx2_GENERICS(X, R, N, ...)
+#define   i_SIMD_avx2_INIT(    X, R, N, ...) \
+    if (!X##_type . N && (detect_cpu_caps() & CPU_CAP_AVX2)) { \
+        X##_type . N = & X## _ ## N ## _avx2; \
+        method_member(X, R, N, ## __VA_ARGS__) \
+    }
+#define   i_SIMD_avx2_PROTO(X, R, N, ...)
+#define   i_SIMD_avx2_METHOD(X, R, N, ...)      R (*N)(__VA_ARGS__);
+
+#define   i_SIMD_avx_INST(    X, R, N, ...)
+#define   i_SIMD_avx_INST_EXTERN(  X, R, N, ...)
+#define   i_SIMD_avx_DECL(    X, R, N, ...)
+#define   i_SIMD_avx_GENERICS(X, R, N, ...)
+#define   i_SIMD_avx_INIT(    X, R, N, ...) \
+    if (!X##_type . N && (detect_cpu_caps() & CPU_CAP_AVX)) { \
+        X##_type . N = & X## _ ## N ## _avx; \
+        method_member(X, R, N, ## __VA_ARGS__) \
+    }
+#define   i_SIMD_avx_PROTO(X, R, N, ...)
+#define   i_SIMD_avx_METHOD(X, R, N, ...)      R (*N)(__VA_ARGS__);
+
+/// avoiding conflict with parsing i_method uses
+#define   i_method\
+(X, Y, T, R, N, ...) i_method_##T##_##Y(X, R, N, X, ## __VA_ARGS__)
+
+#define   i_guard\
+(X, Y, T, R, N, ...) i_method_##T##_##Y(X, R, N, X, ## __VA_ARGS__)
+
+
+// SIMD is public, since we modify the function table
+#define   i_SIMD\
+(X, Y, R, ARCH, N, ...) i_SIMD_##ARCH##_##Y(X, R, N, X, ## __VA_ARGS__)
+
+#define   i_operator_interface_F(X, R, N, ARG)
+#define   i_operator_interface_F_EXTERN(X, R, N, ARG)
+#define   i_operator_interface_INST(X, R, N, ARG)
+#define   i_operator_interface_INST_EXTERN(X, R, N, ARG)
+#define   i_operator_interface_DECL(X, R, N, ARG)
+#define   i_operator_interface_GENERICS(X, R, N, ARG)
+#define   i_operator_interface_INIT(X, R, N, ARG) \
+    member_validate[validate_count] = #N;
+#define   i_operator_interface_PROTO(X, R, N, ARG)
+#define   i_operator_interface_METHOD(X, R, N, ARG)
+
+#define   i_operator_public_F(X, R, N, ARG)
+#define   i_operator_public_F_EXTERN(X, R, N, ARG)
+#define   i_operator_public_INST(X, R, N, ARG)
+#define   i_operator_public_INST_EXTERN(X, R, N, ARG)
+#define   i_operator_public_DECL(X, R, N, ARG)
+#define   i_operator_public_GENERICS(X, R, N, ARG)
+#define   i_operator_public_INIT(X, R, N, ARG) \
+    X##_type  . operator_##N = & X## _operator_ ## N; \
+    X##_type.members[X##_type.member_count].name    = stringify(operator_##N); \
+    X##_type.members[X##_type.member_count].args    = (meta_t) { emit_types(X, ARG) }; \
+    X##_type.members[X##_type.member_count].type    = (AType)&R##_type; \
+    X##_type.members[X##_type.member_count].offset  = offsetof(X##_f, operator_##N); \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_OPERATOR; \
+    X##_type.members[X##_type.member_count].operator_type = OPType_ ## N; \
+    X##_type.member_count++; 
+#define   i_operator_public_PROTO(X, R, N, ARG)
+#define   i_operator_public_METHOD(X, R, N, ARG)    R (*operator_ ## N)(X, ARG);
+
+#define   i_operator_intern_F(X, R, N, ARG)
+#define   i_operator_intern_F_EXTERN(X, R, N, ARG)
+#define   i_operator_intern_INST(X, R, N, ARG)
+#define   i_operator_intern_INST_EXTERN(X, R, N, ARG)
+#define   i_operator_intern_DECL(X, R, N, ARG)
+#define   i_operator_intern_GENERICS(X, R, N, ARG)
+#define   i_operator_intern_INIT(X, R, N, ARG)      
+#define   i_operator_intern_PROTO(X, R, N, ARG)
+#define   i_operator_intern_METHOD(X, R, N, ARG)    
+#define   i_operator(X, Y, T, R, N, ARG)            i_operator_##T##_##Y(X, R, N, ARG)
+
+#define   i_cast_interface_F(X, R)
+#define   i_cast_interface_F_EXTERN(X, R)
+#define   i_cast_interface_INST(X, R)
+#define   i_cast_interface_INST_EXTERN(X, R)
+#define   i_cast_interface_DECL(X, R)
+#define   i_cast_interface_GENERICS(X, R)
+#define   i_cast_interface_INIT(X, R) \
+    member_validate[validate_count++] = "cast_" #R;
+#define   i_cast_interface_PROTO(X, R)
+#define   i_cast_interface_METHOD(X, R)
+
+#define   i_cast_public_F(X, R)
+#define   i_cast_public_F_EXTERN(X, R)
+#define   i_cast_public_INST(X, R)
+#define   i_cast_public_INST_EXTERN(X, R)
+#define   i_cast_public_DECL(X, R)
+#define   i_cast_public_GENERICS(X, R)
+#define   i_cast_public_INIT(X, R) \
+    X##_type.cast_##R = & X##_cast_##R; \
+    X##_type.members[X##_type.member_count].name    = stringify(cast_##R); \
+    X##_type.members[X##_type.member_count].args    = (meta_t) { emit_types(X) }; \
+    X##_type.members[X##_type.member_count].type    = (AType)&R##_type; \
+    X##_type.members[X##_type.member_count].offset  = offsetof(X##_f, cast_##R); \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_CAST; \
+    X##_type.member_count++;  
+#define   i_cast_public_PROTO(X, R)
+#define   i_cast_public_METHOD(X, R)        R (*cast_##R)(X);
+
+#define   i_cast_intern_F(X, R)
+#define   i_cast_intern_F_EXTERN(X, R)
+#define   i_cast_intern_INST(X, R)
+#define   i_cast_intern_INST_EXTERN(X, R)
+#define   i_cast_intern_DECL(X, R)
+#define   i_cast_intern_GENERICS(X, R)
+#define   i_cast_intern_INIT(X, R)          
+#define   i_cast_intern_PROTO(X, R)
+#define   i_cast_intern_METHOD(X, R)        
+#define   i_cast(X, Y, T, R)                i_cast_##T##_##Y(X, R)
+
+#define i_index_interface_F(X, R, ...)
+#define i_index_interface_F_EXTERN(X, R, ...)
+#define i_index_interface_INST(X, R, ...)
+#define i_index_interface_INST_EXTERN(X, R, ...)
+#define i_index_interface_DECL(X, R, ...)
+#define i_index_interface_GENERICS(X, R, ...)
+#define i_index_interface_INIT(X, R, ...) \
+    member_validate[validate_count++] = "index_" #R;
+#define i_index_interface_PROTO(X, R, ...)
+#define i_index_interface_METHOD(X, R, ...)
+
+#define i_index_public_F(X, R, ...)
+#define i_index_public_F_EXTERN(X, R, ...)
+#define i_index_public_INST(X, R, ...)
+#define i_index_public_INST_EXTERN(X, R, ...)
+#define i_index_public_DECL(X, R, ...)
+#define i_index_public_GENERICS(X, R, ...)
+#define i_index_public_INIT(X, R, ...) \
+    X##_type.emit_idx_symbol(index, __VA_ARGS__) = & emit_idx_symbol(X ## _index, __VA_ARGS__); \
+    X##_type.members[X##_type.member_count].name        = stringify(emit_idx_symbol(index, __VA_ARGS__)); \
+    X##_type.members[X##_type.member_count].args        = (meta_t) { emit_types(X, __VA_ARGS__) }; \
+    X##_type.members[X##_type.member_count].type        = (AType)&R##_type; \
+    X##_type.members[X##_type.member_count].offset      = offsetof(X##_f, emit_idx_symbol(index, __VA_ARGS__)); \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_INDEX; \
+    X##_type.member_count++;  
+#define i_index_public_PROTO(X, R, ...)
+#define i_index_public_METHOD(X, R, ...)                R (*emit_idx_symbol(index,__VA_ARGS__))(X, ##__VA_ARGS__);
+
+#define i_index_intern_F(X, R, ...)
+#define i_index_intern_F_EXTERN(X, R, ...)
+#define i_index_intern_INST(X, R, ...)
+#define i_index_intern_INST_EXTERN(X, R, ...)
+#define i_index_intern_DECL(X, R, ...)
+#define i_index_intern_GENERICS(X, R, ...)
+#define i_index_intern_INIT(X, R, ...)
+#define i_index_intern_PROTO(X, R, ...)
+#define i_index_intern_METHOD(X, R, ...)                R (*emit_idx_symbol(index, __VA_ARGS__))(X, ##__VA_ARGS__);
+#define i_index(X, Y, T, R, ...)                        i_index_##T##_##Y(X, R, ##__VA_ARGS__)
+
+#define i_vargs_public_F(X, R, N, ...)
+#define i_vargs_public_F_EXTERN(X, R, N, ...)
+#define i_vargs_public_INST(X, R, N, ...)
+#define i_vargs_public_INST_EXTERN(X, R, N, ...)
+#define i_vargs_public_DECL(X, R, N, ...)
+#define i_vargs_public_GENERICS(X, R, N, ...)
+#define i_vargs_public_INIT(X, R, N, ...)               i_method_public_INIT(X, R, N, __VA_ARGS__)  
+#define i_vargs_public_PROTO(X, R, N, ...)
+#define i_vargs_public_METHOD(X, R, N, ...)             R (*N)(__VA_ARGS__, ...);
+
+#define i_vargs_intern_F(X, R, N, ...)
+#define i_vargs_intern_F_EXTERN(X, R, N, ...)
+#define i_vargs_intern_INST(X, R, N, ...)
+#define i_vargs_intern_INST_EXTERN(X, R, N, ...)
+#define i_vargs_intern_DECL(X, R, N, ...)
+#define i_vargs_intern_GENERICS(X, R, N, ...)
+#define i_vargs_intern_INIT(X, R, N, ...)               i_method_intern_INIT(X, R, N, __VA_ARGS__)  
+#define i_vargs_intern_PROTO(X, R, N, ...)
+#define i_vargs_intern_METHOD(X, R, N, ...)             R (*N)(__VA_ARGS__, ...);
+#define i_vargs(X, Y, T, R, N, ...)                     i_vargs_##T##_##Y(X, R, N, __VA_ARGS__)
+
+#define s_vargs_public_F(X, R, N, ...)
+#define s_vargs_public_F_EXTERN(X, R, N, ...)
+#define s_vargs_public_INST(X, R, N, ...)
+#define s_vargs_public_INST_EXTERN(X, R, N, ...)
+#define s_vargs_public_DECL(X, R, N, ...)               R X##_##N(__VA_ARGS__, ...);
+#define s_vargs_public_GENERICS(X, R, N, ...)
+#define s_vargs_public_INIT(X, R, N, ...)               s_method_public_INIT(X, R, N, ##__VA_ARGS__)
+#define s_vargs_public_PROTO(X, R, N, ...)
+#define s_vargs_public_METHOD(X, R, N, ...)             R (*N)(__VA_ARGS__, ...);
+
+#define s_vargs_intern_F(X, R, N, ...)
+#define s_vargs_intern_F_EXTERN(X, R, N, ...)
+#define s_vargs_intern_INST(X, R, N, ...)
+#define s_vargs_intern_INST_EXTERN(X, R, N, ...)
+#define s_vargs_intern_DECL(X, R, N, ...)
+#define s_vargs_intern_GENERICS(X, R, N, ...)
+#define s_vargs_intern_INIT(X, R, N, ...)               s_method_intern_INIT(X, R, N, ##__VA_ARGS__)
+#define s_vargs_intern_PROTO(X, R, N, ...)
+#define s_vargs_intern_METHOD(X, R, N, ...)             R (*N)(__VA_ARGS__, ...);
+#define s_vargs(X, Y, T, R, N, ...)                     s_vargs_##T##_##Y(X, R, N, ##__VA_ARGS__)
+
+#define i_override_method_F(X, N)
+#define i_override_method_F_EXTERN(X, N)
+#define i_override_method_INST(X, N)
+#define i_override_method_INST_EXTERN(X, N)
+#define i_override_method_DECL(X, N)
+#define i_override_method_GENERICS(X, N)
+#define i_override_method_INIT(X, N) \
+    X##_type . N = (__typeof__(X##_type . N))& X## _ ## N;
+
+#define i_override_method_PROTO(X, N)
+#define i_override_method_METHOD(X, N)
+
+#define i_override_ctr_F(X, R)
+#define i_override_ctr_F_EXTERN(X, R)
+#define i_override_ctr_INST(X, R)
+#define i_override_ctr_INST_EXTERN(X, N)
+#define i_override_ctr_DECL(X, R)
+#define i_override_ctr_GENERICS(X, N)                   N: X##_type.with_##N,
+#define i_override_ctr_INIT(X, R) \
+    X##_type . with_##R = & X##_with_##R; \
+    X##_type.members[X##_type.member_count].name        = stringify(with_##R); \
+    X##_type.members[X##_type.member_count].args        = (meta_t) { emit_types(R) }; \
+    X##_type.members[X##_type.member_count].type        = (AType)&R##_type; \
+    X##_type.members[X##_type.member_count].offset      = offsetof(X##_f, with_##R); \
+    X##_type.members[X##_type.member_count].ptr         = (void*)& X##_with_##R; \
+    X##_type.members[X##_type.member_count].member_type = A_MEMBER_CONSTRUCT; \
+    X##_type.member_count++; 
+#define i_override_ctr_PROTO(X, R)
+#define i_override_ctr_METHOD(X, R)
+
+#define i_override_cast_F(X, R)
+#define i_override_cast_F_EXTERN(X, R)
+#define i_override_cast_INST(X, R)
+#define i_override_cast_INST_EXTERN(X, R)
+#define i_override_cast_DECL(X, R)
+#define i_override_cast_GENERICS(X, N)
+#define i_override_cast_INIT(X, R)                      X##_type . cast_##R = & X##_cast_##R;
+#define i_override_cast_PROTO(X, R)
+#define i_override_cast_METHOD(X, R)
+
+#define i_override_idx_F(X, R)
+#define i_override_idx_F_EXTERN(X, R)
+#define i_override_idx_INST(X, R)
+#define i_override_idx_INST_EXTERN(X, R)
+#define i_override_idx_DECL(X, R)
+#define i_override_idx_GENERICS(X, R)
+#define i_override_idx_INIT(X, R)                    X##_type . idx_##R = & X##_idx_##R;
+#define i_override_idx_PROTO(X, R)
+#define i_override_idx_METHOD(X, R)
+
+#define i_override_1(X, Y, OT, N, ...) \
+    i_override_##OT##_##Y(X, N)
+
+#define i_override_2(X, Y, OT, N, N2) \
+    i_override_##OT##_##Y(X, N) \
+    i_override_##OT##_##Y(X, N2)
+
+#define i_override_3(X, Y, OT, N, N2, N3) \
+    i_override_##OT##_##Y(X, N)  \
+    i_override_##OT##_##Y(X, N2) \
+    i_override_##OT##_##Y(X, N3)
+
+#define i_override_4(X, Y, OT, N, N2, N3) \
+    i_override_##OT##_##Y(X, N)  \
+    i_override_##OT##_##Y(X, N2) \
+    i_override_##OT##_##Y(X, N3) \
+    i_override_##OT##_##Y(X, N4)
+
+#define i_override_5(X, Y, OT, N, N2, N3) \
+    i_override_##OT##_##Y(X, N)  \
+    i_override_##OT##_##Y(X, N2) \
+    i_override_##OT##_##Y(X, N3) \
+    i_override_##OT##_##Y(X, N4) \
+    i_override_##OT##_##Y(X, N5)
+
+#define i_override_6(X, Y, OT, N, N2, N3) \
+    i_override_##OT##_##Y(X, N)  \
+    i_override_##OT##_##Y(X, N2) \
+    i_override_##OT##_##Y(X, N3) \
+    i_override_##OT##_##Y(X, N4) \
+    i_override_##OT##_##Y(X, N5) \
+    i_override_##OT##_##Y(X, N6)
+
+#define i_override_7(X, Y, OT, N, N2, N3) \
+    i_override_##OT##_##Y(X, N)  \
+    i_override_##OT##_##Y(X, N2) \
+    i_override_##OT##_##Y(X, N3) \
+    i_override_##OT##_##Y(X, N4) \
+    i_override_##OT##_##Y(X, N5) \
+    i_override_##OT##_##Y(X, N6) \
+    i_override_##OT##_##Y(X, N7)
+
+#define i_override_8(X, Y, OT, N, N2, N3) \
+    i_override_##OT##_##Y(X, N)  \
+    i_override_##OT##_##Y(X, N2) \
+    i_override_##OT##_##Y(X, N3) \
+    i_override_##OT##_##Y(X, N4) \
+    i_override_##OT##_##Y(X, N5) \
+    i_override_##OT##_##Y(X, N6) \
+    i_override_##OT##_##Y(X, N7) \
+    i_override_##OT##_##Y(X, N8)
+
+#define ARG_COUNT_HELPER(_1, _2, N, ...) N
+#define ARG_COUNT_NO_ZERO(...) \
+    ARG_COUNT_HELPER(__VA_ARGS__, 2, 1, 0)
+
+#define CONCAT_HELPER(x, y) x##y
+#define CONCAT(x, y) CONCAT_HELPER(x, y)
+
+#define i_override(X, Y, OT, N, ...) \
+    CONCAT(i_override_, ARG_COUNT_NO_ZERO(__VA_ARGS__))(X, Y, OT, N __VA_OPT__(,) __VA_ARGS__)
+
+
+#define M(X, Y, VISIBILITY, NAME, ...) \
+    i_ ## NAME ## _ ## VISIBILITY ## _ ## Y (X, __VA_ARGS__)
+
+
+//#define i_override(X, Y, OT, N) i_override_##OT##_##Y(X, N)
+
+/// useful for fetching from va_args if they are used; this is how we enable the meta-types on the classes
+/// they get a global constructor and type structure, with function table identical except for the call signature
+/// at runtime they see their own meta, and may perform validation or different behavior based on those 'types'
+/// in the meta array (max is 8)
+
+#define FIRST_HELPER(FIRST, ...) FIRST
+#define SECOND_HELPER(FIRST, SECOND, ...) SECOND
+#define META0(...)  FIRST_HELPER(__VA_ARGS__, object)
+#define META1(...) SECOND_HELPER(__VA_ARGS__, object, object)
+
+typedef struct method_t {
+    struct _array*  atypes;
+    struct _A_f*    rtype;
+    void*           address;
+    void*           ffi_cif;  /// ffi-calling info
+    void*           ffi_args; /// ffi-data types for args
+} method_t;
+
+// when scalar is set, this is known as a class that shapes this data
+// the complexity arises when we may want to perform shape on this high level class
+// at the moment, a simple rule is sufficient for our use-cases, when scalar is set, it takes the shape
+
+#define A_f_members(B) \
+    struct _ ## B ## _f* parent_type; \
+    char*           name; \
+    char*           module; \
+    int             size; \
+    int             msize; \
+    af_recycler*    af; \
+    int             magic; \
+    int             global_count; \
+    shape           vmember_shape; \
+    int             vmember_count; \
+    AType           vmember_type; \
+    int             member_count; \
+    type_member_t*  members; \
+    int             traits; \
+    void*           user; \
+    u128            required; \
+    AType           src; \
+    void*           arb; \
+    meta_t          meta; \
+
+#ifdef __cplusplus
+#define declare_typedef(X) \
+    typedef struct _ ## X* X;
+#else
+#define declare_typedef(X) \
+    typedef struct _ ## X* X;
+#endif
+
+/// base object needs a fields placeholder -- its fields are not accessible by the user!
+#define declare_base( X ) \
+    declare_typedef(X) \
+    _Pragma("pack(push, 1)") \
+    struct X ## _fields { \
+        u8 __none__; \
+    }; \
+    typedef struct _ ## X { \
+        X##_schema (X, INST) \
+        struct _##X##_f* f; \
+        struct _##X##_f* f2; \
+    } *X; \
+    X##_schema (X, DECL) \
+    typedef struct _##X##_f { \
+        A_f_members(A) \
+        X##_schema (X, METHOD) \
+    } X##_f; \
+    _Pragma("pack(pop)") \
+    extern X##_f X##_type;
+
+
+#define declare_abstract( X, ... ) \
+    declare_typedef(X) \
+    _Pragma("pack(push, 1)") \
+    typedef struct _##X##_f { \
+        A_f_members(A) \
+        A_schema(A, METHOD) \
+        X##_schema(X, METHOD, __VA_ARGS__) \
+    } X##_f, *X##_ft; \
+    _Pragma("pack(pop)") \
+    extern X##_f X##_type;
+
+
+#define declare_primitive( X, Y, ... ) \
+    _Pragma("pack(push, 1)") \
+    typedef struct _##X##_f { \
+        A_f_members(A) \
+        A_schema(A, METHOD, __VA_ARGS__) \
+        X##_schema(X, METHOD, __VA_ARGS__) \
+    } X##_f, *X##_ft; \
+    _Pragma("pack(pop)") \
+    extern X##_f X##_type;
+
+
+#define ENUM_COUNT(...)  (sizeof((int[]){__VA_ARGS__}) / sizeof(int))
+
+// can technically use enums to phone home with real numbers
+#define declare_typed_enum( E, T ) \
+    typedef T E; \
+    E##_schema(E, T, DECL) \
+    _Pragma("pack(push, 1)") \
+    typedef struct _##E##_f { \
+        A_f_members(A) \
+        A_schema   (A, METHOD) \
+        E##_schema (A, T, METHOD) \
+    } E##_f, *E##_ft; \
+    _Pragma("pack(pop)") \
+    static const i32 E##_ENUM_COUNT = ENUM_COUNT(E##_schema(E, T, COUNT)); \
+    extern E##_f   E##_type; \
+
+
+#define declare_enum( E ) declare_typed_enum(E, i32)
+
+void A_push_type(AType type);
+
+void A_lazy_init(global_init_fn fn);
+
+#define define_typed_enum( E, T ) \
+    struct _A E ## _redirect; \
+    E ## _f   E ## _type; \
+    static __attribute__((constructor)) bool global_##E() { \
+        memset(&E ## _redirect, 0, sizeof(E ## _redirect)); \
+        E ## _redirect.type = (AType)&E ## _type; \
+        E ## _f* type_ref = &E ## _type; \
+        A_f* base_ref     = &A_type; \
+        if ((AType)type_ref != (AType)base_ref && base_ref->size == 0) { \
+            A_lazy_init((global_init_fn)&global_##E); \
+            return false; \
+        } else { \
+            memcpy(type_ref, base_ref, sizeof(A_f)); \
+            static type_member_t members[64 + ENUM_COUNT(E##_schema(E, T, COUNT)) + sizeof(E##_type) / sizeof(void*)]; \
+            memset(&E##_type, 0, sizeof(E##_type)); \
+            E##_type.magic = 1337; \
+            E##_type.src      = typeid(T); \
+            E##_type.parent_type = (__typeof__(E##_type.parent_type))& A_type; \
+            E##_type.name     = #E;                 \
+            E##_type.module   = MODULE;             \
+            E##_type.size     = sizeof(E);          \
+            E##_type.members  = members;            \
+            E##_type.member_count = 0;              \
+            E##_type.traits   = A_TRAIT_ENUM;       \
+            E##_type.arb      = primitive_ffi_arb(typeid(i32)); \
+            E##_schema( E, T, IMPL ); \
+            A_push_type((AType)&E##_type); \
+            return true; \
+        } \
+    }
+
+#define define_enum( E ) \
+    define_typed_enum(E, i32)
+
+#define FIELD_ID(TYPE, MEMBER) offsetof(struct TYPE##_fields, MEMBER)
+
+#define declare_class\
+(AA, ...) \
+    typedef struct _##AA* AA; \
+    _Pragma("pack(push, 1)") \
+    struct AA##_fields { \
+        AA##_intern (AA, F, __VA_ARGS__) \
+    }; \
+    typedef struct _##AA { \
+        AA##_intern (AA, INST, __VA_ARGS__) \
+        struct _##AA##_f* f; \
+        struct _##AA##_f* f2; \
+    } *AA; \
+    AA##_schema (AA, DECL, __VA_ARGS__) \
+    typedef struct _##AA##_f { \
+        A_f_members(AA) \
+        A_schema(AA, METHOD, __VA_ARGS__) \
+        AA##_schema (AA, METHOD, __VA_ARGS__) \
+    } AA##_f, *AA##_ft; \
+    extern AA##_f   AA##_type; \
+    _Pragma("pack(pop)")
+
+
+#define declare_class_2\
+(AA, BB, ...) \
+    typedef struct _##AA* AA; \
+    _Pragma("pack(push, 1)") \
+    struct AA##_fields { \
+        BB##_intern (BB, F, __VA_ARGS__) \
+        AA##_intern (AA, F, __VA_ARGS__) \
+    }; \
+    typedef struct _##AA { \
+        BB##_intern (BB, INST, __VA_ARGS__) \
+        AA##_intern (AA, INST, __VA_ARGS__) \
+        struct _##AA##_f* f; \
+        struct _##AA##_f* f2; \
+    } *AA; \
+    AA##_schema (AA, DECL, __VA_ARGS__) \
+    typedef struct _##AA##_f { \
+        A_f_members(AA) \
+        A_schema(AA, METHOD, __VA_ARGS__) \
+        BB##_schema (BB, METHOD, __VA_ARGS__) \
+        AA##_schema (AA, METHOD, __VA_ARGS__) \
+    } AA##_f, *AA##_ft; \
+    extern AA##_f   AA##_type; \
+    _Pragma("pack(pop)")
+
+#define declare_class_3\
+(AA, BB, CC, ...) \
+    typedef struct _##AA* AA; \
+    _Pragma("pack(push, 1)") \
+    struct AA##_fields { \
+        CC##_intern (CC, F, __VA_ARGS__) \
+        BB##_intern (BB, F, __VA_ARGS__) \
+        AA##_intern (AA, F, __VA_ARGS__) \
+    }; \
+    typedef struct _##AA { \
+        CC##_intern (CC, INST, __VA_ARGS__) \
+        BB##_intern (BB, INST, __VA_ARGS__) \
+        AA##_intern (AA, INST, __VA_ARGS__) \
+        struct _##AA##_f* f; \
+        struct _##AA##_f* f2; \
+    } *AA; \
+    AA##_schema (AA, DECL, __VA_ARGS__) \
+    typedef struct _##AA##_f { \
+        A_f_members(AA) \
+        A_schema(AA, METHOD, __VA_ARGS__) \
+        CC##_schema (CC, METHOD, __VA_ARGS__) \
+        BB##_schema (BB, METHOD, __VA_ARGS__) \
+        AA##_schema (AA, METHOD, __VA_ARGS__) \
+    } AA##_f, *AA##_ft; \
+    extern AA##_f   AA##_type; \
+    _Pragma("pack(pop)")
+
+
+#define declare_class_4\
+(AA, BB, CC, DD, ...) \
+    typedef struct _##AA* AA; \
+    _Pragma("pack(push, 1)") \
+    struct AA##_fields { \
+        DD##_intern (DD, F, __VA_ARGS__) \
+        CC##_intern (CC, F, __VA_ARGS__) \
+        BB##_intern (BB, F, __VA_ARGS__) \
+        AA##_intern (AA, F, __VA_ARGS__) \
+    }; \
+    typedef struct _##AA { \
+        DD##_intern (DD, INST, __VA_ARGS__) \
+        CC##_intern (CC, INST, __VA_ARGS__) \
+        BB##_intern (BB, INST, __VA_ARGS__) \
+        AA##_intern (AA, INST, __VA_ARGS__) \
+        struct _##AA##_f* f; \
+        struct _##AA##_f* f2; \
+    } *AA; \
+    AA##_schema (AA, DECL, __VA_ARGS__) \
+    typedef struct _##AA##_f { \
+        A_f_members(AA) \
+        A_schema(AA, METHOD, __VA_ARGS__) \
+        DD##_schema (DD, METHOD, __VA_ARGS__) \
+        CC##_schema (CC, METHOD, __VA_ARGS__) \
+        BB##_schema (BB, METHOD, __VA_ARGS__) \
+        AA##_schema (AA, METHOD, __VA_ARGS__) \
+    } AA##_f, *AA##_ft; \
+    extern AA##_f   AA##_type; \
+    _Pragma("pack(pop)")
+
+#define arg_count_IMPL(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, N, ...) N
+#define arg_count(...) arg_count_IMPL(__VA_ARGS__, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
+
+#define declare_base_meta\
+(AA, BASE, ...) \
+    typedef struct _##AA* AA; \
+    _Pragma("pack(push, 1)") \
+    typedef struct _##AA { \
+        BASE##_intern (AA, INST, __VA_ARGS__) \
+        struct _##AA##_f* f; \
+        struct _##AA##_f* f2; \
+    } *AA; \
+    typedef struct _##AA##_f { \
+        A_f_members(BASE) \
+        BASE##_schema (AA, METHOD, __VA_ARGS__) \
+    } AA##_f, *AA##_ft; \
+    extern AA##_f   AA##_type; \
+    _Pragma("pack(pop)")
+
+#define declare_struct\
+(AA,...) \
+    typedef struct _##AA AA; \
+    _Pragma("pack(push, 1)") \
+    typedef struct _##AA { \
+        AA##_schema (AA, INST, __VA_ARGS__) \
+    } AA; \
+    AA##_schema (AA, DECL, __VA_ARGS__) \
+    typedef struct _##AA##_f { \
+        A_f_members(AA) \
+        AA##_schema (AA, METHOD, __VA_ARGS__) \
+    } AA##_f, *AA##_ft; \
+    extern AA##_f   AA##_type; \
+    _Pragma("pack(pop)")
+
+#define module_init(fn) \
+    static bool _module_init() { \
+        fn(); \
+        return true; \
+    } \
+    static __attribute__((constructor)) void _module_register() { \
+        A_module_init((global_init_fn)&_module_init); \
+    }
+
+
+void* primitive_ffi_arb(AType);
+
+// auto-free recycler
+struct af_recycler {
+    // auto-free
+    A** af;
+    i64 af_count;
+    i64 af_alloc;
+
+    A** re;
+    i64 re_count;
+    i64 re_alloc;
+};
+
+/// alias lets use tag types with an array of types, enabling 
+/// design-time and runtime template-like functionality, with 
+/// permutation of the class-type and instance-type
+#define define_arb(TYPE, BASE, TYPE_SZ, TRAIT, VMEMBER_COUNT, VMEMBER_TYPE, POST_PUSH, ...) \
+    _Pragma("pack(push, 1)") \
+    __thread af_recycler TYPE##_af; \
+    A       TYPE##_head; \
+    TYPE##_f  TYPE##_type; \
+    _Pragma("pack(pop)") \
+    static __attribute__((constructor)) bool Aglobal_##TYPE() { \
+        TYPE##_f* type_ref = &TYPE##_type; \
+        BASE##_f* base_ref = &BASE##_type; \
+        int validate_count = 0; \
+        char* member_validate[256] = {}; \
+        if ((AType)type_ref == (AType)base_ref) \
+            type_ref->name = #TYPE; \
+        if ((AType)type_ref != (AType)base_ref && (!base_ref->traits)) { \
+            A_lazy_init((global_init_fn)&Aglobal_##TYPE); \
+            return false; \
+        } else { \
+            memset(type_ref, 0,        sizeof(TYPE##_f)); \
+            if ((AType)type_ref != (AType)base_ref) \
+                memcpy(type_ref, base_ref, sizeof(BASE##_f)); \
+            type_ref->af = &TYPE##_af; \
+            type_ref->af->re_alloc = 1024; \
+            type_ref->af->re = (A**)calloc(1024, sizeof(A*)); \
+            type_ref->magic = 1337; \
+            static type_member_t members[512]; \
+            type_ref->src = (AType)base_ref != typeid(A) \
+                 ? (AType)base_ref : (AType)null; \
+            type_ref->parent_type = \
+                (__typeof__(type_ref->parent_type))&BASE##_type; \
+            type_ref->name          = #TYPE; \
+            printf("set type name to %s (%p)\n", TYPE##_type.name, &TYPE##_type);  \
+            type_ref->module        = MODULE; \
+            type_ref->members       = members; \
+            type_ref->member_count  = 0; \
+            type_ref->size          = TYPE_SZ; \
+            type_ref->vmember_count = VMEMBER_COUNT; \
+            type_ref->vmember_type  = (AType)VMEMBER_TYPE; \
+            type_ref->traits        = TRAIT; \
+            type_ref->meta          = (meta_t) { emit_types(__VA_ARGS__) }; \
+            type_ref->arb           = primitive_ffi_arb(typeid(TYPE)); \
+            TYPE##_schema( TYPE, INIT, __VA_ARGS__ ) \
+            A_push_type((AType)type_ref); \
+            POST_PUSH; \
+            return true; \
+        } \
+    } \
+
+#define define_init(id, ...) \
+    static __attribute__((constructor)) none Aglobal_initializer_##id() { \
+        __VA_ARGS__; \
+    }
+
+// define any class as vectorable; useful for serialization and other things
+#define define_vector(t, scalar, count) \
+    define_init(t, t##_type.vmember_type = typeid(scalar); t##_type.vmember_count = count)
+
+// todo: validation from interface members
+/*
+we emit these vars already, but must go over to verify within the global ctr
+at the moment there is an issue computing size from abstract types which use this
+for (int i = 0; i < validate_count; i++) { \
+    type_member_t* implemented = A_member((AType)type_ref, (enum A_MEMBER)0, member_validate[i], true); \
+    verify(implemented != null, "%s not implemented", member_validate[i]); \
+}\
+*/
+
+#define define_any(A0, A1, SZ, traits, ...) \
+    define_arb(A0, A1, SZ, traits, 0, null, ({}), __VA_ARGS__)
+
+#define define_class(A0, A1, ...) \
+    define_any(A0, A1, sizeof(struct _##A0), A_TRAIT_CLASS, __VA_ARGS__)
+
+#define define_public(A0, A1, ...) \
+    define_any(A0, A1, sizeof(struct _##A0), A_TRAIT_PUBLIC, __VA_ARGS__)
+
+#define define_struct(A0, ...) \
+    define_any(A0, A0, sizeof(struct _##A0), A_TRAIT_STRUCT, __VA_ARGS__)
+
+#define define_primitive(A0, A1, traits, ...) \
+    define_any(A0, A1, sizeof(A0), traits | A_TRAIT_PRIMITIVE, __VA_ARGS__)
+
+#define define_abstract(A0, traits, ...) \
+    define_any(A0, A, 0, traits | A_TRAIT_ABSTRACT, __VA_ARGS__)
+
+forward(string)
+struct _sz { i64 value; };
+
+/// A-type properties are not user-accessible, 
+/// so they are declared as opaque
+#define A_schema(X,Y,...) \
+    i_prop  (X,Y, opaque, AType,     type) \
+    i_prop  (X,Y, opaque, AType,     scalar) \
+    i_prop  (X,Y, opaque, i64,       refs) \
+    i_prop  (X,Y, opaque, object,    data) \
+    i_prop  (X,Y, opaque, shape,     shape) \
+    i_prop  (X,Y, opaque, cstr,      source) \
+    i_prop  (X,Y, opaque, i64,       line) \
+    i_prop  (X,Y, opaque, i64,       alloc) \
+    i_prop  (X,Y, opaque, i64,       count) \
+    i_prop  (X,Y, opaque, i64,       recycle) \
+    i_prop  (X,Y, opaque, i64,       af_index) \
+    i_method(X,Y, public, none,      init) \
+    i_method(X,Y, public, none,      dealloc) \
+    i_method(X,Y, public, i32,       compare,    X) \
+    i_method(X,Y, public, u64,       hash) \
+    i_method(X,Y, public, object,    copy) \
+    i_method(X,Y, public, object,    data) \
+    i_method(X,Y, public, AType,     data_type) \
+    i_method(X,Y, public, i64,       data_stride) \
+    i_method(X,Y, public, callback,  bind, A, bool, AType, AType, symbol, symbol) \
+    i_ctr(   X,Y, public, cereal) \
+    i_ctr(   X,Y, public, cstrs) \
+    i_cast(  X,Y, public, string) \
+    i_cast(  X,Y, public, bool)
+#define A_intern(AA,YY,...)      A_schema(AA,YY,__VA_ARGS__)
+#define object_intern(AA,YY,...) AA##_schema(AA,YY,__VA_ARGS__)
+declare_base(A)
+
+
+#define object_schema(X,Y,...) \
+
+declare_base_meta(object, A, A)
+
+#define typeid(X)   ((AType)&X##_type)
+
+#define scalarof(X) head(X)->scalar
+
+#define numeric_schema(X,Y,...) \
+    i_operator(X,Y, public, numeric, _add, numeric) \
+    i_operator(X,Y, public, numeric, _sub, numeric) \
+    i_operator(X,Y, public, numeric, _mul, numeric) \
+    i_operator(X,Y, public, numeric, _div, numeric) \
+    i_operator(X,Y, public, numeric, _or, numeric) \
+    i_operator(X,Y, public, numeric, _and, numeric) \
+    i_operator(X,Y, public, numeric, _xor, numeric) \
+    i_operator(X,Y, public, numeric, _mod, numeric) \
+    i_operator(X,Y, public, numeric, _right, numeric) \
+    i_operator(X,Y, public, numeric, _left,  numeric) \
+    i_operator(X,Y, public, numeric, _compare,   numeric) \
+    i_operator(X,Y, public, numeric, _equal,     numeric) \
+    i_operator(X,Y, public, numeric, _not_equal, numeric) \
+    i_operator(X,Y, public, none,    _assign,    numeric)
+declare_class(numeric)
+
+#define string_like_schema(X,Y,...)
+declare_abstract(string_like)
+
+#define nil_schema(X,Y,...)
+declare_abstract(nil)
+
+#define raw_schema(X,Y,...)
+declare_abstract(raw)
+
+#define ref_schema(X,Y,...)
+declare_abstract(ref)
+
+#define imported_schema(X,Y,...)
+declare_abstract(imported)
+
+/// our numeric primitives have their constructs defined
+/// this is so we have a defined construction method for data conversion, we actually need it registered
+/// we may optimize the need for it to be called in C99 output once working
+#define ARef_schema(X,Y,...)        ref_schema(X,Y,...)
+#define i8_schema(X,Y,...)          numeric_schema(numeric,Y,...)
+#define i16_schema(X,Y,...)         numeric_schema(numeric,Y,...)
+#define i32_schema(X,Y,...)         numeric_schema(numeric,Y,...)
+#define i64_schema(X,Y,...)         numeric_schema(numeric,Y,...)
+#define u8_schema(X,Y,...)          numeric_schema(numeric,Y,...)
+#define u16_schema(X,Y,...)         numeric_schema(numeric,Y,...)
+#define u32_schema(X,Y,...)         numeric_schema(numeric,Y,...)
+#define u64_schema(X,Y,...)         numeric_schema(numeric,Y,...)
+#define u128_schema(X,Y,...)        numeric_schema(numeric,Y,...)
+#define f32_schema(X,Y,...)         numeric_schema(numeric,Y,...)
+#define f64_schema(X,Y,...)         numeric_schema(numeric,Y,...)
+#define f128_schema(X,Y,...)        numeric_schema(numeric,Y,...)
+#define AMember_schema(X,Y,...)     numeric_schema(numeric,Y,...)
+#define bool_schema(X,Y,...)        numeric_schema(numeric,Y,...)
+#define num_schema(X,Y,...)         numeric_schema(numeric,Y,...)
+#define sz_schema(X,Y,...)          numeric_schema(numeric,Y,...)
+#define cstr_schema(X,Y,...)        string_like_schema(X,Y,...)
+#define symbol_schema(X,Y,...)      string_like_schema(X,Y,...)
+#define cereal_schema(X,Y,...)      raw_schema(X,Y,...)
+#define none_schema(X,Y,...)        nil_schema(X,Y,...)
+#define raw_t_schema(X,Y,...)       raw_schema(X,Y,...)
+#define handle_schema(X,Y,...)      raw_schema(X,Y,...)
+#define AType_schema(X,Y,...)       raw_schema(X,Y,...)
+#define Member_schema(X,Y,...)      raw_schema(X,Y,...)
+#define hook_schema(X,Y,...)        raw_schema(X,Y,...)
+#define callback_schema(X,Y,...)    raw_schema(X,Y,...)
+#define cstrs_schema(X,Y,...)       raw_schema(X,Y,...)
+#define floats_schema(X,Y,...)      raw_schema(X,Y,...)
+
+/// meta gives us access to one token we can override with (F)
+declare_primitive( i8,          numeric)
+declare_primitive(i16,          numeric)
+declare_primitive(i32,          numeric)
+declare_primitive(i64,          numeric)
+declare_primitive( u8,          numeric)
+declare_primitive(u16,          numeric)
+declare_primitive(u32,          numeric)
+declare_primitive(u64,          numeric)
+declare_primitive(u128,         numeric)
+declare_primitive(f32,          numeric)
+declare_primitive(f64,          numeric)
+declare_primitive(f128,         numeric)
+declare_primitive(AMember,      numeric)
+declare_primitive(cstr,         string_like)
+declare_primitive(symbol,       string_like)
+declare_primitive(cereal,       raw)
+declare_primitive(bool,       numeric)
+declare_primitive(none,         nil)
+declare_primitive(num,          numeric)
+declare_primitive(sz,           numeric)
+declare_primitive(raw_t,        raw)
+declare_primitive(handle,       raw)
+declare_primitive(hook,         raw)
+declare_primitive(callback,     raw)
+declare_primitive(cstrs,        raw)
+
+/// whatever we can 'name', we can handle as a type of any pointer primitive
+declare_primitive(AType,        raw)
+declare_primitive(ARef, ref)
+declare_primitive(Member,       raw)
+
+declare_primitive(floats,       raw)
+
+/// doubly-linked item type, integrated key so we dont also need a 'field' type
+#define item_schema(X,Y,...) \
+    i_prop    (X,Y, opaque, X,         next) \
+    i_prop    (X,Y, opaque, X,         prev) \
+    i_prop    (X,Y, opaque, object,    ref) \
+    i_prop    (X,Y, opaque, object,    value) \
+    i_prop    (X,Y, opaque, object,    key) \
+    i_prop    (X,Y, opaque, u64,       h) \
+    i_override(X,Y, method, hash) \
+    i_override(X,Y, method, init)
+declare_class(item)
+
+
+/// lets mimmick the structure in llama.cpp
+#define message_schema(X,Y,...) \
+    i_prop(X,Y, public,   cstr, role) \
+    i_prop(X,Y, public,   cstr, content) \
+    i_override(X,Y, method, init) \
+    i_override(X,Y, method, dealloc)
+declare_class(message)
+
+/// linked-list of elemental data
+forward(map)
+#define list_schema(X,Y,...) \
+    i_prop  (X,Y, opaque,    item,    first) \
+    i_prop  (X,Y, opaque,    item,    last)  \
+    i_prop  (X,Y, opaque,    map,     assoc)  \
+    i_prop  (X,Y, public,    bool,    unmanaged)  \
+    i_prop  (X,Y, public,    i64,     count) \
+    i_method(X,Y, public,    object,  pop) \
+    i_method(X,Y, public,    item,    push, object) \
+    i_method(X,Y, public,    item,    insert_after, object, i32) \
+    i_method(X,Y, public,    num,     index_of, object) \
+    i_method(X,Y, public,    item,     item_of, object) \
+    i_method(X,Y, public,    none,    sort,   ARef) \
+    i_method(X,Y, public,    none,    remove, num) \
+    i_method(X,Y, public,    none,    remove_item, item) \
+    i_method(X,Y, public,    object,  get,  object) \
+    i_method(X,Y, public,    num,     count) \
+    i_override(X,Y, method, dealloc)
+declare_class(list)
+
+
+/// array of elemental data
+/// important to define the same operators here in silver definition of runtime
+/// one has arguments (operator) and (cast) does not, thats always instance
+/// we need different names for these.  they cannot both be considered 'operators'
+/// we also need new data structure, so ops vs casts vs constructs vs methods
+// += -= *= /= 
+// ":", "+=", "-=", "*=", "/=", "|=",
+// "&=", "^=", ">>=", "<<=", "%=", null);
+
+#define OPType_schema(E,T,Y,...) \
+    enum_value(E,T,Y, _undefined,         0) \
+    enum_value(E,T,Y, _add,               1) \
+    enum_value(E,T,Y, _sub,               2) \
+    enum_value(E,T,Y, _mul,               3) \
+    enum_value(E,T,Y, _div,               4) \
+    enum_value(E,T,Y, _or,                5) \
+    enum_value(E,T,Y, _and,               6) \
+    enum_value(E,T,Y, _xor,               7) \
+    enum_value(E,T,Y, _mod,               8) \
+    enum_value(E,T,Y, _right,             9) \
+    enum_value(E,T,Y, _left,              10) \
+    enum_value(E,T,Y, _compare,           11) \
+    enum_value(E,T,Y, _equal,             12) \
+    enum_value(E,T,Y, _not_equal,         13) \
+    enum_value(E,T,Y, _is,                14) \
+    enum_value(E,T,Y, _inherits,          15) \
+    enum_value(E,T,Y, _value_default,     16) \
+    enum_value(E,T,Y, _cond_value,        17) \
+    enum_value(E,T,Y, _assign,            18) \
+    enum_value(E,T,Y, _assign_add,        19) \
+    enum_value(E,T,Y, _assign_sub,        20) \
+    enum_value(E,T,Y, _assign_mul,        21) \
+    enum_value(E,T,Y, _assign_div,        22) \
+    enum_value(E,T,Y, _assign_or,         23) \
+    enum_value(E,T,Y, _assign_and,        24) \
+    enum_value(E,T,Y, _assign_xor,        25) \
+    enum_value(E,T,Y, _assign_mod,        26) \
+    enum_value(E,T,Y, _assign_right,      27) \
+    enum_value(E,T,Y, _assign_left,       28)
+declare_enum(OPType)
+
+forward(path)
+
+
+#define Key_schema(EE,TT,YY) \
+    enum_value_v(EE, TT, YY, Undefined,      0) \
+    enum_value_v(EE, TT, YY, Space,         32) \
+    enum_value_v(EE, TT, YY, Apostrophe,    39) \
+    enum_value_v(EE, TT, YY, Comma,         44) \
+    enum_value_v(EE, TT, YY, Minus,         45) \
+    enum_value_v(EE, TT, YY, Period,        46) \
+    enum_value_v(EE, TT, YY, Slash,         47) \
+    enum_value_v(EE, TT, YY, K0,            48) \
+    enum_value_v(EE, TT, YY, K1,            49) \
+    enum_value_v(EE, TT, YY, K2,            50) \
+    enum_value_v(EE, TT, YY, K3,            51) \
+    enum_value_v(EE, TT, YY, K4,            52) \
+    enum_value_v(EE, TT, YY, K5,            53) \
+    enum_value_v(EE, TT, YY, K6,            54) \
+    enum_value_v(EE, TT, YY, K7,            55) \
+    enum_value_v(EE, TT, YY, K8,            56) \
+    enum_value_v(EE, TT, YY, K9,            57) \
+    enum_value_v(EE, TT, YY, SemiColon,     59) \
+    enum_value_v(EE, TT, YY, Equal,         61) \
+    enum_value_v(EE, TT, YY, A,             65) \
+    enum_value_v(EE, TT, YY, B,             66) \
+    enum_value_v(EE, TT, YY, C,             67) \
+    enum_value_v(EE, TT, YY, D,             68) \
+    enum_value_v(EE, TT, YY, E,             69) \
+    enum_value_v(EE, TT, YY, F,             70) \
+    enum_value_v(EE, TT, YY, G,             71) \
+    enum_value_v(EE, TT, YY, H,             72) \
+    enum_value_v(EE, TT, YY, I,             73) \
+    enum_value_v(EE, TT, YY, J,             74) \
+    enum_value_v(EE, TT, YY, K,             75) \
+    enum_value_v(EE, TT, YY, L,             76) \
+    enum_value_v(EE, TT, YY, M,             77) \
+    enum_value_v(EE, TT, YY, N,             78) \
+    enum_value_v(EE, TT, YY, O,             79) \
+    enum_value_v(EE, TT, YY, P,             80) \
+    enum_value_v(EE, TT, YY, Q,             81) \
+    enum_value_v(EE, TT, YY, R,             82) \
+    enum_value_v(EE, TT, YY, S,             83) \
+    enum_value_v(EE, TT, YY, T,             84) \
+    enum_value_v(EE, TT, YY, U,             85) \
+    enum_value_v(EE, TT, YY, V,             86) \
+    enum_value_v(EE, TT, YY, W,             87) \
+    enum_value_v(EE, TT, YY, X,             88) \
+    enum_value_v(EE, TT, YY, Y,             89) \
+    enum_value_v(EE, TT, YY, Z,             90) \
+    enum_value_v(EE, TT, YY, LeftBracket,   91) \
+    enum_value_v(EE, TT, YY, BackSlash,     92) \
+    enum_value_v(EE, TT, YY, RightBracket,  93) \
+    enum_value_v(EE, TT, YY, GraveAccent,   96) \
+    enum_value_v(EE, TT, YY, World1,       161) \
+    enum_value_v(EE, TT, YY, World2,       162) \
+    enum_value_v(EE, TT, YY, Escape,       256) \
+    enum_value_v(EE, TT, YY, Enter,        257) \
+    enum_value_v(EE, TT, YY, Tab,          258) \
+    enum_value_v(EE, TT, YY, Backspace,    259) \
+    enum_value_v(EE, TT, YY, Insert,       260) \
+    enum_value_v(EE, TT, YY, Delete,       261) \
+    enum_value_v(EE, TT, YY, Right,        262) \
+    enum_value_v(EE, TT, YY, Left,         263) \
+    enum_value_v(EE, TT, YY, Down,         264) \
+    enum_value_v(EE, TT, YY, Up,           265) \
+    enum_value_v(EE, TT, YY, PageUp,       266) \
+    enum_value_v(EE, TT, YY, PageDown,     267) \
+    enum_value_v(EE, TT, YY, Home,         268) \
+    enum_value_v(EE, TT, YY, End,          269) \
+    enum_value_v(EE, TT, YY, CapsLock,     280) \
+    enum_value_v(EE, TT, YY, ScrollLock,   281) \
+    enum_value_v(EE, TT, YY, NumLock,      282) \
+    enum_value_v(EE, TT, YY, PrintScreen,  283) \
+    enum_value_v(EE, TT, YY, Pause,        284) \
+    enum_value_v(EE, TT, YY, F1,           290) \
+    enum_value_v(EE, TT, YY, F2,           291) \
+    enum_value_v(EE, TT, YY, F3,           292) \
+    enum_value_v(EE, TT, YY, F4,           293) \
+    enum_value_v(EE, TT, YY, F5,           294) \
+    enum_value_v(EE, TT, YY, F6,           295) \
+    enum_value_v(EE, TT, YY, F7,           296) \
+    enum_value_v(EE, TT, YY, F8,           297) \
+    enum_value_v(EE, TT, YY, F9,           298) \
+    enum_value_v(EE, TT, YY, F10,          299) \
+    enum_value_v(EE, TT, YY, F11,          300) \
+    enum_value_v(EE, TT, YY, F12,          301) \
+    enum_value_v(EE, TT, YY, F13,          302) \
+    enum_value_v(EE, TT, YY, F14,          303) \
+    enum_value_v(EE, TT, YY, F15,          304) \
+    enum_value_v(EE, TT, YY, F16,          305) \
+    enum_value_v(EE, TT, YY, F17,          306) \
+    enum_value_v(EE, TT, YY, F18,          307) \
+    enum_value_v(EE, TT, YY, F19,          308) \
+    enum_value_v(EE, TT, YY, F20,          309) \
+    enum_value_v(EE, TT, YY, F21,          310) \
+    enum_value_v(EE, TT, YY, F22,          311) \
+    enum_value_v(EE, TT, YY, F23,          312) \
+    enum_value_v(EE, TT, YY, F24,          313) \
+    enum_value_v(EE, TT, YY, F25,          314) \
+    enum_value_v(EE, TT, YY, Kp0,          320) \
+    enum_value_v(EE, TT, YY, Kp1,          321) \
+    enum_value_v(EE, TT, YY, Kp2,          322) \
+    enum_value_v(EE, TT, YY, Kp3,          323) \
+    enum_value_v(EE, TT, YY, Kp4,          324) \
+    enum_value_v(EE, TT, YY, Kp5,          325) \
+    enum_value_v(EE, TT, YY, Kp6,          326) \
+    enum_value_v(EE, TT, YY, Kp7,          327) \
+    enum_value_v(EE, TT, YY, Kp8,          328) \
+    enum_value_v(EE, TT, YY, Kp9,          329) \
+    enum_value_v(EE, TT, YY, KpDecimal,    330) \
+    enum_value_v(EE, TT, YY, KpDivide,     331) \
+    enum_value_v(EE, TT, YY, KpMultiply,   332) \
+    enum_value_v(EE, TT, YY, KpSubtract,   333) \
+    enum_value_v(EE, TT, YY, KpAdd,        334) \
+    enum_value_v(EE, TT, YY, KpEnter,      335) \
+    enum_value_v(EE, TT, YY, KpEqual,      336) \
+    enum_value_v(EE, TT, YY, LeftShift,    340) \
+    enum_value_v(EE, TT, YY, LeftControl,  341) \
+    enum_value_v(EE, TT, YY, LeftAlt,      342) \
+    enum_value_v(EE, TT, YY, LeftSuper,    343) \
+    enum_value_v(EE, TT, YY, RightShift,   344) \
+    enum_value_v(EE, TT, YY, RightControl, 345) \
+    enum_value_v(EE, TT, YY, RightAlt,     346) \
+    enum_value_v(EE, TT, YY, RightSuper,   347) \
+    enum_value_v(EE, TT, YY, Menu,         348)
+declare_enum(Key)
+/*
+#define buffer_schema(X,Y,...) \
+    i_ctr (X,Y, public,   path) \
+    i_ctr (X,Y, public,   i64) \
+    i_prop(X,Y, public,   cstr, data) \
+    i_prop(X,Y, public,   i64,  count) \
+    i_prop(X,Y, public,   i64,  alloc) \
+    i_method(X,Y, public, none, append, object, i32) \
+    i_override(X,Y, method, dealloc)
+declare_class(buffer)
+*/
+
+/*
+new rule: no redefining C methods
+#define file_schema(X,Y,...) \
+    i_method(X,Y, public,   bool,   write, object) \
+    i_method(X,Y, public,   object, file_read,  AType) \
+    i_method(X,Y, public,   string, gets) \
+    i_method(X,Y, public,   none,   file_close) \
+    i_prop(X,Y,   public,   path,   src) \
+    i_prop(X,Y,   public,   bool,   read) \
+    i_prop(X,Y,   public,   bool,   write) \
+    i_prop(X,Y,   public,   num,    size) \
+    i_prop(X,Y,   public,   num,    location) \
+    i_prop(X,Y,   public,   handle, id) \
+    i_prop(X,Y,   public,   bool,   text_mode) \
+    i_override(X,Y, method, init) \
+    i_override(X,Y, method, dealloc) \
+    i_override(X,Y, cast,   bool)
+declare_class(file)
+*/
+
+forward(array)
+
+#define shape_schema(X,Y,...) \
+    i_method(X,Y, public, i64, total) \
+    i_override(X,Y, method, compare) \
+    i_ctr(X,Y, public, array) \
+    i_prop(X,Y, public, i64, count) \
+    i_array(X,Y, public, i64, 16, data)
+declare_class(shape)
+
+#define vector_schema(X,Y,...) \
+    i_prop      (X,Y, public, num,     alloc) \
+    i_prop      (X,Y, public, AType,   type) \
+    i_prop      (X,Y, public, shape,   vshape) \
+    i_method    (X,Y, public, none,    concat, ARef, num) \
+    i_method    (X,Y, public, ARef,    get,  num) \
+    i_method    (X,Y, public, none,    set,  num, ARef) \
+    i_method    (X,Y, public, none,    push, A) \
+    i_method    (X,Y, public, vector,  slice, num, num) \
+    i_method    (X,Y, public, none,    realloc, sz) \
+    i_method    (X,Y, public, none,    resize, sz) \
+    i_guard     (X,Y, public, sz,      len) \
+    i_ctr       (X,Y, public, path) \
+    i_ctr       (X,Y, public, i32) \
+    i_override  (X,Y, method, init)
+declare_class(vector)
+
+
+// let us declare our vector with string
+// object, user space is simply the cstring
+
+#define subprocedure_schema(X,Y,...) \
+    i_prop    (X,Y, required, object, target) \
+    i_prop    (X,Y, public,   object, ctx) \
+    i_prop    (X,Y, required, handle, addr) \
+    i_method  (X,Y, public,   object, invoke, object)
+declare_class(subprocedure)
+
+#define subproc(targ, faddr, context) new(subprocedure, target, targ, ctx, context, addr, faddr) 
+
+typedef object(*mix_fn)(object, object, f32);
+
+
+#define array_schema(X,Y,O,...) \
+    i_vprop          (X,Y, public, O,    elements) \
+    i_prop           (X,Y, public, bool, unmanaged) \
+    i_prop           (X,Y, public, bool, assorted) \
+    i_prop           (X,Y, opaque, AType, last_type) \
+    i_prop           (X,Y, public, i32,  alloc) \
+    i_prop           (X,Y, public, i32,  len) \
+    s_vargs          (X,Y, public, array,   of,             object) \
+    s_vargs          (X,Y, public, array,   of_cstr,        cstr) \
+    i_method         (X,Y, public, array,   mix, array, f32) \
+    i_method         (X,Y, public, O,       first) \
+    i_method         (X,Y, public, O,       last) \
+    i_method         (X,Y, public, O,       pop) \
+    i_method         (X,Y, public, none,    fill,           O) \
+    i_method         (X,Y, public, array,   reverse) \
+    i_method         (X,Y, public, none,    remove,         num) \
+    i_method         (X,Y, public, none,    remove_weak,    num) \
+    i_method         (X,Y, public, none,    push,           O) \
+    i_method         (X,Y, public, none,    push_weak,      O) \
+    i_method         (X,Y, public, none,    clear) \
+    i_method         (X,Y, public, none,    concat,         array) \
+    i_method         (X,Y, public, O,       get,            num) \
+    i_method         (X,Y, public, O,       peek,           num) \
+    i_method         (X,Y, public, num,     count) \
+    i_guard          (X,Y, public, sz,      len) \
+    i_method         (X,Y, public, num,     index_of,       O) \
+    i_operator       (X,Y, public, none,    _assign_add,    O) \
+    i_operator       (X,Y, public, none,    _assign_sub,    num) \
+    i_vargs          (X,Y, public, none,    push_symbols,   X, cstr) \
+    i_vargs          (X,Y, public, none,    push_objects,   X, O) \
+    i_index          (X,Y, public, O, num) \
+    i_ctr            (X,Y, public, i32) \
+    i_override       (X,Y, method, init) \
+    i_override       (X,Y, method, dealloc) \
+    i_override       (X,Y, cast,   bool) \
+    i_override       (X,Y, cast,   string)
+declare_class(array, object)
+
+
+#define src_schema(X,Y,O,...) \
+    i_prop           (X,Y, public, object, obj) \
+    i_ctr            (X,Y, public, object) \
+    i_override       (X,Y, cast,   string)
+declare_class(src)
+
+
+#define ATypes_schema(X,Y,...)
+declare_class_2(ATypes, array, AType)
+
+#define hashmap_schema(X,Y,...) \
+    i_prop      (X,Y, opaque, list,  data) \
+    i_prop      (X,Y, public, num,   alloc) \
+    i_prop      (X,Y, public, num,   count) \
+    i_prop      (X,Y, public, bool,  unmanaged) \
+    i_prop      (X,Y, intern, A, item_header) \
+    i_method    (X,Y, public, none,  remove, object) \
+    i_method    (X,Y, public, none,  set, object, object) \
+    i_method    (X,Y, public, object,get, object) \
+    i_method    (X,Y, public, item,  fetch, object) \
+    i_method    (X,Y, public, item,  lookup, object) \
+    i_method    (X,Y, public, bool,  contains, object) \
+    i_method    (X,Y, public, none,  clear) \
+    i_index     (X,Y, public, object, object) \
+    i_override  (X,Y, cast,   string) \
+    i_override  (X,Y, method, init) \
+    i_override  (X,Y, method, dealloc) \
+    i_override  (X,Y, cast,   bool)
+declare_class(hashmap)
+
+extern int fault_level;
+
+#define level_schema(E,T,Y,...) \
+    enum_value(E,T,Y, info,   0) \
+    enum_value(E,T,Y, warn,   1) \
+    enum_value(E,T,Y, err,    2)
+declare_enum(level)
+
+#define map_schema(X,Y,...) \
+    i_prop      (X,Y, public,  list,       fifo) \
+    i_prop      (X,Y, opaque,  i64,        count) \
+    i_prop      (X,Y, public,  i32,        hsize) \
+    i_prop      (X,Y, opaque,  item*,      hlist) \
+    i_prop      (X,Y, public,  bool,       unmanaged)  \
+    i_prop      (X,Y, opaque,  AType,      last_type) \
+    i_prop      (X,Y, public,  bool,       assorted)  \
+    i_method    (X,Y, public,  none,       set,        object, object) \
+    i_method    (X,Y, public,  object,     get,        object) \
+    i_method    (X,Y, public,  item,       lookup,     object) \
+    i_method    (X,Y, public,  item,       fetch,      object) \
+    i_method    (X,Y, public,  none,       rm,         object) \
+    i_method    (X,Y, public,  none,       rm_item,    item) \
+    i_method    (X,Y, public,  bool,       contains,   object) \
+    i_method    (X,Y, public,  none,       concat,     map) \
+    i_method    (X,Y, public,  none,       clear) \
+    i_guard     (X,Y, public,  sz,         len) \
+    i_index     (X,Y, public,  object,     sz) \
+    i_index     (X,Y, public,  object,     object) \
+    i_ctr       (X,Y, public,  i32) \
+    i_override  (X,Y, method,  init) \
+    i_override  (X,Y, method,  dealloc) \
+    i_override  (X,Y, cast,    string) \
+    i_override  (X,Y, cast,    bool)
+declare_class(map)
+
+#define ctx_schema(X,Y,...) \
+    i_prop(X,Y, public, object, app) \
+    i_prop(X,Y, intern, bool,   establishing)
+declare_class_2(ctx, map)
+
+
+#define fn_schema(X,Y,...) \
+    i_prop      (X,Y, intern, method_t*, method) \
+    i_prop      (X,Y, public, object,    target) \
+    i_prop      (X,Y, public, object,    context) \
+    i_method    (X,Y, public, object,    call, array) \
+    i_override  (X,Y, method,    hash)
+declare_class(fn)
+
+#define string_schema(X,Y,...) \
+    i_prop    (X,Y,   public, symbol,  chars) \
+    i_prop    (X,Y,   public, num,     alloc) \
+    i_prop    (X,Y,   public, num,     ref_length) \
+    i_prop    (X,Y,   public, num,     len) \
+    i_prop    (X,Y,   public, u64,     h) \
+    i_method  (X,Y,   public, bool,    is_numeric) \
+    i_method  (X,Y,   public, i32,     first) \
+    i_method  (X,Y,   public, i32,     last) \
+    i_method  (X,Y,   public, f64,     real_value) \
+    i_guard   (X,Y,   public, sz,      len) \
+    i_method  (X,Y,   public, string,  ucase) \
+    i_method  (X,Y,   public, string,  lcase) \
+    i_method  (X,Y,   public, array,   split, symbol) \
+    i_method  (X,Y,   public, string,  escape) \
+    i_method  (X,Y,   public, num,     index_of, symbol) \
+    i_method  (X,Y,   public, none,    append, symbol) \
+    i_method  (X,Y,   public, none,    append_count, symbol, i32) \
+    i_method  (X,Y,   public, none,    push, u32) \
+    i_method  (X,Y,   public, none,    concat, string) \
+    i_method  (X,Y,   public, string,  trim) \
+    i_method  (X,Y,   public, string,  ltrim) \
+    i_method  (X,Y,   public, string,  rtrim) \
+    i_method  (X,Y,   public, string,  mid, num, num) \
+    i_method  (X,Y,   public, none,    reserve, num) \
+    i_method  (X,Y,   public, none,    write, handle, bool) \
+    i_method  (X,Y,   public, bool,    ends_with, symbol) \
+    i_method  (X,Y,   public, bool,    starts_with, symbol) \
+    i_method  (X,Y,   public, num,     cmp, symbol) \
+    i_method  (X,Y,   public, bool,    eq,  symbol) \
+    i_method  (X,Y,   public, string,  interpolate, map) \
+    i_cast    (X,Y,   public, cstr) \
+    i_cast    (X,Y,   public, sz) \
+    i_cast    (X,Y,   public, path) \
+    i_ctr     (X,Y,   public, symbol) \
+    i_ctr     (X,Y,   public, cstr) \
+    i_ctr     (X,Y,   public, i32) \
+    i_index   (X,Y,   public, i32, num) \
+    i_override(X,Y,   method, hash) \
+    i_override(X,Y,   method, compare) \
+    i_override(X,Y,   method, init) \
+    i_override(X,Y,   cast,   bool) \
+    i_override(X,Y,   method, copy)
+declare_class(string)
+
+
+#define watch_schema(X,Y,...) \
+    i_prop      (X,Y, public, path, res) \
+    i_prop      (X,Y, public, ARef, callback) \
+    i_prop      (X,Y, public, ARef, argument) \
+    i_method    (X,Y, public, none, pause) \
+    i_method    (X,Y, public, none, start) \
+    i_override  (X,Y, method, init)
+declare_class(watch)
+
+
+#define unit_schema(X,Y,...) \
+    i_ctr       (X,Y, public, string) \
+    i_prop      (X,Y, public, bool,  percent) \
+    i_prop      (X,Y, public, f32,   scale_v) \
+    i_prop      (X,Y, public, f32,   enum_v) \
+    i_prop      (X,Y, public, AType, meta_type) \
+    i_prop      (X,Y, public, ARef,  enum_member)
+declare_class(unit)
+
+
+#define mutex_schema(X,Y,...) \
+    i_prop      (X,Y, public, bool, cond) \
+    i_method    (X,Y, public, none, lock) \
+    i_method    (X,Y, public, none, unlock) \
+    i_method    (X,Y, public, none, cond_wait) \
+    i_method    (X,Y, public, none, cond_signal) \
+    i_method    (X,Y, public, none, cond_broadcast) \
+    i_prop      (X,Y, intern, struct mutex_t*, mtx, as, ARef) \
+    i_override  (X,Y, method, init) \
+    i_override  (X,Y, method, dealloc)
+declare_class(mutex)
+
+
+#define async_schema(X,Y,...) \
+    i_prop      (X,Y, public, hook,     work_fn) \
+    i_prop      (X,Y, public, array,    work) \
+    i_prop      (X,Y, intern, mutex,    global) \
+    i_prop      (X,Y, intern, struct thread_t*, threads, as, ARef) \
+    i_method    (X,Y, public, object,   sync, object) \
+    i_override  (X,Y, method, init) \
+    i_override  (X,Y, method, dealloc)
+declare_class(async)
+
+
+#define path_schema(X,Y,...) \
+    i_method    (X,Y, public, bool,   exists) \
+    i_method    (X,Y, public, bool,   is_symlink) \
+    i_method    (X,Y, public, path,   resolve) \
+    i_method    (X,Y, public, bool,   make_dir) \
+    i_method    (X,Y, public, bool,   is_ext, symbol) \
+    i_method    (X,Y, public, bool,   is_empty) \
+    i_method    (X,Y, public, bool,   is_dir) \
+    i_method    (X,Y, public, none,   cp, path, bool, bool) \
+    i_method    (X,Y, public, path,   directory) \
+    i_method    (X,Y, public, none,   cd) \
+    i_method    (X,Y, public, string, stem) \
+    i_method    (X,Y, public, string, ext) \
+    i_override  (X,Y, method, eq) \
+    i_method    (X,Y, public, string, filename) \
+    i_method    (X,Y, public, path,   absolute) \
+    i_method    (X,Y, public, path,   parent) \
+    i_method    (X,Y, public, object, read, AType, ctx) \
+    i_method    (X,Y, public, path,   change_ext, cstr) \
+    i_method    (X,Y, public, array,  ls, string, bool) \
+    i_method    (X,Y, public, bool,   move, path) \
+    i_method    (X,Y, public, path,   latest_modified, ARef) \
+    i_method    (X,Y, public, i64,    modified_time) \
+    s_method    (X,Y, public, path,   app, cstr) \
+    s_method    (X,Y, public, path,   cwd, sz) \
+    s_method    (X,Y, public, path,   temp, symbol) \
+    i_ctr       (X,Y, public, string) \
+    i_override  (X,Y, ctr,  symbol) \
+    i_override  (X,Y, ctr,  cstr) \
+    i_override  (X,Y, cast, cstr) \
+    i_override  (X,Y, cast, sz) \
+    i_override  (X,Y, method, hash) \
+    i_override  (X,Y, method, init) \
+    i_override  (X,Y, cast,   bool) \
+    i_override  (X,Y, cast,   string)
+declare_class_2(path, string)
+
+
+#define subscriber_schema(X,Y,...) \
+    i_prop    (X,Y, required, object,   target) \
+    i_prop    (X,Y, required, callback, method)
+declare_class(subscriber)
+
+#define subs_schema(X,Y,...) \
+    i_prop    (X,Y, public,   array,  entries, meta, subscriber) \
+    i_method  (X,Y, public,   none,   add,    object, callback) \
+    i_method  (X,Y, public,   object, invoke, object)
+declare_class(subs)
+
+
+#define line_schema(X,Y,...) \
+    i_prop(X,Y, public, i32, indent) \
+    i_prop(X,Y, public, array, text)
+#undef line_intern
+#define line_intern(X,Y,...) line_schema(X,Y,__VA_ARGS__)
+declare_class(line)
+
+
+path path_temp(symbol tmpl);
+
+/// use %o to print objects, or % others -- octet is not a use-case we serve (use base-16 for that)
+object A_formatter(AType rtype, FILE* f, object opt, symbol templ, ...);
+
+
+#define Exists_schema(E,T,Y,...) \
+    enum_value(E,T,Y, no,     0) \
+    enum_value(E,T,Y, file,   1) \
+    enum_value(E,T,Y, dir,    2)
+declare_enum(Exists)
+
+extern FILE* logger;
+
+#define         form(T, t, ...)   (T)A_formatter(typeid(T), null,   (object)false, (symbol)t, ## __VA_ARGS__)
+#define    formatter(t, ...)      ((string)A_formatter((AType)null,      null,   (object)false, (symbol)t, ## __VA_ARGS__))
+#define            f(T, t, ...)   (T)A_formatter(typeid(T), null,   (object)false, (symbol)t, ## __VA_ARGS__)
+#define         exec(t, ...)      A_exec(((string)A_formatter((AType)null, null, (object)false, (symbol)t, ## __VA_ARGS__)))
+#define          tap(L)           (A_tap(L))
+#define        untap(L)           (A_untap(L))
+
+#define        A_log(sL, t, ...)   A_formatter((AType)null,      stdout, string(sL),  t, ## __VA_ARGS__)
+#define        print(t, ...)   ({\
+    static string _topic = null; \
+    if (!_topic) _topic = hold(string(__func__)); \
+    A_formatter((AType)null, stdout, (object)_topic, t, ## __VA_ARGS__); \
+})
+
+#define          put(t,    ...)   A_formatter((AType)null,      stdout, (object)false, (symbol)t, ## __VA_ARGS__)
+//#define        print(L, t,    ...) A_formatter((AType)null,      stdout, (object)true,  (symbol)t, ## __VA_ARGS__)
+#define        error(t, ...)      A_formatter((AType)null,      stderr, (object)true,  (symbol)t, ## __VA_ARGS__)
+#define        fault(t, ...) do { A_formatter((AType)null,      stderr, (object)true,  (symbol)t, ## __VA_ARGS__); exit(1); } while(0)
+#define  file_exists(t, ...)     (A_exists(A_formatter((AType)null, null, (object)false, (symbol)t, ## __VA_ARGS__)) == Exists_file)
+#define   dir_exists(t, ...)     (A_exists(A_formatter((AType)null, null, (object)false, (symbol)t, ## __VA_ARGS__)) == Exists_dir)
+#ifndef NDEBUG
+#define       assert(a, t, ...) do { if (!(a)) { A_formatter((AType)null, stderr, (object)true,  t, ## __VA_ARGS__); exit(1); } } while(0)
+#else
+#define       assert(a, t, ...) do { } while(0)
+#endif
+#define       verify(a, t, ...) \
+    ({ \
+        if (!(a)) { \
+            A_formatter((AType)null, stderr, (object)true,  (symbol)t, ## __VA_ARGS__); \
+            if (level_err >= fault_level) { \
+                exit(1); \
+            } \
+            false; \
+        } else { \
+            true; \
+        } \
+        true; \
+    })
+
+cstr copy_cstr(cstr input);
+
+int A_exec(string cmd);
+
+/// useful utility for smooth movement of any variable in a variable-step-rate
+/// used in Hyper Race physics to make adjustments to cars at frame-rate
+static inline f32 creep(f32 current, f32 goal, f32 amount, f32 rate) {
+    f32 decay = powf(1.0f - amount, rate);
+    if (goal != 0.0f)
+        return current + ((goal - current) * (1.0f - decay));
+    else
+        return current * decay;
+}
+
+#define backwards(container, E, e) \
+    if (container && len(((array)container))) for (E e = peek(((array)container), len(((array)container)) - 1), e0 = 0; e0 == 0; e0++) \
+        for (num __i = len(((array)container)); __i >= 0; __i--, e = __i >= 0 ? (E)peek(((array)container), __i) : (E)null) \
+
+/// we can iterate through a collection with this strange code
+#define each(container, E, e) \
+    if (container && len(((array)container))) for (E e = peek(((array)container), 0), e0 = 0; e0 == 0; e0++) \
+        for (num __i = 0, __len = len(((array)container)); __i < __len; __i++, e = peek(((array)container), __i)) \
+
+#define each_(container, E, e) \
+    if (container && len(((array)container))) for (E e = (E)peek(((array)container), 0), e0 = 0; e0 == 0; e0++) \
+        for (num __i = 0, __len = len(((array)container)); __i < __len; __i++, e = (E)peek(((array)container), __i)) \
+
+#define values(container, E, e) \
+    if (container && len(((array)container))) for (E e = *(E*)peek(((array)container), 0), e0 = 0; e0 == 0; e0++) \
+        for (num __i = 0, __len = len(((array)container)); __i < __len; __i++, e = *(E*)peek(((array)container), __i)) \
+
+/// we can go through a map
+#define pairs(MM, EE) \
+    for (item EE = (MM && MM->fifo) ? MM->fifo->first : (item)null; EE; EE = EE->next)
+
+#define min(A, B) ({ \
+    __typeof__(A) a = A; \
+    __typeof__(B) b = B; \
+    __typeof__(A) r = a < b ? a : b; \
+    r; \
+})
+
+#define max(A, B) ({ \
+    __typeof__(A) a = A; \
+    __typeof__(B) b = B; \
+    __typeof__(A) r = a > b ? a : b; \
+    r; \
+})
+
+/// possible to iterate safely through primitives
+#define primitives(arr, E, e) \
+    if (len(arr)) for (E e = *(E*)peek(arr, 0), e0 = 0; e0 == 0; e0++) \
+        for (num i = 0, __len = len(arr); i < __len; i++, e = *(E*)peek(arr, i)) \
+
+object     A_alloc      (AType type, num count);
+object     A_alloc_dbg  (AType type, num count, cstr source, int line);
+object     A_alloc2     (AType type, AType scalar, shape shape);
+string     evaluate(string, map);
+string     serialize_environment(map, bool);
+i64        epoch_millis();
+none       A_hold_members(object);
+none       A_drop_members(object);
+
+/// we are not registering struct types because we have no idea of membership
+/// however we may allocate based on their size
+#define A_struct(T) A_alloc(typeid(u8), sizeof(T))
+
+string      A_enum_string(AType type, i32* value);
+i32*        A_enum_value(AType type, cstr cs);
+#define     e_str(E,I) A_enum_string(typeid(E), &I)
+#define     e_val(E,S) *(E*)A_enum_value (typeid(E), S)
+
+bool        isname(char n);
+bool        A_is_inlay(type_member_t* m);
+object      A_new(AType);
+object      A_construct(AType, int, ...);
+void        A_serialize(AType type, string res, object a);
+object      A_initialize(object); /// called after 'construction' ... this is so we do something generic in init, and support named args
+none        A_init_recur(object a, AType current, raw last_init);
+object      A_convert(AType, object);
+type_member_t* A_constructor(AType, AType); // find a constructor method (used for dynamic construction)
+object      A_instanceof(object, AType); // would be nice to actually allow typeid vs typeid here
+A           A_hold(A a);
+void        A_drop(A a);
+AType       A_lookup_type(cstr);
+sz          A_len(object a);
+none        A_tap(symbol, hook);
+none        A_untap(symbol);
+object      A_set_property(object instance, symbol name, object value);
+object      A_get_property(object instance, symbol name);
+num         index_of_cstr(object a, cstr f);
+Exists      A_exists(object a);
+bool        A_inherits(AType src, AType check);
+num         clamp(num i, num mn, num mx);
+real        clampf(real, real, real);
+object      construct_with(AType type, object data, ctx context);
+bool        constructs_with(AType type, AType data_type);
+i64         read_integer(object data);
+#define     drop(a) A_drop((A)a)
+#define     hold(a) (__typeof__(a))A_hold((A)a)
+
+
+/// should be adapted to work with schemas 
+/// what a weird thing it would be to have map access to properties
+/// everything should be A-based, and forget about the argument hacks?
+AType       A_find_type(symbol name);
+map         A_arguments(int argc, symbol argv[], map default_values, object default_key);
+AF          A_pool(sz size);
+void        A_free(object a);
+A_f**       A_types(num* length);
+
+type_member_t* A_member_type(AType type, enum A_MEMBER mt, AType f, bool poly);
+object A_cast(A a, AType type);
+
+type_member_t* A_member(AType type, enum A_MEMBER member_type, symbol name, bool poly);
+type_member_t* A_member_first(AType type, AType find, bool poly);
+object      A_method_call(method_t* a, array args);
+object      A_method(AType type, char* method_name, array args);
+object      A_method_vargs(object instance, cstr method_name, int n_args, ...);
+fn          A_lambda(object target, type_member_t* member, object context);
+object      A_call(object instance, type_member_t* member, array args);
+object      A_primitive(AType type, void* data);
+object      A_enum(AType enum_type, i32 value);
+object      A_i8(i8);
+object      A_u8(u8);
+object      A_i16(i16);
+object      A_u16(u16);
+object      A_i32(i32);
+object      A_u32(u32);
+object      A_i64(i64);
+object          i(i64);
+object      A_sz(sz);
+object      A_u64(u64);
+object      A_f32(f32);
+object      A_f64(f64);
+object  float32(f32);
+object   real64(f64);
+object      A_cstr(cstr);
+object      A_none();
+object      A_bool(bool);
+object      A_realloc(object, sz);
+object      A_resize(object, sz);
+string      A_cast_string(A a);
+void        A_push(object, object);
+object      A_member_object(A a, type_member_t* mem);
+bool        A_member_set(A a, type_member_t* mem, object value);
+int         A_memcmp(A a, A b);
+void        A_start(symbol[]);
+map         A_args(cstrs argv, symbol default_arg, ...);
+A           A_header(object instance);
+pid_t       A_last_pid();
+int         A_alloc_count();
+none recycle();
+none recycle_stop(int);
+
+#define head(o) A_header((object)o)
+
+
+//object      A_data(object instance);
+object      A_verify(object instance, AType type);
+void        A_module_init(bool(*fn)());
+void        debug();
+void        br();
+bool        A_reflect(symbol location);
+
+vector      vector_with_path(vector a, path file_path);
+
+AF          AF_bits(object a);
+void        AF_set_id(object a, int id);
+void        AF_set_name(object a, cstr name);
+bool        AF_query_name(object a, cstr name);
+
+object      parse(cstr s, AType schema, ctx context);
+
+#define vdata(instance) A_data(instance)
+
+bool      is_meta(object a);
+bool      is_meta_compatible(object a, object b);
+
+bool create_symlink(path target, path link);
+
+/// todo: auto-release, no use of drop in most places
+/// push_weak is probably a reasonable idea for array
+map   map_of(symbol first_key, ...); /// cstr, A, ...
+//array array_of(object first, ...);
+//array array_of_cstr(cstr first, ...);
+void  array_weak_push(array, object);
+
+/// you can be a typedef and a macro -- it makes APIs simpler
+shape shape_new(i64 count, ...);
+shape shape_from(i64 count, i64* dims);
+shape shape_read(FILE* f);
+
+#define array_string_schema(X,Y,...)
+declare_class_2(array_string,     array, string)
+
+#define array_map_schema(X,Y,...)
+declare_class_2(array_map,        array, map)
+
+unit unit_with_string(unit a, string s);
+
+static inline f32 f32_mix(f32 a, f32 b, f32 f) {
+    return a * (1.0f - f) + b * f;
+}
+
+/// use i_struct_ctr_obj for objects or primitives
+/// use i_struct_ctr for structs.. this is because we cannot separate * from the token
+#define vec_methods(O, Y, T, ...) \
+    i_struct_ctr_obj(O,Y, floats) \
+    i_struct_method(O, Y, T,    length) \
+    i_struct_method(O, Y, O,    add,      O*) \
+    i_struct_method(O, Y, O,    sub,      O*) \
+    i_struct_method(O, Y, O,    mul,      O*) \
+    i_struct_method(O, Y, O,    scale,    f32) \
+    i_struct_method(O, Y, T,    dot,      O*) \
+    i_struct_method(O, Y, O,    normalize) \
+    i_struct_method(O, Y, O,    mix,      O*, f64) \
+    i_struct_cast  (O, Y, string)
+
+#define rgb8_schema(O, Y, ...) \
+    i_struct_prop(O,Y,u8, r) \
+    i_struct_prop(O,Y,u8, g) \
+    i_struct_prop(O,Y,u8, b)
+declare_struct(rgb8)
+
+#define rgbf_schema(O, Y, ...) \
+    i_struct_prop(O,Y, f32, r) \
+    i_struct_prop(O,Y, f32, g) \
+    i_struct_prop(O,Y, f32, b)
+declare_struct(rgbf)
+
+#define rgba8_schema(O, Y, ...) \
+    i_struct_prop(O,Y,u8, r) \
+    i_struct_prop(O,Y,u8, g) \
+    i_struct_prop(O,Y,u8, b) \
+    i_struct_prop(O,Y,u8, a)
+declare_struct(rgba8)
+
+#define rgba16_schema(O, Y, ...) \
+    i_struct_prop(O,Y,u16, r) \
+    i_struct_prop(O,Y,u16, g) \
+    i_struct_prop(O,Y,u16, b) \
+    i_struct_prop(O,Y,u16, a)
+declare_struct(rgba16)
+
+typedef struct _vec3f vec3f;
+
+#define vec4f_schema(O, Y, T, ...) \
+    i_struct_ctr(O,Y, vec3f) \
+    i_struct_prop  (O, Y, T, x) \
+    i_struct_prop  (O, Y, T, y) \
+    i_struct_prop  (O, Y, T, z) \
+    i_struct_prop  (O, Y, T, w) \
+    vec_methods(O, Y, T, __VA_ARGS__)
+declare_struct(vec4f, f32)
+
+#define rgbaf_schema(O, Y, ...) \
+    i_struct_ctr(O,Y, vec4f) \
+    i_struct_prop(O,Y, f32, r) \
+    i_struct_prop(O,Y, f32, g) \
+    i_struct_prop(O,Y, f32, b) \
+    i_struct_prop(O,Y, f32, a)
+declare_struct(rgbaf)
+
+#define vec3f_schema(O, Y, T, ...) \
+    i_struct_prop  (O, Y, T, x) \
+    i_struct_prop  (O, Y, T, y) \
+    i_struct_prop  (O, Y, T, z) \
+    i_struct_method(O, Y, O, cross, O*) \
+    i_struct_static(O, Y, O, rand) \
+    vec_methods(O, Y, T)
+declare_struct(vec3f, f32)
+
+#define quatf_schema(O, Y, ...) \
+    i_struct_ctr(O,Y, vec4f) \
+    i_struct_prop(O,Y,f32, x) \
+    i_struct_prop(O,Y,f32, y) \
+    i_struct_prop(O,Y,f32, z) \
+    i_struct_prop(O,Y,f32, w)
+declare_struct(quatf)
+
+#define rgba_schema(O, Y, ...) \
+    i_prop(O,Y, public, f32, r) \
+    i_prop(O,Y, public, f32, g) \
+    i_prop(O,Y, public, f32, b) \
+    i_prop(O,Y, public, f32, a) \
+    i_method(O,Y, public, rgba, mix, rgba, f32) \
+    i_ctr(O,Y, public, cstr) \
+    i_ctr(O,Y, public, string)
+declare_class(rgba)
+
+f32 degrees(f32 rads);
+f32 radians(f32 degs);
+
+#define vec2f_schema(O, Y, T, ...) \
+    i_struct_prop (O, Y, T, x) \
+    i_struct_prop (O, Y, T, y) \
+    vec_methods   (O, Y, T, __VA_ARGS__)
+declare_struct(vec2f, f32)
+
+#define rect_schema(O, Y, ...) \
+    i_prop (O, Y, public, f32, x) \
+    i_prop (O, Y, public, f32, y) \
+    i_prop (O, Y, public, f32, w) \
+    i_prop (O, Y, public, f32, h) \
+    i_method(O, Y, public, vec2f, xy) \
+    s_method(O, Y, public, rect, from_plots, vec2f, vec2f)
+declare_class(rect)
+
+#define mat4f_schema(O, Y, T, ...) \
+    i_struct_array  (O, Y, f32,   16, m) \
+    i_struct_ctr_obj(O, Y, floats) \
+    i_struct_ctr    (O, Y, quatf) \
+    i_struct_method (O, Y, O,        inverse) \
+    i_struct_method (O, Y, O,        transpose) \
+    i_struct_static (O, Y, O,        ident) \
+    i_struct_static (O, Y, O,        perspective, f32, f32, f32, f32) \
+    i_struct_static (O, Y, O,        ortho,      f32, f32, f32, f32, f32, f32) \
+    i_struct_static (O, Y, O,        look_at,    vec3f*, vec3f*, vec3f*) \
+    i_struct_method (O, Y, O,        scale,      vec3f*) \
+    i_struct_method (O, Y, O,        translate,  vec3f*) \
+    i_struct_method (O, Y, O,        rotate,     quatf*) \
+    i_struct_method (O, Y, vec4f,    mul_v4,     vec4f*) \
+    i_struct_method (O, Y, none,     set_identity) \
+    i_struct_method (O, Y, O,        mul,        O*) \
+    i_struct_cast   (O, Y, string)
+declare_struct(mat4f, f32)
+
+// will need to adjust json serialization to facilitate vector with meta types
+#define vector_mat4f_schema(X,Y,...)
+declare_class_2(vector_mat4f, vector, mat4f)
+
+#define vector_vec4f_schema(X,Y,...)
+declare_class_2(vector_vec4f, vector, vec4f)
+
+#define vector_vec3f_schema(X,Y,...)
+declare_class_2(vector_vec3f, vector, vec3f)
+
+#define vector_vec2f_schema(X,Y,...)
+declare_class_2(vector_vec2f, vector, vec2f)
+
+#define vector_i8_schema(X,Y,...)
+declare_class_2(vector_i8, vector, i8)
+
+#define vector_f32_schema(X,Y,...)
+declare_class_2(vector_f32, vector, f32)
+
+#define vector_f64_schema(X,Y,...)
+declare_class_2(vector_f64, vector, f64)
+
+#define vector_i64_schema(X,Y,...)
+declare_class_2(vector_i64, vector, i64)
+
+#define vector_rgba8_schema(X,Y,...)
+declare_class_2(vector_rgba8, vector, rgba8)
+
+#define vector_rgba16_schema(X,Y,...)
+declare_class_2(vector_rgba16, vector, rgba16)
+
+#define vector_rgbaf_schema(X,Y,...)
+declare_class_2(vector_rgbaf, vector, rgbaf)
+
+#define vector_rgb8_schema(X,Y,...)
+declare_class_2(vector_rgb8, vector, rgb8)
+
+#define vector_rgbf_schema(X,Y,...)
+declare_class_2(vector_rgbf, vector, rgbf)
+
+vector_f32   vector_f32_new  (shape count, ...);
+vector_f64   vector_f64_new  (shape count, ...);
+vector_i8    vector_i8_new   (shape count, ...);
+vector_i64   vector_i64_new  (shape count, ...);
+vector_rgba16 vector_rgba16_new(shape count, ...);
+vector_rgba8 vector_rgba8_new(shape count, ...);
+vector_rgbaf vector_rgbaf_new(shape count, ...);
+vector_rgb8  vector_rgb8_new (shape count, ...);
+vector_rgbf  vector_rgbf_new (shape count, ...);
+
+#define weak_schema(X,Y,...)
+declare_abstract(weak)
+
+#define functional_schema(X,Y,...)
+declare_abstract(functional)
+
+#include <A-public>
+#ifdef __cplusplus
+}
+#endif
+
+#endif

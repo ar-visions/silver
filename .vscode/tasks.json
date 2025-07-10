@@ -1,0 +1,861 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+        {
+            "label": "build-webgpu-test",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../hyperspace/build"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild hyperspace.sln /t:webgpu-test"
+            },
+            "osx": {
+                "command": "make webgpu-test -j32"
+            },
+            "linux": {
+                "command": "make webgpu-test -j32"
+            }
+        },
+        {
+            "label": "build-silver",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../silver"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "osx": {
+                "command": "make -j8"
+            },
+            "linux": {
+                "command": "make -j8"
+            }
+        },
+        {
+            "label": "build-llm",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../llm"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild llm.sln /t:llm"
+            },
+            "osx": {
+                "command": "make -j8"
+            },
+            "linux": {
+                "command": "make -j8"
+            }
+        },
+        {
+            "label": "build-dbg",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../dbg"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild dbg.sln /t:dbg"
+            },
+            "osx": {
+                "command": "make -j8"
+            },
+            "linux": {
+                "command": "make -j8"
+            }
+        },
+        {
+            "label": "build-hyperspace",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../hyperspace"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild silver.sln /t:hyperspace"
+            },
+            "osx": {
+                "command": "make"
+            },
+            "linux": {
+                "command": "make"
+            }
+        },
+        {
+            "label": "build-img",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../img"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "command": "make",
+            "windows": {
+                "command": "msbuild img.sln /t:img"
+            }
+        },
+        {
+            "label": "build-sk",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../sk"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "command": "make",
+            "windows": {
+                "command": "msbuild sk.sln /t:sk"
+            }
+        },
+        {
+            "label": "build-ion",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../ion"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "command": "make",
+            "windows": {
+                "command": "msbuild ion.sln /t:ion"
+            }
+        },
+        {
+            "label": "build-silver-import",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../silver-import",
+                "env": {
+                    "CC": "clang",
+                    "CFLAGS": "-g2"
+                }
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild silver.sln /t:silver"
+            },
+            "osx": {
+                "command": "make"
+            },
+            "linux": {
+                "command": "make"
+            }
+        },
+        {
+            "label": "build-A-generate",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../A"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild silver.sln /t:silver"
+            },
+            "osx": {
+                "command": "make -j8"
+            },
+            "linux": {
+                "command": "make -j8"
+            }
+        },
+        {
+            "label": "build-vec",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../vec"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "osx": {
+                "command": "make -j8"
+            },
+            "linux": {
+                "command": "make -j8"
+            }
+        },
+        {
+            "label": "build-gltf",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../gltf"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "osx": {
+                "command": "make -j8"
+            },
+            "linux": {
+                "command": "make -j8"
+            }
+        },
+        {
+            "label": "build-ether",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../ether"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "osx": {
+                "command": "make"
+            },
+            "linux": {
+                "command": "make"
+            }
+        },
+        {
+            "label": "build-orbiter",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../orbiter"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "osx": {
+                "command": "make -j8"
+            },
+            "linux": {
+                "command": "make -j8"
+            }
+        },
+        {
+            "label": "build-asnes",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../asnes"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "osx": {
+                "command": "make -j8"
+            },
+            "linux": {
+                "command": "make -j8"
+            }
+        },
+        {
+            "label": "build-quanta",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../quanta"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "osx": {
+                "command": "make -j8"
+            },
+            "linux": {
+                "command": "make -j8"
+            }
+        },
+        {
+            "label": "build-A",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../A"
+            },
+            "env": {
+                "VERBOSE": "1"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "osx": {
+                "command": "make"
+            },
+            "linux": {
+                "command": "make"
+            }
+        },
+        {
+            "label": "build-trinity",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../trinity"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "osx": {
+                "command": "make -j8"
+            },
+            "linux": {
+                "command": "make -j8"
+            }
+        },
+        {
+            "label": "build-hyperspace",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../hyperspace"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "osx": {
+                "command": "make -j8"
+            },
+            "linux": {
+                "command": "make -j8"
+            }
+        },
+        {
+            "label": "build-ai",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../ai"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "osx": {
+                "command": "make -j8"
+            },
+            "linux": {
+                "command": "make -j8"
+            }
+        },
+        {
+            "label": "build-canvas-test",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../hyperspace/build-clang"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild hyperspace.sln /t:canvas-test"
+            },
+            "osx": {
+                "command": "make canvas-test -j32"
+            },
+            "linux": {
+                "command": "make canvas-test -j32"
+            }
+        },
+        {
+            "label": "build-canvas-test (debug)",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../hyperspace/build-debug"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild hyperspace.sln /t:canvas-test"
+            },
+            "osx": {
+                "command": "make canvas-test -j32"
+            },
+            "linux": {
+                "command": "make canvas-test -j32"
+            }
+        },
+        {
+            "label": "build-json",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../hyperspace/build-clang"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild hyperspace.sln /t:json"
+            },
+            "osx": {
+                "command": "make json -j32"
+            },
+            "linux": {
+                "command": "make json -j32"
+            }
+        },
+
+        {
+            "label": "build-ux-test1",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../hyperspace/build"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild hyperspace.sln /t:ux-test1"
+            },
+            "osx": {
+                "command": "make ux-test1 -j16"
+            },
+            "linux": {
+                "command": "make ux-test1 -j16"
+            }
+        },
+        {
+            "label": "build-ux-app",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../hyperspace/build"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild hyperspace.sln /t:ux-app"
+            },
+            "osx": {
+                "command": "make ux-app -j16"
+            },
+            "linux": {
+                "command": "make ux-app -j16"
+            }
+        },
+        {
+            "label": "build-textmate-test",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../orbiter/build"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild orbiter.sln /t:textmate-test"
+            },
+            "osx": {
+                "command": "make textmate-test -j16"
+            },
+            "linux": {
+                "command": "make textmate-test -j16"
+            }
+        },
+        {
+            "label": "build-ssh-server",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../ion/build"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild ion.sln /t:ssh-server"
+            },
+            "osx": {
+                "command": "make ssh-server -j16"
+            },
+            "linux": {
+                "command": "make ssh-server -j16"
+            }
+        },
+        {
+            "label": "build-lambda",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../ion/build"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild ion.sln /t:lambda"
+            },
+            "osx": {
+                "command": "make lambda -j16"
+            },
+            "linux": {
+                "command": "make lambda -j16"
+            }
+        },
+        {
+            "label": "build-streamer",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../ion/build"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild ion.sln /t:streamer"
+            },
+            "osx": {
+                "command": "make streamer -j10"
+            },
+            "linux": {
+                "command": "make streamer -j16"
+            }
+        },
+        {
+            "label": "build-encoder",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../ion/build"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild ion.sln /t:encoder"
+            },
+            "osx": {
+                "command": "make encoder -j10"
+            },
+            "linux": {
+                "command": "make encoder -j16"
+            }
+        },
+        {
+            "label": "build-camera-test",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../ion/build"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild ion.sln /t:camera-test"
+            },
+            "osx": {
+                "command": "make camera-test -j10"
+            },
+            "linux": {
+                "command": "make camera-test -j16"
+            }
+        },
+        {
+            "label": "build-winrt",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../ion/build"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "windows": {
+                "command": "msbuild ion.sln /t:winrt"
+            },
+            "osx": {
+                "command": "make winrt -j10"
+            },
+            "linux": {
+                "command": "make winrt -j16"
+            }
+        }
+	]
+}

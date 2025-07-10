@@ -1,6 +1,10 @@
-# path for tapestry
+# path for import
 # effectively strings with formatter support (scope is our module space in design-mode)
-import 'https://github.com/ggml-org/llama.cpp' master
+
+# uri parser integration with A-type schema registration; merely setting a meta type on our class to silver, we say we are a parser too
+# it needs control over context when evaluated
+# we need to base our type on A, to make sense anyway.  then we can sub-class type as model (makes reasonable sense; differentiated as an enode)
+import https://github.com/ggml-org/llama.cpp [ master ]
     -DLLAMA_STATIC=OFF
     -DBUILD_SHARED_LIBS=ON
     -lllama
