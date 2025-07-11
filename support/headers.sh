@@ -12,102 +12,88 @@ fi
 GEN_DIR="$BUILD_PATH/$DIRECTIVE"
 UPROJECT=$(echo "$PROJECT" | tr '[:lower:]' '[:upper:]')
 SED=${SED:-sed}
-IM="$IMPORTS"
-
-if [ "$DIRECTIVE" != "app" ]; then
-    for f in "$SRC_DIRECTIVE"/*; do
-        if [ -f "$f" ] && [[ "$f" != *.* ]]; then
-            module=$(basename "$f")
-            if [[ ! " $IM " =~ (^|[[:space:]])"$module"($|[[:space:]]) ]]; then
-                IM="$IM $module"
-            fi
-        fi
-    done
-fi
-IM="$IM $PROJECT"
 
 mkdir -p $GEN_DIR
 
-# these should always be in sync -- on balance it seems easier to complete this here
-# if you break the build, it means the install is broken for your dependencies, but thats fine
 if [ "$DIRECTIVE" = "src" ]; then
     INSTALL_INCLUDE_DIR="${IMPORT}/include/${PROJECT}"
     rm -rf $INSTALL_INCLUDE_DIR
     ln -s $GEN_DIR $INSTALL_INCLUDE_DIR
 fi
 
-# we need to add to imports based on our local directive peers; those with (extension-less files we dupe check add to IMPORTS)
-#       $SRC_DIRECTIVE scan for this
-
-# should rebuild if last build failed, i think.
-# that may be stored in a file before we make the time stamp, called import-result
-# if that is 0 then we may remake it
-
 write_import_header() {
-    local DIRECTIVE="$1"
-    local BUILD_FILE="$2"
-    local PROJECT="$3"
-    local UPROJECT="$4"
-    local MODULE="$5"
-    local IMPORTS="$6"
+    local MODULE="$1"
+    # .g files: we are going manual [ like kevin bacon ]
+    
+    GRAPH="$SRC_DIRECTIVE/$MODULE.g"
+    if [ "$MODULE" = "A" ]; then
+        IMPORTS="A"
+    else
+        if [ -f "$GRAPH" ]; then
+            IMPORTS="$MODULE $(cat "$GRAPH")"
+        else
+            IMPORTS="A $MODULE"
+            echo ""
+            echo "for $MODULE in directive $DIRECTIVE (project $PROJECT)"
+            echo "defaulting imports to $IMPORTS"
+            echo ""
+        fi
+    fi
+
+    # we need to add $PROJECT in place for all apps, if its not in there it should go right on the end
+    if [ "$DIRECTIVE" == "app" ]; then
+        if ! echo " $IMPORTS " | grep -q " $PROJECT "; then
+            IMPORTS="$IMPORTS $PROJECT"
+        fi
+    fi
+
+    echo ".g data for $MODULE:"
+    echo $IMPORTS
+    echo " "
 
     IMPORT_HEADER="$BUILD_PATH/$DIRECTIVE/$MODULE/import"
     rm -f "$IMPORT_HEADER" # todo: improve
     mkdir -p $(dirname $IMPORT_HEADER)
 
     if [ ! -f "$IMPORT_HEADER" ] || [ "$BUILD_FILE" -nt "$IMPORT_HEADER" ]; then
-        echo "/* generated import interface for project $PROJECT */" >> "$IMPORT_HEADER"
-        echo "#ifndef _${UPROJECT}_IMPORT_${PROJECT}_" >> "$IMPORT_HEADER"
-        echo "#define _${UPROJECT}_IMPORT_${PROJECT}_" >> "$IMPORT_HEADER"
-        echo "" >> "$IMPORT_HEADER"
-        echo "/* imports: $IM <- new imports */" >> "$IMPORT_HEADER"
-
-        for import in $IM; do
+        echo "/* generated $PROJECT import for {$DIRECTIVE} */" >> "$IMPORT_HEADER"
+        echo "#ifndef _IMPORT_ // only one per compilation unit"  >> "$IMPORT_HEADER"
+        echo "#define _IMPORT_"  >> "$IMPORT_HEADER"
+        for import in $IMPORTS; do
             if [ "$import" != "$MODULE" ]; then
                 echo "#include <${import}/public>" >> "$IMPORT_HEADER"
             fi
         done
-        for import in $IM; do
+        for import in $IMPORTS; do
             if [ "$import" != "$MODULE" ]; then
                 echo "#include <${import}/${import}>" >> "$IMPORT_HEADER"
             fi
         done
-
-        echo "#include <${MODULE}/intern>" >> "$IMPORT_HEADER"
-        echo "#include <${MODULE}/${MODULE}>" >> "$IMPORT_HEADER"
-        echo "#include <${MODULE}/methods>" >> "$IMPORT_HEADER"
-
-        echo "#undef init" >> "$IMPORT_HEADER"
-        echo "#undef dealloc" >> "$IMPORT_HEADER"
-
-        for import in $IM; do
+        echo "#include <${MODULE}/intern>"      >> "$IMPORT_HEADER"
+        echo "#include <${MODULE}/${MODULE}>"   >> "$IMPORT_HEADER"
+        echo "#include <${MODULE}/methods>"     >> "$IMPORT_HEADER"
+        echo "#undef init"                      >> "$IMPORT_HEADER"
+        echo "#undef dealloc"                   >> "$IMPORT_HEADER"
+        for import in $IMPORTS; do
             if [ "$import" != "$MODULE" ]; then
                 echo "#include <${import}/init>" >> "$IMPORT_HEADER"
             fi
         done
-
-        for import in $IM; do
+        for import in $IMPORTS; do
             if [ "$import" != "$MODULE" ]; then
                 echo "#include <${import}/methods>" >> "$IMPORT_HEADER"
             fi
         done
-
-        echo "#include <${MODULE}/init>" >> "$IMPORT_HEADER"
-        echo "" >> "$IMPORT_HEADER"
-        echo "#endif" >> "$IMPORT_HEADER"
-
+        echo "#include <${MODULE}/init>"    >> "$IMPORT_HEADER"
+        echo ""                             >> "$IMPORT_HEADER"
+        echo "#endif"                       >> "$IMPORT_HEADER"
         if [ -f "${SRC_DIRECTIVE}/${MODULE}" ]; then
             INSTALL_MODULE_INCLUDE="${IMPORT}/include/${MODULE}"
             rm -rf $INSTALL_MODULE_INCLUDE
             ln -s "${SRC_DIRECTIVE}/${MODULE}" "${INSTALL_MODULE_INCLUDE}"
         fi
-        
     fi
 }
-
-if [ "$DIRECTIVE" = "app" ]; then
-    write_import_header "$DIRECTIVE" "$BUILD_FILE" "$PROJECT" "$UPROJECT" "$PROJECT" "$IM"
-fi
 
 # Find all files with no extension in the directive folder
 find "$SRC_DIRECTIVE" -type f ! -name "*.*" | while read -r MOD_HEADER; do
@@ -118,32 +104,26 @@ find "$SRC_DIRECTIVE" -type f ! -name "*.*" | while read -r MOD_HEADER; do
     INTERN_HEADER="$GEN_DIR/$MODULE/intern"
     PUBLIC_HEADER="$GEN_DIR/$MODULE/public"
     INIT_HEADER="$GEN_DIR/$MODULE/init"
-    echo "[headers] generating for module: $MODULE"
+    echo "[headers] generating for module: $MODULE ($DIRECTIVE)"
 
-    if [ "$DIRECTIVE" != "app" ]; then
-        write_import_header "$DIRECTIVE" "$BUILD_FILE" "$PROJECT" "$UPROJECT" "$MODULE" "$IM"
-    fi
-    
+    write_import_header "$MODULE"
+
+    # make symlink of header direct from source; required for sync'd builds
     HEADER="$GEN_DIR/$MODULE/$MODULE"
     mkdir -p $(dirname $HEADER)
+    rm -rf $HEADER
+    ln -s $SRC_DIRECTIVE/$MODULE $HEADER
 
-    if [ ! -f "$HEADER" ] || [ "$MOD_HEADER" -nt "$HEADER" ]; then
-        mkdir -p "$GEN_DIR"
-        {
-            echo "#line 1 \"$MOD_HEADER\""
-            cat "$MOD_HEADER"
-        } > "$GEN_DIR/temp"
-        mv "$GEN_DIR/temp" "$HEADER"
-    fi
-
+    # C-compatible upper-case definition name
+    UMODULE=$(echo "$MODULE" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
 
     # Only regenerate if necessary
     if [ ! -f "$INIT_HEADER" ] || [ "$HEADER" -nt "$INIT_HEADER" ]; then
         # Start the file with header comments and include guards
         rm -f "$INIT_HEADER"
         echo "/* generated methods interface */" > "$INIT_HEADER"
-        echo "#ifndef _${MODULE}_INIT_H_" >> "$INIT_HEADER"
-        echo "#define _${MODULE}_INIT_H_" >> "$INIT_HEADER"
+        echo "#ifndef _${UMODULE}_INIT_H_" >> "$INIT_HEADER"
+        echo "#define _${UMODULE}_INIT_H_" >> "$INIT_HEADER"
         echo >> "$INIT_HEADER"
         
         # Process class/mod/meta/vector declarations
@@ -195,21 +175,18 @@ find "$SRC_DIRECTIVE" -type f ! -name "*.*" | while read -r MOD_HEADER; do
             # Main constructor macro
             echo "#define ${class_name}(...) ({ \\" >> "$INIT_HEADER"
             echo "    ${class_name} instance = (${class_name})A_alloc_dbg(typeid(${class_name}), 1, __FILE__, __LINE__); \\" >> "$INIT_HEADER"
-            #echo "    ${class_name} instance = (${class_name})A_alloc(typeid(${class_name}), 1, true); \\" >> "$INIT_HEADER"
             echo "    _N_ARGS_${class_name}(${class_name}, ## __VA_ARGS__); \\" >> "$INIT_HEADER"
             echo "    A_initialize((object)instance); \\" >> "$INIT_HEADER"
             echo "    instance; \\" >> "$INIT_HEADER"
             echo "})" >> "$INIT_HEADER"
         done
         
-        # Process struct declarations
         grep -o 'declare_struct[[:space:]]*([[:space:]]*[^,)]*' "$HEADER" | \
         $SED -E 's/declare_struct[[:space:]]*\([[:space:]]*([^,)]*)[[:space:]]*(,[[:space:]]*([^,)[:space:]]*))?/\1 \3/' | \
         while read struct_name arg; do
             if [ -z "${struct_name}" ]; then
                 continue
             fi
-            
             echo "#define ${struct_name}(...) structure_of(${struct_name} __VA_OPT__(,) __VA_ARGS__) _N_STRUCT_ARGS(${struct_name}, __VA_ARGS__);" >> "$INIT_HEADER"
         done
         
@@ -218,17 +195,11 @@ find "$SRC_DIRECTIVE" -type f ! -name "*.*" | while read -r MOD_HEADER; do
         echo "#endif /* _${MODULE}_INIT_H_ */" >> "$INIT_HEADER"
     fi
 
-    # methods would be nicer if we could listen to their calls along with the argument and returns
-    # this is far from easy, though -- it works for individual methods with names like:
-    #   method(Type, obj, arg) <-- not sure if we want this throughout, though
-    #   its more debuggable to be able to listen to methods, but thats actually only these types, not all
-    #   further its quite a lot of conversion and boilerplate to effectively repeat the class name all over the place
-    #   methods lose their edge
     if [ ! -f "$METHODS_HEADER" ] || [ "$HEADER" -nt "$METHODS_HEADER" ]; then
         rm -f "$METHODS_HEADER"
-        echo "/* generated methods interface */" > "$METHODS_HEADER"
-        echo "#ifndef _${MODULE}_METHODS_H_" >> "$METHODS_HEADER"
-        echo "#define _${MODULE}_METHODS_H_" >> "$METHODS_HEADER"
+        echo "/* generated methods */" > "$METHODS_HEADER"
+        echo "#ifndef _${UMODULE}_METHODS_H_" >> "$METHODS_HEADER"
+        echo "#define _${UMODULE}_METHODS_H_" >> "$METHODS_HEADER"
         echo >> "$METHODS_HEADER"
         # Process method declarations (these apply to classes only, not structs; structs also cannot be poly)
         TEMP_METHODS=$(mktemp)
@@ -256,7 +227,7 @@ find "$SRC_DIRECTIVE" -type f ! -name "*.*" | while read -r MOD_HEADER; do
 
         # Close the include guard
         echo >> "$METHODS_HEADER"
-        echo "#endif /* _${MODULE}_METHODS_H_ */" >> "$METHODS_HEADER"
+        echo "#endif /* _${UMODULE}_METHODS_H_ */" >> "$METHODS_HEADER"
     fi
 
 
@@ -264,9 +235,9 @@ find "$SRC_DIRECTIVE" -type f ! -name "*.*" | while read -r MOD_HEADER; do
     if [ ! -f "$PUBLIC_HEADER" ] || [ "$HEADER" -nt "$PUBLIC_HEADER" ]; then
         # Start the file with header comments and include guards
         rm -f "$PUBLIC_HEADER"
-        echo "/* generated methods interface */" > "$PUBLIC_HEADER"
-        echo "#ifndef _${MODULE}_PUBLIC_"         >> "$PUBLIC_HEADER"
-        echo "#define _${MODULE}_PUBLIC_"         >> "$PUBLIC_HEADER"
+        echo "/* generated $UMODULE methods */" > "$PUBLIC_HEADER"
+        echo "#ifndef _${UMODULE}_PUBLIC_"         >> "$PUBLIC_HEADER"
+        echo "#define _${UMODULE}_PUBLIC_"         >> "$PUBLIC_HEADER"
         echo >> "$PUBLIC_HEADER"
 
         # Iterate through all three types using a single loop
@@ -282,20 +253,16 @@ find "$SRC_DIRECTIVE" -type f ! -name "*.*" | while read -r MOD_HEADER; do
             done
             echo >> "$PUBLIC_HEADER"
         done
-
-        #echo "#include <${PROJECT}>"                >> "$PUBLIC_HEADER" ; \
-        #echo "#include <${PROJECT}-init>"           >> "$PUBLIC_HEADER" ; \
-        #echo "#include <${PROJECT}-methods>"        >> "$PUBLIC_HEADER" ; \
-        echo "#endif /* _${MODULE}_PUBLIC_ */"    >> "$PUBLIC_HEADER"
+        echo "#endif /* _${UMODULE}_PUBLIC_ */"    >> "$PUBLIC_HEADER"
     fi
 
     # Only regenerate if necessary
     if [ ! -f "$INTERN_HEADER" ] || [ "$HEADER" -nt "$INTERN_HEADER" ]; then
         # Start the file with header comments and include guards
         rm -f "$INTERN_HEADER"
-        echo "/* generated methods interface */" > "$INTERN_HEADER"
-        echo "#ifndef _${MODULE}_INTERN_H_" >> "$INTERN_HEADER"
-        echo "#define _${MODULE}_INTERN_H_" >> "$INTERN_HEADER"
+        echo "/* generated $UMODULE interns */" > "$INTERN_HEADER"
+        echo "#ifndef _${UMODULE}_INTERN_H_" >> "$INTERN_HEADER"
+        echo "#define _${UMODULE}_INTERN_H_" >> "$INTERN_HEADER"
         echo >> "$INTERN_HEADER"
         
         # Iterate through all three types using a single loop
@@ -308,12 +275,10 @@ find "$SRC_DIRECTIVE" -type f ! -name "*.*" | while read -r MOD_HEADER; do
                     echo "#define ${class_name}_intern(AA,YY,...) AA##_schema(AA,YY, __VA_ARGS__)" >> "$INTERN_HEADER"
                 fi
             done
-            
-            # Add a newline after each type section
             echo >> "$INTERN_HEADER"
         done
         
-        echo "#endif /* _${MODULE}_INTERN_H_ */" >> "$INTERN_HEADER"
+        echo "#endif /* _${UMODULE}_INTERN_H_ */" >> "$INTERN_HEADER"
     fi
 done
 

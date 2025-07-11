@@ -1,6 +1,8 @@
 #ifndef _silver_
 #define _silver_
 
+// requires <ether>
+
 #define import_t_schema(E,T,Y,...) \
     enum_value(E,T,Y, none,       0) \
     enum_value(E,T,Y, source,     1) \

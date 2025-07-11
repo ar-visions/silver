@@ -63,7 +63,6 @@ import ffi
 	env:	CC: 'gcc'
 
 cflags {
-	$(bash $IMPORT/headers.sh)
 	-fPIC
 	-fmacro-backtrace-limit=0
 	-Wno-write-strings

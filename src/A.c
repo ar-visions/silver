@@ -1,12 +1,21 @@
-#include <intern>
-#include <A>
-#include <init>
-#include <methods>
+#include <import>
 
-//#include <src/A-reserve>
 #undef init
 #undef dealloc
 #undef realloc
+
+// we can bring back ffi -- 
+// yes its possible to 
+// generate the call stubs
+//  but it wont be any 
+// faster, if even, as 
+// ffi; generating the 
+// call stubs is simply 
+// more efficient, and 
+// from memory too.. seeing 
+// that in code would be 
+// insanity
+
 //#include <ffi.h>
 #undef USE_FFI
 #undef bool
@@ -17,6 +26,8 @@
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
 #include <cpuid.h>
 #endif
+
+
 #include <math.h>
 #include <errno.h>
 #include <sys/wait.h>

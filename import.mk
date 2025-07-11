@@ -1,12 +1,15 @@
-CC = gcc
-CXX = g++
+CC = clang
+CXX = clang++
 PROJECT ?= silver-import
 # Detect project root path (i.e., where Makefile is located)
 PROJECT_PATH := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 BUILD_PATH := $(PROJECT_PATH)/debug
-IMPORTS ?= A ether
+
 # run through dependencies, getting their -l flags as a result
-DEPS := $(shell for script in ./deps/*.sh; do [ -x "$$script" ] && "$$script"; done | tr '\n' ' ')
+# DEPS := $(shell for script in ./deps/*.sh; do [ -x "$$script" ] && "$$script"; done | tr '\n' ' ')
+DEPS := $(shell for f in ./deps/*.sh; do sh $$f; done)
+$(info "deps result: $(DEPS)")
+
 # we need separate CFLAGS for app/src use-cases
 # App gets its own include path
 APP_CFLAGS := $(CFLAGS) -I$(PROJECT_PATH)/src -I$(BUILD_PATH)/app -I$(BUILD_PATH) -I. -I./include -fPIC \
@@ -17,10 +20,10 @@ APP_CXXFLAGS := $(CXXFLAGS) -I$(PROJECT_PATH)/src -I$(BUILD_PATH)/app -I$(BUILD_
  -std=c++17 -DMODULE="\"$(PROJECT)\""
 
 # Base CFLAGS for src modules (will be extended per module)
-BASE_CFLAGS := $(CFLAGS) -I$(PROJECT_PATH)/src -I$(BUILD_PATH) -I. -I./include -fPIC \
+BASE_CFLAGS := $(CFLAGS) -D_GNU_SOURCE -I$(PROJECT_PATH)/src -I$(BUILD_PATH) -I. -I./include -fPIC \
  -Wno-incompatible-pointer-types -Wfatal-errors \
  -std=gnu11 -DMODULE="\"$(PROJECT)\""
-BASE_CXXFLAGS := $(CXXFLAGS) -I$(PROJECT_PATH)/src -I$(BUILD_PATH) -I. -I./include -fPIC \
+BASE_CXXFLAGS := $(CXXFLAGS) -D_GNU_SOURCE -I$(PROJECT_PATH)/src -I$(BUILD_PATH) -I. -I./include -fPIC \
  -Wfatal-errors \
  -std=c++17 -DMODULE="\"$(PROJECT)\""
 # Platform-specific settings
@@ -42,27 +45,9 @@ SRC_CC_FILES := $(wildcard src/*.cc)
 APP_C_FILES := $(wildcard app/*.c)
 APP_CC_FILES := $(wildcard app/*.cc)
 
-# Extract module names from source files
-SRC_C_MODULES := $(patsubst src/%.c,%,$(SRC_C_FILES))
-SRC_CC_MODULES := $(patsubst src/%.cc,%,$(SRC_CC_FILES))
-ALL_SRC_MODULES := $(sort $(SRC_C_MODULES) $(SRC_CC_MODULES))
-
-# Filter src files based on IMPORTS environment variable (default: all)
-# This facilitates the "import silver [ import pong ]" syntax
-IMPORTS ?= *
-ifeq ($(IMPORTS),*)
- FILTERED_SRC_C_FILES := $(SRC_C_FILES)
- FILTERED_SRC_CC_FILES := $(SRC_CC_FILES)
- FILTERED_MODULES := $(ALL_SRC_MODULES)
-else
- FILTERED_SRC_C_FILES := $(foreach src,$(IMPORTS),$(wildcard src/$(src).c))
- FILTERED_SRC_CC_FILES := $(foreach src,$(IMPORTS),$(wildcard src/$(src).cc))
- FILTERED_MODULES := $(IMPORTS)
-endif
-
 # Generate object file paths in debug directories (each module gets its own dir)
-SRC_C_OBJS := $(patsubst src/%.c,$(BUILD_PATH)/src/%/%.o,$(FILTERED_SRC_C_FILES))
-SRC_CC_OBJS := $(patsubst src/%.cc,$(BUILD_PATH)/src/%/%.o,$(FILTERED_SRC_CC_FILES))
+SRC_C_OBJS := $(patsubst src/%.c,$(BUILD_PATH)/src/%.o,$(SRC_C_FILES))
+SRC_CC_OBJS := $(patsubst src/%.cc,$(BUILD_PATH)/src/%.o,$(SRC_CC_FILES))
 SRC_OBJS := $(SRC_C_OBJS) $(SRC_CC_OBJS)
 
 APP_C_OBJS := $(patsubst app/%.c,$(BUILD_PATH)/app/%.o,$(APP_C_FILES))
@@ -107,34 +92,37 @@ headers:
 	 BUILD_PATH="$(BUILD_PATH)" \
 	 DIRECTIVE="$$x" \
 	 PROJECT="$(PROJECT)" \
-	 IMPORTS="$(IMPORTS)" \
-	 MODULES="$(FILTERED_MODULES)" \
 	 sh ./support/headers.sh; \
 	 done
 
 # Create debug directories for each module
-$(BUILD_PATH)/src/%:
-	@mkdir -p $(BUILD_PATH)/src/$*
 
-$(BUILD_PATH)/app:
+
+
+
+$(BUILD_PATH)/app/%.o: app/%.c
 	@mkdir -p $(BUILD_PATH)/app
+	$(CC) -I$(BUILD_PATH)/app/$* -I$(BUILD_PATH)/src $(BASE_CFLAGS) -c $< -o $@
+
+# Pattern rule for app/*.cc -> debug/app/module-name/module-name.o
+$(BUILD_PATH)/app/%.o: app/%.cc
+	@mkdir -p $(BUILD_PATH)/app
+	$(CXX) -I$(BUILD_PATH)/app/$* -I$(BUILD_PATH)/src $(BASE_CXXFLAGS) -c $< -o $@
+
 
 # Pattern rule for src/*.c -> debug/src/module-name/module-name.o
 # Each module gets its own include directory
-$(BUILD_PATH)/src/%/%.o: src/%.c | $(BUILD_PATH)/src/%
+$(BUILD_PATH)/src/%.o: src/%.c
+	@mkdir -p $(BUILD_PATH)/src
 	$(CC) -I$(BUILD_PATH)/src/$* -I$(BUILD_PATH)/src $(BASE_CFLAGS) -c $< -o $@
 
 # Pattern rule for src/*.cc -> debug/src/module-name/module-name.o
-$(BUILD_PATH)/src/%/%.o: src/%.cc | $(BUILD_PATH)/src/%
+$(BUILD_PATH)/src/%.o: src/%.cc
+	@mkdir -p $(BUILD_PATH)/src
 	$(CXX) -I$(BUILD_PATH)/src/$* -I$(BUILD_PATH)/src $(BASE_CXXFLAGS) -c $< -o $@
 
-# Pattern rule for app/*.c -> debug/app/*.o
-$(BUILD_PATH)/app/%.o: app/%.c | $(BUILD_PATH)/app
-	$(CC) -I$(BUILD_PATH)/app/$* -I$(BUILD_PATH)/app $(APP_CFLAGS) -c $< -o $@
 
-# Pattern rule for app/*.cc -> debug/app/*.o
-$(BUILD_PATH)/app/%.o: app/%.cc | $(BUILD_PATH)/app
-	$(CXX) -I$(BUILD_PATH)/app/$* -I$(BUILD_PATH)/app $(APP_CXXFLAGS) -c $< -o $@
+# we also need an App for each App Obj
 
 $(SHARED_LIB): $(SRC_OBJS)
 	@mkdir -p lib
@@ -144,7 +132,7 @@ $(SHARED_LIB): $(SRC_OBJS)
 # Uses CXX if any C++ objects are present in the library, otherwise CC
 bin/%: $(BUILD_PATH)/app/%.o $(SHARED_LIB)
 	@mkdir -p bin
-	$(if $(SRC_CC_OBJS),$(CXX),$(CC)) -o $@ $< -Llib -l$(PROJECT) $(APP_LDFLAGS) $(DEPS)
+	$(if $(SRC_CC_OBJS),$(CXX),$(CC)) -o $@ $< -Llib -l$(PROJECT) $(APP_LDFLAGS) -l$(PROJECT)
 
 clean:
 	rm -rf $(BUILD_PATH)
