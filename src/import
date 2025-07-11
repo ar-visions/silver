@@ -1,5 +1,6 @@
 #ifndef IMPORT
 #define IMPORT
+
 #include <A>
 
 forward(import)

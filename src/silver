@@ -23,6 +23,8 @@ declare_enum(language)
     i_prop(X,Y, required, array,    body)
 declare_class(completer_context)
 
+forward(import);
+
 #define silver_schema(X,Y,...)\
     i_prop    (X,Y, intern,     import,         import) \
     i_prop    (X,Y, intern,     bool,           no_build) \

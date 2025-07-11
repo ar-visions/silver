@@ -1,12 +1,12 @@
 // import cant quite use its headers from import
-#include <A-public>
+#include <A/public>
 #undef link
-#include <import-intern>
+#include <import/intern>
 #include <import.h>
-#include <import-init>
-#include <import-methods>
-#include <A-init>
-#include <A-methods>
+#include <import/init>
+#include <import/methods>
+#include <A/init>
+#include <A/methods>
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>

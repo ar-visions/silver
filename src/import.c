@@ -1,11 +1,6 @@
-#include <A-public>
-#undef link
-#include <import-intern>
-#include <import.h> // needed fix for this
-#include <import-methods>
-#include <import-init>
-#include <A-init>
-#include <A-methods>
+
+
+#include <import>
 #include <sys/stat.h>
 #include <utime.h>
 #include <limits.h>
@@ -212,7 +207,7 @@ import import_with_map(import a, map m) {
          (dir_exists("%o",  af) && file_exists("%o/build.sf", af)) ? 
         f(path, "%o/build.sf", af) : null; 
     array  lines          = build_file ? read(af, typeid(array), null) : null;
-    import im             = null;
+    remote im             = null;
     string last_arch      = null;
     string last_platform  = null;
     string last_directive = null;
@@ -274,14 +269,14 @@ import import_with_map(import a, map m) {
                             append(s_imports, " ");
                         concat(s_imports, name);
                         /// currently its the headers.sh
-                        im = allocate(import,
+                        im = allocate(remote,
                             import, a,
                             name,   name,
                             uri,    uri,
                             commit, commit,
                             environment, map(),
                             config, array(64), commands, array(16), always, array(16));
-                        push(a->imports, im);
+                        push(a->remotes, im);
                     }
 
                     last_platform = null;
@@ -332,7 +327,7 @@ import import_with_map(import a, map m) {
 
     if (!parent) {
         /// this will perform actual import (now that the data is set)
-        each(a->imports, import, im) {
+        each(a->remotes, remote, im) {
             A_initialize(im);
         }
     }
@@ -895,5 +890,5 @@ none import_init(import a) {
 }
 
 define_class(import,    A)
-define_class(import,  A)
+define_class(remote,    A)
 define_class(flag,      A)
