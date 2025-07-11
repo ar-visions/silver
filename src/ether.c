@@ -2311,33 +2311,16 @@ void ether_dealloc(ether e) {
 
 /// C type rules implemented
 model determine_rtype(ether e, OPType optype, model L, model R) {
-    switch (optype) {
-        case OPType__assign:
-        case OPType__assign_add:
-        case OPType__assign_sub:
-        case OPType__assign_mul:
-        case OPType__assign_div:
-        case OPType__assign_or:
-        case OPType__assign_and:
-        case OPType__assign_xor:
-        case OPType__assign_mod:
-        case OPType__assign_right:
-        case OPType__assign_left:
-            return L;  // Assignment operations always return the type of the left operand
-        
-        case OPType__value_default:
-        case OPType__cond_value:
-        case OPType__or:
-        case OPType__and:
-        case OPType__xor:
-            if (is_bool(L) && is_bool(R))
-                return emodel("bool");  // Logical operations on booleans return boolean
-            // For bitwise operations, fall through to numeric promotion
-            break;
-
-        default:
-            //fault("not implemented");
-            break;
+    if (optype >= OPType__assign && optype <= OPType__assign_left)
+        return L;  // Assignment operations always return the type of the left operand
+    else if (optype == OPType__value_default ||
+             optype == OPType__cond_value    ||
+             optype == OPType__or            ||
+             optype == OPType__and           ||
+             optype == OPType__xor) {
+        if (is_bool(L) && is_bool(R))
+            return emodel("bool");  // Logical operations on booleans return boolean
+        // For bitwise operations, fall through to numeric promotion
     }
 
     // Numeric type promotion

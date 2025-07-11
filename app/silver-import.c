@@ -1,10 +1,10 @@
 // import cant quite use its headers from import
 #include <A/public>
 #undef link
-#include <import/intern>
+#include <silver-import/intern>
 #include <import.h>
-#include <import/init>
-#include <import/methods>
+#include <silver-import/init>
+#include <silver-import/methods>
 #include <A/init>
 #include <A/methods>
 #include <signal.h>
