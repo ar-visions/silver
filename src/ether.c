@@ -9,7 +9,7 @@
 
 typedef LLVMMetadataRef LLVMScope;
 
-#include <import>
+#include <ether/import>
 
 // def -> base for change from type to member (member has model 
 //#define ecall(M, ...) ether_##M(e, ## __VA_ARGS__) # .cms [ c-like module in silver ]

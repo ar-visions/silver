@@ -10,4 +10,4 @@ else ifneq ($(realpath $(IMPORT)), $(realpath $(MAKEFILE_DIR)))
     $(error IMPORT ($(IMPORT)) does not match this Makefile's directory ($(MAKEFILE_DIR)))
 endif
 
-include $(IMPORT)/support/import.mk
+include $(IMPORT)/import.mk

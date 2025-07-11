@@ -2976,7 +2976,7 @@ declare_abstract(weak)
 #define functional_schema(X,Y,...)
 declare_abstract(functional)
 
-#include <A-public>
+#include <public>
 #ifdef __cplusplus
 }
 #endif

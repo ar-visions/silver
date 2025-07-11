@@ -1,4 +1,4 @@
-#include <import>
+#include <app/import>
 
 int main(int argc, char **argv) {
     A_start(argv);

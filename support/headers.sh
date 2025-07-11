@@ -2,6 +2,8 @@
 BUILD_FILE="$PROJECT_PATH/build.sf"
 SRC_DIRECTIVE="$PROJECT_PATH/$DIRECTIVE"
 
+echo "src directive = $SRC_DIRECTIVE"
+
 if [ ! -d "$SRC_DIRECTIVE" ]; then
     echo "skipping directive $DIRECTIVE (null-path: $SRC_DIRECTIVE)"
     exit 0
@@ -26,6 +28,14 @@ IM="$IM $PROJECT"
 
 mkdir -p $GEN_DIR
 
+# these should always be in sync -- on balance it seems easier to complete this here
+# if you break the build, it means the install is broken for your dependencies, but thats fine
+if [ "$DIRECTIVE" = "src" ]; then
+    INSTALL_INCLUDE_DIR="${IMPORT}/include/${PROJECT}"
+    rm -rf $INSTALL_INCLUDE_DIR
+    ln -s $GEN_DIR $INSTALL_INCLUDE_DIR
+fi
+
 # we need to add to imports based on our local directive peers; those with (extension-less files we dupe check add to IMPORTS)
 #       $SRC_DIRECTIVE scan for this
 
@@ -41,12 +51,9 @@ write_import_header() {
     local MODULE="$5"
     local IMPORTS="$6"
 
-    if [ "$DIRECTIVE" = "app" ]; then
-        IMPORT_HEADER="$BUILD_PATH/$DIRECTIVE/import"
-    else
-        IMPORT_HEADER="$BUILD_PATH/$DIRECTIVE/$MODULE-import"
-    fi
+    IMPORT_HEADER="$BUILD_PATH/$DIRECTIVE/$MODULE/import"
     rm -f "$IMPORT_HEADER" # todo: improve
+    mkdir -p $(dirname $IMPORT_HEADER)
 
     if [ ! -f "$IMPORT_HEADER" ] || [ "$BUILD_FILE" -nt "$IMPORT_HEADER" ]; then
         echo "/* generated import interface for project $PROJECT */" >> "$IMPORT_HEADER"
@@ -57,37 +64,44 @@ write_import_header() {
 
         for import in $IM; do
             if [ "$import" != "$MODULE" ]; then
-                echo "#include <${import}-public>" >> "$IMPORT_HEADER"
+                echo "#include <${import}/public>" >> "$IMPORT_HEADER"
             fi
         done
         for import in $IM; do
             if [ "$import" != "$MODULE" ]; then
-                echo "#include <${import}>" >> "$IMPORT_HEADER"
+                echo "#include <${import}/${import}>" >> "$IMPORT_HEADER"
             fi
         done
 
-        echo "#include <${MODULE}-intern>" >> "$IMPORT_HEADER"
-        echo "#include <${MODULE}>" >> "$IMPORT_HEADER"
-        echo "#include <${MODULE}-methods>" >> "$IMPORT_HEADER"
+        echo "#include <${MODULE}/intern>" >> "$IMPORT_HEADER"
+        echo "#include <${MODULE}/${MODULE}>" >> "$IMPORT_HEADER"
+        echo "#include <${MODULE}/methods>" >> "$IMPORT_HEADER"
 
         echo "#undef init" >> "$IMPORT_HEADER"
         echo "#undef dealloc" >> "$IMPORT_HEADER"
 
         for import in $IM; do
             if [ "$import" != "$MODULE" ]; then
-                echo "#include <${import}-init>" >> "$IMPORT_HEADER"
+                echo "#include <${import}/init>" >> "$IMPORT_HEADER"
             fi
         done
 
         for import in $IM; do
             if [ "$import" != "$MODULE" ]; then
-                echo "#include <${import}-methods>" >> "$IMPORT_HEADER"
+                echo "#include <${import}/methods>" >> "$IMPORT_HEADER"
             fi
         done
 
-        echo "#include <${PROJECT}-init>" >> "$IMPORT_HEADER"
+        echo "#include <${MODULE}/init>" >> "$IMPORT_HEADER"
         echo "" >> "$IMPORT_HEADER"
         echo "#endif" >> "$IMPORT_HEADER"
+
+        if [ -f "${SRC_DIRECTIVE}/${MODULE}" ]; then
+            INSTALL_MODULE_INCLUDE="${IMPORT}/include/${MODULE}"
+            rm -rf $INSTALL_MODULE_INCLUDE
+            ln -s "${SRC_DIRECTIVE}/${MODULE}" "${INSTALL_MODULE_INCLUDE}"
+        fi
+        
     fi
 }
 
@@ -100,16 +114,18 @@ find "$SRC_DIRECTIVE" -type f ! -name "*.*" | while read -r MOD_HEADER; do
     MODULE=$(basename "$MOD_HEADER")
     UMODULE=$(echo "$MODULE" | tr '[:lower:]' '[:upper:]')
 
-    METHODS_HEADER="$GEN_DIR/$MODULE-methods"
-    INTERN_HEADER="$GEN_DIR/$MODULE-intern"
-    PUBLIC_HEADER="$GEN_DIR/$MODULE-public"
-    INIT_HEADER="$GEN_DIR/$MODULE-init"
+    METHODS_HEADER="$GEN_DIR/$MODULE/methods"
+    INTERN_HEADER="$GEN_DIR/$MODULE/intern"
+    PUBLIC_HEADER="$GEN_DIR/$MODULE/public"
+    INIT_HEADER="$GEN_DIR/$MODULE/init"
     echo "[headers] generating for module: $MODULE"
 
     if [ "$DIRECTIVE" != "app" ]; then
         write_import_header "$DIRECTIVE" "$BUILD_FILE" "$PROJECT" "$UPROJECT" "$MODULE" "$IM"
     fi
-    HEADER="$GEN_DIR/$MODULE"
+    
+    HEADER="$GEN_DIR/$MODULE/$MODULE"
+    mkdir -p $(dirname $HEADER)
 
     if [ ! -f "$HEADER" ] || [ "$MOD_HEADER" -nt "$HEADER" ]; then
         mkdir -p "$GEN_DIR"

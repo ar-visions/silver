@@ -1,8 +1,11 @@
-#include <A-intern>
+#include <intern>
 #include <A>
-#include <A-init>
-#include <A-methods>
-#include <A-reserve>
+#include <init>
+#include <methods>
+
+//#include <src/A-reserve>
+#undef init
+#undef dealloc
 #undef realloc
 //#include <ffi.h>
 #undef USE_FFI
