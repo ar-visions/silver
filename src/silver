@@ -36,7 +36,7 @@ forward(import);
     i_prop    (X,Y, intern,     bool,           in_left) \
     i_prop    (X,Y, intern,     bool,           in_inlay) \
     i_prop    (X,Y, intern,     bool,           prebuild) \
-    i_prop    (X,Y, intern,     member,         in_assign) \
+    i_prop    (X,Y, intern,     emember,        in_assign) \
     i_prop    (X,Y, intern,     array,          imports) \
     i_prop    (X,Y, intern,     array,          main_symbols) \
     i_prop    (X,Y, intern,     array,          compiled_objects) \
@@ -48,8 +48,9 @@ forward(import);
     i_prop    (X,Y, public,     num,            cursor) \
     i_prop    (X,Y, public,     language,       std) \
     i_prop    (X,Y, intern,     array,          stack) \
+    i_method  (X,Y, public,     none,           import_types) \
     i_method  (X,Y, public,     silver,         load_module, path) \
-    i_method  (X,Y, public,     node,           parse_member_expr, member) \
+    i_method  (X,Y, public,     node,           parse_member_expr, emember) \
     i_method  (X,Y, public,     none,           incremental_resolve) \
     i_method  (X,Y, public,     none,           push_state,   array, num) \
     i_method  (X,Y, public,     none,           push_current) \
@@ -68,17 +69,17 @@ forward(import);
     i_method  (X,Y, public,     none,           namespace_pop, array) \
     i_method  (X,Y, public,     node,           read_node, AType) \
     i_method  (X,Y, public,     node,           parse_ternary, node) \
-    i_method  (X,Y, public,     node,           parse_assignment, member, string) \
+    i_method  (X,Y, public,     node,           parse_assignment, emember, string) \
     i_method  (X,Y, public,     token,          read, symbol) \
-    i_method  (X,Y, public,     object,         read_literal, AType) \
+    i_method  (X,Y, public,     A,              read_literal, AType) \
     i_method  (X,Y, public,     string,         read_string) \
     i_method  (X,Y, public,     string,         read_alpha) \
-    i_method  (X,Y, public,     member,         read_def) \
+    i_method  (X,Y, public,     emember,        read_def) \
     i_method  (X,Y, public,     string,         peek_def) \
     i_method  (X,Y, public,     string,         peek_keyword) \
     i_method  (X,Y, public,     string,         read_keyword) \
-    i_method  (X,Y, public,     object,         read_bool) \
-    i_method  (X,Y, public,     object,         read_numeric) \
+    i_method  (X,Y, public,     A,              read_bool) \
+    i_method  (X,Y, public,     A,              read_numeric) \
     i_method  (X,Y, public,     string,         read_assign, ARef, ARef) \
     i_method  (X,Y, public,     string,         location) \
     i_method  (X,Y, public,     none,           parse) \

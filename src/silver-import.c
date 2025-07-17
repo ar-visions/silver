@@ -74,7 +74,7 @@ none sync_tokens(import t, path build_path, string name) {
 }
 
 none remote_init(remote im) {
-    path   cwd     = path_cwd(4096);
+    path   cwdir   = cwd();
     path   install = copy(im->import->install);
     path   src     = im->import->src;
     bool   is_remote = !dir_exists("%o/%o", src, im->name);
@@ -83,7 +83,7 @@ none remote_init(remote im) {
     
     if (!dir_exists("%o/%o", checkout, im->name)) {
         cd(checkout);
-        if (A_len(src) && dir_exists("%o/%o", src, im->name)) {
+        if (len(src) && dir_exists("%o/%o", src, im->name)) {
             verify (exec("ln -s %o/%o %o/%o",
                 src, im->name, checkout, im->name) == 0, "symlink");
             is_remote = false;
@@ -120,7 +120,7 @@ none remote_init(remote im) {
     cd(im->build_path);
     make(im);
     cd(im->build_path);
-    path   cwd_after = path_cwd(4096);
+    path   cwd_after = cwd();
     each(im->commands, string, cmd) {
         print("> %o: command: %o", im->name, cmd);
         verify(exec("%o", evaluate(cmd, im->import->environment)) == 0, "expected successful command post-install");
@@ -130,7 +130,7 @@ none remote_init(remote im) {
         verify(exec("%o", evaluate(cmd, im->import->environment)) == 0, "expected successful ! inline command");
     }
     sync_tokens(im->import, im->build_path, im->name);
-    cd(cwd);
+    cd(cwdir);
 }
 
 string remote_cast_string(remote a) {
@@ -263,8 +263,8 @@ import import_with_map(import a, map m) {
                         add_flag(a, a->interns, l, environment);
                     } else {
                         verify(is_import, "expected import");
-                        string uri    = evaluate(get(l->text, 1), environment);
-                        string commit = evaluate(get(l->text, 2), environment);
+                        string uri    = evaluate((string)get(l->text, 1), environment);
+                        string commit = evaluate((string)get(l->text, 2), environment);
                         if (len(s_imports))
                             append(s_imports, " ");
                         concat(s_imports, name);
@@ -345,6 +345,8 @@ string remote_cmake_location(remote im) {
     return null;
 }
 
+string serialize_environment(map environment, bool b_export);
+
 /// handle autoconfig (if present) and resultant / static Makefile
 bool remote_make(remote im) {
     import t = im->import;
@@ -364,7 +366,7 @@ bool remote_make(remote im) {
         i64 token1 = modified_time(t1);
 
         if (token0 && token1) {
-            conf_status = abs((i64)(token0 - token1));
+            conf_status = abs((i32)(token0 - token1));
             if (conf_status < 1000)
                 conf_status = 0;
         }
@@ -445,10 +447,8 @@ bool remote_make(remote im) {
                         im) == 0, configure);
                 }
             }
-            if (file_exists("%s", Makefile)) {
-                path cwd = path_cwd(2048);
+            if (file_exists("%s", Makefile))
                 verify(exec("%o make -f %s install", env, Makefile) == 0, "make");
-            }
         }
     }
     return true;
@@ -479,7 +479,7 @@ static int filename_index(array files, path f) {
 }
 
 static bool sync_symlink(path src, path dst) {
-
+    return false;
 }
 
 /// install headers, then overlay built headers; then install libs and app targets

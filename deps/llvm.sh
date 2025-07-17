@@ -5,8 +5,8 @@
 set -e
 
 # attempting to use 20.1 on arch
-echo "-lLLVM"
-exit 0
+#echo "-lLLVM"
+#exit 0
 
 # Configuration (if we want to use )
 
@@ -16,7 +16,8 @@ LLVM_COMMIT="d37feb7"
 # LLVM libraries we need (from your silver import config)
 LLVM_LIBS=(
     "m"
-    "clang" 
+    "clang"
+    "lldb"
     "LLVMCore"
     "LLVMBitReader"
     "LLVMBitWriter"
@@ -47,32 +48,20 @@ else
     PLATFORM="linux"
 fi
 
+build_dir="$IMPORT/checkout"
+llvm_src="$build_dir/llvm-project"
+llvm_build="$llvm_src/release"
+
 # Check if LLVM is already built
 is_llvm_built() {
-    # First check if LLVM exists at all
-    [[ -d "$IMPORT/lib" ]] && [[ -f "$IMPORT/bin/clang" ]] && [[ -d "$IMPORT/checkout/llvm-build" ]] || return 1
-    
-    # Get the newest file time in LLVM build
-    local llvm_newest=$(find "$IMPORT/checkout/llvm-build" -type f -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
-    
-    # Get the newest file time in source directory
-    local src_newest=$(find "$SRC_DIRECTIVE" -type f -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
-    
-    # If we couldn't get times, assume rebuild needed
-    [[ -n "$llvm_newest" ]] && [[ -n "$src_newest" ]] || return 1
-    
-    # LLVM is built if its newest file is newer than source newest file
-    (( $(echo "$llvm_newest > $src_newest" | bc -l) ))
+    [[ -f "$IMPORT/bin/clang" ]] && [[ -d "$llvm_build" ]] || return 1
+    return 0
 }
 
 # Build LLVM from scratch
 build_llvm() {
-    local build_dir="$IMPORT/checkout"
-    local llvm_src="$build_dir/llvm-project"
-    local llvm_build="$build_dir/llvm-build"
-    
     # Create directories
-    mkdir -p "$build_dir" "$IMPORT"
+    mkdir -p "$build_dir"
     
     # Clone or update LLVM
     if [[ -d "$llvm_src" ]]; then
@@ -92,11 +81,11 @@ build_llvm() {
     
     # Base CMake arguments (from your silver import config)
     local cmake_args=(
-        -S "$llvm_src/llvm"
-        -DCMAKE_C_COMPILER="gcc" 
-        -DCMAKE_CXX_COMPILER="g++" 
+        -S $llvm_src/llvm
+        -DCMAKE_C_COMPILER="gcc-14"
+        -DCMAKE_CXX_COMPILER="g++-14"
         -DCMAKE_BUILD_TYPE=Release
-        -DCMAKE_INSTALL_PREFIX="$IMPORT"
+        -DCMAKE_INSTALL_PREFIX=$IMPORT
         -G Ninja
         -DLLVM_ENABLE_ASSERTIONS=ON
         -DLLVM_ENABLE_PROJECTS='clang;lld;lldb'
@@ -106,33 +95,14 @@ build_llvm() {
         -DLLVM_BINUTILS_INCDIR=/usr/include
         -DCLANG_DEFAULT_PIE_ON_LINUX=ON
         -DCLANG_CONFIG_FILE_SYSTEM_DIR=/etc/clang
-        -DLLVM_ENABLE_LIBCXX=OFF
         -DBUILD_SHARED_LIBS=ON
         -DLLDB_ENABLE_PYTHON=OFF
         -DLLVM_BUILD_LLVM_DYLIB=OFF
         -DLLVM_LINK_LLVM_DYLIB=OFF
         -DLLVM_TARGETS_TO_BUILD='host;X86;AArch64'
         -DCLANG_DEFAULT_CXX_STDLIB=libstdc++
-        
     )
-    
-    # Platform-specific arguments
-    if [[ "$PLATFORM" == "darwin" ]]; then
-        cmake_args+=(
-            -DCMAKE_CXX_FLAGS="-stdlib=libc++"
-            -DCLANG_DEFAULT_CXX_STDLIB=libc++
-        )
-        if [[ -n "$SYSROOT" ]]; then
-            cmake_args+=(-DDEFAULT_SYSROOT="$SYSROOT")
-        fi
-    else
-        cmake_args+=(
-            -DCLANG_DEFAULT_CXX_STDLIB=libstdc++
-            -DLLVM_BINUTILS_INCDIR=/usr/include
-        )
-    fi
-    
-    echo "something"
+
     # Force consistent compilers
     cd $llvm_build
     cmake "${cmake_args[@]}"

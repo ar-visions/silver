@@ -2,8 +2,6 @@
 BUILD_FILE="$PROJECT_PATH/build.sf"
 SRC_DIRECTIVE="$PROJECT_PATH/$DIRECTIVE"
 
-echo "src directive = $SRC_DIRECTIVE"
-
 if [ ! -d "$SRC_DIRECTIVE" ]; then
     echo "skipping directive $DIRECTIVE (null-path: $SRC_DIRECTIVE)"
     exit 0
@@ -33,23 +31,15 @@ write_import_header() {
             IMPORTS="$MODULE $(cat "$GRAPH")"
         else
             IMPORTS="A $MODULE"
-            echo ""
-            echo "for $MODULE in directive $DIRECTIVE (project $PROJECT)"
-            echo "defaulting imports to $IMPORTS"
-            echo ""
         fi
     fi
 
     # we need to add $PROJECT in place for all apps, if its not in there it should go right on the end
-    if [ "$DIRECTIVE" == "app" ]; then
+    if [ "$DIRECTIVE" = "app" ]; then
         if ! echo " $IMPORTS " | grep -q " $PROJECT "; then
             IMPORTS="$IMPORTS $PROJECT"
         fi
     fi
-
-    echo ".g data for $MODULE:"
-    echo $IMPORTS
-    echo " "
 
     IMPORT_HEADER="$BUILD_PATH/$DIRECTIVE/$MODULE/import"
     rm -f "$IMPORT_HEADER" # todo: improve
@@ -104,7 +94,7 @@ find "$SRC_DIRECTIVE" -type f ! -name "*.*" | while read -r MOD_HEADER; do
     INTERN_HEADER="$GEN_DIR/$MODULE/intern"
     PUBLIC_HEADER="$GEN_DIR/$MODULE/public"
     INIT_HEADER="$GEN_DIR/$MODULE/init"
-    echo "[headers] generating for module: $MODULE ($DIRECTIVE)"
+    #echo "[headers] generating for module: $MODULE ($DIRECTIVE)"
 
     write_import_header "$MODULE"
 
@@ -152,7 +142,7 @@ find "$SRC_DIRECTIVE" -type f ! -name "*.*" | while read -r MOD_HEADER; do
             if [ "$type" = "meta" ] || [ "$type" = "vector" ]; then
                 echo "#define _N_ARGS_${class_name}_1( TYPE, a)" >> "$INIT_HEADER"
             else
-                echo "#define _N_ARGS_${class_name}_1( TYPE, a) _Generic((a), TYPE##_schema(TYPE, GENERICS, object) A_schema(A, GENERICS, object) const void *: (void)0)(instance, a)" >> "$INIT_HEADER"
+                echo "#define _N_ARGS_${class_name}_1( TYPE, a) _Generic((a), TYPE##_schema(TYPE, GENERICS, A) A_schema(A, GENERICS, A) const void *: (void)0)(instance, a)" >> "$INIT_HEADER"
             fi
             
             # Property assignment macros for various argument counts
@@ -174,9 +164,9 @@ find "$SRC_DIRECTIVE" -type f ! -name "*.*" | while read -r MOD_HEADER; do
             
             # Main constructor macro
             echo "#define ${class_name}(...) ({ \\" >> "$INIT_HEADER"
-            echo "    ${class_name} instance = (${class_name})A_alloc_dbg(typeid(${class_name}), 1, __FILE__, __LINE__); \\" >> "$INIT_HEADER"
+            echo "    ${class_name} instance = (${class_name})alloc_dbg(typeid(${class_name}), 1, __FILE__, __LINE__); \\" >> "$INIT_HEADER"
             echo "    _N_ARGS_${class_name}(${class_name}, ## __VA_ARGS__); \\" >> "$INIT_HEADER"
-            echo "    A_initialize((object)instance); \\" >> "$INIT_HEADER"
+            echo "    A_initialize((A)instance); \\" >> "$INIT_HEADER"
             echo "    instance; \\" >> "$INIT_HEADER"
             echo "})" >> "$INIT_HEADER"
         done
@@ -216,6 +206,17 @@ find "$SRC_DIRECTIVE" -type f ! -name "*.*" | while read -r MOD_HEADER; do
 
         grep -o 'i_method[[:space:]]*([^,]*,[^,]*,[^,]*,[^,]*,[[:space:]]*[[:alnum:]_]*' "$HEADER" | \
         $SED 's/i_method[[:space:]]*([^,]*,[^,]*,[^,]*,[^,]*,[[:space:]]*\([[:alnum:]_]*\).*/\1/' | \
+        while read method; do
+            if [ -n "$method" ] && ! grep -qx "$method" "$TEMP_METHODS"; then
+                echo "$method" >> "$TEMP_METHODS"
+                echo "#ifndef $method" >> "$METHODS_HEADER"
+                echo "#define $method(I,...) ({ __typeof__(I) _i_ = I; ftableI(_i_)->$method(_i_, ## __VA_ARGS__); })" >> "$METHODS_HEADER"
+                echo "#endif" >> "$METHODS_HEADER"
+            fi
+        done
+
+        grep -o 'i_vargs[[:space:]]*([^,]*,[^,]*,[^,]*,[^,]*,[[:space:]]*[[:alnum:]_]*' "$HEADER" | \
+        $SED 's/i_vargs[[:space:]]*([^,]*,[^,]*,[^,]*,[^,]*,[[:space:]]*\([[:alnum:]_]*\).*/\1/' | \
         while read method; do
             if [ -n "$method" ] && ! grep -qx "$method" "$TEMP_METHODS"; then
                 echo "$method" >> "$TEMP_METHODS"

@@ -12,7 +12,7 @@
 
 typedef struct _ether*       ether;
 typedef struct _model*       model;
-typedef struct _member*      member;
+typedef struct _emember*      emember;
 typedef struct _record*      record;
 typedef struct _node*        node;
 typedef struct _function*    function;
@@ -31,8 +31,6 @@ typedef struct _function*    function;
 declare_enum(comparison)
 
 #define token_schema(X,Y,...) \
-    i_prop      (X,Y,  required, cstr,      chars) \
-    i_prop      (X,Y,  public,  sz,         len) \
     i_prop      (X,Y,  public,  path,       source) \
     i_prop      (X,Y,  public,  num,        line) \
     i_prop      (X,Y,  public,  num,        column) \
@@ -40,17 +38,10 @@ declare_enum(comparison)
     i_prop      (X,Y,  public,  A,          literal) \
     i_prop      (X,Y,  public,  model,      namespace) \
     i_method    (X,Y,  public,  AType,      get_type) \
-    i_method    (X,Y,  public,  sz,         len) \
     i_method    (X,Y,  public,  string,     location) \
-    i_method    (X,Y,  public,  bool,       eq,  cstr) \
-    i_method    (X,Y,  public,  num,        cmp, cstr) \
-    i_ctr       (X,Y,  public,  cstr) \
-    i_cast      (X,Y,  public,  cstr) \
-    i_override  (X,Y,  method,  init) \
-    i_override  (X,Y,  method,  compare) \
-    i_override  (X,Y,  cast,    string) \
-    i_override  (X,Y,  cast,    bool)
-declare_class(token)
+    i_override  (X,Y,  ctr,     cstr) \
+    i_override  (X,Y,  method,  init)
+declare_class_2(token, string)
 
 
 #define interface_schema(E,T,Y,...) \
@@ -70,10 +61,11 @@ declare_enum(reference)
 #define model_schema(X,Y,...)\
     i_prop    (X,Y, required,   ether,            mod) \
     i_prop    (X,Y, public,     token,            name) \
-    i_prop    (X,Y, intern,     array,            aliases) \
+    i_prop    (X,Y, public,     bool,             is_alias) \
+    i_prop    (X,Y, intern,     array,            aliases, meta, model) \
     i_prop    (X,Y, public,     model,            src) \
     i_prop    (X,Y, public,     reference,        ref) \
-    i_prop    (X,Y, public,     object,           shape) \
+    i_prop    (X,Y, public,     A,                shape) \
     i_prop    (X,Y, public,     bool,             is_map) \
     i_prop    (X,Y, public,     bool,             is_array) \
     i_prop    (X,Y, public,     i64,              element_count) \
@@ -96,25 +88,25 @@ declare_enum(reference)
     i_method  (X,Y, public,     function,   initializer) \
     i_method  (X,Y, public,     model,      pointer) \
     i_method  (X,Y, public,     bool,       has_scope) \
-    i_method  (X,Y, public,     model,      alias,              object, reference, array) \
-    i_method  (X,Y, public,     none,       finalize, member) \
-    i_method  (X,Y, public,     member,     convertible,   model) \
-    i_method  (X,Y, public,     member,     castable,      model) \
-    i_method  (X,Y, public,     member,     constructable, model) \
+    i_method  (X,Y, public,     model,      alias,         string, reference, array) \
+    i_method  (X,Y, public,     none,       finalize, emember) \
+    i_method  (X,Y, public,     emember,     convertible,   model) \
+    i_method  (X,Y, public,     emember,     castable,      model) \
+    i_method  (X,Y, public,     emember,     constructable, model) \
     i_override(X,Y, cast,       string) \
     i_override(X,Y, method,     init)
 declare_class(model)
 
-#define arguments_schema(X,Y,...) \
+#define eargs_schema(X,Y,...) \
     i_prop    (X,Y, public, array,    args) \
     i_prop    (X,Y, public, bool,     is_ext) \
     i_prop    (X,Y, public, model,    ext_type) \
     i_method  (X,Y, public, sz,       len) \
-    i_method  (X,Y, public, object,   get, num) \
-    i_method  (X,Y, public, none,     push, member) \
-    i_method  (X,Y, public, member,   pop) \
+    i_method  (X,Y, public, A,        get, num) \
+    i_method  (X,Y, public, none,     push, emember) \
+    i_method  (X,Y, public, emember,   pop) \
     i_override(X,Y, method, init)
-declare_class_2(arguments, model)
+declare_class_2(eargs, model)
 
 
 #define format_attr_schema(X,Y,...) \
@@ -129,14 +121,14 @@ declare_class(format_attr)
     i_prop(X,Y, public,     bool,                   is_global_ctr) \
     i_prop(X,Y, public,     bool,                   is_init) \
     i_prop(X,Y, public,     bool,                   va_args) \
-    i_prop(X,Y, public,     arguments,              args) \
+    i_prop(X,Y, public,     eargs,                  args) \
     i_prop(X,Y, public,     record,                 payload) \
     i_prop(X,Y, public,     bool,                   export) \
     i_prop(X,Y, public,     model,                  record) \
     i_prop(X,Y, public,     model,                  imdl) \
     i_prop(X,Y, public,     bool,                   single_expr) \
-    i_prop(X,Y, public,     member,                 target) \
-    i_prop(X,Y, public,     member,                 main_member) \
+    i_prop(X,Y, public,     emember,                 target) \
+    i_prop(X,Y, public,     emember,                 main_member) \
     i_prop(X,Y, public,     AMember,                function_type) \
     i_prop(X,Y, intern,     format_attr,            format) \
     i_prop(X,Y, intern,     LLVMMetadataRef,        last_dbg,  as, ARef) \
@@ -160,6 +152,7 @@ typedef struct _schematic* schematic;
 #define record_schema(X,Y,...) \
     i_prop    (X,Y, public, record, parent) \
     i_prop    (X,Y, public, i32, total_members) \
+    i_prop    (X,Y, public, bool,   expect_members) \
     i_override(X,Y, method,         finalize) \
     i_override(X,Y, method,         init)
 declare_class_2(record, model)
@@ -187,7 +180,7 @@ declare_class_3(uni, record, model)
     i_prop    (X,Y, public,     token,                  name) \
     i_prop    (X,Y, public,     ether,                  mod) \
     i_prop    (X,Y, required,   model,                  mdl) \
-    i_prop    (X,Y, public,     object,                 literal) \
+    i_prop    (X,Y, public,     A,                      literal) \
     i_prop    (X,Y, public,     num,                    line) \
     i_prop    (X,Y, public,     num,                    column) \
     i_prop    (X,Y, public,     bool,                   loaded) \
@@ -195,11 +188,11 @@ declare_class_3(uni, record, model)
 declare_class(node)
 
 // if ref is set, its a reference to a member with type definition (model, struct, ref)
-#define member_schema(X,Y,...) \
+#define emember_schema(X,Y,...) \
     i_prop    (X,Y, public,     interface,              access) \
     i_prop    (X,Y, public,     array,                  aliases, meta, string) \
     i_prop    (X,Y, public,     model,                  context, meta, weak) \
-    i_prop    (X,Y, public,     member,                 target_member) \
+    i_prop    (X,Y, public,     emember,                 target_member) \
     i_prop    (X,Y, public,     record,                 target_record) \
     i_prop    (X,Y, public,     bool,                   registered) \
     i_prop    (X,Y, public,     ether,                  is_module) \
@@ -213,17 +206,17 @@ declare_class(node)
     i_prop    (X,Y, public,     bool,                   is_arg) \
     i_prop    (X,Y, public,     bool,                   is_decl) \
     i_prop    (X,Y, public,     path,                   from_include) \
-    i_prop    (X,Y, public,     object,                 initializer) \
+    i_prop    (X,Y, public,     A,                      initializer) \
     i_prop    (X,Y, intern,     i64,                    offset) \
     i_prop    (X,Y, intern,     i64,                    index) \
     i_prop    (X,Y, intern,     LLVMMetadataRef,        debug, as, ARef) \
     i_method  (X,Y, public,     none,    release) \
     i_method  (X,Y, public,     bool,    has_value) \
     i_method  (X,Y, public,     none,    set_model,     model) \
-    i_method  (X,Y, public,     none,    set_value,     object) \
-    i_method  (X,Y, public,     member,  resolve,       string) \
+    i_method  (X,Y, public,     none,    set_value,     A) \
+    i_method  (X,Y, public,     emember,  resolve,       string) \
     i_override(X,Y, method,     init)
-declare_class_2(member, node)
+declare_class_2(emember, node)
 
 
 #define code_schema(X,Y,...) \
@@ -258,20 +251,21 @@ declare_class(code)
     i_prop    (X,Y, intern,     LLVMTargetMachineRef,   target_machine,    as, ARef) \
     i_prop    (X,Y, intern,     cstr,                   target_triple) \
     i_prop    (X,Y, public,     bool,                   left_hand) \
-    i_method  (X,Y, public,     node,       fn_return,      object) \
+    i_method  (X,Y, public,     model,      runtime_resolve, AType) \
+    i_method  (X,Y, public,     node,       fn_return,      A) \
     i_method  (X,Y, public,     node,       default_value,  model) \
     i_method  (X,Y, public,     node,       builder,        subprocedure) \
     i_method  (X,Y, public,     none,       build_initializer, function) \
-    i_method  (X,Y, public,     node,       eelement,       node,       object) \
+    i_method  (X,Y, public,     node,       eelement,       node,       A) \
     i_method  (X,Y, public,     none,       ecmp,           node,       comparison, node, code, code) \
     i_method  (X,Y, public,     none,       ebranch,        code) \
-    i_method  (X,Y, public,     member,     compatible,     record,     string, AMember, array) \
-    i_method  (X,Y, public,     none,       push_member,    member) \
-    i_method  (X,Y, public,     member,     push_model,     model) \
-    i_method  (X,Y, public,     node,       operand,        object,     model) \
-    i_method  (X,Y, public,     node,       op,             OPType,     string, object, object) \
-    i_method  (X,Y, public,     node,       load,           member) \
-    i_method  (X,Y, public,     node,       offset,         node,       object) \
+    i_method  (X,Y, public,     emember,     compatible,     record,     string, AMember, array) \
+    i_method  (X,Y, public,     none,       push_member,    emember) \
+    i_method  (X,Y, public,     emember,     push_model,     model) \
+    i_method  (X,Y, public,     node,       operand,        A,          model) \
+    i_method  (X,Y, public,     node,       op,             OPType,     string, A, A) \
+    i_method  (X,Y, public,     node,       load,           emember) \
+    i_method  (X,Y, public,     node,       offset,         node,       A) \
     i_method  (X,Y, public,     node,       if_else,        array,      array, subprocedure, subprocedure) \
     i_method  (X,Y, public,     node,       ternary,        node,       node, node) \
     i_method  (X,Y, public,     node,       convert,        node,       model) \
@@ -280,27 +274,27 @@ declare_class(code)
     i_method  (X,Y, public,     node,       not,            node) \
     i_method  (X,Y, public,     none,       einc,           node,       num) \
     i_method  (X,Y, public,     none,       eprint_node,    node) \
-    i_method  (X,Y, public,     member,     evar,           model,      string) \
-    i_method  (X,Y, public,     node,       or,             object,     object) \
-    i_method  (X,Y, public,     node,       xor,            object,     object) \
-    i_method  (X,Y, public,     node,       and,            object,     object) \
-    i_method  (X,Y, public,     node,       add,            object,     object) \
-    i_method  (X,Y, public,     node,       sub,            object,     object) \
-    i_method  (X,Y, public,     node,       mul,            object,     object) \
-    i_method  (X,Y, public,     node,       div,            object,     object) \
-    i_method  (X,Y, public,     node,       create,         model,      object) \
+    i_method  (X,Y, public,     emember,     evar,           model,      string) \
+    i_method  (X,Y, public,     node,       or,             A,     A) \
+    i_method  (X,Y, public,     node,       xor,            A,     A) \
+    i_method  (X,Y, public,     node,       and,            A,     A) \
+    i_method  (X,Y, public,     node,       add,            A,     A) \
+    i_method  (X,Y, public,     node,       sub,            A,     A) \
+    i_method  (X,Y, public,     node,       mul,            A,     A) \
+    i_method  (X,Y, public,     node,       div,            A,     A) \
+    i_method  (X,Y, public,     node,       create,         model,      A) \
     i_method  (X,Y, public,     node,       zero,           node) \
-    i_method  (X,Y, public,     node,       assign,         node,       object, OPType) \
+    i_method  (X,Y, public,     node,       assign,         node,       A, OPType) \
     i_method  (X,Y, public,     node,       eq,             node,       node) \
     i_method  (X,Y, public,     node,       cmp,            node,       node) \
     i_method  (X,Y, public,     node,       not_eq,         node,       node) \
-    i_method  (X,Y, public,     node,       fn_call,        member,     array) \
-    i_method  (X,Y, public,     node,       is,             node,       object) \
-    i_method  (X,Y, public,     node,       inherits,       node,       object) \
-    i_method  (X,Y, public,     member,     lookup,         object,     AType) \
+    i_method  (X,Y, public,     node,       fn_call,        emember,     array) \
+    i_method  (X,Y, public,     node,       is,             node,       A) \
+    i_method  (X,Y, public,     node,       einherits,      node,       A) \
+    i_method  (X,Y, public,     emember,    lookup2,        A,          AType) \
     i_method  (X,Y, public,     model,      context_model,  AType) \
     i_method  (X,Y, public,     path,       include_path,   string) \
-    i_method  (X,Y, public,     path,       include,        object) \
+    i_method  (X,Y, public,     path,       include,        A) \
     i_method  (X,Y, public,     none,       llflag,         symbol,     i32) \
     i_method  (X,Y, public,     model,      push,           model) \
     i_method  (X,Y, public,     model,      pop) \
