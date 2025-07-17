@@ -138,7 +138,7 @@
             "type":       "lldb",
             "request":    "launch",
             "program":    "/src/silver/bin/silver",
-            "args":     [ "/src/silver/silver88.sf" ],
+            "args":     [ "--source", "/src/silver/silver88.sf" ],
             "cwd":        "/src/silver/share/silver",
             "env":      { "VERBOSE": "1", "CC": "clang" }
         },

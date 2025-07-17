@@ -1,21 +1,6 @@
 #include <import>
 
-#undef init
-#undef dealloc
-#undef realloc
-
-// we can bring back ffi -- 
-// yes its possible to 
-// generate the call stubs
-//  but it wont be any 
-// faster, if even, as 
-// ffi; generating the 
-// call stubs is simply 
-// more efficient, and 
-// from memory too.. seeing 
-// that in code would be 
-// insanity
-
+//#undef realloc
 //#include <ffi.h>
 #undef USE_FFI
 #undef bool
@@ -26,8 +11,6 @@
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
 #include <cpuid.h>
 #endif
-
-
 #include <math.h>
 #include <errno.h>
 #include <sys/wait.h>
@@ -35,14 +18,12 @@
 #include <sys/mman.h>
 #include <sys/inotify.h>
 
-
-
+AType_info        AType_i;
+//objectType_info   objectType_i;
 
 #ifndef line
-#define line(...)       new(line,       __VA_ARGS__)
+#define line(...)       new(line, __VA_ARGS__)
 #endif
-
-object parse(cstr s, AType schema, ctx context);
 
 i64 epoch_millis() {
     struct timeval tv;
@@ -52,8 +33,8 @@ i64 epoch_millis() {
 
 shape shape_with_array(shape a, array dims) {
     num count = len(dims);
-    each (dims, object, e) {
-        i64* i = (i64*)instanceof(e, i64);
+    each (dims, A, e) {
+        i64* i = (i64*)instanceof(e, typeid(i64));
         a->data[a->count++] = *i;
     }
     return a;
@@ -110,7 +91,275 @@ shape shape_new(i64 size, ...) {
 
 define_class(shape, A)
 
-/// block-chain will go here in quanta
+
+
+
+bool array_cast_bool(array a) { return a && a->len > 0; }
+
+none array_alloc_sz(array a, sz alloc) {
+    A* elements = (A*)calloc(alloc, sizeof(struct _A*));
+    memcpy(elements, a->elements, sizeof(struct _A*) * a->len);
+    
+    free(a->elements);
+    a->elements = elements;
+    a->alloc = alloc;
+}
+
+none array_init(array a) {
+    if (a->alloc)
+        array_alloc_sz(a, a->alloc);
+}
+
+none array_dealloc(array a) {
+    clear(a);
+    free(a->elements);
+    a->elements = null;
+}
+
+none array_fill(array a, A f) {
+    for (int i = 0; i < a->alloc; i++)
+        push(a, f);
+}
+
+string array_cast_string(array a) {
+    string r = string(alloc, 64);
+    for (int i = 0; i < a->len; i++) {
+        A e = (A)a->elements[i];
+        string s = cast(string, e);
+        if (r->len)
+            append(r, " ");
+        append(r, s ? s->chars : "null");
+    }
+    return r;
+}
+
+array array_reverse(array a) {
+    array r = array((int)len(a));
+    for (int i = len(a) - 1; i >= 0; i--)
+        push(r, a->elements[i]);
+    return r;
+}
+
+none array_expand(array a) {
+    num alloc = 32 + (a->alloc << 1);
+    array_alloc_sz(a, alloc);
+}
+
+none array_push_weak(array a, A b) {
+    if (a->alloc == a->len) array_expand(a);
+    a->elements[a->len++] = b;
+}
+
+array  array_copy(array a) {
+    array  b = new(array, alloc, len(a));
+    concat(b, a);
+    return b;
+}
+
+array array_with_i32(array a, i32 alloc) {
+    a->alloc = alloc;
+    return a;
+}
+
+none array_push(array a, A b) {
+    if (a->alloc == a->len) {
+        array_expand(a);
+    }
+    AType t = isa(a);
+    AType vtype = isa(b);
+    A info = head(a);
+    verify(!a->last_type || a->last_type == vtype || a->assorted,
+        "unassorted array received differing type: %s, previous: %s (%s:%i)",
+        vtype->name, a->last_type->name, info->source, info->line);
+    a->last_type = vtype;
+
+    if (is_meta(a) && t->meta.meta_0 != typeid(A))
+        assert(is_meta_compatible(a, b), "not meta compatible");
+    hold(string("test"));
+    a->elements[a->len++] = a->unmanaged ? b : hold(b);
+}
+
+none array_clear(array a) {
+    if (!a->unmanaged)
+        for (num i = 0; i < a->len; i++) {
+            drop(a->elements[i]);
+            a->elements[i] = null;
+        }
+    a->len = 0;
+}
+
+none array_concat(array a, array b) {
+    each(b, A, e) array_push(a, e);
+}
+
+A array_index_num(array a, num i) {
+    if (i < 0)
+        i += a->len;
+    if (i >= a->len)
+        return 0;
+    return a->elements[i];
+}
+
+none array_remove(array a, num b) {
+    for (num i = b; i < a->len; i++) {
+        A prev = a->elements[b];
+        a->elements[b] = a->elements[b + 1];
+        drop(prev);
+    }
+    a->elements[--a->len] = null;
+}
+
+none array_remove_weak(array a, num b) {
+    for (num i = b; i < a->len; i++) {
+        A prev = a->elements[b];
+        a->elements[b] = a->elements[b + 1];
+    }
+    a->elements[--a->len] = null;
+}
+
+none array_operator__assign_add(array a, A b) {
+    array_push(a, b);
+}
+
+none array_operator__assign_sub(array a, num b) {
+    array_remove(a, b);
+}
+
+A array_first(array a) {
+    assert(a->len, "no items");
+    return a->elements[0];
+}
+
+A array_last(array a) {
+    assert(a->len, "no items");
+    return a->elements[a->len - 1];
+}
+
+none array_push_symbols(array a, cstr symbol, ...) {
+    va_list args;
+    va_start(args, symbol);
+    for (cstr value = symbol; value != null; value = va_arg(args, cstr)) {
+        string s = new(string, chars, value);
+        push(a, s);
+    }
+    va_end(args);
+}
+
+none array_push_objects(array a, A f, ...) {
+    va_list args;
+    va_start(args, f);
+    A value;
+    while ((value = va_arg(args, A)) != null)
+        push(a, value);
+    va_end(args);
+}
+
+array array_of(A first, ...) {
+    array a = new(array, alloc, 32, assorted, true);
+    va_list args;
+    va_start(args, first);
+    if (first) {
+        push(a, first);
+        for (;;) {
+            A arg = va_arg(args, A);
+            if (!arg)
+                break;
+            push(a, arg);
+        }
+    }
+    return a;
+}
+
+array array_of_cstr(cstr first, ...) {
+    array a = allocate(array, alloc, 256);
+    va_list args;
+    va_start(args, first);
+    for (cstr arg = first; arg; arg = va_arg(args, A))
+        push(a, string(arg));
+    return a;
+}
+
+A array_pop(array a) {
+    assert(a->len > 0, "no items");
+    if (!a->unmanaged) drop(a->elements[a->len - 1]);
+    return a->elements[--a->len];
+}
+
+num array_compare(array a, array b) {
+    num diff = a->len - b->len;
+    if (diff != 0)
+        return diff;
+    for (num i = 0; i < a->len; i++) {
+        num cmp = compare(a->elements[i], b->elements[i]);
+        if (cmp != 0)
+            return cmp;
+    }
+    return 0;
+}
+
+A array_peek(array a, num i) {
+    if (i < 0 || i >= a->len)
+        return null;
+    return a->elements[i];
+}
+
+array array_mix(array a, array b, f32 f) {
+    int ln0 = len(a);
+    int ln1 = len(b);
+    if (ln0 != ln1) return b;
+
+    Member fmix = null;
+    AType expect = null;
+    array res = array(ln0);
+    for (int i = 0; i < ln0; i++) {
+        A aa = a->elements[i];
+        A bb = b->elements[i];
+
+        AType at = isa(aa);
+        AType bt = isa(bb);
+
+        if (!expect) expect = at;
+        verify(expect == at, "disperate types in array during mix");
+        verify(at == bt, "types do not match");
+
+        if (!fmix) fmix = member(at, A_MEMBER_IMETHOD, "mix", false);
+        verify(fmix, "implement mix method for type %s", at->name);
+        A e = ((mix_fn)fmix->ptr)(aa, bb, f);
+        push(res, e);
+    }
+    return res;
+}
+
+A array_get(array a, num i) {
+    if (i < 0 || i >= a->len)
+        fault("out of bounds: %i, len = %i", i, a->len);
+    return a->elements[i];
+}
+
+num array_count(array a) {
+    return a->len;
+}
+
+sz array_len(array a) {
+    return a->len;
+}
+
+/// index of element that compares to 0 diff with item
+num array_index_of(array a, A b) {
+    if (a->unmanaged) {
+        for (num i = 0; i < a->len; i++) {
+            if (a->elements[i] == b)
+                return i;
+        }
+    } else {
+        for (num i = 0; i < a->len; i++) {
+            if (compare(a -> elements[i], b) == 0)
+                return i;
+        }
+    }
+
+    return -1;
+}
 
 __thread array     af_stack;
 __thread   AF      af_top;
@@ -120,82 +369,12 @@ static num             call_after_alloc;
 static num             call_after_count;
 static map             log_funcs;
 
-static CPU_Caps        cpu_caps;
-
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
-CPU_Caps detect_x86_caps() {
-    u32 eax, ebx, ecx, edx;
-    CPU_Caps cpu_caps = 0;
-    // Basic CPUID information
-    if (__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
-        // Check for SSE and SSE2
-        if (edx & (1 << 25)) {
-            cpu_caps |= CPU_CAP_SSE;   // SSE
-        }
-        if (edx & (1 << 26)) {
-            cpu_caps |= CPU_CAP_SSE2;  // SSE2
-        }
-        // Check for AVX
-        if (ecx & (1 << 28)) {
-            // Check for OS support for AVX using XGETBV
-            u32 xcr0;
-            __asm__ volatile ("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
-            xcr0 = eax;
-            if ((xcr0 & 0x6) == 0x6) {
-                cpu_caps |= CPU_CAP_AVX;  // AVX
-            }
-        }
-    }
-
-    // Extended CPUID information
-    if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
-        // Check for AVX2
-        if (ebx & (1 << 5)) {
-            cpu_caps |= CPU_CAP_AVX2;  // AVX2
-        }
-        // Check for AVX-512
-        if (ebx & (1 << 16)) {
-            // Check for OS support for AVX-512 using XGETBV
-            unsigned int xcr0;
-            __asm__ volatile ("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
-            xcr0 = eax;
-            if ((xcr0 & 0xE0) == 0xE0) {
-                cpu_caps |= CPU_CAP_AVX512;  // AVX-512
-            }
-        }
-    }
-    return cpu_caps;
-}
-#elif defined(__arm__) || defined(__aarch64__)
-CPU_Caps detect_arm_caps() {
-    CPU_Caps cpu_caps = 0;
-    #if defined(__ARM_NEON)
-        cpu_caps |= CPU_CAP_NEON32;  // NEON for ARM32
-    #endif
-
-    #if defined(__aarch64__)
-        cpu_caps |= CPU_CAP_NEON64;  // NEON is standard on ARM64
-    #endif
-    return cpu_caps;
-}
-#endif
-
-CPU_Caps detect_cpu_caps() {
-    #if defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
-        return detect_x86_caps();
-    #elif defined(__arm__) || defined(__aarch64__)
-        return detect_arm_caps();
-    #else
-        return 0;
-    #endif
-}
-
-none A_lazy_init(global_init_fn fn) {
+none lazy_init(global_init_fn fn) {
     if (call_after_count == call_after_alloc) {
-        global_init_fn* prev      = call_after;
-        num            alloc_prev = call_after_alloc;
-        call_after_alloc          = 32 + (call_after_alloc << 1);
-        call_after                = calloc(call_after_alloc, sizeof(global_init_fn));
+        global_init_fn* prev = call_after;
+        num alloc_prev = call_after_alloc;
+        call_after_alloc = 32 + (call_after_alloc << 1);
+        call_after = calloc(call_after_alloc, sizeof(global_init_fn));
         if (prev) {
             memcpy(call_after, prev, sizeof(global_init_fn) * alloc_prev);
             free(prev);
@@ -215,11 +394,11 @@ cstr copy_cstr(cstr input) {
     return res;
 }
 
-A A_header(object instance) {
-    return (((struct _A*)instance) - 1);
+A header(A a) {
+    return (((struct _A*)a) - 1);
 }
 
-none A_module_init(bool(*fn)()) {
+none register_init(fn f) {
     /// these should be loaded after the types are loaded.. the module inits are used for setting module-members (not globals!)
     if (call_last_count == call_last_alloc) {
         global_init_fn* prev      = call_last;
@@ -231,88 +410,71 @@ none A_module_init(bool(*fn)()) {
             free(prev);
         }
     }
-    call_last[call_last_count++] = fn;
+    call_last[call_last_count++] = f;
 }
 
-static A_f**           types;
-static num             types_alloc;
-static num             types_len;
+static AType*   _types;
+static num      _types_alloc;
+static num      _types_len;
 
-none A_push_type(AType type) {
-    if (types_alloc == types_len) {
-        A_f** prev = types;
-        num   alloc_prev = types_alloc;
-        types_alloc = 128 + (types_alloc << 1);
-        types = calloc(types_alloc, sizeof(A_f*));
+none push_type(AType type) {
+    if (_types_alloc == _types_len) {
+        AType* prev = _types;
+        num   alloc_prev = _types_alloc;
+        _types_alloc = 128 + (_types_alloc << 1);
+        _types = calloc(_types_alloc, sizeof(A_f*));
         if (alloc_prev) {
-            memcpy(types, prev, sizeof(A_f*) * alloc_prev);
+            memcpy(_types, prev, sizeof(A_f*) * alloc_prev);
             free(prev);
         }
     }
-    types[types_len++] = type;
+    _types[_types_len++] = type;
 }
 
-/// verify type is compatible with newly created object given from user
-/// if a null is given by user, we do nothing
-object A_validate_type(object instance, AType type) {
-    if (!instance) return null;
-    AType itype = isa(instance);
-    do {
-        if (itype == type)
-            return instance;
-        type = type->parent_type;
-    } while (type && type != typeid(A));
-    return null;
+ARef types(ref_i64 length) {
+    *length = _types_len;
+    return _types;
 }
 
-A_f** A_types(num* length) {
-    *length = types_len;
-    return types;
-}
-
-AType A_find_type(symbol name) {
-    for (int i = 0; i < types_len; i++) {
-        AType type = types[i];
-        //print("type: %s", type->name);
-        if (strcmp(type->name, name) == 0)
-            return type;
+map _type_map;
+AType find_type(symbol name) {
+    if (!_type_map) {
+        _type_map = map(hsize, 128, unmanaged, true);
+        for (int i = 0; i < _types_len; i++) {
+            AType type = _types[i];
+            set(_type_map, string(type->name), type);
+        }
     }
-    return null;
+    return (AType)get(_type_map, string(name));
 }
 
-object A_new(AType type) {
-    object res = A_alloc(type, 1);
-    // todo: do not call init in A_alloc
-    return res;
-}
-
-u128 AF_bits(object a) {
+AF AF_bits(A a) {
     AType type = isa(a);
     u128 fields = *(u128*)((i8*)a + type->size - (sizeof(void*) * 2));
     return fields;
 }
 
-void AF_set_id(object a, int id) {
+void AF_set_id(A a, int id) {
     AType t = isa(a);
     u128* fields = (u128*)((i8*)a + t->size - (sizeof(void*) * 2));
     *fields |= ((u128)1) << id;
 }
 
-void AF_set_name(object a, cstr name) {
+void AF_set_name(A a, cstr name) {
     AType t = isa(a);
-    type_member_t* m = A_member(t, A_MEMBER_PROP|A_MEMBER_VPROP, name, true);
+    Member m = member(t, A_MEMBER_PROP|A_MEMBER_VPROP, name, true);
     u128* fields = (u128*)((i8*)a + t->size - (sizeof(void*) * 2));
     *fields |= ((u128)1) << m->id;
 }
 
-bool AF_query_name(object a, cstr name) {
+bool AF_query_name(A a, cstr name) {
     AType          t = isa(a);
-    type_member_t* m = A_member(t, A_MEMBER_PROP|A_MEMBER_VPROP, name, true);
+    Member m = member(t, A_MEMBER_PROP|A_MEMBER_VPROP, name, true);
     u128           f = AF_bits(a);
     return (f & (((u128)1) << m->id)) != 0;
 }
 
-static bool A_validator(object a) {
+bool A_validator(A a) {
     AType type = isa(a);
     if (type->magic != 1337) return false;
 
@@ -320,10 +482,10 @@ static bool A_validator(object a) {
     u128 fields = AF_bits(a);
     if ((type->required & fields) != type->required) {
         for (num i = 0; i < type->member_count; i++) {
-            type_member_t* m = &type->members[i];
+            Member m = &type->members[i];
             if (m->required && ((((u128)1) << m->id) & fields) == 0) {
                 u8* ptr = (u8*)a + m->offset;
-                object*  ref = (object*)ptr;
+                A* ref = (A*)ptr;
                 fault("required arg [%s] not set for class %s",
                     m->name, type->name);
             }
@@ -336,16 +498,16 @@ static bool A_validator(object a) {
 /// some changes being made to these, as enums can now be any primitive type
 /// we'll re-cast from i32 later; ptr is the VAL stored in static memory as the typed data in global constructor
 /// we must do this with our usage of static const; thats not always addressable
-i32* A_enum_default(AType type) {
+i32* enum_default(AType type) {
     for (num m = 0; m < type->member_count; m++) {
-        type_member_t* mem = &type->members[m];
+        Member mem = &type->members[m];
         if (mem->member_type & A_MEMBER_ENUMV)
             return (i32*)mem->ptr;
     }
     return null;
 }
 
-static object enum_member_value(AType type, type_member_t* mem) {
+static A enum_member_value(AType type, Member mem) {
     if (type->src == typeid(u8))  return A_u8(*(u8*)mem->ptr);
     if (type->src == typeid(i8))  return A_i8(*(i8*)mem->ptr);
     if (type->src == typeid(u16)) return A_u16(*(u16*)mem->ptr);
@@ -359,33 +521,33 @@ static object enum_member_value(AType type, type_member_t* mem) {
     return null;
 }
 
-i32* A_enum_value(AType type, cstr cs) {
+i32 evalue(AType type, cstr cs) {
     int cur = 0;
     int default_val = INT_MIN;
     bool single = strlen(cs) == 1;
     for (num m = 0; m < type->member_count; m++) {
-        type_member_t* mem = &type->members[m];
+        Member mem = &type->members[m];
         if ((mem->member_type & A_MEMBER_ENUMV) &&
             (strcmp(mem->name, cs) == 0)) {
-            return (i32*)enum_member_value(type, mem);
+            return *(i32*)enum_member_value(type, mem);
         }
     }
     for (num m = 0; m < type->member_count; m++) {
-        type_member_t* mem = &type->members[m];
+        Member mem = &type->members[m];
         if ((mem->member_type & A_MEMBER_ENUMV) &&
             (mem->name[0] == cs[0])) {
-            return (i32*)enum_member_value(type, mem);
+            return *(i32*)enum_member_value(type, mem);
         }
     }
     fault("enum not found");
-    return null;
+    return 0;
 }
 
-string A_enum_string(AType type, i32* value) {
+string estring(AType type, i32 value) {
     for (num m = 0; m < type->member_count; m++) {
-        type_member_t* mem = &type->members[m];
+        Member mem = &type->members[m];
         if (mem->member_type & A_MEMBER_ENUMV) {
-            if (memcmp(mem->ptr, value, mem->type->size) == 0)
+            if (memcmp((void*)mem->ptr, (i32*)&value, mem->type->size) == 0)
                 return mem->sname ? mem->sname : string(mem->name); 
         }
     }
@@ -398,16 +560,12 @@ none debug() {
     return;
 }
 
-
-none A_init_recur(object a, AType current, raw last_init) {
-    if (current == &A_type) return;
-    none(*init)(object) = ((A_f*)current)->init;
-    A_init_recur(a, current->parent_type, (raw)init);
+static none init_recur(A a, AType current, raw last_init) {
+    if (current == &A_i.type) return;
+    none(*init)(A) = ((A_f*)current)->init;
+    init_recur(a, current->parent_type, (raw)init);
     if (init && init != (none*)last_init) init(a); 
 }
-
-none A_hold_members(object);
-
 
 // we need a bit of type logic in here for these numerics; it should mirror the C compiler
 numeric numeric_operator__add(numeric a, numeric b) {
@@ -482,8 +640,8 @@ none    numeric_operator__assign(numeric a, numeric b) {
     memcpy(a, b, sz);
 }
 
-object A_initialize(object a) {
-    A   f = A_header(a);
+A A_initialize(A a) {
+    A   f = header(a);
     if (f->type->traits & A_TRAIT_USER_INIT) return a; // in ux, we call our own method on 'mount'
     // this may be skipped with macro generators, but it would still be broken in new() -- so its wise to keep this
 
@@ -491,19 +649,19 @@ object A_initialize(object a) {
     A_validator(a);
     #endif
 
-    A_init_recur(a, f->type, null);
-    A_hold_members(a);
+    init_recur(a, f->type, null);
+    hold_members(a);
     return a;
 }
 
 
-pid_t last_pid = 0;
+pid_t _last_pid = 0;
 
-pid_t A_last_pid() {
-    return last_pid;
+i64 last_pid() {
+    return (i64)_last_pid;
 }
 
-int A_exec(string cmd) {
+int command_exec(command cmd) {
     if (starts_with(cmd, "export ")) {
         string a = mid(cmd, 7, len(cmd) - 7);
         int i = index_of(a, "=");
@@ -528,7 +686,7 @@ int A_exec(string cmd) {
         execlp("sh", "sh", "-s", null); // or "bash"
         _exit(0);
     } else if (pid > 0) {
-        last_pid = pid;
+        _last_pid = pid;
         // parent
         close(pipefd[0]); // close read
         FILE *out = fdopen(pipefd[1], "w");
@@ -546,7 +704,7 @@ int A_exec(string cmd) {
         do {
             result = waitpid(pid, &status, 0);
         } while (result == -1 && errno == EINTR);
-        last_pid = 0;
+        _last_pid = 0;
 
         if (result == -1) {
             perror("waitpid");
@@ -569,14 +727,14 @@ int A_exec(string cmd) {
 
 static int all_type_alloc;
 
-int A_alloc_count() {
-    return all_type_alloc;
+int alloc_count(AType type) {
+    return type ? type->global_count : all_type_alloc;
 }
 
 //static cstr alloc_src = null;
 //static int  alloc_line = 0;
 
-A A_alloc_instance(AType type, int n_bytes, int recycle_size) {
+A alloc_instance(AType type, int n_bytes, int recycle_size) {
     A a = null;
     af_recycler* af = type->af;
     bool use_recycler = false; //af && n_bytes == recycle_size;
@@ -598,9 +756,12 @@ A A_alloc_instance(AType type, int n_bytes, int recycle_size) {
     a->refs = 1;
     if (use_recycler) {
         if ((af->af_count + 1) >= af->af_alloc) {
+            i64 prev_size = af->af_alloc;
             i64 next_size = af->af_alloc << 1;
             if (next_size == 0) next_size = 1024;
-            af->af = realloc(af->af, next_size * sizeof(A*));
+            void* prev = af->af;
+            af->af = malloc(next_size * sizeof(A*));
+            memcpy(af->af, prev, prev_size * sizeof(A*));
             af->af[0] = 0x00;
             af->af_alloc = next_size;
         }
@@ -611,13 +772,12 @@ A A_alloc_instance(AType type, int n_bytes, int recycle_size) {
     return a;
 }
 
-object A_alloc_dbg(AType type, num count, cstr source, int line) {
+A alloc_dbg(AType type, num count, cstr source, int line) {
     //alloc_src  = source;
     //alloc_line = line;
     sz map_sz = sizeof(map);
-    sz A_sz_rt = sizeof(A);
     sz A_sz   = sizeof(struct _A);
-    A  a      = A_alloc_instance(type,
+    A a = alloc_instance(type,
         A_sz + type->size * count, A_sz + type->size);
     a->type       = type;
     a->data       = &a[1];
@@ -625,316 +785,34 @@ object A_alloc_dbg(AType type, num count, cstr source, int line) {
     a->alloc      = count;
     a->source     = source;
     a->line       = line;
-    return a->data; /// return fields (object)
+    return a->data; /// return fields (A)
 }
 
-object A_alloc(AType type, num count) {
+A alloc(AType type, num count) {
     sz map_sz = sizeof(map);
     sz A_sz   = sizeof(struct _A);
-    object a = A_alloc_instance(type,
+    A a = alloc_instance(type,
         A_sz + type->size * count, A_sz + type->size);
-    a->refs       = 0;
     a->type       = type;
     a->data       = &a[1];
     a->count      = count;
     a->alloc      = count;
-    return a->data; /// return fields (object)
+    return a->data; /// return fields (A)
 }
 
-object A_alloc2(AType type, AType scalar, shape s) {
+A alloc2(AType type, AType scalar, shape s) {
     i64 A_sz      = sizeof(struct _A);
-    shape_ft* t2 = &shape_type;
+    shape_ft* t2 = &shape_i.type;
     i64 count     = total(s);
-    object a      = A_alloc_instance(type,
+    A a      = alloc_instance(type,
         A_sz + scalar->size * count, A_sz + scalar->size);
-    a->refs       = 0;
     a->scalar     = scalar;
     a->type       = type;
     a->data       = &a[1];
-    a->shape      = A_hold(s);
+    a->shape      = hold(s);
     a->count      = count;
     a->alloc      = count;
-    return a->data; /// return fields (object)
-}
-
-
-/// array -------------------------
-none array_alloc_sz(array a, sz alloc) {
-    object* elements = (object*)calloc(alloc, sizeof(struct _A*));
-    memcpy(elements, a->elements, sizeof(struct _A*) * a->len);
-    
-    free(a->elements);
-    a->elements = elements;
-    a->alloc = alloc;
-}
-
-none array_fill(array a, object f) {
-    for (int i = 0; i < a->alloc; i++)
-        push(a, f);
-}
-
-string array_cast_string(array a) {
-    string r = string(alloc, 64);
-    for (int i = 0; i < a->len; i++) {
-        object e = (object)a->elements[i];
-        string s = cast(string, e);
-        if (r->len)
-            append(r, " ");
-        append(r, s ? s->chars : "null");
-    }
-    return r;
-}
-
-array array_reverse(array a) {
-    array r = array((int)len(a));
-    for (int i = len(a) - 1; i >= 0; i--)
-        push(r, a->elements[i]);
-    return r;
-}
-
-none array_expand(array a) {
-    num alloc = 32 + (a->alloc << 1);
-    array_alloc_sz(a, alloc);
-}
-
-none array_push_weak(array a, object b) {
-    if (a->alloc == a->len) array_expand(a);
-    a->elements[a->len++] = b;
-}
-
-array  array_copy(array a) {
-    array  b = new(array, alloc, len(a));
-    concat(b, a);
-    return b;
-}
-
-array array_with_i32(array a, i32 alloc) {
-    a->alloc = alloc;
-    return a;
-}
-
-none array_push(array a, object b) {
-    if (a->alloc == a->len) {
-        array_expand(a);
-    }
-    AType t = isa(a);
-    AType vtype = isa(b);
-    A info = head(a);
-    verify(!a->last_type || a->last_type == vtype || a->assorted,
-        "unassorted array received differing type: %s, previous: %s (%s:%i)",
-        vtype->name, a->last_type->name, info->source, info->line);
-    a->last_type = vtype;
-
-    if (is_meta(a) && t->meta.meta_0 != typeid(object))
-        assert(is_meta_compatible(a, b), "not meta compatible");
-    a->elements[a->len++] = a->unmanaged ? b : hold(b);
-}
-
-none array_clear(array a) {
-    if (!a->unmanaged)
-        for (num i = 0; i < a->len; i++) {
-            A_drop(a->elements[i]);
-            a->elements[i] = null;
-        }
-    a->len = 0;
-}
-
-none array_concat(array a, array b) {
-    each(b, object, e) array_push(a, e);
-}
-
-object array_index_num(array a, num i) {
-    if (i < 0)
-        i += a->len;
-    if (i >= a->len)
-        return 0;
-    return a->elements[i];
-}
-
-none array_remove(array a, num b) {
-    for (num i = b; i < a->len; i++) {
-        object prev = a->elements[b];
-        a->elements[b] = a->elements[b + 1];
-        A_drop(prev);
-    }
-    a->elements[--a->len] = null;
-}
-
-none array_remove_weak(array a, num b) {
-    for (num i = b; i < a->len; i++) {
-        object prev = a->elements[b];
-        a->elements[b] = a->elements[b + 1];
-    }
-    a->elements[--a->len] = null;
-}
-
-none array_operator__assign_add(array a, object b) {
-    array_push(a, b);
-}
-
-none array_operator__assign_sub(array a, num b) {
-    array_remove(a, b);
-}
-
-object array_first(array a) {
-    assert(a->len, "no items");
-    return a->elements[0];
-}
-
-object array_last(array a) {
-    assert(a->len, "no items");
-    return a->elements[a->len - 1];
-}
-
-none array_push_symbols(array a, ...) {
-    va_list args;
-    va_start(args, a);
-    char* value;
-    while ((value = va_arg(args, char*)) != null) {
-        string s = new(string, chars, value);
-        push(a, s);
-    }
-    va_end(args);
-}
-
-none array_push_objects(array a, A f, ...) {
-    va_list args;
-    va_start(args, f);
-    A value;
-    while ((value = va_arg(args, A)) != null)
-        push(a, value);
-    va_end(args);
-}
-
-array array_of(object first, ...) {
-    array a = new(array, alloc, 32, assorted, true);
-    va_list args;
-    va_start(args, first);
-    if (first) {
-        push(a, first);
-        for (;;) {
-            A arg = va_arg(args, object);
-            if (!arg)
-                break;
-            push(a, arg);
-        }
-    }
-    return a;
-}
-
-array array_of_cstr(cstr first, ...) {
-    array a = alloc(array, alloc, 256);
-    va_list args;
-    va_start(args, first);
-    for (cstr arg = first; arg; arg = va_arg(args, A))
-        push(a, string(chars, arg));
-    return a;
-}
-
-none  array_weak_push(array a, object obj) {
-    if (a->alloc == a->len) {
-        array_expand(a);
-    }
-    a->elements[a->len++] = obj;
-}
-
-object array_pop(array a) {
-    assert(a->len > 0, "no items");
-    if (!a->unmanaged) drop(a->elements[a->len - 1]);
-    return a->elements[--a->len];
-}
-
-num array_compare(array a, array b) {
-    num diff = a->len - b->len;
-    if (diff != 0)
-        return diff;
-    for (num i = 0; i < a->len; i++) {
-        num cmp = compare(a->elements[i], b->elements[i]);
-        if (cmp != 0)
-            return cmp;
-    }
-    return 0;
-}
-
-object array_peek(array a, num i) {
-    if (i < 0 || i >= a->len)
-        return null;
-    return a->elements[i];
-}
-
-array array_mix(array a, array b, f32 f) {
-    int ln0 = len(a);
-    int ln1 = len(b);
-    if (ln0 != ln1) return b;
-
-    type_member_t* fmix = null;
-    AType expect = null;
-    array res = array(ln0);
-    for (int i = 0; i < ln0; i++) {
-        object aa = a->elements[i];
-        object bb = b->elements[i];
-
-        AType at = isa(aa);
-        AType bt = isa(bb);
-
-        if (!expect) expect = at;
-        verify(expect == at, "disperate types in array during mix");
-        verify(at == bt, "types do not match");
-
-        if (!fmix) fmix = A_member(at, A_MEMBER_IMETHOD, "mix", false);
-        verify(fmix, "implement mix method for type %s", at->name);
-        object e = ((mix_fn)fmix->ptr)(aa, bb, f);
-        push(res, e);
-    }
-    return res;
-}
-
-object array_get(array a, num i) {
-    if (i < 0 || i >= a->len)
-        fault("out of bounds: %i, len = %i", i, a->len);
-    return a->elements[i];
-}
-
-num array_count(array a) {
-    return a->len;
-}
-
-sz array_len(array a) {
-    return a->len;
-}
-
-/// index of element that compares to 0 diff with item
-num array_index_of(array a, object b) {
-    if (a->unmanaged) {
-        for (num i = 0; i < a->len; i++) {
-            if (a->elements[i] == b)
-                return i;
-        }
-    } else {
-        for (num i = 0; i < a->len; i++) {
-            if (compare(a -> elements[i], b) == 0)
-                return i;
-        }
-    }
-
-    return -1;
-}
-
-none br() {
-    usleep(0);
-}
-
-bool array_cast_bool(array a) { return a && a->len > 0; }
-
-none array_init(array a) {
-    if (a->alloc)
-        array_alloc_sz(a, a->alloc);
-}
-
-none array_dealloc(array a) {
-    clear(a);
-    free(a->elements);
-    a->elements = null;
+    return a->data; /// return fields (A)
 }
 
 #ifdef USE_FFI
@@ -946,18 +824,16 @@ method_t* method_with_address(handle address, AType rtype, array atypes, AType m
 
 
     //_Generic(("hi"), string_schema(string, GENERICS) const none *: (none)0)("hi")  
-
-
     method->atypes   = new(array);
     method->rtype    = rtype;
     method->address  = address;
     assert(atypes->len <= max_args, "adjust arg maxima");
     ffi_type **ffi_args = (ffi_type**)method->ffi_args;
     for (num i = 0; i < atypes->len; i++) {
-        A_f* a_type   = (A_f*)atypes->elements[i];
+        AType a_type   = (AType)atypes->elements[i];
         bool is_prim  = a_type->traits & A_TRAIT_PRIMITIVE;
         ffi_args[i]   = is_prim ? a_type->arb : &ffi_type_pointer;
-        push_weak(method->atypes, (object)a_type);
+        push_weak(method->atypes, (A)a_type);
     }
     ffi_status status = ffi_prep_cif(
         (ffi_cif*) method->ffi_cif, FFI_DEFAULT_ABI, atypes->len,
@@ -967,71 +843,65 @@ method_t* method_with_address(handle address, AType rtype, array atypes, AType m
 }
 #endif
 
-/// should work on statics or member functions the same; its up to the caller to push the self in there
-fn A_lambda(object target, Member member, object context) {
-    fn f = new(fn,
-        method,  member->method,
-        target,  target,
-        context, context);
-    return f;
-}
-
-
 #ifdef USE_FFI
-object A_method_call(method_t* a, array args) {
+A A_method_call(Member m, array args) {
+    method_t* a = m->method;
     const num max_args = 8;
     none* arg_values[max_args];
     assert(args->len == a->atypes->len, "arg count mismatch");
     for (num i = 0; i < args->len; i++) {
-        A_f* arg_type = (A_f*)a->atypes->elements[i];
+        AType arg_type = (AType)a->atypes->elements[i];
         arg_values[i] = (arg_type->traits & (A_TRAIT_PRIMITIVE | A_TRAIT_ENUM)) ? 
             (none*)args->elements[i] : (none*)&args->elements[i];
     }
     none* result[8]; /// enough space to handle all primitive data
     ffi_call((ffi_cif*)a->ffi_cif, a->address, result, arg_values);
     if (a->rtype->traits & A_TRAIT_PRIMITIVE)
-        return A_primitive(a->rtype, result);
-    else if (a->rtype->traits & A_TRAIT_ENUM)
-        return A_enum(a->rtype, *(i32*)result);
-    else
-        return (object) result[0];
+        return primitive(a->rtype, result);
+    else if (a->rtype->traits & A_TRAIT_ENUM) {
+        A res = alloc(a->rtype, 1);
+        verify(r->rtype->src == typeid(i32), "i32 enums supported");
+        *((i32*)res) = *(i32*)result;
+        return res;
+    } else
+        return (A) result[0];
 }
 #endif
 
 /// this calls type methods
-object A_method(AType type, cstr method_name, array args) {
+A method(AType type, cstr method_name, array args) {
 #ifdef USE_FFI
-    type_member_t* mem = A_member(type, A_MEMBER_IMETHOD | A_MEMBER_SMETHOD, method_name, false);
+    Member mem = member(type, A_MEMBER_IMETHOD | A_MEMBER_SMETHOD, method_name, false);
     assert(mem->method, "method not set");
     method_t* m = mem->method;
-    object res = A_method_call(m, args);
+    A res = method_call(m, args);
     return res;
 #else
     return null;
 #endif
 }
 
-object A_convert(AType type, object input) {
+A convert(AType type, A input) {
     if (type == isa(input)) return input;
     return construct_with(type, input, null);
 }
 
-object A_method_vargs(object instance, cstr method_name, int n_args, ...) {
+A A_method_vargs(A a, Member mem, int n_args, ...) {
 #ifdef USE_FFI
-    AType type = isa(instance);
-    type_member_t* mem = A_member(type, A_MEMBER_IMETHOD | A_MEMBER_SMETHOD, method_name, false);
+    //AType type = isa(a);
+    //Member mem = member(type, A_MEMBER_IMETHOD | A_MEMBER_SMETHOD, method_name, false);
     assert(mem->method, "method not set");
     method_t* m = mem->method;
     va_list  vargs;
     va_start(vargs, n_args);
     array args = new(array, alloc, n_args + 1);
-    push(args, instance);
+    push(args, a);
     for (int i = 0; i < n_args; i++) {
-        object arg = va_arg(vargs, object);
+        A arg = va_arg(vargs, A);
         push(args, arg);
     }
     va_end(vargs);
-    object res = A_method_call(m, args);
+    A res = method_call(m, args);
     return res;
 #else
     return null;
@@ -1045,7 +915,7 @@ static __attribute__((constructor)) bool Aglobal_AF();
 
 static bool started = false;
 
-none A_start(symbol argv[]) {
+none startup(cstrs argv) {
     AType f32_type = typeid(f32);
     if (started) return;
 
@@ -1104,16 +974,16 @@ none A_start(symbol argv[]) {
         }
 
     num         types_len;
-    A_f**       types = A_types(&types_len);
+    AType*      _types = types(&types_len);
     const num   max_args = 8;
 
     /// iterate through types
     for (num i = 0; i < types_len; i++) {
-        A_f* type = types[i];
+        A_f* type = _types[i];
         if (type->traits & A_TRAIT_ABSTRACT) continue;
         /// for each member of type
         for (num m = 0; m < type->member_count; m++) {
-            type_member_t* mem = &type->members[m];
+            Member mem = &type->members[m];
             if (mem->name)
                 mem->sname = hold(string(mem->name));
             
@@ -1126,96 +996,68 @@ none A_start(symbol argv[]) {
                 memcpy(&address, &((u8*)type)[mem->offset], sizeof(none*));
                 assert(address, "no address");
 #ifdef USE_FFI
-                array args = alloc(array, alloc, mem->args.count);
+                array args = allocate(array, alloc, mem->args.count);
                 for (num i = 0; i < mem->args.count; i++)
-                    args->elements[i] = (object)((A_f**)&mem->args.meta_0)[i];
+                    args->elements[i] = (A)((A_f**)&mem->args.meta_0)[i];
                 args->len = mem->args.count;
                 mem->method = method_with_address(address, mem->type, args, type);
 #endif
             }
         }
     }
-    path_app((cstr)argv[0]);
+    app_path((cstr)argv[0]);
+    /*
+    if (!app_schema) {
+        string default_arg = null;
+        if (item f = def->fifo->first; f; f = f->next) {
+            default_arg = instanceof(f->key, typeid(string));
+            if (default_arg)
+                break;
+        }
+        return A_arguments(argc, argv, def, default_arg);
+    }
+    */
 }
 
-
-struct mutex_t {
-    pthread_mutex_t lock;
-    pthread_cond_t  cond;
-};
-
-none mutex_init(mutex m) {
-    m->mtx = calloc(sizeof(struct mutex_t), 1);
-    pthread_mutex_init(&m->mtx->lock, null);
-    if (m->cond) pthread_cond_init(&m->mtx->cond, null);
-}
-
-none mutex_dealloc(mutex m) {
-    pthread_mutex_destroy(&m->mtx->lock);
-    if (m->cond) pthread_cond_destroy(&m->mtx->cond);
-    free(m->mtx);
-}
-
-none mutex_lock(mutex m) {
-    pthread_mutex_lock(&m->mtx->lock);
-}
-
-none mutex_unlock(mutex m) {
-    pthread_mutex_unlock(&m->mtx->lock);
-}
-
-none mutex_cond_broadcast(mutex m) {
-    pthread_cond_broadcast(&m->mtx->lock);
-}
-
-none mutex_cond_signal(mutex m) {
-    pthread_cond_signal(&m->mtx->lock);
-}
-
-none mutex_cond_wait(mutex m) {
-    pthread_cond_wait(&m->mtx->cond, &m->mtx->lock);
-}
-
-
-map A_args(cstrs argv, symbol default_arg, ...) {
+map args(cstrs argv, symbol default_arg, ...) {
     int argc = 0;
     while (argv[argc]) argc++;
     va_list  args;
     va_start(args, default_arg);
     symbol arg = default_arg;
-    map    defaults = new(map, assorted, true);
+    map    defaults = map(assorted, true);
     while (arg) {
-        object val = va_arg(args, object);
-        set(defaults, str(arg), hold(val));
+        A val = va_arg(args, A);
+        set(defaults, string(arg), hold(val));
         arg = va_arg(args, symbol);
     }
     va_end(args);
-    return A_arguments(argc, argv, defaults,
-        default_arg ? str(default_arg) : null);
+    return arguments(argc, argv, defaults,
+        default_arg ? string(default_arg) : null);
 }
 
-none A_tap(symbol f, hook sub) {
-    string fname = str(f);
-    set(log_funcs, fname, sub ? (object)sub : (object)A_bool(true)); /// if subprocedure, then it may receive calls for the logging
+none tap(symbol f, hook sub) {
+    string fname = string(f);
+    set(log_funcs, fname, sub ? (A)sub : (A)A_bool(true)); /// if subprocedure, then it may receive calls for the logging
 }
 
-none A_untap(symbol f) {
-    string fname = str(f);
+none untap(symbol f) {
+    string fname = string(f);
     set(log_funcs, fname, A_bool(false));
 }
 
-type_member_t* A_member(AType type, enum A_MEMBER member_type, symbol name, bool poly) {
+Member member(AType type, enum A_MEMBER member_type, symbol name, bool poly) {
     for (num i = 0; i < type->member_count; i++) {
-        type_member_t* mem = &type->members[i];
+        Member mem = &type->members[i];
         if ((member_type == 0) || (mem->member_type & member_type) && strcmp(mem->name, name) == 0)
             return mem;
     }
-    if (poly && type->parent_type && type->parent_type != typeid(A))
-        return A_member(type->parent_type, member_type, name, true);
+    if (poly && type->parent_type && type->parent_type != (ftable_t*)typeid(A))
+        return member(type->parent_type, member_type, name, true);
     return 0;
 }
 
-bool A_is_inlay(type_member_t* m) {
+bool is_inlay(Member m) {
     return (m->type->traits & A_TRAIT_VECTOR    |
             m->type->traits & A_TRAIT_STRUCT    | 
             m->type->traits & A_TRAIT_PRIMITIVE | 
@@ -1223,19 +1065,19 @@ bool A_is_inlay(type_member_t* m) {
             m->member_type == A_MEMBER_INLAY) != 0;
 }
 
-none A_hold_members(object instance) {
-    AType type = isa(instance);
+none hold_members(A a) {
+    AType type = isa(a);
     while (type != typeid(A)) {
         for (num i = 0; i < type->member_count; i++) {
-            type_member_t* mem = &type->members[i];
-            object   *mdata = (object*)((cstr)instance + mem->offset);
+            Member mem = &type->members[i];
+            A   *mdata = (A*)((cstr)a + mem->offset);
             if (mem->member_type & (A_MEMBER_PROP | A_MEMBER_PRIV))
-                if (!A_is_inlay(mem) && *mdata) { // was trying to isolate what class name was responsible for our problems
+                if (!is_inlay(mem) && *mdata) { // was trying to isolate what class name was responsible for our problems
                     if (mem->args.meta_0 == typeid(weak))
                         continue;
 
-                    object member_value = *mdata;
-                    A head = A_header(member_value);
+                    A member_value = *mdata;
+                    A head = header(member_value);
                     //printf("holding member: %s, of type: %s\n", mem->name, head->type->name);// i
                     head->refs++;
                 }
@@ -1244,56 +1086,32 @@ none A_hold_members(object instance) {
     }
 }
 
-object A_set_property(object instance, symbol name, object value) {
-    AType type = isa(instance);
-    type_member_t* m = A_member(type, A_MEMBER_PROP, (cstr)name, true);
-    A_member_set(instance, m, value);
-    /*
-    verify(m, "%s not found on object %s", name, type->name);
-    object   *mdata = (object*)((cstr)instance + m->offset);
-    AType value_type = isa(value);
-
-    if (m->type->traits & A_TRAIT_STRUCT) {
-        A header = A_header(value);
-        verify(value_type == m->type->vmember_type, "%s: expected vmember_type (%s) to equal isa(value) (%s)",
-            name, m->type->vmember_type->name, type->name);
-        verify(m->type->size == value_type->size * header->count, "vector size mismatch for %s", name);
-        memcpy(mdata, value, m->type->size);
-    } else if (A_is_inlay(m)) {
-        // copy inlay data
-        memcpy(mdata, value, m->type->size);
-    } else {
-
-        verify(value_type == m->type || value_type == m->type->parent_type, "%s:%s: must convert data from %s to %s",
-            type->name, name, value_type->name, m->type->name);
-
-        object prev = *mdata;
-        // assign as object, increase ref count
-        *mdata = A_hold(value); 
-        A_drop(prev);
-    }*/
+A set_property(A a, symbol name, A value) {
+    AType type = isa(a);
+    Member m = member(type, A_MEMBER_PROP, (cstr)name, true);
+    member_set(a, m, value);
     return value;
 }
 
 
-object A_get_property(object instance, symbol name) {
-    AType type = isa(instance);
-    type_member_t* m = A_member(type, (A_MEMBER_PROP | A_MEMBER_PRIV | A_MEMBER_INTERN), (cstr)name, true);
-    verify(m, "%s not found on object %s", name, type->name);
-    object *mdata = (object*)((cstr)instance + m->offset);
-    object  value = *mdata;
-    return A_is_inlay(m) ? A_primitive(m->type, mdata) : value;
+A get_property(A a, symbol name) {
+    AType type = isa(a);
+    Member m = member(type, (A_MEMBER_PROP | A_MEMBER_PRIV | A_MEMBER_INTERN), (cstr)name, true);
+    verify(m, "%s not found on A %s", name, type->name);
+    A *mdata = (A*)((cstr)a + m->offset);
+    A  value = *mdata;
+    return is_inlay(m) ? primitive(m->type, mdata) : value;
 }
 
 
 /// should be adapted to work with schemas 
 /// what a weird thing it would be to have map access to properties
 /// everything should be A-based, and forget about the argument hacks?
-map A_arguments(int argc, symbol argv[], map default_values, object default_key) {
+map arguments(int argc, cstrs argv, map default_values, A default_key) {
     map result = new(map, hsize, 16, assorted, true);
     for (item ii = default_values->fifo->first; ii; ii = ii->next) {
-        object k = ii->key;
-        object v = ii->value;
+        A k = ii->key;
+        A v = ii->value;
         set(result, k, v);
     }
     int    i = 1;
@@ -1312,24 +1130,24 @@ map A_arguments(int argc, symbol argv[], map default_values, object default_key)
 
             for (item f = default_values->fifo->first; f; f = f->next) {
                 /// import A types from runtime
-                object def_value = f->value;
+                A def_value = f->value;
                 AType   def_type = def_value ? isa(def_value) : typeid(string);
                 assert(f->key == f->key, "keys do not match"); /// make sure we copy it over from refs
                 if ((!doub && strncmp(((string)f->key)->chars, s_key->chars, 1) == 0) ||
                     ( doub && compare(f->key, s_key) == 0)) {
-                    /// inter-op with object-based A-type sells it.
+                    /// inter-op with A-based A-type sells it.
                     /// its also a guide to use the same schema
-                    object value = A_formatter(def_type, null, (object)false, "%o", s_val);
+                    A value = formatter(def_type, null, (A)false, "%o", s_val);
                     assert(isa(value) == def_type, "");
                     set(result, f->key, value);
                 }
             }
         } else if (!found_single && default_key) {
-            A default_key_obj = A_header(default_key);
+            A default_key_obj = header(default_key);
             string s_val     = new(string, chars, (cstr)arg);
-            object def_value = get(default_values, default_key);
+            A def_value = get(default_values, default_key);
             AType  def_type  = isa(def_value);
-            object value     = A_formatter(def_type, null, (object)false, "%o", s_val);
+            A value     = formatter(def_type, null, (A)false, "%o", s_val);
             set(result, default_key, value);
             found_single = true;
         }
@@ -1342,56 +1160,48 @@ map A_arguments(int argc, symbol argv[], map default_values, object default_key)
 /// primitives are based on A alone
 /// i wonder if we can add more constructors or even methods to the prims
 
-object A_primitive(AType type, none* data) {
+A primitive(AType type, none* data) {
     assert(type->traits & A_TRAIT_PRIMITIVE, "must be primitive");
-    object copy = A_alloc(type, type->size);
+    A copy = alloc(type, type->size);
     memcpy(copy, data, type->size);
     return copy;
 }
 
-object A_enum(AType type, i32 data) {
-    assert(type->traits & A_TRAIT_ENUM, "must be enum");
-    assert(type->size == sizeof(i32), "enum size invalid");
-    object copy = A_alloc(type, type->size);
-    memcpy(copy, &data, type->size);
-    return copy;
-}
-
-object A_i8(i8 data)     { return A_primitive(&i8_type,  &data); }
-object A_u8(u8 data)     { return A_primitive(&u8_type,  &data); }
-object A_i16(i16 data)   { return A_primitive(&i16_type, &data); }
-object A_u16(u16 data)   { return A_primitive(&u16_type, &data); }
-object A_i32(i32 data)   { return A_primitive(&i32_type, &data); }
-object A_u32(u32 data)   { return A_primitive(&u32_type, &data); }
-object A_i64(i64 data)   { return A_primitive(&i64_type, &data); }
-object i(i64 data)       { return A_primitive(&i64_type, &data); }
-object A_sz (sz  data)   { return A_primitive(&sz_type,  &data); }
-object A_u64(u64 data)   { return A_primitive(&u64_type, &data); }
-object A_f32(f32 data)   { return A_primitive(&f32_type, &data); }
-object A_f64(f64 data)   { return A_primitive(&f64_type, &data); }
-object A_f128(f64 data)  { return A_primitive(&f128_type, &data); }
-object float32(f32 data) { return A_primitive(&f32_type, &data); }
-object real64(f64 data)  { return A_primitive(&f64_type, &data); }
-object A_cstr(cstr data) { return A_primitive(&cstr_type, &data); }
-object A_none()          { return A_primitive(&none_type, NULL); }
-object A_bool(bool data) { return A_primitive(&bool_type, &data); }
+A A_i8(i8 data)     { return primitive(typeid(i8),  &data); }
+A A_u8(u8 data)     { return primitive(typeid(u8),  &data); }
+A A_i16(i16 data)   { return primitive(typeid(i16), &data); }
+A A_u16(u16 data)   { return primitive(typeid(u16), &data); }
+A A_i32(i32 data)   { return primitive(typeid(i32), &data); }
+A A_u32(u32 data)   { return primitive(typeid(u32), &data); }
+A A_i64(i64 data)   { return primitive(typeid(i64), &data); }
+A i(i64 data)       { return primitive(typeid(i64), &data); }
+A A_sz (sz  data)   { return primitive(typeid(sz),  &data); }
+A A_u64(u64 data)   { return primitive(typeid(u64), &data); }
+A A_f32(f32 data)   { return primitive(typeid(f32), &data); }
+A A_f64(f64 data)   { return primitive(typeid(f64), &data); }
+A A_f128(f64 data)  { return primitive(typeid(f128), &data); }
+A float32(f32 data) { return primitive(typeid(f32), &data); }
+A real64(f64 data)  { return primitive(typeid(f64), &data); }
+A A_cstr(cstr data) { return primitive(typeid(cstr), &data); }
+A A_none()          { return primitive(typeid(none), NULL); }
+A A_bool(bool data) { return primitive(typeid(bool), &data); }
 
 /// A -------------------------
 none A_init(A a) { }
 
-none A_drop_members(object a) {
-    A        f = A_header((A)a);
+none drop_members(A a) {
+    A        f = header((A)a);
     AType type = f->type;
     while (type != typeid(A)) {
         for (num i = 0; i < type->member_count; i++) {
-            type_member_t* m = &type->members[i];
+            Member m = &type->members[i];
             if ((m->member_type & (A_MEMBER_PROP | A_MEMBER_PRIV)) &&
-                    !A_is_inlay(m)) {
+                    !is_inlay(m)) {
                 if (m->args.meta_0 == typeid(weak))
                     continue;
                 //printf("A_dealloc: drop member %s.%s (%s)\n", type->name, m->name, m->type->name);
                 A*  ref = (A*)((u8*)a + m->offset);
-                A_drop(*ref);
+                drop(*ref);
                 *ref = null;
             }
         }
@@ -1400,18 +1210,18 @@ none A_drop_members(object a) {
 }
 
 none A_dealloc(A a) { 
-    A        f = A_header(a);
+    A        f = header(a);
     AType type = f->type;
     if (!(type->traits & A_TRAIT_USER_INIT)) // composer does this for an 'unmount' operation, and its non-mount results in no holds at all (which is why we must compensate here)
-        A_drop_members(a);
-    if ((object)f->data != (object)a) {
-        A_drop(f->data);
+        drop_members(a);
+    if ((A)f->data != (A)a) {
+        drop(f->data);
         f->data = null;
     }
 }
 u64  A_hash      (A a) { return (u64)(size_t)a; }
 bool A_cast_bool (A a) {
-    A info = A_header(a);
+    A info = header(a);
     bool has_count = info->count > 0;
     if (has_count && info->type == typeid(bool))
         return *(bool*)a;
@@ -1419,29 +1229,18 @@ bool A_cast_bool (A a) {
     return has_count;
 }
 
-type_member_t* A_member_type(AType type, enum A_MEMBER mt, AType f, bool poly) {
+Member member_type(AType type, enum A_MEMBER mt, AType f, bool poly) {
     for (num i = 0; i < type->member_count; i++) {
-        type_member_t* mem = &type->members[i];
+        Member mem = &type->members[i];
         if ((mt == 0) || (mem->member_type & mt) && (mem->type == f))
             return mem;
     }
-    if (poly && type->parent_type && type->parent_type != typeid(A))
-        return A_member(type->parent_type, mt, f, true);
+    if (poly && type->parent_type && type->parent_type != (ftable_t*)typeid(A))
+        return member(type->parent_type, mt, f, true);
     return 0;
 }
 
-object A_cast(A a, AType type) {
-    if (A_instanceof(a, type)) return (object)a;
-    AType atype = isa(a);
-    Member m = A_member_type(atype, A_MEMBER_CAST, type, true);
-    if (m) {
-        object(*fcast)(object) = m->ptr;
-        return fcast(a);
-    }
-    return null;
-}
-
-i64 read_integer(object data) {
+static i64 read_integer(A data) {
     AType data_type = isa(data);
     i64 v = 0;
          if (data_type == typeid(i8))   v = *(i8*)  data;
@@ -1513,17 +1312,17 @@ string prep_cereal(cereal cs) {
 }
 
 A A_with_cstrs(A a, cstrs argv) {
-    A_start(argv);
+    startup(argv);
     int argc = 0;
     while (argv[argc]) { // C standard puts a null char* on end, by law (see: Brannigans law)
         cstr arg = argv[argc];
         if (arg[0] == '-') {
             bool single = arg[1] != '-';
-            type_member_t* mem = null;
+            Member mem = null;
             AType type = isa(a);
             while (type != typeid(A)) {
                 for (int i = 0; i < type->member_count; i++) {
-                    type_member_t* m = &type->members[i];
+                    Member m = &type->members[i];
                     if ((m->member_type & A_MEMBER_PROP) && 
                         ( single &&        m->name[0] == arg[1]) ||
                         (!single && strcmp(m->name,     &arg[2]) == 0)) {
@@ -1537,8 +1336,8 @@ A A_with_cstrs(A a, cstrs argv) {
             cstr value = argv[++argc];
             verify(value, "expected value after %s", &arg[1 + !single]);
             
-            object conv = A_convert(mem->type, string(value));
-            A_set_property(a, mem->name, conv);
+            A conv = convert(mem->type, string(value));
+            set_property(a, mem->name, conv);
         }
         argc++;
     }
@@ -1548,7 +1347,7 @@ A A_with_cstrs(A a, cstrs argv) {
 A A_with_cereal(A a, cereal _cs) {
     cstr cs = _cs.value;
     sz len = strlen(cs);
-    A        f = A_header(a);
+    A        f = header(a);
     AType type = f->type;
     if      (type == typeid(f64)) sscanf(cs, "%lf",  (f64*)a);
     else if (type == typeid(f32)) sscanf(cs, "%f",   (f32*)a);
@@ -1590,7 +1389,7 @@ bool constructs_with(AType type, AType with_type) {
 }
 
 /// used by parse (from json) to construct objects from data
-object construct_with(AType type, object data, ctx context) {
+A construct_with(AType type, A data, ctx context) {
     if (type == typeid(map)) {
         verify(isa(data) == typeid(map), "expected map");
         return hold(data);
@@ -1598,18 +1397,18 @@ object construct_with(AType type, object data, ctx context) {
 
     /// this will lookup ways to construct the type from the available data
     AType data_type = isa(data);
-    object result = null;
+    A result = null;
     map    mdata  = null;
 
     /// construct with map of fields
     if (!(type->traits & A_TRAIT_PRIMITIVE) && data_type == typeid(map)) {
         map m = data;
-        result = A_alloc(type, 1);
+        result = alloc(type, 1);
         pairs(m, i) {
             verify(isa(i->key) == typeid(string),
-                "expected string key when constructing object from map");
-            string s_key = instanceof(i->key, string);
-            A_set_property(result, s_key->chars, i->value);
+                "expected string key when constructing A from map");
+            string s_key = instanceof(i->key, typeid(string));
+            set_property(result, s_key->chars, i->value);
         }
         mdata = m;
     }
@@ -1623,15 +1422,15 @@ object construct_with(AType type, object data, ctx context) {
                 none* addr = mem->ptr;
                 /// no meaningful way to do this generically, we prefer to call these first
                 if (mem->type == typeid(path) && data_type == typeid(string)) {
-                    result = A_alloc(type, 1);
-                    result = ((object(*)(object, path))addr)(result, path(((string)data)));
-                    verify(A_validator(result), "invalid object");
+                    result = alloc(type, 1);
+                    result = ((A(*)(A, path))addr)(result, path(((string)data)));
+                    verify(A_validator(result), "invalid A");
                     break;
                 }
                 if (mem->type == data_type) {
-                    result = A_alloc(type, 1);
-                    result = ((object(*)(object, object))addr)(result, data);
-                    verify(A_validator(result), "invalid object");
+                    result = alloc(type, 1);
+                    result = ((A(*)(A, A))addr)(result, data);
+                    verify(A_validator(result), "invalid A");
                     break;
                 }
             } else if (context && result && mdata) {
@@ -1639,11 +1438,11 @@ object construct_with(AType type, object data, ctx context) {
                 if (mem->required && (mem->member_type & A_MEMBER_PROP) && 
                     !contains(mdata, mem->sname))
                 {
-                    object from_ctx = get(context, mem->sname);
+                    A from_ctx = get(context, mem->sname);
                     verify(from_ctx,
                         "context requires property: %s (%s) in class %s",
                             mem->name, mem->type->name, atype->name);
-                    A_member_set(result, mem, from_ctx);
+                    member_set(result, mem, from_ctx);
                 }
             }
         }
@@ -1657,21 +1456,21 @@ object construct_with(AType type, object data, ctx context) {
         if (data_type->traits & A_TRAIT_INTEGRAL)
             v = read_integer(data_type);
         else if (data_type == typeid(symbol) || data_type == typeid(cstr))
-            v = *A_enum_value (type, (cstr)data);
+            v = evalue (type, (cstr)data);
         else if (data_type == typeid(string))
-            v = *A_enum_value (type, (cstr)((string)data)->chars);
+            v = evalue (type, (cstr)((string)data)->chars);
         else
-            v = *A_enum_value (type, null);
-        result = A_alloc(type, 1);
+            v = evalue (type, null);
+        result = alloc(type, 1);
         *((i32*)result) = (i32)v;
     }
 
-    /// check if we may use generic object from string
+    /// check if we may use generic A from string
     if (!result)
     if ((type->traits & A_TRAIT_PRIMITIVE) && (data_type == typeid(string) ||
                                                data_type == typeid(cstr)   ||
                                                data_type == typeid(symbol))) {
-        result = A_alloc(type, 1);
+        result = alloc(type, 1);
         if (data_type == typeid(string))
             A_with_cereal(result, (cereal) { .value = (cstr)((string)data)->chars } );
         else
@@ -1689,32 +1488,32 @@ object construct_with(AType type, object data, ctx context) {
             u64 combine = mem->type->traits & data_type->traits;
             if (combine & A_TRAIT_INTEGRAL) {
                 i64 v = read_integer(data);
-                result = A_alloc(type, 1);
-                     if (mem->type == typeid(i8))   ((none(*)(object, i8))  addr)(result, (i8)  v);
-                else if (mem->type == typeid(i16))  ((none(*)(object, i16)) addr)(result, (i16) v);
-                else if (mem->type == typeid(i32))  ((none(*)(object, i32)) addr)(result, (i32) v);
-                else if (mem->type == typeid(i64))  ((none(*)(object, i64)) addr)(result, (i64) v);
+                result = alloc(type, 1);
+                     if (mem->type == typeid(i8))   ((none(*)(A, i8))  addr)(result, (i8)  v);
+                else if (mem->type == typeid(i16))  ((none(*)(A, i16)) addr)(result, (i16) v);
+                else if (mem->type == typeid(i32))  ((none(*)(A, i32)) addr)(result, (i32) v);
+                else if (mem->type == typeid(i64))  ((none(*)(A, i64)) addr)(result, (i64) v);
             } else if (combine & A_TRAIT_REALISTIC) {
-                result = A_alloc(type, 1);
+                result = alloc(type, 1);
                 if (mem->type == typeid(f64))
-                    ((none(*)(object, double))addr)(result, (double)*(float*)data);
+                    ((none(*)(A, double))addr)(result, (double)*(float*)data);
                 else
-                    ((none(*)(object, float)) addr)(result, (float)*(double*)data);
+                    ((none(*)(A, float)) addr)(result, (float)*(double*)data);
                 break;
             } else if ((mem->type == typeid(symbol) || mem->type == typeid(cstr)) && 
                        (data_type == typeid(symbol) || data_type == typeid(cstr))) {
-                result = A_alloc(type, 1);
-                ((none(*)(object, cstr))addr)(result, data);
+                result = alloc(type, 1);
+                ((none(*)(A, cstr))addr)(result, data);
                 break;
             } else if ((mem->type == typeid(string)) && 
                        (data_type == typeid(symbol) || data_type == typeid(cstr))) {
-                result = A_alloc(type, 1);
-                ((none(*)(object, string))addr)(result, string((symbol)data));
+                result = alloc(type, 1);
+                ((none(*)(A, string))addr)(result, string((symbol)data));
                 break;
             } else if ((mem->type == typeid(symbol) || mem->type == typeid(cstr)) && 
                        (data_type == typeid(string))) {
-                result = A_alloc(type, 1);
-                ((none(*)(object, cstr))addr)(result, (cstr)((string)data)->chars);
+                result = alloc(type, 1);
+                ((none(*)(A, cstr))addr)(result, (cstr)((string)data)->chars);
                 break;
             }
         }
@@ -1741,7 +1540,7 @@ object construct_with(AType type, object data, ctx context) {
     return result ? A_initialize(result) : null;
 }
 
-none A_serialize(AType type, string res, object a) {
+none serialize(AType type, string res, A a) {
     if (type->traits & A_TRAIT_PRIMITIVE) {
         char buf[128];
         int len = 0;
@@ -1777,14 +1576,7 @@ none A_serialize(AType type, string res, object a) {
     }
 }
 
-int A_memcmp(A a, A b) {
-    AType atype = isa(a);
-    AType btype = isa(b);
-    if (atype != btype) return ((ssize_t)atype - (ssize_t)btype) < 0 ? -1 : 1;
-    return memcmp(a, b, atype->size);
-}
-
-bool A_member_set(A a, type_member_t* m, object value) {
+bool member_set(A a, Member m, A value) {
     if (!(m->member_type & A_MEMBER_PROP))
         return false;
 
@@ -1812,7 +1604,7 @@ bool A_member_set(A a, type_member_t* m, object value) {
             "vector size mismatch for %s", m->name);
         int sz = m->type->size < vtype->size ? m->type->size : vtype->size;
         memcpy(member_ptr, value, sz);
-    } else if ((object)*member_ptr != value) {
+    } else if ((A)*member_ptr != value) {
         //verify(A_inherits(vtype, m->type), "type mismatch: setting %s on member %s %s",
         //    vtype->name, m->type->name, m->name);
         drop(*member_ptr);
@@ -1823,17 +1615,17 @@ bool A_member_set(A a, type_member_t* m, object value) {
 }
 
 // try to use this where possible
-object A_member_object(A a, type_member_t* m) {
+A member_object(A a, Member m) {
     if (!(m->member_type & A_MEMBER_PROP))
         return null; // we do this so much, that its useful as a filter in for statements
 
     bool is_primitive = (m->type->traits & A_TRAIT_PRIMITIVE) | 
                         (m->type->traits & A_TRAIT_STRUCT);
     bool is_inlay     = (m->member_type  & A_MEMBER_INLAY);
-    object result;
+    A result;
     ARef   member_ptr = (cstr)a + m->offset;
     if (is_inlay || is_primitive) {
-        result = A_alloc(m->type, 1);
+        result = alloc(m->type, 1);
         memcpy(result, member_ptr, m->type->size);
     } else {
         result = *member_ptr;
@@ -1843,33 +1635,33 @@ object A_member_object(A a, type_member_t* m) {
 
 string A_cast_string(A a) {
     AType type = isa(a);
-    A a_header = A_header(a);
-    bool  once = false;
-    if (instanceof(a, string)) return (string)a;
+    A a_header = header(a);
+    bool  once = false; 
+    if (instanceof(a, typeid(string))) return (string)a;
     string res = new(string, alloc, 1024);
     if (type->traits & A_TRAIT_PRIMITIVE)
-        A_serialize(type, res, a);
+        serialize(type, res, a);
     else {
         //append(res, type->name);
         append(res, "[");
         for (num i = 0; i < type->member_count; i++) {
-            type_member_t* m = &type->members[i];
+            Member m = &type->members[i];
             // todo: intern members wont be registered
             if (m->member_type & (A_MEMBER_PROP | A_MEMBER_PRIV | A_MEMBER_INTERN)) {
                 if (once)
                     append(res, ", ");
                 u8*    ptr = (u8*)a + m->offset;
-                object inst = null;
+                A inst = null;
                 bool is_primitive = m->type->traits & A_TRAIT_PRIMITIVE;
                 if (is_primitive)
-                    inst = (object)ptr;
+                    inst = (A)ptr;
                 else
-                    inst = *(object*)ptr;
-                A inst_h = A_header(inst);
+                    inst = *(A*)ptr;
+                A inst_h = header(inst);
                 append(res, m->name);
                 append(res, ":");
                 if (is_primitive)
-                    A_serialize(m->type, res, inst);
+                    serialize(m->type, res, inst);
                 else {
                     string s_value = inst ? A_cast_string(inst) : null; /// isa may be called on this, but not primitive data
                     if (!s_value)
@@ -1877,9 +1669,9 @@ string A_cast_string(A a) {
                     else {
                         /// we should have a bit more information on what sort 
                         /// of string casts will result here; sometimes it 
-                        /// returns a json object which is not a string, of course.
+                        /// returns a json A which is not a string, of course.
                         /// however there is no knowledge of this in the return
-                        if (instanceof(inst, string)) {
+                        if (instanceof(inst, typeid(string))) {
                             s_value = escape(s_value);
                             append(res, "\"");
                             concat(res, s_value);
@@ -1911,10 +1703,10 @@ string A_cast_string(A a) {
     if (type == typeid(f64)) *(f64*)a = (f64)v; \
     return a;
 
-object numeric_with_i8 (object a, i8   v) { set_v(); }
-object numeric_with_i16(object a, i16  v) { set_v(); }
-object numeric_with_i32(object a, i32  v) { set_v(); }
-object numeric_with_i64(object a, i64  v) {
+A numeric_with_i8 (A a, i8   v) { set_v(); }
+A numeric_with_i16(A a, i16  v) { set_v(); }
+A numeric_with_i32(A a, i32  v) { set_v(); }
+A numeric_with_i64(A a, i64  v) {
     AType type = isa(a);
     if (type == typeid(i8))  *(i8*) a = (i8) v;
     if (type == typeid(i16)) *(i16*)a = (i16)v;
@@ -1928,18 +1720,18 @@ object numeric_with_i64(object a, i64  v) {
     if (type == typeid(f64)) *(f64*)a = (f64)v; \
     return a;
 }
-object numeric_with_u8 (object a, u8   v) { set_v(); }
-object numeric_with_u16(object a, u16  v) { set_v(); }
-object numeric_with_u32(object a, u32  v) { set_v(); }
-object numeric_with_u64(object a, u64  v) { set_v(); }
-object numeric_with_f32(object a, f32  v) { set_v(); }
-object numeric_with_f64(object a, f64  v) { set_v(); }
-object numeric_with_bool(object a, bool v) { set_v(); }
-object numeric_with_num(object a, num  v) { set_v(); }
+A numeric_with_u8 (A a, u8   v) { set_v(); }
+A numeric_with_u16(A a, u16  v) { set_v(); }
+A numeric_with_u32(A a, u32  v) { set_v(); }
+A numeric_with_u64(A a, u64  v) { set_v(); }
+A numeric_with_f32(A a, f32  v) { set_v(); }
+A numeric_with_f64(A a, f64  v) { set_v(); }
+A numeric_with_bool(A a, bool v) { set_v(); }
+A numeric_with_num(A a, num  v) { set_v(); }
 
-object A_method(AType type, cstr method_name, array args);
+A A_method(AType type, cstr method_name, array args);
 
-sz A_len(object a) {
+sz A_len(A a) {
     if (!a) return 0;
     AType t = isa(a);
     if (t == typeid(string)) return ((string)a)->len;
@@ -1947,41 +1739,16 @@ sz A_len(object a) {
     if (t == typeid(map))    return ((map)a)->count;
     if (t == typeid(cstr) || t == typeid(symbol) || t == typeid(cereal))
         return strlen(a);
-    A aa = A_header(a);
+    A aa = header(a);
     return aa->count;
-}
-
-num index_of_cstr(object a, cstr f) {
-    AType t = isa(a);
-    if (t == typeid(string)) return index_of((string)a, f);
-    if (t == typeid(array))  return index_of((array)a, str(f));
-    if (t == typeid(cstr) || t == typeid(symbol) || t == typeid(cereal)) {
-        cstr v = strstr(a, f);
-        return v ? (num)(v - f) : (num)-1;
-    }
-    fault("len not handled for type %s", t->name);
-    return 0;
-}
-
-Exists A_exists(object o) {
-    AType type = isa(o);
-    path  f = null;
-    if (type == typeid(string))
-        f = cast(path, (string)o);
-    else if (type == typeid(path))
-        f = o;
-    assert(f, "type not supported");
-    bool is_dir = is_dir(f);
-    bool r = exists(f);
-    if (is_dir)
-        return r ? Exists_dir  : Exists_no;
-    else
-        return r ? Exists_file : Exists_no;
 }
 
 /// these pointers are invalid for A since they are in who-knows land, but the differences would be the same
 i32 A_compare(A a, A b) {
-    return (i32)((sz)(none*)a - (sz)(none*)b);
+    AType atype = isa(a);
+    AType btype = isa(b);
+    if (atype != btype) return ((ssize_t)atype - (ssize_t)btype) < 0 ? -1 : 1;
+    return memcmp(a, b, atype->size);
 }
 
 num parse_formatter(cstr start, cstr res, num sz) {
@@ -2005,17 +1772,18 @@ num parse_formatter(cstr start, cstr res, num sz) {
 }
 
 
-object A_formatter(AType type, FILE* f, object opt, symbol template, ...) {
+A formatter(AType type, handle ff, A opt, symbol template, ...) {
     va_list args;
+    FILE* f = (FILE*)ff;
     va_start(args, template);
     string  res  = new(string, alloc, 1024);
     cstr    scan = (cstr)template;
     bool write_ln = (i64)opt == true;
     bool is_input = (f == stdin);
-    string  field = (!is_input && !write_ln && opt) ? instanceof(opt, string) : null;
+    string  field = (!is_input && !write_ln && opt) ? instanceof(opt, typeid(string)) : null;
     
     while (*scan) {
-        /// format %o as object's string cast
+        /// format %o as A's string cast
         char cmd[2] = { *scan, *(scan + 1) };
         int column_size = 0;
         int skip = 0;
@@ -2038,7 +1806,7 @@ object A_formatter(AType type, FILE* f, object opt, symbol template, ...) {
             }
         }
         if (cmd[0] == '%' && cmd[1] == 'o') {
-            object arg = va_arg(args, object);
+            A arg = va_arg(args, A);
             string   a = arg ? cast(string, arg) : string((symbol)"null");
             num    len = a->len;
             reserve(res, len);
@@ -2098,7 +1866,7 @@ object A_formatter(AType type, FILE* f, object opt, symbol template, ...) {
     if (f && field) {
         char info[256];
         symbolic_logging = true;
-        object fvalue = get(log_funcs, field); // make get be harmless to map; null is absolutely fine identity wise to understand that
+        A fvalue = get(log_funcs, field); // make get be harmless to map; null is absolutely fine identity wise to understand that
         int    l      = 0;
         string tname  = null;
         string fname  = field;
@@ -2139,13 +1907,12 @@ object A_formatter(AType type, FILE* f, object opt, symbol template, ...) {
 
     if (type && (type->traits & A_TRAIT_ENUM)) {
         // convert res to instance of this enum
-        object enum_v = A_enum_value(type, (cstr)res->chars);
-        f32 test_v = *(f32*)enum_v;
-        return enum_v;
+        i32 v = evalue(type, (cstr)res->chars);
+        return primitive(typeid(i32), &v);
     }
-    return type ? (object)
-        ((A_f*)type)->with_cereal(A_alloc(type, 1), (cereal) { .value = (cstr)res->chars }) :
-        (object)res;
+    return type ? (A)
+        ((A_f*)type)->with_cereal(alloc(type, 1), (cereal) { .value = (cstr)res->chars }) :
+        (A)res;
 }
 
 u64 fnv1a_hash(const none* data, size_t length, u64 hash) {
@@ -2186,18 +1953,13 @@ real clampf(real i, real mn, real mx) {
 none vector_init(vector a);
 
 vector vector_with_i32(vector a, i32 count) {
-    A_realloc(a, count);
+    vrealloc(a, count);
     return a;
 }
 
 sz vector_len(vector a) {
-    return A_header(a)->count;
+    return header(a)->count;
 }
-
-
-
-
-
 
 
 
@@ -2225,7 +1987,7 @@ none map_dealloc(map m) {
     }
 }
 
-item map_lookup(map m, object k) {
+item map_lookup(map m, A k) {
     if (!m->hlist) return null;
     u64 h = hash(k);
     i64 b = h % m->hsize;
@@ -2236,16 +1998,16 @@ item map_lookup(map m, object k) {
     return null;
 }
 
-bool map_contains(map m, object k) {
+bool map_contains(map m, A k) {
     return map_lookup(m, k) != null;
 }
 
-object map_get(map m, object k) {
+A map_get(map m, A k) {
     item i = map_lookup(m, k);
     return i ? i->value : null;
 }
 
-item map_fetch(map m, object k) {
+item map_fetch(map m, A k) {
     item i = map_lookup(m, k);
     if (!i) {
         u64 h = hash(k);
@@ -2256,7 +2018,7 @@ item map_fetch(map m, object k) {
     return i;
 }
 
-none map_set(map m, object k, object v) {
+none map_set(map m, A k, A v) {
     if (!m->hlist) m->hlist = (item*)calloc(m->hsize, sizeof(item));
     item i = map_fetch(m, k);
     AType vtype = isa(v);
@@ -2293,7 +2055,7 @@ none map_rm_item(map m, item i) {
     drop(i);
 }
 
-none map_rm(map m, object k) {
+none map_rm(map m, A k) {
     u64  h    = hash(k);
     i64  b    = h % m->hsize;
     item prev = null;
@@ -2328,13 +2090,13 @@ sz map_len(map a) {
     return a->count;
 }
 
-object map_index_sz(map a, sz index) {
+A map_index_sz(map a, sz index) {
     assert(index >= 0 && index < a->count, "index out of range");
     item i = list_get(a->fifo, A_sz(index));
     return i ? i->value : null;
 }
 
-object map_index_object(map a, object key) {
+A map_index_A(map a, A key) {
     return map_get(a, key);
 }
 
@@ -2383,17 +2145,17 @@ map map_of(symbol first_key, ...) {
 }
 
 
-src src_with_object(src a, object obj) {
+srcfile srcfile_with_A(srcfile a, A obj) {
     a->obj = obj;
     return a;
 }
 
-string src_cast_string(src a) {
+string srcfile_cast_string(srcfile a) {
     A i = head(a->obj);
     return f(string, "%s:%i", i->source, i->line);
 }
 
-define_class(src, A);
+define_class(srcfile, A);
 
 
 
@@ -2480,21 +2242,21 @@ none  string_dealloc(string a) {
     printf("string_dealloc: %s", a->chars);
     free((cstr)a->chars);
 }
-num   string_compare(string a, string b)   { return strcmp(a->chars, b->chars); }
-num   string_cmp(string a, symbol b)       { return strcmp(a->chars, b); }
-bool  string_eq(string a, symbol b)        { return strcmp(a->chars, b) == 0; }
+num   string_compare(string a, string b) { return strcmp(a->chars, b->chars); }
+num   string_cmp    (string a, symbol b) { return strcmp(a->chars, b); }
+bool  string_eq     (string a, symbol b) { return strcmp(a->chars, b) == 0; }
 
 string string_copy(string a) {
     return string((symbol)a->chars);
 }
 
-bool A_inherits(AType src, AType check) {
+bool inherits(AType src, AType check) {
     while (src != typeid(A)) {
         if (src == check) return true;
         src = src->parent_type;
     }
-    if ((src   == typeid(A) || src   == typeid(object)) &&
-        (check == typeid(A) || check == typeid(object))) {
+    if ((src   == typeid(A) || src   == typeid(A)) &&
+        (check == typeid(A) || check == typeid(A))) {
         return true;
     }
     return src == check; // true for A-type against A-type
@@ -2534,7 +2296,7 @@ string string_interpolate(string a, map f) {
                     if (i->h == hash)
                         break;
                 verify(i, "key not found in map");
-                string v = A_cast(i->value, typeid(string));
+                string v = cast(string, i->value);
 
                 if (!v)
                     append(res, "null");
@@ -2797,9 +2559,9 @@ bool string_ends_with(string a, symbol value) {
     return strcmp(&a->chars[a->len - ln], value) == 0;
 }
 
-item list_push(list a, object e);
+item list_push(list a, A e);
 
-item hashmap_fetch(hashmap a, object key) {
+item hashmap_fetch(hashmap a, A key) {
     u64 h = a->unmanaged ? (u64)((none*)key) : hash(key);
     u64 k = h % a->alloc;
     list bucket = &a->data[k];
@@ -2807,7 +2569,7 @@ item hashmap_fetch(hashmap a, object key) {
         if (compare(f->key, key) == 0)
             return f;
     item n = list_push(bucket, null);
-    a->item_header = A_header(n);
+    a->item_header = header(n);
     n->key = hold(key);
     a->count++;
     return n;
@@ -2820,7 +2582,7 @@ none hashmap_clear(hashmap a) {
     }
 }
 
-item hashmap_lookup(hashmap a, object key) {
+item hashmap_lookup(hashmap a, A key) {
     u64 h = a->unmanaged ? (u64)((none*)key) : hash(key);
     u64 k = h % a->alloc;
     list bucket = &a->data[k];
@@ -2835,24 +2597,24 @@ item hashmap_lookup(hashmap a, object key) {
     return null;
 }
 
-none hashmap_set(hashmap a, object key, object value) {
+none hashmap_set(hashmap a, A key, A value) {
     item i = fetch(a, key);
-    object prev = i->value;
+    A prev = i->value;
     i->value = hold(value);
-    if (!a->unmanaged) A_drop(prev);
+    if (!a->unmanaged) drop(prev);
 }
 
-object hashmap_get(hashmap a, object key) {
+A hashmap_get(hashmap a, A key) {
     item i = lookup(a, key);
     return i ? i->value : null;
 }
 
-bool hashmap_contains(hashmap a, object key) {
+bool hashmap_contains(hashmap a, A key) {
     item i = lookup(a, key);
     return i != null;
 }
 
-none hashmap_remove(hashmap a, object key) {
+none hashmap_remove(hashmap a, A key) {
     u64 h = hash(key);
     u64 k = h % a->alloc;
     list bucket = &a->data[k];
@@ -2868,8 +2630,9 @@ bool hashmap_cast_bool(hashmap a) {
     return a->count > 0;
 }
 
-object hashmap_index_object(hashmap a, object key) {
-    return get(a, key);
+A hashmap_index_A(hashmap a, A key) {
+    item i = hashmap_lookup(a, key);
+    return i ? i->value : null;
 }
 
 none hashmap_init(hashmap a) {
@@ -2901,7 +2664,7 @@ string hashmap_cast_string(hashmap a) {
     return res;
 }
 
-none list_quicksort(list a, i32(*sfn)(object, object)) {
+none list_quicksort(list a, i32(*sfn)(A, A)) {
     item f = a->first;
     int  n = a->count;
     for (int i = 0; i < n - 1; i++) {
@@ -2909,7 +2672,7 @@ none list_quicksort(list a, i32(*sfn)(object, object)) {
         for (item j = f; jc < n - i - 1; j = j->next, jc++) {
             item j1 = j->next;
             if (sfn(j->value, j1->value) > 0) {
-                object t = j->value;
+                A t = j->value;
                 j ->value = j1->value;
                 j1->value = t;
             }
@@ -2918,24 +2681,24 @@ none list_quicksort(list a, i32(*sfn)(object, object)) {
 }
 
 none list_sort(list a, ARef fn) {
-    list_quicksort(a, (i32(*)(object, object))fn);
+    list_quicksort(a, (i32(*)(A, A))fn);
 }
 
-object list_get(list a, object at_index);
+A list_get(list a, A at_index);
 
-object A_copy(A a) {
-    A f = A_header(a);
+A A_copy(A a) {
+    A f = header(a);
     assert(f->count > 0, "invalid count");
     AType type = isa(a);
-    object b = A_alloc(type, f->count);
+    A b = alloc(type, f->count);
     memcpy(b, a, f->type->size * f->count);
-    A_hold_members(b);
+    hold_members(b);
     return b;
 }
 
-A A_hold(A a) {
+A hold(A a) {
     if (a) {
-        A f = A_header(a);
+        A f = header(a);
         f->refs++;
 
         af_recycler* af = f->type->af;
@@ -2947,35 +2710,8 @@ A A_hold(A a) {
     return a;
 }
 
-//#undef dealloc
-
-static int recycle_stop_at;
-
-none recycle_stop(int at) {
-    recycle_stop_at = at;
-}
-
-none recycle() {
-    A_f** types = A_types(&types_len);
-
-    /// iterate through types
-    for (num i = 0; i < types_len; i++) {
-        A_f* type = types[i];
-        af_recycler* af = type->af;
-        if (af && af->af_count) {
-            for (int i = 0; i <= af->af_count; i++) {
-                A a = af->af[i];
-                if (a && --a->refs == 0) {
-                    A_free(&a[1]);
-                }
-            }
-            af->af_count = 0;
-        }
-    }
-}
-
-none A_free(object a) {
-    A       aa = A_header(a);
+none A_free(A a) {
+    A       aa = header(a);
     A_f*  type = aa->type;
     none* prev = null;
     A_f*   cur = type;
@@ -2984,7 +2720,7 @@ none A_free(object a) {
             cur->dealloc(a);
             prev = cur->dealloc;
         }
-        if (cur == &A_type)
+        if (cur == &A_i.type)
             break;
         cur = cur->parent_type;
     }
@@ -3005,16 +2741,36 @@ none A_free(object a) {
     }
 }
 
-none A_drop(A a) {
-    if (!a) return;
-    A header = A_header(a);
+none recycle() {
+    i64   types_len;
+    A_f** atypes = types(&types_len);
 
-    if (header->refs < 0) {
-        printf("A_drop: data freed twice: %s\n", header->type->name);
-    } else if (--header->refs <= 0) {
+    /// iterate through types
+    for (num i = 0; i < types_len; i++) {
+        A_f* type = atypes[i];
+        af_recycler* af = type->af;
+        if (af && af->af_count) {
+            for (int i = 0; i <= af->af_count; i++) {
+                A a = af->af[i];
+                if (a && a->refs > 0 && --a->refs == 0) {
+                    A_free(&a[1]);
+                }
+            }
+            af->af_count = 0;
+        }
+    }
+}
+
+none drop(A a) {
+    if (!a) return;
+    A info = header(a);
+
+    if (info->refs < 0) {
+        printf("drop: data freed twice: %s\n", info->type->name);
+    } else if (info->refs > 0 && --info->refs == 0) {
         // ref:0 on new, and then ref:+1 when added to list
-        // when removing from list, that object is freed.
-        // a = new(object) ... then drop(a) ref:-1 also frees.
+        // when removing from list, that A is freed.
+        // a = new(A) ... then drop(a) ref:-1 also frees.
         // this is to facilitate push(array, new(obj)) <- ends up with a ref of 1.
         // also set(map, string("key"), string("value")) <- both are 1
 
@@ -3022,23 +2778,23 @@ none A_drop(A a) {
         // where it is not required to drop a list and the objects you allocated for it.
         // if you dont have a list, then you must drop the objects.
 
-        if (header->af_index > 0) {
-            header->type->af->af[header->af_index] = null;
-            header->af_index = 0;
+        if (info->af_index > 0) {
+            info->type->af->af[info->af_index] = null;
+            info->af_index = 0;
         }
         A_free(a);
     }
 }
 
 /// bind works with delegate callback registration efficiently to 
-/// avoid namespace collisions, and allow enumeration interfaces without override and base object boilerplate
-callback A_bind(A a, A target, bool required, AType rtype, AType arg_type, symbol id, symbol name) {
+/// avoid namespace collisions, and allow enumeration interfaces without override and base A boilerplate
+callback bind(A a, A target, bool required, AType rtype, AType arg_type, symbol id, symbol name) {
     AType self_type   = isa(a);
     AType target_type = isa(target);
-    bool inherits     = A_instanceof(target, self_type) != null;
+    bool inherits     = instanceof(target, self_type) != null;
     string method     = f(string, "%s%s%s", id ? id : 
         (!inherits ? self_type->name : ""), (id || !inherits) ? "_" : "", name);
-    type_member_t* m  = A_member(target_type, A_MEMBER_IMETHOD, method->chars, true);
+    Member m  = member(target_type, A_MEMBER_IMETHOD, method->chars, true);
     verify(!required || m, "bind: required method not found: %o", method);
     if (!m) return null;
     callback f       = m->ptr;
@@ -3049,22 +2805,22 @@ callback A_bind(A a, A target, bool required, AType rtype, AType arg_type, symbo
     return f;
 }
 
-object A_data(A instance) {
-    A obj = A_header(instance);
+A vdata(A a) {
+    A obj = header(a);
     return obj->data;
 }
 
-i64 A_data_stride(A a) {
-    AType t = A_data_type(a);
+i64 vdata_stride(A a) {
+    AType t = vdata_type(a);
     return t->size - (t->traits & A_TRAIT_PRIMITIVE ? 0 : sizeof(none*));
 }
 
-AType A_data_type(A a) {
-    A f = A_header(a);
+AType vdata_type(A a) {
+    A f = header(a);
     return f->scalar ? f->scalar : f->type;
 }
 
-object A_instanceof(object inst, AType type) {
+A instanceof(A inst, AType type) {
     if (!inst) return null;
 
     verify(inst, "instanceof given a null value");
@@ -3082,7 +2838,7 @@ object A_instanceof(object inst, AType type) {
 }
 
 /// list -------------------------
-item list_push(list a, object e) {
+item list_push(list a, A e) {
     item n = item();
     n->value = a->unmanaged ? e : hold(e); /// held already by caller
     if (a->last) {
@@ -3101,7 +2857,7 @@ none list_dealloc(list a) {
     while (pop(a)) { }
 }
 
-item list_insert_after(list a, object e, i32 after) {
+item list_insert_after(list a, A e, i32 after) {
     num index = 0;
     item found = null;
     if (after >= 0)
@@ -3135,7 +2891,7 @@ item list_insert_after(list a, object e, i32 after) {
 
 /// we need index_of_element and index_of
 /// this is not calling compare for now, and we really need to be able to control that if it did (argument-based is fine)
-num list_index_of(list a, object value) {
+num list_index_of(list a, A value) {
     num index = 0;
     for (item ai = a->first; ai; ai = ai->next) {
         if (ai->value == value)
@@ -3145,7 +2901,7 @@ num list_index_of(list a, object value) {
     return -1;
 }
 
-item list_item_of(list a, object value) {
+item list_item_of(list a, A value) {
     num index = 0;
     for (item ai = a->first; ai; ai = ai->next) {
         if (ai->value == value) {
@@ -3191,16 +2947,16 @@ num list_compare(list a, list b) {
         return diff;
     A_f* ai_t = a->first ? isa(a->first->value) : null;
     if (ai_t) {
-        type_member_t* m = A_member(ai_t, (A_MEMBER_IMETHOD), "compare", true);
+        Member m = member(ai_t, (A_MEMBER_IMETHOD), "compare", true);
         for (item ai = a->first, bi = b->first; ai; ai = ai->next, bi = bi->next) {
-            num   v  = ((num(*)(object,A))((method_t*)m->method)->address)(ai, bi);
+            num   v  = ((num(*)(A,A))((method_t*)m->method)->address)(ai, bi);
             if (v != 0) return v;
         }
     }
     return 0;
 }
 
-object list_pop(list a) {
+A list_pop(list a) {
     item l = a->last;
     if (!l)
         return null;
@@ -3217,7 +2973,7 @@ object list_pop(list a) {
     return l;
 }
 
-object list_get(list a, object at_index) {
+A list_get(list a, A at_index) {
     sz index = 0;
     AType itype = isa(at_index);
     sz at = 0;
@@ -3241,19 +2997,19 @@ num list_count(list a) {
 }
 
 
-bool is_meta(object a) {
+bool is_meta(A a) {
     AType t = isa(a);
     return t->meta.count > 0;
 }
 
-bool is_meta_compatible(object a, object b) {
+bool is_meta_compatible(A a, A b) {
     AType t = isa(a);
     if (is_meta(a)) {
         AType bt = isa(b);
         num found = 0;
         for (num i = 0; i < t->meta.count; i++) {
             AType mt = ((AType*)&t->meta.meta_0)[i];
-            if (A_inherits(bt, mt))
+            if (inherits(bt, mt))
                 found++;
         }
         return found > 0;
@@ -3261,40 +3017,33 @@ bool is_meta_compatible(object a, object b) {
     return false;
 }
 
-object A_realloc(object a, sz alloc) {
-    A   i = A_header(a);
+A vrealloc(A a, sz alloc) {
+    A   i = header(a);
     if (alloc > i->alloc) {
-        AType type = data_type(a);
-        sz  size  = data_stride(a);
+        AType type = vdata_type(a);
+        sz  size  = vdata_stride(a);
         u8* data  = calloc(alloc, size);
         u8* prev  = i->data;
         memcpy(data, prev, i->count * size);
         i->data  = data;
         i->alloc = alloc;
-        if ((object)prev != a) free(prev);
+        if ((A)prev != a) free(prev);
     }
     return i->data;
 }
 
-object A_resize(object a, sz count) {
-    A_realloc(a, count);
-    A f = A_header(a);
-    f->count = count;
-    return f->data;
-}
-
 none vector_init(vector a) {
-    A f = A_header(a);
+    A f = header(a);
     f->count = 0;
     f->scalar = f->type->meta.meta_0 ? f->type->meta.meta_0 : a->type ? a->type : typeid(i8);
     verify(f->scalar, "scalar not set");
     if (a->vshape)
         a->alloc = total(a->vshape);
-    A_realloc(a, a->alloc);
+    vrealloc(a, a->alloc);
 }
 
 vector vector_with_path(vector a, path file_path) {
-    A f = A_header(a);
+    A f = header(a);
     f->scalar = typeid(i8);
     
     verify(exists(file_path), "file %o does not exist", file_path);
@@ -3303,7 +3052,7 @@ vector vector_with_path(vector a, path file_path) {
     sz flen = ftell(ff);
     fseek(ff, 0, SEEK_SET);
 
-    A_realloc(a, flen);
+    vrealloc(a, flen);
     f->count = flen;
     size_t n = fread(f->data, 1, flen, ff);
     verify(n == flen, "could not read file: %o", f);
@@ -3313,33 +3062,32 @@ vector vector_with_path(vector a, path file_path) {
 
 ARef vector_get(vector a, num index) {
     num location = index * a->type->size;
-    i8* arb = data(a);
+    i8* arb = vdata(a);
     return &arb[location];
 }
 
 none vector_set(vector a, num index, ARef element) {
     num location = index * a->type->size;
-    i8* arb = data(a);
+    i8* arb = vdata(a);
     memcpy(&arb[location], element, a->type->size); 
 }
 
-none vector_realloc(vector a, sz size) {
-    A_realloc(a, size);
-}
-
-none vector_resize(vector a, sz size) {
-    A_resize(a, size);
+A vector_resize(vector a, sz size) {
+    vrealloc(a, size);
+    A f = header(a);
+    f->count = size;
+    return f->data;
 }
 
 none vector_concat(vector a, ARef any, num count) {
     if (count <= 0) return;
-    AType type = data_type(a);
-    A f = A_header(a);
+    AType type = vdata_type(a);
+    A f = header(a);
     if (f->alloc < f->count + count)
-        vector_realloc(a, (a->alloc << 1) + 32 + count);
+        vrealloc(a, (a->alloc << 1) + 32 + count);
     
-    u8* ptr  = data(a);
-    i64 size = data_stride(a);
+    u8* ptr  = vdata(a);
+    i64 size = vdata_stride(a);
     memcpy(&ptr[f->count * size], any, size * count);
     f->count += count;
     if (a->vshape)
@@ -3355,17 +3103,17 @@ num abso(num i) {
 }
 
 vector vector_slice(vector a, num from, num to) {
-    A      f   = A_header(a);
+    A      f   = header(a);
     /// allocate the data type (no i8 bytes)
     num count = (1 + abso(from - to)); // + 31 & ~31;
-    object res = A_alloc(f->type, 1);
-    A      res_f = A_header(res);
+    A res = alloc(f->type, 1);
+    A res_f = header(res);
 
     /// allocate 
     u8* src   = f->data;
     u8* dst   = null; //A_valloc(f->type, f->scalar, count, count);
     fault("implement vector_slice allocator");
-    i64 stride = data_stride(a);
+    i64 stride = vdata_stride(a);
     if (from <  to)
         memcpy(dst, &src[from * stride], count * stride);
     else
@@ -3377,37 +3125,16 @@ vector vector_slice(vector a, num from, num to) {
 }
 
 sz vector_count(vector a) {
-    A f = A_header(a);
+    A f = header(a);
     return f->count;
 }
 
 define_class(vector, A);
 
 
-object subprocedure_invoke(subprocedure a, object arg) {
-    object(*addr)(object, object, object) = a->addr;
+A subprocedure_invoke(subprocedure a, A arg) {
+    A(*addr)(A, A, A) = a->addr;
     return addr(a->target, arg, a->ctx);
-}
-
-bool isname(char n) {
-    return (n >= 'a' && n <= 'z') || (n >= 'A' && n <= 'Z') || (n == '_');
-}
-
-u64 fn_hash(fn f) {
-    return (u64)f->method->address;
-}
-
-object fn_call(fn f, array args) {
-#ifdef USE_FFI
-    return A_method_call(f->method, args);
-#else
-    return null;
-#endif
-}
-
-bool create_symlink(path target, path link) {
-    bool is_err = symlink(target, link) == -1;
-    return !is_err;
 }
 
 /*
@@ -3446,7 +3173,7 @@ string file_gets(file f) {
     return null;
 }
 
-bool file_file_write(file f, object o) {
+bool file_file_write(file f, A o) {
     AType type = isa(o);
     if (type == typeid(string)) {
         u16 nbytes    = ((string)o)->len;
@@ -3463,7 +3190,7 @@ bool file_file_write(file f, object o) {
 
 
 
-object file_file_read(file f, AType type) {
+A file_file_read(file f, AType type) {
     if (type == typeid(string)) {
         char bytes[65536];
         u16  nbytes;
@@ -3479,7 +3206,7 @@ object file_file_read(file f, AType type) {
         bytes[nbytes] = 0;
         return string(bytes); 
     }
-    object o = A_alloc(type, 1);
+    A o = alloc(type, 1);
     sz size = isa(o)->size;
     f->location += size;
     verify(type->traits & A_TRAIT_PRIMITIVE, "not a primitive type");
@@ -3513,11 +3240,11 @@ none path_cd(path a) {
     chdir(a->chars);
 }
 
-path path_temp(symbol tmpl) {
+path tempfile(symbol tmpl) {
     path p = null;
     do {
         i64    h = (i64)rand() << 32 | (i64)rand();
-        string r = formatter("/tmp/%p.%s", (none*)h, tmpl);
+        string r = f(string, "/tmp/%p.%s", (none*)h, tmpl);
         p        = path(chars, r->chars);
     } while (exists(p));
     return p;
@@ -3527,6 +3254,11 @@ path path_with_string(path a, string s) {
     a->chars = copy_cstr((cstr)s->chars);
     a->len   = strlen(a->chars);
     return a;
+}
+
+bool path_create_symlink(path target, path link) {
+    bool is_err = symlink(target, link) == -1;
+    return !is_err;
 }
 
 num path_len(path a) {
@@ -3692,8 +3424,8 @@ bool path_is_empty(path a) {
 string path_ext(path a) {
     for (int i = strlen(a->chars) - 1; i >= 0; i--)
         if (a->chars[i] == '.')
-            return str(&a->chars[i + 1]);
-    return str(null);
+            return string(&a->chars[i + 1]);
+    return string((cstr)null);
 }
 
 string path_stem(path a) {
@@ -3739,7 +3471,6 @@ path path_absolute(path a) {
     result->len    = strlen(result->chars);
     return result;
 }
-
 
 path path_directory(path a) {
     path  result  = new(path);
@@ -3803,7 +3534,7 @@ path path_change_ext(path a, cstr ext) {
     return res;
 }
 
-path path_app(cstr name) {
+path app_path(cstr name) {
     char exe[PATH_MAX];
 
 #if defined(__APPLE__)
@@ -3851,14 +3582,30 @@ bool path_eq(path a, path b) {
 #define MAX_PATH_LEN 4096
 
 /// public statics are not 'static'
-path path_cwd(sz size) {
-    if (size == 0) size = MAX_PATH_LEN;
+path cwd() {
+    sz size = MAX_PATH_LEN;
     path a = new(path);
     a->chars = calloc(size, 1);
     char* res = getcwd((cstr)a->chars, size);
     a->len   = strlen(a->chars);
     assert(res != null, "getcwd failure");
     return a;
+}
+
+Exists A_exists(A o) {
+    AType type = isa(o);
+    path  f = null;
+    if (type == typeid(string))
+        f = cast(path, (string)o);
+    else if (type == typeid(path))
+        f = o;
+    assert(f, "type not supported");
+    bool is_dir = is_dir(f);
+    bool r = exists(f);
+    if (is_dir)
+        return r ? Exists_dir  : Exists_no;
+    else
+        return r ? Exists_file : Exists_no;
 }
 
 bool path_exists(path a) {
@@ -3876,7 +3623,7 @@ u64 path_hash(path a) {
 
 string serialize_environment(map environment, bool b_export) {
     string env = string(alloc, 32);
-    pairs(environment, i) { // for import use-case: TARGET=%s BUILD=%s PROJECT=%s UPROJECT=%s
+    pairs(environment, i) { // for tapestry use-case: TARGET=%s BUILD=%s PROJECT=%s UPROJECT=%s
         string name  = i->key;
         string value = escape((string)i->value); /// this is great to do
         string f     = form(string, "%o=\"%o\"", name, value);
@@ -3888,8 +3635,8 @@ string serialize_environment(map environment, bool b_export) {
     return env;
 }
 
-/// import parsing, can be used in silver as well
-string evaluate(string w, map environment) {
+/// tapestry parsing, can be used in silver as well
+string string_evaluate(string w, map environment) {
     if (!strstr(w->chars, "$"))
         return w;
 
@@ -3922,7 +3669,6 @@ string evaluate(string w, map environment) {
 
         const char* argv[] = { "bash", "-s", NULL };
         execvp("bash", (char* const*)argv);
-
         _exit(127); // if exec fails
     }
 
@@ -3947,10 +3693,8 @@ string evaluate(string w, map environment) {
         append(result, buf);
     }
     fclose(out);
-
     int status;
     waitpid(pid, &status, 0); // wait for bash to finish
-
     return trim(result);
 }
 
@@ -3966,7 +3710,6 @@ static cstr ws_inline(cstr p) {
 static cstr read_word(cstr i, string* result) {
     i = ws_inline(i);
     *result = null;
-
     if (*i == '\n' || !*i)
         return i;
 
@@ -4061,7 +3804,7 @@ static array read_lines(path f) {
     return lines;
 }
 
-object path_read(path a, AType type, ctx context) {
+A path_read(path a, AType type, ctx context) {
     if (is_dir(a)) return null;
     if (type == typeid(array))
         return read_lines(a);
@@ -4079,7 +3822,7 @@ object path_read(path a, AType type, ctx context) {
     if (type == typeid(string))
         return str;
     if (is_obj) {
-        object obj = parse((cstr)str->chars, type, context);
+        A obj = parse(type, (cstr)str->chars, context);
         return obj;
     }
     assert(false, "not implemented");
@@ -4087,7 +3830,7 @@ object path_read(path a, AType type, ctx context) {
 }
 
 none* primitive_ffi_arb(AType ptype) {
-#ifdef USE_FFI
+#if USE_FFI
     if (ptype == typeid(u8))        return &ffi_type_uint8;
     if (ptype == typeid(i8))        return &ffi_type_sint8;
     if (ptype == typeid(u16))       return &ffi_type_uint16;
@@ -4105,6 +3848,7 @@ none* primitive_ffi_arb(AType ptype) {
     if (ptype == typeid(sz))        return &ffi_type_sint64;
     if (ptype == typeid(none))      return &ffi_type_void;
     return &ffi_type_pointer;
+
 #else
     return null;
 #endif
@@ -4112,7 +3856,7 @@ none* primitive_ffi_arb(AType ptype) {
 
 
 static none copy_file(path from, path to) {
-    path f_to = is_dir(to) ? form(path, "%o/%o", to, filename(from)) : hold(to);
+    path f_to = is_dir(to) ? f(path, "%o/%o", to, filename(from)) : (path)hold(to);
     FILE *src = fopen(cstring(from), "rb");
     FILE *dst = fopen(cstring(f_to), "wb");
     drop(f_to);
@@ -4189,43 +3933,83 @@ array path_ls(path a, string pattern, bool recur) {
     return list;
 }
 
+
+struct mutex_t {
+    pthread_mutex_t lock;
+    pthread_cond_t  cond;
+};
+
+none mutex_init(mutex m) {
+    m->mtx = calloc(sizeof(struct mutex_t), 1);
+    pthread_mutex_init(&m->mtx->lock, null);
+    if (m->cond) pthread_cond_init(&m->mtx->cond, null);
+}
+
+none mutex_dealloc(mutex m) {
+    pthread_mutex_destroy(&m->mtx->lock);
+    if (m->cond) pthread_cond_destroy(&m->mtx->cond);
+    free(m->mtx);
+}
+
+none mutex_lock(mutex m) {
+    pthread_mutex_lock(&m->mtx->lock);
+}
+
+none mutex_unlock(mutex m) {
+    pthread_mutex_unlock(&m->mtx->lock);
+}
+
+none mutex_cond_broadcast(mutex m) {
+    pthread_cond_broadcast(&m->mtx->lock);
+}
+
+none mutex_cond_signal(mutex m) {
+    pthread_cond_signal(&m->mtx->lock);
+}
+
+none mutex_cond_wait(mutex m) {
+    pthread_cond_wait(&m->mtx->cond, &m->mtx->lock);
+}
+
+define_class(mutex, A)
+
 // idea:
 // silver should: swap = and : ... so : is const, and = is mutable-assign
 // we serialize our data with : and we do not think of this as a changeable form, its our data and we want it intact, lol
-// serialize object into json
-string json(object a) {
+// serialize A into json
+string json(A a) {
     AType  type  = isa(a);
     string res   = string(alloc, 1024);
     /// start at 1024 pre-alloc
     if (!a) {
         append(res, "null");
-    } else if (instanceof(a, array)) {
+    } else if (instanceof(a, typeid(array))) {
         // array with items
         push(res, '[');
-        each (a, object, i) concat(res, json(i));
+        each (a, A, i) concat(res, json(i));
         push(res, ']');
     } else if (!(type->traits & A_TRAIT_PRIMITIVE)) {
-        // object with fields
+        // A with fields
         push(res, '{');
         bool one = false;
         for (num m = 0; m < type->member_count; m++) {
             if (one) push(res, ',');
-            type_member_t* mem = &type->members[m];
+            Member mem = &type->members[m];
             if (!(mem->member_type & (A_MEMBER_PROP | A_MEMBER_INLAY))) continue;
             concat(res, json(mem->sname));
             push  (res, ':');
-            object value = A_get_property(a, mem->name);
+            A value = get_property(a, mem->name);
             concat(res, json(value));
             one = true;
         }
         push(res, '}');
     } else {
-        A_serialize(type, res, a);
+        serialize(type, res, a);
     }
     return res;
 }
 
-string parse_symbol(cstr input, cstr* remainder, ctx context) {
+static string parse_symbol(cstr input, cstr* remainder, ctx context) {
     cstr start = null;
     bool second = false;
     while ((!second && isalpha(*input)) || 
@@ -4248,7 +4032,7 @@ string parse_symbol(cstr input, cstr* remainder, ctx context) {
     return null;
 }
 
-string parse_json_string(cstr origin, cstr* remainder, ctx context) {
+static string parse_json_string(cstr origin, cstr* remainder, ctx context) {
     char delim = *origin;
     if (delim != '\"' && delim != '\'')
         return null;
@@ -4306,25 +4090,25 @@ string parse_json_string(cstr origin, cstr* remainder, ctx context) {
     return (context && delim == '\'') ? interpolate(res, context) : res;
 }
 
-object parse_array(cstr s, AType schema, AType meta, cstr* remainder, ctx context);
+static A parse_array(cstr s, AType schema, AType meta, cstr* remainder, ctx context);
 
-type_member_t* A_member_first(AType type, AType find, bool poly) {
-    if (poly && type->parent_type != typeid(A)) {
-        type_member_t* m = A_member_first(type->parent_type, find, poly);
+Member member_first(AType type, AType find, bool poly) {
+    if (poly && type->parent_type != (ftable_t*)typeid(A)) {
+        Member m = member_first(type->parent_type, find, poly);
         if (m) return m;
     }
     for (int i = 0; i < type->member_count; i++) {
-        type_member_t* m = &type->members[i];
+        Member m = &type->members[i];
         if (!(m->member_type & A_MEMBER_PROP)) continue;
         if (m->type == type) return m;
     }
     return null;
 }
 
-object parse_object(cstr input, AType schema, AType meta_type, cstr* remainder, ctx context) {
+static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder, ctx context) {
     cstr   scan   = ws(input);
     cstr   origin = null;
-    object res    = null;
+    A res    = null;
     char  *endptr;
 
     if (remainder)
@@ -4344,31 +4128,30 @@ object parse_object(cstr input, AType schema, AType meta_type, cstr* remainder, 
             // for these special syntax, we cannot take schema & meta_type into account
             // this is effectively 'ason' syntax
             scan = ws(scan + 1);
-            AType type = A_find_type(sym->chars);
+            AType type = find_type(sym->chars);
             verify(type, "type not found: %o", sym);
 
             if (type->traits & A_TRAIT_ENUM) {
                 // its possible we could reference a context variable within this enum [ value-area ]
                 // in which case, we could effectively look it up
-                //
-                object evalue = A_alloc(type, 1);
+                A evalue = alloc(type, 1);
                 string enum_symbol = parse_symbol(scan, &scan, context);
                 verify(enum_symbol, "enum symbol expected");
                 verify(*scan == ']', "expected ']' after enum symbol");
                 scan++;
-                type_member_t* e = A_member(
+                Member e = member(
                     type, A_MEMBER_ENUMV, enum_symbol->chars, false);
                 verify(e, "enum symbol %o not found in type %s", enum_symbol, type->name);
                 memcpy(evalue, e->ptr, e->type->size);
 
                 res = evalue;
             } else if (type->traits & A_TRAIT_STRUCT) {
-                object svalue = A_alloc(type, 1);
+                A svalue = alloc(type, 1);
                 for (int i = 0; i < type->member_count; i++) {
-                    type_member_t* m = &type->members[i];
+                    Member m = &type->members[i];
                     if (!(m->member_type & A_MEMBER_PROP)) continue;
-                    object f = (object)((cstr)svalue + m->offset);
-                    object r = parse_object(scan, null, null, &scan, context);
+                    A f = (A)((cstr)svalue + m->offset);
+                    A r = parse_object(scan, null, null, &scan, context);
                     verify(r && isa(r) == m->type, "type mismatch while parsing struct %s:%s (read: %s, expect: %s)",
                         type->name, m->name, !r ? "null" : isa(r)->name, m->type->name);
                     if (*scan == ',') scan = ws(scan + 1); // these dumb things are optional
@@ -4378,7 +4161,7 @@ object parse_object(cstr input, AType schema, AType meta_type, cstr* remainder, 
             } else {
                 // this is parsing a 'constructor call', so we must effectively call this constructor with the arg given
                 // only a singular arg is allowed for these
-                object r = parse_object(scan, null, null, &scan, context);
+                A r = parse_object(scan, null, null, &scan, context);
                 verify(r, "expected value to give to type %s", type->name);
                 verify(*scan == ']', "expected ']' after construction of %s", type->name);
                 scan++;
@@ -4425,21 +4208,21 @@ object parse_object(cstr input, AType schema, AType meta_type, cstr* remainder, 
         verify(!sym, "unexpected string after symbol %o", sym);
         origin = scan;
         string js = parse_json_string(origin, &scan, context); // todo: use context for string interpolation
-        res = construct_with((schema && schema != typeid(object)) 
+        res = construct_with((schema && schema != typeid(A)) 
             ? schema : typeid(string), js, context);
     }
-    else if (*scan == '{') { /// Type will make us convert to the object, from map, and set is_map back to false; what could possibly get crossed up with this one
+    else if (*scan == '{') { /// Type will make us convert to the A, from map, and set is_map back to false; what could possibly get crossed up with this one
         if (sym) {
-            verify(!schema || schema == typeid(object) || eq(sym, schema->name),
+            verify(!schema || schema == typeid(A) || eq(sym, schema->name),
                 "expected type: %s, found %o", schema->name, sym);
 
             if (!schema) {
-                schema = A_find_type(sym->chars);
+                schema = find_type(sym->chars);
                 verify(schema, "type not found: %o", sym);
             }
 
-            if (schema == typeid(object)) {
-                schema = A_find_type(sym->chars);
+            if (schema == typeid(A)) {
+                schema = find_type(sym->chars);
                 verify(schema, "%s not found", sym->chars);
             }
         }
@@ -4460,28 +4243,28 @@ object parse_object(cstr input, AType schema, AType meta_type, cstr* remainder, 
 
             origin        = scan;
             string name   = null;
-            Member member = null;
+            Member mem    = null;
             bool   quick_map = false;
             bool   json_type = false;
 
-            // if object, then we find the first object
+            // if A, then we find the first A
             if (*scan == '{' && use_schema) {
                 /// this goes to the bottom class above A first, then proceeds to look
                 /// if you throw a map onto a subclass of element, its going to look through element first
-                member = A_member_first(use_schema, typeid(map), true);
-                verify(member, "map not found in object %s (shorthand {syntax})",
+                mem = member_first(use_schema, typeid(map), true);
+                verify(mem, "map not found in A %s (shorthand {syntax})",
                     use_schema->name);
-                name = member->sname;
+                name = mem->sname;
                 quick_map = true;
             } else
                 name = (*scan != '\"' && *scan != '\'') ?
                     (string)parse_symbol(origin, &scan, context) : 
                     (string)parse_json_string(origin, &scan, context);
             
-            if (!member) {
+            if (!mem) {
                 json_type = cmp(name, "Type") == 0;
-                member  = (is_map) ? null : 
-                    A_member(use_schema, A_MEMBER_PROP, name->chars, true);
+                mem  = (is_map) ? null : 
+                    member(use_schema, A_MEMBER_PROP, name->chars, true);
             }
 
             if (eq(name, "nodes")) {
@@ -4489,7 +4272,7 @@ object parse_object(cstr input, AType schema, AType meta_type, cstr* remainder, 
                 test2 += 2;
             }
             
-            if (!json_type && !member && !is_map && !context) {
+            if (!json_type && !mem && !is_map && !context) {
                 print("property '%o' not found in type: %s", name, use_schema->name);
                 return null;
             }
@@ -4508,8 +4291,8 @@ object parse_object(cstr input, AType schema, AType meta_type, cstr* remainder, 
                 int test2 = 2;
                 test2 += 2;
             }
-            object value = parse_object(scan, (member ? member->type : null),
-                (member ? member->args.meta_0 : null), &scan, context);
+            A value = parse_object(scan, (mem ? mem->type : null),
+                (mem ? mem->args.meta_0 : null), &scan, context);
             
             if (!value)
                 return null;
@@ -4519,7 +4302,7 @@ object parse_object(cstr input, AType schema, AType meta_type, cstr* remainder, 
 
             if (json_type) {
                 string type_name = value;
-                use_schema = A_find_type(type_name->chars);
+                use_schema = find_type(type_name->chars);
                 verify(use_schema, "type not found: %o", type_name);
             } else
                 set(props, name, value);
@@ -4542,7 +4325,7 @@ object parse_object(cstr input, AType schema, AType meta_type, cstr* remainder, 
     } else {
         res = (context && sym) ? get(context, sym) : null;
         if (res) {
-            verify(!schema || A_inherits(isa(res), schema),
+            verify(!schema || inherits(isa(res), schema),
                 "variable type mismatch: %s does not match expected %s",
                 isa(res)->name, schema->name);
         } else
@@ -4552,7 +4335,7 @@ object parse_object(cstr input, AType schema, AType meta_type, cstr* remainder, 
     return res;
 }
 
-array parse_array_objects(cstr* s, AType element_type, ctx context) {
+static array parse_array_objects(cstr* s, AType element_type, ctx context) {
     cstr scan = *s;
     array res = array(alloc, 64);
     static int seq = 0;
@@ -4563,7 +4346,7 @@ array parse_array_objects(cstr* s, AType element_type, ctx context) {
             scan = ws(&scan[1]);
             break;
         }
-        object a = parse_object(scan, element_type, null, &scan, context);
+        A a = parse_object(scan, element_type, null, &scan, context);
         push(res, a);
         scan = ws(scan);
         if (scan && scan[0] == ',') {
@@ -4575,29 +4358,29 @@ array parse_array_objects(cstr* s, AType element_type, ctx context) {
     return res;
 }
 
-object parse_array(cstr s, AType schema, AType meta_type, cstr* remainder, ctx context) {
+static A parse_array(cstr s, AType schema, AType meta_type, cstr* remainder, ctx context) {
     cstr scan = ws(s);
     verify(*scan == '[', "expected array '['");
     scan = ws(&scan[1]);
-    object res = null;
+    A res = null;
     if (!schema || (schema == typeid(array) || schema->src == typeid(array))) {
-        AType element_type = meta_type ? meta_type : (schema ? schema->meta.meta_0 : typeid(object));
+        AType element_type = meta_type ? meta_type : (schema ? schema->meta.meta_0 : typeid(A));
         res = parse_array_objects(&scan, element_type, context);
     } else if (schema->vmember_type == typeid(i64)) { // should support all vector types of i64 (needs type bounds check with vmember_count)
         array arb = parse_array_objects(&scan, typeid(i64), context);
         int vcount = len(arb);
-        res = A_alloc2(schema, typeid(i64), shape_new(vcount, 0));
+        res = alloc2(schema, typeid(i64), shape_new(vcount, 0));
         int n = 0;
-        each(arb, object, a) {
+        each(arb, A, a) {
             verify(isa(a) == typeid(i64), "expected i64");
             ((i64*)res)[n++] = *(i64*)a;
         }
     } else if (schema->vmember_type == typeid(f32)) { // should support all vector types of f32 (needs type bounds check with vmember_count)
         array arb = parse_array_objects(&scan, typeid(f32), context);
         int vcount = len(arb);
-        res = A_alloc(typeid(f32), vcount);
+        res = alloc(typeid(f32), vcount);
         int n = 0;
-        each(arb, object, a) {
+        each(arb, A, a) {
             AType a_type = isa(a);
             if (a_type == typeid(i64))      ((f32*)res)[n++] =  (float)*(i64*)a;
             else if (a_type == typeid(f32)) ((f32*)res)[n++] = *(float*)a;
@@ -4617,16 +4400,16 @@ object parse_array(cstr s, AType schema, AType meta_type, cstr* remainder, ctx c
         // this should contain multiple arrays of scalar values; we want to convert each array to our 'scalar_type'
         // for instance, we may parse [[1,2,3,4,5...16],...] mat4x4's; we merely need to validate vmember_count and vmember_type and convert
         // if we have a vmember_count of 0 then we are dealing with a single primitive type
-        vector vres = A_alloc(schema, 1);
+        vector vres = alloc(schema, 1);
         vres->vshape = shape_new(count, 0);
         A_initialize(vres);
-        i8* vdata = data(vres);
+        i8* data = vdata(vres);
         int index = 0;
-        each (prelim, object, o) {
+        each (prelim, A, o) {
             AType itype = isa(o);
             if (itype->traits & A_TRAIT_PRIMITIVE) {
-                /// parse object here (which may require additional
-                memcpy(&vdata[index], o, scalar_type->size);
+                /// parse A here (which may require additional
+                memcpy(&data[index], o, scalar_type->size);
                 index += scalar_type->size;
             } else {
                 fault("implement struct parsing");
@@ -4642,7 +4425,7 @@ object parse_array(cstr s, AType schema, AType meta_type, cstr* remainder, ctx c
 
 static map ctx_checksums; // where context goes to live, lol.
 
-string extract_context(cstr src, cstr *endptr) {
+static string extract_context(cstr src, cstr *endptr) {
     src = ws(src);
     const char *start = strstr(src, "ctx");
     if (!start) return NULL;
@@ -4688,7 +4471,7 @@ string extract_context(cstr src, cstr *endptr) {
     return string(chars, start, ref_length, len);
 }
 
-object parse(cstr s, AType schema, ctx context) {
+A parse(AType schema, cstr s, ctx context) {
     if (context) {
         if (!ctx_checksums) ctx_checksums = hold(map(hsize, 32));
         string key = f(string, "%p", context);
@@ -4710,8 +4493,8 @@ typedef struct thread_t {
     mutex           lock;
     i32             index;
     bool            done;
-    object          w;
-    object          next;
+    A               w;
+    A               next;
     async           t;
     i32             jobs;
 } thread_t;
@@ -4721,18 +4504,14 @@ static none async_runner(thread_t* thread) {
 
     for (; thread->next; unlock(thread->lock)) {
         t->work_fn(thread->w);
-
         lock(thread->lock);
         thread->done = true;
         cond_signal(thread->lock);
         cond_broadcast(t->global);
-
         while (thread->next == thread->w)
             cond_wait(thread->lock);
-        
         if (!thread->next)
             break;
-        
         thread->done = false;
         drop(thread->w);
         thread->w    = thread->next;
@@ -4773,10 +4552,9 @@ none async_dealloc(async t) {
     }
 }
 
-
-object async_sync(async t, object w) {
+A async_sync(async t, A w) {
     int n = len(t->work);
-    object result = null;
+    A result = null;
 
     if (w) {
         /// in this mode, wait for one to finish
@@ -4830,15 +4608,12 @@ struct inotify_event {
 
 none watch_init(watch a) {
     /// todo: a-perfectly-good-watch ... dont-throw-away
-
     if (!a->res) return;
-
     int fd = inotify_init1(IN_NONBLOCK);
     if (fd < 0) {
         perror("inotify_init1");
         exit(1);
     }
-
     int wd = inotify_add_watch(fd, a->res->chars, IN_MODIFY | IN_CREATE | IN_DELETE);
     if (wd == -1) {
         perror("inotify_add_watch");
@@ -4883,83 +4658,42 @@ bool is_alphabetic(char ch) {
     return false;
 }
 
-// would be nice if region could use these for the 4 coords
-// if unit could store percent we handle the use-case
-// t10%
-// type = xalign ()
-unit unit_with_string(unit a, string s) {
-       s       = trim(s);
-    sz ln      = len (s);
-    a->percent = last(s) == '%';
 
-    if (a->percent)
-        s = mid(s, 0, ln - 1);
-
-    a->meta_type = isa(a)->meta.meta_0;
-    
-    verify(a->meta_type, "not a meta-type -- not turtle enough for turtle club");
-    a->enum_v = *A_enum_default(a->meta_type);
-    if (ln == 0)
-        return a;
-    
-    bool al = is_alphabetic(last(s));
-    if (!al) {
-        verify(!is_alphabetic(first(s)), "expected single value when end is not alpha numeric");
-        verify (sscanf(s->chars, "%f", &a->scale_v) == 1,
-            "unit parsing for %s failed: value is %s",
-            a->meta_type->name, s->chars);
-    } else {
-        string u = null;
-        for (int i = ln - 1; i >= 0; i--) {
-            bool al = is_alphabetic(s->chars[i]);
-            if (!al) {
-                u = mid(s, i + 1, ln - (i + 1));
-                a->enum_v = *A_enum_value(a->meta_type, (cstr)u->chars);
-                string r = trim(mid(s, 0, clamp(i + 1, 0, len(s) - 1)));
-                verify (sscanf(r->chars, "%f", &a->scale_v) == 1,
-                    "unit parsing for %s failed: value is %s",
-                    a->meta_type->name, r->chars);
-
-                break;
-            }
-        }
-        if (!u) {
-            a->enum_v  = *A_enum_value(a->meta_type, (cstr)s->chars);
-            a->scale_v = 0;
-        }
-    }
-    return a;
-}
-
-
-object subs_invoke(subs a, object arg) {
+A subs_invoke(subs a, A arg) {
     each (a->entries, subscriber, sub) {
         sub->method(sub->target, arg);
     }
     return null;
 }
 
-none subs_add(subs a, object target, callback fn) {
+none subs_add(subs a, A target, callback fn) {
     subscriber sub = subscriber(target, target, method, fn);
     push(a->entries, sub);
+}
+
+#undef cast
+// generic casting function
+A typecast(AType type, A a) {
+    if (instanceof(a, type)) return (A)a;
+    AType atype = isa(a);
+    Member m = member_type(atype, A_MEMBER_CAST, type, true);
+    if (m) {
+        A(*fcast)(A) = m->ptr;
+        return fcast(a);
+    }
+    return null;
 }
 
 define_class(subscriber, A)
 define_class(subs, A)
 
-// todo: simplify objects definition -- make it a simple typedef
-define_any(A,      A, sizeof(struct _A), A_TRAIT_CLASS | A_TRAIT_BASE);
-define_any(object, A, sizeof(struct _A), A_TRAIT_CLASS | A_TRAIT_BASE, A);
-
-//define_class(A, A)
-//define_class(object,  A, A)
+define_any(A, A, sizeof(struct _A), A_TRAIT_CLASS);
 
 define_class(watch,   A)
 define_class(message, A)
-define_class(mutex,   A)
 define_class(async,   A)
 
-define_class(numeric, A)
+define_abstract(numeric,        0)
 define_abstract(string_like,    0)
 define_abstract(nil,            0)
 define_abstract(raw,            0)
@@ -4968,6 +4702,24 @@ define_abstract(imported,       0)
 define_abstract(weak,           0)
 define_abstract(functional,     0)
  
+
+define_primitive(ref_u8,     numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  pointer)
+define_primitive(ref_u16,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  pointer)
+define_primitive(ref_u32,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  pointer)
+define_primitive(ref_u64,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  pointer)
+define_primitive(ref_i8,     numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    pointer)
+define_primitive(ref_i16,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    pointer)
+define_primitive(ref_i32,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    pointer)
+define_primitive(ref_i64,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    pointer)
+define_primitive(ref_bool,   numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  pointer)
+//define_primitive(ref_num,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    pointer)
+//define_primitive(ref_sz,     numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    pointer)
+define_primitive(ref_u128,   numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  pointer)
+define_primitive(ref_i128,   numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    pointer)
+define_primitive(ref_f32,    numeric, A_TRAIT_REALISTIC,                    pointer)
+define_primitive(ref_f64,    numeric, A_TRAIT_REALISTIC,                    pointer)
+define_primitive(ref_f128,   numeric, A_TRAIT_REALISTIC,                    pointer)
+
 
 define_primitive( u8,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
 define_primitive(u16,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
@@ -4980,6 +4732,8 @@ define_primitive(i64,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
 define_primitive(bool,   numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
 define_primitive(num,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
 define_primitive(sz,     numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
+define_primitive(u128,   numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
+define_primitive(i128,   numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
 define_primitive(f32,    numeric, A_TRAIT_REALISTIC)
 define_primitive(f64,    numeric, A_TRAIT_REALISTIC)
 define_primitive(f128,   numeric, A_TRAIT_REALISTIC)
@@ -4988,11 +4742,13 @@ define_primitive(cstr,   string_like, 0)
 define_primitive(symbol, string_like, 0)
 define_primitive(cereal, raw, 0)
 define_primitive(none,   nil, 0)
-define_primitive(AType,  raw, 0)
+//define_primitive(AType,  raw, 0)
 define_primitive(handle, raw, 0)
 define_primitive(Member, raw, 0)
 define_primitive(ARef,   ref, 0)
 define_primitive(floats, raw, 0)
+define_abstract(pointer, 0)
+define_primitive(fn,     raw, 0)
 define_primitive(hook,   raw, 0)
 define_primitive(callback, raw, 0)
 define_primitive(cstrs, raw, 0)
@@ -5005,23 +4761,19 @@ define_enum(level)
 
 define_class(path, string)
 //define_class(file)
-define_class(string, A)
-
-define_class(unit, A)
+define_class(string,  A)
+define_class(command, string)
 
 define_class(item, A)
 //define_proto(collection) -- disabling for now during reduction to base + class + mod
-define_class(list,          A, object)
-define_class(array,         A, object)
+define_class(list,          A, A)
+define_class(array,         A, A)
 define_class(hashmap,       A)
 define_class(map,           A)
 define_class(ctx,           map)
-define_class(fn,            A)
+//define_class(fn,            A)
 define_class(subprocedure,  A)
 
-define_class(ATypes,           array, AType)
+//define_class(ATypes,           array, AType)
 define_class(array_map,        array, map)
 define_class(array_string,     array, string)
-
-
-

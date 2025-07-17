@@ -1,12 +1,8 @@
-// import cant quite use its headers from import
-#include <A/public>
+
+#include <silver-import/import>
+
 #undef link
-#include <silver-import/intern>
-#include <import.h>
-#include <silver-import/init>
-#include <silver-import/methods>
-#include <A/init>
-#include <A/methods>
+
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -14,7 +10,7 @@
 #include <utime.h>
 
 void on_signal(int sig) {
-    pid_t pid = A_last_pid();
+    pid_t pid = last_pid();
     printf("\nimport: signal %i\n", sig);
     if (pid > 0)
         killpg(pid, SIGTERM);
@@ -38,7 +34,7 @@ int main(int argc, cstr argv[]) {
     
     verify(stat(rpath, &bin_stat) == 0, "stat failed on self");
     
-    A_start(argv);
+    startup(argv);
 
     signal(SIGINT,  on_signal);  // ctrl+c
     signal(SIGTERM, on_signal);  // kill
@@ -76,13 +72,13 @@ int main(int argc, cstr argv[]) {
     cstr  _ASAN           = getenv("ASAN");
     path  default_path    = form  (path, "%s", ".");
     path  default_install = form  (path, "%s", _IMPORT ? _IMPORT : ".");
-    map   args            = A_args(argv,
+    map   a               = args(argv,
         "path",    default_path,
         "install", default_install,
         null);
 
-    path  path_unrel      = get (args, string("path"));
-    path  install_unrel   = get (args, string("install"));
+    path  path_unrel      = get (a, string("path"));
+    path  install_unrel   = get (a, string("install"));
 
     string dbg      = _DBG ? string(_DBG) : string("");
     path   install  = absolute(install_unrel);

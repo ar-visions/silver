@@ -56,7 +56,7 @@ static string generate(string prompt) {
 };
 
 int main(int n_args, cstr* v_args) {
-    A_start(v_args);
+    startup(v_args);
   //string a          = string("Audrey");
     symbol model_file = "bartowski_Meta-Llama-3-8B-Instruct-GGUF_Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"; /// form this from two parts
     path   model_path = form(path, "%s/.cache/llama.cpp/%s", getenv("HOME"), model_file);

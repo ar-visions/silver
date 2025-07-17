@@ -1,3 +1,6 @@
+.SUFFIXES:
+MAKEFLAGS += -rR
+
 CC = clang
 CXX = clang++
 PROJECT ?= silver-import
@@ -5,25 +8,57 @@ PROJECT ?= silver-import
 PROJECT_PATH := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 BUILD_PATH := $(PROJECT_PATH)/debug
 
+# Debug configuration based on DBG environment variable
+DBG := $(strip $(DBG))
+PROJECT := $(strip $(PROJECT))
+DBG_PAD := ,$(DBG),
+PROJECT_PAD := ,$(PROJECT),
+EXCLUDE_PAD := ,-$(PROJECT),
+DEBUG := false
+
+ifneq ($(findstring $(EXCLUDE_PAD),$(DBG_PAD)),)
+	DEBUG := false
+else ifneq ($(findstring $(PROJECT_PAD),$(DBG_PAD)),)
+	DEBUG := true
+else ifneq ($(findstring *,$(DBG_PAD)),)
+	DEBUG := true
+endif
+
+ifeq ($(DEBUG),true)
+	CFLAGS := $(CFLAGS) -g2 -O0
+else
+	CFLAGS := $(CFLAGS) -O2
+endif
+
 # run through dependencies, getting their -l flags as a result
 # DEPS := $(shell for script in ./deps/*.sh; do [ -x "$$script" ] && "$$script"; done | tr '\n' ' ')
 DEPS := $(shell for f in ./deps/*.sh; do sh $$f; done)
-$(info "deps result: $(DEPS)")
+
+CFLAGS ?= -Wno-writable-strings -fPIC \
+	-fmacro-backtrace-limit=0 \
+	-Wno-write-strings \
+	-Wno-compare-distinct-pointer-types \
+	-Wno-deprecated-declarations \
+	-Wno-incompatible-pointer-types \
+	-Wno-shift-op-parentheses \
+	-Wfatal-errors \
+	-Wno-incompatible-library-redeclaration \
+	-fvisibility=default
 
 # we need separate CFLAGS for app/src use-cases
 # App gets its own include path
-APP_CFLAGS := $(CFLAGS) -I$(PROJECT_PATH)/src -I$(BUILD_PATH)/app -I$(BUILD_PATH) -I. -I./include -fPIC \
+APP_CFLAGS := $(CFLAGS) -I$(PROJECT_PATH)/src -I$(BUILD_PATH)/app -I$(BUILD_PATH) -I$(IMPORT)/include -fPIC \
  -Wno-incompatible-pointer-types -Wfatal-errors \
  -std=gnu11 -DMODULE="\"$(PROJECT)\""
-APP_CXXFLAGS := $(CXXFLAGS) -I$(PROJECT_PATH)/src -I$(BUILD_PATH)/app -I$(BUILD_PATH) -I. -I./include -fPIC \
+APP_CXXFLAGS := $(CFLAGS) $(CXXFLAGS) -I$(PROJECT_PATH)/src -I$(BUILD_PATH)/app -I$(BUILD_PATH) -I$(IMPORT)/include -fPIC \
  -Wfatal-errors \
  -std=c++17 -DMODULE="\"$(PROJECT)\""
 
 # Base CFLAGS for src modules (will be extended per module)
-BASE_CFLAGS := $(CFLAGS) -D_GNU_SOURCE -I$(PROJECT_PATH)/src -I$(BUILD_PATH) -I. -I./include -fPIC \
+BASE_CFLAGS := $(CFLAGS) -I$(PROJECT_PATH)/src -I$(BUILD_PATH) -I$(IMPORT)/include -fPIC \
  -Wno-incompatible-pointer-types -Wfatal-errors \
  -std=gnu11 -DMODULE="\"$(PROJECT)\""
-BASE_CXXFLAGS := $(CXXFLAGS) -D_GNU_SOURCE -I$(PROJECT_PATH)/src -I$(BUILD_PATH) -I. -I./include -fPIC \
+BASE_CXXFLAGS := $(CFLAGS) $(CXXFLAGS) -I$(PROJECT_PATH)/src -I$(BUILD_PATH) -I$(IMPORT)/include -fPIC \
  -Wfatal-errors \
  -std=c++17 -DMODULE="\"$(PROJECT)\""
 # Platform-specific settings
@@ -38,6 +73,9 @@ else
  APP_LDFLAGS := -Wl,-rpath,'$$ORIGIN/../lib'
  LIB_LDFLAGS := -Wl,-soname,$(LIB_PRE)$(PROJECT).$(LIB_EXT)
 endif
+
+APP_LDFLAGS := $(APP_LDFLAGS) -L$(IMPORT)/lib
+LIB_LDFLAGS := $(LIB_LDFLAGS) -L$(IMPORT)/lib
 
 # Find all source files dynamically (both .c and .cc)
 SRC_C_FILES := $(wildcard src/*.c)
@@ -61,26 +99,6 @@ TARGETS := $(TARGETS_C) $(TARGETS_CC)
 
 SHARED_LIB = lib/$(LIB_PRE)$(PROJECT).$(LIB_EXT)
 
-# Debug configuration based on DBG environment variable
-DBG := $(strip $(DBG))
-PROJECT := $(strip $(PROJECT))
-DBG_PAD := ,$(DBG),
-PROJECT_PAD := ,$(PROJECT),
-EXCLUDE_PAD := ,-$(PROJECT),
-DEBUG := false
-ifneq ($(findstring $(EXCLUDE_PAD),$(DBG_PAD)),)
- DEBUG := false
-else ifneq ($(findstring $(PROJECT_PAD),$(DBG_PAD)),)
- DEBUG := true
-else ifneq ($(findstring *,$(DBG_PAD)),)
- DEBUG := true
-endif
-ifeq ($(DEBUG),true)
- CFLAGS := $(CFLAGS) -g2 -O0
-else
- CFLAGS := $(CFLAGS) -O2
-endif
-
 # Targets
 .PHONY: all headers clean install clean-all
 
@@ -96,10 +114,6 @@ headers:
 	 done
 
 # Create debug directories for each module
-
-
-
-
 $(BUILD_PATH)/app/%.o: app/%.c
 	@mkdir -p $(BUILD_PATH)/app
 	$(CC) -I$(BUILD_PATH)/app/$* -I$(BUILD_PATH)/src $(BASE_CFLAGS) -c $< -o $@
@@ -109,9 +123,14 @@ $(BUILD_PATH)/app/%.o: app/%.cc
 	@mkdir -p $(BUILD_PATH)/app
 	$(CXX) -I$(BUILD_PATH)/app/$* -I$(BUILD_PATH)/src $(BASE_CXXFLAGS) -c $< -o $@
 
-
 # Pattern rule for src/*.c -> debug/src/module-name/module-name.o
 # Each module gets its own include directory
+$(BUILD_PATH)/src/%.o: src/%.c src/%
+	@mkdir -p $(BUILD_PATH)/src
+	$(CC) -I$(BUILD_PATH)/src/$* -I$(BUILD_PATH)/src $(BASE_CFLAGS) -c $< -o $@
+
+# if there is no corresponding ext-less header, the above rule is not applied
+# and this one will be
 $(BUILD_PATH)/src/%.o: src/%.c
 	@mkdir -p $(BUILD_PATH)/src
 	$(CC) -I$(BUILD_PATH)/src/$* -I$(BUILD_PATH)/src $(BASE_CFLAGS) -c $< -o $@
@@ -132,7 +151,7 @@ $(SHARED_LIB): $(SRC_OBJS)
 # Uses CXX if any C++ objects are present in the library, otherwise CC
 bin/%: $(BUILD_PATH)/app/%.o $(SHARED_LIB)
 	@mkdir -p bin
-	$(if $(SRC_CC_OBJS),$(CXX),$(CC)) -o $@ $< -Llib -l$(PROJECT) $(APP_LDFLAGS) -l$(PROJECT)
+	$(if $(SRC_CC_OBJS),$(CXX),$(CC)) -o $@ $< $(APP_LDFLAGS) -l$(PROJECT)
 
 clean:
 	rm -rf $(BUILD_PATH)

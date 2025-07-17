@@ -86,7 +86,7 @@
         append(res, "["); \
         for (int r = 0; r < C; r++) { \
             if (r) append(res, ", "); \
-            A_serialize(typeid(T), res, A_ ##T((&a->x)[r])); \
+            serialize(typeid(T), res, A_ ##T((&a->x)[r])); \
         } \
         append(res, "]"); \
         return res; \
@@ -180,7 +180,7 @@ define_class(rgba, A)
 
 vec2f rect_xy(rect a) { return vec2f(a->x, a->y); }
 
-rect rect_from_plots(vec2f v0, vec2f v1) {
+rect create_rect(vec2f v0, vec2f v1) {
     rect r = rect();
     r->x = v0.x;
     r->y = v0.y;
@@ -527,7 +527,7 @@ string mat4f_cast_string(mat4f* a) {
     append(res, "[");
     for (int i = 0; i < 4 * 4; i++) {
         if (i) append(res, ", ");
-        A_serialize(typeid(f32), res, A_f32(a->m[i]));
+        serialize(typeid(f32), res, A_f32(a->m[i]));
     }
     append(res, "]");
     return res;
@@ -543,7 +543,7 @@ vector_##T vector_##T##_new(shape vshape, ...) { \
     va_start(args, vshape); \
     vector_##T result = vector_##T(); \
     result->vshape = hold(vshape); \
-    T* T##_data = data(result); \
+    T* T##_data = vdata(result); \
     for (int i = 0, count = total(vshape); i < count; i++) { \
         T##_data[i] = (T)va_arg(args, ARG_T); \
     } \

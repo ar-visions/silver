@@ -8,7 +8,10 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-object dbg_io(dbg debug) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wwrite-strings"
+
+A dbg_io(dbg debug) {
     lldb::SBEvent event;
     int           fd_out = open(debug->stdout_fifo->chars, O_RDONLY | O_NONBLOCK);
     int           fd_err = open(debug->stderr_fifo->chars, O_RDONLY | O_NONBLOCK);
@@ -30,14 +33,14 @@ object dbg_io(dbg debug) {
                 ssize_t n = read(fd_out, buffer, sizeof(buffer));
                 if (n > 0)
                     debug->on_stdout(debug->target,
-                        (object)iobuffer(debug, debug, bytes, buffer, count, n));
+                        (A)iobuffer(debug, debug, bytes, buffer, count, n));
             }
 
             if (FD_ISSET(fd_err, &readfds)) {
                 ssize_t n = read(fd_err, buffer, sizeof(buffer));
                 if (n > 0)
                     debug->on_stderr(debug->target,
-                        (object)iobuffer(debug, debug, bytes, buffer, count, n));
+                        (A)iobuffer(debug, debug, bytes, buffer, count, n));
             }
         } else if (ready < 0)
             break;
@@ -45,7 +48,7 @@ object dbg_io(dbg debug) {
     return null;
 }
 
-object dbg_poll(dbg debug) {
+A dbg_poll(dbg debug) {
     lldb::SBEvent event;
     while (debug->active) {
         if (!debug->running) {
@@ -80,7 +83,7 @@ object dbg_poll(dbg debug) {
                 source, source,
                 line,   line,
                 column, column);
-            debug->on_break(debug->target, (object)cur);
+            debug->on_break(debug->target, (A)cur);
             
         } else if (state == lldb::eStateCrashed) {
             debug->running = false;
@@ -89,7 +92,7 @@ object dbg_poll(dbg debug) {
                 source, source,
                 line,   line,
                 column, column);
-            debug->on_crash(debug->target, (object)cur);
+            debug->on_crash(debug->target, (A)cur);
 
         } else if (state == lldb::eStateExited) {
             debug->running = false;
@@ -97,7 +100,7 @@ object dbg_poll(dbg debug) {
             exited e = exited(
                 debug,  debug,
                 code,   exit_code);
-            debug->on_exit(debug->target, (object)e);
+            debug->on_exit(debug->target, (A)e);
         }
     }
     return null;
@@ -111,11 +114,11 @@ none dbg_init(dbg debug) {
     }
     debug->lldb_debugger = lldb::SBDebugger::Create();
 
-    if (!debug->on_stdout) debug->on_stdout = bind(debug, (A)debug->target, true, typeid(object), typeid(iobuffer), null, "stdout");
-    if (!debug->on_stderr) debug->on_stderr = bind(debug, (A)debug->target, true, typeid(object), typeid(iobuffer), null, "stderr");
-    if (!debug->on_break)  debug->on_break  = bind(debug, (A)debug->target, true, typeid(object), typeid(cursor),   null, "break");
-    if (!debug->on_exit)   debug->on_exit   = bind(debug, (A)debug->target, true, typeid(object), typeid(dbg),      null, "exit");
-    if (!debug->on_crash)  debug->on_crash  = bind(debug, (A)debug->target, true, typeid(object), typeid(cursor),   null, "crash");
+    if (!debug->on_stdout) debug->on_stdout = bind(debug, (A)debug->target, true, typeid(A), typeid(iobuffer), null, "stdout");
+    if (!debug->on_stderr) debug->on_stderr = bind(debug, (A)debug->target, true, typeid(A), typeid(iobuffer), null, "stderr");
+    if (!debug->on_break)  debug->on_break  = bind(debug, (A)debug->target, true, typeid(A), typeid(cursor),   null, "break");
+    if (!debug->on_exit)   debug->on_exit   = bind(debug, (A)debug->target, true, typeid(A), typeid(dbg),      null, "exit");
+    if (!debug->on_crash)  debug->on_crash  = bind(debug, (A)debug->target, true, typeid(A), typeid(cursor),   null, "crash");
 
     debug->lldb_debugger.SetAsync(true);
     if (!debug->exceptions) {
@@ -145,8 +148,8 @@ none dbg_init(dbg debug) {
 
     if (debug->lldb_target.IsValid()) {
         debug->active        = true;
-        debug->poll          = async(work, a((object)debug), work_fn, (hook)dbg_poll);
-        debug->io            = async(work, a((object)debug), work_fn, (hook)dbg_io);
+        debug->poll          = async(work, a((A)debug), work_fn, (hook)dbg_poll);
+        debug->io            = async(work, a((A)debug), work_fn, (hook)dbg_io);
         if (debug->auto_start)
             start(debug);
     }
@@ -228,7 +231,7 @@ array read_children(dbg debug, lldb::SBValue value) {
             value,      val,
             children,   read_children(debug, child));
 
-        push(result, (object)v);
+        push(result, (A)v);
     }
 
     return result;
@@ -247,7 +250,7 @@ array dbg_read_vars(dbg debug, array result, lldb::SBValueList vars) {
             value,      val,
             children,   read_children(debug, value)
         );
-        push(result, (object)v);
+        push(result, (A)v);
     }
     return result;
 }
@@ -339,3 +342,5 @@ define_class(variable,   A)
 define_class(breakpoint, A)
 define_class(iobuffer,   A)
 define_class(dbg,        A)
+
+#pragma GCC diagnostic pop

@@ -42,7 +42,7 @@ typedef char ARef24[24];
 #define dbg_schema(C,S,...) \
     M(C,S, public, prop,   path,   location) \
     M(C,S, public, prop,   cursor, cursor) \
-    M(C,S, required, prop,   object,     target) \
+    M(C,S, required, prop,   A,     target) \
     M(C,S, public, prop,   callback,   on_stdout) \
     M(C,S, public, prop,   callback,   on_stderr) \
     M(C,S, public, prop,   callback,   on_break) \
