@@ -35,7 +35,6 @@ forward(import);
     i_prop    (X,Y, intern,     bool,           in_const) \
     i_prop    (X,Y, intern,     bool,           in_left) \
     i_prop    (X,Y, intern,     bool,           in_inlay) \
-    i_prop    (X,Y, intern,     bool,           prebuild) \
     i_prop    (X,Y, intern,     emember,        in_assign) \
     i_prop    (X,Y, intern,     array,          imports) \
     i_prop    (X,Y, intern,     array,          main_symbols) \

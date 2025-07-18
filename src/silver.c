@@ -63,6 +63,7 @@ static string op_lang_token(string name) {
 
 
 static void initialize() {
+
     keywords = array_of_cstr(
         "class",    "proto",    "struct",
         "import",   "typeof",   "schema",
@@ -73,13 +74,16 @@ static void initialize() {
         "ifdef",    "else",     "while",
         "for",      "do",       "cast",     "fn",
         null);
+    
     assign = array_of_cstr(
         "=",  ":",  "+=", "-=", "*=",  "/=", 
         "|=", "&=", "^=", "%=", ">>=", "<<=",
         null);
+    
     compare = array_of_cstr(
         "==", "!=", "<=>", ">=", "<=", ">", "<",
         null);
+    
     operators = map_of( /// ether quite needs some operator bindings, and resultantly ONE interface to use them
         "+",        string("add"),
         "-",        string("sub"),
@@ -738,7 +742,7 @@ none silver_namespace_pop(silver mod, array levels) {
         push(mod, levels->elements[i]);
 }
 
-function parse_fn        (silver mod, AMember  member_type, A ident, OPType assign_enum);
+function parse_fn        (silver mod, AFlag member_type, A ident, OPType assign_enum);
 model    read_model      (silver mod, array* expr);
 
 /// should not need to back out ever, since members are always being operated
@@ -826,7 +830,7 @@ node silver_read_node(silver mod, AType constant_result) {
     silver   module   = (mod->top == (model)mod || (fn && fn->imdl == (model)mod)) ? mod : null;
     bool     is_cast  = kw && eq(kw, "cast");
     bool     is_fn    = kw && eq(kw, "fn");
-    AMember  mtype    = is_fn ? A_MEMBER_SMETHOD : is_cast ? A_MEMBER_CAST : A_MEMBER_IMETHOD;
+    AFlag    mtype    = is_fn ? A_MFLAG_SMETHOD : is_cast ? A_MFLAG_CAST : A_MFLAG_IMETHOD;
     function in_init  = (fn && fn->imdl) ? fn : null; /// no-op on levels if we are in membership only, not in a function
     array    levels   = (in_args || in_init || is_fn || is_cast) ? array() : namespace_push(mod);
     string   alpha    = null;
@@ -900,10 +904,10 @@ node silver_read_node(silver mod, AType constant_result) {
             emember rmem = lookup2(mod, alpha, null);
             if (module && rmem && rmem->mdl == (model)module) {
                 verify(!is_cast && is_fn, "invalid constructor for module; use fn keyword");
-                mtype = A_MEMBER_CONSTRUCT;
+                mtype = A_MFLAG_CONSTRUCT;
             } else if (rec && rmem && rmem->mdl == (model)rec) {
                 verify(!is_cast && !is_fn, "invalid constructor for class; use class-name[] [ no fn, not static ]");
-                mtype = A_MEMBER_CONSTRUCT;
+                mtype = A_MFLAG_CONSTRUCT;
             }
 
             token t = peek(mod);
@@ -1480,7 +1484,7 @@ node silver_parse_member_expr(silver mod, emember mem) {
         node index_expr = null;
         if (r) {
             /// this returns a 'node' on this code path
-            emember indexer = compatible(mod, r, null, A_MEMBER_INDEX, args); /// we need to update emember model to make all function members exist in an array
+            emember indexer = compatible(mod, r, null, A_MFLAG_INDEX, args); /// we need to update emember model to make all function members exist in an array
             /// todo: serialize arg type names too
             verify(indexer, "%o: no suitable indexing method", r->name);
             function fn = instanceof(indexer->mdl, typeid(function));
@@ -1777,8 +1781,8 @@ emember register_import(
             silver mod, string name, array _modules, array _includes)
 {
     string fallback = len(_modules) ? first(_modules) : len(_includes) ? first(_includes) : null;
-    array includes = array(alloc, 32);
-    array modules  = array(alloc, 32);
+    array includes = array(32);
+    array modules  = array(32);
     each(_modules, A, m) {
         verify(isa(m) == typeid(string),
             "expected string identifier for module");
@@ -1831,10 +1835,10 @@ emember silver_read_def(silver mod) {
         while ((t = next(mod))) {
             string n = cast(string, t);
             if (inc) {
-                if (!includes) includes = array(alloc, 32);
+                if (!includes) includes = array(32);
                 push(includes, n);
             } else {
-                if (!modules) modules = array(alloc, 32);
+                if (!modules) modules = array(32);
                 push(modules, n);
             }
 
@@ -1948,7 +1952,7 @@ emember silver_read_def(silver mod) {
                 }
                 array aliases = null;
                 while(read(mod, ",")) {
-                    if (!aliases) aliases = array(alloc, 32);
+                    if (!aliases) aliases = array(32);
                     string a = read_alpha(mod);
                     verify(a, "could not read identifier");
                     push(aliases, a);
@@ -2001,7 +2005,7 @@ node parse_statement(silver mod) {
     record    rec          = instanceof(mod->top, typeid(record));
     function  fn           = context_model(mod, typeid(function));
     eargs     args         = instanceof(mod->top, typeid(eargs));
-    silver    module       = (mod->prebuild || (fn && fn->imdl == (model)mod)) ? mod : null;
+    silver    module       = (fn && fn->imdl == (model)mod) ? mod : null;
     bool      is_func_def  = false;
     string    assign_type  = null;
     OPType    assign_enum  = 0;
@@ -2049,18 +2053,18 @@ node parse_statements(silver mod, bool unique_members) {
 }
 
 
-function parse_fn(silver mod, AMember member_type, A ident, OPType assign_enum) {
+function parse_fn(silver mod, AFlag member_type, A ident, OPType assign_enum) {
     model      rtype = null;
     A     name  = instanceof(ident, typeid(token));
     array      body  = null;
     if (!name) name  = instanceof(ident, typeid(string));
     if (!name) {
-        if (member_type != A_MEMBER_CAST) {
+        if (member_type != A_MFLAG_CAST) {
             name = read_alpha(mod);
             verify(name, "expected alpha-identifier");
         }
     } else
-        verify(member_type != A_MEMBER_CAST, "unexpected name for cast");
+        verify(member_type != A_MFLAG_CAST, "unexpected name for cast");
 
     record rec = context_model(mod, typeid(class));
     eargs args = eargs();
@@ -2080,14 +2084,14 @@ function parse_fn(silver mod, AMember member_type, A ident, OPType assign_enum) 
             single_expr = true;
         }
         verify(rtype, "type must proceed the -> keyword in fn");
-    } else if (member_type == A_MEMBER_IMETHOD)
+    } else if (member_type == A_MFLAG_IMETHOD)
         rtype = rec ? (model)pointer(rec) : emodel("generic");
     else
         rtype = emodel("void");
     
     verify(rtype, "rtype not set, void is something we may lookup");
     if (!name) {
-        verify(member_type == A_MEMBER_CAST, "with no name, expected cast");
+        verify(member_type == A_MFLAG_CAST, "with no name, expected cast");
         name = form(token, "cast_%o", rtype->name);
     }
     
@@ -2174,8 +2178,6 @@ void Import_process(Import im) {
     /// this might be returning members from field meta data to something we may understand in ether models
 }
 
-// silver uses import for software we import by symbol map
-// what this looks like -- as much like import as possible, to reveal silver
 void silver_init(silver mod) {
     if ( mod->source)  mod->source  = absolute(mod->source);
     if (!mod->install) mod->install = f(path, "%s", getenv("IMPORT"));
@@ -2185,7 +2187,6 @@ void silver_init(silver mod) {
     verify(file_exists("%o", mod->source), "source not found: %o", mod->source);
 
     print("source is %o", mod->source);
-    // always give it a file, or is code ok?  ... compilers like files!
     verify(exists(mod->source), "source (%o) does not exist", mod->source);
     verify(mod->std == language_silver || eq(ext(mod->source), "sf"),
         "only .sf extension supported; specify --std silver to override");
@@ -2207,31 +2208,12 @@ void silver_init(silver mod) {
         "dbg",     _DBG ? string(_DBG) : string(""),
         "install", install,
         "src",     parent(install));
-    mod->import = import(m); // import could certainly build the .ll assemblies for us -- we have library access
+    mod->import = import(m);
 
-    /// build a proper stack of tokens we may parse through normal means
-    /// lets just set a state variable prebuild so that import->skip
-    
     import_types(mod);
-    
-    /*
-    this is far too round-about a way to import A -- to convert to silver schema, then parse as models
-    we have it in memory Right Now -- so lets use it as-is
-    push_state(mod, a(
-        token(chars, "import"),
-        token(chars, "<"),
-        token(chars, "A"),
-        token(chars, ">")), 0);
-    mod->prebuild = true;
-    parse_statement(mod);
-    mod->prebuild = false;
-    pop_state  (mod, false);
-    */
 
     model mdl = emodel("A");
     verify(mdl, "A type not importing where it should be");
-
-
 
     AType mdl_type = isa(mdl); /// A should be a emember for a alias ref of struct _A, its a typedef
 
