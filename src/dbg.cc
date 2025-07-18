@@ -114,11 +114,13 @@ none dbg_init(dbg debug) {
     }
     debug->lldb_debugger = lldb::SBDebugger::Create();
 
-    if (!debug->on_stdout) debug->on_stdout = bind(debug, (A)debug->target, true, typeid(A), typeid(iobuffer), null, "stdout");
-    if (!debug->on_stderr) debug->on_stderr = bind(debug, (A)debug->target, true, typeid(A), typeid(iobuffer), null, "stderr");
-    if (!debug->on_break)  debug->on_break  = bind(debug, (A)debug->target, true, typeid(A), typeid(cursor),   null, "break");
-    if (!debug->on_exit)   debug->on_exit   = bind(debug, (A)debug->target, true, typeid(A), typeid(dbg),      null, "exit");
-    if (!debug->on_crash)  debug->on_crash  = bind(debug, (A)debug->target, true, typeid(A), typeid(cursor),   null, "crash");
+    // callback,  bind,   A, bool, AType, AType, symbol, symbol) \
+
+    if (!debug->on_stdout) debug->on_stdout = bind((A)debug, (A)debug->target, true, typeid(A), typeid(iobuffer), null, "stdout");
+    if (!debug->on_stderr) debug->on_stderr = bind((A)debug, (A)debug->target, true, typeid(A), typeid(iobuffer), null, "stderr");
+    if (!debug->on_break)  debug->on_break  = bind((A)debug, (A)debug->target, true, typeid(A), typeid(cursor),   null, "break");
+    if (!debug->on_exit)   debug->on_exit   = bind((A)debug, (A)debug->target, true, typeid(A), typeid(dbg),      null, "exit");
+    if (!debug->on_crash)  debug->on_crash  = bind((A)debug, (A)debug->target, true, typeid(A), typeid(cursor),   null, "crash");
 
     debug->lldb_debugger.SetAsync(true);
     if (!debug->exceptions) {
@@ -212,7 +214,7 @@ none dbg_cont(dbg debug) {
 }
 
 array read_children(dbg debug, lldb::SBValue value) {
-    array result = array(alloc, 32);
+    array result = array(32);
 
     for (int i = 0, n = (int)value.GetNumChildren(); i < n; ++i) {
         lldb::SBValue child = value.GetChildAtIndex(i);
@@ -256,7 +258,7 @@ array dbg_read_vars(dbg debug, array result, lldb::SBValueList vars) {
 }
 
 array dbg_read_arguments(dbg debug) {
-    array             result = array(alloc, 32);
+    array             result = array(32);
     lldb::SBFrame     frame  = debug->lldb_process.GetSelectedThread().GetSelectedFrame();
     lldb::SBValueList args   = frame.GetVariables(
         true, false, false, false); 
@@ -264,7 +266,7 @@ array dbg_read_arguments(dbg debug) {
 }
 
 array dbg_read_locals   (dbg debug) {
-    array             result = array(alloc, 32);
+    array             result = array(32);
     lldb::SBFrame     frame  = debug->lldb_process.GetSelectedThread().GetSelectedFrame();
     lldb::SBValueList args   = frame.GetVariables(
         false, true, false, false); 
@@ -272,7 +274,7 @@ array dbg_read_locals   (dbg debug) {
 }
 
 array dbg_read_statics  (dbg debug) {
-    array             result = array(alloc, 32);
+    array             result = array(32);
     lldb::SBFrame     frame  = debug->lldb_process.GetSelectedThread().GetSelectedFrame();
     lldb::SBValueList args   = frame.GetVariables(
         false, false, true, false); 
@@ -280,7 +282,7 @@ array dbg_read_statics  (dbg debug) {
 }
 
 array dbg_read_globals  (dbg debug) {
-    array             result      = array(alloc, 32);
+    array             result      = array(32);
     lldb::SBFrame     frame       = debug->lldb_process.GetSelectedThread().GetSelectedFrame();
     u32               num_modules = debug->lldb_target.GetNumModules();
 
@@ -296,7 +298,7 @@ array dbg_read_globals  (dbg debug) {
 }
 
 array dbg_read_registers(dbg debug) {
-    array             result = array(alloc, 32);
+    array             result = array(32);
     lldb::SBThread    thread = debug->lldb_process.GetSelectedThread();
     lldb::SBFrame     frame  = thread.GetSelectedFrame();
     lldb::SBValueList regs   = frame.GetRegisters();

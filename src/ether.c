@@ -148,7 +148,7 @@ void initialize() {
     LLVMInitializeNativeAsmPrinter();
     LLVMInitializeNativeAsmParser();
 
-    print("LLVM-Version", "%d.%d.%d",
+    print("LLVM-Version %d.%d.%d",
         LLVM_VERSION_MAJOR,
         LLVM_VERSION_MINOR,
         LLVM_VERSION_PATCH);
@@ -522,42 +522,44 @@ model ether_runtime_resolve(ether e, AType atype) {
             (model)class    (mod, e, name, n, members, members);
         emember rmem = push_model(e, mdl);
         for (int m = 0; m < atype->member_count; m++) {
-            type_member_t* mem = &atype->members[m];
-            if ((mem->member_type & A_MEMBER_PROP) != 0) {
-                model  mem_mdl = runtime_resolve(e, mem->type);
-                verify(mem_mdl, "resolve failure for struct prop: %s %s",
-                    mem->type->name, mem->name);
-                emember prop    = emember(mod, e, name, mem->sname, mdl, mem_mdl);
-                set(members, mem->sname, prop);
-            } else if ((mem->member_type & A_MEMBER_IMETHOD) != 0 ||
-                       (mem->member_type & A_MEMBER_SMETHOD) != 0) {
-                bool      is_static   = (mem->member_type & A_MEMBER_SMETHOD) != 0;
-                bool      is_cast     = (mem->member_type & A_MEMBER_CAST)    != 0;
-                bool      module_init = eq(mem->sname, "module_init"); /// name should be set to initialize, or we can track this
-                bool      is_init     = eq(mem->sname, "init");
-                array     arg_members = array(alloc, 32);
-                for (int a = 0; a < mem->args.count; a++) {
-                    AType  arg_type   = ((AType*)(&mem->args.meta_0))[a]; // needs to be a map.
+            type_member_t* amem = &atype->members[m];
+            if ((amem->member_type & A_MFLAG_PROP) != 0) {
+                model  amem_mdl = runtime_resolve(e, amem->type);
+                verify(amem_mdl, "resolve failure for struct prop: %s %s",
+                    amem->type->name, amem->name);
+                emember prop    = emember(mod, e, name, amem->sname, mdl, amem_mdl);
+                set(members, amem->sname, prop);
+            } else if ((amem->member_type & A_MFLAG_IMETHOD) != 0 ||
+                       (amem->member_type & A_MFLAG_SMETHOD) != 0 ||
+                       (amem->member_type & A_MFLAG_IFINAL)  != 0)
+            {
+                bool      is_ifinal   = (amem->member_type & A_MFLAG_IFINAL)  != 0;
+                bool      is_static   = (amem->member_type & A_MFLAG_SMETHOD) != 0;
+                bool      is_cast     = (amem->member_type & A_MFLAG_CAST)    != 0;
+                bool      module_init = eq(amem->sname, "module_init"); /// name should be set to initialize, or we can track this
+                bool      is_init     = eq(amem->sname, "init");
+                array     arg_members = array(32);
+
+                for (int a = 0; a < amem->args.count; a++) {
+                    AType  arg_type   = ((AType*)(&amem->args.meta_0))[a]; // needs to be a map.
                     model  arg_model  = runtime_resolve(e, arg_type);
                     verify(arg_model, "failed to resolve type: %s", arg_type->name);
                     emember arg_member = emember(
-                        mod, e, name, mem->sname, mdl, arg_model, is_arg, true);
+                        mod, e, name, amem->sname, mdl, arg_model, is_arg, true);
                     push(arg_members, arg_member);
                 }
-                eargs args = eargs(mod, e, args, arg_members);
-                
-                function fn = function(
+                eargs    args = eargs(mod, e, args, arg_members);
+                function fn   = function(
                     is_cast,       is_cast,
-                    target,        is_static ? (model)null : mdl,
+                    is_ifinal,     is_ifinal,
+                    is_init,       is_init,
                     is_global_ctr, module_init,
-                    is_init,       false,
-                    args,          args
-                );
-                emember func = emember(mod, e, name, mem->sname, mdl, fn);
-                set(members, mem->sname, func);
+                    target,        is_static ? (model)null : mdl,
+                    args,          args);
+                emember func = emember(mod, e, name, amem->sname, mdl, fn);
+                set(members, amem->sname, func);
             } else {
-                /// lets support attributes on classes; honestly thats just enumerable statics that have a meta emember
-                fault("unhandled: %s", mem->name);
+                fault("unhandled: %s", amem->name);
             }
         }
         finalize(mdl, rmem);
@@ -567,7 +569,7 @@ model ether_runtime_resolve(ether e, AType atype) {
         finalize(mdl, emem);
         for (int m = 0; m < atype->member_count; m++) {
             type_member_t* mem = &atype->members[m];
-            if (mem->member_type & A_MEMBER_ENUMV) {
+            if (mem->member_type & A_MFLAG_ENUMV) {
                 verify(mem->ptr, "expected enum data");
                 A v    = primitive(mem->type, mem->ptr);
                 model  vmdl = runtime_resolve(e, mem->type);
@@ -584,7 +586,7 @@ model ether_runtime_resolve(ether e, AType atype) {
             }
         }
     } else if (is_base_type) {
-        include(e, string("A"));
+        include(e, string("A-type.h"));
         /// ether will build objects out of these:
         emember ftable_t_ = lookup2(e, string("ftable_t"), null);
         emember af_recycler_ = lookup2(e, string("af_recycler"), null);
@@ -707,7 +709,7 @@ void function_finalize(function fn, emember mem) {
             function main_fn = function(
                 mod,            e,
                 name,           string("main"),
-                function_type,  A_MEMBER_SMETHOD,
+                function_type,  A_MFLAG_SMETHOD,
                 export,         true,
                 record,         null,
                 rtype,          lookup2(e, string("int"), null)->mdl,
@@ -1359,12 +1361,12 @@ node ether_create(ether e, model mdl, A args) {
             return convert(e, input, mdl); /// primitive-based conversion goes here
         
         function fn = instanceof(fmem->mdl, typeid(function));
-        if (fn->function_type & A_MEMBER_CONSTRUCT) {
+        if (fn->function_type & A_MFLAG_CONSTRUCT) {
             /// ctr: call before init
             /// this also means the mdl is not a primitive
             verify(!is_primitive(fn->rtype), "expected struct/class");
             ctr = fmem;
-        } else if (fn->function_type & A_MEMBER_CAST) {
+        } else if (fn->function_type & A_MFLAG_CAST) {
             /// cast call on input
             return fn_call(e, fn, array_of(input, null));
         } else
@@ -2451,7 +2453,7 @@ bool ether_write(ether e, ARef ref_ll, ARef ref_bc) {
 
 
 void ether_llvm_init(ether e) {
-    e->lex            = array(alloc, 32);
+    e->lex            = array(32);
     //e->type_refs    = map(hsize, 64);
     e->module         = LLVMModuleCreateWithName(e->name->chars);
     e->module_ctx     = LLVMGetModuleContext(e->module);
@@ -2590,7 +2592,7 @@ emember model_castable(model fr, model to) {
     pairs (to->members, i) {
         emember mem = i->value;
         function fn = instanceof(mem->mdl, typeid(function));
-        if (!fn || !(fn->function_type & A_MEMBER_CONSTRUCT))
+        if (!fn || !(fn->function_type & A_MFLAG_CONSTRUCT))
             continue;
         emember first = null;
         pairs (fn->members, i) {
@@ -2607,7 +2609,7 @@ emember model_castable(model fr, model to) {
     pairs (fr->members, i) {
         emember mem = i->value;
         function fn = instanceof(mem->mdl, typeid(function));
-        if (!fn || !(fn->function_type & A_MEMBER_CAST))
+        if (!fn || !(fn->function_type & A_MFLAG_CAST))
             continue;
         if (fn->rtype == to)
             return mem;
@@ -2627,7 +2629,7 @@ emember model_constructable(model fr, model to) {
     pairs (to->members, i) {
         emember mem = i->value;
         function fn = instanceof(mem->mdl, typeid(function));
-        if (!fn || !(fn->function_type & A_MEMBER_CONSTRUCT))
+        if (!fn || !(fn->function_type & A_MFLAG_CONSTRUCT))
             continue;
         emember first = null;
         pairs (fn->members, i) {
@@ -2649,7 +2651,7 @@ emember model_convertible(model fr, model to) {
     return mcast ? mcast : constructable(fr, to);
 }
 
-emember ether_compatible(ether e, record r, string n, AMember f, array args) {
+emember ether_compatible(ether e, record r, string n, AFlag f, array args) {
     pairs (r->members, i) {
         emember mem = i->value;
         function fn = instanceof(mem->mdl, typeid(function));
