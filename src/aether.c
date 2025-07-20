@@ -9,10 +9,10 @@
 
 typedef LLVMMetadataRef LLVMScope;
 
-#include <ether/import>
+#include <aether/import>
 
 // def -> base for change from type to emember (emember has model 
-//#define ecall(M, ...) ether_##M(e, ## __VA_ARGS__) # .cms [ c-like module in silver ]
+//#define ecall(M, ...) aether_##M(e, ## __VA_ARGS__) # .cms [ c-like module in silver ]
 
 #define emodel(N)     ({            \
     emember  m = lookup2(e, string(N), null); \
@@ -24,7 +24,7 @@ typedef LLVMMetadataRef LLVMScope;
 
 #define value(m,vr) node(mod, e, value, vr, mdl, m)
 
-emember ether_push_model(ether e, model mdl) {
+emember aether_push_model(aether e, model mdl) {
     bool is_func = instanceof(mdl, typeid(function)) != null;
     emember mem   = emember(
         mod, e, mdl, is_class(mdl) ? pointer(mdl) : mdl, name, mdl->name,
@@ -34,7 +34,7 @@ emember ether_push_model(ether e, model mdl) {
     return mem;
 }
 
-map ether_top_member_map(ether e) {
+map aether_top_member_map(aether e) {
     model top = e->top;
     for (int i = len(e->lex) - 2; i >= 0; i--) {
         model ntop = e->lex->elements[i];
@@ -47,7 +47,7 @@ map ether_top_member_map(ether e) {
     return top->members;
 }
 
-void ether_push_member(ether e, emember mem) {
+void aether_push_member(aether e, emember mem) {
     if (!mem || mem->registered)
         return;
     mem->registered = true;
@@ -57,7 +57,7 @@ void ether_push_member(ether e, emember mem) {
         //emember ptr_class = emember(mod, e, mdl, pointer(mem->mdl), name, mem->name);
         //push_member(e, ptr_class);
     //}
-    map members = ether_top_member_map(e);
+    map members = aether_top_member_map(e);
     string  key = string(mem->name->chars);
 
     // todo: remove ALL uses of arrays on the members; i simply do not see the point of this; we do not duplicate members by name, ever in any model
@@ -76,7 +76,7 @@ void ether_push_member(ether e, emember mem) {
 
 #define no_target null
 
-/// this is more useful as a primitive, to include actual A-type in ether's primitive abstract
+/// this is more useful as a primitive, to include actual A-type in aether's primitive abstract
 AType model_primitive(model mdl) {
     model src = mdl->src;
     while (instanceof(src, typeid(model))) {
@@ -156,7 +156,7 @@ void initialize() {
 
 module_init(initialize);
 
-void print_ctx(ether e, string msg) {
+void print_ctx(aether e, string msg) {
     string res = string(alloc, 32);
     for (int i = 0; i < len(e->lex); i++) {
         model ctx = e->lex->elements[i];
@@ -200,7 +200,7 @@ i64 model_cmp(model mdl, model b) {
 }
 
 void model_init(model mdl) {
-    ether  e = mdl->mod;
+    aether  e = mdl->mod;
 
     if (mdl->name && instanceof(mdl->name, typeid(string))) {
         string n = mdl->name;
@@ -287,9 +287,9 @@ void model_init(model mdl) {
             function fn = mdl_src;
             mdl->type  = fn->type;
             mdl->debug = fn->debug;
-        } else if (type == typeid(ether))
+        } else if (type == typeid(aether))
             return;
-        else if (type != typeid(ether)) {
+        else if (type != typeid(aether)) {
             //fault("unsupported model type: %s", type->name);
         }
     } 
@@ -336,7 +336,7 @@ void statements_init(statements st) {
     st->scope = LLVMDIBuilderCreateLexicalBlock(e->dbg_builder, e->top->scope, e->file, 1, 0);
 }
 
-void ether_eprint_node(ether e, node n) {
+void aether_eprint_node(aether e, node n) {
     /// would be nice to have a lookup method on import
     /// call it im_lookup or something so we can tell its different
     emember printf_fn  = lookup2(e, string("printf"), null);
@@ -358,7 +358,7 @@ void ether_eprint_node(ether e, node n) {
 }
 
 // f = format string; this is evaluated from nodes given at runtime
-void ether_eprint(ether e, symbol f, ...) {
+void aether_eprint(aether e, symbol f, ...) {
     va_list args;
     va_start(args, f);
 
@@ -431,7 +431,7 @@ void ether_eprint(ether e, symbol f, ...) {
 
 
 
-emember ether_evar(ether e, model mdl, string name) {
+emember aether_evar(aether e, model mdl, string name) {
     node   a =  create(e, mdl, null);
     emember m = emember(mod, e, name, name, mdl, mdl);
     push_member(e, m);
@@ -448,7 +448,7 @@ void code_select(code c) {
     LLVMPositionBuilderAtEnd(c->mod->builder, c->block);
 }
 
-void ether_ecmp(ether e, node l, comparison comp, node r, code lcode, code rcode) {
+void aether_ecmp(aether e, node l, comparison comp, node r, code lcode, code rcode) {
     node load_l = load(e, l);
     node load_r = load(e, l);
     LLVMValueRef cond = LLVMBuildICmp(
@@ -456,14 +456,14 @@ void ether_ecmp(ether e, node l, comparison comp, node r, code lcode, code rcode
     LLVMBuildCondBr(e->builder, cond, lcode->block, rcode->block);
 }
 
-node ether_eelement(ether e, node array, A index) {
+node aether_eelement(aether e, node array, A index) {
     node i = operand(e, index, null);
     node element_v = value(e, LLVMBuildInBoundsGEP2(
         e->builder, array->mdl->type, array->value, &i->value, 1, "eelement"));
     return load(e, element_v);
 }
 
-void ether_einc(ether e, node v, num amount) {
+void aether_einc(aether e, node v, num amount) {
     node lv = load(e, v);
     LLVMValueRef one = LLVMConstInt(LLVMInt64Type(), amount, 0);
     LLVMValueRef nextI = LLVMBuildAdd(e->mod->builder, lv->value, one, "nextI");
@@ -475,7 +475,7 @@ void ether_einc(ether e, node v, num amount) {
 /// there is no such thing as a global spec for AType functions
 /// we simply can have lots of static methods on A, though.
 
-map member_map(ether e, cstr field, ...) {
+map member_map(aether e, cstr field, ...) {
     va_list args;
     va_start(args, field);
     cstr value;
@@ -495,8 +495,8 @@ map member_map(ether e, cstr field, ...) {
     return res;
 }
 
-/// lets make this the primary call made in ether_define_primitive
-model ether_runtime_resolve(ether e, AType atype) {
+/// lets make this the primary call made in aether_define_primitive
+model aether_runtime_resolve(aether e, AType atype) {
     token  n = token(atype->name);
     print("resolving: %o", n);
     emember m = lookup2(e, n, null);
@@ -522,20 +522,20 @@ model ether_runtime_resolve(ether e, AType atype) {
             (model)class    (mod, e, name, n, members, members);
         emember rmem = push_model(e, mdl);
         for (int m = 0; m < atype->member_count; m++) {
-            type_member_t* amem = &atype->members[m];
-            if ((amem->member_type & A_MFLAG_PROP) != 0) {
+            member amem = &atype->members[m];
+            if ((amem->member_type & A_FLAG_PROP) != 0) {
                 model  amem_mdl = runtime_resolve(e, amem->type);
                 verify(amem_mdl, "resolve failure for struct prop: %s %s",
                     amem->type->name, amem->name);
                 emember prop    = emember(mod, e, name, amem->sname, mdl, amem_mdl);
                 set(members, amem->sname, prop);
-            } else if ((amem->member_type & A_MFLAG_IMETHOD) != 0 ||
-                       (amem->member_type & A_MFLAG_SMETHOD) != 0 ||
-                       (amem->member_type & A_MFLAG_IFINAL)  != 0)
+            } else if ((amem->member_type & A_FLAG_IMETHOD) != 0 ||
+                       (amem->member_type & A_FLAG_SMETHOD) != 0 ||
+                       (amem->member_type & A_FLAG_IFINAL)  != 0)
             {
-                bool      is_ifinal   = (amem->member_type & A_MFLAG_IFINAL)  != 0;
-                bool      is_static   = (amem->member_type & A_MFLAG_SMETHOD) != 0;
-                bool      is_cast     = (amem->member_type & A_MFLAG_CAST)    != 0;
+                bool      is_ifinal   = (amem->member_type & A_FLAG_IFINAL)  != 0;
+                bool      is_static   = (amem->member_type & A_FLAG_SMETHOD) != 0;
+                bool      is_cast     = (amem->member_type & A_FLAG_CAST)    != 0;
                 bool      module_init = eq(amem->sname, "module_init"); /// name should be set to initialize, or we can track this
                 bool      is_init     = eq(amem->sname, "init");
                 array     arg_members = array(32);
@@ -568,8 +568,8 @@ model ether_runtime_resolve(ether e, AType atype) {
         emember emem = push_model(e, mdl);
         finalize(mdl, emem);
         for (int m = 0; m < atype->member_count; m++) {
-            type_member_t* mem = &atype->members[m];
-            if (mem->member_type & A_MFLAG_ENUMV) {
+            member mem = &atype->members[m];
+            if (mem->member_type & A_FLAG_ENUMV) {
                 verify(mem->ptr, "expected enum data");
                 A v    = primitive(mem->type, mem->ptr);
                 model  vmdl = runtime_resolve(e, mem->type);
@@ -586,14 +586,14 @@ model ether_runtime_resolve(ether e, AType atype) {
             }
         }
     } else if (is_base_type) {
-        include(e, string("A-type.h"));
-        /// ether will build objects out of these:
-        emember ftable_t_ = lookup2(e, string("ftable_t"), null);
-        emember af_recycler_ = lookup2(e, string("af_recycler"), null);
-        model m_alias = af_recycler_->mdl->aliases->elements[0];
-        model m_alias_src = m_alias->src;
-        model atype_model = structure(mod, e, name, token("AType"), members, members);
-        model atype_ptr   = pointer(atype_model);
+        /// this lets us know our basic type structs (A Type (minus A methods), A Instance header, member)
+        include(e, string("silver/object.h"));
+        /// aether will build objects out of these:
+        string atype = string("AType");
+        emember AType_ = aether_lookup2(e, atype, null);
+        model atype_model  = structure(mod, e, name, token("AType"), members, members);
+
+        model atype_ptr    = pointer(atype_model);
         emember amem       = push_model(e, atype_ptr); // this only finalizes when its from
         finalize(atype_ptr, amem);
         mdl = atype_ptr;
@@ -603,14 +603,14 @@ model ether_runtime_resolve(ether e, AType atype) {
     return mdl;
 }
 
-void ether_ebranch(ether e, code c) {
+void aether_ebranch(aether e, code c) {
     LLVMBuildBr(e->builder, c->block);
 }
 
-void ether_build_initializer(ether e, function m) { }
+void aether_build_initializer(aether e, function m) { }
 
 bool is_module_level(model mdl) {
-    ether e = mdl->mod;
+    aether e = mdl->mod;
     pairs(e->members, i) {
         emember mem = i->value;
         if (mem->mdl == mdl) return true;
@@ -621,7 +621,7 @@ bool is_module_level(model mdl) {
 void function_finalize(function fn, emember mem) {
     if (fn->finalized) return;
 
-    ether e       = fn->mod;
+    aether e       = fn->mod;
     int   index   = 0;
     bool  is_init = e->fn_init && e->fn_init == fn;
     fn->finalized = true;
@@ -685,7 +685,7 @@ void function_finalize(function fn, emember mem) {
     }
 
     // register module constructors as global initializers ONLY for delegate modules
-    // ether creates a 'main' with argument parsing for its main modules
+    // aether creates a 'main' with argument parsing for its main modules
     if (is_init) {
         verify(e->top == (model)fn, "expected module context");
 
@@ -709,7 +709,7 @@ void function_finalize(function fn, emember mem) {
             function main_fn = function(
                 mod,            e,
                 name,           string("main"),
-                function_type,  A_MFLAG_SMETHOD,
+                function_type,  A_FLAG_SMETHOD,
                 export,         true,
                 record,         null,
                 rtype,          lookup2(e, string("int"), null)->mdl,
@@ -797,7 +797,7 @@ void function_use(function fn) {
     if (fn->value)
         return;
     
-    ether            e         = fn->mod;
+    aether            e         = fn->mod;
     int              n_args    = len(fn->args);
     LLVMTypeRef*     arg_types = calloc(4 + (fn->target != null) + n_args, sizeof(LLVMTypeRef));
     int              index     = 0;
@@ -882,7 +882,7 @@ void record_finalize(record rec, emember mem) {
         return;
 
     int   total = 0;
-    ether e     = rec->mod;
+    aether e     = rec->mod;
     array a     = array(32);
     record r = rec;
     class  is_class = instanceof(rec, typeid(class));
@@ -1033,7 +1033,7 @@ void record_finalize(record rec, emember mem) {
 #define DW_TAG_structure_type 0x13  // DWARF tag for structs.
 
 void record_init(record rec) {
-    ether e = rec->mod;
+    aether e = rec->mod;
     rec->type = LLVMStructCreateNamed(LLVMGetGlobalContext(), rec->name->chars);
 
     // Create a forward declaration for the struct's debug info
@@ -1058,7 +1058,7 @@ void record_init(record rec) {
 }
 
 emember emember_resolve(emember mem, string name) {
-    ether  e   = mem->mod;
+    aether  e   = mem->mod;
     i64  index = 0;
     model base = mem->mdl->ref ? mem->mdl->src : mem->mdl; // needs to support more than indirection here
     pairs(base->members, i) {
@@ -1107,7 +1107,7 @@ bool emember_has_value(emember mem) {
 }
 
 void emember_init(emember mem) {
-    ether e   = mem->mod;
+    aether e   = mem->mod;
     if (!mem->access) mem->access = interface_public;
     if (instanceof(mem->name, typeid(string))) {
         string n = mem->name;
@@ -1128,12 +1128,12 @@ void emember_set_model(emember mem, model mdl) {
     function is_fn   = instanceof(mdl, typeid(function));
     if      (is_fn) return;
 
-    ether    e       = mem->mod;
-    function ctx_fn  = ether_context_model(e, typeid(function));
+    aether    e       = mem->mod;
+    function ctx_fn  = aether_context_model(e, typeid(function));
     bool     is_user = mdl->is_user; /// i.e. import from silver; does not require processing here
     bool     is_init = false;
-    record   rec     = ether_context_model(e, typeid(class));
-    if (!rec) rec = ether_context_model(e, typeid(structure));
+    record   rec     = aether_context_model(e, typeid(class));
+    if (!rec) rec = aether_context_model(e, typeid(structure));
 
     if (ctx_fn && ctx_fn->imdl) {
         is_init = true;
@@ -1186,9 +1186,9 @@ void emember_set_model(emember mem, model mdl) {
         // we assign constants ourselves, and value is not set until we register the
         //verify(!mem->is_const || mem->value, "const value mismatch");
         bool is_global_space = false;
-        /// they would be abstract above definition of ether model
+        /// they would be abstract above definition of aether model
         //      less we want to start subclassing functionality of the others
-        if (isa(mem->mdl)->parent_type != (ftable_t*)typeid(model) && !mem->value) {
+        if (isa(mem->mdl)->parent_type != typeid(model) && !mem->value) {
             mem->value = LLVMAddGlobal(e->module, type, name); // its created here (a-map)
             //LLVMSetGlobalConstant(mem->value, mem->is_const);
             LLVMSetInitializer(mem->value, LLVMConstNull(type));
@@ -1231,7 +1231,7 @@ void emember_set_model(emember mem, model mdl) {
         literal, l, mdl, emodel(stringify(f##b)), \
         value, LLVMConstReal(emodel(stringify(f##b))->type, *(f##b*)l))
 
-node operand_primitive(ether e, A op) {
+node operand_primitive(aether e, A op) {
          if (instanceof(op, typeid(  node))) return op;
     else if (instanceof(op, typeid(    u8))) return uint_value(8,  op);
     else if (instanceof(op, typeid(   u16))) return uint_value(16, op);
@@ -1249,11 +1249,11 @@ node operand_primitive(ether e, A op) {
         LLVMValueRef cast_i8 = LLVMBuildBitCast(e->builder, gs, LLVMPointerType(LLVMInt8Type(), 0), "cast_symbol");
         return node(mod, e, value, cast_i8, mdl, emodel("symbol"), literal, op);
     }
-    error("unsupported type in ether_operand");
+    error("unsupported type in aether_operand");
     return NULL;
 }
 
-node ether_operand(ether e, A op, model src_model) {
+node aether_operand(aether e, A op, model src_model) {
     if (!op) return value(emodel("void"), null);
 
     if (instanceof(op, typeid(array))) {
@@ -1337,13 +1337,13 @@ model model_alias(model src, string name, reference r, array shape) {
     return ref;
 }
 
-node ether_default_value(ether e, model mdl) {
+node aether_default_value(aether e, model mdl) {
     return create(e, mdl, null);
 }
 
 /// create is both stack and heap allocation (based on model->ref, a storage enum)
 /// create primitives and objects, constructs with singular args or a map of them when applicable
-node ether_create(ether e, model mdl, A args) {
+node aether_create(aether e, model mdl, A args) {
     map    imap = instanceof(args, typeid(map));
     array  a    = instanceof(args, typeid(array));
     node   n    = null;
@@ -1361,12 +1361,12 @@ node ether_create(ether e, model mdl, A args) {
             return convert(e, input, mdl); /// primitive-based conversion goes here
         
         function fn = instanceof(fmem->mdl, typeid(function));
-        if (fn->function_type & A_MFLAG_CONSTRUCT) {
+        if (fn->function_type & A_FLAG_CONSTRUCT) {
             /// ctr: call before init
             /// this also means the mdl is not a primitive
             verify(!is_primitive(fn->rtype), "expected struct/class");
             ctr = fmem;
-        } else if (fn->function_type & A_MFLAG_CAST) {
+        } else if (fn->function_type & A_FLAG_CAST) {
             /// cast call on input
             return fn_call(e, fn, array_of(input, null));
         } else
@@ -1454,7 +1454,7 @@ node ether_create(ether e, model mdl, A args) {
     return n;
 }
 
-LLVMValueRef get_memset_function(ether e) {
+LLVMValueRef get_memset_function(aether e) {
     // Parameters for memset: void* (i8*), int (i8), size_t (i64)
     LLVMTypeRef param_types[] = {
         LLVMPointerType(LLVMInt8TypeInContext(e->module_ctx), 0),  // void* (i8*)
@@ -1478,7 +1478,7 @@ LLVMValueRef get_memset_function(ether e) {
     return memset_func;
 }
 
-node ether_zero(ether e, node n) {
+node aether_zero(aether e, node n) {
     model      mdl = n->mdl;
     LLVMValueRef v = n->value;
     LLVMValueRef zero   = LLVMConstInt(LLVMInt8Type(), 0, 0);          // value for memset (0)
@@ -1489,7 +1489,7 @@ node ether_zero(ether e, node n) {
 
 
 model prefer_mdl(model m0, model m1) {
-    ether e = m0->mod;
+    aether e = m0->mod;
     if (m0 == m1) return m0;
     model g = lookup2(e, string("any"), null);
     if (m0 == g) return m1;
@@ -1500,8 +1500,8 @@ model prefer_mdl(model m0, model m1) {
 }
 
 
-node ether_ternary(ether e, node cond_expr, node true_expr, node false_expr) {
-    ether mod = e;
+node aether_ternary(aether e, node cond_expr, node true_expr, node false_expr) {
+    aether mod = e;
     // Step 1: Create the blocks for the ternary structure
     LLVMBasicBlockRef current_block = LLVMGetInsertBlock(mod->builder);
     LLVMBasicBlockRef then_block    = LLVMAppendBasicBlock(current_block, "ternary_then");
@@ -1533,14 +1533,14 @@ node ether_ternary(ether e, node cond_expr, node true_expr, node false_expr) {
     return node(mod, mod, mdl, prefer_mdl(true_expr->mdl, false_expr->mdl), value, null);
 }
 
-node ether_builder(ether e, subprocedure cond_builder) {
+node aether_builder(aether e, subprocedure cond_builder) {
     LLVMBasicBlockRef block = LLVMGetInsertBlock(e->builder);
     LLVMPositionBuilderAtEnd(e->builder, block);
     node   n = invoke(cond_builder, null);
     return n;
 }
 
-node ether_if_else(ether e, array conds, array exprs, subprocedure cond_builder, subprocedure expr_builder) {
+node aether_if_else(aether e, array conds, array exprs, subprocedure cond_builder, subprocedure expr_builder) {
     int ln_conds = len(conds);
     verify(ln_conds == len(exprs) - 1 || 
            ln_conds == len(exprs), "mismatch between conditions and expressions");
@@ -1587,7 +1587,7 @@ node ether_if_else(ether e, array conds, array exprs, subprocedure cond_builder,
     return node(mod, e, mdl, emodel("void"), value, null);  // Dummy node, replace with real node if needed
 }
 
-node ether_addr_of(ether e, node expr, model mdl) {
+node aether_addr_of(aether e, node expr, model mdl) {
     model        ref   = pointer(mdl ? mdl : expr->mdl); // this needs to set mdl->type to LLVMPointerType(mdl_arg->type, 0)
     emember      m_expr = instanceof(expr, typeid(emember));
     LLVMValueRef value = m_expr ? expr->value :
@@ -1598,7 +1598,7 @@ node ether_addr_of(ether e, node expr, model mdl) {
         mdl,   ref);
 }
 
-node ether_offset(ether e, node n, A offset) {
+node aether_offset(aether e, node n, A offset) {
     emember mem = instanceof(n, typeid(emember));
     model  mdl = n->mdl;
     node   i;
@@ -1633,7 +1633,7 @@ node ether_offset(ether e, node n, A offset) {
                          node(mod, e, mdl, mdl, value, ptr_offset);
 }
 
-node ether_load(ether e, emember mem) {
+node aether_load(aether e, emember mem) {
     if (!instanceof(mem, typeid(emember))) return mem; // for node values, no load required
     model        mdl      = mem->mdl;
     LLVMValueRef ptr      = mem->value;
@@ -1664,7 +1664,7 @@ node ether_load(ether e, emember mem) {
 
 /// general signed/unsigned/1-64bit and float/double conversion
 /// [optionally] load and convert expression
-node ether_convert(ether e, node expr, model rtype) {
+node aether_convert(aether e, node expr, model rtype) {
     expr = load(e, expr);
     model        F = expr->mdl;
     model        T = rtype;
@@ -1734,7 +1734,7 @@ node ether_convert(ether e, node expr, model rtype) {
     return res;
 }
 
-model ether_context_model(ether e, AType type) {
+model aether_context_model(aether e, AType type) {
     for (int i = len(e->lex) - 1; i >= 0; i--) {
         model ctx = e->lex->elements[i];
         if (isa(ctx) == type)
@@ -1743,7 +1743,7 @@ model ether_context_model(ether e, AType type) {
     return null;
 }
 
-model ether_return_type(ether e) {
+model aether_return_type(aether e) {
     for (int i = len(e->lex) - 1; i >= 0; i--) {
         model ctx = e->lex->elements[i];
         if (ctx->rtype) return ctx->rtype;
@@ -1751,7 +1751,7 @@ model ether_return_type(ether e) {
     return null;
 }
 
-void assign_args(ether e, node L, A R, node* r_L, node* r_R) {
+void assign_args(aether e, node L, A R, node* r_L, node* r_R) {
     *r_R = operand(e, R, null);
     emember Lm = instanceof(L, typeid(emember));
     if (Lm && !Lm->is_const)
@@ -1775,7 +1775,7 @@ static struct op_entry op_table[] = {
     { LLVMBuildURem }
 };
 
-node ether_assign(ether e, node L, A R, OPType op) {
+node aether_assign(aether e, node L, A R, OPType op) {
     int v_op = op;
     verify(op >= OPType__assign && op <= OPType__assign_left, "invalid assignment-operator");
     node rL, rR = operand(e, R, null);
@@ -1790,7 +1790,7 @@ node ether_assign(ether e, node L, A R, OPType op) {
     return res;
 }
 
-model ether_base_model(ether e, symbol name, AType native) {
+model aether_base_model(aether e, symbol name, AType native) {
     void* result[8];
     A prim = primitive(native, result); /// make a mock instance out of the type
     model mdl = model(
@@ -1802,23 +1802,23 @@ model ether_base_model(ether e, symbol name, AType native) {
 }
 
 /// A-type must be read
-void ether_define_primitive(ether e) {
+void aether_define_primitive(aether e) {
     e->base = map(hsize, 64);
-    model _none = ether_base_model(e, "void", typeid(none));
-                  ether_base_model(e, "bool", typeid(bool));
-                  ether_base_model(e, "u8", typeid(u8));
-    model  _u16 = ether_base_model(e, "u16", typeid(u16));
-                  ether_base_model(e, "u32", typeid(u32));
-    model  _u64 = ether_base_model(e, "u64", typeid(u64));
-    model  _u128 = ether_base_model(e, "u128", typeid(u128));
-    model  _i8  = ether_base_model(e, "i8",  typeid(i8));
-    model  _i16 = ether_base_model(e, "i16", typeid(i16));
-    model  _i32 = ether_base_model(e, "i32", typeid(i32));
-    model  _i64 = ether_base_model(e, "i64", typeid(i64));
-                  ether_base_model(e, "f32",  typeid(f32));
-                  ether_base_model(e, "f64",  typeid(f64));
-                  ether_base_model(e, "f128", typeid(f128));
-    model  _i128 = ether_base_model(e, "i128", typeid(i128));
+    model _none = aether_base_model(e, "void", typeid(none));
+                  aether_base_model(e, "bool", typeid(bool));
+                  aether_base_model(e, "u8", typeid(u8));
+    model  _u16 = aether_base_model(e, "u16", typeid(u16));
+                  aether_base_model(e, "u32", typeid(u32));
+    model  _u64 = aether_base_model(e, "u64", typeid(u64));
+    model  _u128 = aether_base_model(e, "u128", typeid(u128));
+    model  _i8  = aether_base_model(e, "i8",  typeid(i8));
+    model  _i16 = aether_base_model(e, "i16", typeid(i16));
+    model  _i32 = aether_base_model(e, "i32", typeid(i32));
+    model  _i64 = aether_base_model(e, "i64", typeid(i64));
+                  aether_base_model(e, "f32",  typeid(f32));
+                  aether_base_model(e, "f64",  typeid(f64));
+                  aether_base_model(e, "f128", typeid(f128));
+    model  _i128 = aether_base_model(e, "i128", typeid(i128));
     
     model _cstr = alias(_i8, string("cstr"), reference_pointer, null);
     set(e->base, string("cstr"), _cstr);
@@ -1855,7 +1855,7 @@ void ether_define_primitive(ether e) {
 
 /// look up a emember in lexical scope
 /// this applies to models too, because they have membership as a type entry
-emember ether_lookup2(ether e, A name, AType mdl_type_filter) {
+emember aether_lookup2(aether e, A name, AType mdl_type_filter) {
     if (!name) return null;
     if (instanceof(name, typeid(token)))
         name = cast(string, (token)name);
@@ -1886,7 +1886,7 @@ emember ether_lookup2(ether e, A name, AType mdl_type_filter) {
     return null;
 }
 
-model ether_push(ether e, model mdl) {
+model aether_push(aether e, model mdl) {
 
     function fn_prev = context_model(e, typeid(function));
     if (fn_prev) {
@@ -1968,7 +1968,7 @@ none emember_release(emember mem) {
     }
 }
 
-model ether_pop(ether e) {
+model aether_pop(aether e) {
     statements st = instanceof(e->top, typeid(statements));
     if (st) {
         pairs(st->members, i) {
@@ -1985,7 +1985,7 @@ model ether_pop(ether e) {
     function fn = context_model(e, typeid(function));
     if (fn && fn != fn_prev) {
         LLVMPositionBuilderAtEnd(e->builder, fn->entry);
-        //if (!instanceof(fn->imdl, typeid(ether)))
+        //if (!instanceof(fn->imdl, typeid(aether)))
         LLVMSetCurrentDebugLocation2(e->builder, fn->last_dbg);
     }
 
@@ -2000,7 +2000,7 @@ model ether_pop(ether e) {
 
 enum CXChildVisitResult visit_member(CXCursor cursor, CXCursor parent, CXClientData client_data);
 
-model cx_to_model(ether e, CXType cxType, symbol name, bool arg_rules) {
+model cx_to_model(aether e, CXType cxType, symbol name, bool arg_rules) {
     string    t = null;
     int   depth = 0;
     CXType base = cxType;
@@ -2059,7 +2059,7 @@ model cx_to_model(ether e, CXType cxType, symbol name, bool arg_rules) {
                 model  resolved_mdl  = cx_to_model(e, canonicalType, name, arg_rules);
                 model  typedef_mdl   = model_alias(resolved_mdl, t,
                     depth > 0 ? reference_pointer : reference_value, null);
-                ether_push_model(e, typedef_mdl);
+                aether_push_model(e, typedef_mdl);
                 return typedef_mdl;
             } else {
                 if (strcmp(t->chars, "af_recycler") == 0) {
@@ -2126,7 +2126,7 @@ model cx_to_model(ether e, CXType cxType, symbol name, bool arg_rules) {
                 if (rec && rec->expect_members) {
                     rec->expect_members = false;
                 }
-                emember m = ether_push_model(e, def);
+                emember m = aether_push_model(e, def);
                 clang_visitChildren(rcursor, visit_member, def);
                 if (strcmp(t->chars, "_string") == 0) {
                     pairs(def->members, m) {
@@ -2159,7 +2159,7 @@ model cx_to_model(ether e, CXType cxType, symbol name, bool arg_rules) {
 
 enum CXChildVisitResult visit_member(CXCursor cursor, CXCursor parent, CXClientData client_data) {
     model  type_def = (model)client_data;
-    ether  e      = type_def->mod;
+    aether  e      = type_def->mod;
     AType ty = isa(type_def);
     record r = type_def;
     //e->cursor = cursor;
@@ -2176,8 +2176,8 @@ enum CXChildVisitResult visit_member(CXCursor cursor, CXCursor parent, CXClientD
     
     enum CXCursorKind kind = clang_getCursorKind(cursor);
     if (kind == CXCursor_FieldDecl) {
-        ether_push(e, type_def);
-        //ether_pop(e);
+        aether_push(e, type_def);
+        //aether_pop(e);
         CXType   field_type    = clang_getCursorType(cursor);
         CXString field_name    = clang_getCursorSpelling(cursor);
         symbol   field_name_cs = clang_getCString(field_name);
@@ -2187,7 +2187,7 @@ enum CXChildVisitResult visit_member(CXCursor cursor, CXCursor parent, CXClientD
             from_include, e->current_include);
         set(type_def->members, string(field_name_cs), mem);
         clang_disposeString(field_name);
-        ether_pop(e);
+        aether_pop(e);
     }
     
     return CXChildVisit_Recurse;
@@ -2196,7 +2196,7 @@ enum CXChildVisitResult visit_member(CXCursor cursor, CXCursor parent, CXClientD
 enum CXChildVisitResult visit_enum_constant(CXCursor cursor, CXCursor parent, CXClientData client_data) {
     if (clang_getCursorKind(cursor) == CXCursor_EnumConstantDecl) {
         model         def = (model)client_data;
-        ether           e = def->mod;
+        aether           e = def->mod;
         CXString spelling = clang_getCursorSpelling(cursor);
         const char*  name = clang_getCString(spelling);
         long long   value = clang_getEnumConstantDeclValue(cursor);
@@ -2212,7 +2212,7 @@ enum CXChildVisitResult visit_enum_constant(CXCursor cursor, CXCursor parent, CX
 }
 
 enum CXChildVisitResult visit(CXCursor cursor, CXCursor parent, CXClientData client_data) {
-    ether       e = (ether)client_data;
+    aether       e = (aether)client_data;
     CXString  fcx = clang_getCursorSpelling(cursor);
     symbol     cs = clang_getCString(fcx);
     string   name = string(cs);
@@ -2339,7 +2339,7 @@ enum CXChildVisitResult visit(CXCursor cursor, CXCursor parent, CXClientData cli
 }
 
 function model_initializer(model mdl) {
-    ether    e       = mdl->mod;
+    aether    e       = mdl->mod;
     model    rtype   = emodel("void");
     string   fn_name = form(string, "_%o_init", mdl->name);
     record   rec     = instanceof(mdl, typeid(record));
@@ -2358,13 +2358,13 @@ function model_initializer(model mdl) {
 }
 
 void enumeration_init(enumeration mdl) {
-    ether e = mdl->mod;
+    aether e = mdl->mod;
     mdl->src  = mdl->src ? mdl->src : emodel("i32");
     mdl->size = mdl->src->size;
 }
 
 /// return a map of defs found by their name (we can isolate the namespace this way by having separate maps)
-path ether_include_path(ether e, string include) {
+path aether_include_path(aether e, string include) {
     string   include_path  = form(string, "%o/include", e->install);
     path     full_path = null;
     symbol   ipaths[]  = {
@@ -2391,7 +2391,7 @@ path ether_include_path(ether e, string include) {
 }
 
 /// return a map of defs found by their name (we can isolate the namespace this way by having separate maps)
-path ether_include(ether e, A include) {
+path aether_include(aether e, A include) {
     path full_path  = instanceof(include, typeid(path)) ?
         (path)include : include_path(e, include);
 
@@ -2413,7 +2413,7 @@ path ether_include(ether e, A include) {
 }
 
 
-void ether_set_token(ether e, token t) {
+void aether_set_token(aether e, token t) {
     LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(
         e->module_ctx, t->line, t->column, e->top->scope, null);
     LLVMSetCurrentDebugLocation2(e->builder, loc);
@@ -2421,7 +2421,7 @@ void ether_set_token(ether e, token t) {
 
 
 
-void ether_llflag(ether e, symbol flag, i32 ival) {
+void aether_llflag(aether e, symbol flag, i32 ival) {
     LLVMMetadataRef v = LLVMValueAsMetadata(
         LLVMConstInt(LLVMInt32Type(), ival, 0));
 
@@ -2431,7 +2431,7 @@ void ether_llflag(ether e, symbol flag, i32 ival) {
 }
 
 
-bool ether_write(ether e, ARef ref_ll, ARef ref_bc) {
+bool aether_write(aether e, ARef ref_ll, ARef ref_bc) {
     path* ll = ref_ll;
     path* bc = ref_bc;
     cstr err = NULL;
@@ -2452,7 +2452,7 @@ bool ether_write(ether e, ARef ref_ll, ARef ref_bc) {
 }
 
 
-void ether_llvm_init(ether e) {
+void aether_llvm_init(aether e) {
     e->lex            = array(32);
     //e->type_refs    = map(hsize, 64);
     e->module         = LLVMModuleCreateWithName(e->name->chars);
@@ -2472,8 +2472,8 @@ void ether_llvm_init(ether e) {
     llflag(e, "Dwarf Version",      5);
     llflag(e, "Debug Info Version", 3);
 
-    printf("ether: sizeof model = %i\n", (int)sizeof(struct _model));
-    printf("ether: sizeof ether = %i\n", (int)sizeof(struct _ether));
+    printf("aether: sizeof model = %i\n", (int)sizeof(struct _model));
+    printf("aether: sizeof aether = %i\n", (int)sizeof(struct _aether));
 
     string src_file =      filename (e->source);
     string src_path = cast(string, directory(e->source));
@@ -2500,23 +2500,23 @@ void ether_llvm_init(ether e) {
 }
 
 
-/// we may have a kind of 'module' given here; i suppose instanceof(ether) is enough
-void ether_init(ether e) {
+/// we may have a kind of 'module' given here; i suppose instanceof(aether) is enough
+void aether_init(aether e) {
     e->with_debug = true;
     if (!e->name) {
         verify(e->source && len(e->source), "module name required");
         e->name = stem(e->source);
     }
-    ether_llvm_init(e);
+    aether_llvm_init(e);
     e->lex = array(alloc, 32, assorted, true);
-    struct ether_f* table = isa(e);
+    struct aether_f* table = isa(e);
 
     push(e, e);
-    ether_define_primitive(e);
+    aether_define_primitive(e);
 }
 
 
-void ether_dealloc(ether e) {
+void aether_dealloc(aether e) {
     //LLVMDisposeExecutionEngine(e->jit);
     LLVMDisposeBuilder(e->builder);
     LLVMDisposeDIBuilder(e->dbg_builder);
@@ -2526,7 +2526,7 @@ void ether_dealloc(ether e) {
 }
 
 /// C type rules implemented
-model determine_rtype(ether e, OPType optype, model L, model R) {
+model determine_rtype(aether e, OPType optype, model L, model R) {
     if (optype >= OPType__assign && optype <= OPType__assign_left)
         return L;  // Assignment operations always return the type of the left operand
     else if (optype == OPType__value_default ||
@@ -2592,7 +2592,7 @@ emember model_castable(model fr, model to) {
     pairs (to->members, i) {
         emember mem = i->value;
         function fn = instanceof(mem->mdl, typeid(function));
-        if (!fn || !(fn->function_type & A_MFLAG_CONSTRUCT))
+        if (!fn || !(fn->function_type & A_FLAG_CONSTRUCT))
             continue;
         emember first = null;
         pairs (fn->members, i) {
@@ -2609,7 +2609,7 @@ emember model_castable(model fr, model to) {
     pairs (fr->members, i) {
         emember mem = i->value;
         function fn = instanceof(mem->mdl, typeid(function));
-        if (!fn || !(fn->function_type & A_MFLAG_CAST))
+        if (!fn || !(fn->function_type & A_FLAG_CAST))
             continue;
         if (fn->rtype == to)
             return mem;
@@ -2629,7 +2629,7 @@ emember model_constructable(model fr, model to) {
     pairs (to->members, i) {
         emember mem = i->value;
         function fn = instanceof(mem->mdl, typeid(function));
-        if (!fn || !(fn->function_type & A_MFLAG_CONSTRUCT))
+        if (!fn || !(fn->function_type & A_FLAG_CONSTRUCT))
             continue;
         emember first = null;
         pairs (fn->members, i) {
@@ -2651,7 +2651,50 @@ emember model_convertible(model fr, model to) {
     return mcast ? mcast : constructable(fr, to);
 }
 
-emember ether_compatible(ether e, record r, string n, AFlag f, array args) {
+typedef struct tokens_data {
+    array tokens;
+    num   cursor;
+} tokens_data;
+
+
+void aether_push_state(aether a, array tokens, num cursor) {
+    //struct silver_f* table = isa(a);
+    tokens_data* state = A_struct(tokens_data);
+    state->tokens = a->tokens;
+    state->cursor = a->cursor;
+    print("push cursor: %i", state->cursor);
+    push(a->stack, state);
+    tokens_data* state_saved = (tokens_data*)last(a->stack);
+    a->tokens = hold(tokens);
+    a->cursor = cursor;
+}
+
+
+void aether_pop_state(aether a, bool transfer) {
+    int len = a->stack->len;
+    assert (len, "expected stack");
+    tokens_data* state = (tokens_data*)last(a->stack); // we should call this element or ele
+    
+    if(!transfer)
+        a->cursor = state->cursor;
+    else if (transfer && state->tokens != a->tokens) {
+        /// transfer implies we up as many tokens
+        /// as we traveled in what must be a subset
+        a->cursor += state->cursor;
+    }
+
+    if (state->tokens != a->tokens) {
+        drop(a->tokens);
+        a->tokens = state->tokens;
+    }
+    pop(a->stack);
+}
+
+void aether_push_current(aether a) {
+    push_state(a, a->tokens, a->cursor);
+}
+
+emember aether_compatible(aether e, record r, string n, AFlag f, array args) {
     pairs (r->members, i) {
         emember mem = i->value;
         function fn = instanceof(mem->mdl, typeid(function));
@@ -2678,7 +2721,7 @@ emember ether_compatible(ether e, record r, string n, AFlag f, array args) {
     return (emember)false;
 }
 
-node ether_negate(ether e, node L) {
+node aether_negate(aether e, node L) {
     if (is_float(L->mdl))
         return LLVMBuildFNeg(e->builder, L->value, "f-negate");
     else if (is_signed(L->mdl)) // our enums should fall into this category
@@ -2699,7 +2742,7 @@ node ether_negate(ether e, node L) {
     }
 }
 
-node ether_not(ether e, node L) {
+node aether_not(aether e, node L) {
     LLVMValueRef result;
     if (is_float(L->mdl->type)) {
         // for floats, compare with 0.0 and return true if > 0.0
@@ -2717,21 +2760,21 @@ node ether_not(ether e, node L) {
     return value(emodel("bool"), result);
 }
 
-node ether_bitwise_not(ether e, node L) {
+node aether_bitwise_not(aether e, node L) {
     return LLVMBuildNot(e->builder, L->value, "bitwise-not");
 }
 
 // A o = obj("type-name", props)
-node ether_eq(ether e, node L, node R);
+node aether_eq(aether e, node L, node R);
 
-node ether_is(ether e, node L, A R) {
+node aether_is(aether e, node L, A R) {
     node L_type =  offset(e, L, A_i64(-sizeof(struct _A)));
     node L_ptr  =    load(e, L_type); /// must override the mdl type to a ptr, but offset should not perform a unit translation but rather byte-based
     node R_ptr  = operand(e, R, null);
-    return ether_eq(e, L_ptr, R_ptr);
+    return aether_eq(e, L_ptr, R_ptr);
 }
 
-node ether_cmp(ether e, node L, node R) {
+node aether_cmp(aether e, node L, node R) {
     model t0 = L->mdl;
     model t1 = R->mdl;
     verify (t0 == t1, "types must be same at primitive operation level");
@@ -2762,7 +2805,7 @@ node ether_cmp(ether e, node L, node R) {
     return value(emodel("i32"), result);
 }
 
-node ether_eq(ether e, node L, node R) {
+node aether_eq(aether e, node L, node R) {
     model t0 = L->mdl;
     model t1 = R->mdl;
     verify (t0 == t1, "types must be same at primitive operation level");
@@ -2785,7 +2828,7 @@ node ether_eq(ether e, node L, node R) {
     return r;
 }
 
-node ether_not_eq(ether e, node L, node R) {
+node aether_not_eq(aether e, node L, node R) {
     model t0 = L->mdl;
     model t1 = R->mdl;
     verify (t0 == t1, "types must be same at primitive operation level");
@@ -2796,7 +2839,7 @@ node ether_not_eq(ether e, node L, node R) {
     return     value(emodel("bool"), LLVMBuildFCmp(e->builder, LLVMRealONE, L->value, R->value, "not-eq-f"));
 }
 
-node ether_fn_return(ether e, A o) {
+node aether_fn_return(aether e, A o) {
     function fn = context_model(e, typeid(function));
     verify (fn, "function not found in context");
 
@@ -2806,7 +2849,7 @@ node ether_fn_return(ether e, A o) {
     return value(fn->rtype, LLVMBuildRet(e->builder, conv->value));
 }
 
-model formatter_type(ether e, cstr input) {
+model formatter_type(aether e, cstr input) {
     cstr p = input;
     // skip flags/width/precision
     while (*p && strchr("-+ #0123456789.", *p)) p++;
@@ -2827,7 +2870,7 @@ model formatter_type(ether e, cstr input) {
     return null;
 }
 
-node ether_fn_call(ether e, emember fn_mem, array args) {
+node aether_fn_call(aether e, emember fn_mem, array args) {
     verify(isa(fn_mem->mdl) == typeid(function), "model provided is not function");
     function fn = fn_mem->mdl;
     function_use(fn);
@@ -2837,7 +2880,7 @@ node ether_fn_call(ether e, emember fn_mem, array args) {
     LLVMValueRef* arg_values = calloc((fn_mem->target_member != null) + n_args, sizeof(LLVMValueRef));
     //verify (LLVMTypeOf(fdef->function->value) == fdef->ref, "integrity check failure");
     LLVMTypeRef  F = fn->type;
-    LLVMValueRef V = fn->value; // todo: args in ether should be a map.  that way we can do a bit more
+    LLVMValueRef V = fn->value; // todo: args in aether should be a map.  that way we can do a bit more
 
     int index = 0;
     verify(!!fn_mem->target_member == !!fn->target, "target mismatch");
@@ -2864,7 +2907,7 @@ node ether_fn_call(ether e, emember fn_mem, array args) {
             node      conv  = convert(e, op, f_arg ? f_arg->mdl : op->mdl);
             
             LLVMValueRef vr = arg_values[index] = conv->value;
-            //print("ether_fcall: %o arg[%i]: vr: %p, type: %s", fn_mem->name, index, vr, LLVMPrintTypeToString(LLVMTypeOf(vr)));
+            //print("aether_fcall: %o arg[%i]: vr: %p, type: %s", fn_mem->name, index, vr, LLVMPrintTypeToString(LLVMTypeOf(vr)));
             index++;
         }
     int istart = index;
@@ -2909,8 +2952,8 @@ node ether_fn_call(ether e, emember fn_mem, array args) {
     return value(fn->rtype, R);
 }
 
-/// ether is language agnostic so the user must pass the overload method
-node ether_op(ether e, OPType optype, string op_name, A L, A R) {
+/// aether is language agnostic so the user must pass the overload method
+node aether_op(aether e, OPType optype, string op_name, A L, A R) {
     emember mL = instanceof(L, typeid(emember)); 
     node   LV = operand(e, L, null);
     node   RV = operand(e, R, null);
@@ -2974,17 +3017,17 @@ node ether_op(ether e, OPType optype, string op_name, A L, A R) {
         value,      RES);
 }
 
-node ether_or (ether e, A L, A R) { return ether_op(e, OPType__or,  string("or"),  L, R); }
-node ether_xor(ether e, A L, A R) { return ether_op(e, OPType__xor, string("xor"), L, R); }
-node ether_and(ether e, A L, A R) { return ether_op(e, OPType__and, string("and"), L, R); }
-node ether_add(ether e, A L, A R) { return ether_op(e, OPType__add, string("add"), L, R); }
-node ether_sub(ether e, A L, A R) { return ether_op(e, OPType__sub, string("sub"), L, R); }
-node ether_mul(ether e, A L, A R) { return ether_op(e, OPType__mul, string("mul"), L, R); }
-node ether_div(ether e, A L, A R) { return ether_op(e, OPType__div, string("div"), L, R); }
-node ether_value_default(ether e, A L, A R) { return ether_op(e, OPType__value_default, string("value_default"), L, R); }
-node ether_cond_value   (ether e, A L, A R) { return ether_op(e, OPType__cond_value,    string("cond_value"), L, R); }
+node aether_or (aether e, A L, A R) { return aether_op(e, OPType__or,  string("or"),  L, R); }
+node aether_xor(aether e, A L, A R) { return aether_op(e, OPType__xor, string("xor"), L, R); }
+node aether_and(aether e, A L, A R) { return aether_op(e, OPType__and, string("and"), L, R); }
+node aether_add(aether e, A L, A R) { return aether_op(e, OPType__add, string("add"), L, R); }
+node aether_sub(aether e, A L, A R) { return aether_op(e, OPType__sub, string("sub"), L, R); }
+node aether_mul(aether e, A L, A R) { return aether_op(e, OPType__mul, string("mul"), L, R); }
+node aether_div(aether e, A L, A R) { return aether_op(e, OPType__div, string("div"), L, R); }
+node aether_value_default(aether e, A L, A R) { return aether_op(e, OPType__value_default, string("value_default"), L, R); }
+node aether_cond_value   (aether e, A L, A R) { return aether_op(e, OPType__cond_value,    string("cond_value"), L, R); }
 
-node ether_einherits(ether e, node L, A R) {
+node aether_einherits(aether e, node L, A R) {
     // Get the type pointer for L
     node L_type =  offset(e, L, A_i64(-sizeof(A)));
     node L_ptr  =    load(e, L);
@@ -3004,18 +3047,18 @@ node ether_einherits(ether e, node L, A R) {
     LLVMAddIncoming(phi, &L_ptr->value, &block, 1);
 
     // Compare current type with R_type
-    node cmp       = ether_eq(e, value(L_ptr->mdl, phi), R_ptr);
+    node cmp       = aether_eq(e, value(L_ptr->mdl, phi), R_ptr);
 
     // Load the parent pointer (assuming it's the first emember of the type struct)
-    node parent    = ether_load(e, value(L_ptr->mdl, phi));
+    node parent    = aether_load(e, value(L_ptr->mdl, phi));
 
     // Check if parent is null
-    node is_null   = ether_eq(e, parent, value(parent->mdl, LLVMConstNull(parent->mdl->type)));
+    node is_null   = aether_eq(e, parent, value(parent->mdl, LLVMConstNull(parent->mdl->type)));
 
     // Create the loop condition
-    node not_cmp   = ether_not(e, cmp);
-    node not_null  = ether_not(e, is_null);
-    node loop_cond = ether_and(e, not_cmp, not_null);
+    node not_cmp   = aether_not(e, cmp);
+    node not_null  = aether_not(e, is_null);
+    node loop_cond = aether_and(e, not_cmp, not_null);
 
     // Branch based on the loop condition
     LLVMBuildCondBr(e->builder, loop_cond->value, loop_block, exit_block);
@@ -3032,7 +3075,7 @@ node ether_einherits(ether e, node L, A R) {
     return value(emodel("bool"), result);
 }
 
-model ether_top(ether e) {
+model aether_top(aether e) {
     return e->top;
 }
 

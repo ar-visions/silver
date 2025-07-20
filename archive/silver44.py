@@ -1770,7 +1770,7 @@ class EMethodCall(ENode):
                 method_key  = method_id.ident # we cannot lookup a definition, we may only use strings
                 var_name    = ctx.get_value(method_key) # should use C99 concat'd 
                 if not var_name:
-                    get_method = ctx.indent() + 'type_member_t* %s = A_member(meta_t(self, %i), A_TYPE_IMETHOD | A_TYPE_SMETHOD, "%s");' % (
+                    get_method = ctx.indent() + 'member* %s = A_member(meta_t(self, %i), A_TYPE_IMETHOD | A_TYPE_SMETHOD, "%s");' % (
                         method_key,  method_id.meta_member.index, method_name)
                     ctx.set_value(method_key, get_method) 
 

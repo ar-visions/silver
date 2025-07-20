@@ -1,7 +1,7 @@
 #ifndef _ETHER_
 #define _ETHER_
 
-/// @brief the ether should be considered mysterious, and magical.
+/// @brief the aether should be considered mysterious, and magical.
 /// to make effective debuggable LL code, one has to employ multiple 
 /// APIs simultaneously (IR & DBG) and its easy for that to take 
 /// over the syntax
@@ -10,7 +10,7 @@
 /// by A-type driven types.  its just how you want to 'start' building
 /// a language, like silver!
 
-typedef struct _ether*       ether;
+typedef struct _aether*       aether;
 typedef struct _model*       model;
 typedef struct _emember*      emember;
 typedef struct _record*      record;
@@ -59,7 +59,7 @@ declare_enum(reference)
 
 
 #define model_schema(X,Y,...)\
-    i_prop    (X,Y, required,   ether,            mod) \
+    i_prop    (X,Y, required,   aether,            mod) \
     i_prop    (X,Y, public,     token,            name) \
     i_prop    (X,Y, public,     bool,             is_alias) \
     i_prop    (X,Y, intern,     array,            aliases, meta, model) \
@@ -174,12 +174,12 @@ declare_class_3(uni, record, model)
 
 /// the base helps us require the two args we need for nodes
 /// we are also coupling type along inside node, and this must be set properly with value macro
-/// all node values must contain its ether def.
+/// all node values must contain its aether def.
 /// otherwise we are performing hash lookups, which is more complex and slower, 
 /// with less data stored
 #define node_schema(X,Y,...)\
     i_prop    (X,Y, public,     token,                  name) \
-    i_prop    (X,Y, public,     ether,                  mod) \
+    i_prop    (X,Y, public,     aether,                  mod) \
     i_prop    (X,Y, required,   model,                  mdl) \
     i_prop    (X,Y, public,     A,                      literal) \
     i_prop    (X,Y, public,     num,                    line) \
@@ -196,7 +196,7 @@ declare_class(node)
     i_prop    (X,Y, public,     emember,                 target_member) \
     i_prop    (X,Y, public,     record,                 target_record) \
     i_prop    (X,Y, public,     bool,                   registered) \
-    i_prop    (X,Y, public,     ether,                  is_module) \
+    i_prop    (X,Y, public,     aether,                  is_module) \
     i_prop    (X,Y, public,     bool,                   is_static) \
     i_prop    (X,Y, public,     bool,                   is_require) \
     i_prop    (X,Y, public,     bool,                   is_inlay) \
@@ -222,13 +222,13 @@ declare_class_2(emember, node)
 
 #define code_schema(X,Y,...) \
     i_prop    (X,Y, intern, LLVMBasicBlockRef, block, as, ARef) \
-    i_prop    (X,Y, public, ether,  mod) \
+    i_prop    (X,Y, public, aether,  mod) \
     i_prop    (X,Y, public, symbol, label) \
     i_method  (X,Y, public, none,   select) \
     i_override(X,Y, method, init)
 declare_class(code)
 
-#define ether_schema(X,Y,...)\
+#define aether_schema(X,Y,...)\
     i_prop    (X,Y, required,   path,                   install) \
     i_prop    (X,Y, public,     path,                   source) \
     i_prop    (X,Y, public,     bool,                   delegate) \
@@ -252,17 +252,23 @@ declare_class(code)
     i_prop    (X,Y, intern,     LLVMTargetMachineRef,   target_machine,    as, ARef) \
     i_prop    (X,Y, intern,     cstr,                   target_triple) \
     i_prop    (X,Y, public,     bool,                   left_hand) \
-    i_method  (X,Y, public,     model,      runtime_resolve, AType) \
-    i_method  (X,Y, public,     node,       fn_return,      A) \
-    i_method  (X,Y, public,     node,       default_value,  model) \
-    i_method  (X,Y, public,     node,       builder,        subprocedure) \
-    i_method  (X,Y, public,     none,       build_initializer, function) \
-    i_method  (X,Y, public,     node,       eelement,       node,       A) \
-    i_method  (X,Y, public,     none,       ecmp,           node,       comparison, node, code, code) \
-    i_method  (X,Y, public,     none,       ebranch,        code) \
-    i_method  (X,Y, public,     emember,     compatible,     record,     string, AFlag, array) \
-    i_method  (X,Y, public,     none,       push_member,    emember) \
-    i_method  (X,Y, public,     emember,     push_model,     model) \
+    i_prop    (X,Y, public,     array,                  tokens) \
+    i_prop    (X,Y, public,     array,          stack) \
+    i_prop    (X,Y, public,     num,            cursor) \
+    i_method  (X,Y, public,     none,           push_state,   array, num) \
+    i_method  (X,Y, public,     none,           push_current) \
+    i_method  (X,Y, public,     none,           pop_state, bool) \
+    i_method  (X,Y, public,     model,          runtime_resolve, AType) \
+    i_method  (X,Y, public,     node,           fn_return,      A) \
+    i_method  (X,Y, public,     node,           default_value,  model) \
+    i_method  (X,Y, public,     node,           builder,        subprocedure) \
+    i_method  (X,Y, public,     none,           build_initializer, function) \
+    i_method  (X,Y, public,     node,           eelement,       node,       A) \
+    i_method  (X,Y, public,     none,           ecmp,           node,       comparison, node, code, code) \
+    i_method  (X,Y, public,     none,           ebranch,        code) \
+    i_method  (X,Y, public,     emember,        compatible,     record,     string, AFlag, array) \
+    i_method  (X,Y, public,     none,           push_member,    emember) \
+    i_method  (X,Y, public,     emember,        push_model,     model) \
     i_method  (X,Y, public,     node,       operand,        A,          model) \
     i_method  (X,Y, public,     node,       op,             OPType,     string, A, A) \
     i_method  (X,Y, public,     node,       load,           emember) \
@@ -304,7 +310,7 @@ declare_class(code)
     i_method  (X,Y, public,     model,      return_type) \
     i_override(X,Y, method,     init) \
     i_override(X,Y, method,     dealloc)
-declare_class_2(ether, model)
+declare_class_2(aether, model)
 
 // i_vargs   (X,Y, public,     none,       eprint,         symbol) \
 

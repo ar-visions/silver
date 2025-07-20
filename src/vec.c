@@ -542,7 +542,7 @@ vector_##T vector_##T##_new(shape vshape, ...) { \
     va_list args; \
     va_start(args, vshape); \
     vector_##T result = vector_##T(); \
-    result->vshape = hold(vshape); \
+    result->shape = hold(vshape); \
     T* T##_data = vdata(result); \
     for (int i = 0, count = total(vshape); i < count; i++) { \
         T##_data[i] = (T)va_arg(args, ARG_T); \

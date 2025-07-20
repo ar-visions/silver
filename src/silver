@@ -1,15 +1,7 @@
 #ifndef _silver_
 #define _silver_
 
-// requires <ether>
-
-#define import_t_schema(E,T,Y,...) \
-    enum_value(E,T,Y, none,       0) \
-    enum_value(E,T,Y, source,     1) \
-    enum_value(E,T,Y, library,    2) \
-    enum_value(E,T,Y, project,    3) \
-    enum_value(E,T,Y, includes,   4)
-declare_enum(import_t)
+// requires <aether>
 
 #define build_state_schema(E,T,Y,...) \
     enum_value(E,T,Y, none,       0) \
@@ -25,7 +17,6 @@ declare_enum(language)
     i_prop(X,Y, required, array,    body)
 declare_class(completer_context)
 
-forward(import);
 
 #define silver_schema(X,Y,...)\
     i_prop    (X,Y, intern,     import,         import) \
@@ -37,23 +28,16 @@ forward(import);
     i_prop    (X,Y, intern,     bool,           in_inlay) \
     i_prop    (X,Y, intern,     emember,        in_assign) \
     i_prop    (X,Y, intern,     array,          imports) \
-    i_prop    (X,Y, intern,     array,          main_symbols) \
     i_prop    (X,Y, intern,     array,          compiled_objects) \
     i_prop    (X,Y, intern,     array,          products_used) \
     i_prop    (X,Y, intern,     map,            include) \
     i_prop    (X,Y, intern,     int,            expr_level) \
     i_prop    (X,Y, public,     path,           file) \
-    i_prop    (X,Y, public,     array,          tokens) \
-    i_prop    (X,Y, public,     num,            cursor) \
     i_prop    (X,Y, public,     language,       std) \
-    i_prop    (X,Y, intern,     array,          stack) \
     i_method  (X,Y, public,     none,           import_types) \
     i_method  (X,Y, public,     silver,         load_module, path) \
     i_method  (X,Y, public,     node,           parse_member_expr, emember) \
     i_method  (X,Y, public,     none,           incremental_resolve) \
-    i_method  (X,Y, public,     none,           push_state,   array, num) \
-    i_method  (X,Y, public,     none,           push_current) \
-    i_method  (X,Y, public,     none,           pop_state, bool) \
     i_method  (X,Y, public,     token,          next) \
     i_method  (X,Y, public,     token,          prev) \
     i_method  (X,Y, public,     token,          navigate, i32) \
@@ -73,6 +57,7 @@ forward(import);
     i_method  (X,Y, public,     A,              read_literal, AType) \
     i_method  (X,Y, public,     string,         read_string) \
     i_method  (X,Y, public,     string,         read_alpha) \
+    i_method  (X,Y, public,     string,         peek_alpha) \
     i_method  (X,Y, public,     emember,        read_def) \
     i_method  (X,Y, public,     string,         peek_def) \
     i_method  (X,Y, public,     string,         peek_keyword) \
@@ -84,7 +69,7 @@ forward(import);
     i_method  (X,Y, public,     none,           parse) \
     i_override(X,Y, method,     build_initializer) \
     i_override(X,Y, method,     init)
-declare_class_3(silver, ether, model)
+declare_class_3(silver, aether, model)
 
 
 /// major change to model here, with most work on software import happening in import
@@ -103,29 +88,6 @@ declare_class_3(silver, ether, model)
 ///     include <something>
 ///     
 
-#define Import_schema(X,Y,...) \
-    i_prop    (X,Y, intern, array,      source) \
-    i_prop    (X,Y, intern, string,     shell) \
-    i_prop    (X,Y, intern, path,       module_path) \
-    i_prop    (X,Y, intern, bool,       imported) \
-    i_prop    (X,Y, intern, array,      includes, meta, path) \
-    i_prop    (X,Y, intern, array,      modules,  meta, path) \
-    i_prop    (X,Y, intern, path,       include_path) \
-    i_prop    (X,Y, intern, string,     namespace) \
-    i_prop    (X,Y, intern, array,      links) \
-    i_prop    (X,Y, intern, array,      cfiles) \
-    i_prop    (X,Y, intern, array,      products) \
-    i_prop    (X,Y, intern, array,      build_args) \
-    i_prop    (X,Y, intern, import_t,   import_type) \
-    i_prop    (X,Y, intern, array,      library_exports) \
-    i_prop    (X,Y, intern, interface,  visibility) \
-    i_prop    (X,Y, intern, string,     main_symbol) \
-    i_prop    (X,Y, intern, bool,       assemble_so) \
-    i_prop    (X,Y, intern, bool,       skip_process) \
-    i_prop    (X,Y, intern, bool,       anonymous) \
-    i_prop    (X,Y, intern, silver,     extern_mod) \
-    i_method  (X,Y, public, none,       process) \
-    i_override(X,Y, method, init)
-declare_class_2(Import, model)
+
 
 #endif

@@ -1,7 +1,5 @@
 # largest software project i think -- but it enables the largest amount of software to project
-import llvm
-    url: 	'https://github.com/llvm/llvm-project'
-	commit: 'main'
+import llvm [ https://github.com/llvm/llvm-project main ]
 	args {
 		-S ../llvm
 		-G Ninja 
@@ -57,8 +55,8 @@ import llvm
 		-lLLVMX86Info
 	}
 
-import ffi
-	url: 	'https://github.com/libffi/libffi'
+import ffi [ https://github.com/libffi/libffi e28a0d5 ]
+	url: 	
 	commit: 'e28a0d5'
 	env:	CC: 'gcc'
 
