@@ -8,6 +8,10 @@ PROJECT ?= silver-import
 PROJECT_PATH := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 BUILD_PATH := $(PROJECT_PATH)/debug
 
+ifeq ($(strip $(IMPORT)),)
+$(error IMPORT is not set. steady Dak)
+endif
+
 # Debug configuration based on DBG environment variable
 DBG := $(strip $(DBG))
 PROJECT := $(strip $(PROJECT))
@@ -56,7 +60,7 @@ APP_CXXFLAGS := $(CFLAGS) $(CXXFLAGS) -I$(PROJECT_PATH)/src -I$(BUILD_PATH)/app 
 
 # Base CFLAGS for src modules (will be extended per module)
 BASE_CFLAGS := $(CFLAGS) -I$(PROJECT_PATH)/src -I$(BUILD_PATH) -I$(IMPORT)/include -fPIC \
- -Wno-incompatible-pointer-types -Wfatal-errors \
+ -Wno-incompatible-pointer-types -Wno-compare-distinct-pointer-types -Wno-pointer-type-mismatch -Wfatal-errors \
  -std=gnu11 -DMODULE="\"$(PROJECT)\""
 BASE_CXXFLAGS := $(CFLAGS) $(CXXFLAGS) -I$(PROJECT_PATH)/src -I$(BUILD_PATH) -I$(IMPORT)/include -fPIC \
  -Wfatal-errors \

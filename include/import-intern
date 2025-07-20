@@ -1,3 +1,0 @@
-#define import_intern(X,Y,...)    import_schema(X,Y,__VA_ARGS__)
-#define flag_intern(X,Y,...)      flag_schema(X,Y,__VA_ARGS__)
-#define remote_intern(X,Y,...)    remote_schema(X,Y,__VA_ARGS__)

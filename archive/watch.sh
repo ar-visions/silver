@@ -1,6 +1,6 @@
 #!/bin/bash
 # Directories to watch (set via ENV variable)
-WATCH_DIRS=${WATCH_DIRS:-""}  # Example: "A vec ai silver ether trinity hyperspace orbiter"
+WATCH_DIRS=${WATCH_DIRS:-""}  # Example: "A vec ai silver aether trinity hyperspace orbiter"
 
 # Check if WATCH_DIRS is set
 if [[ -z "$WATCH_DIRS" ]]; then

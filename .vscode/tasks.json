@@ -24,7 +24,8 @@
             },
             "linux": {
                 "command": "make"
-            }
+            },
+            "env": { "VERBOSE": "1", "CC": "clang", "IMPORT": "/src/silver" }
         },
         {
             "label": "build-hyperspace",

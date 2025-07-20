@@ -73,67 +73,7 @@ none sync_tokens(import t, path build_path, string name) {
     utime(cstring(t1), &times);
 }
 
-none remote_init(remote im) {
-    path   cwdir   = cwd();
-    path   install = copy(im->import->install);
-    path   src     = im->import->src;
-    bool   is_remote = !dir_exists("%o/%o", src, im->name);
-    path checkout     = f(path, "%o/checkout", install);
-    im->import_path   = f(path, "%o/%o", checkout, im->name);
-    
-    if (!dir_exists("%o/%o", checkout, im->name)) {
-        cd(checkout);
-        if (len(src) && dir_exists("%o/%o", src, im->name)) {
-            verify (exec("ln -s %o/%o %o/%o",
-                src, im->name, checkout, im->name) == 0, "symlink");
-            is_remote = false;
-        } else {
-            exec("rm -rf %o", im->name);
-            int clone = exec("git clone %o %o --no-checkout && cd %o && git checkout %o && cd ..",
-                im->uri, im->name, im->name, im->commit);
-            verify (clone == 0, "git clone");
-            if (file_exists("%o/diff/%o.patch", im->import->project_path, im->name)) {
-                cd(im->import_path);
-                verify(exec("git apply %o/diff/%o.patch", im->import->project_path, im->name) == 0, "patch");
-                cd(checkout);
-            }
-        }
-    }
-    im->debug = is_dbg(im->import, im->import->dbg, (cstr)im->name->chars, is_remote);
-    symbol build_type = im->debug ? "debug" : "release";
-    im->build_path    = f(path, "%o/%s", im->import_path, build_type);
-    string n = im->name;
-    i32* c = null, *b = null, *i = null;
-    if (file_exists("%o/build.sf", im->import_path)) {
-        path af_remote = form(path, "%o/build.sf", im->import_path);
-        map m_copy = copy(im->import->m);
-        set(m_copy, string("parent"), im->import);
-        set(m_copy, string("path"), af_remote);
-        import t_remote = import(m_copy);
-        im->exports = hold(t_remote->exports);
-        i64 mod = modified_time(f(path, "%o/tokens/%o", im->import->install, im->name));
-        if (mod && (!ancestor_mod || ancestor_mod < mod))
-             ancestor_mod = mod;
-        drop(t_remote);
-    }
-    make_dir(im->build_path);
-    cd(im->build_path);
-    make(im);
-    cd(im->build_path);
-    path   cwd_after = cwd();
-    each(im->commands, string, cmd) {
-        print("> %o: command: %o", im->name, cmd);
-        verify(exec("%o", evaluate(cmd, im->import->environment)) == 0, "expected successful command post-install");
-    }
-    each(im->always, string, cmd) {
-        print("! %o: command: %o", im->name, cmd);
-        verify(exec("%o", evaluate(cmd, im->import->environment)) == 0, "expected successful ! inline command");
-    }
-    sync_tokens(im->import, im->build_path, im->name);
-    cd(cwdir);
-}
-
-string remote_cast_string(remote a) {
+string import_config_string(import a) {
     string config = string(alloc, 128);
     each (a->config, string, conf) {
         if (starts_with(conf, "-l"))
@@ -187,45 +127,11 @@ none add_flag(import a, array list, line l, map environment) {
     }
 }
 
+// tapestry with map
 import import_with_map(import a, map m) {
-    import parent       = get(m, string("parent"));
-    path af               = get(m, string("path"));
-    a->m                  = hold(m);
-    a->dbg                = hold(get(m, string("dbg")));
-    a->sanitize           = hold(get(m, string("sanitize")));
-    a->install            = hold(get(m, string("install")));
-    a->src                = hold(get(m, string("src")));
-    a->remotes            = array(64);
-    a->project_path       = directory(af);
-    a->name               = filename(a->project_path);
-    cstr build_dir        = is_dbg(a, a->dbg, (cstr)a->name->chars, false) ? "debug" : "release";
-    a->build_path         = form(path, "%o/%s", a->project_path, build_dir);
-    a->exports            = array(64);
-    a->interns            = array(64);
-    a->environment        = map(assorted, true);
-    path build_file       = file_exists("%o", af) ? af :
-         (dir_exists("%o",  af) && file_exists("%o/build.sf", af)) ? 
-        f(path, "%o/build.sf", af) : null; 
-    array  lines          = build_file ? read(af, typeid(array), null) : null;
-    remote im             = null;
-    string last_arch      = null;
-    string last_platform  = null;
-    string last_directive = null;
-    string top_directive  = null;
-    bool   is_import      = true;
-    string s_imports      = string(alloc, 64);
-    path   project_lib    = form(path, "%o/src",  a->project_path);
-    a->has_lib            = dir_exists("%o", project_lib); /// and contains source?
 
-    /// for each line, process by indentation level, and evaluate tokens
-    /// when exports are evaluated by a parent, the environment but reflect their own
-    set(a->environment, string("PROJECT"),      a->name);
-    set(a->environment, string("PROJECT_PATH"), a->project_path);
-    set(a->environment, string("BUILD_PATH"),   a->build_path);
-    set(a->environment, string("IMPORTS"),      s_imports);
-     
-    map environment = parent ? parent->environment : a->environment;
 
+    /// this method mainly parses the import file (and we are reorganizing this)
     if (lines)
         each(lines, line, l) {
             string first = get(l->text, 0);
@@ -254,36 +160,7 @@ import import_with_map(import a, map m) {
                 else
                     last_arch = n;
             } else if (l->indent == 1) {
-                if (!parent) {
-                    string text0 = get(l->text, 0);
-                    string name   = evaluate(text0, environment);
-                    if (name->chars[0] == '-') {
-                        /// we want our main target (lib or app, if isolated) to get these cflag or libs
-                        /// its the same as 'export' section, but not exported
-                        add_flag(a, a->interns, l, environment);
-                    } else {
-                        verify(is_import, "expected import");
-                        string uri    = evaluate((string)get(l->text, 1), environment);
-                        string commit = evaluate((string)get(l->text, 2), environment);
-                        if (len(s_imports))
-                            append(s_imports, " ");
-                        concat(s_imports, name);
-                        /// currently its the headers.sh
-                        im = allocate(remote,
-                            import, a,
-                            name,   name,
-                            uri,    uri,
-                            commit, commit,
-                            environment, map(),
-                            config, array(64), commands, array(16), always, array(16));
-                        push(a->remotes, im);
-                    }
-
-                    last_platform = null;
-                    last_arch = null;
-                } else if (!is_import) {
-                    add_flag(a, a->exports, l, environment);
-                }
+                //
             } else if (!parent) {
                 if ((!last_platform || cmp(last_platform, platform) == 0) &&
                     (!last_arch     || cmp(last_arch,     arch)     == 0)) {
@@ -325,16 +202,11 @@ import import_with_map(import a, map m) {
             }
         }
 
-    if (!parent) {
-        /// this will perform actual import (now that the data is set)
-        each(a->remotes, remote, im) {
-            A_initialize(im);
-        }
-    }
+
     return a;
 }
 
-string remote_cmake_location(remote im) {
+string import_cmake_location(import im) {
     int index = 0;
     each (im->config, string, conf) {
         if (starts_with(conf, "-S")) {
@@ -348,7 +220,7 @@ string remote_cmake_location(remote im) {
 string serialize_environment(map environment, bool b_export);
 
 /// handle autoconfig (if present) and resultant / static Makefile
-bool remote_make(remote im) {
+bool import_make(import im) {
     import t = im->import;
     path install = copy(t->install);
     i64 conf_status = INT64_MIN;
@@ -385,7 +257,7 @@ bool remote_make(remote im) {
     }
 
     string cmake_conf = cmake_location(im);
-    string args = cast(string, im);
+    string args = import_config_string(im);
     cstr debug_r = im->debug ? "debug" : "release";
     setenv("BUILD_CONFIG", args->chars, 1);
     setenv("BUILD_TYPE", debug_r, 1);
@@ -548,14 +420,14 @@ i32 import_install(import a) {
     return 0;
 }
 
-none cflags_libs(import a, string* cflags, string* libs) {
+none cflags_libs(import im, string* cflags, string* libs) {
     *libs   = string(alloc, 64);
     *cflags = string(alloc, 64);
 
-    array lists[2] = { a->interns, a->exports };
+    array lists[2] = { im->interns, im->exports };
     for (int i = 0; i < 2; i++)
         each (lists[i], flag, fl) {
-            print("%o: %o", a->name, fl->name);
+            print("%o: %o", im->name, fl->name);
             if (fl->is_cflag) {
                 concat(*cflags, cast(string, fl));
                 append(*cflags, " ");
@@ -565,30 +437,28 @@ none cflags_libs(import a, string* cflags, string* libs) {
             }
         }
     
-    each (a->remotes, remote, im) {
-        if (im->exports)
-            each (im->exports, flag, fl) {
-                if (fl->is_cflag) {
-                    concat(*cflags, cast(string, fl));
-                    append(*cflags, " ");
-                } else if (fl->is_lib) {
-                    concat(*libs, form(string, "%o", fl->name));
-                    append(*libs, " ");
-                }
-            }
-        
-        bool has_lib = false;
-        each (im->config, string, conf) {
-            if (starts_with(conf, "-l")) {
-                concat(*libs, conf);
+    if (im->exports)
+        each (im->exports, flag, fl) {
+            if (fl->is_cflag) {
+                concat(*cflags, cast(string, fl));
+                append(*cflags, " ");
+            } else if (fl->is_lib) {
+                concat(*libs, form(string, "%o", fl->name));
                 append(*libs, " ");
-                has_lib = true;
             }
         }
-        if (!has_lib) {
-            concat(*libs, form(string, "-l%o", im->name));
+    
+    bool has_lib = false;
+    each (im->config, string, conf) {
+        if (starts_with(conf, "-l")) {
+            concat(*libs, conf);
             append(*libs, " ");
+            has_lib = true;
         }
+    }
+    if (!has_lib) {
+        concat(*libs, form(string, "-l%o", im->name));
+        append(*libs, " ");
     }
 }
 
@@ -809,7 +679,7 @@ i32 import_build(import a, path bc) {
             } else
                 exec("rsync -a %o %o", output_lib, install_lib);
             
-            //push(a->lib_targets, output_lib);
+            push(a->lib_targets, output_lib);
         } else {
             each (obj_c, path, obj) {
                 string module_name = stem(obj);
@@ -871,11 +741,6 @@ i32 import_build(import a, path bc) {
     }
     
     // for each import with a share folder in its repo, symlink all files individually (cannot use folders safely because our targets stack resources)
-    each (a->remotes, remote, im) {
-        if (!eq(im->name, "silver")) // silver exposes the actual install interface, and has the /apps/ after the share
-            import_link_shares(a, im->import_path);
-    }
-
     import_link_shares(a, a->project_path);
 
     /// now we set the token here! (we do this twice; the import layer does it 
@@ -884,11 +749,169 @@ i32 import_build(import a, path bc) {
     return error_code;
 }
 
+import import_with_silver(import im, silver mod) {
+    
+}
+
 /// initialization path
 none import_init(import a) {
     a->name = filename(a->project_path);
+
+
+
+
+    if (!parent) {
+        string text0 = get(l->text, 0);
+        string name   = evaluate(text0, environment);
+        if (name->chars[0] == '-') {
+            /// we want our main target (lib or app, if isolated) to get these cflag or libs
+            /// its the same as 'export' section, but not exported
+            add_flag(a, a->interns, l, environment);
+        } else {
+            verify(is_import, "expected import");
+            string uri    = evaluate((string)get(l->text, 1), environment);
+            string commit = evaluate((string)get(l->text, 2), environment);
+            if (len(s_imports))
+                append(s_imports, " ");
+            concat(s_imports, name);
+            /// currently its the headers.sh
+            im = allocate(remote,
+                import, a,
+                name,   name,
+                uri,    uri,
+                commit, commit,
+                environment, map(),
+                config, array(64), commands, array(16), always, array(16));
+            push(a->remotes, im);
+        }
+
+        last_platform = null;
+        last_arch = null;
+    } else if (!is_import) {
+        add_flag(a, a->exports, l, environment);
+    }
+
+
+
+
+
+    // was remote:
+    path   cwdir   = cwd();
+    path   install = copy(im->import->install);
+    path   src     = im->import->src;
+    bool   is_remote = !dir_exists("%o/%o", src, im->name);
+    path checkout     = f(path, "%o/checkout", install);
+    im->import_path   = f(path, "%o/%o", checkout, im->name);
+    
+    if (!dir_exists("%o/%o", checkout, im->name)) {
+        cd(checkout);
+        if (len(src) && dir_exists("%o/%o", src, im->name)) {
+            verify (exec("ln -s %o/%o %o/%o",
+                src, im->name, checkout, im->name) == 0, "symlink");
+            is_remote = false;
+        } else {
+            exec("rm -rf %o", im->name);
+            int clone = exec("git clone %o %o --no-checkout && cd %o && git checkout %o && cd ..",
+                im->uri, im->name, im->name, im->commit);
+            verify (clone == 0, "git clone");
+            if (file_exists("%o/diff/%o.patch", im->import->project_path, im->name)) {
+                cd(im->import_path);
+                verify(exec("git apply %o/diff/%o.patch", im->import->project_path, im->name) == 0, "patch");
+                cd(checkout);
+            }
+        }
+    }
+    im->debug = is_dbg(im->import, im->import->dbg, (cstr)im->name->chars, is_remote);
+    symbol build_type = im->debug ? "debug" : "release";
+    im->build_path    = f(path, "%o/%s", im->import_path, build_type);
+    string n = im->name;
+    i32* c = null, *b = null, *i = null;
+    if (file_exists("%o/build.sf", im->import_path)) {
+        path af_remote = form(path, "%o/build.sf", im->import_path);
+        map m_copy = copy(im->import->m);
+        set(m_copy, string("parent"), im->import);
+        set(m_copy, string("path"), af_remote);
+        import t_remote = import(m_copy);
+        im->exports = hold(t_remote->exports);
+        i64 mod = modified_time(f(path, "%o/tokens/%o", im->import->install, im->name));
+        if (mod && (!ancestor_mod || ancestor_mod < mod))
+             ancestor_mod = mod;
+        drop(t_remote);
+    }
+    make_dir(im->build_path);
+    cd(im->build_path);
+    make(im);
+    cd(im->build_path);
+    path   cwd_after = cwd();
+    each(im->commands, string, cmd) {
+        print("> %o: command: %o", im->name, cmd);
+        verify(exec("%o", evaluate(cmd, im->import->environment)) == 0, "expected successful command post-install");
+    }
+    each(im->always, string, cmd) {
+        print("! %o: command: %o", im->name, cmd);
+        verify(exec("%o", evaluate(cmd, im->import->environment)) == 0, "expected successful ! inline command");
+    }
+    sync_tokens(im->import, im->build_path, im->name);
+    cd(cwdir);
+
+
+
+
+
+
+
+
+
+
+
+
+    import parent       = get(m, string("parent"));
+    path af               = get(m, string("path"));
+    a->m                  = hold(m);
+    a->dbg                = hold(get(m, string("dbg")));
+    a->sanitize           = hold(get(m, string("sanitize")));
+    a->install            = hold(get(m, string("install")));
+    a->src                = hold(get(m, string("src")));
+
+    a->project_path       = directory(af);
+    a->name               = filename(a->project_path);
+    cstr build_dir        = is_dbg(a, a->dbg, (cstr)a->name->chars, false) ? "debug" : "release";
+    a->build_path         = form(path, "%o/%s", a->project_path, build_dir);
+    a->exports            = array(64);
+    a->interns            = array(64);
+    a->environment        = map(assorted, true);
+    path build_file       = file_exists("%o", af) ? af :
+         (dir_exists("%o",  af) && file_exists("%o/build.sf", af)) ? 
+        f(path, "%o/build.sf", af) : null; 
+    array  lines          = build_file ? read(af, typeid(array), null) : null;
+    remote im             = null;
+    string last_arch      = null;
+    string last_platform  = null;
+    string last_directive = null;
+    string top_directive  = null;
+    bool   is_import      = true;
+    string s_imports      = string(alloc, 64);
+    path   project_lib    = form(path, "%o/src",  a->project_path);
+    a->has_lib            = dir_exists("%o", project_lib); /// and contains source?
+
+    /// for each line, process by indentation level, and evaluate tokens
+    /// when exports are evaluated by a parent, the environment but reflect their own
+    set(a->environment, string("PROJECT"),      a->name);
+    set(a->environment, string("PROJECT_PATH"), a->project_path);
+    set(a->environment, string("BUILD_PATH"),   a->build_path);
+    set(a->environment, string("IMPORTS"),      s_imports);
+     
+    map environment = parent ? parent->environment : a->environment;
+
+
+
+
+
+
+
+
 }
 
+
 define_class(import,    A)
-define_class(remote,    A)
 define_class(flag,      A)

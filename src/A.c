@@ -308,7 +308,7 @@ array array_mix(array a, array b, f32 f) {
     int ln1 = len(b);
     if (ln0 != ln1) return b;
 
-    Member fmix = null;
+    member fmix = null;
     AType expect = null;
     array res = array(ln0);
     for (int i = 0; i < ln0; i++) {
@@ -322,7 +322,7 @@ array array_mix(array a, array b, f32 f) {
         verify(expect == at, "disperate types in array during mix");
         verify(at == bt, "types do not match");
 
-        if (!fmix) fmix = find_member(at, A_MFLAG_IMETHOD, "mix", false);
+        if (!fmix) fmix = find_member(at, A_FLAG_IMETHOD, "mix", false);
         verify(fmix, "implement mix method for type %s", at->name);
         A e = ((mix_fn)fmix->ptr)(aa, bb, f);
         push(res, e);
@@ -462,14 +462,14 @@ void AF_set_id(A a, int id) {
 
 void AF_set_name(A a, cstr name) {
     AType t = isa(a);
-    Member m = find_member(t, A_MFLAG_PROP|A_MFLAG_VPROP, name, true);
+    member m = find_member(t, A_FLAG_PROP|A_FLAG_VPROP, name, true);
     u128* fields = (u128*)((i8*)a + t->size - (sizeof(void*) * 2));
     *fields |= ((u128)1) << m->id;
 }
 
 bool AF_query_name(A a, cstr name) {
     AType          t = isa(a);
-    Member m = find_member(t, A_MFLAG_PROP|A_MFLAG_VPROP, name, true);
+    member m = find_member(t, A_FLAG_PROP|A_FLAG_VPROP, name, true);
     u128           f = AF_bits(a);
     return (f & (((u128)1) << m->id)) != 0;
 }
@@ -482,7 +482,7 @@ bool A_validator(A a) {
     u128 fields = AF_bits(a);
     if ((type->required & fields) != type->required) {
         for (num i = 0; i < type->member_count; i++) {
-            Member m = &type->members[i];
+            member m = &type->members[i];
             if (m->required && ((((u128)1) << m->id) & fields) == 0) {
                 u8* ptr = (u8*)a + m->offset;
                 A* ref = (A*)ptr;
@@ -500,14 +500,14 @@ bool A_validator(A a) {
 /// we must do this with our usage of static const; thats not always addressable
 i32* enum_default(AType type) {
     for (num m = 0; m < type->member_count; m++) {
-        Member mem = &type->members[m];
-        if (mem->member_type & A_MFLAG_ENUMV)
+        member mem = &type->members[m];
+        if (mem->member_type & A_FLAG_ENUMV)
             return (i32*)mem->ptr;
     }
     return null;
 }
 
-static A enum_member_value(AType type, Member mem) {
+static A enum_member_value(AType type, member mem) {
     if (type->src == typeid(u8))  return A_u8(*(u8*)mem->ptr);
     if (type->src == typeid(i8))  return A_i8(*(i8*)mem->ptr);
     if (type->src == typeid(u16)) return A_u16(*(u16*)mem->ptr);
@@ -526,15 +526,15 @@ i32 evalue(AType type, cstr cs) {
     int default_val = INT_MIN;
     bool single = strlen(cs) == 1;
     for (num m = 0; m < type->member_count; m++) {
-        Member mem = &type->members[m];
-        if ((mem->member_type & A_MFLAG_ENUMV) &&
+        member mem = &type->members[m];
+        if ((mem->member_type & A_FLAG_ENUMV) &&
             (strcmp(mem->name, cs) == 0)) {
             return *(i32*)enum_member_value(type, mem);
         }
     }
     for (num m = 0; m < type->member_count; m++) {
-        Member mem = &type->members[m];
-        if ((mem->member_type & A_MFLAG_ENUMV) &&
+        member mem = &type->members[m];
+        if ((mem->member_type & A_FLAG_ENUMV) &&
             (mem->name[0] == cs[0])) {
             return *(i32*)enum_member_value(type, mem);
         }
@@ -545,8 +545,8 @@ i32 evalue(AType type, cstr cs) {
 
 string estring(AType type, i32 value) {
     for (num m = 0; m < type->member_count; m++) {
-        Member mem = &type->members[m];
-        if (mem->member_type & A_MFLAG_ENUMV) {
+        member mem = &type->members[m];
+        if (mem->member_type & A_FLAG_ENUMV) {
             if (memcmp((void*)mem->ptr, (i32*)&value, mem->type->size) == 0)
                 return string(mem->name); 
         }
@@ -561,8 +561,8 @@ none debug() {
 }
 
 static none init_recur(A a, AType current, raw last_init) {
-    if (current == &A_i.type) return;
-    none(*init)(A) = ((AType)current)->init;
+    if (current == (AType)&A_i.type) return;
+    none(*init)(A) = ((A_f*)current)->init;
     init_recur(a, current->parent_type, (raw)init);
     if (init && init != (none*)last_init) init(a); 
 }
@@ -841,10 +841,8 @@ method_t* method_with_address(handle address, AType rtype, array atypes, AType m
     assert(status == FFI_OK, "status == %i", (i32)status);
     return method;
 }
-#endif
 
-#ifdef USE_FFI
-A A_method_call(Member m, array args) {
+A A_method_call(member m, array args) {
     method_t* a = m->method;
     const num max_args = 8;
     none* arg_values[max_args];
@@ -871,7 +869,7 @@ A A_method_call(Member m, array args) {
 /// this calls type methods
 A method(AType type, cstr method_name, array args) {
 #ifdef USE_FFI
-    Member mem = find_member(type, A_MFLAG_IMETHOD | A_MFLAG_SMETHOD, method_name, false);
+    member mem = find_member(type, A_FLAG_IMETHOD | A_FLAG_SMETHOD, method_name, false);
     assert(mem->method, "method not set");
     method_t* m = mem->method;
     A res = method_call(m, args);
@@ -886,10 +884,10 @@ A convert(AType type, A input) {
     return construct_with(type, input, null);
 }
 
-A A_method_vargs(A a, Member mem, int n_args, ...) {
+A A_method_vargs(A a, member mem, int n_args, ...) {
 #ifdef USE_FFI
     //AType type = isa(a);
-    //Member mem = find_member(type, A_MFLAG_IMETHOD | A_MFLAG_SMETHOD, method_name, false);
+    //member mem = find_member(type, A_FLAG_IMETHOD | A_FLAG_SMETHOD, method_name, false);
     assert(mem->method, "method not set");
     method_t* m = mem->method;
     va_list  vargs;
@@ -983,12 +981,14 @@ none startup(cstrs argv) {
         if (type->traits & A_TRAIT_ABSTRACT) continue;
         /// for each member of type
         for (num m = 0; m < type->member_count; m++) {
-            Member mem = &type->members[m];
-            if (mem->required && (mem->member_type & A_MFLAG_PROP)) {
+            member mem = &type->members[m];
+            if (mem->name) mem->sname = allocate(
+                string, chars, mem->name, len, strlen(mem->name));
+            if (mem->required && (mem->member_type & A_FLAG_PROP)) {
                 type->required |= 1 << mem->id;
                 // now required args are set if (type->required & *(i64*)obj->f) == type->required
             }
-            if (mem->member_type & (A_MFLAG_IMETHOD | A_MFLAG_SMETHOD)) {
+            if (mem->member_type & (A_FLAG_IMETHOD | A_FLAG_SMETHOD)) {
                 none* address = 0;
                 memcpy(&address, &((u8*)type)[mem->offset], sizeof(none*));
                 assert(address, "no address");
@@ -1043,32 +1043,32 @@ none untap(symbol f) {
     set(log_funcs, fname, A_bool(false));
 }
 
-Member find_member(AType type, AFlag memflags, symbol name, bool poly) {
+member find_member(AType type, AFlag memflags, symbol name, bool poly) {
     for (num i = 0; i < type->member_count; i++) {
-        Member mem = &type->members[i];
+        member mem = &type->members[i];
         if ((memflags == 0) || (mem->member_type & memflags) && strcmp(mem->name, name) == 0)
             return mem;
     }
-    if (poly && type->parent_type && type->parent_type != (ftable_t*)typeid(A))
+    if (poly && type->parent_type && type->parent_type != typeid(A))
         return find_member(type->parent_type, memflags, name, true);
     return 0;
 }
 
-bool is_inlay(Member m) {
+bool is_inlay(member m) {
     return (m->type->traits & A_TRAIT_VECTOR    |
             m->type->traits & A_TRAIT_STRUCT    | 
             m->type->traits & A_TRAIT_PRIMITIVE | 
             m->type->traits & A_TRAIT_ENUM      | 
-            m->member_type == A_MFLAG_INLAY) != 0;
+            m->member_type == A_FLAG_INLAY) != 0;
 }
 
 none hold_members(A a) {
     AType type = isa(a);
     while (type != typeid(A)) {
         for (num i = 0; i < type->member_count; i++) {
-            Member mem = &type->members[i];
+            member mem = &type->members[i];
             A   *mdata = (A*)((cstr)a + mem->offset);
-            if (mem->member_type & (A_MFLAG_PROP | A_MFLAG_PRIV))
+            if (mem->member_type & (A_FLAG_PROP | A_FLAG_PRIV))
                 if (!is_inlay(mem) && *mdata) { // was trying to isolate what class name was responsible for our problems
                     if (mem->args.meta_0 == typeid(weak))
                         continue;
@@ -1085,7 +1085,7 @@ none hold_members(A a) {
 
 A set_property(A a, symbol name, A value) {
     AType type = isa(a);
-    Member m = find_member(type, A_MFLAG_PROP, (cstr)name, true);
+    member m = find_member(type, A_FLAG_PROP, (cstr)name, true);
     member_set(a, m, value);
     return value;
 }
@@ -1093,7 +1093,7 @@ A set_property(A a, symbol name, A value) {
 
 A get_property(A a, symbol name) {
     AType type = isa(a);
-    Member m = find_member(type, (A_MFLAG_PROP | A_MFLAG_PRIV | A_MFLAG_INTERN), (cstr)name, true);
+    member m = find_member(type, (A_FLAG_PROP | A_FLAG_PRIV | A_FLAG_INTERN), (cstr)name, true);
     verify(m, "%s not found on A %s", name, type->name);
     A *mdata = (A*)((cstr)a + m->offset);
     A  value = *mdata;
@@ -1191,8 +1191,8 @@ none drop_members(A a) {
     AType type = f->type;
     while (type != typeid(A)) {
         for (num i = 0; i < type->member_count; i++) {
-            Member m = &type->members[i];
-            if ((m->member_type & (A_MFLAG_PROP | A_MFLAG_PRIV)) &&
+            member m = &type->members[i];
+            if ((m->member_type & (A_FLAG_PROP | A_FLAG_PRIV)) &&
                     !is_inlay(m)) {
                 if (m->args.meta_0 == typeid(weak))
                     continue;
@@ -1226,13 +1226,13 @@ bool A_cast_bool (A a) {
     return has_count;
 }
 
-Member member_type(AType type, AFlag mt, AType f, bool poly) {
+member member_type(AType type, AFlag mt, AType f, bool poly) {
     for (num i = 0; i < type->member_count; i++) {
-        Member mem = &type->members[i];
+        member mem = &type->members[i];
         if ((mt == 0) || (mem->member_type & mt) && (mem->type == f))
             return mem;
     }
-    if (poly && type->parent_type && type->parent_type != (ftable_t*)typeid(A))
+    if (poly && type->parent_type && type->parent_type != typeid(A))
         return find_member(type->parent_type, mt, f, true);
     return 0;
 }
@@ -1315,12 +1315,12 @@ A A_with_cstrs(A a, cstrs argv) {
         cstr arg = argv[argc];
         if (arg[0] == '-') {
             bool single = arg[1] != '-';
-            Member mem = null;
+            member mem = null;
             AType type = isa(a);
             while (type != typeid(A)) {
                 for (int i = 0; i < type->member_count; i++) {
-                    Member m = &type->members[i];
-                    if ((m->member_type & A_MFLAG_PROP) && 
+                    member m = &type->members[i];
+                    if ((m->member_type & A_FLAG_PROP) && 
                         ( single &&        m->name[0] == arg[1]) ||
                         (!single && strcmp(m->name,     &arg[2]) == 0)) {
                         mem = m;
@@ -1376,8 +1376,8 @@ A A_with_cereal(A a, cereal _cs) {
 
 bool constructs_with(AType type, AType with_type) {
     for (int i = 0; i < type->member_count; i++) {
-        Member mem = &type->members[i];
-        if (mem->member_type == A_MFLAG_CONSTRUCT) {
+        member mem = &type->members[i];
+        if (mem->member_type == A_FLAG_CONSTRUCT) {
             if (mem->type == with_type)
                 return true;
         }
@@ -1413,9 +1413,9 @@ A construct_with(AType type, A data, ctx context) {
     AType atype = type;
     while (atype != typeid(A)) {
         for (int i = 0; i < atype->member_count; i++) {
-            Member mem = &atype->members[i];
+            member mem = &atype->members[i];
             
-            if (!result && mem->member_type == A_MFLAG_CONSTRUCT) {
+            if (!result && mem->member_type == A_FLAG_CONSTRUCT) {
                 none* addr = mem->ptr;
                 /// no meaningful way to do this generically, we prefer to call these first
                 if (mem->type == typeid(path) && data_type == typeid(string)) {
@@ -1432,7 +1432,7 @@ A construct_with(AType type, A data, ctx context) {
                 }
             } else if (context && result && mdata) {
                 // lets set required properties from context
-                if (mem->required && (mem->member_type & A_MFLAG_PROP) && 
+                if (mem->required && (mem->member_type & A_FLAG_PROP) && 
                     !contains(mdata, mem->sname))
                 {
                     A from_ctx = get(context, mem->sname);
@@ -1477,11 +1477,11 @@ A construct_with(AType type, A data, ctx context) {
     /// check for compatible constructor
     if (!result)
     for (int i = 0; i < type->member_count; i++) {
-        Member mem = &type->members[i];
+        member mem = &type->members[i];
         if (!mem->ptr) continue;
         none* addr = mem->ptr;
         /// check for compatible constructors
-        if (mem->member_type == A_MFLAG_CONSTRUCT) {
+        if (mem->member_type == A_FLAG_CONSTRUCT) {
             u64 combine = mem->type->traits & data_type->traits;
             if (combine & A_TRAIT_INTEGRAL) {
                 i64 v = read_integer(data);
@@ -1573,15 +1573,15 @@ none serialize(AType type, string res, A a) {
     }
 }
 
-bool member_set(A a, Member m, A value) {
-    if (!(m->member_type & A_MFLAG_PROP))
+bool member_set(A a, member m, A value) {
+    if (!(m->member_type & A_FLAG_PROP))
         return false;
 
     AType type         = isa(a);
     bool  is_primitive = (m->type->traits & A_TRAIT_PRIMITIVE) != 0;
     bool  is_enum      = (m->type->traits & A_TRAIT_ENUM)      != 0;
     bool  is_struct    = (m->type->traits & A_TRAIT_STRUCT)    != 0;
-    bool  is_inlay     = (m->member_type  & A_MFLAG_INLAY)    != 0;
+    bool  is_inlay     = (m->member_type  & A_FLAG_INLAY)    != 0;
     ARef  member_ptr   = (cstr)a + m->offset;
     AType vtype        = isa(value);
     A     vinfo        = head(value);
@@ -1612,13 +1612,13 @@ bool member_set(A a, Member m, A value) {
 }
 
 // try to use this where possible
-A member_object(A a, Member m) {
-    if (!(m->member_type & A_MFLAG_PROP))
+A member_object(A a, member m) {
+    if (!(m->member_type & A_FLAG_PROP))
         return null; // we do this so much, that its useful as a filter in for statements
 
     bool is_primitive = (m->type->traits & A_TRAIT_PRIMITIVE) | 
                         (m->type->traits & A_TRAIT_STRUCT);
-    bool is_inlay     = (m->member_type  & A_MFLAG_INLAY);
+    bool is_inlay     = (m->member_type  & A_FLAG_INLAY);
     A result;
     ARef   member_ptr = (cstr)a + m->offset;
     if (is_inlay || is_primitive) {
@@ -1642,9 +1642,9 @@ string A_cast_string(A a) {
         //append(res, type->name);
         append(res, "[");
         for (num i = 0; i < type->member_count; i++) {
-            Member m = &type->members[i];
+            member m = &type->members[i];
             // todo: intern members wont be registered
-            if (m->member_type & (A_MFLAG_PROP | A_MFLAG_PRIV | A_MFLAG_INTERN)) {
+            if (m->member_type & (A_FLAG_PROP | A_FLAG_PRIV | A_FLAG_INTERN)) {
                 if (once)
                     append(res, ", ");
                 u8*    ptr = (u8*)a + m->offset;
@@ -1908,7 +1908,7 @@ A formatter(AType type, handle ff, A opt, symbol template, ...) {
         return primitive(typeid(i32), &v);
     }
     return type ? (A)
-        ((AType)type)->with_cereal(alloc(type, 1), (cereal) { .value = (cstr)res->chars }) :
+        ((A_f*)type)->with_cereal(alloc(type, 1), (cereal) { .value = (cstr)res->chars }) :
         (A)res;
 }
 
@@ -2709,9 +2709,9 @@ A hold(A a) {
 
 none A_free(A a) {
     A       aa = header(a);
-    AType*  type = aa->type;
+    A_f*  type = aa->type;
     none* prev = null;
-    AType* cur = type;
+    A_f*   cur = type;
     while (cur) {
         if (prev != cur->dealloc) {
             cur->dealloc(a);
@@ -2791,7 +2791,7 @@ callback bind(A a, A target, bool required, AType rtype, AType arg_type, symbol 
     bool inherits     = instanceof(target, self_type) != null;
     string method     = f(string, "%s%s%s", id ? id : 
         (!inherits ? self_type->name : ""), (id || !inherits) ? "_" : "", name);
-    Member m  = find_member(target_type, A_MFLAG_IMETHOD, method->chars, true);
+    member m  = find_member(target_type, A_FLAG_IMETHOD, method->chars, true);
     verify(!required || m, "bind: required method not found: %o", method);
     if (!m) return null;
     callback f       = m->ptr;
@@ -2944,7 +2944,7 @@ num list_compare(list a, list b) {
         return diff;
     AType ai_t = a->first ? isa(a->first->value) : null;
     if (ai_t) {
-        Member m = find_member(ai_t, (A_MFLAG_IMETHOD), "compare", true);
+        member m = find_member(ai_t, (A_FLAG_IMETHOD), "compare", true);
         for (item ai = a->first, bi = b->first; ai; ai = ai->next, bi = bi->next) {
             num   v  = ((num(*)(A,A))((method_t*)m->method)->address)(ai, bi);
             if (v != 0) return v;
@@ -3033,9 +3033,10 @@ none vector_init(vector a) {
     A f = header(a);
     f->count = 0;
     f->scalar = f->type->meta.meta_0 ? f->type->meta.meta_0 : a->type ? a->type : typeid(i8);
+    f->shape  = hold(a->shape); // it would be nice if didnt have to do this
     verify(f->scalar, "scalar not set");
-    if (a->vshape)
-        a->alloc = total(a->vshape);
+    if (f->shape)
+        a->alloc = total(f->shape);
     vrealloc(a, a->alloc);
 }
 
@@ -3081,14 +3082,14 @@ none vector_concat(vector a, ARef any, num count) {
     AType type = vdata_type(a);
     A f = header(a);
     if (f->alloc < f->count + count)
-        vrealloc(a, (a->alloc << 1) + 32 + count);
+        vrealloc(a, (f->alloc << 1) + 32 + count);
     
     u8* ptr  = vdata(a);
     i64 size = vdata_stride(a);
     memcpy(&ptr[f->count * size], any, size * count);
     f->count += count;
-    if (a->vshape)
-        a->vshape->data[a->vshape->count - 1] = f->count;
+    if (f->shape)
+        f->shape->data[f->shape->count - 1] = f->count;
 }
 
 none vector_push(vector a, A any) {
@@ -3991,8 +3992,8 @@ string json(A a) {
         bool one = false;
         for (num m = 0; m < type->member_count; m++) {
             if (one) push(res, ',');
-            Member mem = &type->members[m];
-            if (!(mem->member_type & (A_MFLAG_PROP | A_MFLAG_INLAY))) continue;
+            member mem = &type->members[m];
+            if (!(mem->member_type & (A_FLAG_PROP | A_FLAG_INLAY))) continue;
             concat(res, json(mem->sname));
             push  (res, ':');
             A value = get_property(a, mem->name);
@@ -4089,14 +4090,14 @@ static string parse_json_string(cstr origin, cstr* remainder, ctx context) {
 
 static A parse_array(cstr s, AType schema, AType meta, cstr* remainder, ctx context);
 
-Member member_first(AType type, AType find, bool poly) {
-    if (poly && type->parent_type != (ftable_t*)typeid(A)) {
-        Member m = member_first(type->parent_type, find, poly);
+member member_first(AType type, AType find, bool poly) {
+    if (poly && type->parent_type != typeid(A)) {
+        member m = member_first(type->parent_type, find, poly);
         if (m) return m;
     }
     for (int i = 0; i < type->member_count; i++) {
-        Member m = &type->members[i];
-        if (!(m->member_type & A_MFLAG_PROP)) continue;
+        member m = &type->members[i];
+        if (!(m->member_type & A_FLAG_PROP)) continue;
         if (m->type == type) return m;
     }
     return null;
@@ -4136,8 +4137,8 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
                 verify(enum_symbol, "enum symbol expected");
                 verify(*scan == ']', "expected ']' after enum symbol");
                 scan++;
-                Member e = find_member(
-                    type, A_MFLAG_ENUMV, enum_symbol->chars, false);
+                member e = find_member(
+                    type, A_FLAG_ENUMV, enum_symbol->chars, false);
                 verify(e, "enum symbol %o not found in type %s", enum_symbol, type->name);
                 memcpy(evalue, e->ptr, e->type->size);
 
@@ -4145,8 +4146,8 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
             } else if (type->traits & A_TRAIT_STRUCT) {
                 A svalue = alloc(type, 1);
                 for (int i = 0; i < type->member_count; i++) {
-                    Member m = &type->members[i];
-                    if (!(m->member_type & A_MFLAG_PROP)) continue;
+                    member m = &type->members[i];
+                    if (!(m->member_type & A_FLAG_PROP)) continue;
                     A f = (A)((cstr)svalue + m->offset);
                     A r = parse_object(scan, null, null, &scan, context);
                     verify(r && isa(r) == m->type, "type mismatch while parsing struct %s:%s (read: %s, expect: %s)",
@@ -4240,7 +4241,7 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
 
             origin        = scan;
             string name   = null;
-            Member mem    = null;
+            member mem    = null;
             bool   quick_map = false;
             bool   json_type = false;
 
@@ -4261,7 +4262,7 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
             if (!mem) {
                 json_type = cmp(name, "Type") == 0;
                 mem  = (is_map) ? null : 
-                    find_member(use_schema, A_MFLAG_PROP, name->chars, true);
+                    find_member(use_schema, A_FLAG_PROP, name->chars, true);
             }
 
             if (!json_type && !mem && !is_map && !context) {
@@ -4393,7 +4394,7 @@ static A parse_array(cstr s, AType schema, AType meta_type, cstr* remainder, ctx
         // for instance, we may parse [[1,2,3,4,5...16],...] mat4x4's; we merely need to validate vmember_count and vmember_type and convert
         // if we have a vmember_count of 0 then we are dealing with a single primitive type
         vector vres = alloc(schema, 1);
-        vres->vshape = shape_new(count, 0);
+        vres->shape = shape_new(count, 0);
         A_initialize(vres);
         i8* data = vdata(vres);
         int index = 0;
@@ -4668,7 +4669,7 @@ none subs_add(subs a, A target, callback fn) {
 A typecast(AType type, A a) {
     if (instanceof(a, type)) return (A)a;
     AType atype = isa(a);
-    Member m = member_type(atype, A_MFLAG_CAST, type, true);
+    member m = member_type(atype, A_FLAG_CAST, type, true);
     if (m) {
         A(*fcast)(A) = m->ptr;
         return fcast(a);
@@ -4736,7 +4737,7 @@ define_primitive(cereal, raw, 0)
 define_primitive(none,   nil, 0)
 //define_primitive(AType,  raw, 0)
 define_primitive(handle, raw, 0)
-define_primitive(Member, raw, 0)
+define_primitive(member, raw, 0)
 define_primitive(ARef,   ref, 0)
 define_primitive(floats, raw, 0)
 define_abstract(pointer, 0)

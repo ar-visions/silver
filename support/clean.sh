@@ -6,7 +6,7 @@ rm -rf /src/A/release
 rm -rf /src/gltf/release
 rm -rf /src/vec/release
 rm -rf /src/ai/release
-rm -rf /src/ether/release
+rm -rf /src/aether/release
 rm -rf /src/quanta/release
 rm -rf /src/img/release
 rm -rf /src/hyperspace/release
@@ -22,7 +22,7 @@ rm -rf /src/A/debug
 rm -rf /src/gltf/debug
 rm -rf /src/vec/debug
 rm -rf /src/ai/debug
-rm -rf /src/ether/debug
+rm -rf /src/aether/debug
 rm -rf /src/quanta/debug
 rm -rf /src/img/debug
 rm -rf /src/hyperspace/debug

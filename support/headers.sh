@@ -2,6 +2,7 @@
 BUILD_FILE="$PROJECT_PATH/build.sf"
 SRC_DIRECTIVE="$PROJECT_PATH/$DIRECTIVE"
 
+echo "path is $PATH"
 if [ ! -d "$SRC_DIRECTIVE" ]; then
     echo "skipping directive $DIRECTIVE (null-path: $SRC_DIRECTIVE)"
     exit 0
@@ -12,12 +13,6 @@ UPROJECT=$(echo "$PROJECT" | tr '[:lower:]' '[:upper:]')
 SED=${SED:-sed}
 
 mkdir -p $GEN_DIR
-
-if [ "$DIRECTIVE" = "src" ]; then
-    INSTALL_INCLUDE_DIR="${IMPORT}/include/${PROJECT}"
-    rm -rf $INSTALL_INCLUDE_DIR
-    ln -s $GEN_DIR $INSTALL_INCLUDE_DIR
-fi
 
 write_import_header() {
     local MODULE="$1"
@@ -77,16 +72,20 @@ write_import_header() {
         echo "#include <${MODULE}/init>"    >> "$IMPORT_HEADER"
         echo ""                             >> "$IMPORT_HEADER"
         echo "#endif"                       >> "$IMPORT_HEADER"
-        if [ -f "${SRC_DIRECTIVE}/${MODULE}" ]; then
-            INSTALL_MODULE_INCLUDE="${IMPORT}/include/${MODULE}"
-            rm -rf $INSTALL_MODULE_INCLUDE
-            ln -s "${SRC_DIRECTIVE}/${MODULE}" "${INSTALL_MODULE_INCLUDE}"
-        fi
     fi
 }
 
+# lets put all utility headers in the main project folder
+find "$SRC_DIRECTIVE" -maxdepth 1 -type f -name "*.h" | while read -r MOD_HEADER; do
+    MODULE=$(basename "$MOD_HEADER")
+    HEADER="$GEN_DIR/$PROJECT/$MODULE"
+    mkdir -p  $(dirname $HEADER)
+    rm    -rf $HEADER
+    ln    -s  $SRC_DIRECTIVE/$MODULE $HEADER
+done
+
 # Find all files with no extension in the directive folder
-find "$SRC_DIRECTIVE" -type f ! -name "*.*" | while read -r MOD_HEADER; do
+find "$SRC_DIRECTIVE" -maxdepth 1 -type f ! -name "*.*" | while read -r MOD_HEADER; do
     MODULE=$(basename "$MOD_HEADER")
     UMODULE=$(echo "$MODULE" | tr '[:lower:]' '[:upper:]')
 
@@ -99,6 +98,7 @@ find "$SRC_DIRECTIVE" -type f ! -name "*.*" | while read -r MOD_HEADER; do
     write_import_header "$MODULE"
 
     # make symlink of header direct from source; required for sync'd builds
+    # we need to actually link all headers, because its up to the user to put in as many as they want
     HEADER="$GEN_DIR/$MODULE/$MODULE"
     mkdir -p $(dirname $HEADER)
     rm -rf $HEADER
@@ -282,6 +282,16 @@ find "$SRC_DIRECTIVE" -type f ! -name "*.*" | while read -r MOD_HEADER; do
         echo "#endif /* _${UMODULE}_INTERN_H_ */" >> "$INTERN_HEADER"
     fi
 done
+
+if [ "$DIRECTIVE" = "src" ]; then
+    # Find all files with no extension in the directive folder
+    find "$SRC_DIRECTIVE" -maxdepth 1 -type f ! -name "*.*" | while read -r MOD_HEADER; do
+        MODULE=$(basename "$MOD_HEADER")
+        INSTALL_INCLUDE_DIR="${IMPORT}/include/${MODULE}"
+        rm -rf $INSTALL_INCLUDE_DIR
+        ln -s $GEN_DIR/$MODULE $INSTALL_INCLUDE_DIR
+    done
+fi
 
 # return include path
 echo "-I${GEN_DIR}"

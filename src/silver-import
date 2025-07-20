@@ -5,25 +5,6 @@
 
 forward(import)
 
-#define remote_schema(X,Y,...) \
-    i_prop(X,Y, public, import, import) \
-    i_prop(X,Y, public, array,  exports, meta, flag) \
-    i_prop(X,Y, public, string, name) \
-    i_prop(X,Y, public, string, uri) \
-    i_prop(X,Y, public, string, commit) \
-    i_prop(X,Y, public, path,   import_path) \
-    i_prop(X,Y, public, path,   build_path) \
-    i_prop(X,Y, public, bool,   debug) \
-    i_method(X,Y, public, string, cmake_location) \
-    i_method(X,Y, public, bool, make) \
-    i_prop(X,Y, public, map,    environment) \
-    i_prop(X,Y, public, array, config,   meta, string) \
-    i_prop(X,Y, public, array, commands, meta, string) \
-    i_prop(X,Y, public, array, always,   meta, string) \
-    i_override(X,Y, cast, string) \
-    i_override(X,Y, method, init)
-declare_class(remote)
-
 #define flag_schema(X,Y,...) \
     i_prop(X,Y, public, string, name) \
     i_prop(X,Y, public, bool,   is_lib) \
@@ -32,27 +13,65 @@ declare_class(remote)
     i_override(X,Y, cast, string)
 declare_class(flag)
 
+// first part is the struct from tapestry
+// we must subblemate the multiple remotes into this one singular..
+// this means, replace remotes, with all of remote.
+// we also keep all of the members we need in the silver's import (prior: Import)
+// this is very good. its merging 3 parts into one, and it very much makes sense
+// this, because aether constructs keywords with the same type name
+// as we parse tokens, we are looking for registered classes first
+// this happens before our list of keywords are iterated through
+// infact, we should never implement a central token controller, but have it here
+// this allows us to shape silver into whatever we need
+
 #define import_schema(X,Y,...) \
-    i_ctr(X,Y,  public, map) \
-    i_prop(X,Y, public, map,    m) \
-    i_prop(X,Y, public, string, name) \
-    i_prop(X,Y, public, path,    src) \
-    i_prop(X,Y, public, path,    install) \
-    i_prop(X,Y, public, path,    include) \
-    i_prop(X,Y, public, string,  sanitize) \
-    i_prop(X,Y, public, string,  dbg) \
-    i_prop(X,Y, public, path,  project_path) \
-    i_prop(X,Y, public, path,  build_path) \
-    i_prop(X,Y, public, array, remotes, meta, remote) \
-    i_prop(X,Y, intern, array, lib_targets) \
-    i_prop(X,Y, intern, array, app_targets) \
-    i_prop(X,Y, public, array, exports, meta, flag) \
-    i_prop(X,Y, public, array, interns, meta, flag) \
-    i_prop(X,Y, intern, map,   environment) \
-    i_prop(X,Y, intern, bool,  has_lib) \
-    i_method(X,Y, public, i32, build, path) \
-    i_method(X,Y, public, i32, install) \
-    i_override(X,Y, method, init)
-declare_class(import)
+    /* tapestry */ \
+    i_ctr       (X,Y, public, silver) \
+    i_prop      (X,Y, public, string,       name) \
+    i_prop      (X,Y, public, string,       uri) \
+    i_prop      (X,Y, public, string,       commit) \
+    i_prop      (X,Y, public, path,         src) \
+    i_prop      (X,Y, public, string,       sanitize) \
+    i_prop      (X,Y, public, string,       dbg) \
+    i_prop      (X,Y, public, path,         build_path) \
+    \
+    /* the above arguments we also get from aether \
+       we no longer hold onto multiple remotes \
+       i_prop      (X,Y, public, array,    remotes, meta, remote) */ \
+    \
+    i_prop      (X,Y, intern, array,        lib_targets) \
+    i_prop      (X,Y, intern, array,        app_targets) \
+    i_prop      (X,Y, public, array,        exports, meta, flag) \
+    i_prop      (X,Y, public, array,        interns, meta, flag) \
+    i_prop      (X,Y, intern, map,          environment) \
+    i_prop      (X,Y, intern, bool,         has_lib) \
+    i_method    (X,Y, public, i32,          build, path) \
+    i_method    (X,Y, public, i32,          install) \
+    \
+    /* remote */ \
+    \
+    i_prop      (X,Y, public, path,         import_path) \
+    i_prop      (X,Y, public, bool,         debug) \
+    i_method    (X,Y, public, string,       cmake_location) \
+    i_method    (X,Y, public, bool,         make) \
+    i_prop      (X,Y, public, map,          environment) \
+    i_prop      (X,Y, public, array,        config,   meta, string) \
+    i_prop      (X,Y, public, array,        commands, meta, string) \
+    i_prop      (X,Y, public, array,        always,   meta, string) \
+    i_override  (X,Y, cast, string) \
+    i_override  (X,Y, method, init) \
+    \
+    /* silvers import keyword has these args (some we will NOT USE) */ \
+    \
+    i_prop      (X,Y, intern, array,        includes, meta, path) \
+    i_prop      (X,Y, intern, array,        modules,  meta, path) \
+    i_prop      (X,Y, intern, path,         include_path) \
+    i_prop      (X,Y, intern, string,       namespace) \
+    i_prop      (X,Y, intern, array,        links) \
+    i_prop      (X,Y, intern, array,        parameters) \
+    i_method    (X,Y, public, none,         process) \
+    \
+    i_override  (X,Y, method, init)
+declare_class(import, model)
 
 #endif

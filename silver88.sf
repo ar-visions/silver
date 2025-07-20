@@ -4,27 +4,19 @@
 # uri parser integration with A-type schema registration; merely setting a meta type on our class to silver, we say we are a parser too
 # it needs control over context when evaluated
 # we need to base our type on A, to make sense anyway.  then we can sub-class type as model (makes reasonable sense; differentiated as an enode)
-import https://github.com/ggml-org/llama.cpp [ master ]
+import https://github.com/ggml-org/llama.cpp [ master ] {
     -DLLAMA_STATIC=OFF
     -DBUILD_SHARED_LIBS=ON
     -lllama
     -lggml
     -lggml-cpu
     -lggml-base
+}
 
 import silver-mod <cmodule> as together
 import a b as ab
 
-
 import <stdio> another
-
-# this will embed these ito the module namespace, with a null name anyway.
-# all collisions will be reported as errors, of course; there is no 'undefining' or the matter of it
-# being used differently depending on placement in file -- thats not what we want.  its an error
-# question is how do we term that statement? .. ok its expecting another module name, or , or as
-# so this means we cannot have this feature if the Next token is a symbol of undefined name
-# so far i dont believe this ambiguity is there:
-#       so its simply read_alpha, as, and a comma.. if not, then its done
 
 enum alien-type
     squiddy, s: 1
@@ -38,7 +30,7 @@ class aliens, f32 alien-type
     inlaid a-member3 : array [ int 2x4    : 1 1 2 3,  1 1 2 3 ]
     public a-ref     : array [ int 2x2    : 8 8,      4 4     ]
 
-    fn print []
+    func print []
         std.printf[ '{a-prim} ... {a-member} ... {a-ref}\n' ]
     
     fn init-in-aliens []
@@ -52,7 +44,6 @@ fn init-in-module []
         44
     cl.print[]
 
-# unit classes are a L-data-type with an associated R-enum [ maximum 2 dimensions to define ]
 a-type: class speed -> f128, enum etype[ mph kts kph c ]
     # we merely define a map of scales, so that we may perform operations
     mph  : 0.7 * this

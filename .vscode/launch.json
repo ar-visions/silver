@@ -140,7 +140,8 @@
             "program":    "/src/silver/bin/silver",
             "args":     [ "--source", "/src/silver/silver88.sf" ],
             "cwd":        "/src/silver/share/silver",
-            "env":      { "VERBOSE": "1", "CC": "clang" }
+            "env":      { "VERBOSE": "1", "CC": "clang", "IMPORT": "/src/silver",
+                          "PATH":"/usr2/local/bin:/usr/bin:/usr/local/sbin:/usr/bin/site_perl:/usr/bin/vendor_perl:/usr/bin/core_perl" }
         },
         {
             "name": "A-generate",

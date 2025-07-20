@@ -108,7 +108,7 @@ path reflect(string module) {
             set(type_symbols, type_symbol, A_u16(len(type_symbols)));
         }
         for (int m = 0; m < type->member_count; m++) {
-            type_member_t* mem = &type->members[m];
+            member* mem = &type->members[m];
             string name_symbol = string(mem->name);
             if (!contains(name_symbols, name_symbol))
                  set     (name_symbols, name_symbol, A_u16(len(name_symbols)));
@@ -169,7 +169,7 @@ path reflect(string module) {
         u16 *mem_count  = A_u16(type->member_count);
         write(f, mem_count);
         for (int m = 0; m < type->member_count; m++) {
-            type_member_t* mem = &type->members[m];
+            member* mem = &type->members[m];
             
             // write member type
             write(f, A_u32(mem->member_type));

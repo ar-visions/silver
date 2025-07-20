@@ -4,7 +4,7 @@ use std::ffi::c_char;
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum AMember {
+pub enum AMFlag {
     None                = 0,
     Construct           = 1,
     Prop                = 2,
@@ -38,7 +38,7 @@ pub struct meta_t {
 }
 
 #[repr(C, packed(1))]
-pub struct type_member_t {
+pub struct member {
     pub name:           *mut c_char,
     pub _type_:         *mut c_void,
     pub offset:         i32,
@@ -60,7 +60,7 @@ struct f_A {
     pub msize         : i32,
     pub vmember_shape : shape,
     pub vmember_count : i32,
-    pub vmember_type  : AMember,
+    pub vmember_type  : AMFlag,
     pub member_count  : i32,
     pub members       : *mut type_member_t,
     pub traits        : i32,
@@ -212,7 +212,7 @@ macro_rules! A_type {
                                     _type_: std::ptr::null_mut(), // Type info lookup needed
                                     offset: memoffset::offset_of!($name, $prop_name) as i32,
                                     count: 1,
-                                    member_type: AMember::Prop as i32,
+                                    member_type: AMFlag::Prop as i32,
                                     operator_type: 0,
                                     required: 0,
                                     args: meta_t { count: 0, ..Default::default() },
@@ -229,7 +229,7 @@ macro_rules! A_type {
                                         _type_: std::ptr::null_mut(), // Type info lookup needed
                                         offset: memoffset::offset_of!([<f_ $name>], $method_name) as i32,
                                         count: 1,
-                                        member_type: AMember::IMethod as i32,
+                                        member_type: AMFlag::IMethod as i32,
                                         operator_type: 0,
                                         required: 0,
                                         args: meta_t { count: 0, ..Default::default() },
