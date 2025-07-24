@@ -180,7 +180,7 @@ define_class(rgba, A)
 
 vec2f rect_xy(rect a) { return vec2f(a->x, a->y); }
 
-rect create_rect(vec2f v0, vec2f v1) {
+rect rect_create_rect(vec2f v0, vec2f v1) {
     rect r = rect();
     r->x = v0.x;
     r->y = v0.y;

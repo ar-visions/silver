@@ -158,6 +158,9 @@ typedef bool(*global_init_fn)();
     AType           parent_type; \
     char*           name; \
     char*           module; \
+    AType*          sub_types; \
+    i16             sub_types_count; \
+    i16             sub_types_alloc; \
     int             size; \
     int             msize; \
     af_recycler*    af; \
@@ -433,7 +436,7 @@ void lazy_init(global_init_fn fn);
         return true; \
     } \
     static __attribute__((constructor)) void _module_register() { \
-        register_init((global_init_fn)&_module_init); \
+        A_register_init((global_init_fn)&_module_init); \
     }
 
 
@@ -591,8 +594,9 @@ forward(any)
     t_method(AA,Y, public, bool,        inherits,            AType) \
     t_method(AA,Y, public, A,           construct_with,      A,         ctx) \
     t_method(AA,Y, public, bool,        constructs_with,     AType) \
+    t_method(AA,Y, public, member,      find_ctr,            AType, bool) \
     t_method(AA,Y, public, member,      find_member,         AFlag, symbol,    bool) \
-    t_method(AA,Y, public, member,      member_first,        AType,   bool) \
+    t_method(AA,Y, public, member,      member_first,        AType, bool) \
     t_method(AA,Y, public, member,      member_type,         AFlag, AType,     bool) \
     t_method(AA,Y, public, A,           primitive,           raw) \
     t_method(AA,Y, public, A,           method,              cstr,    array) \
@@ -1167,6 +1171,7 @@ declare_class_2(ctx, map)
     i_method  (X,Y,   public, array,   split, symbol) \
     i_method  (X,Y,   public, string,  escape) \
     i_method  (X,Y,   public, num,     index_of, symbol) \
+    i_method  (X,Y,   public, num,     rindex_of, symbol) \
     i_method  (X,Y,   public, none,    append, symbol) \
     i_method  (X,Y,   public, none,    append_count, symbol, i32) \
     i_method  (X,Y,   public, none,    push, u32) \

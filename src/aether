@@ -85,6 +85,7 @@ declare_enum(reference)
     i_prop    (X,Y, public,     bool,             finalized) \
     i_prop    (X,Y, intern,     model,            init_top) \
     i_prop    (X,Y, public,     function,         fn_init) \
+    s_method  (X,Y, public,     string,     keyword) \
     i_method  (X,Y, public,     function,   initializer) \
     i_method  (X,Y, public,     model,      pointer) \
     i_method  (X,Y, public,     bool,       has_scope) \
