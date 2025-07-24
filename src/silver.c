@@ -71,7 +71,7 @@ static void initialize() {
         "const",    "inlaid",   "require",
         "no-op",    "return",   "->",       "::",     "...",
         "asm",      "if",       "switch",   "any",      "enum",
-        "ifdef",    "else",     "while",
+        "e-if",    "else",     "while",
         "for",      "do",       "cast",     "fn",
         null);
     
@@ -864,13 +864,13 @@ node silver_read_node(silver mod, AType constant_result) {
         bool ns_found = false;
         if (first) {
             /// if token is a module name, consume an expected . and emember-name
-            each (mod->imports, Import, im) {
+            each (mod->imports, import, im) {
                 if (im->namespace && eq(alpha, im->namespace->chars)) {
                     string module_name = alpha;
                     verify(read(mod, "."), "expected . after module-name: %o", alpha);
                     alpha = read_alpha(mod);
                     verify(alpha, "expected alpha-ident after module-name: %o", module_name);
-                    mem = lookup2(mod, alpha, typeid(Import)); // if import has no namespace assignment, we should not push it to members
+                    mem = lookup2(mod, alpha, typeid(import)); // if import has no namespace assignment, we should not push it to members
                     verify(mem, "%o not found in module-name: %o", alpha, module_name);
                     ns_found = true;
                 }
@@ -1141,9 +1141,7 @@ static node read_expression(silver mod) {
 
 
 static node parse_expression(silver mod) {
-    //mod->expr_level++;
     node vr = reverse_descent(mod);
-    //mod->expr_level--;
     return vr;
 }
 
@@ -1603,9 +1601,9 @@ node expr_builder(silver mod, array expr_tokens, A unused) {
     return exprs;
 }
 
+// we must have separate if/ifdef, since ifdef does not push the variable scope (it cannot by design)
+// being adaptive to this based on constant status is too ambiguous
 
-/// parses entire chain of if, [else-if, ...] [else]
-/// lets do this a bit simpler
 node parse_ifdef_else(silver mod) {
     bool  require_if   = true;
     bool  one_truth    = false;
@@ -1628,11 +1626,11 @@ node parse_ifdef_else(silver mod) {
             A const_v = n_cond->literal;
             pop_state(mod, false);
             mod->in_const  = prev;
-            one_truth      = true;
-            if (const_v && cast(bool, const_v)) {
-                push_state(mod, block, 0);
+            if (!one_truth && const_v && cast(bool, const_v)) { // we need to make sure that we do not follow anymore in this block!
+                push_state(mod, block, 0); // are we doing that?
                 statements = parse_statements(mod, false);
                 pop_state(mod, false);
+                one_truth = true; /// we passed the condition, so we cannot enter in other blocks.
             }
         } else if (!one_truth) {
             verify(!is_if, "if statement incorrect");
@@ -1650,6 +1648,7 @@ node parse_ifdef_else(silver mod) {
     }
     return statements;
 }
+
 
 /// parses entire chain of if, [else-if, ...] [else]
 node parse_if_else(silver mod) {
@@ -1719,7 +1718,7 @@ map aether_top_member_map(aether e);
 path module_path(silver mod, string name) {
     cstr exts[] = { "sf", "sr" };
     path res    = null;
-    path cw     = cwd();
+    path cw     = path_cwd();
     for (int  i = 0; i < 2; i++) {
         path  r = f(path, "%o/%o.%s", cw, name, exts[i]);
         if (file_exists("%o", res)) {
@@ -1730,42 +1729,13 @@ path module_path(silver mod, string name) {
     return res;
 }
 
-emember register_import(
-            silver mod, string name, array _modules, array _includes)
-{
-    string fallback = len(_modules) ? first(_modules) : len(_includes) ? first(_includes) : null;
-    array includes = array(32);
-    array modules  = array(32);
-    each(_modules, A, m) {
-        verify(isa(m) == typeid(string),
-            "expected string identifier for module");
-        push(modules, module_path(mod, (string)m));
-    }
-    each(_includes, A, inc) {
-        verify(isa(inc) == typeid(string),
-            "expected string identifier for include");
-        push(includes, include_path(mod, (string)inc));
-    }
-    Import im = Import(
-        mod,        mod,
-        name,       name ? name : (fallback && isalpha(first(fallback)) ? fallback : null),
-        modules,    modules,
-        includes,   includes,
-        namespace,  name);
-    
-    emember mem = emember(mod, mod, name, im->name, context, mod->top);
-    push(mod->imports, im); // push to imports array; which is a bit redundant since the model is registered in the context as a emember
-
-    set_model(mem, im);
-    push_member(mod, mem);
-    return mem;
-}
-
-AType next_is_model(silver mod) {
+AType next_is_keyword(silver mod, member* fn) {
     string n = peek_alpha(mod);
     if (!n) return null;
-    AType f = find_type((cstr)n->chars);
-    return inherits(f, typeid(model)) ? f : null;
+    AType f = A_find_type((cstr)n->chars);
+    if (inherits(f, typeid(model)) && (*fn = find_member(f, A_FLAG_SMETHOD, "parse", true)))
+        return f;
+    return null;
 }
 
 /// called after : or before, where the user has access
@@ -1777,187 +1747,144 @@ emember silver_read_def(silver mod) {
     bool   is_struct = next_is(mod, "struct");
     bool   is_enum   = next_is(mod, "enum");
     bool   is_alias  = next_is(mod, "alias");
-    
-    AType  is_type   = next_is_model(mod);
+    member parse_fn = null;
+    AType  is_type   = next_is_keyword(mod, &parse_fn);
 
-    if (!is_import && !is_class && !is_struct && !is_enum && !is_alias)
+    if (!is_type && !is_class && !is_struct && !is_enum && !is_alias)
         return null;
+
+    if (is_type) {
+        typedef node n;
+        n (*func)(silver) = parse_fn->ptr;
+        verify(func, "expected parse fn on member");
+        return func(mod);
+    }
 
     consume(mod);
+    string n = read_alpha(mod);
+    verify(n, "expected alpha-numeric identity, found %o", next(mod));
 
-    /// implement the import keyword; its a bit tricky around <stdio as std, another> ... its certainly possible to group both too with:
-    if (is_import) { // import <stdio, another> as stdan  <- we group all of them when specifying it outside
-        token inc       = read(mod, "<"); // ... silver-mode is without < >'s
-        array includes  = null; // there you may also combine:  import silio another, as silan
-        array modules   = null; // question is do we also allow this:
-        path  inc_path  = null; // anyway we can also do:  import silver as si, <another>
-        token alias     = null;
-        token t         = null;
+    emember mem = emember(mod, mod, name, n, context, mod->top);
 
-        verify(next_is_alpha(mod), "expected alpha-numeric after import");
-
-        while ((t = next(mod))) {
-            string n = cast(string, t);
-            if (inc) {
-                if (!includes) includes = array(32);
-                push(includes, n);
-            } else {
-                if (!modules) modules = array(32);
-                push(modules, n);
-            }
-
-            /// we may encouner a > to end our includes 
-            bool end_of_inc   = inc && read(mod, ">");
-            bool is_as        = (end_of_inc || !inc) && (read(mod, "as") != null);
-            bool is_comma     = read(mod, ",") != null;
-
-            if (end_of_inc || is_as || is_comma) {
-                token name   = is_as ? next(mod) : null;
-                verify(len(modules) || len(includes), "no modules or includes to import");
-                register_import(mod, name, modules, includes);
-                modules      = null;
-                includes     = null;
-                end_of_inc   = false;
-                inc          = null;
-                if (!is_comma)
-                    break;
-                
-            } else if (next_is_keyword(mod) || !next_is_alpha(mod))
-                break;
-
-            verify(next_is_alpha(mod), "expected alpha-numeric continuation");
+    if (is_class || is_struct) {
+        array schema = array();
+        /// read class schematics
+        model parent = null;
+        if (is_class && next_is(mod, "[")) {
+            consume(mod);
+            parent = instanceof(read_model(mod, null), typeid(model));
+            consume(mod);
         }
-
-        if (modules || includes) {
-            register_import(mod, null, modules, includes);
+        array body   = read_body(mod, false);
+        /// todo: call build_record right after this is done
+        if (is_class)
+            mem->mdl = class    (mod, mod, name, n, body, body, parent, parent);
+        else
+            mem->mdl = structure(mod, mod, name, n, body, body);
+    
+    } else if (is_enum) {
+        model store = null, suffix = null;
+        if (read(mod, ",")) {
+            store  = instanceof(read_model(mod, null), typeid(model));
+            suffix = instanceof(read_model(mod, null), typeid(model));
+            verify(store, "invalid storage type");
         }
+        array enum_body = read_body(mod, false);
+        print_all(mod, "enum-tokens", enum_body);
+        verify(len(enum_body), "expected body for enum %o", n);
 
-        return null;
-    } else {
-        string n   = read_alpha(mod);
-        verify(n, "expected alpha-numeric identity, found %o", next(mod));
-
-        emember mem = emember(mod, mod, name, n, context, mod->top);
-
-        if (is_class || is_struct) {
-            array schema = array();
-            /// read class schematics
-            model parent = null;
-            if (is_class && next_is(mod, "[")) {
-                consume(mod);
-                parent = instanceof(read_model(mod, null), typeid(model));
-                consume(mod);
-            }
-            array body   = read_body(mod, false);
-            /// todo: call build_record right after this is done
-            if (is_class)
-                mem->mdl = class    (mod, mod, name, n, body, body, parent, parent);
-            else
-                mem->mdl = structure(mod, mod, name, n, body, body);
+        mem->mdl  = enumeration(
+            mod, mod,  src, store,  name, n);
         
-        } else if (is_enum) {
-            model store = null, suffix = null;
-            if (read(mod, ",")) {
-                store  = instanceof(read_model(mod, null), typeid(model));
-                suffix = instanceof(read_model(mod, null), typeid(model));
-                verify(store, "invalid storage type");
-            }
-            array enum_body = read_body(mod, false);
-            print_all(mod, "enum-tokens", enum_body);
-            verify(len(enum_body), "expected body for enum %o", n);
+        push_state(mod, enum_body, 0);
+        push(mod, mem->mdl);
 
-            mem->mdl  = enumeration(
-                mod, mod,  src, store,  name, n);
+        store = mem->mdl->src;
+
+        /// verify model is a primitive type
+        AType atype = isa(mem->mdl->src->src);
+        verify(atype && (atype->traits & A_TRAIT_PRIMITIVE),
+            "enumeration can only be based on primitive types (i32 default)");
+
+        i64  i64_v = 0;
+        f64  f64_v = 0;
+        f32  f32_v = 0;
+        i64* i64_value = store == emodel("i64") ? &i64_v : null;
+        i64* i32_value = store == emodel("i32") ? &i64_v : null;
+        f64* f64_value = store == emodel("f64") ? &f64_v : null;
+        f32* f32_value = store == emodel("f32") ? &f32_v : null;
+        A value = (A)(i64_value ? (A)i64_value : i32_value ? (A)i32_value :
+                                f64_value ? (A)f64_value : (A)f32_value);
+        
+        while (true) {
+            token e = next(mod);
+            if  (!e) break;
+            A v = null;
             
-            push_state(mod, enum_body, 0);
-            push(mod, mem->mdl);
-
-            store = mem->mdl->src;
-
-            /// verify model is a primitive type
-            AType atype = isa(mem->mdl->src->src);
-            verify(atype && (atype->traits & A_TRAIT_PRIMITIVE),
-                "enumeration can only be based on primitive types (i32 default)");
-
-            i64  i64_v = 0;
-            f64  f64_v = 0;
-            f32  f32_v = 0;
-            i64* i64_value = store == emodel("i64") ? &i64_v : null;
-            i64* i32_value = store == emodel("i32") ? &i64_v : null;
-            f64* f64_value = store == emodel("f64") ? &f64_v : null;
-            f32* f32_value = store == emodel("f32") ? &f32_v : null;
-            A value = (A)(i64_value ? (A)i64_value : i32_value ? (A)i32_value :
-                                    f64_value ? (A)f64_value : (A)f32_value);
-            
-            while (true) {
-                token e = next(mod);
-                if  (!e) break;
-                A v = null;
-                
-                if (read(mod, ":")) {
-                    v = read_node(mod, atype); // i want this to parse an entire literal, with operations
-                    //verify(v && isa(v) == atype, "expected numeric literal");
-                } else
-                    v = primitive(atype, value); /// this creates i8 to i64 data, using &value i64 addr
+            if (read(mod, ":")) {
+                v = read_node(mod, atype); // i want this to parse an entire literal, with operations
+                //verify(v && isa(v) == atype, "expected numeric literal");
+            } else
+                v = primitive(atype, value); /// this creates i8 to i64 data, using &value i64 addr
 
 
-                // lets resolve operations in here
-                if (instanceof(v, typeid(node))) {
-                    // v = resolve_constant(v);
-                    int test2 = 2;
-                    test2 += 2;
-                } else if (instanceof(v, typeid(emember))) {
-                    int test2 = 2;
-                    test2 += 2;
-                } else {
-                    AType res = isa(v);
-                    int test2 = 2;
-                    test2 += 2;
-                }
-                array aliases = null;
-                while(read(mod, ",")) {
-                    if (!aliases) aliases = array(32);
-                    string a = read_alpha(mod);
-                    verify(a, "could not read identifier");
-                    push(aliases, a);
-                }
-                emember emem = emember(
-                    mod, mod, name, e, mdl, mem->mdl,
-                    is_const, true, is_decl, true, literal, v, aliases, aliases);
-                
-                set_value(emem, v); // redundant with the first literal field; we aren't to simply store the token[0] or tokens, either
-                
-                string estr = cast(string, e);
-                set(mem->mdl->members, estr, emem);
-                if (aliases)
-                    each(aliases, string, a)
-                        set(mem->mdl->members, a, emem);
-                
-                if (i64_value) {
-                    *i64_value += 1;
-                } else if (i32_value) {
-                    *i32_value += 1;
-                } else if (f64_value) {
-                    *f64_value += 1.0;
-                } else if (f32_value) {
-                    *f32_value += 1.0f;
-                }
+            // lets resolve operations in here
+            if (instanceof(v, typeid(node))) {
+                // v = resolve_constant(v);
+                int test2 = 2;
+                test2 += 2;
+            } else if (instanceof(v, typeid(emember))) {
+                int test2 = 2;
+                test2 += 2;
+            } else {
+                AType res = isa(v);
+                int test2 = 2;
+                test2 += 2;
             }
-            pop(mod);
-            pop_state(mod, false);
-
-            // is below required or did i comment this out as test?
-            finalize(mem->mdl, mem);
-        } else {
-            verify(is_alias, "unknown error");
-            mem->mdl = alias(mem->mdl, mem->name, reference_pointer, null);
+            array aliases = null;
+            while(read(mod, ",")) {
+                if (!aliases) aliases = array(32);
+                string a = read_alpha(mod);
+                verify(a, "could not read identifier");
+                push(aliases, a);
+            }
+            emember emem = emember(
+                mod, mod, name, e, mdl, mem->mdl,
+                is_const, true, is_decl, true, literal, v, aliases, aliases);
+            
+            set_value(emem, v); // redundant with the first literal field; we aren't to simply store the token[0] or tokens, either
+            
+            string estr = cast(string, e);
+            set(mem->mdl->members, estr, emem);
+            if (aliases)
+                each(aliases, string, a)
+                    set(mem->mdl->members, a, emem);
+            
+            if (i64_value) {
+                *i64_value += 1;
+            } else if (i32_value) {
+                *i32_value += 1;
+            } else if (f64_value) {
+                *f64_value += 1.0;
+            } else if (f32_value) {
+                *f32_value += 1.0f;
+            }
         }
-        mem->is_type = true;
-        verify(mem && (is_import || len(mem->name)),
-            "name required for model: %s", isa(mem->mdl)->name);
-        push_member(mod, mem);
-        return mem; // for these keywords, we have one emember registered (not like our import)
+        pop(mod);
+        pop_state(mod, false);
+
+        // is below required or did i comment this out as test?
+        finalize(mem->mdl, mem);
+    } else {
+        verify(is_alias, "unknown error");
+        mem->mdl = alias(mem->mdl, mem->name, reference_pointer, null);
     }
+    mem->is_type = true;
+    verify(mem && (is_import || len(mem->name)),
+        "name required for model: %s", isa(mem->mdl)->name);
+    push_member(mod, mem);
+    return mem; // for these keywords, we have one emember registered (not like our import)
+
 }
 
 
@@ -2138,10 +2065,6 @@ void silver_parse(silver mod) {
     finalize(module_init, mem_init);
 }
 
-void Import_process(Import im) {
-    /// this might be returning members from field meta data to something we may understand in aether models
-}
-
 void silver_init(silver mod) {
     if ( mod->source)  mod->source  = absolute(mod->source);
     if (!mod->install) mod->install = f(path, "%s", getenv("IMPORT"));
@@ -2155,24 +2078,22 @@ void silver_init(silver mod) {
     verify(mod->std == language_silver || eq(ext(mod->source), "sf"),
         "only .sf extension supported; specify --std silver to override");
     
+    cstr _SRC    = getenv("SRC");
+    cstr _DBG    = getenv("DBG");
+    cstr _IMPORT = getenv("IMPORT");
+    verify(_IMPORT, "silver requires IMPORT environment");
+
     mod->mod = mod;
     mod->products_used = array();
     mod->imports = array(32);
     mod->tokens  = parse_tokens(mod->source);
     mod->stack   = array(4);
+    mod->src     = absolute(path(_SRC ? _SRC : "."));
 
-    cstr      _DBG = getenv("DBG");
-    cstr _IMPORT = getenv("IMPORT");
-    verify(_IMPORT, "silver requires IMPORT environment");
+    verify(dir_exists("%o", mod->src), "SRC path does not exist");
 
-    path        af = cwd();
+    path        af = path_cwd();
     path   install = path(_IMPORT);
-    map         m  = m(
-        "path",    af,
-        "dbg",     _DBG ? string(_DBG) : string(""),
-        "install", install,
-        "src",     parent(install));
-    mod->import = import(m);
 
     import_types(mod);
 
@@ -2181,7 +2102,6 @@ void silver_init(silver mod) {
 
     AType mdl_type = isa(mdl); /// A should be a emember for a alias ref of struct _A, its a typedef
 
-    Import itop = mod->top;
     /// alias A -> any
     emember mA      = lookup2(mod, string("A"), null);
     AType  mA_type = isa(mA->mdl);
@@ -2197,11 +2117,6 @@ void silver_init(silver mod) {
 
     /// we do not want to push this function to context unless it can be gracefully
     parse(mod);
-
-    /// enumerating objects used, libs used, etc
-    /// may be called earlier when the statement of import is finished
-    each (mod->imports, Import, im)
-        process(im);
 
     path ll = null, bc = null;
     write(mod, &ll, &bc);
@@ -2223,7 +2138,7 @@ silver silver_load_module(silver mod, path uri) {
 
 void silver_import_types(silver mod) {
     i64    ln = 0;
-    AType* a  = types(&ln);
+    AType* a  = A_types(&ln);
     
     // we need to first import the basic type structs
     // this is for Type, containing members and its traits
@@ -2298,75 +2213,878 @@ static none resolve_type(silver mod, model import_into, AType type) {
     }
 }
 
-none Import_init(Import a) {
-    silver mod = a->mod;
-    if (a->namespace)
-        push(mod, a);
 
-    model itop = mod->top;
 
-    /// for A-type includes, we want to merely query the dependency with import
-    /// this would mean live loading the A-type libraries because we use them ourselves
-    /// we input the schemas, including properties + extra space for intern (polymorphic)
+#include <import>
+#include <sys/stat.h>
+#include <utime.h>
+#include <limits.h>
 
-    each(a->includes, path, inc) {
-        string ext = ext(inc);
-        if(len(ext) == 0) {
-            cstr preloaded[] = {"A", "silver", "aether"};
-            string project_name = stem(inc);
-            bool is_loaded = false;
-            for (int i = 0; i < sizeof(preloaded) / sizeof(cstr); i++) {
-                if (eq(project_name, preloaded[i])) {
-                    is_loaded = true;
+static i64 ancestor_mod = 0;
+
+#if defined(__x86_64__) || defined(_M_X64)
+static symbol arch = "x86_64";
+#elif defined(__i386__) || defined(_M_IX86)
+static symbol arch = "x86";
+#elif defined(__aarch64__) || defined(_M_ARM64)
+static symbol arch = "arm64";
+#elif defined(__arm__) || defined(_M_ARM)
+static symbol arch = "arm32";
+#endif
+
+#if defined(__linux__)
+static symbol lib_pre  = "lib"; static symbol lib_ext  = ".so";     static symbol app_ext  = "";        static symbol platform = "linux";
+#elif defined(_WIN32)
+static symbol lib_pre  = "";    static symbol lib_ext  = ".dll";    static symbol app_ext  = ".exe";    static symbol platform = "windows";
+#elif defined(__APPLE__)
+static symbol lib_pre  = "lib"; static symbol lib_ext  = ".dylib";  static symbol app_ext  = "";        static symbol platform = "darwin";
+#endif
+
+static bool is_dbg(import t, string query, cstr name, bool is_remote) {
+    cstr  dbg = (cstr)query->chars; // getenv("DBG");
+    char  dbg_str[PATH_MAX];
+    char name_str[PATH_MAX];
+    sprintf(dbg_str, ",%s,", dbg);
+    sprintf(name_str, "%s,", name_str);
+    int   name_len    = strlen(name);
+    int   dbg_len     = strlen(dbg_str);
+    int   has_astrick = 0;
+    
+    for (int i = 0, ln = strlen(dbg_str); i < ln; i++) {
+        if (dbg_str[i] == '*') {
+            if (dbg_str[i + 1] == '*')
+                has_astrick = 2;
+            else if (has_astrick == 0)
+                has_astrick = 1;
+        }
+        if (strncmp(&dbg_str[i], name, name_len) == 0) {
+            if (i == 0 || dbg_str[i - 1] != '-')
+                return true;
+            else
+                return false;
+        }
+    }
+    bool is_local = !is_remote;
+    return has_astrick > 1 || 
+           (has_astrick && has_astrick == (int)is_local);
+}
+
+none sync_tokens(import t, path build_path, string name) {
+    path t0 = form(path, "%o/import-token", build_path);
+    path t1 = form(path, "%o/tokens/%o", t->mod->install, name);
+    struct stat build_token, installed_token;
+    /// create token pair (build & install) to indicate no errors during config/build/install
+    cstr both[2] = { cstring(t0), cstring(t1) };
+    for (int i = 0; i < 2; i++) {
+        FILE* ftoken = fopen(both[i], "wb");
+        fwrite("im-a-token", 10, 1, ftoken);
+        fclose(ftoken);
+    }
+    int istat_build   = stat(cstring(t0), &build_token);
+    int istat_install = stat(cstring(t1), &installed_token);
+    struct utimbuf times;
+    times.actime  = build_token.st_atime;  // access time
+    times.modtime = build_token.st_mtime;  // modification time
+    utime(cstring(t1), &times);
+}
+
+string import_config_string(import a) {
+    string config = string(alloc, 128);
+    each (a->config, string, conf) {
+        if (starts_with(conf, "-l"))
+            continue;
+        if (len(config))
+            append(config, " ");
+        concat(config, conf);
+    }
+    return config;
+}
+
+string flag_cast_string(flag a) {
+    string res = string(alloc, 64);
+
+    if (a->is_cflag)
+        concat(res, a->name);
+    else {
+        if (a->is_static)
+            append(res, "-Wl,-Bstatic ");
+        concat(res, form(string, "-l%o", a->name));
+        if (a->is_static)
+            append(res, " -Wl,-Bdynamic");
+    }
+    return res;
+}
+
+none add_flag(import a, array list, line l, map environment) {
+    each (l->text, string, w) {
+        string directive = get(environment, string("DIRECTIVE"));
+        string t = evaluate(w, environment); // PROJECT is missing null char
+        if (len(t)) {
+            //print("%o: %o", top_directive, t);
+            bool is_lib = false;
+            static cstr linker_labels[] = {
+                "-l", "--sysroot=", "-isystem ",
+                "-Wl,-rpath,", "-nodefaultlibs",
+                "-static"
+            };
+            for (int i = 0; i < sizeof(linker_labels) / sizeof(cstr); i++) {
+                if (starts_with(t, linker_labels[i])) {
+                    is_lib = true;
                     break;
                 }
             }
+            bool is_cflag  = !is_lib && t->chars[0] == '-';
+            bool is_static = t->chars[0] == '@';
+            push(list, flag(name,
+                    is_static ? mid(t, 1, len(t) - 1) : t,
+                is_static, is_static, is_cflag, is_cflag, is_lib, is_lib));
+        }
+    }
+}
 
-            /// load library (if its not already compiled into silver, or we did this already in another silver instance)
-            if (!is_loaded) {
-                path lib = f(path, "%o/lib/lib%o.so", mod->import->install, project_name);
-                verify(file_exists("%o", lib), "A-type library not found");
+string import_cmake_location(import im) {
+    int index = 0;
+    each (im->config, string, conf) {
+        if (starts_with(conf, "-S")) {
+            return form(string, "%o %o", conf, im->config->elements[index + 1]);
+        }
+        index++;
+    }
+    return null;
+}
 
-                /// needs a static map here
-                static map instances;
-                if (!instances) instances = map(hsize, 16, unmanaged, true);
-                handle f = get(instances, project_name);
-                
-                /// load library and perform an invocation to A_shift() ... A-type sister function to start.
-                if (!f) {
-                    handle f = dlopen(project_name->chars, RTLD_NOW | RTLD_GLOBAL);
-                    verify(f, "dlopen could not load: %o", project_name);
-                    set(instances, project_name, f);
-                }
+string serialize_environment(map environment, bool b_export);
+
+static array headers(path dir) {
+    array all = ls(dir, null, false);
+    array res = array();
+    each (all, path, f) {
+        string e = ext(f);
+        if (len(e) == 0 || cmp(e, ".h") == 0)
+            push(res, f);
+    }
+    drop(all);
+    return res;
+}
+
+static int filename_index(array files, path f) {
+    string fname = filename(f);
+    int    index = 0;
+    each(files, path, p) {
+        string n = filename(p);
+        if (compare(n, fname) == 0)
+            return index;
+        index++;
+    }
+    return -1;
+}
+
+static bool sync_symlink(path src, path dst) {
+    return false;
+}
+
+/// install headers, then overlay built headers; then install libs and app targets
+i32 import_install(import a) {
+    path   install      = a->mod->install;
+    path   install_inc  = form(path, "%o/include", install);
+    path   install_lib  = form(path, "%o/lib",     install);
+    path   install_app  = form(path, "%o/bin",     install);
+    path   project_lib = form(path, "%o/src", a->project_path);
+    path   build_lib   = form(path, "%o/src", a->build_path);
+    array  project_h   = headers(project_lib);
+    array  build_h     = headers(build_lib);
+
+    /// no headers are copied, just the directory symlinked for the src lib
+    /// app headers are known by -I already, and apps access <appname-import> directly
+    if (dir_exists("%o", project_lib)) {
+        path f   = f(path, "%o/src", a->build_path);
+        path dst = f(path, "%o/%o", install_inc, a->name);
+        exec("rm -rf %o",      dst);
+        exec("ln -s %o %o", f, dst);
+    }
+    /*
+    each(project_h, path, f) {
+        string fname = filename(f);
+        if (filename_index(build_h, f) < 0) {
+            path dst = f(path, "%o/%o", install_inc, fname);
+            if (!eq(f, dst)) {
+                exec("rm -rf %o",   dst);
+                exec("ln -s %o %o", f, dst);
             }
+            //exec("rsync -a %o %o/", f, install_inc);
+        }
+    }
+    */
 
-
-            num type_count = 0;
-            AType* t = types(&type_count);
-            for (int i = 0; i < type_count; i++) {
-                AType type = t[i];
-                if (type->user) continue; // already imported
-                if (!eq(project_name, type->module))
-                    continue;
-
-                resolve_type(mod, itop, type);
+    each (build_h, path, f) {
+        string  fname = filename(f);
+        if (!eq(fname, "import")) {
+            path dst = f(path, "%o/%o", install_inc, fname);
+            if (!eq(f, dst)) {
+                exec("rm -rf %o",   dst);
+                exec("ln -s %o %o", f, dst);
             }
-
-        } else {
-            include(mod, inc);
+            //exec("rsync -a %o %o/", f, install_inc);
         }
     }
 
-    each(a->modules, path, m) {
-        silver sv = load_module(mod, m);
+    each(a->lib_targets, path, lib) {
+        path dst = f(path, "%o/%o", install_lib, filename(lib));
+        if (!eq(lib, dst)) {
+            exec("rm -rf %o",   dst);
+            exec("ln -s %o %o", lib, dst);
+        }
+        //exec("rsync -a %o %o/%o", lib, install_lib, filename(lib));
     }
-    if (a->namespace)
-        pop(mod);
+
+    each(a->app_targets, path, app) {
+        path dst = f(path, "%o/%o", install_app, filename(app));
+        if (!eq(app, dst)) {
+            exec("rm -rf %o",   dst);
+            exec("ln -s %o %o", app, dst);
+        }
+        //exec("rsync -a %o %o/%o", app, install_app, filename(app));
+    }
+
+    return 0;
 }
+
+none cflags_libs(import im, string* cflags, string* libs) {
+    *libs   = string(alloc, 64);
+    *cflags = string(alloc, 64);
+
+    array lists[2] = { im->cflags, im->exports };
+    for (int i = 0; i < 2; i++)
+        each (lists[i], flag, fl) {
+            print("%o: %o", im->name, fl->name);
+            if (fl->is_cflag) {
+                concat(*cflags, cast(string, fl));
+                append(*cflags, " ");
+            } else if (fl->is_lib) {
+                concat(*libs, form(string, "%o", fl->name));
+                append(*libs, " ");
+            }
+        }
+    
+    if (im->exports)
+        each (im->exports, flag, fl) {
+            if (fl->is_cflag) {
+                concat(*cflags, cast(string, fl));
+                append(*cflags, " ");
+            } else if (fl->is_lib) {
+                concat(*libs, form(string, "%o", fl->name));
+                append(*libs, " ");
+            }
+        }
+    
+    bool has_lib = false;
+    each (im->config, string, conf) {
+        if (starts_with(conf, "-l")) {
+            concat(*libs, conf);
+            append(*libs, " ");
+            has_lib = true;
+        }
+    }
+    if (!has_lib) {
+        concat(*libs, form(string, "-l%o", im->name));
+        append(*libs, " ");
+    }
+}
+
+static bool is_checkout(path a) {
+    path par = parent(a);
+    string st = stem(par);
+    if (eq(st, "checkout")) {
+        return true;
+    }
+    return false;
+}
+
+
+
+none import_link_shares(import a, path project_from) {
+    if (!dir_exists("%o/share", project_from))
+        return;
+    // if this is debug, we want to rsync everything
+    path import_share = f(path, "%o/share", project_from);
+    array dir = ls(import_share, null, false); // no pattern, and recursion set
+    each (dir, path, share_folder) {
+        // verify that its indeed a folder, and not a file resource (not supported at root level)
+        verify(is_dir(share_folder), "unsupported file structure");
+        string rtype = filename(share_folder);
+        array rfiles = ls(share_folder, null, false);
+
+        path rtype_dir  = f(path, "%o/share/%o/%o", a->mod->install, a->name, rtype);
+        make_dir(rtype_dir);
+
+        each (rfiles, path, res) {
+            // create symlink at dest  install/share/our-target-name/each-resource-dir/each-file -> im->import_path/share/each-resource-dir/each-resource-file
+            string fn = filename(res);
+            path src = f(path, "%o/share/%o/%o", project_from, rtype, fn);
+            path dst = f(path, "%o/share/%o/%o/%o", a->mod->install, a->name, rtype, fn);
+            if (file_exists("%o", dst) && !is_symlink(dst))
+                continue; // being used by the user (needs an option for release/packaging mode here)
+            bool needs_link = !eq(src, dst);
+            
+            if (needs_link) {
+                exec("rm -rf %o", dst);
+                verify(!file_exists("%o", dst), "cannot create symlink");
+                exec("ln -s %o %o", src, dst);
+            }
+        }
+    }
+}
+
+// build with optional bc path; if no bc path we use the project file system
+i32 import_build(import a, path bc) {
+    int  error_code = 0;
+    bool debug = is_dbg(a, a->dbg, (cstr)a->name->chars, false);
+    bool sanitize = debug && is_dbg(a, a->sanitize, (cstr)a->name->chars, false); // sanitize does not work with musl, and perhaps we need a special linking area for sanitize; bit lame!
+    path install = a->mod->install;
+
+    if (bc) {
+        // simplified process for .bc case
+        string name = stem(bc);
+        verify(exec("%o/bin/llc -filetype=obj %o.ll -o %o.o -relocation-model=pic",
+            install, name, name) == 0,
+                ".ll -> .o compilation failed");
+        string libs, cflags;
+        cflags_libs(a, &cflags, &libs); // fetches from all exported data
+        verify(exec("%o/bin/clang %o.o -o %o -L %o/lib %o %o",
+            install, name, name, install, libs, cflags) == 0,
+                "link failed");
+        return 0;
+    }
+
+    cd(a->project_path);
+    AType type = isa(a->build_path);
+    make_dir(a->build_path);
+
+    path   project_lib  = form  (path, "%o/src",  a->project_path);
+    path   project_app  = form  (path, "%o/app",  a->project_path);
+    path   build_lib    = form  (path, "%o/src",  a->build_path);
+    path   build_app    = form  (path, "%o/app",  a->build_path);
+    path   build_test   = form  (path, "%o/test", a->build_path);
+    cstr   CC           = getenv("CC");       if (!CC)       CC       = "clang";
+    cstr   CXX          = getenv("CXX");      if (!CXX)      CXX      = "clang++";
+    cstr   CFLAGS       = getenv("CFLAGS");   if (!CFLAGS)   CFLAGS   = "";
+    cstr   CXXFLAGS     = getenv("CXXFLAGS"); if (!CXXFLAGS) CXXFLAGS = "";
+    string name         = filename(a->project_path);
+    string n2           = copy(name);
+    bool   cpp          = false;
+    cstr   compilers[2] = { CC, CXX };
+    path   include      = form(path, "%o/include", install);
+    a->lib_targets      = array();
+    a->app_targets      = array();
+    bool has_lib        = dir_exists("%o", project_lib);
+    path project_main   = has_lib ? project_lib : project_app;
+
+    struct dir {
+        cstr  dir;
+        cstr  output_dir;
+        path  build_dir;
+    } dirs[3] = {
+        { "src",  "src",  build_lib  },
+        { "app",  "bin",  build_app  },
+        { "test", "test", build_test } // not allowed if no lib
+    };
+
+    for (int i = 0; i < sizeof(dirs) / sizeof(struct dir); i++) {
+        struct dir* flags = &dirs[i];
+        bool  is_lib    = strcmp(flags->dir, "src") == 0;
+        path  dir       = form(path, "%o/%s", a->project_path, flags->dir);
+        path  lib_src   = form(path, "%o/%s", a->project_path, "src");
+        path  build_dir = form(path, "%o/%s", a->build_path, flags->output_dir);
+        path  build_dir2 = form(path, "%o/%o", a->build_path, flags->build_dir);
+        make_dir(flags->build_dir);
+        make_dir(build_dir);
+        make_dir(build_dir2);
+        if (!dir_exists("%o", dir)) continue;
+
+        string base_cflags = string(""), base_libs = string("");
+        /// if its a stand-alone app or has a lib, it should get all of the exports
+        /// also lib gets everything (i == 0)
+        if (has_lib && (i == 0) || !has_lib) {
+            cflags_libs(a, &base_cflags, &base_libs);
+        }
+        /// app and test depend on its lib
+        if (has_lib && i != 0)
+            base_libs = form(string, "%o -l%o", base_libs, name);
+
+        cd(flags->build_dir);
+
+        bool is_app  = (i == 1);
+
+        array c      = ls(dir, string(".c"),   false); // returns absolute paths
+        array cc     = ls(dir, string(".cc"),  false);
+        cpp         |= len(cc) > 0;
+        array obj    = array(64);
+        array obj_c  = array(64);
+        array obj_cc = array(64);
+        path  href   = form(path, "%o/%o", dir, name);
+        array files  = ls(dir, null, false);
+        i64   htime  = 0;
+
+        if (!file_exists("%o", href))
+             href = form(path, "%o/%o.h", dir, name);
+    
+        /// get latest header modified (including project header)
+        each (files, path, f) {
+            string e = ext(f);
+            string s = stem(f);
+            if (cmp(s, "h") == 0 || (len(e) == 0 && cmp(s, name->chars) == 0)) {
+                i64 mt = modified_time(f);
+                if (mt > htime)
+                    htime = mt;
+            }
+        }
+        string cflags = string(alloc, 64);
+        string cxxflags = string(alloc, 64);
+
+        /// compile C with cflags
+        struct lang {
+            array source;
+            array objs;
+            cstr  compiler;
+            cstr  std;
+        } langs[2] = {
+            {c,  obj_c,  compilers[0], "gnu11"},
+            {cc, obj_cc, compilers[1], "c++17"}
+        };
+        i64 latest_o = 0;
+        for (int l = 0; l < 2; l++) {
+            struct lang* lang = &langs[l];
+            if (!lang->std) continue;
+            string compiler = form(string, "%s -c %s%s-std=%s %s %o %o -I%o -I%o -I%o -I%o",
+                lang->compiler, debug ? "-g2 " : "", sanitize ? "-fsanitize=address " : "", lang->std,
+                l == 0 ? CFLAGS : CFLAGS, /// CFLAGS from env come first
+                base_cflags,
+                l == 0 ? cflags : cflags, /// ... then project-based flags
+                (has_lib && i == 2) ? build_lib : flags->build_dir,
+                dir, lib_src, include); /// finally, an explicit -I of our directive
+            
+            /// for each source file, make objects file names, and compile if changed
+            each(lang->source, path, src) {
+                string module = filename(src);
+                string module_name = stem(src);
+                string o_file = form(string, "%o.o",  module);
+                path   o_path = form(path,   "%o/%o", a->build_path, o_file);
+                i64    o_modified  = modified_time(o_path);
+                latest_o = max(latest_o, o_modified);
+                push(lang->objs, o_path);
+                push(obj, o_path);
+
+                /// recompile if newer / includes differ
+                i64 mtime = modified_time(src);
+                bool source_newer  = (mtime > o_modified) || (ancestor_mod && (ancestor_mod < mtime)); // || ; /// | project_rebuild (based on newest project we depend on)
+                bool header_change = htime && htime > modified_time(o_path);
+                if (source_newer || header_change) {
+                    int compile = exec("%o -DMODULE=\"\\\"%o\\\"\" %o -o %o", compiler, module_name, src, o_path);
+                    verify(compile == 0, "compilation");
+                    latest_o = max(latest_o, modified_time(o_path));
+                }
+            }
+        }
+
+        // link
+        string lflags = string(alloc, 64);
+        //concat(lflags, form(string, "-L%o/lib ", a->build_path));
+        concat(lflags, form(string, "-L%o/lib -Wl,-rpath,%o/lib%s", install, install,
+            sanitize ? " -fsanitize=address " : ""));
+
+        if (is_lib) {
+            path output_lib = form(path, "%o/lib/%s%o%s", a->build_path, lib_pre, n2, lib_ext);
+            path install_lib = form(path, "%o/lib/%s%o%s", install, lib_pre, n2, lib_ext);
+            if (!latest_o || (modified_time(install_lib) < latest_o)) {
+                verify (exec("%s -shared %o %o %o -o %o",
+                    cpp ? CXX : CC,
+                    lflags, base_libs, obj, output_lib) == 0, "linking");
+            }
+            // install lib right away
+            if (true || debug) {
+                if (!eq(output_lib, install_lib)) {
+                    exec("rm -rf %o",   install_lib);
+                    exec("ln -s %o %o", output_lib, install_lib);
+                }
+            } else
+                exec("rsync -a %o %o", output_lib, install_lib);
+            
+            push(a->lib_targets, output_lib);
+        } else {
+            each (obj_c, path, obj) {
+                string module_name = stem(obj);
+                path output = form(path, "%o/%s/%o%s", a->build_path, flags->output_dir, module_name, app_ext);
+                if (modified_time(output) < modified_time(obj)) {
+                    verify (exec("%s %o %o %o -o %o",
+                        CC, lflags, base_libs, obj, output) == 0, "linking");
+                }
+                if (is_app)
+                    push(a->app_targets, output);
+                else
+                    drop(output);
+                drop(module_name);
+            }
+            each (obj_cc, path, obj) {
+                string module_name = stem(obj);
+                path output_o = form(path, "%o/%s/%o", a->build_path, flags->output_dir, module_name);
+                if (modified_time(output_o) < modified_time(obj)) {
+                    verify (exec("%s %o %o %o -o %o",
+                        CXX, lflags, obj, output_o) == 0, "linking");
+                }
+                drop(module_name);
+                drop(output_o);
+            }
+            // run test here, to verify prior to install; will need updated PATH so they may run the apps we built just prior to test
+        }
+    }
+
+    // Check if we have headers to process
+    if (dir_exists("%o", project_lib)) {
+        // Generate Silver format from concatenated headers
+        path silver_output = form(path, "%o/include/%o.sf", install, name);
+        path main_header = form(path, "%o/%o", project_lib, name);
+        
+        // Check if we need to regenerate (if any header is newer than .sf file)
+        i64 silver_time = modified_time(silver_output);
+        i64 latest_header_time = 0;
+        
+        // Check main header
+        if (file_exists("%o", main_header)) {
+            latest_header_time = max(latest_header_time, modified_time(main_header));
+        }
+        
+        // Check all .h files
+        array h_files = ls(project_lib, string(".h"), false);
+        each(h_files, path, h_file) {
+            latest_header_time = max(latest_header_time, modified_time(h_file));
+        }
+        
+        // Regenerate if needed
+        if (latest_header_time > silver_time || !file_exists("%o", silver_output)) {
+            //print("%22o: generating silver format", name);
+            //int convert_result = exec("python3 %o/c-silver.py --concat %o %o %o",
+            //    install, project_lib, name, silver_output);
+            //verify(convert_result == 0, "Silver format generation failed");
+        }
+        
+        drop(h_files);
+    }
+    
+    // for each import with a share folder in its repo, symlink all files individually (cannot use folders safely because our targets stack resources)
+    import_link_shares(a, a->project_path);
+
+    /// now we set the token here! (we do this twice; the import layer does it 
+    // (and CAN be skipped if its a import project -- should be without side effect, though, since its immediately after))
+    sync_tokens(a, a->build_path, a->name);
+    return error_code;
+}
+
+array compact_tokens(array tokens) {
+    if (len(tokens) == 1) return tokens;
+
+    array  res     = array(32);
+    int    ln      = len(tokens);
+    token  prev    = null;
+    token  current = null;
+
+    for (int i = 1; i < ln; i++) {
+        token t    = tokens->elements[i];
+        token prev = tokens->elements[i - 1];
+        if (!current) current = copy(prev);
+
+        if (prev->line == t->line && (prev->column + prev->len) == t->column) {
+            concat(current, t);
+            current->column += t->len;
+        } else {
+            push(res, current);
+            current = copy(t);
+        }
+    }
+    push(res, current);
+    return res;
+}
+
+string model_keyword() { return null; }
+
+static none checkout(import im, path uri, string commit) {
+    silver mod   = im->mod;
+    path   install = mod->install;
+    path   cur   = path_cwd();
+    cd(f(path, "%o/checkout", install));
+    string s     = cast(string, uri);
+    num    sl    = rindex_of(s, "/");
+    verify(sl >= 0, "invalid uri");
+    string n     = mid(s, sl + 1, len(s) - sl - 1);
+    path   npath = path(n);
+
+    // checkout or symlink to src
+    if (!dir_exists("%o", n)) {
+        // geordi: if you cant reprogram, reroute
+        // we use a symlink of user's working src for like-named packages
+        // this has the side-effect of not being the commit number, 
+        // but its effectively overridden by the user and we dare not write anything more than a debug/release folder
+        if (dir_exists("%o/%o", mod->src, n)) {
+            vexec("ln -s %o/%o %o", mod->src, n, n);
+        } else {
+            vexec("git clone",    "git clone --filter=blob:none --no-checkout --depth=1 %o %o", uri, n);
+            cd(npath);
+            vexec("git sparse",   "git sparse-checkout init --cone");
+            vexec("git checkout", "git checkout %o", commit);
+        }
+    }
+
+    // build
+}
+
+bool build(import im) {
+    path install = copy(im->mod->install);
+    i64 conf_status = INT64_MIN;
+    path t0 = form(path, "silver-token");
+    path t1 = form(path, "%o/tokens/%o", install, im->name);
+    path checkout = form(path, "%o/checkout", install);
+
+    make_dir(im->build_path);
+    cd(im->build_path);
+    string env = serialize_environment(im->environment, false);
+    
+    if (file_exists("%o", t0) && file_exists("%o", t1)) {
+        /// get modified date on token, compare it to one in install dir
+        i64 token0 = modified_time(t0);
+        i64 token1 = modified_time(t1);
+
+        if (token0 && token1) {
+            conf_status = abs((i32)(token0 - token1));
+            if (conf_status < 1000)
+                conf_status = 0;
+        }
+        if (conf_status == 0) {
+            i64 latest = 0;
+            path latest_f = latest_modified(im->import_path, &latest);
+            if (latest > token0 || ancestor_mod > token0)
+                conf_status = -1;
+        }
+    }
+
+    if (conf_status == 0) {
+        clear(im->commands);
+        print("%22o: build-cache", im->name);
+        return true;
+    }
+
+    string cmake_conf = cmake_location(im);
+    string args = import_config_string(im);
+    cstr debug_r = im->debug ? "debug" : "release";
+    setenv("BUILD_CONFIG", args->chars, 1);
+    setenv("BUILD_TYPE", debug_r, 1);
+
+    if (file_exists("../Cargo.toml")) {
+        // todo: copy bin/lib after
+        verify(exec("cargo build --%s --manifest-path ../Cargo.toml --target-dir .",
+            im->debug ? "debug" : "release") == 0, "rust compilation");
+    } else if (cmake_conf || file_exists("../CMakeLists.txt")) {
+        /// configure
+        if (!file_exists("CMakeCache.txt")) {
+            cstr build = im->debug ? "Debug" : "Release";
+            int  iconf = exec(
+                "cmake -B . -S .. -DCMAKE_INSTALL_PREFIX=%o -DCMAKE_BUILD_TYPE=%s %o", install, build, im);
+            verify(iconf == 0, "%o: configure failed", im->name);
+        }
+        /// build & install
+        int    icmd = exec("%o cmake --build . -j16", env);
+        int   iinst = exec("%o cmake --install .",   env);
+
+    } else {
+        cstr Makefile = "Makefile";
+        /// build for A-type projects
+        if (file_exists("../%s", Makefile) && file_exists("../build.sf", Makefile)) {
+            cd(im->import_path);
+            int imake = exec("%o make", env);
+            verify(imake == 0, "make");
+            cd(im->build_path);
+        } else if (!file_exists("Makefile")) {
+            cd(im->import_path);
+            /// build for automake projects
+            if (file_exists("./autogen.sh")  || 
+                file_exists("./configure.ac") || 
+                file_exists("./configure")    ||
+                file_exists("./config")) {
+                
+                // this is not libffi at all, its a race condition that it and many others have with autotools
+                if (!file_exists("./ltmain.sh"))
+                    verify(exec("libtoolize --install --copy --force") == 0, "libtoolize");
+                
+                // neither this -- but its a common preference on these repos
+                if (file_exists("./autogen.sh")) {
+                    verify(exec("bash ./autogen.sh") == 0, "autogen");
+                }
+                /// generate configuration scripts if available
+                else if (!file_exists("./configure") && file_exists("./configure.ac")) {
+                    verify(exec("autoupdate .")    == 0, "autoupdate");
+                    verify(exec("pwd") == 0, "autoreconf");
+                    verify(exec("autoreconf -i .") == 0, "autoreconf");
+                }
+                /// prefer our pre/generated script configure, fallback to config
+                cstr configure = file_exists("./configure") ? "./configure" : "./config";
+                if (file_exists("%s", configure)) {
+                    verify(exec("%o %s%s --prefix=%o %o",
+                        env,
+                        configure,
+                        im->debug ? " --enable-debug" : "",
+                        install,
+                        im) == 0, configure);
+                }
+            }
+            if (file_exists("%s", Makefile))
+                verify(exec("%o make -f %s install", env, Makefile) == 0, "make");
+        }
+    }
+    return true;
+}
+
+// lets implement functional here
+node import_parse(silver mod) {
+    import im = import(mod, mod);
+    // lets just do the parser
+    verify(next_is(mod, "import"), "expected import keyword");
+    consume(mod);
+
+    token alias = null;
+    if (read(mod, "<")) {
+        array include_paths = array(32);
+        for (;;) {
+            token f = read_alpha(mod);
+            verify(f, "expected include");
+            push(include_paths, include_path(mod, (string)f));
+
+            if (!read(mod, ",")) {
+                token n = read(mod, ">");
+                if (!n)
+                    continue;
+                else
+                    break;
+            }
+        }
+        verify(read(mod, ">"), "expected > after include");
+        im->include_paths = hold(include_paths);
+
+    } else if (next_is_alpha(mod)) {
+        array module_paths = array(32);
+        for (;;) {
+            token f = read_alpha(mod);
+            verify(f, "expected include");
+            push(module_paths, module_path(mod, (string)f));
+            if (!read(mod, ","))
+                break;
+        }
+        im->module_paths = hold(module_paths);
+    }
+
+    // this invokes import by git; a local repo may be possible but not very usable
+    if (next_is(mod, "[")) {
+        array raw_tokens       = read_body(mod, false);
+        array import_arguments = compact_tokens(raw_tokens);
+        verify(len(import_arguments) > 0,
+            "expected import arguments in import [ expression ]");
+        token t_uri = get(import_arguments, 0);
+        path    uri = path((string)t_uri);
+        verify(starts_with(t_uri, "https://") || 
+               starts_with(t_uri, "git@"), "expected repository uri");
+        array config = read_body(mod, false);
+        fault("verify url: %o", uri);
+        checkout(mod, t_uri);
+    }
+
+    verify(next_is_alpha(mod),
+        "expected alpha-numeric after import");
+    
+    if (next_is(mod, "as")) {
+        consume(mod);
+        im->namespace = hold(read_alpha(mod));
+        verify(im->namespace, "expected alpha-numeric namespace");
+    }
+    
+    emember mem = emember(mod, mod, name, im->name, context, mod->top);
+    push(mod->imports, im); // push to imports array; which is a bit redundant since the model is registered in the context as a emember
+
+    if (im->include_paths)
+        each(im->include_paths, path, inc) {
+            include(mod, inc);
+        }
+    
+    set_model(mem, im);
+    push_member(mod, mem);
+    return mem;
+
+
+/*
+import llvm [ https://github.com/llvm/llvm-project main ]
+	args {
+		-S ../llvm
+		-G Ninja 
+		-DLLVM_ENABLE_ASSERTIONS=OFF
+		-DLLVM_ENABLE_PROJECTS='clang;lld;lldb;compiler-rt'
+		-DLLVM_TOOL_GOLD_BUILD=ON
+		-DLLVM_ENABLE_FFI=OFF
+	  	-DLLVM_ENABLE_THREADS=ON
+		-DLLVM_PARALLEL_LINK_JOBS=1
+		-DLLVM_BUILD_TOOLS=ON
+		-DLLVM_ENABLE_LTO=OFF
+		-DLLDB_INCLUDE_TESTS=OFF
+		-DLLDB_EXPORT_ALL_SYMBOLS=1
+		-DLLVM_ENABLE_RTTI=OFF
+		-DLLVM_BINUTILS_INCDIR=/usr/include
+		-DCLANG_DEFAULT_PIE_ON_LINUX=ON
+		-DCLANG_CONFIG_FILE_SYSTEM_DIR=/etc/clang
+		-DLLVM_ENABLE_LIBCXX=OFF
+		-DBUILD_SHARED_LIBS=ON
+		-DLLDB_ENABLE_PYTHON=OFF
+		-DLLVM_TARGETS_TO_BUILD='host;X86;AArch64'
+	}
+	args-linux {
+		-DCLANG_DEFAULT_CXX_STDLIB=libstdc++
+	}
+	args-darwin {
+		-DCMAKE_CXX_FLAGS="-stdlib=libc++"
+		-DCLANG_DEFAULT_CXX_STDLIB=libc++
+		-DDEFAULT_SYSROOT=$(xcrun --sdk macosx --show-sdk-path)
+	}
+	link {
+        -lm
+		-lclang
+		-lLLVMCore
+		-lLLVMBitReader
+		-lLLVMBitWriter
+		-lLLVMIRReader
+		-lLLVMSupport
+		-lLLVMExecutionEngine
+		-lLLVMTarget
+		-lLLVMTargetParser
+		-lLLVMTransformUtils
+		-lLLVMAnalysis
+		-lLLVMProfileData
+		-lLLVMAArch64AsmParser
+		-lLLVMAArch64CodeGen
+		-lLLVMAArch64Desc
+		-lLLVMAArch64Info
+		-lLLVMAArch64Utils
+		-lLLVMX86CodeGen
+		-lLLVMX86AsmParser
+		-lLLVMX86Desc
+		-lLLVMX86Info
+	}
+*/
+}
+
+
+
 
 define_class (silver, aether)
 define_enum  (import_t)
 define_enum  (build_state)
 define_enum  (language)
-define_class (Import, model)
+
+define_class(import,    model)
+define_class(flag,      A)
+
+
 module_init  (initialize)

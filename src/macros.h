@@ -203,10 +203,10 @@
 #define idx_2(I,T1,T2,V1,V2)        fcall(I, index ##_## T1 ##_## T2, V1, V2)
 #define idx(I,V1)                   fcall(I, index ##_## num, V1)
 #define meta_t(I,IDX)               isa(I) -> meta.meta_##IDX
-#define ctr(T,WITH,...)             A_initialize(T##_i.type.with_##WITH(A_alloc(typeid(T), 1), ## __VA_ARGS__))
-#define ctr1(T,WITH,...)            A_initialize(T##_i.type.with_##WITH(A_alloc(typeid(T), 1), ## __VA_ARGS__))
-#define alloc_ctr(T,WITH,...)       A_initialize(T##_i.type.with_##WITH(A_alloc(typeid(T), 1), ## __VA_ARGS__))
-#define str(CSTR)                   string_i.type.with_symbol((string)A_alloc((AType)&string_i.type, 1), (symbol)(CSTR))
+#define ctr(T,WITH,...)             A_initialize(T##_i.type.with_##WITH(alloc(typeid(T), 1), ## __VA_ARGS__))
+#define ctr1(T,WITH,...)            A_initialize(T##_i.type.with_##WITH(alloc(typeid(T), 1), ## __VA_ARGS__))
+#define alloc_ctr(T,WITH,...)       A_initialize(T##_i.type.with_##WITH(alloc(typeid(T), 1), ## __VA_ARGS__))
+#define str(CSTR)                   string_i.type.with_symbol((string)alloc((AType)&string_i.type, 1), (symbol)(CSTR))
 #define addr_validateI(I)           ({ \
     __typeof__(I) *addr = &I; \
     I \
@@ -791,6 +791,52 @@
 #define   i_inlay_intern_METHOD(X, R, N)  
 #define   i_inlay(X, Y, T, R, N) i_inlay_##T##_##Y(X, R, N)
 
+
+
+
+#define   t_method_interface_F(X, R, N, ...)
+#define   t_method_interface_F_EXTERN(X, R, N, ...)
+#define   t_method_interface_INST(X, R, N, ...)
+#define   t_method_interface_INST_EXTERN(X, R, N, ...)
+#define   t_method_interface_DECL(X, R, N, ...)
+#define   t_method_interface_DECL_EXTERN(X, R, N, ...)
+#define   t_method_interface_GENERICS(X, R, N, ...)
+#define   t_method_interface_INIT(X, R, N, ...) \
+    member_validate[validate_count++] = #N;
+#define   t_method_interface_PROTO(X, R, N, ...)
+#define   t_method_interface_METHOD(X, R, N, ...)
+#define   t_method_public_F(X, R, N, ...)
+#define   t_method_public_F_EXTERN(X, R, N, ...)
+#define   t_method_public_INST(X, R, N, ...)
+#define   t_method_public_INST_EXTERN(X, R, N, ...)
+#define   t_method_public_DECL(X, R, N, ...)        R N(__VA_ARGS__);
+#define   t_method_public_DECL_EXTERN(X, R, N, ...) R N(__VA_ARGS__);
+#define   t_method_public_GENERICS(X, R, N, ...)
+#define   t_method_public_INIT(X, R, N, ...) \
+    X##_i.type.members[X##_i.type.member_count].name    = #N; \
+    X##_i.type.members[X##_i.type.member_count].args    = (meta_t) { emit_types(__VA_ARGS__) }; \
+    X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].offset  = 0; \
+    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_SMETHOD; \
+    X##_i.type.members[X##_i.type.member_count].ptr     = &N; \
+    X##_i.type.member_count++;   
+#define   t_method_public_PROTO(X, R, N, ...)
+#define   t_method_public_METHOD(X, R, N, ...)
+#define   t_method_intern_F(X, R, N, ...)
+#define   t_method_intern_F_EXTERN(X, R, N, ...)
+#define   t_method_intern_INST(X, R, N, ...)    
+#define   t_method_intern_INST_EXTERN(X, R, N, ...)
+#define   t_method_intern_DECL(X, R, N, ...)        R N(__VA_ARGS__);
+#define   t_method_intern_DECL_EXTERN(X, R, N, ...)
+#define   t_method_intern_GENERICS(X, R, N, ...)
+#define   t_method_intern_INIT(X, R, N, ...)      
+#define   t_method_intern_PROTO(X, R, N, ...)
+#define   t_method_intern_METHOD(X, R, N, ...)
+
+
+
+
+
 #define   s_method_interface_F(X, R, N, ...)
 #define   s_method_interface_F_EXTERN(X, R, N, ...)
 #define   s_method_interface_INST(X, R, N, ...)
@@ -806,8 +852,8 @@
 #define   s_method_public_F_EXTERN(X, R, N, ...)
 #define   s_method_public_INST(X, R, N, ...)
 #define   s_method_public_INST_EXTERN(X, R, N, ...)
-#define   s_method_public_DECL(X, R, N, ...)        R N(__VA_ARGS__);
-#define   s_method_public_DECL_EXTERN(X, R, N, ...) R N(__VA_ARGS__);
+#define   s_method_public_DECL(X, R, N, ...)        R X##_##N(__VA_ARGS__);
+#define   s_method_public_DECL_EXTERN(X, R, N, ...) R X##_##N(__VA_ARGS__);
 #define   s_method_public_GENERICS(X, R, N, ...)
 #define   s_method_public_INIT(X, R, N, ...) \
     X##_i.type.members[X##_i.type.member_count].name    = #N; \
@@ -815,7 +861,7 @@
     X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = 0; \
     X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_SMETHOD; \
-    X##_i.type.members[X##_i.type.member_count].ptr     = &N; \
+    X##_i.type.members[X##_i.type.member_count].ptr     = &X##_##N; \
     X##_i.type.member_count++;   
 #define   s_method_public_PROTO(X, R, N, ...)
 #define   s_method_public_METHOD(X, R, N, ...)
@@ -823,7 +869,7 @@
 #define   s_method_intern_F_EXTERN(X, R, N, ...)
 #define   s_method_intern_INST(X, R, N, ...)    
 #define   s_method_intern_INST_EXTERN(X, R, N, ...)
-#define   s_method_intern_DECL(X, R, N, ...)        R N(__VA_ARGS__);
+#define   s_method_intern_DECL(X, R, N, ...)        R X##_##N(__VA_ARGS__);
 #define   s_method_intern_DECL_EXTERN(X, R, N, ...)
 #define   s_method_intern_GENERICS(X, R, N, ...)
 #define   s_method_intern_INIT(X, R, N, ...)      
@@ -898,7 +944,7 @@
 (X, Y, T, R, N, ...) s_method_##T##_##Y(X, R, N __VA_OPT__(,) __VA_ARGS__)
 
 #define   t_method\
-(X, Y, T, R, N, ...) s_method_##T##_##Y(X, R, N, AType __VA_OPT__(,) __VA_ARGS__)
+(X, Y, T, R, N, ...) t_method_##T##_##Y(X, R, N, AType __VA_OPT__(,) __VA_ARGS__)
 
 #define   i_guard\
 (X, Y, T, R, N, ...) i_method_##T##_##Y(X, R, N, X, ## __VA_ARGS__)
@@ -1060,7 +1106,7 @@
 #define s_vargs_public_DECL(X, R, N, ...)               R N(__VA_ARGS__, ...);
 #define s_vargs_public_DECL_EXTERN(X, R, N, ...)        R N(__VA_ARGS__, ...);
 #define s_vargs_public_GENERICS(X, R, N, ...)
-#define s_vargs_public_INIT(X, R, N, ...)               s_method_public_INIT(X, R, N, ##__VA_ARGS__)
+#define s_vargs_public_INIT(X, R, N, ...)               t_method_public_INIT(X, R, N, ##__VA_ARGS__)
 #define s_vargs_public_PROTO(X, R, N, ...)
 #define s_vargs_public_METHOD(X, R, N, ...)
 
@@ -1071,7 +1117,7 @@
 #define s_vargs_intern_DECL(X, R, N, ...)               R N(__VA_ARGS__, ...);
 #define s_vargs_intern_DECL_EXTERN(X, R, N, ...)
 #define s_vargs_intern_GENERICS(X, R, N, ...)
-#define s_vargs_intern_INIT(X, R, N, ...)               s_method_intern_INIT(X, R, N, ##__VA_ARGS__)
+#define s_vargs_intern_INIT(X, R, N, ...)               t_method_intern_INIT(X, R, N, ##__VA_ARGS__)
 #define s_vargs_intern_PROTO(X, R, N, ...)
 #define s_vargs_intern_METHOD(X, R, N, ...)             
 #define s_vargs(X, Y, T, R, N, ...)                     s_vargs_##T##_##Y(X, R, N, ##__VA_ARGS__)
@@ -1220,6 +1266,7 @@
 #define         form(T, t, ...)   (T)formatter(typeid(T), null,   (A)false, (symbol)t, ## __VA_ARGS__)
 #define            f(T, t, ...)   (T)formatter(typeid(T), null,   (A)false, (symbol)t, ## __VA_ARGS__)
 #define         exec(t, ...)      command_exec(((string)formatter((AType)null, null, (A)false, (symbol)t, ## __VA_ARGS__)))
+#define         vexec(n, t, ...)     verify(exec(t __VA_OPT__(,) __VA_ARGS__) == 0, "shell command failed: %s", n);
 
 #define        A_log(sL, t, ...)   formatter((AType)null,      stdout, string(sL),  t, ## __VA_ARGS__)
 #define        print(t, ...)   ({\

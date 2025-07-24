@@ -34,6 +34,9 @@ typedef struct _AType {
     struct _AType*  parent_type;
     char*           name;
     char*           module;
+    AType*          sub_types;
+    i16             sub_types_count;
+    i16             sub_types_alloc;
     int             size;
     int             msize;
     af_recycler*    af;

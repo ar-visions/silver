@@ -331,7 +331,7 @@ model model_pointer(model mdl) {
 }
 
 void statements_init(statements st) {
-    ether e = st->mod;
+    aether e = st->mod;
     AType atop = isa(e->top);
     st->scope = LLVMDIBuilderCreateLexicalBlock(e->dbg_builder, e->top->scope, e->file, 1, 0);
 }
@@ -1914,7 +1914,7 @@ model aether_push(aether e, model mdl) {
 }
 
 none emember_release(emember mem) {
-    ether e = mem->mod;
+    aether e = mem->mod;
     model mdl = mem->mdl;
     if (mdl->ref == reference_pointer) {
         // Compute the base pointer (reference data is 32 bytes before `user`)
@@ -3181,7 +3181,7 @@ define_class (statements,  model)
 define_class (eargs,   model)
 define_class (function,    model)
 define_class (record,      model)
-define_class (ether,       model)
+define_class (aether,      model)
 define_class (uni,         record)
 define_class (enumeration, record)
 define_class (structure,   record)

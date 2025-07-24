@@ -398,7 +398,7 @@ A header(A a) {
     return (((struct _A*)a) - 1);
 }
 
-none register_init(fn f) {
+none A_register_init(fn f) {
     /// these should be loaded after the types are loaded.. the module inits are used for setting module-members (not globals!)
     if (call_last_count == call_last_alloc) {
         global_init_fn* prev      = call_last;
@@ -418,11 +418,26 @@ static num      _types_alloc;
 static num      _types_len;
 
 none push_type(AType type) {
+    if (type->parent_type != typeid(A)) {
+        AType pt = type->parent_type;
+        if (pt->sub_types_alloc == pt->sub_types_count) {
+            u16   next_alloc = (pt->sub_types_alloc << 1) + 32;
+            void* st_new     = calloc(next_alloc, sizeof(AType));
+            if (pt->sub_types) {
+                memcpy(st_new, pt->sub_types, pt->sub_types_alloc * sizeof(AType));
+                free(pt->sub_types);
+            }
+            pt->sub_types        = st_new;
+            pt->sub_types_alloc  = next_alloc;
+        }
+        pt->sub_types[pt->sub_types_count] = type;
+        pt->sub_types_count += 1;
+    }
     if (_types_alloc == _types_len) {
-        AType* prev = _types;
-        num   alloc_prev = _types_alloc;
-        _types_alloc = 128 + (_types_alloc << 1);
-        _types = calloc(_types_alloc, sizeof(AType));
+        AType* prev       = _types;
+        num    alloc_prev = _types_alloc;
+        _types_alloc      = 128 + (_types_alloc << 1);
+        _types            = calloc(_types_alloc, sizeof(AType));
         if (alloc_prev) {
             memcpy(_types, prev, sizeof(AType) * alloc_prev);
             free(prev);
@@ -431,13 +446,13 @@ none push_type(AType type) {
     _types[_types_len++] = type;
 }
 
-ARef types(ref_i64 length) {
+ARef A_types(ref_i64 length) {
     *length = _types_len;
     return _types;
 }
 
 map _type_map;
-AType find_type(symbol name) {
+AType A_find_type(symbol name) {
     if (!_type_map) {
         _type_map = map(hsize, 128, unmanaged, true);
         for (int i = 0; i < _types_len; i++) {
@@ -657,7 +672,7 @@ A A_initialize(A a) {
 
 pid_t _last_pid = 0;
 
-i64 last_pid() {
+i64 command_last_pid() {
     return (i64)_last_pid;
 }
 
@@ -913,7 +928,7 @@ static __attribute__((constructor)) bool Aglobal_AF();
 
 static bool started = false;
 
-none startup(cstrs argv) {
+none A_startup(cstrs argv) {
     AType f32_type = typeid(f32);
     if (started) return;
 
@@ -972,7 +987,7 @@ none startup(cstrs argv) {
         }
 
     num         types_len;
-    AType*      _types = types(&types_len);
+    AType*      _types = A_types(&types_len);
     const num   max_args = 8;
 
     /// iterate through types
@@ -1002,7 +1017,7 @@ none startup(cstrs argv) {
             }
         }
     }
-    app_path((cstr)argv[0]);
+    path_app_path((cstr)argv[0]);
     /*
     if (!app_schema) {
         string default_arg = null;
@@ -1029,18 +1044,29 @@ map args(cstrs argv, symbol default_arg, ...) {
         arg = va_arg(args, symbol);
     }
     va_end(args);
-    return arguments(argc, argv, defaults,
+    return A_arguments(argc, argv, defaults,
         default_arg ? string(default_arg) : null);
 }
 
-none tap(symbol f, hook sub) {
+none A_tap(symbol f, hook sub) {
     string fname = string(f);
     set(log_funcs, fname, sub ? (A)sub : (A)A_bool(true)); /// if subprocedure, then it may receive calls for the logging
 }
 
-none untap(symbol f) {
+none A_untap(symbol f) {
     string fname = string(f);
     set(log_funcs, fname, A_bool(false));
+}
+
+member find_ctr(AType type, AType with, bool poly) {
+    for (num i = 0; i < type->member_count; i++) {
+        member mem = &type->members[i];
+        if ((mem->member_type & A_FLAG_CONSTRUCT) && mem->args.meta_0 == with)
+            return mem;
+    }
+    if (poly && type->parent_type && type->parent_type != typeid(A))
+        return find_ctr(type->parent_type, with, true);
+    return 0;
 }
 
 member find_member(AType type, AFlag memflags, symbol name, bool poly) {
@@ -1054,7 +1080,7 @@ member find_member(AType type, AFlag memflags, symbol name, bool poly) {
     return 0;
 }
 
-bool is_inlay(member m) {
+bool A_is_inlay(member m) {
     return (m->type->traits & A_TRAIT_VECTOR    |
             m->type->traits & A_TRAIT_STRUCT    | 
             m->type->traits & A_TRAIT_PRIMITIVE | 
@@ -1069,7 +1095,7 @@ none hold_members(A a) {
             member mem = &type->members[i];
             A   *mdata = (A*)((cstr)a + mem->offset);
             if (mem->member_type & (A_FLAG_PROP | A_FLAG_PRIV))
-                if (!is_inlay(mem) && *mdata) { // was trying to isolate what class name was responsible for our problems
+                if (!A_is_inlay(mem) && *mdata) { // was trying to isolate what class name was responsible for our problems
                     if (mem->args.meta_0 == typeid(weak))
                         continue;
 
@@ -1097,14 +1123,14 @@ A get_property(A a, symbol name) {
     verify(m, "%s not found on A %s", name, type->name);
     A *mdata = (A*)((cstr)a + m->offset);
     A  value = *mdata;
-    return is_inlay(m) ? primitive(m->type, mdata) : value;
+    return A_is_inlay(m) ? primitive(m->type, mdata) : value;
 }
 
 
 /// should be adapted to work with schemas 
 /// what a weird thing it would be to have map access to properties
 /// everything should be A-based, and forget about the argument hacks?
-map arguments(int argc, cstrs argv, map default_values, A default_key) {
+map A_arguments(int argc, cstrs argv, map default_values, A default_key) {
     map result = new(map, hsize, 16, assorted, true);
     for (item ii = default_values->fifo->first; ii; ii = ii->next) {
         A k = ii->key;
@@ -1193,7 +1219,7 @@ none drop_members(A a) {
         for (num i = 0; i < type->member_count; i++) {
             member m = &type->members[i];
             if ((m->member_type & (A_FLAG_PROP | A_FLAG_PRIV)) &&
-                    !is_inlay(m)) {
+                    !A_is_inlay(m)) {
                 if (m->args.meta_0 == typeid(weak))
                     continue;
                 //printf("A_dealloc: drop member %s.%s (%s)\n", type->name, m->name, m->type->name);
@@ -1309,7 +1335,7 @@ string prep_cereal(cereal cs) {
 }
 
 A A_with_cstrs(A a, cstrs argv) {
-    startup(argv);
+    A_startup(argv);
     int argc = 0;
     while (argv[argc]) { // C standard puts a null char* on end, by law (see: Brannigans law)
         cstr arg = argv[argc];
@@ -2432,8 +2458,20 @@ none  string_concat(string a, string b) {
 sz string_len(string a) { return a->len; }
 
 num   string_index_of(string a, symbol cs) {
-    char* f = strstr(a->chars, cs);
+    cstr f = strstr(a->chars, cs);
     return f ? (num)(f - a->chars) : (num)-1;
+}
+
+num   string_rindex_of(string a, symbol cs) {
+    cstr   haystack = a->chars;
+    cstr   last     = NULL;
+    size_t len      = strlen(haystack);
+    size_t cs_len   = strlen(cs);
+    for (size_t i = 0; i + cs_len <= len; i++) {
+        if (memcmp(haystack + i, cs, cs_len) == 0)
+            last = haystack + i;
+    }
+    return last ? (num)(last - haystack) : (num)-1;
 }
 
 bool string_cast_bool(string a) {
@@ -2738,9 +2776,9 @@ none A_free(A a) {
     }
 }
 
-none recycle() {
+none A_recycle() {
     i64   types_len;
-    AType* atypes = types(&types_len);
+    AType* atypes = A_types(&types_len);
 
     /// iterate through types
     for (num i = 0; i < types_len; i++) {
@@ -3238,7 +3276,7 @@ none path_cd(path a) {
     chdir(a->chars);
 }
 
-path tempfile(symbol tmpl) {
+path path_tempfile(symbol tmpl) {
     path p = null;
     do {
         i64    h = (i64)rand() << 32 | (i64)rand();
@@ -3532,7 +3570,7 @@ path path_change_ext(path a, cstr ext) {
     return res;
 }
 
-path app_path(cstr name) {
+path path_app_path(cstr name) {
     char exe[PATH_MAX];
 
 #if defined(__APPLE__)
@@ -3580,7 +3618,7 @@ bool path_eq(path a, path b) {
 #define MAX_PATH_LEN 4096
 
 /// public statics are not 'static'
-path cwd() {
+path path_cwd() {
     sz size = MAX_PATH_LEN;
     path a = new(path);
     a->chars = calloc(size, 1);
@@ -4126,7 +4164,7 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
             // for these special syntax, we cannot take schema & meta_type into account
             // this is effectively 'ason' syntax
             scan = ws(scan + 1);
-            AType type = find_type(sym->chars);
+            AType type = A_find_type(sym->chars);
             verify(type, "type not found: %o", sym);
 
             if (type->traits & A_TRAIT_ENUM) {
@@ -4215,12 +4253,12 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
                 "expected type: %s, found %o", schema->name, sym);
 
             if (!schema) {
-                schema = find_type(sym->chars);
+                schema = A_find_type(sym->chars);
                 verify(schema, "type not found: %o", sym);
             }
 
             if (schema == typeid(A)) {
-                schema = find_type(sym->chars);
+                schema = A_find_type(sym->chars);
                 verify(schema, "%s not found", sym->chars);
             }
         }
@@ -4295,7 +4333,7 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
 
             if (json_type) {
                 string type_name = value;
-                use_schema = find_type(type_name->chars);
+                use_schema = A_find_type(type_name->chars);
                 verify(use_schema, "type not found: %o", type_name);
             } else
                 set(props, name, value);
