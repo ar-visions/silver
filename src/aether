@@ -61,6 +61,7 @@ declare_enum(reference)
 #define model_schema(X,Y,...)\
     i_prop    (X,Y, required,   aether,            mod) \
     i_prop    (X,Y, public,     token,            name) \
+    i_prop    (X,Y, public,     string,           namespace) \
     i_prop    (X,Y, public,     bool,             is_alias) \
     i_prop    (X,Y, intern,     array,            aliases, meta, model) \
     i_prop    (X,Y, public,     model,            src) \

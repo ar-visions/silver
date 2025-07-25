@@ -1,4 +1,5 @@
 import <stdio> as std
+export res to share
 
 # this is a comment
 cm:string = 'CMAKE'

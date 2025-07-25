@@ -864,7 +864,7 @@ node silver_read_node(silver mod, AType constant_result) {
         bool ns_found = false;
         if (first) {
             /// if token is a module name, consume an expected . and emember-name
-            each (mod->imports, import, im) {
+            each (mod->spaces, model, im) {
                 if (im->namespace && eq(alpha, im->namespace->chars)) {
                     string module_name = alpha;
                     verify(read(mod, "."), "expected . after module-name: %o", alpha);
@@ -2085,12 +2085,12 @@ void silver_init(silver mod) {
 
     mod->mod = mod;
     mod->products_used = array();
-    mod->imports = array(32);
+    mod->spaces  = array(32);
     mod->tokens  = parse_tokens(mod->source);
     mod->stack   = array(4);
-    mod->src     = absolute(path(_SRC ? _SRC : "."));
+    mod->src_loc = absolute(path(_SRC ? _SRC : "."));
 
-    verify(dir_exists("%o", mod->src), "SRC path does not exist");
+    verify(dir_exists("%o", mod->src_loc), "SRC path does not exist");
 
     path        af = path_cwd();
     path   install = path(_IMPORT);
@@ -2122,7 +2122,7 @@ void silver_init(silver mod) {
     write(mod, &ll, &bc);
     verify(bc != null, "compilation failed");
     
-    build(mod->import, bc);
+    build(mod, bc); // this needs to ONLY build the LLVM IR, thats it
 }
 
 silver silver_load_module(silver mod, path uri) {
@@ -2288,71 +2288,6 @@ none sync_tokens(import t, path build_path, string name) {
     utime(cstring(t1), &times);
 }
 
-string import_config_string(import a) {
-    string config = string(alloc, 128);
-    each (a->config, string, conf) {
-        if (starts_with(conf, "-l"))
-            continue;
-        if (len(config))
-            append(config, " ");
-        concat(config, conf);
-    }
-    return config;
-}
-
-string flag_cast_string(flag a) {
-    string res = string(alloc, 64);
-
-    if (a->is_cflag)
-        concat(res, a->name);
-    else {
-        if (a->is_static)
-            append(res, "-Wl,-Bstatic ");
-        concat(res, form(string, "-l%o", a->name));
-        if (a->is_static)
-            append(res, " -Wl,-Bdynamic");
-    }
-    return res;
-}
-
-none add_flag(import a, array list, line l, map environment) {
-    each (l->text, string, w) {
-        string directive = get(environment, string("DIRECTIVE"));
-        string t = evaluate(w, environment); // PROJECT is missing null char
-        if (len(t)) {
-            //print("%o: %o", top_directive, t);
-            bool is_lib = false;
-            static cstr linker_labels[] = {
-                "-l", "--sysroot=", "-isystem ",
-                "-Wl,-rpath,", "-nodefaultlibs",
-                "-static"
-            };
-            for (int i = 0; i < sizeof(linker_labels) / sizeof(cstr); i++) {
-                if (starts_with(t, linker_labels[i])) {
-                    is_lib = true;
-                    break;
-                }
-            }
-            bool is_cflag  = !is_lib && t->chars[0] == '-';
-            bool is_static = t->chars[0] == '@';
-            push(list, flag(name,
-                    is_static ? mid(t, 1, len(t) - 1) : t,
-                is_static, is_static, is_cflag, is_cflag, is_lib, is_lib));
-        }
-    }
-}
-
-string import_cmake_location(import im) {
-    int index = 0;
-    each (im->config, string, conf) {
-        if (starts_with(conf, "-S")) {
-            return form(string, "%o %o", conf, im->config->elements[index + 1]);
-        }
-        index++;
-    }
-    return null;
-}
-
 string serialize_environment(map environment, bool b_export);
 
 static array headers(path dir) {
@@ -2501,8 +2436,12 @@ static bool is_checkout(path a) {
 }
 
 
+// we have no real standard for project structure here, since we can be given any silver module
+// todo:
+none export_parse(silver mod) {
+    string name = mod->name;
+    import a, path project_from
 
-none import_link_shares(import a, path project_from) {
     if (!dir_exists("%o/share", project_from))
         return;
     // if this is debug, we want to rsync everything
@@ -2514,14 +2453,14 @@ none import_link_shares(import a, path project_from) {
         string rtype = filename(share_folder);
         array rfiles = ls(share_folder, null, false);
 
-        path rtype_dir  = f(path, "%o/share/%o/%o", a->mod->install, a->name, rtype);
+        path rtype_dir  = f(path, "%o/share/%o/%o", mod->install, mod->name, rtype);
         make_dir(rtype_dir);
 
         each (rfiles, path, res) {
             // create symlink at dest  install/share/our-target-name/each-resource-dir/each-file -> im->import_path/share/each-resource-dir/each-resource-file
             string fn = filename(res);
             path src = f(path, "%o/share/%o/%o", project_from, rtype, fn);
-            path dst = f(path, "%o/share/%o/%o/%o", a->mod->install, a->name, rtype, fn);
+            path dst = f(path, "%o/share/%o/%o/%o", mod->install, mod->name, rtype, fn);
             if (file_exists("%o", dst) && !is_symlink(dst))
                 continue; // being used by the user (needs an option for release/packaging mode here)
             bool needs_link = !eq(src, dst);
@@ -2533,250 +2472,6 @@ none import_link_shares(import a, path project_from) {
             }
         }
     }
-}
-
-// build with optional bc path; if no bc path we use the project file system
-i32 import_build(import a, path bc) {
-    int  error_code = 0;
-    bool debug = is_dbg(a, a->dbg, (cstr)a->name->chars, false);
-    bool sanitize = debug && is_dbg(a, a->sanitize, (cstr)a->name->chars, false); // sanitize does not work with musl, and perhaps we need a special linking area for sanitize; bit lame!
-    path install = a->mod->install;
-
-    if (bc) {
-        // simplified process for .bc case
-        string name = stem(bc);
-        verify(exec("%o/bin/llc -filetype=obj %o.ll -o %o.o -relocation-model=pic",
-            install, name, name) == 0,
-                ".ll -> .o compilation failed");
-        string libs, cflags;
-        cflags_libs(a, &cflags, &libs); // fetches from all exported data
-        verify(exec("%o/bin/clang %o.o -o %o -L %o/lib %o %o",
-            install, name, name, install, libs, cflags) == 0,
-                "link failed");
-        return 0;
-    }
-
-    cd(a->project_path);
-    AType type = isa(a->build_path);
-    make_dir(a->build_path);
-
-    path   project_lib  = form  (path, "%o/src",  a->project_path);
-    path   project_app  = form  (path, "%o/app",  a->project_path);
-    path   build_lib    = form  (path, "%o/src",  a->build_path);
-    path   build_app    = form  (path, "%o/app",  a->build_path);
-    path   build_test   = form  (path, "%o/test", a->build_path);
-    cstr   CC           = getenv("CC");       if (!CC)       CC       = "clang";
-    cstr   CXX          = getenv("CXX");      if (!CXX)      CXX      = "clang++";
-    cstr   CFLAGS       = getenv("CFLAGS");   if (!CFLAGS)   CFLAGS   = "";
-    cstr   CXXFLAGS     = getenv("CXXFLAGS"); if (!CXXFLAGS) CXXFLAGS = "";
-    string name         = filename(a->project_path);
-    string n2           = copy(name);
-    bool   cpp          = false;
-    cstr   compilers[2] = { CC, CXX };
-    path   include      = form(path, "%o/include", install);
-    a->lib_targets      = array();
-    a->app_targets      = array();
-    bool has_lib        = dir_exists("%o", project_lib);
-    path project_main   = has_lib ? project_lib : project_app;
-
-    struct dir {
-        cstr  dir;
-        cstr  output_dir;
-        path  build_dir;
-    } dirs[3] = {
-        { "src",  "src",  build_lib  },
-        { "app",  "bin",  build_app  },
-        { "test", "test", build_test } // not allowed if no lib
-    };
-
-    for (int i = 0; i < sizeof(dirs) / sizeof(struct dir); i++) {
-        struct dir* flags = &dirs[i];
-        bool  is_lib    = strcmp(flags->dir, "src") == 0;
-        path  dir       = form(path, "%o/%s", a->project_path, flags->dir);
-        path  lib_src   = form(path, "%o/%s", a->project_path, "src");
-        path  build_dir = form(path, "%o/%s", a->build_path, flags->output_dir);
-        path  build_dir2 = form(path, "%o/%o", a->build_path, flags->build_dir);
-        make_dir(flags->build_dir);
-        make_dir(build_dir);
-        make_dir(build_dir2);
-        if (!dir_exists("%o", dir)) continue;
-
-        string base_cflags = string(""), base_libs = string("");
-        /// if its a stand-alone app or has a lib, it should get all of the exports
-        /// also lib gets everything (i == 0)
-        if (has_lib && (i == 0) || !has_lib) {
-            cflags_libs(a, &base_cflags, &base_libs);
-        }
-        /// app and test depend on its lib
-        if (has_lib && i != 0)
-            base_libs = form(string, "%o -l%o", base_libs, name);
-
-        cd(flags->build_dir);
-
-        bool is_app  = (i == 1);
-
-        array c      = ls(dir, string(".c"),   false); // returns absolute paths
-        array cc     = ls(dir, string(".cc"),  false);
-        cpp         |= len(cc) > 0;
-        array obj    = array(64);
-        array obj_c  = array(64);
-        array obj_cc = array(64);
-        path  href   = form(path, "%o/%o", dir, name);
-        array files  = ls(dir, null, false);
-        i64   htime  = 0;
-
-        if (!file_exists("%o", href))
-             href = form(path, "%o/%o.h", dir, name);
-    
-        /// get latest header modified (including project header)
-        each (files, path, f) {
-            string e = ext(f);
-            string s = stem(f);
-            if (cmp(s, "h") == 0 || (len(e) == 0 && cmp(s, name->chars) == 0)) {
-                i64 mt = modified_time(f);
-                if (mt > htime)
-                    htime = mt;
-            }
-        }
-        string cflags = string(alloc, 64);
-        string cxxflags = string(alloc, 64);
-
-        /// compile C with cflags
-        struct lang {
-            array source;
-            array objs;
-            cstr  compiler;
-            cstr  std;
-        } langs[2] = {
-            {c,  obj_c,  compilers[0], "gnu11"},
-            {cc, obj_cc, compilers[1], "c++17"}
-        };
-        i64 latest_o = 0;
-        for (int l = 0; l < 2; l++) {
-            struct lang* lang = &langs[l];
-            if (!lang->std) continue;
-            string compiler = form(string, "%s -c %s%s-std=%s %s %o %o -I%o -I%o -I%o -I%o",
-                lang->compiler, debug ? "-g2 " : "", sanitize ? "-fsanitize=address " : "", lang->std,
-                l == 0 ? CFLAGS : CFLAGS, /// CFLAGS from env come first
-                base_cflags,
-                l == 0 ? cflags : cflags, /// ... then project-based flags
-                (has_lib && i == 2) ? build_lib : flags->build_dir,
-                dir, lib_src, include); /// finally, an explicit -I of our directive
-            
-            /// for each source file, make objects file names, and compile if changed
-            each(lang->source, path, src) {
-                string module = filename(src);
-                string module_name = stem(src);
-                string o_file = form(string, "%o.o",  module);
-                path   o_path = form(path,   "%o/%o", a->build_path, o_file);
-                i64    o_modified  = modified_time(o_path);
-                latest_o = max(latest_o, o_modified);
-                push(lang->objs, o_path);
-                push(obj, o_path);
-
-                /// recompile if newer / includes differ
-                i64 mtime = modified_time(src);
-                bool source_newer  = (mtime > o_modified) || (ancestor_mod && (ancestor_mod < mtime)); // || ; /// | project_rebuild (based on newest project we depend on)
-                bool header_change = htime && htime > modified_time(o_path);
-                if (source_newer || header_change) {
-                    int compile = exec("%o -DMODULE=\"\\\"%o\\\"\" %o -o %o", compiler, module_name, src, o_path);
-                    verify(compile == 0, "compilation");
-                    latest_o = max(latest_o, modified_time(o_path));
-                }
-            }
-        }
-
-        // link
-        string lflags = string(alloc, 64);
-        //concat(lflags, form(string, "-L%o/lib ", a->build_path));
-        concat(lflags, form(string, "-L%o/lib -Wl,-rpath,%o/lib%s", install, install,
-            sanitize ? " -fsanitize=address " : ""));
-
-        if (is_lib) {
-            path output_lib = form(path, "%o/lib/%s%o%s", a->build_path, lib_pre, n2, lib_ext);
-            path install_lib = form(path, "%o/lib/%s%o%s", install, lib_pre, n2, lib_ext);
-            if (!latest_o || (modified_time(install_lib) < latest_o)) {
-                verify (exec("%s -shared %o %o %o -o %o",
-                    cpp ? CXX : CC,
-                    lflags, base_libs, obj, output_lib) == 0, "linking");
-            }
-            // install lib right away
-            if (true || debug) {
-                if (!eq(output_lib, install_lib)) {
-                    exec("rm -rf %o",   install_lib);
-                    exec("ln -s %o %o", output_lib, install_lib);
-                }
-            } else
-                exec("rsync -a %o %o", output_lib, install_lib);
-            
-            push(a->lib_targets, output_lib);
-        } else {
-            each (obj_c, path, obj) {
-                string module_name = stem(obj);
-                path output = form(path, "%o/%s/%o%s", a->build_path, flags->output_dir, module_name, app_ext);
-                if (modified_time(output) < modified_time(obj)) {
-                    verify (exec("%s %o %o %o -o %o",
-                        CC, lflags, base_libs, obj, output) == 0, "linking");
-                }
-                if (is_app)
-                    push(a->app_targets, output);
-                else
-                    drop(output);
-                drop(module_name);
-            }
-            each (obj_cc, path, obj) {
-                string module_name = stem(obj);
-                path output_o = form(path, "%o/%s/%o", a->build_path, flags->output_dir, module_name);
-                if (modified_time(output_o) < modified_time(obj)) {
-                    verify (exec("%s %o %o %o -o %o",
-                        CXX, lflags, obj, output_o) == 0, "linking");
-                }
-                drop(module_name);
-                drop(output_o);
-            }
-            // run test here, to verify prior to install; will need updated PATH so they may run the apps we built just prior to test
-        }
-    }
-
-    // Check if we have headers to process
-    if (dir_exists("%o", project_lib)) {
-        // Generate Silver format from concatenated headers
-        path silver_output = form(path, "%o/include/%o.sf", install, name);
-        path main_header = form(path, "%o/%o", project_lib, name);
-        
-        // Check if we need to regenerate (if any header is newer than .sf file)
-        i64 silver_time = modified_time(silver_output);
-        i64 latest_header_time = 0;
-        
-        // Check main header
-        if (file_exists("%o", main_header)) {
-            latest_header_time = max(latest_header_time, modified_time(main_header));
-        }
-        
-        // Check all .h files
-        array h_files = ls(project_lib, string(".h"), false);
-        each(h_files, path, h_file) {
-            latest_header_time = max(latest_header_time, modified_time(h_file));
-        }
-        
-        // Regenerate if needed
-        if (latest_header_time > silver_time || !file_exists("%o", silver_output)) {
-            //print("%22o: generating silver format", name);
-            //int convert_result = exec("python3 %o/c-silver.py --concat %o %o %o",
-            //    install, project_lib, name, silver_output);
-            //verify(convert_result == 0, "Silver format generation failed");
-        }
-        
-        drop(h_files);
-    }
-    
-    // for each import with a share folder in its repo, symlink all files individually (cannot use folders safely because our targets stack resources)
-    import_link_shares(a, a->project_path);
-
-    /// now we set the token here! (we do this twice; the import layer does it 
-    // (and CAN be skipped if its a import project -- should be without side effect, though, since its immediately after))
-    sync_tokens(a, a->build_path, a->name);
-    return error_code;
 }
 
 array compact_tokens(array tokens) {
@@ -2806,7 +2501,37 @@ array compact_tokens(array tokens) {
 
 string model_keyword() { return null; }
 
-static none checkout(import im, path uri, string commit) {
+
+// remove the above functions in favor of this one
+static string import_config(array input) {
+    string config = string(alloc, 128);
+    each (input, string, t) {
+        if (!starts_with(t, "-l"))
+            concat(config, f(string, "%o ", t));
+    }
+    return config;
+}
+
+// remove the above functions in favor of this one
+static string import_env(array input) {
+    string config = string(alloc, 128);
+    each (input, string, t) {
+        if (isalpha(t->chars) && index_of(t, "=") >= 0)
+            concat(config, f(string, "%o ", t));
+    }
+    return config;
+}
+
+static string import_libs(array input) {
+    string libs = string(alloc, 128);
+    each (input, string, t) {
+        if (starts_with(t, "-l"))
+            concat(libs, f(string, "%o ", t));
+    }
+    return libs;
+}
+
+static none checkout(import im, path uri, string commit, string config, string env) {
     silver mod   = im->mod;
     path   install = mod->install;
     path   cur   = path_cwd();
@@ -2814,8 +2539,10 @@ static none checkout(import im, path uri, string commit) {
     string s     = cast(string, uri);
     num    sl    = rindex_of(s, "/");
     verify(sl >= 0, "invalid uri");
-    string n     = mid(s, sl + 1, len(s) - sl - 1);
-    path   npath = path(n);
+    string name  = mid(s, sl + 1, len(s) - sl - 1);
+    path   npath = path(name);
+    bool   debug = false;
+    path   project_f = null;
 
     // checkout or symlink to src
     if (!dir_exists("%o", n)) {
@@ -2823,20 +2550,99 @@ static none checkout(import im, path uri, string commit) {
         // we use a symlink of user's working src for like-named packages
         // this has the side-effect of not being the commit number, 
         // but its effectively overridden by the user and we dare not write anything more than a debug/release folder
-        if (dir_exists("%o/%o", mod->src, n)) {
-            vexec("ln -s %o/%o %o", mod->src, n, n);
+        path src_path = f(path, "%o/%o", mod->src_loc, name);
+        if (dir_exists("%o", src_path)) {
+            project_f = src_path;
+            vexec("ln -s %o/%o %o", mod->src_loc, name, name);
+            cd(project_f);
         } else {
-            vexec("git clone",    "git clone --filter=blob:none --no-checkout --depth=1 %o %o", uri, n);
+            vexec("git clone",
+                  "git clone --filter=blob:none --no-checkout --depth=1 %o %o",
+                   uri, name);
             cd(npath);
+            project_f = absolute(cwd());
             vexec("git sparse",   "git sparse-checkout init --cone");
             vexec("git checkout", "git checkout %o", commit);
         }
     }
 
+    // we build to another folder, not inside the source, or checkout
+    path     build_f = f(path, "%o/%s/%o", install, debug ? "debug" : "release", name);
+    make_dir(build_f);
+    cd      (build_f);
+
     // build
+    if (file_exists("%o/Cargo.toml", project_f)) {
+        // todo: copy bin/lib after
+        vexec("rust compilation", "cargo build --%s --manifest-path %o/Cargo.toml --target-dir .",
+            debug ? "debug" : "release", project_f);
+    } else if (file_exists("%o/CMakeLists.txt", project_f)) {
+        /// configure
+        if (!file_exists("CMakeCache.txt")) {
+            cstr build = im->debug ? "Debug" : "Release";
+            int  iconf = exec(
+                "%o cmake -B . -S .. -DCMAKE_INSTALL_PREFIX=%o -DCMAKE_BUILD_TYPE=%s %o", env, install, build, config);
+            verify(iconf == 0, "%o: configure failed", im->name);
+        }
+        /// build & install
+        int    icmd = exec("%o cmake --build . -j16", env);
+        int   iinst = exec("%o cmake --install .",    env);
+
+    } else {
+        cstr Makefile = "Makefile";
+        /// build for A-type projects
+        if (file_exists("%o/%s", project_f, Makefile) && file_exists("%o/build.sf", project_f, Makefile)) {
+            cd(im->import_path);
+            int imake = exec("%o make", env);
+            verify(imake == 0, "make");
+            cd(im->build_path);
+        } else if (!file_exists("Makefile")) {
+            cd(im->import_path);
+            /// build for automake projects
+            if (file_exists("%o/autogen.sh",   project_f) || 
+                file_exists("%o/configure.ac", project_f) || 
+                file_exists("%o/configure",    project_f) ||
+                file_exists("%o/config",       project_f)) {
+                
+                // this is not libffi at all, its a race condition that it and many others have with autotools
+                if (!file_exists("%o/ltmain.sh", project_f))
+                    verify(exec("libtoolize --install --copy --force") == 0, "libtoolize");
+                
+                // neither this -- but its a common preference on these repos
+                if (file_exists("%o/autogen.sh", project_f)) {
+                    verify(exec("bash %o/autogen.sh", project_f) == 0, "autogen");
+                }
+                /// generate configuration scripts if available
+                else if (!file_exists("%o/configure", project_f) && file_exists("%o/configure.ac", project_f)) {
+                    cd(project_f);
+                    verify(exec("autoupdate .")    == 0, "autoupdate");
+                    verify(exec("pwd") == 0, "autoreconf");
+                    verify(exec("autoreconf -i .") == 0, "autoreconf");
+                    cd(build_f);
+                }
+                /// prefer our pre/generated script configure, fallback to config
+                path configure = file_exists("%o/configure", project_f) ?
+                    f(path, "%o/configure", project_f) :
+                    f(path, "%o/config",    project_f);
+                
+                if (file_exists("%o", configure)) {
+                    verify(exec("%o %s%s --prefix=%o %o",
+                        env,
+                        configure,
+                        im->debug ? " --enable-debug" : "",
+                        install,
+                        config) == 0, configure);
+                }
+            }
+            if (file_exists("%s", Makefile))
+                verify(exec("%o make -f %s install", env, Makefile) == 0, "make");
+        }
+    }
 }
 
-bool build(import im) {
+/*
+
+static bool import_build(import im, string url, ) {
     path install = copy(im->mod->install);
     i64 conf_status = INT64_MIN;
     path t0 = form(path, "silver-token");
@@ -2879,8 +2685,8 @@ bool build(import im) {
 
     if (file_exists("../Cargo.toml")) {
         // todo: copy bin/lib after
-        verify(exec("cargo build --%s --manifest-path ../Cargo.toml --target-dir .",
-            im->debug ? "debug" : "release") == 0, "rust compilation");
+        vexec("rust compilation", "cargo build --%s --manifest-path ../Cargo.toml --target-dir .",
+            im->debug ? "debug" : "release"));
     } else if (cmake_conf || file_exists("../CMakeLists.txt")) {
         /// configure
         if (!file_exists("CMakeCache.txt")) {
@@ -2941,16 +2747,64 @@ bool build(import im) {
     return true;
 }
 
-// lets implement functional here
+*/
+
+
+// build with optional bc path; if no bc path we use the project file system
+i32 silver_build(silver a, path bc) {
+    int  error_code = 0;
+    bool debug = is_dbg(a, a->dbg, (cstr)a->name->chars, false);
+    bool sanitize = debug && is_dbg(a, a->sanitize, (cstr)a->name->chars, false); // sanitize does not work with musl, and perhaps we need a special linking area for sanitize; bit lame!
+    path install = a->install;
+
+    if (bc) {
+        // simplified process for .bc case
+        string name = stem(bc);
+        verify(exec("%o/bin/llc -filetype=obj %o.ll -o %o.o -relocation-model=pic",
+            install, name, name) == 0,
+                ".ll -> .o compilation failed");
+        string libs, cflags;
+        cflags_libs(a, &cflags, &libs); // fetches from all exported data
+        verify(exec("%o/bin/clang %o.o -o %o -L %o/lib %o %o",
+            install, name, name, install, libs, cflags) == 0,
+                "link failed");
+        return 0;
+    }
+    
+    import_link_shares(a, a->project_path);
+
+    sync_tokens(a, a->build_path, a->name);
+    return error_code;
+}
+
+
+
+
+node export_parse(silver mod) {
+}
+
+// lets implement functional approach here
+// theres no storing of modules / includes / url / config, and then later finishing or something
+// we do everything in parse.
+// this is reduced in nature and works better in that silver is its only modality
+// theres not Multiple Other Ways to use these!
+
+// alternatively you store them in A-type object state and allow user to express the same
+// code you parse, why add a use-case that we do not need to service?
+// silver is a language, not a service.
+// simply put, this is a design-time process
+
 node import_parse(silver mod) {
-    import im = import(mod, mod);
-    // lets just do the parser
     verify(next_is(mod, "import"), "expected import keyword");
     consume(mod);
 
-    token alias = null;
+    model  mdl           = import(mod, mod); // to the rest of silver, this is merely a model; certainly we can emit this information into run-time, though.
+    string namespace     = null;
+    array  include_paths = null;
+    array  module_paths  = null;
+
     if (read(mod, "<")) {
-        array include_paths = array(32);
+        include_paths = array(32);
         for (;;) {
             token f = read_alpha(mod);
             verify(f, "expected include");
@@ -2965,10 +2819,9 @@ node import_parse(silver mod) {
             }
         }
         verify(read(mod, ">"), "expected > after include");
-        im->include_paths = hold(include_paths);
 
     } else if (next_is_alpha(mod)) {
-        array module_paths = array(32);
+        module_paths = array(32);
         for (;;) {
             token f = read_alpha(mod);
             verify(f, "expected include");
@@ -2976,43 +2829,42 @@ node import_parse(silver mod) {
             if (!read(mod, ","))
                 break;
         }
-        im->module_paths = hold(module_paths);
     }
 
     // this invokes import by git; a local repo may be possible but not very usable
+    // arguments / config not stored / used after this
     if (next_is(mod, "[")) {
-        array raw_tokens       = read_body(mod, false);
-        array import_arguments = compact_tokens(raw_tokens);
-        verify(len(import_arguments) > 0,
+        array arguments  = compact_tokens(read_body(mod, false));
+        array all_config = compact_tokens(read_body(mod, false));
+        verify(len(arguments) > 0,
             "expected import arguments in import [ expression ]");
-        token t_uri = get(import_arguments, 0);
+        token t_uri    = get(arguments, 0);
+        token t_commit = get(arguments, 1);
         path    uri = path((string)t_uri);
         verify(starts_with(t_uri, "https://") || 
                starts_with(t_uri, "git@"), "expected repository uri");
-        array config = read_body(mod, false);
         fault("verify url: %o", uri);
-        checkout(mod, t_uri);
+        checkout(mod, t_uri, t_commit,
+            import_config(all_config),
+            import_env   (all_config));
     }
-
-    verify(next_is_alpha(mod),
-        "expected alpha-numeric after import");
     
     if (next_is(mod, "as")) {
         consume(mod);
-        im->namespace = hold(read_alpha(mod));
-        verify(im->namespace, "expected alpha-numeric namespace");
+        namespace = hold(read_alpha(mod));
+        verify(namespace, "expected alpha-numeric namespace");
     }
     
-    emember mem = emember(mod, mod, name, im->name, context, mod->top);
-    push(mod->imports, im); // push to imports array; which is a bit redundant since the model is registered in the context as a emember
-
-    if (im->include_paths)
-        each(im->include_paths, path, inc) {
-            include(mod, inc);
-        }
-    
-    set_model(mem, im);
+    // its important that silver need not rely on further interpretation of an import model
+    // import does its thing into normal aether modeling, and we move on
+    emember mem = emember(mod, mod, name, namespace, mdl, mdl);
+    set_model  (mem, mdl);
     push_member(mod, mem);
+    
+    if (namespace) push(mod, mdl); // we import directly into our module (global) without namespace
+    each(include_paths, path, inc) include(mod, inc);
+    if (namespace) pop(mod);
+
     return mem;
 
 
@@ -3083,6 +2935,7 @@ define_enum  (import_t)
 define_enum  (build_state)
 define_enum  (language)
 
+define_class(export,    model)
 define_class(import,    model)
 define_class(flag,      A)
 
