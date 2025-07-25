@@ -28,12 +28,12 @@ forward(import)
     i_prop    (X,Y, intern,     bool,           in_left) \
     i_prop    (X,Y, intern,     bool,           in_inlay) \
     i_prop    (X,Y, intern,     emember,        in_assign) \
-    i_prop    (X,Y, intern,     array,          imports) \
+    i_prop    (X,Y, intern,     array,          spaces) \
     i_prop    (X,Y, intern,     array,          compiled_objects) \
     i_prop    (X,Y, intern,     array,          products_used) \
     i_prop    (X,Y, intern,     map,            include) \
     i_prop    (X,Y, intern,     int,            expr_level) \
-    i_prop    (X,Y, public,     path,           src) \
+    i_prop    (X,Y, public,     path,           src_loc) \
     i_prop    (X,Y, public,     path,           file) \
     i_prop    (X,Y, public,     language,       std) \
     i_method  (X,Y, public,     none,           import_types) \
@@ -68,11 +68,10 @@ forward(import)
     i_method  (X,Y, public,     string,         read_assign, ARef, ARef) \
     i_method  (X,Y, public,     string,         location) \
     i_method  (X,Y, public,     none,           parse) \
+    i_method  (X,Y, public,     bool,           build, path) \
     i_override(X,Y, method,     build_initializer) \
     i_override(X,Y, method,     init)
 declare_class_3(silver, aether, model)
-
-
 
 
 #define flag_schema(X,Y,...) \
@@ -83,79 +82,26 @@ declare_class_3(silver, aether, model)
     i_override(X,Y, cast, string)
 declare_class(flag)
 
-// first part is the struct from tapestry
-// we must subblemate the multiple remotes into this one singular..
-// this means, replace remotes, with all of remote.
-// we also keep all of the members we need in the silver's import (prior: Import)
-// this is very good. its merging 3 parts into one, and it very much makes sense
-// this, because aether constructs keywords with the same type name
-// as we parse tokens, we are looking for registered classes first
-// this happens before our list of keywords are iterated through
-// infact, we should never implement a central token controller, but have it here
-// this allows us to shape silver into whatever we need
-
 #define import_schema(X,Y,...) \
-    /* tapestry */ \
-    s_method    (X,Y, public, node,         parse,      silver) \
-    i_prop      (X,Y, public, string,       uri) \
-    i_prop      (X,Y, public, string,       commit) \
-    i_prop      (X,Y, public, path,         source_path) \
-    i_prop      (X,Y, public, path,         project_path) \
-    i_prop      (X,Y, public, string,       sanitize) \
-    i_prop      (X,Y, public, string,       dbg) \
-    i_prop      (X,Y, public, path,         build_path) \
-    \
-    /* the above arguments we also get from aether \
-       we no longer hold onto multiple remotes \
-       i_prop      (X,Y, public, array,    remotes, meta, remote) */ \
-    \
-    i_prop      (X,Y, public, array,        exports, meta, flag) \
-    i_prop      (X,Y, public, array,        cflags,  meta, flag) \
-    i_prop      (X,Y, intern, bool,         has_lib) \
-    i_method    (X,Y, public, i32,          build, path) \
-    i_method    (X,Y, public, i32,          install) \
-    \
-    /* remote */ \
-    \
-    i_prop      (X,Y, public, path,         import_path) \
-    i_prop      (X,Y, public, bool,         debug) \
-    i_method    (X,Y, public, string,       cmake_location) \
-    i_method    (X,Y, public, bool,         make) \
-    i_prop      (X,Y, public, map,          environment) \
-    i_prop      (X,Y, public, array,        config,   meta, string) \
-    i_prop      (X,Y, public, array,        commands, meta, string) \
-    i_prop      (X,Y, public, array,        always,   meta, string) \
-    i_override  (X,Y, cast, string) \
-    i_override  (X,Y, method, init) \
-    \
-    /* silvers import keyword has these args (some we will NOT USE) */ \
-    \
-    i_prop      (X,Y, public, array,        include_paths, meta, path) \
-    i_prop      (X,Y, public, array,        module_paths,  meta, path) \
-    i_prop      (X,Y, public, string,       namespace) \
-    i_prop      (X,Y, intern, array,        links) \
-    i_prop      (X,Y, intern, array,        parameters) \
-    i_method    (X,Y, public, none,         process)
+    s_method(X,Y, public, node, parse, silver)
 declare_class_2(import, model)
 
+#define export_schema(X,Y,...) \
+    s_method(X,Y, public, node, parse, silver)
+declare_class_2(export, model)
 
-
-/// major change to model here, with most work on software import happening in import
-/// process will perform actions needed by silver-only import
-/// does import also perform silver compilation, or stand-alone C compilation?
-/// it might make sense to do so; inter-dependency is what is of issue.  import would need
-/// to use silver at a binary level in that case (which to me is simpler)
-/// it is the interface that we do not have.  for this, do we want .m standard?  (A-reflect emission)
-/// this works for silver, C and possibly others.  the two are what we want to handle for now
-/// unclear what the path is for project imports.  clearly there would be multiple .m reflection interfaces
-/// in the case of standard C we would use typical Clang Indexer service
-
-/// import url is going to infer the project type, internal to  import
-///     <header> may be part of the syntax, if we are to use a specific header
-/// import url -llibrary
-///     include <something>
-///     
-
-
+// major change to model here, with most work on software import happening in import
+// process will perform actions needed by silver-only import
+// does import also perform silver compilation, or stand-alone C compilation?
+// it might make sense to do so; inter-dependency is what is of issue.  import would need
+// to use silver at a binary level in that case (which to me is simpler)
+// it is the interface that we do not have.  for this, do we want .m standard?  (A-reflect emission)
+// this works for silver, C and possibly others.  the two are what we want to handle for now
+// unclear what the path is for project imports.  clearly there would be multiple .m reflection interfaces
+// in the case of standard C we would use typical Clang Indexer service
+// import url is going to infer the project type, internal to  import
+//     <header> may be part of the syntax, if we are to use a specific header
+// import url -llibrary
+//     include <something>
 
 #endif
