@@ -17,7 +17,7 @@ static array keywords;
 static array assign;
 static array compare;
 static bool is_alpha(A any);
-static node parse_expression(silver mod);
+static enode parse_expression(silver mod);
 
 static void print_tokens(silver mod, symbol label) {
     print("[%s] tokens: %o %o %o...", label, element(mod, 0), element(mod, 1), element(mod, 2));
@@ -134,10 +134,10 @@ static void initialize() {
     }
 }
 
-node parse_statements(silver mod, bool unique_members);
-node parse_statement(silver mod);
+enode parse_statements(silver mod, bool unique_members);
+enode parse_statement(silver mod);
 
-static node parse_create(silver mod, model src, array expr);
+static enode parse_create(silver mod, model src, array expr);
 
 void build_function(silver mod, function fn) {
     if (!fn->body) return;
@@ -146,7 +146,7 @@ void build_function(silver mod, function fn) {
     mod->last_return = null;
     push(mod, fn);
     if (fn->single_expr) {
-        node single = parse_create(mod, fn->rtype, fn->body);
+        enode single = parse_create(mod, fn->rtype, fn->body);
         fn_return(mod, single);
     } else {
         push_state(mod, fn->body, 0);
@@ -154,11 +154,11 @@ void build_function(silver mod, function fn) {
         if (cl) pairs(cl->members, m) print("class emember: %o: %o", cl->name, m->key);
         parse_statements(mod, true);
         if (!mod->last_return) {
-            node r_auto = null;
+            enode r_auto = null;
             if (fn->record && fn->target)
                 r_auto = lookup2(mod, string("this"), null);
             else if (fn->rtype == emodel("void"))
-                r_auto = node(mdl, emodel("void"));
+                r_auto = enode(mdl, emodel("void"));
             else {
                 fault("return statement required for function: %o", fn->name);
             }
@@ -744,8 +744,8 @@ model    read_model      (silver mod, array* expr);
 
 /// should not need to back out ever, since members are always being operated
 /// unless its a type, in which case we have a membership for them.. so everything is a emember
-node silver_read_node(silver mod, AType constant_result) {
-    print_tokens(mod, "read-node");
+enode silver_read_node(silver mod, AType constant_result) {
+    print_tokens(mod, "read-enode");
 
     /// only use :: keyword to navigate for code in functions
     A lit = read_literal(mod, null);
@@ -762,7 +762,7 @@ node silver_read_node(silver mod, AType constant_result) {
         if (!inner) {
             pop_state(mod, true);
             consume(mod);
-            node expr = parse_expression(mod); // Parse the expression
+            enode expr = parse_expression(mod); // Parse the expression
             verify(read(mod, "]"), "Expected closing parenthesis");
             return parse_ternary(mod, expr);
         }
@@ -772,13 +772,13 @@ node silver_read_node(silver mod, AType constant_result) {
 
     // handle the logical NOT operator (e.g., '!')
     else if (read(mod, "!") || read(mod, "not")) {
-        node expr = parse_expression(mod); // Parse the following expression
+        enode expr = parse_expression(mod); // Parse the following expression
         return not(mod, expr);
     }
 
     // bitwise NOT operator
     else if (read(mod, "~")) {
-        node expr = parse_expression(mod);
+        enode expr = parse_expression(mod);
         return bitwise_not(mod, expr);
     }
 
@@ -791,7 +791,7 @@ node silver_read_node(silver mod, AType constant_result) {
             consume(mod); // Consume '['
             bracket = true;
         }
-        node expr = parse_expression(mod); // Parse the type expression
+        enode expr = parse_expression(mod); // Parse the type expression
         if (bracket) {
             assert(next_is(mod, "]"), "Expected ']' after type expression");
             consume(mod); // Consume ']'
@@ -802,7 +802,7 @@ node silver_read_node(silver mod, AType constant_result) {
     // 'ref' operator (reference)
     else if (read(mod, "ref")) {
         mod->in_ref = true;
-        node expr = parse_expression(mod);
+        enode expr = parse_expression(mod);
         mod->in_ref = false;
         return addr_of(mod, expr, null);
     }
@@ -814,7 +814,7 @@ node silver_read_node(silver mod, AType constant_result) {
     /// hopefully this can be implemented simply
     else if (read(mod, "inlay")) {
         mod->in_inlay = true;
-        node expr = parse_expression(mod);
+        enode expr = parse_expression(mod);
         mod->in_inlay = false;
         return expr;
     }
@@ -842,7 +842,7 @@ node silver_read_node(silver mod, AType constant_result) {
     if (mdl) {
         pop_state(mod, true);
         print_tokens(mod, "pre-parse_create");
-        node cr = parse_create(mod, mdl, expr);
+        enode cr = parse_create(mod, mdl, expr);
         print_tokens(mod, "post-parse_create");
         return cr;
     }
@@ -865,7 +865,7 @@ node silver_read_node(silver mod, AType constant_result) {
         if (first) {
             /// if token is a module name, consume an expected . and emember-name
             each (mod->spaces, model, im) {
-                if (im->namespace && eq(alpha, im->namespace->chars)) {
+                if (im->namespace_name && eq(alpha, im->namespace_name->chars)) {
                     string module_name = alpha;
                     verify(read(mod, "."), "expected . after module-name: %o", alpha);
                     alpha = read_alpha(mod);
@@ -932,8 +932,8 @@ node silver_read_node(silver mod, AType constant_result) {
                 emember m = instanceof(mem, typeid(emember));
                 print_tokens(mod, "before-parse_member_expr");
                 mem = parse_member_expr(mod, mem);
-                /// we need only the 'node' value of emember; we are sometimes returning node here
-                /// todo: use node value for this mem state
+                /// we need only the 'enode' value of emember; we are sometimes returning enode here
+                /// todo: use enode value for this mem state
             } else
             if (read(mod, ".")) {
                 verify(mem->mdl, "cannot resolve from new emember %o", mem->name);
@@ -1043,11 +1043,11 @@ A silver_read_bool(silver a) {
 
 void silver_build_initializer(silver mod, emember mem) {
     if (mem->initializer) {
-        node expr;
+        enode expr;
         /// need to decide if we parse expressions direct in read_node 
         /// for class members, because we do not yet have the member 
         /// value-ref pointers at that point; we ARE in the class-init, though
-        if (instanceof(mem->initializer, typeid(node)))
+        if (instanceof(mem->initializer, typeid(enode)))
             expr = mem->initializer;
         else {
             push_state(mod, mem->initializer, 0);
@@ -1065,49 +1065,49 @@ void silver_build_initializer(silver mod, emember mem) {
 }
 
 
-node parse_return(silver mod) {
+enode parse_return(silver mod) {
     model rtype = return_type(mod);
     bool  is_v  = is_void(rtype);
     model ctx = context_model(mod, typeid(function));
     consume(mod);
-    node expr   = is_v ? null : parse_expression(mod);
+    enode expr   = is_v ? null : parse_expression(mod);
     A_log("return-type", "%o", is_v ? (A)string("void") : 
                                     (A)expr->mdl);
     return fn_return(mod, expr);
 }
 
 
-node parse_break(silver mod) {
+enode parse_break(silver mod) {
     consume(mod);
-    node vr = null;
+    enode vr = null;
     return null;
 }
 
 
-node parse_for(silver mod) {
+enode parse_for(silver mod) {
     consume(mod);
-    node vr = null;
+    enode vr = null;
     return null;
 }
 
 
-node parse_while(silver mod) {
+enode parse_while(silver mod) {
     consume(mod);
-    node vr = null;
+    enode vr = null;
     return null;
 }
 
 
 
-node silver_parse_do_while(silver mod) {
+enode silver_parse_do_while(silver mod) {
     consume(mod);
-    node vr = null;
+    enode vr = null;
     return null;
 }
 
 
-static node reverse_descent(silver mod) {
-    node L = read_node(mod, null); // build-arg
+static enode reverse_descent(silver mod) {
+    enode L = read_node(mod, null); // build-arg
     verify(L, "failed to read L-value in reverse-descent");
     mod->expr_level++;
     for (int i = 0; i < sizeof(levels) / sizeof(precedence); i++) {
@@ -1121,7 +1121,7 @@ static node reverse_descent(silver mod) {
                     continue;
                 OPType op_type = level->ops   [j];
                 string method  = level->method[j];
-                node R = read_node(mod, null);
+                enode R = read_node(mod, null);
                      L = op(mod, op_type, method, L, R);
                 m      = true;
                 break;
@@ -1132,16 +1132,16 @@ static node reverse_descent(silver mod) {
     return L;
 }
 
-static node read_expression(silver mod) {
+static enode read_expression(silver mod) {
     mod->no_build = true;
-    node vr = reverse_descent(mod);
+    enode vr = reverse_descent(mod);
     mod->no_build = false;
     return vr;
 }
 
 
-static node parse_expression(silver mod) {
-    node vr = reverse_descent(mod);
+static enode parse_expression(silver mod) {
+    enode vr = reverse_descent(mod);
     return vr;
 }
 
@@ -1294,7 +1294,7 @@ emember cast_method(silver mod, class class_target, model cast) {
     return null;
 }
 
-static node parse_function_call(silver mod, emember fmem);
+static enode parse_function_call(silver mod, emember fmem);
 
 /// parse construct from and cast to, and named args
 /// expr comes from read-model;
@@ -1307,14 +1307,14 @@ map parse_map(silver mod) {
     while (peek(mod)) {
         string name  = read_alpha(mod);
         verify(read(mod, ":"), "expected : after arg %o", name);
-        node   value = parse_expression(mod);
+        enode   value = parse_expression(mod);
         verify(!contains(args, name), "duplicate initialization of %o", name);
         set(args, name, value);
     }
     return args;
 }
 
-node parse_create(silver mod, model src, array expr) {
+enode parse_create(silver mod, model src, array expr) {
     if (expr)
         print_token_array(mod, expr);
     push_state(mod, expr ? expr : mod->tokens, expr ? 0 : mod->cursor);
@@ -1324,7 +1324,7 @@ node parse_create(silver mod, model src, array expr) {
         return operand(mod, n, src);
     }
     bool    has_content = !!expr && len(expr); //read(mod, "[") && !read(mod, "]");
-    node    r           = null;
+    enode    r           = null;
     bool    conv        = false;
     token   k           = peek(mod);
     bool    has_init    = is_alpha(k) && eq(element(mod, 1), ":");
@@ -1343,7 +1343,7 @@ node parse_create(silver mod, model src, array expr) {
 
         while (peek(mod)) {
             token n = peek(mod);
-            node  e = parse_expression(mod);
+            enode  e = parse_expression(mod);
             e = convert(mod, e, element_type);
             push(nodes, e);
             num_index++;
@@ -1379,10 +1379,10 @@ node parse_create(silver mod, model src, array expr) {
     return r;
 }
 
-static node parse_construct(silver mod, emember mem) {
+static enode parse_construct(silver mod, emember mem) {
     verify(mem && mem->is_type, "expected emember type");
     verify(read(mod, "["), "expected [ after type name for construction");
-    node res = null;
+    enode res = null;
     //print_tokens("parse-construct", mod);
     /// it may be a dedicated constructor (for primitives or our own), or named args (not for primitives)
     if (instanceof(mem->mdl->src, typeid(record))) {
@@ -1392,7 +1392,7 @@ static node parse_construct(silver mod, emember mem) {
         while (!next_is(mod, "]")) {
             string name  = read_alpha(mod);
             verify(read(mod, ":"), "expected : after arg %o", name);
-            node   value = parse_expression(mod);
+            enode   value = parse_expression(mod);
             set(args, name, value);
             count++;
         }
@@ -1409,7 +1409,7 @@ static node parse_construct(silver mod, emember mem) {
     return res;
 }
 
-node silver_parse_member_expr(silver mod, emember mem) {
+enode silver_parse_member_expr(silver mod, emember mem) {
     print_tokens(mod, "parse_member_expr");
     push_current(mod);
     int parse_index = !mem->is_func;
@@ -1425,16 +1425,16 @@ node silver_parse_member_expr(silver mod, emember mem) {
         consume(mod);
         array args = array(16);
         while (!next_is(mod, "]")) {
-            node expr = parse_expression(mod);
+            enode expr = parse_expression(mod);
             push(args, expr);
             verify(next_is(mod, "]") || next_is(mod, ","), "expected ] or , in index arguments");
             if (next_is(mod, ","))
                 consume(mod);
         }
         consume(mod);
-        node index_expr = null;
+        enode index_expr = null;
         if (r) {
-            /// this returns a 'node' on this code path
+            /// this returns a 'enode' on this code path
             emember indexer = compatible(mod, r, null, A_FLAG_INDEX, args); /// we need to update emember model to make all function members exist in an array
             /// todo: serialize arg type names too
             verify(indexer, "%o: no suitable indexing method", r->name);
@@ -1497,7 +1497,7 @@ eargs parse_args(silver mod) {
     return res;
 }
 
-static node parse_function_call(silver mod, emember fmem) {
+static enode parse_function_call(silver mod, emember fmem) {
     bool     expect_br = false;
     function fn        = fmem->mdl;
     bool     has_expr  = len(fn->args) > 0;
@@ -1515,7 +1515,7 @@ static node parse_function_call(silver mod, emember fmem) {
     emember last_arg  = null;
     while(arg_index < model_arg_count || fn->va_args) {
         emember arg      = arg_index < len(fn->args) ? get(fn->args, arg_index) : null;
-        node   expr     = parse_expression(mod);
+        enode   expr     = parse_expression(mod);
         model  arg_mdl  = arg ? arg->mdl : null;
         if (arg_mdl && expr->mdl != arg_mdl)
             expr = convert(mod, expr, arg_mdl);
@@ -1537,21 +1537,21 @@ static node parse_function_call(silver mod, emember fmem) {
 }
 
 
-node silver_parse_ternary(silver mod, node expr) {
+enode silver_parse_ternary(silver mod, enode expr) {
     if (!read(mod, "?")) return expr;
-    node expr_true  = parse_expression(mod);
-    node expr_false = parse_expression(mod);
+    enode expr_true  = parse_expression(mod);
+    enode expr_false = parse_expression(mod);
     return aether_ternary(mod, expr, expr_true, expr_false);
 }
 
 // with constant literals, this should be able to merge the nodes into a single value
 // would be called 
-node silver_parse_assignment(silver mod, emember mem, string oper) {
+enode silver_parse_assignment(silver mod, emember mem, string oper) {
     verify(!mem->is_assigned || !mem->is_const, "mem %o is a constant", mem->name);
     mod->in_assign = mem;
-    node   L       = mem;
+    enode   L       = mem;
     print_tokens(mod, "parse-assignment");
-    node   R       = parse_expression(mod); /// getting class2 as a struct not a pointer as it should be. we cant lose that pointer info
+    enode   R       = parse_expression(mod); /// getting class2 as a struct not a pointer as it should be. we cant lose that pointer info
     print_tokens(mod, "parse-assignment-after");
     if (!mem->mdl) {
         mem->is_const = eq(oper, ":");
@@ -1564,39 +1564,39 @@ node silver_parse_assignment(silver mod, emember mem, string oper) {
     string op_name = get(operators, oper);
     string op_form = form(string, "_%o", op_name);
     OPType op_val  = e_val(OPType, cstring(op_form));
-    node   result  = op(mod, op_val, op_name, L, R);
+    enode   result  = op(mod, op_val, op_name, L, R);
     mod->in_assign = null;
     return result;
 }
 
 
-node cond_builder_ternary(silver mod, array cond_tokens, A unused) {
+enode cond_builder_ternary(silver mod, array cond_tokens, A unused) {
     push_state(mod, cond_tokens, 0);
-    node cond_expr = parse_expression(mod);
+    enode cond_expr = parse_expression(mod);
     pop_state(mod, false);
     return cond_expr;
 }
 
 
-node expr_builder_ternary(silver mod, array expr_tokens, A unused) {
+enode expr_builder_ternary(silver mod, array expr_tokens, A unused) {
     push_state(mod, expr_tokens, 0);
-    node exprs = parse_expression(mod);
+    enode exprs = parse_expression(mod);
     pop_state(mod, false);
     return exprs;
 }
 
 
-node cond_builder(silver mod, array cond_tokens, A unused) {
+enode cond_builder(silver mod, array cond_tokens, A unused) {
     push_state(mod, cond_tokens, 0);
-    node cond_expr = parse_expression(mod);
+    enode cond_expr = parse_expression(mod);
     pop_state(mod, false);
     return cond_expr;
 }
 
 
-node expr_builder(silver mod, array expr_tokens, A unused) {
+enode expr_builder(silver mod, array expr_tokens, A unused) {
     push_state(mod, expr_tokens, 0);
-    node exprs = parse_statements(mod, true);
+    enode exprs = parse_statements(mod, true);
     pop_state(mod, false);
     return exprs;
 }
@@ -1604,11 +1604,11 @@ node expr_builder(silver mod, array expr_tokens, A unused) {
 // we must have separate if/ifdef, since ifdef does not push the variable scope (it cannot by design)
 // being adaptive to this based on constant status is too ambiguous
 
-node parse_ifdef_else(silver mod) {
+enode parse_ifdef_else(silver mod) {
     bool  require_if   = true;
     bool  one_truth    = false;
     bool  expect_last  = false;
-    node  statements   = null;
+    enode  statements   = null;
 
     while (true) {
         verify(!expect_last, "continuation after else");
@@ -1616,7 +1616,7 @@ node parse_ifdef_else(silver mod) {
         verify(is_if && require_if || !require_if, "expected if");
         array cond   = is_if ? read_body(mod, false) : null;
         array block  = read_body(mod, false);
-        node  n_cond = null;
+        enode  n_cond = null;
 
         if (cond) {
             bool prev      = mod->in_const;
@@ -1651,7 +1651,7 @@ node parse_ifdef_else(silver mod) {
 
 
 /// parses entire chain of if, [else-if, ...] [else]
-node parse_if_else(silver mod) {
+enode parse_if_else(silver mod) {
     bool  require_if   = true;
     array tokens_cond  = array(32);
     array tokens_block = array(32);
@@ -1673,9 +1673,9 @@ node parse_if_else(silver mod) {
 }
 
 
-node parse_do_while(silver mod) {
+enode parse_do_while(silver mod) {
     consume(mod);
-    node vr = null;
+    enode vr = null;
     return null;
 }
 
@@ -1754,7 +1754,7 @@ emember silver_read_def(silver mod) {
         return null;
 
     if (is_type) {
-        typedef node n;
+        typedef enode n;
         n (*func)(silver) = parse_fn->ptr;
         verify(func, "expected parse fn on member");
         return func(mod);
@@ -1829,7 +1829,7 @@ emember silver_read_def(silver mod) {
 
 
             // lets resolve operations in here
-            if (instanceof(v, typeid(node))) {
+            if (instanceof(v, typeid(enode))) {
                 // v = resolve_constant(v);
                 int test2 = 2;
                 test2 += 2;
@@ -1889,7 +1889,7 @@ emember silver_read_def(silver mod) {
 
 
 /// such a big change to this one, tectonic drift'ing ...
-node parse_statement(silver mod) {
+enode parse_statement(silver mod) {
     print_tokens(mod, "parse-statement");
 
     token     t            = peek(mod);
@@ -1910,7 +1910,7 @@ node parse_statement(silver mod) {
     /// its an argument because functions take args; modules really dont
     mod->last_return = null;
     if (!module) {
-        if (next_is(mod, "no-op"))  return node(mdl, emodel("void"));
+        if (next_is(mod, "no-op"))  return enode(mdl, emodel("void"));
         if (next_is(mod, "return")) {
             mod->last_return = parse_return(mod);
             return mod->last_return;
@@ -1924,16 +1924,16 @@ node parse_statement(silver mod) {
         if (next_is(mod, "ifdef"))
             return parse_ifdef_else(mod);
     }
-    node   e = read_node(mod, null); /// at module level, supports keywords
+    enode   e = read_node(mod, null); /// at module level, supports keywords
     return e;
 }
 
-node parse_statements(silver mod, bool unique_members) {
+enode parse_statements(silver mod, bool unique_members) {
     if (unique_members)
         push(mod, new(statements, mod, mod));
     
     //print_tokens("parse_statements", mod);
-    node  vr        = null;
+    enode  vr        = null;
     ///
     while(peek(mod)) {
         vr = parse_statement(mod);
@@ -2438,9 +2438,11 @@ static bool is_checkout(path a) {
 
 // we have no real standard for project structure here, since we can be given any silver module
 // todo:
-none export_parse(silver mod) {
+enode export_parse(silver mod) {
     string name = mod->name;
     import a, path project_from
+    verify(read(mod, "export"), "expected export");
+    string dir = read_alpha(mod);
 
     if (!dir_exists("%o/share", project_from))
         return;
@@ -2780,7 +2782,7 @@ i32 silver_build(silver a, path bc) {
 
 
 
-node export_parse(silver mod) {
+enode export_parse(silver mod) {
 }
 
 // lets implement functional approach here
@@ -2794,7 +2796,7 @@ node export_parse(silver mod) {
 // silver is a language, not a service.
 // simply put, this is a design-time process
 
-node import_parse(silver mod) {
+enode import_parse(silver mod) {
     verify(next_is(mod, "import"), "expected import keyword");
     consume(mod);
 

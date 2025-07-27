@@ -14,7 +14,7 @@ typedef struct _aether*       aether;
 typedef struct _model*       model;
 typedef struct _emember*      emember;
 typedef struct _record*      record;
-typedef struct _node*        node;
+typedef struct _enode*       enode;
 typedef struct _function*    function;
 
 #define comparison_schema(E,T,Y,...) \
@@ -36,7 +36,6 @@ declare_enum(comparison)
     i_prop      (X,Y,  public,  num,        column) \
     i_prop      (X,Y,  public,  num,        indent) \
     i_prop      (X,Y,  public,  A,          literal) \
-    i_prop      (X,Y,  public,  model,      namespace) \
     i_method    (X,Y,  public,  AType,      get_type) \
     i_method    (X,Y,  public,  string,     location) \
     i_override  (X,Y,  ctr,     cstr) \
@@ -61,7 +60,7 @@ declare_enum(reference)
 #define model_schema(X,Y,...)\
     i_prop    (X,Y, required,   aether,            mod) \
     i_prop    (X,Y, public,     token,            name) \
-    i_prop    (X,Y, public,     string,           namespace) \
+    i_prop    (X,Y, public,     string,           namespace_name) \
     i_prop    (X,Y, public,     bool,             is_alias) \
     i_prop    (X,Y, intern,     array,            aliases, meta, model) \
     i_prop    (X,Y, public,     model,            src) \
@@ -175,8 +174,8 @@ declare_class_3(uni, record, model)
 
 
 /// the base helps us require the two args we need for nodes
-/// we are also coupling type along inside node, and this must be set properly with value macro
-/// all node values must contain its aether def.
+/// we are also coupling type along inside enode, and this must be set properly with value macro
+/// all enode values must contain its aether def.
 /// otherwise we are performing hash lookups, which is more complex and slower, 
 /// with less data stored
 #define node_schema(X,Y,...)\
@@ -188,7 +187,7 @@ declare_class_3(uni, record, model)
     i_prop    (X,Y, public,     num,                    column) \
     i_prop    (X,Y, public,     bool,                   loaded) \
     i_prop    (X,Y, intern,     LLVMValueRef,           value, as, ARef)
-declare_class(node)
+declare_class(enode)
 
 // if ref is set, its a reference to a member with type definition (model, struct, ref)
 #define emember_schema(X,Y,...) \
@@ -219,7 +218,7 @@ declare_class(node)
     i_method  (X,Y, public,     none,    set_value,     A) \
     i_method  (X,Y, public,     emember,  resolve,       string) \
     i_override(X,Y, method,     init)
-declare_class_2(emember, node)
+declare_class_2(emember, enode)
 
 
 #define code_schema(X,Y,...) \
@@ -240,7 +239,7 @@ declare_class(code)
     i_prop    (X,Y, public,     model,                  top) \
     i_prop    (X,Y, public,     array,                  lex) \
     i_prop    (X,Y, public,     map,                    base) \
-    i_prop    (X,Y, public,     node,                   last_return) \
+    i_prop    (X,Y, public,     enode,                   last_return) \
     i_prop    (X,Y, intern,     LLVMExecutionEngineRef, jit,               as, ARef) \
     i_prop    (X,Y, intern,     LLVMBasicBlockRef,      current_if_block,  as, ARef) \
     i_prop    (X,Y, intern,     LLVMModuleRef,          module,            as, ARef) \
@@ -261,45 +260,45 @@ declare_class(code)
     i_method  (X,Y, public,     none,           push_current) \
     i_method  (X,Y, public,     none,           pop_state, bool) \
     i_method  (X,Y, public,     model,          runtime_resolve, AType) \
-    i_method  (X,Y, public,     node,           fn_return,      A) \
-    i_method  (X,Y, public,     node,           default_value,  model) \
-    i_method  (X,Y, public,     node,           builder,        subprocedure) \
+    i_method  (X,Y, public,     enode,           fn_return,      A) \
+    i_method  (X,Y, public,     enode,           default_value,  model) \
+    i_method  (X,Y, public,     enode,           builder,        subprocedure) \
     i_method  (X,Y, public,     none,           build_initializer, function) \
-    i_method  (X,Y, public,     node,           eelement,       node,       A) \
-    i_method  (X,Y, public,     none,           ecmp,           node,       comparison, node, code, code) \
+    i_method  (X,Y, public,     enode,           eelement,       enode,       A) \
+    i_method  (X,Y, public,     none,           ecmp,           enode,       comparison, enode, code, code) \
     i_method  (X,Y, public,     none,           ebranch,        code) \
     i_method  (X,Y, public,     emember,        compatible,     record,     string, AFlag, array) \
     i_method  (X,Y, public,     none,           push_member,    emember) \
     i_method  (X,Y, public,     emember,        push_model,     model) \
-    i_method  (X,Y, public,     node,       operand,        A,          model) \
-    i_method  (X,Y, public,     node,       op,             OPType,     string, A, A) \
-    i_method  (X,Y, public,     node,       load,           emember) \
-    i_method  (X,Y, public,     node,       offset,         node,       A) \
-    i_method  (X,Y, public,     node,       if_else,        array,      array, subprocedure, subprocedure) \
-    i_method  (X,Y, public,     node,       ternary,        node,       node, node) \
-    i_method  (X,Y, public,     node,       convert,        node,       model) \
-    i_method  (X,Y, public,     node,       addr_of,        node,       model) \
-    i_method  (X,Y, public,     node,       bitwise_not,    node) \
-    i_method  (X,Y, public,     node,       not,            node) \
-    i_method  (X,Y, public,     none,       einc,           node,       num) \
-    i_method  (X,Y, public,     none,       eprint_node,    node) \
+    i_method  (X,Y, public,     enode,       operand,        A,          model) \
+    i_method  (X,Y, public,     enode,       op,             OPType,     string, A, A) \
+    i_method  (X,Y, public,     enode,       load,           emember) \
+    i_method  (X,Y, public,     enode,       offset,         enode,       A) \
+    i_method  (X,Y, public,     enode,       if_else,        array,      array, subprocedure, subprocedure) \
+    i_method  (X,Y, public,     enode,       ternary,        enode,       enode, enode) \
+    i_method  (X,Y, public,     enode,       convert,        enode,       model) \
+    i_method  (X,Y, public,     enode,       addr_of,        enode,       model) \
+    i_method  (X,Y, public,     enode,       bitwise_not,    enode) \
+    i_method  (X,Y, public,     enode,       not,            enode) \
+    i_method  (X,Y, public,     none,       einc,           enode,       num) \
+    i_method  (X,Y, public,     none,       eprint_node,    enode) \
     i_method  (X,Y, public,     emember,     evar,           model,      string) \
-    i_method  (X,Y, public,     node,       or,             A,     A) \
-    i_method  (X,Y, public,     node,       xor,            A,     A) \
-    i_method  (X,Y, public,     node,       and,            A,     A) \
-    i_method  (X,Y, public,     node,       add,            A,     A) \
-    i_method  (X,Y, public,     node,       sub,            A,     A) \
-    i_method  (X,Y, public,     node,       mul,            A,     A) \
-    i_method  (X,Y, public,     node,       div,            A,     A) \
-    i_method  (X,Y, public,     node,       create,         model,      A) \
-    i_method  (X,Y, public,     node,       zero,           node) \
-    i_method  (X,Y, public,     node,       assign,         node,       A, OPType) \
-    i_method  (X,Y, public,     node,       eq,             node,       node) \
-    i_method  (X,Y, public,     node,       cmp,            node,       node) \
-    i_method  (X,Y, public,     node,       not_eq,         node,       node) \
-    i_method  (X,Y, public,     node,       fn_call,        emember,     array) \
-    i_method  (X,Y, public,     node,       is,             node,       A) \
-    i_method  (X,Y, public,     node,       einherits,      node,       A) \
+    i_method  (X,Y, public,     enode,       or,             A,     A) \
+    i_method  (X,Y, public,     enode,       xor,            A,     A) \
+    i_method  (X,Y, public,     enode,       and,            A,     A) \
+    i_method  (X,Y, public,     enode,       add,            A,     A) \
+    i_method  (X,Y, public,     enode,       sub,            A,     A) \
+    i_method  (X,Y, public,     enode,       mul,            A,     A) \
+    i_method  (X,Y, public,     enode,       div,            A,     A) \
+    i_method  (X,Y, public,     enode,       create,         model,      A) \
+    i_method  (X,Y, public,     enode,       zero,           enode) \
+    i_method  (X,Y, public,     enode,       assign,         enode,       A, OPType) \
+    i_method  (X,Y, public,     enode,       eq,             enode,       enode) \
+    i_method  (X,Y, public,     enode,       cmp,            enode,       enode) \
+    i_method  (X,Y, public,     enode,       not_eq,         enode,       enode) \
+    i_method  (X,Y, public,     enode,       fn_call,        emember,     array) \
+    i_method  (X,Y, public,     enode,       is,             enode,       A) \
+    i_method  (X,Y, public,     enode,       einherits,      enode,       A) \
     i_method  (X,Y, public,     emember,    lookup2,        A,          AType) \
     i_method  (X,Y, public,     model,      context_model,  AType) \
     i_method  (X,Y, public,     path,       include_path,   string) \

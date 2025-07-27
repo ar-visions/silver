@@ -106,7 +106,18 @@
         "memory_resource": "c",
         "scoped_allocator": "c",
         "__hash_table": "c",
-        "__tree": "c"
+        "__tree": "c",
+        "a": "c",
+        "methods": "c",
+        "__locale": "c",
+        "init": "c",
+        "__bit_reference": "c",
+        "propagate_const": "c",
+        "stat.h": "c",
+        "cpuid.h": "c",
+        "windows.h": "c",
+        "stdlib.h": "c",
+        "string.h": "c"
     },
     "cmake.configureOnOpen": false,
     "C_Cpp.errorSquiggles": "enabled"

@@ -5,15 +5,9 @@
 #undef USE_FFI
 #undef bool
 #include <sys/stat.h>
-#include <sys/time.h>
-#include <dirent.h>
-#include <endian-cross.h>
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386) || defined(_M_IX86)
-#include <cpuid.h>
-#endif
+#include <port.h>
 #include <math.h>
 #include <errno.h>
-#include <sys/wait.h>
 #include <limits.h>
 #include <sys/mman.h>
 #include <sys/inotify.h>
@@ -25,11 +19,7 @@ AType_info        AType_i;
 #define line(...)       new(line, __VA_ARGS__)
 #endif
 
-i64 epoch_millis() {
-    struct timeval tv;
-    gettimeofday(&tv, null);
-    return (i64)(tv.tv_sec) * 1000 + (i64)(tv.tv_usec) / 1000;
-}
+i64 epoch_millis();
 
 shape shape_with_array(shape a, array dims) {
     num count = len(dims);
@@ -463,30 +453,30 @@ AType A_find_type(symbol name) {
     return (AType)get(_type_map, string(name));
 }
 
-AF AF_bits(A a) {
+AF* AF_bits(A a) {
     AType type = isa(a);
-    u128 fields = *(u128*)((i8*)a + type->size - (sizeof(void*) * 2));
+    u64* fields = (u64*)((i8*)a + type->size - (sizeof(void*) * 2));
     return fields;
 }
 
 void AF_set_id(A a, int id) {
     AType t = isa(a);
-    u128* fields = (u128*)((i8*)a + t->size - (sizeof(void*) * 2));
-    *fields |= ((u128)1) << id;
+    u64*   f = AF_bits(a);
+    AF_set(f, id);
 }
 
 void AF_set_name(A a, cstr name) {
     AType t = isa(a);
     member m = find_member(t, A_FLAG_PROP|A_FLAG_VPROP, name, true);
-    u128* fields = (u128*)((i8*)a + t->size - (sizeof(void*) * 2));
-    *fields |= ((u128)1) << m->id;
+    u64*   f = AF_bits(a);
+    AF_set(f, m->id);
 }
 
 bool AF_query_name(A a, cstr name) {
-    AType          t = isa(a);
+    AType  t = isa(a);
     member m = find_member(t, A_FLAG_PROP|A_FLAG_VPROP, name, true);
-    u128           f = AF_bits(a);
-    return (f & (((u128)1) << m->id)) != 0;
+    u64*   f = AF_bits(a);
+    return AF_get(f, m->id);
 }
 
 bool A_validator(A a) {
@@ -494,11 +484,12 @@ bool A_validator(A a) {
     if (type->magic != 1337) return false;
 
     // now required args are set if (type->required & *(i64*)obj->f) == type->required
-    u128 fields = AF_bits(a);
-    if ((type->required & fields) != type->required) {
+    u64* f = AF_bits(a);
+    if (((type->required[0] & f[0]) != type->required[0]) ||
+        ((type->required[1] & f[1]) != type->required[1])) {
         for (num i = 0; i < type->member_count; i++) {
             member m = &type->members[i];
-            if (m->required && ((((u128)1) << m->id) & fields) == 0) {
+            if (m->required && AF_get(f, m->id) == 0) {
                 u8* ptr = (u8*)a + m->offset;
                 A* ref = (A*)ptr;
                 fault("required arg [%s] not set for class %s",
@@ -4745,11 +4736,8 @@ define_primitive(ref_i64,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    poin
 define_primitive(ref_bool,   numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  pointer)
 //define_primitive(ref_num,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    pointer)
 //define_primitive(ref_sz,     numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    pointer)
-define_primitive(ref_u128,   numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  pointer)
-define_primitive(ref_i128,   numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    pointer)
 define_primitive(ref_f32,    numeric, A_TRAIT_REALISTIC,                    pointer)
 define_primitive(ref_f64,    numeric, A_TRAIT_REALISTIC,                    pointer)
-define_primitive(ref_f128,   numeric, A_TRAIT_REALISTIC,                    pointer)
 
 
 define_primitive( u8,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
@@ -4763,11 +4751,8 @@ define_primitive(i64,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
 define_primitive(bool,   numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
 define_primitive(num,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
 define_primitive(sz,     numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
-define_primitive(u128,   numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
-define_primitive(i128,   numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
 define_primitive(f32,    numeric, A_TRAIT_REALISTIC)
 define_primitive(f64,    numeric, A_TRAIT_REALISTIC)
-define_primitive(f128,   numeric, A_TRAIT_REALISTIC)
 define_primitive(AFlag,  numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
 define_primitive(cstr,   string_like, 0)
 define_primitive(symbol, string_like, 0)
@@ -4808,3 +4793,6 @@ define_class(subprocedure,  A)
 //define_class(ATypes,           array, AType)
 define_class(array_map,        array, map)
 define_class(array_string,     array, string)
+
+#undef bind
+#include <portable-time.h>

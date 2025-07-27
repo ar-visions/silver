@@ -48,7 +48,7 @@ typedef struct _AType {
     struct _member* members;
     int             traits;
     void*           user;
-    u128            required;
+    u64             required[2];
     struct _AType*  src;
     void*           arb;
     meta_t          meta;
