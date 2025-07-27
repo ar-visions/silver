@@ -1,6 +1,5 @@
 #include <A/import>
 #include <math.h>
-#include <linmath.h>
 
 // change for vectors and matrices
 
@@ -338,10 +337,9 @@ mat4f mat4f_translate(mat4f* a, vec3f* offsets) {
 
 mat4f mat4f_look_at(vec3f* eye, vec3f* target, vec3f* up) {
 
-    mat4f res = {};
-    mat4x4_look_at(&res, *(vec3*)eye, *(vec3*)target, *(vec3*)up);
-    return res;
-
+    //mat4f res = {};
+    //mat4x4_look_at(&res, *(vec3*)eye, *(vec3*)target, *(vec3*)up);
+    //return res;
     //LINMATH_H_FUNC void mat4x4_look_at(mat4x4 m, vec3 const eye, vec3 const center, vec3 const up)
 
     vec3f diff    = vec3f_sub(target, eye);
@@ -350,13 +348,13 @@ mat4f mat4f_look_at(vec3f* eye, vec3f* target, vec3f* up) {
     vec3f right   = vec3f_normalize(&rcross);  // X-axis
     vec3f new_up  = vec3f_cross(&forward, &right); // Y-axis (orthogonalized)
 
-    // Construct the view matrix
+    // construct the view matrix
     mat4f r = {};
     r.m[ 0] = right.x;  r.m[ 1] = new_up.x;  r.m[ 2] = forward.x;  r.m[ 3] = 0.0f;
     r.m[ 4] = right.y;  r.m[ 5] = new_up.y;  r.m[ 6] = forward.y;  r.m[ 7] = 0.0f;
     r.m[ 8] = right.z;  r.m[ 9] = new_up.z;  r.m[10] = forward.z;  r.m[11] = 0.0f;
-    r.m[12] = -vec3f_dot(&right, eye);
-    r.m[13] = -vec3f_dot(&new_up, eye);
+    r.m[12] = -vec3f_dot(&right,   eye);
+    r.m[13] = -vec3f_dot(&new_up,  eye);
     r.m[14] = -vec3f_dot(&forward, eye);
     r.m[15] = 1.0f;
     return r;
@@ -367,7 +365,7 @@ mat4f mat4f_ortho(f32 left, f32 right, f32 bottom, f32 top, f32 near, f32 far) {
     f32 tb = top   - bottom;
     f32 fn = far   - near;
     mat4f res = {};
-    // Construct the orthographic projection matrix
+    // construct the orthographic projection matrix
     res.m[ 0] = 2.0f / rl;  res.m[ 1] = 0.0f;       res.m[ 2] = 0.0f;        res.m[ 3] = 0.0f;
     res.m[ 4] = 0.0f;       res.m[ 5] = 2.0f / tb;  res.m[ 6] = 0.0f;        res.m[ 7] = 0.0f;
     res.m[ 8] = 0.0f;       res.m[ 9] = 0.0f;       res.m[10] = -2.0f / fn;  res.m[11] = 0.0f;
@@ -379,7 +377,7 @@ mat4f mat4f_ortho(f32 left, f32 right, f32 bottom, f32 top, f32 near, f32 far) {
 }
 
 f32 mat4f_determinant(mat4f* mat) {
-    f32 *m = mat->m; // Access matrix elements directly
+    f32 *m = mat->m; // access matrix elements
     f32 det = 
         m[0] * (m[5] * (m[10] * m[15] - m[11] * m[14]) -
                 m[6] * (m[9] * m[15] - m[11] * m[13]) +
@@ -435,22 +433,22 @@ mat4f mat4f_adjugate(mat4f* mat) {
     r.m[14] = -determinant_3x3(m[0],  m[1],  m[2],  m[4],  m[5],  m[6],  m[12], m[13], m[14]);
     r.m[15] =  determinant_3x3(m[0],  m[1],  m[2],  m[4],  m[5],  m[6],  m[8],  m[9],  m[10]);
 
-    // Adjugate is the transpose of the cofactor matrix
+    // adjugate is transpose of the cofactor matrix
     mat4f_transpose(&r);
     return r;
 }
 
 mat4f mat4f_inverse(mat4f* mat) {
-    // Compute the determinant
+    // compute the determinant
     f32 det = mat4f_determinant(mat);
     mat4f res = {};
     if (fabs(det) < 1e-6f) {
         fault("Matrix is singular (non-invertible)");
     }
 
-    // Compute the ifnverse
-    f32 inv_det = 1.0f / det;
-    mat4f adj = mat4f_adjugate(mat); // Compute adjugate
+    // compute the ifnverse
+    f32   inv_det = 1.0f / det;
+    mat4f adj     = mat4f_adjugate(mat); // Compute adjugate
     for (int i = 0; i < 16; i++) {
         res.m[i] = adj.m[i] * inv_det;
     }

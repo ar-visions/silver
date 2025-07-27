@@ -117,7 +117,22 @@
         "cpuid.h": "c",
         "windows.h": "c",
         "stdlib.h": "c",
-        "string.h": "c"
+        "string.h": "c",
+        "math.h": "c",
+        "fcntl.h": "c",
+        "time.h": "c",
+        "public": "cpp",
+        "sim_map": "cpp",
+        "ranges": "c",
+        "span": "c",
+        "mdspan": "c",
+        "expected": "c",
+        "bitset": "c",
+        "__node_handle": "c",
+        "barrier": "cpp",
+        "latch": "cpp",
+        "shared_mutex": "c",
+        "sim_set": "cpp"
     },
     "cmake.configureOnOpen": false,
     "C_Cpp.errorSquiggles": "enabled"

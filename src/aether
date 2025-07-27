@@ -178,7 +178,7 @@ declare_class_3(uni, record, model)
 /// all enode values must contain its aether def.
 /// otherwise we are performing hash lookups, which is more complex and slower, 
 /// with less data stored
-#define node_schema(X,Y,...)\
+#define enode_schema(X,Y,...)\
     i_prop    (X,Y, public,     token,                  name) \
     i_prop    (X,Y, public,     aether,                  mod) \
     i_prop    (X,Y, required,   model,                  mdl) \
