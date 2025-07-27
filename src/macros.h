@@ -1299,7 +1299,10 @@
         } \
         true; \
     })
-    
+
+#undef min
+#undef max
+
 #define min(A, B) ({ \
     __typeof__(A) a = A; \
     __typeof__(B) b = B; \
