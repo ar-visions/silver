@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <ports.h>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wwrite-strings"
@@ -15,7 +16,7 @@ A dbg_io(dbg debug) {
     lldb::SBEvent event;
     int           fd_out = open(debug->stdout_fifo->chars, O_RDONLY | O_NONBLOCK);
     int           fd_err = open(debug->stderr_fifo->chars, O_RDONLY | O_NONBLOCK);
-    fd_set        readfds;
+    _fd_set_      readfds;
     char          buffer[1024];
     debug->fifo_fd_out = fd_out;
     debug->fifo_fd_err = fd_err;

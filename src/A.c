@@ -5,12 +5,10 @@
 #undef USE_FFI
 #undef bool
 #include <sys/stat.h>
-#include <port.h>
+#include <ports.h>
 #include <math.h>
 #include <errno.h>
 #include <limits.h>
-#include <sys/mman.h>
-#include <sys/inotify.h>
 
 AType_info        AType_i;
 //objectType_info   objectType_i;
@@ -991,7 +989,7 @@ none A_startup(cstrs argv) {
             if (mem->name) mem->sname = allocate(
                 string, chars, mem->name, len, strlen(mem->name));
             if (mem->required && (mem->member_type & A_FLAG_PROP)) {
-                type->required |= 1 << mem->id;
+                AF_set(type->required, mem->id);
                 // now required args are set if (type->required & *(i64*)obj->f) == type->required
             }
             if (mem->member_type & (A_FLAG_IMETHOD | A_FLAG_SMETHOD)) {
@@ -1145,7 +1143,7 @@ map A_arguments(int argc, cstrs argv, map default_values, A default_key) {
             for (item f = default_values->fifo->first; f; f = f->next) {
                 /// import A types from runtime
                 A def_value = f->value;
-                AType   def_type = def_value ? isa(def_value) : typeid(string);
+                AType   def_type = def_value ? (AType)isa(def_value) : typeid(string);
                 assert(f->key == f->key, "keys do not match"); /// make sure we copy it over from refs
                 if ((!doub && strncmp(((string)f->key)->chars, s_key->chars, 1) == 0) ||
                     ( doub && compare(f->key, s_key) == 0)) {
@@ -1193,7 +1191,6 @@ A A_sz (sz  data)   { return primitive(typeid(sz),  &data); }
 A A_u64(u64 data)   { return primitive(typeid(u64), &data); }
 A A_f32(f32 data)   { return primitive(typeid(f32), &data); }
 A A_f64(f64 data)   { return primitive(typeid(f64), &data); }
-A A_f128(f64 data)  { return primitive(typeid(f128), &data); }
 A float32(f32 data) { return primitive(typeid(f32), &data); }
 A real64(f64 data)  { return primitive(typeid(f64), &data); }
 A A_cstr(cstr data) { return primitive(typeid(cstr), &data); }
@@ -1568,7 +1565,6 @@ none serialize(AType type, string res, A a) {
         else if (type == typeid(u32)) len = sprintf(buf, "%u",   *(u32*)a);
         else if (type == typeid(u16)) len = sprintf(buf, "%hu",  *(u16*)a);
         else if (type == typeid(u8))  len = sprintf(buf, "%hhu", *(u8*) a);
-        else if (type == typeid(f128)) len = sprintf(buf, "%f",  (f64)*(f128*)a);
         else if (type == typeid(f64)) len = sprintf(buf, "%f",   *(f64*)a);
         else if (type == typeid(f32)) len = sprintf(buf, "%f",   *(f32*)a);
         else if (type == typeid(cstr)) len = sprintf(buf, "%s",  *(cstr*)a);
@@ -3349,6 +3345,8 @@ bool path_make_dir(path a) {
 i64 get_stat_millis(struct stat* st) {
 #if defined(__APPLE__)
     return (i64)(st->st_mtimespec.tv_sec) * 1000 + st->st_mtimespec.tv_nsec / 1000000;
+#elif defined(_WIN32)
+    return (i64)(st->st_mtime) * 1000;  // Windows: only seconds resolution
 #else
     return (i64)(st->st_mtim.tv_sec) * 1000 + st->st_mtim.tv_nsec / 1000000;
 #endif
@@ -3416,11 +3414,15 @@ i64 path_modified_time(path a) {
         path latest = latest_modified(a, &mtime);
         return mtime;
     } else {
+
 #if defined(__APPLE__)
-        return (i64)(st.st_mtimespec.tv_sec) * 1000 + st.st_mtimespec.tv_nsec / 1000000;
+    return (i64)(st.st_mtimespec.tv_sec) * 1000 + st.st_mtimespec.tv_nsec / 1000000;
+#elif defined(_WIN32)
+    return (i64)(st.st_mtime) * 1000;  // Windows: only seconds resolution
 #else
-        return (i64)(st.st_mtim.tv_sec) * 1000 + st.st_mtim.tv_nsec / 1000000;
+    return (i64)(st.st_mtim.tv_sec) * 1000 + st.st_mtim.tv_nsec / 1000000;
 #endif
+
     }
 }
 
@@ -3562,7 +3564,7 @@ path path_change_ext(path a, cstr ext) {
 }
 
 path path_app_path(cstr name) {
-    char exe[PATH_MAX];
+    char exe[4096];
 
 #if defined(__APPLE__)
     uint32_t size = sizeof(exe);
@@ -3589,7 +3591,7 @@ bool path_is_symlink(path p) {
 }
 
 path path_resolve(path p) {
-    char buf[PATH_MAX];
+    char buf[4096];
     ssize_t len = readlink(p->chars, buf, sizeof(buf) - 1);
     if (len == -1) return hold(p);
     buf[len] = '\0';
@@ -4628,14 +4630,17 @@ struct inotify_event {
 };
 */
 
+#undef remove
+#include <io.h>
+
 none watch_init(watch a) {
-    /// todo: a-perfectly-good-watch ... dont-throw-away
     if (!a->res) return;
     int fd = inotify_init1(IN_NONBLOCK);
     if (fd < 0) {
         perror("inotify_init1");
         exit(1);
     }
+
     int wd = inotify_add_watch(fd, a->res->chars, IN_MODIFY | IN_CREATE | IN_DELETE);
     if (wd == -1) {
         perror("inotify_add_watch");
@@ -4647,7 +4652,7 @@ none watch_init(watch a) {
     
     while (1) {
         #undef read
-        int len = read(fd, buf, sizeof(buf));
+        int len = _read(fd, buf, sizeof(buf));
         if (len <= 0) continue;
 
         for (char *ptr = buf; ptr < buf + len; ) {
@@ -4795,4 +4800,3 @@ define_class(array_map,        array, map)
 define_class(array_string,     array, string)
 
 #undef bind
-#include <portable-time.h>
