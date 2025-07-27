@@ -1,6 +1,8 @@
 # **silver** lang
 development in progress, with documentation to be added/changed.
 
+![orbiter avatar](core.png "orbiter avatar")
+
 # A-type runtime
 A-type is a C-based object system designed for clear maintainable code that is reflective and adaptive. Use familiar OOP patterns in C with less boilerplate.  Far more leniant than most Object-Oriented languages. It's in C, and here less code can do more. Just add a few macros. Reflective members of classes, enums methods and props enable for sophisticated control in compact design. The result of that is scalable performance you can take to more platforms. It's javascript meeting C and python in self expanding fashion.
 
@@ -80,7 +82,7 @@ int main(int argc, symbol argv[]) {
 # **import** keyword
 **silver** starts with **import**. The **import** keyword lets you build and include from projects in any language, with coupled configuration parameters and <comma, separated> includes.  Local source links are prioritized before external checkouts, so you can build externals locally with your own changes.  This is a far better way to collaborate in open source with yourself and others. Silver simply gets out of the way when it comes to git for your own source; it's merely importing.  The build process will recognize the various environment variables such as **CC**, **CXX**, **RUSTC**, **CPP**
 
-As a language, **silver** is fewer moving syntactic parts (no direct requirement of Make, CMake for your projects).  It's fewer tokens, and a strong stance against centralized package management.  It's considered a build language first, and tries to do the works after, by facilitating native build targets through standard compilation toolchain LLVM.  In watch mode (or development mode), changes are built immediately, with large C headers kept in memory for faster updates. **silver** is the language target for the Orbiter IDE, which is currently in development.
+As a language, **silver** is fewer moving syntactic parts (no direct requirement of Make, CMake for your projects).  It's fewer tokens, first class methods, and a strong stance against centralized package management.  It's considered a build language first, and tries to do the works after, by facilitating native build targets through standard compilation toolchain LLVM.  In watch mode (or development mode), changes are built immediately, with large C headers kept in memory for faster updates. **silver** is the language target for the Orbiter IDE, which is currently in development.
 
 # **A-type** foundation
 A-type is the foundation of **silver**'s compiler and reflection system. It provides compatibility and reflection capabilities that enable dynamic behavior and runtime type inspection. With A-type, you can write classes in C and seamlessly use them in **silver**, similar to Python's extension protocol. A-type makes **silver** adaptable and extensible, integrating deeply with both the language and its C interoperability features.
@@ -88,10 +90,9 @@ A-type is the foundation of **silver**'s compiler and reflection system. It prov
 see: [A-type project](https://github.com/ar-visions/A)
 
 ```python
-import WGPU 'https://github.com/ar-visions/dawn@2e9297c45'
-    build:      [-DDAWN_ENABLE_INSTALL=1 -DBUILD_SHARED_LIBS=0]
-    includes:   ['dawn/webgpu' 'dawn/dawn_proc_table']
-    links:      ['webgpu_dawn']
+import <dawn/webgpu, dawn/dawn_proc_table> [https://github.com/ar-visions/dawn 2e9297c45]
+    -DDAWN_ENABLE_INSTALL=1 -DBUILD_SHARED_LIBS=0
+    -lwebgpu_dawn
 
 ##
 # designed for keywords import, class, struct, enum
