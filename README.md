@@ -88,10 +88,9 @@ A-type is the foundation of **silver**'s compiler and reflection system. It prov
 see: [A-type project](https://github.com/ar-visions/A)
 
 ```python
-import WGPU 'https://github.com/ar-visions/dawn@2e9297c45'
-    build:      [-DDAWN_ENABLE_INSTALL=1 -DBUILD_SHARED_LIBS=0]
-    includes:   ['dawn/webgpu' 'dawn/dawn_proc_table']
-    links:      ['webgpu_dawn']
+import <dawn/webgpu, dawn/dawn_proc_table> [https://github.com/ar-visions/dawn 2e9297c45]
+    -DDAWN_ENABLE_INSTALL=1 -DBUILD_SHARED_LIBS=0
+    -lwebgpu_dawn
 
 ##
 # designed for keywords import, class, struct, enum
