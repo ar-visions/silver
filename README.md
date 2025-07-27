@@ -1,6 +1,8 @@
 # **silver** lang
 development in progress, with documentation to be added/changed.
 
+![orbiter avatar](core.png "orbiter avatar")
+
 # A-type runtime
 A-type is a C-based object system designed for clear maintainable code that is reflective and adaptive. Use familiar OOP patterns in C with less boilerplate.  Far more leniant than most Object-Oriented languages. It's in C, and here less code can do more. Just add a few macros. Reflective members of classes, enums methods and props enable for sophisticated control in compact design. The result of that is scalable performance you can take to more platforms. It's javascript meeting C and python in self expanding fashion.
 
