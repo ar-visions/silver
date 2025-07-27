@@ -33,6 +33,8 @@ define_class   (silver, ether)
 
 We have named arguments in our new() macro and that means 1 ctr/init to code not arbitrary amounts.  It's a far better and more productive pattern, and even more lean than Swift.  This is a post-init call, where we have already set the properties (where holds happen on non-primitives).  A-type standard destructor will also auto-drop member delegates that are object-based.  It just means you don't have to do much memory management at all.
 
+A-type is the heart of silver, a C run-time that effectively holds teh entire implementation, along with silver's very keyword parsing types.  Implement an A-type object with a static method called parse that takes silver module instance (a model). Your class name will be called on as a keyword; you may also implement the static string keyword() method to return which keyword your class is designed to handle.  From here its a stack system based on models; your class you wrote must inherit from this model class.  We employ an API called aether to write our LLVM program; its essentially an entrance right into A-type translated to LLVM.  It's include system facilitates conversion to the aether model type.  This is effectively a friendly entrance into extending silver to do whatever you want.  Zero other languages even want you to do this.  The design is simple: be like silver: moldable, the most-reflective, ... and not as heavy as lead.
+
 The flattened macro function interface table is one you keep adding to, and they work across all of the objects that support those method names.  This, so you don't have to use the generic 'call' macro.  The large number of defines is actually fine and lets you use variables that clash with the names.  
 
 Orbiter
