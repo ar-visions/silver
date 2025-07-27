@@ -33,7 +33,13 @@ define_class   (silver, ether)
 
 We have named arguments in our new() macro and that means 1 ctr/init to code not arbitrary amounts.  It's a far better and more productive pattern, and even more lean than Swift.  This is a post-init call, where we have already set the properties (where holds happen on non-primitives).  A-type standard destructor will also auto-drop member delegates that are object-based.  It just means you don't have to do much memory management at all.
 
-The flattened macro function interface table is one you keep adding to, and they work across all of the objects that support those method names.  This, so you don't have to use the generic 'call' macro.  The large number of defines is actually fine and lets you use variables that clash with the names.  
+A-type is the heart of silver, a C run-time that effectively holds teh entire implementation, along with silver's very keyword parsing types.  Implement an A-type object with a static method called parse that takes silver module instance (a model). Your class name will be called on as a keyword; you may also implement the static string keyword() method to return which keyword your class is designed to handle.  From here its a stack system based on models; your class you wrote must inherit from this model class.  We employ an API called aether to write our LLVM program; its essentially an entrance right into A-type translated to LLVM.  It's include system facilitates conversion to the aether model type.  This is effectively a friendly entrance into extending silver to do whatever you want.  Zero other languages even want you to do this.
+
+Our design principle here is direct: to be like silver: moldable, the most-reflective, ... and not as heavy as lead.
+
+We may import modules based on A-type, and we load those modules right straight-away while we parse. If you want to accesst the design-time, we implement modules in A-type. They then allow extensions to the language.  With this kind of extensibility, it's best silver not try to have too many keywords, and be more like a substantially trimmed down C++ that functions a bit like post-init Python.  We do not have templates currently, but there is nothing stopping their implementation.  I just ask to consider the use of meta-types that are effectively tags on classes at indices[0...7]; A-type has this ability and it allows us to both tag our types, and tag members on types.  The model is polymorphic, but our methods are first class citizens.  Types simply come along for the ride.  This tilts object-oriented on it's side, and for good reason.  It's to feel far more like C.
+
+A-type is about as much silver as C can get, so there is relatively no translation needed between the two, ..other than having to put up with schema macros your header.  This is really not so scary though -- just don't forget the \ on the end of each line. Also don't have an adjoining line under it because it will become part of the macro.  These are features you don't need to worry about in silver.
 
 Orbiter
 an IDE being built with silver (was C++)
@@ -72,9 +78,9 @@ int main(int argc, symbol argv[]) {
 ```
 
 # **import** keyword
-**silver** starts with **import**. The **import** keyword lets you build from repositories from projects in any language.  It also uses local silver/C/C++/rust modules directly if file identifiers given. Your local checkouts are prioritized before external checkouts, so you can build externals locally with your own changes, and silver will track these changes.  The build process will recognize the various environment variables such as **CC**, **CXX**, **RUSTC**, **CPP** (type-bound pre-processor is planned for **silver** 1.0)
+**silver** starts with **import**. The **import** keyword lets you build and include from projects in any language, with coupled configuration parameters and <comma, separated> includes.  Local source links are prioritized before external checkouts, so you can build externals locally with your own changes.  This is a far better way to collaborate in open source with yourself and others. Silver simply gets out of the way when it comes to git for your own source; it's merely importing.  The build process will recognize the various environment variables such as **CC**, **CXX**, **RUSTC**, **CPP**
 
-As a language, **silver** is all about efficiency: fewer moving parts (no direct requirement of Make, CMake for your projects), fewer tokens, and a strong stance against centralized package management. In watch mode (or development mode), changes are built immediately, with large C headers kept in memory for faster updates. **silver** is also the language target for the Orbiter IDE, which is currently in development.
+As a language, **silver** is fewer moving syntactic parts (no direct requirement of Make, CMake for your projects).  It's fewer tokens, and a strong stance against centralized package management.  It's considered a build language first, and tries to do the works after, by facilitating native build targets through standard compilation toolchain LLVM.  In watch mode (or development mode), changes are built immediately, with large C headers kept in memory for faster updates. **silver** is the language target for the Orbiter IDE, which is currently in development.
 
 # **A-type** foundation
 A-type is the foundation of **silver**'s compiler and reflection system. It provides compatibility and reflection capabilities that enable dynamic behavior and runtime type inspection. With A-type, you can write classes in C and seamlessly use them in **silver**, similar to Python's extension protocol. A-type makes **silver** adaptable and extensible, integrating deeply with both the language and its C interoperability features.
@@ -138,7 +144,7 @@ fn module-name[ a:app ] -> int
     val : is-const      # : assignment [mutable]
     val += 1
     print[ 'using app with value: { is-const } + { val - is-const }' ]
-    return [a.run[string[val]] > 0] ? 1 : 0
+    return [run[a, string[val]] > 0] ? 1 : 0
 
 
 # **meta** keyword (reserved for 1.0 release)
