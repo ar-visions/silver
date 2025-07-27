@@ -35,7 +35,9 @@ We have named arguments in our new() macro and that means 1 ctr/init to code not
 
 A-type is the heart of silver, a C run-time that effectively holds teh entire implementation, along with silver's very keyword parsing types.  Implement an A-type object with a static method called parse that takes silver module instance (a model). Your class name will be called on as a keyword; you may also implement the static string keyword() method to return which keyword your class is designed to handle.  From here its a stack system based on models; your class you wrote must inherit from this model class.  We employ an API called aether to write our LLVM program; its essentially an entrance right into A-type translated to LLVM.  It's include system facilitates conversion to the aether model type.  This is effectively a friendly entrance into extending silver to do whatever you want.  Zero other languages even want you to do this.  The design is simple: be like silver: moldable, the most-reflective, ... and not as heavy as lead.
 
-The flattened macro function interface table is one you keep adding to, and they work across all of the objects that support those method names.  This, so you don't have to use the generic 'call' macro.  The large number of defines is actually fine and lets you use variables that clash with the names.  
+We may import modules based on A-type, and those modules right straight away in the silver process. They then allow extensions to the language.  With this kind of extensibility, it's best silver not try to have too many keywords, and be more like a substantially trimmed down C++ that functions a bit like post-init Python.  We do not have templates currently, but there is nothing stopping their implementation.  I just ask to consider the use of meta-types that are effectively tags on classes at indices[0...7]; A-type has this ability and it allows us to both tag our types, and tag members on types.  The model is polymorphic, but our methods are first class citizens.  Types simply come along for the ride.  This tilts object-oriented on it's side, and for good reason.  It's to feel far more like C.
+
+A-type is about as much silver as C can get, so there is relatively no translation needed between the two, ..other than having to put up with schema macros your header.  This is really not so scary though -- just don't forget the \ on the end of each line. Also don't have an adjoining line under it because it will become part of the macro.  These are features you don't need to worry about in silver.
 
 Orbiter
 an IDE being built with silver (was C++)
@@ -140,7 +142,7 @@ fn module-name[ a:app ] -> int
     val : is-const      # : assignment [mutable]
     val += 1
     print[ 'using app with value: { is-const } + { val - is-const }' ]
-    return [a.run[string[val]] > 0] ? 1 : 0
+    return [run[a, string[val]] > 0] ? 1 : 0
 
 
 # **meta** keyword (reserved for 1.0 release)
