@@ -233,8 +233,6 @@ void model_init(model mdl) {
             mdl->type = LLVMFloatType();
         else if (type == typeid(f64))
             mdl->type = LLVMDoubleType();
-        else if (type == typeid(f128))
-            mdl->type = LLVMFP128Type();
         else if (type == typeid(none))
             mdl->type = LLVMVoidType  ();
         else if (type == typeid(bool))
@@ -247,8 +245,6 @@ void model_init(model mdl) {
             mdl->type = LLVMInt32Type();
         else if (type == typeid(i64) || type == typeid(u64))
             mdl->type = LLVMInt64Type();
-        else if (type == typeid(i128) || type == typeid(u128))
-            mdl->type = LLVMInt128Type();
         else {
             fault("unsupported primitive %s", type->name);
         }
@@ -444,7 +440,7 @@ void code_init(code c) {
     c->block = LLVMAppendBasicBlock(fn->value, c->label);
 }
 
-void code_select(code c) {
+void code_seek_end(code c) {
     LLVMPositionBuilderAtEnd(c->mod->builder, c->block);
 }
 
@@ -773,14 +769,14 @@ void function_finalize(function fn, emember mem) {
 
         /// emit code
         ebranch(e, cond);
-        select (cond);
+        seek_end(cond);
         ecmp   (e, i, comparison_s_less_than, argc, body, end);
-        select (body);
+        seek_end (body);
         enode arg = eelement(e, argv, i);
         eprint (e, "{0}", arg);
         einc   (e, i, 1);
         ebranch(e, cond);
-        select (end);
+        seek_end (end);
         pop (e);
     }
 */
@@ -1679,7 +1675,7 @@ enode aether_convert(aether e, enode expr, model rtype) {
 
     // integer conversion
     if (F_kind == LLVMIntegerTypeKind &&  T_kind == LLVMIntegerTypeKind) {
-        uint F_bits = LLVMGetIntTypeWidth(F->type), T_bits = LLVMGetIntTypeWidth(T->type);
+        u32 F_bits = LLVMGetIntTypeWidth(F->type), T_bits = LLVMGetIntTypeWidth(T->type);
         if (F_bits < T_bits) {
             V = is_signed(F) ? LLVMBuildSExt(B, V, T->type, "sext")
                              : LLVMBuildZExt(B, V, T->type, "zext");
@@ -1810,15 +1806,12 @@ void aether_define_primitive(aether e) {
     model  _u16 = aether_base_model(e, "u16", typeid(u16));
                   aether_base_model(e, "u32", typeid(u32));
     model  _u64 = aether_base_model(e, "u64", typeid(u64));
-    model  _u128 = aether_base_model(e, "u128", typeid(u128));
     model  _i8  = aether_base_model(e, "i8",  typeid(i8));
     model  _i16 = aether_base_model(e, "i16", typeid(i16));
     model  _i32 = aether_base_model(e, "i32", typeid(i32));
     model  _i64 = aether_base_model(e, "i64", typeid(i64));
                   aether_base_model(e, "f32",  typeid(f32));
                   aether_base_model(e, "f64",  typeid(f64));
-                  aether_base_model(e, "f128", typeid(f128));
-    model  _i128 = aether_base_model(e, "i128", typeid(i128));
     
     model _cstr = alias(_i8, string("cstr"), reference_pointer, null);
     set(e->base, string("cstr"), _cstr);
@@ -2431,7 +2424,7 @@ void aether_llflag(aether e, symbol flag, i32 ival) {
 }
 
 
-bool aether_write(aether e, ARef ref_ll, ARef ref_bc) {
+bool aether_emit(aether e, ARef ref_ll, ARef ref_bc) {
     path* ll = ref_ll;
     path* bc = ref_bc;
     cstr err = NULL;
@@ -3155,7 +3148,6 @@ void token_init(token a) {
     sz length = a->len ? a->len : strlen(prev);
     a->chars  = (cstr)calloc(length + 1, 1);
     a->len    = length;
-    a->namespace = null;
     memcpy(a->chars, prev, length);
 
     if (a->chars[0] == '\"' || a->chars[0] == '\'') {

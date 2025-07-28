@@ -132,7 +132,12 @@
         "barrier": "cpp",
         "latch": "cpp",
         "shared_mutex": "c",
-        "sim_set": "cpp"
+        "sim_set": "cpp",
+        "hash_map": "c",
+        "source_location": "c",
+        "codecvt": "cpp",
+        "valarray": "cpp",
+        "import": "c"
     },
     "cmake.configureOnOpen": false,
     "C_Cpp.errorSquiggles": "enabled"

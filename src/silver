@@ -29,12 +29,11 @@ forward(import)
     i_prop    (X,Y, intern,     bool,           in_inlay) \
     i_prop    (X,Y, intern,     emember,        in_assign) \
     i_prop    (X,Y, intern,     array,          spaces) \
-    i_prop    (X,Y, intern,     array,          compiled_objects) \
-    i_prop    (X,Y, intern,     array,          products_used) \
     i_prop    (X,Y, intern,     map,            include) \
     i_prop    (X,Y, intern,     int,            expr_level) \
     i_prop    (X,Y, public,     path,           src_loc) \
     i_prop    (X,Y, public,     path,           file) \
+    i_prop    (X,Y, public,     path,           project_path) \
     i_prop    (X,Y, public,     language,       std) \
     i_method  (X,Y, public,     none,           import_types) \
     i_method  (X,Y, public,     silver,         load_module, path) \
@@ -54,7 +53,7 @@ forward(import)
     i_method  (X,Y, public,     enode,           read_node, AType) \
     i_method  (X,Y, public,     enode,           parse_ternary, enode) \
     i_method  (X,Y, public,     enode,           parse_assignment, emember, string) \
-    i_method  (X,Y, public,     token,          read, symbol) \
+    i_method  (X,Y, public,     token,          read_if, symbol) \
     i_method  (X,Y, public,     A,              read_literal, AType) \
     i_method  (X,Y, public,     string,         read_string) \
     i_method  (X,Y, public,     string,         read_alpha) \
@@ -68,7 +67,7 @@ forward(import)
     i_method  (X,Y, public,     string,         read_assign, ARef, ARef) \
     i_method  (X,Y, public,     string,         location) \
     i_method  (X,Y, public,     none,           parse) \
-    i_method  (X,Y, public,     bool,           build, path) \
+    i_method  (X,Y, public,     i32,            build) \
     i_override(X,Y, method,     build_initializer) \
     i_override(X,Y, method,     init)
 declare_class_3(silver, aether, model)

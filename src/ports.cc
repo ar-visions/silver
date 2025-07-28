@@ -24,6 +24,15 @@
 #include <thread>
 #include <atomic>
 
+BOOL EnumProcessModules(
+    HANDLE  hProcess,
+    HMODULE *lphModule,
+    DWORD   cb,
+    LPDWORD lpcbNeeded
+);
+
+#pragma comment(lib, "psapi.lib")
+
 static inotify_watch global_watch = { 0 };  // only 1 for now
 
 int gettimeofday(struct _timeval_* tp, void* tzp) {
@@ -784,11 +793,11 @@ int close(int fd) {
     return _close(fd);
 }
 
-int read(int fd, void* buf, size_t sz) {
+ssize_t read(int fd, void* buf, size_t sz) {
     return _read(fd, buf, sz);
 }
 
-int write(int fd, void* buf, size_t sz) {
+ssize_t write(int fd, void* buf, size_t sz) {
     return _write(fd, buf, sz);
 }
 
@@ -880,63 +889,440 @@ int usleep(unsigned int usec) {
     return 0;
 }
 
-// Optional: handle mode argument for O_CREAT
+// Convert a path to a named pipe path if needed
+static char* make_pipe_path(const char* path) {
+    if (strncmp(path, PIPE_PREFIX, strlen(PIPE_PREFIX)) == 0) {
+        return strdup(path);
+    }
+    
+    // Convert Unix-style pipe path to Windows named pipe
+    char* pipe_path = (char*)malloc(strlen(PIPE_PREFIX) + strlen(path) + 1);
+    strcpy(pipe_path, PIPE_PREFIX);
+    strcat(pipe_path, path);
+    return pipe_path;
+}
+
+// Open function for named pipes
 int open(const char* pathname, int flags, ...) {
-    int mode = 0;
-
-    // Handle optional mode_t if O_CREAT is used
-    if (flags & O_CREAT) {
-        va_list args;
-        va_start(args, flags);
-        mode = va_arg(args, int);  // mode_t promoted to int
-        va_end(args);
+    HANDLE hPipe;
+    DWORD dwOpenMode = 0;
+    DWORD dwPipeMode = PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT;
+    char* pipe_path = make_pipe_path(pathname);
+    
+    // Convert Unix flags to Windows flags
+    if ((flags & O_RDWR) == O_RDWR) {
+        dwOpenMode = GENERIC_READ | GENERIC_WRITE;
+    } else if (flags & O_WRONLY) {
+        dwOpenMode = GENERIC_WRITE;
+    } else {
+        dwOpenMode = GENERIC_READ;
     }
-
-    // Windows does not support O_NONBLOCK in open(), so we ignore it here
-    int safe_flags = flags & ~O_NONBLOCK;
-
-    int fd = _open(pathname, safe_flags, mode);
-    if (fd == -1) {
-        errno = *_errno();
+    
+    // Try to open existing pipe first
+    hPipe = CreateFile(
+        pipe_path,
+        dwOpenMode,
+        0,
+        NULL,
+        OPEN_EXISTING,
+        0,
+        NULL
+    );
+    
+    // If failed and O_CREAT is set, create the pipe
+    if (hPipe == INVALID_HANDLE_VALUE && (flags & O_CREAT)) {
+        hPipe = CreateNamedPipe(
+            pipe_path,
+            PIPE_ACCESS_DUPLEX,
+            dwPipeMode,
+            PIPE_UNLIMITED_INSTANCES,
+            4096,
+            4096,
+            0,
+            NULL
+        );
+        
+        if (hPipe != INVALID_HANDLE_VALUE) {
+            // Wait for client to connect if we created the pipe
+            ConnectNamedPipe(hPipe, NULL);
+        }
     }
+    
+    free(pipe_path);
+    
+    if (hPipe == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    
+    // Convert HANDLE to file descriptor
+    int fd = _open_osfhandle((intptr_t)hPipe, flags);
     return fd;
 }
 
-int select(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds, struct _timeval_* timeout) {
-    fd_set read_set_win, write_set_win, except_set_win;
-
-    FD_ZERO(&read_set_win);
-    FD_ZERO(&write_set_win);
-    FD_ZERO(&except_set_win);
-
-    for (int fd = 0; fd < nfds; ++fd) {
-        if (readfds && FD_ISSET(fd, readfds))
-            FD_SET(fd, &read_set_win);
-        if (writefds && FD_ISSET(fd, writefds))
-            FD_SET(fd, &write_set_win);
-        if (exceptfds && FD_ISSET(fd, exceptfds))
-            FD_SET(fd, &except_set_win);
+// Select function for named pipes (we do not want to merge sockets into this api, but could)
+// while nicer to look at, it would be less secure by nature
+int select(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds, struct timeval* timeout) {
+    fd_set result_read, result_write, result_except;
+    int ready_count = 0;
+    DWORD wait_time;
+    
+    // Initialize result sets
+    FD_ZERO(&result_read);
+    FD_ZERO(&result_write);
+    FD_ZERO(&result_except);
+    
+    // Calculate timeout
+    if (timeout) {
+        wait_time = timeout->tv_sec * 1000 + timeout->tv_usec / 1000;
+    } else {
+        wait_time = INFINITE;
     }
+    
+    // Check each file descriptor
+    for (int fd = 0; fd < nfds; fd++) {
+        HANDLE hPipe = (HANDLE)_get_osfhandle(fd);
+        if (hPipe == INVALID_HANDLE_VALUE) continue;
+        
+        // Check if it's a pipe
+        DWORD type = GetFileType(hPipe);
+        if (type != FILE_TYPE_PIPE) continue;
+        
+        // Check read readiness
+        if (readfds && FD_ISSET(fd, readfds)) {
+            DWORD bytes_available = 0;
+            if (PeekNamedPipe(hPipe, NULL, 0, NULL, &bytes_available, NULL)) {
+                if (bytes_available > 0) {
+                    FD_SET(fd, &result_read);
+                    ready_count++;
+                }
+            }
+        }
+        
+        // Check write readiness (named pipes are usually always writable)
+        if (writefds && FD_ISSET(fd, writefds)) {
+            DWORD mode;
+            if (GetNamedPipeHandleState(hPipe, &mode, NULL, NULL, NULL, NULL, 0)) {
+                FD_SET(fd, &result_write);
+                ready_count++;
+            }
+        }
+        
+        // Check for exceptions
+        if (exceptfds && FD_ISSET(fd, exceptfds)) {
+            DWORD state;
+            if (!GetNamedPipeHandleState(hPipe, &state, NULL, NULL, NULL, NULL, 0)) {
+                FD_SET(fd, &result_except);
+                ready_count++;
+            }
+        }
+    }
+    
+    // If no ready descriptors and timeout specified, wait
+    if (ready_count == 0 && wait_time > 0) {
+        Sleep(wait_time > 100 ? 100 : wait_time);
+        
+        // Re-check after sleep (simplified - you may want to loop)
+        for (int fd = 0; fd < nfds; fd++) {
+            HANDLE hPipe = (HANDLE)_get_osfhandle(fd);
+            if (hPipe == INVALID_HANDLE_VALUE) continue;
+            
+            if (readfds && FD_ISSET(fd, readfds)) {
+                DWORD bytes_available = 0;
+                if (PeekNamedPipe(hPipe, NULL, 0, NULL, &bytes_available, NULL)) {
+                    if (bytes_available > 0) {
+                        FD_SET(fd, &result_read);
+                        ready_count++;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Copy results back
+    if (readfds) *readfds = result_read;
+    if (writefds) *writefds = result_write;
+    if (exceptfds) *exceptfds = result_except;
+    
+    return ready_count;
+}
 
-    int result = select(0, &read_set_win, &write_set_win, &except_set_win, timeout);
-    if (result == SOCKET_ERROR) {
-        errno = WSAGetLastError();  // optionally translate to POSIX errno
+int mkfifo(const char* pathname, mode_t mode) {
+    HANDLE hPipe;
+    char* pipe_path = make_pipe_path(pathname);
+    
+    // Create the named pipe
+    hPipe = CreateNamedPipe(
+        pipe_path,
+        PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+        1,              // Max instances (1 for FIFO behavior)
+        4096,           // Output buffer size
+        4096,           // Input buffer size
+        0,              // Default timeout
+        NULL            // Default security
+    );
+    
+    free(pipe_path);
+    
+    if (hPipe == INVALID_HANDLE_VALUE) {
+        // Set errno based on Windows error
+        DWORD error = GetLastError();
+        if (error == ERROR_ALREADY_EXISTS) {
+            errno = EEXIST;
+        } else if (error == ERROR_PATH_NOT_FOUND) {
+            errno = ENOENT;
+        } else {
+            errno = EACCES;
+        }
         return -1;
     }
+    
+    // Close the handle - the pipe now exists and can be opened with open()
+    CloseHandle(hPipe);
+    
+    // Mode parameter is ignored on Windows
+    (void)mode;
+    
+    return 0;
+}
 
-    // Clear the original sets, then set matching bits
-    if (readfds) FD_ZERO(readfds);
-    if (writefds) FD_ZERO(writefds);
-    if (exceptfds) FD_ZERO(exceptfds);
-
-    for (int fd = 0; fd < nfds; ++fd) {
-        if (readfds && FD_ISSET(fd, &read_set_win)) FD_SET(fd, readfds);
-        if (writefds && FD_ISSET(fd, &write_set_win)) FD_SET(fd, writefds);
-        if (exceptfds && FD_ISSET(fd, &except_set_win)) FD_SET(fd, exceptfds);
+int unlink(char* f) {
+    char* pipe_path = make_pipe_path(f);
+    
+    HANDLE hPipe = CreateFile(
+        pipe_path,
+        DELETE,
+        0,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_DELETE_ON_CLOSE,
+        NULL
+    );
+    
+    free(pipe_path);
+    
+    if (hPipe != INVALID_HANDLE_VALUE) {
+        CloseHandle(hPipe);
+        return 0;
     }
 
-    return result;
+    return _unlink((LPCTSTR)f);
 }
+
+int mkstemp(char *template_str) {
+    if (!template_str) {
+        errno = EINVAL;
+        return -1;
+    }
+    
+    size_t len = strlen(template_str);
+    if (len < 6) {
+        errno = EINVAL;
+        return -1;
+    }
+    
+    // Check that template ends with "XXXXXX"
+    char *suffix = template_str + len - 6;
+    if (strcmp(suffix, "XXXXXX") != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    
+    // Generate unique filename
+    for (int attempts = 0; attempts < 1000; attempts++) {
+        // Generate 6 random characters
+        for (int i = 0; i < 6; i++) {
+            int rand_val = rand() % 62;  // 0-61
+            if (rand_val < 10) {
+                suffix[i] = '0' + rand_val;           // 0-9
+            } else if (rand_val < 36) {
+                suffix[i] = 'A' + (rand_val - 10);    // A-Z
+            } else {
+                suffix[i] = 'a' + (rand_val - 36);    // a-z
+            }
+        }
+        
+        // Try to create the file exclusively
+        int fd = _open(template_str, 
+                       _O_CREAT | _O_EXCL | _O_RDWR | _O_BINARY,
+                       _S_IREAD | _S_IWRITE);
+        
+        if (fd != -1) {
+            return fd;  // Success
+        }
+        
+        // If file exists, try again with new name
+        if (errno != EEXIST) {
+            return -1;  // Real error
+        }
+    }
+    
+    // Too many attempts
+    errno = EEXIST;
+    return -1;
+}
+
+
+
+
+
+
+
+
+
+
+
+// Thread-local storage for error messages
+static __thread char dlerror_buffer[512];
+static __thread int dlerror_flag = 0;
+
+// Set error message
+static void set_dlerror(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    vsnprintf(dlerror_buffer, sizeof(dlerror_buffer), format, args);
+    va_end(args);
+    dlerror_flag = 1;
+}
+
+// dlopen - open a dynamic library
+void* dlopen(const char* filename, int flags) {
+    HMODULE module;
+    DWORD load_flags = 0;
+    
+    // Clear any previous error
+    dlerror_flag = 0;
+    
+    // Handle special cases
+    if (filename == NULL) {
+        // NULL means open the main program
+        module = GetModuleHandle(NULL);
+        if (!module) {
+            set_dlerror("Failed to get main module handle");
+        }
+        return module;
+    }
+    
+    // Set Windows load flags based on dlopen flags
+    if (flags & RTLD_LAZY) {
+        // Windows always does lazy loading by default
+    }
+    
+    if (flags & RTLD_NOW) {
+        // No direct equivalent - Windows resolves on demand
+    }
+    
+    if (flags & RTLD_NOLOAD) {
+        // Check if already loaded
+        module = GetModuleHandle(filename);
+        if (!module) {
+            set_dlerror("Library not loaded: %s", filename);
+        }
+        return module;
+    }
+    
+    if (flags & RTLD_NODELETE) {
+        // Pin the module
+        load_flags |= LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE;
+    }
+    
+    // Try to load the library
+    module = LoadLibraryEx(filename, NULL, load_flags);
+    
+    if (!module) {
+        // Try with .dll extension if not present
+        if (!strstr(filename, ".dll")) {
+            char dll_name[MAX_PATH];
+            snprintf(dll_name, sizeof(dll_name), "%s.dll", filename);
+            module = LoadLibraryEx(dll_name, NULL, load_flags);
+        }
+        
+        if (!module) {
+            DWORD error = GetLastError();
+            set_dlerror("Failed to load library %s: error %lu", filename, error);
+        }
+    }
+    
+    return module;
+}
+
+// dlsym - get symbol address from a dynamic library
+void* dlsym(void* handle, const char* symbol) {
+    FARPROC proc;
+    
+    // Clear any previous error
+    dlerror_flag = 0;
+    
+    if (handle == RTLD_DEFAULT) {
+        // Search all loaded modules
+        HANDLE process = GetCurrentProcess();
+        HMODULE modules[1024];
+        DWORD needed;
+        
+        if (EnumProcessModules(process, modules, sizeof(modules), &needed)) {
+            for (unsigned int i = 0; i < (needed / sizeof(HMODULE)); i++) {
+                proc = GetProcAddress(modules[i], symbol);
+                if (proc) return (void*)proc;
+            }
+        }
+        set_dlerror("Symbol not found: %s", symbol);
+        return NULL;
+    }
+    
+    if (handle == RTLD_NEXT) {
+        // Not easily implementable on Windows
+        set_dlerror("RTLD_NEXT not supported on Windows");
+        return NULL;
+    }
+    
+    // Normal symbol lookup
+    proc = GetProcAddress((HMODULE)handle, symbol);
+    
+    if (!proc) {
+        // Try with underscore prefix (common for C symbols)
+        char underscore_symbol[256];
+        snprintf(underscore_symbol, sizeof(underscore_symbol), "_%s", symbol);
+        proc = GetProcAddress((HMODULE)handle, underscore_symbol);
+        
+        if (!proc) {
+            DWORD error = GetLastError();
+            set_dlerror("Symbol not found: %s, error %lu", symbol, error);
+        }
+    }
+    
+    return (void*)proc;
+}
+
+// dlclose - close a dynamic library
+int dlclose(void* handle) {
+    // Clear any previous error
+    dlerror_flag = 0;
+    
+    if (!handle || handle == RTLD_DEFAULT || handle == RTLD_NEXT) {
+        return 0;  // Nothing to close
+    }
+    
+    if (FreeLibrary((HMODULE)handle)) {
+        return 0;  // Success
+    }
+    
+    DWORD error = GetLastError();
+    set_dlerror("Failed to unload library: error %lu", error);
+    return -1;
+}
+
+// dlerror - get error message from last dl* operation
+char* dlerror(void) {
+    if (dlerror_flag) {
+        dlerror_flag = 0;  // Clear error after reading
+        return dlerror_buffer;
+    }
+    return NULL;
+}
+
+
+
+
 
 #else
 #include <sys/time.h>

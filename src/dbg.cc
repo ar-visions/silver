@@ -187,8 +187,8 @@ none dbg_stop(dbg debug) {
     debug->active  = false;
     close(debug->fifo_fd_out);
     close(debug->fifo_fd_err);
-    unlink(debug->stdout_fifo->chars);
-    unlink(debug->stderr_fifo->chars);
+    unlink((char*)debug->stdout_fifo->chars);
+    unlink((char*)debug->stderr_fifo->chars);
 }
 
 none dbg_step_into(dbg debug) {
