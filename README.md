@@ -141,8 +141,8 @@ class app
         return 1
 
 fn module-name[ a:app ] -> int
-    is-const = int[ a ] # = denotes constant assignment, this calls the cast above
-    val : is-const      # : assignment [mutable]
+    is-const : int[ a ] # : denotes constant assignment, this calls the cast above
+    val = is-const      # = assignment [mutable]
     val += 1
     print[ 'using app with value: { is-const } + { val - is-const }' ]
     return [run[a, string[val]] > 0] ? 1 : 0
@@ -153,4 +153,5 @@ classes have ability to perform meta instancing.  think of it as templates but w
 ```python
 meta [ I:any ]
 class list
-    I type # in this context, I becomes an 'object' type, the base A-type we're ABI compatible with
+
+```
