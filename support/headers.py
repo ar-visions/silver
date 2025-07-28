@@ -189,7 +189,7 @@ def generate_init_header(module, header_file, init_header):
                 continue
             
             # Generate TC macro
-            f.write(f"#define TC_{class_name}(MEMBER, VALUE) ({{ AF_set(&instance->f, FIELD_ID({class_name}, MEMBER)); VALUE; }})\n")
+            f.write(f"#define TC_{class_name}(MEMBER, VALUE) ({{ AF_set((u64*)&instance->f, FIELD_ID({class_name}, MEMBER)); VALUE; }})\n")
             
             # Variadic argument counting macros
             f.write(f"#define _ARG_COUNT_IMPL_{class_name}(_0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20, _21, _22, N, ...) N\n")
@@ -390,7 +390,7 @@ def process_modules(paths):
         # C-compatible upper-case definition name
         umodule = module.upper().replace('-', '_')
         
-        # Generate headers if needed
+        # Generate headers if needed (we need to also check against headers.py modification time)
         if (not os.path.exists(init_header) or 
             os.path.getmtime(str(source_file)) > os.path.getmtime(init_header)):
             generate_init_header(module, str(source_file), init_header)

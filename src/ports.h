@@ -5,6 +5,8 @@
 #ifdef _WIN32
 typedef struct DIR DIR;
 
+#define PATH_MAX 4096
+
 #ifdef _WIN64
 typedef __int64 ssize_t;
 #else
@@ -12,6 +14,11 @@ typedef __int32 ssize_t;
 #endif
 
 #include <stdint.h>
+#include <sys/stat.h>
+#include <sys/utime.h>
+
+#define utimbuf _utimbuf
+#define utime   _utime
 
 typedef long long off_t;
 typedef uint16_t mode_t;
@@ -57,16 +64,42 @@ typedef int pid_t;
 // Error value
 #define MAP_FAILED      ((void *)-1)
 
-char* strdup(const char* s);
-int   chdir(const char* path);
-int   symlink(const char* target, const char* linkpath);
-int   mkdir(const char* path, mode_t mode);
-char* realpath(const char* path, char* resolved_path);
-char* dirname(char* path);
-ssize_t readlink(const char *path, char *buf, size_t bufsiz);
-int lstat(const char* path, struct _stat* st);
-char* getcwd(char* buf, size_t size);
-int execvp(const char *file, char *const argv[]);
+char*       strdup  (const char* s);
+int         chdir   (const char* path);
+int         symlink (const char* target, const char* linkpath);
+int         mkdir   (const char* path, mode_t mode);
+char*       realpath(const char* path, char* resolved_path);
+char*       dirname (char* path);
+ssize_t     readlink(const char *path, char *buf, size_t bufsiz);
+int         lstat   (const char* path, struct _stat* st);
+char*       getcwd  (char* buf, size_t size);
+int         execvp  (const char *file, char *const argv[]);
+int         setpgid (pid_t pid, pid_t pgid);
+const char* strsignal(int sig);
+pid_t       fork    ();
+int         execlp  (const char* file, const char* arg0, ...);
+int         pipe    (int pipefd[2]);
+int         dup2    (int oldfd, int newfd);
+int         close   (int fd);
+ssize_t     read    (int fd, void* buf, size_t sz);
+ssize_t     write   (int fd, void* buf, size_t sz);
+FILE*       fdopen  (int fd, const char* mode);
+int         usleep  (unsigned int usec);
+int         open    (const char* pathname, int flags, ... /* mode_t mode */);
+pid_t       wait    (int* status);
+pid_t       waitpid (pid_t pid, int* status, int options);
+void*       mmap    (void* addr, size_t length, int prot, int flags, int fd, off_t offset);
+int         munmap  (void* addr, size_t length);
+int         mkstemp (char* template_str);
+int         unlink  (char* f);
+int         mkfifo  (const char* pathname, mode_t mode);
+void*       dlopen  (const char* filename, int flags);
+void*       dlsym   (void* handle, const char* symbol);
+int         dlclose (void* handle);
+char*       dlerror ();
+
+
+void  register_child(pid_t pid, void* handle);
 
 #ifndef S_IFLNK
 #define S_IFLNK 0120000  // symbolic link
@@ -75,12 +108,6 @@ int execvp(const char *file, char *const argv[]);
 #ifndef S_ISLNK
 #define S_ISLNK(m) (((m) & S_IFMT) == S_IFLNK)
 #endif
-
-pid_t wait          (int* status);
-pid_t waitpid       (pid_t pid, int* status, int options);
-void  register_child(pid_t pid, void* handle);
-void* mmap          (void* addr, size_t length, int prot, int flags, int fd, off_t offset);
-int   munmap        (void* addr, size_t length);
 
 typedef struct {
     void*       handle;
@@ -121,6 +148,21 @@ int inotify_rm_watch  (int fd, int wd);
 int inotify_close     (int fd);
 
 int setenv(const char* name, const char* value, int overwrite);
+
+// dlopen() flags
+#define RTLD_LAZY       0x00001  // Lazy symbol resolution
+#define RTLD_NOW        0x00002  // Immediate symbol resolution
+#define RTLD_BINDING_MASK   0x3  // Mask for binding flags
+#define RTLD_NOLOAD     0x00004  // Don't load, just check if loaded
+#define RTLD_DEEPBIND   0x00008  // Place lookup scope ahead of global scope
+#define RTLD_GLOBAL     0x00100  // Symbols available for subsequently loaded objects
+#define RTLD_LOCAL      0x00000  // Symbols not available for subsequently loaded objects
+#define RTLD_NODELETE   0x01000  // Don't unload during dlclose
+
+// Special handle values
+#define RTLD_DEFAULT    ((void*)0)       // Search default libraries
+#define RTLD_NEXT       ((void*)-1L)     // Search subsequent libraries
+
 
 // Event flags
 #define IN_ACCESS        0x00000001  // File was accessed
@@ -165,19 +207,6 @@ int setenv(const char* name, const char* value, int overwrite);
 #define STDOUT_FILENO 1
 #define STDERR_FILENO 2
 
-int         setpgid(pid_t pid, pid_t pgid);
-const char* strsignal(int sig);
-pid_t       fork();
-int         execlp(const char* file, const char* arg0, ...);
-//pid_t       waitpid(pid_t pid, int* status, int options);
-int         pipe(int pipefd[2]);
-int         dup2(int oldfd, int newfd);
-int         close(int fd);
-//int         read(int fd, void* buf, size_t sz);
-//int         write(int fd, void* buf, size_t sz);
-FILE*       fdopen(int fd, const char* mode);
-int         usleep(unsigned int usec);
-
 #define stat _stat
 
 #ifndef S_IFMT
@@ -221,8 +250,6 @@ unsigned __stdcall pthread_start_thunk(void* arg);
 int pthread_create(pthread_t*, const pthread_attr_t*, void* (*)(void*), void*);
 int pthread_join(pthread_t thread, void** retval);
 
-int open(const char* pathname, int flags, ... /* mode_t mode */);
-
 #define O_RDONLY    0x0000
 #define O_WRONLY    0x0001
 #define O_RDWR      0x0002
@@ -234,17 +261,56 @@ int open(const char* pathname, int flags, ... /* mode_t mode */);
 
 #define FD_SETSIZE  64
 
-typedef struct socket_set {
-    unsigned int fd_count;
-    int fd_array[FD_SETSIZE];
-} socket_set;
+#ifdef _WIN64
+typedef __int64 _SOCKET_;
+#else
+typedef int     _SOCKET_;
+#endif
 
-#define FD_ZERO(set) memset((set)->bits, 0, sizeof((set)->bits))
-#define FD_SET(fd, set)   ((set)->bits[(fd) / 8] |=  (1 << ((fd) % 8)))
-#define FD_CLR(fd, set)   ((set)->bits[(fd) / 8] &= ~(1 << ((fd) % 8)))
-#define FD_ISSET(fd, set) (((set)->bits[(fd) / 8] &  (1 << ((fd) % 8))) != 0)
 
-int select(int nfds, socket_set* readfds, socket_set* writefds, socket_set* exceptfds, struct socket_set* timeout);
+// Unix-like fd_set structure with bitmap
+#undef  FD_SETSIZE
+#define FD_SETSIZE 64
+
+typedef struct _fd_set_ {
+    unsigned long fds_bits[(FD_SETSIZE + 31) / 32];
+} _fd_set_;
+
+// Macros for fd_set manipulation
+#define FD_ZERO(set)      memset((set), 0, sizeof(_fd_set_))
+#define FD_SET(fd, set)   ((set)->fds_bits[(fd) / 32] |=  (1UL << ((fd) % 32)))
+#define FD_CLR(fd, set)   ((set)->fds_bits[(fd) / 32] &= ~(1UL << ((fd) % 32)))
+#define FD_ISSET(fd, set) ((set)->fds_bits[(fd) / 32] &   (1UL << ((fd) % 32)))
+
+// Named pipe specific helpers
+#define PIPE_PREFIX "\\\\.\\pipe\\"
+
+// Convert a path to a named pipe path if needed
+int     select(int nfds, _fd_set_* readfds, _fd_set_* writefds, _fd_set_* exceptfds, struct _timeval_* timeout);
+
+// User permissions
+#define S_IRUSR 0000400  // Read permission, owner
+#define S_IWUSR 0000200  // Write permission, owner  
+#define S_IXUSR 0000100  // Execute permission, owner
+
+// Group permissions  
+#define S_IRGRP 0000040  // Read permission, group
+#define S_IWGRP 0000020  // Write permission, group
+#define S_IXGRP 0000010  // Execute permission, group
+
+// Other permissions
+#define S_IROTH 0000004  // Read permission, others
+#define S_IWOTH 0000002  // Write permission, others
+#define S_IXOTH 0000001  // Execute permission, others
+
+// Common combinations
+#define S_IRWXU (S_IRUSR | S_IWUSR | S_IXUSR)  // 0700
+#define S_IRWXG (S_IRGRP | S_IWGRP | S_IXGRP)  // 0070  
+#define S_IRWXO (S_IROTH | S_IWOTH | S_IXOTH)  // 0007
+
+// Your specific combination
+#define S_IRUSR_IWUSR_IRGRP_IWGRP_IROTH_IWOTH \
+    (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH)  // 0664
 
 #else
 
@@ -252,6 +318,9 @@ int select(int nfds, socket_set* readfds, socket_set* writefds, socket_set* exce
 #include <sys/wait.h>
 #include <sys/mmap.h>
 #include <sys/inotify.h>
+#include <dlfcn.h>
+#include <sys/stat.h>
+#include <utime.h>
 
 typedef __int64 ssize_t;
 typedef fd_set  _fd_set_;

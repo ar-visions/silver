@@ -1546,7 +1546,7 @@ A construct_with(AType type, A data, ctx context) {
 
         // load from presumed .json as fallback
         path f = (data_type == typeid(string)) ? path((string)data) : (path)data;
-        return read(f, type, null);
+        return load(f, type, null);
     }
     return result ? A_initialize(result) : null;
 }
@@ -1903,7 +1903,7 @@ A formatter(AType type, handle ff, A opt, symbol template, ...) {
 
     if (f) {
         // write message
-        write(res, f, false);
+        string_writef(res, f, false);
         if (symbolic_logging || write_ln) {
             fwrite("\n", 1, 1, f);
             fflush(f);
@@ -2473,7 +2473,7 @@ cstr string_cast_cstr(string a) {
     return (cstr)a->chars;
 }
 
-none string_write(string a, handle f, bool new_line) {
+none string_writef(string a, handle f, bool new_line) {
     FILE* output = f ? f : stdout;
     fwrite(a->chars, a->len, 1, output);
     if (new_line) fwrite("\n", 1, 1, output);
@@ -3810,7 +3810,7 @@ static cstr read_indent(cstr i, i32* result) {
 
 static array read_lines(path f) {
     array  lines   = array(256);
-    string content = read(f, typeid(string), null);
+    string content = load(f, typeid(string), null);
     cstr   scan    = cstring(content);
 
     while (*scan) {
@@ -4651,8 +4651,7 @@ none watch_init(watch a) {
         __attribute__((aligned(__alignof__(struct inotify_event))));
     
     while (1) {
-        #undef read
-        int len = _read(fd, buf, sizeof(buf));
+        int len = read(fd, buf, sizeof(buf));
         if (len <= 0) continue;
 
         for (char *ptr = buf; ptr < buf + len; ) {

@@ -225,7 +225,7 @@ declare_class_2(emember, enode)
     i_prop    (X,Y, intern, LLVMBasicBlockRef, block, as, ARef) \
     i_prop    (X,Y, public, aether,  mod) \
     i_prop    (X,Y, public, symbol, label) \
-    i_method  (X,Y, public, none,   select) \
+    i_method  (X,Y, public, none,   seek_end) \
     i_override(X,Y, method, init)
 declare_class(code)
 
@@ -307,7 +307,7 @@ declare_class(code)
     i_method  (X,Y, public,     model,      push,           model) \
     i_method  (X,Y, public,     model,      pop) \
     i_method  (X,Y, public,     model,      top) \
-    i_method  (X,Y, public,     bool,       write,          ARef,       ARef) \
+    i_method  (X,Y, public,     bool,       emit,           ARef,       ARef) \
     i_method  (X,Y, public,     model,      return_type) \
     i_override(X,Y, method,     init) \
     i_override(X,Y, method,     dealloc)

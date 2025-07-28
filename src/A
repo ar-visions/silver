@@ -988,37 +988,6 @@ declare_enum(Key)
     enum_value(E,T,Y, dir,    2)
 declare_enum(Exists)
 
-/*
-#define buffer_schema(X,Y,...) \
-    i_ctr (X,Y, public,   path) \
-    i_ctr (X,Y, public,   i64) \
-    i_prop(X,Y, public,   cstr, data) \
-    i_prop(X,Y, public,   i64,  count) \
-    i_prop(X,Y, public,   i64,  alloc) \
-    i_method(X,Y, public, none, append, A, i32) \
-    i_override(X,Y, method, dealloc)
-declare_class(buffer)
-*/
-
-/*
-#define file_schema(X,Y,...) \
-    i_method(X,Y, public,   bool,   write, A) \
-    i_method(X,Y, public,   A, file_read,  AType) \
-    i_method(X,Y, public,   string, gets) \
-    i_method(X,Y, public,   none,   file_close) \
-    i_prop(X,Y,   public,   path,   src) \
-    i_prop(X,Y,   public,   bool,   read) \
-    i_prop(X,Y,   public,   bool,   write) \
-    i_prop(X,Y,   public,   num,    size) \
-    i_prop(X,Y,   public,   num,    location) \
-    i_prop(X,Y,   public,   handle, id) \
-    i_prop(X,Y,   public,   bool,   text_mode) \
-    i_override(X,Y, method, init) \
-    i_override(X,Y, method, dealloc) \
-    i_override(X,Y, cast,   bool)
-declare_class(file)
-*/
-
 forward(array)
 
 #define vector_schema(X,Y,...) \
@@ -1185,7 +1154,7 @@ declare_class_2(ctx, map)
     i_method  (X,Y,   public, string,  rtrim) \
     i_method  (X,Y,   public, string,  mid, num, num) \
     i_method  (X,Y,   public, none,    reserve, num) \
-    i_method  (X,Y,   public, none,    write, handle, bool) \
+    i_method  (X,Y,   public, none,    writef, handle, bool) \
     i_method  (X,Y,   public, bool,    ends_with, symbol) \
     i_method  (X,Y,   public, bool,    starts_with, symbol) \
     i_method  (X,Y,   public, num,     cmp, symbol) \
@@ -1259,7 +1228,7 @@ declare_class(async)
     i_method    (X,Y, public, string, filename) \
     i_method    (X,Y, public, path,   absolute) \
     i_method    (X,Y, public, path,   parent) \
-    i_method    (X,Y, public, A, read, AType, ctx) \
+    i_method    (X,Y, public, A, load, AType, ctx) \
     i_method    (X,Y, public, path,   change_ext, cstr) \
     i_method    (X,Y, public, array,  ls, string, bool) \
     i_method    (X,Y, public, bool,   move, path) \
