@@ -620,7 +620,7 @@ bool silver_next_is_keyword(silver a) {
 }
 
 
-token silver_read(silver a, symbol cs) {
+token silver_read_if(silver a, symbol cs) {
     token n = element(a, 0);
     if (n && strcmp(n->chars, cs) == 0) {
         a->cursor++;
@@ -2068,14 +2068,26 @@ void silver_parse(silver mod) {
 }
 
 void silver_init(silver mod) {
+    if (!mod->source) {
+        fault("required argument: source-file");
+    }
     if ( mod->source)  mod->source  = absolute(mod->source);
-    if (!mod->install) mod->install = f(path, "%s", getenv("IMPORT"));
-
+    if (!mod->install) {
+        cstr import = getenv("IMPORT");
+        if (import)
+            mod->install = f(path, "%s", import);
+        else {
+            path   exe = path_self();
+            path   bin = parent(exe);
+            path   install = absolute(f(path, "%o/..", bin));
+            mod->install = install;
+        }
+    }
     mod->project_path = parent(mod->source);
 
-    verify(dir_exists("%o", mod->install), "silver-import location not found");
-    verify(len(mod->source),               "no source given");
-    verify(file_exists("%o", mod->source), "source not found: %o", mod->source);
+    verify(dir_exists ("%o" mod->install), "silver-import location not found");
+    verify(len        (mod->source),       "no source given");
+    verify(file_exists("%o" mod->source),  "source not found: %o", mod->source);
 
     print("source is %o", mod->source);
     verify(exists(mod->source), "source (%o) does not exist", mod->source);
@@ -2739,73 +2751,13 @@ enode import_parse(silver mod) {
     if (namespace) pop(mod);
 
     return mem;
-
-
-/*
-import llvm [ https://github.com/llvm/llvm-project main ]
-	args {
-		-S ../llvm
-		-G Ninja 
-		-DLLVM_ENABLE_ASSERTIONS=OFF
-		-DLLVM_ENABLE_PROJECTS='clang;lld;lldb;compiler-rt'
-		-DLLVM_TOOL_GOLD_BUILD=ON
-		-DLLVM_ENABLE_FFI=OFF
-	  	-DLLVM_ENABLE_THREADS=ON
-		-DLLVM_PARALLEL_LINK_JOBS=1
-		-DLLVM_BUILD_TOOLS=ON
-		-DLLVM_ENABLE_LTO=OFF
-		-DLLDB_INCLUDE_TESTS=OFF
-		-DLLDB_EXPORT_ALL_SYMBOLS=1
-		-DLLVM_ENABLE_RTTI=OFF
-		-DLLVM_BINUTILS_INCDIR=/usr/include
-		-DCLANG_DEFAULT_PIE_ON_LINUX=ON
-		-DCLANG_CONFIG_FILE_SYSTEM_DIR=/etc/clang
-		-DLLVM_ENABLE_LIBCXX=OFF
-		-DBUILD_SHARED_LIBS=ON
-		-DLLDB_ENABLE_PYTHON=OFF
-		-DLLVM_TARGETS_TO_BUILD='host;X86;AArch64'
-	}
-	args-linux {
-		-DCLANG_DEFAULT_CXX_STDLIB=libstdc++
-	}
-	args-darwin {
-		-DCMAKE_CXX_FLAGS="-stdlib=libc++"
-		-DCLANG_DEFAULT_CXX_STDLIB=libc++
-		-DDEFAULT_SYSROOT=$(xcrun --sdk macosx --show-sdk-path)
-	}
-	link {
-        -lm
-		-lclang
-		-lLLVMCore
-		-lLLVMBitReader
-		-lLLVMBitWriter
-		-lLLVMIRReader
-		-lLLVMSupport
-		-lLLVMExecutionEngine
-		-lLLVMTarget
-		-lLLVMTargetParser
-		-lLLVMTransformUtils
-		-lLLVMAnalysis
-		-lLLVMProfileData
-		-lLLVMAArch64AsmParser
-		-lLLVMAArch64CodeGen
-		-lLLVMAArch64Desc
-		-lLLVMAArch64Info
-		-lLLVMAArch64Utils
-		-lLLVMX86CodeGen
-		-lLLVMX86AsmParser
-		-lLLVMX86Desc
-		-lLLVMX86Info
-	}
-*/
 }
-
-define_class (silver, aether)
 
 define_enum  (build_state)
 define_enum  (language)
 
-define_class(export, model)
-define_class(import, model) // we should put these in ext/*.c to exemplify add-ons
+define_class (silver, aether)
+define_class (export, model)
+define_class (import, model) // we should put these in ext/*.c to exemplify add-ons
 
 module_init  (initialize)

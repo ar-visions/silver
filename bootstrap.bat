@@ -76,7 +76,8 @@ del vs_community.exe
 echo [silver] loading Visual Studio 2022 environment
 :after_vs
 
-call "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
+:: call "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
+call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" amd64
 
 :: ----------- Ensure Ninja Installed ------------
 if not exist "%NINJA_EXE%" (
@@ -124,7 +125,9 @@ pushd "%LLVM_BUILD%"
   -DBUILD_SHARED_LIBS=OFF ^
   -DLLVM_LINK_LLVM_DYLIB=OFF ^
   -DLLVM_TARGETS_TO_BUILD=host;X86;AArch64 ^
-  -DCMAKE_MAKE_PROGRAM="%NINJA_EXE%"
+  -DCMAKE_MAKE_PROGRAM="%NINJA_EXE%" ^
+  -DLLVM_BUILD_LLVM_DYLIB=ON ^
+  -DLLVM_LINK_LLVM_DYLIB=ON
 
 :: ----------- Build and Install ------------
 "%NINJA_EXE%" -j16
@@ -135,7 +138,11 @@ popd
 :echo_flags
 
 pushd "%~dp0"
-"%PYTHON3_EXE%" gen-ninja.py
+"%PYTHON3_EXE%" gen-ninja.py %1
+set EXITCODE=%ERRORLEVEL%
 popd
+
+:: return what python returns
+exit /b %EXITCODE%
 
 endlocal

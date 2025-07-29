@@ -468,6 +468,8 @@ void* primitive_ffi_arb(AType);
             lazy_init((global_init_fn)&Aglobal_##TYPE); \
             return false; \
         } else { \
+            printf("global ctr for %s\n", #TYPE); \
+            fflush(stdout); \
             memset(type_ref, 0,        sizeof(TYPE##_f)); \
             if ((AType)type_ref != (AType)base_ref) \
                 memcpy(type_ref, base_ref, sizeof(BASE##_f)); \
@@ -1234,7 +1236,8 @@ declare_class(async)
     i_method    (X,Y, public, bool,   move, path) \
     i_method    (X,Y, public, path,   latest_modified, ARef) \
     i_method    (X,Y, public, i64,    modified_time) \
-    s_method    (X,Y, public, path,   app_path, cstr) \
+    s_method    (X,Y, public, path,   self) \
+    s_method    (X,Y, public, path,   share_path, cstr) \
     s_method    (X,Y, public, path,   cwd) \
     s_method    (X,Y, public, path,   tempfile, symbol) \
     i_ctr       (X,Y, public, string) \
