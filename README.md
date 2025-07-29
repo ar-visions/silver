@@ -35,7 +35,10 @@ define_class   (silver, ether)
 
 We have named arguments in our new() macro and that means 1 ctr/init to code not arbitrary amounts.  It's a far better and more productive pattern, and even more lean than Swift.  This is a post-init call, where we have already set the properties (where holds happen on non-primitives).  A-type standard destructor will also auto-drop member delegates that are object-based.  It just means you don't have to do much memory management at all.
 
-A-type is the heart of silver, a C run-time that effectively holds teh entire implementation, along with silver's very keyword parsing types.  Implement an A-type object with a static method called parse that takes silver module instance (a model). Your class name will be called on as a keyword; you may also implement the static string keyword() method to return which keyword your class is designed to handle.  From here its a stack system based on models; your class you wrote must inherit from this model class.  We employ an API called aether to write our LLVM program; its essentially an entrance right into A-type translated to LLVM.  It's include system facilitates conversion to the aether model type.  This is effectively a friendly entrance into extending silver to do whatever you want.  Zero other languages even want you to do this.
+A-type is the heart of silver, and one may import A-type c files with silver linings; these are declaration files used in silver, with includes with schemas emitted for C.  silver is a complete reflection of A-type, and thus our schemas are ABI compatible and one in the same.
+
+A-type is generally our C run-time which manages the entire runtime.  Keywords for silver are implemented here, and we may implement silver keywords in silver as well.  Simply model your-keyword static fn parse[ silver ]
+
 
 Our design principle here is direct: to be like silver: moldable, the most-reflective, ... and not as heavy as lead.
 
