@@ -82,6 +82,7 @@ build_llvm() {
     # Base CMake arguments (from your silver import config)
     local cmake_args=(
         -S $llvm_src/llvm
+        -DCMAKE_GENERATOR_PLATFORM=x64
         -DCMAKE_C_COMPILER="gcc-14"
         -DCMAKE_CXX_COMPILER="g++-14"
         -DCMAKE_BUILD_TYPE=Release
@@ -99,8 +100,10 @@ build_llvm() {
         -DLLDB_ENABLE_PYTHON=OFF
         -DLLVM_BUILD_LLVM_DYLIB=OFF
         -DLLVM_LINK_LLVM_DYLIB=OFF
-        -DLLVM_TARGETS_TO_BUILD='host;X86;AArch64'
+        -DLLVM_TARGETS_TO_BUILD='host;X86;AArch64' # so what are these, then?  if we only get 1 set of libs installed?  is INSTALL somet other comman for other toolchain sdks?
         -DCLANG_DEFAULT_CXX_STDLIB=libstdc++
+        -DCMAKE_C_FLAGS="-m64"
+        -DCMAKE_CXX_FLAGS="-m64"
     )
 
     # Force consistent compilers

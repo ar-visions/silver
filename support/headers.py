@@ -19,6 +19,8 @@ def get_env_vars():
     }
 '''
 
+project_path = ''
+
 def get_env_vars():
     """Get required variables from command line arguments"""
     parser = argparse.ArgumentParser(description='Generate header files')
@@ -40,10 +42,10 @@ def get_env_vars():
 
 def setup_paths(env_vars):
     """Setup and validate paths"""
+    global project_path
     project_path  = env_vars['PROJECT_PATH']
     directive     = env_vars['DIRECTIVE']
     build_path    = env_vars['BUILD_PATH']
-    
     build_file    = os.path.join(project_path, "build.sf")
     src_directive = os.path.join(project_path, directive)
     
@@ -84,7 +86,7 @@ def write_import_header(module, paths, env_vars):
             sp = graph_content.split()
             graph_nodes = []
             for g in sp:
-                if not g.startswith('-l'):
+                if not g.startswith('-l') and not ':' in g:
                     graph_nodes.append(g)
             imports = [module] + graph_nodes
         else:
@@ -110,15 +112,18 @@ def write_import_header(module, paths, env_vars):
             f.write("#ifndef _IMPORT_ // only one per compilation unit\n")
             f.write("#define _IMPORT_\n")
             
+            global project_path
+            mod_src = {}
             # First pass: public headers
-            for imp in imports:
-                if imp != module:
-                    f.write(f"#include <{imp}/public>\n")
+            for mod in imports:
+                mod_src[mod] = project_path + os.sep + 'src' + os.sep + mod
+                if os.path.exists(mod_src[mod]) and mod != module:
+                    f.write(f"#include <{mod}/public>\n")
             
             # Second pass: module headers
-            for imp in imports:
-                if imp != module:
-                    f.write(f"#include <{imp}/{imp}>\n")
+            for mod in imports:
+                if os.path.exists(mod_src[mod]) and mod != module:
+                    f.write(f"#include <{mod}/{mod}>\n")
             
             # Module-specific includes
             f.write(f"#include <{module}/intern>\n")
@@ -128,14 +133,14 @@ def write_import_header(module, paths, env_vars):
             f.write("#undef dealloc\n")
             
             # Third pass: init headers
-            for imp in imports:
-                if imp != module:
-                    f.write(f"#include <{imp}/init>\n")
+            for mod in imports:
+                if os.path.exists(mod_src[mod]) and mod != module:
+                    f.write(f"#include <{mod}/init>\n")
             
             # Fourth pass: methods headers
-            for imp in imports:
-                if imp != module:
-                    f.write(f"#include <{imp}/methods>\n")
+            for mod in imports:
+                if os.path.exists(mod_src[mod]) and mod != module:
+                    f.write(f"#include <{mod}/methods>\n")
             
             f.write(f"#include <{module}/init>\n")
             f.write("\n")

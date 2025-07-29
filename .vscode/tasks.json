@@ -4,6 +4,7 @@
         {
             "label": "bootstrap",
             "command": "${workspaceFolder}/bootstrap.bat",
+            "args": ["--debug"],
     		"options": {
                 "cwd": "${workspaceFolder}/debug"
             }
@@ -28,6 +29,7 @@
 			"problemMatcher": ["$gcc"],
             "dependsOn": "bootstrap",
             "command": "${workspaceFolder}/bin/ninja.exe",
+            "args": ["-v"],
             "osx": {
                 "command": "make"
             },

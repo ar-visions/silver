@@ -4,36 +4,37 @@ Direct Ninja build file generator for Silver project
 Converts CMakeLists.txt logic to build.ninja
 """
 
-import os
-import sys
-import glob
-import platform
-from pathlib import Path
-import argparse
+import  os
+import  sys
+import  glob
+import  platform
+import  argparse
+import  subprocess
+from    pathlib import Path
 
-parser = argparse.ArgumentParser(description='Generate Ninja')
+parser      = argparse.ArgumentParser(description='Generate Ninja')
 parser.add_argument('--debug', action='store_true', help='Debug')
-args = parser.parse_args()
-is_debug = args.debug
 
-system = platform.system()
-
-silver = Path(__file__).resolve().parent
+args        = parser.parse_args()
+is_debug    = args.debug
+system      = platform.system()
+silver      = Path(__file__).resolve().parent
 
 def get_platform_info():
     """Get platform-specific settings"""
     global system
     global silver
-    # fetch the Windows SDK directory dynamically; there can be many and we may want the latest sort
-    if system == "Windows":
-        return {
-            'exe_suffix': '.exe',
-            'lib_prefix': '',
-            'lib_suffix': '.dll',
-            'obj_suffix': '.obj',
-            'clang_exe': f'{silver}/bin/clang.exe',
+    
+    base_info = {
+        'Windows': {
+            'exe_suffix':   '.exe',
+            'lib_prefix':   '',
+            'lib_suffix':   '.lib',
+            'obj_suffix':   '.obj',
+            'llvm_ar_exe':  f'{silver}/bin/llvm-ar.exe',
+            'clang_exe':    f'{silver}/bin/clang.exe',
             'clangcpp_exe': f'{silver}/bin/clang++.exe',
-            'ninja_exe': 'build/ninja/ninja.exe',
+            'ninja_exe':    'build/ninja/ninja.exe',
             'includes': [
                 r'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\include',
                 r'C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um',
@@ -41,41 +42,65 @@ def get_platform_info():
                 r'C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\shared'
             ],
             'libs': [
+                f'{silver}\\bin',
                 r'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\lib\x64',
                 r'C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\ucrt\x64',
                 r'C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\x64'
-            ]
-        }
-    elif system == "Darwin":
-        sdk_root = subprocess.check_output(["xcrun", "--show-sdk-path"]).decode().strip()
-
-        return {
-            'exe_suffix': '',
-            'lib_prefix': 'lib',
-            'lib_suffix': '.dylib',
-            'obj_suffix': '.o',
-            'clang_exe': f'{silver}/bin/clang',
+            ],
+            'lflags': [
+                '-fuse-ld=lld',
+                '-Wl,/debug',
+                '-Wl,/pdb:$root/bin/silver.pdb',
+                '-Wl,/SUBSYSTEM:CONSOLE',
+                '-Wl,/NODEFAULTLIB:libcmt', '-Wl,/DEFAULTLIB:msvcrt' ],
+            'cflags':       [ '-D_MT' ],
+            'cxxflags':     [ '-D_MT' ],
+            'system_libs':  ['-luser32', '-lkernel32', '-lshell32', '-llegacy_stdio_definitions']
+        },
+        'Darwin': {
+            'exe_suffix':   '',
+            'lib_prefix':   'lib',
+            'lib_suffix':   '.dylib',
+            'obj_suffix':   '.o',
+            'clang_exe':    f'{silver}/bin/clang',
             'clangcpp_exe': f'{silver}/bin/clang++',
-            'ninja_exe': 'ninja',
-            'includes': [ f'{sdk_root}/usr/include' ],
-            'libs': [ f'{sdk_root}/usr/lib' ]
-        }
-    else:  # Linux
-        return {
-            'exe_suffix': '',
-            'lib_prefix': 'lib',
-            'lib_suffix': '.so',
-            'obj_suffix': '.o',
-            'clang_exe': f'{silver}/bin/clang',
+            'ninja_exe':    'ninja',
+            'includes':     [],  # Will be filled dynamically
+            'libs':         [],  # Will be filled dynamically
+            'lflags':       [ ],
+            'cflags':       [ ],
+            'cxxflags':     [ ],
+            'system_libs':  ['-lc', '-lm']
+        },
+        'Linux': {
+            'exe_suffix':   '',
+            'lib_prefix':   'lib',
+            'lib_suffix':   '.so',
+            'obj_suffix':   '.o',
+            'clang_exe':    f'{silver}/bin/clang',
             'clangcpp_exe': f'{silver}/bin/clang++',
-            'ninja_exe': 'ninja',
-            'includes': [
+            'ninja_exe':    'ninja',
+            'includes':     [
                 '/usr/include',
                 '/usr/include/x86_64-linux-gnu'
             ],
-            'libs': [
-            ]
+            'libs':         [ ],
+            'lflags':       [ ],
+            'cflags':       [ '-D_DLL', '-D_MT' ],
+            'cxxflags':     [ '-D_DLL', '-D_MT' ],
+            'system_libs':  ['-lc', '-lm']
         }
+    }
+    
+    info = base_info.get(system, base_info['Linux'])
+    
+    # Special handling for macOS SDK
+    if system == "Darwin":
+        sdk_root = subprocess.check_output(["xcrun", "--show-sdk-path"]).decode().strip()
+        info['includes'] = [f'{sdk_root}/usr/include']
+        info['libs'] = [f'{sdk_root}/usr/lib']
+    
+    return info
 
 def find_sources(pattern):
     """Find source files matching pattern"""
@@ -96,8 +121,20 @@ def parse_g_file(g_file_path):
     dependencies = []
     link_flags = []
     
+    global system
     for part in parts:
-        if part.startswith('-l'):
+        is_not = part[0] == '!'
+        if is_not: part = part[1:]
+
+        if ':' in part:
+            kind, r = part.split(':', 1)
+            if is_not ^ (kind.lower() == system.lower()):
+                if r.startswith('-l'):
+                    link_flags.append(r)
+                else:
+                    dependencies.append(r)
+                
+        elif part.startswith('-l'):
             # Library flag
             link_flags.append(part)
         else:
@@ -131,26 +168,77 @@ def escape_path(path):
     path = path.replace(':', '$:')
     return path
 
-def normalize_path_for_ninja(path, root_dir):
-    """Normalize path for ninja, using relative paths on Windows to avoid colon issues"""
-    path_obj = Path(path)
-    root_obj = Path(root_dir)
-    
-    try:
-        # Try to make it relative to root directory
-        rel_path = path_obj.relative_to(root_obj)
-        return str(rel_path).replace('\\', '/')
-    except ValueError:
-        # If not relative, use absolute but escape colons on Windows
-        abs_path = str(path_obj).replace('\\', '/')
-        if ':' in abs_path and system == "Windows":
-            # Use $root variable for absolute paths
-            return abs_path.replace(str(root_obj).replace('\\', '/'), '$root')
-        return abs_path
-
 def normalize_path(path):
     """Normalize path for ninja (always use forward slashes)"""
     return str(path).replace('\\', '/')
+
+def resolve_build_order(modules):
+    """Resolve build order based on dependencies in .g files"""
+    ordered = []
+    remaining = modules.copy()
+    module_map = {m['name']: m for m in modules}
+    
+    while remaining:
+        # Find modules with no unresolved dependencies
+        ready = []
+        for module in remaining:
+            deps_satisfied = True
+            for dep in module['dependencies']:
+                if dep in module_map and module_map[dep] in remaining:
+                    deps_satisfied = False
+                    break
+            if deps_satisfied:
+                ready.append(module)
+        
+        if not ready:
+            # Circular dependency or missing dependency - just add remaining
+            ready = remaining.copy()
+        
+        ordered.extend(ready)
+        for module in ready:
+            remaining.remove(module)
+    
+    return ordered
+
+class NinjaBuilder:
+    """Builder class to construct ninja file content"""
+    def __init__(self, project_name, root_dir, build_dir, platform):
+        self.project_name = project_name
+        self.root_dir = root_dir
+        self.build_dir = build_dir
+        self.platform = platform
+        self.content = []
+        self.indent = 0
+        
+    def add_comment(self, comment):
+        self.content.append(f"# {comment}")
+        
+    def add_blank(self):
+        self.content.append("")
+        
+    def add_variable(self, name, value):
+        self.content.append(f"{name} = {value}")
+        
+    def add_rule(self, name, command, description, **kwargs):
+        self.content.append(f"rule {name}")
+        self.content.append(f"  command = {command}")
+        self.content.append(f"  description = {description}")
+        for key, value in kwargs.items():
+            self.content.append(f"  {key} = {value}")
+            
+    def add_build(self, outputs, rule, inputs, deps=None, **variables):
+        line = f"build {outputs}: {rule} {inputs}"
+        if deps:
+            line += f" | {deps}"
+        self.content.append(line)
+        for key, value in variables.items():
+            self.content.append(f"  {key} = {value}")
+            
+    def add_default(self, targets):
+        self.content.append(f"default {targets}")
+        
+    def get_content(self):
+        return "\n".join(self.content)
 
 def generate_ninja_build():
     """Generate build.ninja file"""
@@ -158,12 +246,12 @@ def generate_ninja_build():
     # Configuration
     project_name = "silver"
     root_dir = Path.cwd()
-    build_dir = root_dir / "debug"  # Headers output to debug, ninja file in root
+    build_dir = root_dir / "debug"
     platform = get_platform_info()
 
     os.makedirs(build_dir, exist_ok=True)
     compile_rsp = os.path.join(build_dir, "compile.rsp")
-    link_rsp    = os.path.join(build_dir, "link.rsp")
+    link_rsp = os.path.join(build_dir, "link.rsp")
 
     # --- Compile .rsp ---
     with open(compile_rsp, "w") as f:
@@ -175,24 +263,15 @@ def generate_ninja_build():
         for lib in platform.get("libs", []):
             f.write(f'-L"{lib}"\n')
         
-        # standard system libs for C
-        if system == 'Windows':
-            f.write("-luser32\n")
-            f.write("-lkernel32\n")
-            f.write("-lshell32\n")
-            f.write("-llegacy_stdio_definitions\n")
-        else:
-            f.write("-lc\n")
-            f.write("-lm\n")
+        # Add system libraries
+        for lib in platform.get("system_libs", []):
+            f.write(f"{lib}\n")
 
-
-    # lets make the rsp files here for compile, link 
-    
     # Normalize paths for ninja
     root_path = normalize_path(root_dir)
     build_path = normalize_path(build_dir)
     
-    # Paths - check multiple locations for Python
+    # Find Python executable
     python_paths = [
         root_dir / "bin" / f"python{platform['exe_suffix']}"
     ]
@@ -204,50 +283,21 @@ def generate_ninja_build():
             break
     
     if not python_exe:
-        # Fallback to system python
         python_exe = "python3" if platform['exe_suffix'] == '' else "python"
     
     clang_exe = platform['clang_exe']
     clangcpp_exe = platform['clangcpp_exe']
-    
-    # Source files with dependency analysis
+    llvm_ar_exe = platform['llvm_ar_exe']
+
+    # Find source files
     src_c_files = find_sources("src/*.c")
     src_cc_files = find_sources("src/*.cc") 
     app_c_files = find_sources("app/*.c")
     app_cc_files = find_sources("app/*.cc")
     
-    # Parse module information including .g files
+    # Parse module information
     src_modules = [get_module_info(f) for f in src_c_files + src_cc_files]
     app_modules = [get_module_info(f) for f in app_c_files + app_cc_files]
-    
-    # Build dependency graph for ordering
-    def resolve_build_order(modules):
-        """Resolve build order based on dependencies in .g files"""
-        ordered = []
-        remaining = modules.copy()
-        module_map = {m['name']: m for m in modules}
-        
-        while remaining:
-            # Find modules with no unresolved dependencies
-            ready = []
-            for module in remaining:
-                deps_satisfied = True
-                for dep in module['dependencies']:
-                    if dep in module_map and module_map[dep] in remaining:
-                        deps_satisfied = False
-                        break
-                if deps_satisfied:
-                    ready.append(module)
-            
-            if not ready:
-                # Circular dependency or missing dependency - just add remaining
-                ready = remaining.copy()
-            
-            ordered.extend(ready)
-            for module in ready:
-                remaining.remove(module)
-        
-        return ordered
     
     # Resolve build orders
     src_modules_ordered = resolve_build_order(src_modules)
@@ -268,7 +318,6 @@ def generate_ninja_build():
     
     # Platform-specific flags
     if platform['exe_suffix'] == '.exe':  # Windows
-        # Force GNU target triple and add Windows-specific flags
         base_c_flags.extend([
             "--target=x86_64-pc-windows-msvc",
             "-fno-ms-compatibility",
@@ -280,15 +329,15 @@ def generate_ninja_build():
             "-fvisibility=default"
         ])
     
-    debug_flags   = base_c_flags + ["-g2", "-O0"]
+    debug_flags = base_c_flags + ["-g", "-O0"]
     release_flags = base_c_flags + ["-O2"]
 
     if is_debug:
-        c_flags   = debug_flags
-        cxx_flags = debug_flags + ["-std=c++17"]  # Using debug by default
+        c_flags = debug_flags + platform['cflags']
+        cxx_flags = debug_flags + platform['cxxflags'] + ["-std=c++17"]
     else:
-        c_flags   = release_flags
-        cxx_flags = release_flags + ["-std=c++17"]  # Using debug by default
+        c_flags = release_flags + platform['cflags']
+        cxx_flags = release_flags + platform['cxxflags'] + ["-std=c++17"]
 
     # Include directories
     includes = [
@@ -299,102 +348,131 @@ def generate_ninja_build():
         f"-I{root_path}/include"
     ]
     
-    cflags   = ' '.join(c_flags   + includes)
+    cflags = ' '.join(c_flags + includes)
     cxxflags = ' '.join(cxx_flags + includes)
-    # Generate build.ninja content
-    ninja_content = f"""# Generated Ninja build file for {project_name}
-# Build directory: {build_path}
-
-ninja_required_version = 1.5
-
-# Variables
-clang = {clang_exe}
-clangcpp = {clangcpp_exe}
-python = {python_exe}
-root = {root_path}
-builddir = {build_path}
-project = {project_name}
-
-# Compiler flags
-cflags = {cflags}
-cxxflags = {cxxflags}
-ldflags = -L{root_path}/lib
-
-# Build rules
-rule cc
-  command = $clang @{compile_rsp} $cflags -DMODULE="\\"$project\\"" -c $in -o $out
-  description = Compiling C $in
-  depfile = $out.d
-  deps = gcc
-
-rule cxx  
-  command = $clangcpp @{compile_rsp} $cxxflags -DMODULE="\\"$project\\"" -c $in -o $out
-  description = Compiling C++ $in
-  depfile = $out.d
-  deps = gcc
-
-rule link_shared
-  command = $clang @{link_rsp} -shared $in -o $root/$out $ldflags $libs"""
-
-    # Add platform-specific linking
-    if platform['exe_suffix'] == '':  # Unix-like
-        ninja_content += f"""
-  description = Linking shared library $out
-
-rule link_exe
-  command = $clang @{link_rsp} $in -o $root/$out $ldflags -l$project $libs"""
-        if platform['lib_suffix'] == '.dylib':  # macOS
-            ninja_content = ninja_content.replace(f'rule link_shared\n  command = $clang @{link_rsp} -shared $in -o $root/$out $ldflags $libs',
-                                                f'rule link_shared\n  command = $clang @{link_rsp} -shared $in -o $root/$out $ldflags $libs -Wl,-install_name,@rpath/lib$project.dylib')
-            ninja_content += " -Wl,-rpath,@executable_path/../lib"
-        else:  # Linux
-            ninja_content = ninja_content.replace(f'rule link_shared\n  command = $clang @{link_rsp} -shared $in -o $root/$out $ldflags $libs',
-                                                f'rule link_shared\n  command = $clang @{link_rsp} -shared $in -o $root/$out $ldflags $libs -Wl,-soname,lib$project.so')
-            ninja_content += " -Wl,-rpath,$ORIGIN/../lib"
-    else:  # Windows
-        ninja_content += f"""
-  description = Linking shared library $out
-
-rule link_exe
-  command = $clang @{link_rsp} $in -o $root/$out $ldflags -l$project $libs"""
-            
-    ninja_content += f"""
-  description = Linking executable $out
-
-rule python_header_src
-  command = $python  $root/support/headers.py --project-path $root --directive src --build-path $builddir --project $project --import $root
-  description = Generating src headers
-
-rule python_header_app  
-  command = $python  $root/support/headers.py --project-path $root --directive app --build-path $builddir --project $project --import $root
-  description = Generating app headers
-
-# Header generation targets
-build src_headers: python_header_src
-build app_headers: python_header_app
-
-# Object files for library (respecting build order)
-"""
-
-    # Generate object file builds for library sources in dependency order
+    
+    # Create ninja builder
+    ninja = NinjaBuilder(project_name, root_dir, build_dir, platform)
+    
+    # Header
+    ninja.add_comment(f"Generated Ninja build file for {project_name}")
+    ninja.add_comment(f"Build directory: {build_path}")
+    ninja.add_blank()
+    
+    ninja.add_variable("ninja_required_version", "1.5")
+    ninja.add_blank()
+    
+    # Variables
+    ninja.add_comment("Variables")
+    ninja.add_variable("llvm_ar", llvm_ar_exe)
+    ninja.add_variable("clang", clang_exe)
+    ninja.add_variable("clangcpp", clangcpp_exe)
+    ninja.add_variable("python", python_exe)
+    ninja.add_variable("root", root_path)
+    ninja.add_variable("builddir", build_path)
+    ninja.add_variable("project", project_name)
+    ninja.add_blank()
+    
+    # Compiler flags
+    ninja.add_comment("Compiler flags")
+    ninja.add_variable("cflags", cflags)
+    ninja.add_variable("cxxflags", cxxflags)
+    ninja.add_variable("ldflags", f"-L{root_path}/lib " + ' '.join(platform['lflags']))
+    ninja.add_blank()
+    
+    # Build rules
+    ninja.add_comment("Build rules")
+    ninja.add_rule("cc",
+        command=f"$clang @{compile_rsp} $cflags -DMODULE=\"\\\"$project\\\"\" -c $in -o $out",
+        description="Compiling C $in",
+        depfile="$out.d",
+        deps="gcc"
+    )
+    ninja.add_blank()
+    
+    ninja.add_rule("cxx",
+        command=f"$clangcpp @{compile_rsp} $cxxflags -DMODULE=\"\\\"$project\\\"\" -c $in -o $out",
+        description="Compiling C++ $in",
+        depfile="$out.d",
+        deps="gcc"
+    )
+    ninja.add_blank()
+    
+    # Platform-specific link rules
+    if system == "Windows":
+        ninja.add_rule("link_static",
+            command=f"$llvm_ar rcs $root/$out $in",
+            #command=f"$clang @{link_rsp} $in -o $root/$out $ldflags $libs",
+            description="Linking shared library $out"
+        )
+        ninja.add_blank()
+        
+        ninja.add_rule("link_exe",
+            command=f"$clang @{link_rsp} $in -o $root/$out $ldflags -l$project $libs",
+            description="Linking executable $out"
+        )
+    elif system == "Darwin":
+        ninja.add_rule("link_static",
+            command=f"$clang @{link_rsp} $in -o $root/$out $ldflags $libs",
+            description="Linking shared library $out"
+        )
+        ninja.add_blank()
+        
+        ninja.add_rule("link_exe",
+            command=f"$clang @{link_rsp} $in -o $root/$out $ldflags -l$project $libs -Wl,-rpath,@executable_path/../lib",
+            description="Linking executable $out"
+        )
+    else:  # Linux
+        ninja.add_rule("link_static",
+            command=f"$clang @{link_rsp} $in -o $root/$out $ldflags $libs",
+            description="Linking shared library $out"
+        )
+        ninja.add_blank()
+        
+        ninja.add_rule("link_exe",
+            command=f"$clang @{link_rsp} $in -o $root/$out $ldflags -l$project $libs -Wl,-rpath,$ORIGIN/../lib",
+            description="Linking executable $out"
+        )
+    ninja.add_blank()
+    
+    # Python header generation rules
+    ninja.add_rule("python_header_src",
+        command="$python $root/support/headers.py --project-path $root --directive src --build-path $builddir --project $project --import $root",
+        description="Generating src headers"
+    )
+    ninja.add_blank()
+    
+    ninja.add_rule("python_header_app",
+        command="$python $root/support/headers.py --project-path $root --directive app --build-path $builddir --project $project --import $root",
+        description="Generating app headers"
+    )
+    ninja.add_blank()
+    
+    # Header generation targets
+    ninja.add_comment("Header generation targets")
+    ninja.add_build("src_headers", "python_header_src", "")
+    ninja.add_build("app_headers", "python_header_app", "")
+    ninja.add_blank()
+    
+    # Object files for library
+    ninja.add_comment("Object files for library (respecting build order)")
     lib_objects = []
     lib_link_flags = set()
     
     for module in src_modules_ordered:
         src = Path(module['source']).resolve()
         stem = src.stem
-        src_dbg_path = f'-I{build_path}/src/{stem}' # do i append in here?
-
+        src_dbg_path = f'-I{build_path}/src/{stem}'
+        
         obj = f"$builddir/lib_{module['name']}{platform['obj_suffix']}"
         lib_objects.append(obj)
         
         # Collect link flags from .g files
         lib_link_flags.update(module['link_flags'])
         
-        # Build dependencies - other modules this depends on
+        # Build dependencies
         deps = ["src_headers"]
         for dep_name in module['dependencies']:
-            # Find the dependency object file
             for other_module in src_modules_ordered:
                 if other_module['name'] == dep_name:
                     dep_obj = f"$builddir/lib_{dep_name}{platform['obj_suffix']}"
@@ -403,29 +481,38 @@ build app_headers: python_header_app
         
         # Determine compiler rule
         rule = "cxx" if str(src).endswith(('.cc', '.cpp', '.cxx')) else "cc"
+        deps_str = " ".join(deps) if deps else None
         
-        deps_str = " | " + " ".join(deps) if len(deps) > 0 else ""
-        ninja_content += f"build {obj}: {rule} {escape_path(normalize_path(src))}{deps_str}\n"
-        
+        # Build variables
+        build_vars = {}
         if rule == "cc":
-            ninja_content += f"  cflags = {src_dbg_path} {cflags}\n"
+            build_vars["cflags"] = f"{src_dbg_path} {cflags}"
         else:
-            ninja_content += f"  cxxflags = {src_dbg_path} {cxxflags}\n"
+            build_vars["cxxflags"] = f"{src_dbg_path} {cxxflags}"
+        
+        ninja.add_build(obj, rule, escape_path(normalize_path(src)), deps=deps_str, **build_vars)
         
         if module['has_g_file']:
-            ninja_content += f"  # Dependencies from {module['name']}.g: {' '.join(module['dependencies'])}\n"
+            ninja.add_comment(f"Dependencies from {module['name']}.g: {' '.join(module['dependencies'])}")
             if module['link_flags']:
-                ninja_content += f"  # Link flags: {' '.join(module['link_flags'])}\n"
+                ninja.add_comment(f"Link flags: {' '.join(module['link_flags'])}")
     
-    # Shared library with collected link flags
+    ninja.add_blank()
+    
+    # Shared library
+    ninja.add_comment("Shared library")
     lib_name = f"lib/{platform['lib_prefix']}{project_name}{platform['lib_suffix']}"
-    lib_flags = ' '.join(sorted(lib_link_flags)) if lib_link_flags else ''
-    ninja_content += f"\n# Shared library\nbuild {lib_name}: link_shared {' '.join(lib_objects)}\n"
-    if lib_flags:
-        ninja_content += f"  libs = {lib_flags}\n"
+    lib_flags = ' '.join(platform['lflags'] + sorted(lib_link_flags)) if lib_link_flags else ''
     
-    # Executables with dependency tracking
-    ninja_content += "\n# Executables\n"
+    build_vars = {}
+    if lib_flags:
+        build_vars["libs"] = lib_flags
+    
+    ninja.add_build(lib_name, "link_static", ' '.join(lib_objects), **build_vars)
+    ninja.add_blank()
+    
+    # Executables
+    ninja.add_comment("Executables")
     exe_targets = []
     
     for module in app_modules_ordered:
@@ -444,7 +531,7 @@ build app_headers: python_header_app
                     dep_obj = f"$builddir/lib_{dep_name}{platform['obj_suffix']}"
                     deps.append(dep_obj)
                     break
-            # Check if dependency is in other app modules  
+            # Check if dependency is in other app modules
             for app_module in app_modules_ordered:
                 if app_module['name'] == dep_name and app_module != module:
                     dep_obj = f"$builddir/app_{dep_name}{platform['obj_suffix']}"
@@ -453,35 +540,41 @@ build app_headers: python_header_app
         
         # Object file
         rule = "cxx" if str(src).endswith(('.cc', '.cpp', '.cxx')) else "cc"
-        deps_str = " | " + " ".join(deps) if len(deps) > 0 else ""
-        ninja_content += f"build {obj}: {rule} {escape_path(normalize_path(src))}{deps_str}\n"
+        deps_str = " ".join(deps) if deps else None
+        
+        ninja.add_build(obj, rule, escape_path(normalize_path(src)), deps=deps_str)
         
         if module['has_g_file']:
-            ninja_content += f"  # Dependencies from {app_name}.g: {' '.join(module['dependencies'])}\n"
+            ninja.add_comment(f"Dependencies from {app_name}.g: {' '.join(module['dependencies'])}")
         
-        # Executable with link flags from .g file
-        exe_libs = ' '.join(module['link_flags']) if module['link_flags'] else ''
-        ninja_content += f"build {exe}: link_exe {obj} | {lib_name}\n"
-        if exe_libs:
-            ninja_content += f"  libs = {exe_libs}\n"
+        # Executable with link flags
+        exe_vars = {}
+        if module['link_flags']:
+            exe_vars["libs"] = ' '.join(module['link_flags'])
+        
+        ninja.add_build(exe, "link_exe", obj, deps=lib_name, **exe_vars)
+    
+    ninja.add_blank()
     
     # Default target
-    ninja_content += f"\n# Default target\nbuild all: phony {lib_name} {' '.join(exe_targets)}\ndefault all\n"
+    ninja.add_comment("Default target")
+    all_targets = f"{lib_name} {' '.join(exe_targets)}"
+    ninja.add_build("all", "phony", all_targets)
+    ninja.add_default("all")
     
     # Write build.ninja
     build_ninja = build_dir / "build.ninja"
     build_dir.mkdir(exist_ok=True)
     
     with open(build_ninja, 'w') as f:
-        f.write(ninja_content)
+        f.write(ninja.get_content())
+        f.write('\n')
     
     print(f"Generated {build_ninja}")
     return build_ninja
 
 def run_ninja_build(ninja_file):
     """Run the ninja build"""
-    import subprocess
-    
     platform = get_platform_info()
     ninja_exe = Path.cwd() / platform['ninja_exe'].replace('.exe', platform['exe_suffix'])
     

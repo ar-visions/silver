@@ -76,6 +76,13 @@ void aether_push_member(aether e, emember mem) {
 
 #define no_target null
 
+
+none aether_test_model(aether e) {
+    int offset = offsetof(struct _aether, source);
+    int test2 = 2;
+    test2 += 2;
+}
+
 /// this is more useful as a primitive, to include actual A-type in aether's primitive abstract
 AType model_primitive(model mdl) {
     model src = mdl->src;

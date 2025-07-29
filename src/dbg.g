@@ -1,2 +1,2 @@
 A
--lm -llldb
+linux:-lm -llldb

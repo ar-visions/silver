@@ -922,7 +922,7 @@ none A_startup(cstrs argv) {
     if (started) return;
 
     int argc    = 0;
-    while (argv[argc]) argc++;
+    if (argv) while (argv[argc]) argc++;
     started     = true;
     fault_level = level_err;
     log_funcs   = hold(map(hsize, 32, unmanaged, true));
@@ -1006,7 +1006,8 @@ none A_startup(cstrs argv) {
             }
         }
     }
-    path_app_path((cstr)argv[0]);
+    if (argv)
+        path_share_path((cstr)argv[0]);
     /*
     if (!app_schema) {
         string default_arg = null;
@@ -3563,9 +3564,8 @@ path path_change_ext(path a, cstr ext) {
     return res;
 }
 
-path path_app_path(cstr name) {
+path path_self() {
     char exe[4096];
-
 #if defined(__APPLE__)
     uint32_t size = sizeof(exe);
     if (_NSGetExecutablePath(exe, &size) != 0) return path(""); // fail safe
@@ -3574,10 +3574,13 @@ path path_app_path(cstr name) {
     if (len == -1) return path(""); // fail safe
     exe[len] = '\0';
 #endif
+    return path(exe);
+}
 
-    cstr last = strrchr(exe, '/');
-    if (last) *last = '\0';
-    path res = form(path, "%s/../share/%s/", exe, name);
+path path_share_path(cstr name) {
+    path exe    = path_self();
+    path parent = path_parent(exe); // verify this folder is bin?
+    path res    = form(path, "%o/../share/%s/", parent, name);
     if (dir_exists("%o", res)) {
         cd(res);
         return res;
@@ -3638,12 +3641,8 @@ Exists A_exists(A o) {
 }
 
 bool path_exists(path a) {
-    FILE *file = fopen(a->chars, "r");
-    if (file) {
-        fclose(file);
-        return true; // File exists
-    }
-    return false; // File does not exist
+    struct stat st;
+    return stat(a->chars, &st) == 0;
 }
 
 u64 path_hash(path a) {
@@ -3833,7 +3832,7 @@ static array read_lines(path f) {
     return lines;
 }
 
-A path_read(path a, AType type, ctx context) {
+A path_load(path a, AType type, ctx context) {
     if (is_dir(a)) return null;
     if (type == typeid(array))
         return read_lines(a);

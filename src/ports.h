@@ -1,6 +1,10 @@
 #ifndef _PORT_
 #define _PORT_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // portable dirent / gettimeofday functionality
 #ifdef _WIN32
 typedef struct DIR DIR;
@@ -327,4 +331,9 @@ typedef fd_set  _fd_set_;
 
 #endif
 #endif
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif

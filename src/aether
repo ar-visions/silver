@@ -58,7 +58,7 @@ declare_enum(reference)
 
 
 #define model_schema(X,Y,...)\
-    i_prop    (X,Y, required,   aether,            mod) \
+    i_prop    (X,Y, required,   aether,           mod) \
     i_prop    (X,Y, public,     token,            name) \
     i_prop    (X,Y, public,     string,           namespace_name) \
     i_prop    (X,Y, public,     bool,             is_alias) \
@@ -230,8 +230,8 @@ declare_class_2(emember, enode)
 declare_class(code)
 
 #define aether_schema(X,Y,...)\
-    i_prop    (X,Y, required,   path,                   install) \
-    i_prop    (X,Y, public,     path,                   source) \
+    i_prop    (X,Y, public,     path,                   install) \
+    i_prop    (X,Y, required,   path,                   source) \
     i_prop    (X,Y, public,     bool,                   delegate) \
     i_prop    (X,Y, public,     bool,                   with_debug) \
     i_prop    (X,Y, intern,     path,                   current_include) \
@@ -256,6 +256,7 @@ declare_class(code)
     i_prop    (X,Y, public,     array,                  tokens) \
     i_prop    (X,Y, public,     array,          stack) \
     i_prop    (X,Y, public,     num,            cursor) \
+    i_method  (X,Y, public,     none,           test_model) \
     i_method  (X,Y, public,     none,           push_state,   array, num) \
     i_method  (X,Y, public,     none,           push_current) \
     i_method  (X,Y, public,     none,           pop_state, bool) \

@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ports.h>
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <time.h>
 #include <io.h>
@@ -24,12 +25,14 @@
 #include <thread>
 #include <atomic>
 
+extern "C" {
 BOOL EnumProcessModules(
     HANDLE  hProcess,
     HMODULE *lphModule,
     DWORD   cb,
     LPDWORD lpcbNeeded
 );
+}
 
 #pragma comment(lib, "psapi.lib")
 
@@ -801,8 +804,8 @@ ssize_t write(int fd, void* buf, size_t sz) {
     return _write(fd, buf, sz);
 }
 
-FILE* _fdopen(int fd, const char* mode) {
-    return fdopen(fd, mode);
+FILE* fdopen(int fd, const char* mode) {
+    return _fdopen(fd, mode);
 }
 
 #define MUTEX(m) ((LPCRITICAL_SECTION)(m))
@@ -961,8 +964,8 @@ int open(const char* pathname, int flags, ...) {
 
 // Select function for named pipes (we do not want to merge sockets into this api, but could)
 // while nicer to look at, it would be less secure by nature
-int select(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds, struct timeval* timeout) {
-    fd_set result_read, result_write, result_except;
+int select(int nfds, _fd_set_* readfds, _fd_set_* writefds, _fd_set_* exceptfds, struct _timeval_* timeout) {
+    _fd_set_ result_read, result_write, result_except;
     int ready_count = 0;
     DWORD wait_time;
     
@@ -1335,7 +1338,7 @@ int inotify_close(int fd) {
 #endif
 
 int64_t epoch_millis() {
-    struct timeval tv;
+    struct _timeval_ tv;
     gettimeofday((struct _timeval_*)&tv, 0L);
     return (int64_t)(tv.tv_sec) * 1000 + (int64_t)(tv.tv_usec) / 1000;
 }
