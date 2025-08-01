@@ -1278,7 +1278,22 @@
 #define          put(t,    ...)   formatter((AType)null,      stdout, (A)false, (symbol)t, ## __VA_ARGS__)
 //#define        print(L, t,    ...) formatter((AType)null,      stdout, (A)true,  (symbol)t, ## __VA_ARGS__)
 #define        error(t, ...)      formatter((AType)null,      stderr, (A)true,  (symbol)t, ## __VA_ARGS__)
-#define        fault(t, ...) do { formatter((AType)null,      stderr, (A)true,  (symbol)t, ## __VA_ARGS__); exit(1); } while(0)
+
+
+#define print(t, ...)   ({\
+    static string _topic = null; \
+    if (!_topic) _topic = (string)hold((A)string(__func__)); \
+    formatter((AType)null, stdout, (A)_topic, t, ## __VA_ARGS__); \
+})
+
+#define fault(t, ...) do {\
+    static string _topic = null; \
+    if (!_topic) _topic = (string)hold((A)string(__func__)); \
+     formatter((AType)null, stderr, (A)_topic,  (symbol)t, ## __VA_ARGS__); \
+     exit(1); \
+    } while(0)
+
+
 #define  file_exists(t, ...)     (A_exists(formatter((AType)null, null, (A)false, (symbol)t, ## __VA_ARGS__)) == Exists_file)
 #define   dir_exists(t, ...)     (A_exists(formatter((AType)null, null, (A)false, (symbol)t, ## __VA_ARGS__)) == Exists_dir)
 #ifndef NDEBUG
@@ -1302,6 +1317,11 @@
 
 #undef min
 #undef max
+
+#define sqr(x) ({ \
+    __typeof__(x) a = x; \
+    a*a \
+})\
 
 #define min(A, B) ({ \
     __typeof__(A) a = A; \

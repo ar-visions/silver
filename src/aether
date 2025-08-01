@@ -119,6 +119,9 @@ declare_class(format_attr)
 
 #define function_schema(X,Y,...) \
     i_prop(X,Y, public,     bool,                   is_cast) \
+    i_prop(X,Y, public,     bool,                   is_ctr) \
+    i_prop(X,Y, public,     bool,                   is_idx) \
+    i_prop(X,Y, public,     OPType,                 is_oper) \
     i_prop(X,Y, public,     bool,                   is_ifinal) \
     i_prop(X,Y, public,     bool,                   is_global_ctr) \
     i_prop(X,Y, public,     bool,                   is_init) \
@@ -260,7 +263,7 @@ declare_class(code)
     i_method  (X,Y, public,     none,           push_state,   array, num) \
     i_method  (X,Y, public,     none,           push_current) \
     i_method  (X,Y, public,     none,           pop_state, bool) \
-    i_method  (X,Y, public,     model,          runtime_resolve, AType) \
+    i_method  (X,Y, public,     model,          runtime_resolve, AType, bool) \
     i_method  (X,Y, public,     enode,           fn_return,      A) \
     i_method  (X,Y, public,     enode,           default_value,  model) \
     i_method  (X,Y, public,     enode,           builder,        subprocedure) \

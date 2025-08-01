@@ -66,7 +66,7 @@ static string op_lang_token(string name) {
 static void initialize() {
 
     keywords = array_of_cstr(
-        "class",    "proto",    "struct",
+        "class",    "proto",    "struct", "override",
         "import",   "typeof",   "schema",
         "is",       "inherits", "ref",
         "const",    "inlaid",   "require",
@@ -157,7 +157,7 @@ void build_function(silver mod, function fn) {
         if (!mod->last_return) {
             enode r_auto = null;
             if (fn->record && fn->target)
-                r_auto = lookup2(mod, string("this"), null);
+                r_auto = lookup2(mod, string("a"), null);
             else if (fn->rtype == emodel("void"))
                 r_auto = enode(mdl, emodel("void"));
             else {
@@ -923,7 +923,7 @@ enode silver_read_node(silver mod, AType constant_result) {
             /// from record if no value; !is_record means its not a record definition but this is an expression within a function
             if (!is_record && !mem->is_func && !has_value(mem)) { // if mem from_record_in_context
                 AType ctx_type = isa(ctx);
-                emember target = lookup2(mod, string("this"), null); // unique to the function in class, not the class
+                emember target = lookup2(mod, string("a"), null); // unique to the function in class, not the class
                 verify(target, "no target found in context");
                 mem = resolve(target, alpha);
                 verify(mem, "failed to resolve emember in context: %o", mod->top->name);
@@ -1056,7 +1056,7 @@ void silver_build_initializer(silver mod, emember mem) {
             expr = parse_expression(mod);
             pop_state(mod, false);
         }
-        emember target = lookup2(mod, string("this"), null); // unique to the function in class, not the class
+        emember target = lookup2(mod, string("a"), null); // unique to the function in class, not the class
         verify(target, "no target found in context");
         emember rmem = resolve(target, mem->name);
         assign(mod, rmem, expr, OPType__assign);
@@ -2084,10 +2084,19 @@ void silver_init(silver mod) {
         }
     }
     mod->project_path = parent(mod->source);
+    path c_file   = f(path, "%o/%o.c",  mod->project_path, stem(mod->source));
+    path cc_file  = f(path, "%o/%o.cc", mod->project_path, stem(mod->source));
+    path files[2] = { c_file, cc_file };
+    for (int i = 0; i < 2; i++)
+        if (exists(files[i])) {
+            if (!mod->implements) mod->implements = array(2);
+            push(mod->implements, files[i]);
+        }
+    mod->shared_libs = array(alloc, 32, unmanaged, true);
 
-    verify(dir_exists ("%o" mod->install), "silver-import location not found");
+    verify(dir_exists ("%o", mod->install), "silver-import location not found");
     verify(len        (mod->source),       "no source given");
-    verify(file_exists("%o" mod->source),  "source not found: %o", mod->source);
+    verify(file_exists("%o", mod->source),  "source not found: %o", mod->source);
 
     print("source is %o", mod->source);
     verify(exists(mod->source), "source (%o) does not exist", mod->source);
@@ -2110,7 +2119,7 @@ void silver_init(silver mod) {
     path        af = path_cwd();
     path   install = path(_IMPORT);
 
-    import_types(mod);
+    import_types(mod, null);
 
     model mdl = emodel("A");
     verify(mdl, "A-type not importing");
@@ -2127,25 +2136,26 @@ silver silver_load_module(silver mod, path uri) {
     return mod_load;
 }
 
-void silver_import_types(silver mod) {
+void silver_import_types(silver mod, path lib) {
+    handle f = lib ? dlopen(cstring(lib), RTLD_NOW) : null;
+    verify(!lib || f, "shared-lib failed to load: %o", lib);
+
+    // push libraries for reloading facility
+    // todo: associate all loaded elements with this, so we can effectively release resources
+    // A-type has no unregistration of classes, but its a trivial mechanism
+    if (f) push(mod->shared_libs, f);
+    
+    // finish global construction, effectively registering the types with our runtime
+    A_engage(null); 
+
     i64    ln = 0;
     AType* a  = A_types(&ln);
     
-    // we need to first import the basic type structs
-    // this is for Type, containing members and its traits
-    // also members and the meta struct
-    // these we will initialize when creating our own types
-    // as well as read from to understand imported 
-    // i dont quite know how to use them yet -- we are in design-time of course
-    // what we need here is to track symbol names; if ts a mere function address
-    // in a ftable then can we or can we not use that with LLVM?
-    // we could tell it to read addresses from offsets, correct?
-    
-    model mdl = aether_runtime_resolve(mod, typeid(AType));
+    model mdl = aether_runtime_resolve(mod, typeid(AType), false);
 
     for (num i = 0; i < ln; i++) {
         AType type = a[i];
-        model mdl  = aether_runtime_resolve(mod, type);
+        model mdl  = aether_runtime_resolve(mod, type, false);
         verify(mdl, "import failed for type: %s", type->name);
         push_model(mod, mdl);
     }
@@ -2312,8 +2322,7 @@ static bool is_checkout(path a) {
     return false;
 }
 
-enode export_parse(silver mod) {
-    verify(read_if(mod, "export"), "expected export");
+enode export_share(silver mod) {
     string dir         = read_alpha(mod);
     path   export_from = f(path, "%o/%o", mod->project_path, dir);
 
@@ -2363,6 +2372,16 @@ enode export_parse(silver mod) {
             }
         }
     }
+    return null;
+}
+
+enode export_parse(silver mod) {
+    verify(read_if(mod, "export"), "expected export");
+
+    if (read_if(mod, "share"))
+        return export_share(mod);
+
+    fault("export mode not supported: %o", next(mod));
     return null;
 }
 
@@ -2746,10 +2765,14 @@ enode import_parse(silver mod) {
     set_model  (mem, mdl);
     push_member(mod, mem);
     
-    if (namespace) push(mod, mdl); // we import directly into our module (global) without namespace
+    if (namespace) {
+        mdl->name = namespace;
+        push(mod, mdl); // we import directly into our module (global) without namespace
+    }
     each(include_paths, path, inc) include(mod, inc);
+    each(module_paths,  path, m)   import_types(mod, m);
     if (namespace) pop(mod);
-
+    
     return mem;
 }
 

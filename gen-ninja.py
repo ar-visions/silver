@@ -314,6 +314,7 @@ def generate_ninja_build():
         "-Wno-incompatible-pointer-types", 
         "-Wno-shift-op-parentheses",
         "-Wfatal-errors",
+        "-fno-omit-frame-pointer"
     ]
     
     # Platform-specific flags
