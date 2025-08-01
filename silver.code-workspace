@@ -27,6 +27,7 @@
 	],
 	"settings": {
 		"files.associations": {
+			"*.sf": "coffeescript",
 			"*.si": "csharp",
 			"unordered_map": "cpp",
 			"algorithm": "cpp",
@@ -270,7 +271,6 @@
 			"utime.h": "c",
 			"import-public": "c",
 			"import-methods": "c",
-			"import": "c",
 			"quanta-flat": "cpp",
 			"import-init": "c",
 			"orbiter": "c",
@@ -282,7 +282,16 @@
 			"sk-methods": "c",
 			"__std_stream": "c",
 			"ion-init": "c",
-			"ion-methods": "c"
+			"ion-methods": "c",
+			"methods": "c",
+			"init": "c",
+			"sim_vector": "c",
+			"mdspan": "c",
+			"sim_iterator_base": "c",
+			"sim_set": "c",
+			"sim_map": "c",
+			"sim_unordered_map": "c",
+			"sim_unordered_set": "c"
 		}
 	}
 }

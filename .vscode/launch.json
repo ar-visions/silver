@@ -135,10 +135,10 @@
         },
         {
             "name":       "silver88",
-            "type":       "lldb",
+            "type":       "lldb-dap",
             "request":    "launch",
-            "program":    "/src/silver/bin/silver",
-            "args":     [ "--source", "/src/silver/silver88.sf" ],
+            "program":    "/src/silver/bin/silver.exe",
+            "args":     [ "--source", "/src/trinity/src/test.sf" ],
             "cwd":        "/src/silver/bin",
             "env":      { "VERBOSE": "1",
                           "CC":      "clang",

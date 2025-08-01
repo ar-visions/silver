@@ -21,6 +21,7 @@ forward(import)
 
 #define silver_schema(X,Y,...)\
     i_prop    (X,Y, intern,     import,         import) \
+    i_prop    (X,Y, intern,     array,          implements) \
     i_prop    (X,Y, intern,     bool,           no_build) \
     i_prop    (X,Y, intern,     bool,           in_ref) \
     i_prop    (X,Y, intern,     bool,           in_top) \
@@ -29,13 +30,14 @@ forward(import)
     i_prop    (X,Y, intern,     bool,           in_inlay) \
     i_prop    (X,Y, intern,     emember,        in_assign) \
     i_prop    (X,Y, intern,     array,          spaces) \
+    i_prop    (X,Y, intern,     array,          shared_libs) \
     i_prop    (X,Y, intern,     map,            include) \
     i_prop    (X,Y, intern,     int,            expr_level) \
     i_prop    (X,Y, public,     path,           src_loc) \
     i_prop    (X,Y, public,     path,           file) \
     i_prop    (X,Y, public,     path,           project_path) \
     i_prop    (X,Y, public,     language,       std) \
-    i_method  (X,Y, public,     none,           import_types) \
+    i_method  (X,Y, public,     none,           import_types, path) \
     i_method  (X,Y, public,     silver,         load_module, path) \
     i_method  (X,Y, public,     enode,           parse_member_expr, emember) \
     i_method  (X,Y, public,     none,           incremental_resolve) \

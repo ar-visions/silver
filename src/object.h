@@ -1,6 +1,98 @@
 #ifndef _object_h
 #define _object_h
 
+
+/// A-type runtime
+typedef void                    none;
+typedef signed char             i8;
+typedef short                   i16;
+typedef int                     i32;
+typedef long long               i64;
+typedef unsigned char           u8;
+typedef unsigned short          u16;
+typedef unsigned int            u32;
+typedef unsigned long long      u64;
+
+
+typedef u64                     AF;
+typedef long long               num;
+typedef long long               sz;      /// a signed 64 bit size lets us act like python, so this is a type for the purpose of indexing and all valid sizes
+#ifndef __cplusplus
+typedef u8                      bool;
+#endif
+typedef float                   f32;
+typedef double                  f64;
+typedef double                  real;    /// real enough
+typedef void*                   handle;
+typedef char*                   cstr;
+typedef const char*             symbol;
+//typedef const char*           cereal;
+typedef bool                   *ref_bool;
+
+#define imethod static
+
+typedef struct cereal { char* value; } cereal;
+
+// typedef struct _object*         A;
+typedef struct _A**             ARef; /// registered for a generic raw, but we must transition to use 'raw' in cases where they are not A-allocations
+typedef float*                  floats;
+typedef struct _A*              A;
+typedef cstr*                   cstrs;
+typedef void*                   raw;        // abstract types are void*
+typedef void*                   numeric;
+
+typedef none(*fn)      ();
+typedef A   (*hook)    (A);
+typedef A   (*callback)(A, A); // target and argument
+
+
+/// our A-type classes have many types of methods
+/// constructor, i[nstance]-method, s[tatic]-method, operator (these are enumeration!), and index.  we index by 1 argument only in C but we may allow for more in silver
+enum A_FLAG {
+    A_FLAG_NONE      = 0,
+    A_FLAG_CONSTRUCT = 1,
+    A_FLAG_PROP      = 2,
+    A_FLAG_INLAY     = 4,
+    A_FLAG_PRIV      = 8,
+    A_FLAG_INTERN    = 16,
+    A_FLAG_READ_ONLY = 32,
+    A_FLAG_IMETHOD   = 64,
+    A_FLAG_SMETHOD   = 128,
+    A_FLAG_OPERATOR  = 256,
+    A_FLAG_CAST      = 512,
+    A_FLAG_INDEX     = 1024,
+    A_FLAG_ENUMV     = 2048,
+    A_FLAG_OVERRIDE  = 4096,
+    A_FLAG_VPROP     = 8192,
+    A_FLAG_IS_ATTR   = 16384,
+    A_FLAG_OPAQUE    = 32768,
+    A_FLAG_IFINAL    = 32768 << 1
+};
+
+typedef enum A_FLAG AFlag;
+
+enum A_TRAIT {
+    A_TRAIT_PRIMITIVE = 1,
+    A_TRAIT_INTEGRAL  = 2,
+    A_TRAIT_REALISTIC = 4,
+    A_TRAIT_SIGNED    = 8,
+    A_TRAIT_UNSIGNED  = 16,
+    A_TRAIT_ENUM      = 32,
+    A_TRAIT_ALIAS     = 64,
+    A_TRAIT_ABSTRACT  = 128,
+    A_TRAIT_VECTOR    = 256,
+    A_TRAIT_STRUCT    = 512,
+    A_TRAIT_PTR_SIZE  = 1024,
+    A_TRAIT_PUBLIC    = 2048,
+    A_TRAIT_USER_INIT = 4096,
+    A_TRAIT_CLASS     = 8192,
+    A_TRAIT_BASE      = 8192 << 1,
+    A_TRAIT_POINTER   = 8192 << 2
+};
+
+typedef bool(*global_init_fn)();
+
+
 _Pragma("pack(push, 1)")
 
 typedef struct _AType *AType;

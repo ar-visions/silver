@@ -917,7 +917,7 @@ static __attribute__((constructor)) bool Aglobal_AF();
 
 static bool started = false;
 
-none A_startup(cstrs argv) {
+none A_engage(cstrs argv) {
     AType f32_type = typeid(f32);
     if (started) return;
 
@@ -1174,7 +1174,7 @@ map A_arguments(int argc, cstrs argv, map default_values, A default_key) {
 /// i wonder if we can add more constructors or even methods to the prims
 
 A primitive(AType type, none* data) {
-    assert(type->traits & A_TRAIT_PRIMITIVE, "must be primitive");
+    //assert(type->traits & A_TRAIT_PRIMITIVE, "must be primitive");
     A copy = alloc(type, type->size);
     memcpy(copy, data, type->size);
     return copy;
@@ -1324,7 +1324,7 @@ string prep_cereal(cereal cs) {
 }
 
 A A_with_cstrs(A a, cstrs argv) {
-    A_startup(argv);
+    A_engage(argv);
     int argc = 0;
     while (argv[argc]) { // C standard puts a null char* on end, by law (see: Brannigans law)
         cstr arg = argv[argc];
@@ -4728,19 +4728,19 @@ define_abstract(weak,           0)
 define_abstract(functional,     0)
  
 
-define_primitive(ref_u8,     numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  pointer)
-define_primitive(ref_u16,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  pointer)
-define_primitive(ref_u32,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  pointer)
-define_primitive(ref_u64,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  pointer)
-define_primitive(ref_i8,     numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    pointer)
-define_primitive(ref_i16,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    pointer)
-define_primitive(ref_i32,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    pointer)
-define_primitive(ref_i64,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    pointer)
-define_primitive(ref_bool,   numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  pointer)
-//define_primitive(ref_num,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    pointer)
-//define_primitive(ref_sz,     numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    pointer)
-define_primitive(ref_f32,    numeric, A_TRAIT_REALISTIC,                    pointer)
-define_primitive(ref_f64,    numeric, A_TRAIT_REALISTIC,                    pointer)
+define_primitive(ref_u8,     numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  u8)
+define_primitive(ref_u16,    numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  u16)
+define_primitive(ref_u32,    numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  u32)
+define_primitive(ref_u64,    numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  u64)
+define_primitive(ref_i8,     numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    i8)
+define_primitive(ref_i16,    numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    i16)
+define_primitive(ref_i32,    numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    i32)
+define_primitive(ref_i64,    numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    i64)
+define_primitive(ref_bool,   numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  bool)
+//define_primitive(ref_num,    numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,  num)
+//define_primitive(ref_sz,     numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,  sz)
+define_primitive(ref_f32,    numeric, A_TRAIT_POINTER | A_TRAIT_REALISTIC,                    f32)
+define_primitive(ref_f64,    numeric, A_TRAIT_POINTER | A_TRAIT_REALISTIC,                    f64)
 
 
 define_primitive( u8,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
@@ -4757,16 +4757,16 @@ define_primitive(sz,     numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
 define_primitive(f32,    numeric, A_TRAIT_REALISTIC)
 define_primitive(f64,    numeric, A_TRAIT_REALISTIC)
 define_primitive(AFlag,  numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
-define_primitive(cstr,   string_like, 0)
-define_primitive(symbol, string_like, 0)
+define_primitive(cstr,   string_like, A_TRAIT_POINTER, i8)
+define_primitive(symbol, string_like, A_TRAIT_POINTER, i8)
 define_primitive(cereal, raw, 0)
 define_primitive(none,   nil, 0)
 //define_primitive(AType,  raw, 0)
 define_primitive(handle, raw, 0)
 define_primitive(member, raw, 0)
-define_primitive(ARef,   ref, 0)
+define_primitive(ARef,   ref, A_TRAIT_POINTER, A)
 define_primitive(floats, raw, 0)
-define_abstract(pointer, 0)
+
 define_primitive(fn,     raw, 0)
 define_primitive(hook,   raw, 0)
 define_primitive(callback, raw, 0)

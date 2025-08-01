@@ -137,7 +137,8 @@
         "source_location": "c",
         "codecvt": "cpp",
         "valarray": "cpp",
-        "import": "c"
+        "import": "c",
+        "aether": "c"
     },
     "cmake.configureOnOpen": false,
     "C_Cpp.errorSquiggles": "enabled"
