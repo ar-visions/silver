@@ -574,7 +574,7 @@ declare_abstract(nil)
 
 #define raw_schema(X,Y,...)
 declare_abstract(raw)
-
+ 
 #define ref_schema(X,Y,...)
 declare_abstract(ref)
 

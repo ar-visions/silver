@@ -135,34 +135,18 @@
         },
         {
             "name":       "silver88",
-            "type":       "lldb-dap",
+            "type":       "lldb",
             "request":    "launch",
-            "program":    "/src/silver/bin/silver.exe",
+            "program":    "/src/silver/bin/silver",
             "args":     [ "--source", "/src/trinity/src/test.sf" ],
-            "cwd":        "/src/silver/bin",
-            "env":      { "VERBOSE": "1",
-                          "CC":      "clang",
-                          "IMPORT":  "/src/silver",
-                          "PATH":    "/src/silver/bin" }
-        },
-        {
-            "name": "A-generate",
-            "type": "cppdbg",
-            "request": "launch",
-            "program": "/src/A/debug/A-generate",
-            "args": [
-                "-i", "/src/A/gen-test.c.ai",
-                "-o", "/src/A/gen-test.c"
-            ],
-            "stopAtEntry": false,
-            "cwd": "/src/A/debug",
-            "environment": [
-                {
-                    "name": "LD_LIBRARY_PATH",
-                    "value": "/src/import/lib"
-                }
-            ],
-            "MIMode": "gdb"
+            "cwd":        "/src/silver/lib",
+            "env":      {
+                "VERBOSE": "1",
+                "LD_LIBRARY_PATH":"/src/silver/lib",
+                "IMPORT":  "/src/silver",
+                "CC":      "clang",
+                "PATH":    "/src/silver/bin"
+            }
         },
         {
             "name": "hyperspace-train",
@@ -201,49 +185,6 @@
             "cwd": "/src/silver/share/hyperspace",
             "args": [],
             "env": {"LD_LIBRARY_PATH":"/src/silver/lib"},
-        },
-        {
-            "name": "A-test",
-            "type": "lldb",
-            "request": "launch",
-            "program": "/src/A/debug/test/a-test",
-            "cwd": "/src/A/debug/test"
-        },
-        {
-            "name": "A-reflect",
-            "type": "cppdbg",
-            "request": "launch",
-            "program": "/src/A/debug/A-reflect",
-            "args": [
-                
-            ],
-            "stopAtEntry": false,
-            "cwd": "/src/A/debug",
-            "environment": [
-            ],
-            "MIMode": "gdb"
-        },
-        {
-            "name": "quanta-hi",
-            "type": "cppdbg",
-            "request": "launch",
-            "program": "/src/quanta/debug/quanta-hi",
-            "args": [
-                "https://www.google.com"
-            ],
-            "environment": [
-                {
-                    "name": "LSAN_OPTIONS",
-                    "value": "verbosity=1:log_threads=1:print_suppressions=1:report_objects=1"
-                },
-                {
-                    "name": "ASAN_OPTIONS",
-                    "value": "detect_leaks=1:verbosity=1"
-                }
-            ],
-            "stopAtEntry": false,
-            "cwd": "/src/quanta/debug",
-            "MIMode": "gdb"
         }
     ]
 }

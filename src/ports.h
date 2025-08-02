@@ -1,5 +1,5 @@
-#ifndef _PORT_
-#define _PORT_
+#ifndef _PORTS_
+#define _PORTS_
 
 #ifdef __cplusplus
 extern "C" {
@@ -316,20 +316,23 @@ int     select(int nfds, _fd_set_* readfds, _fd_set_* writefds, _fd_set_* except
 #define S_IRUSR_IWUSR_IRGRP_IWGRP_IROTH_IWOTH \
     (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH)  // 0664
 
+#endif
+
 #else
 
 #include <sys/time.h>
 #include <sys/wait.h>
-#include <sys/mmap.h>
+#include <sys/mman.h>
 #include <sys/inotify.h>
-#include <dlfcn.h>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <errno.h>
+#include <dlfcn.h>
 #include <utime.h>
 
-typedef __int64 ssize_t;
+typedef __int64_t ssize_t;
 typedef fd_set  _fd_set_;
 
-#endif
 #endif
 
 #ifdef __cplusplus

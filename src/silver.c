@@ -2776,6 +2776,13 @@ enode import_parse(silver mod) {
     return mem;
 }
 
+int main(int argc, cstrs argv) {
+    A_engage(argv);
+    print("engage");
+    silver mod = silver(argv);
+    return 0;
+}
+
 define_enum  (build_state)
 define_enum  (language)
 

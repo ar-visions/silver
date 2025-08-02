@@ -7,25 +7,12 @@ from pathlib import Path
 import subprocess
 import argparse
 
-'''
-def get_env_vars():
-    """Get required environment variables"""
-    return {
-        'PROJECT_PATH': os.environ.get('PROJECT_PATH',  ''),
-        'DIRECTIVE':    os.environ.get('DIRECTIVE',     ''),
-        'BUILD_PATH':   os.environ.get('BUILD_PATH',    ''),
-        'PROJECT':      os.environ.get('PROJECT',       ''),
-        'IMPORT':       os.environ.get('IMPORT',        '')
-    }
-'''
-
 project_path = ''
 
 def get_env_vars():
     """Get required variables from command line arguments"""
     parser = argparse.ArgumentParser(description='Generate header files')
     parser.add_argument('--project-path', required=True, help='Project root path')
-    parser.add_argument('--directive', required=True, help='Directive (src or app)')
     parser.add_argument('--build-path', required=True, help='Build output path')
     parser.add_argument('--project', required=True, help='Project name')
     parser.add_argument('--import', required=True, help='Import path')
@@ -34,10 +21,10 @@ def get_env_vars():
     
     return {
         'PROJECT_PATH': args.project_path,
-        'DIRECTIVE': args.directive,
-        'BUILD_PATH': args.build_path,
-        'PROJECT': args.project,
-        'IMPORT': getattr(args, 'import')  # 'import' is a Python keyword
+        'DIRECTIVE':    'src',
+        'BUILD_PATH':   args.build_path,
+        'PROJECT':      args.project,
+        'IMPORT':       getattr(args, 'import')  # 'import' is a Python keyword
     }
 
 def setup_paths(env_vars):
@@ -450,7 +437,6 @@ def main():
     # Process utility headers (.h files)
     process_utility_headers(paths)
     
-
     # Process modules (files without extension)
     process_modules(paths)
     

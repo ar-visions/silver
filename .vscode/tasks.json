@@ -13,7 +13,7 @@
             "label": "build-silver-ninja",
             "type": "shell",
 			"options": {
-                "cwd": "${workspaceFolder}/../silver/debug"
+                "cwd": "${workspaceFolder}/../silver"
             },
             "group": {
                 "kind": "build",
@@ -27,15 +27,8 @@
             },
 			"isBackground": false,
 			"problemMatcher": ["$gcc"],
-            "dependsOn": "bootstrap",
-            "command": "${workspaceFolder}/bin/ninja.exe",
-            "args": ["-v"],
-            "osx": {
-                "command": "make"
-            },
-            "linux": {
-                "command": "make"
-            },
+            "command": "${workspaceFolder}/bin/ninja",
+            "args": ["-C", "debug"],
             "env": { "VERBOSE": "1", "CC": "clang", "IMPORT": "/src/silver" }
         },
         {
