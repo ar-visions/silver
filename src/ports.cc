@@ -1329,16 +1329,19 @@ char* dlerror(void) {
 
 #else
 #include <sys/time.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#define _timeval_ timeval
 
 int inotify_close(int fd) {
-    close(fd);
+    return close(fd);
 }
-
 
 #endif
 
-int64_t epoch_millis() {
+
+__int64_t epoch_millis() {
     struct _timeval_ tv;
     gettimeofday((struct _timeval_*)&tv, 0L);
-    return (int64_t)(tv.tv_sec) * 1000 + (int64_t)(tv.tv_usec) / 1000;
+    return (__int64_t)(tv.tv_sec) * 1000 + (__int64_t)(tv.tv_usec) / 1000;
 }

@@ -1,2 +1,4 @@
-A aether
--lLLVM-C -lclang -llldb
+@app
+A
+aether
+-lLLVM -lclang -llldb

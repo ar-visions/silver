@@ -22,7 +22,9 @@ enum alien-type
     squiddy, s: 1
     mantis,  m: 2
 
+
 class aliens, f32 alien-type
+    # 
     public a-prim    : int
     public a-map     : map   [ int string : 0:'a' ]
     inlaid a-member  : array [ int 2x1    : 1, 1  ]
@@ -31,10 +33,42 @@ class aliens, f32 alien-type
     public a-ref     : array [ int 2x2    : 8 8,      4 4     ]
 
     func print []
-        std.printf[ '{a-prim} ... {a-member} ... {a-ref}\n' ]
+        # "symbol strings" are opaque to string interpolation 'cstr' are not
+        # this is due to their result coming from a runtime operation
+        #
+        # thats a functional difference with symbol vs cstr
+        # we dont absolutely require ref to be shown, its nice to hide in these types
+        # they are both technically ref u8, but symbol has symbolic meaning here, in that it isnt allowed use in interpolation in silver
+        # its possible we dont allow casting, too.  not until it can be resolved further
+        # weird idea, i suppose. that 'probably' means we do not have it as a non-const member
+        # that does make sense through and through. 
+        # its a bit..  C++
+        # that means they would be required initializers, and one would have to set them from another const
+        # i mean if the developer canno do that, then they must choose cstr, lol.. its just about not lying about whats there.
+        # in C++ and C all meaning on const is moot, because anyone can set anything to anything they want.
+        # sorry thats not much of a meaningful language syntax
+        #  if it makes a fuss and then wimps out with cast.
+
+
+        # there has always been these two meanings of const in applied context, 
+        # and i never quite squared this.
+        # its about one, a const type, changing of that data at runtime is not allowed
+        # however, in object membership - how can we set this data and when?
+        # in C++ you just say hey no problem set it to const "my string"
+        # thats really interfering with a qualified basic requirement Of constant
+        # you dont change out one constant for another that never changes
+        # sorry if we want to talk about the data identity of the member being the origin 
+        # that means we're conquering ourselves on constant
+
+        # clearly, C++ allows us to set it however and whenver to any casted type. 
+        # they dont want to get in your way.  however, if you have a const on your
+        # type you just got in your own way, and people want this feature for what it is
+        # simple to understand, and simple to implement.  i can go no further on it
+        
+        std.puts[ '{ a-prim } ... { a-member } ... {a-ref}\n' ]
     
     fn init-in-aliens []
-        if [!a-member] a-member: [ 2 2 ]
+        if [ !a-member ] a-member: [ 2 2 ]
 
 fn init-in-module []
     # we can construct this way...
@@ -42,7 +76,15 @@ fn init-in-module []
         [ int 2 2 : 4 4, 4 4 ]
         [ int 2   : 4 4 ]
         44
-    cl.print[]
+    
+    print cl
+
+
+##
+'''
+
+it would be nice to have units, however its simply too much to add to 0.88
+this is more of a 1.0 release, and it must be thoroughly explored
 
 a-type: class speed -> f128, enum etype[ mph kts kph c ]
     # we merely define a map of scales, so that we may perform operations
@@ -50,4 +92,9 @@ a-type: class speed -> f128, enum etype[ mph kts kph c ]
     kts  : this / 0.78
     kph  : this * 1.0
     c    : 122000000000.0 / this
-    # we normally define types with sub-classes as speed[ base ], so this data operator lets us design this
+    # we normally define types with 
+    # sub-classes as speed[ base ], 
+    # so this data operator lets us 
+    # design this
+'''
+##

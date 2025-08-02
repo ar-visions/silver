@@ -4,7 +4,6 @@
 //#include <ffi.h>
 #undef USE_FFI
 #undef bool
-#include <sys/stat.h>
 #include <ports.h>
 #include <math.h>
 #include <errno.h>
@@ -4630,7 +4629,9 @@ struct inotify_event {
 */
 
 #undef remove
+#ifdef _WIN32
 #include <io.h>
+#endif
 
 none watch_init(watch a) {
     if (!a->res) return;
