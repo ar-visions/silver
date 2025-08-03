@@ -79,12 +79,6 @@ fn module-name[ a:app ] -> int
     print[ 'using app with value: { is-const } + { val - is-const }' ]
     return [run[a, string[val]] > 0] ? 1 : 0
 
-
-# **meta** keyword (reserved for 1.0 release)
-classes have ability to perform meta instancing.  think of it as templates but without code expansion; it simply does high-level reflection with the typed symbols.  meta is a simple idea, it's nothing more than an array of types you provide to the class when using it.  the class accepts types at meta index.  
-```python
-meta [ I:any ]
-class list
-
 ```
+
 
