@@ -68,7 +68,7 @@ declare_enum(reference)
     i_prop    (X,Y, public,     A,                shape) \
     i_prop    (X,Y, public,     bool,             is_map) \
     i_prop    (X,Y, public,     bool,             is_array) \
-    i_prop    (X,Y, public,     i64,              element_count) \
+    i_prop    (X,Y, public,     i64,              count) \
     i_prop    (X,Y, public,     i64,              top_stride) \
     i_prop    (X,Y, public,     array,            strides) \
     i_prop    (X,Y, public,     bool,             is_user) \
@@ -86,15 +86,15 @@ declare_enum(reference)
     i_prop    (X,Y, public,     bool,             finalized) \
     i_prop    (X,Y, intern,     model,            init_top) \
     i_prop    (X,Y, public,     function,         fn_init) \
-    s_method  (X,Y, public,     string,     keyword) \
-    i_method  (X,Y, public,     function,   initializer) \
-    i_method  (X,Y, public,     model,      pointer, string) \
-    i_method  (X,Y, public,     bool,       has_scope) \
-    i_method  (X,Y, public,     model,      alias,         string, reference, array) \
-    i_method  (X,Y, public,     none,       finalize, emember) \
-    i_method  (X,Y, public,     emember,     convertible,   model) \
-    i_method  (X,Y, public,     emember,     castable,      model) \
-    i_method  (X,Y, public,     emember,     constructable, model) \
+    s_method  (X,Y, public,     string,           keyword) \
+    i_method  (X,Y, public,     function,         initializer) \
+    i_method  (X,Y, public,     model,            pointer,       string) \
+    i_method  (X,Y, public,     bool,             has_scope) \
+    i_method  (X,Y, public,     model,            alias,         string, reference, array) \
+    i_method  (X,Y, public,     none,             finalize,      emember) \
+    i_method  (X,Y, public,     emember,          convertible,   model) \
+    i_method  (X,Y, public,     emember,          castable,      model) \
+    i_method  (X,Y, public,     emember,          constructable, model) \
     i_override(X,Y, cast,       string) \
     i_override(X,Y, method,     init)
 declare_class(model)
@@ -238,7 +238,7 @@ declare_class(code)
 #define aether_schema(X,Y,...)\
     i_prop    (X,Y, public,     path,        install) \
     i_prop    (X,Y, required,   path,        source) \
-    i_method  (X,Y, public,     none,        import_types, path) \
+    i_prop    (X,Y, intern,     array,       shared_libs) \
     i_prop    (X,Y, public,     bool,        delegate) \
     i_prop    (X,Y, public,     bool,        with_debug) \
     i_prop    (X,Y, intern,     path,        current_include) \
@@ -263,6 +263,7 @@ declare_class(code)
     i_prop    (X,Y, public,     array,       tokens) \
     i_prop    (X,Y, public,     array,       stack) \
     i_prop    (X,Y, public,     num,         cursor) \
+    i_method  (X,Y, public,     none,        A_import,           path) \
     i_method  (X,Y, public,     none,        test_model) \
     i_method  (X,Y, public,     none,        push_state,         array, num) \
     i_method  (X,Y, public,     none,        push_current) \

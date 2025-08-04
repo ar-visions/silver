@@ -2090,7 +2090,6 @@ void silver_init(silver mod) {
             if (!mod->implements) mod->implements = array(2);
             push(mod->implements, files[i]);
         }
-    mod->shared_libs = array(alloc, 32, unmanaged, true);
 
     verify(dir_exists ("%o", mod->install), "silver-import location not found");
     verify(len        (mod->source),       "no source given");
@@ -2116,8 +2115,6 @@ void silver_init(silver mod) {
 
     path        af = path_cwd();
     path   install = path(_IMPORT);
-
-    import_types(mod, null);
 
     model mdl = emodel("A");
     verify(mdl, "A-type not importing");
@@ -2689,7 +2686,7 @@ enode import_parse(silver mod) {
         push(mod, mdl); // we import directly into our module (global) without namespace
     }
     each(include_paths, path, inc) include(mod, inc);
-    each(module_paths,  path, m)   import_types(mod, m);
+    each(module_paths,  path, m)   A_import(mod, m);
     if (namespace) pop(mod);
     
     return mem;

@@ -30,7 +30,6 @@ forward(import)
     i_prop    (X,Y, intern,     bool,           in_inlay) \
     i_prop    (X,Y, intern,     emember,        in_assign) \
     i_prop    (X,Y, intern,     array,          spaces) \
-    i_prop    (X,Y, intern,     array,          shared_libs) \
     i_prop    (X,Y, intern,     map,            include) \
     i_prop    (X,Y, intern,     int,            expr_level) \
     i_prop    (X,Y, public,     path,           src_loc) \
