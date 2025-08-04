@@ -5,6 +5,7 @@
 #include <llvm-c/Analysis.h>
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/BitWriter.h>
+#include <ports.h>
 
 typedef LLVMMetadataRef LLVMScope;
 
@@ -207,23 +208,11 @@ i64 model_cmp(model mdl, model b) {
 
 void model_init(model mdl) {
     aether  e = mdl->mod;
-    if (mdl->name && eq(mdl->name, "A")) {
-        int test2 = 2;
-        test2 += 2;
-    }
-    if (mdl->name && eq(mdl->name, "_AType")) {
-        int test2 = 2;
-        test2 += 2;
-    }
-    if (mdl->name && instanceof(mdl->name, typeid(string))) {
-        string n = mdl->name;
-        mdl->name = token(chars, cstring(n), source, e ? e->source : null, line, 1);
-    }
 
     if (!mdl->members)
         mdl->members = map(hsize, 32);
 
-    if (!mdl->src)
+    if (!mdl->src) // this is set when we form arrays where count > 0
         return;
 
     /// narrow down type traits
@@ -245,7 +234,7 @@ void model_init(model mdl) {
         verify(mdl->type, "type must be set already for %s", type->name);
         
         print("creating primitive for type %s", type->name);
-
+        // we must support count in here, along with src being set
         if (type == typeid(f32))
             mdl->type = LLVMFloatType();
         else if (type == typeid(f64))
@@ -343,6 +332,17 @@ void model_init(model mdl) {
         mdl->scope = mdl->debug; // set this in record manually when debug is set
     } else if (!mdl->scope)
         mdl->scope = e->scope;
+
+    // convert to array if count is set
+    if (mdl->count > 0 && mdl->type && LLVMGetTypeKind(mdl->type) != LLVMVoidTypeKind) {
+        mdl->type = LLVMArrayType(mdl->type, mdl->count);
+        if (mdl->debug)
+            mdl->debug = LLVMDIBuilderCreateArrayType(
+                e->dbg_builder,
+                LLVMABISizeOfType(e->target_data, mdl->type) * 8,
+                LLVMABIAlignmentOfType(e->target_data, mdl->type),
+                null, 0, 0);
+    }
 }
 
 model model_alias(model src, string name, reference r, array shape);
@@ -442,7 +442,7 @@ model model_alias(model src, string name, reference r, array shape) {
             last     = *num;
         }
         ref->strides = reverse(rstrides);
-        ref->element_count = a_size;
+        ref->count = a_size;
         ref->top_stride = last; /// we require comma at this rate
     }
 
@@ -890,15 +890,14 @@ void function_use(function fn) {
 none enumeration_finalize(enumeration en, emember mem) {
     if (en->finalized) return;
     en->finalized = true;
-
+    aether e = en->mod;
     if (!en->src)
          en->src = emodel("i32");
 
-    mdl->size = mdl->src->size;
-    aether e = en->mod;
+    en->size = en->src->size;
 
     // set ABI size/alignment
-    en->size     = LLVMABISizeOfType(e->target_data, en->src->type);
+    en->size     = LLVMABISizeOfType(e->target_data, en->src->type); // ?
     en->alignment = LLVMABIAlignmentOfType(e->target_data, en->src->type);
 
     // each member must represent the value of an export symbol:
@@ -1357,7 +1356,7 @@ enode aether_create(aether e, model mdl, A args) {
     model        src        = mdl->ref == reference_pointer ? mdl->src : mdl;
     array        shape      = mdl->shape;
     i64          slen       = shape ? len(shape) : 0;
-    num          count      = mdl->element_count ? mdl->element_count : 1;
+    num          count      = mdl->count ? mdl->count : 1;
     bool         use_stack  = mdl->ref == reference_value && !is_class(mdl);
     LLVMValueRef size_A     = LLVMConstInt(LLVMInt64Type(), 32, false);
     LLVMValueRef size_mdl   = LLVMConstInt(LLVMInt64Type(), src->size * count, false);
@@ -1374,7 +1373,7 @@ enode aether_create(aether e, model mdl, A args) {
     if (a) {
         num   count = len(a);
         num   i     = 0;
-        verify(slen == 0 || (mdl->element_count == count), "array count mismatch");
+        verify(slen == 0 || (mdl->count == count), "array count mismatch");
         each(a, A, element) {
             enode         expr     = operand(e, element, null); /// todo: cases of array embedding must be handled
             enode         conv     = convert(e, expr, mdl->src);
@@ -2085,7 +2084,7 @@ void aether_llvm_init(aether e) {
     //    fault("failed to create execution engine: %s", err);
 }
 
-void aether_A_import(aether e, path dll) {
+void aether_A_import(aether e, path lib) {
     handle f = lib ? dlopen(cstring(lib), RTLD_NOW) : null;
     verify(!lib || f, "shared-lib failed to load: %o", lib);
 
@@ -2093,7 +2092,7 @@ void aether_A_import(aether e, path dll) {
     // todo: associate all loaded elements with this, so we can effectively release resources
     // A-type has no unregistration of classes, but its a trivial mechanism
     if (f) {
-        push(mod->shared_libs, f);
+        push(e->shared_libs, f);
         A_engage(null); // load A-types by finishing global constructor ordered calls
     }
 
@@ -2113,6 +2112,7 @@ void aether_A_import(aether e, path dll) {
         model  mdl   = null;
 
         if (atype->user) continue; // if we have already processed this type, continue
+        string name = string(atype->name);
         set(processing, name, atype);
 
         bool  is_base_type = (atype->traits & A_TRAIT_BASE)      != 0;
@@ -2120,8 +2120,6 @@ void aether_A_import(aether e, path dll) {
 
         bool  is_ref       = (atype->traits & A_TRAIT_POINTER)   != 0;
         if   (is_ref)       continue; // src of this may be referencing another unresolved
-
-        string name  = string(atype->name);
 
         bool  is_struct    = (atype->traits & A_TRAIT_STRUCT)    != 0;
         bool  is_class     = (atype->traits & A_TRAIT_CLASS)     != 0;
@@ -2151,13 +2149,16 @@ void aether_A_import(aether e, path dll) {
 
         _AType     = structure(mod, e, name, string("_AType"), members, null);
         _AType_ptr = pointer(_AType, "AType");
-        register_model(e, _AType);
-        register_model(e, _AType_ptr);
+        structure  _af_recycler         = structure(mod, e, name, string("_af_recycler"));
+        model      af_recycler_ptr      = pointer(_af_recycler, "af_recycler");
+        emember    _af_recycler_mem     = register_model(e, _af_recycler);
+        emember    af_recycler_ptr_mem  = register_model(e,  af_recycler_ptr);
+        emember    _AType_mem           = register_model(e, _AType);
+        emember    _AType_ptr_mem       = register_model(e, _AType_ptr);
+        structure _meta_t               = structure(mod, e, name, string("_meta_t"));
+        emember   _meta_t_mem           = register_model(e, _meta_t);
 
-        structure _meta_t = structure(mod, e, name, string("_meta_t"));
-        register_model(e, _meta_t);
-
-        map meta_members = m(
+        _meta_t->members = m(
             "count",  emodel("i64"),
             "meta_0", _AType_ptr,
             "meta_1", _AType_ptr,
@@ -2168,9 +2169,15 @@ void aether_A_import(aether e, path dll) {
             "meta_6", _AType_ptr,
             "meta_7", _AType_ptr,
             "meta_8", _AType_ptr,
-            "meta_9", _AType_ptr
-        );
-        members(_meta_t, meta_members);
+            "meta_9", _AType_ptr);
+
+        _af_recycler->members = m(
+            "af4",      pointer(emodel("_A"), null),
+            "af_count", emodel("i64"),
+            "af_alloc", emodel("i64"),
+            "re",       pointer(emodel("_A"), null),
+            "re_count", emodel("i64"),
+            "re_alloc", emodel("i64"));
 
         _AType->members = m(
             "parent_type",    _AType_ptr,
@@ -2181,7 +2188,7 @@ void aether_A_import(aether e, path dll) {
             "sub_types_alloc", _i16,
             "size",           _i32,
             "msize",          _i32,
-            "af44",           pointer(af_recycler, null),
+            "af44",           af_recycler_ptr,
             "magic",          _i32,
             "global_count",   _i32,
             "vmember_count",  _i32,
@@ -2194,6 +2201,13 @@ void aether_A_import(aether e, path dll) {
             "src",            _AType_ptr,
             "arb",            emodel("handle"),
             "meta",           _meta_t);
+
+        finalize(af_recycler_ptr, af_recycler_ptr_mem);
+        finalize(_AType_ptr,      _AType_ptr_mem);
+        finalize(_AType,          _AType_mem);
+        finalize(_meta_t,         _meta_t_mem);
+        finalize(_af_recycler,    _af_recycler_mem);
+        
 
     /* we want to set members for this one, as well as create the _
        af_recycler struct (and register it), pointer(_af_recycler, "af_recycler")
@@ -2308,7 +2322,7 @@ void aether_A_import(aether e, path dll) {
                         is_ctr,        true,
                         rtype,         st ? st : null, // structure ctr return data (A-type ABI)
                         target,        cl ? pointer(cl, null) : null, 
-                        args,          eargs(mod, e, args, m("_with", mtype->src)));
+                        args,          eargs(mod, e, args, a(mtype->src)));
                 }
                 if ((amem->member_type & A_FLAG_CAST) != 0) {
                     mem_mdl = function(
@@ -2319,12 +2333,11 @@ void aether_A_import(aether e, path dll) {
                 if ((amem->member_type & A_FLAG_IMETHOD) != 0 ||
                     (amem->member_type & A_FLAG_SMETHOD) != 0) {
                     bool  is_inst = (amem->member_type & A_FLAG_IMETHOD) != 0;
-                    eargs args    = eargs(mod, e, args, map(hsize, 8));
+                    eargs args    = eargs(mod, e, args, array(8));
                     for (int a = 0; a < amem->args.count; a++) {
                         AType arg_type = ((AType*)(&amem->args.meta_0))[a];
                         model arg_mdl  = arg_type->user;
-                        string arg_n   = f(string, "_arg%i", a);
-                        set(args, arg_n, arg_mdl);
+                        push(args->args, arg_mdl);
                     }
                     mem_mdl = function(
                         is_cast,       true,
@@ -2337,7 +2350,9 @@ void aether_A_import(aether e, path dll) {
                     mem_mdl = mtype->src;
                 }
                 emember smem = emember(
-                    mod, e, mdl, mem_mdl, name, n, count, amem->count);
+                    mod, e, name, n, 
+                    mdl, amem->count == 0 ? 
+                        mem_mdl : model(mod, e, src, mem_mdl, count, amem->count));
                 set(st->members, n, smem);
             }
         }
@@ -2355,18 +2370,17 @@ void aether_A_import(aether e, path dll) {
 
 /// we may have a kind of 'module' given here; i suppose instanceof(aether) is enough
 void aether_init(aether e) {
-    e->resolving = map(hsize, 16, assorted, true, unmanaged, true);
     e->with_debug = true;
     if (!e->name) {
         verify(e->source && len(e->source), "module name required");
         e->name = stem(e->source);
     }
     aether_llvm_init(e);
+    e->shared_libs = array(alloc, 32, unmanaged, true);
     e->lex = array(alloc, 32, assorted, true);
     push(e, e);
 
     // aether_define_primitive(e);
-
     A_import(e, null);
 }
 

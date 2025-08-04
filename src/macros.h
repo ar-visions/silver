@@ -682,7 +682,7 @@
     X##_i.type.members[X##_i.type.member_count].name     = #N; \
     X##_i.type.members[X##_i.type.member_count].offset   = offsetof(struct _##X, N); \
     X##_i.type.members[X##_i.type.member_count].type     = (AType)&R##_i.type; \
-    X##_i.type.members[X##_i.type.member_count].count    = 1; \
+    X##_i.type.members[X##_i.type.member_count].count    = 0; \
     X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_PROP; \
     X##_i.type.member_count++;
 #define   i_struct_prop_PROTO(X, R, N)  
