@@ -1,45 +1,7 @@
 #ifndef _object_h
 #define _object_h
 
-
-/// A-type runtime
-typedef void                    none;
-typedef signed char             i8;
-typedef short                   i16;
-typedef int                     i32;
-typedef long long               i64;
-typedef unsigned char           u8;
-typedef unsigned short          u16;
-typedef unsigned int            u32;
-typedef unsigned long long      u64;
-
-
-typedef u64                     AF;
-typedef long long               num;
-typedef long long               sz;      /// a signed 64 bit size lets us act like python, so this is a type for the purpose of indexing and all valid sizes
-#ifndef __cplusplus
-typedef u8                      bool;
-#endif
-typedef float                   f32;
-typedef double                  f64;
-typedef double                  real;    /// real enough
-typedef void*                   handle;
-typedef char*                   cstr;
-typedef const char*             symbol;
-//typedef const char*           cereal;
-typedef bool                   *ref_bool;
-
-#define imethod static
-
-typedef struct cereal { char* value; } cereal;
-
-// typedef struct _object*         A;
-typedef struct _A**             ARef; /// registered for a generic raw, but we must transition to use 'raw' in cases where they are not A-allocations
-typedef float*                  floats;
-typedef struct _A*              A;
-typedef cstr*                   cstrs;
-typedef void*                   raw;        // abstract types are void*
-typedef void*                   numeric;
+typedef struct _A* A;
 
 typedef none(*fn)      ();
 typedef A   (*hook)    (A);
@@ -97,23 +59,24 @@ _Pragma("pack(push, 1)")
 
 typedef struct _AType *AType;
 
-typedef struct meta_t {
+typedef struct _meta_t {
     long long       count;
     AType           meta_0, meta_1, meta_2, meta_3, 
                     meta_4, meta_5, meta_6, meta_7, meta_8, meta_9;
-} meta_t;
+} _meta_t, *meta_t;
 
 // auto-free recycler
-typedef struct af_recycler {
-    struct _object** af;
+typedef struct _af_recycler {
+    struct _object** af4;
     i64     af_count;
     i64     af_alloc;
     struct _object** re;
     i64     re_count;
     i64     re_alloc;
-} af_recycler;
+} *af_recycler;
 
 typedef struct method_t {
+
     struct _array*  atypes;
     AType           rtype;
     void*           address;
@@ -131,7 +94,7 @@ typedef struct _AType {
     i16             sub_types_alloc;
     int             size;
     int             msize;
-    af_recycler*    af;
+    af_recycler     af44;
     int             magic;
     int             global_count;
     int             vmember_count;
@@ -143,7 +106,7 @@ typedef struct _AType {
     u64             required[2];
     struct _AType*  src;
     void*           arb;
-    meta_t          meta;
+    struct _meta_t  meta;
 } *AType;
 
 
@@ -162,11 +125,6 @@ typedef struct _object {
     i64             af_index;
 } *object;
 
-
-/// we mock string at the top, 
-/// just so member can be treated
-/// as such (we must be careful, 
-/// because it has no header)
 typedef struct _member {
     char*           name;
     struct _string* sname;
@@ -176,7 +134,7 @@ typedef struct _member {
     int             member_type;
     int             operator_type;
     int             required;
-    meta_t          args;
+    struct _meta_t  args;
     void*           ptr;
     void*           method;
     i64             id;

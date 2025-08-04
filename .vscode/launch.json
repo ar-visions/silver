@@ -137,6 +137,7 @@
             "name":       "silver88",
             "type":       "lldb",
             "request":    "launch",
+            "preLaunchTask": "build-silver-ninja",
             "program":    "/src/silver/bin/silver",
             "args":     [ "--source", "/src/trinity/src/test.sf" ],
             "cwd":        "/src/silver/lib",

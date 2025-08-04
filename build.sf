@@ -1,5 +1,5 @@
 import <stdio> as std
-export res to share
+export share res
 
 # this is a comment
 cm:string = 'CMAKE'
@@ -69,23 +69,3 @@ fn this-is-great[ i:int ] -> array [ int 10x2 ] [ 2 2, 4 4, 8 8, 2 2, 4 4, 2 2, 
 
 import ffi [ https://github.com/libffi/libffi e28a0d5 ]
 	env: CC: 'gcc'
-
-##
-cflags {
-	-fPIC
-	-fmacro-backtrace-limit=0
-	-Wno-write-strings
-	-Wno-compare-distinct-pointer-types
-	-Wno-deprecated-declarations
-	-Wno-incompatible-pointer-types
-	-Wno-shift-op-parentheses
-	-Wfatal-errors
-	-Wno-incompatible-library-redeclaration
-	-fvisibility=default
-}
-
-lflags {
-	-Wl,--as-needed
-}
-##
-

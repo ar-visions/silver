@@ -744,8 +744,6 @@ none silver_namespace_pop(silver mod, array levels) {
 function parse_fn        (silver mod, AFlag member_type, A ident, OPType assign_enum);
 model    read_model      (silver mod, array* expr);
 
-/// should not need to back out ever, since members are always being operated
-/// unless its a type, in which case we have a membership for them.. so everything is a emember
 enode silver_read_node(silver mod, AType constant_result) {
     print_tokens(mod, "read-enode");
 
@@ -1004,7 +1002,7 @@ enode silver_read_node(silver mod, AType constant_result) {
 
     if (mem && mem->mdl) {
         AType model_type = mem->mdl ? isa(mem->mdl) : null;
-        push_member(mod, mem); /// do not finalize in push member
+        register_member(mod, mem); /// do not finalize in push member
     }
 
     return mem;
@@ -1884,7 +1882,7 @@ emember silver_read_def(silver mod) {
     mem->is_type = true;
     verify(mem && (is_import || len(mem->name)),
         "name required for model: %s", isa(mem->mdl)->name);
-    push_member(mod, mem);
+    register_member(mod, mem);
     return mem; // for these keywords, we have one emember registered (not like our import)
 
 }
@@ -1978,7 +1976,7 @@ function parse_fn(silver mod, AFlag member_type, A ident, OPType assign_enum) {
         }
         verify(rtype, "type must proceed the -> keyword in fn");
     } else if (member_type == A_FLAG_IMETHOD)
-        rtype = rec ? (model)pointer(rec) : emodel("generic");
+        rtype = rec ? (model)pointer(rec, null) : emodel("generic");
     else
         rtype = emodel("void");
     
@@ -2062,7 +2060,7 @@ void silver_parse(silver mod) {
     }
     mod->in_top = false;
 
-    emember mem_init = push_model(mod, module_init); // publish initializer
+    emember mem_init = register_model(mod, module_init); // publish initializer
     pop(mod);
     finalize(module_init, mem_init);
 }
@@ -2135,85 +2133,6 @@ silver silver_load_module(silver mod, path uri) {
         name,    stem(uri));
     return mod_load;
 }
-
-void silver_import_types(silver mod, path lib) {
-    handle f = lib ? dlopen(cstring(lib), RTLD_NOW) : null;
-    verify(!lib || f, "shared-lib failed to load: %o", lib);
-
-    // push libraries for reloading facility
-    // todo: associate all loaded elements with this, so we can effectively release resources
-    // A-type has no unregistration of classes, but its a trivial mechanism
-    if (f) push(mod->shared_libs, f);
-    
-    // finish global construction, effectively registering the types with our runtime
-    A_engage(null); 
-
-    i64    ln = 0;
-    AType* a  = A_types(&ln);
-    
-    model mdl = aether_runtime_resolve(mod, typeid(AType), false);
-
-    for (num i = 0; i < ln; i++) {
-        AType type = a[i];
-        model mdl  = aether_runtime_resolve(mod, type, false);
-        verify(mdl, "import failed for type: %s", type->name);
-        push_model(mod, mdl);
-    }
-}
-
-static none resolve_type(silver mod, model import_into, AType type) {
-
-    /// import type into model/class/structure
-    bool is_struct    = (type->traits & A_TRAIT_STRUCT    ) != 0;
-    bool is_class     = (type->traits & A_TRAIT_CLASS     ) != 0;
-    bool is_primitive = (type->traits & A_TRAIT_PRIMITIVE ) != 0;
-    bool is_abstract  = (type->traits & A_TRAIT_ABSTRACT  ) != 0;
-    bool is_enum      = (type->traits & A_TRAIT_ENUM      ) != 0;
-
-    if (is_struct || is_class) {
-        /// we use ->src to A-type heavily in aether, so we use a sort of direct translation
-        /// doesnt work with 'A' -- perhaps A-alloc needs to give double for A.. (i think it does, though)
-        record rec = is_struct ? 
-            (record)structure(mod, mod, name, token(chars, type->name), body, null, src, alloc(type, 1)) :
-            (record)class    (mod, mod, name, token(chars, type->name), body, null, src, alloc(type, 1));
-        
-        type->user = rec;
-        //verify(mod->top == import_into, "somethings off");
-        
-        emember rtype_member = emember(
-            mod, mod, name, string(type->name), context, import_into, is_type, true);
-        set_model(rtype_member, rec);
-        push_member(mod, rtype_member);
-
-        push(mod, rec);
-        for (int m = 0; m < type->member_count; m++) {
-            member mem = &type->members[m];
-
-            // model should be associaed to the user on the type
-            model type_res = mem->type->user; // emodel(mem->type->name);
-            if (!type_res) {
-                print("lazy resolving type: %s", mem->type->name);
-                resolve_type(mod, import_into, mem->type);
-                type_res = mem->type->user;
-                verify(type_res, "resolution fail for type: %s", type->name);
-            }
-
-            emember rec_member = emember(
-                mod, mod, name, string(mem->name), context, rec);
-            set_model(rec_member, type->user);
-            push_member(mod, rec_member);
-            // set top to this record
-
-            set_model(rec_member, type_res); /// this is erroring because no 
-        }
-        /// return to our 'Import' space
-        pop(mod);
-    } else if (is_primitive) {
-        model mdl  = model(mod, mod, name, token(chars, type->name), src, alloc(type, 1));
-        type->user = mdl;
-    }
-}
-
 
 static i64 ancestor_mod = 0;
 
@@ -2763,7 +2682,7 @@ enode import_parse(silver mod) {
     // import does its thing into normal aether modeling, and we move on
     emember mem = emember(mod, mod, name, namespace, mdl, mdl);
     set_model  (mem, mdl);
-    push_member(mod, mem);
+    register_member(mod, mem);
     
     if (namespace) {
         mdl->name = namespace;
