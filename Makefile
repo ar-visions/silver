@@ -1,13 +1,39 @@
 PROJECT := silver
+CONFIG ?= release
 
-# Get directory of this Makefile
-MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+.PHONY: all bootstrap build clean debug release
 
-# Set IMPORT if not already set
-ifeq ($(origin IMPORT), undefined)
-    IMPORT := $(MAKEFILE_DIR)
-else ifneq ($(realpath $(IMPORT)), $(realpath $(MAKEFILE_DIR)))
-    $(error IMPORT ($(IMPORT)) does not match this Makefile's directory ($(MAKEFILE_DIR)))
+all: build
+
+debug:
+	$(MAKE) CONFIG=debug build
+
+release:
+	$(MAKE) CONFIG=release build
+
+bootstrap:
+ifeq ($(OS),Windows_NT)
+	@if [ "$(CONFIG)" = "debug" ]; then \
+		./bootstrap.bat --debug; \
+	else \
+		./bootstrap.bat; \
+	fi
+else
+	@if [ "$(CONFIG)" = "debug" ]; then \
+		./bootstrap.sh --debug; \
+	else \
+		./bootstrap.sh; \
+	fi
 endif
 
-include $(IMPORT)/import.mk
+build: bootstrap
+	ninja -C $(CONFIG)
+
+clean:
+ifeq ($(OS),Windows_NT)
+	@if exist debug rmdir /S /Q debug
+	@if exist release rmdir /S /Q release
+else
+	@rm -rf debug
+	@rm -rf release
+endif

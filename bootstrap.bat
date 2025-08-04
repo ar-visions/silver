@@ -137,7 +137,7 @@ popd
 :echo_flags
 
 pushd "%~dp0"
-"%PYTHON3_EXE%" gen-ninja.py %1
+"%PYTHON3_EXE%" gen.py %1
 set EXITCODE=%ERRORLEVEL%
 popd
 

@@ -37,7 +37,6 @@ forward(import)
     i_prop    (X,Y, public,     path,           file) \
     i_prop    (X,Y, public,     path,           project_path) \
     i_prop    (X,Y, public,     language,       std) \
-    i_method  (X,Y, public,     none,           import_types, path) \
     i_method  (X,Y, public,     silver,         load_module, path) \
     i_method  (X,Y, public,     enode,           parse_member_expr, emember) \
     i_method  (X,Y, public,     none,           incremental_resolve) \

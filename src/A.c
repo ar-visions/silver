@@ -122,6 +122,8 @@ string array_cast_string(array a) {
 
 array array_reverse(array a) {
     array r = array((int)len(a));
+    r->unmanaged = a->unmanaged;
+    r->assorted  = a->assorted;
     for (int i = len(a) - 1; i >= 0; i--)
         push(r, a->elements[i]);
     return r;
@@ -739,7 +741,7 @@ int alloc_count(AType type) {
 
 A alloc_instance(AType type, int n_bytes, int recycle_size) {
     A a = null;
-    af_recycler* af = type->af;
+    af_recycler af = type->af44;
     bool use_recycler = false; //af && n_bytes == recycle_size;
 
     if (use_recycler && af->re_count) {
@@ -762,14 +764,14 @@ A alloc_instance(AType type, int n_bytes, int recycle_size) {
             i64 prev_size = af->af_alloc;
             i64 next_size = af->af_alloc << 1;
             if (next_size == 0) next_size = 1024;
-            void* prev = af->af;
-            af->af = malloc(next_size * sizeof(A*));
-            memcpy(af->af, prev, prev_size * sizeof(A*));
-            af->af[0] = 0x00;
+            void* prev = af->af4;
+            af->af4 = malloc(next_size * sizeof(A*));
+            memcpy(af->af4, prev, prev_size * sizeof(A*));
+            af->af4[0] = 0x00;
             af->af_alloc = next_size;
         }
         a->af_index = 1 + af->af_count;
-        af->af[a->af_index] = a;
+        af->af4[a->af_index] = a;
         af->af_count++;
     }
     return a;
@@ -820,7 +822,7 @@ A alloc2(AType type, AType scalar, shape s) {
 
 #ifdef USE_FFI
 method_t* method_with_address(handle address, AType rtype, array atypes, AType method_owner) {
-    const num max_args = (sizeof(meta_t) - sizeof(num)) / sizeof(AType);
+    const num max_args = (sizeof(_meta_t) - sizeof(num)) / sizeof(AType);
     method_t* method = calloc(1, sizeof(method_t));
     method->ffi_cif  = calloc(1,        sizeof(ffi_cif));
     method->ffi_args = calloc(max_args, sizeof(ffi_type*));
@@ -2029,6 +2031,14 @@ item map_fetch(map m, A k) {
 }
 
 none map_set(map m, A k, A v) {
+    if (v == (A)0x00005555561bfa38) {
+        int test2 = 2;
+        test2    += 2;
+    }
+    if (isa(k) == typeid(string) && eq(((string)k), "af44")) {
+        int test2 = 2;
+        test2    += 2;
+    }
     if (!m->hlist) m->hlist = (item*)calloc(m->hsize, sizeof(item));
     item i = map_fetch(m, k);
     AType vtype = isa(v);
@@ -2069,18 +2079,19 @@ none map_rm(map m, A k) {
     u64  h    = hash(k);
     i64  b    = h % m->hsize;
     item prev = null;
-    for (item i = m->hlist[b]; i; i = i->next) {
-        if (i->h == h && compare(i->key, k) == 0) {
-            if (prev) {
-                prev->next = i->next;
-            } else {
-                m->hlist[b] = i->next;
+    if (m->hlist)
+        for (item i = m->hlist[b]; i; i = i->next) {
+            if (i->h == h && compare(i->key, k) == 0) {
+                if (prev) {
+                    prev->next = i->next;
+                } else {
+                    m->hlist[b] = i->next;
+                }
+                map_rm_item(m, i);
+                return;
             }
-            map_rm_item(m, i);
-            return;
+            prev = i;
         }
-        prev = i;
-    }
 }
 
 none map_clear(map m) {
@@ -2723,9 +2734,9 @@ A hold(A a) {
         A f = header(a);
         f->refs++;
 
-        af_recycler* af = f->type->af;
+        af_recycler af = f->type->af44;
         if (f->af_index > 0) {
-            af->af[f->af_index] = null;
+            af->af4[f->af_index] = null;
             f->af_index = 0;
         }
     }
@@ -2747,7 +2758,7 @@ none A_free(A a) {
         cur = cur->parent_type;
     }
     
-    af_recycler* af = type->af;    
+    af_recycler af = type->af;    
     if (true || !af || af->re_alloc == af->re_count) {
         memset(aa, 0xff, type->size);
         free(aa);
@@ -2770,10 +2781,10 @@ none A_recycle() {
     /// iterate through types
     for (num i = 0; i < types_len; i++) {
         AType type = atypes[i];
-        af_recycler* af = type->af;
+        af_recycler af = type->af44;
         if (af && af->af_count) {
             for (int i = 0; i <= af->af_count; i++) {
-                A a = af->af[i];
+                A a = af->af4[i];
                 if (a && a->refs > 0 && --a->refs == 0) {
                     A_free(&a[1]);
                 }
@@ -2801,7 +2812,7 @@ none drop(A a) {
         // if you dont have a list, then you must drop the objects.
 
         if (info->af_index > 0) {
-            info->type->af->af[info->af_index] = null;
+            info->type->af44->af4[info->af_index] = null;
             info->af_index = 0;
         }
         A_free(a);

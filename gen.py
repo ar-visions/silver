@@ -9,11 +9,13 @@ parser.add_argument('--debug', action='store_true', help='debug')
 args = parser.parse_args()
 
 is_debug = args.debug
+fname  = "debug" if is_debug else "release"
 system = platform.system()
 silver = Path(__file__).resolve().parent
 
 def get_platform_info():
     """get platform-specific settings"""
+    global fname
     base = {
         'Windows': {
             'exe': '.exe', 'lib_pre': '', 'lib': '.lib', 'shared': '.dll', 'obj': '.obj',
@@ -31,7 +33,7 @@ def get_platform_info():
                 r'C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\ucrt\x64',
                 r'C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\x64'
             ],
-            'lflags': ['-fuse-ld=lld', '-Wl,/debug', '-Wl,/pdb:$root/bin/silver.pdb',
+            'lflags': ['-fuse-ld=lld', f'-Wl,/{fname}', '-Wl,/pdb:$root/bin/silver.pdb',
                       '-Wl,/SUBSYSTEM:CONSOLE', '-Wl,/NODEFAULTLIB:libcmt', '-Wl,/DEFAULTLIB:msvcrt'],
             'cflags': ['-D_MT'], 'cxxflags': ['-D_MT'],
             'libs': ['-luser32', '-lkernel32', '-lshell32', '-llegacy_stdio_definitions']
@@ -195,6 +197,7 @@ def write_ninja(project, root, build_dir, plat):
     else:
         base_flags.extend(["-fPIC", "-fvisibility=default"])
     
+    global is_debug
     opt_flags = ["-g", "-O0"] if is_debug else ["-O2"]
     includes = [f"-I{build_p}/src/{project}", f"-I{root_p}/src", 
                 f"-I{build_p}/src", f"-I{root_p}/include"]
@@ -306,8 +309,9 @@ def write_ninja(project, root, build_dir, plat):
     return build_ninja
 
 def main():
+    global fname
     root = Path(__file__).resolve().parent
-    ninja_file = write_ninja("silver", root, root / "debug", get_platform_info())
+    ninja_file = write_ninja("silver", root, root / fname, get_platform_info())
     
     if ninja_file and len(sys.argv) > 1 and sys.argv[1] == "--build":
         plat = get_platform_info()

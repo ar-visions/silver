@@ -20,7 +20,7 @@
 #define   enum_method_IMPL(E, T, R, N, ...) \
     E##_i.type . N = & E## _ ## N; \
     E##_i.type.members[E##_i.type.member_count].name    = #N; \
-    E##_i.type.members[E##_i.type.member_count].args    = (meta_t) { emit_types(__VA_ARGS__) }; \
+    E##_i.type.members[E##_i.type.member_count].args    = (_meta_t) { emit_types(__VA_ARGS__) }; \
     E##_i.type.members[E##_i.type.member_count].type    = (AType)&R##_i.type; \
     E##_i.type.members[E##_i.type.member_count].offset  = offsetof(E##_f, N); \
     E##_i.type.members[E##_i.type.member_count].ptr     = (void*)& E##_##N; \
@@ -53,7 +53,7 @@
     E##_i.type.members[E## _i.type.member_count].member_type = A_FLAG_ENUMV; \
     static T static_##N = VAL; \
     E##_i.type.members[E## _i.type.member_count].ptr      = &static_##N;\
-    E##_i.type.members[E## _i.type.member_count].args     = (meta_t) { emit_types(__VA_ARGS__) }; \
+    E##_i.type.members[E## _i.type.member_count].args     = (_meta_t) { emit_types(__VA_ARGS__) }; \
     E##_i.type.member_count++;
 
 //#define   enum_value_v(E,T,Y, N,VAL)                enum_value_v_##Y(X, N,VAL)
@@ -274,7 +274,7 @@
 #define   i_ctr_public_INIT(X, ARG) \
     X##_i.type.with_##ARG = & X##_with_##ARG; \
     X##_i.type.members[X##_i.type.member_count].name        = stringify(with_##ARG); \
-    X##_i.type.members[X##_i.type.member_count].args        = (meta_t) { emit_types(ARG) }; \
+    X##_i.type.members[X##_i.type.member_count].args        = (_meta_t) { emit_types(ARG) }; \
     X##_i.type.members[X##_i.type.member_count].type        = (AType)&ARG##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset      = offsetof(X##_f, with_##ARG); \
     X##_i.type.members[X##_i.type.member_count].ptr         = (void*)& X##_with_##ARG; \
@@ -418,7 +418,7 @@
 #define   i_prop_public_DECL_EXTERN_meta(X, R, N, M2) i_prop_public_DECL(X, R, N)
 #define   i_prop_public_GENERICS_meta(X, R, N, M2)
 #define   i_prop_public_INIT_meta(X, R, N, M2) \
-    X##_i.type.members[X##_i.type.member_count].args = (meta_t) { 1, (AType)&M2##_i.type }; \
+    X##_i.type.members[X##_i.type.member_count].args = (_meta_t) { 1, (AType)&M2##_i.type }; \
     i_prop_public_INIT(X, R, N)
 
 #define   i_prop_public_PROTO_meta(X, R, N, M2)  
@@ -573,7 +573,7 @@
     X##_i.type.members[X##_i.type.member_count].id          = ENUM##_##ID; \
     X##_i.type.members[X##_i.type.member_count].value       = VALUE; \
     X##_i.type.members[X##_i.type.member_count].type        = (AType)&ENUM##_i.type; \
-    X##_i.type.members[X##_i.type.member_count].args        = (meta_t) { emit_types(__VA_ARGS__) }; \
+    X##_i.type.members[X##_i.type.member_count].args        = (_meta_t) { emit_types(__VA_ARGS__) }; \
     X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_ATTR; \
     X##_i.type.member_count++;
 #define i_attr_PROTO(       X, ENUM, ID, VALUE, ...)  
@@ -628,7 +628,7 @@
 #define   i_struct_ctr_INIT(X, ARG) \
     X##_i.type.with_##ARG = & X##_with_##ARG; \
     X##_i.type.members[X##_i.type.member_count].name        = stringify(with_##ARG); \
-    X##_i.type.members[X##_i.type.member_count].args        = (meta_t) { }; \
+    X##_i.type.members[X##_i.type.member_count].args        = (_meta_t) { }; \
     X##_i.type.members[X##_i.type.member_count].type        = (AType)&ARG##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset      = offsetof(X##_f, with_##ARG); \
     X##_i.type.members[X##_i.type.member_count].ptr         = (void*)& X##_with_##ARG; \
@@ -646,7 +646,7 @@
 #define   i_struct_ctr_obj_INIT(X, ARG) \
     X##_i.type.with_##ARG = & X##_with_##ARG; \
     X##_i.type.members[X##_i.type.member_count].name        = stringify(with_##ARG); \
-    X##_i.type.members[X##_i.type.member_count].args        = (meta_t) { }; \
+    X##_i.type.members[X##_i.type.member_count].args        = (_meta_t) { }; \
     X##_i.type.members[X##_i.type.member_count].type        = (AType)&ARG##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset      = offsetof(X##_f, with_##ARG); \
     X##_i.type.members[X##_i.type.member_count].ptr         = (void*)& X##_with_##ARG; \
@@ -697,7 +697,7 @@
 #define   i_struct_cast_INIT(X, R) \
     X##_i.type.cast_##R = & X##_cast_##R; \
     X##_i.type.members[X##_i.type.member_count].name    = stringify(cast_##R); \
-    X##_i.type.members[X##_i.type.member_count].args    = (meta_t) { emit_types(X) }; \
+    X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { emit_types(X) }; \
     X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = offsetof(X##_f, cast_##R); \
     X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_CAST; \
@@ -714,7 +714,7 @@
 #define   i_struct_method_INIT(    X, R, N, ...) \
     X##_i.type . N = & X## _ ## N; \
     X##_i.type.members[X##_i.type.member_count].name    = #N; \
-    X##_i.type.members[X##_i.type.member_count].args    = (meta_t) { }; \
+    X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { }; \
     X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = offsetof(X##_f, N); \
     X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_IMETHOD; \
@@ -733,10 +733,10 @@
 #define   i_struct_static_INIT(    X, R, N, ...) \
     X##_i.type . N = & X## _ ## N; \
     X##_i.type.members[X##_i.type.member_count].name    = #N; \
-    X##_i.type.members[X##_i.type.member_count].args    = (meta_t) { }; \
+    X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { }; \
     X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = offsetof(X##_f, N); \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_IMETHOD; \
+    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_SMETHOD; \
     X##_i.type.member_count++;
 #define   i_struct_static_PROTO(X, R, N, ...)
 #define   i_struct_static_METHOD(X, R, N, ...)      R (*N)(__VA_ARGS__);
@@ -814,7 +814,7 @@
 #define   t_method_public_GENERICS(X, R, N, ...)
 #define   t_method_public_INIT(X, R, N, ...) \
     X##_i.type.members[X##_i.type.member_count].name    = #N; \
-    X##_i.type.members[X##_i.type.member_count].args    = (meta_t) { emit_types(__VA_ARGS__) }; \
+    X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { emit_types(__VA_ARGS__) }; \
     X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = 0; \
     X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_SMETHOD; \
@@ -857,7 +857,7 @@
 #define   s_method_public_GENERICS(X, R, N, ...)
 #define   s_method_public_INIT(X, R, N, ...) \
     X##_i.type.members[X##_i.type.member_count].name    = #N; \
-    X##_i.type.members[X##_i.type.member_count].args    = (meta_t) { emit_types(__VA_ARGS__) }; \
+    X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { emit_types(__VA_ARGS__) }; \
     X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = 0; \
     X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_SMETHOD; \
@@ -896,7 +896,7 @@
 #define   i_method_public_INIT(    X, R, N, ...) \
     X##_i.type . N = & X## _ ## N; \
     X##_i.type.members[X##_i.type.member_count].name    = #N; \
-    X##_i.type.members[X##_i.type.member_count].args    = (meta_t) { emit_types(__VA_ARGS__) }; \
+    X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { emit_types(__VA_ARGS__) }; \
     X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = offsetof(X##_f, N); \
     X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_IMETHOD; \
@@ -924,7 +924,7 @@
 #define   i_final_public_GENERICS(X, R, N, ...)
 #define   i_final_public_INIT(    X, R, N, ...) \
     X##_i.type.members[X##_i.type.member_count].name    = #N; \
-    X##_i.type.members[X##_i.type.member_count].args    = (meta_t) { emit_types(__VA_ARGS__) }; \
+    X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { emit_types(__VA_ARGS__) }; \
     X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = 0; \
     X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_IFINAL; \
@@ -971,7 +971,7 @@
 #define   i_operator_public_INIT(X, R, N, ARG) \
     X##_i.type  . operator_##N = & X## _operator_ ## N; \
     X##_i.type.members[X##_i.type.member_count].name    = stringify(operator_##N); \
-    X##_i.type.members[X##_i.type.member_count].args    = (meta_t) { emit_types(X, ARG) }; \
+    X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { emit_types(X, ARG) }; \
     X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = offsetof(X##_f, operator_##N); \
     X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_OPERATOR; \
@@ -1014,7 +1014,7 @@
 #define   i_cast_public_INIT(X, R) \
     X##_i.type.cast_##R = & X##_cast_##R; \
     X##_i.type.members[X##_i.type.member_count].name    = stringify(cast_##R); \
-    X##_i.type.members[X##_i.type.member_count].args    = (meta_t) { emit_types(X) }; \
+    X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { emit_types(X) }; \
     X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = offsetof(X##_f, cast_##R); \
     X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_CAST; \
@@ -1056,7 +1056,7 @@
 #define i_index_public_INIT(X, R, ...) \
     X##_i.type.emit_idx_symbol(index, __VA_ARGS__) = & emit_idx_symbol(X ## _index, __VA_ARGS__); \
     X##_i.type.members[X##_i.type.member_count].name        = stringify(emit_idx_symbol(index, __VA_ARGS__)); \
-    X##_i.type.members[X##_i.type.member_count].args        = (meta_t) { emit_types(X, __VA_ARGS__) }; \
+    X##_i.type.members[X##_i.type.member_count].args        = (_meta_t) { emit_types(X, __VA_ARGS__) }; \
     X##_i.type.members[X##_i.type.member_count].type        = (AType)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset      = offsetof(X##_f, emit_idx_symbol(index, __VA_ARGS__)); \
     X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_INDEX; \
@@ -1145,7 +1145,7 @@
 #define i_override_ctr_INIT(X, R) \
     X##_i.type . with_##R = & X##_with_##R; \
     X##_i.type.members[X##_i.type.member_count].name        = stringify(with_##R); \
-    X##_i.type.members[X##_i.type.member_count].args        = (meta_t) { emit_types(R) }; \
+    X##_i.type.members[X##_i.type.member_count].args        = (_meta_t) { emit_types(R) }; \
     X##_i.type.members[X##_i.type.member_count].type        = (AType)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset      = offsetof(X##_f, with_##R); \
     X##_i.type.members[X##_i.type.member_count].ptr         = (void*)& X##_with_##R; \

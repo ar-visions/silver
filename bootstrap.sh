@@ -70,4 +70,4 @@ if [[ ! -f "$IMPORT/bin/clang" ]] || [[ ! -d "$llvm_build" ]]; then
     build_llvm
 fi
 
-# (cd "$(dirname "$0")" && python3 gen-ninja.py "$@")
+(cd "$(dirname "$0")" && python3 gen.py "$@")
