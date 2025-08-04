@@ -3,49 +3,6 @@ development in progress, with documentation to be added/changed.
 
 ![orbiter avatar](core.png "orbiter avatar")
 
-# A-type runtime
-A-type is a C-based object system designed for clear maintainable code that is reflective and adaptive. Use familiar OOP patterns in C with less boilerplate.  Far more leniant than most Object-Oriented languages. It's in C, and here less code can do more. Just add a few macros. Reflective members of classes, enums methods and props enable for sophisticated control in compact design. The result of that is scalable performance you can take to more platforms. It's javascript meeting C and python in self expanding fashion.
-
-<a href="https://github.com/ar-visions/A/actions/workflows/build.yml">
-  <img src="https://github.com/ar-visions/A/actions/workflows/build.yml/badge.svg" alt="A-type build" width="444">
-</a>
-
-```c
-#include <A>
-
-int main(int argc, char **argv) {
-    cstr        src = getenv("SRC");
-    cstr     import = getenv("IMPORT");
-    map        args = A_args(argv,
-        "module",  str(""),
-        "install", form(path, "%s", import));
-    string mkey     = str("module");
-    string name     = get(args, str("module"));
-    path   n        = new(path, chars, name->chars);
-    path   source   = call(n, absolute);
-    silver mod      = new(silver,
-        source,  source,
-        install, get(args, str("install")),
-        name,    stem(source));
-}
-
-define_class (tokens)
-define_class   (silver, ether)
-```
-
-We have named arguments in our new() macro and that means 1 ctr/init to code not arbitrary amounts.  It's a far better and more productive pattern, and even more lean than Swift.  This is a post-init call, where we have already set the properties (where holds happen on non-primitives).  A-type standard destructor will also auto-drop member delegates that are object-based.  It just means you don't have to do much memory management at all.
-
-A-type is the heart of silver, and one may import A-type c files with silver linings; these are declaration files used in silver, with includes with schemas emitted for C.  silver is a complete reflection of A-type, and thus our schemas are ABI compatible and one in the same.
-
-A-type is generally our C run-time which manages the entire runtime.  Keywords for silver are implemented here, and we may implement silver keywords in silver as well.  Simply model your-keyword static fn parse[ silver ]
-
-
-Our design principle here is direct: to be like silver: moldable, the most-reflective, ... and not as heavy as lead.
-
-We may import modules based on A-type, and we load those modules right straight-away while we parse. If you want to accesst the design-time, we implement modules in A-type. They then allow extensions to the language.  With this kind of extensibility, it's best silver not try to have too many keywords, and be more like a substantially trimmed down C++ that functions a bit like post-init Python.  We do not have templates currently, but there is nothing stopping their implementation.  I just ask to consider the use of meta-types that are effectively tags on classes at indices[0...7]; A-type has this ability and it allows us to both tag our types, and tag members on types.  The model is polymorphic, but our methods are first class citizens.  Types simply come along for the ride.  This tilts object-oriented on it's side, and for good reason.  It's to feel far more like C.
-
-A-type is about as much silver as C can get, so there is relatively no translation needed between the two, ..other than having to put up with schema macros your header.  This is really not so scary though -- just don't forget the \ on the end of each line. Also don't have an adjoining line under it because it will become part of the macro.  These are features you don't need to worry about in silver.
-
 Orbiter
 an IDE being built with silver (was C++)
 [https://github.com/ar-visions/orbiter.git]
@@ -53,34 +10,6 @@ an IDE being built with silver (was C++)
 Hyperspace
 spatial dev kit, ai module & training scripts
 [https://github.com/ar-visions/hyperspace.git]
-
-
-# dbg component (A-type, universal object for C or C++)
-- componentized debugger using LLDB api; accessed by universal object
-
-# example use-case
-```c
-#include <dbg>
-
-object on_break(dbg debug, path source, u32 line, u32 column) {
-	print("breakpoint hit on %o:%i:%i", source, line, column);
-	print("arguments: %o ... locals: %o ... statics: %o ... globals: %o ... registers: %o ... this/self: %o", 
-	cont(debug);
-	return null;
-}
-
-int main(int argc, symbol argv[]) {
-	map args  = A_arguments(argc, argv);
-    	dbg debug = dbg(
-		location,  f(path, "%o", get(args, string("binary")),
-		arguments, f(string, "--an-arg %i", 1));
-	break_line(debug, 4, on_break);
-	start(debug);
-	while(running(debug)) {
-		usleep(1000000);
-	}
-}
-```
 
 # **import** keyword
 **silver** starts with **import**. The **import** keyword lets you build and include from projects in any language, with coupled configuration parameters and <comma, separated> includes.  Local source links are prioritized before external checkouts, so you can build externals locally with your own changes.  This is a far better way to collaborate in open source with yourself and others. Silver simply gets out of the way when it comes to git for your own source; it's merely importing.  The build process will recognize the various environment variables such as **CC**, **CXX**, **RUSTC**, **CPP**
@@ -150,11 +79,6 @@ fn module-name[ a:app ] -> int
     print[ 'using app with value: { is-const } + { val - is-const }' ]
     return [run[a, string[val]] > 0] ? 1 : 0
 
-
-# **meta** keyword (reserved for 1.0 release)
-classes have ability to perform meta instancing.  think of it as templates but without code expansion; it simply does high-level reflection with the typed symbols.  meta is a simple idea, it's nothing more than an array of types you provide to the class when using it.  the class accepts types at meta index.  
-```python
-meta [ I:any ]
-class list
-
 ```
+
+
