@@ -91,7 +91,7 @@ declare_enum(reference)
     i_method  (X,Y, public,     model,            pointer,       string) \
     i_method  (X,Y, public,     bool,             has_scope) \
     i_method  (X,Y, public,     model,            alias,         string, reference, array) \
-    i_method  (X,Y, public,     none,             finalize,      emember) \
+    i_final   (X,Y, public,     none,             finalize) \
     i_method  (X,Y, public,     emember,          convertible,   model) \
     i_method  (X,Y, public,     emember,          castable,      model) \
     i_method  (X,Y, public,     emember,          constructable, model) \
@@ -123,6 +123,7 @@ declare_class(format_attr)
     i_prop(X,Y, public,     bool,                   is_ctr) \
     i_prop(X,Y, public,     bool,                   is_idx) \
     i_prop(X,Y, public,     OPType,                 is_oper) \
+    i_prop(X,Y, public,     bool,                   is_override) \
     i_prop(X,Y, public,     bool,                   is_ifinal) \
     i_prop(X,Y, public,     bool,                   is_global_ctr) \
     i_prop(X,Y, public,     bool,                   is_init) \
@@ -143,8 +144,7 @@ declare_class(format_attr)
     i_prop(X,Y, intern,     LLVMTypeRef*,           arg_types, as, ARef) \
     i_prop(X,Y, intern,     num,                    arg_count) \
     i_method(X,Y, public,   none,                   use) \
-    i_override(X,Y, method, init) \
-    i_override(X,Y, method, finalize)
+    i_override(X,Y, method, init)
 declare_class_2(function, model)
 
 
@@ -159,7 +159,6 @@ typedef struct _schematic* schematic;
     i_prop    (X,Y, public, record, parent) \
     i_prop    (X,Y, public, i32, total_members) \
     i_prop    (X,Y, public, bool,   expect_members) \
-    i_override(X,Y, method,         finalize) \
     i_override(X,Y, method,         init)
 declare_class_2(record, model)
 
@@ -171,7 +170,6 @@ declare_class_3(structure, record, model)
 
 #define enumeration_schema(X,Y,...) \
     i_prop    (X,Y, public, model, vtype) \
-    i_override(X,Y, method, finalize) \
     i_override(X,Y, method, init)
 declare_class_3(enumeration, record, model)
 
@@ -247,6 +245,7 @@ declare_class(code)
     i_prop    (X,Y, public,     array,       lex) \
     i_prop    (X,Y, public,     map,         base) \
     i_prop    (X,Y, public,     enode,       last_return) \
+    i_prop    (X,Y, intern,     array,       finalizing) \
     i_prop    (X,Y, intern,     LLVMExecutionEngineRef, jit,               as, ARef) \
     i_prop    (X,Y, intern,     LLVMBasicBlockRef,      current_if_block,  as, ARef) \
     i_prop    (X,Y, intern,     LLVMModuleRef,          module,            as, ARef) \
@@ -264,7 +263,6 @@ declare_class(code)
     i_prop    (X,Y, public,     array,       stack) \
     i_prop    (X,Y, public,     num,         cursor) \
     i_method  (X,Y, public,     none,        A_import,           path) \
-    i_method  (X,Y, public,     none,        test_model) \
     i_method  (X,Y, public,     none,        push_state,         array, num) \
     i_method  (X,Y, public,     none,        push_current) \
     i_method  (X,Y, public,     none,        pop_state,          bool) \

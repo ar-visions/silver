@@ -193,7 +193,8 @@ none array_remove(array a, num b) {
     for (num i = b; i < a->len; i++) {
         A prev = a->elements[b];
         a->elements[b] = a->elements[b + 1];
-        drop(prev);
+        if (!a->unmanaged)
+            drop(prev);
     }
     a->elements[--a->len] = null;
 }
@@ -406,7 +407,39 @@ static AType*   _types;
 static num      _types_alloc;
 static num      _types_len;
 
+static bool started = false;
+
 none push_type(AType type) {
+    /* for A-type building, we must do this; however silver has runtime awareness of this info */
+    /* it simply means for A-type, one must build for debug before release */
+    /* yes its required for proper interns in a C build system, but silver goes beyond this to use its info at designtime */
+#ifndef NDEBUG
+    char* import = getenv("IMPORT");
+    if (import && !started) { // we do not want to run this if its already generated; our build system handles cache management here
+        static bool once;     // also we do not want external modules adding to this (different project header typically)
+        static bool skip;
+        char  f[256];
+        snprintf(f, sizeof(f), "%s/include/%s/isize", import, type->module);
+        if (!once) {
+            struct stat st;
+            if (stat(f, &st) != 0 || st.st_size == 0)
+                unlink(f);
+            else
+                skip = true;
+            
+            once = true;
+        }
+        if (!skip) {
+            FILE* fi = fopen(f, "a");
+            if (!fi) {
+                fprintf(stderr, "could not write isize for type %s\n", type->name);
+            } else {
+                fprintf(fi, "#define %s_isize %i\n", type->name, type->isize);
+                fclose(fi);
+            }
+        }
+    }
+#endif
     if (type->parent_type != typeid(A)) {
         AType pt = type->parent_type;
         if (pt->sub_types_alloc == pt->sub_types_count) {
@@ -741,7 +774,7 @@ int alloc_count(AType type) {
 
 A alloc_instance(AType type, int n_bytes, int recycle_size) {
     A a = null;
-    af_recycler af = type->af44;
+    af_recycler af = type->af;
     bool use_recycler = false; //af && n_bytes == recycle_size;
 
     if (use_recycler && af->re_count) {
@@ -916,7 +949,30 @@ int fault_level;
 
 static __attribute__((constructor)) bool Aglobal_AF();
 
-static bool started = false;
+none A_member_override(AType type, member type_mem, AFlag f) {
+    AType base = type;
+    bool found = false;
+
+    do {
+        base = base->parent_type;
+        for (int i = 0; i < base->member_count; i++) {
+            member m = &base->members[i];
+            if ((m->member_type & f) != 0 && strcmp(m->name, type_mem->name) == 0) {
+                if (strcmp(type->name, "aether") == 0 && strcmp(type_mem->name, "dealloc") == 0) {
+                    int test2 = 2;
+                    test2    += 2;
+                }
+                type_mem->offset = m->offset;
+                type_mem->args   = m->args; // this simply makes it easier to declare
+                type_mem->type   = m->type; // adding a real member for override makes it easier to enumerate
+                type_mem->member_type = m->member_type | A_FLAG_OVERRIDE; // otherwise we have to scour the function tables with memcmp
+                return;
+            }
+        }
+    } while (!found && base != typeid(A));
+
+    fprintf(stderr, "override could not find member from type %s", type->name);
+}
 
 none A_engage(cstrs argv) {
     AType f32_type = typeid(f32);
@@ -2734,7 +2790,7 @@ A hold(A a) {
         A f = header(a);
         f->refs++;
 
-        af_recycler af = f->type->af44;
+        af_recycler af = f->type->af;
         if (f->af_index > 0) {
             af->af4[f->af_index] = null;
             f->af_index = 0;
@@ -2781,7 +2837,7 @@ none A_recycle() {
     /// iterate through types
     for (num i = 0; i < types_len; i++) {
         AType type = atypes[i];
-        af_recycler af = type->af44;
+        af_recycler af = type->af;
         if (af && af->af_count) {
             for (int i = 0; i <= af->af_count; i++) {
                 A a = af->af4[i];
@@ -2812,7 +2868,7 @@ none drop(A a) {
         // if you dont have a list, then you must drop the objects.
 
         if (info->af_index > 0) {
-            info->type->af44->af4[info->af_index] = null;
+            info->type->af->af4[info->af_index] = null;
             info->af_index = 0;
         }
         A_free(a);

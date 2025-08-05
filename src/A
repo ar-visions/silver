@@ -112,7 +112,7 @@ typedef double                 *ref_f64;
     i16             sub_types_count; \
     i16             sub_types_alloc; \
     int             size; \
-    int             msize; \
+    int             isize; \
     af_recycler     af; \
     int             magic; \
     int             global_count; \
@@ -144,7 +144,9 @@ typedef double                 *ref_f64;
         u8 __none__; \
     }; \
     typedef struct _ ## AA { \
-        AA##_schema (AA, INST) \
+        AA##_intern (AA, INST_U, __VA_ARGS__) \
+        AA##_intern (AA, INST_L, __VA_ARGS__) \
+        AA##_intern_footer (AA) \
         struct _##AA##_f* f; \
         struct _##AA##_f* f2; \
     } *AA; \
@@ -250,7 +252,9 @@ void lazy_init(global_init_fn fn);
         AA##_intern (AA, F, __VA_ARGS__) \
     }; \
     typedef struct _##AA { \
-        AA##_intern (AA, INST, __VA_ARGS__) \
+        AA##_intern (AA, INST_U, __VA_ARGS__) \
+        AA##_intern (AA, INST_L, __VA_ARGS__) \
+        AA##_intern_footer (AA) \
         struct _##AA##_f* f; \
         struct _##AA##_f* f2; \
     } *AA; \
@@ -273,8 +277,12 @@ void lazy_init(global_init_fn fn);
         AA##_intern (AA, F, __VA_ARGS__) \
     }; \
     typedef struct _##AA { \
-        BB##_intern (BB, INST, __VA_ARGS__) \
-        AA##_intern (AA, INST, __VA_ARGS__) \
+        BB##_intern (BB, INST_U, __VA_ARGS__) \
+        BB##_intern (BB, INST_L, __VA_ARGS__) \
+        BB##_intern_footer (BB) \
+        AA##_intern (AA, INST_U, __VA_ARGS__) \
+        AA##_intern (AA, INST_L, __VA_ARGS__) \
+        AA##_intern_footer (AA) \
         struct _##AA##_f* f; \
         struct _##AA##_f* f2; \
     } *AA; \
@@ -298,9 +306,15 @@ void lazy_init(global_init_fn fn);
         AA##_intern (AA, F, __VA_ARGS__) \
     }; \
     typedef struct _##AA { \
-        CC##_intern (CC, INST, __VA_ARGS__) \
-        BB##_intern (BB, INST, __VA_ARGS__) \
-        AA##_intern (AA, INST, __VA_ARGS__) \
+        CC##_intern (CC, INST_U, __VA_ARGS__) \
+        CC##_intern (CC, INST_L, __VA_ARGS__) \
+        CC##_intern_footer (CC) \
+        BB##_intern (BB, INST_U, __VA_ARGS__) \
+        BB##_intern (BB, INST_L, __VA_ARGS__) \
+        BB##_intern_footer (BB) \
+        AA##_intern (AA, INST_U, __VA_ARGS__) \
+        AA##_intern (AA, INST_L, __VA_ARGS__) \
+        AA##_intern_footer (AA) \
         struct _##AA##_f* f; \
         struct _##AA##_f* f2; \
     } *AA; \
@@ -327,10 +341,18 @@ void lazy_init(global_init_fn fn);
         AA##_intern (AA, F, __VA_ARGS__) \
     }; \
     typedef struct _##AA { \
-        DD##_intern (DD, INST, __VA_ARGS__) \
-        CC##_intern (CC, INST, __VA_ARGS__) \
-        BB##_intern (BB, INST, __VA_ARGS__) \
-        AA##_intern (AA, INST, __VA_ARGS__) \
+        DD##_intern (DD, INST_U, __VA_ARGS__) \
+        DD##_intern (DD, INST_L, __VA_ARGS__) \
+        DD##_intern_footer (DD) \
+        CC##_intern (CC, INST_U, __VA_ARGS__) \
+        CC##_intern (CC, INST_L, __VA_ARGS__) \
+        CC##_intern_footer (CC) \
+        BB##_intern (BB, INST_U, __VA_ARGS__) \
+        BB##_intern (BB, INST_L, __VA_ARGS__) \
+        BB##_intern_footer (BB) \
+        AA##_intern (AA, INST_U, __VA_ARGS__) \
+        AA##_intern (AA, INST_L, __VA_ARGS__) \
+        AA##_intern_footer (AA) \
         struct _##AA##_f* f; \
         struct _##AA##_f* f2; \
     } *AA; \
@@ -392,6 +414,12 @@ void lazy_init(global_init_fn fn);
 
 void* primitive_ffi_arb(AType);
 
+#ifndef NDEBUG
+#define IS_DEBUG 0
+#else
+#define IS_DEBUG 1
+#endif
+
 /// alias lets use tag types with an array of types, enabling 
 /// design-time and runtime template-like functionality, with 
 /// permutation of the class-type and instance-type
@@ -404,8 +432,6 @@ void* primitive_ffi_arb(AType);
         TYPE##_f* type_ref = &TYPE##_i.type; \
         BASE##_f* base_ref = &BASE##_i.type; \
         if (!AType_i.type.name) { \
-            AType_i.info.type   = (AType)&AType_i.type; \
-            AType_i.info.refs   = 0; \
             AType_i.type.name   = "AType"; \
             AType_i.type.traits = A_TRAIT_BASE; \
             AType_i.type.src    = typeid(A); \
@@ -426,6 +452,7 @@ void* primitive_ffi_arb(AType);
             type_ref->af = &TYPE##_af; \
             type_ref->af->re_alloc = 1024; \
             type_ref->af->re = (object*)(A*)calloc(1024, sizeof(A)); \
+            type_ref->isize = 0 TYPE##_schema( TYPE, ISIZE, __VA_ARGS__ ); \
             type_ref->magic = 1337; \
             static struct _member members[512]; \
             type_ref->src = (AType)base_ref != typeid(A) \
@@ -497,18 +524,20 @@ forward(path)
 forward(vector)
 forward(any)
 
+// A-type must generate defines for sizes for users of it
+
 #define A_schema(AA,Y,...) \
-    i_prop  (AA,Y, opaque, AType,       type) \
-    i_prop  (AA,Y, opaque, AType,       scalar) \
-    i_prop  (AA,Y, opaque, i64,         refs) \
-    i_prop  (AA,Y, opaque, A,           data) \
-    i_prop  (AA,Y, opaque, shape,       shape) \
-    i_prop  (AA,Y, opaque, cstr,        source) \
-    i_prop  (AA,Y, opaque, i64,         line) \
-    i_prop  (AA,Y, opaque, i64,         alloc) \
-    i_prop  (AA,Y, opaque, i64,         count) \
-    i_prop  (AA,Y, opaque, i64,         recycle) \
-    i_prop  (AA,Y, opaque, i64,         af_index) \
+    i_prop  (AA,Y, intern, AType,       type) \
+    i_prop  (AA,Y, intern, AType,       scalar) \
+    i_prop  (AA,Y, intern, i64,         refs) \
+    i_prop  (AA,Y, intern, A,           data) \
+    i_prop  (AA,Y, intern, shape,       shape) \
+    i_prop  (AA,Y, intern, cstr,        source) \
+    i_prop  (AA,Y, intern, i64,         line) \
+    i_prop  (AA,Y, intern, i64,         alloc) \
+    i_prop  (AA,Y, intern, i64,         count) \
+    i_prop  (AA,Y, intern, i64,         recycle) \
+    i_prop  (AA,Y, intern, i64,         af_index) \
     i_method(AA,Y, public, none,        init) \
     i_method(AA,Y, public, none,        dealloc) \
     i_method(AA,Y, public, i32,         compare,             AA) \
@@ -556,6 +585,7 @@ forward(any)
     t_method(AA,Y, public, i32,         alloc_count) \
     t_method(AA,Y, public, none,        push_type) \
     t_method(AA,Y, public, A,           typecast,            A) \
+    s_method(AA,Y, public, none,        member_override,     AType, member, AFlag) \
     s_method(AA,Y, public, none,        register_init,       fn) \
     s_method(AA,Y, public, bool,        is_inlay,            member) \
     s_method(AA,Y, public, AType,       find_type,           symbol) \
@@ -572,6 +602,9 @@ forward(any)
     i_cast  (AA,Y, public, string) \
     i_cast  (AA,Y, public, bool)
 
+
+#define A_intern_footer(AA)
+                    
 #define A_intern(AA,YY,...) A_schema(AA,YY,__VA_ARGS__)
 
 typedef struct _shape *shape;
