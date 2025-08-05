@@ -2,10 +2,6 @@
 #include <ports.h>
 #include <limits.h>
 
-/// silver 88
-/// the goal of 88 is to support class, enum, struct with operator overloads
-/// import keyword to import other silver modules as well as any other source project, including
-/// git repos that build rust, C or C++ [ all must export C functions ]
 
 #define   emodel(MDL)    ({ \
     emember  m = aether_lookup2(mod, string(MDL), null); \
@@ -1874,7 +1870,7 @@ emember silver_read_def(silver mod) {
         pop_state(mod, false);
 
         // is below required or did i comment this out as test?
-        finalize(mem->mdl, mem);
+        finalize(mem->mdl);
     } else {
         verify(is_alias, "unknown error");
         mem->mdl = alias(mem->mdl, mem->name, reference_pointer, null);
@@ -2003,7 +1999,7 @@ void silver_incremental_resolve(silver mod) {
         emember mem = i->value;
         model base = mem->mdl->ref ? mem->mdl->src : mem->mdl;
         if (!mem->mdl->finalized && instanceof(base, typeid(record)) && base->from_include)
-            finalize(base, mem);
+            finalize(base);
     }
 
     /// finalize imported C functions, which use those structs perhaps literally in argument form
@@ -2011,7 +2007,7 @@ void silver_incremental_resolve(silver mod) {
         emember mem = i->value;
         model  mdl = mem->mdl;
         if (!mdl->finalized && instanceof(mem->mdl, typeid(function)) && mdl->from_include) {
-            finalize(mem->mdl, mem);
+            finalize(mem->mdl);
         }
     }
 
@@ -2022,12 +2018,12 @@ void silver_incremental_resolve(silver mod) {
         model base = mem->mdl->ref ? mem->mdl->src : mem->mdl;
         if (!base->finalized && instanceof(base, typeid(record)) && !base->from_include) {
             build_record(mod, mem->mdl);
-            finalize(base, mem);
+            finalize(base);
             pairs(mem->mdl->members, ii) {
                 emember rec_mem = ii->value;
                 if (instanceof(rec_mem->mdl, typeid(function))) {
                     build_function(mod, rec_mem->mdl);
-                    finalize(mod, rec_mem->mdl);
+                    finalize(mod);
                 }
             }
         }
@@ -2038,7 +2034,7 @@ void silver_incremental_resolve(silver mod) {
         emember mem = i->value;
         if (!mem->mdl->finalized && instanceof(mem->mdl, typeid(function)) && !mem->mdl->from_include) {
             build_function(mod, mem->mdl);
-            finalize(mem->mdl, mem);
+            finalize(mem->mdl);
         }
     }
 
@@ -2062,7 +2058,7 @@ void silver_parse(silver mod) {
 
     emember mem_init = register_model(mod, module_init); // publish initializer
     pop(mod);
-    finalize(module_init, mem_init);
+    finalize(module_init);
 }
 
 void silver_init(silver mod) {

@@ -93,8 +93,8 @@ typedef struct _AType {
     i16             sub_types_count;
     i16             sub_types_alloc;
     int             size;
-    int             msize;
-    af_recycler     af44;
+    int             isize;
+    af_recycler     af;
     int             magic;
     int             global_count;
     int             vmember_count;
