@@ -171,7 +171,7 @@ declare_class_3(structure, record, model)
 #define enumeration_schema(X,Y,...) \
     i_prop    (X,Y, public, model, vtype) \
     i_override(X,Y, method, init)
-declare_class_3(enumeration, record, model)
+declare_class_2(enumeration, model)
 
 #define uni_schema(X,Y,...)
 declare_class_3(uni, record, model)
