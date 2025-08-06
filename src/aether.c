@@ -596,10 +596,6 @@ map member_map(aether e, cstr field, ...) {
         string n   = new(string, chars, value);
         A mdl = va_arg(args, A);
         AType  ty  = isa(mdl);
-        if (inherits(typeid(model), ty)) {
-            int test2 = 2;
-            test2 += 2;
-        }
         emember mem = emember(mod, e, name, n, mdl, va_arg(args, cstr));
         set(res, n, mem);
     }
@@ -818,13 +814,11 @@ void function_use(function fn) {
         arg_types[index++] = fn->target->mdl->type;
     }
 
-    //print("function %o", fn->name);
     verify(isa(fn->args) == typeid(eargs), "arg mismatch");
     
     each(fn->args->args, emember, arg) {
         verify (arg->mdl->type, "no LLVM type found for arg %o", arg->name);
         arg_types[index++]   = arg->mdl->type;
-        //print("arg type [%i] = %s", index - 1, LLVMPrintTypeToString(arg->mdl->type));
     }
 
     fn->arg_types = arg_types;
@@ -979,7 +973,13 @@ void record_finalize(record rec) {
                     0,                     // Debug info flags (e.g., 0 for none)
                     mem->mdl->debug);
             }
-            print("(%o) setting index %i to %p (%o : %s)", r->name, index, mem->mdl->type, mem->name, isa(mem->mdl)->name);
+
+            if (!LLVMTypeIsSized(mem->mdl->type)) {
+                finalize(mem->mdl);
+            }
+            
+            print("(%o) setting index %i to %p (%o : %s) = %i",
+                r->name, index, mem->mdl->type, mem->name, isa(mem->mdl)->name, LLVMTypeIsSized(mem->mdl->type));
             member_types[index]   = mem->mdl->type;
             enumeration en = instanceof(mem->mdl, typeid(enumeration));
 
@@ -1902,7 +1902,7 @@ model aether_pop(aether e) {
 
 function model_initializer(model mdl) {
     aether   e       = mdl->mod;
-    model    rtype   = emodel("void");
+    model    rtype   = emodel("none");
     string   fn_name = form(string, "_%o_init", mdl->name);
     record   rec     = instanceof(mdl, typeid(record));
     function fn_init = function(
@@ -1922,6 +1922,7 @@ function model_initializer(model mdl) {
 void enumeration_init(enumeration mdl) {
     aether e = mdl->mod;
     mdl->src  = mdl->src ? mdl->src : emodel("i32");
+    mdl->type = mdl->src->type;
 }
 
 /// return a map of defs found by their name (we can isolate the namespace this way by having separate maps)
@@ -2038,9 +2039,6 @@ void aether_llvm_init(aether e) {
     e->target_data = LLVMCreateTargetDataLayout(e->target_machine);
     llflag(e, "Dwarf Version",      5);
     llflag(e, "Debug Info Version", 3);
-
-    printf("aether: sizeof model = %i\n", (int)sizeof(struct _model));
-    printf("aether: sizeof aether = %i\n", (int)sizeof(struct _aether));
 
     string src_file =      filename (e->source);
     string src_path = cast(string, directory(e->source));
@@ -2170,13 +2168,6 @@ static void register_basics(aether e) {
     finalize(_af_recycler);
     finalize(_member);
 
-    pairs (_AType->members, i) {
-        string  f = i->key;
-        emember m = i->value;
-        print("%o:  %o size = %i", f, m->name, m->mdl->size);
-    }
-
-    int s0 = _member->size, s1 = sizeof(struct _member);
     verify(_AType->size       == sizeof(struct _AType),       "AType size mismatch");
     verify(_af_recycler->size == sizeof(struct _af_recycler), "_af_recycler size mismatch");
     verify(_meta_t->size      == sizeof(struct _meta_t),      "_meta_t size mismatch");
@@ -2230,7 +2221,6 @@ void aether_A_import(aether e, path lib) {
         bool  is_integral  = (atype->traits & A_TRAIT_INTEGRAL)  != 0;
         bool  is_unsigned  = (atype->traits & A_TRAIT_UNSIGNED)  != 0;
         bool  is_signed    = (atype->traits & A_TRAIT_SIGNED)    != 0;
-
         if      (is_class)    mdl = class      (mod, e, name, name, from_include, inc);
         else if (is_struct)   mdl = structure  (mod, e, name, name, from_include, inc);
         else if (is_enum)     mdl = enumeration(mod, e, name, name);
@@ -2294,10 +2284,6 @@ void aether_A_import(aether e, path lib) {
     // load structs and class members (including i/s methods)
     pairs(processing, i) {
         AType  atype     = i->value;
-        if (atype == typeid(enode)) {
-            int test2 = 2;
-            test2    += 2;
-        }
         model  mdl       = atype->user;
         bool   is_struct = (atype->traits & A_TRAIT_STRUCT) != 0;
         bool   is_class  = (atype->traits & A_TRAIT_CLASS)   != 0;
@@ -2318,15 +2304,7 @@ void aether_A_import(aether e, path lib) {
                 member amem    = &atype->members[m];
                 AType  mtype   = amem->type;
                 string n       = amem->sname;
-                if (eq(n, "mod")) {
-                    int test2 = 2;
-                    test2    += 2;
-                }
                 model  mem_mdl = null;
-
-                if (atype == typeid(A)) {
-                    print("A member: %s", amem->name);
-                }
 
                 verify(!mtype || mtype->user, "expected type resolution for member %o", n);
                 if ((amem->member_type & A_FLAG_CONSTRUCT) != 0) {
@@ -2424,7 +2402,6 @@ void aether_A_import(aether e, path lib) {
     pairs(processing, i) {
         AType  atype  = i->value;
         model   mdl   = atype->user;
-        AType test2 = mdl->src;
         verify(mdl, "could not import %s", atype->name);
         emember emem  = lookup2(e, mdl->name, null);
         verify(emem->mdl == mdl || emem->mdl == mdl->ptr, "import integrity error for %o", mdl->name);
@@ -2864,14 +2841,12 @@ enode aether_fn_call(aether e, emember fn_mem, array args) {
         // alternately we may copy the string from %o to %s.
         while  (p[0]) {
             if (p[0] == '%' && p[1] != '%') {
-                model arg_type = formatter_type(e, (cstr)&p[1]);
-                A o_arg = args->elements[arg_idx + soft_args];
+                model arg_type  = formatter_type(e, (cstr)&p[1]);
+                A     o_arg     = args->elements[arg_idx + soft_args];
                 AType arg_type2 = isa(o_arg);
-                enode n_arg = load(e, o_arg);
-                printf("arg type 1: %s\n", LLVMPrintTypeToString(LLVMTypeOf(n_arg->value)));
-                enode  arg      = operand(e, n_arg, null);
-                printf("arg type: %s\n", LLVMPrintTypeToString(LLVMTypeOf(arg->value)));
-                enode  conv     = convert(e, arg, arg_type); 
+                enode n_arg     = load(e, o_arg);
+                enode arg       = operand(e, n_arg, null);
+                enode conv      = convert(e, arg, arg_type); 
                 arg_values[arg_idx + soft_args] = conv->value;
                 soft_args++;
                 index    ++;
@@ -3136,7 +3111,7 @@ define_class (function,    model)
 define_class (record,      model)
 define_class (aether,      model)
 define_class (uni,         record)
-define_class (enumeration, record)
+define_class (enumeration, model)
 define_class (structure,   record)
 define_class (class,       record)
 define_class (code,        A)
