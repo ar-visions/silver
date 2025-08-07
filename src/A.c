@@ -164,7 +164,7 @@ none array_push(array a, A b) {
 
     if (is_meta(a) && t->meta.meta_0 != typeid(A))
         assert(is_meta_compatible(a, b), "not meta compatible");
-    hold(string("test"));
+    
     a->elements[a->len++] = a->unmanaged ? b : hold(b);
 }
 
@@ -388,7 +388,7 @@ A header(A a) {
     return (((struct _A*)a) - 1);
 }
 
-none A_register_init(fn f) {
+none A_register_init(func f) {
     /// these should be loaded after the types are loaded.. the module inits are used for setting module-members (not globals!)
     if (call_last_count == call_last_alloc) {
         global_init_fn* prev      = call_last;
@@ -699,6 +699,50 @@ i64 command_last_pid() {
     return (i64)_last_pid;
 }
 
+string command_run(command cmd) {
+    int pipe_in[2];   // for writing command input to sh -s
+    int pipe_out[2];  // for reading stdout from sh -s
+
+    pipe(pipe_in);
+    pipe(pipe_out);
+
+    pid_t pid = fork();
+
+    if (pid == 0) {
+        // Child process
+        dup2(pipe_in[0], STDIN_FILENO);   // read command
+        dup2(pipe_out[1], STDOUT_FILENO); // write output
+        dup2(pipe_out[1], STDERR_FILENO); // optional: stderr too
+
+        close(pipe_in[1]);
+        close(pipe_out[0]);
+        execlp("sh", "sh", "-s", NULL);
+        _exit(127); // exec failed
+    }
+
+    // Parent process
+    close(pipe_in[0]);  // parent writes only
+    close(pipe_out[1]); // parent reads only
+
+    FILE *out = fdopen(pipe_in[1], "w");
+    fprintf(out, "%s\n", cstring(cmd));
+    fflush(out);
+    fclose(out);  // send EOF to child
+
+    char buffer[1024];
+    string result = string(alloc, 1024);
+    ssize_t bytes;
+    while ((bytes = read(pipe_out[0], buffer, sizeof(buffer))) > 0) {
+        append_count(result, buffer, bytes);
+    }
+
+    close(pipe_out[0]);
+
+    int status;
+    waitpid(pid, &status, 0);
+    return result;
+}
+
 int command_exec(command cmd) {
     if (starts_with(cmd, "export ")) {
         string a = mid(cmd, 7, len(cmd) - 7);
@@ -958,10 +1002,6 @@ none A_member_override(AType type, member type_mem, AFlag f) {
         for (int i = 0; i < base->member_count; i++) {
             member m = &base->members[i];
             if ((m->member_type & f) != 0 && strcmp(m->name, type_mem->name) == 0) {
-                if (strcmp(type->name, "aether") == 0 && strcmp(type_mem->name, "dealloc") == 0) {
-                    int test2 = 2;
-                    test2    += 2;
-                }
                 type_mem->offset = m->offset;
                 type_mem->args   = m->args; // this simply makes it easier to declare
                 type_mem->type   = m->type; // adding a real member for override makes it easier to enumerate
@@ -2086,24 +2126,21 @@ item map_fetch(map m, A k) {
     return i;
 }
 
+A map_value_by_index(map m, num idx) {
+    int i = 0;
+    pairs(m, ii) {
+        if (i++ == idx)
+            return ii->value;
+    }
+    return null;
+}
+
 none map_set(map m, A k, A v) {
-    if (v == (A)0x00005555561bfa38) {
-        int test2 = 2;
-        test2    += 2;
-    }
-    if (isa(k) == typeid(string) && eq(((string)k), "af44")) {
-        int test2 = 2;
-        test2    += 2;
-    }
     if (!m->hlist) m->hlist = (item*)calloc(m->hsize, sizeof(item));
     item i = map_fetch(m, k);
     AType vtype = isa(v);
     A info = head(m);
-    bool allowed = !m->last_type || m->last_type == vtype || m->assorted;
-    if (!allowed) {
-        int test2 = 2;
-        test2 += 2;
-    }
+    bool allowed = m->unmanaged || !m->last_type || m->last_type == vtype || m->assorted;
     verify(allowed,
         "unassorted map set to differing type: %s, previous: %s (%s:%i)",
         vtype->name, m->last_type->name, info->source, info->line);
@@ -2343,12 +2380,14 @@ static inline char just_a_dash(char a) {
     return a == '-' ? '_' : a;
 }
 
-string string_interpolate(string a, map f) {
+string string_interpolate(string a, A ff) {
     cstr   s    = (cstr)a->chars;
     cstr   prev = null;
     string res  = string(alloc, 256);
+    map    f    = instanceof(ff, typeid(map));
 
-    verify(f && f->hsize, "no hashmap on map, set hsize > 0");
+    verify( f || ff,       "no object given for interpolation");
+    verify(!f || f->hsize, "no hashmap on map, set hsize > 0");
 
     while (*s) {
         if (*s == '{') {
@@ -2361,20 +2400,31 @@ string string_interpolate(string a, map f) {
                     prev = null;
                 }
                 cstr kstart = ++s;
-                u64  hash   = OFFSET_BASIS;
-                while (*s != '}') {
-                    verify (*s, "unexpected end of string", 1);
-                    hash ^= just_a_dash((u8)*(s++));
-                    hash *= FNV_PRIME;
+                string v = null;
+                if (f) {
+                    u64  hash   = OFFSET_BASIS;
+                    while (*s != '}') {
+                        verify (*s, "unexpected end of string", 1);
+                        hash ^= just_a_dash((u8)*(s++));
+                        hash *= FNV_PRIME;
+                    }
+                    item b = f->hlist[hash % f->hsize]; // todo: change schema of hashmap to mirror map
+                    item i = null;
+                    for (i = b; i; i = i->next)
+                        if (i->h == hash)
+                            break;
+                    verify(i, "key not found in map");
+                    v = cast(string, i->value);
+                } else {
+                    cstr   s_ind = strchr(kstart, '}');
+                    verify(s_ind, "unexpected end of string");
+                    int    ind   = (size_t)s_ind - (size_t)kstart;
+                    string k     = string(chars, kstart, ref_length, ind);
+                    A      vv    = get_property(ff, k->chars);
+                    verify(vv, "property %o does not exist on object", k);
+                    v            = cast(string, vv);
+                    s           += ind;
                 }
-                item b = f->hlist[hash % f->hsize]; // todo: change schema of hashmap to mirror map
-                item i = null;
-                for (i = b; i; i = i->next)
-                    if (i->h == hash)
-                        break;
-                verify(i, "key not found in map");
-                string v = cast(string, i->value);
-
                 if (!v)
                     append(res, "null");
                 else
@@ -3330,6 +3380,31 @@ none path_cd(path a) {
     chdir(a->chars);
 }
 
+bool path_touch(path a) {
+    FILE* f = fopen(a->chars, "wx");
+    if (f)
+        fclose(f);
+    return f != null;
+}
+
+bool path_remove_dir(path a) {
+    DIR* d = opendir(a->chars);
+    if (!d) return true;
+    struct dirent* entry;
+    char full[PATH_MAX];
+    while ((entry = readdir(d))) {
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+            continue;
+        snprintf(full, sizeof(full), "%s/%s", a->chars, entry->d_name);
+        if (entry->d_type == DT_DIR)
+            remove_dir(path(full));
+        else
+            unlink(full);
+    }
+    closedir(d);
+    return rmdir(a->chars) == 0;
+}
+
 path path_tempfile(symbol tmpl) {
     path p = null;
     do {
@@ -3898,6 +3973,16 @@ static array read_lines(path f) {
     return lines;
 }
 
+bool path_save(path a, A content, ctx context) {
+    if (is_dir(a)) return false;
+    string s = cast(string, content);
+    FILE* f = fopen(a->chars, "w");
+    if  (!f) return false;
+    bool success = fwrite(s->chars, s->len, 1, f) == 1;
+    fclose(f);
+    return success;
+}
+
 A path_load(path a, AType type, ctx context) {
     if (is_dir(a)) return null;
     if (type == typeid(array))
@@ -3908,7 +3993,7 @@ A path_load(path a, AType type, ctx context) {
     fseek(f, 0, SEEK_END);
     sz flen = ftell(f);
     fseek(f, 0, SEEK_SET);
-    string str = new(string, alloc, flen);
+    string str = new(string, alloc, flen + 1);
     size_t n = fread((cstr)str->chars, 1, flen, f);
     fclose(f);
     assert(n == flen, "could not read enough bytes");
@@ -4376,10 +4461,6 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
                 else
                     scan = ws(&scan[1]);
             }
-            if (*scan == '}') {
-                int test2 = 2;
-                test2 += 2;
-            }
             A value = parse_object(scan, (mem ? mem->type : null),
                 (mem ? mem->args.meta_0 : null), &scan, context);
             
@@ -4835,7 +4916,7 @@ define_primitive(member, raw, 0)
 define_primitive(ARef,   ref, A_TRAIT_POINTER, A)
 define_primitive(floats, raw, 0)
 
-define_primitive(fn,     raw, 0)
+define_primitive(func,     raw, 0)
 define_primitive(hook,   raw, 0)
 define_primitive(callback, raw, 0)
 define_primitive(cstrs, raw, 0)
@@ -4858,7 +4939,6 @@ define_class(array,         A, A)
 define_class(hashmap,       A)
 define_class(map,           A)
 define_class(ctx,           map)
-//define_class(fn,            A)
 define_class(subprocedure,  A)
 
 //define_class(ATypes,           array, AType)

@@ -3,7 +3,7 @@
 
 typedef struct _A* A;
 
-typedef none(*fn)      ();
+typedef none(*func)    ();
 typedef A   (*hook)    (A);
 typedef A   (*callback)(A, A); // target and argument
 

@@ -36,6 +36,7 @@ forward(import)
     i_prop    (X,Y, public,     path,           file) \
     i_prop    (X,Y, public,     path,           project_path) \
     i_prop    (X,Y, public,     language,       std) \
+    i_prop    (X,Y, public,     map,            defs) \
     i_method  (X,Y, public,     silver,         load_module, path) \
     i_method  (X,Y, public,     enode,           parse_member_expr, emember) \
     i_method  (X,Y, public,     none,           incremental_resolve) \
@@ -57,7 +58,9 @@ forward(import)
     i_method  (X,Y, public,     A,              read_literal, AType) \
     i_method  (X,Y, public,     string,         read_string) \
     i_method  (X,Y, public,     string,         read_alpha) \
+    i_method  (X,Y, public,     string,         read_alpha_any) \
     i_method  (X,Y, public,     string,         peek_alpha) \
+    i_method  (X,Y, public,     bool,           next_is_neighbor) \
     i_method  (X,Y, public,     emember,        read_def) \
     i_method  (X,Y, public,     string,         peek_def) \
     i_method  (X,Y, public,     string,         peek_keyword) \
