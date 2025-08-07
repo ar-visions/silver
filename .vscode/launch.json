@@ -146,7 +146,7 @@
                 "LD_LIBRARY_PATH":"/src/silver/lib",
                 "IMPORT":  "/src/silver",
                 "CC":      "clang",
-                "PATH":    "/src/silver/bin"
+                "PATH":    "/src/silver/bin:/usr/bin"
             }
         },
         {

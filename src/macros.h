@@ -1437,8 +1437,8 @@
 
 /// we can iterate through a collection with this strange code
 #define each(container, E, e) \
-    if (container && len(((array)container))) for (E e = peek(((array)container), 0), e0 = 0; e0 == 0; e0++) \
-        for (num __i = 0, __len = len(((array)container)); __i < __len; __i++, e = peek(((array)container), __i)) \
+    if (container && len(((array)container))) for (E e = (E)peek(((array)container), 0), e0 = 0; e0 == 0; e0++) \
+        for (num __i = 0, __len = len(((array)container)); __i < __len; __i++, e = (E)peek(((array)container), __i)) \
 
 #define each_(container, E, e) \
     if (container && len(((array)container))) for (E e = (E)peek(((array)container), 0), e0 = 0; e0 == 0; e0++) \
@@ -1456,6 +1456,7 @@
 #define         form(T, t, ...)   (T)formatter(typeid(T), null,   (A)false, (symbol)t, ## __VA_ARGS__)
 #define            f(T, t, ...)   (T)formatter(typeid(T), null,   (A)false, (symbol)t, ## __VA_ARGS__)
 #define         exec(t, ...)      command_exec(((string)formatter((AType)null, null, (A)false, (symbol)t, ## __VA_ARGS__)))
+#define          run(t, ...)      command_run(((string)formatter((AType)null, null, (A)false, (symbol)t, ## __VA_ARGS__)))
 #define         vexec(n, t, ...)     verify(exec(t __VA_OPT__(,) __VA_ARGS__) == 0, "shell command failed: %s", n);
 
 #define        A_log(sL, t, ...)   formatter((AType)null,      stdout, string(sL),  t, ## __VA_ARGS__)

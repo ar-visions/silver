@@ -62,7 +62,7 @@ static string op_lang_token(string name) {
 static void initialize() {
 
     keywords = array_of_cstr(
-        "class",    "proto",    "struct", "override",
+        "class",    "proto",    "struct", "public", "intern",
         "import",   "typeof",   "schema",
         "is",       "inherits", "ref",
         "const",    "inlaid",   "require",
@@ -136,45 +136,45 @@ enode parse_statement(silver mod);
 
 static enode parse_create(silver mod, model src, array expr);
 
-void build_function(silver mod, function fn) {
-    if (!fn->body) return;
-    if (fn->record)
-        push(mod, fn->record);
+void build_fn(silver mod, fn f) {
+    if (!f->body) return;
+    if (f->record)
+        push(mod, f->record);
     mod->last_return = null;
-    push(mod, fn);
-    if (fn->single_expr) {
-        enode single = parse_create(mod, fn->rtype, fn->body);
-        fn_return(mod, single);
+    push(mod, f);
+    if (f->single_expr) {
+        enode single = parse_create(mod, f->rtype, f->body);
+        e_fn_return(mod, single);
     } else {
-        push_state(mod, fn->body, 0);
-        record cl = fn ? fn->record : null;
+        push_state(mod, f->body, 0);
+        record cl = f ? f->record : null;
         if (cl) pairs(cl->members, m) print("class emember: %o: %o", cl->name, m->key);
         parse_statements(mod, true);
         if (!mod->last_return) {
             enode r_auto = null;
-            if (fn->record && fn->target)
+            if (f->record && f->target)
                 r_auto = lookup2(mod, string("a"), null);
-            else if (fn->rtype == emodel("void"))
+            else if (f->rtype == emodel("void"))
                 r_auto = enode(mdl, emodel("void"));
             else {
-                fault("return statement required for function: %o", fn->name);
+                fault("return statement required for function: %o", f->name);
             }
-            fn_return(mod, r_auto);
+            e_fn_return(mod, r_auto);
         }
         pop_state(mod, false);
     }
 
     pop(mod);
-    if (fn->record) pop(mod);
+    if (f->record) pop(mod);
 }
 
 void build_record(silver mod, record rec) {
     if (!rec->body) return;
-    bool   is_class = instanceof(rec, typeid(class)) != null;
+    bool   is_class = instanceof(rec, typeid(Class)) != null;
     symbol sname    = is_class ? "class" : "struct";
     array  body     = rec->body;
 
-    A_log       ("build_record", "%s %o", sname, rec->name);
+    print("%s %o", sname, rec->name);
     print_tokens(mod, "before-build-record");
     push_state(mod, body, 0); /// measure here
     print_tokens(mod, "during-build-record");
@@ -296,8 +296,8 @@ array read_body(silver mod, bool inner_expr) {
     while (1) {
         token k = peek(mod);
         if (!k) break;
-        if (!multiple && k->line   > n->line)   break;
-        if ( multiple && k->indent < n->indent) break;
+        if (!multiple && k->line    > n->line)   break;
+        if ( multiple && k->indent <= p->indent) break;
         push(body, k);
         consume(mod);
     }
@@ -609,12 +609,6 @@ bool silver_next_is_alpha(silver a) {
     return is_alpha(n) ? true : false;
 }
 
-bool silver_next_is_keyword(silver a) {
-    if (peek_keyword(a))
-        return true;
-    return false;
-}
-
 
 token silver_read_if(silver a, symbol cs) {
     token n = element(a, 0);
@@ -680,6 +674,15 @@ string silver_read_assign(silver a, ARef assign_type, ARef is_const) {
 }
 
 
+string silver_read_alpha_any(silver a) {
+    token n = element(a, 0);
+    if (n && isalpha(n->chars[0])) {
+        a->cursor ++;
+        return string(n->chars);
+    }
+    return null;
+}
+
 string silver_read_alpha(silver a) {
     token n = element(a, 0);
     if (is_alpha(n)) {
@@ -737,8 +740,8 @@ none silver_namespace_pop(silver mod, array levels) {
         push(mod, levels->elements[i]);
 }
 
-function parse_fn        (silver mod, AFlag member_type, A ident, OPType assign_enum);
-model    read_model      (silver mod, array* expr);
+fn    parse_fn  (silver mod, AFlag member_type, A ident, OPType assign_enum);
+model read_model(silver mod, array* expr);
 
 enode silver_read_node(silver mod, AType constant_result) {
     print_tokens(mod, "read-enode");
@@ -746,7 +749,7 @@ enode silver_read_node(silver mod, AType constant_result) {
     /// only use :: keyword to navigate for code in functions
     A lit = read_literal(mod, null);
     if (lit)
-        return operand(mod, lit, null);
+        return e_operand(mod, lit, null);
     
     // parenthesized expressions, with a model check (make sure its not a type, which indicates array/map typed expression)
     if (next_is(mod, "[")) {
@@ -769,13 +772,13 @@ enode silver_read_node(silver mod, AType constant_result) {
     // handle the logical NOT operator (e.g., '!')
     else if (read_if(mod, "!") || read_if(mod, "not")) {
         enode expr = parse_expression(mod); // Parse the following expression
-        return not(mod, expr);
+        return e_not(mod, expr);
     }
 
     // bitwise NOT operator
     else if (read_if(mod, "~")) {
         enode expr = parse_expression(mod);
-        return bitwise_not(mod, expr);
+        return e_bitwise_not(mod, expr);
     }
 
     // 'typeof' operator
@@ -800,7 +803,7 @@ enode silver_read_node(silver mod, AType constant_result) {
         mod->in_ref = true;
         enode expr = parse_expression(mod);
         mod->in_ref = false;
-        return addr_of(mod, expr, null);
+        return e_addr_of(mod, expr, null);
     }
 
     /// 'inlay' keyword forces a value type, where as pointer-type is used without
@@ -817,17 +820,17 @@ enode silver_read_node(silver mod, AType constant_result) {
     push_current(mod);
     
     string   kw       = peek_keyword(mod);
-    function fn       = instanceof(mod->top, typeid(function));
-    function in_args  = instanceof(mod->top, typeid(eargs));
-    record   rec      = context_model(mod, typeid(class));
-    silver   module   = (mod->top == (model)mod || (fn && fn->imdl == (model)mod)) ? mod : null;
+    fn       f        = instanceof(mod->top, typeid(fn));
+    fn       in_args  = instanceof(mod->top, typeid(eargs));
+    record   rec      = context_model(mod, typeid(Class));
+    silver   module   = (mod->top == (model)mod || (f && f->imdl == (model)mod)) ? mod : null;
     bool     is_cast  = kw && eq(kw, "cast");
     bool     is_fn    = kw && eq(kw, "fn");
     AFlag    mtype    = is_fn ? A_FLAG_SMETHOD : is_cast ? A_FLAG_CAST : A_FLAG_IMETHOD;
-    function in_init  = (fn && fn->imdl) ? fn : null; /// no-op on levels if we are in membership only, not in a function
+    fn       in_init  = (f && f->imdl) ? f : null; /// no-op on levels if we are in membership only, not in a function
     array    levels   = (in_args || in_init || is_fn || is_cast) ? array() : namespace_push(mod);
     string   alpha    = null;
-    emember   mem      = null;
+    emember  mem      = null;
     int      back     = 0;
     int      depth    = 0;
 
@@ -883,9 +886,7 @@ enode silver_read_node(silver mod, AType constant_result) {
         /// other things such as member,  member[expr],  member.something[expr].another
         model     ctx    = mod->top;
         record    rec    = instanceof(mod->top, typeid(record));
-        function  fn     = instanceof(mod->top, typeid(function));
         bool parse_index = false;
-
 
         // if new type; verify we are allowed to create a function here
         // silver wont let us create context functions above level
@@ -1053,7 +1054,7 @@ void silver_build_initializer(silver mod, emember mem) {
         emember target = lookup2(mod, string("a"), null); // unique to the function in class, not the class
         verify(target, "no target found in context");
         emember rmem = resolve(target, mem->name);
-        assign(mod, rmem, expr, OPType__assign);
+        e_assign(mod, rmem, expr, OPType__assign);
         
     } else {
         /// aether can memset to zero
@@ -1064,12 +1065,12 @@ void silver_build_initializer(silver mod, emember mem) {
 enode parse_return(silver mod) {
     model rtype = return_type(mod);
     bool  is_v  = is_void(rtype);
-    model ctx = context_model(mod, typeid(function));
+    model ctx = context_model(mod, typeid(fn));
     consume(mod);
     enode expr   = is_v ? null : parse_expression(mod);
     A_log("return-type", "%o", is_v ? (A)string("void") : 
                                     (A)expr->mdl);
-    return fn_return(mod, expr);
+    return e_fn_return(mod, expr);
 }
 
 
@@ -1092,7 +1093,6 @@ enode parse_while(silver mod) {
     enode vr = null;
     return null;
 }
-
 
 
 enode silver_parse_do_while(silver mod) {
@@ -1118,7 +1118,7 @@ static enode reverse_descent(silver mod) {
                 OPType op_type = level->ops   [j];
                 string method  = level->method[j];
                 enode R = read_node(mod, null);
-                     L = op(mod, op_type, method, L, R);
+                     L = e_op(mod, op_type, method, L, R);
                 m      = true;
                 break;
             }
@@ -1179,6 +1179,9 @@ model read_model(silver mod, array* expr) {
 
     push_current(mod);
     
+    // todo: this must be converted to new syntax; its type dims [ values ]; array 4x2 i64 [ 8 8, 16 16, 2 2, 4 4 ]
+    // must be separate solutions for array and map
+    // ideally, we want A-type to dictate syntax here
     if (read_if(mod, "[")) {
         type = read_model(mod, null);
         if (!type) {
@@ -1239,8 +1242,7 @@ model read_model(silver mod, array* expr) {
         verify(is_map || is_array, "failed to read model");
         /// we use simple alias for both array and map cases
         /// map likely needs a special model
-        mdl = alias(type, null, mod->in_inlay ?
-            reference_value : reference_pointer, shape);
+        mdl = model(mod, mod, src, type, is_ref, !mod->in_inlay, shape, shape);
         mod->in_inlay = false;
     } else {
         /// read-body calle twice because this is inside the token state
@@ -1276,21 +1278,21 @@ model read_model(silver mod, array* expr) {
 
 
 
-emember cast_method(silver mod, class class_target, model cast) {
+emember cast_method(silver mod, Class class_target, model cast) {
     record rec = class_target;
-    verify(isa(rec) == typeid(class), "cast target expected class");
+    verify(isa(rec) == typeid(Class), "cast target expected class");
     pairs(rec->members, i) {
         emember mem = i->value;
         model fmdl = mem->mdl;
-        if (isa(fmdl) != typeid(function)) continue;
-        function fn = fmdl;
-        if (fn->is_cast && fn->rtype == cast)
+        if (isa(fmdl) != typeid(fn)) continue;
+        fn f = fmdl;
+        if (f->is_cast && f->rtype == cast)
             return mem;
     }
     return null;
 }
 
-static enode parse_function_call(silver mod, emember fmem);
+static enode parse_fn_call(silver mod, emember fmem);
 
 /// parse construct from and cast to, and named args
 /// expr comes from read-model;
@@ -1317,7 +1319,7 @@ enode parse_create(silver mod, model src, array expr) {
     A  n = read_literal(mod, null);
     if (n) {
         pop_state(mod, false); /// issue here is we lost [ array ] context, expr has no brackets and it needs them
-        return operand(mod, n, src);
+        return e_operand(mod, n, src);
     }
     bool    has_content = !!expr && len(expr); //read_if(mod, "[") && !read(mod, "]");
     enode    r           = null;
@@ -1326,32 +1328,33 @@ enode parse_create(silver mod, model src, array expr) {
     bool    has_init    = is_alpha(k) && eq(element(mod, 1), ":");
     
     if (!has_content) { /// same for all objects if no content
-        r = create(mod, src, null); // default
+        r = e_create(mod, src, null); // default
         conv = false;
     } else if (src->is_array) {
         array nodes = array(64); /// initial alloc size
         model element_type = src->src;
         AType shape_type = isa(src->shape);
         int shape_len = len((array)src->shape);
-        verify((!src->top_stride && shape_len == 0) || (src->top_stride && shape_len),
+        int top_stride = shape_len ? *(i64*)last((array)src->shape) : 0;
+        verify((!top_stride && shape_len == 0) || (top_stride && shape_len),
             "unknown stride information");  
         int num_index = 0; /// shape_len is 0 on [ int 2x2 : 1 0, 2 2 ]
 
         while (peek(mod)) {
             token n = peek(mod);
             enode  e = parse_expression(mod);
-            e = convert(mod, e, element_type);
+            e = e_convert(mod, e, element_type);
             push(nodes, e);
             num_index++;
-            if (src->top_stride && num_index == src->top_stride) {
+            if (top_stride && num_index == top_stride) {
                 verify(read_if(mod, ",") || !peek(mod),
                     "expected ',' when striding between dimensions (stride size: %o)",
-                    src->top_stride);
+                    top_stride);
             }
         }
         int array_size = 0;
         /// support both stack and heap here, depending on presence of inlay 
-        r = operand(mod, nodes, src);
+        r = e_operand(mod, nodes, src);
     } else if (src->is_map) {
         verify(has_init, "invalid initialization of map model");
         conv = true;
@@ -1370,7 +1373,7 @@ enode parse_create(silver mod, model src, array expr) {
         //verify(read_if(mod, "]"), "expected ] after mdl-expr %o", src->name);
     }
     if (conv)
-        r = create(mod, src, r);
+        r = e_create(mod, src, r);
     pop_state(mod, false);
     return r;
 }
@@ -1397,7 +1400,7 @@ static enode parse_construct(silver mod, emember mem) {
 
         /// now we need to parse the named arguments, and perform assignment on each
         /// then we separately parse 'default values' (not now, but thats in emember as a body attribute)
-        res = create(mod, mem->mdl, args);
+        res = e_create(mod, mem->mdl, args);
     } else {
         /// enum [ value ] <- same as below:
         /// primitive [ value ] <- not sure if we want this, as we have cast
@@ -1414,8 +1417,8 @@ enode silver_parse_member_expr(silver mod, emember mem) {
     if (parse_index && next_is(mod, "[")) {
         record r = instanceof(mem->mdl, typeid(record));
         /// must have an indexing method, or be a reference_pointer
-        verify(mem->mdl->ref == reference_pointer || r, "no indexing available for model %o/%o",
-            mem->mdl->name, e_str(reference, mem->mdl->ref));
+        verify(mem->mdl->is_ref || r, "no indexing available for model %o",
+            mem->mdl->name);
         
         /// we must read the arguments given to the indexer
         consume(mod);
@@ -1434,24 +1437,24 @@ enode silver_parse_member_expr(silver mod, emember mem) {
             emember indexer = compatible(mod, r, null, A_FLAG_INDEX, args); /// we need to update emember model to make all function members exist in an array
             /// todo: serialize arg type names too
             verify(indexer, "%o: no suitable indexing method", r->name);
-            function fn = instanceof(indexer->mdl, typeid(function));
+            fn f = instanceof(indexer->mdl, typeid(fn));
             indexer->target_member = mem; /// todo: may not be so hot to change the schema
-            index_expr = fn_call(mod, indexer, args); // needs a target
+            index_expr = e_fn_call(mod, indexer, args); // needs a target
         } else {
-            index_expr = offset(mod, mem, args);
+            index_expr = e_offset(mod, mem, args);
         }
         pop_state(mod, true);
         return index_expr;
     } else if (mem) {
         if (mem->is_func) {
             if (!mod->in_ref)
-                mem = parse_function_call(mod, mem);
+                mem = parse_fn_call(mod, mem);
         } else if (mem->is_type && next_is(mod, "[")) {
             mem = parse_construct(mod, mem); /// this, is the construct
         } else if (mod->in_ref || mem->literal) {
             mem = mem; /// we will not load when ref is being requested on a emember
         } else {
-            mem = load(mod, mem); // todo: perhaps wait to AddFunction until they are used; keep the emember around but do not add them until they are referenced (unless we are Exporting the import)
+            mem = e_load(mod, mem); // todo: perhaps wait to AddFunction until they are used; keep the emember around but do not add them until they are referenced (unless we are Exporting the import)
         }
     }
     pop_state(mod, mem != null);
@@ -1461,18 +1464,17 @@ enode silver_parse_member_expr(silver mod, emember mem) {
 /// parses emember args for a definition of a function
 eargs parse_args(silver mod) {
     verify(read_if(mod, "["), "parse-args: expected [");
-    array   args = new(array,     alloc, 32);
-    eargs   res  = new(eargs, mod, mod, args, args);
+    eargs args = eargs(mod, mod);
 
     //print_tokens("parse-args", mod);
     if (!next_is(mod, "]")) {
-        push(mod, res); // if we push null, then it should not actually create debug info for the members since we dont 'know' what type it is... this wil let us delay setting it on function
+        push(mod, args); // if we push null, then it should not actually create debug info for the members since we dont 'know' what type it is... this wil let us delay setting it on function
         int statements = 0;
         for (;;) {
             /// we expect an arg-like statement when we are in this context (eargs)
             if (next_is(mod, "...")) {
                 consume(mod);
-                res->is_ext = true;
+                args->is_ext = true;
                 continue;
             }
             parse_statement(mod);
@@ -1482,23 +1484,19 @@ eargs parse_args(silver mod) {
         }
         consume(mod);
         pop(mod);
-        verify(statements == len(res->members), "argument parser mismatch");
-        pairs(res->members, i) {
-            emember arg = i->value;
-            push(args, arg); // todo: make sure there is no value set on these, because we have no default at the moment (we could, of course with this)
-        }
+        verify(statements == len(args->members), "argument parser mismatch");
     } else {
         consume(mod);
     }
-    return res;
+    return args;
 }
 
-static enode parse_function_call(silver mod, emember fmem) {
+static enode parse_fn_call(silver mod, emember fmem) {
     bool     expect_br = false;
-    function fn        = fmem->mdl;
-    bool     has_expr  = len(fn->args) > 0;
-    verify(isa(fn) == typeid(function), "expected function type");
-    int  model_arg_count = len(fn->args);
+    fn       f         = fmem->mdl;
+    bool     has_expr  = len(f->args->members) > 0;
+    verify(isa(f) == typeid(fn), "expected function type");
+    int  model_arg_count = len(f->args->members);
     
     if (has_expr && next_is(mod, "[")) {
         consume(mod);
@@ -1509,12 +1507,12 @@ static enode parse_function_call(silver mod, emember fmem) {
     int    arg_index = 0;
     array  values    = new(array, alloc, 32);
     emember last_arg  = null;
-    while(arg_index < model_arg_count || fn->va_args) {
-        emember arg      = arg_index < len(fn->args) ? get(fn->args, arg_index) : null;
+    while(arg_index < model_arg_count || f->va_args) {
+        emember arg      = arg_index < len(f->args->members) ? value_by_index(f->args->members, arg_index) : null;
         enode   expr     = parse_expression(mod);
         model  arg_mdl  = arg ? arg->mdl : null;
         if (arg_mdl && expr->mdl != arg_mdl)
-            expr = convert(mod, expr, arg_mdl);
+            expr = e_convert(mod, expr, arg_mdl);
         
         push(values, expr);
         arg_index++;
@@ -1529,7 +1527,7 @@ static enode parse_function_call(silver mod, emember fmem) {
         verify(next_is(mod, "]"), "expected ] end of function call");
         consume(mod);
     }
-    return fn_call(mod, fmem, values);
+    return e_fn_call(mod, fmem, values);
 }
 
 
@@ -1537,11 +1535,10 @@ enode silver_parse_ternary(silver mod, enode expr) {
     if (!read_if(mod, "?")) return expr;
     enode expr_true  = parse_expression(mod);
     enode expr_false = parse_expression(mod);
-    return aether_ternary(mod, expr, expr_true, expr_false);
+    return e_ternary(mod, expr, expr_true, expr_false);
 }
 
 // with constant literals, this should be able to merge the nodes into a single value
-// would be called 
 enode silver_parse_assignment(silver mod, emember mem, string oper) {
     verify(!mem->is_assigned || !mem->is_const, "mem %o is a constant", mem->name);
     mod->in_assign = mem;
@@ -1560,7 +1557,7 @@ enode silver_parse_assignment(silver mod, emember mem, string oper) {
     string op_name = get(operators, oper);
     string op_form = form(string, "_%o", op_name);
     OPType op_val  = e_val(OPType, cstring(op_form));
-    enode   result  = op(mod, op_val, op_name, L, R);
+    enode  result  = e_op(mod, op_val, op_name, L, R);
     mod->in_assign = null;
     return result;
 }
@@ -1600,6 +1597,7 @@ enode expr_builder(silver mod, array expr_tokens, A unused) {
 // we must have separate if/ifdef, since ifdef does not push the variable scope (it cannot by design)
 // being adaptive to this based on constant status is too ambiguous
 
+// this needs to perform const expressions (test this; also rename to something like if-const)
 enode parse_ifdef_else(silver mod) {
     bool  require_if   = true;
     bool  one_truth    = false;
@@ -1665,7 +1663,7 @@ enode parse_if_else(silver mod) {
     }
     subprocedure build_cond = subproc(mod, cond_builder, null);
     subprocedure build_expr = subproc(mod, expr_builder, null);
-    return aether_if_else(mod, tokens_cond, tokens_block, build_cond, build_expr);
+    return e_if_else(mod, tokens_cond, tokens_block, build_cond, build_expr);
 }
 
 
@@ -1726,9 +1724,10 @@ path module_path(silver mod, string name) {
 }
 
 AType next_is_keyword(silver mod, member* fn) {
-    string n = peek_alpha(mod);
-    if (!n) return null;
-    AType f = A_find_type((cstr)n->chars);
+    token t = peek(mod);
+    if  (!t)  return null;
+    if  (!isalpha(t->chars[0])) return null;
+    AType f = A_find_type((cstr)t->chars);
     if (inherits(f, typeid(model)) && (*fn = find_member(f, A_FLAG_SMETHOD, "parse", true)))
         return f;
     return null;
@@ -1743,7 +1742,7 @@ emember silver_read_def(silver mod) {
     bool   is_struct = next_is(mod, "struct");
     bool   is_enum   = next_is(mod, "enum");
     bool   is_alias  = next_is(mod, "alias");
-    member parse_fn = null;
+    member parse_fn  = null;
     AType  is_type   = next_is_keyword(mod, &parse_fn);
 
     if (!is_type && !is_class && !is_struct && !is_enum && !is_alias)
@@ -1774,7 +1773,7 @@ emember silver_read_def(silver mod) {
         array body   = read_body(mod, false);
         /// todo: call build_record right after this is done
         if (is_class)
-            mem->mdl = class    (mod, mod, name, n, body, body, parent, parent);
+            mem->mdl = Class    (mod, mod, name, n, body, body, parent, parent);
         else
             mem->mdl = structure(mod, mod, name, n, body, body);
     
@@ -1873,7 +1872,7 @@ emember silver_read_def(silver mod) {
         finalize(mem->mdl);
     } else {
         verify(is_alias, "unknown error");
-        mem->mdl = alias(mem->mdl, mem->name, reference_pointer, null);
+        mem->mdl = model(mod, mod, src, mem->mdl, name, mem->name);
     }
     mem->is_type = true;
     verify(mem && (is_import || len(mem->name)),
@@ -1890,9 +1889,9 @@ enode parse_statement(silver mod) {
 
     token     t            = peek(mod);
     record    rec          = instanceof(mod->top, typeid(record));
-    function  fn           = context_model(mod, typeid(function));
+    fn        f            = context_model(mod, typeid(fn));
     eargs     args         = instanceof(mod->top, typeid(eargs));
-    silver    module       = (fn && fn->imdl == (model)mod) ? mod : null;
+    silver    module       = (f && f->imdl == (model)mod) ? mod : null;
     bool      is_func_def  = false;
     string    assign_type  = null;
     OPType    assign_enum  = 0;
@@ -1940,7 +1939,7 @@ enode parse_statements(silver mod, bool unique_members) {
 }
 
 
-function parse_fn(silver mod, AFlag member_type, A ident, OPType assign_enum) {
+fn parse_fn(silver mod, AFlag member_type, A ident, OPType assign_enum) {
     model      rtype = null;
     A     name  = instanceof(ident, typeid(token));
     array      body  = null;
@@ -1953,7 +1952,7 @@ function parse_fn(silver mod, AFlag member_type, A ident, OPType assign_enum) {
     } else
         verify(member_type != A_FLAG_CAST, "unexpected name for cast");
 
-    record rec = context_model(mod, typeid(class));
+    record rec = context_model(mod, typeid(Class));
     eargs args = eargs();
     verify (next_is(mod, "[") || next_is(mod, "->"), "expected function args [");
     bool r0 = read_if(mod, "->") != null;
@@ -1982,12 +1981,12 @@ function parse_fn(silver mod, AFlag member_type, A ident, OPType assign_enum) {
         name = form(token, "cast_%o", rtype->name);
     }
     
-    function     fn      = function(
+    fn f = fn(
         mod,    mod,     name,   name, function_type, member_type,
         record, rec,     rtype,  rtype, single_expr, single_expr,
         args,   args,    body,   (body && len(body)) ? body : read_body(mod, false));
     
-    return fn;
+    return f;
 }
 
 void silver_incremental_resolve(silver mod) {
@@ -1997,7 +1996,7 @@ void silver_incremental_resolve(silver mod) {
     /// finalize included structs
     pairs(mod->members, i) {
         emember mem = i->value;
-        model base = mem->mdl->ref ? mem->mdl->src : mem->mdl;
+        model base = mem->mdl->is_ref ? mem->mdl->src : mem->mdl;
         if (!mem->mdl->finalized && instanceof(base, typeid(record)) && base->from_include)
             finalize(base);
     }
@@ -2006,7 +2005,7 @@ void silver_incremental_resolve(silver mod) {
     pairs(mod->members, i) {
         emember mem = i->value;
         model  mdl = mem->mdl;
-        if (!mdl->finalized && instanceof(mem->mdl, typeid(function)) && mdl->from_include) {
+        if (!mdl->finalized && instanceof(mem->mdl, typeid(fn)) && mdl->from_include) {
             finalize(mem->mdl);
         }
     }
@@ -2015,14 +2014,14 @@ void silver_incremental_resolve(silver mod) {
     /// calls process sub-procedure and poly-based finalize
     pairs(mod->members, i) {
         emember mem = i->value;
-        model base = mem->mdl->ref ? mem->mdl->src : mem->mdl;
+        model base = mem->mdl->is_ref ? mem->mdl->src : mem->mdl;
         if (!base->finalized && instanceof(base, typeid(record)) && !base->from_include) {
             build_record(mod, mem->mdl);
             finalize(base);
             pairs(mem->mdl->members, ii) {
                 emember rec_mem = ii->value;
-                if (instanceof(rec_mem->mdl, typeid(function))) {
-                    build_function(mod, rec_mem->mdl);
+                if (instanceof(rec_mem->mdl, typeid(fn))) {
+                    build_fn(mod, rec_mem->mdl);
                     finalize(mod);
                 }
             }
@@ -2032,8 +2031,8 @@ void silver_incremental_resolve(silver mod) {
     /// finally, process functions (last step in parsing)
     pairs(mod->members, i) {
         emember mem = i->value;
-        if (!mem->mdl->finalized && instanceof(mem->mdl, typeid(function)) && !mem->mdl->from_include) {
-            build_function(mod, mem->mdl);
+        if (!mem->mdl->finalized && instanceof(mem->mdl, typeid(fn)) && !mem->mdl->from_include) {
+            build_fn(mod, mem->mdl);
             finalize(mem->mdl);
         }
     }
@@ -2044,7 +2043,7 @@ void silver_incremental_resolve(silver mod) {
 
 void silver_parse(silver mod) {
     /// im a module!
-    function module_init = initializer(mod);
+    fn module_init = initializer(mod);
     push(mod, mod->fn_init);
     mod->in_top = true;
     map members = mod->members;
@@ -2061,7 +2060,18 @@ void silver_parse(silver mod) {
     finalize(module_init);
 }
 
+
 void silver_init(silver mod) {
+    mod->defs = map(hsize, 8);
+
+#if defined(__linux__)
+    set(mod->defs, string("linux"), A_bool(true));
+#elif defined(_WIN32)
+    set(mod->defs, string("windows"), A_bool(true));
+#elif defined(__APPLE__)
+    set(mod->defs, string("apple"), A_bool(true));
+#endif
+
     if (!mod->source) {
         fault("required argument: source-file");
     }
@@ -2077,7 +2087,9 @@ void silver_init(silver mod) {
             mod->install = install;
         }
     }
+    build_info(mod, mod->install);
     mod->project_path = parent(mod->source);
+
     path c_file   = f(path, "%o/%o.c",  mod->project_path, stem(mod->source));
     path cc_file  = f(path, "%o/%o.cc", mod->project_path, stem(mod->source));
     path files[2] = { c_file, cc_file };
@@ -2298,7 +2310,7 @@ enode export_parse(silver mod) {
 }
 
 array compact_tokens(array tokens) {
-    if (len(tokens) == 1) return tokens;
+    if (len(tokens) <= 1) return tokens;
 
     array  res     = array(32);
     int    ln      = len(tokens);
@@ -2318,7 +2330,8 @@ array compact_tokens(array tokens) {
             current = copy(t);
         }
     }
-    push(res, current);
+    if (current)
+        push(res, current);
     return res;
 }
 
@@ -2354,116 +2367,268 @@ static string import_libs(array input) {
     return libs;
 }
 
-static none checkout(import im, path uri, string commit, string config, string env) {
-    silver mod   = im->mod;
-    path   install = mod->install;
-    path   cur   = path_cwd();
-    cd(f(path, "%o/checkout", install));
-    string s     = cast(string, uri);
-    num    sl    = rindex_of(s, "/");
-    verify(sl >= 0, "invalid uri");
-    string name  = mid(s, sl + 1, len(s) - sl - 1);
-    path   npath = path(name);
-    bool   debug = false;
-    path   project_f = null;
+static bool command_exists(cstr cmd) {
+    char buf[256];
+    snprintf(buf, sizeof(buf), "command -v %s >/dev/null 2>&1", cmd);
+    return system(buf) == 0;
+}
+
+static bool is_branchy(string n) {
+    i32 ln = len(n);
+    if (ln == 7) {
+        for (int i = 0; i < ln; i++) {
+            char l = tolower(n->chars[i]);
+            if ((l >= 'a' && l <= 'f') || (l >= '0' && l <= '9'))
+                continue;
+
+            return true;
+        }
+        return false;
+    }
+    return true;
+}
+
+static none checkout(import im, path uri, string commit, string conf, string env) {
+    silver mod       = im->mod;
+    path   install   = mod->install;
+    string s         = cast(string, uri);
+    num    sl        = rindex_of(s, "/");   verify(sl >= 0, "invalid uri");
+    string name      = mid(s, sl + 1, len(s) - sl - 1);
+    path   project_f = f(path, "%o/checkout/%o", install, name);
+    bool   debug     = false;
+    string config    = interpolate(conf, mod);
+
+    verify(command_exists("git"), "git required for import feature");
+
+    // we need to check if its full hash
+    verify(len(commit) == 40 || is_branchy(commit),
+        "commit-id must be a full SHA-1 hash or a branch name (short-hand does not work for depth=1 checkouts)");
 
     // checkout or symlink to src
-    if (!dir_exists("%o", name)) {
-        // geordi: if you cant reprogram, reroute
-        // we use a symlink of user's working src for like-named packages
-        // this has the side-effect of not being the commit number, 
-        // but its effectively overridden by the user and we dare not write anything more than a debug/release folder
+    if (!dir_exists("%o", project_f)) {
         path src_path = f(path, "%o/%o", mod->src_loc, name);
         if (dir_exists("%o", src_path)) {
             project_f = src_path;
             vexec("ln -s %o/%o %o", mod->src_loc, name, name);
-            cd(project_f);
         } else {
-            vexec("git clone",
-                  "git clone --filter=blob:none --no-checkout --depth=1 %o %o",
-                   uri, name);
-            cd(npath);
-            project_f = absolute(path_cwd());
-            vexec("git sparse",   "git sparse-checkout init --cone");
-            vexec("git checkout", "git checkout %o", commit);
+            vexec("init",     "git init %o",                        project_f);
+            vexec("remote",   "git -C %o remote add origin %o",     project_f, uri);
+            vexec("fetch",    "git -C %o fetch origin %o",          project_f, commit);
+            vexec("checkout", "git -C %o reset --hard FETCH_HEAD",  project_f);
         }
     }
 
     // we build to another folder, not inside the source, or checkout
-    path     build_f = f(path, "%o/%s/%o", install, debug ? "debug" : "build", name);
-    make_dir(build_f);
-    cd      (build_f);
+    path build_f   = f(path, "%o/%s/%o", install, debug ? "debug" : "build", name);
+    path rust_f    = f(path, "%o/Cargo.toml",     project_f);
+    path cmake_f   = f(path, "%o/CMakeLists.txt", project_f);
+    path silver_f  = f(path, "%o/build.sf",       project_f);
+    bool is_rust   = file_exists("%o", rust_f);
+    bool is_cmake  = file_exists("%o", cmake_f);
+    bool is_silver = file_exists("%o", silver_f);
+    path token     = f(path, "%o/silver-token", build_f);
 
-    // build
-    if (file_exists("%o/Cargo.toml", project_f)) {
-        // todo: copy bin/lib after
-        vexec("rust compilation", "cargo build --%s --manifest-path %o/Cargo.toml --target-dir .",
-            debug ? "debug" : "release", project_f);
-    } else if (file_exists("%o/CMakeLists.txt", project_f)) {
-        /// configure
-        if (!file_exists("CMakeCache.txt")) {
-            cstr build = debug ? "Debug" : "Release";
-            int  iconf = exec(
-                "%o cmake -B . -S .. -DCMAKE_INSTALL_PREFIX=%o -DCMAKE_BUILD_TYPE=%s %o", env, install, build, config);
-            verify(iconf == 0, "%o: configure failed", im->name);
-        }
-        /// build & install
-        int    icmd = exec("%o cmake --build . -j16", env);
-        int   iinst = exec("%o cmake --install .",    env);
+    if (file_exists("%o", token)) {
+        string s = load(token, typeid(string), null);
+        if (s && eq(s, config->chars))
+            return; // we may want to return cached / built / error, etc
+    }
 
+    // the only reliable way of rebuilding on reconfig is to have a new build-folder
+    remove_dir(build_f);
+    if (is_rust || is_cmake || is_silver)
+        make_dir(build_f);
+
+    if (is_cmake) { // build for cmake
+        cstr build = debug ? "Debug" : "Release";
+        vexec("configure",
+            "%o cmake -B %o -S %o -DCMAKE_INSTALL_PREFIX=%o -DCMAKE_BUILD_TYPE=%s %o",
+                env, build_f, project_f, install, build, config);
+
+        vexec("build",   "%o cmake --build %o -j16", env, build_f);
+        vexec("install", "%o cmake --install %o",    env, build_f);
+    }
+    else if (is_rust) { // todo: copy bin/lib after
+        vexec("rust", "cargo build --%s --manifest-path %o/Cargo.toml --target-dir %o",
+            debug ? "debug" : "release", project_f, build_f);
+    } else if (is_silver) { // build for A-type projects
+        silver sf = silver(source, silver_f);
+        verify(sf, "silver module compilation failed: %o", silver_f);
     } else {
-        
-        /// build for A-type projects
-        path silver_f = f(path, "%o/build.sf", project_f);
-        if (file_exists("%o/build.sf", project_f)) {
-            cd(project_f); // lets not require cwd of any sort in silver init
-            // instance silver with this file, build, and verify
-            silver sf = silver(source, silver_f);
-            verify(sf, "silver module compilation failed: %o", silver_f);
-        } else if (!file_exists("Makefile")) {
-            cd(project_f);
-            /// build for automake projects
-            if (file_exists("%o/autogen.sh",   project_f) || 
-                file_exists("%o/configure.ac", project_f) || 
-                file_exists("%o/configure",    project_f) ||
-                file_exists("%o/config",       project_f)) {
-                
-                // this is not libffi at all, its a race condition that it and many others have with autotools
-                if (!file_exists("%o/ltmain.sh", project_f))
-                    verify(exec("libtoolize --install --copy --force") == 0, "libtoolize");
-                
-                // neither this -- but its a common preference on these repos
-                if (file_exists("%o/autogen.sh", project_f)) {
-                    verify(exec("bash %o/autogen.sh", project_f) == 0, "autogen");
-                }
-                /// generate configuration scripts if available
-                else if (!file_exists("%o/configure", project_f) && file_exists("%o/configure.ac", project_f)) {
-                    cd(project_f);
-                    verify(exec("autoupdate .")    == 0, "autoupdate");
-                    verify(exec("pwd") == 0, "autoreconf");
-                    verify(exec("autoreconf -i .") == 0, "autoreconf");
-                    cd(build_f);
-                }
-                /// prefer our pre/generated script configure, fallback to config
-                path configure = file_exists("%o/configure", project_f) ?
-                    f(path, "%o/configure", project_f) :
-                    f(path, "%o/config",    project_f);
-                
-                if (file_exists("%o", configure)) {
-                    verify(exec("%o %s%s --prefix=%o %o",
-                        env,
-                        configure,
-                        debug ? " --enable-debug" : "",
-                        install,
-                        config) == 0, configure);
-                }
+        /// build for automake
+        if (file_exists("%o/autogen.sh",   project_f) || 
+            file_exists("%o/configure.ac", project_f) || 
+            file_exists("%o/configure",    project_f) ||
+            file_exists("%o/config",       project_f)) {
+            
+            // fix common race condition with autotools
+            if (!file_exists("%o/ltmain.sh", project_f))
+                verify(exec("libtoolize --install --copy --force") == 0, "libtoolize");
+            
+            // common preference on these repos
+            if (file_exists("%o/autogen.sh", project_f))
+                verify(exec("(cd %o && bash autogen.sh)", project_f) == 0, "autogen");
+             
+            // generate configuration scripts if available
+            else if (!file_exists("%o/configure", project_f) && file_exists("%o/configure.ac", project_f)) {
+                verify(exec("autoupdate --verbose --force --output=%o/configure.ac %o/configure.ac",
+                    project_f, project_f) == 0, "autoupdate");
+                verify(exec("autoreconf -i %o",
+                    project_f) == 0, "autoreconf");
             }
-            cstr Makefile = "Makefile";
-            if (file_exists("%s", Makefile))
-                verify(exec("%o make -f %s install", env, Makefile) == 0, "make");
+
+            // prefer pre/generated script configure, fallback to config
+            path configure = file_exists("%o/configure", project_f) ?
+                f(path, "./configure") : f(path, "./config");
+            
+            if (file_exists("%o/%o", project_f, configure)) {
+                verify(exec("%o (cd %o && %o%s --prefix=%o %o)",
+                    env,
+                    project_f,
+                    configure,
+                    debug ? " --enable-debug" : "",
+                    install,
+                    config) == 0, "config script %o", configure);
+            }
+        }
+
+        path Makefile = f(path, "%o/Makefile", project_f);
+        if (file_exists("%o", Makefile))
+            verify(exec("%o (cd %o && make -f %o install)", env, project_f, Makefile) == 0, "make");
+    }
+
+    save(token, config, null);
+}
+
+
+
+// build with optional bc path; if no bc path we use the project file system
+i32 silver_build(silver a) {
+    path ll = null, bc = null;
+    emit(a, &ll, &bc);
+    verify(bc != null, "compilation failed");
+
+    int  error_code = 0;
+    path install = a->install;
+
+    // simplified process for .bc case
+    string name = stem(bc);
+    verify(exec("%o/bin/llc -filetype=obj %o.ll -o %o.o -relocation-model=pic",
+        install, name, name) == 0,
+            ".ll -> .o compilation failed");
+    string libs, cflags;
+    libs = string("");
+    cflags = string(""); // import keyword should publish to these
+    //cflags_libs(a, &cflags, &libs); // fetches from all exported data
+    verify(exec("%o/bin/clang %o.o -o %o -L %o/lib %o %o",
+        install, name, name, install, libs, cflags) == 0,
+            "link failed");
+    return 0;
+}
+
+// lets implement functional approach here
+// theres no storing of modules / includes / url / config, and then later finishing or something
+// we do everything in parse.
+// this is reduced in nature and works better in that silver is its only modality
+// theres not Multiple Other Ways to use these!
+
+// alternatively you store them in A-type object state and allow user to express the same
+// code you parse, why add a use-case that we do not need to service?
+// silver is a language, not a service.
+// simply put, this is a design-time process
+
+bool silver_next_is_neighbor(silver mod) {
+    token b = element(mod, -1);
+    token c = element(mod,  0);
+    return b->column + b->len == c->column;
+}
+
+enode import_parse(silver mod) {
+    verify(next_is(mod, "import"), "expected import keyword");
+    consume(mod);
+
+    import mdl           = import(mod, mod); // to the rest of silver, this is merely a model; certainly we can emit this information into run-time, though.
+    string namespace     = null;
+    array  includes      = array(32);
+    array  module_paths  = array(32);
+
+    if (read_if(mod, "<")) {
+        for (;;) {
+            string f = read_alpha_any(mod);
+            verify(f, "expected include");
+            /// we may read: something/is-a.cool\file.hh.h
+            while (next_is_neighbor(mod) && (!next_is(mod, ",") && !next_is(mod, ">")))
+                concat(f, next(mod));
+            
+            push(includes, f);
+
+            if (!read_if(mod, ",")) {
+                token n = read_if(mod, ">");
+                verify(n, "expected '>' after include, list, of, headers");
+                break;
+            }
+        }
+
+    } else if (next_is_alpha(mod)) {
+        for (;;) {
+            token f = read_alpha(mod);
+            while (next_is_neighbor(mod) && !next_is(mod, ","))
+                concat(f, next(mod));
+            
+            verify(f, "expected include");
+            push(module_paths, module_path(mod, (string)f));
+            if (!read_if(mod, ","))
+                break;
         }
     }
+
+    // this invokes import by git; a local repo may be possible but not very usable
+    // arguments / config not stored / used after this
+    if (next_is(mod, "[")) {
+        array b          = read_body(mod, false);
+        array arguments  = compact_tokens(b);
+        array c          = read_body(mod, false);
+        array all_config = compact_tokens(c);
+        verify(len(arguments) >= 2,
+            "expected import arguments in import [ git-url checkout-id ]");
+        token t_uri    = get(arguments, 0);
+        token t_commit = get(arguments, 1);
+        path    uri = path((string)t_uri);
+        verify(starts_with(t_uri, "https://") || 
+               starts_with(t_uri, "git@"), "expected repository uri");
+        checkout(mod, t_uri, t_commit,
+            import_config(all_config),
+            import_env   (all_config));
+    }
+    
+    if (next_is(mod, "as")) {
+        consume(mod);
+        namespace = hold(read_alpha(mod));
+        verify(namespace, "expected alpha-numeric namespace");
+    }
+    
+    // its important that silver need not rely on further interpretation of an import model
+    // import does its thing into normal aether modeling, and we move on
+    emember mem = emember(mod, mod, name, namespace, mdl, mdl);
+    set_model  (mem, mdl);
+    register_member(mod, mem);
+    
+    if (namespace) {
+        mdl->name = namespace;
+        push(mod, mdl); // we import directly into our module (global) without namespace
+    }
+
+    each (includes, string, inc)
+        include(mod, inc);
+
+    each(module_paths, path, m)
+        A_import(mod, m);
+    
+    if (namespace) pop(mod);
+    
+    return mem;
 }
+
 
 /*
 
@@ -2573,120 +2738,6 @@ static bool import_build(import im, string url, ) {
 }
 
 */
-
-
-// build with optional bc path; if no bc path we use the project file system
-i32 silver_build(silver a) {
-    path ll = null, bc = null;
-    emit(a, &ll, &bc);
-    verify(bc != null, "compilation failed");
-
-    int  error_code = 0;
-    path install = a->install;
-
-    // simplified process for .bc case
-    string name = stem(bc);
-    verify(exec("%o/bin/llc -filetype=obj %o.ll -o %o.o -relocation-model=pic",
-        install, name, name) == 0,
-            ".ll -> .o compilation failed");
-    string libs, cflags;
-    libs = string("");
-    cflags = string(""); // import keyword should publish to these
-    //cflags_libs(a, &cflags, &libs); // fetches from all exported data
-    verify(exec("%o/bin/clang %o.o -o %o -L %o/lib %o %o",
-        install, name, name, install, libs, cflags) == 0,
-            "link failed");
-    return 0;
-}
-
-// lets implement functional approach here
-// theres no storing of modules / includes / url / config, and then later finishing or something
-// we do everything in parse.
-// this is reduced in nature and works better in that silver is its only modality
-// theres not Multiple Other Ways to use these!
-
-// alternatively you store them in A-type object state and allow user to express the same
-// code you parse, why add a use-case that we do not need to service?
-// silver is a language, not a service.
-// simply put, this is a design-time process
-
-enode import_parse(silver mod) {
-    verify(next_is(mod, "import"), "expected import keyword");
-    consume(mod);
-
-    model  mdl           = import(mod, mod); // to the rest of silver, this is merely a model; certainly we can emit this information into run-time, though.
-    string namespace     = null;
-    array  include_paths = null;
-    array  module_paths  = null;
-
-    if (read_if(mod, "<")) {
-        include_paths = array(32);
-        for (;;) {
-            token f = read_alpha(mod);
-            verify(f, "expected include");
-            push(include_paths, include_path(mod, (string)f));
-
-            if (!read_if(mod, ",")) {
-                token n = read_if(mod, ">");
-                if (!n)
-                    continue;
-                else
-                    break;
-            }
-        }
-        verify(read_if(mod, ">"), "expected > after include");
-
-    } else if (next_is_alpha(mod)) {
-        module_paths = array(32);
-        for (;;) {
-            token f = read_alpha(mod);
-            verify(f, "expected include");
-            push(module_paths, module_path(mod, (string)f));
-            if (!read_if(mod, ","))
-                break;
-        }
-    }
-
-    // this invokes import by git; a local repo may be possible but not very usable
-    // arguments / config not stored / used after this
-    if (next_is(mod, "[")) {
-        array arguments  = compact_tokens(read_body(mod, false));
-        array all_config = compact_tokens(read_body(mod, false));
-        verify(len(arguments) > 0,
-            "expected import arguments in import [ expression ]");
-        token t_uri    = get(arguments, 0);
-        token t_commit = get(arguments, 1);
-        path    uri = path((string)t_uri);
-        verify(starts_with(t_uri, "https://") || 
-               starts_with(t_uri, "git@"), "expected repository uri");
-        fault("verify url: %o", uri);
-        checkout(mod, t_uri, t_commit,
-            import_config(all_config),
-            import_env   (all_config));
-    }
-    
-    if (next_is(mod, "as")) {
-        consume(mod);
-        namespace = hold(read_alpha(mod));
-        verify(namespace, "expected alpha-numeric namespace");
-    }
-    
-    // its important that silver need not rely on further interpretation of an import model
-    // import does its thing into normal aether modeling, and we move on
-    emember mem = emember(mod, mod, name, namespace, mdl, mdl);
-    set_model  (mem, mdl);
-    register_member(mod, mem);
-    
-    if (namespace) {
-        mdl->name = namespace;
-        push(mod, mdl); // we import directly into our module (global) without namespace
-    }
-    each(include_paths, path, inc) include(mod, inc);
-    each(module_paths,  path, m)   A_import(mod, m);
-    if (namespace) pop(mod);
-    
-    return mem;
-}
 
 int main(int argc, cstrs argv) {
     A_engage(argv);

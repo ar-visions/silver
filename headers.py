@@ -318,7 +318,7 @@ def generate_public_header(module, header_file, public_header):
                 class_name = match.strip() if isinstance(match, str) else match[0].strip()
                 if class_name:
                     f.write(f"#ifndef {class_name}_isize\n")
-                    f.write(f"#define {class_name}_isize 0\n") # this must trigger a re-build
+                    f.write(f"#define {class_name}_isize 512\n") # give it enough space on the first go (run & rebuild required for precise sizing)
                     f.write(f"#endif\n")
                     f.write(f"#ifndef {class_name}_intern\n")
                     f.write(f"#define {class_name}_intern(AA,YY,...) AA##_schema(AA,YY##_EXTERN, __VA_ARGS__)\n")

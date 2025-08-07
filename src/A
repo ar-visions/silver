@@ -49,8 +49,6 @@ struct _AType;
 #define FNV_PRIME           0x100000001b3
 #define OFFSET_BASIS        0xcbf29ce484222325
 
-
-
 /// A-type runtime
 typedef void                    none;
 typedef signed char             i8;
@@ -61,7 +59,6 @@ typedef unsigned char           u8;
 typedef unsigned short          u16;
 typedef unsigned int            u32;
 typedef unsigned long long      u64;
-
 
 typedef u64                     AF;
 typedef long long               num;
@@ -75,10 +72,7 @@ typedef double                  real;    /// real enough
 typedef void*                   handle;
 typedef char*                   cstr;
 typedef const char*             symbol;
-//typedef const char*           cereal;
 typedef bool                   *ref_bool;
-
-#define imethod static
 
 typedef struct cereal { char* value; } cereal;
 
@@ -586,7 +580,7 @@ forward(any)
     t_method(AA,Y, public, none,        push_type) \
     t_method(AA,Y, public, A,           typecast,            A) \
     s_method(AA,Y, public, none,        member_override,     AType, member, AFlag) \
-    s_method(AA,Y, public, none,        register_init,       fn) \
+    s_method(AA,Y, public, none,        register_init,       func) \
     s_method(AA,Y, public, bool,        is_inlay,            member) \
     s_method(AA,Y, public, AType,       find_type,           symbol) \
     s_method(AA,Y, public, map,         arguments,           i32, cstrs, map, A) \
@@ -691,7 +685,7 @@ declare_abstract(imported)
 #define handle_schema(X,Y,...)      raw_schema(X,Y,...)
 #define AType_schema(X,Y,...)       raw_schema(X,Y,...)
 #define member_schema(X,Y,...)      raw_schema(X,Y,...)
-#define fn_schema(X,Y,...)          raw_schema(X,Y,...)
+#define func_schema(X,Y,...)        raw_schema(X,Y,...)
 #define hook_schema(X,Y,...)        raw_schema(X,Y,...)
 #define callback_schema(X,Y,...)    raw_schema(X,Y,...)
 #define cstrs_schema(X,Y,...)       raw_schema(X,Y,...)
@@ -757,7 +751,7 @@ declare_primitive(none,             nil)
 declare_primitive(cereal,           raw)
 declare_primitive(raw_t,            raw)
 declare_primitive(handle,           raw)
-declare_primitive(fn,               raw)
+declare_primitive(func,             raw)
 declare_primitive(hook,             raw)
 declare_primitive(callback,         raw)
 declare_primitive(cstrs,            raw)
@@ -1097,6 +1091,7 @@ declare_enum(level)
     i_prop      (X,Y, public,  bool,       assorted)  \
     i_method    (X,Y, public,  none,       set,        A, A) \
     i_method    (X,Y, public,  A,     get,        A) \
+    i_method    (X,Y, public,  A,          value_by_index, num) \
     i_method    (X,Y, public,  item,       lookup,     A) \
     i_method    (X,Y, public,  item,       fetch,      A) \
     i_method    (X,Y, public,  none,       rm,         A) \
@@ -1151,7 +1146,7 @@ declare_class_2(ctx, map)
     i_method  (X,Y,   public, bool,    starts_with, symbol) \
     i_method  (X,Y,   public, num,     cmp, symbol) \
     i_method  (X,Y,   public, bool,    eq,  symbol) \
-    i_method  (X,Y,   public, string,  interpolate, map) \
+    i_method  (X,Y,   public, string,  interpolate, A) \
     i_cast    (X,Y,   public, cstr) \
     i_cast    (X,Y,   public, sz) \
     i_cast    (X,Y,   public, path) \
@@ -1167,7 +1162,8 @@ declare_class_2(ctx, map)
 declare_class(string)
 
 #define command_schema(X,Y,...) \
-    i_method  (X,Y, public, i32, exec) \
+    i_method  (X,Y, public, i32,    exec) \
+    i_method  (X,Y, public, string, run) \
     s_method  (X,Y, public, i64, last_pid)
 declare_class_2(command, string)
 
@@ -1201,13 +1197,15 @@ declare_class(mutex)
     i_override  (X,Y, method, init) \
     i_override  (X,Y, method, dealloc)
 declare_class(async)
-
+ 
 #define path_schema(X,Y,...) \
     i_method    (X,Y, public, bool,   exists) \
+    i_method    (X,Y, public, bool,   touch) \
     i_method    (X,Y, public, bool,   create_symlink, path) \
     i_method    (X,Y, public, bool,   is_symlink) \
     i_method    (X,Y, public, path,   resolve) \
     i_method    (X,Y, public, bool,   make_dir) \
+    i_method    (X,Y, public, bool,   remove_dir) \
     i_method    (X,Y, public, bool,   is_ext, symbol) \
     i_method    (X,Y, public, bool,   is_empty) \
     i_method    (X,Y, public, bool,   is_dir) \
@@ -1220,7 +1218,8 @@ declare_class(async)
     i_method    (X,Y, public, string, filename) \
     i_method    (X,Y, public, path,   absolute) \
     i_method    (X,Y, public, path,   parent) \
-    i_method    (X,Y, public, A, load, AType, ctx) \
+    i_method    (X,Y, public, A,      load, AType, ctx) \
+    i_method    (X,Y, public, bool,   save, A,     ctx) \
     i_method    (X,Y, public, path,   change_ext, cstr) \
     i_method    (X,Y, public, array,  ls, string, bool) \
     i_method    (X,Y, public, bool,   move, path) \
