@@ -85,6 +85,8 @@ typedef void*                   numeric;
 
 
 #include <object.h>
+
+#undef assert
 #include <macros.h>
 
 typedef signed char            *ref_i8;
