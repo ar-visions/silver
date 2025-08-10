@@ -39,7 +39,8 @@ declare_enum(comparison)
     i_method    (X,Y,  public,  AType,      get_type) \
     i_method    (X,Y,  public,  string,     location) \
     i_override  (X,Y,  ctr,     cstr) \
-    i_override  (X,Y,  method,  init)
+    i_override  (X,Y,  method,  init) \
+    i_override  (X,Y,  method,  copy)
 declare_class_2(token, string)
 
 
@@ -69,10 +70,10 @@ declare_enum(reference)
     i_prop    (X,Y, public,     bool,             is_const) \
     i_prop    (X,Y, public,     i64,              count) \
     i_prop    (X,Y, public,     A,                shape) \
-    i_prop    (X,Y, public,     sz,               size) \
-    i_prop    (X,Y, public,     sz,               alignment) \
+    i_prop    (X,Y, public,     sz,               size_bits) \
+    i_prop    (X,Y, public,     sz,               alignment_bits) \
     i_prop    (X,Y, public,     map,              members) \
-    i_prop    (X,Y, public,     path,             from_include) \
+    i_prop    (X,Y, public,     path,             imported_from) \
     i_prop    (X,Y, public,     string,           extern_name) \
     i_prop    (X,Y, public,     array,            body) \
     i_prop    (X,Y, intern,     LLVMScope,        scope,      as, ARef) \
@@ -82,6 +83,7 @@ declare_enum(reference)
     i_prop    (X,Y, public,     bool,             finalized) \
     i_prop    (X,Y, intern,     model,            init_top) \
     i_prop    (X,Y, public,     fn,               fn_init) \
+    i_method  (X,Y, public,     model,            typed) \
     s_method  (X,Y, public,     string,           keyword) \
     i_method  (X,Y, public,     fn,               initializer) \
     i_method  (X,Y, public,     model,            pointer,       string) \
@@ -144,10 +146,12 @@ declare_class_2(fn, model)
 declare_class_2(statements, model)
 
 typedef struct _schematic* schematic;
-
+ 
 // for each field, f_* name-bound class, enum or primitive
 #define record_schema(X,Y,...) \
     i_prop    (X,Y, public, record, parent) \
+    i_prop    (X,Y, public, array,  meta) \
+    i_prop    (X,Y, public, bool,   parsing) \
     i_prop    (X,Y, public, i32, total_members) \
     i_prop    (X,Y, public, bool,   expect_members) \
     i_override(X,Y, method,         init)
@@ -202,10 +206,13 @@ declare_class(enode)
     i_prop    (X,Y, public,     bool,                   is_func) \
     i_prop    (X,Y, public,     bool,                   is_arg) \
     i_prop    (X,Y, public,     bool,                   is_decl) \
-    i_prop    (X,Y, public,     path,                   from_include) \
+    i_prop    (X,Y, public,     A,                      override_offset_bits) \
+    i_prop    (X,Y, public,     A,                      override_size_bits) \
+    i_prop    (X,Y, public,     A,                      override_alignment_bits) \
+    i_prop    (X,Y, public,     path,                   imported_from) \
     i_prop    (X,Y, public,     A,                      initializer) \
-    i_prop    (X,Y, intern,     i64,                    offset) \
-    i_prop    (X,Y, intern,     i64,                    index) \
+    i_prop    (X,Y, intern,     i32,                    offset_bits) \
+    i_prop    (X,Y, intern,     i32,                    index) \
     i_prop    (X,Y, intern,     LLVMMetadataRef,        debug, as, ARef) \
     i_method  (X,Y, public,     none,    release) \
     i_method  (X,Y, public,     bool,    has_value) \

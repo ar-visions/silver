@@ -49,11 +49,9 @@ forward(import)
     i_method  (X,Y, public,     num,            current_line) \
     i_method  (X,Y, public,     bool,           next_is,       symbol) \
     i_method  (X,Y, public,     bool,           next_is_alpha) \
-    i_method  (X,Y, public,     array,          namespace_push) \
-    i_method  (X,Y, public,     none,           namespace_pop, array) \
-    i_method  (X,Y, public,     enode,           read_node, AType) \
-    i_method  (X,Y, public,     enode,           parse_ternary, enode) \
-    i_method  (X,Y, public,     enode,           parse_assignment, emember, string) \
+    i_method  (X,Y, public,     enode,          read_node, AType) \
+    i_method  (X,Y, public,     enode,          parse_ternary, enode) \
+    i_method  (X,Y, public,     enode,          parse_assignment, emember, string) \
     i_method  (X,Y, public,     token,          read_if, symbol) \
     i_method  (X,Y, public,     A,              read_literal, AType) \
     i_method  (X,Y, public,     string,         read_string) \

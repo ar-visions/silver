@@ -34,10 +34,10 @@ build_llvm() {
         -DCMAKE_CXX_STANDARD_REQUIRED=ON
         -DCMAKE_CXX_EXTENSIONS=OFF
         -DLLVM_ENABLE_ASSERTIONS=ON
-        -DLLVM_ENABLE_PROJECTS='clang;lld;lldb'
-        -DLLVM_TOOL_GOLD_BUILD=OFF
+        -DLLVM_ENABLE_PROJECTS='clang;lld;lldb;compiler-rt'
+        -DLLVM_TOOL_GOLD_BUILD=ON
         -DLLVM_ENABLE_FFI=OFF
-        -DLLVM_ENABLE_RTTI=OFF
+        -DLLVM_ENABLE_RTTI=ON
         -DLLVM_BINUTILS_INCDIR=/usr/include
         -DCLANG_DEFAULT_PIE_ON_LINUX=ON
         -DCLANG_CONFIG_FILE_SYSTEM_DIR=/etc/clang
@@ -47,6 +47,9 @@ build_llvm() {
         -DCLANG_DEFAULT_CXX_STDLIB=libstdc++
         -DLLVM_BUILD_LLVM_DYLIB=ON
         -DLLVM_LINK_LLVM_DYLIB=ON
+        -DCOMPILER_RT_BUILD_SANITIZERS=ON
+        -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
+        -DCMAKE_C_COMPILER_TARGET=x86_64-unknown-linux-gnu
     )
 
     if [[ "$OSTYPE" == "darwin"* ]]; then

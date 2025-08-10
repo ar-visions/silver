@@ -1,4 +1,4 @@
 @app
 A
 aether
--lLLVM -lclang -llldb
+-lLLVM -llldb
