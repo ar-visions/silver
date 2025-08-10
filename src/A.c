@@ -4858,6 +4858,7 @@ A typecast(AType type, A a) {
     return null;
 }
 
+// this signals an application entry
 define_class(subscriber, A)
 define_class(subs, A)
 

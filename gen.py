@@ -50,8 +50,10 @@ def get_platform_info():
             'cc': f'{silver}/bin/clang', 'cxx': f'{silver}/bin/clang++',
             'ar': f'{silver}/bin/llvm-ar', 'ninja': 'ninja',
             'inc': ['/usr/include', '/usr/include/x86_64-linux-gnu'],
-            'lib_dirs': [], 'lflags': ['-fuse-ld=lld', '-lstdc++'],
-            'cflags': ['-D_DLL', '-D_MT'], 'cxxflags': ['-D_DLL', '-D_MT'],
+            'lib_dirs': [],
+            'lflags': ['-fuse-ld=lld', '-lstdc++', '-fsanitize=address'],
+            'cflags': ['-D_DLL', '-D_MT', '-fsanitize=address'],
+            'cxxflags': ['-D_DLL', '-D_MT', '-fsanitize=address'], # todo: we should have levels of debug, so make asan vs make debug
             'libs': ['-lc', '-lm']
         }
     }

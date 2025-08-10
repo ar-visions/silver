@@ -520,8 +520,8 @@ forward(path)
 forward(vector)
 forward(any)
 
-// A-type must generate defines for sizes for users of it
 
+// A-type must generate defines for sizes for users of it
 #define A_schema(AA,Y,...) \
     i_prop  (AA,Y, intern, AType,       type) \
     i_prop  (AA,Y, intern, AType,       scalar) \
@@ -593,11 +593,10 @@ forward(any)
     s_method(AA,Y, public, none,        engage,              cstrs) \
     s_vargs (AA,Y, public, map,         args,                cstrs, symbol) \
     s_vargs (AA,Y, public, map,         map_of,              symbol) \
-    i_ctr   (AA,Y, public, cstrs) \
     i_ctr   (AA,Y, public, cereal) \
+    i_ctr(AA,Y, public, cstrs) \
     i_cast  (AA,Y, public, string) \
     i_cast  (AA,Y, public, bool)
-
 
 #define A_intern_footer(AA)
                     
@@ -614,7 +613,6 @@ declare_base(A)
     i_prop      (X,Y, public, i64, count) \
     i_array     (X,Y, public, i64, 16, data)
 declare_class(shape)
-
 
 #define typeid(AA)   ((AType)&AA##_i.type)
 #define scalarof(AA) head(AA)->scalar
@@ -845,6 +843,7 @@ declare_class(list)
     enum_value(E,T,Y, _assign_right,      27) \
     enum_value(E,T,Y, _assign_left,       28)
 declare_enum(OPType)
+
 
 #define Key_schema(EE,TT,YY) \
     enum_value_v(EE, TT, YY, Undefined,      0) \

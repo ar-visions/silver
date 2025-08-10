@@ -10,6 +10,10 @@
 //#include <clang-c/Index.h>
 
 
+#include "clang/Basic/Diagnostic.h"
+#include "clang/Basic/DiagnosticIDs.h"
+#include "clang/Basic/DiagnosticOptions.h"
+#include <clang/Basic/TargetInfo.h>
 #include <clang/AST/ASTConsumer.h>
 #include <clang/AST/ASTContext.h>
 #include <clang/AST/RecursiveASTVisitor.h>
@@ -17,15 +21,16 @@
 #include <clang/AST/Decl.h>
 #include <clang/AST/DeclCXX.h>
 #include <clang/AST/RecordLayout.h>
-#include <clang/Basic/TargetInfo.h>
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Frontend/FrontendActions.h>
+#include <clang/Frontend/TextDiagnosticPrinter.h>
 #include <clang/Lex/Preprocessor.h>
 #include <clang/Parse/ParseAST.h>
 #include <clang/Tooling/Tooling.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/IR/DataLayout.h>
-
+#include "llvm/TargetParser/Host.h"
+#include "llvm/TargetParser/Triple.h"
 
 #include <ports.h>
 #include <string>
@@ -72,14 +77,15 @@ struct model_ctx {
 };
 
 
-static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether e);
+static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether e, string use_name);
 
 
 // Enum visitor equivalent
 static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e) {
     std::string name = decl->getNameAsString();
     string n = string(name.c_str());
-    
+    verify (len(n), "expected name for enumerable");
+
     enumeration en = enumeration(mod, e, name, (token)n, members, map(hsize, 8));
     
     // Visit enum constants
@@ -108,7 +114,7 @@ static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e) {
     
     // Get return type
     QualType return_qt = decl->getReturnType();
-    model rtype = map_clang_type_to_model(return_qt, ctx, e);
+    model rtype = map_clang_type_to_model(return_qt, ctx, e, null);
     if (!rtype) rtype = emodel("none");
     
     // Process parameters
@@ -125,7 +131,7 @@ static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e) {
         }
         
         string pname = string(param_name.c_str());
-        model mt = map_clang_type_to_model(param_type, ctx, e);
+        model mt = map_clang_type_to_model(param_type, ctx, e, null);
         if (!mt) continue;
         
         emember earg = emember(mod, e, name, (token)pname, mdl, mt, is_arg, true);
@@ -147,6 +153,11 @@ static record create_record(RecordDecl* decl, ASTContext& ctx, aether e) {
     std::string name = decl->getNameAsString();
     string n = string(name.c_str());
     
+    // Check if already exists
+    emember existing = lookup2(e, (A)n, null);
+    if (existing && existing->mdl)
+        return (record)existing->mdl;
+
     // Check if it's a union or struct
     bool is_union = decl->isUnion();
     
@@ -155,47 +166,67 @@ static record create_record(RecordDecl* decl, ASTContext& ctx, aether e) {
         (record)structure(mod, e, name, (token)n);
     
     rec->members = map(hsize, 8);
+    register_model(e, (model)rec);
     
     // Get the layout for accurate offsets/sizes
-    const ASTRecordLayout& layout = ctx.getASTRecordLayout(decl);
-    
-    int field_index = 0;
-    for (auto field : decl->fields()) {
-        std::string field_name = field->getNameAsString();
-        if (field_name.empty()) {
-            // Handle anonymous fields
-            field_name = "__anon_" + std::to_string(field_index);
-        }
-        string fname = string(field_name.c_str());
+    if (decl->isCompleteDefinition()) {
+        const ASTRecordLayout& layout = ctx.getASTRecordLayout(decl);
         
-        QualType field_type = field->getType();
-        model mapped = map_clang_type_to_model(field_type, ctx, e);
-        if (!mapped) continue;
-        
-        emember m = emember(mod, rec->mod, name, (token)fname, mdl, mapped);
-        m->index = field_index++;
-        
-        // Get accurate offset (handles pragma pack!)
-        if (!is_union) {
+        int field_index = 0;
+        for (auto field : decl->fields()) {
+            std::string field_name = field->getNameAsString();
+            if (field_name.empty()) {
+                // Handle anonymous fields
+                field_name = "__anon_" + std::to_string(field_index);
+            }
+            string fname = string(field_name.c_str());
+            
+            QualType field_type = field->getType();
+
+            model mapped = map_clang_type_to_model(field_type, ctx, e, null);
+            if (!mapped) continue;
+            
+            emember m = emember(mod, rec->mod, name, (token)fname, mdl, mapped);
+
             uint64_t offset_bits = layout.getFieldOffset(field->getFieldIndex());
-            m->offset = offset_bits / 8;  // Convert to bytes
+
+            // important:
+            // these specific members LLVM IR does not actually support in a general sense, and we must, as a user construct padding and operations
+            // this is not remotely designed and, if our offsets differ, the compiler should error
+            // for silver 1.0, we want bitfield support
+            m->override_offset_bits = A_i32(offset_bits);
+
+            // size
+            if (field->isBitField()) {
+                m->override_size_bits = A_i32(field->getBitWidthValue());  // in bits
+            } else if (const auto *IAT = dyn_cast<IncompleteArrayType>(field_type)) {
+                // flexible array member (must be last): size is 0 in the struct
+                m->override_size_bits = A_i32(0);
+            } else {
+                m->override_size_bits = A_i32(ctx.getTypeSizeInChars(field_type).getQuantity());
+            }
+
+            // alignment (prefer decl-level to capture alignas/attributes)
+            CharUnits declAlign = ctx.getDeclAlign(field);
+            if (declAlign.isZero())
+                declAlign = ctx.getTypeAlignInChars(field_type);
+            m->override_alignment_bits = A_i32(declAlign.getQuantity());
+
+            // Get accurate offset (handles pragma pack!)
+            if (!is_union) {
+                uint64_t offset_bits = layout.getFieldOffset(field->getFieldIndex());
+                m->offset_bits = offset_bits / 8;  // Convert to bytes
+            }
+
+            m->index = field_index++;
+            set(rec->members, (A)fname, (A)m);
         }
         
-        // Check for bitfield
-        /*
-        if (field->isBitField()) {
-            m->is_bitfield = true;
-            m->bitwidth = field->getBitWidthValue(ctx);
-        }*/
-        
-        set(rec->members, (A)fname, (A)m);
+        // Set struct/union size and alignment
+        rec->size_bits = layout.getSize().getQuantity() * 8;
+        rec->alignment_bits = layout.getAlignment().getQuantity() * 8;
     }
     
-    // Set struct/union size and alignment
-    rec->size = layout.getSize().getQuantity();
-    rec->alignment = layout.getAlignment().getQuantity();
-    
-    register_model(e, (model)rec);
     finalize((model)rec);
     return rec;
 }
@@ -203,13 +234,13 @@ static record create_record(RecordDecl* decl, ASTContext& ctx, aether e) {
 // Function type helper
 static model map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, aether e) {
     QualType return_qt = fpt->getReturnType();
-    model return_model = map_clang_type_to_model(return_qt, ctx, e);
+    model return_model = map_clang_type_to_model(return_qt, ctx, e, null);
     
     eargs param_models = eargs(mod, e);
     
     for (unsigned i = 0; i < fpt->getNumParams(); i++) {
         QualType param_type = fpt->getParamType(i);
-        model param = map_clang_type_to_model(param_type, ctx, e);
+        model param = map_clang_type_to_model(param_type, ctx, e, null);
         
         // Function types don't have parameter names
         char name_buf[32];
@@ -221,7 +252,9 @@ static model map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, ae
     }
     
     bool is_variadic = fpt->isVariadic();
-    return (model)fn(mod, e, rtype, return_model, args, param_models, va_args, is_variadic);
+    fn f = fn(mod, e, rtype, return_model, args, param_models, va_args, is_variadic);
+    use(f);
+    return (model)f;
 }
 
 // Function pointer helper
@@ -236,7 +269,7 @@ static model map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e
     if (const FunctionNoProtoType* fnpt = dyn_cast<FunctionNoProtoType>(pointee)) {
         // Old-style function without prototype
         QualType return_qt = fnpt->getReturnType();
-        model return_model = map_clang_type_to_model(return_qt, ctx, e);
+        model return_model = map_clang_type_to_model(return_qt, ctx, e, null);
         eargs empty_args = eargs(mod, e);
         
         model func_model = (model)fn(mod, e, rtype, return_model, args, empty_args);
@@ -280,29 +313,32 @@ public:
 
 
 // Direct Clang type mapping (equivalent to map_ctype_to_model)
-static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether e) {
-    const Type* type = qt.getTypePtr();
-    
+static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether e, string use_name) {
+    const Type* t = qt.getTypePtr();
+
     // Strip elaborated type (like CXType_Elaborated)
-    if (const ElaboratedType* et = dyn_cast<ElaboratedType>(type)) {
-        return map_clang_type_to_model(et->getNamedType(), ctx, e);
+    if (const ElaboratedType* et = dyn_cast<ElaboratedType>(t)) {
+        return map_clang_type_to_model(et->getNamedType(), ctx, e, null);
     }
     
     // Handle typedefs
-    if (const TypedefType* tt = dyn_cast<TypedefType>(type)) {
+    if (const TypedefType* tt = dyn_cast<TypedefType>(t)) {
         std::string name = tt->getDecl()->getName().str();
+        symbol n = name.c_str();
+        model existing = emodel(n);
+        if (existing) return existing;
+        if (!use_name) use_name = string(n);
 
-        // Check for known typedefs
-        if (name == "size_t") return emodel("usize");
-        if (name == "ssize_t") return emodel("isize");
-        if (name == "ptrdiff_t") return emodel("isize");
-        if (name == "intptr_t") return emodel("isize");
-        if (name == "uintptr_t") return emodel("usize");
-        
         // Recurse on underlying type
-        return map_clang_type_to_model(tt->getDecl()->getUnderlyingType(), ctx, e);
+        return map_clang_type_to_model(tt->getDecl()->getUnderlyingType(), ctx, e, use_name);
     }
     
+
+    QualType unqualified = qt.getCanonicalType().getUnqualifiedType();
+    const Type* type = unqualified.getTypePtr();
+    //const Type* type = qt.getTypePtr();
+    
+
     // Builtin types
     if (const BuiltinType* bt = dyn_cast<BuiltinType>(type)) {
         switch (bt->getKind()) {
@@ -354,7 +390,7 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
     if (const ConstantArrayType* cat = dyn_cast<ConstantArrayType>(type)) {
         QualType elem_type = cat->getElementType();
         int64_t size = cat->getSize().getSExtValue();
-        model elem_model = map_clang_type_to_model(elem_type, ctx, e);
+        model elem_model = map_clang_type_to_model(elem_type, ctx, e, null);
         
         if (!elem_model) return nullptr;
         
@@ -367,7 +403,7 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
     
     if (const IncompleteArrayType* iat = dyn_cast<IncompleteArrayType>(type)) {
         QualType elem_type = iat->getElementType();
-        model elem_model = map_clang_type_to_model(elem_type, ctx, e);
+        model elem_model = map_clang_type_to_model(elem_type, ctx, e, null);
         if (!elem_model) return nullptr;
         return model(mod, e, src, elem_model, shape, (A)a(A_i64(0)));
     }
@@ -376,34 +412,21 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
     if (const PointerType* pt = dyn_cast<PointerType>(type)) {
         QualType pointee = pt->getPointeeType();
         
-        // Special string handling
-        if (pointee->isCharType()) {
-            if (pointee.isConstQualified()) {
-                return emodel("cstr");
-            }
-            return emodel("mut_cstr");
-        }
-        
-        // Function pointers
-        if (pointee->isFunctionType()) {
+        // function pointers
+        if (pointee->isFunctionType())
             return map_function_pointer(pointee, ctx, e);
-        }
         
-        model base = map_clang_type_to_model(pointee, ctx, e);
+        model base = map_clang_type_to_model(pointee, ctx, e, null);
+        if (!base)
+             base = map_clang_type_to_model(pointee, ctx, e, null);
+        
         verify(base, "could not resolve pointer type");
         
-        if (pointee.isConstQualified()) {
-            base = model(mod, e, src, base, is_const, true);
-        }
-        /*
-        if (pointee.isVolatileQualified()) {
-            base = model_volatile(base);
-        }
-        if (qt.isRestrictQualified()) {
-            return model_restrict_pointer(base);
-        }*/
-        
-        return model(mod, e, src, base, is_ref, true);
+        model ptr = model(mod, e, name, (token)use_name, src, base, is_ref, true,
+            is_const, pointee.isConstQualified());
+        if (use_name)
+            register_model(e, ptr);
+        return ptr;
     }
     
     // Record types (struct/union/class)
@@ -448,12 +471,136 @@ path aether_lookup_include(aether e, string include) {
     return full_path;
 }
 
+// custom AST consumer
+class AetherASTConsumer : public clang::ASTConsumer {
+    AetherDeclVisitor& visitor;
+    ASTContext& ctx;
+public:
+    AetherASTConsumer(AetherDeclVisitor& v, ASTContext& c) : visitor(v), ctx(c) {}
+    
+    void HandleTranslationUnit(ASTContext& context) override {
+        visitor.TraverseDecl(context.getTranslationUnitDecl());
+    }
+};
+
+class SimpleDiagConsumer : public clang::DiagnosticConsumer {
+  std::unique_ptr<clang::DiagnosticOptions> Opts;
+  std::unique_ptr<clang::TextDiagnosticPrinter> Printer;
+  bool Begun = false;
+
+public:
+  SimpleDiagConsumer() {
+    Opts = std::make_unique<clang::DiagnosticOptions>();
+    Opts->ShowCarets = true;
+    Opts->ShowColors = true;
+    Opts->ShowSourceRanges = true;
+    Opts->ShowFixits = true;
+    Printer = std::make_unique<clang::TextDiagnosticPrinter>(llvm::errs(), *Opts.get());
+  }
+
+  void BeginSourceFile(const clang::LangOptions &LO,
+                       const clang::Preprocessor *PP) override {
+    Printer->BeginSourceFile(LO, PP);
+    Begun = true;
+  }
+
+  void EndSourceFile() override { Printer->EndSourceFile(); }
+
+  void HandleDiagnostic(clang::DiagnosticsEngine::Level L,
+                        const clang::Diagnostic &Info) override {
+    if (!Begun) {
+      clang::LangOptions LO;
+      Printer->BeginSourceFile(LO, /*PP=*/nullptr);
+      Begun = true;
+    }
+    // forward to the real renderer
+    Printer->HandleDiagnostic(L, Info);
+  }
+};
+
 path aether_include(aether e, A inc) {
     path ipath = (AType)isa(inc) == typeid(string) ?
         lookup_include(e, (string)inc) : (path)inc;
     verify(ipath && exists(ipath), "include path does not exist: %o", ipath ? (A)ipath : inc);
     e->current_include = ipath;
 
+
+    // Create DiagID
+    auto DiagID(new DiagnosticIDs());
+    auto DiagOpts(new DiagnosticOptions());
+
+    // Create invocation first
+    auto Invocation = std::make_shared<CompilerInvocation>();
+
+
+    // Add Clang's resource directory for built-in headers
+    Invocation->getHeaderSearchOpts().ResourceDir = "/src/silver/lib/clang/22";
+
+    // Or add the include path directly
+    Invocation->getHeaderSearchOpts().AddPath(
+        "/src/silver/lib/clang/22/include", 
+        frontend::System,  // System headers
+        false, 
+        false);
+
+
+
+    path c = f(path, "/tmp/%o.c", stem(ipath));
+    string  contents = f(string, "#include \"%o\"\n", ipath);
+    save(c, (A)contents, null);
+
+    // Set up input file
+    Invocation->getFrontendOpts().Inputs.push_back(
+        FrontendInputFile(c->chars, Language::C));  // or Language::CXX
+    
+    // Set target
+    Invocation->getTargetOpts().Triple = llvm::sys::getProcessTriple();
+    
+    // Add include paths
+    for (int i = 0; i < e->include_paths->len; i++) {
+        path inc_path = (path)e->include_paths->elements[i];
+        Invocation->getHeaderSearchOpts().AddPath(
+            inc_path->chars, frontend::Angled, false, false);
+    }
+    
+    // Create compiler with the invocation
+    CompilerInstance compiler(std::move(Invocation));
+    
+
+    // Then use it:
+    SimpleDiagConsumer* DiagClient = new SimpleDiagConsumer();
+    IntrusiveRefCntPtr<DiagnosticsEngine> Diags = 
+        new DiagnosticsEngine(DiagID, *DiagOpts, DiagClient);
+    compiler.setDiagnostics(Diags.get());
+
+
+    // Create other managers
+    compiler.createFileManager();
+    compiler.createSourceManager(compiler.getFileManager());
+
+    auto fe = compiler.getFileManager().getFileRef(c->chars);
+    verify(bool(fe), "cant find..");
+    verify(fe.get(), "clang cannot find TU file: %o", c);
+
+
+    FileID mainFileID = compiler.getSourceManager().createFileID(
+        fe.get(), 
+        SourceLocation(), 
+        SrcMgr::C_User
+    );
+    compiler.getSourceManager().setMainFileID(mainFileID);
+
+
+    compiler.createTarget();
+    compiler.createPreprocessor(TU_Complete);
+    compiler.createASTContext();
+    
+    // Parse
+    ASTContext& ctx = compiler.getASTContext();
+    AetherDeclVisitor visitor(ctx, e);
+    AetherASTConsumer consumer(visitor, ctx);
+    ParseAST(compiler.getPreprocessor(), &consumer, ctx);
+    unlink(c->chars);
 
     e->current_include = null;
     return ipath;
