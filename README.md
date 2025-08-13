@@ -48,7 +48,8 @@ class Vulkan:
                     pEngineName        : 'trinity-v{version}'
 
                     # 88 exposes C macro, however we do design-time eval on the tokens, as 'feature'
-                    # const is how we effectively perform silvers macro level; it can go as far as calling runtime methods we import (not in our own module please, yet!)
+                    # const is how we effectively perform silvers macro level
+                    # it can go as far as calling runtime methods we import (not in our own module please, yet!)
 
                     # macros do use comma.
                     engineVersion      : VK_MAKE_VERSION(const i64[ first[version] ], const i64[ last[version] ], 0)
