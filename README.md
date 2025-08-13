@@ -4,13 +4,84 @@ development in progress, with documentation to be added/changed.
 Update: context addition to release 88:
 ### Context-Aware Members
 
-In silver we describe members that implicitly **pull from a context** without requiring explicit passing every time. If the context is not available and the user does not specify it, the compiler will require them to either provide it or explicitly set it to `null`. This enables a natural, readable flow for code, where dependencies are declared as part of the structure itself—no boilerplate, no magic, and no hidden state.
+In silver we describe members that implicitly **pull from context** without requiring explicit passing by user, unless with intent.
+Inherently required arguments, context represents a second level of public member, one that is implicit and allows for syntax reduction
+
+If the context is not available and the user does not specify it, the compiler will require them to either provide it.  Passing null for an object is following that rule.
+
+This enables a natural, readable flow for code with less boilerplate.  When the user does describe syntax, it is with clearer intention.
 
 ```silver
+
+# design-time would see a default object of type import, which produces no ops
+linux ?? import [ https://gitlab.freedesktop.org/wayland/wayland-protocols 810f1adaf33521cc55fc510566efba2a1418174f ]
+
+import <vulkan/vulkan.h> [ https://github.com/KhronosGroup/Vulkan-Headers main ]
+
+# token operations require design-time ready variables -- these are NOT enodes.
+# its decidedly not mode-oriented for this syntax
+# so it's clear to understand!
+
+import [ https://github.com/KhronosGroup/Vulkan-Tools main ]
+	-DVULKAN_HEADERS_INSTALL_DIR={install}
+	{linux ?? -DWAYLAND_PROTOCOLS_DIR={install}/checkout/wayland-protocols}
+
+version = '22'
+
+# no one can override these, but :'s can be when importing; this can change what gets imported, how its built, etc.
+# this demonstrates language control over more than is typical from a module interface
+# silver is a build language first, and one that treats git as first class
+
+class Vulkan:
+    intern instance : VkInstance
+
+    fn init[]
+        instance : vkCreateInstance [
+            [
+                # this is the best sort of comment
+                sType : VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
+
+                pApplicationInfo [
+                    sType              : VK_STRUCTURE_TYPE_APPLICATION_INFO
+                    pApplicationName   : "trinity"
+                    applicationVersion : VK_MAKE_VERSION(1, 0, 0)
+                    pEngineName        : 'trinity-v{version}'
+
+                    # 88 exposes C macro, however we do design-time eval on the tokens, as 'feature'
+                    # const alters the deal, effectively replacing the token given to the token
+                    # const must have token-level access to function; it is not making enodes.
+
+                    # macros do use comma.
+                    engineVersion      : VK_MAKE_VERSION(const i64[ first[version] ], const i64[ last[version] ], 0)
+
+                    apiVersion         : vk_version
+                ]
+            ]
+            null
+            instance
+        ]
+
+        VkResult result = vkCreateInstance(&(VkInstanceCreateInfo) {
+                .sType                      = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+                .pApplicationInfo           = &(VkApplicationInfo) {
+                    .sType                  = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                    .pApplicationName       = "trinity",
+                    .applicationVersion     = VK_MAKE_VERSION(1, 0, 0),
+                    .pEngineName            = "trinity",
+                    .engineVersion          = VK_MAKE_VERSION(1, 0, 0),
+                    .apiVersion             = vk_version,
+                },
+                .enabledExtensionCount      = t->instance_exts->len,
+                .ppEnabledExtensionNames    = t->instance_exts->elements,
+                .enabledLayerCount          = (u32)enable_validation,
+                .ppEnabledLayerNames        = &validation_layer
+            }, null, &instance);    
+
 main test_vulkan
     public  queue_family_index : i32[ 2 ], string i64 i32
     intern  an_intern_member   : i64[ 4 ]
-    context a-context-member
+    context an-instance        : Vulkan
+
 ```
 
 ![orbiter avatar](core.png "orbiter avatar")
