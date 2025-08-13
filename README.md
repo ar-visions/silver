@@ -32,7 +32,7 @@ version = '22'
 # this demonstrates language control over more than is typical from a module interface
 # silver is a build language first, and one that treats git as first class
 
-class Vulkan:
+class Vulkan
     intern instance : VkInstance
 
     fn init[]
