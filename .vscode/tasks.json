@@ -28,7 +28,7 @@
 			"isBackground": false,
 			"problemMatcher": ["$gcc"],
             "command": "${workspaceFolder}/bin/ninja",
-            "args": ["-C", "debug"],
+            "args": ["-C", "debug", "-v"],
             "env": { "VERBOSE": "1", "CC": "clang", "IMPORT": "/src/silver" }
         },
         {

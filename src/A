@@ -133,6 +133,7 @@ typedef double                 *ref_f64;
     } AA##_info; \
     extern AA##_info   AA##_i; \
 
+
 #define declare_base( AA ) \
     declare_typedef(AA) \
     _Pragma("pack(push, 1)") \
@@ -199,7 +200,6 @@ typedef double                 *ref_f64;
     static const i32 E##_ENUM_COUNT = ENUM_COUNT(E##_schema(E, T, COUNT)); \
     decl_type(E)\
     _Pragma("pack(pop)") \
-
 
 #define declare_enum( E ) declare_typed_enum(E, i32)
 
@@ -415,6 +415,7 @@ void* primitive_ffi_arb(AType);
 #else
 #define IS_DEBUG 1
 #endif
+
 
 /// alias lets use tag types with an array of types, enabling 
 /// design-time and runtime template-like functionality, with 

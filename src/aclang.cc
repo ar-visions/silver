@@ -143,7 +143,7 @@ static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e) {
     
     fn f = fn(mod, e, name, (token)n, rtype, rtype, args, args, va_args, is_variadic);
     register_model(e, (model)f);
-    use(f);
+    //use(f);
     finalize((model)f);
     return f;
 }
@@ -253,7 +253,7 @@ static model map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, ae
     
     bool is_variadic = fpt->isVariadic();
     fn f = fn(mod, e, rtype, return_model, args, param_models, va_args, is_variadic);
-    use(f);
+    //use(f);
     return (model)f;
 }
 
@@ -263,6 +263,7 @@ static model map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e
     
     if (const FunctionProtoType* fpt = dyn_cast<FunctionProtoType>(pointee)) {
         model func_model = map_function_type(fpt, ctx, e);
+        use((fn)func_model);
         return model(mod, e, src, func_model, is_ref, true);
     }
     
@@ -273,9 +274,10 @@ static model map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e
         eargs empty_args = eargs(mod, e);
         
         model func_model = (model)fn(mod, e, rtype, return_model, args, empty_args);
+        use((fn)func_model);
         return model(mod, e, src, func_model, is_ref, true);
     }
-    
+
     return null;
 }
 
