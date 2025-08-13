@@ -11,7 +11,7 @@ If the context is not available and the user does not specify it, the compiler w
 
 This enables a natural, readable flow for code with less boilerplate.  When the user does describe syntax, it is with clearer intention.
 
-```silver
+```python
 
 linux ?? import [ https://gitlab.freedesktop.org/wayland/wayland-protocols 810f1adaf33521cc55fc510566efba2a1418174f ]
 
