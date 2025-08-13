@@ -13,7 +13,6 @@ This enables a natural, readable flow for code with less boilerplate.  When the 
 
 ```silver
 
-# design-time would see a default object of type import, which produces no ops
 linux ?? import [ https://gitlab.freedesktop.org/wayland/wayland-protocols 810f1adaf33521cc55fc510566efba2a1418174f ]
 
 import <vulkan/vulkan.h> [ https://github.com/KhronosGroup/Vulkan-Headers main ]
@@ -34,9 +33,10 @@ version = '22'
 
 class Vulkan
     intern instance : VkInstance
+    public a-member : int
 
     fn init[]
-        instance : vkCreateInstance [
+        result : vkCreateInstance [
             [
                 # this is the best sort of comment
                 sType : VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
@@ -51,36 +51,21 @@ class Vulkan
                     # const is how we effectively perform silvers macro level
                     # it can go as far as calling runtime methods we import (not in our own module please, yet!)
 
-                    # macros do use comma.
                     engineVersion      : VK_MAKE_VERSION(const i64[ first[version] ], const i64[ last[version] ], 0)
 
                     apiVersion         : vk_version
                 ]
-            ]
-            null
-            instance
-        ]
+            ], null, instance ]
 
-        VkResult result = vkCreateInstance(&(VkInstanceCreateInfo) {
-                .sType                      = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-                .pApplicationInfo           = &(VkApplicationInfo) {
-                    .sType                  = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-                    .pApplicationName       = "trinity",
-                    .applicationVersion     = VK_MAKE_VERSION(1, 0, 0),
-                    .pEngineName            = "trinity",
-                    .engineVersion          = VK_MAKE_VERSION(1, 0, 0),
-                    .apiVersion             = vk_version,
-                },
-                .enabledExtensionCount      = t->instance_exts->len,
-                .ppEnabledExtensionNames    = t->instance_exts->elements,
-                .enabledLayerCount          = (u32)enable_validation,
-                .ppEnabledLayerNames        = &validation_layer
-            }, null, &instance);    
+        # methods at expr-level 0 do not invoke with [ these ] unless the function is variable argument
+        verify result == VK_SUCCESS, 'could not start vulkan {VK_VERSION}'
 
 main test_vulkan
     public  queue_family_index : i32[ 2 ], string i64 i32
     intern  an_intern_member   : i64[ 4 ]
     context an-instance        : Vulkan
+
+    fn func-using-context [ arg:i32,  ]
 
 ```
 
@@ -116,13 +101,14 @@ import <dawn/webgpu, dawn/dawn_proc_table> [https://github.com/ar-visions/dawn 2
 # public members can be reflected by map: members [ object ]
 ##
 
-# there are no commas in arguments, less we are expressing context arguments
-string op + [ i:int  a:string ] -> string
+string op + [ i:int, a:string ] -> string
     return '{ a } and { i }'
 
-fn some-callback[ i:int, ctx:string ] -> int
+# context is used when the function is called; as such, the user should have these variables themselves
+# this reduces the payload on lambdas to zero, at expense of keeping membership explicit
+fn some-callback[ i:int, context ctx:Vulkan ] -> int
     print[ '{ctx}: {i}' ]
-    return i + len[ ctx ]
+    return i + ctx.a-member
 
 # methods can exist at module-level, too.
 # for this, we may incorporate generic, 'this' is applicable to any object
