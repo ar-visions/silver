@@ -1529,6 +1529,8 @@
     r; \
 })
 
+#define mset(m, k, v) set(m, string(k), v)
+
 /// possible to iterate safely through primitives
 #define primitives(arr, E, e) \
     if (len(arr)) for (E e = *(E*)peek(arr, 0), e0 = 0; e0 == 0; e0++) \

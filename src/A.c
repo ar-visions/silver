@@ -687,6 +687,7 @@ A A_initialize(A a) {
     A_validator(a);
     #endif
 
+    
     init_recur(a, f->type, null);
     hold_members(a);
     return a;

@@ -68,6 +68,7 @@ declare_enum(reference)
     i_prop    (X,Y, public,     bool,             is_array) \
     i_prop    (X,Y, public,     bool,             is_user) \
     i_prop    (X,Y, public,     bool,             is_const) \
+    i_prop    (X,Y, public,     bool,             is_system) \
     i_prop    (X,Y, public,     i64,              count) \
     i_prop    (X,Y, public,     A,                shape) \
     i_prop    (X,Y, public,     sz,               size_bits) \
@@ -80,12 +81,13 @@ declare_enum(reference)
     i_prop    (X,Y, intern,     LLVMTypeRef,      type,       as, ARef) \
     i_prop    (X,Y, intern,     LLVMMetadataRef,  debug,      as, ARef) \
     i_prop    (X,Y, intern,     model,            ptr) \
+    i_prop    (X,Y, intern,     model,            schema) \
     i_prop    (X,Y, public,     bool,             finalized) \
     i_prop    (X,Y, intern,     model,            init_top) \
-    i_prop    (X,Y, public,     fn,               fn_init) \
+    i_prop    (X,Y, public,     emember,          mem_init) \
+    i_method  (X,Y, public,     emember,          member_lookup, string, AType) \
     i_method  (X,Y, public,     model,            typed) \
     s_method  (X,Y, public,     string,           keyword) \
-    i_method  (X,Y, public,     fn,               initializer) \
     i_method  (X,Y, public,     model,            pointer,       string) \
     i_final   (X,Y, public,     none,             finalize) \
     i_method  (X,Y, public,     emember,          convertible,   model) \
@@ -115,17 +117,16 @@ declare_class(format_attr)
     i_prop(X,Y, public,     bool,                   is_ctr) \
     i_prop(X,Y, public,     bool,                   is_idx) \
     i_prop(X,Y, public,     OPType,                 is_oper) \
+    i_prop(X,Y, public,     bool,                   is_module_init) \
     i_prop(X,Y, public,     bool,                   is_override) \
     i_prop(X,Y, public,     bool,                   is_ifinal) \
     i_prop(X,Y, public,     bool,                   is_global_ctr) \
-    i_prop(X,Y, public,     bool,                   is_init) \
     i_prop(X,Y, public,     bool,                   va_args) \
     i_prop(X,Y, public,     model,                  rtype) \
     i_prop(X,Y, public,     eargs,                  args) \
     i_prop(X,Y, public,     record,                 payload) \
     i_prop(X,Y, public,     bool,                   exported) \
-    i_prop(X,Y, public,     model,                  record) \
-    i_prop(X,Y, public,     model,                  imdl) \
+    i_prop(X,Y, public,     model,                  instance) \
     i_prop(X,Y, public,     bool,                   single_expr) \
     i_prop(X,Y, public,     emember,                target) \
     i_prop(X,Y, public,     emember,                main_member) \
@@ -152,6 +153,7 @@ typedef struct _schematic* schematic;
     i_prop    (X,Y, public, record, parent) \
     i_prop    (X,Y, public, array,  meta) \
     i_prop    (X,Y, public, bool,   parsing) \
+    i_prop    (X,Y, public, bool,   is_abstract) \
     i_prop    (X,Y, public, i32, total_members) \
     i_prop    (X,Y, public, bool,   expect_members) \
     i_override(X,Y, method,         init)
@@ -165,6 +167,7 @@ declare_class_3(structure, record, model)
 
 #define enumeration_schema(X,Y,...) \
     i_prop    (X,Y, public, model, vtype) \
+    i_prop    (X,Y, public, map,   global_values) \
     i_override(X,Y, method, init)
 declare_class_2(enumeration, model)
 
@@ -188,11 +191,13 @@ declare_class_3(uni, record, model)
     i_prop    (X,Y, intern,     LLVMValueRef,           value, as, ARef)
 declare_class(enode)
 
+
 // if ref is set, its a reference to a member with type definition (model, struct, ref)
 #define emember_schema(X,Y,...) \
     i_prop    (X,Y, public,     interface,              access) \
     i_prop    (X,Y, public,     array,                  aliases, meta, string) \
     i_prop    (X,Y, public,     model,                  context, meta, weak) \
+    i_prop    (X,Y, public,     array,                  meta_args) \
     i_prop    (X,Y, public,     emember,                target_member) \
     i_prop    (X,Y, public,     record,                 target_record) \
     i_prop    (X,Y, public,     bool,                   registered) \
@@ -231,6 +236,11 @@ declare_class_2(emember, enode)
     i_override(X,Y, method, init)
 declare_class(code)
 
+#define ident_schema(X,Y,...) \
+    i_prop(X,Y, public, model, mdl) \
+    i_ctr(X,Y, public, model)
+declare_class(ident)
+
 #define aether_schema(X,Y,...)\
     i_prop    (X,Y, public,     path,        install) \
     i_prop    (X,Y, required,   path,        source) \
@@ -239,6 +249,7 @@ declare_class(code)
     i_prop    (X,Y, intern,     array,       shared_libs) \
     i_prop    (X,Y, public,     bool,        delegate) \
     i_prop    (X,Y, public,     bool,        with_debug) \
+    i_prop    (X,Y, intern,     bool,        is_A_import) \
     i_prop    (X,Y, intern,     path,        current_include) \
     i_prop    (X,Y, intern,     fn,          current_fn) \
     i_prop    (X,Y, public,     model,       top) \
@@ -262,6 +273,7 @@ declare_class(code)
     i_prop    (X,Y, public,     array,       tokens) \
     i_prop    (X,Y, public,     array,       stack) \
     i_prop    (X,Y, public,     num,         cursor) \
+    i_method  (X,Y, public,     emember,     initializer) \
     i_method  (X,Y, public,     path,        lookup_include,     string) \
     i_method  (X,Y, public,     none,        build_info,         path) \
     i_method  (X,Y, public,     none,        A_import,           path) \
@@ -280,7 +292,8 @@ declare_class(code)
     i_method  (X,Y, public,     emember,     register_model,     model) \
     i_method  (X,Y, public,     enode,       e_operand,          A,          model) \
     i_method  (X,Y, public,     enode,       e_op,               OPType,     string, A, A) \
-    i_method  (X,Y, public,     enode,       e_load,             emember) \
+    i_method  (X,Y, public,     enode,       e_load,             emember, emember) \
+    i_method  (X,Y, public,     enode,       e_typeid,           model) \
     i_method  (X,Y, public,     enode,       e_offset,           enode,      A) \
     i_method  (X,Y, public,     enode,       e_if_else,          array,      array, subprocedure, subprocedure) \
     i_method  (X,Y, public,     enode,       e_ternary,          enode,      enode, enode) \

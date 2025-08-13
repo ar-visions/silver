@@ -1,6 +1,17 @@
 # **silver** lang
 development in progress, with documentation to be added/changed.
 
+Update: context addition to release 88:
+### Context-Aware Members
+
+In silver we describe members that implicitly **pull from a context** without requiring explicit passing every time. If the context is not available and the user does not specify it, the compiler will require them to either provide it or explicitly set it to `null`. This enables a natural, readable flow for code, where dependencies are declared as part of the structure itself—no boilerplate, no magic, and no hidden state.
+
+```silver
+main test_vulkan
+    public  queue_family_index : i32[ 2 ], string i64 i32
+    intern  an_intern_member   : i64[ 4 ]
+    context a-context-member
+
 ![orbiter avatar](core.png "orbiter avatar")
 
 Orbiter
