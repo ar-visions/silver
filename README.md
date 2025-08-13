@@ -38,7 +38,6 @@ class Vulkan
     fn init[]
         result : vkCreateInstance [
             [
-                # this is the best sort of comment
                 sType : VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
 
                 pApplicationInfo [
@@ -46,7 +45,7 @@ class Vulkan
                     pApplicationName   : "trinity"
                     applicationVersion : VK_MAKE_VERSION(1, 0, 0)
                     pEngineName        : 'trinity-v{version}'
-
+ 
                     # 88 exposes C macro, however we do design-time eval on the tokens, as 'feature'
                     # const is how we effectively perform silvers macro level
                     # it can go as far as calling runtime methods we import (not in our own module please, yet!)
