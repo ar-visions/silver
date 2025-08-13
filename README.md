@@ -11,6 +11,7 @@ main test_vulkan
     public  queue_family_index : i32[ 2 ], string i64 i32
     intern  an_intern_member   : i64[ 4 ]
     context a-context-member
+```
 
 ![orbiter avatar](core.png "orbiter avatar")
 
