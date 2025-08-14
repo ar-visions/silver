@@ -4,6 +4,10 @@
 import os, sys, glob, platform, argparse, subprocess
 from pathlib import Path
 
+# Collect .c files from your src directory (or any other)
+source_dir = Path('src')
+source_files = list(source_dir.glob('**/*.c*'))  # recursively finds .c files
+
 parser = argparse.ArgumentParser(description='generate ninja')
 parser.add_argument('--debug', action='store_true', help='debug')
 args = parser.parse_args()
@@ -227,13 +231,13 @@ def write_ninja(project, root, build_dir, plat):
     
     # rules
     n.append("rule cc")
-    n.append(f"  command = $clang @{build_dir}/compile.rsp $cflags -DMODULE=\"\\\"$project\\\"\" -c $in -o $out")
+    n.append(f"  command = $clang @{build_dir}/compile.rsp $cflags -DPROJECT=\"\\\"$project\\\"\" -c $in -o $out")
     n.append("  description = compiling c $in")
     n.append("  depfile = $out.d")
     n.append("  deps = gcc")
     n.append("")
     n.append("rule cxx")
-    n.append(f"  command = $clangcpp @{build_dir}/compile.rsp $cxxflags -DMODULE=\"\\\"$project\\\"\" -c $in -o $out")
+    n.append(f"  command = $clangcpp @{build_dir}/compile.rsp $cxxflags -DPROJECT=\"\\\"$project\\\"\" -c $in -o $out")
     n.append("  description = compiling c++ $in")
     n.append("  depfile = $out.d")
     n.append("  deps = gcc")
@@ -285,7 +289,9 @@ def write_ninja(project, root, build_dir, plat):
         flags_var = "cxxflags" if m['is_cxx'] else "cflags"
         
         n.append(f"build {obj}: {rule} {escape_path(norm_path(m['src']))} | {' '.join(deps)}")
-        n.append(f"  {flags_var} = -I{build_p}/src/{m['name']} ${flags_var}")
+
+        
+        n.append(f"  {flags_var} = -I{build_p}/src/{m['name']}  ${flags_var} -DMODULE=\\\"{m['name']}\\\"")
     n.append("")
     
     # final target
@@ -301,6 +307,25 @@ def write_ninja(project, root, build_dir, plat):
         n.append(f"  libs = {' '.join(sorted(all_links))}")
     n.append("")
     n.append(f"build all: phony {output}")
+
+    for f in source_files:
+        ff     = Path(f)
+        stem   = ff.stem
+        suffix = ff.suffix
+        is_cxx = suffix in ['.cc', '.cpp', '.cxx']
+        rule   = {
+            'input' : f,
+            'output': f'obj/{stem}.o',
+            'rule'  :  'cxx' if is_cxx else 'cc',
+            'flags' : f'-DMODULE=\\"{stem}\\"',
+        }
+        input_path  = norm_path(rule['input'])
+        output_path = f"$builddir/{rule['output']}"
+        n.append     (f"build {output_path}: {rule['rule']} {input_path}")
+        flags_var   =  'cflags' if rule['rule'] == 'cc' else 'cxxflags'
+        n.append     (f"  {flags_var} = {rule['flags']} -DMODULE=\\\"{m['name']}\\\"")
+        objs.append(output_path)
+
     n.append("default all")
     
     build_ninja = build_dir / "build.ninja"

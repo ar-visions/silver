@@ -20,6 +20,7 @@
 #define M_PI 3.14159265358979323846264338327950288
 #endif
 
+
 #define forward(t) typedef struct _##t* t;
 
 #ifdef __cplusplus
@@ -472,6 +473,7 @@ void* primitive_ffi_arb(AType);
             return true; \
         } \
     } \
+
 
 #define define_init(id, ...) \
     static __attribute__((constructor)) none Aglobal_initializer_##id() { \

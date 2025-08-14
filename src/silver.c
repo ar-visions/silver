@@ -73,10 +73,9 @@ static void initialize() {
 
     keywords = array_of_cstr(
         "class",    "proto",    "struct", "public", "intern",
-        "import",   "typeof",   "schema",
+        "import",   "typeof",   "context",
         "is",       "inherits", "ref",
-        "const",    "inlaid",   "require",
-        "no-op",    "return",   "->",       "::",     "...",
+        "const",    "require",  "no-op",    "return",   "->",       "::",     "...",
         "asm",      "if",       "switch",   "any",      "enum",
         "e-if",    "else",     "while",
         "for",      "do",       "cast",     "fn",
@@ -157,11 +156,12 @@ void build_fn(silver mod, fn f, callback preamble, callback postamble) {
     }
     if (preamble)
         preamble(f, null);
+    array after_const = parse_const(mod, f->body);
     if (f->single_expr) {
-        enode single = parse_create(mod, f->rtype, f->body);
+        enode single = parse_create(mod, f->rtype, after_const);
         e_fn_return(mod, single);
     } else {
-        push_state(mod, f->body, 0);
+        push_state(mod, after_const, 0);
         record cl = f ? f->instance : null;
         if (cl) pairs(cl->members, m) print("class emember: %o: %o", cl->name, m->key);
         parse_statements(mod, true);
@@ -1104,13 +1104,33 @@ A silver_read_bool(silver a) {
     return is_bool ? A_bool(is_true) : null;
 }
 
+// we would want to call this for each initializer, or each function
+// since const requires knowledge of membership on const, we cannot simply invoke this directly after parsing initial tokens
+// as such, we may not invoke const to create member names or to change class keywords
+
+array silver_parse_const(silver mod, array tokens) {
+    array res = array(32);
+    push_state(mod, tokens, 0);
+    while (peek(mod)) {
+        token t = next(mod);
+        if (eq(t, "const")) {
+            verify(false, "implement const");
+        } else {
+            push(res, t);
+        }
+    }
+    pop_state(mod, false);
+    return res;
+}
+
 void silver_build_initializer(silver mod, emember mem) {
     if (mem->initializer) {
         enode expr;
         if (instanceof(mem->initializer, typeid(enode)))
             expr = mem->initializer;
         else {
-            push_state(mod, mem->initializer, 0);
+            array post_const = parse_const(mod, mem->initializer);
+            push_state(mod, post_const, 0);
             print_token_array(mod, mod->tokens);
             expr = parse_expression(mod);
             pop_state(mod, false);
@@ -1459,6 +1479,33 @@ static enode parse_construct(silver mod, emember mem) {
     return res;
 }
 
+enode silver_expand_macro(silver mod, macro m) {
+    verify(!mod->in_ref, "unexpected ref on macro");
+    verify(read_if(mod, "("), "expected macro invocation '('");
+    array cur = null;
+    array margs = array(32);
+    for (;;) {
+        token t = next(mod);
+        verify(t, "expected ')' when expanding macro %o", m->name);
+        if (eq(t, ")") || eq(t, ",")) {
+            verify(cur, "unexpected ','");
+            // we can read for const expressions within this, effectively changing the tokens
+            push(margs, cur);
+            cur = null;
+            if (eq(t, ","))
+                continue;
+            break;
+        }
+        if (!cur) cur = array(32);
+        push(cur, t);
+    }
+    array expansion = expand(m, margs);
+    push_state(mod, expansion, 0);
+    enode res = read_node(mod, expansion);
+    pop_state(mod, false);
+    return res;
+}
+
 enode silver_parse_member_expr(silver mod, emember mem) {
     push_current(mod);
     int parse_index = !mem->is_func;
@@ -1496,7 +1543,10 @@ enode silver_parse_member_expr(silver mod, emember mem) {
         pop_state(mod, true);
         return index_expr;
     } else if (mem) {
-        if (mem->is_func) {
+        if (mem->is_macro) {
+            macro m = (macro)mem->mdl;
+            return expand_macro(mod, m);
+        } else if (mem->is_func) {
             if (!mod->in_ref)
                 mem = parse_fn_call(mod, mem);
         } else if (mem->is_type && next_is(mod, "[")) {
@@ -2150,6 +2200,7 @@ void silver_init(silver mod) {
 
     mod->mod     = mod;
     mod->spaces  = array(32);
+    mod->parse_f = parse_tokens;
     mod->tokens  = parse_tokens(mod->source);
     mod->stack   = array(4);
     mod->src_loc = absolute(path(_SRC ? _SRC : "."));
@@ -2653,8 +2704,12 @@ enode import_parse(silver mod) {
         push(mod, mdl); // we import directly into our module (global) without namespace
     }
  
-    each (includes, string, inc)
-        include(mod, inc);
+    // include each, collecting the clang instance for which we will invoke macros through
+    each (includes, string, inc) {
+        clang_cc instance;
+        include(mod, inc, &instance);
+        set(mod->instances, inc, instance);
+    }
 
     each(module_paths, path, m)
         A_import(mod, m);

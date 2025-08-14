@@ -34,11 +34,13 @@ typedef LLVMMetadataRef LLVMScope;
 #define mvalue(m,vr) emember(mod, e, value, vr, mdl, m)
 
 emember aether_register_model(aether e, model mdl) {
-    bool is_func = instanceof(mdl, typeid(fn)) != null;
+    bool is_func  = instanceof(mdl, typeid(fn))    != null;
+    bool is_macro = instanceof(mdl, typeid(macro)) != null;
     emember mem   = emember(
         mod, e, mdl, is_class(mdl) ? pointer(mdl, null) : mdl, name, mdl->name,
         is_func,  is_func,
-        is_type, true);
+        is_macro, is_macro,
+        is_type,  true);
     register_member(e, mem);
     print("registered model %o", mdl->name);
     return mem;
@@ -2344,8 +2346,12 @@ static void register_basics(aether e) {
         
         // a member with 'context' would automatically bind the exact type when init'ing the object; the context flows unless its changed explicitly to something else
         // this 'just works'
-
-        register_model(e, emodel(mod, e, ))
+        _i32    = register_model(e, model(mod, e, name, string("i32"),    src, typeid(i32)))   ->mdl;
+        _i16    = register_model(e, model(mod, e, name, string("i16"),    src, typeid(i16)))   ->mdl;
+        _i64    = register_model(e, model(mod, e, name, string("i64"),    src, typeid(i64)))   ->mdl;
+        _u64    = register_model(e, model(mod, e, name, string("u64"),    src, typeid(u64)))   ->mdl;
+        _handle = register_model(e, model(mod, e, name, string("handle"), src, typeid(handle)))->mdl;
+        _symbol = register_model(e, model(mod, e, name, string("symbol"), src, typeid(symbol)))->mdl;
     }
     verify(_i32, "i32 not found");
 
@@ -2499,6 +2505,11 @@ void aether_A_import(aether e, path lib) {
         model  mdl   = null;
         if (atype == typeid(member)) 
             continue;
+
+        if (atype == typeid(A)) {
+            int test2 = 2;
+            test2    += 2;
+        }
 
         // only import the module the user wants
         if (last_module != atype->module) {
@@ -2740,6 +2751,9 @@ void aether_A_import(aether e, path lib) {
     }
     e->is_A_import     = true;
     e->current_include = null;
+
+    // we do not need the schema until we build the global constructor
+    update_schemas(e);
 }
 
 
@@ -2747,6 +2761,8 @@ void aether_init(aether e) {
     e->with_debug = true;
     e->is_system  = true;
     e->finalizing = hold(array(alloc, 64, assorted, true, unmanaged, true));
+    e->instances  = map(hsize, 8);
+
     if (!e->name) {
         verify(e->source && len(e->source), "module name required");
         e->name = stem(e->source);
@@ -2908,6 +2924,118 @@ typedef struct tokens_data {
     num   cursor;
 } tokens_data;
 
+
+
+// create AType structure (info and its AType_f)
+static void create_schema(model mdl) {
+    aether e = mdl->mod;
+    fn  f = instanceof(mdl, typeid(fn));
+    if (f || mdl->is_system || mdl == e) return;
+
+    record      rec = instanceof(mdl, typeid(record));
+    enumeration en  = instanceof(mdl, typeid(enumeration));
+
+    if (!rec && !en) return;
+
+    finalize(mdl);
+
+    // does not work for enumerations 
+    Class  cmdl = instanceof(mdl, typeid(Class));
+    Class  emdl = instanceof(mdl, typeid(enumeration));
+    
+    if (cmdl && cmdl->is_abstract)
+        return;
+    if (mdl->has_schema)
+        return;
+    
+    mdl->has_schema = true;
+    
+    // focus on emitting class info similar to this macro:
+    string    type_name = f(string, "_%o_f", mdl->name);
+    structure mdl_type  = structure(mod, e, name, type_name, members, map(hsize, 8), is_system, true);
+    emember   type_mem  = register_model(e, mdl_type);
+    push(e, type_mem->mdl);
+
+    model _AType = emodel("_AType");
+    model _A     = emodel("A")->src;
+
+    pairs(_AType->members, ai) {
+        emember m  = ai->value;
+        print("AType member: %o", m->name);
+    }
+
+    // register the basic AType fields
+    pairs(_AType->members, ai) {
+        emember m  = ai->value;
+        emember mm = emember(mod, e, name, m->name, mdl, m->mdl);
+        register_member(e, mm);
+    }
+
+    Class  cur = cmdl;
+    array  classes = array(alloc, 32, assorted, true);
+    if (emdl) {
+        push(classes, emdl);
+        push(classes, emodel("A")->src);
+    } else {
+        while (cur) {
+            push(classes, cur);
+            cur = cur->parent;
+            if (cur && cur->is_abstract)
+                cur = cur->src;
+            verify(!cur || !cur->is_ref, "unexpected pointer");
+        }
+        classes = reverse(classes);
+    }
+
+    // emit f table
+    each (classes, Class, cl) {
+        if (!cl->members) continue;
+        pairs(cl->members, a) {
+            emember m = a->value;
+            if (isa(m->mdl) != typeid(fn))
+                continue;
+            fn f = m->mdl;
+            model f_ptr = model(mod, e, name, m->mdl->name, src, m->mdl, is_ref, true);
+            emember mm = register_model(e, f_ptr);
+        }
+    }
+    pop(e);
+    finalize(mdl_type);
+
+    // register type ## _info struct with A info header and f table (AType)
+    structure _type_info = structure(mod, e, name, f(string, "_%o_info", mdl->name), members, map(), is_system, true);
+    register_model(e, _type_info);
+    push(e, _type_info);
+        emember info = emember(mod, e, name, string("info"), mdl, _A);
+        emember type = emember(mod, e, name, string("type"), mdl, mdl_type);
+        register_member(e, info);
+        register_member(e, type);
+    pop(e);
+    finalize(_type_info);
+    model type_info = model(mod, e, name, f(string, "%o_info", mdl->name), src, _type_info);
+    register_model(e, type_info);
+
+    // register our global type info
+    if (eq(mdl->name, "string")) { // we expect this to load the string _i table
+        int test2 = 2;
+        test2    += 2;
+    }
+
+    emember type_i = emember(mod, e, name, f(string, "%o_i", mdl->name), mdl, _type_info);
+    register_member(e, type_i);
+    //finalize(type_i);
+
+    model   type_alias = model(mod, e, name, f(string, "%o_f", mdl->name), src, mdl_type);
+    register_model(e, type_alias);
+}
+
+void aether_update_schemas(aether e) {
+    pairs (e->members, i) {
+        emember m = i->value;
+        model  mdl = m->mdl;
+        create_schema(mdl);
+    }
+}
 
 void aether_push_state(aether a, array tokens, num cursor) {
     //struct silver_f* table = isa(a);
@@ -3326,93 +3454,6 @@ enode aether_e_inherits(aether e, enode L, A R) {
     return value(emodel("bool"), result);
 }
 
-// create AType structure (info and its AType_f)
-void create_schema(model mdl) {
-    // does not work for enumerations 
-    aether e    = mdl->mod;
-    Class  cmdl = instanceof(mdl, typeid(Class));
-    Class  emdl = instanceof(mdl, typeid(enumeration));
-    if (cmdl && cmdl->is_abstract)
-        return;
-    
-    // focus on emitting class info similar to this macro:
-    string    type_name = f(string, "_%o_f", mdl->name);
-    structure mdl_type  = structure(mod, e, name, type_name, members, map(hsize, 8), is_system, true);
-    emember   type_mem  = register_model(e, mdl_type);
-    push(e, type_mem->mdl);
-
-    model _AType = emodel("_AType");
-    model _A     = emodel("A")->src;
-
-    pairs(_AType->members, ai) {
-        emember m  = ai->value;
-        print("AType member: %o", m->name);
-    }
-
-    // register the basic AType fields
-    pairs(_AType->members, ai) {
-        emember m  = ai->value;
-        emember mm = emember(mod, e, name, m->name, mdl, m->mdl);
-        register_member(e, mm);
-    }
-
-    Class  cur = cmdl;
-    array  classes = array(alloc, 32, assorted, true);
-    if (emdl) {
-        push(classes, emdl);
-        push(classes, emodel("A")->src);
-    } else {
-        while (cur) {
-            push(classes, cur);
-            cur = cur->parent;
-            if (cur && cur->is_abstract)
-                cur = cur->src;
-            verify(!cur || !cur->is_ref, "unexpected pointer");
-        }
-        classes = reverse(classes);
-    }
-
-    // emit f table
-    each (classes, Class, cl) {
-        if (!cl->members) continue;
-        pairs(cl->members, a) {
-            emember m = a->value;
-            if (isa(m->mdl) != typeid(fn))
-                continue;
-            fn f = m->mdl;
-            model f_ptr = model(mod, e, name, m->mdl->name, src, m->mdl, is_ref, true);
-            emember mm = register_model(e, f_ptr);
-        }
-    }
-    pop(e);
-    finalize(mdl_type);
-
-    // register type ## _info struct with A info header and f table (AType)
-    structure _type_info = structure(mod, e, name, f(string, "_%o_info", mdl->name), members, map(), is_system, true);
-    register_model(e, _type_info);
-    push(e, _type_info);
-        emember info = emember(mod, e, name, string("info"), mdl, _A);
-        emember type = emember(mod, e, name, string("type"), mdl, mdl_type);
-        register_member(e, info);
-        register_member(e, type);
-    pop(e);
-    finalize(_type_info);
-    model type_info = model(mod, e, name, f(string, "%o_info", mdl->name), src, _type_info);
-    register_model(e, type_info);
-
-    // register our global type info
-    if (eq(mdl->name, "string")) { // we expect this to load the string _i table
-        int test2 = 2;
-        test2    += 2;
-    }
-
-    emember type_i = emember(mod, e, name, f(string, "%o_i", mdl->name), mdl, _type_info);
-    register_member(e, type_i);
-    //finalize(type_i);
-
-    model   type_alias = model(mod, e, name, f(string, "%o_f", mdl->name), src, mdl_type);
-    register_model(e, type_alias);
-}
 
 void finalize(model mdl) {
     aether e = mdl->mod;
@@ -3429,9 +3470,6 @@ void finalize(model mdl) {
     if (rec)     record_finalize(mdl);
     else if (f)  fn_finalize(mdl);
     else if (en) enumeration_finalize(mdl);
-
-    if ((rec || en) && (!mdl->is_system && mdl != e))
-        create_schema(mdl);
 
     verify(index_of(e->finalizing, mdl) == index, "weird?");
     remove(e->finalizing, index);
@@ -3547,10 +3585,14 @@ void eargs_init (eargs a) {
 define_enum  (interface)
 define_enum  (comparison)
 
+array macro_expand(macro m, array args_tokens);
+
 define_class (model,        A)
 define_class (format_attr,  A)
 define_class (ident,        A) // useful class to represent ident for operations, and not conversion to a model; this disambiguates the two use-cases
+define_class (clang_cc,     A)
 
+define_class (macro,        model)
 define_class (statements,   model)
 define_class (eargs,        model)
 define_class (fn,           model)
