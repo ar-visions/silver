@@ -25,8 +25,11 @@
 #include <clang/Frontend/FrontendActions.h>
 #include <clang/Frontend/TextDiagnosticPrinter.h>
 #include <clang/Lex/Preprocessor.h>
+#include <clang/Lex/PPCallbacks.h>
+#include <clang/Lex/MacroInfo.h>
 #include <clang/Parse/ParseAST.h>
 #include <clang/Tooling/Tooling.h>
+
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/IR/DataLayout.h>
 #include "llvm/TargetParser/Host.h"
@@ -520,7 +523,204 @@ public:
   }
 };
 
-path aether_include(aether e, A inc) {
+
+
+
+
+// Better approach: Create a reusable macro expander lets call it SashaXpander
+class SashaXpander {
+private:
+    clang::CompilerInstance* compiler;
+    clang::Preprocessor* PP;
+
+public:
+    SashaXpander(clang_cc instance) :
+        compiler((clang::CompilerInstance*)instance->compiler),
+        PP((clang::Preprocessor*)instance->PP) { }
+    
+    ~SashaXpander() {
+    }
+    
+    // Register a macro for later expansion
+    void registerMacro(const std::string& name, const std::string& definition) {
+        std::string macro_def = "#define " + definition + "\n";
+        
+        auto buffer = llvm::MemoryBuffer::getMemBufferCopy(macro_def, "<macro>");
+        clang::FileID FID = compiler->getSourceManager().createFileID(std::move(buffer));
+        
+        PP->EnterSourceFile(FID, nullptr, clang::SourceLocation());
+        
+        // Parse the macro definition
+        clang::Token tok;
+        PP->Lex(tok); // Should be 'define'
+        PP->HandleDirective(tok);
+    }
+    
+    // Expand a macro with arguments
+    std::string expandMacro(const std::string& macro_name, 
+                           const std::vector<std::string>& args) {
+        // Build invocation
+        std::string invocation = macro_name + "(";
+        for (size_t i = 0; i < args.size(); i++) {
+            if (i > 0) invocation += ",";
+            invocation += args[i];
+        }
+        invocation += ")";
+        
+        // Create buffer with the invocation
+        auto buffer = llvm::MemoryBuffer::getMemBufferCopy(invocation, "<expansion>");
+        clang::FileID FID = compiler->getSourceManager().createFileID(std::move(buffer));
+        
+        // Save current state
+        PP->EnterSourceFile(FID, nullptr, clang::SourceLocation());
+        
+        // Collect expanded tokens
+        std::string result;
+        clang::Token tok;
+        
+        while (true) {
+            PP->Lex(tok);
+            if (tok.is(clang::tok::eof))
+                break;
+            
+            if (!result.empty()) result += " ";
+            result += PP->getSpelling(tok);
+        }
+        
+        return result;
+    }
+};
+
+// Store macros with their definitions
+struct StoredMacro {
+    std::string name;
+    std::string definition;  // Full definition: "MAX(a,b) ((a)>(b)?(a):(b))"
+    std::vector<std::string> params;
+    bool is_variadic;
+};
+
+class MacroCollector : public clang::PPCallbacks {
+public:
+    clang_cc instance;
+    clang::Preprocessor* PP;
+    std::map<std::string, StoredMacro> stored_macros;
+
+    explicit MacroCollector(clang_cc instance)
+        : instance(instance), PP((clang::Preprocessor*)instance->PP) {}
+
+    void MacroDefined(const clang::Token &macroNameTok,
+                      const clang::MacroDirective *md) override {
+        const clang::MacroInfo *mi = md->getMacroInfo();
+        
+        if (!mi->isFunctionLike())
+            return;
+            
+        StoredMacro stored;
+        stored.name = macroNameTok.getIdentifierInfo()->getName().str();
+        stored.is_variadic = mi->isVariadic();
+        
+        // Build the full definition string
+        std::string def = stored.name + "(";
+        
+        // Add parameters
+        bool first = true;
+        for (auto it = mi->param_begin(); it != mi->param_end(); ++it) {
+            if (!first) def += ",";
+            first = false;
+            std::string param_name = (*it)->getName().str();
+            stored.params.push_back(param_name);
+            def += param_name;
+        }
+        if (mi->isVariadic()) {
+            if (!first) def += ",";
+            def += "...";
+        }
+        def += ") ";
+        
+        // Add body tokens
+        for (auto it = mi->tokens_begin(); it != mi->tokens_end(); ++it) {
+            def += PP->getSpelling(*it);
+            if (std::next(it) != mi->tokens_end())
+                def += " ";
+        }
+        
+        stored.definition = def;
+        stored_macros[stored.name] = stored;
+        
+        // Register in aether
+        register_param_macro(stored);
+    }
+
+private:
+    void register_param_macro(const StoredMacro& stored) {
+        string n = string(stored.name.c_str());
+        aether e = this->instance->mod;
+        array  params = array(32);
+        for (size_t i = 0; i < stored.params.size(); i++) {
+            string pname = string(stored.params[i].c_str());
+            push(params, (A)pname);
+        }
+        string definition = string(stored.definition.c_str());
+
+        macro m = macro(
+            mod,        e,
+            instance,   this->instance,
+            name,       (token)n,
+            definition, definition,
+            params,     params,
+            is_var,     stored.is_variadic);
+        
+        register_model(e, (model)m);
+    }
+};
+
+// Global expander instance
+static SashaXpander* global_expander = nullptr;
+
+void init_macro_expander(clang_cc instance) {
+    if (!global_expander) {
+        global_expander = new SashaXpander(instance);
+    }
+}
+
+// returns tokens to replace
+array macro_expand(macro m, array args_tokens) {
+    aether e = m->mod;
+
+    if (!global_expander) {
+        init_macro_expander(m->instance);
+    }
+    
+    // Register the macro if not already done
+    // we may also 'update' the macro with evaluation from the module (must support this so we may have silvers const working with pre-processor)
+
+    global_expander->registerMacro(m->name->chars, m->definition->chars);
+    
+    // Convert args to strings
+    std::vector<std::string> arg_strings;
+    for (int i = 0; i < args_tokens->len; i++) {
+        string s = string(64);
+        array  arg_tokens = (array)args_tokens->elements[i];
+        verify((AType)isa(arg_tokens) == typeid(array),
+            "expected array with token, got %s", isa(arg_tokens)->name);
+        each (arg_tokens, token, t) {
+            if (len(s))
+                append(s, " ");
+            concat(s, (string)t);
+        }
+        arg_strings.push_back(s->chars);
+    }
+    
+    // Expand
+    std::string res    = global_expander->expandMacro(m->name->chars, arg_strings);
+    string      input  = string(res.c_str());
+    array       tokens = (array)e->parse_f((A)input);
+    return tokens;
+}
+
+// this must now INSTANCE an Inovcation & CompilerInstance and KEEP it in memory
+path aether_include(aether e, A inc, ARef _instance) {
+    clang_cc* instance = (clang_cc*)_instance;
     path ipath = (AType)isa(inc) == typeid(string) ?
         lookup_include(e, (string)inc) : (path)inc;
     verify(ipath && exists(ipath), "include path does not exist: %o", ipath ? (A)ipath : inc);
@@ -566,42 +766,48 @@ path aether_include(aether e, A inc) {
     }
     
     // Create compiler with the invocation
-    CompilerInstance compiler(std::move(Invocation));
+    CompilerInstance* compiler = new CompilerInstance(std::move(Invocation));
     
 
     // Then use it:
     SimpleDiagConsumer* DiagClient = new SimpleDiagConsumer();
     IntrusiveRefCntPtr<DiagnosticsEngine> Diags = 
         new DiagnosticsEngine(DiagID, *DiagOpts, DiagClient);
-    compiler.setDiagnostics(Diags.get());
+    compiler->setDiagnostics(Diags.get());
 
 
     // Create other managers
-    compiler.createFileManager();
-    compiler.createSourceManager(compiler.getFileManager());
+    compiler->createFileManager();
+    compiler->createSourceManager(compiler->getFileManager());
 
-    auto fe = compiler.getFileManager().getFileRef(c->chars);
+    auto fe = compiler->getFileManager().getFileRef(c->chars);
     verify(bool(fe), "cant find..");
     verify(fe.get(), "clang cannot find TU file: %o", c);
 
 
-    FileID mainFileID = compiler.getSourceManager().createFileID(
+    FileID mainFileID = compiler->getSourceManager().createFileID(
         fe.get(), 
         SourceLocation(), 
         SrcMgr::C_User
     );
-    compiler.getSourceManager().setMainFileID(mainFileID);
+    compiler->getSourceManager().setMainFileID(mainFileID);
 
+    compiler->createTarget();
+    compiler->createPreprocessor(TU_Complete);
 
-    compiler.createTarget();
-    compiler.createPreprocessor(TU_Complete);
-    compiler.createASTContext();
+    *instance = clang_cc(
+        mod, e, compiler, (handle)compiler, PP, (handle)&compiler->getPreprocessor()); // how do we keep this process alive and pass the compiler / pre processor in here?
+
+    compiler->getPreprocessor().addPPCallbacks(
+        std::make_unique<MacroCollector>(*instance));
+    
+    compiler->createASTContext();
     
     // Parse
-    ASTContext& ctx = compiler.getASTContext();
+    ASTContext& ctx = compiler->getASTContext();
     AetherDeclVisitor visitor(ctx, e);
     AetherASTConsumer consumer(visitor, ctx);
-    ParseAST(compiler.getPreprocessor(), &consumer, ctx);
+    ParseAST(compiler->getPreprocessor(), &consumer, ctx);
     unlink(c->chars);
 
     e->current_include = null;

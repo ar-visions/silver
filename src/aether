@@ -58,6 +58,7 @@ declare_enum(interface)
 declare_enum(reference)
 */
 
+
 #define model_schema(X,Y,...)\
     i_prop    (X,Y, required,   aether,           mod, meta, weak) \
     i_prop    (X,Y, public,     token,            name) \
@@ -69,6 +70,7 @@ declare_enum(reference)
     i_prop    (X,Y, public,     bool,             is_user) \
     i_prop    (X,Y, public,     bool,             is_const) \
     i_prop    (X,Y, public,     bool,             is_system) \
+    i_prop    (X,Y, public,     bool,             has_schema) \
     i_prop    (X,Y, public,     i64,              count) \
     i_prop    (X,Y, public,     A,                shape) \
     i_prop    (X,Y, public,     sz,               size_bits) \
@@ -142,6 +144,21 @@ declare_class(format_attr)
 declare_class_2(fn, model)
 
 
+#define clang_cc_schema(X,Y,...) \
+    i_prop  (X,Y, public, aether,   mod) \
+    i_prop  (X,Y, public, handle,   compiler) \
+    i_prop  (X,Y, public, handle,   PP)
+declare_class(clang_cc)
+
+#define macro_schema(X,Y,...) \
+    i_prop  (X,Y, public, array,    params) \
+    i_prop  (X,Y, public, clang_cc, instance) \
+    i_prop  (X,Y, public, string,   definition) \
+    i_prop  (X,Y, public, bool,     is_var) \
+    i_method(X,Y, public, array,    expand, array)
+declare_class_2(macro, model)
+
+
 #define statements_schema(X,Y,...) \
     i_override(X,Y, method, init)
 declare_class_2(statements, model)
@@ -209,6 +226,7 @@ declare_class(enode)
     i_prop    (X,Y, public,     bool,                   is_assigned) \
     i_prop    (X,Y, public,     bool,                   is_type) \
     i_prop    (X,Y, public,     bool,                   is_func) \
+    i_prop    (X,Y, public,     bool,                   is_macro) \
     i_prop    (X,Y, public,     bool,                   is_arg) \
     i_prop    (X,Y, public,     bool,                   is_decl) \
     i_prop    (X,Y, public,     A,                      override_offset_bits) \
@@ -254,6 +272,7 @@ declare_class(ident)
     i_prop    (X,Y, intern,     fn,          current_fn) \
     i_prop    (X,Y, public,     model,       top) \
     i_prop    (X,Y, public,     array,       lex) \
+    i_prop    (X,Y, public,     hook,        parse_f) \
     i_prop    (X,Y, public,     map,         base) \
     i_prop    (X,Y, public,     enode,       last_return) \
     i_prop    (X,Y, intern,     array,       finalizing) \
@@ -273,6 +292,8 @@ declare_class(ident)
     i_prop    (X,Y, public,     array,       tokens) \
     i_prop    (X,Y, public,     array,       stack) \
     i_prop    (X,Y, public,     num,         cursor) \
+    i_prop    (X,Y, public,     map,         instances) \
+    i_method  (X,Y, public,     none,        update_schemas) \
     i_method  (X,Y, public,     emember,     initializer) \
     i_method  (X,Y, public,     path,        lookup_include,     string) \
     i_method  (X,Y, public,     none,        build_info,         path) \
@@ -322,7 +343,7 @@ declare_class(ident)
     i_method  (X,Y, public,     enode,       e_inherits,         enode,      A) \
     i_method  (X,Y, public,     emember,     lookup2,            A,          AType) \
     i_method  (X,Y, public,     model,       context_model,      AType) \
-    i_method  (X,Y, public,     path,        include,            A) \
+    i_method  (X,Y, public,     path,        include,            A, ARef) \
     i_method  (X,Y, public,     none,        llflag,             symbol,     i32) \
     i_method  (X,Y, public,     model,       push,               model) \
     i_method  (X,Y, public,     model,       pop) \

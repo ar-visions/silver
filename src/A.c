@@ -414,12 +414,13 @@ none push_type(AType type) {
     /* it simply means for A-type, one must build for debug before release */
     /* yes its required for proper interns in a C build system, but silver goes beyond this to use its info at designtime */
 #ifndef NDEBUG
-    char* import = getenv("IMPORT");
+    char* import  = getenv("IMPORT");
+    char* project = PROJECT; 
     if (import && !started) { // we do not want to run this if its already generated; our build system handles cache management here
         static bool once;     // also we do not want external modules adding to this (different project header typically)
         static bool skip;
         char  f[256];
-        snprintf(f, sizeof(f), "%s/include/%s/isize", import, type->module);
+        snprintf(f, sizeof(f), "%s/include/%s/isize", import, project);
         if (!once) {
             struct stat st;
             if (stat(f, &st) != 0 || st.st_size == 0)
@@ -605,6 +606,7 @@ static none init_recur(A a, AType current, raw last_init) {
     if (init && init != (none*)last_init) init(a); 
 }
 
+
 // we need a bit of type logic in here for these numerics; it should mirror the C compiler
 numeric numeric_operator__add(numeric a, numeric b) {
     AType type_a = isa(a);
@@ -692,7 +694,6 @@ A A_initialize(A a) {
     hold_members(a);
     return a;
 }
-
 
 pid_t _last_pid = 0;
 

@@ -33,8 +33,10 @@ version = '22'
 
 class Vulkan
     intern instance : VkInstance
-    public a-member : int
-
+    public a-member : i32
+    public major    : i32
+    public minor    : i32
+    
     fn init[]
         result : vkCreateInstance [
             [
@@ -59,12 +61,21 @@ class Vulkan
         # methods at expr-level 0 do not invoke with [ these ] unless the function is variable argument
         verify result == VK_SUCCESS, 'could not start vulkan {VK_VERSION}'
 
+
+class Window
+    context vk : Vulkan
+    dimensions : vec2i
+
 main test_vulkan
-    public  queue_family_index : i32[ 2 ], string i64 i32
+    public  queue_family_index : array 2x4 [ 2 2 2 2, 4 4 4 4 ]
     intern  an_intern_member   : i64[ 4 ]
     context an-instance        : Vulkan
+    intern  window             : Window
 
-    fn func-using-context [ arg:i32,  ]
+    fn init[]
+        an-instance : Vulkan[ major: 1  minor: 1 ]
+        window      : Window[ dimensions: [ 444 888 ] ]
+        
 
 ```
 

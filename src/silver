@@ -65,6 +65,8 @@ forward(import)
     i_method  (X,Y, public,     string,         read_keyword) \
     i_method  (X,Y, public,     A,              read_bool) \
     i_method  (X,Y, public,     A,              read_numeric) \
+    i_method  (X,Y, public,     array,          parse_const, array) \
+    i_method  (X,Y, public,     enode,          expand_macro, macro) \
     i_method  (X,Y, public,     string,         read_assign, ARef, ARef) \
     i_method  (X,Y, public,     string,         location) \
     i_method  (X,Y, public,     none,           parse) \
