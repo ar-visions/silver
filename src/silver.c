@@ -858,13 +858,6 @@ enode silver_read_node(silver mod, AType constant_result) {
     record in_record = instanceof(mod->top, typeid(record));
     if (access)
         access = access;
-
-    static int test = 0;
-    test++;
-
-    if (test == 22) {
-        test = test;
-    }
     
     bool skip_member_check = false;
     if (module) {
@@ -1002,10 +995,7 @@ enode silver_read_node(silver mod, AType constant_result) {
         }
         else if (in_record && assign_type) {
             token t = peek(mod);
-            if (eq(t, "array")) {
-                int test2 = 2;
-                test2    += 2;
-            }
+
             // this is where member types are read
             mem->mdl = read_model(mod, &expr); // given VkInstance intern instance2 (should only read 1 token)
             mem->initializer = hold(expr);
@@ -1017,8 +1007,6 @@ enode silver_read_node(silver mod, AType constant_result) {
                 while (true) {
                     token t = peek(mod);
                     model f = emodel(t->chars);
-                    if (f && instanceof(f->src, typeid(Class)))
-                        f = f->src;
                     if (!f) break;
                     push(mem->meta_args, f);
                     consume(mod);
@@ -1074,13 +1062,10 @@ static model next_is_class(silver mod, bool read_token) {
     if (eq(t, "class")) {
         if (read_token)
             consume(mod);
-        return emodel("A")->src;
+        return emodel("A");
     }
 
     model f = emodel(t->chars);
-    while (f && f->is_ref)
-        f = f->src;
-
     if (f && isa(f) == typeid(Class)) {
         if (read_token)
             consume(mod);
@@ -1139,10 +1124,10 @@ void silver_build_initializer(silver mod, emember mem) {
             array post_const = parse_const(mod, mem->initializer);
             push_state(mod, post_const, 0);
             print_token_array(mod, mod->tokens);
-            int expr = mod->expr_level;
+            int level = mod->expr_level;
             mod->expr_level++;
             expr = parse_expression(mod);
-            mod->expr_level = expr;
+            mod->expr_level = level;
             pop_state(mod, false);
         }
 
@@ -1304,7 +1289,7 @@ model read_model(silver mod, array* expr) {
         mdl = emodel(ident->chars);
         if (!mdl) {
             array ameta = a(type);
-            Class parent = emodel("array")->src;
+            Class parent = emodel("array");
             mdl = Class(mod, mod, name, ident, src, type, parent, parent, shape, sh, meta, ameta); // shape will be used when registering the AType
             register_model(mod, mdl);
             finalize(mdl);
@@ -1327,7 +1312,7 @@ model read_model(silver mod, array* expr) {
 
     } else if (read_if(mod, "map")) {
         verify(false, "todo");
-        //mdl = model(mod, mod, src, type, src, emodel("map")->src, shape, shape); // shape will be used when registering the AType
+        //mdl = model(mod, mod, src, type, src, emodel("map"), shape, shape); // shape will be used when registering the AType
 
     } else {
         mdl = read_named_model(mod);
@@ -1378,11 +1363,9 @@ map parse_map(silver mod) {
 }
 
 static bool class_inherits(model mdl, Class of_cl) {
-    if (mdl && mdl->is_ref && isa(mdl->src) == typeid(Class))
-        mdl = mdl->src;
     silver mod = mdl->mod;
     Class cl = instanceof(mdl, typeid(Class));
-    Class aa = of_cl; //emodel("array")->src;
+    Class aa = of_cl;
     while (cl != aa) {
         if (!cl->parent) break;
         cl = cl->parent;
@@ -1391,8 +1374,6 @@ static bool class_inherits(model mdl, Class of_cl) {
 }
 
 enode parse_create(silver mod, model src, array expr) {
-    if (src && src->is_ref && isa(src->src) == typeid(Class))
-        src = src->src;
     if (expr)
         print_token_array(mod, expr);
     push_state(mod, expr ? expr : mod->tokens, expr ? 0 : mod->cursor);
@@ -1416,7 +1397,7 @@ enode parse_create(silver mod, model src, array expr) {
     if (!has_content) {
         r = e_create(mod, src, null); // default
         conv = false;
-    } else if (class_inherits(src, emodel("array")->src)) {
+    } else if (class_inherits(src, emodel("array"))) {
         array nodes = array(64);
         model element_type = src->src;
         shape sh = src->shape;
@@ -1468,7 +1449,7 @@ static enode parse_construct(silver mod, emember mem) {
     verify(read_if(mod, "["), "expected [ after type name for construction");
     enode res = null;
     /// it may be a dedicated constructor (for primitives or our own), or named args (not for primitives)
-    if (instanceof(mem->mdl->src, typeid(record))) {
+    if (instanceof(mem->mdl, typeid(record))) {
         AType atype = isa(mem->mdl->src);
         map args = map(hsize, 16);
         int count = 0;
@@ -1879,7 +1860,7 @@ emember silver_read_def(silver mod) {
         /// todo: call build_record right after this is done
         if (is_class) {
             member m = mod->top;
-            verify (!is_class->src || !is_class->src->is_ref, "unexpected pointer");
+            verify (!is_class || !is_class->is_ref, "unexpected pointer");
             mem->mdl = Class    (mod, mod, parent, is_class, name, n, body, body, meta, meta);
         } else
             mem->mdl = structure(mod, mod, name, n, body, body);
@@ -2105,9 +2086,8 @@ void silver_incremental_resolve(silver mod) {
     /// calls process sub-procedure and poly-based finalize
     pairs(mod->members, i) {
         emember mem = i->value;
-        model base = mem->mdl->is_ref ? mem->mdl->src : mem->mdl;
-        record rec = instanceof(base, typeid(record));
-        Class  cl  = instanceof(base, typeid(Class));
+        record rec = instanceof(mem->mdl, typeid(record));
+        Class  cl  = instanceof(mem->mdl, typeid(Class));
         if ((!cl || !cl->is_abstract) && rec && !rec->parsing && !rec->finalized && !rec->imported_from) {
             build_record(mod, rec);
         }
