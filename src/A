@@ -20,7 +20,6 @@
 #define M_PI 3.14159265358979323846264338327950288
 #endif
 
-
 #define forward(t) typedef struct _##t* t;
 
 #ifdef __cplusplus
@@ -122,6 +121,7 @@ typedef double                 *ref_f64;
     u64             required[2]; \
     AType           src; \
     void*           arb; \
+    struct _shape*  shape; \
     _meta_t         meta; \
 
 #define declare_typedef(X) \
@@ -133,7 +133,6 @@ typedef double                 *ref_f64;
         AA##_f        type; \
     } AA##_info; \
     extern AA##_info   AA##_i; \
-
 
 #define declare_base( AA ) \
     declare_typedef(AA) \
@@ -605,17 +604,9 @@ forward(any)
                     
 #define A_intern(AA,YY,...) A_schema(AA,YY,__VA_ARGS__)
 
-typedef struct _shape *shape;
+//typedef struct _shape *shape;
+
 declare_base(A)
-
-
-#define shape_schema(X,Y,...) \
-    i_method    (X,Y, public, i64, total) \
-    i_override  (X,Y, method, compare) \
-    i_ctr       (X,Y, public, array) \
-    i_prop      (X,Y, public, i64, count) \
-    i_array     (X,Y, public, i64, 16, data)
-declare_class(shape)
 
 #define typeid(AA)   ((AType)&AA##_i.type)
 #define scalarof(AA) head(AA)->scalar
@@ -683,6 +674,7 @@ declare_abstract(imported)
 #define cstr_schema(X,Y,...)        string_like_schema(X,Y,...)
 #define symbol_schema(X,Y,...)      string_like_schema(X,Y,...)
 #define cereal_schema(X,Y,...)      raw_schema(X,Y,...)
+#define shape_schema(X,Y,...)       raw_schema(X,Y,...)
 #define none_schema(X,Y,...)        nil_schema(X,Y,...)
 #define raw_t_schema(X,Y,...)       raw_schema(X,Y,...)
 #define handle_schema(X,Y,...)      raw_schema(X,Y,...)
@@ -693,6 +685,15 @@ declare_abstract(imported)
 #define callback_schema(X,Y,...)    raw_schema(X,Y,...)
 #define cstrs_schema(X,Y,...)       raw_schema(X,Y,...)
 #define floats_schema(X,Y,...)      raw_schema(X,Y,...)
+
+
+shape shape_with_array(shape a, array dims);
+i64 shape_total(shape a);
+i64 shape_compare(shape a, shape b);
+shape shape_from(i64 count, i64* values);
+shape shape_read(FILE* f);
+shape shape_new(i64 size, ...);
+
 
 /// meta gives us access to one token we can override with (F)
 
@@ -752,6 +753,7 @@ declare_primitive(cstr,             string_like)
 declare_primitive(symbol,           string_like)
 declare_primitive(none,             nil)
 declare_primitive(cereal,           raw)
+declare_primitive(shape,            raw)
 declare_primitive(raw_t,            raw)
 declare_primitive(handle,           raw)
 declare_primitive(func,             raw)

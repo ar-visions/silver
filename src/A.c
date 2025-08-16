@@ -45,8 +45,10 @@ i64 shape_compare(shape a, shape b) {
 }
 
 shape shape_from(i64 count, i64* values) {
-    shape res = shape(count, count);
-    memcpy(res->data, values, sizeof(i64) * count);
+    shape res = A_struct(_shape);
+    res->count = count;
+    if (values)
+        memcpy(res->data, values, sizeof(i64) * count);
     return res;
 }
 
@@ -56,8 +58,7 @@ shape shape_read(FILE* f) {
     verify(fread(&n_dims, sizeof(i32), 1, f) == 1, "n_dims");
     verify(n_dims < 256, "invalid");
     verify(fread(data, sizeof(i64), n_dims, f) == n_dims, "shape_read data");
-    shape res = shape(count, n_dims);
-    memcpy(res->data, data, sizeof(i64) * n_dims);
+    shape res = shape_from(n_dims, data);
     return res;
 }
 
@@ -69,16 +70,12 @@ shape shape_new(i64 size, ...) {
         n_dims++;
     
     va_start(args, size);
-    shape res = shape(count, n_dims);
+    shape res = shape_from(n_dims, null);
     i64  index = 0;
     for (i64 arg = size; arg; arg = va_arg(args, i64))
         res->data[index++] = arg;
     return res;
 }
-
-define_class(shape, A)
-
-
 
 
 bool array_cast_bool(array a) { return a && a->len > 0; }
@@ -887,7 +884,7 @@ A alloc(AType type, num count) {
 A alloc2(AType type, AType scalar, shape s) {
     i64 A_sz      = sizeof(struct _A);
     shape_ft* t2 = &shape_i.type;
-    i64 count     = total(s);
+    i64 count     = shape_total(s);
     A a      = alloc_instance(type,
         A_sz + scalar->size * count, A_sz + scalar->size);
     a->scalar     = scalar;
@@ -3180,7 +3177,7 @@ none vector_init(vector a) {
     f->shape  = hold(a->shape); // it would be nice if didnt have to do this
     verify(f->scalar, "scalar not set");
     if (f->shape)
-        a->alloc = total(f->shape);
+        a->alloc = shape_total(f->shape);
     vrealloc(a, a->alloc);
 }
 
@@ -4912,6 +4909,7 @@ define_primitive(AFlag,  numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
 define_primitive(cstr,   string_like, A_TRAIT_POINTER, i8)
 define_primitive(symbol, string_like, A_TRAIT_POINTER, i8)
 define_primitive(cereal, raw, 0)
+define_primitive(shape,  raw, A_TRAIT_POINTER)
 define_primitive(none,   nil, 0)
 //define_primitive(AType,  raw, 0)
 define_primitive(handle, raw, 0)
