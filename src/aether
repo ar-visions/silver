@@ -47,7 +47,8 @@ declare_class_2(token, string)
 #define interface_schema(E,T,Y,...) \
     enum_value(E,T,Y, undefined,  0) \
     enum_value(E,T,Y, intern,     1) \
-    enum_value(E,T,Y, public,     2)
+    enum_value(E,T,Y, public,     2) \
+    enum_value(E,T,Y, context,    3)
 declare_enum(interface)
 
 /*
@@ -72,7 +73,7 @@ declare_enum(reference)
     i_prop    (X,Y, public,     bool,             is_system) \
     i_prop    (X,Y, public,     bool,             has_schema) \
     i_prop    (X,Y, public,     i64,              count) \
-    i_prop    (X,Y, public,     A,                shape) \
+    i_prop    (X,Y, public,     shape,            shape) \
     i_prop    (X,Y, public,     sz,               size_bits) \
     i_prop    (X,Y, public,     sz,               alignment_bits) \
     i_prop    (X,Y, public,     map,              members) \
@@ -171,7 +172,7 @@ typedef struct _schematic* schematic;
     i_prop    (X,Y, public, array,  meta) \
     i_prop    (X,Y, public, bool,   parsing) \
     i_prop    (X,Y, public, bool,   is_abstract) \
-    i_prop    (X,Y, public, i32, total_members) \
+    i_prop    (X,Y, public, i32,    total_members) \
     i_prop    (X,Y, public, bool,   expect_members) \
     i_override(X,Y, method,         init)
 declare_class_2(record, model)

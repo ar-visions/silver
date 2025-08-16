@@ -208,6 +208,8 @@ void build_record(silver mod, record rec) {
     push_state(mod, body, 0);
     push      (mod, rec);
     while     (peek(mod)) {
+        Class t = mod->top;
+        AType tt = isa(t->parent);
         print_tokens(mod, "parse-statement");
         parse_statement(mod); // must not 'build' code here, and should not (just initializer type[expr] for members)
     }
@@ -223,7 +225,7 @@ void build_record(silver mod, record rec) {
         // if no init, create one
         emember m_init = member_lookup(rec, string("init"), typeid(fn));
         if (!m_init) {
-            fn f_init = fn(mod, mod, name, string("init"), instance, rec);
+            fn f_init = fn(mod, mod, name, string("init"), instance, rec, args, eargs(mod, mod));
             m_init    = emember(mod, mod, name, f_init->name, mdl, f_init);
             register_member(mod, m_init);
         }
@@ -763,10 +765,9 @@ enode silver_read_node(silver mod, AType constant_result) {
     if (lit)
         return e_operand(mod, lit, null);
     
-    // parenthesized expressions, with a model check (make sure its not a type, which indicates array/map typed expression)
+    // parenthesized expressions
     if (next_is(mod, "[")) {
         push_current(mod);
-        bool  in_inlay = mod->in_inlay;
         model inner    = read_model(mod, null); /// if the model comes first, this is an array or map
         if (!inner) {
             pop_state(mod, true);
@@ -775,7 +776,6 @@ enode silver_read_node(silver mod, AType constant_result) {
             verify(read_if(mod, "]"), "Expected closing parenthesis");
             return parse_ternary(mod, expr);
         }
-        mod->in_inlay = in_inlay;
         pop_state(mod, false);
     }
 
@@ -816,6 +816,7 @@ enode silver_read_node(silver mod, AType constant_result) {
         return e_addr_of(mod, expr, null);
     }
     /*
+    inlay is simply too difficult to use with reference counts, less we couple the objects together (this requires different architecture)
     else if (read_if(mod, "inlay")) {
         mod->in_inlay = true;
         enode expr = parse_expression(mod);
@@ -826,25 +827,26 @@ enode silver_read_node(silver mod, AType constant_result) {
 
     push_current(mod);
     
-    interface access  = read_enum(mod, interface_undefined, typeid(interface));
-    bool     is_static = read_if(mod, "static") != null;
-    string   kw       = peek_keyword(mod);
-    fn       f        = context_model(mod, typeid(fn));
-    fn       in_args  = instanceof(mod->top, typeid(eargs));
-    record   rec      = context_model(mod, typeid(Class));
-    silver   module   = (mod->top == (model)mod || (f && f->is_module_init)) ? mod : null;
-    bool     is_cast  = kw && eq(kw, "cast");
-    bool     is_fn    = kw && eq(kw, "fn");
-    AFlag    mtype    = (is_fn && !is_static) ? A_FLAG_IMETHOD : (!is_static && is_cast) ? A_FLAG_CAST : A_FLAG_SMETHOD;
-    string   alpha    = null;
-    emember  mem      = null;
-    int      back     = 0;
-    int      depth    = 0;
-
-    array expr = null;
+    bool      is_expr0  = mod->expr_level == 0;
+    interface access    = is_expr0 ? read_enum(mod, interface_undefined, typeid(interface)) : 0;
+    bool      is_static = is_expr0 && read_if(mod, "static") != null;
+    string    kw        = is_expr0 ? peek_keyword(mod) : null;
+    fn        f         = context_model(mod, typeid(fn));
+    fn        in_args   = instanceof(mod->top, typeid(eargs));
+    record    rec       = context_model(mod, typeid(Class));
+    silver    module    = (mod->top == (model)mod || (f && f->is_module_init)) ? mod : null;
+    bool      is_cast   = kw && eq(kw, "cast");
+    bool      is_fn     = kw && eq(kw, "fn");
+    AFlag     mtype     = (is_fn && !is_static) ? A_FLAG_IMETHOD : (!is_static && is_cast) ? A_FLAG_CAST : A_FLAG_SMETHOD;
+    string    alpha     = null;
+    emember   mem       = null;
+    int       back      = 0;
+    int       depth     = 0;
+    array     expr      = null;
+    token     tt        = peek(mod);
 
     // need to make an exception for methods here
-    if (mod->expr_level > 0) {
+    if (mod->expr_level > 0) { // this must be set to 1 in intializers
         model mdl = read_model(mod, &expr);
         if (mdl) {
             pop_state(mod, true);
@@ -999,6 +1001,12 @@ enode silver_read_node(silver mod, AType constant_result) {
             verify(mem->mdl, "cannot read model for arg: %o", mem->name);
         }
         else if (in_record && assign_type) {
+            token t = peek(mod);
+            if (eq(t, "array")) {
+                int test2 = 2;
+                test2    += 2;
+            }
+            // this is where member types are read
             mem->mdl = read_model(mod, &expr); // given VkInstance intern instance2 (should only read 1 token)
             mem->initializer = hold(expr);
 
@@ -1061,13 +1069,12 @@ string silver_peek_keyword(silver a) {
 // the real challenge there is the differing nature between L and R, and various statements
 
 
-// conflicts a bit with the whole idea of implementing keywords by classes!
 static model next_is_class(silver mod, bool read_token) {
     token t = peek(mod);
     if (eq(t, "class")) {
         if (read_token)
             consume(mod);
-        return emodel("A");
+        return emodel("A")->src;
     }
 
     model f = emodel(t->chars);
@@ -1132,7 +1139,10 @@ void silver_build_initializer(silver mod, emember mem) {
             array post_const = parse_const(mod, mem->initializer);
             push_state(mod, post_const, 0);
             print_token_array(mod, mod->tokens);
+            int expr = mod->expr_level;
+            mod->expr_level++;
             expr = parse_expression(mod);
+            mod->expr_level = expr;
             pop_state(mod, false);
         }
 
@@ -1248,6 +1258,8 @@ model read_named_model(silver mod) {
     return mdl;
 }
 
+void create_schema(model mdl);
+
 model read_model(silver mod, array* expr) {
     model mdl       = null;
     bool  body_set  = false;
@@ -1257,94 +1269,75 @@ model read_model(silver mod, array* expr) {
 
     push_current(mod);
     
-    // todo: this must be converted to new syntax; its type dims [ values ]; array <i64 4x2> [ 8 8, 16 16, 2 2, 4 4 ]
-    // must be separate solutions for array and map
-    // ideally, we want A-type to dictate syntax here
-    // not focusing on array/map now -- focus on reading the Vk type (verify this is happening in aclang)
-    if (read_if(mod, "[")) {
+    // this must be converted to new syntax; its type dims [ values ]; array <i64 4x2> [ 8 8, 16 16, 2 2, 4 4 ]
+    if (read_if(mod, "array")) {
+        verify(read_if(mod, "<"), "expected < after array");
+        string ident = string(alloc, 32);
+
+        // read manditory type
         type = read_model(mod, null);
-        if (!type) {
-            pop_state(mod, false);
-            return null;
-        }
+        verify(type, "expected type after <");
+        concat(ident, f(string, "array_%o", type->name));
 
-        array shape    = null;
-        bool  is_auto  = read_if(mod, "]") != null;
-        bool  is_map   = false;
-        bool  is_array = is_auto || next_is(mod, ","); /// it may also be looking at literal x literal
-        bool  is_row   = false;
-        bool  is_col   = false;
-        verify(!next_is(mod, "]"), "unexpected ']' use [any] for any object");
-
-        shape = array(8);
-
-        // determine if map or array if we have not already determined [is_auto]
-        if (!is_auto) {
+        // read optional shape
+        shape sh = A_struct(_shape);
+        if (!read_if(mod, ">")) {
+            append(ident, "_");
             A lit = read_literal(mod, null);
-
-            // this literal may be a value if is_array is set already
-            if (lit) {
-                if (!is_array) { /// it would have seen ] or , ... both of which are after size
-                    is_array = true;
-                    do {
-                        verify(isa(lit) == typeid(i64), "expected numeric for array size");
-                        push(shape, lit);
-                        if (!read_if(mod, "x")) // these must be compacted
-                            break;
-                        lit = read_literal(mod, null);
-                        verify(lit, "expecting literal after x");
-                    } while (lit);
-                    if (read_if(mod, "row")) {
-                        is_row = true;
-                    } else if (read_if(mod, "col"))
-                        is_col = true;
-                    verify(next_is(mod, ":") || next_is(mod, "]"), "expected : or ]");
-                }
-                // if we specified a ] or : already we are in 'automatic' size
-            } else if (read_if(mod, ":")) {
-                is_map = true;
-                model  value_type = read_model(mod, null);
-                verify(value_type, "expected value type for map");
-                drop(shape);
-                shape = type;
-                type  = value_type;
-            }
+            verify(lit, "expected shape literal after <");
+            do {
+                verify(isa(lit) == typeid(i64), "expected numeric for array size");
+                sh->data[sh->count] = *(i64*)lit;
+                sh->count++;
+                concat(ident, f(string, "%o", lit));
+                if (!read_if(mod, "x")) // these must be compacted
+                    break;
+                append(ident, "x");
+                lit = read_literal(mod, null);
+                verify(lit, "expecting literal after x");
+            } while (lit);
+            verify(read_if(mod, ">"), "expected > after shape");
         }
 
-        type_only = is_auto || !read_if(mod, ","); // todo: attempting to read this twice, nope!
-        
-        token t = peek(mod);
-        print("first token 1 = %o", t);
+        // we must register type information for these models for use in this module
+        // further we must identity these by symbol:  array_i32_4x4 for example
+        mdl = emodel(ident->chars);
+        if (!mdl) {
+            array ameta = a(type);
+            Class parent = emodel("array")->src;
+            mdl = Class(mod, mod, name, ident, src, type, parent, parent, shape, sh, meta, ameta); // shape will be used when registering the AType
+            register_model(mod, mdl);
+            finalize(mdl);
+            create_schema(mdl);
+            mdl = pointer(mdl, null);
+        }
 
-        verify(is_map || is_array, "failed to read model");
-        /// we use simple alias for both array and map cases
-        /// map likely needs a special model
-        mdl = model(mod, mod, src, type, is_ref, !mod->in_inlay, shape, shape);
-        mod->in_inlay = false;
+
+        if (next_is(mod, "[")) {
+            array e = read_body(mod, false);
+            array with_type = array(32);
+            push(with_type, token((cstr)mdl->name->chars)); // we re-parse with the registered name
+            push(with_type, token((cstr)"["));
+            each (e, token, t)
+                push(with_type, t);
+            push(with_type, token((cstr)"]"));
+            verify(expr, "expected expression holder");
+            *expr = with_type;
+        }
+
+    } else if (read_if(mod, "map")) {
+        verify(false, "todo");
+        //mdl = model(mod, mod, src, type, src, emodel("map")->src, shape, shape); // shape will be used when registering the AType
+
     } else {
-        /// read-body calle twice because this is inside the token state
         mdl = read_named_model(mod);
         if (expr && next_is(mod, "[")) {
             body_set = true;
-            *expr = read_body(mod, false); /// todo: read body can adapt to seeing a [, and look for another ] at balance
-        } else if (mdl) {
-            type_only = true;
-        } else {
-            type_only = false;
+            *expr = read_body(mod, false);
         }
     }
 
-    bool has_read = mdl != null;
-    pop_state(mod, has_read); /// save if we are returning a model
-    if (has_read && expr && !body_set && !type_only) {
-        token t = peek(mod);
-        print("first token = %o", t);
-        *expr = read_body(mod, true);
-    }
-
-    if (expr && *expr)
-        print_token_array(mod, *expr);
-
+    pop_state(mod, mdl != null); // if we read a model, we transfer token state
     return mdl;
 }
 
@@ -1384,14 +1377,35 @@ map parse_map(silver mod) {
     return args;
 }
 
+static bool class_inherits(model mdl, Class of_cl) {
+    if (mdl && mdl->is_ref && isa(mdl->src) == typeid(Class))
+        mdl = mdl->src;
+    silver mod = mdl->mod;
+    Class cl = instanceof(mdl, typeid(Class));
+    Class aa = of_cl; //emodel("array")->src;
+    while (cl != aa) {
+        if (!cl->parent) break;
+        cl = cl->parent;
+    }
+    return cl && cl == aa;
+}
+
 enode parse_create(silver mod, model src, array expr) {
+    if (src && src->is_ref && isa(src->src) == typeid(Class))
+        src = src->src;
     if (expr)
         print_token_array(mod, expr);
     push_state(mod, expr ? expr : mod->tokens, expr ? 0 : mod->cursor);
+    
+    // this is only suitable if reading a literal constitutes the token stack
     A  n = read_literal(mod, null);
-    if (n) {
-        pop_state(mod, false); /// issue here is we lost [ array ] context, expr has no brackets and it needs them
+    if (n && mod->cursor == len(mod->tokens)) {
+        pop_state(mod, expr ? false : true);
         return e_operand(mod, n, src);
+    } else if (n) {
+        // reset if we read something
+        pop_state(mod, expr ? false : true);
+        push_state(mod, expr ? expr : mod->tokens, expr ? 0 : mod->cursor);
     }
     bool    has_content = !!expr && len(expr); //read_if(mod, "[") && !read(mod, "]");
     enode    r           = null;
@@ -1399,15 +1413,16 @@ enode parse_create(silver mod, model src, array expr) {
     token   k           = peek(mod);
     bool    has_init    = is_alpha(k) && eq(element(mod, 1), ":");
     
-    if (!has_content) { /// same for all objects if no content
+    if (!has_content) {
         r = e_create(mod, src, null); // default
         conv = false;
-    } else if (src->is_array) {
-        array nodes = array(64); /// initial alloc size
+    } else if (class_inherits(src, emodel("array")->src)) {
+        array nodes = array(64);
         model element_type = src->src;
-        AType shape_type = isa(src->shape);
-        int shape_len = len((array)src->shape);
-        int top_stride = shape_len ? *(i64*)last((array)src->shape) : 0;
+        shape sh = src->shape;
+        verify(sh, "expected shape on array");
+        int shape_len = shape_total(sh);
+        int top_stride = sh->count ? sh->data[sh->count - 1] : 0;
         verify((!top_stride && shape_len == 0) || (top_stride && shape_len),
             "unknown stride information");  
         int num_index = 0; /// shape_len is 0 on [ int 2x2 : 1 0, 2 2 ]
@@ -1418,14 +1433,12 @@ enode parse_create(silver mod, model src, array expr) {
             e = e_convert(mod, e, element_type);
             push(nodes, e);
             num_index++;
-            if (top_stride && num_index == top_stride) {
+            if (top_stride && (num_index % top_stride == 0)) {
                 verify(read_if(mod, ",") || !peek(mod),
                     "expected ',' when striding between dimensions (stride size: %o)",
                     top_stride);
             }
         }
-        int array_size = 0;
-        /// support both stack and heap here, depending on presence of inlay 
         r = e_operand(mod, nodes, src);
     } else if (src->is_map) {
         verify(has_init, "invalid initialization of map model");
@@ -1446,7 +1459,7 @@ enode parse_create(silver mod, model src, array expr) {
     }
     if (conv)
         r = e_create(mod, src, r);
-    pop_state(mod, false);
+    pop_state(mod, expr ? false : true);
     return r;
 }
 
@@ -1916,20 +1929,6 @@ emember silver_read_def(silver mod) {
             } else
                 v = primitive(atype, value); /// this creates i8 to i64 data, using &value i64 addr
 
-
-            // lets resolve operations in here
-            if (instanceof(v, typeid(enode))) {
-                // v = resolve_constant(v);
-                int test2 = 2;
-                test2 += 2;
-            } else if (instanceof(v, typeid(emember))) {
-                int test2 = 2;
-                test2 += 2;
-            } else {
-                AType res = isa(v);
-                int test2 = 2;
-                test2 += 2;
-            }
             array aliases = null;
             while(read_if(mod, ",")) {
                 if (!aliases) aliases = array(32);
@@ -2209,9 +2208,6 @@ void silver_init(silver mod) {
 
     path        af = path_cwd();
     path   install = path(_IMPORT);
-
-    model mdl = emodel("A");
-    verify(mdl, "A-type not importing");
 
     parse(mod);
     build(mod);

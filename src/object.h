@@ -76,13 +76,17 @@ typedef struct _af_recycler {
 } *af_recycler;
 
 typedef struct method_t {
-
     struct _array*  atypes;
     AType           rtype;
     void*           address;
     void*           ffi_cif;  /// ffi-calling info
     void*           ffi_args; /// ffi-data types for args
 } method_t;
+
+typedef struct _shape {
+    i64 count;
+    i64 data[16];
+} _shape, *shape;
 
 // this is an exact mock type of A's type, minus the methods it holds
 typedef struct _AType {
@@ -106,6 +110,7 @@ typedef struct _AType {
     u64             required[2];
     struct _AType*  src;
     void*           arb;
+    struct _shape*  shape;
     struct _meta_t  meta;
 } *AType;
 

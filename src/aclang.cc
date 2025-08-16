@@ -402,15 +402,20 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         if (elem_type.isConstQualified()) {
             elem_model = model(mod, e, src, elem_model, is_const, true);
         }
-        
-        return model(mod, e, src, elem_model, shape, (A)a(A_i64(size)));
+        shape sh = (shape)A_struct(_shape);
+        sh->count = 1;
+        sh->data[0] = size;
+        return model(mod, e, src, elem_model, shape, sh);
     }
     
     if (const IncompleteArrayType* iat = dyn_cast<IncompleteArrayType>(type)) {
         QualType elem_type = iat->getElementType();
         model elem_model = map_clang_type_to_model(elem_type, ctx, e, null);
         if (!elem_model) return nullptr;
-        return model(mod, e, src, elem_model, shape, (A)a(A_i64(0)));
+        shape sh = (shape)A_struct(_shape);
+        sh->count = 1;
+        sh->data[0] = 0;
+        return model(mod, e, src, elem_model, shape, sh);
     }
     
     // Pointer types
