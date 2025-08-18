@@ -1290,7 +1290,7 @@ model read_model(silver mod, array* expr) {
         if (!mdl) {
             array ameta = a(type);
             Class parent = emodel("array");
-            mdl = Class(mod, mod, name, ident, src, type, parent, parent, shape, sh, meta, ameta); // shape will be used when registering the AType
+            mdl = Class(mod, mod, name, ident, src, type, parent, parent, shape, sh, meta, ameta, is_internal, true); // shape will be used when registering the AType
             register_model(mod, mdl);
             finalize(mdl);
             create_schema(mdl);
