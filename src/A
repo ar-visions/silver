@@ -554,6 +554,7 @@ forward(any)
     i_final (AA,Y, public, A,           set_property,        symbol, A) \
     i_final (AA,Y, public, A,           get_property,        symbol) \
     i_final (AA,Y, public, A,           vrealloc,            sz) \
+    s_method(AA,Y, public, A,           initialize,          A) \
     i_final (AA,Y, public, A,           member_object,       member) \
     i_final (AA,Y, public, bool,        member_set,          member, A) \
     i_final (AA,Y, public, A,           header) \
@@ -1031,6 +1032,7 @@ typedef A(*mix_fn)(A, A, f32);
     i_method         (X,Y, public, none,    remove,         num) \
     i_method         (X,Y, public, none,    remove_weak,    num) \
     i_method         (X,Y, public, none,    push,           A) \
+    i_method         (X,Y, public, none,    push_vdata,     A, i64) \
     i_method         (X,Y, public, none,    push_weak,      A) \
     i_method         (X,Y, public, none,    clear) \
     i_method         (X,Y, public, none,    concat,         array) \
@@ -1058,6 +1060,7 @@ Exists A_exists(A);
     i_ctr            (X,Y, public, A) \
     i_override       (X,Y, cast,   string)
 declare_class(srcfile)
+
 
 #define hashmap_schema(X,Y,...) \
     i_prop      (X,Y, opaque, list,  data) \
@@ -1245,7 +1248,6 @@ declare_class(async)
     i_override  (X,Y, cast,     bool) \
     i_override  (X,Y, cast,     string)
 declare_class_2(path, string)
-
 
 #define subscriber_schema(X,Y,...) \
     i_prop    (X,Y, required, A,   target) \

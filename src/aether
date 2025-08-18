@@ -71,6 +71,7 @@ declare_enum(reference)
     i_prop    (X,Y, public,     bool,             is_user) \
     i_prop    (X,Y, public,     bool,             is_const) \
     i_prop    (X,Y, public,     bool,             is_system) \
+    i_prop    (X,Y, public,     bool,             is_internal) \
     i_prop    (X,Y, public,     bool,             has_schema) \
     i_prop    (X,Y, public,     i64,              count) \
     i_prop    (X,Y, public,     shape,            shape) \
@@ -198,6 +199,8 @@ declare_class_3(uni, record, model)
 /// all enode values must contain its aether def.
 /// otherwise we are performing hash lookups, which is more complex and slower, 
 /// with less data stored
+forward(emember)
+
 #define enode_schema(X,Y,...)\
     i_prop    (X,Y, public,     token,                  name) \
     i_prop    (X,Y, public,     aether,                 mod) \
@@ -206,7 +209,8 @@ declare_class_3(uni, record, model)
     i_prop    (X,Y, public,     num,                    line) \
     i_prop    (X,Y, public,     num,                    column) \
     i_prop    (X,Y, public,     bool,                   loaded) \
-    i_prop    (X,Y, intern,     LLVMValueRef,           value, as, ARef)
+    i_prop    (X,Y, intern,     LLVMValueRef,           value, as, ARef) \
+    i_method  (X,Y, public,     emember,  resolve,      string)
 declare_class(enode)
 
 
@@ -242,7 +246,6 @@ declare_class(enode)
     i_method  (X,Y, public,     bool,    has_value) \
     i_method  (X,Y, public,     none,    set_model,     model) \
     i_method  (X,Y, public,     none,    set_value,     A) \
-    i_method  (X,Y, public,     emember,  resolve,       string) \
     i_override(X,Y, method,     init)
 declare_class_2(emember, enode)
 
@@ -271,6 +274,7 @@ declare_class(ident)
     i_prop    (X,Y, intern,     bool,        is_A_import) \
     i_prop    (X,Y, intern,     path,        current_include) \
     i_prop    (X,Y, intern,     fn,          current_fn) \
+    i_prop    (X,Y, public,     bool,        in_ref) \
     i_prop    (X,Y, public,     model,       top) \
     i_prop    (X,Y, public,     array,       lex) \
     i_prop    (X,Y, public,     hook,        parse_f) \
@@ -294,6 +298,8 @@ declare_class(ident)
     i_prop    (X,Y, public,     array,       stack) \
     i_prop    (X,Y, public,     num,         cursor) \
     i_prop    (X,Y, public,     map,         instances) \
+    i_method  (X,Y, public,     array,       classes,            model, model, bool) \
+    i_method  (X,Y, public,     array,       fields,             model, model, bool) \
     i_method  (X,Y, public,     none,        update_schemas) \
     i_method  (X,Y, public,     emember,     initializer) \
     i_method  (X,Y, public,     path,        lookup_include,     string) \
@@ -343,6 +349,7 @@ declare_class(ident)
     i_method  (X,Y, public,     enode,       e_is,               enode,      A) \
     i_method  (X,Y, public,     enode,       e_inherits,         enode,      A) \
     i_method  (X,Y, public,     emember,     lookup2,            A,          AType) \
+    i_method  (X,Y, public,     emember,     find_member,        string,     record, AType) \
     i_method  (X,Y, public,     model,       context_model,      AType) \
     i_method  (X,Y, public,     path,        include,            A, ARef) \
     i_method  (X,Y, public,     none,        llflag,             symbol,     i32) \

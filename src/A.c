@@ -147,6 +147,21 @@ array array_with_i32(array a, i32 alloc) {
     return a;
 }
 
+// data must be same format, and compacted in data
+none array_push_vdata(array a, A data, i64 count) {
+    AType t = isa(a)->meta.meta_0;
+    verify(is_meta(a) && t->meta.meta_0 != typeid(A), "method requires meta object with type signature");
+    verify(a->unmanaged, "this method requires unmanaged primitives");
+    a->last_type = t;
+    u8* cur = data;
+    for (i64 i = 0; i < count; i++) {
+        if (!a->elements || a->alloc == a->len)
+            array_expand(a);
+        a->elements[a->len++] = cur;
+        cur += t->size;
+    }
+}
+
 none array_push(array a, A b) {
     if (!a->elements || a->alloc == a->len) {
         array_expand(a);
