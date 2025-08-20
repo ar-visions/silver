@@ -1053,6 +1053,7 @@ typedef A(*mix_fn)(A, A, f32);
     i_override       (X,Y, cast,   string)
 declare_class(array, any)
 
+
 Exists A_exists(A);
 
 #define srcfile_schema(X,Y,...) \
@@ -1060,7 +1061,6 @@ Exists A_exists(A);
     i_ctr            (X,Y, public, A) \
     i_override       (X,Y, cast,   string)
 declare_class(srcfile)
-
 
 #define hashmap_schema(X,Y,...) \
     i_prop      (X,Y, opaque, list,  data) \
@@ -1248,6 +1248,7 @@ declare_class(async)
     i_override  (X,Y, cast,     bool) \
     i_override  (X,Y, cast,     string)
 declare_class_2(path, string)
+
 
 #define subscriber_schema(X,Y,...) \
     i_prop    (X,Y, required, A,   target) \

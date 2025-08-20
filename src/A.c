@@ -147,19 +147,23 @@ array array_with_i32(array a, i32 alloc) {
     return a;
 }
 
-// data must be same format, and compacted in data
 none array_push_vdata(array a, A data, i64 count) {
-    AType t = isa(a)->meta.meta_0;
-    verify(is_meta(a) && t->meta.meta_0 != typeid(A), "method requires meta object with type signature");
-    verify(a->unmanaged, "this method requires unmanaged primitives");
+    AType   t = isa(a)->meta.meta_0;
+    verify(is_meta(a) && t->meta.meta_0 != typeid(A),
+        "method requires meta object with type signature");
+    verify(a->unmanaged,
+        "this method requires unmanaged primitives");
+    u8*     cur = data;
+    i64     t_size = t->size;
+
+    while (count < (a->alloc - a->len))
+        array_expand(a);
+
+    for (i64 i = 0; i < count; i++)
+        a->elements[a->len + i] = cur + (t_size * i);
+
+    a->len += count;
     a->last_type = t;
-    u8* cur = data;
-    for (i64 i = 0; i < count; i++) {
-        if (!a->elements || a->alloc == a->len)
-            array_expand(a);
-        a->elements[a->len++] = cur;
-        cur += t->size;
-    }
 }
 
 none array_push(array a, A b) {
@@ -1169,6 +1173,7 @@ member find_ctr(AType type, AType with, bool poly) {
         return find_ctr(type->parent_type, with, true);
     return 0;
 }
+
 
 member find_member(AType type, AFlag memflags, symbol name, bool poly) {
     for (num i = 0; i < type->member_count; i++) {
@@ -4927,7 +4932,7 @@ define_primitive(cereal, raw, 0)
 define_primitive(shape,  raw, A_TRAIT_POINTER)
 define_primitive(none,   nil, 0)
 //define_primitive(AType,  raw, 0)
-define_primitive(handle, raw, 0)
+define_primitive(handle, raw, A_TRAIT_POINTER, A)
 define_primitive(member, raw, 0)
 define_primitive(ARef,   ref, A_TRAIT_POINTER, A)
 define_primitive(floats, raw, 0)
