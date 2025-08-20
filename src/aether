@@ -72,7 +72,7 @@ declare_enum(reference)
     i_prop    (X,Y, public,     bool,             is_const) \
     i_prop    (X,Y, public,     bool,             is_system) \
     i_prop    (X,Y, public,     bool,             is_internal) \
-    i_prop    (X,Y, public,     bool,             has_schema) \
+    i_prop    (X,Y, public,     emember,          has_schema) \
     i_prop    (X,Y, public,     i64,              count) \
     i_prop    (X,Y, public,     shape,            shape) \
     i_prop    (X,Y, public,     sz,               size_bits) \
@@ -89,6 +89,8 @@ declare_enum(reference)
     i_prop    (X,Y, public,     bool,             finalized) \
     i_prop    (X,Y, intern,     model,            init_top) \
     i_prop    (X,Y, public,     emember,          mem_init) \
+    i_method  (X,Y, public,     array,            class_list,    model, bool) \
+    i_method  (X,Y, public,     array,            field_list,    model, bool) \
     i_method  (X,Y, public,     emember,          member_lookup, string, AType) \
     i_method  (X,Y, public,     model,            typed) \
     s_method  (X,Y, public,     string,           keyword) \
@@ -263,6 +265,9 @@ declare_class(code)
     i_ctr(X,Y, public, model)
 declare_class(ident)
 
+#define static_array_schema(X,Y,...)
+declare_class_2(static_array, array)
+
 #define aether_schema(X,Y,...)\
     i_prop    (X,Y, public,     path,        install) \
     i_prop    (X,Y, required,   path,        source) \
@@ -298,8 +303,6 @@ declare_class(ident)
     i_prop    (X,Y, public,     array,       stack) \
     i_prop    (X,Y, public,     num,         cursor) \
     i_prop    (X,Y, public,     map,         instances) \
-    i_method  (X,Y, public,     array,       classes,            model, model, bool) \
-    i_method  (X,Y, public,     array,       fields,             model, model, bool) \
     i_method  (X,Y, public,     none,        update_schemas) \
     i_method  (X,Y, public,     emember,     initializer) \
     i_method  (X,Y, public,     path,        lookup_include,     string) \
@@ -309,6 +312,7 @@ declare_class(ident)
     i_method  (X,Y, public,     none,        push_current) \
     i_method  (X,Y, public,     none,        pop_state,          bool) \
     i_method  (X,Y, public,     enode,       e_fn_return,        A) \
+    i_method  (X,Y, public,     enode,       e_null,             model) \
     i_method  (X,Y, public,     enode,       e_default_value,    model) \
     i_method  (X,Y, public,     enode,       e_builder,          subprocedure) \
     i_method  (X,Y, public,     none,        build_initializer,  fn) \
@@ -345,7 +349,7 @@ declare_class(ident)
     i_method  (X,Y, public,     enode,       e_eq,                 enode,      enode) \
     i_method  (X,Y, public,     enode,       e_cmp,                enode,      enode) \
     i_method  (X,Y, public,     enode,       e_not_eq,             enode,      enode) \
-    i_method  (X,Y, public,     enode,       e_fn_call,            emember,    array) \
+    i_method  (X,Y, public,     enode,       e_fn_call,            fn,         enode,    array) \
     i_method  (X,Y, public,     enode,       e_is,               enode,      A) \
     i_method  (X,Y, public,     enode,       e_inherits,         enode,      A) \
     i_method  (X,Y, public,     emember,     lookup2,            A,          AType) \

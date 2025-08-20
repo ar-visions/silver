@@ -198,6 +198,8 @@ A build_init_preamble(fn f, A arg) {
     return null;
 }
 
+void create_schema(model mdl);
+
 void build_record(silver mod, record rec) {
     AType t = isa(rec);
     rec->parsing = true;
@@ -218,14 +220,15 @@ void build_record(silver mod, record rec) {
     pop_state (mod, false);
     rec->parsing = false;
     finalize(rec);
-    
+    create_schema(rec);
+
     if (is_class) {
         push(mod, rec);
 
         // if no init, create one
         emember m_init = member_lookup(rec, string("init"), typeid(fn));
         if (!m_init) {
-            fn f_init = fn(mod, mod, name, string("init"), instance, rec, args, eargs(mod, mod));
+            fn f_init = fn(mod, mod, name, string("init"), rtype, emodel("none"), instance, rec, args, eargs(mod, mod));
             m_init    = emember(mod, mod, name, f_init->name, mdl, f_init);
             register_member(mod, m_init);
         }
@@ -1243,8 +1246,6 @@ model read_named_model(silver mod) {
     return mdl;
 }
 
-void create_schema(model mdl);
-
 model read_model(silver mod, array* expr) {
     model mdl       = null;
     bool  body_set  = false;
@@ -1342,14 +1343,8 @@ emember cast_method(silver mod, Class class_target, model cast) {
     return null;
 }
 
-static enode parse_fn_call(silver mod, emember fmem);
+static enode parse_fn_call(silver, fn, enode);
 
-/// parse construct from and cast to, and named args
-/// expr comes from read-model;
-/// we need to do that to parse single-expr 
-/// to gather model info, and its expression body prior
-/// to builder being active on the function
-/// meant to be read from a tokens state  key:value  key2:value, no [ ] brackets surrounding
 map parse_map(silver mod) {
     map args  = map(hsize, 16);
     while (peek(mod)) {
@@ -1420,7 +1415,7 @@ enode parse_create(silver mod, model src, array expr) {
                     top_stride);
             }
         }
-        r = e_operand(mod, nodes, src);
+        r = e_create(mod, src, nodes);
     } else if (src->is_map) {
         verify(has_init, "invalid initialization of map model");
         conv = true;
@@ -1524,13 +1519,9 @@ enode silver_parse_member_expr(silver mod, emember mem) {
         consume(mod);
         enode index_expr = null;
         if (r) {
-            /// this returns a 'enode' on this code path
             emember indexer = compatible(mod, r, null, A_FLAG_INDEX, args); /// we need to update emember model to make all function members exist in an array
-            /// todo: serialize arg type names too
             verify(indexer, "%o: no suitable indexing method", r->name);
-            fn f = instanceof(indexer->mdl, typeid(fn));
-            indexer->target_member = mem; /// todo: may not be so hot to change the schema
-            index_expr = e_fn_call(mod, indexer, args); // needs a target
+            index_expr = e_fn_call(mod, indexer->mdl, mem, args); // needs a target
         } else {
             index_expr = e_offset(mod, mem, args);
         }
@@ -1542,7 +1533,7 @@ enode silver_parse_member_expr(silver mod, emember mem) {
             return expand_macro(mod, m);
         } else if (mem->is_func) {
             if (!mod->in_ref)
-                mem = parse_fn_call(mod, mem);
+                mem = parse_fn_call(mod, mem->mdl, mem->target_member); // lets avoid creating temporary members if possible, and pass target
         } else if (mem->is_type && next_is(mod, "[")) {
             mem = parse_construct(mod, mem); /// this, is the construct
         } else if (mod->in_ref || mem->literal) {
@@ -1585,9 +1576,8 @@ eargs parse_args(silver mod) {
     return args;
 }
 
-static enode parse_fn_call(silver mod, emember fmem) {
+static enode parse_fn_call(silver mod, fn f, enode target) {
     bool     expect_br = false;
-    fn       f         = fmem->mdl;
     bool     has_expr  = len(f->args->members) > 0;
     verify(isa(f) == typeid(fn), "expected function type");
     int  model_arg_count = len(f->args->members);
@@ -1621,7 +1611,7 @@ static enode parse_fn_call(silver mod, emember fmem) {
         verify(next_is(mod, "]"), "expected ] end of function call");
         consume(mod);
     }
-    return e_fn_call(mod, fmem, values);
+    return e_fn_call(mod, f, target, values);
 }
 
 
@@ -1801,6 +1791,8 @@ path module_path(silver mod, string name) {
     }
     return res;
 }
+
+#undef find_member
 
 AType next_is_keyword(silver mod, member* fn) {
     token t = peek(mod);
