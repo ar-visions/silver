@@ -1,1 +1,3 @@
-A
+@static
+A aclang
+-lclang-cpp -lclang 

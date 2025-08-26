@@ -1,2 +1,2 @@
-A aether
--lclang-cpp -lclang 
+@static
+A

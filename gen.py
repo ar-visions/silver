@@ -139,6 +139,24 @@ def escape_path(p):
     """escape path for ninja"""
     return norm_path(p).replace('$', '$$').replace(':', '$:')
 
+def resolve_deps(modules, deps, plat, root_p, builddir):
+    out = []
+    mod_map = {m['name']: m for m in modules}
+    for d in deps:
+        if d in mod_map:
+            dep_mod = mod_map[d]
+            if dep_mod['target'] == 'static':
+                out.append(f"{root_p}/lib/{plat['lib_pre']}{d}{plat['lib']}")
+            elif dep_mod['target'] == 'shared':
+                out.append(f"{root_p}/lib/{plat['lib_pre']}{d}{plat['shared']}")
+            elif dep_mod['target'] == 'app':
+                out.append(f"{root_p}/bin/{d}{plat['exe']}")
+            else:
+                out.append(f"{builddir}/{d}{plat['obj']}")
+        else:
+            out.append(d)
+    return out
+
 def write_ninja(project, root, build_dir, plat):
     """generate build.ninja file"""
     # setup
@@ -166,10 +184,8 @@ def write_ninja(project, root, build_dir, plat):
     non_ext = [str(f) for f in (root / "src").iterdir() if f.is_file() and '.' not in f.name]
     global_deps = ' '.join(norm_path(d) for d in headers + non_ext)
     
-    # find main module
+    # check for a main target
     main_mod, target_type = None, None
-    
-    # check silver.g first
     silver_g = root / "src" / "silver.g"
     if silver_g.exists():
         _, links, target_type = parse_g_file(silver_g)
@@ -179,14 +195,11 @@ def write_ninja(project, root, build_dir, plat):
                     main_mod = m
                     m['links'].extend(links)
                     break
-    
-    # fallback to any module with target
     if not main_mod:
         for m in modules:
             if m['target']:
                 main_mod, target_type = m, m['target']
                 break
-    
     if not main_mod:
         print("error: no module with @app/@static/@shared directive")
         return None
@@ -196,7 +209,6 @@ def write_ninja(project, root, build_dir, plat):
                   "-Wno-compare-distinct-pointer-types", "-Wno-deprecated-declarations",
                   "-Wno-incompatible-pointer-types", "-Wno-shift-op-parentheses",
                   "-Wfatal-errors", "-fno-omit-frame-pointer"]
-    
     if plat['exe'] == '.exe':
         base_flags.extend(["--target=x86_64-pc-windows-msvc", "-fno-ms-compatibility", 
                           "-fno-delayed-template-parsing"])
@@ -214,7 +226,6 @@ def write_ninja(project, root, build_dir, plat):
     # write ninja file
     n = []
     n.append(f"# generated ninja build for {project}")
-    n.append(f"# target: {target_type} ({project})")
     n.append("")
     n.append("ninja_required_version = 1.5")
     n.append(f"llvm_ar = {plat['ar']}")
@@ -229,7 +240,7 @@ def write_ninja(project, root, build_dir, plat):
     n.append(f"ldflags = -L{root_p}/lib " + ' '.join(plat['lflags']))
     n.append("")
     
-    # rules
+    # rules for compiling
     n.append("rule cc")
     n.append(f"  command = $clang @{build_dir}/compile.rsp $cflags -DPROJECT=\"\\\"$project\\\"\" -c $in -o $out")
     n.append("  description = compiling c $in")
@@ -243,31 +254,32 @@ def write_ninja(project, root, build_dir, plat):
     n.append("  deps = gcc")
     n.append("")
     
-    # link rule
-    if target_type == 'app':
-        n.append("rule link")
-        n.append(f"  command = $clang @{build_dir}/link.rsp $in -o $root/$out $ldflags $libs")
-        n.append("  description = linking executable $out")
-    elif target_type == 'static':
-        n.append("rule link")
-        n.append("  command = $llvm_ar rcs $root/$out $in")
-        n.append("  description = creating static library $out")
-    else:  # shared
-        n.append("rule link")
-        cmd = f"$clang @{build_dir}/link.rsp -shared $in -o $root/$out $ldflags $libs"
-        if system == "Darwin":
-            cmd += " -install_name @rpath/$out"
-        elif system == "Linux":
-            cmd += " -Wl,-soname,$out"
-        n.append(f"  command = {cmd}")
-        n.append("  description = linking shared library $out")
+    # separate link rules
+    n.append("rule link_app")
+    n.append(f"  command = $clang @{build_dir}/link.rsp $in -o $out $ldflags $libs")
+    n.append("  description = linking executable $out")
+    n.append("")
+    
+    n.append("rule link_static")
+    n.append("  command = $llvm_ar rcs $out $in")
+    n.append("  description = creating static library $out")
+    n.append("")
+    
+    n.append("rule link_shared")
+    cmd = f"$clang @{build_dir}/link.rsp -shared $in -o $out $ldflags $libs"
+    if system == "Darwin":
+        cmd += " -install_name @rpath/$out"
+    elif system == "Linux":
+        cmd += " -Wl,-soname,$out"
+    n.append(f"  command = {cmd}")
+    n.append("  description = linking shared library $out")
     n.append("")
     
     # header gen
     n.append("rule headers")
     n.append(f"  command = $python $root/headers.py --project-path $root --build-path $builddir --project $project --import $root && touch $out")
-    n.append( "  description = generating headers")
-    n.append( "  generator = 1")
+    n.append("  description = generating headers")
+    n.append("  generator = 1")
     n.append("")
     
     stamp = "$builddir/.headers_generated"
@@ -275,56 +287,76 @@ def write_ninja(project, root, build_dir, plat):
     n.append("")
     
     # objects
-    objs, all_links = [], set()
+    module_objs, all_links = {}, set()
     for m in modules:
         obj = f"$builddir/{m['name']}{plat['obj']}"
-        objs.append(obj)
+        module_objs.setdefault(m['name'], []).append(obj)
         all_links.update(m['links'])
         
         deps = [stamp]
-        if global_deps: deps.append(global_deps)
+        if global_deps:
+            deps.append(global_deps)
         deps.extend(f"$builddir/{d}{plat['obj']}" for d in m['deps'] if any(x['name'] == d for x in modules))
         
         rule = "cxx" if m['is_cxx'] else "cc"
         flags_var = "cxxflags" if m['is_cxx'] else "cflags"
         
         n.append(f"build {obj}: {rule} {escape_path(norm_path(m['src']))} | {' '.join(deps)}")
-
-        
         n.append(f"  {flags_var} = -I{build_p}/src/{m['name']}  ${flags_var} -DMODULE=\\\"{m['name']}\\\"")
     n.append("")
     
-    # final target
-    if target_type == 'app':
-        output = f"bin/{project}{plat['exe']}"
-    elif target_type == 'static':
-        output = f"lib/{plat['lib_pre']}{project}{plat['lib']}"
-    else:
-        output = f"lib/{plat['lib_pre']}{project}{plat['shared']}"
-    
-    n.append(f"build {output}: link {' '.join(objs)}")
-    if all_links:
-        n.append(f"  libs = {' '.join(sorted(all_links))}")
-    n.append("")
-    n.append(f"build all: phony {output}")
-
+    # handle extra source files not tied to modules
     for f in source_files:
         ff     = Path(f)
         stem   = ff.stem
         suffix = ff.suffix
         is_cxx = suffix in ['.cc', '.cpp', '.cxx']
-        rule   = {
-            'input' : f,
-            'output': f'obj/{stem}.o',
-            'rule'  :  'cxx' if is_cxx else 'cc',
-            'flags' : f'-DMODULE=\\"{stem}\\"',
-        }
-        input_path  = norm_path(rule['input'])
-        output_path = f"$builddir/{rule['output']}"
-        n.append     (f"build {output_path}: {rule['rule']} {input_path}")
-        flags_var   =  'cflags' if rule['rule'] == 'cc' else 'cxxflags'
-        n.append     (f"  {flags_var} = {rule['flags']} -DMODULE=\\\"{m['name']}\\\"")
-        objs.append(output_path)
+        rule   = 'cxx' if is_cxx else 'cc'
+        flags_var = 'cxxflags' if is_cxx else 'cflags'
+        input_path  = norm_path(f)
+        output_path = f"$builddir/obj/{stem}{plat['obj']}"
+        n.append(f"build {output_path}: {rule} {input_path}")
+        n.append(f"  {flags_var} = -DMODULE=\\\"{stem}\\\" ${flags_var}")
+        module_objs.setdefault("misc", []).append(output_path)
+    n.append("")
+    
+    # final targets
+    outputs = []
+    for m in modules:
+        objs = ' '.join(module_objs.get(m['name'], []))
+        if not objs:
+            continue
+        
+        deps = resolve_deps(modules, m['deps'], plat, root_p, "$builddir")
+        if m['target'] == 'app':
+            output = f"{root_p}/bin/{m['name']}{plat['exe']}"
+            n.append(f"build {output}: link_app {objs} {' '.join(deps)}")
+            libs = sorted(set(m['links']) | all_links)
+            if libs:
+                n.append(f"  libs = {' '.join(libs)}")
+            n.append("")
+
+        elif m['target'] == 'static':
+            output = f"{root_p}/lib/{plat['lib_pre']}{m['name']}{plat['lib']}"
+            n.append(f"build {output}: link_static {objs}")
+            n.append("")
+
+        elif m['target'] == 'shared':
+            output = f"{root_p}/lib/{plat['lib_pre']}{m['name']}{plat['shared']}"
+            n.append(f"build {output}: link_shared {objs} {' '.join(deps)}")
+            libs = sorted(set(m['links']) | all_links)
+            if libs:
+                n.append(f"  libs = {' '.join(libs)}")
+            n.append("")
+        
+        else:
+            continue
+
+        outputs.append(output)
+
+    if outputs:
+        n.append(f"build all: phony {' '.join(outputs)}")
+        n.append("")
 
     n.append("default all")
     
@@ -333,7 +365,6 @@ def write_ninja(project, root, build_dir, plat):
         f.write('\n'.join(n) + '\n')
     
     print(f"generated {build_ninja}")
-    print(f"target: {target_type} -> {output}")
     return build_ninja
 
 def main():

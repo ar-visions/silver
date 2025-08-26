@@ -90,7 +90,7 @@ static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e) {
     verify (len(n), "expected name for enumerable");
 
     enumeration en = enumeration(mod, e, name, (token)n, members, map(hsize, 8));
-    
+    push(e, (model)en);
     // Visit enum constants
     for (auto it = decl->enumerator_begin(); it != decl->enumerator_end(); ++it) {
         EnumConstantDecl* ec = *it;
@@ -104,8 +104,9 @@ static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e) {
         ev->is_const = true;
         set(en->members, (A)cn, (A)ev);
     }
+    pop(e);
     
-    register_model(e, (model)en);
+    register_model(e, (model)en, false);
     finalize((model)en);
     return en;
 }
@@ -115,6 +116,10 @@ static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e) {
     std::string name = decl->getNameAsString();
     string n = string(name.c_str());
     
+    if (eq(n, "vkCreateInstance")) {
+        int test2 = 2;
+        test2    += 2;
+    }
     // Get return type
     QualType return_qt = decl->getReturnType();
     model rtype = map_clang_type_to_model(return_qt, ctx, e, null);
@@ -122,7 +127,6 @@ static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e) {
     
     // Process parameters
     eargs args = eargs(mod, e);
-    
     for (unsigned i = 0; i < decl->getNumParams(); i++) {
         ParmVarDecl* param = decl->getParamDecl(i);
         QualType param_type = param->getType();
@@ -137,7 +141,7 @@ static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e) {
         model mt = map_clang_type_to_model(param_type, ctx, e, null);
         if (!mt) continue;
         
-        emember earg = emember(mod, e, name, (token)pname, mdl, mt, is_arg, true);
+        emember earg = emember(mod, e, name, (token)pname, mdl, mt, is_arg, true, context, (model)args);
         set(args->members, (A)pname, (A)earg);
     }
     
@@ -145,7 +149,7 @@ static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e) {
     bool is_variadic = decl->isVariadic();
     
     fn f = fn(mod, e, name, (token)n, rtype, rtype, args, args, va_args, is_variadic);
-    register_model(e, (model)f);
+    register_model(e, (model)f, false);
     //use(f);
     finalize((model)f);
     return f;
@@ -169,7 +173,7 @@ static record create_record(RecordDecl* decl, ASTContext& ctx, aether e) {
         (record)structure(mod, e, name, (token)n);
     
     rec->members = map(hsize, 8);
-    register_model(e, (model)rec);
+    register_model(e, (model)rec, false);
     
     // Get the layout for accurate offsets/sizes
     if (decl->isCompleteDefinition()) {
@@ -189,7 +193,9 @@ static record create_record(RecordDecl* decl, ASTContext& ctx, aether e) {
             model mapped = map_clang_type_to_model(field_type, ctx, e, null);
             if (!mapped) continue;
             
+            push(e, mapped);
             emember m = emember(mod, rec->mod, name, (token)fname, mdl, mapped);
+            pop(e);
 
             uint64_t offset_bits = layout.getFieldOffset(field->getFieldIndex());
 
@@ -334,6 +340,10 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         if (existing) return existing;
         if (!use_name) use_name = string(n);
 
+        if (strcmp(n, "__INTMAX_C") == 0) {
+            int test2 = 2;
+            test2    += 2;
+        }
         // Recurse on underlying type
         return map_clang_type_to_model(tt->getDecl()->getUnderlyingType(), ctx, e, use_name);
     }
@@ -421,7 +431,10 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
     // Pointer types
     if (const PointerType* pt = dyn_cast<PointerType>(type)) {
         QualType pointee = pt->getPointeeType();
-        
+        if (use_name) {
+            model existing = emodel(use_name->chars);
+            if (existing) return existing;
+        }
         // function pointers
         if (pointee->isFunctionType())
             return map_function_pointer(pointee, ctx, e);
@@ -435,20 +448,24 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         model ptr = model(mod, e, name, (token)use_name, src, base, is_ref, true,
             is_const, pointee.isConstQualified());
         if (use_name)
-            register_model(e, ptr);
+            register_model(e, ptr, false);
         return ptr;
     }
     
     // Record types (struct/union/class)
     if (const RecordType* rt = dyn_cast<RecordType>(type)) {
         RecordDecl* decl = rt->getDecl();
-        return (model)create_record(decl, ctx, e);
+        std::string name = decl->getNameAsString();
+        model existing = emodel(name.c_str());
+        return existing ? existing : (model)create_record(decl, ctx, e);
     }
     
     // Enum types
     if (const EnumType* et = dyn_cast<EnumType>(type)) {
         EnumDecl* decl = et->getDecl();
-        return (model)create_enum(decl, ctx, e);
+        std::string name = decl->getNameAsString();
+        model existing = emodel(name.c_str());
+        return existing ? existing : (model)create_enum(decl, ctx, e);
     }
     
     // Function types
@@ -675,7 +692,7 @@ private:
             params,     params,
             is_var,     stored.is_variadic);
         
-        register_model(e, (model)m);
+        register_model(e, (model)m, false);
     }
 };
 

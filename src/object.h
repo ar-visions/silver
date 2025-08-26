@@ -28,7 +28,8 @@ enum A_FLAG {
     A_FLAG_VPROP     = 8192,
     A_FLAG_IS_ATTR   = 16384,
     A_FLAG_OPAQUE    = 32768,
-    A_FLAG_IFINAL    = 32768 << 1
+    A_FLAG_IFINAL    = 32768 << 1,
+    A_FLAG_TMETHOD   = 32768 << 2
 };
 
 typedef enum A_FLAG AFlag;
