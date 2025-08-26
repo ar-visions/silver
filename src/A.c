@@ -704,7 +704,6 @@ A A_initialize(A a) {
     #ifndef NDEBUG
     A_validator(a);
     #endif
-
     
     init_recur(a, f->type, null);
     hold_members(a);
@@ -888,7 +887,20 @@ A alloc_dbg(AType type, num count, cstr source, int line) {
     return a->data; /// return fields (A)
 }
 
+
 A alloc(AType type, num count) {
+    sz map_sz = sizeof(map);
+    sz A_sz   = sizeof(struct _A);
+    A a = alloc_instance(type,
+        A_sz + type->size * count, A_sz + type->size);
+    a->type       = type;
+    a->data       = &a[1];
+    a->count      = count;
+    a->alloc      = count;
+    return a->data; /// return fields (A)
+}
+
+A alloc_new(AType type, num count) {
     sz map_sz = sizeof(map);
     sz A_sz   = sizeof(struct _A);
     A a = alloc_instance(type,

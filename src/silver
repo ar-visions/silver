@@ -46,7 +46,6 @@ forward(import)
     i_method  (X,Y, public,     token,          peek) \
     i_method  (X,Y, public,     token,          element, num) \
     i_method  (X,Y, public,     num,            current_line) \
-    i_method  (X,Y, public,     bool,           next_is,       symbol) \
     i_method  (X,Y, public,     bool,           next_is_alpha) \
     i_method  (X,Y, public,     enode,          read_node, AType) \
     i_method  (X,Y, public,     enode,          parse_ternary, enode) \

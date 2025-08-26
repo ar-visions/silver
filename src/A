@@ -22,6 +22,7 @@
 
 #define forward(t) typedef struct _##t* t;
 
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -234,6 +235,7 @@ void lazy_init(global_init_fn fn);
             return true; \
         } \
     }
+
 
 #define define_enum( E ) \
     define_typed_enum(E, i32)
@@ -565,6 +567,7 @@ forward(any)
     i_final (AA,Y, public, bool,        is_meta_compatible,  A) \
     t_vargs (AA,Y, public, A,           formatter,           handle, A, symbol) \
     t_method(AA,Y, public, A,           alloc,               num) \
+    t_method(AA,Y, public, A,           alloc_new,           num) \
     t_method(AA,Y, public, A,           alloc_dbg,           num,     cstr,      i32) \
     t_method(AA,Y, public, A,           alloc2,              AType,   shape) \
     t_method(AA,Y, public, string,      estring,             i32) \
@@ -602,7 +605,7 @@ forward(any)
     i_cast  (AA,Y, public, bool)
 
 #define A_intern_footer(AA)
-                    
+
 #define A_intern(AA,YY,...) A_schema(AA,YY,__VA_ARGS__)
 
 //typedef struct _shape *shape;
@@ -1053,7 +1056,6 @@ typedef A(*mix_fn)(A, A, f32);
     i_override       (X,Y, cast,   string)
 declare_class(array, any)
 
-
 Exists A_exists(A);
 
 #define srcfile_schema(X,Y,...) \
@@ -1169,6 +1171,7 @@ declare_class_2(ctx, map)
     i_override(X,Y,   cast,   bool) \
     i_override(X,Y,   method, copy)
 declare_class(string)
+
 
 #define command_schema(X,Y,...) \
     i_method  (X,Y, public, i32,    exec) \

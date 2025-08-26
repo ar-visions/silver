@@ -59,9 +59,17 @@ declare_enum(interface)
 declare_enum(reference)
 */
 
+// mem is for is_type members
+#define mschema_schema(X,Y,...) \
+    i_prop(X,Y, public, emember, schema_type) \
+    i_prop(X,Y, public, emember, schema_f) \
+    i_prop(X,Y, public, emember, schema_info) \
+    i_prop(X,Y, public, emember, schema_i)
+declare_class(mschema)
 
 #define model_schema(X,Y,...)\
     i_prop    (X,Y, required,   aether,           mod, meta, weak) \
+    i_prop    (X,Y, public,     emember,          mem, weak) \
     i_prop    (X,Y, public,     token,            name) \
     i_prop    (X,Y, public,     string,           namespace_name) \
     i_prop    (X,Y, public,     model,            src) \
@@ -72,7 +80,7 @@ declare_enum(reference)
     i_prop    (X,Y, public,     bool,             is_const) \
     i_prop    (X,Y, public,     bool,             is_system) \
     i_prop    (X,Y, public,     bool,             is_internal) \
-    i_prop    (X,Y, public,     emember,          has_schema) \
+    i_prop    (X,Y, public,     mschema,          schema) \
     i_prop    (X,Y, public,     i64,              count) \
     i_prop    (X,Y, public,     shape,            shape) \
     i_prop    (X,Y, public,     sz,               size_bits) \
@@ -85,7 +93,6 @@ declare_enum(reference)
     i_prop    (X,Y, intern,     LLVMTypeRef,      type,       as, ARef) \
     i_prop    (X,Y, intern,     LLVMMetadataRef,  debug,      as, ARef) \
     i_prop    (X,Y, intern,     model,            ptr) \
-    i_prop    (X,Y, intern,     model,            schema) \
     i_prop    (X,Y, public,     bool,             finalized) \
     i_prop    (X,Y, intern,     model,            init_top) \
     i_prop    (X,Y, public,     emember,          mem_init) \
@@ -207,6 +214,7 @@ forward(emember)
     i_prop    (X,Y, public,     token,                  name) \
     i_prop    (X,Y, public,     aether,                 mod) \
     i_prop    (X,Y, required,   model,                  mdl) \
+    i_prop    (X,Y, public,     bool,                   is_null) \
     i_prop    (X,Y, public,     A,                      literal) \
     i_prop    (X,Y, public,     num,                    line) \
     i_prop    (X,Y, public,     num,                    column) \
@@ -226,7 +234,6 @@ declare_class(enode)
     i_prop    (X,Y, public,     record,                 target_record) \
     i_prop    (X,Y, public,     bool,                   registered) \
     i_prop    (X,Y, public,     aether,                 is_module) \
-    i_prop    (X,Y, public,     bool,                   is_static) \
     i_prop    (X,Y, public,     bool,                   is_require) \
     i_prop    (X,Y, public,     bool,                   is_inlay) \
     i_prop    (X,Y, public,     bool,                   is_const) \
@@ -246,6 +253,7 @@ declare_class(enode)
     i_prop    (X,Y, intern,     LLVMMetadataRef,        debug, as, ARef) \
     i_method  (X,Y, public,     none,    release) \
     i_method  (X,Y, public,     bool,    has_value) \
+    i_method  (X,Y, public,     none,    mark_used) \
     i_method  (X,Y, public,     none,    set_model,     model) \
     i_method  (X,Y, public,     none,    set_value,     A) \
     i_override(X,Y, method,     init)
@@ -273,19 +281,21 @@ declare_class_2(static_array, array)
     i_prop    (X,Y, required,   path,        source) \
     i_prop    (X,Y, public,     array,       lib_paths) \
     i_prop    (X,Y, public,     array,       include_paths) \
-    i_prop    (X,Y, intern,     array,       shared_libs) \
+    i_prop    (X,Y, public,     array,       shared_libs) \
     i_prop    (X,Y, public,     bool,        delegate) \
     i_prop    (X,Y, public,     bool,        with_debug) \
     i_prop    (X,Y, intern,     bool,        is_A_import) \
     i_prop    (X,Y, intern,     path,        current_include) \
     i_prop    (X,Y, intern,     fn,          current_fn) \
     i_prop    (X,Y, public,     bool,        in_ref) \
+    i_prop    (X,Y, public,     bool,        is_library) \
     i_prop    (X,Y, public,     model,       top) \
     i_prop    (X,Y, public,     array,       lex) \
     i_prop    (X,Y, public,     hook,        parse_f) \
     i_prop    (X,Y, public,     map,         base) \
     i_prop    (X,Y, public,     enode,       last_return) \
     i_prop    (X,Y, intern,     array,       finalizing) \
+    i_prop    (X,Y, intern,     bool,        no_const) \
     i_prop    (X,Y, intern,     LLVMExecutionEngineRef, jit,               as, ARef) \
     i_prop    (X,Y, intern,     LLVMBasicBlockRef,      current_if_block,  as, ARef) \
     i_prop    (X,Y, intern,     LLVMModuleRef,          module,            as, ARef) \
@@ -319,9 +329,10 @@ declare_class_2(static_array, array)
     i_method  (X,Y, public,     enode,       e_element,          enode,      A) \
     i_method  (X,Y, public,     none,        e_cmp_code,         enode,      comparison, enode, code, code) \
     i_method  (X,Y, public,     none,        e_branch,           code) \
+    i_method  (X,Y, public,     none,        e_memcpy,           enode, enode, model) \
     i_method  (X,Y, public,     emember,     compatible,         record,     string, AFlag, array) \
-    i_method  (X,Y, public,     none,        register_member,    emember) \
-    i_method  (X,Y, public,     emember,     register_model,     model) \
+    i_method  (X,Y, public,     none,        register_member,    emember, bool) \
+    i_method  (X,Y, public,     emember,     register_model,     model,   bool) \
     i_method  (X,Y, public,     enode,       e_operand,          A,          model) \
     i_method  (X,Y, public,     enode,       e_op,               OPType,     string, A, A) \
     i_method  (X,Y, public,     enode,       e_load,             emember, emember) \

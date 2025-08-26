@@ -912,7 +912,7 @@
     X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { emit_types(__VA_ARGS__) }; \
     X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = 0; \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_SMETHOD; \
+    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_TMETHOD; \
     X##_i.type.members[X##_i.type.member_count].ptr     = &N; \
     X##_i.type.member_count++;   
 #define   t_method_public_PROTO(X, R, N, ...)
@@ -1530,6 +1530,7 @@
 })
 
 #define mset(m, k, v) set(m, string(k), v)
+#define mget(m, k)    get(m, string(k))
 
 /// possible to iterate safely through primitives
 #define primitives(arr, E, e) \
