@@ -47,7 +47,6 @@ emember aether_register_model(aether e, model mdl, bool use_now) {
     }
 
     bool is_func  = instanceof(mdl, typeid(fn))    != null;
-    bool is_macro = instanceof(mdl, typeid(macro)) != null;
 
     // the pointer for classes is created after, and used when we need it
     // accessible on model by ->ptr
@@ -56,13 +55,12 @@ emember aether_register_model(aether e, model mdl, bool use_now) {
         mdl,      mdl,
         name,     mdl->name,
         is_func,  is_func,
-        is_macro, is_macro,
         is_type,  true);
     
     mdl->mem = mem;
     
     register_member(e, mem, use_now);
-    if (!is_macro && !is_func)
+    if (!is_func)
         pointer(mdl, null);
     print("registered model %o", mdl->name);
     return mem;
@@ -87,6 +85,11 @@ map aether_top_member_map(aether e) {
 void aether_register_member(aether e, emember mem, bool register_now) {
     if (!mem || mem->registered)
         return;
+
+    if (eq(mem->name, "Vulkan")) {
+        int test2 = 2;
+        test2    += 2;
+    }
 
     //mem->registered  = true;
     model ctx = mem->context ? mem->context : e->top;
@@ -1144,16 +1147,29 @@ static LLVMValueRef set_module_init(LLVMModuleRef module, fn f) {
     return global_ctors;
 }
 
+model translate_rtype(model mdl) {
+    if (isa(mdl) == typeid(Class))
+        return mdl->is_ref ? mdl : pointer(mdl, null);
+    return mdl;
+}
+
+model translate_target(model mdl) {
+    if (isa(mdl) == typeid(Class))
+        return mdl->is_ref ? mdl : pointer(mdl, null);
+    return mdl;
+}
+
+
 void fn_use(fn fn) {
     if (fn->value)
         return;
 
-    if (fn->name && eq(fn->name, "vkCreateInstance")) {
+    aether e = fn->mod;
+    if (fn->name && fn->instance == emodel("string") && eq(fn->name, "with_symbol")) {
         int test2 = 2;
         test2    += 2;
     }
     
-    aether            e         = fn->mod;
     int              n_args    = fn->args ? len(fn->args->members) : 0;
     LLVMTypeRef*     arg_types = calloc(4 + (fn->instance != null) + n_args, sizeof(LLVMTypeRef));
     int              index     = 0;
@@ -1168,7 +1184,8 @@ void fn_use(fn fn) {
             "target [incoming] must be record type (struct / class) -- it is then made pointer-to record");
         
         /// we set is_arg to prevent registration of global
-        fn->target = hold(emember(mod, e, mdl, pointer(fn->instance, null), name, string("a"), is_arg, true));
+        
+        fn->target = hold(emember(mod, e, mdl, translate_target(fn->instance), name, string("a"), is_arg, true));
         print("target = %o", fn->instance->name);
         arg_types[index++] = fn->target->mdl->type;
     }
@@ -1559,8 +1576,7 @@ void emember_set_model(emember mem, model mdl) {
 
     enumeration ctx_en = aether_context_model(e, typeid(enumeration));
     fn    is_fn    = instanceof(mdl, typeid(fn));
-    macro is_macro = instanceof(mdl, typeid(macro));
-    if (is_macro || ctx_en || is_fn || mdl->is_user) return;
+    if (ctx_en || is_fn || mdl->is_user) return;
 
     AType mdl_type = isa(mdl);
     if (mem->mdl != mdl) {
@@ -1770,7 +1786,7 @@ enode aether_e_operand(aether e, A op, model src_model) {
     enode r = e_operand_primitive(e, op);
     if (!r->value)
         r = e_operand_primitive(e, op);
-    return src_model ? e_convert(e, r, src_model) : r;
+    return src_model ? e_create(e, src_model, r) : r;
 }
 
 enode aether_e_null(aether e, model mdl) {
@@ -1809,7 +1825,7 @@ enode aether_e_create(aether e, model mdl, A args) {
         if (fn->function_type & A_FLAG_CONSTRUCT) {
             // ctr: call before init
             // this also means the mdl is not a primitive
-            verify(!is_primitive(fn->rtype), "expected struct/class");
+            //verify(!is_primitive(fn->rtype), "expected struct/class");
             ctr = fmem;
         } else if (fn->function_type & A_FLAG_CAST) {
             // we may call cast straight away, no need for init (which the cast does)
@@ -1947,20 +1963,25 @@ enode aether_e_create(aether e, model mdl, A args) {
             }
         } else {
             if (ctr) {
-                e_fn_call(e, ctr, res, a(input));
-                e_fn_call(e, f_initialize, res, a());
+                e_fn_call(e, ctr->mdl, res, a(input));
+                e_fn_call(e, f_initialize, null, a(res));
             } else {
                 verify(false, "expected constructor for type %o", mdl->name);
             }
         }
     } else if (ctr) {
         verify(isa(mdl) == typeid(structure), "expected structure");
-        res = e_fn_call(e, ctr, res, a(input));
+        res = e_fn_call(e, ctr->mdl, res, a(input));
     } else {
         
         verify(!a, "no translation for array to model %o", mdl->name);
-        if (isa(mdl) == typeid(structure)) {
+        bool is_ref_struct = mdl->is_ref && isa(mdl->src) == typeid(structure);
 
+        if (isa(mdl) == typeid(structure) || is_ref_struct) {
+
+            if (is_ref_struct) {
+                is_ref_struct = is_ref_struct;
+            }
             verify(!a, "unexpected array argument");
             if (imap) {
                 // check if constants are in map, and order fields
@@ -2239,7 +2260,9 @@ enode aether_e_load(aether e, emember mem, emember target) {
             emember t = target ? target : mem->target_member ? mem->target_member : elookup("a"); // unique to the function in class, not the class
             verify(t, "no target found when looking up emember");
             /// static methods do not have this in context
-            record rec = instanceof(t->mdl, typeid(record));
+            AType type = isa(t->mdl);
+            
+            record rec = instanceof(model_source(t->mdl), typeid(record));
             verify(rec, "record lookup failed for %o", t->mdl->name);
             ptr = LLVMBuildStructGEP2(
                 e->builder, rec->type, t->value, mem->index, "emember-ptr");
@@ -2368,10 +2391,14 @@ static struct op_entry op_table[] = {
     { LLVMBuildSub }, 
     { LLVMBuildMul }, 
     { LLVMBuildSDiv }, 
-    { LLVMBuildOr }, 
-    { LLVMBuildAnd },
+    { LLVMBuildOr },  // logical or
+    { LLVMBuildAnd }, // logical and
+    { LLVMBuildOr },  // bitwise or
+    { LLVMBuildAnd }, // bitwise and
     { LLVMBuildXor },  
-    { LLVMBuildURem }
+    { LLVMBuildURem },
+    { LLVMBuildAShr },
+    { LLVMBuildShl }
 };
 
 enode aether_e_assign(aether e, enode L, A R, OPType op) {
@@ -2387,8 +2414,10 @@ enode aether_e_assign(aether e, enode L, A R, OPType op) {
                 (e->builder, rL->value, rR->value, e_str(OPType, op)->chars));
     }
 
-    if (res->mdl != L->mdl)
-        res = e_convert(e, res, L->mdl);
+    if (res->mdl != L->mdl) {
+        res = e_operand(e, res, L->mdl);
+        //res = e_convert(e, res, L->mdl);
+    }
 
     LLVMBuildStore(e->builder, res->value, L->value);
     return res;
@@ -2450,6 +2479,10 @@ model aether_push(aether e, model mdl) {
         use(f);
 
     push(e->lex, mdl);
+    if (e->top == mdl && isa(mdl) == typeid(Class)){
+        int test2 = 2;
+        test2    += 2;
+    }
     e->top = mdl;
 
     if (!mdl->members) mdl->members = hold(map(hsize, 8));
@@ -2841,18 +2874,6 @@ static void register_basics(aether e) {
     verify(_member->size_bits      == sizeof(struct _member)      * 8, "_member size mismatch");
 }
 
-model translate_rtype(model mdl) {
-    if (isa(mdl) == typeid(Class))
-        return mdl->is_ref ? mdl : pointer(mdl, null);
-    return mdl;
-}
-
-model translate_target(model mdl) {
-    if (isa(mdl) == typeid(Class))
-        return mdl->is_ref ? mdl : pointer(mdl, null);
-    return mdl;
-}
-
 void aether_A_import(aether e, path lib) {
     e->current_include = lib ? lib : path("A");
     e->is_A_import = true;
@@ -2908,7 +2929,10 @@ void aether_A_import(aether e, path lib) {
         if (atype->user || (is_abstract && (atype != typeid(raw)))) continue; // if we have already processed this type, continue
         string name = string(atype->name);
         set(processing, name, atype);
-
+        if (atype == typeid(symbol)) {
+            int test2 = 2;
+            test2    += 2;
+        }
         bool  is_base_type = (atype->traits & A_TRAIT_BASE)      != 0;
         if   (is_base_type) continue; // this is AType, which we setup manually
 
@@ -2934,6 +2958,10 @@ void aether_A_import(aether e, path lib) {
 
         Class cl = mdl;
         // initialization for primitives are in model_init
+        if (atype == typeid(symbol)) {
+            int test2 = 2;
+            test2    += 2;
+        }
         atype->user = mdl; // lets store our model reference here
         verify(mdl, "failed to import type: %o", name);
         register_model(e, mdl, is_prim || is_enum || 
@@ -2948,7 +2976,7 @@ void aether_A_import(aether e, path lib) {
 
     Class cl_A = emodel("A");
 
-    // resolve parent classes, load refs, fill out enumerations
+    // resolve parent classes, load refs, fill out enumerations, and set primitive references
     pairs(processing, i) {
         AType  atype    = i->value;
         model  mdl      = atype->user;
@@ -2995,7 +3023,13 @@ void aether_A_import(aether e, path lib) {
         mdl = pointer(mdl->ptr ? mdl->ptr : mdl, name); // we have to have these ref_i32's and such from A-type
         register_model(e, mdl, false);
         verify(!atype->user, "expected null user for type %s", atype->name);
-        atype->user = mdl;
+        
+        if (atype == typeid(symbol)) {
+            atype->user = emodel("symbol");
+            verify(atype->user, "missing symbol model");
+        } else {
+            atype->user = mdl;
+        }
     }
 
     // load structs and class members (including i/s methods)
@@ -3027,14 +3061,21 @@ void aether_A_import(aether e, path lib) {
                 eargs args = eargs(mod, e);
                 if ((amem->member_type & A_FLAG_CONSTRUCT) != 0) {
                     verify(mtype, "type cannot be void for a constructor");
+                    model raw_mdl = (model)mtype->user;
                     model arg_mdl = translate_target((model)mtype->user); // 'target' is our arg (not target), the function merely works for us
                     member arg = earg(args, arg_mdl, "");
+                    if (cl && eq(cl->name, "string")) {
+                        int test2 = 2;
+                        test2    += 2;
+                    }
+                    set(args->members, string(""), arg);
                     mem_mdl = fn(
                         mod,           e,
                         is_ctr,        true,
                         name,          n,
                         extern_name,   f(string, "%s_%o", atype->name, n),
                         rtype,         translate_rtype(st ? (model)st : emodel("none")), // structure ctr return data (A-type ABI)
+                        function_type, A_FLAG_CONSTRUCT,
                         instance,      cl, // structs do not have a 'target' argument in constructor -- silver operates the same
                         args,          args);
                 }
@@ -3046,6 +3087,7 @@ void aether_A_import(aether e, path lib) {
                         name,          n,
                         extern_name,   f(string, "%s_%o", atype->name, n),
                         rtype,         translate_rtype(mtype->user),
+                        function_type, A_FLAG_CAST,
                         instance,      mdl);
                 }
                 else if ((amem->member_type & A_FLAG_INDEX) != 0) {
@@ -3060,6 +3102,7 @@ void aether_A_import(aether e, path lib) {
                         extern_name,   f(string, "%s_%o", atype->name, n),
                         is_cast,       true,
                         rtype,         translate_rtype(mtype->user),
+                        function_type, A_FLAG_INDEX,
                         instance,      mdl,
                         args,          args);
                 }
@@ -3073,6 +3116,7 @@ void aether_A_import(aether e, path lib) {
                         extern_name,   f(string, "%s_%o", atype->name, n),
                         is_oper,       amem->operator_type,
                         rtype,         translate_rtype(mtype->user),
+                        function_type, A_FLAG_OPERATOR,
                         instance,      mdl,
                         args,          arg_mdl ? args : null);
                 }
@@ -3249,24 +3293,6 @@ emember model_castable(model fr, model to) {
     if (is_primitive(fr) && is_generic(to))
         return (emember)true;
 
-    /// check constructors on to
-    /// single-arg construction model, same as as A-type
-    pairs (to->members, i) {
-        emember mem = i->value;
-        fn f = instanceof(mem->mdl, typeid(fn));
-        if (!f || !(f->function_type & A_FLAG_CONSTRUCT))
-            continue;
-        emember first = null;
-        pairs (f->args->members, i) {
-            emember arg = i->value;
-            first = arg;
-            break;
-        }
-        verify(first, "invalid constructor");
-        if (model_convertible(fr, first->mdl))
-            return (emember)true;
-    }
-
     /// check cast methods on from
     pairs (fr->members, i) {
         emember mem = i->value;
@@ -3291,7 +3317,7 @@ emember model_constructable(model fr, model to) {
     pairs (to->members, i) {
         emember mem = i->value;
         fn fn = instanceof(mem->mdl, typeid(fn));
-        if (!fn || !(fn->function_type & A_FLAG_CONSTRUCT))
+        if (!fn || !((fn->function_type & A_FLAG_CONSTRUCT) != 0))
             continue;
         emember first = null;
         pairs (fn->args->members, i) {
@@ -3799,9 +3825,19 @@ enode aether_e_op(aether e, OPType optype, string op_name, A L, A R) {
     LLVMBuilderRef B = e->builder;
     A literal = null;
     /// if are not storing ...
-    if (optype >= OPType__add && optype <= OPType__left) {
+    if (optype == OPType__or || optype == OPType__and) {
+        // ensure both operands are i1
+        model m_bool = emodel("bool");
+        rtype = m_bool;
+        LL = e_convert(e, LL, m_bool); // generate compare != 0 if not already i1
+        RL = e_convert(e, RL, m_bool);
         struct op_entry* op = &op_table[optype - OPType__add];
         RES = op->f_op(B, LL->value, RL->value, N);
+    } else if (optype >= OPType__add && optype <= OPType__left) {
+        struct op_entry* op = &op_table[optype - OPType__add];
+        // we must override the logic here because we're ONLY doing OPType__or, or OPType__and (we acn check for )
+        RES = op->f_op(B, LL->value, RL->value, N);
+
     } else if (optype == OPType__equal)
         return e_eq(e, LL, RL);
     else if (optype == OPType__compare)
@@ -3922,6 +3958,68 @@ A read_numeric(token a) {
         bool v = false;
         return primitive(typeid(bool), &v);
     }
+    bool is_base16 = cs[0] == '0' && cs[1] == 'x'; //0xff_ff_ff_ff_ff_ff_ff_ffull
+    if (is_base16) {
+        // not supporting the float format at the moment, like rust
+        i32  is_unsigned = 0;
+        i32  is_long     = 0;
+        i64  ln          = strlen(cs);
+        i32  suffix      = 0;
+        if (ln <= 2 || ln > 28) return null;
+        
+        for (int i = 0; i < 2; i++)
+            if (tolower(cs[ln - 1 - suffix]) == 'l') {
+                is_long++;
+                suffix++;
+            }
+
+        if (tolower(cs[ln - 1 - suffix]) == 'u') {
+            is_unsigned++;
+            suffix++;
+        }
+        if (is_long == 0)
+            for (int i = 0; i < 2; i++)
+                if (tolower(cs[ln - 1 - suffix]) == 'l') {
+                    is_long++;
+                    suffix++;
+                }
+
+        i32 nlen = 0;
+        u64 val  = 0;
+        i32 digits = 0;
+        for (int i = 0; i < ln - suffix; i++) {
+            i32 v = tolower(cs[i]);
+            if (v == '_') continue;
+            if (!((v >= 'a' && v <= 'f') || (v >= '0' && v <= '9')))
+                return null;
+            i32 n = (v >= 'a' && v <= 'f') ? (v - 'a' + 10) : (v - '0');
+            val = (val << 4) | (n & 0xF);
+            digits++;
+        }
+        if (is_unsigned) {
+            if (is_long == 0) {
+                if (digits >= 15) return A_u64((u64)val);
+                if (digits >= 7)  return A_u32((u32)val);
+                if (digits >= 3)  return A_u16((u16)val);
+                return A_u8((u8)val);
+            } else if (is_long == 1) {
+                return A_u32((u32)val);
+            } else if (is_long == 2) {
+                return A_u64((u64)val);
+            }
+        } else {
+            if (is_long == 0) {
+                if (digits >= 15) return A_i64((i64)val);
+                if (digits >= 7)  return A_i32((i32)val);
+                if (digits >= 3)  return A_i16((i16)val);
+                return A_i8((i8)val);
+            } else if (is_long == 1) {
+                return A_i32((i32)val);
+            } else if (is_long == 2) {
+                return A_i64((i64)val);
+            }
+        }
+    }
     bool is_digit = cs[0] >= '0' && cs[0] <= '9';
     bool has_dot  = strstr(cs, ".") != 0;
     if (!is_digit && !has_dot)
@@ -4018,8 +4116,6 @@ void eargs_init (eargs a) {
 define_enum  (interface)
 define_enum  (comparison)
 
-array macro_expand(macro m, array args_tokens);
-
 define_class (static_array, array)
 
 define_class (mschema,      A)
@@ -4028,7 +4124,6 @@ define_class (format_attr,  A)
 define_class (ident,        A) // useful class to represent ident for operations, and not conversion to a model; this disambiguates the two use-cases
 define_class (clang_cc,     A)
 
-define_class (macro,        model)
 define_class (statements,   model)
 define_class (eargs,        model)
 define_class (fn,           model)

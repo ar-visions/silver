@@ -161,14 +161,6 @@ declare_class_2(fn, model)
     i_prop  (X,Y, public, handle,   PP)
 declare_class(clang_cc)
 
-#define macro_schema(X,Y,...) \
-    i_prop  (X,Y, public, array,    params) \
-    i_prop  (X,Y, public, clang_cc, instance) \
-    i_prop  (X,Y, public, string,   definition) \
-    i_prop  (X,Y, public, bool,     is_var) \
-    i_method(X,Y, public, array,    expand, array)
-declare_class_2(macro, model)
-
 
 #define statements_schema(X,Y,...) \
     i_override(X,Y, method, init)
@@ -240,7 +232,6 @@ declare_class(enode)
     i_prop    (X,Y, public,     bool,                   is_assigned) \
     i_prop    (X,Y, public,     bool,                   is_type) \
     i_prop    (X,Y, public,     bool,                   is_func) \
-    i_prop    (X,Y, public,     bool,                   is_macro) \
     i_prop    (X,Y, public,     bool,                   is_arg) \
     i_prop    (X,Y, public,     bool,                   is_decl) \
     i_prop    (X,Y, public,     A,                      override_offset_bits) \
@@ -276,6 +267,7 @@ declare_class(ident)
 #define static_array_schema(X,Y,...)
 declare_class_2(static_array, array)
 
+
 #define aether_schema(X,Y,...)\
     i_prop    (X,Y, public,     path,        install) \
     i_prop    (X,Y, required,   path,        source) \
@@ -285,13 +277,15 @@ declare_class_2(static_array, array)
     i_prop    (X,Y, public,     bool,        delegate) \
     i_prop    (X,Y, public,     bool,        with_debug) \
     i_prop    (X,Y, intern,     bool,        is_A_import) \
-    i_prop    (X,Y, intern,     path,        current_include) \
+    i_prop    (X,Y, public,     path,        current_include) \
     i_prop    (X,Y, intern,     fn,          current_fn) \
+    i_prop    (X,Y, public,     bool,        in_macro) \
     i_prop    (X,Y, public,     bool,        in_ref) \
     i_prop    (X,Y, public,     bool,        is_library) \
     i_prop    (X,Y, public,     model,       top) \
     i_prop    (X,Y, public,     array,       lex) \
     i_prop    (X,Y, public,     hook,        parse_f) \
+    i_prop    (X,Y, public,     callback,    parse_expr) \
     i_prop    (X,Y, public,     map,         base) \
     i_prop    (X,Y, public,     enode,       last_return) \
     i_prop    (X,Y, intern,     array,       finalizing) \
