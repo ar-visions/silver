@@ -820,7 +820,25 @@ declare_class(list)
 // += -= *= /= 
 // ":", "+=", "-=", "*=", "/=", "|=",
 // "&=", "^=", ">>=", "<<=", "%=", null);
+/*
 
+static struct op_entry op_table[] = {
+    { LLVMBuildAdd },
+    { LLVMBuildSub }, 
+    { LLVMBuildMul }, 
+    { LLVMBuildSDiv }, 
+    { LLVMBuildOr }, 
+    { LLVMBuildAnd },
+    { LLVMBuildOr }, 
+    { LLVMBuildAnd },
+    { LLVMBuildXor },  
+    { LLVMBuildURem },
+    { LLVMBuildAShr },
+    { LLVMBuildShl }
+};
+
+
+*/
 #define OPType_schema(E,T,Y,...) \
     enum_value(E,T,Y, _undefined,         0) \
     enum_value(E,T,Y, _add,               1) \
@@ -829,28 +847,34 @@ declare_class(list)
     enum_value(E,T,Y, _div,               4) \
     enum_value(E,T,Y, _or,                5) \
     enum_value(E,T,Y, _and,               6) \
-    enum_value(E,T,Y, _xor,               7) \
-    enum_value(E,T,Y, _mod,               8) \
-    enum_value(E,T,Y, _right,             9) \
-    enum_value(E,T,Y, _left,              10) \
-    enum_value(E,T,Y, _compare,           11) \
-    enum_value(E,T,Y, _equal,             12) \
-    enum_value(E,T,Y, _not_equal,         13) \
-    enum_value(E,T,Y, _is,                14) \
-    enum_value(E,T,Y, _inherits,          15) \
-    enum_value(E,T,Y, _value_default,     16) \
-    enum_value(E,T,Y, _cond_value,        17) \
-    enum_value(E,T,Y, _assign,            18) \
-    enum_value(E,T,Y, _assign_add,        19) \
-    enum_value(E,T,Y, _assign_sub,        20) \
-    enum_value(E,T,Y, _assign_mul,        21) \
-    enum_value(E,T,Y, _assign_div,        22) \
-    enum_value(E,T,Y, _assign_or,         23) \
-    enum_value(E,T,Y, _assign_and,        24) \
-    enum_value(E,T,Y, _assign_xor,        25) \
-    enum_value(E,T,Y, _assign_mod,        26) \
-    enum_value(E,T,Y, _assign_right,      27) \
-    enum_value(E,T,Y, _assign_left,       28)
+    enum_value(E,T,Y, _bitwise_or,        7) \
+    enum_value(E,T,Y, _bitwise_and,       8) \
+    enum_value(E,T,Y, _xor,               9) \
+    enum_value(E,T,Y, _mod,               10) \
+    enum_value(E,T,Y, _right,             11) \
+    enum_value(E,T,Y, _left,              12) \
+    enum_value(E,T,Y, _compare,           13) \
+    enum_value(E,T,Y, _equal,             14) \
+    enum_value(E,T,Y, _not_equal,         15) \
+    enum_value(E,T,Y, _greater,           16) \
+    enum_value(E,T,Y, _less,              17) \
+    enum_value(E,T,Y, _greater_eq,        18) \
+    enum_value(E,T,Y, _less_eq,           19) \
+    enum_value(E,T,Y, _is,                20) \
+    enum_value(E,T,Y, _inherits,          21) \
+    enum_value(E,T,Y, _value_default,     22) \
+    enum_value(E,T,Y, _cond_value,        23) \
+    enum_value(E,T,Y, _assign,            24) \
+    enum_value(E,T,Y, _assign_add,        25) \
+    enum_value(E,T,Y, _assign_sub,        26) \
+    enum_value(E,T,Y, _assign_mul,        27) \
+    enum_value(E,T,Y, _assign_div,        28) \
+    enum_value(E,T,Y, _assign_or,         29) \
+    enum_value(E,T,Y, _assign_and,        30) \
+    enum_value(E,T,Y, _assign_xor,        31) \
+    enum_value(E,T,Y, _assign_mod,        32) \
+    enum_value(E,T,Y, _assign_right,      33) \
+    enum_value(E,T,Y, _assign_left,       34)
 declare_enum(OPType)
 
 
@@ -1171,7 +1195,6 @@ declare_class_2(ctx, map)
     i_override(X,Y,   cast,   bool) \
     i_override(X,Y,   method, copy)
 declare_class(string)
-
 
 #define command_schema(X,Y,...) \
     i_method  (X,Y, public, i32,    exec) \

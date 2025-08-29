@@ -2171,6 +2171,11 @@ none map_set(map m, A k, A v) {
     item i = map_fetch(m, k);
     AType vtype = isa(v);
     A info = head(m);
+    string kstr = instanceof(k, typeid(string));
+    if (kstr && eq(kstr, "Vulkan")) {
+        int test2 = 2;
+        test2    += 2;
+    }
     bool allowed = m->unmanaged || !m->last_type || m->last_type == vtype || m->assorted;
     verify(allowed,
         "unassorted map set to differing type: %s, previous: %s (%s:%i)",
