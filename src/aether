@@ -36,6 +36,7 @@ declare_enum(comparison)
     i_prop      (X,Y,  public,  num,        column) \
     i_prop      (X,Y,  public,  num,        indent) \
     i_prop      (X,Y,  public,  A,          literal) \
+    i_prop      (X,Y,  public,  aether,     mod) \
     i_method    (X,Y,  public,  AType,      get_type) \
     i_method    (X,Y,  public,  string,     location) \
     i_override  (X,Y,  ctr,     cstr) \
@@ -72,6 +73,7 @@ declare_class(mschema)
     i_prop    (X,Y, public,     emember,          mem, weak) \
     i_prop    (X,Y, public,     token,            name) \
     i_prop    (X,Y, public,     string,           namespace_name) \
+    i_prop    (X,Y, public,     AType,            atype_src) \
     i_prop    (X,Y, public,     model,            src) \
     i_prop    (X,Y, public,     bool,             is_ref) \
     i_prop    (X,Y, public,     bool,             is_map) \
@@ -106,7 +108,6 @@ declare_class(mschema)
     i_method  (X,Y, public,     emember,          convertible,   model) \
     i_method  (X,Y, public,     emember,          castable,      model) \
     i_method  (X,Y, public,     emember,          constructable, model) \
-    i_override(X,Y, cast,       string) \
     i_override(X,Y, method,     init)
 declare_class(model)
 
@@ -116,6 +117,14 @@ declare_class(model)
     i_prop(X,Y, public, bool, is_ext) \
     i_override(X,Y, method, init)
 declare_class_2(eargs, model)
+
+
+#define macro_schema(X,Y,...) \
+    i_prop(X,Y, public, array, def) \
+    i_prop(X,Y, public, array, params) \
+    i_prop(X,Y, public, bool,  va_args) \
+    i_method(X,Y, public, array, expand, array, map)
+declare_class_2(macro, model)
 
 
 #define format_attr_schema(X,Y,...) \
@@ -158,7 +167,11 @@ declare_class_2(fn, model)
 #define clang_cc_schema(X,Y,...) \
     i_prop  (X,Y, public, aether,   mod) \
     i_prop  (X,Y, public, handle,   compiler) \
-    i_prop  (X,Y, public, handle,   PP)
+    i_prop  (X,Y, public, handle,   PP) \
+    i_prop  (X,Y, public, handle,   ctx) \
+    i_prop  (X,Y, public, handle,   consumer) \
+    i_prop  (X,Y, public, handle,   S) \
+    i_prop  (X,Y, public, handle,   P)
 declare_class(clang_cc)
 
 
@@ -206,6 +219,7 @@ forward(emember)
     i_prop    (X,Y, public,     token,                  name) \
     i_prop    (X,Y, public,     aether,                 mod) \
     i_prop    (X,Y, required,   model,                  mdl) \
+    i_prop    (X,Y, public,     bool,                   explicit_ref) \
     i_prop    (X,Y, public,     bool,                   is_null) \
     i_prop    (X,Y, public,     A,                      literal) \
     i_prop    (X,Y, public,     num,                    line) \
@@ -284,8 +298,10 @@ declare_class_2(static_array, array)
     i_prop    (X,Y, public,     bool,        is_library) \
     i_prop    (X,Y, public,     model,       top) \
     i_prop    (X,Y, public,     array,       lex) \
-    i_prop    (X,Y, public,     hook,        parse_f) \
+    i_prop    (X,Y, public,     bool,        cmode) \
+    i_prop    (X,Y, public,     callback,    parse_f) \
     i_prop    (X,Y, public,     callback,    parse_expr) \
+    i_prop    (X,Y, public,     callback,    read_model) \
     i_prop    (X,Y, public,     map,         base) \
     i_prop    (X,Y, public,     enode,       last_return) \
     i_prop    (X,Y, intern,     array,       finalizing) \

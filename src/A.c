@@ -8,6 +8,8 @@
 #include <math.h>
 #include <errno.h>
 #include <limits.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 AType_info        AType_i;
 //objectType_info   objectType_i;
@@ -1910,6 +1912,11 @@ num parse_formatter(cstr start, cstr res, num sz) {
     return (num)(scan - start);
 }
 
+static int term_width() {
+    struct winsize w;
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+    return w.ws_col ? w.ws_col : 80;
+}
 
 A formatter(AType type, handle ff, A opt, symbol template, ...) {
     va_list args;
@@ -2021,9 +2028,11 @@ A formatter(AType type, handle ff, A opt, symbol template, ...) {
         if (!listen && !contains(log_funcs, asterick)) return null;
         // write type / function
         if (tname)
-            sprintf(info, "%s::%s: ", tname->chars, fname->chars);
+            sprintf(info, "\x1b[34m%s::%s:\x1b[21G \x1b[0m", tname->chars, fname->chars);
         else
-            sprintf(info, "%s: ", fname->chars);
+            sprintf(info, "\x1b[34m%s:\x1b[21G \x1b[0m", fname->chars);
+
+        // based on the number of columns left, we need to isue multiple prints starting at 30
         fwrite(info, strlen(info), 1, f);
     }
 
@@ -2031,12 +2040,32 @@ A formatter(AType type, handle ff, A opt, symbol template, ...) {
         fwrite("\033[1;33m", 7, 1, f);
 
     if (f) {
+        // based on the number of columns left, we need to isue multiple prints starting at 30
         // write message
-        string_writef(res, f, false);
-        if (symbolic_logging || write_ln) {
-            fwrite("\n", 1, 1, f);
+        int n = len(res);
+        int tw = max(32, term_width() - 22);
+        float lc = (float)n / tw;
+        if (lc <= 1) {
+            string_writef(res, f, false);
+            if (symbolic_logging || write_ln) {
+                fwrite("\n", 1, 1, f);
+                fflush(f);
+            }
+        } else {
+            for (int i = 0, to = floorf(lc); i <= to; i++) {
+                string l  = mid(res, i * tw, tw);
+                string ff = f(string, "\x1b[22G%o", l);
+                string_writef(ff, f, false);
+                if (symbolic_logging || write_ln) {
+                    if (i == to)
+                        fwrite("\n", 1, 1, f);
+                    else
+                        fwrite("\n\x1b[22G", 1, 7, f);
+                }
+            }
             fflush(f);
         }
+
     }
     
     if (f == stderr) {
@@ -4949,7 +4978,7 @@ define_primitive(cereal, raw, 0)
 define_primitive(shape,  raw, A_TRAIT_POINTER)
 define_primitive(none,   nil, 0)
 //define_primitive(AType,  raw, 0)
-define_primitive(handle, raw, A_TRAIT_POINTER, A)
+define_primitive(handle, raw, A_TRAIT_POINTER, u8)
 define_primitive(member, raw, 0)
 define_primitive(ARef,   ref, A_TRAIT_POINTER, A)
 define_primitive(floats, raw, 0)

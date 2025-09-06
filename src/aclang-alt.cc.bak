@@ -19,21 +19,26 @@
 #include <clang/AST/RecursiveASTVisitor.h>
 #include <clang/AST/Type.h>
 #include <clang/AST/Decl.h>
+#include <clang/AST/Expr.h>
+#include <clang/AST/Stmt.h>
 #include <clang/AST/DeclCXX.h>
 #include <clang/AST/RecordLayout.h>
+#include <clang/Frontend/ASTUnit.h>
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Frontend/FrontendActions.h>
 #include <clang/Frontend/TextDiagnosticPrinter.h>
 #include <clang/Lex/Preprocessor.h>
 #include <clang/Lex/PPCallbacks.h>
 #include <clang/Lex/MacroInfo.h>
+#include <clang/Lex/TokenLexer.h>
+#include <clang/Parse/Parser.h>
 #include <clang/Parse/ParseAST.h>
 #include <clang/Tooling/Tooling.h>
 
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/IR/DataLayout.h>
-#include "llvm/TargetParser/Host.h"
-#include "llvm/TargetParser/Triple.h"
+#include <llvm/TargetParser/Host.h>
+#include <llvm/TargetParser/Triple.h>
 
 #include <ports.h>
 #include <string>
@@ -331,17 +336,13 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
 
     // Strip elaborated type (like CXType_Elaborated)
     if (const ElaboratedType* et = dyn_cast<ElaboratedType>(t)) {
-        return map_clang_type_to_model(et->getNamedType(), ctx, e, use_name);
+        return map_clang_type_to_model(et->getNamedType(), ctx, e, null);
     }
     
     // Handle typedefs
     if (const TypedefType* tt = dyn_cast<TypedefType>(t)) {
         std::string name = tt->getDecl()->getName().str();
         symbol n = name.c_str();
-        if (strcmp(n, "uint32_t") == 0) {
-            int test2 = 2;
-            test2    += 2;
-        }
         model existing = emodel(n);
         if (existing) return existing;
         if (!use_name) use_name = string(n);
@@ -361,52 +362,44 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
     
 
     // Builtin types
-    model src = null;
     if (const BuiltinType* bt = dyn_cast<BuiltinType>(type)) {
         switch (bt->getKind()) {
-        case BuiltinType::Void:        src = emodel("none"); break;
-        case BuiltinType::Bool:        src = emodel("bool"); break;
+        case BuiltinType::Void:        return emodel("none");
+        case BuiltinType::Bool:        return emodel("bool");
         
         // Character types
-        case BuiltinType::Char_U:      src = emodel("u8");   break;
-        case BuiltinType::UChar:       src = emodel("u8");  break;
-        case BuiltinType::Char_S:      src = emodel("i8"); break;
-        case BuiltinType::SChar:       src = emodel("i8"); break;
+        case BuiltinType::Char_U:      return emodel("u8");
+        case BuiltinType::UChar:       return emodel("u8");
+        case BuiltinType::Char_S:      return emodel("i8");
+        case BuiltinType::SChar:       return emodel("i8");
         case BuiltinType::WChar_U:
-        case BuiltinType::WChar_S:     src = emodel("wchar"); break;
-        case BuiltinType::Char16:      src = emodel("u16"); break;
-        case BuiltinType::Char32:      src = emodel("u32"); break;
+        case BuiltinType::WChar_S:     return emodel("wchar");
+        case BuiltinType::Char16:      return emodel("u16");
+        case BuiltinType::Char32:      return emodel("u32");
         
         // Integer types
-        case BuiltinType::UShort:      src = emodel("u16"); break;
-        case BuiltinType::Short:       src = emodel("i16"); break;
-        case BuiltinType::UInt:        src = emodel("u32"); break;
-        case BuiltinType::Int:         src = emodel("i32"); break;
-        case BuiltinType::ULong:       src = emodel("u64"); break;
-        case BuiltinType::Long:        src = emodel("i64"); break;
-        case BuiltinType::ULongLong:   src = emodel("u64"); break;
-        case BuiltinType::LongLong:    src = emodel("i64"); break;
-        case BuiltinType::Int128:      src = emodel("i128"); break;
-        case BuiltinType::UInt128:     src = emodel("u128"); break;
+        case BuiltinType::UShort:      return emodel("u16");
+        case BuiltinType::Short:       return emodel("i16");
+        case BuiltinType::UInt:        return emodel("u32");
+        case BuiltinType::Int:         return emodel("i32");
+        case BuiltinType::ULong:       return emodel("u64");
+        case BuiltinType::Long:        return emodel("i64");
+        case BuiltinType::ULongLong:   return emodel("u64");
+        case BuiltinType::LongLong:    return emodel("i64");
+        case BuiltinType::Int128:      return emodel("i128");
+        case BuiltinType::UInt128:     return emodel("u128");
         
         // Floating point
-        case BuiltinType::Float:       src = emodel("f32");  break;
-        case BuiltinType::Double:      src = emodel("f64");  break;
-        case BuiltinType::LongDouble:  src = emodel("f128"); break;
-        case BuiltinType::Float16:     src = emodel("f16");  break;
-        case BuiltinType::Float128:    src = emodel("f128"); break;
+        case BuiltinType::Float:       return emodel("f32");
+        case BuiltinType::Double:      return emodel("f64");
+        case BuiltinType::LongDouble:  return emodel("f128");
+        case BuiltinType::Float16:     return emodel("f16");
+        case BuiltinType::Float128:    return emodel("f128");
         
         default:
             // Handle other builtin types
             break;
         }
-
-        if (src && use_name) {
-            model mdl = model(mod, e, src, src, name, (token)use_name);
-            register_model(e, mdl, false);
-            return mdl;
-        } else if (src)
-            return src;
     }
     
     // Complex types
@@ -429,10 +422,7 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         shape sh = (shape)A_struct(_shape);
         sh->count = 1;
         sh->data[0] = size;
-        model mdl = model(mod, e, name, (token)use_name, src, elem_model, shape, sh);
-        if (use_name)
-            register_model(e, mdl, false);
-        return mdl;
+        return model(mod, e, src, elem_model, shape, sh);
     }
     
     if (const IncompleteArrayType* iat = dyn_cast<IncompleteArrayType>(type)) {
@@ -515,15 +505,136 @@ path aether_lookup_include(aether e, string include) {
     return full_path;
 }
 
+
+class MacroCollector : public clang::PPCallbacks {
+    struct MacroRecord {
+        std::string Name;
+        std::vector<Token> Tokens;
+    };
+    std::vector<MacroRecord> Collected;
+public:
+    clang_cc instance;
+    explicit MacroCollector(clang_cc instance) : instance(instance) { }
+
+    void MacroDefined(const clang::Token &macroNameTok,
+                      const clang::MacroDirective *md) override {
+        const clang::MacroInfo *mi = md->getMacroInfo();
+        
+        clang::Preprocessor*    PP  = (clang::Preprocessor*)instance->PP;
+        ASTContext*             ctx = (ASTContext*)instance->ctx;
+        Sema*                   S   = (clang::Sema*)instance->S;
+
+        if (mi->isFunctionLike())
+            return;
+
+        MacroRecord rec;
+        rec.Name = macroNameTok.getIdentifierInfo()->getName().str();
+        rec.Tokens.assign(mi->tokens_begin(), mi->tokens_end());
+        Collected.push_back(std::move(rec));
+    }
+
+    void define_macros() {
+        aether mod = instance->mod;
+        clang::Parser*          P   = (clang::Parser*)instance->P;
+        clang::Preprocessor*    PP  = (clang::Preprocessor*)instance->PP;
+        ASTContext*             ctx = (ASTContext*)instance->ctx;
+        Sema*                   S   = (clang::Sema*)instance->S;
+
+        for (auto &rec : Collected) {
+
+            enode       value    = null;
+            string      n        = string(rec.Name.c_str());
+            emember     existing = lookup2(mod, (A)n, (AType)null);
+                
+            if (existing)
+                continue;
+
+                // Make a copy of the tokens to enter a new stream
+            llvm::SmallVector<clang::Token, 8> toks(rec.Tokens.begin(), rec.Tokens.end());
+            
+            // --- This is the key change ---
+            // Create an expression from the tokens using Sema's parser helpers.
+            // We use the same preprocessor and Sema instances.
+            
+            // Push the tokens into the preprocessor's stream.
+            PP->EnterTokenStream(toks, /*DisableMacroExpansion*/ false, /*OwnsTokens*/ false);
+
+            clang::Parser parser(*PP, *S, false);
+            parser.Initialize(); // Reset parser state for this new job
+
+
+            clang::Expr *expr = null;
+            if (!expr) continue;
+
+            clang::Expr::EvalResult eval;
+            if (!expr->EvaluateAsRValue(eval, *ctx)) continue;
+            
+            // convert eval.Val → your aether enode (int/float/string)
+            if (eval.Val.isInt()) {
+                llvm::APSInt val = eval.Val.getInt();
+                u32 bits         = val.getBitWidth();
+                bool is_signed   = val.isSigned();
+                
+                if (bits <= 32) {
+                    value = e_operand(mod, is_signed ? A_i32(val.getSExtValue()) : A_u32(val.getZExtValue()), null);
+                } else if (bits <= 64) {
+                    value = e_operand(mod, is_signed ? A_i64(val.getSExtValue()) : A_u64(val.getZExtValue()), null);
+                } else {
+                    // cannot support i128 for now as its not universal enough across our targets
+                    continue;
+                }
+                
+                // register as u32 constant in aether
+            } else if (eval.Val.isFloat()) {
+                llvm::APFloat f = eval.Val.getFloat();
+                const llvm::fltSemantics &sem = f.getSemantics();
+                if (&sem == &llvm::APFloat::IEEEsingle()) {
+                    value = e_operand(mod, A_f32(f.convertToFloat()), null);
+                } else if (&sem == &llvm::APFloat::IEEEdouble()) {
+                    value = e_operand(mod, A_f64(f.convertToDouble()), null);
+                } else if (&sem == &llvm::APFloat::x87DoubleExtended()) {
+                    // 80-bit long double
+                    // these absolutely are stupid, because different systems have different widths
+                    // definite blowhard of a type
+                    continue;
+                } else if (&sem == &llvm::APFloat::IEEEquad()) {
+                    // 128-bit float
+                    continue;
+                }
+            } else if (auto str = dyn_cast<StringLiteral>(expr)) {
+                llvm::StringRef bytes = str->getBytes();  // raw contents (no quotes, no null terminator)
+                std::string s = bytes.str();             // make an owning std::string
+
+                // handle string literal
+                value = e_operand(mod, (A)string((symbol)s.c_str()), null);
+            }
+
+            if (!value)
+                continue;
+
+            emember m = emember(
+                mod,        mod,
+                name,       (token)n,
+                mdl,        value->mdl,
+                value,      value->value);
+            
+            register_member(mod, m, false);
+        }
+    }
+};
+
 // custom AST consumer
 class AetherASTConsumer : public clang::ASTConsumer {
     AetherDeclVisitor& visitor;
     ASTContext& ctx;
+    MacroCollector* mc;
 public:
-    AetherASTConsumer(AetherDeclVisitor& v, ASTContext& c) : visitor(v), ctx(c) {}
+    AetherASTConsumer(AetherDeclVisitor& v, ASTContext& c, MacroCollector* mc) : 
+        visitor(v), ctx(c), mc(mc) {}
     
     void HandleTranslationUnit(ASTContext& context) override {
         visitor.TraverseDecl(context.getTranslationUnitDecl());
+        mc->define_macros();
     }
 };
 
@@ -564,88 +675,6 @@ public:
 
 typedef aether silver;
 void print_tokens(silver mod, symbol label);
-
-class MacroCollector : public clang::PPCallbacks {
-public:
-    clang_cc instance;
-    clang::Preprocessor* PP;
-
-    explicit MacroCollector(clang_cc instance)
-        : instance(instance), PP((clang::Preprocessor*)instance->PP) {}
-
-    void MacroDefined(const clang::Token &macroNameTok,
-                      const clang::MacroDirective *md) override {
-        const clang::MacroInfo *mi = md->getMacroInfo();
-    
-        aether mod = instance->mod;
-        std::string name = macroNameTok.getIdentifierInfo()->getName().str();
-        string n = string(name.c_str());
-        emember existing = lookup2(mod, (A)n, (AType)null);
-
-        if (existing)
-            return;
-
-        array params = null;
-        bool is_func = mi->isFunctionLike();
-        if (is_func) {
-            params = array(alloc, 32);
-            for (const IdentifierInfo *II: mi->params())
-                push(params, (A)string(II->getName().str().c_str()));
-        }
-
-        std::string def;
-        for (auto it = mi->tokens_begin(); it != mi->tokens_end(); ++it) {
-            def += PP->getSpelling(*it);
-            if (std::next(it) != mi->tokens_end())
-                def += " ";
-        }
-        
-        bool cmode = mod->cmode;
-        mod->cmode = true;
-        array t = (array)mod->parse_f((A)mod, (A)string(def.c_str()));
-        mod->cmode = cmode;
-
-        if (!len(t))
-            return;
-
-
-        if (params) {
-            bool va_args = mi->isC99Varargs() || mi->isGNUVarargs();
-            macro mac = macro(mod, mod, name, (token)n, params, params, def, t, va_args, va_args);
-            if (eq(n, "__UINT64_C")) {
-                int test2 = 2;
-                test2    += 2;
-            }
-            register_model(mod, (model)mac, false);
-            //
-        } else {
-            //
-            push_state(mod, t, 0);
-            mod->in_macro = true;
-            print_tokens(mod, ((string)f(string, "macro: %o", n))->chars);
-            
-            model mdl = (model)mod->read_model((A)mod, (A)null);
-
-            if (mdl) {
-                mod->in_macro = false;
-                model macro_typedef = model(mod, mod, src, mdl, name, (token)n);
-                register_model(mod, macro_typedef, false);
-            } else {
-                enode value = (enode)mod->parse_expr((A)mod, (A)null);
-                mod->in_macro = false;
-                if (value) {
-                    emember m = emember(
-                        mod,        mod,
-                        name,       (token)n,
-                        mdl,        value->mdl,
-                        value,      value->value);
-                    register_member(mod, m, false);
-                }
-            }
-            pop_state(mod, false);
-        }
-    }
-};
 
 // this must now INSTANCE an Inovcation & CompilerInstance and KEEP it in memory
 path aether_include(aether e, A inc, ARef _instance) {
@@ -724,19 +753,29 @@ path aether_include(aether e, A inc, ARef _instance) {
     compiler->createTarget();
     compiler->createPreprocessor(TU_Complete);
 
+    Preprocessor& PP = compiler->getPreprocessor();
     *instance = clang_cc(
-        mod, e, compiler, (handle)compiler, PP, (handle)&compiler->getPreprocessor()); // how do we keep this process alive and pass the compiler / pre processor in here?
+        mod, e, compiler, (handle)compiler, PP, (handle)&PP); // how do we keep this process alive and pass the compiler / pre processor in here?
 
-    compiler->getPreprocessor().addPPCallbacks(
-        std::make_unique<MacroCollector>(*instance));
-    
     compiler->createASTContext();
-    
-    // Parse
+
+    auto mc = std::make_unique<MacroCollector>(*instance);
+    MacroCollector* mc_ = mc.get();   // non-owning pointer
+
     ASTContext& ctx = compiler->getASTContext();
     AetherDeclVisitor visitor(ctx, e);
-    AetherASTConsumer consumer(visitor, ctx);
-    ParseAST(compiler->getPreprocessor(), &consumer, ctx);
+    AetherASTConsumer consumer(visitor, ctx, mc_);
+
+    compiler->getPreprocessor().addPPCallbacks(std::move(mc));
+    
+    Sema S(PP, ctx, consumer, TU_Complete);
+
+    (*instance)->S        = (handle)&S;
+    (*instance)->ctx      = (handle)&ctx;
+    (*instance)->consumer = (handle)&consumer;
+    //(*instance)->P        = (handle)&P;
+
+    ParseAST(S, false, true);
     unlink(c->chars);
 
     e->current_include = null;
