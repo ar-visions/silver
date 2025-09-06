@@ -836,9 +836,8 @@ static struct op_entry op_table[] = {
     { LLVMBuildAShr },
     { LLVMBuildShl }
 };
-
-
 */
+
 #define OPType_schema(E,T,Y,...) \
     enum_value(E,T,Y, _undefined,         0) \
     enum_value(E,T,Y, _add,               1) \
@@ -1466,6 +1465,7 @@ declare_class(rect)
     i_struct_method (O, Y, O,        mul,        O*) \
     i_struct_cast   (O, Y, string)
 declare_struct(mat4f, f32)
+
 
 // will need to adjust json serialization to facilitate vector with meta types
 #define vector_mat4f_schema(X,Y,...)
