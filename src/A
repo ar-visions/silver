@@ -418,7 +418,6 @@ void* primitive_ffi_arb(AType);
 #define IS_DEBUG 1
 #endif
 
-
 /// alias lets use tag types with an array of types, enabling 
 /// design-time and runtime template-like functionality, with 
 /// permutation of the class-type and instance-type

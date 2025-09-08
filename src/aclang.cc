@@ -108,7 +108,8 @@ static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e) {
     }
     pop(e);
     
-    register_model(e, (model)en, false);
+    if (en->name && len((string)en->name))
+        register_model(e, (model)en, false);
     finalize((model)en);
     return en;
 }
@@ -151,7 +152,8 @@ static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e) {
     bool is_variadic = decl->isVariadic();
     
     fn f = fn(mod, e, name, (token)n, rtype, rtype, args, args, va_args, is_variadic);
-    register_model(e, (model)f, false);
+    if (len(n) > 0)
+        register_model(e, (model)f, false);
     //use(f);
     finalize((model)f);
     return f;
@@ -161,21 +163,24 @@ static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e) {
 static record create_record(RecordDecl* decl, ASTContext& ctx, aether e) {
     std::string name = decl->getNameAsString();
     string n = string(name.c_str());
-    
+    bool has_name = name.length() > 0;
     // Check if already exists
-    emember existing = lookup2(e, (A)n, null);
+    emember existing = has_name ? lookup2(e, (A)n, null) : (emember)null;
     if (existing && existing->mdl)
         return (record)existing->mdl;
 
     // Check if it's a union or struct
     bool is_union = decl->isUnion();
-    
+    if (is_union) {
+        is_union = is_union;
+    }
     record rec = is_union ?
         (record)uni(mod, e, name, (token)n) :
         (record)structure(mod, e, name, (token)n);
     
     rec->members = map(hsize, 8);
-    register_model(e, (model)rec, false);
+    if (has_name)
+        register_model(e, (model)rec, false);
     
     // Get the layout for accurate offsets/sizes
     if (decl->isCompleteDefinition()) {
@@ -191,7 +196,10 @@ static record create_record(RecordDecl* decl, ASTContext& ctx, aether e) {
             string fname = string(field_name.c_str());
             
             QualType field_type = field->getType();
-
+            if (eq(fname, "__value")) {
+                int test2 = 2;
+                test2    += 2;
+            }
             model mapped = map_clang_type_to_model(field_type, ctx, e, null);
             if (!mapped) continue;
             
@@ -328,7 +336,7 @@ public:
 // Direct Clang type mapping (equivalent to map_ctype_to_model)
 static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether e, string use_name) {
     const Type* t = qt.getTypePtr();
-
+    
     // Strip elaborated type (like CXType_Elaborated)
     if (const ElaboratedType* et = dyn_cast<ElaboratedType>(t)) {
         return map_clang_type_to_model(et->getNamedType(), ctx, e, use_name);
@@ -342,7 +350,7 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
             int test2 = 2;
             test2    += 2;
         }
-        model existing = emodel(n);
+        model existing = name.length() ? emodel(n) : (model)null;
         if (existing) return existing;
         if (!use_name) use_name = string(n);
 
@@ -401,7 +409,7 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
             break;
         }
 
-        if (src && use_name) {
+        if (src && use_name && len(use_name) > 0) {
             model mdl = model(mod, e, src, src, name, (token)use_name);
             register_model(e, mdl, false);
             return mdl;
@@ -430,7 +438,7 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         sh->count = 1;
         sh->data[0] = size;
         model mdl = model(mod, e, name, (token)use_name, src, elem_model, shape, sh);
-        if (use_name)
+        if (use_name && len(use_name) > 0)
             register_model(e, mdl, false);
         return mdl;
     }
@@ -449,7 +457,7 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
     if (const PointerType* pt = dyn_cast<PointerType>(type)) {
         QualType pointee = pt->getPointeeType();
         if (use_name) {
-            model existing = emodel(use_name->chars);
+            model existing = use_name->len ? emodel(use_name->chars) : (model)null;
             if (existing) return existing;
         }
         // function pointers
@@ -464,7 +472,7 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         
         model ptr = model(mod, e, name, (token)use_name, src, base, is_ref, true,
             is_const, pointee.isConstQualified());
-        if (use_name)
+        if (use_name && len(use_name) > 0)
             register_model(e, ptr, false);
         return ptr;
     }
@@ -473,7 +481,7 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
     if (const RecordType* rt = dyn_cast<RecordType>(type)) {
         RecordDecl* decl = rt->getDecl();
         std::string name = decl->getNameAsString();
-        model existing = emodel(name.c_str());
+        model existing = name.length() ? emodel(name.c_str()) : null;
         return existing ? existing : (model)create_record(decl, ctx, e);
     }
     
@@ -481,7 +489,7 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
     if (const EnumType* et = dyn_cast<EnumType>(type)) {
         EnumDecl* decl = et->getDecl();
         std::string name = decl->getNameAsString();
-        model existing = emodel(name.c_str());
+        model existing = name.length() ? emodel(name.c_str()) : null;
         return existing ? existing : (model)create_enum(decl, ctx, e);
     }
     
@@ -631,7 +639,10 @@ public:
                 model macro_typedef = model(mod, mod, src, mdl, name, (token)n);
                 register_model(mod, macro_typedef, false);
             } else {
+                bool cmode = mod->cmode;
+                mod->cmode = true;
                 enode value = (enode)mod->parse_expr((A)mod, (A)null);
+                mod->cmode = cmode;
                 mod->in_macro = false;
                 if (value) {
                     emember m = emember(

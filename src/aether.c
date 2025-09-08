@@ -86,7 +86,7 @@ void aether_register_member(aether e, emember mem, bool register_now) {
     if (!mem || mem->registered || mem->target_member)
         return;
 
-    if (eq(mem->name, "Vulkan")) {
+    if (eq(mem->name, "")) {
         int test2 = 2;
         test2    += 2;
     }
@@ -136,10 +136,31 @@ model model_resolve(model f) {
 bool is_bool     (model f) { f = model_resolve(f); return f->src && model_primitive(f) == typeid(bool); }
 bool is_float    (model f) { f = model_resolve(f); return f->src && model_primitive(f) == typeid(f32);  }
 bool is_double   (model f) { f = model_resolve(f); return f->src && model_primitive(f) == typeid(f64);  }
-bool is_realistic(model f) { f = model_resolve(f); return f->src && model_primitive(f)->traits & A_TRAIT_REALISTIC; }
-bool is_integral (model f) { f = model_resolve(f); return f->src && model_primitive(f)->traits & A_TRAIT_INTEGRAL;  }
-bool is_signed   (model f) { f = model_resolve(f); return f->src && model_primitive(f)->traits & A_TRAIT_SIGNED;    }
-bool is_unsigned (model f) { f = model_resolve(f); return f->src && model_primitive(f)->traits & A_TRAIT_UNSIGNED;  }
+
+bool is_realistic(model f) {
+    f = model_resolve(f);
+    AType pr = model_primitive(f);
+    return pr && pr->traits & A_TRAIT_REALISTIC;
+}
+
+bool is_integral (model f) {
+    f = model_resolve(f);
+    AType pr = model_primitive(f);
+    return pr && pr->traits & A_TRAIT_INTEGRAL;
+}
+
+bool is_signed   (model f) {
+    f = model_resolve(f);
+    AType pr = model_primitive(f);
+    return pr && pr->traits & A_TRAIT_SIGNED;
+}
+
+bool is_unsigned (model f) {
+    f = model_resolve(f);
+    AType pr = model_primitive(f);
+    return pr && pr->traits & A_TRAIT_UNSIGNED;
+}
+
 bool is_primitive(model f) {
     AType t = model_primitive(f);
     return t && t->traits & A_TRAIT_PRIMITIVE;
@@ -1337,6 +1358,10 @@ void fn_use(fn fn) {
         /// we set is_arg to prevent registration of global
         
         model mtarget = translate_target(fn->instance);
+
+        if (fn->function_type == A_FLAG_CAST) {
+            fn = fn;
+        }
         // our abstract is to have type differences for struct and ref struct, 
         // but NOT any form of ref class, less the user is setting a pointer indirectly;
         // class is inherently a reference to our abstract
@@ -1352,12 +1377,12 @@ void fn_use(fn fn) {
     if (fn->args)
         pairs(fn->args->members, i) {
             emember arg = i->value;
-            model amdl = typed(arg->mdl);
+            model arg_mdl = typed(arg->mdl);
             info = header(arg);
-            print("type = %o (%s:%i)", amdl->name, info->source, info->line);
-            verify (amdl && amdl->type, "no LLVM type found for arg %o", arg->name);
+            print("type = %o (%s:%i)", arg_mdl->name, info->source, info->line);
+            verify (arg_mdl && arg_mdl->type, "no LLVM type found for arg %o", arg->name);
             arg_types[index++] =
-                isa(amdl) == typeid(Class) ? pointer(amdl, null)->type : amdl->type;
+                isa(arg_mdl) == typeid(Class) ? pointer(arg_mdl, null)->type : arg_mdl->type;
         }
 
     fn->arg_types = arg_types;
@@ -1527,6 +1552,7 @@ void record_finalize(record rec) {
 
             //member_types[index] = mem->mdl->type;
 
+            AType mdl_type = isa(mem->mdl);
             int abi_size = member_types[index] != LLVMVoidType() ?
                 LLVMABISizeOfType(target_data, member_types[index]) : 0;
             
@@ -1970,9 +1996,13 @@ enode aether_e_null(aether e, model mdl) {
     return enode(mod, e, value, LLVMConstNull(m->type), mdl, m, is_null, true);
 }
 
+enode aether_e_primitive_convert(aether e, enode expr, model rtype);
+
 /// create is both stack and heap allocation (based on model->is_ref, a storage enum)
 /// create primitives and objects, constructs with singular args or a map of them when applicable
 enode aether_e_create(aether e, model mdl, A args) {
+    if (!mdl) return args;
+
     map     imap = instanceof(args, typeid(map));
     array   a    = instanceof(args, typeid(array));
     static_array static_a = instanceof(args, typeid(static_array));
@@ -1990,15 +2020,17 @@ enode aether_e_create(aether e, model mdl, A args) {
     enode input = instanceof(args, typeid(enode));
     if (input) {
         verify(!imap, "unexpected data");
+        
         // if both are internally created and these are refs, we can allow conversion
         emember fmem = convertible(input->mdl, mdl);
         verify(fmem, "no suitable conversion found for %o -> %o",
             input->mdl->name, mdl->name);
         
-        // if same type, return the enode
+        // if same type, or types are primitively convertable return the enode
         if (fmem == (void*)true)
-            return e_convert(e, input, mdl); /// primitive-based conversion goes here
+            return aether_e_primitive_convert(e, input, mdl);
         
+        // primitive-based conversion goes here
         fn fn = instanceof(fmem->mdl, typeid(fn));
         if (fn->function_type & A_FLAG_CONSTRUCT) {
             // ctr: call before init
@@ -2346,7 +2378,7 @@ enode aether_e_if_else(aether e, array conds, array exprs, subprocedure cond_bui
         // Build the condition
         A cond_obj = conds->elements[i];
         enode cond_result = invoke(cond_builder, cond_obj);  // Silver handles the actual condition parsing and building
-        LLVMValueRef condition = e_convert(e, cond_result, emodel("bool"))->value;
+        LLVMValueRef condition = e_create(e, emodel("bool"), cond_result)->value;
 
         // Set the sconditional branch
         LLVMBuildCondBr(e->builder, condition, then_block, else_block);
@@ -2458,14 +2490,14 @@ enode aether_e_load(aether e, emember mem, emember target) {
 }
 
 /// general signed/unsigned/1-64bit and float/double conversion
-/// [optionally] load and convert expression
-enode aether_e_convert(aether e, enode expr, model rtype) {
+/// should NOT be loading, should absolutely be calling model_convertible -- why is it not?
+enode aether_e_primitive_convert(aether e, enode expr, model rtype) {
     if (!rtype) return expr;
 
     expr = e_load(e, expr, null); // i think we want to place this somewhere else for better structural use
     
-    model        F = is_class(expr->mdl) ? typed(expr->mdl->ptr) : typed(expr->mdl);
-    model        T = is_class(rtype)     ? typed(rtype->ptr)     : typed(rtype);
+    model        F = typed(expr->mdl);
+    model        T = typed(rtype);
     LLVMValueRef V = expr->value;
 
     if (F == T) return expr;  // no cast needed
@@ -3268,10 +3300,7 @@ void aether_A_import(aether e, path lib) {
                     model raw_mdl = (model)mtype->user;
                     model arg_mdl = translate_target((model)mtype->user); // 'target' is our arg (not target), the function merely works for us
                     member arg = earg(args, arg_mdl, "");
-                    if (cl && eq(cl->name, "string")) {
-                        int test2 = 2;
-                        test2    += 2;
-                    }
+
                     set(args->members, string(""), arg);
                     mem_mdl = fn(
                         mod,           e,
@@ -3962,7 +3991,7 @@ enode aether_e_fn_return(aether e, A o) {
 
     if (!o) return value(f->rtype, LLVMBuildRetVoid(e->builder));
 
-    enode conv = e_convert(e, e_operand(e, o, null), f->rtype);
+    enode conv = e_create(e, f->rtype, e_operand(e, o, null));
     return value(f->rtype, LLVMBuildRet(e->builder, conv->value));
 }
 
@@ -4021,8 +4050,7 @@ enode aether_e_fn_call(aether e, fn fn, enode target, array args) { // we could 
 
             emember    f_arg = value_by_index(fn->args->members, index - (target ? 1 : 0));
             AType      vtype = isa(value);
-            enode      op    = e_operand(e, value, null);
-            enode      conv  = e_convert(e, op, f_arg ? f_arg->mdl : op->mdl);
+            enode      conv  = e_create(e, f_arg->mdl, value);
             
             LLVMValueRef vr = arg_values[index] = conv->value;
             index++;
@@ -4043,8 +4071,7 @@ enode aether_e_fn_call(aether e, fn fn, enode target, array args) { // we could 
                 A     o_arg     = args->elements[arg_idx + soft_args];
                 AType arg_type2 = isa(o_arg);
                 enode n_arg     = e_load(e, o_arg, null);
-                enode arg       = e_operand(e, n_arg, null);
-                enode conv      = e_convert(e, arg, arg_type); 
+                enode conv      = e_create(e, arg_type, n_arg);
                 arg_values[arg_idx + soft_args] = conv->value;
                 soft_args++;
                 index    ++;
@@ -4079,8 +4106,9 @@ enode aether_e_op(aether e, OPType optype, string op_name, A L, A R) {
                 fn fn = Lt->mdl;
                 verify(len(fn->args->members) == 1, "expected 1 argument for operator method");
                 /// convert argument and call method
-                model  arg_expects = value_by_index(fn->args->members, 0);
-                enode  conv = e_convert(e, Ln, arg_expects);
+                emember arg_expects = value_by_index(fn->args->members, 0);
+                verify(isa(arg_expects) == typeid(emember), "weird?");
+                enode  conv = e_create(e, arg_expects->mdl, Ln);
                 array args = array_of(conv, null);
                 verify(mL, "mL == null");
                 return e_fn_call(e, Lt->mdl, mL, args);
@@ -4098,8 +4126,8 @@ enode aether_e_op(aether e, OPType optype, string op_name, A L, A R) {
     LLVMTypeRef  LV_type = LLVMTypeOf(LV->value);
     LLVMTypeKind vkind = LLVMGetTypeKind(LV_type);
 
-    enode LL = optype == OPType__assign ? LV : e_convert(e, LV, rtype); // we dont need the 'load' in here, or convert even
-    enode RL = e_convert(e, RV, rtype);
+    enode LL = optype == OPType__assign ? LV : e_create(e, rtype, LV); // we dont need the 'load' in here, or convert even
+    enode RL = e_create(e, rtype, RV);
 
     symbol         N = cstring(op_name);
     LLVMBuilderRef B = e->builder;
@@ -4109,8 +4137,8 @@ enode aether_e_op(aether e, OPType optype, string op_name, A L, A R) {
         // ensure both operands are i1
         model m_bool = emodel("bool");
         rtype = m_bool;
-        LL = e_convert(e, LL, m_bool); // generate compare != 0 if not already i1
-        RL = e_convert(e, RL, m_bool);
+        LL = e_create(e, m_bool, LL); // generate compare != 0 if not already i1
+        RL = e_create(e, m_bool, RL);
         struct op_entry* op = &op_table[optype - OPType__add];
         RES = op->f_op(B, LL->value, RL->value, N);
     } else if (optype >= OPType__add && optype <= OPType__left) {
