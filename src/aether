@@ -350,7 +350,7 @@ declare_class_2(static_array, array)
     i_method  (X,Y, public,     enode,       e_offset,           enode,      A) \
     i_method  (X,Y, public,     enode,       e_if_else,          array,      array, subprocedure, subprocedure) \
     i_method  (X,Y, public,     enode,       e_ternary,          enode,      enode, enode) \
-    i_method  (X,Y, public,     enode,       e_convert,          enode,      model) \
+    i_method  (X,Y, public,     enode,       e_primitive_convert, enode,     model) \
     i_method  (X,Y, public,     enode,       e_addr_of,          enode,      model) \
     i_method  (X,Y, public,     enode,       e_bitwise_not,      enode) \
     i_method  (X,Y, public,     enode,       e_not,              enode) \
