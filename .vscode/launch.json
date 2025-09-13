@@ -138,15 +138,13 @@
             "type":       "lldb",
             "request":    "launch",
             "preLaunchTask": "build-silver-ninja",
-            "program":    "/src/silver/bin/silver",
-            "args":     [ "--source", "/src/trinity/src/test.sf" ],
-            "cwd":        "/src/silver/lib",
+            "program":    "/Users/kalen/src/silver/bin/silver",
+            "args":     [ "--source", "/Users/kalen/src/silver/res/test.sf" ],
+            "cwd":        "/Users/kalen/src/silver/lib",
             "env":      {
                 "VERBOSE": "1",
-                "LD_LIBRARY_PATH":"/src/silver/lib",
-                "IMPORT":  "/src/silver",
-                "CC":      "clang",
-                "PATH":    "/src/silver/bin:/usr/bin"
+                "LD_LIBRARY_PATH":"/Users/kalen/src/silver/lib",
+                "IMPORT":  "/Users/kalen/src/silver"
             }
         },
         {

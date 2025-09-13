@@ -37,6 +37,9 @@ struct _AType;
 
 #define len(I,...) ({ __typeof__(I) _i_ = I; _i_ ? (num)ftableI(_i_)->len(_i_, ## __VA_ARGS__) : (num)0; })
 
+#undef bool
+#undef false
+#undef true
 
 #define true                (bool)1
 #define false               (bool)0
@@ -546,7 +549,7 @@ forward(any)
     i_final (AA,Y, public, ref_u64,     AF_bits) \
     i_final (AA,Y, public, none,        AF_set_id,           i32) \
     i_final (AA,Y, public, none,        AF_set_name,         cstr) \
-    i_final (AA,Y, public, bool,        AF_query_name,       cstr) \
+    i_final (AA,Y, public, i32,         AF_query_name,       cstr) \
     i_final (AA,Y, public, A,           instanceof,          AType) \
     i_final (AA,Y, public, AA,          hold) \
     i_final (AA,Y, public, none,        drop) \

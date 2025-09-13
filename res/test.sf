@@ -1,0 +1,49 @@
+this: i32[ 1 ]
+
+import <stdio.h>
+
+import <vulkan/vulkan.h> [ https://github.com/KhronosGroup/Vulkan-Headers main ]
+
+import [ https://github.com/KhronosGroup/MoltenVK main ]
+    > ./fetchDependencies --macos
+    -DANOTHER=2
+
+import [ https://github.com/KhronosGroup/Vulkan-Loader main ]
+    -DSOMETHING=1
+
+import [ https://github.com/KhronosGroup/Vulkan-Tools main ]
+    -DBUILD_CUBE=OFF
+
+class Vulkan
+	intern instance : VkInstance
+    fn init[]
+        printf[ 'vulkan is loading...\n' ]
+        vkCreateInstance [
+            [
+                sType:      VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
+                pNext:      null
+                flags:      0
+                pApplicationInfo: [
+                    sType:              VK_STRUCTURE_TYPE_APPLICATION_INFO
+                    pNext:              null
+                    pApplicationName:   'vk-app'
+                    applicationVersion: VK_MAKE_VERSION(1, 0, 0)
+                    pEngineName:        'trinity'
+                    engineVersion:      VK_MAKE_VERSION(1, 0, 0)
+                    apiVersion:         VK_API_VERSION_1_3 
+                ]
+            ], null, ref instance
+        ]
+
+main test_vulkan
+    public  variable-name      : i32 [ 2 ]
+	public  queue_family_index : i32 [ 2 ]
+	intern  an_intern_member   : i64 [ 4 ]
+  # intern  an_array		   : array <i32 4x2>  [ 4 2, 4 4, 2 2, 8 8 ]
+  # intern  an_map             : map <i32 string> [ 1: 'a-value'  2: 'another' ]
+
+	fn init [ ]
+		# queue_family_index should be 2 when it gets here.
+		# the function it makes should set it to 2, then 4.
+		# then of course LLVM should optimize that
+		queue_family_index : 4

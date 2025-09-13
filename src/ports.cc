@@ -1,6 +1,57 @@
 
 
-#ifdef _WIN32
+#ifdef __APPLE__
+
+
+#include <stdio.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ports.h>
+
+#include <time.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+//#include <unistd.h>
+//#include <errno.h>
+#include <assert.h>
+#include <map>
+#include <vector>
+#include <string>
+#include <mutex>
+#include <thread>
+#include <atomic>
+
+#define _timeval_ timeval
+
+
+// Worker thread function for directory monitoring
+static void WatcherThread(struct InotifyContext* ctx, struct WatchInfo* watch) {
+}
+
+int inotify_init1(int flags) {
+    return 0;
+}
+
+int inotify_init() {
+    return inotify_init1(0);
+}
+
+int inotify_add_watch(int fd, const char* pathname, uint32_t mask) {
+    return 0;
+}
+
+int inotify_rm_watch(int fd, int wd) {
+    return 0;
+}
+
+int inotify_close(int fd) {
+    return 0;
+}
+
+#elif defined(_WIN32)
 
 #include <stdio.h>
 #include <stdint.h>
@@ -24,6 +75,8 @@
 #include <mutex>
 #include <thread>
 #include <atomic>
+
+#undef bool
 
 extern "C" {
 BOOL EnumProcessModules(

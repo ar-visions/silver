@@ -10,6 +10,11 @@
 #include <limits.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#undef bool
+
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 AType_info        AType_i;
 //objectType_info   objectType_i;
@@ -523,11 +528,11 @@ void AF_set_name(A a, cstr name) {
     AF_set(f, m->id);
 }
 
-bool AF_query_name(A a, cstr name) {
+i32 AF_query_name(A a, cstr name) {
     AType  t = isa(a);
     member m = find_member(t, A_FLAG_PROP|A_FLAG_VPROP, name, true);
     u64*   f = AF_bits(a);
-    return AF_get(f, m->id);
+    return (i32)AF_get(f, m->id);
 }
 
 bool A_validator(A a) {
@@ -759,6 +764,13 @@ string command_run(command cmd) {
 
     int status;
     waitpid(pid, &status, 0);
+    for (;result->len;) {
+        char l = result->chars[result->len - 1];
+        if (l == '\n' || l == '\r')
+            ((cstr)result->chars)[--result->len] = 0;
+        else
+            break;
+    }
     return result;
 }
 
@@ -2045,7 +2057,7 @@ A formatter(AType type, handle ff, A opt, symbol template, ...) {
         int n = len(res);
         int tw = max(32, term_width() - 22);
         float lc = (float)n / tw;
-        if (lc <= 1) {
+        if (lc <= 1 || !field) {
             string_writef(res, f, false);
             if (symbolic_logging || write_ln) {
                 fwrite("\n", 1, 1, f);
@@ -4847,6 +4859,7 @@ struct inotify_event {
 #endif
 
 none watch_init(watch a) {
+#ifndef __APPLE__
     if (!a->res) return;
     int fd = inotify_init1(IN_NONBLOCK);
     if (fd < 0) {
@@ -4879,6 +4892,7 @@ none watch_init(watch a) {
     }
 
     close(fd);
+#endif
 }
 
 none watch_dealloc(watch a) {

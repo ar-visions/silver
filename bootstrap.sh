@@ -1,11 +1,32 @@
 #!/bin/bash
 set -e
 
+if [ -z "$IMPORT" ]; then
+    IMPORT="$(realpath "$(dirname "$0")")"
+fi
+
 LLVM_URL="https://github.com/LLVM/llvm-project"
 LLVM_COMMIT="bd7db75"
 build_dir="$IMPORT/build/llvm-project"
 llvm_src="$IMPORT/checkout/llvm-project"
 llvm_build="$build_dir/release"
+mkdir -p "$IMPORT/checkout"
+mkdir -p "$IMPORT/bin"
+
+# download source for ninja and build
+if ! [ -f "$IMPORT/bin/ninja" ]; then
+    ninja_f="v1.13.1"
+    NINJA_URL="https://github.com/ninja-build/ninja/archive/refs/tags/${ninja_f}.zip"
+    cd $IMPORT/checkout
+    curl -LO $NINJA_URL
+    unzip -o "${ninja_f}.zip"
+    cd ninja-1.13.1
+    cmake -Bbuild-cmake -DBUILD_TESTING=OFF
+    cmake --build build-cmake
+    cp -a build-cmake/ninja $IMPORT/bin/ninja
+fi
+
+cd $IMPORT
 
 # build LLVM from scratch
 build_llvm() {
@@ -25,8 +46,8 @@ build_llvm() {
     cd "$llvm_build"
     local cmake_args=(
         -S $llvm_src/llvm
-        -DCMAKE_C_COMPILER="gcc-14"
-        -DCMAKE_CXX_COMPILER="g++-14"
+        -DCMAKE_C_COMPILER="clang"
+        -DCMAKE_CXX_COMPILER="clang++"
         -DCMAKE_BUILD_TYPE=Release
         -DCMAKE_INSTALL_PREFIX=$IMPORT
         -G Ninja
@@ -35,22 +56,31 @@ build_llvm() {
         -DCMAKE_CXX_EXTENSIONS=OFF
         -DLLVM_ENABLE_ASSERTIONS=ON
         -DLLVM_ENABLE_PROJECTS='clang;lld;lldb;compiler-rt'
-        -DLLVM_TOOL_GOLD_BUILD=ON
+        -DLLVM_ENABLE_RUNTIMES='libcxx;libcxxabi;libunwind'
+        -DLLVM_TOOL_GOLD_BUILD=OFF
         -DLLVM_ENABLE_FFI=OFF
         -DLLVM_ENABLE_RTTI=ON
         -DLLVM_BINUTILS_INCDIR=/usr/include
         -DCLANG_DEFAULT_PIE_ON_LINUX=ON
         -DCLANG_CONFIG_FILE_SYSTEM_DIR=/etc/clang
         -DBUILD_SHARED_LIBS=OFF
-        -DLLDB_ENABLE_PYTHON=OFF
-        -DLLVM_TARGETS_TO_BUILD='host;X86;AArch64'
+        -DLLDB_ENABLE_PYTHON=ON
+        -DLLVM_ENABLE_PYTHON=ON
+        -DPython3_EXECUTABLE=$(which python3)
+        -DLLVM_TARGETS_TO_BUILD='host;AArch64'
         -DCLANG_DEFAULT_CXX_STDLIB=libstdc++
+        -DLLVM_INCLUDE_TESTS=OFF
+        -DCOMPILER_RT_INCLUDE_TESTS=OFF
         -DLLVM_BUILD_LLVM_DYLIB=ON
         -DLLVM_LINK_LLVM_DYLIB=ON
         -DCOMPILER_RT_BUILD_SANITIZERS=ON
         -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
-        -DCMAKE_C_COMPILER_TARGET=x86_64-unknown-linux-gnu
+        -DLLVM_DEFAULT_CXX_STDLIB=libc++
+        -DCMAKE_C_COMPILER_TARGET=arm64-apple-darwin
+        -DCMAKE_OSX_SYSROOT=$(xcrun --show-sdk-path)
     )
+
+    # linux needs -DCMAKE_C_COMPILER_TARGET=x86_64-unknown-linux-gnu
 
     if [[ "$OSTYPE" == "darwin"* ]]; then
         SYSROOT="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || echo "")"

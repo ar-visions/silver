@@ -11,9 +11,6 @@ typedef LLVMMetadataRef LLVMScope;
 
 #include <aether/import>
 
-// def -> base for change from type to emember (emember has model 
-//#define ecall(M, ...) aether_##M(e, ## __VA_ARGS__) # .cms [ c-like module in silver ]
-
 #define emodel(N)     ({            \
     emember  m = lookup2(e, string(N), null); \
     model mdl = m ? m->mdl : null;  \
@@ -86,21 +83,8 @@ void aether_register_member(aether e, emember mem, bool register_now) {
     if (!mem || mem->registered || mem->target_member)
         return;
 
-    if (eq(mem->name, "")) {
-        int test2 = 2;
-        test2    += 2;
-    }
-
     //mem->registered  = true;
     model ctx = mem->context ? mem->context : e->top;
-    if (isa(ctx) == typeid(record) && eq(mem->name, "instance")) {
-        int test2 = 2;
-        test2    += 2;
-    }
-    if (isa(ctx) == typeid(statements) && eq(mem->name, "instance")) {
-        int test2 = 2;
-        test2    += 2;
-    }
     verify(ctx->members, "expected members map");
     set(ctx->members, string(mem->name->chars), mem);
     if (register_now)
@@ -1742,11 +1726,6 @@ void emember_set_model(emember mem, model mdl) {
     if (!mdl || mem->registered) return;
     mem->registered = true;
     model ctx = mem->context ? mem->context : e->top;
-
-    if (eq(mem->name, "Vulkan_i")) {
-        int test2 = 2;
-        test2    += 2;
-    }
     
     // lets register unregistered within
     pairs(mdl->members, i) {
@@ -2846,7 +2825,8 @@ void aether_build_info(aether e, path install) {
     e->include_paths = a(f(path, "/usr/include"), f(path, "/usr/include/x86_64-linux-gnu"));
     e->lib_paths     = a();
 #elif defined(__APPLE__)
-    string sdk       = run("xcrun --show-sdk-path")
+    string sdk       = run("xcrun --show-sdk-path");
+    e->sdk_path      = path(sdk);
     e->include_paths = a(f(path, "%o/usr/include", sdk));
     e->lib_paths     = a(f(path, "%o/usr/lib", sdk));
 #endif
@@ -3769,11 +3749,6 @@ void create_schema(model mdl) {
     model type_info = model(mod, e, name, f(string, "%o_info", mdl->name),
         src, _type_info, is_system, true);
     register_model(e, type_info, use_now);
-
-    if (eq(mdl->name, "Vulkan")) {
-        int test2 = 2;
-        test2    += 2;
-    }
 
     interface access = from_module ? interface_public : interface_intern;
     emember type_i = emember(mod, e, name, f(string, "%o_i", mdl->name),
