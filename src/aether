@@ -286,6 +286,7 @@ declare_class_2(static_array, array)
     i_prop    (X,Y, public,     path,        install) \
     i_prop    (X,Y, required,   path,        source) \
     i_prop    (X,Y, public,     array,       lib_paths) \
+    i_prop    (X,Y, public,     path,        sdk_path) \
     i_prop    (X,Y, public,     array,       include_paths) \
     i_prop    (X,Y, public,     array,       shared_libs) \
     i_prop    (X,Y, public,     bool,        delegate) \

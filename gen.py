@@ -20,6 +20,9 @@ silver = Path(__file__).resolve().parent
 def get_platform_info():
     """get platform-specific settings"""
     global fname
+    sdk=''
+    if system == 'Darwin':
+        sdk = subprocess.check_output(["xcrun", "--show-sdk-path"]).decode().strip()
     base = {
         'Windows': {
             'exe': '.exe', 'lib_pre': '', 'lib': '.lib', 'shared': '.dll', 'obj': '.obj',
@@ -47,7 +50,10 @@ def get_platform_info():
             'cc': f'{silver}/bin/clang', 'cxx': f'{silver}/bin/clang++',
             'ar': f'{silver}/bin/llvm-ar', 'ninja': 'ninja',
             'inc': [], 'lib_dirs': [], 'lflags': [], 
-            'cflags': [], 'cxxflags': [], 'libs': ['-lc', '-lm']
+            'cflags': [f'-isysroot{sdk}'], 'cxxflags': [], 'libs': ['-lc', '-lm'],
+            'cxxflags': ['-stdlib=libc++', f'-isysroot{sdk}'],   # <-- add this
+            'lflags': [f'-isysroot{sdk}'],
+            'libs': ['-lc', '-lm', '-lc++', '-lc++abi']
         },
         'Linux': {
             'exe': '', 'lib_pre': 'lib', 'lib': '.a', 'shared': '.so', 'obj': '.o',
@@ -208,6 +214,7 @@ def write_ninja(project, root, build_dir, plat):
     base_flags = ["-Wno-write-strings", "-Wno-incompatible-function-pointer-types",
                   "-Wno-compare-distinct-pointer-types", "-Wno-deprecated-declarations",
                   "-Wno-incompatible-pointer-types", "-Wno-shift-op-parentheses",
+                  "-Wno-nullability-completeness", "-Wno-expansion-to-defined",
                   "-Wfatal-errors", "-fno-omit-frame-pointer"]
     if plat['exe'] == '.exe':
         base_flags.extend(["--target=x86_64-pc-windows-msvc", "-fno-ms-compatibility", 
@@ -256,7 +263,12 @@ def write_ninja(project, root, build_dir, plat):
     
     # separate link rules
     n.append("rule link_app")
-    n.append(f"  command = $clang @{build_dir}/link.rsp $in -o $out $ldflags $libs")
+
+    lpath = ''
+    if system == "Darwin":
+        lpath = '-Wl,-rpath,@executable_path/../lib'
+    n.append(f"  command = $clang @{build_dir}/link.rsp $in -o $out $ldflags $libs {lpath}")
+
     n.append("  description = linking executable $out")
     n.append("")
     
@@ -268,7 +280,7 @@ def write_ninja(project, root, build_dir, plat):
     n.append("rule link_shared")
     cmd = f"$clang @{build_dir}/link.rsp -shared $in -o $out $ldflags $libs"
     if system == "Darwin":
-        cmd += " -install_name @rpath/$out"
+        cmd += ' -Wl,-rpath,@executable_path/../lib -install_name $install_name'
     elif system == "Linux":
         cmd += " -Wl,-soname,$out"
     n.append(f"  command = {cmd}")
@@ -343,10 +355,13 @@ def write_ninja(project, root, build_dir, plat):
 
         elif m['target'] == 'shared':
             output = f"{root_p}/lib/{plat['lib_pre']}{m['name']}{plat['shared']}"
+            install_name = os.path.basename(output)
             n.append(f"build {output}: link_shared {objs} {' '.join(deps)}")
             libs = sorted(set(m['links']) | all_links)
             if libs:
                 n.append(f"  libs = {' '.join(libs)}")
+            if system == "Darwin":
+                n.append(f"  install_name = @rpath/{install_name}")
             n.append("")
         
         else:

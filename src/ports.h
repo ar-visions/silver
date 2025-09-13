@@ -323,14 +323,18 @@ int     select(int nfds, _fd_set_* readfds, _fd_set_* writefds, _fd_set_* except
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <sys/mman.h>
+#ifdef __linux__
 #include <sys/inotify.h>
+#endif
 #include <sys/stat.h>
 #include <dirent.h>
 #include <errno.h>
 #include <dlfcn.h>
 #include <utime.h>
 
+#ifndef __APPLE__
 typedef __int64_t ssize_t;
+#endif
 typedef fd_set  _fd_set_;
 
 #endif
@@ -340,3 +344,4 @@ typedef fd_set  _fd_set_;
 #endif
 
 #endif
+#undef bool
