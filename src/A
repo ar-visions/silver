@@ -72,6 +72,7 @@ typedef u8                      bool;
 #endif
 typedef float                   f32;
 typedef double                  f64;
+typedef long double             f80;
 typedef double                  real;    /// real enough
 typedef void*                   handle;
 typedef char*                   cstr;
@@ -103,6 +104,7 @@ typedef unsigned int           *ref_u32;
 typedef unsigned long long     *ref_u64;
 typedef float                  *ref_f32;
 typedef double                 *ref_f64;
+typedef long double            *ref_f80;
 
 #define A_f_members(B) \
     AType           parent_type; \
@@ -660,6 +662,8 @@ declare_abstract(imported)
 #define u64_schema(X,Y,...)         numeric_schema(numeric,Y,...)
 #define f32_schema(X,Y,...)         numeric_schema(numeric,Y,...)
 #define f64_schema(X,Y,...)         numeric_schema(numeric,Y,...)
+#define f80_schema(X,Y,...)         numeric_schema(numeric,Y,...)
+
 
 #define ref_i8_schema(X,Y,...)      numeric_schema(numeric,Y,...)
 #define ref_i16_schema(X,Y,...)     numeric_schema(numeric,Y,...)
@@ -671,6 +675,7 @@ declare_abstract(imported)
 #define ref_u64_schema(X,Y,...)     numeric_schema(numeric,Y,...)
 #define ref_f32_schema(X,Y,...)     numeric_schema(numeric,Y,...)
 #define ref_f64_schema(X,Y,...)     numeric_schema(numeric,Y,...)
+#define ref_f80_schema(X,Y,...)     numeric_schema(numeric,Y,...)
 #define ref_bool_schema(X,Y,...)    numeric_schema(numeric,Y,...)
 
 #define AFlag_schema(X,Y,...)       numeric_schema(numeric,Y,...)
@@ -751,6 +756,7 @@ declare_primitive(u32,              numeric)
 declare_primitive(u64,              numeric)
 declare_primitive(f32,              numeric)
 declare_primitive(f64,              numeric)
+declare_primitive(f80,              numeric)
 declare_primitive(AFlag,            numeric)
 declare_primitive(bool,             numeric)
 declare_primitive(num,              numeric)
@@ -877,6 +883,7 @@ static struct op_entry op_table[] = {
     enum_value(E,T,Y, _assign_right,      33) \
     enum_value(E,T,Y, _assign_left,       34)
 declare_enum(OPType)
+
 
 
 #define Key_schema(EE,TT,YY) \
@@ -1322,18 +1329,17 @@ A      A_sz(sz);
 A      A_u64(u64);
 A      A_f32(f32);
 A      A_f64(f64);
+A      A_f80(f80);
 A  float32(f32);
 A   real64(f64);
 A      A_cstr(cstr);
 A      A_none();
 A      A_bool(bool);
 
-
 /// you can be a typedef and a macro -- it makes APIs simpler
 shape shape_new(i64 count, ...);
 shape shape_from(i64 count, i64* dims);
 shape shape_read(FILE* f);
-
 
 #define array_string_schema(X,Y,...)
 declare_class_2(array_string,     array, string)
@@ -1344,7 +1350,6 @@ declare_class_2(array_map,        array, map)
 static inline f32 f32_mix(f32 a, f32 b, f32 f) {
     return a * (1.0f - f) + b * f;
 }
-
 /// use i_struct_ctr_obj for objects or primitives
 /// use i_struct_ctr for structs.. this is because we cannot separate * from the token
 #define vec_methods(O, Y, T, ...) \

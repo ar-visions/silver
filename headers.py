@@ -176,7 +176,7 @@ def generate_init_header(module, header_file, init_header):
         f.write("\n")
         
         # Process class declarations
-        class_pattern = r'declare_(class|class_2|class_3|vector)\s*\(\s*([^,)]*)'
+        class_pattern = r'declare_(class|class_2|class_3|class_4|vector)\s*\(\s*([^,)]*)'
         matches = find_declarations(header_file, class_pattern)
         
         for match in matches:

@@ -642,6 +642,7 @@ numeric numeric_operator__add(numeric a, numeric b) {
         if (type_a == typeid(i64)) return A_i64(*(i64*)a + *(i64*)b);
         if (type_a == typeid(f32)) return A_f32(*(f32*)a + *(f32*)b);
         if (type_a == typeid(f64)) return A_f64(*(f64*)a + *(f64*)b);
+        if (type_a == typeid(f80)) return A_f80(*(f80*)a + *(f80*)b);
     } else {
         fault("implement dislike add");
     }
@@ -1334,6 +1335,7 @@ A A_sz (sz  data)   { return primitive(typeid(sz),  &data); }
 A A_u64(u64 data)   { return primitive(typeid(u64), &data); }
 A A_f32(f32 data)   { return primitive(typeid(f32), &data); }
 A A_f64(f64 data)   { return primitive(typeid(f64), &data); }
+A A_f80(f80 data)   { return primitive(typeid(f80), &data); }
 A float32(f32 data) { return primitive(typeid(f32), &data); }
 A real64(f64 data)  { return primitive(typeid(f64), &data); }
 A A_cstr(cstr data) { return primitive(typeid(cstr), &data); }
@@ -1504,6 +1506,7 @@ A A_with_cereal(A a, cereal _cs) {
     A        f = header(a);
     AType type = f->type;
     if      (type == typeid(f64)) sscanf(cs, "%lf",  (f64*)a);
+    else if (type == typeid(f80)) sscanf(cs, "%Lf",  (f80*)a);
     else if (type == typeid(f32)) sscanf(cs, "%f",   (f32*)a);
     else if (type == typeid(i32)) sscanf(cs, "%i",   (i32*)a);
     else if (type == typeid(u32)) sscanf(cs, "%u",   (u32*)a);
@@ -1708,6 +1711,7 @@ none serialize(AType type, string res, A a) {
         else if (type == typeid(u32)) len = sprintf(buf, "%u",   *(u32*)a);
         else if (type == typeid(u16)) len = sprintf(buf, "%hu",  *(u16*)a);
         else if (type == typeid(u8))  len = sprintf(buf, "%hhu", *(u8*) a);
+        else if (type == typeid(f80)) len = sprintf(buf, "%f",   (f64)*(f80*)a);
         else if (type == typeid(f64)) len = sprintf(buf, "%f",   *(f64*)a);
         else if (type == typeid(f32)) len = sprintf(buf, "%f",   *(f32*)a);
         else if (type == typeid(cstr)) len = sprintf(buf, "%s",  *(cstr*)a);
@@ -1854,6 +1858,7 @@ string A_cast_string(A a) {
     if (type == typeid(u64)) *(u64*)a = (u64)v; \
     if (type == typeid(f32)) *(f32*)a = (f32)v; \
     if (type == typeid(f64)) *(f64*)a = (f64)v; \
+    if (type == typeid(f80)) *(f80*)a = (f80)v; \
     return a;
 
 A numeric_with_i8 (A a, i8   v) { set_v(); }
@@ -1871,6 +1876,7 @@ A numeric_with_i64(A a, i64  v) {
     if (type == typeid(u64)) *(u64*)a = (u64)v; \
     if (type == typeid(f32)) *(f32*)a = (f32)v; \
     if (type == typeid(f64)) *(f64*)a = (f64)v; \
+    if (type == typeid(f80)) *(f80*)a = (f80)v; \
     return a;
 }
 A numeric_with_u8 (A a, u8   v) { set_v(); }
@@ -4097,7 +4103,7 @@ none* primitive_ffi_arb(AType ptype) {
     if (ptype == typeid(i64))       return &ffi_type_sint64;
     if (ptype == typeid(f32))       return &ffi_type_float;
     if (ptype == typeid(f64))       return &ffi_type_double;
-    if (ptype == typeid(f128))      return &ffi_type_longdouble;
+    if (ptype == typeid(f80))       return &ffi_type_longdouble;
     if (ptype == typeid(AFlag))     return &ffi_type_sint32;
     if (ptype == typeid(bool))      return &ffi_type_uint32;
     if (ptype == typeid(num))       return &ffi_type_sint64;
@@ -4985,6 +4991,7 @@ define_primitive(num,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
 define_primitive(sz,     numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
 define_primitive(f32,    numeric, A_TRAIT_REALISTIC)
 define_primitive(f64,    numeric, A_TRAIT_REALISTIC)
+define_primitive(f80,    numeric, A_TRAIT_REALISTIC)
 define_primitive(AFlag,  numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
 define_primitive(cstr,   string_like, A_TRAIT_POINTER, i8)
 define_primitive(symbol, string_like, A_TRAIT_POINTER, i8)

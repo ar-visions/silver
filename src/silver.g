@@ -1,4 +1,4 @@
 @app
 A
-aether aclang
+aether aclang allvm
 -lLLVM -llldb

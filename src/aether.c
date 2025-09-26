@@ -85,6 +85,20 @@ void aether_register_member(aether e, emember mem, bool register_now) {
 
     //mem->registered  = true;
     model ctx = mem->context ? mem->context : e->top;
+    bool exists = false;
+    for (int i = 0; i < len(e->lex); i++) {
+        model _ctx = e->lex->elements[i];
+        if (_ctx == ctx) {
+            printf("found top context in scope\n");
+            break;
+        }
+    }
+
+    if (mem->mdl->name && eq(mem->mdl->name, "none")) {
+        int test2 = 2;
+        test2    += 2;
+    }
+
     verify(ctx->members, "expected members map");
     set(ctx->members, string(mem->name->chars), mem);
     if (register_now)
@@ -396,6 +410,11 @@ void model_init(model mdl) {
     statements st = instanceof(mdl, typeid(statements));
     fn         f = instanceof(mdl, typeid(fn));
 
+    if (mdl->name && eq(mdl->name, "none")) {
+        int test2 = 2;
+        test2    += 2;
+    }
+
     if ((e && e != mdl) && !mdl->is_user && !f && !args && !st && (!mdl->name || eq(mdl->name, "")) && !mdl->src) {
         print("useless model");
     }
@@ -432,6 +451,8 @@ void model_init(model mdl) {
             mdl->type = LLVMFloatType();
         else if (type == typeid(f64))
             mdl->type = LLVMDoubleType();
+        else if (type == typeid(f80))
+            mdl->type = LLVMX86FP80Type();
         else if (type == typeid(none))
             mdl->type = LLVMVoidType  ();
         else if (type == typeid(bool))
@@ -538,9 +559,15 @@ void model_init(model mdl) {
         Class cl = instanceof(mdl, typeid(Class));
         //if (!cl || !cl->is_abstract) {
             LLVMTypeRef type = mdl->type;
-            /// todo: validate: when referencing these, we must find src where type != null
-            mdl->size_bits      = LLVMABISizeOfType     (mdl->mod->target_data, type) * 8;
-            mdl->alignment_bits = LLVMABIAlignmentOfType(mdl->mod->target_data, type) * 8;
+            model res = model_resolve(mdl);
+            if (res && res->size_bits) {
+                mdl->size_bits      = res->size_bits;
+                mdl->alignment_bits = res->alignment_bits;
+            } else {
+                /// todo: validate: when referencing these, we must find src where type != null
+                mdl->size_bits      = LLVMABISizeOfType     (mdl->mod->target_data, type) * 8;
+                mdl->alignment_bits = LLVMABIAlignmentOfType(mdl->mod->target_data, type) * 8;
+            }
         //}
     }
     if (instanceof(mdl, typeid(record))) {
@@ -583,11 +610,14 @@ bool model_e_inherits(model mdl, model base) {
 
 /// we allocate all pointer models this way
 model model_pointer(model mdl, string opt_name) {
-    if (!mdl->ptr)
+    if (!mdl->ptr) {
+        model res = model_resolve(mdl);
         mdl->ptr = model(
             mod,    mdl->mod,  name,    opt_name ? opt_name : (string)mdl->name,
             is_ref, true,      members, mdl->members,
-            body,   mdl->body, src,     mdl, type, mdl->type ? LLVMPointerType(mdl->type, 0) : null);
+            body,   mdl->body, src,     mdl, type,
+                LLVMPointerType(res->type ? res->type : LLVMInt8Type(), 0));
+     }
     return mdl->ptr;
 }
 
@@ -1053,6 +1083,7 @@ void aether_finalize_init(aether e, fn f) {
         // set parent_type if this is a class
         if (cmdl) {
             record parent = cmdl->parent;
+            verify(!parent || instanceof(parent, typeid(record)), "expected parent record");
             if (parent && parent->is_abstract)
                 parent = parent->src;
             enode parent_type = e_typeid(e, parent);
@@ -1321,11 +1352,6 @@ void fn_use(fn fn) {
         return;
 
     aether e = fn->mod;
-    if (fn->name && fn->instance == emodel("string") && eq(fn->name, "with_symbol")) {
-        int test2 = 2;
-        test2    += 2;
-    }
-    
     int              n_args    = fn->args ? len(fn->args->members) : 0;
     LLVMTypeRef*     arg_types = calloc(4 + (fn->instance != null) + n_args, sizeof(LLVMTypeRef));
     int              index     = 0;
@@ -1361,12 +1387,13 @@ void fn_use(fn fn) {
     if (fn->args)
         pairs(fn->args->members, i) {
             emember arg = i->value;
-            model arg_mdl = typed(arg->mdl);
+            model arg_mdl = arg->mdl;
             info = header(arg);
             print("type = %o (%s:%i)", arg_mdl->name, info->source, info->line);
-            verify (arg_mdl && arg_mdl->type, "no LLVM type found for arg %o", arg->name);
+            verify (arg_mdl, "no LLVM type found for arg %o", arg->name);
             arg_types[index++] =
-                isa(arg_mdl) == typeid(Class) ? pointer(arg_mdl, null)->type : arg_mdl->type;
+                (isa(arg_mdl) == typeid(Class) || !arg_mdl->type) ? 
+                    pointer(arg_mdl, null)->type : arg_mdl->type;
         }
 
     fn->arg_types = arg_types;
@@ -1527,18 +1554,23 @@ void record_finalize(record rec) {
             finalize(mem->mdl);
             enumeration en = instanceof(mem->mdl, typeid(enumeration));
 
-            if (en)
+            if (en) {
                 member_types[index] = en->src->type;
-            else if (is_class(mem->mdl) || mem->mdl->is_ref)
+            } else if (is_class(mem->mdl) || mem->mdl->is_ref) {
                 member_types[index] = pointer(mem->mdl, null)->type;
-            else
+            } else {
                 member_types[index] = mem->mdl->type;
+            }
 
             //member_types[index] = mem->mdl->type;
 
             AType mdl_type = isa(mem->mdl);
-            int abi_size = member_types[index] != LLVMVoidType() ?
-                LLVMABISizeOfType(target_data, member_types[index]) : 0;
+            LLVMTypeRef member_type = member_types[index];
+            if (!member_type) {
+                member_type = emodel("ARef")->type;
+            }
+            int abi_size = (member_type && member_type != LLVMVoidType()) ?
+                LLVMABISizeOfType(target_data, member_type) : 0;
             
             print("member %o: %o = %i", mem->name, mem->mdl->name, abi_size);
             member_debug[index++] = mem->debug;
@@ -1553,8 +1585,14 @@ void record_finalize(record rec) {
         verify(sz_largest, "cannot determine size of union");
         LLVMStructSetBody(rec->type, &largest->mdl->type, 1, 0);
     } else {
-        // we need to add a padding member manually here, based on it's
-        LLVMStructSetBody(rec->type, member_types, index, 1);
+        if (index == 0) {
+            LLVMTypeRef f = isa(rec) == typeid(Class) ? 
+                LLVMPointerType(LLVMInt8Type(), 0) : LLVMInt8Type();
+            LLVMStructSetBody(rec->type, &f, 1, 0);
+        } else {
+            printf("member types = %p\n", member_types);
+            LLVMStructSetBody(rec->type, member_types, index, 1);
+        }
     }
 
     /// set record size
@@ -1704,6 +1742,10 @@ void emember_set_value(emember mem, A value) {
     mem->mdl   = n->mdl;
     mem->value = n->value;
     mem->is_const = LLVMIsAConstant(n->value) != null;
+    if (mem->mdl && eq(mem->mdl->name, "none")) {
+        int test2 = 2;
+        test2    += 2;
+    }
 }
 
 bool emember_has_value(emember mem) {
@@ -2574,22 +2616,35 @@ void assign_args(aether e, enode L, A R, enode* r_L, enode* r_R) {
 }
 
 struct op_entry {
-    LLVMValueRef(*f_op)(LLVMBuilderRef, LLVMValueRef L, LLVMValueRef R, symbol);
+    LLVMValueRef(*f_build_op)(LLVMBuilderRef, LLVMValueRef L, LLVMValueRef R, symbol);
+    LLVMValueRef(*f_const_op)(LLVMValueRef L, LLVMValueRef R);
 };
 
+LLVMValueRef LLVMConstMul(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+LLVMValueRef LLVMConstSDiv(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+LLVMValueRef LLVMConstUDiv(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+LLVMValueRef LLVMConstURem(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+LLVMValueRef LLVMConstSRem(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+LLVMValueRef LLVMConstShl(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+LLVMValueRef LLVMConstLShr(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+LLVMValueRef LLVMConstAShr(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+LLVMValueRef LLVMConstAnd(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+LLVMValueRef LLVMConstOr(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+LLVMValueRef LLVMConstXor(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
+
 static struct op_entry op_table[] = {
-    { LLVMBuildAdd },
-    { LLVMBuildSub }, 
-    { LLVMBuildMul }, 
-    { LLVMBuildSDiv }, 
-    { LLVMBuildOr },  // logical or
-    { LLVMBuildAnd }, // logical and
-    { LLVMBuildOr },  // bitwise or
-    { LLVMBuildAnd }, // bitwise and
-    { LLVMBuildXor },  
-    { LLVMBuildURem },
-    { LLVMBuildAShr },
-    { LLVMBuildShl }
+    { LLVMBuildAdd,  LLVMConstAdd  },
+    { LLVMBuildSub,  LLVMConstSub  }, 
+    { LLVMBuildMul,  LLVMConstMul  }, 
+    { LLVMBuildSDiv, LLVMConstSDiv },
+    { LLVMBuildOr,   LLVMConstOr   },  // logical or
+    { LLVMBuildAnd,  LLVMConstAnd  }, // logical and
+    { LLVMBuildOr,   LLVMConstOr   },  // bitwise or
+    { LLVMBuildAnd,  LLVMConstAnd  }, // bitwise and
+    { LLVMBuildXor,  LLVMConstXor  },  
+    { LLVMBuildURem, LLVMConstURem },
+    { LLVMBuildAShr, LLVMConstAShr },
+    { LLVMBuildShl,  LLVMConstShl  }
 };
 
 enode aether_e_assign(aether e, enode L, A R, OPType op) {
@@ -2601,7 +2656,7 @@ enode aether_e_assign(aether e, enode L, A R, OPType op) {
     if (op != OPType__assign) {
         rL = e_load(e, L, null);
         res = value(L->mdl,
-            op_table[op - OPType__assign - 1].f_op
+            op_table[op - OPType__assign - 1].f_build_op
                 (e->builder, rL->value, rR->value, e_str(OPType, op)->chars));
     }
 
@@ -2632,11 +2687,7 @@ emember aether_lookup2(aether e, A name, AType mdl_type_filter) {
     if (!name) return null;
     if (instanceof(name, typeid(token)))
         name = cast(string, (token)name);
-    string n = name;
-    if (eq(n, "instance")) {
-        int test2 = 2;
-        test2    += 2;
-    }
+
     for (int i = len(e->lex) - 1; i >= 0; i--) {
         model ctx      = e->lex->elements[i];
         AType ctx_type = isa(ctx);
@@ -2645,13 +2696,17 @@ emember aether_lookup2(aether e, A name, AType mdl_type_filter) {
         cstr  n = cast(cstr, (string)name);
         // combine the two member checks
         do {
+            // member registration should create namespace; which we dont technically have past one level
             emember m = ctx->members ? get(ctx->members, string(n)) : null;
             if (m) {
                 AType mdl_type = isa(m->mdl);
                 if (mdl_type_filter) {
-                    if (mdl_type != mdl_type_filter)
+                    if (mdl_type != mdl_type_filter) {
+                        print("going to next");
                         goto nxt;
+                    }
                 }
+                print("returning m = %p", m);
                 return m;
             }
             nxt:
@@ -2675,10 +2730,6 @@ model aether_push(aether e, model mdl) {
         use(f);
 
     push(e->lex, mdl);
-    if (e->top == mdl && isa(mdl) == typeid(Class)){
-        int test2 = 2;
-        test2    += 2;
-    }
     e->top = mdl;
 
     if (!mdl->members) mdl->members = hold(map(hsize, 8));
@@ -2806,7 +2857,6 @@ void enumeration_init(enumeration mdl) {
     mdl->type = mdl->src->type;
 }
 
-// probably more suitable for aether, if we define aether as build from llvm/os
 void aether_build_info(aether e, path install) {
     if (e->install != install)
         e->install = hold(install);
@@ -2827,11 +2877,14 @@ void aether_build_info(aether e, path install) {
 #elif defined(__APPLE__)
     string sdk       = run("xcrun --show-sdk-path");
     e->sdk_path      = path(sdk);
-    e->include_paths = a(f(path, "%o/usr/include", sdk));
+    e->include_paths = a(f(path, "%o/usr/include", sdk), f(path, "%o/usr/include/c++/v1", sdk));
     e->lib_paths     = a(f(path, "%o/usr/lib", sdk));
 #endif
     push(e->include_paths, f(path, "%o/include", e->install));
     push(e->lib_paths,     f(path, "%o/lib",     e->install));
+
+    path src_path = parent(e->source);
+    push(e->include_paths, src_path);
 }
 
 // very undocumented process here -- the means of looking up intrinsics is simply not documented
@@ -3141,10 +3194,6 @@ void aether_A_import(aether e, path lib) {
         if (atype->user || (is_abstract && (atype != typeid(raw)))) continue; // if we have already processed this type, continue
         string name = string(atype->name);
         set(processing, name, atype);
-        if (atype == typeid(symbol)) {
-            int test2 = 2;
-            test2    += 2;
-        }
         bool  is_base_type = (atype->traits & A_TRAIT_BASE)      != 0;
         if   (is_base_type) continue; // this is AType, which we setup manually
 
@@ -3165,19 +3214,11 @@ void aether_A_import(aether e, path lib) {
         else if (is_struct)   mdl = structure  (mod, e, name, name, imported_from, inc);
         else if (is_enum)     mdl = enumeration(mod, e, name, name);
         else if (is_prim || is_abstract) {
-            if (eq(name, "raw")) {
-                int test2 = 2;
-                test2    += 2;
-            }
             mdl = model(mod, e, name, name, atype_src, atype);
         }
 
         Class cl = mdl;
         // initialization for primitives are in model_init
-        if (atype == typeid(symbol)) {
-            int test2 = 2;
-            test2    += 2;
-        }
         atype->user = mdl; // lets store our model reference here
         verify(mdl, "failed to import type: %o", name);
         register_model(e, mdl, is_prim || is_enum || 
@@ -3895,69 +3936,286 @@ enode aether_e_is(aether e, enode L, A R) {
     return aether_e_eq(e, L_ptr, R_ptr);
 }
 
+
 enode aether_e_cmp(aether e, enode L, enode R) {
-    model t0 = L->mdl;
-    model t1 = R->mdl;
-    verify (t0 == t1, "types must be same at primitive operation level");
-    bool i0 = is_integral(t0);
-    bool f0 = is_realistic(t1);
-    LLVMValueRef result;
-    if (i0 || !f0) {
-        // For integers, build two comparisons and combine
-        LLVMValueRef lt = LLVMBuildICmp(e->builder, LLVMIntSLT, L->value, R->value, "cmp_lt");
-        LLVMValueRef gt = LLVMBuildICmp(e->builder, LLVMIntSGT, L->value, R->value, "cmp_gt");
-        // Convert true/false to -1/+1 and combine
-        LLVMValueRef neg_one = LLVMConstInt(LLVMInt32Type(), -1, true);
-        LLVMValueRef pos_one = LLVMConstInt(LLVMInt32Type(), 1, false);
-        LLVMValueRef lt_val = LLVMBuildSelect(e->builder, lt, neg_one, LLVMConstInt(LLVMInt32Type(), 0, false), "lt_val");
-        LLVMValueRef gt_val = LLVMBuildSelect(e->builder, gt, pos_one, lt_val, "cmp_result");
-        result = gt_val;
-    } else {
-        // For floats, use ordered comparison
+
+    AType Lt = isa(L->literal);
+    AType Rt = isa(R->literal);
+    bool  Lc = is_class(L->mdl);
+    bool  Rc = is_class(R->mdl);
+    bool  Ls = is_struct(L->mdl);
+    bool  Rs = is_struct(R->mdl);
+    bool  Lr = is_realistic(L->mdl);
+    bool  Rr = is_realistic(R->mdl);
+
+    if (Lt && Rt) { // ifdef functionality
+        bool Lr = (Lt->traits & A_TRAIT_REALISTIC);
+        bool Rr = (Rt->traits & A_TRAIT_REALISTIC);
+        i32 diff = 0;
+
+        if (Lr || Rr) {
+            f64 L_64;
+            f64 R_64;
+
+            if      (Lt == typeid(f32)) L_64 = *(f32*)L->literal;
+            else if (Lt == typeid(f64)) L_64 = *(f64*)L->literal;
+            else fault("unexpected float format");
+
+            if      (Rt == typeid(f32)) R_64 = *(f32*)R->literal;
+            else if (Rt == typeid(f64)) R_64 = *(f64*)R->literal;
+            else fault("unexpected float format");
+
+            diff = L_64 - R_64;
+            diff = (diff < 0) ? -1 : (diff > 0) ? 1 : 0; // it doesn't make sense to change the result for floats
+
+        } else
+            diff = compare(L->literal, R->literal);
+        
+        A literal = A_i32(diff);
+        enode res = value(emodel("i32"), LLVMConstInt(LLVMInt32Type(), diff, 0));
+        res->literal = hold(literal);
+        return res;
+    }
+
+    fn f = context_model(e, typeid(fn));
+    verify(f, "non-const compare must be in a function");
+
+    if (Lc || Rc) {
+        if (!Lc) {
+            enode t = L;
+            L = R;
+            R = t;
+        }
+        fn eq = aether_find_member(e, string("compare"), L->mdl, typeid(fn));
+        if (eq) {
+            verify(eq->rtype == emodel("i32"), "compare function must return i32, found %o", eq->rtype->name);
+            // check if R is compatible with argument
+            // if users want to allow different data types, we need to make the argument more generic
+            // this is better than overloads since the code is in one place
+            return e_fn_call(e, eq, L, a(R));
+        } else {
+            LLVMValueRef lt = LLVMBuildICmp(e->builder, LLVMIntULT, L->value, R->value, "cmp_class-lt");
+            LLVMValueRef gt = LLVMBuildICmp(e->builder, LLVMIntUGT, L->value, R->value, "cmp_class-gt");
+
+            LLVMValueRef neg_one = LLVMConstInt(LLVMInt32Type(), -1, true);
+            LLVMValueRef pos_one = LLVMConstInt(LLVMInt32Type(),  1, false);
+            LLVMValueRef zero    = LLVMConstInt(LLVMInt32Type(),  0, false);
+
+            // if L<R → -1, else if L>R → 1, else 0
+            LLVMValueRef lt_val = LLVMBuildSelect(e->builder, lt, neg_one, zero, "lt_val");
+            LLVMValueRef result = LLVMBuildSelect(e->builder, gt, pos_one, lt_val, "cmp_f");
+            return value(emodel("i32"), result);
+        }
+    } else if (Ls || Rs) {
+        // iterate through struct members, checking against each with recursion
+
+        LLVMValueRef result = LLVMConstInt(LLVMInt32Type(), 0, 0);
+        LLVMBasicBlockRef exit_block = LLVMAppendBasicBlock(f, "cmp_exit");
+
+        // incoming edges for phi
+        array phi_vals   = array(alloc, 32, unmanaged, true); // LLVMValueRef
+        array phi_blocks = array(alloc, 32, unmanaged, true); // LLVMBasicBlockRef
+
+        verify(Ls && Rs && (L->mdl == R->mdl), "struct type mismatch %o != %o", L->mdl->name, R->mdl->name);
+        pairs(L->mdl->members, i) {
+            emember mem = i->value;
+
+            // get the struct member at [ mem->index ]
+            if (instanceof(mem->mdl, typeid(fn)))
+                continue;
+
+            LLVMValueRef lv  = LLVMBuildExtractValue(e->builder, L->value, mem->index, "lv");
+            LLVMValueRef rv  = LLVMBuildExtractValue(e->builder, R->value, mem->index, "rv");
+            enode        le  = value(mem->mdl, lv);
+            enode        re  = value(mem->mdl, rv);
+            enode        cmp = e_cmp(e, le, re);
+
+            LLVMValueRef is_nonzero = LLVMBuildICmp(
+                e->builder, LLVMIntNE, cmp->value,
+                LLVMConstInt(LLVMInt32Type(), 0, 0),
+                "cmp_nonzero");
+
+            // create blocks for next-field vs exit
+            LLVMBasicBlockRef next_block = LLVMAppendBasicBlock(f, "cmp_next");
+            LLVMBasicBlockRef exit_here  = LLVMAppendBasicBlock(f, "cmp_exit_here");
+
+            // branch: if nonzero → exit_here, else → next
+            LLVMBuildCondBr(e->builder, is_nonzero, exit_here, next_block);
+
+            // in exit_here: set result = cmp and jump to exit_block
+            LLVMPositionBuilderAtEnd(e->builder, exit_here);
+
+            push(phi_vals,   cmp->value);
+            push(phi_blocks, exit_here);
+
+            LLVMBuildBr(e->builder, exit_block);
+
+            // move to next_block for the next member
+            LLVMPositionBuilderAtEnd(e->builder, next_block);
+        }
+
+        push(phi_vals,   LLVMConstInt(LLVMInt32Type(), 0, 0));
+        push(phi_blocks, LLVMGetInsertBlock(e->builder)); // fallthrough
+
+        // at the end, build a PHI in exit_block that merges:
+        //   - 0 (from fallthrough if all equal)
+        //   - cmp (from whichever exit_here branch)
+        LLVMPositionBuilderAtEnd(e->builder, exit_block);
+        LLVMValueRef phi = LLVMBuildPhi(e->builder, LLVMInt32Type(), "cmp_phi");
+        LLVMAddIncoming(phi, vdata(phi_vals), vdata(phi_blocks), len(phi_vals));
+
+        return value(emodel("i32"), phi);
+
+    } else if (L->mdl != R->mdl) {
+        if (Lr && Rr) {
+            // convert to highest bit width
+            if (L->mdl->size_bits > R->mdl->size_bits) {
+                R = e_create(e, L->mdl, R);
+            } else {
+                L = e_create(e, R->mdl, L);
+            }
+        } else if (Lr) {
+            R = e_create(e, L->mdl, R);
+        } else if (Rr) {
+            L = e_create(e, L->mdl, R);
+        } else {
+            if (L->mdl->size_bits > R->mdl->size_bits) {
+                R = e_create(e, L->mdl, R);
+            } else {
+                L = e_create(e, R->mdl, L);
+            }
+        }
+    }
+
+    if (Lr || Rr) {
+        // we need a select with a less than, equal to, else
+        // for float we must return -1 0 and 1
+
         LLVMValueRef lt = LLVMBuildFCmp(e->builder, LLVMRealOLT, L->value, R->value, "cmp_lt");
         LLVMValueRef gt = LLVMBuildFCmp(e->builder, LLVMRealOGT, L->value, R->value, "cmp_gt");
+
         LLVMValueRef neg_one = LLVMConstInt(LLVMInt32Type(), -1, true);
-        LLVMValueRef pos_one = LLVMConstInt(LLVMInt32Type(), 1, false);
-        LLVMValueRef lt_val = LLVMBuildSelect(e->builder, lt, neg_one, LLVMConstInt(LLVMInt32Type(), 0, false), "lt_val");
-        LLVMValueRef gt_val = LLVMBuildSelect(e->builder, gt, pos_one, lt_val, "cmp_result");
-        result = gt_val;
+        LLVMValueRef pos_one = LLVMConstInt(LLVMInt32Type(),  1, false);
+        LLVMValueRef zero    = LLVMConstInt(LLVMInt32Type(),  0, false);
+
+        // if L<R → -1, else if L>R → 1, else 0
+        LLVMValueRef lt_val = LLVMBuildSelect(e->builder, lt, neg_one, zero, "lt_val");
+        LLVMValueRef result = LLVMBuildSelect(e->builder, gt, pos_one, lt_val, "cmp_f");
+
+        return value(emodel("i32"), result);
     }
-    
-    return value(emodel("i32"), result);
+
+    return value(emodel("i32"), LLVMBuildSub(e->builder, L->value, R->value, "diff-i"));
 }
 
 enode aether_e_eq(aether e, enode L, enode R) {
-    model t0 = L->mdl;
-    model t1 = R->mdl;
-    verify (t0 == t1, "types must be same at primitive operation level");
-    bool i0 = is_integral(t0);
-    bool f0 = is_realistic(t1);
-    enode r;
-    A literal = null;
-    if (i0 || !f0) {
-        AType Lt = isa(L->literal);
-        AType Rt = isa(R->literal);
-        if (Lt && Lt == Rt) { /// useful for ifdef functionality
-            bool is_eq = memcmp(L->literal, R->literal, Lt->size) == 0;
-            literal = A_bool(is_eq);
-            r = value(emodel("bool"), LLVMConstInt(LLVMInt1Type(), is_eq, 0) );
+    enode        cmp = e_cmp(e, L, R);
+    LLVMValueRef z   = LLVMConstInt(LLVMInt32Type(), 0, 0);
+    return value(emodel("bool"), LLVMBuildICmp(e->builder, LLVMIntEQ, cmp->value, z, "cmp-i"));
+
+#if 0
+    AType Lt = isa(L->literal);
+    AType Rt = isa(R->literal);
+    bool  Lc = is_class(L->mdl);
+    bool  Rc = is_class(R->mdl);
+    bool  Ls = is_struct(L->mdl);
+    bool  Rs = is_struct(R->mdl);
+    bool  Lr = is_realistic(L->mdl);
+    bool  Rr = is_realistic(R->mdl);
+
+    if (Lt && Rt) { // ifdef functionality
+        bool Lr = (Lt->traits & A_TRAIT_REALISTIC);
+        bool Rr = (Rt->traits & A_TRAIT_REALISTIC);
+        bool is_eq = false;
+
+        if (Lr || Rr) {
+            f64 L_64;
+            f64 R_64;
+
+            if      (Lt == typeid(f32)) L_64 = *(f32*)L->literal;
+            else if (Lt == typeid(f64)) L_64 = *(f64*)L->literal;
+            else fault("unexpected float format");
+
+            if      (Rt == typeid(f32)) R_64 = *(f32*)R->literal;
+            else if (Rt == typeid(f64)) R_64 = *(f64*)R->literal;
+            else fault("unexpected float format");
+
+            is_eq = L_64 == R_64;
+
         } else
-            r = value(emodel("bool"), LLVMBuildICmp(e->builder, LLVMIntEQ,   L->value, R->value, "eq-i"));
-    } else
-        r = value(emodel("bool"), LLVMBuildFCmp(e->builder, LLVMRealOEQ, L->value, R->value, "eq-f"));
-    r->literal = hold(literal);
-    return r;
+            is_eq = compare(L->literal, R->literal) == 0;
+        
+        A literal = A_bool(is_eq);
+        enode res = value(emodel("bool"), LLVMConstInt(LLVMInt1Type(), is_eq, 0));
+        res->literal = hold(literal);
+        return res;
+    }
+
+    if (Lc || Rc) {
+        if (!Lc) {
+            enode t = L;
+            L = R;
+            R = t;
+        }
+        fn eq = aether_find_member(e, string("eq"), L->mdl, typeid(fn));
+        if (eq) {
+            // check if R is compatible with argument
+            // if users want to allow different data types, we need to make the argument more generic
+            // this is better than overloads since the code is in one place
+            return e_fn_call(e, eq, L, a(R));
+        }
+    } else if (Ls || Rs) {
+        // iterate through struct members, checking against each with recursion
+        LLVMValueRef result = LLVMConstInt(LLVMInt1Type(), 1, 0);
+
+        verify(Ls && Rs && (L->mdl == R->mdl), "struct type mismatch %o != %o", L->mdl->name, R->mdl->name);
+        pairs(L->mdl->members, i) {
+            emember mem = i->value;
+
+            // get the struct member at [ mem->index ]
+            if (instanceof(mem->mdl, typeid(fn)))
+                continue;
+
+            LLVMValueRef lv  = LLVMBuildExtractValue(e->builder, L->value, mem->index, "lv");
+            LLVMValueRef rv  = LLVMBuildExtractValue(e->builder, R->value, mem->index, "rv");
+            enode        le  = value(mem->mdl, lv);
+            enode        re  = value(mem->mdl, rv);
+            enode        cmp = e_eq(e, le, re);
+
+            result = LLVMBuildAnd(e->builder, result, cmp->value, "eq-struct-and");
+        }
+        return value(emodel("bool"), result);
+
+    } else if (L->mdl != R->mdl) {
+        if (Lr && Rr) {
+            // convert to highest bit width
+            if (L->mdl->size_bits > R->mdl->size_bits) {
+                R = e_create(e, L->mdl, R);
+            } else {
+                L = e_create(e, R->mdl, L);
+            }
+        } else if (Lr) {
+            R = e_create(e, L->mdl, R);
+        } else if (Rr) {
+            L = e_create(e, L->mdl, R);
+        } else {
+            if (L->mdl->size_bits > R->mdl->size_bits) {
+                R = e_create(e, L->mdl, R);
+            } else {
+                L = e_create(e, R->mdl, L);
+            }
+        }
+    }
+
+    if (Lr || Rr)
+        return value(emodel("bool"), LLVMBuildFCmp(e->builder, LLVMRealOEQ, L->value, R->value, "eq-f"));
+    
+    return value(emodel("bool"), LLVMBuildICmp(e->builder, LLVMIntEQ, L->value, R->value, "eq-i"));
+#endif
 }
 
 enode aether_e_not_eq(aether e, enode L, enode R) {
-    model t0 = L->mdl;
-    model t1 = R->mdl;
-    verify (t0 == t1, "types must be same at primitive operation level");
-    bool i0 = is_integral(t0);
-    bool f0 = is_realistic(t1);
-    if (i0 || !f0)
-        return value(emodel("bool"), LLVMBuildICmp(e->builder, LLVMIntNE,   L->value, R->value, "not-eq-i"));
-    return     value(emodel("bool"), LLVMBuildFCmp(e->builder, LLVMRealONE, L->value, R->value, "not-eq-f"));
+    return e_not(e, e_eq(e, L, R));
 }
 
 enode aether_e_fn_return(aether e, A o) {
@@ -4022,8 +4280,8 @@ enode aether_e_fn_call(aether e, fn fn, enode target, array args) { // we could 
                 index++;
                 continue;
             }
-
-            emember    f_arg = value_by_index(fn->args->members, index - (target ? 1 : 0));
+            // this is wrong because we do not have the target as a member in args
+            emember    f_arg = value_by_index(fn->args->members, index);
             AType      vtype = isa(value);
             enode      conv  = e_create(e, f_arg->mdl, value);
             
@@ -4044,7 +4302,6 @@ enode aether_e_fn_call(aether e, fn fn, enode target, array args) { // we could 
             if (p[0] == '%' && p[1] != '%') {
                 model arg_type  = formatter_type(e, (cstr)&p[1]);
                 A     o_arg     = args->elements[arg_idx + soft_args];
-                AType arg_type2 = isa(o_arg);
                 enode n_arg     = e_load(e, o_arg, null);
                 enode conv      = e_create(e, arg_type, n_arg);
                 arg_values[arg_idx + soft_args] = conv->value;
@@ -4115,11 +4372,17 @@ enode aether_e_op(aether e, OPType optype, string op_name, A L, A R) {
         LL = e_create(e, m_bool, LL); // generate compare != 0 if not already i1
         RL = e_create(e, m_bool, RL);
         struct op_entry* op = &op_table[optype - OPType__add];
-        RES = op->f_op(B, LL->value, RL->value, N);
+        if (LL->literal && RL->literal)
+            RES = op->f_const_op(LL->value, RL->value);
+        else
+            RES = op->f_build_op(B, LL->value, RL->value, N);
     } else if (optype >= OPType__add && optype <= OPType__left) {
         struct op_entry* op = &op_table[optype - OPType__add];
-        // we must override the logic here because we're ONLY doing OPType__or, or OPType__and (we acn check for )
-        RES = op->f_op(B, LL->value, RL->value, N);
+        if (LL->literal && RL->literal)
+            RES = op->f_const_op(LL->value, RL->value);
+        else
+            // we must override the logic here because we're ONLY doing OPType__or, OPType__and
+            RES = op->f_build_op(B, LL->value, RL->value, N);
 
     } else if (optype == OPType__equal)
         return e_eq(e, LL, RL);
@@ -4136,7 +4399,7 @@ enode aether_e_op(aether e, OPType optype, string op_name, A L, A R) {
         } else
         /// store from operation we call, membered in OPType enumeration
         /// todo: build all op tables in A-type (we are lacking these definitions)
-            RES = op_table[optype - OPType__assign_add].f_op(B, LL->value, RL->value, N);
+            RES = op_table[optype - OPType__assign_add].f_build_op(B, LL->value, RL->value, N);
         LLVMBuildStore(B, RES, mL->value);
     }
     return enode(
@@ -4238,10 +4501,6 @@ model aether_top(aether e) {
 
 A read_numeric(token a) {
     cstr cs = cstring(a);
-    if (ends_with(a, "UL")) {
-        int test2 = 2;
-        test2    += 2;
-    }
     if (strcmp(cs, "true") == 0) {
         bool v = true;
         return primitive(typeid(bool), &v);
@@ -4436,7 +4695,8 @@ define_class (clang_cc,     A)
 define_class (statements,   model)
 define_class (eargs,        model)
 define_class (fn,           model)
-define_class (record,       model)
+define_class (Namespace,    model)
+define_class (record,       Namespace)
 define_class (aether,       model)
 define_class (uni,          record)
 define_class (enumeration,  model)

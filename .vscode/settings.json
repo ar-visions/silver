@@ -138,7 +138,13 @@
         "codecvt": "cpp",
         "valarray": "cpp",
         "import": "c",
-        "aether": "c"
+        "aether": "c",
+        "*.def": "cpp",
+        "bitwriter.h": "c",
+        "__split_buffer": "cpp",
+        "sim_unordered_map": "cpp",
+        "sim_unordered_set": "cpp",
+        "sim_vector": "cpp"
     },
     "cmake.configureOnOpen": false,
     "C_Cpp.errorSquiggles": "enabled"

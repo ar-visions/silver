@@ -1,3 +1,3 @@
 @static
-A aclang
--lclang-cpp -lclang 
+A
+-lclang-cpp -lclang
