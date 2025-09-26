@@ -7,6 +7,8 @@
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/BitWriter.h>
 
+#include <clang/CodeGen/CodeGenAction.h>
+
 //#include <clang-c/Index.h>
 
 
@@ -20,6 +22,7 @@
 #include <clang/AST/Type.h>
 #include <clang/AST/Decl.h>
 #include <clang/AST/DeclCXX.h>
+#include <clang/AST/Mangle.h>
 #include <clang/AST/RecordLayout.h>
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Frontend/FrontendActions.h>
@@ -32,6 +35,7 @@
 
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/IR/DataLayout.h>
+#include <llvm/IR/Module.h>
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 
@@ -82,108 +86,104 @@ struct model_ctx {
 
 static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether e, string use_name);
 
+static std::string get_name(NamedDecl* decl) {
+    clang::PrintingPolicy policy(decl->getASTContext().getLangOpts());
+    policy.SuppressUnwrittenScope = true;     // skip compiler-injected stuff
+    policy.SuppressInlineNamespace = true;    // hide inline namespaces
 
-// Enum visitor equivalent
-static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e) {
-    std::string name = decl->getNameAsString();
-    string n = string(name.c_str());
-    verify (len(n), "expected name for enumerable");
-
-    model top = e->top;
-    enumeration en = enumeration(mod, e, name, (token)n, members, map(hsize, 8));
-    push(e, (model)en);
-    // Visit enum constants
-    for (auto it = decl->enumerator_begin(); it != decl->enumerator_end(); ++it) {
-        EnumConstantDecl* ec = *it;
-        std::string const_name = ec->getNameAsString();
-        string cn = string(const_name.c_str());
-        
-        // Get the value if needed
-        llvm::APSInt val = ec->getInitVal();
-        
-        emember ev = emember(mod, en->mod, name, (token)cn, mdl, (model)en);
-        ev->is_const = true;
-        set(en->members, (A)cn, (A)ev);
-        set(top->members, (A)cn, (A)ev); // this is how C enums work, so lets make it easy to lookup
-    }
-    pop(e);
-    
-    if (en->name && len((string)en->name))
-        register_model(e, (model)en, false);
-    finalize((model)en);
-    return en;
+    std::string out;
+    llvm::raw_string_ostream os(out);
+    decl->printQualifiedName(os, policy);
+    return os.str();
 }
 
-// Function creation
-static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e) {
-    std::string name = decl->getNameAsString();
-    string n = string(name.c_str());
-    
-    if (eq(n, "vkCreateInstance")) {
-        int test2 = 2;
-        test2    += 2;
+static std::string mangle(const NamedDecl* D, ASTContext& ctx) {
+    std::string out;
+    llvm::raw_string_ostream os(out);
+
+    // Pick ABI style: Itanium (Linux/macOS) or Microsoft (MSVC)
+    std::unique_ptr<MangleContext> MC(
+        ItaniumMangleContext::create(ctx, ctx.getDiagnostics()));
+
+    if (const auto *VD = dyn_cast<VarDecl>(D)) {
+        MC->mangleName(VD, os);
+    } else if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
+        MC->mangleName(FD, os);
+    } else if (const auto *MD = dyn_cast<CXXMethodDecl>(D)) {
+        MC->mangleName(MD, os);
+    } else {
+        // fall back to unmangled identifier if needed
+        out = D->getNameAsString();
     }
-    // Get return type
-    QualType return_qt = decl->getReturnType();
-    model rtype = map_clang_type_to_model(return_qt, ctx, e, null);
+
+    os.flush();
+    return out;
+}
+
+static void create_method_stub(CXXMethodDecl* md, ASTContext& ctx, aether e, record owner) {
+    if (!md->getIdentifier()) return;            // skip operators/unnamed
+    if (md->getAccess() != AS_public) return;   // only public for now
+
+    // human-readable + ABI-mangled name
+    std::string disp = md->getQualifiedNameAsString(); // ns::Class::method
+    std::string mg   = mangle(md, ctx);
+    std::string name = disp + "#" + mg;
+
+    // return type
+    model rtype = map_clang_type_to_model(md->getReturnType(), ctx, e, null);
     if (!rtype) rtype = emodel("none");
-    
-    // Process parameters
+
+    // argument list
     eargs args = eargs(mod, e);
-    for (unsigned i = 0; i < decl->getNumParams(); i++) {
-        ParmVarDecl* param = decl->getParamDecl(i);
-        QualType param_type = param->getType();
-        std::string param_name = param->getNameAsString();
-        
-        // Handle unnamed parameters
-        if (param_name.empty()) {
-            param_name = "arg_" + std::to_string(i);
-        }
-        
-        string pname = string(param_name.c_str());
-        model mt = map_clang_type_to_model(param_type, ctx, e, null);
-        if (!mt) continue;
-        
-        emember earg = emember(mod, e, name, (token)pname, mdl, mt, is_arg, true, context, (model)args);
-        set(args->members, (A)pname, (A)earg);
+
+    // implicit "self" pointer for non-static methods
+    if (!md->isStatic()) {
+        model selfTy = (model)owner;
+        if (md->isConst())
+            selfTy = model(mod, e, src, selfTy, is_const, true);
+        model selfPtr = model(mod, e, src, selfTy, is_ref, true);
+
+        emember a0 = emember(mod, e, name,
+                             (token)string("self"),
+                             mdl, selfPtr,
+                             is_arg, true);
+        set(args->members, (A)string("self"), (A)a0);
     }
-    
-    // Check for variadic
-    bool is_variadic = decl->isVariadic();
-    
-    fn f = fn(mod, e, name, (token)n, rtype, rtype, args, args, va_args, is_variadic);
-    if (len(n) > 0)
-        register_model(e, (model)f, false);
-    //use(f);
+
+    // explicit parameters
+    for (unsigned i = 0; i < md->getNumParams(); ++i) {
+        ParmVarDecl* p = md->getParamDecl(i);
+        model mt = map_clang_type_to_model(p->getType(), ctx, e, null);
+        if (!mt) continue;
+
+        std::string pname = p->getNameAsString();
+        if (pname.empty())
+            pname = "arg_" + std::to_string(i);
+
+        emember ap = emember(mod, e, name,
+                             (token)string(pname.c_str()),
+                             mdl, mt,
+                             is_arg, true);
+        set(args->members, (A)string(pname.c_str()), (A)ap);
+    }
+
+    // build fn
+    bool variadic = md->isVariadic();
+    fn f = fn(mod, e, name, (token)string(name.c_str()),
+              rtype, rtype,
+              args, args,
+              va_args, variadic);
+
+    register_model(e, (model)f, false);
     finalize((model)f);
-    return f;
 }
 
-// Record (struct/union) creation
-static record create_record(RecordDecl* decl, ASTContext& ctx, aether e) {
-    std::string name = decl->getNameAsString();
-    string n = string(name.c_str());
-    bool has_name = name.length() > 0;
-    // Check if already exists
-    emember existing = has_name ? lookup2(e, (A)n, null) : (emember)null;
-    if (existing && existing->mdl)
-        return (record)existing->mdl;
 
-    // Check if it's a union or struct
+static none set_fields(RecordDecl* decl, ASTContext& ctx, aether e, record rec) {
     bool is_union = decl->isUnion();
-    if (is_union) {
-        is_union = is_union;
-    }
-    record rec = is_union ?
-        (record)uni(mod, e, name, (token)n) :
-        (record)structure(mod, e, name, (token)n);
-    
-    rec->members = map(hsize, 8);
-    if (has_name)
-        register_model(e, (model)rec, false);
-    
+
     // Get the layout for accurate offsets/sizes
-    if (decl->isCompleteDefinition()) {
+    if (decl->isCompleteDefinition() && !decl->isInvalidDecl() && !decl->isDependentType()) {
         const ASTRecordLayout& layout = ctx.getASTRecordLayout(decl);
         
         int field_index = 0;
@@ -196,10 +196,6 @@ static record create_record(RecordDecl* decl, ASTContext& ctx, aether e) {
             string fname = string(field_name.c_str());
             
             QualType field_type = field->getType();
-            if (eq(fname, "__value")) {
-                int test2 = 2;
-                test2    += 2;
-            }
             model mapped = map_clang_type_to_model(field_type, ctx, e, null);
             if (!mapped) continue;
             
@@ -245,6 +241,194 @@ static record create_record(RecordDecl* decl, ASTContext& ctx, aether e) {
         rec->size_bits = layout.getSize().getQuantity() * 8;
         rec->alignment_bits = layout.getAlignment().getQuantity() * 8;
     }
+}
+
+static record create_opaque_class(CXXRecordDecl* cxx, aether e) {
+    std::string qname = cxx->getQualifiedNameAsString();
+    string n = string(qname.c_str());
+
+    if (emember existing = lookup2(e, (A)n, null))
+        return (record)existing->mdl;
+
+    record rec = (record)Class(mod, e, name, (token)n);
+    register_model(e, (model)rec, false);
+
+    if (strstr(n->chars, "ios_base")) {
+        int test2 = 2;
+        test2    += 2;
+    }
+
+    //rec->opaque = true; // mark so downstream code knows
+    finalize((model)rec);
+    return rec;
+}
+
+static record create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::string qname) {
+    string n = string(qname.c_str());
+    
+    if (!cxx->isCompleteDefinition() || cxx->isDependentType() || cxx->isInvalidDecl())
+        return create_opaque_class(cxx, e);
+    
+    if (emember existing = lookup2(e, (A)n, null))
+        return (record)existing->mdl;
+
+    record rec = (record)Class(mod, e, name, (token)n, members, map(hsize, 16));
+    register_model(e, (model)rec, false);
+    
+    // bases → embed base layout first (simple, single inheritance case)
+    const ASTRecordLayout& layout = ctx.getASTRecordLayout(cxx);
+
+    for (const auto& B : cxx->bases()) {
+        const CXXRecordDecl* base = B.getType()->getAsCXXRecordDecl();
+        if (!base) continue;
+        record base_rec = (record)create_class(
+            const_cast<CXXRecordDecl*>(base), ctx, e, get_name((NamedDecl*)base));
+        // represent as a synthetic member named "__baseN"
+        i32    N     = len(rec->members);
+        string bname = f(string, "__base%i", N);
+        emember m = emember(mod, rec->mod, name, (token)bname, mdl, (model)base_rec);
+        m->index = N;
+        // byte offset:
+        uint64_t off_bits = layout.getBaseClassOffset(base).getQuantity() * 8;
+        m->override_offset_bits = A_i32(off_bits);
+        set(rec->members, (A)bname, (A)m);
+    }
+
+    set_fields((RecordDecl*)cxx, ctx, e, rec);
+
+    // class size/alignment
+    rec->size_bits      = layout.getSize().getQuantity() * 8;
+    rec->alignment_bits = layout.getAlignment().getQuantity() * 8;
+
+    // methods (collect; shims in §4)
+    for (auto* m : cxx->methods()) {
+        create_method_stub(m, ctx, e, rec); // see §4
+    }
+
+    finalize((model)rec);
+    return rec;
+}
+
+
+static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string name) {
+    string n = string(name.c_str());
+
+    // todo:
+    // this needs to get all of the namespaces that stack up in the EnumDecl
+    model top = e->top;
+    enumeration en = enumeration(mod, e, name, (token)n, members, map(hsize, 8));
+    push(e, (model)en);
+
+    // Visit enum constants
+    for (auto it = decl->enumerator_begin(); it != decl->enumerator_end(); ++it) {
+        EnumConstantDecl* ec = *it;
+        std::string const_name = ec->getNameAsString();
+        string cn = string(const_name.c_str());
+
+        if (eq(cn, "none")) {
+            int test2 = 2;
+            test2    += 2;
+        }
+        
+        // Get the value if needed
+        llvm::APSInt val = ec->getInitVal();
+        
+        emember ev = emember(mod, en->mod, name, (token)cn, mdl, (model)en);
+        ev->is_const = true;
+        set(en->members, (A)cn, (A)ev);
+        set(top->members, (A)cn, (A)ev); // this is how C enums work, so lets make it easy to lookup
+    }
+    pop(e);
+    
+    if (en->name && len((string)en->name))
+        register_model(e, (model)en, false);
+    finalize((model)en);
+    return en;
+}
+
+// Function creation
+static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string name) {
+    string n = string(name.c_str());
+    
+    if (eq(n, "vkCreateInstance")) {
+        int test2 = 2;
+        test2    += 2;
+    }
+    // Get return type
+    QualType return_qt = decl->getReturnType();
+    model rtype = map_clang_type_to_model(return_qt, ctx, e, null);
+    if (!rtype) rtype = emodel("none");
+    
+    // Process parameters
+    eargs args = eargs(mod, e);
+    for (unsigned i = 0; i < decl->getNumParams(); i++) {
+        ParmVarDecl* param = decl->getParamDecl(i);
+        QualType param_type = param->getType();
+        std::string param_name = param->getNameAsString();
+        
+        // Handle unnamed parameters
+        if (param_name.empty()) {
+            param_name = "arg_" + std::to_string(i);
+        }
+        
+        string pname = string(param_name.c_str());
+        model mt = map_clang_type_to_model(param_type, ctx, e, null);
+        if (!mt) continue;
+        
+        emember earg = emember(mod, e, name, (token)pname, mdl, mt, is_arg, true, context, (model)args);
+        set(args->members, (A)pname, (A)earg);
+    }
+    
+    // Check for variadic
+    bool is_variadic = decl->isVariadic();
+    
+    fn f = fn(mod, e, name, (token)n, rtype, rtype, args, args, va_args, is_variadic);
+    if (len(n) > 0)
+        register_model(e, (model)f, false);
+    //use(f);
+    finalize((model)f);
+    return f;
+}
+
+// Record (struct/union) creation
+static record create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::string name) {
+    string n = string(name.c_str());
+    bool has_name = name.length() > 0;
+    // Check if already exists
+    emember existing = has_name ? lookup2(e, (A)n, null) : (emember)null;
+    if (existing && existing->mdl)
+        return (record)existing->mdl;
+
+    // Check if it's a union or struct
+    bool is_union = decl->isUnion();
+    if (is_union) {
+        is_union = is_union;
+    }
+
+    model mdl_opaque = emodel("ARef");
+
+    // c++ ville
+    if (!decl->isCompleteDefinition() || decl->isInvalidDecl() || decl->isDependentType()) {
+        if (strstr(n->chars, "error_category")) {
+            int test2 = 2;
+            test2    += 2;
+        }
+        return (record)model(mod, e, name, (token)n, src, mdl_opaque);
+    }
+
+    if (strstr(n->chars, "error_category")) {
+        int test2 = 2;
+        test2    += 2;
+    }
+    record rec = is_union ?
+        (record)uni(mod, e, name, (token)n) :
+        (record)structure(mod, e, name, (token)n);
+    
+    rec->members = map(hsize, 8);
+    if (has_name)
+        register_model(e, (model)rec, false);
+    
+    set_fields(decl, ctx, e, rec);
     
     finalize((model)rec);
     return rec;
@@ -281,6 +465,12 @@ static model map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e
     const Type* pointee = pointee_qt.getTypePtr();
     
     if (const FunctionProtoType* fpt = dyn_cast<FunctionProtoType>(pointee)) {
+        static int seq = 0;
+        seq++;
+        if (seq == 62) {
+            int test2 = 2;
+            test2    += 2;
+        }
         model func_model = map_function_type(fpt, ctx, e);
         use((fn)func_model);
         return model(mod, e, src, func_model, is_ref, true);
@@ -311,23 +501,42 @@ public:
     
     bool VisitEnumDecl(EnumDecl* decl) {
         if (!decl->getNameAsString().empty()) {
-            create_enum(decl, ctx, e);
+            create_enum(decl, ctx, e, get_name((NamedDecl*)decl));
         }
         return true;
     }
     
     bool VisitFunctionDecl(FunctionDecl* decl) {
         if (!decl->getNameAsString().empty()) {
-            create_fn(decl, ctx, e);
+            std::string n = decl->getNameAsString();
+            if (n.find("none") != std::string::npos) {
+                int test2 = 2;
+                test2    += 2;
+            }
+            create_fn(decl, ctx, e, get_name((NamedDecl*)decl));
         }
         return true;
     }
     
     bool VisitRecordDecl(RecordDecl* decl) {
         // Only process complete definitions
+        if (isa<CXXRecordDecl>(decl)) return true;
         if (decl->isCompleteDefinition() && !decl->getNameAsString().empty()) {
-            create_record(decl, ctx, e);
+            create_record(decl, ctx, e, get_name((NamedDecl*)decl));
         }
+        return true;
+    }
+
+    bool VisitCXXRecordDecl(CXXRecordDecl* decl) {
+        if (!decl->isCompleteDefinition()) return true;
+        if (decl->isInjectedClassName())   return true;
+        if (auto* spec = dyn_cast<ClassTemplateSpecializationDecl>(decl)) {
+            // only import concrete specializations
+            if (spec->getSpecializationKind() != TSK_ExplicitSpecialization &&
+                spec->getSpecializationKind() != TSK_ImplicitInstantiation)
+                return true;
+        }
+        create_class(decl, ctx, e, get_name((NamedDecl*)decl));
         return true;
     }
 };
@@ -346,18 +555,10 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
     if (const TypedefType* tt = dyn_cast<TypedefType>(t)) {
         std::string name = tt->getDecl()->getName().str();
         symbol n = name.c_str();
-        if (strcmp(n, "uint32_t") == 0) {
-            int test2 = 2;
-            test2    += 2;
-        }
         model existing = name.length() ? emodel(n) : (model)null;
         if (existing) return existing;
         if (!use_name) use_name = string(n);
 
-        if (strcmp(n, "__INTMAX_C") == 0) {
-            int test2 = 2;
-            test2    += 2;
-        }
         // Recurse on underlying type
         return map_clang_type_to_model(tt->getDecl()->getUnderlyingType(), ctx, e, use_name);
     }
@@ -365,8 +566,8 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
 
     QualType unqualified = qt.getCanonicalType().getUnqualifiedType();
     const Type* type = unqualified.getTypePtr();
+
     //const Type* type = qt.getTypePtr();
-    
 
     // Builtin types
     model src = null;
@@ -400,7 +601,7 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         // Floating point
         case BuiltinType::Float:       src = emodel("f32");  break;
         case BuiltinType::Double:      src = emodel("f64");  break;
-        case BuiltinType::LongDouble:  src = emodel("f128"); break;
+        case BuiltinType::LongDouble:  src = emodel("f64");  break;
         case BuiltinType::Float16:     src = emodel("f16");  break;
         case BuiltinType::Float128:    src = emodel("f128"); break;
         
@@ -468,6 +669,8 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         if (!base)
              base = map_clang_type_to_model(pointee, ctx, e, null);
         
+        if (!base) base = emodel("ARef"); // todo: call this opaque (we dont want to classify this as A-related)
+
         verify(base, "could not resolve pointer type");
         
         model ptr = model(mod, e, name, (token)use_name, src, base, is_ref, true,
@@ -477,12 +680,28 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         return ptr;
     }
     
-    // Record types (struct/union/class)
-    if (const RecordType* rt = dyn_cast<RecordType>(type)) {
-        RecordDecl* decl = rt->getDecl();
+    // class types (already handle RecordType) — ensure CXXRecordDecl path hits create_class
+    if (auto* RT = dyn_cast<RecordType>(type)) {
+        RecordDecl* decl = RT->getDecl();
         std::string name = decl->getNameAsString();
         model existing = name.length() ? emodel(name.c_str()) : null;
-        return existing ? existing : (model)create_record(decl, ctx, e);
+        if (existing) return existing;
+
+        if (auto* CXX = dyn_cast<CXXRecordDecl>(decl)) {
+            if (CXX->isCLike()) {
+                return (model)create_record(decl, ctx, e, get_name((NamedDecl*)decl));
+            } else {
+                return (model)create_class((CXXRecordDecl*)decl, ctx, e, get_name((NamedDecl*)decl));
+            }
+        } else {
+            return (model)create_record(decl, ctx, e, get_name((NamedDecl*)decl));
+        }
+    }
+
+    // template specializations
+    if (auto* T = dyn_cast<TemplateSpecializationType>(type)) {
+        if (auto* RD = T->getAsCXXRecordDecl())
+            return (model)create_class(const_cast<CXXRecordDecl*>(RD), ctx, e, get_name((NamedDecl*)RD));
     }
     
     // Enum types
@@ -490,8 +709,25 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         EnumDecl* decl = et->getDecl();
         std::string name = decl->getNameAsString();
         model existing = name.length() ? emodel(name.c_str()) : null;
-        return existing ? existing : (model)create_enum(decl, ctx, e);
+        return existing ? existing : (model)create_enum(decl, ctx, e, get_name((NamedDecl*)decl));
     }
+
+
+    // references → treat as pointers + metadata
+    if (auto* L = dyn_cast<LValueReferenceType>(type)) {
+        model base = map_clang_type_to_model(L->getPointeeType(), ctx, e, null); // 2nd arg on seq 62 of function pointer type results in null
+        return model(mod, e, src, base, is_ref, true);
+    }
+    if (auto* R = dyn_cast<RValueReferenceType>(type)) {
+        model base = map_clang_type_to_model(R->getPointeeType(), ctx, e, null);
+        return model(mod, e, src, base, is_ref, true);
+    }
+
+    // member pointers — skip or represent as opaque for now
+    if (isa<MemberPointerType>(type)) {
+        return emodel("opaque"); // or make a dedicated opaque model
+    }
+
     
     // Function types
     /*
@@ -503,6 +739,12 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         return map_function_type_no_proto(fnpt, ctx, e);
     }
     */
+
+    // how do 
+    //if (!type->isCompleteDefinition() || type->isInvalidDecl() || type->isDependentType())
+    //    return null;
+
+    return emodel("ARef"); // lets treat opaque types as ARef
 
     // Unhandled type
     std::string type_name = qt.getAsString();
@@ -525,12 +767,12 @@ path aether_lookup_include(aether e, string include) {
 
 // custom AST consumer
 class AetherASTConsumer : public clang::ASTConsumer {
-    AetherDeclVisitor& visitor;
-    ASTContext& ctx;
+    aether e;
 public:
-    AetherASTConsumer(AetherDeclVisitor& v, ASTContext& c) : visitor(v), ctx(c) {}
-    
+    AetherASTConsumer(aether e) : e(e) {}
+
     void HandleTranslationUnit(ASTContext& context) override {
+        AetherDeclVisitor visitor(context, e);
         visitor.TraverseDecl(context.getTranslationUnitDecl());
     }
 };
@@ -590,6 +832,11 @@ public:
         string n = string(name.c_str());
         emember existing = lookup2(mod, (A)n, (AType)null);
 
+        if (eq(n, "_CACHED_RUNES")) {
+            int test2 = 2;
+            test2    += 2;
+        }
+        
         if (existing)
             return;
 
@@ -616,14 +863,9 @@ public:
         if (!len(t))
             return;
 
-
         if (params) {
             bool va_args = mi->isC99Varargs() || mi->isGNUVarargs();
             macro mac = macro(mod, mod, name, (token)n, params, params, def, t, va_args, va_args);
-            if (eq(n, "__UINT64_C")) {
-                int test2 = 2;
-                test2    += 2;
-            }
             register_model(mod, (model)mac, false);
             //
         } else {
@@ -634,11 +876,21 @@ public:
             
             model mdl = (model)mod->read_model((A)mod, (A)null);
 
-            if (mdl) {
+            if (mdl && (AType)isa(mdl) != (AType)typeid(macro)) {
                 mod->in_macro = false;
                 model macro_typedef = model(mod, mod, src, mdl, name, (token)n);
                 register_model(mod, macro_typedef, false);
             } else {
+                macro mac = macro(mod, mod, name, (token)n, params, null, def, t);
+                register_model(mod, (model)mac, false);
+
+                // we were attempting to parse the expression here, but the const api's
+                // in llvm are not implemented as they should be.
+                // for instance.  it complains about bit-shift operations, etc
+                // its far better to act like a real 'macro' here and perform cmode in code
+                // this is to be done without params, so the syntax will not require the ()
+
+#if 0
                 bool cmode = mod->cmode;
                 mod->cmode = true;
                 enode value = (enode)mod->parse_expr((A)mod, (A)null);
@@ -652,11 +904,22 @@ public:
                         value,      value->value);
                     register_member(mod, m, false);
                 }
+#endif
             }
             pop_state(mod, false);
         }
     }
 };
+
+#undef release
+
+static inline LLVMModuleRef wrap(llvm::Module *M) {
+    return reinterpret_cast<LLVMModuleRef>(M);
+}
+
+static inline llvm::Module *unwrap(LLVMModuleRef M) {
+    return reinterpret_cast<llvm::Module*>(M);
+}
 
 // this must now INSTANCE an Inovcation & CompilerInstance and KEEP it in memory
 path aether_include(aether e, A inc, ARef _instance) {
@@ -666,14 +929,12 @@ path aether_include(aether e, A inc, ARef _instance) {
     verify(ipath && exists(ipath), "include path does not exist: %o", ipath ? (A)ipath : inc);
     e->current_include = ipath;
 
-
     // Create DiagID
     auto DiagID(new DiagnosticIDs());
     auto DiagOpts(new DiagnosticOptions());
 
     // Create invocation first
     auto Invocation = std::make_shared<CompilerInvocation>();
-
 
     // Add Clang's resource directory for built-in headers
     Invocation->getHeaderSearchOpts().ResourceDir = "/src/silver/lib/clang/22";
@@ -685,19 +946,22 @@ path aether_include(aether e, A inc, ARef _instance) {
         false, 
         false);
 
-
-
-    path c = f(path, "/tmp/%o.c", stem(ipath));
+    path c = f(path, "/tmp/%o.c", stem(ipath)); // may need to switch ext and the Language spec based on the ext
     string  contents = f(string, "#include \"%o\"\n", ipath);
     save(c, (A)contents, null);
 
     // Set up input file
-    Invocation->getFrontendOpts().Inputs.push_back(
-        FrontendInputFile(c->chars, Language::C));  // or Language::CXX
+    //Invocation->getFrontendOpts().Inputs.push_back(
+    //    FrontendInputFile(c->chars, Language::C));  // or Language::CXX
     
     // Set target
     Invocation->getTargetOpts().Triple = llvm::sys::getProcessTriple();
-    
+
+    Invocation->getLangOpts().CPlusPlus = 1;
+    Invocation->getLangOpts().CPlusPlus20 = 1;
+    Invocation->getFrontendOpts().Inputs.push_back(
+        FrontendInputFile(c->chars, Language::CXX));
+
     // Add include paths
     for (int i = 0; i < e->include_paths->len; i++) {
         path inc_path = (path)e->include_paths->elements[i];
@@ -744,10 +1008,35 @@ path aether_include(aether e, A inc, ARef _instance) {
     compiler->createASTContext();
     
     // Parse
+    /*
     ASTContext& ctx = compiler->getASTContext();
     AetherDeclVisitor visitor(ctx, e);
     AetherASTConsumer consumer(visitor, ctx);
     ParseAST(compiler->getPreprocessor(), &consumer, ctx);
+    */
+
+    string incl = string(ipath->chars);
+    bool is_header = ends_with(incl, ".h") ||
+                     ends_with(incl, ".hpp");
+
+    ASTContext& ctx = compiler->getASTContext();
+    if (is_header) {
+        // header → just parse symbols
+        AetherASTConsumer consumer(e);
+        ParseAST(compiler->getPreprocessor(), &consumer, ctx);
+    } else {
+        // source → parse + codegen
+        compiler->setASTConsumer(std::make_unique<AetherASTConsumer>(e));
+        std::unique_ptr<EmitLLVMOnlyAction> act(new EmitLLVMOnlyAction());
+        compiler->ExecuteAction(*act);
+
+        std::unique_ptr<llvm::Module> M = act->takeModule();
+        LLVMModuleRef cMod = M ? wrap(M.release()) : nullptr;
+        // stash cMod somewhere or return it
+    }
+
+
+
     unlink(c->chars);
 
     e->current_include = null;

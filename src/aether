@@ -72,7 +72,6 @@ declare_class(mschema)
     i_prop    (X,Y, required,   aether,           mod, meta, weak) \
     i_prop    (X,Y, public,     emember,          mem, weak) \
     i_prop    (X,Y, public,     token,            name) \
-    i_prop    (X,Y, public,     string,           namespace_name) \
     i_prop    (X,Y, public,     AType,            atype_src) \
     i_prop    (X,Y, public,     model,            src) \
     i_prop    (X,Y, public,     bool,             is_ref) \
@@ -181,31 +180,40 @@ declare_class_2(statements, model)
 
 typedef struct _schematic* schematic;
  
+// replaces model's use of:
+// i_prop(X,Y, public, string, namespace_name)
+
+#define Namespace_schema(X,Y,...) \
+    i_prop    (X,Y, public, Namespace, namespace_parent) \
+    i_prop    (X,Y, public, string, namespace_name) \
+    i_prop    (X,Y, public, bool,   namespace_inline)
+declare_class_2(Namespace, model)
+
 // for each field, f_* name-bound class, enum or primitive
 #define record_schema(X,Y,...) \
-    i_prop    (X,Y, public, record, parent) \
     i_prop    (X,Y, public, array,  meta) \
+    i_prop    (X,Y, public, record, parent) \
     i_prop    (X,Y, public, bool,   parsing) \
     i_prop    (X,Y, public, bool,   is_abstract) \
     i_prop    (X,Y, public, i32,    total_members) \
     i_prop    (X,Y, public, bool,   expect_members) \
     i_override(X,Y, method,         init)
-declare_class_2(record, model)
+declare_class_3(record, Namespace, model)
 
 #define Class_schema(X,Y,...)
-declare_class_3(Class, record, model)
+declare_class_4(Class, record, Namespace, model)
 
 #define structure_schema(X,Y,...)
-declare_class_3(structure, record, model)
+declare_class_4(structure, record, Namespace, model)
 
 #define enumeration_schema(X,Y,...) \
     i_prop    (X,Y, public, model, vtype) \
     i_prop    (X,Y, public, map,   global_values) \
     i_override(X,Y, method, init)
-declare_class_2(enumeration, model)
+declare_class_3(enumeration, Namespace, model)
 
 #define uni_schema(X,Y,...)
-declare_class_3(uni, record, model)
+declare_class_4(uni, record, Namespace, model)
 
 
 /// the base helps us require the two args we need for nodes

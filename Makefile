@@ -14,13 +14,13 @@ release:
 bootstrap:
 ifeq ($(OS),Windows_NT)
 	@if [ "$(CONFIG)" = "debug" ]; then \
-		./bootstrap.bat --debug; \
+		./bootstrap.bat --debug --asan; \
 	else \
 		./bootstrap.bat; \
 	fi
 else
 	@if [ "$(CONFIG)" = "debug" ]; then \
-		./bootstrap.sh --debug; \
+		./bootstrap.sh --debug --asan; \
 	else \
 		./bootstrap.sh; \
 	fi

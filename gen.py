@@ -10,6 +10,7 @@ source_files = list(source_dir.glob('**/*.c*'))  # recursively finds .c files
 
 parser = argparse.ArgumentParser(description='generate ninja')
 parser.add_argument('--debug', action='store_true', help='debug')
+parser.add_argument('--asan', action='store_true', help='enable address sanitizer')
 args = parser.parse_args()
 
 is_debug = args.debug
@@ -61,9 +62,9 @@ def get_platform_info():
             'ar': f'{silver}/bin/llvm-ar', 'ninja': 'ninja',
             'inc': ['/usr/include', '/usr/include/x86_64-linux-gnu'],
             'lib_dirs': [],
-            'lflags': ['-fuse-ld=lld', '-lstdc++', '-fsanitize=address'],
-            'cflags': ['-D_DLL', '-D_MT', '-fsanitize=address'],
-            'cxxflags': ['-D_DLL', '-D_MT', '-fsanitize=address'], # todo: we should have levels of debug, so make asan vs make debug
+            'lflags': ['-fuse-ld=lld', '-lstdc++'],
+            'cflags': ['-D_DLL', '-D_MT'],
+            'cxxflags': ['-D_DLL', '-D_MT'],
             'libs': ['-lc', '-lm']
         }
     }
@@ -224,6 +225,13 @@ def write_ninja(project, root, build_dir, plat):
     
     global is_debug
     opt_flags = ["-g", "-O0"] if is_debug else ["-O2"]
+
+    if args.asan:
+        opt_flags.extend(["-fsanitize=address"])
+        # On Linux you also need this to get runtime symbols linked:
+        plat['lflags'].append("-fsanitize=address")
+        plat['libs'].append("-lasan")
+
     includes = [f"-I{build_p}/src/{project}", f"-I{root_p}/src", 
                 f"-I{build_p}/src", f"-I{root_p}/include"]
     
