@@ -97,7 +97,47 @@ static std::string get_name(NamedDecl* decl) {
     return os.str();
 }
 
-static std::string mangle(const NamedDecl* D, ASTContext& ctx) {
+#undef reverse
+static std::vector<std::string> namespace_stack(const clang::Decl *decl) {
+    std::vector<std::string> parts;
+    const clang::DeclContext *ctx = decl->getDeclContext();
+
+    while (ctx && !ctx->isTranslationUnit()) {
+        if (const auto *ns = llvm::dyn_cast<clang::NamespaceDecl>(ctx)) {
+            if (!ns->isAnonymousNamespace())
+                parts.push_back(ns->getNameAsString());
+        } else if (const auto *rec = llvm::dyn_cast<clang::RecordDecl>(ctx)) {
+            if (rec->getIdentifier())
+                parts.push_back(rec->getNameAsString());
+        }
+        ctx = ctx->getParent();
+    }
+
+    std::reverse(parts.begin(), parts.end()); // outermost → innermost
+    return parts;
+}
+
+A map_get(map, A);
+
+static void push_context(NamedDecl* decl, aether e) {
+    auto s = namespace_stack(decl);
+    model cur = e->top;
+    for (std::string n: s) {
+        string name = string(n.c_str());
+        model attempt = (model)map_get(cur->members, (A)name);
+        verify(attempt, "namespace not found: %o", name);
+        push(e, attempt);
+    }
+}
+
+static void pop_context(NamedDecl* decl, aether e) {
+    auto s = namespace_stack(decl);
+    for (std::string n: s) {
+        pop(e); // dont need verification here since we are 1:1 with above
+    }
+}
+
+static std::string cxx_mangle(const NamedDecl* D, ASTContext& ctx) {
     std::string out;
     llvm::raw_string_ostream os(out);
 
@@ -126,7 +166,7 @@ static void create_method_stub(CXXMethodDecl* md, ASTContext& ctx, aether e, rec
 
     // human-readable + ABI-mangled name
     std::string disp = md->getQualifiedNameAsString(); // ns::Class::method
-    std::string mg   = mangle(md, ctx);
+    std::string mg   = cxx_mangle(md, ctx);
     std::string name = disp + "#" + mg;
 
     // return type
@@ -315,6 +355,8 @@ static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::s
 
     // todo:
     // this needs to get all of the namespaces that stack up in the EnumDecl
+
+
     model top = e->top;
     enumeration en = enumeration(mod, e, name, (token)n, members, map(hsize, 8));
     push(e, (model)en);
@@ -336,7 +378,9 @@ static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::s
         emember ev = emember(mod, en->mod, name, (token)cn, mdl, (model)en);
         ev->is_const = true;
         set(en->members, (A)cn, (A)ev);
-        set(top->members, (A)cn, (A)ev); // this is how C enums work, so lets make it easy to lookup
+
+        if (!decl->isScoped()) // top should be our updated context
+            set(top->members, (A)cn, (A)ev); // this is how C enums work, so lets make it easy to lookup
     }
     pop(e);
     
@@ -490,6 +534,41 @@ static model map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e
     return null;
 }
 
+// this should always create namespace one at a time, navigating to the location to create without error
+static model create_namespace(NamespaceDecl* ns, ASTContext& ctx, aether e) {
+    std::string qname = ns->getQualifiedNameAsString();
+    bool   anonymous  = ns->isAnonymousNamespace();
+    bool   is_inline  = ns->isInlineNamespace();
+    string n          = string(qname.c_str());
+    auto   s          = namespace_stack(ns);
+
+    model cur = e->top;
+    int index = 0;
+
+    for (std::string n: s) {
+        string name = string(n.c_str());
+        index++;
+        model existing = (model)map_get(cur->members, (A)name);
+
+        if (index == s.size() - 1) {
+            // return if namespace already exists
+            if (existing)
+                return existing;
+
+            model ns_model = (model)Namespace(
+                mod, e, name, (token)name, members, map(hsize, 16),
+                namespace_inline, is_inline);
+
+            register_model(e, ns_model, false);
+            finalize(ns_model);
+            return ns_model;
+        } else {
+            // expect this namesapce to exist
+            verify(existing, "expected namespace: %o", name);
+        }
+    }
+}
+
 // AST Visitor to find all declarations
 class AetherDeclVisitor : public RecursiveASTVisitor<AetherDeclVisitor> {
 private:
@@ -500,9 +579,18 @@ public:
     AetherDeclVisitor(ASTContext& context, aether ae) : ctx(context), e(ae) {}
     
     bool VisitEnumDecl(EnumDecl* decl) {
+        // we want to prepare context here; do we 'create' namespace at all, or just look it up?
+        // 
+        push_context(decl, e);
         if (!decl->getNameAsString().empty()) {
             create_enum(decl, ctx, e, get_name((NamedDecl*)decl));
         }
+        pop_context(decl, e);
+        return true;
+    }
+
+    bool VisitNamespaceDecl(NamespaceDecl* ns) {
+        create_namespace(ns, ctx, e);
         return true;
     }
     
