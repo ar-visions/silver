@@ -1,10 +1,11 @@
 this: i32[ 1 ]
 
-import <stdio.h>
-
-import <vulkan/vulkan.h> [ https://github.com/KhronosGroup/Vulkan-Headers main ]
-
 import <test.cc>
+
+#import <stdio.h>
+
+#import <vulkan/vulkan.h> [ https://github.com/KhronosGroup/Vulkan-Headers main ]
+
 
 import [ https://github.com/KhronosGroup/MoltenVK main ]
     > ./fetchDependencies --macos

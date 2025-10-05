@@ -293,8 +293,12 @@ declare_class_2(static_array, array)
 #define aether_schema(X,Y,...)\
     i_prop    (X,Y, public,     path,        install) \
     i_prop    (X,Y, required,   path,        source) \
+    i_prop    (X,Y, public,     array,       framework_paths) \
     i_prop    (X,Y, public,     array,       lib_paths) \
-    i_prop    (X,Y, public,     path,        sdk_path) \
+    i_prop    (X,Y, public,     path,        isysroot) \
+    i_prop    (X,Y, public,     path,        resource_dir) \
+    i_prop    (X,Y, public,     array,       sys_inc_paths) \
+    i_prop    (X,Y, public,     array,       sys_exc_paths) \
     i_prop    (X,Y, public,     array,       include_paths) \
     i_prop    (X,Y, public,     array,       shared_libs) \
     i_prop    (X,Y, public,     bool,        delegate) \
