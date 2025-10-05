@@ -281,8 +281,9 @@ def write_ninja(project, root, build_dir, plat):
     n.append("")
     
     n.append("rule link_static")
-    n.append("  command = $llvm_ar rcs $out $in")
+    n.append("  command = $llvm_ar rcsU $out $in")
     n.append("  description = creating static library $out")
+    n.append("  restat = 1")
     n.append("")
     
     n.append("rule link_shared")
@@ -381,7 +382,7 @@ def write_ninja(project, root, build_dir, plat):
         n.append(f"build all: phony {' '.join(outputs)}")
         n.append("")
 
-    n.append("default all")
+    n.append("default all\n")
     
     build_ninja = build_dir / "build.ninja"
     with open(build_ninja, 'w') as f:

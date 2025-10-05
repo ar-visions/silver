@@ -1,3 +1,4 @@
+#include <iostream>
 
 #include <llvm-c/DebugInfo.h>
 #include <llvm-c/Core.h>
@@ -8,13 +9,9 @@
 #include <llvm-c/BitWriter.h>
 
 #include <clang/CodeGen/CodeGenAction.h>
-
-//#include <clang-c/Index.h>
-
-
-#include "clang/Basic/Diagnostic.h"
-#include "clang/Basic/DiagnosticIDs.h"
-#include "clang/Basic/DiagnosticOptions.h"
+#include <clang/Basic/Diagnostic.h>
+#include <clang/Basic/DiagnosticIDs.h>
+#include <clang/Basic/DiagnosticOptions.h>
 #include <clang/Basic/TargetInfo.h>
 #include <clang/AST/ASTConsumer.h>
 #include <clang/AST/ASTContext.h>
@@ -28,6 +25,7 @@
 #include <clang/Frontend/FrontendActions.h>
 #include <clang/Frontend/TextDiagnosticPrinter.h>
 #include <clang/Lex/Preprocessor.h>
+#include <clang/Lex/PreprocessorOptions.h>
 #include <clang/Lex/PPCallbacks.h>
 #include <clang/Lex/MacroInfo.h>
 #include <clang/Parse/ParseAST.h>
@@ -36,8 +34,16 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/IR/DataLayout.h>
 #include <llvm/IR/Module.h>
-#include "llvm/TargetParser/Host.h"
-#include "llvm/TargetParser/Triple.h"
+#include <llvm/TargetParser/Host.h>
+#include <llvm/TargetParser/Triple.h>
+
+#include <clang/Driver/Driver.h>
+#include <clang/Driver/Compilation.h>
+#include <clang/Driver/ToolChain.h>
+#include <clang/Frontend/TextDiagnosticPrinter.h>
+//#include <llvm/Support/Host.h>
+
+#include <clang/Driver/Tool.h>
 
 #include <ports.h>
 #include <string>
@@ -306,6 +312,10 @@ static record create_opaque_class(CXXRecordDecl* cxx, aether e) {
 static record create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::string qname) {
     string n = string(qname.c_str());
     
+    if (strstr(n->chars, "cpp_test")) {
+        int test2 = 2;
+        test2    += 2;
+    }
     if (!cxx->isCompleteDefinition() || cxx->isDependentType() || cxx->isInvalidDecl())
         return create_opaque_class(cxx, e);
     
@@ -567,6 +577,7 @@ static model create_namespace(NamespaceDecl* ns, ASTContext& ctx, aether e) {
             verify(existing, "expected namespace: %o", name);
         }
     }
+    return null;
 }
 
 // AST Visitor to find all declarations
@@ -591,6 +602,14 @@ public:
 
     bool VisitNamespaceDecl(NamespaceDecl* ns) {
         create_namespace(ns, ctx, e);
+        return true;
+    }
+
+    bool VisitDecl(Decl* d) {
+        std::string n = d->getDeclKindName();
+        if (n == "Namespace") {
+            printf("something\n");
+        }
         return true;
     }
     
@@ -841,16 +860,22 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
 }
 
 path aether_lookup_include(aether e, string include) {
-    path     full_path = null;
-    each(e->include_paths, path, i) {
-        path r = f(path, "%o/%o", i, include);
-        if (exists(r)) {
-            full_path = r;
-            break;
-        }
-    }
-    verify(full_path, "could not resolve include path for %o", include);
-    return full_path;
+    array ipaths = a((A)e->sys_inc_paths, (A)e->sys_exc_paths, (A)e->include_paths);
+    each(ipaths, array, includes)
+        if (includes)
+            each(includes, path, i) {
+                if (e->isysroot) {
+                    path r = f(path, "%o/%o/%o", e->isysroot, i, include);
+                    if (exists(r))
+                        return r;
+                }
+                path r = f(path, "%o/%o", i, include);
+                if (exists(r))
+                    return r;
+            }
+
+    verify(false, "could not resolve include path for %o", include);
+    return null;
 }
 
 // custom AST consumer
@@ -1009,7 +1034,8 @@ static inline llvm::Module *unwrap(LLVMModuleRef M) {
     return reinterpret_cast<llvm::Module*>(M);
 }
 
-// this must now INSTANCE an Inovcation & CompilerInstance and KEEP it in memory
+#undef print
+
 path aether_include(aether e, A inc, ARef _instance) {
     clang_cc* instance = (clang_cc*)_instance;
     path ipath = (AType)isa(inc) == typeid(string) ?
@@ -1017,58 +1043,122 @@ path aether_include(aether e, A inc, ARef _instance) {
     verify(ipath && exists(ipath), "include path does not exist: %o", ipath ? (A)ipath : inc);
     e->current_include = ipath;
 
-    // Create DiagID
-    auto DiagID(new DiagnosticIDs());
-    auto DiagOpts(new DiagnosticOptions());
+    string incl = string(ipath->chars);
+    bool is_header = ends_with(incl, ".h") ||
+                     ends_with(incl, ".hpp");
 
-    // Create invocation first
+    auto DiagID(new DiagnosticIDs());
+    auto DiagOpts = new DiagnosticOptions();
+    TextDiagnosticPrinter *DiagPrinter = new TextDiagnosticPrinter(llvm::errs(), *DiagOpts);
+
     auto Invocation = std::make_shared<CompilerInvocation>();
 
-    // Add Clang's resource directory for built-in headers
-    Invocation->getHeaderSearchOpts().ResourceDir = "/src/silver/lib/clang/22";
-
-    // Or add the include path directly
-    Invocation->getHeaderSearchOpts().AddPath(
-        "/src/silver/lib/clang/22/include", 
-        frontend::System,  // System headers
-        false, 
-        false);
-
-    path c = f(path, "/tmp/%o.c", stem(ipath)); // may need to switch ext and the Language spec based on the ext
+    path res = f(path, "%o/lib/clang/22", e->install);
+    path c = f(path, "/tmp/%o.cc", stem(ipath)); // may need to switch ext and the Language spec based on the ext
     string  contents = f(string, "#include \"%o\"\n", ipath);
     save(c, (A)contents, null);
 
-    // Set up input file
-    //Invocation->getFrontendOpts().Inputs.push_back(
-    //    FrontendInputFile(c->chars, Language::C));  // or Language::CXX
-    
-    // Set target
-    Invocation->getTargetOpts().Triple = llvm::sys::getProcessTriple();
+    symbol compile_unit = is_header ? c->chars : ipath->chars;
 
-    Invocation->getLangOpts().CPlusPlus = 1;
-    Invocation->getLangOpts().CPlusPlus20 = 1;
-    Invocation->getFrontendOpts().Inputs.push_back(
-        FrontendInputFile(c->chars, Language::CXX));
+    // lets get the 'driver' arguments, otherwise known as 
+    // the hidden things you have never heard of and absolutely need
+    DiagnosticsEngine diags(DiagID, *DiagOpts, DiagPrinter);
 
-    // Add include paths
+    // === use the Driver API here ===
+    path clang_path = f(path, "%o/bin/clang++", e->install);
+    driver::Driver drv(clang_path->chars, llvm::sys::getDefaultTargetTriple(), diags);
+
+    std::vector<symbol> args = {
+        "clang++",
+        "-std=c++23",
+        "-fdiagnostics-show-option",
+        "-Wno-nullability-completeness",
+        "-D_LIBCPP_DISABLE_NULLABILITY_ANNOTATIONS",
+        "-nostdinc++",
+        "-isystem",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include/c++/v1",
+        "-stdlib=libc++",
+        "-resource-dir",
+        e->resource_dir->chars,
+        "-isysroot",
+        e->isysroot->chars,
+        "-c",
+        compile_unit
+    };
+
+    if (e->isysroot) {
+        //args.push_back("-isysroot");
+        //args.push_back(e->isysroot->chars);
+    }
+
+    // isystem + framework + includes
+    struct {
+        symbol ident;
+        array  paths;
+    } all_paths[] = {
+        { "-internal-isystem",         e->sys_inc_paths },
+        { "-internal-externc-isystem", e->sys_exc_paths }
+    };
+
+    for (int i = 0, l = 2; i < l; i++) {
+        symbol ident = all_paths[i].ident;
+        array  paths = all_paths[i].paths;
+        for (int ii = 0; ii < paths->len; ii++) {
+            path f = (path)paths->elements[ii];
+            args.push_back(ident);
+            args.push_back(f->chars);
+        }
+    }
+
+    for (int i = 0; i < e->framework_paths->len; i++) {
+        path fw_path = (path)e->framework_paths->elements[i];
+        string arg = f(string, "-F%o", fw_path);
+        args.push_back(arg->chars);
+    }
+
     for (int i = 0; i < e->include_paths->len; i++) {
         path inc_path = (path)e->include_paths->elements[i];
-        Invocation->getHeaderSearchOpts().AddPath(
-            inc_path->chars, frontend::Angled, false, false);
+        string arg = f(string, "-I%o", inc_path);
+        args.push_back(arg->chars);
     }
-    
-    // Create compiler with the invocation
-    CompilerInstance* compiler = new CompilerInstance(std::move(Invocation));
-    
 
-    // Then use it:
+    std::unique_ptr<driver::Compilation> comp(
+        drv.BuildCompilation(llvm::ArrayRef<symbol>(args)));
+
+    std::vector<symbol> compilation_args;
+
+    // check commands produced
+    for (clang::driver::Command &cmd : comp->getJobs()) {
+        llvm::errs() << "command: ";
+        if (StringRef(cmd.getCreator().getName()) == "clang") {
+            for (symbol arg : cmd.getArguments()) {
+                llvm::errs() << arg << " ";
+                compilation_args.push_back(arg);
+            }
+        }
+        llvm::errs() << "\n";
+    }
+
     SimpleDiagConsumer* DiagClient = new SimpleDiagConsumer();
     IntrusiveRefCntPtr<DiagnosticsEngine> Diags = 
         new DiagnosticsEngine(DiagID, *DiagOpts, DiagClient);
+
+    // build invocation from args
+    llvm::ArrayRef<symbol> cmdline_args(compilation_args);
+    CompilerInvocation::CreateFromArgs(
+        *Invocation,
+        cmdline_args,
+        *Diags
+    );
+
+    // create compiler with the invocation
+    CompilerInstance* compiler = new CompilerInstance(Invocation);
+
+    auto& LO = Invocation->getLangOpts();
+
     compiler->setDiagnostics(Diags.get());
 
-
-    // Create other managers
+    // create other managers
     compiler->createFileManager();
     compiler->createSourceManager(compiler->getFileManager());
 
@@ -1076,14 +1166,13 @@ path aether_include(aether e, A inc, ARef _instance) {
     verify(bool(fe), "cant find..");
     verify(fe.get(), "clang cannot find TU file: %o", c);
 
-
     FileID mainFileID = compiler->getSourceManager().createFileID(
         fe.get(), 
         SourceLocation(), 
         SrcMgr::C_User
     );
-    compiler->getSourceManager().setMainFileID(mainFileID);
 
+    compiler->getSourceManager().setMainFileID(mainFileID);
     compiler->createTarget();
     compiler->createPreprocessor(TU_Complete);
 
@@ -1094,18 +1183,6 @@ path aether_include(aether e, A inc, ARef _instance) {
         std::make_unique<MacroCollector>(*instance));
     
     compiler->createASTContext();
-    
-    // Parse
-    /*
-    ASTContext& ctx = compiler->getASTContext();
-    AetherDeclVisitor visitor(ctx, e);
-    AetherASTConsumer consumer(visitor, ctx);
-    ParseAST(compiler->getPreprocessor(), &consumer, ctx);
-    */
-
-    string incl = string(ipath->chars);
-    bool is_header = ends_with(incl, ".h") ||
-                     ends_with(incl, ".hpp");
 
     ASTContext& ctx = compiler->getASTContext();
     if (is_header) {
@@ -1120,10 +1197,7 @@ path aether_include(aether e, A inc, ARef _instance) {
 
         std::unique_ptr<llvm::Module> M = act->takeModule();
         LLVMModuleRef cMod = M ? wrap(M.release()) : nullptr;
-        // stash cMod somewhere or return it
     }
-
-
 
     unlink(c->chars);
 

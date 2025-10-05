@@ -1439,6 +1439,7 @@ declare_class(rgba)
 f32 degrees(f32 rads);
 f32 radians(f32 degs);
 
+
 #define vec2f_schema(O, Y, T, ...) \
     i_struct_prop (O, Y, T, x) \
     i_struct_prop (O, Y, T, y) \

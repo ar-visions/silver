@@ -2573,7 +2573,7 @@ static none checkout(import im, path uri, string commit, array prebuild, array p
 
     if (is_cmake) { // build for cmake
         cstr build = debug ? "Debug" : "Release";
-        string opt = mod->sdk_path ? f(string, "-DCMAKE_OSX_SYSROOT=%o", mod->sdk_path) : string("");
+        string opt = mod->isysroot ? f(string, "-DCMAKE_OSX_SYSROOT=%o", mod->isysroot) : string("");
 
         vexec("configure",
             "%o cmake -B %o -S %o %o -DCMAKE_INSTALL_PREFIX=%o -DCMAKE_BUILD_TYPE=%s %o",

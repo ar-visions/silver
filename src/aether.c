@@ -2859,9 +2859,10 @@ void enumeration_init(enumeration mdl) {
 
 void aether_build_info(aether e, path install) {
     if (e->install != install)
-        e->install = hold(install);
+        e->install = install;
 #ifdef _WIN32
-    e->include_paths = a(
+    e->include_paths = hold(a());
+    e->sys_inc_paths = a(
         f(path, "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/include"),
         f(path, "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/um"),
         f(path, "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/ucrt"),
@@ -2872,17 +2873,44 @@ void aether_build_info(aether e, path install) {
         f(path, "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.22621.0/ucrt/x64"),
         f(path, "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.22621.0/um/x64"));
 #elif defined(__linux)
-    e->include_paths = a(f(path, "/usr/include"), f(path, "/usr/include/x86_64-linux-gnu"));
+    e->include_paths = a();
+    e->sys_inc_paths = a(f(path, "/usr/include"), f(path, "/usr/include/x86_64-linux-gnu"));
     e->lib_paths     = a();
 #elif defined(__APPLE__)
-    string sdk       = run("xcrun --show-sdk-path");
-    e->sdk_path      = path(sdk);
-    e->include_paths = a(f(path, "%o/usr/include", sdk), f(path, "%o/usr/include/c++/v1", sdk));
-    e->lib_paths     = a(f(path, "%o/usr/lib", sdk));
+
+  //-internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1
+  //-internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include
+  //-internal-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/14.0.3/include
+  //-internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include
+  //-internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include
+
+    string sdk          = run("xcrun --show-sdk-path");
+    string toolchain    = f(string, "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain"); // run("xcrun --show-toolchain-path");
+    e->include_paths    = a();
+    e->sys_inc_paths    = a(f(path, "%o/usr/include/c++/v1", sdk),
+                            f(path, "%o/usr/local/include", sdk),
+                            f(path, "%o/usr/lib/clang/14.0.3/include", toolchain));
+    e->sys_exc_paths    = a(f(path, "%o/usr/include", sdk),
+                            f(path, "%o/usr/include", toolchain));
+    e->lib_paths        = a(f(path, "%o/usr/lib", sdk));
+    e->framework_paths  = a(f(path, "%o/System/Library/Frameworks", sdk));
+    e->isysroot         =   f(path, "%o/", sdk);
+    e->resource_dir     =   f(path, "%o/usr/lib/clang/14.0.3", toolchain);
+
 #endif
-    push(e->include_paths, f(path, "%o/include", e->install));
+
+    // include our own clang as part of system, but include after the os
+    //push(e->include_paths, f(path, "%o/lib/clang/22/include", e->install));
+    
+    // include silver include as a user include
+    // we use the sdk on the system, as this is the only way to compile for the system
+    // we may still do this for linux
+    //push(e->include_paths, f(path, "%o/include", e->install));
+
+    // add silver lib path (no differentiation between user and system, but we order after system)
     push(e->lib_paths,     f(path, "%o/lib",     e->install));
 
+    // finally the path folder of the users source must be added as an include path
     path src_path = parent(e->source);
     push(e->include_paths, src_path);
 }
