@@ -199,7 +199,7 @@ bool is_ref(model f) {
     model src = f->src;
     while (instanceof(src, typeid(model))) {
         src = src->src;
-        if (src->is_ref)
+        if (src && src->is_ref)
             break;
     }
     AType asrc = src;
@@ -313,12 +313,13 @@ static array expand_tokens(aether mod, array tokens, map expanding) {
         if (m && b && eq(b, "(") && !get(expanding, m->name)) {
             array args  = array(alloc, 32);
             int   index = i + n + 1;
-
+            
             while (true) {
                 int  stop = 0;
                 array arg = read_arg(mod, tokens, index, &stop);
                 if (!arg)
                     return null;
+                
                 skip += len(arg) + 1; // for the , or )
                 push(args, arg);
                 token  after = tokens->elements[stop];
@@ -2886,8 +2887,9 @@ void aether_build_info(aether e, path install) {
 
     string sdk          = run("xcrun --show-sdk-path");
     string toolchain    = f(string, "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain"); // run("xcrun --show-toolchain-path");
-    e->include_paths    = a();
-    e->sys_inc_paths    = a(f(path, "%o/usr/include/c++/v1", sdk),
+    e->include_paths    = a(f(path, "%o/include", install));
+    e->isystem          =   f(path, "%o/usr/include", toolchain);
+    e->sys_inc_paths    = a(f(path, "%o/usr/include", toolchain),
                             f(path, "%o/usr/local/include", sdk),
                             f(path, "%o/usr/lib/clang/14.0.3/include", toolchain));
     e->sys_exc_paths    = a(f(path, "%o/usr/include", sdk),

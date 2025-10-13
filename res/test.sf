@@ -1,11 +1,12 @@
 this: i32[ 1 ]
 
-import <test.cc>
+#import chatgpt [ openai url:'https://api.openai.com/v1/chat/completions'  ]
 
-#import <stdio.h>
+#import <test.cc>
 
-#import <vulkan/vulkan.h> [ https://github.com/KhronosGroup/Vulkan-Headers main ]
+import <stdio.h>
 
+import <vulkan/vulkan.h> [ https://github.com/KhronosGroup/Vulkan-Headers main ]
 
 import [ https://github.com/KhronosGroup/MoltenVK main ]
     > ./fetchDependencies --macos
@@ -17,8 +18,13 @@ import [ https://github.com/KhronosGroup/Vulkan-Loader main ]
 import [ https://github.com/KhronosGroup/Vulkan-Tools main ]
     -DBUILD_CUBE=OFF
 
+# model-based 
 class Vulkan
 	intern instance : VkInstance
+
+    #fn init2[] using chatgpt[seed: 22]
+    #    'initialize vulkan version 1.3, storing the instance on the member we have'
+
     fn init[]
         printf[ 'vulkan is loading...\n' ]
         vkCreateInstance [

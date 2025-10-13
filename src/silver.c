@@ -941,6 +941,10 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect) {
         }
         
         record rec = instanceof(mod->top, typeid(record));
+        if (mem && eq(mem->name, "printf")) {
+            int test2 = 2;
+            test2    += 2;
+        }
         if (!mem) {
             validate(mod->expr_level == 0, "member not found: %o", alpha);
             /// parse new member, parsing any associated function
@@ -1563,23 +1567,26 @@ enode silver_parse_member_expr(silver mod, emember mem) {
         }
         pop_state(mod, true);
         return index_expr;
-    } else if (is_macro && next_is(mod, "(")) {
-        consume(mod);
+    } else if (is_macro) {
+        bool is_functional = next_is(mod, "(");
         array args = array(alloc, 32);
-        while (!next_is(mod, ")")) {
-            int next;
-            array arg = read_arg(mod, mod->tokens, mod->cursor, &next);
-            validate(arg, "macro expansion failed");
-            if (arg)
-                push(args, arg);
-            mod->cursor = next;
+        if (is_functional) {
+            consume(mod);
+            while (!next_is(mod, ")")) {
+                int next;
+                array arg = read_arg(mod, mod->tokens, mod->cursor, &next);
+                validate(arg, "macro expansion failed");
+                if (arg)
+                    push(args, arg);
+                mod->cursor = next;
+            }
+            validate(read_if(mod, ")"), "expected parenthesis to end macro fn call");
         }
-        validate(read_if(mod, ")"), "expected parenthesis to end macro fn call");
         token cur = peek(mod);
 
         // read arguments, and call macro
         macro m = mem->mdl;
-        array tokens = macro_expand(m, args, null);
+        array tokens = macro_expand(m, is_functional ? args : null, null);
         push_state(mod, tokens, 0); // set these tokens as the parser state, run parse, then return the statement
         enode res = parse_expression(mod, null);
         pop_state(mod, false);

@@ -7,6 +7,7 @@
 #include <llvm-c/Analysis.h>
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/BitWriter.h>
+#include <llvm-c/Linker.h>
 
 #include <clang/CodeGen/CodeGenAction.h>
 #include <clang/Basic/Diagnostic.h>
@@ -103,33 +104,34 @@ static std::string get_name(NamedDecl* decl) {
     return os.str();
 }
 
-#undef reverse
-static std::vector<std::string> namespace_stack(const clang::Decl *decl) {
-    std::vector<std::string> parts;
-    const clang::DeclContext *ctx = decl->getDeclContext();
+// all have an implied to-level name, so it does make sense to keep that, too
+// we must adjust how we use it now
 
-    while (ctx && !ctx->isTranslationUnit()) {
-        if (const auto *ns = llvm::dyn_cast<clang::NamespaceDecl>(ctx)) {
-            if (!ns->isAnonymousNamespace())
-                parts.push_back(ns->getNameAsString());
-        } else if (const auto *rec = llvm::dyn_cast<clang::RecordDecl>(ctx)) {
-            if (rec->getIdentifier())
-                parts.push_back(rec->getNameAsString());
+#undef reverse
+static std::vector<clang::NamedDecl*> namespace_stack(clang::NamedDecl *decl) {
+    std::vector<clang::NamedDecl*> parts;
+
+    for (const clang::DeclContext *ctx = decl->getDeclContext();
+         ctx && !ctx->isTranslationUnit();
+         ctx = ctx->getParent()) {
+
+        if (const auto *D = llvm::dyn_cast<clang::Decl>(ctx)) {
+            if (const auto *ND = llvm::dyn_cast<clang::NamedDecl>(D))
+                parts.push_back(const_cast<clang::NamedDecl*>(ND));
         }
-        ctx = ctx->getParent();
     }
 
-    std::reverse(parts.begin(), parts.end()); // outermost → innermost
+    std::reverse(parts.begin(), parts.end()); // reverse order so we may navigate with it
     return parts;
 }
 
 A map_get(map, A);
 
 static void push_context(NamedDecl* decl, aether e) {
-    auto s = namespace_stack(decl);
+    auto s = namespace_stack((NamespaceDecl*)decl);
     model cur = e->top;
-    for (std::string n: s) {
-        string name = string(n.c_str());
+    for (clang::NamedDecl* n: s) {
+        string name = string(n->getNameAsString().c_str());
         model attempt = (model)map_get(cur->members, (A)name);
         verify(attempt, "namespace not found: %o", name);
         push(e, attempt);
@@ -137,8 +139,8 @@ static void push_context(NamedDecl* decl, aether e) {
 }
 
 static void pop_context(NamedDecl* decl, aether e) {
-    auto s = namespace_stack(decl);
-    for (std::string n: s) {
+    auto s = namespace_stack((NamespaceDecl*)decl);
+    for (auto n: s) {
         pop(e); // dont need verification here since we are 1:1 with above
     }
 }
@@ -169,6 +171,12 @@ static std::string cxx_mangle(const NamedDecl* D, ASTContext& ctx) {
 static void create_method_stub(CXXMethodDecl* md, ASTContext& ctx, aether e, record owner) {
     if (!md->getIdentifier()) return;            // skip operators/unnamed
     if (md->getAccess() != AS_public) return;   // only public for now
+
+    if (md->isOverloadedOperator()) {
+        //rec->operator_new = (fn)create_fn(method, ctx, e, get_name(method));
+        int test2 = 2;
+        test2    += 2;
+    }
 
     // human-readable + ABI-mangled name
     std::string disp = md->getQualifiedNameAsString(); // ns::Class::method
@@ -215,9 +223,17 @@ static void create_method_stub(CXXMethodDecl* md, ASTContext& ctx, aether e, rec
 
     // build fn
     bool variadic = md->isVariadic();
-    fn f = fn(mod, e, name, (token)string(name.c_str()),
+
+    string fname = string(name.c_str());
+    if (eq(fname, "fprintf")) {
+        int test2 = 2;
+        test2    += 2;
+    }
+    fn f = fn(mod, e,
+              name, (token)fname,
               rtype, rtype,
               args, args,
+              extern_name, string(mg.c_str()),
               va_args, variadic);
 
     register_model(e, (model)f, false);
@@ -436,6 +452,10 @@ static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string n
     // Check for variadic
     bool is_variadic = decl->isVariadic();
     
+    if (eq(n, "printf")) {
+        int test2 = 2;
+        test2    += 2;
+    }
     fn f = fn(mod, e, name, (token)n, rtype, rtype, args, args, va_args, is_variadic);
     if (len(n) > 0)
         register_model(e, (model)f, false);
@@ -555,15 +575,17 @@ static model create_namespace(NamespaceDecl* ns, ASTContext& ctx, aether e) {
     model cur = e->top;
     int index = 0;
 
-    for (std::string n: s) {
+    emember existing = null;
+    for (clang::NamedDecl* ndecl: s) {
+        std::string n = ndecl->getNameAsString();
         string name = string(n.c_str());
         index++;
-        model existing = (model)map_get(cur->members, (A)name);
+        existing = (emember)map_get(cur->members, (A)name);
 
         if (index == s.size() - 1) {
             // return if namespace already exists
             if (existing)
-                return existing;
+                return existing->mdl;
 
             model ns_model = (model)Namespace(
                 mod, e, name, (token)name, members, map(hsize, 16),
@@ -574,9 +596,10 @@ static model create_namespace(NamespaceDecl* ns, ASTContext& ctx, aether e) {
             return ns_model;
         } else {
             // expect this namesapce to exist
-            verify(existing, "expected namespace: %o", name);
+            verify(existing || (index == s.size() - 1), "expected namespace: %o", name);
         }
     }
+    
     return null;
 }
 
@@ -890,6 +913,36 @@ public:
     }
 };
 
+// subclass of LLVMOnlyAction, adding emit as well
+class AetherEmitAction : public clang::EmitLLVMOnlyAction {
+    aether e;
+
+public:
+    AetherEmitAction(aether e) : e(e) {}
+
+    std::unique_ptr<clang::ASTConsumer>
+    CreateASTConsumer(clang::CompilerInstance &CI, llvm::StringRef InFile) override {
+        auto backend = EmitLLVMOnlyAction::CreateASTConsumer(CI, InFile);
+
+        // Wrap it with our custom Aether consumer
+        class CombinedConsumer : public clang::ASTConsumer {
+            std::unique_ptr<clang::ASTConsumer> backend;
+            AetherASTConsumer aetherConsumer;
+        public:
+            CombinedConsumer(aether e, std::unique_ptr<clang::ASTConsumer> backend)
+                : backend(std::move(backend)), aetherConsumer(e) {}
+
+            void HandleTranslationUnit(clang::ASTContext &Ctx) override {
+                aetherConsumer.HandleTranslationUnit(Ctx);
+                backend->HandleTranslationUnit(Ctx);
+            }
+        };
+
+        return std::make_unique<CombinedConsumer>(e, std::move(backend));
+    }
+};
+
+
 class SimpleDiagConsumer : public clang::DiagnosticConsumer {
   std::unique_ptr<clang::DiagnosticOptions> Opts;
   std::unique_ptr<clang::TextDiagnosticPrinter> Printer;
@@ -1036,6 +1089,10 @@ static inline llvm::Module *unwrap(LLVMModuleRef M) {
 
 #undef print
 
+// goal is to test iterative includes, enables by a watch in silver
+// this so we need not traverse through the modules again
+// question is how to cache the include
+
 path aether_include(aether e, A inc, ARef _instance) {
     clang_cc* instance = (clang_cc*)_instance;
     path ipath = (AType)isa(inc) == typeid(string) ?
@@ -1054,7 +1111,7 @@ path aether_include(aether e, A inc, ARef _instance) {
     auto Invocation = std::make_shared<CompilerInvocation>();
 
     path res = f(path, "%o/lib/clang/22", e->install);
-    path c = f(path, "/tmp/%o.cc", stem(ipath)); // may need to switch ext and the Language spec based on the ext
+    path c = f(path, "/tmp/%o.c", stem(ipath)); // may need to switch ext and the Language spec based on the ext
     string  contents = f(string, "#include \"%o\"\n", ipath);
     save(c, (A)contents, null);
 
@@ -1065,30 +1122,34 @@ path aether_include(aether e, A inc, ARef _instance) {
     DiagnosticsEngine diags(DiagID, *DiagOpts, DiagPrinter);
 
     // === use the Driver API here ===
-    path clang_path = f(path, "%o/bin/clang++", e->install);
+    path clang_path = f(path, "%o/bin/clang", e->install);
     driver::Driver drv(clang_path->chars, llvm::sys::getDefaultTargetTriple(), diags);
 
     std::vector<symbol> args = {
-        "clang++",
-        "-std=c++23",
+        "clang",
+        "-x",
+        "c",
+        "-std=c11",
         "-fdiagnostics-show-option",
-        "-Wno-nullability-completeness",
-        "-D_LIBCPP_DISABLE_NULLABILITY_ANNOTATIONS",
-        "-nostdinc++",
-        "-isystem",
-        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include/c++/v1",
-        "-stdlib=libc++",
-        "-resource-dir",
-        e->resource_dir->chars,
-        "-isysroot",
-        e->isysroot->chars,
-        "-c",
-        compile_unit
+        "-Wno-nullability-completeness"
     };
 
+    args.push_back("-w");
+    args.push_back("-Wno-system-headers");
+
+    if (e->isystem) {
+        args.push_back("-isystem");
+        args.push_back(e->isystem->chars);
+    }
+
+    if (e->resource_dir) {
+        args.push_back("-resource-dir");
+        args.push_back(e->resource_dir->chars);
+    }
+
     if (e->isysroot) {
-        //args.push_back("-isysroot");
-        //args.push_back(e->isysroot->chars);
+        args.push_back("-isysroot");
+        args.push_back(e->isysroot->chars);
     }
 
     // isystem + framework + includes
@@ -1096,8 +1157,8 @@ path aether_include(aether e, A inc, ARef _instance) {
         symbol ident;
         array  paths;
     } all_paths[] = {
-        { "-internal-isystem",         e->sys_inc_paths },
-        { "-internal-externc-isystem", e->sys_exc_paths }
+        { "-isystem", e->sys_inc_paths },
+        { "-isystem", e->sys_exc_paths }
     };
 
     for (int i = 0, l = 2; i < l; i++) {
@@ -1105,6 +1166,7 @@ path aether_include(aether e, A inc, ARef _instance) {
         array  paths = all_paths[i].paths;
         for (int ii = 0; ii < paths->len; ii++) {
             path f = (path)paths->elements[ii];
+            //args.push_back("-Xclang");
             args.push_back(ident);
             args.push_back(f->chars);
         }
@@ -1118,9 +1180,16 @@ path aether_include(aether e, A inc, ARef _instance) {
 
     for (int i = 0; i < e->include_paths->len; i++) {
         path inc_path = (path)e->include_paths->elements[i];
-        string arg = f(string, "-I%o", inc_path);
+        string arg = f(string, "%o", inc_path);
+        //args.push_back("-Xclang");
+        args.push_back("-isystem");
         args.push_back(arg->chars);
     }
+
+    args.push_back("-nostdinc++");
+    //args.push_back("-stdlib=libc++");
+    args.push_back("-c");
+    args.push_back(compile_unit);
 
     std::unique_ptr<driver::Compilation> comp(
         drv.BuildCompilation(llvm::ArrayRef<symbol>(args)));
@@ -1135,6 +1204,7 @@ path aether_include(aether e, A inc, ARef _instance) {
                 llvm::errs() << arg << " ";
                 compilation_args.push_back(arg);
             }
+            llvm::errs() << "\n";
         }
         llvm::errs() << "\n";
     }
@@ -1145,6 +1215,9 @@ path aether_include(aether e, A inc, ARef _instance) {
 
     // build invocation from args
     llvm::ArrayRef<symbol> cmdline_args(compilation_args);
+
+    Diags->setSuppressSystemWarnings(true);
+    
     CompilerInvocation::CreateFromArgs(
         *Invocation,
         cmdline_args,
@@ -1163,7 +1236,7 @@ path aether_include(aether e, A inc, ARef _instance) {
     compiler->createSourceManager(compiler->getFileManager());
 
     auto fe = compiler->getFileManager().getFileRef(c->chars);
-    verify(bool(fe), "cant find..");
+    verify(bool(fe), "cannot find file reference from compiler instance");
     verify(fe.get(), "clang cannot find TU file: %o", c);
 
     FileID mainFileID = compiler->getSourceManager().createFileID(
@@ -1176,6 +1249,9 @@ path aether_include(aether e, A inc, ARef _instance) {
     compiler->createTarget();
     compiler->createPreprocessor(TU_Complete);
 
+    Diags->setIgnoreAllWarnings(true);
+    Diags->setSuppressSystemWarnings(true);
+    
     *instance = clang_cc(
         mod, e, compiler, (handle)compiler, PP, (handle)&compiler->getPreprocessor()); // how do we keep this process alive and pass the compiler / pre processor in here?
 
@@ -1184,6 +1260,9 @@ path aether_include(aether e, A inc, ARef _instance) {
     
     compiler->createASTContext();
 
+    llvm::errs() << "LangOpts.CPlusPlus: " << Invocation->getLangOpts().CPlusPlus << "\n";
+    llvm::errs() << "LangOpts.C11: " << Invocation->getLangOpts().C11 << "\n";
+
     ASTContext& ctx = compiler->getASTContext();
     if (is_header) {
         // header → just parse symbols
@@ -1191,12 +1270,14 @@ path aether_include(aether e, A inc, ARef _instance) {
         ParseAST(compiler->getPreprocessor(), &consumer, ctx);
     } else {
         // source → parse + codegen
-        compiler->setASTConsumer(std::make_unique<AetherASTConsumer>(e));
-        std::unique_ptr<EmitLLVMOnlyAction> act(new EmitLLVMOnlyAction());
-        compiler->ExecuteAction(*act);
-
-        std::unique_ptr<llvm::Module> M = act->takeModule();
+        AetherEmitAction act(e);
+        //compiler->setASTConsumer(std::make_unique<AetherASTConsumer>(e));
+        //std::unique_ptr<EmitLLVMOnlyAction> act(new EmitLLVMOnlyAction());
+        compiler->ExecuteAction(act);
+        std::unique_ptr<llvm::Module> M = act.takeModule();
         LLVMModuleRef cMod = M ? wrap(M.release()) : nullptr;
+        (*instance)->module = cMod;
+        LLVMLinkModules2(e->module, cMod);
     }
 
     unlink(c->chars);

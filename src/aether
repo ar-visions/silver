@@ -170,7 +170,8 @@ declare_class_2(fn, model)
     i_prop  (X,Y, public, handle,   ctx) \
     i_prop  (X,Y, public, handle,   consumer) \
     i_prop  (X,Y, public, handle,   S) \
-    i_prop  (X,Y, public, handle,   P)
+    i_prop  (X,Y, public, handle,   P) \
+    i_prop  (X,Y, public, handle,   module)
 declare_class(clang_cc)
 
 
@@ -296,6 +297,7 @@ declare_class_2(static_array, array)
     i_prop    (X,Y, public,     array,       framework_paths) \
     i_prop    (X,Y, public,     array,       lib_paths) \
     i_prop    (X,Y, public,     path,        isysroot) \
+    i_prop    (X,Y, public,     path,        isystem) \
     i_prop    (X,Y, public,     path,        resource_dir) \
     i_prop    (X,Y, public,     array,       sys_inc_paths) \
     i_prop    (X,Y, public,     array,       sys_exc_paths) \
