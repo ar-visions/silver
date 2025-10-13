@@ -313,7 +313,7 @@ static array expand_tokens(aether mod, array tokens, map expanding) {
         if (m && b && eq(b, "(") && !get(expanding, m->name)) {
             array args  = array(alloc, 32);
             int   index = i + n + 1;
-            
+
             while (true) {
                 int  stop = 0;
                 array arg = read_arg(mod, tokens, index, &stop);
