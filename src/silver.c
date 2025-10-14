@@ -2549,9 +2549,11 @@ static none checkout(import im, path uri, string commit, array prebuild, array p
     // we build to another folder, not inside the source, or checkout
     path build_f   = f(path, "%o/%s/%o", install, debug ? "debug" : "build", name);
     path rust_f    = f(path, "%o/Cargo.toml",     project_f);
+    path meson_f   = f(path, "%o/meson.build",    project_f);
     path cmake_f   = f(path, "%o/CMakeLists.txt", project_f);
     path silver_f  = f(path, "%o/build.sf",       project_f);
     bool is_rust   = file_exists("%o", rust_f);
+    bool is_meson  = file_exists("%o", meson_f);
     bool is_cmake  = file_exists("%o", cmake_f);
     bool is_silver = file_exists("%o", silver_f);
     path token     = f(path, "%o/silver-token", build_f);
@@ -2588,6 +2590,16 @@ static none checkout(import im, path uri, string commit, array prebuild, array p
 
         vexec("build",   "%o cmake --build %o -j16", env, build_f);
         vexec("install", "%o cmake --install %o",    env, build_f);
+    }
+    else if (is_meson) { // build for meson
+        cstr build = debug ? "debug" : "release";
+        
+        vexec("setup",
+            "%o meson setup %o --prefix=%o --buildtype=%o %o",
+                env, build_f, install, build, config);
+
+        vexec("compile", "%o meson compile -C %o", env, build_f);
+        vexec("install", "%o meson install -C %o", env, build_f);
     }
     else if (is_rust) { // todo: copy bin/lib after
         vexec("rust", "cargo build --%s --manifest-path %o/Cargo.toml --target-dir %o",
