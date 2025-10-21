@@ -1,15 +1,25 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
 
 if [ -z "$IMPORT" ]; then
     IMPORT="$(realpath "$(dirname "$0")")"
 fi
 
+# lets make sure silver bins come first
+export PATH=$IMPORT/bin:$PATH
+
 LLVM_URL="https://github.com/LLVM/llvm-project"
 LLVM_COMMIT="bd7db75"
-build_dir="$IMPORT/build/llvm-project"
+llvm_build_dir="$IMPORT/build/llvm-project"
 llvm_src="$IMPORT/checkout/llvm-project"
-llvm_build="$build_dir/release"
+llvm_build="$llvm_build_dir/release"
+
+mbed_url="https://github.com/Mbed-TLS/mbedtls"
+mbed_build_dir="$IMPORT/build/mbedtls"
+mbed_src="$IMPORT/checkout/mbedtls"
+mbed_build="$mbed_build_dir/release"
+mbed_commit="ec40440"
+
 mkdir -p "$IMPORT/checkout"
 mkdir -p "$IMPORT/bin"
 
@@ -26,11 +36,95 @@ if ! [ -f "$IMPORT/bin/ninja" ]; then
     cp -a build-cmake/ninja $IMPORT/bin/ninja
 fi
 
+if ! [ -f "$IMPORT/bin/python3" ]; then
+    PY_VER="3.11.9"
+    PY_SRC="$IMPORT/checkout/Python-$PY_VER"
+
+    mkdir -p "$IMPORT/checkout"
+    cd "$IMPORT/checkout"
+    curl -LO "https://www.python.org/ftp/python/$PY_VER/Python-$PY_VER.tgz"
+    tar -xf "Python-$PY_VER.tgz"
+    cd "Python-$PY_VER"
+
+    CC=gcc ./configure --prefix=$IMPORT --with-ensurepip=install
+    make -j$(sysctl -n hw.ncpu)
+    make install
+fi
+
 cd $IMPORT
 
-# build LLVM from scratch
+ if [ -n "$ZSH_VERSION" ]; then
+    rehash 2>/dev/null || true
+elif [ -n "$BASH_VERSION" ]; then
+    hash -r 2>/dev/null || true
+elif [ -n "$FISH_VERSION" ]; then
+    builtin functions -q rehash && rehash 2>/dev/null || true
+elif [ -n "$TCSH_VERSION" ] || [ -n "$CSH_VERSION" ]; then
+    rehash 2>/dev/null || true
+else
+    # fallback: force PATH refresh by launching a subshell
+    exec $SHELL -l
+fi
+
+# we need https as a core dependency, since silver uses chatgpt, claude, and gemini apis
+# wolf-ssl is a bit easier to use, however mbed works with streaming protocol
+# while streamining is not in the domain of silver, its generally in the stack of apps
+# all of these core dependencies are there for silver apps to use
+
+build_mbed() {
+    mkdir -p "$mbed_build_dir"
+    
+    if [[ -d "$mbed_src" ]]; then       # clone or update
+        cd "$mbed_src"
+        git fetch origin
+        git checkout "$mbed_commit"
+        git pull origin "$mbed_commit" 2>/dev/null || true
+    else
+        git clone "$mbed_url" "$mbed_src"
+        cd "$mbed_src"
+        git checkout "$mbed_commit"
+        git submodule update --init --recursive
+        pip3 install jsonschema jinja2
+    fi
+    
+    mkdir -p "$mbed_build"              # configure
+    cd "$mbed_build"
+    local cmake_args=(
+        -S $mbed_src
+        -DPython3_EXECUTABLE=$IMPORT/bin/python3
+        -DCMAKE_C_COMPILER="clang"
+        -DCMAKE_CXX_COMPILER="clang++"
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_INSTALL_PREFIX=$IMPORT
+        -G Ninja
+        -DENABLE_TESTING=0
+        -DPSA_CRYPTO_DRIVERS=0
+        -DCMAKE_POSITION_INDEPENDENT_CODE=1
+        -DLINK_WITH_PTHREAD=1
+    )
+
+    # linux needs -DCMAKE_C_COMPILER_TARGET=x86_64-unknown-linux-gnu
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        SYSROOT="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || echo "")"
+        cmake_args+=(-DCMAKE_OSX_SYSROOT="$SYSROOT")
+    fi
+
+    cmake "${cmake_args[@]}"
+    local num_jobs=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+    
+    ninja -j$num_jobs
+    ninja install
+}
+
+# build LLVM from scratch; we cannot depend on various versions used throughout os's
+# they do not all contain the runtimes, clang++ APIs, and IR API required
+# it would be ludacrous to call different versions on different systems for the same given silver version
+# that said, different system headers are used for C++ and that must be the case since C++ is not implemented
+# in LLVM clang; they use the SDK on the system
+# for now, C++ integration has hurdles and is planned for 1.0
+
 build_llvm() {
-    mkdir -p "$build_dir"               # create build dir
+    mkdir -p "$llvm_build_dir"               # create build dir
     if [[ -d "$llvm_src" ]]; then       # clone or update
         cd "$llvm_src"
         git fetch origin
@@ -77,8 +171,8 @@ build_llvm() {
         -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
         -DLLVM_DEFAULT_CXX_STDLIB=libc++
         -DCMAKE_C_COMPILER_TARGET=arm64-apple-darwin
-        -DCMAKE_OSX_SYSROOT=$(xcrun --show-sdk-path)
     )
+    # -DCMAKE_OSX_SYSROOT=$(xcrun --show-sdk-path)
 
     # linux needs -DCMAKE_C_COMPILER_TARGET=x86_64-unknown-linux-gnu
 
@@ -103,4 +197,8 @@ if [[ ! -f "$IMPORT/bin/clang" ]] || [[ ! -d "$llvm_build" ]]; then
     build_llvm
 fi
 
-(cd "$(dirname "$0")" && python3 gen.py "$@")
+if [[ ! -d "$mbed_build" ]]; then
+    build_mbed
+fi
+
+(cd "$(dirname "$0")" && cd $IMPORT && python3 gen.py "$@")

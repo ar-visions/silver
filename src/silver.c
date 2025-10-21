@@ -2552,9 +2552,11 @@ static none checkout(import im, path uri, string commit, array prebuild, array p
     path meson_f   = f(path, "%o/meson.build",    project_f);
     path cmake_f   = f(path, "%o/CMakeLists.txt", project_f);
     path silver_f  = f(path, "%o/build.sf",       project_f);
+    path gn_f      = f(path, "%o/BUILD.gn",       project_f);
     bool is_rust   = file_exists("%o", rust_f);
     bool is_meson  = file_exists("%o", meson_f);
     bool is_cmake  = file_exists("%o", cmake_f);
+    bool is_gn     = file_exists("%o", gn_f);
     bool is_silver = file_exists("%o", silver_f);
     path token     = f(path, "%o/silver-token", build_f);
     
@@ -2593,13 +2595,18 @@ static none checkout(import im, path uri, string commit, array prebuild, array p
     }
     else if (is_meson) { // build for meson
         cstr build = debug ? "debug" : "release";
-        
+
         vexec("setup",
-            "%o meson setup %o --prefix=%o --buildtype=%o %o",
+            "%o meson setup %o --prefix=%o --buildtype=%s %o",
                 env, build_f, install, build, config);
 
         vexec("compile", "%o meson compile -C %o", env, build_f);
         vexec("install", "%o meson install -C %o", env, build_f);
+    }
+    else if (is_gn) {
+        cstr is_debug = debug ? "true" : "false";
+        vexec("gen", "gn gen %o --args='is_debug=%s is_official_build=true %o'", build_f, is_debug, config);
+        vexec("ninja", "ninja -C %o -j8", build_f);
     }
     else if (is_rust) { // todo: copy bin/lib after
         vexec("rust", "cargo build --%s --manifest-path %o/Cargo.toml --target-dir %o",
@@ -2807,15 +2814,120 @@ enode import_parse(silver mod) {
     return mem;
 }
 
+
+/*
+A request2(uri url, map args) {
+    map     st_headers   = new(map);
+    A       null_content = null;
+    map     headers      = contains(args, "headers") ? (map)get (args, "headers") : st_headers;
+    A       content      = contains(args, "content") ? get (args, "content") : null_content;
+    web     type         = contains(args, "method")  ? e_val(web, get(args, "method")) : web_Get;
+    uri     query        = url;
+
+    query->mtype = type;
+    verify(query->mtype != web_undefined, "undefined web method type");
+
+    sock client = sock(query);
+    print("(net) request: %o", url);
+    if (!connect_to(client))
+        return null;
+
+    // Send request line
+    string method = e_str(web, query->mtype);
+    send_object(client, f(string, "%o %o HTTP/1.1\r\n", method, query->query));
+
+    // Default headers
+    if (!contains(headers, "User-Agent"))      set(headers, "User-Agent", "silver");
+    if (!contains(headers, "Accept"))          set(headers, "Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*;q=0.8");
+    if (!contains(headers, "Accept-Language")) set(headers, "Accept-Language", "en-US,en;q=0.9");
+    if (!contains(headers, "Accept-Encoding")) set(headers, "Accept-Encoding", "gzip, deflate, br");
+    if (!contains(headers, "Host"))            set(headers, "Host", query->host);
+
+    message request = message(content, content, headers, headers, query, query);
+    write(request, client);
+
+    message response = message(client);
+    close(client);
+
+    return response;
+}*/
+
+
 int main(int argc, cstrs argv) {
     A_engage(argv);
-    print("engage");
-    silver mod = silver(argv);
+
+    string key = f(string, "%s", getenv("CHATGPT"));
+    verify(len(key),
+        "chatgpt requires an api key stored in environment variable CHATGPT"
+        " (user-persistent is recommended)");
+
+    map headers = m(
+        "Authorization", f(string, "Bearer %o", key));
+    
+    uri  addr    = uri("POST https://api.openai.com/v1/chat/completions");
+    sock chatgpt = sock(addr);
+    bool res     = connect_to(chatgpt);
+    verify(res, "failed to connect to chatgpt");
+
+    // will need a silver overview to attach
+    map sys = m(
+        "role",    string("system"),
+        "content", string("this is silver compiler, and your job is to write methods WITHOUT the method name and args, and no [ braces ] containing it, just the inner method content that we will place in code block; you will ALWAYS be given the arguments and model members, and surrounding models if needed"));
+    
+    msg user = m(
+        "role",     string("user"),
+        "content",  string("write a function that adds the args a and b"));
+    
+    array messages = a(sys, user);
+    hold(messages);
+    map body = m("model", string("gpt-5"), "messages", messages);
+
+    message request = message(content, body, headers, copy(headers), query, addr);
+    write(request, chatgpt, false);
+
+    message response = message(chatgpt);
+    string content_len = get(response->headers, string("Content-Length"));
+
+    pairs(response->headers, i) {
+        string k = i->key;
+        string v = i->value;
+        printf("header: %s: %s\n", k->chars, v->chars);
+    }
+
+    msg user2 = m(
+        "role",     string("user"),
+        "content",  string("write a function that adds the args a, b and c"));
+    
+    map body2 = m("model", string("gpt-5"), "messages", a(user2));
+    message request2 = message(content, body2, headers, copy(headers), query, addr);
+    write(request2, chatgpt, true);
+    message response2 = message(chatgpt);
+
+    close(chatgpt);
+    
+    //silver mod = silver(argv);
     return 0;
 }
 
 define_enum  (build_state)
 define_enum  (language)
+
+
+
+// return tokens for function content (not its surrounding def)
+array codegen_generate_fn(codegen a, fn f, array query) {
+    fault("must subclass codegen for usable code generation");
+    return null;
+}
+
+array chatgpt_generate_fn(chatgpt a, fn f, array query) {
+    array res = array(alloc, 32);
+    return res;
+}
+
+
+define_class (codegen, A)
+define_class (chatgpt, codegen)
 
 define_class (silver, aether)
 define_class (export, model)

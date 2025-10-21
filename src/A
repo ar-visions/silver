@@ -547,7 +547,7 @@ forward(any)
     i_method(AA,Y, public, i32,         compare,             AA) \
     i_method(AA,Y, public, u64,         hash) \
     i_method(AA,Y, public, AA,          copy) \
-    i_final (AA,Y, public, callback,    bind,                A, bool, AType, AType, symbol, symbol) \
+    i_final (AA,Y, public, callback,    binding,             A, bool, AType, AType, symbol, symbol) \
     i_final (AA,Y, public, ref_u64,     AF_bits) \
     i_final (AA,Y, public, none,        AF_set_id,           i32) \
     i_final (AA,Y, public, none,        AF_set_name,         cstr) \
@@ -793,12 +793,12 @@ declare_class(item)
 
 
 /// lets mimmick the structure in llama.cpp
-#define message_schema(X,Y,...) \
+#define msg_schema(X,Y,...) \
     i_prop(X,Y, public,   cstr, role) \
     i_prop(X,Y, public,   cstr, content) \
     i_override(X,Y, method, init) \
     i_override(X,Y, method, dealloc)
-declare_class(message)
+declare_class(msg)
 
 /// linked-list of elemental data
 #define list_schema(X,Y,...) \
@@ -1028,6 +1028,7 @@ forward(array)
     i_method(X,Y, public, none,    push, A) \
     i_method(X,Y, public, vector,  slice, num, num) \
     i_method(X,Y, public, A,       resize, sz) \
+    i_method(X,Y, public, A,       reallocate, sz) \
     i_guard(X,Y, public, sz,      len) \
     i_ctr(X,Y, public, i32) \
     i_ctr(X,Y, public, path) \
@@ -1149,7 +1150,8 @@ declare_enum(level)
     i_override  (X,Y, method,  init) \
     i_override  (X,Y, method,  dealloc) \
     i_override  (X,Y, cast,    string) \
-    i_override  (X,Y, cast,    bool)
+    i_override  (X,Y, cast,    bool) \
+    i_override  (X,Y, method,  copy)
 declare_class(map)
 
 #define ctx_schema(X,Y,...) \
@@ -1269,7 +1271,7 @@ declare_class(async)
     i_method    (X,Y, public, path,   latest_modified, ARef) \
     i_method    (X,Y, public, i64,    modified_time) \
     s_method    (X,Y, public, path,   self) \
-    s_method    (X,Y, public, path,   share_path, cstr) \
+    s_method    (X,Y, public, path,   share_path) \
     s_method    (X,Y, public, path,   cwd) \
     s_method    (X,Y, public, path,   tempfile, symbol) \
     i_ctr       (X,Y, public, string) \
@@ -1335,6 +1337,8 @@ A   real64(f64);
 A      A_cstr(cstr);
 A      A_none();
 A      A_bool(bool);
+
+string json(A a);
 
 /// you can be a typedef and a macro -- it makes APIs simpler
 shape shape_new(i64 count, ...);

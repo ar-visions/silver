@@ -1,4 +1,4 @@
 @app
-A
+A net
 aether aclang allvm
 -lLLVM -llldb
