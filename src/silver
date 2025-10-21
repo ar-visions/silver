@@ -87,6 +87,18 @@ declare_class(flag)
     s_method(X,Y, public, enode, parse, silver)
 declare_class_2(import, model)
 
+// codegen is given a function with no body, along with an array of [ array of media types ]
+// supported types are string, image, resource file
+// question is does this wait for the user on the system, or does it return when code is generated at all
+// the user should sign-off on code with an accept statement, true, or some keyword
+#define codegen_schema(X,Y,...) \
+    i_method(X,Y, public, array, generate_fn, fn, array)
+declare_class(codegen)
+
+#define chatgpt_schema(X,Y,...) \
+    i_override(X,Y, method, generate_fn)
+declare_class_2(chatgpt, codegen)
+
 #define export_schema(X,Y,...) \
     s_method(X,Y, public, enode, parse, silver)
 declare_class_2(export, model)

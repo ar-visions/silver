@@ -590,14 +590,14 @@ i32 evalue(AType type, cstr cs) {
     for (num m = 0; m < type->member_count; m++) {
         member mem = &type->members[m];
         if ((mem->member_type & A_FLAG_ENUMV) &&
-            (strcmp(mem->name, cs) == 0)) {
+            (strcasecmp(mem->name, cs) == 0)) {
             return *(i32*)enum_member_value(type, mem);
         }
     }
     for (num m = 0; m < type->member_count; m++) {
         member mem = &type->members[m];
         if ((mem->member_type & A_FLAG_ENUMV) &&
-            (mem->name[0] == cs[0])) {
+            (tolower(mem->name[0]) == tolower(cs[0]))) {
             return *(i32*)enum_member_value(type, mem);
         }
     }
@@ -1148,8 +1148,10 @@ none A_engage(cstrs argv) {
             }
         }
     }
-    if (argv)
-        path_share_path((cstr)argv[0]);
+    if (argv) {
+        path sh = path_share_path();
+        if (sh) cd(sh);
+    }
     /*
     if (!app_schema) {
         string default_arg = null;
@@ -2155,6 +2157,14 @@ none map_init(map m) {
     m->fifo->assoc = m;
 }
 
+map map_copy(map m) {
+    map a = map(hsize, 16, assorted, m->assorted, unmanaged, m->unmanaged);
+    pairs(m, i) {
+        set(a, i->key, i->value);
+    }
+    return a;
+}
+
 none map_dealloc(map m) {
     A info = head(m);
     if (m->hlist) {
@@ -2218,16 +2228,13 @@ none map_set(map m, A k, A v) {
     item i = map_fetch(m, k);
     AType vtype = isa(v);
     A info = head(m);
-    string kstr = instanceof(k, typeid(string));
-    if (kstr && eq(kstr, "Vulkan")) {
-        int test2 = 2;
-        test2    += 2;
-    }
+
     bool allowed = m->unmanaged || !m->last_type || m->last_type == vtype || m->assorted;
     verify(allowed,
         "unassorted map set to differing type: %s, previous: %s (%s:%i)",
         vtype->name, m->last_type->name, info->source, info->line);
     m->last_type = vtype;
+    
     if (i->value) {
         if (i->value != v) {
             drop(i->value);
@@ -2238,10 +2245,14 @@ none map_set(map m, A k, A v) {
     } else {
         i->value = m->unmanaged ? v : hold(v);
     }
-    item ref = push(m->fifo, m->unmanaged ? v : hold(v));
-    ref->key = hold(k);
-    ref->ref = i; // these reference each other
-    i->ref = ref;
+
+    bool in_fifo = i->ref != null;
+    if (!in_fifo) {
+        item ref = push(m->fifo, m->unmanaged ? v : hold(v));
+        ref->key = hold(k);
+        ref->ref = i; // these reference each other
+        i->ref = ref;
+    }
 }
 
 none map_rm_item(map m, item i) {
@@ -2692,12 +2703,12 @@ u64 string_hash(string a) {
     return a->h;
 }
 
-none message_init(message a) {
+none msg_init(msg a) {
     a->role = strdup(a->role);
     a->content = strdup(a->content);
 }
 
-none message_dealloc(message a) {
+none msg_dealloc(msg a) {
     free(a->role);
     free(a->content);
 }
@@ -3008,9 +3019,9 @@ none drop(A a) {
     }
 }
 
-/// bind works with delegate callback registration efficiently to 
+/// binding works with delegate callback registration efficiently to 
 /// avoid namespace collisions, and allow enumeration interfaces without override and base A boilerplate
-callback bind(A a, A target, bool required, AType rtype, AType arg_type, symbol id, symbol name) {
+callback binding(A a, A target, bool required, AType rtype, AType arg_type, symbol id, symbol name) {
     AType self_type   = isa(a);
     AType target_type = isa(target);
     bool inherits     = instanceof(target, self_type) != null;
@@ -3299,6 +3310,12 @@ A vector_resize(vector a, sz size) {
     vrealloc(a, size);
     A f = header(a);
     f->count = size;
+    return f->data;
+}
+
+A vector_reallocate(vector a, sz size) {
+    vrealloc(a, size);
+    A f = header(a);
     return f->data;
 }
 
@@ -3801,14 +3818,13 @@ path path_self() {
     return path(exe);
 }
 
-path path_share_path(cstr name) {
+path path_share_path() {
     path exe    = path_self();
     path parent = path_parent(exe); // verify this folder is bin?
-    path res    = form(path, "%o/../share/%s/", parent, name);
-    if (dir_exists("%o", res)) {
-        cd(res);
+    string n = stem(exe);
+    path res    = form(path, "%o/../share/%o/", parent, n);
+    if (dir_exists("%o", res))
         return res;
-    }
     return null;
 }
 
@@ -4245,11 +4261,34 @@ string json(A a) {
     /// start at 1024 pre-alloc
     if (!a) {
         append(res, "null");
+    } else if (instanceof(a, typeid(string))) {
+        push(res, '"');
+        concat(res, escape((string)a));
+        push(res, '"');
     } else if (instanceof(a, typeid(array))) {
         // array with items
         push(res, '[');
-        each (a, A, i) concat(res, json(i));
+        bool first = true;
+        each (a, A, i) {
+            if (!first) push(res, ',');
+            concat(res, json(i));
+            first = false;
+        }
         push(res, ']');
+    } else if (instanceof(a, typeid(map))) {
+        push(res, '{');
+        map ma = a;
+        bool first = true;
+        pairs (ma, i) {
+            if (!first) push(res, ',');
+            string k = json(i->key);
+            string v = json(i->value);
+            concat(res, k);
+            push(res, ':');
+            concat(res, v);
+            first = false;
+        }
+        push(res, '}');
     } else if (!(type->traits & A_TRAIT_PRIMITIVE)) {
         // A with fields
         push(res, '{');
@@ -4380,7 +4419,10 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
     bool   set_ctx = sym && context && !remainder && context->establishing && eq(sym, "ctx");
     bool   is_true = false;
 
-    if (sym && ((is_true = eq(sym, "true")) || eq(sym, "false"))) {
+    if (sym && (eq(sym, "null"))) {
+        res = null;
+    }
+    else if (sym && ((is_true = eq(sym, "true")) || eq(sym, "false"))) {
         verify(!schema || schema == typeid(bool), "type mismatch");
         res = A_bool(is_true); 
     }
@@ -4491,7 +4533,7 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
         AType use_schema = schema ? schema : typeid(map);
         bool  is_map     = use_schema == typeid(map);
         scan = ws(&scan[1]);
-        map props = map(hsize, 16);
+        map props = map(hsize, 16, assorted, true);
 
         for (;;) {
             scan = ws(&scan[0]);
@@ -4547,8 +4589,8 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
             A value = parse_object(scan, (mem ? mem->type : null),
                 (mem ? mem->args.meta_0 : null), &scan, context);
             
-            if (!value)
-                return null;
+            //if (!value)
+            //    return null;
 
             if (set_ctx && value)
                 set(context, name, value);
@@ -4617,7 +4659,7 @@ static A parse_array(cstr s, AType schema, AType meta_type, cstr* remainder, ctx
     scan = ws(&scan[1]);
     A res = null;
     if (!schema || (schema == typeid(array) || schema->src == typeid(array))) {
-        AType element_type = meta_type ? meta_type : (schema ? schema->meta.meta_0 : typeid(A));
+        AType element_type = meta_type ? meta_type : (schema ? schema->meta.meta_0 : typeid(map));
         res = parse_array_objects(&scan, element_type, context);
     } else if (schema->vmember_type == typeid(i64)) { // should support all vector types of i64 (needs type bounds check with vmember_count)
         array arb = parse_array_objects(&scan, typeid(i64), context);
@@ -4725,6 +4767,7 @@ static string extract_context(cstr src, cstr *endptr) {
 }
 
 A parse(AType schema, cstr s, ctx context) {
+    printf("parse: %s", s);
     if (context) {
         if (!ctx_checksums) ctx_checksums = hold(map(hsize, 32));
         string key = f(string, "%p", context);
@@ -4950,7 +4993,7 @@ define_class(subs, A)
 define_any(A, A, sizeof(struct _A), A_TRAIT_CLASS);
 
 define_class(watch,   A)
-define_class(message, A)
+define_class(msg,     A)
 define_class(async,   A)
 
 define_abstract(numeric,        0)

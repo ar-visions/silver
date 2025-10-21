@@ -226,11 +226,11 @@ def write_ninja(project, root, build_dir, plat):
     global is_debug
     opt_flags = ["-g", "-O0"] if is_debug else ["-O2"]
 
-    if args.asan:
-        opt_flags.extend(["-fsanitize=address"])
-        # On Linux you also need this to get runtime symbols linked:
-        plat['lflags'].append("-fsanitize=address")
-        plat['libs'].append("-lasan")
+    #if args.asan:
+    opt_flags.extend(["-fsanitize=address"])
+    # On Linux you also need this to get runtime symbols linked:
+    plat['lflags'].append("-fsanitize=address")
+    plat['libs'].append("-lasan")
 
     includes = [f"-I{build_p}/src/{project}", f"-I{root_p}/src", 
                 f"-I{build_p}/src", f"-I{root_p}/include"]

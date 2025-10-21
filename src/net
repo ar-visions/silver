@@ -1,0 +1,128 @@
+#ifndef _NET_
+#define _NET_
+#include <A>
+
+#undef bind
+/// opaque
+forward(Session)
+
+#define protocol_schema(E,T,Y,...) \
+    enum_value(E,T,Y, undefined,  0) \
+    enum_value(E,T,Y, http,       1) \
+    enum_value(E,T,Y, https,      2) \
+    enum_value(E,T,Y, wss,        3) \
+    enum_value(E,T,Y, ssh,        4)
+declare_enum(protocol)
+
+#define web_schema(E,T,Y,...) \
+    enum_value(E,T,Y, undefined,  0) \
+    enum_value(E,T,Y, Response,   1) \
+    enum_value(E,T,Y, Get,        2) \
+    enum_value(E,T,Y, Post,       3) \
+    enum_value(E,T,Y, Put,        4) \
+    enum_value(E,T,Y, Delete,     5)
+declare_enum(web)
+
+#define uri_schema(X,Y,...) \
+    i_prop    (X,Y, public,  web,      mtype) \
+    i_prop    (X,Y, public,  protocol, proto) \
+    i_prop    (X,Y, public,  string,   host) \
+    i_prop    (X,Y, public,  i32,      port) \
+    i_prop    (X,Y, public,  string,   query) \
+    i_prop    (X,Y, public,  string,   resource) \
+    i_prop    (X,Y, public,  map,      args) \
+    i_prop    (X,Y, public,  string,   version) \
+    i_method  (X,Y, public,  string,   addr) \
+    i_ctr     (X,Y, public,  string) \
+    i_ctr     (X,Y, public,  cstr) \
+    s_method  (X,Y, public,  string,   encode, string) \
+    s_method  (X,Y, public,  string,   decode, string)
+declare_class(uri)
+
+forward(TLS)
+
+#define sock_schema(X,Y,...) \
+    i_prop    (X,Y, intern,  Session,  data) \
+    i_method  (X,Y, public,  bool,     bind_addr, uri) \
+    i_method  (X,Y, public,  bool,     connect_to) \
+    i_method  (X,Y, public,  bool,     close) \
+    i_method  (X,Y, public,  none,     set_timeout, i64) \
+    i_method  (X,Y, public,  bool,     read_sz, handle, sz) \
+    i_method  (X,Y, public,  sz,       recv, handle, sz) \
+    i_method  (X,Y, public,  sz,       send_bytes,  handle, sz) \
+    i_method  (X,Y, public,  sz,       send_object, A) \
+    i_method  (X,Y, public,  vector,   read_until, string, i32) \
+    s_method  (X,Y, public,  sock,     accept, TLS) \
+    i_ctr     (X,Y, public,  TLS) \
+    i_ctr     (X,Y, public,  uri) \
+    i_ctr     (X,Y, public,  cstr) \
+    i_override(X,Y, cast,    bool)
+declare_class(sock)
+
+
+#define Session_schema(X,Y,...) \
+    i_prop    (X,Y, public,  TLS,      tls) \
+    i_prop    (X,Y, intern,  mbedtls_net_context,   fd) \
+    i_prop    (X,Y, intern,  mbedtls_ssl_context,   ssl) \
+    i_prop    (X,Y, public,  bool,     connected) \
+    i_prop    (X,Y, public,  num,      timeout_ms) \
+    i_ctr     (X,Y, public,  TLS) \
+    i_ctr     (X,Y, public,  uri) \
+    i_method  (X,Y, public,  bool,     bind_addr,   uri) \
+    i_method  (X,Y, public,  bool,     connect_to) \
+    i_method  (X,Y, public,  bool,     close) \
+    i_method  (X,Y, public,  none,     set_timeout, i64) \
+    i_method  (X,Y, public,  bool,     read_sz,     handle, sz) \
+    i_method  (X,Y, public,  sz,       recv,        handle, sz) \
+    i_method  (X,Y, public,  sz,       send,        handle, sz) \
+    i_method  (X,Y, public,  sz,       send_string, string) \
+    i_method  (X,Y, public,  vector,   read_until,  string, i32) \
+    s_method  (X,Y, public,  Session,  accept,      TLS)
+declare_class(Session)
+
+
+#define message_schema(X,Y,...) \
+    i_prop    (X,Y, public,  uri,     query) \
+    i_prop    (X,Y, public,  i32,     code) \
+    i_prop    (X,Y, public,  map,     headers) \
+    i_prop    (X,Y, public,  A,       content) \
+    i_prop    (X,Y, public,  string,  summary) \
+    i_method  (X,Y, public,  web,     method_type) \
+    i_method  (X,Y, public,  bool,    read_headers, sock) \
+    i_method  (X,Y, public,  bool,    read_content, sock) \
+    i_method  (X,Y, public,  bool,    write_status, sock) \
+    i_method  (X,Y, public,  bool,    write_headers, sock) \
+    i_method  (X,Y, public,  bool,    write, sock, bool) \
+    i_method  (X,Y, public,  string,  text) \
+    i_method  (X,Y, public,  map,     cookies) \
+    s_method  (X,Y, public,  message, query, uri, map, A) \
+    s_method  (X,Y, public,  message, response, uri, i32, A, map) \
+    i_ctr     (X,Y, public,  sock) \
+    i_ctr     (X,Y, public,  i32) \
+    i_ctr     (X,Y, public,  string) \
+    i_override(X,Y, method,  init) \
+    i_override(X,Y, cast,    bool)
+declare_class(message)
+
+
+typedef struct iTLS* iTLS;
+
+
+#define TLS_schema(X,Y,...) \
+    i_prop    (X,Y, intern,  mbedtls_net_context,       fd) \
+    i_prop    (X,Y, intern,  mbedtls_ssl_config,        conf) \
+    i_prop    (X,Y, intern,  mbedtls_x509_crt,          srvcert) \
+    i_prop    (X,Y, intern,  mbedtls_pk_context,        pkey) \
+    i_prop    (X,Y, public,  bool,     is_client) \
+    i_prop    (X,Y, public,  uri,      url) \
+    i_prop    (X,Y, intern,  handle,   ssl_ctx) \
+    i_prop    (X,Y, intern,  handle,   ssl) \
+    i_override(X,Y, method, init)
+declare_class(TLS)
+
+string dns(string hostname);
+A json_request(uri addr, map args, map headers, subprocedure success_handler, subprocedure failure_handler);
+
+A request(uri url, map args);
+
+#endif

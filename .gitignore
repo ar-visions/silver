@@ -16,3 +16,6 @@ include/*
 !include/import-*
 share/*
 build/*
+.chatgpt
+.claude
+.gemini

@@ -144,7 +144,10 @@
         "__split_buffer": "cpp",
         "sim_unordered_map": "cpp",
         "sim_unordered_set": "cpp",
-        "sim_vector": "cpp"
+        "sim_vector": "cpp",
+        "error_common.h": "c",
+        "platform.h": "c",
+        "x509.h": "c"
     },
     "cmake.configureOnOpen": false,
     "C_Cpp.errorSquiggles": "enabled"
