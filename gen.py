@@ -227,10 +227,10 @@ def write_ninja(project, root, build_dir, plat):
     opt_flags = ["-g", "-O0"] if is_debug else ["-O2"]
 
     #if args.asan:
-    opt_flags.extend(["-fsanitize=address"])
-    # On Linux you also need this to get runtime symbols linked:
-    plat['lflags'].append("-fsanitize=address")
-    plat['libs'].append("-lasan")
+        #opt_flags.extend(["-fsanitize=address"])
+        # On Linux you also need this to get runtime symbols linked:
+        #plat['lflags'].append("-fsanitize=address")
+        #plat['libs'].append("-lasan")
 
     includes = [f"-I{build_p}/src/{project}", f"-I{root_p}/src", 
                 f"-I{build_p}/src", f"-I{root_p}/include"]
@@ -257,13 +257,13 @@ def write_ninja(project, root, build_dir, plat):
     
     # rules for compiling
     n.append("rule cc")
-    n.append(f"  command = $clang @{build_dir}/compile.rsp $cflags -DPROJECT=\"\\\"$project\\\"\" -c $in -o $out")
+    n.append(f"  command = $clang @$builddir/compile.rsp $cflags -DPROJECT=\"\\\"$project\\\"\" -c $in -o $out")
     n.append("  description = compiling c $in")
     n.append("  depfile = $out.d")
     n.append("  deps = gcc")
     n.append("")
     n.append("rule cxx")
-    n.append(f"  command = $clangcpp @{build_dir}/compile.rsp $cxxflags -DPROJECT=\"\\\"$project\\\"\" -c $in -o $out")
+    n.append(f"  command = $clangcpp @$builddir/compile.rsp $cxxflags -DPROJECT=\"\\\"$project\\\"\" -c $in -o $out")
     n.append("  description = compiling c++ $in")
     n.append("  depfile = $out.d")
     n.append("  deps = gcc")
@@ -275,7 +275,7 @@ def write_ninja(project, root, build_dir, plat):
     lpath = ''
     if system == "Darwin":
         lpath = '-Wl,-rpath,@executable_path/../lib'
-    n.append(f"  command = $clang @{build_dir}/link.rsp $in -o $out $ldflags $libs {lpath}")
+    n.append(f"  command = $clang @$builddir/link.rsp $in -o $out $ldflags $libs {lpath}")
 
     n.append("  description = linking executable $out")
     n.append("")
@@ -287,7 +287,7 @@ def write_ninja(project, root, build_dir, plat):
     n.append("")
     
     n.append("rule link_shared")
-    cmd = f"$clang @{build_dir}/link.rsp -shared $in -o $out $ldflags $libs"
+    cmd = f"$clang @$builddir/link.rsp -shared $in -o $out $ldflags $libs"
     if system == "Darwin":
         cmd += ' -Wl,-rpath,@executable_path/../lib -install_name $install_name'
     elif system == "Linux":

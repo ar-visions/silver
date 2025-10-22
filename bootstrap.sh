@@ -23,6 +23,24 @@ mbed_commit="ec40440"
 mkdir -p "$IMPORT/checkout"
 mkdir -p "$IMPORT/bin"
 
+case "$OSTYPE" in
+  darwin*)  SHLIB_EXT="dylib" ;;  # macOS
+  linux*)   SHLIB_EXT="so" ;;     # Linux / WSL
+  msys*|cygwin*|win*) SHLIB_EXT="dll" ;;  # Windows or Git-Bash
+  *)        SHLIB_EXT="so" ;;     # fallback
+esac
+
+# install Xcode tools (base clang and sdk)
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    if ! command -v clang >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
+        echo "🛠️  macOS command line tools not found. Installing..."
+        xcode-select --install || true
+        until command -v clang >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; do
+            sleep 2
+        done
+    fi
+fi
+
 # download source for ninja and build
 if ! [ -f "$IMPORT/bin/ninja" ]; then
     ninja_f="v1.13.1"
@@ -46,9 +64,29 @@ if ! [ -f "$IMPORT/bin/python3" ]; then
     tar -xf "Python-$PY_VER.tgz"
     cd "Python-$PY_VER"
 
-    CC=gcc ./configure --prefix=$IMPORT --with-ensurepip=install
+    CC=gcc ./configure --prefix=$IMPORT --enable-shared --with-ensurepip=install
     make -j$(sysctl -n hw.ncpu)
     make install
+
+
+    cd "$IMPORT/checkout"
+    curl -LO https://github.com/swig/swig/archive/refs/tags/v4.1.1.tar.gz
+    tar -xf v4.1.1.tar.gz
+    cd swig-4.1.1
+
+    # point it explicitly to your Python
+    export PATH="$IMPORT/bin:$PATH"
+    export LD_LIBRARY_PATH="$IMPORT/lib:$LD_LIBRARY_PATH"
+
+    ./autogen.sh || true
+    ./configure \
+    --prefix=$IMPORT \
+    --with-python=$IMPORT/bin/python3 \
+    --without-pcre  # optional; system PCRE is usually fine
+
+    make -j$(nproc)
+    make install
+
 fi
 
 cd $IMPORT
@@ -92,8 +130,8 @@ build_mbed() {
     local cmake_args=(
         -S $mbed_src
         -DPython3_EXECUTABLE=$IMPORT/bin/python3
-        -DCMAKE_C_COMPILER="clang"
-        -DCMAKE_CXX_COMPILER="clang++"
+        -DCMAKE_C_COMPILER="gcc"
+        -DCMAKE_CXX_COMPILER="g++"
         -DCMAKE_BUILD_TYPE=Release
         -DCMAKE_INSTALL_PREFIX=$IMPORT
         -G Ninja
@@ -140,10 +178,17 @@ build_llvm() {
     cd "$llvm_build"
     local cmake_args=(
         -S $llvm_src/llvm
-        -DCMAKE_C_COMPILER="clang"
-        -DCMAKE_CXX_COMPILER="clang++"
+        -DCMAKE_C_COMPILER="gcc"
+        -DCMAKE_CXX_COMPILER="g++"
         -DCMAKE_BUILD_TYPE=Release
+        -DLLVM_ENABLE_OPTIMIZED=ON
         -DCMAKE_INSTALL_PREFIX=$IMPORT
+        -DPython3_EXECUTABLE=$IMPORT/bin/python3
+        -DPython3_INCLUDE_DIR=$IMPORT/include/python3.11
+        -DPython3_LIBRARY=$IMPORT/lib/libpython3.11.$SHLIB_EXT
+        -DLLDB_PYTHON_RELATIVE_PATH=lib/python3.11
+        -DLLDB_PYTHON_EXE_RELATIVE_PATH=bin/python3
+        -DLLDB_PYTHON_EXT_SUFFIX=.$SHLIB_EXT
         -G Ninja
         -DCMAKE_CXX_STANDARD=17
         -DCMAKE_CXX_STANDARD_REQUIRED=ON
@@ -151,6 +196,10 @@ build_llvm() {
         -DLLVM_ENABLE_ASSERTIONS=ON
         -DLLVM_ENABLE_PROJECTS='clang;lld;lldb;compiler-rt'
         -DLLVM_ENABLE_RUNTIMES='libcxx;libcxxabi;libunwind'
+        -DLLVM_HOST_TRIPLE="x86_64-unknown-linux-gnu"
+        -DCMAKE_SYSTEM_NAME=Linux
+        -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
+        -DPYTHON_EXECUTABLE=/src/silver/bin/python3
         -DLLVM_TOOL_GOLD_BUILD=OFF
         -DLLVM_ENABLE_FFI=OFF
         -DLLVM_ENABLE_RTTI=ON
@@ -170,7 +219,6 @@ build_llvm() {
         -DCOMPILER_RT_BUILD_SANITIZERS=ON
         -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
         -DLLVM_DEFAULT_CXX_STDLIB=libc++
-        -DCMAKE_C_COMPILER_TARGET=arm64-apple-darwin
     )
     # -DCMAKE_OSX_SYSROOT=$(xcrun --show-sdk-path)
 
@@ -178,7 +226,14 @@ build_llvm() {
 
     if [[ "$OSTYPE" == "darwin"* ]]; then
         SYSROOT="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || echo "")"
-        cmake_args+=(-DCMAKE_OSX_SYSROOT="$SYSROOT")
+        cmake_args+=(
+            -DCMAKE_OSX_SYSROOT="$SYSROOT"
+            -DCMAKE_C_COMPILER_TARGET=arm64-apple-darwin
+        )
+    else
+        cmake_args+=(
+            -DCMAKE_C_COMPILER_TARGET=x86_64-unknown-linux-gnu
+        )
     fi
 
     cmake "${cmake_args[@]}"

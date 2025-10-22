@@ -2064,9 +2064,12 @@ fn parse_fn(silver mod, AFlag member_type, A ident, OPType assign_enum) {
     } else
         rtype = emodel("none");
 
-    if (!rtype) {
+    if (!rtype)
         rtype = emodel("none");
-        rtype = rtype;
+    
+    // check if using ai model
+    if (read_if(mod, "using")) {
+
     }
     
     validate(rtype, "rtype not set, void is something we may lookup");
@@ -2725,6 +2728,8 @@ enode import_parse(silver mod) {
     array  includes      = array(32);
     array  module_paths  = array(32);
 
+    // what differentiates a codegen from others, just class name?
+
     if (read_if(mod, "<")) {
         for (;;) {
             string f = read_alpha_any(mod);
@@ -2808,8 +2813,10 @@ enode import_parse(silver mod) {
         A_import(mod, m);
     }
     
+    // should only do this if its a global import and has no namesapce
     // this import stays
-    //pop(mod);
+    if (!mdl->name)
+        pop(mod);
     
     return mem;
 }
@@ -2852,6 +2859,9 @@ A request2(uri url, map args) {
     return response;
 }*/
 
+
+// todo: integrate the ssl into chatgpt type
+// implement 'using' keyword to facilitate this
 
 int main(int argc, cstrs argv) {
     A_engage(argv);
