@@ -82,19 +82,15 @@ fn init-in-module []
 
 ##
 '''
+# very simple idea: we declare a unit as a class, and we allow numeric tokens to join with this suffix
+unit deg degrees # degrees is a class, and that class may allow conversion to radians
 
-it would be nice to have units, however its simply too much to add to 0.88
-this is more of a 1.0 release, and it must be thoroughly explored
+# or prefix
+unit prefix $ usd
 
-a-type: class speed -> f128, enum etype[ mph kts kph c ]
-    # we merely define a map of scales, so that we may perform operations
-    mph  : 0.7 * this
-    kts  : this / 0.78
-    kph  : this * 1.0
-    c    : 122000000000.0 / this
-    # we normally define types with 
-    # sub-classes as speed[ base ], 
-    # so this data operator lets us 
-    # design this
+# unit are not classes, they merely allow a class to be made
+if amount > $10.0
+    print ['too expensive. inflations']
+
 '''
 ##

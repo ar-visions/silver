@@ -3,6 +3,7 @@
 
 import os, sys, glob, platform, argparse, subprocess
 from pathlib import Path
+from graph import parse_g_file, get_env_vars
 
 # Collect .c files from your src directory (or any other)
 source_dir = Path('src')
@@ -78,71 +79,18 @@ def get_platform_info():
     
     return info
 
-def parse_g_file(path):
-    """parse .g file for deps, link flags, target type, and imports"""
-    if not os.path.exists(path):
-        return [], [], None, []
-
-    content = open(path).read().strip()
-    if not content:
-        return [], [], None, []
-
-    deps, links, target, imports = [], [], None, []
-    current_key = None
-
-    for line in content.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-
-        # split "key: value" style
-        if ":" in line:
-            key, val = [x.strip() for x in line.split(":", 1)]
-            current_key = key.lower()
-
-            if current_key == "type":
-                target = val
-
-            elif current_key == "modules":
-                deps.extend(val.split())
-
-            elif current_key == "link":
-                links.extend(val.split())
-
-            elif current_key == "import":
-                # each import line:  url commit [configs...]
-                parts = val.split()
-                if len(parts) >= 2:
-                    uri = parts[0]
-                    commit = parts[1]
-                    configs = parts[2:]
-                    imports.append((uri, commit, configs))
-                else:
-                    print(f"warning: invalid import line: {line}")
-
-        # support for continuation lines (indented)
-        elif current_key == "modules" and line.startswith(" "):
-            deps.extend(line.split())
-        elif current_key == "link" and line.startswith(" "):
-            links.extend(line.split())
-        elif current_key == "import" and line.startswith(" "):
-            # continuation of previous import config
-            if imports:
-                imports[-1][2].extend(line.split())
-
-    return deps, links, target, imports
-
 
 def get_modules(src_dir):
     """get all modules with their info"""
     modules = []
     for src in glob.glob(f"{src_dir}/*.c") + glob.glob(f"{src_dir}/*.cc"):
-        deps, links, target = parse_g_file(Path(src).with_suffix('.g'))
+        deps, links, cflags, target, _ = parse_g_file(Path(src).with_suffix('.g'))
         modules.append({
             'name': Path(src).stem,
             'src': src,
             'deps': deps,
             'links': links,
+            'cflags': cflags,
             'target': target,
             'is_cxx': src.endswith(('.cc', '.cpp', '.cxx'))
         })
@@ -221,7 +169,7 @@ def write_ninja(project, root, build_dir, plat):
     main_mod, target_type = None, None
     silver_g = root / "src" / "silver.g"
     if silver_g.exists():
-        _, links, target_type = parse_g_file(silver_g)
+        _, links, cflags, target_type, _ = parse_g_file(silver_g)
         if target_type:
             for m in modules:
                 if m['name'] == 'silver':
@@ -349,7 +297,7 @@ def write_ninja(project, root, build_dir, plat):
         flags_var = "cxxflags" if m['is_cxx'] else "cflags"
         
         n.append(f"build {obj}: {rule} {escape_path(norm_path(m['src']))} | {' '.join(deps)}")
-        n.append(f"  {flags_var} = -I{build_p}/src/{m['name']}  ${flags_var} -DMODULE=\\\"{m['name']}\\\"")
+        n.append(f"  {flags_var} = -I{build_p}/src/{m['name']}  ${flags_var} {' '.join(m['cflags'])} -DMODULE=\\\"{m['name']}\\\"")
     n.append("")
     
     # handle extra source files not tied to modules

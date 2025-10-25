@@ -1,2 +1,2 @@
-A
-linux:-lm -llldb
+modules:    A
+link:       -lm -llldb

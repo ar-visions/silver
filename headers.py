@@ -6,27 +6,10 @@ import tempfile
 from pathlib import Path
 import subprocess
 import argparse
+from graph import parse_g_file, get_env_vars
 
 project_path = ''
 project = ''
-
-def get_env_vars():
-    """Get required variables from command line arguments"""
-    parser = argparse.ArgumentParser(description='Generate header files')
-    parser.add_argument('--project-path', required=True, help='Project root path')
-    parser.add_argument('--build-path', required=True, help='Build output path')
-    parser.add_argument('--project', required=True, help='Project name')
-    parser.add_argument('--import', required=True, help='Import path')
-    
-    args = parser.parse_args()
-    
-    return {
-        'PROJECT_PATH': args.project_path,
-        'DIRECTIVE':    'src',
-        'BUILD_PATH':   args.build_path,
-        'PROJECT':      args.project,
-        'IMPORT':       getattr(args, 'import')  # 'import' is a Python keyword
-    }
 
 def setup_paths(env_vars):
     """Setup and validate paths"""
@@ -69,13 +52,7 @@ def write_import_header(module, paths, env_vars):
         imports = ["A"]
     else:
         if os.path.isfile(graph_file):
-            with open(graph_file, 'r') as f:
-                graph_content = f.read().strip()
-            sp = graph_content.split()
-            graph_nodes = []
-            for g in sp:
-                if not g.startswith('-l'):
-                    graph_nodes.append(g)
+            graph_nodes = parse_g_file(graph_file)
             imports = [module] + graph_nodes
         else:
             imports = ["A", module]
