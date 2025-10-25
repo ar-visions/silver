@@ -1,2 +1,2 @@
-@shared
-ports
+type:       shared
+modules:    ports

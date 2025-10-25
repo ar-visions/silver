@@ -19,3 +19,4 @@ build/*
 .chatgpt
 .claude
 .gemini
+*.pyc

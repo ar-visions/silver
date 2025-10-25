@@ -1,2 +1,2 @@
-@static
-A
+type:       static
+modules:    A
