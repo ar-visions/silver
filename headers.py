@@ -74,7 +74,7 @@ def write_import_header(module, paths, env_vars):
             sp = graph_content.split()
             graph_nodes = []
             for g in sp:
-                if not g.startswith('-l') and not ':' in g:
+                if not g.startswith('-l'):
                     graph_nodes.append(g)
             imports = [module] + graph_nodes
         else:

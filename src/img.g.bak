@@ -1,0 +1,47 @@
+-ldeflate -lImath -lOpenEXR -lOpenEXRUtil -lz -lpng
+-mavx2 -mfma
+-I$IMPORT/include/opencv4
+-I$IMPORT/include/OpenEXR
+-I$IMPORT/include/Imath
+
+import deflate
+	url: 'https://github.com/ebiggers/libdeflate 682a668'
+	args { -DBUILD_SHARED_LIBS=ON }
+
+import Imath
+	url: 'https://github.com/AcademySoftwareFoundation/Imath c0396a0'
+	link { -lImath }
+
+import openexr
+	url: 'https://github.com/AcademySoftwareFoundation/openexr 0b83825'
+		-DBUILD_SHARED_LIBS=ON
+	link { -lOpenEXR -lOpenEXRUtil }
+	
+import zlib
+	url: 'https://github.com/madler/zlib 04f42ce'
+		-DCMAKE_POLICY_VERSION_MINIMUM=3.5
+	link { -lz -lm }
+	
+import png
+	url: 'https://github.com/glennrp/libpng 07b8803'
+		-DCMAKE_POLICY_VERSION_MINIMUM=3.5
+	link { -lpng }
+	
+import opencv
+	url: 'https://github.com/opencv/opencv 31b0eee'
+	args {
+		-DBUILD_LIST=core,imgproc
+	}
+	link {
+		-lopencv_imgproc
+	}
+	post-build {
+		rsync -av $TAPESTRY/include/opencv4/opencv2 $TAPESTRY/include/opencv2
+	}
+
+cflags {
+	-mavx2 -mfma
+	-I$TAPESTRY/include/opencv4
+	-I$TAPESTRY/include/OpenEXR
+	-I$TAPESTRY/include/Imath
+}

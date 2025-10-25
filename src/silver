@@ -32,12 +32,14 @@ forward(import)
     i_prop    (X,Y, intern,     map,            include) \
     i_prop    (X,Y, intern,     int,            expr_level) \
     i_prop    (X,Y, intern,     int,            parens_depth) \
+    i_prop    (X,Y, intern,     i32,            statement_count) \
     i_prop    (X,Y, public,     path,           src_loc) \
     i_prop    (X,Y, public,     path,           file) \
     i_prop    (X,Y, public,     path,           project_path) \
     i_prop    (X,Y, public,     language,       std) \
     i_prop    (X,Y, public,     map,            defs) \
-    i_prop    (X,Y, intern,     i32,            statement_count) \
+    i_prop    (X,Y, public,     map,            codegens) \
+    i_prop    (X,Y, public,     string,         source_raw) \
     i_method  (X,Y, public,     silver,         load_module, path) \
     i_method  (X,Y, public,     enode,          parse_member_expr, emember) \
     i_method  (X,Y, public,     none,           incremental_resolve) \
@@ -84,16 +86,9 @@ declare_class_3(silver, aether, model)
 declare_class(flag)
 
 #define import_schema(X,Y,...) \
+    i_prop(X,Y, public, codegen, codegen) \
     s_method(X,Y, public, enode, parse, silver)
 declare_class_2(import, model)
-
-// codegen is given a function with no body, along with an array of [ array of media types ]
-// supported types are string, image, resource file
-// question is does this wait for the user on the system, or does it return when code is generated at all
-// the user should sign-off on code with an accept statement, true, or some keyword
-#define codegen_schema(X,Y,...) \
-    i_method(X,Y, public, array, generate_fn, fn, array)
-declare_class(codegen)
 
 #define chatgpt_schema(X,Y,...) \
     i_override(X,Y, method, generate_fn)

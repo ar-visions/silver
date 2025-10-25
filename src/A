@@ -1050,43 +1050,45 @@ declare_class(subprocedure)
 
 typedef A(*mix_fn)(A, A, f32);
 
-#define array_schema(X,Y,O,...) \
-    i_vprop          (X,Y, public, A,       elements) \
-    i_prop           (X,Y, public, bool,    unmanaged) \
-    i_prop           (X,Y, public, bool,    assorted) \
-    i_prop           (X,Y, opaque, AType,   last_type) \
-    i_prop           (X,Y, public, i32,     alloc) \
-    i_prop           (X,Y, public, i32,     len) \
-    s_vargs          (X,Y, public, array,   array_of,       A) \
-    s_vargs          (X,Y, public, array,   array_of_cstr,  cstr) \
-    i_method         (X,Y, public, array,   mix, array, f32) \
-    i_method         (X,Y, public, A,       first) \
-    i_method         (X,Y, public, A,       last) \
-    i_method         (X,Y, public, A,       pop) \
-    i_method         (X,Y, public, none,    fill,           A) \
-    i_method         (X,Y, public, array,   reverse) \
-    i_method         (X,Y, public, none,    remove,         num) \
-    i_method         (X,Y, public, none,    remove_weak,    num) \
-    i_method         (X,Y, public, none,    push,           A) \
-    i_method         (X,Y, public, none,    push_vdata,     A, i64) \
-    i_method         (X,Y, public, none,    push_weak,      A) \
-    i_method         (X,Y, public, none,    clear) \
-    i_method         (X,Y, public, none,    concat,         array) \
-    i_method         (X,Y, public, A,       get,            num) \
-    i_method         (X,Y, public, A,       peek,           num) \
-    i_method         (X,Y, public, num,     count) \
-    i_guard          (X,Y, public, sz,      len) \
-    i_method         (X,Y, public, num,     index_of,       A) \
-    i_operator       (X,Y, public, none,    _assign_add,    A) \
-    i_operator       (X,Y, public, none,    _assign_sub,    num) \
-    i_vargs          (X,Y, public, none,    push_symbols,   cstr) \
-    i_vargs          (X,Y, public, none,    push_objects,   A) \
-    i_index          (X,Y, public, A,       num) \
-    i_ctr            (X,Y, public, i32) \
-    i_override       (X,Y, method, init) \
-    i_override       (X,Y, method, dealloc) \
-    i_override       (X,Y, cast,   bool) \
-    i_override       (X,Y, cast,   string)
+#define array_schema(AA,Y,O,...) \
+    i_vprop          (AA,Y, public, A,       elements) \
+    i_prop           (AA,Y, public, bool,    unmanaged) \
+    i_prop           (AA,Y, public, bool,    assorted) \
+    i_prop           (AA,Y, opaque, AType,   last_type) \
+    i_prop           (AA,Y, public, i32,     alloc) \
+    i_prop           (AA,Y, public, i32,     len) \
+    i_prop           (AA,Y, public, map,     fields) \
+    s_vargs          (AA,Y, public, array,   array_of,       A) \
+    s_vargs          (AA,Y, public, array,   array_of_cstr,  cstr) \
+    i_method         (AA,Y, public, array,   mix, array, f32) \
+    i_method         (AA,Y, public, A,       first) \
+    i_method         (AA,Y, public, A,       last) \
+    i_method         (AA,Y, public, A,       pop) \
+    i_method         (AA,Y, public, none,    fill,           A) \
+    i_method         (AA,Y, public, array,   reverse) \
+    i_method         (AA,Y, public, none,    remove,         num) \
+    i_method         (AA,Y, public, none,    remove_weak,    num) \
+    i_method         (AA,Y, public, none,    push,           A) \
+    i_method         (AA,Y, public, none,    push_vdata,     A, i64) \
+    i_method         (AA,Y, public, none,    push_weak,      A) \
+    i_method         (AA,Y, public, none,    clear) \
+    i_method         (AA,Y, public, none,    concat,         array) \
+    i_method         (AA,Y, public, A,       get,            num) \
+    i_method         (AA,Y, public, A,       peek,           num) \
+    i_method         (AA,Y, public, num,     count) \
+    i_guard          (AA,Y, public, sz,      len) \
+    i_method         (AA,Y, public, num,     index_of,       A) \
+    i_operator       (AA,Y, public, none,    _assign_add,    A) \
+    i_operator       (AA,Y, public, none,    _assign_sub,    num) \
+    i_cast           (AA,Y, public, map) \
+    i_vargs          (AA,Y, public, none,    push_symbols,   cstr) \
+    i_vargs          (AA,Y, public, none,    push_objects,   A) \
+    i_index          (AA,Y, public, A,       num) \
+    i_ctr            (AA,Y, public, i32) \
+    i_override       (AA,Y, method, init) \
+    i_override       (AA,Y, method, dealloc) \
+    i_override       (AA,Y, cast,   bool) \
+    i_override       (AA,Y, cast,   string)
 declare_class(array, any)
 
 Exists A_exists(A);
@@ -1102,7 +1104,6 @@ declare_class(srcfile)
     i_prop      (X,Y, public, num,   alloc) \
     i_prop      (X,Y, public, num,   count) \
     i_prop      (X,Y, public, bool,  unmanaged) \
-    i_prop      (X,Y, intern, A, item_header) \
     i_method    (X,Y, public, none,  remove, A) \
     i_method    (X,Y, public, none,  set, A, A) \
     i_method    (X,Y, public, A,get, A) \

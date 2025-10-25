@@ -4711,6 +4711,8 @@ void eargs_init (eargs a) {
          a->members = map(hsize, 4);
 }
 
+define_class (codegen, A)
+
 define_enum  (interface)
 define_enum  (comparison)
 
