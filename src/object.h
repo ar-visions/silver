@@ -115,6 +115,10 @@ typedef struct _AType {
     struct _meta_t  meta;
 } *AType;
 
+typedef struct _AFields {
+
+    
+} *AType;
 
 // this is an exact mock type of A's instance
 typedef struct _object {

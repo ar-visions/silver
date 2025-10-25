@@ -357,6 +357,10 @@ sz array_len(array a) {
     return a->len;
 }
 
+map array_cast_map(array a) {
+    return a->fields;
+}
+
 /// index of element that compares to 0 diff with item
 num array_index_of(array a, A b) {
     if (a->unmanaged) {
@@ -2802,7 +2806,6 @@ item hashmap_fetch(hashmap a, A key) {
         if (compare(f->key, key) == 0)
             return f;
     item n = list_push(bucket, null);
-    a->item_header = header(n);
     n->key = hold(key);
     a->count++;
     return n;

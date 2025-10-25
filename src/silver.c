@@ -178,7 +178,11 @@ void build_fn(silver mod, fn f, callback preamble, callback postamble) {
     if (preamble)
         preamble(f, null);
     array after_const = parse_const(mod, f->body);
-    if (f->single_expr) {
+    if (f->cgen) {
+        // generate code with cgen delegate imported
+        array gen = generate_fn(f->cgen, f->body);
+    }
+    else if (f->single_expr) {
         enode single = typed_expr(mod, f->rtype, after_const);
         e_fn_return(mod, single);
     } else {
@@ -427,10 +431,11 @@ array parse_tokens(silver mod, A input) {
         src = input;
         input_string = load(src, typeid(string), null); // this was read before, but we 'load' files; way less conflict wit posix
     } else if (type == typeid(string))
-
         input_string = input;
     else
         assert(false, "can only parse from path");
+
+    mod->source_raw = hold(input_string);
     
     list   symbols    = list();
     string special    = string(".$,<>()![]/+*:=#");
@@ -2068,8 +2073,13 @@ fn parse_fn(silver mod, AFlag member_type, A ident, OPType assign_enum) {
         rtype = emodel("none");
     
     // check if using ai model
+    codegen cgen = null;
     if (read_if(mod, "using")) {
-
+        verify(!body, "body already defined in type[expr]");
+        token codegen_name = read_alpha(mod);
+        verify(codegen_name, "expected codegen-identifier after 'using'");
+        cgen = get(mod->codegens, codegen_name);
+        verify(cgen, "codegen identifier not found: %o", codegen_name);
     }
     
     validate(rtype, "rtype not set, void is something we may lookup");
@@ -2083,7 +2093,8 @@ fn parse_fn(silver mod, AFlag member_type, A ident, OPType assign_enum) {
         mod,      mod,     name,   name, function_type, member_type, extern_name, f(string, "%o_%o", rec->name, name),
         instance, is_static ? null : rec,
         rtype,    rtype,   single_expr, single_expr,
-        args,     args,    body,   (body && len(body)) ? body : read_body(mod, false));
+        args,     args,    body,   (body && len(body)) ? body : read_body(mod, false),
+        cgen,     cgen);
     
     return f;
 }
@@ -2152,6 +2163,7 @@ void silver_parse(silver mod) {
 
 void silver_init(silver mod) {
     mod->defs = map(hsize, 8);
+    mod->codegens = map(hsize, 8);
 
 #if defined(__linux__)
     set(mod->defs, string("linux"), A_bool(true));
@@ -2729,8 +2741,15 @@ enode import_parse(silver mod) {
     array  module_paths  = array(32);
 
     // what differentiates a codegen from others, just class name?
+    token t = peek(mod);
+    AType is_codegen = null;
 
-    if (read_if(mod, "<")) {
+    if (t && isalpha(t->chars[0])) {
+        AType f = A_find_type((cstr)t->chars);
+        if (f && inherits(f, typeid(codegen)))
+            is_codegen = f;
+    }
+    else if (read_if(mod, "<")) {
         for (;;) {
             string f = read_alpha_any(mod);
             validate(f, "expected include");
@@ -2760,35 +2779,56 @@ enode import_parse(silver mod) {
         }
     }
 
+    map props = is_codegen ? map() : null;
+
     // this invokes import by git; a local repo may be possible but not very usable
     // arguments / config not stored / used after this
     if (next_is(mod, "[")) {
         array b          = read_body(mod, false);
-        array arguments  = compact_tokens(b);
-        array c          = read_body(mod, false);
-        array all_config = compact_tokens(c);
-        validate(len(arguments) >= 2,
-            "expected import arguments in import [ git-url checkout-id ]");
-        token t_uri    = get(arguments, 0);
-        token t_commit = get(arguments, 1);
-        path    uri = path((string)t_uri);
-        validate(starts_with(t_uri, "https://") || 
-               starts_with(t_uri, "git@"), "expected repository uri");
-        checkout(mod, t_uri, t_commit,
-            import_build_commands(all_config, ">"),
-            import_build_commands(all_config, ">>"),
-            import_config(all_config),
-            import_env   (all_config));
-        each(all_config, string, t) {
-            if (starts_with(t, "-l"))
-                push(mod->shared_libs, mid(t, 2, len(t) - 2));
+
+        if (is_codegen) {
+            int index = 0;
+            while (index < len(b)) {
+                verify(index - len(b) >= 3, "expected prop: value for codegen object");
+                token prop_name  = b->elements[index++];
+                token col        = b->elements[index++];
+                token prop_value = b->elements[index++];
+                verify(eq(col, ":"), "expected prop: value for codegen object");
+                set(props, string(prop_name->chars), string(prop_value->chars));
+            }
+        } else {
+            array arguments  = compact_tokens(b);
+            array c          = read_body(mod, false);
+            array all_config = compact_tokens(c);
+            validate(len(arguments) >= 2,
+                "expected import arguments in import [ git-url checkout-id ]");
+            token t_uri    = get(arguments, 0);
+            token t_commit = get(arguments, 1);
+            path    uri = path((string)t_uri);
+            validate(starts_with(t_uri, "https://") || 
+                starts_with(t_uri, "git@"), "expected repository uri");
+            checkout(mod, t_uri, t_commit,
+                import_build_commands(all_config, ">"),
+                import_build_commands(all_config, ">>"),
+                import_config(all_config),
+                import_env   (all_config));
+            each(all_config, string, t) {
+                if (starts_with(t, "-l"))
+                    push(mod->shared_libs, mid(t, 2, len(t) - 2));
+            }
         }
+    }
+
+    if (is_codegen) {
+        mdl->codegen = hold(construct_with(is_codegen, props, null));
     }
     
     if (next_is(mod, "as")) {
         consume(mod);
         namespace = hold(read_alpha(mod));
-        validate(namespace, "expected alpha-numeric namespace");
+        validate(namespace, "expected alpha-numeric %s", is_codegen ? "alias" : "namespace");
+    } else if (is_codegen) {
+        namespace = hold(string(is_codegen->name));
     }
     
     // its important that silver need not rely on further interpretation of an import model
@@ -2814,9 +2854,15 @@ enode import_parse(silver mod) {
     }
     
     // should only do this if its a global import and has no namesapce
-    // this import stays
-    if (!mdl->name)
+    // this import stays as a global lookup otherwise
+    // however, for delegates of llm with names, we will not keep it open
+    if (!mdl->name || is_codegen)
         pop(mod);
+
+    if (is_codegen) {
+        string name = mdl->name ? (string)mdl->name : string(is_codegen->name);
+        set(mod->codegens, name, mdl->codegen);
+    }
     
     return mem;
 }
@@ -2930,13 +2976,103 @@ array codegen_generate_fn(codegen a, fn f, array query) {
     return null;
 }
 
+// design-time for dictation
+array read_dictation(silver mod, array input) {
+    // we want to read through [ 'tokens', image[ 'file.png' ] ]
+    // also 'token here' 'and here' as two messages
+    array result = array();
+
+    push_state(mod, input, 0);
+    while (read_if(mod, "[")) {
+        array content = array();
+        while (!next_is(mod, "]")) {
+            if (read_if(mod, "image")) {
+                verify (read_if(mod, "["), "expected [ after image");
+                string file = read_literal(mod, typeid(string));
+                verify (file, "expected 'path' of image");
+                verify (read_if(mod, "]"), "expected ] after image [ file ");
+                push(content, file); // we need to bring in the image/media api
+                verify(false, "todo: import image for silver");
+            } else {
+                string msg = read_literal(mod, typeid(string));
+                verify (msg, "expected 'text' message");
+                push(content, msg);
+            }
+            read_if(mod, ","); // optional for arrays of 1 dimension
+        }
+        verify(len(content), "expected more than one message entry");
+        verify(read_if(mod, "]"), "expected ] after message");
+
+        push(result, content);
+    }
+    verify(len(result), "expected dictation message");
+    pop_state(mod, false);
+    return result;
+}
+
 array chatgpt_generate_fn(chatgpt a, fn f, array query) {
+    silver mod = f->mod;
     array res = array(alloc, 32);
+    // we need to construct the query for chatgpt from our query tokens
+    // as well as the preamble system context 
+    // we have simple strings
+
+    string key = f(string, "%s", getenv("CHATGPT"));
+    verify(len(key),
+        "chatgpt requires an api key stored in environment variable CHATGPT");
+    
+    map headers = m(
+        "Authorization", f(string, "Bearer %o", key));
+    
+    uri  addr    = uri("POST https://api.openai.com/v1/chat/completions");
+    sock chatgpt = sock(addr);
+    bool res     = connect_to(chatgpt);
+    verify(res, "failed to connect to chatgpt (online access required for remote codegen)");
+
+    string signature = f(string, "fn %o[%o] -> %o", f->name, str_args, f->rtype->name);
+    
+    // main system message
+    map sys_intro = m(
+        "role",    string("system"),
+        "content", f(string, 
+            "this is silver compiler, and your job is to write the code for inside of method: %o, "
+            "no [ braces ] containing it, just the inner method code; next we will provide entire module "
+            "source, so you know context and other components available", signature));
+    
+    // include our module source code
+    map sys_module = m(
+        "rule",     string("system"),
+        "content",  mod->source_raw);
+
+    // now we need a silver document with reasonable how-to
+    // this can be fetched from resource, as its meant for both human and AI learning
+    path docs = path_share_path("docs");
+    path test_sf = f(path, "%o/test.sf",docs);
+    path f = (data_type == typeid(string)) ? path((string)data) : (path)data;
+    string test_content = load(test_sf, typeid(string), null);
+
+    map sys_howto = m(
+        "rule",     string("system"),
+        "content",  test_content);
+
+    array messages = a(sys_intro, sys_module, sys_howto);
+
+    // now we have 1 line of dictation: ['this is text describing an image', image[ 'file.png' ] ]
+    // for each dictation message, there is a response from the server which we also include as assistant
+    array dictation = read_dictation(fn->body);
+
+    msg user = m(
+        "role",     string("user"),
+        "content",  string("write a function that adds the args a and b"));
+    
+    
+    hold(messages);
+    map body = m("model", string("gpt-5"), "messages", messages);
+    
     return res;
 }
 
 
-define_class (codegen, A)
 define_class (chatgpt, codegen)
 
 define_class (silver, aether)

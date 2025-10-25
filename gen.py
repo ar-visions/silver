@@ -79,33 +79,59 @@ def get_platform_info():
     return info
 
 def parse_g_file(path):
-    """parse .g file for deps, link flags, and target type"""
+    """parse .g file for deps, link flags, target type, and imports"""
     if not os.path.exists(path):
-        return [], [], None
-    
+        return [], [], None, []
+
     content = open(path).read().strip()
     if not content:
-        return [], [], None
-    
-    deps, links, target = [], [], None
-    
-    for part in content.split():
-        if part in ['@app', '@static', '@shared']:
-            target = part[1:]
-        else:
-            is_not = part.startswith('!')
-            if is_not: part = part[1:]
-            
-            if ':' in part:
-                kind, r = part.split(':', 1)
-                if is_not ^ (kind.lower() == system.lower()):
-                    (links if r.startswith('-l') else deps).append(r)
-            elif part.startswith('-l'):
-                links.append(part)
-            else:
-                deps.append(part)
-    
-    return deps, links, target
+        return [], [], None, []
+
+    deps, links, target, imports = [], [], None, []
+    current_key = None
+
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        # split "key: value" style
+        if ":" in line:
+            key, val = [x.strip() for x in line.split(":", 1)]
+            current_key = key.lower()
+
+            if current_key == "type":
+                target = val
+
+            elif current_key == "modules":
+                deps.extend(val.split())
+
+            elif current_key == "link":
+                links.extend(val.split())
+
+            elif current_key == "import":
+                # each import line:  url commit [configs...]
+                parts = val.split()
+                if len(parts) >= 2:
+                    uri = parts[0]
+                    commit = parts[1]
+                    configs = parts[2:]
+                    imports.append((uri, commit, configs))
+                else:
+                    print(f"warning: invalid import line: {line}")
+
+        # support for continuation lines (indented)
+        elif current_key == "modules" and line.startswith(" "):
+            deps.extend(line.split())
+        elif current_key == "link" and line.startswith(" "):
+            links.extend(line.split())
+        elif current_key == "import" and line.startswith(" "):
+            # continuation of previous import config
+            if imports:
+                imports[-1][2].extend(line.split())
+
+    return deps, links, target, imports
+
 
 def get_modules(src_dir):
     """get all modules with their info"""
