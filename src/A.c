@@ -3479,8 +3479,75 @@ none path_init(path a) {
     }
 }
 
+string path_mime(path a) {
+    string e = ext(a);
+    cstr res = null;
+    if      (eq(e, "png"))  res = "image/png";
+    else if (eq(e, "jpg"))  res = "image/jpeg";
+    else if (eq(e, "jpeg")) res = "image/jpeg";
+    else if (eq(e, "gif"))  res = "image/gif";
+    else if (eq(e, "txt"))  res = "text/plain";
+    else if (eq(e, "json")) res = "application/json";
+    else if (eq(e, "bmp"))  res = "image/bmp";
+    else if (eq(e, "jpg"))  res = "image/jpeg";
+    verify(res, "unsupported extension: %o", e);
+    return string(res);
+}
+
 none path_cd(path a) {
     chdir(a->chars);
+}
+
+string path_base64(path a) {
+    FILE*    f = fopen(a->chars, "rb");
+    if (!f) return null;
+
+    fseek(f, 0, SEEK_END);
+    sz    flen = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    int    rem = flen % 3;
+    int    pad = (3 - rem) % 3;
+    int    thr = ceil(flen / 3.0);
+    int    cnt = thr  * 4;
+
+    u8*   data = calloc(1, flen + 3);
+    fread(data, flen, 1, f);
+    
+    string res = string(alloc, cnt);
+
+    static const char b64[64] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        "abcdefghijklmnopqrstuvwxyz"
+        "0123456789+/";
+
+    for (int i = 0; i < flen / 3; i++) {
+        int istart = i * 3;
+        u32 chrs   = data[istart] << 16 | data[istart+1] << 8 | data[istart+2] << 0;
+        u8  i0     = (chrs >> 18) & 0x3f;
+        u8  i1     = (chrs >> 12) & 0x3f;
+        u8  i2     = (chrs >> 6)  & 0x3f;
+        u8  i3     = (chrs >> 0)  & 0x3f;
+        char b[5]  = { b64[i0], b64[i1], b64[i2], b64[i3], 0 };
+        append(res, b);
+    }
+    if (pad != 0) {
+        int istart = flen / 3 * 3;
+        u32 chrs = data[istart] << 16 | data[istart+1] << 8 | data[istart+2] << 0;
+        u8 i0 = (chrs >> 18) & 0x3f;
+        u8 i1 = (chrs >> 12) & 0x3f;
+        u8 i2 = (chrs >> 6)  & 0x3f;
+        u8 i3 = (chrs >> 0)  & 0x3f;
+        char b[5] = { b64[i0], pad >= 3 ? 0 : b64[i1], pad >= 2 ? 0 : b64[i2], pad >= 1 ? 0 : b64[i3], 0 };
+        append(res, b);
+    }
+
+    free(data);
+
+    for (int i = 0; i < pad; i++)
+        append(res, "=");
+
+    return res;
 }
 
 bool path_touch(path a) {

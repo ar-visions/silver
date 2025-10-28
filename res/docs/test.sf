@@ -54,7 +54,8 @@ main test_vulkan
   # intern  an_map             : map <i32 string> [ 1: 'a-value'  2: 'another' ] # this is a map (fifo-oriented)
 
     fn test_llm [] -> i32 using chatgpt
-        'simply return 2 + 2, but before you return print a funny joke'
+        ['simply return 2 + 2, but before you return print a funny joke', file[ 'docs/image-test.png' ]]
+        ['now multiply the return value by 2']
 
 	fn init [ ] # default is none for return
 		queue_family_index : 4

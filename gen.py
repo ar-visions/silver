@@ -282,11 +282,10 @@ def write_ninja(project, root, build_dir, plat):
     n.append("")
     
     # objects
-    module_objs, all_links = {}, set()
+    module_objs = {}
     for m in modules:
         obj = f"$builddir/{m['name']}{plat['obj']}"
         module_objs.setdefault(m['name'], []).append(obj)
-        all_links.update(m['links'])
         
         deps = [stamp]
         if global_deps:
@@ -326,7 +325,7 @@ def write_ninja(project, root, build_dir, plat):
         if m['target'] == 'app':
             output = f"{root_p}/bin/{m['name']}{plat['exe']}"
             n.append(f"build {output}: link_app {objs} {' '.join(deps)}")
-            libs = sorted(set(m['links']) | all_links)
+            libs = sorted(set(m['links']))
             if libs:
                 n.append(f"  libs = {' '.join(libs)}")
             n.append("")
@@ -340,7 +339,7 @@ def write_ninja(project, root, build_dir, plat):
             output = f"{root_p}/lib/{plat['lib_pre']}{m['name']}{plat['shared']}"
             install_name = os.path.basename(output)
             n.append(f"build {output}: link_shared {objs} {' '.join(deps)}")
-            libs = sorted(set(m['links']) | all_links)
+            libs = sorted(set(m['links']))
             if libs:
                 n.append(f"  libs = {' '.join(libs)}")
             if system == "Darwin":

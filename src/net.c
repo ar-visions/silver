@@ -50,7 +50,7 @@ bool Session_bind_addr(Session s, uri addr) {
     string s_port = f(string, "%i", addr->port);
     i32 res = mbedtls_net_bind(&s->fd, addr->host->chars, s_port->chars, MBEDTLS_NET_PROTO_TCP);
     if (res != 0) {
-        print("mbedtls_net_bind: fails with %i", res);
+        verify(false, "mbedtls_net_bind: fails with %i", res);
         return false;
     }
     return true;
@@ -97,7 +97,7 @@ bool Session_close(Session s) {
         if (ret != MBEDTLS_ERR_SSL_WANT_READ && 
             ret != MBEDTLS_ERR_SSL_WANT_WRITE &&
             ret != MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
-            print("mbedtls_ssl_close_notify returned %i", ret);
+            verify(false, "mbedtls_ssl_close_notify returned %i", ret);
             return false;
         }
     }
@@ -155,13 +155,13 @@ sz Session_send_string(Session s, string v) {
 
 vector Session_read_until(Session s, string match, i32 max_len) {
     vector rbytes = new(vector);
-    reallocate(rbytes, max_len + 1);
+    vector_reallocate(rbytes, max_len + 1);
 
     sz slen = match->len;
     cstr buf = vdata(rbytes);
     
     for (;;) {
-        push(rbytes, A_i8(0)); // extend buffer size here with a null, giving us space to read
+        vector_push(rbytes, A_i8(0)); // extend buffer size here with a null, giving us space to read
         sz sz = len(rbytes);
         if (!recv(s, &buf[sz - 1], 1))
             return null;
@@ -195,7 +195,7 @@ Session Session_accept(TLS tls) {
         while ((ret = mbedtls_ssl_handshake(&client->ssl)) != 0) {
             if (ret != MBEDTLS_ERR_SSL_WANT_READ && 
                 ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
-                print("mbedtls_ssl_handshake: %i", ret);
+                verify(false, "mbedtls_ssl_handshake: %i", ret);
                 retry = true;
                 break;
             }
@@ -236,7 +236,7 @@ none TLS_init(TLS tls) {
     //mbedtls_ctr_drbg_init(&tls->ctr_drbg);
 
     static string pers;
-    if (!pers) pers = string("A-type::net");
+    if (!pers) pers = new(string, "A-type::net");
 
     u8 random[32];
     i32 status = psa_generate_random(random, sizeof(random));
@@ -306,21 +306,21 @@ none TLS_init(TLS tls) {
 
 // copy headers first?
 none message_init(message m) {
-    if (!m->headers) m->headers = map(hsize, 16);
+    if (!m->headers) m->headers = new(map, hsize, 24);
 
     map headers = m->headers;
     uri query   = m->query;
 
-    string ua = string("User-Agent");
-    string ac = string("Accept");
-    string al = string("Accept-Language");
-    string ae = string("Accept-Encoding");
-    string h  = string("Host");
+    string ua = f(string, "User-Agent");
+    string ac = f(string, "Accept");
+    string al = f(string, "Accept-Language");
+    string ae = f(string, "Accept-Encoding");
+    string h  = f(string, "Host");
 
-    if (!contains(headers, ua)) set(headers, ua, string("silver"));
-    if (!contains(headers, ac)) set(headers, ac, string("text/html,application/xhtml+xml,application/xml;q=0.9,*;q=0.8"));
-    if (!contains(headers, al)) set(headers, al, string("en-US,en;q=0.9"));
-    if (!contains(headers, ae)) set(headers, ae, string("identity"));
+    if (!contains(headers, ua)) set(headers, ua, f(string, "silver"));
+    if (!contains(headers, ac)) set(headers, ac, f(string, "text/html,application/xhtml+xml,application/xml;q=0.9,*;q=0.8"));
+    if (!contains(headers, al)) set(headers, al, f(string, "en-US,en;q=0.9"));
+    if (!contains(headers, ae)) set(headers, ae, f(string, "identity"));
     if (!contains(headers, h))  set(headers, h,  query->host);
 }
 
