@@ -94,9 +94,11 @@ declare_class_2(import, model)
     i_override(X,Y, method, generate_fn)
 declare_class_2(chatgpt, codegen)
 
+#ifndef __cplusplus
 #define export_schema(X,Y,...) \
     s_method(X,Y, public, enode, parse, silver)
 declare_class_2(export, model)
+#endif
 
 // major change to model here, with most work on software import happening in import
 // process will perform actions needed by silver-only import

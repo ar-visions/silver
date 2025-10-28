@@ -179,8 +179,8 @@ void build_fn(silver mod, fn f, callback preamble, callback postamble) {
         preamble(f, null);
     array after_const = parse_const(mod, f->body);
     if (f->cgen) {
-        // generate code with cgen delegate imported
-        array gen = generate_fn(f->cgen, f->body);
+        // generate code with cgen delegate imported (todo)
+        array gen = generate_fn(f->cgen, f, f->body);
     }
     else if (f->single_expr) {
         enode single = typed_expr(mod, f->rtype, after_const);
@@ -2731,6 +2731,7 @@ bool silver_next_is_neighbor(silver mod) {
 }
 
 enode import_parse(silver mod) {
+    print_tokens(mod, "import parse");
     validate(next_is(mod, "import"), "expected import keyword");
     consume(mod);
 
@@ -2781,6 +2782,7 @@ enode import_parse(silver mod) {
 
     map props = is_codegen ? map() : null;
 
+    print_tokens(mod, "before [");
     // this invokes import by git; a local repo may be possible but not very usable
     // arguments / config not stored / used after this
     if (next_is(mod, "[")) {
@@ -2912,6 +2914,8 @@ A request2(uri url, map args) {
 int main(int argc, cstrs argv) {
     A_engage(argv);
 
+    /*
+
     string key = f(string, "%s", getenv("CHATGPT"));
     verify(len(key),
         "chatgpt requires an api key stored in environment variable CHATGPT"
@@ -2960,8 +2964,9 @@ int main(int argc, cstrs argv) {
     message response2 = message(chatgpt);
 
     close(chatgpt);
+    */
     
-    //silver mod = silver(argv);
+    silver mod = silver(argv);
     return 0;
 }
 
@@ -2985,14 +2990,16 @@ array read_dictation(silver mod, array input) {
     push_state(mod, input, 0);
     while (read_if(mod, "[")) {
         array content = array();
-        while (!next_is(mod, "]")) {
-            if (read_if(mod, "image")) {
-                verify (read_if(mod, "["), "expected [ after image");
+        while (peek(mod) && !next_is(mod, "]")) {
+            if (read_if(mod, "file")) {
+                verify (read_if(mod, "["), "expected [ after file");
                 string file = read_literal(mod, typeid(string));
-                verify (file, "expected 'path' of image");
-                verify (read_if(mod, "]"), "expected ] after image [ file ");
-                push(content, file); // we need to bring in the image/media api
-                verify(false, "todo: import image for silver");
+                verify (file, "expected 'path' of file in resources");
+                path share = path_share_path();
+                path fpath = f(path, "%o/%o", share, file);
+                verify(exists(fpath), "path does not exist: %o", fpath);
+                verify (read_if(mod, "]"), "expected ] after file [ literal string path... ] ");
+                push(content, fpath); // we need to bring in the image/media api
             } else {
                 string msg = read_literal(mod, typeid(string));
                 verify (msg, "expected 'text' message");
@@ -3012,7 +3019,7 @@ array read_dictation(silver mod, array input) {
 
 array chatgpt_generate_fn(chatgpt a, fn f, array query) {
     silver mod = f->mod;
-    array res = array(alloc, 32);
+    array  res = array(alloc, 32);
     // we need to construct the query for chatgpt from our query tokens
     // as well as the preamble system context 
     // we have simple strings
@@ -3024,11 +3031,18 @@ array chatgpt_generate_fn(chatgpt a, fn f, array query) {
     map headers = m(
         "Authorization", f(string, "Bearer %o", key));
     
-    uri  addr    = uri("POST https://api.openai.com/v1/chat/completions");
-    sock chatgpt = sock(addr);
-    bool res     = connect_to(chatgpt);
-    verify(res, "failed to connect to chatgpt (online access required for remote codegen)");
-
+    uri  addr      = uri("POST https://api.openai.com/v1/chat/completions");
+    sock chatgpt   = sock(addr);
+    bool connected = connect_to(chatgpt);
+    verify(connected, "failed to connect to chatgpt (online access required for remote codegen)");
+    string str_args = string();
+    pairs(f->args->members, i) {
+        string name = i->key;
+        emember mem  = i->value;
+        if (len(str_args))
+            append(str_args, ",");
+        concat(str_args, f(string, "%o: %o", name, mem->mdl->name));
+    }
     string signature = f(string, "fn %o[%o] -> %o", f->name, str_args, f->rtype->name);
     
     // main system message
@@ -3041,27 +3055,56 @@ array chatgpt_generate_fn(chatgpt a, fn f, array query) {
     
     // include our module source code
     map sys_module = m(
-        "rule",     string("system"),
-        "content",  mod->source_raw);
+        "role",     string("system"),
+        "content",  mod->source_raw );
 
     // now we need a silver document with reasonable how-to
     // this can be fetched from resource, as its meant for both human and AI learning
-    path docs = path_share_path("docs");
-    path test_sf = f(path, "%o/test.sf",docs);
-    path f = (data_type == typeid(string)) ? path((string)data) : (path)data;
+    path docs = path_share_path();
+    path test_sf = f(path, "%o/docs/test.sf", docs);
     string test_content = load(test_sf, typeid(string), null);
 
     map sys_howto = m(
-        "rule",     string("system"),
+        "role",     string("system"),
         "content",  test_content);
 
     array messages = a(sys_intro, sys_module, sys_howto);
 
+    
     // now we have 1 line of dictation: ['this is text describing an image', image[ 'file.png' ] ]
     // for each dictation message, there is a response from the server which we also include as assistant
-    array dictation = read_dictation(fn->body);
+    // it must error if there are missing responses from the servea                                                                                                                                                                                                                                                                                                                                                                                      
+    array dictation = read_dictation(mod, f->body);
 
-    msg user = m(
+    each (dictation, array, msg) {
+        array content = array();
+        each (msg, A, info) {
+            map item;
+            if (instanceof(typeid(path), info)) {
+                string mime_type = mime((path)info);
+                string b64 = base64((path)info);
+                map m_url = m("url", f(string, "data:%o;base64,%o", mime_type, b64)); // data:image/png;base64,
+                item = m("type", "image_url", "image_url", m_url);
+            } else if (instanceof(typeid(string), info)) {
+                item = m("type", "text", "text", info);
+            } else {
+                fault("unknown type in dictation: %s", isa(info)->name);
+            }
+            push(content, item);
+        }
+        map user_dictation = m(
+            "role",     string("user"),
+            "content",  content);
+
+        push(messages, user_dictation);
+
+        path test_sf = f(path, "%o/docs/test.sf", docs);
+
+        // if there is a response on file, append that
+        // if not, we should error if the next message contains another dictation
+    }
+
+    map user = m(
         "role",     string("user"),
         "content",  string("write a function that adds the args a and b"));
     

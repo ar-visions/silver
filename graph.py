@@ -20,6 +20,23 @@ def get_env_vars():
         'IMPORT':       getattr(args, 'import')  # 'import' is a Python keyword
     }
 
+
+def expand_vars(s):
+    """expand $(...) and $VARS using the environment"""
+    # shell commands
+    s = re.sub(
+        r"\$\(([^)]+)\)",
+        lambda m: subprocess.getoutput(m.group(1)).strip(),
+        s,
+    )
+    # env vars
+    s = re.sub(
+        r"\$([A-Za-z_][A-Za-z0-9_]*)",
+        lambda m: os.getenv(m.group(1), m.group(0)),
+        s,
+    )
+    return s
+
 def parse_g_file(path):
     """parse .g file for deps, link flags, target type, and imports"""
     if not os.path.exists(path):
@@ -51,7 +68,7 @@ def parse_g_file(path):
                 links.extend(val.split())
         
             elif current_key == "cflags":
-                cflags.extend(val.split())
+                cflags.extend(expand_vars(val).split())
 
             elif current_key == "import":
                 uri_commit = val.strip()

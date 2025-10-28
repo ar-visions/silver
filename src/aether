@@ -137,7 +137,8 @@ declare_class(format_attr)
 // question is does this wait for the user on the system, or does it return when code is generated at all
 // the user should sign-off on code with an accept statement, true, or some keyword
 #define codegen_schema(X,Y,...) \
-    i_method(X,Y, public, array, generate_fn, fn, array)
+    i_method(X,Y, public, array, generate_fn, fn, array) \
+    i_prop(X,Y, public, i32, pad)
 declare_class(codegen)
 
 #define fn_schema(X,Y,...) \

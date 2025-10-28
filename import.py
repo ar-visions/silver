@@ -73,7 +73,7 @@ def build_import(name, uri, commit, _config_lines, install_dir):
     
     # build & install
     cpu_count = os.cpu_count() or 4
-    run(f"ninja -j{min(cpu_count, 8)}", cwd=build_dir)
+    run(f"ninja -j{4}", cwd=build_dir)
     run("ninja install", cwd=build_dir)
 
     # run post commands

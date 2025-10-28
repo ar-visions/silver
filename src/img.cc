@@ -5,9 +5,10 @@
 #include <OpenEXR/ImfHeader.h>
 //#include <OpenEXR/ImathBox.h>
 #include <png.h>
-#include <import>
 #include <immintrin.h>
 #include <opencv.h>
+
+#include <import>
 
 // read images without conversion; for .png and .exr
 // this facilitates grayscale maps, environment color, 
@@ -17,7 +18,7 @@ image image_copy(image a) {
     image res = image(
         width,  a->width,  height,  a->height,
         format, a->format, surface, a->surface);
-    memcpy(data(res), data(a), byte_count(a));
+    memcpy(vdata((A)res), vdata((A)a), byte_count(a));
     return res;
 }
 
@@ -29,7 +30,7 @@ image image_resize(image input, i32 out_w, i32 out_h) {
     int in_h = input->height;
 
     if (in_w == out_w && in_h == out_h)
-        return (image)copy((object)input);
+        return (image)copy((A)input);
     
     float scale_x = (float)in_w / out_w;
     float scale_y = (float)in_h / out_h;
@@ -43,7 +44,7 @@ image image_resize(image input, i32 out_w, i32 out_h) {
 
 image image_gaussian(image input, float amount) {
     if (amount < 0.1f)
-        return (image)copy((object)input);
+        return (image)copy((A)input);
     int w = input->width;
     int h = input->height;
     image output = image(width, w, height, h, format, input->format, surface, input->surface, channels, input->channels);
@@ -74,7 +75,7 @@ image image_with_cstr(image a, cstr i) {
 }
 
 none image_init(image a) {
-    A header = head(a);
+    A info = header((A)a);
     Pixel f = a->format;
 
     if (!a->channels)
@@ -82,11 +83,11 @@ none image_init(image a) {
                       f == Pixel_u8   ? 1 : f == Pixel_rgbaf32 ? 4 : 1;
     
     if (a->source) {
-        A source_header = A_header(a->source);
-        header->data    = hold(a->source);
-        header->scalar  = source_header->scalar;
-        header->count   = source_header->count;
-        header->shape   = (shape)hold((object)source_header->shape);
+        A source_header = header((A)a->source);
+        info->data    = hold(a->source);
+        info->scalar  = source_header->scalar;
+        info->count   = source_header->count;
+        info->shape   = (shape)hold((A)source_header->shape);
         return;
     }
 
@@ -99,10 +100,10 @@ none image_init(image a) {
             f == Pixel_u8   ? typeid(i8) : f == Pixel_rgbaf32 ? typeid(f32) : typeid(f32);
 
         if (a->res_bits) {
-            header->data = (object)a->res_bits; // we leave this up to res, but may support fallback cases where thats not provided
+            info->data = (A)a->res_bits; // we leave this up to res, but may support fallback cases where thats not provided
         } else {
             /// validate with channels if set?
-            header->data = A_alloc2(
+            info->data = alloc2(
                 pixel_type, component_type, shape_new(a->height, a->width, pixel_type->size, 0));
         }
         return;
@@ -129,7 +130,7 @@ none image_init(image a) {
         a->pixel_size = sizeof(f32) * a->channels;
 
         int total_floats = width * height * 4;
-        f32* data = (f32*)A_alloc2(typeid(rgbaf), typeid(f32), shape_new(height, width, sizeof(f32), 0));
+        f32* data = (f32*)alloc2(typeid(rgbaf), typeid(f32), shape_new(height, width, sizeof(f32), 0));
 
         Imf::Array2D<Rgba> pixels;
         pixels.resizeErase(height, width); // [y][x] format
@@ -148,9 +149,9 @@ none image_init(image a) {
             }
         }
 
-        header->count = total_floats;
-        header->scalar = typeid(f32);
-        header->data = (object)data;
+        info->count = total_floats;
+        info->scalar = typeid(f32);
+        info->data = (A)data;
     } else if (eq(ext, "png")) {
         FILE* file = fopen(uri, "rb");
         verify (file, "could not open PNG: %o", a->uri);
@@ -158,22 +159,22 @@ none image_init(image a) {
         png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
         verify (png, "could not init PNG: %o", a->uri);
 
-        png_infop info = png_create_info_struct(png);
+        png_infop png_info = png_create_info_struct(png);
         setjmp (png_jmpbuf(png));
         png_init_io   (png, file);
-        png_read_info (png, info);
+        png_read_info (png, png_info);
 
-        a->width            = png_get_image_width  (png, info);
-        a->height           = png_get_image_height (png, info);
-        a->channels         = png_get_channels     (png, info);
+        a->width            = png_get_image_width  (png, png_info);
+        a->height           = png_get_image_height (png, png_info);
+        a->channels         = png_get_channels     (png, png_info);
         a->format           = Pixel_rgba8;
-        png_byte bit_depth  = png_get_bit_depth    (png, info);
-        png_byte color_type = png_get_color_type   (png, info);
+        png_byte bit_depth  = png_get_bit_depth    (png, png_info);
+        png_byte color_type = png_get_color_type   (png, png_info);
 
         /// store the exact format read
-        png_read_update_info (png, info);
+        png_read_update_info (png, png_info);
         png_bytep* rows = (png_bytep*)malloc (sizeof(png_bytep) * a->height);
-        u8*        data = (u8*)A_alloc(typeid(u8), a->width * a->height * a->channels * (bit_depth / 8));
+        u8*        data = (u8*)alloc(typeid(u8), a->width * a->height * a->channels * (bit_depth / 8));
         for (int y = 0; y < a->height; y++) {
             rows[y] = data + (y * a->width * a->channels * (bit_depth / 8));
         }
@@ -181,13 +182,13 @@ none image_init(image a) {
         /// read-image-rows
         png_read_image(png, rows);
         free(rows);
-        png_destroy_read_struct(&png, &info, NULL);
+        png_destroy_read_struct(&png, &png_info, NULL);
         fclose(file);
 
         /// Store in header
-        header->count  = a->width * a->height * a->channels;
-        header->scalar = (bit_depth == 16) ? typeid(u16) : typeid(u8);
-        header->data   = (object)data;
+        info->count  = a->width * a->height * a->channels;
+        info->scalar = (bit_depth == 16) ? typeid(u16) : typeid(u8);
+        info->data   = (A)data;
         a->pixel_size  = (bit_depth / 8) * a->channels;
     }
 }
@@ -206,11 +207,11 @@ i32 image_exr(image a, path uri) {
         using namespace Imf;
 
         if (a->format != Pixel_rgbaf32)
-            fault("Only Pixel_rgbaf32 supported for EXR save");
+            verify(false, "Only Pixel_rgbaf32 supported for EXR save");
 
         int width  = a->width;
         int height = a->height;
-        f32* data  = (f32*)data(a); // assumes planar RGBA32F
+        f32* data  = (f32*)vdata((A)a); // assumes planar RGBA32F
 
         Array2D<Rgba> pixels;
         pixels.resizeErase(height, width); // [y][x]
@@ -271,7 +272,7 @@ i32 image_png(image a, path uri) {
         png_write_info(png, info);
 
         png_bytep* rows = (png_bytep*)malloc(sizeof(png_bytep) * a->height);
-        u8* data = (u8*)data(a);
+        u8* data = (u8*)vdata((A)a);
         for (int y = 0; y < a->height; y++) {
             rows[y] = data + y * a->width * a->channels;
         }
@@ -290,16 +291,17 @@ i32 image_png(image a, path uri) {
 }
 
 none image_dealloc(image a) {
-    A header = head(a); 
+    A info = header((A)a); 
     if (a->res_dealloc) {
-        a->res_dealloc((object)a);
-        header->data = null;
+        a->res_dealloc((A)a);
+        info->data = null;
     }
     if (!a->res_bits) {
-        drop(header->data);
-        header->data = null;
+        drop(info->data);
+        info->data = null;
     }
 }
+
 
 num image_len(image a) {
     return a->height;
@@ -310,9 +312,9 @@ num image_byte_count(image a) {
     return f->count * f->scalar->size;
 }
 
-object image_get(image a, num y) {
-    i8* bytes = (i8*)data(a);
-    return (object)&bytes[a->pixel_size * a->width * y];
+A image_get(image a, num y) {
+    i8* bytes = (i8*)vdata((A)a);
+    return (A)&bytes[a->pixel_size * a->width * y];
 }
 
 define_class(image, A);
@@ -330,17 +332,17 @@ none set_font_manager(hook init, hook dealloc) {
 }
 
 none font_dealloc(font f) {
-    font_manager_dealloc((object)f);
+    font_manager_dealloc((A)f);
 }
 
 A font_copy(font f) {
     font cp = (font)A_copy((A)f);
-    font_manager_init((object)cp);
+    font_manager_init((A)cp);
     return (A)cp;
 }
 
 font font_init(font f) {
-    font_manager_init((object)f);
+    font_manager_init((A)f);
     return f;
 }
 
@@ -349,6 +351,9 @@ font font_from_path(font f, path uri) {
     return f;
 }
 
+define_enum(Pixel)
+define_enum(Filter)
+define_enum(Surface)
 
 define_class(font, A)
 define_enum(variant)

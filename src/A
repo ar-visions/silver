@@ -94,6 +94,7 @@ typedef void*                   numeric;
 #undef assert
 #include <macros.h>
 
+
 typedef signed char            *ref_i8;
 typedef short                  *ref_i16;
 typedef int                    *ref_i32;
@@ -236,7 +237,7 @@ void lazy_init(global_init_fn fn);
             type_ref->traits   = A_TRAIT_ENUM;       \
             type_ref->arb      = primitive_ffi_arb(typeid(i32)); \
             E##_schema( E, T, IMPL ); \
-            push_type(type_ref); \
+            push_type((AType)type_ref); \
             return true; \
         } \
     }
@@ -779,6 +780,17 @@ declare_primitive(ARef,         ref)
 declare_primitive(member,       raw)
 declare_primitive(floats,       raw)
 
+
+
+
+/// lets mimmick the structure in llama.cpp
+#define msg_schema(X,Y,...) \
+    i_prop(X,Y, public,   cstr, role) \
+    i_prop(X,Y, public,   cstr, content) \
+    i_override(X,Y, method, init) \
+    i_override(X,Y, method, dealloc)
+declare_class(msg)
+
 /// doubly-linked item type, integrated key so we dont also need a 'field' type
 #define item_schema(X,Y,...) \
     i_prop    (X,Y, opaque, X,         next) \
@@ -790,15 +802,6 @@ declare_primitive(floats,       raw)
     i_override(X,Y, method, hash) \
     i_override(X,Y, method, init)
 declare_class(item)
-
-
-/// lets mimmick the structure in llama.cpp
-#define msg_schema(X,Y,...) \
-    i_prop(X,Y, public,   cstr, role) \
-    i_prop(X,Y, public,   cstr, content) \
-    i_override(X,Y, method, init) \
-    i_override(X,Y, method, dealloc)
-declare_class(msg)
 
 /// linked-list of elemental data
 #define list_schema(X,Y,...) \
@@ -1261,6 +1264,8 @@ declare_class(async)
     i_method    (X,Y, public, string, stem) \
     i_method    (X,Y, public, string, ext) \
     i_override  (X,Y, method, eq) \
+    i_method    (X,Y, public, string, mime) \
+    i_method    (X,Y, public, string, base64) \
     i_method    (X,Y, public, string, filename) \
     i_method    (X,Y, public, path,   absolute) \
     i_method    (X,Y, public, path,   parent) \

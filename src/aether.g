@@ -1,38 +1,29 @@
-type:       static
-modules:    A
-link:       -lclang-cpp -lclang
+type:       shared
+modules:    A aclang allvm
+link:       -lclang-cpp -lclang -lLLVM -llldb
 import:     llvm-project https://github.com/LLVM/llvm-project bd7db75
     -S $IMPORT/checkout/llvm-project/llvm
     -DCMAKE_C_COMPILER=gcc
     -DCMAKE_CXX_COMPILER=g++
     -DCMAKE_BUILD_TYPE=Release
-    -DLLVM_ENABLE_OPTIMIZED=ON
     -DCMAKE_INSTALL_PREFIX=$IMPORT
     -DPython3_EXECUTABLE=$IMPORT/bin/python3
-    -DPYTHON_EXECUTABLE=$IMPORT/bin/python3
-    -DPython3_INCLUDE_DIR=$IMPORT/include/python3.11
-    -DPython3_LIBRARY=$IMPORT/lib/libpython3.11.$SHLIB_EXT
-    -DLLDB_PYTHON_RELATIVE_PATH=lib/python3.11
-    -DLLDB_PYTHON_EXE_RELATIVE_PATH=bin/python3
-    -DLLDB_PYTHON_EXT_SUFFIX=.$SHLIB_EXT
     -DCMAKE_CXX_STANDARD=17
     -DCMAKE_CXX_STANDARD_REQUIRED=ON
-    -DCMAKE_CXX_EXTENSIONS=OFF
-    -DLLVM_ENABLE_ASSERTIONS=ON
-    -DLLVM_ENABLE_PROJECTS='clang;lld;lldb;compiler-rt'
-    -DLLVM_ENABLE_RUNTIMES='libcxx;libcxxabi;libunwind'
+    -DLLVM_ENABLE_ASSERTIONS=OFF
+    -DLLVM_ENABLE_PROJECTS='clang;lld;lldb'
+    -DLLVM_ENABLE_RUNTIMES='libcxx;libcxxabi;libunwind;compiler-rt'
     -DLLVM_HOST_TRIPLE=x86_64-unknown-linux-gnu
     -DCMAKE_SYSTEM_NAME=Linux
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
     -DLLVM_TOOL_GOLD_BUILD=OFF
     -DLLVM_ENABLE_FFI=OFF
-    -DLLVM_ENABLE_RTTI=ON
+    -DLLVM_ENABLE_RTTI=OFF
     -DLLVM_BINUTILS_INCDIR=/usr/include
     -DCLANG_DEFAULT_PIE_ON_LINUX=ON
     -DCLANG_CONFIG_FILE_SYSTEM_DIR=/etc/clang
     -DBUILD_SHARED_LIBS=OFF
-    -DLLDB_ENABLE_PYTHON=ON
-    -DLLVM_ENABLE_PYTHON=ON
+    -DLLDB_ENABLE_PYTHON=OFF
     -DLLVM_TARGETS_TO_BUILD='host;AArch64'
     -DCLANG_DEFAULT_CXX_STDLIB=libstdc++
     -DLLVM_INCLUDE_TESTS=OFF
@@ -41,4 +32,3 @@ import:     llvm-project https://github.com/LLVM/llvm-project bd7db75
     -DLLVM_LINK_LLVM_DYLIB=ON
     -DCOMPILER_RT_BUILD_SANITIZERS=ON
     -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
-    -DLLVM_DEFAULT_CXX_STDLIB=libc++

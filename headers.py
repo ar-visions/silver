@@ -52,7 +52,7 @@ def write_import_header(module, paths, env_vars):
         imports = ["A"]
     else:
         if os.path.isfile(graph_file):
-            graph_nodes = parse_g_file(graph_file)
+            graph_nodes, _, _, _, _ = parse_g_file(graph_file)
             imports = [module] + graph_nodes
         else:
             imports = ["A", module]

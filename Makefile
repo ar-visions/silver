@@ -27,7 +27,7 @@ else
 endif
 
 build: bootstrap
-	ninja -v -C $(CONFIG)
+	ninja -j8 -v -C $(CONFIG)
 
 clean:
 ifeq ($(OS),Windows_NT)

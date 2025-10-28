@@ -7,7 +7,7 @@
 #define   enum_value_IMPL(E, T, N, VAL) \
     E##_i.type.members[E## _i.type.member_count].name     = #N; \
     E##_i.type.members[E## _i.type.member_count].offset   = (i32)(E##_##N);\
-    E##_i.type.members[E## _i.type.member_count].type     = &T ## _i.type; \
+    E##_i.type.members[E## _i.type.member_count].type     = (AType)&T ## _i.type; \
     static T static_##N = VAL; \
     E##_i.type.members[E## _i.type.member_count].ptr      = &static_##N;\
     E##_i.type.members[E## _i.type.member_count].member_type = A_FLAG_ENUMV; \
@@ -1460,11 +1460,6 @@
 #define         vexec(n, t, ...)     verify(exec(t __VA_OPT__(,) __VA_ARGS__) == 0, "shell command failed: %s", n);
 
 #define        A_log(sL, t, ...)   formatter((AType)null,      stdout, string(sL),  t, ## __VA_ARGS__)
-#define        print(t, ...)   ({\
-    static string _topic = null; \
-    if (!_topic) _topic = (string)hold((A)string(__func__)); \
-    formatter((AType)null, stdout, (A)_topic, t, ## __VA_ARGS__); \
-})
 
 #define          put(t,    ...)   formatter((AType)null,      stdout, (A)false, (symbol)t, ## __VA_ARGS__)
 //#define        print(L, t,    ...) formatter((AType)null,      stdout, (A)true,  (symbol)t, ## __VA_ARGS__)
@@ -1473,7 +1468,7 @@
 
 #define print(t, ...)   ({\
     static string _topic = null; \
-    if (!_topic) _topic = (string)hold((A)string(__func__)); \
+    if (!_topic) _topic = (string)hold((A)new(string, __func__)); \
     formatter((AType)null, stdout, (A)_topic, t, ## __VA_ARGS__); \
 })
 
