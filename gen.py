@@ -7,26 +7,23 @@ from pathlib import Path
 
 from graph import parse_g_file, get_env_vars
 
-# Collect .c files from your src directory (or any other)
-source_dir = Path('src')
-source_files = list(source_dir.glob('**/*.c*'))  # recursively finds .c files
-
-parser = argparse.ArgumentParser(description='generate ninja')
-parser.add_argument('--debug', action='store_true', help='debug')
-parser.add_argument('--asan', action='store_true', help='enable address sanitizer')
-args = parser.parse_args()
-
-is_debug = args.debug
-fname  = "debug" if is_debug else "release"
-system = platform.system()
-silver = Path(__file__).resolve().parent
+args            = get_env_vars()
+is_debug        = args['DEBUG']
+sdk             = args['SDK']
+fname           = "debug" if is_debug else "release"
+system          = platform.system()
+silver          = Path(args['IMPORT'])
+project         = args['PROJECT']
+project_path    = Path(args['PROJECT_PATH'])
+source_dir      = project_path / Path('src')
+source_files    = list(source_dir.glob('**/*.c*'))  # recursively finds .c files
 
 def get_platform_info():
     """get platform-specific settings"""
     global fname
-    sdk=''
+    os_sdk=''
     if system == 'Darwin':
-        sdk = subprocess.check_output(["xcrun", "--show-sdk-path"]).decode().strip()
+        os_sdk = subprocess.check_output(["xcrun", "--show-sdk-path"]).decode().strip()
     base = {
         'Windows': {
             'exe': '.exe', 'lib_pre': '', 'lib': '.lib', 'shared': '.dll', 'obj': '.obj',
@@ -54,9 +51,9 @@ def get_platform_info():
             'cc': f'{silver}/bin/clang', 'cxx': f'{silver}/bin/clang++',
             'ar': f'{silver}/bin/llvm-ar', 'ninja': 'ninja',
             'inc': [], 'lib_dirs': [], 'lflags': [], 
-            'cflags': [f'-isysroot{sdk}'], 'cxxflags': [], 'libs': ['-lc', '-lm'],
-            'cxxflags': ['-stdlib=libc++', f'-isysroot{sdk}'],   # <-- add this
-            'lflags': [f'-isysroot{sdk}'],
+            'cflags': [f'-isysroot{os_sdk}'], 'cxxflags': [], 'libs': ['-lc', '-lm'],
+            'cxxflags': ['-stdlib=libc++', f'-isysroot{os_sdk}'],   # <-- add this
+            'lflags': [f'-isysroot{os_sdk}'],
             'libs': ['-lc', '-lm', '-lc++', '-lc++abi']
         },
         'Linux': {
@@ -75,9 +72,8 @@ def get_platform_info():
     info = base.get(system, base['Linux'])
     
     if system == "Darwin":
-        sdk = subprocess.check_output(["xcrun", "--show-sdk-path"]).decode().strip()
-        info['inc'] = [f'{sdk}/usr/include']
-        info['lib_dirs'] = [f'{sdk}/usr/lib']
+        info['inc'] = [f'{os_sdk}/usr/include']
+        info['lib_dirs'] = [f'{os_sdk}/usr/lib']
     
     return info
 
@@ -140,7 +136,7 @@ def resolve_deps(modules, deps, plat, root_p, builddir):
             out.append(d)
     return out
 
-def write_ninja(project, root, build_dir, plat):
+def write_ninja(project, root, import_dir, build_dir, plat):
     """generate build.ninja file"""
     # setup
     os.makedirs(build_dir, exist_ok=True)
@@ -158,12 +154,16 @@ def write_ninja(project, root, build_dir, plat):
     # paths
     root_p = norm_path(root)
     build_p = norm_path(build_dir)
-    python = norm_path(next((p for p in [root / "bin" / f"python{plat['exe']}"] if p.exists()), 
+    import_p = norm_path(import_dir)
+    python = norm_path(next((p for p in [import_dir / "bin" / f"python{plat['exe']}"] if p.exists()), 
                             "python3" if plat['exe'] == '' else "python"))
     
     # find files
     modules = order_modules(get_modules(root / "src"))
-    headers = glob.glob(f"{root}/src/*.h") + glob.glob(f"{root}/include/*.h")
+    headers = glob.glob(f"{root}/src/*.h") # + glob.glob(f"{import_dir}/include/*.h")
+
+    print(f'root = {root}')
+
     non_ext = [str(f) for f in (root / "src").iterdir() if f.is_file() and '.' not in f.name]
     global_deps = ' '.join(norm_path(d) for d in headers + non_ext)
     
@@ -202,14 +202,14 @@ def write_ninja(project, root, build_dir, plat):
     global is_debug
     opt_flags = ["-g", "-O0"] if is_debug else ["-O2"]
 
-    #if args.asan:
+    #if args['ASAN']:
         #opt_flags.extend(["-fsanitize=address"])
         # On Linux you also need this to get runtime symbols linked:
         #plat['lflags'].append("-fsanitize=address")
         #plat['libs'].append("-lasan")
 
     includes = [f"-I{build_p}/src/{project}", f"-I{root_p}/src", 
-                f"-I{build_p}/src", f"-I{root_p}/include"]
+                f"-I{build_p}/src", f"-I{import_p}/include"]
     
     cflags = ' '.join(opt_flags + base_flags + plat['cflags'] + includes)
     cxxflags = ' '.join(opt_flags + base_flags + plat['cxxflags'] + ["-std=c++17"] + includes)
@@ -224,11 +224,12 @@ def write_ninja(project, root, build_dir, plat):
     n.append(f"clangcpp = {plat['cxx']}")
     n.append(f"python = {python}")
     n.append(f"root = {root_p}")
+    n.append(f"importdir = {import_p}")
     n.append(f"builddir = {build_p}")
     n.append(f"project = {project}")
     n.append(f"cflags = {cflags}")
     n.append(f"cxxflags = {cxxflags}")
-    n.append(f"ldflags = -L{root_p}/lib " + ' '.join(plat['lflags']))
+    n.append(f"ldflags = -L{import_p}/lib " + ' '.join(plat['lflags']))
     n.append("")
     
     # rules for compiling
@@ -274,7 +275,7 @@ def write_ninja(project, root, build_dir, plat):
     
     # header gen
     n.append("rule headers")
-    n.append(f"  command = $python $root/headers.py --project-path $root --build-path $builddir --project $project --import $root && touch $out")
+    n.append(f"  command = $python $root/headers.py --project-path $root --build-path $builddir --project $project --import $importdir && touch $out")
     n.append("  description = generating headers")
     n.append("  generator = 1")
     n.append("")
@@ -312,7 +313,8 @@ def write_ninja(project, root, build_dir, plat):
         input_path  = norm_path(f)
         output_path = f"$builddir/obj/{stem}{plat['obj']}"
         n.append(f"build {output_path}: {rule} {input_path}")
-        n.append(f"  {flags_var} = -DMODULE=\\\"{stem}\\\" ${flags_var}")
+        global sdk
+        n.append(f"  {flags_var} = -DSDK=\\\"{sdk}\\\" -DMODULE=\\\"{stem}\\\" ${flags_var}")
         module_objs.setdefault("misc", []).append(output_path)
     n.append("")
     
@@ -325,7 +327,7 @@ def write_ninja(project, root, build_dir, plat):
         
         deps = resolve_deps(modules, m['deps'], plat, root_p, "$builddir")
         if m['target'] == 'app':
-            output = f"{root_p}/bin/{m['name']}{plat['exe']}"
+            output = f"{import_p}/bin/{m['name']}{plat['exe']}"
             n.append(f"build {output}: link_app {objs} {' '.join(deps)}")
             libs = sorted(set(m['links']))
             if libs:
@@ -333,12 +335,12 @@ def write_ninja(project, root, build_dir, plat):
             n.append("")
 
         elif m['target'] == 'static':
-            output = f"{root_p}/lib/{plat['lib_pre']}{m['name']}{plat['lib']}"
+            output = f"{import_p}/lib/{plat['lib_pre']}{m['name']}{plat['lib']}"
             n.append(f"build {output}: link_static {objs}")
             n.append("")
 
         elif m['target'] == 'shared':
-            output = f"{root_p}/lib/{plat['lib_pre']}{m['name']}{plat['shared']}"
+            output = f"{import_p}/lib/{plat['lib_pre']}{m['name']}{plat['shared']}"
             install_name = os.path.basename(output)
             n.append(f"build {output}: link_shared {objs} {' '.join(deps)}")
             libs = sorted(set(m['links']))
@@ -368,12 +370,15 @@ def write_ninja(project, root, build_dir, plat):
 
 def main():
     global fname
-    root = Path(__file__).resolve().parent
-    ninja_file = write_ninja("silver", root, root / fname, get_platform_info())
+    global silver
+    global project
+    global project_path
+
+    ninja_file = write_ninja(project, Path(project_path), Path(silver), Path(silver) / Path(fname), get_platform_info())
     
     if ninja_file and len(sys.argv) > 1 and sys.argv[1] == "--build":
         plat = get_platform_info()
-        ninja_exe = root / plat['ninja'].replace('.exe', plat['exe'])
+        ninja_exe = silver / Path('bin') / plat['ninja'].replace('.exe', plat['exe'])
         if not ninja_exe.exists():
             ninja_exe = "ninja"
         

@@ -3,6 +3,18 @@
 
 setlocal enabledelayedexpansion
 
+set "SDK=native"
+set "TYPE=debug"
+for %%A in (%*) do (
+    if /i "%%~A"=="--debug" (
+        set "TYPE=debug"
+    ) else if /i "%%~A"=="--release" (
+        set "TYPE=release"
+    ) else (
+        set "SDK=%%~A"
+    )
+)
+
 :: ----------- Config ------------
 set "PERL_ZIP=strawberry-perl-5.38.2.2-64bit-portable.zip"
 set "NINJA_URL=https://github.com/ninja-build/ninja/releases/download/v1.13.1/ninja-win.zip"
@@ -14,15 +26,17 @@ pushd "%SCRIPT_DIR%"
 set "SILVER=%CD%"
 popd
 
+set "PROJECT=%SILVER%"
 set "CHECKOUT=%SILVER%\checkout"
-set "IMPORT=%SILVER%"
-set "BUILD=%IMPORT%\build"
+set "IMPORT=%SILVER%\sdk\%SDK%"
+set "BUILD=%IMPORT%\%TYPE%"
 set "PERL_DIR=%IMPORT%\bin"
 set "PERL_EXE=%PERL_DIR%\perl\bin\perl.exe"
 set "NINJA_DIR=%IMPORT%\bin"
 set "NINJA_EXE=%NINJA_DIR%\ninja.exe"
 set "VSUTIL_DIR=%IMPORT%\bin"
 
+if not exist "%IMPORT%"      mkdir "%IMPORT%"
 if not exist "%CHECKOUT%"    mkdir "%CHECKOUT%"
 if not exist "%BUILD%"       mkdir "%BUILD%"
 if not exist "%VSUTIL_DIR%"  mkdir "%VSUTIL_DIR%"
@@ -86,11 +100,13 @@ if not exist "%NINJA_EXE%" (
     del %NINJA_DIR%\ninja.zip
 )
 
-set "PATH=%~dp0bin\perl\bin;%~dp0bin;%PATH%"
+set "PATH=%~dp0sdk\%SDK%\bin\perl\bin;%~dp0sdk\%SDK%\bin;%PATH%"
 
 pushd "%~dp0"
-python3 import.py
-python3 gen.py %1
+for %%I in ("%CD%") do set "TOPDIR=%%~nxI"
+echo python3 import.py --import %IMPORT% --%TYPE% --project-path %CD% --build-path %BUILD% --project %TOPDIR% %SDK%
+python3 import.py --import %IMPORT% --%TYPE% --project-path %CD% --build-path %BUILD% --project %TOPDIR% %SDK%
+python3 gen.py    --import %IMPORT% --%TYPE% --project-path %CD% --build-path %BUILD% --project %TOPDIR% %SDK%
 set EXITCODE=%ERRORLEVEL%
 popd
 

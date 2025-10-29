@@ -6,11 +6,16 @@ from pathlib import Path
 def get_env_vars():
     """Get required variables from command line arguments"""
     parser = argparse.ArgumentParser(description='Generate header files')
-    parser.add_argument('--project-path', required=True, help='Project root path')
-    parser.add_argument('--build-path', required=True, help='Build output path')
-    parser.add_argument('--project', required=True, help='Project name')
-    parser.add_argument('--import', required=True, help='Import path')
-    
+    parser.add_argument('--project-path',   required=True, help='Project root path')
+    parser.add_argument('--build-path',     required=True, help='Build output path')
+    parser.add_argument('--project',        required=True, help='Project name')
+    parser.add_argument('--import',         required=True, help='Import path')
+    parser.add_argument('--debug',          action='store_true', default=True,  help='debug')
+    parser.add_argument('--release',        action='store_true', default=False, help='release')
+    parser.add_argument('--asan',           action='store_true', default=False, help='enable address sanitizer')
+    parser.add_argument('sdk', nargs='?', default='native',
+                        help='target SDK / platform triple (default: native)')
+
     args = parser.parse_args()
     
     return {
@@ -18,7 +23,10 @@ def get_env_vars():
         'DIRECTIVE':    'src',
         'BUILD_PATH':   args.build_path,
         'PROJECT':      args.project,
-        'IMPORT':       getattr(args, 'import')  # 'import' is a Python keyword
+        'SDK':          args.sdk,
+        'DEBUG':        args.debug,
+        'ASAN':         args.asan,
+        'IMPORT':       getattr(args, 'import').replace('\\', '/') # 'import' is a Python keyword
     }
 
 
