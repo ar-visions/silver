@@ -1,10 +1,9 @@
 # AGI vision
 
-i believe AGI is us.  AGI, as I see it, is Aggregated Group Intelligence. this is decentralized data aggregated from truly identified sources, backed by cryptographic certification. collectively and cooperatively, we offer a superior model to proprietary, some-what metered in contract models; ones that cannot enumerable public IP usage properly. alternatively with AGI, we summarize fair usage across IP identities (G), provably -- a more eco-profitable model that the public owns collectively, integrated to the level of authorship ability in the devices we use.
+i believe AGI is us.  AGI, as I see it, is Aggregated Group Intelligence. this is decentralized data aggregated from truly identified sources, backed by cryptographic certification. collectively and cooperatively, we offer a superior model to proprietary, some-what metered in contract models; ones that cannot enumerable public IP usage properly. alternatively with AGI, we summarize fair usage across IP identities (G), provably -- a more eco-profitable model in which the public owns collectively. through-out, we will see this integrated to the level of authorship ability in all devices we use.  its more free for the user, but it doesn't mean its not a far more profitable model for corporations to adopt in making products.
 
-using AGI in real time, we can actually query-upon collective committed media in the open.  it's fascinating to consider what our collective can achieve together, and how much we can intellectually and emotionally progress using composed applications in both group and private context.
-
-rather than let singular corporations define the model, we collectively create the schema and distributed data-set.  when corporations adopt this, train with integrity, they profit more with less cost on development.  this enables all organizations to focus on their great products while they include all of us along to annotate using the devices they create.  in one practical use-case, thats us driving a car to help annotate self-drive.
+rather than singular corporations defining and maintaining expensive proprietary models, we collectively create the schema and distributed data-set.  when corporations adopt this, train with integrity, they profit more with less cost on development.  this enables all organizations to focus on their great products while they include all of us along to annotate using the devices they create.  in one practical use-case, thats us driving a car to help annotate self-drive.  private can certainly
+create private datasets for their own means, however they have ability to bring in as much much data as possible.
 
 this publicly committed approach is more-provable for IP than closed systems, especially when we all write the very operating systems they run on. we ensure verifiable barriers between public and private data, with the contract dictated by a free society.
 
@@ -20,6 +19,6 @@ for interactive presentation on screen, the application view may counter-distort
 
 when we are enabled in this way, we would call the device an AI-PC
 
-it's our God given right to contribute together in public and private.  we are primary to define the models used by others.
+it's our God given right to contribute together in public and private. individuals are primary to define the models used across the globe.
 
 # Kalen Novis White
