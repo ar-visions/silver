@@ -14,6 +14,9 @@ import: libpng  https://github.com/glennrp/libpng                       07b8803
 
 import: opencv  https://github.com/opencv/opencv                        master
     -DBUILD_LIST=core,imgproc
+    -DCMAKE_C_COMPILER="{'clang-cl' if win else 'gcc'}"
+    -DCMAKE_CXX_COMPILER="{'clang-cl' if win else 'g++'}"
+    -G "{default_generator}"
 
 type: static
 modules: A

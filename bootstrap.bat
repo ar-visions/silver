@@ -1,15 +1,13 @@
 @echo off
-:: deps.bat - LLVM downloader/builder for Windows
-:: Always returns linker flags after optional build
+:: bootstrap.bat -- bootstrap import environment for silver
 
 setlocal enabledelayedexpansion
 
 :: ----------- Config ------------
-set "LLVM_URL=https://github.com/LLVM/llvm-project"
-set "LLVM_COMMIT=bd7db75"
-set "PYTHON3_URL=https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
+set "PERL_ZIP=strawberry-perl-5.38.2.2-64bit-portable.zip"
 set "NINJA_URL=https://github.com/ninja-build/ninja/releases/download/v1.13.1/ninja-win.zip"
 set "VSWHERE_URL=https://github.com/microsoft/vswhere/releases/download/3.1.7/vswhere.exe"
+set "PERL_URL=https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/SP_53822_64bit/%PERL_ZIP%"
 
 for %%I in ("%~dp0.") do set "SCRIPT_DIR=%%~fI"
 pushd "%SCRIPT_DIR%"
@@ -19,27 +17,19 @@ popd
 set "CHECKOUT=%SILVER%\checkout"
 set "IMPORT=%SILVER%"
 set "BUILD=%IMPORT%\build"
-set "LLVM_SRC=%CHECKOUT%\llvm-project"
-set "LLVM_BUILD=%BUILD%\llvm-project"
+set "PERL_DIR=%IMPORT%\bin"
+set "PERL_EXE=%PERL_DIR%\perl\bin\perl.exe"
 set "NINJA_DIR=%IMPORT%\bin"
 set "NINJA_EXE=%NINJA_DIR%\ninja.exe"
 set "VSUTIL_DIR=%IMPORT%\bin"
-set "PYTHON3_DIR=%IMPORT%\bin"
-set "PYTHON3_EXE=%PYTHON3_DIR%\python"
 
 if not exist "%CHECKOUT%"    mkdir "%CHECKOUT%"
-if not exist "%PYTHON3_DIR%" mkdir "%PYTHON3_DIR%"
 if not exist "%BUILD%"       mkdir "%BUILD%"
 if not exist "%VSUTIL_DIR%"  mkdir "%VSUTIL_DIR%"
+if not exist "%NINJA_DIR%"   mkdir "%NINJA_DIR%"
 
 :: todo: if cmake is not found, download and unzip it
 set "CMAKE_EXE=cmake"
-
-if not exist "%PYTHON3_DIR%\python.exe" (
-    powershell -Command "Invoke-WebRequest -Uri %PYTHON3_URL% -OutFile %PYTHON3_DIR%\python3.zip"
-    powershell -Command "Expand-Archive -Path '%PYTHON3_DIR%\python3.zip' -DestinationPath '%PYTHON3_DIR%' -Force"
-    del %PYTHON3_DIR%\python3.zip
-)
 
 :: download vswhere.exe if not found
 if not exist "%VSUTIL_DIR%\vswhere.exe" (
@@ -79,6 +69,14 @@ echo [silver] loading Visual Studio 2022 environment
 :: call "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
 call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" amd64
 
+if not exist "%PERL_EXE%" (
+    echo "downloading perl..."
+    if not exist "%PERL_DIR%" mkdir "%PERL_DIR%"
+    powershell -Command "Invoke-WebRequest -Uri '%PERL_URL%' -OutFile '%PERL_DIR%\%PERL_ZIP%'"
+    powershell -Command "Expand-Archive -Path '%PERL_DIR%\%PERL_ZIP%' -DestinationPath '%PERL_DIR%' -Force"
+    del %PERL_DIR%\%PERL_ZIP%
+)
+
 :: ----------- Ensure Ninja Installed ------------
 if not exist "%NINJA_EXE%" (
     echo "downloading ninja..."
@@ -88,56 +86,11 @@ if not exist "%NINJA_EXE%" (
     del %NINJA_DIR%\ninja.zip
 )
 
-:: ----------- Check if LLVM built ------------
-if exist "%IMPORT%\bin\clang.exe" (
-    goto :echo_flags
-)
-
-:: ----------- Clone or update LLVM ------------
-if exist "%LLVM_SRC%" (
-    pushd "%LLVM_SRC%"
-    git fetch origin
-    git checkout %LLVM_COMMIT%
-    git pull origin %LLVM_COMMIT%
-    popd
-) else (
-    git clone %LLVM_URL% "%LLVM_SRC%"
-    pushd "%LLVM_SRC%"
-    git checkout %LLVM_COMMIT%
-    popd
-)
-
-:: ----------- Configure LLVM ------------
-if not exist "%LLVM_BUILD%" mkdir "%LLVM_BUILD%"
-pushd "%LLVM_BUILD%"
-"%NINJA_EXE%" --version >nul 2>&1 || (echo ninja not found && exit /b 1)
-%CMAKE_EXE% -G Ninja ^
-  -S "%LLVM_SRC%\llvm" ^
-  -DCMAKE_BUILD_TYPE=Release ^
-  -DCMAKE_INSTALL_PREFIX=%IMPORT% ^
-  -DLLVM_ENABLE_ASSERTIONS=ON ^
-  -DCMAKE_CXX_STANDARD=17 ^
-  -DCMAKE_CXX_STANDARD_REQUIRED=ON ^
-  -DCMAKE_CXX_EXTENSIONS=OFF ^
-  -DLLVM_ENABLE_PROJECTS=clang;lld;lldb ^
-  -DLLVM_ENABLE_FFI=OFF ^
-  -DLLVM_ENABLE_RTTI=OFF ^
-  -DBUILD_SHARED_LIBS=OFF ^
-  -DLLVM_TARGETS_TO_BUILD=host;X86;AArch64 ^
-  -DCMAKE_MAKE_PROGRAM="%NINJA_EXE%" ^
-  -DLLVM_BUILD_LLVM_DYLIB=ON ^
-  -DLLVM_LINK_LLVM_DYLIB=ON
-
-:: ----------- Build and Install ------------
-"%NINJA_EXE%" -j16
-"%NINJA_EXE%" install
-popd
-
-:: ----------- Output linker flags ------------
-:echo_flags
+set "PATH=%~dp0bin\perl\bin;%~dp0bin;%PATH%"
 
 pushd "%~dp0"
-"%PYTHON3_EXE%" gen.py %1
+python3 import.py
+python3 gen.py %1
 set EXITCODE=%ERRORLEVEL%
 popd
 

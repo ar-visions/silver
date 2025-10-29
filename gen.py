@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """ninja build generator for silver project"""
 
+import site
 import os, sys, glob, platform, argparse, subprocess
 from pathlib import Path
+
 from graph import parse_g_file, get_env_vars
 
 # Collect .c files from your src directory (or any other)
