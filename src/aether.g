@@ -1,8 +1,8 @@
 type:       shared
 modules:    A aclang allvm
 link:       -lclang-cpp -lclang -lLLVM -llldb
-import:     llvm-project https://github.com/LLVM/llvm-project bd7db754895ed3b51388ec549cd656c770c17587
-    -S $IMPORT/checkout/llvm-project/llvm
+imports:     llvm-project https://github.com/LLVM/llvm-project bd7db754895ed3b51388ec549cd656c770c17587
+    -S $PROJECT/checkout/llvm-project/llvm
     -DCMAKE_C_COMPILER=gcc
     -DCMAKE_CXX_COMPILER=g++
     -DCMAKE_BUILD_TYPE=Release

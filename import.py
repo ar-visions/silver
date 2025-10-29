@@ -6,8 +6,12 @@ import os, sys, glob, platform, argparse, subprocess, re
 from pathlib import Path
 from graph import parse_g_file, get_env_vars
 
-if not 'IMPORT' in os.environ:
-    os.environ['IMPORT'] = os.getcwd()
+v = get_env_vars()
+root   = v['PROJECT_PATH']
+IMPORT = v['IMPORT']
+SDK    = v['SDK']
+os.environ['IMPORT'] = IMPORT
+os.environ['SDK']    = SDK
 
 def run(cmd, cwd=None, check=True):
     print(">", cmd)
@@ -65,8 +69,10 @@ def vreplace(s: str) -> str:
     return eval_braces(s)
 
 def build_import(name, uri, commit, _config_lines, install_dir):
-    checkout_dir = Path("checkout") / name
-    build_dir    = Path("build")    / name / 'release'
+    global IMPORT
+    global root
+    checkout_dir = Path(root)   / Path('checkout') / name
+    build_dir    = Path(IMPORT) / Path('release')  / name
     
     config_lines, pre, post, env = parse_from_config(_config_lines) # pre has > and post as >> infront ... everything else is a config_line
     
@@ -116,7 +122,6 @@ def build_import(name, uri, commit, _config_lines, install_dir):
     ]
 
     cmake_args = " ".join(config_lines)
-    IMPORT = os.environ['IMPORT']
 
     s = '/'
     win = sys.platform.startswith('win')
@@ -137,7 +142,7 @@ def build_import(name, uri, commit, _config_lines, install_dir):
         config_lines = '-G Ninja ' + cmake_args
 
     if not '-S ' in cmake_args:
-        cmake_args = f'-S {IMPORT}{s}{checkout_dir} ' + cmake_args
+        cmake_args = f'-S {checkout_dir} ' + cmake_args
 
     if os.name == "nt":
         cmake_args = cmake_args.replace("gcc", "cl")
@@ -165,7 +170,6 @@ def build_import(name, uri, commit, _config_lines, install_dir):
 
 def import_src(root_dir="src"):
     IMPORT = os.environ.get('IMPORT')
-    IMPORT = IMPORT.replace('\\', '/')
     for path in Path(root_dir).rglob("*.g"):
         _, _, _, _, imports = parse_g_file(str(path))
         for i in imports:
