@@ -4,6 +4,7 @@ debug
 .DS_Store
 bin
 lib
+etc
 tokens
 checkout
 libexec
