@@ -9,17 +9,13 @@ Inherently required arguments, context represents a second level of public membe
 
 If the context is not available and the user does not specify it, the compiler will require them to either provide it.  Passing null for an object is following that rule.
 
-This enables a natural, readable flow for code with less boilerplate.  When the user does describe syntax, it is with clearer intention.
+This enables natural, readable code with less boilerplate.  When the user does describe syntax, it is with clearer intention.
 
 ```python
 
 linux ?? import [ https://gitlab.freedesktop.org/wayland/wayland-protocols 810f1adaf33521cc55fc510566efba2a1418174f ]
 
 import <vulkan/vulkan.h> [ https://github.com/KhronosGroup/Vulkan-Headers main ]
-
-# token operations require design-time ready variables -- these are NOT enodes.
-# its decidedly not mode-oriented for this syntax
-# so it's clear to understand!
 
 import [ https://github.com/KhronosGroup/Vulkan-Tools main ]
 	-DVULKAN_HEADERS_INSTALL_DIR={install}

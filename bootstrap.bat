@@ -68,6 +68,10 @@ vs_community.exe --wait --norestart --nocache ^
   --installPath "%ProgramFiles%\Microsoft Visual Studio\2022\Community" ^
   --add Microsoft.VisualStudio.Workload.NativeDesktop --includeRecommended ^
   --add Microsoft.VisualStudio.Workload.VCTools ^
+  --add Microsoft.VisualStudio.Component.VC.Llvm.Clang ^
+  --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset ^
+  --add Microsoft.VisualStudio.Component.VC.Llvm.ClangTidy ^
+  --add Microsoft.VisualStudio.Component.VC.Llvm.AddressSanitizer ^
   --add Microsoft.VisualStudio.Component.VC.Libraries.CppRuntime ^
   --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 ^
   --add Microsoft.VisualStudio.Component.VC.Modules.x86.x64 ^
