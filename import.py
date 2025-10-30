@@ -17,26 +17,6 @@ def run(cmd, cwd=None, check=True):
     print(">", cmd)
     subprocess.run(cmd, cwd=cwd, shell=True, check=check)
 
-def parse_from_config(all):
-    res  = []
-    pre  = []
-    post = []
-    env  = {}
-    env_pattern = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
-    for c in all:
-        if c.startswith('>>'):
-            pre.append(c[2:].strip())
-        elif c.startswith('>'):
-            post.append(c[1:].strip())
-        else:
-            m = env_pattern.match(c)
-            if m:
-                key, val = m.groups()
-                env[key] = val.strip()
-            else:
-                res.append(c.strip())
-    return res, pre, post, env
-
 def eval_braces(s, context=None):
     """Replace {expr} in a string with eval(expr) using given context dict."""
     if context is None:
@@ -68,9 +48,35 @@ def vreplace(s: str) -> str:
         ))
     return eval_braces(s)
 
+def parse_from_config(all):
+    res  = []
+    pre  = []
+    post = []
+    env  = {}
+    env_pattern = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+    for c in all:
+        c = vreplace(c)
+        if c.startswith('>>'):
+            pre.append(c[2:].strip())
+        elif c.startswith('>'):
+            post.append(c[1:].strip())
+        else:
+            m = env_pattern.match(c)
+            if m:
+                key, val = m.groups()
+                env[key] = val.strip()
+            else:
+                res.append(c.strip())
+    return res, pre, post, env
+
 def build_import(name, uri, commit, _config_lines, install_dir):
+
+    print(f'running build_import for {name}')
+
     global IMPORT
     global root
+    global SDK
+
     checkout_dir = Path(root)   / Path('checkout') / name
     build_dir    = Path(IMPORT) / Path('release')  / name
     
@@ -93,9 +99,6 @@ def build_import(name, uri, commit, _config_lines, install_dir):
         run(f"git clone {uri} {checkout_dir}")
         run(f"git -C {checkout_dir} checkout {commit}")
 
-    for key in env:
-        env[key] = vreplace(env[key])
-    
     for key in env:
         os.environ[key] = env[key]
 
@@ -121,7 +124,15 @@ def build_import(name, uri, commit, _config_lines, install_dir):
         f"-DCMAKE_INSTALL_PREFIX={install_dir}",
     ]
 
-    cmake_args = " ".join(config_lines)
+    # lets loop through config_lines and omit
+    cfg = []
+    for l in config_lines:
+        if name != 'llvm-project':
+            if l.startswith('-DCMAKE_C_COMPILER') or l.startswith('-DCMAKE_CXX_COMPILER'):
+                continue
+        cfg.append(l)
+
+    cmake_args = " ".join(cfg)
 
     s = '/'
     win = sys.platform.startswith('win')
@@ -130,7 +141,7 @@ def build_import(name, uri, commit, _config_lines, install_dir):
     # generally, software producers throw in MSVC-style command-line switches for cl compiler, and generally do NOT test against clang-cl
     # to this end, we need to go with the compiler its designed for first
     # on linux/mac though, we can attempt our own clang as its preferrable to go with our version we built
-    if not '-DCMAKE_C_COMPILER=' in cmake_args:
+    if SDK == 'native' and not '-DCMAKE_C_COMPILER=' in cmake_args:
         cc         = 'cl' if win else 'clang'
         cpp        = 'cl' if win else 'clang++'
         idir       = ''   if win else install_dir + s + 'bin' + s
@@ -139,25 +150,24 @@ def build_import(name, uri, commit, _config_lines, install_dir):
         cmake_args = f'-DCMAKE_C_COMPILER="{clang}" -DCMAKE_CXX_COMPILER="{clangpp}" ' + cmake_args
     
     if not '-G ' in cmake_args:
-        config_lines = '-G Ninja ' + cmake_args
+        cmake_args = '-G Ninja ' + cmake_args
 
     if not '-S ' in cmake_args:
         cmake_args = f'-S {checkout_dir} ' + cmake_args
 
-    if os.name == "nt":
-        cmake_args = cmake_args.replace("gcc", "cl")
-        cmake_args = cmake_args.replace("g++", "cl")
-
-    r_cmake_args = vreplace(cmake_args)
-    is_ninja = '-G Ninja' in r_cmake_args
-
+    is_ninja = '-G Ninja' in cmake_args or '-G "Ninja"' in cmake_args
+    tc = ''
+    if name != 'llvm-project':
+        tc = f"--toolchain='{IMPORT}/target.cmake'"
+    
     # replace environment vars in cmake_args that begin with $something with %something% on windows
-    run(f"cmake {r_cmake_args}", cwd=build_dir)
+    run(f"cmake {tc} {cmake_args}", cwd=build_dir)
     
     # build & install
     cpu_count = os.cpu_count() or 4
     if is_ninja:
-        run(f"ninja -j{max(1, cpu_count//4)}", cwd=build_dir)
+        print(f'running ninja for {name}')
+        run(f"ninja -j{max(1, cpu_count//2)}", cwd=build_dir)
         run("ninja install", cwd=build_dir)
     else:
         run('cmake --build . --config Release --target INSTALL', cwd=build_dir)
