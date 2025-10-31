@@ -45,6 +45,7 @@ generate_target_cmake() {
     fi
 
     ARCH="$PROCESSOR"
+
     echo "🧩 Generating target.cmake for $TARGET_TRIPLE ($SYSTEM_NAME)"
 
     cat > "$TARGET_DIR/target.cmake" <<EOF
@@ -55,24 +56,32 @@ set(CMAKE_SYSTEM_NAME $SYSTEM_NAME)
 set(CMAKE_SYSTEM_PROCESSOR $PROCESSOR)
 
 get_filename_component(TARGET_DIR "\${CMAKE_CURRENT_LIST_FILE}" PATH)
-set(CMAKE_SYSROOT "\${TARGET_DIR}")
+EOF
 
-set(CMAKE_C_COMPILER   "\${TARGET_DIR}/../native/bin/clang")
-set(CMAKE_CXX_COMPILER "\${TARGET_DIR}/../native/bin/clang++")
-set(CMAKE_LINKER       "\${TARGET_DIR}/../native/bin/ld.lld")
+# Append sysroot only for non-native
+if [[ "$IS_NATIVE" != "yes" ]]; then
+    echo 'set(CMAKE_SYSROOT "${TARGET_DIR}")' >> "$TARGET_DIR/target.cmake"
+fi
+
+    cat >> "$TARGET_DIR/target.cmake" <<EOF
+set(CMAKE_C_COMPILER   "${NATIVE}/bin/clang" CACHE STRING "")
+set(CMAKE_CXX_COMPILER "${NATIVE}/bin/clang++" CACHE STRING "")
+set(CMAKE_LINKER       "${NATIVE}/bin/ld.lld" CACHE STRING "")
+set(CMAKE_EXE_LINKER_FLAGS "-fuse-ld=lld" CACHE STRING "")
+set(CMAKE_SHARED_LINKER_FLAGS "-fuse-ld=lld" CACHE STRING "")
 
 if(NOT DEFINED CMAKE_C_FLAGS)
-    set(CMAKE_C_FLAGS "")
+    set(CMAKE_C_FLAGS "" CACHE STRING "")
 endif()
 if(NOT DEFINED CMAKE_CXX_FLAGS)
-    set(CMAKE_CXX_FLAGS "")
+    set(CMAKE_CXX_FLAGS "" CACHE STRING "")
 endif()
 EOF
 
     if [[ "$IS_NATIVE" != "yes" ]]; then
         cat >> "$TARGET_DIR/target.cmake" <<EOF
-string(APPEND CMAKE_C_FLAGS   " --target=${TARGET_TRIPLE} --sysroot=\${CMAKE_SYSROOT} -fPIC")
-string(APPEND CMAKE_CXX_FLAGS " --target=${TARGET_TRIPLE} --sysroot=\${CMAKE_SYSROOT} -fPIC -stdlib=libc++")
+string(APPEND CMAKE_C_FLAGS   " --target=${TARGET_TRIPLE} -fPIC")
+string(APPEND CMAKE_CXX_FLAGS " --target=${TARGET_TRIPLE} -fPIC -stdlib=libc++")
 EOF
     else
         cat >> "$TARGET_DIR/target.cmake" <<'EOF'
@@ -208,19 +217,24 @@ if [[ "$SDK" != "native" ]]; then
         BUILD_DIR="$NATIVE/release/compiler-rt-$SDK"
         mkdir -p "$BUILD_DIR"
         cd "$BUILD_DIR"
-
-        cmake -G Ninja $SILVER/checkout/llvm-project/compiler-rt \
-            -DCMAKE_C_COMPILER=$NATIVE/bin/clang \
-            -DCMAKE_CXX_COMPILER=$NATIVE/bin/clang++ \
-            -DCMAKE_C_COMPILER_TARGET="$SDK" \
+        
+        cmake ../llvm-project/compiler‑rt \
+            -G Ninja \
+            -DCMAKE_AR=${NATIVE}/bin/llvm-ar \
+            -DCMAKE_NM=${NATIVE}/bin/llvm-nm \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_RANLIB=${NATIVE}/bin/llvm-ranlib \
+            -DLLVM_CMAKE_DIR="${NATIVE}/lib/cmake/llvm" \
+            -DCMAKE_SYSROOT="${IMPORT}" \
+            -DCMAKE_C_COMPILER_TARGET="${SDK}" \
+            -DCMAKE_C_COMPILER=${NATIVE}/bin/clang \
+            -DCMAKE_CXX_COMPILER_TARGET="${SDK}" \
+            -DCMAKE_CXX_COMPILER=${NATIVE}/bin/clang++ \
             -DCOMPILER_RT_BUILD_BUILTINS=ON \
             -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON \
             -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" \
-            -DCMAKE_INSTALL_PREFIX=$NATIVE \
-            -DCMAKE_SYSROOT=$IMPORT \
             -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
-        
+
         ninja install
         echo "installed $ARCH, check $SDK/lib/clang/22/lib/linux/libclang_rt.builtins-${ARCH}.a"
         exit 0

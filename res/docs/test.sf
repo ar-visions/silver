@@ -13,10 +13,10 @@ import [ https://github.com/KhronosGroup/MoltenVK main ]
     > ./fetchDependencies --macos
     -DANOTHER=2
 
-import [ https://github.com/KhronosGroup/Vulkan-Loader main ]
+import [ KhronosGroup:Vulkan-Loader ]
     -DSOMETHING=1
 
-import [ https://github.com/KhronosGroup/Vulkan-Tools main ]
+import [ KhronosGroup:Vulkan-Tools ]
     -DBUILD_CUBE=OFF
 
 class Vulkan

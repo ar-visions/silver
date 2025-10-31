@@ -19,6 +19,7 @@ def get_env_vars():
     args = parser.parse_args()
     
     return {
+        'SILVER':       Path(__file__).resolve().parent,
         'PROJECT_PATH': args.project_path,
         'DIRECTIVE':    'src',
         'BUILD_PATH':   args.build_path,
@@ -87,6 +88,8 @@ def parse_g_file(path):
                     uri = parts[1]
                     commit = parts[2] if len(parts) > 2 else None
                     configs = []
+                    extra = None if len(parts) < 4 else parts[3]
+                    
                     # collect indented block lines
                     j = i + 1
                     while j < len(lines) and (lines[j].startswith(" ") or lines[j].startswith("\t")):
@@ -94,7 +97,7 @@ def parse_g_file(path):
                         if cfg_line:
                             configs.append(cfg_line)
                         j += 1
-                    imports.append((name, uri, commit, configs))
+                    imports.append((name, uri, commit, configs, extra))
                     i = j - 1
                 else:
                     print(f"warning: invalid import line: {raw}")

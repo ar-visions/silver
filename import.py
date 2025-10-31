@@ -9,6 +9,7 @@ from graph import parse_g_file, get_env_vars
 v = get_env_vars()
 root   = v['PROJECT_PATH']
 IMPORT = v['IMPORT']
+NATIVE = Path(v['SILVER']) / "sdk" / "native"
 SDK    = v['SDK']
 os.environ['IMPORT'] = IMPORT
 os.environ['SDK']    = SDK
@@ -23,10 +24,12 @@ def eval_braces(s, context=None):
         context = {}
     pattern = re.compile(r"\{([^{}]+)\}")
     win = sys.platform.startswith("win")
+    global SDK
     context.update({
         "win": win,
         "lin": sys.platform.startswith("linux"),
         "mac": sys.platform == "darwin",
+        "SDK": SDK,
         "default_generator": 'Visual Studio 17 2022' if win else 'Ninja'
     })
     def repl(match):
@@ -69,35 +72,64 @@ def parse_from_config(all):
                 res.append(c.strip())
     return res, pre, post, env
 
-def build_import(name, uri, commit, _config_lines, install_dir):
+last_name   = None
+last_uri    = None
+last_commit = None
 
+def build_import(name, uri, commit, _config_lines, install_dir, extra):
+
+    if not uri.startswith('https://'):
+        parts = uri.split(':')
+        while len(parts) < 3:
+            parts.append('')
+        uri = f'https://github.com/{parts[0]}/{parts[1]}/{"/".join(parts[2].split('.'))}'
+    # we might need an argument for this in import, but i dont see cases other than the compiler
+    if extra == 'native':
+        install_dir = NATIVE
+    
     print(f'running build_import for {name}')
 
+    global last_uri
+    global last_commit
+    global last_name
     global IMPORT
     global root
     global SDK
 
     checkout_dir = Path(root)   / Path('checkout') / name
     build_dir    = Path(IMPORT) / Path('release')  / name
-    
+
     config_lines, pre, post, env = parse_from_config(_config_lines) # pre has > and post as >> infront ... everything else is a config_line
     
     token_file = build_dir / 'silver-token'
     # continue if silver-token exists
     if token_file.exists():
+        last_uri = uri
+        last_commit = commit
+        last_name = name
         return
     
     # checkout_dir.mkdir(parents=True, exist_ok=True)
     build_dir.mkdir(parents=True, exist_ok=True)
 
     # fetch or clone
-    if checkout_dir.exists():
+    if last_uri == uri and last_commit == commit:
+        # make symlink for name -> last_name in the checkout dir (so we dont do double checkouts on these combined projects)
+        if last_name and last_name != name:
+            target_path = Path(root) / 'checkout' / last_name
+            if not checkout_dir.exists():
+                checkout_dir.symlink_to(target_path, target_is_directory=True)
+    elif checkout_dir.exists():
         run(f"git -C {checkout_dir} fetch origin")
         run(f"git -C {checkout_dir} checkout {commit}")
         run(f"git -C {checkout_dir} pull origin {commit}", check=False)
     else:
         run(f"git clone {uri} {checkout_dir}")
         run(f"git -C {checkout_dir} checkout {commit}")
+
+    last_uri = uri
+    last_commit = commit
+    last_name = name
 
     for key in env:
         os.environ[key] = env[key]
@@ -123,6 +155,14 @@ def build_import(name, uri, commit, _config_lines, install_dir):
     config_lines += [
         f"-DCMAKE_INSTALL_PREFIX={install_dir}",
     ]
+
+    if extra != 'native' and SDK !='native':
+        config_lines += [
+            f"-DCMAKE_SYSROOT={IMPORT}/usr",
+            f"-DCMAKE_C_COMPILER_TARGET={SDK}",
+            f"-DCMAKE_CXX_COMPILER_TARGET={SDK}",
+        ]
+
 
     # lets loop through config_lines and omit
     cfg = []
@@ -180,10 +220,11 @@ def build_import(name, uri, commit, _config_lines, install_dir):
 
 def import_src(root_dir="src"):
     IMPORT = os.environ.get('IMPORT')
+    global NATIVE
     for path in Path(root_dir).rglob("*.g"):
         _, _, _, _, imports = parse_g_file(str(path))
         for i in imports:
             print(f'{path.stem:<10} import {i[0]}')
-            build_import(i[0], i[1], i[2], i[3], IMPORT)
+            build_import(i[0], i[1], i[2], i[3], IMPORT, i[4])
 
 import_src()
