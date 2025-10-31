@@ -14,7 +14,7 @@ we take the web2, and establish structure to form infrastructure that allows fre
 
 to edit, we watch for changes in source and rebuild in browser.
 
-silver programming language we write Orbiter in, and its a language we use as a basis for building these apps that run anywhere there is a browser.  this means different capabilities from alarm clock to ear-piece to AR glasses or currently most impactful in composition ability: AI desktop.
+silver is the programming language we write Orbiter in -- its a language we use as a basis for building these apps that run in this new form of browsing by building.  when we say we are checking out a site, it will quite literally mean that.  the device scope is limitless: this means different capabilities from alarm clock to ear-piece to AR glasses or currently most impactful in composition ability: AI desktop.
 
 listening to changes in units which constitutes an entire app src, or data.  it depends on who is translating. in one way. it's a basic schema to share app compositions with each other.
 
