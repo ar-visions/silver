@@ -1,18 +1,16 @@
 For Michael
 
-The idea of what to do with the internet has evolved with society and its use of media.  I realize that freedom of annotation on media is a basic token to establish a true AGI we all use.  Effectively its the network it consumes, and the network that builds upon itself. This is our true reflection, and it's empowering -- not replacing at all.  It cannot replace, not if it shines as bright as us.
+The idea of what to do with the internet has evolved with society and its use of media.  I realize that freedom of annotation on media is a basic token to establish a true AGI we all use.  Effectively its the network it consumes, and the network that builds upon itself. This is our true reflection, and it's empowering -- not replacing at all.  It cannot replace any one of us, since its authored by us all for free.
 
-words, images, videos, any openly described type.  these are media members in module.
+words, images, videos, any openly described type.  these are members of units desribed in a unit.
 
-we're certainly peer-to-peer in this great index, because we have the internet connecting us and thus any public or private network can be formed within anyones space.  again, this is any network we define, it need not be any specific corporate ownership, and as such, github does not alter its users data -- this is a decent foundation for name and view.  you can even submit bugs and work together to improve things both in public and private.
+we're peer-to-peer in this great index, because we have a wide variety of git repository services.  again, this is any network we host or reference, it need not be any specific corporate ownership. as a default, github does not alter its users data and abides by reasonable law -- this is a decent foundation for name and view.  you can even submit bugs and work together to improve things both in public and private.
 
-we have github namespace to use as a default for identity, domain and view.  projects are now domains, and the media we contain inside may harbor different apps to build openly and view.
+users are their own domains, with a separator for user:project.unit[ version ] or app-indexed defaults for user:project
 
-this space is given unlimited free dimensions to extent to as many as there are git hosted domains we may trust publicly or private.  anybody can make one, even for private enterprise.
+this space is given unlimited free dimensions to extent to as many as there are git hosted domains we may trust publicly or private.  anybody can make one, even for private enterprise.  these apps when built and rendered will be done so in a browser called Orbiter.
 
-we take the web2, and establish structure to form infrastructure that allows freedom for the users with access to audit git.  as rendered, this a browser called Orbiter.
-
-to edit, we watch for changes in source and rebuild in browser.
+to edit, we may alter our checked out source and watch for changes in source and rebuild in browser.  to revert, we use git, and to commit changes we also use git.  git is powerful in that it knows its remote url origin, so the directory is aware of its own identity.
 
 silver is the programming language we write Orbiter in -- its a language we use as a basis for building these apps that run in this new form of browsing by building.  when we say we are checking out a site, it will quite literally mean that.  the device scope is limitless: this means different capabilities from alarm clock to ear-piece to AR glasses or currently most impactful in composition ability: AI desktop.
 

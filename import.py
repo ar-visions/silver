@@ -76,13 +76,24 @@ last_name   = None
 last_uri    = None
 last_commit = None
 
-def build_import(name, uri, commit, _config_lines, install_dir, extra):
+def get_element(arr, index, default=None):
+    if index < len(arr):
+        return arr[index]
+    return default
 
+def build_import(name, uri, _config_lines, install_dir, extra):
+    commit = None
     if not uri.startswith('https://'):
         parts = uri.split(':')
         while len(parts) < 3:
             parts.append('')
         uri = f'https://github.com/{parts[0]}/{parts[1]}/{"/".join(parts[2].split('.'))}'
+        commit = get_element(parts[3].split('/'), 1, None)
+    else:
+        sp = uri.split('|')
+        uri = sp[0]
+        commit = sp[1] if len(sp) > 1 else None
+    
     # we might need an argument for this in import, but i dont see cases other than the compiler
     if extra == 'native':
         install_dir = NATIVE
@@ -120,12 +131,14 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
             if not checkout_dir.exists():
                 checkout_dir.symlink_to(target_path, target_is_directory=True)
     elif checkout_dir.exists():
-        run(f"git -C {checkout_dir} fetch origin")
-        run(f"git -C {checkout_dir} checkout {commit}")
-        run(f"git -C {checkout_dir} pull origin {commit}", check=False)
+        if commit:
+            run(f"git -C {checkout_dir} fetch origin")
+            run(f"git -C {checkout_dir} checkout {commit}")
+            run(f"git -C {checkout_dir} pull origin {commit}", check=False)
     else:
         run(f"git clone {uri} {checkout_dir}")
-        run(f"git -C {checkout_dir} checkout {commit}")
+        if commit:
+            run(f"git -C {checkout_dir} checkout {commit}")
 
     last_uri = uri
     last_commit = commit
