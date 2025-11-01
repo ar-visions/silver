@@ -81,25 +81,11 @@ def get_element(arr, index, default=None):
         return arr[index]
     return default
 
-def build_import(name, uri, _config_lines, install_dir, extra):
-    commit = None
-    if not uri.startswith('https://'):
-        parts = uri.split(':')
-        while len(parts) < 3:
-            parts.append('')
-        uri = f'https://github.com/{parts[0]}/{parts[1]}/{"/".join(parts[2].split('.'))}'
-        commit = get_element(parts[3].split('/'), 1, None)
-    else:
-        sp = uri.split('|')
-        uri = sp[0]
-        commit = sp[1] if len(sp) > 1 else None
-    
+def build_import(name, uri, commit, _config_lines, install_dir, extra):
     # we might need an argument for this in import, but i dont see cases other than the compiler
     if extra == 'native':
         install_dir = NATIVE
     
-    print(f'running build_import for {name}')
-
     global last_uri
     global last_commit
     global last_name
@@ -239,5 +225,7 @@ def import_src(root_dir="src"):
         for i in imports:
             print(f'{path.stem:<10} import {i[0]}')
             build_import(i[0], i[1], i[2], i[3], IMPORT, i[4])
+
+# ((name, uri, commit, configs, extra))
 
 import_src()

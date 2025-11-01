@@ -1,6 +1,6 @@
 PROJECT := silver
-CONFIG ?= release
-
+CONFIG  ?= release
+SDK     ?= native
 .PHONY: all bootstrap build clean debug release
 
 all: build
@@ -27,9 +27,17 @@ else
 endif
 
 build: bootstrap
-	ninja -j8 -v -C $(CONFIG)
+	ninja -j8 -v -C ./sdk/$(SDK)/$(CONFIG)
 
 clean:
+	@if [ -f ./sdk/$(SDK)/release/build.ninja ]; then \
+		echo "cleaning release build..."; \
+		ninja -v -C ./sdk/$(SDK)/release -t clean ; \
+	fi
+	@if [ -f ./sdk/$(SDK)/debug/build.ninja ]; then \
+		echo "cleaning debug build..."; \
+		ninja -v -C ./sdk/$(SDK)/debug -t clean ; \
+	fi
 ifeq ($(OS),Windows_NT)
 	@if exist debug rmdir /S /Q debug
 	@if exist release rmdir /S /Q release

@@ -1,18 +1,18 @@
-import: deflate https://github.com/ebiggers/libdeflate                  682a668
+import: NVIDIA:libdeflate/682a668 as deflate
     -DBUILD_SHARED_LIBS=ON
 
-import: Imath   https://github.com/AcademySoftwareFoundation/Imath      c0396a0
+import: AcademySoftwareFoundation:Imath/c0396a0
 
-import: openexr https://github.com/AcademySoftwareFoundation/openexr    0b83825
+import: AcademySoftwareFoundation:openexr/0b83825
     -DBUILD_SHARED_LIBS=ON
 
-import: zlib    https://github.com/madler/zlib                          04f42ce
+import: madler:zlib/04f42ce
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
-import: libpng  https://github.com/glennrp/libpng                       07b8803
+import: glennrp:libpng/07b8803
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
-import: opencv  https://github.com/opencv/opencv                        master
+import: opencv:opencv/49486f6
     -DBUILD_LIST=core,imgproc
     -DCMAKE_C_COMPILER="{'clang-cl' if win else 'gcc'}"
     -DCMAKE_CXX_COMPILER="{'clang-cl' if win else 'g++'}"

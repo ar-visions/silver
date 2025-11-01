@@ -3,6 +3,27 @@ import site
 import os, re, sys, glob, platform, argparse, subprocess
 from pathlib import Path
 
+
+def git_remote_info(path='.'):
+    """Return (domain, owner, repo) from the current Git remote."""
+
+    remote = subprocess.check_output(
+        ['git', '-C', Path(path).parent, 'remote', 'get-url', 'origin'],
+        text=True
+    ).strip()
+
+    # Match SSH (git@github.com:owner/repo) or HTTPS (https://github.com/owner/repo.git)
+    m = re.search(
+        r'(?:@|//)(?P<domain>[^/:]+)[:/](?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$',
+        remote
+    )
+
+    if not m:
+        raise ValueError(f"could not parse remote URL: {remote}")
+
+    return m.group('domain'), m.group('owner'), m.group('repo')
+
+
 def get_env_vars():
     """Get required variables from command line arguments"""
     parser = argparse.ArgumentParser(description='Generate header files')
@@ -17,7 +38,7 @@ def get_env_vars():
                         help='target SDK / platform triple (default: native)')
 
     args = parser.parse_args()
-    
+
     return {
         'SILVER':       Path(__file__).resolve().parent,
         'PROJECT_PATH': args.project_path,
@@ -47,10 +68,13 @@ def expand_vars(s):
     )
     return s
 
+
 def parse_g_file(path):
     """parse .g file for deps, link flags, target type, and imports"""
     if not os.path.exists(path):
         return [], [], [], None, []
+
+    domain, owner, _ = git_remote_info(path)
 
     lines = open(path).read().splitlines()
     deps, links, cflags, target, imports = [], [], [], None, []
@@ -81,15 +105,36 @@ def parse_g_file(path):
                 cflags.extend(expand_vars(val).split())
 
             elif current_key == "import":
-                uri_commit = val.strip()
-                parts = uri_commit.split()
+                w4 = val.strip()
+                parts = w4.split(':') # account:project:
+                count = len(parts)
+                
                 if len(parts) >= 1:
-                    name = parts[0]
-                    uri = parts[1]
-                    commit = parts[2] if len(parts) > 2 else None
-                    configs = []
-                    extra = None if len(parts) < 4 else parts[3]
+                    iservice = 0 if count <= 2 else 1
+                    iname   = iservice+1
+                    account = owner if count < 2 else parts[0]
+                    service = domain if count < 3 else parts[iservice]
+                    sp      = parts[iname].split('/')
+                    name    = sp[0]
+                    alias   = name
+                    commit  = sp[1] if len(sp) > 1 else None
+                    commit_sp = commit.split() if commit else None
+                    extra   = None
+                    if commit and len(commit_sp) > 1:
+                        commit = commit_sp[0]
+                        if commit_sp[1] == 'as':
+                            alias = commit_sp[2]
+                            if len(commit_sp) > 3:
+                                extra = commit_sp[3]
+                        else:
+                            extra = commit_sp[1]
+                        
                     
+                    uri     = f'https://{service}/{account}/{name}'
+                    configs = []
+
+                    #print (f'alias = {alias}, account = {account}, service = {service}, name = {name}, commit = {commit}, extra = {extra}')
+
                     # collect indented block lines
                     j = i + 1
                     while j < len(lines) and (lines[j].startswith(" ") or lines[j].startswith("\t")):
@@ -97,7 +142,7 @@ def parse_g_file(path):
                         if cfg_line:
                             configs.append(cfg_line)
                         j += 1
-                    imports.append((name, uri, commit, configs, extra))
+                    imports.append((alias, uri, commit, configs, extra))
                     i = j - 1
                 else:
                     print(f"warning: invalid import line: {raw}")
