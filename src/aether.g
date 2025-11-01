@@ -1,7 +1,7 @@
 type:       shared
 modules:    A aclang allvm
 link:       -lclang-cpp -lclang -lLLVM -llldb
-import:     llvm-project https://github.com/LLVM/llvm-project bd7db754895ed3b51388ec549cd656c770c17587 native
+import:     LLVM:llvm-project/bd7db754895ed3b51388ec549cd656c770c17587 native
     -S $SILVER/checkout/llvm-project/llvm
     { f'-DCMAKE_SYSROOT=$IMPORT' if SDK != 'native' else '' }
     -DCMAKE_C_COMPILER=gcc
@@ -27,7 +27,7 @@ import:     llvm-project https://github.com/LLVM/llvm-project bd7db754895ed3b513
     -DLLVM_BUILD_LLVM_DYLIB=ON
     -DLLVM_LINK_LLVM_DYLIB=ON
 
-import:     runtimes https://github.com/LLVM/llvm-project bd7db754895ed3b51388ec549cd656c770c17587
+import: LLVM:llvm-project/bd7db754895ed3b51388ec549cd656c770c17587 as runtimes
     -S $SILVER/checkout/llvm-project/runtimes
     -DCMAKE_C_COMPILER=$NATIVE/bin/clang
     -DCMAKE_CXX_COMPILER=$NATIVE/bin/clang++
@@ -38,3 +38,8 @@ import:     runtimes https://github.com/LLVM/llvm-project bd7db754895ed3b51388ec
     -DLIBUNWIND_ENABLE_SHARED=OFF
     -DLIBUNWIND_ENABLE_STATIC=ON
     -DCMAKE_LINKER="$NATIVE/bin/ld.lld"
+
+import: KhronosGroup:Vulkan-Headers
+
+import: KhronosGroup:Vulkan-Tools
+    -DVULKAN_HEADERS_INSTALL_DIR=$IMPORT

@@ -338,7 +338,6 @@ fi
 
 (
     cd $SILVER
-    echo 'running import?'
     python3 import.py --import $IMPORT --$TYPE --project-path $PROJECT --build-path $BUILD --project $PROJECT_NAME $SDK
     python3 gen.py    --import $IMPORT --$TYPE --project-path $PROJECT --build-path $BUILD --project $PROJECT_NAME $SDK
 )

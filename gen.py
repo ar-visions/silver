@@ -162,8 +162,6 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     modules = order_modules(get_modules(root / "src"))
     headers = glob.glob(f"{root}/src/*.h") # + glob.glob(f"{import_dir}/include/*.h")
 
-    print(f'root = {root}')
-
     non_ext = [str(f) for f in (root / "src").iterdir() if f.is_file() and '.' not in f.name]
     global_deps = ' '.join(norm_path(d) for d in headers + non_ext)
     
@@ -325,7 +323,7 @@ def write_ninja(project, root, import_dir, build_dir, plat):
         if not objs:
             continue
         
-        deps = resolve_deps(modules, m['deps'], plat, root_p, "$builddir")
+        deps = resolve_deps(modules, m['deps'], plat, import_p, "$builddir")
         if m['target'] == 'app':
             output = f"{import_p}/bin/{m['name']}{plat['exe']}"
             n.append(f"build {output}: link_app {objs} {' '.join(deps)}")
