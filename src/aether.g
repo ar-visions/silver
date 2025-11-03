@@ -17,7 +17,7 @@ import:     LLVM:llvm-project/bd7db754895ed3b51388ec549cd656c770c17587 native
     { '-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON'         if not win else '' }
     -DLLVM_TOOL_GOLD_BUILD=OFF
     -DLLVM_ENABLE_FFI=OFF
-    -DLLVM_ENABLE_RTTI=OFF
+    -DLLVM_ENABLE_RTTI=ON
     { '-DLLVM_BINUTILS_INCDIR=/usr/include' if lin else '' }
     -DCLANG_DEFAULT_PIE_ON_LINUX={'ON' if lin else 'OFF'}
     -DBUILD_SHARED_LIBS=OFF

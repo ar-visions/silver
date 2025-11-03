@@ -152,7 +152,7 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
 
     # generate type / install dir
     config_lines += [
-        f"-DCMAKE_INSTALL_PREFIX={install_dir}",
+        f"-DCMAKE_INSTALL_PREFIX={install_dir}"
     ]
 
     if extra != 'native' and SDK !='native':

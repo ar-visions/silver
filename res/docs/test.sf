@@ -5,15 +5,17 @@ import chatgpt [ model:'gpt-5' ]
 # we separate headers by comma if we want to include multiple in one line
 import <stdio.h, ctype.h>
 
-import <vulkan/vulkan.h> [ https://github.com/KhronosGroup/Vulkan-Headers main ]
+import KhronosGroup:Vulkan-Headers/main [ args ]
+    <vulkan/vulkan.h>
+
 
 # import can ONLY be defined at the module level, never inside fn or classes
 # here after its checked out, we run an > arb-command
-import [ https://github.com/KhronosGroup/MoltenVK main ]
+import [ KhronosGroup:MoltenVK/main ]
     > ./fetchDependencies --macos
     -DANOTHER=2
 
-import [ KhronosGroup:Vulkan-Loader ]
+import KhronosGroup:Vulkan-Loader
     -DSOMETHING=1
 
 import [ KhronosGroup:Vulkan-Tools ]
