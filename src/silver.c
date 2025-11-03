@@ -289,9 +289,10 @@ exts get_exts() {
     ;
 }
 
-bool silver_next_indent(silver, a) {
-    token p = element(mod, -1);
-    token n = element(mod,  0);
+
+bool silver_next_indent(silver a) {
+    token p = element(a, -1);
+    token n = element(a,  0);
     return p && n->indent > p->indent;
 }
 
@@ -2220,6 +2221,11 @@ string git_remote_info(path path, string *out_service, string *out_owner, string
     return remote; // optional if you want to keep full URL
 }
 
+silver silver_with_path(silver mod, path external) {
+    mod->source = hold(external);
+    return mod;
+}
+
 void silver_init(silver mod) {
     mod->defs = map(hsize, 8);
     mod->codegens = map(hsize, 8);
@@ -2793,11 +2799,11 @@ bool silver_next_is_neighbor(silver mod) {
 
 string expect_alpha(silver mod) {
     token t = next(mod);
-    verify (t && isalpha(t->chars), "expected alpha identifier");
+    verify (t && isalpha(*t->chars), "expected alpha identifier");
     return string(t->chars);
 }
 
-path is_dir(silver mod, string ident) {
+path is_module_dir(silver mod, string ident) {
     path dir = f(path, "%o/%o", mod->project_path, ident);
     if (dir_exists("%o", dir))
         return dir;
@@ -2807,8 +2813,9 @@ path is_dir(silver mod, string ident) {
 // when we load silver files, we should look for and bind corresponding .c files that have implementation
 // this is useful for implementing in C or other languages
 
-path module_exists(silver mod, string ident) {
-    path sf = f(path, "%o/%o.sf", mod->project_path, ident);
+path module_exists(silver mod, array idents) {
+    string to_path = join(idents, "/");
+    path sf = f(path, "%o/%o.sf", mod->project_path, to_path);
     return file_exists("%o", sf) ? sf : null;
 }
 
@@ -2822,6 +2829,7 @@ enode import_parse(silver mod) {
     string namespace     = null;
     array  includes      = array(32);
     array  module_paths  = array(32);
+    path   local_mod     = null;
 
     // what differentiates a codegen from others, just class name?
     token t = peek(mod);
@@ -2830,55 +2838,89 @@ enode import_parse(silver mod) {
     string uri    = null;
 
     if (t && isalpha(t->chars[0])) {
-        AType f = A_find_type((cstr)t->chars);
+        bool cont = false;
+        string service    = mod->git_service;
+        string user       = mod->git_owner;
+        string project    = null;
+        string aa         = expect_alpha(mod); // value of t
+        string bb         = read_if(mod, ":") ? expect_alpha(mod) : null;
+        string cc         = bb && read_if(mod, ":") ? expect_alpha(mod) : null;
+        array  mpath      = null;
+        AType  f          = A_find_type((cstr)aa->chars);
+
         if (f && inherits(f, typeid(codegen)))
             is_codegen = f;
-        else {
-
-            string service = mod->git_service;
-            string user    = mod->git_owner;
-            
-            array arguments  = b;//compact_tokens(b);
-            array c          = read_body(mod, false);
-            array all_config = compact_tokens(c);
-            validate(len(arguments) >= 1,
-                "expected import arguments in import [ user:project/checkout-id ]");
-
-            string aa = expect_alpha(mod); // value of t
-            string bb = read_if(mod, ":") ? expect_alpha(mod) : null;
-            string cc = bb && read_if(mod, ":") ? expect_alpha(mod) : null;
-            if (read_if(mod, "/")) {
-                commit = next(mod);
+        else if (next_is(mod, ".")) {
+            while (read_if(mod, ".")) {
+                if (!mpath) {
+                    mpath = array(alloc, 32);
+                    push(mpath, cc ? cc : bb ? bb : aa ? aa : (string)null);
+                }
+                string ident = read_alpha(mod);
+                push(mpath, ident);
             }
-
-            // needs a path.to.individual.unit a well! (this would be an array)
-
-            path local_mod = false;
-            if (aa && !bb && !commit) {
-                local_mod = module_exists(mod, aa);
-            } else if (aa && !bb) {
-                uri = f(string, "https://%o/%o/%o/%o", service, user, project);
-            } else if (aa && !cc) {
-                user = bb;
-            } else {
-                // all 3
-            }
-
-            // local import = 1 word
-            // remote = 2
-            // remote with service = 3
-            
-            // import shopping-cart
-            // import amazon:cart
-
-            // the issue with remote is how does one import a specific module from remote, and not the entire repo?
+        } else {
+            mpath = array(alloc, 32);
+            push(mpath, cc ? cc : bb ? bb : aa ? aa : (string)null);
         }
+
+        // read commit if given
+        if (read_if(mod, "/")) commit = next(mod);
+        
+        if (aa && !bb && !commit) {
+            local_mod = module_exists(mod, mpath);
+            if (!local_mod) {
+                // push entire directory
+                string j = join(mpath, "/");
+                verify(dir_exists("%o", j), "module/directory not found: %o", j);
+                path f = f(path, "%o", j);
+                array dir = ls(f, string("*.sf"), false);
+                verify(len(dir), "no modules in directory %o", f);
+                each(dir, path, m)
+                    push(module_paths, m);
+            } else
+                push(module_paths, local_mod);
+        } else if (aa && !bb) {
+            verify(!local_mod, "unexpected import chain containing different methodologies");
+
+            // contains commit, so logically cannot be a singular module
+            // for commit # it must be a project for now, this is not a 
+            // constraint that we directly need to mitigate, but it may 
+            // be a version difference
+            project     = aa;
+            verify(!mpath || len(mpath) == 0, "unexpected path to module (expected 1st arg as project)");
+        } else if (aa && !cc) {
+            verify(!local_mod, "unexpected import chain containing different methodologies");
+            user        = aa;
+            project     = bb;
+            verify(!mpath || len(mpath) == 0, "unexpected path to module (expected 2nd arg as project)");
+        } else {
+            verify(!local_mod, "unexpected import chain containing different methodologies");
+            user        = aa;
+            project     = bb;
+        }
+
+        string str_mpath = join(mpath, "/") ? cc       : string("");
+        string path_str  = len(str_mpath) ?
+            f(string, "blob/%o/%o", commit, str_mpath) : string("");
+        
+        verify(project || local_mod, "could not decipher module references from import statement");
+
+        if (local_mod) {
+            uri = null;
+            cont = read_if(mod, ",") != null;
+            verify (!cont, "comma not yet supported in import (fn needs restructuring to create multiple imoprts in enode)");
+        } else
+            uri = f(string, "https://%o/%o/%o/%o", service, user, project, path_str);
     }
-    else if (read_if(mod, "<")) {
+    
+    // includes for this import
+    if (read_if(mod, "<")) {
         for (;;) {
             string f = read_alpha_any(mod);
             validate(f, "expected include");
-            /// we may read: something/is-a.cool\file.hh.h
+
+            // we may read: something/is-a.cool\file.hh.h
             while (next_is_neighbor(mod) && (!next_is(mod, ",") && !next_is(mod, ">")))
                 concat(f, next(mod));
             
@@ -2890,24 +2932,14 @@ enode import_parse(silver mod) {
                 break;
             }
         }
-
-    } else if (next_is_alpha(mod)) {
-        // this must validate module path,or..actually it wont run [delete]
-        for (;;) {
-            token f = read_alpha(mod);
-            while (next_is_neighbor(mod) && !next_is(mod, ","))
-                concat(f, next(mod));
-            
-            validate(f, "expected include");
-            push(module_paths, module_path(mod, (string)f));
-            if (!read_if(mod, ","))
-                break;
-        }
     }
 
-    map props = map();
+    array  c          = read_body(mod, false);
+    array  all_config = compact_tokens(c);
+    map    props      = map();
 
     print_tokens(mod, "before [");
+
     // this invokes import by git; a local repo may be possible but not very usable
     // arguments / config not stored / used after this
     if (next_is(mod, "[") || next_indent(mod)) {
@@ -2935,12 +2967,10 @@ enode import_parse(silver mod) {
         each(all_config, string, t)
             if (starts_with(t, "-l"))
                 push(mod->shared_libs, mid(t, 2, len(t) - 2));
-    }
-
-    if (is_codegen) {
+    } else if (local_mod)
+        mdl->external = silver(local_mod);
+    else if (is_codegen) {
         mdl->codegen = hold(construct_with(is_codegen, props, null));
-    } else if () {
-
     }
     
     if (next_is(mod, "as")) {
@@ -2976,8 +3006,7 @@ enode import_parse(silver mod) {
     // should only do this if its a global import and has no namesapce
     // this import stays as a global lookup otherwise
     // however, for delegates of llm with names, we will not keep it open
-    if (!mdl->name || is_codegen)
-        pop(mod);
+    pop(mod);
 
     if (is_codegen) {
         string name = mdl->name ? (string)mdl->name : string(is_codegen->name);

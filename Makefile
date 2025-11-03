@@ -1,15 +1,16 @@
 PROJECT := silver
 CONFIG ?= release
+SDK ?= native
 
 .PHONY: all bootstrap build clean debug release
 
 all: build
 
 debug:
-	$(MAKE) CONFIG=debug build
+	$(MAKE) CONFIG=sdk/$(SDK)/debug build
 
 release:
-	$(MAKE) CONFIG=release build
+	$(MAKE) CONFIG=sdk/$(SDK)/release build
 
 bootstrap:
 ifeq ($(OS),Windows_NT)

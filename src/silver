@@ -76,6 +76,7 @@ forward(import)
     i_method  (X,Y, public,     string,         location) \
     i_method  (X,Y, public,     none,           parse) \
     i_method  (X,Y, public,     i32,            build) \
+    i_ctr     (X,Y, public,     path) \
     i_override(X,Y, method,     build_initializer) \
     i_override(X,Y, method,     init)
 declare_class_3(silver, aether, model)
@@ -91,6 +92,7 @@ declare_class(flag)
 
 #define import_schema(X,Y,...) \
     i_prop(X,Y, public, codegen, codegen) \
+    i_prop(X,Y, public, silver,  external) \
     s_method(X,Y, public, enode, parse, silver)
 declare_class_2(import, model)
 

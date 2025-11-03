@@ -1067,6 +1067,8 @@ typedef A(*mix_fn)(A, A, f32);
     i_method         (AA,Y, public, A,       first) \
     i_method         (AA,Y, public, A,       last) \
     i_method         (AA,Y, public, A,       pop) \
+    i_method         (AA,Y, public, array,   shift) \
+    i_method         (AA,Y, public, string,  join, cstr) \
     i_method         (AA,Y, public, none,    fill,           A) \
     i_method         (AA,Y, public, array,   reverse) \
     i_method         (AA,Y, public, none,    remove,         num) \
