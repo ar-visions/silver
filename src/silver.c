@@ -289,6 +289,12 @@ exts get_exts() {
     ;
 }
 
+bool silver_next_indent(silver, a) {
+    token p = element(mod, -1);
+    token n = element(mod,  0);
+    return p && n->indent > p->indent;
+}
+
 bool silver_next_is_eq(silver a, symbol first, ...) {
     va_list args;
     va_start(args, first);
@@ -2161,6 +2167,59 @@ void silver_parse(silver mod) {
     finalize(mem_init->mdl);
 }
 
+string git_remote_info(path path, string *out_service, string *out_owner, string *out_project) {
+    // run git command
+    string cmd = f(string, "git -C %s remote get-url origin", path->chars);
+    string remote = command_run(cmd);
+
+    if (!remote || !remote->len)
+        error("git_remote_info: failed to get remote url");
+
+    cstr url = remote->chars;
+
+    // strip trailing newline(s)
+    for (int i = remote->len - 1; i >= 0 && (url[i] == '\n' || url[i] == '\r'); i--)
+        url[i] = '\0';
+
+    cstr domain = NULL, owner = NULL, repo = NULL;
+
+    if (strstr(url, "://")) {
+        // HTTPS form: https://github.com/owner/repo.git
+        domain = strstr(url, "://");
+        domain += 3; // skip "://"
+    } else if (strchr(url, '@')) {
+        // SSH form: git@github.com:owner/repo.git
+        domain = strchr(url, '@') + 1;
+    } else {
+        error("git_remote_info: unrecognized URL: %s", url);
+    }
+
+    // domain ends at first ':' or '/'
+    cstr domain_end = strpbrk(domain, ":/");
+    if (!domain_end) error("git_remote_info: malformed URL");
+    *domain_end = '\0';
+
+    // next part: owner/repo
+    cstr next = domain_end + 1;
+    owner = next;
+
+    cstr slash = strchr(owner, '/');
+    if (!slash) error("git_remote_info: missing owner/repo");
+    *slash = '\0';
+    repo = slash + 1;
+
+    // remove .git if present
+    cstr dot = strrchr(repo, '.');
+    if (dot && strcmp(dot, ".git") == 0)
+        *dot = '\0';
+
+    *out_service = string(domain);
+    *out_owner   = string(owner);
+    *out_project = string(repo);
+
+    return remote; // optional if you want to keep full URL
+}
+
 void silver_init(silver mod) {
     mod->defs = map(hsize, 8);
     mod->codegens = map(hsize, 8);
@@ -2227,6 +2286,8 @@ void silver_init(silver mod) {
 
     path        af = path_cwd();
     path   install = path(_IMPORT);
+
+    git_remote_info(af, &mod->git_service, &mod->git_owner, &mod->git_project);
 
     parse(mod);
     build(mod);
@@ -2730,6 +2791,27 @@ bool silver_next_is_neighbor(silver mod) {
     return b->column + b->len == c->column;
 }
 
+string expect_alpha(silver mod) {
+    token t = next(mod);
+    verify (t && isalpha(t->chars), "expected alpha identifier");
+    return string(t->chars);
+}
+
+path is_dir(silver mod, string ident) {
+    path dir = f(path, "%o/%o", mod->project_path, ident);
+    if (dir_exists("%o", dir))
+        return dir;
+    return null;
+}
+
+// when we load silver files, we should look for and bind corresponding .c files that have implementation
+// this is useful for implementing in C or other languages
+
+path module_exists(silver mod, string ident) {
+    path sf = f(path, "%o/%o.sf", mod->project_path, ident);
+    return file_exists("%o", sf) ? sf : null;
+}
+
 enode import_parse(silver mod) {
     print_tokens(mod, "import parse");
     validate(next_is(mod, "import"), "expected import keyword");
@@ -2744,11 +2826,53 @@ enode import_parse(silver mod) {
     // what differentiates a codegen from others, just class name?
     token t = peek(mod);
     AType is_codegen = null;
+    token commit = null;
+    string uri    = null;
 
     if (t && isalpha(t->chars[0])) {
         AType f = A_find_type((cstr)t->chars);
         if (f && inherits(f, typeid(codegen)))
             is_codegen = f;
+        else {
+
+            string service = mod->git_service;
+            string user    = mod->git_owner;
+            
+            array arguments  = b;//compact_tokens(b);
+            array c          = read_body(mod, false);
+            array all_config = compact_tokens(c);
+            validate(len(arguments) >= 1,
+                "expected import arguments in import [ user:project/checkout-id ]");
+
+            string aa = expect_alpha(mod); // value of t
+            string bb = read_if(mod, ":") ? expect_alpha(mod) : null;
+            string cc = bb && read_if(mod, ":") ? expect_alpha(mod) : null;
+            if (read_if(mod, "/")) {
+                commit = next(mod);
+            }
+
+            // needs a path.to.individual.unit a well! (this would be an array)
+
+            path local_mod = false;
+            if (aa && !bb && !commit) {
+                local_mod = module_exists(mod, aa);
+            } else if (aa && !bb) {
+                uri = f(string, "https://%o/%o/%o/%o", service, user, project);
+            } else if (aa && !cc) {
+                user = bb;
+            } else {
+                // all 3
+            }
+
+            // local import = 1 word
+            // remote = 2
+            // remote with service = 3
+            
+            // import shopping-cart
+            // import amazon:cart
+
+            // the issue with remote is how does one import a specific module from remote, and not the entire repo?
+        }
     }
     else if (read_if(mod, "<")) {
         for (;;) {
@@ -2768,6 +2892,7 @@ enode import_parse(silver mod) {
         }
 
     } else if (next_is_alpha(mod)) {
+        // this must validate module path,or..actually it wont run [delete]
         for (;;) {
             token f = read_alpha(mod);
             while (next_is_neighbor(mod) && !next_is(mod, ","))
@@ -2780,49 +2905,42 @@ enode import_parse(silver mod) {
         }
     }
 
-    map props = is_codegen ? map() : null;
+    map props = map();
 
     print_tokens(mod, "before [");
     // this invokes import by git; a local repo may be possible but not very usable
     // arguments / config not stored / used after this
-    if (next_is(mod, "[")) {
-        array b          = read_body(mod, false);
-
-        if (is_codegen) {
-            int index = 0;
-            while (index < len(b)) {
-                verify(index - len(b) >= 3, "expected prop: value for codegen object");
-                token prop_name  = b->elements[index++];
-                token col        = b->elements[index++];
-                token prop_value = b->elements[index++];
-                verify(eq(col, ":"), "expected prop: value for codegen object");
-                set(props, string(prop_name->chars), string(prop_value->chars));
-            }
-        } else {
-            array arguments  = compact_tokens(b);
-            array c          = read_body(mod, false);
-            array all_config = compact_tokens(c);
-            validate(len(arguments) >= 2,
-                "expected import arguments in import [ git-url checkout-id ]");
-            token t_uri    = get(arguments, 0);
-            token t_commit = get(arguments, 1);
-            path    uri = path((string)t_uri);
-            validate(starts_with(t_uri, "https://") || 
-                starts_with(t_uri, "git@"), "expected repository uri");
-            checkout(mod, t_uri, t_commit,
-                import_build_commands(all_config, ">"),
-                import_build_commands(all_config, ">>"),
-                import_config(all_config),
-                import_env   (all_config));
-            each(all_config, string, t) {
-                if (starts_with(t, "-l"))
-                    push(mod->shared_libs, mid(t, 2, len(t) - 2));
-            }
+    if (next_is(mod, "[") || next_indent(mod)) {
+        array b = read_body(mod, false);
+        int index = 0;
+        while (index < len(b)) {
+            verify(index - len(b) >= 3, "expected prop: value for codegen object");
+            token prop_name  = b->elements[index++];
+            token col        = b->elements[index++];
+            token prop_value = b->elements[index++];
+            // this will not work for reading {fields}
+            // trouble is the merging of software with build config, and props we set in module.
+            
+            verify(eq(col, ":"), "expected prop: value for codegen object");
+            set(props, string(prop_name->chars), string(prop_value->chars));
         }
+    }
+
+    if (uri) {
+        checkout(mod, uri, commit,
+            import_build_commands(all_config, ">"),
+            import_build_commands(all_config, ">>"),
+            import_config(all_config),
+            import_env(all_config));
+        each(all_config, string, t)
+            if (starts_with(t, "-l"))
+                push(mod->shared_libs, mid(t, 2, len(t) - 2));
     }
 
     if (is_codegen) {
         mdl->codegen = hold(construct_with(is_codegen, props, null));
+    } else if () {
+
     }
     
     if (next_is(mod, "as")) {

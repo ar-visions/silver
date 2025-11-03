@@ -135,7 +135,7 @@ for arg in "$@"; do
 done
 
 export PROJECT="$(realpath $(pwd))" # we can run bootstrap from another project (silver build is its own host)
-export PROJECT_NAME="$(dirname "$PROJECT")"
+export PROJECT_NAME="$(basename "$PROJECT")"
 
 SELF_PATH="$(realpath $(dirname "$0"))"
 cd "$SELF_PATH"
@@ -191,6 +191,9 @@ if ! [ -f "$NATIVE/bin/python3" ]; then
     make -j$(sysctl -n hw.ncpu)
     make install
 
+    #export LD_LIBRARY_PATH="$NATIVE/lib:$LD_LIBRARY_PATH"
+    $NATIVE/bin/python3 -m ensurepip --upgrade || \
+    curl -sS https://bootstrap.pypa.io/get-pip.py | $NATIVE/bin/python3 -
 
     cd "$SILVER/checkout"
     curl -LO https://github.com/swig/swig/archive/refs/tags/v4.1.1.tar.gz

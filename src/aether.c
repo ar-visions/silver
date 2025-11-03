@@ -4701,6 +4701,7 @@ void token_init(token a) {
         a->literal = read_numeric(a);
 }
 
+
 ident ident_with_model(ident a, model mdl) {
     a->mdl = mdl;
     return a;
