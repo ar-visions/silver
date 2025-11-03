@@ -84,6 +84,28 @@ shape shape_new(i64 size, ...) {
     return res;
 }
 
+array array_shift(array a) {
+    int ln = len(a);
+    array res = array(alloc, ln);
+    bool skip = true;
+    each(a, A, i) {
+        if (skip)
+            skip = false;
+        else
+            push(res, i);
+    }
+    return i;
+}
+
+string array_join(array a, cstr str) {
+    int ln = len(a);
+    string res = string(alloc, ln * 32);
+    each(a, A, i) {
+        string s = cast(string, i);
+        concat(res, s);
+    }
+    return res;
+}
 
 bool array_cast_bool(array a) { return a && a->len > 0; }
 
