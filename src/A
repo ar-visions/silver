@@ -473,7 +473,7 @@ void* primitive_ffi_arb(AType);
             type_ref->traits        = TRAIT; \
             type_ref->meta          = (_meta_t) { emit_types(__VA_ARGS__) }; \
             type_ref->arb           = primitive_ffi_arb(typeid(TYPE)); \
-            TYPE##_schema( TYPE, INIT, __VA_ARGS__ ) \
+        TYPE##_schema( TYPE, INIT, __VA_ARGS__ ) \
             push_type((AType)type_ref); \
             POST_PUSH; \
             return true; \
@@ -511,11 +511,11 @@ void* primitive_ffi_arb(AType);
 struct _sz { i64 value; };
 
 // true utility / internal functions
-num             clamp(num i, num mn, num mx);
-real            clampf(real, real, real);
-i64             epoch_millis();
-A          A_initialize(A);
-none            A_init_recur(A a, AType current, raw last_init);
+num clamp(num i, num mn, num mx);
+real clampf(real, real, real);
+i64 epoch_millis();
+A A_initialize(A);
+none A_init_recur(A a, AType current, raw last_init);
 
 /// A-type properties are not user-accessible, 
 /// so they are declared as opaque
@@ -543,6 +543,7 @@ forward(any)
     i_prop  (AA,Y, intern, i64,         count) \
     i_prop  (AA,Y, intern, i64,         recycle) \
     i_prop  (AA,Y, intern, i64,         af_index) \
+    i_array (AA,Y, intern, A,       8,  meta) \
     i_method(AA,Y, public, none,        init) \
     i_method(AA,Y, public, none,        dealloc) \
     i_method(AA,Y, public, i32,         compare,             AA) \
@@ -571,7 +572,7 @@ forward(any)
     i_final (AA,Y, public, bool,        is_meta) \
     i_final (AA,Y, public, bool,        is_meta_compatible,  A) \
     t_vargs (AA,Y, public, A,           formatter,           handle, A, symbol) \
-    t_method(AA,Y, public, A,           alloc,               num) \
+    t_method(AA,Y, public, A,           alloc,               num, AType) \
     t_method(AA,Y, public, A,           alloc_new,           num) \
     t_method(AA,Y, public, A,           alloc_dbg,           num,     cstr,      i32) \
     t_method(AA,Y, public, A,           alloc2,              AType,   shape) \
@@ -614,7 +615,7 @@ forward(any)
 #define A_intern(AA,YY,...) A_schema(AA,YY,__VA_ARGS__)
 
 //typedef struct _shape *shape;
-
+forward(shape)
 declare_base(A)
 
 #define typeid(AA)   ((AType)&AA##_i.type)
@@ -636,6 +637,14 @@ declare_base(A)
     i_operator(AA,Y, public, numeric, _not_equal, numeric) \
     i_operator(AA,Y, public, none,    _assign,    numeric)
 declare_abstract(numeric)
+
+// if a meta type is abstract, then the user may optionally fill that in
+// array for instance has a Value type, and a Dims
+// this makes abstract types great again
+
+#define Dims_schema(AA,Y,...) \
+    s_method(AA,Y, public, none, bind_instance, A, AType) \
+declare_abstract(Dims)
 
 #define string_like_schema(X,Y,...)
 declare_abstract(string_like)
@@ -686,7 +695,6 @@ declare_abstract(imported)
 #define cstr_schema(X,Y,...)        string_like_schema(X,Y,...)
 #define symbol_schema(X,Y,...)      string_like_schema(X,Y,...)
 #define cereal_schema(X,Y,...)      raw_schema(X,Y,...)
-#define shape_schema(X,Y,...)       raw_schema(X,Y,...)
 #define none_schema(X,Y,...)        nil_schema(X,Y,...)
 #define raw_t_schema(X,Y,...)       raw_schema(X,Y,...)
 #define handle_schema(X,Y,...)      raw_schema(X,Y,...)
@@ -766,7 +774,6 @@ declare_primitive(cstr,             string_like)
 declare_primitive(symbol,           string_like)
 declare_primitive(none,             nil)
 declare_primitive(cereal,           raw)
-declare_primitive(shape,            raw)
 declare_primitive(raw_t,            raw)
 declare_primitive(handle,           raw)
 declare_primitive(func,             raw)
@@ -790,6 +797,15 @@ declare_primitive(floats,       raw)
     i_override(X,Y, method, init) \
     i_override(X,Y, method, dealloc)
 declare_class(msg)
+
+
+#define shape_schema(AA,YY,...) \
+    i_prop  (AA,YY, public, i64, count) \
+    i_vprop (AA,YY, public, i64, data) \
+    i_prop  (AA,YY, public, bool, is_global) \
+    i_override(AA,YY, method, dealloc)
+declare_class(shape)
+
 
 /// doubly-linked item type, integrated key so we dont also need a 'field' type
 #define item_schema(X,Y,...) \
