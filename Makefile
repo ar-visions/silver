@@ -35,6 +35,6 @@ ifeq ($(OS),Windows_NT)
 	@if exist sdk\native\debug rmdir /S /Q sdk\native\debug\.headers_generated
 	@if exist sdk\native\release rmdir /S /Q sdk\native\release\.headers_generated
 else
-	@rm -rf /sdk/native/debug/.headers_generated
-	@rm -rf /sdk/native/debug/.headers_generated
+	@rm -rf ./sdk/native/debug/.headers_generated
+	@rm -rf ./sdk/native/debug/.headers_generated
 endif

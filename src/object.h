@@ -84,10 +84,13 @@ typedef struct method_t {
     void*           ffi_args; /// ffi-data types for args
 } method_t;
 
+/*
 typedef struct _shape {
     i64 count;
-    i64 data[16];
+    i64* data;
+    bool is_global;
 } _shape, *shape;
+*/
 
 // this is an exact mock type of A's type, minus the methods it holds
 typedef struct _AType {

@@ -403,9 +403,10 @@ def process_modules(paths):
             os.path.getmtime(str(source_file)) > os.path.getmtime(public_header)):
             generate_public_header(module, str(source_file), public_header)
         
-        if (not os.path.exists(intern_header) or 
-            os.path.getmtime(str(source_file)) > os.path.getmtime(intern_header)):
-            generate_intern_header(module, str(source_file), intern_header)
+        #if (not os.path.exists(intern_header) or 
+        #    os.path.getmtime(str(source_file)) > os.path.getmtime(intern_header)):
+        generate_intern_header(module, str(source_file), intern_header)
+        print('doing things')
 
 def handle_src_directive(paths, env_vars):
     """Handle src directive symlink creation"""

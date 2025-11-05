@@ -52,7 +52,7 @@ i64 shape_compare(shape a, shape b) {
 }
 
 shape shape_from(i64 count, i64* values) {
-    shape res = A_struct(_shape);
+    shape res = new(shape, count, count, data, values, is_global, false);
     res->count = count;
     if (values)
         memcpy(res->data, values, sizeof(i64) * count);
@@ -929,7 +929,7 @@ A alloc_dbg(AType type, num count, cstr source, int line) {
 }
 
 
-A alloc(AType type, num count) {
+A alloc(AType type, num count, AType* meta) {
     sz map_sz = sizeof(map);
     sz A_sz   = sizeof(struct _A);
     A a = alloc_instance(type,
@@ -938,6 +938,22 @@ A alloc(AType type, num count) {
     a->data       = &a[1];
     a->count      = count;
     a->alloc      = count;
+    if (meta && type->meta.count > 0) {
+        // ATypes are simple instances with a type header, too.. however, their typeof points to a struct of struct _A that is blank
+        // as such we can use this as a boolean to know if an object instance is given to meta
+        // when it is, we validate that it inherits the object given
+        for (int i = 0; i < type->meta.count; i++) {
+            AType m = meta[i];
+            AType object_type = isa(m);
+            AType ref = ((AType*)type->meta)[i];
+            if (object_type) {
+                verify (inherits(object_type, ref), "expected object of compatible-type %s", m->name);
+            } else {
+                // these would be used more abstract, and validated by user
+            }
+            a->meta[i] = m;
+        }
+    }
     return a->data; /// return fields (A)
 }
 
@@ -5078,6 +5094,24 @@ A typecast(AType type, A a) {
     return null;
 }
 
+none shape_dealloc(shape a) {
+    if (!a->is_global)
+        free(a->data);
+}
+
+// make it easy for users creating shapes from stack
+none shape_init(shape a) {
+    if (!a->is_global) {
+        i64* cp = malloc(sizeof(i64) * (a->count + 1));
+        if (a->data)
+            memcpy(cp, a->data, sizeof(i64) * a->count);
+        else
+            memset(cp, 0, sizeof(i64) * a->count);
+        cp[a->count] = 0;
+        a->data = cp;
+    }
+}
+
 // this signals an application entry
 define_class(subscriber, A)
 define_class(subs, A)
@@ -5131,7 +5165,6 @@ define_primitive(AFlag,  numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
 define_primitive(cstr,   string_like, A_TRAIT_POINTER, i8)
 define_primitive(symbol, string_like, A_TRAIT_POINTER, i8)
 define_primitive(cereal, raw, 0)
-define_primitive(shape,  raw, A_TRAIT_POINTER)
 define_primitive(none,   nil, 0)
 //define_primitive(AType,  raw, 0)
 define_primitive(handle, raw, A_TRAIT_POINTER, u8)
@@ -5155,10 +5188,12 @@ define_class(path, string)
 define_class(string,  A)
 define_class(command, string)
 
+define_class(shape, A)
+
 define_class(item, A)
 //define_proto(collection) -- disabling for now during reduction to base + class + mod
 define_class(list,          A, A)
-define_class(array,         A, A)
+define_class(array,         A, A, Dims)
 define_class(hashmap,       A)
 define_class(map,           A)
 define_class(ctx,           map)
