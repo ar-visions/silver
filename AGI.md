@@ -7,7 +7,7 @@ create private datasets for their own means, however they have ability to bring 
 
 this publicly committed approach is more-provable for IP than closed systems, especially when we all write the very operating systems they run on. we ensure verifiable barriers between public and private data, with the contract dictated by a free society.
 
-being open-data is the only way that IP law can work in an AI age.  nobody can prove weights-only, private-corporate models in court.  the training must be open for proof; auto-payment could depend on summary queries alone, which you make as another model that is directly correlated for summary use-case; in device we may optimize training without need to summarize but rather bake in groups of annotations built for it.  so, embedded ultra-edge-case covered, along with towering cloud servers to compute larger summaries of groups.
+being open-data is the only way that IP law can work in an AI age.  nobody can prove weights-only, private-corporate models in court.  the training must be open for proof, with identifiable sources for IP origin.
 
 when we desire, we commit our own annotations for any media. this is a giant decentralized media index with running apps in the nodes.
 
