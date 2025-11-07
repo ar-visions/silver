@@ -18,7 +18,7 @@ The process of media composition will become easier, more intuitive over time �
 
 For immersive observer-feedback on screen, the application view may counter-distort its projection with an ability to observe from different angles — like a virtual hologram using a 2D parallax technique applied in shaders. This is the particular focus of trinity toolkit.  
 
-The product for this is **Orbiter** — it lets you run web4 apps with an ability to edit the source if it’s available.
+The product for this is **Orbiter** — it lets you run web4 apps with an ability to edit the source if it’s available.  We define apps as either console, graphical with desktop-spatial used when there are IR cameras (Logitech Brio supported on Linux with it's low emission pulse-IR)
 
 When we are enabled in this way, we would call the device an **AI-PC**.
 
