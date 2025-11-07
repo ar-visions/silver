@@ -19,7 +19,7 @@ for interactive presentation on screen, the application view may counter-distort
 
 when we are enabled in this way, we would call the device an AI-PC
 
-it's our God given right to contribute together in public and private. individuals represented by themselves or within group are primary authors of real domain knowledge. this should enable the meek inherit the Earth.
+it's our God given right to contribute together in public and private. individuals represented by themselves or within group are primary authors of real domain knowledge. this can enable the meek inherit the Earth.
 
 *— Kalen Novis White*  
 [www.silver-lang.org](https://www.silver-lang.org)
