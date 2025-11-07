@@ -152,14 +152,14 @@
 
 #define new(TYPE, ...) \
     ({ \
-        TYPE instance = (TYPE)alloc(typeid(TYPE), 1); \
+        TYPE instance = (TYPE)alloc(typeid(TYPE), 1, (AType*)null); \
         _N_ARGS(TYPE, ## __VA_ARGS__); \
         A_initialize((A)instance); \
         instance; \
     })
 #define new2(TYPE, ...) \
     ({ \
-        TYPE instance = (TYPE)alloc(typeid(TYPE), 1); \
+        TYPE instance = (TYPE)alloc(typeid(TYPE), 1, (AType*)null); \
         TYPE##_N_ARGS(TYPE, ## __VA_ARGS__); \
         A_initialize((A)instance); \
         instance; \
@@ -168,7 +168,7 @@
 /// with construct we give it a dynamic type, symbols and A-values
 #define construct(type, ...) \
     ({ \
-        T instance = (T)alloc(type, 1); \
+        T instance = (T)alloc(type, 1, (AType*)null); \
         _N_ARGS(instance, ## __VA_ARGS__); \
         A_initialize((A)instance); \
         instance; \
@@ -176,7 +176,7 @@
 
 #define new0(T, ...) \
     ({ \
-        T instance = (T)alloc(typeid(T), 1); \
+        T instance = (T)alloc(typeid(T), 1, (AType*)null); \
         _N_ARGS(instance, ## __VA_ARGS__); \
         A_initialize((A)instance); \
         instance; \
@@ -184,12 +184,12 @@
 
 #define allocate(T, ...) \
     ({ \
-        T instance = (T)alloc(typeid(T), 1); \
+        T instance = (T)alloc(typeid(T), 1, (AType*)null); \
         _N_ARGS(instance, ## __VA_ARGS__); \
         instance; \
     })
 
-#define valloc(T, N)                ((A)alloc(typeid(T), N))
+#define valloc(T, N)                ((A)alloc(typeid(T), N, (AType*)null))
 #define ftable(TYPE, INSTANCE)      ((TYPE##_f*)((A)INSTANCE)[-1].type)
 #define isa(INSTANCE)               (INSTANCE ? (struct _A_f*)((struct _A*)INSTANCE - 1)->type : (struct _A_f*)0)
 // see: javascript; returns null if its not an instance-of; faults if you give it a null
@@ -203,10 +203,10 @@
 #define idx_2(I,T1,T2,V1,V2)        fcall(I, index ##_## T1 ##_## T2, V1, V2)
 #define idx(I,V1)                   fcall(I, index ##_## num, V1)
 #define meta_t(I,IDX)               isa(I) -> meta.meta_##IDX
-#define ctr(T,WITH,...)             A_initialize(T##_i.type.with_##WITH(alloc(typeid(T), 1), ## __VA_ARGS__))
-#define ctr1(T,WITH,...)            A_initialize(T##_i.type.with_##WITH(alloc(typeid(T), 1), ## __VA_ARGS__))
-#define alloc_ctr(T,WITH,...)       A_initialize(T##_i.type.with_##WITH(alloc(typeid(T), 1), ## __VA_ARGS__))
-#define str(CSTR)                   string_i.type.with_symbol((string)alloc((AType)&string_i.type, 1), (symbol)(CSTR))
+#define ctr(T,WITH,...)             A_initialize(T##_i.type.with_##WITH(alloc(typeid(T), 1, (AType*)null), ## __VA_ARGS__))
+#define ctr1(T,WITH,...)            A_initialize(T##_i.type.with_##WITH(alloc(typeid(T), 1, (AType*)null), ## __VA_ARGS__))
+#define alloc_ctr(T,WITH,...)       A_initialize(T##_i.type.with_##WITH(alloc(typeid(T), 1, (AType*)null), ## __VA_ARGS__))
+#define str(CSTR)                   string_i.type.with_symbol((string)alloc((AType)&string_i.type, 1, (AType*)null), (symbol)(CSTR))
 #define addr_validateI(I)           ({ \
     __typeof__(I) *addr = &I; \
     I \
@@ -1533,7 +1533,7 @@
         for (num i = 0, __len = len(arr); i < __len; i++, e = *(E*)peek(arr, i)) \
 
 #define head(o) header((A)o)
-#define A_struct(T) alloc(typeid(u8), sizeof(T))
+#define A_struct(T) alloc(typeid(u8), sizeof(T), (AType*)null)
 #define     e_str(E,I) estring(typeid(E), I)
 #define     e_val(E,S) evalue (typeid(E), S)
 

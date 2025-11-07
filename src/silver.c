@@ -2,34 +2,34 @@
 #include <ports.h>
 #include <limits.h>
 
-#define   emodel(MDL)    ({ \
+#define emodel(MDL) ({ \
     emember  m = aether_lookup2(mod, string(MDL), null); \
     if (m) mark_used(m); \
     model mdl = (m && m->is_type) ? m->mdl : null; \
     mdl; \
 })
 
-#define validate(a, t, ...) \
-    ({ \
-        if (!(a)) { \
-            formatter((AType)null, stderr, (A)true,  (symbol)"\n%o:%i:%i " t, mod->source, \
-                peek(mod)->line, peek(mod)->column, ## __VA_ARGS__); \
-            if (level_err >= fault_level) { \
-                raise(SIGTRAP); \
-                exit(1); \
-            } \
-            false; \
-        } else { \
-            true; \
+#define validate(a, t, ...) ({ \
+    if (!(a)) { \
+        formatter((AType)null, stderr, (A)true,  (symbol)"\n%o:%i:%i " t, mod->source, \
+            peek(mod)->line, peek(mod)->column, ## __VA_ARGS__); \
+        if (level_err >= fault_level) { \
+            raise(SIGTRAP); \
+            exit(1); \
         } \
+        false; \
+    } else { \
         true; \
-    })
+    } \
+    true; \
+})
 
 static map   operators;
 static array keywords;
 static array assign;
 static array compare;
-static bool is_alpha(A any);
+
+static bool  is_alpha(A any);
 static enode parse_expression(silver mod, model expect_mdl);
 
 void print_tokens(silver mod, symbol label) {
@@ -1323,7 +1323,7 @@ model read_model(silver mod, array* expr) {
         concat(ident, f(string, "array_%o", type->name));
 
         // read optional shape
-        shape sh = A_struct(_shape);
+        shape sh = shape();
         if (!read_if(mod, ">")) {
             append(ident, "_");
             A lit = read_literal(mod, null);
@@ -2213,10 +2213,10 @@ string git_remote_info(path path, string *out_service, string *out_owner, string
     cstr dot = strrchr(repo, '.');
     if (dot && strcmp(dot, ".git") == 0)
         *dot = '\0';
-
-    *out_service = string(domain);
-    *out_owner   = string(owner);
-    *out_project = string(repo);
+    
+    if (!*out_service) *out_service = string(domain);
+    if (!*out_owner)   *out_owner   = string(owner);
+    if (!*out_project) *out_project = string(repo);
 
     return remote; // optional if you want to keep full URL
 }
@@ -2983,7 +2983,10 @@ enode import_parse(silver mod) {
     
     // its important that silver need not rely on further interpretation of an import model
     // import does its thing into normal aether modeling, and we move on
-    emember mem = emember(mod, mod, name, namespace, mdl, mdl);
+    emember mem = emember(
+        mod,    mod,    // sets instance->mod = mod
+        name,   namespace,
+        mdl,    mdl);
     set_model  (mem, mdl);
     register_member(mod, mem, true);
     
@@ -3207,16 +3210,14 @@ array chatgpt_generate_fn(chatgpt a, fn f, array query) {
 
     // now we need a silver document with reasonable how-to
     // this can be fetched from resource, as its meant for both human and AI learning
-    path docs = path_share_path();
-    path test_sf = f(path, "%o/docs/test.sf", docs);
+    path   docs         = path_share_path();
+    path   test_sf      = f(path, "%o/docs/test.sf", docs);
     string test_content = load(test_sf, typeid(string), null);
-
-    map sys_howto = m(
+    map    sys_howto    = m(
         "role",     string("system"),
         "content",  test_content);
-
-    array messages = a(sys_intro, sys_module, sys_howto);
-
+    
+    array  messages     = a(sys_intro, sys_module, sys_howto);
     
     // now we have 1 line of dictation: ['this is text describing an image', image[ 'file.png' ] ]
     // for each dictation message, there is a response from the server which we also include as assistant

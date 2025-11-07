@@ -225,10 +225,6 @@ static void create_method_stub(CXXMethodDecl* md, ASTContext& ctx, aether e, rec
     bool variadic = md->isVariadic();
 
     string fname = string(name.c_str());
-    if (eq(fname, "fprintf")) {
-        int test2 = 2;
-        test2    += 2;
-    }
     fn f = fn(mod, e,
               name, (token)fname,
               rtype, rtype,
@@ -315,11 +311,6 @@ static record create_opaque_class(CXXRecordDecl* cxx, aether e) {
     record rec = (record)Class(mod, e, name, (token)n);
     register_model(e, (model)rec, false);
 
-    if (strstr(n->chars, "ios_base")) {
-        int test2 = 2;
-        test2    += 2;
-    }
-
     //rec->opaque = true; // mark so downstream code knows
     finalize((model)rec);
     return rec;
@@ -328,10 +319,6 @@ static record create_opaque_class(CXXRecordDecl* cxx, aether e) {
 static record create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::string qname) {
     string n = string(qname.c_str());
     
-    if (strstr(n->chars, "cpp_test")) {
-        int test2 = 2;
-        test2    += 2;
-    }
     if (!cxx->isCompleteDefinition() || cxx->isDependentType() || cxx->isInvalidDecl())
         return create_opaque_class(cxx, e);
     
@@ -393,11 +380,6 @@ static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::s
         std::string const_name = ec->getNameAsString();
         string cn = string(const_name.c_str());
 
-        if (eq(cn, "none")) {
-            int test2 = 2;
-            test2    += 2;
-        }
-        
         // Get the value if needed
         llvm::APSInt val = ec->getInitVal();
         
@@ -420,10 +402,6 @@ static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::s
 static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string name) {
     string n = string(name.c_str());
     
-    if (eq(n, "vkCreateInstance")) {
-        int test2 = 2;
-        test2    += 2;
-    }
     // Get return type
     QualType return_qt = decl->getReturnType();
     model rtype = map_clang_type_to_model(return_qt, ctx, e, null);
@@ -451,11 +429,7 @@ static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string n
     
     // Check for variadic
     bool is_variadic = decl->isVariadic();
-    
-    if (eq(n, "printf")) {
-        int test2 = 2;
-        test2    += 2;
-    }
+
     fn f = fn(mod, e, name, (token)n, rtype, rtype, args, args, va_args, is_variadic);
     if (len(n) > 0)
         register_model(e, (model)f, false);
@@ -483,17 +457,9 @@ static record create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::st
 
     // c++ ville
     if (!decl->isCompleteDefinition() || decl->isInvalidDecl() || decl->isDependentType()) {
-        if (strstr(n->chars, "error_category")) {
-            int test2 = 2;
-            test2    += 2;
-        }
         return (record)model(mod, e, name, (token)n, src, mdl_opaque);
     }
 
-    if (strstr(n->chars, "error_category")) {
-        int test2 = 2;
-        test2    += 2;
-    }
     record rec = is_union ?
         (record)uni(mod, e, name, (token)n) :
         (record)structure(mod, e, name, (token)n);
@@ -541,10 +507,7 @@ static model map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e
     if (const FunctionProtoType* fpt = dyn_cast<FunctionProtoType>(pointee)) {
         static int seq = 0;
         seq++;
-        if (seq == 62) {
-            int test2 = 2;
-            test2    += 2;
-        }
+
         model func_model = map_function_type(fpt, ctx, e);
         use((fn)func_model);
         return model(mod, e, src, func_model, is_ref, true);
@@ -639,10 +602,6 @@ public:
     bool VisitFunctionDecl(FunctionDecl* decl) {
         if (!decl->getNameAsString().empty()) {
             std::string n = decl->getNameAsString();
-            if (n.find("none") != std::string::npos) {
-                int test2 = 2;
-                test2    += 2;
-            }
             create_fn(decl, ctx, e, get_name((NamedDecl*)decl));
         }
         return true;
@@ -765,10 +724,8 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         if (elem_type.isConstQualified()) {
             elem_model = model(mod, e, src, elem_model, is_const, true);
         }
-        shape sh = (shape)A_struct(_shape);
-        sh->count = 1;
-        sh->data[0] = size;
-        model mdl = model(mod, e, name, (token)use_name, src, elem_model, shape, sh);
+        ARef sh = new_shape(size, 0);
+        model mdl = model(mod, e, name, (token)use_name, src, elem_model, shape, (shape)sh);
         if (use_name && len(use_name) > 0)
             register_model(e, mdl, false);
         return mdl;
@@ -778,10 +735,8 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         QualType elem_type = iat->getElementType();
         model elem_model = map_clang_type_to_model(elem_type, ctx, e, null);
         if (!elem_model) return nullptr;
-        shape sh = (shape)A_struct(_shape);
-        sh->count = 1;
-        sh->data[0] = 0;
-        return model(mod, e, src, elem_model, shape, sh);
+        ARef sh = new_shape(0, 0);
+        return model(mod, e, src, elem_model, shape, (shape)sh);
     }
     
     // Pointer types
@@ -997,11 +952,6 @@ public:
         std::string name = macroNameTok.getIdentifierInfo()->getName().str();
         string n = string(name.c_str());
         emember existing = lookup2(mod, (A)n, (AType)null);
-
-        if (eq(n, "_CACHED_RUNES")) {
-            int test2 = 2;
-            test2    += 2;
-        }
         
         if (existing)
             return;

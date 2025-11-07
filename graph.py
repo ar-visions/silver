@@ -29,7 +29,7 @@ def get_env_vars():
     parser = argparse.ArgumentParser(description='Generate header files')
     parser.add_argument('--project-path',   required=True, help='Project root path')
     parser.add_argument('--build-path',     required=True, help='Build output path')
-    parser.add_argument('--project',        required=True, help='Project name')
+    parser.add_argument('--project-name',   required=True, help='Project name')
     parser.add_argument('--import',         required=True, help='Import path')
     parser.add_argument('--debug',          action='store_true', default=True,  help='debug')
     parser.add_argument('--release',        action='store_true', default=False, help='release')
@@ -42,9 +42,9 @@ def get_env_vars():
     return {
         'SILVER':       Path(__file__).resolve().parent,
         'PROJECT_PATH': args.project_path,
+        'PROJECT_NAME': args.project_name,
         'DIRECTIVE':    'src',
         'BUILD_PATH':   args.build_path,
-        'PROJECT':      args.project,
         'SDK':          args.sdk,
         'DEBUG':        args.debug,
         'ASAN':         args.asan,

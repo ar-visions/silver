@@ -21,4 +21,5 @@ when we are enabled in this way, we would call the device an AI-PC
 
 it's our God given right to contribute together in public and private. individuals are primary to define the models used across the globe.
 
-# Kalen Novis White
+*— Kalen Novis White*  
+[www.silver-lang.org](https://www.silver-lang.org)

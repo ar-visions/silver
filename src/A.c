@@ -51,7 +51,7 @@ i64 shape_compare(shape a, shape b) {
     return 0;
 }
 
-shape shape_from(i64 count, i64* values) {
+shape shape_from(i64 count, ref_i64 values) {
     shape res = new(shape, count, count, data, values, is_global, false);
     res->count = count;
     if (values)
@@ -59,7 +59,8 @@ shape shape_from(i64 count, i64* values) {
     return res;
 }
 
-shape shape_read(FILE* f) {
+shape shape_read(ARef ff) {
+    FILE* f = ff;
     i32 n_dims;
     i64 data[256];
     verify(fread(&n_dims, sizeof(i32), 1, f) == 1, "n_dims");
@@ -69,7 +70,7 @@ shape shape_read(FILE* f) {
     return res;
 }
 
-shape shape_new(i64 size, ...) {
+shape new_shape(i64 size, ...) {
     va_list args;
     va_start(args, size);
     i64 n_dims = 0;
@@ -945,7 +946,7 @@ A alloc(AType type, num count, AType* meta) {
         for (int i = 0; i < type->meta.count; i++) {
             AType m = meta[i];
             AType object_type = isa(m);
-            AType ref = ((AType*)type->meta)[i];
+            AType ref = ((AType*)&type->meta)[i];
             if (object_type) {
                 verify (inherits(object_type, ref), "expected object of compatible-type %s", m->name);
             } else {
@@ -1026,7 +1027,7 @@ A A_method_call(member m, array args) {
     if (a->rtype->traits & A_TRAIT_PRIMITIVE)
         return primitive(a->rtype, result);
     else if (a->rtype->traits & A_TRAIT_ENUM) {
-        A res = alloc(a->rtype, 1);
+        A res = alloc(a->rtype, 1, null);
         verify(r->rtype->src == typeid(i32), "i32 enums supported");
         *((i32*)res) = *(i32*)result;
         return res;
@@ -1362,28 +1363,30 @@ map A_arguments(int argc, cstrs argv, map default_values, A default_key) {
 
 A primitive(AType type, none* data) {
     //assert(type->traits & A_TRAIT_PRIMITIVE, "must be primitive");
-    A copy = alloc(type, type->size);
+    A copy = alloc(type, type->size, null);
     memcpy(copy, data, type->size);
     return copy;
 }
 
-A A_i8(i8 data)     { return primitive(typeid(i8),  &data); }
-A A_u8(u8 data)     { return primitive(typeid(u8),  &data); }
-A A_i16(i16 data)   { return primitive(typeid(i16), &data); }
-A A_u16(u16 data)   { return primitive(typeid(u16), &data); }
-A A_i32(i32 data)   { return primitive(typeid(i32), &data); }
-A A_u32(u32 data)   { return primitive(typeid(u32), &data); }
-A A_i64(i64 data)   { return primitive(typeid(i64), &data); }
-A i(i64 data)       { return primitive(typeid(i64), &data); }
-A A_sz (sz  data)   { return primitive(typeid(sz),  &data); }
-A A_u64(u64 data)   { return primitive(typeid(u64), &data); }
-A A_f32(f32 data)   { return primitive(typeid(f32), &data); }
-A A_f64(f64 data)   { return primitive(typeid(f64), &data); }
-A A_f80(f80 data)   { return primitive(typeid(f80), &data); }
-A float32(f32 data) { return primitive(typeid(f32), &data); }
-A real64(f64 data)  { return primitive(typeid(f64), &data); }
+A A_i8   (i8 data)   { return primitive(typeid(i8),   &data); }
+A A_u8   (u8 data)   { return primitive(typeid(u8),   &data); }
+A A_i16  (i16 data)  { return primitive(typeid(i16),  &data); }
+A A_u16  (u16 data)  { return primitive(typeid(u16),  &data); }
+A A_i32  (i32 data)  { return primitive(typeid(i32),  &data); }
+A A_u32  (u32 data)  { return primitive(typeid(u32),  &data); }
+A A_i64  (i64 data)  { return primitive(typeid(i64),  &data); }
+A i      (i64 data)  { return primitive(typeid(i64),  &data); }
+A A_sz   (sz  data)  { return primitive(typeid(sz),   &data); }
+A A_u64  (u64 data)  { return primitive(typeid(u64),  &data); }
+A A_fp16 (fp16* data) { return primitive(typeid(fp16), data); }
+A A_bf16 (bf16* data) { return primitive(typeid(bf16), data); }
+A A_f32  (f32 data)  { return primitive(typeid(f32),  &data); }
+A A_f64  (f64 data)  { return primitive(typeid(f64),  &data); }
+A A_f80  (f80 data)  { return primitive(typeid(f80),  &data); }
+A float32(f32 data) { return primitive(typeid(f32),  &data); }
+A real64(f64 data)  { return primitive(typeid(f64),  &data); }
 A A_cstr(cstr data) { return primitive(typeid(cstr), &data); }
-A A_none()          { return primitive(typeid(none), NULL); }
+A A_none()          { return primitive(typeid(none), NULL);  }
 A A_bool(bool data) { return primitive(typeid(bool), &data); }
 
 /// A -------------------------
@@ -1604,7 +1607,7 @@ A construct_with(AType type, A data, ctx context) {
     /// construct with map of fields
     if (!(type->traits & A_TRAIT_PRIMITIVE) && data_type == typeid(map)) {
         map m = data;
-        result = alloc(type, 1);
+        result = alloc(type, 1, null);
         pairs(m, i) {
             verify(isa(i->key) == typeid(string),
                 "expected string key when constructing A from map");
@@ -1623,13 +1626,13 @@ A construct_with(AType type, A data, ctx context) {
                 none* addr = mem->ptr;
                 /// no meaningful way to do this generically, we prefer to call these first
                 if (mem->type == typeid(path) && data_type == typeid(string)) {
-                    result = alloc(type, 1);
+                    result = alloc(type, 1, null);
                     result = ((A(*)(A, path))addr)(result, path(((string)data)));
                     verify(A_validator(result), "invalid A");
                     break;
                 }
                 if (mem->type == data_type) {
-                    result = alloc(type, 1);
+                    result = alloc(type, 1, null);
                     result = ((A(*)(A, A))addr)(result, data);
                     verify(A_validator(result), "invalid A");
                     break;
@@ -1662,7 +1665,7 @@ A construct_with(AType type, A data, ctx context) {
             v = evalue (type, (cstr)((string)data)->chars);
         else
             v = evalue (type, null);
-        result = alloc(type, 1);
+        result = alloc(type, 1, null);
         *((i32*)result) = (i32)v;
     }
 
@@ -1671,7 +1674,7 @@ A construct_with(AType type, A data, ctx context) {
     if ((type->traits & A_TRAIT_PRIMITIVE) && (data_type == typeid(string) ||
                                                data_type == typeid(cstr)   ||
                                                data_type == typeid(symbol))) {
-        result = alloc(type, 1);
+        result = alloc(type, 1, null);
         if (data_type == typeid(string))
             A_with_cereal(result, (cereal) { .value = (cstr)((string)data)->chars } );
         else
@@ -1689,13 +1692,13 @@ A construct_with(AType type, A data, ctx context) {
             u64 combine = mem->type->traits & data_type->traits;
             if (combine & A_TRAIT_INTEGRAL) {
                 i64 v = read_integer(data);
-                result = alloc(type, 1);
+                result = alloc(type, 1, null);
                      if (mem->type == typeid(i8))   ((none(*)(A, i8))  addr)(result, (i8)  v);
                 else if (mem->type == typeid(i16))  ((none(*)(A, i16)) addr)(result, (i16) v);
                 else if (mem->type == typeid(i32))  ((none(*)(A, i32)) addr)(result, (i32) v);
                 else if (mem->type == typeid(i64))  ((none(*)(A, i64)) addr)(result, (i64) v);
             } else if (combine & A_TRAIT_REALISTIC) {
-                result = alloc(type, 1);
+                result = alloc(type, 1, null);
                 if (mem->type == typeid(f64))
                     ((none(*)(A, double))addr)(result, (double)*(float*)data);
                 else
@@ -1703,17 +1706,17 @@ A construct_with(AType type, A data, ctx context) {
                 break;
             } else if ((mem->type == typeid(symbol) || mem->type == typeid(cstr)) && 
                        (data_type == typeid(symbol) || data_type == typeid(cstr))) {
-                result = alloc(type, 1);
+                result = alloc(type, 1, null);
                 ((none(*)(A, cstr))addr)(result, data);
                 break;
             } else if ((mem->type == typeid(string)) && 
                        (data_type == typeid(symbol) || data_type == typeid(cstr))) {
-                result = alloc(type, 1);
+                result = alloc(type, 1, null);
                 ((none(*)(A, string))addr)(result, string((symbol)data));
                 break;
             } else if ((mem->type == typeid(symbol) || mem->type == typeid(cstr)) && 
                        (data_type == typeid(string))) {
-                result = alloc(type, 1);
+                result = alloc(type, 1, null);
                 ((none(*)(A, cstr))addr)(result, (cstr)((string)data)->chars);
                 break;
             }
@@ -1826,7 +1829,7 @@ A member_object(A a, member m) {
     A result;
     ARef   member_ptr = (cstr)a + m->offset;
     if (is_inlay || is_primitive) {
-        result = alloc(m->type, 1);
+        result = alloc(m->type, 1, null);
         memcpy(result, member_ptr, m->type->size);
     } else {
         result = *member_ptr;
@@ -2141,7 +2144,7 @@ A formatter(AType type, handle ff, A opt, symbol template, ...) {
         return primitive(typeid(i32), &v);
     }
     return type ? (A)
-        ((A_f*)type)->with_cereal(alloc(type, 1), (cereal) { .value = (cstr)res->chars }) :
+        ((A_f*)type)->with_cereal(alloc(type, 1, null), (cereal) { .value = (cstr)res->chars }) :
         (A)res;
 }
 
@@ -2964,7 +2967,7 @@ A A_copy(A a) {
     A f = header(a);
     assert(f->count > 0, "invalid count");
     AType type = isa(a);
-    A b = alloc(type, f->count);
+    A b = alloc(type, f->count, null);
     memcpy(b, a, f->type->size * f->count);
     hold_members(b);
     return b;
@@ -3387,7 +3390,7 @@ vector vector_slice(vector a, num from, num to) {
     A      f   = header(a);
     /// allocate the data type (no i8 bytes)
     num count = (1 + abso(from - to)); // + 31 & ~31;
-    A res = alloc(f->type, 1);
+    A res = alloc(f->type, 1, null);
     A res_f = header(res);
 
     /// allocate 
@@ -3487,7 +3490,7 @@ A file_file_read(file f, AType type) {
         bytes[nbytes] = 0;
         return string(bytes); 
     }
-    A o = alloc(type, 1);
+    A o = alloc(type, 1, null);
     sz size = isa(o)->size;
     f->location += size;
     verify(type->traits & A_TRAIT_PRIMITIVE, "not a primitive type");
@@ -4546,7 +4549,7 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
             if (type->traits & A_TRAIT_ENUM) {
                 // its possible we could reference a context variable within this enum [ value-area ]
                 // in which case, we could effectively look it up
-                A evalue = alloc(type, 1);
+                A evalue = alloc(type, 1, null);
                 string enum_symbol = parse_symbol(scan, &scan, context);
                 verify(enum_symbol, "enum symbol expected");
                 verify(*scan == ']', "expected ']' after enum symbol");
@@ -4558,7 +4561,7 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
 
                 res = evalue;
             } else if (type->traits & A_TRAIT_STRUCT) {
-                A svalue = alloc(type, 1);
+                A svalue = alloc(type, 1, null);
                 for (int i = 0; i < type->member_count; i++) {
                     member m = &type->members[i];
                     if (!(m->member_type & A_FLAG_PROP)) continue;
@@ -4772,7 +4775,7 @@ static A parse_array(cstr s, AType schema, AType meta_type, cstr* remainder, ctx
     } else if (schema->vmember_type == typeid(i64)) { // should support all vector types of i64 (needs type bounds check with vmember_count)
         array arb = parse_array_objects(&scan, typeid(i64), context);
         int vcount = len(arb);
-        res = alloc2(schema, typeid(i64), shape_new(vcount, 0));
+        res = alloc2(schema, typeid(i64), new_shape(vcount, 0));
         int n = 0;
         each(arb, A, a) {
             verify(isa(a) == typeid(i64), "expected i64");
@@ -4781,7 +4784,7 @@ static A parse_array(cstr s, AType schema, AType meta_type, cstr* remainder, ctx
     } else if (schema->vmember_type == typeid(f32)) { // should support all vector types of f32 (needs type bounds check with vmember_count)
         array arb = parse_array_objects(&scan, typeid(f32), context);
         int vcount = len(arb);
-        res = alloc(typeid(f32), vcount);
+        res = alloc(typeid(f32), vcount, null);
         int n = 0;
         each(arb, A, a) {
             AType a_type = isa(a);
@@ -4803,8 +4806,8 @@ static A parse_array(cstr s, AType schema, AType meta_type, cstr* remainder, ctx
         // this should contain multiple arrays of scalar values; we want to convert each array to our 'scalar_type'
         // for instance, we may parse [[1,2,3,4,5...16],...] mat4x4's; we merely need to validate vmember_count and vmember_type and convert
         // if we have a vmember_count of 0 then we are dealing with a single primitive type
-        vector vres = alloc(schema, 1);
-        vres->shape = shape_new(count, 0);
+        vector vres = alloc(schema, 1, null);
+        vres->shape = new_shape(count, 0);
         A_initialize(vres);
         i8* data = vdata(vres);
         int index = 0;
@@ -5102,11 +5105,12 @@ none shape_dealloc(shape a) {
 // make it easy for users creating shapes from stack
 none shape_init(shape a) {
     if (!a->is_global) {
-        i64* cp = malloc(sizeof(i64) * (a->count + 1));
+        i64 sz = a->count ? a->count : 16;
+        i64* cp = malloc(sizeof(i64) * (sz + 1));
         if (a->data)
             memcpy(cp, a->data, sizeof(i64) * a->count);
         else
-            memset(cp, 0, sizeof(i64) * a->count);
+            memset(cp, 0, sizeof(i64) * sz);
         cp[a->count] = 0;
         a->data = cp;
     }
@@ -5143,8 +5147,8 @@ define_primitive(ref_i64,    numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRA
 define_primitive(ref_bool,   numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  bool)
 //define_primitive(ref_num,    numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,  num)
 //define_primitive(ref_sz,     numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,  sz)
-define_primitive(ref_f32,    numeric, A_TRAIT_POINTER | A_TRAIT_REALISTIC,                    f32)
-define_primitive(ref_f64,    numeric, A_TRAIT_POINTER | A_TRAIT_REALISTIC,                    f64)
+define_primitive(ref_f32,    numeric, A_TRAIT_POINTER | A_TRAIT_REALISTIC, f32)
+define_primitive(ref_f64,    numeric, A_TRAIT_POINTER | A_TRAIT_REALISTIC, f64)
 
 
 define_primitive( u8,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
@@ -5158,6 +5162,8 @@ define_primitive(i64,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
 define_primitive(bool,   numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
 define_primitive(num,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
 define_primitive(sz,     numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
+define_primitive(bf16,   numeric, A_TRAIT_REALISTIC)
+define_primitive(fp16,   numeric, A_TRAIT_REALISTIC)
 define_primitive(f32,    numeric, A_TRAIT_REALISTIC)
 define_primitive(f64,    numeric, A_TRAIT_REALISTIC)
 define_primitive(f80,    numeric, A_TRAIT_REALISTIC)
@@ -5170,6 +5176,7 @@ define_primitive(none,   nil, 0)
 define_primitive(handle, raw, A_TRAIT_POINTER, u8)
 define_primitive(member, raw, 0)
 define_primitive(ARef,   ref, A_TRAIT_POINTER, A)
+define_primitive(ATypes, ref, A_TRAIT_POINTER, AType)
 define_primitive(floats, raw, 0)
 
 define_primitive(func,     raw, 0)
@@ -5193,7 +5200,7 @@ define_class(shape, A)
 define_class(item, A)
 //define_proto(collection) -- disabling for now during reduction to base + class + mod
 define_class(list,          A, A)
-define_class(array,         A, A, Dims)
+define_class(array,         A, A, shape)
 define_class(hashmap,       A)
 define_class(map,           A)
 define_class(ctx,           map)
