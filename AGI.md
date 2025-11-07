@@ -16,7 +16,7 @@ This publicly committed approach is *more provable* for IP than closed systems, 
 
 The process of media composition will become easier, more intuitive over time — with desktop eye-tracking AIs we can converse with for “public” screen elements. You use both your hands, eyes, and voice as cursors integrated in the machine. The next HID (Human Interface Device) is, in fact, the human themselves — without any gear at all.
 
-For interactive presentation on screen, the application view may counter-distort its projection with an ability to observe from different angles — like a virtual hologram using a 2D parallax technique applied in shaders. This is my particular focus as composer agent.  
+For immersive observer-feedback on screen, the application view may counter-distort its projection with an ability to observe from different angles — like a virtual hologram using a 2D parallax technique applied in shaders. This is my particular focus as composer agent.  
 
 The product for this is **Orbiter** — it lets you run web4 apps with an ability to edit the source if it’s available.
 
