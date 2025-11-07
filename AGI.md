@@ -9,8 +9,6 @@ this publicly committed approach is more-provable for IP than closed systems, es
 
 being open-data is the only way that IP law can work in an AI age.  nobody can prove weights-only, private-corporate models in court.  the training must be open for proof, with identifiable sources for IP origin.
 
-when we desire, we commit our own annotations for any media. this is a giant decentralized media index with running apps in the nodes.
-
 # AI-PC
 the process of media composition will become easier, more intuitive over time with desktop eye-tracking AIs we can converse with for 'public' screen elements.  you use both your hands, eyes and voice as cursors integrated in the machine.  so, the next HID device (Human Interface Device)
 would infact be the human themselves, without any gear at all.
