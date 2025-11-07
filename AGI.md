@@ -18,7 +18,7 @@ The process of media composition will become easier, more intuitive over time �
 
 For immersive observer-feedback on screen, the application view may counter-distort its projection with an ability to observe from different angles — like a virtual hologram using a 2D parallax technique applied in shaders. This is the particular focus of  [trinity](https://github.com/ar-visions/trinity) toolkit ✝ leveraging model from [hyperspace](https://github.com/ar-visions/hyperspace).
 
-The product for this is **Orbiter** — it lets you run web4 apps with an ability to edit the source if it’s available.  We define apps as either console, graphical with desktop-spatial used when there are IR cameras <sub>[1]</sub>
+The product for this is **Orbiter** — it lets you run web4 apps with an ability to edit the source if it’s available.  We define apps as either console, graphical with desktop-spatial used when there are IR cameras <sub>[1]</sub>.  As such, source editing will be rendered in both console, and graphical modes.
 
 <sub>[1]: Logitech Brio supported on Linux with it's low emission pulse-IR</sub>
 
