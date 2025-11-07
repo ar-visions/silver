@@ -22,10 +22,6 @@ The product for this is **Orbiter** — it lets you run web4 apps with an abilit
 
 <sub>[1]: Logitech Brio supported on Linux with it's low emission pulse-IR</sub>
 
-When we are enabled in this way, we would call the device an **AI-PC**.
-
-It’s our God-given right to contribute together — in public and private. Individuals, represented by themselves or within group, are the primary authors of real domain knowledge.
-
 ---
 
 *— Kalen Novis White*  
