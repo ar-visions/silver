@@ -108,9 +108,9 @@ set "PATH=%~dp0sdk\%SDK%\bin\perl\bin;%~dp0sdk\%SDK%\bin;%PATH%"
 
 pushd "%~dp0"
 for %%I in ("%CD%") do set "TOPDIR=%%~nxI"
-echo python3 import.py --import %IMPORT% --%TYPE% --project-path %CD% --build-path %BUILD% --project %TOPDIR% %SDK%
-python3 import.py --import %IMPORT% --%TYPE% --project-path %CD% --build-path %BUILD% --project %TOPDIR% %SDK%
-python3 gen.py    --import %IMPORT% --%TYPE% --project-path %CD% --build-path %BUILD% --project %TOPDIR% %SDK%
+echo python3 import.py --import %IMPORT% --%TYPE% --project-path %CD% --build-path %BUILD% --project-name %TOPDIR% %SDK%
+python3 import.py --import %IMPORT% --%TYPE% --project-path %CD% --build-path %BUILD% --project-name %TOPDIR% %SDK%
+python3 gen.py    --import %IMPORT% --%TYPE% --project-path %CD% --build-path %BUILD% --project-name %TOPDIR% %SDK%
 set EXITCODE=%ERRORLEVEL%
 popd
 

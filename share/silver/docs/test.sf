@@ -9,18 +9,18 @@ import <stdio.h, ctype.h>
 import KhronosGroup:Vulkan-Headers/main
     <vulkan/vulkan.h>
 
-
 # import can ONLY be defined at the module level, never inside fn or classes
 # here after its checked out, we run an > arb-command
 import KhronosGroup:MoltenVK/main
-    > ./fetchDependencies --macos
+    > { mac ?? $(./fetchDependencies --macos) }
     -DANOTHER=2
+    -DTHIS_IS_HOW_PEOPLE_NORMALLY_SEE_IT=1
 
 import KhronosGroup:Vulkan-Loader
     -DSOMETHING=1
 
 import KhronosGroup:Vulkan-Tools
-    -DBUILD_CUBE=OFF
+    -DBUILD_CUBE=ON
 
 class Vulkan
 	intern instance : VkInstance # interns are only seen by this module (not the object alone), public is default
@@ -50,7 +50,9 @@ class Vulkan
 # this is how we subclass in silver; base-type first, then our new type
 # in this case, main is an abstract class to indicate we are an app, and not a library
 main test_vulkan
-    public  variable-name      : i32 [ 2 ] # these are not arrays, they are singular values; we use [ ] instead of ( ) for object construction
+    public  member             : fp16 [ 1.2 ] # fp16 type
+    public   
+    public  variable-name      : 2.1 # these are not arrays, they are singular values; we use [ ] instead of ( ) for object construction
 	public  queue_family_index : i32 [ 2 ] # local members in functions cannot specify public or intern
 	intern  an_intern_member   : i64 [ 4 ]
   # intern  an_array		   : array <i32 4x2>  [ 4 2, 4 4, 2 2, 8 8 ] # this IS an array, we specify the container, type, and stride

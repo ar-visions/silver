@@ -134,14 +134,16 @@ for arg in "$@"; do
     esac
 done
 
-export PROJECT="$(realpath $(pwd))" # we can run bootstrap from another project (silver build is its own host)
-export PROJECT_NAME="$(basename "$PROJECT")"
+if [ -z "$PROJECT_PATH" ]; then
+    export PROJECT_PATH="$(realpath $(pwd))" # we can run bootstrap from another project (silver build is its own host)
+    export PROJECT_NAME="$(basename "$PROJECT_PATH")"
+fi
 
 SELF_PATH="$(realpath $(dirname "$0"))"
 cd "$SELF_PATH"
 
 export SILVER="$(pwd)"
-export CHECKOUT="$PROJECT/checkout"
+export CHECKOUT="$PROJECT_PATH/checkout"
 export IMPORT="$SILVER/sdk/$SDK"
 export NATIVE="$SILVER/sdk/native"
 export BUILD="$IMPORT/$TYPE"
@@ -187,7 +189,11 @@ if ! [ -f "$NATIVE/bin/python3" ]; then
     tar -xf "Python-$PY_VER.tgz"
     cd "Python-$PY_VER"
 
-    CC=gcc ./configure --prefix=$NATIVE --enable-shared --with-ensurepip=install
+    CC=gcc ./configure \
+        --prefix=$NATIVE --enable-shared --with-ensurepip=install \
+        --with-tcltk-includes='-I/usr/include' \
+        --with-tcltk-libs='-L/usr/lib -ltcl8.6 -ltk8.6'
+
     make -j$(sysctl -n hw.ncpu)
     make install
 
@@ -341,6 +347,6 @@ fi
 
 (
     cd $SILVER
-    python3 import.py --import $IMPORT --$TYPE --project-path $PROJECT --build-path $BUILD --project $PROJECT_NAME $SDK
-    python3 gen.py    --import $IMPORT --$TYPE --project-path $PROJECT --build-path $BUILD --project $PROJECT_NAME $SDK
+    python3 import.py --import $IMPORT --$TYPE --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
+    python3 gen.py    --import $IMPORT --$TYPE --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
 )

@@ -34,7 +34,7 @@ def setup_paths(env_vars):
         'src_directive': src_directive,
         'gen_dir': gen_dir,
         'directive': directive,
-        'project': env_vars['PROJECT'],
+        'project': env_vars['PROJECT_NAME'],
         'import_path': env_vars['IMPORT']
     }
 
@@ -442,7 +442,7 @@ def main():
     """Main function"""
     env_vars = get_env_vars()
     global project
-    project = env_vars['PROJECT']
+    project = env_vars['PROJECT_NAME']
     paths = setup_paths(env_vars)
     # Process utility headers (.h files)
     process_utility_headers(paths)

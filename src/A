@@ -79,6 +79,10 @@ typedef char*                   cstr;
 typedef const char*             symbol;
 typedef bool                   *ref_bool;
 
+typedef __fp16                  fp16;
+typedef __bf16                  bf16;
+
+
 typedef struct cereal { char* value; } cereal;
 
 // typedef struct _object*         A;
@@ -418,6 +422,8 @@ void lazy_init(global_init_fn fn);
 
 void* primitive_ffi_arb(AType);
 
+typedef AType* ATypes;
+
 #ifndef NDEBUG
 #define IS_DEBUG 0
 #else
@@ -572,7 +578,7 @@ forward(any)
     i_final (AA,Y, public, bool,        is_meta) \
     i_final (AA,Y, public, bool,        is_meta_compatible,  A) \
     t_vargs (AA,Y, public, A,           formatter,           handle, A, symbol) \
-    t_method(AA,Y, public, A,           alloc,               num, AType) \
+    t_method(AA,Y, public, A,           alloc,               num, ATypes) \
     t_method(AA,Y, public, A,           alloc_new,           num) \
     t_method(AA,Y, public, A,           alloc_dbg,           num,     cstr,      i32) \
     t_method(AA,Y, public, A,           alloc2,              AType,   shape) \
@@ -642,10 +648,6 @@ declare_abstract(numeric)
 // array for instance has a Value type, and a Dims
 // this makes abstract types great again
 
-#define Dims_schema(AA,Y,...) \
-    s_method(AA,Y, public, none, bind_instance, A, AType) \
-declare_abstract(Dims)
-
 #define string_like_schema(X,Y,...)
 declare_abstract(string_like)
 
@@ -670,6 +672,8 @@ declare_abstract(imported)
 #define u16_schema(X,Y,...)         numeric_schema(numeric,Y,...)
 #define u32_schema(X,Y,...)         numeric_schema(numeric,Y,...)
 #define u64_schema(X,Y,...)         numeric_schema(numeric,Y,...)
+#define fp16_schema(X,Y,...)        numeric_schema(numeric,Y,...)
+#define bf16_schema(X,Y,...)        numeric_schema(numeric,Y,...)
 #define f32_schema(X,Y,...)         numeric_schema(numeric,Y,...)
 #define f64_schema(X,Y,...)         numeric_schema(numeric,Y,...)
 #define f80_schema(X,Y,...)         numeric_schema(numeric,Y,...)
@@ -704,15 +708,8 @@ declare_abstract(imported)
 #define hook_schema(X,Y,...)        raw_schema(X,Y,...)
 #define callback_schema(X,Y,...)    raw_schema(X,Y,...)
 #define cstrs_schema(X,Y,...)       raw_schema(X,Y,...)
+#define ATypes_schema(X,Y,...)      raw_schema(X,Y,...)
 #define floats_schema(X,Y,...)      raw_schema(X,Y,...)
-
-
-shape shape_with_array(shape a, array dims);
-i64 shape_total(shape a);
-i64 shape_compare(shape a, shape b);
-shape shape_from(i64 count, i64* values);
-shape shape_read(FILE* f);
-shape shape_new(i64 size, ...);
 
 
 /// meta gives us access to one token we can override with (F)
@@ -763,6 +760,8 @@ declare_primitive( u8,              numeric)
 declare_primitive(u16,              numeric)
 declare_primitive(u32,              numeric)
 declare_primitive(u64,              numeric)
+declare_primitive(fp16,             numeric)
+declare_primitive(bf16,             numeric)
 declare_primitive(f32,              numeric)
 declare_primitive(f64,              numeric)
 declare_primitive(f80,              numeric)
@@ -780,6 +779,7 @@ declare_primitive(func,             raw)
 declare_primitive(hook,             raw)
 declare_primitive(callback,         raw)
 declare_primitive(cstrs,            raw)
+declare_primitive(ATypes,           raw)
 
 /// whatever we can 'name', we can handle as a type of any pointer primitive
 //declare_primitive(AType,        raw)
@@ -798,14 +798,27 @@ declare_primitive(floats,       raw)
     i_override(X,Y, method, dealloc)
 declare_class(msg)
 
+#undef shape
 
+forward(shape)
+
+#ifndef __cplusplus
 #define shape_schema(AA,YY,...) \
     i_prop  (AA,YY, public, i64, count) \
     i_vprop (AA,YY, public, i64, data) \
     i_prop  (AA,YY, public, bool, is_global) \
+    i_method(AA,YY, public, shape, with_array, array) \
+    i_method(AA,YY, public, i64,   total) \
+    s_method(AA,YY, public, shape, from, i64, ref_i64) \
+    s_method(AA,YY, public, shape, read, ARef) \
+    s_vargs (AA,YY, public, shape, new_shape,  i64) \
+    i_override(AA,YY, method, compare) \
     i_override(AA,YY, method, dealloc)
 declare_class(shape)
-
+#else
+// shape mysteriously defined in cpp somewhere else
+ARef new_shape(i64, ...);
+#endif
 
 /// doubly-linked item type, integrated key so we dont also need a 'field' type
 #define item_schema(X,Y,...) \
@@ -1355,6 +1368,8 @@ A      A_sz(sz);
 A      A_u64(u64);
 A      A_f32(f32);
 A      A_f64(f64);
+A      A_fp16(fp16*);
+A      A_bf16(bf16*);
 A      A_f80(f80);
 A  float32(f32);
 A   real64(f64);
@@ -1363,11 +1378,6 @@ A      A_none();
 A      A_bool(bool);
 
 string json(A a);
-
-/// you can be a typedef and a macro -- it makes APIs simpler
-shape shape_new(i64 count, ...);
-shape shape_from(i64 count, i64* dims);
-shape shape_read(FILE* f);
 
 #define array_string_schema(X,Y,...)
 declare_class_2(array_string,     array, string)

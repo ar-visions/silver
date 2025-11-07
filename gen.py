@@ -12,8 +12,9 @@ is_debug        = args['DEBUG']
 sdk             = args['SDK']
 fname           = "debug" if is_debug else "release"
 system          = platform.system()
+silver_root     = Path(args['SILVER'])
 silver          = Path(args['IMPORT'])
-project         = args['PROJECT']
+project         = args['PROJECT_NAME']
 project_path    = Path(args['PROJECT_PATH'])
 source_dir      = project_path / Path('src')
 source_files    = list(source_dir.glob('**/*.c*'))  # recursively finds .c files
@@ -139,6 +140,10 @@ def resolve_deps(modules, deps, plat, root_p, builddir):
 def write_ninja(project, root, import_dir, build_dir, plat):
     """generate build.ninja file"""
     # setup
+    global silver_root
+    silver_root = Path(silver_root).resolve()
+    root = Path(root).resolve()
+
     os.makedirs(build_dir, exist_ok=True)
     
     with open(build_dir / "compile.rsp", "w") as f:
@@ -152,27 +157,44 @@ def write_ninja(project, root, import_dir, build_dir, plat):
             f.write(f"{lib}\n")
     
     # paths
+    
     root_p = norm_path(root)
+    silver_root_p = norm_path(silver_root)
     build_p = norm_path(build_dir)
     import_p = norm_path(import_dir)
     python = norm_path(next((p for p in [import_dir / "bin" / f"python{plat['exe']}"] if p.exists()), 
                             "python3" if plat['exe'] == '' else "python"))
     
     # find files
-    modules = order_modules(get_modules(root / "src"))
-    headers = glob.glob(f"{root}/src/*.h") # + glob.glob(f"{import_dir}/include/*.h")
+    if root != silver_root:
+        modules = order_modules(get_modules(silver_root / "src") +
+                                get_modules(root / "src"))
+        headers = glob.glob(f"{silver_root}/src/*.h") + \
+                glob.glob(f"{root}/src/*.h")
 
-    non_ext = [str(f) for f in (root / "src").iterdir() if f.is_file() and '.' not in f.name]
+        # collect non-ext files from both src trees
+        non_ext = []
+        for src_dir in [silver_root / "src", root / "src"]:
+            non_ext += [str(f) for f in src_dir.iterdir()
+                        if f.is_file() and '.' not in f.name]
+
+        print(f'project is not silver {root} != {silver_root}')
+    else:
+        modules = order_modules(get_modules(root / "src"))
+        headers = glob.glob(f"{root}/src/*.h")
+        non_ext = [str(f) for f in (root / "src").iterdir()
+                if f.is_file() and '.' not in f.name]
+
     global_deps = ' '.join(norm_path(d) for d in headers + non_ext)
     
     # check for a main target
     main_mod, target_type = None, None
-    silver_g = root / "src" / "silver.g"
-    if silver_g.exists():
-        _, links, cflags, target_type, _ = parse_g_file(silver_g)
+    project_g = root / "src" / f'{project}.g'
+    if project_g.exists():
+        _, links, cflags, target_type, _ = parse_g_file(project_g)
         if target_type:
             for m in modules:
-                if m['name'] == 'silver':
+                if m['name'] == project:
                     main_mod = m
                     m['links'].extend(links)
                     break
@@ -206,7 +228,8 @@ def write_ninja(project, root, import_dir, build_dir, plat):
         #plat['lflags'].append("-fsanitize=address")
         #plat['libs'].append("-lasan")
 
-    includes = [f"-I{build_p}/src/{project}", f"-I{root_p}/src", 
+    includes = [f"-I{build_p}/src/silver", f"-I{build_p}/src/{project}", 
+                f"-I{root_p}/src", f"-I{silver_root_p}/src", 
                 f"-I{build_p}/src", f"-I{import_p}/include"]
     
     cflags = ' '.join(opt_flags + base_flags + plat['cflags'] + includes)
@@ -221,6 +244,7 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     n.append(f"clang = {plat['cc']}")
     n.append(f"clangcpp = {plat['cxx']}")
     n.append(f"python = {python}")
+    n.append(f"silver_root = {silver_root_p}")
     n.append(f"root = {root_p}")
     n.append(f"importdir = {import_p}")
     n.append(f"builddir = {build_p}")
@@ -273,7 +297,7 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     
     # header gen
     n.append("rule headers")
-    n.append(f"  command = $python $root/headers.py --project-path $root --build-path $builddir --project $project --import $importdir && touch $out")
+    n.append(f"  command = $python $silver_root/headers.py --project-path $root --build-path $builddir --project-name $project --import $importdir && touch $out")
     n.append("  description = generating headers")
     n.append("  generator = 1")
     n.append("")
@@ -359,7 +383,7 @@ def write_ninja(project, root, import_dir, build_dir, plat):
 
     n.append("default all\n")
     
-    build_ninja = build_dir / "build.ninja"
+    build_ninja = build_dir / f'{project}.ninja'
     with open(build_ninja, 'w') as f:
         f.write('\n'.join(n) + '\n')
     
