@@ -745,6 +745,25 @@ A A_initialize(A a) {
     return a;
 }
 
+__thread __error_t* A_error_top = NULL;
+
+void halt(string msg) {
+    if (!A_error_top) {
+        // we already printed the message call
+        //fprintf(stderr, "unhandled A-type exception: %s\n", msg);
+#ifndef NDEBUG
+        raise(SIGTRAP);
+        exit(1);
+#else
+        abort();
+#endif
+    }
+    A_error_top->message = msg;
+    longjmp(A_error_top->env, 1);
+}
+
+
+
 pid_t _last_pid = 0;
 
 i64 command_last_pid() {
@@ -1290,7 +1309,7 @@ none hold_members(A a) {
 A set_property(A a, symbol name, A value) {
     AType type = isa(a);
     member m = find_member(type, A_FLAG_PROP, (cstr)name, true);
-    member_set(a, m, value);
+    member_set(a, m, value); // get the address of mod->source
     return value;
 }
 
@@ -1811,6 +1830,7 @@ bool member_set(A a, member m, A value) {
     } else if ((A)*member_ptr != value) {
         //verify(A_inherits(vtype, m->type), "type mismatch: setting %s on member %s %s",
         //    vtype->name, m->type->name, m->name);
+        print("member ptr %s = %p", m->name, member_ptr);
         drop(*member_ptr);
         *member_ptr = hold(value);
     }
@@ -3754,6 +3774,32 @@ static path _path_latest_modified(path a, ARef mvalue, map visit) {
     return latest_f;
 }
 
+i64 path_wait_for_change(path a, i64 last_mod, i64 millis) {
+    int    fd = inotify_init1(IN_NONBLOCK);
+    int    wd = inotify_add_watch(fd, a->chars, IN_MODIFY | IN_CLOSE_WRITE);
+    char   buf[4096];
+    struct stat st;
+
+    while (1) {
+        i64 m = modified_time(a);
+        if (m != last_mod && m != 0) {
+            last_mod = m;
+            break;
+        }
+        // drain any pending events (old ones)
+        read(fd, buf, sizeof(buf));
+
+        // block until something *new* arrives
+        int ln = read(fd, buf, sizeof(buf));
+        if (ln > 0) continue;
+        usleep(100000); // 100 ms safety
+    }
+
+    inotify_rm_watch(fd, wd);
+    close(fd);
+    return last_mod;
+}
+
 path path_latest_modified(path a, ARef mvalue) {
     return _path_latest_modified(a, mvalue, map(hsize, 64));
 }
@@ -5104,6 +5150,7 @@ none shape_dealloc(shape a) {
 
 // make it easy for users creating shapes from stack
 none shape_init(shape a) {
+    print("shape_init has been called");
     if (!a->is_global) {
         i64 sz = a->count ? a->count : 16;
         i64* cp = malloc(sizeof(i64) * (sz + 1));

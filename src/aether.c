@@ -501,6 +501,10 @@ void model_init(model mdl) {
             mdl->type = LLVMPointerType(LLVMPointerType(LLVMInt8Type(), 0), 0);
         } else if (type == typeid(handle)) {
             mdl->type = LLVMPointerType(LLVMPointerType(LLVMInt8Type(), 0), 0);
+        } else if (type == typeid(bf16)) {
+            mdl->type = LLVMBFloatTypeInContext(e->module_ctx);
+        } else if (type == typeid(fp16)) {
+            mdl->type = LLVMHalfTypeInContext(e->module_ctx);
         } else {
             fault("unsupported primitive %s", type->name);
         }
@@ -2861,8 +2865,12 @@ void enumeration_init(enumeration mdl) {
 void aether_build_info(aether e, path install) {
     if (e->install != install)
         e->install = install;
+
+    e->include_paths    = a(f(path, "%o/include", install));
+    e->sys_inc_paths    = a();
+    e->sys_exc_paths    = a();
+
 #ifdef _WIN32
-    e->include_paths = hold(a());
     e->sys_inc_paths = a(
         f(path, "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/include"),
         f(path, "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/um"),
@@ -2874,7 +2882,6 @@ void aether_build_info(aether e, path install) {
         f(path, "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.22621.0/ucrt/x64"),
         f(path, "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.22621.0/um/x64"));
 #elif defined(__linux)
-    e->include_paths = a();
     e->sys_inc_paths = a(f(path, "/usr/include"), f(path, "/usr/include/x86_64-linux-gnu"));
     e->lib_paths     = a();
 #elif defined(__APPLE__)
@@ -2887,7 +2894,7 @@ void aether_build_info(aether e, path install) {
 
     string sdk          = run("xcrun --show-sdk-path");
     string toolchain    = f(string, "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain"); // run("xcrun --show-toolchain-path");
-    e->include_paths    = a(f(path, "%o/include", install));
+    
     e->isystem          =   f(path, "%o/usr/include", toolchain);
     e->sys_inc_paths    = a(f(path, "%o/usr/include", toolchain),
                             f(path, "%o/usr/local/include", sdk),
@@ -2904,11 +2911,6 @@ void aether_build_info(aether e, path install) {
     // include our own clang as part of system, but include after the os
     //push(e->include_paths, f(path, "%o/lib/clang/22/include", e->install));
     
-    // include silver include as a user include
-    // we use the sdk on the system, as this is the only way to compile for the system
-    // we may still do this for linux
-    //push(e->include_paths, f(path, "%o/include", e->install));
-
     // add silver lib path (no differentiation between user and system, but we order after system)
     push(e->lib_paths,     f(path, "%o/lib",     e->install));
 
@@ -3931,6 +3933,7 @@ enode aether_negate(aether e, enode L) {
     else {
         fault("A negation not valid");
     }
+    return null;
 }
 
 enode aether_e_not(aether e, enode L) {

@@ -15,6 +15,7 @@
 #include <pthread.h>
 #endif
 #include <math.h>
+#include <setjmp.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846264338327950288
@@ -37,6 +38,7 @@ struct _AType;
 
 #define len(I,...) ({ __typeof__(I) _i_ = I; _i_ ? (num)ftableI(_i_)->len(_i_, ## __VA_ARGS__) : (num)0; })
 
+
 #undef bool
 #undef false
 #undef true
@@ -52,6 +54,33 @@ struct _AType;
 #endif
 #define FNV_PRIME           0x100000001b3
 #define OFFSET_BASIS        0xcbf29ce484222325
+
+forward(string)
+
+typedef struct __error_t {
+    jmp_buf env;
+    struct __error_t* prev;
+    string message;
+} __error_t;
+
+extern __thread __error_t* A_error_top;
+
+#define attempt() \
+    { \
+        __error_t _frame; \
+        _frame.prev = A_error_top; \
+        A_error_top = &_frame; \
+        if (setjmp(_frame.env) == 0)
+
+#define on_error() \
+    else
+
+#define finally() \
+        A_error_top = _frame.prev; \
+    }
+
+
+void toss(string msg);
 
 /// A-type runtime
 typedef void                    none;
@@ -813,6 +842,7 @@ forward(shape)
     s_method(AA,YY, public, shape, read, ARef) \
     s_vargs (AA,YY, public, shape, new_shape,  i64) \
     i_override(AA,YY, method, compare) \
+    i_override(AA,YY, method, init) \
     i_override(AA,YY, method, dealloc)
 declare_class(shape)
 #else
@@ -1307,6 +1337,7 @@ declare_class(async)
     i_method    (X,Y, public, bool,   move, path) \
     i_method    (X,Y, public, path,   latest_modified, ARef) \
     i_method    (X,Y, public, i64,    modified_time) \
+    i_method    (X,Y, public, i64,    wait_for_change, i64, i64) \
     s_method    (X,Y, public, path,   self) \
     s_method    (X,Y, public, path,   share_path) \
     s_method    (X,Y, public, path,   cwd) \
@@ -1321,6 +1352,7 @@ declare_class(async)
     i_override  (X,Y, cast,     bool) \
     i_override  (X,Y, cast,     string)
 declare_class_2(path, string)
+
 
 
 #define subscriber_schema(X,Y,...) \
@@ -1570,6 +1602,8 @@ declare_abstract(weak)
 declare_abstract(functional)
 
 #define cast(T,I) fcall(I, cast_##T)
+
+none halt(string);
 
 #ifdef __cplusplus
 }
