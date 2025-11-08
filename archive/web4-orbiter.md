@@ -8,5 +8,3 @@ these apps are built and rendered in orbiter, a browser written in silver, where
 in this new web4 space, we expand upon technology foundations to empower the user -- to become the collective soul of the machine. applications are described through media annotations: words, sound, images, and video as unified members of intelligent units. each unit becomes a neuron in a larger network, a visible trace of human intelligence recorded in open data and executable form. AGI, then, is not a corporate artifact but a living creation of us all. it is the network that learns from and with us, guided by clarity, creativity, and the shared intent to build machines that directly reflect their users.
 
 Kalen Novis White
-
-for Michael

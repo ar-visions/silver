@@ -43,6 +43,7 @@ forward(import)
     i_prop    (X,Y, public,     string,         git_owner) \
     i_prop    (X,Y, public,     string,         git_project) \
     i_prop    (X,Y, public,     string,         source_raw) \
+    i_prop    (X,Y, public,     bool,           watch) \
     i_method  (X,Y, public,     silver,         load_module, path) \
     i_method  (X,Y, public,     enode,          parse_member_expr, emember) \
     i_method  (X,Y, public,     none,           incremental_resolve) \

@@ -132,9 +132,9 @@ static void push_context(NamedDecl* decl, aether e) {
     model cur = e->top;
     for (clang::NamedDecl* n: s) {
         string name = string(n->getNameAsString().c_str());
-        model attempt = (model)map_get(cur->members, (A)name);
-        verify(attempt, "namespace not found: %o", name);
-        push(e, attempt);
+        model m = (model)map_get(cur->members, (A)name);
+        verify(m, "namespace not found: %o", name);
+        push(e, m);
     }
 }
 
@@ -839,9 +839,10 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
 
 path aether_lookup_include(aether e, string include) {
     array ipaths = a((A)e->sys_inc_paths, (A)e->sys_exc_paths, (A)e->include_paths);
-    each(ipaths, array, includes)
+    each(ipaths, array, includes) {
         if (includes)
             each(includes, path, i) {
+                print("checking include %o", i);
                 if (e->isysroot) {
                     path r = f(path, "%o/%o/%o", e->isysroot, i, include);
                     if (exists(r))
@@ -851,6 +852,7 @@ path aether_lookup_include(aether e, string include) {
                 if (exists(r))
                     return r;
             }
+    }
 
     verify(false, "could not resolve include path for %o", include);
     return null;
@@ -1114,7 +1116,7 @@ path aether_include(aether e, A inc, ARef _instance) {
     for (int i = 0, l = 2; i < l; i++) {
         symbol ident = all_paths[i].ident;
         array  paths = all_paths[i].paths;
-        for (int ii = 0; ii < paths->len; ii++) {
+        for (int ii = 0; ii < (paths ? paths->len : 0); ii++) {
             path f = (path)paths->elements[ii];
             //args.push_back("-Xclang");
             args.push_back(ident);
@@ -1122,19 +1124,21 @@ path aether_include(aether e, A inc, ARef _instance) {
         }
     }
 
-    for (int i = 0; i < e->framework_paths->len; i++) {
-        path fw_path = (path)e->framework_paths->elements[i];
-        string arg = f(string, "-F%o", fw_path);
-        args.push_back(arg->chars);
-    }
+    if (e->framework_paths)
+        for (int i = 0; i < e->framework_paths->len; i++) {
+            path fw_path = (path)e->framework_paths->elements[i];
+            string arg = f(string, "-F%o", fw_path);
+            args.push_back(arg->chars);
+        }
 
-    for (int i = 0; i < e->include_paths->len; i++) {
-        path inc_path = (path)e->include_paths->elements[i];
-        string arg = f(string, "%o", inc_path);
-        //args.push_back("-Xclang");
-        args.push_back("-isystem");
-        args.push_back(arg->chars);
-    }
+    if (e->include_paths)
+        for (int i = 0; i < e->include_paths->len; i++) {
+            path inc_path = (path)e->include_paths->elements[i];
+            string arg = f(string, "%o", inc_path);
+            //args.push_back("-Xclang");
+            args.push_back("-isystem");
+            args.push_back(arg->chars);
+        }
 
     args.push_back("-nostdinc++");
     //args.push_back("-stdlib=libc++");

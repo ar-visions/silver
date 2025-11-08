@@ -2,6 +2,8 @@
 #include <ports.h>
 #include <limits.h>
 
+// for Michael
+
 #define emodel(MDL) ({ \
     emember  m = aether_lookup2(mod, string(MDL), null); \
     if (m) mark_used(m); \
@@ -23,6 +25,9 @@
     } \
     true; \
 })
+
+// implement automatic .c bindings; for methods without a function, we may bind the method with .c source of the same name
+// 
 
 static map   operators;
 static array keywords;
@@ -316,35 +321,40 @@ bool silver_next_is_eq(silver a, symbol first, ...) {
 
 #define next_is(a, ...) silver_next_is_eq(a, __VA_ARGS__, null)
 
-array read_body(silver mod, bool inner_expr) {
+array read_within(silver mod) {
     array body    = array(32);
     token n       = element(mod,  0);
     bool  bracket = n && eq(n, "[");
-    if (!n) return null;
-    if (bracket || inner_expr) {
-        if (bracket) consume(mod);
-        int depth = !!inner_expr + !!bracket; /// inner expr signals depth 1, and a bracket does too.  we need both togaether sometimes, as in inner expression that has parens
-        for (;;) {
-            token inner = next(mod);
-            if (!inner) break;
-            if (eq(inner, "]")) depth--;
-            if (eq(inner, "[")) depth++;
-            if (depth > 0) {
-                push(body, inner);
-                continue;
-            }
-            break;
+    if (!bracket) return null;
+
+    consume(mod);
+    int depth = 1; // inner expr signals depth 1, and a bracket does too.  we need both togaether sometimes, as in inner expression that has parens
+    for (;;) {
+        token inner = next(mod);
+        if (!inner) break;
+        if (eq(inner, "]")) depth--;
+        if (eq(inner, "[")) depth++;
+        if (depth > 0) {
+            push(body, inner);
+            continue;
         }
-        return body;
+        break;
     }
+    return body;
+}
+
+array read_body(silver mod) {
+    array body = array(32);
+    token n    = element(mod,  0);
+    if (!n) return null;
     token p    = element(mod, -1);
-    bool  multiple  = n->line > p->line;
+    bool  mult = n->line > p->line;
 
     while (1) {
         token k = peek(mod);
         if (!k) break;
-        if (!multiple && k->line    > n->line)   break;
-        if ( multiple && k->indent <= p->indent) break;
+        if (!mult && k->line    > n->line)   break;
+        if ( mult && k->indent <= p->indent) break;
         push(body, k);
         consume(mod);
     }
@@ -855,7 +865,7 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect) {
 
     if (!cmode && next_is(mod, "[")) {
         validate(mdl_expect, "expected model name before [");
-        array expr = read_body(mod, false);
+        array expr = read_within(mod);
         // we need to get mdl from argument
         enode r = typed_expr(mod, mdl_expect, expr);
         return r;
@@ -1358,7 +1368,7 @@ model read_model(silver mod, array* expr) {
         }
 
         if (next_is(mod, "[")) {
-            array e = read_body(mod, false);
+            array e = read_within(mod);
             array with_type = array(32);
             push(with_type, token(chars, mdl->name->chars, mod, mod)); // we re-parse with the registered name
             push(with_type, token(chars, (cstr)"[", mod, mod));
@@ -1378,7 +1388,7 @@ model read_model(silver mod, array* expr) {
         mdl = prim_mdl ? prim_mdl : read_named_model(mod);
         if (!mod->cmode && expr && next_is(mod, "[")) {
             body_set = true;
-            *expr = read_body(mod, false);
+            *expr = read_within(mod);
         }
     }
 
@@ -1609,7 +1619,7 @@ enode silver_parse_member_expr(silver mod, emember mem) {
     } else if (mem) {
         if (mem->is_func || mem->is_type) {
             validate(next_is(mod, "["), "expected [ to initialize type");
-            array expr = read_body(mod, false);
+            array expr = read_within(mod);
             mem = typed_expr(mod, mem->mdl, expr); // this, is the construct
         } else if (mod->in_ref || mem->literal) {
             mem = mem; // we will not load when ref is being requested on a emember
@@ -1735,8 +1745,8 @@ enode parse_ifdef_else(silver mod) {
         validate(!expect_last, "continuation after else");
         bool  is_if  = read_if(mod, "ifdef") != null;
         validate(is_if && require_if || !require_if, "expected if");
-        array cond   = is_if ? read_body(mod, false) : null;
-        array block  = read_body(mod, false);
+        array cond   = is_if ? read_within(mod) : null;
+        array block  = read_body(mod);
         enode  n_cond = null;
 
         if (cond) {
@@ -1771,6 +1781,8 @@ enode parse_ifdef_else(silver mod) {
 }
 
 /// parses entire chain of if, [else-if, ...] [else]
+// if the cond is a constant evaluation then we do not build the condition in with LLVM build, but omit the blocks that are not used
+// and only proceed
 enode parse_if_else(silver mod) {
     bool  require_if   = true;
     array tokens_cond  = array(32);
@@ -1778,8 +1790,9 @@ enode parse_if_else(silver mod) {
     while (true) {
         bool is_if  = read_if(mod, "if") != null;
         validate(is_if && require_if || !require_if, "expected if");
-        array cond  = is_if ? read_body(mod, false) : null;
-        array block = read_body(mod, false);
+        array cond  = is_if ? read_within(mod) : array();
+        array block = read_body(mod);
+        verify(block, "expected body");
         push(tokens_cond,  cond);
         push(tokens_block, block);
         if (!is_if)
@@ -1880,10 +1893,13 @@ emember silver_read_def(silver mod) {
                 model mdl = instanceof(read_model(mod, null), typeid(model));
                 validate(mdl, "expected model name in meta for %o", is_class->name);
                 push(meta, mdl);
+                // these we now give to the type when we make it (they are runtime args
+                // must also handle defining a type alias this way)
+                // for those, i believe its a subclass now; having alias and subclass is very redundant
             }
             consume(mod);
         }
-        array body   = read_body(mod, false);
+        array body   = read_body(mod);
 
         /// todo: call build_record right after this is done
         push(mod, mod); // make sure we are not in an import space
@@ -1901,7 +1917,7 @@ emember silver_read_def(silver mod) {
             suffix = instanceof(read_model(mod, null), typeid(model));
             validate(store, "invalid storage type");
         }
-        array enum_body = read_body(mod, false);
+        array enum_body = read_body(mod);
         print_all(mod, "enum-tokens", enum_body);
         validate(len(enum_body), "expected body for enum %o", n);
 
@@ -2100,7 +2116,7 @@ fn parse_fn(silver mod, AFlag member_type, A ident, OPType assign_enum) {
         mod,      mod,     name,   name, function_type, member_type, extern_name, f(string, "%o_%o", rec->name, name),
         instance, is_static ? null : rec,
         rtype,    rtype,   single_expr, single_expr,
-        args,     args,    body,   (body && len(body)) ? body : read_body(mod, false),
+        args,     args,    body,   (body && len(body)) ? body : read_body(mod),
         cgen,     cgen);
     
     return f;
@@ -2226,9 +2242,13 @@ silver silver_with_path(silver mod, path external) {
     return mod;
 }
 
+i64 path_wait_for_change(path, i64, i64);
+
+// implement watcher now
 void silver_init(silver mod) {
-    mod->defs = map(hsize, 8);
+    mod->defs     = map(hsize, 8);
     mod->codegens = map(hsize, 8);
+    bool is_watch = mod->watch; // -w or --watch
 
 #if defined(__linux__)
     set(mod->defs, string("linux"), A_bool(true));
@@ -2256,19 +2276,11 @@ void silver_init(silver mod) {
     build_info(mod, mod->install);
     mod->project_path = parent(mod->source);
 
-    path c_file   = f(path, "%o/%o.c",  mod->project_path, stem(mod->source));
-    path cc_file  = f(path, "%o/%o.cc", mod->project_path, stem(mod->source));
-    path files[2] = { c_file, cc_file };
-    for (int i = 0; i < 2; i++)
-        if (exists(files[i])) {
-            if (!mod->implements) mod->implements = array(2);
-            push(mod->implements, files[i]);
-        }
-
     verify(dir_exists ("%o", mod->install), "silver-import location not found");
     verify(len        (mod->source),       "no source given");
     verify(file_exists("%o", mod->source),  "source not found: %o", mod->source);
 
+    print("source pointer = %p", &mod->source);
     print("source is %o", mod->source);
     verify(exists(mod->source), "source (%o) does not exist", mod->source);
     verify(mod->std == language_silver || eq(ext(mod->source), "sf"),
@@ -2279,24 +2291,49 @@ void silver_init(silver mod) {
     cstr _IMPORT = getenv("IMPORT");
     verify(_IMPORT, "silver requires IMPORT environment");
 
-    mod->mod     = mod;
-    mod->spaces  = array(32);
-    mod->parse_f = parse_tokens;
+    mod->mod        = mod;
+    mod->spaces     = array(32);
+    mod->parse_f    = parse_tokens;
     mod->parse_expr = parse_expression;
     mod->read_model = read_model;
-    mod->tokens  = parse_tokens(mod, mod->source);
-    mod->stack   = array(4);
     mod->src_loc = absolute(path(_SRC ? _SRC : "."));
-
     verify(dir_exists("%o", mod->src_loc), "SRC path does not exist");
 
     path        af = path_cwd();
     path   install = path(_IMPORT);
-
     git_remote_info(af, &mod->git_service, &mod->git_owner, &mod->git_project);
+    
+    bool retry   = false;
+    i64  mtime   = modified_time(mod->source);
+    do {
+        if (retry) {
+            hold_members(mod);
+            A_recycle();
+            mtime = path_wait_for_change(mod->source, mtime, 0);
+            print("rebuilding...");
+            drop(mod->tokens);
+            drop(mod->stack);
+        }
+        retry = false;
+        mod->tokens  = parse_tokens(mod, mod->source);
+        mod->stack   = array(4);
 
-    parse(mod);
-    build(mod);
+        attempt() {
+            path c_file   = f(path, "%o/%o.c",  mod->project_path, stem(mod->source));
+            path cc_file  = f(path, "%o/%o.cc", mod->project_path, stem(mod->source));
+            path files[2] = { c_file, cc_file };
+            for (int i = 0; i < 2; i++)
+                if (exists(files[i])) {
+                    if (!mod->implements) mod->implements = array(2);
+                    push(mod->implements, files[i]);
+                }
+            parse(mod);
+            build(mod);
+        } on_error() {
+            retry = is_watch;
+        }
+        finally()
+    } while (retry);
 }
 
 silver silver_load_module(silver mod, path uri) {
@@ -2861,57 +2898,68 @@ enode import_parse(silver mod) {
             }
         } else {
             mpath = array(alloc, 32);
-            push(mpath, cc ? cc : bb ? bb : aa ? aa : (string)null);
+            string f = cc ? cc : bb ? bb : aa ? aa : (string)null;
+            if (index_of(f, ".") >= 0) {
+                array sp = split(f, ".");
+                array sh = shift(sp);
+                push(mpath, sh);
+            }
         }
-
-        // read commit if given
-        if (read_if(mod, "/")) commit = next(mod);
         
-        if (aa && !bb && !commit) {
-            local_mod = module_exists(mod, mpath);
-            if (!local_mod) {
-                // push entire directory
-                string j = join(mpath, "/");
-                verify(dir_exists("%o", j), "module/directory not found: %o", j);
-                path f = f(path, "%o", j);
-                array dir = ls(f, string("*.sf"), false);
-                verify(len(dir), "no modules in directory %o", f);
-                each(dir, path, m)
-                    push(module_paths, m);
+        if (!is_codegen) {
+            // read commit if given
+            if (read_if(mod, "/")) commit = next(mod);
+            
+            if (aa && !bb && !commit) {
+                local_mod = module_exists(mod, mpath);
+                if (!local_mod) {
+                    // push entire directory
+                    string j = join(mpath, "/");
+                    verify(dir_exists("%o", j), "module/directory not found: %o", j);
+                    path f = f(path, "%o", j);
+                    array dir = ls(f, string("*.sf"), false);
+                    verify(len(dir), "no modules in directory %o", f);
+                    each(dir, path, m)
+                        push(module_paths, m);
+                } else
+                    push(module_paths, local_mod);
+            } else if (aa && !bb) {
+                verify(!local_mod, "unexpected import chain containing different methodologies");
+
+                // contains commit, so logically cannot be a singular module
+                // for commit # it must be a project for now, this is not a 
+                // constraint that we directly need to mitigate, but it may 
+                // be a version difference
+                project     = aa;
+                verify(!mpath || len(mpath) == 0, "unexpected path to module (expected 1st arg as project)");
+            } else if (aa && !cc) {
+                verify(!local_mod, "unexpected import chain containing different methodologies");
+                user        = aa;
+                project     = bb;
+                //verify(!mpath || len(mpath) == 0, "unexpected path to module (expected 2nd arg as project)");
+            } else {
+                verify(!local_mod, "unexpected import chain containing different methodologies");
+                user        = aa;
+                project     = bb;
+            }
+
+            string path_str = string();
+            if (len(mpath)) {
+                string str_mpath = join(mpath, "/") ? cc       : string("");
+                path_str  = len(str_mpath) ?
+                    f(string, "blob/%o/%o", commit, str_mpath) : string("");
+            }
+            
+            verify(project || local_mod, "could not decipher module references from import statement");
+
+            if (local_mod) {
+                uri = null;
+                cont = read_if(mod, ",") != null;
+                verify (!cont, "comma not yet supported in import (fn needs restructuring to create multiple imoprts in enode)");
             } else
-                push(module_paths, local_mod);
-        } else if (aa && !bb) {
-            verify(!local_mod, "unexpected import chain containing different methodologies");
-
-            // contains commit, so logically cannot be a singular module
-            // for commit # it must be a project for now, this is not a 
-            // constraint that we directly need to mitigate, but it may 
-            // be a version difference
-            project     = aa;
-            verify(!mpath || len(mpath) == 0, "unexpected path to module (expected 1st arg as project)");
-        } else if (aa && !cc) {
-            verify(!local_mod, "unexpected import chain containing different methodologies");
-            user        = aa;
-            project     = bb;
-            verify(!mpath || len(mpath) == 0, "unexpected path to module (expected 2nd arg as project)");
-        } else {
-            verify(!local_mod, "unexpected import chain containing different methodologies");
-            user        = aa;
-            project     = bb;
+                uri = f(string, "https://%o/%o/%o%s%o", service, user, project,
+                    cast(bool, path_str) ? "/" : "", path_str);
         }
-
-        string str_mpath = join(mpath, "/") ? cc       : string("");
-        string path_str  = len(str_mpath) ?
-            f(string, "blob/%o/%o", commit, str_mpath) : string("");
-        
-        verify(project || local_mod, "could not decipher module references from import statement");
-
-        if (local_mod) {
-            uri = null;
-            cont = read_if(mod, ",") != null;
-            verify (!cont, "comma not yet supported in import (fn needs restructuring to create multiple imoprts in enode)");
-        } else
-            uri = f(string, "https://%o/%o/%o/%o", service, user, project, path_str);
     }
     
     // includes for this import
@@ -2934,7 +2982,7 @@ enode import_parse(silver mod) {
         }
     }
 
-    array  c          = read_body(mod, false);
+    array  c          = read_body(mod);
     array  all_config = compact_tokens(c);
     map    props      = map();
 
@@ -2943,7 +2991,7 @@ enode import_parse(silver mod) {
     // this invokes import by git; a local repo may be possible but not very usable
     // arguments / config not stored / used after this
     if (next_is(mod, "[") || next_indent(mod)) {
-        array b = read_body(mod, false);
+        array b = read_body(mod);
         int index = 0;
         while (index < len(b)) {
             verify(index - len(b) >= 3, "expected prop: value for codegen object");
@@ -3063,59 +3111,6 @@ A request2(uri url, map args) {
 
 int main(int argc, cstrs argv) {
     A_engage(argv);
-
-    /*
-
-    string key = f(string, "%s", getenv("CHATGPT"));
-    verify(len(key),
-        "chatgpt requires an api key stored in environment variable CHATGPT"
-        " (user-persistent is recommended)");
-
-    map headers = m(
-        "Authorization", f(string, "Bearer %o", key));
-    
-    uri  addr    = uri("POST https://api.openai.com/v1/chat/completions");
-    sock chatgpt = sock(addr);
-    bool res     = connect_to(chatgpt);
-    verify(res, "failed to connect to chatgpt");
-
-    // will need a silver overview to attach
-    map sys = m(
-        "role",    string("system"),
-        "content", string("this is silver compiler, and your job is to write methods WITHOUT the method name and args, and no [ braces ] containing it, just the inner method content that we will place in code block; you will ALWAYS be given the arguments and model members, and surrounding models if needed"));
-    
-    msg user = m(
-        "role",     string("user"),
-        "content",  string("write a function that adds the args a and b"));
-    
-    array messages = a(sys, user);
-    hold(messages);
-    map body = m("model", string("gpt-5"), "messages", messages);
-
-    message request = message(content, body, headers, copy(headers), query, addr);
-    write(request, chatgpt, false);
-
-    message response = message(chatgpt);
-    string content_len = get(response->headers, string("Content-Length"));
-
-    pairs(response->headers, i) {
-        string k = i->key;
-        string v = i->value;
-        printf("header: %s: %s\n", k->chars, v->chars);
-    }
-
-    msg user2 = m(
-        "role",     string("user"),
-        "content",  string("write a function that adds the args a, b and c"));
-    
-    map body2 = m("model", string("gpt-5"), "messages", a(user2));
-    message request2 = message(content, body2, headers, copy(headers), query, addr);
-    write(request2, chatgpt, true);
-    message response2 = message(chatgpt);
-
-    close(chatgpt);
-    */
-    
     silver mod = silver(argv);
     return 0;
 }

@@ -1475,8 +1475,8 @@
 #define fault(t, ...) do {\
     static string _topic = null; \
     if (!_topic) _topic = (string)hold((A)string(__func__)); \
-     formatter((AType)null, stderr, (A)_topic,  (symbol)t, ## __VA_ARGS__); \
-     exit(1); \
+     string res = (string)formatter((AType)null, stderr, (A)_topic,  (symbol)t, ## __VA_ARGS__); \
+     halt(res); \
     } while(0)
 
 
@@ -1490,10 +1490,9 @@
 #define       verify(a, t, ...) \
     ({ \
         if (!(a)) { \
-            formatter((AType)null, stderr, (A)true,  (symbol)t, ## __VA_ARGS__); \
+            string res = (string)formatter((AType)null, stderr, (A)true,  (symbol)t, ## __VA_ARGS__); \
             if (level_err >= fault_level) { \
-                raise(SIGTRAP); \
-                exit(1); \
+                halt(res); \
             } \
             false; \
         } else { \
