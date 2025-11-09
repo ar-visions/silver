@@ -986,16 +986,8 @@ A alloc(AType type, num count, AType* meta) {
     return a->data; /// return fields (A)
 }
 
-A alloc_new(AType type, num count) {
-    sz map_sz = sizeof(map);
-    sz A_sz   = sizeof(struct _A);
-    A a = alloc_instance(type,
-        A_sz + type->size * count, A_sz + type->size);
-    a->type       = type;
-    a->data       = &a[1];
-    a->count      = count;
-    a->alloc      = count;
-    return a->data; /// return fields (A)
+A alloc_new(AType type, num count, AType* meta) {
+    return alloc(type, count, meta);
 }
 
 A alloc2(AType type, AType scalar, shape s) {
