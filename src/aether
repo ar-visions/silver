@@ -348,6 +348,7 @@ declare_class_2(static_array, array)
     i_prop    (X,Y, public,     array,       stack) \
     i_prop    (X,Y, public,     num,         cursor) \
     i_prop    (X,Y, public,     map,         instances) \
+    i_method  (X,Y, public,     none,        reinit_startup) \
     i_method  (X,Y, public,     none,        update_schemas) \
     i_method  (X,Y, public,     emember,     initializer) \
     i_method  (X,Y, public,     path,        lookup_include,     string) \

@@ -11,7 +11,7 @@ import KhronosGroup:Vulkan-Headers/main
 
 # import can ONLY be defined at the module level, never inside fn or classes
 # here after its checked out, we run an > arb-command
-if mac
+ifdef mac
     import KhronosGroup:MoltenVK/main
         > ./fetchDependencies --macos
         -DANOTHER=2
@@ -24,8 +24,8 @@ import KhronosGroup:Vulkan-Tools
     -DBUILD_CUBE=ON
 
 struct a-struct
-    array-of-data : inlay i8[ 32x ] # structs do not default as inlay
-    str           : string          # this should be 32 bytes down the struct
+    array-of-data : array <i8, 32x1>
+    str : string
 
 class engine
     cast i32 -> i32[ 2 ] # casting method
