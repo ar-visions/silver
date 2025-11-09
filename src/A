@@ -608,7 +608,7 @@ forward(any)
     i_final (AA,Y, public, bool,        is_meta_compatible,  A) \
     t_vargs (AA,Y, public, A,           formatter,           handle, A, symbol) \
     t_method(AA,Y, public, A,           alloc,               num, ATypes) \
-    t_method(AA,Y, public, A,           alloc_new,           num) \
+    t_method(AA,Y, public, A,           alloc_new,           num, ATypes) \
     t_method(AA,Y, public, A,           alloc_dbg,           num,     cstr,      i32) \
     t_method(AA,Y, public, A,           alloc2,              AType,   shape) \
     t_method(AA,Y, public, string,      estring,             i32) \
@@ -644,6 +644,7 @@ forward(any)
     i_ctr(AA,Y, public, cstrs) \
     i_cast  (AA,Y, public, string) \
     i_cast  (AA,Y, public, bool)
+
 
 #define A_intern_footer(AA)
 

@@ -234,7 +234,6 @@ void build_record(silver mod, record rec) {
     AType t = isa(rec);
     rec->parsing = true;
     bool   is_class = instanceof(rec, typeid(Class)) != null;
-    symbol sname    = is_class ? "class" : "struct";
     array  body     = rec->body ? rec->body : array();
 
     push_state(mod, body, 0);
@@ -815,14 +814,14 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect, arra
         model mdl_found = read_model(mod, &expr, &meta);
         if (mdl_found) {
             enode res = typed_expr(mod, mdl_found, meta, expr);
-            return e_create(mod, mdl_expect, res); // we need a 'meta_expect' here
+            return e_create(mod, mdl_expect, meta_expect, res); // we need a 'meta_expect' here
         }
     }
 
     A lit = read_literal(mod, null);
     if (lit) {
-        enode res = e_operand(mod, lit, null);
-        return e_create(mod, mdl_expect, res);
+        enode res = e_operand(mod, lit, null, null);
+        return e_create(mod, mdl_expect, meta_expect, res);
     }
     
     if (!cmode && next_is(mod, "$", "(")) {
@@ -840,13 +839,14 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect, arra
         // support C-style cast here, only in cmode (macro definitions)
         if (cmode) {
             push_current(mod);
+            array meta = null;
             model inner = read_model(mod, null, null);
             if (inner) {
                 if (next_is(mod, ")")) {
                     consume(mod);
                     pop_state(mod, true);
-                    enode res = e_create(mod, inner, parse_expression(mod, inner, null));
-                    return e_create(mod, mdl_expect, res);
+                    enode res = e_create(mod, inner, null, parse_expression(mod, inner, null));
+                    return e_create(mod, mdl_expect, meta_expect, res);
                 } else {
                     pop_state(mod, false);
                     mod->expr_level = 0;
@@ -861,7 +861,8 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect, arra
         print_tokens(mod, "expecting ) ...");
         token t = read_if(mod, ")");
         if (t) mod->parens_depth--;
-        return e_create(mod, mdl_expect, parse_ternary(mod, expr, mdl_expect, meta_expect));
+        return e_create(mod, mdl_expect, meta_expect,
+            parse_ternary(mod, expr, mdl_expect, meta_expect));
     }
 
     if (!cmode && next_is(mod, "[")) {
@@ -875,13 +876,15 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect, arra
     // handle the logical NOT operator (e.g., '!')
     else if (read_if(mod, "!") || (!cmode && read_if(mod, "not"))) {
         enode expr = parse_expression(mod, null, null); // Parse the following expression
-        return e_create(mod, mdl_expect, e_not(mod, expr));
+        return e_create(mod,
+            mdl_expect, meta_expect, e_not(mod, expr));
     }
 
     // bitwise NOT operator
     else if (read_if(mod, "~")) {
         enode expr = parse_expression(mod, null, null);
-        return e_create(mod, mdl_expect, e_bitwise_not(mod, expr));
+        return e_create(mod,
+            mdl_expect, meta_expect, e_bitwise_not(mod, expr));
     }
 
     // 'typeof' operator
@@ -897,7 +900,8 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect, arra
             assert(next_is(mod, "]"), "Expected ']' after type expression");
             consume(mod); // Consume ']'
         }
-        return e_create(mod, mdl_expect, expr); // Return the type reference
+        return e_create(mod,
+            mdl_expect, meta_expect, expr); // Return the type reference
     }
 
     // 'ref' operator (reference)
@@ -905,7 +909,8 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect, arra
         mod->in_ref = true;
         enode expr = parse_expression(mod, null, null);
         mod->in_ref = false;
-        return e_create(mod, mdl_expect, e_addr_of(mod, expr, null));
+        return e_create(mod,
+            mdl_expect, meta_expect, e_addr_of(mod, expr, null));
     }
 
     // we may only support a limited set of C functionality for #define macros
@@ -964,10 +969,6 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect, arra
         }
         
         record rec = instanceof(mod->top, typeid(record));
-        if (mem && eq(mem->name, "printf")) {
-            int test2 = 2;
-            test2    += 2;
-        }
         if (!mem) {
             validate(mod->expr_level == 0, "member not found: %o", alpha);
             /// parse new member, parsing any associated function
@@ -1080,7 +1081,8 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect, arra
         register_member(mod, mem, true); /// do not finalize in push member
     }
 
-    return e_create(mod, mdl_expect, mem);
+    return e_create(mod,
+        mdl_expect, meta_expect, mem);
 }
 
 string silver_read_keyword(silver a) {
@@ -1423,7 +1425,6 @@ static bool peek_fields(silver mod) {
 }
 
 static enode typed_expr(silver mod, model mdl, array meta, array expr) {
-    
     if (expr)
         print_token_array(mod, expr);
 
@@ -1441,9 +1442,10 @@ static enode typed_expr(silver mod, model mdl, array meta, array expr) {
             emember arg  = value_by_index(m, i);
             enode   expr = parse_expression(mod, arg->mdl, arg->meta);
             verify(expr, "invalid expression");
-            model   arg_mdl  = arg ? arg->mdl : null;
+            model   arg_mdl  = arg ? arg->mdl  : null;
+            array   arg_meta = arg ? arg->meta : null;
             if (arg_mdl && expr->mdl != arg_mdl)
-                expr = e_create(mod, arg_mdl, expr);
+                expr = e_create(mod, arg_mdl, arg_meta, expr);
             
             if (!target && f->instance)
                 target = expr;
@@ -1464,7 +1466,7 @@ static enode typed_expr(silver mod, model mdl, array meta, array expr) {
     A  n = read_literal(mod, null);
     if (n && mod->cursor == len(mod->tokens)) {
         pop_state(mod, expr ? false : true);
-        return e_operand(mod, n, mdl);
+        return e_operand(mod, n, mdl, meta);
     } else if (n) {
         // reset if we read something
         pop_state(mod, expr ? false : true);
@@ -1477,7 +1479,7 @@ static enode typed_expr(silver mod, model mdl, array meta, array expr) {
     bool    has_init    = peek_fields(mod);
     
     if (!has_content) {
-        r = e_create(mod, mdl, null); // default
+        r = e_create(mod, mdl, meta, null); // default
         conv = false;
     } else if (class_inherits(mdl, emodel("array"))) {
         array nodes = array(64);
@@ -1493,7 +1495,7 @@ static enode typed_expr(silver mod, model mdl, array meta, array expr) {
         while (peek(mod)) {
             token n = peek(mod);
             enode  e = parse_expression(mod, element_type, null);
-            e = e_create(mod, element_type, e);
+            e = e_create(mod, element_type, null, e);
             push(nodes, e);
             num_index++;
             if (top_stride && (num_index % top_stride == 0)) {
@@ -1502,7 +1504,7 @@ static enode typed_expr(silver mod, model mdl, array meta, array expr) {
                     top_stride);
             }
         }
-        r = e_create(mod, mdl, nodes);
+        r = e_create(mod, mdl, meta, nodes);
     } else if (has_init || class_inherits(mdl, emodel("map"))) {
         validate(has_init, "invalid initialization of map model");
         conv = true;
@@ -1515,7 +1517,7 @@ static enode typed_expr(silver mod, model mdl, array meta, array expr) {
         //validate(read_if(mod, "]"), "expected ] after mdl-expr %o", src->name);
     }
     if (conv)
-        r = e_create(mod, mdl, r);
+        r = e_create(mod, mdl, meta, r);
     pop_state(mod, expr ? false : true);
     return r;
 }
@@ -1728,7 +1730,7 @@ enode parse_ifdef_else(silver mod) {
     }
 
     verify(mod->expr_level == 0, "unexpected expression level after ifdef");
-    return statements ? statements : enode(mdl, mod);
+    return statements ? statements : enode(mdl, null, meta, null);
 }
 
 /// parses entire chain of if, [else-if, ...] [else]
@@ -1958,7 +1960,7 @@ enode parse_statement(silver mod) {
     mod->expr_level = 0;
 
     if (!module) {
-        if (next_is(mod, "no-op"))  return enode(mdl, emodel("none"));
+        if (next_is(mod, "no-op"))  return enode(mdl, emodel("none"), meta, null);
         if (next_is(mod, "return")) {
             mod->expr_level++;
             mod->last_return = parse_return(mod);
