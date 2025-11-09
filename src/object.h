@@ -6,6 +6,7 @@ typedef struct _A* A;
 typedef none(*func)    ();
 typedef A   (*hook)    (A);
 typedef A   (*callback)(A, A); // target and argument
+typedef A   (*callback_extra)(A, A, A); // target, argument, argument2
 
 
 /// our A-type classes have many types of methods

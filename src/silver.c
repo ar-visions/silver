@@ -35,7 +35,7 @@ static array assign;
 static array compare;
 
 static bool  is_alpha(A any);
-static enode parse_expression(silver mod, model expect_mdl);
+static enode parse_expression(silver mod, model expect_mdl, array meta);
 
 void print_tokens(silver mod, symbol label) {
     print("[%s] tokens: %o %o %o %o %o %o...", label,
@@ -169,7 +169,7 @@ static void initialize() {
 enode parse_statements(silver mod, bool unique_members);
 enode parse_statement(silver mod);
 
-static enode typed_expr(silver mod, model src, array expr);
+static enode typed_expr(silver mod, model src, array meta, array expr);
 
 void build_fn(silver mod, fn f, callback preamble, callback postamble) {
     if (!f->body && !preamble && !postamble) return;
@@ -188,7 +188,7 @@ void build_fn(silver mod, fn f, callback preamble, callback postamble) {
         array gen = generate_fn(f->cgen, f, f->body);
     }
     else if (f->single_expr) {
-        enode single = typed_expr(mod, f->rtype, after_const);
+        enode single = typed_expr(mod, f->rtype, f->rmeta, after_const);
         e_fn_return(mod, single);
     } else {
         push_state(mod, after_const, 0);
@@ -746,11 +746,11 @@ string silver_peek_alpha(silver a) {
 }
 
 fn    parse_fn  (silver mod, AFlag member_type, A ident, OPType assign_enum);
-model read_model(silver mod, array* expr);
+model read_model(silver mod, array* expr, array* meta);
 
 bool ref_level(model f);
 
-enode silver_read_node(silver mod, AType constant_result, model mdl_expect) {
+enode silver_read_node(silver mod, AType constant_result, model mdl_expect, array meta_expect) {
     bool cmode = mod->cmode;
     array expr = null;
     token peek = peek(mod);
@@ -765,7 +765,7 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect) {
     fn        in_args   = !mod->cmode ? instanceof(mod->top, typeid(eargs))  : null;
     record    rec       = !mod->cmode ? context_model(mod,   typeid(Class))  : null;
     record    in_record = !mod->cmode ? instanceof(mod->top, typeid(record)) : null;
-    silver    module    = (!mod->cmode && (mod->top == (model)mod || 
+    silver    module    = (!mod->cmode && (top(mod) == (model)mod || 
                            instanceof(mod->top, typeid(import))  || 
                           (f && f->is_module_init))) ? mod : null;
     emember   mem       = null;
@@ -811,10 +811,11 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect) {
     }
 
     if (peek && is_alpha(peek) && !lookup2(mod, peek, typeid(macro))) {
-        model mdl_found = read_model(mod, &expr);
+        array meta = null;
+        model mdl_found = read_model(mod, &expr, &meta);
         if (mdl_found) {
-            enode res = typed_expr(mod, mdl_found, expr);
-            return e_create(mod, mdl_expect, res);
+            enode res = typed_expr(mod, mdl_found, meta, expr);
+            return e_create(mod, mdl_expect, res); // we need a 'meta_expect' here
         }
     }
 
@@ -839,12 +840,12 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect) {
         // support C-style cast here, only in cmode (macro definitions)
         if (cmode) {
             push_current(mod);
-            model inner = read_model(mod, null);
+            model inner = read_model(mod, null, null);
             if (inner) {
                 if (next_is(mod, ")")) {
                     consume(mod);
                     pop_state(mod, true);
-                    enode res = e_create(mod, inner, parse_expression(mod, null));
+                    enode res = e_create(mod, inner, parse_expression(mod, inner, null));
                     return e_create(mod, mdl_expect, res);
                 } else {
                     pop_state(mod, false);
@@ -856,30 +857,30 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect) {
         }
         mod->parens_depth++;
         print_tokens(mod, "within ( ...");
-        enode expr = parse_expression(mod, null); // Parse the expression
+        enode expr = parse_expression(mod, null, null); // Parse the expression
         print_tokens(mod, "expecting ) ...");
         token t = read_if(mod, ")");
         if (t) mod->parens_depth--;
-        return e_create(mod, mdl_expect, parse_ternary(mod, expr));
+        return e_create(mod, mdl_expect, parse_ternary(mod, expr, mdl_expect, meta_expect));
     }
 
     if (!cmode && next_is(mod, "[")) {
         validate(mdl_expect, "expected model name before [");
         array expr = read_within(mod);
         // we need to get mdl from argument
-        enode r = typed_expr(mod, mdl_expect, expr);
+        enode r = typed_expr(mod, mdl_expect, meta_expect, expr);
         return r;
     }
 
     // handle the logical NOT operator (e.g., '!')
     else if (read_if(mod, "!") || (!cmode && read_if(mod, "not"))) {
-        enode expr = parse_expression(mod, null); // Parse the following expression
+        enode expr = parse_expression(mod, null, null); // Parse the following expression
         return e_create(mod, mdl_expect, e_not(mod, expr));
     }
 
     // bitwise NOT operator
     else if (read_if(mod, "~")) {
-        enode expr = parse_expression(mod, null);
+        enode expr = parse_expression(mod, null, null);
         return e_create(mod, mdl_expect, e_bitwise_not(mod, expr));
     }
 
@@ -891,7 +892,7 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect) {
             consume(mod); // Consume '['
             bracket = true;
         }
-        enode expr = parse_expression(mod, null); // Parse the type expression
+        enode expr = parse_expression(mod, null, null); // Parse the type expression
         if (bracket) {
             assert(next_is(mod, "]"), "Expected ']' after type expression");
             consume(mod); // Consume ']'
@@ -902,7 +903,7 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect) {
     // 'ref' operator (reference)
     else if (!cmode && read_if(mod, "ref")) {
         mod->in_ref = true;
-        enode expr = parse_expression(mod, null);
+        enode expr = parse_expression(mod, null, null);
         mod->in_ref = false;
         return e_create(mod, mdl_expect, e_addr_of(mod, expr, null));
     }
@@ -915,8 +916,8 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect) {
     string    alpha     = null;
     int       depth     = 0;
     
-    bool skip_member_check = false;
-    if (module) {
+    bool skip_member_check = mod->expr_level == 0;
+    if (!skip_member_check && module) {
         string alpha = peek_alpha(mod);
         if (alpha) {
             emember m = lookup2(mod, alpha, null);
@@ -1036,7 +1037,7 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect) {
             validate(mem, "expected emember");
             validate(assign_enum == OPType__assign, "expected : operator in eargs");
             validate(!mem->mdl, "duplicate member exists in eargs");
-            mem->mdl = read_model(mod, &expr);
+            mem->mdl = read_model(mod, &expr, &mem->meta);
             validate(expr == null, "unexpected assignment in args");
             validate(mem->mdl, "cannot read model for arg: %o", mem->name);
         }
@@ -1044,7 +1045,7 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect) {
             token t = peek(mod);
 
             // this is where member types are read
-            mem->mdl = read_model(mod, &expr); // given VkInstance intern instance2 (should only read 1 token)
+            mem->mdl = read_model(mod, &expr, &mem->meta); // given VkInstance intern instance2 (should only read 1 token)
             validate(mem->mdl, "expected type after ':' in %o, found %o",
                 (in_record ? (model)in_record : (model)module)->name, peek(mod));
             mem->initializer = hold(expr);
@@ -1161,7 +1162,7 @@ void silver_build_initializer(silver mod, emember mem) {
             print_token_array(mod, mod->tokens);
             int level = mod->expr_level;
             mod->expr_level++;
-            expr = parse_expression(mod, null); // we have tokens for the name pushed to the stack
+            expr = parse_expression(mod, mem->mdl, mem->meta); // we have tokens for the name pushed to the stack
             mod->expr_level = level;
             pop_state(mod, false);
         }
@@ -1179,11 +1180,12 @@ void silver_build_initializer(silver mod, emember mem) {
 }
 
 enode parse_return(silver mod) {
-    model rtype = return_type(mod);
+    array rmeta;
+    model rtype = return_type(mod, &rmeta);
     bool  is_v  = is_void(rtype);
     model ctx = context_model(mod, typeid(fn));
     consume(mod);
-    enode expr   = is_v ? null : parse_expression(mod, rtype);
+    enode expr   = is_v ? null : parse_expression(mod, rtype, rmeta);
     A_log("return-type", "%o", is_v ? (A)string("none") : 
                                     (A)expr->mdl);
     return e_fn_return(mod, expr);
@@ -1213,10 +1215,10 @@ enode silver_parse_do_while(silver mod) {
     return null;
 }
 
-static enode reverse_descent(silver mod, model mdl_expect) {
+static enode reverse_descent(silver mod, model mdl_expect, array meta_expect) {
     bool cmode = mod->cmode;
     print_tokens(mod, "reverse_descent");
-    enode L = read_node(mod, null, mdl_expect); // build-arg
+    enode L = read_node(mod, null, mdl_expect, meta_expect); // build-arg
     validate(cmode || L, "unexpected '%o'", peek(mod));
     if (!L) {
         int statement_count = mod->statement_count;
@@ -1235,7 +1237,7 @@ static enode reverse_descent(silver mod, model mdl_expect) {
                     continue;
                 OPType op_type = level->ops   [j];
                 string method  = level->method[j];
-                enode R = read_node(mod, null, null);
+                enode R = read_node(mod, null, null, null);
                 if (!mod->current_include) {
                     print_tokens(mod, "after read_node in reverse_descent");
                 }
@@ -1252,15 +1254,15 @@ static enode reverse_descent(silver mod, model mdl_expect) {
     return L;
 }
 
-static enode read_expression(silver mod, model mdl_expect) {
+static enode read_expression(silver mod, model mdl_expect, array meta_expect) {
     mod->no_build = true;
-    enode vr = reverse_descent(mod, mdl_expect);
+    enode vr = reverse_descent(mod, mdl_expect, meta_expect);
     mod->no_build = false;
     return vr;
 }
 
-static enode parse_expression(silver mod, model mdl_expect) {
-    enode vr = reverse_descent(mod, mdl_expect);
+static enode parse_expression(silver mod, model mdl_expect, array meta_expect) {
+    enode vr = reverse_descent(mod, mdl_expect, meta_expect);
     return vr;
 }
 
@@ -1294,7 +1296,24 @@ static model model_adj(silver mod, model mdl) {
     return mdl;
 }
 
-model read_model(silver mod, array* expr) {
+array read_meta(silver mod) {
+    array res = null;
+    if (read_if(mod, "<")) {
+        bool first = true;
+        while (!next_is(mod, ">")) {
+            if (!first)
+                verify(read_if(mod, ","), "expected ',' seperator between models");
+            model mdl = read_named_model(mod);
+            verify(mdl, "expected model name, found %o", peek(mod));
+            push(res, mdl);
+            first = false;
+        }
+        consume(mod);
+    }
+    return res;
+}
+
+model read_model(silver mod, array* expr, array* meta) {
     model mdl       = null;
     bool  body_set  = false;
     bool  type_only = false;
@@ -1304,17 +1323,32 @@ model read_model(silver mod, array* expr) {
     push_current(mod);
 
     bool explicit_sign = read_if(mod, "signed") != null;
+    bool explicit_un   = !explicit_sign && read_if(mod, "unsigned") != null;
 
     model prim_mdl = null;
-    if (read_if(mod, "char"))   prim_mdl = emodel("i8");
-    else if (read_if(mod, "short"))  prim_mdl = emodel("i16");
-    else if (read_if(mod, "int"))    prim_mdl = emodel("i32");
-    else if (read_if(mod, "long"))   prim_mdl = read_if(mod, "long") ? emodel("i64") : emodel("i32");
-    else if (explicit_sign)          prim_mdl = emodel("i32");
-    if (prim_mdl)
-        prim_mdl = model_adj(mod, prim_mdl);
+    if (!explicit_un) {
+        if (read_if(mod, "char"))   prim_mdl = emodel("i8");
+        else if (read_if(mod, "short"))  prim_mdl = emodel("i16");
+        else if (read_if(mod, "int"))    prim_mdl = emodel("i32");
+        else if (read_if(mod, "long"))   prim_mdl = read_if(mod, "long") ? emodel("i64") : emodel("i32");
+        else if (explicit_sign)          prim_mdl = emodel("i32");
+        if (prim_mdl)
+            prim_mdl = model_adj(mod, prim_mdl);
 
-    if (read_if(mod, "unsigned")) {
+        print_tokens(mod, "before read-named");
+
+        mdl = prim_mdl ? prim_mdl : read_named_model(mod);
+
+        if (!mod->cmode && meta && next_is(mod, "<")) {
+            *meta = read_meta(mod);
+        }
+
+        if (!mod->cmode && expr && next_is(mod, "[")) {
+            body_set = true;
+            *expr = read_within(mod);
+        }
+
+    } else if (explicit_un) {
         if (read_if(mod, "char"))  prim_mdl = emodel("u8");
         if (read_if(mod, "short")) prim_mdl = emodel("u16");
         if (read_if(mod, "int"))   prim_mdl = emodel("u32");
@@ -1322,76 +1356,6 @@ model read_model(silver mod, array* expr) {
 
         prim_mdl = model_adj(mod, prim_mdl ? prim_mdl : emodel("u32"));
     }
-
-    if (!mod->cmode && read_if(mod, "array")) {
-        validate(read_if(mod, "<"), "expected < after array");
-        string ident = string(alloc, 32);
-
-        // read manditory type
-        type = read_model(mod, null);
-        validate(type, "expected type after <");
-        concat(ident, f(string, "array_%o", type->name));
-
-        // read optional shape
-        shape sh = shape();
-        if (!read_if(mod, ">")) {
-            append(ident, "_");
-            A lit = read_literal(mod, null);
-            validate(lit, "expected shape literal after <");
-            do {
-                validate(isa(lit) == typeid(i64), "expected numeric for array size");
-                sh->data[sh->count] = *(i64*)lit;
-                sh->count++;
-                concat(ident, f(string, "%o", lit));
-                if (!read_if(mod, "x")) // these must be compacted
-                    break;
-                append(ident, "x");
-                lit = read_literal(mod, null);
-                validate(lit, "expecting literal after x");
-            } while (lit);
-            validate(read_if(mod, ">"), "expected > after shape");
-        }
-
-        // we must register type information for these models for use in this module
-        // further we must identity these by symbol:  array_i32_4x4 for example
-        mdl = prim_mdl ? prim_mdl : emodel(ident->chars);
-        if (!mdl) {
-            array ameta = a(type);
-            Class parent = emodel("array");
-            push(mod, mod);
-            mdl = Class(mod, mod, name, ident, src, type, parent, parent, shape, sh, meta, ameta, is_internal, true); // shape will be used when registering the AType
-            register_model(mod, mdl, true);
-            finalize(mdl);
-            pop(mod);
-            create_schema(mdl);
-            mdl = pointer(mdl, null);
-        }
-
-        if (next_is(mod, "[")) {
-            array e = read_within(mod);
-            array with_type = array(32);
-            push(with_type, token(chars, mdl->name->chars, mod, mod)); // we re-parse with the registered name
-            push(with_type, token(chars, (cstr)"[", mod, mod));
-            each (e, token, t)
-                push(with_type, t);
-            push(with_type, token(chars, (cstr)"]", mod, mod));
-            validate(expr, "expected expression holder");
-            *expr = with_type;
-        }
-
-    } else if (!mod->cmode && read_if(mod, "map")) {
-        validate(false, "todo");
-        //mdl = model(mod, mod, src, type, src, emodel("map"), shape, shape); // shape will be used when registering the AType
-
-    } else {
-        print_tokens(mod, "before read-named");
-        mdl = prim_mdl ? prim_mdl : read_named_model(mod);
-        if (!mod->cmode && expr && next_is(mod, "[")) {
-            body_set = true;
-            *expr = read_within(mod);
-        }
-    }
-
     pop_state(mod, mdl != null); // if we read a model, we transfer token state
     return mdl;
 }
@@ -1424,13 +1388,15 @@ map parse_map(silver mod, model mdl_schema) {
         string name  = read_alpha(mod);
         validate(read_if(mod, ":"), "expected : after arg %o", name);
         model   mdl_expect = null;
+        array   meta_expect = null;
         if (mdl_schema && mdl_schema->members) {
             emember m = get(mdl_schema->members, name);
             validate(m, "member %o not found on model %o", name, mdl_schema->name);
             mdl_expect = m->mdl;
+            meta_expect = m->meta;
         }
         print_tokens(mod, "parse_map_value");
-        enode   value = parse_expression(mod, mdl_expect);
+        enode   value = parse_expression(mod, mdl_expect, meta_expect);
         validate(!contains(args, name), "duplicate initialization of %o", name);
         set(args, name, value);
     }
@@ -1456,7 +1422,7 @@ static bool peek_fields(silver mod) {
     return false;
 }
 
-static enode typed_expr(silver mod, model mdl, array expr) {
+static enode typed_expr(silver mod, model mdl, array meta, array expr) {
     
     if (expr)
         print_token_array(mod, expr);
@@ -1473,7 +1439,7 @@ static enode typed_expr(silver mod, model mdl, array expr) {
 
         while (i < ln || f->va_args) {
             emember arg  = value_by_index(m, i);
-            enode   expr = parse_expression(mod, arg->mdl);
+            enode   expr = parse_expression(mod, arg->mdl, arg->meta);
             verify(expr, "invalid expression");
             model   arg_mdl  = arg ? arg->mdl : null;
             if (arg_mdl && expr->mdl != arg_mdl)
@@ -1526,7 +1492,7 @@ static enode typed_expr(silver mod, model mdl, array expr) {
 
         while (peek(mod)) {
             token n = peek(mod);
-            enode  e = parse_expression(mod, element_type);
+            enode  e = parse_expression(mod, element_type, null);
             e = e_create(mod, element_type, e);
             push(nodes, e);
             num_index++;
@@ -1544,7 +1510,7 @@ static enode typed_expr(silver mod, model mdl, array expr) {
         r    = parse_map(mod, mdl);
     } else {
         /// this is a conversion operation
-        r = parse_expression(mod, mdl);
+        r = parse_expression(mod, mdl, meta);
         conv = r->mdl != mdl;
         //validate(read_if(mod, "]"), "expected ] after mdl-expr %o", src->name);
     }
@@ -1572,7 +1538,7 @@ enode silver_parse_member_expr(silver mod, emember mem) {
         consume(mod);
         array args = array(16);
         while (!next_is(mod, "]")) {
-            enode expr = parse_expression(mod, null);
+            enode expr = parse_expression(mod, null, null);
             push(args, expr);
             validate(next_is(mod, "]") || next_is(mod, ","), "expected ] or , in index arguments");
             if (next_is(mod, ","))
@@ -1610,7 +1576,7 @@ enode silver_parse_member_expr(silver mod, emember mem) {
         macro m = mem->mdl;
         array tokens = macro_expand(m, is_functional ? args : null, null);
         push_state(mod, tokens, 0); // set these tokens as the parser state, run parse, then return the statement
-        enode res = parse_expression(mod, null);
+        enode res = parse_expression(mod, null, null);
         pop_state(mod, false);
         print_tokens(mod, "after m");
         pop_state(mod, true);
@@ -1620,7 +1586,7 @@ enode silver_parse_member_expr(silver mod, emember mem) {
         if (mem->is_func || mem->is_type) {
             validate(next_is(mod, "["), "expected [ to initialize type");
             array expr = read_within(mod);
-            mem = typed_expr(mod, mem->mdl, expr); // this, is the construct
+            mem = typed_expr(mod, mem->mdl, mem->meta, expr); // this, is the construct
         } else if (mod->in_ref || mem->literal) {
             mem = mem; // we will not load when ref is being requested on a emember
         } else {
@@ -1671,10 +1637,10 @@ static enode auto_ref(enode expr, model expect) {
     return expr;
 }
 
-enode silver_parse_ternary(silver mod, enode expr) {
+enode silver_parse_ternary(silver mod, enode expr, model mdl_expect, array meta_expect) {
     if (!read_if(mod, "?")) return expr;
-    enode expr_true  = parse_expression(mod, null);
-    enode expr_false = parse_expression(mod, null);
+    enode expr_true  = parse_expression(mod, mdl_expect, meta_expect);
+    enode expr_false = parse_expression(mod, mdl_expect, meta_expect);
     return e_ternary(mod, expr, expr_true, expr_false);
 }
 
@@ -1683,7 +1649,7 @@ enode silver_parse_assignment(silver mod, emember mem, string oper) {
     validate(isa(mem) == typeid(enode) || !mem->is_assigned || !mem->is_const, "mem %o is a constant", mem->name);
     mod->in_assign = mem;
     enode   L       = mem;
-    enode   R       = parse_expression(mod, mem->mdl); /// getting class2 as a struct not a pointer as it should be. we cant lose that pointer info
+    enode   R       = parse_expression(mod, mem->mdl, mem->meta); /// getting class2 as a struct not a pointer as it should be. we cant lose that pointer info
     if (!mem->mdl) {
         mem->is_const = eq(oper, ":");
         set_model(mem, R->mdl); /// this is erroring because no 
@@ -1703,23 +1669,9 @@ enode silver_parse_assignment(silver mod, emember mem, string oper) {
     return result;
 }
 
-enode cond_builder_ternary(silver mod, array cond_tokens, A unused) {
-    push_state(mod, cond_tokens, 0);
-    enode cond_expr = parse_expression(mod, null);
-    pop_state(mod, false);
-    return cond_expr;
-}
-
-enode expr_builder_ternary(silver mod, array expr_tokens, A unused) {
-    push_state(mod, expr_tokens, 0);
-    enode exprs = parse_expression(mod, null);
-    pop_state(mod, false);
-    return exprs;
-}
-
 enode cond_builder(silver mod, array cond_tokens, A unused) {
     push_state(mod, cond_tokens, 0);
-    enode cond_expr = parse_expression(mod, null);
+    enode cond_expr = parse_expression(mod, emodel("bool"), null);
     pop_state(mod, false);
     return cond_expr;
 }
@@ -1741,21 +1693,19 @@ enode parse_ifdef_else(silver mod) {
     bool  expect_last  = false;
     enode  statements   = null;
 
+    verify(mod->expr_level == 0, "unexpected expression level at ifdef");
+    
+    
     while (true) {
         validate(!expect_last, "continuation after else");
         bool  is_if  = read_if(mod, "ifdef") != null;
         validate(is_if && require_if || !require_if, "expected if");
-        enode n_cond = is_if ? parse_expression(mod, null) : null;
+        mod->expr_level++;
+        enode n_cond = is_if ? parse_expression(mod, null, null) : null;
+        mod->expr_level--;
         array block  = read_body(mod);
-
         if (n_cond) {
-            bool prev      = mod->in_const;
-            mod->in_const  = true;
-            //push_state(mod, cond, 0);
-            //n_cond = parse_expression(mod, null);
             A const_v = n_cond->literal;
-            //pop_state(mod, false);
-            mod->in_const  = prev;
             if (!one_truth && const_v && cast(bool, const_v)) { // we need to make sure that we do not follow anymore in this block!
                 push_state(mod, block, 0); // are we doing that?
                 statements = parse_statements(mod, false);
@@ -1776,7 +1726,9 @@ enode parse_ifdef_else(silver mod) {
             break;
         require_if = false;
     }
-    return statements;
+
+    verify(mod->expr_level == 0, "unexpected expression level after ifdef");
+    return statements ? statements : enode(mdl, mod);
 }
 
 /// parses entire chain of if, [else-if, ...] [else]
@@ -1878,27 +1830,15 @@ emember silver_read_def(silver mod) {
     string n = read_alpha(mod);
     validate(n, "expected alpha-numeric identity, found %o", next(mod));
 
-    model mtop = instanceof(mod->top, typeid(import)) ? (model)mod : mod->top;
+    model mtop = top(mod);
     emember mem = emember(mod, mod, name, n, context, mtop);
 
     if (is_class || is_struct) {
         validate(mtop == mod, "expected record definition at module level");
         array schema = array();
         /// read class schematics
-        array meta = null;
-        if (is_class && next_is(mod, "[")) {
-            consume(mod);
-            while (!next_is(mod, "]")) {
-                model mdl = instanceof(read_model(mod, null), typeid(model));
-                validate(mdl, "expected model name in meta for %o", is_class->name);
-                push(meta, mdl);
-                // these we now give to the type when we make it (they are runtime args
-                // must also handle defining a type alias this way)
-                // for those, i believe its a subclass now; having alias and subclass is very redundant
-            }
-            consume(mod);
-        }
-        array body   = read_body(mod);
+        array meta = (is_class && next_is(mod, "<")) ? read_meta(mod) : null;
+        array body = read_body(mod);
 
         /// todo: call build_record right after this is done
         push(mod, mod); // make sure we are not in an import space
@@ -1912,8 +1852,8 @@ emember silver_read_def(silver mod) {
     } else if (is_enum) {
         model store = null, suffix = null;
         if (read_if(mod, ",")) {
-            store  = instanceof(read_model(mod, null), typeid(model));
-            suffix = instanceof(read_model(mod, null), typeid(model));
+            store  = instanceof(read_model(mod, null, null), typeid(model));
+            suffix = instanceof(read_model(mod, null, null), typeid(model));
             validate(store, "invalid storage type");
         }
         array enum_body = read_body(mod);
@@ -1949,7 +1889,7 @@ emember silver_read_def(silver mod) {
             A v = null;
             
             if (read_if(mod, ":")) {
-                v = read_node(mod, atype, null); // i want this to parse an entire literal, with operations
+                v = read_node(mod, atype, null, null); // i want this to parse an entire literal, with operations
                 //validate(v && isa(v) == atype, "expected numeric literal");
             } else
                 v = primitive(atype, value); /// this creates i8 to i64 data, using &value i64 addr
@@ -2038,7 +1978,7 @@ enode parse_statement(silver mod) {
     mod->left_hand = true;
 
     // lets read ahead to get the type here, so read-node has less scope to cover
-    enode   e = read_node(mod, null, null); /// at module level, supports keywords
+    enode   e = read_node(mod, null, null, null); /// at module level, supports keywords
     return e;
 }
 
@@ -2062,12 +2002,13 @@ fn parse_fn(silver mod, AFlag member_type, A ident, OPType assign_enum) {
     model      rtype = null;
     A     name  = instanceof(ident, typeid(token));
     array      body  = null;
+    array      meta  = null;
     if (!name) name  = instanceof(ident, typeid(string));
     bool     is_cast = member_type == A_FLAG_CAST;
 
     if (is_cast) {
         print_tokens(mod, "parse_fn before read_model");
-        rtype = read_model(mod, &body);
+        rtype = read_model(mod, &body, &meta);
     } else if (!name) {
         name = read_alpha(mod);
         validate(name, "expected alpha-identifier");
@@ -2084,7 +2025,7 @@ fn parse_fn(silver mod, AFlag member_type, A ident, OPType assign_enum) {
     
     bool single_expr = false;
     if ( r0 || read_if(mod, "->")) {
-        rtype = read_model(mod, &body); 
+        rtype = read_model(mod, &body, &meta); 
         if (body && len(body)) {
             // if body is set, then parse_fn will return the typed_expr call, with model of rtype, and expr of body
             single_expr = true;
@@ -2116,7 +2057,7 @@ fn parse_fn(silver mod, AFlag member_type, A ident, OPType assign_enum) {
     fn f = fn(
         mod,      mod,     name,   name, function_type, member_type, extern_name, f(string, "%o_%o", rec->name, name),
         instance, is_static ? null : rec,
-        rtype,    rtype,   single_expr, single_expr,
+        rtype,    rtype,   rmeta, meta,  single_expr, single_expr,
         args,     args,    body,   (body && len(body)) ? body : read_body(mod),
         cgen,     cgen);
     
@@ -2656,6 +2597,12 @@ static none checkout(import im, path uri, string commit, array prebuild, array p
         } else {
             vexec("init",     "git init %o",                        project_f);
             vexec("remote",   "git -C %o remote add origin %o",     project_f, uri);
+            if (!commit) {
+                command c = f(command, "git remote show origin");
+                string res = run(c);
+                verify(starts_with(res, "HEAD branch: "), "unexpected result for git remote show origin");
+                commit = mid(res, 13, len(res) - 13);
+            }
             vexec("fetch",    "git -C %o fetch origin %o",          project_f, commit);
             vexec("checkout", "git -C %o reset --hard FETCH_HEAD",  project_f);
         }

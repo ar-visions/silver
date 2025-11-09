@@ -770,6 +770,15 @@ i64 command_last_pid() {
     return (i64)_last_pid;
 }
 
+command command_with_cstr(command cmd, cstr buf) {
+    int ln = strlen(buf);
+    cmd->len = ln;
+    cmd->alloc = ln + 1;
+    cmd->chars = malloc(ln + 1);
+    memcpy(cmd->chars, buf, ln + 1);
+    return cmd;
+}
+
 string command_run(command cmd) {
     int pipe_in[2];   // for writing command input to sh -s
     int pipe_out[2];  // for reading stdout from sh -s
@@ -5229,6 +5238,7 @@ define_primitive(floats, raw, 0)
 define_primitive(func,     raw, 0)
 define_primitive(hook,   raw, 0)
 define_primitive(callback, raw, 0)
+define_primitive(callback_extra, raw, 0)
 define_primitive(cstrs, raw, 0)
 
 define_class(line, A)
