@@ -153,6 +153,7 @@ declare_class(codegen)
     i_prop(X,Y, public,     bool,                   is_global_ctr) \
     i_prop(X,Y, public,     bool,                   va_args) \
     i_prop(X,Y, public,     model,                  rtype) \
+    i_prop(X,Y, public,     array,                  rmeta) \
     i_prop(X,Y, public,     eargs,                  args) \
     i_prop(X,Y, public,     record,                 payload) \
     i_prop(X,Y, public,     bool,                   exported) \
@@ -272,6 +273,7 @@ declare_class(enode)
     i_prop    (X,Y, public,     A,                      override_alignment_bits) \
     i_prop    (X,Y, public,     path,                   imported_from) \
     i_prop    (X,Y, public,     A,                      initializer) \
+    i_prop    (X,Y, public,     array,                  meta) \
     i_prop    (X,Y, intern,     i32,                    offset_bits) \
     i_prop    (X,Y, intern,     i32,                    index) \
     i_prop    (X,Y, intern,     LLVMMetadataRef,        debug, as, ARef) \
@@ -326,7 +328,7 @@ declare_class_2(static_array, array)
     i_prop    (X,Y, public,     bool,        cmode) \
     i_prop    (X,Y, public,     callback,    parse_f) \
     i_prop    (X,Y, public,     callback,    parse_expr) \
-    i_prop    (X,Y, public,     callback,    read_model) \
+    i_prop    (X,Y, public,     callback_extra, read_model) \
     i_prop    (X,Y, public,     map,         base) \
     i_prop    (X,Y, public,     enode,       last_return) \
     i_prop    (X,Y, intern,     array,       finalizing) \
@@ -408,7 +410,7 @@ declare_class_2(static_array, array)
     i_method  (X,Y, public,     model,       pop) \
     i_method  (X,Y, public,     model,       top) \
     i_method  (X,Y, public,     bool,        emit,           ARef,       ARef) \
-    i_method  (X,Y, public,     model,       return_type) \
+    i_method  (X,Y, public,     model,       return_type, ARef) \
     i_override(X,Y, method,     init) \
     i_override(X,Y, method,     dealloc)
 declare_class_2(aether, model)

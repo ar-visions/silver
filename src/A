@@ -736,6 +736,7 @@ declare_abstract(imported)
 #define func_schema(X,Y,...)        raw_schema(X,Y,...)
 #define hook_schema(X,Y,...)        raw_schema(X,Y,...)
 #define callback_schema(X,Y,...)    raw_schema(X,Y,...)
+#define callback_extra_schema(X,Y,...)    raw_schema(X,Y,...)
 #define cstrs_schema(X,Y,...)       raw_schema(X,Y,...)
 #define ATypes_schema(X,Y,...)      raw_schema(X,Y,...)
 #define floats_schema(X,Y,...)      raw_schema(X,Y,...)
@@ -807,6 +808,7 @@ declare_primitive(handle,           raw)
 declare_primitive(func,             raw)
 declare_primitive(hook,             raw)
 declare_primitive(callback,         raw)
+declare_primitive(callback_extra,   raw)
 declare_primitive(cstrs,            raw)
 declare_primitive(ATypes,           raw)
 
@@ -1274,7 +1276,8 @@ declare_class(string)
 #define command_schema(X,Y,...) \
     i_method  (X,Y, public, i32,    exec) \
     i_method  (X,Y, public, string, run) \
-    s_method  (X,Y, public, i64, last_pid)
+    s_method  (X,Y, public, i64, last_pid) \
+    i_override(X,Y, ctr, cstr)
 declare_class_2(command, string)
 
 #define watch_schema(X,Y,...) \

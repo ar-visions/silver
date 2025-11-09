@@ -992,7 +992,7 @@ public:
             mod->in_macro = true;
             print_tokens(mod, ((string)f(string, "macro: %o", n))->chars);
             
-            model mdl = (model)mod->read_model((A)mod, (A)null);
+            model mdl = (model)mod->read_model((A)mod, (A)null, (A)null);
 
             if (mdl && (AType)isa(mdl) != (AType)typeid(macro)) {
                 mod->in_macro = false;

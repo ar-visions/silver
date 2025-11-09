@@ -89,7 +89,6 @@ void aether_register_member(aether e, emember mem, bool register_now) {
     for (int i = 0; i < len(e->lex); i++) {
         model _ctx = e->lex->elements[i];
         if (_ctx == ctx) {
-            printf("found top context in scope\n");
             break;
         }
     }
@@ -2602,11 +2601,14 @@ model aether_context_model(aether e, AType type) {
     return null;
 }
 
-model aether_return_type(aether e) {
+model aether_return_type(aether e, ARef meta) {
+    if (meta) *meta = null;
     for (int i = len(e->lex) - 1; i >= 0; i--) {
         model ctx = e->lex->elements[i];
-        if (isa(ctx) == typeid(fn) && ((fn)ctx)->rtype)
+        if (isa(ctx) == typeid(fn) && ((fn)ctx)->rtype) {
+            if (meta) *meta = (ARef)((fn)ctx)->rmeta;
             return ((fn)ctx)->rtype;
+        }
     }
     return null;
 }
@@ -3518,24 +3520,44 @@ void aether_init(aether e) {
     Class main_cl = main;
     register_model(e, main, false);
 
+    bool _mac = false;
+    bool _win = false;
+    bool _unix = false;
+    bool _x86_64 = false;
+    bool _arm64 = false;
+    bool _riscv = false;
+    bool _arm = false;
+    bool _x86 = false;
+    bool _mips = false;
 #if defined(_WIN32)
     cstr os_type = "win";
+    _win = true;
 #elif defined(__APPLE__)
     cstr os_type = "mac";
+    _mac = true;
 #else
     cstr os_type = "unix";
+    _unix = true;
 #endif
 
 #if defined(__x86_64__) || defined(_M_X64)
     cstr arch_type = "x86_64";
+    _x86_64 = true;
 #elif defined(__aarch64__) || defined(_M_ARM64)
     cstr arch_type = "arm64";
+    _arm64 = true;
 #elif defined(__arm__) || defined(_M_ARM)
     cstr arch_type = "arm";
+    _arm = true;
 #elif defined(__riscv)
     cstr arch_type = "riscv";
+    _riscv = true;
 #elif defined(__i386__) || defined(_M_IX86)
     cstr arch_type = "x86";
+    _x86 = true;
+#elif defined(__mips__) || defined(__mips) || defined(_M_MRX000)
+    cstr arch_type = "mips";
+    _mips = true;
 #else
     cstr arch_type = "unknown";
 #endif
@@ -3543,16 +3565,70 @@ void aether_init(aether e) {
     // standard member constants for os and arch
     model str = emodel("string");
     emember os = emember(
-        mod, e, name, token("os"), mdl, str,
+        mod, e, name, token("os"),
         is_const, true, is_decl, true,
         literal, string(os_type), mdl, str);
     register_member(e, os, true);
 
     emember arch = emember(
-        mod, e, name, token("arch"), mdl, str,
+        mod, e, name, token("arch"),
         is_const, true, is_decl, true,
         literal, string(arch_type), mdl, str);
     register_member(e, arch, true);
+
+    emember m_mac = emember(
+        mod, e, name, token("mac"),
+        is_const, true, is_decl, true,
+        literal, A_bool(_mac), mdl, emodel("bool"));
+    register_member(e, m_mac, true);
+
+    emember m_win = emember(
+        mod, e, name, token("win"),
+        is_const, true, is_decl, true,
+        literal, A_bool(_win), mdl, emodel("bool"));
+    register_member(e, m_win, true);
+
+    emember m_unix = emember(
+        mod, e, name, token("unix"),
+        is_const, true, is_decl, true,
+        literal, A_bool(_unix), mdl, emodel("bool"));
+    register_member(e, m_unix, true);
+
+    emember m_x86_64 = emember(
+        mod, e, name, token("x86_64"),
+        is_const, true, is_decl, true,
+        literal, A_bool(_x86_64), mdl, emodel("bool"));
+    register_member(e, m_x86_64, true);
+
+    emember m_x86 = emember(
+        mod, e, name, token("x86"),
+        is_const, true, is_decl, true,
+        literal, A_bool(_x86), mdl, emodel("bool"));
+    register_member(e, m_x86, true);
+
+    emember m_arm64 = emember(
+        mod, e, name, token("arm64"),
+        is_const, true, is_decl, true,
+        literal, A_bool(_arm64), mdl, emodel("bool"));
+    register_member(e, m_arm64, true);
+
+    emember m_arm = emember(
+        mod, e, name, token("arm"),
+        is_const, true, is_decl, true,
+        literal, A_bool(_arm), mdl, emodel("bool"));
+    register_member(e, m_arm, true);
+
+    emember m_riscv = emember(
+        mod, e, name, token("riscv"),
+        is_const, true, is_decl, true,
+        literal, A_bool(_riscv), mdl, emodel("bool"));
+    register_member(e, m_riscv, true);
+
+    emember m_mips = emember(
+        mod, e, name, token("mips"),
+        is_const, true, is_decl, true,
+        literal, A_bool(_mips), mdl, emodel("bool"));
+    register_member(e, m_mips, true);
 
     // this is so we have watching ability -- the ability 
     // to not require reimport of A-type, keeping our model 
@@ -4583,7 +4659,9 @@ void finalize(model mdl) {
 }
 
 model aether_top(aether e) {
-    return e->top;
+    if (e->top && strcmp(isa(e->top)->name, "import") == 0)
+        return e;
+    return e->top ? ((model)e->top->src == (model)e ? (model)e : e->top) : null;
 }
 
 A read_numeric(token a) {
