@@ -2711,7 +2711,6 @@ emember aether_lookup2(aether e, A name, AType mdl_type_filter) {
                         goto nxt;
                     }
                 }
-                print("returning m = %p", m);
                 return m;
             }
             nxt:
@@ -3479,6 +3478,18 @@ void aether_A_import(aether e, path lib) {
     update_schemas(e);
 }
 
+// todo: adding methods to header does not update the methods header (requires clean)
+void aether_reinit_startup(aether e) {
+    array prev = e->lex;
+    e->lex = hold(array(alloc, 32, assorted, true));
+    push(e->lex, prev->elements[0]);
+
+    // this should pose virtually as global
+    // we have two parts so our A-type models do not reload, and change identity
+    model mdl_after = model(mod, e, name, null, src, e, members, map(hsize, 64));
+    push(e, mdl_after);
+    drop(prev);
+} 
 
 void aether_init(aether e) {
     e->with_debug = true;
@@ -3491,6 +3502,7 @@ void aether_init(aether e) {
         e->name = stem(e->source);
     }
     aether_llvm_init(e);
+
     e->members = map(hsize, 32);
     e->shared_libs = array(alloc, 32, unmanaged, true);
     e->lex = array(alloc, 32, assorted, true);
@@ -3505,6 +3517,47 @@ void aether_init(aether e) {
     model main = Class(mod, e, src, emodel("A"), name, string("main"), imported_from, path("A"), is_abstract, true);
     Class main_cl = main;
     register_model(e, main, false);
+
+#if defined(_WIN32)
+    cstr os_type = "win";
+#elif defined(__APPLE__)
+    cstr os_type = "mac";
+#else
+    cstr os_type = "unix";
+#endif
+
+#if defined(__x86_64__) || defined(_M_X64)
+    cstr arch_type = "x86_64";
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    cstr arch_type = "arm64";
+#elif defined(__arm__) || defined(_M_ARM)
+    cstr arch_type = "arm";
+#elif defined(__riscv)
+    cstr arch_type = "riscv";
+#elif defined(__i386__) || defined(_M_IX86)
+    cstr arch_type = "x86";
+#else
+    cstr arch_type = "unknown";
+#endif
+
+    // standard member constants for os and arch
+    model str = emodel("string");
+    emember os = emember(
+        mod, e, name, token("os"), mdl, str,
+        is_const, true, is_decl, true,
+        literal, string(os_type), mdl, str);
+    register_member(e, os, true);
+
+    emember arch = emember(
+        mod, e, name, token("arch"), mdl, str,
+        is_const, true, is_decl, true,
+        literal, string(arch_type), mdl, str);
+    register_member(e, arch, true);
+
+    // this is so we have watching ability -- the ability 
+    // to not require reimport of A-type, keeping our model 
+    // identities intact for retries
+    reinit_startup(e);
 }
 
 
@@ -4147,6 +4200,7 @@ enode aether_e_eq(aether e, enode L, enode R) {
     return value(emodel("bool"), LLVMBuildICmp(e->builder, LLVMIntEQ, cmp->value, z, "cmp-i"));
 
 #if 0
+    // todo: bring this back in of course
     AType Lt = isa(L->literal);
     AType Rt = isa(R->literal);
     bool  Lc = is_class(L->mdl);

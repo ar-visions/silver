@@ -1045,6 +1045,8 @@ static inline llvm::Module *unwrap(LLVMModuleRef M) {
 // this so we need not traverse through the modules again
 // question is how to cache the include
 
+static map include_cache = null;
+
 path aether_include(aether e, A inc, ARef _instance) {
     clang_cc* instance = (clang_cc*)_instance;
     path ipath = (AType)isa(inc) == typeid(string) ?

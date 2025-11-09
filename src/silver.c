@@ -1745,17 +1745,16 @@ enode parse_ifdef_else(silver mod) {
         validate(!expect_last, "continuation after else");
         bool  is_if  = read_if(mod, "ifdef") != null;
         validate(is_if && require_if || !require_if, "expected if");
-        array cond   = is_if ? read_within(mod) : null;
+        enode n_cond = is_if ? parse_expression(mod, null) : null;
         array block  = read_body(mod);
-        enode  n_cond = null;
 
-        if (cond) {
+        if (n_cond) {
             bool prev      = mod->in_const;
             mod->in_const  = true;
-            push_state(mod, cond, 0);
-            n_cond = parse_expression(mod, null);
+            //push_state(mod, cond, 0);
+            //n_cond = parse_expression(mod, null);
             A const_v = n_cond->literal;
-            pop_state(mod, false);
+            //pop_state(mod, false);
             mod->in_const  = prev;
             if (!one_truth && const_v && cast(bool, const_v)) { // we need to make sure that we do not follow anymore in this block!
                 push_state(mod, block, 0); // are we doing that?
@@ -2029,6 +2028,8 @@ enode parse_statement(silver mod) {
         if (next_is(mod, "for"))    return parse_for(mod);
         if (next_is(mod, "while"))  return parse_while(mod);
         if (next_is(mod, "if"))     return parse_if_else(mod);
+        if (next_is(mod, "ifdef"))
+            return parse_ifdef_else(mod);
         if (next_is(mod, "do"))     return parse_do_while(mod);
     } else {
         if (next_is(mod, "ifdef"))
@@ -2248,15 +2249,9 @@ i64 path_wait_for_change(path, i64, i64);
 void silver_init(silver mod) {
     mod->defs     = map(hsize, 8);
     mod->codegens = map(hsize, 8);
-    bool is_watch = mod->watch; // -w or --watch
+    mod->import_cache = map(hsize, 8);
 
-#if defined(__linux__)
-    set(mod->defs, string("linux"), A_bool(true));
-#elif defined(_WIN32)
-    set(mod->defs, string("windows"), A_bool(true));
-#elif defined(__APPLE__)
-    set(mod->defs, string("apple"), A_bool(true));
-#endif
+    bool is_watch = mod->watch; // -w or --watch
 
     if (!mod->source) {
         fault("required argument: source-file");
@@ -2313,6 +2308,7 @@ void silver_init(silver mod) {
             print("rebuilding...");
             drop(mod->tokens);
             drop(mod->stack);
+            reinit_startup(mod);
         }
         retry = false;
         mod->tokens  = parse_tokens(mod, mod->source);
@@ -2856,13 +2852,16 @@ path module_exists(silver mod, array idents) {
     return file_exists("%o", sf) ? sf : null;
 }
 
+
 enode import_parse(silver mod) {
     print_tokens(mod, "import parse");
     validate(next_is(mod, "import"), "expected import keyword");
     consume(mod);
 
     model current_top = mod->top;
-    import mdl           = import(mod, mod, is_user, true); // to the rest of silver, this is merely a model; certainly we can emit this information into run-time, though.
+
+    int    from          = mod->cursor;
+    codegen cg           = null;
     string namespace     = null;
     array  includes      = array(32);
     array  module_paths  = array(32);
@@ -3005,6 +3004,8 @@ enode import_parse(silver mod) {
             set(props, string(prop_name->chars), string(prop_value->chars));
         }
     }
+    
+    silver external = null;
 
     if (uri) {
         checkout(mod, uri, commit,
@@ -3016,23 +3017,44 @@ enode import_parse(silver mod) {
             if (starts_with(t, "-l"))
                 push(mod->shared_libs, mid(t, 2, len(t) - 2));
     } else if (local_mod)
-        mdl->external = silver(local_mod);
+        external = silver(local_mod);
     else if (is_codegen) {
-        mdl->codegen = hold(construct_with(is_codegen, props, null));
+        cg = construct_with(is_codegen, props, null);
     }
     
     if (next_is(mod, "as")) {
         consume(mod);
         namespace = hold(read_alpha(mod));
-        validate(namespace, "expected alpha-numeric %s", is_codegen ? "alias" : "namespace");
+        validate(namespace, "expected alpha-numeric %s",
+            is_codegen ? "alias" : "namespace");
     } else if (is_codegen) {
         namespace = hold(string(is_codegen->name));
     }
+
+    // hash. for cache.  keep cache warm
+    int to = mod->cursor;
+    array tokens = array(alloc, to - from + 1);
+    for (int i = from; i < to; i++) {
+        token t = mod->tokens->elements[i];
+        push(tokens, t);
+    }
+
+    import mdl = get(mod->import_cache, tokens);
+    bool has_cache = mdl != null;
+
+    if (!has_cache) {
+        mdl = import(
+            mod,        mod,
+            is_user,    true,
+            codegen,    cg,
+            external,   external,
+            tokens,     tokens);
+
+        set(mod->import_cache, tokens, mdl);
+    }
     
-    // its important that silver need not rely on further interpretation of an import model
-    // import does its thing into normal aether modeling, and we move on
     emember mem = emember(
-        mod,    mod,    // sets instance->mod = mod
+        mod,    mod,
         name,   namespace,
         mdl,    mdl);
     set_model  (mem, mdl);
@@ -3041,23 +3063,24 @@ enode import_parse(silver mod) {
     if (namespace)
         mdl->name = namespace;
     
-    push(mod, mdl);
- 
-    // include each, collecting the clang instance for which we will invoke macros through
-    each (includes, string, inc) {
-        clang_cc instance;
-        include(mod, inc, &instance);
-        set(mod->instances, inc, instance);
-    }
-
-    each(module_paths, path, m) {
-        A_import(mod, m);
-    }
+    if (!has_cache && !is_codegen) {
+        push(mod, mdl);
     
-    // should only do this if its a global import and has no namesapce
-    // this import stays as a global lookup otherwise
-    // however, for delegates of llm with names, we will not keep it open
-    pop(mod);
+        // include each, collecting the clang instance for which we will invoke macros through
+        each (includes, string, inc) {
+            clang_cc instance;
+            include(mod, inc, &instance);
+            set(mod->instances, inc, instance);
+        }
+
+        each(module_paths, path, m) {
+            A_import(mod, m);
+        }
+        
+        // should only do this if its a global import and has no namespace
+        if (!namespace)
+            pop(mod);
+    }
 
     if (is_codegen) {
         string name = mdl->name ? (string)mdl->name : string(is_codegen->name);
