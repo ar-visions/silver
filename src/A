@@ -670,12 +670,10 @@ declare_base(A)
     i_operator(AA,Y, public, numeric, _compare,   numeric) \
     i_operator(AA,Y, public, numeric, _equal,     numeric) \
     i_operator(AA,Y, public, numeric, _not_equal, numeric) \
-    i_operator(AA,Y, public, none,    _assign,    numeric)
+    i_operator(AA,Y, public, none,    _assign,    numeric) \
+    i_override(AA,Y, cast, string)
 declare_abstract(numeric)
 
-// if a meta type is abstract, then the user may optionally fill that in
-// array for instance has a Value type, and a Dims
-// this makes abstract types great again
 
 #define string_like_schema(X,Y,...)
 declare_abstract(string_like)
@@ -1228,52 +1226,65 @@ declare_class(map)
     i_prop(X,Y, intern, bool,   establishing)
 declare_class_2(ctx, map)
 
-#define string_schema(X,Y,...) \
-    i_prop    (X,Y,   public, symbol,  chars) \
-    i_prop    (X,Y,   public, num,     alloc) \
-    i_prop    (X,Y,   public, num,     ref_length) \
-    i_prop    (X,Y,   public, num,     len) \
-    i_prop    (X,Y,   public, u64,     h) \
-    i_method  (X,Y,   public, string,  evaluate, map) \
-    i_method  (X,Y,   public, bool,    is_numeric) \
-    i_method  (X,Y,   public, i32,     first) \
-    i_method  (X,Y,   public, i32,     last) \
-    i_method  (X,Y,   public, f64,     real_value) \
-    i_guard   (X,Y,   public, sz,      len) \
-    i_method  (X,Y,   public, string,  ucase) \
-    i_method  (X,Y,   public, string,  lcase) \
-    i_method  (X,Y,   public, array,   split, symbol) \
-    i_method  (X,Y,   public, string,  escape) \
-    i_method  (X,Y,   public, num,     index_of, symbol) \
-    i_method  (X,Y,   public, num,     rindex_of, symbol) \
-    i_method  (X,Y,   public, none,    append, symbol) \
-    i_method  (X,Y,   public, none,    append_count, symbol, i32) \
-    i_method  (X,Y,   public, none,    push, u32) \
-    i_method  (X,Y,   public, none,    concat, string) \
-    i_method  (X,Y,   public, string,  trim) \
-    i_method  (X,Y,   public, string,  ltrim) \
-    i_method  (X,Y,   public, string,  rtrim) \
-    i_method  (X,Y,   public, string,  mid, num, num) \
-    i_method  (X,Y,   public, none,    reserve, num) \
-    i_method  (X,Y,   public, none,    writef, handle, bool) \
-    i_method  (X,Y,   public, bool,    ends_with, symbol) \
-    i_method  (X,Y,   public, bool,    starts_with, symbol) \
-    i_method  (X,Y,   public, num,     cmp, symbol) \
-    i_method  (X,Y,   public, bool,    eq,  symbol) \
-    i_method  (X,Y,   public, string,  interpolate, A) \
-    i_cast    (X,Y,   public, cstr) \
-    i_cast    (X,Y,   public, sz) \
-    i_cast    (X,Y,   public, path) \
-    i_ctr     (X,Y,   public, symbol) \
-    i_ctr     (X,Y,   public, cstr) \
-    i_ctr     (X,Y,   public, i32) \
-    i_index   (X,Y,   public, i32, num) \
-    i_override(X,Y,   method, hash) \
-    i_override(X,Y,   method, compare) \
-    i_override(X,Y,   method, init) \
-    i_override(X,Y,   cast,   bool) \
-    i_override(X,Y,   method, copy)
+#define ipart_schema(AA,Y,...) \
+    i_prop    (AA,Y,   public, bool,   is_expr) \
+    i_prop    (AA,Y,   public, string, content)
+declare_class(ipart)
+
+
+#define string_schema(AA,Y,...) \
+    i_prop    (AA,Y,   public, symbol,  chars) \
+    i_prop    (AA,Y,   public, num,     alloc) \
+    i_prop    (AA,Y,   public, num,     ref_length) \
+    i_prop    (AA,Y,   public, num,     len) \
+    i_prop    (AA,Y,   public, u64,     h) \
+    i_method  (AA,Y,   public, string,  evaluate, map) \
+    i_method  (AA,Y,   public, bool,    is_numeric) \
+    i_method  (AA,Y,   public, i32,     first) \
+    i_method  (AA,Y,   public, i32,     last) \
+    i_method  (AA,Y,   public, f64,     real_value) \
+    i_guard   (AA,Y,   public, sz,      len) \
+    i_method  (AA,Y,   public, string,  ucase) \
+    i_method  (AA,Y,   public, string,  lcase) \
+    i_method  (AA,Y,   public, array,   split, symbol) \
+    i_method  (AA,Y,   public, string,  escape) \
+    i_method  (AA,Y,   public, num,     index_of, symbol) \
+    i_method  (AA,Y,   public, num,     rindex_of, symbol) \
+    i_method  (AA,Y,   public, none,    append, symbol) \
+    i_method  (AA,Y,   public, none,    append_count, symbol, i32) \
+    i_method  (AA,Y,   public, none,    push, u32) \
+    i_method  (AA,Y,   public, none,    concat, string) \
+    i_method  (AA,Y,   public, string,  trim) \
+    i_method  (AA,Y,   public, string,  ltrim) \
+    i_method  (AA,Y,   public, string,  rtrim) \
+    i_method  (AA,Y,   public, string,  mid, num, num) \
+    i_method  (AA,Y,   public, none,    reserve, num) \
+    i_method  (AA,Y,   public, none,    writef, handle, bool) \
+    i_method  (AA,Y,   public, bool,    ends_with, symbol) \
+    i_method  (AA,Y,   public, bool,    starts_with, symbol) \
+    i_method  (AA,Y,   public, num,     cmp, symbol) \
+    i_method  (AA,Y,   public, bool,    eq,  symbol) \
+    i_method  (AA,Y,   public, string,  interpolate, A) \
+    i_method  (AA,Y,   public, array,   split_parts) \
+    i_cast    (AA,Y,   public, cstr) \
+    i_cast    (AA,Y,   public, sz) \
+    i_cast    (AA,Y,   public, path) \
+    i_ctr     (AA,Y,   public, symbol) \
+    i_ctr     (AA,Y,   public, cstr) \
+    i_ctr     (AA,Y,   public, i32) \
+    i_operator(AA,Y,   public, none,   _assign_add,  string) \
+    i_operator(AA,Y,   public, string, _add,         string) \
+    i_index   (AA,Y,   public, i32, num) \
+    i_override(AA,Y,   method, hash) \
+    i_override(AA,Y,   method, compare) \
+    i_override(AA,Y,   method, init) \
+    i_override(AA,Y,   cast,   bool) \
+    i_override(AA,Y,   method, copy)
 declare_class(string)
+
+
+#define const_string_schema(AA,Y,...)
+declare_class_2(const_string, string)
 
 #define command_schema(X,Y,...) \
     i_method  (X,Y, public, i32,    exec) \

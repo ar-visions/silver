@@ -499,15 +499,55 @@ void model_init(model mdl) {
             LLVMTypeRef param_types[] = { e_A->type, e_A->type, e_A->type };
             LLVMTypeRef cb_type = LLVMFunctionType(e_A->type, param_types, 3, 0);
             mdl->type = LLVMPointerType(cb_type, 0);
-        } else if (type == typeid(ref_u8)) {
+        } else if (type == typeid(ref_u8))
             mdl->type = LLVMPointerType(LLVMPointerType(LLVMInt8Type(), 0), 0);
-        } else if (type == typeid(handle)) {
+        else if (type == typeid(ref_u16))
+            mdl->type = LLVMPointerType(LLVMPointerType(LLVMInt16Type(), 0), 0);
+        else if (type == typeid(ref_u32))
+            mdl->type = LLVMPointerType(LLVMPointerType(LLVMInt32Type(), 0), 0);
+        else if (type == typeid(ref_u64))
+            mdl->type = LLVMPointerType(LLVMPointerType(LLVMInt64Type(), 0), 0);
+        else if (type == typeid(ref_i8))
             mdl->type = LLVMPointerType(LLVMPointerType(LLVMInt8Type(), 0), 0);
-        } else if (type == typeid(bf16)) {
+        else if (type == typeid(ref_i16))
+            mdl->type = LLVMPointerType(LLVMPointerType(LLVMInt16Type(), 0), 0);
+        else if (type == typeid(ref_i32))
+            mdl->type = LLVMPointerType(LLVMPointerType(LLVMInt32Type(), 0), 0);
+        else if (type == typeid(ref_i64))
+            mdl->type = LLVMPointerType(LLVMPointerType(LLVMInt64Type(), 0), 0);
+        else if (type == typeid(ref_f32))
+            mdl->type = LLVMPointerType(LLVMPointerType(LLVMFloatType(), 0), 0);
+        else if (type == typeid(ref_f64))
+            mdl->type = LLVMPointerType(LLVMPointerType(LLVMDoubleType(), 0), 0);
+        else if (type == typeid(ref_bool))
+            mdl->type = LLVMPointerType(LLVMPointerType(LLVMInt1Type(), 0), 0);
+        else if (type == typeid(handle))
+            mdl->type = LLVMPointerType(LLVMPointerType(LLVMInt8Type(), 0), 0);
+        else if (type == typeid(ARef))
+            mdl->type = pointer(emodel("A"), null)->type;
+        else if (type == typeid(ATypes))
+            mdl->type = pointer(emodel("_AType"), null)->type;
+        else if (type == typeid(bf16)) {
             mdl->type = LLVMBFloatTypeInContext(e->module_ctx);
         } else if (type == typeid(fp16)) {
             mdl->type = LLVMHalfTypeInContext(e->module_ctx);
-        } else {
+        } else if ((mdl->atype_src->traits & A_TRAIT_POINTER) != 0) {
+            model mdl_src = null;
+            cstr src_name = null;
+            if (starts_with(mdl->name, "ref_")) {
+                string n = mid(mdl->name, 4, len(mdl->name) - 4);
+                mdl_src = emodel(n->chars);
+                src_name = n->chars;
+            } else {
+                // the way i 'thought' A-type worked
+                AType src = mdl->atype_src->src;
+                src_name = src->name;
+                mdl_src = src->user;
+            }
+            verify(mdl_src && mdl_src->type,
+                "type must be created before %o: %s", mdl->name, src_name);
+            mdl->type = pointer(mdl_src, null);
+        } else if ((mdl->atype_src->traits & A_TRAIT_ABSTRACT) == 0) {
             fault("unsupported primitive %s", type->name);
         }
         if (mdl->type && mdl->type != LLVMVoidType())
@@ -602,7 +642,7 @@ Class read_parent(Class mdl) {
     return null;
 }
 
-bool model_e_inherits(model mdl, model base) {
+bool model_inherits(model mdl, model base) {
     if (mdl == base) return true;
     bool inherits = false;
     model m = mdl;
@@ -1765,6 +1805,11 @@ void emember_init(emember mem) {
         string n = mem->name;
         mem->name = token(chars, cstring(n), source, e->source, line, 1, mod, e);
     }
+    if (eq(mem->name, "ARef")) {
+        print("ARef for emember %p", mem);
+        int test2 = 2;
+        test2++;
+    }
     //set_model(mem, mem->mdl);
 }
 
@@ -1961,7 +2006,7 @@ enode aether_e_const_array(aether e, model mdl, array a) {
 
 enode aether_e_meta_ids(aether e, array meta) {
     model atype = emodel("AType");
-    model atype_vector = pointer(atype, null);
+    model atype_vector = pointer(atype, string("ATypes"));
     if (!meta || !len(meta))
         return e_null(e, atype_vector);
 
@@ -2003,7 +2048,7 @@ enode aether_e_meta_ids(aether e, array meta) {
     return e_addr_of(e, arr_node, atype);
 }
 
-static LLVMValueRef const_string(aether e, cstr value, i32 len) {
+static LLVMValueRef const_cstr(aether e, cstr value, i32 len) {
     LLVMContextRef ctx = LLVMGetGlobalContext();
 
     // 1. make a constant array from the raw bytes (null-terminated!)
@@ -2059,24 +2104,51 @@ enode e_operand_primitive(aether e, A op) {
     else if (instanceof(op, typeid(   f32))) return  f32_value(32, op);
     else if (instanceof(op, typeid(   f64))) return  f64_value(64, op);
     else if (instanceof(op, typeid(symbol))) {
-        return enode(mod, e, meta, null, value, const_string(e, op, strlen(op)), mdl, emodel("symbol"), literal, op);
+        return enode(mod, e, meta, null, value, const_cstr(e, op, strlen(op)), mdl, emodel("symbol"), literal, op);
     }
-    else if (instanceof(op, typeid(string))) {
+    else if (instanceof(op, typeid(string))) { // this works for const_string too
         string str = string(((string)op)->chars);
-        return enode(mod, e, meta, null, value, const_string(e, str->chars, str->len), mdl, emodel("symbol"), literal, op);
+        return enode(mod, e, meta, null, value, const_cstr(e, str->chars, str->len), mdl, emodel("symbol"), literal, op);
     }
     error("unsupported type in aether_operand %s", t->name);
     return NULL;
+}
+
+enode aether_e_eval(aether e, string value) {
+    array tokens = e->parse_f(e, (A)value);
+    push_state(e, tokens, 0);
+    enode n = e->parse_expr(e, null, null); 
+    enode s = e_create(e, emodel("string"), null, n);
+    pop_state(e, false);
+    return s;
+}
+
+enode aether_e_interpolate(aether e, string str) {
+    enode accum = null;
+    array sp    = split_parts(str);
+    model mdl   = emodel("string");
+    each (sp, ipart, s) {
+        enode val = e_create(e, mdl, null, s->is_expr ?
+            (A)e_eval(e, s->content) : (A)s->content);
+        accum = accum ? e_add(e, accum, val) : val;
+    }
+    return accum;
 }
 
 enode aether_e_operand(aether e, A op, model src_model, array meta) {
     if (!op) {
         if (is_ref(src_model))
             return e_null(e, src_model);
-
         return enode(mod, e, mdl, emodel("none"), meta, null, value, null);
-        //return e_convert(e, src_model, map());
     }
+    
+    if (isa(op) == typeid(string))
+        return e_create(e, src_model, meta,
+            e_interpolate(e, (string)op));
+    
+    if (isa(op) == typeid(const_string))
+        return e_create(e, src_model, meta, (string)op);
+    
     if (isa(op) == typeid(map)) {
         return e_create(e, src_model, meta, op);
     }
@@ -2088,8 +2160,9 @@ enode aether_e_operand(aether e, A op, model src_model, array meta) {
     }
 
     enode r = e_operand_primitive(e, op);
-    if (!r->value)
+    if  (!r->value)
         r = e_operand_primitive(e, op);
+
     return src_model ? e_create(e, src_model, meta, r) : r;
 }
 
@@ -2106,18 +2179,22 @@ enode aether_e_primitive_convert(aether e, enode expr, model rtype);
 enode aether_e_create(aether e, model mdl, array meta, A args) {
     if (!mdl) return args;
 
+    string  str  = instanceof(args, typeid(string));
     map     imap = instanceof(args, typeid(map));
     array   a    = instanceof(args, typeid(array));
     static_array static_a = instanceof(args, typeid(static_array));
     enode   n    = null;
     emember ctr  = null;
-    model orig = mdl;
-    mdl          = typed(mdl);
+    //model orig = mdl;
+    //mdl = typed(mdl); // this is a bad idea here. undo this!
 
     if (!args) {
         if (is_ref(mdl))
             return e_null(e, mdl);
     }
+
+    if (mdl == emodel("string") && str)
+        return e_operand_primitive(e, args);
 
     // construct / cast methods
     enode input = instanceof(args, typeid(enode));
@@ -2126,12 +2203,39 @@ enode aether_e_create(aether e, model mdl, array meta, A args) {
         
         // if both are internally created and these are refs, we can allow conversion
         emember fmem = convertible(input->mdl, mdl);
+        if (!fmem) {
+            emember fmem2 = convertible(input->mdl, mdl);
+        }
         verify(fmem, "no suitable conversion found for %o -> %o",
             input->mdl->name, mdl->name);
         
-        // if same type, or types are primitively convertable return the enode
-        if (fmem == (void*)true)
+        if (fmem == (void*)true) {
+            LLVMTypeRef t = LLVMTypeOf(input->value);
+            LLVMTypeKind k = LLVMGetTypeKind(t);
+
+            // check if these are either AType class typeids, or actual compatible instances
+            if (k == LLVMPointerTypeKind) {
+                model src = model_source(input->mdl);
+                model dst = model_source(mdl);
+                bool bit_cast = false;
+                if (src->is_typeid && (dst->is_typeid || mdl == emodel("AType")))
+                    bit_cast = true; 
+                else {
+                    bit_cast = true;
+                    char *s = LLVMPrintTypeToString(t);
+                    print("LLVM type: %s", s);
+                    verify((is_primitive(src) && is_primitive(dst)) ||
+                        model_inherits(input->mdl, mdl), "models not compatible");
+                }
+                verify(bit_cast, "cannot bitcast type %o to %o", input->mdl->name, mdl->name);
+                return value(mdl, null,
+                    LLVMBuildBitCast(e->builder, input->value,
+                        pointer(mdl, null)->type, "class_ref_cast"));
+            }
+
+            // fallback to primitive conversion rules
             return aether_e_primitive_convert(e, input, mdl);
+        }
         
         // primitive-based conversion goes here
         fn fn = instanceof(fmem->mdl, typeid(fn));
@@ -2189,7 +2293,8 @@ enode aether_e_create(aether e, model mdl, array meta, A args) {
     } else if (cmdl) {
         // we have to call array with an intialization property for size, and data pointer
         // if the data is pre-defined in init and using primitives, it has to be stored prior to this call
-        res = e_fn_call(e, f_alloc, null, a( e_typeid(e, mdl), A_i32(1), e_meta_ids(e, meta) ));
+        enode metas_node = e_meta_ids(e, meta);
+        res = e_fn_call(e, f_alloc, null, a( e_typeid(e, mdl), A_i32(1), metas_node ));
         res->mdl = mdl; // we need a general cast method that does not call function
 
         bool is_array = cmdl && cmdl->parent == emodel("array");
@@ -2424,7 +2529,7 @@ model prefer_mdl(model m0, model m1, array meta0, array meta1, array* rmeta) {
         *rmeta = meta0;
         return m0;
     }
-    if (model_e_inherits(m0, m1)) {
+    if (model_inherits(m0, m1)) {
         *rmeta = meta1;
         return m1;
     }
@@ -2680,7 +2785,7 @@ enode aether_e_primitive_convert(aether e, enode expr, model rtype) {
 
     // bitcast for same-size types
     else if (F_kind == T_kind)
-        V = LLVMBuildBitCast(B, V, T->type, "bitcast");
+        V = LLVMBuildBitCast(B, V, T->type, "bitcast2");
 
     else if (F_kind == LLVMVoidTypeKind)
         V = LLVMConstNull(T->type);
@@ -3313,6 +3418,7 @@ void aether_A_import(aether e, path lib) {
     for (num i = 0; i < ln; i++) {
         AType  atype = a[i];
         model  mdl   = null;
+
         if (atype == typeid(member)) 
             continue;
 
@@ -3324,10 +3430,14 @@ void aether_A_import(aether e, path lib) {
         if (!get(module_filter, mstate))
             continue;
 
+        if (strcmp(atype->name, "ARef") == 0) {
+            continue; // we register this after
+        }
+
         if (atype == typeid(shape)) continue;
 
         bool  is_abstract  = (atype->traits & A_TRAIT_ABSTRACT)  != 0;
-        if (atype->user || (is_abstract && (atype != typeid(raw)))) continue; // if we have already processed this type, continue
+        if (atype->user) continue; // if we have already processed this type, continue
         string name = string(atype->name);
         set(processing, name, atype);
         bool  is_base_type = (atype->traits & A_TRAIT_BASE)      != 0;
@@ -3335,7 +3445,8 @@ void aether_A_import(aether e, path lib) {
 
         bool  is_prim      = (atype->traits & A_TRAIT_PRIMITIVE) != 0;
         bool  is_ref       = (atype->traits & A_TRAIT_POINTER)   != 0;
-        if   (is_ref) continue; // src of this may be referencing another unresolved
+        
+        //if   (is_ref) continue; // src of this may be referencing another unresolved
 
 
         bool  is_struct    = (atype->traits & A_TRAIT_STRUCT)    != 0;
@@ -3349,8 +3460,14 @@ void aether_A_import(aether e, path lib) {
         if      (is_class)    mdl = Class      (mod, e, name, name, imported_from, inc);
         else if (is_struct)   mdl = structure  (mod, e, name, name, imported_from, inc);
         else if (is_enum)     mdl = enumeration(mod, e, name, name);
-        else if (is_prim || is_abstract) {
+        else if (is_prim && !is_abstract && (atype->traits & A_TRAIT_INTEGRAL) != 0) {
             mdl = model(mod, e, name, name, atype_src, atype);
+        } else {
+            continue; // we get these on another pass
+        }
+
+        if (eq(mdl->name, "ref_u8")) {
+            mdl = mdl;
         }
 
         Class cl = mdl;
@@ -3367,21 +3484,48 @@ void aether_A_import(aether e, path lib) {
     // first time we run this, we must import AType basics (after we import the basic primitives)
     if (!_AType) register_basics(e);
 
+   
+    for (num i = 0; i < ln; i++) {
+        AType  atype = a[i];
+        model  mdl   = null;
+
+        if (atype->user || atype == typeid(member)) 
+            continue;
+
+        if (last_module != atype->module) {
+            last_module  = atype->module;
+            mstate       = string(last_module);
+        }
+        if (!get(module_filter, mstate))
+            continue;
+
+        bool  is_abstract  = (atype->traits & A_TRAIT_ABSTRACT)  != 0;
+        bool  is_prim      = (atype->traits & A_TRAIT_PRIMITIVE) != 0;
+        bool  is_ref       = (atype->traits & A_TRAIT_POINTER)   != 0;
+        
+        if   (!is_abstract && !is_prim && !is_ref) continue;
+        mdl = model(mod, e, name, string(atype->name), atype_src, atype);
+
+        // initialization for primitives are in model_init
+        atype->user = mdl; // lets store our model reference here
+        register_model(e, mdl, is_prim);
+    }
+
+    // register the abstracts 
+
     Class cl_A = emodel("A");
 
     // resolve parent classes, load refs, fill out enumerations, and set primitive references
     pairs(processing, i) {
         AType  atype    = i->value;
         model  mdl      = atype->user;
-        bool   is_class = (atype->traits & A_TRAIT_CLASS)   != 0;
-        if    (is_class) {
-            if (atype != typeid(A)) {
-                Class cl_A2 = emodel("A");
-                model m = emodel(atype->parent_type->name);
-                verify(isa(m) == typeid(Class), "expected parent class");
-                ((Class)mdl)->parent = m;
-            }
-            continue;
+        //bool   is_class = (atype->traits & A_TRAIT_CLASS)   != 0;
+
+        if (atype != typeid(A)) {
+            Class cl_A2 = emodel("A");
+            model m = emodel(atype->parent_type->name);
+            verify(isa(m), "expected parent class %s", atype->parent_type->name);
+            mdl->parent = m;
         }
 
         bool   is_enum  = (atype->traits & A_TRAIT_ENUM)    != 0;
@@ -3406,7 +3550,7 @@ void aether_A_import(aether e, path lib) {
         }
 
         bool   is_ref   = (atype->traits & A_TRAIT_POINTER) != 0;
-        if   (!is_ref) continue;
+        if   (!is_ref || mdl) continue;
 
         AType pointer_to = atype->meta.meta_0;
         verify(!mdl, "unexpected user data set for %s", atype->name);
@@ -3439,8 +3583,11 @@ void aether_A_import(aether e, path lib) {
 
             if (atype == typeid(A)) {
                 typeid(A)->user = cl;
-                model mdl_ARef = pointer(cl->ptr, string("ARef"));
-                register_model(e, mdl_ARef, true);
+                emember mem_ARef = lookup2(e, string("ARef"), null);
+                mem_ARef->mdl->src = mdl;
+                mdl->ptr = pointer(mdl, string("ARef"));
+                //model mdl_ARef = pointer(cl->ptr, string("ARef"));
+                //register_model(e, mdl_ARef, true);
             }
 
             // add members
@@ -3566,11 +3713,15 @@ void aether_A_import(aether e, path lib) {
         }
     }
     // finalize models
+    model _ARef = emodel("ARef");
     pairs(processing, i) {
         AType  atype  = i->value;
         model   mdl   = atype->user;
         verify(mdl, "could not import %s", atype->name);
         emember emem  = lookup2(e, mdl->name, null);
+        if (mdl == _ARef) {
+            _ARef->ptr = _ARef->ptr;
+        }
         verify(emem->mdl == mdl || emem->mdl == mdl->ptr, "import integrity error for %o", mdl->name);
         finalize(mdl);
         if (isa(mdl) == typeid(fn)) // should go in member parsing, where we mark_used
@@ -4012,7 +4163,8 @@ void create_schema(model mdl) {
     bool from_module = !mdl->imported_from;
     bool use_now = (!mdl->imported_from || (mdl->mem && mdl->mem->registered));
     string    type_name = f(string, "_%o_f", mdl->name);
-    structure mdl_type  = structure(mod, e, name, type_name, members, map(hsize, 8), is_system, true);
+    structure mdl_type  = structure(
+        mod, e, name, type_name, members, map(hsize, 8), is_system, true, is_typeid, true);
     emember   type_mem  = register_model(e, mdl_type, use_now);
     
     push(e, type_mem->mdl);
@@ -4572,7 +4724,7 @@ enode aether_e_fn_call(aether e, fn fn, enode target, array args) { // we could 
         }
     }
     int istart = index;
-
+    /*
     if (fn->format) {
         AType a0 = isa(args->elements[fmt_idx]);
         enode   fmt_node = instanceof(args->elements[fmt_idx], typeid(enode));
@@ -4596,7 +4748,7 @@ enode aether_e_fn_call(aether e, fn fn, enode target, array args) { // we could 
 
         }
         verify((istart + soft_args) == len(args), "%o: formatter args mismatch", fn->name);
-    }
+    }*/
     
     bool is_void_ = is_void(fn->rtype);
     LLVMValueRef R = LLVMBuildCall2(e->builder, F, V, arg_values, index, is_void_ ? "" : "call");
@@ -4896,9 +5048,9 @@ AType token_is_bool(token a) {
         (AType)typeid(bool) : null;
 }
 
-string read_string(cstr cs) {
+string read_string(cstr cs, bool is_const) {
     int ln = strlen(cs);
-    string res = string(alloc, ln);
+    string res = is_const ? (string)const_string(alloc, ln) : string(alloc, ln);
     char*   cur = cs;
     while (*cur) {
         int inc = 1;
@@ -4947,7 +5099,7 @@ void token_init(token a) {
 
     if (a->chars[0] == '\"' || a->chars[0] == '\'') {
         string crop = string(chars, &a->chars[1], ref_length, length - 2);
-        a->literal = read_string((cstr)crop->chars);
+        a->literal = read_string((cstr)crop->chars, a->chars[0] == '\"');
     } else
         a->literal = read_numeric(a);
 }
