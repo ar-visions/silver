@@ -401,7 +401,9 @@ static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::s
 // Function creation
 static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string name) {
     string n = string(name.c_str());
-    
+    if (eq(n, "printf")) {
+        n = n;
+    }
     // Get return type
     QualType return_qt = decl->getReturnType();
     model rtype = map_clang_type_to_model(return_qt, ctx, e, null);
@@ -992,7 +994,10 @@ public:
             mod->in_macro = true;
             print_tokens(mod, ((string)f(string, "macro: %o", n))->chars);
             
+            bool cmode = mod->cmode;
+            mod->cmode = true;
             model mdl = (model)mod->read_model((A)mod, (A)null, (A)null);
+            mod->cmode = cmode;
 
             if (mdl && (AType)isa(mdl) != (AType)typeid(macro)) {
                 mod->in_macro = false;
