@@ -23,13 +23,18 @@ import KhronosGroup:Vulkan-Loader
 import KhronosGroup:Vulkan-Tools
     -DBUILD_CUBE=ON
 
-struct a-struct
-    array-of-data : array <i8, 32x1>
-    str : string
+struct a-struct2
+    #array-of-data : array <i8, 32x1>
+    str2 : string
 
 class engine
+    m1 : string
     cast i32 -> i32[ 2 ] # casting method
-    fn init[ ] -> none # none is an alias for void
+    m2 : string
+
+    aa : a-struct2 [ str2:'lol' ]
+
+    fn init[ ]
         printf[ 'an engine is loading... its called {isa[..].name} \n' ]
     
 engine vk

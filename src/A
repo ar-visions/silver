@@ -645,7 +645,6 @@ forward(any)
     i_cast  (AA,Y, public, string) \
     i_cast  (AA,Y, public, bool)
 
-
 #define A_intern_footer(AA)
 
 #define A_intern(AA,YY,...) A_schema(AA,YY,__VA_ARGS__)
@@ -841,6 +840,7 @@ forward(shape)
     i_prop  (AA,YY, public, bool, is_global) \
     i_method(AA,YY, public, shape, with_array, array) \
     i_method(AA,YY, public, i64,   total) \
+    i_method(AA,YY, public, none,  push, i64) \
     s_method(AA,YY, public, shape, from, i64, ref_i64) \
     s_method(AA,YY, public, shape, read, ARef) \
     s_vargs (AA,YY, public, shape, new_shape,  i64) \
@@ -852,6 +852,7 @@ declare_class(shape)
 // shape mysteriously defined in cpp somewhere else
 ARef new_shape(i64, ...);
 #endif
+
 
 /// doubly-linked item type, integrated key so we dont also need a 'field' type
 #define item_schema(X,Y,...) \

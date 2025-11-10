@@ -82,7 +82,7 @@ void aether_register_member(aether e, emember mem, bool register_now) {
         return;
 
     //mem->registered  = true;
-    model ctx = mem->context ? mem->context : e->top;
+    model ctx = mem->context ? mem->context : top(e);
     bool exists = false;
     for (int i = 0; i < len(e->lex); i++) {
         model _ctx = e->lex->elements[i];
@@ -413,7 +413,7 @@ void model_init(model mdl) {
         test2    += 2;
     }
 
-    if ((e && e != mdl) && !mdl->is_user && !f && !args && !st && (!mdl->name || eq(mdl->name, "")) && !mdl->src) {
+    if ((e && e != mdl) && !mdl->is_global && !f && !args && !st && (!mdl->name || eq(mdl->name, "")) && !mdl->src) {
         print("useless model");
     }
 
@@ -630,7 +630,7 @@ model model_pointer(model mdl, string opt_name) {
 
 void statements_init(statements st) {
     aether e = st->mod;
-    st->scope = LLVMDIBuilderCreateLexicalBlock(e->dbg_builder, e->top->scope, e->file, 1, 0);
+    st->scope = LLVMDIBuilderCreateLexicalBlock(e->dbg_builder, top(e)->scope, e->file, 1, 0);
 }
 
 void aether_e_print_node(aether e, enode n) {
@@ -884,25 +884,18 @@ void aether_finalize_init(aether e, fn f) {
     // we need to set 'shape' on the AType field
     
     // emit declaration of the struct _type_f for classes, structs, and enums
-    pairs (e->members, i) {
+    model module_base = e->lex->elements[1]; // the init is at [1] because of the need to have non-replacables at [0] in use with a watcher
+    pairs (module_base->members, i) {
         emember mem = i->value;
         model   mdl = mem->mdl;
         if (mdl == f)
             module_init_mem = mem;
-        else if (!mdl->imported_from && isa(mdl) == typeid(Class)) {
-            
-
-            // we need to add code in module constructor to fill out members on this structure
-            // it also needs to be made a global constructor, no need to have a different strategy for apps
-        } else {
-            // structs are built slightly different
-        }
     }
 
     // now enter the function where we will construct the type_i
     push(e, f);
 
-    pairs (e->members, i) { // these members include our types, then we go through members on those
+    pairs (module_base->members, i) { // these members include our types, then we go through members on those
         emember mem = i->value;
         model   mdl = mem->mdl;
 
@@ -1135,7 +1128,7 @@ void aether_finalize_init(aether e, fn f) {
         Class main_class = null;
         Class main_spec  = emodel("main");
         verify(main_spec && instanceof(main_spec, typeid(Class)), "expected main class");
-        pairs(e->top->members, i) {
+        pairs(module_base->members, i) {
             emember mem = i->value;
             Class   cl  = instanceof(mem->mdl, typeid(Class));
             if (!cl) continue;
@@ -1146,7 +1139,7 @@ void aether_finalize_init(aether e, fn f) {
         }
 
         bool is_app = main_class != null;
-        pairs (e->members, i) {
+        pairs (module_base->members, i) {
             emember mem = i->value;
             // todo: reflection on emember if public
             if (mem->initializer) {
@@ -1367,7 +1360,6 @@ void fn_use(fn fn) {
     int              n_args    = fn->args ? len(fn->args->members) : 0;
     LLVMTypeRef*     arg_types = calloc(4 + (fn->instance != null) + n_args, sizeof(LLVMTypeRef));
     int              index     = 0;
-    model            top       = e->top;
 
     print("-------------");
 
@@ -1627,7 +1619,7 @@ void record_finalize(record rec) {
 
             mem->debug = LLVMDIBuilderCreateMemberType(
                 e->dbg_builder,        // LLVMDIBuilderRef
-                e->top->scope,         // Scope of the emember (can be the struct, class or base module)
+                top(e)->scope,         // Scope of the emember (can be the struct, class or base module)
                 cstring(mem->name),    // Name of the emember
                 len(mem->name),        // Length of the name
                 e->file,               // The file where the emember is declared
@@ -1655,7 +1647,7 @@ void record_finalize(record rec) {
     if (prev) {
         rec->debug = LLVMDIBuilderCreateStructType(
             e->dbg_builder,                     // Debug builder
-            e->top->scope,                // Scope (module or file)
+            top(e)->scope,                // Scope (module or file)
             cstring(rec->name),                // Name of the struct
             len(rec->name),
             e->file,                      // File where it’s defined
@@ -1686,7 +1678,7 @@ void record_init(record rec) {
             LLVMDwarfTag(DW_TAG_structure_type), // Tag for struct
             cstring(rec->name),                      // Name of the struct
             len(rec->name),
-            e->top->scope,                       // Scope (this can be file or module scope)
+            top(e)->scope,                       // Scope (this can be file or module scope)
             e->file,                             // File
             rec->name->line,                     // Line number
             0,
@@ -1780,7 +1772,7 @@ void emember_set_model(emember mem, model mdl) {
     aether e = mem->mod;
     if (!mdl || mem->registered) return;
     mem->registered = true;
-    model ctx = mem->context ? mem->context : e->top;
+    model ctx = mem->context ? mem->context : top(e);
     
     // lets register unregistered within
     pairs(mdl->members, i) {
@@ -1791,7 +1783,10 @@ void emember_set_model(emember mem, model mdl) {
 
     enumeration ctx_en = aether_context_model(e, typeid(enumeration));
     fn    is_fn    = instanceof(mdl, typeid(fn));
-    if (ctx_en || is_fn || mdl->is_user) return;
+
+    // better user check here that doesnt require the argument
+    // we replaced with is_global, for another case; that is these models define global members (when not aliased)
+    if (ctx_en || is_fn || (isa(mdl)->module != typeid(aether)->module)) return;
 
     AType mdl_type = isa(mdl);
     if (mem->mdl != mdl) {
@@ -1810,7 +1805,7 @@ void emember_set_model(emember mem, model mdl) {
     }
 
     model t = typed(mem->mdl);
-    bool is_module = ctx == e || ctx->is_user;
+    bool is_module = ctx == e || ctx->is_global;
     bool external_member = e->current_include || e->is_A_import;
     bool is_macro = instanceof(mem->mdl, typeid(macro)) != null;
     /// if we are creating a new emember inside of a fn, we need
@@ -1931,6 +1926,39 @@ enode aether_e_typeid(aether e, model mdl) {
     return n;
 }
 
+
+enode aether_e_const_array(aether e, model mdl, array a) {
+    model atype = emodel("AType");
+    model vector_type = pointer(mdl, null);
+    if (!a || !len(a))
+        return e_null(e, vector_type);
+
+    i32 ln = len(a);
+    
+    LLVMTypeRef arrTy = LLVMArrayType(vector_type->type, ln);
+    LLVMValueRef *elems = calloc(ln, sizeof(LLVMValueRef));
+
+    for (i32 i = 0; i < ln; i++) {
+        A m = a->elements[i];
+        enode n = e_operand(e, m, mdl, null);
+        elems[i] = n->value;  // each is an AType*
+    }
+
+    LLVMValueRef arr_init = LLVMConstArray(vector_type->type, elems, ln);
+    free(elems);
+
+    static int ident = 0;
+    char gname[32];
+    sprintf(gname, "static_array_%i", ident++);
+    LLVMValueRef G = LLVMAddGlobal(e->module, arrTy, gname);
+    LLVMSetLinkage(G, LLVMInternalLinkage);
+    LLVMSetGlobalConstant(G, 1);
+    LLVMSetInitializer(G, arr_init);
+
+    enode n = enode(mod, e, value, G, mdl, mdl, meta, null);
+    return e_addr_of(e, n, mdl);
+}
+
 enode aether_e_meta_ids(aether e, array meta) {
     model atype = emodel("AType");
     model atype_vector = pointer(atype, null);
@@ -1943,9 +1971,21 @@ enode aether_e_meta_ids(aether e, array meta) {
     LLVMValueRef *elems = calloc(ln, sizeof(LLVMValueRef));
 
     for (i32 i = 0; i < ln; i++) {
-        model m = meta->elements[i];
-        enode n = e_typeid(e, m);
-        elems[i] = n->value;  // each is an AType*
+        A m = meta->elements[i];
+        enode n;
+        if (instanceof(m, typeid(model)))
+            n = e_typeid(e, (model)m);
+        else if (instanceof(m, typeid(shape))) {
+            shape s = (shape)m;
+            array a = array(alloc, s->count);
+            push_vdata(a, s->data, s->count);
+            n = e_create(e, emodel("shape"), null,
+                m("count", s->count,
+                  "data",  e_const_array(e, emodel("i64"), a)));
+        } else {
+            verify(false, "unsupported design-time meta type");
+        }
+        elems[i] = n->value;
     }
 
     LLVMValueRef arr_init = LLVMConstArray(atype_vector->type, elems, ln);
@@ -2299,10 +2339,15 @@ enode aether_e_create(aether e, model mdl, array meta, A args) {
                             field_type = smem->mdl;
                             break;
                         }
-                    }
+                    } // string and cstr strike again -- it should be calling the constructor on string for this, which has been enumerated by A-type already
                     verify(field_type, "field type lookup failed for %o (index = %i)",
                         model_source(mdl)->name, i);
-                    verify(field_type->type == LLVMStructGetTypeAtIndex(rmdl->type, i), "field type mismatch");
+                    emember m0 = value_by_index(rmdl->members, 0);
+                    AType type_m0 = isa(m0); // this is string for our struct member at 0 (string str2)
+                    LLVMTypeRef tr = LLVMStructGetTypeAtIndex(rmdl->type, i);
+                    LLVMTypeRef expect_ty = is_class(field_type) ?
+                        pointer(field_type, null)->type : field_type->type;
+                    verify(expect_ty == tr, "field type mismatch");
                     if (!value) value = e_null(e, field_type);
                     fields[i] = value->value;
                 }
@@ -2865,7 +2910,7 @@ none emember_release(emember mem) {
 }
 
 model aether_pop(aether e) {
-    statements st = instanceof(e->top, typeid(statements));
+    statements st = instanceof(top(e), typeid(statements));
     if (st) {
         pairs(st->members, i) {
             emember mem = i->value;
@@ -2901,6 +2946,7 @@ model model_typed(model a) {
 emember aether_initializer(aether e) {
     verify(e, "model given must be module (aether-based)");
 
+    e->is_global = true;
     fn fn_init = fn(
         mod,      e,
         name,     f(string, "_%o_module_init", e->name),
@@ -3545,7 +3591,12 @@ void aether_reinit_startup(aether e) {
 
     // this should pose virtually as global
     // we have two parts so our A-type models do not reload, and change identity
-    model mdl_after = model(mod, e, name, null, src, e, members, map(hsize, 64));
+    model mdl_after = model(
+        mod,       e,
+        name,      null,
+        src,       e,
+        is_global, true,
+        members,   map(hsize, 64));
     push(e, mdl_after);
     drop(prev);
 } 
@@ -3845,6 +3896,14 @@ emember model_convertible(model fr, model to) {
         return (emember)true;
 
     if (is_record(a) || is_record(b)) {
+        if (is_class(a) && is_class(b)) {
+            Class aa = a;
+            Class bb = b;
+            while (aa) {
+                if (aa == bb) return (emember)true;
+                aa = aa->parent;
+            }
+        }
         emember mcast = castable(a, b);
         return mcast ? mcast : constructable(a, b);
     } else {
@@ -4493,21 +4552,25 @@ enode aether_e_fn_call(aether e, fn fn, enode target, array args) { // we could 
 
     int fmt_idx  = fn->format ? fn->format->format_index - 1 : -1;
     int arg_idx  = fn->format ? fn->format->arg_index    - 1 : -1;
-    if (args)
+    if (args) {
+        int i = 0;
         each (args, A, value) {
             if (index == arg_idx) break;
             if (index == fmt_idx) {
+                i++;
                 index++;
                 continue;
             }
-            // this is wrong because we do not have the target as a member in args
-            emember    f_arg = value_by_index(fn->args->members, index);
+
+            emember    f_arg = value_by_index(fn->args->members, i);
             AType      vtype = isa(value);
             enode      conv  = e_create(e, f_arg->mdl, f_arg->meta, value);
             
             LLVMValueRef vr = arg_values[index] = conv->value;
+            i++;
             index++;
         }
+    }
     int istart = index;
 
     if (fn->format) {
@@ -4718,9 +4781,9 @@ void finalize(model mdl) {
 }
 
 model aether_top(aether e) {
-    if (e->top && strcmp(isa(e->top)->name, "import") == 0)
-        return e;
-    return e->top ? ((model)e->top->src == (model)e ? (model)e : e->top) : null;
+    //if (e->top && strcmp(isa(e->top)->name, "import") == 0)
+    //    return e;
+    return e->top;
 }
 
 A read_numeric(token a) {
@@ -4798,11 +4861,8 @@ A read_numeric(token a) {
 
     if (is_unsigned) {
         if (is_long == 0) {
-            if (is_base10 || digits >= 15) return (a->mod->cmode && is_base10) ? 
-                A_u32((u32)val) : A_u64((u64)val);
-            if (digits >= 7)  return A_u32((u32)val);
-            if (digits >= 3)  return A_u16((u16)val);
-            return A_u8((u8)val);
+            return (!a->mod->cmode || (!is_base10 && digits > 8) || (val > 0xffffffff)) ?
+                A_u64((i64)val) : A_u32((i32)val);
         } else if (is_long == 1) {
             return A_u32((u32)val);
         } else if (is_long == 2) {
@@ -4810,11 +4870,8 @@ A read_numeric(token a) {
         }
     } else {
         if (is_long == 0) {
-            if (is_base10 || digits >= 15) return (a->mod->cmode && is_base10) ?
-                A_i32((i32)val) :A_i64((i64)val);
-            if (digits >= 7)  return A_i32((i32)val);
-            if (digits >= 3)  return A_i16((i16)val);
-            return A_i8((i8)val);
+            return (!a->mod->cmode || (!is_base10 && digits > 8) || (val > 0xffffffff)) ?
+                A_i64((i64)val) : A_i32((i32)val);
         } else if (is_long == 1) {
             return A_i32((i32)val);
         } else if (is_long == 2) {

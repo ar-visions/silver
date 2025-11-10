@@ -5149,7 +5149,16 @@ none shape_dealloc(shape a) {
         free(a->data);
 }
 
-// make it easy for users creating shapes from stack
+none shape_push(shape a, i64 i) {
+    i64* prev = a->data;
+    a->data = malloc(sizeof(i64) * (a->count + 2));
+    a->data[a->count++] = i;
+    a->data[a->count]   = 0;
+    if (!a->is_global)
+        free(prev);
+    a->is_global = false;
+}
+
 none shape_init(shape a) {
     print("shape_init has been called");
     if (!a->is_global) {

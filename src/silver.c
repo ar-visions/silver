@@ -764,8 +764,7 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect, arra
     fn        in_args   = !mod->cmode ? instanceof(mod->top, typeid(eargs))  : null;
     record    rec       = !mod->cmode ? context_model(mod,   typeid(Class))  : null;
     record    in_record = !mod->cmode ? instanceof(mod->top, typeid(record)) : null;
-    silver    module    = (!mod->cmode && (top(mod) == (model)mod || 
-                           instanceof(mod->top, typeid(import))  || 
+    silver    module    = (!mod->cmode && (top(mod)->is_global || 
                           (f && f->is_module_init))) ? mod : null;
     emember   mem       = null;
     AFlag     mtype     = (is_fn && !is_static) ? A_FLAG_IMETHOD : (!is_static && is_cast) ? A_FLAG_CAST : A_FLAG_SMETHOD;
@@ -921,7 +920,7 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect, arra
     string    alpha     = null;
     int       depth     = 0;
     
-    bool skip_member_check = mod->expr_level == 0;
+    bool skip_member_check = false;
     if (!skip_member_check && module) {
         string alpha = peek_alpha(mod);
         if (alpha) {
@@ -963,12 +962,11 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect, arra
         
 
         if (!ns_found) {
-            print_tokens(mod, "before lookup2");
             mem = (is_fn || is_cast) ? null : lookup2(mod, alpha, null);
             if (mem) mark_used(mem);
         }
         
-        record rec = instanceof(mod->top, typeid(record));
+        record rec = instanceof(top(mod), typeid(record));
         if (!mem) {
             validate(mod->expr_level == 0, "member not found: %o", alpha);
             /// parse new member, parsing any associated function
@@ -1119,7 +1117,7 @@ static model next_is_class(silver mod, bool read_token) {
 
 string silver_peek_def(silver a) {
     token n = element(a, 0);
-    record rec = instanceof(a->top, typeid(record));
+    record rec = instanceof(top(a), typeid(record));
     if (!rec && next_is_class(a, false))
         return string(n->chars);
 
@@ -1160,13 +1158,13 @@ void silver_build_initializer(silver mod, emember mem) {
             expr = mem->initializer;
         else {
             array post_const = parse_const(mod, mem->initializer);
-            push_state(mod, post_const, 0);
-            print_token_array(mod, mod->tokens);
+            //push_state(mod, post_const, 0);
+            print_token_array(mod, post_const);
             int level = mod->expr_level;
             mod->expr_level++;
-            expr = parse_expression(mod, mem->mdl, mem->meta); // we have tokens for the name pushed to the stack
+            expr = typed_expr(mod, mem->mdl, mem->meta, post_const); // we have tokens for the name pushed to the stack
             mod->expr_level = level;
-            pop_state(mod, false);
+            //pop_state(mod, false);
         }
 
         //enode L = e_load(mod, mem);
@@ -1271,14 +1269,13 @@ static enode parse_expression(silver mod, model mdl_expect, array meta_expect) {
 model read_named_model(silver mod) {
     model mdl = null;
     push_current(mod);
-    if (instanceof(mod->top, typeid(import)) == 0) {
-        bool any = read_if(mod, "any") != null;
-        if (any) {
-            emember mem = lookup2(mod, string("any"), null);
-            model mdl_any = mem->mdl;
-            if (mem) mark_used(mem);
-            return mdl_any;
-        }
+
+    bool any = read_if(mod, "any") != null;
+    if (any) {
+        emember mem = lookup2(mod, string("any"), null);
+        model mdl_any = mem->mdl;
+        if (mem) mark_used(mem);
+        return mdl_any;
     }
     string a = read_alpha(mod);
     if (a && !next_is(mod, ".")) {
@@ -1303,11 +1300,29 @@ array read_meta(silver mod) {
     if (read_if(mod, "<")) {
         bool first = true;
         while (!next_is(mod, ">")) {
+            if (!res) res = array(alloc, 32, assorted, true);
             if (!first)
                 verify(read_if(mod, ","), "expected ',' seperator between models");
-            model mdl = read_named_model(mod);
-            verify(mdl, "expected model name, found %o", peek(mod));
-            push(res, mdl);
+            A n = read_numeric(mod);
+            bool f = true;
+            shape s = null;
+            if (n) {
+                s = shape();
+                while (n) {
+                    verify (isa(n) == typeid(i64),
+                        "expected numeric type i64, found %s", isa(n)->name);
+                    i64 value = *(i64*)n;
+                    shape_push(s, value);
+                    if (!read_if(mod, "x")) 
+                        break;
+                    n = read_numeric(mod);
+                }
+                push(res, s);
+            } else {
+                model mdl = read_named_model(mod);
+                verify(mdl, "expected model name, found %o", peek(mod));
+                push(res, mdl);
+            }
             first = false;
         }
         consume(mod);
@@ -1321,8 +1336,43 @@ model read_model(silver mod, array* expr, array* meta) {
     bool  type_only = false;
     model type      = null;
     if (expr) *expr = null;
+    if (meta) *meta = null;
 
     push_current(mod);
+
+    if (!mod->cmode) {
+        A lit = read_literal(mod, null);
+        if (lit) {
+            mod->cursor--;
+            // we support var:1  or var:2.2 or var:'this is a test with {var2}'
+            if (isa(lit) == typeid(string)) {
+                *expr = a(token("string"), token("["), element(mod, 0), token("]"));
+                mdl = emodel("string");
+            } else if (isa(lit) == typeid(i64)) {
+                *expr = a(token("i64"), token("["), element(mod, 0), token("]"));
+                mdl = emodel("i64");
+            } else if (isa(lit) == typeid(u64)) {
+                *expr = a(token("u64"), token("["), element(mod, 0), token("]"));
+                mdl = emodel("u64");
+            } else if (isa(lit) == typeid(i32)) {
+                *expr = a(token("i32"), token("["), element(mod, 0), token("]"));
+                mdl = emodel("i32");
+            } else if (isa(lit) == typeid(u32)) {
+                *expr = a(token("u32"), token("["), element(mod, 0), token("]"));
+                mdl = emodel("u32");
+            } else if (isa(lit) == typeid(f32)) {
+                *expr = a(token("f32"), token("["), element(mod, 0), token("]"));
+                mdl = emodel("f32");
+            } else if (isa(lit) == typeid(f64)) {
+                *expr = a(token("f64"), token("["), element(mod, 0), token("]"));
+                mdl = emodel("f64");
+            } else {
+                verify(false, "implement literal %s in read_model", isa(lit)->name);
+            }
+            mod->cursor++;
+            return mdl;
+        }
+    }
 
     bool explicit_sign = read_if(mod, "signed") != null;
     bool explicit_un   = !explicit_sign && read_if(mod, "unsigned") != null;
@@ -1836,7 +1886,7 @@ emember silver_read_def(silver mod) {
     emember mem = emember(mod, mod, name, n, context, mtop);
 
     if (is_class || is_struct) {
-        validate(mtop == mod, "expected record definition at module level");
+        validate(mtop->is_global, "expected record definition at module level");
         array schema = array();
         /// read class schematics
         array meta = (is_class && next_is(mod, "<")) ? read_meta(mod) : null;
@@ -1903,10 +1953,6 @@ emember silver_read_def(silver mod) {
                 validate(a, "could not read identifier");
                 push(aliases, a);
             }
-            if (eq(e, "none")) {
-                int test2 = 2;
-                test2    += 2;
-            }
             emember emem = emember(
                 mod, mod, name, e, mdl, mem->mdl,
                 is_const, true, is_decl, true, literal, v, aliases, aliases);
@@ -1950,7 +1996,7 @@ enode parse_statement(silver mod) {
     record    rec          = instanceof(mod->top, typeid(record));
     fn        f            = context_model(mod, typeid(fn));
     eargs     args         = instanceof(mod->top, typeid(eargs));
-    silver    module       = (f && f->is_module_init) ? mod : null;
+    silver    module       = (top(mod)->is_global || (f && f->is_module_init)) ? mod : null;
     bool      is_func_def  = false;
     string    assign_type  = null;
     OPType    assign_enum  = 0;
@@ -2117,10 +2163,9 @@ void silver_parse(silver mod) {
 
     while (peek(mod)) {
         print("token origin %p", mod->tokens);
-        print_tokens(mod, "pre-statement");
+        print_tokens(mod, "parse_statement");
         enode res = parse_statement(mod);
         validate(res, "unexpected token found for statement: %o", peek(mod));
-        print_tokens(mod, "post-statement");
         incremental_resolve(mod);
     }
     mod->in_top = false;
@@ -2994,8 +3039,8 @@ enode import_parse(silver mod) {
     if (!has_cache) {
         mdl = import(
             mod,        mod,
-            is_user,    true,
             codegen,    cg,
+            is_global,  cg == null && !namespace,
             external,   external,
             tokens,     tokens);
 
@@ -3027,7 +3072,7 @@ enode import_parse(silver mod) {
         }
         
         // should only do this if its a global import and has no namespace
-        if (!namespace)
+        if (namespace)
             pop(mod);
     }
 
