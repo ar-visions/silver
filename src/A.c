@@ -656,6 +656,24 @@ static none init_recur(A a, AType current, raw last_init) {
     if (init && init != (none*)last_init) init(a); 
 }
 
+string numeric_cast_string(numeric a) {
+    AType t = isa(a);
+    if (t == typeid(i8))  return f(string, "%hhi", *(i8*) a);
+    if (t == typeid(i16)) return f(string, "%hi",  *(i16*)a);
+    if (t == typeid(i32)) return f(string, "%i",   *(i32*)a);
+    if (t == typeid(i64)) return f(string, "%lli", *(i64*)a);
+
+    if (t == typeid(u8))  return f(string, "%hhu", *(u8*) a);
+    if (t == typeid(u16)) return f(string, "%hu",  *(u16*)a);
+    if (t == typeid(u32)) return f(string, "%u",   *(u32*)a);
+    if (t == typeid(u64)) return f(string, "%llu", *(u64*)a);
+
+    if (t == typeid(f32)) return f(string, "%f",   *(f32*)a);
+    if (t == typeid(f64)) return f(string, "%lf",  *(f64*)a);
+
+    fault("numeric type not handled in string cast: %s", t->name);
+    return null;
+}
 
 // we need a bit of type logic in here for these numerics; it should mirror the C compiler
 numeric numeric_operator__add(numeric a, numeric b) {
@@ -2540,6 +2558,62 @@ static inline char just_a_dash(char a) {
     return a == '-' ? '_' : a;
 }
 
+array string_split_parts(string a) {
+    array res = array(alloc, 32);
+    cstr s = (cstr)a->chars;
+    cstr prev = null;
+
+    while (*s) {
+        if (*s == '{') {
+            if (s[1] == '{') {
+                // escaped {{
+                if (!prev) prev = s;
+                s += 2;
+                continue;
+            }
+
+            // flush any literal before the expression
+            if (prev) {
+                string lit = string(chars, prev, ref_length, (sz)(s - prev));
+                ipart p = ipart(is_expr, false, content, lit);
+                push(res, p);
+                prev = null;
+            }
+
+            // parse expression content
+            s++; // skip '{'
+            cstr start = s;
+            while (*s && *s != '}')
+                s++;
+
+            verify(*s == '}', "unterminated interpolation", 1);
+
+            string expr = string(chars, start, ref_length, (sz)(s - start));
+            ipart p = ipart(is_expr, true, content, expr);
+            push(res, p);
+
+            s++; // skip '}'
+        } else if (*s == '}') {
+            // escaped }}
+            verify(s[1] == '}', "single unmatched }", 2);
+            if (!prev) prev = s;
+            s += 2;
+        } else {
+            if (!prev) prev = s;
+            s++;
+        }
+    }
+
+    // flush trailing literal
+    if (prev) {
+        string lit = string(chars, prev, ref_length, (sz)(s - prev));
+        ipart p = ipart(is_expr, false, content, lit);
+        push(res, p);
+    }
+
+    return res;
+}
+
 string string_interpolate(string a, A ff) {
     cstr   s    = (cstr)a->chars;
     cstr   prev = null;
@@ -2703,6 +2777,15 @@ string string_rtrim(string a) {
     while (s[count - 1] == ' ')
         count--;
     return string(chars, s, ref_length, count);
+}
+
+none string_operator__assign_add(string a, string b) {
+    concat(a, b);
+}
+
+string string_operator__add(string a, string b) {
+    concat(a, b);
+    return a;
 }
 
 none  string_push(string a, u32 b) {
@@ -5251,6 +5334,8 @@ define_enum(level)
 define_class(path, string)
 //define_class(file)
 define_class(string,  A)
+define_class(const_string, string)
+define_class(ipart,   A)
 define_class(command, string)
 
 define_class(shape, A)

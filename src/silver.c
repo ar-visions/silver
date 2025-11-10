@@ -819,7 +819,7 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect, arra
 
     A lit = read_literal(mod, null);
     if (lit) {
-        enode res = e_operand(mod, lit, null, null);
+        enode res = e_operand(mod, lit, mdl_expect, meta_expect);
         return e_create(mod, mdl_expect, meta_expect, res);
     }
     
@@ -1490,7 +1490,7 @@ static enode typed_expr(silver mod, model mdl, array meta, array expr) {
 
         while (i < ln || f->va_args) {
             emember arg  = value_by_index(m, i);
-            enode   expr = parse_expression(mod, arg->mdl, arg->meta);
+            enode   expr = parse_expression(mod, arg->mdl, arg->meta); // self contained for '{interp}' to cstr!
             verify(expr, "invalid expression");
             model   arg_mdl  = arg ? arg->mdl  : null;
             array   arg_meta = arg ? arg->meta : null;
@@ -1893,13 +1893,13 @@ emember silver_read_def(silver mod) {
         array body = read_body(mod);
 
         /// todo: call build_record right after this is done
-        push(mod, mod); // make sure we are not in an import space
+        //push(mod, mod); // make sure we are not in an import space
         if (is_class) {
             validate(!is_class || !is_class->is_ref, "unexpected pointer");
             mem->mdl = Class    (mod, mod, parent, is_class, name, n, body, body, meta, meta);
         } else
             mem->mdl = structure(mod, mod, name, n, body, body);
-        pop(mod);
+        //pop(mod);
 
     } else if (is_enum) {
         model store = null, suffix = null;
@@ -2013,7 +2013,8 @@ enode parse_statement(silver mod) {
             return mod->last_return;
         }
         if (next_is(mod, "break"))  return parse_break(mod);
-        if (next_is(mod, "for"))    return parse_for(mod);
+        if (next_is(mod, "for"))
+            return parse_for(mod);
         if (next_is(mod, "while"))  return parse_while(mod);
         if (next_is(mod, "if"))     return parse_if_else(mod);
         if (next_is(mod, "ifdef"))
@@ -2115,9 +2116,11 @@ fn parse_fn(silver mod, AFlag member_type, A ident, OPType assign_enum) {
 void silver_incremental_resolve(silver mod) {
     bool in_top = mod->in_top;
     mod->in_top = false;
+
+    model top = top(mod);
     
     /// finalize included structs
-    pairs(mod->members, i) {
+    pairs(top->members, i) {
         emember mem = i->value;
         model base = mem->mdl->is_ref ? mem->mdl->src : mem->mdl;
         if (!mem->mdl->finalized && instanceof(base, typeid(record)) && base->imported_from)
@@ -2125,7 +2128,7 @@ void silver_incremental_resolve(silver mod) {
     }
 
     /// finalize imported C functions, which use those structs perhaps literally in argument form
-    pairs(mod->members, i) {
+    pairs(top->members, i) {
         emember mem = i->value;
         model  mdl = mem->mdl;
         if (!mdl->finalized && instanceof(mem->mdl, typeid(fn)) && mdl->imported_from) {
@@ -2135,7 +2138,7 @@ void silver_incremental_resolve(silver mod) {
 
     /// process/finalize all remaining member models 
     /// calls process sub-procedure and poly-based finalize
-    pairs(mod->members, i) {
+    pairs(top->members, i) {
         emember mem = i->value;
         record rec = instanceof(mem->mdl, typeid(record));
         Class  cl  = instanceof(mem->mdl, typeid(Class));
@@ -2145,7 +2148,7 @@ void silver_incremental_resolve(silver mod) {
     }
 
     // finally, process functions (last step in parsing)
-    pairs(mod->members, i) {
+    pairs(top->members, i) {
         emember mem = i->value;
         if (mem != mod->mem_init && !mem->mdl->finalized && instanceof(mem->mdl, typeid(fn)) && !mem->mdl->imported_from) {
             build_fn(mod, mem->mdl, null, null);

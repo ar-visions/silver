@@ -71,6 +71,7 @@ declare_class(mschema)
 #define model_schema(X,Y,...)\
     i_prop    (X,Y, required,   aether,           mod, meta, weak) \
     i_prop    (X,Y, public,     emember,          mem, weak) \
+    i_prop    (X,Y, public,     model,            parent) \
     i_prop    (X,Y, public,     token,            name) \
     i_prop    (X,Y, public,     AType,            atype_src) \
     i_prop    (X,Y, public,     model,            src) \
@@ -80,6 +81,7 @@ declare_class(mschema)
     i_prop    (X,Y, public,     bool,             is_global) \
     i_prop    (X,Y, public,     bool,             is_const) \
     i_prop    (X,Y, public,     bool,             is_system) \
+    i_prop    (X,Y, public,     bool,             is_typeid) \
     i_prop    (X,Y, public,     bool,             is_internal) \
     i_prop    (X,Y, public,     mschema,          schema) \
     i_prop    (X,Y, public,     i64,              count) \
@@ -204,7 +206,6 @@ declare_class_2(Namespace, model)
 // for each field, f_* name-bound class, enum or primitive
 #define record_schema(X,Y,...) \
     i_prop    (X,Y, public, array,  meta) \
-    i_prop    (X,Y, public, record, parent) \
     i_prop    (X,Y, public, bool,   parsing) \
     i_prop    (X,Y, public, bool,   is_abstract) \
     i_prop    (X,Y, public, i32,    total_members) \
@@ -327,7 +328,7 @@ declare_class_2(static_array, array)
     i_prop    (X,Y, public,     array,       lex) \
     i_prop    (X,Y, public,     bool,        cmode) \
     i_prop    (X,Y, public,     callback,    parse_f) \
-    i_prop    (X,Y, public,     callback,    parse_expr) \
+    i_prop    (X,Y, public,     callback_extra, parse_expr) \
     i_prop    (X,Y, public,     callback_extra, read_model) \
     i_prop    (X,Y, public,     map,         base) \
     i_prop    (X,Y, public,     enode,       last_return) \
@@ -376,6 +377,8 @@ declare_class_2(static_array, array)
     i_method  (X,Y, public,     enode,       e_load,             emember, emember) \
     i_method  (X,Y, public,     enode,       e_typeid,           model) \
     i_method  (X,Y, public,     enode,       e_meta_ids,         array) \
+    i_method  (X,Y, public,     enode,       e_eval,             string) \
+    i_method  (X,Y, public,     enode,       e_interpolate,      string) \
     i_method  (X,Y, public,     enode,       e_const_array,      model, array) \
     i_method  (X,Y, public,     enode,       e_offset,           enode,      A) \
     i_method  (X,Y, public,     enode,       e_if_else,          array,      array, subprocedure, subprocedure) \

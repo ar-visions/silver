@@ -35,7 +35,7 @@ class engine
     aa : a-struct2 [ str2:'lol' ]
 
     fn init[ ]
-        printf[ 'an engine is loading... its called {isa[..].name} \n' ]
+        puts 'an engine is loading... lets compute: {2+2}\n'
     
 engine vk
 	intern instance : VkInstance
@@ -44,7 +44,7 @@ engine vk
     cast i32 -> i32 [ 4 ]
     
     fn init[] -> none # none is an alias for void
-        printf 'vulkan is loading...\n'
+        puts 'vulkan {version} is loading...\n'
         vkCreateInstance
             [ # temps are handled for you, and automatically referenced or given as literal depending on the type
                 sType:      VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
@@ -57,7 +57,7 @@ engine vk
                     applicationVersion: VK_MAKE_VERSION(1, 0, 0) # notice: macros use parenthesis
                     pEngineName:        'trinity'
                     engineVersion:      VK_MAKE_VERSION(1, 0, 0)
-                    apiVersion:         version == 1.3f ? VK_API_VERSION_1_3 : VK_API_VERSION_1_2
+                    apiVersion:         (version == 1.3f) ? VK_API_VERSION_1_3 : VK_API_VERSION_1_2
                 ]
             ], null, ref instance # when giving a member variable, we must specify ref if it that type is required
         
