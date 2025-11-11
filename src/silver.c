@@ -256,10 +256,9 @@ void build_record(silver mod, record rec) {
         emember m_init = member_lookup(rec, string("init"), typeid(fn));
         if (!m_init) {
             fn f_init = fn(mod, mod,
-                name, string("init"),
                 extern_name, f(string, "%s_init", rec->name),
                 rtype, emodel("none"), instance, rec, args, eargs(mod, mod));
-            m_init    = emember(mod, mod, name, f_init->name, mdl, f_init);
+            m_init    = emember(mod, mod, name, string("init"), mdl, f_init);
             register_member(mod, m_init, true);
         }
         pop(mod);
@@ -1046,7 +1045,7 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect, arra
             // this is where member types are read
             mem->mdl = read_model(mod, &expr, &mem->meta); // given VkInstance intern instance2 (should only read 1 token)
             validate(mem->mdl, "expected type after ':' in %o, found %o",
-                (in_record ? (model)in_record : (model)module)->name, peek(mod));
+                (in_record ? (model)in_record : (model)module)->mem->name, peek(mod));
             mem->initializer = hold(expr);
 
             // lets read meta types here, at the record member level
@@ -1443,7 +1442,7 @@ map parse_map(silver mod, model mdl_schema) {
         array   meta_expect = null;
         if (mdl_schema && mdl_schema->members) {
             emember m = get(mdl_schema->members, name);
-            validate(m, "member %o not found on model %o", name, mdl_schema->name);
+            validate(m, "member %o not found on model %o", name, mdl_schema->mem->name);
             mdl_expect = m->mdl;
             meta_expect = m->meta;
         }
@@ -1584,7 +1583,7 @@ enode silver_parse_member_expr(silver mod, emember mem) {
         record r = instanceof(mem->mdl, typeid(record));
         /// must have an indexing method, or be a reference_pointer
         validate(mem->mdl->is_ref || r, "no indexing available for model %o",
-            mem->mdl->name);
+            mem->name);
         
         /// we must read the arguments given to the indexer
         consume(mod);
@@ -1896,9 +1895,9 @@ emember silver_read_def(silver mod) {
         //push(mod, mod); // make sure we are not in an import space
         if (is_class) {
             validate(!is_class || !is_class->is_ref, "unexpected pointer");
-            mem->mdl = Class    (mod, mod, parent, is_class, name, n, body, body, meta, meta);
+            mem->mdl = Class    (mod, mod, ident, mem->name, parent, is_class, body, body, meta, meta);
         } else
-            mem->mdl = structure(mod, mod, name, n, body, body);
+            mem->mdl = structure(mod, mod, ident, mem->name, body, body);
         //pop(mod);
 
     } else if (is_enum) {
@@ -1913,7 +1912,7 @@ emember silver_read_def(silver mod) {
         validate(len(enum_body), "expected body for enum %o", n);
 
         mem->mdl  = enumeration(
-            mod, mod,  src, store,  name, n);
+            mod, mod,  src, store);
         
         push_state(mod, enum_body, 0);
         push(mod, mem->mdl);
@@ -1982,7 +1981,7 @@ emember silver_read_def(silver mod) {
         finalize(mem->mdl);
     } else {
         validate(is_alias, "unknown error");
-        mem->mdl = model(mod, mod, src, mem->mdl, name, mem->name);
+        mem->mdl = model(mod, mod, src, mem->mdl);
     }
     mem->is_type = true;
     validate(mem && (is_import || len(mem->name)),
@@ -2104,7 +2103,8 @@ fn parse_fn(silver mod, AFlag member_type, A ident, OPType assign_enum) {
     
     bool is_static = (member_type & A_FLAG_SMETHOD) != 0;
     fn f = fn(
-        mod,      mod,     name,   name, function_type, member_type, extern_name, f(string, "%o_%o", rec->name, name),
+        mod,      mod,     function_type, member_type,
+        extern_name, f(string, "%o_%o", rec->name, name),
         instance, is_static ? null : rec,
         rtype,    rtype,   rmeta, meta,  single_expr, single_expr,
         args,     args,    body,   (body && len(body)) ? body : read_body(mod),
@@ -2324,10 +2324,11 @@ void silver_init(silver mod) {
 }
 
 silver silver_load_module(silver mod, path uri) {
+    emember mem = emember(mod, mod, name, stem(uri));
     silver mod_load = silver(
         source,  mod->source,
         install, mod->install,
-        name,    stem(uri));
+        mem,     mem);
     return mod_load;
 }
 
@@ -3057,9 +3058,6 @@ enode import_parse(silver mod) {
     set_model  (mem, mdl);
     register_member(mod, mem, true);
     
-    if (namespace)
-        mdl->name = namespace;
-    
     if (!has_cache && !is_codegen) {
         push(mod, mdl);
     
@@ -3080,7 +3078,7 @@ enode import_parse(silver mod) {
     }
 
     if (is_codegen) {
-        string name = mdl->name ? (string)mdl->name : string(is_codegen->name);
+        string name = namespace ? (string)namespace : string(is_codegen->name);
         set(mod->codegens, name, mdl->codegen);
     }
     
@@ -3206,7 +3204,7 @@ array chatgpt_generate_fn(chatgpt a, fn f, array query) {
         emember mem  = i->value;
         if (len(str_args))
             append(str_args, ",");
-        concat(str_args, f(string, "%o: %o", name, mem->mdl->name));
+        concat(str_args, f(string, "%o: %o", name, mem->name));
     }
     string signature = f(string, "fn %o[%o] -> %o", f->name, str_args, f->rtype->name);
     
