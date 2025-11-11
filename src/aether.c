@@ -36,6 +36,7 @@ typedef LLVMMetadataRef LLVMScope;
 #define value(m,META,vr) enode(mod, e, value, vr, mdl, m, meta, META)
 
 emember aether_register_model(aether e, model mdl, string name, bool use_now) {
+
     if (mdl->mem) {
         error("already registered: %o", name);
         return mdl->mem;
@@ -45,18 +46,40 @@ emember aether_register_model(aether e, model mdl, string name, bool use_now) {
     bool is_macro = instanceof(mdl, typeid(macro)) != null;
     // the pointer for classes is created after, and used when we need it
     // accessible on model by ->ptr
+    bool is_class = isa(mdl) == typeid(Class);
+
+    model mdl_for_member = is_class ?
+        model(
+            mod,    mdl->mod,
+            is_ref, true,      members, mdl->members,
+            body,   mdl->body, src,     mdl, type,
+                LLVMPointerType(mdl->type ? mdl->type : LLVMInt8Type(), 0)) :
+        mdl;
+    
+    if (is_class) mdl->ptr = hold(mdl_for_member);
+
     emember mem   = emember(
         mod,      e,
-        mdl,      mdl,
+        mdl,      mdl_for_member,
         name,     name,
         is_func,  is_func,
         is_type,  true);
     
-    mdl->mem = mem;
-    
+    mdl->mem = hold(mem);
+    if (is_class) {
+        if (eq(name, "A")) {
+            int test2 = 2;
+            test2 += 2;
+        }
+        mdl_for_member->mem = hold(mem);
+        mdl->ptr = hold(mdl_for_member);
+    }
+
     register_member(e, mem, use_now);
-    if (!is_func && !is_macro && !mdl->ptr)
+    
+    if (!is_class && !is_func && !is_macro && !mdl->ptr)
         pointer(mdl);
+
     print("registered model %o", mem->name);
     return mem;
 }
@@ -471,17 +494,17 @@ void model_init(model mdl) {
             LLVMTypeRef fn_type = LLVMFunctionType(LLVMVoidType(), NULL, 0, 0);
             mdl->type = LLVMPointerType(fn_type, 0);
         } else if (type == typeid(hook)) {
-            model e_A = emodel("A")->ptr;
+            model e_A = emodel("A");
             LLVMTypeRef param_types[] = { e_A->type };
             LLVMTypeRef hook_type = LLVMFunctionType(e_A->type, param_types, 1, 0);
             mdl->type = LLVMPointerType(hook_type, 0);
         } else if (type == typeid(callback)) {
-            model e_A = emodel("A")->ptr;
+            model e_A = emodel("A");
             LLVMTypeRef param_types[] = { e_A->type, e_A->type };
             LLVMTypeRef cb_type = LLVMFunctionType(e_A->type, param_types, 2, 0);
             mdl->type = LLVMPointerType(cb_type, 0);
         } else if (type == typeid(callback_extra)) {
-            model e_A = emodel("A")->ptr;
+            model e_A = emodel("A");
             LLVMTypeRef param_types[] = { e_A->type, e_A->type, e_A->type };
             LLVMTypeRef cb_type = LLVMFunctionType(e_A->type, param_types, 3, 0);
             mdl->type = LLVMPointerType(cb_type, 0);
@@ -510,9 +533,9 @@ void model_init(model mdl) {
         else if (type == typeid(handle))
             mdl->type = LLVMPointerType(LLVMPointerType(LLVMInt8Type(), 0), 0);
         else if (type == typeid(ARef))
-            mdl->type = pointer(emodel("A"))->type;
+            mdl->type = emodel("A")->type;
         else if (type == typeid(ATypes))
-            mdl->type = pointer(emodel("_AType"))->type;
+            mdl->type = emodel("ATypes")->type;
         else if (type == typeid(bf16)) {
             mdl->type = LLVMBFloatTypeInContext(e->module_ctx);
         } else if (type == typeid(fp16)) {
@@ -568,12 +591,6 @@ void model_init(model mdl) {
             u64 ptr_sz = LLVMPointerSize(e->target_data);
             mdl->type  = LLVMPointerType(
                 src->type == LLVMVoidType() ? LLVMInt8Type() : src->type, 0);
-            string src_name = mdl->src->mem->name;
-            if (src_name) {
-                int ln = len(src_name);
-                mdl->debug = LLVMDIBuilderCreatePointerType(e->dbg_builder, src->debug,
-                    ptr_sz * 8, 0, 0, src_name->chars, ln);
-            }
         } else if (instanceof(mdl_src, typeid(record))) {
             record rec = mdl_src;
             mdl->type  = rec->type;
@@ -651,6 +668,11 @@ model model_pointer(model mdl) {
             is_ref, true,      members, mdl->members,
             body,   mdl->body, src,     mdl, type,
                 LLVMPointerType(res->type ? res->type : LLVMInt8Type(), 0));
+        
+        // make it easier to register pointers again
+        //if (mdl->mem && mdl->mem->registered) {
+        //    register_model(mdl->mod, mdl->ptr, false);
+        //}
      }
     return mdl->ptr;
 }
@@ -1395,8 +1417,9 @@ void fn_use(fn fn) {
 
     if (fn->instance) {
         AType t = isa(fn->instance);
-        verify (isa(fn->instance) == typeid(structure) || 
-                isa(fn->instance) == typeid(Class),
+        verify (fn->instance->src && 
+                (isa(fn->instance->src) == typeid(structure) || 
+                 isa(fn->instance->src) == typeid(Class)),
             "target [incoming] must be record type (struct / class) -- it is then made pointer-to record");
         
         /// we set is_arg to prevent registration of global
@@ -1579,7 +1602,7 @@ void record_finalize(record rec) {
         pairs(r->members, i) {
             string k =  i->key;
             emember mem = i->value;
-            AType t = isa(mem->mdl);
+               AType t = isa(mem->mdl);
             A info = isa(mem);
             verify( mem->name && mem->name->chars,  "no name on emember: %p (type: %o)", mem, r);
 
@@ -1607,7 +1630,7 @@ void record_finalize(record rec) {
             int abi_size = (member_type && member_type != LLVMVoidType()) ?
                 LLVMABISizeOfType(target_data, member_type) : 0;
             
-            print("member %o: %o = %i", mem->name, mem->mdl->mem->name, abi_size);
+            print("member %o: %o = %i", mem->name, mem->mdl, abi_size);
             member_debug[index++] = mem->debug;
             if (!sz_largest || abi_size > sz_largest) {
                 largest = mem;
@@ -1740,7 +1763,7 @@ emember enode_resolve(enode mem, string name) {
 
                 LLVMValueRef actual_ptr = is_arg ? mem->value : LLVMBuildLoad2(
                     e->builder,
-                    pointer(base)->type,
+                    (isa(base) == typeid(Class) ? pointer(base) : base)->type,
                     mem->value,
                     "load_actual_ptr"
                 );
@@ -3224,12 +3247,12 @@ static void register_vbasics(aether e) {
 
     //typeid(glyph)->user  = 
     register_model(e, mdl_glyph,  string("glyph"),  true);
-    typeid(i8)->user     = register_model(e, mdl_i8,     string("i8"),     true);
-    typeid(u8)->user     = register_model(e, mdl_u8,     string("u8"),     true);
-    typeid(ref_u8)->user = register_model(e, mdl_ref_u8, string("ref_u8"), true);
-    typeid(handle)->user = register_model(e, mdl_handle, string("handle"), true);
-    typeid(symbol)->user = register_model(e, mdl_symbol, string("symbol"), true);
-    typeid(cstr)->user   = register_model(e, mdl_cstr,   string("cstr"),   true);
+    typeid(i8)->user     = register_model(e, mdl_i8,     string("i8"),     true)->mdl;
+    typeid(u8)->user     = register_model(e, mdl_u8,     string("u8"),     true)->mdl;
+    typeid(ref_u8)->user = register_model(e, mdl_ref_u8, string("ref_u8"), true)->mdl;
+    typeid(handle)->user = register_model(e, mdl_handle, string("handle"), true)->mdl;
+    typeid(symbol)->user = register_model(e, mdl_symbol, string("symbol"), true)->mdl;
+    typeid(cstr)->user   = register_model(e, mdl_cstr,   string("cstr"),   true)->mdl;
 }
 
 static void register_basics(aether e) {
@@ -3260,33 +3283,34 @@ static void register_basics(aether e) {
         _shape  = m_shape->mdl;
         push(e, _shape);
         model _i64_16 = model(mod, e, src, _i64, count, 16);
+        register_model(e, _i64_16, string("_i64_16"), false);
         _shape->members = m(
             "count", emem(_i64,    null, "count"),
             "data",  emem(_i64_16, null, "data"));
         pop(e);
         mark_used(m_shape);
         shape = pointer(_shape);
+        register_model(e, shape, string("shape"), false);
         typeid(shape)->user = shape;
     }
 
     _symbol->is_const = true;
 
-    string _AType_name = string("_AType");
-    structure _AType = structure (mod, e, ident, _AType_name, members, null);
-    emember   _AType_mem = register_model(e, _AType, _AType_name, false);
+    string    _AType_name = string("_AType");
+    structure _AType      = structure (mod, e, ident, _AType_name, members, null);
+    emember   _AType_mem  = register_model(e, _AType, _AType_name, false);
 
-    model     _AType_ptr            = pointer       (_AType);
-    model     _ATypes_ptr           = pointer       (_AType_ptr);
+    model _AType_ptr  = pointer(_AType);
+    register_model(e, _AType_ptr,  string("AType"),  false);
+    model _ATypes_ptr = pointer(_AType_ptr);
+    register_model(e, _ATypes_ptr, string("ATypes"), false);
     
     typeid(AType) ->user = _AType_ptr; // without this, its double-registered in A_import
     typeid(ATypes)->user = _ATypes_ptr;
 
-    register_model(e, _AType_ptr,  string("AType"),  false); // makes sense to auto-register if a name is given.
-    register_model(e, _ATypes_ptr, string("ATypes"), false);
-
     structure _af_recycler          = structure     (mod, e, ident, string("_af_recycler"));
-    model      af_recycler_ptr      = pointer       (_af_recycler);
     emember   _af_recycler_mem      = register_model(e, _af_recycler,     string("_af_recycler"), false);
+    model      af_recycler_ptr      = pointer       (_af_recycler);
     emember    af_recycler_ptr_mem  = register_model(e,  af_recycler_ptr, string("af_recycler"),  false);
 
     structure _meta_t               = structure     (mod, e, ident, string("_meta_t"));
@@ -3343,6 +3367,8 @@ static void register_basics(aether e) {
     pop(e);
     
     model _u64_2 = model(mod, e, src, _u64, count, 2);
+    register_model(e, _u64_2, string("_u64_2"), true);
+
     push(e, _AType);
     _AType->members = m(
         "parent_type",     emem(_AType_ptr, null, "parent_type"),
@@ -3466,16 +3492,30 @@ void aether_A_import(aether e, path lib) {
             continue; // we get these on another pass
         }
 
-
         Class cl = mdl;
+
         // initialization for primitives are in model_init
-        atype->user = mdl; // lets store our model reference here
         verify(mdl, "failed to import type: %o", name);
-        register_model(e, mdl, name, is_prim || is_enum || 
+
+        if (eq(name, "A")) {
+            model mdl_A = emodel("A");
+            int test2 = 2;
+            test2 += 2;
+        }
+
+        emember mem = register_model(e, mdl, name, is_prim || is_enum || 
             eq(name, "A")     ||
             eq(name, "string") || 
             eq(name, "array") || 
             eq(name, "map"));
+
+        atype->user = mem->mdl;
+
+        if (eq(name, "A")) {
+            model mdl_A = emodel("A");
+            int test2 = 2;
+            test2 += 2;
+        }
     }
 
     // first time we run this, we must import AType basics (after we import the basic primitives)
@@ -3598,7 +3638,6 @@ void aether_A_import(aether e, path lib) {
                 eargs args = eargs(mod, e);
                 if ((amem->member_type & A_FLAG_CONSTRUCT) != 0) {
                     verify(mtype, "type cannot be void for a constructor");
-                    model raw_mdl = (model)mtype->user;
                     model arg_mdl = translate_target((model)mtype->user); // 'target' is our arg (not target), the function merely works for us
                     member arg = earg(args, arg_mdl, null, "");
 
@@ -3683,6 +3722,10 @@ void aether_A_import(aether e, path lib) {
                     }
                 }
                 verify(mem_mdl, "expected mdl for member %s:%o", atype->name, n);
+                if (eq(n, "elements")) {
+                    int test2 = 2;
+                    test2 += 2;
+                }
                 emember smem = emember(
                     mod, e, name, n, 
                     mdl, amem->count == 0 ? 
@@ -3699,6 +3742,7 @@ void aether_A_import(aether e, path lib) {
                     src,    emodel("u8"),
                     count,  atype->isize);
                 emember imem = emember(mod, e, name, n, mdl, intern_space); // todo: when we finalize our classes, we must position interns below our regular members (we are not doing that!)
+                intern_space->mem = hold(imem);
                 set(mdl->members, n, imem);
             }
         }
@@ -4920,6 +4964,19 @@ void finalize(model mdl) {
     else if (en)  enumeration_finalize(mdl);
     else if (rec) record_finalize(mdl);
     else if (f)   fn_finalize(mdl);
+
+    AType type = isa(mdl);
+
+    if (type == typeid(model) && mdl->src && mdl->src->type) {
+        model  src = mdl->src;
+        u64 ptr_sz = LLVMPointerSize(e->target_data);
+        string src_name = mdl->src->mem->name;
+        if (src_name) {
+            int ln = len(src_name);
+            mdl->debug = LLVMDIBuilderCreatePointerType(e->dbg_builder, src->debug,
+                ptr_sz * 8, 0, 0, src_name->chars, ln);
+        }
+    }
 
     verify(index_of(e->finalizing, mdl) == index, "weird?");
     remove(e->finalizing, index);
