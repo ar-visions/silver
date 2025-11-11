@@ -1612,7 +1612,10 @@ A A_with_cereal(A a, cereal _cs) {
         bool can = constructs_with(f->type, typeid(string));
         if (can) {
             return construct_with(f->type, string(cs), null);
+        } else if (constructs_with(f->type, typeid(cstr))) {
+            return construct_with(f->type, string(cs), null);
         }
+        constructs_with(f->type, typeid(cstr));
         printf("implement ctr cstr for %s\n", f->type->name);
         exit(-1);
     }
@@ -1622,7 +1625,7 @@ A A_with_cereal(A a, cereal _cs) {
 bool constructs_with(AType type, AType with_type) {
     for (int i = 0; i < type->member_count; i++) {
         member mem = &type->members[i];
-        if (mem->member_type == A_FLAG_CONSTRUCT) {
+        if ((mem->member_type & A_FLAG_CONSTRUCT) != 0) {
             if (mem->type == with_type)
                 return true;
         }
@@ -1666,6 +1669,13 @@ A construct_with(AType type, A data, ctx context) {
                 if (mem->type == typeid(path) && data_type == typeid(string)) {
                     result = alloc(type, 1, null);
                     result = ((A(*)(A, path))addr)(result, path(((string)data)));
+                    verify(A_validator(result), "invalid A");
+                    break;
+                }
+                if ((mem->type == typeid(cstr) || mem->type == typeid(symbol)) && 
+                        data_type == typeid(string)) {
+                    result = alloc(type, 1, null);
+                    result = ((A(*)(A, cstr))addr)(result, ((string)data)->chars);
                     verify(A_validator(result), "invalid A");
                     break;
                 }
