@@ -235,7 +235,6 @@ void build_record(silver mod, record rec) {
     rec->parsing = true;
     bool   is_class = instanceof(rec, typeid(Class)) != null;
     array  body     = rec->body ? rec->body : array();
-
     push_state(mod, body, 0);
     push      (mod, rec);
     while     (peek(mod)) {
@@ -246,6 +245,7 @@ void build_record(silver mod, record rec) {
     pop       (mod);
     pop_state (mod, false);
     rec->parsing = false;
+    
     finalize(rec);
     create_schema(rec);
 
@@ -1106,7 +1106,7 @@ static model next_is_class(silver mod, bool read_token) {
     }
 
     model f = emodel(t->chars);
-    if (f && isa(f) == typeid(Class)) {
+    if (f && isa(f->src) == typeid(Class)) {
         if (read_token)
             consume(mod);
         return f;
@@ -1887,18 +1887,13 @@ emember silver_read_def(silver mod) {
     if (is_class || is_struct) {
         validate(mtop->is_global, "expected record definition at module level");
         array schema = array();
-        /// read class schematics
-        array meta = (is_class && next_is(mod, "<")) ? read_meta(mod) : null;
-        array body = read_body(mod);
-
-        /// todo: call build_record right after this is done
-        //push(mod, mod); // make sure we are not in an import space
+        array meta   = (is_class && next_is(mod, "<")) ? read_meta(mod) : null;
+        array body   = read_body(mod);
         if (is_class) {
-            validate(!is_class || !is_class->is_ref, "unexpected pointer");
             mem->mdl = Class    (mod, mod, ident, mem->name, parent, is_class, body, body, meta, meta);
         } else
             mem->mdl = structure(mod, mod, ident, mem->name, body, body);
-        //pop(mod);
+        register_model(mod, mem->mdl, mem->name, false);
 
     } else if (is_enum) {
         model store = null, suffix = null;
