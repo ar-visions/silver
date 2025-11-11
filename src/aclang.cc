@@ -253,12 +253,12 @@ static none set_fields(RecordDecl* decl, ASTContext& ctx, aether e, record rec) 
             string fname = string(field_name.c_str());
             
             QualType field_type = field->getType();
-            model mapped = map_clang_type_to_model(field_type, ctx, e, null);
+            model mapped = map_clang_type_to_model(field_type, ctx, e, fname);
             if (!mapped) continue;
             
-            push(e, mapped);
+            //push(e, mapped);
             emember m = emember(mod, rec->mod, name, (token)fname, mdl, mapped);
-            pop(e);
+            //pop(e);
 
             uint64_t offset_bits = layout.getFieldOffset(field->getFieldIndex());
 
@@ -400,9 +400,6 @@ static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::s
 // Function creation
 static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string name) {
     string n = string(name.c_str());
-    if (eq(n, "printf")) {
-        n = n;
-    }
     // Get return type
     QualType return_qt = decl->getReturnType();
     model rtype = map_clang_type_to_model(return_qt, ctx, e, null);
@@ -458,7 +455,9 @@ static record create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::st
 
     // c++ ville
     if (!decl->isCompleteDefinition() || decl->isInvalidDecl() || decl->isDependentType()) {
-        return (record)model(mod, e, src, mdl_opaque);
+        record r_opaque = (record)model(mod, e, src, mdl_opaque);
+        register_model(e, (model)r_opaque, n, false);
+        return (record)r_opaque;
     }
 
     record rec = is_union ?
@@ -484,7 +483,8 @@ static model map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, ae
     
     for (unsigned i = 0; i < fpt->getNumParams(); i++) {
         QualType param_type = fpt->getParamType(i);
-        model param = map_clang_type_to_model(param_type, ctx, e, null);
+        string arg_name = f(string, "arg_%i", i);
+        model param = map_clang_type_to_model(param_type, ctx, e, arg_name);
         
         // Function types don't have parameter names
         char name_buf[32];
@@ -506,12 +506,12 @@ static model map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e
     const Type* pointee = pointee_qt.getTypePtr();
     
     if (const FunctionProtoType* fpt = dyn_cast<FunctionProtoType>(pointee)) {
-        static int seq = 0;
-        seq++;
-
         model func_model = map_function_type(fpt, ctx, e);
+        register_model(e, func_model, null, false);
         use((fn)func_model);
-        return model(mod, e, src, func_model, is_ref, true);
+        model rmodel = model(mod, e, src, func_model, is_ref, true);
+        register_model(e, rmodel, null, false);
+        return rmodel;
     }
     
     if (const FunctionNoProtoType* fnpt = dyn_cast<FunctionNoProtoType>(pointee)) {
@@ -635,6 +635,11 @@ public:
 // Direct Clang type mapping (equivalent to map_ctype_to_model)
 static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether e, string use_name) {
     const Type* t = qt.getTypePtr();
+
+    if (use_name && eq(use_name, "u32")) {
+        int test2 = 2;
+        test2 += 2;
+    }
     
     // Strip elaborated type (like CXType_Elaborated)
     if (const ElaboratedType* et = dyn_cast<ElaboratedType>(t)) {
@@ -727,8 +732,7 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         }
         ARef sh = new_shape(size, 0);
         model mdl = model(mod, e, src, elem_model, shape, (shape)sh);
-        if (use_name && len(use_name) > 0)
-            register_model(e, mdl, use_name, false);
+        register_model(e, mdl, use_name, false);
         return mdl;
     }
     
@@ -751,18 +755,19 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         if (pointee->isFunctionType())
             return map_function_pointer(pointee, ctx, e);
         
+        // replace with fields to navigate issues for
+        if (use_name && eq(use_name, "_markers")) {
+            model base = map_clang_type_to_model(pointee, ctx, e, null);
+        }
+
         model base = map_clang_type_to_model(pointee, ctx, e, null);
-        if (!base)
-             base = map_clang_type_to_model(pointee, ctx, e, null);
-        
         if (!base) base = emodel("ARef"); // todo: call this opaque (we dont want to classify this as A-related)
 
         verify(base, "could not resolve pointer type");
-        
+
         model ptr = model(mod, e, src, base, is_ref, true,
             is_const, pointee.isConstQualified());
-        if (use_name && len(use_name) > 0)
-            register_model(e, ptr, use_name, false);
+        register_model(e, ptr, use_name, false);
         return ptr;
     }
     

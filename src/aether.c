@@ -36,11 +36,8 @@ typedef LLVMMetadataRef LLVMScope;
 #define value(m,META,vr) enode(mod, e, value, vr, mdl, m, meta, META)
 
 emember aether_register_model(aether e, model mdl, string name, bool use_now) {
-
-    if (mdl->mem) {
-        error("already registered: %o", name);
+    if (mdl->mem)
         return mdl->mem;
-    }
 
     bool is_func  = instanceof(mdl, typeid(fn))    != null;
     bool is_macro = instanceof(mdl, typeid(macro)) != null;
@@ -1422,13 +1419,9 @@ void fn_use(fn fn) {
                  isa(fn->instance->src) == typeid(Class)),
             "target [incoming] must be record type (struct / class) -- it is then made pointer-to record");
         
-        /// we set is_arg to prevent registration of global
-        
+        /// we set is_arg to prevent registration of global 
         model mtarget = translate_target(fn->instance);
 
-        if (fn->function_type == A_FLAG_CAST) {
-            fn = fn;
-        }
         // our abstract is to have type differences for struct and ref struct, 
         // but NOT any form of ref class, less the user is setting a pointer indirectly;
         // class is inherently a reference to our abstract
@@ -1455,13 +1448,11 @@ void fn_use(fn fn) {
 
     fn->arg_types = arg_types;
     fn->arg_count = index;
-    model rtype = fn->rtype ? typed(fn->rtype) : null;
-    if (isa(rtype) == typeid(Class))
-        rtype = rtype->ptr;
+    fn->type      = LLVMFunctionType(
+        fn->rtype ? fn->rtype->type : LLVMVoidType(),
+        fn->arg_types, fn->arg_count, fn->va_args);
+    fn->ptr       = pointer(fn);
 
-
-    fn->type  = LLVMFunctionType(rtype ? rtype->type : LLVMVoidType(), fn->arg_types, fn->arg_count, fn->va_args);
-    fn->ptr   = pointer(fn);
     if (fn->mem->name || fn->extern_name) {
         fn->value = LLVMAddFunction(fn->mod->module,
             fn->extern_name ? fn->extern_name->chars : fn->mem->name->chars, fn->type);
@@ -1814,6 +1805,10 @@ void emember_init(emember mem) {
         string n = mem->name;
         mem->name = token(chars, cstring(n), source, e->source, line, 1, mod, e);
     }
+    if (eq(mem->name, "_markers")) {
+        int test2 = 2;
+        test2 += 2;
+    }
     //set_model(mem, mem->mdl);
 }
 
@@ -1900,8 +1895,13 @@ void emember_set_model(emember mem, model mdl) {
             LLVMGetCurrentDebugLocation2(e->builder), // Current debug location
             firstInstr);
     } else if (is_module && !mem->is_type) {
+        if (eq(mem->name, "engine")) {
+            int test2 = 2;
+            test2    += 2;
+        }
         mem->value = LLVMAddGlobal(e->module, t->type, mem->name->chars);
-        bool use_intern = (mem->access == interface_intern || t->is_internal);
+        bool use_intern = !external_member && 
+            (mem->access == interface_intern || t->is_internal);
         LLVMSetLinkage(mem->value, use_intern ? LLVMInternalLinkage : LLVMExternalLinkage);
         if (!external_member) {
             LLVMSetInitializer(mem->value, LLVMConstNull(t->type));
@@ -1969,6 +1969,8 @@ enode aether_e_typeid(aether e, model mdl) {
     emember type_member = get(i_member->mdl->members, string("type"));
     verify(type_member, "expected info global instance for type %o", name);
 
+    // i_member must have registered with set_model, to create its global
+    verify(i_member->value, "no value set on i_member");
     bool r = e->in_ref;
     e->in_ref = true;
     enode n = e_load(e, type_member, i_member);
@@ -3547,6 +3549,8 @@ void aether_A_import(aether e, path lib) {
         register_model(e, mdl, string(atype->name), is_prim);
     }
 
+    model _y64 = emodel("u32");
+
     // register the abstracts 
 
     Class cl_A = emodel("A");
@@ -3730,7 +3734,7 @@ void aether_A_import(aether e, path lib) {
                     mod, e, name, n, 
                     mdl, amem->count == 0 ? 
                         mem_mdl : model(mod, e, src, mem_mdl, count, amem->count), context, mdl);
-                
+                mem_mdl->mem = hold(smem);
                 set(mdl->members, n, smem);
             }
 
@@ -3762,17 +3766,19 @@ void aether_A_import(aether e, path lib) {
         if (isa(mdl) == typeid(fn)) // should go in member parsing, where we mark_used
             fn_use(mdl);
     }
-    e->is_A_import     = false;
-    e->current_include = null;
 
     // we do not need the schema until we build the global constructor
     update_schemas(e);
+
+    e->is_A_import     = false;
+    e->current_include = null;
 }
 
 // todo: adding methods to header does not update the methods header (requires clean)
 void aether_reinit_startup(aether e) {
     array prev = e->lex;
     e->lex = hold(array(alloc, 32, assorted, true));
+    verify(prev->elements[0] == e, "expected module identity");
     push(e->lex, prev->elements[0]);
 
     // this should pose virtually as global
@@ -4222,8 +4228,9 @@ void create_schema(model mdl, string name) {
     Class  cur = cmdl;
     array  acl = class_list(mdl, emodel("A"), false);
 
-    // register f table
+    // register functions
     each (acl, Class, cl) {
+        model mcl = cl;
         if (!cl->members) continue;
         pairs(cl->members, a) {
             emember m = a->value;
@@ -4275,7 +4282,7 @@ void create_schema(model mdl, string name) {
 }
 
 void aether_update_schemas(aether e) {
-    pairs (e->members, i) {
+    pairs (top(e)->members, i) {
         emember m = i->value;
         model  mdl = m->mdl;
         create_schema(mdl, m->name);
@@ -4969,12 +4976,14 @@ void finalize(model mdl) {
 
     if (type == typeid(model) && mdl->src && mdl->src->type) {
         model  src = mdl->src;
-        u64 ptr_sz = LLVMPointerSize(e->target_data);
-        string src_name = mdl->src->mem->name;
-        if (src_name) {
-            int ln = len(src_name);
-            mdl->debug = LLVMDIBuilderCreatePointerType(e->dbg_builder, src->debug,
-                ptr_sz * 8, 0, 0, src_name->chars, ln);
+        if (src && src->mem) {
+            u64 ptr_sz = LLVMPointerSize(e->target_data);
+            string src_name = src->mem->name;
+            if (src_name) {
+                int ln = len(src_name);
+                mdl->debug = LLVMDIBuilderCreatePointerType(e->dbg_builder, src->debug,
+                    ptr_sz * 8, 0, 0, src_name->chars, ln);
+            }
         }
     }
 
