@@ -226,13 +226,12 @@ static void create_method_stub(CXXMethodDecl* md, ASTContext& ctx, aether e, rec
 
     string fname = string(name.c_str());
     fn f = fn(mod, e,
-              name, (token)fname,
               rtype, rtype,
               args, args,
               extern_name, string(mg.c_str()),
               va_args, variadic);
 
-    register_model(e, (model)f, false);
+    register_model(e, (model)f, fname, false);
     finalize((model)f);
 }
 
@@ -308,8 +307,8 @@ static record create_opaque_class(CXXRecordDecl* cxx, aether e) {
     if (emember existing = lookup2(e, (A)n, null))
         return (record)existing->mdl;
 
-    record rec = (record)Class(mod, e, name, (token)n);
-    register_model(e, (model)rec, false);
+    record rec = (record)Class(mod, e, ident, (token)n);
+    register_model(e, (model)rec, n, false);
 
     //rec->opaque = true; // mark so downstream code knows
     finalize((model)rec);
@@ -325,8 +324,8 @@ static record create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::s
     if (emember existing = lookup2(e, (A)n, null))
         return (record)existing->mdl;
 
-    record rec = (record)Class(mod, e, name, (token)n, members, map(hsize, 16));
-    register_model(e, (model)rec, false);
+    record rec = (record)Class(mod, e, members, map(hsize, 16));
+    register_model(e, (model)rec, n, false);
     
     // bases → embed base layout first (simple, single inheritance case)
     const ASTRecordLayout& layout = ctx.getASTRecordLayout(cxx);
@@ -371,7 +370,7 @@ static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::s
 
 
     model top = e->top;
-    enumeration en = enumeration(mod, e, name, (token)n, members, map(hsize, 8));
+    enumeration en = enumeration(mod, e, members, map(hsize, 8));
     push(e, (model)en);
 
     // Visit enum constants
@@ -392,8 +391,8 @@ static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::s
     }
     pop(e);
     
-    if (en->name && len((string)en->name))
-        register_model(e, (model)en, false);
+    if (n && len((string)n))
+        register_model(e, (model)en, n, false);
     finalize((model)en);
     return en;
 }
@@ -432,9 +431,9 @@ static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string n
     // Check for variadic
     bool is_variadic = decl->isVariadic();
 
-    fn f = fn(mod, e, name, (token)n, rtype, rtype, args, args, va_args, is_variadic);
+    fn f = fn(mod, e, rtype, rtype, args, args, va_args, is_variadic);
     if (len(n) > 0)
-        register_model(e, (model)f, false);
+        register_model(e, (model)f, (string)n, false);
     //use(f);
     finalize((model)f);
     return f;
@@ -459,16 +458,16 @@ static record create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::st
 
     // c++ ville
     if (!decl->isCompleteDefinition() || decl->isInvalidDecl() || decl->isDependentType()) {
-        return (record)model(mod, e, name, (token)n, src, mdl_opaque);
+        return (record)model(mod, e, src, mdl_opaque);
     }
 
     record rec = is_union ?
-        (record)uni(mod, e, name, (token)n) :
-        (record)structure(mod, e, name, (token)n);
+        (record)uni(mod, e, ident, (token)n) :
+        (record)structure(mod, e, ident, (token)n);
     
     rec->members = map(hsize, 8);
     if (has_name)
-        register_model(e, (model)rec, false);
+        register_model(e, (model)rec, n, false);
     
     set_fields(decl, ctx, e, rec);
     
@@ -553,10 +552,10 @@ static model create_namespace(NamespaceDecl* ns, ASTContext& ctx, aether e) {
                 return existing->mdl;
 
             model ns_model = (model)Namespace(
-                mod, e, name, (token)name, members, map(hsize, 16),
+                mod, e, namespace_name, name, members, map(hsize, 16),
                 namespace_inline, is_inline);
 
-            register_model(e, ns_model, false);
+            register_model(e, ns_model, name, false);
             finalize(ns_model);
             return ns_model;
         } else {
@@ -702,8 +701,8 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         }
 
         if (src && use_name && len(use_name) > 0) {
-            model mdl = model(mod, e, src, src, name, (token)use_name);
-            register_model(e, mdl, false);
+            model mdl = model(mod, e, src, src);
+            register_model(e, mdl, use_name, false);
             return mdl;
         } else if (src)
             return src;
@@ -727,9 +726,9 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
             elem_model = model(mod, e, src, elem_model, is_const, true);
         }
         ARef sh = new_shape(size, 0);
-        model mdl = model(mod, e, name, (token)use_name, src, elem_model, shape, (shape)sh);
+        model mdl = model(mod, e, src, elem_model, shape, (shape)sh);
         if (use_name && len(use_name) > 0)
-            register_model(e, mdl, false);
+            register_model(e, mdl, use_name, false);
         return mdl;
     }
     
@@ -760,10 +759,10 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
 
         verify(base, "could not resolve pointer type");
         
-        model ptr = model(mod, e, name, (token)use_name, src, base, is_ref, true,
+        model ptr = model(mod, e, src, base, is_ref, true,
             is_const, pointee.isConstQualified());
         if (use_name && len(use_name) > 0)
-            register_model(e, ptr, false);
+            register_model(e, ptr, use_name, false);
         return ptr;
     }
     
@@ -985,8 +984,8 @@ public:
 
         if (params) {
             bool va_args = mi->isC99Varargs() || mi->isGNUVarargs();
-            macro mac = macro(mod, mod, name, (token)n, params, params, def, t, va_args, va_args);
-            register_model(mod, (model)mac, false);
+            macro mac = macro(mod, mod, params, params, def, t, va_args, va_args);
+            register_model(mod, (model)mac, n, false);
             //
         } else {
             //
@@ -1001,11 +1000,11 @@ public:
 
             if (mdl && (AType)isa(mdl) != (AType)typeid(macro)) {
                 mod->in_macro = false;
-                model macro_typedef = model(mod, mod, src, mdl, name, (token)n);
-                register_model(mod, macro_typedef, false);
+                model macro_typedef = model(mod, mod, src, mdl);
+                register_model(mod, macro_typedef, n, false);
             } else {
-                macro mac = macro(mod, mod, name, (token)n, params, null, def, t);
-                register_model(mod, (model)mac, false);
+                macro mac = macro(mod, mod, params, null, def, t);
+                register_model(mod, (model)mac, n, false);
 
                 // we were attempting to parse the expression here, but the const api's
                 // in llvm are not implemented as they should be.

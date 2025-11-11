@@ -103,7 +103,7 @@ declare_class(mschema)
     i_method  (X,Y, public,     emember,          member_lookup, string, AType) \
     i_method  (X,Y, public,     model,            typed) \
     s_method  (X,Y, public,     string,           keyword) \
-    i_method  (X,Y, public,     model,            pointer,       string) \
+    i_method  (X,Y, public,     model,            pointer) \
     i_final   (X,Y, public,     none,             finalize) \
     i_method  (X,Y, public,     emember,          convertible,   model) \
     i_method  (X,Y, public,     emember,          castable,      model) \
