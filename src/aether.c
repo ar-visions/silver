@@ -2007,6 +2007,7 @@ enode aether_e_const_array(aether e, model mdl, array a) {
 enode aether_e_meta_ids(aether e, array meta) {
     model atype = emodel("AType");
     model atype_vector = pointer(atype, string("ATypes"));
+
     if (!meta || !len(meta))
         return e_null(e, atype_vector);
 
@@ -2167,9 +2168,9 @@ enode aether_e_operand(aether e, A op, model src_model, array meta) {
 }
 
 enode aether_e_null(aether e, model mdl) {
+    if (is_class(mdl)) mdl = pointer(mdl, null); // classes are elevated to ref even though structurally they look like structs.  we've gone back and forth on this one
     if (!mdl) mdl = emodel("handle");
-    model m = (mdl->is_ref || is_class(mdl)) ? pointer(mdl, null) : mdl;
-    return enode(mod, e, value, LLVMConstNull(m->type), mdl, m, meta, null, is_null, true);
+    return enode(mod, e, value, LLVMConstNull(mdl->type), mdl, mdl, meta, null, is_null, true);
 }
 
 enode aether_e_primitive_convert(aether e, enode expr, model rtype);
@@ -2204,6 +2205,8 @@ enode aether_e_create(aether e, model mdl, array meta, A args) {
         // if both are internally created and these are refs, we can allow conversion
         emember fmem = convertible(input->mdl, mdl);
         if (!fmem) {
+            emember mcast = castable(input->mdl->parent->parent, emodel("string"));
+            mcast = mcast;
             emember fmem2 = convertible(input->mdl, mdl);
         }
         verify(fmem, "no suitable conversion found for %o -> %o",
@@ -2221,13 +2224,13 @@ enode aether_e_create(aether e, model mdl, array meta, A args) {
                 if (src->is_typeid && (dst->is_typeid || mdl == emodel("AType")))
                     bit_cast = true; 
                 else {
-                    bit_cast = true;
                     char *s = LLVMPrintTypeToString(t);
+                    int r0 = ref_level(input->mdl);
+                    int r1 = ref_level(mdl);
                     print("LLVM type: %s", s);
                     verify((is_primitive(src) && is_primitive(dst)) ||
                         model_inherits(input->mdl, mdl), "models not compatible");
                 }
-                verify(bit_cast, "cannot bitcast type %o to %o", input->mdl->name, mdl->name);
                 return value(mdl, null,
                     LLVMBuildBitCast(e->builder, input->value,
                         pointer(mdl, null)->type, "class_ref_cast"));
@@ -2294,6 +2297,7 @@ enode aether_e_create(aether e, model mdl, array meta, A args) {
         // we have to call array with an intialization property for size, and data pointer
         // if the data is pre-defined in init and using primitives, it has to be stored prior to this call
         enode metas_node = e_meta_ids(e, meta);
+        verify(!is_struct(e), "inappropriate use of struct, they cannot be given to alloc");
         res = e_fn_call(e, f_alloc, null, a( e_typeid(e, mdl), A_i32(1), metas_node ));
         res->mdl = mdl; // we need a general cast method that does not call function
 
@@ -2641,6 +2645,11 @@ enode aether_e_if_else(aether e, array conds, array exprs, subprocedure cond_bui
 
 enode aether_e_addr_of(aether e, enode expr, model mdl) {
     model        ref   = pointer(mdl ? mdl : expr->mdl, null); // this needs to set mdl->type to LLVMPointerType(mdl_arg->type, 0)
+    int rcount = ref_level(ref);
+    
+    model ref1 = emodel("ATypes");
+    int r1 = ref_level(ref1);
+
     emember      m_expr = instanceof(expr, typeid(emember));
     LLVMValueRef value = m_expr ? expr->value :
         LLVMBuildGEP2(e->builder, ref->type, expr->value, NULL, 0, "ref_expr");
@@ -3276,17 +3285,24 @@ static void register_basics(aether e) {
         typeid(shape)->user = shape;
     }
 
-  //model _ARef     = emodel("ARef");
     _symbol->is_const = true;
 
     structure _AType                = structure     (mod, e, name, string("_AType"), members, null);
     model     _AType_ptr            = pointer       (_AType, string("AType"));
+    model     _ATypes_ptr           = pointer       (_AType_ptr, string("ATypes"));
+    
+    typeid(AType) ->user = _AType_ptr; // without this, its double-registered in A_import
+    typeid(ATypes)->user = _ATypes_ptr;
+
+    register_model(e, _AType_ptr, false); // makes sense to auto-register if a name is given.
+    register_model(e, _ATypes_ptr, false);
+
     structure _af_recycler          = structure     (mod, e, name, string("_af_recycler"));
     model      af_recycler_ptr      = pointer       (_af_recycler, string("af_recycler"));
     emember   _af_recycler_mem      = register_model(e, _af_recycler, false);
     emember    af_recycler_ptr_mem  = register_model(e,  af_recycler_ptr, false);
     emember   _AType_mem            = register_model(e, _AType, false);
-    emember   _AType_ptr_mem        = register_model(e, _AType_ptr, false);
+
     structure _meta_t               = structure     (mod, e, name, string("_meta_t"));
     emember   _meta_t_mem           = register_model(e, _meta_t, false);
     structure _member               = structure     (mod, e, name, string("_member"));
@@ -3393,9 +3409,7 @@ void aether_A_import(aether e, path lib) {
     verify(!lib || f, "shared-lib failed to load: %o", lib);
 
     path inc = lib ? lib : path_self();
-    // push libraries for reloading facility
-    // todo: associate all loaded elements with this, so we can effectively release resources
-    // A-type has no unregistration of classes, but its a trivial mechanism
+
     if (f) {
         push(e->shared_libs, f);
         A_engage(null); // load A-types by finishing global constructor ordered calls
@@ -3484,7 +3498,6 @@ void aether_A_import(aether e, path lib) {
     // first time we run this, we must import AType basics (after we import the basic primitives)
     if (!_AType) register_basics(e);
 
-   
     for (num i = 0; i < ln; i++) {
         AType  atype = a[i];
         model  mdl   = null;
