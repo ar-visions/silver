@@ -193,7 +193,7 @@ void build_fn(silver mod, fn f, callback preamble, callback postamble) {
     } else {
         push_state(mod, after_const, 0);
         record cl = f ? f->instance : null;
-        if (cl) pairs(cl->members, m) print("class emember: %o: %o", cl->name, m->key);
+        if (cl) pairs(cl->members, m) print("class emember: %o: %o", cl, m->key);
         parse_statements(mod, true);
         if (!mod->last_return) {
             enode r_auto = null;
@@ -202,7 +202,7 @@ void build_fn(silver mod, fn f, callback preamble, callback postamble) {
             else if (f->instance)
                 r_auto = lookup2(mod, string("a"), null);
             else if (!mod->cmode) {
-                fault("return statement required for function: %o", f->name);
+                fault("return statement required for function: %o", f);
             }
             e_fn_return(mod, r_auto);
         }
@@ -256,7 +256,7 @@ void build_record(silver mod, record rec) {
         emember m_init = member_lookup(rec, string("init"), typeid(fn));
         if (!m_init) {
             fn f_init = fn(mod, mod,
-                extern_name, f(string, "%s_init", rec->name),
+                extern_name, f(string, "%s_init", rec),
                 rtype, emodel("none"), instance, rec, args, eargs(mod, mod));
             m_init    = emember(mod, mod, name, string("init"), mdl, f_init);
             register_member(mod, m_init, true);
@@ -799,8 +799,8 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect, arra
                 is_module,  module);
             if (is_cast) {
                 fn f = (fn)mem->mdl;
-                validate(len(f->rtype->name), "rtype cannot be anonymous for cast");
-                mem->name = hold(f(string, "cast_%o", f->rtype->name));
+                validate(len(f->rtype->mem->name), "rtype cannot be anonymous for cast");
+                mem->name = hold(f(string, "cast_%o", f->rtype));
             }
         }
         register_member(mod, mem, true); /// do not finalize in push member
@@ -982,7 +982,7 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect, arra
                 validate(f,         "expected function");
                 validate(f->target, "no target found in context");
                 mem = resolve(f->target, alpha);
-                validate(mem, "failed to resolve emember in context: %o", f->name);
+                validate(mem, "failed to resolve emember in context: %o", f);
             }
 
             bool chain = next_is(mod, ".") || next_is(mod, "->");
@@ -1504,7 +1504,7 @@ static enode typed_expr(silver mod, model mdl, array meta, array expr) {
             if (read_if(mod, ","))
                 continue;
             
-            validate(len(values) >= ln, "expected %i args for function %o", ln, f->name);
+            validate(len(values) >= ln, "expected %i args for function %o", ln, f);
             break;
         }
         return e_fn_call(mod, f, target, values);
@@ -1599,7 +1599,7 @@ enode silver_parse_member_expr(silver mod, emember mem) {
         enode index_expr = null;
         if (r) {
             emember indexer = compatible(mod, r, null, A_FLAG_INDEX, args); /// we need to update emember model to make all function members exist in an array
-            validate(indexer, "%o: no suitable indexing method", r->name);
+            validate(indexer, "%o: no suitable indexing method", r);
             index_expr = e_fn_call(mod, indexer->mdl, mem, args); // needs a target
         } else {
             index_expr = e_offset(mod, mem, args);
@@ -2098,13 +2098,13 @@ fn parse_fn(silver mod, AFlag member_type, A ident, OPType assign_enum) {
     validate(rtype, "rtype not set, void is something we may lookup");
     if (!name) {
         validate((member_type & A_FLAG_CAST) != 0, "with no name, expected cast");
-        name = form(string, "cast_%o", rtype->name);
+        name = form(string, "cast_%o", rtype);
     }
     
     bool is_static = (member_type & A_FLAG_SMETHOD) != 0;
     fn f = fn(
         mod,      mod,     function_type, member_type,
-        extern_name, f(string, "%o_%o", rec->name, name),
+        extern_name, f(string, "%o_%o", rec, name),
         instance, is_static ? null : rec,
         rtype,    rtype,   rmeta, meta,  single_expr, single_expr,
         args,     args,    body,   (body && len(body)) ? body : read_body(mod),
@@ -2451,7 +2451,7 @@ enode export_share(silver mod) {
     
     // create share folder for dest
     path share_dir = f(path, "%o/share/%o",
-        mod->install, mod->name);
+        mod->install, mod);
     make_dir(share_dir);
 
     // iterate through directory given [ this should support individual files, and patterns ]
@@ -3206,7 +3206,7 @@ array chatgpt_generate_fn(chatgpt a, fn f, array query) {
             append(str_args, ",");
         concat(str_args, f(string, "%o: %o", name, mem->name));
     }
-    string signature = f(string, "fn %o[%o] -> %o", f->name, str_args, f->rtype->name);
+    string signature = f(string, "fn %o[%o] -> %o", f, str_args, f->rtype);
     
     // main system message
     map sys_intro = m(
