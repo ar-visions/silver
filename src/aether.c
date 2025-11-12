@@ -84,30 +84,18 @@ emember aether_register_model(aether e, model mdl, string name, bool use_now) {
     return mem;
 }
 
-/*
-map aether_top_member_map(aether e) {
-    model top = e->top;
-    for (int i = len(e->lex) - 2; i >= 0; i--) {
-        model ntop = e->lex->elements[i];
-        if (ntop->members == top->members) {
-            top = ntop;
-            continue;
-        }
-        break;
-    }
-    if (!top->members)
-        top->members = map(hsize, 16);
-    return top->members;
-}*/
-
 void aether_register_member(aether e, emember mem, bool finalize) {
-    if (!mem || mem->membership || mem->target_member)
+    if (mem && mem->target_member)
         return;
-    model ctx = mem->context ? mem->context : top(e);
-    //mem->registered  = true;
-    verify(ctx->members, "expected members map");
-    set(ctx->members, string(mem->name->chars), mem);
-    mem->membership = ctx;
+
+    if (mem && !mem->membership) {
+        model ctx = mem->context ? mem->context : top(e);
+        //mem->registered  = true;
+        verify(ctx->members, "expected members map");
+        set(ctx->members, string(mem->name->chars), mem);
+        mem->membership = ctx;
+    }
+
     if (finalize)
         finalize(mem);
 }
@@ -4380,7 +4368,7 @@ static void record_finalize(record rec) {
             if (instanceof(mem->mdl, typeid(fn)))
                 continue;
 
-            finalize(mem->mdl);
+            finalize(mem);
             enumeration en = instanceof(mem->mdl, typeid(enumeration));
 
             if (en) {
@@ -4489,15 +4477,15 @@ static void record_finalize(record rec) {
 }
 
 
-static void fn_finalize(fn f) {
-    aether e = f->mod;
+static void fn_finalize(fn fn) {
+    aether e = fn->mod;
 
-    if (f->finalized) return;
-    if (f->is_module_init)
-        aether_finalize_init(e, f);
+    if (fn->finalized) return;
+    if (fn->is_module_init)
+        aether_finalize_init(e, fn);
 
-    f->finalized = true;
-    if (!f->entry || fn->value)
+    fn->finalized = true;
+    if (!fn->entry || fn->value)
         return;
 
     int n_args = fn->args ? len(fn->args->members) : 0;
@@ -4605,28 +4593,28 @@ static void fn_finalize(fn f) {
     }
 
     index = 0;
-    push(e, f);
-    if (f->target && false) {
+    push(e, fn);
+    if (fn->target && false) {
         LLVMMetadataRef meta = LLVMDIBuilderCreateParameterVariable(
             e->dbg_builder,     // DIBuilder reference
-            f->scope,           // The scope (subprogram/fn metadata)
+            fn->scope,           // The scope (subprogram/fn metadata)
             "a",                // Parameter name
             4,
             1,                  // Argument index (starting from 1, not 0)
             e->file,            // File where it's defined
-            isa(f->mem->name) == typeid(string) ? 0 :
-                f->mem->name->line,      // Line number
-            f->target->mdl->debug,   // Debug type of the parameter (LLVMMetadataRef for type)
+            isa(fn->mem->name) == typeid(string) ? 0 :
+                fn->mem->name->line,      // Line number
+            fn->target->mdl->debug,   // Debug type of the parameter (LLVMMetadataRef for type)
             1,                 // AlwaysPreserve (1 to ensure the variable is preserved in optimized code)
             0                  // Flags (typically 0)
         );
-        LLVMValueRef first_instr = LLVMGetFirstInstruction(f->entry);
+        LLVMValueRef first_instr = LLVMGetFirstInstruction(fn->entry);
         
         assert(LLVMIsAInstruction(first_instr), "not a instr"); /// we may simply insert a return if there is nothing?
         
         LLVMValueRef decl  = LLVMDIBuilderInsertDeclareRecordBefore(
             e->dbg_builder,                 // The LLVM builder
-            f->target->value,              // The LLVMValueRef for the first parameter
+            fn->target->value,              // The LLVMValueRef for the first parameter
             meta,                           // The debug metadata for the first parameter
             LLVMDIBuilderCreateExpression(e->dbg_builder, NULL, 0), // Empty expression
             LLVMGetCurrentDebugLocation2(e->builder),       // Current debug location
@@ -4634,12 +4622,12 @@ static void fn_finalize(fn f) {
         index++;
     }
 
-    pairs(f->args->members, i) {
+    pairs(fn->args->members, i) {
         emember arg = i->value;
         /// create debug for parameter here
         LLVMMetadataRef param_meta = LLVMDIBuilderCreateParameterVariable(
             e->dbg_builder,          // DIBuilder reference
-            f->scope,         // The scope (subprogram/fn metadata)
+            fn->scope,         // The scope (subprogram/fn metadata)
              cstring(arg->name),    // Parameter name
             len(arg->name),
             1 + index,         // Argument index (starting from 1, not 0)
@@ -4649,14 +4637,14 @@ static void fn_finalize(fn f) {
             1,                 // AlwaysPreserve (1 to ensure the variable is preserved in optimized code)
             0                  // Flags (typically 0)
         );
-        LLVMValueRef param_value = LLVMGetParam(f->value, index);
+        LLVMValueRef param_value = LLVMGetParam(fn->value, index);
         LLVMValueRef decl        = LLVMDIBuilderInsertDeclareRecordAtEnd(
             e->dbg_builder,
             param_value, 
             param_meta, // debug metadata for the first parameter
             LLVMDIBuilderCreateExpression(e->dbg_builder, NULL, 0), // Empty expression
             LLVMGetCurrentDebugLocation2(e->builder), // current debug location
-            f->entry); // attach it in the fn's entry block
+            fn->entry); // attach it in the fn's entry block
         arg->value = param_value;
         index++;
     }
@@ -4746,7 +4734,7 @@ void emember_finalize(emember mem) {
     if (!mdl || mdl->finalized) return; // ptr's need no form of action to 'finalize', although we are missing 
     mem->finalized = true;
 
-    model mdl = model_source(mdl); // resolve class record from its use-case pointer
+    mdl = model_source(mdl); // resolve class record from its use-case pointer
     if (mdl->finalized) return;
     mem->finalized = true;
     
@@ -4796,8 +4784,8 @@ void emember_finalize(emember mem) {
     
     fn       ctx_fn  = aether_context_model(e, typeid(fn));
     bool     is_init = false;
-    record   rec     = aether_context_model(e, typeid(Class)); // todo: convert to record
-    if (!rec) rec = aether_context_model(e, typeid(structure));
+    record   ctx_rec = aether_context_model(e, typeid(Class)); // todo: convert to record
+    if (!ctx_rec) ctx_rec = aether_context_model(e, typeid(structure));
 
     if (ctx_fn && ctx_fn->is_module_init) {
         is_init = true;
@@ -4856,7 +4844,7 @@ void emember_finalize(emember mem) {
         if (!external_member) {
             LLVMSetInitializer(mem->value, LLVMConstNull(t->type));
         }
-    } else if (!rec && !ctx_fn && !mem->is_type && 
+    } else if (!ctx_rec && !ctx_fn && !mem->is_type && 
                !mem->is_arg && (!e->current_include || e->is_A_import || is_module) && is_init && !mem->is_decl) { // we're importing so its not adding this global -- for module includes, it should
         symbol name = mem->name->chars;
         LLVMTypeRef type = t->type;

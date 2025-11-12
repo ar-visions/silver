@@ -231,8 +231,7 @@ static void create_method_stub(CXXMethodDecl* md, ASTContext& ctx, aether e, rec
               extern_name, string(mg.c_str()),
               va_args, variadic);
 
-    register_model(e, (model)f, fname, false);
-    finalize((model)f);
+    register_model(e, (model)f, fname, true);
 }
 
 
@@ -308,10 +307,7 @@ static record create_opaque_class(CXXRecordDecl* cxx, aether e) {
         return (record)existing->mdl;
 
     record rec = (record)Class(mod, e, ident, (token)n);
-    register_model(e, (model)rec, n, false);
-
-    //rec->opaque = true; // mark so downstream code knows
-    finalize((model)rec);
+    register_model(e, (model)rec, n, true);
     return rec;
 }
 
@@ -324,8 +320,8 @@ static record create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::s
     if (emember existing = lookup2(e, (A)n, null))
         return (record)existing->mdl;
 
-    record rec = (record)Class(mod, e, members, map(hsize, 16));
-    register_model(e, (model)rec, n, false);
+    record  rec = (record)Class(mod, e, members, map(hsize, 16));
+    emember mem = register_model(e, (model)rec, n, false);
     
     // bases → embed base layout first (simple, single inheritance case)
     const ASTRecordLayout& layout = ctx.getASTRecordLayout(cxx);
@@ -357,7 +353,7 @@ static record create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::s
         create_method_stub(m, ctx, e, rec); // see §4
     }
 
-    finalize((model)rec);
+    finalize(mem);
     return rec;
 }
 
@@ -392,8 +388,8 @@ static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::s
     pop(e);
     
     if (n && len((string)n))
-        register_model(e, (model)en, n, false);
-    finalize((model)en);
+        register_model(e, (model)en, n, true);
+    
     return en;
 }
 
@@ -430,9 +426,8 @@ static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string n
 
     fn f = fn(mod, e, rtype, rtype, args, args, va_args, is_variadic);
     if (len(n) > 0)
-        register_model(e, (model)f, (string)n, false);
-    //use(f);
-    finalize((model)f);
+        register_model(e, (model)f, (string)n, true);
+
     return f;
 }
 
@@ -461,16 +456,15 @@ static record create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::st
     }
 
     record rec = is_union ?
-        (record)uni(mod, e, ident, (token)n) :
-        (record)structure(mod, e, ident, (token)n);
+        (record)uni(mod, e, ident, (token)n, members, map(hsize, 8)) :
+        (record)structure(mod, e, ident, (token)n, members, map(hsize, 8));
     
-    rec->members = map(hsize, 8);
+    emember mem = null;
     if (has_name)
-        register_model(e, (model)rec, n, false);
+        mem = register_model(e, (model)rec, n, false);
     
     set_fields(decl, ctx, e, rec);
-    
-    finalize((model)rec);
+    if (mem) finalize(mem);
     return rec;
 }
 
@@ -497,7 +491,7 @@ static model map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, ae
     
     bool is_variadic = fpt->isVariadic();
     fn f = fn(mod, e, rtype, return_model, args, param_models, va_args, is_variadic);
-    //use(f);
+    register_model(e, (model)f, null, true);
     return (model)f;
 }
 
@@ -507,10 +501,10 @@ static model map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e
     
     if (const FunctionProtoType* fpt = dyn_cast<FunctionProtoType>(pointee)) {
         model func_model = map_function_type(fpt, ctx, e);
-        register_model(e, func_model, null, false);
-        use((fn)func_model);
+        register_model(e, func_model, null, true);
+
         model rmodel = model(mod, e, src, func_model, is_ref, true);
-        register_model(e, rmodel, null, false);
+        register_model(e, rmodel, null, true);
         return rmodel;
     }
     
@@ -521,8 +515,10 @@ static model map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e
         eargs empty_args = eargs(mod, e);
         
         model func_model = (model)fn(mod, e, rtype, return_model, args, empty_args);
-        use((fn)func_model);
-        return model(mod, e, src, func_model, is_ref, true);
+        emember fmem = register_model(e, func_model, null, true);
+        model func_ptr = model(mod, e, src, func_model, is_ref, true);
+        emember ptr = register_model(e, func_ptr, null, true);
+        return ptr->mdl;
     }
 
     return null;
@@ -555,8 +551,7 @@ static model create_namespace(NamespaceDecl* ns, ASTContext& ctx, aether e) {
                 mod, e, namespace_name, name, members, map(hsize, 16),
                 namespace_inline, is_inline);
 
-            register_model(e, ns_model, name, false);
-            finalize(ns_model);
+            register_model(e, ns_model, name, true);
             return ns_model;
         } else {
             // expect this namesapce to exist

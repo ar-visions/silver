@@ -278,6 +278,7 @@ declare_class(enode)
     i_prop    (X,Y, intern,     i32,                    offset_bits) \
     i_prop    (X,Y, intern,     i32,                    index) \
     i_prop    (X,Y, intern,     LLVMMetadataRef,        debug, as, ARef) \
+    i_method  (X,Y, public,     none,    finalize) \
     i_method  (X,Y, public,     none,    release) \
     i_method  (X,Y, public,     bool,    has_value) \
     i_method  (X,Y, public,     none,    mark_used) \
