@@ -104,7 +104,6 @@ declare_class(mschema)
     i_method  (X,Y, public,     model,            typed) \
     s_method  (X,Y, public,     string,           keyword) \
     i_method  (X,Y, public,     model,            pointer) \
-    i_final   (X,Y, public,     none,             finalize) \
     i_method  (X,Y, public,     emember,          convertible,   model) \
     i_method  (X,Y, public,     emember,          castable,      model) \
     i_method  (X,Y, public,     emember,          constructable, model) \
@@ -171,7 +170,6 @@ declare_class(codegen)
     i_prop(X,Y, intern,     LLVMValueRef,           value,     as, ARef) \
     i_prop(X,Y, intern,     LLVMTypeRef*,           arg_types, as, ARef) \
     i_prop(X,Y, intern,     num,                    arg_count) \
-    i_method(X,Y, public,   none,                   use) \
     i_override(X,Y, method, init)
 declare_class_2(fn, model)
 
@@ -258,10 +256,11 @@ declare_class(enode)
     i_prop    (X,Y, public,     interface,              access) \
     i_prop    (X,Y, public,     array,                  aliases, meta, string) \
     i_prop    (X,Y, public,     model,                  context, meta, weak) \
+    i_prop    (X,Y, public,     model,                  membership, meta, weak) \
     i_prop    (X,Y, public,     array,                  meta_args) \
     i_prop    (X,Y, public,     emember,                target_member) \
     i_prop    (X,Y, public,     record,                 target_record) \
-    i_prop    (X,Y, public,     bool,                   registered) \
+    i_prop    (X,Y, public,     bool,                   finalized) \
     i_prop    (X,Y, public,     aether,                 is_module) \
     i_prop    (X,Y, public,     bool,                   is_require) \
     i_prop    (X,Y, public,     bool,                   is_inlay) \
@@ -282,7 +281,6 @@ declare_class(enode)
     i_method  (X,Y, public,     none,    release) \
     i_method  (X,Y, public,     bool,    has_value) \
     i_method  (X,Y, public,     none,    mark_used) \
-    i_method  (X,Y, public,     none,    set_model,     model) \
     i_method  (X,Y, public,     none,    set_value,     A) \
     i_override(X,Y, method,     init)
 declare_class_2(emember, enode)
