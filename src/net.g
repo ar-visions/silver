@@ -1,5 +1,5 @@
 type: shared
-modules: A
+modules: Au
 link: -lmbedtls -lmbedx509 -lmbedcrypto -lpthread
 import:     Mbed-TLS:mbedtls/ec40440 as mbedtls
     -DPython3_EXECUTABLE={'$IMPORT/bin/python3' if not win else 'python'}

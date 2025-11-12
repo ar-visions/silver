@@ -85,7 +85,7 @@
         append(res, "["); \
         for (int r = 0; r < C; r++) { \
             if (r) append(res, ", "); \
-            serialize(typeid(T), res, A_ ##T((&a->x)[r])); \
+            serialize(typeid(T), res, _ ##T((&a->x)[r])); \
         } \
         append(res, "]"); \
         return res; \
@@ -175,7 +175,7 @@ rgba rgba_mix(rgba a, rgba b, f32 f) {
         a, a->a * (1.0f - f) + b->a * f);
 }
 
-define_class(rgba, A)
+define_class(rgba, Au)
 
 vec2f rect_xy(rect a) { return vec2f(a->x, a->y); }
 
@@ -525,7 +525,7 @@ string mat4f_cast_string(mat4f* a) {
     append(res, "[");
     for (int i = 0; i < 4 * 4; i++) {
         if (i) append(res, ", ");
-        serialize(typeid(f32), res, A_f32(a->m[i]));
+        serialize(typeid(f32), res, _f32(a->m[i]));
     }
     append(res, "]");
     return res;
@@ -594,7 +594,7 @@ define_vector(vec2f, f32, 2)
 define_struct(mat4f, f32)
 define_vector(mat4f, f32, 16)
 
-define_class(rect, A)
+define_class(rect, Au)
 
 define_class(vector_rgbf,  vector, rgbf)
 define_class(vector_rgb8,  vector, rgb8)

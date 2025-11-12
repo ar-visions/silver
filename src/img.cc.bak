@@ -18,7 +18,7 @@ image image_copy(image a) {
     image res = image(
         width,  a->width,  height,  a->height,
         format, a->format, surface, a->surface);
-    memcpy(vdata((A)res), vdata((A)a), byte_count(a));
+    memcpy(vdata((Au)res), vdata((Au)a), byte_count(a));
     return res;
 }
 
@@ -30,27 +30,27 @@ image image_resize(image input, i32 out_w, i32 out_h) {
     int in_h = input->height;
 
     if (in_w == out_w && in_h == out_h)
-        return (image)copy((A)input);
+        return (image)copy((Au)input);
     
     float scale_x = (float)in_w / out_w;
     float scale_y = (float)in_h / out_h;
     image output = image(width, out_w, height, out_h, format, input->format, surface, input->surface, channels, input->channels);
     
-    u8* src = (u8*)vdata((A)input);
-    u8* dst = (u8*)vdata((A)output);
+    u8* src = (u8*)vdata((Au)input);
+    u8* dst = (u8*)vdata((Au)output);
     opencv_resize_area(src, dst, input->format == Pixel_rgbaf32, in_w, in_h, input->channels, out_w, out_h);
     return output;
 }
 
 image image_gaussian(image input, float amount) {
     if (amount < 0.1f)
-        return (image)copy((A)input);
+        return (image)copy((Au)input);
     int w = input->width;
     int h = input->height;
     image output = image(width, w, height, h, format, input->format, surface, input->surface, channels, input->channels);
 
-    u8* src = (u8*)vdata((A)input);
-    u8* dst = (u8*)vdata((A)output);
+    u8* src = (u8*)vdata((Au)input);
+    u8* dst = (u8*)vdata((Au)output);
     opencv_gaussian(src, dst, input->format == Pixel_rgbaf32, w, h, input->channels, amount);
     return output;
 }
@@ -75,7 +75,7 @@ image image_with_cstr(image a, cstr i) {
 }
 
 none image_init(image a) {
-    A info = header((A)a);
+    A info = header((Au)a);
     Pixel f = a->format;
 
     if (!a->channels)
@@ -83,24 +83,24 @@ none image_init(image a) {
                       f == Pixel_u8   ? 1 : f == Pixel_rgbaf32 ? 4 : 1;
     
     if (a->source) {
-        A source_header = header((A)a->source);
+        A source_header = header((Au)a->source);
         info->data    = hold(a->source);
         info->scalar  = source_header->scalar;
         info->count   = source_header->count;
-        info->shape   = (shape)hold((A)source_header->shape);
+        info->shape   = (shape)hold((Au)source_header->shape);
         return;
     }
 
     if (!a->uri) {
-        AType pixel_type =
+        Au_t pixel_type =
             f == Pixel_none ? typeid(i8) : f == Pixel_rgba8   ? typeid(rgba8) : f == Pixel_rgbf32 ? typeid(vec3f) :
             f == Pixel_u8   ? typeid(i8) : f == Pixel_rgbaf32 ? typeid(vec4f) : typeid(f32);
-        AType component_type =
+        Au_t component_type =
             f == Pixel_none ? typeid(i8) : f == Pixel_rgba8   ? typeid(i8)  : f == Pixel_rgbf32 ? typeid(f32) :
             f == Pixel_u8   ? typeid(i8) : f == Pixel_rgbaf32 ? typeid(f32) : typeid(f32);
 
         if (a->res_bits) {
-            info->data = (A)a->res_bits; // we leave this up to res, but may support fallback cases where thats not provided
+            info->data = (Au)a->res_bits; // we leave this up to res, but may support fallback cases where thats not provided
         } else {
             /// validate with channels if set?
             info->data = alloc2(
@@ -151,7 +151,7 @@ none image_init(image a) {
 
         info->count = total_floats;
         info->scalar = typeid(f32);
-        info->data = (A)data;
+        info->data = (Au)data;
     } else if (eq(ext, "png")) {
         FILE* file = fopen(uri, "rb");
         verify (file, "could not open PNG: %o", a->uri);
@@ -188,7 +188,7 @@ none image_init(image a) {
         /// Store in header
         info->count  = a->width * a->height * a->channels;
         info->scalar = (bit_depth == 16) ? typeid(u16) : typeid(u8);
-        info->data   = (A)data;
+        info->data   = (Au)data;
         a->pixel_size  = (bit_depth / 8) * a->channels;
     }
 }
@@ -211,7 +211,7 @@ i32 image_exr(image a, path uri) {
 
         int width  = a->width;
         int height = a->height;
-        f32* data  = (f32*)vdata((A)a); // assumes planar RGBA32F
+        f32* data  = (f32*)vdata((Au)a); // assumes planar RGBA32F
 
         Array2D<Rgba> pixels;
         pixels.resizeErase(height, width); // [y][x]
@@ -272,7 +272,7 @@ i32 image_png(image a, path uri) {
         png_write_info(png, info);
 
         png_bytep* rows = (png_bytep*)malloc(sizeof(png_bytep) * a->height);
-        u8* data = (u8*)vdata((A)a);
+        u8* data = (u8*)vdata((Au)a);
         for (int y = 0; y < a->height; y++) {
             rows[y] = data + y * a->width * a->channels;
         }
@@ -291,9 +291,9 @@ i32 image_png(image a, path uri) {
 }
 
 none image_dealloc(image a) {
-    A info = header((A)a); 
+    A info = header((Au)a); 
     if (a->res_dealloc) {
-        a->res_dealloc((A)a);
+        a->res_dealloc((Au)a);
         info->data = null;
     }
     if (!a->res_bits) {
@@ -313,11 +313,11 @@ num image_byte_count(image a) {
 }
 
 A image_get(image a, num y) {
-    i8* bytes = (i8*)vdata((A)a);
-    return (A)&bytes[a->pixel_size * a->width * y];
+    i8* bytes = (i8*)vdata((Au)a);
+    return (Au)&bytes[a->pixel_size * a->width * y];
 }
 
-define_class(image, A);
+define_class(image, Au);
 
 define_enum (join)
 define_enum (cap)
@@ -332,17 +332,17 @@ none set_font_manager(hook init, hook dealloc) {
 }
 
 none font_dealloc(font f) {
-    font_manager_dealloc((A)f);
+    font_manager_dealloc((Au)f);
 }
 
 A font_copy(font f) {
-    font cp = (font)A_copy((A)f);
-    font_manager_init((A)cp);
-    return (A)cp;
+    font cp = (font)A_copy((Au)f);
+    font_manager_init((Au)cp);
+    return (Au)cp;
 }
 
 font font_init(font f) {
-    font_manager_init((A)f);
+    font_manager_init((Au)f);
     return f;
 }
 
@@ -355,5 +355,5 @@ define_enum(Pixel)
 define_enum(Filter)
 define_enum(Surface)
 
-define_class(font, A)
+define_class(font, Au)
 define_enum(variant)

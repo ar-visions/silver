@@ -1,2 +1,2 @@
 type:       static
-modules:    A
+modules:    Au

@@ -16,7 +16,7 @@
 #include <mach-o/dyld.h>
 #endif
 
-AType_info        AType_i;
+Au_t_info        Au_t_i;
 //objectType_info   objectType_i;
 
 #ifndef line
@@ -27,7 +27,7 @@ i64 epoch_millis();
 
 shape shape_with_array(shape a, array dims) {
     num count = len(dims);
-    each (dims, A, e) {
+    each (dims, Au, e) {
         i64* i = (i64*)instanceof(e, typeid(i64));
         a->data[a->count++] = *i;
     }
@@ -89,7 +89,7 @@ array array_shift(array a) {
     int ln = len(a);
     array res = array(alloc, ln);
     bool skip = true;
-    each(a, A, i) {
+    each(a, Au, i) {
         if (skip)
             skip = false;
         else
@@ -101,7 +101,7 @@ array array_shift(array a) {
 string array_join(array a, cstr str) {
     int ln = len(a);
     string res = string(alloc, ln * 32);
-    each(a, A, i) {
+    each(a, Au, i) {
         string s = cast(string, i);
         concat(res, s);
     }
@@ -111,8 +111,8 @@ string array_join(array a, cstr str) {
 bool array_cast_bool(array a) { return a && a->len > 0; }
 
 none array_alloc_sz(array a, sz alloc) {
-    A* elements = (A*)calloc(alloc, sizeof(struct _A*));
-    memcpy(elements, a->elements, sizeof(struct _A*) * a->len);
+    Au* elements = (Au*)calloc(alloc, sizeof(struct _Au*));
+    memcpy(elements, a->elements, sizeof(struct _Au*) * a->len);
     
     free(a->elements);
     a->elements = elements;
@@ -130,7 +130,7 @@ none array_dealloc(array a) {
     a->elements = null;
 }
 
-none array_fill(array a, A f) {
+none array_fill(array a, Au f) {
     for (int i = 0; i < a->alloc; i++)
         push(a, f);
 }
@@ -138,7 +138,7 @@ none array_fill(array a, A f) {
 string array_cast_string(array a) {
     string r = string(alloc, 64);
     for (int i = 0; i < a->len; i++) {
-        A e = (A)a->elements[i];
+        Au e = (Au)a->elements[i];
         string s = cast(string, e);
         if (r->len)
             append(r, " ");
@@ -161,7 +161,7 @@ none array_expand(array a) {
     array_alloc_sz(a, alloc);
 }
 
-none array_push_weak(array a, A b) {
+none array_push_weak(array a, Au b) {
     if (a->alloc == a->len) array_expand(a);
     a->elements[a->len++] = b;
 }
@@ -177,9 +177,9 @@ array array_with_i32(array a, i32 alloc) {
     return a;
 }
 
-none array_push_vdata(array a, A data, i64 count) {
-    AType   t = isa(a)->meta.meta_0;
-    verify(is_meta(a) && t->meta.meta_0 != typeid(A),
+none array_push_vdata(array a, Au data, i64 count) {
+    Au_t   t = isa(a)->meta.meta_0;
+    verify(is_meta(a) && t->meta.meta_0 != typeid(Au),
         "method requires meta object with type signature");
     verify(a->unmanaged,
         "this method requires unmanaged primitives");
@@ -196,19 +196,19 @@ none array_push_vdata(array a, A data, i64 count) {
     a->last_type = t;
 }
 
-none array_push(array a, A b) {
+none array_push(array a, Au b) {
     if (!a->elements || a->alloc == a->len) {
         array_expand(a);
     }
-    AType t = isa(a);
-    AType vtype = isa(b);
-    A info = head(a);
+    Au_t t = isa(a);
+    Au_t vtype = isa(b);
+    Au info = head(a);
     verify(!a->last_type || a->last_type == vtype || a->assorted,
         "unassorted array received differing type: %s, previous: %s (%s:%i)",
         vtype->name, a->last_type->name, info->source, info->line);
     a->last_type = vtype;
 
-    if (is_meta(a) && t->meta.meta_0 != typeid(A))
+    if (is_meta(a) && t->meta.meta_0 != typeid(Au))
         assert(is_meta_compatible(a, b), "not meta compatible");
     
     a->elements[a->len++] = a->unmanaged ? b : hold(b);
@@ -224,10 +224,10 @@ none array_clear(array a) {
 }
 
 none array_concat(array a, array b) {
-    each(b, A, e) array_push(a, e);
+    each(b, Au, e) array_push(a, e);
 }
 
-A array_index_num(array a, num i) {
+Au array_index_num(array a, num i) {
     if (i < 0)
         i += a->len;
     if (i >= a->len)
@@ -237,7 +237,7 @@ A array_index_num(array a, num i) {
 
 none array_remove(array a, num b) {
     for (num i = b; i < a->len; i++) {
-        A prev = a->elements[b];
+        Au prev = a->elements[b];
         a->elements[b] = a->elements[b + 1];
         if (!a->unmanaged)
             drop(prev);
@@ -247,13 +247,13 @@ none array_remove(array a, num b) {
 
 none array_remove_weak(array a, num b) {
     for (num i = b; i < a->len; i++) {
-        A prev = a->elements[b];
+        Au prev = a->elements[b];
         a->elements[b] = a->elements[b + 1];
     }
     a->elements[--a->len] = null;
 }
 
-none array_operator__assign_add(array a, A b) {
+none array_operator__assign_add(array a, Au b) {
     array_push(a, b);
 }
 
@@ -261,12 +261,12 @@ none array_operator__assign_sub(array a, num b) {
     array_remove(a, b);
 }
 
-A array_first(array a) {
+Au array_first(array a) {
     assert(a->len, "no items");
     return a->elements[0];
 }
 
-A array_last(array a) {
+Au array_last(array a) {
     assert(a->len, "no items");
     return a->elements[a->len - 1];
 }
@@ -281,23 +281,23 @@ none array_push_symbols(array a, cstr symbol, ...) {
     va_end(args);
 }
 
-none array_push_objects(array a, A f, ...) {
+none array_push_objects(array a, Au f, ...) {
     va_list args;
     va_start(args, f);
-    A value;
-    while ((value = va_arg(args, A)) != null)
+    Au value;
+    while ((value = va_arg(args, Au)) != null)
         push(a, value);
     va_end(args);
 }
 
-array array_of(A first, ...) {
+array array_of(Au first, ...) {
     array a = new(array, alloc, 32, assorted, true);
     va_list args;
     va_start(args, first);
     if (first) {
         push(a, first);
         for (;;) {
-            A arg = va_arg(args, A);
+            Au arg = va_arg(args, Au);
             if (!arg)
                 break;
             push(a, arg);
@@ -310,12 +310,12 @@ array array_of_cstr(cstr first, ...) {
     array a = allocate(array, alloc, 256);
     va_list args;
     va_start(args, first);
-    for (cstr arg = first; arg; arg = va_arg(args, A))
+    for (cstr arg = first; arg; arg = va_arg(args, Au))
         push(a, string(arg));
     return a;
 }
 
-A array_pop(array a) {
+Au array_pop(array a) {
     assert(a->len > 0, "no items");
     if (!a->unmanaged) drop(a->elements[a->len - 1]);
     return a->elements[--a->len];
@@ -333,7 +333,7 @@ num array_compare(array a, array b) {
     return 0;
 }
 
-A array_peek(array a, num i) {
+Au array_peek(array a, num i) {
     if (i < 0 || i >= a->len)
         return null;
     return a->elements[i];
@@ -345,28 +345,28 @@ array array_mix(array a, array b, f32 f) {
     if (ln0 != ln1) return b;
 
     member fmix = null;
-    AType expect = null;
+    Au_t expect = null;
     array res = array(ln0);
     for (int i = 0; i < ln0; i++) {
-        A aa = a->elements[i];
-        A bb = b->elements[i];
+        Au aa = a->elements[i];
+        Au bb = b->elements[i];
 
-        AType at = isa(aa);
-        AType bt = isa(bb);
+        Au_t at = isa(aa);
+        Au_t bt = isa(bb);
 
         if (!expect) expect = at;
         verify(expect == at, "disperate types in array during mix");
         verify(at == bt, "types do not match");
 
-        if (!fmix) fmix = find_member(at, A_FLAG_IMETHOD, "mix", false);
+        if (!fmix) fmix = find_member(at, AU_FLAG_IMETHOD, "mix", false);
         verify(fmix, "implement mix method for type %s", at->name);
-        A e = ((mix_fn)fmix->ptr)(aa, bb, f);
+        Au e = ((mix_fn)fmix->ptr)(aa, bb, f);
         push(res, e);
     }
     return res;
 }
 
-A array_get(array a, num i) {
+Au array_get(array a, num i) {
     if (i < 0 || i >= a->len)
         fault("out of bounds: %i, len = %i", i, a->len);
     return a->elements[i];
@@ -385,7 +385,7 @@ map array_cast_map(array a) {
 }
 
 /// index of element that compares to 0 diff with item
-num array_index_of(array a, A b) {
+num array_index_of(array a, Au b) {
     if (a->unmanaged) {
         for (num i = 0; i < a->len; i++) {
             if (a->elements[i] == b)
@@ -434,11 +434,11 @@ cstr copy_cstr(cstr input) {
     return res;
 }
 
-A header(A a) {
-    return (((struct _A*)a) - 1);
+Au header(Au a) {
+    return (((struct _Au*)a) - 1);
 }
 
-none A_register_init(func f) {
+none Au_register_init(func f) {
     /// these should be loaded after the types are loaded.. the module inits are used for setting module-members (not globals!)
     if (call_last_count == call_last_alloc) {
         global_init_fn* prev      = call_last;
@@ -453,15 +453,15 @@ none A_register_init(func f) {
     call_last[call_last_count++] = f;
 }
 
-static AType*   _types;
+static Au_t*   _types;
 static num      _types_alloc;
 static num      _types_len;
 
 static bool started = false;
 
-none push_type(AType type) {
-    /* for A-type building, we must do this; however silver has runtime awareness of this info */
-    /* it simply means for A-type, one must build for debug before release */
+none push_type(Au_t type) {
+    /* for Au building, we must do this; however silver has runtime awareness of this info */
+    /* it simply means for Au, one must build for debug before release */
     /* yes its required for proper interns in a C build system, but silver goes beyond this to use its info at designtime */
 #ifndef NDEBUG
     char* import  = getenv("IMPORT");
@@ -491,13 +491,13 @@ none push_type(AType type) {
         }
     }
 #endif
-    if (type->parent_type != typeid(A)) {
-        AType pt = type->parent_type;
+    if (type->parent_type != typeid(Au)) {
+        Au_t pt = type->parent_type;
         if (pt->sub_types_alloc == pt->sub_types_count) {
             u16   next_alloc = (pt->sub_types_alloc << 1) + 32;
-            void* st_new     = calloc(next_alloc, sizeof(AType));
+            void* st_new     = calloc(next_alloc, sizeof(Au_t));
             if (pt->sub_types) {
-                memcpy(st_new, pt->sub_types, pt->sub_types_alloc * sizeof(AType));
+                memcpy(st_new, pt->sub_types, pt->sub_types_alloc * sizeof(Au_t));
                 free(pt->sub_types);
             }
             pt->sub_types        = st_new;
@@ -507,63 +507,63 @@ none push_type(AType type) {
         pt->sub_types_count += 1;
     }
     if (_types_alloc == _types_len) {
-        AType* prev       = _types;
+        Au_t* prev       = _types;
         num    alloc_prev = _types_alloc;
         _types_alloc      = 128 + (_types_alloc << 1);
-        _types            = calloc(_types_alloc, sizeof(AType));
+        _types            = calloc(_types_alloc, sizeof(Au_t));
         if (alloc_prev) {
-            memcpy(_types, prev, sizeof(AType) * alloc_prev);
+            memcpy(_types, prev, sizeof(Au_t) * alloc_prev);
             free(prev);
         }
     }
     _types[_types_len++] = type;
 }
 
-ARef A_types(ref_i64 length) {
+ARef Au_types(ref_i64 length) {
     *length = _types_len;
     return _types;
 }
 
 map _type_map;
-AType A_find_type(symbol name) {
+Au_t Au_find_type(symbol name) {
     if (!_type_map) {
         _type_map = map(hsize, 128, unmanaged, true);
         for (int i = 0; i < _types_len; i++) {
-            AType type = _types[i];
+            Au_t type = _types[i];
             set(_type_map, string(type->name), type);
         }
     }
-    return (AType)get(_type_map, string(name));
+    return (Au_t)get(_type_map, string(name));
 }
 
-AF* AF_bits(A a) {
-    AType type = isa(a);
+AF* AF_bits(Au a) {
+    Au_t type = isa(a);
     u64* fields = (u64*)((i8*)a + type->size - (sizeof(void*) * 2));
     return fields;
 }
 
-void AF_set_id(A a, int id) {
-    AType t = isa(a);
+void AF_set_id(Au a, int id) {
+    Au_t t = isa(a);
     u64*   f = AF_bits(a);
     AF_set(f, id);
 }
 
-void AF_set_name(A a, cstr name) {
-    AType t = isa(a);
-    member m = find_member(t, A_FLAG_PROP|A_FLAG_VPROP, name, true);
+void AF_set_name(Au a, cstr name) {
+    Au_t t = isa(a);
+    member m = find_member(t, AU_FLAG_PROP|AU_FLAG_VPROP, name, true);
     u64*   f = AF_bits(a);
     AF_set(f, m->id);
 }
 
-i32 AF_query_name(A a, cstr name) {
-    AType  t = isa(a);
-    member m = find_member(t, A_FLAG_PROP|A_FLAG_VPROP, name, true);
+i32 AF_query_name(Au a, cstr name) {
+    Au_t  t = isa(a);
+    member m = find_member(t, AU_FLAG_PROP|AU_FLAG_VPROP, name, true);
     u64*   f = AF_bits(a);
     return (i32)AF_get(f, m->id);
 }
 
-bool A_validator(A a) {
-    AType type = isa(a);
+bool Au_validator(Au a) {
+    Au_t type = isa(a);
     if (type->magic != 1337) return false;
 
     // now required args are set if (type->required & *(i64*)obj->f) == type->required
@@ -574,7 +574,7 @@ bool A_validator(A a) {
             member m = &type->members[i];
             if (m->required && AF_get(f, m->id) == 0) {
                 u8* ptr = (u8*)a + m->offset;
-                A* ref = (A*)ptr;
+                Au* ref = (Au*)ptr;
                 fault("required arg [%s] not set for class %s",
                     m->name, type->name);
             }
@@ -587,43 +587,43 @@ bool A_validator(A a) {
 /// some changes being made to these, as enums can now be any primitive type
 /// we'll re-cast from i32 later; ptr is the VAL stored in static memory as the typed data in global constructor
 /// we must do this with our usage of static const; thats not always addressable
-i32* enum_default(AType type) {
+i32* enum_default(Au_t type) {
     for (num m = 0; m < type->member_count; m++) {
         member mem = &type->members[m];
-        if (mem->member_type & A_FLAG_ENUMV)
+        if (mem->member_type & AU_FLAG_ENUMV)
             return (i32*)mem->ptr;
     }
     return null;
 }
 
-static A enum_member_value(AType type, member mem) {
-    if (type->src == typeid(u8))  return A_u8(*(u8*)mem->ptr);
-    if (type->src == typeid(i8))  return A_i8(*(i8*)mem->ptr);
-    if (type->src == typeid(u16)) return A_u16(*(u16*)mem->ptr);
-    if (type->src == typeid(i16)) return A_i16(*(i16*)mem->ptr);
-    if (type->src == typeid(u32)) return A_u32(*(u32*)mem->ptr);
-    if (type->src == typeid(i32)) return A_i32(*(i32*)mem->ptr);
-    if (type->src == typeid(u64)) return A_u64(*(u64*)mem->ptr);
-    if (type->src == typeid(i64)) return A_i64(*(i64*)mem->ptr);
-    if (type->src == typeid(f32)) return A_f32(*(f32*)mem->ptr);
+static Au enum_member_value(Au_t type, member mem) {
+    if (type->src == typeid(u8))  return _u8(*(u8*)mem->ptr);
+    if (type->src == typeid(i8))  return _i8(*(i8*)mem->ptr);
+    if (type->src == typeid(u16)) return _u16(*(u16*)mem->ptr);
+    if (type->src == typeid(i16)) return _i16(*(i16*)mem->ptr);
+    if (type->src == typeid(u32)) return _u32(*(u32*)mem->ptr);
+    if (type->src == typeid(i32)) return _i32(*(i32*)mem->ptr);
+    if (type->src == typeid(u64)) return _u64(*(u64*)mem->ptr);
+    if (type->src == typeid(i64)) return _i64(*(i64*)mem->ptr);
+    if (type->src == typeid(f32)) return _f32(*(f32*)mem->ptr);
     fault("implement enum conversion: %s", type->name);
     return null;
 }
 
-i32 evalue(AType type, cstr cs) {
+i32 evalue(Au_t type, cstr cs) {
     int cur = 0;
     int default_val = INT_MIN;
     bool single = strlen(cs) == 1;
     for (num m = 0; m < type->member_count; m++) {
         member mem = &type->members[m];
-        if ((mem->member_type & A_FLAG_ENUMV) &&
+        if ((mem->member_type & AU_FLAG_ENUMV) &&
             (strcasecmp(mem->name, cs) == 0)) {
             return *(i32*)enum_member_value(type, mem);
         }
     }
     for (num m = 0; m < type->member_count; m++) {
         member mem = &type->members[m];
-        if ((mem->member_type & A_FLAG_ENUMV) &&
+        if ((mem->member_type & AU_FLAG_ENUMV) &&
             (tolower(mem->name[0]) == tolower(cs[0]))) {
             return *(i32*)enum_member_value(type, mem);
         }
@@ -632,10 +632,10 @@ i32 evalue(AType type, cstr cs) {
     return 0;
 }
 
-string estring(AType type, i32 value) {
+string estring(Au_t type, i32 value) {
     for (num m = 0; m < type->member_count; m++) {
         member mem = &type->members[m];
-        if (mem->member_type & A_FLAG_ENUMV) {
+        if (mem->member_type & AU_FLAG_ENUMV) {
             if (memcmp((void*)mem->ptr, (i32*)&value, mem->type->size) == 0)
                 return string(mem->name); 
         }
@@ -649,15 +649,15 @@ none debug() {
     return;
 }
 
-static none init_recur(A a, AType current, raw last_init) {
-    if (current == (AType)&A_i.type) return;
-    none(*init)(A) = ((A_f*)current)->init;
+static none init_recur(Au a, Au_t current, raw last_init) {
+    if (current == (Au_t)&Au_i.type) return;
+    none(*init)(Au) = ((Au_f*)current)->init;
     init_recur(a, current->parent_type, (raw)init);
     if (init && init != (none*)last_init) init(a); 
 }
 
 string numeric_cast_string(numeric a) {
-    AType t = isa(a);
+    Au_t t = isa(a);
     if (t == typeid(i8))  return f(string, "%hhi", *(i8*) a);
     if (t == typeid(i16)) return f(string, "%hi",  *(i16*)a);
     if (t == typeid(i32)) return f(string, "%i",   *(i32*)a);
@@ -677,17 +677,17 @@ string numeric_cast_string(numeric a) {
 
 // we need a bit of type logic in here for these numerics; it should mirror the C compiler
 numeric numeric_operator__add(numeric a, numeric b) {
-    AType type_a = isa(a);
-    AType type_b = isa(b);
+    Au_t type_a = isa(a);
+    Au_t type_b = isa(b);
     
     if (type_a == type_b) {
-        if (type_a == typeid(i8))  return  A_i8(* (i8*)a + * (i8*)b);
-        if (type_a == typeid(i16)) return A_i16(*(i16*)a + *(i16*)b);
-        if (type_a == typeid(i32)) return A_i32(*(i32*)a + *(i32*)b);
-        if (type_a == typeid(i64)) return A_i64(*(i64*)a + *(i64*)b);
-        if (type_a == typeid(f32)) return A_f32(*(f32*)a + *(f32*)b);
-        if (type_a == typeid(f64)) return A_f64(*(f64*)a + *(f64*)b);
-        if (type_a == typeid(f80)) return A_f80(*(f80*)a + *(f80*)b);
+        if (type_a == typeid(i8))  return  _i8(* (i8*)a + * (i8*)b);
+        if (type_a == typeid(i16)) return _i16(*(i16*)a + *(i16*)b);
+        if (type_a == typeid(i32)) return _i32(*(i32*)a + *(i32*)b);
+        if (type_a == typeid(i64)) return _i64(*(i64*)a + *(i64*)b);
+        if (type_a == typeid(f32)) return _f32(*(f32*)a + *(f32*)b);
+        if (type_a == typeid(f64)) return _f64(*(f64*)a + *(f64*)b);
+        if (type_a == typeid(f80)) return _f80(*(f80*)a + *(f80*)b);
     } else {
         fault("implement dislike add");
     }
@@ -743,19 +743,19 @@ numeric numeric_operator__not_equal(numeric a, numeric b) {
 }
 
 none    numeric_operator__assign(numeric a, numeric b) {
-    AType type_a = isa(a);
-    AType type_b = isa(b);
+    Au_t type_a = isa(a);
+    Au_t type_b = isa(b);
     num sz = type_a->size < type_b->size ? type_a->size : type_b->size;
     memcpy(a, b, sz);
 }
 
-A A_initialize(A a) {
-    A   f = header(a);
-    if (f->type->traits & A_TRAIT_USER_INIT) return a; // in ux, we call our own method on 'mount'
+Au Au_initialize(Au a) {
+    Au   f = header(a);
+    if (f->type->traits & AU_TRAIT_USER_INIT) return a; // in ux, we call our own method on 'mount'
     // this may be skipped with macro generators, but it would still be broken in new() -- so its wise to keep this
 
     #ifndef NDEBUG
-    A_validator(a);
+    Au_validator(a);
     #endif
     
     init_recur(a, f->type, null);
@@ -763,12 +763,12 @@ A A_initialize(A a) {
     return a;
 }
 
-__thread __error_t* A_error_top = NULL;
+__thread __error_t* Au_error_top = NULL;
 
 void halt(string msg) {
-    if (!A_error_top) {
+    if (!Au_error_top) {
         // we already printed the message call
-        //fprintf(stderr, "unhandled A-type exception: %s\n", msg);
+        //fprintf(stderr, "unhandled Au exception: %s\n", msg);
 #ifndef NDEBUG
         raise(SIGTRAP);
         exit(1);
@@ -776,8 +776,8 @@ void halt(string msg) {
         abort();
 #endif
     }
-    A_error_top->message = msg;
-    longjmp(A_error_top->env, 1);
+    Au_error_top->message = msg;
+    longjmp(Au_error_top->env, 1);
 }
 
 
@@ -914,15 +914,15 @@ int command_exec(command cmd) {
 
 static int all_type_alloc;
 
-int alloc_count(AType type) {
+int alloc_count(Au_t type) {
     return type ? type->global_count : all_type_alloc;
 }
 
 //static cstr alloc_src = null;
 //static int  alloc_line = 0;
 
-A alloc_instance(AType type, int n_bytes, int recycle_size) {
-    A a = null;
+Au alloc_instance(Au_t type, int n_bytes, int recycle_size) {
+    Au a = null;
     af_recycler af = type->af;
     bool use_recycler = false; //af && n_bytes == recycle_size;
 
@@ -933,7 +933,7 @@ A alloc_instance(AType type, int n_bytes, int recycle_size) {
         type->global_count++;
         all_type_alloc++;
 
-        if (type->traits & A_TRAIT_PUBLIC)
+        if (type->traits & AU_TRAIT_PUBLIC)
             a = mmap(NULL, n_bytes,
                 PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
         else
@@ -947,8 +947,8 @@ A alloc_instance(AType type, int n_bytes, int recycle_size) {
             i64 next_size = af->af_alloc << 1;
             if (next_size == 0) next_size = 1024;
             void* prev = af->af4;
-            af->af4 = malloc(next_size * sizeof(A*));
-            memcpy(af->af4, prev, prev_size * sizeof(A*));
+            af->af4 = malloc(next_size * sizeof(Au*));
+            memcpy(af->af4, prev, prev_size * sizeof(Au*));
             af->af4[0] = 0x00;
             af->af_alloc = next_size;
         }
@@ -959,40 +959,40 @@ A alloc_instance(AType type, int n_bytes, int recycle_size) {
     return a;
 }
 
-A alloc_dbg(AType type, num count, cstr source, int line) {
+Au alloc_dbg(Au_t type, num count, cstr source, int line) {
     //alloc_src  = source;
     //alloc_line = line;
     sz map_sz = sizeof(map);
-    sz A_sz   = sizeof(struct _A);
-    A a = alloc_instance(type,
-        A_sz + type->size * count, A_sz + type->size);
+    sz _sz   = sizeof(struct _Au);
+    Au a = alloc_instance(type,
+        _sz + type->size * count, _sz + type->size);
     a->type       = type;
     a->data       = &a[1];
     a->count      = count;
     a->alloc      = count;
     a->source     = source;
     a->line       = line;
-    return a->data; /// return fields (A)
+    return a->data; /// return fields (Au)
 }
 
 
-A alloc(AType type, num count, AType* meta) {
+Au alloc(Au_t type, num count, Au_t* meta) {
     sz map_sz = sizeof(map);
-    sz A_sz   = sizeof(struct _A);
-    A a = alloc_instance(type,
-        A_sz + type->size * count, A_sz + type->size);
+    sz _sz   = sizeof(struct _Au);
+    Au a = alloc_instance(type,
+        _sz + type->size * count, _sz + type->size);
     a->type       = type;
     a->data       = &a[1];
     a->count      = count;
     a->alloc      = count;
     if (meta && type->meta.count > 0) {
-        // ATypes are simple instances with a type header, too.. however, their typeof points to a struct of struct _A that is blank
+        // Au_ts are simple instances with a type header, too.. however, their typeof points to a struct of struct _Au that is blank
         // as such we can use this as a boolean to know if an object instance is given to meta
         // when it is, we validate that it inherits the object given
         for (int i = 0; i < type->meta.count; i++) {
-            AType m = meta[i];
-            AType object_type = isa(m);
-            AType ref = ((AType*)&type->meta)[i];
+            Au_t m = meta[i];
+            Au_t object_type = isa(m);
+            Au_t ref = ((Au_t*)&type->meta)[i];
             if (object_type) {
                 verify (inherits(object_type, ref), "expected object of compatible-type %s", m->name);
             } else {
@@ -1001,31 +1001,31 @@ A alloc(AType type, num count, AType* meta) {
             a->meta[i] = m;
         }
     }
-    return a->data; /// return fields (A)
+    return a->data; /// return fields (Au)
 }
 
-A alloc_new(AType type, num count, AType* meta) {
+Au alloc_new(Au_t type, num count, Au_t* meta) {
     return alloc(type, count, meta);
 }
 
-A alloc2(AType type, AType scalar, shape s) {
-    i64 A_sz      = sizeof(struct _A);
+Au alloc2(Au_t type, Au_t scalar, shape s) {
+    i64 _sz      = sizeof(struct _Au);
     shape_ft* t2 = &shape_i.type;
     i64 count     = shape_total(s);
-    A a      = alloc_instance(type,
-        A_sz + scalar->size * count, A_sz + scalar->size);
+    Au a      = alloc_instance(type,
+        _sz + scalar->size * count, _sz + scalar->size);
     a->scalar     = scalar;
     a->type       = type;
     a->data       = &a[1];
     a->shape      = hold(s);
     a->count      = count;
     a->alloc      = count;
-    return a->data; /// return fields (A)
+    return a->data; /// return fields (Au)
 }
 
 #ifdef USE_FFI
-method_t* method_with_address(handle address, AType rtype, array atypes, AType method_owner) {
-    const num max_args = (sizeof(_meta_t) - sizeof(num)) / sizeof(AType);
+method_t* method_with_address(handle address, Au_t rtype, array atypes, Au_t method_owner) {
+    const num max_args = (sizeof(_meta_t) - sizeof(num)) / sizeof(Au_t);
     method_t* method = calloc(1, sizeof(method_t));
     method->ffi_cif  = calloc(1,        sizeof(ffi_cif));
     method->ffi_args = calloc(max_args, sizeof(ffi_type*));
@@ -1038,64 +1038,64 @@ method_t* method_with_address(handle address, AType rtype, array atypes, AType m
     assert(atypes->len <= max_args, "adjust arg maxima");
     ffi_type **ffi_args = (ffi_type**)method->ffi_args;
     for (num i = 0; i < atypes->len; i++) {
-        AType a_type   = (AType)atypes->elements[i];
-        bool is_prim  = a_type->traits & A_TRAIT_PRIMITIVE;
+        Au_t a_type   = (Au_t)atypes->elements[i];
+        bool is_prim  = a_type->traits & AU_TRAIT_PRIMITIVE;
         ffi_args[i]   = is_prim ? a_type->arb : &ffi_type_pointer;
-        push_weak(method->atypes, (A)a_type);
+        push_weak(method->atypes, (Au)a_type);
     }
     ffi_status status = ffi_prep_cif(
         (ffi_cif*) method->ffi_cif, FFI_DEFAULT_ABI, atypes->len,
-        (ffi_type*)((rtype->traits & A_TRAIT_ABSTRACT) ? method_owner->arb : rtype->arb), ffi_args);
+        (ffi_type*)((rtype->traits & AU_TRAIT_ABSTRACT) ? method_owner->arb : rtype->arb), ffi_args);
     assert(status == FFI_OK, "status == %i", (i32)status);
     return method;
 }
 
-A A_method_call(member m, array args) {
+Au Au_method_call(member m, array args) {
     method_t* a = m->method;
     const num max_args = 8;
     none* arg_values[max_args];
     assert(args->len == a->atypes->len, "arg count mismatch");
     for (num i = 0; i < args->len; i++) {
-        AType arg_type = (AType)a->atypes->elements[i];
-        arg_values[i] = (arg_type->traits & (A_TRAIT_PRIMITIVE | A_TRAIT_ENUM)) ? 
+        Au_t arg_type = (Au_t)a->atypes->elements[i];
+        arg_values[i] = (arg_type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) ? 
             (none*)args->elements[i] : (none*)&args->elements[i];
     }
     none* result[8]; /// enough space to handle all primitive data
     ffi_call((ffi_cif*)a->ffi_cif, a->address, result, arg_values);
-    if (a->rtype->traits & A_TRAIT_PRIMITIVE)
+    if (a->rtype->traits & AU_TRAIT_PRIMITIVE)
         return primitive(a->rtype, result);
-    else if (a->rtype->traits & A_TRAIT_ENUM) {
-        A res = alloc(a->rtype, 1, null);
+    else if (a->rtype->traits & AU_TRAIT_ENUM) {
+        Au res = alloc(a->rtype, 1, null);
         verify(r->rtype->src == typeid(i32), "i32 enums supported");
         *((i32*)res) = *(i32*)result;
         return res;
     } else
-        return (A) result[0];
+        return (Au) result[0];
 }
 #endif
 
 /// this calls type methods
-A method(AType type, cstr method_name, array args) {
+Au method(Au_t type, cstr method_name, array args) {
 #ifdef USE_FFI
-    member mem = find_member(type, A_FLAG_IMETHOD | A_FLAG_SMETHOD, method_name, false);
+    member mem = find_member(type, AU_FLAG_IMETHOD | AU_FLAG_SMETHOD, method_name, false);
     assert(mem->method, "method not set");
     method_t* m = mem->method;
-    A res = method_call(m, args);
+    Au res = method_call(m, args);
     return res;
 #else
     return null;
 #endif
 }
 
-A convert(AType type, A input) {
+Au convert(Au_t type, Au input) {
     if (type == isa(input)) return input;
     return construct_with(type, input, null);
 }
 
-A A_method_vargs(A a, member mem, int n_args, ...) {
+Au Au_method_vargs(Au a, member mem, int n_args, ...) {
 #ifdef USE_FFI
-    //AType type = isa(a);
-    //member mem = find_member(type, A_FLAG_IMETHOD | A_FLAG_SMETHOD, method_name, false);
+    //Au_t type = isa(a);
+    //member mem = find_member(type, AU_FLAG_IMETHOD | AU_FLAG_SMETHOD, method_name, false);
     assert(mem->method, "method not set");
     method_t* m = mem->method;
     va_list  vargs;
@@ -1103,11 +1103,11 @@ A A_method_vargs(A a, member mem, int n_args, ...) {
     array args = new(array, alloc, n_args + 1);
     push(args, a);
     for (int i = 0; i < n_args; i++) {
-        A arg = va_arg(vargs, A);
+        Au arg = va_arg(vargs, Au);
         push(args, arg);
     }
     va_end(vargs);
-    A res = method_call(m, args);
+    Au res = method_call(m, args);
     return res;
 #else
     return null;
@@ -1119,8 +1119,8 @@ int fault_level;
 
 static __attribute__((constructor)) bool Aglobal_AF();
 
-none A_member_override(AType type, member type_mem, AFlag f) {
-    AType base = type;
+none Au_member_override(Au_t type, member type_mem, AFlag f) {
+    Au_t base = type;
     bool found = false;
 
     do {
@@ -1131,17 +1131,17 @@ none A_member_override(AType type, member type_mem, AFlag f) {
                 type_mem->offset = m->offset;
                 type_mem->args   = m->args; // this simply makes it easier to declare
                 type_mem->type   = m->type; // adding a real member for override makes it easier to enumerate
-                type_mem->member_type = m->member_type | A_FLAG_OVERRIDE; // otherwise we have to scour the function tables with memcmp
+                type_mem->member_type = m->member_type | AU_FLAG_OVERRIDE; // otherwise we have to scour the function tables with memcmp
                 return;
             }
         }
-    } while (!found && base != typeid(A));
+    } while (!found && base != typeid(Au));
 
     fprintf(stderr, "override could not find member from type %s", type->name);
 }
 
-none A_engage(cstrs argv) {
-    AType f32_type = typeid(f32);
+none Au_engage(cstrs argv) {
+    Au_t f32_type = typeid(f32);
     if (started) return;
 
     int argc    = 0;
@@ -1157,7 +1157,7 @@ none A_engage(cstrs argv) {
             string s = string(argv[i + 1]);
             array  a = split(s, ",");
             each(a, string, s) {
-                set(log_funcs, eq(s, "all") ? string("*") : s, A_bool(true));
+                set(log_funcs, eq(s, "all") ? string("*") : s, _bool(true));
                 explicit_listen = true;
             }
         }
@@ -1165,7 +1165,7 @@ none A_engage(cstrs argv) {
  
 #ifndef NDEBUG
     if (!explicit_listen)
-        set(log_funcs, string("*"), A_bool(true));
+        set(log_funcs, string("*"), _bool(true));
 #endif
 
     if (len(log_funcs)) {
@@ -1199,30 +1199,30 @@ none A_engage(cstrs argv) {
         }
 
     num         types_len;
-    AType*      _types = A_types(&types_len);
+    Au_t*      _types = Au_types(&types_len);
     const num   max_args = 8;
 
     /// iterate through types
     for (num i = 0; i < types_len; i++) {
-        AType type = _types[i];
-        if (type->traits & A_TRAIT_ABSTRACT) continue;
+        Au_t type = _types[i];
+        if (type->traits & AU_TRAIT_ABSTRACT) continue;
         /// for each member of type
         for (num m = 0; m < type->member_count; m++) {
             member mem = &type->members[m];
             if (mem->name) mem->sname = allocate(
                 string, chars, mem->name, len, strlen(mem->name));
-            if (mem->required && (mem->member_type & A_FLAG_PROP)) {
+            if (mem->required && (mem->member_type & AU_FLAG_PROP)) {
                 AF_set(type->required, mem->id);
                 // now required args are set if (type->required & *(i64*)obj->f) == type->required
             }
-            if (mem->member_type & (A_FLAG_IMETHOD | A_FLAG_SMETHOD)) {
+            if (mem->member_type & (AU_FLAG_IMETHOD | AU_FLAG_SMETHOD)) {
                 none* address = 0;
                 memcpy(&address, &((u8*)type)[mem->offset], sizeof(none*));
                 assert(address, "no address");
 #ifdef USE_FFI
                 array args = allocate(array, alloc, mem->args.count);
                 for (num i = 0; i < mem->args.count; i++)
-                    args->elements[i] = (A)((AType*)&mem->args.meta_0)[i];
+                    args->elements[i] = (Au)((Au_t*)&mem->args.meta_0)[i];
                 args->len = mem->args.count;
                 mem->method = method_with_address(address, mem->type, args, type);
 #endif
@@ -1241,7 +1241,7 @@ none A_engage(cstrs argv) {
             if (default_arg)
                 break;
         }
-        return A_arguments(argc, argv, def, default_arg);
+        return Au_arguments(argc, argv, def, default_arg);
     }
     */
 }
@@ -1254,69 +1254,69 @@ map args(cstrs argv, symbol default_arg, ...) {
     symbol arg = default_arg;
     map    defaults = map(assorted, true);
     while (arg) {
-        A val = va_arg(args, A);
+        Au val = va_arg(args, Au);
         set(defaults, string(arg), hold(val));
         arg = va_arg(args, symbol);
     }
     va_end(args);
-    return A_arguments(argc, argv, defaults,
+    return Au_arguments(argc, argv, defaults,
         default_arg ? string(default_arg) : null);
 }
 
-none A_tap(symbol f, hook sub) {
+none Au_tap(symbol f, hook sub) {
     string fname = string(f);
-    set(log_funcs, fname, sub ? (A)sub : (A)A_bool(true)); /// if subprocedure, then it may receive calls for the logging
+    set(log_funcs, fname, sub ? (Au)sub : (Au)_bool(true)); /// if subprocedure, then it may receive calls for the logging
 }
 
-none A_untap(symbol f) {
+none Au_untap(symbol f) {
     string fname = string(f);
-    set(log_funcs, fname, A_bool(false));
+    set(log_funcs, fname, _bool(false));
 }
 
-member find_ctr(AType type, AType with, bool poly) {
+member find_ctr(Au_t type, Au_t with, bool poly) {
     for (num i = 0; i < type->member_count; i++) {
         member mem = &type->members[i];
-        if ((mem->member_type & A_FLAG_CONSTRUCT) && mem->args.meta_0 == with)
+        if ((mem->member_type & AU_FLAG_CONSTRUCT) && mem->args.meta_0 == with)
             return mem;
     }
-    if (poly && type->parent_type && type->parent_type != typeid(A))
+    if (poly && type->parent_type && type->parent_type != typeid(Au))
         return find_ctr(type->parent_type, with, true);
     return 0;
 }
 
 
-member find_member(AType type, AFlag memflags, symbol name, bool poly) {
+member find_member(Au_t type, AFlag memflags, symbol name, bool poly) {
     for (num i = 0; i < type->member_count; i++) {
         member mem = &type->members[i];
         if ((memflags == 0) || (mem->member_type & memflags) && strcmp(mem->name, name) == 0)
             return mem;
     }
-    if (poly && type->parent_type && type->parent_type != typeid(A))
+    if (poly && type->parent_type && type->parent_type != typeid(Au))
         return find_member(type->parent_type, memflags, name, true);
     return 0;
 }
 
-bool A_is_inlay(member m) {
-    return (m->type->traits & A_TRAIT_VECTOR    |
-            m->type->traits & A_TRAIT_STRUCT    | 
-            m->type->traits & A_TRAIT_PRIMITIVE | 
-            m->type->traits & A_TRAIT_ENUM      | 
-            m->member_type == A_FLAG_INLAY) != 0;
+bool Au_is_inlay(member m) {
+    return (m->type->traits & AU_TRAIT_VECTOR    |
+            m->type->traits & AU_TRAIT_STRUCT    | 
+            m->type->traits & AU_TRAIT_PRIMITIVE | 
+            m->type->traits & AU_TRAIT_ENUM      | 
+            m->member_type == AU_FLAG_INLAY) != 0;
 }
 
-none hold_members(A a) {
-    AType type = isa(a);
-    while (type != typeid(A)) {
+none hold_members(Au a) {
+    Au_t type = isa(a);
+    while (type != typeid(Au)) {
         for (num i = 0; i < type->member_count; i++) {
             member mem = &type->members[i];
-            A   *mdata = (A*)((cstr)a + mem->offset);
-            if (mem->member_type & (A_FLAG_PROP | A_FLAG_PRIV))
-                if (!A_is_inlay(mem) && *mdata) { // was trying to isolate what class name was responsible for our problems
+            Au   *mdata = (Au*)((cstr)a + mem->offset);
+            if (mem->member_type & (AU_FLAG_PROP | AU_FLAG_PRIV))
+                if (!Au_is_inlay(mem) && *mdata) { // was trying to isolate what class name was responsible for our problems
                     if (mem->args.meta_0 == typeid(weak))
                         continue;
 
-                    A member_value = *mdata;
-                    A head = header(member_value);
+                    Au member_value = *mdata;
+                    Au head = header(member_value);
                     //printf("holding member: %s, of type: %s\n", mem->name, head->type->name);// i
                     head->refs++;
                 }
@@ -1325,32 +1325,32 @@ none hold_members(A a) {
     }
 }
 
-A set_property(A a, symbol name, A value) {
-    AType type = isa(a);
-    member m = find_member(type, A_FLAG_PROP, (cstr)name, true);
+Au set_property(Au a, symbol name, Au value) {
+    Au_t type = isa(a);
+    member m = find_member(type, AU_FLAG_PROP, (cstr)name, true);
     member_set(a, m, value); // get the address of mod->source
     return value;
 }
 
 
-A get_property(A a, symbol name) {
-    AType type = isa(a);
-    member m = find_member(type, (A_FLAG_PROP | A_FLAG_PRIV | A_FLAG_INTERN), (cstr)name, true);
-    verify(m, "%s not found on A %s", name, type->name);
-    A *mdata = (A*)((cstr)a + m->offset);
-    A  value = *mdata;
-    return A_is_inlay(m) ? primitive(m->type, mdata) : value;
+Au get_property(Au a, symbol name) {
+    Au_t type = isa(a);
+    member m = find_member(type, (AU_FLAG_PROP | AU_FLAG_PRIV | AU_FLAG_INTERN), (cstr)name, true);
+    verify(m, "%s not found on Au %s", name, type->name);
+    Au *mdata = (Au*)((cstr)a + m->offset);
+    Au  value = *mdata;
+    return Au_is_inlay(m) ? primitive(m->type, mdata) : value;
 }
 
 
 /// should be adapted to work with schemas 
 /// what a weird thing it would be to have map access to properties
-/// everything should be A-based, and forget about the argument hacks?
-map A_arguments(int argc, cstrs argv, map default_values, A default_key) {
+/// everything should be Au-based, and forget about the argument hacks?
+map Au_arguments(int argc, cstrs argv, map default_values, Au default_key) {
     map result = new(map, hsize, 16, assorted, true);
     for (item ii = default_values->fifo->first; ii; ii = ii->next) {
-        A k = ii->key;
-        A v = ii->value;
+        Au k = ii->key;
+        Au v = ii->value;
         set(result, k, v);
     }
     int    i = 1;
@@ -1368,25 +1368,25 @@ map A_arguments(int argc, cstrs argv, map default_values, A default_key) {
             string s_val = new(string, chars, (cstr)argv[i + 1]);
 
             for (item f = default_values->fifo->first; f; f = f->next) {
-                /// import A types from runtime
-                A def_value = f->value;
-                AType   def_type = def_value ? (AType)isa(def_value) : typeid(string);
+                /// import Au types from runtime
+                Au def_value = f->value;
+                Au_t   def_type = def_value ? (Au_t)isa(def_value) : typeid(string);
                 assert(f->key == f->key, "keys do not match"); /// make sure we copy it over from refs
                 if ((!doub && strncmp(((string)f->key)->chars, s_key->chars, 1) == 0) ||
                     ( doub && compare(f->key, s_key) == 0)) {
-                    /// inter-op with A-based A-type sells it.
+                    /// inter-op with Au-based Au sells it.
                     /// its also a guide to use the same schema
-                    A value = formatter(def_type, null, (A)false, "%o", s_val);
+                    Au value = formatter(def_type, null, (Au)false, "%o", s_val);
                     assert(isa(value) == def_type, "");
                     set(result, f->key, value);
                 }
             }
         } else if (!found_single && default_key) {
-            A default_key_obj = header(default_key);
+            Au default_key_obj = header(default_key);
             string s_val     = new(string, chars, (cstr)arg);
-            A def_value = get(default_values, default_key);
-            AType  def_type  = isa(def_value);
-            A value     = formatter(def_type, null, (A)false, "%o", s_val);
+            Au def_value = get(default_values, default_key);
+            Au_t  def_type  = isa(def_value);
+            Au value     = formatter(def_type, null, (Au)false, "%o", s_val);
             set(result, default_key, value);
             found_single = true;
         }
@@ -1396,52 +1396,52 @@ map A_arguments(int argc, cstrs argv, map default_values, A default_key) {
 }
 
 /// can we have i32_with_i16(i32 a, i16 b)
-/// primitives are based on A alone
+/// primitives are based on Au alone
 /// i wonder if we can add more constructors or even methods to the prims
 
-A primitive(AType type, none* data) {
-    //assert(type->traits & A_TRAIT_PRIMITIVE, "must be primitive");
-    A copy = alloc(type, type->size, null);
+Au primitive(Au_t type, none* data) {
+    //assert(type->traits & AU_TRAIT_PRIMITIVE, "must be primitive");
+    Au copy = alloc(type, type->size, null);
     memcpy(copy, data, type->size);
     return copy;
 }
 
-A A_i8   (i8 data)   { return primitive(typeid(i8),   &data); }
-A A_u8   (u8 data)   { return primitive(typeid(u8),   &data); }
-A A_i16  (i16 data)  { return primitive(typeid(i16),  &data); }
-A A_u16  (u16 data)  { return primitive(typeid(u16),  &data); }
-A A_i32  (i32 data)  { return primitive(typeid(i32),  &data); }
-A A_u32  (u32 data)  { return primitive(typeid(u32),  &data); }
-A A_i64  (i64 data)  { return primitive(typeid(i64),  &data); }
-A i      (i64 data)  { return primitive(typeid(i64),  &data); }
-A A_sz   (sz  data)  { return primitive(typeid(sz),   &data); }
-A A_u64  (u64 data)  { return primitive(typeid(u64),  &data); }
-A A_fp16 (fp16* data) { return primitive(typeid(fp16), data); }
-A A_bf16 (bf16* data) { return primitive(typeid(bf16), data); }
-A A_f32  (f32 data)  { return primitive(typeid(f32),  &data); }
-A A_f64  (f64 data)  { return primitive(typeid(f64),  &data); }
-A A_f80  (f80 data)  { return primitive(typeid(f80),  &data); }
-A float32(f32 data) { return primitive(typeid(f32),  &data); }
-A real64(f64 data)  { return primitive(typeid(f64),  &data); }
-A A_cstr(cstr data) { return primitive(typeid(cstr), &data); }
-A A_none()          { return primitive(typeid(none), NULL);  }
-A A_bool(bool data) { return primitive(typeid(bool), &data); }
+Au _i8   (i8 data)   { return primitive(typeid(i8),   &data); }
+Au _u8   (u8 data)   { return primitive(typeid(u8),   &data); }
+Au _i16  (i16 data)  { return primitive(typeid(i16),  &data); }
+Au _u16  (u16 data)  { return primitive(typeid(u16),  &data); }
+Au _i32  (i32 data)  { return primitive(typeid(i32),  &data); }
+Au _u32  (u32 data)  { return primitive(typeid(u32),  &data); }
+Au _i64  (i64 data)  { return primitive(typeid(i64),  &data); }
+Au i      (i64 data)  { return primitive(typeid(i64),  &data); }
+Au _sz   (sz  data)  { return primitive(typeid(sz),   &data); }
+Au _u64  (u64 data)  { return primitive(typeid(u64),  &data); }
+Au _fp16 (fp16* data) { return primitive(typeid(fp16), data); }
+Au _bf16 (bf16* data) { return primitive(typeid(bf16), data); }
+Au _f32  (f32 data)  { return primitive(typeid(f32),  &data); }
+Au _f64  (f64 data)  { return primitive(typeid(f64),  &data); }
+Au _f80  (f80 data)  { return primitive(typeid(f80),  &data); }
+Au float32(f32 data) { return primitive(typeid(f32),  &data); }
+Au real64(f64 data)  { return primitive(typeid(f64),  &data); }
+Au _cstr(cstr data) { return primitive(typeid(cstr), &data); }
+Au _none()          { return primitive(typeid(none), NULL);  }
+Au _bool(bool data) { return primitive(typeid(bool), &data); }
 
-/// A -------------------------
-none A_init(A a) { }
+/// Au -------------------------
+none Au_init(Au a) { }
 
-none drop_members(A a) {
-    A        f = header((A)a);
-    AType type = f->type;
-    while (type != typeid(A)) {
+none drop_members(Au a) {
+    Au        f = header((Au)a);
+    Au_t type = f->type;
+    while (type != typeid(Au)) {
         for (num i = 0; i < type->member_count; i++) {
             member m = &type->members[i];
-            if ((m->member_type & (A_FLAG_PROP | A_FLAG_PRIV)) &&
-                    !A_is_inlay(m)) {
+            if ((m->member_type & (AU_FLAG_PROP | AU_FLAG_PRIV)) &&
+                    !Au_is_inlay(m)) {
                 if (m->args.meta_0 == typeid(weak))
                     continue;
-                //printf("A_dealloc: drop member %s.%s (%s)\n", type->name, m->name, m->type->name);
-                A*  ref = (A*)((u8*)a + m->offset);
+                //printf("Au_dealloc: drop member %s.%s (%s)\n", type->name, m->name, m->type->name);
+                Au*  ref = (Au*)((u8*)a + m->offset);
                 drop(*ref);
                 *ref = null;
             }
@@ -1450,19 +1450,19 @@ none drop_members(A a) {
     }
 }
 
-none A_dealloc(A a) { 
-    A        f = header(a);
-    AType type = f->type;
-    if (!(type->traits & A_TRAIT_USER_INIT)) // composer does this for an 'unmount' operation, and its non-mount results in no holds at all (which is why we must compensate here)
+none Au_dealloc(Au a) { 
+    Au        f = header(a);
+    Au_t type = f->type;
+    if (!(type->traits & AU_TRAIT_USER_INIT)) // composer does this for an 'unmount' operation, and its non-mount results in no holds at all (which is why we must compensate here)
         drop_members(a);
-    if ((A)f->data != (A)a) {
+    if ((Au)f->data != (Au)a) {
         drop(f->data);
         f->data = null;
     }
 }
-u64  A_hash      (A a) { return (u64)(size_t)a; }
-bool A_cast_bool (A a) {
-    A info = header(a);
+u64  Au_hash      (Au a) { return (u64)(size_t)a; }
+bool Au_cast_bool (Au a) {
+    Au info = header(a);
     bool has_count = info->count > 0;
     if (has_count && info->type == typeid(bool))
         return *(bool*)a;
@@ -1470,19 +1470,19 @@ bool A_cast_bool (A a) {
     return has_count;
 }
 
-member member_type(AType type, AFlag mt, AType f, bool poly) {
+member member_type(Au_t type, AFlag mt, Au_t f, bool poly) {
     for (num i = 0; i < type->member_count; i++) {
         member mem = &type->members[i];
         if ((mt == 0) || (mem->member_type & mt) && (mem->type == f))
             return mem;
     }
-    if (poly && type->parent_type && type->parent_type != typeid(A))
+    if (poly && type->parent_type && type->parent_type != typeid(Au))
         return find_member(type->parent_type, mt, f, true);
     return 0;
 }
 
-static i64 read_integer(A data) {
-    AType data_type = isa(data);
+static i64 read_integer(Au data) {
+    Au_t data_type = isa(data);
     i64 v = 0;
          if (data_type == typeid(i8))   v = *(i8*)  data;
     else if (data_type == typeid(i16))  v = *(i16*) data;
@@ -1552,19 +1552,19 @@ string prep_cereal(cereal cs) {
     return res;
 }
 
-A A_with_cstrs(A a, cstrs argv) {
-    A_engage(argv);
+Au Au_with_cstrs(Au a, cstrs argv) {
+    Au_engage(argv);
     int argc = 0;
     while (argv[argc]) { // C standard puts a null char* on end, by law (see: Brannigans law)
         cstr arg = argv[argc];
         if (arg[0] == '-') {
             bool single = arg[1] != '-';
             member mem = null;
-            AType type = isa(a);
-            while (type != typeid(A)) {
+            Au_t type = isa(a);
+            while (type != typeid(Au)) {
                 for (int i = 0; i < type->member_count; i++) {
                     member m = &type->members[i];
-                    if ((m->member_type & A_FLAG_PROP) && 
+                    if ((m->member_type & AU_FLAG_PROP) && 
                         ( single &&        m->name[0] == arg[1]) ||
                         (!single && strcmp(m->name,     &arg[2]) == 0)) {
                         mem = m;
@@ -1577,7 +1577,7 @@ A A_with_cstrs(A a, cstrs argv) {
             cstr value = argv[++argc];
             verify(value, "expected value after %s", &arg[1 + !single]);
             
-            A conv = convert(mem->type, string(value));
+            Au conv = convert(mem->type, string(value));
             set_property(a, mem->name, conv);
         }
         argc++;
@@ -1585,11 +1585,11 @@ A A_with_cstrs(A a, cstrs argv) {
     return a;
 }
 
-A A_with_cereal(A a, cereal _cs) {
+Au Au_with_cereal(Au a, cereal _cs) {
     cstr cs = _cs.value;
     sz len = strlen(cs);
-    A        f = header(a);
-    AType type = f->type;
+    Au        f = header(a);
+    Au_t type = f->type;
     if      (type == typeid(f64)) sscanf(cs, "%lf",  (f64*)a);
     else if (type == typeid(f80)) sscanf(cs, "%Lf",  (f80*)a);
     else if (type == typeid(f32)) sscanf(cs, "%f",   (f32*)a);
@@ -1622,10 +1622,10 @@ A A_with_cereal(A a, cereal _cs) {
     return a;
 }
 
-bool constructs_with(AType type, AType with_type) {
+bool constructs_with(Au_t type, Au_t with_type) {
     for (int i = 0; i < type->member_count; i++) {
         member mem = &type->members[i];
-        if ((mem->member_type & A_FLAG_CONSTRUCT) != 0) {
+        if ((mem->member_type & AU_FLAG_CONSTRUCT) != 0) {
             if (mem->type == with_type)
                 return true;
         }
@@ -1634,78 +1634,78 @@ bool constructs_with(AType type, AType with_type) {
 }
 
 /// used by parse (from json) to construct objects from data
-A construct_with(AType type, A data, ctx context) {
+Au construct_with(Au_t type, Au data, ctx context) {
     if (type == typeid(map)) {
         verify(isa(data) == typeid(map), "expected map");
         return hold(data);
     }
 
     /// this will lookup ways to construct the type from the available data
-    AType data_type = isa(data);
-    A result = null;
+    Au_t data_type = isa(data);
+    Au result = null;
     map    mdata  = null;
 
     /// construct with map of fields
-    if (!(type->traits & A_TRAIT_PRIMITIVE) && data_type == typeid(map)) {
+    if (!(type->traits & AU_TRAIT_PRIMITIVE) && data_type == typeid(map)) {
         map m = data;
         result = alloc(type, 1, null);
         pairs(m, i) {
             verify(isa(i->key) == typeid(string),
-                "expected string key when constructing A from map");
+                "expected string key when constructing Au from map");
             string s_key = instanceof(i->key, typeid(string));
             set_property(result, s_key->chars, i->value);
         }
         mdata = m;
     }
     /// check for identical constructor
-    AType atype = type;
-    while (atype != typeid(A)) {
-        for (int i = 0; i < atype->member_count; i++) {
-            member mem = &atype->members[i];
+    Au_t au = type;
+    while (au != typeid(Au)) {
+        for (int i = 0; i < au->member_count; i++) {
+            member mem = &au->members[i];
             
-            if (!result && mem->member_type == A_FLAG_CONSTRUCT) {
+            if (!result && mem->member_type == AU_FLAG_CONSTRUCT) {
                 none* addr = mem->ptr;
                 /// no meaningful way to do this generically, we prefer to call these first
                 if (mem->type == typeid(path) && data_type == typeid(string)) {
                     result = alloc(type, 1, null);
-                    result = ((A(*)(A, path))addr)(result, path(((string)data)));
-                    verify(A_validator(result), "invalid A");
+                    result = ((Au(*)(Au, path))addr)(result, path(((string)data)));
+                    verify(Au_validator(result), "invalid Au");
                     break;
                 }
                 if ((mem->type == typeid(cstr) || mem->type == typeid(symbol)) && 
                         data_type == typeid(string)) {
                     result = alloc(type, 1, null);
-                    result = ((A(*)(A, cstr))addr)(result, ((string)data)->chars);
-                    verify(A_validator(result), "invalid A");
+                    result = ((Au(*)(Au, cstr))addr)(result, ((string)data)->chars);
+                    verify(Au_validator(result), "invalid Au");
                     break;
                 }
                 if (mem->type == data_type) {
                     result = alloc(type, 1, null);
-                    result = ((A(*)(A, A))addr)(result, data);
-                    verify(A_validator(result), "invalid A");
+                    result = ((Au(*)(Au, Au))addr)(result, data);
+                    verify(Au_validator(result), "invalid Au");
                     break;
                 }
             } else if (context && result && mdata) {
                 // lets set required properties from context
-                if (mem->required && (mem->member_type & A_FLAG_PROP) && 
+                if (mem->required && (mem->member_type & AU_FLAG_PROP) && 
                     !contains(mdata, mem->sname))
                 {
-                    A from_ctx = get(context, mem->sname);
+                    Au from_ctx = get(context, mem->sname);
                     verify(from_ctx,
                         "context requires property: %s (%s) in class %s",
-                            mem->name, mem->type->name, atype->name);
+                            mem->name, mem->type->name, au->name);
                     member_set(result, mem, from_ctx);
                 }
             }
         }
-        atype = atype->parent_type;
+        au = au->parent_type;
     }
 
-    /// simple enum conversion, with a default handled in A_enum_value and type-based match here
+    /// simple enum conversion, with a default handled in Au_enum_value and type-based match here
     if (!result)
-    if (type->traits & A_TRAIT_ENUM) {
+    if (type->traits & AU_TRAIT_ENUM) {
         i64 v = 0;
-        if (data_type->traits & A_TRAIT_INTEGRAL)
+        if (data_type->traits & AU_TRAIT_INTEGRAL)
             v = read_integer(data_type);
         else if (data_type == typeid(symbol) || data_type == typeid(cstr))
             v = evalue (type, (cstr)data);
@@ -1717,16 +1717,16 @@ A construct_with(AType type, A data, ctx context) {
         *((i32*)result) = (i32)v;
     }
 
-    /// check if we may use generic A from string
+    /// check if we may use generic Au from string
     if (!result)
-    if ((type->traits & A_TRAIT_PRIMITIVE) && (data_type == typeid(string) ||
+    if ((type->traits & AU_TRAIT_PRIMITIVE) && (data_type == typeid(string) ||
                                                data_type == typeid(cstr)   ||
                                                data_type == typeid(symbol))) {
         result = alloc(type, 1, null);
         if (data_type == typeid(string))
-            A_with_cereal(result, (cereal) { .value = (cstr)((string)data)->chars } );
+            Au_with_cereal(result, (cereal) { .value = (cstr)((string)data)->chars } );
         else
-            A_with_cereal(result, (cereal) { .value = data });
+            Au_with_cereal(result, (cereal) { .value = data });
     }
 
     /// check for compatible constructor
@@ -1736,36 +1736,36 @@ A construct_with(AType type, A data, ctx context) {
         if (!mem->ptr) continue;
         none* addr = mem->ptr;
         /// check for compatible constructors
-        if (mem->member_type == A_FLAG_CONSTRUCT) {
+        if (mem->member_type == AU_FLAG_CONSTRUCT) {
             u64 combine = mem->type->traits & data_type->traits;
-            if (combine & A_TRAIT_INTEGRAL) {
+            if (combine & AU_TRAIT_INTEGRAL) {
                 i64 v = read_integer(data);
                 result = alloc(type, 1, null);
-                     if (mem->type == typeid(i8))   ((none(*)(A, i8))  addr)(result, (i8)  v);
-                else if (mem->type == typeid(i16))  ((none(*)(A, i16)) addr)(result, (i16) v);
-                else if (mem->type == typeid(i32))  ((none(*)(A, i32)) addr)(result, (i32) v);
-                else if (mem->type == typeid(i64))  ((none(*)(A, i64)) addr)(result, (i64) v);
-            } else if (combine & A_TRAIT_REALISTIC) {
+                     if (mem->type == typeid(i8))   ((none(*)(Au, i8))  addr)(result, (i8)  v);
+                else if (mem->type == typeid(i16))  ((none(*)(Au, i16)) addr)(result, (i16) v);
+                else if (mem->type == typeid(i32))  ((none(*)(Au, i32)) addr)(result, (i32) v);
+                else if (mem->type == typeid(i64))  ((none(*)(Au, i64)) addr)(result, (i64) v);
+            } else if (combine & AU_TRAIT_REALISTIC) {
                 result = alloc(type, 1, null);
                 if (mem->type == typeid(f64))
-                    ((none(*)(A, double))addr)(result, (double)*(float*)data);
+                    ((none(*)(Au, double))addr)(result, (double)*(float*)data);
                 else
-                    ((none(*)(A, float)) addr)(result, (float)*(double*)data);
+                    ((none(*)(Au, float)) addr)(result, (float)*(double*)data);
                 break;
             } else if ((mem->type == typeid(symbol) || mem->type == typeid(cstr)) && 
                        (data_type == typeid(symbol) || data_type == typeid(cstr))) {
                 result = alloc(type, 1, null);
-                ((none(*)(A, cstr))addr)(result, data);
+                ((none(*)(Au, cstr))addr)(result, data);
                 break;
             } else if ((mem->type == typeid(string)) && 
                        (data_type == typeid(symbol) || data_type == typeid(cstr))) {
                 result = alloc(type, 1, null);
-                ((none(*)(A, string))addr)(result, string((symbol)data));
+                ((none(*)(Au, string))addr)(result, string((symbol)data));
                 break;
             } else if ((mem->type == typeid(symbol) || mem->type == typeid(cstr)) && 
                        (data_type == typeid(string))) {
                 result = alloc(type, 1, null);
-                ((none(*)(A, cstr))addr)(result, (cstr)((string)data)->chars);
+                ((none(*)(Au, cstr))addr)(result, (cstr)((string)data)->chars);
                 break;
             }
         }
@@ -1789,11 +1789,11 @@ A construct_with(AType type, A data, ctx context) {
         path f = (data_type == typeid(string)) ? path((string)data) : (path)data;
         return load(f, type, null);
     }
-    return result ? A_initialize(result) : null;
+    return result ? Au_initialize(result) : null;
 }
 
-none serialize(AType type, string res, A a) {
-    if (type->traits & A_TRAIT_PRIMITIVE) {
+none serialize(Au_t type, string res, Au a) {
+    if (type->traits & AU_TRAIT_PRIMITIVE) {
         char buf[128];
         int len = 0;
         if      (type == typeid(bool)) len = sprintf(buf, "%s", *(bool*)a ? "true" : "false");
@@ -1828,18 +1828,18 @@ none serialize(AType type, string res, A a) {
     }
 }
 
-bool member_set(A a, member m, A value) {
-    if (!(m->member_type & A_FLAG_PROP))
+bool member_set(Au a, member m, Au value) {
+    if (!(m->member_type & AU_FLAG_PROP))
         return false;
 
-    AType type         = isa(a);
-    bool  is_primitive = (m->type->traits & A_TRAIT_PRIMITIVE) != 0;
-    bool  is_enum      = (m->type->traits & A_TRAIT_ENUM)      != 0;
-    bool  is_struct    = (m->type->traits & A_TRAIT_STRUCT)    != 0;
-    bool  is_inlay     = (m->member_type  & A_FLAG_INLAY)    != 0;
+    Au_t type         = isa(a);
+    bool  is_primitive = (m->type->traits & AU_TRAIT_PRIMITIVE) != 0;
+    bool  is_enum      = (m->type->traits & AU_TRAIT_ENUM)      != 0;
+    bool  is_struct    = (m->type->traits & AU_TRAIT_STRUCT)    != 0;
+    bool  is_inlay     = (m->member_type  & AU_FLAG_INLAY)    != 0;
     ARef  member_ptr   = (cstr)a + m->offset;
-    AType vtype        = isa(value);
-    A     vinfo        = head(value);
+    Au_t vtype        = isa(value);
+    Au     vinfo        = head(value);
 
     if (is_struct) {
         //verify(vtype == m->type->vmember_type, "%s: expected vmember_type (%s) to equal isa(value) (%s)",
@@ -1856,8 +1856,8 @@ bool member_set(A a, member m, A value) {
             "vector size mismatch for %s", m->name);
         int sz = m->type->size < vtype->size ? m->type->size : vtype->size;
         memcpy(member_ptr, value, sz);
-    } else if ((A)*member_ptr != value) {
-        //verify(A_inherits(vtype, m->type), "type mismatch: setting %s on member %s %s",
+    } else if ((Au)*member_ptr != value) {
+        //verify(Au_inherits(vtype, m->type), "type mismatch: setting %s on member %s %s",
         //    vtype->name, m->type->name, m->name);
         print("member ptr %s = %p", m->name, member_ptr);
         drop(*member_ptr);
@@ -1868,14 +1868,14 @@ bool member_set(A a, member m, A value) {
 }
 
 // try to use this where possible
-A member_object(A a, member m) {
-    if (!(m->member_type & A_FLAG_PROP))
+Au member_object(Au a, member m) {
+    if (!(m->member_type & AU_FLAG_PROP))
         return null; // we do this so much, that its useful as a filter in for statements
 
-    bool is_primitive = (m->type->traits & A_TRAIT_PRIMITIVE) | 
-                        (m->type->traits & A_TRAIT_STRUCT);
-    bool is_inlay     = (m->member_type  & A_FLAG_INLAY);
-    A result;
+    bool is_primitive = (m->type->traits & AU_TRAIT_PRIMITIVE) | 
+                        (m->type->traits & AU_TRAIT_STRUCT);
+    bool is_inlay     = (m->member_type  & AU_FLAG_INLAY);
+    Au result;
     ARef   member_ptr = (cstr)a + m->offset;
     if (is_inlay || is_primitive) {
         result = alloc(m->type, 1, null);
@@ -1886,13 +1886,13 @@ A member_object(A a, member m) {
     return result;
 }
 
-string A_cast_string(A a) {
-    AType type = isa(a);
-    A a_header = header(a);
+string Au_cast_string(Au a) {
+    Au_t type = isa(a);
+    Au a_header = header(a);
     bool  once = false; 
     if (instanceof(a, typeid(string))) return (string)a;
     string res = new(string, alloc, 1024);
-    if (type->traits & A_TRAIT_PRIMITIVE)
+    if (type->traits & AU_TRAIT_PRIMITIVE)
         serialize(type, res, a);
     else {
         //append(res, type->name);
@@ -1900,29 +1900,29 @@ string A_cast_string(A a) {
         for (num i = 0; i < type->member_count; i++) {
             member m = &type->members[i];
             // todo: intern members wont be registered
-            if (m->member_type & (A_FLAG_PROP | A_FLAG_PRIV | A_FLAG_INTERN)) {
+            if (m->member_type & (AU_FLAG_PROP | AU_FLAG_PRIV | AU_FLAG_INTERN)) {
                 if (once)
                     append(res, ", ");
                 u8*    ptr = (u8*)a + m->offset;
-                A inst = null;
-                bool is_primitive = m->type->traits & A_TRAIT_PRIMITIVE;
+                Au inst = null;
+                bool is_primitive = m->type->traits & AU_TRAIT_PRIMITIVE;
                 if (is_primitive)
-                    inst = (A)ptr;
+                    inst = (Au)ptr;
                 else
-                    inst = *(A*)ptr;
-                A inst_h = header(inst);
+                    inst = *(Au*)ptr;
+                Au inst_h = header(inst);
                 append(res, m->name);
                 append(res, ":");
                 if (is_primitive)
                     serialize(m->type, res, inst);
                 else {
-                    string s_value = inst ? A_cast_string(inst) : null; /// isa may be called on this, but not primitive data
+                    string s_value = inst ? Au_cast_string(inst) : null; /// isa may be called on this, but not primitive data
                     if (!s_value)
                         append(res, "null");
                     else {
                         /// we should have a bit more information on what sort 
                         /// of string casts will result here; sometimes it 
-                        /// returns a json A which is not a string, of course.
+                        /// returns a json Au which is not a string, of course.
                         /// however there is no knowledge of this in the return
                         if (instanceof(inst, typeid(string))) {
                             s_value = escape(s_value);
@@ -1943,7 +1943,7 @@ string A_cast_string(A a) {
 }
 
 #define set_v() \
-    AType type = isa(a); \
+    Au_t type = isa(a); \
     if (type == typeid(i8))  *(i8*) a = (i8) v; \
     if (type == typeid(i16)) *(i16*)a = (i16)v; \
     if (type == typeid(i32)) *(i32*)a = (i32)v; \
@@ -1957,11 +1957,11 @@ string A_cast_string(A a) {
     if (type == typeid(f80)) *(f80*)a = (f80)v; \
     return a;
 
-A numeric_with_i8 (A a, i8   v) { set_v(); }
-A numeric_with_i16(A a, i16  v) { set_v(); }
-A numeric_with_i32(A a, i32  v) { set_v(); }
-A numeric_with_i64(A a, i64  v) {
-    AType type = isa(a);
+Au numeric_with_i8 (Au a, i8   v) { set_v(); }
+Au numeric_with_i16(Au a, i16  v) { set_v(); }
+Au numeric_with_i32(Au a, i32  v) { set_v(); }
+Au numeric_with_i64(Au a, i64  v) {
+    Au_t type = isa(a);
     if (type == typeid(i8))  *(i8*) a = (i8) v;
     if (type == typeid(i16)) *(i16*)a = (i16)v;
     if (type == typeid(i32)) *(i32*)a = (i32)v; \
@@ -1975,35 +1975,35 @@ A numeric_with_i64(A a, i64  v) {
     if (type == typeid(f80)) *(f80*)a = (f80)v; \
     return a;
 }
-A numeric_with_u8 (A a, u8   v) { set_v(); }
-A numeric_with_u16(A a, u16  v) { set_v(); }
-A numeric_with_u32(A a, u32  v) { set_v(); }
-A numeric_with_u64(A a, u64  v) { set_v(); }
-A numeric_with_f32(A a, f32  v) { set_v(); }
-A numeric_with_f64(A a, f64  v) { set_v(); }
-A numeric_with_bool(A a, bool v) { set_v(); }
-A numeric_with_num(A a, num  v) { set_v(); }
+Au numeric_with_u8 (Au a, u8   v) { set_v(); }
+Au numeric_with_u16(Au a, u16  v) { set_v(); }
+Au numeric_with_u32(Au a, u32  v) { set_v(); }
+Au numeric_with_u64(Au a, u64  v) { set_v(); }
+Au numeric_with_f32(Au a, f32  v) { set_v(); }
+Au numeric_with_f64(Au a, f64  v) { set_v(); }
+Au numeric_with_bool(Au a, bool v) { set_v(); }
+Au numeric_with_num(Au a, num  v) { set_v(); }
 
-A A_method(AType type, cstr method_name, array args);
+Au Au_method(Au_t type, cstr method_name, array args);
 
-sz A_len(A a) {
+sz Au_len(Au a) {
     if (!a) return 0;
-    AType t = isa(a);
+    Au_t t = isa(a);
     if (t == typeid(string)) return ((string)a)->len;
     if (t == typeid(array))  return ((array) a)->len;
     if (t == typeid(map))    return ((map)a)->count;
     if (t == typeid(cstr) || t == typeid(symbol) || t == typeid(cereal))
         return strlen(a);
-    A aa = header(a);
+    Au aa = header(a);
     return aa->count;
 }
 
-/// these pointers are invalid for A since they are in who-knows land, but the differences would be the same
-i32 A_compare(A a, A b) {
-    AType atype = isa(a);
-    AType btype = isa(b);
-    if (atype != btype) return ((ssize_t)atype - (ssize_t)btype) < 0 ? -1 : 1;
-    return memcmp(a, b, atype->size);
+/// these pointers are invalid for Au since they are in who-knows land, but the differences would be the same
+i32 Au_compare(Au a, Au b) {
+    Au_t au = isa(a);
+    Au_t btype = isa(b);
+    if (au != btype) return ((ssize_t)au - (ssize_t)btype) < 0 ? -1 : 1;
+    return memcmp(a, b, au->size);
 }
 
 num parse_formatter(cstr start, cstr res, num sz) {
@@ -2032,7 +2032,7 @@ static int term_width() {
     return w.ws_col ? w.ws_col : 80;
 }
 
-A formatter(AType type, handle ff, A opt, symbol template, ...) {
+Au formatter(Au_t type, handle ff, Au opt, symbol template, ...) {
     va_list args;
     FILE* f = (FILE*)ff;
     va_start(args, template);
@@ -2043,7 +2043,7 @@ A formatter(AType type, handle ff, A opt, symbol template, ...) {
     string  field = (!is_input && !write_ln && opt) ? instanceof(opt, typeid(string)) : null;
     
     while (*scan) {
-        /// format %o as A's string cast
+        /// format %o as Au's string cast
         char cmd[2] = { *scan, *(scan + 1) };
         int column_size = 0;
         int skip = 0;
@@ -2066,7 +2066,7 @@ A formatter(AType type, handle ff, A opt, symbol template, ...) {
             }
         }
         if (cmd[0] == '%' && cmd[1] == 'o') {
-            A arg = va_arg(args, A);
+            Au arg = va_arg(args, Au);
             string   a = arg ? cast(string, arg) : string((symbol)"null");
             num    len = a->len;
             reserve(res, len);
@@ -2126,7 +2126,7 @@ A formatter(AType type, handle ff, A opt, symbol template, ...) {
     if (f && field) {
         char info[256];
         symbolic_logging = true;
-        A fvalue = get(log_funcs, field); // make get be harmless to map; null is absolutely fine identity wise to understand that
+        Au fvalue = get(log_funcs, field); // make get be harmless to map; null is absolutely fine identity wise to understand that
         int    l      = 0;
         string tname  = null;
         string fname  = field;
@@ -2187,14 +2187,14 @@ A formatter(AType type, handle ff, A opt, symbol template, ...) {
         fflush(f);
     }
 
-    if (type && (type->traits & A_TRAIT_ENUM)) {
+    if (type && (type->traits & AU_TRAIT_ENUM)) {
         // convert res to instance of this enum
         i32 v = evalue(type, (cstr)res->chars);
         return primitive(typeid(i32), &v);
     }
-    return type ? (A)
-        ((A_f*)type)->with_cereal(alloc(type, 1, null), (cereal) { .value = (cstr)res->chars }) :
-        (A)res;
+    return type ? (Au)
+        ((Au_f*)type)->with_cereal(alloc(type, 1, null), (cereal) { .value = (cstr)res->chars }) :
+        (Au)res;
 }
 
 u64 fnv1a_hash(const none* data, size_t length, u64 hash) {
@@ -2260,7 +2260,7 @@ map map_copy(map m) {
 }
 
 none map_dealloc(map m) {
-    A info = head(m);
+    Au info = head(m);
     if (m->hlist) {
         for (int b = 0; b < m->hsize; b++)
             while (m->hlist[b]) {
@@ -2277,7 +2277,7 @@ none map_dealloc(map m) {
     }
 }
 
-item map_lookup(map m, A k) {
+item map_lookup(map m, Au k) {
     if (!m->hlist) return null;
     u64 h = hash(k);
     i64 b = h % m->hsize;
@@ -2288,16 +2288,16 @@ item map_lookup(map m, A k) {
     return null;
 }
 
-bool map_contains(map m, A k) {
+bool map_contains(map m, Au k) {
     return map_lookup(m, k) != null;
 }
 
-A map_get(map m, A k) {
+Au map_get(map m, Au k) {
     item i = map_lookup(m, k);
     return i ? i->value : null;
 }
 
-item map_fetch(map m, A k) {
+item map_fetch(map m, Au k) {
     item i = map_lookup(m, k);
     if (!i) {
         u64 h = hash(k);
@@ -2308,7 +2308,7 @@ item map_fetch(map m, A k) {
     return i;
 }
 
-A map_value_by_index(map m, num idx) {
+Au map_value_by_index(map m, num idx) {
     int i = 0;
     pairs(m, ii) {
         if (i++ == idx)
@@ -2317,11 +2317,11 @@ A map_value_by_index(map m, num idx) {
     return null;
 }
 
-none map_set(map m, A k, A v) {
+none map_set(map m, Au k, Au v) {
     if (!m->hlist) m->hlist = (item*)calloc(m->hsize, sizeof(item));
     item i = map_fetch(m, k);
-    AType vtype = isa(v);
-    A info = head(m);
+    Au_t vtype = isa(v);
+    Au info = head(m);
 
     bool allowed = m->unmanaged || !m->last_type || m->last_type == vtype || m->assorted;
     verify(allowed,
@@ -2356,7 +2356,7 @@ none map_rm_item(map m, item i) {
     drop(i);
 }
 
-none map_rm(map m, A k) {
+none map_rm(map m, Au k) {
     u64  h    = hash(k);
     i64  b    = h % m->hsize;
     item prev = null;
@@ -2392,13 +2392,13 @@ sz map_len(map a) {
     return a->count;
 }
 
-A map_index_sz(map a, sz index) {
+Au map_index_sz(map a, sz index) {
     assert(index >= 0 && index < a->count, "index out of range");
-    item i = list_get(a->fifo, A_sz(index));
+    item i = list_get(a->fifo, _sz(index));
     return i ? i->value : null;
 }
 
-A map_index_A(map a, A key) {
+Au map_index_Au(map a, Au key) {
     return map_get(a, key);
 }
 
@@ -2437,7 +2437,7 @@ map map_of(symbol first_key, ...) {
     symbol key = first_key;
     if (!key) return a;
     for (;;) {
-        A arg = va_arg(args, A);
+        Au arg = va_arg(args, Au);
         set(a, string(key), arg);
         key = va_arg(args, cstr);
         if (key == null)
@@ -2447,17 +2447,17 @@ map map_of(symbol first_key, ...) {
 }
 
 
-srcfile srcfile_with_A(srcfile a, A obj) {
+srcfile srcfile_with_A(srcfile a, Au obj) {
     a->obj = obj;
     return a;
 }
 
 string srcfile_cast_string(srcfile a) {
-    A i = head(a->obj);
+    Au i = head(a->obj);
     return f(string, "%s:%i", i->source, i->line);
 }
 
-define_class(srcfile, A);
+define_class(srcfile, Au);
 
 
 
@@ -2552,16 +2552,16 @@ string string_copy(string a) {
     return string((symbol)a->chars);
 }
 
-bool inherits(AType src, AType check) {
-    while (src != typeid(A)) {
+bool inherits(Au_t src, Au_t check) {
+    while (src != typeid(Au)) {
         if (src == check) return true;
         src = src->parent_type;
     }
-    if ((src   == typeid(A) || src   == typeid(A)) &&
-        (check == typeid(A) || check == typeid(A))) {
+    if ((src   == typeid(Au) || src   == typeid(Au)) &&
+        (check == typeid(Au) || check == typeid(Au))) {
         return true;
     }
-    return src == check; // true for A-type against A-type
+    return src == check; // true for Au against Au
 }
 
 static inline char just_a_dash(char a) {
@@ -2624,7 +2624,7 @@ array string_split_parts(string a) {
     return res;
 }
 
-string string_interpolate(string a, A ff) {
+string string_interpolate(string a, Au ff) {
     cstr   s    = (cstr)a->chars;
     cstr   prev = null;
     string res  = string(alloc, 256);
@@ -2664,7 +2664,7 @@ string string_interpolate(string a, A ff) {
                     verify(s_ind, "unexpected end of string");
                     int    ind   = (size_t)s_ind - (size_t)kstart;
                     string k     = string(chars, kstart, ref_length, ind);
-                    A      vv    = get_property(ff, k->chars);
+                    Au      vv    = get_property(ff, k->chars);
                     verify(vv, "property %o does not exist on object", k);
                     v            = cast(string, vv);
                     s           += ind;
@@ -2951,9 +2951,9 @@ bool string_ends_with(string a, symbol value) {
     return strcmp(&a->chars[a->len - ln], value) == 0;
 }
 
-item list_push(list a, A e);
+item list_push(list a, Au e);
 
-item hashmap_fetch(hashmap a, A key) {
+item hashmap_fetch(hashmap a, Au key) {
     u64 h = a->unmanaged ? (u64)((none*)key) : hash(key);
     u64 k = h % a->alloc;
     list bucket = &a->data[k];
@@ -2973,7 +2973,7 @@ none hashmap_clear(hashmap a) {
     }
 }
 
-item hashmap_lookup(hashmap a, A key) {
+item hashmap_lookup(hashmap a, Au key) {
     u64 h = a->unmanaged ? (u64)((none*)key) : hash(key);
     u64 k = h % a->alloc;
     list bucket = &a->data[k];
@@ -2988,24 +2988,24 @@ item hashmap_lookup(hashmap a, A key) {
     return null;
 }
 
-none hashmap_set(hashmap a, A key, A value) {
+none hashmap_set(hashmap a, Au key, Au value) {
     item i = fetch(a, key);
-    A prev = i->value;
+    Au prev = i->value;
     i->value = hold(value);
     if (!a->unmanaged) drop(prev);
 }
 
-A hashmap_get(hashmap a, A key) {
+Au hashmap_get(hashmap a, Au key) {
     item i = lookup(a, key);
     return i ? i->value : null;
 }
 
-bool hashmap_contains(hashmap a, A key) {
+bool hashmap_contains(hashmap a, Au key) {
     item i = lookup(a, key);
     return i != null;
 }
 
-none hashmap_remove(hashmap a, A key) {
+none hashmap_remove(hashmap a, Au key) {
     u64 h = hash(key);
     u64 k = h % a->alloc;
     list bucket = &a->data[k];
@@ -3021,7 +3021,7 @@ bool hashmap_cast_bool(hashmap a) {
     return a->count > 0;
 }
 
-A hashmap_index_A(hashmap a, A key) {
+Au hashmap_index_Au(hashmap a, Au key) {
     item i = hashmap_lookup(a, key);
     return i ? i->value : null;
 }
@@ -3029,7 +3029,7 @@ A hashmap_index_A(hashmap a, A key) {
 none hashmap_init(hashmap a) {
     if (!a->alloc)
          a->alloc = 16;
-    a->data  = (list)calloc(a->alloc, sizeof(struct _list)); /// we can zero-init a vectorized set of objects with A-type
+    a->data  = (list)calloc(a->alloc, sizeof(struct _list)); /// we can zero-init a vectorized set of objects with Au
 }
 
 none hashmap_dealloc(hashmap a) {
@@ -3055,7 +3055,7 @@ string hashmap_cast_string(hashmap a) {
     return res;
 }
 
-none list_quicksort(list a, i32(*sfn)(A, A)) {
+none list_quicksort(list a, i32(*sfn)(Au, Au)) {
     item f = a->first;
     int  n = a->count;
     for (int i = 0; i < n - 1; i++) {
@@ -3063,7 +3063,7 @@ none list_quicksort(list a, i32(*sfn)(A, A)) {
         for (item j = f; jc < n - i - 1; j = j->next, jc++) {
             item j1 = j->next;
             if (sfn(j->value, j1->value) > 0) {
-                A t = j->value;
+                Au t = j->value;
                 j ->value = j1->value;
                 j1->value = t;
             }
@@ -3072,24 +3072,24 @@ none list_quicksort(list a, i32(*sfn)(A, A)) {
 }
 
 none list_sort(list a, ARef fn) {
-    list_quicksort(a, (i32(*)(A, A))fn);
+    list_quicksort(a, (i32(*)(Au, Au))fn);
 }
 
-A list_get(list a, A at_index);
+Au list_get(list a, Au at_index);
 
-A A_copy(A a) {
-    A f = header(a);
+Au Au_copy(Au a) {
+    Au f = header(a);
     assert(f->count > 0, "invalid count");
-    AType type = isa(a);
-    A b = alloc(type, f->count, null);
+    Au_t type = isa(a);
+    Au b = alloc(type, f->count, null);
     memcpy(b, a, f->type->size * f->count);
     hold_members(b);
     return b;
 }
 
-A hold(A a) {
+Au hold(Au a) {
     if (a) {
-        A f = header(a);
+        Au f = header(a);
         f->refs++;
 
         af_recycler af = f->type->af;
@@ -3101,17 +3101,17 @@ A hold(A a) {
     return a;
 }
 
-none A_free(A a) {
-    A       aa = header(a);
-    A_f*  type = aa->type;
+none Au_free(Au a) {
+    Au       aa = header(a);
+    Au_f*  type = aa->type;
     none* prev = null;
-    A_f*   cur = type;
+    Au_f*   cur = type;
     while (cur) {
         if (prev != cur->dealloc) {
             cur->dealloc(a);
             prev = cur->dealloc;
         }
-        if (cur == &A_i.type)
+        if (cur == &Au_i.type)
             break;
         cur = cur->parent_type;
     }
@@ -3132,19 +3132,19 @@ none A_free(A a) {
     }
 }
 
-none A_recycle() {
+none Au_recycle() {
     i64   types_len;
-    AType* atypes = A_types(&types_len);
+    Au_t* atypes = Au_types(&types_len);
 
     /// iterate through types
     for (num i = 0; i < types_len; i++) {
-        AType type = atypes[i];
+        Au_t type = atypes[i];
         af_recycler af = type->af;
         if (af && af->af_count) {
             for (int i = 0; i <= af->af_count; i++) {
-                A a = af->af4[i];
+                Au a = af->af4[i];
                 if (a && a->refs > 0 && --a->refs == 0) {
-                    A_free(&a[1]);
+                    Au_free(&a[1]);
                 }
             }
             af->af_count = 0;
@@ -3152,16 +3152,16 @@ none A_recycle() {
     }
 }
 
-none drop(A a) {
+none drop(Au a) {
     if (!a) return;
-    A info = header(a);
+    Au info = header(a);
 
     if (info->refs < 0) {
         printf("drop: data freed twice: %s\n", info->type->name);
     } else if (info->refs > 0 && --info->refs == 0) {
         // ref:0 on new, and then ref:+1 when added to list
-        // when removing from list, that A is freed.
-        // a = new(A) ... then drop(a) ref:-1 also frees.
+        // when removing from list, that Au is freed.
+        // a = new(Au) ... then drop(a) ref:-1 also frees.
         // this is to facilitate push(array, new(obj)) <- ends up with a ref of 1.
         // also set(map, string("key"), string("value")) <- both are 1
 
@@ -3173,19 +3173,19 @@ none drop(A a) {
             info->type->af->af4[info->af_index] = null;
             info->af_index = 0;
         }
-        A_free(a);
+        Au_free(a);
     }
 }
 
 /// binding works with delegate callback registration efficiently to 
-/// avoid namespace collisions, and allow enumeration interfaces without override and base A boilerplate
-callback binding(A a, A target, bool required, AType rtype, AType arg_type, symbol id, symbol name) {
-    AType self_type   = isa(a);
-    AType target_type = isa(target);
+/// avoid namespace collisions, and allow enumeration interfaces without override and base Au boilerplate
+callback binding(Au a, Au target, bool required, Au_t rtype, Au_t arg_type, symbol id, symbol name) {
+    Au_t self_type   = isa(a);
+    Au_t target_type = isa(target);
     bool inherits     = instanceof(target, self_type) != null;
     string method     = f(string, "%s%s%s", id ? id : 
         (!inherits ? self_type->name : ""), (id || !inherits) ? "_" : "", name);
-    member m  = find_member(target_type, A_FLAG_IMETHOD, method->chars, true);
+    member m  = find_member(target_type, AU_FLAG_IMETHOD, method->chars, true);
     verify(!required || m, "bind: required method not found: %o", method);
     if (!m) return null;
     callback f       = m->ptr;
@@ -3196,32 +3196,32 @@ callback binding(A a, A target, bool required, AType rtype, AType arg_type, symb
     return f;
 }
 
-A vdata(A a) {
-    A obj = header(a);
+Au vdata(Au a) {
+    Au obj = header(a);
     return obj->data;
 }
 
-i64 vdata_stride(A a) {
-    AType t = vdata_type(a);
-    return t->size - (t->traits & A_TRAIT_PRIMITIVE ? 0 : sizeof(none*));
+i64 vdata_stride(Au a) {
+    Au_t t = vdata_type(a);
+    return t->size - (t->traits & AU_TRAIT_PRIMITIVE ? 0 : sizeof(none*));
 }
 
-AType vdata_type(A a) {
-    A f = header(a);
+Au_t vdata_type(Au a) {
+    Au f = header(a);
     return f->scalar ? f->scalar : f->type;
 }
 
-A instanceof(A inst, AType type) {
+Au instanceof(Au inst, Au_t type) {
     if (!inst) return null;
 
     verify(inst, "instanceof given a null value");
-    AType t  = type;
-    AType it = isa(inst); 
-    AType it_copy = it;
+    Au_t t  = type;
+    Au_t it = isa(inst); 
+    Au_t it_copy = it;
     while (it) {
         if (it == t)
             return inst;
-        else if (it == typeid(A))
+        else if (it == typeid(Au))
             break;
         it = it->parent_type; 
     }
@@ -3229,7 +3229,7 @@ A instanceof(A inst, AType type) {
 }
 
 /// list -------------------------
-item list_push(list a, A e) {
+item list_push(list a, Au e) {
     item n = item();
     n->value = a->unmanaged ? e : hold(e); /// held already by caller
     if (a->last) {
@@ -3248,7 +3248,7 @@ none list_dealloc(list a) {
     while (pop(a)) { }
 }
 
-item list_insert_after(list a, A e, i32 after) {
+item list_insert_after(list a, Au e, i32 after) {
     num index = 0;
     item found = null;
     if (after >= 0)
@@ -3282,7 +3282,7 @@ item list_insert_after(list a, A e, i32 after) {
 
 /// we need index_of_element and index_of
 /// this is not calling compare for now, and we really need to be able to control that if it did (argument-based is fine)
-num list_index_of(list a, A value) {
+num list_index_of(list a, Au value) {
     num index = 0;
     for (item ai = a->first; ai; ai = ai->next) {
         if (ai->value == value)
@@ -3292,11 +3292,11 @@ num list_index_of(list a, A value) {
     return -1;
 }
 
-item list_item_of(list a, A value) {
+item list_item_of(list a, Au value) {
     num index = 0;
     for (item ai = a->first; ai; ai = ai->next) {
         if (ai->value == value) {
-            ai->key = A_i64(index);
+            ai->key = _i64(index);
             return ai;
         }
         index++;
@@ -3336,22 +3336,22 @@ num list_compare(list a, list b) {
     num diff  = a->count - b->count;
     if (diff != 0)
         return diff;
-    AType ai_t = a->first ? isa(a->first->value) : null;
+    Au_t ai_t = a->first ? isa(a->first->value) : null;
     if (ai_t) {
-        member m = find_member(ai_t, (A_FLAG_IMETHOD), "compare", true);
+        member m = find_member(ai_t, (AU_FLAG_IMETHOD), "compare", true);
         for (item ai = a->first, bi = b->first; ai; ai = ai->next, bi = bi->next) {
-            num   v  = ((num(*)(A,A))((method_t*)m->method)->address)(ai, bi);
+            num   v  = ((num(*)(Au,Au))((method_t*)m->method)->address)(ai, bi);
             if (v != 0) return v;
         }
     }
     return 0;
 }
 
-A list_pop(list a) {
+Au list_pop(list a) {
     item l = a->last;
     if (!l)
         return null;
-    A info = head(a);
+    Au info = head(a);
     a->last = a->last->prev;
     if (!a->last)
         a->first = null;
@@ -3364,9 +3364,9 @@ A list_pop(list a) {
     return l;
 }
 
-A list_get(list a, A at_index) {
+Au list_get(list a, Au at_index) {
     sz index = 0;
-    AType itype = isa(at_index);
+    Au_t itype = isa(at_index);
     sz at = 0;
     if (itype == typeid(sz)) {
         at = *(sz*)at_index;
@@ -3388,18 +3388,18 @@ num list_count(list a) {
 }
 
 
-bool is_meta(A a) {
-    AType t = isa(a);
+bool is_meta(Au a) {
+    Au_t t = isa(a);
     return t->meta.count > 0;
 }
 
-bool is_meta_compatible(A a, A b) {
-    AType t = isa(a);
+bool is_meta_compatible(Au a, Au b) {
+    Au_t t = isa(a);
     if (is_meta(a)) {
-        AType bt = isa(b);
+        Au_t bt = isa(b);
         num found = 0;
         for (num i = 0; i < t->meta.count; i++) {
-            AType mt = ((AType*)&t->meta.meta_0)[i];
+            Au_t mt = ((Au_t*)&t->meta.meta_0)[i];
             if (inherits(bt, mt))
                 found++;
         }
@@ -3408,23 +3408,23 @@ bool is_meta_compatible(A a, A b) {
     return false;
 }
 
-A vrealloc(A a, sz alloc) {
-    A   i = header(a);
+Au vrealloc(Au a, sz alloc) {
+    Au   i = header(a);
     if (alloc > i->alloc) {
-        AType type = vdata_type(a);
+        Au_t type = vdata_type(a);
         sz  size  = vdata_stride(a);
         u8* data  = calloc(alloc, size);
         u8* prev  = i->data;
         memcpy(data, prev, i->count * size);
         i->data  = data;
         i->alloc = alloc;
-        if ((A)prev != a) free(prev);
+        if ((Au)prev != a) free(prev);
     }
     return i->data;
 }
 
 none vector_init(vector a) {
-    A f = header(a);
+    Au f = header(a);
     f->count = 0;
     f->scalar = f->type->meta.meta_0 ? f->type->meta.meta_0 : a->type ? a->type : typeid(i8);
     f->shape  = hold(a->shape); // it would be nice if didnt have to do this
@@ -3435,7 +3435,7 @@ none vector_init(vector a) {
 }
 
 vector vector_with_path(vector a, path file_path) {
-    A f = header(a);
+    Au f = header(a);
     f->scalar = typeid(i8);
     
     verify(exists(file_path), "file %o does not exist", file_path);
@@ -3464,23 +3464,23 @@ none vector_set(vector a, num index, ARef element) {
     memcpy(&arb[location], element, a->type->size); 
 }
 
-A vector_resize(vector a, sz size) {
+Au vector_resize(vector a, sz size) {
     vrealloc(a, size);
-    A f = header(a);
+    Au f = header(a);
     f->count = size;
     return f->data;
 }
 
-A vector_reallocate(vector a, sz size) {
+Au vector_reallocate(vector a, sz size) {
     vrealloc(a, size);
-    A f = header(a);
+    Au f = header(a);
     return f->data;
 }
 
 none vector_concat(vector a, ARef any, num count) {
     if (count <= 0) return;
-    AType type = vdata_type(a);
-    A f = header(a);
+    Au_t type = vdata_type(a);
+    Au f = header(a);
     if (f->alloc < f->count + count)
         vrealloc(a, (f->alloc << 1) + 32 + count);
     
@@ -3492,7 +3492,7 @@ none vector_concat(vector a, ARef any, num count) {
         f->shape->data[f->shape->count - 1] = f->count;
 }
 
-none vector_push(vector a, A any) {
+none vector_push(vector a, Au any) {
     vector_concat(a, any, 1);
 }
 
@@ -3501,15 +3501,15 @@ num abso(num i) {
 }
 
 vector vector_slice(vector a, num from, num to) {
-    A      f   = header(a);
+    Au      f   = header(a);
     /// allocate the data type (no i8 bytes)
     num count = (1 + abso(from - to)); // + 31 & ~31;
-    A res = alloc(f->type, 1, null);
-    A res_f = header(res);
+    Au res = alloc(f->type, 1, null);
+    Au res_f = header(res);
 
     /// allocate 
     u8* src   = f->data;
-    u8* dst   = null; //A_valloc(f->type, f->scalar, count, count);
+    u8* dst   = null; //Au_valloc(f->type, f->scalar, count, count);
     fault("implement vector_slice allocator");
     i64 stride = vdata_stride(a);
     if (from <  to)
@@ -3518,20 +3518,20 @@ vector vector_slice(vector a, num from, num to) {
         for (int i = from; i > to; i--, dst++)
             memcpy(dst, &src[i * stride], count * stride);
     res_f->data = dst;
-    A_initialize(res);
+    Au_initialize(res);
     return res;
 }
 
 sz vector_count(vector a) {
-    A f = header(a);
+    Au f = header(a);
     return f->count;
 }
 
-define_class(vector, A);
+define_class(vector, Au);
 
 
-A subprocedure_invoke(subprocedure a, A arg) {
-    A(*addr)(A, A, A) = a->addr;
+Au subprocedure_invoke(subprocedure a, Au arg) {
+    Au(*addr)(Au, Au, Au) = a->addr;
     return addr(a->target, arg, a->ctx);
 }
 
@@ -3571,8 +3571,8 @@ string file_gets(file f) {
     return null;
 }
 
-bool file_file_write(file f, A o) {
-    AType type = isa(o);
+bool file_file_write(file f, Au o) {
+    Au_t type = isa(o);
     if (type == typeid(string)) {
         u16 nbytes    = ((string)o)->len;
         u16 le_nbytes = htole16(nbytes);
@@ -3582,13 +3582,13 @@ bool file_file_write(file f, A o) {
     }
     sz size = isa(o)->size;
     f->size += (num)size;
-    verify(type->traits & A_TRAIT_PRIMITIVE, "not a primitive type");
+    verify(type->traits & AU_TRAIT_PRIMITIVE, "not a primitive type");
     return fwrite(o, size, 1, f->id) == 1;
 }
 
 
 
-A file_file_read(file f, AType type) {
+Au file_file_read(file f, Au_t type) {
     if (type == typeid(string)) {
         char bytes[65536];
         u16  nbytes;
@@ -3604,10 +3604,10 @@ A file_file_read(file f, AType type) {
         bytes[nbytes] = 0;
         return string(bytes); 
     }
-    A o = alloc(type, 1, null);
+    Au o = alloc(type, 1, null);
     sz size = isa(o)->size;
     f->location += size;
-    verify(type->traits & A_TRAIT_PRIMITIVE, "not a primitive type");
+    verify(type->traits & AU_TRAIT_PRIMITIVE, "not a primitive type");
     bool success = fread(o, size, 1, f->id) == 1;
     return success ? o : null;
 }
@@ -3828,7 +3828,7 @@ static path _path_latest_modified(path a, ARef mvalue, map visit) {
     if (!canonical) return null;
     string k = string(canonical);
     if (contains(visit, k)) return null;;
-    set(visit, k, A_bool(true));
+    set(visit, k, _bool(true));
     
     DIR *dir = opendir(base_dir);
     char abs[4096];
@@ -4115,8 +4115,8 @@ path path_cwd() {
     return a;
 }
 
-Exists A_exists(A o) {
-    AType type = isa(o);
+Exists Au_exists(Au o) {
+    Au_t type = isa(o);
     path  f = null;
     if (type == typeid(string))
         f = cast(path, (string)o);
@@ -4323,7 +4323,7 @@ static array read_lines(path f) {
     return lines;
 }
 
-bool path_save(path a, A content, ctx context) {
+bool path_save(path a, Au content, ctx context) {
     if (is_dir(a)) return false;
     string s = cast(string, content);
     FILE* f = fopen(a->chars, "w");
@@ -4333,13 +4333,13 @@ bool path_save(path a, A content, ctx context) {
     return success;
 }
 
-A path_load(path a, AType type, ctx context) {
+Au path_load(path a, Au_t type, ctx context) {
     if (is_dir(a)) return null;
     if (type == typeid(array))
         return read_lines(a);
     FILE* f = fopen(a->chars, "rb");
     if (!f) return null;
-    bool is_obj = type && !(type->traits & A_TRAIT_PRIMITIVE);
+    bool is_obj = type && !(type->traits & AU_TRAIT_PRIMITIVE);
     fseek(f, 0, SEEK_END);
     sz flen = ftell(f);
     fseek(f, 0, SEEK_SET);
@@ -4351,14 +4351,14 @@ A path_load(path a, AType type, ctx context) {
     if (type == typeid(string))
         return str;
     if (is_obj) {
-        A obj = parse(type, (cstr)str->chars, context);
+        Au obj = parse(type, (cstr)str->chars, context);
         return obj;
     }
     assert(false, "not implemented");
     return null;
 }
 
-none* primitive_ffi_arb(AType ptype) {
+none* primitive_ffi_arb(Au_t ptype) {
 #if USE_FFI
     if (ptype == typeid(u8))        return &ffi_type_uint8;
     if (ptype == typeid(i8))        return &ffi_type_sint8;
@@ -4500,14 +4500,14 @@ none mutex_cond_wait(mutex m) {
     pthread_cond_wait(&m->mtx->cond, &m->mtx->lock);
 }
 
-define_class(mutex, A)
+define_class(mutex, Au)
 
 // idea:
 // silver should: swap = and : ... so : is const, and = is mutable-assign
 // we serialize our data with : and we do not think of this as a changeable form, its our data and we want it intact, lol
-// serialize A into json
-string json(A a) {
-    AType  type  = isa(a);
+// serialize Au into json
+string json(Au a) {
+    Au_t  type  = isa(a);
     string res   = string(alloc, 1024);
     /// start at 1024 pre-alloc
     if (!a) {
@@ -4520,7 +4520,7 @@ string json(A a) {
         // array with items
         push(res, '[');
         bool first = true;
-        each (a, A, i) {
+        each (a, Au, i) {
             if (!first) push(res, ',');
             concat(res, json(i));
             first = false;
@@ -4540,17 +4540,17 @@ string json(A a) {
             first = false;
         }
         push(res, '}');
-    } else if (!(type->traits & A_TRAIT_PRIMITIVE)) {
-        // A with fields
+    } else if (!(type->traits & AU_TRAIT_PRIMITIVE)) {
+        // Au with fields
         push(res, '{');
         bool one = false;
         for (num m = 0; m < type->member_count; m++) {
             if (one) push(res, ',');
             member mem = &type->members[m];
-            if (!(mem->member_type & (A_FLAG_PROP | A_FLAG_INLAY))) continue;
+            if (!(mem->member_type & (AU_FLAG_PROP | AU_FLAG_INLAY))) continue;
             concat(res, json(mem->sname));
             push  (res, ':');
-            A value = get_property(a, mem->name);
+            Au value = get_property(a, mem->name);
             concat(res, json(value));
             one = true;
         }
@@ -4642,25 +4642,25 @@ static string parse_json_string(cstr origin, cstr* remainder, ctx context) {
     return (context && delim == '\'') ? interpolate(res, context) : res;
 }
 
-static A parse_array(cstr s, AType schema, AType meta, cstr* remainder, ctx context);
+static Au parse_array(cstr s, Au_t schema, Au_t meta, cstr* remainder, ctx context);
 
-member member_first(AType type, AType find, bool poly) {
-    if (poly && type->parent_type != typeid(A)) {
+member member_first(Au_t type, Au_t find, bool poly) {
+    if (poly && type->parent_type != typeid(Au)) {
         member m = member_first(type->parent_type, find, poly);
         if (m) return m;
     }
     for (int i = 0; i < type->member_count; i++) {
         member m = &type->members[i];
-        if (!(m->member_type & A_FLAG_PROP)) continue;
+        if (!(m->member_type & AU_FLAG_PROP)) continue;
         if (m->type == type) return m;
     }
     return null;
 }
 
-static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder, ctx context) {
+static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder, ctx context) {
     cstr   scan   = ws(input);
     cstr   origin = null;
-    A res    = null;
+    Au res    = null;
     char  *endptr;
 
     if (remainder)
@@ -4675,7 +4675,7 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
     }
     else if (sym && ((is_true = eq(sym, "true")) || eq(sym, "false"))) {
         verify(!schema || schema == typeid(bool), "type mismatch");
-        res = A_bool(is_true); 
+        res = _bool(is_true); 
     }
     else if (*scan == '[') {
         if (sym) {
@@ -4683,30 +4683,30 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
             // for these special syntax, we cannot take schema & meta_type into account
             // this is effectively 'ason' syntax
             scan = ws(scan + 1);
-            AType type = A_find_type(sym->chars);
+            Au_t type = Au_find_type(sym->chars);
             verify(type, "type not found: %o", sym);
 
-            if (type->traits & A_TRAIT_ENUM) {
+            if (type->traits & AU_TRAIT_ENUM) {
                 // its possible we could reference a context variable within this enum [ value-area ]
                 // in which case, we could effectively look it up
-                A evalue = alloc(type, 1, null);
+                Au evalue = alloc(type, 1, null);
                 string enum_symbol = parse_symbol(scan, &scan, context);
                 verify(enum_symbol, "enum symbol expected");
                 verify(*scan == ']', "expected ']' after enum symbol");
                 scan++;
                 member e = find_member(
-                    type, A_FLAG_ENUMV, enum_symbol->chars, false);
+                    type, AU_FLAG_ENUMV, enum_symbol->chars, false);
                 verify(e, "enum symbol %o not found in type %s", enum_symbol, type->name);
                 memcpy(evalue, e->ptr, e->type->size);
 
                 res = evalue;
-            } else if (type->traits & A_TRAIT_STRUCT) {
-                A svalue = alloc(type, 1, null);
+            } else if (type->traits & AU_TRAIT_STRUCT) {
+                Au svalue = alloc(type, 1, null);
                 for (int i = 0; i < type->member_count; i++) {
                     member m = &type->members[i];
-                    if (!(m->member_type & A_FLAG_PROP)) continue;
-                    A f = (A)((cstr)svalue + m->offset);
-                    A r = parse_object(scan, null, null, &scan, context);
+                    if (!(m->member_type & AU_FLAG_PROP)) continue;
+                    Au f = (Au)((cstr)svalue + m->offset);
+                    Au r = parse_object(scan, null, null, &scan, context);
                     verify(r && isa(r) == m->type, "type mismatch while parsing struct %s:%s (read: %s, expect: %s)",
                         type->name, m->name, !r ? "null" : isa(r)->name, m->type->name);
                     if (*scan == ',') scan = ws(scan + 1); // these dumb things are optional
@@ -4716,7 +4716,7 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
             } else {
                 // this is parsing a 'constructor call', so we must effectively call this constructor with the arg given
                 // only a singular arg is allowed for these
-                A r = parse_object(scan, null, null, &scan, context);
+                Au r = parse_object(scan, null, null, &scan, context);
                 verify(r, "expected value to give to type %s", type->name);
                 verify(*scan == ']', "expected ']' after construction of %s", type->name);
                 scan++;
@@ -4739,7 +4739,7 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
             if (*scan != '.' && !(*scan >= '0' && *scan <= '9'))
                 break;
         }
-        if (has_dot || (schema && schema->traits & A_TRAIT_REALISTIC)) {
+        if (has_dot || (schema && schema->traits & AU_TRAIT_REALISTIC)) {
             bool force_f32 = false;
             if (has_dot) {
                 force_f32 = *scan == 'f';
@@ -4747,41 +4747,41 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
             }
             if (schema == typeid(i64)) {
                 double v = strtod(origin, &scan);
-                res = A_i64((i64)floor(v));
+                res = _i64((i64)floor(v));
             }
             else if (force_f32 || schema == typeid(f32)) {
-                res = A_f32(strtof(origin, &scan));
+                res = _f32(strtof(origin, &scan));
                 if (force_f32)
                     scan++; // f++
             }
             else
-                res = A_f64(strtod(origin, &scan));
+                res = _f64(strtod(origin, &scan));
         } else
-            res = A_i64(strtoll(origin, &scan, 10));
+            res = _i64(strtoll(origin, &scan, 10));
     }
     else if (*scan == '"' || *scan == '\'') {
         verify(!sym, "unexpected string after symbol %o", sym);
         origin = scan;
         string js = parse_json_string(origin, &scan, context); // todo: use context for string interpolation
-        res = construct_with((schema && schema != typeid(A)) 
+        res = construct_with((schema && schema != typeid(Au)) 
             ? schema : typeid(string), js, context);
     }
-    else if (*scan == '{') { /// Type will make us convert to the A, from map, and set is_map back to false; what could possibly get crossed up with this one
+    else if (*scan == '{') { /// Type will make us convert to the Au, from map, and set is_map back to false; what could possibly get crossed up with this one
         if (sym) {
-            verify(!schema || schema == typeid(A) || eq(sym, schema->name),
+            verify(!schema || schema == typeid(Au) || eq(sym, schema->name),
                 "expected type: %s, found %o", schema->name, sym);
 
             if (!schema) {
-                schema = A_find_type(sym->chars);
+                schema = Au_find_type(sym->chars);
                 verify(schema, "type not found: %o", sym);
             }
 
-            if (schema == typeid(A)) {
-                schema = A_find_type(sym->chars);
+            if (schema == typeid(Au)) {
+                schema = Au_find_type(sym->chars);
                 verify(schema, "%s not found", sym->chars);
             }
         }
-        AType use_schema = schema ? schema : typeid(map);
+        Au_t use_schema = schema ? schema : typeid(map);
         bool  is_map     = use_schema == typeid(map);
         scan = ws(&scan[1]);
         map props = map(hsize, 16, assorted, true);
@@ -4802,12 +4802,12 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
             bool   quick_map = false;
             bool   json_type = false;
 
-            // if A, then we find the first A
+            // if Au, then we find the first Au
             if (*scan == '{' && use_schema) {
-                /// this goes to the bottom class above A first, then proceeds to look
+                /// this goes to the bottom class above Au first, then proceeds to look
                 /// if you throw a map onto a subclass of element, its going to look through element first
                 mem = member_first(use_schema, typeid(map), true);
-                verify(mem, "map not found in A %s (shorthand {syntax})",
+                verify(mem, "map not found in Au %s (shorthand {syntax})",
                     use_schema->name);
                 name = mem->sname;
                 quick_map = true;
@@ -4819,7 +4819,7 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
             if (!mem) {
                 json_type = cmp(name, "Type") == 0;
                 mem  = (is_map) ? null : 
-                    find_member(use_schema, A_FLAG_PROP, name->chars, true);
+                    find_member(use_schema, AU_FLAG_PROP, name->chars, true);
             }
 
             if (!json_type && !mem && !is_map && !context) {
@@ -4837,7 +4837,7 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
                 else
                     scan = ws(&scan[1]);
             }
-            A value = parse_object(scan, (mem ? mem->type : null),
+            Au value = parse_object(scan, (mem ? mem->type : null),
                 (mem ? mem->args.meta_0 : null), &scan, context);
             
             //if (!value)
@@ -4848,7 +4848,7 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
 
             if (json_type) {
                 string type_name = value;
-                use_schema = A_find_type(type_name->chars);
+                use_schema = Au_find_type(type_name->chars);
                 verify(use_schema, "type not found: %o", type_name);
             } else
                 set(props, name, value);
@@ -4881,7 +4881,7 @@ static A parse_object(cstr input, AType schema, AType meta_type, cstr* remainder
     return res;
 }
 
-static array parse_array_objects(cstr* s, AType element_type, ctx context) {
+static array parse_array_objects(cstr* s, Au_t element_type, ctx context) {
     cstr scan = *s;
     array res = array(64);
     static int seq = 0;
@@ -4892,7 +4892,7 @@ static array parse_array_objects(cstr* s, AType element_type, ctx context) {
             scan = ws(&scan[1]);
             break;
         }
-        A a = parse_object(scan, element_type, null, &scan, context);
+        Au a = parse_object(scan, element_type, null, &scan, context);
         push(res, a);
         scan = ws(scan);
         if (scan && scan[0] == ',') {
@@ -4904,20 +4904,20 @@ static array parse_array_objects(cstr* s, AType element_type, ctx context) {
     return res;
 }
 
-static A parse_array(cstr s, AType schema, AType meta_type, cstr* remainder, ctx context) {
+static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx context) {
     cstr scan = ws(s);
     verify(*scan == '[', "expected array '['");
     scan = ws(&scan[1]);
-    A res = null;
+    Au res = null;
     if (!schema || (schema == typeid(array) || schema->src == typeid(array))) {
-        AType element_type = meta_type ? meta_type : (schema ? schema->meta.meta_0 : typeid(map));
+        Au_t element_type = meta_type ? meta_type : (schema ? schema->meta.meta_0 : typeid(map));
         res = parse_array_objects(&scan, element_type, context);
     } else if (schema->vmember_type == typeid(i64)) { // should support all vector types of i64 (needs type bounds check with vmember_count)
         array arb = parse_array_objects(&scan, typeid(i64), context);
         int vcount = len(arb);
         res = alloc2(schema, typeid(i64), new_shape(vcount, 0));
         int n = 0;
-        each(arb, A, a) {
+        each(arb, Au, a) {
             verify(isa(a) == typeid(i64), "expected i64");
             ((i64*)res)[n++] = *(i64*)a;
         }
@@ -4926,8 +4926,8 @@ static A parse_array(cstr s, AType schema, AType meta_type, cstr* remainder, ctx
         int vcount = len(arb);
         res = alloc(typeid(f32), vcount, null);
         int n = 0;
-        each(arb, A, a) {
-            AType a_type = isa(a);
+        each(arb, Au, a) {
+            Au_t a_type = isa(a);
             if (a_type == typeid(i64))      ((f32*)res)[n++] =  (float)*(i64*)a;
             else if (a_type == typeid(f32)) ((f32*)res)[n++] = *(float*)a;
             else if (a_type == typeid(f64)) ((f32*)res)[n++] =  (float)*(double*)a;
@@ -4938,7 +4938,7 @@ static A parse_array(cstr s, AType schema, AType meta_type, cstr* remainder, ctx
         array arb = parse_array_objects(&scan, typeid(i64), context);
         res = construct_with(schema, arb, null);
     } else if (schema->src == typeid(vector)) {
-        AType scalar_type = schema->meta.meta_0;
+        Au_t scalar_type = schema->meta.meta_0;
         verify(scalar_type, "scalar type required when using vector (define a meta-type of vector with type)");
         
         array prelim = parse_array_objects(&scan, null, context);
@@ -4948,13 +4948,13 @@ static A parse_array(cstr s, AType schema, AType meta_type, cstr* remainder, ctx
         // if we have a vmember_count of 0 then we are dealing with a single primitive type
         vector vres = alloc(schema, 1, null);
         vres->shape = new_shape(count, 0);
-        A_initialize(vres);
+        Au_initialize(vres);
         i8* data = vdata(vres);
         int index = 0;
-        each (prelim, A, o) {
-            AType itype = isa(o);
-            if (itype->traits & A_TRAIT_PRIMITIVE) {
-                /// parse A here (which may require additional
+        each (prelim, Au, o) {
+            Au_t itype = isa(o);
+            if (itype->traits & AU_TRAIT_PRIMITIVE) {
+                /// parse Au here (which may require additional
                 memcpy(&data[index], o, scalar_type->size);
                 index += scalar_type->size;
             } else {
@@ -5017,7 +5017,7 @@ static string extract_context(cstr src, cstr *endptr) {
     return string(chars, start, ref_length, len);
 }
 
-A parse(AType schema, cstr s, ctx context) {
+Au parse(Au_t schema, cstr s, ctx context) {
     printf("parse: %s", s);
     if (context) {
         if (!ctx_checksums) ctx_checksums = hold(map(hsize, 32));
@@ -5026,7 +5026,7 @@ A parse(AType schema, cstr s, ctx context) {
         string ctx = extract_context(s, &s);
         u64 h = hash(ctx);
         if (!chk || *chk != h) {
-            set(ctx_checksums, key, A_u64(h));
+            set(ctx_checksums, key, _u64(h));
             context->establishing = true;
             map ctx_update = parse_object((cstr)ctx->chars, null, null, null, context);
             context->establishing = false;
@@ -5040,8 +5040,8 @@ typedef struct thread_t {
     mutex           lock;
     i32             index;
     bool            done;
-    A               w;
-    A               next;
+    Au               w;
+    Au               next;
     async           t;
     i32             jobs;
 } thread_t;
@@ -5099,9 +5099,9 @@ none async_dealloc(async t) {
     }
 }
 
-A async_sync(async t, A w) {
+Au async_sync(async t, Au w) {
     int n = len(t->work);
-    A result = null;
+    Au result = null;
 
     if (w) {
         /// in this mode, wait for one to finish
@@ -5212,26 +5212,26 @@ bool is_alphabetic(char ch) {
 }
 
 
-A subs_invoke(subs a, A arg) {
+Au subs_invoke(subs a, Au arg) {
     each (a->entries, subscriber, sub) {
         sub->method(sub->target, arg);
     }
     return null;
 }
 
-none subs_add(subs a, A target, callback fn) {
+none subs_add(subs a, Au target, callback fn) {
     subscriber sub = subscriber(target, target, method, fn);
     push(a->entries, sub);
 }
 
 #undef cast
 // generic casting function
-A typecast(AType type, A a) {
-    if (instanceof(a, type)) return (A)a;
-    AType atype = isa(a);
-    member m = member_type(atype, A_FLAG_CAST, type, true);
+Au typecast(Au_t type, Au a) {
+    if (instanceof(a, type)) return (Au)a;
+    Au_t au = isa(a);
+    member m = member_type(au, AU_FLAG_CAST, type, true);
     if (m) {
-        A(*fcast)(A) = m->ptr;
+        Au(*fcast)(Au) = m->ptr;
         return fcast(a);
     }
     return null;
@@ -5267,14 +5267,14 @@ none shape_init(shape a) {
 }
 
 // this signals an application entry
-define_class(subscriber, A)
-define_class(subs, A)
+define_class(subscriber, Au)
+define_class(subs, Au)
 
-define_any(A, A, sizeof(struct _A), A_TRAIT_CLASS);
+define_any(Au, Au, sizeof(struct _Au), AU_TRAIT_CLASS);
 
-define_class(watch,   A)
-define_class(msg,     A)
-define_class(async,   A)
+define_class(watch,   Au)
+define_class(msg,     Au)
+define_class(async,   Au)
 
 define_abstract(numeric,        0)
 define_abstract(string_like,    0)
@@ -5286,47 +5286,47 @@ define_abstract(weak,           0)
 define_abstract(functional,     0)
  
 
-define_primitive(ref_u8,     numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  u8)
-define_primitive(ref_u16,    numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  u16)
-define_primitive(ref_u32,    numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  u32)
-define_primitive(ref_u64,    numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  u64)
-define_primitive(ref_i8,     numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    i8)
-define_primitive(ref_i16,    numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    i16)
-define_primitive(ref_i32,    numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    i32)
-define_primitive(ref_i64,    numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,    i64)
-define_primitive(ref_bool,   numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED,  bool)
-//define_primitive(ref_num,    numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,  num)
-//define_primitive(ref_sz,     numeric, A_TRAIT_POINTER | A_TRAIT_INTEGRAL | A_TRAIT_SIGNED,  sz)
-define_primitive(ref_f32,    numeric, A_TRAIT_POINTER | A_TRAIT_REALISTIC, f32)
-define_primitive(ref_f64,    numeric, A_TRAIT_POINTER | A_TRAIT_REALISTIC, f64)
+define_primitive(ref_u8,     numeric, AU_TRAIT_POINTER | AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED,  u8)
+define_primitive(ref_u16,    numeric, AU_TRAIT_POINTER | AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED,  u16)
+define_primitive(ref_u32,    numeric, AU_TRAIT_POINTER | AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED,  u32)
+define_primitive(ref_u64,    numeric, AU_TRAIT_POINTER | AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED,  u64)
+define_primitive(ref_i8,     numeric, AU_TRAIT_POINTER | AU_TRAIT_INTEGRAL | AU_TRAIT_SIGNED,    i8)
+define_primitive(ref_i16,    numeric, AU_TRAIT_POINTER | AU_TRAIT_INTEGRAL | AU_TRAIT_SIGNED,    i16)
+define_primitive(ref_i32,    numeric, AU_TRAIT_POINTER | AU_TRAIT_INTEGRAL | AU_TRAIT_SIGNED,    i32)
+define_primitive(ref_i64,    numeric, AU_TRAIT_POINTER | AU_TRAIT_INTEGRAL | AU_TRAIT_SIGNED,    i64)
+define_primitive(ref_bool,   numeric, AU_TRAIT_POINTER | AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED,  bool)
+//define_primitive(ref_num,    numeric, AU_TRAIT_POINTER | AU_TRAIT_INTEGRAL | AU_TRAIT_SIGNED,  num)
+//define_primitive(ref_sz,     numeric, AU_TRAIT_POINTER | AU_TRAIT_INTEGRAL | AU_TRAIT_SIGNED,  sz)
+define_primitive(ref_f32,    numeric, AU_TRAIT_POINTER | AU_TRAIT_REALISTIC, f32)
+define_primitive(ref_f64,    numeric, AU_TRAIT_POINTER | AU_TRAIT_REALISTIC, f64)
 
 
-define_primitive( u8,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
-define_primitive(u16,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
-define_primitive(u32,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
-define_primitive(u64,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
-define_primitive( i8,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
-define_primitive(i16,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
-define_primitive(i32,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
-define_primitive(i64,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
-define_primitive(bool,   numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
-define_primitive(num,    numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
-define_primitive(sz,     numeric, A_TRAIT_INTEGRAL | A_TRAIT_SIGNED)
-define_primitive(bf16,   numeric, A_TRAIT_REALISTIC)
-define_primitive(fp16,   numeric, A_TRAIT_REALISTIC)
-define_primitive(f32,    numeric, A_TRAIT_REALISTIC)
-define_primitive(f64,    numeric, A_TRAIT_REALISTIC)
-define_primitive(f80,    numeric, A_TRAIT_REALISTIC)
-define_primitive(AFlag,  numeric, A_TRAIT_INTEGRAL | A_TRAIT_UNSIGNED)
-define_primitive(cstr,   string_like, A_TRAIT_POINTER, i8)
-define_primitive(symbol, string_like, A_TRAIT_POINTER, i8)
+define_primitive( u8,    numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED)
+define_primitive(u16,    numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED)
+define_primitive(u32,    numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED)
+define_primitive(u64,    numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED)
+define_primitive( i8,    numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_SIGNED)
+define_primitive(i16,    numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_SIGNED)
+define_primitive(i32,    numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_SIGNED)
+define_primitive(i64,    numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_SIGNED)
+define_primitive(bool,   numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED)
+define_primitive(num,    numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_SIGNED)
+define_primitive(sz,     numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_SIGNED)
+define_primitive(bf16,   numeric, AU_TRAIT_REALISTIC)
+define_primitive(fp16,   numeric, AU_TRAIT_REALISTIC)
+define_primitive(f32,    numeric, AU_TRAIT_REALISTIC)
+define_primitive(f64,    numeric, AU_TRAIT_REALISTIC)
+define_primitive(f80,    numeric, AU_TRAIT_REALISTIC)
+define_primitive(AFlag,  numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED)
+define_primitive(cstr,   string_like, AU_TRAIT_POINTER, i8)
+define_primitive(symbol, string_like, AU_TRAIT_POINTER, i8)
 define_primitive(cereal, raw, 0)
 define_primitive(none,   nil, 0)
-//define_primitive(AType,  raw, 0)
-define_primitive(handle, raw, A_TRAIT_POINTER, u8)
+//define_primitive(Au_t,  raw, 0)
+define_primitive(handle, raw, AU_TRAIT_POINTER, u8)
 define_primitive(member, raw, 0)
-define_primitive(ARef,   ref, A_TRAIT_POINTER, A)
-define_primitive(ATypes, ref, A_TRAIT_POINTER, AType)
+define_primitive(ARef,   ref, AU_TRAIT_POINTER, Au)
+define_primitive(Au_ts, ref, AU_TRAIT_POINTER, Au_t)
 define_primitive(floats, raw, 0)
 
 define_primitive(func,     raw, 0)
@@ -5335,7 +5335,7 @@ define_primitive(callback, raw, 0)
 define_primitive(callback_extra, raw, 0)
 define_primitive(cstrs, raw, 0)
 
-define_class(line, A)
+define_class(line, Au)
 
 define_enum(OPType)
 define_enum(Exists)
@@ -5343,23 +5343,23 @@ define_enum(level)
 
 define_class(path, string)
 //define_class(file)
-define_class(string,  A)
+define_class(string,  Au)
 define_class(const_string, string)
-define_class(ipart,   A)
+define_class(ipart,   Au)
 define_class(command, string)
 
-define_class(shape, A)
+define_class(shape, Au)
 
-define_class(item, A)
+define_class(item, Au)
 //define_proto(collection) -- disabling for now during reduction to base + class + mod
-define_class(list,          A, A)
-define_class(array,         A, A, shape)
-define_class(hashmap,       A)
-define_class(map,           A)
+define_class(list,          Au, Au)
+define_class(array,         Au, Au, shape)
+define_class(hashmap,       Au)
+define_class(map,           Au)
 define_class(ctx,           map)
-define_class(subprocedure,  A)
+define_class(subprocedure,  Au)
 
-//define_class(ATypes,           array, AType)
+//define_class(Au_ts,           array, Au_t)
 define_class(array_map,        array, map)
 define_class(array_string,     array, string)
 

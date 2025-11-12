@@ -1,5 +1,5 @@
-#ifndef _A_
-#define _A_
+#ifndef _Au_
+#define _Au_
 
 #include <stddef.h>
 #include <stdio.h>
@@ -28,10 +28,10 @@
 extern "C" {
 #endif
 
-typedef struct _AType *AType;
+typedef struct _Au_t *Au_t;
 
 struct _array;
-struct _AType;
+struct _Au_t;
 
 #define a(...) array_of(__VA_ARGS__ __VA_OPT__(,) null)
 #define m(...)   map_of(__VA_ARGS__ __VA_OPT__(,) null)
@@ -63,26 +63,26 @@ typedef struct __error_t {
     string message;
 } __error_t;
 
-extern __thread __error_t* A_error_top;
+extern __thread __error_t* Au_error_top;
 
 #define attempt() \
     { \
         __error_t _frame; \
-        _frame.prev = A_error_top; \
-        A_error_top = &_frame; \
+        _frame.prev = Au_error_top; \
+        Au_error_top = &_frame; \
         if (setjmp(_frame.env) == 0)
 
 #define on_error() \
     else
 
 #define finally() \
-        A_error_top = _frame.prev; \
+        Au_error_top = _frame.prev; \
     }
 
 
 void toss(string msg);
 
-/// A-type runtime
+/// Au runtime
 typedef void                    none;
 typedef signed char             i8;
 typedef short                   i16;
@@ -114,8 +114,8 @@ typedef __bf16                  bf16;
 
 typedef struct cereal { char* value; } cereal;
 
-// typedef struct _object*         A;
-typedef struct _A**             ARef; /// registered for a generic raw, but we must transition to use 'raw' in cases where they are not A-allocations
+// typedef struct _object*         Au;
+typedef struct _Au**             ARef; /// registered for a generic raw, but we must transition to use 'raw' in cases where they are not Au-allocations
 typedef float*                  floats;
 typedef cstr*                   cstrs;
 typedef void*                   raw;        // abstract types are void*
@@ -140,11 +140,11 @@ typedef float                  *ref_f32;
 typedef double                 *ref_f64;
 typedef long double            *ref_f80;
 
-#define A_f_members(B) \
-    AType           parent_type; \
+#define Au_f_members(B) \
+    Au_t           parent_type; \
     char*           name; \
     char*           module; \
-    AType*          sub_types; \
+    Au_t*          sub_types; \
     i16             sub_types_count; \
     i16             sub_types_alloc; \
     int             size; \
@@ -153,13 +153,13 @@ typedef long double            *ref_f80;
     int             magic; \
     int             global_count; \
     int             vmember_count; \
-    AType           vmember_type; \
+    Au_t           vmember_type; \
     int             member_count; \
     member          members; \
     int             traits; \
     void*           user; \
     u64             required[2]; \
-    AType           src; \
+    Au_t           src; \
     void*           arb; \
     struct _shape*  shape; \
     _meta_t         meta; \
@@ -169,7 +169,7 @@ typedef long double            *ref_f80;
 
 #define decl_type(AA) \
     typedef struct _##AA##_info { \
-        struct _A     info; \
+        struct _Au     info; \
         AA##_f        type; \
     } AA##_info; \
     extern AA##_info   AA##_i; \
@@ -189,16 +189,16 @@ typedef long double            *ref_f80;
     } *AA; \
     AA##_schema (AA, DECL) \
     typedef struct _##AA##_f { \
-        A_f_members(A) \
+        Au_f_members(Au) \
         AA##_schema (AA, METHOD) \
     } AA##_f; \
-    typedef struct _##AA##Type_info { \
-        struct _A     info; \
-        struct _##AA##Type_ { \
-            A_f_members(A) \
+    typedef struct _##AA##_t_info { \
+        struct _Au     info; \
+        struct _##AA##_t_ { \
+            Au_f_members(Au) \
         } type; \
-    } AA##Type_info; \
-    extern AA##Type_info   AA##Type_i; \
+    } AA##_t_info; \
+    extern AA##_t_info   AA##_t_i; \
     decl_type(AA) \
     _Pragma("pack(pop)")
 
@@ -207,8 +207,8 @@ typedef long double            *ref_f80;
     _Pragma("pack(push, 1)") \
     typedef void* X; \
     typedef struct _##X##_f { \
-        A_f_members(A) \
-        A_schema(A, METHOD) \
+        Au_f_members(Au) \
+        Au_schema(Au, METHOD) \
         X##_schema(X, METHOD, __VA_ARGS__) \
     } X##_f, *X##_ft; \
     decl_type(X) \
@@ -218,8 +218,8 @@ typedef long double            *ref_f80;
 #define declare_primitive( AA, Y, ... ) \
     _Pragma("pack(push, 1)") \
     typedef struct _##AA##_f { \
-        A_f_members(A) \
-        A_schema(A, METHOD, __VA_ARGS__) \
+        Au_f_members(Au) \
+        Au_schema(Au, METHOD, __VA_ARGS__) \
         AA##_schema(AA, METHOD, __VA_ARGS__) \
     } AA##_f, *AA##_ft; \
     decl_type(AA)\
@@ -233,9 +233,9 @@ typedef long double            *ref_f80;
     E##_schema(E, T, DECL) \
     _Pragma("pack(push, 1)") \
     typedef struct _##E##_f { \
-        A_f_members(A) \
-        A_schema   (A, METHOD) \
-        E##_schema (A, T, METHOD) \
+        Au_f_members(Au) \
+        Au_schema   (Au, METHOD) \
+        E##_schema (Au, T, METHOD) \
     } E##_f, *E##_ft; \
     static const i32 E##_ENUM_COUNT = ENUM_COUNT(E##_schema(E, T, COUNT)); \
     decl_type(E)\
@@ -248,29 +248,29 @@ void lazy_init(global_init_fn fn);
 #define define_typed_enum( E, T ) \
     E##_info E##_i;\
     static __attribute__((constructor)) bool global_##E() { \
-        E ## _i.info.type = (AType)&E ## _i.type; \
+        E ## _i.info.type = (Au_t)&E ## _i.type; \
         E ## _i.info.refs = 1000; \
         E ## _f* type_ref = &E ## _i.type; \
-        A_f* base_ref   = &A_i.type; \
-        if ((AType)type_ref != (AType)base_ref && base_ref->size == 0) { \
+        Au_f* base_ref   = &Au_i.type; \
+        if ((Au_t)type_ref != (Au_t)base_ref && base_ref->size == 0) { \
             lazy_init((global_init_fn)&global_##E); \
             return false; \
         } else { \
-            memcpy(type_ref, base_ref, sizeof(struct _AType)); \
+            memcpy(type_ref, base_ref, sizeof(struct _Au_t)); \
             static struct _member members[64 + ENUM_COUNT(E##_schema(E, T, COUNT)) + sizeof(E##_i.type) / sizeof(void*)]; \
             memset(type_ref, 0, sizeof(E##_i.type)); \
             type_ref->magic = 1337; \
             type_ref->src      = typeid(T); \
-            type_ref->parent_type = (__typeof__(E##_i.type.parent_type))& A_i.type; \
+            type_ref->parent_type = (__typeof__(E##_i.type.parent_type))& Au_i.type; \
             type_ref->name     = #E;                 \
             type_ref->module   = MODULE;             \
             type_ref->size     = sizeof(E);          \
             type_ref->members  = members;            \
             type_ref->member_count = 0;              \
-            type_ref->traits   = A_TRAIT_ENUM;       \
+            type_ref->traits   = AU_TRAIT_ENUM;       \
             type_ref->arb      = primitive_ffi_arb(typeid(i32)); \
             E##_schema( E, T, IMPL ); \
-            push_type((AType)type_ref); \
+            push_type((Au_t)type_ref); \
             return true; \
         } \
     }
@@ -297,8 +297,8 @@ void lazy_init(global_init_fn fn);
     } *AA; \
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
-        A_f_members(AA) \
-        A_schema(AA, METHOD, __VA_ARGS__) \
+        Au_f_members(AA) \
+        Au_schema(AA, METHOD, __VA_ARGS__) \
         AA##_schema (AA, METHOD, __VA_ARGS__) \
     } AA##_f, *AA##_ft; \
     decl_type(AA)\
@@ -325,8 +325,8 @@ void lazy_init(global_init_fn fn);
     } *AA; \
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
-        A_f_members(AA) \
-        A_schema(AA, METHOD, __VA_ARGS__) \
+        Au_f_members(AA) \
+        Au_schema(AA, METHOD, __VA_ARGS__) \
         BB##_schema (BB, METHOD, __VA_ARGS__) \
         AA##_schema (AA, METHOD, __VA_ARGS__) \
     } AA##_f, *AA##_ft; \
@@ -357,8 +357,8 @@ void lazy_init(global_init_fn fn);
     } *AA; \
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
-        A_f_members(AA) \
-        A_schema(AA, METHOD, __VA_ARGS__) \
+        Au_f_members(AA) \
+        Au_schema(AA, METHOD, __VA_ARGS__) \
         CC##_schema (CC, METHOD, __VA_ARGS__) \
         BB##_schema (BB, METHOD, __VA_ARGS__) \
         AA##_schema (AA, METHOD, __VA_ARGS__) \
@@ -395,8 +395,8 @@ void lazy_init(global_init_fn fn);
     } *AA; \
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
-        A_f_members(AA) \
-        A_schema(AA, METHOD, __VA_ARGS__) \
+        Au_f_members(AA) \
+        Au_schema(AA, METHOD, __VA_ARGS__) \
         DD##_schema (DD, METHOD, __VA_ARGS__) \
         CC##_schema (CC, METHOD, __VA_ARGS__) \
         BB##_schema (BB, METHOD, __VA_ARGS__) \
@@ -418,7 +418,7 @@ void lazy_init(global_init_fn fn);
         struct _##AA##_f* f2; \
     } *AA; \
     typedef struct _##AA##_f { \
-        A_f_members(BASE) \
+        Au_f_members(BASE) \
         BASE##_schema (AA, METHOD, __VA_ARGS__) \
     } AA##_f, *AA##_ft; \
     decl_type(AA)\
@@ -433,7 +433,7 @@ void lazy_init(global_init_fn fn);
     } AA; \
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
-        A_f_members(AA) \
+        Au_f_members(AA) \
         AA##_schema (AA, METHOD, __VA_ARGS__) \
     } AA##_f, *AA##_ft; \
     decl_type(AA)\
@@ -445,13 +445,13 @@ void lazy_init(global_init_fn fn);
         return true; \
     } \
     static __attribute__((constructor)) void _module_register() { \
-        A_register_init((global_init_fn)&_module_init); \
+        Au_register_init((global_init_fn)&_module_init); \
     }
 
 
-void* primitive_ffi_arb(AType);
+void* primitive_ffi_arb(Au_t);
 
-typedef AType* ATypes;
+typedef Au_t* Au_ts;
 
 #ifndef NDEBUG
 #define IS_DEBUG 0
@@ -470,32 +470,32 @@ typedef AType* ATypes;
     static __attribute__((constructor)) bool Aglobal_##TYPE() { \
         TYPE##_f* type_ref = &TYPE##_i.type; \
         BASE##_f* base_ref = &BASE##_i.type; \
-        if (!AType_i.type.name) { \
-            AType_i.type.name   = "AType"; \
-            AType_i.type.traits = A_TRAIT_BASE; \
-            AType_i.type.src    = typeid(A); \
+        if (!Au_t_i.type.name) { \
+            Au_t_i.type.name   = "Au_t"; \
+            Au_t_i.type.traits = AU_TRAIT_BASE; \
+            Au_t_i.type.src    = typeid(Au); \
         } \
         int validate_count = 0; \
         char* member_validate[256] = {}; \
-        if ((AType)type_ref == (AType)base_ref) \
+        if ((Au_t)type_ref == (Au_t)base_ref) \
             type_ref->name = #TYPE; \
-        if ((AType)type_ref != (AType)base_ref && (!base_ref->traits)) { \
+        if ((Au_t)type_ref != (Au_t)base_ref && (!base_ref->traits)) { \
             lazy_init((global_init_fn)&Aglobal_##TYPE); \
             return false; \
         } else { \
             printf("global ctr for %s\n", #TYPE); \
             fflush(stdout); \
             memset(type_ref, 0,        sizeof(TYPE##_f)); \
-            if ((AType)type_ref != (AType)base_ref) \
+            if ((Au_t)type_ref != (Au_t)base_ref) \
                 memcpy(type_ref, base_ref, sizeof(BASE##_f)); \
             type_ref->af = &TYPE##_af; \
             type_ref->af->re_alloc = 1024; \
-            type_ref->af->re = (object*)(A*)calloc(1024, sizeof(A)); \
+            type_ref->af->re = (object*)(Au*)calloc(1024, sizeof(Au)); \
             type_ref->isize = 0 TYPE##_schema( TYPE, ISIZE, __VA_ARGS__ ); \
             type_ref->magic = 1337; \
             static struct _member members[512]; \
-            type_ref->src = (AType)base_ref != typeid(A) \
-                 ? (AType)base_ref : (AType)null; \
+            type_ref->src = (Au_t)base_ref != typeid(Au) \
+                 ? (Au_t)base_ref : (Au_t)null; \
             type_ref->parent_type = \
                 (__typeof__(type_ref->parent_type))&BASE##_i.type; \
             type_ref->name          = #TYPE; \
@@ -504,12 +504,12 @@ typedef AType* ATypes;
             type_ref->member_count  = 0; \
             type_ref->size          = TYPE_SZ; \
             type_ref->vmember_count = VMEMBER_COUNT; \
-            type_ref->vmember_type  = (AType)VMEMBER_TYPE; \
+            type_ref->vmember_type  = (Au_t)VMEMBER_TYPE; \
             type_ref->traits        = TRAIT; \
             type_ref->meta          = (_meta_t) { emit_types(__VA_ARGS__) }; \
             type_ref->arb           = primitive_ffi_arb(typeid(TYPE)); \
         TYPE##_schema( TYPE, INIT, __VA_ARGS__ ) \
-            push_type((AType)type_ref); \
+            push_type((Au_t)type_ref); \
             POST_PUSH; \
             return true; \
         } \
@@ -529,19 +529,19 @@ typedef AType* ATypes;
     define_arb(A0, A1, SZ, traits, 0, null, ({}), __VA_ARGS__)
 
 #define define_class(A0, A1, ...) \
-    define_any(A0, A1, sizeof(struct _##A0), A_TRAIT_CLASS, __VA_ARGS__)
+    define_any(A0, A1, sizeof(struct _##A0), AU_TRAIT_CLASS, __VA_ARGS__)
 
 #define define_public(A0, A1, ...) \
-    define_any(A0, A1, sizeof(struct _##A0), A_TRAIT_PUBLIC, __VA_ARGS__)
+    define_any(A0, A1, sizeof(struct _##A0), AU_TRAIT_PUBLIC, __VA_ARGS__)
 
 #define define_struct(A0, ...) \
-    define_any(A0, A0, sizeof(struct _##A0), A_TRAIT_STRUCT, __VA_ARGS__)
+    define_any(A0, A0, sizeof(struct _##A0), AU_TRAIT_STRUCT, __VA_ARGS__)
 
 #define define_primitive(A0, A1, traits, ...) \
-    define_any(A0, A1, sizeof(A0), traits | A_TRAIT_PRIMITIVE, __VA_ARGS__)
+    define_any(A0, A1, sizeof(A0), traits | AU_TRAIT_PRIMITIVE, __VA_ARGS__)
 
 #define define_abstract(A0, traits, ...) \
-    define_any(A0, A, 0, traits | A_TRAIT_ABSTRACT, __VA_ARGS__)
+    define_any(A0, Au, 0, traits | AU_TRAIT_ABSTRACT, __VA_ARGS__)
 
 struct _sz { i64 value; };
 
@@ -550,10 +550,10 @@ struct _sz { i64 value; };
 num clamp(num i, num mn, num mx);
 real clampf(real, real, real);
 i64 epoch_millis();
-A A_initialize(A);
-none A_init_recur(A a, AType current, raw last_init);
+Au Au_initialize(Au);
+none Au_init_recur(Au a, Au_t current, raw last_init);
 
-/// A-type properties are not user-accessible, 
+/// Au properties are not user-accessible, 
 /// so they are declared as opaque
 /// the methods Are, accessible
 
@@ -566,12 +566,12 @@ forward(vector)
 forward(any)
 
 
-// A-type must generate defines for sizes for users of it
-#define A_schema(AA,Y,...) \
-    i_prop  (AA,Y, intern, AType,       type) \
-    i_prop  (AA,Y, intern, AType,       scalar) \
+// Au must generate defines for sizes for users of it
+#define Au_schema(AA,Y,...) \
+    i_prop  (AA,Y, intern, Au_t,       type) \
+    i_prop  (AA,Y, intern, Au_t,       scalar) \
     i_prop  (AA,Y, intern, i64,         refs) \
-    i_prop  (AA,Y, intern, A,           data) \
+    i_prop  (AA,Y, intern, Au,           data) \
     i_prop  (AA,Y, intern, shape,       shape) \
     i_prop  (AA,Y, intern, cstr,        source) \
     i_prop  (AA,Y, intern, i64,         line) \
@@ -579,61 +579,61 @@ forward(any)
     i_prop  (AA,Y, intern, i64,         count) \
     i_prop  (AA,Y, intern, i64,         recycle) \
     i_prop  (AA,Y, intern, i64,         af_index) \
-    i_array (AA,Y, intern, A,       8,  meta) \
+    i_array (AA,Y, intern, Au,       8,  meta) \
     i_method(AA,Y, public, none,        init) \
     i_method(AA,Y, public, none,        dealloc) \
     i_method(AA,Y, public, i32,         compare,             AA) \
     i_method(AA,Y, public, u64,         hash) \
     i_method(AA,Y, public, AA,          copy) \
-    i_final (AA,Y, public, callback,    binding,             A, bool, AType, AType, symbol, symbol) \
+    i_final (AA,Y, public, callback,    binding,             Au, bool, Au_t, Au_t, symbol, symbol) \
     i_final (AA,Y, public, ref_u64,     AF_bits) \
     i_final (AA,Y, public, none,        AF_set_id,           i32) \
     i_final (AA,Y, public, none,        AF_set_name,         cstr) \
     i_final (AA,Y, public, i32,         AF_query_name,       cstr) \
-    i_final (AA,Y, public, A,           instanceof,          AType) \
+    i_final (AA,Y, public, Au,           instanceof,          Au_t) \
     i_final (AA,Y, public, AA,          hold) \
     i_final (AA,Y, public, none,        drop) \
     i_final (AA,Y, public, none,        hold_members) \
     i_final (AA,Y, public, none,        drop_members) \
-    i_final (AA,Y, public, A,           set_property,        symbol, A) \
-    i_final (AA,Y, public, A,           get_property,        symbol) \
-    i_final (AA,Y, public, A,           vrealloc,            sz) \
-    s_method(AA,Y, public, A,           initialize,          A) \
-    i_final (AA,Y, public, A,           member_object,       member) \
-    i_final (AA,Y, public, bool,        member_set,          member, A) \
-    i_final (AA,Y, public, A,           header) \
-    i_final (AA,Y, public, A,           vdata) \
-    i_final (AA,Y, public, AType,       vdata_type) \
+    i_final (AA,Y, public, Au,           set_property,        symbol, Au) \
+    i_final (AA,Y, public, Au,           get_property,        symbol) \
+    i_final (AA,Y, public, Au,           vrealloc,            sz) \
+    s_method(AA,Y, public, Au,           initialize,          Au) \
+    i_final (AA,Y, public, Au,           member_object,       member) \
+    i_final (AA,Y, public, bool,        member_set,          member, Au) \
+    i_final (AA,Y, public, Au,           header) \
+    i_final (AA,Y, public, Au,           vdata) \
+    i_final (AA,Y, public, Au_t,       vdata_type) \
     i_final (AA,Y, public, i64,         vdata_stride) \
     i_final (AA,Y, public, bool,        is_meta) \
-    i_final (AA,Y, public, bool,        is_meta_compatible,  A) \
-    t_vargs (AA,Y, public, A,           formatter,           handle, A, symbol) \
-    t_method(AA,Y, public, A,           alloc,               num, ATypes) \
-    t_method(AA,Y, public, A,           alloc_new,           num, ATypes) \
-    t_method(AA,Y, public, A,           alloc_dbg,           num,     cstr,      i32) \
-    t_method(AA,Y, public, A,           alloc2,              AType,   shape) \
+    i_final (AA,Y, public, bool,        is_meta_compatible,  Au) \
+    t_vargs (AA,Y, public, Au,           formatter,           handle, Au, symbol) \
+    t_method(AA,Y, public, Au,           alloc,               num, Au_ts) \
+    t_method(AA,Y, public, Au,           alloc_new,           num, Au_ts) \
+    t_method(AA,Y, public, Au,           alloc_dbg,           num,     cstr,      i32) \
+    t_method(AA,Y, public, Au,           alloc2,              Au_t,   shape) \
     t_method(AA,Y, public, string,      estring,             i32) \
     t_method(AA,Y, public, i32,         evalue,              cstr) \
-    t_method(AA,Y, public, none,        serialize,           string,  A) \
-    t_method(AA,Y, public, A,           convert,             A) \
-    t_method(AA,Y, public, bool,        inherits,            AType) \
-    t_method(AA,Y, public, A,           construct_with,      A,         ctx) \
-    t_method(AA,Y, public, bool,        constructs_with,     AType) \
-    t_method(AA,Y, public, member,      find_ctr,            AType, bool) \
+    t_method(AA,Y, public, none,        serialize,           string,  Au) \
+    t_method(AA,Y, public, Au,           convert,             Au) \
+    t_method(AA,Y, public, bool,        inherits,            Au_t) \
+    t_method(AA,Y, public, Au,           construct_with,      Au,         ctx) \
+    t_method(AA,Y, public, bool,        constructs_with,     Au_t) \
+    t_method(AA,Y, public, member,      find_ctr,            Au_t, bool) \
     t_method(AA,Y, public, member,      find_member,         AFlag, symbol,    bool) \
-    t_method(AA,Y, public, member,      member_first,        AType, bool) \
-    t_method(AA,Y, public, member,      member_type,         AFlag, AType,     bool) \
-    t_method(AA,Y, public, A,           primitive,           raw) \
-    t_method(AA,Y, public, A,           method,              cstr,    array) \
-    t_method(AA,Y, public, A,           parse,               cstr, ctx) \
+    t_method(AA,Y, public, member,      member_first,        Au_t, bool) \
+    t_method(AA,Y, public, member,      member_type,         AFlag, Au_t,     bool) \
+    t_method(AA,Y, public, Au,           primitive,           raw) \
+    t_method(AA,Y, public, Au,           method,              cstr,    array) \
+    t_method(AA,Y, public, Au,           parse,               cstr, ctx) \
     t_method(AA,Y, public, i32,         alloc_count) \
     t_method(AA,Y, public, none,        push_type) \
-    t_method(AA,Y, public, A,           typecast,            A) \
-    s_method(AA,Y, public, none,        member_override,     AType, member, AFlag) \
+    t_method(AA,Y, public, Au,           typecast,            Au) \
+    s_method(AA,Y, public, none,        member_override,     Au_t, member, AFlag) \
     s_method(AA,Y, public, none,        register_init,       func) \
     s_method(AA,Y, public, bool,        is_inlay,            member) \
-    s_method(AA,Y, public, AType,       find_type,           symbol) \
-    s_method(AA,Y, public, map,         arguments,           i32, cstrs, map, A) \
+    s_method(AA,Y, public, Au_t,       find_type,           symbol) \
+    s_method(AA,Y, public, map,         arguments,           i32, cstrs, map, Au) \
     s_method(AA,Y, public, ARef,        types,               ref_i64) \
     s_method(AA,Y, public, none,        tap,                 symbol, hook) \
     s_method(AA,Y, public, none,        untap,               symbol) \
@@ -646,15 +646,15 @@ forward(any)
     i_cast  (AA,Y, public, string) \
     i_cast  (AA,Y, public, bool)
 
-#define A_intern_footer(AA)
+#define Au_intern_footer(AA)
 
-#define A_intern(AA,YY,...) A_schema(AA,YY,__VA_ARGS__)
+#define Au_intern(AA,YY,...) Au_schema(AA,YY,__VA_ARGS__)
 
 //typedef struct _shape *shape;
 forward(shape)
-declare_base(A)
+declare_base(Au)
 
-#define typeid(AA)   ((AType)&AA##_i.type)
+#define typeid(AA)   ((Au_t)&AA##_i.type)
 #define scalarof(AA) head(AA)->scalar
 
 #define numeric_schema(AA,Y,...) \
@@ -730,14 +730,14 @@ declare_abstract(imported)
 #define none_schema(X,Y,...)        nil_schema(X,Y,...)
 #define raw_t_schema(X,Y,...)       raw_schema(X,Y,...)
 #define handle_schema(X,Y,...)      raw_schema(X,Y,...)
-#define AType_schema(X,Y,...)       raw_schema(X,Y,...)
+#define Au_t_schema(X,Y,...)       raw_schema(X,Y,...)
 #define member_schema(X,Y,...)      raw_schema(X,Y,...)
 #define func_schema(X,Y,...)        raw_schema(X,Y,...)
 #define hook_schema(X,Y,...)        raw_schema(X,Y,...)
 #define callback_schema(X,Y,...)    raw_schema(X,Y,...)
 #define callback_extra_schema(X,Y,...)    raw_schema(X,Y,...)
 #define cstrs_schema(X,Y,...)       raw_schema(X,Y,...)
-#define ATypes_schema(X,Y,...)      raw_schema(X,Y,...)
+#define Au_ts_schema(X,Y,...)      raw_schema(X,Y,...)
 #define floats_schema(X,Y,...)      raw_schema(X,Y,...)
 
 
@@ -809,10 +809,10 @@ declare_primitive(hook,             raw)
 declare_primitive(callback,         raw)
 declare_primitive(callback_extra,   raw)
 declare_primitive(cstrs,            raw)
-declare_primitive(ATypes,           raw)
+declare_primitive(Au_ts,           raw)
 
 /// whatever we can 'name', we can handle as a type of any pointer primitive
-//declare_primitive(AType,        raw)
+//declare_primitive(Au_t,        raw)
 declare_primitive(ARef,         ref)
 declare_primitive(member,       raw)
 declare_primitive(floats,       raw)
@@ -857,9 +857,9 @@ ARef new_shape(i64, ...);
 #define item_schema(X,Y,...) \
     i_prop    (X,Y, opaque, X,         next) \
     i_prop    (X,Y, opaque, X,         prev) \
-    i_prop    (X,Y, opaque, A,    ref) \
-    i_prop    (X,Y, opaque, A,    value) \
-    i_prop    (X,Y, opaque, A,    key) \
+    i_prop    (X,Y, opaque, Au,    ref) \
+    i_prop    (X,Y, opaque, Au,    value) \
+    i_prop    (X,Y, opaque, Au,    key) \
     i_prop    (X,Y, opaque, u64,       h) \
     i_override(X,Y, method, hash) \
     i_override(X,Y, method, init)
@@ -872,15 +872,15 @@ declare_class(item)
     i_prop  (X,Y, opaque,    map,     assoc)  \
     i_prop  (X,Y, public,    bool,    unmanaged)  \
     i_prop  (X,Y, public,    i64,     count) \
-    i_method(X,Y, public,    A,  pop) \
-    i_method(X,Y, public,    item,    push, A) \
-    i_method(X,Y, public,    item,    insert_after, A, i32) \
-    i_method(X,Y, public,    num,     index_of, A) \
-    i_method(X,Y, public,    item,     item_of, A) \
+    i_method(X,Y, public,    Au,  pop) \
+    i_method(X,Y, public,    item,    push, Au) \
+    i_method(X,Y, public,    item,    insert_after, Au, i32) \
+    i_method(X,Y, public,    num,     index_of, Au) \
+    i_method(X,Y, public,    item,     item_of, Au) \
     i_method(X,Y, public,    none,    sort,   ARef) \
     i_method(X,Y, public,    none,    remove, num) \
     i_method(X,Y, public,    none,    remove_item, item) \
-    i_method(X,Y, public,    A,  get,  A) \
+    i_method(X,Y, public,    Au,  get,  Au) \
     i_method(X,Y, public,    num,     count) \
     i_override(X,Y, method, dealloc)
 declare_class(list)
@@ -1085,15 +1085,15 @@ forward(array)
 
 #define vector_schema(X,Y,...) \
     i_prop(X,Y, public, num,     alloc) \
-    i_prop(X,Y, public, AType,   type) \
+    i_prop(X,Y, public, Au_t,   type) \
     i_prop(X,Y, public, shape,   shape) \
     i_method(X,Y, public, none,    concat, ARef, num) \
     i_method(X,Y, public, ARef,    get,  num) \
     i_method(X,Y, public, none,    set,  num, ARef) \
-    i_method(X,Y, public, none,    push, A) \
+    i_method(X,Y, public, none,    push, Au) \
     i_method(X,Y, public, vector,  slice, num, num) \
-    i_method(X,Y, public, A,       resize, sz) \
-    i_method(X,Y, public, A,       reallocate, sz) \
+    i_method(X,Y, public, Au,       resize, sz) \
+    i_method(X,Y, public, Au,       reallocate, sz) \
     i_guard(X,Y, public, sz,      len) \
     i_ctr(X,Y, public, i32) \
     i_ctr(X,Y, public, path) \
@@ -1102,55 +1102,55 @@ declare_class(vector)
 
 
 // let us declare our vector with string
-// A, user space is simply the cstring
+// Au, user space is simply the cstring
 
 #define subprocedure_schema(X,Y,...) \
-    i_prop    (X,Y, required, A, target) \
-    i_prop    (X,Y, public,   A, ctx) \
+    i_prop    (X,Y, required, Au, target) \
+    i_prop    (X,Y, public,   Au, ctx) \
     i_prop    (X,Y, required, handle, addr) \
-    i_method  (X,Y, public,   A, invoke, A)
+    i_method  (X,Y, public,   Au, invoke, Au)
 declare_class(subprocedure)
 
 #define subproc(targ, faddr, context) new(subprocedure, target, targ, ctx, context, addr, faddr) 
 
-typedef A(*mix_fn)(A, A, f32);
+typedef Au(*mix_fn)(Au, Au, f32);
 
 #define array_schema(AA,Y,O,...) \
-    i_vprop          (AA,Y, public, A,       elements) \
+    i_vprop          (AA,Y, public, Au,       elements) \
     i_prop           (AA,Y, public, bool,    unmanaged) \
     i_prop           (AA,Y, public, bool,    assorted) \
-    i_prop           (AA,Y, opaque, AType,   last_type) \
+    i_prop           (AA,Y, opaque, Au_t,   last_type) \
     i_prop           (AA,Y, public, i32,     alloc) \
     i_prop           (AA,Y, public, i32,     len) \
     i_prop           (AA,Y, public, map,     fields) \
-    s_vargs          (AA,Y, public, array,   array_of,       A) \
+    s_vargs          (AA,Y, public, array,   array_of,       Au) \
     s_vargs          (AA,Y, public, array,   array_of_cstr,  cstr) \
     i_method         (AA,Y, public, array,   mix, array, f32) \
-    i_method         (AA,Y, public, A,       first) \
-    i_method         (AA,Y, public, A,       last) \
-    i_method         (AA,Y, public, A,       pop) \
+    i_method         (AA,Y, public, Au,       first) \
+    i_method         (AA,Y, public, Au,       last) \
+    i_method         (AA,Y, public, Au,       pop) \
     i_method         (AA,Y, public, array,   shift) \
     i_method         (AA,Y, public, string,  join, cstr) \
-    i_method         (AA,Y, public, none,    fill,           A) \
+    i_method         (AA,Y, public, none,    fill,           Au) \
     i_method         (AA,Y, public, array,   reverse) \
     i_method         (AA,Y, public, none,    remove,         num) \
     i_method         (AA,Y, public, none,    remove_weak,    num) \
-    i_method         (AA,Y, public, none,    push,           A) \
-    i_method         (AA,Y, public, none,    push_vdata,     A, i64) \
-    i_method         (AA,Y, public, none,    push_weak,      A) \
+    i_method         (AA,Y, public, none,    push,           Au) \
+    i_method         (AA,Y, public, none,    push_vdata,     Au, i64) \
+    i_method         (AA,Y, public, none,    push_weak,      Au) \
     i_method         (AA,Y, public, none,    clear) \
     i_method         (AA,Y, public, none,    concat,         array) \
-    i_method         (AA,Y, public, A,       get,            num) \
-    i_method         (AA,Y, public, A,       peek,           num) \
+    i_method         (AA,Y, public, Au,       get,            num) \
+    i_method         (AA,Y, public, Au,       peek,           num) \
     i_method         (AA,Y, public, num,     count) \
     i_guard          (AA,Y, public, sz,      len) \
-    i_method         (AA,Y, public, num,     index_of,       A) \
-    i_operator       (AA,Y, public, none,    _assign_add,    A) \
+    i_method         (AA,Y, public, num,     index_of,       Au) \
+    i_operator       (AA,Y, public, none,    _assign_add,    Au) \
     i_operator       (AA,Y, public, none,    _assign_sub,    num) \
     i_cast           (AA,Y, public, map) \
     i_vargs          (AA,Y, public, none,    push_symbols,   cstr) \
-    i_vargs          (AA,Y, public, none,    push_objects,   A) \
-    i_index          (AA,Y, public, A,       num) \
+    i_vargs          (AA,Y, public, none,    push_objects,   Au) \
+    i_index          (AA,Y, public, Au,       num) \
     i_ctr            (AA,Y, public, i32) \
     i_override       (AA,Y, method, init) \
     i_override       (AA,Y, method, dealloc) \
@@ -1158,11 +1158,11 @@ typedef A(*mix_fn)(A, A, f32);
     i_override       (AA,Y, cast,   string)
 declare_class(array, any)
 
-Exists A_exists(A);
+Exists Au_exists(Au);
 
 #define srcfile_schema(X,Y,...) \
-    i_prop           (X,Y, public, A, obj) \
-    i_ctr            (X,Y, public, A) \
+    i_prop           (X,Y, public, Au, obj) \
+    i_ctr            (X,Y, public, Au) \
     i_override       (X,Y, cast,   string)
 declare_class(srcfile)
 
@@ -1171,14 +1171,14 @@ declare_class(srcfile)
     i_prop      (X,Y, public, num,   alloc) \
     i_prop      (X,Y, public, num,   count) \
     i_prop      (X,Y, public, bool,  unmanaged) \
-    i_method    (X,Y, public, none,  remove, A) \
-    i_method    (X,Y, public, none,  set, A, A) \
-    i_method    (X,Y, public, A,get, A) \
-    i_method    (X,Y, public, item,  fetch, A) \
-    i_method    (X,Y, public, item,  lookup, A) \
-    i_method    (X,Y, public, bool,  contains, A) \
+    i_method    (X,Y, public, none,  remove, Au) \
+    i_method    (X,Y, public, none,  set, Au, Au) \
+    i_method    (X,Y, public, Au,get, Au) \
+    i_method    (X,Y, public, item,  fetch, Au) \
+    i_method    (X,Y, public, item,  lookup, Au) \
+    i_method    (X,Y, public, bool,  contains, Au) \
     i_method    (X,Y, public, none,  clear) \
-    i_index     (X,Y, public, A, A) \
+    i_index     (X,Y, public, Au, Au) \
     i_override  (X,Y, cast,   string) \
     i_override  (X,Y, method, init) \
     i_override  (X,Y, method, dealloc) \
@@ -1199,21 +1199,21 @@ declare_enum(level)
     i_prop      (X,Y, public,  i32,        hsize) \
     i_prop      (X,Y, opaque,  item*,      hlist) \
     i_prop      (X,Y, public,  bool,       unmanaged)  \
-    i_prop      (X,Y, opaque,  AType,      last_type) \
+    i_prop      (X,Y, opaque,  Au_t,      last_type) \
     i_prop      (X,Y, public,  bool,       assorted)  \
-    i_method    (X,Y, public,  none,       set,        A, A) \
-    i_method    (X,Y, public,  A,     get,        A) \
-    i_method    (X,Y, public,  A,          value_by_index, num) \
-    i_method    (X,Y, public,  item,       lookup,     A) \
-    i_method    (X,Y, public,  item,       fetch,      A) \
-    i_method    (X,Y, public,  none,       rm,         A) \
+    i_method    (X,Y, public,  none,       set,        Au, Au) \
+    i_method    (X,Y, public,  Au,     get,        Au) \
+    i_method    (X,Y, public,  Au,          value_by_index, num) \
+    i_method    (X,Y, public,  item,       lookup,     Au) \
+    i_method    (X,Y, public,  item,       fetch,      Au) \
+    i_method    (X,Y, public,  none,       rm,         Au) \
     i_method    (X,Y, public,  none,       rm_item,    item) \
-    i_method    (X,Y, public,  bool,       contains,   A) \
+    i_method    (X,Y, public,  bool,       contains,   Au) \
     i_method    (X,Y, public,  none,       concat,     map) \
     i_method    (X,Y, public,  none,       clear) \
     i_guard     (X,Y, public,  sz,         len) \
-    i_index     (X,Y, public,  A,     sz) \
-    i_index     (X,Y, public,  A,     A) \
+    i_index     (X,Y, public,  Au,     sz) \
+    i_index     (X,Y, public,  Au,     Au) \
     i_ctr       (X,Y, public,  i32) \
     i_override  (X,Y, method,  init) \
     i_override  (X,Y, method,  dealloc) \
@@ -1223,7 +1223,7 @@ declare_enum(level)
 declare_class(map)
 
 #define ctx_schema(X,Y,...) \
-    i_prop(X,Y, public, A, app) \
+    i_prop(X,Y, public, Au, app) \
     i_prop(X,Y, intern, bool,   establishing)
 declare_class_2(ctx, map)
 
@@ -1265,7 +1265,7 @@ declare_class(ipart)
     i_method  (AA,Y,   public, bool,    starts_with, symbol) \
     i_method  (AA,Y,   public, num,     cmp, symbol) \
     i_method  (AA,Y,   public, bool,    eq,  symbol) \
-    i_method  (AA,Y,   public, string,  interpolate, A) \
+    i_method  (AA,Y,   public, string,  interpolate, Au) \
     i_method  (AA,Y,   public, array,   split_parts) \
     i_cast    (AA,Y,   public, cstr) \
     i_cast    (AA,Y,   public, sz) \
@@ -1320,7 +1320,7 @@ declare_class(mutex)
     i_prop      (X,Y, public, array,    work) \
     i_prop      (X,Y, intern, mutex,    global) \
     i_prop      (X,Y, intern, struct thread_t*, threads, as, ARef) \
-    i_method    (X,Y, public, A,   sync, A) \
+    i_method    (X,Y, public, Au,   sync, Au) \
     i_override  (X,Y, method, init) \
     i_override  (X,Y, method, dealloc)
 declare_class(async)
@@ -1347,8 +1347,8 @@ declare_class(async)
     i_method    (X,Y, public, string, filename) \
     i_method    (X,Y, public, path,   absolute) \
     i_method    (X,Y, public, path,   parent) \
-    i_method    (X,Y, public, A,      load, AType, ctx) \
-    i_method    (X,Y, public, bool,   save, A,     ctx) \
+    i_method    (X,Y, public, Au,      load, Au_t, ctx) \
+    i_method    (X,Y, public, bool,   save, Au,     ctx) \
     i_method    (X,Y, public, path,   change_ext, cstr) \
     i_method    (X,Y, public, array,  ls, string, bool) \
     i_method    (X,Y, public, bool,   move, path) \
@@ -1373,14 +1373,14 @@ declare_class_2(path, string)
 
 
 #define subscriber_schema(X,Y,...) \
-    i_prop    (X,Y, required, A,   target) \
+    i_prop    (X,Y, required, Au,   target) \
     i_prop    (X,Y, required, callback, method)
 declare_class(subscriber)
 
 #define subs_schema(X,Y,...) \
     i_prop    (X,Y, public,   array,  entries, meta, subscriber) \
-    i_method  (X,Y, public,   none,   add,    A, callback) \
-    i_method  (X,Y, public,   A, invoke, A)
+    i_method  (X,Y, public,   none,   add,    Au, callback) \
+    i_method  (X,Y, public,   Au, invoke, Au)
 declare_class(subs)
 
 
@@ -1405,28 +1405,28 @@ static inline f32 filter_n(f32 current, f32 goal, f32 amount, f32 rate) {
         return current * decay;
 }
 
-A      A_i8(i8);
-A      A_u8(u8);
-A      A_i16(i16);
-A      A_u16(u16);
-A      A_i32(i32);
-A      A_u32(u32);
-A      A_i64(i64);
-A          i(i64);
-A      A_sz(sz);
-A      A_u64(u64);
-A      A_f32(f32);
-A      A_f64(f64);
-A      A_fp16(fp16*);
-A      A_bf16(bf16*);
-A      A_f80(f80);
-A  float32(f32);
-A   real64(f64);
-A      A_cstr(cstr);
-A      A_none();
-A      A_bool(bool);
+Au      _i8(i8);
+Au      _u8(u8);
+Au      _i16(i16);
+Au      _u16(u16);
+Au      _i32(i32);
+Au      _u32(u32);
+Au      _i64(i64);
+Au          i(i64);
+Au      _sz(sz);
+Au      _u64(u64);
+Au      _f32(f32);
+Au      _f64(f64);
+Au      _fp16(fp16*);
+Au      _bf16(bf16*);
+Au      _f80(f80);
+Au  float32(f32);
+Au   real64(f64);
+Au      _cstr(cstr);
+Au      _none();
+Au      _bool(bool);
 
-string json(A a);
+string json(Au a);
 
 #define array_string_schema(X,Y,...)
 declare_class_2(array_string,     array, string)
@@ -1437,6 +1437,7 @@ declare_class_2(array_map,        array, map)
 static inline f32 f32_mix(f32 a, f32 b, f32 f) {
     return a * (1.0f - f) + b * f;
 }
+
 /// use i_struct_ctr_obj for objects or primitives
 /// use i_struct_ctr for structs.. this is because we cannot separate * from the token
 #define vec_methods(O, Y, T, ...) \

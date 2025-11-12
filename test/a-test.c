@@ -17,7 +17,7 @@ int main(int n_args, symbol v_args[]) {
             count = A_alloc_count()) {
 
         string k = string("key");
-        object b = A_bool(true);
+        object b = _bool(true);
         map    m = map(16);
         
         A      m_header = A_header(m);
@@ -38,11 +38,11 @@ int main(int n_args, symbol v_args[]) {
         target, null, // <-- null value explicitly and it passes required.  so thats useful for design members
         addr,   main);
 
-    AType sub_type = isa(sub);
+    Au_t sub_type = isa(sub);
 
     int sz1 = sizeof(struct _string);
     int sz2 = sizeof(struct _vector);
-    AType str_type = typeid(string);
+    Au_t str_type = typeid(string);
     string s1 = new(string, alloc, 64);
     print("a-test");
 

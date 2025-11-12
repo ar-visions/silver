@@ -35,9 +35,9 @@ declare_enum(comparison)
     i_prop      (X,Y,  public,  num,        line) \
     i_prop      (X,Y,  public,  num,        column) \
     i_prop      (X,Y,  public,  num,        indent) \
-    i_prop      (X,Y,  public,  A,          literal) \
+    i_prop      (X,Y,  public,  Au,          literal) \
     i_prop      (X,Y,  public,  aether,     mod) \
-    i_method    (X,Y,  public,  AType,      get_type) \
+    i_method    (X,Y,  public,  Au_t,      get_type) \
     i_method    (X,Y,  public,  string,     location) \
     i_override  (X,Y,  ctr,     cstr) \
     i_override  (X,Y,  method,  init) \
@@ -72,7 +72,7 @@ declare_class(mschema)
     i_prop    (X,Y, required,   aether,           mod, meta, weak) \
     i_prop    (X,Y, public,     emember,          mem, weak) \
     i_prop    (X,Y, public,     model,            parent) \
-    i_prop    (X,Y, public,     AType,            atype_src) \
+    i_prop    (X,Y, public,     Au_t,            atype_src) \
     i_prop    (X,Y, public,     model,            src) \
     i_prop    (X,Y, public,     bool,             is_ref) \
     i_prop    (X,Y, public,     bool,             is_map) \
@@ -100,7 +100,7 @@ declare_class(mschema)
     i_prop    (X,Y, public,     emember,          mem_init) \
     i_method  (X,Y, public,     array,            class_list,    model, bool) \
     i_method  (X,Y, public,     array,            field_list,    model, bool) \
-    i_method  (X,Y, public,     emember,          member_lookup, string, AType) \
+    i_method  (X,Y, public,     emember,          member_lookup, string, Au_t) \
     i_method  (X,Y, public,     model,            typed) \
     s_method  (X,Y, public,     string,           keyword) \
     i_method  (X,Y, public,     model,            pointer) \
@@ -241,8 +241,7 @@ forward(emember)
     i_prop    (X,Y, required,   model,                  mdl) \
     i_prop    (X,Y, required,   array,                  meta) \
     i_prop    (X,Y, public,     bool,                   explicit_ref) \
-    i_prop    (X,Y, public,     bool,                   is_null) \
-    i_prop    (X,Y, public,     A,                      literal) \
+    i_prop    (X,Y, public,     Au,                      literal) \
     i_prop    (X,Y, public,     num,                    line) \
     i_prop    (X,Y, public,     num,                    column) \
     i_prop    (X,Y, public,     bool,                   loaded) \
@@ -270,19 +269,18 @@ declare_class(enode)
     i_prop    (X,Y, public,     bool,                   is_func) \
     i_prop    (X,Y, public,     bool,                   is_arg) \
     i_prop    (X,Y, public,     bool,                   is_decl) \
-    i_prop    (X,Y, public,     A,                      override_offset_bits) \
-    i_prop    (X,Y, public,     A,                      override_size_bits) \
-    i_prop    (X,Y, public,     A,                      override_alignment_bits) \
+    i_prop    (X,Y, public,     Au,                      override_offset_bits) \
+    i_prop    (X,Y, public,     Au,                      override_size_bits) \
+    i_prop    (X,Y, public,     Au,                      override_alignment_bits) \
     i_prop    (X,Y, public,     path,                   imported_from) \
-    i_prop    (X,Y, public,     A,                      initializer) \
+    i_prop    (X,Y, public,     Au,                      initializer) \
     i_prop    (X,Y, intern,     i32,                    offset_bits) \
     i_prop    (X,Y, intern,     i32,                    index) \
     i_prop    (X,Y, intern,     LLVMMetadataRef,        debug, as, ARef) \
     i_method  (X,Y, public,     none,    finalize) \
     i_method  (X,Y, public,     none,    release) \
     i_method  (X,Y, public,     bool,    has_value) \
-    i_method  (X,Y, public,     none,    mark_used) \
-    i_method  (X,Y, public,     none,    set_value,     A) \
+    i_method  (X,Y, public,     none,    set_value,     Au) \
     i_override(X,Y, method,     init)
 declare_class_2(emember, enode)
 
@@ -352,7 +350,6 @@ declare_class_2(static_array, array)
     i_prop    (X,Y, public,     num,         cursor) \
     i_prop    (X,Y, public,     map,         instances) \
     i_method  (X,Y, public,     none,        reinit_startup) \
-    i_method  (X,Y, public,     none,        update_schemas) \
     i_method  (X,Y, public,     emember,     initializer) \
     i_method  (X,Y, public,     path,        lookup_include,     string) \
     i_method  (X,Y, public,     none,        build_info,         path) \
@@ -360,27 +357,27 @@ declare_class_2(static_array, array)
     i_method  (X,Y, public,     none,        push_state,         array, num) \
     i_method  (X,Y, public,     none,        push_current) \
     i_method  (X,Y, public,     none,        pop_state,          bool) \
-    i_method  (X,Y, public,     enode,       e_fn_return,        A) \
+    i_method  (X,Y, public,     enode,       e_fn_return,        Au) \
     i_method  (X,Y, public,     enode,       e_null,             model) \
     i_method  (X,Y, public,     enode,       e_default_value,    model, array) \
     i_method  (X,Y, public,     enode,       e_builder,          subprocedure) \
     i_method  (X,Y, public,     none,        build_initializer,  fn) \
-    i_method  (X,Y, public,     enode,       e_element,          enode,      A) \
+    i_method  (X,Y, public,     enode,       e_element,          enode,      Au) \
     i_method  (X,Y, public,     none,        e_cmp_code,         enode,      comparison, enode, code, code) \
     i_method  (X,Y, public,     none,        e_branch,           code) \
     i_method  (X,Y, public,     none,        e_memcpy,           enode, enode, model) \
     i_method  (X,Y, public,     emember,     compatible,         record,     string, AFlag, array) \
     i_method  (X,Y, public,     none,        register_member,    emember, bool) \
     i_method  (X,Y, public,     emember,     register_model,     model,   string, bool) \
-    i_method  (X,Y, public,     enode,       e_operand,          A,          model, array) \
-    i_method  (X,Y, public,     enode,       e_op,               OPType,     string, A, A) \
+    i_method  (X,Y, public,     enode,       e_operand,          Au,          model, array) \
+    i_method  (X,Y, public,     enode,       e_op,               OPType,     string, Au, Au) \
     i_method  (X,Y, public,     enode,       e_load,             emember, emember) \
     i_method  (X,Y, public,     enode,       e_typeid,           model) \
     i_method  (X,Y, public,     enode,       e_meta_ids,         array) \
     i_method  (X,Y, public,     enode,       e_eval,             string) \
     i_method  (X,Y, public,     enode,       e_interpolate,      string) \
     i_method  (X,Y, public,     enode,       e_const_array,      model, array) \
-    i_method  (X,Y, public,     enode,       e_offset,           enode,      A) \
+    i_method  (X,Y, public,     enode,       e_offset,           enode,      Au) \
     i_method  (X,Y, public,     enode,       e_if_else,          array,      array, subprocedure, subprocedure) \
     i_method  (X,Y, public,     enode,       e_ternary,          enode,      enode, enode) \
     i_method  (X,Y, public,     enode,       e_primitive_convert, enode,     model) \
@@ -390,26 +387,26 @@ declare_class_2(static_array, array)
     i_method  (X,Y, public,     none,        e_inc,              enode,      num) \
     i_method  (X,Y, public,     none,        e_print_node,       enode) \
     i_method  (X,Y, public,     emember,     e_var,              model,      string) \
-    i_method  (X,Y, public,     enode,       e_or,               A,          A) \
-    i_method  (X,Y, public,     enode,       e_xor,              A,          A) \
-    i_method  (X,Y, public,     enode,       e_and,              A,          A) \
-    i_method  (X,Y, public,     enode,       e_add,              A,          A) \
-    i_method  (X,Y, public,     enode,       e_sub,              A,          A) \
-    i_method  (X,Y, public,     enode,       e_mul,              A,          A) \
-    i_method  (X,Y, public,     enode,       e_div,              A,          A) \
-    i_method  (X,Y, public,     enode,       e_create,             model,      array, A) \
+    i_method  (X,Y, public,     enode,       e_or,               Au,          Au) \
+    i_method  (X,Y, public,     enode,       e_xor,              Au,          Au) \
+    i_method  (X,Y, public,     enode,       e_and,              Au,          Au) \
+    i_method  (X,Y, public,     enode,       e_add,              Au,          Au) \
+    i_method  (X,Y, public,     enode,       e_sub,              Au,          Au) \
+    i_method  (X,Y, public,     enode,       e_mul,              Au,          Au) \
+    i_method  (X,Y, public,     enode,       e_div,              Au,          Au) \
+    i_method  (X,Y, public,     enode,       e_create,             model,      array, Au) \
     i_method  (X,Y, public,     enode,       e_zero,               enode) \
-    i_method  (X,Y, public,     enode,       e_assign,             enode,      A, OPType) \
+    i_method  (X,Y, public,     enode,       e_assign,             enode,      Au, OPType) \
     i_method  (X,Y, public,     enode,       e_eq,                 enode,      enode) \
     i_method  (X,Y, public,     enode,       e_cmp,                enode,      enode) \
     i_method  (X,Y, public,     enode,       e_not_eq,             enode,      enode) \
     i_method  (X,Y, public,     enode,       e_fn_call,            fn,         enode,    array) \
-    i_method  (X,Y, public,     enode,       e_is,               enode,      A) \
-    i_method  (X,Y, public,     enode,       e_inherits,         enode,      A) \
-    i_method  (X,Y, public,     emember,     lookup2,            A,          AType) \
-    i_method  (X,Y, public,     emember,     find_member,        string,     record, AType) \
-    i_method  (X,Y, public,     model,       context_model,      AType) \
-    i_method  (X,Y, public,     path,        include,            A, ARef) \
+    i_method  (X,Y, public,     enode,       e_is,               enode,      Au) \
+    i_method  (X,Y, public,     enode,       e_inherits,         enode,      Au) \
+    i_method  (X,Y, public,     emember,     lookup2,            Au,          Au_t) \
+    i_method  (X,Y, public,     emember,     find_member,        string,     record, Au_t) \
+    i_method  (X,Y, public,     model,       context_model,      Au_t) \
+    i_method  (X,Y, public,     path,        include,            Au, ARef) \
     i_method  (X,Y, public,     none,        llflag,             symbol,     i32) \
     i_method  (X,Y, public,     model,       push,               model) \
     i_method  (X,Y, public,     model,       pop) \

@@ -1,4 +1,4 @@
-#include <A>
+#include <Au>
 
 bool isname(char n) { return (n >= 'a' && n <= 'z') || (n >= 'A' && n <= 'Z') || (n == '_'); }
 
@@ -18,7 +18,7 @@ bool validate(path mfile) {
     for (u32 i = 0; i < names_len; i++) {
         string name = read(f, typeid(string));
         verify(len(name) && isname(name->chars[0]), "invalid identifier-name");
-        set (name_symbols, name, A_u16(len(name_symbols)));
+        set (name_symbols, name, _u16(len(name_symbols)));
         push(name_ordered, name);
     }
 
@@ -29,7 +29,7 @@ bool validate(path mfile) {
         string type     = read(f, typeid(string));
         bool*  external = read(f, typeid(bool));
         verify(len(type) && isname(type->chars[0]), "invalid type-name");
-        set (type_symbols, type, A_u16(len(type_symbols)));
+        set (type_symbols, type, _u16(len(type_symbols)));
         set (type_extern,  type, external);
         push(type_ordered, type);
         if (!*external) module_types++;
@@ -102,32 +102,32 @@ path reflect(string module) {
         /// process type name
         string type_symbol = str(type->name);
         bool external = cmp(module, type->module) != 0;
-        set(type_extern, type_symbol, A_bool(external));
+        set(type_extern, type_symbol, _bool(external));
 
         if (!contains(type_symbols, type_symbol)) {
-            set(type_symbols, type_symbol, A_u16(len(type_symbols)));
+            set(type_symbols, type_symbol, _u16(len(type_symbols)));
         }
         for (int m = 0; m < type->member_count; m++) {
             member* mem = &type->members[m];
             string name_symbol = string(mem->name);
             if (!contains(name_symbols, name_symbol))
-                 set     (name_symbols, name_symbol, A_u16(len(name_symbols)));
+                 set     (name_symbols, name_symbol, _u16(len(name_symbols)));
             if (!contains(type_symbols, type_symbol))
-                 set     (type_symbols, type_symbol, A_u16(len(type_symbols)));
+                 set     (type_symbols, type_symbol, _u16(len(type_symbols)));
         }
     }
 
     // emit symbol table for member name
     i64 n_name = len(name_symbols);
     verify(n_name <= 65535, "name count overflow");
-    write(f, A_u16(n_name));
+    write(f, _u16(n_name));
     for (item i = name_symbols->first; i; i = i->next)
         write(f, i->key);
     
     // emit symbol table for type name
     i64 n_type = len(type_symbols);
     verify(n_type <= 65535, "type count overflow");
-    write(f, A_u16(n_type));
+    write(f, _u16(n_type));
     for (item i = type_symbols->first; i; i = i->next) {
         bool* external = get(type_extern, i->key);
         write(f, i->key);
@@ -149,15 +149,15 @@ path reflect(string module) {
         write(f, type_ident);
 
         // write traits (u32)
-        u32 *traits = A_u32(type->traits);
+        u32 *traits = _u32(type->traits);
         write(f, traits);
 
         // write size (u32)
-        u32 *size = A_u32(type->size);
+        u32 *size = _u32(type->size);
         write(f, size);
 
         // write meta count and idents
-        u16 *meta_count = A_u16(type->meta.count);
+        u16 *meta_count = _u16(type->meta.count);
         write(f, meta_count);
         for (int m = 0; m < type->meta.count; m++) {
             AType  mtype = ((AType*)&type->meta.meta_0)[m];
@@ -166,13 +166,13 @@ path reflect(string module) {
         }
 
         // write member count and member info
-        u16 *mem_count  = A_u16(type->member_count);
+        u16 *mem_count  = _u16(type->member_count);
         write(f, mem_count);
         for (int m = 0; m < type->member_count; m++) {
             member* mem = &type->members[m];
             
             // write member type
-            write(f, A_u32(mem->member_type));
+            write(f, _u32(mem->member_type));
 
             // write member name ident
             u16 *name_ident = get(name_symbols, str(mem->name));
@@ -184,11 +184,11 @@ path reflect(string module) {
             
             if (mem->member_type & A_TYPE_PROP) {
                 // write member offset
-                u16 *offset = A_u16(mem->offset);
+                u16 *offset = _u16(mem->offset);
                 write(f, offset);
            } else if (mem->member_type & (A_TYPE_CAST | A_TYPE_INDEX | A_TYPE_IMETHOD | A_TYPE_SMETHOD)) {
                 // write arg count & arg idents
-                write(f, A_u16(mem->args.count));
+                write(f, _u16(mem->args.count));
                 for (int a = 0; a < mem->args.count; a++) {
                     AType  atype = ((AType*)&mem->args.meta_0)[a];
                     u16 *atype_ident = get(type_symbols, str(atype->name));
