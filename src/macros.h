@@ -1510,9 +1510,9 @@
 })\
 
 #define min(A, B) ({ \
-    __typeof__(Au) a = A; \
+    __typeof__(A) a = A; \
     __typeof__(B) b = B; \
-    __typeof__(Au) r = a < b ? a : b; \
+    __typeof__(A) r = a < b ? a : b; \
     r; \
 })
 

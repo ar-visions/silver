@@ -316,7 +316,7 @@ declare_class_2(static_array, array)
     i_prop    (X,Y, public,     array,       shared_libs) \
     i_prop    (X,Y, public,     bool,        delegate) \
     i_prop    (X,Y, public,     bool,        with_debug) \
-    i_prop    (X,Y, intern,     bool,        is_A_import) \
+    i_prop    (X,Y, intern,     bool,        is_Au_import) \
     i_prop    (X,Y, public,     path,        current_include) \
     i_prop    (X,Y, intern,     fn,          current_fn) \
     i_prop    (X,Y, public,     bool,        in_macro) \
@@ -353,7 +353,7 @@ declare_class_2(static_array, array)
     i_method  (X,Y, public,     emember,     initializer) \
     i_method  (X,Y, public,     path,        lookup_include,     string) \
     i_method  (X,Y, public,     none,        build_info,         path) \
-    i_method  (X,Y, public,     none,        A_import,           path) \
+    i_method  (X,Y, public,     none,        Au_import,          path) \
     i_method  (X,Y, public,     none,        push_state,         array, num) \
     i_method  (X,Y, public,     none,        push_current) \
     i_method  (X,Y, public,     none,        pop_state,          bool) \

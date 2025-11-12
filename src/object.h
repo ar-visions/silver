@@ -124,7 +124,7 @@ typedef struct _object {
     Au_t           type;
     Au_t           scalar;
     i64             refs;
-    struct _A*      data;
+    struct _Au*     data;
     struct _shape*  shape;
     cstr            source;
     i64             line;
