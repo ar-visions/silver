@@ -262,7 +262,7 @@ void build_record(silver mod, record rec) {
         pop(mod);
     }
 
-    finalize(rec);
+    finalize(rec->mem);
 
     if (is_class) {
         // build init with preamble
@@ -1978,7 +1978,6 @@ emember silver_read_def(silver mod) {
         }
         pop(mod);
         pop_state(mod, false);
-        finalize(mem->mdl);
     } else {
         validate(is_alias, "unknown error");
         mem->mdl = model(mod, mod, src, mem->mdl);
@@ -2839,13 +2838,11 @@ path is_module_dir(silver mod, string ident) {
 
 // when we load silver files, we should look for and bind corresponding .c files that have implementation
 // this is useful for implementing in C or other languages
-
 path module_exists(silver mod, array idents) {
     string to_path = join(idents, "/");
     path sf = f(path, "%o/%o.sf", mod->project_path, to_path);
     return file_exists("%o", sf) ? sf : null;
 }
-
 
 enode import_parse(silver mod) {
     print_tokens(mod, "import parse");
@@ -3178,10 +3175,10 @@ array read_dictation(silver mod, array input) {
 array chatgpt_generate_fn(chatgpt a, fn f, array query) {
     silver mod = f->mod;
     array  res = array(alloc, 32);
+
     // we need to construct the query for chatgpt from our query tokens
     // as well as the preamble system context 
     // we have simple strings
-
     string key = f(string, "%s", getenv("CHATGPT"));
     verify(len(key),
         "chatgpt requires an api key stored in environment variable CHATGPT");
@@ -3253,17 +3250,12 @@ array chatgpt_generate_fn(chatgpt a, fn f, array query) {
             "content",  content);
 
         push(messages, user_dictation);
-
         path test_sf = f(path, "%o/docs/test.sf", docs);
-
-        // if there is a response on file, append that
-        // if not, we should error if the next message contains another dictation
     }
 
     map user = m(
         "role",     string("user"),
         "content",  string("write a function that adds the args a and b"));
-    
     
     hold(messages);
     map body = m("model", string("gpt-5"), "messages", messages);
@@ -3271,9 +3263,7 @@ array chatgpt_generate_fn(chatgpt a, fn f, array query) {
     return res;
 }
 
-
 define_class (chatgpt, codegen)
-
 define_class (silver, aether)
 define_class (export, model)
 define_class (import, model) // we should put these in ext/*.c to exemplify add-ons
