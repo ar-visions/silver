@@ -37,6 +37,9 @@ class engine
     fn init[ ]
         puts 'an engine is loading... lets compute: {2+2}\n'
     
+class engine2
+    m2 : string
+
 engine vk
 	intern instance : VkInstance
     public version : float [ 1.3 ]

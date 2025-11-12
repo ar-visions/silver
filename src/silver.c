@@ -811,6 +811,7 @@ enode silver_read_node(silver mod, AType constant_result, model mdl_expect, arra
         array meta = null;
         model mdl_found = read_model(mod, &expr, &meta);
         if (mdl_found) {
+            print_tokens(mod, "pre-typed-expr");
             enode res = typed_expr(mod, mdl_found, meta, expr);
             return e_create(mod, mdl_expect, meta_expect, res); // we need a 'meta_expect' here
         }
@@ -1117,6 +1118,7 @@ static model next_is_class(silver mod, bool read_token) {
 string silver_peek_def(silver a) {
     token n = element(a, 0);
     record rec = instanceof(top(a), typeid(record));
+    print_tokens(a, "peek-def");
     if (!rec && next_is_class(a, false))
         return string(n->chars);
 
@@ -1703,7 +1705,7 @@ enode silver_parse_assignment(silver mod, emember mem, string oper) {
     enode   R       = parse_expression(mod, mem->mdl, mem->meta); /// getting class2 as a struct not a pointer as it should be. we cant lose that pointer info
     if (!mem->mdl) {
         mem->is_const = eq(oper, ":");
-        set_model(mem, R->mdl); /// this is erroring because no 
+        set_model(mem, R->mdl); 
         if (mem->literal)
             drop(mem->literal);
         mem->literal = hold(R->literal);
@@ -1889,6 +1891,8 @@ emember silver_read_def(silver mod) {
         array schema = array();
         array meta   = (is_class && next_is(mod, "<")) ? read_meta(mod) : null;
         array body   = read_body(mod);
+        print_tokens(mod, "after-read-body");
+        print_token_array(mod, body);
         if (is_class) {
             mem->mdl = Class    (mod, mod, ident, mem->name, parent, is_class, body, body, meta, meta);
         } else
