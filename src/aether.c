@@ -3754,7 +3754,7 @@ enode aether_e_bitwise_not(aether e, enode L) {
 enode aether_e_eq(aether e, enode L, enode R);
 
 enode aether_e_is(aether e, enode L, Au R) {
-    enode L_type =  e_offset(e, L, _i64(-sizeof(struct _A)));
+    enode L_type =  e_offset(e, L, _i64(-sizeof(struct _Au)));
     enode L_ptr  =    e_load(e, L_type, null); /// must override the mdl type to a ptr, but offset should not perform a unit translation but rather byte-based
     enode R_ptr  = e_operand(e, R, null, null);
     return aether_e_eq(e, L_ptr, R_ptr);
