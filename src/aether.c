@@ -39,6 +39,11 @@ emember aether_register_model(aether e, model mdl, string name, bool use_now) {
     if (mdl->mem)
         return mdl->mem;
 
+    if (name && eq(name, "engine")) {
+        int test2 = 2;
+        test2    += 2;
+    }
+
     bool is_func  = instanceof(mdl, typeid(fn))    != null;
     bool is_macro = instanceof(mdl, typeid(macro)) != null;
     // the pointer for classes is created after, and used when we need it
@@ -77,6 +82,8 @@ emember aether_register_model(aether e, model mdl, string name, bool use_now) {
     if (!is_class && !is_func && !is_macro && !mdl->ptr)
         pointer(mdl);
 
+    emember test_lookup = lookup2(e, name, null);
+
     print("registered model %o", mem->name);
     return mem;
 }
@@ -100,17 +107,12 @@ map aether_top_member_map(aether e) {
 void aether_register_member(aether e, emember mem, bool register_now) {
     if (!mem || mem->registered || mem->target_member)
         return;
-
-    //mem->registered  = true;
-    model ctx = mem->context ? mem->context : top(e);
-    bool exists = false;
-    for (int i = 0; i < len(e->lex); i++) {
-        model _ctx = e->lex->elements[i];
-        if (_ctx == ctx) {
-            break;
-        }
+    if (eq(mem->name, "watch")) {
+        int test2 = 2;
+        test2    += 2;
     }
-
+    model ctx = mem->context ? mem->context : top(e);
+    //mem->registered  = true;
     verify(ctx->members, "expected members map");
     set(ctx->members, string(mem->name->chars), mem);
     if (register_now)
@@ -1805,11 +1807,6 @@ void emember_init(emember mem) {
         string n = mem->name;
         mem->name = token(chars, cstring(n), source, e->source, line, 1, mod, e);
     }
-    if (eq(mem->name, "_markers")) {
-        int test2 = 2;
-        test2 += 2;
-    }
-    //set_model(mem, mem->mdl);
 }
 
 void emember_set_model(emember mem, model mdl) {
@@ -1818,18 +1815,8 @@ void emember_set_model(emember mem, model mdl) {
     mem->registered = true;
     model ctx = mem->context ? mem->context : top(e);
     
-    // lets register unregistered within
-    pairs(mdl->members, i) {
-        emember m = i->value;
-        if (m->is_type && !m->registered)
-            set_model(m, m->mdl);
-    }
-
     enumeration ctx_en = aether_context_model(e, typeid(enumeration));
     fn    is_fn    = instanceof(mdl, typeid(fn));
-
-    // better user check here that doesnt require the argument
-    // we replaced with is_global, for another case; that is these models define global members (when not aliased)
     if (ctx_en || is_fn || (isa(mdl)->module != typeid(aether)->module)) return;
 
     AType mdl_type = isa(mdl);
@@ -2953,6 +2940,14 @@ model aether_push(aether e, model mdl) {
         fn_prev->last_dbg = LLVMGetCurrentDebugLocation2(e->builder);
     }
 
+    if (isa(mdl) == typeid(fn)) {
+        fn f = mdl;
+        if (f->is_module_init) {
+            int test2 = 2;
+            test2    += 2;
+        }
+    }
+
     verify(mdl, "no context given");
     fn f = instanceof(mdl, typeid(fn));
     if (f)
@@ -3071,9 +3066,6 @@ emember aether_initializer(aether e) {
     fn fn_init = fn(
         mod,      e,
         is_module_init, true,
-        instance, null,
-        rtype,    emodel("none"),
-        members,  e->members,
         args,     eargs(mod, e));
 
     e->mem_init = register_model(e, fn_init,
