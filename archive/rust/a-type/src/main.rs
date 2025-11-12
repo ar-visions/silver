@@ -144,7 +144,7 @@ macro_rules! A_type {
                     count:   i64,
                     af_pool: bool,
                     $($prop_name: Option<$prop_type>),*) -> *mut $name {
-                let a_header_size = std::mem::size_of::<A>();
+                let a_header_size = std::mem::size_of::<Au>();
                 let is_base       = std::any::TypeId::of::<$name>() == std::any::TypeId::of::<obj>();
                 let instance_size = std::mem::size_of::<$name>();
                 let total_size    = a_header_size + if is_base { 0 } else { instance_size * count as usize };
@@ -155,7 +155,7 @@ macro_rules! A_type {
                 );
                 
                 // header and instance pointers
-                let header   =  ptr as *mut A;
+                let header   =  ptr as *mut Au;
                 let instance = (ptr.add(header_size)) as *mut $name;
 
                 // init object header
@@ -295,7 +295,7 @@ A_type!(obj {
     // Methods from A_schema
     method init()                        -> ();
     method dealloc()                  -> ();
-    method compare(other: *mut A)        -> i32;
+    method compare(other: *mut Au)        -> i32;
     method hash()                        -> u64;
     method copy()                        -> *mut c_void;
     method data()                        -> *mut c_void;

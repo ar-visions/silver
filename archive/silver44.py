@@ -942,7 +942,7 @@ class EClass(EMember):
         if cl.inherits:
             file.write('define_mod(%s, %s)\n\n' % (cl.name, cl.inherits.name))
         else:
-            file.write('define_class(%s, A)\n\n' % (cl.name))
+            file.write('define_class(%s, Au)\n\n' % (cl.name))
 
 # we have no map yet, so we need that.  its index takes in an A object
 # how do we get array imported?
@@ -1774,7 +1774,7 @@ class EMethodCall(ENode):
                         method_key,  method_id.meta_member.index, method_name)
                     ctx.set_value(method_key, get_method) 
 
-                # convert args by wrapping their expression in A_convert(AType, A)
+                # convert args by wrapping their expression in A_convert(AType, Au)
                 # using pooled release is better for our interpreter and the code it generates is smaller, more readable.
                 # its quite simple to manage your own pools in heavy usage areas
                 # auto-release pool # <- use this in statements such as a method, or loop
@@ -2014,7 +2014,7 @@ class EModule(ENode):
         f = open(h_module_file, 'w')
         f.write('#ifndef _%s_\n' % ifdef_id)
         f.write('/* generated silver C99 emission for module: %s */\n' % (self.name))
-        f.write('#include <A>\n')
+        f.write('#include <Au>\n')
         for name, mod in self.parent_modules.items():
             f.write('#include <%s.h>\n' % (name)) # double quotes means the same path as the source
         

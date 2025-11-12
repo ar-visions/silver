@@ -48,14 +48,14 @@ def write_import_header(module, paths, env_vars):
     # Handle graph file and imports
     graph_file = os.path.join(src_directive, f"{module}.g")
     
-    if module == "A":
-        imports = ["A"]
+    if module == "Au":
+        imports = ["Au"]
     else:
         if os.path.isfile(graph_file):
             graph_nodes, _, _, _, _ = parse_g_file(graph_file)
             imports = [module] + graph_nodes
         else:
-            imports = ["A", module]
+            imports = ["Au", module]
     
     # Add project to imports for app directive
     if directive == "app" and project not in imports:
@@ -169,7 +169,7 @@ def generate_init_header(module, header_file, init_header):
             # Variadic argument counting macros
             f.write(f"#define _ARG_COUNT_IMPL_{class_name}(_0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20, _21, _22, N, ...) N\n")
             f.write(f"#define _ARG_COUNT_I_{class_name}(...) _ARG_COUNT_IMPL_{class_name}(__VA_ARGS__, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)\n")
-            f.write(f"#define _ARG_COUNT_{class_name}(...)   _ARG_COUNT_I_{class_name}(\"A-type\", ## __VA_ARGS__)\n")
+            f.write(f"#define _ARG_COUNT_{class_name}(...)   _ARG_COUNT_I_{class_name}(\"Au object model\", ## __VA_ARGS__)\n")
             
             # Combination macros
             f.write(f"#define _COMBINE_{class_name}_(A, B)   A##B\n")
@@ -181,7 +181,7 @@ def generate_init_header(module, header_file, init_header):
             if decl_type in ["meta", "vector"]:
                 f.write(f"#define _N_ARGS_{class_name}_1( TYPE, a)\n")
             else:
-                f.write(f"#define _N_ARGS_{class_name}_1( TYPE, a) _Generic((a), TYPE##_schema(TYPE, GENERICS, A) A_schema(A, GENERICS, A) const void *: (void)0)(instance, a)\n")
+                f.write(f"#define _N_ARGS_{class_name}_1( TYPE, a) _Generic((a), TYPE##_schema(TYPE, GENERICS, Au) Au_schema(Au, GENERICS, Au) const void *: (void)0)(instance, a)\n")
             
             # Property assignment macros for various argument counts
             for i in range(2, 24, 2):
@@ -209,7 +209,7 @@ def generate_init_header(module, header_file, init_header):
             f.write(f"#define {class_name}(...) ({{ \\\n")
             f.write(f"    {class_name} instance = ({class_name})alloc_dbg(typeid({class_name}), 1, __FILE__, __LINE__); \\\n")
             f.write(f"    _N_ARGS_{class_name}({class_name}, ## __VA_ARGS__); \\\n")
-            f.write(f"    A_initialize((A)instance); \\\n")
+            f.write(f"    Au_initialize((Au)instance); \\\n")
             f.write(f"    instance; \\\n")
             f.write(f"}})\n")
         
@@ -246,7 +246,7 @@ def generate_methods_header(module, header_file, methods_header):
             if method and method not in processed_methods:
                 processed_methods.add(method)
                 f.write(f"#undef {method}\n")
-                f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; (((A)_i_ != (A)0L) ? ftableI(_i_)->{method}(_i_, ## __VA_ARGS__) : (__typeof__(ftableI(_i_)->{method}(_i_, ## __VA_ARGS__)))0) ; }})\n")
+                f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; (((Au)_i_ != (Au)0L) ? ftableI(_i_)->{method}(_i_, ## __VA_ARGS__) : (__typeof__(ftableI(_i_)->{method}(_i_, ## __VA_ARGS__)))0) ; }})\n")
         
         # Process i_method methods
         method_pattern = r'i_method\s*\([^,]*,[^,]*,[^,]*,[^,]*,\s*([a-zA-Z_][a-zA-Z0-9_]*)'

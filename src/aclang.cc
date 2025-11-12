@@ -64,13 +64,13 @@ extern "C" {
 #undef submit
 
 #define emodel(N)     ({            \
-    emember  m = lookup2(e, (A)string(N), null); \
+    emember  m = lookup2(e, (Au)string(N), null); \
     model mdl = m ? m->mdl : null;  \
     mdl;                            \
 })
 
 #define elookup(N)     ({ \
-    emember  m = lookup2(e, (A)string(N), null); \
+    emember  m = lookup2(e, (Au)string(N), null); \
     m; \
 })
 
@@ -125,14 +125,14 @@ static std::vector<clang::NamedDecl*> namespace_stack(clang::NamedDecl *decl) {
     return parts;
 }
 
-A map_get(map, A);
+Au map_get(map, Au);
 
 static void push_context(NamedDecl* decl, aether e) {
     auto s = namespace_stack((NamespaceDecl*)decl);
     model cur = e->top;
     for (clang::NamedDecl* n: s) {
         string name = string(n->getNameAsString().c_str());
-        model m = (model)map_get(cur->members, (A)name);
+        model m = (model)map_get(cur->members, (Au)name);
         verify(m, "namespace not found: %o", name);
         push(e, m);
     }
@@ -201,7 +201,7 @@ static void create_method_stub(CXXMethodDecl* md, ASTContext& ctx, aether e, rec
                              (token)string("self"),
                              mdl, selfPtr,
                              is_arg, true);
-        set(args->members, (A)string("self"), (A)a0);
+        set(args->members, (Au)string("self"), (Au)a0);
     }
 
     // explicit parameters
@@ -218,13 +218,15 @@ static void create_method_stub(CXXMethodDecl* md, ASTContext& ctx, aether e, rec
                              (token)string(pname.c_str()),
                              mdl, mt,
                              is_arg, true);
-        set(args->members, (A)string(pname.c_str()), (A)ap);
+        set(args->members, (Au)string(pname.c_str()), (Au)ap);
     }
 
     // build fn
     bool variadic = md->isVariadic();
 
     string fname = string(name.c_str());
+
+    push(e, (model)owner);
     fn f = fn(mod, e,
               rtype, rtype,
               args, args,
@@ -232,12 +234,14 @@ static void create_method_stub(CXXMethodDecl* md, ASTContext& ctx, aether e, rec
               va_args, variadic);
 
     register_model(e, (model)f, fname, true);
+    pop(e);
 }
 
 
 static none set_fields(RecordDecl* decl, ASTContext& ctx, aether e, record rec) {
     bool is_union = decl->isUnion();
 
+    push(e, (model)rec);
     // Get the layout for accurate offsets/sizes
     if (decl->isCompleteDefinition() && !decl->isInvalidDecl() && !decl->isDependentType()) {
         const ASTRecordLayout& layout = ctx.getASTRecordLayout(decl);
@@ -265,23 +269,23 @@ static none set_fields(RecordDecl* decl, ASTContext& ctx, aether e, record rec) 
             // these specific members LLVM IR does not actually support in a general sense, and we must, as a user construct padding and operations
             // this is not remotely designed and, if our offsets differ, the compiler should error
             // for silver 1.0, we want bitfield support
-            m->override_offset_bits = A_i32(offset_bits);
+            m->override_offset_bits = _i32(offset_bits);
 
             // size
             if (field->isBitField()) {
-                m->override_size_bits = A_i32(field->getBitWidthValue());  // in bits
+                m->override_size_bits = _i32(field->getBitWidthValue());  // in bits
             } else if (const auto *IAT = dyn_cast<IncompleteArrayType>(field_type)) {
                 // flexible array member (must be last): size is 0 in the struct
-                m->override_size_bits = A_i32(0);
+                m->override_size_bits = _i32(0);
             } else {
-                m->override_size_bits = A_i32(ctx.getTypeSizeInChars(field_type).getQuantity());
+                m->override_size_bits = _i32(ctx.getTypeSizeInChars(field_type).getQuantity());
             }
 
             // alignment (prefer decl-level to capture alignas/attributes)
             CharUnits declAlign = ctx.getDeclAlign(field);
             if (declAlign.isZero())
                 declAlign = ctx.getTypeAlignInChars(field_type);
-            m->override_alignment_bits = A_i32(declAlign.getQuantity());
+            m->override_alignment_bits = _i32(declAlign.getQuantity());
 
             // Get accurate offset (handles pragma pack!)
             if (!is_union) {
@@ -290,20 +294,21 @@ static none set_fields(RecordDecl* decl, ASTContext& ctx, aether e, record rec) 
             }
 
             m->index = field_index++;
-            set(rec->members, (A)fname, (A)m);
+            set(rec->members, (Au)fname, (Au)m);
         }
         
         // Set struct/union size and alignment
         rec->size_bits = layout.getSize().getQuantity() * 8;
         rec->alignment_bits = layout.getAlignment().getQuantity() * 8;
     }
+    pop(e);
 }
 
 static record create_opaque_class(CXXRecordDecl* cxx, aether e) {
     std::string qname = cxx->getQualifiedNameAsString();
     string n = string(qname.c_str());
 
-    if (emember existing = lookup2(e, (A)n, null))
+    if (emember existing = lookup2(e, (Au)n, null))
         return (record)existing->mdl;
 
     record rec = (record)Class(mod, e, ident, (token)n);
@@ -317,7 +322,7 @@ static record create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::s
     if (!cxx->isCompleteDefinition() || cxx->isDependentType() || cxx->isInvalidDecl())
         return create_opaque_class(cxx, e);
     
-    if (emember existing = lookup2(e, (A)n, null))
+    if (emember existing = lookup2(e, (Au)n, null))
         return (record)existing->mdl;
 
     record  rec = (record)Class(mod, e, members, map(hsize, 16));
@@ -338,8 +343,8 @@ static record create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::s
         m->index = N;
         // byte offset:
         uint64_t off_bits = layout.getBaseClassOffset(base).getQuantity() * 8;
-        m->override_offset_bits = A_i32(off_bits);
-        set(rec->members, (A)bname, (A)m);
+        m->override_offset_bits = _i32(off_bits);
+        set(rec->members, (Au)bname, (Au)m);
     }
 
     set_fields((RecordDecl*)cxx, ctx, e, rec);
@@ -380,10 +385,10 @@ static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::s
         
         emember ev = emember(mod, en->mod, name, (token)cn, mdl, (model)en);
         ev->is_const = true;
-        set(en->members, (A)cn, (A)ev);
+        set(en->members, (Au)cn, (Au)ev);
 
         if (!decl->isScoped()) // top should be our updated context
-            set(top->members, (A)cn, (A)ev); // this is how C enums work, so lets make it easy to lookup
+            set(top->members, (Au)cn, (Au)ev); // this is how C enums work, so lets make it easy to lookup
     }
     pop(e);
     
@@ -418,7 +423,7 @@ static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string n
         if (!mt) continue;
         
         emember earg = emember(mod, e, name, (token)pname, mdl, mt, is_arg, true, context, (model)args);
-        set(args->members, (A)pname, (A)earg);
+        set(args->members, (Au)pname, (Au)earg);
     }
     
     // Check for variadic
@@ -436,7 +441,7 @@ static record create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::st
     string n = string(name.c_str());
     bool has_name = name.length() > 0;
     // Check if already exists
-    emember existing = has_name ? lookup2(e, (A)n, null) : (emember)null;
+    emember existing = has_name ? lookup2(e, (Au)n, null) : (emember)null;
     if (existing && existing->mdl)
         return (record)existing->mdl;
 
@@ -486,7 +491,7 @@ static model map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, ae
         string n = string(name_buf);
         
         emember marg = emember(mod, e, name, null, mdl, param, is_arg, true);
-        set(param_models->members, (A)n, (A)marg);
+        set(param_models->members, (Au)n, (Au)marg);
     }
     
     bool is_variadic = fpt->isVariadic();
@@ -540,7 +545,7 @@ static model create_namespace(NamespaceDecl* ns, ASTContext& ctx, aether e) {
         std::string n = ndecl->getNameAsString();
         string name = string(n.c_str());
         index++;
-        existing = (emember)map_get(cur->members, (A)name);
+        existing = (emember)map_get(cur->members, (Au)name);
 
         if (index == s.size() - 1) {
             // return if namespace already exists
@@ -756,7 +761,7 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         }
 
         model base = map_clang_type_to_model(pointee, ctx, e, null);
-        if (!base) base = emodel("ARef"); // todo: call this opaque (we dont want to classify this as A-related)
+        if (!base) base = emodel("ARef"); // todo: call this opaque (we dont want to classify this as Au-related)
 
         verify(base, "could not resolve pointer type");
 
@@ -839,7 +844,7 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
 }
 
 path aether_lookup_include(aether e, string include) {
-    array ipaths = a((A)e->sys_inc_paths, (A)e->sys_exc_paths, (A)e->include_paths);
+    array ipaths = a((Au)e->sys_inc_paths, (Au)e->sys_exc_paths, (Au)e->include_paths);
     each(ipaths, array, includes) {
         if (includes)
             each(includes, path, i) {
@@ -954,7 +959,7 @@ public:
         aether mod = instance->mod;
         std::string name = macroNameTok.getIdentifierInfo()->getName().str();
         string n = string(name.c_str());
-        emember existing = lookup2(mod, (A)n, (AType)null);
+        emember existing = lookup2(mod, (Au)n, (Au_t)null);
         
         if (existing)
             return;
@@ -964,7 +969,7 @@ public:
         if (is_func) {
             params = array(alloc, 32);
             for (const IdentifierInfo *II: mi->params())
-                push(params, (A)string(II->getName().str().c_str()));
+                push(params, (Au)string(II->getName().str().c_str()));
         }
 
         std::string def;
@@ -976,7 +981,7 @@ public:
         
         bool cmode = mod->cmode;
         mod->cmode = true;
-        array t = (array)mod->parse_f((A)mod, (A)string(def.c_str()));
+        array t = (array)mod->parse_f((Au)mod, (Au)string(def.c_str()));
         mod->cmode = cmode;
 
         if (!len(t))
@@ -995,10 +1000,10 @@ public:
             
             bool cmode = mod->cmode;
             mod->cmode = true;
-            model mdl = (model)mod->read_model((A)mod, (A)null, (A)null);
+            model mdl = (model)mod->read_model((Au)mod, (Au)null, (Au)null);
             mod->cmode = cmode;
 
-            if (mdl && (AType)isa(mdl) != (AType)typeid(macro)) {
+            if (mdl && (Au_t)isa(mdl) != (Au_t)typeid(macro)) {
                 mod->in_macro = false;
                 model macro_typedef = model(mod, mod, src, mdl);
                 register_model(mod, macro_typedef, n, false);
@@ -1015,7 +1020,7 @@ public:
 #if 0
                 bool cmode = mod->cmode;
                 mod->cmode = true;
-                enode value = (enode)mod->parse_expr((A)mod, (A)null);
+                enode value = (enode)mod->parse_expr((Au)mod, (Au)null);
                 mod->cmode = cmode;
                 mod->in_macro = false;
                 if (value) {
@@ -1051,11 +1056,11 @@ static inline llvm::Module *unwrap(LLVMModuleRef M) {
 
 static map include_cache = null;
 
-path aether_include(aether e, A inc, ARef _instance) {
+path aether_include(aether e, Au inc, ARef _instance) {
     clang_cc* instance = (clang_cc*)_instance;
-    path ipath = (AType)isa(inc) == typeid(string) ?
+    path ipath = (Au_t)isa(inc) == typeid(string) ?
         lookup_include(e, (string)inc) : (path)inc;
-    verify(ipath && exists(ipath), "include path does not exist: %o", ipath ? (A)ipath : inc);
+    verify(ipath && exists(ipath), "include path does not exist: %o", ipath ? (Au)ipath : inc);
     e->current_include = ipath;
 
     string incl = string(ipath->chars);
@@ -1071,7 +1076,7 @@ path aether_include(aether e, A inc, ARef _instance) {
     path res = f(path, "%o/lib/clang/22", e->install);
     path c = f(path, "/tmp/%o.c", stem(ipath)); // may need to switch ext and the Language spec based on the ext
     string  contents = f(string, "#include \"%o\"\n", ipath);
-    save(c, (A)contents, null);
+    save(c, (Au)contents, null);
 
     symbol compile_unit = is_header ? c->chars : ipath->chars;
 

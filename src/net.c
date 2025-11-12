@@ -161,7 +161,7 @@ vector Session_read_until(Session s, string match, i32 max_len) {
     cstr buf = vdata(rbytes);
     
     for (;;) {
-        vector_push(rbytes, A_i8(0)); // extend buffer size here with a null, giving us space to read
+        vector_push(rbytes, _i8(0)); // extend buffer size here with a null, giving us space to read
         sz sz = len(rbytes);
         if (!recv(s, &buf[sz - 1], 1))
             return null;
@@ -236,7 +236,7 @@ none TLS_init(TLS tls) {
     //mbedtls_ctr_drbg_init(&tls->ctr_drbg);
 
     static string pers;
-    if (!pers) pers = new(string, "A-type::net");
+    if (!pers) pers = new(string, "Au-type::net");
 
     u8 random[32];
     i32 status = psa_generate_random(random, sizeof(random));
@@ -347,7 +347,7 @@ message message_with_string(message m, string text) {
     return m;
 }
 
-message message_with_path(message m, path p, A modified_since) {
+message message_with_path(message m, path p, Au modified_since) {
     verify(exists(p) == Exists_file, "path must exist");
     string content = cast(string, load(p, typeid(string), null));
     m->content = content;
@@ -357,7 +357,7 @@ message message_with_path(message m, path p, A modified_since) {
     return m;
 }
 
-message message_with_content(message m, A content, map headers, uri query) {
+message message_with_content(message m, Au content, map headers, uri query) {
     m->query = query;
     m->headers = headers;
     m->content = content;
@@ -408,7 +408,7 @@ bool message_read_content(message m, sock sc) {
     string encoding = contains(m->headers, te) ? get(m->headers, ce) : null;
     i32 clen = -1;
 
-    A o = get(m->headers, cl);
+    Au o = get(m->headers, cl);
     if (o) {
         string v = instanceof(o, typeid(string));
         if (v) {
@@ -491,7 +491,7 @@ bool message_read_content(message m, sock sc) {
 
 
 /// query/request construction
-message message_query(uri server, map headers, A content) {
+message message_query(uri server, map headers, Au content) {
     message m;
     m->query   = uri(
         mtype,web_Get, proto,server->proto, host,server->host,
@@ -504,7 +504,7 @@ message message_query(uri server, map headers, A content) {
 }
 
 /// response construction, uri is not needed
-message message_response(uri query, i32 code, A content, map headers) {
+message message_response(uri query, i32 code, Au content, map headers) {
     message r;
     r->query    = uri(
         mtype,web_Response, proto,query->proto, host,query->host,
@@ -553,7 +553,7 @@ bool message_cast_bool(message m) {
             (m->code == 0 && (m->content || len(m->headers) > 0)));
 }
 
-string A_cast_string(A);
+string A_cast_string(Au);
 
 string message_text(message m) {
     return cast(string, m->content);
@@ -587,9 +587,9 @@ map message_cookies(message m) {
 bool message_write_status(message m, sock sc) {
     string status = string("Status");
     i32 code = 0;
-    A s = get(m->headers, status);
+    Au s = get(m->headers, status);
     if (s) {
-        AType t = isa(s);
+        Au_t t = isa(s);
         int test = 1;
         test++;
         code = *(i32*)s;
@@ -656,7 +656,7 @@ bool message_write(message m, sock sc, bool last_message) {
     }
 
     if (m->content) {
-        AType ct = isa(m->content);
+        Au_t ct = isa(m->content);
         
         if (ct && !contains(m->headers, string("Content-Type")))
             set(m->headers, string("Content-Type"), string("application/json"));
@@ -666,17 +666,17 @@ bool message_write(message m, sock sc, bool last_message) {
         string headers_ct = get(m->headers, string("Content-Type"));
         if (ct == typeid(map)) {
             string post = json(m->content);
-            set(m->headers, string("Content-Length"), A_i64(len(post)));
+            set(m->headers, string("Content-Length"), _i64(len(post)));
             //set(m->headers, string("Content-Type"),   string("application/json"));
             write_headers(m, sc);
             return send_object(sc, post);
         } else if (ct == typeid(u8)) {
             num byte_count = header(m->content)->count;
-            set(m->headers, string("Content-Length"), A_i64(byte_count));
+            set(m->headers, string("Content-Length"), _i64(byte_count));
             return send_bytes(sc, m->content, byte_count);
         } else {
             verify(ct == typeid(string), "unsupported content type");
-            set(m->headers, string("Content-Length"), A_i64(len((string)m->content)));
+            set(m->headers, string("Content-Length"), _i64(len((string)m->content)));
             write_headers(m, sc);
             return send_object(sc, m->content);
         }
@@ -728,11 +728,11 @@ string dns(string hostname) {
     return result;
 }
 
-A request(uri url, map args) {
+Au request(uri url, map args) {
     map     st_headers   = new(map);
-    A       null_content = null;
+    Au       null_content = null;
     map     headers      = contains(args, string("headers")) ? (map)get (args, "headers") : st_headers;
-    A       content      = contains(args, string("content")) ? get (args, "content") : null_content;
+    Au       content      = contains(args, string("content")) ? get (args, "content") : null_content;
     web     type         = contains(args, string("method"))  ? e_val(web, get(args, "method")) : web_Get;
     uri     query        = url;
 
@@ -797,8 +797,8 @@ uri uri_with_string(uri a, string raw) {
         
         each(all, string, kv) {
             array sp = split(kv, string("="));
-            A     k = get(sp, 0);
-            A     v = len(sp) > 1 ? get(sp, 1) : k;
+            Au     k = get(sp, 0);
+            Au     v = len(sp) > 1 ? get(sp, 1) : k;
             set(a->args, k, v);
         }
     } else {
@@ -884,13 +884,13 @@ string uri_decode(string e) {
 }
 
 // The handler function signature would be:
-A handle_client(A target, A client_sock, A context) {
+Au handle_client(Au target, Au client_sock, Au context) {
     sock s = client_sock;
     // Handle the client socket
-    return A_bool(true);
+    return _bool(true);
 }
 
-A sock_listen(uri url, subprocedure handler) {
+Au sock_listen(uri url, subprocedure handler) {
     TLS tls = TLS(url, url);
     
     for (;;) {
@@ -902,7 +902,7 @@ A sock_listen(uri url, subprocedure handler) {
         // - target from handler->target
         // - client as the data arg 
         // - context from handler->ctx
-        A result = invoke(handler, client);
+        Au result = invoke(handler, client);
         if (!cast(bool, result))
             break;
     }
@@ -955,7 +955,7 @@ sz sock_send_bytes(sock s, handle buf, sz len) {
     return Session_send(s->data, buf, len);
 }
 
-sz sock_send_object(sock s, A v) {
+sz sock_send_object(sock s, Au v) {
     string str = cast(string, v);
     return Session_send_string(s->data, str);
 }
@@ -979,18 +979,18 @@ bool sock_read(sock s, handle buf, sz len) {
 }
 
 // For JSON requests, success/failure handlers would have signatures like:
-A on_success(A target, A response_data, A context) {
+Au on_success(Au target, Au response_data, Au context) {
     // Handle successful JSON response
     return response_data;
 }
 
-A on_failure(A target, A error_data, A context) {
+Au on_failure(Au target, Au error_data, Au context) {
     // Handle failure
     return null;
 }
 
-A json_request(uri addr, map args, map headers, subprocedure success_handler, subprocedure failure_handler) {
-    A response = request(addr, headers);
+Au json_request(uri addr, map args, map headers, subprocedure success_handler, subprocedure failure_handler) {
+    Au response = request(addr, headers);
     
     if (!response) {
         return invoke(failure_handler, null);
@@ -1003,11 +1003,11 @@ A json_request(uri addr, map args, map headers, subprocedure success_handler, su
     }
 }
 
-define_class(uri,       A)
-define_class(Session,   A)
-define_class(TLS,       A)
-define_class(sock,      A)
-define_class(message,   A)
+define_class(uri,       Au)
+define_class(Session,   Au)
+define_class(TLS,       Au)
+define_class(sock,      Au)
+define_class(message,   Au)
 
 define_enum(web)
 define_enum(protocol)

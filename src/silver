@@ -57,11 +57,11 @@ forward(import)
     i_method  (X,Y, public,     num,            current_line) \
     i_method  (X,Y, public,     bool,           next_is_alpha) \
     i_method  (X,Y, public,     bool,           next_indent) \
-    i_method  (X,Y, public,     enode,          read_node, AType, model, array) \
+    i_method  (X,Y, public,     enode,          read_node, Au_t, model, array) \
     i_method  (X,Y, public,     enode,          parse_ternary, enode, model, array) \
     i_method  (X,Y, public,     enode,          parse_assignment, emember, string) \
     i_method  (X,Y, public,     token,          read_if, symbol) \
-    i_method  (X,Y, public,     A,              read_literal, AType) \
+    i_method  (X,Y, public,     Au,              read_literal, Au_t) \
     i_method  (X,Y, public,     string,         read_string) \
     i_method  (X,Y, public,     string,         read_alpha) \
     i_method  (X,Y, public,     string,         read_alpha_any) \
@@ -71,8 +71,8 @@ forward(import)
     i_method  (X,Y, public,     string,         peek_def) \
     i_method  (X,Y, public,     string,         peek_keyword) \
     i_method  (X,Y, public,     string,         read_keyword) \
-    i_method  (X,Y, public,     A,              read_bool) \
-    i_method  (X,Y, public,     A,              read_numeric) \
+    i_method  (X,Y, public,     Au,              read_bool) \
+    i_method  (X,Y, public,     Au,              read_numeric) \
     i_method  (X,Y, public,     array,          parse_const, array) \
     i_method  (X,Y, public,     string,         read_assign, ARef, ARef) \
     i_method  (X,Y, public,     string,         location) \
@@ -114,7 +114,7 @@ declare_class_2(export, model)
 // does import also perform silver compilation, or stand-alone C compilation?
 // it might make sense to do so; inter-dependency is what is of issue.  import would need
 // to use silver at a binary level in that case (which to me is simpler)
-// it is the interface that we do not have.  for this, do we want .m standard?  (A-reflect emission)
+// it is the interface that we do not have.  for this, do we want .m standard?  (Au-reflect emission)
 // this works for silver, C and possibly others.  the two are what we want to handle for now
 // unclear what the path is for project imports.  clearly there would be multiple .m reflection interfaces
 // in the case of standard C we would use typical Clang Indexer service

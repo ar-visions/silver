@@ -1,2 +1,2 @@
-modules:    A
+modules:    Au
 link:       -lm -llldb

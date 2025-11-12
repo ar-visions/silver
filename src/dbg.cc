@@ -34,14 +34,14 @@ A dbg_io(dbg debug) {
                 ssize_t n = read(fd_out, buffer, sizeof(buffer));
                 if (n > 0)
                     debug->on_stdout(debug->target,
-                        (A)iobuffer(debug, debug, bytes, buffer, count, n));
+                        (Au)iobuffer(debug, debug, bytes, buffer, count, n));
             }
 
             if (FD_ISSET(fd_err, &readfds)) {
                 ssize_t n = read(fd_err, buffer, sizeof(buffer));
                 if (n > 0)
                     debug->on_stderr(debug->target,
-                        (A)iobuffer(debug, debug, bytes, buffer, count, n));
+                        (Au)iobuffer(debug, debug, bytes, buffer, count, n));
             }
         } else if (ready < 0)
             break;
@@ -84,7 +84,7 @@ A dbg_poll(dbg debug) {
                 source, source,
                 line,   line,
                 column, column);
-            debug->on_break(debug->target, (A)cur);
+            debug->on_break(debug->target, (Au)cur);
             
         } else if (state == lldb::eStateCrashed) {
             debug->running = false;
@@ -93,7 +93,7 @@ A dbg_poll(dbg debug) {
                 source, source,
                 line,   line,
                 column, column);
-            debug->on_crash(debug->target, (A)cur);
+            debug->on_crash(debug->target, (Au)cur);
 
         } else if (state == lldb::eStateExited) {
             debug->running = false;
@@ -101,7 +101,7 @@ A dbg_poll(dbg debug) {
             exited e = exited(
                 debug,  debug,
                 code,   exit_code);
-            debug->on_exit(debug->target, (A)e);
+            debug->on_exit(debug->target, (Au)e);
         }
     }
     return null;
@@ -115,13 +115,13 @@ none dbg_init(dbg debug) {
     }
     debug->lldb_debugger = lldb::SBDebugger::Create();
 
-    // callback,  bind,   A, bool, AType, AType, symbol, symbol) \
+    // callback,  bind,   A, bool, Au_t, Au_t, symbol, symbol) \
 
-    if (!debug->on_stdout) debug->on_stdout = bind((A)debug, (A)debug->target, true, typeid(A), typeid(iobuffer), null, "stdout");
-    if (!debug->on_stderr) debug->on_stderr = bind((A)debug, (A)debug->target, true, typeid(A), typeid(iobuffer), null, "stderr");
-    if (!debug->on_break)  debug->on_break  = bind((A)debug, (A)debug->target, true, typeid(A), typeid(cursor),   null, "break");
-    if (!debug->on_exit)   debug->on_exit   = bind((A)debug, (A)debug->target, true, typeid(A), typeid(dbg),      null, "exit");
-    if (!debug->on_crash)  debug->on_crash  = bind((A)debug, (A)debug->target, true, typeid(A), typeid(cursor),   null, "crash");
+    if (!debug->on_stdout) debug->on_stdout = bind((Au)debug, (Au)debug->target, true, typeid(Au), typeid(iobuffer), null, "stdout");
+    if (!debug->on_stderr) debug->on_stderr = bind((Au)debug, (Au)debug->target, true, typeid(Au), typeid(iobuffer), null, "stderr");
+    if (!debug->on_break)  debug->on_break  = bind((Au)debug, (Au)debug->target, true, typeid(Au), typeid(cursor),   null, "break");
+    if (!debug->on_exit)   debug->on_exit   = bind((Au)debug, (Au)debug->target, true, typeid(Au), typeid(dbg),      null, "exit");
+    if (!debug->on_crash)  debug->on_crash  = bind((Au)debug, (Au)debug->target, true, typeid(Au), typeid(cursor),   null, "crash");
 
     debug->lldb_debugger.SetAsync(true);
     if (!debug->exceptions) {
@@ -151,8 +151,8 @@ none dbg_init(dbg debug) {
 
     if (debug->lldb_target.IsValid()) {
         debug->active        = true;
-        debug->poll          = async(work, a((A)debug), work_fn, (hook)dbg_poll);
-        debug->io            = async(work, a((A)debug), work_fn, (hook)dbg_io);
+        debug->poll          = async(work, a((Au)debug), work_fn, (hook)dbg_poll);
+        debug->io            = async(work, a((Au)debug), work_fn, (hook)dbg_io);
         if (debug->auto_start)
             start(debug);
     }
@@ -234,7 +234,7 @@ array read_children(dbg debug, lldb::SBValue value) {
             value,      val,
             children,   read_children(debug, child));
 
-        push(result, (A)v);
+        push(result, (Au)v);
     }
 
     return result;
@@ -253,7 +253,7 @@ array dbg_read_vars(dbg debug, array result, lldb::SBValueList vars) {
             value,      val,
             children,   read_children(debug, value)
         );
-        push(result, (A)v);
+        push(result, (Au)v);
     }
     return result;
 }
@@ -339,11 +339,11 @@ none breakpoint_dealloc(breakpoint bp) {
     dbg_remove_breakpoint(bp->debug, bp);
 }
 
-define_class(cursor,     A)
-define_class(exited,     A)
-define_class(variable,   A)
-define_class(breakpoint, A)
-define_class(iobuffer,   A)
-define_class(dbg,        A)
+define_class(cursor,     Au)
+define_class(exited,     Au)
+define_class(variable,   Au)
+define_class(breakpoint, Au)
+define_class(iobuffer,   Au)
+define_class(dbg,        Au)
 
 #pragma GCC diagnostic pop

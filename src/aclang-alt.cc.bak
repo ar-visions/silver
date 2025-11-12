@@ -58,13 +58,13 @@ extern "C" {
 #undef submit
 
 #define emodel(N)     ({            \
-    emember  m = lookup2(e, (A)string(N), null); \
+    emember  m = lookup2(e, (Au)string(N), null); \
     model mdl = m ? m->mdl : null;  \
     mdl;                            \
 })
 
 #define elookup(N)     ({ \
-    emember  m = lookup2(e, (A)string(N), null); \
+    emember  m = lookup2(e, (Au)string(N), null); \
     m; \
 })
 
@@ -108,8 +108,8 @@ static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e) {
         
         emember ev = emember(mod, en->mod, name, (token)cn, mdl, (model)en);
         ev->is_const = true;
-        set(en->members, (A)cn, (A)ev);
-        set(top->members, (A)cn, (A)ev); // this is how C enums work, so lets make it easy to lookup
+        set(en->members, (Au)cn, (Au)ev);
+        set(top->members, (Au)cn, (Au)ev); // this is how C enums work, so lets make it easy to lookup
     }
     pop(e);
     
@@ -149,7 +149,7 @@ static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e) {
         if (!mt) continue;
         
         emember earg = emember(mod, e, name, (token)pname, mdl, mt, is_arg, true, context, (model)args);
-        set(args->members, (A)pname, (A)earg);
+        set(args->members, (Au)pname, (Au)earg);
     }
     
     // Check for variadic
@@ -168,7 +168,7 @@ static record create_record(RecordDecl* decl, ASTContext& ctx, aether e) {
     string n = string(name.c_str());
     
     // Check if already exists
-    emember existing = lookup2(e, (A)n, null);
+    emember existing = lookup2(e, (Au)n, null);
     if (existing && existing->mdl)
         return (record)existing->mdl;
 
@@ -210,23 +210,23 @@ static record create_record(RecordDecl* decl, ASTContext& ctx, aether e) {
             // these specific members LLVM IR does not actually support in a general sense, and we must, as a user construct padding and operations
             // this is not remotely designed and, if our offsets differ, the compiler should error
             // for silver 1.0, we want bitfield support
-            m->override_offset_bits = A_i32(offset_bits);
+            m->override_offset_bits = _i32(offset_bits);
 
             // size
             if (field->isBitField()) {
-                m->override_size_bits = A_i32(field->getBitWidthValue());  // in bits
+                m->override_size_bits = _i32(field->getBitWidthValue());  // in bits
             } else if (const auto *IAT = dyn_cast<IncompleteArrayType>(field_type)) {
                 // flexible array member (must be last): size is 0 in the struct
-                m->override_size_bits = A_i32(0);
+                m->override_size_bits = _i32(0);
             } else {
-                m->override_size_bits = A_i32(ctx.getTypeSizeInChars(field_type).getQuantity());
+                m->override_size_bits = _i32(ctx.getTypeSizeInChars(field_type).getQuantity());
             }
 
             // alignment (prefer decl-level to capture alignas/attributes)
             CharUnits declAlign = ctx.getDeclAlign(field);
             if (declAlign.isZero())
                 declAlign = ctx.getTypeAlignInChars(field_type);
-            m->override_alignment_bits = A_i32(declAlign.getQuantity());
+            m->override_alignment_bits = _i32(declAlign.getQuantity());
 
             // Get accurate offset (handles pragma pack!)
             if (!is_union) {
@@ -235,7 +235,7 @@ static record create_record(RecordDecl* decl, ASTContext& ctx, aether e) {
             }
 
             m->index = field_index++;
-            set(rec->members, (A)fname, (A)m);
+            set(rec->members, (Au)fname, (Au)m);
         }
         
         // Set struct/union size and alignment
@@ -264,7 +264,7 @@ static model map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, ae
         string n = string(name_buf);
         
         emember marg = emember(mod, e, name, null, mdl, param, is_arg, true);
-        set(param_models->members, (A)n, (A)marg);
+        set(param_models->members, (Au)n, (Au)marg);
     }
     
     bool is_variadic = fpt->isVariadic();
@@ -544,7 +544,7 @@ public:
 
             enode       value    = null;
             string      n        = string(rec.Name.c_str());
-            emember     existing = lookup2(mod, (A)n, (AType)null);
+            emember     existing = lookup2(mod, (Au)n, (AType)null);
                 
             if (existing)
                 continue;
@@ -576,9 +576,9 @@ public:
                 bool is_signed   = val.isSigned();
                 
                 if (bits <= 32) {
-                    value = e_operand(mod, is_signed ? A_i32(val.getSExtValue()) : A_u32(val.getZExtValue()), null);
+                    value = e_operand(mod, is_signed ? _i32(val.getSExtValue()) : _u32(val.getZExtValue()), null);
                 } else if (bits <= 64) {
-                    value = e_operand(mod, is_signed ? A_i64(val.getSExtValue()) : A_u64(val.getZExtValue()), null);
+                    value = e_operand(mod, is_signed ? _i64(val.getSExtValue()) : _u64(val.getZExtValue()), null);
                 } else {
                     // cannot support i128 for now as its not universal enough across our targets
                     continue;
@@ -589,9 +589,9 @@ public:
                 llvm::APFloat f = eval.Val.getFloat();
                 const llvm::fltSemantics &sem = f.getSemantics();
                 if (&sem == &llvm::APFloat::IEEEsingle()) {
-                    value = e_operand(mod, A_f32(f.convertToFloat()), null);
+                    value = e_operand(mod, _f32(f.convertToFloat()), null);
                 } else if (&sem == &llvm::APFloat::IEEEdouble()) {
-                    value = e_operand(mod, A_f64(f.convertToDouble()), null);
+                    value = e_operand(mod, _f64(f.convertToDouble()), null);
                 } else if (&sem == &llvm::APFloat::x87DoubleExtended()) {
                     // 80-bit long double
                     // these absolutely are stupid, because different systems have different widths
@@ -606,7 +606,7 @@ public:
                 std::string s = bytes.str();             // make an owning std::string
 
                 // handle string literal
-                value = e_operand(mod, (A)string((symbol)s.c_str()), null);
+                value = e_operand(mod, (Au)string((symbol)s.c_str()), null);
             }
 
             if (!value)
@@ -681,7 +681,7 @@ path aether_include(aether e, A inc, ARef _instance) {
     clang_cc* instance = (clang_cc*)_instance;
     path ipath = (AType)isa(inc) == typeid(string) ?
         lookup_include(e, (string)inc) : (path)inc;
-    verify(ipath && exists(ipath), "include path does not exist: %o", ipath ? (A)ipath : inc);
+    verify(ipath && exists(ipath), "include path does not exist: %o", ipath ? (Au)ipath : inc);
     e->current_include = ipath;
 
 
@@ -707,7 +707,7 @@ path aether_include(aether e, A inc, ARef _instance) {
 
     path c = f(path, "/tmp/%o.c", stem(ipath));
     string  contents = f(string, "#include \"%o\"\n", ipath);
-    save(c, (A)contents, null);
+    save(c, (Au)contents, null);
 
     // Set up input file
     Invocation->getFrontendOpts().Inputs.push_back(

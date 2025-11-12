@@ -1,6 +1,6 @@
 #ifndef _NET_
 #define _NET_
-#include <A>
+#include <Au>
 
 #undef bind
 /// opaque
@@ -50,7 +50,7 @@ forward(TLS)
     i_method  (X,Y, public,  bool,     read_sz, handle, sz) \
     i_method  (X,Y, public,  sz,       recv, handle, sz) \
     i_method  (X,Y, public,  sz,       send_bytes,  handle, sz) \
-    i_method  (X,Y, public,  sz,       send_object, A) \
+    i_method  (X,Y, public,  sz,       send_object, Au) \
     i_method  (X,Y, public,  vector,   read_until, string, i32) \
     s_method  (X,Y, public,  sock,     accept, TLS) \
     i_ctr     (X,Y, public,  TLS) \
@@ -85,7 +85,7 @@ declare_class(Session)
     i_prop    (X,Y, public,  uri,     query) \
     i_prop    (X,Y, public,  i32,     code) \
     i_prop    (X,Y, public,  map,     headers) \
-    i_prop    (X,Y, public,  A,       content) \
+    i_prop    (X,Y, public,  Au,       content) \
     i_prop    (X,Y, public,  string,  summary) \
     i_method  (X,Y, public,  web,     method_type) \
     i_method  (X,Y, public,  bool,    read_headers, sock) \
@@ -95,8 +95,8 @@ declare_class(Session)
     i_method  (X,Y, public,  bool,    write, sock, bool) \
     i_method  (X,Y, public,  string,  text) \
     i_method  (X,Y, public,  map,     cookies) \
-    s_method  (X,Y, public,  message, query, uri, map, A) \
-    s_method  (X,Y, public,  message, response, uri, i32, A, map) \
+    s_method  (X,Y, public,  message, query, uri, map, Au) \
+    s_method  (X,Y, public,  message, response, uri, i32, Au, map) \
     i_ctr     (X,Y, public,  sock) \
     i_ctr     (X,Y, public,  i32) \
     i_ctr     (X,Y, public,  string) \
@@ -121,8 +121,8 @@ declare_class(message)
 declare_class(TLS)
 
 string dns(string hostname);
-A json_request(uri addr, map args, map headers, subprocedure success_handler, subprocedure failure_handler);
+Au json_request(uri addr, map args, map headers, subprocedure success_handler, subprocedure failure_handler);
 
-A request(uri url, map args);
+Au request(uri url, map args);
 
 #endif

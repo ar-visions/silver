@@ -7,10 +7,10 @@
 #define   enum_value_IMPL(E, T, N, VAL) \
     E##_i.type.members[E## _i.type.member_count].name     = #N; \
     E##_i.type.members[E## _i.type.member_count].offset   = (i32)(E##_##N);\
-    E##_i.type.members[E## _i.type.member_count].type     = (AType)&T ## _i.type; \
+    E##_i.type.members[E## _i.type.member_count].type     = (Au_t)&T ## _i.type; \
     static T static_##N = VAL; \
     E##_i.type.members[E## _i.type.member_count].ptr      = &static_##N;\
-    E##_i.type.members[E## _i.type.member_count].member_type = A_FLAG_ENUMV; \
+    E##_i.type.members[E## _i.type.member_count].member_type = AU_FLAG_ENUMV; \
     E##_i.type.member_count++;
 
 #define   enum_value(E,T,Y, N, VAL)                enum_value_##Y(E, T, N, VAL)
@@ -21,10 +21,10 @@
     E##_i.type . N = & E## _ ## N; \
     E##_i.type.members[E##_i.type.member_count].name    = #N; \
     E##_i.type.members[E##_i.type.member_count].args    = (_meta_t) { emit_types(__VA_ARGS__) }; \
-    E##_i.type.members[E##_i.type.member_count].type    = (AType)&R##_i.type; \
+    E##_i.type.members[E##_i.type.member_count].type    = (Au_t)&R##_i.type; \
     E##_i.type.members[E##_i.type.member_count].offset  = offsetof(E##_f, N); \
     E##_i.type.members[E##_i.type.member_count].ptr     = (void*)& E##_##N; \
-    E##_i.type.members[E##_i.type.member_count].member_type = A_FLAG_SMETHOD; \
+    E##_i.type.members[E##_i.type.member_count].member_type = AU_FLAG_SMETHOD; \
     E##_i.type.member_count++; 
 #define   enum_method_METHOD(E, T, R, N, ...)    R (*N)(E value __VA_OPT__(,) __VA_ARGS__);
 #define   enum_method(E,T,Y,R,N,...)            enum_method_##Y(E,T, R,N __VA_OPT__(,) __VA_ARGS__)
@@ -37,10 +37,10 @@
 #define   enum_value_v_IMPL(E, T, N, VAL) \
     E##_i.type.members[E## _i.type.member_count].name     = #N; \
     E##_i.type.members[E## _i.type.member_count].offset   = (i64)E##_##N;\
-    E##_i.type.members[E## _i.type.member_count].type     = (AType)&T ## _i.type; \
+    E##_i.type.members[E## _i.type.member_count].type     = (Au_t)&T ## _i.type; \
     static T static_##N = VAL; \
     E##_i.type.members[E## _i.type.member_count].ptr      = &static_##N;\
-    E##_i.type.members[E## _i.type.member_count].member_type = A_FLAG_ENUMV; \
+    E##_i.type.members[E## _i.type.member_count].member_type = AU_FLAG_ENUMV; \
     E##_i.type.member_count++;
 
 #define   enum_value_vargs_DECL(E, T, N, VAL,...)             static const E E##_##N = VAL;
@@ -49,8 +49,8 @@
 #define   enum_value_vargs_IMPL(E, T, N, VAL,...) \
     E##_i.type.members[E## _i.type.member_count].name     = #N; \
     E##_i.type.members[E## _i.type.member_count].offset   = (i64)E##_##N;\
-    E##_i.type.members[E## _i.type.member_count].type     = (AType)&T ## _i.type; \
-    E##_i.type.members[E## _i.type.member_count].member_type = A_FLAG_ENUMV; \
+    E##_i.type.members[E## _i.type.member_count].type     = (Au_t)&T ## _i.type; \
+    E##_i.type.members[E## _i.type.member_count].member_type = AU_FLAG_ENUMV; \
     static T static_##N = VAL; \
     E##_i.type.members[E## _i.type.member_count].ptr      = &static_##N;\
     E##_i.type.members[E## _i.type.member_count].args     = (_meta_t) { emit_types(__VA_ARGS__) }; \
@@ -87,11 +87,11 @@
 
 #define _ARG_COUNT_IMPL(_0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20, _21, _22, N, ...) N
 #define _ARG_COUNT_I(...) _ARG_COUNT_IMPL(__VA_ARGS__, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
-#define _ARG_COUNT(...)   _ARG_COUNT_I("A-type", ## __VA_ARGS__)
+#define _ARG_COUNT(...)   _ARG_COUNT_I("Au", ## __VA_ARGS__)
 #define _COMBINE_(A, B)   A##B
 #define _COMBINE(A, B)    _COMBINE_(A, B)
 #define _N_ARGS_0( TYPE)
-#define _N_ARGS_1( TYPE, a) _Generic((a), TYPE##_schema(TYPE, GENERICS, A) const void *: (void)0)(instance, a)
+#define _N_ARGS_1( TYPE, a) _Generic((a), TYPE##_schema(TYPE, GENERICS, Au) const void *: (void)0)(instance, a)
 #define _N_ARGS_2( TYPE, a,b) instance->a = TC(a,b);
 #define _N_ARGS_4( TYPE, a,b, c,d) \
         _N_ARGS_2 (TYPE, a,b) instance->c = TC(c,d);
@@ -119,7 +119,7 @@
 
 //#define _N_STRUCT_ARGS_0( TYPE) _N_ARGS_2( TYPE )
 #define _N_STRUCT_ARGS_1( TYPE, a) \
-    ({ TYPE instance = _Generic((a), TYPE##_schema(TYPE, GENERICS, A) const void *: (void)0)(a); instance; }) 
+    ({ TYPE instance = _Generic((a), TYPE##_schema(TYPE, GENERICS, Au) const void *: (void)0)(a); instance; }) 
 
 #define _N_STRUCT_ARGS_2( TYPE, ...) ({ TYPE instance = (TYPE) { __VA_ARGS__ }; instance; })
 #define _N_STRUCT_ARGS_3( TYPE, ...) _N_STRUCT_ARGS_2( TYPE, __VA_ARGS__ )
@@ -152,49 +152,49 @@
 
 #define new(TYPE, ...) \
     ({ \
-        TYPE instance = (TYPE)alloc(typeid(TYPE), 1, (AType*)null); \
+        TYPE instance = (TYPE)alloc(typeid(TYPE), 1, (Au_t*)null); \
         _N_ARGS(TYPE, ## __VA_ARGS__); \
-        A_initialize((A)instance); \
+        Au_initialize((Au)instance); \
         instance; \
     })
 #define new2(TYPE, ...) \
     ({ \
-        TYPE instance = (TYPE)alloc(typeid(TYPE), 1, (AType*)null); \
+        TYPE instance = (TYPE)alloc(typeid(TYPE), 1, (Au_t*)null); \
         TYPE##_N_ARGS(TYPE, ## __VA_ARGS__); \
-        A_initialize((A)instance); \
+        Au_initialize((Au)instance); \
         instance; \
     })
 
-/// with construct we give it a dynamic type, symbols and A-values
+/// with construct we give it a dynamic type, symbols and Au-values
 #define construct(type, ...) \
     ({ \
-        T instance = (T)alloc(type, 1, (AType*)null); \
+        T instance = (T)alloc(type, 1, (Au_t*)null); \
         _N_ARGS(instance, ## __VA_ARGS__); \
-        A_initialize((A)instance); \
+        Au_initialize((Au)instance); \
         instance; \
     })
 
 #define new0(T, ...) \
     ({ \
-        T instance = (T)alloc(typeid(T), 1, (AType*)null); \
+        T instance = (T)alloc(typeid(T), 1, (Au_t*)null); \
         _N_ARGS(instance, ## __VA_ARGS__); \
-        A_initialize((A)instance); \
+        Au_initialize((Au)instance); \
         instance; \
     })
 
 #define allocate(T, ...) \
     ({ \
-        T instance = (T)alloc(typeid(T), 1, (AType*)null); \
+        T instance = (T)alloc(typeid(T), 1, (Au_t*)null); \
         _N_ARGS(instance, ## __VA_ARGS__); \
         instance; \
     })
 
-#define valloc(T, N)                ((A)alloc(typeid(T), N, (AType*)null))
-#define ftable(TYPE, INSTANCE)      ((TYPE##_f*)((A)INSTANCE)[-1].type)
-#define isa(INSTANCE)               (INSTANCE ? (struct _A_f*)((struct _A*)INSTANCE - 1)->type : (struct _A_f*)0)
+#define valloc(T, N)                ((Au)alloc(typeid(T), N, (Au_t*)null))
+#define ftable(TYPE, INSTANCE)      ((TYPE##_f*)((Au)INSTANCE)[-1].type)
+#define isa(INSTANCE)               (INSTANCE ? (struct _Au_f*)((struct _Au*)INSTANCE - 1)->type : (struct _Au_f*)0)
 // see: javascript; returns null if its not an instance-of; faults if you give it a null
-//#define instanceof(left, type)      A_instanceof(left, typeid(type))
-#define ftableI(I)                  ((__typeof__((I)->f)) ((A)(I))[-1].type)
+//#define instanceof(left, type)      Au_instanceof(left, typeid(type))
+#define ftableI(I)                  ((__typeof__((I)->f)) ((Au)(I))[-1].type)
 #define fcall(I,M,...)              ({ __typeof__(I) _i_ = I; ftableI(_i_)->M(_i_, ## __VA_ARGS__); })
 #define mcall(I,M,...)              ({ __typeof__(I) _i_ = I; (_i_) ? ftableI(_i_)->M(_i_, ## __VA_ARGS__) : 0; })
 #define cstring(I)                  cast(cstr, I)
@@ -203,10 +203,10 @@
 #define idx_2(I,T1,T2,V1,V2)        fcall(I, index ##_## T1 ##_## T2, V1, V2)
 #define idx(I,V1)                   fcall(I, index ##_## num, V1)
 #define meta_t(I,IDX)               isa(I) -> meta.meta_##IDX
-#define ctr(T,WITH,...)             A_initialize(T##_i.type.with_##WITH(alloc(typeid(T), 1, (AType*)null), ## __VA_ARGS__))
-#define ctr1(T,WITH,...)            A_initialize(T##_i.type.with_##WITH(alloc(typeid(T), 1, (AType*)null), ## __VA_ARGS__))
-#define alloc_ctr(T,WITH,...)       A_initialize(T##_i.type.with_##WITH(alloc(typeid(T), 1, (AType*)null), ## __VA_ARGS__))
-#define str(CSTR)                   string_i.type.with_symbol((string)alloc((AType)&string_i.type, 1, (AType*)null), (symbol)(CSTR))
+#define ctr(T,WITH,...)             Au_initialize(T##_i.type.with_##WITH(alloc(typeid(T), 1, (Au_t*)null), ## __VA_ARGS__))
+#define ctr1(T,WITH,...)            Au_initialize(T##_i.type.with_##WITH(alloc(typeid(T), 1, (Au_t*)null), ## __VA_ARGS__))
+#define alloc_ctr(T,WITH,...)       Au_initialize(T##_i.type.with_##WITH(alloc(typeid(T), 1, (Au_t*)null), ## __VA_ARGS__))
+#define str(CSTR)                   string_i.type.with_symbol((string)alloc((Au_t)&string_i.type, 1, (Au_t*)null), (symbol)(CSTR))
 #define addr_validateI(I)           ({ \
     __typeof__(I) *addr = &I; \
     I \
@@ -219,16 +219,16 @@
 #define EXPAND_ARGS(...)            EXPAND_ARGS_HELPER(COUNT_ARGS(__VA_ARGS__), __VA_ARGS__)
 #define EXPAND_ARGS_HELPER(N, ...)  combine_tokens(EXPAND_ARGS_, N)(__VA_ARGS__)
 #define EXPAND_ARGS_0()                                0
-#define EXPAND_ARGS_1(a)                               1, (AType)&a##_i.type
-#define EXPAND_ARGS_2(a, b)                            2, (AType)&a##_i.type, (AType)&b##_i.type
-#define EXPAND_ARGS_3(a, b, c)                         3, (AType)&a##_i.type, (AType)&b##_i.type, (AType)&c##_i.type
-#define EXPAND_ARGS_4(a, b, c, d)                      4, (AType)&a##_i.type, (AType)&b##_i.type, (AType)&c##_i.type, (AType)&d##_i.type
-#define EXPAND_ARGS_5(a, b, c, d, e)                   5, (AType)&a##_i.type, (AType)&b##_i.type, (AType)&c##_i.type, (AType)&d##_i.type, (AType)&e##_i.type
-#define EXPAND_ARGS_6(a, b, c, d, e, f)                6, (AType)&a##_i.type, (AType)&b##_i.type, (AType)&c##_i.type, (AType)&d##_i.type, (AType)&e##_i.type, (AType)&f##_i.type
-#define EXPAND_ARGS_7(a, b, c, d, e, f, g)             7, (AType)&a##_i.type, (AType)&b##_i.type, (AType)&c##_i.type, (AType)&d##_i.type, (AType)&e##_i.type, (AType)&f##_i.type, (AType)&g##_i.type
-#define EXPAND_ARGS_8(a, b, c, d, e, f, g, h)          8, (AType)&a##_i.type, (AType)&b##_i.type, (AType)&c##_i.type, (AType)&d##_i.type, (AType)&e##_i.type, (AType)&f##_i.type, (AType)&g##_i.type, (AType)&h##_i.type
-#define EXPAND_ARGS_9(a, b, c, d, e, f, g, h, ii)      9, (AType)&a##_i.type, (AType)&b##_i.type, (AType)&c##_i.type, (AType)&d##_i.type, (AType)&e##_i.type, (AType)&f##_i.type, (AType)&g##_i.type, (AType)&h##_i.type, (AType)&ii##_i.type
-#define EXPAND_ARGS_10(a, b, c, d, e, f, g, h, ii, j) 10, (AType)&a##_i.type, (AType)&b##_i.type, (AType)&c##_i.type, (AType)&d##_i.type, (AType)&e##_i.type, (AType)&f##_i.type, (AType)&g##_i.type, (AType)&h##_i.type, (AType)&ii##_i.type, (AType)&j##_i.type
+#define EXPAND_ARGS_1(a)                               1, (Au_t)&a##_i.type
+#define EXPAND_ARGS_2(a, b)                            2, (Au_t)&a##_i.type, (Au_t)&b##_i.type
+#define EXPAND_ARGS_3(a, b, c)                         3, (Au_t)&a##_i.type, (Au_t)&b##_i.type, (Au_t)&c##_i.type
+#define EXPAND_ARGS_4(a, b, c, d)                      4, (Au_t)&a##_i.type, (Au_t)&b##_i.type, (Au_t)&c##_i.type, (Au_t)&d##_i.type
+#define EXPAND_ARGS_5(a, b, c, d, e)                   5, (Au_t)&a##_i.type, (Au_t)&b##_i.type, (Au_t)&c##_i.type, (Au_t)&d##_i.type, (Au_t)&e##_i.type
+#define EXPAND_ARGS_6(a, b, c, d, e, f)                6, (Au_t)&a##_i.type, (Au_t)&b##_i.type, (Au_t)&c##_i.type, (Au_t)&d##_i.type, (Au_t)&e##_i.type, (Au_t)&f##_i.type
+#define EXPAND_ARGS_7(a, b, c, d, e, f, g)             7, (Au_t)&a##_i.type, (Au_t)&b##_i.type, (Au_t)&c##_i.type, (Au_t)&d##_i.type, (Au_t)&e##_i.type, (Au_t)&f##_i.type, (Au_t)&g##_i.type
+#define EXPAND_ARGS_8(a, b, c, d, e, f, g, h)          8, (Au_t)&a##_i.type, (Au_t)&b##_i.type, (Au_t)&c##_i.type, (Au_t)&d##_i.type, (Au_t)&e##_i.type, (Au_t)&f##_i.type, (Au_t)&g##_i.type, (Au_t)&h##_i.type
+#define EXPAND_ARGS_9(a, b, c, d, e, f, g, h, ii)      9, (Au_t)&a##_i.type, (Au_t)&b##_i.type, (Au_t)&c##_i.type, (Au_t)&d##_i.type, (Au_t)&e##_i.type, (Au_t)&f##_i.type, (Au_t)&g##_i.type, (Au_t)&h##_i.type, (Au_t)&ii##_i.type
+#define EXPAND_ARGS_10(a, b, c, d, e, f, g, h, ii, j) 10, (Au_t)&a##_i.type, (Au_t)&b##_i.type, (Au_t)&c##_i.type, (Au_t)&d##_i.type, (Au_t)&e##_i.type, (Au_t)&f##_i.type, (Au_t)&g##_i.type, (Au_t)&h##_i.type, (Au_t)&ii##_i.type, (Au_t)&j##_i.type
 //#define COUNT_ARGS_IMPL(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, N, ...) N
 #define COUNT_ARGS_IMPL(_0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, N, ...) N
 #define COUNT_ARGS(...)             COUNT_ARGS_IMPL(dummy, ## __VA_ARGS__, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
@@ -281,10 +281,10 @@
     X##_i.type.with_##ARG = & X##_with_##ARG; \
     X##_i.type.members[X##_i.type.member_count].name        = stringify(with_##ARG); \
     X##_i.type.members[X##_i.type.member_count].args        = (_meta_t) { emit_types(ARG) }; \
-    X##_i.type.members[X##_i.type.member_count].type        = (AType)&ARG##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].type        = (Au_t)&ARG##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset      = offsetof(X##_f, with_##ARG); \
     X##_i.type.members[X##_i.type.member_count].ptr         = (void*)& X##_with_##ARG; \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_CONSTRUCT; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_CONSTRUCT; \
     X##_i.type.member_count++;  
 #define   i_ctr_public_PROTO(X, ARG)
 #define   i_ctr_public_METHOD(X, ARG)      X (*with_##ARG)(X, ARG);
@@ -345,8 +345,8 @@
 #define   i_prop_public_INIT(X, R, N) \
     X##_i.type.members[X##_i.type.member_count].name        = #N;                                \
     X##_i.type.members[X##_i.type.member_count].offset      = offsetof(struct _##X, N);          \
-    X##_i.type.members[X##_i.type.member_count].type        = (AType)&R##_i.type;                  \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_PROP;                     \
+    X##_i.type.members[X##_i.type.member_count].type        = (Au_t)&R##_i.type;                  \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_PROP;                     \
     X##_i.type.members[X##_i.type.member_count].id          = offsetof(struct X##_fields, N);    \
     X##_i.type.member_count++;
 #define   i_prop_public_PROTO(X, R, N)  
@@ -400,8 +400,8 @@
 #define   i_prop_public_INIT_field(X, R, N, M2) \
     X##_i.type.members[X##_i.type.member_count].name        = #M2;                               \
     X##_i.type.members[X##_i.type.member_count].offset      = offsetof(struct _##X, N);          \
-    X##_i.type.members[X##_i.type.member_count].type        = (AType)&R##_i.type;                  \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_PROP;                     \
+    X##_i.type.members[X##_i.type.member_count].type        = (Au_t)&R##_i.type;                  \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_PROP;                     \
     X##_i.type.members[X##_i.type.member_count].id          = offsetof(struct X##_fields, N);    \
     X##_i.type.member_count++;
 
@@ -454,7 +454,7 @@
 #define   i_prop_public_DECL_EXTERN_meta(X, R, N, M2) i_prop_public_DECL(X, R, N)
 #define   i_prop_public_GENERICS_meta(X, R, N, M2)
 #define   i_prop_public_INIT_meta(X, R, N, M2) \
-    X##_i.type.members[X##_i.type.member_count].args = (_meta_t) { 1, (AType)&M2##_i.type }; \
+    X##_i.type.members[X##_i.type.member_count].args = (_meta_t) { 1, (Au_t)&M2##_i.type }; \
     i_prop_public_INIT(X, R, N)
 
 #define   i_prop_public_PROTO_meta(X, R, N, M2)  
@@ -585,8 +585,8 @@
 #define   i_vprop_public_INIT(X, R, N) \
     X##_i.type.members[X##_i.type.member_count].name     = #N; \
     X##_i.type.members[X##_i.type.member_count].offset   = offsetof(struct _##X, N); \
-    X##_i.type.members[X##_i.type.member_count].type     = (AType)&ARef_i.type; \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_VPROP; \
+    X##_i.type.members[X##_i.type.member_count].type     = (Au_t)&ARef_i.type; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_VPROP; \
     X##_i.type.member_count++;
 #define   i_vprop_public_PROTO(X, R, N)  
 #define   i_vprop_public_METHOD(X, R, N)
@@ -637,9 +637,9 @@
     X##_i.type.members[X##_i.type.member_count].name        = #ID; \
     X##_i.type.members[X##_i.type.member_count].id          = ENUM##_##ID; \
     X##_i.type.members[X##_i.type.member_count].value       = VALUE; \
-    X##_i.type.members[X##_i.type.member_count].type        = (AType)&ENUM##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].type        = (Au_t)&ENUM##_i.type; \
     X##_i.type.members[X##_i.type.member_count].args        = (_meta_t) { emit_types(__VA_ARGS__) }; \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_ATTR; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_ATTR; \
     X##_i.type.member_count++;
 #define i_attr_PROTO(       X, ENUM, ID, VALUE, ...)  
 #define i_attr_METHOD(      X, ENUM, ID, VALUE, ...)  
@@ -704,10 +704,10 @@
     X##_i.type.with_##ARG = & X##_with_##ARG; \
     X##_i.type.members[X##_i.type.member_count].name        = stringify(with_##ARG); \
     X##_i.type.members[X##_i.type.member_count].args        = (_meta_t) { }; \
-    X##_i.type.members[X##_i.type.member_count].type        = (AType)&ARG##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].type        = (Au_t)&ARG##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset      = offsetof(X##_f, with_##ARG); \
     X##_i.type.members[X##_i.type.member_count].ptr         = (void*)& X##_with_##ARG; \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_CONSTRUCT; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_CONSTRUCT; \
     X##_i.type.member_count++;  
 #define   i_struct_ctr_PROTO(X, ARG)
 #define   i_struct_ctr_METHOD(X, ARG)      X (*with_##ARG)(ARG*);
@@ -723,10 +723,10 @@
     X##_i.type.with_##ARG = & X##_with_##ARG; \
     X##_i.type.members[X##_i.type.member_count].name        = stringify(with_##ARG); \
     X##_i.type.members[X##_i.type.member_count].args        = (_meta_t) { }; \
-    X##_i.type.members[X##_i.type.member_count].type        = (AType)&ARG##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].type        = (Au_t)&ARG##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset      = offsetof(X##_f, with_##ARG); \
     X##_i.type.members[X##_i.type.member_count].ptr         = (void*)& X##_with_##ARG; \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_CONSTRUCT; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_CONSTRUCT; \
     X##_i.type.member_count++;  
 #define   i_struct_ctr_obj_PROTO(X, ARG)
 #define   i_struct_ctr_obj_METHOD(X, ARG)      X (*with_##ARG)(ARG);
@@ -741,9 +741,9 @@
 #define   i_struct_array_INIT(X, R, S, N) \
     X##_i.type.members[X##_i.type.member_count].name     = #N; \
     X##_i.type.members[X##_i.type.member_count].offset   = offsetof(struct _##X, N); \
-    X##_i.type.members[X##_i.type.member_count].type     = (AType)&R##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].type     = (Au_t)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].count    = S; \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_PROP; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_PROP; \
     X##_i.type.member_count++;
 #define   i_struct_array_PROTO(X, R, S, N)  
 #define   i_struct_array_METHOD(X, R, S, N)        
@@ -758,9 +758,9 @@
 #define   i_struct_prop_INIT(X, R, N) \
     X##_i.type.members[X##_i.type.member_count].name     = #N; \
     X##_i.type.members[X##_i.type.member_count].offset   = offsetof(struct _##X, N); \
-    X##_i.type.members[X##_i.type.member_count].type     = (AType)&R##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].type     = (Au_t)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].count    = 0; \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_PROP; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_PROP; \
     X##_i.type.member_count++;
 #define   i_struct_prop_PROTO(X, R, N)  
 #define   i_struct_prop_METHOD(X, R, N)      
@@ -776,9 +776,9 @@
     X##_i.type.cast_##R = & X##_cast_##R; \
     X##_i.type.members[X##_i.type.member_count].name    = stringify(cast_##R); \
     X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { emit_types(X) }; \
-    X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].type    = (Au_t)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = offsetof(X##_f, cast_##R); \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_CAST; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_CAST; \
     X##_i.type.member_count++;  
 #define   i_struct_cast_PROTO(X, R)
 #define   i_struct_cast_METHOD(X, R)        R (*cast_##R)(X);         
@@ -794,9 +794,9 @@
     X##_i.type . N = & X## _ ## N; \
     X##_i.type.members[X##_i.type.member_count].name    = #N; \
     X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { }; \
-    X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].type    = (Au_t)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = offsetof(X##_f, N); \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_IMETHOD; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_IMETHOD; \
     X##_i.type.member_count++;
 #define   i_struct_method_PROTO(X, R, N, ...)
 #define   i_struct_method_METHOD(X, R, N, ...)      R (*N)(X* __VA_OPT__(,) __VA_ARGS__);
@@ -813,9 +813,9 @@
     X##_i.type . N = & X## _ ## N; \
     X##_i.type.members[X##_i.type.member_count].name    = #N; \
     X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { }; \
-    X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].type    = (Au_t)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = offsetof(X##_f, N); \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_SMETHOD; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_SMETHOD; \
     X##_i.type.member_count++;
 #define   i_struct_static_PROTO(X, R, N, ...)
 #define   i_struct_static_METHOD(X, R, N, ...)      R (*N)(__VA_ARGS__);
@@ -842,8 +842,8 @@
 #define   i_inlay_public_INIT(X, R, N) \
     X##_i.type.members[X##_i.type.member_count].name     = #N; \
     X##_i.type.members[X##_i.type.member_count].offset   = offsetof(struct _##X, N); \
-    X##_i.type.members[X##_i.type.member_count].type     = (AType)&R##_i.type; \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_INLAY; \
+    X##_i.type.members[X##_i.type.member_count].type     = (Au_t)&R##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_INLAY; \
     X##_i.type.member_count++;
 #define   i_inlay_public_PROTO(X, R, N)  
 #define   i_inlay_public_METHOD(X, R, N)
@@ -910,9 +910,9 @@
 #define   t_method_public_INIT(X, R, N, ...) \
     X##_i.type.members[X##_i.type.member_count].name    = #N; \
     X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { emit_types(__VA_ARGS__) }; \
-    X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].type    = (Au_t)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = 0; \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_TMETHOD; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_TMETHOD; \
     X##_i.type.members[X##_i.type.member_count].ptr     = &N; \
     X##_i.type.member_count++;   
 #define   t_method_public_PROTO(X, R, N, ...)
@@ -964,9 +964,9 @@
 #define   s_method_public_INIT(X, R, N, ...) \
     X##_i.type.members[X##_i.type.member_count].name    = #N; \
     X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { emit_types(__VA_ARGS__) }; \
-    X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].type    = (Au_t)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = 0; \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_SMETHOD; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_SMETHOD; \
     X##_i.type.members[X##_i.type.member_count].ptr     = &X##_##N; \
     X##_i.type.member_count++;   
 #define   s_method_public_PROTO(X, R, N, ...)
@@ -1015,9 +1015,9 @@
     X##_i.type . N = & X## _ ## N; \
     X##_i.type.members[X##_i.type.member_count].name    = #N; \
     X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { emit_types(__VA_ARGS__) }; \
-    X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].type    = (Au_t)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = offsetof(X##_f, N); \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_IMETHOD; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_IMETHOD; \
     X##_i.type.members[X##_i.type.member_count].ptr     = (void*)X##_i.type . N; \
     X##_i.type.member_count++;
 #define   i_method_public_PROTO(X, R, N, ...)
@@ -1050,9 +1050,9 @@
 #define   i_final_public_INIT(    X, R, N, ...) \
     X##_i.type.members[X##_i.type.member_count].name    = #N; \
     X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { emit_types(__VA_ARGS__) }; \
-    X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].type    = (Au_t)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = 0; \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_IFINAL; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_IFINAL; \
     X##_i.type.members[X##_i.type.member_count].ptr     = &N; \
     X##_i.type.member_count++;
 #define   i_final_public_PROTO(X, R, N, ...)
@@ -1069,7 +1069,7 @@
 (X, Y, T, R, N, ...) s_method_##T##_##Y(X, R, N __VA_OPT__(,) __VA_ARGS__)
 
 #define   t_method\
-(X, Y, T, R, N, ...) t_method_##T##_##Y(X, R, N, AType __VA_OPT__(,) __VA_ARGS__)
+(X, Y, T, R, N, ...) t_method_##T##_##Y(X, R, N, Au_t __VA_OPT__(,) __VA_ARGS__)
 
 #define   i_guard\
 (X, Y, T, R, N, ...) i_method_##T##_##Y(X, R, N, X, ## __VA_ARGS__)
@@ -1103,9 +1103,9 @@
     X##_i.type  . operator_##N = & X## _operator_ ## N; \
     X##_i.type.members[X##_i.type.member_count].name    = stringify(operator_##N); \
     X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { emit_types(X, ARG) }; \
-    X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].type    = (Au_t)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = offsetof(X##_f, operator_##N); \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_OPERATOR; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_OPERATOR; \
     X##_i.type.members[X##_i.type.member_count].operator_type = OPType_ ## N; \
     X##_i.type.member_count++; 
 #define   i_operator_public_PROTO(X, R, N, ARG)
@@ -1155,9 +1155,9 @@
     X##_i.type.cast_##R = & X##_cast_##R; \
     X##_i.type.members[X##_i.type.member_count].name    = stringify(cast_##R); \
     X##_i.type.members[X##_i.type.member_count].args    = (_meta_t) { emit_types(X) }; \
-    X##_i.type.members[X##_i.type.member_count].type    = (AType)&R##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].type    = (Au_t)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset  = offsetof(X##_f, cast_##R); \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_CAST; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_CAST; \
     X##_i.type.member_count++;  
 #define   i_cast_public_PROTO(X, R)
 #define   i_cast_public_METHOD(X, R)        R (*cast_##R)(X);
@@ -1206,9 +1206,9 @@
     X##_i.type.emit_idx_symbol(index, __VA_ARGS__) = & emit_idx_symbol(X ## _index, __VA_ARGS__); \
     X##_i.type.members[X##_i.type.member_count].name        = stringify(emit_idx_symbol(index, __VA_ARGS__)); \
     X##_i.type.members[X##_i.type.member_count].args        = (_meta_t) { emit_types(X, __VA_ARGS__) }; \
-    X##_i.type.members[X##_i.type.member_count].type        = (AType)&R##_i.type; \
+    X##_i.type.members[X##_i.type.member_count].type        = (Au_t)&R##_i.type; \
     X##_i.type.members[X##_i.type.member_count].offset      = offsetof(X##_f, emit_idx_symbol(index, __VA_ARGS__)); \
-    X##_i.type.members[X##_i.type.member_count].member_type = A_FLAG_INDEX; \
+    X##_i.type.members[X##_i.type.member_count].member_type = AU_FLAG_INDEX; \
     X##_i.type.member_count++;  
 #define i_index_public_PROTO(X, R, ...)
 #define i_index_public_METHOD(X, R, ...)                R (*emit_idx_symbol(index,__VA_ARGS__))(X, ##__VA_ARGS__);
@@ -1285,7 +1285,7 @@
 #define s_vargs_intern_PROTO(X, R, N, ...)
 #define s_vargs_intern_METHOD(X, R, N, ...)             
 #define s_vargs(X, Y, T, R, N, ...)                     s_vargs_##T##_##Y(X, R, N, ##__VA_ARGS__)
-#define t_vargs(X, Y, T, R, N, ...)                     s_vargs_##T##_##Y(X, R, N, AType, __VA_ARGS__)
+#define t_vargs(X, Y, T, R, N, ...)                     s_vargs_##T##_##Y(X, R, N, Au_t, __VA_ARGS__)
 
 #define i_override_method_F(X, N)
 #define i_override_method_F_EXTERN(X, N)
@@ -1301,7 +1301,7 @@
     type_ref->N = (__typeof__(type_ref->N))& X## _ ## N; \
     type_ref->members[type_ref->member_count].name = stringify(N); \
     type_ref->members[type_ref->member_count].ptr = (void*)& X##_##N; \
-    A_member_override((AType)type_ref, &type_ref->members[type_ref->member_count], A_FLAG_IMETHOD); \
+    Au_member_override((Au_t)type_ref, &type_ref->members[type_ref->member_count], AU_FLAG_IMETHOD); \
     type_ref->member_count++; \
     
 
@@ -1321,7 +1321,7 @@
     type_ref->with_##R = & X##_with_##R; \
     type_ref->members[type_ref->member_count].name = stringify(with_##R); \
     type_ref->members[type_ref->member_count].ptr  = (void*)& X##_with_##R; \
-    A_member_override((AType)type_ref, &type_ref->members[type_ref->member_count], A_FLAG_CONSTRUCT); \
+    Au_member_override((Au_t)type_ref, &type_ref->members[type_ref->member_count], AU_FLAG_CONSTRUCT); \
     type_ref->member_count++; 
 #define i_override_ctr_PROTO(X, R)
 #define i_override_ctr_METHOD(X, R)
@@ -1339,7 +1339,7 @@
     type_ref->cast_##R = & X##_cast_##R; \
     type_ref->members[type_ref->member_count].name = stringify(cast_##R); \
     type_ref->members[type_ref->member_count].ptr = (void*)& X##_cast_##R; \
-    A_member_override((AType)type_ref, &type_ref->members[type_ref->member_count], A_FLAG_CAST); \
+    Au_member_override((Au_t)type_ref, &type_ref->members[type_ref->member_count], AU_FLAG_CAST); \
     type_ref->member_count++; 
 
 #define i_override_cast_PROTO(X, R)
@@ -1358,7 +1358,7 @@
     type_ref->idx_##R = & X##_idx_##R; \
     type_ref->members[type_ref->member_count].name = stringify(idx_##R); \
     type_ref->members[type_ref->member_count].ptr = (void*)& X##_idx_##R; \
-    A_member_override(type_ref, &type_ref->members[type_ref->member_count], A_FLAG_INDEX); \
+    Au_member_override(type_ref, &type_ref->members[type_ref->member_count], AU_FLAG_INDEX); \
     type_ref->member_count++; 
 
 #define i_override_idx_PROTO(X, R)
@@ -1453,44 +1453,44 @@
     for (item EE = (MM && MM->fifo) ? MM->fifo->first : (item)null; EE; EE = EE->next)
 
 
-#define         form(T, t, ...)   (T)formatter(typeid(T), null,   (A)false, (symbol)t, ## __VA_ARGS__)
-#define            f(T, t, ...)   (T)formatter(typeid(T), null,   (A)false, (symbol)t, ## __VA_ARGS__)
-#define         exec(t, ...)      command_exec(((string)formatter((AType)null, null, (A)false, (symbol)t, ## __VA_ARGS__)))
-#define          run(t, ...)      command_run(((string)formatter((AType)null, null, (A)false, (symbol)t, ## __VA_ARGS__)))
+#define         form(T, t, ...)   (T)formatter(typeid(T), null,   (Au)false, (symbol)t, ## __VA_ARGS__)
+#define            f(T, t, ...)   (T)formatter(typeid(T), null,   (Au)false, (symbol)t, ## __VA_ARGS__)
+#define         exec(t, ...)      command_exec(((string)formatter((Au_t)null, null, (Au)false, (symbol)t, ## __VA_ARGS__)))
+#define          run(t, ...)      command_run(((string)formatter((Au_t)null, null, (Au)false, (symbol)t, ## __VA_ARGS__)))
 #define         vexec(n, t, ...)     verify(exec(t __VA_OPT__(,) __VA_ARGS__) == 0, "shell command failed: %s", n);
 
-#define        A_log(sL, t, ...)   formatter((AType)null,      stdout, string(sL),  t, ## __VA_ARGS__)
+#define        Au_log(sL, t, ...)   formatter((Au_t)null,      stdout, string(sL),  t, ## __VA_ARGS__)
 
-#define          put(t,    ...)   formatter((AType)null,      stdout, (A)false, (symbol)t, ## __VA_ARGS__)
-//#define        print(L, t,    ...) formatter((AType)null,      stdout, (A)true,  (symbol)t, ## __VA_ARGS__)
-#define        error(t, ...)      formatter((AType)null,      stderr, (A)true,  (symbol)t, ## __VA_ARGS__)
+#define          put(t,    ...)   formatter((Au_t)null,      stdout, (Au)false, (symbol)t, ## __VA_ARGS__)
+//#define        print(L, t,    ...) formatter((Au_t)null,      stdout, (Au)true,  (symbol)t, ## __VA_ARGS__)
+#define        error(t, ...)      formatter((Au_t)null,      stderr, (Au)true,  (symbol)t, ## __VA_ARGS__)
 
 
 #define print(t, ...)   ({\
     static string _topic = null; \
-    if (!_topic) _topic = (string)hold((A)new(string, __func__)); \
-    formatter((AType)null, stdout, (A)_topic, t, ## __VA_ARGS__); \
+    if (!_topic) _topic = (string)hold((Au)new(string, __func__)); \
+    formatter((Au_t)null, stdout, (Au)_topic, t, ## __VA_ARGS__); \
 })
 
 #define fault(t, ...) do {\
     static string _topic = null; \
-    if (!_topic) _topic = (string)hold((A)string(__func__)); \
-     string res = (string)formatter((AType)null, stderr, (A)_topic,  (symbol)t, ## __VA_ARGS__); \
+    if (!_topic) _topic = (string)hold((Au)string(__func__)); \
+     string res = (string)formatter((Au_t)null, stderr, (Au)_topic,  (symbol)t, ## __VA_ARGS__); \
      halt(res); \
     } while(0)
 
 
-#define  file_exists(t, ...)     (A_exists(formatter((AType)null, null, (A)false, (symbol)t, ## __VA_ARGS__)) == Exists_file)
-#define   dir_exists(t, ...)     (A_exists(formatter((AType)null, null, (A)false, (symbol)t, ## __VA_ARGS__)) == Exists_dir)
+#define  file_exists(t, ...)     (Au_exists(formatter((Au_t)null, null, (Au)false, (symbol)t, ## __VA_ARGS__)) == Exists_file)
+#define   dir_exists(t, ...)     (Au_exists(formatter((Au_t)null, null, (Au)false, (symbol)t, ## __VA_ARGS__)) == Exists_dir)
 #ifndef NDEBUG
-#define       assert(a, t, ...) do { if (!(a)) { formatter((AType)null, stderr, (A)true,  t, ## __VA_ARGS__); exit(1); } } while(0)
+#define       assert(a, t, ...) do { if (!(a)) { formatter((Au_t)null, stderr, (Au)true,  t, ## __VA_ARGS__); exit(1); } } while(0)
 #else
 #define       assert(a, t, ...) do { } while(0)
 #endif
 #define       verify(a, t, ...) \
     ({ \
         if (!(a)) { \
-            string res = (string)formatter((AType)null, stderr, (A)true,  (symbol)t, ## __VA_ARGS__); \
+            string res = (string)formatter((Au_t)null, stderr, (Au)true,  (symbol)t, ## __VA_ARGS__); \
             if (level_err >= fault_level) { \
                 halt(res); \
             } \
@@ -1504,15 +1504,15 @@
 #undef min
 #undef max
 
-#define sqr(x) ({ \
-    __typeof__(x) a = x; \
+#define sqr(Au) ({ \
+    __typeof__(Au) a = A; \
     a*a \
 })\
 
 #define min(A, B) ({ \
-    __typeof__(A) a = A; \
+    __typeof__(Au) a = A; \
     __typeof__(B) b = B; \
-    __typeof__(A) r = a < b ? a : b; \
+    __typeof__(Au) r = a < b ? a : b; \
     r; \
 })
 
@@ -1531,8 +1531,8 @@
     if (len(arr)) for (E e = *(E*)peek(arr, 0), e0 = 0; e0 == 0; e0++) \
         for (num i = 0, __len = len(arr); i < __len; i++, e = *(E*)peek(arr, i)) \
 
-#define head(o) header((A)o)
-#define A_struct(T) alloc(typeid(u8), sizeof(T), (AType*)null)
+#define head(o) header((Au)o)
+#define Au_struct(T) alloc(typeid(u8), sizeof(T), (Au_t*)null)
 #define     e_str(E,I) estring(typeid(E), I)
 #define     e_val(E,S) evalue (typeid(E), S)
 

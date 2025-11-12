@@ -19,6 +19,6 @@ import: opencv:opencv/49486f6
     -G "{default_generator}"
 
 type: static
-modules: A
+modules: Au
 link:   -lopencv_core -lopencv_imgproc
 cflags: -O2 -g0 -mavx2 -mfma -I$IMPORT/include/opencv4 -I$IMPORT/include/opencv4/opencv2
