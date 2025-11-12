@@ -69,10 +69,6 @@ emember aether_register_model(aether e, model mdl, string name, bool use_now) {
     
     mdl->mem = hold(mem);
     if (is_class) {
-        if (eq(name, "A")) {
-            int test2 = 2;
-            test2 += 2;
-        }
         mdl_for_member->mem = hold(mem);
         mdl->ptr = hold(mdl_for_member);
     }
@@ -104,23 +100,16 @@ map aether_top_member_map(aether e) {
     return top->members;
 }*/
 
-void aether_register_member(aether e, emember mem, bool register_now) {
-    if (!mem || mem->registered || mem->target_member)
+void aether_register_member(aether e, emember mem, bool finalize) {
+    if (!mem || mem->membership || mem->target_member)
         return;
-    if (eq(mem->name, "watch")) {
-        int test2 = 2;
-        test2    += 2;
-    }
     model ctx = mem->context ? mem->context : top(e);
     //mem->registered  = true;
     verify(ctx->members, "expected members map");
     set(ctx->members, string(mem->name->chars), mem);
-    if (register_now)
-        set_model(mem, mem->mdl);
-}
-
-void emember_mark_used(emember mem) {
-    set_model(mem, mem->mdl);
+    mem->membership = ctx;
+    if (finalize)
+        finalize(mem);
 }
 
 #define no_target null
@@ -569,23 +558,19 @@ void model_init(model mdl) {
                 0);
     } else {
         // we still need static array (use of integral shape), aliases
-
         if (mdl && mdl->src) {
-            model  src = mdl->src;
-            AType src_cl = src->atype_src;
-            if (src_cl == typeid(fn)) {
-                use((fn)src); // type not set on function until we use it
+            model src = mdl->src;
+            if (isa(src) == typeid(fn)) {
+                finalize(src->mem);
                 return;
             }
         }
 
         // can be a class, structure, fn
         if (type == typeid(model) && mdl->src && mdl->src->type) {
-            /// now we should handle the case 
-            model  src = mdl->src;
-            AType src_cl = src->atype_src;
-            if (src_cl == typeid(fn) && !((fn)src)->type)
-                use((fn)src); // type not set on function until we use it
+            model src = mdl->src;
+            if (isa(src) == typeid(fn))
+                finalize(src->mem);
             /// this is a reference, so we create type and debug based on this
             u64 ptr_sz = LLVMPointerSize(e->target_data);
             mdl->type  = LLVMPointerType(
@@ -980,8 +965,6 @@ void aether_finalize_init(aether e, fn f) {
         model member_ptr = emodel("_member");
         i32 current_prop_id = 0;
 
-        // props are not makign their way to Vulkan record (find out where they are being registered)
-        // 
         pairs (mdl->members, ii) {
             emember   f      = ii->value;
             map       member = map(hsize, 8, assorted, true);
@@ -1243,7 +1226,6 @@ void aether_finalize_init(aether e, fn f) {
             pop(e);
 
             push(e, e);
-            use(main_fn);
             register_model(e, main_fn, string("main"), true);
             pop(e);
         }
@@ -1295,78 +1277,6 @@ if (eq(fn->name, "main")) {
     //pop(e);
 }
 
-void fn_finalize(fn f) {
-    if (f->finalized) return;
-    aether e = f->mod;
-
-    if (f->is_module_init)
-        aether_finalize_init(e, f);
-
-    int   index   = 0;
-    f->finalized = true;
-
-    if (!f->entry)
-        return;
-
-    index = 0;
-    push(e, f);
-    if (f->target && false) {
-        LLVMMetadataRef meta = LLVMDIBuilderCreateParameterVariable(
-            e->dbg_builder,     // DIBuilder reference
-            f->scope,           // The scope (subprogram/fn metadata)
-            "a",                // Parameter name
-            4,
-            1,                  // Argument index (starting from 1, not 0)
-            e->file,            // File where it's defined
-            isa(f->mem->name) == typeid(string) ? 0 :
-                f->mem->name->line,      // Line number
-            f->target->mdl->debug,   // Debug type of the parameter (LLVMMetadataRef for type)
-            1,                 // AlwaysPreserve (1 to ensure the variable is preserved in optimized code)
-            0                  // Flags (typically 0)
-        );
-        LLVMValueRef first_instr = LLVMGetFirstInstruction(f->entry);
-        
-        assert(LLVMIsAInstruction(first_instr), "not a instr"); /// we may simply insert a return if there is nothing?
-        
-        LLVMValueRef decl  = LLVMDIBuilderInsertDeclareRecordBefore(
-            e->dbg_builder,                 // The LLVM builder
-            f->target->value,              // The LLVMValueRef for the first parameter
-            meta,                           // The debug metadata for the first parameter
-            LLVMDIBuilderCreateExpression(e->dbg_builder, NULL, 0), // Empty expression
-            LLVMGetCurrentDebugLocation2(e->builder),       // Current debug location
-            first_instr);                   // Attach it in the fn's entry block
-        index++;
-    }
-
-    pairs(f->args->members, i) {
-        emember arg = i->value;
-        /// create debug for parameter here
-        LLVMMetadataRef param_meta = LLVMDIBuilderCreateParameterVariable(
-            e->dbg_builder,          // DIBuilder reference
-            f->scope,         // The scope (subprogram/fn metadata)
-             cstring(arg->name),    // Parameter name
-            len(arg->name),
-            1 + index,         // Argument index (starting from 1, not 0)
-            e->file,           // File where it's defined
-            arg->name->line,   // Line number
-            arg->mdl->debug,   // Debug type of the parameter (LLVMMetadataRef for type)
-            1,                 // AlwaysPreserve (1 to ensure the variable is preserved in optimized code)
-            0                  // Flags (typically 0)
-        );
-        LLVMValueRef param_value = LLVMGetParam(f->value, index);
-        LLVMValueRef decl        = LLVMDIBuilderInsertDeclareRecordAtEnd(
-            e->dbg_builder,                   // The LLVM builder
-            param_value,                
-            param_meta,                 // The debug metadata for the first parameter
-            LLVMDIBuilderCreateExpression(e->dbg_builder, NULL, 0), // Empty expression
-            LLVMGetCurrentDebugLocation2(e->builder),       // Current debug location
-            f->entry);                 // Attach it in the fn's entry block
-        arg->value = param_value;
-        index++;
-    }
-    pop(e);
-}
-
 void fn_init(fn fn) {
     //verify(fn->record || !eq(fn->name, "main"), "to implement main, implement fn module-name[]");
 }
@@ -1402,314 +1312,6 @@ model translate_target(model mdl) {
     return mdl;
 }
 
-
-void fn_use(fn fn) {
-    if (fn->value)
-        return;
-
-    aether e = fn->mod;
-    int              n_args    = fn->args ? len(fn->args->members) : 0;
-    LLVMTypeRef*     arg_types = calloc(4 + (fn->instance != null) + n_args, sizeof(LLVMTypeRef));
-    int              index     = 0;
-
-    print("-------------");
-
-    if (fn->instance) {
-        AType t = isa(fn->instance);
-        verify (fn->instance->src && 
-                (isa(fn->instance->src) == typeid(structure) || 
-                 isa(fn->instance->src) == typeid(Class)),
-            "target [incoming] must be record type (struct / class) -- it is then made pointer-to record");
-        
-        /// we set is_arg to prevent registration of global 
-        model mtarget = translate_target(fn->instance);
-
-        // our abstract is to have type differences for struct and ref struct, 
-        // but NOT any form of ref class, less the user is setting a pointer indirectly;
-        // class is inherently a reference to our abstract
-        fn->target = hold(emember(mod, e, mdl, mtarget, name, string("a"), is_arg, true));
-        print("target = %o", fn->instance);
-        arg_types[index++] = mtarget->ptr ? mtarget->ptr->type : mtarget->type;
-    }
-
-    verify(!fn->args || isa(fn->args) == typeid(eargs), "arg mismatch");
-    
-    A info = null;
-
-    if (fn->args)
-        pairs(fn->args->members, i) {
-            emember arg = i->value;
-            model arg_mdl = arg->mdl;
-            info = header(arg);
-            print("type = %o (%s:%i)", arg_mdl, info->source, info->line);
-            verify (arg_mdl, "no LLVM type found for arg %o", arg->name);
-            arg_types[index++] =
-                (isa(arg_mdl) == typeid(Class) || !arg_mdl->type) ? 
-                    pointer(arg_mdl)->type : arg_mdl->type;
-        }
-
-    fn->arg_types = arg_types;
-    fn->arg_count = index;
-    fn->type      = LLVMFunctionType(
-        fn->rtype ? fn->rtype->type : LLVMVoidType(),
-        fn->arg_types, fn->arg_count, fn->va_args);
-    fn->ptr       = pointer(fn);
-
-    if (fn->mem->name || fn->extern_name) {
-        fn->value = LLVMAddFunction(fn->mod->module,
-            fn->extern_name ? fn->extern_name->chars : fn->mem->name->chars, fn->type);
-    }
-    bool is_extern = !!fn->imported_from || fn->exported;
-
-    /// create debug info for eargs (including target)
-    if (fn->value) {
-        index = 0;
-        if (fn->target) {
-            fn->target->value = LLVMGetParam(fn->value, index++);
-            fn->target->is_arg = true;
-        }
-        if (fn->args)
-            pairs(fn->args->members, i) {
-                emember arg = i->value;
-                arg->value = LLVMGetParam(fn->value, index++);
-                arg->is_arg = true;
-            }
-        //verify(fmem, "fn emember access not found");
-        LLVMSetLinkage(fn->value,
-            is_extern ? LLVMExternalLinkage : LLVMInternalLinkage);
-
-        if (fn->is_module_init)
-            set_module_init(fn->mod->module, fn);
-
-        if (!is_extern || fn->exported) {
-            // Create fn debug info
-            LLVMMetadataRef subroutine = LLVMDIBuilderCreateSubroutineType(
-                e->dbg_builder,
-                e->compile_unit,   // Scope (file)
-                NULL,              // Parameter types (None for simplicity)
-                0,                 // Number of parameters
-                LLVMDIFlagZero     // Flags
-            );
-
-            fn->scope = LLVMDIBuilderCreateFunction(
-                e->dbg_builder,
-                e->compile_unit,        // Scope (compile_unit)
-                fn->mem->name->chars, len(fn->mem->name),
-                fn->mem->name->chars, len(fn->mem->name),
-                e->file,                // File
-                e->mem->name->line,     // Line number
-                subroutine,             // Function type
-                1,                      // Is local to unit
-                1,                      // Is definition
-                1,                      // Scope line
-                LLVMDIFlagZero,         // Flags
-                0                       // Is optimized
-            );
-            // attach debug info to fn
-            LLVMSetSubprogram(fn->value, fn->scope);
-            fn->entry = LLVMAppendBasicBlockInContext(
-                e->module_ctx, fn->value, "entry");
-        }
-
-        // make sure we have a pointer type defined for funcitons, since this is not automatic in member registration
-        pointer(fn);
-    }
-}
-
-none enumeration_finalize(enumeration en) {
-    if (en->finalized) return;
-    en->finalized = true;
-    aether e = en->mod;
-    if (!en->src)
-         en->src = emodel("i32");
-
-    //en->size_bits = en->src->size_bits;
-
-    // set ABI size/alignment
-    model emdl = typed(en);
-    en->size_bits      = LLVMABISizeOfType(e->target_data, emdl->type)      * 8;
-    en->alignment_bits = LLVMABIAlignmentOfType(e->target_data, emdl->type) * 8;
-
-    if (!en->imported_from) {
-        en->global_values = map(hsize, 8);
-        pairs(en->members, i) {
-            emember mem = i->value;
-            // can DBG link to a global value an accessed from a namespace E?
-            string global_name = f(string, "%o_%o", en, mem->name);
-            LLVMValueRef g = LLVMAddGlobal(e->module, emdl->type, cstring(global_name));
-            LLVMSetLinkage       (g, LLVMExternalLinkage);
-            LLVMSetInitializer   (g, mem->value);
-            LLVMSetGlobalConstant(g, true);
-            LLVMSetUnnamedAddr   (g, true);
-            set(en->global_values, en->mem->name,
-                enode(mod, e, value, g, mdl, en->vtype, meta, null));
-        }
-    }
-}
-
-void record_finalize(record rec) {
-    enumeration en = instanceof(rec, typeid(enumeration));
-    if (rec->finalized || rec->is_abstract || en) {
-        rec->finalized = true;
-        return;
-    }
-    int    total = 0;
-    aether e     = rec->mod;
-    array  a     = array(32);
-    a->assorted = true;
-    record r     = rec;
-    Class  is_cl = instanceof(rec, typeid(Class));
-
-    if (is_cl && is_cl->parent) {
-        finalize(is_cl->parent);
-    }
-    
-    rec->finalized = true;
-
-    // this must now work with 'schematic' model
-    // delegation namespace
-    while (r) {
-        int this_total = 0;
-        pairs(r->members, i) {
-            total ++;
-            this_total++;
-        }
-        push(a, r);
-        r = read_parent(r);
-    }
-    rec->total_members = total;
-    if (len(a) > 1)
-        a = reverse(a); // parent first when finalizing
-    
-    LLVMTargetDataRef target_data = rec->mod->target_data;
-    LLVMTypeRef*     member_types = calloc(total, sizeof(LLVMTypeRef));
-    LLVMMetadataRef* member_debug = calloc(total, sizeof(LLVMMetadataRef));
-    bool             is_uni       = instanceof(rec, typeid(uni)) != null;
-    int              index        = 0;
-    emember           largest      = null;
-    sz               sz_largest   = 0;
-
-    AType r_type = isa(rec);
-
-    each (a, record, r) {
-        pairs(r->members, i) {
-            string k =  i->key;
-            emember mem = i->value;
-               AType t = isa(mem->mdl);
-            A info = isa(mem);
-            verify( mem->name && mem->name->chars,  "no name on emember: %p (type: %o)", mem, r);
-
-            if (instanceof(mem->mdl, typeid(fn)))
-                continue;
-
-            finalize(mem->mdl);
-            enumeration en = instanceof(mem->mdl, typeid(enumeration));
-
-            if (en) {
-                member_types[index] = en->src->type;
-            } else if (is_class(mem->mdl) || mem->mdl->is_ref) {
-                member_types[index] = pointer(mem->mdl)->type;
-            } else {
-                member_types[index] = mem->mdl->type;
-            }
-
-            //member_types[index] = mem->mdl->type;
-
-            AType mdl_type = isa(mem->mdl);
-            LLVMTypeRef member_type = member_types[index];
-            if (!member_type) {
-                member_type = emodel("ARef")->type;
-            }
-            int abi_size = (member_type && member_type != LLVMVoidType()) ?
-                LLVMABISizeOfType(target_data, member_type) : 0;
-            
-            print("member %o: %o = %i", mem->name, mem->mdl, abi_size);
-            member_debug[index++] = mem->debug;
-            if (!sz_largest || abi_size > sz_largest) {
-                largest = mem;
-                sz_largest = abi_size;
-            }
-        }
-    }
-
-    if (is_uni) {
-        verify(sz_largest, "cannot determine size of union");
-        LLVMStructSetBody(rec->type, &largest->mdl->type, 1, 0);
-    } else {
-        if (index == 0) {
-            LLVMTypeRef f = isa(rec) == typeid(Class) ? 
-                LLVMPointerType(LLVMInt8Type(), 0) : LLVMInt8Type();
-            LLVMStructSetBody(rec->type, &f, 1, 0);
-        } else {
-            printf("member types = %p\n", member_types);
-            LLVMStructSetBody(rec->type, member_types, index, 1);
-        }
-    }
-
-    /// set record size
-    rec->size_bits = LLVMABISizeOfType(target_data, rec->type) * 8;
-    //print("finalized and got size: %i for type %o", rec->size, rec->name);
-
-    /// set offsets on members (needed for the method finalization)
-    num imember = 0;
-    each (a, record, r) {
-        for (int iter = 0; iter < 2; iter++)
-        pairs(r->members, i) {
-            emember mem = i->value;
-            if (instanceof(mem->mdl, typeid(fn))) // fns do not occupy membership on the instance
-                continue;
-            if (iter == 0 && mem->access <  interface_public) continue;
-            if (iter == 1 && mem->access != interface_intern) continue;
-            mem->index  = imember;
-            mem->offset_bits = LLVMOffsetOfElement(target_data, rec->type, imember) * 8;
-
-            mem->debug = LLVMDIBuilderCreateMemberType(
-                e->dbg_builder,        // LLVMDIBuilderRef
-                top(e)->scope,         // Scope of the emember (can be the struct, class or base module)
-                cstring(mem->name),    // Name of the emember
-                len(mem->name),        // Length of the name
-                e->file,               // The file where the emember is declared
-                mem->name->line,       // Line number where the emember is declared
-                mem->mdl->size_bits,      // Size of the emember in bits (e.g., 32 for a 32-bit int)
-                mem->mdl->alignment_bits, // Alignment of the emember in bits
-                mem->offset_bits,      // Offset in bits from the start of the struct or class
-                0,                     // Debug info flags (e.g., 0 for none)
-                mem->mdl->debug);
-
-            if (!instanceof(r, typeid(uni))) // unions have 1 emember
-                imember++;
-        }
-    }
-
-    record is_record = instanceof(rec, typeid(record));
-    if (is_record) {
-        pointer(is_record);
-    }
-    
-    int sz = LLVMABISizeOfType     (target_data, rec->type);
-    int al = LLVMABIAlignmentOfType(target_data, rec->type);
-    
-    LLVMMetadataRef prev = rec->debug;
-    if (prev) {
-        rec->debug = LLVMDIBuilderCreateStructType(
-            e->dbg_builder,                     // Debug builder
-            top(e)->scope,                // Scope (module or file)
-            cstring(rec->mem->name),      // Name of the struct
-            len(rec->mem->name),
-            e->file,                      // File where it’s defined
-            rec->mem->name->line,         // Line number where it’s defined
-            sz, al,                       // Size, Alignment in bits
-            LLVMDIFlagZero,               // Flags
-            rec->parent ? rec->parent->debug : null, // Derived from (NULL in C)
-            member_debug,                 // Array of emember debug info
-            total,                        // Number of members
-            0,                            // Runtime language (0 for none)
-            NULL,                         // No VTable
-            NULL, 0);
-        LLVMMetadataReplaceAllUsesWith(prev, rec->debug);
-    }
-}
-
 #define LLVMDwarfTag(tag) (tag)
 #define DW_TAG_structure_type 0x13  // DWARF tag for structs.
 
@@ -1733,10 +1335,6 @@ void record_init(record rec) {
             LLVMDIFlagZero,                      // Flags
             NULL,                                // Derived from (NULL in C)
             0);
-    }
-
-    if (len(rec->members)) {
-        finalize(rec); /// cannot know emember here, but record-based methods need not know this arg (just fns)
     }
 }
 
@@ -1806,113 +1404,6 @@ void emember_init(emember mem) {
     if (instanceof(mem->name, typeid(string))) {
         string n = mem->name;
         mem->name = token(chars, cstring(n), source, e->source, line, 1, mod, e);
-    }
-}
-
-void emember_set_model(emember mem, model mdl) {
-    aether e = mem->mod;
-    if (!mdl || mem->registered) return;
-    mem->registered = true;
-    model ctx = mem->context ? mem->context : top(e);
-    
-    enumeration ctx_en = aether_context_model(e, typeid(enumeration));
-    fn    is_fn    = instanceof(mdl, typeid(fn));
-    if (ctx_en || is_fn || (isa(mdl)->module != typeid(aether)->module)) return;
-
-    AType mdl_type = isa(mdl);
-    if (mem->mdl != mdl) {
-        verify(!mem->mdl, "model already set on emember");
-        mem->mdl = hold(mdl);
-    }
-    
-    fn       ctx_fn  = aether_context_model(e, typeid(fn));
-    bool     is_init = false;
-    record   rec     = aether_context_model(e, typeid(Class)); // todo: convert to record
-    if (!rec) rec = aether_context_model(e, typeid(structure));
-
-    if (ctx_fn && ctx_fn->is_module_init) {
-        is_init = true;
-        ctx_fn = null;
-    }
-
-    model t = typed(mem->mdl);
-    bool is_module = ctx == e || ctx->is_global;
-    bool external_member = e->current_include || e->is_A_import;
-    bool is_macro = instanceof(mem->mdl, typeid(macro)) != null;
-    /// if we are creating a new emember inside of a fn, we need
-    /// to make debug and value info here
-    if (is_macro) {
-        return;
-    } else if (ctx_fn && !mem->value) {
-        
-        verify (!mem->value, "value-ref already set auto emember");
-        model src = t->src ? t->src : t;
-        mem->value = LLVMBuildAlloca(e->builder, src->type, cstring(mem->name));
-        mem->debug = LLVMDIBuilderCreateAutoVariable(
-            e->dbg_builder,           // DIBuilder reference
-            ctx_fn->scope,          // The scope (subprogram/fn metadata)
-             cstring(mem->name),     // Variable name
-            len(mem->name),
-            e->file,            // File where it’s declared
-            mem->name->line,    // Line number
-            src->debug,    // Type of the variable (e.g., LLVMMetadataRef for int)
-            true,               // Is this variable always preserved (DebugPreserveAll)?
-            0,                  // Flags (usually 0)
-            0                   // Align (0 is default)
-        );
-
-        // Attach the debug info to the actual LLVM IR value using llvm.dbg.value
-        //LLVMBuildDbgValue(
-        //    e->builder,              // LLVM Builder
-        //    mem->value,              // The LLVMValueRef for the value being assigned to the emember
-        //    mem->debug,              // Debug info for the variable
-        //    LLVMGetCurrentDebugLocation2(e->builder));
-        
-        LLVMValueRef firstInstr = LLVMGetFirstInstruction(ctx_fn->entry);
-        if (!firstInstr) {
-            // If there’s no instruction in the block yet, use the block itself as the insertion point
-            firstInstr = (LLVMValueRef)ctx_fn->entry;
-        }
-
-        LLVMDIBuilderInsertDeclareRecordBefore(
-            e->dbg_builder, // The LLVM builder
-            mem->value, // The LLVMValueRef for the first parameter
-            mem->debug, // The debug metadata for the first parameter
-            LLVMDIBuilderCreateExpression(e->dbg_builder, NULL, 0), // Empty expression
-            LLVMGetCurrentDebugLocation2(e->builder), // Current debug location
-            firstInstr);
-    } else if (is_module && !mem->is_type) {
-        if (eq(mem->name, "engine")) {
-            int test2 = 2;
-            test2    += 2;
-        }
-        mem->value = LLVMAddGlobal(e->module, t->type, mem->name->chars);
-        bool use_intern = !external_member && 
-            (mem->access == interface_intern || t->is_internal);
-        LLVMSetLinkage(mem->value, use_intern ? LLVMInternalLinkage : LLVMExternalLinkage);
-        if (!external_member) {
-            LLVMSetInitializer(mem->value, LLVMConstNull(t->type));
-        }
-    } else if (!rec && !ctx_fn && !mem->is_type && 
-               !mem->is_arg && (!e->current_include || e->is_A_import || is_module) && is_init && !mem->is_decl) { // we're importing so its not adding this global -- for module includes, it should
-        symbol name = mem->name->chars;
-        LLVMTypeRef type = t->type;
-        bool is_global_space = false;
-        if (isa(mem->mdl)->parent_type != typeid(model) && !mem->value) {
-            mem->value = LLVMAddGlobal(e->module, type, name); // its created here (a-map)
-            //LLVMSetGlobalConstant(mem->value, mem->is_const);
-            LLVMSetInitializer(mem->value, LLVMConstNull(type));
-            is_global_space = true; 
-        }
-        if (is_global_space) {
-            bool is_public = (int)mem->access >= (int)interface_public && !t->is_internal;
-            LLVMSetLinkage(mem->value, is_public ? LLVMExternalLinkage : LLVMPrivateLinkage);
-            LLVMMetadataRef expr = LLVMDIBuilderCreateExpression(e->dbg_builder, NULL, 0);
-            LLVMMetadataRef meta = LLVMDIBuilderCreateGlobalVariableExpression(
-                e->dbg_builder, e->scope, name, len(mem->name), NULL, 0, e->file, 1, t->debug, 
-                0, expr, NULL, 0);
-            LLVMGlobalSetMetadata(mem->value, LLVMGetMDKindID("dbg", 3), meta);
-        }
     }
 }
 
@@ -2940,18 +2431,10 @@ model aether_push(aether e, model mdl) {
         fn_prev->last_dbg = LLVMGetCurrentDebugLocation2(e->builder);
     }
 
-    if (isa(mdl) == typeid(fn)) {
-        fn f = mdl;
-        if (f->is_module_init) {
-            int test2 = 2;
-            test2    += 2;
-        }
-    }
-
     verify(mdl, "no context given");
     fn f = instanceof(mdl, typeid(fn));
     if (f)
-        use(f);
+        finalize(f->mem);
 
     push(e->lex, mdl);
     e->top = mdl;
@@ -3282,7 +2765,7 @@ static void register_basics(aether e) {
             "count", emem(_i64,    null, "count"),
             "data",  emem(_i64_16, null, "data"));
         pop(e);
-        mark_used(m_shape);
+        finalize(m_shape);
         shape = pointer(_shape);
         register_model(e, shape, string("shape"), false);
         typeid(shape)->user = shape;
@@ -3389,12 +2872,10 @@ static void register_basics(aether e) {
         "meta",            emem(_meta_t,    null, "meta"));
     pop(e);
 
-    finalize(_AType);
-    finalize(_meta_t);
-    finalize(_af_recycler);
-    finalize(_member);
-
-    mark_used(_AType_mem);
+    finalize(_AType_mem);
+    finalize(_meta_t_mem);
+    finalize(_af_recycler_mem);
+    finalize(_member_mem);
 
     verify(_AType->size_bits       == sizeof(struct _AType)       * 8, "AType size mismatch");
     verify(_af_recycler->size_bits == sizeof(struct _af_recycler) * 8, "_af_recycler size mismatch");
@@ -3491,12 +2972,6 @@ void aether_A_import(aether e, path lib) {
         // initialization for primitives are in model_init
         verify(mdl, "failed to import type: %o", name);
 
-        if (eq(name, "A")) {
-            model mdl_A = emodel("A");
-            int test2 = 2;
-            test2 += 2;
-        }
-
         emember mem = register_model(e, mdl, name, is_prim || is_enum || 
             eq(name, "A")     ||
             eq(name, "string") || 
@@ -3504,12 +2979,6 @@ void aether_A_import(aether e, path lib) {
             eq(name, "map"));
 
         atype->user = mem->mdl;
-
-        if (eq(name, "A")) {
-            model mdl_A = emodel("A");
-            int test2 = 2;
-            test2 += 2;
-        }
     }
 
     // first time we run this, we must import AType basics (after we import the basic primitives)
@@ -3718,10 +3187,6 @@ void aether_A_import(aether e, path lib) {
                     }
                 }
                 verify(mem_mdl, "expected mdl for member %s:%o", atype->name, n);
-                if (eq(n, "elements")) {
-                    int test2 = 2;
-                    test2 += 2;
-                }
                 emember smem = emember(
                     mod, e, name, n, 
                     mdl, amem->count == 0 ? 
@@ -3754,9 +3219,7 @@ void aether_A_import(aether e, path lib) {
 
         // improve integrity check so ptr is for classes, and mdl check is for others
         verify(emem->mdl == mdl || emem->mdl == mdl->ptr, "import integrity error for %o", name);
-        finalize(mdl);
-        if (isa(mdl) == typeid(fn)) // should go in member parsing, where we mark_used
-            fn_use(mdl);
+        finalize(emem);
     }
 
     // we do not need the schema until we build the global constructor
@@ -4166,119 +3629,6 @@ array model_field_list(model mdl, model mdl_filter, bool filter_in) {
         }
     }
     return fields;
-}
-
-
-// create AType structure (info and its AType_f)
-void create_schema(model mdl, string name) {
-    aether e = mdl->mod;
-    fn  f = instanceof(mdl, typeid(fn));
-    if (f || mdl->is_system || mdl == e) return;
-
-    if (mdl->is_ref) return;
-
-    record      rec = instanceof(mdl, typeid(record));
-    enumeration en  = instanceof(mdl, typeid(enumeration));
-
-    push(e, e);
-    finalize(mdl);
-
-    // does not work for enumerations 
-    Class  cmdl = instanceof(mdl, typeid(Class));
-    Class  emdl = instanceof(mdl, typeid(enumeration));
-    
-    if ((cmdl && cmdl->is_abstract) || mdl->schema) {
-        pop(e);
-        return;
-    }
-    
-    // focus on emitting class info similar to this macro:
-    bool from_module = !mdl->imported_from;
-    bool use_now = (!mdl->imported_from || (mdl->mem && mdl->mem->registered));
-    string    type_name = f(string, "_%o_f", name);
-    structure mdl_type  = structure(
-        mod, e, ident, type_name, members, map(hsize, 8), is_system, true, is_typeid, true);
-    emember   type_mem  = register_model(e, mdl_type, type_name, use_now);
-    
-    push(e, type_mem->mdl);
-
-    model _AType = emodel("_AType");
-    model _A     = emodel("A");
-
-    pairs(_AType->members, ai) {
-        emember m  = ai->value;
-        print("AType member: %o", m->name);
-    }
-
-    // register the basic AType fields
-    pairs(_AType->members, ai) {
-        emember m  = ai->value;
-        emember mm = emember(mod, e, name, m->name, mdl, m->mdl, context, type_mem->mdl);
-        register_member(e, mm, true);
-    }
-
-    Class  cur = cmdl;
-    array  acl = class_list(mdl, emodel("A"), false);
-
-    // register functions
-    each (acl, Class, cl) {
-        model mcl = cl;
-        if (!cl->members) continue;
-        pairs(cl->members, a) {
-            emember m = a->value;
-            if (isa(m->mdl) != typeid(fn))
-                continue;
-            fn f = m->mdl;
-            use(f);
-            // todo: this was for making methods global
-            //model   ptr = pointer(m->mdl);
-            //emember mm  = register_model(e, ptr, false); // init needs its fn->type set; and its not
-        }
-    }
-    pop(e);
-    finalize(mdl_type);
-
-    // register type ## _info struct with A info header and f table (AType)
-    token info_name = f(token, "_%o_info", name);
-    structure _type_info = structure(mod, e, ident, info_name, members, map(),
-        is_system, true, is_internal, mdl->is_internal);
-    push(e, _type_info);
-        emember info = emember(mod, e, name, string("info"), mdl, _A, context, _type_info);
-        emember type = emember(mod, e, name, string("type"), mdl, mdl_type, context, _type_info);
-        register_member(e, info, use_now);
-        register_member(e, type, use_now);
-    pop(e);
-    register_model(e, _type_info, info_name, use_now);
-    finalize(_type_info);
-
-    token info_ptr_name = f(token, "%o_info", name);
-    model type_info = model(mod, e, src, _type_info, is_system, true);
-    register_model(e, type_info, info_ptr_name, use_now);
-
-    interface access = from_module ? interface_public : interface_intern;
-    emember type_i = emember(mod, e, name, f(string, "%o_i", name),
-        mdl, _type_info, access, access);
-    register_member(e, type_i, use_now); // this needs to be a 'static' sometimes, for say array types we generate (which might conflict with other modules)
-    //finalize(type_i);
-
-    model   type_alias = model(mod, e, src, mdl_type, is_system, true);
-    register_model(e, type_alias, f(string, "%o_f", name, access, access), use_now);
-
-    pop(e);
-
-    mdl->schema = mschema(
-        schema_type, type_mem,
-        schema_f, type_alias,
-        schema_info, type_info,
-        schema_i, type_i);
-}
-
-void aether_update_schemas(aether e) {
-    pairs (top(e)->members, i) {
-        emember m = i->value;
-        model  mdl = m->mdl;
-        create_schema(mdl, m->name);
-    }
 }
 
 void aether_push_state(aether a, array tokens, num cursor) {
@@ -4717,8 +4067,8 @@ model formatter_type(aether e, cstr input) {
 }
 
 enode aether_e_fn_call(aether e, fn fn, enode target, array args) { // we could support an array or map arg here, for args
-    use(fn);
-
+    verify(fn->mem, "no member on fn");
+    finalize(fn->mem);
     verify((!target && !fn->target) || (target && fn->target),
         "target mismatch for %o", fn);
 
@@ -4941,26 +4291,479 @@ enode aether_e_inherits(aether e, enode L, A R) {
 }
 
 
-void finalize(model mdl) {
-    if (mdl->finalized) return;
+
+
+
+static none enumeration_finalize(enumeration en) {
+    if (en->finalized) return;
+    en->finalized = true;
+    aether e = en->mod;
+    if (!en->src)
+         en->src = emodel("i32");
+
+    //en->size_bits = en->src->size_bits;
+
+    // set ABI size/alignment
+    model emdl = typed(en);
+    en->size_bits      = LLVMABISizeOfType(e->target_data, emdl->type)      * 8;
+    en->alignment_bits = LLVMABIAlignmentOfType(e->target_data, emdl->type) * 8;
+
+    if (!en->imported_from) {
+        en->global_values = map(hsize, 8);
+        pairs(en->members, i) {
+            emember mem = i->value;
+            // can DBG link to a global value an accessed from a namespace E?
+            string global_name = f(string, "%o_%o", en, mem->name);
+            LLVMValueRef g = LLVMAddGlobal(e->module, emdl->type, cstring(global_name));
+            LLVMSetLinkage       (g, LLVMExternalLinkage);
+            LLVMSetInitializer   (g, mem->value);
+            LLVMSetGlobalConstant(g, true);
+            LLVMSetUnnamedAddr   (g, true);
+            set(en->global_values, en->mem->name,
+                enode(mod, e, value, g, mdl, en->vtype, meta, null));
+        }
+    }
+}
+
+static void record_finalize(record rec) {
+    enumeration en = instanceof(rec, typeid(enumeration));
+    if (rec->finalized || rec->is_abstract || en) {
+        rec->finalized = true;
+        return;
+    }
+    int    total = 0;
+    aether e     = rec->mod;
+    array  a     = array(32);
+    a->assorted = true;
+    record r     = rec;
+    Class  is_cl = instanceof(rec, typeid(Class));
+
+    if (is_cl && is_cl->parent) {
+        emember_finalize(is_cl->parent->mem);
+    }
     
+    rec->finalized = true;
+
+    // this must now work with 'schematic' model
+    // delegation namespace
+    while (r) {
+        int this_total = 0;
+        pairs(r->members, i) {
+            total ++;
+            this_total++;
+        }
+        push(a, r);
+        r = read_parent(r);
+    }
+    rec->total_members = total;
+    if (len(a) > 1)
+        a = reverse(a); // parent first when finalizing
+    
+    LLVMTargetDataRef target_data = rec->mod->target_data;
+    LLVMTypeRef*     member_types = calloc(total, sizeof(LLVMTypeRef));
+    LLVMMetadataRef* member_debug = calloc(total, sizeof(LLVMMetadataRef));
+    bool             is_uni       = instanceof(rec, typeid(uni)) != null;
+    int              index        = 0;
+    emember           largest      = null;
+    sz               sz_largest   = 0;
+
+    AType r_type = isa(rec);
+
+    each (a, record, r) {
+        pairs(r->members, i) {
+            string k =  i->key;
+            emember mem = i->value;
+               AType t = isa(mem->mdl);
+            A info = isa(mem);
+            verify( mem->name && mem->name->chars,  "no name on emember: %p (type: %o)", mem, r);
+
+            if (instanceof(mem->mdl, typeid(fn)))
+                continue;
+
+            finalize(mem->mdl);
+            enumeration en = instanceof(mem->mdl, typeid(enumeration));
+
+            if (en) {
+                member_types[index] = en->src->type;
+            } else if (is_class(mem->mdl) || mem->mdl->is_ref) {
+                member_types[index] = pointer(mem->mdl)->type;
+            } else {
+                member_types[index] = mem->mdl->type;
+            }
+
+            //member_types[index] = mem->mdl->type;
+
+            AType mdl_type = isa(mem->mdl);
+            LLVMTypeRef member_type = member_types[index];
+            if (!member_type) {
+                member_type = emodel("ARef")->type;
+            }
+            int abi_size = (member_type && member_type != LLVMVoidType()) ?
+                LLVMABISizeOfType(target_data, member_type) : 0;
+            
+            print("member %o: %o = %i", mem->name, mem->mdl, abi_size);
+            member_debug[index++] = mem->debug;
+            if (!sz_largest || abi_size > sz_largest) {
+                largest = mem;
+                sz_largest = abi_size;
+            }
+        }
+    }
+
+    if (is_uni) {
+        verify(sz_largest, "cannot determine size of union");
+        LLVMStructSetBody(rec->type, &largest->mdl->type, 1, 0);
+    } else {
+        if (index == 0) {
+            LLVMTypeRef f = isa(rec) == typeid(Class) ? 
+                LLVMPointerType(LLVMInt8Type(), 0) : LLVMInt8Type();
+            LLVMStructSetBody(rec->type, &f, 1, 0);
+        } else {
+            printf("member types = %p\n", member_types);
+            LLVMStructSetBody(rec->type, member_types, index, 1);
+        }
+    }
+
+    /// set record size
+    rec->size_bits = LLVMABISizeOfType(target_data, rec->type) * 8;
+    //print("finalized and got size: %i for type %o", rec->size, rec->name);
+
+    /// set offsets on members (needed for the method finalization)
+    num imember = 0;
+    each (a, record, r) {
+        for (int iter = 0; iter < 2; iter++)
+        pairs(r->members, i) {
+            emember mem = i->value;
+            if (instanceof(mem->mdl, typeid(fn))) // fns do not occupy membership on the instance
+                continue;
+            if (iter == 0 && mem->access <  interface_public) continue;
+            if (iter == 1 && mem->access != interface_intern) continue;
+            mem->index  = imember;
+            mem->offset_bits = LLVMOffsetOfElement(target_data, rec->type, imember) * 8;
+
+            mem->debug = LLVMDIBuilderCreateMemberType(
+                e->dbg_builder,        // LLVMDIBuilderRef
+                top(e)->scope,         // Scope of the emember (can be the struct, class or base module)
+                cstring(mem->name),    // Name of the emember
+                len(mem->name),        // Length of the name
+                e->file,               // The file where the emember is declared
+                mem->name->line,       // Line number where the emember is declared
+                mem->mdl->size_bits,      // Size of the emember in bits (e.g., 32 for a 32-bit int)
+                mem->mdl->alignment_bits, // Alignment of the emember in bits
+                mem->offset_bits,      // Offset in bits from the start of the struct or class
+                0,                     // Debug info flags (e.g., 0 for none)
+                mem->mdl->debug);
+
+            if (!instanceof(r, typeid(uni))) // unions have 1 emember
+                imember++;
+        }
+    }
+
+    record is_record = instanceof(rec, typeid(record));
+    if (is_record) {
+        pointer(is_record);
+    }
+    
+    int sz = LLVMABISizeOfType     (target_data, rec->type);
+    int al = LLVMABIAlignmentOfType(target_data, rec->type);
+    
+    LLVMMetadataRef prev = rec->debug;
+    if (prev) {
+        rec->debug = LLVMDIBuilderCreateStructType(
+            e->dbg_builder,                     // Debug builder
+            top(e)->scope,                // Scope (module or file)
+            cstring(rec->mem->name),      // Name of the struct
+            len(rec->mem->name),
+            e->file,                      // File where it’s defined
+            rec->mem->name->line,         // Line number where it’s defined
+            sz, al,                       // Size, Alignment in bits
+            LLVMDIFlagZero,               // Flags
+            rec->parent ? rec->parent->debug : null, // Derived from (NULL in C)
+            member_debug,                 // Array of emember debug info
+            total,                        // Number of members
+            0,                            // Runtime language (0 for none)
+            NULL,                         // No VTable
+            NULL, 0);
+        LLVMMetadataReplaceAllUsesWith(prev, rec->debug);
+    }
+}
+
+
+static void fn_finalize(fn f) {
+    aether e = f->mod;
+
+    if (f->finalized) return;
+    if (f->is_module_init)
+        aether_finalize_init(e, f);
+
+    f->finalized = true;
+    if (!f->entry || fn->value)
+        return;
+
+    int n_args = fn->args ? len(fn->args->members) : 0;
+    LLVMTypeRef* arg_types = calloc(4 + (fn->instance != null) + 
+        n_args, sizeof(LLVMTypeRef));
+    int index  = 0;
+
+    if (fn->instance) {
+        AType t = isa(fn->instance);
+        verify (fn->instance->src && 
+                (isa(fn->instance->src) == typeid(structure) || 
+                 isa(fn->instance->src) == typeid(Class)),
+            "target [incoming] must be record type (struct / class) -- it is then made pointer-to record");
+        
+        /// we set is_arg to prevent registration of global 
+        model mtarget = translate_target(fn->instance);
+
+        // our abstract is to have type differences for struct and ref struct, 
+        // but NOT any form of ref class, less the user is setting a pointer indirectly;
+        // class is inherently a reference to our abstract
+        fn->target = hold(emember(mod, e, mdl, mtarget, name, string("a"), is_arg, true));
+        print("target = %o", fn->instance);
+        arg_types[index++] = mtarget->ptr ? mtarget->ptr->type : mtarget->type;
+    }
+
+    verify(!fn->args || isa(fn->args) == typeid(eargs), "arg mismatch");
+    
+    if (fn->args)
+        pairs(fn->args->members, i) {
+            emember arg = i->value;
+            model arg_mdl = arg->mdl;
+            A info = header(arg);
+            print("type = %o (%s:%i)", arg_mdl, info->source, info->line);
+            verify (arg_mdl, "no LLVM type found for arg %o", arg->name);
+            arg_types[index++] =
+                (isa(arg_mdl) == typeid(Class) || !arg_mdl->type) ? 
+                    pointer(arg_mdl)->type : arg_mdl->type;
+        }
+
+    fn->arg_types = arg_types;
+    fn->arg_count = index;
+    fn->type      = LLVMFunctionType(
+        fn->rtype ? fn->rtype->type : LLVMVoidType(),
+        fn->arg_types, fn->arg_count, fn->va_args);
+    fn->ptr       = pointer(fn);
+
+    if (fn->mem->name || fn->extern_name) {
+        fn->value = LLVMAddFunction(fn->mod->module,
+            fn->extern_name ? fn->extern_name->chars : fn->mem->name->chars, fn->type);
+    }
+    bool is_extern = !!fn->imported_from || fn->exported;
+
+    /// create debug info for eargs (including target)
+    if (fn->value) {
+        index = 0;
+        if (fn->target) {
+            fn->target->value = LLVMGetParam(fn->value, index++);
+            fn->target->is_arg = true;
+        }
+        if (fn->args)
+            pairs(fn->args->members, i) {
+                emember arg = i->value;
+                arg->value = LLVMGetParam(fn->value, index++);
+                arg->is_arg = true;
+            }
+        //verify(fmem, "fn emember access not found");
+        LLVMSetLinkage(fn->value,
+            is_extern ? LLVMExternalLinkage : LLVMInternalLinkage);
+
+        if (fn->is_module_init)
+            set_module_init(fn->mod->module, fn);
+
+        if (!is_extern || fn->exported) {
+            // Create fn debug info
+            LLVMMetadataRef subroutine = LLVMDIBuilderCreateSubroutineType(
+                e->dbg_builder,
+                e->compile_unit,   // Scope (file)
+                NULL,              // Parameter types (None for simplicity)
+                0,                 // Number of parameters
+                LLVMDIFlagZero     // Flags
+            );
+
+            fn->scope = LLVMDIBuilderCreateFunction(
+                e->dbg_builder,
+                e->compile_unit,        // Scope (compile_unit)
+                fn->mem->name->chars, len(fn->mem->name),
+                fn->mem->name->chars, len(fn->mem->name),
+                e->file,                // File
+                e->mem->name->line,     // Line number
+                subroutine,             // Function type
+                1,                      // Is local to unit
+                1,                      // Is definition
+                1,                      // Scope line
+                LLVMDIFlagZero,         // Flags
+                0                       // Is optimized
+            );
+            // attach debug info to fn
+            LLVMSetSubprogram(fn->value, fn->scope);
+            fn->entry = LLVMAppendBasicBlockInContext(
+                e->module_ctx, fn->value, "entry");
+        }
+
+        // make sure we have a pointer type defined for funcitons, since this is not automatic in member registration
+        pointer(fn);
+    }
+
+    index = 0;
+    push(e, f);
+    if (f->target && false) {
+        LLVMMetadataRef meta = LLVMDIBuilderCreateParameterVariable(
+            e->dbg_builder,     // DIBuilder reference
+            f->scope,           // The scope (subprogram/fn metadata)
+            "a",                // Parameter name
+            4,
+            1,                  // Argument index (starting from 1, not 0)
+            e->file,            // File where it's defined
+            isa(f->mem->name) == typeid(string) ? 0 :
+                f->mem->name->line,      // Line number
+            f->target->mdl->debug,   // Debug type of the parameter (LLVMMetadataRef for type)
+            1,                 // AlwaysPreserve (1 to ensure the variable is preserved in optimized code)
+            0                  // Flags (typically 0)
+        );
+        LLVMValueRef first_instr = LLVMGetFirstInstruction(f->entry);
+        
+        assert(LLVMIsAInstruction(first_instr), "not a instr"); /// we may simply insert a return if there is nothing?
+        
+        LLVMValueRef decl  = LLVMDIBuilderInsertDeclareRecordBefore(
+            e->dbg_builder,                 // The LLVM builder
+            f->target->value,              // The LLVMValueRef for the first parameter
+            meta,                           // The debug metadata for the first parameter
+            LLVMDIBuilderCreateExpression(e->dbg_builder, NULL, 0), // Empty expression
+            LLVMGetCurrentDebugLocation2(e->builder),       // Current debug location
+            first_instr);                   // Attach it in the fn's entry block
+        index++;
+    }
+
+    pairs(f->args->members, i) {
+        emember arg = i->value;
+        /// create debug for parameter here
+        LLVMMetadataRef param_meta = LLVMDIBuilderCreateParameterVariable(
+            e->dbg_builder,          // DIBuilder reference
+            f->scope,         // The scope (subprogram/fn metadata)
+             cstring(arg->name),    // Parameter name
+            len(arg->name),
+            1 + index,         // Argument index (starting from 1, not 0)
+            e->file,           // File where it's defined
+            arg->name->line,   // Line number
+            arg->mdl->debug,   // Debug type of the parameter (LLVMMetadataRef for type)
+            1,                 // AlwaysPreserve (1 to ensure the variable is preserved in optimized code)
+            0                  // Flags (typically 0)
+        );
+        LLVMValueRef param_value = LLVMGetParam(f->value, index);
+        LLVMValueRef decl        = LLVMDIBuilderInsertDeclareRecordAtEnd(
+            e->dbg_builder,
+            param_value, 
+            param_meta, // debug metadata for the first parameter
+            LLVMDIBuilderCreateExpression(e->dbg_builder, NULL, 0), // Empty expression
+            LLVMGetCurrentDebugLocation2(e->builder), // current debug location
+            f->entry); // attach it in the fn's entry block
+        arg->value = param_value;
+        index++;
+    }
+    pop(e);
+}
+
+
+// create AType structure (info and its AType_f)
+static void create_schema(model mdl, string name) {
     aether e = mdl->mod;
-    mdl      = model_source(mdl);
+    fn  f = instanceof(mdl, typeid(fn));
+    if (e->current_include || mdl->schema || mdl->src || f || mdl->is_system || mdl == e)
+        return;
+
+    record      rec  = instanceof(mdl, typeid(record));
+    enumeration en   = instanceof(mdl, typeid(enumeration));
+    Class       cmdl = instanceof(mdl, typeid(Class));
+    Class       emdl = instanceof(mdl, typeid(enumeration));
     
+    if (cmdl && cmdl->is_abstract)
+        return;
+
+    push(e, e);
+    
+    // focus on emitting class info similar to this macro:
+    bool from_module = !mdl->imported_from;
+    string    type_name = f(string, "_%o_f", name);
+    structure mdl_type  = structure(
+        mod, e, ident, type_name, members, map(hsize, 8), is_system, true, is_typeid, true);
+    emember   type_mem  = register_model(e, mdl_type, type_name, false);
+    
+    push(e, type_mem->mdl);
+
+    model _A     = emodel("A");
+    array  acl = class_list(mdl, emodel("A"), false);
+
+    // register functions
+    each (acl, Class, cl) {
+        model mcl = cl;
+        if (!cl->members) continue;
+        pairs(cl->members, a) {
+            emember m = a->value;
+            if (isa(m->mdl) != typeid(fn))
+                continue;
+            finalize(m);
+        }
+    }
+    pop(e);
+    finalize(type_mem);
+
+    // register type ## _info struct with A info header and f table (AType)
+    token info_name = f(token, "_%o_info", name);
+    structure _type_info = structure(mod, e, ident, info_name, members, map(),
+        is_system, true, is_internal, mdl->is_internal, members, m(
+            "info", _A,
+            "type", mdl_type
+        ));
+    emember _type_info_mem = register_model(e, _type_info, info_name, true);
+
+    token info_ptr_name = f(token, "%o_info", name);
+    model type_info = model(mod, e, src, _type_info, is_system, true);
+    register_model(e, type_info, info_ptr_name, true);
+
+    interface access = from_module ? interface_public : interface_intern;
+    emember type_i = emember(mod, e, name, f(string, "%o_i", name),
+        mdl, _type_info, access, access);
+    register_member(e, type_i, true);
+
+    model   type_alias = model(mod, e, src, mdl_type, is_system, true);
+    register_model(e, type_alias, f(string, "%o_f", name, access, access), true);
+
+    pop(e);
+
+    mdl->schema = hold(mschema(
+        schema_type, type_mem,
+        schema_f, type_alias,
+        schema_info, type_info,
+        schema_i, type_i));
+}
+
+// this will be the only 'finalize' anyone (outside of emember_finalize) calls!
+// we also make internal the create_schema
+void emember_finalize(emember mem) {
+    aether e   = mem->mod;
+    model  mdl = mem->mdl;
+
+    if (!mdl || mdl->finalized) return; // ptr's need no form of action to 'finalize', although we are missing 
+    mem->finalized = true;
+
+    model mdl = model_source(mdl); // resolve class record from its use-case pointer
     if (mdl->finalized) return;
+    mem->finalized = true;
+    
     if (index_of(e->finalizing, mdl) >= 0)
         return;
 
-    push(e->finalizing, mdl);
-
-    i32         index = len(e->finalizing) - 1;
     record      rec   = instanceof(mdl, typeid(record));
     fn          f     = instanceof(mdl, typeid(fn));
     enumeration en    = instanceof(mdl, typeid(enumeration));
     macro       mac   = instanceof(mdl, typeid(macro));
+    if         (mac) return;
 
-    if      (mac) return;
-    else if (en)  enumeration_finalize(mdl);
+    push(e->finalizing, mdl);
+
+    i32         index = len(e->finalizing) - 1;
+
+    if      (en)  enumeration_finalize(mdl);
     else if (rec) record_finalize(mdl);
     else if (f)   fn_finalize(mdl);
 
@@ -4976,6 +4779,102 @@ void finalize(model mdl) {
                 mdl->debug = LLVMDIBuilderCreatePointerType(e->dbg_builder, src->debug,
                     ptr_sz * 8, 0, 0, src_name->chars, ln);
             }
+        }
+    }
+
+    model ctx = mem->context ? mem->context : top(e);
+    
+    enumeration ctx_en = aether_context_model(e, typeid(enumeration));
+    fn    is_fn    = instanceof(mdl, typeid(fn));
+    if (ctx_en || is_fn || (isa(mdl)->module != typeid(aether)->module)) return;
+
+    AType mdl_type = isa(mdl);
+    if (mem->mdl != mdl) {
+        verify(!mem->mdl, "model already set on emember");
+        mem->mdl = hold(mdl);
+    }
+    
+    fn       ctx_fn  = aether_context_model(e, typeid(fn));
+    bool     is_init = false;
+    record   rec     = aether_context_model(e, typeid(Class)); // todo: convert to record
+    if (!rec) rec = aether_context_model(e, typeid(structure));
+
+    if (ctx_fn && ctx_fn->is_module_init) {
+        is_init = true;
+        ctx_fn = null;
+    }
+
+    model t = typed(mem->mdl);
+    bool is_module = ctx == e || ctx->is_global;
+    bool external_member = e->current_include || e->is_A_import;
+
+    /// if we are creating a new emember inside of a fn, we need
+    /// to make debug and value info here
+    if (ctx_fn && !mem->value) {
+        
+        verify (!mem->value, "value-ref already set auto emember");
+        model src = t->src ? t->src : t;
+        mem->value = LLVMBuildAlloca(e->builder, src->type, cstring(mem->name));
+        mem->debug = LLVMDIBuilderCreateAutoVariable(
+            e->dbg_builder,           // DIBuilder reference
+            ctx_fn->scope,          // The scope (subprogram/fn metadata)
+             cstring(mem->name),     // Variable name
+            len(mem->name),
+            e->file,            // File where it’s declared
+            mem->name->line,    // Line number
+            src->debug,    // Type of the variable (e.g., LLVMMetadataRef for int)
+            true,               // Is this variable always preserved (DebugPreserveAll)?
+            0,                  // Flags (usually 0)
+            0                   // Align (0 is default)
+        );
+
+        // Attach the debug info to the actual LLVM IR value using llvm.dbg.value
+        //LLVMBuildDbgValue(
+        //    e->builder,              // LLVM Builder
+        //    mem->value,              // The LLVMValueRef for the value being assigned to the emember
+        //    mem->debug,              // Debug info for the variable
+        //    LLVMGetCurrentDebugLocation2(e->builder));
+        
+        LLVMValueRef firstInstr = LLVMGetFirstInstruction(ctx_fn->entry);
+        if (!firstInstr) {
+            // If there’s no instruction in the block yet, use the block itself as the insertion point
+            firstInstr = (LLVMValueRef)ctx_fn->entry;
+        }
+
+        LLVMDIBuilderInsertDeclareRecordBefore(
+            e->dbg_builder, // The LLVM builder
+            mem->value, // The LLVMValueRef for the first parameter
+            mem->debug, // The debug metadata for the first parameter
+            LLVMDIBuilderCreateExpression(e->dbg_builder, NULL, 0), // Empty expression
+            LLVMGetCurrentDebugLocation2(e->builder), // Current debug location
+            firstInstr);
+    } else if (is_module && !mem->is_type) {
+        mem->value = LLVMAddGlobal(e->module, t->type, mem->name->chars);
+        bool use_intern = !external_member && 
+            (mem->access == interface_intern || t->is_internal);
+        LLVMSetLinkage(mem->value, use_intern ? LLVMInternalLinkage : LLVMExternalLinkage);
+        if (!external_member) {
+            LLVMSetInitializer(mem->value, LLVMConstNull(t->type));
+        }
+    } else if (!rec && !ctx_fn && !mem->is_type && 
+               !mem->is_arg && (!e->current_include || e->is_A_import || is_module) && is_init && !mem->is_decl) { // we're importing so its not adding this global -- for module includes, it should
+        symbol name = mem->name->chars;
+        LLVMTypeRef type = t->type;
+        bool is_global_space = false;
+        if (isa(mem->mdl)->parent_type != typeid(model) && !mem->value) {
+            mem->value = LLVMAddGlobal(e->module, type, name); // its created here (a-map)
+            //LLVMSetGlobalConstant(mem->value, mem->is_const);
+            LLVMSetInitializer(mem->value, LLVMConstNull(type));
+            is_global_space = true; 
+        }
+        if (is_global_space) {
+            bool is_public = (int)mem->access >= (int)interface_public && !t->is_internal;
+            LLVMSetLinkage(mem->value, is_public ? LLVMExternalLinkage : LLVMPrivateLinkage);
+            LLVMMetadataRef expr = LLVMDIBuilderCreateExpression(e->dbg_builder, NULL, 0);
+            LLVMMetadataRef meta = LLVMDIBuilderCreateGlobalVariableExpression(
+                e->dbg_builder, e->scope, name, len(mem->name), NULL, 0, e->file, 1, t->debug, 
+                0, expr, NULL, 0);
+            LLVMGlobalSetMetadata(mem->value, LLVMGetMDKindID("dbg", 3), meta);
         }
     }
 

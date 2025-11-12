@@ -171,7 +171,8 @@ enode parse_statement(silver mod);
 
 static enode typed_expr(silver mod, model src, array meta, array expr);
 
-void build_fn(silver mod, fn f, callback preamble, callback postamble) {
+void build_fn(silver mod, emember fmem, callback preamble, callback postamble) {
+    fn f = fmem->mdl;
     if (!f->body && !preamble && !postamble) return;
     if (f->instance)
         push(mod, f->instance);
@@ -212,7 +213,7 @@ void build_fn(silver mod, fn f, callback preamble, callback postamble) {
         postamble(f, null);
     pop(mod);
     if (f->instance) pop(mod);
-    finalize(f);
+    finalize(fmem);
 }
 
 A build_init_preamble(fn f, A arg) {
@@ -227,8 +228,6 @@ A build_init_preamble(fn f, A arg) {
     }
     return null;
 }
-
-void create_schema(model mdl);
 
 void build_record(silver mod, record rec) {
     AType t = isa(rec);
@@ -246,14 +245,13 @@ void build_record(silver mod, record rec) {
     pop_state (mod, false);
     rec->parsing = false;
     
-    finalize(rec);
-    create_schema(rec);
-
+    // register the init method (without defining; not required for finalize!)
+    emember m_init = null;
     if (is_class) {
         push(mod, rec);
 
         // if no init, create one
-        emember m_init = member_lookup(rec, string("init"), typeid(fn));
+        m_init = member_lookup(rec, string("init"), typeid(fn));
         if (!m_init) {
             fn f_init = fn(mod, mod,
                 extern_name, f(string, "%s_init", rec),
@@ -262,15 +260,19 @@ void build_record(silver mod, record rec) {
             register_member(mod, m_init, true);
         }
         pop(mod);
+    }
 
-        // build with preamble
-        build_fn(mod, m_init->mdl, build_init_preamble, null); // we may need to 
+    finalize(rec);
+
+    if (is_class) {
+        // build init with preamble
+        build_fn(mod, m_init, build_init_preamble, null); // we may need to 
         
         // build remaining functions
         pairs(rec->members, ii) {
             emember m = ii->value;
-            if (!m->mdl->finalized && instanceof(m->mdl, typeid(fn)))
-                build_fn(mod, m->mdl, null, null);
+            if (!m->finalized && instanceof(m->mdl, typeid(fn)))
+                build_fn(mod, m, null, null);
         }
     }
 }
@@ -1705,10 +1707,11 @@ enode silver_parse_assignment(silver mod, emember mem, string oper) {
     enode   R       = parse_expression(mod, mem->mdl, mem->meta); /// getting class2 as a struct not a pointer as it should be. we cant lose that pointer info
     if (!mem->mdl) {
         mem->is_const = eq(oper, ":");
-        set_model(mem, R->mdl); 
+        mem->mdl = hold(R->mdl);
         if (mem->literal)
             drop(mem->literal);
         mem->literal = hold(R->literal);
+        finalize(mem); // todo: i would make sure we are never performing any action here if its inside of a function
     } else {
         // we 'assign' to a member that has a reference+1 on it related to the schema
         //R = auto_ref(R, mem->mdl);
@@ -1975,8 +1978,6 @@ emember silver_read_def(silver mod) {
         }
         pop(mod);
         pop_state(mod, false);
-
-        // is below required or did i comment this out as test?
         finalize(mem->mdl);
     } else {
         validate(is_alias, "unknown error");
@@ -2118,40 +2119,36 @@ void silver_incremental_resolve(silver mod) {
 
     model top = top(mod);
     
-    /// finalize included structs
+    // finalize included structs
     pairs(top->members, i) {
         emember mem = i->value;
         model base = mem->mdl->is_ref ? mem->mdl->src : mem->mdl;
-        if (!mem->mdl->finalized && instanceof(base, typeid(record)) && base->imported_from)
-            finalize(base);
+        if (!mem->finalized && instanceof(base, typeid(record)) && base->imported_from)
+            finalize(mem);
     }
 
-    /// finalize imported C functions, which use those structs perhaps literally in argument form
+    // finalize imported C functions, which use those structs perhaps literally in argument form
     pairs(top->members, i) {
         emember mem = i->value;
-        model  mdl = mem->mdl;
-        if (!mdl->finalized && instanceof(mem->mdl, typeid(fn)) && mdl->imported_from) {
-            finalize(mem->mdl);
-        }
+        if (!mem->finalized && instanceof(mem->mdl, typeid(fn)) && mem->mdl->imported_from)
+            finalize(mem);
     }
 
-    /// process/finalize all remaining member models 
-    /// calls process sub-procedure and poly-based finalize
+    // process/finalize all remaining member models 
+    // calls process sub-procedure and poly-based finalize
     pairs(top->members, i) {
         emember mem = i->value;
         record rec = instanceof(mem->mdl, typeid(record));
         Class  cl  = instanceof(mem->mdl, typeid(Class));
-        if ((!cl || !cl->is_abstract) && rec && !rec->parsing && !rec->finalized && !rec->imported_from) {
+        if ((!cl || !cl->is_abstract) && rec && !rec->parsing && !rec->finalized && !rec->imported_from)
             build_record(mod, rec);
-        }
     }
 
     // finally, process functions (last step in parsing)
     pairs(top->members, i) {
         emember mem = i->value;
-        if (mem != mod->mem_init && !mem->mdl->finalized && instanceof(mem->mdl, typeid(fn)) && !mem->mdl->imported_from) {
-            build_fn(mod, mem->mdl, null, null);
-        }
+        if (mem != mod->mem_init && !mem->mdl->finalized && instanceof(mem->mdl, typeid(fn)) && !mem->mdl->imported_from)
+            build_fn(mod, mem, null, null);
     }
 
     mod->in_top = in_top;
@@ -2172,7 +2169,7 @@ void silver_parse(silver mod) {
     }
     mod->in_top = false;
 
-    finalize(mem_init->mdl);
+    finalize(mem_init);
 }
 
 string git_remote_info(path path, string *out_service, string *out_owner, string *out_project) {
@@ -3054,7 +3051,6 @@ enode import_parse(silver mod) {
         mod,    mod,
         name,   namespace,
         mdl,    mdl);
-    set_model  (mem, mdl);
     register_member(mod, mem, true);
     
     if (!has_cache && !is_codegen) {
