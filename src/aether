@@ -83,6 +83,7 @@ declare_class(mschema)
     i_prop    (X,Y, public,     bool,             is_typeid) \
     i_prop    (X,Y, public,     bool,             is_internal) \
     i_prop    (X,Y, public,     mschema,          schema) \
+    i_prop    (X,Y, public,     bool,             use_count) \
     i_prop    (X,Y, public,     i64,              count) \
     i_prop    (X,Y, public,     shape,            shape) \
     i_prop    (X,Y, public,     sz,               size_bits) \
@@ -152,6 +153,7 @@ declare_class(codegen)
     i_prop(X,Y, public,     bool,                   is_override) \
     i_prop(X,Y, public,     bool,                   is_ifinal) \
     i_prop(X,Y, public,     bool,                   is_global_ctr) \
+    i_prop(X,Y, public,     bool,                   is_guarded) \
     i_prop(X,Y, public,     bool,                   va_args) \
     i_prop(X,Y, public,     model,                  rtype) \
     i_prop(X,Y, public,     array,                  rmeta) \
@@ -349,6 +351,7 @@ declare_class_2(static_array, array)
     i_prop    (X,Y, public,     array,       stack) \
     i_prop    (X,Y, public,     num,         cursor) \
     i_prop    (X,Y, public,     map,         instances) \
+    i_prop    (X,Y, public,     bool,        verbose) \
     i_method  (X,Y, public,     none,        reinit_startup) \
     i_method  (X,Y, public,     emember,     initializer) \
     i_method  (X,Y, public,     path,        lookup_include,     string) \

@@ -848,7 +848,6 @@ path aether_lookup_include(aether e, string include) {
     each(ipaths, array, includes) {
         if (includes)
             each(includes, path, i) {
-                print("checking include %o", i);
                 if (e->isysroot) {
                     path r = f(path, "%o/%o/%o", e->isysroot, i, include);
                     if (exists(r))
@@ -996,7 +995,7 @@ public:
             //
             push_state(mod, t, 0);
             mod->in_macro = true;
-            print_tokens(mod, ((string)f(string, "macro: %o", n))->chars);
+            // print_tokens(mod, ((string)f(string, "macro: %o", n))->chars);
             
             bool cmode = mod->cmode;
             mod->cmode = true;
@@ -1163,15 +1162,15 @@ path aether_include(aether e, Au inc, ARef _instance) {
 
     // check commands produced
     for (clang::driver::Command &cmd : comp->getJobs()) {
-        llvm::errs() << "command: ";
+        if (e->verbose) llvm::errs() << "command: ";
         if (StringRef(cmd.getCreator().getName()) == "clang") {
             for (symbol arg : cmd.getArguments()) {
-                llvm::errs() << arg << " ";
+                if (e->verbose) llvm::errs() << arg << " ";
                 compilation_args.push_back(arg);
             }
-            llvm::errs() << "\n";
+            if (e->verbose) llvm::errs() << "\n";
         }
-        llvm::errs() << "\n";
+        if (e->verbose) llvm::errs() << "\n";
     }
 
     SimpleDiagConsumer* DiagClient = new SimpleDiagConsumer();
@@ -1225,8 +1224,8 @@ path aether_include(aether e, Au inc, ARef _instance) {
     
     compiler->createASTContext();
 
-    llvm::errs() << "LangOpts.CPlusPlus: " << Invocation->getLangOpts().CPlusPlus << "\n";
-    llvm::errs() << "LangOpts.C11: " << Invocation->getLangOpts().C11 << "\n";
+    //llvm::errs() << "LangOpts.CPlusPlus: " << Invocation->getLangOpts().CPlusPlus << "\n";
+    //llvm::errs() << "LangOpts.C11: " << Invocation->getLangOpts().C11 << "\n";
 
     ASTContext& ctx = compiler->getASTContext();
     if (is_header) {

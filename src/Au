@@ -291,7 +291,7 @@ void lazy_init(global_init_fn fn);
     typedef struct _##AA { \
         AA##_intern (AA, INST_U, __VA_ARGS__) \
         AA##_intern (AA, INST_L, __VA_ARGS__) \
-        AA##_intern_footer (AA) \
+        u8 AA##_interns [0 AA##_intern(AA, ISIZE, __VA_ARGS__)]; \
         struct _##AA##_f* f; \
         struct _##AA##_f* f2; \
     } *AA; \
@@ -316,10 +316,10 @@ void lazy_init(global_init_fn fn);
     typedef struct _##AA { \
         BB##_intern (BB, INST_U, __VA_ARGS__) \
         BB##_intern (BB, INST_L, __VA_ARGS__) \
-        BB##_intern_footer (BB) \
+        u8 BB##_interns [0 BB##_intern (BB, ISIZE, __VA_ARGS__)]; \
         AA##_intern (AA, INST_U, __VA_ARGS__) \
         AA##_intern (AA, INST_L, __VA_ARGS__) \
-        AA##_intern_footer (AA) \
+        u8 AA##_interns [0 AA##_intern (AA, ISIZE, __VA_ARGS__)]; \
         struct _##AA##_f* f; \
         struct _##AA##_f* f2; \
     } *AA; \
@@ -345,13 +345,13 @@ void lazy_init(global_init_fn fn);
     typedef struct _##AA { \
         CC##_intern (CC, INST_U, __VA_ARGS__) \
         CC##_intern (CC, INST_L, __VA_ARGS__) \
-        CC##_intern_footer (CC) \
+        u8 CC##_interns [0 CC##_intern (CC, ISIZE, __VA_ARGS__)]; \
         BB##_intern (BB, INST_U, __VA_ARGS__) \
         BB##_intern (BB, INST_L, __VA_ARGS__) \
-        BB##_intern_footer (BB) \
+        u8 BB##_interns [0 BB##_intern (BB, ISIZE, __VA_ARGS__)]; \
         AA##_intern (AA, INST_U, __VA_ARGS__) \
         AA##_intern (AA, INST_L, __VA_ARGS__) \
-        AA##_intern_footer (AA) \
+        u8 AA##_interns [0 AA##_intern (AA, ISIZE, __VA_ARGS__)]; \
         struct _##AA##_f* f; \
         struct _##AA##_f* f2; \
     } *AA; \
@@ -366,7 +366,9 @@ void lazy_init(global_init_fn fn);
     decl_type(AA)\
     _Pragma("pack(pop)")
 
-
+// emit A-type compatible structs
+// we may ALSO emit Au macros as well, however its slightly hacky in nature
+// because we need t
 #define declare_class_4\
 (AA, BB, CC, DD, ...) \
     typedef struct _##AA* AA; \
@@ -380,16 +382,16 @@ void lazy_init(global_init_fn fn);
     typedef struct _##AA { \
         DD##_intern (DD, INST_U, __VA_ARGS__) \
         DD##_intern (DD, INST_L, __VA_ARGS__) \
-        DD##_intern_footer (DD) \
+        u8 DD##_interns [0 DD##_intern (DD, ISIZE, __VA_ARGS__)]; \
         CC##_intern (CC, INST_U, __VA_ARGS__) \
         CC##_intern (CC, INST_L, __VA_ARGS__) \
-        CC##_intern_footer (CC) \
+        u8 CC##_interns [0 CC##_intern (CC, ISIZE, __VA_ARGS__)]; \
         BB##_intern (BB, INST_U, __VA_ARGS__) \
         BB##_intern (BB, INST_L, __VA_ARGS__) \
-        BB##_intern_footer (BB) \
+        u8 BB##_interns [0 BB##_intern (BB, ISIZE, __VA_ARGS__)]; \
         AA##_intern (AA, INST_U, __VA_ARGS__) \
         AA##_intern (AA, INST_L, __VA_ARGS__) \
-        AA##_intern_footer (AA) \
+        u8 AA##_interns [0 AA##_intern (AA, ISIZE, __VA_ARGS__)]; \
         struct _##AA##_f* f; \
         struct _##AA##_f* f2; \
     } *AA; \
@@ -483,7 +485,6 @@ typedef Au_t* Au_ts;
             lazy_init((global_init_fn)&Aglobal_##TYPE); \
             return false; \
         } else { \
-            printf("global ctr for %s\n", #TYPE); \
             fflush(stdout); \
             memset(type_ref, 0,        sizeof(TYPE##_f)); \
             if ((Au_t)type_ref != (Au_t)base_ref) \
@@ -1224,7 +1225,7 @@ declare_class(map)
 
 #define ctx_schema(X,Y,...) \
     i_prop(X,Y, public, Au, app) \
-    i_prop(X,Y, intern, bool,   establishing)
+    i_prop(X,Y, intern, bool,   establishing, pad, 32)
 declare_class_2(ctx, map)
 
 #define ipart_schema(AA,Y,...) \

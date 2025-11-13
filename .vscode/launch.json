@@ -144,7 +144,8 @@
             "env":      {
                 "VERBOSE": "1",
                 "LD_LIBRARY_PATH":"/src/silver/sdk/native/lib",
-                "IMPORT":  "/src/silver/sdk/native"
+                "IMPORT":  "/src/silver/sdk/native",
+                "ASAN_OPTIONS": "detect_leaks=0"
             }
         },
         {

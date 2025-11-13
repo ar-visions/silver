@@ -268,7 +268,8 @@
 
 #define   i_ctr_public_F(X, ARG)
 #define   i_ctr_public_F_EXTERN(X, ARG)
-#define   i_ctr_public_ISIZE(X, ARG)    
+#define   i_ctr_public_ISIZE(X, ARG)   
+#define   i_ctr_public_ISIZE_EXTERN(X, ARG)   
 #define   i_ctr_public_INST_U(X, ARG)
 #define   i_ctr_public_INST_L(X, ARG)
 #define   i_ctr_public_INST_U_EXTERN(X, ARG)
@@ -304,7 +305,8 @@
 
 #define   i_prop_opaque_F(X, R, N)              u8 N;
 #define   i_prop_opaque_F_EXTERN(X, R, N)       u8 N;
-#define   i_prop_opaque_ISIZE(X, R, N)        
+#define   i_prop_opaque_ISIZE(X, R, N) 
+#define   i_prop_opaque_ISIZE_EXTERN(X, R, N)          
 #define   i_prop_opaque_INST_U(X, R, N)           R N;
 #define   i_prop_opaque_INST_L(X, R, N)
 #define   i_prop_opaque_INST_U_EXTERN(X, R, N)    i_prop_public_INST_U(X, R, N)
@@ -319,7 +321,8 @@
 
 #define   i_prop_interface_F(X, R, N)
 #define   i_prop_interface_F_EXTERN(X, R, N)
-#define   i_prop_interface_ISIZE(X, R, N)        
+#define   i_prop_interface_ISIZE(X, R, N)      
+#define   i_prop_interface_ISIZE_EXTERN(X, R, N)       
 #define   i_prop_interface_INST_U(X, R, N)
 #define   i_prop_interface_INST_L(X, R, N)
 #define   i_prop_interface_INST_U_EXTERN(X, R, N)
@@ -334,7 +337,9 @@
 
 #define   i_prop_public_F(X, R, N)              u8 N;
 #define   i_prop_public_F_EXTERN(X, R, N)       u8 N;
-#define   i_prop_public_ISIZE(X, R, N)        
+#define   i_prop_public_ISIZE(X, R, N)   
+#define   i_prop_public_ISIZE_EXTERN(X, R, N)     
+#define   i_prop_public_ISIZE_EXTERN_meta(X, R, N, M2, ...) 
 #define   i_prop_public_INST_U(X, R, N)           R N;
 #define   i_prop_public_INST_L(X, R, N)
 #define   i_prop_public_INST_U_EXTERN(X, R, N)    i_prop_public_INST_U(X, R, N)  
@@ -352,9 +357,11 @@
 #define   i_prop_public_PROTO(X, R, N)  
 #define   i_prop_public_METHOD(X, R, N)
 
-#define   i_prop_required_F(X, ISIZER, N)            u8 N;
+#define   i_prop_required_F(X, R, N)            u8 N;
 #define   i_prop_required_F_EXTERN(X, R, N)     u8 N;
-#define   i_prop_required_ISIZE(X, R, N)        
+#define   i_prop_required_ISIZE(X, R, N)     
+#define   i_prop_required_ISIZE_EXTERN(X, R, N)    
+#define   i_prop_required_ISIZE_EXTERN_meta(X, R, N, M2, ...)    
 #define   i_prop_required_INST_U(X, R, N)         i_prop_public_INST_U(X, R, N)
 #define   i_prop_required_INST_L(X, R, N)
 #define   i_prop_required_INST_U_EXTERN(X, R, N)  i_prop_public_INST_U(X, R, N)
@@ -371,6 +378,7 @@
 #define   i_prop_intern_F(X, R, N)              u8 N;
 #define   i_prop_intern_F_EXTERN(X, R, N)       
 #define   i_prop_intern_ISIZE(X, R, N)          +sizeof(R)
+#define   i_prop_intern_ISIZE_EXTERN(X, R, N) 
 #define   i_prop_intern_INST_U(X, R, N)           
 #define   i_prop_intern_INST_L(X, R, N)           R N;
 #define   i_prop_intern_INST_U_EXTERN(X, R, N)
@@ -382,6 +390,24 @@
 #define   i_prop_intern_PROTO(X, R, N)  
 #define   i_prop_intern_METHOD(X, R, N)
 
+
+
+
+
+#define   i_prop_intern_F_pad(X, R, N, M2)                u8 N;
+#define   i_prop_intern_F_EXTERN_pad(X, R, N, M2)       
+#define   i_prop_intern_ISIZE_pad(X, R, N, M2)            + M2
+#define   i_prop_intern_ISIZE_EXTERN_pad(X, R, N, M2)            + M2
+#define   i_prop_intern_INST_U_pad(X, R, N, M2)           
+#define   i_prop_intern_INST_L_pad(X, R, N, M2)           union { R N; char _##N##_pad[M2]; };
+#define   i_prop_intern_INST_U_EXTERN_pad(X, R, N, M2)
+#define   i_prop_intern_INST_L_EXTERN_pad(X, R, N, M2)
+#define   i_prop_intern_DECL_pad(X, R, N, M2)           i_prop_public_DECL(X, R, N)
+#define   i_prop_intern_DECL_EXTERN_pad(X, R, N, M2)    i_prop_public_DECL(X, R, N)
+#define   i_prop_intern_GENERICS_pad(X, R, N, M2)
+#define   i_prop_intern_INIT_pad(X, R, N, M2)
+#define   i_prop_intern_PROTO_pad(X, R, N, M2)  
+#define   i_prop_intern_METHOD_pad(X, R, N, M2)
 
 
 
@@ -493,7 +519,8 @@
 
 #define   i_prop_public_F_as(X, R, N, M2)               u8 N;
 #define   i_prop_public_F_EXTERN_as(X, R, N, M2)        u8 N;
-#define   i_prop_public_ISIZE_as(X, R, N, M2)            
+#define   i_prop_public_ISIZE_as(X, R, N, M2)           
+#define   i_prop_public_ISIZE_EXTERN_as(X, R, N, M2)  
 #define   i_prop_public_INST_U_as(X, R, N, M2)            R N;
 #define   i_prop_public_INST_L_as(X, R, N, M2)
 #define   i_prop_public_INST_U_EXTERN_as(X, R, N, M2)     M2 N;
@@ -508,7 +535,8 @@
 
 #define   i_prop_required_F_as(X, R, N, M2)             u8 N;
 #define   i_prop_required_F_EXTERN_as(X, R, N, M2)      u8 N;
-#define   i_prop_required_ISIZE_as(X, R, N, M2)            
+#define   i_prop_required_ISIZE_as(X, R, N, M2)        
+#define   i_prop_required_ISIZE_EXTERN_as(X, R, N, M2)     
 #define   i_prop_required_INST_U_as(X, R, N, M2)          R N;
 #define   i_prop_required_INST_L_as(X, R, N, M2)
 #define   i_prop_required_INST_U_EXTERN_as(X, R, N, M2)   M2 N;
@@ -524,6 +552,7 @@
 #define   i_prop_intern_F_as(X, R, N, M2)               u8 N;
 #define   i_prop_intern_F_EXTERN_as(X, R, N, M2)        
 #define   i_prop_intern_ISIZE_as(X, R, N, M2)          +sizeof(R)
+#define   i_prop_intern_ISIZE_EXTERN_as(X, R, N, M2)   +sizeof(M2)
 #define   i_prop_intern_INST_U_as(X, R, N, M2)           
 #define   i_prop_intern_INST_L_as(X, R, N, M2)           R N;
 #define   i_prop_intern_INST_U_EXTERN_as(X, R, N, M2)
@@ -561,6 +590,7 @@
 #define   i_vprop_interface_F(X, R, N)
 #define   i_vprop_interface_F_EXTERN(X, R, N)
 #define   i_vprop_interface_ISIZE(X, R, N)
+#define   i_vprop_interface_ISIZE_EXTERN(X, R, N)
 #define   i_vprop_interface_INST_U(X, R, N)
 #define   i_vprop_interface_INST_L(X, R, N)
 #define   i_vprop_interface_INST_U_EXTERN(X, R, N)
@@ -575,6 +605,7 @@
 #define   i_vprop_public_F(X, R, N) u8 N;
 #define   i_vprop_public_F_EXTERN(X, R, N) u8 N;
 #define   i_vprop_public_ISIZE(X, R, N)        
+#define   i_vprop_public_ISIZE_EXTERN(X, R, N) 
 #define   i_vprop_public_INST_U(X, R, N)         R* N;
 #define   i_vprop_public_INST_L(X, R, N)
 #define   i_vprop_public_INST_U_EXTERN(X, R, N)  i_vprop_public_INST_U(X, R, N)
@@ -593,6 +624,8 @@
 
 #define   i_vprop_required_F(X, R, N) u8 N;
 #define   i_vprop_required_F_EXTERN(X, R, N) u8 N;
+#define   i_vprop_required_ISIZE(X, R, N)          
+#define   i_vprop_required_ISIZE_EXTERN(X, R, N)          
 #define   i_vprop_required_INST_U(X, R, N)         i_vprop_public_INST_U(X, R, N)
 #define   i_vprop_required_INST_L(X, R, N)
 #define   i_vprop_required_INST_U_EXTERN(X, R, N)  i_vprop_public_INST_U(X, R, N)
@@ -609,6 +642,7 @@
 #define   i_vprop_intern_F(X, R, N) u8 N;
 #define   i_vprop_intern_F_EXTERN(X, R, N)
 #define   i_vprop_intern_ISIZE(X, R, N)          +sizeof(R*)
+#define   i_vprop_intern_ISIZE_EXTERN(X, R, N)   +sizeof(R*)
 #define   i_vprop_intern_INST_U(X, R, N)
 #define   i_vprop_intern_INST_L(X, R, N)           R* N;
 #define   i_vprop_intern_INST_U_EXTERN(X, R, N)
@@ -626,6 +660,7 @@
 #define i_attr_F(           X, ENUM, ID, VALUE, ...)
 #define i_attr_F_EXTERN(    X, ENUM, ID, VALUE, ...)
 #define i_attr_ISIZE(       X, ENUM, ID, VALUE, ...)
+#define i_attr_ISIZE_EXTERN(       X, ENUM, ID, VALUE, ...)
 #define i_attr_INST_U(        X, ENUM, ID, VALUE, ...)
 #define i_attr_INST_L(        X, ENUM, ID, VALUE, ...)
 #define i_attr_INST_U_EXTERN( X, ENUM, ID, VALUE, ...)
@@ -649,6 +684,7 @@
 #define   i_array_interface_F(X, R, S, N)
 #define   i_array_interface_F_EXTERN(X, R, S, N)
 #define   i_array_interface_ISIZE(X, R, S, N)
+#define   i_array_interface_ISIZE_EXTERN(X, R, S, N)
 #define   i_array_interface_INST_U(X, R, S, N)
 #define   i_array_interface_INST_L(X, R, S, N)
 #define   i_array_interface_INST_U_EXTERN(X, R, S, N)
@@ -665,6 +701,7 @@
 #define   i_array_public_F(X, R, S, N) u8 N;
 #define   i_array_public_F_EXTERN(X, R, S, N) u8 N;
 #define   i_array_public_ISIZE(X, R, S, N)
+#define   i_array_public_ISIZE_EXTERN(X, R, S, N)
 #define   i_array_public_INST_U(X, R, S, N)         R N[S];  
 #define   i_array_public_INST_L(X, R, S, N)         
 #define   i_array_public_INST_U_EXTERN(X, R, S, N)  i_array_public_INST_U(X, R, S, N)
@@ -681,7 +718,8 @@
 
 #define   i_array_intern_F(X, R, S, N) u8 N;
 #define   i_array_intern_F_EXTERN(X, R, S, N)
-#define   i_array_intern_ISIZE(X, R, S, N)        +sizeof(R[S])
+#define   i_array_intern_ISIZE(X, R, S, N)              +sizeof(R[S])
+#define   i_array_intern_ISIZE_EXTERN(X, R, S, N)        +sizeof(R[S])
 #define   i_array_intern_INST_U(X, R, S, N)         
 #define   i_array_intern_INST_L(X, R, S, N)         R N[S];
 #define   i_array_intern_INST_U_EXTERN(X, R, S, N)
@@ -695,6 +733,7 @@
 #define   i_array(X, Y, T, R, S, N) i_array_##T##_##Y(X, R, S, N)
 
 #define   i_struct_ctr_ISIZE(X, ARG)
+#define   i_struct_ctr_ISIZE_EXTERN(X, R, S, N)
 #define   i_struct_ctr_INST(X, ARG)
 #define   i_struct_ctr_INST_EXTERN(X, ARG)
 #define   i_struct_ctr_DECL(X, ARG)
@@ -714,6 +753,7 @@
 #define   i_struct_ctr(X, Y, ARG)          i_struct_ctr_##Y(X, ARG)
 
 #define   i_struct_ctr_obj_ISIZE(X, ARG)
+#define   i_struct_ctr_obj_ISIZE_EXTERN(X, R, S, N)
 #define   i_struct_ctr_obj_INST(X, ARG)
 #define   i_struct_ctr_obj_INST_EXTERN(X, ARG)
 #define   i_struct_ctr_obj_DECL(X, ARG)
@@ -733,6 +773,7 @@
 #define   i_struct_ctr_obj(X, Y, ARG)          i_struct_ctr_obj_##Y(X, ARG)
 
 #define   i_struct_array_ISIZE(X, R, S, N)
+#define   i_struct_array_ISIZE_EXTERN(X, R, S, N)
 #define   i_struct_array_INST(X, R, S, N)         R N[S];
 #define   i_struct_array_INST_EXTERN(X, R, S, N)  i_struct_array_INST(X, R, S, N)
 #define   i_struct_array_DECL(X, R, S, N)
@@ -750,6 +791,7 @@
 #define   i_struct_array(X, Y, R, S, N) i_struct_array_##Y(X, R, S, N)
 
 #define   i_struct_prop_ISIZE(X, R, N)
+#define   i_struct_prop_ISIZE_EXTERN(X, R, N)
 #define   i_struct_prop_INST(X, R, N)         R N;
 #define   i_struct_prop_INST_EXTERN(X, R, N)  i_struct_prop_INST(X, R, N)
 #define   i_struct_prop_DECL(X, R, N)
@@ -767,6 +809,7 @@
 #define   i_struct_prop(X, Y, R, N) i_struct_prop_##Y(X, R, N)
 
 #define   i_struct_cast_ISIZE(X, R)
+#define   i_struct_cast_ISIZE_EXTERN(X, R)
 #define   i_struct_cast_INST(X, R)
 #define   i_struct_cast_INST_EXTERN(X, R)
 #define   i_struct_cast_DECL(X, R)
@@ -785,6 +828,7 @@
 #define   i_struct_cast(X, Y, R)                i_struct_cast_##Y(X, R)
 
 #define   i_struct_method_ISIZE(    X, R, N, ...)
+#define   i_struct_method_ISIZE_EXTERN(X, R, N, ...)
 #define   i_struct_method_INST(    X, R, N, ...)
 #define   i_struct_method_INST_EXTERN(    X, R, N, ...)
 #define   i_struct_method_DECL(X, R, N, ...)        R X##_##N(X* __VA_OPT__(,) __VA_ARGS__);
@@ -804,6 +848,7 @@
 
 
 #define   i_struct_static_ISIZE(    X, R, N, ...)
+#define   i_struct_static_ISIZE_EXTERN(X, R, N, ...)
 #define   i_struct_static_INST(    X, R, N, ...)
 #define   i_struct_static_INST_EXTERN(X, R, N, ...)
 #define   i_struct_static_DECL(    X, R, N, ...)            R X##_##N(__VA_ARGS__);
@@ -832,6 +877,7 @@
 #define   i_inlay_public_F(X, R, N)            u8 N;
 #define   i_inlay_public_F_EXTERN(X, R, N)     u8 N;
 #define   i_inlay_public_ISIZE(X, R, N)
+#define   i_inlay_public_ISIZE_EXTERN(X, R, N)
 #define   i_inlay_public_INST_U(X, R, N)         struct _##R N;
 #define   i_inlay_public_INST_L(X, R, N)         
 #define   i_inlay_public_INST_U_EXTERN(X, R, N)  struct _##R N;
@@ -850,7 +896,8 @@
 
 #define   i_inlay_required_F(X, R, N) u8 N;
 #define   i_inlay_required_F_EXTERN(X, R, N) u8 N;
-#define   i_inlay_required_ISIZE(X, R, N)
+#define   i_inlay_required_ISIZE(X, R, N)           
+#define   i_inlay_required_ISIZE_EXTERN(X, R, N)    
 #define   i_inlay_required_INST_U(X, R, N)         i_inlay_public_INST_U(X, R, N)
 #define   i_inlay_required_INST_L(X, R, N)         
 #define   i_inlay_required_INST_U_EXTERN(X, R, N)  i_inlay_public_INST_U_EXTERN(X, R, N)
@@ -867,6 +914,7 @@
 #define   i_inlay_intern_F(X, R, N)               u8 N;
 #define   i_inlay_intern_F_EXTERN(X, R, N)        
 #define   i_inlay_intern_ISIZE(X, R, N)           +sizeof(struct _##R)
+#define   i_inlay_intern_ISIZE_EXTERN(X, R, N, ...) i_inlay_intern_ISIZE(X, R, N)
 #define   i_inlay_intern_INST_U(X, R, N)            
 #define   i_inlay_intern_INST_L(X, R, N)            struct _##R N;
 #define   i_inlay_intern_INST_U_EXTERN(X, R, N)
@@ -885,6 +933,7 @@
 #define   t_method_interface_F(X, R, N, ...)
 #define   t_method_interface_F_EXTERN(X, R, N, ...)
 #define   t_method_interface_ISIZE(X, R, N, ...)
+#define   t_method_interface_ISIZE_EXTERN(X, R, N, ...)
 #define   t_method_interface_INST_U(X, R, N, ...)
 #define   t_method_interface_INST_L(X, R, N, ...)
 #define   t_method_interface_INST_U_EXTERN(X, R, N, ...)
@@ -900,6 +949,7 @@
 #define   t_method_public_F(X, R, N, ...)
 #define   t_method_public_F_EXTERN(X, R, N, ...)
 #define   t_method_public_ISIZE(X, R, N, ...)
+#define   t_method_public_ISIZE_EXTERN(X, R, N, ...)
 #define   t_method_public_INST_U(X, R, N, ...)
 #define   t_method_public_INST_L(X, R, N, ...)
 #define   t_method_public_INST_U_EXTERN(X, R, N, ...)
@@ -921,6 +971,7 @@
 #define   t_method_intern_F(X, R, N, ...)
 #define   t_method_intern_F_EXTERN(X, R, N, ...)
 #define   t_method_intern_ISIZE(X, R, N, ...)   
+#define   t_method_intern_ISIZE_EXTERN(X, R, N, ...)   
 #define   t_method_intern_INST_U(X, R, N, ...)    
 #define   t_method_intern_INST_L(X, R, N, ...)  
 #define   t_method_intern_INST_U_EXTERN(X, R, N, ...)
@@ -939,6 +990,7 @@
 #define   s_method_interface_F(X, R, N, ...)
 #define   s_method_interface_F_EXTERN(X, R, N, ...)
 #define   s_method_interface_ISIZE(X, R, N, ...)   
+#define   s_method_interface_ISIZE_EXTERN(X, R, N, ...)   
 #define   s_method_interface_INST_U(X, R, N, ...)
 #define   s_method_interface_INST_L(X, R, N, ...)
 #define   s_method_interface_INST_U_EXTERN(X, R, N, ...)
@@ -954,6 +1006,7 @@
 #define   s_method_public_F(X, R, N, ...)
 #define   s_method_public_F_EXTERN(X, R, N, ...)
 #define   s_method_public_ISIZE(X, R, N, ...)
+#define   s_method_public_ISIZE_EXTERN(X, R, N, ...)
 #define   s_method_public_INST_U(X, R, N, ...)
 #define   s_method_public_INST_L(X, R, N, ...)
 #define   s_method_public_INST_U_EXTERN(X, R, N, ...)
@@ -975,6 +1028,7 @@
 #define   s_method_intern_F(X, R, N, ...)
 #define   s_method_intern_F_EXTERN(X, R, N, ...)
 #define   s_method_intern_ISIZE(X, R, N, ...)
+#define   s_method_intern_ISIZE_EXTERN(X, R, N, ...)
 #define   s_method_intern_INST_U(X, R, N, ...)
 #define   s_method_intern_INST_L(X, R, N, ...)
 #define   s_method_intern_INST_U_EXTERN(X, R, N, ...)
@@ -989,6 +1043,7 @@
 #define   i_method_interface_F(X, R, N, ...)
 #define   i_method_interface_F_EXTERN(X, R, N, ...)
 #define   i_method_interface_ISIZE(X, R, N, ...)
+#define   i_method_interface_ISIZE_EXTERN(X, R, N, ...)
 #define   i_method_interface_INST_U(X, R, N, ...)
 #define   i_method_interface_INST_L(X, R, N, ...)
 #define   i_method_interface_INST_U_EXTERN(X, R, N, ...)
@@ -1004,6 +1059,7 @@
 #define   i_method_public_F(    X, R, N, ...)
 #define   i_method_public_F_EXTERN(    X, R, N, ...)
 #define   i_method_public_ISIZE(X, R, N, ...)
+#define   i_method_public_ISIZE_EXTERN(X, R, N, ...)
 #define   i_method_public_INST_U(    X, R, N, ...)
 #define   i_method_public_INST_L(    X, R, N, ...)
 #define   i_method_public_INST_U_EXTERN(  X, R, N, ...)
@@ -1092,6 +1148,7 @@
 #define   i_operator_public_F(X, R, N, ARG)
 #define   i_operator_public_F_EXTERN(X, R, N, ARG)
 #define   i_operator_public_ISIZE(X, R, N, ARG)
+#define   i_operator_public_ISIZE_EXTERN(X, R, N, ARG)
 #define   i_operator_public_INST_U(X, R, N, ARG)
 #define   i_operator_public_INST_L(X, R, N, ARG)
 #define   i_operator_public_INST_U_EXTERN(X, R, N, ARG)
@@ -1144,6 +1201,7 @@
 #define   i_cast_public_F(X, R)
 #define   i_cast_public_F_EXTERN(X, R)
 #define   i_cast_public_ISIZE(X, R)
+#define   i_cast_public_ISIZE_EXTERN(X, R)
 #define   i_cast_public_INST_U(X, R)
 #define   i_cast_public_INST_L(X, R)
 #define   i_cast_public_INST_U_EXTERN(X, R)
@@ -1195,6 +1253,7 @@
 #define i_index_public_F(X, R, ...)
 #define i_index_public_F_EXTERN(X, R, ...)
 #define i_index_public_ISIZE(X, R, ...)
+#define i_index_public_ISIZE_EXTERN(X, R, ...)
 #define i_index_public_INST_U(X, R, ...)
 #define i_index_public_INST_L(X, R, ...)
 #define i_index_public_INST_U_EXTERN(X, R, ...)
@@ -1231,6 +1290,7 @@
 #define i_vargs_public_F(X, R, N, ...)
 #define i_vargs_public_F_EXTERN(X, R, N, ...)
 #define i_vargs_public_ISIZE(X, R, N, ...)
+#define i_vargs_public_ISIZE_EXTERN(X, R, N, ...)
 #define i_vargs_public_INST_U(X, R, N, ...)
 #define i_vargs_public_INST_L(X, R, N, ...)
 #define i_vargs_public_INST_U_EXTERN(X, R, N, ...)
@@ -1260,6 +1320,7 @@
 #define s_vargs_public_F(X, R, N, ...)
 #define s_vargs_public_F_EXTERN(X, R, N, ...)
 #define s_vargs_public_ISIZE(X, R, N, ...)
+#define s_vargs_public_ISIZE_EXTERN(X, R, N, ...)
 #define s_vargs_public_INST_U(X, R, N, ...)
 #define s_vargs_public_INST_L(X, R, N, ...)
 #define s_vargs_public_INST_U_EXTERN(X, R, N, ...)
@@ -1290,6 +1351,7 @@
 #define i_override_method_F(X, N)
 #define i_override_method_F_EXTERN(X, N)
 #define i_override_method_ISIZE(X, N)
+#define i_override_method_ISIZE_EXTERN(X, N)
 #define i_override_method_INST_U(X, N)
 #define i_override_method_INST_L(X, N)
 #define i_override_method_INST_U_EXTERN(X, N)
@@ -1311,6 +1373,7 @@
 #define i_override_ctr_F(X, R)
 #define i_override_ctr_F_EXTERN(X, R)
 #define i_override_ctr_ISIZE(X, R)
+#define i_override_ctr_ISIZE_EXTERN(X, R)
 #define i_override_ctr_INST_U(X, R)
 #define i_override_ctr_INST_L(X, R)
 #define i_override_ctr_INST_U_EXTERN(X, N)
@@ -1329,6 +1392,7 @@
 #define i_override_cast_F(X, R)
 #define i_override_cast_F_EXTERN(X, R)
 #define i_override_cast_ISIZE(X, R)
+#define i_override_cast_ISIZE_EXTERN(X, R)
 #define i_override_cast_INST_U(X, R)
 #define i_override_cast_INST_L(X, R)
 #define i_override_cast_INST_U_EXTERN(X, R)
