@@ -80,7 +80,7 @@ emember aether_register_model(aether e, model mdl, string name, bool use_now) {
 
     emember test_lookup = lookup2(e, name, null);
 
-    print("registered model %o", mem->name);
+    // print("registered model %o", mem->name);
     return mem;
 }
 
@@ -836,66 +836,6 @@ bool is_module_level(model mdl) {
     }
     return false;
 }
-
-/*
-
-#define define_arb(TYPE, BASE, TYPE_SZ, TRAIT, VMEMBER_COUNT, VMEMBER_TYPE, POST_PUSH, ...) \
-    _Pragma("pack(push, 1)") \
-    __thread struct _af_recycler TYPE##_af; \
-    TYPE##_info TYPE##_i; \
-    _Pragma("pack(pop)") \
-    static __attribute__((constructor)) bool Aglobal_##TYPE() { \
-        TYPE##_f* type_ref = &TYPE##_i.type; \
-        BASE##_f* base_ref = &BASE##_i.type; \
-        if (!Au_t_i.type.name) { \
-            Au_t_i.type.name   = "Au_t"; \
-            Au_t_i.type.traits = AU_TRAIT_BASE; \
-            Au_t_i.type.src    = typeid(Au); \
-        } \
-        int validate_count = 0; \
-        char* member_validate[256] = {}; \
-        if ((Au_t)type_ref == (Au_t)base_ref) \
-            type_ref->name = #TYPE; \
-        if ((Au_t)type_ref != (Au_t)base_ref && (!base_ref->traits)) { \
-            lazy_init((global_init_fn)&Aglobal_##TYPE); \
-            return false; \
-        } else { \
-            printf("global ctr for %s\n", #TYPE); \
-            fflush(stdout); \
-            memset(type_ref, 0,        sizeof(TYPE##_f)); \
-            if ((Au_t)type_ref != (Au_t)base_ref) \
-                memcpy(type_ref, base_ref, sizeof(BASE##_f)); \
-            type_ref->af = &TYPE##_af; \
-            type_ref->af->re_alloc = 1024; \
-            type_ref->af->re = (object*)(Au*)calloc(1024, sizeof(Au)); \
-            type_ref->isize = 0 TYPE##_schema( TYPE, ISIZE, __VA_ARGS__ ); \
-            type_ref->magic = 1337; \
-            static struct _member members[512]; \
-            type_ref->src = (Au_t)base_ref != typeid(Au) \
-                 ? (Au_t)base_ref : (Au_t)null; \
-            type_ref->parent_type = \
-                (__typeof__(type_ref->parent_type))&BASE##_i.type; \
-            type_ref->name          = #TYPE; \
-            type_ref->module        = (cstr)MODULE; \
-            type_ref->members       = members; \
-            type_ref->member_count  = 0; \
-            type_ref->size          = TYPE_SZ; \
-            type_ref->vmember_count = VMEMBER_COUNT; \
-            type_ref->vmember_type  = (Au_t)VMEMBER_TYPE; \
-            type_ref->traits        = TRAIT; \
-            type_ref->meta          = (_meta_t) { emit_types(__VA_ARGS__) }; \
-            type_ref->arb           = primitive_ffi_arb(typeid(TYPE)); \
-
-            set all member data:
-            
-            TYPE##_schema( TYPE, INIT, __VA_ARGS__ ) \
-            push_type((Au_t)type_ref); \
-            POST_PUSH; \
-            return true; \
-        } \
-    } \
-
-*/
 
 static i32 get_aflags(emember f, i32 extra) {
     fn func = instanceof(f->mdl, typeid(fn));
@@ -2413,10 +2353,8 @@ emember aether_lookup2(aether e, Au name, Au_t mdl_type_filter) {
             if (m) {
                 Au_t mdl_type = isa(m->mdl);
                 if (mdl_type_filter) {
-                    if (mdl_type != mdl_type_filter) {
-                        print("going to next");
+                    if (mdl_type != mdl_type_filter)
                         goto nxt;
-                    }
                 }
                 return m;
             }
@@ -3208,9 +3146,10 @@ void aether_Au_import(aether e, path lib) {
             if ((is_class || is_struct) && atype->isize > 0) {
                 string n = f(string, "%s_interns", atype->name);
                 model intern_space = model(
-                    mod,    e,
-                    src,    emodel("u8"),
-                    count,  atype->isize);
+                    mod,       e,
+                    src,       emodel("u8"),
+                    use_count, true,
+                    count,     atype->isize);
                 emember imem = emember(mod, e, name, n, mdl, intern_space); // todo: when we finalize our classes, we must position interns below our regular members (we are not doing that!)
                 intern_space->mem = hold(imem);
                 set(mdl->members, n, imem);
@@ -3603,18 +3542,18 @@ typedef struct tokens_data {
 } tokens_data;
 
 
-array model_class_list(model mdl, model mdl_filter, bool filter_in) {
+array model_class_list(model mdl, model mdl_filter, bool filter_out) {
     aether e = mdl->mod;
     array   classes = array(alloc, 32, assorted, true);
     enumeration emdl = instanceof(mdl, typeid(enumeration));
     model Au_mdl = emodel("Au");
     if (emdl) {        
-        if (!mdl_filter || ((mdl_filter == emdl)  ^ filter_in)) push(classes, emdl);
-        if (!mdl_filter || ((mdl_filter == Au_mdl) ^ filter_in)) push(classes, Au_mdl);
+        if (!mdl_filter || ((mdl_filter == emdl)  ^ filter_out)) push(classes, emdl);
+        if (!mdl_filter || ((mdl_filter == Au_mdl) ^ filter_out)) push(classes, Au_mdl);
     } else {
         record cur  = instanceof(mdl, typeid(record));
         while (cur) {
-            if (!mdl_filter || ((mdl_filter == cur) ^ filter_in))
+            if (!mdl_filter || ((mdl_filter == cur) ^ filter_out))
                 push(classes, cur);
             cur = cur->parent;
             if (cur && cur->is_abstract)
@@ -4411,7 +4350,6 @@ static void record_finalize(record rec) {
             int abi_size = (member_type && member_type != LLVMVoidType()) ?
                 LLVMABISizeOfType(target_data, member_type) : 0;
             
-            print("member %o: %o = %i", mem->name, mem->mdl, abi_size);
             member_debug[index++] = mem->debug;
             if (!sz_largest || abi_size > sz_largest) {
                 largest = mem;
@@ -4429,7 +4367,6 @@ static void record_finalize(record rec) {
                 LLVMPointerType(LLVMInt8Type(), 0) : LLVMInt8Type();
             LLVMStructSetBody(rec->type, &f, 1, 0);
         } else {
-            printf("member types = %p\n", member_types);
             LLVMStructSetBody(rec->type, member_types, index, 1);
         }
     }

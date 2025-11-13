@@ -27,30 +27,26 @@ struct a-struct2
     #array-of-data : array <i8, 32x1>
     str2 : string
 
-fn construct-something [ string ] -> int 2
+fn construct-something [ silly:string ]
+    int [ silly->len ]
 
 class engine
-    m1   : string
-    
-    m2   : string
-    aa   : a-struct2 [ str2:'lol' ]
+    m1 : string
+    m2 : string
+    aa : a-struct2[str2:'lol']
 
     func init [ ]
         puts 'an engine is loading... lets compute: {2+2}\n'
-    
-    cast i32 [ ] i32 2  # casting method
 
-    # this must be added to the A-type C11 api (Au)
-    cast i32 [ a : object ] # cast with object... something we can check against
-        if inherits [ a, i32 ] 
+    cast i32 [ ] -> i32 [ 2 ]  # casting method
 
     # this is an instance guarded method
     # 
-    func returns2 [ i:int, b:string ]    string 'not guarded.. can certainly proceed without my own instance check.. {m1}'
+    fn returns2 [ i:int, b:string ]    'not guarded.. can certainly proceed without my own instance check.. {m1}'
     
-    func returns  [ i:int, b:string ] -> string 'this is a string and our state is {m1}'
+    fn returns  [ i:int, b:string ] -> 'this is a string and our state is {m1}'
 
-    fn returns4 [ i:int, b:string ] -> string 2
+    fn returns4 [ i:int, b:string ] -> string [ 2 ]
 
         m1 # this should error, the above statement did not continue on, because string reads an expression
 

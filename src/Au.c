@@ -460,37 +460,6 @@ static num      _types_len;
 static bool started = false;
 
 none push_type(Au_t type) {
-    /* for Au building, we must do this; however silver has runtime awareness of this info */
-    /* it simply means for Au, one must build for debug before release */
-    /* yes its required for proper interns in a C build system, but silver goes beyond this to use its info at designtime */
-#ifndef NDEBUG
-    char* import  = getenv("IMPORT");
-    char* project = PROJECT; 
-    if (import && !started) { // we do not want to run this if its already generated; our build system handles cache management here
-        static bool once;     // also we do not want external modules adding to this (different project header typically)
-        static bool skip;
-        char  f[256];
-        snprintf(f, sizeof(f), "%s/include/%s/isize", import, project);
-        if (!once) {
-            struct stat st;
-            if (stat(f, &st) != 0 || st.st_size == 0)
-                unlink(f);
-            else
-                skip = true;
-            
-            once = true;
-        }
-        if (!skip) {
-            FILE* fi = fopen(f, "a");
-            if (!fi) {
-                fprintf(stderr, "could not write isize for type %s\n", type->name);
-            } else {
-                fprintf(fi, "#define %s_isize %i\n", type->name, type->isize);
-                fclose(fi);
-            }
-        }
-    }
-#endif
     if (type->parent_type != typeid(Au)) {
         Au_t pt = type->parent_type;
         if (pt->sub_types_alloc == pt->sub_types_count) {
@@ -2446,8 +2415,7 @@ map map_of(symbol first_key, ...) {
     return a;
 }
 
-
-srcfile srcfile_with_A(srcfile a, Au obj) {
+srcfile srcfile_with_Au(srcfile a, Au obj) {
     a->obj = obj;
     return a;
 }
@@ -5253,7 +5221,6 @@ none shape_push(shape a, i64 i) {
 }
 
 none shape_init(shape a) {
-    print("shape_init has been called");
     if (!a->is_global) {
         i64 sz = a->count ? a->count : 16;
         i64* cp = malloc(sizeof(i64) * (sz + 1));
