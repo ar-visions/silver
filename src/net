@@ -62,7 +62,7 @@ declare_class(sock)
 
 #define Session_schema(X,Y,...) \
     i_prop    (X,Y, public,  TLS,      tls) \
-    i_prop    (X,Y, intern,  mbedtls_net_context,   fd, as i32) \
+    i_prop    (X,Y, intern,  mbedtls_net_context,   fd, as, i32) \
     i_prop    (X,Y, intern,  mbedtls_ssl_context,   ssl, pad, 8192) \
     i_prop    (X,Y, public,  bool,     connected) \
     i_prop    (X,Y, public,  num,      timeout_ms) \

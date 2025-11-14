@@ -377,8 +377,8 @@
 
 #define   i_prop_intern_F(X, R, N)              u8 N;
 #define   i_prop_intern_F_EXTERN(X, R, N)       
-#define   i_prop_intern_ISIZE(X, R, N)          +sizeof(R)
-#define   i_prop_intern_ISIZE_EXTERN(X, R, N) 
+#define   i_prop_intern_ISIZE(X, R, N)          
+#define   i_prop_intern_ISIZE_EXTERN(X, R, N)   +sizeof(R)
 #define   i_prop_intern_INST_U(X, R, N)           
 #define   i_prop_intern_INST_L(X, R, N)           R N;
 #define   i_prop_intern_INST_U_EXTERN(X, R, N)
@@ -396,8 +396,8 @@
 
 #define   i_prop_intern_F_pad(X, R, N, M2)                u8 N;
 #define   i_prop_intern_F_EXTERN_pad(X, R, N, M2)       
-#define   i_prop_intern_ISIZE_pad(X, R, N, M2)            + M2
-#define   i_prop_intern_ISIZE_EXTERN_pad(X, R, N, M2)            + M2
+#define   i_prop_intern_ISIZE_pad(X, R, N, M2)            
+#define   i_prop_intern_ISIZE_EXTERN_pad(X, R, N, M2)     + M2
 #define   i_prop_intern_INST_U_pad(X, R, N, M2)           
 #define   i_prop_intern_INST_L_pad(X, R, N, M2)           union { R N; char _##N##_pad[M2]; };
 #define   i_prop_intern_INST_U_EXTERN_pad(X, R, N, M2)
@@ -551,7 +551,7 @@
 
 #define   i_prop_intern_F_as(X, R, N, M2)               u8 N;
 #define   i_prop_intern_F_EXTERN_as(X, R, N, M2)        
-#define   i_prop_intern_ISIZE_as(X, R, N, M2)          +sizeof(R)
+#define   i_prop_intern_ISIZE_as(X, R, N, M2)          
 #define   i_prop_intern_ISIZE_EXTERN_as(X, R, N, M2)   +sizeof(M2)
 #define   i_prop_intern_INST_U_as(X, R, N, M2)           
 #define   i_prop_intern_INST_L_as(X, R, N, M2)           R N;
@@ -641,7 +641,7 @@
 
 #define   i_vprop_intern_F(X, R, N) u8 N;
 #define   i_vprop_intern_F_EXTERN(X, R, N)
-#define   i_vprop_intern_ISIZE(X, R, N)          +sizeof(R*)
+#define   i_vprop_intern_ISIZE(X, R, N)          
 #define   i_vprop_intern_ISIZE_EXTERN(X, R, N)   +sizeof(R*)
 #define   i_vprop_intern_INST_U(X, R, N)
 #define   i_vprop_intern_INST_L(X, R, N)           R* N;
@@ -718,7 +718,7 @@
 
 #define   i_array_intern_F(X, R, S, N) u8 N;
 #define   i_array_intern_F_EXTERN(X, R, S, N)
-#define   i_array_intern_ISIZE(X, R, S, N)              +sizeof(R[S])
+#define   i_array_intern_ISIZE(X, R, S, N)              
 #define   i_array_intern_ISIZE_EXTERN(X, R, S, N)        +sizeof(R[S])
 #define   i_array_intern_INST_U(X, R, S, N)         
 #define   i_array_intern_INST_L(X, R, S, N)         R N[S];
@@ -913,8 +913,8 @@
 
 #define   i_inlay_intern_F(X, R, N)               u8 N;
 #define   i_inlay_intern_F_EXTERN(X, R, N)        
-#define   i_inlay_intern_ISIZE(X, R, N)           +sizeof(struct _##R)
-#define   i_inlay_intern_ISIZE_EXTERN(X, R, N, ...) i_inlay_intern_ISIZE(X, R, N)
+#define   i_inlay_intern_ISIZE(X, R, N)           
+#define   i_inlay_intern_ISIZE_EXTERN(X, R, N, ...) +sizeof(struct _##R)
 #define   i_inlay_intern_INST_U(X, R, N)            
 #define   i_inlay_intern_INST_L(X, R, N)            struct _##R N;
 #define   i_inlay_intern_INST_U_EXTERN(X, R, N)
