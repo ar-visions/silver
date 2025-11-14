@@ -96,6 +96,8 @@ declare_class(flag)
     i_prop(X,Y, public, codegen, codegen) \
     i_prop(X,Y, public, silver,  external) \
     i_prop(X,Y, public, array,   tokens) \
+    i_prop(X,Y, public, array,   module_paths) \
+    i_prop(X,Y, public, array,   include_paths) \
     s_method(X,Y, public, enode, parse, silver)
 declare_class_2(import, model)
 

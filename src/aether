@@ -72,7 +72,7 @@ declare_class(mschema)
     i_prop    (X,Y, required,   aether,           mod, meta, weak) \
     i_prop    (X,Y, public,     emember,          mem, weak) \
     i_prop    (X,Y, public,     model,            parent) \
-    i_prop    (X,Y, public,     Au_t,            atype_src) \
+    i_prop    (X,Y, public,     Au_t,             atype_src) \
     i_prop    (X,Y, public,     model,            src) \
     i_prop    (X,Y, public,     bool,             is_ref) \
     i_prop    (X,Y, public,     bool,             is_map) \
@@ -305,8 +305,8 @@ declare_class_2(static_array, array)
 
 
 #define aether_schema(X,Y,...)\
+    i_prop    (X,Y, public,     path,        source) \
     i_prop    (X,Y, public,     path,        install) \
-    i_prop    (X,Y, required,   path,        source) \
     i_prop    (X,Y, public,     array,       framework_paths) \
     i_prop    (X,Y, public,     array,       lib_paths) \
     i_prop    (X,Y, public,     path,        isysroot) \

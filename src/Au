@@ -707,6 +707,7 @@ declare_abstract(imported)
 #define f64_schema(X,Y,...)         numeric_schema(numeric,Y,...)
 #define f80_schema(X,Y,...)         numeric_schema(numeric,Y,...)
 
+#define fmt(...) ((string)f(string, __VA_ARGS__))
 
 #define ref_i8_schema(X,Y,...)      numeric_schema(numeric,Y,...)
 #define ref_i16_schema(X,Y,...)     numeric_schema(numeric,Y,...)
