@@ -28,37 +28,19 @@ struct a-struct2
     str2 : string
 
 fn construct-something [ silly:string ]
-    int [ silly->len ]
+    int [ silly.len ]
+
+fn a-function [ stupid:string ] none
+    printf[ 'something' ]
 
 class engine
-    m1 : string
-    m2 : string
-    aa : a-struct2[str2:'lol']
+    m1      : string
+    m2      : string
+    state   : i32
+    aa      : a-struct2 [str2:'lol']
 
-    func init [ ]
-        puts 'an engine is loading... lets compute: {2+2}\n'
-
-    cast i32 [ ] -> i32 [ 2 ]  # casting method
-
-    # this is an instance guarded method
-    # 
     fn returns2 [ i:int, b:string ]    'not guarded.. can certainly proceed without my own instance check.. {m1}'
-    
     fn returns  [ i:int, b:string ] -> 'this is a string and our state is {m1}'
-
-    fn returns4 [ i:int, b:string ] -> string [ 2 ]
-
-        m1 # this should error, the above statement did not continue on, because string reads an expression
-
-        # expression can be an entire field set
-        # or singular
-        # not an expression, not a statement, but a type-expr
-        # its only when we have the type read.. its not a big deal, its part of read-node
-
-        if !we->have->complex # it can still be checked with a boolean for default state
-            return 'lol'
-
-        return '{i + b} ... auto-wash'
 
 class engine2
     m2 : string

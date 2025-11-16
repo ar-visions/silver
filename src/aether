@@ -82,6 +82,8 @@ declare_class(mschema)
     i_prop    (X,Y, public,     bool,             is_system) \
     i_prop    (X,Y, public,     bool,             is_typeid) \
     i_prop    (X,Y, public,     bool,             is_internal) \
+    i_prop    (X,Y, public,     bool,             user_built) \
+    i_prop    (X,Y, public,     bool,             open) \
     i_prop    (X,Y, public,     mschema,          schema) \
     i_prop    (X,Y, public,     bool,             use_count) \
     i_prop    (X,Y, public,     i64,              count) \
@@ -154,6 +156,7 @@ declare_class(codegen)
     i_prop(X,Y, public,     bool,                   is_ifinal) \
     i_prop(X,Y, public,     bool,                   is_global_ctr) \
     i_prop(X,Y, public,     bool,                   is_guarded) \
+    i_prop(X,Y, public,     bool,                   is_elsewhere) \
     i_prop(X,Y, public,     bool,                   va_args) \
     i_prop(X,Y, public,     model,                  rtype) \
     i_prop(X,Y, public,     array,                  rmeta) \
@@ -221,7 +224,7 @@ declare_class_4(Class, record, Namespace, model)
 declare_class_4(structure, record, Namespace, model)
 
 #define enumeration_schema(X,Y,...) \
-    i_prop    (X,Y, public, model, vtype) \
+    i_prop    (X,Y, public, model, atype) \
     i_prop    (X,Y, public, map,   global_values) \
     i_override(X,Y, method, init)
 declare_class_3(enumeration, Namespace, model)
@@ -243,7 +246,7 @@ forward(emember)
     i_prop    (X,Y, required,   model,                  mdl) \
     i_prop    (X,Y, required,   array,                  meta) \
     i_prop    (X,Y, public,     bool,                   explicit_ref) \
-    i_prop    (X,Y, public,     Au,                      literal) \
+    i_prop    (X,Y, public,     Au,                     literal) \
     i_prop    (X,Y, public,     num,                    line) \
     i_prop    (X,Y, public,     num,                    column) \
     i_prop    (X,Y, public,     bool,                   loaded) \
@@ -271,6 +274,7 @@ declare_class(enode)
     i_prop    (X,Y, public,     bool,                   is_func) \
     i_prop    (X,Y, public,     bool,                   is_arg) \
     i_prop    (X,Y, public,     bool,                   is_decl) \
+    i_prop    (X,Y, public,     bool,                   is_codegen) \
     i_prop    (X,Y, public,     Au,                      override_offset_bits) \
     i_prop    (X,Y, public,     Au,                      override_size_bits) \
     i_prop    (X,Y, public,     Au,                      override_alignment_bits) \
@@ -332,6 +336,7 @@ declare_class_2(static_array, array)
     i_prop    (X,Y, public,     callback_extra, read_model) \
     i_prop    (X,Y, public,     map,         base) \
     i_prop    (X,Y, public,     enode,       last_return) \
+    i_prop    (X,Y, public,     model,       userspace) \
     i_prop    (X,Y, intern,     array,       finalizing) \
     i_prop    (X,Y, intern,     bool,        no_const) \
     i_prop    (X,Y, intern,     LLVMExecutionEngineRef, jit,               as, ARef) \

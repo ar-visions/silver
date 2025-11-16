@@ -90,14 +90,9 @@ void aether_register_member(aether e, emember mem, bool finalize) {
 
     if (mem && !mem->membership) {
         model ctx = mem->context ? mem->context : top(e);
-        //mem->registered  = true;
         verify(ctx->members, "expected members map");
         set(ctx->members, string(mem->name->chars), mem);
         mem->membership = ctx;
-    }
-
-    if (mem->context && mem->context != top(e)) {
-        verify(false, "context mismatch for %o, expected %o and found %o", mem->name, mem->context, top(e));
     }
 
     if (finalize)
@@ -552,10 +547,8 @@ void model_init(model mdl) {
         // we still need static array (use of integral shape), aliases
         if (mdl && mdl->src) {
             model src = mdl->src;
-            if (isa(src) == typeid(fn)) {
+            if (isa(src) == typeid(fn))
                 finalize(src->mem);
-                return;
-            }
         }
 
         // can be a class, structure, fn
@@ -981,7 +974,7 @@ void aether_finalize_init(aether e, fn f) {
             } else if (emdl) { // && member is ENUMV
                 enode gvalue = get(en->global_values, f->name);
                 verify(gvalue, "value not found for enum %o", f->name);
-                mset(member, "ptr", e_addr_of(e, gvalue, en->vtype));
+                mset(member, "ptr", e_addr_of(e, gvalue, en->atype));
             } else {
                 mset(member, "ptr", e_null(e, emodel("handle")));
             }
@@ -1300,11 +1293,11 @@ emember enode_resolve(enode mem, string name) {
                 res->mdl    = schema->mdl;
                 fn f = instanceof(schema->mdl, typeid(fn));
                 res->value  = f ? f->value : LLVMBuildStructGEP2(
-                        e->builder, typed(base)->type, actual_ptr, index, "resolve"); // GPT: mem->value is effectively the ptr value on the stack
+                        e->builder, typed(base)->type, actual_ptr, index, "resolve2"); // GPT: mem->value is effectively the ptr value on the stack
                 if (f)
                     res->is_func = true;
                 
-                return res;
+                return e_load(e, res, null);
             }
             index++;
         }
@@ -1322,6 +1315,7 @@ void emember_set_value(emember mem, Au value) {
     enode n = e_operand(mem->mod, value, null, null);
     mem->mdl   = n->mdl;
     mem->value = n->value;
+    mem->literal = hold(n->literal);
     mem->is_const = LLVMIsAConstant(n->value) != null;
 }
 
@@ -1332,12 +1326,15 @@ bool emember_has_value(emember mem) {
 void emember_init(emember mem) {
     aether e   = mem->mod;
     if (!mem->name) mem->name = string("");
+    mem->name = hold(string(mem->name->chars));
+
+    model top = top(e);
     if (!mem->access) mem->access = interface_public;
     if (instanceof(mem->name, typeid(string))) {
         string n = mem->name;
         mem->name = token(chars, cstring(n), source, e->source, line, 1, mod, e);
     }
-    if (eq(mem->name, "pfnAllocation")) {
+    if (eq(mem->name, "construct-something")) {
         int test2 = 2;
         test2    += 2;
     }
@@ -1633,11 +1630,6 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
         
         // if both are internally created and these are refs, we can allow conversion
         emember fmem = convertible(input->mdl, mdl);
-        if (!fmem) {
-            emember mcast = castable(input->mdl->parent->parent, emodel("string"));
-            mcast = mcast;
-            emember fmem2 = convertible(input->mdl, mdl);
-        }
         verify(fmem, "no suitable conversion found for %o -> %o",
             input->mdl, mdl);
         
@@ -2141,7 +2133,9 @@ enode aether_e_load(aether e, emember mem, emember target) {
             /// static methods do not have this in context
             Au_t type = isa(t->mdl);
             
-            record rec = instanceof(t->mdl, typeid(record));
+            record rec = t->mdl->src ?
+                instanceof(t->mdl->src, typeid(record)) :
+                instanceof(t->mdl,      typeid(record));
             verify(rec, "record lookup failed for %o", t->mdl);
             ptr = LLVMBuildStructGEP2(
                 e->builder, rec->type, t->value, mem->index, "emember-ptr");
@@ -2152,9 +2146,10 @@ enode aether_e_load(aether e, emember mem, emember target) {
     bool         use_ptr = mem->is_arg || e->left_hand || e->in_ref;
     LLVMValueRef res     = use_ptr ? ptr :
         LLVMBuildLoad2(e->builder, mdl->type, ptr, cstring(label));
-    if (use_ptr) mdl = pointer(mdl);
+    //if (use_ptr) mdl = pointer(mdl);
 
-    enode r = value(mdl, mem->meta, res);
+    // enode(mod, e, value, vr, mdl, m, meta, META)
+    emember r = emember(mod, e, value, res, mdl, mdl, meta, mem->meta); // value(mdl, mem->meta, res);
     r->loaded = true;
     return r;
 }
@@ -2653,6 +2648,7 @@ void aether_llvm_init(aether e) {
     //    fault("failed to create execution engine: %s", err);
 }
 
+// enumerate everything from object.h (plus some needed primitive)
 static void register_vbasics(aether e) {
     model mdl_glyph  = model(mod, e, atype_src, typeid(i8), is_const, true);
     model mdl_symbol = model(mod, e, 
@@ -2660,6 +2656,7 @@ static void register_vbasics(aether e) {
     
     mdl_glyph->ptr = hold(mdl_symbol);
     model mdl_i8     = model(mod, e, atype_src, typeid(i8));
+    model mdl_i32    = model(mod, e, atype_src, typeid(i32));
     model mdl_u8     = model(mod, e, atype_src, typeid(u8));
     model mdl_ref_u8 = model(mod, e, atype_src, typeid(ref_u8), src, mdl_u8, is_ref, true);
     mdl_u8->ptr = hold(mdl_ref_u8);
@@ -2669,14 +2666,101 @@ static void register_vbasics(aether e) {
     model mdl_cstr   = model(mod, e, atype_src, typeid(cstr), src, mdl_i8);
     mdl_i8->ptr = hold(mdl_cstr);
 
-    //typeid(glyph)->user  = 
     register_model(e, mdl_glyph,  string("glyph"),  true);
     typeid(i8)->user     = register_model(e, mdl_i8,     string("i8"),     true)->mdl;
     typeid(u8)->user     = register_model(e, mdl_u8,     string("u8"),     true)->mdl;
+    typeid(i32)->user    = register_model(e, mdl_i32,    string("i32"),    true)->mdl;
     typeid(ref_u8)->user = register_model(e, mdl_ref_u8, string("ref_u8"), true)->mdl;
     typeid(handle)->user = register_model(e, mdl_handle, string("handle"), true)->mdl;
     typeid(symbol)->user = register_model(e, mdl_symbol, string("symbol"), true)->mdl;
     typeid(cstr)->user   = register_model(e, mdl_cstr,   string("cstr"),   true)->mdl;
+
+    model mdl_cereal = structure(mod, e, ident, string("cereal"),
+        members, m("value", emember(mod, e, name, string("value"), mdl, mdl_i8)));
+
+    model mdl_AU_FLAG = enumeration(mod, e,
+        members, m(
+            "AU_FLAG_NONE",      emember(mod, e, name, string("AU_FLAG_NONE"),      mdl, mdl_i32),
+            "AU_FLAG_CONSTRUCT", emember(mod, e, name, string("AU_FLAG_CONSTRUCT"), mdl, mdl_i32),
+            "AU_FLAG_PROP",      emember(mod, e, name, string("AU_FLAG_PROP"),      mdl, mdl_i32),
+            "AU_FLAG_INLAY",     emember(mod, e, name, string("AU_FLAG_INLAY"),     mdl, mdl_i32),
+            "AU_FLAG_PRIV",      emember(mod, e, name, string("AU_FLAG_PRIV"),      mdl, mdl_i32),
+            "AU_FLAG_INTERN",    emember(mod, e, name, string("AU_FLAG_INTERN"),    mdl, mdl_i32),
+            "AU_FLAG_READ_ONLY", emember(mod, e, name, string("AU_FLAG_READ_ONLY"), mdl, mdl_i32),
+            "AU_FLAG_IMETHOD",   emember(mod, e, name, string("AU_FLAG_IMETHOD"),   mdl, mdl_i32),
+            "AU_FLAG_SMETHOD",   emember(mod, e, name, string("AU_FLAG_SMETHOD"),   mdl, mdl_i32),
+            "AU_FLAG_OPERATOR",  emember(mod, e, name, string("AU_FLAG_OPERATOR"),  mdl, mdl_i32),
+            "AU_FLAG_CAST",      emember(mod, e, name, string("AU_FLAG_CAST"),      mdl, mdl_i32),
+            "AU_FLAG_INDEX",     emember(mod, e, name, string("AU_FLAG_INDEX"),     mdl, mdl_i32),
+            "AU_FLAG_ENUMV",     emember(mod, e, name, string("AU_FLAG_ENUMV"),     mdl, mdl_i32),
+            "AU_FLAG_OVERRIDE",  emember(mod, e, name, string("AU_FLAG_OVERRIDE"),  mdl, mdl_i32),
+            "AU_FLAG_VPROP",     emember(mod, e, name, string("AU_FLAG_VPROP"),     mdl, mdl_i32),
+            "AU_FLAG_IS_ATTR",   emember(mod, e, name, string("AU_FLAG_IS_ATTR"),   mdl, mdl_i32),
+            "AU_FLAG_OPAQUE",    emember(mod, e, name, string("AU_FLAG_OPAQUE"),    mdl, mdl_i32),
+            "AU_FLAG_IFINAL",    emember(mod, e, name, string("AU_FLAG_IFINAL"),    mdl, mdl_i32),
+            "AU_FLAG_TMETHOD",   emember(mod, e, name, string("AU_FLAG_TMETHOD"),   mdl, mdl_i32)));
+
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_NONE")),        _i32(AU_FLAG_NONE));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_CONSTRUCT")),   _i32(AU_FLAG_CONSTRUCT));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_PROP")),        _i32(AU_FLAG_PROP));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_INLAY")),       _i32(AU_FLAG_INLAY));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_PRIV")),        _i32(AU_FLAG_PRIV));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_INTERN")),      _i32(AU_FLAG_INTERN));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_READ_ONLY")),   _i32(AU_FLAG_READ_ONLY));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_IMETHOD")),     _i32(AU_FLAG_IMETHOD));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_SMETHOD")),     _i32(AU_FLAG_SMETHOD));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_OPERATOR")),    _i32(AU_FLAG_OPERATOR));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_CAST")),        _i32(AU_FLAG_CAST));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_INDEX")),       _i32(AU_FLAG_INDEX));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_ENUMV")),       _i32(AU_FLAG_ENUMV));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_OVERRIDE")),    _i32(AU_FLAG_OVERRIDE));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_VPROP")),       _i32(AU_FLAG_VPROP));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_IS_ATTR")),     _i32(AU_FLAG_IS_ATTR));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_OPAQUE")),      _i32(AU_FLAG_OPAQUE));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_IFINAL")),      _i32(AU_FLAG_IFINAL));
+    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_TMETHOD")),     _i32(AU_FLAG_TMETHOD));
+    
+    model mdl_AU_TRAIT = enumeration(mod, e,
+        members, m(
+            "AU_TRAIT_PRIMITIVE",   emember(mod, e, name, string("AU_TRAIT_PRIMITIVE"), mdl, mdl_i32),
+            "AU_TRAIT_INTEGRAL",    emember(mod, e, name, string("AU_TRAIT_INTEGRAL"),  mdl, mdl_i32),
+            "AU_TRAIT_REALISTIC",   emember(mod, e, name, string("AU_TRAIT_REALISTIC"), mdl, mdl_i32),
+            "AU_TRAIT_SIGNED",      emember(mod, e, name, string("AU_TRAIT_SIGNED"),    mdl, mdl_i32),
+            "AU_TRAIT_UNSIGNED",    emember(mod, e, name, string("AU_TRAIT_UNSIGNED"),  mdl, mdl_i32),
+            "AU_TRAIT_ENUM",        emember(mod, e, name, string("AU_TRAIT_ENUM"),      mdl, mdl_i32),
+            "AU_TRAIT_ALIAS",       emember(mod, e, name, string("AU_TRAIT_ALIAS"),     mdl, mdl_i32),
+            "AU_TRAIT_ABSTRACT",    emember(mod, e, name, string("AU_TRAIT_ABSTRACT"),  mdl, mdl_i32),
+            "AU_TRAIT_VECTOR",      emember(mod, e, name, string("AU_TRAIT_VECTOR"),    mdl, mdl_i32),
+            "AU_TRAIT_STRUCT",      emember(mod, e, name, string("AU_TRAIT_STRUCT"),    mdl, mdl_i32),
+            "AU_TRAIT_PTR_SIZE",    emember(mod, e, name, string("AU_TRAIT_PTR_SIZE"),  mdl, mdl_i32),
+            "AU_TRAIT_PUBLIC",      emember(mod, e, name, string("AU_TRAIT_PUBLIC"),    mdl, mdl_i32),
+            "AU_TRAIT_USER_INIT",   emember(mod, e, name, string("AU_TRAIT_USER_INIT"), mdl, mdl_i32),
+            "AU_TRAIT_CLASS",       emember(mod, e, name, string("AU_TRAIT_CLASS"),     mdl, mdl_i32),
+            "AU_TRAIT_BASE",        emember(mod, e, name, string("AU_TRAIT_BASE"),      mdl, mdl_i32),
+            "AU_TRAIT_POINTER",     emember(mod, e, name, string("AU_TRAIT_POINTER"),   mdl, mdl_i32)));
+
+    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_PRIMITIVE")),  _i32(AU_TRAIT_PRIMITIVE));
+    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_INTEGRAL")),   _i32(AU_TRAIT_INTEGRAL));
+    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_REALISTIC")),  _i32(AU_TRAIT_REALISTIC));
+    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_SIGNED")),     _i32(AU_TRAIT_SIGNED));
+    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_UNSIGNED")),   _i32(AU_TRAIT_UNSIGNED));
+    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_ENUM")),       _i32(AU_TRAIT_ENUM));
+    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_ALIAS")),      _i32(AU_TRAIT_ALIAS));
+    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_ABSTRACT")),   _i32(AU_TRAIT_ABSTRACT));
+    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_VECTOR")),     _i32(AU_TRAIT_VECTOR));
+    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_STRUCT")),     _i32(AU_TRAIT_STRUCT));
+    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_PTR_SIZE")),   _i32(AU_TRAIT_PTR_SIZE));
+    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_PUBLIC")),     _i32(AU_TRAIT_PUBLIC));
+    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_USER_INIT")),  _i32(AU_TRAIT_USER_INIT));
+    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_CLASS")),      _i32(AU_TRAIT_CLASS));
+    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_BASE")),       _i32(AU_TRAIT_BASE));
+    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_POINTER")),    _i32(AU_TRAIT_POINTER));
+
+    typeid(AFlag)->user = register_model(e, mdl_AU_FLAG, string("AFlag"), true)->mdl->src;
+    
+    register_model(e, mdl_AU_TRAIT, string("AU_TRAIT"), true);
+    
+    typeid(cereal)->user = register_model(e, mdl_cereal, string("cereal"),   true)->mdl;
 }
 
 static void register_basics(aether e) {
@@ -2687,10 +2771,10 @@ static void register_basics(aether e) {
     model _handle   = emodel("handle");
     model _symbol   = emodel("symbol");
 
-    if (!_i32) {
+    if (!_i64) {
         // a member with 'context' would automatically bind the exact type when init'ing the object; the context flows unless its changed explicitly to something else
         // this 'just works'
-        _i32    = register_model(e, model(mod, e, atype_src, typeid(i32)),    string("i32"),    true)->mdl;
+        //_i32    = register_model(e, model(mod, e, atype_src, typeid(i32)),    string("i32"),    true)->mdl;
         _i16    = register_model(e, model(mod, e, atype_src, typeid(i16)),    string("i16"),    true)->mdl;
         _i64    = register_model(e, model(mod, e, atype_src, typeid(i64)),    string("i64"),    true)->mdl;
         _u64    = register_model(e, model(mod, e, atype_src, typeid(u64)),    string("u64"),    true)->mdl;
@@ -2699,22 +2783,65 @@ static void register_basics(aether e) {
     }
     verify(_i32, "i32 not found");
 
-    structure _shape = emodel("_shape");
-    model      shape = emodel("shape");
+    // register callback primitives
+    eargs args0 = eargs();
+    eargs args1 = eargs();
+    map a1 = m(
+        "a0", earg(args, emodel("Au"), null, "a0"));
+
+    eargs args2 = eargs();
+    map a2 = m(
+        "a0", earg(args, emodel("Au"), null, "a0"),
+        "a1", earg(args, emodel("Au"), null, "a1"));
+    
+    eargs args3 = eargs();
+    map a3 = m(
+        "a0", earg(args, emodel("Au"), null, "a0"),
+        "a1", earg(args, emodel("Au"), null, "a1"),
+        "a2", earg(args, emodel("Au"), null, "a2"));
+    
+    fn f_func           = fn(mod, e, rtype, emodel("none"), args, args0);
+    fn f_hook           = fn(mod, e, rtype, emodel("Au"), args, args1);
+    fn f_callback       = fn(mod, e, rtype, emodel("Au"), args, args2);
+    fn f_callback_extra = fn(mod, e, rtype, emodel("Au"), args, args3);
+
+    register_model(e, f_func,           string("_func"),            true);
+    register_model(e, f_hook,           string("_hook"),            true);
+    register_model(e, f_callback,       string("_callback"),        true);
+    register_model(e, f_callback_extra, string("_callback_extra"),  true);
+
+    typeid(func)->user =
+        register_model(e, (model)model(
+            mod, e, src, f_func, is_ref, true),
+            string("func"), true)->mdl;
+    typeid(hook)->user =
+        register_model(e, (model)model(
+            mod, e, src, f_hook, is_ref, true),
+            string("hook"), true)->mdl;
+    typeid(callback)->user =
+        register_model(e, (model)model(
+            mod, e, src, f_callback, is_ref, true),
+            string("callback"), true)->mdl;
+    typeid(callback_extra)->user = 
+        register_model(e, (model)model(
+            mod, e, src, f_callback_extra, is_ref, true),
+            string("callback_extra"), true)->mdl;
+
+    model shape = emodel("shape");
     if (!shape) {
-        token n = token("_shape");
-        emember m_shape = register_model(e, structure(mod, e, ident, n), n, false);
-        _shape  = m_shape->mdl;
-        push(e, _shape);
+        emember m_shape = register_model(e, Class(
+            mod, e, ident, string("shape"), members, map()), string("shape"), false);
+
         model _i64_16 = model(mod, e, src, _i64, count, 16);
         register_model(e, _i64_16, string("_i64_16"), false);
-        _shape->members = m(
+
+        push(e, m_shape->mdl);
+        m_shape->mdl->members = m(
             "count", emem(_i64,    null, "count"),
             "data",  emem(_i64_16, null, "data"));
         pop(e);
         finalize(m_shape);
-        shape = pointer(_shape);
-        register_model(e, shape, string("shape"), false);
+        shape = m_shape->mdl;
         typeid(shape)->user = shape;
     }
 
@@ -2794,8 +2921,10 @@ static void register_basics(aether e) {
     register_model(e, _u64_2, string("_u64_2"), true);
 
     push(e, _Au_t);
+    emember mem2 = emem(_Au_t_ptr, null, "parent_type");
+
     _Au_t->members = m(
-        "parent_type",     emem(_Au_t_ptr, null, "parent_type"),
+        "parent_type",     mem2,
         "name",            emem(_symbol,    null, "name"),
         "module",          emem(_symbol,    null, "module"),
         "sub_types",       emem(_handle,    null, "sub_types"), // needs to be _Au_tRef
@@ -2807,19 +2936,21 @@ static void register_basics(aether e) {
         "magic",           emem(_i32,       null, "magic"),
         "global_count",    emem(_i32,       null, "global_count"),
         "vmember_count",   emem(_i32,       null, "vmember_count"),
-        "vmember_type",    emem(_Au_t_ptr, null, "vmember_type"),
+        "vmember_type",    emem(_Au_t_ptr,  null, "vmember_type"),
         "member_count",    emem(_i32,       null, "member_count"),
         "members",         emem(member_ptr, null, "members"),
         "traits",          emem(_i32,       null, "traits"),
         "user",            emem(_handle,    null, "user"),
         "required",        emem(_u64_2,     null, "required"),
-        "src",             emem(_Au_t_ptr, null, "src"),
+        "src",             emem(_Au_t_ptr,  null, "src"),
         "arb",             emem(_handle,    null, "arb"),
         "shape",           emem(shape,      null, "shape"),
         "meta",            emem(_meta_t,    null, "meta"));
     pop(e);
 
     finalize(_Au_t_mem);
+
+    
     finalize(_meta_t_mem);
     finalize(_af_recycler_mem);
     finalize(_member_mem);
@@ -2893,9 +3024,7 @@ void aether_Au_import(aether e, path lib) {
 
         bool  is_prim      = (atype->traits & AU_TRAIT_PRIMITIVE) != 0;
         bool  is_ref       = (atype->traits & AU_TRAIT_POINTER)   != 0;
-        
-        //if   (is_ref) continue; // src of this may be referencing another unresolved
-
+        if   (is_ref) continue; // src of this may be referencing another unresolved
 
         bool  is_struct    = (atype->traits & AU_TRAIT_STRUCT)    != 0;
         bool  is_class     = (atype->traits & AU_TRAIT_CLASS)     != 0;
@@ -2907,11 +3036,16 @@ void aether_Au_import(aether e, path lib) {
 
         if      (is_class)    mdl = Class      (mod, e, ident, name, imported_from, inc);
         else if (is_struct)   mdl = structure  (mod, e, ident, name, imported_from, inc);
-        else if (is_enum)     mdl = enumeration(mod, e);
+        else if (is_enum)     mdl = enumeration(mod, e, atype, typeid(i32));
         else if (is_prim && !is_abstract && (atype->traits & AU_TRAIT_INTEGRAL) != 0) {
             mdl = model(mod, e, atype_src, atype);
         } else {
             continue; // we get these on another pass
+        }
+
+        if (is_class) {
+            int test2 = 2;
+            test2    += 2;
         }
 
         Class cl = mdl;
@@ -2920,10 +3054,7 @@ void aether_Au_import(aether e, path lib) {
         verify(mdl, "failed to import type: %o", name);
 
         emember mem = register_model(e, mdl, name, is_prim || is_enum || 
-            eq(name, "Au")     ||
-            eq(name, "string") || 
-            eq(name, "array") || 
-            eq(name, "map"));
+            eq(name, "Au"));
 
         atype->user = mem->mdl;
     }
@@ -2931,6 +3062,7 @@ void aether_Au_import(aether e, path lib) {
     // first time we run this, we must import Au_t basics (after we import the basic primitives)
     if (!_Au_t) register_basics(e);
 
+    for (int ii = 0; ii < 2; ii++)
     for (num i = 0; i < ln; i++) {
         Au_t  atype = a[i];
         model  mdl   = null;
@@ -2944,23 +3076,30 @@ void aether_Au_import(aether e, path lib) {
         }
         if (!get(module_filter, mstate))
             continue;
-
+        
         bool  is_abstract  = (atype->traits & AU_TRAIT_ABSTRACT)  != 0;
         bool  is_prim      = (atype->traits & AU_TRAIT_PRIMITIVE) != 0;
         bool  is_ref       = (atype->traits & AU_TRAIT_POINTER)   != 0;
         
+        if (ii == 0 && is_ref) continue; // lets wait for the second iteration to register
+
         if   (!is_abstract && !is_prim && !is_ref) continue;
         mdl = model(mod, e, atype_src, atype);
+
+        string n = string(atype->name);
+        if (is_ref && starts_with(n, "ref_")) {
+            string src = mid(n, 4, len(n) - 4);
+            emember mem_src = lookup2(e, src, null);
+            verify(mem_src, "could not find source model for %o", src);
+            mdl->src = hold(mem_src->mdl);
+        }
 
         // initialization for primitives are in model_init
         atype->user = mdl; // lets store our model reference here
         register_model(e, mdl, string(atype->name), is_prim);
     }
 
-    model _y64 = emodel("u32");
-
     // register the abstracts 
-
     Class cl_A = emodel("Au");
 
     // resolve parent classes, load refs, fill out enumerations, and set primitive references
@@ -3018,23 +3157,30 @@ void aether_Au_import(aether e, path lib) {
         }
     }
 
+    emember g2 = get(emodel("_Au_t")->members, string("parent_type"));
+    model mdl_prev = g2->mdl;
+
     // load structs and class members (including i/s methods)
     pairs(processing, i) {
         Au_t  atype     = i->value;
         model  mdl       = atype->user;
         bool   is_struct = (atype->traits & AU_TRAIT_STRUCT) != 0;
         bool   is_class  = (atype->traits & AU_TRAIT_CLASS)   != 0;
+        
         if    (is_class || is_struct) {
             structure st = is_struct ? mdl : null;
             Class     cl = is_class  ? mdl : null;
 
-            if (!mdl->members) mdl->members = hold(map(hsize, 8));
-
+            if (!mdl->members) {
+                mdl->members = hold(map(hsize, 8));
+                if (cl) {
+                    cl->src->members = hold(mdl->members);
+                }
+            }
             if (atype == typeid(Au)) {
                 typeid(Au)->user = cl;
                 emember mem_ARef = lookup2(e, string("ARef"), null);
                 mem_ARef->mdl->src = mdl;
-
                 //mdl->ptr = pointer(mdl);
                 //register_model(e, mdl->ptr, string("ARef"), true);
             }
@@ -3042,7 +3188,7 @@ void aether_Au_import(aether e, path lib) {
             // add members
             for (int m = 0; m < atype->member_count; m++) {
                 member amem    = &atype->members[m];
-                Au_t  mtype   = amem->type;
+                Au_t  mtype    = amem->type;
                 string n       = amem->sname;
                 model  mem_mdl = null;
 
@@ -3105,6 +3251,11 @@ void aether_Au_import(aether e, path lib) {
                          (amem->member_type & AU_FLAG_SMETHOD) != 0 ||
                          (amem->member_type & AU_FLAG_IFINAL)  != 0 ||
                          (amem->member_type & AU_FLAG_TMETHOD) != 0) {
+
+                    if (strcmp(amem->name, "len") == 0) {
+                        int test2 = 2;
+                        test2    += 2;
+                    }
                     bool  is_inst = (amem->member_type & AU_FLAG_IMETHOD) != 0;
                     bool  is_f    = (amem->member_type & AU_FLAG_IFINAL)  != 0;
                     bool  is_t    = (amem->member_type & AU_FLAG_TMETHOD)  != 0;
@@ -3138,7 +3289,11 @@ void aether_Au_import(aether e, path lib) {
                     mod, e, name, n, 
                     mdl, amem->count == 0 ? 
                         mem_mdl : model(mod, e, src, mem_mdl, count, amem->count), context, mdl);
-                mem_mdl->mem = hold(smem);
+                
+                if (!mem_mdl->mem) {
+                    mem_mdl->mem = hold(smem); // this doesnt happen for props/vprops
+                }
+                //mem_mdl->mem = hold(smem);
                 set(mdl->members, n, smem);
             }
 
@@ -3156,6 +3311,9 @@ void aether_Au_import(aether e, path lib) {
             }
         }
     }
+
+    emember g = get(emodel("_Au_t")->members, string("parent_type"));
+
     // finalize models
     model _ARef = emodel("ARef");
     pairs(processing, i) {
@@ -3165,6 +3323,10 @@ void aether_Au_import(aether e, path lib) {
         verify(mdl, "could not import %s", atype->name);
         emember emem  = lookup2(e, name, null);
 
+        if (eq(name, "string")) {
+            int test2 = 2;
+            test2    += 2;
+        }
         // improve integrity check so ptr is for classes, and mdl check is for others
         verify(emem->mdl == mdl || emem->mdl == mdl->ptr, "import integrity error for %o", name);
         finalize(emem);
@@ -3191,10 +3353,13 @@ void aether_reinit_startup(aether e) {
         is_global, true,
         members,   map(hsize, 64));
     push(e, mdl_after);
+    e->userspace = hold(mdl_after);
+    e->userspace->open = true;
     drop(prev);
 } 
 
 void aether_init(aether e) {
+    e->open       = true;
     e->with_debug = true;
     e->is_system  = true;
     e->finalizing = hold(array(alloc, 64, assorted, true, unmanaged, true));
@@ -3338,6 +3503,8 @@ void aether_init(aether e) {
     // to not require reimport of Au-type, keeping our model 
     // identities intact for retries
     reinit_startup(e);
+
+
 }
 
 
@@ -4269,16 +4436,27 @@ static none enumeration_finalize(enumeration en) {
             LLVMSetGlobalConstant(g, true);
             LLVMSetUnnamedAddr   (g, true);
             set(en->global_values, en->mem->name,
-                enode(mod, e, value, g, mdl, en->vtype, meta, null));
+                enode(mod, e, value, g, mdl, en->atype, meta, null));
         }
     }
 }
 
 static void record_finalize(record rec) {
+
+    if (eq(rec->ident, "string")) {
+        int test2 = 2;
+        test2    += 2;
+    }
+
     enumeration en = instanceof(rec, typeid(enumeration));
     if (rec->finalized || rec->is_abstract || en) {
         rec->finalized = true;
         return;
+    }
+
+    if (eq(rec->ident, "string")) {
+        int test2 = 2;
+        test2    += 2;
     }
     int    total = 0;
     aether e     = rec->mod;
@@ -4444,8 +4622,22 @@ static void fn_finalize(fn fn) {
         aether_finalize_init(e, fn);
 
     fn->finalized = true;
-    if (!fn->entry || fn->value)
+    /*if (eq(fn->ident, "construct-something")) {
+        int test2 = 2;
+        test2    += 2;
+    }*/
+    if (fn->value)
         return;
+    // todo: code coverage in orbiter (act less of an idiot)
+    fn->is_elsewhere = !fn->cgen && (!fn->body || len(fn->body) == 0);
+    if (fn->is_elsewhere && !fn->extern_name) {
+        record rec = aether_context_model(e, typeid(Class));
+        if (!rec) rec = aether_context_model(e, typeid(structure));
+        if (rec)
+            fn->extern_name = hold(f(string, "%o_%o", rec, fn));
+        else
+            fn->extern_name = hold(f(string, "%o", fn));
+    }
 
     int n_args = fn->args ? len(fn->args->members) : 0;
     LLVMTypeRef* arg_types = calloc(4 + (fn->instance != null) + 
@@ -4583,27 +4775,31 @@ static void fn_finalize(fn fn) {
 
     pairs(fn->args->members, i) {
         emember arg = i->value;
-        /// create debug for parameter here
-        LLVMMetadataRef param_meta = LLVMDIBuilderCreateParameterVariable(
-            e->dbg_builder,          // DIBuilder reference
-            fn->scope,         // The scope (subprogram/fn metadata)
-             cstring(arg->name),    // Parameter name
-            len(arg->name),
-            1 + index,         // Argument index (starting from 1, not 0)
-            e->file,           // File where it's defined
-            arg->name->line,   // Line number
-            arg->mdl->debug,   // Debug type of the parameter (LLVMMetadataRef for type)
-            1,                 // AlwaysPreserve (1 to ensure the variable is preserved in optimized code)
-            0                  // Flags (typically 0)
-        );
         LLVMValueRef param_value = LLVMGetParam(fn->value, index);
-        LLVMValueRef decl        = LLVMDIBuilderInsertDeclareRecordAtEnd(
-            e->dbg_builder,
-            param_value, 
-            param_meta, // debug metadata for the first parameter
-            LLVMDIBuilderCreateExpression(e->dbg_builder, NULL, 0), // Empty expression
-            LLVMGetCurrentDebugLocation2(e->builder), // current debug location
-            fn->entry); // attach it in the fn's entry block
+
+        if (fn->scope) {
+            /// create debug for parameter here
+            LLVMMetadataRef param_meta = LLVMDIBuilderCreateParameterVariable(
+                e->dbg_builder,          // DIBuilder reference
+                fn->scope,         // The scope (subprogram/fn metadata)
+                cstring(arg->name),    // Parameter name
+                len(arg->name),
+                1 + index,         // Argument index (starting from 1, not 0)
+                e->file,           // File where it's defined
+                arg->name->line,   // Line number
+                arg->mdl->debug,   // Debug type of the parameter (LLVMMetadataRef for type)
+                1,                 // AlwaysPreserve (1 to ensure the variable is preserved in optimized code)
+                0                  // Flags (typically 0)
+            );
+            
+            LLVMValueRef decl = LLVMDIBuilderInsertDeclareRecordAtEnd(
+                e->dbg_builder,
+                param_value, 
+                param_meta, // debug metadata for the first parameter
+                LLVMDIBuilderCreateExpression(e->dbg_builder, NULL, 0), // Empty expression
+                LLVMGetCurrentDebugLocation2(e->builder), // current debug location
+                fn->entry); // attach it in the fn's entry block
+        }
         arg->value = param_value;
         index++;
     }
@@ -4705,12 +4901,10 @@ void emember_finalize(emember mem) {
                     ptr_sz * 8, 0, 0, src_name->chars, ln);
             }
         }
-        return; // ptr's need no form of action to 'finalize' other than debug info
     }
 
     mdl = model_source(mdl); // resolve class record from its use-case pointer
     if (mdl->finalized) return;
-    mem->finalized = true;
     
     if (index_of(e->finalizing, mdl) >= 0)
         return;
@@ -4723,7 +4917,7 @@ void emember_finalize(emember mem) {
 
     push(e->finalizing, mdl);
 
-    i32         index = len(e->finalizing) - 1;
+    i32 index = len(e->finalizing) - 1;
 
     if      (en)  enumeration_finalize(mdl);
     else if (rec) record_finalize(mdl);
@@ -4735,10 +4929,6 @@ void emember_finalize(emember mem) {
     if (ctx_en || is_fn || (isa(mdl)->module != typeid(aether)->module)) return;
 
     Au_t mdl_type = isa(mdl);
-    if (mem->mdl != mdl) {
-        verify(!mem->mdl, "model already set on emember");
-        mem->mdl = hold(mdl);
-    }
     
     fn       ctx_fn  = aether_context_model(e, typeid(fn));
     bool     is_init = false;
@@ -4794,10 +4984,7 @@ void emember_finalize(emember mem) {
             LLVMDIBuilderCreateExpression(e->dbg_builder, NULL, 0), // Empty expression
             LLVMGetCurrentDebugLocation2(e->builder), // Current debug location
             firstInstr);
-    } else if (is_module && !mem->is_type) {
-        if (!t) {
-            record   ctx_rec = aether_context_model(e, typeid(Class));
-        }
+    } else if (t && is_module && !mem->is_type) {
         mem->value = LLVMAddGlobal(e->module, t->type, mem->name->chars);
         bool use_intern = !external_member && 
             (mem->access == interface_intern || t->is_internal);
@@ -4805,18 +4992,13 @@ void emember_finalize(emember mem) {
         if (!external_member) {
             LLVMSetInitializer(mem->value, LLVMConstNull(t->type));
         }
-    } else if (!ctx_rec && !ctx_fn && !mem->is_type && 
-               !mem->is_arg && (!e->current_include || e->is_Au_import || is_module) && is_init && !mem->is_decl) { // we're importing so its not adding this global -- for module includes, it should
+    } else if (t && !mem->is_type && is_init && !mem->is_decl) { // we're importing so its not adding this global -- for module includes, it should
         symbol name = mem->name->chars;
         LLVMTypeRef type = t->type;
-        bool is_global_space = false;
         if (isa(mem->mdl)->parent_type != typeid(model) && !mem->value) {
             mem->value = LLVMAddGlobal(e->module, type, name); // its created here (a-map)
             //LLVMSetGlobalConstant(mem->value, mem->is_const);
             LLVMSetInitializer(mem->value, LLVMConstNull(type));
-            is_global_space = true; 
-        }
-        if (is_global_space) {
             bool is_public = (int)mem->access >= (int)interface_public && !t->is_internal;
             LLVMSetLinkage(mem->value, is_public ? LLVMExternalLinkage : LLVMPrivateLinkage);
             LLVMMetadataRef expr = LLVMDIBuilderCreateExpression(e->dbg_builder, NULL, 0);
@@ -4832,9 +5014,12 @@ void emember_finalize(emember mem) {
 }
 
 model aether_top(aether e) {
-    //if (e->top && strcmp(isa(e->top)->name, "import") == 0)
-    //    return e;
-    return e->top;
+    for (int i = len(e->lex) - 1; i >= 0; i--) {
+        model mdl = e->lex->elements[i];
+        if (!mdl->open) continue;
+        return mdl;
+    }
+    return e;
 }
 
 Au read_numeric(token a) {
@@ -4993,6 +5178,10 @@ void token_init(token a) {
     sz length = a->len ? a->len : strlen(prev);
     a->chars  = (cstr)calloc((a->alloc ? a->alloc : length) + 1, 1);
     a->len    = length;
+    if (eq(a, "silly-")) {
+        int test2 = 2;
+        test2    += 2;
+    }
     aether mod = a->mod;
     memcpy(a->chars, prev, length);
 
