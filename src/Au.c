@@ -1828,7 +1828,6 @@ bool member_set(Au a, member m, Au value) {
     } else if ((Au)*member_ptr != value) {
         //verify(Au_inherits(vtype, m->type), "type mismatch: setting %s on member %s %s",
         //    vtype->name, m->type->name, m->name);
-        print("member ptr %s = %p", m->name, member_ptr);
         drop(*member_ptr);
         *member_ptr = hold(value);
     }

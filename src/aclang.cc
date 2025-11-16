@@ -401,6 +401,10 @@ static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::s
 // Function creation
 static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string name) {
     string n = string(name.c_str());
+    if (eq(n, "vkGetInstanceProcAddr")) {
+        int test2 = 2;
+        test2    += 2;
+    }
     // Get return type
     QualType return_qt = decl->getReturnType();
     model rtype = map_clang_type_to_model(return_qt, ctx, e, null);
@@ -501,7 +505,7 @@ static model map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, ae
 }
 
 // Function pointer helper
-static model map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e) {
+static model map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e, string use_name) {
     const Type* pointee = pointee_qt.getTypePtr();
     
     if (const FunctionProtoType* fpt = dyn_cast<FunctionProtoType>(pointee)) {
@@ -509,7 +513,7 @@ static model map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e
         register_model(e, func_model, null, true);
 
         model rmodel = model(mod, e, src, func_model, is_ref, true);
-        register_model(e, rmodel, null, true);
+        register_model(e, rmodel, use_name, true);
         return rmodel;
     }
     
@@ -753,12 +757,7 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
         }
         // function pointers
         if (pointee->isFunctionType())
-            return map_function_pointer(pointee, ctx, e);
-        
-        // replace with fields to navigate issues for
-        if (use_name && eq(use_name, "_markers")) {
-            model base = map_clang_type_to_model(pointee, ctx, e, null);
-        }
+            return map_function_pointer(pointee, ctx, e, use_name);
 
         model base = map_clang_type_to_model(pointee, ctx, e, null);
         if (!base) base = emodel("ARef"); // todo: call this opaque (we dont want to classify this as Au-related)
@@ -1061,6 +1060,9 @@ path aether_include(aether e, Au inc, ARef _instance) {
         lookup_include(e, (string)inc) : (path)inc;
     verify(ipath && exists(ipath), "include path does not exist: %o", ipath ? (Au)ipath : inc);
     e->current_include = ipath;
+
+    //model mdl_top = aether_top(e);
+    //mdl_top->imported_from = (path)hold((Au)ipath);
 
     string incl = string(ipath->chars);
     bool is_header = ends_with(incl, ".h") ||

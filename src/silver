@@ -23,7 +23,6 @@ forward(import)
     i_prop    (X,Y, intern,     import,         import) \
     i_prop    (X,Y, intern,     array,          implements) \
     i_prop    (X,Y, intern,     bool,           no_build) \
-    i_prop    (X,Y, intern,     bool,           in_top) \
     i_prop    (X,Y, intern,     bool,           in_const) \
     i_prop    (X,Y, intern,     bool,           in_left) \
     i_prop    (X,Y, intern,     bool,           in_inlay) \
