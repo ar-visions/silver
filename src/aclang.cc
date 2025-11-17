@@ -260,7 +260,7 @@ static none set_fields(RecordDecl* decl, ASTContext& ctx, aether e, record rec) 
             if (!mapped) continue;
             
             //push(e, mapped);
-            emember m = emember(mod, rec->mod, name, (token)fname, mdl, mapped);
+            emember m = emember(mod, rec->mod, name, (token)fname, mdl, mapped, context, top(e));
             //pop(e);
 
             uint64_t offset_bits = layout.getFieldOffset(field->getFieldIndex());
@@ -437,6 +437,16 @@ static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string n
     if (len(n) > 0)
         register_model(e, (model)f, (string)n, true);
 
+    if (decl->hasAttr<FormatAttr>()) {
+        for (auto *attr : decl->specific_attrs<FormatAttr>()) {
+            // attr->getType() gives printf/scanf/strfmon
+            int idx = attr->getFormatIdx(); // gives the position of the format string
+            emember arg = (emember)value_by_index(args->members, idx);
+            if (arg) arg->is_formatter = true; // we can require constant string here
+            // attr->getFirstArg() gives the first variadic arg index
+        }
+    }
+
     return f;
 }
 
@@ -471,8 +481,9 @@ static record create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::st
     emember mem = null;
     if (has_name)
         mem = register_model(e, (model)rec, n, false);
-    
+    push(e, mem->mdl);
     set_fields(decl, ctx, e, rec);
+    pop(e);
     if (mem) finalize(mem);
     return rec;
 }
@@ -766,7 +777,8 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
 
         model ptr = model(mod, e, src, base, is_ref, true,
             is_const, pointee.isConstQualified());
-        register_model(e, ptr, use_name, false);
+        emember mem = register_model(e, ptr, use_name, false);
+        mem->context = top(e);
         return ptr;
     }
     

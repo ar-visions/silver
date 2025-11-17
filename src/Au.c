@@ -2520,6 +2520,7 @@ string string_copy(string a) {
 }
 
 bool inherits(Au_t src, Au_t check) {
+    if (!src) return false;
     while (src != typeid(Au)) {
         if (src == check) return true;
         src = src->parent_type;
@@ -2541,7 +2542,7 @@ array string_split_parts(string a) {
     cstr prev = null;
 
     while (*s) {
-        if (*s == '{') {
+        if (*s == '{' || s[1] == 0) {
             if (s[1] == '{') {
                 // escaped {{
                 if (!prev) prev = s;
@@ -2551,11 +2552,14 @@ array string_split_parts(string a) {
 
             // flush any literal before the expression
             if (prev) {
-                string lit = string(chars, prev, ref_length, (sz)(s - prev));
+                string lit = const_string(chars, prev, ref_length, (sz)(s - prev));
                 ipart p = ipart(is_expr, false, content, lit);
                 push(res, p);
                 prev = null;
             }
+
+            if (s[1] == 0)
+                break;
 
             // parse expression content
             s++; // skip '{'
@@ -2579,13 +2583,6 @@ array string_split_parts(string a) {
             if (!prev) prev = s;
             s++;
         }
-    }
-
-    // flush trailing literal
-    if (prev) {
-        string lit = string(chars, prev, ref_length, (sz)(s - prev));
-        ipart p = ipart(is_expr, false, content, lit);
-        push(res, p);
     }
 
     return res;

@@ -174,10 +174,6 @@ void build_fn(silver mod, emember fmem, callback preamble, callback postamble) {
     fn f = fmem->mdl;
     if (f->user_built || (!f->body && !preamble && !postamble)) return;
 
-    if (f && f->is_module_init) {
-        int test2 = 2;
-        test2    += 2;
-    }
     // finalize first: this prepares args and gives us a value for our function
     // otherwise we could not call recursively
     finalize(fmem);
@@ -196,6 +192,10 @@ void build_fn(silver mod, emember fmem, callback preamble, callback postamble) {
         arg = arg;
     }
 
+    // before the preamble we handle guard
+    if (f->is_guarded) {
+        // we have a target
+    }
     if (preamble)
         preamble(f, null);
     array after_const = parse_const(mod, f->body);
@@ -239,12 +239,13 @@ Au build_init_preamble(fn f, Au arg) {
 
     pairs(rec->members, i) {
         emember mem = i->value;
-        mem->target_member = f->target;
         if (mem->initializer)
             build_initializer(mod, mem);
     }
     return null;
 }
+
+void create_schema(model mdl, string name);
 
 void build_record(silver mod, record rec) {
     Au_t t = isa(rec);
@@ -280,6 +281,8 @@ void build_record(silver mod, record rec) {
     }
 
     finalize(rec->mem);
+    // schema must be there before we build functions
+    create_schema(emodel(rec->mem->name->chars), rec->mem->name);
 
     if (is_class) {
         // build init with preamble
@@ -1008,7 +1011,7 @@ enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array
                 validate(f, "expected function");
                 if (f->target) {
                     validate(f->target, "no target found in context");
-                    mem = resolve(f->target, alpha);
+                    mem = member_lookup(f->target, alpha);
                     validate(mem, "failed to resolve emember in context: %o", f);
                 }
             }
@@ -1025,21 +1028,17 @@ enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array
                 }
                 if (read_if(mod, ".")) {
                     validate(mem->mdl, "cannot resolve from new emember %o", mem->name);
-                    push(mod, hold(mem->mdl)); // we are in the string stack.
                     string alpha = read_alpha(mod);
                     validate(alpha, "expected alpha identifier");
-                    mem = resolve(mem, alpha); /// needs an argument
+                    mem = member_lookup(mem, alpha);
+                    mem = e_load(mod, mem, null);
                     mem = parse_member_expr(mod, mem);
-                    pop(mod);
                 } else {
-                    // implement a null guard for Au -> emember syntax
                     // make pointers safe again
-                    if (first) {
-                        /// if next is [, we are defining a fn
-                        validate(false, "not implemented 1");
-                    } else {
-                        validate(false, "not implemented 2");
-                    }
+                    consume(mod);
+                    string alpha = read_alpha(mod);
+                    validate(alpha, "expected member name after ->");
+                    mem = guard_lookup_load(mem, alpha);
                 }
             }
         }
@@ -1102,7 +1101,7 @@ enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array
         }
     }
 
-    if (mem && isa(mem) == typeid(emember) && !mem->target_member && mem->mdl) {
+    if (mem && isa(mem) == typeid(emember) && !mem->membership && mem->mdl && mem->name && len(mem->name)) {
         push(mod, mod->userspace);
         register_member(mod, mem, true); /// do not finalize in push member
         pop(mod);
@@ -1195,10 +1194,9 @@ void silver_build_initializer(silver mod, emember mem) {
             //pop_state(mod, false);
         }
 
-        //enode L = e_load(mod, mem);
-        emember target = mem->target_member; //lookup2(mod, string("a"), null); // unique to the function in class, not the class
-        validate(target, "no target found in context");
-        emember L = resolve(target, mem->name);
+        fn ctx = context_model(mod, typeid(fn));
+        emember L = (!mem->is_module && ctx) ? 
+            member_lookup(ctx->target, mem->name) : mem;
         
         e_assign(mod, L, expr, OPType__assign);
         
@@ -1645,11 +1643,6 @@ enode silver_parse_member_expr(silver mod, emember mem) {
             //validate(next_is(mod, "["), "expected [ to initialize type");
             array expr = read_within(mod, mem->mdl, mem->meta);
             mem = typed_expr(mod, mem->mdl, mem->meta, expr); // this, is the construct
-        } else if (mod->in_ref || mem->literal) {
-            mem = mem; // we will not load when ref is being requested on a emember
-        } else {
-            // member in isolation must load its value
-            mem = e_load(mod, mem, null); // todo: perhaps wait to AddFunction until they are used; keep the emember around but do not add them until they are referenced (unless we are Exporting the import)
         }
     }
     pop_state(mod, mem != null);
@@ -2005,7 +1998,7 @@ enode parse_statement(silver mod) {
     record    rec          = instanceof(mod->top, typeid(record));
     fn        f            = context_model(mod, typeid(fn));
     eargs     args         = instanceof(mod->top, typeid(eargs));
-    silver    module       = (top(mod)->is_global || (f && f->is_module_init)) ? mod : null;
+    silver    module       = (f && f->is_module_init) ? mod : null;
     bool      is_func_def  = false;
     string    assign_type  = null;
     OPType    assign_enum  = 0;

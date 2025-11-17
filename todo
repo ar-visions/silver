@@ -1,8 +1,34 @@
 [-] watcher for silver
-    [ ] re-create Module-Ref and 'rebuild' however we do not need to reimport!
-        > store imports by name in memory
+    [x] re-create Module-Ref and 'rebuild' however we do not need to reimport!
+        [x] store imports by name in memory
+    [-] untested so far 
+    [ ] find all memory leaks (there most definitely are!)
+
 [ ] finish integration of map
     > give meta args to allocator (update some uses of LLVMBuildMalloc to our own A-type methods in .c)
+
 [ ] finish integration of array
-[ ] use A-type in all cases, no reproducing results when we may call.  implementation must be kept to a minimum, and in .c
+
+[ ] use Au in all cases, no reproducing results when we may call.  implementation must be kept to a minimum, and in .c
+    > we are producing the header directly from reflection of Au, so this 'is' Au
+    > this so far is uncompiled and must be completed:
+        [ ] init macros must be generated (methods are)
+        [x] method macros
+        [x] class declarations
+        [x] class construction done in silver.o, not .c (there will be no define_class(cl, meta, meta2))
+
 [ ] generate A-type header file when it is not there for .c files (stem name, no extension)
+
+[ ] formatter logic
+    > %s will perform string cast, then cstr cast for object types (if they give a cstr, no conversion!)
+    > %i returns i32 cast
+    > %ull returns u64 cast
+    > %ll returns i64 cast
+    > %f, d, etc
+
+[ ] guard functions need only register an instance of this, created anew when the incoming is null
+    > this is to mimick the -> guard in member access (same token ->)
+
+[-] verify object allocation into c, it must use Au for this
+    > no actual allocations done in silver with BuildMAlloc
+
