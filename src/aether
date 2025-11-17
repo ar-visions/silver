@@ -18,16 +18,16 @@ typedef struct _enode*       enode;
 typedef struct _fn*          fn;
 
 #define comparison_schema(E,T,Y,...) \
-    enum_value  (E,T,Y, equals,           32) \
-    enum_value  (E,T,Y, not_equals,       1) \
-    enum_value  (E,T,Y, u_greater_than,   2) \
-    enum_value  (E,T,Y, u_greater_than_e, 3) \
-    enum_value  (E,T,Y, u_less_than,      4) \
-    enum_value  (E,T,Y, u_less_than_e,    5) \
-    enum_value  (E,T,Y, s_greater_than,   6) \
-    enum_value  (E,T,Y, s_greater_than_e, 7) \
-    enum_value  (E,T,Y, s_less_than,      8) \
-    enum_value  (E,T,Y, s_less_than_e,    9)
+    enum_value(E,T,Y, equals,            32) \
+    enum_value(E,T,Y, not_equals,        33) \
+    enum_value(E,T,Y, u_greater_than,    34) \
+    enum_value(E,T,Y, u_greater_than_e,  35) \
+    enum_value(E,T,Y, u_less_than,       36) \
+    enum_value(E,T,Y, u_less_than_e,     37) \
+    enum_value(E,T,Y, s_greater_than,    38) \
+    enum_value(E,T,Y, s_greater_than_e,  39) \
+    enum_value(E,T,Y, s_less_than,       40) \
+    enum_value(E,T,Y, s_less_than_e,     41)
 declare_enum(comparison)
 
 #define token_schema(X,Y,...) \
@@ -68,6 +68,8 @@ declare_enum(reference)
     i_prop(X,Y, public, emember, schema_i)
 declare_class(mschema)
 
+forward(structure)
+
 #define model_schema(X,Y,...)\
     i_prop    (X,Y, required,   aether,           mod, meta, weak) \
     i_prop    (X,Y, public,     emember,          mem, weak) \
@@ -101,6 +103,8 @@ declare_class(mschema)
     i_prop    (X,Y, public,     bool,             finalized) \
     i_prop    (X,Y, intern,     model,            init_top) \
     i_prop    (X,Y, public,     emember,          mem_init) \
+    i_prop    (X,Y, public,     structure,        schema_type) \
+    i_prop    (X,Y, public,     model,            schema_pointer) \
     i_method  (X,Y, public,     array,            class_list,    model, bool) \
     i_method  (X,Y, public,     array,            field_list,    model, bool) \
     i_method  (X,Y, public,     emember,          member_lookup, string, Au_t) \
@@ -175,6 +179,7 @@ declare_class(codegen)
     i_prop(X,Y, intern,     LLVMValueRef,           value,     as, ARef) \
     i_prop(X,Y, intern,     LLVMTypeRef*,           arg_types, as, ARef) \
     i_prop(X,Y, intern,     num,                    arg_count) \
+    i_method  (X,Y, public, none, use) \
     i_override(X,Y, method, init)
 declare_class_2(fn, model)
 
@@ -251,7 +256,7 @@ forward(emember)
     i_prop    (X,Y, public,     num,                    column) \
     i_prop    (X,Y, public,     bool,                   loaded) \
     i_prop    (X,Y, intern,     LLVMValueRef,           value, as, ARef) \
-    i_method  (X,Y, public,     emember,  resolve,      string)
+    i_method  (X,Y, public,     emember,  member_lookup, string)
 declare_class(enode)
 
 
@@ -262,8 +267,6 @@ declare_class(enode)
     i_prop    (X,Y, public,     model,                  context, meta, weak) \
     i_prop    (X,Y, public,     model,                  membership, meta, weak) \
     i_prop    (X,Y, public,     array,                  meta_args) \
-    i_prop    (X,Y, public,     emember,                target_member) \
-    i_prop    (X,Y, public,     record,                 target_record) \
     i_prop    (X,Y, public,     bool,                   finalized) \
     i_prop    (X,Y, public,     aether,                 is_module) \
     i_prop    (X,Y, public,     bool,                   is_require) \
@@ -273,6 +276,7 @@ declare_class(enode)
     i_prop    (X,Y, public,     bool,                   is_type) \
     i_prop    (X,Y, public,     bool,                   is_func) \
     i_prop    (X,Y, public,     bool,                   is_arg) \
+    i_prop    (X,Y, public,     bool,                   is_formatter) \
     i_prop    (X,Y, public,     bool,                   is_decl) \
     i_prop    (X,Y, public,     bool,                   is_codegen) \
     i_prop    (X,Y, public,     Au,                      override_offset_bits) \
@@ -287,6 +291,7 @@ declare_class(enode)
     i_method  (X,Y, public,     none,    release) \
     i_method  (X,Y, public,     bool,    has_value) \
     i_method  (X,Y, public,     none,    set_value,     Au) \
+    i_method  (X,Y, public,     emember,  guard_lookup_load, string) \
     i_override(X,Y, method,     init)
 declare_class_2(emember, enode)
 
@@ -372,6 +377,7 @@ declare_class_2(static_array, array)
     i_method  (X,Y, public,     none,        build_initializer,  fn) \
     i_method  (X,Y, public,     enode,       e_element,          enode,      Au) \
     i_method  (X,Y, public,     none,        e_cmp_code,         enode,      comparison, enode, code, code) \
+    i_method  (X,Y, public,     enode,       e_cmp,              enode, enode) \
     i_method  (X,Y, public,     none,        e_branch,           code) \
     i_method  (X,Y, public,     none,        e_memcpy,           enode, enode, model) \
     i_method  (X,Y, public,     emember,     compatible,         record,     string, AFlag, array) \
@@ -406,7 +412,6 @@ declare_class_2(static_array, array)
     i_method  (X,Y, public,     enode,       e_zero,               enode) \
     i_method  (X,Y, public,     enode,       e_assign,             enode,      Au, OPType) \
     i_method  (X,Y, public,     enode,       e_eq,                 enode,      enode) \
-    i_method  (X,Y, public,     enode,       e_cmp,                enode,      enode) \
     i_method  (X,Y, public,     enode,       e_not_eq,             enode,      enode) \
     i_method  (X,Y, public,     enode,       e_fn_call,            fn,         enode,    array) \
     i_method  (X,Y, public,     enode,       e_is,               enode,      Au) \

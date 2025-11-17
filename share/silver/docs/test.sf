@@ -1,16 +1,30 @@
+
+# return types must be type-expr based, 
+# we cannot take in a 'something' for example, 
+# because it may be the first operation in a none returning fn
+# ----------------------------------------------
+fn string-together [ something:string ] string
+    return '{something} and {something} else'
+
+
+main test
+    member : f32 [ 1.2 ] # public is default in silver ([ ] verify)
+
+	fn init [ ]
+        str: string-together["an input string"]
+        # str += "... append this"
+        # printf [ "actual string: %s with our member %.2f", str, member ]
+# ----------------------------------------------
+
+##
+import <stdio.h, ctype.h>
+
 import chatgpt
     model:'gpt-5'
-
-#import <test.cc>
-
-# we separate headers by comma if we want to include multiple in one line
-import <stdio.h, ctype.h>
 
 import KhronosGroup:Vulkan-Headers/main
     <vulkan/vulkan.h>
 
-# import can ONLY be defined at the module level, never inside fn or classes
-# here after its checked out, we run an > arb-command
 ifdef mac
     import KhronosGroup:MoltenVK/main
         > ./fetchDependencies --macos
@@ -27,8 +41,12 @@ struct a-struct2
     #array-of-data : array <i8, 32x1>
     str2 : string
 
-fn construct-something [ silly:string ]
-    int [ silly.len ]
+fn construct-something [ silly:string ] int [ silly.len ]
+
+aa : i32[ 1 ]
+bb : i32[ 2 ]
+cc : i32[ 3 ]
+ff : string[ string-together['hi'] ]
 
 fn a-function [ stupid:string ] none
     printf[ 'something' ]
@@ -70,14 +88,6 @@ engine vk
             ], null, ref instance # when giving a member variable, we must specify ref if it that type is required
         
         return # optional for void fn
-
-# we may need to support instances in meta via syntax config
-# not remotely sure how to do this in c though
-
-# we know this value, and can also set it with an import config
-# our import may facilitate api initialization at top where applicable
-# import our-module
-#       another: 'hi2'
 
 another : string[ 'hi' ]
 alt: 'hello'
@@ -127,4 +137,4 @@ main test_vulkan
             i += 1
 
         result: float [ member * variable-name ]
-    
+##
