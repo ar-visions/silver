@@ -1277,8 +1277,9 @@ emember enode_member_lookup(enode mem, string name) {
                 emember  res = emember(mod, e, name, name, mdl, null);
                 fn f = instanceof(schema->mdl, typeid(fn));
                 res->mdl    = (f && !e->in_ref) ? (model)f : pointer(schema->mdl);
+                static int count = 0;
                 res->value  = f ? f->value : LLVMBuildStructGEP2(
-                        e->builder, typed(base)->type, actual_ptr, index, "resolve2"); // GPT: mem->value is effectively the ptr value on the stack
+                        e->builder, typed(base)->type, actual_ptr, index, fmt("resolve%i", ++count)->chars); // GPT: mem->value is effectively the ptr value on the stack
                 if (f)
                     res->is_func = true;
                 

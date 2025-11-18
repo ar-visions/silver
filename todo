@@ -3,6 +3,7 @@
         [x] store imports by name in memory
     [-] untested so far 
     [ ] find all memory leaks (there most definitely are!)
+        > profile resources in LLVM if possible
 
 [ ] finish integration of map
     > give meta args to allocator (update some uses of LLVMBuildMalloc to our own A-type methods in .c)
@@ -32,3 +33,5 @@
 [-] verify object allocation into c, it must use Au for this
     > no actual allocations done in silver with BuildMAlloc
 
+[ ] e_fn_call needs to perform runtime polymorphism (reading from table  by type's schema_f)
+    > support method calls on primitives
