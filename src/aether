@@ -104,7 +104,6 @@ forward(structure)
     i_prop    (X,Y, intern,     model,            init_top) \
     i_prop    (X,Y, public,     emember,          mem_init) \
     i_prop    (X,Y, public,     structure,        schema_type) \
-    i_prop    (X,Y, public,     model,            schema_pointer) \
     i_method  (X,Y, public,     array,            class_list,    model, bool) \
     i_method  (X,Y, public,     array,            field_list,    model, bool) \
     i_method  (X,Y, public,     emember,          member_lookup, string, Au_t) \
