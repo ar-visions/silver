@@ -1,6 +1,8 @@
 # **silver** lang
 development in progress, with documentation to be added/changed.
 
+![silver-lang](silver-icon.png "silver-lang")
+
 Update: context addition to release 88:
 ### Context-Aware Members
 
