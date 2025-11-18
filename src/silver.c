@@ -1990,7 +1990,7 @@ emember silver_read_def(silver mod) {
     validate(mdl && len(n),
         "name required for model: %s", isa(mdl)->name);
     
-    return register_model(mod, mdl, n, true);
+    return register_model(mod, mdl, n, false);
 }
 
 enode parse_statement(silver mod) {

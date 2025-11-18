@@ -69,12 +69,6 @@ emember aether_register_model(aether e, model mdl, string name, bool use_now) {
     }
 
     register_member(e, mem, use_now);
-    
-    //if (!is_class && !is_func && !is_macro && !mdl->ptr)
-    //    pointer(mdl);
-
-    emember test_lookup = lookup2(e, name, null);
-
     // print("registered model %o", mem->name);
     return mem;
 }
@@ -1323,22 +1317,19 @@ void emember_init(emember mem) {
     fn in_f = context_model(e, typeid(fn));
     model mdl = mem->mdl;
 
-    if (eq(mem->name, "Au")) {
-        int test2 = 2;
-        test2    += 2;
-    }
     // filter models that emit schema
     // we must create these first, because they are used in finalization of instance structs
     if (mdl && mem->is_type && !mdl->is_system && !rec && !in_f && (isa(mdl) != typeid(fn)) &&
             (!e->current_include || e->is_Au_import)) {
         verify(mem->name && len(mem->name), "member name required to register schema");
-        string f_name = f(string, "_%o_f", mem->name);
+        string  f_name = f(string, "_%o_f", mem->name);
+        emember m_find = lookup2(e, f_name, null);
+        verify(!m_find, "schema object already created for %o (%o)", mem->name, f_name);
         mdl->schema_type = structure(
-            mod, e, ident, f_name, members, map(), is_system, true);
-
-        string f_ptr_name = f(string, "%o_ft", mem->name);
-        mdl->schema_pointer = model(mod, e, src, mdl->schema_type, is_system, true);
-        register_model(e, mdl->schema_pointer, f_ptr_name, false);
+            mod, e, ident, f_name, members, map(hsize, 8), is_system, true);
+        pointer(mdl->schema_type);
+        if (mdl->src && isa(mdl->src) == typeid(Class))
+            mdl->src->schema_type = hold(mdl->schema_type);
     }
 
     model top = top(e);
@@ -2858,16 +2849,17 @@ static void register_basics(aether e) {
     model shape = emodel("shape");
     if (!shape) {
         emember m_shape = register_model(e, Class(
-            mod, e, ident, string("shape"), members, map()), string("shape"), false);
+            mod, e, ident, string("shape")), string("shape"), false);
 
         model _i64_16 = model(mod, e, src, _i64, count, 16);
         register_model(e, _i64_16, string("_i64_16"), false);
 
         push(e, m_shape->mdl);
-        m_shape->mdl->members = m(
+        m_shape->mdl->src->members = m(
             "count", emem(_i64,    null, "count"),
             "data",  emem(_i64_16, null, "data"));
         pop(e);
+        m_shape->mdl->members = hold(m_shape->mdl->src->members); // we really need a way to mitigate this
         finalize(m_shape);
         shape = m_shape->mdl;
         typeid(shape)->user = shape;
@@ -2888,12 +2880,12 @@ static void register_basics(aether e) {
     typeid(Au_t) ->user = _Au_t_ptr; // without this, its double-registered in Au_import
     typeid(Au_ts)->user = _Au_ts_ptr;
 
-    structure _af_recycler          = structure     (mod, e, ident, string("_af_recycler"));
+    structure _af_recycler          = structure     (mod, e, ident, string("_af_recycler"), is_system, true);
     emember   _af_recycler_mem      = register_model(e, _af_recycler,     string("_af_recycler"), false);
     model      af_recycler_ptr      = pointer       (_af_recycler);
     emember    af_recycler_ptr_mem  = register_model(e,  af_recycler_ptr, string("af_recycler"),  false);
 
-    structure _meta_t               = structure     (mod, e, ident, string("_meta_t"));
+    structure _meta_t               = structure     (mod, e, ident, string("_meta_t"), is_system, true);
     emember   _meta_t_mem           = register_model(e, _meta_t, string("_meta_t"), false);
     structure _member               = structure     (mod, e, ident, string("_member"));
     Au_t member_type = isa(_member);
@@ -2977,14 +2969,11 @@ static void register_basics(aether e) {
         "meta",            emem(_meta_t,    null, "meta"));
     pop(e);
 
-    finalize(_Au_t_mem);
-
-    
+    finalize(_Au_t_mem);    
     finalize(_meta_t_mem);
     finalize(_af_recycler_mem);
     finalize(_member_mem);
 
-    verify(_Au_t->size_bits       == sizeof(struct _Au_t)       * 8, "Au_t size mismatch");
     verify(_af_recycler->size_bits == sizeof(struct _af_recycler) * 8, "_af_recycler size mismatch");
     verify(_meta_t->size_bits      == sizeof(struct _meta_t)      * 8, "_meta_t size mismatch");
     verify(_member->size_bits      == sizeof(struct _member)      * 8, "_member size mismatch");
@@ -3001,6 +2990,7 @@ void create_schema(model mdl, string name) {
     structure   st   = instanceof(mdl, typeid(structure));
     enumeration en   = instanceof(mdl, typeid(enumeration));
     Class       cmdl = mdl->src ? instanceof(mdl->src, typeid(Class)) : null;
+    Class       emdl = instanceof(mdl, typeid(enumeration));
 
     // want to guard against anonymous pointers and such
     if (!mdl->mem || !mdl->mem->name || !len(mdl->mem->name)) return;
@@ -3010,23 +3000,29 @@ void create_schema(model mdl, string name) {
 
     push(e, e->is_Au_import ? (model)e : (model)e->userspace);
     
-    verify(mdl->schema_type, "did not create schema type for %o", name);
-
     // emit class info
     bool      from_module = !mdl->imported_from;
-    model     Au_t_ref    = emodel("_Au_t");
-    string    type_name   = mdl->schema_type->ident; //f(string, "_%o_f", name);
-    structure mdl_type    = mdl->schema_type; /*structure(
-        mod, e, ident, type_name, members, map(hsize, 8), is_system, true);*/
-
-    // add base type members (prior to fn table)
+    model     Au_t_ref    = emodel("_Au_t"); // this is what we define in object.h (a mock of the top portion of the _Au_f table)
+    string    type_name   = f(string, "_%o_f", name);
+    structure mdl_type    = mdl->schema_type;
+    
+    // add identical member models to this new structure
+    if (!(mdl_type->members->count == 0)) {
+        pairs(mdl_type->members, i) {
+            emember m = i->value;
+            print("%o", m->name);
+        }
+    }
+    verify(mdl_type->members->count == 0, "expected no members on %o", type_name);
+    push(e, mdl_type);
     pairs(Au_t_ref->members, i) {
         emember r = i->value;
         emember n = emember(mod, e, name, r->name, mdl, r->mdl, context, mdl_type);
         set(mdl_type->members, r->name, n);
     }
+    pop(e);
 
-    model _Au = emodel("_Au");
+    model _Au = emodel("Au")->src;
     array acl = class_list(mdl, emodel("Au"), false);
 
     // register polymorphic functions
@@ -3161,9 +3157,7 @@ void aether_Au_import(aether e, path lib) {
         
         // initialization for primitives are in model_init
         verify(mdl, "failed to import type: %o", name);
-        emember mem = register_model(e, mdl, name, is_prim || is_enum || 
-            eq(name, "Au"));
-
+        emember mem = register_model(e, mdl, name, is_prim || is_enum); // lets finalize Au after (we have no props and methods)
         atype->user = mem->mdl;
     }
 
@@ -3413,6 +3407,7 @@ void aether_Au_import(aether e, path lib) {
 
     // finalize models
     model _ARef = emodel("ARef");
+    
     pairs(processing, i) {
         Au_t  atype  = i->value;
         string name   = string(atype->name);
@@ -3423,6 +3418,7 @@ void aether_Au_import(aether e, path lib) {
         // improve integrity check so ptr is for classes, and mdl check is for others
         verify(emem->mdl == mdl || emem->mdl == mdl->ptr, "import integrity error for %o", name);
         finalize(emem);
+
         create_schema(emem->mdl, emem->name);
     }
 
@@ -4630,61 +4626,49 @@ static void record_finalize(record rec) {
         }
         push(a, r);
         r = read_parent(r);
+        if (r == emodel("Au")) // Au members are hidden, unless the object itself is an Au
+            break;
     }
     rec->total_members = total;
     if (len(a) > 1)
         a = reverse(a); // parent first when finalizing
     
     LLVMTargetDataRef target_data = rec->mod->target_data;
-    LLVMTypeRef*     member_types = calloc(total, sizeof(LLVMTypeRef));
-    LLVMMetadataRef* member_debug = calloc(total, sizeof(LLVMMetadataRef));
+    LLVMTypeRef*     member_types = calloc(total + 2, sizeof(LLVMTypeRef));
+    LLVMMetadataRef* member_debug = calloc(total + 2, sizeof(LLVMMetadataRef));
     bool             is_uni       = instanceof(rec, typeid(uni)) != null;
     int              index        = 0;
     emember           largest      = null;
     sz               sz_largest   = 0;
 
-    Au_t r_type = isa(rec);
-
-    // footer elements for Au type 
-    // (these store 128bits for fields set, and give type-ident into _f table)
-    if (rec->schema_pointer) {
-        //verify(!get(rec->members, string("__f")),  "__f is reserved name");
-        //verify(!get(rec->members, string("__f2")), "__f2 is reserved name");
-        //set(rec->members, string("__f"),  emember(
-        //    mod, e, name, string("__f"),  mdl, rec->schema_pointer, context, rec));
-        //set(rec->members, string("__f2"), emember(
-        //    mod, e, name, string("__f2"), mdl, rec->schema_pointer, context, rec));
-        //total += 2;
+    if (isa(rec) == typeid(Class)) {
+        verify(!get(rec->members, string("__f")),  "__f is reserved name");
+        verify(!get(rec->members, string("__f2")), "__f2 is reserved name");
+        set(rec->members, string("__f"),  emember(
+            mod, e, name, string("__f"),  mdl, rec->schema_type->ptr, context, rec));
+        set(rec->members, string("__f2"), emember(
+            mod, e, name, string("__f2"), mdl, rec->schema_type->ptr, context, rec));
+        total += 2;
     }
 
     each (a, record, r) {
         push(e, r);
         pairs(r->members, i) {
-            string k =  i->key;
+            string  k   =  i->key;
             emember mem = i->value;
-               Au_t t = isa(mem->mdl);
-            Au info = isa(mem);
             verify( mem->name && mem->name->chars,  "no name on emember: %p (type: %o)", mem, r);
 
             if (instanceof(mem->mdl, typeid(fn)))
                 continue;
 
-            finalize(mem);
+            if (!mem->mdl->is_ref)
+                finalize(mem);
+
             enumeration en = instanceof(mem->mdl, typeid(enumeration));
-
-            if (en) {
-                member_types[index] = en->src->type;
-            } else if ((mem->mdl->src && isa(mem->mdl->src) == typeid(Class)) || 
-                    mem->mdl->is_ref) {
-                member_types[index] = pointer(mem->mdl)->type;
-            } else {
-                member_types[index] = mem->mdl->type;
-            }
-
-            Au_t mdl_type = isa(mem->mdl);
+            member_types[index] = en ? en->src->type : mem->mdl->type;
             LLVMTypeRef member_type = member_types[index];
             if (!member_type) {
-                member_type = emodel("ARef")->type;
+                 member_type = emodel("ARef")->type;
             }
             int abi_size = (member_type && member_type != LLVMVoidType()) ?
                 LLVMABISizeOfType(target_data, member_type) : 0;
