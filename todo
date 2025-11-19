@@ -17,8 +17,10 @@
         [x] method macros
         [x] class declarations
         [x] class construction done in silver.o, not .c (there will be no define_class(cl, meta, meta2))
-
-[ ] generate A-type header file when it is not there for .c files (stem name, no extension)
+    > we have been emitting model reflection from silver
+    > this is likely not modular enough, and a better approach would be to output Au schemas, so it's human readible
+        - expanding every type we have in silver is a double-reflection (since we schema translate from Au -> model -> Au ABI compatible C )
+        - the problem is going to be down to the use of intern.  if the user does not describe intern then we may use public
 
 [ ] formatter logic
     > %s will perform string cast, then cstr cast for object types (if they give a cstr, no conversion!)
@@ -35,3 +37,11 @@
 
 [ ] e_fn_call needs to perform runtime polymorphism (reading from table  by type's schema_f)
     > support method calls on primitives
+
+[ ] statements
+    [ ] while
+    [x] if
+    [x] ifdef
+    [ ] for
+    [ ] loop [ this is loop-while or just loop ]
+        [ ] loop-while

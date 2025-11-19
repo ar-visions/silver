@@ -117,6 +117,14 @@ forward(structure)
     i_override(X,Y, method,     init)
 declare_class(model)
 
+
+#define catcher_schema(X,Y,...) \
+    i_prop(X,Y, intern, LLVMBasicBlockRef, block, as, ARef)
+declare_class_2(catcher, model)
+
+
+
+
 // some models are simple sub-classes to indicate their use
 // use members on model for args
 #define eargs_schema(X,Y,...) \
@@ -254,6 +262,7 @@ forward(emember)
     i_prop    (X,Y, public,     num,                    line) \
     i_prop    (X,Y, public,     num,                    column) \
     i_prop    (X,Y, public,     bool,                   loaded) \
+    i_prop    (X,Y, public,     array,                  expressions) \
     i_prop    (X,Y, intern,     LLVMValueRef,           value, as, ARef) \
     i_method  (X,Y, public,     emember,  member_lookup, string)
 declare_class(enode)
@@ -275,6 +284,7 @@ declare_class(enode)
     i_prop    (X,Y, public,     bool,                   is_type) \
     i_prop    (X,Y, public,     bool,                   is_func) \
     i_prop    (X,Y, public,     bool,                   is_arg) \
+    i_prop    (X,Y, public,     bool,                   is_global) \
     i_prop    (X,Y, public,     bool,                   is_formatter) \
     i_prop    (X,Y, public,     bool,                   is_decl) \
     i_prop    (X,Y, public,     bool,                   is_codegen) \
@@ -361,6 +371,7 @@ declare_class_2(static_array, array)
     i_prop    (X,Y, public,     num,         cursor) \
     i_prop    (X,Y, public,     map,         instances) \
     i_prop    (X,Y, public,     bool,        verbose) \
+    i_prop    (X,Y, public,     bool,        is_const) \
     i_method  (X,Y, public,     none,        reinit_startup) \
     i_method  (X,Y, public,     emember,     initializer) \
     i_method  (X,Y, public,     path,        lookup_include,     string) \
@@ -378,6 +389,7 @@ declare_class_2(static_array, array)
     i_method  (X,Y, public,     none,        e_cmp_code,         enode,      comparison, enode, code, code) \
     i_method  (X,Y, public,     enode,       e_cmp,              enode, enode) \
     i_method  (X,Y, public,     none,        e_branch,           code) \
+    i_method  (X,Y, public,     enode,       e_break,            catcher) \
     i_method  (X,Y, public,     none,        e_memcpy,           enode, enode, model) \
     i_method  (X,Y, public,     emember,     compatible,         record,     string, AFlag, array) \
     i_method  (X,Y, public,     none,        register_member,    emember, bool) \
@@ -391,9 +403,13 @@ declare_class_2(static_array, array)
     i_method  (X,Y, public,     enode,       e_interpolate,      string) \
     i_method  (X,Y, public,     enode,       e_const_array,      model, array) \
     i_method  (X,Y, public,     enode,       e_offset,           enode,      Au) \
+    i_method  (X,Y, public,     enode,       e_switch,           enode, map, array, subprocedure, subprocedure, bool) \
+    i_method  (X,Y, public,     enode,       e_for,              array, array, array, array, subprocedure, subprocedure, subprocedure, subprocedure) \
+    i_method  (X,Y, public,     enode,       e_loop,             array,      array, subprocedure, subprocedure, bool) \
     i_method  (X,Y, public,     enode,       e_if_else,          array,      array, subprocedure, subprocedure) \
     i_method  (X,Y, public,     enode,       e_ternary,          enode,      enode, enode) \
     i_method  (X,Y, public,     enode,       e_primitive_convert, enode,     model) \
+    i_method  (X,Y, public,     enode,       e_noop) \
     i_method  (X,Y, public,     enode,       e_addr_of,          enode,      model) \
     i_method  (X,Y, public,     enode,       e_bitwise_not,      enode) \
     i_method  (X,Y, public,     enode,       e_not,              enode) \

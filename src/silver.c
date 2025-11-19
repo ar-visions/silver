@@ -101,8 +101,8 @@ static void initialize() {
         "is",       "inherits", "ref",
         "const",    "require",  "no-op",    "return",   "->",       "::",     "...",
         "asm",      "if",       "switch",   "any",      "enum",
-        "e-if",    "else",     "while",
-        "for",      "do",       "cast",     "fn",
+        "e-if",     "else",     "while",
+        "for",      "loop",     "cast",     "fn",
         null);
     
     assign = array_of_cstr(
@@ -342,16 +342,11 @@ bool silver_next_is_eq(silver a, symbol first, ...) {
 
 #define next_is(a, ...) silver_next_is_eq(a, __VA_ARGS__, null)
 
-array read_within(silver mod, model mdl_expect, array meta_expect) {
+array read_within(silver mod) {
     array body    = array(32);
     token n       = element(mod,  0);
     bool  proceed = mod->expr_level == 0 ? true : eq(n, "[");
-
     if  (!proceed) return null;
-
-    if (mod->expr_level == 0) {
-
-    }
 
     bool bracket = eq(n, "[");
     consume(mod);
@@ -897,7 +892,7 @@ enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array
 
     if (!cmode && next_is(mod, "[")) {
         validate(mdl_expect, "expected model name before [");
-        array expr = read_within(mod, mdl_expect, meta_expect);
+        array expr = read_within(mod);
         // we need to get mdl from argument
         enode r = typed_expr(mod, mdl_expect, meta_expect, expr);
         return r;
@@ -1219,20 +1214,9 @@ enode parse_return(silver mod) {
 
 enode parse_break(silver mod) {
     consume(mod);
-    enode vr = null;
-    return null;
-}
-
-enode parse_for(silver mod) {
-    consume(mod);
-    enode vr = null;
-    return null;
-}
-
-enode parse_while(silver mod) {
-    consume(mod);
-    enode vr = null;
-    return null;
+    catcher cat = context_model(mod, typeid(catcher));
+    verify(cat, "expected cats");
+    return e_break(mod, cat);
 }
 
 enode silver_parse_do_while(silver mod) {
@@ -1270,11 +1254,23 @@ static enode reverse_descent(silver mod, model mdl_expect, array meta_expect) {
     return L;
 }
 
-static enode read_expression(silver mod, model mdl_expect, array meta_expect) {
+// read-expression does not pass in expected models, because 100% of the time we would run conversion to that
+// we get no information from that, so the idea is to know what model is returning -- thats meaningful
+static array read_expression(silver mod, model mdl_res, array meta_res, bool* is_const) {
+    array exprs = array(32);
+    int s = mod->cursor;
     mod->no_build = true;
-    enode vr = reverse_descent(mod, mdl_expect, meta_expect);
+
+    enode   n = reverse_descent(mod, null, null);
+    if (mdl_res)  *mdl_res  = n->mdl;
+    if (meta_res) *meta_res = n->meta;
     mod->no_build = false;
-    return vr;
+    int e = mod->cursor;
+    for (int i = s; i < e; i++) {
+        push(exprs, a->tokens->elements[i]);
+    }
+    *is_const = !mod->is_const;
+    return exprs;
 }
 
 static enode parse_expression(silver mod, model mdl_expect, array meta_expect) {
@@ -1407,7 +1403,7 @@ model read_model(silver mod, array* expr, array* meta) {
 
         if (!mod->cmode && expr && next_is(mod, "[")) {
             body_set = true;
-            *expr = read_within(mod, mdl, (meta ? *meta : null));
+            *expr = read_within(mod);
         }
 
     } else if (explicit_un) {
@@ -1641,7 +1637,7 @@ enode silver_parse_member_expr(silver mod, emember mem) {
     } else if (mem) {
         if (mem->is_func || mem->is_type) {
             //validate(next_is(mod, "["), "expected [ to initialize type");
-            array expr = read_within(mod, mem->mdl, mem->meta);
+            array expr = read_within(mod);
             mem = typed_expr(mod, mem->mdl, mem->meta, expr); // this, is the construct
         }
     }
@@ -1800,7 +1796,7 @@ enode parse_if_else(silver mod) {
     while (true) {
         bool is_if  = read_if(mod, "if") != null;
         validate(is_if && require_if || !require_if, "expected if");
-        array cond  = is_if ? read_within(mod, null, null) : array();
+        array cond  = is_if ? read_within(mod) : array();
         array block = read_body(mod);
         verify(block, "expected body");
         push(tokens_cond,  cond);
@@ -1815,11 +1811,130 @@ enode parse_if_else(silver mod) {
     return e_if_else(mod, tokens_cond, tokens_block, build_cond, build_expr);
 }
 
-enode parse_do_while(silver mod) {
-    consume(mod);
-    enode vr = null;
-    return null;
+
+enode parse_switch(silver mod) {
+    
+    validate(read_if(mod, "switch") != null, "expected switch");
+    enode e_expr = parse_expression(mod, null, null);
+    array cases  = map(hsize, 16);
+    array expr_def = null;
+    bool  all_const = is_primitive(e_expr->mdl);
+
+    while (true) {
+        if (read_if(mod, "case")) {
+            bool  is_const  = false;
+            model mdl_read  = null;
+            array meta_read = null;
+            array value = read_expression(mod,
+                &mdl_read, &meta_read, &is_const);
+            all_const &= is_const;
+            array body  = read_body(mod);
+            value->deep_compare = true; // tell array when its given a compare to not just do element equation but effectively deep compare (i will do this)
+            set(cases, value, body);
+            continue;
+        } else if (read_if(mod, "default")) {
+            expr_def = read_body(mod);
+            continue;
+        } else
+            break;
+    }
+
+    return e_switch(mod, expr, cases, expr_def);
 }
+
+
+enode parse_for(silver mod) {
+    validate(read_if(mod, "for") != null, "expected for");
+
+    array groups = read_expression_groups(mod);
+    validate(groups != null, "expected [ init , cond , step [ , step-b , step-c , ...] ]");
+    validate(len(groups) == 3, "for expects exactly 3 expressions");
+
+    array init_exprs = groups->elements[0];
+    array cond_expr  = groups->elements[1];
+    array step_exprs = groups->elements[2];
+
+    array body = read_body(mod);
+    verify(body, "expected for-body");
+
+    subprocedure build_init = subproc(mod, expr_builder, null);
+    subprocedure build_cond = subproc(mod, cond_builder, null);
+    subprocedure build_body = subproc(mod, expr_builder, null);
+    subprocedure build_step = subproc(mod, expr_builder, null);
+
+    return e_for(
+        mod,
+        init_exprs,
+        cond_expr,
+        step_exprs,
+        body,
+        build_init,
+        build_cond,
+        build_body,
+        build_step
+    );
+}
+
+
+enode parse_loop_while(silver mod) {
+    bool is_loop = read_if(mod, "loop") != null;
+    validate(is_loop, "expected loop");
+    array cond  = read_within(mod);
+    array block = read_body(mod);
+    verify(block, "expected body");
+    bool is_loop_while = read_if(mod, "while") != null;
+    if (is_loop_while) {
+        verify(!cond, "condition given above conflicts with while below");
+        cond = read_within(mod);
+    }
+    subprocedure build_cond = subproc(mod, cond_builder, null);
+    subprocedure build_expr = subproc(mod, expr_builder, null);
+    return e_loop(mod, cond, block, build_cond, build_expr, is_loop_while);
+}
+
+array read_expression_groups(silver mod) {
+    array result  = array(8);
+    array current = array(32);
+    int   level   = 0;
+
+    token f = peek(mod);
+    if (!eq(f, "[")) return null;
+
+    consume(mod);
+    
+    while (true) {
+        token t = consume(mod);
+        if (!t)
+            break;
+
+        // adjust nesting
+        if (eq(t, "[")) 
+            level++;
+        else if (eq(t, "]")) {
+            level--;
+            if (level < 0)
+                break;
+        }
+
+        // comma at base-level → end group
+        if (eq(t, ",") && level == 0) {
+            push(result, current);
+            current = array(32);
+            continue;
+        }
+
+        // normal token inside current expression
+        push(current, t);
+        if (len(result))
+    }
+
+    // Push final group if not empty
+    if (len(current) > 0)
+        push(result, current);
+
+    return result;
+}
+
 
 bool is_model(silver mod) {
     token  k = peek(mod);
@@ -2010,20 +2125,19 @@ enode parse_statement(silver mod) {
     mod->expr_level = 0;
 
     if (!module) {
-        if (next_is(mod, "no-op"))  return enode(mdl, emodel("none"), meta, null);
+        if (next_is(mod, "no-op"))  return e_noop(mod);
         if (next_is(mod, "return")) {
             mod->expr_level++;
             mod->last_return = parse_return(mod);
             return mod->last_return;
         }
         if (next_is(mod, "break"))  return parse_break(mod);
-        if (next_is(mod, "for"))
-            return parse_for(mod);
-        if (next_is(mod, "while"))  return parse_while(mod);
+        if (next_is(mod, "for"))    return parse_for(mod);
+        if (next_is(mod, "loop"))   return parse_loop_while(mod);
         if (next_is(mod, "if"))     return parse_if_else(mod);
         if (next_is(mod, "ifdef"))
             return parse_ifdef_else(mod);
-        if (next_is(mod, "do"))     return parse_do_while(mod);
+        if (next_is(mod, "loop"))   return parse_loop_while(mod);
     } else {
         if (next_is(mod, "ifdef"))
             return parse_ifdef_else(mod);
@@ -2287,6 +2401,8 @@ static string to_cmodel(model mdl) {
 
 // rather than include Au header, its best to reproduce its exact structure without macros
 static void write_header(silver mod) {
+    return;
+    
     string m   = stem(mod->source);
     path i_gen = f(path, "%o/%o.i",  mod->project_path, m);
     // lets generate a header from our models
@@ -2400,10 +2516,13 @@ static void write_header(silver mod) {
             if (emem->is_codegen) continue;
             if (!emem->name || !len(emem->name)) continue;
             structure st = instanceof(emem->mdl, typeid(structure));
+            if (emem->mdl->is_system) continue;
             if (st) {
                 fputs(fmt("typedef struct _%o {\n", emem->mdl)->chars, f);
                 props (st, i) {
                     emember emem = i->value;
+                    Au_t t = isa(emem->mdl);
+                    Au info = header(emem);
                     if (emem->mdl->count || emem->mdl->use_count)
                         fputs(fmt("\t%o %o[%i];\n", emem->mdl, emem->name, emem->mdl->count)->chars, f);
                     else
