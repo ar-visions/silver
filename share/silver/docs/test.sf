@@ -11,7 +11,18 @@ main test
     member : f32 [ 1.2 ] # public is default in silver ([ ] verify)
 
 	fn init [ ]
+        doesnt-exist []
         str: string-together["an input string"]
+
+        i:i32 [ 2 ]
+        switch [i]
+            case 0: printf['case is 0']
+            case 1: printf['case is 1']
+            case 2: printf['case is 2']
+            case 3: printf['case is 3']
+            case 4: printf['case is 4']
+            default: printf['case is something else']
+        
         # str += "... append this"
         # printf [ "actual string: %s with our member %.2f", str, member ]
 # ----------------------------------------------

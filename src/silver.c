@@ -248,6 +248,10 @@ Au build_init_preamble(fn f, Au arg) {
 void create_schema(model mdl, string name);
 
 void build_record(silver mod, record rec) {
+    if (eq(rec->ident, "test")) {
+        int test2 = 2;
+        test2 += 2;
+    }
     Au_t t = isa(rec);
     rec->parsing = true;
     bool   is_class = instanceof(rec, typeid(Class)) != null;
@@ -2303,8 +2307,9 @@ void silver_incremental_resolve(silver mod) {
     pairs(mod->userspace->members, i) {
         emember mem = i->value;
         record rec = instanceof(mem->mdl, typeid(record));
-        Class  cl  = instanceof(mem->mdl, typeid(Class));
+        Class  cl  = mem->mdl->src ? instanceof(mem->mdl->src, typeid(Class)) : null;
         if (rec || cl) {
+            if (!rec) rec = cl;
             if ((!cl || !cl->is_abstract) && rec && !rec->parsing && !rec->user_built) {
                 build_record(mod, rec);
             }
