@@ -3356,6 +3356,10 @@ static void register_basics(aether e) {
 
 // create Au_t structure (info and its Au_t_f)
 void create_schema(model mdl, string name) {
+    if (eq(name, "Au")) {
+        int test2 = 2;
+        test2    += 2;
+    }
     aether e = mdl->mod;
     fn  f = instanceof(mdl, typeid(fn));
     if ((e->current_include && !e->is_Au_import) || mdl->schema || f || mdl->is_system || mdl == e)
@@ -3381,13 +3385,6 @@ void create_schema(model mdl, string name) {
     structure mdl_type    = mdl->schema_type;
     
     // add identical member models to this new structure
-    if (!(mdl_type->members->count == 0)) {
-        pairs(mdl_type->members, i) {
-            emember m = i->value;
-            print("%o", m->name);
-        }
-    }
-
     model _Au = emodel("Au")->src;
     array acl = class_list(mdl, emodel("Au"), false);
 
@@ -3523,7 +3520,6 @@ void aether_Au_import(aether e, path lib) {
         bool  is_integral  = (atype->traits & AU_TRAIT_INTEGRAL)  != 0;
         bool  is_unsigned  = (atype->traits & AU_TRAIT_UNSIGNED)  != 0;
         bool  is_signed    = (atype->traits & AU_TRAIT_SIGNED)    != 0;
-
         if      (is_class)    mdl = Class      (mod, e, ident, name, imported_from, inc);
         else if (is_struct)   mdl = structure  (mod, e, ident, name, imported_from, inc);
         else if (is_enum)     mdl = enumeration(mod, e, atype, typeid(i32));
@@ -3762,6 +3758,11 @@ void aether_Au_import(aether e, path lib) {
                 }
                 //mem_mdl->mem = hold(smem);
                 set(mdl->members, n, smem);
+            }
+
+            if (strcmp(atype->name, "Au") == 0) {
+                int test2 = 2;
+                test2 += 2;
             }
 
             // add padding based on isize (aligned with runtime; this way we may allocate space for it to use its special things)
@@ -5050,9 +5051,9 @@ static void record_finalize(record rec) {
         verify(!get(rec->members, string("__f")),  "__f is reserved name");
         verify(!get(rec->members, string("__f2")), "__f2 is reserved name");
         set(rec->members, string("__f"),  emember(
-            mod, e, name, string("__f"),  mdl, rec->schema_type->ptr, context, rec));
+            mod, e, name, string("__f"),  mdl, rec->schema_type->ptr, context, rec, is_hidden, true));
         set(rec->members, string("__f2"), emember(
-            mod, e, name, string("__f2"), mdl, rec->schema_type->ptr, context, rec));
+            mod, e, name, string("__f2"), mdl, rec->schema_type->ptr, context, rec, is_hidden, true));
         total += 2;
     }
 
@@ -5063,7 +5064,7 @@ static void record_finalize(record rec) {
             emember mem = i->value;
             verify( mem->name && mem->name->chars,  "no name on emember: %p (type: %o)", mem, r);
 
-            if (instanceof(mem->mdl, typeid(fn)))
+            if (instanceof(mem->mdl, typeid(fn)) || (r != rec && mem->is_hidden))
                 continue;
 
             if (!mem->mdl->is_ref)

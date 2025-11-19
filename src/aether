@@ -288,6 +288,7 @@ declare_class(enode)
     i_prop    (X,Y, public,     bool,                   is_global) \
     i_prop    (X,Y, public,     bool,                   is_formatter) \
     i_prop    (X,Y, public,     bool,                   is_decl) \
+    i_prop    (X,Y, public,     bool,                   is_hidden) \
     i_prop    (X,Y, public,     bool,                   is_codegen) \
     i_prop    (X,Y, public,     Au,                      override_offset_bits) \
     i_prop    (X,Y, public,     Au,                      override_size_bits) \

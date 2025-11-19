@@ -257,8 +257,7 @@
 #define   i_ctr_interface_DECL_EXTERN(X, ARG)
 #define   i_ctr_interface_MEMBER_INDEX(X, ARG)
 #define   i_ctr_interface_GENERICS(X, ARG)
-#define   i_ctr_interface_INIT(X, ARG) \
-    member_validate[validate_count++] = #ARG;
+#define   i_ctr_interface_INIT(X, ARG)
 #define   i_ctr_interface_PROTO(X, ARG)
 #define   i_ctr_interface_METHOD(X, ARG)
 
@@ -330,8 +329,7 @@
 #define   i_prop_interface_DECL(X, R, N)
 #define   i_prop_interface_DECL_EXTERN(X, R, N)
 #define   i_prop_interface_GENERICS(X, R, N)
-#define   i_prop_interface_INIT(X, R, N) \
-    member_validate[validate_count++] = #N;
+#define   i_prop_interface_INIT(X, R, N)
 #define   i_prop_interface_PROTO(X, R, N)  
 #define   i_prop_interface_METHOD(X, R, N)
 
@@ -597,8 +595,7 @@
 #define   i_vprop_interface_INST_L_EXTERN(X, R, N)
 #define   i_vprop_interface_DECL(X, R, N)        i_prop_public_DECL(X, R, N)
 #define   i_vprop_interface_DECL_EXTERN(X, R, N) i_prop_public_DECL(X, R, N)
-#define   i_vprop_interface_GENERICS(X, R, N) \
-    member_validate[validate_count++] = #N;
+#define   i_vprop_interface_GENERICS(X, R, N)
 #define   i_vprop_interface_PROTO(X, R, N)  
 #define   i_vprop_interface_METHOD(X, R, N)
 
@@ -692,8 +689,7 @@
 #define   i_array_interface_DECL(X, R, S, N)
 #define   i_array_interface_DECL_EXTERN(X, R, S, N)
 #define   i_array_interface_GENERICS(X, R, S, N)
-#define   i_array_interface_INIT(X, R, S, N) \
-    member_validate[validate_count++] = #N;
+#define   i_array_interface_INIT(X, R, S, N)
 #define   i_array_interface_PROTO(X, R, S, N)  
 #define   i_array_interface_METHOD(X, R, S, N)
 
@@ -733,7 +729,7 @@
 #define   i_array(X, Y, T, R, S, N) i_array_##T##_##Y(X, R, S, N)
 
 #define   i_struct_ctr_ISIZE(X, ARG)
-#define   i_struct_ctr_ISIZE_EXTERN(X, R, S, N)
+#define   i_struct_ctr_ISIZE_EXTERN(X, ARG)
 #define   i_struct_ctr_INST(X, ARG)
 #define   i_struct_ctr_INST_EXTERN(X, ARG)
 #define   i_struct_ctr_DECL(X, ARG)
@@ -753,7 +749,7 @@
 #define   i_struct_ctr(X, Y, ARG)          i_struct_ctr_##Y(X, ARG)
 
 #define   i_struct_ctr_obj_ISIZE(X, ARG)
-#define   i_struct_ctr_obj_ISIZE_EXTERN(X, R, S, N)
+#define   i_struct_ctr_obj_ISIZE_EXTERN(X, ARG)
 #define   i_struct_ctr_obj_INST(X, ARG)
 #define   i_struct_ctr_obj_INST_EXTERN(X, ARG)
 #define   i_struct_ctr_obj_DECL(X, ARG)
@@ -941,8 +937,7 @@
 #define   t_method_interface_DECL(X, R, N, ...)
 #define   t_method_interface_DECL_EXTERN(X, R, N, ...)
 #define   t_method_interface_GENERICS(X, R, N, ...)
-#define   t_method_interface_INIT(X, R, N, ...) \
-    member_validate[validate_count++] = #N;
+#define   t_method_interface_INIT(X, R, N, ...)
 #define   t_method_interface_PROTO(X, R, N, ...)
 #define   t_method_interface_METHOD(X, R, N, ...)
 
@@ -998,8 +993,7 @@
 #define   s_method_interface_DECL(X, R, N, ...)
 #define   s_method_interface_DECL_EXTERN(X, R, N, ...)
 #define   s_method_interface_GENERICS(X, R, N, ...)
-#define   s_method_interface_INIT(X, R, N, ...) \
-    member_validate[validate_count++] = #N;
+#define   s_method_interface_INIT(X, R, N, ...)
 #define   s_method_interface_PROTO(X, R, N, ...)
 #define   s_method_interface_METHOD(X, R, N, ...)
 
@@ -1051,8 +1045,7 @@
 #define   i_method_interface_DECL(X, R, N, ...)
 #define   i_method_interface_DECL_EXTERN(X, R, N, ...)
 #define   i_method_interface_GENERICS(X, R, N, ...)
-#define   i_method_interface_INIT(X, R, N, ...) \
-    member_validate[validate_count++] = #N;
+#define   i_method_interface_INIT(X, R, N, ...)
 #define   i_method_interface_PROTO(X, R, N, ...)
 #define   i_method_interface_METHOD(X, R, N, ...)
 
@@ -1096,6 +1089,7 @@
 #define   i_final_public_F(    X, R, N, ...)
 #define   i_final_public_F_EXTERN(    X, R, N, ...)
 #define   i_final_public_ISIZE(    X, R, N, ...)
+#define   i_final_public_ISIZE_EXTERN(    X, R, N, ...)
 #define   i_final_public_INST_U(    X, R, N, ...)
 #define   i_final_public_INST_L(    X, R, N, ...)
 #define   i_final_public_INST_U_EXTERN(  X, R, N, ...)
@@ -1140,8 +1134,7 @@
 #define   i_operator_interface_DECL(X, R, N, ARG)
 #define   i_operator_interface_DECL_EXTERN(X, R, N, ARG)
 #define   i_operator_interface_GENERICS(X, R, N, ARG)
-#define   i_operator_interface_INIT(X, R, N, ARG) \
-    member_validate[validate_count] = #N;
+#define   i_operator_interface_INIT(X, R, N, ARG)
 #define   i_operator_interface_PROTO(X, R, N, ARG)
 #define   i_operator_interface_METHOD(X, R, N, ARG)
 
@@ -1193,8 +1186,7 @@
 #define   i_cast_interface_DECL(X, R)
 #define   i_cast_interface_DECL_EXTERN(X, R)
 #define   i_cast_interface_GENERICS(X, R)
-#define   i_cast_interface_INIT(X, R) \
-    member_validate[validate_count++] = "cast_" #R;
+#define   i_cast_interface_INIT(X, R)
 #define   i_cast_interface_PROTO(X, R)
 #define   i_cast_interface_METHOD(X, R)
 
@@ -1245,8 +1237,7 @@
 #define i_index_interface_DECL(X, R, ...)
 #define i_index_interface_DECL_EXTERN(X, R, ...)
 #define i_index_interface_GENERICS(X, R, ...)
-#define i_index_interface_INIT(X, R, ...) \
-    member_validate[validate_count++] = "index_" #R;
+#define i_index_interface_INIT(X, R, ...)
 #define i_index_interface_PROTO(X, R, ...)
 #define i_index_interface_METHOD(X, R, ...)
 

@@ -478,9 +478,6 @@ typedef Au_t* Au_ts;
             Au_t_i.type.src    = typeid(Au); \
         } \
         int validate_count = 0; \
-        char* member_validate[256] = {}; \
-        if ((Au_t)type_ref == (Au_t)base_ref) \
-            type_ref->name = #TYPE; \
         if ((Au_t)type_ref != (Au_t)base_ref && (!base_ref->traits)) { \
             lazy_init((global_init_fn)&Aglobal_##TYPE); \
             return false; \
@@ -489,17 +486,18 @@ typedef Au_t* Au_ts;
             memset(type_ref, 0,        sizeof(TYPE##_f)); \
             if ((Au_t)type_ref != (Au_t)base_ref) \
                 memcpy(type_ref, base_ref, sizeof(BASE##_f)); \
+            type_ref->name = #TYPE; \
             type_ref->af = &TYPE##_af; \
             type_ref->af->re_alloc = 1024; \
             type_ref->af->re = (object*)(Au*)calloc(1024, sizeof(Au)); \
-            type_ref->isize = 0 TYPE##_schema( TYPE, ISIZE, __VA_ARGS__ ); \
+            type_ref->isize = 0 TYPE##_schema( TYPE, ISIZE_EXTERN, __VA_ARGS__ ); \
             type_ref->magic = 1337; \
+            printf("global init: %s (isize: %i)\n", type_ref->name, type_ref->isize); \
             static struct _member members[512]; \
             type_ref->src = (Au_t)base_ref != typeid(Au) \
                  ? (Au_t)base_ref : (Au_t)null; \
             type_ref->parent_type = \
                 (__typeof__(type_ref->parent_type))&BASE##_i.type; \
-            type_ref->name          = #TYPE; \
             type_ref->module        = (cstr)MODULE; \
             type_ref->members       = members; \
             type_ref->member_count  = 0; \
