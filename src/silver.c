@@ -1254,22 +1254,22 @@ static enode reverse_descent(silver mod, model mdl_expect, array meta_expect) {
     return L;
 }
 
-// read-expression does not pass in expected models, because 100% of the time we would run conversion to that
-// we get no information from that, so the idea is to know what model is returning -- thats meaningful
-static array read_expression(silver mod, model mdl_res, array meta_res, bool* is_const) {
+// read-expression does not pass in 'expected' models, because 100% of the time we run conversion when they differ
+// the idea is to know what model is returning from deeper calls
+static array read_expression(silver mod, model* mdl_res, array* meta_res, bool* is_const) {
     array exprs = array(32);
     int s = mod->cursor;
     mod->no_build = true;
-
+    mod->is_const = true; // set this, and it can only &= to true with const ops; any build op sets to false
     enode   n = reverse_descent(mod, null, null);
     if (mdl_res)  *mdl_res  = n->mdl;
     if (meta_res) *meta_res = n->meta;
     mod->no_build = false;
     int e = mod->cursor;
     for (int i = s; i < e; i++) {
-        push(exprs, a->tokens->elements[i]);
+        push(exprs, mod->tokens->elements[i]);
     }
-    *is_const = !mod->is_const;
+    *is_const = mod->is_const;
     return exprs;
 }
 
@@ -1725,16 +1725,68 @@ enode silver_parse_assignment(silver mod, emember mem, string oper) {
 }
 
 enode cond_builder(silver mod, array cond_tokens, Au unused) {
+    mod->expr_level++; // make sure we are not at 0
     push_state(mod, cond_tokens, 0);
     enode cond_expr = parse_expression(mod, emodel("bool"), null);
     pop_state(mod, false);
+    mod->expr_level--;
     return cond_expr;
 }
 
-enode expr_builder(silver mod, array expr_tokens, Au unused) {
+// singular statement (not used)
+enode statement_builder(silver mod, array expr_tokens, Au unused) {
+    int level = mod->expr_level;
+    mod->expr_level = 0;
     push_state(mod, expr_tokens, 0);
-    enode exprs = parse_statements(mod, true);
+    enode expr = parse_statement(mod);
     pop_state(mod, false);
+    mod->expr_level = level;
+    return expr;
+}
+
+enode block_builder(silver mod, array block_tokens, Au unused) {
+    int level = mod->expr_level;
+    mod->expr_level = 0;
+    enode last = null;
+    push_state(mod, block_tokens, 0);
+    last = parse_statements(mod, false);
+    pop_state(mod, false);
+    mod->expr_level = level;
+    return last;
+}
+
+// we separate this, that:1, other:2 -- thats not an actual statements protocol generally, just used in for
+enode statements_builder(silver mod, array expr_groups, Au unused) {
+    int level = mod->expr_level;
+    mod->expr_level = 0;
+    enode last = null;
+    each (expr_groups, array, expr_tokens) {
+        push_state(mod, expr_tokens, 0);
+        last = parse_statement(mod);
+        pop_state(mod, false);
+    }
+    mod->expr_level = level;
+    return last;
+}
+
+enode exprs_builder(silver mod, array expr_groups, Au unused) {
+    mod->expr_level++; // make sure we are not at 0
+    enode last = null;
+    each (expr_groups, array, expr_tokens) {
+        push_state(mod, expr_tokens, 0);
+        last = parse_expression(mod, null, null);
+        pop_state(mod, false);
+    }
+    mod->expr_level--;
+    return last;
+}
+
+enode expr_builder(silver mod, array expr_tokens, Au unused) {
+    mod->expr_level++; // make sure we are not at 0
+    push_state(mod, expr_tokens, 0);
+    enode exprs = parse_expression(mod, null, null);
+    pop_state(mod, false);
+    mod->expr_level--;
     return exprs;
 }
 
@@ -1807,16 +1859,17 @@ enode parse_if_else(silver mod) {
         require_if = false;
     }
     subprocedure build_cond = subproc(mod, cond_builder, null);
-    subprocedure build_expr = subproc(mod, expr_builder, null);
+    subprocedure build_expr = subproc(mod, block_builder, null);
     return e_if_else(mod, tokens_cond, tokens_block, build_cond, build_expr);
 }
 
+bool is_primitive(model f);
 
 enode parse_switch(silver mod) {
     
     validate(read_if(mod, "switch") != null, "expected switch");
     enode e_expr = parse_expression(mod, null, null);
-    array cases  = map(hsize, 16);
+    map   cases  = map(hsize, 16);
     array expr_def = null;
     bool  all_const = is_primitive(e_expr->mdl);
 
@@ -1827,9 +1880,9 @@ enode parse_switch(silver mod) {
             array meta_read = null;
             array value = read_expression(mod,
                 &mdl_read, &meta_read, &is_const);
-            all_const &= is_const;
+            all_const &= is_const && (mdl_read == e_expr->mdl) && (meta_read == e_expr->meta);
             array body  = read_body(mod);
-            value->deep_compare = true; // tell array when its given a compare to not just do element equation but effectively deep compare (i will do this)
+            //value->deep_compare = true; // tell array when its given a compare to not just do element equation but effectively deep compare (i will do this)
             set(cases, value, body);
             continue;
         } else if (read_if(mod, "default")) {
@@ -1839,59 +1892,15 @@ enode parse_switch(silver mod) {
             break;
     }
 
-    return e_switch(mod, expr, cases, expr_def);
-}
-
-
-enode parse_for(silver mod) {
-    validate(read_if(mod, "for") != null, "expected for");
-
-    array groups = read_expression_groups(mod);
-    validate(groups != null, "expected [ init , cond , step [ , step-b , step-c , ...] ]");
-    validate(len(groups) == 3, "for expects exactly 3 expressions");
-
-    array init_exprs = groups->elements[0];
-    array cond_expr  = groups->elements[1];
-    array step_exprs = groups->elements[2];
-
-    array body = read_body(mod);
-    verify(body, "expected for-body");
-
-    subprocedure build_init = subproc(mod, expr_builder, null);
-    subprocedure build_cond = subproc(mod, cond_builder, null);
-    subprocedure build_body = subproc(mod, expr_builder, null);
-    subprocedure build_step = subproc(mod, expr_builder, null);
-
-    return e_for(
-        mod,
-        init_exprs,
-        cond_expr,
-        step_exprs,
-        body,
-        build_init,
-        build_cond,
-        build_body,
-        build_step
-    );
-}
-
-
-enode parse_loop_while(silver mod) {
-    bool is_loop = read_if(mod, "loop") != null;
-    validate(is_loop, "expected loop");
-    array cond  = read_within(mod);
-    array block = read_body(mod);
-    verify(block, "expected body");
-    bool is_loop_while = read_if(mod, "while") != null;
-    if (is_loop_while) {
-        verify(!cond, "condition given above conflicts with while below");
-        cond = read_within(mod);
-    }
-    subprocedure build_cond = subproc(mod, cond_builder, null);
     subprocedure build_expr = subproc(mod, expr_builder, null);
-    return e_loop(mod, cond, block, build_cond, build_expr, is_loop_while);
+    subprocedure build_body = subproc(mod, statements_builder, null);
+    if (all_const)
+        return e_native_switch(mod, e_expr, cases, expr_def, build_expr, build_body);
+    else
+        return e_switch(mod, e_expr, cases, expr_def, build_expr, build_body);
 }
 
+// improve this to use read_expression (todo: read_expression needs to be able to keep the stack read)
 array read_expression_groups(silver mod) {
     array result  = array(8);
     array current = array(32);
@@ -1925,7 +1934,6 @@ array read_expression_groups(silver mod) {
 
         // normal token inside current expression
         push(current, t);
-        if (len(result))
     }
 
     // Push final group if not empty
@@ -1933,6 +1941,60 @@ array read_expression_groups(silver mod) {
         push(result, current);
 
     return result;
+}
+
+enode parse_for(silver mod) {
+    validate(read_if(mod, "for") != null, "expected for");
+
+    array groups = read_expression_groups(mod);
+    validate(groups != null, "expected [ init , cond , step [ , step-b , step-c , ...] ]");
+    validate(len(groups) == 3, "for expects exactly 3 expressions");
+
+    array init_exprs = groups->elements[0];
+    array cond_expr  = groups->elements[1];
+    array step_exprs = groups->elements[2];
+
+    verify(isa(init_exprs) == typeid(array), "expected array for init exprs");
+    verify(isa(cond_expr)  == typeid(array), "expected group of cond expr");
+    cond_expr = cond_expr->len ? cond_expr->elements[0] : null;
+    verify(isa(cond_expr)  == typeid(array), "expected array for inner cond expr");
+
+    array body = read_body(mod);
+    verify(body, "expected for-body");
+
+    subprocedure build_init = subproc(mod, statements_builder, null);
+    subprocedure build_cond = subproc(mod, cond_builder, null);
+    subprocedure build_body = subproc(mod, expr_builder, null);
+    subprocedure build_step = subproc(mod, exprs_builder, null);
+
+    return e_for(
+        mod,
+        init_exprs,
+        cond_expr,
+        step_exprs,
+        body,
+        build_init,
+        build_cond,
+        build_body,
+        build_step
+    );
+}
+
+
+enode parse_loop_while(silver mod) {
+    bool is_loop = read_if(mod, "loop") != null;
+    validate(is_loop, "expected loop");
+    array cond  = read_within(mod);
+    array block = read_body(mod);
+    verify(block, "expected body");
+    bool is_loop_while = read_if(mod, "while") != null;
+    if (is_loop_while) {
+        verify(!cond, "condition given above conflicts with while below");
+        cond = read_within(mod);
+    }
+    subprocedure build_cond = subproc(mod, cond_builder, null);
+    subprocedure build_expr = subproc(mod, expr_builder, null);
+    return e_loop(mod, cond, block, build_cond, build_expr, is_loop_while);
 }
 
 
@@ -2125,7 +2187,7 @@ enode parse_statement(silver mod) {
     mod->expr_level = 0;
 
     if (!module) {
-        if (next_is(mod, "no-op"))  return e_noop(mod);
+        if (next_is(mod, "no-op"))  return e_noop(mod, null);
         if (next_is(mod, "return")) {
             mod->expr_level++;
             mod->last_return = parse_return(mod);
