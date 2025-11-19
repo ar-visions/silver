@@ -119,6 +119,7 @@ declare_class(model)
 
 
 #define catcher_schema(X,Y,...) \
+    i_prop(X,Y, public, map, team) \
     i_prop(X,Y, intern, LLVMBasicBlockRef, block, as, ARef)
 declare_class_2(catcher, model)
 
@@ -371,7 +372,7 @@ declare_class_2(static_array, array)
     i_prop    (X,Y, public,     num,         cursor) \
     i_prop    (X,Y, public,     map,         instances) \
     i_prop    (X,Y, public,     bool,        verbose) \
-    i_prop    (X,Y, public,     bool,        is_const) \
+    i_prop    (X,Y, public,     bool,        no_build) \
     i_method  (X,Y, public,     none,        reinit_startup) \
     i_method  (X,Y, public,     emember,     initializer) \
     i_method  (X,Y, public,     path,        lookup_include,     string) \
@@ -403,13 +404,14 @@ declare_class_2(static_array, array)
     i_method  (X,Y, public,     enode,       e_interpolate,      string) \
     i_method  (X,Y, public,     enode,       e_const_array,      model, array) \
     i_method  (X,Y, public,     enode,       e_offset,           enode,      Au) \
-    i_method  (X,Y, public,     enode,       e_switch,           enode, map, array, subprocedure, subprocedure, bool) \
+    i_method  (X,Y, public,     enode,       e_switch,           enode, map, array, subprocedure, subprocedure) \
+    i_method  (X,Y, public,     enode,       e_native_switch,    enode, map, array, subprocedure, subprocedure) \
     i_method  (X,Y, public,     enode,       e_for,              array, array, array, array, subprocedure, subprocedure, subprocedure, subprocedure) \
     i_method  (X,Y, public,     enode,       e_loop,             array,      array, subprocedure, subprocedure, bool) \
     i_method  (X,Y, public,     enode,       e_if_else,          array,      array, subprocedure, subprocedure) \
     i_method  (X,Y, public,     enode,       e_ternary,          enode,      enode, enode) \
     i_method  (X,Y, public,     enode,       e_primitive_convert, enode,     model) \
-    i_method  (X,Y, public,     enode,       e_noop) \
+    i_method  (X,Y, public,     enode,       e_noop,             model) \
     i_method  (X,Y, public,     enode,       e_addr_of,          enode,      model) \
     i_method  (X,Y, public,     enode,       e_bitwise_not,      enode) \
     i_method  (X,Y, public,     enode,       e_not,              enode) \

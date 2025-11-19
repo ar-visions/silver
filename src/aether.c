@@ -629,10 +629,21 @@ void statements_init(statements st) {
     st->scope = LLVMDIBuilderCreateLexicalBlock(e->dbg_builder, top(e)->scope, e->file, 1, 0);
 }
 
+enode aether_e_goto(aether e, array tokens_label) {
+    catcher cat = context_model(e, typeid(catcher));
+    verify(cat->team, "rogue cat, cannot goto label %o", tokens_label);
+    catcher f_case = get(cat->team, tokens_label);
+    e->is_const = false;
+    if (!e->no_build)
+        LLVMBuildBr(e->builder, f_case->block);
+    return e_noop(e, null);
+}
+
 enode aether_e_break(aether e, catcher cat) {
     e->is_const = false;
-    LLVMBuildBr(e->builder, cat->block);
-    return e_noop(e);
+    if (!e->no_build)
+        LLVMBuildBr(e->builder, cat->block);
+    return e_noop(e, null);
 }
 
 void aether_e_print_node(aether e, enode n) {
@@ -1274,7 +1285,7 @@ emember enode_member_lookup(enode mem, string name) {
     bool is_ptr = isa(mem) == typeid(emember) ? 
         (((emember)mem)->is_arg || ((emember)mem)->is_global) : false;
 
-    if (isa(mem->mdl) == typeid(enumerable)) {
+    if (isa(mem->mdl) == typeid(enumeration)) {
         emember m = get(mem->mdl->members, name);
         verify (m, "%o not found on enumerable type %o", name, mem->mdl);
         return  m;
@@ -1460,7 +1471,7 @@ enode aether_e_meta_ids(aether e, array meta) {
     model atype_vector = pointer(atype);
 
     e->is_const = false;
-    if (e->no_build) return e_noop(e, vector_type);
+    if (e->no_build) return e_noop(e, atype_vector);
 
     if (!meta || !len(meta))
         return e_null(e, atype_vector);
@@ -2068,41 +2079,97 @@ enode aether_e_builder(aether e, subprocedure cond_builder) {
     return n;
 }
 
+enode aether_e_native_switch(
+        aether          e,
+        enode           switch_val,
+        map             cases,
+        array           def_block,
+        subprocedure    expr_builder,
+        subprocedure    body_builder)
+{
+    LLVMBuilderRef B = e->builder;
+    LLVMTypeRef    Ty = LLVMTypeOf(switch_val->value);
+    LLVMBasicBlockRef entry = LLVMGetInsertBlock(e->builder);
 
+    catcher switch_cat = catcher(mod, e,
+        block, LLVMAppendBasicBlock(entry, "switch.end"));
+    push(e, switch_cat);
 
+    LLVMBasicBlockRef default_block =
+        def_block
+            ? LLVMAppendBasicBlock(LLVMGetInsertBlock(B), "default")
+            : switch_cat->block;
 
+    // create switch instruction
+    LLVMValueRef SW =
+        LLVMBuildSwitch(B, switch_val->value, default_block, cases->count);
 
+    // allocate blocks for each case BEFORE emitting bodies
+    map case_blocks = map(hsize, 16);
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-static bool all_constant(aether e, map cases) {
-    return false;
-    /*
+    Au_t common_type = null;
     pairs(cases, i) {
-        array v = i->key;
-        each(v, token, t) {
-            if () // silver will need to tag the tokens with members if possible
+        LLVMBasicBlockRef case_block =
+            LLVMAppendBasicBlock(LLVMGetInsertBlock(B), "case");
+
+        set(case_blocks, i->key, (Au)case_block);
+
+        // evaluate key to literal
+        enode key_node = invoke(expr_builder, i->key);
+        Au   au_value = key_node->literal;
+
+        verify(au_value, "expression not evaluating as constant (%o)", i->key);
+        Au_t au_type  = isa(au_value);
+        if (common_type && common_type != au_type) {
+            fault("type %s differs from common type of %s", au_type->name, common_type->name);
         }
-    }*/
+        verify(!(au_type->traits & AU_TRAIT_REALISTIC), "realistic types not supported in switch");
+
+        i64 key_val;
+             if (au_type == typeid(bool)) key_val = *(bool*)au_value;
+        else if (au_type == typeid(i8))   key_val = *(i8*) au_value;
+        else if (au_type == typeid(u8))   key_val = *(u8*) au_value;
+        else if (au_type == typeid(i16))  key_val = *(i16*)au_value;
+        else if (au_type == typeid(u16))  key_val = *(u16*)au_value;
+        else if (au_type == typeid(i32))  key_val = *(i32*)au_value;
+        else if (au_type == typeid(u32))  key_val = *(u32*)au_value;
+        else if (au_type == typeid(i64))  key_val = *(i64*)au_value;
+        else if (au_type == typeid(u64))  key_val = *(u64*)au_value;
+        else {
+            fault("type not supported in native switch: %s", au_type->name);
+        }
+
+        LLVMValueRef KeyConst =
+            LLVMConstInt(Ty, key_val, false);
+        
+        LLVMAddCase(SW, KeyConst, case_block);
+    }
+
+    // emit each case body
+    int idx = 0;
+    pairs(case_blocks, p) {
+        LLVMBasicBlockRef case_block = p->value;
+        LLVMPositionBuilderAtEnd(B, case_block);
+
+        array body_tokens = value_by_index(cases, idx++);
+        invoke(body_builder, body_tokens);
+
+        LLVMBuildBr(B, switch_cat->block);
+    }
+
+    // default body
+    if (def_block) {
+        LLVMPositionBuilderAtEnd(B, default_block);
+        invoke(body_builder, def_block);
+        LLVMBuildBr(B, switch_cat->block);
+    }
+
+    // merge
+    LLVMPositionBuilderAtEnd(B, switch_cat->block);
+    pop(e);
+    return e_noop(e, null);
 }
+
 
 enode aether_e_switch(
         aether          e,
@@ -2110,15 +2177,12 @@ enode aether_e_switch(
         map             cases,       // map: array_of_tokens → array_of_tokens
         array           def_block,   // null or body array
         subprocedure    expr_builder,
-        subprocedure    body_builder,
-        bool            use_primitive_switch)
+        subprocedure    body_builder)
 {
     LLVMBasicBlockRef entry = LLVMGetInsertBlock(e->builder);
 
     // invoke expression for switch, and push switch cat
-    enode switch_val     = e_expr; // invoke(expr_builder, expr);
-    bool  can_use_switch = is_primitive(switch_val->mdl) && all_constant(e, cases);
-
+    enode   switch_val = e_expr; // invoke(expr_builder, expr);
     catcher switch_cat = catcher(mod, e,
         block, LLVMAppendBasicBlock(entry, "switch.end"));
     push(e, switch_cat);
@@ -2127,7 +2191,7 @@ enode aether_e_switch(
     // wrap in cat, store the catcher, not an enode
     map case_blocks = map(hsize, 16);
     pairs(cases, i)
-        set(case_blocks, i->key, catcher(mod, e, block, LLVMAppendBasicBlock(entry, "case")));
+        set(case_blocks, i->key, catcher(mod, e, team, case_blocks, block, LLVMAppendBasicBlock(entry, "case")));
 
     // default block, and obtain insertion block for first case
     catcher def_cat = def_block ? catcher(mod, e, block, LLVMAppendBasicBlock(entry, "default")) : null;
@@ -2178,7 +2242,7 @@ enode aether_e_switch(
     // ---- MERGE ----
     LLVMPositionBuilderAtEnd(e->builder, switch_cat->block);
     pop(e);
-    return e_noop(e);
+    return e_noop(e, null);
 }
 
 
@@ -2251,7 +2315,7 @@ enode aether_e_for(aether e,
     LLVMPositionBuilderAtEnd(e->builder, merge);
     pop(e);
 
-    return e_noop(e);
+    return e_noop(e, null);
 }
 
 
@@ -2304,7 +2368,7 @@ enode aether_e_loop(aether e,
     // ---- MERGE BLOCK ----
     LLVMPositionBuilderAtEnd(e->builder, cat->block);
     pop(e);
-    return e_noop(e);
+    return e_noop(e, null);
 }
 
 enode aether_e_noop(aether e, model mdl) {
@@ -2473,8 +2537,8 @@ enode aether_e_load(aether e, emember mem, emember target) {
 enode aether_e_primitive_convert(aether e, enode expr, model rtype) {
     if (!rtype) return expr;
 
-    e->is_const &= expr->mdl == rtype->mdl; // we may allow from-bit-width <= to-bit-width
-    if (e->no_build) return e_noop(e, rtype->mdl);
+    e->is_const &= expr->mdl == rtype; // we may allow from-bit-width <= to-bit-width
+    if (e->no_build) return e_noop(e, rtype);
 
     //expr = e_load(e, expr, null); // i think we want to place this somewhere else for better structural use
     
@@ -4569,7 +4633,7 @@ enode aether_e_not_eq(aether e, enode L, enode R) {
 enode aether_e_fn_return(aether e, Au o) {
     fn f = context_model(e, typeid(fn));
     e->is_const = false;
-    if (e->no_build) return e_noop(e, r->rtype);
+    if (e->no_build) return e_noop(e, f->rtype);
 
     verify (f, "function not found in context");
 
@@ -4856,7 +4920,7 @@ emember emember_guard_lookup_load(emember mem, string alpha) {
 enode aether_e_inherits(aether e, enode L, Au R) {
     e->is_const = false;
     if (e->no_build) return e_noop(e, emodel("bool"));
-    
+
     // Get the type pointer for L
     enode L_type =  e_offset(e, L, _i64(-sizeof(Au)));
     enode L_ptr  =    e_load(e, L, null);
