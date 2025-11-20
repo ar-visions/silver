@@ -7,11 +7,10 @@ fn string-together [ something:string ] string
     return '{something} and {something} else'
 
 
-main test
-    member : f32 [ 1.2 ] # public is default in silver ([ ] verify)
+main aclass
+    member : f32 [ 1.2 ] # public is default in silver ([-] verify)
 
 	fn init [ ]
-        doesnt-exist []
         str: string-together["an input string"]
 
         i:i32 [ 2 ]

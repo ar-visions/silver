@@ -74,7 +74,12 @@
       "cmath": "c",
       "algorithm": "c",
       "__tree": "c",
-      "sim_set": "c"
+      "sim_set": "c",
+      "aether": "c",
+      "silver": "c",
+      "au": "c",
+      "trinity": "c",
+      "format": "c"
     }
   }
 }

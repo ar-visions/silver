@@ -25,6 +25,7 @@ forward(import)
     i_prop    (X,Y, intern,     bool,           in_const) \
     i_prop    (X,Y, intern,     bool,           in_left) \
     i_prop    (X,Y, intern,     bool,           in_inlay) \
+    i_prop    (X,Y, intern,     bool,           read_model_abort) \
     i_prop    (X,Y, intern,     emember,        in_assign) \
     i_prop    (X,Y, intern,     array,          spaces) \
     i_prop    (X,Y, intern,     map,            include) \
