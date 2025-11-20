@@ -84,6 +84,7 @@ forward(structure)
     i_prop    (X,Y, public,     bool,             is_system) \
     i_prop    (X,Y, public,     bool,             is_typeid) \
     i_prop    (X,Y, public,     bool,             is_internal) \
+    i_prop    (X,Y, public,     bool,             is_module_init) \
     i_prop    (X,Y, public,     bool,             user_built) \
     i_prop    (X,Y, public,     bool,             open) \
     i_prop    (X,Y, public,     mschema,          schema) \
@@ -163,7 +164,6 @@ declare_class(codegen)
     i_prop(X,Y, public,     bool,                   is_ctr) \
     i_prop(X,Y, public,     bool,                   is_idx) \
     i_prop(X,Y, public,     OPType,                 is_oper) \
-    i_prop(X,Y, public,     bool,                   is_module_init) \
     i_prop(X,Y, public,     bool,                   is_override) \
     i_prop(X,Y, public,     bool,                   is_ifinal) \
     i_prop(X,Y, public,     bool,                   is_global_ctr) \
@@ -374,6 +374,8 @@ declare_class_2(static_array, array)
     i_prop    (X,Y, public,     map,         instances) \
     i_prop    (X,Y, public,     bool,        verbose) \
     i_prop    (X,Y, public,     bool,        no_build) \
+    i_prop    (X,Y, public,     i32,         state) \
+    i_method  (X,Y, public,     none,        context,            ARef, ARef, Au_t) \
     i_method  (X,Y, public,     none,        reinit_startup) \
     i_method  (X,Y, public,     emember,     initializer) \
     i_method  (X,Y, public,     path,        lookup_include,     string) \
@@ -458,11 +460,11 @@ bool is_realistic(model);
 bool is_integral (model);
 bool is_signed   (model);
 bool is_unsigned (model);
-bool is_record   (model);
+model is_record  (model);
 bool is_generic  (model);
-bool is_class    (model);
+model is_class   (model);
 bool is_enumeration(model);
-bool is_struct   (model);
+model is_struct  (model);
 bool is_ref      (model);
 
 #endif

@@ -151,12 +151,20 @@ bool is_generic(model f) {
     return (Au_t)f->src == typeid(Au);
 }
 
-bool is_record(model f) {
-    return is_struct(f) || is_class(f);
+model is_record(model f) {
+    model ff = is_class(f);
+    if   (ff) return ff;
+    return is_struct(f);
 }
 
-bool is_class(model f) {
-    return (f->src && isa(f->src) == typeid(Class)) || isa(f) == typeid(Class);
+model is_class(model f) {
+    if (f->src && isa(f->src) == typeid(Class))
+        return f;
+    if (isa(f) == typeid(Class)) {
+        verify(f->ptr, "expected ptr identity");
+        return f->ptr;
+    }
+    return null;
 }
 
 bool is_subclass(model a, model b) {
@@ -171,11 +179,9 @@ bool is_subclass(model a, model b) {
     return false;
 }
 
-bool is_struct(model f) {
+model is_struct(model f) {
     f = model_resolve(f); 
-    if (isa(f) == typeid(structure))
-        return true;
-    return isa(f) == typeid(structure);
+    return isa(f) == typeid(structure) ? f : null;
 }
 
 bool is_ref(model f) {
@@ -605,8 +611,8 @@ void model_init(model mdl) {
 }
 
 Class read_parent(Class mdl) {
-    if (isa(mdl) == typeid(Class) && mdl->parent) {
-        return mdl->parent;
+    if (isa(mdl->src) == typeid(Class) && mdl->src->parent) {
+        return mdl->src->parent;
     }
     return null;
 }
@@ -629,8 +635,23 @@ void statements_init(statements st) {
     st->scope = LLVMDIBuilderCreateLexicalBlock(e->dbg_builder, top(e)->scope, e->file, 1, 0);
 }
 
+model aether_context_model(aether e, Au_t type) {
+    Au_t cl = typeid(Class);
+    for (int i = len(e->lex) - 1; i >= 0; i--) {
+        model ctx = e->lex->elements[i];
+        Au_t ctx_t = isa(ctx);
+        if ((type == cl && inherits(isa(ctx->src), type)) || 
+            (type != cl && inherits(ctx_t, type)))
+            return ctx;
+        if (ctx == e)
+            return null;
+    }
+    return null;
+}
+
 enode aether_e_goto(aether e, array tokens_label) {
     catcher cat = context_model(e, typeid(catcher));
+
     verify(cat->team, "rogue cat, cannot goto label %o", tokens_label);
     catcher f_case = get(cat->team, tokens_label);
     e->is_const = false;
@@ -879,7 +900,7 @@ void aether_finalize_init(aether e, fn f) {
 
         if (mdl->imported_from) continue;
 
-        Class       cmdl = mdl->src ? instanceof(mdl, typeid(Class)) : null;
+        Class       cmdl = mdl->src ? instanceof(mdl->src, typeid(Class)) : null;
         Class       smdl = instanceof(mdl, typeid(structure));
         enumeration emdl = instanceof(mdl, typeid(enumeration));
 
@@ -1125,6 +1146,7 @@ void aether_finalize_init(aether e, fn f) {
                 //zero(e, mem);
             }
         }
+        fn f2 = f;
         e_fn_return(e, null);
         pop (e);
 
@@ -1351,9 +1373,10 @@ void emember_init(emember mem) {
     if (!mem->name) mem->name = string("");
     mem->name = hold(string(mem->name->chars));
 
-    record rec = context_model(e, typeid(record));
-    fn in_f = context_model(e, typeid(fn));
-    model mdl = mem->mdl;
+    record rec;
+    fn     in_f;
+    context(e, &rec, &in_f, typeid(fn));
+    model  mdl  = mem->mdl;
 
     // filter models that emit schema
     // we must create these first, because they are used in finalization of instance structs
@@ -1378,11 +1401,11 @@ void emember_init(emember mem) {
     }
     model t = top(e);
     if (t && !mem->context) {
-        if      (instanceof(t, typeid(record)))      mem->context = t;
-        else if (instanceof(t, typeid(eargs)))       mem->context = t;
+        if      (instanceof(t, typeid(record))) mem->context = t;
+        else if (instanceof(t, typeid(eargs)))  mem->context = t;
         else if (t->src && instanceof(t->src, typeid(Class)))  mem->context = t->src;
-        else if (instanceof(t,      typeid(Class)))  mem->context = t;
-        else if (instanceof(t,      typeid(uni)))    mem->context = t;
+        else if (instanceof(t, typeid(Class)))  mem->context = t;
+        else if (instanceof(t, typeid(uni)))    mem->context = t;
     }
 }
 
@@ -1634,7 +1657,8 @@ enode aether_e_operand(aether e, Au op, model src_model, array meta) {
 }
 
 enode aether_e_null(aether e, model mdl) {
-    if (is_class(mdl)) mdl = pointer(mdl); // classes are elevated to ref even though structurally they look like structs.  we've gone back and forth on this one
+    model f = is_class(mdl);
+    if (f) mdl = f; // classes are elevated to ref even though structurally they look like structs.  we've gone back and forth on this one
     if (!mdl) mdl = emodel("handle");
     return enode(mod, e, value, LLVMConstNull(mdl->type), mdl, mdl, meta, null);
 }
@@ -1930,8 +1954,8 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
                     emember m0 = value_by_index(rmdl->members, 0);
                     Au_t type_m0 = isa(m0); // this is string for our struct member at 0 (string str2)
                     LLVMTypeRef tr = LLVMStructGetTypeAtIndex(rmdl->type, i);
-                    LLVMTypeRef expect_ty = is_class(field_type) ?
-                        pointer(field_type)->type : field_type->type;
+                    model f = is_class(field_type);
+                    LLVMTypeRef expect_ty = f ? f->type : field_type->type;
                     verify(expect_ty == tr, "field type mismatch");
                     if (!value) value = e_null(e, field_type);
                     fields[i] = value->value;
@@ -2611,6 +2635,55 @@ enode aether_e_primitive_convert(aether e, enode expr, model rtype) {
     return res;
 }
 
+// this should give us enough dimensionality to control for
+// class, structure with eargs or fn on top (including inits for record or module)
+none aether_context(aether e, ARef record, ARef top_model, Au_t filter) {
+    model f = null;
+    if (record)    *record    = null;
+    if (top_model) *top_model = null;
+
+    for (int i = len(e->lex) - 1; i >= 0; i--) {
+        model mdl = e->lex->elements[i];
+        Au_t t = isa(mdl);
+        Au_t s = isa(mdl->src);
+        bool allow = (!filter || isa(mdl) == filter);
+
+        if (allow && top_model && !*top_model) {
+            if (t == typeid(statements))
+                *(model*)top_model = mdl;
+
+            if (t == typeid(enumeration))
+                *(model*)top_model = mdl;
+
+            if (t == typeid(eargs))
+                *(model*)top_model = mdl;
+
+            if (t == typeid(fn))
+                *(model*)top_model = mdl;
+
+            if (mdl->is_global && mdl->open)
+                *(model*)top_model = mdl;
+        }
+
+        if (record && !*record) {
+            if (t == typeid(structure)) {
+                *(model*)record = mdl;
+                if (!*top_model && !filter) {
+                    *top_model = mdl;
+                }
+            }
+
+            if (s == typeid(Class)) {
+                *(model*)record = mdl; // important to note this is the ptr (a model, not Class)
+                if (!*top_model && !filter) {
+                    *top_model = mdl;
+                }
+            }
+        }
+    }
+}
+
+/*
 model aether_context_model(aether e, Au_t type) {
     Au_t cl = typeid(Class);
     for (int i = len(e->lex) - 1; i >= 0; i--) {
@@ -2624,6 +2697,7 @@ model aether_context_model(aether e, Au_t type) {
     }
     return null;
 }
+*/
 
 model aether_return_type(aether e, ARef meta) {
     if (meta) *meta = null;
@@ -2694,7 +2768,8 @@ enode aether_e_assign(aether e, enode L, Au R, OPType op) {
                 (e->builder, rL->value, rR->value, e_str(OPType, op)->chars));
     }
 
-    if (res->mdl != L->mdl) {
+    verify(L->mdl->is_ref, "L-value not a pointer (cannot assign to value)");
+    if (res->mdl != L->mdl->src) {
         res = e_operand(e, res, L->mdl, L->meta);
         //res = e_convert(e, res, L->mdl);
     }
@@ -2724,11 +2799,9 @@ emember aether_lookup2(aether e, Au name, Au_t mdl_type_filter) {
 
     for (int i = len(e->lex) - 1; i >= 0; i--) {
         model ctx      = e->lex->elements[i];
-        Au_t ctx_type = isa(ctx);
-        Class cl       = ctx->src ? instanceof(ctx->src, typeid(Class)) : null;
-        Class parent   = cl ? cl->parent : null;
+        Au_t  ctx_type = isa(ctx);
         cstr  n = cast(cstr, (string)name);
-        // combine the two member checks
+        
         do {
             // member registration should create namespace; which we dont technically have past one level
             emember m = ctx->members ? get(ctx->members, string(n)) : null;
@@ -2738,23 +2811,23 @@ emember aether_lookup2(aether e, Au name, Au_t mdl_type_filter) {
                     if (mdl_type != mdl_type_filter)
                         goto nxt;
                 }
-                if (isa(m->mdl) == typeid(fn)) {
-                    fn  f = (fn)m->mdl;
-                    //use(f);
-                }
                 return m;
             }
             nxt:
-            if  (parent) parent = parent->parent;
-            cl = parent ? parent : null;
-            ctx = cl;
+            if (instanceof(ctx->src, typeid(Class)))
+                ctx = ctx->src->parent;
+            else
+                break;
         } while (ctx);
     }
     return null;
 }
 
 model aether_push(aether e, model mdl) {
-    fn fn_prev = context_model(e, typeid(fn));
+    verify(isa(mdl) != typeid(Class), "must push the class->ptr");
+    record rec_prev;
+    fn     fn_prev;
+    context(e, &rec_prev, &fn_prev, typeid(fn));
     if (fn_prev) {
         fn_prev->last_dbg = LLVMGetCurrentDebugLocation2(e->builder);
     }
@@ -2848,17 +2921,22 @@ model aether_pop(aether e) {
             release(mem); // this member is added to statements when its already a member of record in context
         }
     }
-    fn fn_prev = context_model(e, typeid(fn));
-    if (fn_prev && !e->no_build)
-        fn_prev->last_dbg = LLVMGetCurrentDebugLocation2(e->builder);
+    record prev_rec_ctx;
+    fn     prev_fn;
+    context(e, &prev_rec_ctx, &prev_fn, typeid(fn));
+
+    if (prev_fn && !e->no_build)
+        prev_fn->last_dbg = LLVMGetCurrentDebugLocation2(e->builder);
 
     pop(e->lex);
     e->top = last(e->lex);
 
-    fn fn = context_model(e, typeid(fn));
-    if (fn && fn != fn_prev && !e->no_build) {
-        LLVMPositionBuilderAtEnd(e->builder, fn->entry);
-        LLVMSetCurrentDebugLocation2(e->builder, fn->last_dbg);
+    record rec_ctx;
+    fn     fn_ctx;
+    context(e, &rec_ctx, &fn_ctx, typeid(fn));
+    if (fn_ctx && (fn_ctx != prev_fn) && !e->no_build) {
+        LLVMPositionBuilderAtEnd(e->builder, fn_ctx->entry);
+        LLVMSetCurrentDebugLocation2(e->builder, fn_ctx->last_dbg);
     }
     return e->top;
 }
@@ -3572,9 +3650,6 @@ void aether_Au_import(aether e, path lib) {
         register_model(e, mdl, string(atype->name), is_prim);
     }
 
-    // register the abstracts 
-    Class cl_A = emodel("Au");
-
     // resolve parent classes, load refs, fill out enumerations, and set primitive references
     pairs(processing, i) {
         Au_t  atype    = i->value;
@@ -3635,6 +3710,8 @@ void aether_Au_import(aether e, path lib) {
     pairs(processing, i) {
         Au_t  atype     = i->value;
         model  mdl       = atype->user;
+        verify(isa(mdl) != typeid(Class), "type mismatch for model on %s", atype->name);
+
         bool   is_struct = (atype->traits & AU_TRAIT_STRUCT) != 0;
         bool   is_class  = (atype->traits & AU_TRAIT_CLASS)   != 0;
         
@@ -3649,7 +3726,6 @@ void aether_Au_import(aether e, path lib) {
                 }
             }
             if (atype == typeid(Au)) {
-                typeid(Au)->user = cl;
                 emember mem_ARef = lookup2(e, string("ARef"), null);
                 mem_ARef->mdl->src = mdl;
             }
@@ -3675,7 +3751,7 @@ void aether_Au_import(aether e, path lib) {
                         extern_name,   f(string, "%s_%o", atype->name, n),
                         rtype,         translate_rtype(st ? (model)st : emodel("none")), // structure ctr return data (Au-type ABI)
                         function_type, AU_FLAG_CONSTRUCT,
-                        instance,      cl, // structs do not have a 'target' argument in constructor -- silver operates the same
+                        instance,      mdl, // structs do not have a 'target' argument in constructor -- silver operates the same
                         args,          args);
                 }
                 else if ((amem->member_type & AU_FLAG_CAST) != 0) {
@@ -3853,7 +3929,6 @@ void aether_init(aether e) {
     // we cant make the type in Au-type because the symbol clashes; we need not export this symbol
     model main = Class(mod, e, ident, string("main"),
         src, emodel("Au"), imported_from, path("Au"), is_abstract, true);
-    Class main_cl = main;
     register_model(e, main, string("main"), false);
 
     bool _mac = false;
@@ -4343,12 +4418,12 @@ enode aether_e_is(aether e, enode L, Au R) {
 enode aether_e_cmp(aether e, enode L, enode R) {
     Au_t Lt = isa(L->literal);
     Au_t Rt = isa(R->literal);
-    bool  Lc = is_class(L->mdl);
-    bool  Rc = is_class(R->mdl);
-    bool  Ls = is_struct(L->mdl);
-    bool  Rs = is_struct(R->mdl);
-    bool  Lr = is_realistic(L->mdl);
-    bool  Rr = is_realistic(R->mdl);
+    bool Lc = is_class(L->mdl) != null;
+    bool Rc = is_class(R->mdl) != null;
+    bool Ls = is_struct(L->mdl) != null;
+    bool Rs = is_struct(R->mdl) != null;
+    bool Lr = is_realistic(L->mdl);
+    bool Rr = is_realistic(R->mdl);
 
     if (Lt && Rt) { // ifdef functionality
         bool Lr = (Lt->traits & AU_TRAIT_REALISTIC);
@@ -4382,8 +4457,10 @@ enode aether_e_cmp(aether e, enode L, enode R) {
     e->is_const = false;
     if (e->no_build) return e_noop(e, emodel("i32"));
 
-    fn f = context_model(e, typeid(fn));
-    verify(f, "non-const compare must be in a function");
+    record rec_ctx;
+    fn     mdl_ctx;
+    context(e, &rec_ctx, &mdl_ctx, typeid(fn));
+    verify(mdl_ctx, "non-const compare must be in a function");
 
     if (Lc || Rc) {
         if (!Lc) {
@@ -4415,7 +4492,8 @@ enode aether_e_cmp(aether e, enode L, enode R) {
         // iterate through struct members, checking against each with recursion
 
         LLVMValueRef result = LLVMConstInt(LLVMInt32Type(), 0, 0);
-        LLVMBasicBlockRef exit_block = LLVMAppendBasicBlock(f, "cmp_exit");
+        LLVMBasicBlockRef block      = LLVMGetInsertBlock(e->builder);
+        LLVMBasicBlockRef exit_block = LLVMAppendBasicBlock(block, "cmp_exit");
 
         // incoming edges for phi
         array phi_vals   = array(alloc, 32, unmanaged, true); // LLVMValueRef
@@ -4442,8 +4520,8 @@ enode aether_e_cmp(aether e, enode L, enode R) {
                 "cmp_nonzero");
 
             // create blocks for next-field vs exit
-            LLVMBasicBlockRef next_block = LLVMAppendBasicBlock(f, "cmp_next");
-            LLVMBasicBlockRef exit_here  = LLVMAppendBasicBlock(f, "cmp_exit_here");
+            LLVMBasicBlockRef next_block = LLVMAppendBasicBlock(block, "cmp_next");
+            LLVMBasicBlockRef exit_here  = LLVMAppendBasicBlock(block, "cmp_exit_here");
 
             // branch: if nonzero → exit_here, else → next
             LLVMBuildCondBr(e->builder, is_nonzero, exit_here, next_block);
@@ -4632,11 +4710,14 @@ enode aether_e_not_eq(aether e, enode L, enode R) {
 }
 
 enode aether_e_fn_return(aether e, Au o) {
-    fn f = context_model(e, typeid(fn));
-    e->is_const = false;
-    if (e->no_build) return e_noop(e, f->rtype);
+    record rec_ctx;
+    fn     f;
+    context(e, &rec_ctx, &f, typeid(fn));
 
     verify (f, "function not found in context");
+
+    e->is_const = false;
+    if (e->no_build) return e_noop(e, f->rtype);
 
     if (!o) return value(f->rtype, f->rmeta, LLVMBuildRetVoid(e->builder));
 
@@ -5014,11 +5095,15 @@ static void record_finalize(record rec) {
     aether e     = rec->mod;
     array  a     = array(32);
     a->assorted = true;
-    record r     = rec;
     Class  is_cl = instanceof(rec, typeid(Class)); // given direct instance from emember_finalize()
+    model  r     = is_cl ? pointer(rec) : (model)rec;
 
     if (is_cl && is_cl->parent) {
         emember_finalize(is_cl->parent->mem);
+    }
+
+    if (!rec->members && rec->ptr) {
+        rec->members = hold(rec->ptr->members);
     }
     
     rec->finalized = true;
@@ -5064,7 +5149,7 @@ static void record_finalize(record rec) {
             emember mem = i->value;
             verify( mem->name && mem->name->chars,  "no name on emember: %p (type: %o)", mem, r);
 
-            if (instanceof(mem->mdl, typeid(fn)) || (r != rec && mem->is_hidden))
+            if (instanceof(mem->mdl, typeid(fn)) || ((r != rec->ptr && r != rec) && mem->is_hidden))
                 continue;
 
             if (!mem->mdl->is_ref)
@@ -5178,8 +5263,8 @@ static void fn_finalize(fn fn) {
     // todo: code coverage in orbiter (act less of an idiot)
     fn->is_elsewhere = !fn->cgen && (!fn->body || len(fn->body) == 0);
     if (fn->is_elsewhere && !fn->extern_name) {
-        record rec = aether_context_model(e, typeid(Class));
-        if (!rec) rec = aether_context_model(e, typeid(structure));
+        record rec;
+        context(e, &rec, null, null);
         if (rec)
             fn->extern_name = hold(f(string, "%o_%o", rec, fn));
         else
@@ -5193,9 +5278,15 @@ static void fn_finalize(fn fn) {
 
     if (fn->instance) {
         Au_t t = isa(fn->instance);
-        verify (fn->instance->src && 
+        Au_t src = fn->instance->src ? isa(fn->instance->src) : null;
+        bool check = fn->instance->src && 
                 (isa(fn->instance->src) == typeid(structure) || 
-                 isa(fn->instance->src) == typeid(Class)),
+                 isa(fn->instance->src) == typeid(Class));
+        if (!check) {
+            int test2 = 2;
+            test2 += 2;
+        }
+        verify (check,
             "target [incoming] must be record type (struct / class) -- it is then made pointer-to record");
         
         /// we set is_arg to prevent registration of global 
@@ -5226,7 +5317,7 @@ static void fn_finalize(fn fn) {
         fn->rtype ? fn->rtype->type : LLVMVoidType(),
         fn->arg_types, fn->arg_count, fn->va_args);
     fn->ptr       = pointer(fn);
-    Class cl = context_model(e, typeid(Class));
+
     if (!fn->imported_from) use(fn);
 }
 
@@ -5365,6 +5456,7 @@ void emember_finalize(emember mem) {
     model  mdl = mem->mdl;
 
     if (!mdl || (mdl->finalized && mem->is_type)) return;
+    if (!mdl->mem) mdl->mem = mem;
     mem->finalized = true;
 
     Au_t type = isa(mdl);
@@ -5424,6 +5516,11 @@ void emember_finalize(emember mem) {
     model t = typed(mem->mdl);
     bool is_module = ctx == e || ctx->is_global;
     bool external_member = e->current_include || e->is_Au_import;
+
+    if (!mem->is_type && eq(mem->name, "member")) {
+        int test2 = 2;
+        test2 += 2;
+    }
 
     if (!ctx_rec) {
     if (ctx_fn && !mem->value) {
@@ -5501,7 +5598,7 @@ void emember_finalize(emember mem) {
 model aether_top(aether e) {
     for (int i = len(e->lex) - 1; i >= 0; i--) {
         model mdl = e->lex->elements[i];
-        if (!mdl->open) continue;
+        if (!is_record(mdl) && !mdl->open) continue;
         return mdl;
     }
     return e;

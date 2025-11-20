@@ -10,8 +10,8 @@ import:     LLVM:llvm-project/bd7db754895ed3b51388ec549cd656c770c17587 native
     -DCMAKE_CXX_STANDARD=17
     -DCMAKE_CXX_STANDARD_REQUIRED=ON
     -DLLVM_ENABLE_ASSERTIONS=OFF
+    -DLLVM_ENABLE_RUNTIMES="compiler-rt;libcxx;libcxxabi;libunwind"
     -DLLVM_ENABLE_PROJECTS='clang;lld;lldb'
-    -DLLVM_ENABLE_RUNTIMES=''
     { '-DCLANG_CONFIG_FILE_SYSTEM_DIR=/etc/clang'   if lin else '' }
     { '-DCLANG_DEFAULT_CXX_STDLIB=libstdc++'        if lin else '' }
     { '-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON'         if not win else '' }
@@ -32,9 +32,12 @@ import: LLVM:llvm-project/bd7db754895ed3b51388ec549cd656c770c17587 as runtimes
     -DCMAKE_C_COMPILER=$NATIVE/bin/clang
     -DCMAKE_CXX_COMPILER=$NATIVE/bin/clang++
     -DCMAKE_CXX_FLAGS="-fexceptions -funwind-tables -Wno-unused-command-line-argument"
+    -DLIBCXX_HAS_NO_STDLIB=ON
     -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld"
     -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld"
-    -DLLVM_ENABLE_RUNTIMES="compler-rt;libcxx;libcxxabi;libunwind"
+    -DLLVM_ENABLE_RUNTIMES="compiler-rt;libcxx;libcxxabi;libunwind"
+    -DCLANG_DEFAULT_CXX_STDLIB=libstdc++
+    -DCMAKE_CXX_STANDARD_LIBRARY=libstdc++
     -DLIBUNWIND_ENABLE_SHARED=OFF
     -DLIBUNWIND_ENABLE_STATIC=ON
     -DCMAKE_LINKER="$NATIVE/bin/ld.lld"

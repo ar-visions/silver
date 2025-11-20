@@ -180,10 +180,17 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
     # generally, software producers throw in MSVC-style command-line switches for cl compiler, and generally do NOT test against clang-cl
     # to this end, we need to go with the compiler its designed for first
     # on linux/mac though, we can attempt our own clang as its preferrable to go with our version we built
+    # --- however ---
+    # this is not ideal, to change compilation on dependencies based on presence of our clang, or not
+    # for determinism import needs a switch for which compiler to use
     if SDK == 'native' and not '-DCMAKE_C_COMPILER=' in cmake_args:
         cc         = 'cl' if win else 'clang'
         cpp        = 'cl' if win else 'clang++'
         idir       = ''   if win else install_dir + s + 'bin' + s
+        if not win and not (Path(idir) / cc).exists():
+            idir = ''
+            cc   = 'gcc'
+            cpp  = 'g++'
         clang      = f'{idir}{cc}{ext}'
         clangpp    = f'{idir}{cpp}{ext}'
         cmake_args = f'-DCMAKE_C_COMPILER="{clang}" -DCMAKE_CXX_COMPILER="{clangpp}" ' + cmake_args
