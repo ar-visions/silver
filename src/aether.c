@@ -689,6 +689,19 @@ void aether_e_print_node(aether e, enode n) {
         array_of(e_operand(e, string(fmt), null, null), n, null));
 }
 
+emember model_find_member(model mdl, string n, Au_t mdl_type_filter) {
+    aether e = mdl->mod;
+    while (mdl) {
+        if (mdl->members) {
+            emember m = get(mdl->members, n);
+            if (m && (!mdl_type_filter || isa(m->mdl) == mdl_type_filter))
+                return m;
+        }
+        mdl = mdl->parent;
+    }
+    return null;
+}
+
 string model_cast_string(model mdl) {
     return mdl->mem ? mdl->mem->name : null;
 }
@@ -1089,7 +1102,7 @@ void aether_finalize_init(aether e, fn f) {
             if (parent && parent->is_abstract)
                 parent = parent->src;
             enode parent_type = e_typeid(e, parent);
-            emember m_parent_type = member_lookup(target, string("parent_type"));
+            enode m_parent_type = access(target, string("parent_type"));
             e_assign(e, m_parent_type, parent_type, OPType__assign);
         }
 
@@ -1301,7 +1314,65 @@ void record_init(record rec) {
     }
 }
 
-emember enode_member_lookup(enode mem, string name) {
+
+
+enode enode_access_guard(enode mem, string alpha) {
+    aether e = mem->mod;
+
+    // 2. Prepare code blocks
+    code then_code  = code(mod, e, label, "guard.then");   // normal .member
+    code else_code  = code(mod, e, label, "guard.else");   // null return
+    code merge_code = code(mod, e, label, "guard.merge");
+
+    // 3. Emit conditional branch
+    // IF base == null → jump to else_block
+    // ELSE → jump to then_block
+    e_cmp_code(e, mem, comparison_equals, e_null(e, mem->mdl), else_code, then_code);
+
+    // --------------------------
+    // THEN BLOCK (non-null)
+    // --------------------------
+    seek_end(then_code);
+
+    // Evaluate normal .member here
+    enode result_then = access(mem, alpha);
+    result_then = e_load(e, result_then, NULL);
+    //result_then = parse_member_expr(e, result_then);
+
+    // Save the result so we can feed it to PHI later
+    LLVMValueRef then_val  = result_then->value;
+    LLVMTypeRef  then_type = result_then->mdl->type;
+
+    // After finishing then block, jump to merge
+    e_branch(e, merge_code);
+
+    // --------------------------
+    // ELSE BLOCK (null case)
+    // --------------------------
+    seek_end(else_code);
+
+    // Produce the null-version of the member type
+    LLVMValueRef null_val = LLVMConstNull(then_type);
+
+    // Jump to merge block
+    e_branch(e, merge_code);
+
+    // --------------------------
+    // MERGE BLOCK
+    // --------------------------
+    seek_end(merge_code);
+
+    // Build PHI node for final value
+    LLVMValueRef phi = LLVMBuildPhi(e->builder, result_then->mdl->type, "guardphi");
+
+    LLVMAddIncoming(phi, &then_val,  &then_code->block, 1);
+    LLVMAddIncoming(phi, &null_val,  &else_code->block, 1);
+
+    return enode(mod, e, value, phi, mdl, result_then->mdl);
+}
+
+
+enode enode_access(enode mem, string name) {
     aether  e   = mem->mod;
     i64  index = 0;
     bool is_ptr = isa(mem) == typeid(emember) ? 
@@ -1331,14 +1402,14 @@ emember enode_member_lookup(enode mem, string name) {
                     );
 
                     /// by pass automatic allocation of this emember, as we are assigning to StructGEP from its container
-                    emember  res = emember(mod, e, name, name, mdl, null);
+                    enode res = enode(mod, e, name, name, mdl, null);
                     fn f = instanceof(schema->mdl, typeid(fn));
-                    res->mdl    = (f && !e->in_ref) ? (model)f : pointer(schema->mdl);
+                    res->mdl = (f && !e->in_ref) ? (model)f : pointer(schema->mdl);
                     static int count = 0;
                     res->value  = f ? f->value : LLVMBuildStructGEP2(
                             e->builder, typed(base)->type, actual_ptr, index, fmt("resolve%i", ++count)->chars); // GPT: mem->value is effectively the ptr value on the stack
-                    if (f)
-                        res->is_func = true;
+                    //if (f)
+                    //    res->is_func = true;
                     
                     return res;
                 }
@@ -1446,7 +1517,7 @@ enode aether_e_typeid(aether e, model mdl) {
     LLVMValueRef g = i_member->value;
     verify(g, "expected info global instance for type %o", name);
 
-    emember type_member = member_lookup((enode)i_member, string("type"));
+    enode type_member = access((enode)i_member, string("type"));
     type_member->mdl->is_typeid = true;
     verify(type_member, "expected info global instance for type %o", name);
     return type_member;
@@ -1765,8 +1836,8 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
     Class        cmdl         = mdl->src ? instanceof(mdl->src, typeid(Class)) : null;
     structure    smdl         = instanceof(mdl, typeid(structure));
     Class        Au_type      = emodel("Au");
-    fn           f_alloc      = aether_find_member(e, string("alloc_new"), Au_type, null)->mdl;
-    fn           f_initialize = aether_find_member(e, string("initialize"), Au_type, null)->mdl;
+    fn           f_alloc      = find_member((model)Au_type, string("alloc_new"), null)->mdl;
+    fn           f_initialize = find_member((model)Au_type, string("initialize"), null)->mdl;
     enode        res;
     Au_t         mdl_src      = isa(mdl->src);
 
@@ -1806,11 +1877,11 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
         if (imap) {
             
             pairs(imap, i) {
-                emember m = aether_find_member(e, i->key, mdl, null);
+                emember m = find_member(mdl, i->key, null);
                 verify(m, "prop %o not found in %o", i->key, mdl);
                 verify(isa(m) != typeid(fn), "%o (fn) cannot be initialized", i->key);
                 enode   i_value = e_operand(e, i->value, m->mdl, m->meta);
-                emember i_prop  = member_lookup((emember)res, i->key);
+                emember i_prop  = access(res, i->key);
                 e_assign(e, i_prop, i_value, OPType__assign);
             }
 
@@ -1851,8 +1922,8 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
                     LLVMSetInitializer(glob, const_arr);
                     const_array = enode(mod, e, mdl, ptr, meta, null, value, glob);
                 }
-                emember     prop_alloc     = member_lookup(res, string("alloc"));
-                emember     prop_unmanaged = member_lookup(res, string("unmanaged"));
+                enode prop_alloc     = access(res, string("alloc"));
+                enode prop_unmanaged = access(res, string("unmanaged"));
                 e_assign(e, prop_alloc, n, OPType__assign);
                 if (const_array) {
                     enode tru = e_operand(e, _bool(ln), emodel("bool"), null);
@@ -1860,10 +1931,10 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
                 }     
                 e_fn_call(e, f_initialize, null, a(res));
                 if (const_array) {
-                    fn f_push_vdata = aether_find_member(e, string("push_vdata"), mdl, null)->mdl;
+                    fn f_push_vdata = find_member( mdl, string("push_vdata"), null)->mdl;
                     e_fn_call(e, f_push_vdata, res, a(const_array, n));
                 } else {
-                    fn f_push = aether_find_member(e, string("push"), mdl, null)->mdl;
+                    fn f_push = find_member(mdl, string("push"), null)->mdl;
                     for (int i = 0; i < ln; i++) {
                         Au      aa = a->elements[i];
                         enode   n = e_operand(e, aa, mdl->src, null);
@@ -1916,7 +1987,7 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
                 pairs(imap, i) {
                     string  k = i->key;
                     Au_t   t = isa(i->value);
-                    emember m = aether_find_member(e, i->key, rmdl, null);
+                    emember m = find_member(rmdl, i->key, null);
                     i32 index = m->index;
 
                     enode value = e_operand(e, i->value, m->mdl, m->meta);
@@ -1984,7 +2055,7 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
                     string  k = i->key;
                     Au_t t = isa(i->value);
                     //print("%o -> %o", k, i->value ? (cstr)isa(i->value)->name : "null");
-                    emember m = aether_find_member(e, i->key, mdl, null);
+                    emember m = find_member(mdl, i->key, null);
                     verify(m, "prop %o not found in %o", mdl, i->key);
                     verify(isa(m) != typeid(fn), "%o (fn) cannot be initialized", i->key);
                     enode i_value = e_operand(e, i->value, m->mdl, m->meta)  ; // for handle with a value of 0, it must create a e_null
@@ -2778,17 +2849,6 @@ enode aether_e_assign(aether e, enode L, Au R, OPType op) {
     return res;
 }
 
-emember aether_find_member(aether e, string n, record rec, Au_t mdl_type_filter) {
-    while (rec) {
-        if (rec->members) {
-            emember m = get(rec->members, n);
-            if (m && (!mdl_type_filter || isa(m->mdl) == mdl_type_filter))
-                return m;
-        }
-        rec = rec->parent;
-    }
-    return null;
-}
 
 // look up a emember in lexical scope
 // this applies to models too, because they have membership as a type entry
@@ -2902,7 +2962,7 @@ none emember_release(emember mem) {
 
     // Free block: Add logic to free the memory
     LLVMPositionBuilderAtEnd(e->builder, free_block);
-    fn f_dealloc = aether_find_member(e, string("dealloc"), mem->mdl, null)->mdl;
+    fn f_dealloc = find_member(mem->mdl, string("dealloc"), null)->mdl;
     if (f_dealloc) {
         e_fn_call(e, f_dealloc, mem, a());
     }
@@ -4468,7 +4528,7 @@ enode aether_e_cmp(aether e, enode L, enode R) {
             L = R;
             R = t;
         }
-        fn eq = aether_find_member(e, string("compare"), L->mdl, typeid(fn));
+        fn eq = find_member(L->mdl, string("compare"), typeid(fn));
         if (eq) {
             verify(eq->rtype == emodel("i32"), "compare function must return i32, found %o", eq->rtype);
             // check if R is compatible with argument
@@ -4647,7 +4707,7 @@ enode aether_e_eq(aether e, enode L, enode R) {
             L = R;
             R = t;
         }
-        fn eq = aether_find_member(e, string("eq"), L->mdl, typeid(fn));
+        fn eq = find_member(L->mdl, string("eq"), typeid(fn));
         if (eq) {
             // check if R is compatible with argument
             // if users want to allow different data types, we need to make the argument more generic
@@ -4944,60 +5004,6 @@ enode aether_e_div(aether e, Au L, Au R) { return e_op(e, OPType__div, string("d
 enode aether_value_default(aether e, Au L, Au R) { return e_op(e, OPType__value_default, string("value_default"), L, R); }
 enode aether_cond_value   (aether e, Au L, Au R) { return e_op(e, OPType__cond_value,    string("cond_value"), L, R); }
 
-emember emember_guard_lookup_load(emember mem, string alpha) {
-    aether e = mem->mod;
-
-    // 2. Prepare code blocks
-    code then_code  = code(mod, e, label, "guard.then");   // normal .member
-    code else_code  = code(mod, e, label, "guard.else");   // null return
-    code merge_code = code(mod, e, label, "guard.merge");
-
-    // 3. Emit conditional branch
-    // IF base == null → jump to else_block
-    // ELSE → jump to then_block
-    e_cmp_code(e, mem, comparison_equals, e_null(e, mem->mdl), else_code, then_code);
-
-    // --------------------------
-    // THEN BLOCK (non-null)
-    // --------------------------
-    seek_end(then_code);
-
-    // Evaluate normal .member here
-    enode result_then = member_lookup(mem, alpha);
-    result_then = e_load(e, result_then, NULL);
-    //result_then = parse_member_expr(e, result_then);
-
-    // Save the result so we can feed it to PHI later
-    LLVMValueRef then_val  = result_then->value;
-    LLVMTypeRef  then_type = result_then->mdl->type;
-
-    // After finishing then block, jump to merge
-    e_branch(e, merge_code);
-
-    // --------------------------
-    // ELSE BLOCK (null case)
-    // --------------------------
-    seek_end(else_code);
-
-    // Produce the null-version of the member type
-    LLVMValueRef null_val = LLVMConstNull(then_type);
-
-    // Jump to merge block
-    e_branch(e, merge_code);
-
-    // --------------------------
-    // MERGE BLOCK
-    // --------------------------
-    seek_end(merge_code);
-
-    // Build PHI node for final value
-    LLVMValueRef phi = LLVMBuildPhi(e->builder, result_then->mdl->type, "guardphi");
-
-    LLVMAddIncoming(phi, &then_val,  &then_code->block, 1);
-    LLVMAddIncoming(phi, &null_val,  &else_code->block, 1);
-
-    return emember(mod, e, value, phi, mdl, result_then->mdl);
-}
 
 enode aether_e_inherits(aether e, enode L, Au R) {
     e->is_const = false;
@@ -5598,7 +5604,9 @@ void emember_finalize(emember mem) {
 model aether_top(aether e) {
     for (int i = len(e->lex) - 1; i >= 0; i--) {
         model mdl = e->lex->elements[i];
-        if (!is_record(mdl) && !mdl->open) continue;
+        if (!is_record (mdl) && 
+            !instanceof(mdl, typeid(statements)) && 
+            !instanceof(mdl, typeid(eargs)) && !mdl->open) continue;
         return mdl;
     }
     return e;

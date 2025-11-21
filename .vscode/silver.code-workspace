@@ -79,7 +79,12 @@
       "silver": "c",
       "au": "c",
       "trinity": "c",
-      "format": "c"
+      "format": "c",
+      "semaphore": "c",
+      "shared_mutex": "c",
+      "expected": "c",
+      "memory_resource": "c",
+      "stop_token": "c"
     }
   }
 }

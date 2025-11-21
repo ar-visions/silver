@@ -268,7 +268,7 @@ void build_record(silver mod, model mrec) {
         push(mod, mrec);
 
         // if no init, create one
-        m_init = member_lookup(rec, string("init"), typeid(fn));
+        m_init = find_member(rec, string("init"), typeid(fn));
         if (!m_init) {
             fn f_init = fn(mod, mod,
                 extern_name, f(string, "%s_init", rec),
@@ -796,16 +796,16 @@ enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array
     bool      is_cast   = kw && eq(kw, "cast");
     bool      is_fn     = kw && eq(kw, "fn");
     record    rec_ctx   = null;
-    record    rec_top   = !mod->cmode ? is_record(top(mod)) : null;
+    model     top       = top(mod);
+    record    rec_top   = !mod->cmode ? is_record(top) : null;
     fn        f         = null;
-    eargs     args      = null;
-    silver    module    = !mod->cmode && (top(mod)->is_global) ? mod : null;
+    eargs     args      = !mod->cmode ? instanceof(top, typeid(eargs)) : null;
+    silver    module    = !mod->cmode && (top->is_global) ? mod : null;
     emember   mem       = null;
     AFlag     mtype     = (is_fn && !is_static) ? AU_FLAG_IMETHOD : (!is_static && is_cast) ? AU_FLAG_CAST : AU_FLAG_SMETHOD;
 
     if (!mod->cmode) {
         context(mod, &rec_ctx, &f, typeid(fn));
-        context(mod, null, &args, typeid(eargs));
     }
 
     if (is_expr0 && !mod->cmode && (module || rec_ctx) && peek_def(mod)) {
@@ -1021,8 +1021,11 @@ enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array
                 validate(f, "expected function");
                 if (f->target) {
                     validate(f->target, "no target found in context");
-                    mem = member_lookup(f->target, alpha);
+                    emember mem2 = lookup2(mod, alpha, null);
                     validate(mem, "failed to resolve emember in context: %o", f);
+
+                    mem = access(f->target, alpha);
+                    validate(mem, "failed to lookup emember in context: %o", f->target);
                 }
             }
 
@@ -1040,16 +1043,17 @@ enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array
                     validate(mem->mdl, "cannot resolve from new emember %o", mem->name);
                     string alpha = read_alpha(mod);
                     validate(alpha, "expected alpha identifier");
-                    mem = member_lookup(mem, alpha);
+                    model mdl = mem->mdl;
+                    mem = access(mem, alpha);
                     mem = e_load(mod, mem, null);
                     mem = parse_member_expr(mod, mem);
-                } else {
+                }/* else {
                     // make pointers safe again
                     consume(mod);
                     string alpha = read_alpha(mod);
                     validate(alpha, "expected member name after ->");
-                    mem = guard_lookup_load(mem, alpha);
-                }
+                    mem = access_guarded(mem, alpha);
+                }*/
             }
         }
 
@@ -1205,8 +1209,8 @@ void silver_build_initializer(silver mod, emember mem) {
         }
 
         fn ctx = context_model(mod, typeid(fn));
-        emember L = (!mem->is_module && ctx) ? 
-            member_lookup(ctx->target, mem->name) : mem;
+        enode L = (!mem->is_module && ctx) ? 
+            access(ctx->target, mem->name) : (enode)mem;
         
         e_assign(mod, L, expr, OPType__assign);
         

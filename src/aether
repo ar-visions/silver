@@ -107,13 +107,13 @@ forward(structure)
     i_prop    (X,Y, public,     structure,        schema_type) \
     i_method  (X,Y, public,     array,            class_list,    model, bool) \
     i_method  (X,Y, public,     array,            field_list,    model, bool) \
-    i_method  (X,Y, public,     emember,          member_lookup, string, Au_t) \
     i_method  (X,Y, public,     model,            typed) \
     s_method  (X,Y, public,     string,           keyword) \
     i_method  (X,Y, public,     model,            pointer) \
     i_method  (X,Y, public,     emember,          convertible,   model) \
     i_method  (X,Y, public,     emember,          castable,      model) \
     i_method  (X,Y, public,     emember,          constructable, model) \
+    i_method  (X,Y, public,     emember,          find_member,   string, Au_t) \
     i_override(X,Y, cast,       string) \
     i_override(X,Y, method,     init)
 declare_class(model)
@@ -265,7 +265,8 @@ forward(emember)
     i_prop    (X,Y, public,     bool,                   loaded) \
     i_prop    (X,Y, public,     array,                  expressions) \
     i_prop    (X,Y, intern,     LLVMValueRef,           value, as, ARef) \
-    i_method  (X,Y, public,     emember,  member_lookup, string)
+    i_method  (X,Y, public,     enode, access, string) \
+    i_method  (X,Y, public,     enode, access_guard, string)
 declare_class(enode)
 
 
@@ -302,7 +303,6 @@ declare_class(enode)
     i_method  (X,Y, public,     none,    release) \
     i_method  (X,Y, public,     bool,    has_value) \
     i_method  (X,Y, public,     none,    set_value,     Au) \
-    i_method  (X,Y, public,     emember,  guard_lookup_load, string) \
     i_override(X,Y, method,     init)
 declare_class_2(emember, enode)
 
@@ -437,7 +437,6 @@ declare_class_2(static_array, array)
     i_method  (X,Y, public,     enode,       e_is,               enode,      Au) \
     i_method  (X,Y, public,     enode,       e_inherits,         enode,      Au) \
     i_method  (X,Y, public,     emember,     lookup2,            Au,          Au_t) \
-    i_method  (X,Y, public,     emember,     find_member,        string,     record, Au_t) \
     i_method  (X,Y, public,     model,       context_model,      Au_t) \
     i_method  (X,Y, public,     path,        include,            Au, ARef) \
     i_method  (X,Y, public,     none,        llflag,             symbol,     i32) \
