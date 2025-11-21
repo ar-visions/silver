@@ -257,7 +257,7 @@ forward(emember)
     i_prop    (X,Y, public,     token,                  name) \
     i_prop    (X,Y, public,     aether,                 mod) \
     i_prop    (X,Y, required,   model,                  mdl) \
-    i_prop    (X,Y, required,   array,                  meta) \
+    i_prop    (X,Y, public,     array,                  meta) \
     i_prop    (X,Y, public,     bool,                   explicit_ref) \
     i_prop    (X,Y, public,     Au,                     literal) \
     i_prop    (X,Y, public,     num,                    line) \
