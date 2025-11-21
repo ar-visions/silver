@@ -19,22 +19,23 @@ linux ?? import [ https://gitlab.freedesktop.org/wayland/wayland-protocols 810f1
 
 import <vulkan/vulkan.h> [ https://github.com/KhronosGroup/Vulkan-Headers main ]
 
-import [ https://github.com/KhronosGroup/Vulkan-Tools main ]
+# short-hand for git -- i think this is a good basis for 'web4' data
+# its git provided, so it costs little to host, and we have our identities as url basis. with project/version, what else could democratize user provided media better in open?
+
+import [ KhronosGroup:Vulkan-Tools/main ]
 	-DVULKAN_HEADERS_INSTALL_DIR={install}
 	{linux ?? -DWAYLAND_PROTOCOLS_DIR={install}/checkout/wayland-protocols}
 
+# = means constant, it cannot be changed by the importer or ourselves, at any member level.
 version = '22'
-
-# no one can override these, but :'s can be when importing; this can change what gets imported, how its built, etc.
-# this demonstrates language control over more than is typical from a module interface
-# silver is a build language first, and one that treats git as first class
 
 class Vulkan
     intern instance : VkInstance
     public a-member : i32
     public major    : i32
     public minor    : i32
-    
+    context string  : shared
+
     fn init[]
         result : vkCreateInstance [
             [
@@ -69,7 +70,7 @@ main test_vulkan
     intern  an_intern_member   : i64[ 4 ]
     context an-instance        : Vulkan
     intern  window             : Window
-
+    public  shared             : 'a-string'
     fn init[]
         an-instance : Vulkan[ major: 1  minor: 1 ]
         window      : Window[ dimensions: [ 444 888 ] ]
@@ -95,7 +96,7 @@ As a language, **silver** is fewer moving syntactic parts (no direct requirement
 # **Au** foundation
 Au is the foundation model of **silver**'s compiler and component system. It provides compatibility and reflection capabilities that enable dynamic behavior and runtime type inspection. With Au, you can write classes in C and seamlessly use them in **silver**, similar to Python's extension protocol. Au makes **silver** adaptable and extensible, integrating deeply with both the language and its C interoperability features.
 
-see: [Au project](https://github.com/ar-visions/Au)
+see: [Au project](https://github.com/ar-visions/silver/blob/master/src/Au)
 
 ```python
 import <dawn/webgpu, dawn/dawn_proc_table> [https://github.com/ar-visions/dawn 2e9297c45]
@@ -109,35 +110,36 @@ import <dawn/webgpu, dawn/dawn_proc_table> [https://github.com/ar-visions/dawn 2
 # public members can be reflected by map: members [ object ]
 ##
 
+import a-silver-module [ a-non-const: enum-from-module ]
+
+
+
 string op + [ i:int, a:string ] -> string
     return '{ a } and { i }'
 
 # context is used when the function is called; as such, the user should have these variables themselves
 # this reduces the payload on lambdas to zero, at expense of keeping membership explicit
-fn some-callback[ i:int, context ctx:Vulkan ] -> int
+fn some-callback[ i:int, context ctx:Vulkan ] int
     print[ '{ctx}: {i}' ]
     return i + ctx.a-member
 
-# methods can exist at module-level, too.
-# for this, we may incorporate generic, 'this' is applicable to any object
-generic[ second:int ] -> string
-    return '{typeof[ this ]} generic, with arg {second}'
+# methods can exist at module-level, or record.
 
 nice: some-callback[ 'a-nice-callback' ]
 
-fn a-function [ string a ] -> string
+fn a-function [ a:string ] string
     i : 2 + sz[ a ]
     r : nice[ i ]
     print[ 'called-with: %s. returning: { r }'  a ]
     return r
 
-fn a-function [ string a ] -> int [2 + sz[ a ]]
+fn a-function [ a:string ] int [2 + sz[ a ]]
 
 class app
     public value     : short 1
     intern something : 2 # default is int
 
-    mk-string [ from: int ] -> 'a string with { from }'
+    mk-string [ from: int ] -> 'a string with { from } .. our -> guard indicates a default instance, same as member->access .. using -> effectively defaults null member allocation in cases where you want to be lazy.  this way we make pointers great again'
 
     cast int
         my-func  = ref run
@@ -150,11 +152,11 @@ class app
         return 1
 
 fn module-name[ a:app ] -> int
-    is-const : int[ a ] # : denotes constant assignment, this calls the cast above
-    val = is-const      # = assignment [mutable]
+    is-const : int[ a ]  # : denotes constant assignment, this calls the cast above
+    val  = is-const      # = assignment [mutable]
     val += 1
     print[ 'using app with value: { is-const } + { val - is-const }' ]
-    return [run[a, string[val]] > 0] ? 1 : 0
+    return [ run[a, string[val]] > 0 ] ? 1 : 0
 
 ```
 
