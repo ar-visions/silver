@@ -1019,13 +1019,18 @@ enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array
             // but this is an expression within a function
             if (!rec_top && !mem->is_func && !is_macro && !has_value(mem)) { // if mem from_record_in_context
                 validate(f, "expected function");
-                if (f->target) {
+                emember lex = lookup2(mod, alpha, null);
+                if (lex && isa(lex->mdl) == typeid(fn)) {
+                    mem = lex;
+                } else if (f->target && lex) {
                     validate(f->target, "no target found in context");
-                    emember mem2 = lookup2(mod, alpha, null);
+                    
                     validate(mem, "failed to resolve emember in context: %o", f);
 
                     mem = access(f->target, alpha);
                     validate(mem, "failed to lookup emember in context: %o", f->target);
+                } else {
+                    fault("failed to resolve %o in context", alpha);
                 }
             }
 
