@@ -461,7 +461,7 @@ string scan_map(map m, string source, int index) {
     return last_match;
 }
 
-array parse_tokens(silver mod, Au input) {
+array parse_tokens(silver mod, Au input, array output) {
     string input_string;
     Au_t  type = isa(input);
     path    src = null;
@@ -491,7 +491,9 @@ array parse_tokens(silver mod, Au input) {
         set(mapping, sym, sym);
     }
 
-    array   tokens          = array(128);
+    array   tokens          = output;
+    verify(tokens, "no output set");
+
     num     line_num        = 1;
     num     length          = len(input_string);
     num     index           = 0;
@@ -1011,6 +1013,7 @@ enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array
                 mod,        mod,
                 access,     access,
                 name,       alpha,
+                is_static,  is_static,
                 is_module,  module);
         } else if (!mem->is_type || instanceof(mem->mdl, typeid(macro)) || instanceof(mem->mdl, typeid(fn))) {
             bool is_macro = instanceof(mem->mdl, typeid(macro)) != null;
@@ -2071,9 +2074,8 @@ emember silver_read_def(silver mod) {
     model  is_class  = !is_type ? next_is_class(mod, false) : null;
     bool   is_struct = next_is(mod, "struct");
     bool   is_enum   = next_is(mod, "enum");
-    bool   is_alias  = next_is(mod, "alias");
 
-    if (!is_type && !is_class && !is_struct && !is_enum && !is_alias)
+    if (!is_type && !is_class && !is_struct && !is_enum)
         return null;
 
     if (is_type) {
@@ -2181,11 +2183,7 @@ emember silver_read_def(silver mod) {
         pop(mod);
         pop_state(mod, false);
     } else {
-        validate(is_alias, "unknown error");
-        mdl  = read_named_model(mod);
-        validate(is_alias, "expected model for alias, found %o", peek(mod));
-        mdl  = model(mod, mod, src, mdl); // todo: support meta too
-        //meta = read_meta(mod);
+        fault("unknown error");
     }
 
     validate(mdl && len(n),
@@ -2419,12 +2417,6 @@ string func_ptr(emember emem) {
     return f(string, "%o (*%o)(%o);", func->rtype, func, args);
 }
 
-string method_def(emember emem) {
-    return f(string,
-        "#define %o(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->%o(_i_, ## __VA_ARGS__); }})",
-            emem->name);
-}
-
 static void process_forward(map forwards, model mdl, FILE* f) {
     aether e = mdl->mod;
     Class is_cl = mdl->src ?
@@ -2483,7 +2475,157 @@ static string to_cmodel(model mdl) {
 }
 
 // rather than include Au header, its best to reproduce its exact structure without macros
+// [x] false! lol.. this is just far too much to reproduce and, i dont see how we gain here
+// its more 'modular' to generate headers in our install so that ALL USERS of it get updates, rather than have them rebuild
+
+static string uccase(string s) {
+    string u = ucase(s);
+    do {
+        int i = index_of(u, "-");
+        if (i == -1) break;
+        ((cstr)u->chars)[i] = '_';
+    } while (1);
+    return u;
+}
+
+static string cname(string s) {
+    string u = copy(s);
+    do {
+        int i = index_of(u, "-");
+        if (i == -1) break;
+        ((cstr)u->chars)[i] = '_';
+    } while (1);
+    return u;
+}
+
+string method_def(emember emem) {
+    return f(string,
+        "#define %o(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->%o(_i_, ## __VA_ARGS__); }})",
+            cname(emem->name));
+}
+
 static void write_header(silver mod) {
+    string m           = stem(mod->source);
+    path   inc_path    = f(path, "%o/include",    mod->install);
+    path   module_dir  = f(path, "%o/%o",         inc_path, m); 
+    path   module_path = f(path, "%o/%o/%o",      inc_path, m, m);
+    path   intern_path = f(path, "%o/%o/intern",  inc_path, m);
+    path   public_path = f(path, "%o/%o/public",  inc_path, m);
+    path   method_path = f(path, "%o/%o/methods", inc_path, m); // lets store in the install path
+    string NAME        = uccase(mod->mem->name);
+
+    verify(make_dir(module_dir), "could not make dir %o", module_dir);
+
+    // we still need to parse aliases where we subclass
+    // LA
+    /*
+    for external uses
+    f.write(f"#ifndef {class_name}_intern\n")
+    f.write(f"#define {class_name}_intern(AA,YY,...) AA##_schema(AA,YY##_EXTERN, __VA_ARGS__)\n")
+    f.write(f"#endif\n")
+    */
+    FILE* module_f = fopen(cstring(module_path), "wb");
+    FILE* intern_f = fopen(cstring(intern_path), "wb");
+    FILE* public_f = fopen(cstring(public_path), "wb");
+    FILE* method_f = fopen(cstring(method_path), "wb");
+
+    // write intern header
+    fputs(fmt("#ifndef _%o_INTERN_\n", NAME)->chars, intern_f);
+    fputs(fmt("#define _%o_INTERN_\n", NAME)->chars, intern_f);
+    pairs (mod->userspace->members, i) {
+        emember m = i->value;
+        if (m->mdl->src && instanceof(m->mdl->src, typeid(Class))) {
+            string n = cname(m->name);
+            fputs(fmt("#undef %o_intern\n", n)->chars, intern_f);
+            fputs(fmt("#define %o_intern(AA,YY,...) AA##_schema(AA,YY, __VA_ARGS__)\n", n)->chars, intern_f);
+        }
+    }
+    fputs(fmt("#endif\n")->chars, intern_f);
+
+    // write public header
+    fputs(fmt("#ifndef _%o_PUBLIC_\n", NAME)->chars, public_f);
+    fputs(fmt("#define _%o_PUBLIC_\n", NAME)->chars, public_f);
+    pairs (mod->userspace->members, i) {
+        emember m = i->value;
+        if (m->mdl->src && instanceof(m->mdl->src, typeid(Class))) {
+            string n = cname(m->name);
+            fputs(fmt("#ifndef %o_intern\n", n)->chars, public_f);
+            fputs(fmt("#define %o_intern(AA,YY,...) AA##_schema(AA,YY##_EXTERN, __VA_ARGS__)\n", n)->chars, public_f);
+            fputs(fmt("#endif\n")->chars, public_f);
+        }
+    }
+    fputs(fmt("#endif\n")->chars, public_f);
+
+    fputs(fmt("#ifndef _%o_\n", NAME)->chars, module_f);
+    fputs(fmt("#define _%o_\n", NAME)->chars, module_f);
+
+    // forward declare all classes
+    pairs (mod->userspace->members, i) {
+        emember m = i->value;
+        if (m->mdl->src && instanceof(m->mdl->src, typeid(Class)))
+            fputs(fmt("forward(%o)\n", cname(m->name))->chars, module_f);
+    }
+
+    // write class schemas
+    pairs (mod->userspace->members, i) {
+        emember m = i->value;
+        if (m->mdl->src && instanceof(m->mdl->src, typeid(Class))) {
+            string n     = cname(m->name);
+            array  acl   = class_list(m->mdl, emodel("Au"), true);
+            fputs(fmt("#define %o_schema(A,B,...)\\\n", cname(m->name))->chars, module_f);
+            pairs(m->mdl->members, ii) {
+                emember  mi = ii->value;
+                fn        f = isa(mi->mdl) == typeid(fn) ? mi->mdl : null;
+                string   mn = cname(mi->name);
+                if (f) {
+                    string args = string();
+                    pairs (f->args->members, arg) {
+                        emember a = arg->value;
+                        if (len(args)) append(args, ", ");
+                        concat(args, cname(cast(string, a->mdl)));
+                    }
+                    string i     = f->instance ? string("i") : string("s");
+                    string rtype = cname(cast(string, f->rtype));
+                    fputs(fmt("M(A,B, %o,method,%o)\\\n", i, rtype, mn, args)->chars, module_f);
+                } else {
+                    string i     = !mi->is_static ? string("i") : string("s");
+                    bool has_meta = mi->meta && len(mi->meta);
+                    fputs(fmt("M(A,B, %o,prop,%o,%o%s%o)\\\n",
+                        i, cname(mi->mdl), mn,
+                        has_meta ? "," : "",
+                        has_meta ? (Au)mi->meta : (Au)string())->chars, module_f);
+                }
+                fputs(fmt("%o\n", method_def(mi))->chars, module_f);
+            }
+            int    count = len(acl);
+            string extra = string("");
+            if (count > 1) extra = fmt("_%i", count);
+            fputs(fmt("\ndeclare_class%o(%o)\n", extra, acl), module_f);
+        }
+    }
+    fputs(fmt("#endif\n")->chars, module_f);
+
+    // write methods
+    fputs(fmt("#ifndef _%o_METHODS_\n", NAME)->chars, public_f);
+    fputs(fmt("#define _%o_METHODS_\n", NAME)->chars, public_f);
+    pairs (mod->userspace->members, i) {
+        emember m = i->value;
+        if (m->mdl->src && instanceof(m->mdl->src, typeid(Class))) {
+            pairs(m->mdl->members, ii) {
+                emember mi = ii->value;
+                if (isa(mi->mdl) == typeid(fn))
+                    fputs(fmt("%o\n", method_def(mi))->chars, method_f);
+            }
+        }
+    }
+    fputs(fmt("#endif\n")->chars, method_f);
+
+    fclose(module_f);
+    fclose(intern_f);
+    fclose(public_f);
+}
+
+static void write_header2(silver mod) {
     return;
     
     string m   = stem(mod->source);
@@ -2789,7 +2931,8 @@ void silver_init(silver mod) {
             reinit_startup(mod);
         }
         retry = false;
-        mod->tokens  = parse_tokens(mod, mod->source);
+        mod->tokens  = tokens(
+            target, mod, parser, parse_tokens, input, mod->source);
         mod->stack   = array(4);
         mod->implements = array();
         

@@ -1324,6 +1324,28 @@ declare_class(mutex)
     i_override  (X,Y, method, init) \
     i_override  (X,Y, method, dealloc)
 declare_class(async)
+
+#define token_schema(X,Y,...) \
+    i_prop      (X,Y,  public,  path,       source) \
+    i_prop      (X,Y,  public,  num,        line) \
+    i_prop      (X,Y,  public,  num,        column) \
+    i_prop      (X,Y,  public,  num,        indent) \
+    i_prop      (X,Y,  public,  Au,          literal) \
+    i_prop      (X,Y,  public,  bool,      cmode) \
+    i_method    (X,Y,  public,  Au_t,      get_type) \
+    i_method    (X,Y,  public,  string,     location) \
+    i_override  (X,Y,  ctr,     cstr) \
+    i_override  (X,Y,  method,  init) \
+    i_override  (X,Y,  method,  copy)
+declare_class_2(token, string)
+
+#define tokens_schema(X,Y,...) \
+    i_prop      (X,Y,  required,  callback_extra, parser) \
+    i_prop      (X,Y,  required,  Au, target) \
+    i_prop      (X,Y,  required,  Au, input) \
+    i_override  (X,Y,  ctr,     cstr) \
+    i_override  (X,Y,  method,  init)
+declare_class_2(tokens, array)
  
 #define path_schema(X,Y,...) \
     i_method    (X,Y, public, bool,   exists) \
@@ -1341,7 +1363,6 @@ declare_class(async)
     i_method    (X,Y, public, none,   cd) \
     i_method    (X,Y, public, string, stem) \
     i_method    (X,Y, public, string, ext) \
-    i_override  (X,Y, method, eq) \
     i_method    (X,Y, public, string, mime) \
     i_method    (X,Y, public, string, base64) \
     i_method    (X,Y, public, string, filename) \
@@ -1360,12 +1381,14 @@ declare_class(async)
     s_method    (X,Y, public, path,   cwd) \
     s_method    (X,Y, public, path,   tempfile, symbol) \
     i_ctr       (X,Y, public, string) \
+    i_ctr       (X,Y, public, tokens) \
+    i_override  (X,Y, method,   hash) \
+    i_override  (X,Y, method,   init) \
+    i_override  (X,Y, method,   eq) \
     i_override  (X,Y, ctr,      symbol) \
     i_override  (X,Y, ctr,      cstr) \
     i_override  (X,Y, cast,     cstr) \
     i_override  (X,Y, cast,     sz) \
-    i_override  (X,Y, method,   hash) \
-    i_override  (X,Y, method,   init) \
     i_override  (X,Y, cast,     bool) \
     i_override  (X,Y, cast,     string)
 declare_class_2(path, string)

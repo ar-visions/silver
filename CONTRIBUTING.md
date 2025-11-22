@@ -6,7 +6,7 @@ Accepting people looking to commit open modeling to the public, to facilitate op
 ## Welcome to the silver project!
 
 We are building a highly reflective, reduced-token programming language, an associated build system (Au), a Vulkan-based 3D UX SDK (trinity), and the Orbiter IDE that integrates AI at design time.
-We welcome volunteers who are "madly reflective" and excited about systems programming, language design, and graphics development.
+The projects around silver welcome volunteers who are excited about systems programming, language design, and graphics development.
 Getting Started
 The project is hosted on github: ar-visions/silver.
 

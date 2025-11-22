@@ -141,7 +141,7 @@ string array_cast_string(array a) {
         Au e = (Au)a->elements[i];
         string s = cast(string, e);
         if (r->len)
-            append(r, " ");
+            append(r, ", ");
         append(r, s ? s->chars : "null");
     }
     return r;
@@ -5201,6 +5201,7 @@ Au typecast(Au_t type, Au a) {
     return null;
 }
 
+// ----------------------------------------
 none shape_dealloc(shape a) {
     if (!a->is_global)
         free(a->data);
@@ -5228,6 +5229,196 @@ none shape_init(shape a) {
         a->data = cp;
     }
 }
+
+
+// ----------------------------------------
+token token_with_cstr(token a, cstr s) {
+    a->chars = s;
+    a->len   = strlen(s);
+    return a;
+}
+
+token token_copy(token a) {
+    return token(chars, a->chars, line, a->line, column, a->column);
+}
+
+
+string read_string(cstr cs, bool is_const) {
+    int ln = strlen(cs);
+    string res = is_const ? (string)const_string(alloc, ln) : string(alloc, ln);
+    char*   cur = cs;
+    while (*cur) {
+        int inc = 1;
+        if (cur[0] == '\\') {
+            symbol app = null;
+            switch (cur[1]) {
+                case 'n':  app = "\n"; break;
+                case 't':  app = "\t"; break;
+                case 'r':  app = "\r"; break;
+                case '\\': app = "\\"; break;
+                case '\'': app = "\'"; break;
+                case '\"': app = "\""; break;
+                case '\f': app = "\f"; break;
+                case '\v': app = "\v"; break;
+                case '\a': app = "\a"; break;
+                default:   app = "?";  break;
+            }
+            inc = 2;
+            append(res, (cstr)app);
+        } else {
+            char app[2] = { cur[0], 0 };
+            append(res, (cstr)app);
+        }
+        cur += inc;
+    }
+    return res;
+}
+
+
+Au read_numeric(token a) {
+    cstr cs = (cstr)a->chars;
+    if (strcmp(cs, "true") == 0) {
+        bool v = true;
+        return primitive(typeid(bool), &v);
+    }
+    if (strcmp(cs, "false") == 0) {
+        bool v = false;
+        return primitive(typeid(bool), &v);
+    }
+    bool is_base16 = cs[0] == '0' && cs[1] == 'x'; //0xff_ff_ff_ff_ff_ff_ff_ffull
+    i32  is_unsigned = 0;
+    i32  is_long     = 0;
+    i64  ln          = strlen(cs);
+    i32  suffix      = 0;
+
+    for (int i = 0; i < 2; i++) {
+        int ii = ln - 1 - suffix;
+        if (ii >= 0 && tolower(cs[ii]) == 'l') {
+            is_long++;
+            suffix++;
+        }
+    }
+
+    int ii = ln - 1 - suffix;
+    if (ii >= 0 && tolower(cs[ii]) == 'u') {
+        is_unsigned++;
+        suffix++;
+    }
+
+    if (is_long == 0)
+        for (int i = 0; i < 2; i++) {
+            int ii = ln - 1 - suffix;
+            if (ii >= 0 && tolower(cs[ii]) == 'l') {
+                is_long++;
+                suffix++;
+            }
+        }
+    
+    bool has_dot = strstr(cs, ".") != 0;
+    i64  val = 0;
+    i32 digits = 0;
+    bool is_base10 = false;
+
+    if (is_base16) {
+        // not supporting the float format at the moment, like rust
+        if (ln <= 2 || ln > 28) return null;
+
+        i32 nlen = 0;
+        
+        for (int i = 0; i < ln - suffix; i++) {
+            i32 v = tolower(cs[i]);
+            if (v == '_') continue;
+            if (!((v >= 'a' && v <= 'f') || (v >= '0' && v <= '9')))
+                return null;
+            i32 n = (v >= 'a' && v <= 'f') ? (v - 'a' + 10) : (v - '0');
+            val = (val << 4) | (n & 0xF);
+            digits++;
+        }
+    } else if (!has_dot) {
+        is_base10 = true;
+        bool is_digit = cs[0] >= '0' && cs[0] <= '9';
+        if (!is_digit && !has_dot)
+            return null;
+        char* e = null;
+        val = is_unsigned ? strtoull(cs, &e, 10) : strtoll(cs, &e, 10);
+        digits = (sz)e - (sz)cs - (sz)(cs[0] == '-');
+    } else {
+        char* e = null;
+        f64 v = strtod(cs, &e);
+        return primitive(typeid(f64), &v);
+    }
+
+    if (is_unsigned) {
+        if (is_long == 0) {
+            return (!a->cmode || (!is_base10 && digits > 8) || (val > 0xffffffff)) ?
+                _u64((i64)val) : _u32((i32)val);
+        } else if (is_long == 1) {
+            return _u32((u32)val);
+        } else if (is_long == 2) {
+            return _u64((u64)val);
+        }
+    } else {
+        if (is_long == 0) {
+            return (!a->cmode || (!is_base10 && digits > 8) || (val > 0xffffffff)) ?
+                _i64((i64)val) : _i32((i32)val);
+        } else if (is_long == 1) {
+            return _i32((i32)val);
+        } else if (is_long == 2) {
+            return _i64((i64)val);
+        }
+    }
+    return null;
+}
+
+static callback_extra parser_ident;
+
+void tokens_init(tokens a) {
+    // lets not allow switching of parser functions for the time being
+    verify (!parser_ident || a->parser == parser_ident,
+        "invalid parser state");
+    
+    if (!parser_ident)
+         parser_ident = a->parser;
+
+    parser_ident(a->target, a->input, a);
+}
+
+// constructors have ability to return whatever data they want, and
+// when doing so, the buffer is kept around for the next user (max of +1)
+tokens tokens_with_cstr(tokens a) {
+
+}
+
+void token_init(token a) {
+    cstr prev = a->chars;
+    sz length = a->len ? a->len : strlen(prev);
+    a->chars  = (cstr)calloc((a->alloc ? a->alloc : length) + 1, 1);
+    a->len    = length;
+
+    memcpy(a->chars, prev, length);
+
+    if (a->chars[0] == '\"' || a->chars[0] == '\'') {
+        string crop = string(chars, &a->chars[1], ref_length, length - 2);
+        a->literal = read_string((cstr)crop->chars, a->chars[0] == '\"');
+    } else
+        a->literal = read_numeric(a);
+}
+
+string token_location(token a) {
+    string f = form(string, "%o:%i:%i", a->source, a->line, a->column);
+    return f;
+}
+
+Au_t token_get_type(token a) {
+    return a->literal ? isa(a->literal) : null;
+}
+
+Au_t token_is_bool(token a) {
+    string t = cast(string, a);
+    return (cmp(t, "true") || cmp(t, "false")) ?
+        (Au_t)typeid(bool) : null;
+}
+
 
 // this signals an application entry
 define_class(subscriber, Au)
@@ -5312,6 +5503,11 @@ define_class(ipart,   Au)
 define_class(command, string)
 
 define_class(shape, Au)
+
+define_class(token,  string)
+
+// this is defining tokens as array <token> .. the shape, is something the user gives (hard coded in Au)
+define_class(tokens, array, token)
 
 define_class(item, Au)
 //define_proto(collection) -- disabling for now during reduction to base + class + mod

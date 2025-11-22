@@ -1,3 +1,25 @@
+# import must come first, and exports are after -- last if you prefer, giving them members you may call at design-time
+import chatgpt
+    model:'gpt-5'
+
+# arrays have an optional comma, but required comma when defining an array shape (last-dim-stride)
+i = array <i32, 3x2> [ 1 2, 3 4, 2 2 ]
+m : array <path>     [ car1.spec car2.spec car3.spec ]
+
+# here we are demonstrating a design mode in silver, using available module data
+for i in m export images/{i} using chatgpt
+
+    gen ['with these cars, we generate picturesc scenes onn Europa, 
+     featuring plasma powered hovercraft floating on magnetic-plasma confinement 
+     field, as shaped offset from the track which may span quite distances and 
+     allow you to see under it, at the icey surface and glass under it.']
+    
+    secret: string ['can you believe you made these?']
+    secret += 'really, can you?'
+
+    if i == car3.spec
+        gen [images/car1.png, images/car1.png,
+            'do something great with this one, given inspiration from car1 and car2, {secret}']
 
 # return types must be type-expr based, 
 # we cannot take in a 'something' for example, 
@@ -14,7 +36,7 @@ main aclass
         str: string-together["an input string"]
 
         i:i32 [ 2 ]
-        switch [i]
+        switch [ i ]
             case 0: printf['case is 0']
             case 1: printf['case is 1']
             case 2: printf['case is 2']
@@ -29,8 +51,7 @@ main aclass
 ##
 import <stdio.h, ctype.h>
 
-import chatgpt
-    model:'gpt-5'
+
 
 import KhronosGroup:Vulkan-Headers/main
     <vulkan/vulkan.h>
@@ -51,7 +72,10 @@ struct a-struct2
     #array-of-data : array <i8, 32x1>
     str2 : string
 
-fn construct-something [ silly:string ] int [ silly.len ]
+something : string[ 'a string of sort..' ]
+
+fn construct-something [ silly:string ] int using chatgpt
+    'construct the silliest string you can come up with given the context'
 
 aa : i32[ 1 ]
 bb : i32[ 2 ]
@@ -59,7 +83,7 @@ cc : i32[ 3 ]
 ff : string[ string-together['hi'] ]
 
 fn a-function [ stupid:string ] none
-    printf[ 'something' ]
+    puts[ 'something {stupid}' ]
 
 class engine
     m1      : string

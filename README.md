@@ -1,7 +1,12 @@
 # **silver** lang
-development in progress, with documentation to be added/changed.
-
 ![silver-lang](silver-icon.png "silver-lang")
+
+silver is a reduced-token, reflective systems language built on a polymorphic C macro object model (Au) that vectorizes cleanly, isolates intern data, and reflects public members into JSON, CSS, and UX transitions.
+Its compiler imports C, C++, and other languages into a unified Aether model, letting developers build native apps, Vulkan engines, and AI-assisted components with fast two-second iteration from a token stack.
+Design-time AI watchers generate and cache non-deterministic outputs, keeping authored code separate from LLM-generated dictation while integrating naturally into modules and media.
+silver’s founding vision is an open, decentralized build ecosystem where cross-compiled toolchains, reflective models, and human-AI co-creation converge into a unified development experience.
+
+development in progress, with documentation to be added/changed.
 
 Update: context addition to release 88:
 ### Context-Aware Members
@@ -89,7 +94,10 @@ spatial dev kit, ai module & training scripts
 [https://github.com/ar-visions/hyperspace.git]
 
 # **import** keyword
-**silver** starts with **import**. The **import** keyword lets you build and include from projects in any language, with coupled configuration parameters and <comma, separated> includes.  Local source links are prioritized before external checkouts, so you can build externals locally with your own changes.  This is a far better way to collaborate in open source with yourself and others. Silver simply gets out of the way when it comes to git for your own source; it's merely importing.  The build process will recognize the various environment variables such as **CC**, **CXX**, **RUSTC**, **CPP**
+**silver** starts with **import**. The **import** keyword lets you build and include from projects in any language, with coupled configuration parameters and <comma, separated> includes.  Local source links are prioritized before external checkouts, so you can build externals locally with your own changes.  This is a far better way to collaborate in open source with yourself and others. silver simply gets out of the way when it comes to git for your own source; it's merely importing.  The build process will recognize the various environment variables such as **CC**, **CXX**, **RUSTC**, **CPP**
+
+# **export** keyword
+**silver**'s contains export keyword, an invocation into any AI resource we are listening to for resource generation.  export src is a great way to include your src code for the project, as a resource in share.  this so more verification is enabled, and we can be transparent to the user with minimal resources used.  since AI is building for you right away, the 'mode' of this is during design-stage.  as such we do have a const.
 
 As a language, **silver** is fewer moving syntactic parts (no direct requirement of Make, CMake for your projects).  It's fewer tokens, first class methods, and a strong stance against centralized package management.  It's considered a build language first, and tries to do the works after, by facilitating native build targets through standard compilation toolchain LLVM.  In watch mode (or development mode), changes are built immediately, with large C headers kept in memory for faster updates. **silver** is the language target for the Orbiter IDE, which is currently in development.
 
