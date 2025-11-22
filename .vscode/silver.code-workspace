@@ -84,7 +84,11 @@
       "shared_mutex": "c",
       "expected": "c",
       "memory_resource": "c",
-      "stop_token": "c"
+      "stop_token": "c",
+      "scoped_allocator": "c",
+      "charconv": "c",
+      "functional": "c",
+      "utility": "c"
     }
   }
 }

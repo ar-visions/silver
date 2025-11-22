@@ -585,6 +585,10 @@
 #define i_prop(X, Y, T, R, N, ...) \
     CONCAT(i_prop_, ARG_COUNT_NO_ZERO(__VA_ARGS__))(X, Y, T, R, N __VA_OPT__(,) __VA_ARGS__)
 
+
+#define M(X,Y,I,T, ...) \
+    I##_##T(X, Y, __VA_ARGS__)
+
 #define   i_vprop_interface_F(X, R, N)
 #define   i_vprop_interface_F_EXTERN(X, R, N)
 #define   i_vprop_interface_ISIZE(X, R, N)
@@ -1482,8 +1486,8 @@
     CONCAT(i_override_, ARG_COUNT_NO_ZERO(__VA_ARGS__))(X, Y, OT, N __VA_OPT__(,) __VA_ARGS__)
 
 
-#define M(X, Y, VISIBILITY, NAME, ...) \
-    i_ ## NAME ## _ ## VISIBILITY ## _ ## Y (X, __VA_ARGS__)
+//#define M(X, Y, VISIBILITY, NAME, ...) \
+//    i_ ## NAME ## _ ## VISIBILITY ## _ ## Y (X, __VA_ARGS__)
 
 
 #define backwards(container, E, e) \

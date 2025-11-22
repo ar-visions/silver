@@ -30,20 +30,6 @@ typedef struct _fn*          fn;
     enum_value(E,T,Y, s_less_than_e,     41)
 declare_enum(comparison)
 
-#define token_schema(X,Y,...) \
-    i_prop      (X,Y,  public,  path,       source) \
-    i_prop      (X,Y,  public,  num,        line) \
-    i_prop      (X,Y,  public,  num,        column) \
-    i_prop      (X,Y,  public,  num,        indent) \
-    i_prop      (X,Y,  public,  Au,          literal) \
-    i_prop      (X,Y,  public,  aether,     mod) \
-    i_method    (X,Y,  public,  Au_t,      get_type) \
-    i_method    (X,Y,  public,  string,     location) \
-    i_override  (X,Y,  ctr,     cstr) \
-    i_override  (X,Y,  method,  init) \
-    i_override  (X,Y,  method,  copy)
-declare_class_2(token, string)
-
 
 #define interface_schema(E,T,Y,...) \
     enum_value(E,T,Y, undefined,  0) \
@@ -289,6 +275,7 @@ declare_class(enode)
     i_prop    (X,Y, public,     bool,                   is_global) \
     i_prop    (X,Y, public,     bool,                   is_formatter) \
     i_prop    (X,Y, public,     bool,                   is_decl) \
+    i_prop    (X,Y, public,     bool,                   is_static) \
     i_prop    (X,Y, public,     bool,                   is_hidden) \
     i_prop    (X,Y, public,     bool,                   is_codegen) \
     i_prop    (X,Y, public,     Au,                      override_offset_bits) \
@@ -347,7 +334,7 @@ declare_class_2(static_array, array)
     i_prop    (X,Y, public,     model,       top) \
     i_prop    (X,Y, public,     array,       lex) \
     i_prop    (X,Y, public,     bool,        cmode) \
-    i_prop    (X,Y, public,     callback,    parse_f) \
+    i_prop    (X,Y, public,     callback_extra, parse_f) \
     i_prop    (X,Y, public,     callback_extra, parse_expr) \
     i_prop    (X,Y, public,     callback_extra, read_model) \
     i_prop    (X,Y, public,     map,         base) \
@@ -432,7 +419,7 @@ declare_class_2(static_array, array)
     i_method  (X,Y, public,     enode,       e_zero,               enode) \
     i_method  (X,Y, public,     enode,       e_assign,             enode,      Au, OPType) \
     i_method  (X,Y, public,     enode,       e_eq,                 enode,      enode) \
-    i_method  (X,Y, public,     enode,       e_not_eq,             enode,      enode) \
+    M(X,Y, i, method, public, enode, e_not_eq, enode, enode) \
     i_method  (X,Y, public,     enode,       e_fn_call,            fn,         enode,    array) \
     i_method  (X,Y, public,     enode,       e_is,               enode,      Au) \
     i_method  (X,Y, public,     enode,       e_inherits,         enode,      Au) \

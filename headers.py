@@ -81,9 +81,6 @@ def write_import_header(module, paths, env_vars):
             global project_path
             mod_src = {}
 
-            # this is generated at runtime in debug mode
-            f.write(f"#include <{project}/isize>\n")
-
             # First pass: public headers
             for mod in imports:
                 mod_src[mod] = project_path + os.sep + 'src' + os.sep + mod
@@ -274,8 +271,6 @@ def generate_methods_header(module, header_file, methods_header):
         
         f.write(f"\n#endif /* _{umodule}_METHODS_H_ */\n")
 
-def generate_isize_header(module, header_file, public_header):
-    open(public_header, 'w').close()
 
 def generate_public_header(module, header_file, public_header):
     """Generate public header"""
@@ -294,14 +289,8 @@ def generate_public_header(module, header_file, public_header):
             for match in matches:
                 class_name = match.strip() if isinstance(match, str) else match[0].strip()
                 if class_name:
-                    f.write(f"#ifndef {class_name}_isize\n")
-                    f.write(f"#define {class_name}_isize 512\n") # give it enough space on the first go (run & rebuild required for precise sizing)
-                    f.write(f"#endif\n")
                     f.write(f"#ifndef {class_name}_intern\n")
                     f.write(f"#define {class_name}_intern(AA,YY,...) AA##_schema(AA,YY##_EXTERN, __VA_ARGS__)\n")
-                    f.write(f"#endif\n")
-                    f.write(f"#ifndef {class_name}_intern_footer\n")
-                    f.write(f"#define {class_name}_intern_footer(AA) u8 AA##_interns[{class_name}_isize];\n")
                     f.write(f"#endif\n")
             f.write("\n")
         
@@ -327,7 +316,6 @@ def generate_intern_header(module, header_file, intern_header):
                 if class_name:
                     f.write(f"#undef {class_name}_intern\n")
                     f.write(f"#define {class_name}_intern(AA,YY,...) AA##_schema(AA,YY, __VA_ARGS__)\n")
-                    f.write(f"#define {class_name}_intern_footer(AA)\n")
             f.write("\n")
         
         f.write(f"#endif /* _{umodule}_INTERN_H_ */\n")
@@ -341,16 +329,6 @@ def process_modules(paths):
     # Find modules from both extensionless files and .g files
     module_names = find_modules_for_headers(src_directive)
     
-    # when headers change, we must run again to find out new sizes!
-    # our first run has larger structs, but as long as they are large 
-    # enough and we do not depend on a sizeof literal for some process its fine
-    for module in module_names:
-        isize_header = os.path.join(gen_dir, project, "isize")
-        source_file  = Path(src_directive) / module
-        if os.path.exists(source_file) and os.path.exists(isize_header):
-            if os.path.getmtime(source_file) > os.path.getmtime(isize_header):
-                os.remove(isize_header)
-    
     for module in module_names:
         umodule = module.upper().replace('-', '_')
         
@@ -363,7 +341,6 @@ def process_modules(paths):
             continue  # Skip if neither exists
         
         # Generate header paths
-        isize_header   = os.path.join(gen_dir, project, "isize")
         methods_header = os.path.join(gen_dir, module, "methods")
         intern_header  = os.path.join(gen_dir, module, "intern")
         public_header  = os.path.join(gen_dir, module, "public")
@@ -394,10 +371,6 @@ def process_modules(paths):
         if (not os.path.exists(methods_header) or 
             os.path.getmtime(str(source_file)) > os.path.getmtime(methods_header)):
             generate_methods_header(module, str(source_file), methods_header)
-        
-        # only create isize header if it doesnt exist already; the runtime will update this info in debug mode
-        if not os.path.exists(isize_header):
-            generate_isize_header(module, str(source_file), isize_header)
         
         if (not os.path.exists(public_header) or 
             os.path.getmtime(str(source_file)) > os.path.getmtime(public_header)):
