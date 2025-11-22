@@ -7,7 +7,7 @@ i = array <i32, 3x2> [ 1 2, 3 4, 2 2 ]
 m : array <path>     [ car1.spec car2.spec car3.spec ]
 
 # here we are demonstrating a design mode in silver, using available module data
-for i in m export images/{i} using chatgpt
+const for i in m export images/{i} using chatgpt
 
     gen ['with these cars, we generate picturesque scenes of good shots of our car designs on Europa, 
      they ride atop magnetic-plasma confinement on a waht is a track of fields with gaps allowing one to
@@ -76,13 +76,13 @@ something : string[ 'a string of sort..' ]
 fn construct-something [ silly:string ] int using chatgpt
     'construct the silliest string you can come up with given the context'
 
-aa : i32[ 1 ]
+aa : 2 # i64
 bb : i32[ 2 ]
 cc : i32[ 3 ]
 ff : string[ string-together['hi'] ]
 
-fn a-function [ stupid:string ] none
-    puts[ 'something {stupid}' ]
+fn a-function [ e:string ] none
+    puts[ 'something {e}' ]
 
 class engine
     m1      : string
