@@ -991,7 +991,9 @@ public:
         
         bool cmode = mod->cmode;
         mod->cmode = true;
-        array t = (array)mod->parse_f((Au)mod, (Au)string(def.c_str()));
+        array t = (array)tokens(
+            target, (Au)mod, parser, mod->parse_f,
+            input, (Au)string(def.c_str()));
         mod->cmode = cmode;
 
         if (!len(t))

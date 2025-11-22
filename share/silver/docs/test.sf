@@ -9,10 +9,9 @@ m : array <path>     [ car1.spec car2.spec car3.spec ]
 # here we are demonstrating a design mode in silver, using available module data
 for i in m export images/{i} using chatgpt
 
-    gen ['with these cars, we generate picturesc scenes onn Europa, 
-     featuring plasma powered hovercraft floating on magnetic-plasma confinement 
-     field, as shaped offset from the track which may span quite distances and 
-     allow you to see under it, at the icey surface and glass under it.']
+    gen ['with these cars, we generate picturesque scenes of good shots of our car designs on Europa, 
+     they ride atop magnetic-plasma confinement on a waht is a track of fields with gaps allowing one to
+     see through to the surface in caves on on surface of planet.']
     
     secret: string ['can you believe you made these?']
     secret += 'really, can you?'

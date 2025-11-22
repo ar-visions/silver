@@ -290,7 +290,7 @@ static array expand_tokens(aether mod, array tokens, map expanding) {
             if  (ln <= (i + 2)) return null;
             token c = tokens->elements[i + 2];
             if  (!c) return null;
-            token  aa = token(alloc, len(a) + len(c) + 1, mod, mod);
+            token  aa = token(alloc, len(a) + len(c) + 1);
             concat(aa, a);
             concat(aa, c);
             a = aa;
@@ -1470,7 +1470,7 @@ void emember_init(emember mem) {
     if (!mem->access) mem->access = interface_public;
     if (instanceof(mem->name, typeid(string))) {
         string n = mem->name;
-        mem->name = token(chars, cstring(n), source, e->source, line, 1, mod, e);
+        mem->name = token(chars, cstring(n), source, e->source, line, 1);
     }
     model t = top(e);
     if (t && !mem->context) {
@@ -1677,8 +1677,8 @@ enode e_operand_primitive(aether e, Au op) {
 }
 
 enode aether_e_eval(aether e, string value) {
-    array tokens = e->parse_f(e, (Au)value);
-    push_state(e, tokens, 0);
+    array t = tokens(target, (Au)e, parser, e->parse_f, input, (Au)value);
+    push_state(e, t, 0);
     enode n = e->parse_expr(e, null, null); 
     enode s = e_create(e, emodel("string"), null, n);
     pop_state(e, false);
@@ -5650,6 +5650,5 @@ define_class (enumeration,  model)
 define_class (structure,    record)
 define_class (Class,        record)
 define_class (code,         Au)
-define_class (token,        string)
 define_class (enode,        Au)
 define_class (emember,      enode)

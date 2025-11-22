@@ -1343,8 +1343,8 @@ declare_class_2(token, string)
     i_prop      (X,Y,  required,  callback_extra, parser) \
     i_prop      (X,Y,  required,  Au, target) \
     i_prop      (X,Y,  required,  Au, input) \
-    i_override  (X,Y,  ctr,     cstr) \
-    i_override  (X,Y,  method,  init)
+    i_ctr       (X,Y,  public, cstr) \
+    i_override  (X,Y,  method, init)
 declare_class_2(tokens, array)
  
 #define path_schema(X,Y,...) \
