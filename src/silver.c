@@ -1965,6 +1965,22 @@ array read_expression_groups(silver mod) {
     return result;
 }
 
+// we separate this, that:1, other:2 -- thats not an actual statements protocol generally, just used in for
+enode statements_push_builder(silver mod, array expr_groups, Au unused) {
+    int level = mod->expr_level;
+    mod->expr_level = 0;
+    enode last = null;
+    statements s_members = statements(mod, mod);
+    push(mod, s_members);
+    each (expr_groups, array, expr_tokens) {
+        push_state(mod, expr_tokens, 0);
+        last = parse_statement(mod);
+        pop_state(mod, false);
+    }
+    mod->expr_level = level;
+    return last;
+}
+
 enode parse_for(silver mod) {
     validate(read_if(mod, "for") != null, "expected for");
 
@@ -1984,22 +2000,19 @@ enode parse_for(silver mod) {
     array body = read_body(mod);
     verify(body, "expected for-body");
 
-    subprocedure build_init = subproc(mod, statements_builder, null);
+    // drop remaining statements before return, so we encapsulate the members to this transaction.
+    subprocedure build_init = subproc(mod, statements_push_builder, null); 
     subprocedure build_cond = subproc(mod, cond_builder, null);
     subprocedure build_body = subproc(mod, expr_builder, null);
     subprocedure build_step = subproc(mod, exprs_builder, null);
 
-    return e_for(
+    enode res = e_for(
         mod,
-        init_exprs,
-        cond_expr,
-        step_exprs,
+        init_exprs, cond_expr, step_exprs,
         body,
-        build_init,
-        build_cond,
-        build_body,
-        build_step
-    );
+        build_init, build_cond, build_body, build_step);
+    pop(mod);
+    return res;
 }
 
 
