@@ -3710,6 +3710,10 @@ path path_with_string(path a, string s) {
     return a;
 }
 
+path path_with_tokens(path a, tokens s) {
+    return path_with_string(a, s);
+}
+
 bool path_create_symlink(path target, path link) {
     bool is_err = symlink(target, link) == -1;
     return !is_err;
@@ -5370,6 +5374,7 @@ Au read_numeric(token a) {
     return null;
 }
 
+static Au             parser_target;
 static callback_extra parser_ident;
 
 void tokens_init(tokens a) {
@@ -5377,16 +5382,23 @@ void tokens_init(tokens a) {
     verify (!parser_ident || a->parser == parser_ident,
         "invalid parser state");
     
-    if (!parser_ident)
+    if (!parser_ident) {
          parser_ident = a->parser;
-
+    }
+    // the target will change in order, 
+    // however its registration will be updated with an init
+    // before ctr is ever called; with those, they are within the scope of the user
+    parser_target = a->target;
     parser_ident(a->target, a->input, a);
 }
 
 // constructors have ability to return whatever data they want, and
 // when doing so, the buffer is kept around for the next user (max of +1)
-tokens tokens_with_cstr(tokens a) {
-
+tokens tokens_with_cstr(tokens a, cstr cs) {
+    a->parser = parser_ident;
+    a->target = parser_target;
+    a->input  = string(cs);
+    return a;
 }
 
 void token_init(token a) {
@@ -5414,7 +5426,7 @@ Au_t token_get_type(token a) {
 }
 
 Au_t token_is_bool(token a) {
-    string t = cast(string, a);
+    string t = a;
     return (cmp(t, "true") || cmp(t, "false")) ?
         (Au_t)typeid(bool) : null;
 }
@@ -5504,7 +5516,7 @@ define_class(command, string)
 
 define_class(shape, Au)
 
-define_class(token,  string)
+define_class(token, string)
 
 // this is defining tokens as array <token> .. the shape, is something the user gives (hard coded in Au)
 define_class(tokens, array, token)

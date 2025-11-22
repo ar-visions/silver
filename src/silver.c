@@ -555,7 +555,6 @@ array parse_tokens(silver mod, Au input, array output) {
                 name = string("##");
             }
             token  t = token(
-                mod,        mod,
                 chars,      (cstr)name->chars, 
                 indent,     indent,
                 source,     src,
@@ -582,7 +581,6 @@ array parse_tokens(silver mod, Au input, array output) {
             if (crop->chars[0] == '-') {
                 char ch[2] = { crop->chars[0], 0 };
                 push(tokens, token(
-                    mod,    mod,
                     chars,  ch,
                     indent, indent,
                     source, src,
@@ -592,7 +590,6 @@ array parse_tokens(silver mod, Au input, array output) {
                 line_start++;
             }
             push(tokens, token(
-                mod,    mod,
                 chars,  crop->chars,
                 indent, indent,
                 source, src,
@@ -622,7 +619,6 @@ array parse_tokens(silver mod, Au input, array output) {
         
         string crop = mid(input_string, start, index - start);
         push(tokens, token(
-            mod,    mod,
             chars,  crop->chars,
             indent, indent,
             source, src,
@@ -630,7 +626,6 @@ array parse_tokens(silver mod, Au input, array output) {
             column, start - line_start));
         if (is_dim) {
             push(tokens, token(
-                mod,    mod,
                 chars,  "x",
                 indent, indent,
                 source, src,
