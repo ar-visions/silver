@@ -1,3 +1,35 @@
+
+# return types must be type-expr based, 
+# we cannot take in a 'something' for example, 
+# because it may be the first operation in a none returning fn
+# ----------------------------------------------
+fn string-together [ something:string ] string
+    return '{something} and {something} else'
+
+fn external-func [ obj:array, obj2:string ]
+    puts [ 'you gave a {obj} ({typeid[obj].name}) and a {obj2} (2 + 2 = {2 + 2})' ]
+
+main aclass
+    member : float 1.2 # public is default in silver ([-] verify)
+
+	fn init [ ]
+        str: string-together['an input string']
+
+        i:i32 [ 2 ]
+        switch [ i ]
+            case 0: puts['case is {i}\n']
+            case 1: puts['case is 1\n']
+            case 2: puts['case is {i}\n']
+            case 3: puts['case is 3\n']
+            case 4: puts['case is 4\n']
+            default: puts['case is something else']
+        
+        # str += "... append this"
+        # printf [ "actual string: %s with our member %.2f", str, member ]
+# ----------------------------------------------
+
+##
+
 # import must come first, and exports are after -- last if you prefer, giving them members you may call at design-time
 import chatgpt
     model:'gpt-5'
@@ -20,34 +52,7 @@ const for i in m export images/{i} using chatgpt
         gen [images/car1.png, images/car1.png,
             'do something great with this one, given inspiration from car1 and car2, {secret}']
 
-# return types must be type-expr based, 
-# we cannot take in a 'something' for example, 
-# because it may be the first operation in a none returning fn
-# ----------------------------------------------
-fn string-together [ something:string ] string
-    return '{something} and {something} else'
 
-
-main aclass
-    member : f32 [ 1.2 ] # public is default in silver ([-] verify)
-
-	fn init [ ]
-        str: string-together["an input string"]
-
-        i:i32 [ 2 ]
-        switch [ i ]
-            case 0: printf['case is 0']
-            case 1: printf['case is 1']
-            case 2: printf['case is 2']
-            case 3: printf['case is 3']
-            case 4: printf['case is 4']
-            default: printf['case is something else']
-        
-        # str += "... append this"
-        # printf [ "actual string: %s with our member %.2f", str, member ]
-# ----------------------------------------------
-
-##
 import <stdio.h, ctype.h>
 
 
