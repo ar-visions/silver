@@ -1924,6 +1924,13 @@ Au member_object(Au a, Au_t m) {
 
 string Au_cast_string(Au a) {
     Au_t type = isa(a);
+    
+    // convenient feature of new object abi
+    if (!type) {
+        type = (Au_t)a;
+        return string(type->name);
+    }
+
     Au a_header = header(a);
     bool  once = false; 
     if (instanceof(a, typeid(string))) return (string)a;

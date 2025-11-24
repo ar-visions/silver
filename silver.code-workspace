@@ -295,7 +295,9 @@
 			"sim_set": "c",
 			"sim_map": "c",
 			"sim_unordered_map": "c",
-			"sim_unordered_set": "c"
+			"sim_unordered_set": "c",
+			"au": "c",
+			"sim_type_traits": "c"
 		}
 	}
 }
