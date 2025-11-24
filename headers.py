@@ -17,7 +17,7 @@ def setup_paths(env_vars):
     project_path  = env_vars['PROJECT_PATH']
     directive     = env_vars['DIRECTIVE']
     build_path    = env_vars['BUILD_PATH']
-    build_file    = os.path.join(project_path, "build.sf")
+    build_file    = os.path.join(project_path, "build.ag")
     src_directive = os.path.join(project_path, directive)
     
     # print(f"path is {os.environ.get('PATH', '')}")

@@ -16,11 +16,15 @@
         [ ] init macros must be generated (methods are)
         [x] method macros
         [x] class declarations
-        [x] class construction done in silver.o, not .c (there will be no define_class(cl, meta, meta2))
+        [x] class construction done in silver.o, not .c 
+            (there will be no define_class(cl, meta, meta2))
+
     > we have been emitting model reflection from silver
-    > this is likely not modular enough, and a better approach would be to output Au schemas, so it's human readible
+    > this is likely not modular enough, and a better approach would be to output Au schemas,
+          so it's human readible
         - expanding every type we have in silver is a double-reflection (since we schema translate from Au -> model -> Au ABI compatible C )
-        - the problem is going to be down to the use of intern.  if the user does not describe intern then we may use public
+        - the problem is going to be down to the use of intern.  if the user does not 
+          describe intern then we may use public
 
 [ ] formatter logic
     > %s will perform string cast, then cstr cast for object types (if they give a cstr, no conversion!)
@@ -45,3 +49,12 @@
     [ ] for
     [ ] loop [ this is loop-while or just loop ]
         [ ] loop-while
+
+[-] Au model/member reduction into Au_t
+    [x] register types modules, with default being an exported symbol au, in struct _Au_t
+    *** everything is mappable -- with default being a linked-list
+        maps are something you request by api and thus we can lazy-load.  we can do this
+        easier when we have meta types associated to our use-case members (desc by the user)
+    [-] convert creation and management of model/struct/class/enumeration
+
+    

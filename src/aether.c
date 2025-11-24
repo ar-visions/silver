@@ -235,7 +235,7 @@ module_init(initialize);
 void print_ctx(aether e, string msg) {
     string res = string(alloc, 32);
     for (int i = 0; i < len(e->lex); i++) {
-        model ctx = e->lex->elements[i];
+        model ctx = e->lex->origin[i];
         if (res->len)
             append(res, "/");
         concat(res, cast(string, ctx));
@@ -282,20 +282,20 @@ static array expand_tokens(aether mod, array tokens, map expanding) {
     int skip = 1;
     for (int i = 0; i < ln; i += skip) {
         skip    = 1;
-        token a = tokens->elements[i];
-        token b = ln > (i + 1) ? tokens->elements[i + 1] : null;
+        token a = tokens->origin[i];
+        token b = ln > (i + 1) ? tokens->origin[i + 1] : null;
         int   n = 2; // after b is 2 ahead of a
 
         if (b && eq(b, "##")) {
             if  (ln <= (i + 2)) return null;
-            token c = tokens->elements[i + 2];
+            token c = tokens->origin[i + 2];
             if  (!c) return null;
             token  aa = token(alloc, len(a) + len(c) + 1);
             concat(aa, a);
             concat(aa, c);
             a = aa;
             n = 4;
-            b = ln > (i + 3) ? tokens->elements[i + 3] : null; // can be null
+            b = ln > (i + 3) ? tokens->origin[i + 3] : null; // can be null
             skip += 2;
         }
 
@@ -314,7 +314,7 @@ static array expand_tokens(aether mod, array tokens, map expanding) {
                 
                 skip += len(arg) + 1; // for the , or )
                 push(args, arg);
-                token  after = tokens->elements[stop];
+                token  after = tokens->origin[stop];
                 if (eq(after, ")")) {
                     index++;
                     break;
@@ -366,8 +366,8 @@ array macro_expand(macro m, array args, map expanding) {
         // replace directly in here
         bool found = false;
         for (int param = 0; param < ln_params; param++) {
-            if (compare(t, m->params->elements[param]) == 0) {
-                concat(initial, args->elements[param]);
+            if (compare(t, m->params->origin[param]) == 0) {
+                concat(initial, args->origin[param]);
                 found = true;
                 break;
             }
@@ -377,7 +377,7 @@ array macro_expand(macro m, array args, map expanding) {
     }
 
     if (!expanding)
-         expanding = map(hsize, 16, assorted, true, unmanaged, true);
+         expanding = map(hsize, 16, assorted, true, fifo.unmanaged, true);
 
     set(expanding, m->mem->name, _bool(true));
 
@@ -640,7 +640,7 @@ void statements_init(statements st) {
 model aether_context_model(aether e, Au_t type) {
     Au_t cl = typeid(Class);
     for (int i = len(e->lex) - 1; i >= 0; i--) {
-        model ctx = e->lex->elements[i];
+        model ctx = e->lex->origin[i];
         Au_t ctx_t = isa(ctx);
         if ((type == cl && inherits(isa(ctx->src), type)) || 
             (type != cl && inherits(ctx_t, type)))
@@ -829,8 +829,8 @@ enode aether_e_element(aether e, enode array, Au index) {
     e->is_const = false;
     if (e->no_build) return e_noop(e, typed(array->mdl));
     enode i = e_operand(e, index, null, null);
-    model imdl = (model)(array->meta->elements[0] ? 
-        (model)array->meta->elements[0] : emodel("Au"));
+    model imdl = (model)(array->meta->origin[0] ? 
+        (model)array->meta->origin[0] : emodel("Au"));
     enode element_v = value(imdl, null, LLVMBuildInBoundsGEP2(
         e->builder, typed(array->mdl)->type, array->value, &i->value, 1, "eelement"));
     return e_load(e, element_v, null);
@@ -884,7 +884,7 @@ bool is_module_level(model mdl) {
 
 static i32 get_aflags(emember f, i32 extra) {
     fn func = instanceof(f->mdl, typeid(fn));
-    return (extra | (func && func->is_override)) ? AU_FLAG_OVERRIDE : 0;
+    return (extra | (func && func->is_override)) ? AU_MEMBER_OVERRIDE : 0;
 }
 
 void aether_finalize_init(aether e, fn f) {
@@ -898,7 +898,7 @@ void aether_finalize_init(aether e, fn f) {
     // we need to set 'shape' on the Au_t field
     
     // emit declaration of the struct _type_f for classes, structs, and enums
-    model module_base = e->lex->elements[1]; // the init is at [1] because of the need to have non-replacables at [0] in use with a watcher
+    model module_base = e->lex->origin[1]; // the init is at [1] because of the need to have non-replacables at [0] in use with a watcher
     pairs (module_base->members, i) {
         emember mem = i->value;
         model   mdl = mem->mdl;
@@ -1009,9 +1009,9 @@ void aether_finalize_init(aether e, fn f) {
                 mset(member, "member_type", _i32(get_aflags(f, func->function_type)));
             } else {
                 if (emdl)
-                    mset(member, "member_type", _i32(get_aflags(f, AU_FLAG_ENUMV)));
+                    mset(member, "member_type", _i32(get_aflags(f, AU_MEMBER_ENUMV)));
                 else
-                    mset(member, "member_type", _i32(get_aflags(f, AU_FLAG_PROP)));
+                    mset(member, "member_type", _i32(get_aflags(f, AU_MEMBER_PROP)));
             }
 
             OPType otype = ((cmdl || smdl) && func && func->is_oper) ? func->is_oper : 0;
@@ -1161,7 +1161,6 @@ void aether_finalize_init(aether e, fn f) {
                 //zero(e, mem);
             }
         }
-        fn f2 = f;
         e_fn_return(e, null);
         pop (e);
 
@@ -1180,7 +1179,7 @@ void aether_finalize_init(aether e, fn f) {
 
             fn main_fn = fn(
                 mod,            e,
-                function_type,  AU_FLAG_SMETHOD,
+                function_type,  AU_MEMBER_SMETHOD,
                 exported,       true,
                 rtype,          emodel("i32"),
                 args,           args);
@@ -1376,7 +1375,6 @@ enode enode_access_guard(enode mem, string alpha) {
 
 enode enode_access(enode mem, string name) {
     aether  e   = mem->mod;
-    i64  index = 0;
     bool is_ptr = isa(mem) == typeid(emember) ? 
         (((emember)mem)->is_arg || ((emember)mem)->is_global) : false;
 
@@ -1384,48 +1382,34 @@ enode enode_access(enode mem, string name) {
         emember m = get(mem->mdl->members, name);
         verify (m, "%o not found on enumerable type %o", name, mem->mdl);
         return  m;
-    } else {
-        model base = mem->mdl->is_ref ? mem->mdl->src : mem->mdl;
-        e->is_const = false;
-        if (e->no_build) return e_noop(e, ((emember)get(mem->mdl->members, name))->mdl);
-        do {
-            pairs(base->members, i) {
-                if (compare(i->key, name) == 0) {
-                    emember schema = i->value; /// value is our pair value, not a llvm-value
-                    if (schema->is_const) {
-                        return schema; /// for enum members, they are const integer; no target stored but we may init that
-                    }
-
-                    LLVMValueRef actual_ptr = is_ptr ? mem->value : LLVMBuildLoad2(
-                        e->builder,
-                        (isa(base) == typeid(Class) ? pointer(base) : base)->type,
-                        mem->value,
-                        "load_actual_ptr"
-                    );
-
-                    /// by pass automatic allocation of this emember, as we are assigning to StructGEP from its container
-                    enode res = enode(mod, e, name, name, mdl, null);
-                    fn f = instanceof(schema->mdl, typeid(fn));
-                    res->mdl = (f && !e->in_ref) ? (model)f : pointer(schema->mdl);
-                    static int count = 0;
-                    res->value  = f ? f->value : LLVMBuildStructGEP2(
-                            e->builder, typed(base)->type, actual_ptr, index, fmt("resolve%i", ++count)->chars); // GPT: mem->value is effectively the ptr value on the stack
-                    //if (f)
-                    //    res->is_func = true;
-                    
-                    return res;
-                }
-                index++;
-            }
-            if (isa(base) != typeid(Class))
-                break;
-            Class cl = base;
-            base = cl->parent;
-        } while (base);
-
-        fault("emember %o not found in type %o", name, base);
     }
-    return null;
+    
+    model current = mem->mdl->is_ref ? mem->mdl->src : mem->mdl;
+    model mdl     = current;
+    e->is_const   = false;
+    if (e->no_build) return e_noop(e, ((emember)get(mem->mdl->members, name))->mdl);
+
+    emember schema = get(mem->mdl->members, name);
+    verify(schema, "failed to find member %o for model %o", name, mdl);
+
+    fn f = instanceof(schema->mdl, typeid(fn));
+    if (f) return enode(mod, e, name, name, mdl, schema->mdl, target, mem);
+    
+    if (schema->is_const) return schema;
+
+    LLVMValueRef actual_ptr = is_ptr ? mem->value : LLVMBuildLoad2(
+        e->builder,
+        (isa(mdl) == typeid(Class) ? pointer(mdl) : mdl)->type,
+        mem->value,
+        "load_actual_ptr");
+
+    enode res = enode(mod, e, name, name, mdl, null);
+    res->mdl = (f && !e->in_ref) ? (model)f : pointer(schema->mdl);
+    static int count = 0;
+    res->value  = f ? f->value : LLVMBuildStructGEP2(
+        e->builder, typed(mdl)->type, actual_ptr,
+        schema->index, fmt("resolve%i", ++count)->chars);
+    return res;
 }
 
 void emember_set_value(emember mem, Au value) {
@@ -1542,7 +1526,7 @@ enode aether_e_const_array(aether e, model mdl, array a) {
     LLVMValueRef *elems = calloc(ln, sizeof(LLVMValueRef));
 
     for (i32 i = 0; i < ln; i++) {
-        Au m = a->elements[i];
+        Au m = a->origin[i];
         enode n = e_operand(e, m, mdl, null);
         elems[i] = n->value;  // each is an Au_t*
     }
@@ -1578,7 +1562,7 @@ enode aether_e_meta_ids(aether e, array meta) {
     LLVMValueRef *elems = calloc(ln, sizeof(LLVMValueRef));
 
     for (i32 i = 0; i < ln; i++) {
-        Au m = meta->elements[i];
+        Au m = meta->origin[i];
         enode n;
         if (instanceof(m, typeid(model)))
             n = e_typeid(e, (model)m);
@@ -1814,12 +1798,12 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
         
         // primitive-based conversion goes here
         fn fn = instanceof(fmem->mdl, typeid(fn));
-        if (fn->function_type & AU_FLAG_CONSTRUCT) {
+        if (fn->function_type & AU_MEMBER_CONSTRUCT) {
             // ctr: call before init
             // this also means the mdl is not a primitive
             //verify(!is_primitive(fn->rtype), "expected struct/class");
             ctr = fmem;
-        } else if (fn->function_type & AU_FLAG_CAST) {
+        } else if (fn->function_type & AU_MEMBER_CAST) {
             // we may call cast straight away, no need for init (which the cast does)
             return e_fn_call(e, fn, input, a());
         } else
@@ -1856,7 +1840,7 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
         LLVMSetLinkage(G, LLVMInternalLinkage);
 
         for (i32 i = 0; i < ln; i++) {
-            enode n = e_operand(e, static_a->elements[i], null, null);
+            enode n = e_operand(e, static_a->origin[i], null, null);
             verify (LLVMIsConstant(n->value), "static_array must contain constant statements");
             verify (n->mdl == mdl->src, "type mismatch");
             elems[i] = n->value;
@@ -1899,7 +1883,7 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
                 bool all_const = ln > 0;
                 enode const_array = null;
                 for (int i = 0; i < ln; i++) {
-                    enode node = instanceof(a->elements[i], typeid(enode));
+                    enode node = instanceof(a->origin[i], typeid(enode));
                     if (node && node->literal)
                         continue;
                     all_const = false;
@@ -1910,7 +1894,7 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
                     LLVMTypeRef   elem_ty = mdl->src->type;   // base element type
                     LLVMValueRef *elems   = malloc(sizeof(LLVMValueRef) * ln);
                     for (int i = 0; i < ln; i++) {
-                        enode node = a->elements[i];
+                        enode node = a->origin[i];
                         elems[i]   = node->value;
                     }
                     LLVMValueRef const_arr = LLVMConstArray(elem_ty, elems, ln);
@@ -1938,7 +1922,7 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
                 } else {
                     fn f_push = find_member(mdl, string("push"), null)->mdl;
                     for (int i = 0; i < ln; i++) {
-                        Au      aa = a->elements[i];
+                        Au      aa = a->origin[i];
                         enode   n = e_operand(e, aa, mdl->src, null);
                         e_fn_call(e, f_push, res, a(n));
                     }
@@ -1952,8 +1936,8 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
                 array f = field_list(mdl, emodel("Au"), false);
                 for (int i = 0, ln = len(a); i < ln; i++) {
                     verify(i < len(f), "too many fields provided for object %o", mdl);
-                    emember m = f->elements[i];
-                    enode   n = e_operand(e, a->elements[i], m->mdl, m->meta);
+                    emember m = f->origin[i];
+                    enode   n = e_operand(e, a->origin[i], m->mdl, m->meta);
                     emember rmem = member_lookup((emember)res, m->name);
                     e_assign(e, res, rmem, OPType__assign);
                 }
@@ -2009,9 +1993,9 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
                     enode value = null;
                     model field_type = null;
                     for (int our_index = 0; our_index < field_count; our_index++) {
-                        i32* f_index = (i32*)field_indices->elements[our_index];
+                        i32* f_index = (i32*)field_indices->origin[our_index];
                         if  (f_index && *f_index == i) {
-                            value = (enode)field_values->elements[our_index];
+                            value = (enode)field_values->origin[our_index];
                             break;
                         }
                     }
@@ -2487,7 +2471,7 @@ enode aether_e_if_else(aether e, array conds, array exprs, subprocedure cond_bui
         LLVMBasicBlockRef else_block = LLVMAppendBasicBlock(block, "else");
 
         // Build the condition
-        Au cond_obj = conds->elements[i];
+        Au cond_obj = conds->origin[i];
         enode cond_result = invoke(cond_builder, cond_obj);  // Silver handles the actual condition parsing and building
         LLVMValueRef condition = e_create(e, emodel("bool"), null, cond_result)->value;
 
@@ -2496,7 +2480,7 @@ enode aether_e_if_else(aether e, array conds, array exprs, subprocedure cond_bui
 
         // Build the "then" block
         LLVMPositionBuilderAtEnd(e->builder, then_block);
-        Au expr_obj = exprs->elements[i];
+        Au expr_obj = exprs->origin[i];
         enode expressions = invoke(expr_builder, expr_obj);  // Silver handles the actual block/statement generation
         LLVMBuildBr(e->builder, merge);
 
@@ -2507,7 +2491,7 @@ enode aether_e_if_else(aether e, array conds, array exprs, subprocedure cond_bui
 
     // Handle the fnal "else" (if applicable)
     if (len(exprs) > len(conds)) {
-        Au else_expr = exprs->elements[len(conds)];
+        Au else_expr = exprs->origin[len(conds)];
         invoke(expr_builder, else_expr);  // Process the final else block
         LLVMBuildBr(e->builder, merge);
     }
@@ -2556,8 +2540,8 @@ enode aether_e_offset(aether e, enode n, Au offset) {
             "arg count does not match the shape");
         i = e_operand(e, _i64(0), null, null);
         for (int a = 0; a < len(args); a++) {
-            Au arg_index   = args->elements[a];
-            Au shape_index = shape->elements[a];
+            Au arg_index   = args->origin[a];
+            Au shape_index = shape->origin[a];
             enode   stride_pos  = e_mul(e, shape_index, arg_index);
             i = e_add(e, i, stride_pos);
         }
@@ -2609,13 +2593,13 @@ enode aether_e_cmp(aether e, comparison cmp, enode lhs, enode rhs) {
 }*/
 
 enode aether_e_load(aether e, emember mem, emember target) {
-
     // we can use the e->in_ref for pointer lookup
-    if (!instanceof(mem, typeid(emember))) return mem; // for enode values, no load required
-    model        mdl      = mem->mdl;
+    model mdl = mem->mdl;
 
     e->is_const = false;
     if (e->no_build) return e_noop(e, mdl->src);
+
+    if (mem->is_const) return mem;
 
     LLVMValueRef ptr      = mem->value;
     verify(mdl->src, "expected pointer to load from, given %o", mdl);
@@ -2716,7 +2700,7 @@ none aether_context(aether e, ARef record, ARef top_model, Au_t filter) {
     if (top_model) *top_model = null;
 
     for (int i = len(e->lex) - 1; i >= 0; i--) {
-        model mdl = e->lex->elements[i];
+        model mdl = e->lex->origin[i];
         Au_t t = isa(mdl);
         Au_t s = isa(mdl->src);
         bool allow = (!filter || isa(mdl) == filter);
@@ -2760,7 +2744,7 @@ none aether_context(aether e, ARef record, ARef top_model, Au_t filter) {
 model aether_context_model(aether e, Au_t type) {
     Au_t cl = typeid(Class);
     for (int i = len(e->lex) - 1; i >= 0; i--) {
-        model ctx = e->lex->elements[i];
+        model ctx = e->lex->origin[i];
         Au_t ctx_t = isa(ctx);
         if ((type == cl && inherits(isa(ctx->src), type)) || 
             (type != cl && inherits(ctx_t, type)))
@@ -2775,7 +2759,7 @@ model aether_context_model(aether e, Au_t type) {
 model aether_return_type(aether e, ARef meta) {
     if (meta) *meta = null;
     for (int i = len(e->lex) - 1; i >= 0; i--) {
-        model ctx = e->lex->elements[i];
+        model ctx = e->lex->origin[i];
         if (isa(ctx) == typeid(fn) && ((fn)ctx)->rtype) {
             if (meta) *meta = (ARef)((fn)ctx)->rmeta;
             return ((fn)ctx)->rtype;
@@ -2860,7 +2844,7 @@ emember aether_lookup2(aether e, Au name, Au_t mdl_type_filter) {
         name = cast(string, (token)name);
 
     for (int i = len(e->lex) - 1; i >= 0; i--) {
-        model ctx      = e->lex->elements[i];
+        model ctx      = e->lex->origin[i];
         Au_t  ctx_type = isa(ctx);
         cstr  n = cast(cstr, (string)name);
         
@@ -3211,48 +3195,49 @@ static void register_vbasics(aether e) {
     model mdl_cereal = structure(mod, e, ident, string("cereal"),
         members, m("value", emember(mod, e, name, string("value"), mdl, mdl_i8)));
 
-    model mdl_AU_FLAG = enumeration(mod, e,
+    model mdl_AU_MEMBER = enumeration(mod, e,
         members, m(
-            "AU_FLAG_NONE",      emember(mod, e, name, string("AU_FLAG_NONE"),      mdl, mdl_i32),
-            "AU_FLAG_CONSTRUCT", emember(mod, e, name, string("AU_FLAG_CONSTRUCT"), mdl, mdl_i32),
-            "AU_FLAG_PROP",      emember(mod, e, name, string("AU_FLAG_PROP"),      mdl, mdl_i32),
-            "AU_FLAG_INLAY",     emember(mod, e, name, string("AU_FLAG_INLAY"),     mdl, mdl_i32),
-            "AU_FLAG_PRIV",      emember(mod, e, name, string("AU_FLAG_PRIV"),      mdl, mdl_i32),
-            "AU_FLAG_INTERN",    emember(mod, e, name, string("AU_FLAG_INTERN"),    mdl, mdl_i32),
-            "AU_FLAG_READ_ONLY", emember(mod, e, name, string("AU_FLAG_READ_ONLY"), mdl, mdl_i32),
-            "AU_FLAG_IMETHOD",   emember(mod, e, name, string("AU_FLAG_IMETHOD"),   mdl, mdl_i32),
-            "AU_FLAG_SMETHOD",   emember(mod, e, name, string("AU_FLAG_SMETHOD"),   mdl, mdl_i32),
-            "AU_FLAG_OPERATOR",  emember(mod, e, name, string("AU_FLAG_OPERATOR"),  mdl, mdl_i32),
-            "AU_FLAG_CAST",      emember(mod, e, name, string("AU_FLAG_CAST"),      mdl, mdl_i32),
-            "AU_FLAG_INDEX",     emember(mod, e, name, string("AU_FLAG_INDEX"),     mdl, mdl_i32),
-            "AU_FLAG_ENUMV",     emember(mod, e, name, string("AU_FLAG_ENUMV"),     mdl, mdl_i32),
-            "AU_FLAG_OVERRIDE",  emember(mod, e, name, string("AU_FLAG_OVERRIDE"),  mdl, mdl_i32),
-            "AU_FLAG_VPROP",     emember(mod, e, name, string("AU_FLAG_VPROP"),     mdl, mdl_i32),
-            "AU_FLAG_IS_ATTR",   emember(mod, e, name, string("AU_FLAG_IS_ATTR"),   mdl, mdl_i32),
-            "AU_FLAG_OPAQUE",    emember(mod, e, name, string("AU_FLAG_OPAQUE"),    mdl, mdl_i32),
-            "AU_FLAG_IFINAL",    emember(mod, e, name, string("AU_FLAG_IFINAL"),    mdl, mdl_i32),
-            "AU_FLAG_TMETHOD",   emember(mod, e, name, string("AU_FLAG_TMETHOD"),   mdl, mdl_i32)));
+            "AU_MEMBER_NONE",      emember(mod, e, name, string("AU_MEMBER_NONE"),      mdl, mdl_i32),
+            "AU_MEMBER_CONSTRUCT", emember(mod, e, name, string("AU_MEMBER_CONSTRUCT"), mdl, mdl_i32),
+            "AU_MEMBER_PROP",      emember(mod, e, name, string("AU_MEMBER_PROP"),      mdl, mdl_i32),
+            "AU_MEMBER_INLAY",     emember(mod, e, name, string("AU_MEMBER_INLAY"),     mdl, mdl_i32),
+            "AU_MEMBER_PRIV",      emember(mod, e, name, string("AU_MEMBER_PRIV"),      mdl, mdl_i32),
+            "AU_MEMBER_INTERN",    emember(mod, e, name, string("AU_MEMBER_INTERN"),    mdl, mdl_i32),
+            "AU_MEMBER_READ_ONLY", emember(mod, e, name, string("AU_MEMBER_READ_ONLY"), mdl, mdl_i32),
+            "AU_MEMBER_IMETHOD",   emember(mod, e, name, string("AU_MEMBER_IMETHOD"),   mdl, mdl_i32),
+            "AU_MEMBER_SMETHOD",   emember(mod, e, name, string("AU_MEMBER_SMETHOD"),   mdl, mdl_i32),
+            "AU_MEMBER_OPERATOR",  emember(mod, e, name, string("AU_MEMBER_OPERATOR"),  mdl, mdl_i32),
+            "AU_MEMBER_CAST",      emember(mod, e, name, string("AU_MEMBER_CAST"),      mdl, mdl_i32),
+            "AU_MEMBER_INDEX",     emember(mod, e, name, string("AU_MEMBER_INDEX"),     mdl, mdl_i32),
+            "AU_MEMBER_ENUMV",     emember(mod, e, name, string("AU_MEMBER_ENUMV"),     mdl, mdl_i32),
+            "AU_MEMBER_OVERRIDE",  emember(mod, e, name, string("AU_MEMBER_OVERRIDE"),  mdl, mdl_i32),
+            "AU_MEMBER_VPROP",     emember(mod, e, name, string("AU_MEMBER_VPROP"),     mdl, mdl_i32),
+            "AU_MEMBER_IS_ATTR",   emember(mod, e, name, string("AU_MEMBER_IS_ATTR"),   mdl, mdl_i32),
+            "AU_MEMBER_OPAQUE",    emember(mod, e, name, string("AU_MEMBER_OPAQUE"),    mdl, mdl_i32),
+            "AU_MEMBER_IFINAL",    emember(mod, e, name, string("AU_MEMBER_IFINAL"),    mdl, mdl_i32),
+            "AU_MEMBER_TMETHOD",   emember(mod, e, name, string("AU_MEMBER_TMETHOD"),   mdl, mdl_i32),
+            "AU_MEMBER_FORMATTER", emember(mod, e, name, string("AU_MEMBER_FORMATTER"), mdl, mdl_i32));
 
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_NONE")),        _i32(AU_FLAG_NONE));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_CONSTRUCT")),   _i32(AU_FLAG_CONSTRUCT));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_PROP")),        _i32(AU_FLAG_PROP));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_INLAY")),       _i32(AU_FLAG_INLAY));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_PRIV")),        _i32(AU_FLAG_PRIV));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_INTERN")),      _i32(AU_FLAG_INTERN));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_READ_ONLY")),   _i32(AU_FLAG_READ_ONLY));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_IMETHOD")),     _i32(AU_FLAG_IMETHOD));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_SMETHOD")),     _i32(AU_FLAG_SMETHOD));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_OPERATOR")),    _i32(AU_FLAG_OPERATOR));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_CAST")),        _i32(AU_FLAG_CAST));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_INDEX")),       _i32(AU_FLAG_INDEX));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_ENUMV")),       _i32(AU_FLAG_ENUMV));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_OVERRIDE")),    _i32(AU_FLAG_OVERRIDE));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_VPROP")),       _i32(AU_FLAG_VPROP));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_IS_ATTR")),     _i32(AU_FLAG_IS_ATTR));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_OPAQUE")),      _i32(AU_FLAG_OPAQUE));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_IFINAL")),      _i32(AU_FLAG_IFINAL));
-    set_value((emember)get(mdl_AU_FLAG->members, string("AU_FLAG_TMETHOD")),     _i32(AU_FLAG_TMETHOD));
-    
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_NONE")),        _i32(AU_MEMBER_NONE));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_CONSTRUCT")),   _i32(AU_MEMBER_CONSTRUCT));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_PROP")),        _i32(AU_MEMBER_PROP));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_INLAY")),       _i32(AU_MEMBER_INLAY));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_PRIV")),        _i32(AU_MEMBER_PRIV));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_INTERN")),      _i32(AU_MEMBER_INTERN));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_READ_ONLY")),   _i32(AU_MEMBER_READ_ONLY));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_IMETHOD")),     _i32(AU_MEMBER_IMETHOD));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_SMETHOD")),     _i32(AU_MEMBER_SMETHOD));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_OPERATOR")),    _i32(AU_MEMBER_OPERATOR));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_CAST")),        _i32(AU_MEMBER_CAST));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_INDEX")),       _i32(AU_MEMBER_INDEX));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_ENUMV")),       _i32(AU_MEMBER_ENUMV));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_OVERRIDE")),    _i32(AU_MEMBER_OVERRIDE));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_VPROP")),       _i32(AU_MEMBER_VPROP));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_IS_ATTR")),     _i32(AU_MEMBER_IS_ATTR));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_OPAQUE")),      _i32(AU_MEMBER_OPAQUE));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_IFINAL")),      _i32(AU_MEMBER_IFINAL));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_TMETHOD")),     _i32(AU_MEMBER_TMETHOD));
+    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_FORMATTER")),   _i32(AU_MEMBER_FORMATTER));
     model mdl_AU_TRAIT = enumeration(mod, e,
         members, m(
             "AU_TRAIT_PRIMITIVE",   emember(mod, e, name, string("AU_TRAIT_PRIMITIVE"), mdl, mdl_i32),
@@ -3263,13 +3248,8 @@ static void register_vbasics(aether e) {
             "AU_TRAIT_ENUM",        emember(mod, e, name, string("AU_TRAIT_ENUM"),      mdl, mdl_i32),
             "AU_TRAIT_ALIAS",       emember(mod, e, name, string("AU_TRAIT_ALIAS"),     mdl, mdl_i32),
             "AU_TRAIT_ABSTRACT",    emember(mod, e, name, string("AU_TRAIT_ABSTRACT"),  mdl, mdl_i32),
-            "AU_TRAIT_VECTOR",      emember(mod, e, name, string("AU_TRAIT_VECTOR"),    mdl, mdl_i32),
             "AU_TRAIT_STRUCT",      emember(mod, e, name, string("AU_TRAIT_STRUCT"),    mdl, mdl_i32),
-            "AU_TRAIT_PTR_SIZE",    emember(mod, e, name, string("AU_TRAIT_PTR_SIZE"),  mdl, mdl_i32),
-            "AU_TRAIT_PUBLIC",      emember(mod, e, name, string("AU_TRAIT_PUBLIC"),    mdl, mdl_i32),
-            "AU_TRAIT_USER_INIT",   emember(mod, e, name, string("AU_TRAIT_USER_INIT"), mdl, mdl_i32),
             "AU_TRAIT_CLASS",       emember(mod, e, name, string("AU_TRAIT_CLASS"),     mdl, mdl_i32),
-            "AU_TRAIT_BASE",        emember(mod, e, name, string("AU_TRAIT_BASE"),      mdl, mdl_i32),
             "AU_TRAIT_POINTER",     emember(mod, e, name, string("AU_TRAIT_POINTER"),   mdl, mdl_i32)));
 
     set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_PRIMITIVE")),  _i32(AU_TRAIT_PRIMITIVE));
@@ -3280,16 +3260,11 @@ static void register_vbasics(aether e) {
     set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_ENUM")),       _i32(AU_TRAIT_ENUM));
     set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_ALIAS")),      _i32(AU_TRAIT_ALIAS));
     set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_ABSTRACT")),   _i32(AU_TRAIT_ABSTRACT));
-    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_VECTOR")),     _i32(AU_TRAIT_VECTOR));
     set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_STRUCT")),     _i32(AU_TRAIT_STRUCT));
-    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_PTR_SIZE")),   _i32(AU_TRAIT_PTR_SIZE));
-    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_PUBLIC")),     _i32(AU_TRAIT_PUBLIC));
-    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_USER_INIT")),  _i32(AU_TRAIT_USER_INIT));
     set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_CLASS")),      _i32(AU_TRAIT_CLASS));
-    set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_BASE")),       _i32(AU_TRAIT_BASE));
     set_value((emember)get(mdl_AU_TRAIT->members, string("AU_TRAIT_POINTER")),    _i32(AU_TRAIT_POINTER));
 
-    typeid(AFlag)->user = register_model(e, mdl_AU_FLAG, string("AFlag"), true)->mdl->src;
+    typeid(AFlag)->user = register_model(e, mdl_AU_MEMBER, string("AFlag"), true)->mdl->src;
     
     register_model(e, mdl_AU_TRAIT, string("AU_TRAIT"), true);
     
@@ -3439,7 +3414,13 @@ static void register_basics(aether e) {
         "meta_6", emem(_Au_t_ptr,   null, "meta_6"),
         "meta_7", emem(_Au_t_ptr,   null, "meta_7"),
         "meta_8", emem(_Au_t_ptr,   null, "meta_8"),
-        "meta_9", emem(_Au_t_ptr,   null, "meta_9"));
+        "meta_9", emem(_Au_t_ptr,   null, "meta_9"),
+        "meta_10", emem(_Au_t_ptr,   null, "meta_10"),
+        "meta_11", emem(_Au_t_ptr,   null, "meta_11"),
+        "meta_12", emem(_Au_t_ptr,   null, "meta_12"),
+        "meta_13", emem(_Au_t_ptr,   null, "meta_13"),
+        "meta_14", emem(_Au_t_ptr,   null, "meta_14"),
+        "meta_15", emem(_Au_t_ptr,   null, "meta_15"));
     pop(e);
 
     push(e, _af_recycler);
@@ -3460,18 +3441,12 @@ static void register_basics(aether e) {
 
     _Au_t->members = m(
         "parent_type",     mem2,
-        "name",            emem(_symbol,    null, "name"),
+        "domain",          emem(_symbol,    null, "domain"),
         "module",          emem(_symbol,    null, "module"),
-        "sub_types",       emem(_handle,    null, "sub_types"), // needs to be _Au_tRef
-        "sub_types_count", emem(_i16,       null, "sub_types_count"),
-        "sub_types_alloc", emem(_i16,       null, "sub_types_alloc"),
+        "name",            emem(_symbol,    null, "name"),
         "size",            emem(_i32,       null, "size"),
         "isize",           emem(_i32,       null, "isize"),
         "af",              emem(af_recycler_ptr, null, "af"),
-        "magic",           emem(_i32,       null, "magic"),
-        "global_count",    emem(_i32,       null, "global_count"),
-        "vmember_count",   emem(_i32,       null, "vmember_count"),
-        "vmember_type",    emem(_Au_t_ptr,  null, "vmember_type"),
         "member_count",    emem(_i32,       null, "member_count"),
         "members",         emem(member_ptr, null, "members"),
         "traits",          emem(_i32,       null, "traits"),
@@ -3646,8 +3621,7 @@ void aether_Au_import(aether e, path lib) {
         if (atype->user) continue; // if we have already processed this type, continue
         string name = string(atype->name);
         set(processing, name, atype);
-        bool  is_base_type = (atype->traits & AU_TRAIT_BASE)      != 0;
-        if   (is_base_type) continue; // this is Au_t, which we setup manually
+        if (atype->user == typeid(Au_t)) continue;
 
         bool  is_prim      = (atype->traits & AU_TRAIT_PRIMITIVE) != 0;
         bool  is_ref       = (atype->traits & AU_TRAIT_POINTER)   != 0;
@@ -3732,7 +3706,7 @@ void aether_Au_import(aether e, path lib) {
 
             for (int m = 0; m < atype->member_count; m++) {
                 member amem = &atype->members[m];
-                if (!(amem->member_type & AU_FLAG_ENUMV)) continue;
+                if (!(amem->member_type & AU_MEMBER_ENUMV)) continue;
                 verify(atype->src == amem->type,
                     "enum value type not the same as defined on type");
                 Au e_const = primitive(amem->type, amem->ptr);
@@ -3801,7 +3775,7 @@ void aether_Au_import(aether e, path lib) {
 
                 verify(!mtype || mtype->user, "expected type resolution for member %o", n);
                 eargs args = eargs(mod, e);
-                if ((amem->member_type & AU_FLAG_CONSTRUCT) != 0) {
+                if (amem->member_type == AU_MEMBER_CONSTRUCT) {
                     verify(mtype, "type cannot be void for a constructor");
                     model arg_mdl = translate_target((model)mtype->user); // 'target' is our arg (not target), the function merely works for us
                     emember arg = earg(args, arg_mdl, null, "");
@@ -3812,21 +3786,21 @@ void aether_Au_import(aether e, path lib) {
                         is_ctr,        true,
                         extern_name,   f(string, "%s_%o", atype->name, n),
                         rtype,         translate_rtype(st ? (model)st : emodel("none")), // structure ctr return data (Au-type ABI)
-                        function_type, AU_FLAG_CONSTRUCT,
+                        function_type, AU_MEMBER_CONSTRUCT,
                         instance,      mdl, // structs do not have a 'target' argument in constructor -- silver operates the same
                         args,          args);
                 }
-                else if ((amem->member_type & AU_FLAG_CAST) != 0) {
+                else if (amem->member_type == AU_MEMBER_CAST) {
                     verify(mtype, "cast cannot be void");
                     mem_mdl = fn(
                         mod,           e,
                         is_cast,       true,
                         extern_name,   f(string, "%s_%o", atype->name, n),
                         rtype,         translate_rtype(mtype->user),
-                        function_type, AU_FLAG_CAST,
+                        function_type, AU_MEMBER_CAST,
                         instance,      mdl);
                 }
-                else if ((amem->member_type & AU_FLAG_INDEX) != 0) {
+                else if (amem->member_type == AU_MEMBER_INDEX) {
                     verify(mtype, "index cannot return void");
                     model index_mdl = amem->args.meta_0->user;
                     verify(index_mdl, "index requires argument");
@@ -3837,11 +3811,11 @@ void aether_Au_import(aether e, path lib) {
                         extern_name,   f(string, "%s_%o", atype->name, n),
                         is_cast,       true,
                         rtype,         translate_rtype(mtype->user),
-                        function_type, AU_FLAG_INDEX,
+                        function_type, AU_MEMBER_INDEX,
                         instance,      mdl,
                         args,          args);
                 }
-                else if ((amem->member_type & AU_FLAG_OPERATOR) != 0) {
+                else if ((amem->member_type & AU_MEMBER_OPERATOR) != 0) {
                     model  arg_mdl = amem->args.meta_0->user;
                     emember arg     = earg(args, arg_mdl, null, "operand");
                     set(args->members, string("operand"), arg);
@@ -3850,17 +3824,17 @@ void aether_Au_import(aether e, path lib) {
                         extern_name,   f(string, "%s_%o", atype->name, n),
                         is_oper,       amem->operator_type,
                         rtype,         translate_rtype(mtype->user),
-                        function_type, AU_FLAG_OPERATOR,
+                        function_type, AU_MEMBER_OPERATOR,
                         instance,      mdl,
                         args,          arg_mdl ? args : null);
                 }
-                else if ((amem->member_type & AU_FLAG_IMETHOD) != 0 ||
-                         (amem->member_type & AU_FLAG_SMETHOD) != 0 ||
-                         (amem->member_type & AU_FLAG_IFINAL)  != 0 ||
-                         (amem->member_type & AU_FLAG_TMETHOD) != 0) {
-                    bool  is_inst = (amem->member_type & AU_FLAG_IMETHOD) != 0;
-                    bool  is_f    = (amem->member_type & AU_FLAG_IFINAL)  != 0;
-                    bool  is_t    = (amem->member_type & AU_FLAG_TMETHOD)  != 0;
+                else if ((amem->member_type == AU_MEMBER_IMETHOD) ||
+                         (amem->member_type == AU_MEMBER_SMETHOD) ||
+                         (amem->member_type == AU_MEMBER_IFINAL) ||
+                         (amem->member_type == AU_MEMBER_TMETHOD)) {
+                    bool  is_inst = (amem->member_type == AU_MEMBER_IMETHOD);
+                    bool  is_f    = (amem->member_type == AU_MEMBER_IFINAL);
+                    bool  is_t    = (amem->member_type == AU_MEMBER_TMETHOD);
                     eargs args    = eargs(mod, e);
                     // Au-type includes the target in args, but we do not
                     for (int a = (is_inst || is_f) ? 1 : 0; a < amem->args.count; a++) {
@@ -3872,16 +3846,16 @@ void aether_Au_import(aether e, path lib) {
                     mem_mdl = fn(
                         mod,           e,
                         extern_name,   (is_f || is_t) ? n : f(string, "%s_%o", atype->name, n),
-                        is_override,   (amem->member_type & AU_FLAG_OVERRIDE) != 0,
+                        is_override,   (amem->member_type & AU_MEMBER_OVERRIDE) != 0,
                         rtype,         translate_rtype(mtype->user),
-                        function_type, is_f ? AU_FLAG_IFINAL : is_inst ? AU_FLAG_IMETHOD : AU_FLAG_SMETHOD,
+                        function_type, is_f ? AU_MEMBER_IFINAL : is_inst ? AU_MEMBER_IMETHOD : AU_MEMBER_SMETHOD,
                         instance,      (is_inst || is_f) ? mdl : null,
                         args,          args);
                 }
-                else if ((amem->member_type & AU_FLAG_PROP) ||
-                         (amem->member_type & AU_FLAG_VPROP)) {
+                else if ((amem->member_type == AU_MEMBER_PROP) ||
+                         (amem->member_type == AU_MEMBER_VPROP)) {
                     mem_mdl = mtype->user;
-                    if (amem->member_type & AU_FLAG_VPROP) {
+                    if (amem->member_type == AU_MEMBER_VPROP) {
                         mem_mdl = pointer(mem_mdl);
                     }
                 }
@@ -3948,8 +3922,8 @@ void aether_Au_import(aether e, path lib) {
 void aether_reinit_startup(aether e) {
     array prev = e->lex;
     e->lex = hold(array(alloc, 32, assorted, true));
-    verify(prev->elements[0] == e, "expected module identity");
-    push(e->lex, prev->elements[0]);
+    verify(prev->origin[0] == e, "expected module identity");
+    push(e->lex, prev->origin[0]);
 
     // this should pose virtually as global
     // we have two parts so our Au-type models do not reload, and change identity
@@ -4187,7 +4161,7 @@ emember model_castable(model fr, model to) {
     pairs (fr->members, i) {
         emember mem = i->value;
         fn f = instanceof(mem->mdl, typeid(fn));
-        if (!f || !(f->function_type & AU_FLAG_CAST))
+        if (!f || !(f->function_type & AU_MEMBER_CAST))
             continue;
         if (f->rtype == to)
             return mem;
@@ -4207,7 +4181,7 @@ emember model_constructable(model fr, model to) {
     pairs (to->members, i) {
         emember mem = i->value;
         fn fn = instanceof(mem->mdl, typeid(fn));
-        if (!fn || !((fn->function_type & AU_FLAG_CONSTRUCT) != 0))
+        if (!fn || !((fn->function_type & AU_MEMBER_CONSTRUCT) != 0))
             continue;
         emember first = null;
         pairs (fn->args->members, i) {
@@ -4396,7 +4370,7 @@ emember aether_compatible(aether e, record r, string n, AFlag f, array args) {
         int ai = 0;
         pairs(fn->args->members, ii) {
             emember to_arg = ii->value;
-            enode fr_arg = args->elements[ai];
+            enode fr_arg = args->origin[ai];
             if (!convertible(fr_arg->mdl, to_arg->mdl)) {
                 compatible = false;
                 break;
@@ -4866,8 +4840,8 @@ enode aether_e_fn_call(aether e, fn fn, enode target, array args) { // we could 
     int istart = index;
     /*
     if (fn->format) {
-        Au_t a0 = isa(args->elements[fmt_idx]);
-        enode   fmt_node = instanceof(args->elements[fmt_idx], typeid(enode));
+        Au_t a0 = isa(args->origin[fmt_idx]);
+        enode   fmt_node = instanceof(args->origin[fmt_idx], typeid(enode));
         string fmt_str  = instanceof(fmt_node->literal, typeid(string));
         verify(fmt_str, "expected string literal at index %i for format-function: %o", fmt_idx, fn->name);
         arg_values[fmt_idx] = fmt_node->value;
@@ -4876,7 +4850,7 @@ enode aether_e_fn_call(aether e, fn fn, enode target, array args) { // we could 
         while  (p[0]) {
             if (p[0] == '%' && p[1] != '%') {
                 model arg_type  = formatter_type(e, (cstr)&p[1]);
-                Au     o_arg     = args->elements[arg_idx + soft_args];
+                Au     o_arg     = args->origin[arg_idx + soft_args];
                 enode n_arg     = e_load(e, o_arg, null);
                 enode conv      = e_create(e, arg_type, null, n_arg);
                 arg_values[arg_idx + soft_args] = conv->value;
@@ -5142,12 +5116,9 @@ static void record_finalize(record rec) {
 
     if (isa(rec) == typeid(Class)) {
         verify(!get(rec->members, string("__f")),  "__f is reserved name");
-        verify(!get(rec->members, string("__f2")), "__f2 is reserved name");
         set(rec->members, string("__f"),  emember(
             mod, e, name, string("__f"),  mdl, rec->schema_type->ptr, context, rec, is_hidden, true));
-        set(rec->members, string("__f2"), emember(
-            mod, e, name, string("__f2"), mdl, rec->schema_type->ptr, context, rec, is_hidden, true));
-        total += 2;
+        total += 1;
     }
 
     each (a, record, r) {
@@ -5525,11 +5496,6 @@ void emember_finalize(emember mem) {
     bool is_module = ctx == e || ctx->is_global;
     bool external_member = e->current_include || e->is_Au_import;
 
-    if (!mem->is_type && eq(mem->name, "member")) {
-        int test2 = 2;
-        test2 += 2;
-    }
-
     if (!ctx_rec) {
     if (ctx_fn && !mem->value) {
         
@@ -5605,7 +5571,7 @@ void emember_finalize(emember mem) {
 
 model aether_top(aether e) {
     for (int i = len(e->lex) - 1; i >= 0; i--) {
-        model mdl = e->lex->elements[i];
+        model mdl = e->lex->origin[i];
         if (!is_record (mdl) && 
             !instanceof(mdl, typeid(statements)) && 
             !instanceof(mdl, typeid(eargs)) && !mdl->open) continue;
@@ -5626,9 +5592,6 @@ void eargs_init (eargs a) {
 }
 
 define_class (codegen, Au)
-
-define_enum  (interface)
-define_enum  (comparison)
 
 define_class (static_array, array)
 

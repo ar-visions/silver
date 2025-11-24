@@ -139,7 +139,7 @@
             "request":    "launch",
             "preLaunchTask": "build-silver-ninja",
             "program":    "/src/silver/sdk/native/bin/silver",
-            "args":     [ "--source", "/src/silver/share/silver/docs/test.sf" ],
+            "args":     [ "--source", "/src/silver/share/silver/docs/test.ag" ],
             "cwd":        "/src/silver/sdk/native/lib",
             "env":      {
                 "VERBOSE": "1",
