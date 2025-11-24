@@ -282,13 +282,15 @@ declare_class_2(emember, enode)
     i_override(X,Y, method, init)
 declare_class(code)
 
-#define ident_schema(X,Y,...) \
-    i_prop(X,Y, public, model, mdl) \
-    i_ctr(X,Y, public, model)
-declare_class(ident)
+#define ident2_schema(X,Y,...) \
+    i_prop    (X,Y, public, model,  mdl) \
+    i_ctr     (X,Y, public,  model)
+declare_class(ident2)
 
-#define static_array_schema(X,Y,...)
-declare_class_2(static_array, array)
+
+#define static_array_schema(X,Y,...) \
+    i_prop    (X,Y, intern, bool, placeholder)
+declare_class_3(static_array, array, collective)
 
 
 #define aether_schema(X,Y,...)\
@@ -347,7 +349,7 @@ declare_class_2(static_array, array)
     i_method  (X,Y, public,     emember,     initializer) \
     i_method  (X,Y, public,     path,        lookup_include,     string) \
     i_method  (X,Y, public,     none,        build_info,         path) \
-    i_method  (X,Y, public,     none,        Au_import,          path) \
+    i_method  (X,Y, public,     none,        Au_import,          path, string) \
     i_method  (X,Y, public,     none,        push_state,         array, num) \
     i_method  (X,Y, public,     none,        push_current) \
     i_method  (X,Y, public,     none,        pop_state,          bool) \

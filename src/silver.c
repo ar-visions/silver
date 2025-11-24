@@ -283,7 +283,7 @@ void build_record(silver mod, model mrec) {
 
     finalize(rec->mem);
     // schema must be there before we build functions
-    create_schema(emodel(rec->mem->ident->chars), rec->mem->ident);
+    create_schema(emodel(rec->mem->name->chars), rec->mem->name);
 
     if (is_class) {
         // build init with preamble
@@ -641,7 +641,7 @@ array parse_tokens(silver mod, Au input, array output) {
 
 token silver_element(silver a, num rel) {
     int r = a->cursor + rel;
-    if (r < 0 || r > a->tokens->len - 1) return null;
+    if (r < 0 || r > a->tokens->count - 1) return null;
     token t = a->tokens->origin[r];
     return t;
 }
@@ -709,7 +709,7 @@ string silver_read_string(silver a) {
     token  n = element(a, 0);
     if (n && isa(n->literal) == typeid(string)) {
         string token_s = string(n->chars);
-        string result  = mid(token_s, 1, token_s->len - 2);
+        string result  = mid(token_s, 1, token_s->count - 2);
         a->cursor ++;
         return result;
     }
@@ -840,8 +840,8 @@ enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array
 
             if (is_cast) {
                 fn f = (fn)mem->mdl;
-                validate(len(f->rtype->mem->ident), "rtype cannot be anonymous for cast");
-                mem->ident = hold(f(string, "cast_%o", f->rtype));
+                validate(len(f->rtype->mem->name), "rtype cannot be anonymous for cast");
+                mem->name = hold(f(string, "cast_%o", f->rtype));
             }
         }
         register_member(mod, mem, false); /// do not finalize in push member
@@ -1334,7 +1334,7 @@ array read_meta(silver mod) {
                 s = shape();
                 while (n) {
                     verify (isa(n) == typeid(i64),
-                        "expected numeric type i64, found %s", isa(n)->name);
+                        "expected numeric type i64, found %s", isa(n)->ident);
                     i64 value = *(i64*)n;
                     shape_push(s, value);
                     if (!read_if(mod, "x")) 
@@ -1393,7 +1393,7 @@ static model read_model(silver mod, array* p_expr, array* p_meta) {
                 expr = a(token("f64"), token("["), element(mod, 0), token("]"));
                 mdl = emodel("f64");
             } else {
-                verify(false, "implement literal %s in read_model", isa(lit)->name);
+                verify(false, "implement literal %s in read_model", isa(lit)->ident);
             }
             mod->cursor++;
             return mdl;
@@ -1986,7 +1986,7 @@ enode parse_for(silver mod) {
 
     verify(isa(init_exprs) == typeid(array), "expected array for init exprs");
     verify(isa(cond_expr)  == typeid(array), "expected group of cond expr");
-    cond_expr = cond_expr->len ? cond_expr->origin[0] : null;
+    cond_expr = cond_expr->count ? cond_expr->origin[0] : null;
     verify(isa(cond_expr)  == typeid(array), "expected array for inner cond expr");
 
     array body = read_body(mod);
@@ -2033,10 +2033,10 @@ bool is_model(silver mod) {
 
 // these are for public, intern, etc; Au-Type enums, not someting the user defines in silver context
 i32 read_enum(silver mod, i32 def, Au_t etype) {
-    for (int m = 1; m < etype->member_count; m++) {
-        member enum_v = &etype->members[m];
-        if (read_if(mod, enum_v->name))
-            return *(i32*)enum_v->ptr;
+    for (int m = 1; m < etype->members.count; m++) {
+        Au_t enum_v = etype->members.origin[m];
+        if (read_if(mod, enum_v->ident))
+            return *(i32*)enum_v->ptr; // should support typed enums; the ptr is a mere Au-object
     }
     return def;
 }
@@ -2057,7 +2057,7 @@ path module_path(silver mod, string name) {
 
 #undef find_member
 
-Au_t next_is_keyword(silver mod, member* fn) {
+Au_t next_is_keyword(silver mod, Au_t* fn) {
     token t = peek(mod);
     if  (!t)  return null;
     if  (!isalpha(t->chars[0])) return null;
@@ -2069,7 +2069,7 @@ Au_t next_is_keyword(silver mod, member* fn) {
 
 /// called after : or before, where the user has access
 emember silver_read_def(silver mod) {
-    member parse_fn  = null;
+    Au_t   parse_fn  = null;
     Au_t   is_type   = next_is_keyword(mod, &parse_fn);
     model  is_class  = !is_type ? next_is_class(mod, false) : null;
     bool   is_struct = next_is(mod, "struct");
@@ -2187,7 +2187,7 @@ emember silver_read_def(silver mod) {
     }
 
     validate(mdl && len(n),
-        "name required for model: %s", isa(mdl)->name);
+        "name required for model: %s", isa(mdl)->ident);
     
     return register_model(mod, mdl, n, false);
 }
@@ -2350,13 +2350,13 @@ string git_remote_info(path path, string *out_service, string *out_owner, string
     string cmd = f(string, "git -C %s remote get-url origin", path->chars);
     string remote = command_run(cmd);
 
-    if (!remote || !remote->len)
+    if (!remote || !remote->count)
         error("git_remote_info: failed to get remote url");
 
     cstr url = remote->chars;
 
     // strip trailing newline(s)
-    for (int i = remote->len - 1; i >= 0 && (url[i] == '\n' || url[i] == '\r'); i--)
+    for (int i = remote->count - 1; i >= 0 && (url[i] == '\n' || url[i] == '\r'); i--)
         url[i] = '\0';
 
     cstr domain = NULL, owner = NULL, repo = NULL;
@@ -2469,7 +2469,7 @@ static string to_cmodel(model mdl) {
         string b = to_cmodel(mdl->src);
         return f(string, "%o*", b);
     }
-    fault("handle primitive: %s", t->name);
+    fault("handle primitive: %s", t->ident);
     return string("unhandled");
 }
 
@@ -2883,13 +2883,13 @@ void silver_init(silver mod) {
             mod->install = f(path, "%s", import);
         else {
             path   exe = path_self();
-            path   bin = parent(exe);
+            path   bin = parent_dir(exe);
             path   install = absolute(f(path, "%o/..", bin));
             mod->install = install;
         }
     }
     build_info(mod, mod->install);
-    mod->project_path = parent(mod->source);
+    mod->project_path = parent_dir(mod->source);
 
     verify(dir_exists ("%o", mod->install), "silver-import location not found");
     verify(len        (mod->source),       "no source given");
@@ -3068,7 +3068,7 @@ static bool sync_symlink(path src, path dst) {
 }
 
 static bool is_checkout(path a) {
-    path par = parent(a);
+    path par = parent_dir(a);
     string st = stem(par);
     if (eq(st, "checkout")) {
         return true;
@@ -3152,9 +3152,9 @@ array compact_tokens(array tokens) {
         token prev = tokens->origin[i - 1];
         if (!current) current = copy(prev);
 
-        if (prev->line == t->line && (prev->column + prev->len) == t->column) {
+        if (prev->line == t->line && (prev->column + prev->count) == t->column) {
             concat(current, t);
-            current->column += t->len;
+            current->column += t->count;
         } else {
             push(res, current);
             current = copy(t);
@@ -3463,7 +3463,7 @@ i32 silver_build(silver a) {
 bool silver_next_is_neighbor(silver mod) {
     token b = element(mod, -1);
     token c = element(mod,  0);
-    return b->column + b->len == c->column;
+    return b->column + b->count == c->column;
 }
 
 string expect_alpha(silver mod) {
@@ -3498,6 +3498,7 @@ enode import_parse(silver mod) {
     string namespace     = null;
     array  includes      = array(32);
     array  module_paths  = array(32);
+    array  module_names  = array(32);
     path   local_mod     = null;
 
     // what differentiates a codegen from others, just class name?
@@ -3551,8 +3552,9 @@ enode import_parse(silver mod) {
                     path f = f(path, "%o", j);
                     array dir = ls(f, string("*.ag"), false);
                     verify(len(dir), "no modules in directory %o", f);
-                    each(dir, path, m)
+                    each(dir, path, m) {
                         push(module_paths, m);
+                    }
                 } else
                     push(module_paths, local_mod);
             } else if (aa && !bb) {
@@ -3659,7 +3661,7 @@ enode import_parse(silver mod) {
         validate(namespace, "expected alpha-numeric %s",
             is_codegen ? "alias" : "namespace");
     } else if (is_codegen) {
-        namespace = hold(string(is_codegen->name));
+        namespace = hold(string(is_codegen->ident));
     }
 
     // hash. for cache.  keep cache warm
@@ -3703,7 +3705,7 @@ enode import_parse(silver mod) {
         }
 
         each(module_paths, path, m) {
-            Au_import(mod, m);
+            Au_import(mod, m, null);
         }
 
         // should only do this if its a global import and has no namespace
@@ -3716,7 +3718,7 @@ enode import_parse(silver mod) {
 
     if (is_codegen) {
         mem->is_codegen = true;
-        string name = namespace ? (string)namespace : string(is_codegen->name);
+        string name = namespace ? (string)namespace : string(is_codegen->ident);
         set(mod->codegens, name, mdl->codegen);
     }
     
@@ -3887,7 +3889,7 @@ array chatgpt_generate_fn(chatgpt a, fn f, array query) {
             } else if (instanceof(typeid(string), info)) {
                 item = m("type", "text", "text", info);
             } else {
-                fault("unknown type in dictation: %s", isa(info)->name);
+                fault("unknown type in dictation: %s", isa(info)->ident);
             }
             push(content, item);
         }

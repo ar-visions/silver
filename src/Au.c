@@ -250,6 +250,24 @@ none array_push(array a, Au b) {
     a->origin[a->count++] = a->unmanaged ? b : hold(b);
 }
 
+static Au_t* member_pool;
+static int   n_members;
+
+Au array_qpush(array a, Au b) {
+    if (!a->origin || a->alloc == a->count)
+        array_expand(a);
+    a->origin[a->count++] = b;
+    return b;
+}
+
+Au_t Au_alloc_member(Au_t type) {
+    if (n_members == 0) {
+        member_pool = calloc(256, n_members);
+        n_members = 256;
+    }
+    return array_qpush(&type->members, member_pool[--n_members]);
+}
+
 none array_clear(array a) {
     if (!a->unmanaged)
         for (num i = 0; i < a->count; i++) {
@@ -369,7 +387,7 @@ num array_compare(array a, array b) {
     return 0;
 }
 
-Au array_peek(array a, num i) {
+Au collective_peek(collective a, num i) {
     if (i < 0 || i >= a->count)
         return null;
     return a->origin[i];
@@ -506,15 +524,17 @@ static bool   started = false;
 
 Au_t Au_module(symbol name) {
     if (!module) return &au;
-    if (module && name == module->ident) return module;
+    if (module && strcmp(name, module->ident) == 0) return module;
     verify(module_map, "expected module map allocation");
     string k = string(name);
     return get(module_map, k);
 }
 
 // this tells us where to put models
-none register_module(Au_t next_module) {
-    module = next_module;
+Au_t Au_register_module(symbol next_module) {
+    module = calloc(1, sizeof(struct _Au_t));
+    module->ident = next_module;
+    return module;
 }
 
 // drop: when ref count is already 0, it means its an unmanaged object (no operations on these)
@@ -1928,7 +1948,7 @@ string Au_cast_string(Au a) {
     // convenient feature of new object abi
     if (!type) {
         type = (Au_t)a;
-        return string(type->name);
+        return string(type->ident);
     }
 
     Au a_header = header(a);
@@ -5522,7 +5542,8 @@ define_class(token, string)
 define_class(tokens, array, token)
 
 define_class(item, Au)
-//define_proto(collection) -- disabling for now during reduction to base + class + mod
+
+define_class(collective, Au)
 define_class(list,    collective, Au)
 define_class(array,   collective, Au, shape)
 define_class(map,     collective, Au, Au)
@@ -5530,8 +5551,8 @@ define_class(ctx,            map)
 define_class(subprocedure,    Au)
 
 //define_class(Au_ts,           array, Au_t)
-define_class(array_map,        array, map)
-define_class(array_string,     array, string)
+//define_class(array_map,        array, map)
+//define_class(array_string,     array, string)
 
 define_enum  (interface)
 define_enum  (comparison)

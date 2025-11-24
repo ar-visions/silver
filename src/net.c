@@ -150,19 +150,20 @@ sz Session_send_string(Session s, string v) {
     printf("%s", v->chars);
     if (len(v) && v->chars[len(v) - 1] != '\n')
         printf("\r\n");
-    return send(s, v->chars, v->len);
+    return send(s, v->chars, v->count);
 }
 
 vector Session_read_until(Session s, string match, i32 max_len) {
     vector rbytes = new(vector);
     vector_reallocate(rbytes, max_len + 1);
 
-    sz slen = match->len;
+    sz slen = match->count;
     cstr buf = vdata(rbytes);
     
     for (;;) {
         vector_push(rbytes, _i8(0)); // extend buffer size here with a null, giving us space to read
-        sz sz = len(rbytes);
+        sz sz = rbytes->count;
+        verify(sz, "invalid");
         if (!recv(s, &buf[sz - 1], 1))
             return null;
             
@@ -414,7 +415,7 @@ bool message_read_content(message m, sock sc) {
         if (v) {
             clen = atoi(v->chars);
         } else {
-            print("unsupported len format: %s", isa(o)->name);
+            print("unsupported len format: %s", isa(o)->ident);
         }
     }
     
