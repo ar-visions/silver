@@ -1,32 +1,37 @@
+import <stdio.h, ctype.h>
+
+class something
+    mem:int[4]
+    fn action[]
+        puts['something is equal to {mem}']
+
+main aclass
+    member : f32 [ 1.2 ] # public is default in silver ([-] verify)
+
+	fn init [ ]
+        #str: string-together["an input string"]
+        #str += member
+
+        s:something[mem:8]
+        s.action[]
+        puts['i can verify its value is {s.mem}']
+
+
+##
+
 # import must come first, and exports are after -- last if you prefer, giving them members you may call at design-time
-import chatgpt
-    model:'gpt-5'
+#import chatgpt
+#    model:'gpt-5'
 
 # arrays have an optional comma, but required comma when defining an array shape (last-dim-stride)
 i = array <i32, 3x2> [ 1 2, 3 4, 2 2 ]
-m : array <path>     [ car1.spec car2.spec car3.spec ]
-
-# here we are demonstrating a design mode in silver, using available module data
-const for i in m export images/{i} using chatgpt
-
-    gen ['with these cars, we generate picturesque scenes of good shots of our car designs on Europa, 
-     they ride atop magnetic-plasma confinement on a waht is a track of fields with gaps allowing one to
-     see through to the surface in caves on on surface of planet.']
-    
-    secret: string ['can you believe you made these?']
-    secret += 'really, can you?'
-
-    if i == car3.spec
-        gen [images/car1.png, images/car1.png,
-            'do something great with this one, given inspiration from car1 and car2, {secret}']
+m : array <path>     [ 'car1.spec' 'car2.spec' 'car3.spec' ]
 
 # return types must be type-expr based, 
 # we cannot take in a 'something' for example, 
 # because it may be the first operation in a none returning fn
-# ----------------------------------------------
 fn string-together [ something:string ] string
     return '{something} and {something} else'
-
 
 main aclass
     member : f32 [ 1.2 ] # public is default in silver ([-] verify)
@@ -48,9 +53,16 @@ main aclass
 # ----------------------------------------------
 
 ##
+
+# here we are demonstrating a design mode in silver, using available module data
+const for i in m export images/{i} using chatgpt
+    [['with these cars, we generate picturesque scenes of good shots of our car designs on Europa, 
+they ride atop magnetic-plasma confinement on a waht is a track of fields with gaps allowing one to
+see through to the surface in caves on on surface of planet.']],
+     [ $ path images/car1.png, $ path images/car1.png ],
+     'do something great with this one, given inspiration from car1 and car2, {secret}'
+
 import <stdio.h, ctype.h>
-
-
 
 import KhronosGroup:Vulkan-Headers/main
     <vulkan/vulkan.h>
@@ -75,6 +87,7 @@ something : string[ 'a string of sort..' ]
 
 fn construct-something [ silly:string ] int using chatgpt
     'construct the silliest string you can come up with given the context'
+    done
 
 aa : 2 # i64
 bb : i32[ 2 ]
@@ -164,7 +177,8 @@ main test_vulkan
 
         run_cast = cast i32 [ vk ]
 
-        printf [ "this is constant, and cannot receive {variables}, but we may still use with printf: %s", cstr[string[ i ]] ]
+        variables = 2
+        printf [ "this is constant, and cannot receive {variables}, but we may still use with printf: %s", string[ i ] ]
 
         while [ i < 2 ]
             i += 1

@@ -1143,7 +1143,7 @@ path aether_include(aether e, Au inc, ARef _instance) {
         symbol ident = all_paths[i].ident;
         array  paths = all_paths[i].paths;
         for (int ii = 0; ii < (paths ? paths->len : 0); ii++) {
-            path f = (path)paths->elements[ii];
+            path f = (path)paths->origin[ii];
             //args.push_back("-Xclang");
             args.push_back(ident);
             args.push_back(f->chars);
@@ -1152,14 +1152,14 @@ path aether_include(aether e, Au inc, ARef _instance) {
 
     if (e->framework_paths)
         for (int i = 0; i < e->framework_paths->len; i++) {
-            path fw_path = (path)e->framework_paths->elements[i];
+            path fw_path = (path)e->framework_paths->origin[i];
             string arg = f(string, "-F%o", fw_path);
             args.push_back(arg->chars);
         }
 
     if (e->include_paths)
         for (int i = 0; i < e->include_paths->len; i++) {
-            path inc_path = (path)e->include_paths->elements[i];
+            path inc_path = (path)e->include_paths->origin[i];
             string arg = f(string, "%o", inc_path);
             //args.push_back("-Xclang");
             args.push_back("-isystem");

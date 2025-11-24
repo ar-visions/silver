@@ -140,29 +140,40 @@ typedef float                  *ref_f32;
 typedef double                 *ref_f64;
 typedef long double            *ref_f80;
 
+
 #define Au_f_members(B) \
-    Au_t           parent_type; \
-    char*           name; \
-    char*           module; \
-    Au_t*          sub_types; \
-    i16             sub_types_count; \
-    i16             sub_types_alloc; \
+    Au_t            parent; \
+    union { Au_t src, rtype, type; }; \
+    Au_t            user; \
+    Au_t            module; \
+    char*           ident; \
+    i64             index; \
+    object          value; \
+    int             global_count; \
+    int             member_type; \
+    int             operator_type; \
+    int             traits; \
+    int             offset; \
     int             size; \
     int             isize; \
-    af_recycler     af; \
-    int             magic; \
-    int             global_count; \
-    int             vmember_count; \
-    Au_t           vmember_type; \
-    int             member_count; \
-    member          members; \
-    int             traits; \
-    void*           user; \
-    u64             required[2]; \
-    Au_t           src; \
-    void*           arb; \
+    void*           ptr; \
+    au_core         af; \
+    struct _object  members_info; \
+    struct _collective_abi  members; \
+    struct _object  meta_info; \
+    struct _collective_abi  meta; \
     struct _shape*  shape; \
-    _meta_t         meta; \
+    u64             required[2];
+
+typedef struct _au_core {
+    struct _object** af4;
+    i64     af_count;
+    i64     af_alloc;
+    struct _object** re;
+    i64     re_count;
+    i64     re_alloc;
+    void*   arb;
+} *au_core;
 
 #define declare_typedef(X) \
     typedef struct _ ## X* X;
@@ -185,7 +196,6 @@ typedef long double            *ref_f80;
         AA##_intern (AA, INST_L, __VA_ARGS__) \
         AA##_intern_footer (AA) \
         struct _##AA##_f* f; \
-        struct _##AA##_f* f2; \
     } *AA; \
     AA##_schema (AA, DECL) \
     typedef struct _##AA##_f { \
@@ -256,19 +266,22 @@ void lazy_init(global_init_fn fn);
             lazy_init((global_init_fn)&global_##E); \
             return false; \
         } else { \
-            memcpy(type_ref, base_ref, sizeof(struct _Au_t)); \
-            static struct _member members[64 + ENUM_COUNT(E##_schema(E, T, COUNT)) + sizeof(E##_i.type) / sizeof(void*)]; \
             memset(type_ref, 0, sizeof(E##_i.type)); \
-            type_ref->magic = 1337; \
+            memcpy(type_ref, base_ref, sizeof(struct _Au_t)); \
+            type_ref->members.alloc     = 128; \
+            type_ref->members.assorted  = true; \
+            type_ref->members.unmanaged = true; \
+            array_init(&type_ref->members); \
+            type_ref->meta.alloc        = 16; \
+            type_ref->meta.assorted  = true; \
+            type_ref->meta.unmanaged = true; \
+            array_init(&type_ref->meta); \
             type_ref->src      = typeid(T); \
-            type_ref->parent_type = (__typeof__(E##_i.type.parent_type))& Au_i.type; \
-            type_ref->name     = #E;                 \
-            type_ref->module   = MODULE;             \
+            type_ref->parent   = (__typeof__(E##_i.type.parent))& Au_i.type; \
+            type_ref->ident    = #E;                 \
+            type_ref->module   = Au_module(MODULE); \
             type_ref->size     = sizeof(E);          \
-            type_ref->members  = members;            \
-            type_ref->member_count = 0;              \
             type_ref->traits   = AU_TRAIT_ENUM;       \
-            type_ref->arb      = primitive_ffi_arb(typeid(i32)); \
             E##_schema( E, T, IMPL ); \
             push_type((Au_t)type_ref); \
             return true; \
@@ -293,7 +306,6 @@ void lazy_init(global_init_fn fn);
         AA##_intern (AA, INST_L, __VA_ARGS__) \
         u8 AA##_interns [0 AA##_intern(AA, ISIZE, __VA_ARGS__)]; \
         struct _##AA##_f* f; \
-        struct _##AA##_f* f2; \
     } *AA; \
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
@@ -321,7 +333,6 @@ void lazy_init(global_init_fn fn);
         AA##_intern (AA, INST_L, __VA_ARGS__) \
         u8 AA##_interns [0 AA##_intern (AA, ISIZE, __VA_ARGS__)]; \
         struct _##AA##_f* f; \
-        struct _##AA##_f* f2; \
     } *AA; \
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
@@ -353,7 +364,6 @@ void lazy_init(global_init_fn fn);
         AA##_intern (AA, INST_L, __VA_ARGS__) \
         u8 AA##_interns [0 AA##_intern (AA, ISIZE, __VA_ARGS__)]; \
         struct _##AA##_f* f; \
-        struct _##AA##_f* f2; \
     } *AA; \
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
@@ -393,7 +403,6 @@ void lazy_init(global_init_fn fn);
         AA##_intern (AA, INST_L, __VA_ARGS__) \
         u8 AA##_interns [0 AA##_intern (AA, ISIZE, __VA_ARGS__)]; \
         struct _##AA##_f* f; \
-        struct _##AA##_f* f2; \
     } *AA; \
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
@@ -417,7 +426,6 @@ void lazy_init(global_init_fn fn);
     typedef struct _##AA { \
         BASE##_intern (AA, INST, __VA_ARGS__) \
         struct _##AA##_f* f; \
-        struct _##AA##_f* f2; \
     } *AA; \
     typedef struct _##AA##_f { \
         Au_f_members(BASE) \
@@ -464,74 +472,56 @@ typedef Au_t* Au_ts;
 /// alias lets use tag types with an array of types, enabling 
 /// design-time and runtime template-like functionality, with 
 /// permutation of the class-type and instance-type
-#define define_arb(TYPE, BASE, TYPE_SZ, TRAIT, VMEMBER_COUNT, VMEMBER_TYPE, POST_PUSH, ...) \
+#define define_arb(TYPE, BASE, TYPE_SZ, TRAIT, ...) \
     _Pragma("pack(push, 1)") \
-    __thread struct _af_recycler TYPE##_af; \
+    __thread struct _au_core TYPE##_af; \
     TYPE##_info TYPE##_i; \
     _Pragma("pack(pop)") \
     static __attribute__((constructor)) bool Aglobal_##TYPE() { \
         TYPE##_f* type_ref = &TYPE##_i.type; \
         BASE##_f* base_ref = &BASE##_i.type; \
-        if (!Au_t_i.type.name) { \
-            Au_t_i.type.name   = "Au_t"; \
-            Au_t_i.type.traits = AU_TRAIT_BASE; \
+        if (!Au_t_i.type.ident) { \
+            Au_t_i.type.ident   = "Au_t"; \
             Au_t_i.type.src    = typeid(Au); \
         } \
-        int validate_count = 0; \
         if ((Au_t)type_ref != (Au_t)base_ref && (!base_ref->traits)) { \
             lazy_init((global_init_fn)&Aglobal_##TYPE); \
             return false; \
         } else { \
-            fflush(stdout); \
-            memset(type_ref, 0,        sizeof(TYPE##_f)); \
+            memset(type_ref, 0, sizeof(TYPE##_f)); \
             if ((Au_t)type_ref != (Au_t)base_ref) \
                 memcpy(type_ref, base_ref, sizeof(BASE##_f)); \
-            type_ref->name = #TYPE; \
+            type_ref->members.alloc     = 128; \
+            type_ref->members.assorted  = true; \
+            type_ref->members.unmanaged = true; \
+            array_init(&type_ref->members); \
+            type_ref->meta.alloc     = 16; \
+            type_ref->meta.assorted  = true; \
+            type_ref->meta.unmanaged = true; \
+            array_init(&type_ref->meta); \
+            type_ref->ident = #TYPE; \
             type_ref->af = &TYPE##_af; \
-            type_ref->af->re_alloc = 1024; \
-            type_ref->af->re = (object*)(Au*)calloc(1024, sizeof(Au)); \
             type_ref->isize = 0 TYPE##_schema( TYPE, ISIZE_EXTERN, __VA_ARGS__ ); \
-            type_ref->magic = 1337; \
-            printf("global init: %s (isize: %i)\n", type_ref->name, type_ref->isize); \
-            static struct _member members[512]; \
             type_ref->src = (Au_t)base_ref != typeid(Au) \
                  ? (Au_t)base_ref : (Au_t)null; \
-            type_ref->parent_type = \
-                (__typeof__(type_ref->parent_type))&BASE##_i.type; \
-            type_ref->module        = (cstr)MODULE; \
-            type_ref->members       = members; \
-            type_ref->member_count  = 0; \
+            type_ref->parent = \
+                (__typeof__(type_ref->parent))&BASE##_i.type; \
+            type_ref->module        = Au_module((cstr)MODULE); \
             type_ref->size          = TYPE_SZ; \
-            type_ref->vmember_count = VMEMBER_COUNT; \
-            type_ref->vmember_type  = (Au_t)VMEMBER_TYPE; \
             type_ref->traits        = TRAIT; \
-            type_ref->meta          = (_meta_t) { emit_types(__VA_ARGS__) }; \
-            type_ref->arb           = primitive_ffi_arb(typeid(TYPE)); \
-        TYPE##_schema( TYPE, INIT, __VA_ARGS__ ) \
+            set_meta_array(type_ref, emit_types(__VA_ARGS__)); \
+            TYPE##_schema( TYPE, INIT, __VA_ARGS__ ); \
             push_type((Au_t)type_ref); \
-            POST_PUSH; \
             return true; \
         } \
     } \
 
 
-#define define_init(id, ...) \
-    static __attribute__((constructor)) none Aglobal_initializer_##id() { \
-        __VA_ARGS__; \
-    }
-
-// define any class as vectorable; useful for serialization and other things
-#define define_vector(t, scalar, count) \
-    define_init(t, t##_i.type.vmember_type = typeid(scalar); t##_i.type.vmember_count = count)
-
 #define define_any(A0, A1, SZ, traits, ...) \
-    define_arb(A0, A1, SZ, traits, 0, null, ({}), __VA_ARGS__)
+    define_arb(A0, A1, SZ, traits, __VA_ARGS__)
 
 #define define_class(A0, A1, ...) \
     define_any(A0, A1, sizeof(struct _##A0), AU_TRAIT_CLASS, __VA_ARGS__)
-
-#define define_public(A0, A1, ...) \
-    define_any(A0, A1, sizeof(struct _##A0), AU_TRAIT_PUBLIC, __VA_ARGS__)
 
 #define define_struct(A0, ...) \
     define_any(A0, A0, sizeof(struct _##A0), AU_TRAIT_STRUCT, __VA_ARGS__)
@@ -567,10 +557,10 @@ forward(any)
 
 // Au must generate defines for sizes for users of it
 #define Au_schema(AA,Y,...) \
-    i_prop  (AA,Y, intern, Au_t,       type) \
-    i_prop  (AA,Y, intern, Au_t,       scalar) \
+    i_prop  (AA,Y, intern, Au_t,        type) \
+    i_prop  (AA,Y, intern, Au_t,        scalar) \
     i_prop  (AA,Y, intern, i64,         refs) \
-    i_prop  (AA,Y, intern, Au,           data) \
+    i_prop  (AA,Y, intern, Au,          data) \
     i_prop  (AA,Y, intern, shape,       shape) \
     i_prop  (AA,Y, intern, cstr,        source) \
     i_prop  (AA,Y, intern, i64,         line) \
@@ -598,8 +588,8 @@ forward(any)
     i_final (AA,Y, public, Au,           get_property,        symbol) \
     i_final (AA,Y, public, Au,           vrealloc,            sz) \
     s_method(AA,Y, public, Au,           initialize,          Au) \
-    i_final (AA,Y, public, Au,           member_object,       member) \
-    i_final (AA,Y, public, bool,        member_set,          member, Au) \
+    i_final (AA,Y, public, Au,           member_object,       Au_t) \
+    i_final (AA,Y, public, bool,        member_set,           Au_t, Au) \
     i_final (AA,Y, public, Au,           header) \
     i_final (AA,Y, public, Au,           vdata) \
     i_final (AA,Y, public, Au_t,       vdata_type) \
@@ -618,20 +608,20 @@ forward(any)
     t_method(AA,Y, public, bool,        inherits,            Au_t) \
     t_method(AA,Y, public, Au,           construct_with,      Au,         ctx) \
     t_method(AA,Y, public, bool,        constructs_with,     Au_t) \
-    t_method(AA,Y, public, member,      find_ctr,            Au_t, bool) \
-    t_method(AA,Y, public, member,      find_member,         AFlag, symbol,    bool) \
-    t_method(AA,Y, public, member,      member_first,        Au_t, bool) \
-    t_method(AA,Y, public, member,      member_type,         AFlag, Au_t,     bool) \
+    t_method(AA,Y, public, Au_t,        find_ctr,            Au_t, bool) \
+    t_method(AA,Y, public, Au_t,        find_member,         AFlag, symbol,    bool) \
+    t_method(AA,Y, public, Au_t,        member_first,        Au_t, bool) \
+    t_method(AA,Y, public, Au_t,        member_type,         AFlag, Au_t,     bool) \
     t_method(AA,Y, public, Au,           primitive,           raw) \
     t_method(AA,Y, public, Au,           method,              cstr,    array) \
     t_method(AA,Y, public, Au,           parse,               cstr, ctx) \
     t_method(AA,Y, public, i32,         alloc_count) \
     t_method(AA,Y, public, none,        push_type) \
     t_method(AA,Y, public, Au,           typecast,            Au) \
-    s_method(AA,Y, public, none,        member_override,     Au_t, member, AFlag) \
+    s_method(AA,Y, public, none,        member_override,     Au_t, Au_t, AFlag) \
     s_method(AA,Y, public, none,        register_init,       func) \
-    s_method(AA,Y, public, bool,        is_inlay,            member) \
-    s_method(AA,Y, public, Au_t,       find_type,           symbol) \
+    s_method(AA,Y, public, bool,        is_inlay,            Au_t) \
+    s_method(AA,Y, public, Au_t,       find_type,            symbol, Au_t) \
     s_method(AA,Y, public, map,         arguments,           i32, cstrs, map, Au) \
     s_method(AA,Y, public, ARef,        types,               ref_i64) \
     s_method(AA,Y, public, none,        tap,                 symbol, hook) \
@@ -653,8 +643,27 @@ forward(any)
 forward(shape)
 declare_base(Au)
 
+
 #define typeid(AA)   ((Au_t)&AA##_i.type)
 #define scalarof(AA) head(AA)->scalar
+
+forward(item)
+
+// these methods could-be var-arg, however not recommended?
+#define collective_schema(AA,Y,...) \
+    i_prop           (AA,Y, public, i32,     count) \
+    i_prop           (AA,Y, public, i32,     alloc) \
+    i_vprop          (AA,Y, public, Au,      origin) \
+    i_prop           (AA,Y, public, item,    first) \
+    i_prop           (AA,Y, public, item,    last) \
+    i_prop           (AA,Y, public, i64,     hsize) \
+    i_prop           (AA,Y, public, vector,  hlist) \
+    i_prop           (AA,Y, public, bool,    unmanaged)  \
+    i_prop           (AA,Y, public, bool,    assorted) \
+    i_prop           (AA,Y, public, Au_t,    last_type) \
+    i_method         (AA,Y, public, num,     len)
+declare_class(collective)
+
 
 #define numeric_schema(AA,Y,...) \
     i_operator(AA,Y, public, numeric, _add, numeric) \
@@ -731,7 +740,6 @@ declare_abstract(imported)
 #define raw_t_schema(X,Y,...)       raw_schema(X,Y,...)
 #define handle_schema(X,Y,...)      raw_schema(X,Y,...)
 #define Au_t_schema(X,Y,...)       raw_schema(X,Y,...)
-#define member_schema(X,Y,...)      raw_schema(X,Y,...)
 #define func_schema(X,Y,...)        raw_schema(X,Y,...)
 #define hook_schema(X,Y,...)        raw_schema(X,Y,...)
 #define callback_schema(X,Y,...)    raw_schema(X,Y,...)
@@ -814,7 +822,6 @@ declare_primitive(Au_ts,           raw)
 /// whatever we can 'name', we can handle as a type of any pointer primitive
 //declare_primitive(Au_t,        raw)
 declare_primitive(ARef,         ref)
-declare_primitive(member,       raw)
 declare_primitive(floats,       raw)
 
 
@@ -867,23 +874,19 @@ declare_class(item)
 
 /// linked-list of elemental data
 #define list_schema(X,Y,...) \
-    i_prop  (X,Y, opaque,    item,    first) \
-    i_prop  (X,Y, opaque,    item,    last)  \
-    i_prop  (X,Y, opaque,    map,     assoc)  \
-    i_prop  (X,Y, public,    bool,    unmanaged)  \
-    i_prop  (X,Y, public,    i64,     count) \
-    i_method(X,Y, public,    Au,  pop) \
+    i_method(X,Y, public,    Au,      pop) \
     i_method(X,Y, public,    item,    push, Au) \
+    i_method(X,Y, public,    none,    push_item, item) \
     i_method(X,Y, public,    item,    insert_after, Au, i32) \
     i_method(X,Y, public,    num,     index_of, Au) \
-    i_method(X,Y, public,    item,     item_of, Au) \
+    i_method(X,Y, public,    item,    item_of, Au) \
     i_method(X,Y, public,    none,    sort,   ARef) \
     i_method(X,Y, public,    none,    remove, num) \
     i_method(X,Y, public,    none,    remove_item, item) \
     i_method(X,Y, public,    Au,  get,  Au) \
     i_method(X,Y, public,    num,     count) \
     i_override(X,Y, method, dealloc)
-declare_class(list)
+declare_class_2(list, collective)
 
 /// array of elemental data
 /// important to define the same operators here in silver definition of runtime
@@ -1094,11 +1097,10 @@ forward(array)
     i_method(X,Y, public, vector,  slice, num, num) \
     i_method(X,Y, public, Au,       resize, sz) \
     i_method(X,Y, public, Au,       reallocate, sz) \
-    i_guard(X,Y, public, sz,      len) \
+    i_override(X,Y, method, init) \
     i_ctr(X,Y, public, i32) \
-    i_ctr(X,Y, public, path) \
-    i_override  (X,Y, method, init)
-declare_class(vector)
+    i_ctr(X,Y, public, path)
+declare_class(vector, collective)
 
 
 // let us declare our vector with string
@@ -1115,20 +1117,39 @@ declare_class(subprocedure)
 
 typedef Au(*mix_fn)(Au, Au, f32);
 
+// keyword methods, is a simple public method idea to elevate it bracket-less status
+// however, the user can define keyword interface, so we can do that.  required is just
+// another one of those interfaces that are used in use-case.
+#define interface_schema(E,T,Y,...) \
+    enum_value       (E,T,Y, undefined,  0) \
+    enum_value       (E,T,Y, intern,     1) \
+    enum_value       (E,T,Y, public,     2) \
+    enum_value       (E,T,Y, guard,      3) \
+    enum_value       (E,T,Y, context,    4) \
+    enum_value       (E,T,Y, keyword,    5)
+declare_enum(interface)
+
+#define comparison_schema(E,T,Y,...) \
+    enum_value(E,T,Y, equals,            32) \
+    enum_value(E,T,Y, not_equals,        33) \
+    enum_value(E,T,Y, u_greater_than,    34) \
+    enum_value(E,T,Y, u_greater_than_e,  35) \
+    enum_value(E,T,Y, u_less_than,       36) \
+    enum_value(E,T,Y, u_less_than_e,     37) \
+    enum_value(E,T,Y, s_greater_than,    38) \
+    enum_value(E,T,Y, s_greater_than_e,  39) \
+    enum_value(E,T,Y, s_less_than,       40) \
+    enum_value(E,T,Y, s_less_than_e,     41)
+declare_enum(comparison)
+
+
 #define array_schema(AA,Y,O,...) \
-    i_vprop          (AA,Y, public, Au,       elements) \
-    i_prop           (AA,Y, public, bool,    unmanaged) \
-    i_prop           (AA,Y, public, bool,    assorted) \
-    i_prop           (AA,Y, opaque, Au_t,   last_type) \
-    i_prop           (AA,Y, public, i32,     alloc) \
-    i_prop           (AA,Y, public, i32,     len) \
-    i_prop           (AA,Y, public, map,     fields) \
     s_vargs          (AA,Y, public, array,   array_of,       Au) \
     s_vargs          (AA,Y, public, array,   array_of_cstr,  cstr) \
     i_method         (AA,Y, public, array,   mix, array, f32) \
-    i_method         (AA,Y, public, Au,       first) \
-    i_method         (AA,Y, public, Au,       last) \
-    i_method         (AA,Y, public, Au,       pop) \
+    i_method         (AA,Y, public, Au,      first_element) \
+    i_method         (AA,Y, public, Au,      last_element) \
+    i_method         (AA,Y, public, Au,      pop) \
     i_method         (AA,Y, public, array,   shift) \
     i_method         (AA,Y, public, string,  join, cstr) \
     i_method         (AA,Y, public, none,    fill,           Au) \
@@ -1143,7 +1164,6 @@ typedef Au(*mix_fn)(Au, Au, f32);
     i_method         (AA,Y, public, Au,       get,            num) \
     i_method         (AA,Y, public, Au,       peek,           num) \
     i_method         (AA,Y, public, num,     count) \
-    i_guard          (AA,Y, public, sz,      len) \
     i_method         (AA,Y, public, num,     index_of,       Au) \
     i_operator       (AA,Y, public, none,    _assign_add,    Au) \
     i_operator       (AA,Y, public, none,    _assign_sub,    num) \
@@ -1156,7 +1176,7 @@ typedef Au(*mix_fn)(Au, Au, f32);
     i_override       (AA,Y, method, dealloc) \
     i_override       (AA,Y, cast,   bool) \
     i_override       (AA,Y, cast,   string)
-declare_class(array, any)
+declare_class_2(array, collective)
 
 Exists Au_exists(Au);
 
@@ -1165,25 +1185,6 @@ Exists Au_exists(Au);
     i_ctr            (X,Y, public, Au) \
     i_override       (X,Y, cast,   string)
 declare_class(srcfile)
-
-#define hashmap_schema(X,Y,...) \
-    i_prop      (X,Y, opaque, list,  data) \
-    i_prop      (X,Y, public, num,   alloc) \
-    i_prop      (X,Y, public, num,   count) \
-    i_prop      (X,Y, public, bool,  unmanaged) \
-    i_method    (X,Y, public, none,  remove, Au) \
-    i_method    (X,Y, public, none,  set, Au, Au) \
-    i_method    (X,Y, public, Au,get, Au) \
-    i_method    (X,Y, public, item,  fetch, Au) \
-    i_method    (X,Y, public, item,  lookup, Au) \
-    i_method    (X,Y, public, bool,  contains, Au) \
-    i_method    (X,Y, public, none,  clear) \
-    i_index     (X,Y, public, Au, Au) \
-    i_override  (X,Y, cast,   string) \
-    i_override  (X,Y, method, init) \
-    i_override  (X,Y, method, dealloc) \
-    i_override  (X,Y, cast,   bool)
-declare_class(hashmap)
 
 extern int fault_level;
 
@@ -1194,16 +1195,9 @@ extern int fault_level;
 declare_enum(level)
 
 #define map_schema(X,Y,...) \
-    i_prop      (X,Y, public,  list,       fifo) \
-    i_prop      (X,Y, opaque,  i64,        count) \
-    i_prop      (X,Y, public,  i32,        hsize) \
-    i_prop      (X,Y, opaque,  item*,      hlist) \
-    i_prop      (X,Y, public,  bool,       unmanaged)  \
-    i_prop      (X,Y, opaque,  Au_t,      last_type) \
-    i_prop      (X,Y, public,  bool,       assorted)  \
     i_method    (X,Y, public,  none,       set,        Au, Au) \
-    i_method    (X,Y, public,  Au,     get,        Au) \
-    i_method    (X,Y, public,  Au,          value_by_index, num) \
+    i_method    (X,Y, public,  Au,         get,        Au) \
+    i_method    (X,Y, public,  Au,         value_by_index, num) \
     i_method    (X,Y, public,  item,       lookup,     Au) \
     i_method    (X,Y, public,  item,       fetch,      Au) \
     i_method    (X,Y, public,  none,       rm,         Au) \
@@ -1211,16 +1205,15 @@ declare_enum(level)
     i_method    (X,Y, public,  bool,       contains,   Au) \
     i_method    (X,Y, public,  none,       concat,     map) \
     i_method    (X,Y, public,  none,       clear) \
-    i_guard     (X,Y, public,  sz,         len) \
-    i_index     (X,Y, public,  Au,     sz) \
-    i_index     (X,Y, public,  Au,     Au) \
+    i_index     (X,Y, public,  Au,         sz) \
+    i_index     (X,Y, public,  Au,         Au) \
     i_ctr       (X,Y, public,  i32) \
     i_override  (X,Y, method,  init) \
     i_override  (X,Y, method,  dealloc) \
     i_override  (X,Y, cast,    string) \
     i_override  (X,Y, cast,    bool) \
     i_override  (X,Y, method,  copy)
-declare_class(map)
+declare_class_2(map, collective)
 
 #define ctx_schema(X,Y,...) \
     i_prop(X,Y, public, Au, app) \
@@ -1237,7 +1230,7 @@ declare_class(ipart)
     i_prop    (AA,Y,   public, symbol,  chars) \
     i_prop    (AA,Y,   public, num,     alloc) \
     i_prop    (AA,Y,   public, num,     ref_length) \
-    i_prop    (AA,Y,   public, num,     len) \
+    i_prop    (AA,Y,   public, num,     count) \
     i_prop    (AA,Y,   public, u64,     h) \
     i_method  (AA,Y,   public, string,  evaluate, map) \
     i_method  (AA,Y,   public, bool,    is_numeric) \
@@ -1367,7 +1360,7 @@ declare_class_2(tokens, array)
     i_method    (X,Y, public, string, base64) \
     i_method    (X,Y, public, string, filename) \
     i_method    (X,Y, public, path,   absolute) \
-    i_method    (X,Y, public, path,   parent) \
+    i_method    (X,Y, public, path,   parent_dir) \
     i_method    (X,Y, public, Au,      load, Au_t, ctx) \
     i_method    (X,Y, public, bool,   save, Au,     ctx) \
     i_method    (X,Y, public, path,   change_ext, cstr) \
@@ -1572,7 +1565,7 @@ declare_class(rect)
     i_struct_ctr    (O, Y, quatf) \
     i_struct_method (O, Y, O,        inverse) \
     i_struct_method (O, Y, O,        transpose) \
-    i_struct_static (O, Y, O,        ident) \
+    i_struct_static (O, Y, O,        identity) \
     i_struct_static (O, Y, O,        perspective, f32, f32, f32, f32) \
     i_struct_static (O, Y, O,        ortho,      f32, f32, f32, f32, f32, f32) \
     i_struct_static (O, Y, O,        look_at,    vec3f*, vec3f*, vec3f*) \
@@ -1635,6 +1628,12 @@ vector_rgba8 vector_rgba8_new(shape count, ...);
 vector_rgbaf vector_rgbaf_new(shape count, ...);
 vector_rgb8  vector_rgb8_new (shape count, ...);
 vector_rgbf  vector_rgbf_new (shape count, ...);
+
+none set_meta_array(Au_t type, int count, ...);
+none set_meta_map(Au_t type, int count, ...);
+Au_t meta_index(Au a, int i);
+
+none array_init(array);
 
 #define weak_schema(X,Y,...)
 declare_abstract(weak)

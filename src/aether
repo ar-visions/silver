@@ -17,27 +17,6 @@ typedef struct _record*      record;
 typedef struct _enode*       enode;
 typedef struct _fn*          fn;
 
-#define comparison_schema(E,T,Y,...) \
-    enum_value(E,T,Y, equals,            32) \
-    enum_value(E,T,Y, not_equals,        33) \
-    enum_value(E,T,Y, u_greater_than,    34) \
-    enum_value(E,T,Y, u_greater_than_e,  35) \
-    enum_value(E,T,Y, u_less_than,       36) \
-    enum_value(E,T,Y, u_less_than_e,     37) \
-    enum_value(E,T,Y, s_greater_than,    38) \
-    enum_value(E,T,Y, s_greater_than_e,  39) \
-    enum_value(E,T,Y, s_less_than,       40) \
-    enum_value(E,T,Y, s_less_than_e,     41)
-declare_enum(comparison)
-
-
-#define interface_schema(E,T,Y,...) \
-    enum_value(E,T,Y, undefined,  0) \
-    enum_value(E,T,Y, intern,     1) \
-    enum_value(E,T,Y, public,     2) \
-    enum_value(E,T,Y, context,    3)
-declare_enum(interface)
-
 /*
 #define reference_schema(E,T,Y,...) \
     enum_value(E,T,Y, value,      0) \
@@ -242,6 +221,7 @@ forward(emember)
 #define enode_schema(X,Y,...)\
     i_prop    (X,Y, public,     token,                  name) \
     i_prop    (X,Y, public,     aether,                 mod) \
+    i_prop    (X,Y, public,     enode,                  target) \
     i_prop    (X,Y, required,   model,                  mdl) \
     i_prop    (X,Y, public,     array,                  meta) \
     i_prop    (X,Y, public,     bool,                   explicit_ref) \

@@ -31,7 +31,7 @@
 	],
 	"settings": {
 		"files.associations": {
-			"*.sf": "coffeescript",
+			"*.ag": "coffeescript",
 			"*.si": "csharp",
 			"unordered_map": "cpp",
 			"algorithm": "cpp",

@@ -64,7 +64,7 @@ def get_platform_info():
             'inc': ['/usr/include', '/usr/include/x86_64-linux-gnu'],
             'lib_dirs': [],
             'lflags': ['-fuse-ld=lld', '-lstdc++'],
-            'cflags': ['-D_DLL', '-D_MT'],
+            'cflags': ['-D_DLL', '-D_MT', '-fmacro-backtrace-limit=0'],
             'cxxflags': ['-D_DLL', '-D_MT'],
             'libs': ['-lc', '-lm']
         }

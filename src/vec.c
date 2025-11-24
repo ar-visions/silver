@@ -328,7 +328,7 @@ mat4f mat4f_scale(mat4f* a, vec3f* f) {
 
 // any 'shape' in A-type model applies on top of vmember_count
 mat4f mat4f_translate(mat4f* a, vec3f* offsets) {
-    mat4f tr = mat4f_ident();
+    mat4f tr = mat4f_identity();
     tr.m[12] = offsets->x; // Column-major: m[12] = (3,0)
     tr.m[13] = offsets->y; // Column-major: m[13] = (3,1)
     tr.m[14] = offsets->z; // Column-major: m[14] = (3,2)
@@ -455,7 +455,7 @@ mat4f mat4f_inverse(mat4f* mat) {
     return res;
 }
 
-mat4f mat4f_ident() {
+mat4f mat4f_identity() {
     return mat4f((floats)null);
 }
 
@@ -564,35 +564,16 @@ rgbaf rgbaf_with_vec4f(vec4f* v4) {
     return *(rgbaf*)v4;
 }
 
-define_struct(rgb8, u8)
-define_vector(rgb8, u8, 3)
-
-define_struct(rgbf, f32)
-define_vector(rgbf, f32, 3)
-
-define_struct(rgba8, u8)
-define_vector(rgba8, u8, 4)
-
-define_struct(rgba16, u16)
-define_vector(rgba16, u16, 4)
-
-define_struct(rgbaf, f32)
-define_vector(rgbaf, f32, 4)
-
-define_struct(quatf, f32)
-define_vector(quatf, f32, 4)
-
-define_struct(vec4f, f32)
-define_vector(vec4f, f32, 4)
-
-define_struct(vec3f, f32)
-define_vector(vec3f, f32, 3)
-
-define_struct(vec2f, f32)
-define_vector(vec2f, f32, 2)
-
-define_struct(mat4f, f32)
-define_vector(mat4f, f32, 16)
+define_struct(rgb8,   u8,  u8,  u8)
+define_struct(rgba8,  u8,  u8,  u8,  u8)
+define_struct(rgba16, u16, u16, u16, u16)
+define_struct(rgbaf,  f32, f32, f32, f32)
+define_struct(quatf,  f32, f32, f32, f32)
+define_struct(vec4f,  f32, f32, f32, f32)
+define_struct(vec3f,  f32, f32, f32)
+define_struct(vec2f,  f32, f32)
+define_struct(mat4f,  f32, f32, f32, f32, f32, f32, f32, f32,
+                      f32, f32, f32, f32, f32, f32, f32, f32)
 
 define_class(rect, Au)
 
