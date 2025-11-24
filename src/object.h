@@ -73,11 +73,12 @@ typedef struct _method_t *method_t;
 typedef struct _object *object;
 
 typedef struct _collective_abi {
-    i64             count;
-    i64             alloc;
+    i32             count;
+    i32             alloc;
+    i32             hsize;
+    i32             esize;
     ARef            origin;
     struct _item*   first, *last;
-    i64             hsize;
     struct _vector* hlist;
     bool            unmanaged;
     bool            assorted;

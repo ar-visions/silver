@@ -337,7 +337,7 @@ static record create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::s
         record base_rec = (record)create_class(
             const_cast<CXXRecordDecl*>(base), ctx, e, get_name((NamedDecl*)base));
         // represent as a synthetic member named "__baseN"
-        i32    N     = len(rec->members);
+        i32    N     = len((collective)rec->members);
         string bname = f(string, "__base%i", N);
         emember m = emember(mod, rec->mod, name, (token)bname, mdl, (model)base_rec);
         m->index = N;
@@ -763,7 +763,7 @@ static model map_clang_type_to_model(const QualType& qt, ASTContext& ctx, aether
     if (const PointerType* pt = dyn_cast<PointerType>(type)) {
         QualType pointee = pt->getPointeeType();
         if (use_name) {
-            model existing = use_name->len ? emodel(use_name->chars) : (model)null;
+            model existing = use_name->count ? emodel(use_name->chars) : (model)null;
             if (existing) return existing;
         }
         // function pointers
@@ -996,7 +996,7 @@ public:
             input, (Au)string(def.c_str()));
         mod->cmode = cmode;
 
-        if (!len(t))
+        if (!len((collective)t))
             return;
 
         if (params) {
@@ -1142,7 +1142,7 @@ path aether_include(aether e, Au inc, ARef _instance) {
     for (int i = 0, l = 2; i < l; i++) {
         symbol ident = all_paths[i].ident;
         array  paths = all_paths[i].paths;
-        for (int ii = 0; ii < (paths ? paths->len : 0); ii++) {
+        for (int ii = 0; ii < (paths ? paths->count : 0); ii++) {
             path f = (path)paths->origin[ii];
             //args.push_back("-Xclang");
             args.push_back(ident);
@@ -1151,14 +1151,14 @@ path aether_include(aether e, Au inc, ARef _instance) {
     }
 
     if (e->framework_paths)
-        for (int i = 0; i < e->framework_paths->len; i++) {
+        for (int i = 0; i < e->framework_paths->count; i++) {
             path fw_path = (path)e->framework_paths->origin[i];
             string arg = f(string, "-F%o", fw_path);
             args.push_back(arg->chars);
         }
 
     if (e->include_paths)
-        for (int i = 0; i < e->include_paths->len; i++) {
+        for (int i = 0; i < e->include_paths->count; i++) {
             path inc_path = (path)e->include_paths->origin[i];
             string arg = f(string, "%o", inc_path);
             //args.push_back("-Xclang");

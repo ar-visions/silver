@@ -36,7 +36,7 @@ struct _Au_t;
 #define a(...) array_of(__VA_ARGS__ __VA_OPT__(,) null)
 #define m(...)   map_of(__VA_ARGS__ __VA_OPT__(,) null)
 
-#define len(I,...) ({ __typeof__(I) _i_ = I; _i_ ? (num)ftableI(_i_)->len(_i_, ## __VA_ARGS__) : (num)0; })
+#define len(I,...) ({ __typeof__(I) _i_ = I; _i_ ? (num)ftableI(_i_)->len((collective)_i_, ## __VA_ARGS__) : (num)0; })
 
 
 #undef bool
@@ -268,10 +268,10 @@ void lazy_init(global_init_fn fn);
         } else { \
             memset(type_ref, 0, sizeof(E##_i.type)); \
             memcpy(type_ref, base_ref, sizeof(struct _Au_t)); \
-            type_ref->members.alloc     = 128; \
+            type_ref->members.alloc     = 16; \
             type_ref->members.assorted  = true; \
             type_ref->members.unmanaged = true; \
-            array_init(&type_ref->members); \
+            vector_init(&type_ref->members); \
             type_ref->meta.alloc        = 16; \
             type_ref->meta.assorted  = true; \
             type_ref->meta.unmanaged = true; \
@@ -587,7 +587,10 @@ forward(any)
     i_final (AA,Y, public, Au,           set_property,        symbol, Au) \
     i_final (AA,Y, public, Au,           get_property,        symbol) \
     i_final (AA,Y, public, Au,           vrealloc,            sz) \
+    s_method(AA,Y, public, Au_t,         alloc_member,        Au_t) \
     s_method(AA,Y, public, Au,           initialize,          Au) \
+    s_method(AA,Y, public, Au_t,         module,              symbol) \
+    s_method(AA,Y, public, Au_t,         register_module,     symbol) \
     i_final (AA,Y, public, Au,           member_object,       Au_t) \
     i_final (AA,Y, public, bool,        member_set,           Au_t, Au) \
     i_final (AA,Y, public, Au,           header) \
@@ -653,15 +656,18 @@ forward(item)
 #define collective_schema(AA,Y,...) \
     i_prop           (AA,Y, public, i32,     count) \
     i_prop           (AA,Y, public, i32,     alloc) \
+    i_prop           (AA,Y, public, i32,     hsize) \
     i_vprop          (AA,Y, public, Au,      origin) \
     i_prop           (AA,Y, public, item,    first) \
     i_prop           (AA,Y, public, item,    last) \
-    i_prop           (AA,Y, public, i64,     hsize) \
     i_prop           (AA,Y, public, vector,  hlist) \
     i_prop           (AA,Y, public, bool,    unmanaged)  \
     i_prop           (AA,Y, public, bool,    assorted) \
     i_prop           (AA,Y, public, Au_t,    last_type) \
-    i_method         (AA,Y, public, num,     len)
+    i_prop(AA,Y, public, Au_t,   type) \
+    i_prop(AA,Y, public, shape,   shape) \
+    i_guard          (AA,Y, public, num,     len) \
+    i_method         (AA,Y, public, Au,      peek, num)
 declare_class(collective)
 
 
@@ -1087,9 +1093,7 @@ declare_enum(Exists)
 forward(array)
 
 #define vector_schema(X,Y,...) \
-    i_prop(X,Y, public, num,     alloc) \
-    i_prop(X,Y, public, Au_t,   type) \
-    i_prop(X,Y, public, shape,   shape) \
+    i_prop(X,Y, public, Au, placeholder) \
     i_method(X,Y, public, none,    concat, ARef, num) \
     i_method(X,Y, public, ARef,    get,  num) \
     i_method(X,Y, public, none,    set,  num, ARef) \
@@ -1100,7 +1104,9 @@ forward(array)
     i_override(X,Y, method, init) \
     i_ctr(X,Y, public, i32) \
     i_ctr(X,Y, public, path)
-declare_class(vector, collective)
+declare_class_2(vector, collective)
+
+none vector_init(vector);
 
 
 // let us declare our vector with string
@@ -1151,6 +1157,7 @@ declare_enum(comparison)
     i_method         (AA,Y, public, Au,      last_element) \
     i_method         (AA,Y, public, Au,      pop) \
     i_method         (AA,Y, public, array,   shift) \
+    i_method         (AA,Y, public, Au,      qpush, Au) \
     i_method         (AA,Y, public, string,  join, cstr) \
     i_method         (AA,Y, public, none,    fill,           Au) \
     i_method         (AA,Y, public, array,   reverse) \
@@ -1162,7 +1169,6 @@ declare_enum(comparison)
     i_method         (AA,Y, public, none,    clear) \
     i_method         (AA,Y, public, none,    concat,         array) \
     i_method         (AA,Y, public, Au,       get,            num) \
-    i_method         (AA,Y, public, Au,       peek,           num) \
     i_method         (AA,Y, public, num,     count) \
     i_method         (AA,Y, public, num,     index_of,       Au) \
     i_operator       (AA,Y, public, none,    _assign_add,    Au) \
@@ -1444,11 +1450,11 @@ Au      _bool(bool);
 
 string json(Au a);
 
-#define array_string_schema(X,Y,...)
-declare_class_2(array_string,     array, string)
+//#define array_string_schema(X,Y,...)
+//declare_class_2(array_string,     array, string)
 
-#define array_map_schema(X,Y,...)
-declare_class_2(array_map,        array, map)
+//#define array_map_schema(X,Y,...)
+//declare_class_2(array_map,        array, map)
 
 static inline f32 f32_mix(f32 a, f32 b, f32 f) {
     return a * (1.0f - f) + b * f;
@@ -1581,43 +1587,43 @@ declare_struct(mat4f, f32)
 
 // will need to adjust json serialization to facilitate vector with meta types
 #define vector_mat4f_schema(X,Y,...)
-declare_class_2(vector_mat4f, vector, mat4f)
+declare_class_3(vector_mat4f, vector, collective, mat4f)
 
 #define vector_vec4f_schema(X,Y,...)
-declare_class_2(vector_vec4f, vector, vec4f)
+declare_class_3(vector_vec4f, vector, collective, vec4f)
 
 #define vector_vec3f_schema(X,Y,...)
-declare_class_2(vector_vec3f, vector, vec3f)
+declare_class_3(vector_vec3f, vector, collective, vec3f)
 
 #define vector_vec2f_schema(X,Y,...)
-declare_class_2(vector_vec2f, vector, vec2f)
+declare_class_3(vector_vec2f, vector, collective, vec2f)
 
 #define vector_i8_schema(X,Y,...)
-declare_class_2(vector_i8, vector, i8)
+declare_class_3(vector_i8, vector, collective, i8)
 
 #define vector_f32_schema(X,Y,...)
-declare_class_2(vector_f32, vector, f32)
+declare_class_3(vector_f32, vector, collective, f32)
 
 #define vector_f64_schema(X,Y,...)
-declare_class_2(vector_f64, vector, f64)
+declare_class_3(vector_f64, vector, collective, f64)
 
 #define vector_i64_schema(X,Y,...)
-declare_class_2(vector_i64, vector, i64)
+declare_class_3(vector_i64, vector, collective, i64)
 
 #define vector_rgba8_schema(X,Y,...)
-declare_class_2(vector_rgba8, vector, rgba8)
+declare_class_3(vector_rgba8, vector, collective, rgba8)
 
 #define vector_rgba16_schema(X,Y,...)
-declare_class_2(vector_rgba16, vector, rgba16)
+declare_class_3(vector_rgba16, vector, collective, rgba16)
 
 #define vector_rgbaf_schema(X,Y,...)
-declare_class_2(vector_rgbaf, vector, rgbaf)
+declare_class_3(vector_rgbaf, vector, collective, rgbaf)
 
 #define vector_rgb8_schema(X,Y,...)
-declare_class_2(vector_rgb8, vector, rgb8)
+declare_class_3(vector_rgb8, vector, collective, rgb8)
 
 #define vector_rgbf_schema(X,Y,...)
-declare_class_2(vector_rgbf, vector, rgbf)
+declare_class_3(vector_rgbf, vector, collective, rgbf)
 
 vector_f32   vector_f32_new  (shape count, ...);
 vector_f64   vector_f64_new  (shape count, ...);
