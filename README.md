@@ -3,7 +3,7 @@
 
 silver is a reduced-token, reflective systems language built on a reflective polymorphic C model (Au), isolating intern data, and offering more public exposure on members into JSON, CSS, and UX transitions.
 
-The parser and import-related build system imports C, C++, and other languages into Au design-time models -- at design-time, we have actual runtime access to types we import.  By import, we are not merely 'also compiling' but compiling, and running for silver to use at design time.
+The parser and import-related build system imports C, C++, and other languages into Au design-time models -- at design-time, we have actual runtime access to types we import.  By import, we are not merely 'compiling' but also running the module for silver to use at design time.
 
 This lets developers build native apps in very innovative and modern ways -- to run on the most amount of hardware with built in cross compilation, letting you symlink repo clones, so you have a direct way to use and improve open source software from any package we import by its web4-like scheme: 
 
