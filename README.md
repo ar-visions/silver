@@ -12,23 +12,37 @@ as used in a silver app
 ```python
 
 
-# import is the first keyword that utilizes a tokens string; for these we want to allow you to use your $(shell) when you wish, as well as {expression} at design-time
+# import is the first keyword that utilizes a tokens string
+# for these we want to allow you to use your $(shell) when you wish, as well as {expression} at design-time
 # our silver-app-properties are exposed as module members (install:path for one)
+
 import [ KhronosGroup:Vulkan-Tools/main ]
 	-DVULKAN_HEADERS_INSTALL_DIR={install}
 	{linux ?? -DWAYLAND_PROTOCOLS_DIR={install}/checkout/wayland-protocols}
 
-# the above are lines typically found in a Makefile, or two -- however with silver we wanted the language to build a software install that can define in code.
+# the above are lines typically found in a Makefile, or two -- 
+# however with silver we wanted the language to build a software install that can define in code.
 # this is keeping with Au's .g technique for graphing dependencies per compile-unit.
 
-import <stdio.h> # lets include C models, and even type/value macros; macros with matching type definitions are registered as type aliases. 
+import <stdio.h> # lets include C models, and even type/value macros
 
+# note: macros with matching type definitions are registered as type aliases, similar to how Swift imports types from C
+
+# main is a hard-coded abstract class which sets properties by their 
 main app
-	override fn init[]
+    # this lambda is called as an exception printer, of sort.  otherwise public/intern members may be called to construct their own defaults
+    # please notice this happens in the order of the membership, and please don't think about that too much.
+    required msg:string -> fault 'you have to start with hello'
+
+    # to keep initialization even more standard, we can do everything by overloading init in one method
+	override fn init[] -> none
+        # we may omit '-> none' by convention.  types are expressed by given return-type of call model, or a simple type name
+        # this is not remotely complicated because we do not interface with C++ yet (will probably require type[ expr ])
+
 		however = "its args need not be" # const-string, instanced as design-time literal with the use of = over :
 		puts[ "calling a C function with a const string: %s", string[' we only allow formatter args with const-string.. {however} ']]
 
-		print[ usage ] # an au-type registered va-arg function, registered by reflection into design-time
+		print[ app.usage ] # an au-type registered va-arg function, registered by reflection into design-time
 			###
 			# once a module has reached compilable state, it may use its own models at design-time, making adaptations to code we output without macros.
 			# silver is here because there is a need to express a kind of model we have a real-control of.
