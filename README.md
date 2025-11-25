@@ -235,9 +235,11 @@ class app
         return 1
 
 fn module-name[ a:app ] -> int
-    is-const : int[ a ]  # : denotes constant assignment, this calls the cast above
-    val  = is-const      # = assignment [mutable]
-    val += 1
+    is-const = int[ a ]  # : denotes constant assignment, this calls the cast above
+    val : is-const      # = assignment [mutable]
+
+    val += 1 # we may change the val, because it was declared with :
+
     print[ 'using app with value: { is-const } + { val - is-const }' ]
     return [ run[a, string[val]] > 0 ] ? 1 : 0
 
