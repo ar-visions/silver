@@ -220,21 +220,22 @@ fn a-function [ a:string ] int [2 + sz[ a ]]
 
 class app
     public value     : short 1
-    intern something : 2 # default is int
+    intern something : 2 # default is i64 for numerics, or string type for 'open' and "closed" strings
 
-    mk-string [ from: int ] -> 'a string with { from } .. our -> guard indicates a default instance, same as member->access .. using -> effectively defaults null member allocation in cases where you want to be lazy.  this way we make pointers great again'
+    func make-string [ from: int ] ->
+        'a string with { from }'
 
     cast int
         my-func  = ref run
         r:int[ my-func[ 'hi' ] ?? run ] # value or default
-        s:mk-string[ r ]
+        s:make-string[ r ]
         return len[ s ]
     
-    run[ arg:string ] -> int
+    func run[ arg:string ] -> int
         print['{ arg } ... call own indexing method: { this[ 2 ] }']
         return 1
 
-fn module-name[ a:app ] -> int
+func module-name[ a:app ] -> int
     is-const = int[ a ]  # : denotes constant assignment, this calls the cast above
     val : is-const      # = assignment [mutable]
 
