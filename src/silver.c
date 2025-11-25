@@ -2487,7 +2487,7 @@ static string cname(string s) {
 
 string method_def(emember emem) {
     return f(string,
-        "#define %o(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->%o(_i_, ## __VA_ARGS__); }})",
+        "#define %o(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->ft.%o(_i_, ## __VA_ARGS__); }})",
             cname(emem->name));
 }
 

@@ -2,8 +2,71 @@
 ![silver-lang](silver-icon.png "silver-lang")
 
 silver is a reduced-token, reflective systems language built on a polymorphic C macro object model (Au) that vectorizes cleanly, isolates intern data, and reflects public members into JSON, CSS, and UX transitions.
-Its compiler imports C, C++, and other languages into a unified Aether model, letting developers build native apps, Vulkan engines, and AI-assisted components with fast two-second iteration from a token stack.
+The parser and import-related build system imports C, C++, and other languages into a Au_t design-time models that it has direct const-mode access to.
+This lets developers build native apps in very innovative and modern ways -- to run on the most amount of hardware with built in cross compilation, letting you symlink repo clones, so you have a direct way to use and improve open source software from any package we import by its web4-like scheme: 
+
+
+**import** identity:project/version
+
+as used in a silver app
+```python
+
+
+# import is the first keyword that utilizes a tokens string; for these we want to allow you to use your $(shell) when you wish, as well as {expression} at design-time
+# our silver-app-properties are exposed as module members (install:path for one)
+import [ KhronosGroup:Vulkan-Tools/main ]
+	-DVULKAN_HEADERS_INSTALL_DIR={install}
+	{linux ?? -DWAYLAND_PROTOCOLS_DIR={install}/checkout/wayland-protocols}
+
+# the above are lines typically found in a Makefile, or two -- however with silver we wanted the language to build a software install that can define in code.
+# this is keeping with Au's .g technique for graphing dependencies per compile-unit.
+
+import <stdio.h> # lets include C models, and even type/value macros; macros with matching type definitions are registered as type aliases. 
+
+main app
+	override fn init[]
+		however = "its args need not be" # const-string, instanced as design-time literal with the use of = over :
+		puts[ "calling a C function with a const string: %s", string[' we only allow formatter args with const-string.. {however} ']]
+
+		print[ usage ] # an au-type registered va-arg function, registered by reflection into design-time
+			###
+			# once a module has reached compilable state, it may use its own models at design-time, making adaptations to code we output without macros.
+			# silver is here because there is a need to express a kind of model we have a real-control of.
+			  its runtime environment is all c code, and it has the exact same models and capabilities as silver. the worlds are all one.
+              using silver as build tool alone, is quite useful in that it's a cross platform, CMake/Makefile/Ninja replacement.
+              we're still commented because of the double # above ^
+			##
+
+			# rust is quite good but we need more open way of expressing software,
+			# that is, decentralized, independent, git-domain projects as first class imports, its nothing but user:project/branch
+
+			# silver has a tokens type, so the user can effectively take off with their own expressions that allow or disallow unix tools to be used within.
+			# tokens and shell_tokens are the different types that take-in a string.
+			# when your constructor is keyword level, we can express tokens directly into code, with {expressions} possible in both
+			# for zero expression expansion, we use basic_tokens
+
+
+
+```
+
+
 Design-time AI watchers generate and cache non-deterministic outputs, keeping authored code separate from LLM-generated dictation while integrating naturally into modules and media.
+
+
+```python
+# this is a native component that receives an import construction, thus creating a component-decentral model for implementing keywords in silver
+# in the case of chatgpt, it hooks into function body generation using a 'using' keyword
+import chatgpt
+	model:'gpt-5'
+
+# chatgpt takes over design-time in that these requested data types are converted for you, when valid
+# with silver we are still programming by taking in these members into a function.
+# for this mode, any tokens are first passed to the chatgpt component.  chatgpt returns a path when valid
+fn do-something[] -> image using chatgpt [ publish:image ]
+	return { please draw me cuddly lion }
+
+```
+
 silver’s founding vision is an open, decentralized build ecosystem where cross-compiled toolchains, reflective models, and human-AI co-creation converge into a unified development experience.
 
 development in progress, with documentation to be added/changed.
@@ -167,5 +230,6 @@ fn module-name[ a:app ] -> int
     return [ run[a, string[val]] > 0 ] ? 1 : 0
 
 ```
+
 
 

@@ -243,7 +243,7 @@ def generate_methods_header(module, header_file, methods_header):
             if method and method not in processed_methods:
                 processed_methods.add(method)
                 f.write(f"#undef {method}\n")
-                f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; (((Au)_i_ != (Au)0L) ? ftableI(_i_)->{method}(_i_, ## __VA_ARGS__) : (__typeof__(ftableI(_i_)->{method}(_i_, ## __VA_ARGS__)))0) ; }})\n")
+                f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; (((Au)_i_ != (Au)0L) ? ftableI(_i_)->ft.{method}(_i_, ## __VA_ARGS__) : (__typeof__(ftableI(_i_)->ft.{method}(_i_, ## __VA_ARGS__)))0) ; }})\n")
         
         # Process i_method methods
         method_pattern = r'i_method\s*\([^,]*,[^,]*,[^,]*,[^,]*,\s*([a-zA-Z_][a-zA-Z0-9_]*)'
@@ -254,7 +254,7 @@ def generate_methods_header(module, header_file, methods_header):
             if method and method not in processed_methods:
                 processed_methods.add(method)
                 f.write(f"#ifndef {method}\n")
-                f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->{method}(_i_, ## __VA_ARGS__); }})\n")
+                f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->ft.{method}(_i_, ## __VA_ARGS__); }})\n")
                 f.write(f"#endif\n")
         
         # Process i_vargs methods
@@ -266,7 +266,7 @@ def generate_methods_header(module, header_file, methods_header):
             if method and method not in processed_methods:
                 processed_methods.add(method)
                 f.write(f"#ifndef {method}\n")
-                f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->{method}(_i_, ## __VA_ARGS__); }})\n")
+                f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->ft.{method}(_i_, ## __VA_ARGS__); }})\n")
                 f.write(f"#endif\n")
         
         f.write(f"\n#endif /* _{umodule}_METHODS_H_ */\n")

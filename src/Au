@@ -36,7 +36,7 @@ struct _Au_t;
 #define a(...) array_of(__VA_ARGS__ __VA_OPT__(,) null)
 #define m(...)   map_of(__VA_ARGS__ __VA_OPT__(,) null)
 
-#define len(I,...) ({ __typeof__(I) _i_ = I; _i_ ? (num)ftableI(_i_)->len((collective)_i_, ## __VA_ARGS__) : (num)0; })
+#define len(I,...) ({ __typeof__(I) _i_ = I; _i_ ? (num)ftableI(_i_)->ft.len((collective)_i_, ## __VA_ARGS__) : (num)0; })
 
 
 #undef bool
@@ -142,7 +142,7 @@ typedef long double            *ref_f80;
 
 
 #define Au_f_members(B) \
-    Au_t            parent; \
+    Au_t            context; \
     union { Au_t src, rtype, type; }; \
     Au_t            user; \
     Au_t            module; \
@@ -150,9 +150,11 @@ typedef long double            *ref_f80;
     i64             index; \
     object          value; \
     int             global_count; \
-    int             member_type; \
-    int             operator_type; \
-    int             traits; \
+    u8              member_type; \
+    u8              operator_type; \
+    u8              access_type; \
+    u8              reserved; \
+    u32             traits; \
     int             offset; \
     int             size; \
     int             isize; \
@@ -163,7 +165,7 @@ typedef long double            *ref_f80;
     struct _object  meta_info; \
     struct _collective_abi  meta; \
     struct _shape*  shape; \
-    u64             required[2];
+    u64             required_bits[2];
 
 typedef struct _au_core {
     struct _object** af4;
@@ -200,7 +202,9 @@ typedef struct _au_core {
     AA##_schema (AA, DECL) \
     typedef struct _##AA##_f { \
         Au_f_members(Au) \
-        AA##_schema (AA, METHOD) \
+        struct { void(*_ff)(); \
+            AA##_schema (AA, METHOD) \
+        } ft; \
     } AA##_f; \
     typedef struct _##AA##_t_info { \
         struct _Au     info; \
@@ -218,8 +222,10 @@ typedef struct _au_core {
     typedef void* X; \
     typedef struct _##X##_f { \
         Au_f_members(Au) \
-        Au_schema(Au, METHOD) \
-        X##_schema(X, METHOD, __VA_ARGS__) \
+        struct { void(*_ff)(); \
+            Au_schema(Au, METHOD) \
+            X##_schema(X, METHOD, __VA_ARGS__) \
+        } ft; \
     } X##_f, *X##_ft; \
     decl_type(X) \
     _Pragma("pack(pop)") \
@@ -229,8 +235,10 @@ typedef struct _au_core {
     _Pragma("pack(push, 1)") \
     typedef struct _##AA##_f { \
         Au_f_members(Au) \
-        Au_schema(Au, METHOD, __VA_ARGS__) \
-        AA##_schema(AA, METHOD, __VA_ARGS__) \
+        struct { void(*_ff)(); \
+            Au_schema(Au, METHOD, __VA_ARGS__) \
+            AA##_schema(AA, METHOD, __VA_ARGS__) \
+        } ft; \
     } AA##_f, *AA##_ft; \
     decl_type(AA)\
     _Pragma("pack(pop)")
@@ -277,7 +285,7 @@ void lazy_init(global_init_fn fn);
             type_ref->meta.unmanaged = true; \
             array_init(&type_ref->meta); \
             type_ref->src      = typeid(T); \
-            type_ref->parent   = (__typeof__(E##_i.type.parent))& Au_i.type; \
+            type_ref->context   = (__typeof__(E##_i.type.context))& Au_i.type; \
             type_ref->ident    = #E;                 \
             type_ref->module   = Au_module(MODULE); \
             type_ref->size     = sizeof(E);          \
@@ -310,8 +318,10 @@ void lazy_init(global_init_fn fn);
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
         Au_f_members(AA) \
-        Au_schema(AA, METHOD, __VA_ARGS__) \
-        AA##_schema (AA, METHOD, __VA_ARGS__) \
+        struct { void(*_ff)(); \
+            Au_schema(AA, METHOD, __VA_ARGS__) \
+            AA##_schema (AA, METHOD, __VA_ARGS__) \
+        } ft; \
     } AA##_f, *AA##_ft; \
     decl_type(AA)\
     _Pragma("pack(pop)")
@@ -337,9 +347,11 @@ void lazy_init(global_init_fn fn);
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
         Au_f_members(AA) \
-        Au_schema(AA, METHOD, __VA_ARGS__) \
-        BB##_schema (BB, METHOD, __VA_ARGS__) \
-        AA##_schema (AA, METHOD, __VA_ARGS__) \
+        struct { void(*_ff)(); \
+            Au_schema(AA, METHOD, __VA_ARGS__) \
+            BB##_schema (BB, METHOD, __VA_ARGS__) \
+            AA##_schema (AA, METHOD, __VA_ARGS__) \
+        } ft; \
     } AA##_f, *AA##_ft; \
     decl_type(AA)\
     _Pragma("pack(pop)")
@@ -368,10 +380,12 @@ void lazy_init(global_init_fn fn);
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
         Au_f_members(AA) \
-        Au_schema(AA, METHOD, __VA_ARGS__) \
-        CC##_schema (CC, METHOD, __VA_ARGS__) \
-        BB##_schema (BB, METHOD, __VA_ARGS__) \
-        AA##_schema (AA, METHOD, __VA_ARGS__) \
+        struct { void(*_ff)(); \
+            Au_schema(AA, METHOD, __VA_ARGS__) \
+            CC##_schema (CC, METHOD, __VA_ARGS__) \
+            BB##_schema (BB, METHOD, __VA_ARGS__) \
+            AA##_schema (AA, METHOD, __VA_ARGS__) \
+        } ft; \
     } AA##_f, *AA##_ft; \
     decl_type(AA)\
     _Pragma("pack(pop)")
@@ -407,11 +421,13 @@ void lazy_init(global_init_fn fn);
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
         Au_f_members(AA) \
-        Au_schema(AA, METHOD, __VA_ARGS__) \
-        DD##_schema (DD, METHOD, __VA_ARGS__) \
-        CC##_schema (CC, METHOD, __VA_ARGS__) \
-        BB##_schema (BB, METHOD, __VA_ARGS__) \
-        AA##_schema (AA, METHOD, __VA_ARGS__) \
+        struct { void(*_ff)(); \
+            Au_schema(AA, METHOD, __VA_ARGS__) \
+            DD##_schema (DD, METHOD, __VA_ARGS__) \
+            CC##_schema (CC, METHOD, __VA_ARGS__) \
+            BB##_schema (BB, METHOD, __VA_ARGS__) \
+            AA##_schema (AA, METHOD, __VA_ARGS__) \
+        } ft; \
     } AA##_f, *AA##_ft; \
     decl_type(AA)\
     _Pragma("pack(pop)")
@@ -429,7 +445,9 @@ void lazy_init(global_init_fn fn);
     } *AA; \
     typedef struct _##AA##_f { \
         Au_f_members(BASE) \
-        BASE##_schema (AA, METHOD, __VA_ARGS__) \
+        struct { void(*_ff)(); \
+            BASE##_schema (AA, METHOD, __VA_ARGS__) \
+        } ft; \
     } AA##_f, *AA##_ft; \
     decl_type(AA)\
     _Pragma("pack(pop)")
@@ -444,7 +462,9 @@ void lazy_init(global_init_fn fn);
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
         Au_f_members(AA) \
-        AA##_schema (AA, METHOD, __VA_ARGS__) \
+        struct { void(*_ff)(); \
+            AA##_schema (AA, METHOD, __VA_ARGS__) \
+        } ft; \
     } AA##_f, *AA##_ft; \
     decl_type(AA)\
     _Pragma("pack(pop)")
@@ -469,9 +489,6 @@ typedef Au_t* Au_ts;
 #define IS_DEBUG 1
 #endif
 
-/// alias lets use tag types with an array of types, enabling 
-/// design-time and runtime template-like functionality, with 
-/// permutation of the class-type and instance-type
 #define define_arb(TYPE, BASE, TYPE_SZ, TRAIT, ...) \
     _Pragma("pack(push, 1)") \
     __thread struct _au_core TYPE##_af; \
@@ -491,24 +508,22 @@ typedef Au_t* Au_ts;
             memset(type_ref, 0, sizeof(TYPE##_f)); \
             if ((Au_t)type_ref != (Au_t)base_ref) \
                 memcpy(type_ref, base_ref, sizeof(BASE##_f)); \
+            type_ref->member_type       = AU_MEMBER_TYPE; \
             type_ref->members.alloc     = 128; \
             type_ref->members.assorted  = true; \
             type_ref->members.unmanaged = true; \
             array_init(&type_ref->members); \
-            type_ref->meta.alloc     = 16; \
-            type_ref->meta.assorted  = true; \
-            type_ref->meta.unmanaged = true; \
+            type_ref->meta.alloc        = 16; \
+            type_ref->meta.assorted     = true; \
+            type_ref->meta.unmanaged    = true; \
             array_init(&type_ref->meta); \
-            type_ref->ident = #TYPE; \
-            type_ref->af = &TYPE##_af; \
-            type_ref->isize = 0 TYPE##_schema( TYPE, ISIZE_EXTERN, __VA_ARGS__ ); \
-            type_ref->src = (Au_t)base_ref != typeid(Au) \
-                 ? (Au_t)base_ref : (Au_t)null; \
-            type_ref->parent = \
-                (__typeof__(type_ref->parent))&BASE##_i.type; \
-            type_ref->module        = Au_module((cstr)MODULE); \
-            type_ref->size          = TYPE_SZ; \
-            type_ref->traits        = TRAIT; \
+            type_ref->ident             = #TYPE; \
+            type_ref->af                = &TYPE##_af; \
+            type_ref->isize             = 0 TYPE##_schema( TYPE, ISIZE_EXTERN, __VA_ARGS__ ); \
+            type_ref->context            = (__typeof__(type_ref->context))&BASE##_i.type; \
+            type_ref->module            = Au_module((cstr)MODULE); \
+            type_ref->size              = TYPE_SZ; \
+            type_ref->traits            = TRAIT; \
             set_meta_array(type_ref, emit_types(__VA_ARGS__)); \
             TYPE##_schema( TYPE, INIT, __VA_ARGS__ ); \
             push_type((Au_t)type_ref); \

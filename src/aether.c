@@ -3666,8 +3666,8 @@ void aether_Au_import(aether e, path lib, string name) {
         model  mdl      = atype->user;
 
         if (atype != typeid(Au)) {
-            model m = emodel(atype->parent->ident);
-            verify(isa(m), "expected parent class %s", atype->parent->ident);
+            model m = emodel(atype->context->ident);
+            verify(isa(m), "expected parent class %s", atype->context->ident);
             mdl->parent = m;
         }
 
@@ -5529,7 +5529,7 @@ void emember_finalize(emember mem) {
     } else if (t && !mem->is_type && is_init && !mem->is_decl) { // we're importing so its not adding this global -- for module includes, it should
         symbol name = mem->name->chars;
         LLVMTypeRef type = t->type;
-        if (isa(mem->mdl)->parent != typeid(model) && !mem->value) {
+        if (isa(mem->mdl)->context != typeid(model) && !mem->value) {
             mem->is_global = true;
             mem->value = LLVMAddGlobal(e
                 ->module, type, name); // its created here (a-map)
