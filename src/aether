@@ -17,15 +17,8 @@ typedef struct _record*      record;
 typedef struct _enode*       enode;
 typedef struct _fn*          fn;
 
-/*
-#define reference_schema(E,T,Y,...) \
-    enum_value(E,T,Y, value,      0) \
-    enum_value(E,T,Y, pointer,    1) \
-    enum_value(E,T,Y, constant,   2)
-declare_enum(reference)
-*/
+//#define model Au_t
 
-// mem is for is_type members
 #define mschema_schema(X,Y,...) \
     i_prop(X,Y, public, emember, schema_type) \
     i_prop(X,Y, public, emember, schema_f) \
@@ -88,10 +81,6 @@ declare_class(model)
 declare_class_2(catcher, model)
 
 
-
-
-// some models are simple sub-classes to indicate their use
-// use members on model for args
 #define eargs_schema(X,Y,...) \
     i_prop(X,Y, public, bool, is_ext) \
     i_override(X,Y, method, init)
@@ -172,9 +161,6 @@ declare_class(clang_cc)
 declare_class_2(statements, model)
 
 typedef struct _schematic* schematic;
- 
-// replaces model's use of:
-// i_prop(X,Y, public, string, namespace_name)
 
 #define Namespace_schema(X,Y,...) \
     i_prop    (X,Y, public, Namespace, namespace_parent) \
@@ -182,7 +168,6 @@ typedef struct _schematic* schematic;
     i_prop    (X,Y, public, bool,   namespace_inline)
 declare_class_2(Namespace, model)
 
-// for each field, f_* name-bound class, enum or primitive
 #define record_schema(X,Y,...) \
     i_prop    (X,Y, public, token,  ident) \
     i_prop    (X,Y, public, array,  meta) \
@@ -228,7 +213,6 @@ forward(emember)
 declare_class(enode)
 
 
-// if ref is set, its a reference to a member with type definition (model, struct, ref)
 #define emember_schema(X,Y,...) \
     i_prop    (X,Y, public,     interface,              access) \
     i_prop    (X,Y, public,     model,                  context, meta, weak) \

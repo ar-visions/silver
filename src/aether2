@@ -1,0 +1,12 @@
+#ifndef _AETHER_
+#define _AETHER_
+
+#define aether2_schema(X,Y,...)\
+    M(X,Y, i, prop,     public, path,   source) \
+    M(X,Y, i, prop,     public, path,   current_inc) \
+    M(X,Y, i, prop,     public, array,  libs) \
+    M(X,Y, i, prop,     public, bool,   is_Au_import) \
+    M(X,Y, i, override, method, init)
+declare_class(aether2)
+
+#endif

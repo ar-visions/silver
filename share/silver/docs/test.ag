@@ -27,7 +27,6 @@ main aclass
 i = array <i32, 3x2> [ 1 2, 3 4, 2 2 ]
 m : array <path>     [ 'car1.spec' 'car2.spec' 'car3.spec' ]
 
-<<<<<<< HEAD:share/silver/docs/test.ag
 # return types must be type-expr based, 
 # we cannot take in a 'something' for example, 
 # because it may be the first operation in a none returning fn
@@ -63,9 +62,6 @@ see through to the surface in caves on on surface of planet.']],
      [ $ path images/car1.png, $ path images/car1.png ],
      'do something great with this one, given inspiration from car1 and car2, {secret}'
 
-=======
-
->>>>>>> f2dcf7e6813fea1da25641a30d2ca27f270864fe:share/silver/docs/test.sf
 import <stdio.h, ctype.h>
 
 import KhronosGroup:Vulkan-Headers/main
