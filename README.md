@@ -186,9 +186,6 @@ Au is the foundation model of **silver**'s compiler and component system. It pro
 see: [Au project](https://github.com/ar-visions/silver/blob/master/src/Au)
 
 ```python
-import <dawn/webgpu, dawn/dawn_proc_table> [https://github.com/ar-visions/dawn 2e9297c45]
-    -DDAWN_ENABLE_INSTALL=1 -DBUILD_SHARED_LIBS=0
-    -lwebgpu_dawn
 
 ##
 # designed for keywords import, class, struct, enum
@@ -200,21 +197,20 @@ import <dawn/webgpu, dawn/dawn_proc_table> [https://github.com/ar-visions/dawn 2
 import a-silver-module [ a-non-const: enum-from-module ]
 
 
-
-string op + [ i:int, a:string ] -> string
+string operator + [ i:int, a:string ] -> string
     return '{ a } and { i }'
 
 # context is used when the function is called; as such, the user should have these variables themselves
 # this reduces the payload on lambdas to zero, at expense of keeping membership explicit
-fn some-callback[ i:int, context ctx:Vulkan ] int
+fn some-callback[ i:int, context ctx:Vulkan ] -> int
     print[ '{ctx}: {i}' ]
-    return i + ctx.a-member
+    return i + ctx ? ctx.a-member : 0
 
 # methods can exist at module-level, or record.
 
-nice: some-callback[ 'a-nice-callback' ]
+nice: some-callback[ 'a-nice-callback', null ]
 
-fn a-function [ a:string ] string
+fn a-function [ a:string ]  -> string
     i : 2 + sz[ a ]
     r : nice[ i ]
     print[ 'called-with: %s. returning: { r }'  a ]
