@@ -778,8 +778,6 @@ string silver_peek_alpha(silver a) {
 fn    parse_fn  (silver mod, AFlag member_type, Au ident, OPType assign_enum);
 static model read_model(silver mod, array* expr, array* meta);
 
-int ref_level(model f);
-
 enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array meta_expect) {
 
     print_tokens(mod, "read-node");
@@ -2151,24 +2149,14 @@ emember silver_read_def(silver mod) {
             } else
                 v = primitive(atype, value); /// this creates i8 to i64 data, using &value i64 addr
 
-            array aliases = null;
-            while(read_if(mod, ",")) {
-                if (!aliases) aliases = array(32);
-                string a = read_alpha(mod);
-                validate(a, "could not read identifier");
-                push(aliases, a);
-            }
             emember emem = emember(
                 mod, mod, name, e, mdl, mdl,
-                is_const, true, is_decl, true, literal, v, aliases, aliases);
+                is_const, true, is_decl, true, literal, v);
             
             set_value(emem, v); // redundant with the first literal field; we aren't to simply store the token[0] or tokens, either
             
             string estr = cast(string, e);
             set(mdl->members, estr, emem);
-            if (aliases)
-                each(aliases, string, a)
-                    set(mdl->members, a, emem);
             
             if (i64_value) {
                 *i64_value += 1;

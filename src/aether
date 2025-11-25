@@ -42,8 +42,6 @@ forward(structure)
     i_prop    (X,Y, public,     Au_t,             atype_src) \
     i_prop    (X,Y, public,     model,            src) \
     i_prop    (X,Y, public,     bool,             is_ref) \
-    i_prop    (X,Y, public,     bool,             is_map) \
-    i_prop    (X,Y, public,     bool,             is_array) \
     i_prop    (X,Y, public,     bool,             is_global) \
     i_prop    (X,Y, public,     bool,             is_const) \
     i_prop    (X,Y, public,     bool,             is_system) \
@@ -210,12 +208,6 @@ declare_class_3(enumeration, Namespace, model)
 #define uni_schema(X,Y,...)
 declare_class_4(uni, record, Namespace, model)
 
-
-/// the base helps us require the two args we need for nodes
-/// we are also coupling type along inside enode, and this must be set properly with value macro
-/// all enode values must contain its aether def.
-/// otherwise we are performing hash lookups, which is more complex and slower, 
-/// with less data stored
 forward(emember)
 
 #define enode_schema(X,Y,...)\
@@ -239,14 +231,12 @@ declare_class(enode)
 // if ref is set, its a reference to a member with type definition (model, struct, ref)
 #define emember_schema(X,Y,...) \
     i_prop    (X,Y, public,     interface,              access) \
-    i_prop    (X,Y, public,     array,                  aliases, meta, string) \
     i_prop    (X,Y, public,     model,                  context, meta, weak) \
     i_prop    (X,Y, public,     model,                  membership, meta, weak) \
     i_prop    (X,Y, public,     array,                  meta_args) \
     i_prop    (X,Y, public,     bool,                   finalized) \
     i_prop    (X,Y, public,     aether,                 is_module) \
     i_prop    (X,Y, public,     bool,                   is_require) \
-    i_prop    (X,Y, public,     bool,                   is_inlay) \
     i_prop    (X,Y, public,     bool,                   is_const) \
     i_prop    (X,Y, public,     bool,                   is_assigned) \
     i_prop    (X,Y, public,     bool,                   is_type) \
@@ -258,11 +248,8 @@ declare_class(enode)
     i_prop    (X,Y, public,     bool,                   is_static) \
     i_prop    (X,Y, public,     bool,                   is_hidden) \
     i_prop    (X,Y, public,     bool,                   is_codegen) \
-    i_prop    (X,Y, public,     Au,                      override_offset_bits) \
-    i_prop    (X,Y, public,     Au,                      override_size_bits) \
-    i_prop    (X,Y, public,     Au,                      override_alignment_bits) \
     i_prop    (X,Y, public,     path,                   imported_from) \
-    i_prop    (X,Y, public,     Au,                      initializer) \
+    i_prop    (X,Y, public,     array,                  initializer) \
     i_prop    (X,Y, intern,     i32,                    offset_bits) \
     i_prop    (X,Y, intern,     i32,                    index) \
     i_prop    (X,Y, intern,     LLVMMetadataRef,        debug, as, ARef) \
@@ -300,6 +287,8 @@ declare_class_3(static_array, array, collective)
     i_prop    (X,Y, public,     array,       lib_paths) \
     i_prop    (X,Y, public,     path,        isysroot) \
     i_prop    (X,Y, public,     path,        isystem) \
+    i_prop    (X,Y, public,     Au_t,        au) \
+    i_prop    (X,Y, public,     bool,        is_const_op) \
     i_prop    (X,Y, public,     path,        resource_dir) \
     i_prop    (X,Y, public,     array,       sys_inc_paths) \
     i_prop    (X,Y, public,     array,       sys_exc_paths) \
@@ -418,21 +407,21 @@ declare_class_3(static_array, array, collective)
     i_override(X,Y, method,     dealloc)
 declare_class_2(aether, model)
 
-// i_vargs   (X,Y, public,     none,       eprint,         symbol) \
-
-bool is_void     (model);
-bool is_bool     (model);
-bool is_float    (model);
-bool is_double   (model);
-bool is_realistic(model);
-bool is_integral (model);
-bool is_signed   (model);
-bool is_unsigned (model);
-model is_record  (model);
-bool is_generic  (model);
-model is_class   (model);
-bool is_enumeration(model);
-model is_struct  (model);
-bool is_ref      (model);
+bool is_bool     (model f);
+bool is_float    (model f);
+bool is_double   (model f);
+bool is_realistic(model f);
+bool is_integral (model f);
+bool is_signed   (model f);
+bool is_unsigned (model f);
+bool is_primitive(model f);
+bool is_void     (model f);
+bool is_generic  (model f);
+model is_record  (model f);
+model is_class   (model f);
+bool is_subclass (model a, model b);
+model is_struct  (model f);
+bool is_ref      (model f);
+int  ref_level   (model f);
 
 #endif

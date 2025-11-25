@@ -55,7 +55,8 @@ enum AU_TRAIT {
     AU_TRAIT_CLASS     = 8192,
     AU_TRAIT_POINTER   = 8192 << 2,
     AU_TRAIT_CONST     = 8192 << 3,
-    AU_TRAIT_REQUIRED  = 8192 << 4
+    AU_TRAIT_REQUIRED  = 8192 << 4,
+    AU_TRAIT_SYSTEM    = 8192 << 5
 };
 
 typedef bool(*global_init_fn)();

@@ -269,7 +269,10 @@ static none set_fields(RecordDecl* decl, ASTContext& ctx, aether e, record rec) 
             // these specific members LLVM IR does not actually support in a general sense, and we must, as a user construct padding and operations
             // this is not remotely designed and, if our offsets differ, the compiler should error
             // for silver 1.0, we want bitfield support
-            m->override_offset_bits = _i32(offset_bits);
+            
+
+            // todo: these were not being used in aether:
+            /*m->override_offset_bits = _i32(offset_bits);
 
             // size
             if (field->isBitField()) {
@@ -286,6 +289,7 @@ static none set_fields(RecordDecl* decl, ASTContext& ctx, aether e, record rec) 
             if (declAlign.isZero())
                 declAlign = ctx.getTypeAlignInChars(field_type);
             m->override_alignment_bits = _i32(declAlign.getQuantity());
+            */
 
             // Get accurate offset (handles pragma pack!)
             if (!is_union) {
@@ -342,8 +346,9 @@ static record create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::s
         emember m = emember(mod, rec->mod, name, (token)bname, mdl, (model)base_rec);
         m->index = N;
         // byte offset:
-        uint64_t off_bits = layout.getBaseClassOffset(base).getQuantity() * 8;
-        m->override_offset_bits = _i32(off_bits);
+        // todo: this was not being used by aether:
+        //uint64_t off_bits = layout.getBaseClassOffset(base).getQuantity() * 8;
+        //m->override_offset_bits = _i32(off_bits);
         set(rec->members, (Au)bname, (Au)m);
     }
 
