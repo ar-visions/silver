@@ -5,7 +5,7 @@ silver is a reduced-token, reflective systems language built on a reflective pol
 
 The parser and import-related build system imports C, C++, and other languages into Au design-time models -- at design-time, we have actual runtime access to types we import.  By import, we are not merely 'compiling' but also running the module for silver to use at design time.
 
-This lets developers build native apps in very innovative and modern ways -- to run on the most amount of hardware with built in cross compilation, letting you symlink repo clones, so you have a direct way to use and improve open source software from any package we import by its web4-like scheme: 
+This lets developers build native apps in very innovative and modern ways -- to run on the most amount of hardware with built in cross compilation, letting import automatically symlink to your working source -- this, so you have a direct way to use and improve open source software from any package we import by its web4-like scheme: 
 
 
 **import** identity:project/version
