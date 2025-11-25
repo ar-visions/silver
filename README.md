@@ -42,7 +42,7 @@ main app
 		however = "its args need not be" # const-string, instanced as design-time literal with the use of = over :
 		puts[ "calling a C function with a const string: %s", string[' we only allow formatter args with const-string.. {however} ']]
 
-		print[ app.usage ] # an au-type registered va-arg function, registered by reflection into design-time
+		print[ usage ] # an au-type registered va-arg function, registered by reflection into design-time
 			###
 			# once a module has reached compilable state, it may use its own models at design-time, making adaptations to code we output without macros.
 			# silver is here because there is a need to express a kind of model we have a real-control of.
