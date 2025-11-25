@@ -1,7 +1,7 @@
 # **silver** lang
 ![silver-lang](silver-icon.png "silver-lang")
 
-silver is a reduced-token, reflective systems language built on a polymorphic C macro object model (Au) that vectorizes cleanly, isolates intern data, and reflects public members into JSON, CSS, and UX transitions.
+silver is a reduced-token, reflective systems language built on a reflective polymorphic C model (Au) that vectorizes cleanly, isolates intern data, and reflects public members into JSON, CSS, and UX transitions.
 The parser and import-related build system imports C, C++, and other languages into a Au_t design-time models that it has direct const-mode access to.
 This lets developers build native apps in very innovative and modern ways -- to run on the most amount of hardware with built in cross compilation, letting you symlink repo clones, so you have a direct way to use and improve open source software from any package we import by its web4-like scheme: 
 
