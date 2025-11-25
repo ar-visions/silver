@@ -1238,7 +1238,6 @@ declare_class(ipart)
     i_prop    (AA,Y,   public, num,     ref_length) \
     i_prop    (AA,Y,   public, num,     count) \
     i_prop    (AA,Y,   public, u64,     h) \
-    i_method  (AA,Y,   public, string,  evaluate, map) \
     i_method  (AA,Y,   public, bool,    is_numeric) \
     i_method  (AA,Y,   public, i32,     first) \
     i_method  (AA,Y,   public, i32,     last) \
