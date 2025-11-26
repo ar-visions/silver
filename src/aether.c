@@ -3199,10 +3199,6 @@ static void register_vbasics(aether e) {
     set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_NONE")),        _i32(AU_MEMBER_NONE));
     set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_CONSTRUCT")),   _i32(AU_MEMBER_CONSTRUCT));
     set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_PROP")),        _i32(AU_MEMBER_PROP));
-    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_INLAY")),       _i32(AU_MEMBER_INLAY));
-    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_PRIV")),        _i32(AU_MEMBER_PRIV));
-    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_INTERN")),      _i32(AU_MEMBER_INTERN));
-    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_READ_ONLY")),   _i32(AU_MEMBER_READ_ONLY));
     set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_IMETHOD")),     _i32(AU_MEMBER_IMETHOD));
     set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_SMETHOD")),     _i32(AU_MEMBER_SMETHOD));
     set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_OPERATOR")),    _i32(AU_MEMBER_OPERATOR));
@@ -3918,6 +3914,7 @@ void aether_reinit_startup(aether e) {
 } 
 
 void aether_init(aether e) {
+
     e->open       = true;
     e->with_debug = true;
     e->is_system  = true;

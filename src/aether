@@ -387,7 +387,6 @@ declare_class_3(static_array, array, collective)
     i_method  (X,Y, public,     model,       top) \
     i_method  (X,Y, public,     bool,        emit,           ARef,       ARef) \
     i_method  (X,Y, public,     model,       return_type, ARef) \
-    i_override(X,Y, method,     init) \
     i_override(X,Y, method,     dealloc)
 declare_class_2(aether, model)
 

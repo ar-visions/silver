@@ -19,23 +19,19 @@ enum AU_MEMBER {
     AU_MEMBER_TYPE      = 1,
     AU_MEMBER_CONSTRUCT = 2,
     AU_MEMBER_PROP      = 3,
-    AU_MEMBER_INLAY     = 4,
-    AU_MEMBER_PRIV      = 5,
-    AU_MEMBER_INTERN    = 6,
-    AU_MEMBER_READ_ONLY = 7,
-    AU_MEMBER_IMETHOD   = 8,
-    AU_MEMBER_SMETHOD   = 9,
-    AU_MEMBER_OPERATOR  = 10,
-    AU_MEMBER_CAST      = 11,
-    AU_MEMBER_INDEX     = 12,
-    AU_MEMBER_ENUMV     = 13,
-    AU_MEMBER_OVERRIDE  = 14,
-    AU_MEMBER_VPROP     = 15,
-    AU_MEMBER_IS_ATTR   = 16,
-    AU_MEMBER_OPAQUE    = 17,
-    AU_MEMBER_IFINAL    = 18,
-    AU_MEMBER_TMETHOD   = 19,
-    AU_MEMBER_FORMATTER = 20,
+    AU_MEMBER_IMETHOD   = 4,
+    AU_MEMBER_SMETHOD   = 5,
+    AU_MEMBER_OPERATOR  = 6,
+    AU_MEMBER_CAST      = 7,
+    AU_MEMBER_INDEX     = 8,
+    AU_MEMBER_ENUMV     = 9,
+    AU_MEMBER_OVERRIDE  = 10,
+    AU_MEMBER_VPROP     = 11,
+    AU_MEMBER_IS_ATTR   = 12,
+    AU_MEMBER_OPAQUE    = 13,
+    AU_MEMBER_IFINAL    = 14,
+    AU_MEMBER_TMETHOD   = 15,
+    AU_MEMBER_FORMATTER = 16,
 };
 
 typedef enum AU_MEMBER AFlag;
@@ -55,7 +51,9 @@ enum AU_TRAIT {
     AU_TRAIT_POINTER   = 1 << 11,
     AU_TRAIT_CONST     = 1 << 12,
     AU_TRAIT_REQUIRED  = 1 << 13,
-    AU_TRAIT_SYSTEM    = 1 << 14
+    AU_TRAIT_SYSTEM    = 1 << 14,
+    AU_TRAIT_OVERRIDE  = 1 << 15, // im crash override 
+    AU_TRAIT_INLAY     = 1 << 16
 };
 
 typedef bool(*global_init_fn)();
@@ -76,7 +74,6 @@ typedef struct _collective_abi {
     i32             count;
     i32             alloc;
     i32             hsize;
-    i32             esize;
     ARef            origin;
     struct _item*   first, *last;
     struct _vector* hlist;
@@ -85,7 +82,7 @@ typedef struct _collective_abi {
     struct _Au_t*   last_type;
 } collective_abi;
 
-typedef struct _Au_t* Au_t;
+typedef struct _Au_t *Au_t;
 
 // this is an exact mock type of A's instance
 typedef struct _object {
@@ -100,7 +97,11 @@ typedef struct _object {
     i64             count;
     i64             recycle;
     i64             af_index;
+    struct _object* meta[8];
+    struct _object* f;
 } *object;
+
+typedef struct _ffi_method_t ffi_method_t;
 
 // this is the standard _Au_t declaration
 typedef struct _Au_t {
@@ -133,6 +134,7 @@ typedef struct _Au_t {
             u32 is_const      : 1;  // AU_TRAIT_CONST
             u32 is_required   : 1;  // AU_TRAIT_REQUIRED
             u32 is_system     : 1;  // AU_TRAIT_SYSTEM
+            u32 is_override   : 1;  // AU_TRAIT_OVERRIDE
         };
         u32 traits;
     };
@@ -140,6 +142,7 @@ typedef struct _Au_t {
     int             size;
     int             isize;
     void*           ptr; // used for function addresses
+    ffi_method_t*   ffi;
     au_core         af; // Au-specific internal members on type
     struct _object  members_info;
     struct _collective_abi  members;
@@ -147,6 +150,9 @@ typedef struct _Au_t {
     union { struct _collective_abi meta, args; };
     struct _shape*  shape;
     u64             required_bits[2];
+    struct {
+        void* __none__;
+    } ft;
 } *Au_t;
 
 #define mdl()

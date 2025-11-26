@@ -159,6 +159,7 @@ typedef long double            *ref_f80;
     int             size; \
     int             isize; \
     void*           ptr; \
+    ffi_method_t*   ffi; \
     au_core         af; \
     struct _object  members_info; \
     struct _collective_abi  members; \
@@ -196,7 +197,6 @@ typedef struct _au_core {
     typedef struct _ ## AA { \
         AA##_intern (AA, INST_U, __VA_ARGS__) \
         AA##_intern (AA, INST_L, __VA_ARGS__) \
-        AA##_intern_footer (AA) \
         struct _##AA##_f* f; \
     } *AA; \
     AA##_schema (AA, DECL) \
@@ -252,8 +252,10 @@ typedef struct _au_core {
     _Pragma("pack(push, 1)") \
     typedef struct _##E##_f { \
         Au_f_members(Au) \
-        Au_schema   (Au, METHOD) \
-        E##_schema (Au, T, METHOD) \
+        struct { \
+            Au_schema   (Au, METHOD) \
+            E##_schema (Au, T, METHOD) \
+        } ft; \
     } E##_f, *E##_ft; \
     static const i32 E##_ENUM_COUNT = ENUM_COUNT(E##_schema(E, T, COUNT)); \
     decl_type(E)\
@@ -261,7 +263,7 @@ typedef struct _au_core {
 
 #define declare_enum( E ) declare_typed_enum(E, i32)
 
-void lazy_init(global_init_fn fn);
+void lazy_init(global_init_fn fn, Au_t);
 
 #define define_typed_enum( E, T ) \
     E##_info E##_i;\
@@ -269,13 +271,13 @@ void lazy_init(global_init_fn fn);
         E ## _i.info.type = (Au_t)&E ## _i.type; \
         E ## _i.info.refs = 1000; \
         E ## _f* type_ref = &E ## _i.type; \
-        Au_f* base_ref   = &Au_i.type; \
+        Au_t base_ref     = &Au_i.type; \
         if ((Au_t)type_ref != (Au_t)base_ref && base_ref->size == 0) { \
-            lazy_init((global_init_fn)&global_##E); \
+            lazy_init((global_init_fn)&global_##E, (Au_t)base_ref); \
             return false; \
         } else { \
             memset(type_ref, 0, sizeof(E##_i.type)); \
-            memcpy(type_ref, base_ref, sizeof(struct _Au_t)); \
+            memcpy(&type_ref->ft, &base_ref->ft, sizeof(__typeof__(base_ref->ft))); \
             type_ref->members.alloc     = 16; \
             type_ref->members.assorted  = true; \
             type_ref->members.unmanaged = true; \
@@ -502,12 +504,12 @@ typedef Au_t* Au_ts;
             Au_t_i.type.src    = typeid(Au); \
         } \
         if ((Au_t)type_ref != (Au_t)base_ref && (!base_ref->traits)) { \
-            lazy_init((global_init_fn)&Aglobal_##TYPE); \
+            lazy_init((global_init_fn)&Aglobal_##TYPE, (Au_t)base_ref); \
             return false; \
         } else { \
-            memset(type_ref, 0, sizeof(TYPE##_f)); \
+            memset(type_ref, 0, sizeof(TYPE##_i.type)); \
             if ((Au_t)type_ref != (Au_t)base_ref) \
-                memcpy(type_ref, base_ref, sizeof(BASE##_f)); \
+                memcpy(&type_ref->ft, &base_ref->ft, sizeof(BASE##_i.type.ft)); \
             type_ref->member_type       = AU_MEMBER_TYPE; \
             type_ref->members.alloc     = 128; \
             type_ref->members.assorted  = true; \
@@ -606,6 +608,8 @@ forward(any)
     s_method(AA,Y, public, Au,           initialize,          Au) \
     s_method(AA,Y, public, Au_t,         module,              symbol) \
     s_method(AA,Y, public, Au_t,         register_module,     symbol) \
+    s_method(AA,Y, public, Au_t,         scope_lookup,        array, string) \
+    s_method(AA,Y, public, Au_t,         current_module) \
     i_final (AA,Y, public, Au,           member_object,       Au_t) \
     i_final (AA,Y, public, bool,        member_set,           Au_t, Au) \
     i_final (AA,Y, public, Au,           header) \
@@ -681,6 +685,7 @@ forward(item)
     i_prop           (AA,Y, public, Au_t,    last_type) \
     i_prop(AA,Y, public, Au_t,   type) \
     i_prop(AA,Y, public, shape,   shape) \
+    i_override(AA,Y, method, init) \
     i_guard          (AA,Y, public, num,     len) \
     i_method         (AA,Y, public, Au,      peek, num)
 declare_class(collective)
@@ -1239,7 +1244,7 @@ declare_class_2(map, collective)
 #define ctx_schema(X,Y,...) \
     i_prop(X,Y, public, Au, app) \
     i_prop(X,Y, intern, bool,   establishing, pad, 32)
-declare_class_2(ctx, map)
+declare_class_3(ctx, map, collective)
 
 #define ipart_schema(AA,Y,...) \
     i_prop    (AA,Y,   public, bool,   is_expr) \
@@ -1358,7 +1363,7 @@ declare_class_2(token, string)
     i_prop      (X,Y,  required,  Au, input) \
     i_ctr       (X,Y,  public, cstr) \
     i_override  (X,Y,  method, init)
-declare_class_2(tokens, array)
+declare_class_3(tokens, array, collective)
  
 #define path_schema(X,Y,...) \
     i_method    (X,Y, public, bool,   exists) \
