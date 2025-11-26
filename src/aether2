@@ -1,12 +1,15 @@
-#ifndef _AETHER_
-#define _AETHER_
+#ifndef _AETHER2_
+#define _AETHER2_
 
 #define aether2_schema(X,Y,...)\
     M(X,Y, i, prop,     public, path,   source) \
     M(X,Y, i, prop,     public, path,   current_inc) \
     M(X,Y, i, prop,     public, array,  libs) \
+    M(X,Y, i, prop,     public, array,  lexical) \
     M(X,Y, i, prop,     public, bool,   is_Au_import) \
+    i_method(X,Y, public, Au_t,   top_scope) \
+    i_method(X,Y, public, none,   push_scope, Au_t) \
     M(X,Y, i, override, method, init)
-declare_class(aether2)
+declare_class(aether2);
 
 #endif

@@ -5,10 +5,12 @@ import site, pprint
 import os, sys, glob, platform, argparse, subprocess, re
 from pathlib import Path
 from graph import parse_g_file, get_env_vars
+import shutil
 
 v = get_env_vars()
 root   = v['PROJECT_PATH']
 IMPORT = v['IMPORT']
+silver = v['SILVER']
 NATIVE = Path(v['SILVER']) / "sdk" / "native"
 SDK    = v['SDK']
 os.environ['IMPORT'] = IMPORT
@@ -17,6 +19,73 @@ os.environ['SDK']    = SDK
 def run(cmd, cwd=None, check=True):
     print(">", cmd)
     subprocess.run(cmd, cwd=cwd, shell=True, check=check)
+
+def ensure_msys2(silver_root):
+    win = sys.platform.startswith("win")
+    if not win: return
+    
+    """Download and extract MSYS2 into silver's directory."""
+    msys2_dir = Path(silver_root) / 'msys2'
+    bash = msys2_dir / 'usr' / 'bin' / 'bash.exe'
+    
+    if bash.exists():
+        return msys2_dir
+    
+    import urllib.request
+    import tarfile
+    
+    # MSYS2 provides a self-extracting archive / tarball
+    url = 'https://github.com/msys2/msys2-installer/releases/download/nightly-x86_64/msys2-base-x86_64-latest.sfx.exe'
+    # Or use the tar: https://github.com/msys2/msys2-installer/releases/download/nightly-x86_64/msys2-base-x86_64-latest.tar.xz
+    
+    print("Downloading MSYS2...")
+    msys2_dir.mkdir(parents=True, exist_ok=True)
+    
+    archive = msys2_dir.parent / 'msys2.tar.xz'
+    tar_url = 'https://github.com/msys2/msys2-installer/releases/download/nightly-x86_64/msys2-base-x86_64-latest.tar.xz'
+    urllib.request.urlretrieve(tar_url, archive)
+    
+    print("Extracting MSYS2...")
+    # Extract - it contains msys64/ folder
+    import lzma
+    with lzma.open(archive) as xz:
+        with tarfile.open(fileobj=xz) as tar:
+            tar.extractall(msys2_dir.parent)
+    
+    # Rename msys64 -> msys2 (or whatever you want)
+    extracted = msys2_dir.parent / 'msys64'
+    if extracted.exists():
+        extracted.rename(msys2_dir)
+    
+    archive.unlink()
+    
+    # First run initializes the environment
+    run_msys2('true', msys2_root=msys2_dir)  # Just initialize
+    run_msys2('pacman -Syu --noconfirm', msys2_root=msys2_dir)
+    run_msys2('pacman -S --noconfirm base-devel autoconf automake libtool', msys2_root=msys2_dir)
+    
+    return msys2_dir
+
+def run_msys2(cmd, cwd=None, msys2_root=None, check=True):
+    """Run command in silver's local MSYS2."""
+    bash = msys2_root / 'usr' / 'bin' / 'bash.exe'
+    
+    if cwd:
+        cwd_posix = str(cwd).replace('\\', '/')
+        if cwd_posix[1] == ':':
+            cwd_posix = '/' + cwd_posix[0].lower() + cwd_posix[2:]
+        inner_cmd = f'cd "{cwd_posix}" && {cmd}'
+    else:
+        inner_cmd = cmd
+    
+    env = os.environ.copy()
+    env['MSYSTEM'] = 'MINGW64'
+    env['CHERE_INVOKING'] = '1'
+    env['HOME'] = str(msys2_root / 'home' / 'silver')
+    
+    print(f"> [msys2] {cmd}")
+    subprocess.run([str(bash), '-lc', inner_cmd], check=check, env=env)
+
 
 def eval_braces(s, context=None):
     """Replace {expr} in a string with eval(expr) using given context dict."""
@@ -93,8 +162,10 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
     global root
     global SDK
 
+    overlay_dir  = Path(root)   / Path('overlay') / name
     checkout_dir = Path(root)   / Path('checkout') / name
     build_dir    = Path(IMPORT) / Path('release')  / name
+    CMakeLists   = checkout_dir / 'CMakeLists.txt'
 
     config_lines, pre, post, env = parse_from_config(_config_lines) # pre has > and post as >> infront ... everything else is a config_line
     
@@ -126,6 +197,9 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
         if commit:
             run(f"git -C {checkout_dir} checkout {commit}")
 
+    if overlay_dir.exists():
+        shutil.copytree(overlay_dir, checkout_dir, dirs_exist_ok=True)
+
     last_uri = uri
     last_commit = commit
     last_name = name
@@ -140,84 +214,104 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
         run(cmd, cwd=checkout_dir)
 
     # os-specific
-    sysname = platform.system().lower()
-    if sysname == "darwin":
-        sysroot = subprocess.getoutput("xcrun --sdk macosx --show-sdk-path || echo ''")
-        config_lines += [
-            f"-DCMAKE_OSX_SYSROOT={sysroot}",
-            "-DCMAKE_C_COMPILER_TARGET=arm64-apple-darwin",
-        ]
-    elif sysname == "linux":
-        config_lines += ["-DCMAKE_C_COMPILER_TARGET=x86_64-unknown-linux-gnu"]
+    if CMakeLists.exists():
+        sysname = platform.system().lower()
+        if sysname == "darwin":
+            sysroot = subprocess.getoutput("xcrun --sdk macosx --show-sdk-path || echo ''")
+            config_lines += [
+                f"-DCMAKE_OSX_SYSROOT={sysroot}",
+                "-DCMAKE_C_COMPILER_TARGET=arm64-apple-darwin",
+            ]
+        elif sysname == "linux":
+            config_lines += ["-DCMAKE_C_COMPILER_TARGET=x86_64-unknown-linux-gnu"]
 
-    # generate type / install dir
-    config_lines += [
-        f"-DCMAKE_INSTALL_PREFIX={install_dir}"
-    ]
-
-    if extra != 'native' and SDK !='native':
+        # generate type / install dir
         config_lines += [
-            f"-DCMAKE_SYSROOT={IMPORT}/usr",
-            f"-DCMAKE_C_COMPILER_TARGET={SDK}",
-            f"-DCMAKE_CXX_COMPILER_TARGET={SDK}",
+            f"-DCMAKE_INSTALL_PREFIX={install_dir}"
         ]
 
+        if extra != 'native' and SDK !='native':
+            config_lines += [
+                f"-DCMAKE_SYSROOT={IMPORT}/usr",
+                f"-DCMAKE_C_COMPILER_TARGET={SDK}",
+                f"-DCMAKE_CXX_COMPILER_TARGET={SDK}",
+            ]
 
-    # lets loop through config_lines and omit
-    cfg = []
-    for l in config_lines:
+
+        # lets loop through config_lines and omit
+        cfg = []
+        for l in config_lines:
+            if name != 'llvm-project':
+                if l.startswith('-DCMAKE_C_COMPILER') or l.startswith('-DCMAKE_CXX_COMPILER'):
+                    continue
+            cfg.append(l)
+
+        cmake_args = " ".join(cfg)
+
+        s = '/'
+        win = sys.platform.startswith('win')
+        ext = '.exe' if win else ''
+
+        # generally, software producers throw in MSVC-style command-line switches for cl compiler, and generally do NOT test against clang-cl
+        # to this end, we need to go with the compiler its designed for first
+        # on linux/mac though, we can attempt our own clang as its preferrable to go with our version we built
+        # --- however ---
+        # this is not ideal, to change compilation on dependencies based on presence of our clang, or not
+        # for determinism import needs a switch for which compiler to use
+        if SDK == 'native' and not '-DCMAKE_C_COMPILER=' in cmake_args:
+            cc         = 'cl' if win else 'clang'
+            cpp        = 'cl' if win else 'clang++'
+            idir       = ''   if win else install_dir + s + 'bin' + s
+            if not win and not (Path(idir) / cc).exists():
+                idir = ''
+                cc   = 'gcc'
+                cpp  = 'g++'
+            clang      = f'{idir}{cc}{ext}'
+            clangpp    = f'{idir}{cpp}{ext}'
+            cmake_args = f'-DCMAKE_C_COMPILER="{clang}" -DCMAKE_CXX_COMPILER="{clangpp}" ' + cmake_args
+        
+        if not '-G ' in cmake_args:
+            cmake_args = '-G Ninja ' + cmake_args
+
+        if not '-S ' in cmake_args:
+            cmake_args = f'-S {checkout_dir} ' + cmake_args
+
+        is_ninja = '-G Ninja' in cmake_args or '-G "Ninja"' in cmake_args
+        tc = ''
         if name != 'llvm-project':
-            if l.startswith('-DCMAKE_C_COMPILER') or l.startswith('-DCMAKE_CXX_COMPILER'):
-                continue
-        cfg.append(l)
-
-    cmake_args = " ".join(cfg)
-
-    s = '/'
-    win = sys.platform.startswith('win')
-    ext = '.exe' if win else ''
-
-    # generally, software producers throw in MSVC-style command-line switches for cl compiler, and generally do NOT test against clang-cl
-    # to this end, we need to go with the compiler its designed for first
-    # on linux/mac though, we can attempt our own clang as its preferrable to go with our version we built
-    # --- however ---
-    # this is not ideal, to change compilation on dependencies based on presence of our clang, or not
-    # for determinism import needs a switch for which compiler to use
-    if SDK == 'native' and not '-DCMAKE_C_COMPILER=' in cmake_args:
-        cc         = 'cl' if win else 'clang'
-        cpp        = 'cl' if win else 'clang++'
-        idir       = ''   if win else install_dir + s + 'bin' + s
-        if not win and not (Path(idir) / cc).exists():
-            idir = ''
-            cc   = 'gcc'
-            cpp  = 'g++'
-        clang      = f'{idir}{cc}{ext}'
-        clangpp    = f'{idir}{cpp}{ext}'
-        cmake_args = f'-DCMAKE_C_COMPILER="{clang}" -DCMAKE_CXX_COMPILER="{clangpp}" ' + cmake_args
-    
-    if not '-G ' in cmake_args:
-        cmake_args = '-G Ninja ' + cmake_args
-
-    if not '-S ' in cmake_args:
-        cmake_args = f'-S {checkout_dir} ' + cmake_args
-
-    is_ninja = '-G Ninja' in cmake_args or '-G "Ninja"' in cmake_args
-    tc = ''
-    if name != 'llvm-project':
-        tc = f"--toolchain='{IMPORT}/target.cmake'"
-    
-    # replace environment vars in cmake_args that begin with $something with %something% on windows
-    run(f"cmake {tc} {cmake_args}", cwd=build_dir)
-    
-    # build & install
-    cpu_count = os.cpu_count() or 4
-    if is_ninja:
-        print(f'running ninja for {name}')
-        run(f"ninja -j{max(1, cpu_count//2)}", cwd=build_dir)
-        run("ninja install", cwd=build_dir)
+            tc = f"--toolchain='{IMPORT}/target.cmake'"
+        
+        # replace environment vars in cmake_args that begin with $something with %something% on windows
+        run(f"cmake {tc} {cmake_args}", cwd=build_dir)
+        
+        # build & install
+        cpu_count = os.cpu_count() or 4
+        if is_ninja:
+            print(f'running ninja for {name}')
+            run(f"ninja -j{max(1, cpu_count//2)}", cwd=build_dir)
+            run("ninja install", cwd=build_dir)
+        else:
+            run('cmake --build . --config Release --target INSTALL', cwd=build_dir)
     else:
-        run('cmake --build . --config Release --target INSTALL', cwd=build_dir)
-    
+        configure_args = " ".join(config_lines)
+        configure = Path(f'{checkout_dir}/configure')
+
+        r = run_msys2 if win else run
+
+        if not configure.exists():
+            if os.path.exists(f'{checkout_dir}/autogen.sh'):
+                r(f'{checkout_dir}/autogen.sh', cwd=checkout_dir)
+            elif os.path.exists(f'{checkout_dir}/bootstrap.sh'):
+                r(f'{checkout_dir}/bootstrap.sh', cwd=checkout_dir)
+        
+        # Force regeneration of all autotools files
+        r(f'autoreconf -fi', cwd=checkout_dir)
+
+        r(f'{configure} --prefix={install_dir} {configure_args}', cwd=build_dir)
+        r(f'make', cwd=build_dir)
+        r(f'make install', cwd=build_dir)
+
+
     # run post commands
     for cmd in post:
         run(cmd, cwd=build_dir)
@@ -227,6 +321,7 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
 def import_src(root_dir="src"):
     IMPORT = os.environ.get('IMPORT')
     global NATIVE
+    ensure_msys2(NATIVE)
     for path in Path(root_dir).rglob("*.g"):
         _, _, _, _, imports = parse_g_file(str(path))
         for i in imports:

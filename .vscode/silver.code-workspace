@@ -106,7 +106,9 @@
       "sim_type_traits": "c",
       "compare": "c",
       "*.def": "c",
-      "sstream": "c"
+      "sstream": "c",
+      "aether2": "c",
+      "import": "c"
     }
   }
 }

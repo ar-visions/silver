@@ -2855,6 +2855,9 @@ static void write_header2(silver mod) {
 
 /// im a module!
 void silver_init(silver mod) {
+
+    aether2 e2 = aether2();
+    
     mod->defs     = map(hsize, 8);
     mod->codegens = map(hsize, 8);
     mod->import_cache = map(hsize, 8);

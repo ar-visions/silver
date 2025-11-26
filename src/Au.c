@@ -1,8 +1,7 @@
 #include <import>
 
 //#undef realloc
-//#include <ffi.h>
-#undef USE_FFI
+#include <ffi.h>
 #undef bool
 #include <ports.h>
 #include <math.h>
@@ -25,13 +24,13 @@ Au_t_info        Au_t_i;
 i64 epoch_millis();
 
 
-struct method_t {
+typedef struct _ffi_method_t {
     struct _array*  atypes;
     Au_t            rtype;
     void*           address;
     void*           ffi_cif;  /// ffi-calling info
     void*           ffi_args; /// ffi-data types for args
-};
+} ffi_method_t;
 
 shape shape_with_array(shape a, array dims) {
     num count = len(dims);
@@ -121,7 +120,6 @@ bool array_cast_bool(array a) { return a && a->count > 0; }
 none array_alloc_sz(array a, sz alloc) {
     Au* elements = (Au*)calloc(alloc, sizeof(struct _Au*));
     memcpy(elements, a->origin, sizeof(struct _Au*) * a->count);
-    
     free(a->origin);
     a->origin = elements;
     a->alloc = alloc;
@@ -245,8 +243,13 @@ none array_push(array a, Au b) {
     a->origin[a->count++] = a->unmanaged ? b : hold(b);
 }
 
-static Au_t* member_pool;
-static int   n_members;
+struct _Au_combine {
+    struct _Au   info;
+    struct _Au_t type;
+};
+
+static struct _Au_combine* member_pool;
+static int                 n_members;
 
 Au array_qpush(array a, Au b) {
     if (!a->origin || a->alloc == a->count)
@@ -258,9 +261,15 @@ Au array_qpush(array a, Au b) {
 Au_t Au_alloc_member(Au_t type) {
     if (n_members == 0) {
         n_members   = 256;
-        member_pool = calloc(n_members, sizeof(struct _Au_t));
+        member_pool = calloc(n_members, sizeof(struct _Au_combine));
+        memset(member_pool, 0, n_members * sizeof(struct _Au_combine));
     }
-    return array_qpush(&type->members, &member_pool[--n_members]);
+    struct _Au_combine* cur = &member_pool[--n_members];
+    cur->info.refs = 1;
+    Au_t new_member = array_qpush(&type->members, &cur->type);
+    new_member->context = type;
+    printf("new_member on type %s = %p (%i)\n", type->ident, new_member, n_members);
+    return new_member;
 }
 
 none array_clear(array a) {
@@ -457,23 +466,30 @@ num array_index_of(array a, Au b) {
 __thread array     af_stack;
 __thread   AF      af_top;
 
-static global_init_fn* call_after;
+struct _init_dep {
+    Au_t dep;
+    global_init_fn call_after;
+};
+
+static struct _init_dep* call_after;
 static num             call_after_alloc;
 static num             call_after_count;
 static map             log_funcs;
 
-none lazy_init(global_init_fn fn) {
+none lazy_init(global_init_fn fn, Au_t dependency) {
     if (call_after_count == call_after_alloc) {
         global_init_fn* prev = call_after;
         num alloc_prev = call_after_alloc;
         call_after_alloc = 32 + (call_after_alloc << 1);
-        call_after = calloc(call_after_alloc, sizeof(global_init_fn));
+        call_after = calloc(call_after_alloc, sizeof(struct _init_dep));
         if (prev) {
-            memcpy(call_after, prev, sizeof(global_init_fn) * alloc_prev);
+            memcpy(call_after, prev, sizeof(struct _init_dep) * alloc_prev);
             free(prev);
         }
     }
-    call_after[call_after_count++] = fn;
+    call_after[call_after_count].call_after = fn;
+    call_after[call_after_count].dep = dependency;
+    call_after_count++;
 }
 
 static global_init_fn* call_last;
@@ -509,15 +525,17 @@ none Au_register_init(func f) {
 
 struct _Au_t  au; // its fine for this to be in global space if we need to enumerate types
 static Au_t   module;
+static array  scope;
 static map    module_map;
-static Au_t* _types;
-static num   _types_alloc;
-static num   _types_len;
 static bool   started = false;
 
 Au_t Au_module(symbol name) {
-    if (!module) return &au;
+    if (!module) {
+        module = &au;
+        module->ident = name;
+    }
     if (module && strcmp(name, module->ident) == 0) return module;
+    if (!module_map) module_map = hold(map(hsize, 8));
     verify(module_map, "expected module map allocation");
     string k = string(name);
     return get(module_map, k);
@@ -530,181 +548,28 @@ Au_t Au_register_module(symbol next_module) {
 }
 
 item pseudo_item(Au content) {
-    u8*    a = calloc(1, sizeof(struct _object) + sizeof(struct _item));
-    item   i = (item)&a[sizeof(struct _object)];
-    i->value = content; // no hold on these Bards
+    u8*    a = calloc(1, sizeof(struct _Au) + sizeof(struct _item));
+    item   i = (item)&a[sizeof(struct _Au)];
+    Au     f = header(i);
+    f->refs  = 1;
+    i->value = content;
     return i;
 }
 
+none collective_init(collective a) {
+}
+
+ffi_method_t* method_with_address(handle address, Au_t rtype, array atypes, Au_t method_owner);
+
 none push_type(Au_t type) {
     // on first go, we must register our basic type structures:
-
-/*
-typedef none(*func)    ();
-typedef Au  (*hook)    (Au);
-typedef Au  (*callback)(Au, Au); // target and argument
-typedef Au  (*callback_extra)(Au, Au, Au); // target, argument, argument2
-
-
-/// our A-type classes have many types of methods
-/// constructor, i[nstance]-method, s[tatic]-method, operator 
-/// (these are enumeration!), and index.  we index by 1 argument 
-/// only in C but we may allow for more in silver
-// member enums span multiple use-case, from struct member types, to formatter targeting on arguments
-enum AU_MEMBER {
-    AU_MEMBER_NONE      = 0,
-    AU_MEMBER_TYPE      = 1,
-    AU_MEMBER_CONSTRUCT = 2,
-    AU_MEMBER_PROP      = 3,
-    AU_MEMBER_INLAY     = 4,
-    AU_MEMBER_PRIV      = 5,
-    AU_MEMBER_INTERN    = 6,
-    AU_MEMBER_READ_ONLY = 7,
-    AU_MEMBER_IMETHOD   = 8,
-    AU_MEMBER_SMETHOD   = 9,
-    AU_MEMBER_OPERATOR  = 10,
-    AU_MEMBER_CAST      = 11,
-    AU_MEMBER_INDEX     = 12,
-    AU_MEMBER_ENUMV     = 13,
-    AU_MEMBER_OVERRIDE  = 14,
-    AU_MEMBER_VPROP     = 15,
-    AU_MEMBER_IS_ATTR   = 16,
-    AU_MEMBER_OPAQUE    = 17,
-    AU_MEMBER_IFINAL    = 18,
-    AU_MEMBER_TMETHOD   = 19,
-    AU_MEMBER_FORMATTER = 20,
-};
-
-typedef enum AU_MEMBER AFlag;
-
-enum AU_TRAIT {
-    AU_TRAIT_PRIMITIVE = 1 << 0,
-    AU_TRAIT_INTEGRAL  = 1 << 1,
-    AU_TRAIT_REALISTIC = 1 << 2,
-    AU_TRAIT_SIGNED    = 1 << 3,
-    AU_TRAIT_UNSIGNED  = 1 << 4,
-    AU_TRAIT_ENUM      = 1 << 5,
-    AU_TRAIT_ALIAS     = 1 << 6,
-    AU_TRAIT_ABSTRACT  = 1 << 7,
-    AU_TRAIT_STRUCT    = 1 << 8,
-    AU_TRAIT_USER_INIT = 1 << 9,
-    AU_TRAIT_CLASS     = 1 << 10,
-    AU_TRAIT_POINTER   = 1 << 11,
-    AU_TRAIT_CONST     = 1 << 12,
-    AU_TRAIT_REQUIRED  = 1 << 13,
-    AU_TRAIT_SYSTEM    = 1 << 14
-};
-
-typedef bool(*global_init_fn)();
-
-
-_Pragma("pack(push, 1)")
-
-typedef struct _Au_t *Au_t;
-
-// auto-free recycler
-typedef struct _au_core *au_core;
-
-typedef struct _method_t *method_t; 
-
-typedef struct _object *object;
-
-typedef struct _collective_abi {
-    i32             count;
-    i32             alloc;
-    i32             hsize;
-    i32             esize;
-    ARef            origin;
-    struct _item*   first, *last;
-    struct _vector* hlist;
-    bool            unmanaged;
-    bool            assorted;
-    struct _Au_t*   last_type;
-} collective_abi;
-
-typedef struct _Au_t* Au_t;
-
-// this is an exact mock type of A's instance
-typedef struct _object {
-    Au_t            type;
-    Au_t            scalar;
-    i64             refs;
-    struct _Au*     data;
-    struct _shape*  shape;
-    cstr            source;
-    i64             line;
-    i64             alloc;
-    i64             count;
-    i64             recycle;
-    i64             af_index;
-} *object;
-
-// this is the standard _Au_t declaration
-typedef struct _Au_t {
-    Au_t            context;
-    union { Au_t src, rtype, type; };
-    Au_t            user;
-    Au_t            module; // origin of its module
-    char*           ident;
-    i64             index; // index of type in module, or index of member in type
-    object          value; // user-data value associated to type
-    int             global_count;
-    u8              member_type;
-    u8              operator_type;
-    u8              access_type;
-    u8              reserved;
-    union {
-        struct {
-            u32 is_primitive  : 1;  // AU_TRAIT_PRIMITIVE
-            u32 is_integral   : 1;  // AU_TRAIT_INTEGRAL
-            u32 is_realistic  : 1;  // AU_TRAIT_REALISTIC
-            u32 is_signed     : 1;  // AU_TRAIT_SIGNED
-            u32 is_unsigned   : 1;  // AU_TRAIT_UNSIGNED
-            u32 is_enum       : 1;  // AU_TRAIT_ENUM
-            u32 is_alias      : 1;  // AU_TRAIT_ALIAS
-            u32 is_abstract   : 1;  // AU_TRAIT_ABSTRACT
-            u32 is_struct     : 1;  // AU_TRAIT_STRUCT
-            u32 is_user_init  : 1;  // AU_TRAIT_USER_INIT
-            u32 is_class      : 1;  // AU_TRAIT_CLASS
-            u32 is_pointer    : 1;  // AU_TRAIT_POINTER
-            u32 is_const      : 1;  // AU_TRAIT_CONST
-            u32 is_required   : 1;  // AU_TRAIT_REQUIRED
-            u32 is_system     : 1;  // AU_TRAIT_SYSTEM
-        };
-        u32 traits;
-    };
-    int             offset;
-    int             size;
-    int             isize;
-    void*           ptr; // used for function addresses
-    au_core         af; // Au-specific internal members on type
-    struct _object  members_info;
-    struct _collective_abi  members;
-    struct _object  meta_info;
-    union { struct _collective_abi meta, args; };
-    struct _shape*  shape;
-    u64             required_bits[2];
-} *Au_t;
-*/
 
     if (!module) {
         module = &au;
         module->members.unmanaged = true;
     }
 
-    array_push(&module->members, pseudo_item(type));
-
-    if (_types_alloc == _types_len) {
-        Au_t* prev       = _types;
-        num    alloc_prev = _types_alloc;
-        _types_alloc      = 128 + (_types_alloc << 1);
-        _types            = calloc(_types_alloc, sizeof(Au_t));
-        if (alloc_prev) {
-            memcpy(_types, prev, sizeof(Au_t) * alloc_prev);
-            free(prev);
-        }
-    }
-    _types[_types_len++] = type;
+    array_qpush(&module->members, pseudo_item(type));
 
     type->af = (au_core)calloc(1, sizeof(struct _au_core));
     type->af->re_alloc = 1024;
@@ -714,12 +579,45 @@ typedef struct _Au_t {
     if ((type->traits & AU_TRAIT_POINTER) != 0) {
         type->src = type->meta.origin ? *(Au_t*)type->meta.origin : null;
     }
+
+    if ((type->traits & AU_TRAIT_ABSTRACT) == 0) {
+        for (num i = 0; i < type->members.count; i++) {
+            Au_t mem = type->members.origin[i];
+            if ((mem->traits & AU_TRAIT_REQUIRED) != 0 && (mem->member_type == AU_MEMBER_PROP))
+                AF_set(type->required_bits, mem->index);
+        }
+    }
+
+    for (int i = 0; i < call_after_count; i++) {
+        struct _init_dep* f = &call_after[i];
+        if (f->dep == type && f->call_after())
+            f->dep = null;
+    }
+}
+
+Au_t Au_current_module() {
+    return module;
+}
+
+// i am not sure if we 'need' a find by type; in language we never seem to search this way
+// its barely used in lookup2() in aether
+Au_t Au_scope_lookup(array a, string f) {
+    cstr s = f->chars;
+    for (int i = len(a) - 1; i >= 0; i--) {
+        Au_t t = a->origin[i];
+        while (t) {
+            if (t->ident && strcmp(t->ident, s) == 0) return t;
+            if (t->context == t) break;
+            t = t->context;
+        }
+    }
+    return null;
 }
 
 ARef Au_types(ref_i64 length) {
     if (!module) module = &au;
     *length = module->members.count;
-    return _types;
+    return module->members.origin;
 }
 
 Au_t Au_find_type(symbol name, Au_t m) {
@@ -1202,35 +1100,31 @@ Au alloc2(Au_t type, Au_t scalar, shape s) {
     return a->data;
 }
 
-#ifdef USE_FFI
-method_t* method_with_address(handle address, Au_t rtype, array atypes, Au_t method_owner) {
-    const num max_args = (sizeof(_meta_t) - sizeof(num)) / sizeof(Au_t);
-    method_t* method = calloc(1, sizeof(method_t));
+ffi_method_t* method_with_address(handle address, Au_t rtype, array args, Au_t method_owner) {
+    const num max_args = 16;
+    ffi_method_t* method = calloc(1, sizeof(ffi_method_t));
     method->ffi_cif  = calloc(1,        sizeof(ffi_cif));
     method->ffi_args = calloc(max_args, sizeof(ffi_type*));
-
-
-    //_Generic(("hi"), string_schema(string, GENERICS) const none *: (none)0)("hi")  
-    method->atypes   = new(array);
+    method->atypes   = args;
     method->rtype    = rtype;
     method->address  = address;
-    assert(atypes->count <= max_args, "adjust arg maxima");
+    assert(args->count <= max_args, "adjust arg maxima");
     ffi_type **ffi_args = (ffi_type**)method->ffi_args;
-    for (num i = 0; i < atypes->count; i++) {
-        Au_t a_type   = (Au_t)atypes->origin[i];
-        bool is_prim  = a_type->traits & AU_TRAIT_PRIMITIVE;
-        ffi_args[i]   = is_prim ? a_type->arb : &ffi_type_pointer;
-        push_weak(method->atypes, (Au)a_type);
+    for (num i = 0; i < args->count; i++) {
+        Au_t a_type   = (Au_t)args->origin[i];
+        ffi_args[i]   = primitive_ffi_arb(a_type);
     }
     ffi_status status = ffi_prep_cif(
-        (ffi_cif*) method->ffi_cif, FFI_DEFAULT_ABI, atypes->count,
-        (ffi_type*)((rtype->traits & AU_TRAIT_ABSTRACT) ? method_owner->arb : rtype->arb), ffi_args);
+        (ffi_cif*) method->ffi_cif, FFI_DEFAULT_ABI, args->count,
+        (ffi_type*)((rtype->traits & AU_TRAIT_ABSTRACT) ?
+        primitive_ffi_arb(method_owner) : primitive_ffi_arb(rtype)), ffi_args);
     assert(status == FFI_OK, "status == %i", (i32)status);
     return method;
 }
 
 Au Au_method_call(Au_t m, array args) {
-    method_t* a = m->method;
+    if (!m->ffi) m->ffi = method_with_address(m->ptr, m->type, &m->args, m->context);
+    ffi_method_t* a = m->ffi;
     const num max_args = 8;
     none* arg_values[max_args];
     assert(args->count == a->atypes->count, "arg count mismatch");
@@ -1245,25 +1139,20 @@ Au Au_method_call(Au_t m, array args) {
         return primitive(a->rtype, result);
     else if (a->rtype->traits & AU_TRAIT_ENUM) {
         Au res = alloc(a->rtype, 1, null);
-        verify(r->rtype->src == typeid(i32), "i32 enums supported");
+        verify(a->rtype->src == typeid(i32), "i32 enums supported");
         *((i32*)res) = *(i32*)result;
         return res;
     } else
         return (Au) result[0];
 }
-#endif
 
 /// this calls type methods
 Au method(Au_t type, cstr method_name, array args) {
-#ifdef USE_FFI
     Au_t mem = find_member(type, AU_MEMBER_IMETHOD | AU_MEMBER_SMETHOD, method_name, false);
-    assert(mem->method, "method not set");
-    method_t* m = mem->method;
-    Au res = method_call(m, args);
+    assert(mem->ffi, "method not set");
+    ffi_method_t* m = mem->ffi;
+    Au res = Au_method_call(m, args);
     return res;
-#else
-    return null;
-#endif
 }
 
 Au convert(Au_t type, Au input) {
@@ -1272,9 +1161,8 @@ Au convert(Au_t type, Au input) {
 }
 
 Au Au_method_vargs(Au a, Au_t mem, int n_args, ...) {
-#ifdef USE_FFI
-    assert(mem->method, "method not set");
-    method_t* m = mem->method;
+    assert(mem->ffi, "method not set");
+    ffi_method_t* m = mem->ffi;
     va_list  vargs;
     va_start(vargs, n_args);
     array args = new(array, alloc, n_args + 1);
@@ -1284,11 +1172,8 @@ Au Au_method_vargs(Au a, Au_t mem, int n_args, ...) {
         push(args, arg);
     }
     va_end(vargs);
-    Au res = method_call(m, args);
+    Au res = Au_method_call(m, args);
     return res;
-#else
-    return null;
-#endif
 }
 
 
@@ -1296,25 +1181,62 @@ int fault_level;
 
 static __attribute__((constructor)) bool Aglobal_AF();
 
-none Au_member_override(Au_t type, Au_t type_mem, AFlag f) {
-    Au_t base = type;
-    bool found = false;
+string Au_cast_string(Au a);
+string numeric_cast_string(numeric a);
 
-    do {
-        base = base->context;
+none Au_member_override(Au_t type, Au_t type_mem, AFlag f) {
+    Au_t base = type->context;
+    if  (base) base = base->context;
+
+    while (base) {
         for (num i = 0; i < base->members.count; i++) {
             Au_t m = base->members.origin[i];
-            if ((m->member_type & f) != 0 && strcmp(m->ident, type_mem->ident) == 0) {
-                type_mem->offset = m->offset; // todo: better idea to use src on type_mem
-                type_mem->args   = m->args;
-                type_mem->src    = m->type;
-                type_mem->member_type = m->member_type | AU_MEMBER_OVERRIDE;
+            if (m->member_type == f && strcmp(m->ident, type_mem->ident) == 0) {
+                type_mem->offset        = m->offset; // todo: better idea to use src on type_mem
+                type_mem->args          = m->args;
+                type_mem->src           = m->type;
+                type_mem->member_type   = m->member_type;// | AU_MEMBER_OVERRIDE;
+                type_mem->is_override   = 1;
+                type_mem->index         = m->index;
+
+                verify(m->index, "method %s.%s cannot be overridden\n", base->ident, m->ident);
+
+                verify(m->ptr, "method pointer not set on source yet (%s.%s); cannot override\n",
+                    base->ident, m->ident);
+                 
+                struct _string*(*base_method)(Au) = ((ARef)&base->ft.__none__)[m->index];
+                struct _string*(*ptr_method)(Au) = m->ptr;
+                verify(base_method == m->ptr, "method not stored in base table correctly");
                 return;
             }
         }
-    } while (!found && base != typeid(Au));
+        if (base == typeid(Au)) break;
+        base = base->context;
+    }
 
-    fprintf(stderr, "override could not find member from type %s", type->ident);
+    fprintf(stderr, "override could not find member %s from type %s\n", type_mem->ident, type->ident);
+
+    base = type->context;
+    while (base) {
+        for (num i = 0; i < base->members.count; i++) {
+            Au_t m = base->members.origin[i];
+            printf("existing member on type %s = %p\n", base->ident, m);
+            if (m->ident && strcmp(m->ident, type_mem->ident) == 0) {
+                type_mem->offset = m->offset; // todo: better idea to use src on type_mem
+                type_mem->args   = m->args;
+                type_mem->src    = m->type;
+                type_mem->member_type = m->member_type;// | AU_MEMBER_OVERRIDE;
+                ARef ptr_find = m->ptr;
+                verify(m->index, "method %s.%s cannot be overridden\n", base->ident, m->ident);
+                verify(m->ptr, "method pointer not set on source yet (%s.%s); cannot override\n",
+                    base->ident, m->ident);
+                ((ARef)&type->ft)[m->index] = m->ptr;
+                return;
+            }
+        }
+        if (base == typeid(Au)) break;
+        base = base->context;
+    }
 }
 
 none Au_engage(cstrs argv) {
@@ -1356,54 +1278,6 @@ none Au_engage(cstrs argv) {
         printf("listening-to: %s\n", topics->chars);
     }
 
-    int remaining = call_after_count;
-    while (remaining)
-        for (int i = 0; i < call_after_count; i++) {
-            global_init_fn fn2 = call_after[i];
-            if (fn2 && fn2()) {
-                call_after[i] = null;
-                remaining--;
-            }
-        }
-
-    remaining = call_last_count;
-    while (remaining)
-        for (int i = 0; i < call_last_count; i++) {
-            global_init_fn fn2 = call_last[i];
-            if (fn2 && fn2()) {
-                call_last[i] = null;
-                remaining--;
-            }
-        }
-
-    num         types_len;
-    Au_t*      _types = Au_types(&types_len);
-    const num   max_args = 8;
-
-    for (num i = 0; i < types_len; i++) {
-        Au_t type = _types[i];
-        if (type->traits & AU_TRAIT_ABSTRACT) continue;
-        
-        for (num i = 0; i < type->members.count; i++) {
-            Au_t mem = type->members.origin[i];
-            if ((mem->traits & AU_TRAIT_REQUIRED) != 0 && (mem->member_type & AU_MEMBER_PROP)) {
-                AF_set(type->required_bits, mem->index);
-            }
-            if (mem->member_type & (AU_MEMBER_IMETHOD | AU_MEMBER_SMETHOD)) {
-                // no offset needed for methods; we have mem->ptr already set; we will only need to handle override entries with ffi
-                //none* address = 0;
-                //memcpy(&address, &((u8*)type)[mem->offset], sizeof(none*));
-                //assert(address, "no address");
-#ifdef USE_FFI
-                array args = allocate(array, alloc, mem->args.count);
-                for (num i = 0; i < mem->args.count; i++)
-                    args->origin[i] = (Au)((Au_t*)&mem->args.meta_0)[i];
-                args->count = mem->args.count;
-                mem->method = method_with_address(address, mem->type, args, type);
-#endif
-            }
-        }
-    }
     if (argv) {
         path sh = path_share_path();
         if (sh) cd(sh);
@@ -1475,7 +1349,7 @@ bool Au_is_inlay(Au_t m) {
     return (m->type->traits & AU_TRAIT_STRUCT    | 
             m->type->traits & AU_TRAIT_PRIMITIVE | 
             m->type->traits & AU_TRAIT_ENUM      | 
-            m->member_type == AU_MEMBER_INLAY) != 0;
+            m->type->traits & AU_TRAIT_INLAY) != 0;
 }
 
 none hold_members(Au a) {
@@ -1484,7 +1358,7 @@ none hold_members(Au a) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t mem = type->members.origin[i];
             Au   *mdata = (Au*)((cstr)a + mem->offset);
-            if (mem->member_type & (AU_MEMBER_PROP | AU_MEMBER_PRIV))
+            if (mem->member_type == AU_MEMBER_PROP)
                 if (!Au_is_inlay(mem) && *mdata) { // was trying to isolate what class name was responsible for our problems
                     if (mem->meta.origin && *(Au_t*)mem->meta.origin == typeid(weak))
                         continue;
@@ -1509,7 +1383,7 @@ Au set_property(Au a, symbol name, Au value) {
 
 Au get_property(Au a, symbol name) {
     Au_t type = isa(a);
-    Au_t m = find_member(type, (AU_MEMBER_PROP | AU_MEMBER_PRIV | AU_MEMBER_INTERN), (cstr)name, true);
+    Au_t m = find_member(type, AU_MEMBER_PROP, (cstr)name, true);
     verify(m, "%s not found on Au %s", name, type->ident);
     Au *mdata = (Au*)((cstr)a + m->offset);
     Au  value = *mdata;
@@ -1601,7 +1475,7 @@ none drop_members(Au a) {
     while (type != typeid(Au)) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t m = type->members.origin[i];
-            if ((m->member_type & (AU_MEMBER_PROP | AU_MEMBER_PRIV)) &&
+            if ((m->member_type == AU_MEMBER_PROP) &&
                     !Au_is_inlay(m)) {
                 if (m->args.origin && *(Au_t*)m->args.origin == typeid(weak))
                     continue;
@@ -2001,7 +1875,7 @@ bool member_set(Au a, Au_t m, Au value) {
     bool  is_primitive = (m->type->traits & AU_TRAIT_PRIMITIVE) != 0;
     bool  is_enum      = (m->type->traits & AU_TRAIT_ENUM)      != 0;
     bool  is_struct    = (m->type->traits & AU_TRAIT_STRUCT)    != 0;
-    bool  is_inlay     = (m->member_type  & AU_MEMBER_INLAY)    != 0;
+    bool  is_inlay     = (m->type->traits & AU_TRAIT_INLAY)    != 0;
     ARef  member_ptr   = (cstr)a + m->offset;
     Au_t vtype        = isa(value);
     Au     vinfo        = head(value);
@@ -2033,9 +1907,9 @@ Au member_object(Au a, Au_t m) {
     if (!(m->member_type & AU_MEMBER_PROP))
         return null; // we do this so much, that its useful as a filter in for statements
 
-    bool is_primitive = (m->type->traits & AU_TRAIT_PRIMITIVE) | 
-                        (m->type->traits & AU_TRAIT_STRUCT);
-    bool is_inlay     = (m->member_type  & AU_MEMBER_INLAY);
+    bool is_primitive = (m->type->traits & AU_TRAIT_PRIMITIVE) != 0 || 
+                        (m->type->traits & AU_TRAIT_STRUCT) != 0;
+    bool is_inlay     = (m->type->traits & AU_TRAIT_INLAY) != 0;
     Au result;
     ARef   member_ptr = (cstr)a + m->offset;
     if (is_inlay || is_primitive) {
@@ -2068,12 +1942,12 @@ string Au_cast_string(Au a) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t m = type->members.origin[i];
             // todo: intern members wont be registered
-            if (m->member_type & (AU_MEMBER_PROP | AU_MEMBER_PRIV | AU_MEMBER_INTERN)) {
+            if (m->member_type == AU_MEMBER_PROP) {
                 if (once)
                     append(res, ", ");
                 u8*    ptr = (u8*)a + m->offset;
                 Au inst = null;
-                bool is_primitive = m->type->traits & AU_TRAIT_PRIMITIVE;
+                bool is_primitive = (m->type->traits & AU_TRAIT_PRIMITIVE) != 0;
                 if (is_primitive)
                     inst = (Au)ptr;
                 else
@@ -3491,7 +3365,7 @@ Au vrealloc(Au a, sz alloc) {
 none vector_init(vector a) {
     Au f = header(a);
     f->count = 0;
-    f->scalar = f->type->meta.origin ? meta_index(a, 0) : a->type ? a->type : typeid(i8);
+    f->scalar = (f->type && f->type->meta.origin) ? meta_index(a, 0) : a->type ? a->type : typeid(i8);
     f->shape  = hold(a->shape);
     verify(f->scalar, "scalar not set");
     if (f->shape)
@@ -4346,9 +4220,8 @@ Au path_load(path a, Au_t type, ctx context) {
 }
 
 none* primitive_ffi_arb(Au_t ptype) {
-#if USE_FFI
     //type_ref->arb      = primitive_ffi_arb(typeid(i32));
-    if ((ptype->trait & AU_TRAIT_ENUM)) return primitive_ffi_arb(ptype->src);
+    if ((ptype->traits & AU_TRAIT_ENUM)) return primitive_ffi_arb(ptype->src);
     if (ptype == typeid(u8))        return &ffi_type_uint8;
     if (ptype == typeid(i8))        return &ffi_type_sint8;
     if (ptype == typeid(u16))       return &ffi_type_uint16;
@@ -4366,10 +4239,6 @@ none* primitive_ffi_arb(Au_t ptype) {
     if (ptype == typeid(sz))        return &ffi_type_sint64;
     if (ptype == typeid(none))      return &ffi_type_void;
     return &ffi_type_pointer;
-
-#else
-    return null;
-#endif
 }
 
 
@@ -4536,7 +4405,7 @@ string json(Au a) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t mem = type->members.origin[i];
             if (one) push(res, ',');
-            if (!(mem->member_type & (AU_MEMBER_PROP | AU_MEMBER_INLAY))) continue;
+            if (!(mem->member_type & AU_MEMBER_PROP)) continue;
             concat(res, json(string(mem->ident)));
             push  (res, ':');
             Au value = get_property(a, mem->ident);

@@ -26,6 +26,7 @@
     m->type    = (Au_t)&R##_i.type; \
     m->offset  = offsetof(E##_f, N); \
     m->ptr     = (void*)& E##_##N; \
+    m->index   = offsetof(__typeof__(E##_i.type.ft), N) / sizeof(void*); \
     m->member_type = AU_MEMBER_SMETHOD; \
 }
 
@@ -318,6 +319,7 @@
     m->type        = (Au_t)&ARG##_i.type; \
     /*m->offset      = offsetof(X##_f.ft, with_##ARG);*/ \
     m->ptr         = (void*)& X##_with_##ARG; \
+    m->index   = offsetof(__typeof__(X##_i.type.ft), with_##ARG) / sizeof(void*); \
     m->member_type = AU_MEMBER_CONSTRUCT; \
 }
 
@@ -812,6 +814,7 @@
     m->type        = (Au_t)&ARG##_i.type; \
     /* m->offset      = offsetof(X##_f, with_##ARG); */ \
     m->ptr         = (void*)& X##_with_##ARG; \
+    m->index       = offsetof(__typeof__(X##_i.type.ft), with_##ARG) / sizeof(void*); \
     m->member_type = AU_MEMBER_CONSTRUCT; \
 }
 
@@ -886,13 +889,13 @@
 #define   i_struct_cast_DECL(X, R)
 #define   i_struct_cast_DECL_EXTERN(X, R)
 #define   i_struct_cast_GENERICS(X, R)
-#define   i_struct_cast_INIT(X, R) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    X##_i.type.ft.cast_##R = & X##_cast_##R; \
+#define   i_struct_cast_INIT(ST, R) { \
+    Au_t m = Au_alloc_member(&ST##_i.type); \
+    ST##_i.type.ft.cast_##R = & ST##_cast_##R; \
     m->ident    = stringify(cast_##R); \
-    set_meta_array(m, emit_types(X)); \
+    set_meta_array(m, emit_types(ST)); \
     m->type    = (Au_t)&R##_i.type; \
-    /* m->offset  = offsetof(X##_f, cast_##R); */ \
+    m->offset  = offsetof(__typeof(ST##_i.type.ft), cast_##R); \
     m->member_type = AU_MEMBER_CAST; \
 }
 
@@ -1160,6 +1163,7 @@
     m->type    = (Au_t)&R##_i.type; \
     /* m->offset  = offsetof(X##_f, N); */ \
     m->member_type = AU_MEMBER_IMETHOD; \
+    m->index   = offsetof(__typeof__(X##_i.type.ft), N) / sizeof(void*); \
     m->ptr     = (void*)X##_i.type . ft.N; \
 }
 
@@ -1251,7 +1255,7 @@
     m->ident   = stringify(operator_##N); \
     set_meta_array(m, emit_types(X)); \
     m->type    = (Au_t)&R##_i.type; \
-    /* m->offset  = offsetof(X##_f, operator_##N); */ \
+    m->index  = offsetof(__typeof__(X##_i.type.ft), operator_##N) / sizeof(void*); \
     m->member_type = AU_MEMBER_OPERATOR; \
     m->operator_type = OPType_ ## N; \
 }
@@ -1299,13 +1303,14 @@
 #define   i_cast_public_DECL(X, R)
 #define   i_cast_public_DECL_EXTERN(X, R)
 #define   i_cast_public_GENERICS(X, R)
-#define   i_cast_public_INIT(X, R) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    X##_i.type.ft.cast_##R = & X##_cast_##R; \
+#define   i_cast_public_INIT(CL, R) { \
+    Au_t m = Au_alloc_member(&CL##_i.type); \
+    CL##_i.type.ft.cast_##R = & CL##_cast_##R; \
+    m->ptr = CL##_i.type.ft.cast_##R; \
     m->ident   = stringify(cast_##R); \
-    set_meta_array(m, emit_types(X)); \
+    set_meta_array(m, emit_types(CL)); \
     m->type    = (Au_t)&R##_i.type; \
-    /* m->offset  = offsetof(X##_f, cast_##R); */ \
+    m->index   = offsetof(__typeof(CL##_i.type.ft), cast_##R) / sizeof(void*); \
     m->member_type = AU_MEMBER_CAST; \
 }
 
@@ -1358,7 +1363,7 @@
     m->ident       = stringify(emit_idx_symbol(index, __VA_ARGS__)); \
     set_meta_array(m, emit_types(X, __VA_ARGS__)); \
     m->type        = (Au_t)&R##_i.type; \
-    /* m->offset      = offsetof(X##_f, emit_idx_symbol(index, __VA_ARGS__)); */ \
+    m->index        = offsetof(__typeof(X##_i.type.ft), emit_idx_symbol(index, __VA_ARGS__)) / sizeof(void*); \
     m->member_type = AU_MEMBER_INDEX; \
 }
 
