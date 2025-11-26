@@ -210,13 +210,13 @@ fn some-callback[ i:int, context ctx:Vulkan ] -> int
 
 nice: some-callback[ 'a-nice-callback', null ]
 
-fn a-function [ a:string ]  -> string
+func a-function [ a:string ]  -> string
     i : 2 + sz[ a ]
     r : nice[ i ]
     print[ 'called-with: %s. returning: { r }'  a ]
     return r
 
-fn a-function [ a:string ] int [2 + sz[ a ]]
+func a-function [ a:string ] int [2 + sz[ a ]]
 
 class app
     public value     : short 1
@@ -242,7 +242,7 @@ func module-name[ a:app ] -> int
     val += 1 # we may change the val, because it was declared with :
 
     print[ 'using app with value: { is-const } + { val - is-const }' ]
-    return [ run[a, string[val]] > 0 ] ? 1 : 0
+    return (run[a, string[val]] > 0) ? 1 : 0
 
 ```
 
