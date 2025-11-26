@@ -653,14 +653,14 @@ void AF_set_id(Au a, int id) {
 
 void AF_set_name(Au a, cstr name) {
     Au_t t = isa(a);
-    Au_t m = find_member(t, AU_MEMBER_PROP|AU_MEMBER_VPROP, name, true);
+    Au_t m = find_member(t, AU_MEMBER_PROP, name, true);
     u64*   f = AF_bits(a);
     AF_set(f, m->index);
 }
 
 i32 AF_query_name(Au a, cstr name) {
     Au_t t = isa(a);
-    Au_t m = find_member(t, AU_MEMBER_PROP|AU_MEMBER_VPROP, name, true);
+    Au_t m = find_member(t, AU_MEMBER_PROP, name, true);
     u64* f = AF_bits(a);
     return (i32)AF_get(f, m->index);
 }
@@ -1148,7 +1148,8 @@ Au Au_method_call(Au_t m, array args) {
 
 /// this calls type methods
 Au method(Au_t type, cstr method_name, array args) {
-    Au_t mem = find_member(type, AU_MEMBER_IMETHOD | AU_MEMBER_SMETHOD, method_name, false);
+    Au_t mem = find_member(type, AU_MEMBER_IMETHOD, method_name, false);
+    if (!mem) mem = find_member(type, AU_MEMBER_SMETHOD, method_name, false);
     assert(mem->ffi, "method not set");
     ffi_method_t* m = mem->ffi;
     Au res = Au_method_call(m, args);
@@ -1602,7 +1603,7 @@ Au Au_with_cstrs(Au a, cstrs argv) {
             while (type != typeid(Au)) {
                 for (num i = 0; i < type->members.count; i++) {
                     Au_t m = type->members.origin[i];
-                    if ((m->member_type & AU_MEMBER_PROP) && 
+                    if ((m->member_type == AU_MEMBER_PROP) && 
                         ( single &&        m->ident[0] == arg[1]) ||
                         (!single && strcmp(m->ident,     &arg[2]) == 0)) {
                         mem = m;
@@ -3277,7 +3278,7 @@ num list_compare(list a, list b) {
         return diff;
     Au_t ai_t = a->first ? isa(a->first->value) : null;
     if (ai_t) {
-        Au_t m = find_member(ai_t, (AU_MEMBER_IMETHOD), "compare", true);
+        Au_t m = find_member(ai_t, AU_MEMBER_IMETHOD, "compare", true);
         for (item ai = a->first, bi = b->first; ai; ai = ai->next, bi = bi->next) {
             num   v  = ((num(*)(Au,Au))(m->ptr))(ai, bi);
             if (v != 0) return v;
