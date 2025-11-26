@@ -20,28 +20,36 @@ static void Au_import_members(aether2 e, path lib) {
 
     if (lib) set(module_filter, lib_name, _bool(true));
 
+    // first we register the module we are loading -- this is a first operation prior to load
     Au_t mod = lib ? Au_register_module(copy_cstr(lib_name->chars)) : null; //Au_module(name->chars);
     
+    // next we dlopen, which starts importing types
     handle f = lib ? dlopen(cstring(lib), RTLD_NOW) : null;
     verify(!lib || f, "shared-lib failed to load: %o", lib);
 
+    // we call Au_engage on additional (from Au default)
     path inc = lib ? lib : path_self();
-
     if (f) {
         push(e->libs, f);
         Au_engage(null); // load Au-types by finishing global constructor ordered calls
     }
 
+    // we can now iterate newly loaded types
     i64 ln;
     Au_t* a = Au_types(&ln);
     //structure _Au_t = emodel("_Au_t"); // Au type must define these in its core; all primitive types to be defined there manually (not here!)
     map processing = map(hsize, 64, assorted, true, unmanaged, true);
     
     for (num i = 0; i < ln; i++) {
-        Au_t mem = a[i]; // everything is a member!
-
+        Au_t m = a[i]; // Au_t are members, and members can describe types (if is_type) or src-relationship to them
+        if (m->is_type) {
+            print("found type %o", m);
+        }
+        // module name is namespace in Au, its important this function as a general stack
+        // if not, we have to have our own abstract for this (which we are trying to reduce in aether)
     }
 
+    // unregister our import, setting state for default au
     Au_register_module(null); // indicates to Au to go back to its default state (module is registered for our end)
 }
 
