@@ -19,19 +19,14 @@ enum AU_MEMBER {
     AU_MEMBER_TYPE      = 1,
     AU_MEMBER_CONSTRUCT = 2,
     AU_MEMBER_PROP      = 3,
-    AU_MEMBER_IMETHOD   = 4,
-    AU_MEMBER_SMETHOD   = 5,
-    AU_MEMBER_OPERATOR  = 6,
-    AU_MEMBER_CAST      = 7,
-    AU_MEMBER_INDEX     = 8,
-    AU_MEMBER_ENUMV     = 9,
-    AU_MEMBER_OVERRIDE  = 10,
-    AU_MEMBER_VPROP     = 11,
-    AU_MEMBER_IS_ATTR   = 12,
-    AU_MEMBER_OPAQUE    = 13,
-    AU_MEMBER_IFINAL    = 14,
-    AU_MEMBER_TMETHOD   = 15,
-    AU_MEMBER_FORMATTER = 16,
+    AU_MEMBER_FUNC      = 4,
+    AU_MEMBER_OPERATOR  = 5,
+    AU_MEMBER_CAST      = 6,
+    AU_MEMBER_INDEX     = 7,
+    AU_MEMBER_ENUMV     = 8,
+    AU_MEMBER_OVERRIDE  = 9,
+    AU_MEMBER_IS_ATTR   = 10,
+    AU_MEMBER_FORMATTER = 11,
 };
 
 typedef enum AU_MEMBER AFlag;
@@ -53,7 +48,12 @@ enum AU_TRAIT {
     AU_TRAIT_REQUIRED  = 1 << 13,
     AU_TRAIT_SYSTEM    = 1 << 14,
     AU_TRAIT_OVERRIDE  = 1 << 15, // im crash override 
-    AU_TRAIT_INLAY     = 1 << 16
+    AU_TRAIT_INLAY     = 1 << 16,
+    AU_TRAIT_VPROP     = 1 << 17,
+    AU_TRAIT_IMETHOD   = 1 << 18,
+    AU_TRAIT_SMETHOD   = 1 << 19,
+    AU_TRAIT_TMETHOD   = 1 << 20,
+    AU_TRAIT_IFINAL    = 1 << 21,
 };
 
 typedef bool(*global_init_fn)();
@@ -109,6 +109,7 @@ typedef struct _Au_t {
     union { Au_t src, rtype, type; };
     Au_t            user;
     Au_t            module; // origin of its module
+    Au_t            ptr; // a cache location for the type's pointer
     char*           ident;
     i64             index; // index of type in module, or index of member in type
     object          value; // user-data value associated to type
@@ -137,11 +138,11 @@ typedef struct _Au_t {
             u32 is_override   : 1;  // AU_TRAIT_OVERRIDE
         };
         u32 traits;
-    };
+    };345 
     int             offset;
     int             size;
     int             isize;
-    void*           ptr; // used for function addresses
+    void*           fn; // used for function addresses
     ffi_method_t*   ffi;
     au_core         af; // Au-specific internal members on type
     struct _object  members_info;

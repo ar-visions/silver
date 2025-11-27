@@ -146,6 +146,7 @@ typedef long double            *ref_f80;
     union { Au_t src, rtype, type; }; \
     Au_t            user; \
     Au_t            module; \
+    Au_t            ptr; \
     char*           ident; \
     i64             index; \
     object          value; \
@@ -158,7 +159,7 @@ typedef long double            *ref_f80;
     int             offset; \
     int             size; \
     int             isize; \
-    void*           ptr; \
+    void*           fn; \
     ffi_method_t*   ffi; \
     au_core         af; \
     struct _object  members_info; \

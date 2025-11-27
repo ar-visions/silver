@@ -108,7 +108,10 @@
       "*.def": "c",
       "sstream": "c",
       "aether2": "c",
-      "import": "c"
+      "import": "c",
+      "source_location": "c",
+      "bitwriter.h": "c",
+      "executionengine.h": "c"
     }
   }
 }
