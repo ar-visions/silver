@@ -27,8 +27,8 @@
     m->offset  = offsetof(E##_f, N); \
     m->ptr     = (void*)& E##_##N; \
     m->index   = offsetof(__typeof__(E##_i.type.ft), N) / sizeof(void*); \
-    m->member_type = AU_MEMBER_SMETHOD; \
-}
+    m->member_type = AU_MEMBER_FUNC; \
+    m->traits |= AU_TRAIT_SMETHOD; \
 
 #define   enum_method_METHOD(E, T, R, N, ...)    R (*N)(E value __VA_OPT__(,) __VA_ARGS__);
 #define   enum_method(E,T,Y,R,N,...)            enum_method_##Y(E,T, R,N __VA_OPT__(,) __VA_ARGS__)
@@ -417,7 +417,7 @@
     m->member_type = AU_MEMBER_PROP; \
     m->index       = offsetof(struct X##_fields, N); \
     m->traits |= AU_TRAIT_REQUIRED; \
-}
+};
 
 #define   i_prop_required_PROTO(X, R, N)  
 #define   i_prop_required_METHOD(X, R, N)
@@ -916,7 +916,8 @@
     m->ident   = #N; \
     m->type    = (Au_t)&R##_i.type; \
     /* m->offset  = offsetof(X##_f, N); */ \
-    m->member_type = AU_MEMBER_IMETHOD; \
+    m->member_type = AU_MEMBER_FUNC; \
+    m->traits |= AU_TRAIT_IMETHOD; \
 }
 
 #define   i_struct_method_PROTO(X, R, N, ...)
@@ -937,7 +938,8 @@
     m->ident   = #N; \
     m->type    = (Au_t)&R##_i.type; \
     /* m->offset  = offsetof(X##_f, N); */ \
-    m->member_type = AU_MEMBER_SMETHOD; \
+    m->member_type = AU_MEMBER_FUNC; \
+    m->traits |= AU_TRAIT_SMETHOD; \
 }
 
 #define   i_struct_static_PROTO(X, R, N, ...)
@@ -1107,7 +1109,8 @@
     set_meta_array(m, emit_types(__VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
     m->offset  = 0; \
-    m->member_type = AU_MEMBER_SMETHOD; \
+    m->member_type = AU_MEMBER_FUNC; \
+    m->traits |= AU_TRAIT_SMETHOD; \
     m->ptr     = &X##_##N; \
 }
 
@@ -1162,7 +1165,8 @@
     set_meta_array(m, emit_types(__VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
     /* m->offset  = offsetof(X##_f, N); */ \
-    m->member_type = AU_MEMBER_IMETHOD; \
+    m->member_type = AU_MEMBER_FUNC; \
+    m->traits |= AU_TRAIT_IMETHOD; \
     m->index   = offsetof(__typeof__(X##_i.type.ft), N) / sizeof(void*); \
     m->ptr     = (void*)X##_i.type . ft.N; \
 }
@@ -1201,7 +1205,8 @@
     set_meta_array(m, emit_types(__VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
     m->offset  = 0; \
-    m->member_type = AU_MEMBER_IFINAL; \
+    m->member_type = AU_MEMBER_FUNC; \
+    m->traits |= AU_TRAIT_IFINAL; \
     m->ptr     = &N; \
 }
 
@@ -1462,7 +1467,7 @@
     type_ref->ft.N = (__typeof__(type_ref->ft.N))& X## _ ## N; \
     m->ident = stringify(N); \
     m->ptr = (void*)& X##_##N; \
-    Au_member_override((Au_t)type_ref, m, AU_MEMBER_IMETHOD); \
+    Au_member_override((Au_t)type_ref, m, AU_MEMBER_FUNC); \
 }
 
 #define i_override_method_PROTO(X, N)

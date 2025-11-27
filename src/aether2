@@ -2,14 +2,47 @@
 #define _AETHER2_
 
 #define aether2_schema(X,Y,...)\
-    M(X,Y, i, prop,     public, path,   source) \
-    M(X,Y, i, prop,     public, path,   current_inc) \
-    M(X,Y, i, prop,     public, array,  libs) \
-    M(X,Y, i, prop,     public, array,  lexical) \
-    M(X,Y, i, prop,     public, bool,   is_Au_import) \
+    M(X,Y, i, prop,  required, string,               name) \
+    M(X,Y, i, prop,  public, path,                   source) \
+    M(X,Y, i, prop,  public, path,                   current_inc) \
+    M(X,Y, i, prop,  public, array,                  libs) \
+    M(X,Y, i, prop,  public, array,                  lexical) \
+    M(X,Y, i, prop,  public, bool,                   is_Au_import) \
+    M(X,Y, i, prop,  public, Au_t,                   au_module) \
+    M(X,Y, i, prop,  intern, LLVMExecutionEngineRef, jit,               as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMBasicBlockRef,      current_if_block,  as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMModuleRef,          module,            as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMContextRef,         module_ctx,        as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMBuilderRef,         builder,           as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMMetadataRef,        file,              as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMMetadataRef,        compile_unit,      as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMDIBuilderRef,       dbg_builder,       as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMTargetRef,          target,            as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMTargetDataRef,      target_data,       as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMTargetMachineRef,   target_machine,    as, ARef) \
+    M(X,Y, i, prop,  intern, cstr,                   target_triple) \
     i_method(X,Y, public, Au_t,   top_scope) \
     i_method(X,Y, public, none,   push_scope, Au_t) \
     M(X,Y, i, override, method, init)
 declare_class(aether2);
+
+#define etype_schema(X,Y,...)\
+    M(X,Y, i, prop, required, Au_t,             au) \
+    M(X,Y, i, prop, required, aether2,          mod) \
+    M(X,Y, i, prop, public,   etype,            schema) \
+    M(X,Y, i, prop, public,   bool,             is_schema) \
+    M(X,Y, i, prop, intern,   LLVMScope,        scope, as, ARef) \
+    M(X,Y, i, prop, intern,   LLVMTypeRef,      type,  as, ARef) \
+    M(X,Y, i, prop, intern,   LLVMMetadataRef,  debug, as, ARef)
+declare_class(etype)
+
+#define enode2_schema(X,Y,...)\
+    M(X,Y, i, prop, required, enode2,           target) \
+    M(X,Y, i, prop, required, etype,            etype) \
+    M(X,Y, i, prop, required, aether2,          mod) \
+    M(X,Y, i, prop, intern,   LLVMValueRef,     value,  as, ARef)
+declare_class(enode2)
+
+
 
 #endif

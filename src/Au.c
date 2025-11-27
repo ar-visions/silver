@@ -243,33 +243,11 @@ none array_push(array a, Au b) {
     a->origin[a->count++] = a->unmanaged ? b : hold(b);
 }
 
-struct _Au_combine {
-    struct _Au   info;
-    struct _Au_t type;
-};
-
-static struct _Au_combine* member_pool;
-static int                 n_members;
-
 Au array_qpush(array a, Au b) {
     if (!a->origin || a->alloc == a->count)
         array_expand(a);
     a->origin[a->count++] = b;
     return b;
-}
-
-Au_t Au_alloc_member(Au_t type) {
-    if (n_members == 0) {
-        n_members   = 256;
-        member_pool = calloc(n_members, sizeof(struct _Au_combine));
-        memset(member_pool, 0, n_members * sizeof(struct _Au_combine));
-    }
-    struct _Au_combine* cur = &member_pool[--n_members];
-    cur->info.refs = 1;
-    Au_t new_member = array_qpush(&type->members, &cur->type);
-    new_member->context = type;
-    printf("new_member on type %s = %p (%i)\n", type->ident, new_member, n_members);
-    return new_member;
 }
 
 none array_clear(array a) {
@@ -416,7 +394,7 @@ array array_mix(array a, array b, f32 f) {
         verify(expect == at, "disperate types in array during mix");
         verify(at == bt, "types do not match");
 
-        if (!fmix) fmix = find_member(at, AU_MEMBER_IMETHOD, "mix", false);
+        if (!fmix) fmix = find_member(at, AU_MEMBER_FUNC, "mix", false);
         verify(fmix, "implement mix method for type %s", at->ident);
         Au e = ((mix_fn)fmix->ptr)(aa, bb, f);
         push(res, e);
@@ -496,6 +474,29 @@ static global_init_fn* call_last;
 static num             call_last_alloc;
 static num             call_last_count;
 
+struct _Au_combine {
+    struct _Au   info;
+    struct _Au_t type;
+};
+
+static struct _Au_combine* member_pool;
+static int                 n_members;
+
+
+Au_t Au_alloc_member(Au_t type) {
+    if (n_members == 0) {
+        n_members   = 256;
+        member_pool = calloc(n_members, sizeof(struct _Au_combine));
+        memset(member_pool, 0, n_members * sizeof(struct _Au_combine));
+    }
+    struct _Au_combine* cur = &member_pool[--n_members];
+    cur->info.refs = 1;
+    Au_t new_member = array_qpush(&type->members, &cur->type);
+    new_member->context = type;
+    printf("new_member on type %s = %p (%i)\n", type->ident, new_member, n_members);
+    return new_member;
+}
+
 cstr copy_cstr(cstr input) {
     sz len = strlen(input);
     cstr res = calloc(len + 1, 1);
@@ -547,15 +548,6 @@ Au_t Au_register_module(symbol next_module) {
     return module;
 }
 
-item pseudo_item(Au content) {
-    u8*    a = calloc(1, sizeof(struct _Au) + sizeof(struct _item));
-    item   i = (item)&a[sizeof(struct _Au)];
-    Au     f = header(i);
-    f->refs  = 1;
-    i->value = content;
-    return i;
-}
-
 none collective_init(collective a) {
 }
 
@@ -567,9 +559,61 @@ none push_type(Au_t type) {
     if (!module) {
         module = &au;
         module->members.unmanaged = true;
+        
+
+/*
+
+typedef struct _collective_abi {
+    i32             count;
+    i32             alloc;
+    i32             hsize;
+    ARef            origin;
+    struct _item*   first, *last;
+    struct _vector* hlist;
+    bool            unmanaged;
+    bool            assorted;
+    struct _Au_t*   last_type;
+} collective_abi;
+
+// this is the standard _Au_t declaration
+typedef struct _Au_t {
+    Au_t            context;
+        Au_t src;
+    Au_t            user;
+    Au_t            module; // origin of its module
+    Au_t            ptr; // a cache location for the type's pointer
+    char*           ident;
+    i64             index; // index of type in module, or index of member in type
+    object          value; // user-data value associated to type
+    int             global_count;
+    u8              member_type;
+    u8              operator_type;
+    u8              access_type;
+    u8              reserved;
+        u32 traits;
+    int             offset;
+    int             size;
+    int             isize;
+    void*           ptr; // used for function addresses
+    ffi_method_t*   ffi;
+    au_core         af; // Au-specific internal members on type
+    struct _object  members_info;
+    struct _collective_abi  members;
+    struct _object  meta_info;
+    struct _collective_abi meta;
+    struct _shape*  shape;
+    u64             required_bits[2];
+    struct {
+        void* __none__;
+    } ft;
+} *Au_t;
+
+*/
+
+
     }
 
-    array_qpush(&module->members, pseudo_item(type));
+    array_qpush(&module->members, type);
 
     type->af = (au_core)calloc(1, sizeof(struct _au_core));
     type->af->re_alloc = 1024;
@@ -1148,8 +1192,7 @@ Au Au_method_call(Au_t m, array args) {
 
 /// this calls type methods
 Au method(Au_t type, cstr method_name, array args) {
-    Au_t mem = find_member(type, AU_MEMBER_IMETHOD, method_name, false);
-    if (!mem) mem = find_member(type, AU_MEMBER_SMETHOD, method_name, false);
+    Au_t mem = find_member(type, AU_MEMBER_FUNC, method_name, false);
     assert(mem->ffi, "method not set");
     ffi_method_t* m = mem->ffi;
     Au res = Au_method_call(m, args);
@@ -3113,7 +3156,7 @@ callback binding(Au a, Au target, bool required, Au_t rtype, Au_t arg_type, symb
     bool inherits     = instanceof(target, self_type) != null;
     string method     = f(string, "%s%s%s", id ? id : 
         (!inherits ? self_type->ident : ""), (id || !inherits) ? "_" : "", name);
-    Au_t m  = find_member(target_type, AU_MEMBER_IMETHOD, method->chars, true);
+    Au_t m  = find_member(target_type, AU_MEMBER_FUNC, method->chars, true);
     verify(!required || m, "bind: required method not found: %o", method);
     if (!m) return null;
     callback f       = m->ptr;
@@ -3278,7 +3321,7 @@ num list_compare(list a, list b) {
         return diff;
     Au_t ai_t = a->first ? isa(a->first->value) : null;
     if (ai_t) {
-        Au_t m = find_member(ai_t, AU_MEMBER_IMETHOD, "compare", true);
+        Au_t m = find_member(ai_t, AU_MEMBER_FUNC, "compare", true);
         for (item ai = a->first, bi = b->first; ai; ai = ai->next, bi = bi->next) {
             num   v  = ((num(*)(Au,Au))(m->ptr))(ai, bi);
             if (v != 0) return v;
@@ -5343,6 +5386,7 @@ define_abstract(imported,       0, Au)
 define_abstract(weak,           0, Au)
 define_abstract(functional,     0, Au)
  
+
 
 define_primitive(ref_u8, numeric, AU_TRAIT_POINTER | AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED, u8)
 define_primitive(ref_u16,    numeric, AU_TRAIT_POINTER | AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED,  u16)
