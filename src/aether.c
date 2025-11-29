@@ -256,30 +256,6 @@ i64 model_cmp(model mdl, model b) {
     return typed(mdl)->type == typed(b)->type ? 0 : -1;
 }
 
-array read_arg(aether e, array tokens, int start, int* next_read) {
-    int   level = 0;
-    int   ln    = len(tokens);
-    bool  count = ln - start;
-    array res   = array(alloc, 32);
-
-    for (int i = start; i < ln; i++) {
-        token t = get(tokens, i);
-
-        if (eq(t, "("))
-            level++;
-        else if (eq(t, ")") && level > 0)
-            level--;
-
-        if ((eq(t, ",") || eq(t, ")")) && level == 0) {
-            *next_read = i + (int)eq(t, ",");
-            return res;
-        }
-
-        push(res, t);
-    }
-    return count > 0 ? null : res;
-}
-
 array macro_expand(macro, array, map);
 
 static array expand_tokens(aether mod, array tokens, map expanding) {
@@ -315,7 +291,7 @@ static array expand_tokens(aether mod, array tokens, map expanding) {
 
             while (true) {
                 int  stop = 0;
-                array arg = read_arg(mod, tokens, index, &stop);
+                array arg = read_arg(tokens, index, &stop);
                 if (!arg)
                     return null;
                 

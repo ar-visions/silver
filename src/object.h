@@ -55,6 +55,8 @@ enum AU_TRAIT {
     AU_TRAIT_SMETHOD   = 1 << 20,
     AU_TRAIT_TMETHOD   = 1 << 21,
     AU_TRAIT_IFINAL    = 1 << 22,
+    AU_TRAIT_FUNCPTR   = 1 << 23,
+    AU_TRAIT_SCHEMA    = 1 << 24
 };
 
 typedef bool(*global_init_fn)();
@@ -108,7 +110,8 @@ typedef struct _ffi_method_t ffi_method_t;
 typedef struct _Au_t {
     Au_t            context;
     union { Au_t src, rtype, type; };
-    Au_t            user;
+    Au_t            schema;
+    struct _etype*  user;
     Au_t            module; // origin of its module
     Au_t            ptr; // a cache location for the type's pointer
     char*           ident;
@@ -143,6 +146,8 @@ typedef struct _Au_t {
             u32 is_smethod   : 1; // AU_TRAIT_SMETHOD   = 1 << 20,
             u32 is_tmethod   : 1; // AU_TRAIT_TMETHOD   = 1 << 21,
             u32 is_ifinal    : 1; // AU_TRAIT_IFINAL    = 1 << 22,
+            u32 is_funcptr   : 1;
+            u32 is_schema    : 1;
         };
         u32 traits;
     };
@@ -188,7 +193,7 @@ typedef struct _Au_t {
 #define _N_ARGS_HELPER2_mdl(TYPE, N, ...)  _COMBINE_mdl(_N_ARGS_mdl_, N)(TYPE, ## __VA_ARGS__)
 #define _N_ARGS_mdl(TYPE,...)    _N_ARGS_HELPER2_mdl(TYPE, _ARG_COUNT_mdl(__VA_ARGS__), ## __VA_ARGS__)
 #define mdl2(context, ...) ({ \
-    mdl instance = (mdl)Au_alloc_member(context); \
+    mdl instance = (mdl)Au_register(context); \
     _N_ARGS_mdl(mdl, ## __VA_ARGS__); \
     instance->context = context; \
     instance; \

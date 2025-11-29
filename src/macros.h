@@ -10,7 +10,7 @@
         m->offset   = (i32)(E##_##N);\
         m->type     = (Au_t)&T ## _i.type; \
         static T static_##N = VAL; \
-        m->ptr      = &static_##N;\
+        m->value    = &static_##N;\
         m->member_type = AU_MEMBER_ENUMV; \
     }
 
@@ -25,7 +25,7 @@
     set_meta_array(m, emit_types(__VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
     m->offset  = offsetof(E##_f, N); \
-    m->ptr     = (void*)& E##_##N; \
+    m->value   = (void*)& E##_##N; \
     m->index   = offsetof(__typeof__(E##_i.type.ft), N) / sizeof(void*); \
     m->member_type = AU_MEMBER_FUNC; \
     m->traits |= AU_TRAIT_SMETHOD; \
@@ -44,7 +44,7 @@
     m->offset   = (i64)E##_##N;\
     m->type     = (Au_t)&T ## _i.type; \
     static T static_##N = VAL; \
-    m->ptr      = &static_##N;\
+    m->value    = &static_##N;\
     m->member_type = AU_MEMBER_ENUMV; \
 }
 
@@ -58,7 +58,7 @@
     m->type     = (Au_t)&T ## _i.type; \
     m->member_type = AU_MEMBER_ENUMV; \
     static T static_##N = VAL; \
-    m->ptr      = &static_##N;\
+    m->value    = &static_##N;\
     set_meta_array(m, emit_types(__VA_ARGS__)); \
 }
 
@@ -318,7 +318,7 @@
     set_meta_array(m, emit_types(ARG)); \
     m->type        = (Au_t)&ARG##_i.type; \
     /*m->offset      = offsetof(X##_f.ft, with_##ARG);*/ \
-    m->ptr         = (void*)& X##_with_##ARG; \
+    m->value       = (void*)& X##_with_##ARG; \
     m->index   = offsetof(__typeof__(X##_i.type.ft), with_##ARG) / sizeof(void*); \
     m->member_type = AU_MEMBER_CONSTRUCT; \
 }
@@ -814,7 +814,7 @@
     m->ident       = stringify(with_##ARG); \
     m->type        = (Au_t)&ARG##_i.type; \
     /* m->offset      = offsetof(X##_f, with_##ARG); */ \
-    m->ptr         = (void*)& X##_with_##ARG; \
+    m->value       = (void*)& X##_with_##ARG; \
     m->index       = offsetof(__typeof__(X##_i.type.ft), with_##ARG) / sizeof(void*); \
     m->member_type = AU_MEMBER_CONSTRUCT; \
 }
@@ -836,7 +836,7 @@
     m->ident       = stringify(with_##ARG); \
     m->type        = (Au_t)&ARG##_i.type; \
     /* m->offset      = offsetof(X##_f, with_##ARG); */ \
-    m->ptr         = (void*)& X##_with_##ARG; \
+    m->value       = (void*)& X##_with_##ARG; \
     m->member_type = AU_MEMBER_CONSTRUCT; \
 }
 
@@ -1054,7 +1054,7 @@
     m->offset  = 0; \
     m->member_type = AU_MEMBER_FUNC; \
     m->traits |= AU_TRAIT_TMETHOD; \
-    m->ptr     = &N; \
+    m->value   = &N; \
 }
 
 #define   t_method_public_PROTO(X, R, N, ...)
@@ -1113,7 +1113,7 @@
     m->offset  = 0; \
     m->member_type = AU_MEMBER_FUNC; \
     m->traits |= AU_TRAIT_SMETHOD; \
-    m->ptr     = &X##_##N; \
+    m->value   = &X##_##N; \
 }
 
 #define   s_method_public_PROTO(X, R, N, ...)
@@ -1170,7 +1170,7 @@
     m->member_type = AU_MEMBER_FUNC; \
     m->traits |= AU_TRAIT_IMETHOD; \
     m->index   = offsetof(__typeof__(X##_i.type.ft), N) / sizeof(void*); \
-    m->ptr     = (void*)X##_i.type . ft.N; \
+    m->value   = (void*)X##_i.type . ft.N; \
 }
 
 #define   i_method_public_PROTO(X, R, N, ...)
@@ -1209,7 +1209,7 @@
     m->offset  = 0; \
     m->member_type = AU_MEMBER_FUNC; \
     m->traits |= AU_TRAIT_IFINAL; \
-    m->ptr     = &N; \
+    m->value   = &N; \
 }
 
 #define   i_final_public_PROTO(X, R, N, ...)
@@ -1313,7 +1313,7 @@
 #define   i_cast_public_INIT(CL, R) { \
     Au_t m = Au_alloc_member(&CL##_i.type); \
     CL##_i.type.ft.cast_##R = & CL##_cast_##R; \
-    m->ptr = CL##_i.type.ft.cast_##R; \
+    m->value = CL##_i.type.ft.cast_##R; \
     m->ident   = stringify(cast_##R); \
     set_meta_array(m, emit_types(CL)); \
     m->type    = (Au_t)&R##_i.type; \
@@ -1468,7 +1468,7 @@
     Au_t m = Au_alloc_member(&X##_i.type); \
     type_ref->ft.N = (__typeof__(type_ref->ft.N))& X## _ ## N; \
     m->ident = stringify(N); \
-    m->ptr = (void*)& X##_##N; \
+    m->value = (void*)& X##_##N; \
     Au_member_override((Au_t)type_ref, m, AU_MEMBER_FUNC); \
 }
 
@@ -1489,7 +1489,7 @@
     Au_t m = Au_alloc_member(&X##_i.type); \
     type_ref->ft.with_##R = & X##_with_##R; \
     m->ident = stringify(with_##R); \
-    m->ptr   = (void*)& X##_with_##R; \
+    m->value = (void*)& X##_with_##R; \
     Au_member_override((Au_t)type_ref, m, AU_MEMBER_CONSTRUCT); \
 }
 
@@ -1510,7 +1510,7 @@
     Au_t m = Au_alloc_member(&X##_i.type); \
     type_ref->ft.cast_##R = & X##_cast_##R; \
     m->ident = stringify(cast_##R); \
-    m->ptr = (void*)& X##_cast_##R; \
+    m->value = (void*)& X##_cast_##R; \
     Au_member_override((Au_t)type_ref, m, AU_MEMBER_CAST); \
 }
 
@@ -1531,7 +1531,7 @@
     Au_t m = Au_alloc_member(&X##_i.type); \
     type_ref->idx_##R = & X##_idx_##R; \
     m->ident= stringify(idx_##R); \
-    m->ptr = (void*)& X##_idx_##R; \
+    m->value = (void*)& X##_idx_##R; \
     Au_member_override(type_ref, m, AU_MEMBER_INDEX); \
 }
 

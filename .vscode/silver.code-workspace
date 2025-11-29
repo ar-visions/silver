@@ -111,7 +111,8 @@
       "import": "c",
       "source_location": "c",
       "bitwriter.h": "c",
-      "executionengine.h": "c"
+      "executionengine.h": "c",
+      "ports.h": "c"
     }
   }
 }
