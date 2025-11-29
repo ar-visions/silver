@@ -41,19 +41,20 @@ enum AU_TRAIT {
     AU_TRAIT_ALIAS     = 1 << 6,
     AU_TRAIT_ABSTRACT  = 1 << 7,
     AU_TRAIT_STRUCT    = 1 << 8,
-    AU_TRAIT_USER_INIT = 1 << 9,
-    AU_TRAIT_CLASS     = 1 << 10,
-    AU_TRAIT_POINTER   = 1 << 11,
-    AU_TRAIT_CONST     = 1 << 12,
-    AU_TRAIT_REQUIRED  = 1 << 13,
-    AU_TRAIT_SYSTEM    = 1 << 14,
-    AU_TRAIT_OVERRIDE  = 1 << 15, // im crash override 
-    AU_TRAIT_INLAY     = 1 << 16,
-    AU_TRAIT_VPROP     = 1 << 17,
-    AU_TRAIT_IMETHOD   = 1 << 18,
-    AU_TRAIT_SMETHOD   = 1 << 19,
-    AU_TRAIT_TMETHOD   = 1 << 20,
-    AU_TRAIT_IFINAL    = 1 << 21,
+    AU_TRAIT_UNION     = 1 << 9,
+    AU_TRAIT_USER_INIT = 1 << 10,
+    AU_TRAIT_CLASS     = 1 << 11,
+    AU_TRAIT_POINTER   = 1 << 12,
+    AU_TRAIT_CONST     = 1 << 13,
+    AU_TRAIT_REQUIRED  = 1 << 14,
+    AU_TRAIT_SYSTEM    = 1 << 15,
+    AU_TRAIT_OVERRIDE  = 1 << 16, // im crash override 
+    AU_TRAIT_INLAY     = 1 << 17,
+    AU_TRAIT_VPROP     = 1 << 18,
+    AU_TRAIT_IMETHOD   = 1 << 19,
+    AU_TRAIT_SMETHOD   = 1 << 20,
+    AU_TRAIT_TMETHOD   = 1 << 21,
+    AU_TRAIT_IFINAL    = 1 << 22,
 };
 
 typedef bool(*global_init_fn)();
@@ -113,32 +114,39 @@ typedef struct _Au_t {
     char*           ident;
     i64             index; // index of type in module, or index of member in type
     object          value; // user-data value associated to type
-    int             global_count;
     u8              member_type;
     u8              operator_type;
     u8              access_type;
     u8              reserved;
     union {
         struct {
-            u32 is_primitive  : 1;  // AU_TRAIT_PRIMITIVE
-            u32 is_integral   : 1;  // AU_TRAIT_INTEGRAL
-            u32 is_realistic  : 1;  // AU_TRAIT_REALISTIC
-            u32 is_signed     : 1;  // AU_TRAIT_SIGNED
-            u32 is_unsigned   : 1;  // AU_TRAIT_UNSIGNED
-            u32 is_enum       : 1;  // AU_TRAIT_ENUM
-            u32 is_alias      : 1;  // AU_TRAIT_ALIAS
-            u32 is_abstract   : 1;  // AU_TRAIT_ABSTRACT
-            u32 is_struct     : 1;  // AU_TRAIT_STRUCT
-            u32 is_user_init  : 1;  // AU_TRAIT_USER_INIT
-            u32 is_class      : 1;  // AU_TRAIT_CLASS
-            u32 is_pointer    : 1;  // AU_TRAIT_POINTER
-            u32 is_const      : 1;  // AU_TRAIT_CONST
-            u32 is_required   : 1;  // AU_TRAIT_REQUIRED
-            u32 is_system     : 1;  // AU_TRAIT_SYSTEM
-            u32 is_override   : 1;  // AU_TRAIT_OVERRIDE
+            u32 is_primitive : 1; // AU_TRAIT_PRIMITIVE = 1 << 0,
+            u32 is_integral  : 1; // AU_TRAIT_INTEGRAL  = 1 << 1,
+            u32 is_realistic : 1; // AU_TRAIT_REALISTIC = 1 << 2,
+            u32 is_signed    : 1; // AU_TRAIT_SIGNED    = 1 << 3,
+            u32 is_unsigned  : 1; // AU_TRAIT_UNSIGNED  = 1 << 4,
+            u32 is_enum      : 1; // AU_TRAIT_ENUM      = 1 << 5,
+            u32 is_alias     : 1; // AU_TRAIT_ALIAS     = 1 << 6,
+            u32 is_abstract  : 1; // AU_TRAIT_ABSTRACT  = 1 << 7,
+            u32 is_struct    : 1; // AU_TRAIT_STRUCT    = 1 << 8,
+            u32 is_union     : 1; // AU_TRAIT_UNION     = 1 << 9,
+            u32 is_user_init : 1; // AU_TRAIT_USER_INIT = 1 << 10,
+            u32 is_class     : 1; // AU_TRAIT_CLASS     = 1 << 11,
+            u32 is_pointer   : 1; // AU_TRAIT_POINTER   = 1 << 12,
+            u32 is_const     : 1; // AU_TRAIT_CONST     = 1 << 13,
+            u32 is_required  : 1; // AU_TRAIT_REQUIRED  = 1 << 14,
+            u32 is_system    : 1; // AU_TRAIT_SYSTEM    = 1 << 15,
+            u32 is_override  : 1; // AU_TRAIT_OVERRIDE  = 1 << 16, // im crash override 
+            u32 is_inlay     : 1; // AU_TRAIT_INLAY     = 1 << 17,
+            u32 is_vprop     : 1; // AU_TRAIT_VPROP     = 1 << 18,
+            u32 is_imethod   : 1; // AU_TRAIT_IMETHOD   = 1 << 19,
+            u32 is_smethod   : 1; // AU_TRAIT_SMETHOD   = 1 << 20,
+            u32 is_tmethod   : 1; // AU_TRAIT_TMETHOD   = 1 << 21,
+            u32 is_ifinal    : 1; // AU_TRAIT_IFINAL    = 1 << 22,
         };
         u32 traits;
-    };345 
+    };
+    int             global_count;
     int             offset;
     int             size;
     int             isize;

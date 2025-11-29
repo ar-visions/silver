@@ -102,7 +102,7 @@ static void initialize() {
         "const",    "require",  "no-op",    "return",   "->",    "::",     "...",
         "asm",      "if",       "switch",   "any",      "enum",
         "ifdef",    "else",     "while",    "cast",     "forge", "try", "throw", "catch", "finally",
-        "for",      "loop",     "fn",       "operator", "index", "ctr",
+        "for",      "loop",     "func",     "operator", "index", "ctr",
         null);
     
     assign = array_of_cstr(
@@ -171,7 +171,7 @@ enode parse_statement(silver mod);
 static enode typed_expr(silver mod, model src, array meta, array expr);
 
 void build_fn(silver mod, emember fmem, callback preamble, callback postamble) {
-    fn f = fmem->mdl;
+    function f = fmem->mdl;
     if (f->user_built || (!f->body && !preamble && !postamble)) return;
 
     // finalize first: this prepares args and gives us a value for our function
@@ -231,7 +231,7 @@ void build_fn(silver mod, emember fmem, callback preamble, callback postamble) {
 
 }
 
-Au build_init_preamble(fn f, Au arg) {
+Au build_init_preamble(function f, Au arg) {
     silver mod = f->mod;
     model  rec = f->instance ? f->instance : mod->userspace;
 
@@ -270,9 +270,9 @@ void build_record(silver mod, model mrec) {
         push(mod, mrec);
 
         // if no init, create one
-        m_init = find_member(rec, string("init"), typeid(fn));
+        m_init = find_member(rec, string("init"), typeid(function));
         if (!m_init) {
-            fn f_init = fn(mod, mod,
+            function f_init = function(mod, mod,
                 extern_name, f(string, "%s_init", rec),
                 rtype, emodel("none"), instance, pointer(rec), args, eargs(mod, mod));
             m_init    = emember(mod, mod, name, string("init"), mdl, f_init);
@@ -292,7 +292,7 @@ void build_record(silver mod, model mrec) {
         // build remaining functions
         pairs(rec->members, ii) {
             emember m = ii->value;
-            if (!m->finalized && instanceof(m->mdl, typeid(fn)))
+            if (!m->finalized && instanceof(m->mdl, typeid(function)))
                 build_fn(mod, m, null, null);
         }
     }
@@ -775,7 +775,7 @@ string silver_peek_alpha(silver a) {
     return null;
 }
 
-fn    parse_fn  (silver mod, AFlag member_type, Au ident, OPType assign_enum);
+function    parse_fn  (silver mod, AFlag member_type, Au ident, OPType assign_enum);
 static model read_model(silver mod, array* expr, array* meta);
 
 enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array meta_expect) {
@@ -791,18 +791,19 @@ enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array
     bool      is_oper   = kw && eq(kw, "operator");
     bool      is_index  = kw && eq(kw, "index");
     bool      is_cast   = kw && eq(kw, "cast");
-    bool      is_fn     = kw && eq(kw, "fn");
+    bool      is_fn     = kw && eq(kw, "func");
     record    rec_ctx   = null;
     model     top       = top(mod);
     record    rec_top   = !mod->cmode ? is_record(top) : null;
-    fn        f         = null;
+    function  f         = null;
     eargs     args      = !mod->cmode ? instanceof(top, typeid(eargs)) : null;
     silver    module    = !mod->cmode && (top->is_global) ? mod : null;
     emember   mem       = null;
-    AFlag     mtype     = (is_fn && !is_static) ? AU_MEMBER_IMETHOD : (!is_static && is_cast) ? AU_MEMBER_CAST : AU_MEMBER_SMETHOD;
+    // todo: lost notion of static vs imethod here, reintroduce
+    AFlag     mtype     = (is_fn && !is_static) ? AU_MEMBER_FUNC : (!is_static && is_cast) ? AU_MEMBER_CAST : AU_MEMBER_FUNC;
 
     if (!mod->cmode) {
-        context(mod, &rec_ctx, &f, typeid(fn));
+        context(mod, &rec_ctx, &f, typeid(function));
     }
 
     if (is_expr0 && !mod->cmode && (module || rec_ctx) && peek_def(mod)) {
@@ -813,15 +814,15 @@ enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array
             // check if module or record constructor
             emember rmem = alpha ? lookup2(mod, alpha, null) : null;
             if (module && rmem && rmem->mdl == (model)module) {
-                validate(!is_cast && is_fn, "invalid constructor for module; use fn keyword");
+                validate(!is_cast && is_fn, "invalid constructor for module; use func keyword");
                 mtype = AU_MEMBER_CONSTRUCT;
             } else if (rec_ctx && rmem && rmem->mdl == (model)rec_ctx) {
-                validate(!is_cast && !is_fn, "invalid constructor for class; use class-name[] [ no fn, not static ]");
+                validate(!is_cast && !is_fn, "invalid constructor for class; use class-name[] [ no func, not static ]");
                 mtype = AU_MEMBER_CONSTRUCT;
             }
 
             bool has_args = is_cast || next_is(mod, "[");
-            validate(has_args, "expected fn args for %o", alpha);
+            validate(has_args, "expected func args for %o", alpha);
 
             // parse function contents
             if (eq(alpha, "member")) {
@@ -837,7 +838,7 @@ enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array
             mem->mdl->mem = mem;
 
             if (is_cast) {
-                fn f = (fn)mem->mdl;
+                function f = (function)mem->mdl;
                 validate(len(f->rtype->mem->name), "rtype cannot be anonymous for cast");
                 mem->name = hold(f(string, "cast_%o", f->rtype));
             }
@@ -1031,7 +1032,7 @@ enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array
             }
 
             /// Handle macros and function calls
-            if (instanceof(mem->mdl, typeid(macro)) || instanceof(mem->mdl, typeid(fn))) {
+            if (instanceof(mem->mdl, typeid(macro)) || instanceof(mem->mdl, typeid(function))) {
                 mem = parse_member_expr(mod, mem);
             }
         }
@@ -1157,7 +1158,7 @@ string silver_peek_def(silver a) {
         return string(n->chars);
 
     if (n && is_keyword(n))
-        if (eq(n, "import") || eq(n, "fn") || eq(n, "cast") || eq(n, "class") || eq(n, "enum") || eq(n, "struct"))
+        if (eq(n, "import") || eq(n, "func") || eq(n, "cast") || eq(n, "class") || eq(n, "enum") || eq(n, "struct"))
             return string(n->chars);
     return null;
 }
@@ -1201,7 +1202,7 @@ void silver_build_initializer(silver mod, emember mem) {
             //pop_state(mod, false);
         }
 
-        fn ctx = context_model(mod, typeid(fn));
+        function ctx = context_model(mod, typeid(function));
         enode L = (!mem->is_module && ctx) ? 
             access(ctx->target, mem->name) : (enode)mem;
         
@@ -1216,7 +1217,7 @@ enode parse_return(silver mod) {
     array rmeta;
     model rtype = return_type(mod, &rmeta);
     bool  is_v  = is_void(rtype);
-    model ctx = context_model(mod, typeid(fn));
+    model ctx = context_model(mod, typeid(function));
     consume(mod);
     enode expr   = is_v ? null : parse_expression(mod, rtype, rmeta);
     Au_log("return-type", "%o", is_v ? (Au)string("none") : 
@@ -1444,7 +1445,7 @@ static model read_model(silver mod, array* p_expr, array* p_meta) {
     return mdl;
 }
 
-static enode parse_fn_call(silver, fn, enode);
+static enode parse_fn_call(silver, function, enode);
 
 map parse_map(silver mod, model mdl_schema) {
     map args  = map(hsize, 16, assorted, true);
@@ -1493,8 +1494,8 @@ static enode typed_expr(silver mod, model mdl, array meta, array expr) {
     push_state(mod, expr ? expr : mod->tokens, expr ? 0 : mod->cursor);
     
     // function calls
-    if (instanceof(mdl, typeid(fn))) {
-        fn      f      = mdl;
+    if (instanceof(mdl, typeid(function))) {
+        function f     = mdl;
         map     m      = f->args->members;
         int     ln     = len(m), i = 0;
         array   values = array(alloc, 32);
@@ -1632,7 +1633,7 @@ enode silver_parse_member_expr(silver mod, emember mem) {
                     push(args, arg);
                 mod->cursor = next;
             }
-            validate(read_if(mod, ")"), "expected parenthesis to end macro fn call");
+            validate(read_if(mod, ")"), "expected parenthesis to end macro func call");
         }
         token cur = peek(mod);
 
@@ -2060,7 +2061,7 @@ Au_t next_is_keyword(silver mod, Au_t* fn) {
     if  (!t)  return null;
     if  (!isalpha(t->chars[0])) return null;
     Au_t f = Au_find_type((cstr)t->chars, null);
-    if (f && inherits(f, typeid(model)) && (*fn = find_member(f, AU_MEMBER_SMETHOD, "parse", true)))
+    if (f && inherits(f, typeid(model)) && (*fn = find_member(f, AU_MEMBER_FUNC, "parse", true)))
         return f;
     return null;
 }
@@ -2181,7 +2182,7 @@ emember silver_read_def(silver mod) {
 }
 
 enode parse_statement(silver mod) { 
-    fn f = context_model(mod, typeid(fn));
+    function f = context_model(mod, typeid(function));
     verify(!f || !f->is_module_init, "unexpected init function");
 
     print_tokens(mod, "parse-statement");
@@ -2230,7 +2231,7 @@ enode parse_statements(silver mod, bool unique_members) {
     return vr;
 }
 
-fn parse_fn(silver mod, AFlag member_type, Au ident, OPType assign_enum) {
+function parse_fn(silver mod, AFlag member_type, Au ident, OPType assign_enum) {
     model      rtype   = null;
     Au         name    = instanceof(ident, typeid(token));
     array      body    = null;
@@ -2255,7 +2256,7 @@ fn parse_fn(silver mod, AFlag member_type, Au ident, OPType assign_enum) {
     args->open = false;
 
     bool guarded = read_if(mod, "->") != null;
-    verify(rec_ctx || !guarded, "guard ( -> ) applies only to class fn");
+    verify(rec_ctx || !guarded, "guard ( -> ) applies only to class func");
 
     rtype = read_model(mod, &body, &meta);
     if (!rtype) rtype = emodel("none");
@@ -2273,12 +2274,12 @@ fn parse_fn(silver mod, AFlag member_type, Au ident, OPType assign_enum) {
     
     validate(rtype, "rtype not set, void is something we may lookup");
     if (!name) {
-        validate((member_type & AU_MEMBER_CAST) != 0, "with no name, expected cast");
+        validate(member_type == AU_MEMBER_CAST, "with no name, expected cast");
         name = form(string, "cast_%o", rtype);
     }
     
-    bool is_static = (member_type & AU_MEMBER_SMETHOD) != 0;
-    fn f = fn(
+    bool is_static = false; // todo: reintroduce static
+    function f = function(
         mod,            mod,
         function_type,  member_type,
         is_guarded,     guarded,
@@ -2298,7 +2299,7 @@ void silver_incremental_resolve(silver mod) {
 
     pairs(mod->userspace->members, i) {
         emember mem = i->value;
-        if (mem != mod->mem_init && instanceof(mem->mdl, typeid(fn)) &&
+        if (mem != mod->mem_init && instanceof(mem->mdl, typeid(function)) &&
                 !mem->mdl->user_built) {
             build_fn(mod, mem, null, null);
         }
@@ -2394,7 +2395,7 @@ silver silver_with_path(silver mod, path external) {
 i64 path_wait_for_change(path, i64, i64);
 
 string func_ptr(emember emem) {
-    fn func = emem->mdl;
+    function func = emem->mdl;
     string args = string();
     pairs (func->args->members, arg) {
         emember a = arg->value;
@@ -2562,7 +2563,7 @@ static void write_header(silver mod) {
             fputs(fmt("#define %o_schema(A,B,...)\\\n", cname(m->name))->chars, module_f);
             pairs(m->mdl->members, ii) {
                 emember  mi = ii->value;
-                fn        f = isa(mi->mdl) == typeid(fn) ? mi->mdl : null;
+                function f = isa(mi->mdl) == typeid(function) ? mi->mdl : null;
                 string   mn = cname(mi->name);
                 if (f) {
                     string args = string();
@@ -2600,7 +2601,7 @@ static void write_header(silver mod) {
         if (m->mdl->src && instanceof(m->mdl->src, typeid(Class))) {
             pairs(m->mdl->members, ii) {
                 emember mi = ii->value;
-                if (isa(mi->mdl) == typeid(fn))
+                if (isa(mi->mdl) == typeid(function))
                     fputs(fmt("%o\n", method_def(mi))->chars, method_f);
             }
         }
@@ -2625,11 +2626,11 @@ static void write_header2(silver mod) {
 
     #define props(MDL, P_ITER) \
         pairs (MDL->members, P_ITER) \
-            if (!instanceof(((emember)P_ITER)->mdl, typeid(fn)))
+            if (!instanceof(((emember)P_ITER)->mdl, typeid(function)))
 
     #define funcs(MDL, P_ITER) \
         pairs (MDL->members, P_ITER) \
-            if (instanceof(((emember)P_ITER)->mdl, typeid(fn)))
+            if (instanceof(((emember)P_ITER)->mdl, typeid(function)))
 
     model Au_mdl   = emodel("Au");
     model Au_type  = emodel("Au_t")->src;
@@ -2687,14 +2688,14 @@ static void write_header2(silver mod) {
             emember emem = i->value;
             if (emem->is_codegen) continue;
             if (!emem->name || !len(emem->name)) continue;
-            fn    func     = instanceof(emem->mdl, typeid(fn));
+            function func  = instanceof(emem->mdl, typeid(function));
             Class cl       = emem->mdl->src ? instanceof(emem->mdl->src, typeid(Class)) : null;
             structure st   = instanceof(emem->mdl, typeid(structure));
             enumeration en = instanceof(emem->mdl, typeid(enumeration));
             model alias    = (!func && !cl && !en && emem->mdl->src) ? emem->mdl : null;
             if (alias) {
-                if (isa(alias->src) == typeid(fn)) {
-                    fn f = alias->src;
+                if (isa(alias->src) == typeid(function)) {
+                    function f = alias->src;
                     pairs(f->args->members, i) {
                         fputs(fmt("%o;\n", func_ptr(i->value))->chars, f);
                     }
@@ -2750,7 +2751,7 @@ static void write_header2(silver mod) {
             if (emem->is_codegen) continue;
             if (!emem->name || !len(emem->name)) continue;
             Au_t  mem_type = isa(emem->mdl);
-            fn    func     = instanceof(emem->mdl, typeid(fn));
+            function func  = instanceof(emem->mdl, typeid(function));
             Class cl       = emem->mdl->src ? instanceof(emem->mdl->src, typeid(Class)) : null;
             structure st   = instanceof(emem->mdl, typeid(structure));
             enumeration en = instanceof(emem->mdl, typeid(enumeration));
@@ -2819,7 +2820,7 @@ static void write_header2(silver mod) {
             
             pairs (Au_type->members, i) {
                 emember emem = i->value;
-                if (isa(emem->mdl) != typeid(fn))
+                if (isa(emem->mdl) != typeid(function))
                     fputs(fmt("\t%o %o;\n", emem->mdl->mem->name, emem->name)->chars, f);
             }
             each (cls, model, cl_mdl)
@@ -2856,8 +2857,8 @@ static void write_header2(silver mod) {
 /// im a module!
 void silver_init(silver mod) {
 
-    aether2 e2 = aether2();
-    
+    aether2 e2 = aether2(name, string("test"));
+
     mod->defs     = map(hsize, 8);
     mod->codegens = map(hsize, 8);
     mod->import_cache = map(hsize, 8);
@@ -3580,7 +3581,7 @@ enode import_parse(silver mod) {
             if (local_mod) {
                 uri = null;
                 cont = read_if(mod, ",") != null;
-                verify (!cont, "comma not yet supported in import (fn needs restructuring to create multiple imoprts in enode)");
+                verify (!cont, "comma not yet supported in import (func needs restructuring to create multiple imoprts in enode)");
             } else
                 uri = f(string, "https://%o/%o/%o%s%o", service, user, project,
                     cast(bool, path_str) ? "/" : "", path_str);
@@ -3770,7 +3771,7 @@ define_enum  (language)
 
 
 // return tokens for function content (not its surrounding def)
-array codegen_generate_fn(codegen a, fn f, array query) {
+array codegen_generate_fn(codegen a, function f, array query) {
     fault("must subclass codegen for usable code generation");
     return null;
 }
@@ -3811,7 +3812,7 @@ array read_dictation(silver mod, array input) {
     return result;
 }
 
-array chatgpt_generate_fn(chatgpt a, fn f, array query) {
+array chatgpt_generate_fn(chatgpt a, function f, array query) {
     silver mod = f->mod;
     array  res = array(alloc, 32);
 
@@ -3837,7 +3838,7 @@ array chatgpt_generate_fn(chatgpt a, fn f, array query) {
             append(str_args, ",");
         concat(str_args, f(string, "%o: %o", name, mem->name));
     }
-    string signature = f(string, "fn %o[%o] -> %o", f, str_args, f->rtype);
+    string signature = f(string, "func %o[%o] -> %o", f, str_args, f->rtype);
     
     // main system message
     map sys_intro = m(

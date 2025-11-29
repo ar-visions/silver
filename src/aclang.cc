@@ -173,7 +173,7 @@ static void create_method_stub(CXXMethodDecl* md, ASTContext& ctx, aether e, rec
     if (md->getAccess() != AS_public) return;   // only public for now
 
     if (md->isOverloadedOperator()) {
-        //rec->operator_new = (fn)create_fn(method, ctx, e, get_name(method));
+        //rec->operator_new = (function)create_fn(method, ctx, e, get_name(method));
         int test2 = 2;
         test2    += 2;
     }
@@ -221,13 +221,13 @@ static void create_method_stub(CXXMethodDecl* md, ASTContext& ctx, aether e, rec
         set(args->members, (Au)string(pname.c_str()), (Au)ap);
     }
 
-    // build fn
+    // build function
     bool variadic = md->isVariadic();
 
     string fname = string(name.c_str());
 
     push(e, (model)owner);
-    fn f = fn(mod, e,
+    function f = function(mod, e,
               rtype, rtype,
               args, args,
               extern_name, string(mg.c_str()),
@@ -404,7 +404,7 @@ static enumeration create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::s
 }
 
 // Function creation
-static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string name) {
+static function create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string name) {
     string n = string(name.c_str());
     if (eq(n, "vkGetInstanceProcAddr")) {
         int test2 = 2;
@@ -438,7 +438,7 @@ static fn create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string n
     // Check for variadic
     bool is_variadic = decl->isVariadic();
 
-    fn f = fn(mod, e, rtype, rtype, args, args, va_args, is_variadic);
+    function f = function(mod, e, rtype, rtype, args, args, va_args, is_variadic);
     if (len(n) > 0)
         register_model(e, (model)f, (string)n, true);
 
@@ -515,7 +515,7 @@ static model map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, ae
     }
     
     bool is_variadic = fpt->isVariadic();
-    fn f = fn(mod, e, rtype, return_model, args, param_models, va_args, is_variadic);
+    function f = function(mod, e, rtype, return_model, args, param_models, va_args, is_variadic);
     register_model(e, (model)f, null, true);
     return (model)f;
 }
@@ -539,7 +539,7 @@ static model map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e
         model return_model = map_clang_type_to_model(return_qt, ctx, e, null);
         eargs empty_args = eargs(mod, e);
         
-        model func_model = (model)fn(mod, e, rtype, return_model, args, empty_args);
+        model func_model = (model)function(mod, e, rtype, return_model, args, empty_args);
         emember fmem = register_model(e, func_model, null, true);
         model func_ptr = model(mod, e, src, func_model, is_ref, true);
         emember ptr = register_model(e, func_ptr, null, true);

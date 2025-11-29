@@ -670,7 +670,8 @@
     m->ident    = #N; \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&ARef_i.type; \
-    m->member_type = AU_MEMBER_VPROP; \
+    m->member_type = AU_MEMBER_PROP; \
+    m->traits |= AU_TRAIT_VPROP; \
 }
 
 #define   i_vprop_public_PROTO(X, R, N)  
@@ -692,9 +693,9 @@
     m->ident    = #N; \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&ARef_i.type; \
-    m->member_type = AU_MEMBER_VPROP; \
+    m->member_type = AU_MEMBER_PROP; \
     m->index       = offsetof(struct X##_fields, N); \
-    m->traits |= AU_TRAIT_REQUIRED; \
+    m->traits |= AU_TRAIT_REQUIRED | AU_TRAIT_VPROP; \
 }
 
 #define   i_vprop_required_PROTO(X, R, N)  
@@ -1051,7 +1052,8 @@
     set_meta_array(m, emit_types(__VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
     m->offset  = 0; \
-    m->member_type = AU_MEMBER_TMETHOD; \
+    m->member_type = AU_MEMBER_FUNC; \
+    m->traits |= AU_TRAIT_TMETHOD; \
     m->ptr     = &N; \
 }
 
