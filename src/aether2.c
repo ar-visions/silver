@@ -31,8 +31,20 @@ static bool is_ptr     (Au t) { return au_arg(t)->is_pointer; }
 static bool is_enum    (Au t) { return au_arg(t)->is_enum; }
 static bool is_type    (Au t) { return au_arg(t)->member_type == AU_MEMBER_TYPE; }
 
-static etype etype_deref(aether2 e, Au_t au) {
-    return au->src;
+static int  ref_level  (Au t) {
+    Au_t a = au_arg(t);
+    Au_t src = a;
+    int  level = 0;
+    while (src) {
+        if (src->is_pointer)
+            level++;
+        src = src->src;
+    }
+    return level;
+}
+
+static etype etype_deref(Au_t au) {
+    return au->src ? au->src->user : null;
 }
 
 static etype etype_ptr(aether2 e, Au_t a) {
@@ -40,11 +52,11 @@ static etype etype_ptr(aether2 e, Au_t a) {
     if (isa(a) == typeid(etype)) return ((etype) a)->au;
     Au_t au = a;
     if (au->ptr) return au->ptr;
-    au->ptr              = Au_alloc_member(e->au_module);
-    au->ptr->member_type = AU_MEMBER_TYPE;
+    au->ptr              = Au_register(e->au_module, AU_MEMBER_TYPE, 0);
     au->ptr->is_pointer  = true;
     au->ptr->src         = au;
     au->ptr->user        = etype(mod, e, au, au->ptr);
+    push(e->registry, e); // we only 'clear' our registry and the linked Au_t's
     return au->ptr->user;
 }
 
@@ -104,9 +116,59 @@ LLVMTypeRef lltype(Au a) {
     return ((etype)au->user)->type;
 }
 
+Au_t arg_type(Au_t au) {
+    Au_t res = au;
+    while (res) {
+        if (res->member_type != AU_MEMBER_TYPE) {
+            res = res->type;
+            continue;
+        }
+        break;
+    }
+    verify(res, "argument not resolving type: %s", au);
+    return res;
+}
+
 etype etype_create_schema(etype t) {
+    aether2 a = t->mod;
     if (t->schema) return t->schema;
-    t->schema = etype(mod, t->mod, au, t->au, is_schema, true);
+
+    Au_t au = t->au;
+    t->schema  = etype(mod, t->mod, au, au->schema, is_schema, true);
+    au->schema = Au_register(a->au_module, au->ident, AU_MEMBER_TYPE, AU_TRAIT_SCHEMA);
+
+    Au_t base = etype_lexical(a, "Au_t");
+    for (int i = 0; i < base->members.count; i++) {
+        Au_t au_mem  = base->members.origin[i];
+
+        // this is the last member (function table), if that changes, we no longer break
+        if (au_mem->ident && strcmp(au_mem->ident, "ft") == 0) {
+            Au_t new_ft = Au_register(au->schema, "ft", AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
+
+            array cl = etype_class_list(t);
+            each (cl,  etype, tt) {
+                for (int ai = 0; ai < tt->au->members.count; ai++) {
+                    Au_t ai_mem = tt->au->members.origin[ai];
+                    if (ai_mem->member_type != AU_MEMBER_FUNC)
+                        continue;
+                    
+                    Au_t fn = Au_register(new_ft, null, AU_MEMBER_FUNC, AU_TRAIT_FUNCPTR);
+                    fn->traits = ai_mem->traits;
+                    fn->rtype  = ai_mem->rtype;
+
+                    for (int arg = 0; arg < ai_mem->args.count; arg++) {
+                        Au_t arg_src = ai_mem->args.origin[arg];
+                        Au_t arg_t   = arg_type(arg_src);
+                        array_qpush(&fn->args, arg_t);
+                    }
+                }
+            }
+            break;
+        }
+        Au_t new_mem = Au_alloc_member(au->schema);
+        *new_mem = *au_mem;
+        new_mem->context = au; // copy entire member and reset for our for context
+    }
     return t->schema;
 }
 
@@ -121,8 +183,11 @@ none etype_init(etype t) {
     au->member_type = AU_MEMBER_TYPE;
     au->user = hold(t);
 
-    // must create the type-ref here -- however for structures we do not create the members until init
-    if (is_rec(t)) {
+    if (t->is_schema) {
+        // we already did the work in create_schema
+    } else if (au->is_pointer && au->src && !au->src->is_primitive) {
+        t->type = LLVMPointerType(au->src->user->type, 0);
+    } else if (is_rec(t) || au == typeid(Au_t)) {
         t->type = named ? LLVMStructCreateNamed(a->module_ctx, au->ident) : null;
     } else if (is_enum(t)) {
         t->type = lltype(t->au->src ? t->au->src : typeid(i32));
@@ -176,7 +241,7 @@ none etype_init(etype t) {
     } else if (au == typeid(callback_extra)) {
         Au_t e_A = au_lexical(a, "Au");
         LLVMTypeRef param_types[] = { lltype(e_A), lltype(e_A), lltype(e_A) };
-        LLVMTypeRef cb_type = LLVMFunctionType(e_A->type, param_types, 3, 0);
+        LLVMTypeRef cb_type = LLVMFunctionType(lltype(e_A), param_types, 3, 0);
         t->type = LLVMPointerType(cb_type, 0);
     }
     else if (au == typeid(ref_u8)  || au == typeid(ref_u16) || 
@@ -190,14 +255,15 @@ none etype_init(etype t) {
         b->ptr  = t;
         au->src = b;
         au->src->ptr = au;
-        t->type = LLVMPointerType((typeid(u8)->user)->type, 0);
+        t->type = LLVMPointerType(b->user->type, 0);
         au->is_pointer = true;
     }
     else if (au == typeid(handle))   t->type = LLVMPointerType(LLVMInt8Type(), 0);
     else if (au == typeid(ARef)) {
         au->src = typeid(Au);
         au->src->ptr = au;
-        t->type = LLVMPointerType(lltype(au_lexical(a, "Au")), 0);
+        Au_t au_type = au_lexical(a, "Au");
+        t->type = LLVMPointerType(lltype(au_type), 0);
     }
     else if (au == typeid(Au_ts))    t->type = lltype(au_lexical(a, "Au_ts"));
     else if (au == typeid(bf16))     t->type = LLVMBFloatTypeInContext(a->module_ctx);
@@ -232,11 +298,12 @@ none etype_init(etype t) {
     }
 }
 
-// this is where we 'finish' creating the type
-// 
 none etype_implement(etype t) {
     Au_t    au = t->au;
     aether2 a  = t->mod;
+
+    if (t->is_implemented) return;
+    t->is_implemented = true;
 
     if (is_rec(t)) {
         array cl = etype_class_list(t);
@@ -265,19 +332,15 @@ none etype_implement(etype t) {
         etype mt = null;
         if (is_class(t)) {
             mt = etype_ptr(a, etype_create_schema(t)->au)->type;
-        } else if (count == 0) {
-             mt = members[count++] = etype_lexical(a, "u8")->type; 
-             // if no members, we allow this with a single byte
-             // in the case of Au types, this is not added to the 
-             // total size of any polymorphic instance
-        }
-        if (mt) {
-            members[count++] = mt;
-        }
+        } else if (count == 0)
+             mt = etype_lexical(a, "u8")->type;
+        if (mt) members[count++] = mt;
         LLVMStructSetBody(t->type, members, count, 1);
-        t->au->ptr = etype_ptr(a, t->au)->au;
+        etype_ptr(a, t->au);
 
     } else if (is_enum(t)) {
+        Au_t et = t->au->src;
+        verify(et, "expected source type for enum %s", t->au);
         for (int i = 0; i < au->members.count; i++) {
             Au_t   m = au->members.origin[i]; // has ident, and value set (required)
             verify(m->value, "no value set for enum %s:%s", au->ident, m->ident);
@@ -288,7 +351,6 @@ none etype_implement(etype t) {
             LLVMSetGlobalConstant(G, 1);
             LLVMValueRef init;
             
-            Au_t et = isa(m->value);
             if (et == typeid(i32))
                 init = LLVMConstInt(t->type, *((i32*)m->value), 0);
             else if (et == typeid(u32))
@@ -324,96 +386,55 @@ none aether2_push_scope(aether2 a, Au_t mem) {
 static void import_Au(aether2 a, path lib) {
     a->current_inc   = lib ? lib : path("Au");
     a->is_Au_import  = true;
-
     string  lib_name = lib ? stem(lib) : null;
 
-    // register new module if this is not global
     if (lib) Au_register_module(copy_cstr(lib_name->chars));
-
-    a->au_module = Au_current_module();
-
-    // get current module (newer one, if registered)
+    a->au_module     = Au_current_module();
     push(a->lexical, a->au_module);
+
     if (lib) {
-        // next we dlopen, invoking global-initializers for types
         handle f = dlopen(cstring(lib), RTLD_NOW);
         verify(f, "shared-lib failed to load: %o", lib);
         push(a->libs, f);
     }
 
-    // we can now iterate newly loaded types; for each, we must create llvm data (which we shall do a-new so we broaden our understanding)
-    Au_t top = top_scope(a);
-    Au_t au  = typeid(Au);
-    au->user = etype(mod, a, au, au);
-
+    Au_t au    = typeid(Au);
+    au->user   = etype(mod, a, au, au);
     Au_t au_t  = typeid(Au_t);
     au_t->user = etype(mod, a, au, au_t);
 
-    // all basic primitives
-    for (num i = 0; i < top->members.count; i++) {
-        Au_t m = top->members.origin[i];
-        if (m->is_primitive && !m->is_pointer) {
-            print("init primitive %o", m);
-            m->user = etype(mod, a, au, m);
-            etype_implement((etype)m->user);
-        }
-    }
+    etype_ptr(a, au);
+    etype_ptr(a, au_t);
 
-    // all pointer primitives
-    for (num i = 0; i < top->members.count; i++) {
-        Au_t m = top->members.origin[i];
-        if (m->is_primitive && m->is_pointer) {
-            print("init pointer %o", m);
-            m->user = etype(mod, a, au, m);
-            etype_implement((etype)m->user);
-        }
-    }
+    // initialization table for has/not bits, controlling init and implement
+    struct filter {
+        bool init, impl;
+        u32 has_bits;
+        u32 not_bits;
+    } filters[7] = {
+        { true,  true,  AU_TRAIT_PRIMITIVE, AU_TRAIT_POINTER | AU_TRAIT_FUNCPTR },
+        { true,  true,  AU_TRAIT_PRIMITIVE | AU_TRAIT_POINTER, 0 },
+        { true,  true,  AU_TRAIT_PRIMITIVE | AU_TRAIT_FUNCPTR, 0 },
+        { true,  true,  AU_TRAIT_ENUM,   0 }, 
+        { true,  false, AU_TRAIT_STRUCT, 0 },
+        { true,  false, AU_TRAIT_CLASS,  0 },
+        { false, true,  0, AU_TRAIT_ABSTRACT },
+    };
 
-    // all structs
-    for (num i = 0; i < top->members.count; i++) {
-        Au_t m = top->members.origin[i];
-        if (m->is_struct) {
-            print("init structure %o", m);
-            m->user = etype(mod, a, au, m);
-        }
-    }
-
-    // all classes
-    for (num i = 0; i < top->members.count; i++) {
-        Au_t m = top->members.origin[i];
-        if (m->is_class) {
-            print("init class %o", m);
-            m->user = etype(mod, a, au, m);
-        }
-    }
-
-    // implement structs
-    for (num i = 0; i < top->members.count; i++) {
-        Au_t m = top->members.origin[i];
-        if (m->is_struct) {
-            print("implement structure %o", m);
-            etype_implement((etype)m->user);
-        }
-    }
-
-    // implement classes
-    for (num i = 0; i < top->members.count; i++) {
-        Au_t m = top->members.origin[i];
-        if (m->is_class) {
-            print("implement class %o", m);
-            etype_implement((etype)m->user);
-        }
-    }
-
-    // 
-    for (num i = 0; i < top->members.count; i++) {
-        Au_t m = top->members.origin[i]; 
-        if (m->member_type == AU_MEMBER_TYPE) {
-            if (!m->user) {
-                print("not initialized: %o", m->user);
-            } else if (!((etype)m->user)->type) {
-                print("implementing type %o", m);
-                etype_implement((etype)m->user);
+    Au_t top = top_scope(a);
+    for (int filter = 0; filter < 7; filter++) {
+        struct filter* ff = &filters[filter];
+        for (num i = 0; i < top->members.count; i++) {
+            Au_t m = top->members.origin[i];
+            bool proceed = (ff->has_bits & m->traits) == ff->has_bits && 
+                           (ff->not_bits & m->traits) == 0;
+            if (proceed) {
+                Au_t m_isa = isa(m);
+                print("init primitive %o", m);
+                if (ff->init && !m->user)
+                    m->user = etype(mod, a, au, m);
+                if (ff->impl)
+                    etype_implement((etype)m->user);
             }
         }
     }
@@ -421,13 +442,12 @@ static void import_Au(aether2 a, path lib) {
     Au_register_module(null);
 }
 
-
 none aether2_init(aether2 a) {
-
     LLVMInitializeNativeTarget();
     LLVMInitializeNativeAsmPrinter();
     LLVMInitializeNativeAsmParser();
 
+    a->registry       = array(256);
     a->libs           = array();
     a->lexical        = array(unmanaged, true, assorted, true);
     a->module         = LLVMModuleCreateWithName(a->name->chars);
@@ -435,7 +455,6 @@ none aether2_init(aether2 a) {
     a->dbg_builder    = LLVMCreateDIBuilder(a->module);
     a->builder        = LLVMCreateBuilderInContext(a->module_ctx);
     a->target_triple  = LLVMGetDefaultTargetTriple();
-
     cstr err = NULL;
     if (LLVMGetTargetFromTriple(a->target_triple, &a->target, &err))
         fault("error: %s", err);
@@ -461,7 +480,6 @@ none aether2_dealloc(aether2 a) {
     LLVMContextDispose  (a->module_ctx);
     LLVMDisposeMessage  (a->target_triple);
 }
-
 
 define_class(aether2, Au)
 define_class(enode2,  Au)

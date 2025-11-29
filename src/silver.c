@@ -1585,7 +1585,7 @@ static enode typed_expr(silver mod, model mdl, array meta, array expr) {
     return r;
 }
 
-array read_arg(aether e, array tokens, int start, int* next_read);
+array read_arg(array tokens, int start, int* next_read);
 
 enode silver_parse_member_expr(silver mod, emember mem) {
     push_current(mod);

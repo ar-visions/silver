@@ -396,7 +396,7 @@ array array_mix(array a, array b, f32 f) {
 
         if (!fmix) fmix = find_member(at, AU_MEMBER_FUNC, "mix", false);
         verify(fmix, "implement mix method for type %s", at->ident);
-        Au e = ((mix_fn)fmix->ptr)(aa, bb, f);
+        Au e = ((mix_fn)fmix->value)(aa, bb, f);
         push(res, e);
     }
     return res;
@@ -483,7 +483,7 @@ static struct _Au_combine* member_pool;
 static int                 n_members;
 
 
-Au_t Au_alloc_member(Au_t type) {
+Au_t Au_register(Au_t type, symbol ident, u32 member_type, u32 traits) {
     if (n_members == 0) {
         n_members   = 256;
         member_pool = calloc(n_members, sizeof(struct _Au_combine));
@@ -491,6 +491,12 @@ Au_t Au_alloc_member(Au_t type) {
     }
     struct _Au_combine* cur = &member_pool[--n_members];
     cur->info.refs = 1;
+
+    Au_t au = &cur->type;
+    au->ident = strdup(ident);
+    au->member_type = member_type;
+    au->traits = traits;
+
     if (type) {
         Au_t new_member = array_qpush(&type->members, &cur->type);
         new_member->context = type;
@@ -498,6 +504,36 @@ Au_t Au_alloc_member(Au_t type) {
         return new_member;
     }
     return (Au_t)&cur->type;
+}
+
+Au_t Au_register_type(Au_t type, symbol ident, u32 traits) {
+    return Au_register(type, ident, AU_MEMBER_TYPE, traits);
+}
+
+Au_t Au_register_class(Au_t type, symbol ident) {
+    return Au_register(type, ident, AU_MEMBER_TYPE, AU_TRAIT_CLASS);
+}
+
+Au_t Au_register_struct(Au_t type, symbol ident, u32 traits) {
+    return Au_register(type, ident, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
+}
+
+Au_t Au_register_func_ptr(Au_t type, symbol ident) {
+    return Au_register(type, ident, AU_MEMBER_TYPE, AU_TRAIT_FUNCPTR);
+}
+
+Au_t Au_register_pointer(Au_t ref, symbol ident) {
+    if (!ref->ptr) ref->ptr = Au_register(null, ident, AU_MEMBER_TYPE, AU_TRAIT_POINTER);
+    return ref->ptr;
+}
+
+Au_t Au_register_enum(Au_t type, symbol ident, u32 traits) {
+}
+
+Au_t Au_register_enum_value(Au_t type, symbol ident, object value) {
+}
+
+Au_t Au_register_member(Au_t type, symbol ident, u32 member_type, u32 traits) {
 }
 
 cstr copy_cstr(cstr input) {
@@ -557,8 +593,7 @@ none collective_init(collective a) {
 ffi_method_t* method_with_address(handle address, Au_t rtype, array atypes, Au_t method_owner);
 
 Au_t push_mem(Au_t context, symbol ident, Au_t type) {
-    Au_t mem = Au_alloc_member(context);
-    mem->ident = ident ? strdup(ident) : null;
+    Au_t mem = Au_register(context, ident, 0, 0);
     mem->type  = type;
     return mem;
 }
@@ -569,34 +604,30 @@ none push_type(Au_t type) {
         module = &au;
         module->members.unmanaged = true;
         
-        Au_t au_collective = Au_alloc_member(module);
-        au_collective->ident = strdup("collective_abi");
-        au_collective->member_type = AU_MEMBER_TYPE;
-        au_collective->is_struct = true;
+        Au_t au_collective = Au_register(module, "collective_abi",
+            AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
 
         push_mem(au_collective, "count",     typeid(i32));
         push_mem(au_collective, "alloc",     typeid(i32));
         push_mem(au_collective, "hsize",     typeid(i32));
         push_mem(au_collective, "origin",    typeid(ARef));
-        push_mem(au_collective, "first",     typeid(ARef));
-        push_mem(au_collective, "last",      typeid(ARef));
-        push_mem(au_collective, "hlist",     typeid(ARef));
+        push_mem(au_collective, "first",     typeid(item));
+        push_mem(au_collective, "last",      typeid(item));
+        push_mem(au_collective, "hlist",     typeid(vector));
         push_mem(au_collective, "unmanaged", typeid(bool));
         push_mem(au_collective, "assorted",  typeid(bool));
         push_mem(au_collective, "last_type", typeid(Au_t));
 
-        Au_t au_t           = Au_alloc_member(module);
-        au_t->member_type   = AU_MEMBER_TYPE;
-        au_t->ident         = strdup("collective_abi");
-        au_t->is_class      = true; // we want to store as references for this one
+        Au_t au_t = Au_register(module, "Au_t",
+            AU_MEMBER_TYPE, AU_TRAIT_CLASS);
 
         push_mem(au_t, "context",       typeid(Au_t));
         push_mem(au_t, "src",           typeid(Au_t));
         push_mem(au_t, "user",          typeid(Au_t));
-        push_mem(au_t, "module",        typeid(i32));
+        push_mem(au_t, "module",        typeid(Au_t));
         push_mem(au_t, "ptr",           typeid(Au_t));
         push_mem(au_t, "ident",         typeid(cstr));
-        push_mem(au_t, "index",         typeid(i32));
+        push_mem(au_t, "index",         typeid(i64));
         push_mem(au_t, "value",         typeid(ARef));
         push_mem(au_t, "member_type",   typeid(u8));
         push_mem(au_t, "operator_type", typeid(u8));
@@ -612,28 +643,19 @@ none push_type(Au_t type) {
         
         Au_t minfo = push_mem(au_t, "members_info", typeid(Au));
         minfo->traits = AU_TRAIT_INLAY;
-        
         push_mem(au_t, "members",       au_collective);
         
         Au_t metainfo = push_mem(au_t, "meta_info", typeid(Au));
         metainfo->traits = AU_TRAIT_INLAY;
-
         push_mem(au_t, "meta",          au_collective);
         push_mem(au_t, "shape",         typeid(shape));
 
         Au_t required_bits  = push_mem(au_t, "required_bits",  typeid(u64));
         required_bits->size = 2;
-        Au_t ft             = Au_alloc_member(au_t);
-        ft->traits          = AU_TRAIT_STRUCT;
-        ft->member_type     = AU_MEMBER_TYPE;
+        Au_t ft             = Au_register(au_t, null,
+            AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
         push_mem(ft, "_none_", typeid(ARef));
         push_mem(au_t, null, ft);
-
-        Au_t mtest = typeid(Au_t);
-        if (mtest->member_type == AU_MEMBER_TYPE) {
-            int test2 = 2;
-            test2    += 2;
-        }
     }
 
     array_qpush(&module->members, type);
@@ -754,21 +776,21 @@ i32* enum_default(Au_t type) {
     for (num i = 0; i < type->members.count; i++) {
         Au_t mem = type->members.origin[i];
         if (mem->member_type & AU_MEMBER_ENUMV)
-            return (i32*)mem->ptr;
+            return (i32*)mem->value;
     }
     return null;
 }
 
 static Au enum_member_value(Au_t type, Au_t mem) {
-    if (type->src == typeid(u8))  return _u8(*(u8*)mem->ptr);
-    if (type->src == typeid(i8))  return _i8(*(i8*)mem->ptr);
-    if (type->src == typeid(u16)) return _u16(*(u16*)mem->ptr);
-    if (type->src == typeid(i16)) return _i16(*(i16*)mem->ptr);
-    if (type->src == typeid(u32)) return _u32(*(u32*)mem->ptr);
-    if (type->src == typeid(i32)) return _i32(*(i32*)mem->ptr);
-    if (type->src == typeid(u64)) return _u64(*(u64*)mem->ptr);
-    if (type->src == typeid(i64)) return _i64(*(i64*)mem->ptr);
-    if (type->src == typeid(f32)) return _f32(*(f32*)mem->ptr);
+    if (type->src == typeid(u8))  return _u8(*(u8*)mem->value);
+    if (type->src == typeid(i8))  return _i8(*(i8*)mem->value);
+    if (type->src == typeid(u16)) return _u16(*(u16*)mem->value);
+    if (type->src == typeid(i16)) return _i16(*(i16*)mem->value);
+    if (type->src == typeid(u32)) return _u32(*(u32*)mem->value);
+    if (type->src == typeid(i32)) return _i32(*(i32*)mem->value);
+    if (type->src == typeid(u64)) return _u64(*(u64*)mem->value);
+    if (type->src == typeid(i64)) return _i64(*(i64*)mem->value);
+    if (type->src == typeid(f32)) return _f32(*(f32*)mem->value);
     fault("implement enum conversion: %s", type->ident);
     return null;
 }
@@ -799,7 +821,7 @@ string estring(Au_t type, i32 value) {
     for (num i = 0; i < type->members.count; i++) {
         Au_t mem = type->members.origin[i];
         if (mem->member_type & AU_MEMBER_ENUMV) {
-            if (memcmp((void*)mem->ptr, (i32*)&value, mem->src->size) == 0)
+            if (memcmp((void*)mem->value, (i32*)&value, mem->src->size) == 0)
                 return string(mem->ident); 
         }
     }
@@ -1188,7 +1210,7 @@ ffi_method_t* method_with_address(handle address, Au_t rtype, array args, Au_t m
 }
 
 Au Au_method_call(Au_t m, array args) {
-    if (!m->ffi) m->ffi = method_with_address(m->ptr, m->type, &m->args, m->context);
+    if (!m->ffi) m->ffi = method_with_address(m->value, m->type, &m->args, m->context);
     ffi_method_t* a = m->ffi;
     const num max_args = 8;
     none* arg_values[max_args];
@@ -1266,12 +1288,12 @@ none Au_member_override(Au_t type, Au_t type_mem, AFlag f) {
 
                 verify(m->index, "method %s.%s cannot be overridden\n", base->ident, m->ident);
 
-                verify(m->ptr, "method pointer not set on source yet (%s.%s); cannot override\n",
+                verify(m->value, "method pointer not set on source yet (%s.%s); cannot override\n",
                     base->ident, m->ident);
                  
                 struct _string*(*base_method)(Au) = ((ARef)&base->ft.__none__)[m->index];
-                struct _string*(*ptr_method)(Au) = m->ptr;
-                verify(base_method == m->ptr, "method not stored in base table correctly");
+                struct _string*(*ptr_method)(Au) = m->value;
+                verify(base_method == m->value, "method not stored in base table correctly");
                 return;
             }
         }
@@ -1291,11 +1313,11 @@ none Au_member_override(Au_t type, Au_t type_mem, AFlag f) {
                 type_mem->args   = m->args;
                 type_mem->src    = m->type;
                 type_mem->member_type = m->member_type;// | AU_MEMBER_OVERRIDE;
-                ARef ptr_find = m->ptr;
+                ARef ptr_find = m->value;
                 verify(m->index, "method %s.%s cannot be overridden\n", base->ident, m->ident);
-                verify(m->ptr, "method pointer not set on source yet (%s.%s); cannot override\n",
+                verify(m->value, "method pointer not set on source yet (%s.%s); cannot override\n",
                     base->ident, m->ident);
-                ((ARef)&type->ft)[m->index] = m->ptr;
+                ((ARef)&type->ft)[m->index] = m->value;
                 return;
             }
         }
@@ -1767,7 +1789,7 @@ Au construct_with(Au_t type, Au data, ctx context) {
             Au_t mem = type->members.origin[i];
             
             if (!result && mem->member_type == AU_MEMBER_CONSTRUCT) {
-                none* addr = mem->ptr;
+                none* addr = mem->value;
                 /// no meaningful way to do this generically, we prefer to call these first
                 if (mem->type == typeid(path) && data_type == typeid(string)) {
                     result = alloc(type, 1, null);
@@ -1837,8 +1859,8 @@ Au construct_with(Au_t type, Au data, ctx context) {
     if (!result)
     for (num i = 0; i < type->members.count; i++) {
         Au_t mem = type->members.origin[i];
-        if (!mem->ptr) continue;
-        none* addr = mem->ptr;
+        if (!mem->value) continue;
+        none* addr = mem->value;
         /// check for compatible constructors
         if (mem->member_type == AU_MEMBER_CONSTRUCT) {
             u64 combine = mem->type->traits & data_type->traits;
@@ -2170,7 +2192,8 @@ Au formatter(Au_t type, handle ff, Au opt, symbol template, ...) {
         if (cmd[0] == '%' && cmd[1] == 'o') {
             Au arg = va_arg(args, Au);
             string   a;
-            if (isa(arg) == null) {
+            Au_t isa_arg = isa(arg);
+            if (isa_arg == null || isa_arg == arg) {
                 if (!arg) {
                     a = string("null");
                 } else {
@@ -3189,7 +3212,7 @@ callback binding(Au a, Au target, bool required, Au_t rtype, Au_t arg_type, symb
     Au_t m  = find_member(target_type, AU_MEMBER_FUNC, method->chars, true);
     verify(!required || m, "bind: required method not found: %o", method);
     if (!m) return null;
-    callback f       = m->ptr;
+    callback f       = m->value;
     verify(f, "expected method address");
     verify(m->args.count  == 2, "%s: expected method address with instance, and arg*", name);
     verify(!arg_type || m->args.origin[1] == arg_type, "%s: expected arg type: %s", name, arg_type->ident);
@@ -3353,7 +3376,7 @@ num list_compare(list a, list b) {
     if (ai_t) {
         Au_t m = find_member(ai_t, AU_MEMBER_FUNC, "compare", true);
         for (item ai = a->first, bi = b->first; ai; ai = ai->next, bi = bi->next) {
-            num   v  = ((num(*)(Au,Au))(m->ptr))(ai, bi);
+            num   v  = ((num(*)(Au,Au))(m->value))(ai, bi);
             if (v != 0) return v;
         }
     }
@@ -4629,7 +4652,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
                 Au_t e = find_member(
                     type, AU_MEMBER_ENUMV, enum_symbol->chars, false);
                 verify(e, "enum symbol %o not found in type %s", enum_symbol, type->ident);
-                memcpy(evalue, e->ptr, e->type->size);
+                memcpy(evalue, e->value, e->type->size);
 
                 res = evalue;
             } else if (type->traits & AU_TRAIT_STRUCT) {
@@ -5163,7 +5186,7 @@ Au typecast(Au_t type, Au a) {
     Au_t au = isa(a);
     Au_t m = member_type(au, AU_MEMBER_CAST, type, true);
     if (m) {
-        Au(*fcast)(Au) = m->ptr;
+        Au(*fcast)(Au) = m->value;
         return fcast(a);
     }
     return null;
@@ -5395,6 +5418,29 @@ Au_t token_is_bool(token a) {
         (Au_t)typeid(bool) : null;
 }
 
+array read_arg(array tokens, int start, int* next_read) {
+    int   level = 0;
+    int   ln    = len(tokens);
+    bool  count = ln - start;
+    array res   = array(alloc, 32);
+
+    for (int i = start; i < ln; i++) {
+        token t = get(tokens, i);
+
+        if (eq(t, "("))
+            level++;
+        else if (eq(t, ")") && level > 0)
+            level--;
+
+        if ((eq(t, ",") || eq(t, ")")) && level == 0) {
+            *next_read = i + (int)eq(t, ",");
+            return res;
+        }
+
+        push(res, t);
+    }
+    return count > 0 ? null : res;
+}
 
 // this signals an application entry
 define_class(subscriber, Au)
@@ -5458,13 +5504,13 @@ define_primitive(none,   nil, 0)
 define_primitive(handle, raw, AU_TRAIT_POINTER, u8)
 define_primitive(ARef,   ref, AU_TRAIT_POINTER, Au)
 define_primitive(Au_ts, ref, AU_TRAIT_POINTER, Au_t)
-define_primitive(floats, raw, 0)
+define_primitive(floats, raw, AU_TRAIT_POINTER, f32)
 
-define_primitive(func,     raw, 0)
-define_primitive(hook,   raw, 0)
-define_primitive(callback, raw, 0)
-define_primitive(callback_extra, raw, 0)
-define_primitive(cstrs, raw, 0)
+define_primitive(func,     raw, AU_TRAIT_FUNCPTR)
+define_primitive(hook,     raw, AU_TRAIT_FUNCPTR)
+define_primitive(callback, raw, AU_TRAIT_FUNCPTR)
+define_primitive(callback_extra, raw, AU_TRAIT_FUNCPTR)
+define_primitive(cstrs, raw, AU_TRAIT_POINTER, cstr)
 
 define_class(line, Au)
 

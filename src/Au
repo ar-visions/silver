@@ -144,6 +144,7 @@ typedef long double            *ref_f80;
 #define Au_f_members(B) \
     Au_t            context; \
     union { Au_t src, rtype, type; }; \
+    Au_t            schema; \
     Au_t            user; \
     Au_t            module; \
     Au_t            ptr; \
@@ -605,7 +606,9 @@ forward(any)
     i_final (AA,Y, public, Au,           set_property,        symbol, Au) \
     i_final (AA,Y, public, Au,           get_property,        symbol) \
     i_final (AA,Y, public, Au,           vrealloc,            sz) \
-    s_method(AA,Y, public, Au_t,         alloc_member,        Au_t) \
+    s_method(AA,Y, public, Au_t,         register,            Au_t, symbol, u32, u32) \
+    s_method(AA,Y, public, Au_t,         register_type,       Au_t, symbol, u32) \
+    s_method(AA,Y, public, Au_t,         register_member,     Au_t, symbol, u32) \
     s_method(AA,Y, public, Au,           initialize,          Au) \
     s_method(AA,Y, public, Au_t,         module,              symbol) \
     s_method(AA,Y, public, Au_t,         register_module,     symbol) \
