@@ -491,10 +491,13 @@ Au_t Au_alloc_member(Au_t type) {
     }
     struct _Au_combine* cur = &member_pool[--n_members];
     cur->info.refs = 1;
-    Au_t new_member = array_qpush(&type->members, &cur->type);
-    new_member->context = type;
-    printf("new_member on type %s = %p (%i)\n", type->ident, new_member, n_members);
-    return new_member;
+    if (type) {
+        Au_t new_member = array_qpush(&type->members, &cur->type);
+        new_member->context = type;
+        printf("new_member on type %s = %p (%i)\n", type->ident, new_member, n_members);
+        return new_member;
+    }
+    return (Au_t)&cur->type;
 }
 
 cstr copy_cstr(cstr input) {
@@ -553,64 +556,84 @@ none collective_init(collective a) {
 
 ffi_method_t* method_with_address(handle address, Au_t rtype, array atypes, Au_t method_owner);
 
+Au_t push_mem(Au_t context, symbol ident, Au_t type) {
+    Au_t mem = Au_alloc_member(context);
+    mem->ident = ident ? strdup(ident) : null;
+    mem->type  = type;
+    return mem;
+}
+
 none push_type(Au_t type) {
     // on first go, we must register our basic type structures:
-
     if (!module) {
         module = &au;
         module->members.unmanaged = true;
         
+        Au_t au_collective = Au_alloc_member(module);
+        au_collective->ident = strdup("collective_abi");
+        au_collective->member_type = AU_MEMBER_TYPE;
+        au_collective->is_struct = true;
 
-/*
+        push_mem(au_collective, "count",     typeid(i32));
+        push_mem(au_collective, "alloc",     typeid(i32));
+        push_mem(au_collective, "hsize",     typeid(i32));
+        push_mem(au_collective, "origin",    typeid(ARef));
+        push_mem(au_collective, "first",     typeid(ARef));
+        push_mem(au_collective, "last",      typeid(ARef));
+        push_mem(au_collective, "hlist",     typeid(ARef));
+        push_mem(au_collective, "unmanaged", typeid(bool));
+        push_mem(au_collective, "assorted",  typeid(bool));
+        push_mem(au_collective, "last_type", typeid(Au_t));
 
-typedef struct _collective_abi {
-    i32             count;
-    i32             alloc;
-    i32             hsize;
-    ARef            origin;
-    struct _item*   first, *last;
-    struct _vector* hlist;
-    bool            unmanaged;
-    bool            assorted;
-    struct _Au_t*   last_type;
-} collective_abi;
+        Au_t au_t           = Au_alloc_member(module);
+        au_t->member_type   = AU_MEMBER_TYPE;
+        au_t->ident         = strdup("collective_abi");
+        au_t->is_class      = true; // we want to store as references for this one
 
-// this is the standard _Au_t declaration
-typedef struct _Au_t {
-    Au_t            context;
-        Au_t src;
-    Au_t            user;
-    Au_t            module; // origin of its module
-    Au_t            ptr; // a cache location for the type's pointer
-    char*           ident;
-    i64             index; // index of type in module, or index of member in type
-    object          value; // user-data value associated to type
-    int             global_count;
-    u8              member_type;
-    u8              operator_type;
-    u8              access_type;
-    u8              reserved;
-        u32 traits;
-    int             offset;
-    int             size;
-    int             isize;
-    void*           ptr; // used for function addresses
-    ffi_method_t*   ffi;
-    au_core         af; // Au-specific internal members on type
-    struct _object  members_info;
-    struct _collective_abi  members;
-    struct _object  meta_info;
-    struct _collective_abi meta;
-    struct _shape*  shape;
-    u64             required_bits[2];
-    struct {
-        void* __none__;
-    } ft;
-} *Au_t;
+        push_mem(au_t, "context",       typeid(Au_t));
+        push_mem(au_t, "src",           typeid(Au_t));
+        push_mem(au_t, "user",          typeid(Au_t));
+        push_mem(au_t, "module",        typeid(i32));
+        push_mem(au_t, "ptr",           typeid(Au_t));
+        push_mem(au_t, "ident",         typeid(cstr));
+        push_mem(au_t, "index",         typeid(i32));
+        push_mem(au_t, "value",         typeid(ARef));
+        push_mem(au_t, "member_type",   typeid(u8));
+        push_mem(au_t, "operator_type", typeid(u8));
+        push_mem(au_t, "access_type",   typeid(u8));
+        push_mem(au_t, "traits",        typeid(u8));
+        push_mem(au_t, "global_count",  typeid(i32));
+        push_mem(au_t, "offset",        typeid(i32));
+        push_mem(au_t, "size",          typeid(i32));
+        push_mem(au_t, "isize",         typeid(i32));
+        push_mem(au_t, "ptr",           typeid(ARef));
+        push_mem(au_t, "ffi",           typeid(ARef));
+        push_mem(au_t, "af",            typeid(ARef));
+        
+        Au_t minfo = push_mem(au_t, "members_info", typeid(Au));
+        minfo->traits = AU_TRAIT_INLAY;
+        
+        push_mem(au_t, "members",       au_collective);
+        
+        Au_t metainfo = push_mem(au_t, "meta_info", typeid(Au));
+        metainfo->traits = AU_TRAIT_INLAY;
 
-*/
+        push_mem(au_t, "meta",          au_collective);
+        push_mem(au_t, "shape",         typeid(shape));
 
+        Au_t required_bits  = push_mem(au_t, "required_bits",  typeid(u64));
+        required_bits->size = 2;
+        Au_t ft             = Au_alloc_member(au_t);
+        ft->traits          = AU_TRAIT_STRUCT;
+        ft->member_type     = AU_MEMBER_TYPE;
+        push_mem(ft, "_none_", typeid(ARef));
+        push_mem(au_t, null, ft);
 
+        Au_t mtest = typeid(Au_t);
+        if (mtest->member_type == AU_MEMBER_TYPE) {
+            int test2 = 2;
+            test2    += 2;
+        }
     }
 
     array_qpush(&module->members, type);
@@ -643,8 +666,6 @@ Au_t Au_current_module() {
     return module;
 }
 
-// i am not sure if we 'need' a find by type; in language we never seem to search this way
-// its barely used in lookup2() in aether
 Au_t Au_scope_lookup(array a, string f) {
     cstr s = f->chars;
     for (int i = len(a) - 1; i >= 0; i--) {
@@ -2148,7 +2169,16 @@ Au formatter(Au_t type, handle ff, Au opt, symbol template, ...) {
         }
         if (cmd[0] == '%' && cmd[1] == 'o') {
             Au arg = va_arg(args, Au);
-            string   a = arg ? cast(string, arg) : string((symbol)"null");
+            string   a;
+            if (isa(arg) == null) {
+                if (!arg) {
+                    a = string("null");
+                } else {
+                    Au_t au = arg;
+                    a = string(au->ident);
+                }
+            } else
+                a = arg ? cast(string, arg) : string((symbol)"null");
             num    len = a->count;
             reserve(res, len);
             if (column_size < 0) {

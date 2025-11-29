@@ -150,12 +150,12 @@ typedef long double            *ref_f80;
     char*           ident; \
     i64             index; \
     object          value; \
-    int             global_count; \
     u8              member_type; \
     u8              operator_type; \
     u8              access_type; \
     u8              reserved; \
     u32             traits; \
+    int             global_count; \
     int             offset; \
     int             size; \
     int             isize; \

@@ -15,7 +15,7 @@ typedef struct _model*       model;
 typedef struct _emember*      emember;
 typedef struct _record*      record;
 typedef struct _enode*       enode;
-typedef struct _fn*          fn;
+typedef struct _function*    function;
 
 //#define model Au_t
 
@@ -106,12 +106,9 @@ declare_class(format_attr)
 // supported types are string, image, resource file
 // question is does this wait for the user on the system, or does it return when code is generated at all
 // the user should sign-off on code with an accept statement, true, or some keyword
-#define codegen_schema(X,Y,...) \
-    i_method(X,Y, public, array, generate_fn, fn, array) \
-    i_prop(X,Y, public, i32, pad)
-declare_class(codegen)
+forward(codegen)
 
-#define fn_schema(X,Y,...) \
+#define function_schema(X,Y,...) \
     i_prop(X,Y, public,     bool,                   is_cast) \
     i_prop(X,Y, public,     bool,                   is_ctr) \
     i_prop(X,Y, public,     bool,                   is_idx) \
@@ -141,7 +138,12 @@ declare_class(codegen)
     i_prop(X,Y, intern,     num,                    arg_count) \
     i_method  (X,Y, public, none, use) \
     i_override(X,Y, method, init)
-declare_class_2(fn, model)
+declare_class_2(function, model)
+
+#define codegen_schema(X,Y,...) \
+    i_method(X,Y, public, array, generate_fn, function, array) \
+    i_prop(X,Y, public, i32, pad)
+declare_class(codegen)
 
 
 #define clang_cc_schema(X,Y,...) \
@@ -282,7 +284,7 @@ declare_class_3(static_array, array, collective)
     i_prop    (X,Y, public,     bool,        with_debug) \
     i_prop    (X,Y, intern,     bool,        is_Au_import) \
     i_prop    (X,Y, public,     path,        current_include) \
-    i_prop    (X,Y, intern,     fn,          current_fn) \
+    i_prop    (X,Y, intern,     function,    current_fn) \
     i_prop    (X,Y, public,     bool,        in_macro) \
     i_prop    (X,Y, public,     bool,        in_ref) \
     i_prop    (X,Y, public,     bool,        is_library) \
@@ -330,7 +332,7 @@ declare_class_3(static_array, array, collective)
     i_method  (X,Y, public,     enode,       e_null,             model) \
     i_method  (X,Y, public,     enode,       e_default_value,    model, array) \
     i_method  (X,Y, public,     enode,       e_builder,          subprocedure) \
-    i_method  (X,Y, public,     none,        build_initializer,  fn) \
+    i_method  (X,Y, public,     none,        build_initializer,  function) \
     i_method  (X,Y, public,     enode,       e_element,          enode,      Au) \
     i_method  (X,Y, public,     none,        e_cmp_code,         enode,      comparison, enode, code, code) \
     i_method  (X,Y, public,     enode,       e_cmp,              enode, enode) \
@@ -375,7 +377,7 @@ declare_class_3(static_array, array, collective)
     i_method  (X,Y, public,     enode,       e_assign,             enode,      Au, OPType) \
     i_method  (X,Y, public,     enode,       e_eq,                 enode,      enode) \
     M(X,Y, i, method, public, enode, e_not_eq, enode, enode) \
-    i_method  (X,Y, public,     enode,       e_fn_call,            fn,         enode,    array) \
+    i_method  (X,Y, public,     enode,       e_fn_call,          function,   enode,    array) \
     i_method  (X,Y, public,     enode,       e_is,               enode,      Au) \
     i_method  (X,Y, public,     enode,       e_inherits,         enode,      Au) \
     i_method  (X,Y, public,     emember,     lookup2,            Au,          Au_t) \

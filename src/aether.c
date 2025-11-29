@@ -22,11 +22,11 @@ typedef LLVMMetadataRef LLVMScope;
     m; \
 })
 
-#define fn_lookup(M, N) ({ \
+#define function_lookup(M, N) ({ \
     push(e, M); \
     emember m = lookup2(e, string(N), null); \
     pop(e); \
-    m ? (fn)m->mdl : (fn)null; \
+    m ? (function)m->mdl : (function)null; \
 }) \
 
 #define emem(M, META, N) emember(mod, e, name, string(N), mdl, M, meta, META)
@@ -176,7 +176,7 @@ emember aether_register_model(aether e, model mdl, string name, bool use_now) {
     if (mdl->mem)
         return mdl->mem;
 
-    bool is_func  = instanceof(mdl, typeid(fn))    != null;
+    bool is_func  = instanceof(mdl, typeid(function)) != null;
     bool is_macro = instanceof(mdl, typeid(macro)) != null;
     // the pointer for classes is created after, and used when we need it
     // accessible on model by ->ptr
@@ -410,7 +410,7 @@ void model_init(model mdl) {
     mdl->imported_from = (e && e->current_include) ? e->current_include : null;
     eargs args = instanceof(mdl, typeid(eargs));
     statements st = instanceof(mdl, typeid(statements));
-    fn         f = instanceof(mdl, typeid(fn));
+    function   f = instanceof(mdl, typeid(function));
 
     if (isa(mdl) == typeid(macro))
         return;
@@ -466,8 +466,8 @@ void model_init(model mdl) {
         } else if (type == typeid(floats)) {
             mdl->type = LLVMPointerType(LLVMFloatType(), 0);
         } else if (type == typeid(func)) {
-            LLVMTypeRef fn_type = LLVMFunctionType(LLVMVoidType(), NULL, 0, 0);
-            mdl->type = LLVMPointerType(fn_type, 0);
+            LLVMTypeRef function_type = LLVMFunctionType(LLVMVoidType(), NULL, 0, 0);
+            mdl->type = LLVMPointerType(function_type, 0);
         } else if (type == typeid(hook)) {
             model e_A = emodel("Au");
             LLVMTypeRef param_types[] = { e_A->type };
@@ -547,14 +547,14 @@ void model_init(model mdl) {
         // we still need static array (use of integral shape), aliases
         if (mdl && mdl->src) {
             model src = mdl->src;
-            if (isa(src) == typeid(fn))
+            if (isa(src) == typeid(function))
                 finalize(src->mem);
         }
 
-        // can be a class, structure, fn
+        // can be a class, structure, function
         if (type == typeid(model) && mdl->src && mdl->src->type) {
             model src = mdl->src;
-            if (isa(src) == typeid(fn))
+            if (isa(src) == typeid(function))
                 finalize(src->mem);
             /// this is a reference, so we create type and debug based on this
             u64 ptr_sz = LLVMPointerSize(e->target_data);
@@ -788,8 +788,8 @@ emember aether_e_var(aether e, model mdl, string name) {
 }
 
 void code_init(code c) {
-    fn fn = context_model(c->mod, typeid(fn));
-    c->block = LLVMAppendBasicBlock(fn->value, c->label);
+    function function = context_model(c->mod, typeid(function));
+    c->block = LLVMAppendBasicBlock(function->value, c->label);
 }
 
 void code_seek_end(code c) {
@@ -824,7 +824,7 @@ void aether_e_inc(aether e, enode v, num amount) {
 }
 
 /// needs to import classes, structs, methods within the classes
-/// there is no such thing as a global spec for Au_t fns
+/// there is no such thing as a global spec for Au_t functions
 /// we simply can have lots of static methods on Au, though.
 
 map member_map(aether e, cstr field, ...) {
@@ -849,7 +849,7 @@ void aether_e_branch(aether e, code c) {
     LLVMBuildBr(e->builder, c->block);
 }
 
-void aether_build_initializer(aether e, fn m) { }
+void aether_build_initializer(aether e, function m) { }
 
 bool is_module_level(model mdl) {
     aether e = mdl->mod;
@@ -861,11 +861,11 @@ bool is_module_level(model mdl) {
 }
 
 static i32 get_aflags(emember f, i32 extra) {
-    fn func = instanceof(f->mdl, typeid(fn));
+    function func = instanceof(f->mdl, typeid(function));
     return (extra | (func && func->is_override)) ? AU_MEMBER_OVERRIDE : 0;
 }
 
-void aether_finalize_init(aether e, fn f) {
+void aether_finalize_init(aether e, function f) {
     // register module constructors as global initializers ONLY for delegate modules
     // aether creates a 'main' with argument parsing for its main modules
     emember module_init_mem = null;
@@ -923,7 +923,7 @@ void aether_finalize_init(aether e, fn f) {
         pairs (mdl->members, ii) {
             emember   f      = ii->value;
             map       member = map(hsize, 8, assorted, true);
-            fn        func   = instanceof(f->mdl, typeid(fn));
+            function  func   = instanceof(f->mdl, typeid(function));
             
             if (f->access == interface_intern) continue;
             // structure _meta_t
@@ -1044,7 +1044,7 @@ void aether_finalize_init(aether e, fn f) {
         pairs (mdl->members, ii) {
             emember   f      = ii->value;
             map       member = map(hsize, 8, assorted, true);
-            fn        func   = instanceof(f->mdl, typeid(fn));
+            function  func   = instanceof(f->mdl, typeid(function));
             if (f->access != interface_intern || func)
                 continue;
             isize += f->mdl->size_bits / 8;
@@ -1087,7 +1087,7 @@ void aether_finalize_init(aether e, fn f) {
         }
 
         // push_type(type_ref);
-        fn fn_push_type = fn_lookup(_A, "push_type");
+        function fn_push_type = function_lookup(_A, "push_type");
         e_fn_call(e, fn_push_type, null, a(target)); // todo: t-method, f-method, and s-method must merge.  this is plainly stupid
 
         // vector type info if implemented
@@ -1155,9 +1155,9 @@ void aether_finalize_init(aether e, fn f) {
             set(args->members, argc->name, argc);
             set(args->members, argv->name, argv);
 
-            fn main_fn = fn(
+            function main_fn = function(
                 mod,            e,
-                function_type,  AU_MEMBER_SMETHOD,
+                function_type,  AU_TRAIT_SMETHOD,
                 exported,       true,
                 rtype,          emodel("i32"),
                 args,           args);
@@ -1166,7 +1166,7 @@ void aether_finalize_init(aether e, fn f) {
 
             // from main_fn: call module initialize (initializes module members)
             e_fn_call(e, module_init_mem->mdl, null, null);
-            fn Au_engage = fn_lookup(_A, "engage");
+            function Au_engage = function_lookup(_A, "engage");
             e_fn_call(e, Au_engage, null, a(argv));
 
             // create main class described by user
@@ -1232,12 +1232,12 @@ if (eq(fn->name, "main")) {
     //pop(e);
 }
 
-void fn_init(fn fn) {
+void function_init(function fn) {
     //verify(fn->record || !eq(fn->name, "main"), "to implement main, implement fn module-name[]");
 }
 
 // aether will only allow one of these per module
-static LLVMValueRef set_module_init(LLVMModuleRef module, fn f) {
+static LLVMValueRef set_module_init(LLVMModuleRef module, function f) {
     // register global constructor
     LLVMTypeRef ctor_type = LLVMStructTypeInContext(LLVMGetModuleContext(module),
         (LLVMTypeRef[]){LLVMInt32Type(), LLVMPointerType(f->type, 0), LLVMPointerType(LLVMInt8Type(), 0)}, 3, 0);
@@ -1370,7 +1370,7 @@ enode enode_access(enode mem, string name) {
     emember schema = get(mem->mdl->members, name);
     verify(schema, "failed to find member %o for model %o", name, mdl);
 
-    fn f = instanceof(schema->mdl, typeid(fn));
+    function f = instanceof(schema->mdl, typeid(function));
     if (f) return enode(mod, e, name, name, mdl, schema->mdl, target, mem);
     
     if (schema->is_const) return schema;
@@ -1408,14 +1408,14 @@ void emember_init(emember mem) {
     if (!mem->name) mem->name = string("");
     mem->name = hold(string(mem->name->chars));
 
-    record rec;
-    fn     in_f;
-    context(e, &rec, &in_f, typeid(fn));
+    record   rec;
+    function in_f;
+    context(e, &rec, &in_f, typeid(function));
     model  mdl  = mem->mdl;
 
     // filter models that emit schema
     // we must create these first, because they are used in finalization of instance structs
-    if (mdl && mem->is_type && !mdl->is_system && !rec && !in_f && (isa(mdl) != typeid(fn)) &&
+    if (mdl && mem->is_type && !mdl->is_system && !rec && !in_f && (isa(mdl) != typeid(function)) &&
             (!e->current_include || e->is_Au_import)) {
         verify(mem->name && len(mem->name), "member name required to register schema");
         string  f_name = f(string, "_%o_f", mem->name);
@@ -1775,7 +1775,7 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
         }
         
         // primitive-based conversion goes here
-        fn fn = instanceof(fmem->mdl, typeid(fn));
+        function fn = instanceof(fmem->mdl, typeid(function));
         if (fn->function_type & AU_MEMBER_CONSTRUCT) {
             // ctr: call before init
             // this also means the mdl is not a primitive
@@ -1800,8 +1800,8 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
     Class        cmdl         = mdl->src ? instanceof(mdl->src, typeid(Class)) : null;
     structure    smdl         = instanceof(mdl, typeid(structure));
     Class        Au_type      = emodel("Au");
-    fn           f_alloc      = find_member((model)Au_type, string("alloc_new"), null)->mdl;
-    fn           f_initialize = find_member((model)Au_type, string("initialize"), null)->mdl;
+    function     f_alloc      = find_member((model)Au_type, string("alloc_new"), null)->mdl;
+    function     f_initialize = find_member((model)Au_type, string("initialize"), null)->mdl;
     enode        res;
     Au_t         mdl_src      = isa(mdl->src);
 
@@ -1843,7 +1843,7 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
             pairs(imap, i) {
                 emember m = find_member(mdl, i->key, null);
                 verify(m, "prop %o not found in %o", i->key, mdl);
-                verify(isa(m) != typeid(fn), "%o (fn) cannot be initialized", i->key);
+                verify(isa(m) != typeid(function), "%o (function) cannot be initialized", i->key);
                 enode   i_value = e_operand(e, i->value, m->mdl, m->meta);
                 emember i_prop  = access(res, i->key);
                 e_assign(e, i_prop, i_value, OPType__assign);
@@ -1895,10 +1895,10 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
                 }     
                 e_fn_call(e, f_initialize, null, a(res));
                 if (const_array) {
-                    fn f_push_vdata = find_member( mdl, string("push_vdata"), null)->mdl;
+                    function f_push_vdata = find_member( mdl, string("push_vdata"), null)->mdl;
                     e_fn_call(e, f_push_vdata, res, a(const_array, n));
                 } else {
-                    fn f_push = find_member(mdl, string("push"), null)->mdl;
+                    function f_push = find_member(mdl, string("push"), null)->mdl;
                     for (int i = 0; i < ln; i++) {
                         Au      aa = a->origin[i];
                         enode   n = e_operand(e, aa, mdl->src, null);
@@ -2021,7 +2021,7 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
                     //print("%o -> %o", k, i->value ? (cstr)isa(i->value)->ident : "null");
                     emember m = find_member(mdl, i->key, null);
                     verify(m, "prop %o not found in %o", mdl, i->key);
-                    verify(isa(m) != typeid(fn), "%o (fn) cannot be initialized", i->key);
+                    verify(isa(m) != typeid(function), "%o (function) cannot be initialized", i->key);
                     enode i_value = e_operand(e, i->value, m->mdl, m->meta)  ; // for handle with a value of 0, it must create a e_null
                     emember i_prop  = resolve((emember)res, i->key) ;
                     e_assign(e, i_prop, i_value, OPType__assign);
@@ -2693,7 +2693,7 @@ none aether_context(aether e, ARef record, ARef top_model, Au_t filter) {
             if (t == typeid(eargs))
                 *(model*)top_model = mdl;
 
-            if (t == typeid(fn))
+            if (t == typeid(function))
                 *(model*)top_model = mdl;
 
             if (mdl->is_global && mdl->open)
@@ -2738,9 +2738,9 @@ model aether_return_type(aether e, ARef meta) {
     if (meta) *meta = null;
     for (int i = len(e->lex) - 1; i >= 0; i--) {
         model ctx = e->lex->origin[i];
-        if (isa(ctx) == typeid(fn) && ((fn)ctx)->rtype) {
-            if (meta) *meta = (ARef)((fn)ctx)->rmeta;
-            return ((fn)ctx)->rtype;
+        if (isa(ctx) == typeid(function) && ((function)ctx)->rtype) {
+            if (meta) *meta = (ARef)((function)ctx)->rmeta;
+            return ((function)ctx)->rtype;
         }
     }
     return null;
@@ -2849,15 +2849,15 @@ emember aether_lookup2(aether e, Au name, Au_t mdl_type_filter) {
 
 model aether_push(aether e, model mdl) {
     verify(isa(mdl) != typeid(Class), "must push the class->ptr");
-    record rec_prev;
-    fn     fn_prev;
-    context(e, &rec_prev, &fn_prev, typeid(fn));
+    record   rec_prev;
+    function fn_prev;
+    context(e, &rec_prev, &fn_prev, typeid(function));
     if (fn_prev) {
         fn_prev->last_dbg = LLVMGetCurrentDebugLocation2(e->builder);
     }
 
     verify(mdl, "no context given");
-    fn f = instanceof(mdl, typeid(fn));
+    function f = instanceof(mdl, typeid(function));
     if (f)
         finalize(f->mem);
 
@@ -2926,7 +2926,7 @@ none emember_release(emember mem) {
 
     // Free block: Add logic to free the memory
     LLVMPositionBuilderAtEnd(e->builder, free_block);
-    fn f_dealloc = find_member(mem->mdl, string("dealloc"), null)->mdl;
+    function f_dealloc = find_member(mem->mdl, string("dealloc"), null)->mdl;
     if (f_dealloc) {
         e_fn_call(e, f_dealloc, mem, a());
     }
@@ -2946,8 +2946,8 @@ model aether_pop(aether e) {
         }
     }
     record prev_rec_ctx;
-    fn     prev_fn;
-    context(e, &prev_rec_ctx, &prev_fn, typeid(fn));
+    function prev_fn;
+    context(e, &prev_rec_ctx, &prev_fn, typeid(function));
 
     if (prev_fn && !e->no_build)
         prev_fn->last_dbg = LLVMGetCurrentDebugLocation2(e->builder);
@@ -2955,9 +2955,9 @@ model aether_pop(aether e) {
     pop(e->lex);
     e->top = last_element(e->lex);
 
-    record rec_ctx;
-    fn     fn_ctx;
-    context(e, &rec_ctx, &fn_ctx, typeid(fn));
+    record   rec_ctx;
+    function fn_ctx;
+    context(e, &rec_ctx, &fn_ctx, typeid(function));
     if (fn_ctx && (fn_ctx != prev_fn) && !e->no_build) {
         LLVMPositionBuilderAtEnd(e->builder, fn_ctx->entry);
         LLVMSetCurrentDebugLocation2(e->builder, fn_ctx->last_dbg);
@@ -2980,7 +2980,7 @@ emember aether_initializer(aether e) {
     verify(e, "model given must be module (aether-based)");
 
     e->is_global = true;
-    fn fn_init = fn(
+    function fn_init = function(
         mod,      e,
         is_module_init, true,
         args,     eargs(mod, e));
@@ -3199,18 +3199,11 @@ static void register_vbasics(aether e) {
     set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_NONE")),        _i32(AU_MEMBER_NONE));
     set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_CONSTRUCT")),   _i32(AU_MEMBER_CONSTRUCT));
     set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_PROP")),        _i32(AU_MEMBER_PROP));
-    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_IMETHOD")),     _i32(AU_MEMBER_IMETHOD));
-    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_SMETHOD")),     _i32(AU_MEMBER_SMETHOD));
     set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_OPERATOR")),    _i32(AU_MEMBER_OPERATOR));
     set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_CAST")),        _i32(AU_MEMBER_CAST));
     set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_INDEX")),       _i32(AU_MEMBER_INDEX));
     set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_ENUMV")),       _i32(AU_MEMBER_ENUMV));
     set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_OVERRIDE")),    _i32(AU_MEMBER_OVERRIDE));
-    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_VPROP")),       _i32(AU_MEMBER_VPROP));
-    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_IS_ATTR")),     _i32(AU_MEMBER_IS_ATTR));
-    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_OPAQUE")),      _i32(AU_MEMBER_OPAQUE));
-    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_IFINAL")),      _i32(AU_MEMBER_IFINAL));
-    set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_TMETHOD")),     _i32(AU_MEMBER_TMETHOD));
     set_value((emember)get(mdl_AU_MEMBER->members, string("AU_MEMBER_FORMATTER")),   _i32(AU_MEMBER_FORMATTER));
     model mdl_AU_TRAIT = enumeration(mod, e,
         members, m(
@@ -3282,10 +3275,10 @@ static void register_basics(aether e) {
         "a1", earg(args, emodel("Au"), null, "a1"),
         "a2", earg(args, emodel("Au"), null, "a2"));
     
-    fn f_func           = fn(mod, e, rtype, emodel("none"), args, args0);
-    fn f_hook           = fn(mod, e, rtype, emodel("Au"), args, args1);
-    fn f_callback       = fn(mod, e, rtype, emodel("Au"), args, args2);
-    fn f_callback_extra = fn(mod, e, rtype, emodel("Au"), args, args3);
+    function f_func           = function(mod, e, rtype, emodel("none"), args, args0);
+    function f_hook           = function(mod, e, rtype, emodel("Au"), args, args1);
+    function f_callback       = function(mod, e, rtype, emodel("Au"), args, args2);
+    function f_callback_extra = function(mod, e, rtype, emodel("Au"), args, args3);
 
     register_model(e, f_func,           string("_func"),            true);
     register_model(e, f_hook,           string("_hook"),            true);
@@ -3447,7 +3440,7 @@ void create_schema(model mdl, string name) {
         test2    += 2;
     }
     aether e = mdl->mod;
-    fn  f = instanceof(mdl, typeid(fn));
+    function  f = instanceof(mdl, typeid(function));
     if ((e->current_include && !e->is_Au_import) || mdl->schema || f || mdl->is_system || mdl == e)
         return;
 
@@ -3490,7 +3483,7 @@ void create_schema(model mdl, string name) {
         if (!cl->members) continue;
         pairs(cl->members, a) {
             emember m = a->value;
-            if (isa(m->mdl) != typeid(fn))
+            if (isa(m->mdl) != typeid(function))
                 continue;
             model ptr = pointer(m->mdl);
             emember f = emember(mod, e, name, m->name, mdl, ptr, context, mdl_type);
@@ -3752,7 +3745,7 @@ void aether_Au_import(aether e, path lib, string name) {
                     emember arg = earg(args, arg_mdl, null, "");
 
                     set(args->members, string(""), arg);
-                    mem_mdl = fn(
+                    mem_mdl = function(
                         mod,           e,
                         is_ctr,        true,
                         extern_name,   f(string, "%s_%o", atype->ident, n),
@@ -3763,7 +3756,7 @@ void aether_Au_import(aether e, path lib, string name) {
                 }
                 else if (amem->member_type == AU_MEMBER_CAST) {
                     verify(mtype, "cast cannot be void");
-                    mem_mdl = fn(
+                    mem_mdl = function(
                         mod,           e,
                         is_cast,       true,
                         extern_name,   f(string, "%s_%o", atype->ident, n),
@@ -3777,7 +3770,7 @@ void aether_Au_import(aether e, path lib, string name) {
                     verify(index_mdl, "index requires argument");
                     emember arg = earg(args, index_mdl, null, "");
                     set(args->members, string(""), arg);
-                    mem_mdl    = fn(
+                    mem_mdl    = function(
                         mod,           e,
                         extern_name,   f(string, "%s_%o", atype->ident, n),
                         is_cast,       true,
@@ -3790,7 +3783,7 @@ void aether_Au_import(aether e, path lib, string name) {
                     model  arg_mdl = ((Au_t)*amem->args.origin)->user;
                     emember arg     = earg(args, arg_mdl, null, "operand");
                     set(args->members, string("operand"), arg);
-                    mem_mdl        = fn(
+                    mem_mdl        = function(
                         mod,           e,
                         extern_name,   f(string, "%s_%o", atype->ident, n),
                         is_oper,       amem->operator_type,
@@ -3799,13 +3792,10 @@ void aether_Au_import(aether e, path lib, string name) {
                         instance,      mdl,
                         args,          arg_mdl ? args : null);
                 }
-                else if ((amem->member_type == AU_MEMBER_IMETHOD) ||
-                         (amem->member_type == AU_MEMBER_SMETHOD) ||
-                         (amem->member_type == AU_MEMBER_IFINAL) ||
-                         (amem->member_type == AU_MEMBER_TMETHOD)) {
-                    bool  is_inst = (amem->member_type == AU_MEMBER_IMETHOD);
-                    bool  is_f    = (amem->member_type == AU_MEMBER_IFINAL);
-                    bool  is_t    = (amem->member_type == AU_MEMBER_TMETHOD);
+                else if (amem->member_type == AU_MEMBER_FUNC) {
+                    bool  is_inst = amem->is_imethod;
+                    bool  is_f    = amem->is_ifinal;
+                    bool  is_t    = amem->is_tmethod;
                     eargs args    = eargs(mod, e);
                     // Au-type includes the target in args, but we do not
                     for (int a = (is_inst || is_f) ? 1 : 0; a < amem->args.count; a++) {
@@ -3814,19 +3804,18 @@ void aether_Au_import(aether e, path lib, string name) {
                         emember arg     = earg(args, arg_mdl, null, arg_mdl->mem->name->chars);
                         set(args->members, arg_mdl->mem->name, arg);
                     }
-                    mem_mdl = fn(
+                    mem_mdl = function(
                         mod,           e,
                         extern_name,   (is_f || is_t) ? n : f(string, "%s_%o", atype->ident, n),
                         is_override,   (amem->member_type & AU_MEMBER_OVERRIDE) != 0,
                         rtype,         translate_rtype(mtype->user),
-                        function_type, is_f ? AU_MEMBER_IFINAL : is_inst ? AU_MEMBER_IMETHOD : AU_MEMBER_SMETHOD,
+                        function_type, is_f ? AU_TRAIT_IFINAL : is_inst ? AU_TRAIT_IMETHOD : AU_TRAIT_SMETHOD,
                         instance,      (is_inst || is_f) ? mdl : null,
                         args,          args);
                 }
-                else if ((amem->member_type == AU_MEMBER_PROP) ||
-                         (amem->member_type == AU_MEMBER_VPROP)) {
+                else if (amem->member_type == AU_MEMBER_PROP) {
                     mem_mdl = mtype->user;
-                    if (amem->member_type == AU_MEMBER_VPROP) {
+                    if (amem->is_vprop) {
                         mem_mdl = pointer(mem_mdl);
                     }
                 }
@@ -4139,7 +4128,7 @@ emember model_castable(model fr, model to) {
     /// check cast methods on from
     pairs (fr->members, i) {
         emember mem = i->value;
-        fn f = instanceof(mem->mdl, typeid(fn));
+        function f = instanceof(mem->mdl, typeid(function));
         if (!f || !(f->function_type & AU_MEMBER_CAST))
             continue;
         if (f->rtype == to)
@@ -4159,7 +4148,7 @@ emember model_constructable(model fr, model to) {
         return (emember)true;
     pairs (to->members, i) {
         emember mem = i->value;
-        fn fn = instanceof(mem->mdl, typeid(fn));
+        function fn = instanceof(mem->mdl, typeid(function));
         if (!fn || !((fn->function_type & AU_MEMBER_CONSTRUCT) != 0))
             continue;
         emember first = null;
@@ -4291,7 +4280,7 @@ array model_field_list(model mdl, model mdl_filter, bool filter_in) {
         pairs (cl->members, i) {
             emember m = i->value;
             if (m->access == interface_intern)  continue;
-            if (instanceof(m->mdl, typeid(fn))) continue;
+            if (instanceof(m->mdl, typeid(function))) continue;
             push(fields, m);
         }
     }
@@ -4337,7 +4326,7 @@ void aether_push_current(aether a) {
 emember aether_compatible(aether e, record r, string n, AFlag f, array args) {
     pairs (r->members, i) {
         emember mem = i->value;
-        fn fn = instanceof(mem->mdl, typeid(fn));
+        function fn = instanceof(mem->mdl, typeid(function));
         /// must be function with optional name check
         if (!fn || (((f & fn->function_type) == f) && (n && !eq(n, fn->mem->name->chars))))
             continue;
@@ -4472,9 +4461,9 @@ enode aether_e_cmp(aether e, enode L, enode R) {
     e->is_const_op = false;
     if (e->no_build) return e_noop(e, emodel("i32"));
 
-    record rec_ctx;
-    fn     mdl_ctx;
-    context(e, &rec_ctx, &mdl_ctx, typeid(fn));
+    record   rec_ctx;
+    function mdl_ctx;
+    context(e, &rec_ctx, &mdl_ctx, typeid(function));
     verify(mdl_ctx, "non-const compare must be in a function");
 
     if (Lc || Rc) {
@@ -4483,7 +4472,7 @@ enode aether_e_cmp(aether e, enode L, enode R) {
             L = R;
             R = t;
         }
-        fn eq = find_member(L->mdl, string("compare"), typeid(fn));
+        function eq = find_member(L->mdl, string("compare"), typeid(function));
         if (eq) {
             verify(eq->rtype == emodel("i32"), "compare function must return i32, found %o", eq->rtype);
             // check if R is compatible with argument
@@ -4520,7 +4509,7 @@ enode aether_e_cmp(aether e, enode L, enode R) {
             emember mem = i->value;
 
             // get the struct member at [ mem->index ]
-            if (instanceof(mem->mdl, typeid(fn)))
+            if (instanceof(mem->mdl, typeid(function)))
                 continue;
 
             LLVMValueRef lv  = LLVMBuildExtractValue(e->builder, L->value, mem->index, "lv");
@@ -4662,7 +4651,7 @@ enode aether_e_eq(aether e, enode L, enode R) {
             L = R;
             R = t;
         }
-        fn eq = find_member(L->mdl, string("eq"), typeid(fn));
+        function eq = find_member(L->mdl, string("eq"), typeid(function));
         if (eq) {
             // check if R is compatible with argument
             // if users want to allow different data types, we need to make the argument more generic
@@ -4679,7 +4668,7 @@ enode aether_e_eq(aether e, enode L, enode R) {
             emember mem = i->value;
 
             // get the struct member at [ mem->index ]
-            if (instanceof(mem->mdl, typeid(fn)))
+            if (instanceof(mem->mdl, typeid(function)))
                 continue;
 
             LLVMValueRef lv  = LLVMBuildExtractValue(e->builder, L->value, mem->index, "lv");
@@ -4726,8 +4715,8 @@ enode aether_e_not_eq(aether e, enode L, enode R) {
 
 enode aether_e_fn_return(aether e, Au o) {
     record rec_ctx;
-    fn     f;
-    context(e, &rec_ctx, &f, typeid(fn));
+    function f;
+    context(e, &rec_ctx, &f, typeid(function));
 
     verify (f, "function not found in context");
 
@@ -4762,7 +4751,7 @@ model formatter_type(aether e, cstr input) {
     return null;
 }
 
-enode aether_e_fn_call(aether e, fn fn, enode target, array args) { // we could support an array or map arg here, for args
+enode aether_e_fn_call(aether e, function fn, enode target, array args) { // we could support an array or map arg here, for args
     e->is_const_op = false; // we set this when we do something complex
     if (e->no_build) return e_noop(e, fn->rtype);
 
@@ -4864,14 +4853,14 @@ enode aether_e_op(aether e, OPType optype, string op_name, Au L, Au R) {
             emember Lt = null;
             pairs(rec->members, i) {
                 emember mem = i->value;
-                fn f = instanceof(mem->mdl, typeid(fn));
+                function f = instanceof(mem->mdl, typeid(function));
                 if (f && f->is_oper == optype) {
                     Lt = mem;
                     break;
                 }
             }
             if  (Lt) {
-                fn f = Lt->mdl;
+                function f = Lt->mdl;
                 verify(len(f->args->members) == 1,
                     "expected 1 argument for operator method");
                 /// convert argument and call method
@@ -5107,7 +5096,7 @@ static void record_finalize(record rec) {
             emember mem = i->value;
             verify( mem->name && mem->name->chars,  "no name on emember: %p (type: %o)", mem, r);
 
-            if (instanceof(mem->mdl, typeid(fn)) || ((r != rec->ptr && r != rec) && mem->is_hidden))
+            if (instanceof(mem->mdl, typeid(function)) || ((r != rec->ptr && r != rec) && mem->is_hidden))
                 continue;
 
             if (!mem->mdl->is_ref)
@@ -5153,7 +5142,7 @@ static void record_finalize(record rec) {
         for (int iter = 0; iter < 2; iter++)
         pairs(r->members, i) {
             emember mem = i->value;
-            if (instanceof(mem->mdl, typeid(fn))) // fns do not occupy membership on the instance
+            if (instanceof(mem->mdl, typeid(function))) // fns do not occupy membership on the instance
                 continue;
             if (iter == 0 && mem->access <  interface_public) continue;
             if (iter == 1 && mem->access != interface_intern) continue;
@@ -5208,7 +5197,7 @@ static void record_finalize(record rec) {
 }
 
 
-static void fn_finalize(fn fn) {
+static void function_finalize(function fn) {
     aether e = fn->mod;
 
     if (fn->finalized) return;
@@ -5279,7 +5268,7 @@ static void fn_finalize(fn fn) {
     if (!fn->imported_from) use(fn);
 }
 
-void fn_use(fn fn) {
+void function_use(function fn) {
     aether e = fn->mod;
     if (fn->value || fn->scope) return;
 
@@ -5438,7 +5427,7 @@ void emember_finalize(emember mem) {
         return;
 
     record      rec   = instanceof(mdl, typeid(record));
-    fn          f     = instanceof(mdl, typeid(fn));
+    function    f     = instanceof(mdl, typeid(function));
     enumeration en    = instanceof(mdl, typeid(enumeration));
     macro       mac   = instanceof(mdl, typeid(macro));
     if         (mac) return;
@@ -5450,17 +5439,17 @@ void emember_finalize(emember mem) {
         index = len(e->finalizing) - 1;
         if      (en)  enumeration_finalize(mdl);
         else if (rec) record_finalize(mdl);
-        else if (f)   fn_finalize(mdl);
+        else if (f)   function_finalize(mdl);
     }
 
     model ctx = mem->context ? mem->context : top(e);
     enumeration ctx_en = aether_context_model(e, typeid(enumeration));
-    fn    is_fn    = instanceof(mdl, typeid(fn));
+    function    is_fn    = instanceof(mdl, typeid(function));
     if (ctx_en || is_fn || (isa(mdl)->module != typeid(aether)->module)) return;
 
     Au_t mdl_type = isa(mdl);
     
-    fn       ctx_fn  = aether_context_model(e, typeid(fn));
+    function ctx_fn  = aether_context_model(e, typeid(function));
     bool     is_init = false;
     record   ctx_rec = aether_context_model(e, typeid(Class)); // todo: convert to record
     if (!ctx_rec) ctx_rec = aether_context_model(e, typeid(structure));
@@ -5579,7 +5568,7 @@ define_class (clang_cc,     Au)
 define_class (statements,   model)
 define_class (catcher,      model)
 define_class (eargs,        model)
-define_class (fn,           model)
+define_class (function,     model)
 define_class (Namespace,    model)
 define_class (record,       Namespace)
 define_class (aether,       model)
