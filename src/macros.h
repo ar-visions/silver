@@ -5,11 +5,10 @@
 #define   enum_value_COUNT(E, T, N, VAL)            1,
 #define   enum_value_METHOD(E, T, N, VAL)
 #define   enum_value_IMPL(E, T, N, VAL) { \
-        Au_t m = Au_alloc_member(&E##_i.type); \
-        m->ident    = #N; \
+        static T static_##N = VAL; \
+        Au_t m = Au_register_enum_value(&E##_i.type, #N, &static_##N); \
         m->offset   = (i32)(E##_##N);\
         m->type     = (Au_t)&T ## _i.type; \
-        static T static_##N = VAL; \
         m->value    = &static_##N;\
         m->member_type = AU_MEMBER_ENUMV; \
     }
@@ -19,16 +18,13 @@
 #define   enum_method_DECL(E, T, R, N, ...)
 #define   enum_method_COUNT(E, T, R, N, ...)
 #define   enum_method_IMPL(E, T, R, N, ...) { \
-    Au_t m = Au_alloc_member(&E##_i.type); \
+    Au_t m = Au_register(&E##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_SMETHOD); \
     E##_i.type . ft.N = & E## _ ## N; \
-    m->ident   = #N; \
     set_meta_array(m, emit_types(__VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
     m->offset  = offsetof(E##_f, N); \
     m->value   = (void*)& E##_##N; \
-    m->index   = offsetof(__typeof__(E##_i.type.ft), N) / sizeof(void*); \
-    m->member_type = AU_MEMBER_FUNC; \
-    m->traits |= AU_TRAIT_SMETHOD; \
+    m->index   = offsetof(__typeof__(E##_i.type.ft), N) / sizeof(void*);
 
 #define   enum_method_METHOD(E, T, R, N, ...)    R (*N)(E value __VA_OPT__(,) __VA_ARGS__);
 #define   enum_method(E,T,Y,R,N,...)            enum_method_##Y(E,T, R,N __VA_OPT__(,) __VA_ARGS__)
@@ -39,25 +35,22 @@
 #define   enum_value_v_COUNT(E, T, N, VAL)            1,
 #define   enum_value_v_METHOD(E, T, N, VAL)
 #define   enum_value_v_IMPL(E, T, N, VAL) { \
-    Au_t m = Au_alloc_member(&E##_i.type); \
-    m->ident    = #N; \
+    Au_t m = Au_register_enum_value(&E##_i.type, #N, &static_##N); \
+    static T static_##N = VAL; \
     m->offset   = (i64)E##_##N;\
     m->type     = (Au_t)&T ## _i.type; \
-    static T static_##N = VAL; \
     m->value    = &static_##N;\
-    m->member_type = AU_MEMBER_ENUMV; \
 }
 
 #define   enum_value_vargs_DECL(E, T, N, VAL,...)             static const E E##_##N = VAL;
 #define   enum_value_vargs_COUNT(E, T, N, VAL,...)            1,
 #define   enum_value_vargs_METHOD(E, T, N, VAL,...)
 #define   enum_value_vargs_IMPL(E, T, N, VAL,...) { \
-    Au_t m = Au_alloc_member(&E##_i.type); \
-    m->ident    = #N; \
+    static T static_##N = VAL; \
+    Au_t m = Au_register_enum_value(&E##_i.type, #N, &static_##N); \
     m->offset   = (i64)E##_##N;\
     m->type     = (Au_t)&T ## _i.type; \
     m->member_type = AU_MEMBER_ENUMV; \
-    static T static_##N = VAL; \
     m->value    = &static_##N;\
     set_meta_array(m, emit_types(__VA_ARGS__)); \
 }
@@ -312,15 +305,13 @@
 #define   i_ctr_public_GENERICS(X, ARG) ARG: X##_i.type.ft.with_##ARG,
 
 #define   i_ctr_public_INIT(X, ARG) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
+    Au_t m = Au_register(&X##_i.type, stringify(with_##ARG), AU_MEMBER_CONSTRUCT, 0); \
     X##_i.type.ft.with_##ARG = & X##_with_##ARG; \
-    m->ident       = stringify(with_##ARG); \
     set_meta_array(m, emit_types(ARG)); \
     m->type        = (Au_t)&ARG##_i.type; \
     /*m->offset      = offsetof(X##_f.ft, with_##ARG);*/ \
     m->value       = (void*)& X##_with_##ARG; \
     m->index   = offsetof(__typeof__(X##_i.type.ft), with_##ARG) / sizeof(void*); \
-    m->member_type = AU_MEMBER_CONSTRUCT; \
 }
 
 #define   i_ctr_public_PROTO(X, ARG)
@@ -386,8 +377,7 @@
 
 
 #define   i_prop_public_INIT(X, R, N) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    m->ident       = #N; \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, 0); \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
     m->member_type = AU_MEMBER_PROP; \
@@ -410,13 +400,10 @@
 #define   i_prop_required_DECL_EXTERN(X, R, N)  i_prop_public_DECL(X, R, N)
 #define   i_prop_required_GENERICS(X, R, N)
 #define   i_prop_required_INIT(X, R, N) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    m->ident       = #N; \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, AU_TRAIT_REQUIRED); \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
-    m->member_type = AU_MEMBER_PROP; \
     m->index       = offsetof(struct X##_fields, N); \
-    m->traits |= AU_TRAIT_REQUIRED; \
 };
 
 #define   i_prop_required_PROTO(X, R, N)  
@@ -463,11 +450,9 @@
 #define   i_prop_public_DECL_EXTERN_field(X, R, N, M2)  i_prop_public_DECL(X, R, N)
 #define   i_prop_public_GENERICS_field(X, R, N, M2)
 #define   i_prop_public_INIT_field(X, R, N, M2) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    m->ident       = #M2; \
+    Au_t m = Au_register(&X##_i.type, #M2, AU_MEMBER_PROP, 0); \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
-    m->member_type = AU_MEMBER_PROP; \
     m->id          = offsetof(struct X##_fields, N);    \
 }
 
@@ -485,13 +470,10 @@
 #define   i_prop_required_DECL_EXTERN_field(X, R, N, M2)    i_prop_public_DECL(X, R, N)
 #define   i_prop_required_GENERICS_field(X, R, N, M2)
 #define   i_prop_required_INIT_field(X, R, N, M2) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    m->ident       = #M2; \
+    Au_t m = Au_register(&X##_i.type, #M2, AU_MEMBER_PROP, AU_TRAIT_REQUIRED); \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
-    m->member_type = AU_MEMBER_PROP; \
     m->index       = offsetof(struct X##_fields, N); \
-    m->traits |= AU_TRAIT_REQUIRED; \
 }
 
 #define   i_prop_required_PROTO_field(X, R, N, M2)  
@@ -522,11 +504,9 @@
 #define   i_prop_public_DECL_EXTERN_meta(X, R, N, M2) i_prop_public_DECL(X, R, N)
 #define   i_prop_public_GENERICS_meta(X, R, N, M2)
 #define   i_prop_public_INIT_meta(X, R, N, M2) {\
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    m->ident       = #N; \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, 0); \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
-    m->member_type = AU_MEMBER_PROP; \
     m->index       = offsetof(struct X##_fields, N); \
     set_meta_array(m, 1, (Au_t)&M2##_i.type); \
 }
@@ -545,13 +525,10 @@
 #define   i_prop_required_DECL_EXTERN_meta(X, R, N, M2) i_prop_public_DECL(X, R, N)
 #define   i_prop_required_GENERICS_meta(X, R, N, M2)
 #define   i_prop_required_INIT_meta(X, R, N, M2) {\
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    m->ident       = #N; \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, AU_TRAIT_REQUIRED); \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
-    m->member_type = AU_MEMBER_PROP; \
     m->index       = offsetof(struct X##_fields, N); \
-    m->traits |= AU_TRAIT_REQUIRED; \
     set_meta_array(m, 1, (Au_t)&M2##_i.type); \
 }
 
@@ -666,12 +643,9 @@
 #define   i_vprop_public_DECL_EXTERN(X, R, N)   i_prop_public_DECL(X, R, N)
 #define   i_vprop_public_GENERICS(X, R, N)
 #define   i_vprop_public_INIT(X, R, N) {\
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    m->ident    = #N; \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, AU_TRAIT_VPROP); \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&ARef_i.type; \
-    m->member_type = AU_MEMBER_PROP; \
-    m->traits |= AU_TRAIT_VPROP; \
 }
 
 #define   i_vprop_public_PROTO(X, R, N)  
@@ -689,13 +663,10 @@
 #define   i_vprop_required_DECL_EXTERN(X, R, N)  i_prop_public_DECL(X, R, N)
 #define   i_vprop_required_GENERICS(X, R, N)
 #define   i_vprop_required_INIT(X, R, N) {\
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    m->ident    = #N; \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, AU_TRAIT_VPROP | AU_TRAIT_REQUIRED); \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&ARef_i.type; \
-    m->member_type = AU_MEMBER_PROP; \
     m->index       = offsetof(struct X##_fields, N); \
-    m->traits |= AU_TRAIT_REQUIRED | AU_TRAIT_VPROP; \
 }
 
 #define   i_vprop_required_PROTO(X, R, N)  
@@ -731,13 +702,11 @@
 #define i_attr_DECL_EXTERN( X, ENUM, ID, VALUE, ...)
 #define i_attr_GENERICS(    X, ENUM, ID, VALUE, ...)
 #define i_attr_INIT(        X, ENUM, ID, VALUE, ...) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    m->ident       = #ID; \
-    m->id          = ENUM##_##ID; \
+    Au_t m = Au_register(&X##_i.type, #ID, AU_MEMBER_ATTR, 0); \
+    m->index       = ENUM##_##ID; \
     m->value       = VALUE; \
     m->type        = (Au_t)&ENUM##_i.type; \
     set_meta_array(m, emit_types(__VA_ARGS__)); \
-    m->member_type = AU_MEMBER_ATTR; \
 }
 
 #define i_attr_PROTO(       X, ENUM, ID, VALUE, ...)  
@@ -773,11 +742,9 @@
 #define   i_array_public_DECL_EXTERN(X, R, S, N)
 #define   i_array_public_GENERICS(X, R, S, N)
 #define   i_array_public_INIT(X, R, S, N) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    m->ident       = #N; \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, 0); \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
-    m->member_type = AU_MEMBER_PROP; \
     m->index       = offsetof(struct X##_fields, N); \
     m->size        = S; \
 }
@@ -809,14 +776,12 @@
 #define   i_struct_ctr_DECL_EXTERN(X, ARG)
 #define   i_struct_ctr_GENERICS(X, ARG) ARG*: X##_i.type.ft.with_##ARG,
 #define   i_struct_ctr_INIT(X, ARG) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
+    Au_t m = Au_register(&X##_i.type, stringify(with_##ARG), AU_MEMBER_CONSTRUCT, 0); \
     X##_i.type.ft.with_##ARG = & X##_with_##ARG; \
-    m->ident       = stringify(with_##ARG); \
     m->type        = (Au_t)&ARG##_i.type; \
     /* m->offset      = offsetof(X##_f, with_##ARG); */ \
     m->value       = (void*)& X##_with_##ARG; \
     m->index       = offsetof(__typeof__(X##_i.type.ft), with_##ARG) / sizeof(void*); \
-    m->member_type = AU_MEMBER_CONSTRUCT; \
 }
 
 #define   i_struct_ctr_PROTO(X, ARG)
@@ -831,13 +796,10 @@
 #define   i_struct_ctr_obj_DECL_EXTERN(X, ARG)
 #define   i_struct_ctr_obj_GENERICS(X, ARG) ARG: X##_i.type.ft.with_##ARG,
 #define   i_struct_ctr_obj_INIT(X, ARG) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
+    Au_t m = Au_register(&X##_i.type, stringify(with_##ARG), AU_MEMBER_CONSTRUCT, 0); \
     X##_i.type.ft.with_##ARG = & X##_with_##ARG; \
-    m->ident       = stringify(with_##ARG); \
     m->type        = (Au_t)&ARG##_i.type; \
-    /* m->offset      = offsetof(X##_f, with_##ARG); */ \
     m->value       = (void*)& X##_with_##ARG; \
-    m->member_type = AU_MEMBER_CONSTRUCT; \
 }
 
 #define   i_struct_ctr_obj_PROTO(X, ARG)
@@ -852,8 +814,7 @@
 #define   i_struct_array_DECL_EXTERN(X, R, S, N)
 #define   i_struct_array_GENERICS(X, R, S, N)
 #define   i_struct_array_INIT(X, R, S, N) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    m->ident    = #N; \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, 0); \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&R##_i.type; \
     m->size     = S; \
@@ -872,11 +833,9 @@
 #define   i_struct_prop_DECL_EXTERN(X, R, N)
 #define   i_struct_prop_GENERICS(X, R, N)
 #define   i_struct_prop_INIT(X, R, N) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    m->ident    = #N; \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, 0); \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&R##_i.type; \
-    m->member_type = AU_MEMBER_PROP; \
 }
 
 #define   i_struct_prop_PROTO(X, R, N)  
@@ -891,9 +850,8 @@
 #define   i_struct_cast_DECL_EXTERN(X, R)
 #define   i_struct_cast_GENERICS(X, R)
 #define   i_struct_cast_INIT(ST, R) { \
-    Au_t m = Au_alloc_member(&ST##_i.type); \
+    Au_t m = Au_register(&ST##_i.type, stringify(cast_##R), AU_MEMBER_CAST, 0); \
     ST##_i.type.ft.cast_##R = & ST##_cast_##R; \
-    m->ident    = stringify(cast_##R); \
     set_meta_array(m, emit_types(ST)); \
     m->type    = (Au_t)&R##_i.type; \
     m->offset  = offsetof(__typeof(ST##_i.type.ft), cast_##R); \
@@ -912,13 +870,9 @@
 #define   i_struct_method_DECL_EXTERN(X, R, N, ...) R X##_##N(X* __VA_OPT__(,) __VA_ARGS__);
 #define   i_struct_method_GENERICS(X, R, N, ...)
 #define   i_struct_method_INIT(    X, R, N, ...) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
     X##_i.type . ft.N = & X## _ ## N; \
-    m->ident   = #N; \
     m->type    = (Au_t)&R##_i.type; \
-    /* m->offset  = offsetof(X##_f, N); */ \
-    m->member_type = AU_MEMBER_FUNC; \
-    m->traits |= AU_TRAIT_IMETHOD; \
 }
 
 #define   i_struct_method_PROTO(X, R, N, ...)
@@ -934,13 +888,9 @@
 #define   i_struct_static_DECL_EXTERN(    X, R, N, ...)     R X##_##N(__VA_ARGS__);
 #define   i_struct_static_GENERICS(X, R, N, ...)
 #define   i_struct_static_INIT(    X, R, N, ...) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_SMETHOD); \
     X##_i.type . ft.N = & X## _ ## N; \
-    m->ident   = #N; \
     m->type    = (Au_t)&R##_i.type; \
-    /* m->offset  = offsetof(X##_f, N); */ \
-    m->member_type = AU_MEMBER_FUNC; \
-    m->traits |= AU_TRAIT_SMETHOD; \
 }
 
 #define   i_struct_static_PROTO(X, R, N, ...)
@@ -967,11 +917,9 @@
 #define   i_inlay_public_DECL_EXTERN(X, R, N)
 #define   i_inlay_public_GENERICS(X, R, N)
 #define   i_inlay_public_INIT(X, R, N) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    m->ident    = #N; \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, AU_TRAIT_INLAY); \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&R##_i.type; \
-    m->member_type = AU_MEMBER_INLAY; \
 }
 
 #define   i_inlay_public_PROTO(X, R, N)  
@@ -989,13 +937,10 @@
 #define   i_inlay_required_DECL_EXTERN(X, R, N)
 #define   i_inlay_required_GENERICS(X, R, N)
 #define   i_inlay_required_INIT(X, R, N) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    m->ident    = #N; \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, AU_TRAIT_INLAY | AU_TRAIT_REQUIRED); \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&R##_i.type; \
-    m->member_type = AU_MEMBER_INLAY; \
-    m->index       = offsetof(struct X##_fields, N); \
-    m->traits |= AU_TRAIT_REQUIRED; \
+    m->index    = offsetof(struct X##_fields, N); \
 }
 
 #define   i_inlay_required_PROTO(X, R, N)  
@@ -1047,13 +992,10 @@
 #define   t_method_public_DECL_EXTERN(X, R, N, ...) R N(__VA_ARGS__);
 #define   t_method_public_GENERICS(X, R, N, ...)
 #define   t_method_public_INIT(E, R, N, ...) { \
-    Au_t m = Au_alloc_member(&E##_i.type); \
-    m->ident   = #N; \
+    Au_t m = Au_register(&E##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_TMETHOD); \
     set_meta_array(m, emit_types(__VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
     m->offset  = 0; \
-    m->member_type = AU_MEMBER_FUNC; \
-    m->traits |= AU_TRAIT_TMETHOD; \
     m->value   = &N; \
 }
 
@@ -1106,13 +1048,10 @@
 #define   s_method_public_DECL_EXTERN(X, R, N, ...) R X##_##N(__VA_ARGS__);
 #define   s_method_public_GENERICS(X, R, N, ...)
 #define   s_method_public_INIT(X, R, N, ...) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    m->ident   = #N; \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_SMETHOD); \
     set_meta_array(m, emit_types(__VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
     m->offset  = 0; \
-    m->member_type = AU_MEMBER_FUNC; \
-    m->traits |= AU_TRAIT_SMETHOD; \
     m->value   = &X##_##N; \
 }
 
@@ -1161,14 +1100,11 @@
 #define   i_method_public_DECL_EXTERN(    X, R, N, ...)    
 #define   i_method_public_GENERICS(X, R, N, ...)
 #define   i_method_public_INIT(    X, R, N, ...) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
     X##_i.type . ft.N = & X## _ ## N; \
-    m->ident = #N; \
     set_meta_array(m, emit_types(__VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
     /* m->offset  = offsetof(X##_f, N); */ \
-    m->member_type = AU_MEMBER_FUNC; \
-    m->traits |= AU_TRAIT_IMETHOD; \
     m->index   = offsetof(__typeof__(X##_i.type.ft), N) / sizeof(void*); \
     m->value   = (void*)X##_i.type . ft.N; \
 }
@@ -1202,13 +1138,10 @@
 #define   i_final_public_DECL_EXTERN(    X, R, N, ...)    
 #define   i_final_public_GENERICS(X, R, N, ...)
 #define   i_final_public_INIT(    X, R, N, ...) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
-    m->ident   = #N; \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_IFINAL); \
     set_meta_array(m, emit_types(__VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
     m->offset  = 0; \
-    m->member_type = AU_MEMBER_FUNC; \
-    m->traits |= AU_TRAIT_IFINAL; \
     m->value   = &N; \
 }
 
@@ -1257,7 +1190,7 @@
 #define   i_operator_public_DECL_EXTERN(X, R, N, ARG)
 #define   i_operator_public_GENERICS(X, R, N, ARG)
 #define   i_operator_public_INIT(X, R, N, ARG) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_OPERATOR, 0); \
     X##_i.type  . ft.operator_##N = & X## _operator_ ## N; \
     m->ident   = stringify(operator_##N); \
     set_meta_array(m, emit_types(X)); \
@@ -1311,14 +1244,12 @@
 #define   i_cast_public_DECL_EXTERN(X, R)
 #define   i_cast_public_GENERICS(X, R)
 #define   i_cast_public_INIT(CL, R) { \
-    Au_t m = Au_alloc_member(&CL##_i.type); \
+    Au_t m = Au_register(&CL##_i.type, stringify(cast_##R), AU_MEMBER_CAST, 0); \
     CL##_i.type.ft.cast_##R = & CL##_cast_##R; \
     m->value = CL##_i.type.ft.cast_##R; \
-    m->ident   = stringify(cast_##R); \
     set_meta_array(m, emit_types(CL)); \
     m->type    = (Au_t)&R##_i.type; \
     m->index   = offsetof(__typeof(CL##_i.type.ft), cast_##R) / sizeof(void*); \
-    m->member_type = AU_MEMBER_CAST; \
 }
 
 #define   i_cast_public_PROTO(X, R)
@@ -1365,13 +1296,11 @@
 #define i_index_public_DECL_EXTERN(X, R, ...)
 #define i_index_public_GENERICS(X, R, ...)
 #define i_index_public_INIT(X, R, ...) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
+    Au_t m = Au_register(&X##_i.type, stringify(emit_idx_symbol(index, __VA_ARGS__)), AU_MEMBER_INDEX, 0); \
     X##_i.type.ft.emit_idx_symbol(index, __VA_ARGS__) = & emit_idx_symbol(X ## _index, __VA_ARGS__); \
-    m->ident       = stringify(emit_idx_symbol(index, __VA_ARGS__)); \
     set_meta_array(m, emit_types(X, __VA_ARGS__)); \
     m->type        = (Au_t)&R##_i.type; \
     m->index        = offsetof(__typeof(X##_i.type.ft), emit_idx_symbol(index, __VA_ARGS__)) / sizeof(void*); \
-    m->member_type = AU_MEMBER_INDEX; \
 }
 
 #define i_index_public_PROTO(X, R, ...)
@@ -1465,9 +1394,8 @@
 #define i_override_method_DECL_EXTERN(X, N)
 #define i_override_method_GENERICS(X, N)
 #define i_override_method_INIT(X, N) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
+    Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_OVERRIDE); \
     type_ref->ft.N = (__typeof__(type_ref->ft.N))& X## _ ## N; \
-    m->ident = stringify(N); \
     m->value = (void*)& X##_##N; \
     Au_member_override((Au_t)type_ref, m, AU_MEMBER_FUNC); \
 }
@@ -1486,9 +1414,8 @@
 #define i_override_ctr_DECL(X, R)
 #define i_override_ctr_GENERICS(X, N)                   N: X##_i.type.ft.with_##N,
 #define i_override_ctr_INIT(X, R) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
+    Au_t m = Au_register(&X##_i.type, stringify(with_##R), AU_MEMBER_CONSTRUCT, AU_TRAIT_OVERRIDE); \
     type_ref->ft.with_##R = & X##_with_##R; \
-    m->ident = stringify(with_##R); \
     m->value = (void*)& X##_with_##R; \
     Au_member_override((Au_t)type_ref, m, AU_MEMBER_CONSTRUCT); \
 }
@@ -1507,9 +1434,8 @@
 #define i_override_cast_DECL(X, R)
 #define i_override_cast_GENERICS(X, N)
 #define i_override_cast_INIT(X, R) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
+    Au_t m = Au_register(&X##_i.type, stringify(cast_##R), AU_MEMBER_CAST, AU_TRAIT_OVERRIDE); \
     type_ref->ft.cast_##R = & X##_cast_##R; \
-    m->ident = stringify(cast_##R); \
     m->value = (void*)& X##_cast_##R; \
     Au_member_override((Au_t)type_ref, m, AU_MEMBER_CAST); \
 }
@@ -1528,9 +1454,8 @@
 #define i_override_idx_DECL(X, R)
 #define i_override_idx_GENERICS(X, R)
 #define i_override_idx_INIT(X, R) { \
-    Au_t m = Au_alloc_member(&X##_i.type); \
+    Au_t m = Au_register(&X##_i.type, stringify(idx_##R), AU_MEMBER_INDEX, AU_TRAIT_OVERRIDE); \
     type_ref->idx_##R = & X##_idx_##R; \
-    m->ident= stringify(idx_##R); \
     m->value = (void*)& X##_idx_##R; \
     Au_member_override(type_ref, m, AU_MEMBER_INDEX); \
 }

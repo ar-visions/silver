@@ -56,7 +56,8 @@ enum AU_TRAIT {
     AU_TRAIT_TMETHOD   = 1 << 21,
     AU_TRAIT_IFINAL    = 1 << 22,
     AU_TRAIT_FUNCPTR   = 1 << 23,
-    AU_TRAIT_SCHEMA    = 1 << 24
+    AU_TRAIT_SCHEMA    = 1 << 24,
+    AU_TRAIT_VARGS     = 1 << 25
 };
 
 typedef bool(*global_init_fn)();

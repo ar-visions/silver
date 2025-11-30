@@ -9,6 +9,16 @@
     M(X,Y, i, prop,  public, array,                  lexical) \
     M(X,Y, i, prop,  public, bool,                   is_Au_import) \
     M(X,Y, i, prop,  public, Au_t,                   au_module) \
+    M(X,Y, i, prop,  public, array,                  sys_inc_paths) \
+    M(X,Y, i, prop,  public, array,                  sys_exc_paths) \
+    M(X,Y, i, prop,  public, array,                  include_paths) \
+    M(X,Y, i, prop,  public, array,                  framework_paths) \
+    M(X,Y, i, prop,  public, array,                  lib_paths) \
+    M(X,Y, i, prop,  public, path,                   isysroot) \
+    M(X,Y, i, prop,  public, path,                   resource_dir) \
+    M(X,Y, i, prop,  public, path,                   isystem) \
+    M(X,Y, i, prop,  public, bool,                   verbose) \
+    M(X,Y, i, prop,  public, path,                   install) \
     M(X,Y, i, prop,  intern, LLVMExecutionEngineRef, jit,               as, ARef) \
     M(X,Y, i, prop,  intern, LLVMBasicBlockRef,      current_if_block,  as, ARef) \
     M(X,Y, i, prop,  intern, LLVMModuleRef,          module,            as, ARef) \
@@ -23,9 +33,12 @@
     M(X,Y, i, prop,  intern, LLVMScope,              scope,             as, ARef) \
     M(X,Y, i, prop,  intern, cstr,                   target_triple) \
     M(X,Y, i, prop,  intern, array,                  registry) \
+    i_method(X,Y, public, path,   lookup_include, string) \
+    i_method(X,Y, public, path,   include,        Au, ARef) \
     i_method(X,Y, public, Au_t,   top_scope) \
     i_method(X,Y, public, none,   push_scope, Au_t) \
-    M(X,Y, i, override, method, init)
+    M(X,Y, i, override, method, init) \
+    M(X,Y, i, override, cast, Au_t)
 declare_class(aether2);
 
 #define etype_schema(X,Y,...)\
@@ -37,16 +50,31 @@ declare_class(aether2);
     M(X,Y, i, prop, intern,   LLVMScope,        scope, as, ARef) \
     M(X,Y, i, prop, intern,   LLVMTypeRef,      type,  as, ARef) \
     M(X,Y, i, prop, intern,   LLVMMetadataRef,  debug, as, ARef) \
-    M(X,Y, i, override, method, init)
+    M(X,Y, i, override, method, init) \
+    M(X,Y, i, override, cast,   Au_t)
 declare_class(etype)
 
 #define enode2_schema(X,Y,...)\
     M(X,Y, i, prop, public,   enode2,           target) \
-    M(X,Y, i, prop, public,   etype,            etype) \
+    M(X,Y, i, prop, public,   etype,            t) \
     M(X,Y, i, prop, public,   aether2,          mod) \
-    M(X,Y, i, prop, intern,   LLVMValueRef,     value,  as, ARef)
+    M(X,Y, i, prop, intern,   LLVMValueRef,     value,  as, ARef) \
+    M(X,Y, i, override, cast, Au_t)
 declare_class(enode2)
 
+#define aclang2_cc_schema(X,Y,...) \
+    i_prop  (X,Y, public, aether2,  mod) \
+    i_prop  (X,Y, public, handle,   compiler) \
+    i_prop  (X,Y, public, handle,   PP) \
+    i_prop  (X,Y, public, handle,   ctx) \
+    i_prop  (X,Y, public, handle,   consumer) \
+    i_prop  (X,Y, public, handle,   S) \
+    i_prop  (X,Y, public, handle,   P) \
+    i_prop  (X,Y, public, handle,   module)
+declare_class(aclang2_cc)
 
+
+Au_t  au_lexical(array, symbol);
+etype etype_lexical(aether2, symbol);
 
 #endif

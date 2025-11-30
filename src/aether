@@ -392,21 +392,5 @@ declare_class_3(static_array, array, collective)
     i_override(X,Y, method,     dealloc)
 declare_class_2(aether, model)
 
-bool is_bool     (model f);
-bool is_float    (model f);
-bool is_double   (model f);
-bool is_realistic(model f);
-bool is_integral (model f);
-bool is_signed   (model f);
-bool is_unsigned (model f);
-bool is_primitive(model f);
-bool is_void     (model f);
-bool is_generic  (model f);
-model is_record  (model f);
-model is_class   (model f);
-bool is_subclass (model a, model b);
-model is_struct  (model f);
-bool is_ref      (model f);
-int  ref_level   (model f);
 
 #endif

@@ -58,23 +58,23 @@ model model_resolve(model f) {
     return f;
 }
 
-bool is_bool     (model f) { f = model_resolve(f); return f->src && model_primitive(f) == typeid(bool); }
-bool is_float    (model f) { f = model_resolve(f); return f->src && model_primitive(f) == typeid(f32);  }
-bool is_double   (model f) { f = model_resolve(f); return f->src && model_primitive(f) == typeid(f64);  }
+static bool is_bool     (model f) { f = model_resolve(f); return f->src && model_primitive(f) == typeid(bool); }
+static bool is_float    (model f) { f = model_resolve(f); return f->src && model_primitive(f) == typeid(f32);  }
+static bool is_double   (model f) { f = model_resolve(f); return f->src && model_primitive(f) == typeid(f64);  }
 
-bool is_realistic(model f) {
+static bool is_realistic(model f) {
     f = model_resolve(f);
     Au_t pr = model_primitive(f);
     return pr && pr->traits & AU_TRAIT_REALISTIC;
 }
 
-bool is_integral (model f) {
+static bool is_integral (model f) {
     f = model_resolve(f);
     Au_t pr = model_primitive(f);
     return pr && pr->traits & AU_TRAIT_INTEGRAL;
 }
 
-bool is_signed   (model f) {
+static bool is_signed   (model f) {
     f = model_resolve(f);
     Au_t pr = model_primitive(f);
     return pr && pr->traits & AU_TRAIT_SIGNED;
@@ -96,21 +96,12 @@ bool is_void(model f) {
     return f ? f->size_bits == 0 : false;
 }
 
-bool is_generic(model f) {
+bool _is_generic(model f) {
     f = model_resolve(f);
     return (Au_t)f->src == typeid(Au);
 }
 
-model is_class(model f);
-model is_struct(model f);
-
-model is_record(model f) {
-    model ff = is_class(f);
-    if   (ff) return ff;
-    return is_struct(f);
-}
-
-model is_class(model f) {
+model _is_class(model f) {
     if (f->src && isa(f->src) == typeid(Class))
         return f;
     if (isa(f) == typeid(Class)) {
@@ -119,9 +110,18 @@ model is_class(model f) {
     }
     return null;
 }
+model _is_struct(model f);
 
-bool is_subclass(model a, model b) {
-    if (is_class(a) && is_class(b)) {
+model _is_record(model f) {
+    model ff = _is_class(f);
+    if   (ff) return ff;
+    return _is_struct(f);
+}
+
+
+
+bool _is_subclass(model a, model b) {
+    if (_is_class(a) && _is_class(b)) {
         model aa = a;
         model bb = b;
         while (aa) {
@@ -132,12 +132,12 @@ bool is_subclass(model a, model b) {
     return false;
 }
 
-model is_struct(model f) {
+model _is_struct(model f) {
     f = model_resolve(f); 
     return isa(f) == typeid(structure) ? f : null;
 }
 
-bool is_ref(model f) {
+bool _is_ref(model f) {
     f = model_resolve(f); 
     if (f->is_ref)
         return true;
@@ -155,7 +155,7 @@ bool is_ref(model f) {
     return false;
 }
 
-int ref_level(model f) {
+int _ref_level(model f) {
     f = model_resolve(f); 
     model src = f;
     int level = 0;
@@ -180,9 +180,9 @@ emember aether_register_model(aether e, model mdl, string name, bool use_now) {
     bool is_macro = instanceof(mdl, typeid(macro)) != null;
     // the pointer for classes is created after, and used when we need it
     // accessible on model by ->ptr
-    bool is_class = isa(mdl) == typeid(Class);
+    bool _is_class = isa(mdl) == typeid(Class);
 
-    model mdl_for_member = is_class ?
+    model mdl_for_member = _is_class ?
         model(
             mod,    mdl->mod,
             is_ref, true,      members, mdl->members,
@@ -190,7 +190,7 @@ emember aether_register_model(aether e, model mdl, string name, bool use_now) {
                 LLVMPointerType(mdl->type ? mdl->type : LLVMInt8Type(), 0)) :
         mdl;
     
-    if (is_class) mdl->ptr = hold(mdl_for_member);
+    if (_is_class) mdl->ptr = hold(mdl_for_member);
 
     emember mem   = emember(
         mod,      e,
@@ -200,7 +200,7 @@ emember aether_register_model(aether e, model mdl, string name, bool use_now) {
         is_type,  true);
     
     mdl->mem = hold(mem);
-    if (is_class) {
+    if (_is_class) {
         mdl_for_member->mem = hold(mem);
         mdl->ptr = hold(mdl_for_member);
     }
@@ -257,6 +257,8 @@ i64 model_cmp(model mdl, model b) {
 }
 
 array macro_expand(macro, array, map);
+
+array read_arg(array tokens, int start, int* next_read);
 
 static array expand_tokens(aether mod, array tokens, map expanding) {
     int ln = len(tokens);
@@ -1641,7 +1643,7 @@ enode aether_e_interpolate(aether e, string str) {
 
 enode aether_e_operand(aether e, Au op, model src_model, array meta) {
     if (!op) {
-        if (is_ref(src_model))
+        if (_is_ref(src_model))
             return e_null(e, src_model);
         return enode(mod, e, mdl, emodel("none"), meta, null, value, null);
     }
@@ -1668,7 +1670,7 @@ enode aether_e_operand(aether e, Au op, model src_model, array meta) {
 }
 
 enode aether_e_null(aether e, model mdl) {
-    model f = is_class(mdl);
+    model f = _is_class(mdl);
     if (f) mdl = f; // classes are elevated to ref even though structurally they look like structs.  we've gone back and forth on this one
     if (!mdl) mdl = emodel("handle");
     return enode(mod, e, value, LLVMConstNull(mdl->type), mdl, mdl, meta, null);
@@ -1691,7 +1693,7 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
     //mdl = typed(mdl); // this is a bad idea here. undo this!
 
     if (!args) {
-        if (is_ref(mdl))
+        if (_is_ref(mdl))
             return e_null(e, mdl);
     }
 
@@ -1733,10 +1735,10 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
                 bool bit_cast = false;
                 if (input->mdl->is_typeid && (mdl->is_typeid || mdl == emodel("Au_t")))
                     bit_cast = true; 
-                else if (!is_subclass(input->mdl, mdl)) {
+                else if (!_is_subclass(input->mdl, mdl)) {
                     char *s = LLVMPrintTypeToString(t);
-                    int r0 = ref_level(input->mdl);
-                    int r1 = ref_level(mdl);
+                    int r0 = _ref_level(input->mdl);
+                    int r1 = _ref_level(mdl);
                     print("LLVM type: %s", s);
                     verify((is_primitive(src) && is_primitive(dst)) ||
                         model_inherits(input->mdl, mdl), "models not compatible: %o -> %o",
@@ -1809,7 +1811,7 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
         // we have to call array with an intialization property for size, and data pointer
         // if the data is pre-defined in init and using primitives, it has to be stored prior to this call
         enode metas_node = e_meta_ids(e, meta);
-        verify(!is_struct(e), "inappropriate use of struct, they cannot be given to alloc");
+        verify(!_is_struct(e), "inappropriate use of struct, they cannot be given to alloc");
         res = e_fn_call(e, f_alloc, null, a( e_typeid(e, mdl), _i32(1), metas_node ));
         res->mdl = mdl; // we need a general cast method that does not call function
 
@@ -1965,7 +1967,7 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
                     emember m0 = value_by_index(rmdl->members, 0);
                     Au_t type_m0 = isa(m0); // this is string for our struct member at 0 (string str2)
                     LLVMTypeRef tr = LLVMStructGetTypeAtIndex(rmdl->type, i);
-                    model f = is_class(field_type);
+                    model f = _is_class(field_type);
                     LLVMTypeRef expect_ty = f ? f->type : field_type->type;
                     verify(expect_ty == tr, "field type mismatch");
                     if (!value) value = e_null(e, field_type);
@@ -2459,13 +2461,13 @@ enode aether_e_if_else(aether e, array conds, array exprs, subprocedure cond_bui
 
 enode aether_e_addr_of(aether e, enode expr, model mdl) {
     model        ref   = pointer(mdl ? mdl : expr->mdl); // this needs to set mdl->type to LLVMPointerType(mdl_arg->type, 0)
-    int rcount = ref_level(ref);
+    int rcount = _ref_level(ref);
     
     e->is_const_op = false;
     if (e->no_build) return e_noop(e, ref);
 
     model ref1 = emodel("Au_ts");
-    int r1 = ref_level(ref1);
+    int r1 = _ref_level(ref1);
 
     emember      m_expr = instanceof(expr, typeid(emember));
     LLVMValueRef value = m_expr ? expr->value :
@@ -2621,15 +2623,15 @@ enode aether_e_primitive_convert(aether e, enode expr, model rtype) {
             LLVMBuildFPExt  (B, V, T->type, "fpext");
 
     // ptr conversion
-    else if (is_ref(F) && is_ref(T))
+    else if (_is_ref(F) && _is_ref(T))
         V = LLVMBuildPointerCast(B, V, T->type, "ptr_cast");
 
     // ptr to int
-    else if (is_ref(F) && is_integral(T))
+    else if (_is_ref(F) && is_integral(T))
         V = LLVMBuildPtrToInt(B, V, T->type, "ptr_to_int");
 
     // int to ptr
-    else if (is_integral(F) && is_ref(T))
+    else if (is_integral(F) && _is_ref(T))
         V = LLVMBuildIntToPtr(B, V, T->type, "int_to_ptr");
 
     // bitcast for same-size types
@@ -3566,15 +3568,15 @@ void aether_Au_import(aether e, path lib, string name) {
         bool  is_ref       = (atype->traits & AU_TRAIT_POINTER)   != 0;
         if   (is_ref) continue; // src of this may be referencing another unresolved
 
-        bool  is_struct    = (atype->traits & AU_TRAIT_STRUCT)    != 0;
-        bool  is_class     = (atype->traits & AU_TRAIT_CLASS)     != 0;
+        bool  _is_struct    = (atype->traits & AU_TRAIT_STRUCT)    != 0;
+        bool  _is_class     = (atype->traits & AU_TRAIT_CLASS)     != 0;
         bool  is_enum      = (atype->traits & AU_TRAIT_ENUM)      != 0;
         bool  is_realistic = (atype->traits & AU_TRAIT_REALISTIC) != 0;
         bool  is_integral  = (atype->traits & AU_TRAIT_INTEGRAL)  != 0;
         bool  is_unsigned  = (atype->traits & AU_TRAIT_UNSIGNED)  != 0;
         bool  is_signed    = (atype->traits & AU_TRAIT_SIGNED)    != 0;
-        if      (is_class)    mdl = Class      (mod, e, ident, name, imported_from, inc);
-        else if (is_struct)   mdl = structure  (mod, e, ident, name, imported_from, inc);
+        if      (_is_class)    mdl = Class      (mod, e, ident, name, imported_from, inc);
+        else if (_is_struct)   mdl = structure  (mod, e, ident, name, imported_from, inc);
         else if (is_enum)     mdl = enumeration(mod, e, atype, typeid(i32));
         else if (is_prim && !is_abstract && (atype->traits & AU_TRAIT_INTEGRAL) != 0) {
             mdl = model(mod, e, atype_src, atype);
@@ -3688,12 +3690,12 @@ void aether_Au_import(aether e, path lib, string name) {
         model  mdl       = atype->user;
         verify(isa(mdl) != typeid(Class), "type mismatch for model on %s", atype->ident);
 
-        bool   is_struct = (atype->traits & AU_TRAIT_STRUCT) != 0;
-        bool   is_class  = (atype->traits & AU_TRAIT_CLASS)   != 0;
+        bool   _is_struct = (atype->traits & AU_TRAIT_STRUCT) != 0;
+        bool   _is_class  = (atype->traits & AU_TRAIT_CLASS)   != 0;
         
-        if    (is_class || is_struct) {
-            structure st = is_struct ? mdl : null;
-            Class     cl = is_class  ? mdl : null;
+        if    (_is_class || _is_struct) {
+            structure st = _is_struct ? mdl : null;
+            Class     cl = _is_class  ? mdl : null;
 
             if (!mdl->members) {
                 mdl->members = hold(map(hsize, 8));
@@ -3814,7 +3816,7 @@ void aether_Au_import(aether e, path lib, string name) {
             }
 
             // add padding based on isize (aligned with runtime; this way we may allocate space for it to use its special things)
-            if ((is_class || is_struct) && atype->isize > 0) {
+            if ((_is_class || _is_struct) && atype->isize > 0) {
                 string n = f(string, "%s_interns", atype->ident);
                 model intern_space = model(
                     mod,       e,
@@ -4098,7 +4100,7 @@ emember model_castable(model fr, model to) {
         return (emember)true;
     
     /// primitives may be converted to Au-type Au
-    if (is_primitive(fr) && is_generic(to))
+    if (is_primitive(fr) && _is_generic(to))
         return (emember)true;
 
     /// check cast methods on from
@@ -4180,8 +4182,8 @@ emember model_convertible(model fr, model to) {
     if (is_primitive(a) && is_primitive(b))
         return (emember)true;
 
-    if (is_record(a) || is_record(b)) {
-        if (is_subclass(a, b))
+    if (_is_record(a) || _is_record(b)) {
+        if (_is_subclass(a, b))
             return (emember)true;
         emember mcast = castable(a, b);
         return mcast ? mcast : constructable(a, b);
@@ -4398,10 +4400,10 @@ enode aether_e_is(aether e, enode L, Au R) {
 enode aether_e_cmp(aether e, enode L, enode R) {
     Au_t Lt = isa(L->literal);
     Au_t Rt = isa(R->literal);
-    bool Lc = is_class(L->mdl) != null;
-    bool Rc = is_class(R->mdl) != null;
-    bool Ls = is_struct(L->mdl) != null;
-    bool Rs = is_struct(R->mdl) != null;
+    bool Lc = _is_class(L->mdl) != null;
+    bool Rc = _is_class(R->mdl) != null;
+    bool Ls = _is_struct(L->mdl) != null;
+    bool Rs = _is_struct(R->mdl) != null;
     bool Lr = is_realistic(L->mdl);
     bool Rr = is_realistic(R->mdl);
 
@@ -4586,10 +4588,10 @@ enode aether_e_eq(aether e, enode L, enode R) {
     // todo: bring this back in of course
     Au_t Lt = isa(L->literal);
     Au_t Rt = isa(R->literal);
-    bool  Lc = is_class(L->mdl);
-    bool  Rc = is_class(R->mdl);
-    bool  Ls = is_struct(L->mdl);
-    bool  Rs = is_struct(R->mdl);
+    bool  Lc = _is_class(L->mdl);
+    bool  Rc = _is_class(R->mdl);
+    bool  Ls = _is_struct(L->mdl);
+    bool  Rs = _is_struct(R->mdl);
     bool  Lr = is_realistic(L->mdl);
     bool  Rr = is_realistic(R->mdl);
 
@@ -4821,10 +4823,10 @@ enode aether_e_op(aether e, OPType optype, string op_name, Au L, Au R) {
     enode   RV = e_operand(e, R, null, null);
 
     // check for overload
-    if (op_name && isa(L) == typeid(enode) && is_class(((enode)L)->mdl)) {
+    if (op_name && isa(L) == typeid(enode) && _is_class(((enode)L)->mdl)) {
         enode Ln = L;
         Au_t type = isa(Ln->mdl);
-        model rec = is_record(Ln->mdl) ? Ln->mdl : null;
+        model rec = _is_record(Ln->mdl) ? Ln->mdl : null;
         if (rec) {
             emember Lt = null;
             pairs(rec->members, i) {
@@ -5143,9 +5145,9 @@ static void record_finalize(record rec) {
         }
     }
 
-    record is_record = instanceof(rec, typeid(record));
-    if (is_record) {
-        pointer(is_record);
+    record _is_record = instanceof(rec, typeid(record));
+    if (_is_record) {
+        pointer(_is_record);
     }
     
     int sz = LLVMABISizeOfType     (target_data, rec->type);
@@ -5517,7 +5519,7 @@ void emember_finalize(emember mem) {
 model aether_top(aether e) {
     for (int i = len(e->lex) - 1; i >= 0; i--) {
         model mdl = e->lex->origin[i];
-        if (!is_record (mdl) && 
+        if (!_is_record (mdl) && 
             !instanceof(mdl, typeid(statements)) && 
             !instanceof(mdl, typeid(eargs)) && !mdl->open) continue;
         return mdl;

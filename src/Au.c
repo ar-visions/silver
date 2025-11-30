@@ -32,6 +32,28 @@ typedef struct _ffi_method_t {
     void*           ffi_args; /// ffi-data types for args
 } ffi_method_t;
 
+Au_t au_arg(Au a) {
+    if (!isa(a)) return a;
+    return cast(Au_t, a);
+}
+
+Au_t Au_cast_Au_t(Au a) {
+    return isa(a);
+}
+
+bool is_class   (Au t) { return au_arg(t)->is_class;  }
+bool is_struct  (Au t) { return au_arg(t)->is_struct; }
+bool is_func    (Au t) { return au_arg(t)->member_type == AU_MEMBER_FUNC; }
+bool is_imethod (Au t) { return au_arg(t)->member_type == AU_MEMBER_FUNC && au_arg(t)->is_imethod; }
+bool is_rec     (Au t) { return au_arg(t)->is_class || au_arg(t)->is_struct; }
+bool is_prim    (Au t) { return au_arg(t)->is_primitive; }
+bool is_sign    (Au t) { return au_arg(t)->is_signed; }
+bool is_unsign  (Au t) { return au_arg(t)->is_unsigned; }
+bool is_ptr     (Au t) { return au_arg(t)->is_pointer; }
+bool is_enum    (Au t) { return au_arg(t)->is_enum; }
+bool is_type    (Au t) { return au_arg(t)->member_type == AU_MEMBER_TYPE; }
+
+
 shape shape_with_array(shape a, array dims) {
     num count = len(dims);
     each (dims, Au, e) {
@@ -482,6 +504,22 @@ struct _Au_combine {
 static struct _Au_combine* member_pool;
 static int                 n_members;
 
+Au_t Au_lexical(array lex, symbol f) {
+    for (int i = len(lex) - 1; i >= 0; i--) {
+        Au_t au = lex->origin[i];
+        while (au) {
+            for (int ii = 0; ii < au->members.count; ii++) {
+                Au_t m = au->members.origin[ii];
+                if (m->ident && strcmp(m->ident, f) == 0)
+                    return m;
+            }
+            if (!is_class(au))     break;
+            if (au->context == au) break;
+            au = au->context;
+        }
+    }
+    return null;
+}
 
 Au_t Au_register(Au_t type, symbol ident, u32 member_type, u32 traits) {
     if (n_members == 0) {
@@ -493,7 +531,7 @@ Au_t Au_register(Au_t type, symbol ident, u32 member_type, u32 traits) {
     cur->info.refs = 1;
 
     Au_t au = &cur->type;
-    au->ident = strdup(ident);
+    au->ident = ident ? strdup(ident) : null;
     au->member_type = member_type;
     au->traits = traits;
 
@@ -514,7 +552,7 @@ Au_t Au_register_class(Au_t type, symbol ident) {
     return Au_register(type, ident, AU_MEMBER_TYPE, AU_TRAIT_CLASS);
 }
 
-Au_t Au_register_struct(Au_t type, symbol ident, u32 traits) {
+Au_t Au_register_struct(Au_t type, symbol ident) {
     return Au_register(type, ident, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
 }
 
@@ -528,12 +566,17 @@ Au_t Au_register_pointer(Au_t ref, symbol ident) {
 }
 
 Au_t Au_register_enum(Au_t type, symbol ident, u32 traits) {
+    return Au_register(type, ident, AU_MEMBER_TYPE, AU_TRAIT_ENUM);
 }
 
-Au_t Au_register_enum_value(Au_t type, symbol ident, object value) {
+Au_t Au_register_enum_value(Au_t type, symbol ident, Au value) {
+    Au_t res = Au_register(type, ident, AU_MEMBER_ENUMV, 0);
+    res->value = value;
+    return res;
 }
 
 Au_t Au_register_member(Au_t type, symbol ident, u32 member_type, u32 traits) {
+    return Au_register(type, ident, member_type, traits);
 }
 
 cstr copy_cstr(cstr input) {
