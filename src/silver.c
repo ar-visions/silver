@@ -778,6 +778,8 @@ string silver_peek_alpha(silver a) {
 function    parse_fn  (silver mod, AFlag member_type, Au ident, OPType assign_enum);
 static model read_model(silver mod, array* expr, array* meta);
 
+model _is_record(model);
+
 enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array meta_expect) {
 
     print_tokens(mod, "read-node");
@@ -794,7 +796,7 @@ enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array
     bool      is_fn     = kw && eq(kw, "func");
     record    rec_ctx   = null;
     model     top       = top(mod);
-    record    rec_top   = !mod->cmode ? is_record(top) : null;
+    record    rec_top   = !mod->cmode ? _is_record(top) : null;
     function  f         = null;
     eargs     args      = !mod->cmode ? instanceof(top, typeid(eargs)) : null;
     silver    module    = !mod->cmode && (top->is_global) ? mod : null;
@@ -1213,6 +1215,8 @@ void silver_build_initializer(silver mod, emember mem) {
     }
 }
 
+bool is_void(model);
+
 enode parse_return(silver mod) {
     array rmeta;
     model rtype = return_type(mod, &rmeta);
@@ -1627,7 +1631,7 @@ enode silver_parse_member_expr(silver mod, emember mem) {
             consume(mod);
             while (!next_is(mod, ")")) {
                 int next;
-                array arg = read_arg(mod, mod->tokens, mod->cursor, &next);
+                array arg = read_arg(mod->tokens, mod->cursor, &next);
                 validate(arg, "macro expansion failed");
                 if (arg)
                     push(args, arg);
@@ -1693,6 +1697,8 @@ eargs parse_args(silver mod) {
     args->open = false;
     return args;
 }
+
+int ref_level(model);
 
 static enode auto_ref(enode expr, model expect) {
     silver mod = expr->mod;
@@ -2857,7 +2863,7 @@ static void write_header2(silver mod) {
 /// im a module!
 void silver_init(silver mod) {
 
-    aether2 e2 = aether2(name, string("test"));
+    aether2 e2 = aether2(name, string("test"), source, mod->source);
 
     mod->defs     = map(hsize, 8);
     mod->codegens = map(hsize, 8);

@@ -11,25 +11,7 @@ typedef LLVMMetadataRef LLVMScope;
 
 #include <aether2/import>
 
-static Au_t au_arg(Au a) {
-    if (isa(a) == typeid(etype))  return ((etype) a)->au;
-    if (isa(a) == typeid(enode2)) return ((enode2)a)->etype->au;
-    if (!isa(a)) return a;
-    fault("unhandled type: %s", isa(a)->ident);
-    return null;
-}
-
-static bool is_class   (Au t) { return au_arg(t)->is_class;  }
-static bool is_struct  (Au t) { return au_arg(t)->is_struct; }
-static bool is_func    (Au t) { return au_arg(t)->member_type == AU_MEMBER_FUNC; }
-static bool is_imethod (Au t) { return au_arg(t)->member_type == AU_MEMBER_FUNC && au_arg(t)->is_imethod; }
-static bool is_rec     (Au t) { return au_arg(t)->is_class || au_arg(t)->is_struct; }
-static bool is_prim    (Au t) { return au_arg(t)->is_primitive; }
-static bool is_sign    (Au t) { return au_arg(t)->is_signed; }
-static bool is_unsign  (Au t) { return au_arg(t)->is_unsigned; }
-static bool is_ptr     (Au t) { return au_arg(t)->is_pointer; }
-static bool is_enum    (Au t) { return au_arg(t)->is_enum; }
-static bool is_type    (Au t) { return au_arg(t)->member_type == AU_MEMBER_TYPE; }
+#define au_lexical(sym) Au_lexical(a->lexical, sym)
 
 static int  ref_level  (Au t) {
     Au_t a = au_arg(t);
@@ -52,7 +34,11 @@ static etype etype_ptr(aether2 e, Au_t a) {
     if (isa(a) == typeid(etype)) return ((etype) a)->au;
     Au_t au = a;
     if (au->ptr) return au->ptr;
-    au->ptr              = Au_register(e->au_module, AU_MEMBER_TYPE, 0);
+    if (au->ident && strcmp(au->ident, "Au_t") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
+    au->ptr              = Au_register(e->au_module, null, AU_MEMBER_TYPE, 0);
     au->ptr->is_pointer  = true;
     au->ptr->src         = au;
     au->ptr->user        = etype(mod, e, au, au->ptr);
@@ -60,25 +46,8 @@ static etype etype_ptr(aether2 e, Au_t a) {
     return au->ptr->user;
 }
 
-Au_t au_lexical(aether2 a, symbol f) {
-    for (int i = len(a->lexical) - 1; i >= 0; i--) {
-        Au_t au = a->lexical->origin[i];
-        while (au) {
-            for (int ii = 0; ii < au->members.count; ii++) {
-                Au_t m = au->members.origin[ii];
-                if (strcmp(m->ident, f) == 0)
-                    return m;
-            }
-            if (!is_class(au))     break;
-            if (au->context == au) break;
-            au = au->context;
-        }
-    }
-    return null;
-}
-
 etype etype_lexical(aether2 a, symbol f) {
-    Au_t au = au_lexical(a, f);
+    Au_t au = au_lexical(f);
     return au ? au->user : null;
 }
 
@@ -102,7 +71,7 @@ LLVMTypeRef lltype(Au a) {
         verify(((etype) a)->type, "no type found on %s", ((etype)a)->au->ident);
         au = ((etype) a)->au;
     }
-    else if (isa(a) == typeid(enode2)) return ((enode2)a)->etype->type;
+    else if (isa(a) == typeid(enode2)) return ((enode2)a)->t->type;
     else if (!isa(a)) {
         verify(((etype)(((Au_t)a)->user))->type,
             "no type found on %s", ((Au_t)a)->ident);
@@ -129,68 +98,66 @@ Au_t arg_type(Au_t au) {
     return res;
 }
 
-etype etype_create_schema(etype t) {
-    aether2 a = t->mod;
-    if (t->schema) return t->schema;
-
-    Au_t au = t->au;
-    t->schema  = etype(mod, t->mod, au, au->schema, is_schema, true);
-    au->schema = Au_register(a->au_module, au->ident, AU_MEMBER_TYPE, AU_TRAIT_SCHEMA);
-
-    Au_t base = etype_lexical(a, "Au_t");
-    for (int i = 0; i < base->members.count; i++) {
-        Au_t au_mem  = base->members.origin[i];
-
-        // this is the last member (function table), if that changes, we no longer break
-        if (au_mem->ident && strcmp(au_mem->ident, "ft") == 0) {
-            Au_t new_ft = Au_register(au->schema, "ft", AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
-
-            array cl = etype_class_list(t);
-            each (cl,  etype, tt) {
-                for (int ai = 0; ai < tt->au->members.count; ai++) {
-                    Au_t ai_mem = tt->au->members.origin[ai];
-                    if (ai_mem->member_type != AU_MEMBER_FUNC)
-                        continue;
-                    
-                    Au_t fn = Au_register(new_ft, null, AU_MEMBER_FUNC, AU_TRAIT_FUNCPTR);
-                    fn->traits = ai_mem->traits;
-                    fn->rtype  = ai_mem->rtype;
-
-                    for (int arg = 0; arg < ai_mem->args.count; arg++) {
-                        Au_t arg_src = ai_mem->args.origin[arg];
-                        Au_t arg_t   = arg_type(arg_src);
-                        array_qpush(&fn->args, arg_t);
-                    }
-                }
-            }
-            break;
-        }
-        Au_t new_mem = Au_alloc_member(au->schema);
-        *new_mem = *au_mem;
-        new_mem->context = au; // copy entire member and reset for our for context
-    }
-    return t->schema;
-}
-
 none etype_implement(etype t);
 
-// this is the declare
+// this is the declare (this comment stays)
 none etype_init(etype t) {
     aether2 a   = t->mod; // silver's mod will be a delegate to aether2, not inherited
     Au_t    au  = t->au;
     bool  named = au->ident && strlen(au->ident);
 
+    if (t->is_schema) {
+        Au_t reference = t->au; // lets take control of the type given, so we may initialize with our schema
+        au = t->au = Au_register(a->au_module, fmt("%s_t", au->ident)->chars,
+            AU_MEMBER_TYPE, AU_TRAIT_SCHEMA);
+        au->user = hold(t);
+
+        // do this for Au types
+        Au_t base = etype_lexical(a, "Au_t");
+        for (int i = 0; i < base->members.count; i++) {
+            Au_t au_mem  = base->members.origin[i];
+
+            // this is the last member (function table), if that changes, we no longer break
+            if (au_mem->ident && strcmp(au_mem->ident, "ft") == 0) {
+                Au_t new_ft = Au_register(au->schema, "ft", AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
+
+                array cl = etype_class_list(t);
+                each (cl,  etype, tt) {
+                    for (int ai = 0; ai < tt->au->members.count; ai++) {
+                        Au_t ai_mem = tt->au->members.origin[ai];
+                        if (ai_mem->member_type != AU_MEMBER_FUNC)
+                            continue;
+                        
+                        Au_t fn = Au_register(new_ft, null, AU_MEMBER_FUNC, AU_TRAIT_FUNCPTR);
+                        fn->traits = ai_mem->traits;
+                        fn->rtype  = ai_mem->rtype;
+
+                        for (int arg = 0; arg < ai_mem->args.count; arg++) {
+                            Au_t arg_src = ai_mem->args.origin[arg];
+                            Au_t arg_t   = arg_type(arg_src);
+                            array_qpush(&fn->args, arg_t);
+                        }
+                    }
+                }
+                break;
+            }
+            Au_t new_mem = Au_register(reference, au_mem->ident, au_mem->member_type, au_mem->traits);
+            *new_mem = *au_mem; // i never trust these things, or myself to remember the members
+            new_mem->context = reference; // copy entire member and reset for our for context
+        }
+
+        return;
+    }
+    
     au->member_type = AU_MEMBER_TYPE;
     au->user = hold(t);
 
-    if (t->is_schema) {
-        // we already did the work in create_schema
-    } else if (au->is_pointer && au->src && !au->src->is_primitive) {
+    if (au->is_pointer && au->src && !au->src->is_primitive) {
         t->type = LLVMPointerType(au->src->user->type, 0);
     } else if (is_rec(t) || au == typeid(Au_t)) {
         t->type = named ? LLVMStructCreateNamed(a->module_ctx, au->ident) : null;
     } else if (is_enum(t)) {
-        t->type = lltype(t->au->src ? t->au->src : typeid(i32));
+        t->type = lltype(au->src ? au->src : typeid(i32));
     }
     else if (au == typeid(f32))  t->type = LLVMFloatType();
     else if (au == typeid(f64))  t->type = LLVMDoubleType();
@@ -224,7 +191,7 @@ none etype_init(etype t) {
         LLVMTypeRef fn_type = LLVMFunctionType(LLVMVoidType(), NULL, 0, 0);
         t->type = LLVMPointerType(fn_type, 0);
     } else if (au == typeid(hook)) {
-        Au_t e_A = au_lexical(a, "Au");
+        Au_t e_A = au_lexical("Au");
         if (!e_A->user) {
             e_A->user = etype(mod, a, au, e_A);
             etype_implement((etype)e_A->user); // move this to proper place
@@ -233,13 +200,13 @@ none etype_init(etype t) {
         LLVMTypeRef hook_type = LLVMFunctionType(lltype(e_A), param_types, 1, 0);
         t->type = LLVMPointerType(hook_type, 0);
     } else if (au == typeid(callback)) {
-        Au_t e_A = au_lexical(a, "Au");
+        Au_t e_A = au_lexical("Au");
         LLVMTypeRef param_types[] = { lltype(e_A), lltype(e_A) };
         LLVMTypeRef cb_type = LLVMFunctionType(
             lltype(e_A), param_types, 2, 0);
         t->type = LLVMPointerType(cb_type, 0);
     } else if (au == typeid(callback_extra)) {
-        Au_t e_A = au_lexical(a, "Au");
+        Au_t e_A = au_lexical("Au");
         LLVMTypeRef param_types[] = { lltype(e_A), lltype(e_A), lltype(e_A) };
         LLVMTypeRef cb_type = LLVMFunctionType(lltype(e_A), param_types, 3, 0);
         t->type = LLVMPointerType(cb_type, 0);
@@ -262,10 +229,10 @@ none etype_init(etype t) {
     else if (au == typeid(ARef)) {
         au->src = typeid(Au);
         au->src->ptr = au;
-        Au_t au_type = au_lexical(a, "Au");
+        Au_t au_type = au_lexical("Au");
         t->type = LLVMPointerType(lltype(au_type), 0);
     }
-    else if (au == typeid(Au_ts))    t->type = lltype(au_lexical(a, "Au_ts"));
+    else if (au == typeid(Au_ts))    t->type = lltype(au_lexical("Au_ts"));
     else if (au == typeid(bf16))     t->type = LLVMBFloatTypeInContext(a->module_ctx);
     else if (au == typeid(fp16))     t->type = LLVMHalfTypeInContext(a->module_ctx);
     else if (au->is_pointer) {
@@ -331,7 +298,8 @@ none etype_implement(etype t) {
         }
         etype mt = null;
         if (is_class(t)) {
-            mt = etype_ptr(a, etype_create_schema(t)->au)->type;
+            etype schema = etype(mod, a, au, t->au, is_schema, true);
+            mt = etype_ptr(a, schema->au)->type;
         } else if (count == 0)
              mt = etype_lexical(a, "u8")->type;
         if (mt) members[count++] = mt;
@@ -431,8 +399,13 @@ static void import_Au(aether2 a, path lib) {
             if (proceed) {
                 Au_t m_isa = isa(m);
                 print("init primitive %o", m);
-                if (ff->init && !m->user)
+                if (ff->init && !m->user) {
+                    if (au->ident && strcmp(au->ident, "Au_t") == 0) {
+                        int test2 = 2;
+                        test2    += 2;
+                    }
                     m->user = etype(mod, a, au, m);
+                }
                 if (ff->impl)
                     etype_implement((etype)m->user);
             }
@@ -446,6 +419,55 @@ none aether2_init(aether2 a) {
     LLVMInitializeNativeTarget();
     LLVMInitializeNativeAsmPrinter();
     LLVMInitializeNativeAsmParser();
+
+    if ( a->source) a->source = absolute(a->source);
+    if (!a->install) {
+        cstr import = getenv("IMPORT");
+        if (import)
+            a->install = f(path, "%s", import);
+        else {
+            path   exe = path_self();
+            path   bin = parent_dir(exe);
+            path   install = absolute(f(path, "%o/..", bin));
+            a->install = install;
+        }
+    }
+    a->include_paths    = a(f(path, "%o/include", a->install));
+    a->sys_inc_paths    = a();
+    a->sys_exc_paths    = a();
+#ifdef _WIN32
+    a->sys_inc_paths = a(
+        f(path, "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/include"),
+        f(path, "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/um"),
+        f(path, "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/ucrt"),
+        f(path, "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/shared"));
+    a->lib_paths = a(
+        f(path, "%o/bin"),
+        f(path, "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/lib/x64"),
+        f(path, "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.22621.0/ucrt/x64"),
+        f(path, "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.22621.0/um/x64"));
+#elif defined(__linux)
+    a->sys_inc_paths = a(f(path, "/usr/include"), f(path, "/usr/include/x86_64-linux-gnu"));
+    a->lib_paths     = a();
+#elif defined(__APPLE__)
+    string sdk          = run("xcrun --show-sdk-path");
+    string toolchain    = f(string, "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain"); // run("xcrun --show-toolchain-path");
+    a->isystem          =   f(path, "%o/usr/include", toolchain);
+    a->sys_inc_paths    = a(f(path, "%o/usr/include", toolchain),
+                            f(path, "%o/usr/local/include", sdk),
+                            f(path, "%o/usr/lib/clang/14.0.3/include", toolchain));
+    a->sys_exc_paths    = a(f(path, "%o/usr/include", sdk),
+                            f(path, "%o/usr/include", toolchain));
+    a->lib_paths        = a(f(path, "%o/usr/lib", sdk));
+    a->framework_paths  = a(f(path, "%o/System/Library/Frameworks", sdk));
+    a->isysroot         =   f(path, "%o/", sdk);
+    a->resource_dir     =   f(path, "%o/usr/lib/clang/14.0.3", toolchain);
+#endif
+
+    //push(a->include_paths, f(path, "%o/lib/clang/22/include", a->install));
+    push(a->lib_paths, f(path, "%o/lib", a->install));
+    path src_path = parent_dir(a->source);
+    push(a->include_paths, src_path);
 
     a->registry       = array(256);
     a->libs           = array();
@@ -481,6 +503,19 @@ none aether2_dealloc(aether2 a) {
     LLVMDisposeMessage  (a->target_triple);
 }
 
-define_class(aether2, Au)
-define_class(enode2,  Au)
-define_class(etype,   Au)
+Au_t etype_cast_Au_t(etype t) {
+    return t->au;
+}
+
+Au_t enode2_cast_Au_t(enode2 e) {
+    return e->t->au;
+}
+
+Au_t aether2_cast_Au_t(aether2 a) {
+    return a->au_module;
+}
+
+define_class(aether2,    Au)
+define_class(enode2,     Au)
+define_class(etype,      Au)
+define_class(aclang2_cc, Au)
