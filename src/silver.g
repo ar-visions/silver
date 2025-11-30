@@ -1,2 +1,2 @@
 type:       app
-modules:    Au net aether aether2
+modules:    Au net aether

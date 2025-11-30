@@ -138,7 +138,9 @@
       "exception": "cpp",
       "iterator": "cpp",
       "numeric": "cpp",
-      "thread": "cpp"
+      "thread": "cpp",
+      "target.h": "c",
+      "*.bak": "c"
     }
   }
 }

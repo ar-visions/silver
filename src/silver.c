@@ -4,6 +4,7 @@
 
 // for Michael
 
+/*
 #define emodel(MDL) ({ \
     emember  m = aether_lookup2(mod, string(MDL), null); \
     model mdl = (m && m->is_type) ? m->mdl : null; \
@@ -27,11 +28,6 @@
 
 // implement automatic .c bindings; for methods without a function, we may bind the method with .c source of the same name
 // 
-
-static map   operators;
-static array keywords;
-static array assign;
-static array compare;
 
 static bool  is_alpha(Au any);
 static enode parse_expression(silver mod, model expect_mdl, array meta);
@@ -61,109 +57,6 @@ void print_token_array(silver mod, array tokens) {
 
 i32 read_enum(silver mod, i32 def, Au_t etype);
 
-typedef struct {
-    OPType ops   [2];
-    string method[2];
-    string token [2];
-} precedence;
-
-static precedence levels[] = {
-    { { OPType__mul,       OPType__div        } },
-    { { OPType__add,       OPType__sub        } },
-    { { OPType__right,     OPType__left       } },
-    { { OPType__greater,   OPType__less       } },
-    { { OPType__greater_eq, OPType__less_eq   } },
-    { { OPType__equal,     OPType__not_equal  } },
-    { { OPType__is,        OPType__inherits   } },
-    { { OPType__xor,       OPType__xor        } },
-    { { OPType__and,       OPType__or         } },
-    { { OPType__bitwise_and, OPType__bitwise_or } },
-    { { OPType__value_default, OPType__cond_value } } // i find cond-value to be odd, but ?? (value_default) should work for most
-};
-
-
-static string op_lang_token(string name) {
-    pairs(operators, i) {
-        string token = i->key;
-        string value = i->value;
-        if (eq(name, value->chars))
-            return token;
-    }
-    fault("invalid operator name: %o", name);
-    return null;
-}
-
-
-static void initialize() {
-    keywords = array_of_cstr(
-        "class",    "struct",   "public", "intern",
-        "import",   "export",   "typeid",   "context",
-        "is",       "inherits", "ref",
-        "const",    "require",  "no-op",    "return",   "->",    "::",     "...",
-        "asm",      "if",       "switch",   "any",      "enum",
-        "ifdef",    "else",     "while",    "cast",     "forge", "try", "throw", "catch", "finally",
-        "for",      "loop",     "func",     "operator", "index", "ctr",
-        null);
-    
-    assign = array_of_cstr(
-        "=",  ":",  "+=", "-=", "*=",  "/=", 
-        "|=", "&=", "^=", "%=", ">>=", "<<=",
-        null);
-    
-    compare = array_of_cstr(
-        "==", "!=", "<=>", ">=", "<=", ">", "<",
-        null);
-    
-    operators = map_of( // aether needs some operator bindings
-        "+",        string("add"),
-        "-",        string("sub"),
-        "*",        string("mul"),
-        "/",        string("div"),
-        "||",       string("or"),
-        "&&",       string("and"),
-        "|",        string("bitwise_or"),
-        "&",        string("bitwise_and"),
-        "^",        string("xor"),
-        ">>",       string("right"),
-        "<<",       string("left"),
-        ">=",       string("greater_eq"),
-        ">",        string("greater"),
-        "<=",       string("less_eq"),
-        "<",        string("less"),
-        "??",       string("value_default"),
-        "?:",       string("cond_value"),
-        "=",        string("assign"),
-        ":",        string("assign"),     // dynamic behavior on this, turns into "equal" outside of parse-assignment
-        "%=",       string("assign_mod"),
-        "+=",       string("assign_add"),
-        "-=",       string("assign_sub"),
-        "*=",       string("assign_mul"),
-        "/=",       string("assign_div"),
-        "|=",       string("assign_or"),
-        "&=",       string("assign_and"),
-        "^=",       string("assign_xor"),
-        ">>=",      string("assign_right"),
-        "<<=",      string("assign_left"),
-        "->",       string("resolve_member"),
-        "==",       string("compare"),
-        "~ ",       string("equal"), // placeholder impossible match, just so we have the enum ordering
-        "!=",       string("not_equal"),
-        "is",       string("is"),
-        "inherits", string("inherits"),
-        null);
-    
-    for (int i = 0; i < sizeof(levels) / sizeof(precedence); i++) {
-        precedence *level = &levels[i];
-        for (int j = 0; j < 2; j++) {
-            OPType op        = level->ops[j];
-            string e_name    = e_str(OPType, op);
-            string op_name   = mid(e_name, 1, len(e_name) - 1);
-            string op_token  = op_lang_token(op_name);
-            level->method[j] = op_name; // replace the placeholder; assignment is outside of precedence; the camel has spoken
-            level->token [j] = eq(op_name, "equal") ? string("==") : op_token;
-        }
-    }
-}
 
 enode parse_statements(silver mod, bool unique_members);
 enode parse_statement(silver mod);
@@ -1086,19 +979,6 @@ enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array
             mem->initializer = hold(expr);
 
             // lets read meta types here, at the record member level
-            /*
-            if (next_is(mod, ",")) {
-                mem->meta_args = array(alloc, 32, assorted, true);
-                consume(mod);
-                while (true) {
-                    token t = peek(mod);
-                    model f = emodel(t->chars);
-                    if (!f) break;
-                    push(mem->meta_args, f);
-                    consume(mod);
-                }
-                validate(len(mem->meta_args), "expected one or more types after ','");
-            }*/
 
         } else if (mem && assign_type) {
             mod->left_hand = false;
@@ -2512,12 +2392,7 @@ static void write_header(silver mod) {
 
     // we still need to parse aliases where we subclass
     // LA
-    /*
-    for external uses
-    f.write(f"#ifndef {class_name}_intern\n")
-    f.write(f"#define {class_name}_intern(AA,YY,...) AA##_schema(AA,YY##_EXTERN, __VA_ARGS__)\n")
-    f.write(f"#endif\n")
-    */
+
     FILE* module_f = fopen(cstring(module_path), "wb");
     FILE* intern_f = fopen(cstring(intern_path), "wb");
     FILE* public_f = fopen(cstring(public_path), "wb");
@@ -2860,102 +2735,6 @@ static void write_header2(silver mod) {
     fclose(f);
 }
 
-/// im a module!
-void silver_init(silver mod) {
-
-    aether2 e2 = aether2(name, string("test"), source, mod->source);
-
-    mod->defs     = map(hsize, 8);
-    mod->codegens = map(hsize, 8);
-    mod->import_cache = map(hsize, 8);
-
-    bool is_once = mod->single; // -s or --single [ single build ]
-
-    if (!mod->source) {
-        fault("required argument: source-file");
-    }
-    if ( mod->source)  mod->source  = absolute(mod->source);
-    if (!mod->install) {
-        cstr import = getenv("IMPORT");
-        if (import)
-            mod->install = f(path, "%s", import);
-        else {
-            path   exe = path_self();
-            path   bin = parent_dir(exe);
-            path   install = absolute(f(path, "%o/..", bin));
-            mod->install = install;
-        }
-    }
-    build_info(mod, mod->install);
-    mod->project_path = parent_dir(mod->source);
-
-    verify(dir_exists ("%o", mod->install), "silver-import location not found");
-    verify(len        (mod->source),       "no source given");
-    verify(file_exists("%o", mod->source),  "source not found: %o", mod->source);
-
-    verify(exists(mod->source), "source (%o) does not exist", mod->source);
-    verify(mod->std == language_silver || eq(ext(mod->source), "sf"),
-        "only .sf extension supported; specify --std silver to override");
-    
-    cstr _SRC    = getenv("SRC");
-    cstr _DBG    = getenv("DBG");
-    cstr _IMPORT = getenv("IMPORT");
-    verify(_IMPORT, "silver requires IMPORT environment");
-
-    mod->mod        = mod;
-    mod->spaces     = array(32);
-    mod->parse_f    = parse_tokens;
-    mod->parse_expr = parse_expression;
-    mod->read_model = read_model;
-    mod->src_loc = absolute(path(_SRC ? _SRC : "."));
-    verify(dir_exists("%o", mod->src_loc), "SRC path does not exist");
-
-    path        af = path_cwd();
-    path   install = path(_IMPORT);
-    git_remote_info(af, &mod->git_service, &mod->git_owner, &mod->git_project);
-    
-    bool retry   = false;
-    i64  mtime   = modified_time(mod->source);
-    do {
-        if (retry) {
-            print("awaiting iteration: %o", mod->source);
-            hold_members(mod);
-            Au_recycle();
-            mtime = path_wait_for_change(mod->source, mtime, 0);
-            print("rebuilding...");
-            drop(mod->tokens);
-            drop(mod->stack);
-            reinit_startup(mod);
-        }
-        retry = false;
-        mod->tokens  = tokens(
-            target, mod, parser, parse_tokens, input, mod->source);
-        mod->stack   = array(4);
-        mod->implements = array();
-        
-        // our verify infrastructure is now production useful
-        attempt() {
-            string m = stem(mod->source);
-            path i_gen    = f(path, "%o/%o.i",  mod->project_path, m);
-            path c_file   = f(path, "%o/%o.c",  mod->project_path, m);
-            path cc_file  = f(path, "%o/%o.cc", mod->project_path, m);
-            path files[2] = { c_file, cc_file };
-            for (int i = 0; i < 2; i++)
-                if (exists(files[i])) {
-                    if (!mod->implements) mod->implements = array(2);
-                    push(mod->implements, files[i]);
-                }
-            parse(mod);
-            build(mod);
-            
-            if (len(mod->implements))
-                write_header(mod);
-        } on_error() {
-            retry = !is_once;
-        }
-        finally()
-    } while (retry);
-}
 
 silver silver_load_module(silver mod, path uri) {
     emember mem = emember(mod, mod, name, stem(uri));
@@ -3723,48 +3502,6 @@ enode import_parse(silver mod) {
     return mem;
 }
 
-
-/*
-Au request2(uri url, map args) {
-    map     st_headers   = new(map);
-    Au       null_content = null;
-    map     headers      = contains(args, "headers") ? (map)get (args, "headers") : st_headers;
-    Au       content      = contains(args, "content") ? get (args, "content") : null_content;
-    web     type         = contains(args, "method")  ? e_val(web, get(args, "method")) : web_Get;
-    uri     query        = url;
-
-    query->mtype = type;
-    verify(query->mtype != web_undefined, "undefined web method type");
-
-    sock client = sock(query);
-    print("(net) request: %o", url);
-    if (!connect_to(client))
-        return null;
-
-    // Send request line
-    string method = e_str(web, query->mtype);
-    send_object(client, f(string, "%o %o HTTP/1.1\r\n", method, query->query));
-
-    // Default headers
-    if (!contains(headers, "User-Agent"))      set(headers, "User-Agent", "silver");
-    if (!contains(headers, "Accept"))          set(headers, "Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*;q=0.8");
-    if (!contains(headers, "Accept-Language")) set(headers, "Accept-Language", "en-US,en;q=0.9");
-    if (!contains(headers, "Accept-Encoding")) set(headers, "Accept-Encoding", "gzip, deflate, br");
-    if (!contains(headers, "Host"))            set(headers, "Host", query->host);
-
-    message request = message(content, content, headers, headers, query, query);
-    write(request, client);
-
-    message response = message(client);
-    close(client);
-
-    return response;
-}*/
-
-
-// todo: integrate the ssl into chatgpt type
-// implement 'using' keyword to facilitate this
-
 int main(int argc, cstrs argv) {
     Au_engage(argv);
     silver mod = silver(argv);
@@ -3909,9 +3646,219 @@ array chatgpt_generate_fn(chatgpt a, function f, array query) {
     return res;
 }
 
+*/
+
+static map   operators;
+static array keywords;
+static array assign;
+static array compare;
+
+
+/// im a module!
+void silver_init(silver mod) {
+
+    aether e2 = aether(name, string("test"), source, mod->source);
+
+    /*
+    mod->defs     = map(hsize, 8);
+    mod->codegens = map(hsize, 8);
+    mod->import_cache = map(hsize, 8);
+
+    bool is_once = mod->single; // -s or --single [ single build ]
+
+    if (!mod->source) {
+        fault("required argument: source-file");
+    }
+    if ( mod->source)  mod->source  = absolute(mod->source);
+    if (!mod->install) {
+        cstr import = getenv("IMPORT");
+        if (import)
+            mod->install = f(path, "%s", import);
+        else {
+            path   exe = path_self();
+            path   bin = parent_dir(exe);
+            path   install = absolute(f(path, "%o/..", bin));
+            mod->install = install;
+        }
+    }
+    build_info(mod, mod->install);
+    mod->project_path = parent_dir(mod->source);
+
+    verify(dir_exists ("%o", mod->install), "silver-import location not found");
+    verify(len        (mod->source),       "no source given");
+    verify(file_exists("%o", mod->source),  "source not found: %o", mod->source);
+
+    verify(exists(mod->source), "source (%o) does not exist", mod->source);
+    verify(mod->std == language_silver || eq(ext(mod->source), "sf"),
+        "only .sf extension supported; specify --std silver to override");
+    
+    cstr _SRC    = getenv("SRC");
+    cstr _DBG    = getenv("DBG");
+    cstr _IMPORT = getenv("IMPORT");
+    verify(_IMPORT, "silver requires IMPORT environment");
+
+    mod->mod        = mod;
+    mod->spaces     = array(32);
+    mod->parse_f    = parse_tokens;
+    mod->parse_expr = parse_expression;
+    mod->read_model = read_model;
+    mod->src_loc = absolute(path(_SRC ? _SRC : "."));
+    verify(dir_exists("%o", mod->src_loc), "SRC path does not exist");
+
+    path        af = path_cwd();
+    path   install = path(_IMPORT);
+    git_remote_info(af, &mod->git_service, &mod->git_owner, &mod->git_project);
+    
+    bool retry   = false;
+    i64  mtime   = modified_time(mod->source);
+    do {
+        if (retry) {
+            print("awaiting iteration: %o", mod->source);
+            hold_members(mod);
+            Au_recycle();
+            mtime = path_wait_for_change(mod->source, mtime, 0);
+            print("rebuilding...");
+            drop(mod->tokens);
+            drop(mod->stack);
+            reinit_startup(mod);
+        }
+        retry = false;
+        mod->tokens  = tokens(
+            target, mod, parser, parse_tokens, input, mod->source);
+        mod->stack   = array(4);
+        mod->implements = array();
+        
+        // our verify infrastructure is now production useful
+        attempt() {
+            string m = stem(mod->source);
+            path i_gen    = f(path, "%o/%o.i",  mod->project_path, m);
+            path c_file   = f(path, "%o/%o.c",  mod->project_path, m);
+            path cc_file  = f(path, "%o/%o.cc", mod->project_path, m);
+            path files[2] = { c_file, cc_file };
+            for (int i = 0; i < 2; i++)
+                if (exists(files[i])) {
+                    if (!mod->implements) mod->implements = array(2);
+                    push(mod->implements, files[i]);
+                }
+            parse(mod);
+            build(mod);
+            
+            if (len(mod->implements))
+                write_header(mod);
+        } on_error() {
+            retry = !is_once;
+        }
+        finally()
+    } while (retry);
+    */
+}
+
+typedef struct {
+    OPType ops   [2];
+    string method[2];
+    string token [2];
+} precedence;
+
+static precedence levels[] = {
+    { { OPType__mul,       OPType__div        } },
+    { { OPType__add,       OPType__sub        } },
+    { { OPType__right,     OPType__left       } },
+    { { OPType__greater,   OPType__less       } },
+    { { OPType__greater_eq, OPType__less_eq   } },
+    { { OPType__equal,     OPType__not_equal  } },
+    { { OPType__is,        OPType__inherits   } },
+    { { OPType__xor,       OPType__xor        } },
+    { { OPType__and,       OPType__or         } },
+    { { OPType__bitwise_and, OPType__bitwise_or } },
+    { { OPType__value_default, OPType__cond_value } } // i find cond-value to be odd, but ?? (value_default) should work for most
+};
+
+static string op_lang_token(string name) {
+    pairs(operators, i) {
+        string token = i->key;
+        string value = i->value;
+        if (eq(name, value->chars))
+            return token;
+    }
+    fault("invalid operator name: %o", name);
+    return null;
+}
+
+static void initialize() {
+    keywords = array_of_cstr(
+        "class",    "struct",   "public", "intern",
+        "import",   "export",   "typeid",   "context",
+        "is",       "inherits", "ref",
+        "const",    "require",  "no-op",    "return",   "->",    "::",     "...",
+        "asm",      "if",       "switch",   "any",      "enum",
+        "ifdef",    "else",     "while",    "cast",     "forge", "try", "throw", "catch", "finally",
+        "for",      "loop",     "func",     "operator", "index", "ctr",
+        null);
+    
+    assign = array_of_cstr(
+        "=",  ":",  "+=", "-=", "*=",  "/=", 
+        "|=", "&=", "^=", "%=", ">>=", "<<=",
+        null);
+    
+    compare = array_of_cstr(
+        "==", "!=", "<=>", ">=", "<=", ">", "<",
+        null);
+    
+    operators = map_of( // aether needs some operator bindings
+        "+",        string("add"),
+        "-",        string("sub"),
+        "*",        string("mul"),
+        "/",        string("div"),
+        "||",       string("or"),
+        "&&",       string("and"),
+        "|",        string("bitwise_or"),
+        "&",        string("bitwise_and"),
+        "^",        string("xor"),
+        ">>",       string("right"),
+        "<<",       string("left"),
+        ">=",       string("greater_eq"),
+        ">",        string("greater"),
+        "<=",       string("less_eq"),
+        "<",        string("less"),
+        "??",       string("value_default"),
+        "?:",       string("cond_value"),
+        "=",        string("assign"),
+        ":",        string("assign"),     // dynamic behavior on this, turns into "equal" outside of parse-assignment
+        "%=",       string("assign_mod"),
+        "+=",       string("assign_add"),
+        "-=",       string("assign_sub"),
+        "*=",       string("assign_mul"),
+        "/=",       string("assign_div"),
+        "|=",       string("assign_or"),
+        "&=",       string("assign_and"),
+        "^=",       string("assign_xor"),
+        ">>=",      string("assign_right"),
+        "<<=",      string("assign_left"),
+        "->",       string("resolve_member"),
+        "==",       string("compare"),
+        "~ ",       string("equal"), // placeholder impossible match, just so we have the enum ordering
+        "!=",       string("not_equal"),
+        "is",       string("is"),
+        "inherits", string("inherits"),
+        null);
+    
+    for (int i = 0; i < sizeof(levels) / sizeof(precedence); i++) {
+        precedence *level = &levels[i];
+        for (int j = 0; j < 2; j++) {
+            OPType op        = level->ops[j];
+            string e_name    = e_str(OPType, op);
+            string op_name   = mid(e_name, 1, len(e_name) - 1);
+            string op_token  = op_lang_token(op_name);
+            level->method[j] = op_name; // replace the placeholder; assignment is outside of precedence; the camel has spoken
+            level->token [j] = eq(op_name, "equal") ? string("==") : op_token;
+        }
+    }
+}
+
 define_class (chatgpt, codegen)
-define_class (silver, aether)
-define_class (export, model)
-define_class (import, model) // we should put these in ext/*.c to exemplify add-ons
+define_class (silver,  aether)
+
+//define_class (export, model)
+//define_class (import, model) // we should put these in ext/*.c to exemplify add-ons
 
 module_init  (initialize)

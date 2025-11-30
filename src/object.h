@@ -26,7 +26,7 @@ enum AU_MEMBER {
     AU_MEMBER_ENUMV     = 8,
     AU_MEMBER_OVERRIDE  = 9,
     AU_MEMBER_IS_ATTR   = 10,
-    AU_MEMBER_FORMATTER = 11,
+    AU_MEMBER_ARG       = 11,
 };
 
 typedef enum AU_MEMBER AFlag;
@@ -57,7 +57,10 @@ enum AU_TRAIT {
     AU_TRAIT_IFINAL    = 1 << 22,
     AU_TRAIT_FUNCPTR   = 1 << 23,
     AU_TRAIT_SCHEMA    = 1 << 24,
-    AU_TRAIT_VARGS     = 1 << 25
+    AU_TRAIT_VARGS     = 1 << 25,
+    AU_TRAIT_VOID      = 1 << 26,
+    AU_TRAIT_STATIC    = 1 << 27,
+    AU_TRAIT_FORMATTER = 1 << 28,
 };
 
 typedef bool(*global_init_fn)();
@@ -149,6 +152,10 @@ typedef struct _Au_t {
             u32 is_ifinal    : 1; // AU_TRAIT_IFINAL    = 1 << 22,
             u32 is_funcptr   : 1;
             u32 is_schema    : 1;
+            u32 is_vargs     : 1;
+            u32 is_void      : 1;
+            u32 is_static    : 1;
+            u32 is_formatter : 1;
         };
         u32 traits;
     };
