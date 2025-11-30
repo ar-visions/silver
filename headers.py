@@ -256,6 +256,17 @@ def generate_methods_header(module, header_file, methods_header):
                 f.write(f"#ifndef {method}\n")
                 f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->ft.{method}(_i_, ## __VA_ARGS__); }})\n")
                 f.write(f"#endif\n")
+
+        method_pattern = r'M\s*\([^,]*,[^,]*,\s*i\s*,\s*method\s*,[^,]*,[^,]*,\s*([a-zA-Z_][a-zA-Z0-9_]*)'
+        method_matches = find_declarations(header_file, method_pattern)
+        
+        for method in method_matches:
+            method = method.strip()
+            if method and method not in processed_methods:
+                processed_methods.add(method)
+                f.write(f"#ifndef {method}\n")
+                f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->ft.{method}(_i_, ## __VA_ARGS__); }})\n")
+                f.write(f"#endif\n")
         
         # Process i_vargs methods
         vargs_pattern = r'i_vargs\s*\([^,]*,[^,]*,[^,]*,[^,]*,\s*([a-zA-Z_][a-zA-Z0-9_]*)'
@@ -379,7 +390,6 @@ def process_modules(paths):
         #if (not os.path.exists(intern_header) or 
         #    os.path.getmtime(str(source_file)) > os.path.getmtime(intern_header)):
         generate_intern_header(module, str(source_file), intern_header)
-        print('doing things')
 
 def handle_src_directive(paths, env_vars):
     """Handle src directive symlink creation"""

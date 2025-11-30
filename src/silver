@@ -1,7 +1,21 @@
 #ifndef _silver_
 #define _silver_
 
-// requires <aether>
+#define silver_schema(X,Y,...)\
+    M(X,Y, i, prop,     public, i32,    expr_level) \
+    M(X,Y, i, prop,     public, i32,    parens_depth) \
+    M(X,Y, i, prop,     public, string, git_service) \
+    M(X,Y, i, prop,     public, string, git_owner) \
+    M(X,Y, i, prop,     public, string, git_project) \
+    M(X,Y, i, prop,     public, string, source_raw) \
+    M(X,Y, i, override, method, init)
+declare_class_3(silver, aether, etype)
+
+#define chatgpt_schema(X,Y,...) \
+    i_override(X,Y, method, generate_fn)
+declare_class_2(chatgpt, codegen)
+
+/*
 
 #define build_state_schema(E,T,Y,...) \
     enum_value(E,T,Y, none,       0) \
@@ -80,7 +94,7 @@ forward(import)
     i_ctr     (X,Y, public,     path) \
     i_override(X,Y, method,     build_initializer) \
     i_override(X,Y, method,     init)
-declare_class_3(silver, aether, model)
+declare_class(silver)
 
 
 #define flag_schema(X,Y,...) \
@@ -98,11 +112,9 @@ declare_class(flag)
     i_prop(X,Y, public, array,   module_paths) \
     i_prop(X,Y, public, array,   include_paths) \
     s_method(X,Y, public, enode, parse, silver)
-declare_class_2(import, model)
+declare_class(import)
 
-#define chatgpt_schema(X,Y,...) \
-    i_override(X,Y, method, generate_fn)
-declare_class_2(chatgpt, codegen)
+
 
 #ifndef __cplusplus
 #define export_schema(X,Y,...) \
@@ -123,5 +135,7 @@ declare_class_2(export, model)
 //     <header> may be part of the syntax, if we are to use a specific header
 // import url -llibrary
 //     include <something>
+
+*/
 
 #endif
