@@ -2668,15 +2668,16 @@ static array compare;
 
 int main(int argc, cstrs argv) {
     Au_engage(argv);
+    // we can read defaulted args this way
+    // argv is null-term cstr-array, so one does not need argc to read it
+
+    //map a = args(argv, "install", path("."), "source", path());
     silver mod = silver(argv);
     return 0;
 }
 
-/// im a module!
+// im a module!
 void silver_init(silver mod) {
-
-    aether e2 = aether(name, string("test"), source, mod->source);
-
     /*
     mod->defs     = map(hsize, 8);
     mod->codegens = map(hsize, 8);
