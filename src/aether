@@ -7,6 +7,7 @@ forward(aether)
     M(X,Y, i, prop, public,   Au_t,             au) \
     M(X,Y, i, prop, public,   aether,           mod) \
     M(X,Y, i, prop, public,   etype,            schema) \
+    M(X,Y, i, prop, public,   tokens,           body) \
     M(X,Y, i, prop, public,   bool,             is_schema) \
     M(X,Y, i, prop, public,   bool,             is_implemented) \
     M(X,Y, i, prop, public,   i32,              size_bits) \
@@ -54,9 +55,13 @@ declare_class(etype)
     M(X,Y, i, prop,  intern, LLVMTargetRef,          target,            as, ARef) \
     M(X,Y, i, prop,  intern, LLVMTargetDataRef,      target_data,       as, ARef) \
     M(X,Y, i, prop,  intern, LLVMTargetMachineRef,   target_machine,    as, ARef) \
-    M(X,Y, i, prop,  intern, LLVMScope,              scope,             as, ARef) \
     M(X,Y, i, prop,  intern, cstr,                   target_triple) \
     M(X,Y, i, prop,  intern, array,                  registry) \
+    M(X,Y, i, prop,  public, tokens,                 tokens) \
+    M(X,Y, i, prop,  public, num,                    cursor) \
+    M(X,Y, i, prop,  public, array,                  stack) \
+    M(X,Y, i, method, public, none,   push_tokens,    tokens, num) \
+    M(X,Y, i, method, public, none,   pop_tokens,     bool) \
     M(X,Y, i, method, public, path,   lookup_include, string) \
     M(X,Y, i, method, public, path,   include,        Au, ARef) \
     M(X,Y, i, method, public, Au_t,   top_scope) \

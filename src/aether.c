@@ -13,8 +13,50 @@ typedef LLVMMetadataRef LLVMScope;
 
 #define au_lookup(sym) Au_lexical(a->lexical, sym)
 
+typedef struct tokens_data {
+    array tokens;
+    num   cursor;
+} tokens_data;
+
 none bp() {
     return;
+}
+
+
+void aether_push_tokens(aether a, tokens t, num cursor) {
+    //struct silver_f* table = isa(a);
+    tokens_data* state = Au_struct(tokens_data);
+    state->tokens = a->tokens;
+    state->cursor = a->cursor;
+    push(a->stack, state);
+    tokens_data* state_saved = (tokens_data*)last_element(a->stack);
+    a->tokens = hold(t);
+    a->cursor = cursor;
+}
+
+
+void aether_pop_tokens(aether a, bool transfer) {
+    int len = a->stack->count;
+    assert (len, "expected stack");
+    tokens_data* state = (tokens_data*)last_element(a->stack); // we should call this element or ele
+    
+    if(!transfer)
+        a->cursor = state->cursor;
+    else if (transfer && state->tokens != a->tokens) {
+        /// transfer implies we up as many tokens
+        /// as we traveled in what must be a subset
+        a->cursor += state->cursor;
+    }
+
+    if (state->tokens != a->tokens) {
+        drop(a->tokens);
+        a->tokens = state->tokens;
+    }
+    pop(a->stack);
+}
+
+void aether_push_current(aether a) {
+    push_tokens(a, a->tokens, a->cursor);
 }
 
 static int ref_level(Au t) {
@@ -120,7 +162,9 @@ none etype_init(etype t) {
     bool  named = au->ident && strlen(au->ident);
 
     if (isa(t) == typeid(aether)) {
-        t->au = Au_module(((aether)t)->name);
+        verify(a->source && len(a->source), "no source provided");
+        string name = stem(a->source);
+        t->au = Au_register_module(name->chars);
     } else if (t->is_schema) {
         au = t->au = Au_register(a->au, fmt("__%s_t", au->ident)->chars,
             AU_MEMBER_TYPE, AU_TRAIT_SCHEMA | AU_TRAIT_STRUCT);
@@ -423,21 +467,23 @@ void aether_import_models(aether a) {
         { false, true,  0, AU_TRAIT_ABSTRACT },
     };
 
-    Au_t top = top_scope(a);
-    for (int filter = 0; filter < 8; filter++) {
-        struct filter* ff = &filters[filter];
-        for (num i = 0; i < top->members.count; i++) {
-            Au_t m = top->members.origin[i];
-            bool proceed = (ff->has_bits & m->traits) == ff->has_bits && 
-                           (ff->not_bits & m->traits) == 0;
-            if (proceed) {
-                Au_t m_isa = isa(m);
-                print("init %o", m);
-                if (ff->init || ff->impl)
-                    src_init(a, m);
-                if (ff->impl) {
-                    Au_t au = cast(Au_t, m->user);
-                    etype_implement((etype)m->user);
+    for (int i = len(a->lexical) - 1; i >= 0; i--) {
+        Au_t ctx = a->lexical->origin[i];
+        for (int filter = 0; filter < 8; filter++) {
+            struct filter* ff = &filters[filter];
+            for (num i = 0; i < ctx->members.count; i++) {
+                Au_t m = ctx->members.origin[i];
+                bool proceed = (ff->has_bits & m->traits) == ff->has_bits && 
+                            (ff->not_bits & m->traits) == 0;
+                if (proceed) {
+                    Au_t m_isa = isa(m);
+                    print("init %o", m);
+                    if (ff->init || ff->impl)
+                        src_init(a, m);
+                    if (ff->impl) {
+                        Au_t au = cast(Au_t, m->user);
+                        etype_implement((etype)m->user);
+                    }
                 }
             }
         }
@@ -449,9 +495,11 @@ static void import_Au(aether a, path lib) {
     a->is_Au_import  = true;
     string  lib_name = lib ? stem(lib) : null;
 
+    // register and push new module scope if we are loading from library
     if (lib) Au_register_module(copy_cstr(lib_name->chars));
     Au_t current = Au_current_module();
-    push_scope(a, current);
+    if (current != a->au)
+        push_scope(a, current);
 
     Au_t base = au_lookup("Au_t");
 
@@ -501,6 +549,7 @@ none aether_init(aether a) {
             a->install = install;
         }
     }
+    a->stack = array(16);
     a->include_paths    = a(f(path, "%o/include", a->install));
     a->sys_inc_paths    = a();
     a->sys_exc_paths    = a();
@@ -561,6 +610,14 @@ none aether_init(aether a) {
     a->scope = a->compile_unit;
     a->builder = LLVMCreateBuilderInContext(a->module_ctx);
 
+    // push our module space to the scope
+    Au_t g = Au_global();
+    verify(g,           "globals not registered");
+    verify(a->au,       "no module registered for aether");
+    verify(g != a->au,  "aether using global module");
+
+    push_scope(a, g);
+    push_scope(a, a->au);
     import_Au(a, null);
 
     aclang_cc instance;

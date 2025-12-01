@@ -140,7 +140,8 @@
       "numeric": "cpp",
       "thread": "cpp",
       "target.h": "c",
-      "*.bak": "c"
+      "*.bak": "c",
+      "analysis.h": "c"
     }
   }
 }

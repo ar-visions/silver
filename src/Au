@@ -620,6 +620,7 @@ forward(any)
     s_method(AA,Y, public, Au,           initialize,          Au) \
     s_method(AA,Y, public, Au_t,         module,              symbol) \
     s_method(AA,Y, public, Au_t,         register_module,     symbol) \
+    s_method(AA,Y, public, Au_t,         global) \
     s_method(AA,Y, public, Au_t,         scope_lookup,        array, string) \
     s_method(AA,Y, public, Au_t,         current_module) \
     i_final (AA,Y, public, Au,           member_object,       Au_t) \
