@@ -132,7 +132,7 @@ static void push_context(NamedDecl* decl, aether e) {
         symbol name = s.c_str();
         Au_t m = find_member(cur, name);
         verify(m, "namespace not found: %s", name);
-        push_scope(e, m);
+        push_scope(e, (Au)m);
         cur = m;
     }
 }
@@ -462,7 +462,7 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     u32 traits = is_union ? AU_TRAIT_UNION : AU_TRAIT_STRUCT;
     Au_t rec = Au_register_type(parent, n, traits);
     
-    push_scope(e, rec);
+    push_scope(e, (Au)rec);
     set_fields(decl, ctx, e, rec);
     pop(e->lexical);
     
@@ -492,7 +492,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
     Au_t parent = top_scope(e);
     Au_t rec = Au_register_class(parent, n);
     
-    push_scope(e, rec);
+    push_scope(e, (Au)rec);
     
     // Handle bases
     const ASTRecordLayout& layout = ctx.getASTRecordLayout(cxx);
@@ -575,7 +575,7 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
     // Set underlying type
     en->src = au_lookup("i32"); // default to i32
     
-    push_scope(e, en);
+    push_scope(e, (Au)en);
     
     for (auto it = decl->enumerator_begin(); it != decl->enumerator_end(); ++it) {
         EnumConstantDecl* ec = *it;

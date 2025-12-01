@@ -505,6 +505,7 @@ static struct _Au_combine* member_pool;
 static int                 n_members;
 
 static struct _Au_combine au_module;
+static Au_t   base_module;
 static Au_t   module;
 static array  scope;
 static map    module_map;
@@ -614,10 +615,6 @@ none Au_register_init(func f) {
 }
 
 Au_t Au_module(symbol name) {
-    if (!module) {
-        module = &au_module.type;
-        module->ident = name;
-    }
     if (module && strcmp(name, module->ident) == 0) return module;
     if (!module_map) module_map = hold(map(hsize, 8));
     verify(module_map, "expected module map allocation");
@@ -625,9 +622,13 @@ Au_t Au_module(symbol name) {
     return get(module_map, k);
 }
 
+Au_t Au_global() {
+    return base_module;
+}
+
 Au_t Au_register_module(symbol next_module) {
     module = calloc(1, sizeof(struct _Au_t));
-    module->ident = next_module;
+    module->ident = strdup(next_module);
     return module;
 }
 
@@ -644,6 +645,7 @@ none push_type(Au_t type) {
     if (type == typeid(Au_t)) {
         has_pushed = true;
         module = Au_module("Au");
+        base_module = module;
         module->members.unmanaged = true;
 
         // the first ever type we really register is the collective_abi

@@ -4,17 +4,16 @@
 
 // for Michael
 
-/*
-#define emodel(MDL) ({ \
-    emember  m = aether_lookup2(mod, string(MDL), null); \
-    model mdl = (m && m->is_type) ? m->mdl : null; \
-    mdl; \
+#define au_lookup(sym)   Au_lexical(a->lexical, sym)
+#define etype_lookup(sym) ({                 \
+    Au_t m = Au_lexical(a->lexical, sym);   \
+    (m ? m->user : (etype)null);            \
 })
 
 #define validate(a, t, ...) ({ \
     if (!(a)) { \
         formatter((Au_t)null, stderr, (Au)true,  (symbol)"\n%o:%i:%i " t, mod->source, \
-            peek(mod)->line, peek(mod)->column, ## __VA_ARGS__); \
+            silver_peek(mod)->line, silver_peek(mod)->column, ## __VA_ARGS__); \
         if (level_err >= fault_level) { \
             raise(SIGTRAP); \
             exit(1); \
@@ -26,16 +25,12 @@
     true; \
 })
 
-// implement automatic .c bindings; for methods without a function, we may bind the method with .c source of the same name
-// 
-
-static bool  is_alpha(Au any);
-static enode parse_expression(silver mod, model expect_mdl, array meta);
+static token silver_element(silver, num);
 
 void print_tokens(silver mod, symbol label) {
     print("[%s] tokens: %o %o %o %o %o %o...", label,
-        element(mod, 0), element(mod, 1), element(mod, 2), element(mod, 3),
-        element(mod, 4), element(mod, 5));
+        silver_element(mod, 0), silver_element(mod, 1), silver_element(mod, 2), silver_element(mod, 3),
+        silver_element(mod, 4), silver_element(mod, 5));
 }
 
 static void print_all(silver mod, symbol label, array list) {
@@ -44,6 +39,23 @@ static void print_all(silver mod, symbol label, array list) {
         put("%o ", t);
     put("\n");
 }
+
+/*
+#define emodel(MDL) ({ \
+    emember  m = aether_lookup2(mod, string(MDL), null); \
+    model mdl = (m && m->is_type) ? m->mdl : null; \
+    mdl; \
+})
+
+
+
+// implement automatic .c bindings; for methods without a function, we may bind the method with .c source of the same name
+// 
+
+static bool  is_alpha(Au any);
+static enode parse_expression(silver mod, model expect_mdl, array meta);
+
+
 
 void print_token_array(silver mod, array tokens) {
     string res = string();
@@ -98,7 +110,7 @@ void build_fn(silver mod, emember fmem, callback preamble, callback postamble) {
         enode single = typed_expr(mod, f->rtype, f->rmeta, after_const);
         e_fn_return(mod, single);
     } else {
-        push_state(mod, after_const, 0);
+        push_tokens(mod, after_const, 0);
         record cl = f ? f->instance : null;
         if (cl) pairs(cl->members, m) print("class emember: %o: %o", cl, m->key);
         print_tokens(mod, "build-fn-statements");
@@ -114,7 +126,7 @@ void build_fn(silver mod, emember fmem, callback preamble, callback postamble) {
             }
             e_fn_return(mod, r_auto);
         }
-        pop_state(mod, false);
+        pop_tokens(mod, false);
     }
     if (postamble)
         postamble(f, null);
@@ -146,15 +158,15 @@ void build_record(silver mod, model mrec) {
     verify(is_class, "not a class");
     print_token_array(mod, rec->body);
     array  body     = rec->body ? rec->body : array();
-    push_state(mod, body, 0);
+    push_tokens(mod, body, 0);
     push      (mod, mrec);
-    while     (peek(mod)) {
+    while     (silver_peek(mod)) {
         print_tokens(mod, "parse-statement");
         parse_statement(mod); // must not 'build' code here, and should not (just initializer type[expr] for members)
     }
 
     pop       (mod);
-    pop_state (mod, false);
+    pop_tokens (mod, false);
     rec->parsing = false;
     
     // register the init method (without defining; not required for finalize!)
@@ -192,872 +204,10 @@ void build_record(silver mod, model mrec) {
     rec->user_built = true;
 }
 
-typedef struct {
-    symbol lib_prefix;
-    symbol exe_ext, static_ext, shared_ext; 
-} exts;
-
-exts get_exts() {
-    return (exts)
-#ifdef _WIN32
-    { "", "exe", "lib", "dll" }
-#elif defined(__APPLE__)
-    { "", "",    "a",   "dylib" }
-#else
-    { "", "",    "a",   "so" }
-#endif
-    ;
-}
-
-
-bool silver_next_indent(silver a) {
-    token p = element(a, -1);
-    token n = element(a,  0);
-    return p && n->indent > p->indent;
-}
-
-bool silver_next_is_eq(silver a, symbol first, ...) {
-    va_list args;
-    va_start(args, first);
-    int i = 0;
-    symbol cs = first;
-    while (cs) {
-        token n = element(a, i);
-        if (!n || strcmp(n->chars, cs) != 0) {
-            va_end(args);
-            return false;
-        }
-        cs = va_arg(args, symbol);
-        i++;
-    }
-    va_end(args);
-    return true;
-}
-
-#define next_is(a, ...) silver_next_is_eq(a, __VA_ARGS__, null)
-
-array read_within(silver mod) {
-    array body    = array(32);
-    token n       = element(mod,  0);
-    bool  proceed = mod->expr_level == 0 ? true : eq(n, "[");
-    if  (!proceed) return null;
-
-    bool bracket = eq(n, "[");
-    consume(mod);
-    int depth = bracket == true; // inner expr signals depth 1, and a bracket does too.  we need both togaether sometimes, as in inner expression that has parens
-    for (;;) {
-        token inner = next(mod);
-        if (!inner) break;
-        if (eq(inner, "]")) depth--;
-        if (eq(inner, "[")) depth++;
-        if (depth > 0) {
-            push(body, inner);
-            continue;
-        }
-        break;
-    }
-    return body;
-}
-
-array read_body(silver mod) {
-    array body = array(32);
-    token n    = element(mod,  0);
-    if (!n) return null;
-    token p    = element(mod, -1);
-    bool  mult = n->line > p->line;
-
-    while (1) {
-        token k = peek(mod);
-        if (!k) break;
-        if (!mult && k->line    > n->line)   break;
-        if ( mult && k->indent <= p->indent) break;
-        push(body, k);
-        consume(mod);
-    }
-    return body;
-}
-
-num silver_current_line(silver a) {
-    token  t = element(a, 0);
-    return t->line;
-}
-
-string silver_location(silver a) {
-    token  t = element(a, 0);
-    return t ? (string)location(t) : (string)form(string, "n/a");
-}
-
-num index_of_cstr(Au a, cstr f) {
-    Au_t t = isa(a);
-    if (t == typeid(string)) return index_of((string)a, f);
-    if (t == typeid(array))  return index_of((array)a, string(f));
-    if (t == typeid(cstr) || t == typeid(symbol) || t == typeid(cereal)) {
-        cstr v = strstr(a, f);
-        return v ? (num)(v - f) : (num)-1;
-    }
-    fault("len not handled for type %s", t->ident);
-    return 0;
-}
-
-bool is_keyword(Au any) {
-    Au_t  type = isa(any);
-    string s;
-    if (type == typeid(string))
-        s = any;
-    else if (type == typeid(token))
-        s = string(((token)any)->chars);
-    
-    return index_of_cstr(keywords, cstring(s)) >= 0;
-}
-
-bool is_alpha(Au any) {
-    if (!any)
-        return false;
-    Au_t  type = isa(any);
-    string s;
-    if (type == typeid(string)) {
-        s = any;
-    } else if (type == typeid(token)) {
-        token token = any;
-        s = string(token->chars);
-    }
-    
-    if (index_of_cstr(keywords, cstring(s)) >= 0)
-        return false;
-    
-    if (len(s) > 0) {
-        char first = s->chars[0];
-        return isalpha(first) || first == '_';
-    }
-    return false;
-}
-
-int sfn(string a, string b) {
-    int diff = len(a) - len(b);
-    return diff;
-}
-
-string scan_map(map m, string source, int index) {
-    string s = string(alloc, 32);
-    string last_match = null;
-    int i = index;
-    while (1) {
-        if (i >= len(source))
-            break;
-        string a = mid(source, i, 1);
-        append(s, a->chars);
-        string f = get(m, s);
-        if (f) {
-            last_match = f;
-            i++;
-        } else
-            break;
-    }
-    return last_match;
-}
-
-array parse_tokens(silver mod, Au input, array output) {
-    string input_string;
-    Au_t  type = isa(input);
-    path    src = null;
-    if (type == typeid(path)) {
-        src = input;
-        input_string = load(src, typeid(string), null); // this was read before, but we 'load' files; way less conflict wit posix
-    } else if (type == typeid(string))
-        input_string = input;
-    else
-        assert(false, "can only parse from path");
-
-    mod->source_raw = hold(input_string);
-    
-    list   symbols    = list();
-    string special    = string(".$,<>()![]/+*:=#");
-    i32    special_ln = len(special);
-    for (int i = 0; i < special_ln; i++)
-        push(symbols, string((i32)special->chars[i]));
-    each (keywords, string, kw) push(symbols, kw);
-    each (assign,   string, a)  push(symbols, a);
-    each (compare,  string, a)  push(symbols, a);
-    pairs(operators, i)         push(symbols, i->key);
-    sort(symbols, sfn);
-    map mapping = map(hsize, 32);
-    for (item i = symbols->first; i; i = i->next) {
-        string sym = i->value;
-        set(mapping, sym, sym);
-    }
-
-    array   tokens          = output;
-    verify(tokens, "no output set");
-
-    num     line_num        = 1;
-    num     length          = len(input_string);
-    num     index           = 0;
-    num     line_start      = 0;
-    num     indent          = 0;
-    bool    num_start       = 0;
-
-    i32 chr0 = idx(input_string, index);
-    validate(!isspace(chr0) || chr0 == '\n', "initial statement off indentation");
-
-    while (index < length) {
-        i32 chr = idx(input_string, index);
-
-        if (isspace(chr)) {
-            if (chr == '\n') {
-                line_num  += 1;
-                line_start = index + 1;
-                indent     = 0;
-                label: /// so we may use break and continue
-                chr = idx(input_string, ++index);
-                if       (!isspace(chr))  continue;
-                else if  (chr ==  '\n')   continue;
-                else if  (chr ==   ' ')   indent += 1;
-                else if  (chr ==  '\t')   indent += 4;
-                else                      continue;
-                goto label;
-            } else {
-                index += 1;
-                continue;
-            }
-        }
-
-        num_start = isdigit(chr) > 0;
-
-        if (!mod->cmode && chr == '#') {
-            if (index + 1 < length && idx(input_string, index + 1) == '#') {
-                index += 2;
-                while (index < length && !(idx(input_string, index) == '#' && index + 1 < length && idx(input_string, index + 1) == '#')) {
-                    if (idx(input_string, index) == '\n')
-                        line_num += 1;
-                    index += 1;
-                }
-                index += 2;
-            } else {
-                while (index < length && idx(input_string, index) != '\n')
-                    index += 1;
-                line_num += 1;
-                index += 1;
-            }
-            continue;
-        }
-    
-
-        
-        string name = scan_map(mapping, input_string, index);
-        if (name) {
-            // we could merge these more generically
-            if (mod->cmode && len(name) == 1 && strncmp(&input_string->chars[index], "##", 2) == 0) {
-                name = string("##");
-            }
-            token  t = token(
-                chars,      (cstr)name->chars, 
-                indent,     indent,
-                source,     src,
-                line,       line_num,
-                column,     index - line_start);
-            push(tokens, t);
-            index += len(name);
-            continue;
-        }
-
-        if (chr == '"' || chr == '\'') {
-            i32 quote_char = chr;
-            num start      = index;
-            index         += 1;
-            while (index < length && idx(input_string, index) != quote_char) {
-                if (idx(input_string, index)     == '\\' && index + 1 < length && 
-                    idx(input_string, index + 1) == quote_char)
-                    index += 2;
-                else
-                    index += 1;
-            }
-            index         += 1;
-            string crop    = mid(input_string, start, index - start);
-            if (crop->chars[0] == '-') {
-                char ch[2] = { crop->chars[0], 0 };
-                push(tokens, token(
-                    chars,  ch,
-                    indent, indent,
-                    source, src,
-                    line,   line_num,
-                    column, start - line_start));
-                crop = string(&crop->chars[1]);
-                line_start++;
-            }
-            push(tokens, token(
-                chars,  crop->chars,
-                indent, indent,
-                source, src,
-                line,   line_num,
-                column, start - line_start));
-            continue;
-        }
-
-        num start = index;
-        bool is_dim = false;
-        bool last_dash = false;
-        while (index < length) {
-            i32 v = idx(input_string, index);
-            char sval[2] = { v, 0 };
-            bool is_dash = v == '-';
-            is_dim = (num_start && v == 'x');
-            if (isspace(v) || index_of(special, sval) >= 0 || is_dim) {
-                if (last_dash && (index - start) > 1) {
-                    i32 vb = idx(input_string, index - 2); // allow the -- sequence, disallow - at end of tokens
-                    index -= vb != '-';
-                }
-                break;
-            }
-            index += 1;
-            last_dash = is_dash;
-        }
-        
-        string crop = mid(input_string, start, index - start);
-        push(tokens, token(
-            chars,  crop->chars,
-            indent, indent,
-            source, src,
-            line,   line_num,
-            column, start - line_start));
-        if (is_dim) {
-            push(tokens, token(
-                chars,  "x",
-                indent, indent,
-                source, src,
-                line,   line_num,
-                column, index - line_start));
-            index++;
-        }
-    }
-    return tokens;
-}
-
-token silver_element(silver a, num rel) {
-    int r = a->cursor + rel;
-    if (r < 0 || r > a->tokens->count - 1) return null;
-    token t = a->tokens->origin[r];
-    return t;
-}
-
-token silver_navigate(silver a, int count) {
-    if (a->cursor <= 0)
-        return null;
-    a->cursor += count;
-    token res = element(a, 0);
-    return res;
-}
-
-token silver_prev(silver a) {
-    if (a->cursor <= 0)
-        return null;
-    a->cursor--;
-    token res = element(a, 0);
-    return res;
-}
-
-token silver_next(silver a) {
-    if (a->cursor >= len(a->tokens))
-        return null;
-    token res = element(a, 0);
-    a->cursor++;
-    return res;
-}
-
-token silver_consume(silver a) {
-    return silver_next(a);
-}
-
-token silver_peek(silver a) {
-    if (a->cursor == len(a->tokens))
-        return null;
-    return element(a, 0);
-}
-
-bool silver_next_is_alpha(silver a) {
-    if (peek_keyword(a)) return false;
-    token n = element(a, 0);
-    return is_alpha(n) ? true : false;
-}
-
-
-token silver_read_if(silver a, symbol cs) {
-    token n = element(a, 0);
-    if (n && strcmp(n->chars, cs) == 0) {
-        a->cursor++;
-        return n;
-    }
-    return null;
-}
-
-Au silver_read_literal(silver a, Au_t of_type) {
-    token  n = element(a, 0);
-    if (n && n->literal) {
-        a->cursor++;
-        return n->literal;
-    }
-    return null;
-}
-
-string silver_read_string(silver a) {
-    token  n = element(a, 0);
-    if (n && isa(n->literal) == typeid(string)) {
-        string token_s = string(n->chars);
-        string result  = mid(token_s, 1, token_s->count - 2);
-        a->cursor ++;
-        return result;
-    }
-    return null;
-}
-
-Au silver_read_numeric(silver a) {
-    token n = element(a, 0);
-    if (n && (isa(n->literal) == typeid(f64) || isa(n->literal) == typeid(i64))) {
-        a->cursor++;
-        return n->literal;
-    }
-    return null;
-}
-
-// this merely reads the various assignment operators if set, and gives a constant bool
-string silver_read_assign(silver a, ARef assign_type, ARef is_const) {
-    token  n = element(a, 0);
-    if (!n) return null;
-    string    k            = string(n->chars);
-    num       assign_index = index_of(assign, k);
-    bool      found        = assign_index >= 0;
-
-    if (is_const)    *(bool*)  is_const     = false;
-    if (assign_type) *(OPType*)assign_type  = OPType__undefined;
-
-    if (found) {
-        if (eq(k, ":")) {
-            if (is_const)    *(bool*)is_const      = true;
-            if (assign_type) *(OPType*)assign_type = OPType__assign;
-        } else {
-            if (is_const)    *(bool*)is_const      = false;
-            if (assign_type) *(OPType*)assign_type = OPType__assign + assign_index;
-        }
-        a->cursor ++;
-    }
-    return found ? k : null;
-}
-
-string silver_read_alpha_any(silver a) {
-    token n = element(a, 0);
-    if (n && isalpha(n->chars[0])) {
-        a->cursor ++;
-        return string(n->chars);
-    }
-    return null;
-}
-
-string silver_read_alpha(silver a) {
-    token n = element(a, 0);
-    if (is_alpha(n)) {
-        a->cursor ++;
-        return string(n->chars);
-    }
-    return null;
-}
-
-string silver_peek_alpha(silver a) {
-    token n = element(a, 0);
-    if (is_alpha(n)) {
-        return string(n->chars);
-    }
-    return null;
-}
-
-function    parse_fn  (silver mod, AFlag member_type, Au ident, OPType assign_enum);
-static model read_model(silver mod, array* expr, array* meta);
-
-model _is_record(model);
-
-enode silver_read_node(silver mod, Au_t constant_result, model mdl_expect, array meta_expect) {
-
-    print_tokens(mod, "read-node");
-    bool      cmode     = mod->cmode;
-    array     expr      = null;
-    token     peek      = peek(mod);
-    bool      is_expr0  = !mod->cmode && mod->expr_level == 0;
-    interface access    = is_expr0 ? read_enum(mod, interface_undefined, typeid(interface)) : 0;
-    bool      is_static = is_expr0 && read_if(mod, "static") != null;
-    string    kw        = is_expr0 ? peek_keyword(mod) : null;
-    bool      is_oper   = kw && eq(kw, "operator");
-    bool      is_index  = kw && eq(kw, "index");
-    bool      is_cast   = kw && eq(kw, "cast");
-    bool      is_fn     = kw && eq(kw, "func");
-    record    rec_ctx   = null;
-    model     top       = top(mod);
-    record    rec_top   = !mod->cmode ? _is_record(top) : null;
-    function  f         = null;
-    eargs     args      = !mod->cmode ? instanceof(top, typeid(eargs)) : null;
-    silver    module    = !mod->cmode && (top->is_global) ? mod : null;
-    emember   mem       = null;
-    // todo: lost notion of static vs imethod here, reintroduce
-    AFlag     mtype     = (is_fn && !is_static) ? AU_MEMBER_FUNC : (!is_static && is_cast) ? AU_MEMBER_CAST : AU_MEMBER_FUNC;
-
-    if (!mod->cmode) {
-        context(mod, &rec_ctx, &f, typeid(function));
-    }
-
-    if (is_expr0 && !mod->cmode && (module || rec_ctx) && peek_def(mod)) {
-        emember mem = read_def(mod);
-        if (!mem) {
-            if (is_cast || is_fn) consume(mod);
-            token alpha = !is_cast ? read_alpha(mod) : null;
-            // check if module or record constructor
-            emember rmem = alpha ? lookup2(mod, alpha, null) : null;
-            if (module && rmem && rmem->mdl == (model)module) {
-                validate(!is_cast && is_fn, "invalid constructor for module; use func keyword");
-                mtype = AU_MEMBER_CONSTRUCT;
-            } else if (rec_ctx && rmem && rmem->mdl == (model)rec_ctx) {
-                validate(!is_cast && !is_fn, "invalid constructor for class; use class-name[] [ no func, not static ]");
-                mtype = AU_MEMBER_CONSTRUCT;
-            }
-
-            bool has_args = is_cast || next_is(mod, "[");
-            validate(has_args, "expected func args for %o", alpha);
-
-            // parse function contents
-            if (eq(alpha, "member")) {
-                int test2 = 2;
-                test2    += 2;
-            }
-            mem = emember(
-                mod,        mod,
-                access,     access,
-                name,       alpha,
-                mdl,        parse_fn(mod, mtype, alpha, OPType__undefined),
-                is_module,  module);
-            mem->mdl->mem = mem;
-
-            if (is_cast) {
-                function f = (function)mem->mdl;
-                validate(len(f->rtype->mem->name), "rtype cannot be anonymous for cast");
-                mem->name = hold(f(string, "cast_%o", f->rtype));
-            }
-        }
-        register_member(mod, mem, false); /// do not finalize in push member
-        return mem;
-    }
-
-    if (peek && is_alpha(peek) && !lookup2(mod, peek, typeid(macro))) {
-        array meta = null;
-        model mdl_found = read_model(mod, &expr, &meta);
-        if (mdl_found) {
-            enode res = typed_expr(mod, mdl_found, meta, expr);
-            return e_create(mod, mdl_expect, meta_expect, res); // we need a 'meta_expect' here
-        }
-    }
-
-    Au lit = read_literal(mod, null);
-    if (lit) {
-        mod->expr_level++;
-        enode res = e_operand(mod, lit, mdl_expect, meta_expect);
-        mod->expr_level--;
-        return e_create(mod, mdl_expect, meta_expect, res);
-    }
-    
-    if (!cmode && next_is(mod, "$", "(")) {
-        consume(mod);
-        consume(mod);
-        fault("shell syntax not implemented for 88");
-    }
-
-    if (!cmode && read_if(mod, "null"))
-        return e_null(mod, mdl_expect);
-
-    // parenthesized expressions
-    if (next_is(mod, "(")) {
-        consume(mod);
-        // support C-style cast here, only in cmode (macro definitions)
-        if (cmode) {
-            push_current(mod);
-            array meta = null;
-            model inner = read_model(mod, null, null);
-            if (inner) {
-                if (next_is(mod, ")")) {
-                    consume(mod);
-                    pop_state(mod, true);
-                    enode res = e_create(mod, inner, null, parse_expression(mod, inner, null));
-                    return e_create(mod, mdl_expect, meta_expect, res);
-                } else {
-                    pop_state(mod, false);
-                    mod->expr_level = 0;
-                    return null;
-                }
-            }
-            pop_state(mod, false);
-        }
-        mod->parens_depth++;
-        enode expr = parse_expression(mod, null, null); // Parse the expression
-        token t = read_if(mod, ")");
-        if (t) mod->parens_depth--;
-        return e_create(mod, mdl_expect, meta_expect,
-            parse_ternary(mod, expr, mdl_expect, meta_expect));
-    }
-
-    if (!cmode && next_is(mod, "[")) {
-        validate(mdl_expect, "expected model name before [");
-        array expr = read_within(mod);
-        // we need to get mdl from argument
-        enode r = typed_expr(mod, mdl_expect, meta_expect, expr);
-        return r;
-    }
-
-    // handle the logical NOT operator (e.g., '!')
-    else if (read_if(mod, "!") || (!cmode && read_if(mod, "not"))) {
-        enode expr = parse_expression(mod, null, null); // Parse the following expression
-        return e_create(mod,
-            mdl_expect, meta_expect, e_not(mod, expr));
-    }
-
-    // bitwise NOT operator
-    else if (read_if(mod, "~")) {
-        enode expr = parse_expression(mod, null, null);
-        return e_create(mod,
-            mdl_expect, meta_expect, e_bitwise_not(mod, expr));
-    }
-
-    // 'typeof' operator
-    // should work on instances as well as direct types
-    else if (!cmode && read_if(mod, "typeid")) {
-        bool bracket = false;
-        if (next_is(mod, "[")) {
-            consume(mod); // Consume '['
-            bracket = true;
-        }
-        enode expr = parse_expression(mod, null, null); // Parse the type expression
-        if (bracket) {
-            assert(next_is(mod, "]"), "Expected ']' after type expression");
-            consume(mod); // Consume ']'
-        }
-        return e_create(mod,
-            mdl_expect, meta_expect, expr); // Return the type reference
-    }
-
-    // 'ref' operator (reference)
-    else if (!cmode && read_if(mod, "ref")) {
-        mod->in_ref = true;
-        enode expr = parse_expression(mod, null, null);
-        mod->in_ref = false;
-        return e_create(mod,
-            mdl_expect, meta_expect, e_addr_of(mod, expr, null));
-    }
-
-    // we may only support a limited set of C functionality for #define macros
-    if (cmode) return null;
-
-    push_current(mod);
-    
-    string    alpha     = null;
-    int       depth     = 0;
-    
-    bool skip_member_check = false;
-    bool avoid_model_lookup = mod->read_model_abort;
-    if (!skip_member_check && module) {
-        string alpha = peek_alpha(mod);
-        if (alpha && !mod->read_model_abort) {
-            emember m = lookup2(mod, alpha, null); // silly read as string here in int [ silly.len ]
-            model mdl = m ? m->mdl : null;
-            while (mdl && mdl->is_ref)
-                mdl = mdl->src;
-            if (m && m->is_type && mdl && isa(mdl) == typeid(Class))
-                skip_member_check = true;
-        }
-        mod->read_model_abort = false; // state var used for this purpose with the singular call to read-model above
-    }
-
-    for (;!skip_member_check;) {
-        bool first = !mem;
-        if (first && (is_fn || is_cast)) consume(mod);
-        
-        alpha = read_alpha(mod);
-        if (!alpha) {
-            validate(mem == null, "expected alpha ident after .");
-            break;
-        }
-
-        /// Namespace resolution (only on first iteration)
-        bool ns_found = false;
-        if (first && !avoid_model_lookup) {
-            each (mod->spaces, Namespace, im) {
-                if (im->namespace_name && eq(alpha, im->namespace_name->chars)) {
-                    string module_name = alpha;
-                    validate(read_if(mod, "."), "expected . after module-name: %o", alpha);
-                    alpha = read_alpha(mod);
-                    validate(alpha, "expected alpha-ident after module-name: %o", module_name);
-                    mem = lookup2(mod, alpha, typeid(import));
-                    validate(mem, "%o not found in module-name: %o", alpha, module_name);
-                    ns_found = true;
-                }
-            }
-        }
-        
-        /// Lookup or resolve member
-        if (!ns_found) {
-            if (first) {
-
-                // try implicit 'this' access in instance methods
-                if (!mem && f && f->target) {
-                    emember field = find_member(f->target->mdl, alpha, null);
-                    if (field) {
-                        mem = access(f->target, alpha);
-                    } else {
-                        mem = lookup2(mod, alpha, null);
-                    }
-                } else if (!f || !f->target) {
-                    mem = lookup2(mod, alpha, null);
-                }
-                
-                // Still not found? Create new member (module-level definition)
-                if (!mem) {
-                    validate(mod->expr_level == 0, "member not found: %o", alpha);
-                    mem = emember(mod, mod, access, access, name, alpha, 
-                                is_static, is_static, is_module, module);
-                }
-            } else {
-                // Subsequent iterations - access from previous member
-                validate(mem && mem->mdl, "cannot resolve from null member");
-                
-                // Load previous member to traverse into it
-                enode loaded = e_load(mod, mem, null);
-                mem = access(loaded, alpha);
-            }
-
-            /// Handle macros and function calls
-            if (instanceof(mem->mdl, typeid(macro)) || instanceof(mem->mdl, typeid(function))) {
-                mem = parse_member_expr(mod, mem);
-            }
-        }
-        avoid_model_lookup = false;
-
-        /// Check if there's more chaining
-        if (!read_if(mod, ".")) {
-            // End of chain - final load if needed
-            if (!mod->left_hand) {
-                mem = e_load(mod, mem, null);
-            }
-            break;
-        }
-        
-        // More chaining - push context for next iteration
-        validate(!mem->is_func, "cannot resolve into function");
-        if (mem->mdl && !module) {
-            push(mod, mem->mdl);
-            depth++;
-        }
-    }
-
-
-    /// restore namespace after resolving emember
-    for (int i = 0; i < depth; i++)
-        pop(mod);
-
-    pop_state(mod, true);
-
-    if (mod->expr_level == 0) {
-        OPType assign_enum  = OPType__undefined;
-        bool   assign_const = false;
-        string assign_type  = read_assign  (mod, &assign_enum, &assign_const);
-        if (args) {
-            validate(mem, "expected emember");
-            validate(assign_enum == OPType__assign, "expected : operator in eargs");
-            validate(!mem->mdl, "duplicate member exists in eargs");
-            mem->mdl = read_model(mod, &expr, &mem->meta);
-            validate(expr == null, "unexpected assignment in args");
-            validate(mem->mdl, "cannot read model for arg: %o", mem->name);
-        }
-        else if ((rec_top || module) && assign_type) {
-            token t = peek(mod);
-
-            // this is where member types are read
-            mem->mdl = read_model(mod, &expr, &mem->meta); // given VkInstance intern instance2 (should only read 1 token)
-            validate(mem->mdl, "expected type after ':' in %o, found %o",
-                (rec_top ? (model)rec_top : (model)module)->mem->name, peek(mod));
-            mem->initializer = hold(expr);
-
-            // lets read meta types here, at the record member level
-
-        } else if (mem && assign_type) {
-            mod->left_hand = false;
-            mod->expr_level++;
-            validate(mem, "member expected before assignment operator");
-            expr = parse_assignment(mod, mem, assign_type);
-            mod->expr_level--;
-        } else if (mem && !assign_type && !mem->mdl) {
-            validate (false, "expected assignment after '%o'", alpha);
-        }
-    }
-
-    if (mem && isa(mem) == typeid(emember) && !mem->membership && mem->mdl && mem->name && len(mem->name)) {
-        //push(mod, mod->userspace);
-        register_member(mod, mem, false); // was true
-        //pop(mod);
-    }
-
-    // this only happens when in a function
-    return f ? e_create(mod, mdl_expect, meta_expect, mem) : null;
-}
-
-string silver_read_keyword(silver a) {
-    token n = element(a, 0);
-    if (n && is_keyword(n)) {
-        a->cursor ++;
-        return string(n->chars);
-    }
-    return null;
-}
-
-string silver_peek_keyword(silver a) {
-    token   n = element(a, 0);
-    return (n && is_keyword(n)) ? string(n->chars) : null;
-}
-
-static model next_is_class(silver mod, bool read_token) {
-    token t = peek(mod);
-    if (!t) return null;
-    if (eq(t, "class")) {
-        if (read_token)
-            consume(mod);
-        return emodel("Au");
-    }
-
-    model f = emodel(t->chars);
-    if (f && isa(f->src) == typeid(Class)) {
-        if (read_token)
-            consume(mod);
-        return f;
-    }
-    return null;
-}
-
-string silver_peek_def(silver a) {
-    token n = element(a, 0);
-    record rec = instanceof(top(a), typeid(record));
-    if (!rec && next_is_class(a, false))
-        return string(n->chars);
-
-    if (n && is_keyword(n))
-        if (eq(n, "import") || eq(n, "func") || eq(n, "cast") || eq(n, "class") || eq(n, "enum") || eq(n, "struct"))
-            return string(n->chars);
-    return null;
-}
-
-Au silver_read_bool(silver a) {
-    token  n       = element(a, 0);
-    if (!n) return null;
-    bool   is_true = strcmp(n->chars, "true")  == 0;
-    bool   is_bool = strcmp(n->chars, "false") == 0 || is_true;
-    if (is_bool) a->cursor ++;
-    return is_bool ? _bool(is_true) : null;
-}
-
 array silver_parse_const(silver mod, array tokens) {
     array res = array(32);
-    push_state(mod, tokens, 0);
-    while (peek(mod)) {
+    push_tokens(mod, tokens, 0);
+    while (silver_peek(mod)) {
         token t = next(mod);
         if (eq(t, "const")) {
             validate(false, "implement const");
@@ -1065,7 +215,7 @@ array silver_parse_const(silver mod, array tokens) {
             push(res, t);
         }
     }
-    pop_state(mod, false);
+    pop_tokens(mod, false);
     return res;
 }
 
@@ -1076,12 +226,12 @@ void silver_build_initializer(silver mod, emember mem) {
             expr = mem->initializer;
         else {
             array post_const = parse_const(mod, mem->initializer);
-            //push_state(mod, post_const, 0);
+            //push_tokens(mod, post_const, 0);
             int level = mod->expr_level;
             mod->expr_level++;
             expr = typed_expr(mod, mem->mdl, mem->meta, post_const); // we have tokens for the name pushed to the stack
             mod->expr_level = level;
-            //pop_state(mod, false);
+            //pop_tokens(mod, false);
         }
 
         function ctx = context_model(mod, typeid(function));
@@ -1102,7 +252,7 @@ enode parse_return(silver mod) {
     model rtype = return_type(mod, &rmeta);
     bool  is_v  = is_void(rtype);
     model ctx = context_model(mod, typeid(function));
-    consume(mod);
+    silver_consume(mod);
     enode expr   = is_v ? null : parse_expression(mod, rtype, rmeta);
     Au_log("return-type", "%o", is_v ? (Au)string("none") : 
                                     (Au)expr->mdl);
@@ -1110,14 +260,14 @@ enode parse_return(silver mod) {
 }
 
 enode parse_break(silver mod) {
-    consume(mod);
+    silver_consume(mod);
     catcher cat = context_model(mod, typeid(catcher));
     verify(cat, "expected cats");
     return e_break(mod, cat);
 }
 
 enode silver_parse_do_while(silver mod) {
-    consume(mod);
+    silver_consume(mod);
     enode vr = null;
     return null;
 }
@@ -1125,7 +275,7 @@ enode silver_parse_do_while(silver mod) {
 static enode reverse_descent(silver mod, model mdl_expect, array meta_expect) {
     bool cmode = mod->cmode;
     enode L = read_node(mod, null, mdl_expect, meta_expect); // build-arg
-    token t = peek(mod);
+    token t = silver_peek(mod);
     validate(cmode || L, "unexpected '%o'", t);
     if (!L)
         return null;
@@ -1137,7 +287,7 @@ static enode reverse_descent(silver mod, model mdl_expect, array meta_expect) {
             m = false;
             for (int j = 0; j < 2; j++) {
                 string token  = level->token [j];
-                if (!read_if(mod, cstring(token)))
+                if (!silver_read_if(mod, cstring(token)))
                     continue;
                 OPType op_type = level->ops   [j];
                 string method  = level->method[j];
@@ -1181,35 +331,35 @@ model read_named_model(silver mod) {
     model mdl = null;
     push_current(mod);
 
-    bool any = read_if(mod, "any") != null;
+    bool any = silver_read_if(mod, "any") != null;
     if (any) {
         emember mem = lookup2(mod, string("any"), null);
         model mdl_any = mem->mdl;
         return mdl_any;
     }
-    string a = read_alpha(mod);
+    string a = silver_read_alpha(mod);
     if (a && !next_is(mod, ".")) {
         emember f = lookup2(mod, a, null);
         if (f && f->is_type) mdl = f->mdl;
     }
-    pop_state(mod, mdl != null); /// save if we are returning a model
+    pop_tokens(mod, mdl != null); /// save if we are returning a model
     return mdl;
 }
 
 static model model_adj(silver mod, model mdl) {
-    while (mod->cmode && read_if(mod, "*"))
+    while (mod->cmode && silver_read_if(mod, "*"))
         mdl = model(mod, mod, src, mdl, is_ref, true);
     return mdl;
 }
 
 array read_meta(silver mod) {
     array res = null;
-    if (read_if(mod, "<")) {
+    if (silver_read_if(mod, "<")) {
         bool first = true;
         while (!next_is(mod, ">")) {
             if (!res) res = array(alloc, 32, assorted, true);
             if (!first)
-                verify(read_if(mod, ","), "expected ',' seperator between models");
+                verify(silver_read_if(mod, ","), "expected ',' seperator between models");
             Au n = read_numeric(mod);
             bool f = true;
             shape s = null;
@@ -1220,19 +370,19 @@ array read_meta(silver mod) {
                         "expected numeric type i64, found %s", isa(n)->ident);
                     i64 value = *(i64*)n;
                     shape_push(s, value);
-                    if (!read_if(mod, "x")) 
+                    if (!silver_read_if(mod, "x")) 
                         break;
                     n = read_numeric(mod);
                 }
                 push(res, s);
             } else {
                 model mdl = read_named_model(mod);
-                verify(mdl, "expected model name, found %o", peek(mod));
+                verify(mdl, "expected model name, found %o", silver_peek(mod));
                 push(res, mdl);
             }
             first = false;
         }
-        consume(mod);
+        silver_consume(mod);
     }
     return res;
 }
@@ -1250,30 +400,30 @@ static model read_model(silver mod, array* p_expr, array* p_meta) {
     push_current(mod);
 
     if (!mod->cmode) {
-        Au lit = read_literal(mod, null);
+        Au lit = silver_read_literal(mod, null);
         if (lit) {
             mod->cursor--;
             // we support var:1  or var:2.2 or var:'this is a test with {var2}'
             if (isa(lit) == typeid(string)) {
-                expr = a(token("string"), token("["), element(mod, 0), token("]"));
+                expr = a(token("string"), token("["), silver_element(mod, 0), token("]"));
                 mdl = emodel("string");
             } else if (isa(lit) == typeid(i64)) {
-                expr = a(token("i64"), token("["), element(mod, 0), token("]"));
+                expr = a(token("i64"), token("["), silver_element(mod, 0), token("]"));
                 mdl = emodel("i64");
             } else if (isa(lit) == typeid(u64)) {
-                expr = a(token("u64"), token("["), element(mod, 0), token("]"));
+                expr = a(token("u64"), token("["), silver_element(mod, 0), token("]"));
                 mdl = emodel("u64");
             } else if (isa(lit) == typeid(i32)) {
-                expr = a(token("i32"), token("["), element(mod, 0), token("]"));
+                expr = a(token("i32"), token("["), silver_element(mod, 0), token("]"));
                 mdl = emodel("i32");
             } else if (isa(lit) == typeid(u32)) {
-                expr = a(token("u32"), token("["), element(mod, 0), token("]"));
+                expr = a(token("u32"), token("["), silver_element(mod, 0), token("]"));
                 mdl = emodel("u32");
             } else if (isa(lit) == typeid(f32)) {
-                expr = a(token("f32"), token("["), element(mod, 0), token("]"));
+                expr = a(token("f32"), token("["), silver_element(mod, 0), token("]"));
                 mdl = emodel("f32");
             } else if (isa(lit) == typeid(f64)) {
-                expr = a(token("f64"), token("["), element(mod, 0), token("]"));
+                expr = a(token("f64"), token("["), silver_element(mod, 0), token("]"));
                 mdl = emodel("f64");
             } else {
                 verify(false, "implement literal %s in read_model", isa(lit)->ident);
@@ -1283,15 +433,15 @@ static model read_model(silver mod, array* p_expr, array* p_meta) {
         }
     }
 
-    bool explicit_sign = read_if(mod, "signed") != null;
-    bool explicit_un   = !explicit_sign && read_if(mod, "unsigned") != null;
+    bool explicit_sign = silver_read_if(mod, "signed") != null;
+    bool explicit_un   = !explicit_sign && silver_read_if(mod, "unsigned") != null;
 
     model prim_mdl = null;
     if (!explicit_un) {
-        if (read_if(mod, "char"))   prim_mdl = emodel("i8");
-        else if (read_if(mod, "short"))  prim_mdl = emodel("i16");
-        else if (read_if(mod, "int"))    prim_mdl = emodel("i32");
-        else if (read_if(mod, "long"))   prim_mdl = read_if(mod, "long") ? emodel("i64") : emodel("i32");
+        if (silver_read_if(mod, "char"))   prim_mdl = emodel("i8");
+        else if (silver_read_if(mod, "short"))  prim_mdl = emodel("i16");
+        else if (silver_read_if(mod, "int"))    prim_mdl = emodel("i32");
+        else if (silver_read_if(mod, "long"))   prim_mdl = silver_read_if(mod, "long") ? emodel("i64") : emodel("i32");
         else if (explicit_sign)          prim_mdl = emodel("i32");
         if (prim_mdl)
             prim_mdl = model_adj(mod, prim_mdl);
@@ -1308,10 +458,10 @@ static model read_model(silver mod, array* p_expr, array* p_meta) {
         }
 
     } else if (explicit_un) {
-        if (read_if(mod, "char"))  prim_mdl = emodel("u8");
-        if (read_if(mod, "short")) prim_mdl = emodel("u16");
-        if (read_if(mod, "int"))   prim_mdl = emodel("u32");
-        if (read_if(mod, "long"))  prim_mdl = read_if(mod, "long") ? emodel("u64") : emodel("u32");
+        if (silver_read_if(mod, "char"))  prim_mdl = emodel("u8");
+        if (silver_read_if(mod, "short")) prim_mdl = emodel("u16");
+        if (silver_read_if(mod, "int"))   prim_mdl = emodel("u32");
+        if (silver_read_if(mod, "long"))  prim_mdl = silver_read_if(mod, "long") ? emodel("u64") : emodel("u32");
 
         prim_mdl = model_adj(mod, prim_mdl ? prim_mdl : emodel("u32"));
     }
@@ -1325,7 +475,7 @@ static model read_model(silver mod, array* p_expr, array* p_meta) {
     if (p_expr) *p_expr = expr;
     if (p_meta) *p_meta = meta;
     
-    pop_state(mod, mdl != null); // if we read a model, we transfer token state
+    pop_tokens(mod, mdl != null); // if we read a model, we transfer token state
     return mdl;
 }
 
@@ -1338,9 +488,9 @@ map parse_map(silver mod, model mdl_schema) {
     if (mdl_schema->is_ref && instanceof(mdl_schema->src, typeid(structure)))
         mdl_schema = mdl_schema->src;
 
-    while (peek(mod)) {
-        string name  = read_alpha(mod);
-        validate(read_if(mod, ":"), "expected : after arg %o", name);
+    while (silver_peek(mod)) {
+        string name  = silver_read_alpha(mod);
+        validate(silver_read_if(mod, ":"), "expected : after arg %o", name);
         model   mdl_expect = null;
         array   meta_expect = null;
         if (mdl_schema && mdl_schema->members) {
@@ -1367,15 +517,15 @@ static bool class_inherits(model cl, model of_cl) {
 }
 
 static bool peek_fields(silver mod) {
-    token t0 = element(mod, 0);
-    token t1 = element(mod, 1);
+    token t0 = silver_element(mod, 0);
+    token t1 = silver_element(mod, 1);
     if (t0 && is_alpha(t0) && t1 && eq(t1, ":"))
         return true;
     return false;
 }
 
 static enode typed_expr(silver mod, model mdl, array meta, array expr) {
-    push_state(mod, expr ? expr : mod->tokens, expr ? 0 : mod->cursor);
+    push_tokens(mod, expr ? expr : mod->tokens, expr ? 0 : mod->cursor);
     
     // function calls
     if (instanceof(mdl, typeid(function))) {
@@ -1399,7 +549,7 @@ static enode typed_expr(silver mod, model mdl, array meta, array expr) {
             else
                 push(values, expr);
             
-            if (read_if(mod, ","))
+            if (silver_read_if(mod, ","))
                 continue;
             
             validate(len(values) >= ln, "expected %i args for function %o", ln, f);
@@ -1410,16 +560,16 @@ static enode typed_expr(silver mod, model mdl, array meta, array expr) {
     
     // this is only suitable if reading a literal constitutes the token stack
     // for example:  i32 100
-    Au  n = read_literal(mod, null);
+    Au  n = silver_read_literal(mod, null);
     if (n && mod->cursor == len(mod->tokens)) {
-        pop_state(mod, expr ? false : true);
+        pop_tokens(mod, expr ? false : true);
         return e_operand(mod, n, mdl, meta);
     } else if (n) {
         // reset if we read something
-        pop_state(mod, expr ? false : true);
-        push_state(mod, expr ? expr : mod->tokens, expr ? 0 : mod->cursor);
+        pop_tokens(mod, expr ? false : true);
+        push_tokens(mod, expr ? expr : mod->tokens, expr ? 0 : mod->cursor);
     }
-    bool    has_content = !!expr && len(expr); //read_if(mod, "[") && !read(mod, "]");
+    bool    has_content = !!expr && len(expr); //silver_read_if(mod, "[") && !read(mod, "]");
     enode   r           = null;
     bool    conv        = false;
     bool    has_init    = peek_fields(mod);
@@ -1439,14 +589,14 @@ static enode typed_expr(silver mod, model mdl, array meta, array expr) {
             "unknown stride information");  
         int num_index = 0; /// shape_len is 0 on [ int 2x2 : 1 0, 2 2 ]
 
-        while (peek(mod)) {
-            token n = peek(mod);
+        while (silver_peek(mod)) {
+            token n = silver_peek(mod);
             enode  e = parse_expression(mod, element_type, null);
             e = e_create(mod, element_type, null, e);
             push(nodes, e);
             num_index++;
             if (top_stride && (num_index % top_stride == 0)) {
-                validate(read_if(mod, ",") || !peek(mod),
+                validate(silver_read_if(mod, ",") || !silver_peek(mod),
                     "expected ',' when striding between dimensions (stride size: %o)",
                     top_stride);
             }
@@ -1460,12 +610,12 @@ static enode typed_expr(silver mod, model mdl, array meta, array expr) {
         /// this is a conversion operation
         r = parse_expression(mod, mdl, meta);
         conv = r->mdl != mdl;
-        //validate(read_if(mod, "]"), "expected ] after mdl-expr %o", src->name);
+        //validate(silver_read_if(mod, "]"), "expected ] after mdl-expr %o", src->name);
     }
     mod->expr_level--;
     if (conv)
         r = e_create(mod, mdl, meta, r);
-    pop_state(mod, expr ? false : true);
+    pop_tokens(mod, expr ? false : true);
     return r;
 }
 
@@ -1484,16 +634,16 @@ enode silver_parse_member_expr(silver mod, emember mem) {
             mem->name);
         
         /// we must read the arguments given to the indexer
-        consume(mod);
+        silver_consume(mod);
         array args = array(16);
         while (!next_is(mod, "]")) {
             enode expr = parse_expression(mod, null, null);
             push(args, expr);
             validate(next_is(mod, "]") || next_is(mod, ","), "expected ] or , in index arguments");
             if (next_is(mod, ","))
-                consume(mod);
+                silver_consume(mod);
         }
-        consume(mod);
+        silver_consume(mod);
         enode index_expr = null;
         if (r) {
             emember indexer = compatible(mod, r, null, AU_MEMBER_INDEX, args); /// we need to update emember model to make all function members exist in an array
@@ -1502,13 +652,13 @@ enode silver_parse_member_expr(silver mod, emember mem) {
         } else {
             index_expr = e_offset(mod, mem, args);
         }
-        pop_state(mod, true);
+        pop_tokens(mod, true);
         return index_expr;
     } else if (is_macro) {
         bool is_functional = next_is(mod, "(");
         array args = array(alloc, 32);
         if (is_functional) {
-            consume(mod);
+            silver_consume(mod);
             while (!next_is(mod, ")")) {
                 int next;
                 array arg = read_arg(mod->tokens, mod->cursor, &next);
@@ -1517,17 +667,17 @@ enode silver_parse_member_expr(silver mod, emember mem) {
                     push(args, arg);
                 mod->cursor = next;
             }
-            validate(read_if(mod, ")"), "expected parenthesis to end macro func call");
+            validate(silver_read_if(mod, ")"), "expected parenthesis to end macro func call");
         }
-        token cur = peek(mod);
+        token cur = silver_peek(mod);
 
         // read arguments, and call macro
         macro m = mem->mdl;
         array tokens = macro_expand(m, is_functional ? args : null, null);
-        push_state(mod, tokens, 0); // set these tokens as the parser state, run parse, then return the statement
+        push_tokens(mod, tokens, 0); // set these tokens as the parser state, run parse, then return the statement
         enode res = parse_expression(mod, null, null);
-        pop_state(mod, false);
-        pop_state(mod, true);
+        pop_tokens(mod, false);
+        pop_tokens(mod, true);
         return res;
 
     } else if (mem) {
@@ -1537,13 +687,13 @@ enode silver_parse_member_expr(silver mod, emember mem) {
             mem = typed_expr(mod, mem->mdl, mem->meta, expr); // this, is the construct
         }
     }
-    pop_state(mod, mem != null);
+    pop_tokens(mod, mem != null);
     return mem;
 }
 
 /// parses emember args for a definition of a function
 eargs parse_args(silver mod) {
-    validate(read_if(mod, "["), "parse-args: expected [");
+    validate(silver_read_if(mod, "["), "parse-args: expected [");
     eargs args = eargs(mod, mod, open, true);
 
     if (!next_is(mod, "]")) {
@@ -1552,7 +702,7 @@ eargs parse_args(silver mod) {
         for (;;) {
             /// we expect an arg-like statement when we are in this context (eargs)
             if (next_is(mod, "...")) {
-                consume(mod);
+                silver_consume(mod);
                 args->is_ext = true;
                 continue;
             }
@@ -1568,11 +718,11 @@ eargs parse_args(silver mod) {
             if (next_is(mod, "]"))
                 break;
         }
-        consume(mod);
+        silver_consume(mod);
         pop(mod);
         validate(statements == len(args->members), "argument parser mismatch");
     } else {
-        consume(mod);
+        silver_consume(mod);
     }
     args->open = false;
     return args;
@@ -1591,7 +741,7 @@ static enode auto_ref(enode expr, model expect) {
 }
 
 enode silver_parse_ternary(silver mod, enode expr, model mdl_expect, array meta_expect) {
-    if (!read_if(mod, "?")) return expr;
+    if (!silver_read_if(mod, "?")) return expr;
     enode expr_true  = parse_expression(mod, mdl_expect, meta_expect);
     enode expr_false = parse_expression(mod, mdl_expect, meta_expect);
     return e_ternary(mod, expr, expr_true, expr_false);
@@ -1625,9 +775,9 @@ enode silver_parse_assignment(silver mod, emember mem, string oper) {
 
 enode cond_builder(silver mod, array cond_tokens, Au unused) {
     mod->expr_level++; // make sure we are not at 0
-    push_state(mod, cond_tokens, 0);
+    push_tokens(mod, cond_tokens, 0);
     enode cond_expr = parse_expression(mod, emodel("bool"), null);
-    pop_state(mod, false);
+    pop_tokens(mod, false);
     mod->expr_level--;
     return cond_expr;
 }
@@ -1636,9 +786,9 @@ enode cond_builder(silver mod, array cond_tokens, Au unused) {
 enode statement_builder(silver mod, array expr_tokens, Au unused) {
     int level = mod->expr_level;
     mod->expr_level = 0;
-    push_state(mod, expr_tokens, 0);
+    push_tokens(mod, expr_tokens, 0);
     enode expr = parse_statement(mod);
-    pop_state(mod, false);
+    pop_tokens(mod, false);
     mod->expr_level = level;
     return expr;
 }
@@ -1647,9 +797,9 @@ enode block_builder(silver mod, array block_tokens, Au unused) {
     int level = mod->expr_level;
     mod->expr_level = 0;
     enode last = null;
-    push_state(mod, block_tokens, 0);
+    push_tokens(mod, block_tokens, 0);
     last = parse_statements(mod, false);
-    pop_state(mod, false);
+    pop_tokens(mod, false);
     mod->expr_level = level;
     return last;
 }
@@ -1660,9 +810,9 @@ enode statements_builder(silver mod, array expr_groups, Au unused) {
     mod->expr_level = 0;
     enode last = null;
     each (expr_groups, array, expr_tokens) {
-        push_state(mod, expr_tokens, 0);
+        push_tokens(mod, expr_tokens, 0);
         last = parse_statement(mod);
-        pop_state(mod, false);
+        pop_tokens(mod, false);
     }
     mod->expr_level = level;
     return last;
@@ -1672,9 +822,9 @@ enode exprs_builder(silver mod, array expr_groups, Au unused) {
     mod->expr_level++; // make sure we are not at 0
     enode last = null;
     each (expr_groups, array, expr_tokens) {
-        push_state(mod, expr_tokens, 0);
+        push_tokens(mod, expr_tokens, 0);
         last = parse_expression(mod, null, null);
-        pop_state(mod, false);
+        pop_tokens(mod, false);
     }
     mod->expr_level--;
     return last;
@@ -1682,9 +832,9 @@ enode exprs_builder(silver mod, array expr_groups, Au unused) {
 
 enode expr_builder(silver mod, array expr_tokens, Au unused) {
     mod->expr_level++; // make sure we are not at 0
-    push_state(mod, expr_tokens, 0);
+    push_tokens(mod, expr_tokens, 0);
     enode exprs = parse_expression(mod, null, null);
-    pop_state(mod, false);
+    pop_tokens(mod, false);
     mod->expr_level--;
     return exprs;
 }
@@ -1704,7 +854,7 @@ enode parse_ifdef_else(silver mod) {
     
     while (true) {
         validate(!expect_last, "continuation after else");
-        bool  is_if  = read_if(mod, "ifdef") != null;
+        bool  is_if  = silver_read_if(mod, "ifdef") != null;
         validate(is_if && require_if || !require_if, "expected if");
         mod->expr_level++;
         enode n_cond = is_if ? parse_expression(mod, null, null) : null;
@@ -1713,21 +863,21 @@ enode parse_ifdef_else(silver mod) {
         if (n_cond) {
             Au const_v = n_cond->literal;
             if (!one_truth && const_v && cast(bool, const_v)) { // we need to make sure that we do not follow anymore in this block!
-                push_state(mod, block, 0); // are we doing that?
+                push_tokens(mod, block, 0); // are we doing that?
                 statements = parse_statements(mod, false);
-                pop_state(mod, false);
+                pop_tokens(mod, false);
                 one_truth = true; /// we passed the condition, so we cannot enter in other blocks.
             }
         } else if (!one_truth) {
             validate(!is_if, "if statement incorrect");
-            push_state(mod, block, 0);
+            push_tokens(mod, block, 0);
             statements = parse_statements(mod, false); /// make sure parse-statements does not use its own members
-            pop_state(mod, false);
+            pop_tokens(mod, false);
             expect_last = true;
         }
         if (!is_if)
             break;
-        bool next_else = read_if(mod, "else") != null;
+        bool next_else = silver_read_if(mod, "else") != null;
         if (!next_else)
             break;
         require_if = false;
@@ -1745,7 +895,7 @@ enode parse_if_else(silver mod) {
     array tokens_cond  = array(32);
     array tokens_block = array(32);
     while (true) {
-        bool is_if  = read_if(mod, "if") != null;
+        bool is_if  = silver_read_if(mod, "if") != null;
         validate(is_if && require_if || !require_if, "expected if");
         array cond  = is_if ? read_within(mod) : array();
         array block = read_body(mod);
@@ -1754,7 +904,7 @@ enode parse_if_else(silver mod) {
         push(tokens_block, block);
         if (!is_if)
             break;
-        bool next_else = read_if(mod, "else") != null;
+        bool next_else = silver_read_if(mod, "else") != null;
         require_if = false;
     }
     subprocedure build_cond = subproc(mod, cond_builder, null);
@@ -1766,14 +916,14 @@ bool is_primitive(model f);
 
 enode parse_switch(silver mod) {
     
-    validate(read_if(mod, "switch") != null, "expected switch");
+    validate(silver_read_if(mod, "switch") != null, "expected switch");
     enode e_expr = parse_expression(mod, null, null);
     map   cases  = map(hsize, 16);
     array expr_def = null;
     bool  all_const = is_primitive(e_expr->mdl);
 
     while (true) {
-        if (read_if(mod, "case")) {
+        if (silver_read_if(mod, "case")) {
             bool  is_const  = false;
             model mdl_read  = null;
             array meta_read = null;
@@ -1781,10 +931,10 @@ enode parse_switch(silver mod) {
                 &mdl_read, &meta_read, &is_const);
             all_const &= is_const && (mdl_read == e_expr->mdl) && (meta_read == e_expr->meta);
             array body  = read_body(mod);
-            //value->deep_compare = true; // tell array when its given a compare to not just do element equation but effectively deep compare (i will do this)
+            //value->deep_compare = true; // tell array when its given a compare to not just do silver_element equation but effectively deep compare (i will do this)
             set(cases, value, body);
             continue;
-        } else if (read_if(mod, "default")) {
+        } else if (silver_read_if(mod, "default")) {
             expr_def = read_body(mod);
             continue;
         } else
@@ -1805,13 +955,13 @@ array read_expression_groups(silver mod) {
     array current = array(32);
     int   level   = 0;
 
-    token f = peek(mod);
+    token f = silver_peek(mod);
     if (!eq(f, "[")) return null;
 
-    consume(mod);
+    silver_consume(mod);
     
     while (true) {
-        token t = consume(mod);
+        token t = silver_consume(mod);
         if (!t)
             break;
 
@@ -1850,16 +1000,16 @@ enode statements_push_builder(silver mod, array expr_groups, Au unused) {
     statements s_members = statements(mod, mod);
     push(mod, s_members);
     each (expr_groups, array, expr_tokens) {
-        push_state(mod, expr_tokens, 0);
+        push_tokens(mod, expr_tokens, 0);
         last = parse_statement(mod);
-        pop_state(mod, false);
+        pop_tokens(mod, false);
     }
     mod->expr_level = level;
     return last;
 }
 
 enode parse_for(silver mod) {
-    validate(read_if(mod, "for") != null, "expected for");
+    validate(silver_read_if(mod, "for") != null, "expected for");
 
     array groups = read_expression_groups(mod);
     validate(groups != null, "expected [ init , cond , step [ , step-b , step-c , ...] ]");
@@ -1894,12 +1044,12 @@ enode parse_for(silver mod) {
 
 
 enode parse_loop_while(silver mod) {
-    bool is_loop = read_if(mod, "loop") != null;
+    bool is_loop = silver_read_if(mod, "loop") != null;
     validate(is_loop, "expected loop");
     array cond  = read_within(mod);
     array block = read_body(mod);
     verify(block, "expected body");
-    bool is_loop_while = read_if(mod, "while") != null;
+    bool is_loop_while = silver_read_if(mod, "while") != null;
     if (is_loop_while) {
         verify(!cond, "condition given above conflicts with while below");
         cond = read_within(mod);
@@ -1911,7 +1061,7 @@ enode parse_loop_while(silver mod) {
 
 
 bool is_model(silver mod) {
-    token  k = peek(mod);
+    token  k = silver_peek(mod);
     emember m = lookup2(mod, k, null);
     return m && m->is_type;
 }
@@ -1920,7 +1070,7 @@ bool is_model(silver mod) {
 i32 read_enum(silver mod, i32 def, Au_t etype) {
     for (int m = 1; m < etype->members.count; m++) {
         Au_t enum_v = etype->members.origin[m];
-        if (read_if(mod, enum_v->ident))
+        if (silver_read_if(mod, enum_v->ident))
             return *(i32*)enum_v->ptr; // should support typed enums; the ptr is a mere Au-object
     }
     return def;
@@ -1943,7 +1093,7 @@ path module_path(silver mod, string name) {
 #undef find_member
 
 Au_t next_is_keyword(silver mod, Au_t* fn) {
-    token t = peek(mod);
+    token t = silver_peek(mod);
     if  (!t)  return null;
     if  (!isalpha(t->chars[0])) return null;
     Au_t f = Au_find_type((cstr)t->chars, null);
@@ -1971,11 +1121,11 @@ emember silver_read_def(silver mod) {
         return mem;
     }
 
-    consume(mod);
-    string n = read_alpha(mod);
+    silver_consume(mod);
+    string n = silver_read_alpha(mod);
     validate(n, "expected alpha-numeric identity, found %o", next(mod));
 
-    model   mtop = top(mod);
+    model   mtop = top_scope(mod);
     emember mem  = null; // = emember(mod, mod, name, n, context, mtop);
     model   mdl  = null;
     array   meta = null;
@@ -1994,7 +1144,7 @@ emember silver_read_def(silver mod) {
         
     } else if (is_enum) {
         model store = null, suffix = null;
-        if (read_if(mod, ",")) {
+        if (silver_read_if(mod, ",")) {
             store  = instanceof(read_model(mod, null, null), typeid(model));
             suffix = instanceof(read_model(mod, null, null), typeid(model));
             validate(store, "invalid storage type");
@@ -2006,7 +1156,7 @@ emember silver_read_def(silver mod) {
         mdl = enumeration(
             mod, mod, src, store);
         
-        push_state(mod, enum_body, 0);
+        push_tokens(mod, enum_body, 0);
         push(mod, mdl);
         store = mdl->src;
 
@@ -2030,7 +1180,7 @@ emember silver_read_def(silver mod) {
             if  (!e) break;
             Au v = null;
             
-            if (read_if(mod, ":")) {
+            if (silver_read_if(mod, ":")) {
                 v = read_node(mod, atype, null, null); // i want this to parse an entire literal, with operations
                 //validate(v && isa(v) == atype, "expected numeric literal");
             } else
@@ -2056,7 +1206,7 @@ emember silver_read_def(silver mod) {
             }
         }
         pop(mod);
-        pop_state(mod, false);
+        pop_tokens(mod, false);
     } else {
         fault("unknown error");
     }
@@ -2108,7 +1258,7 @@ enode parse_statements(silver mod, bool unique_members) {
         push(mod, new(statements, mod, mod));
     
     enode  vr = null;
-    while(peek(mod)) {
+    while(silver_peek(mod)) {
         print_tokens(mod, "parse_statements");
         vr = parse_statement(mod);
     }
@@ -2131,7 +1281,7 @@ function parse_fn(silver mod, AFlag member_type, Au ident, OPType assign_enum) {
     if (is_cast) {
         rtype = read_model(mod, &body, &meta);
     } else if (!name) {
-        name = read_alpha(mod);
+        name = silver_read_alpha(mod);
         validate(name, "expected alpha-identifier");
     }
 
@@ -2141,7 +1291,7 @@ function parse_fn(silver mod, AFlag member_type, Au ident, OPType assign_enum) {
     if (next_is(mod, "[")) args = parse_args(mod);
     args->open = false;
 
-    bool guarded = read_if(mod, "->") != null;
+    bool guarded = silver_read_if(mod, "->") != null;
     verify(rec_ctx || !guarded, "guard ( -> ) applies only to class func");
 
     rtype = read_model(mod, &body, &meta);
@@ -2150,9 +1300,9 @@ function parse_fn(silver mod, AFlag member_type, Au ident, OPType assign_enum) {
     
     // check if using ai model
     codegen cgen = null;
-    if (read_if(mod, "using")) {
+    if (silver_read_if(mod, "using")) {
         verify(!body, "body already defined in type[expr]");
-        token codegen_name = read_alpha(mod);
+        token codegen_name = silver_read_alpha(mod);
         verify(codegen_name, "expected codegen-identifier after 'using'");
         cgen = get(mod->codegens, codegen_name);
         verify(cgen, "codegen identifier not found: %o", codegen_name);
@@ -2210,9 +1360,9 @@ void silver_parse(silver mod) {
     emember mem_init = initializer(mod); // publish initializer
     map members = mod->members;
 
-    while (peek(mod)) {
+    while (silver_peek(mod)) {
         enode res = parse_statement(mod);
-        validate(res, "unexpected token found for statement: %o", peek(mod));
+        validate(res, "unexpected token found for statement: %o", silver_peek(mod));
         incremental_resolve(mod);
     }
 
@@ -2854,7 +2004,7 @@ static bool is_checkout(path a) {
 }
 
 enode export_share(silver mod) {
-    string dir         = read_alpha(mod);
+    string dir         = silver_read_alpha(mod);
     path   export_from = f(path, "%o/%o", mod->project_path, dir);
 
     validate(dir_exists("%o", export_from),
@@ -2907,9 +2057,9 @@ enode export_share(silver mod) {
 }
 
 enode export_parse(silver mod) {
-    validate(read_if(mod, "export"), "expected export");
+    validate(silver_read_if(mod, "export"), "expected export");
 
-    if (read_if(mod, "share"))
+    if (silver_read_if(mod, "share"))
         return export_share(mod);
 
     fault("export mode not supported: %o", next(mod));
@@ -3238,8 +2388,8 @@ i32 silver_build(silver a) {
 }
 
 bool silver_next_is_neighbor(silver mod) {
-    token b = element(mod, -1);
-    token c = element(mod,  0);
+    token b = silver_element(mod, -1);
+    token c = silver_element(mod,  0);
     return b->column + b->count == c->column;
 }
 
@@ -3266,7 +2416,7 @@ path module_exists(silver mod, array idents) {
 
 enode import_parse(silver mod) {
     validate(next_is(mod, "import"), "expected import keyword");
-    consume(mod);
+    silver_consume(mod);
 
     model current_top = mod->top;
 
@@ -3279,7 +2429,7 @@ enode import_parse(silver mod) {
     path   local_mod     = null;
 
     // what differentiates a codegen from others, just class name?
-    token t = peek(mod);
+    token t = silver_peek(mod);
     Au_t is_codegen = null;
     token commit = null;
     string uri    = null;
@@ -3290,20 +2440,20 @@ enode import_parse(silver mod) {
         string user       = mod->git_owner;
         string project    = null;
         string aa         = expect_alpha(mod); // value of t
-        string bb         = read_if(mod, ":") ? expect_alpha(mod) : null;
-        string cc         = bb && read_if(mod, ":") ? expect_alpha(mod) : null;
+        string bb         = silver_read_if(mod, ":") ? expect_alpha(mod) : null;
+        string cc         = bb && silver_read_if(mod, ":") ? expect_alpha(mod) : null;
         array  mpath      = null;
         Au_t  f           = Au_find_type((cstr)aa->chars, null);
 
         if (f && inherits(f, typeid(codegen)))
             is_codegen = f;
         else if (next_is(mod, ".")) {
-            while (read_if(mod, ".")) {
+            while (silver_read_if(mod, ".")) {
                 if (!mpath) {
                     mpath = array(alloc, 32);
                     push(mpath, cc ? cc : bb ? bb : aa ? aa : (string)null);
                 }
-                string ident = read_alpha(mod);
+                string ident = silver_read_alpha(mod);
                 push(mpath, ident);
             }
         } else {
@@ -3318,7 +2468,7 @@ enode import_parse(silver mod) {
         
         if (!is_codegen) {
             // read commit if given
-            if (read_if(mod, "/")) commit = next(mod);
+            if (silver_read_if(mod, "/")) commit = next(mod);
             
             if (aa && !bb && !commit) {
                 local_mod = module_exists(mod, mpath);
@@ -3365,7 +2515,7 @@ enode import_parse(silver mod) {
 
             if (local_mod) {
                 uri = null;
-                cont = read_if(mod, ",") != null;
+                cont = silver_read_if(mod, ",") != null;
                 verify (!cont, "comma not yet supported in import (func needs restructuring to create multiple imoprts in enode)");
             } else
                 uri = f(string, "https://%o/%o/%o%s%o", service, user, project,
@@ -3374,7 +2524,7 @@ enode import_parse(silver mod) {
     }
     
     // includes for this import
-    if (read_if(mod, "<")) {
+    if (silver_read_if(mod, "<")) {
         for (;;) {
             string f = read_alpha_any(mod);
             validate(f, "expected include");
@@ -3385,8 +2535,8 @@ enode import_parse(silver mod) {
             
             push(includes, f);
 
-            if (!read_if(mod, ",")) {
-                token n = read_if(mod, ">");
+            if (!silver_read_if(mod, ",")) {
+                token n = silver_read_if(mod, ">");
                 validate(n, "expected '>' after include, list, of, headers");
                 break;
             }
@@ -3433,8 +2583,8 @@ enode import_parse(silver mod) {
     }
     
     if (next_is(mod, "as")) {
-        consume(mod);
-        namespace = hold(read_alpha(mod));
+        silver_consume(mod);
+        namespace = hold(silver_read_alpha(mod));
         validate(namespace, "expected alpha-numeric %s",
             is_codegen ? "alias" : "namespace");
     } else if (is_codegen) {
@@ -3502,149 +2652,11 @@ enode import_parse(silver mod) {
     return mem;
 }
 
-int main(int argc, cstrs argv) {
-    Au_engage(argv);
-    silver mod = silver(argv);
-    return 0;
-}
+
 
 define_enum  (build_state)
 define_enum  (language)
 
-
-
-// return tokens for function content (not its surrounding def)
-array codegen_generate_fn(codegen a, function f, array query) {
-    fault("must subclass codegen for usable code generation");
-    return null;
-}
-
-// design-time for dictation
-array read_dictation(silver mod, array input) {
-    // we want to read through [ 'tokens', image[ 'file.png' ] ]
-    // also 'token here' 'and here' as two messages
-    array result = array();
-
-    push_state(mod, input, 0);
-    while (read_if(mod, "[")) {
-        array content = array();
-        while (peek(mod) && !next_is(mod, "]")) {
-            if (read_if(mod, "file")) {
-                verify (read_if(mod, "["), "expected [ after file");
-                string file = read_literal(mod, typeid(string));
-                verify (file, "expected 'path' of file in resources");
-                path share = path_share_path();
-                path fpath = f(path, "%o/%o", share, file);
-                verify(exists(fpath), "path does not exist: %o", fpath);
-                verify (read_if(mod, "]"), "expected ] after file [ literal string path... ] ");
-                push(content, fpath); // we need to bring in the image/media api
-            } else {
-                string msg = read_literal(mod, typeid(string));
-                verify (msg, "expected 'text' message");
-                push(content, msg);
-            }
-            read_if(mod, ","); // optional for arrays of 1 dimension
-        }
-        verify(len(content), "expected more than one message entry");
-        verify(read_if(mod, "]"), "expected ] after message");
-
-        push(result, content);
-    }
-    verify(len(result), "expected dictation message");
-    pop_state(mod, false);
-    return result;
-}
-
-array chatgpt_generate_fn(chatgpt a, function f, array query) {
-    silver mod = f->mod;
-    array  res = array(alloc, 32);
-
-    // we need to construct the query for chatgpt from our query tokens
-    // as well as the preamble system context 
-    // we have simple strings
-    string key = f(string, "%s", getenv("CHATGPT"));
-    verify(len(key),
-        "chatgpt requires an api key stored in environment variable CHATGPT");
-    
-    map headers = m(
-        "Authorization", f(string, "Bearer %o", key));
-    
-    uri  addr      = uri("POST https://api.openai.com/v1/chat/completions");
-    sock chatgpt   = sock(addr);
-    bool connected = connect_to(chatgpt);
-    verify(connected, "failed to connect to chatgpt (online access required for remote codegen)");
-    string str_args = string();
-    pairs(f->args->members, i) {
-        string name = i->key;
-        emember mem  = i->value;
-        if (len(str_args))
-            append(str_args, ",");
-        concat(str_args, f(string, "%o: %o", name, mem->name));
-    }
-    string signature = f(string, "func %o[%o] -> %o", f, str_args, f->rtype);
-    
-    // main system message
-    map sys_intro = m(
-        "role",    string("system"),
-        "content", f(string, 
-            "this is silver compiler, and your job is to write the code for inside of method: %o, "
-            "no [ braces ] containing it, just the inner method code; next we will provide entire module "
-            "source, so you know context and other components available", signature));
-    
-    // include our module source code
-    map sys_module = m(
-        "role",     string("system"),
-        "content",  mod->source_raw );
-
-    // now we need a silver document with reasonable how-to
-    // this can be fetched from resource, as its meant for both human and AI learning
-    path   docs         = path_share_path();
-    path   test_sf      = f(path, "%o/docs/test.ag", docs);
-    string test_content = load(test_sf, typeid(string), null);
-    map    sys_howto    = m(
-        "role",     string("system"),
-        "content",  test_content);
-    
-    array  messages     = a(sys_intro, sys_module, sys_howto);
-    
-    // now we have 1 line of dictation: ['this is text describing an image', image[ 'file.png' ] ]
-    // for each dictation message, there is a response from the server which we also include as assistant
-    // it must error if there are missing responses from the servea                                                                                                                                                                                                                                                                                                                                                                                      
-    array dictation = read_dictation(mod, f->body);
-
-    each (dictation, array, msg) {
-        array content = array();
-        each (msg, Au, info) {
-            map item;
-            if (instanceof(typeid(path), info)) {
-                string mime_type = mime((path)info);
-                string b64 = base64((path)info);
-                map m_url = m("url", f(string, "data:%o;base64,%o", mime_type, b64)); // data:image/png;base64,
-                item = m("type", "image_url", "image_url", m_url);
-            } else if (instanceof(typeid(string), info)) {
-                item = m("type", "text", "text", info);
-            } else {
-                fault("unknown type in dictation: %s", isa(info)->ident);
-            }
-            push(content, item);
-        }
-        map user_dictation = m(
-            "role",     string("user"),
-            "content",  content);
-
-        push(messages, user_dictation);
-        path test_sf = f(path, "%o/docs/test.ag", docs);
-    }
-
-    map user = m(
-        "role",     string("user"),
-        "content",  string("write a function that adds the args a and b"));
-    
-    hold(messages);
-    map body = m("model", string("gpt-5"), "messages", messages);
-    
-    return res;
-}
 
 */
 
@@ -3653,6 +2665,12 @@ static array keywords;
 static array assign;
 static array compare;
 
+
+int main(int argc, cstrs argv) {
+    Au_engage(argv);
+    silver mod = silver(argv);
+    return 0;
+}
 
 /// im a module!
 void silver_init(silver mod) {
@@ -3853,6 +2871,1005 @@ static void initialize() {
             level->token [j] = eq(op_name, "equal") ? string("==") : op_token;
         }
     }
+}
+
+
+typedef struct {
+    symbol lib_prefix;
+    symbol exe_ext, static_ext, shared_ext; 
+} exts;
+
+exts get_exts() {
+    return (exts)
+#ifdef _WIN32
+    { "", "exe", "lib", "dll" }
+#elif defined(__APPLE__)
+    { "", "",    "a",   "dylib" }
+#else
+    { "", "",    "a",   "so" }
+#endif
+    ;
+}
+
+num index_of_cstr(Au a, cstr f) {
+    Au_t t = isa(a);
+    if (t == typeid(string)) return index_of((string)a, f);
+    if (t == typeid(array))  return index_of((array)a, string(f));
+    if (t == typeid(cstr) || t == typeid(symbol) || t == typeid(cereal)) {
+        cstr v = strstr(a, f);
+        return v ? (num)(v - f) : (num)-1;
+    }
+    fault("len not handled for type %s", t->ident);
+    return 0;
+}
+
+static token silver_element(silver a, num rel) {
+    int r = a->cursor + rel;
+    if (r < 0 || r > a->tokens->count - 1) return null;
+    token t = a->tokens->origin[r];
+    return t;
+}
+
+static bool is_alpha(Au any) {
+    if (!any)
+        return false;
+    Au_t  type = isa(any);
+    string s;
+    if (type == typeid(string)) {
+        s = any;
+    } else if (type == typeid(token)) {
+        token token = any;
+        s = string(token->chars);
+    }
+    
+    if (index_of_cstr(keywords, cstring(s)) >= 0)
+        return false;
+    
+    if (len(s) > 0) {
+        char first = s->chars[0];
+        return isalpha(first) || first == '_';
+    }
+    return false;
+}
+
+static bool silver_next_indent(silver a) {
+    token p = silver_element(a, -1);
+    token n = silver_element(a,  0);
+    return p && n->indent > p->indent;
+}
+
+static bool silver_next_is_eq(silver a, symbol first, ...) {
+    va_list args;
+    va_start(args, first);
+    int i = 0;
+    symbol cs = first;
+    while (cs) {
+        token n = silver_element(a, i);
+        if (!n || strcmp(n->chars, cs) != 0) {
+            va_end(args);
+            return false;
+        }
+        cs = va_arg(args, symbol);
+        i++;
+    }
+    va_end(args);
+    return true;
+}
+
+#define next_is(a, ...) silver_next_is_eq(a, __VA_ARGS__, null)
+
+static token silver_next(silver a) {
+    if (a->cursor >= len(a->tokens))
+        return null;
+    token res = silver_element(a, 0);
+    a->cursor++;
+    return res;
+}
+
+static token silver_consume(silver a) {
+    return silver_next(a);
+}
+
+static array read_within(silver mod) {
+    array body    = array(32);
+    token n       = silver_element(mod,  0);
+    bool  proceed = mod->expr_level == 0 ? true : eq(n, "[");
+    if  (!proceed) return null;
+
+    bool bracket = eq(n, "[");
+    silver_consume(mod);
+    int depth = bracket == true; // inner expr signals depth 1, and a bracket does too.  we need both togaether sometimes, as in inner expression that has parens
+    for (;;) {
+        token inner = silver_next(mod);
+        if (!inner) break;
+        if (eq(inner, "]")) depth--;
+        if (eq(inner, "[")) depth++;
+        if (depth > 0) {
+            push(body, inner);
+            continue;
+        }
+        break;
+    }
+    return body;
+}
+
+static token silver_peek(silver a) {
+    if (a->cursor == len(a->tokens))
+        return null;
+    return silver_element(a, 0);
+}
+
+static array read_body(silver mod) {
+    array body = array(32);
+    token n    = silver_element(mod,  0);
+    if (!n) return null;
+    token p    = silver_element(mod, -1);
+    bool  mult = n->line > p->line;
+
+    while (1) {
+        token k = silver_peek(mod);
+        if (!k) break;
+        if (!mult && k->line    > n->line)   break;
+        if ( mult && k->indent <= p->indent) break;
+        push(body, k);
+        silver_consume(mod);
+    }
+    return body;
+}
+
+static num silver_current_line(silver a) {
+    token  t = silver_element(a, 0);
+    return t->line;
+}
+
+static string silver_location(silver a) {
+    token  t = silver_element(a, 0);
+    return t ? (string)location(t) : (string)form(string, "n/a");
+}
+
+
+static token silver_navigate(silver a, int count) {
+    if (a->cursor <= 0)
+        return null;
+    a->cursor += count;
+    token res = silver_element(a, 0);
+    return res;
+}
+
+static token silver_prev(silver a) {
+    if (a->cursor <= 0)
+        return null;
+    a->cursor--;
+    token res = silver_element(a, 0);
+    return res;
+}
+
+static bool is_keyword(Au any) {
+    Au_t  type = isa(any);
+    string s;
+    if (type == typeid(string))
+        s = any;
+    else if (type == typeid(token))
+        s = string(((token)any)->chars);
+    
+    return index_of_cstr(keywords, cstring(s)) >= 0;
+}
+
+static string silver_read_keyword(silver a) {
+    token n = silver_element(a, 0);
+    if (n && is_keyword(n)) {
+        a->cursor ++;
+        return string(n->chars);
+    }
+    return null;
+}
+
+static string silver_peek_keyword(silver a) {
+    token   n = silver_element(a, 0);
+    return (n && is_keyword(n)) ? string(n->chars) : null;
+}
+
+static bool silver_next_is_alpha(silver a) {
+    if (silver_peek_keyword(a)) return false;
+    token n = silver_element(a, 0);
+    return is_alpha(n) ? true : false;
+}
+
+static int sfn(string a, string b) {
+    int diff = len(a) - len(b);
+    return diff;
+}
+
+static string scan_map(map m, string source, int index) {
+    string s = string(alloc, 32);
+    string last_match = null;
+    int i = index;
+    while (1) {
+        if (i >= len(source))
+            break;
+        string a = mid(source, i, 1);
+        append(s, a->chars);
+        string f = get(m, s);
+        if (f) {
+            last_match = f;
+            i++;
+        } else
+            break;
+    }
+    return last_match;
+}
+
+static array parse_tokens(silver mod, Au input, array output) {
+    string input_string;
+    Au_t  type = isa(input);
+    path    src = null;
+    if (type == typeid(path)) {
+        src = input;
+        input_string = load(src, typeid(string), null); // this was read before, but we 'load' files; way less conflict wit posix
+    } else if (type == typeid(string))
+        input_string = input;
+    else
+        assert(false, "can only parse from path");
+
+    mod->source_raw = hold(input_string);
+    
+    list   symbols    = list();
+    string special    = string(".$,<>()![]/+*:=#");
+    i32    special_ln = len(special);
+    for (int i = 0; i < special_ln; i++)
+        push(symbols, string((i32)special->chars[i]));
+    each (keywords, string, kw) push(symbols, kw);
+    each (assign,   string, a)  push(symbols, a);
+    each (compare,  string, a)  push(symbols, a);
+    pairs(operators, i)         push(symbols, i->key);
+    sort(symbols, sfn);
+    map mapping = map(hsize, 32);
+    for (item i = symbols->first; i; i = i->next) {
+        string sym = i->value;
+        set(mapping, sym, sym);
+    }
+
+    array   tokens          = output;
+    verify(tokens, "no output set");
+
+    num     line_num        = 1;
+    num     length          = len(input_string);
+    num     index           = 0;
+    num     line_start      = 0;
+    num     indent          = 0;
+    bool    num_start       = 0;
+
+    i32 chr0 = idx(input_string, index);
+    validate(!isspace(chr0) || chr0 == '\n', "initial statement off indentation");
+
+    while (index < length) {
+        i32 chr = idx(input_string, index);
+
+        if (isspace(chr)) {
+            if (chr == '\n') {
+                line_num  += 1;
+                line_start = index + 1;
+                indent     = 0;
+                label: /// so we may use break and continue
+                chr = idx(input_string, ++index);
+                if       (!isspace(chr))  continue;
+                else if  (chr ==  '\n')   continue;
+                else if  (chr ==   ' ')   indent += 1;
+                else if  (chr ==  '\t')   indent += 4;
+                else                      continue;
+                goto label;
+            } else {
+                index += 1;
+                continue;
+            }
+        }
+
+        num_start = isdigit(chr) > 0;
+
+        if (!mod->cmode && chr == '#') {
+            if (index + 1 < length && idx(input_string, index + 1) == '#') {
+                index += 2;
+                while (index < length && !(idx(input_string, index) == '#' && index + 1 < length && idx(input_string, index + 1) == '#')) {
+                    if (idx(input_string, index) == '\n')
+                        line_num += 1;
+                    index += 1;
+                }
+                index += 2;
+            } else {
+                while (index < length && idx(input_string, index) != '\n')
+                    index += 1;
+                line_num += 1;
+                index += 1;
+            }
+            continue;
+        }
+    
+
+        
+        string name = scan_map(mapping, input_string, index);
+        if (name) {
+            // we could merge these more generically
+            if (mod->cmode && len(name) == 1 && strncmp(&input_string->chars[index], "##", 2) == 0) {
+                name = string("##");
+            }
+            token  t = token(
+                chars,      (cstr)name->chars, 
+                indent,     indent,
+                source,     src,
+                line,       line_num,
+                column,     index - line_start);
+            push(tokens, t);
+            index += len(name);
+            continue;
+        }
+
+        if (chr == '"' || chr == '\'') {
+            i32 quote_char = chr;
+            num start      = index;
+            index         += 1;
+            while (index < length && idx(input_string, index) != quote_char) {
+                if (idx(input_string, index)     == '\\' && index + 1 < length && 
+                    idx(input_string, index + 1) == quote_char)
+                    index += 2;
+                else
+                    index += 1;
+            }
+            index         += 1;
+            string crop    = mid(input_string, start, index - start);
+            if (crop->chars[0] == '-') {
+                char ch[2] = { crop->chars[0], 0 };
+                push(tokens, token(
+                    chars,  ch,
+                    indent, indent,
+                    source, src,
+                    line,   line_num,
+                    column, start - line_start));
+                crop = string(&crop->chars[1]);
+                line_start++;
+            }
+            push(tokens, token(
+                chars,  crop->chars,
+                indent, indent,
+                source, src,
+                line,   line_num,
+                column, start - line_start));
+            continue;
+        }
+
+        num start = index;
+        bool is_dim = false;
+        bool last_dash = false;
+        while (index < length) {
+            i32 v = idx(input_string, index);
+            char sval[2] = { v, 0 };
+            bool is_dash = v == '-';
+            is_dim = (num_start && v == 'x');
+            if (isspace(v) || index_of(special, sval) >= 0 || is_dim) {
+                if (last_dash && (index - start) > 1) {
+                    i32 vb = idx(input_string, index - 2); // allow the -- sequence, disallow - at end of tokens
+                    index -= vb != '-';
+                }
+                break;
+            }
+            index += 1;
+            last_dash = is_dash;
+        }
+        
+        string crop = mid(input_string, start, index - start);
+        push(tokens, token(
+            chars,  crop->chars,
+            indent, indent,
+            source, src,
+            line,   line_num,
+            column, start - line_start));
+        if (is_dim) {
+            push(tokens, token(
+                chars,  "x",
+                indent, indent,
+                source, src,
+                line,   line_num,
+                column, index - line_start));
+            index++;
+        }
+    }
+    return tokens;
+}
+
+
+static token silver_read_if(silver a, symbol cs) {
+    token n = silver_element(a, 0);
+    if (n && strcmp(n->chars, cs) == 0) {
+        a->cursor++;
+        return n;
+    }
+    return null;
+}
+
+static Au silver_read_literal(silver a, Au_t of_type) {
+    token  n = silver_element(a, 0);
+    if (n && n->literal) {
+        a->cursor++;
+        return n->literal;
+    }
+    return null;
+}
+
+static string silver_read_string(silver a) {
+    token  n = silver_element(a, 0);
+    if (n && isa(n->literal) == typeid(string)) {
+        string token_s = string(n->chars);
+        string result  = mid(token_s, 1, token_s->count - 2);
+        a->cursor ++;
+        return result;
+    }
+    return null;
+}
+
+static Au silver_read_numeric(silver a) {
+    token n = silver_element(a, 0);
+    if (n && (isa(n->literal) == typeid(f64) || isa(n->literal) == typeid(i64))) {
+        a->cursor++;
+        return n->literal;
+    }
+    return null;
+}
+
+static etype next_is_class(silver a, bool read_token) {
+    token t = silver_peek(a);
+    if (!t) return null;
+    if (eq(t, "class")) {
+        if (read_token)
+            silver_consume(a);
+        return etype_lookup("Au");
+    }
+
+    etype f = etype_lookup(t->chars);
+    if (is_class(f)) {
+        if (read_token)
+            silver_consume(a);
+        return f;
+    }
+    return null;
+}
+
+static string silver_peek_def(silver a) {
+    token n   = silver_element(a, 0);
+    etype t   = top_scope(a);
+    etype rec = is_rec(t) ? t : null;
+    if (!rec && next_is_class(a, false))
+        return string(n->chars);
+
+    if (n && is_keyword(n))
+        if (eq(n, "import") || eq(n, "func") || eq(n, "cast") || 
+            eq(n, "class")  || eq(n, "enum") || eq(n, "struct"))
+            return string(n->chars);
+    return null;
+}
+
+static Au silver_read_bool(silver a) {
+    token  n       = silver_element(a, 0);
+    if (!n) return null;
+    bool   is_true = strcmp(n->chars, "true")  == 0;
+    bool   is_bool = strcmp(n->chars, "false") == 0 || is_true;
+    if (is_bool) a->cursor ++;
+    return is_bool ? _bool(is_true) : null;
+}
+
+// this merely reads the various assignment operators if set, and gives a constant bool
+static string silver_read_assign(silver a, ARef assign_type, ARef is_const) {
+    token  n = silver_element(a, 0);
+    if (!n) return null;
+    string    k            = string(n->chars);
+    num       assign_index = index_of(assign, k);
+    bool      found        = assign_index >= 0;
+
+    if (is_const)    *(bool*)  is_const     = false;
+    if (assign_type) *(OPType*)assign_type  = OPType__undefined;
+
+    if (found) {
+        if (eq(k, ":")) {
+            if (is_const)    *(bool*)is_const      = true;
+            if (assign_type) *(OPType*)assign_type = OPType__assign;
+        } else {
+            if (is_const)    *(bool*)is_const      = false;
+            if (assign_type) *(OPType*)assign_type = OPType__assign + assign_index;
+        }
+        a->cursor ++;
+    }
+    return found ? k : null;
+}
+
+string silver_read_alpha_any(silver a) {
+    token n = silver_element(a, 0);
+    if (n && isalpha(n->chars[0])) {
+        a->cursor ++;
+        return string(n->chars);
+    }
+    return null;
+}
+
+string silver_read_alpha(silver a) {
+    token n = silver_element(a, 0);
+    if (is_alpha(n)) {
+        a->cursor ++;
+        return string(n->chars);
+    }
+    return null;
+}
+
+string silver_peek_alpha(silver a) {
+    token n = silver_element(a, 0);
+    if (is_alpha(n)) {
+        return string(n->chars);
+    }
+    return null;
+}
+
+etype parse_fn(silver mod, AFlag member_type, Au ident, OPType assign_enum);
+static etype read_model(silver mod, array* expr, array* meta);
+
+
+enode silver_read_enode(silver mod, Au_t constant_result, etype mdl_expect, array meta_expect) {
+/*
+    print_tokens(mod, "read-node");
+    bool      cmode     = mod->cmode;
+    array     expr      = null;
+    token     silver_peek      = silver_peek(mod);
+    bool      is_expr0  = !mod->cmode && mod->expr_level == 0;
+    interface access    = is_expr0 ? read_enum(mod, interface_undefined, typeid(interface)) : 0;
+    bool      is_static = is_expr0 && silver_read_if(mod, "static") != null;
+    string    kw        = is_expr0 ? peek_keyword(mod) : null;
+    bool      is_oper   = kw && eq(kw, "operator");
+    bool      is_index  = kw && eq(kw, "index");
+    bool      is_cast   = kw && eq(kw, "cast");
+    bool      is_fn     = kw && eq(kw, "func");
+    etype     rec_ctx   = null;
+    etype     top       = top_scope(mod);
+    etype     rec_top   = !mod->cmode ? is_rec(top) : null;
+    etype     f         = null;
+    etype     args      = !mod->cmode && top->au->is_func ? top : null;
+    silver    module    = !mod->cmode && (top->is_global) ? mod : null;
+    emember   mem       = null;
+    // todo: lost notion of static vs imethod here, reintroduce
+    AFlag     mtype     = (is_fn && !is_static) ? AU_MEMBER_FUNC : (!is_static && is_cast) ? AU_MEMBER_CAST : AU_MEMBER_FUNC;
+
+    if (!mod->cmode) {
+        context(mod, &rec_ctx, &f, typeid(function));
+    }
+
+    if (is_expr0 && !mod->cmode && (module || rec_ctx) && silver_peek_def(mod)) {
+        emember mem = read_def(mod);
+        if (!mem) {
+            if (is_cast || is_fn) silver_consume(mod);
+            token alpha = !is_cast ? silver_read_alpha(mod) : null;
+            // check if module or record constructor
+            emember rmem = alpha ? lookup2(mod, alpha, null) : null;
+            if (module && rmem && rmem->mdl == (etype)module) {
+                validate(!is_cast && is_fn, "invalid constructor for module; use func keyword");
+                mtype = AU_MEMBER_CONSTRUCT;
+            } else if (rec_ctx && rmem && rmem->mdl == (etype)rec_ctx) {
+                validate(!is_cast && !is_fn, "invalid constructor for class; use class-name[] [ no func, not static ]");
+                mtype = AU_MEMBER_CONSTRUCT;
+            }
+
+            bool has_args = is_cast || next_is(mod, "[");
+            validate(has_args, "expected func args for %o", alpha);
+
+            // parse function contents
+            if (eq(alpha, "member")) {
+                int test2 = 2;
+                test2    += 2;
+            }
+            mem = emember(
+                mod,        mod,
+                access,     access,
+                name,       alpha,
+                mdl,        parse_fn(mod, mtype, alpha, OPType__undefined),
+                is_module,  module);
+            mem->mdl->mem = mem;
+
+            if (is_cast) {
+                function f = (function)mem->mdl;
+                validate(len(f->rtype->mem->name), "rtype cannot be anonymous for cast");
+                mem->name = hold(f(string, "cast_%o", f->rtype));
+            }
+        }
+        register_member(mod, mem, false); /// do not finalize in push member
+        return mem;
+    }
+
+    if (silver_peek && is_alpha(silver_peek) && !lookup2(mod, silver_peek, typeid(macro))) {
+        array meta = null;
+        etype mdl_found = read_model(mod, &expr, &meta);
+        if (mdl_found) {
+            enode res = typed_expr(mod, mdl_found, meta, expr);
+            return e_create(mod, mdl_expect, meta_expect, res); // we need a 'meta_expect' here
+        }
+    }
+
+    Au lit = silver_read_literal(mod, null);
+    if (lit) {
+        mod->expr_level++;
+        enode res = e_operand(mod, lit, mdl_expect, meta_expect);
+        mod->expr_level--;
+        return e_create(mod, mdl_expect, meta_expect, res);
+    }
+    
+    if (!cmode && next_is(mod, "$", "(")) {
+        silver_consume(mod);
+        silver_consume(mod);
+        fault("shell syntax not implemented for 88");
+    }
+
+    if (!cmode && silver_read_if(mod, "null"))
+        return e_null(mod, mdl_expect);
+
+    // parenthesized expressions
+    if (next_is(mod, "(")) {
+        silver_consume(mod);
+        // support C-style cast here, only in cmode (macro definitions)
+        if (cmode) {
+            push_current(mod);
+            array meta = null;
+            etype inner = read_model(mod, null, null);
+            if (inner) {
+                if (next_is(mod, ")")) {
+                    silver_consume(mod);
+                    pop_tokens(mod, true);
+                    enode res = e_create(mod, inner, null, parse_expression(mod, inner, null));
+                    return e_create(mod, mdl_expect, meta_expect, res);
+                } else {
+                    pop_tokens(mod, false);
+                    mod->expr_level = 0;
+                    return null;
+                }
+            }
+            pop_tokens(mod, false);
+        }
+        mod->parens_depth++;
+        enode expr = parse_expression(mod, null, null); // Parse the expression
+        token t = silver_read_if(mod, ")");
+        if (t) mod->parens_depth--;
+        return e_create(mod, mdl_expect, meta_expect,
+            parse_ternary(mod, expr, mdl_expect, meta_expect));
+    }
+
+    if (!cmode && next_is(mod, "[")) {
+        validate(mdl_expect, "expected model name before [");
+        array expr = read_within(mod);
+        // we need to get mdl from argument
+        enode r = typed_expr(mod, mdl_expect, meta_expect, expr);
+        return r;
+    }
+
+    // handle the logical NOT operator (e.g., '!')
+    else if (silver_read_if(mod, "!") || (!cmode && silver_read_if(mod, "not"))) {
+        enode expr = parse_expression(mod, null, null); // Parse the following expression
+        return e_create(mod,
+            mdl_expect, meta_expect, e_not(mod, expr));
+    }
+
+    // bitwise NOT operator
+    else if (silver_read_if(mod, "~")) {
+        enode expr = parse_expression(mod, null, null);
+        return e_create(mod,
+            mdl_expect, meta_expect, e_bitwise_not(mod, expr));
+    }
+
+    // 'typeof' operator
+    // should work on instances as well as direct types
+    else if (!cmode && silver_read_if(mod, "typeid")) {
+        bool bracket = false;
+        if (next_is(mod, "[")) {
+            silver_consume(mod); // silver_consume '['
+            bracket = true;
+        }
+        enode expr = parse_expression(mod, null, null); // Parse the type expression
+        if (bracket) {
+            assert(next_is(mod, "]"), "Expected ']' after type expression");
+            silver_consume(mod); // silver_consume ']'
+        }
+        return e_create(mod,
+            mdl_expect, meta_expect, expr); // Return the type reference
+    }
+
+    // 'ref' operator (reference)
+    else if (!cmode && silver_read_if(mod, "ref")) {
+        mod->in_ref = true;
+        enode expr = parse_expression(mod, null, null);
+        mod->in_ref = false;
+        return e_create(mod,
+            mdl_expect, meta_expect, e_addr_of(mod, expr, null));
+    }
+
+    // we may only support a limited set of C functionality for #define macros
+    if (cmode) return null;
+
+    push_current(mod);
+    
+    string    alpha     = null;
+    int       depth     = 0;
+    
+    bool skip_member_check = false;
+    bool avoid_model_lookup = mod->read_model_abort;
+    if (!skip_member_check && module) {
+        string alpha = peek_alpha(mod);
+        if (alpha && !mod->read_model_abort) {
+            emember m = lookup2(mod, alpha, null); // silly read as string here in int [ silly.len ]
+            etype mdl = m ? m->mdl : null;
+            while (mdl && mdl->is_ref)
+                mdl = mdl->src;
+            if (m && m->is_type && mdl && isa(mdl) == typeid(Class))
+                skip_member_check = true;
+        }
+        mod->read_model_abort = false; // state var used for this purpose with the singular call to read-model above
+    }
+
+    for (;!skip_member_check;) {
+        bool first = !mem;
+        if (first && (is_fn || is_cast)) silver_consume(mod);
+        
+        alpha = silver_read_alpha(mod);
+        if (!alpha) {
+            validate(mem == null, "expected alpha ident after .");
+            break;
+        }
+
+        /// Namespace resolution (only on first iteration)
+        bool ns_found = false;
+        if (first && !avoid_model_lookup) {
+            each (mod->spaces, Namespace, im) {
+                if (im->namespace_name && eq(alpha, im->namespace_name->chars)) {
+                    string module_name = alpha;
+                    validate(silver_read_if(mod, "."), "expected . after module-name: %o", alpha);
+                    alpha = silver_read_alpha(mod);
+                    validate(alpha, "expected alpha-ident after module-name: %o", module_name);
+                    mem = lookup2(mod, alpha, typeid(import));
+                    validate(mem, "%o not found in module-name: %o", alpha, module_name);
+                    ns_found = true;
+                }
+            }
+        }
+        
+        /// Lookup or resolve member
+        if (!ns_found) {
+            if (first) {
+
+                // try implicit 'this' access in instance methods
+                if (!mem && f && f->target) {
+                    emember field = find_member(f->target->mdl, alpha, null);
+                    if (field) {
+                        mem = access(f->target, alpha);
+                    } else {
+                        mem = lookup2(mod, alpha, null);
+                    }
+                } else if (!f || !f->target) {
+                    mem = lookup2(mod, alpha, null);
+                }
+                
+                // Still not found? Create new member (module-level definition)
+                if (!mem) {
+                    validate(mod->expr_level == 0, "member not found: %o", alpha);
+                    mem = emember(mod, mod, access, access, name, alpha, 
+                                is_static, is_static, is_module, module);
+                }
+            } else {
+                // Subsequent iterations - access from previous member
+                validate(mem && mem->mdl, "cannot resolve from null member");
+                
+                // Load previous member to traverse into it
+                enode loaded = e_load(mod, mem, null);
+                mem = access(loaded, alpha);
+            }
+
+            /// Handle macros and function calls
+            if (instanceof(mem->mdl, typeid(macro)) || instanceof(mem->mdl, typeid(function))) {
+                mem = parse_member_expr(mod, mem);
+            }
+        }
+        avoid_model_lookup = false;
+
+        /// Check if there's more chaining
+        if (!silver_read_if(mod, ".")) {
+            // End of chain - final load if needed
+            if (!mod->left_hand) {
+                mem = e_load(mod, mem, null);
+            }
+            break;
+        }
+        
+        // More chaining - push context for next iteration
+        validate(!mem->is_func, "cannot resolve into function");
+        if (mem->mdl && !module) {
+            push(mod, mem->mdl);
+            depth++;
+        }
+    }
+
+
+    /// restore namespace after resolving emember
+    for (int i = 0; i < depth; i++)
+        pop(mod);
+
+    pop_tokens(mod, true);
+
+    if (mod->expr_level == 0) {
+        OPType assign_enum  = OPType__undefined;
+        bool   assign_const = false;
+        string assign_type  = read_assign  (mod, &assign_enum, &assign_const);
+        if (args) {
+            validate(mem, "expected emember");
+            validate(assign_enum == OPType__assign, "expected : operator in eargs");
+            validate(!mem->mdl, "duplicate member exists in eargs");
+            mem->mdl = read_model(mod, &expr, &mem->meta);
+            validate(expr == null, "unexpected assignment in args");
+            validate(mem->mdl, "cannot read model for arg: %o", mem->name);
+        }
+        else if ((rec_top || module) && assign_type) {
+            token t = silver_peek(mod);
+
+            // this is where member types are read
+            mem->mdl = read_model(mod, &expr, &mem->meta); // given VkInstance intern instance2 (should only read 1 token)
+            validate(mem->mdl, "expected type after ':' in %o, found %o",
+                (rec_top ? (model)rec_top : (model)module)->mem->name, silver_peek(mod));
+            mem->initializer = hold(expr);
+
+            // lets read meta types here, at the record member level
+
+        } else if (mem && assign_type) {
+            mod->left_hand = false;
+            mod->expr_level++;
+            validate(mem, "member expected before assignment operator");
+            expr = parse_assignment(mod, mem, assign_type);
+            mod->expr_level--;
+        } else if (mem && !assign_type && !mem->mdl) {
+            validate (false, "expected assignment after '%o'", alpha);
+        }
+    }
+
+    if (mem && isa(mem) == typeid(emember) && !mem->membership && mem->mdl && mem->name && len(mem->name)) {
+        //push(mod, mod->userspace);
+        register_member(mod, mem, false); // was true
+        //pop(mod);
+    }
+
+    // this only happens when in a function
+    return f ? e_create(mod, mdl_expect, meta_expect, mem) : null;
+    */
+    return null;
+}
+
+
+// return tokens for function content (not its surrounding def)
+array codegen_generate_fn(codegen a, Au_t f, array query) {
+    fault("must subclass codegen for usable code generation");
+    return null;
+}
+
+// design-time for dictation
+array read_dictation(silver a, array input) {
+    // we want to read through [ 'tokens', image[ 'file.png' ] ]
+    // also 'token here' 'and here' as two messages
+    array result = array();
+
+    push_tokens(a, input, 0);
+    while (silver_read_if(a, "[")) {
+        array content = array();
+        while (silver_peek(a) && !next_is(a, "]")) {
+            if (silver_read_if(a, "file")) {
+                verify (silver_read_if(a, "["), "expected [ after file");
+                string file = silver_read_literal(a, typeid(string));
+                verify (file, "expected 'path' of file in resources");
+                path share = path_share_path();
+                path fpath = f(path, "%o/%o", share, file);
+                verify(exists(fpath), "path does not exist: %o", fpath);
+                verify (silver_read_if(a, "]"), "expected ] after file [ literal string path... ] ");
+                push(content, fpath); // we need to bring in the image/media api
+            } else {
+                string msg = silver_read_literal(a, typeid(string));
+                verify (msg, "expected 'text' message");
+                push(content, msg);
+            }
+            silver_read_if(a, ","); // optional for arrays of 1 dimension
+        }
+        verify(len(content), "expected more than one message entry");
+        verify(silver_read_if(a, "]"), "expected ] after message");
+
+        push(result, content);
+    }
+    verify(len(result), "expected dictation message");
+    pop_tokens(a, false);
+    return result;
+}
+
+array chatgpt_generate_fn(chatgpt a, Au_t f, array query) {
+    silver mod = f->user->mod;
+    array  res = array(alloc, 32);
+
+    // we need to construct the query for chatgpt from our query tokens
+    // as well as the preamble system context 
+    // we have simple strings
+    string key = f(string, "%s", getenv("CHATGPT"));
+    verify(len(key),
+        "chatgpt requires an api key stored in environment variable CHATGPT");
+    
+    map headers = m(
+        "Authorization", f(string, "Bearer %o", key));
+    
+    uri  addr      = uri("POST https://api.openai.com/v1/chat/completions");
+    sock chatgpt   = sock(addr);
+    bool connected = connect_to(chatgpt);
+    verify(connected, "failed to connect to chatgpt (online access required for remote codegen)");
+    string str_args = string();
+    for (int i = 0; i < f->args.count; i++) {
+        Au_t mem = f->args.origin[i];
+        if (len(str_args))
+            append(str_args, ",");
+        concat(str_args, f(string, "%o: %o", mem, mem->type));
+    }
+    string signature = f(string, "func %o[%o] -> %o", f, str_args, f->rtype);
+    
+    // main system message
+    map sys_intro = m(
+        "role",    string("system"),
+        "content", f(string, 
+            "this is silver compiler, and your job is to write the code for inside of method: %o, "
+            "no [ braces ] containing it, just the inner method code; next we will provide entire module "
+            "source, so you know context and other components available", signature));
+    
+    // include our module source code
+    map sys_module = m(
+        "role",     string("system"),
+        "content",  mod->source_raw );
+
+    // now we need a silver document with reasonable how-to
+    // this can be fetched from resource, as its meant for both human and AI learning
+    path   docs         = path_share_path();
+    path   test_sf      = f(path, "%o/docs/test.ag", docs);
+    string test_content = load(test_sf, typeid(string), null);
+    map    sys_howto    = m(
+        "role",     string("system"),
+        "content",  test_content);
+    
+    array  messages     = a(sys_intro, sys_module, sys_howto);
+    
+    // now we have 1 line of dictation: ['this is text describing an image', image[ 'file.png' ] ]
+    // for each dictation message, there is a response from the server which we also include as assistant
+    // it must error if there are missing responses from the servea                                                                                                                                                                                                                                                                                                                                                                                      
+    array dictation = read_dictation(mod, f->user->body);
+
+    each (dictation, array, msg) {
+        array content = array();
+        each (msg, Au, info) {
+            map item;
+            if (instanceof(typeid(path), info)) {
+                string mime_type = mime((path)info);
+                string b64 = base64((path)info);
+                map m_url = m("url", f(string, "data:%o;base64,%o", mime_type, b64)); // data:image/png;base64,
+                item = m("type", "image_url", "image_url", m_url);
+            } else if (instanceof(typeid(string), info)) {
+                item = m("type", "text", "text", info);
+            } else {
+                fault("unknown type in dictation: %s", isa(info)->ident);
+            }
+            push(content, item);
+        }
+        map user_dictation = m(
+            "role",     string("user"),
+            "content",  content);
+
+        push(messages, user_dictation);
+        path test_sf = f(path, "%o/docs/test.ag", docs);
+    }
+
+    map user = m(
+        "role",     string("user"),
+        "content",  string("write a function that adds the args a and b"));
+    
+    hold(messages);
+    map body = m("model", string("gpt-5"), "messages", messages);
+    
+    return res;
 }
 
 define_class (chatgpt, codegen)
