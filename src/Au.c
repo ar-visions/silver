@@ -496,19 +496,23 @@ static global_init_fn* call_last;
 static num             call_last_alloc;
 static num             call_last_count;
 
-struct _Au_combine {
+typedef struct _Au_combine {
     struct _Au   info;
     struct _Au_t type;
-};
+} Au_combine;
 
-static struct _Au_combine* member_pool;
-static int                 n_members;
+typedef struct _array_combine {
+    struct _Au    info;
+    struct _array data;
+} array_combine;
 
-static struct _Au_combine au_module;
-static Au_t   base_module;
+static Au_combine* member_pool;
+static int         n_members;
+
+static Au_t   au_module;
 static Au_t   module;
+static array_combine modules;
 static array  scope;
-static map    module_map;
 static bool   started = false;
 
 Au_t Au_lexical(array lex, symbol f) {
@@ -615,21 +619,28 @@ none Au_register_init(func f) {
 }
 
 Au_t Au_module(symbol name) {
-    if (module && strcmp(name, module->ident) == 0) return module;
-    if (!module_map) module_map = hold(map(hsize, 8));
-    verify(module_map, "expected module map allocation");
-    string k = string(name);
-    return get(module_map, k);
+    for (int i = 0; i < modules.data.count; i++) {
+        Au_t m = modules.data.origin[i];
+        if (strcmp(m->ident, name) == 0)
+            return m;
+    }
+    return Au_register_module(name);
 }
 
 Au_t Au_global() {
-    return base_module;
+    return au_module;
 }
 
 Au_t Au_register_module(symbol next_module) {
-    module = calloc(1, sizeof(struct _Au_t));
-    module->ident = strdup(next_module);
-    return module;
+    struct _Au_combine* combine = calloc(1, sizeof(struct _Au_combine));
+    Au_t m = &combine->type;
+    m->ident = strdup(next_module);
+    if (!au_module) {
+        au_module = m;
+        module = m;
+    }
+    array_qpush(&modules.data, m);
+    return m;
 }
 
 none collective_init(collective a) {
@@ -645,7 +656,6 @@ none push_type(Au_t type) {
     if (type == typeid(Au_t)) {
         has_pushed = true;
         module = Au_module("Au");
-        base_module = module;
         module->members.unmanaged = true;
 
         // the first ever type we really register is the collective_abi
@@ -747,13 +757,12 @@ Au_t Au_scope_lookup(array a, string f) {
 }
 
 ARef Au_types(ref_i64 length) {
-    if (!module) module = &au_module.type;
     *length = module->members.count;
     return module->members.origin;
 }
 
 Au_t Au_find_type(symbol name, Au_t m) {
-    Au_t mod = m ? m : (Au_t)(module ? (Au_t)module : (Au_t)&au_module.type);
+    Au_t mod = m ? m : module;
 
     for (int i = 0; i < mod->members.count; i++) {
         Au_t type = mod->members.origin[i];
@@ -761,9 +770,9 @@ Au_t Au_find_type(symbol name, Au_t m) {
             return type;
     }
 
-    if (mod != &au_module.type)
-        for (int i = 0; i < au_module.type.members.count; i++) {
-            Au_t type = au_module.type.members.origin[i];
+    if (mod != module)
+        for (int i = 0; i < module->members.count; i++) {
+            Au_t type = module->members.origin[i];
             if (strcmp(name, type->ident) == 0)
                 return type;
         }
@@ -1375,7 +1384,6 @@ none Au_engage(cstrs argv) {
     Au_t f32_type = typeid(f32);
     if (started) return;
 
-    module_map  = hold(map(hsize, 16, unmanaged, true));
     int argc    = 0;
     if (argv) while (argv[argc]) argc++;
     started     = true;

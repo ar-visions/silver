@@ -159,9 +159,9 @@ etype etype_resolve(etype t) {
 none etype_init(etype t) {
     aether a   = t->mod; // silver's mod will be a delegate to aether, not inherited
     Au_t    au  = t->au;
-    bool  named = au->ident && strlen(au->ident);
+    bool  named = au && au->ident && strlen(au->ident);
 
-    if (isa(t) == typeid(aether)) {
+    if (isa(t) == typeid(aether) || isa(t)->context == typeid(aether)) {
         verify(a->source && len(a->source), "no source provided");
         string name = stem(a->source);
         t->au = Au_register_module(name->chars);
@@ -207,7 +207,7 @@ none etype_init(etype t) {
     au->member_type = AU_MEMBER_TYPE;
     au->user = hold(t);
 
-    if (au->is_pointer && au->src && !au->src->is_primitive) {
+    if (au && au->is_pointer && au->src && !au->src->is_primitive) {
         t->type = LLVMPointerType(au->src->user->type, 0);
     } else if (is_rec(t) || au->is_union || au == typeid(Au_t)) {
         t->type = named ? LLVMStructCreateNamed(a->module_ctx, au->ident) : null;
