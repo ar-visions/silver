@@ -634,6 +634,7 @@ Au_t Au_global() {
 Au_t Au_register_module(symbol next_module) {
     struct _Au_combine* combine = calloc(1, sizeof(struct _Au_combine));
     Au_t m = &combine->type;
+    m->member_type = AU_MEMBER_MODULE;
     m->ident = strdup(next_module);
     if (!au_module) {
         au_module = m;
@@ -1499,13 +1500,11 @@ none hold_members(Au a) {
             Au_t mem = type->members.origin[i];
             Au   *mdata = (Au*)((cstr)a + mem->offset);
             if (mem->member_type == AU_MEMBER_PROP)
-                if (!Au_is_inlay(mem) && *mdata) { // was trying to isolate what class name was responsible for our problems
+                if (!Au_is_inlay(mem) && *mdata) {
                     if (mem->meta.origin && *(Au_t*)mem->meta.origin == typeid(weak))
                         continue;
-
                     Au member_value = *mdata;
                     Au head = header(member_value);
-                    //printf("holding member: %s, of type: %s\n", mem->ident, head->type->ident);// i
                     head->refs++;
                 }
         }

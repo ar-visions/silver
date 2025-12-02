@@ -10,17 +10,18 @@ typedef Au  (*callback_extra)(Au, Au, Au);
 
 enum AU_MEMBER {
     AU_MEMBER_NONE      = 0,
-    AU_MEMBER_TYPE      = 1,
-    AU_MEMBER_CONSTRUCT = 2,
-    AU_MEMBER_PROP      = 3,
-    AU_MEMBER_FUNC      = 4,
-    AU_MEMBER_OPERATOR  = 5,
-    AU_MEMBER_CAST      = 6,
-    AU_MEMBER_INDEX     = 7,
-    AU_MEMBER_ENUMV     = 8,
-    AU_MEMBER_OVERRIDE  = 9,
-    AU_MEMBER_IS_ATTR   = 10,
-    AU_MEMBER_ARG       = 11,
+    AU_MEMBER_MODULE    = 1,
+    AU_MEMBER_TYPE      = 2,
+    AU_MEMBER_CONSTRUCT = 3,
+    AU_MEMBER_PROP      = 4,
+    AU_MEMBER_FUNC      = 5,
+    AU_MEMBER_OPERATOR  = 6,
+    AU_MEMBER_CAST      = 7,
+    AU_MEMBER_INDEX     = 8,
+    AU_MEMBER_ENUMV     = 9,
+    AU_MEMBER_OVERRIDE  = 10,
+    AU_MEMBER_IS_ATTR   = 11,
+    AU_MEMBER_ARG       = 12,
 };
 
 typedef enum AU_MEMBER AFlag;

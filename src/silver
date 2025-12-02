@@ -2,14 +2,28 @@
 #define _silver_
 
 #define silver_schema(X,Y,...)\
+    M(X,Y, i, prop,     public, bool,   build) \
     M(X,Y, i, prop,     public, i32,    expr_level) \
     M(X,Y, i, prop,     public, i32,    parens_depth) \
     M(X,Y, i, prop,     public, string, git_service) \
     M(X,Y, i, prop,     public, string, git_owner) \
     M(X,Y, i, prop,     public, string, git_project) \
     M(X,Y, i, prop,     public, string, source_raw) \
+    M(X,Y, i, prop,     public, path,   src_loc) \
+    M(X,Y, i, prop,     intern, array,  implements) \
+    M(X,Y, i, prop,     intern, array,  imports) \
+    M(X,Y, i, prop,     intern, bool,   read_model_abort) \
     M(X,Y, i, override, method, init)
 declare_class_3(silver, aether, etype)
+
+#define import_schema(X,Y,...) \
+    i_prop(X,Y, public, codegen, codegen) \
+    i_prop(X,Y, public, silver,  external) \
+    i_prop(X,Y, public, array,   tokens) \
+    i_prop(X,Y, public, array,   module_paths) \
+    i_prop(X,Y, public, array,   include_paths) \
+    s_method(X,Y, public, enode, parse, silver)
+declare_class_2(import, etype)
 
 #define chatgpt_schema(X,Y,...) \
     i_override(X,Y, method, generate_fn)

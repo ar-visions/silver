@@ -193,7 +193,7 @@
 #define isa(INSTANCE)               (INSTANCE ? (struct _Au_f*)((struct _Au*)INSTANCE - 1)->type : (struct _Au_f*)0)
 // see: javascript; returns null if its not an instance-of; faults if you give it a null
 //#define instanceof(left, type)      Au_instanceof(left, typeid(type))
-#define ftableI(I)                  ((__typeof__((I)->f)) ((Au)(I))[-1].type)
+#define ftableI(I)                  ((__typeof__((I)->__f[0])) ((Au)(I))[-1].type)
 #define fcall(I,M,...)              ({ __typeof__(I) _i_ = I; ftableI(_i_)->ft.M(_i_, ## __VA_ARGS__); })
 #define mcall(I,M,...)              ({ __typeof__(I) _i_ = I; (_i_) ? ftableI(_i_)->ft.M(_i_, ## __VA_ARGS__) : 0; })
 #define cstring(I)                  cast(cstr, I)
