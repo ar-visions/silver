@@ -23,6 +23,168 @@ none bp() {
 }
 
 
+enode aether_e_op(aether e, OPType optype, string op_name, Au L, Au R) {
+    e->is_const_op = false; // we can be granular about this, but its just not worth the complexity for now
+    enode mL = instanceof(L, typeid(enode)); 
+    enode LV = e_operand(e, L, null);
+    enode RV = e_operand(e, R, null);
+
+    // check for overload
+    if (op_name && isa(L) == typeid(enode) && is_class(L)) {
+        enode Ln = L;
+        etype rec  = is_rec(Ln);
+        if (rec) {
+            enode Lt = null;
+            for (int i = 0; i < rec->au->members.count; i++) {
+                enode mem = i->value;
+                function f = instanceof(mem->mdl, typeid(function));
+                if (f && f->is_oper == optype) {
+                    Lt = mem;
+                    break;
+                }
+            }
+            if  (Lt) {
+                function f = Lt->mdl;
+                verify(len(f->args->members) == 1,
+                    "expected 1 argument for operator method");
+                /// convert argument and call method
+                enode arg_expects = value_by_index(f->args->members, 0);
+                enode  conv = e_create(e, arg_expects->mdl, arg_expects->meta, Ln);
+                array args = array_of(conv, null);
+                verify(mL, "L-operand is invalid data-type");
+                return e_fn_call(e, Lt->mdl, mL, args);
+            }
+        }
+    }
+
+    /// LV cannot change its type if it is a emember and we are assigning
+    enode Lnode = L;
+    Au_t ltype = isa(L);
+    model rtype = determine_rtype(e, optype,
+        (isa(L) == typeid(enode) && Lnode->loaded) ? LV->mdl->src : LV->mdl, RV->mdl); // todo: return bool for equal/not_equal/gt/lt/etc, i64 for compare; there are other ones too
+    array rmeta = LV->meta;
+
+    LLVMValueRef RES;
+    LLVMTypeRef  LV_type = LLVMTypeOf(LV->value);
+    LLVMTypeKind vkind = LLVMGetTypeKind(LV_type);
+
+    enode LL = optype == OPType__assign ? LV : e_create(e, rtype, rmeta, LV); // we dont need the 'load' in here, or convert even
+    enode RL = e_create(e, rtype, RV->meta, RV);
+
+    symbol         N = cstring(op_name);
+    LLVMBuilderRef B = e->builder;
+    Au literal = null;
+    // if not storing ...
+    if (optype == OPType__or || optype == OPType__and) {
+        // ensure both operands are i1
+        model m_bool = emodel("bool");
+        rtype = m_bool;
+        LL = e_create(e, m_bool, null, LL); // generate compare != 0 if not already i1
+        RL = e_create(e, m_bool, null, RL);
+        struct op_entry* op = &op_table[optype - OPType__add];
+        if (LL->literal && RL->literal)
+            RES = op->f_const_op(LL->value, RL->value);
+        else
+            RES = op->f_build_op(B, LL->value, RL->value, N);
+    } else if (optype >= OPType__add && optype <= OPType__left) {
+        struct op_entry* op = &op_table[optype - OPType__add];
+        if (LL->literal && RL->literal)
+            RES = op->f_const_op(LL->value, RL->value);
+        else
+            // we must override the logic here because we're ONLY doing OPType__or, OPType__and
+            RES = op->f_build_op(B, LL->value, RL->value, N);
+
+    } else if (optype == OPType__equal)
+        return e_eq(e, LL, RL);
+    else if (optype == OPType__compare)
+        return e_cmp(e, LL, RL);
+    else {
+        /// assignments perform a store
+        verify(optype >= OPType__assign && optype <= OPType__assign_left, "invalid assignment operation");
+        verify(mL, "left-hand operator must be a emember");
+        /// already computed in R-value
+        if (optype == OPType__assign) {
+            RES = RL->value;
+            literal = RL->literal;
+        } else
+        /// store from operation we call, membered in OPType enumeration
+        /// todo: build all op tables in Au-type (we are lacking these definitions)
+            RES = op_table[optype - OPType__assign_add].f_build_op(B, LL->value, RL->value, N);
+        LLVMBuildStore(B, RES, mL->value);
+    }
+    return enode(
+        mod,        e,
+        mdl,        rtype,
+        meta,       rmeta,
+        literal,    literal,
+        value,      RES);
+}
+
+enode aether_e_or (aether e, Au L, Au R) { return e_op(e, OPType__or,  string("or"),  L, R); }
+enode aether_e_xor(aether e, Au L, Au R) { return e_op(e, OPType__xor, string("xor"), L, R); }
+enode aether_e_and(aether e, Au L, Au R) { return e_op(e, OPType__and, string("and"), L, R); }
+enode aether_e_add(aether e, Au L, Au R) {
+    return e_op(e, OPType__add, string("add"), L, R);
+}
+enode aether_e_sub(aether e, Au L, Au R) { return e_op(e, OPType__sub, string("sub"), L, R); }
+enode aether_e_mul(aether e, Au L, Au R) { return e_op(e, OPType__mul, string("mul"), L, R); }
+enode aether_e_div(aether e, Au L, Au R) { return e_op(e, OPType__div, string("div"), L, R); }
+enode aether_value_default(aether e, Au L, Au R) { return e_op(e, OPType__value_default, string("value_default"), L, R); }
+enode aether_cond_value   (aether e, Au L, Au R) { return e_op(e, OPType__cond_value,    string("cond_value"), L, R); }
+
+
+enode aether_e_inherits(aether e, enode L, Au R) {
+    e->is_const_op = false;
+    if (e->no_build) return e_noop(e, emodel("bool"));
+
+    // Get the type pointer for L
+    enode L_type =  e_offset(e, L, _i64(-sizeof(Au)));
+    enode L_ptr  =    e_load(e, L, null);
+    enode R_ptr  = e_operand(e, R, null, null);
+
+    // Create basic blocks for the loopf
+    LLVMBasicBlockRef block      = LLVMGetInsertBlock(e->builder);
+    LLVMBasicBlockRef loop_block = LLVMAppendBasicBlock(block, "inherit_loop");
+    LLVMBasicBlockRef exit_block = LLVMAppendBasicBlock(block, "inherit_exit");
+
+    // Branch to the loop block
+    LLVMBuildBr(e->builder, loop_block);
+
+    // Loop block
+    LLVMPositionBuilderAtEnd(e->builder, loop_block);
+    LLVMValueRef phi = LLVMBuildPhi(e->builder, L_ptr->mdl->type, "current_type");
+    LLVMAddIncoming(phi, &L_ptr->value, &block, 1);
+
+    // Compare current type with R_type
+    enode cmp       = e_eq(e, value(L_ptr->mdl, L_ptr->meta, phi), R_ptr);
+
+    // Load the parent pointer (assuming it's the first emember of the type struct)
+    enode parent    = e_load(e, value(L_ptr->mdl, L_ptr->meta, phi), null);
+
+    // Check if parent is null
+    enode is_null   = e_eq(e, parent, value(parent->mdl, parent->meta, LLVMConstNull(typed(parent->mdl)->type)));
+
+    // Create the loop condition
+    enode not_cmp   = e_not(e, cmp);
+    enode not_null  = e_not(e, is_null);
+    enode loop_cond = e_and(e, not_cmp, not_null);
+
+    // Branch based on the loop condition
+    LLVMBuildCondBr(e->builder, loop_cond->value, loop_block, exit_block);
+
+    // Update the phi enode
+    LLVMAddIncoming(phi, &parent->value, &loop_block, 1);
+
+    // Exit block
+    LLVMPositionBuilderAtEnd(e->builder, exit_block);
+    LLVMValueRef result = LLVMBuildPhi(e->builder, cmp->mdl->type, "inherit_result");
+    LLVMAddIncoming(result, &cmp->value, &loop_block, 1);
+    LLVMAddIncoming(result, &(LLVMValueRef){LLVMConstInt(LLVMInt1Type(), 0, 0)}, &block, 1);
+
+    return value(emodel("bool"), null, result);
+}
+
+
 void aether_push_tokens(aether a, tokens t, num cursor) {
     //struct silver_f* table = isa(a);
     tokens_data* state = Au_struct(tokens_data);
@@ -162,9 +324,12 @@ none etype_init(etype t) {
     bool  named = au && au->ident && strlen(au->ident);
 
     if (isa(t) == typeid(aether) || isa(t)->context == typeid(aether)) {
+        a = (aether)t;
         verify(a->source && len(a->source), "no source provided");
-        string name = stem(a->source);
-        t->au = Au_register_module(name->chars);
+        a->name = a->name ? a->name : stem(a->source);
+        au = t->au = Au_register_module(a->name->chars);
+        au->user = hold(t);
+        return;
     } else if (t->is_schema) {
         au = t->au = Au_register(a->au, fmt("__%s_t", au->ident)->chars,
             AU_MEMBER_TYPE, AU_TRAIT_SCHEMA | AU_TRAIT_STRUCT);
@@ -528,8 +693,6 @@ static void import_Au(aether a, path lib) {
     etype_ptr(a, au_t);
 
     aether_import_models(a);
-
-    Au_register_module(null);
 }
 
 none aether_init(aether a) {

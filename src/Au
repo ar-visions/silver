@@ -199,7 +199,7 @@ typedef struct _au_core {
     typedef struct _ ## AA { \
         AA##_intern (AA, INST_U, __VA_ARGS__) \
         AA##_intern (AA, INST_L, __VA_ARGS__) \
-        struct _##AA##_f* f; \
+        struct _##AA##_f* __f[2]; \
     } *AA; \
     AA##_schema (AA, DECL) \
     typedef struct _##AA##_f { \
@@ -317,7 +317,7 @@ void lazy_init(global_init_fn fn, Au_t);
         AA##_intern (AA, INST_U, __VA_ARGS__) \
         AA##_intern (AA, INST_L, __VA_ARGS__) \
         u8 AA##_interns [0 AA##_intern(AA, ISIZE, __VA_ARGS__)]; \
-        struct _##AA##_f* f; \
+        struct _##AA##_f* __f[2]; \
     } *AA; \
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
@@ -346,7 +346,7 @@ void lazy_init(global_init_fn fn, Au_t);
         AA##_intern (AA, INST_U, __VA_ARGS__) \
         AA##_intern (AA, INST_L, __VA_ARGS__) \
         u8 AA##_interns [0 AA##_intern (AA, ISIZE, __VA_ARGS__)]; \
-        struct _##AA##_f* f; \
+        struct _##AA##_f* __f[2]; \
     } *AA; \
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
@@ -379,7 +379,7 @@ void lazy_init(global_init_fn fn, Au_t);
         AA##_intern (AA, INST_U, __VA_ARGS__) \
         AA##_intern (AA, INST_L, __VA_ARGS__) \
         u8 AA##_interns [0 AA##_intern (AA, ISIZE, __VA_ARGS__)]; \
-        struct _##AA##_f* f; \
+        struct _##AA##_f* __f[2]; \
     } *AA; \
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
@@ -420,7 +420,7 @@ void lazy_init(global_init_fn fn, Au_t);
         AA##_intern (AA, INST_U, __VA_ARGS__) \
         AA##_intern (AA, INST_L, __VA_ARGS__) \
         u8 AA##_interns [0 AA##_intern (AA, ISIZE, __VA_ARGS__)]; \
-        struct _##AA##_f* f; \
+        struct _##AA##_f* __f[2]; \
     } *AA; \
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
@@ -445,7 +445,7 @@ void lazy_init(global_init_fn fn, Au_t);
     _Pragma("pack(push, 1)") \
     typedef struct _##AA { \
         BASE##_intern (AA, INST, __VA_ARGS__) \
-        struct _##AA##_f* f; \
+        struct _##AA##_f* __f[2]; \
     } *AA; \
     typedef struct _##AA##_f { \
         Au_f_members(BASE) \

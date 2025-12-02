@@ -5,6 +5,7 @@ forward(aether)
 
 #define etype_schema(X,Y,...)\
     M(X,Y, i, prop, public,   Au_t,             au) \
+    M(X,Y, i, prop, public,   array,            meta) \
     M(X,Y, i, prop, public,   aether,           mod) \
     M(X,Y, i, prop, public,   etype,            schema) \
     M(X,Y, i, prop, public,   tokens,           body) \
