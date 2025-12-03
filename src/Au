@@ -607,6 +607,8 @@ forward(any)
     i_final (AA,Y, public, Au,           set_property,        symbol, Au) \
     i_final (AA,Y, public, Au,           get_property,        symbol) \
     i_final (AA,Y, public, Au,           vrealloc,            sz) \
+    s_method(AA,Y, public, Au_t,         find_member,         Au_t, symbol, i32) \
+    s_method(AA,Y, public, Au_t,         context,             array, i32, i32) \
     s_method(AA,Y, public, Au_t,         lexical,             array, symbol) \
     s_method(AA,Y, public, Au_t,         register,            Au_t, symbol, u32, u32) \
     s_method(AA,Y, public, Au_t,         register_type,       Au_t, symbol, u32) \
@@ -665,6 +667,13 @@ forward(any)
     s_method(AA,Y, public, none,        engage,              cstrs) \
     s_vargs (AA,Y, public, map,         args,                cstrs, symbol) \
     s_vargs (AA,Y, public, map,         map_of,              symbol) \
+    i_final (AA,Y, public, bool,        is_generic) \
+    i_final (AA,Y, public, bool,        is_integral) \
+    i_final (AA,Y, public, bool,        is_void) \
+    i_final (AA,Y, public, bool,        is_double) \
+    i_final (AA,Y, public, bool,        is_float) \
+    i_final (AA,Y, public, bool,        is_realistic) \
+    i_final (AA,Y, public, bool,        is_bool) \
     i_final (AA,Y, public, bool,        is_class) \
     i_final (AA,Y, public, bool,        is_struct) \
     i_final (AA,Y, public, bool,        is_func) \

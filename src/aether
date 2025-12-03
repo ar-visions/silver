@@ -2,6 +2,9 @@
 #define _AETHER2_
 
 forward(aether)
+forward(enode)
+forward(code)
+forward(catcher)
 
 #define etype_schema(X,Y,...)\
     M(X,Y, i, prop, public,   Au_t,             au) \
@@ -15,6 +18,7 @@ forward(aether)
     M(X,Y, i, prop, public,   i32,              align_bits) \
     M(X,Y, i, prop, intern,   LLVMScope,        scope, as, ARef) \
     M(X,Y, i, prop, intern,   LLVMTypeRef,      type,  as, ARef) \
+    M(X,Y, i, prop, intern,   LLVMValueRef,     value, as, ARef) \
     M(X,Y, i, prop, intern,   LLVMMetadataRef,  debug, as, ARef) \
     M(X,Y, i, method, public, etype, resolve) \
     M(X,Y, i, override, method, init) \
@@ -42,6 +46,9 @@ declare_class(etype)
     M(X,Y, i, prop,  public, bool,                   verbose) \
     M(X,Y, i, prop,  public, path,                   install) \
     M(X,Y, i, prop,  public, bool,                   cmode) \
+    M(X,Y, i, prop,  public, bool,                   no_const) \
+    M(X,Y, i, prop,  public, bool,                   no_build) \
+    M(X,Y, i, prop,  public, bool,                   is_const_op) \
     M(X,Y, i, prop,  public, callback_extra,         parse_f) \
     M(X,Y, i, prop,  public, callback_extra, parse_expr) \
     M(X,Y, i, prop,  public, callback_extra, read_model) \
@@ -61,45 +68,120 @@ declare_class(etype)
     M(X,Y, i, prop,  public, tokens,                 tokens) \
     M(X,Y, i, prop,  public, num,                    cursor) \
     M(X,Y, i, prop,  public, array,                  stack) \
+    M(X,Y, i, method, public,     enode,       initializer) \
+    M(X,Y, i, method, public,     enode,       e_fn_return,        Au) \
+    M(X,Y, i, method, public,     enode,       e_null,             etype) \
+    M(X,Y, i, method, public,     enode,       e_default_value,    etype) \
+    M(X,Y, i, method, public,     enode,       e_builder,          subprocedure) \
+    M(X,Y, i, method, public,     none,        build_initializer,  etype) \
+    M(X,Y, i, method, public,     enode,       e_element,          enode,      Au) \
+    M(X,Y, i, method, public,     none,        e_cmp_code,         enode,      comparison, enode, code, code) \
+    M(X,Y, i, method, public,     enode,       e_cmp,              enode, enode) \
+    M(X,Y, i, method, public,     none,        e_branch,           code) \
+    M(X,Y, i, method, public,     enode,       e_break,            catcher) \
+    M(X,Y, i, method, public,     none,        e_memcpy,           enode, enode, etype) \
+    M(X,Y, i, method, public,     enode,       compatible,         etype, string, AFlag, array) \
+    M(X,Y, i, method, public,     enode,       e_operand,          Au, etype) \
+    M(X,Y, i, method, public,     enode,       e_op,               OPType,     string, Au, Au) \
+    M(X,Y, i, method, public,     enode,       e_load,             enode, enode) \
+    M(X,Y, i, method, public,     enode,       e_typeid,           etype) \
+    M(X,Y, i, method, public,     enode,       e_meta_ids,         array) \
+    M(X,Y, i, method, public,     enode,       e_eval,             string) \
+    M(X,Y, i, method, public,     enode,       e_interpolate,      string) \
+    M(X,Y, i, method, public,     enode,       e_const_array,      etype, array) \
+    M(X,Y, i, method, public,     enode,       e_offset,           enode,      Au) \
+    M(X,Y, i, method, public,     enode,       e_switch,           enode, map, array, subprocedure, subprocedure) \
+    M(X,Y, i, method, public,     enode,       e_native_switch,    enode, map, array, subprocedure, subprocedure) \
+    M(X,Y, i, method, public,     enode,       e_for,              array, array, array, array, subprocedure, subprocedure, subprocedure, subprocedure) \
+    M(X,Y, i, method, public,     enode,       e_loop,             array,      array, subprocedure, subprocedure, bool) \
+    M(X,Y, i, method, public,     enode,       e_if_else,          array,      array, subprocedure, subprocedure) \
+    M(X,Y, i, method, public,     enode,       e_ternary,          enode,      enode, enode) \
+    M(X,Y, i, method, public,     enode,       e_primitive_convert, enode,     etype) \
+    M(X,Y, i, method, public,     enode,       e_noop,             etype) \
+    M(X,Y, i, method, public,     enode,       e_addr_of,          enode,      etype) \
+    M(X,Y, i, method, public,     enode,       e_bitwise_not,      enode) \
+    M(X,Y, i, method, public,     enode,       e_not,              enode) \
+    M(X,Y, i, method, public,     none,        e_inc,              enode,      num) \
+    M(X,Y, i, method, public,     none,        e_print_node,       enode) \
+    M(X,Y, i, method, public,     enode,       e_var,              etype,      string) \
+    M(X,Y, i, method, public,     enode,       e_or,               Au,          Au) \
+    M(X,Y, i, method, public,     enode,       e_xor,              Au,          Au) \
+    M(X,Y, i, method, public,     enode,       e_and,              Au,          Au) \
+    M(X,Y, i, method, public,     enode,       e_add,              Au,          Au) \
+    M(X,Y, i, method, public,     enode,       e_sub,              Au,          Au) \
+    M(X,Y, i, method, public,     enode,       e_mul,              Au,          Au) \
+    M(X,Y, i, method, public,     enode,       e_div,              Au,          Au) \
+    M(X,Y, i, method, public,     enode,       e_create,           etype, Au) \
+    M(X,Y, i, method, public,     enode,       e_zero,               enode) \
+    M(X,Y, i, method, public,     enode,       e_assign,             enode,      Au, OPType) \
+    M(X,Y, i, method, public,     enode,       e_eq,                 enode,      enode) \
+    M(X,Y, i, method, public,     enode,       e_not_eq,           enode, enode) \
+    M(X,Y, i, method, public,     enode,       e_fn_call,          etype,      enode,    array) \
+    M(X,Y, i, method, public,     enode,       e_is,               enode,      Au) \
+    M(X,Y, i, method, public,     enode,       e_inherits,         enode,      Au) \
+    M(X,Y, i, method, public,     none,        llflag,             symbol,     i32) \
+    M(X,Y, i, method, public,     bool,        emit,           ARef,       ARef) \
+    M(X,Y, i, method, public,     etype,       return_type, ARef) \
     M(X,Y, i, method, public, none,   push_tokens,    tokens, num) \
     M(X,Y, i, method, public, none,   pop_tokens,     bool) \
     M(X,Y, i, method, public, path,   lookup_include, string) \
     M(X,Y, i, method, public, path,   include,        Au, ARef) \
     M(X,Y, i, method, public, Au_t,   top_scope) \
     M(X,Y, i, method, public, none,   push_scope, Au) \
+    M(X,Y, i, method, public, none,   pop_scope) \
     M(X,Y, i, method, public, none,   import_models) \
     M(X,Y, i, override, method, init)
 declare_class_2(aether, etype);
 
+#define catcher_schema(X,Y,...) \
+    M(X,Y, i, prop, public, map, team) \
+    M(X,Y, i, prop, intern, LLVMBasicBlockRef, block, as, ARef)
+declare_class(catcher)
+
+#define code_schema(X,Y,...) \
+    M(X,Y, i, prop, intern, LLVMBasicBlockRef, block, as, ARef) \
+    M(X,Y, i, prop, public, aether,  mod) \
+    M(X,Y, i, prop, public, symbol, label) \
+    M(X,Y, i, method, public, none,   seek_end) \
+    M(X,Y, i, override, method, init)
+declare_class(code)
+
 #define enode_schema(X,Y,...)\
+    M(X,Y, i, prop, public,   aether,           mod) \
     M(X,Y, i, prop, public,   enode,            target) \
     M(X,Y, i, prop, public,   etype,            t) \
-    M(X,Y, i, prop, public,   aether,           mod) \
+    M(X,Y, i, prop, public,   string,           name) \
+    M(X,Y, i, prop, public,   Au,               literal) \
     M(X,Y, i, prop, intern,   LLVMValueRef,     value,  as, ARef) \
+    M(X,Y, i, method, public, enode, access, string) \
     M(X,Y, i, override, cast, Au_t)
 declare_class(enode)
 
 #define aclang_cc_schema(X,Y,...) \
-    i_prop  (X,Y, public, aether,   mod) \
-    i_prop  (X,Y, public, handle,   compiler) \
-    i_prop  (X,Y, public, handle,   PP) \
-    i_prop  (X,Y, public, handle,   ctx) \
-    i_prop  (X,Y, public, handle,   consumer) \
-    i_prop  (X,Y, public, handle,   S) \
-    i_prop  (X,Y, public, handle,   P) \
-    i_prop  (X,Y, public, handle,   module)
+    M(X,Y, i, prop, public, aether,   mod) \
+    M(X,Y, i, prop, public, handle,   compiler) \
+    M(X,Y, i, prop, public, handle,   PP) \
+    M(X,Y, i, prop, public, handle,   ctx) \
+    M(X,Y, i, prop, public, handle,   consumer) \
+    M(X,Y, i, prop, public, handle,   S) \
+    M(X,Y, i, prop, public, handle,   P) \
+    M(X,Y, i, prop, public, handle,   module)
 declare_class(aclang_cc)
 
 #define macro_schema(X,Y,...) \
-    i_prop(X,Y, public, array, def) \
-    i_prop(X,Y, public, array, params) \
-    i_prop(X,Y, public, bool,  va_args) \
-    i_method(X,Y, public, array, expand, array, map)
+    M(X,Y, i, prop, public, array, def) \
+    M(X,Y, i, prop, public, array, params) \
+    M(X,Y, i, prop, public, bool,  va_args) \
+    M(X,Y, i, method, public, array, expand, array, map)
 declare_class_2(macro, etype)
 
 #define codegen_schema(X,Y,...) \
     i_method(X,Y, public, array, generate_fn, Au_t, array) \
-    i_prop(X,Y, public, i32, pad)
+    M(X,Y, i, prop, public, i32, pad)
 declare_class(codegen)
+
+#define static_array_schema(X,Y,...) \
+    i_prop    (X,Y, intern, bool, placeholder)
+declare_class_3(static_array, array, collective)
 
 #endif

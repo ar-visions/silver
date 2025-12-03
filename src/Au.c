@@ -41,6 +41,12 @@ Au_t Au_cast_Au_t(Au a) {
     return isa(a);
 }
 
+bool is_generic(Au t) { return typeid(Au) == au_arg(t); }
+bool is_integral(Au t) { return au_arg(t)->is_integral; }
+bool is_void    (Au t) { return typeid(none) == au_arg(t); }
+bool is_double  (Au t) { return typeid(f64) == au_arg(t); }
+bool is_float   (Au t) { return typeid(f32) == au_arg(t); }
+bool is_realistic(Au t) { return au_arg(t)->is_realistic; }
 bool is_class   (Au t) { return au_arg(t)->is_class;  }
 bool is_struct  (Au t) { return au_arg(t)->is_struct; }
 bool is_func    (Au t) { return au_arg(t)->member_type == AU_MEMBER_FUNC; }
@@ -51,6 +57,7 @@ bool is_sign    (Au t) { return au_arg(t)->is_signed; }
 bool is_unsign  (Au t) { return au_arg(t)->is_unsigned; }
 bool is_ptr     (Au t) { return au_arg(t)->is_pointer; }
 bool is_enum    (Au t) { return au_arg(t)->is_enum; }
+bool is_bool    (Au t) { return typeid(bool) == au_arg(t); }
 bool is_type    (Au t) { return au_arg(t)->member_type == AU_MEMBER_TYPE; }
 
 
@@ -514,6 +521,31 @@ static Au_t   module;
 static array_combine modules;
 static array  scope;
 static bool   started = false;
+
+Au_t Au_find_member(Au_t mdl, symbol f, int member_type) {
+    do {
+        for (int i = 0; i < mdl->members.count; i++) {
+            Au_t au = mdl->members.origin[i];
+            if (!member_type || au->member_type == member_type)
+                if (strcmp(au->ident, f) == 0)
+                    return au;
+        }
+        if (mdl->context == mdl) break;
+        mdl = mdl->context;
+    } while (mdl);
+    return null;
+}
+
+Au_t Au_context(array lex, int member_type, int traits) {
+    for (int i = len(lex) - 1; i >= 0; i--) {
+        Au_t au = lex->origin[i];
+        if (!member_type || au->member_type == member_type) {
+            if (!traits || (au->traits & traits) == traits)
+                return au;
+        }
+    }
+    return null;
+}
 
 Au_t Au_lexical(array lex, symbol f) {
     for (int i = len(lex) - 1; i >= 0; i--) {
