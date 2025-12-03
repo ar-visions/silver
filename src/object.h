@@ -56,7 +56,9 @@ enum AU_TRAIT {
     AU_TRAIT_VOID      = 1 << 26,
     AU_TRAIT_STATIC    = 1 << 27,
     AU_TRAIT_FORMATTER = 1 << 28,
-    AU_TRAIT_NAMESPACE = 1 << 29
+    AU_TRAIT_NAMESPACE = 1 << 29,
+    AU_TRAIT_TYPEID    = 1 << 30,
+    AU_TRAIT_MODINIT   = 1 << 31
 };
 
 typedef bool(*global_init_fn)();
@@ -153,6 +155,8 @@ typedef struct _Au_t {
             u32 is_static    : 1;
             u32 is_formatter : 1;
             u32 is_namespace : 1;
+            u32 is_typeid    : 1;
+            u32 is_mod_init  : 1;
         };
         u32 traits;
     };

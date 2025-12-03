@@ -647,19 +647,6 @@ void aether_e_print_node(aether e, enode n) {
         array_of(e_operand(e, string(fmt), null, null), n, null));
 }
 
-emember model_find_member(model mdl, string n, Au_t mdl_type_filter) {
-    aether e = mdl->mod;
-    while (mdl) {
-        if (mdl->members) {
-            emember m = get(mdl->members, n);
-            if (m && (!mdl_type_filter || isa(m->mdl) == mdl_type_filter))
-                return m;
-        }
-        mdl = mdl->parent;
-    }
-    return null;
-}
-
 string model_cast_string(model mdl) {
     return mdl->mem ? mdl->mem->name : null;
 }
@@ -1777,9 +1764,9 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
 
     Class        cmdl         = mdl->src ? instanceof(mdl->src, typeid(Class)) : null;
     structure    smdl         = instanceof(mdl, typeid(structure));
-    Class        Au_type      = emodel("Au");
-    function     f_alloc      = find_member((model)Au_type, string("alloc_new"), null)->mdl;
-    function     f_initialize = find_member((model)Au_type, string("initialize"), null)->mdl;
+    Au_t         Au_type      = au_lookup("Au");
+    etype        f_alloc      = Au_find_member(Au_type, "alloc_new", AU_MEMBER_FUNC)->user;
+    etype        f_initialize = Au_find_member(Au_type, "initialize", AU_MEMBER_FUNC)->user;
     enode        res;
     Au_t         mdl_src      = isa(mdl->src);
 
@@ -4580,11 +4567,12 @@ enode aether_e_eq(aether e, enode L, enode R) {
     e->is_const_op = false;
     if (e->no_build) return e_noop(e, emodel("bool"));
 
-    enode        cmp = e_cmp(e, L, R);
-    LLVMValueRef z   = LLVMConstInt(LLVMInt32Type(), 0, 0);
-    return value(emodel("bool"), null, LLVMBuildICmp(e->builder, LLVMIntEQ, cmp->value, z, "cmp-i"));
+    if (is_prim(L) && is_prim(R)) {
+        enode        cmp = e_cmp(e, L, R);
+        LLVMValueRef z   = LLVMConstInt(LLVMInt32Type(), 0, 0);
+        return value(emodel("bool"), null, LLVMBuildICmp(e->builder, LLVMIntEQ, cmp->value, z, "cmp-i"));
+    }
 
-#if 0
     // todo: bring this back in of course
     Au_t Lt = isa(L->literal);
     Au_t Rt = isa(R->literal);
@@ -4629,8 +4617,9 @@ enode aether_e_eq(aether e, enode L, enode R) {
             L = R;
             R = t;
         }
-        function eq = find_member(L->mdl, string("eq"), typeid(function));
-        if (eq) {
+        Au_t au_f = Au_find_member(L->t->au, "eq", AU_MEMBER_FUNC);
+        if (au_f) {
+            etype eq = au_f->user;
             // check if R is compatible with argument
             // if users want to allow different data types, we need to make the argument more generic
             // this is better than overloads since the code is in one place
@@ -4684,7 +4673,6 @@ enode aether_e_eq(aether e, enode L, enode R) {
         return value(emodel("bool"), null, LLVMBuildFCmp(e->builder, LLVMRealOEQ, L->value, R->value, "eq-f"));
     
     return value(emodel("bool"), null, LLVMBuildICmp(e->builder, LLVMIntEQ, L->value, R->value, "eq-i"));
-#endif
 }
 
 enode aether_e_not_eq(aether e, enode L, enode R) {
