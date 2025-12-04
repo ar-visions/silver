@@ -22,6 +22,7 @@ enum AU_MEMBER {
     AU_MEMBER_OVERRIDE  = 10,
     AU_MEMBER_IS_ATTR   = 11,
     AU_MEMBER_ARG       = 12,
+    AU_MEMBER_NAMESPACE = 13
 };
 
 typedef enum AU_MEMBER AFlag;
@@ -56,9 +57,8 @@ enum AU_TRAIT {
     AU_TRAIT_VOID      = 1 << 26,
     AU_TRAIT_STATIC    = 1 << 27,
     AU_TRAIT_FORMATTER = 1 << 28,
-    AU_TRAIT_NAMESPACE = 1 << 29,
-    AU_TRAIT_TYPEID    = 1 << 30,
-    AU_TRAIT_MODINIT   = 1 << 31
+    AU_TRAIT_TYPEID    = 1 << 29,
+    AU_TRAIT_MODINIT   = 1 << 30
 };
 
 typedef bool(*global_init_fn)();
