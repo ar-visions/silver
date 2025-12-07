@@ -41,8 +41,3 @@ import: LLVM:llvm-project/bd7db754895ed3b51388ec549cd656c770c17587 as runtimes
     -DLIBUNWIND_ENABLE_SHARED=OFF
     -DLIBUNWIND_ENABLE_STATIC=ON
     -DCMAKE_LINKER="$NATIVE/bin/ld.lld"
-
-import: KhronosGroup:Vulkan-Headers
-
-import: KhronosGroup:Vulkan-Tools
-    -DVULKAN_HEADERS_INSTALL_DIR=$IMPORT

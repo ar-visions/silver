@@ -2039,324 +2039,248 @@ array etype_class_list(etype t) {
     return reverse(res);
 }
 
-void aether_finalize_init(aether a, etype f) {
+void aether_build_initializer(aether a, etype m) { }
+
+
+static void aether_finalize_types(aether a, etype module_init_fn) {
+    Au_t module_base = a->au_module;
+
+    push_scope(a, module_init_fn);
+
+    members(module_base, mem) {
+        etype mdl = mem->user;
+        if (!mdl || mdl->imported_from)
+            continue;
+
+        bool is_class_t  = is_class(mdl);
+        bool is_struct_t = is_struct(mdl);
+        bool is_enum_t   = is_enum(mdl);
+
+        if (!is_class_t && !is_struct_t && !is_enum_t)
+            continue;
+
+        if (is_class_t && mdl->au->is_abstract)
+            continue;
+
+        // Count exported members (ignoring intern)
+        int m_count = 0;
+        members(mdl->au, f) {
+            if (f->access_type != interface_intern)
+                m_count++;
+        }
+
+        static_array members_array = static_array(alloc, m_count, assorted, true);
+
+        // Build metadata for each member
+        members(mdl->au, f) {
+            if (f->access_type == interface_intern)
+                continue;
+
+            static_array fmeta = static_array(unmanaged, true, assorted, true);
+            args(f, au_meta) {
+                etype t = au_meta->user;
+                push(fmeta, t);
+            }
+
+            map entry = map(hsize, 8, assorted, true);
+            mset(entry, "meta",          fmeta);
+            mset(entry, "src",           f->type);
+            mset(entry, "ident",         string(f->ident));
+            mset(entry, "offset",        _i32(f->offset));
+            mset(entry, "size",          _i32(f->size));
+            mset(entry, "isize",         _i32(f->isize));
+            mset(entry, "operator_type", _i8(f->operator_type));
+            mset(entry, "access_type",   _i8(f->access_type));
+            mset(entry, "member_type",   _i8(f->member_type));
+            mset(entry, "traits",        _u64(f->traits));
+            mset(entry, "index",         _i64(f->index));
+
+            // Attach function pointer or enum value
+            if (is_func(f)) {
+                etype fn = f->user;
+                mset(entry, "value", e_bitcast(a, fn->static_value, pointer(a, f)));
+            }
+            else if (is_enum_t && f->member_type == AU_MEMBER_ENUMV) {
+                etype v = f->user;
+                mset(entry, "value", e_addr_of(a, v->static_value, mdl));
+            } else
+                mset(entry, "value", e_null(a, etype_lookup("handle")));
+
+            push(members_array, e_create(a, etype_lookup("Au_t"), entry));
+        }
+
+        // Build type-level metadata
+        array meta = array(unmanaged, true, assorted, true);
+        if (is_class_t || is_struct_t) {
+            args(mdl->au, field)
+                push(meta, field);
+        }
+
+        int internal_size = 0;
+        members(mdl->au, f) {
+            if (f->access_type == interface_intern &&
+                f->member_type == AU_MEMBER_PROP)
+                internal_size += f->user->size_bits / 8;
+        }
+
+        map tmap = map(hsize, 8, unmanaged, true, assorted, true);
+        mset(tmap, "ident",   string(mdl->au->ident));
+        mset(tmap, "module",  e_fn_call(a, Au_find_member(au_lookup("Au"), "module", AU_MEMBER_FUNC)->user, null, a(a->name)));
+        mset(tmap, "size",    _i32(mdl->size_bits / 8));
+        mset(tmap, "traits",  _u64(mdl->au->traits));
+        mset(tmap, "meta",    meta);
+        mset(tmap, "isize",   _i32(internal_size));
+        mset(tmap, "members", members_array);
+
+        a->no_const = true;
+        enode static_type = e_create(a, mdl->schema, tmap);
+        a->no_const = false;
+
+        enode target = e_typeid(a, mdl);
+        e_memcpy(a, target, static_type, mdl->schema);
+
+        // Patch parent type for classes
+        if (is_class_t) {
+            etype parent = mdl->au->context;
+            enode parent_typeid = e_typeid(a, parent);
+            e_assign(a, access(target, string("context")), parent_typeid, OPType__assign);
+        }
+
+        // Register type globally
+        Au_t fn_push = Au_find_member(au_lookup("Au"), "push_type", AU_MEMBER_FUNC);
+        e_fn_call(a, fn_push->user, null, a(target));
+    }
+
+    pop(a);
+}
+
+static void build_module_initializer(aether a, etype module_init_fn) {
+    Au_t module_base = a->au_module;
+
+    push_scope(a, module_init_fn);
+
+    members(module_base, au)
+        if (au->member_type == AU_MEMBER_PROP && au->user->initializer)
+            build_initializer(a, au->user);
+
+    e_fn_return(a, null);
+    pop(a);
+}
+
+static void set_global_construct(aether a, etype fn) {
+    LLVMModuleRef mod = a->module;
+
+    LLVMValueRef ctor_func = fn->static_value;  // LLVM function
+    LLVMTypeRef  int32_t   = LLVMInt32Type();
+    LLVMTypeRef  i8ptr_t   = LLVMPointerType(LLVMInt8Type(), 0);
+
+    // Priority: 65535 is lowest priority (runs last); you can choose another.
+    LLVMValueRef priority = LLVMConstInt(int32_t, 65535, false);
+    LLVMValueRef null_ptr = LLVMConstNull(i8ptr_t);
+
+    // Construct struct { i32 priority, void()* fn, i8* data }
+    LLVMTypeRef ctor_type = LLVMStructType(
+        (LLVMTypeRef[]){
+            int32_t,
+            LLVMPointerType(LLVMTypeOf(ctor_func), 0),
+            i8ptr_t
+        },
+        3, false
+    );
+
+    LLVMValueRef ctor_entry = LLVMConstStruct(
+        (LLVMValueRef[]){
+            priority,
+            ctor_func,
+            null_ptr
+        },
+        3, false
+    );
+
+    // Create array [1 x { i32, fn, i8* }]
+    LLVMTypeRef array_type = LLVMArrayType(ctor_type, 1);
+    LLVMValueRef array = LLVMConstArray(ctor_type, &ctor_entry, 1);
+
+    // Create or fetch global named llvm.global_ctors
+    LLVMValueRef global = LLVMGetNamedGlobal(mod, "llvm.global_ctors");
+    if (!global) {
+        global = LLVMAddGlobal(mod, array_type, "llvm.global_ctors");
+    }
+
+    LLVMSetInitializer(global, array);
+    LLVMSetLinkage(global, LLVMAppendingLinkage);
+    LLVMSetGlobalConstant(global, false);
+}
+
+static void build_entrypoint(aether a, etype module_init_fn) {
+    Au_t module_base = a->au_module;
+
+    if (a->is_delegate) {
+        set_global_construct(a, module_init_fn);
+        return;
+    }
+
+    etype main_spec  = etype_lookup("main");
+    verify(main_spec && is_class(main_spec), "expected main class");
+
+    etype main_class = null;
+
+    members(module_base, mem) {
+        if (is_class(mem)) {
+            etype cls = mem->user;
+            if (cls->au->context == main_spec->au) {
+                verify(!main_class, "found multiple main classes");
+                main_class = cls;
+            }
+        }
+    }
+
+    // LIBRARY → no main
+    if (!main_class) {
+        a->is_library = true;
+        return;
+    }
+
+    // APPLICATION → build real main(argc, argv)
+    eargs args = eargs(mod, a);
+    emember argc = earg(args, emodel("i32"),   null, "argc");
+    emember argv = earg(args, emodel("cstrs"), null, "argv");
+
+    set(args->members, argc->name, argc);
+    set(args->members, argv->name, argv);
+
+    Au_t au_f_main = Au_register_member(a->au, "main", au_model("i32"), AU_MEMBER_FUNC, 0);
+    etype main_fn = etype(mod, a, a->au, au_f_main);
+
+    push_scope(a, main_fn);
+
+    // initialize module
+    e_fn_call(a, module_init_fn, null, null);
+
+    // engage runtime
+    etype Au_engage = etype_lookup("Au", "engage");
+    e_fn_call(a, Au_engage, null, a(argv));
+
+    // construct user’s main class
+    e_create(a, main_class, map());
+
+    // return a code
+    e_fn_return(a, _i32(0));
+
+    pop_scope(a);
+    etype_implement(main_fn);
+}
+
+
+static void finalize_init(aether a, etype f) {
     // register module constructors as global initializers ONLY for delegate modules
     // aether creates a 'main' with argument parsing for its main modules
-    enode module_init_mem = null;
+    Au_t module_init_au = null;
 
-    // we need to set 'shape' on the Au_t field
-    
-    // emit declaration of the struct _type_f for classes, structs, and enums
-    au module_base = a->au_module; // the init is at [1] because of the need to have non-replacables at [0] in use with a watcher
-    pairs (module_base->members, i) {
-        emember mem = i->value;
-        model   mdl = mem->mdl;
-        if (mdl == f)
-            module_init_mem = mem;
-    }
-
-    // now enter the function where we will construct the type_i
-    push_scope(a, f);
-
-    pairs (module_base->members, i) { // these members include our types, then we go through members on those
-        emember mem = i->value;
-        model   mdl = mem->mdl;
-
-        if (mdl->imported_from) continue;
-
-        Class       cmdl = mdl->src ? instanceof(mdl->src, typeid(Class)) : null;
-        Class       smdl = instanceof(mdl, typeid(structure));
-        enumeration emdl = instanceof(mdl, typeid(enumeration));
-
-        if (!cmdl && !emdl)
-            continue;
-        
-        if (cmdl && cmdl->is_abstract)
-            continue;
-
-        symbol null_str = null;
-        Au      null_v   = primitive(typeid(symbol), &null_str);
-        Au      null_h   = primitive(typeid(handle), &null_str);
-        int    m_count  = 0;
-
-        pairs (mdl->members, ii) {
-            emember f = ii->value;
-            if (f->access == interface_intern) continue;
-            m_count++;
-        }
-
-        // create a 'static_array', this indicates that we are to create static global space for this in module,
-        // e_create returns a pointer to it, which we may assign to member
-        static_array members = static_array(alloc, m_count, assorted, true); // we need to create a singular value for this entire array of members
-        model member_ptr = emodel("_member");
-        i32 current_prop_id = 0;
-
-        pairs (mdl->members, ii) {
-            emember   f      = ii->value;
-            map       member = map(hsize, 8, assorted, true);
-            function  func   = instanceof(f->mdl, typeid(function));
-            
-            if (f->access == interface_intern) continue;
-            // structure _meta_t
-            map  m_meta = map(unmanaged, true, assorted, true);
-
-            // for functions, this is the argments; for props they are meta descriptors; type-only entries to describe their use
-            i32 meta_index = 0;
-            if (func) {
-                mset(m_meta, "count", _i64((func->instance ? 1 : 0) + (func->args ? len(func->args->members): 0)));
-                if (func->instance) {
-                    string fname = f(string, "meta_%i", meta_index);
-                    set(m_meta, fname, func->instance); // this should not be the pointer type
-                    meta_index++;
-                }
-                pairs(func->args->members, ai) {
-                    model mdl_meta = ((emember)ai->value)->mdl;
-                    string fname = f(string, "meta_%i", meta_index);
-                    set(m_meta, fname, ident2(mdl_meta));
-                    meta_index++;
-                }
-            } else {
-                mset(m_meta, "count", _i64(len(f->meta_args))); // f is field; this is a meta-description for field members using the args we already have
-                each(f->meta_args, model, mdl_meta) {
-                    string fname = f(string, "meta_%i", meta_index);
-                    set(m_meta, fname, ident2(mdl_meta));
-                    meta_index++;
-                }
-            }
-
-            Au           _count  = get(m_meta, string("count"));
-            Au_t       t       = isa(_count);
-            map         margs   = map(unmanaged, true, assorted, true);
-            enumeration en      = instanceof(f->mdl, typeid(enumeration));
-
-            if (func && func->args) {
-                mset(margs, "count", _i64(len(f->meta_args)));
-                i32 meta_index = 0;
-                pairs(func->args->members, ai) {
-                    emember arg_mem = ai->value;
-                    string fname = f(string, "meta_%i", meta_index);
-                    set(margs, fname, arg_mem->mdl);
-                    meta_index++;
-                }
-            }
-            
-            mset(member, "name",  f->name);
-            mset(member, "sname", e_null(e, emodel("handle")));
-
-            if (func) {
-                if (!func->rtype) {
-                    fault("this should be set to something");
-                }
-                mset(member, "type", ident2(func->rtype));
-            } else {
-                 mset(member, "type", ident2(f->mdl));
-            }
-           
-            mset(member, "offset",          _i32(f->offset_bits / 8)); // do we have to add the parent classes minus Au-type? (Au-type is a header)
-            mset(member, "count",           _i32(1)); // needs to expose member-specific array, however we don't handle it on the member level in silver (we may not need this)
-            if (func) {
-                mset(member, "member_type", _i32(get_aflags(f, func->function_type)));
-            } else {
-                if (emdl)
-                    mset(member, "member_type", _i32(get_aflags(f, AU_MEMBER_ENUMV)));
-                else
-                    mset(member, "member_type", _i32(get_aflags(f, AU_MEMBER_PROP)));
-            }
-
-            OPType otype = ((cmdl || smdl) && func && func->is_oper) ? func->is_oper : 0;
-            mset(member, "operator_type",   _i32(otype));
-            mset(member, "required",        _i32(f->is_require ? 1 : 0));
-            mset(member, "args",            margs); // e_create can lookup this field, and convert the map
-
-            if (func) {
-                mset(member, "ptr", enode(
-                    mod, e, value, LLVMConstBitCast(func->value, func->ptr->type),
-                    meta, null, mdl, func->ptr));
-            } else if (emdl) { // && member is ENUMV
-                enode gvalue = get(en->global_values, f->name);
-                verify(gvalue, "value not found for enum %o", f->name);
-                mset(member, "ptr", e_addr_of(e, gvalue, en->atype));
-            } else {
-                mset(member, "ptr", e_null(e, emodel("handle")));
-            }
-
-            mset(member, "method", null_h);
-            mset(member, "id",     _i64(current_prop_id));
-            //mset(member, "value",  _i64(0));
-
-            if (!func)
-                current_prop_id++;
-
-            enode static_member = e_create(e, member_ptr->src, null, member);
-            push(members, static_member);
-        }
-
-        
-        // set traits
-        AFlag traits = 0;
-        if (cmdl) traits |= AU_TRAIT_CLASS;
-        if (smdl) traits |= AU_TRAIT_STRUCT;
-        if (emdl) traits |= AU_TRAIT_ENUM;
-
-        // fill out type meta
-        map type_meta = map(unmanaged, true, assorted, true);
-        i32 meta_index = 0;
-        if (cmdl || smdl) {
-            record rmdl = cmdl ? cmdl : smdl;
-            mset(type_meta, "count", _i64(len(rmdl->meta))); // f is field; this is a meta-description for field members using the args we already have
-            each(rmdl->meta, model, mdl_meta) {
-                string fname = f(string, "meta_%i", meta_index);
-                set(type_meta, fname, ident2(mdl_meta));
-                meta_index++;
-            }
-        }
-
-        i32 isize = 0;
-        pairs (mdl->members, ii) {
-            emember   f      = ii->value;
-            map       member = map(hsize, 8, assorted, true);
-            function  func   = instanceof(f->mdl, typeid(function));
-            if (f->access != interface_intern || func)
-                continue;
-            isize += f->mdl->size_bits / 8;
-        }
-
-        enode e_members  = e_create(e, member_ptr, null, members);
-
-        map  mtype = map(hsize, 8, unmanaged, true, assorted, true);
-        mset(mtype, "name",   mdl->mem->name);
-        mset(mtype, "module", e->mem->name);
-        mset(mtype, "size",   _i32(mdl->size_bits / 8));
-        mset(mtype, "magic",  _i32(1337));
-        mset(mtype, "traits", _i32(traits));
-        mset(mtype, "meta",   type_meta);
-        mset(mtype, "isize",  _i32(isize));
-        mset(mtype, "member_count", _i32(len(members)));
-        mset(mtype, "members", e_members); // simply getting the const address
-
-        e->no_const = true;
-        enode static_type = e_create(e,
-            mdl->schema->schema_type->mdl, mdl->schema->schema_type->meta, mtype);
-        e->no_const = false;
-        enode target      = e_typeid(e, mdl);
-
-        // build operations -- copy static_type to target (Au_t ptr) memory
-        e_memcpy(e, target, static_type, mdl->schema->schema_type->mdl);
-
-        // set vmember_type and vmember_count
-        push(e, target->mdl->src);
-
-        // set parent_type if this is a class
-        if (cmdl) {
-            record parent = cmdl->parent;
-            verify(!parent || instanceof(parent, typeid(record)), "expected parent record");
-            if (parent && parent->is_abstract)
-                parent = parent->src;
-            enode parent_type = e_typeid(e, parent);
-            enode m_parent_type = access(target, string("parent_type"));
-            e_assign(e, m_parent_type, parent_type, OPType__assign);
-        }
-
-        // push_type(type_ref);
-        function fn_push_type = function_lookup(_A, "push_type");
-        e_fn_call(e, fn_push_type, null, a(target)); // todo: t-method, f-method, and s-method must merge.  this is plainly stupid
-
-        // vector type info if implemented
-        /*
-        if (false) {
-            emember m_vmember_count = resolve(res, string("vmember_count"));
-            emember m_vmember_type  = resolve(res, string("vmember_type"));
-            e_assign(e, m_vmember_count, _i32(0), OPType__assign);
-        }*/
-
-        // finish this process of initialization (types not yet emitting their schema initialization)
-
-        pop_scope(e);
-    }
-
-    // we should create structs for our class tables now; we need members registered for each
-    //verify(e->top == (model)f, "expected module context");
-    //push(e, e);
-    if (e->mod->delegate) {
-        unsigned ctr_kind = LLVMGetEnumAttributeKindForName("constructor", 11);
-        LLVMAddAttributeAtIndex(f->value, 
-            LLVMAttributeFunctionIndex, 
-            LLVMCreateEnumAttribute(e->module_ctx, ctr_kind, 0));
-    } else {
-
-        // check if module will be an app or lib
-        // search through members, finding subclass of main
-        Class main_class = null;
-        Class main_spec  = emodel("main");
-        verify(main_spec && instanceof(main_spec->src, typeid(Class)), "expected main class");
-        pairs(module_base->src->members, i) {
-            emember mem = i->value;
-            Class   cl  = mem->mdl->src ? instanceof(mem->mdl->src, typeid(Class)) : null;
-            if (!cl) continue;
-            if (cl->parent == main_spec) {
-                main_class = cl;
-                break;
-            }
-        }
-
-        bool is_app = main_class != null;
-        pairs (module_base->members, i) {
-            emember mem = i->value;
-            // todo: reflection on emember if public
-            if (mem->initializer) {
-                build_initializer(e, mem);
-            } else {
-                // we need a default(e, mem) call!
-                //zero(e, mem);
-            }
-        }
-        e_fn_return(e, null);
-        pop (e);
-
-        verify(module_init_mem, "expected member for module init");
-
-        if (!main_class) {
-            e->is_library = true;
-            // this is a library, so we do not implement or call a main
-        } else {
-            // code main, which is what inits main class
-            eargs    args = eargs(mod, e);
-            emember  argc = earg(args, emodel("i32"),   null, "argc");
-            emember  argv = earg(args, emodel("cstrs"), null, "argv");
-            set(args->members, argc->name, argc);
-            set(args->members, argv->name, argv);
-
-            function main_fn = function(
-                mod,            e,
-                function_type,  AU_TRAIT_SMETHOD,
-                exported,       true,
-                rtype,          emodel("i32"),
-                args,           args);
-
-            push_scope(e, main_fn);
-
-            // from main_fn: call module initialize (initializes module members)
-            e_fn_call(e, module_init_mem->mdl, null, null);
-            function Au_engage = function_lookup(_A, "engage");
-            e_fn_call(e, Au_engage, null, a(argv));
-
-            // create main class described by user
-            // we will want to serialize properties for the class as well
-            // if there are required properties, we can use this to exit with 1
-            // must call Au_init
-            e_create(e, main_class, null, map());
-
-            // return i32, which could come from a cast on the class if implemented
-            e_fn_return(e, _i32(255));
-            
-            pop_scope(e);
-
-            push_scope(e, e);
-            register_model(e, main_fn, string("main"), true);
-            pop_scope(e);
-        }
-    }
-    //pop_scope(e);
+    aether_finalize_types(a, f);
+    // for delegates, we must accept overrides from a->props
+    build_module_initializer(a, f);
+    build_entrypoint(a, f);
 }
 
 Au_t arg_type(Au_t au) {
@@ -2469,7 +2393,7 @@ none etype_init(etype t) {
         fn->is_elsewhere = !fn->cgen && (!fn->body || len(fn->body) == 0);
         if (fn->is_elsewhere && !fn->extern_name) {
             record rec;
-            context(e, &rec, null, null);
+            context(a, &rec, null, null);
             if (rec)
                 fn->extern_name = hold(f(string, "%o_%o", rec, fn));
             else
@@ -2481,40 +2405,10 @@ none etype_init(etype t) {
             n_args, sizeof(LLVMTypeRef));
         int index  = 0;
 
-        if (fn->instance) {
-            Au_t t = isa(fn->instance);
-            Au_t src = fn->instance->src ? isa(fn->instance->src) : null;
-            bool check = fn->instance->src && 
-                    (isa(fn->instance->src) == typeid(structure) || 
-                    isa(fn->instance->src) == typeid(Class));
-            if (!check) {
-                int test2 = 2;
-                test2 += 2;
-            }
-            verify (check,
-                "target [incoming] must be record type (struct / class) -- it is then made pointer-to record");
-            
-            /// we set is_arg to prevent registration of global 
-            model mtarget = translate_target(fn->instance);
-
-            // our abstract is to have type differences for struct and ref struct, 
-            // but NOT any form of ref class, less the user is setting a pointer indirectly;
-            // class is inherently a reference to our abstract
-            fn->target = hold(emember(mod, e, mdl, mtarget, name, string("a"), is_arg, true));
-            arg_types[index++] = mtarget->ptr ? mtarget->ptr->type : mtarget->type;
-        }
-
         verify(!fn->args || isa(fn->args) == typeid(eargs), "arg mismatch");
         
-        if (fn->args)
-            pairs(fn->args->members, i) {
-                emember arg = i->value;
-                model arg_mdl = arg->mdl;
-                Au info = header(arg);
-                //print("type = %o (%s:%i)", arg_mdl, info->source, info->line);
-                verify (arg_mdl, "no LLVM type found for arg %o", arg->name);
-                arg_types[index++] = arg_mdl->type;
-            }
+        members(fn->au->args, arg)
+            arg_types[index++] = lltype(arg);
 
         fn->arg_types = arg_types;
         fn->arg_count = index;
@@ -2522,8 +2416,6 @@ none etype_init(etype t) {
             fn->rtype ? fn->rtype->type : LLVMVoidType(),
             fn->arg_types, fn->arg_count, fn->va_args);
         fn->ptr       = pointer(fn);
-
-
 
     } else if (au && au->is_pointer && au->src && !au->src->is_primitive) {
         t->type = LLVMPointerType(au->src->user->type, 0);

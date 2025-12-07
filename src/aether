@@ -6,6 +6,14 @@ forward(enode)
 forward(code)
 forward(catcher)
 
+#define members(MDL, VAR) \
+    for (int __i = 0; __i < (MDL)->members.count; __i++) \
+        for (Au_t VAR = (MDL)->members.origin[__i]; VAR; VAR = NULL)
+
+#define args(MDL, VAR) \
+    for (int __i = 0; __i < (MDL)->members.count; __i++) \
+        for (Au_t VAR = (MDL)->members.origin[__i]; VAR; VAR = NULL)
+
 #define etype_schema(X,Y,...)\
     M(X,Y, i, prop, public,   Au_t,             au) \
     M(X,Y, i, prop, public,   array,            meta) \
@@ -14,10 +22,10 @@ forward(catcher)
     M(X,Y, i, prop, public,   tokens,           body) \
     M(X,Y, i, prop, public,   bool,             is_schema) \
     M(X,Y, i, prop, public,   bool,             is_implemented) \
+    M(X,Y, i, prop, public,   path,             imported_from) \
     M(X,Y, i, prop, public,   i32,              size_bits) \
     M(X,Y, i, prop, public,   i32,              align_bits) \
     M(X,Y, i, prop, public,   enode,            static_value) \
-    M(X,Y, i, prop, public,   bool,             in_ref) \
     M(X,Y, i, prop, intern,   LLVMScope,        scope, as, ARef) \
     M(X,Y, i, prop, intern,   LLVMTypeRef,      type,  as, ARef) \
     M(X,Y, i, prop, intern,   LLVMValueRef,     value, as, ARef) \
@@ -29,14 +37,18 @@ forward(catcher)
     M(X,Y, i, override, cast,   string)
 declare_class(etype)
 
+// if we provide a singular function reference, i wonder if it shoudl be then be 'called'
+// its a field syntax that optionally has no : set, and that sets default, or it calls the function
 #define aether_schema(X,Y,...)\
     M(X,Y, i, prop,  public, string,                 name) \
     M(X,Y, i, prop,  public, path,                   source) \
     M(X,Y, i, prop,  public, path,                   project_path) \
     M(X,Y, i, prop,  public, path,                   current_inc) \
+    M(X,Y, i, prop,  public, map,                    props) \
     M(X,Y, i, prop,  public, array,                  libs) \
     M(X,Y, i, prop,  public, array,                  lexical) \
     M(X,Y, i, prop,  public, bool,                   is_Au_import) \
+    M(X,Y, i, prop,  public, bool,                   in_ref) \
     M(X,Y, i, prop,  public, Au_t,                   au_module) \
     M(X,Y, i, prop,  public, array,                  sys_inc_paths) \
     M(X,Y, i, prop,  public, array,                  sys_exc_paths) \
@@ -48,10 +60,12 @@ declare_class(etype)
     M(X,Y, i, prop,  public, path,                   isystem) \
     M(X,Y, i, prop,  public, bool,                   verbose) \
     M(X,Y, i, prop,  public, path,                   install) \
+    M(X,Y, i, prop,  public, bool,                   is_library) \
     M(X,Y, i, prop,  public, bool,                   cmode) \
     M(X,Y, i, prop,  public, bool,                   no_const) \
     M(X,Y, i, prop,  public, bool,                   no_build) \
     M(X,Y, i, prop,  public, bool,                   is_const_op) \
+    M(X,Y, i, prop,  public, bool,                   is_delegate) \
     M(X,Y, i, prop,  public, callback_extra,         parse_f) \
     M(X,Y, i, prop,  public, callback_extra, parse_expr) \
     M(X,Y, i, prop,  public, callback_extra, read_model) \
