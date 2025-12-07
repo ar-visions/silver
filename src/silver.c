@@ -3776,7 +3776,7 @@ void silver_build_initializer(silver mod, etype t) {
             expr = typed_expr(mod, t, post_const); // we have tokens for the name pushed to the stack
             mod->expr_level = level;
         }
-        etype ctx = context_fn(mod);
+        etype ctx = context_func(mod);
         enode L = (!is_module_mem && ctx) ? 
             access(ctx->target, string(t->au->ident)) : (enode)t->static_value;
         e_assign(mod, L, expr, OPType__assign);

@@ -2657,6 +2657,33 @@ none etype_implement(etype t) {
     }
 }
 
+etype aether_context_func(aether a) {
+    for (int i = len(a->lexical) - 1; i >= 0; i--) {
+        Au_t ctx = a->lexical->origin[i];
+        if (ctx->member_type == AU_MEMBER_FUNC)
+            return ctx->user;
+    }
+    return null;
+}
+
+etype aether_context_class(aether a) {
+    for (int i = len(a->lexical) - 1; i >= 0; i--) {
+        Au_t ctx = a->lexical->origin[i];
+        if (ctx->member_type == AU_MEMBER_TYPE && ctx->is_class)
+            return ctx->user;
+    }
+    return null;
+}
+
+etype aether_context_struct(aether a) {
+    for (int i = len(a->lexical) - 1; i >= 0; i--) {
+        Au_t ctx = a->lexical->origin[i];
+        if (ctx->member_type == AU_MEMBER_TYPE && ctx->is_struct)
+            return ctx->user;
+    }
+    return null;
+}
+
 Au_t aether_top_scope(aether a) {
     return last_element(a->lexical);
 }
@@ -2843,10 +2870,10 @@ none aether_init(aether a) {
     a->builder        = LLVMCreateBuilderInContext(a->module_ctx);
     a->target_triple  = LLVMGetDefaultTargetTriple();
     cstr err = NULL;
-    if (LLVMGetTargetFromTriple(a->target_triple, &a->target, &err))
+    if (LLVMGetTargetFromTriple(a->target_triple, &a->target_ref, &err))
         fault("error: %s", err);
     a->target_machine = LLVMCreateTargetMachine(
-        a->target, a->target_triple, "generic", "",
+        a->target_ref, a->target_triple, "generic", "",
         LLVMCodeGenLevelDefault, LLVMRelocDefault, LLVMCodeModelDefault);
     
     a->target_data = LLVMCreateTargetDataLayout(a->target_machine);
