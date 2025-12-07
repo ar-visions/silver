@@ -141,7 +141,9 @@
       "thread": "cpp",
       "target.h": "c",
       "*.bak": "c",
-      "analysis.h": "c"
+      "analysis.h": "c",
+      "__tuple": "c",
+      "simd": "c"
     }
   }
 }

@@ -213,8 +213,10 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
         print(f'running {cmd}')
         run(cmd, cwd=checkout_dir)
 
+    cfg2 = " ".join(config_lines)
+
     # os-specific
-    if CMakeLists.exists():
+    if CMakeLists.exists() or '-S ' in cfg2:
         sysname = platform.system().lower()
         if sysname == "darwin":
             sysroot = subprocess.getoutput("xcrun --sdk macosx --show-sdk-path || echo ''")
@@ -258,6 +260,7 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
         # --- however ---
         # this is not ideal, to change compilation on dependencies based on presence of our clang, or not
         # for determinism import needs a switch for which compiler to use
+        print('cmake args = ', cmake_args)
         if SDK == 'native' and not '-DCMAKE_C_COMPILER=' in cmake_args:
             cc         = 'cl' if win else 'clang'
             cpp        = 'cl' if win else 'clang++'
@@ -295,7 +298,7 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
     else:
         configure_args = " ".join(config_lines)
         configure = Path(f'{checkout_dir}/configure')
-
+        win = sys.platform.startswith("win")
         r = run_msys2 if win else run
 
         if not configure.exists():

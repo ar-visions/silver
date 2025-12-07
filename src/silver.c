@@ -219,32 +219,6 @@ array silver_parse_const(silver mod, array tokens) {
     return res;
 }
 
-void silver_build_initializer(silver mod, emember mem) {
-    if (mem->initializer) {
-        enode expr;
-        if (instanceof(mem->initializer, typeid(enode)))
-            expr = mem->initializer;
-        else {
-            array post_const = parse_const(mod, mem->initializer);
-            //push_tokens(mod, post_const, 0);
-            int level = mod->expr_level;
-            mod->expr_level++;
-            expr = typed_expr(mod, mem->mdl, post_const); // we have tokens for the name pushed to the stack
-            mod->expr_level = level;
-            //pop_tokens(mod, false);
-        }
-
-        function ctx = context_model(mod, typeid(function));
-        enode L = (!mem->is_module && ctx) ? 
-            access(ctx->target, mem->name) : (enode)mem;
-        
-        e_assign(mod, L, expr, OPType__assign);
-        
-    } else {
-        /// aether can memset to zero
-    }
-}
-
 bool is_void(model);
 
 enode parse_return(silver mod) {
@@ -1860,8 +1834,6 @@ static bool is_checkout(path a) {
     return false;
 }
 
-
-
 array compact_tokens(array tokens) {
     if (len(tokens) <= 1) return tokens;
 
@@ -1894,7 +1866,6 @@ static map   operators;
 static array keywords;
 static array assign;
 static array compare;
-
 
 int main(int argc, cstrs argv) {
     Au_engage(argv);
@@ -3790,6 +3761,28 @@ enode import_parse(silver mod) {
     
     return mem;
 }
+
+// works for class inits, and module inits
+void silver_build_initializer(silver mod, etype t) {
+    if (t && t->au && t->au->member_type == AU_MEMBER_PROP && t->body) {
+        // only override for module members, not class members
+        bool is_module_mem = t->au->context == mod->au;
+        Au override = is_module_mem ? get(mod->props, string(t->au->ident)) : null;
+        enode expr = override ? override : t->body;
+        if (!instanceof(t->body, typeid(enode))) {
+            array post_const = parse_const(mod, t->body);
+            int level = mod->expr_level;
+            mod->expr_level++;
+            expr = typed_expr(mod, t, post_const); // we have tokens for the name pushed to the stack
+            mod->expr_level = level;
+        }
+        etype ctx = context_fn(mod);
+        enode L = (!is_module_mem && ctx) ? 
+            access(ctx->target, string(t->au->ident)) : (enode)t->static_value;
+        e_assign(mod, L, expr, OPType__assign);
+    }
+}
+
 
 define_class (chatgpt, codegen)
 define_class (silver,  aether)

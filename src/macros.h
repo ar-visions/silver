@@ -201,7 +201,7 @@
 #define idx_1(I,T1,V1)              fcall(I, index ##_## T1, V1)
 #define idx_2(I,T1,T2,V1,V2)        fcall(I, index ##_## T1 ##_## T2, V1, V2)
 #define idx(I,V1)                   fcall(I, index ##_## num, V1)
-#define meta_t(I,IDX)               isa(I) -> meta.meta_##IDX
+#define meta_t(I,IDX)               isa(I) -> meta.origin[IDX]
 #define ctr(T,WITH,...)             Au_initialize(T##_i.type.ft.with_##WITH(alloc(typeid(T), 1, (Au_t*)null), ## __VA_ARGS__))
 #define ctr1(T,WITH,...)            Au_initialize(T##_i.type.ft.with_##WITH(alloc(typeid(T), 1, (Au_t*)null), ## __VA_ARGS__))
 #define alloc_ctr(T,WITH,...)       Au_initialize(T##_i.type.ft.with_##WITH(alloc(typeid(T), 1, (Au_t*)null), ## __VA_ARGS__))
@@ -307,7 +307,7 @@
 #define   i_ctr_public_INIT(X, ARG) { \
     Au_t m = Au_register(&X##_i.type, stringify(with_##ARG), AU_MEMBER_CONSTRUCT, 0); \
     X##_i.type.ft.with_##ARG = & X##_with_##ARG; \
-    set_meta_array(m, emit_types(ARG)); \
+    set_meta_array(m, emit_types(X, ARG)); \
     m->type        = (Au_t)&ARG##_i.type; \
     /*m->offset      = offsetof(X##_f.ft, with_##ARG);*/ \
     m->value       = (void*)& X##_with_##ARG; \
@@ -993,7 +993,7 @@
 #define   t_method_public_GENERICS(X, R, N, ...)
 #define   t_method_public_INIT(E, R, N, ...) { \
     Au_t m = Au_register(&E##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_TMETHOD); \
-    set_meta_array(m, emit_types(__VA_ARGS__)); \
+    set_meta_array(m, emit_types(Au_t __VA_OPT__(,) __VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
     m->offset  = 0; \
     m->value   = &N; \
@@ -1102,7 +1102,7 @@
 #define   i_method_public_INIT(    X, R, N, ...) { \
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
     X##_i.type . ft.N = & X## _ ## N; \
-    set_meta_array(m, emit_types(__VA_ARGS__)); \
+    set_meta_array(m, emit_types(X __VA_OPT__(,) __VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
     /* m->offset  = offsetof(X##_f, N); */ \
     m->index   = offsetof(__typeof__(X##_i.type.ft), N) / sizeof(void*); \

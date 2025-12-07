@@ -101,7 +101,6 @@ typedef u8                      bool;
 #endif
 typedef float                   f32;
 typedef double                  f64;
-typedef long double             f80;
 typedef double                  real;    /// real enough
 typedef void*                   handle;
 typedef char*                   cstr;
@@ -138,8 +137,6 @@ typedef unsigned int           *ref_u32;
 typedef unsigned long long     *ref_u64;
 typedef float                  *ref_f32;
 typedef double                 *ref_f64;
-typedef long double            *ref_f80;
-
 
 #define Au_f_members(B) \
     Au_t            context; \
@@ -772,7 +769,6 @@ declare_abstract(imported)
 #define bf16_schema(X,Y,...)        numeric_schema(numeric,Y,...)
 #define f32_schema(X,Y,...)         numeric_schema(numeric,Y,...)
 #define f64_schema(X,Y,...)         numeric_schema(numeric,Y,...)
-#define f80_schema(X,Y,...)         numeric_schema(numeric,Y,...)
 
 #define fmt(...) ((string)f(string, __VA_ARGS__))
 
@@ -786,7 +782,6 @@ declare_abstract(imported)
 #define ref_u64_schema(X,Y,...)     numeric_schema(numeric,Y,...)
 #define ref_f32_schema(X,Y,...)     numeric_schema(numeric,Y,...)
 #define ref_f64_schema(X,Y,...)     numeric_schema(numeric,Y,...)
-#define ref_f80_schema(X,Y,...)     numeric_schema(numeric,Y,...)
 #define ref_bool_schema(X,Y,...)    numeric_schema(numeric,Y,...)
 
 #define AFlag_schema(X,Y,...)       numeric_schema(numeric,Y,...)
@@ -861,7 +856,6 @@ declare_primitive(fp16,             numeric)
 declare_primitive(bf16,             numeric)
 declare_primitive(f32,              numeric)
 declare_primitive(f64,              numeric)
-declare_primitive(f80,              numeric)
 declare_primitive(AFlag,            numeric)
 declare_primitive(bool,             numeric)
 declare_primitive(num,              numeric)
@@ -1494,7 +1488,6 @@ Au      _f32(f32);
 Au      _f64(f64);
 Au      _fp16(fp16*);
 Au      _bf16(bf16*);
-Au      _f80(f80);
 Au  float32(f32);
 Au   real64(f64);
 Au      _cstr(cstr);

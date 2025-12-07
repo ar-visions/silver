@@ -957,7 +957,6 @@ numeric numeric_operator__add(numeric a, numeric b) {
         if (type_a == typeid(i64)) return _i64(*(i64*)a + *(i64*)b);
         if (type_a == typeid(f32)) return _f32(*(f32*)a + *(f32*)b);
         if (type_a == typeid(f64)) return _f64(*(f64*)a + *(f64*)b);
-        if (type_a == typeid(f80)) return _f80(*(f80*)a + *(f80*)b);
     } else {
         fault("implement dislike add");
     }
@@ -1630,7 +1629,6 @@ Au _fp16 (fp16* data) { return primitive(typeid(fp16), data); }
 Au _bf16 (bf16* data) { return primitive(typeid(bf16), data); }
 Au _f32  (f32 data)  { return primitive(typeid(f32),  &data); }
 Au _f64  (f64 data)  { return primitive(typeid(f64),  &data); }
-Au _f80  (f80 data)  { return primitive(typeid(f80),  &data); }
 Au float32(f32 data) { return primitive(typeid(f32),  &data); }
 Au real64(f64 data)  { return primitive(typeid(f64),  &data); }
 Au _cstr(cstr data) { return primitive(typeid(cstr), &data); }
@@ -1800,7 +1798,6 @@ Au Au_with_cereal(Au a, cereal _cs) {
     Au        f = header(a);
     Au_t type = f->type;
     if      (type == typeid(f64)) sscanf(cs, "%lf",  (f64*)a);
-    else if (type == typeid(f80)) sscanf(cs, "%Lf",  (f80*)a);
     else if (type == typeid(f32)) sscanf(cs, "%f",   (f32*)a);
     else if (type == typeid(i32)) sscanf(cs, "%i",   (i32*)a);
     else if (type == typeid(u32)) sscanf(cs, "%u",   (u32*)a);
@@ -2016,7 +2013,6 @@ none serialize(Au_t type, string res, Au a) {
         else if (type == typeid(u32)) len = sprintf(buf, "%u",   *(u32*)a);
         else if (type == typeid(u16)) len = sprintf(buf, "%hu",  *(u16*)a);
         else if (type == typeid(u8))  len = sprintf(buf, "%hhu", *(u8*) a);
-        else if (type == typeid(f80)) len = sprintf(buf, "%f",   (f64)*(f80*)a);
         else if (type == typeid(f64)) len = sprintf(buf, "%f",   *(f64*)a);
         else if (type == typeid(f32)) len = sprintf(buf, "%f",   *(f32*)a);
         else if (type == typeid(cstr)) len = sprintf(buf, "%s",  *(cstr*)a);
@@ -2163,7 +2159,6 @@ string Au_cast_string(Au a) {
     if (type == typeid(u64)) *(u64*)a = (u64)v; \
     if (type == typeid(f32)) *(f32*)a = (f32)v; \
     if (type == typeid(f64)) *(f64*)a = (f64)v; \
-    if (type == typeid(f80)) *(f80*)a = (f80)v; \
     return a;
 
 Au numeric_with_i8 (Au a, i8   v) { set_v(); }
@@ -2181,7 +2176,6 @@ Au numeric_with_i64(Au a, i64  v) {
     if (type == typeid(u64)) *(u64*)a = (u64)v; \
     if (type == typeid(f32)) *(f32*)a = (f32)v; \
     if (type == typeid(f64)) *(f64*)a = (f64)v; \
-    if (type == typeid(f80)) *(f80*)a = (f80)v; \
     return a;
 }
 Au numeric_with_u8 (Au a, u8   v) { set_v(); }
@@ -3989,6 +3983,62 @@ static path _path_latest_modified(path a, ARef mvalue, map visit) {
     return latest_f;
 }
 
+#ifdef __APPLE__
+#include <sys/event.h>
+#include <sys/time.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+i64 path_wait_for_change(path a, i64 last_mod, i64 millis) {
+    struct stat st;
+
+    int fd = open(a->chars, O_EVTONLY);
+    if (fd < 0) return last_mod;
+
+    int kq = kqueue();
+    if (kq < 0) {
+        close(fd);
+        return last_mod;
+    }
+
+    struct kevent ev;
+    EV_SET(&ev, fd, EVFILT_VNODE,
+           EV_ADD | EV_CLEAR,
+           NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB | NOTE_RENAME | NOTE_DELETE,
+           0, NULL);
+
+    // poll loop similar to your Linux version
+    while (1) {
+        i64 m = modified_time(a);
+        if (m != last_mod && m != 0) {
+            last_mod = m;
+            break;
+        }
+
+        // wait for new events (block up to 'millis')
+        struct timespec ts;
+        ts.tv_sec  = millis / 1000;
+        ts.tv_nsec = (millis % 1000) * 1000000;
+
+        struct kevent out;
+        int n = kevent(kq, &ev, 1, &out, 1, &ts);
+
+        if (n > 0) {
+            // something happened — check again
+            continue;
+        }
+
+        // timeout → loop again
+    }
+
+    close(kq);
+    close(fd);
+    return last_mod;
+}
+
+#else
+
 i64 path_wait_for_change(path a, i64 last_mod, i64 millis) {
     int    fd = inotify_init1(IN_NONBLOCK);
     int    wd = inotify_add_watch(fd, a->chars, IN_MODIFY | IN_CLOSE_WRITE);
@@ -4014,6 +4064,7 @@ i64 path_wait_for_change(path a, i64 last_mod, i64 millis) {
     close(fd);
     return last_mod;
 }
+#endif
 
 path path_latest_modified(path a, ARef mvalue) {
     return _path_latest_modified(a, mvalue, map(hsize, 64));
@@ -4413,7 +4464,6 @@ none* primitive_ffi_arb(Au_t ptype) {
     if (ptype == typeid(i64))       return &ffi_type_sint64;
     if (ptype == typeid(f32))       return &ffi_type_float;
     if (ptype == typeid(f64))       return &ffi_type_double;
-    if (ptype == typeid(f80))       return &ffi_type_longdouble;
     if (ptype == typeid(AFlag))     return &ffi_type_sint32;
     if (ptype == typeid(bool))      return &ffi_type_uint32;
     if (ptype == typeid(num))       return &ffi_type_sint64;
@@ -5578,7 +5628,6 @@ define_primitive(bf16,   numeric, AU_TRAIT_REALISTIC)
 define_primitive(fp16,   numeric, AU_TRAIT_REALISTIC)
 define_primitive(f32,    numeric, AU_TRAIT_REALISTIC)
 define_primitive(f64,    numeric, AU_TRAIT_REALISTIC)
-define_primitive(f80,    numeric, AU_TRAIT_REALISTIC)
 define_primitive(AFlag,  numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED)
 define_primitive(cstr,   string_like, AU_TRAIT_POINTER, i8)
 define_primitive(symbol, string_like, AU_TRAIT_CONST | AU_TRAIT_POINTER, i8)
