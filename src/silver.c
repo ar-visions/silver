@@ -269,67 +269,6 @@ static enode parse_expression(silver mod, model mdl_expect) {
     return vr;
 }
 
-model read_named_model(silver mod) {
-    model mdl = null;
-    push_current(mod);
-
-    bool any = silver_read_if(mod, "any") != null;
-    if (any) {
-        emember mem = lookup2(mod, string("any"), null);
-        model mdl_any = mem->mdl;
-        return mdl_any;
-    }
-    string a = silver_read_alpha(mod);
-    if (a && !next_is(mod, ".")) {
-        emember f = lookup2(mod, a, null);
-        if (f && f->is_type) mdl = f->mdl;
-    }
-    pop_tokens(mod, mdl != null); /// save if we are returning a model
-    return mdl;
-}
-
-static model model_adj(silver mod, model mdl) {
-    while (mod->cmode && silver_read_if(mod, "*"))
-        mdl = model(mod, mod, src, mdl, is_ref, true);
-    return mdl;
-}
-
-array read_meta(silver mod) {
-    array res = null;
-    if (silver_read_if(mod, "<")) {
-        bool first = true;
-        while (!next_is(mod, ">")) {
-            if (!res) res = array(alloc, 32, assorted, true);
-            if (!first)
-                verify(silver_read_if(mod, ","), "expected ',' seperator between models");
-            Au n = read_numeric(mod);
-            bool f = true;
-            shape s = null;
-            if (n) {
-                s = shape();
-                while (n) {
-                    verify (isa(n) == typeid(i64),
-                        "expected numeric type i64, found %s", isa(n)->ident);
-                    i64 value = *(i64*)n;
-                    shape_push(s, value);
-                    if (!silver_read_if(mod, "x")) 
-                        break;
-                    n = read_numeric(mod);
-                }
-                push(res, s);
-            } else {
-                model mdl = read_named_model(mod);
-                verify(mdl, "expected model name, found %o", silver_peek(mod));
-                push(res, mdl);
-            }
-            first = false;
-        }
-        silver_consume(mod);
-    }
-    return res;
-}
-
-
 static enode parse_fn_call(silver, function, enode);
 
 map parse_map(silver mod, model mdl_schema) {
@@ -1187,73 +1126,6 @@ void silver_incremental_resolve(silver mod) {
     }
 }
 
-void silver_parse(silver mod) {
-    emember mem_init = initializer(mod); // publish initializer
-    map members = mod->members;
-
-    while (silver_peek(mod)) {
-        enode res = parse_statement(mod);
-        validate(res, "unexpected token found for statement: %o", silver_peek(mod));
-        incremental_resolve(mod);
-    }
-
-    build_fn(mod, mem_init, build_init_preamble, null);
-    finalize(mem_init);
-}
-
-string git_remote_info(path path, string *out_service, string *out_owner, string *out_project) {
-    // run git command
-    string cmd = f(string, "git -C %s remote get-url origin", path->chars);
-    string remote = command_run(cmd);
-
-    if (!remote || !remote->count)
-        error("git_remote_info: failed to get remote url");
-
-    cstr url = remote->chars;
-
-    // strip trailing newline(s)
-    for (int i = remote->count - 1; i >= 0 && (url[i] == '\n' || url[i] == '\r'); i--)
-        url[i] = '\0';
-
-    cstr domain = NULL, owner = NULL, repo = NULL;
-
-    if (strstr(url, "://")) {
-        // HTTPS form: https://github.com/owner/repo.git
-        domain = strstr(url, "://");
-        domain += 3; // skip "://"
-    } else if (strchr(url, '@')) {
-        // SSH form: git@github.com:owner/repo.git
-        domain = strchr(url, '@') + 1;
-    } else {
-        error("git_remote_info: unrecognized URL: %s", url);
-    }
-
-    // domain ends at first ':' or '/'
-    cstr domain_end = strpbrk(domain, ":/");
-    if (!domain_end) error("git_remote_info: malformed URL");
-    *domain_end = '\0';
-
-    // next part: owner/repo
-    cstr next = domain_end + 1;
-    owner = next;
-
-    cstr slash = strchr(owner, '/');
-    if (!slash) error("git_remote_info: missing owner/repo");
-    *slash = '\0';
-    repo = slash + 1;
-
-    // remove .git if present
-    cstr dot = strrchr(repo, '.');
-    if (dot && strcmp(dot, ".git") == 0)
-        *dot = '\0';
-    
-    if (!*out_service) *out_service = string(domain);
-    if (!*out_owner)   *out_owner   = string(owner);
-    if (!*out_project) *out_project = string(repo);
-
-    return remote; // optional if you want to keep full URL
-}
-
 silver silver_with_path(silver mod, path external) {
     mod->source = hold(external);
     return mod;
@@ -1776,6 +1648,61 @@ static bool is_dbg(import t, string query, cstr name, bool is_remote) {
            (has_astrick && has_astrick == (int)is_local);
 }
 
+
+string git_remote_info(path path, string *out_service, string *out_owner, string *out_project) {
+    // run git command
+    string cmd = f(string, "git -C %s remote get-url origin", path->chars);
+    string remote = command_run(cmd);
+
+    if (!remote || !remote->count)
+        error("git_remote_info: failed to get remote url");
+
+    cstr url = remote->chars;
+
+    // strip trailing newline(s)
+    for (int i = remote->count - 1; i >= 0 && (url[i] == '\n' || url[i] == '\r'); i--)
+        url[i] = '\0';
+
+    cstr domain = NULL, owner = NULL, repo = NULL;
+
+    if (strstr(url, "://")) {
+        // HTTPS form: https://github.com/owner/repo.git
+        domain = strstr(url, "://");
+        domain += 3; // skip "://"
+    } else if (strchr(url, '@')) {
+        // SSH form: git@github.com:owner/repo.git
+        domain = strchr(url, '@') + 1;
+    } else {
+        error("git_remote_info: unrecognized URL: %s", url);
+    }
+
+    // domain ends at first ':' or '/'
+    cstr domain_end = strpbrk(domain, ":/");
+    if (!domain_end) error("git_remote_info: malformed URL");
+    *domain_end = '\0';
+
+    // next part: owner/repo
+    cstr next = domain_end + 1;
+    owner = next;
+
+    cstr slash = strchr(owner, '/');
+    if (!slash) error("git_remote_info: missing owner/repo");
+    *slash = '\0';
+    repo = slash + 1;
+
+    // remove .git if present
+    cstr dot = strrchr(repo, '.');
+    if (dot && strcmp(dot, ".git") == 0)
+        *dot = '\0';
+    
+    if (!*out_service) *out_service = string(domain);
+    if (!*out_owner)   *out_owner   = string(owner);
+    if (!*out_project) *out_project = string(repo);
+
+    return remote; // optional if you want to keep full URL
+}
+
+
 none sync_tokens(import t, path build_path, string name) {
     path t0 = form(path, "%o/import-token", build_path);
     path t1 = form(path, "%o/tokens/%o", t->mod->install, name);
@@ -1940,6 +1867,25 @@ static enode parse_expression(silver mod, etype expect) {
     return vr;
 }
 
+static array parse_tokens(silver mod, Au input, array output);
+static etype read_etype(silver mod, array* p_expr);
+
+
+void silver_parse(silver mod) {
+    /*
+    emember mem_init = initializer(mod); // publish initializer
+    map members = mod->members;
+
+    while (silver_peek(mod)) {
+        enode res = parse_statement(mod);
+        validate(res, "unexpected token found for statement: %o", silver_peek(mod));
+        incremental_resolve(mod);
+    }
+
+    build_fn(mod, mem_init, build_init_preamble, null);
+    finalize(mem_init);*/
+}
+
 // im a module!
 void silver_init(silver mod) {
     bool is_once = mod->build; // -b or --build [ single build, no watching! ]
@@ -1959,7 +1905,6 @@ void silver_init(silver mod) {
             mod->install = install;
         }
     }
-    build_info(mod, mod->install);
     mod->project_path = parent_dir(mod->source);
 
     verify(dir_exists ("%o", mod->install), "silver-import location not found");
@@ -2551,10 +2496,6 @@ static Au silver_read_numeric(silver a) {
     return null;
 }
 
-static token silver_peek(silver a) {
-    return a->tokens->origin[a->cursor];
-}
-
 static etype next_is_class(silver a, bool read_token) {
     token t = silver_peek(a);
     if (!t) return null;
@@ -2648,7 +2589,67 @@ string silver_peek_alpha(silver a) {
 
 etype parse_fn(silver mod, AFlag member_type, Au ident, OPType assign_enum);
 
-static etype read_etype(silver mod, array* p_expr) {
+etype pointer(aether mod, Au a);
+
+static etype model_adj(silver mod, etype mdl) {
+    while (mod->cmode && silver_read_if(mod, "*"))
+        mdl = pointer(mod, mdl);
+    return mdl;
+}
+
+
+static etype read_named_model(silver a) {
+    etype mdl = null;
+    push_current(a);
+
+    bool any = silver_read_if(a, "any") != null;
+    if (any)
+        return etype_lookup("Au");
+    
+    string alpha = silver_read_alpha(a);
+    if (a && !next_is(a, ".")) {
+        mdl = etype_lookup(alpha->chars);
+    }
+    pop_tokens(a, mdl != null); /// save if we are returning a model
+    return mdl;
+}
+
+array read_meta(silver mod) {
+    array res = null;
+    if (silver_read_if(mod, "<")) {
+        bool first = true;
+        while (!next_is(mod, ">")) {
+            if (!res) res = array(alloc, 32, assorted, true);
+            if (!first)
+                verify(silver_read_if(mod, ","), "expected ',' seperator between models");
+            Au n = silver_read_numeric(mod);
+            bool f = true;
+            shape s = null;
+            if (n) {
+                s = shape();
+                while (n) {
+                    verify (isa(n) == typeid(i64),
+                        "expected numeric type i64, found %s", isa(n)->ident);
+                    i64 value = *(i64*)n;
+                    shape_push(s, value);
+                    if (!silver_read_if(mod, "x")) 
+                        break;
+                    n = silver_read_numeric(mod);
+                }
+                push(res, s);
+            } else {
+                etype mdl = read_named_model(mod);
+                verify(mdl, "expected model name, found %o", silver_peek(mod));
+                push(res, mdl);
+            }
+            first = false;
+        }
+        silver_consume(mod);
+    }
+    return res;
+}
+
+static etype read_etype(silver a, array* p_expr) {
     Au_t  mdl       = null;
     bool  body_set  = false;
     bool  type_only = false;
@@ -2656,87 +2657,88 @@ static etype read_etype(silver mod, array* p_expr) {
     array expr      = null;
     array meta      = null;
 
-    mod->read_model_abort = false;
+    a->read_etype_abort = false;
 
-    push_current(mod);
+    push_current(a);
 
-    if (!mod->cmode) {
-        Au lit = silver_read_literal(mod, null);
+    if (!a->cmode) {
+        Au lit = silver_read_literal(a, null);
         if (lit) {
-            mod->cursor--;
+            a->cursor--;
             // we support var:1  or var:2.2 or var:'this is a test with {var2}'
             if (isa(lit) == typeid(string)) {
-                expr = a(token("string"), token("["), silver_element(mod, 0), token("]"));
+                expr = a(token("string"), token("["), silver_element(a, 0), token("]"));
                 mdl = au_lookup("string");
             } else if (isa(lit) == typeid(i64)) {
-                expr = a(token("i64"), token("["), silver_element(mod, 0), token("]"));
+                expr = a(token("i64"), token("["), silver_element(a, 0), token("]"));
                 mdl = au_lookup("i64");
             } else if (isa(lit) == typeid(u64)) {
-                expr = a(token("u64"), token("["), silver_element(mod, 0), token("]"));
+                expr = a(token("u64"), token("["), silver_element(a, 0), token("]"));
                 mdl = au_lookup("u64");
             } else if (isa(lit) == typeid(i32)) {
-                expr = a(token("i32"), token("["), silver_element(mod, 0), token("]"));
+                expr = a(token("i32"), token("["), silver_element(a, 0), token("]"));
                 mdl = au_lookup("i32");
             } else if (isa(lit) == typeid(u32)) {
-                expr = a(token("u32"), token("["), silver_element(mod, 0), token("]"));
+                expr = a(token("u32"), token("["), silver_element(a, 0), token("]"));
                 mdl = au_lookup("u32");
             } else if (isa(lit) == typeid(f32)) {
-                expr = a(token("f32"), token("["), silver_element(mod, 0), token("]"));
+                expr = a(token("f32"), token("["), silver_element(a, 0), token("]"));
                 mdl = au_lookup("f32");
             } else if (isa(lit) == typeid(f64)) {
-                expr = a(token("f64"), token("["), silver_element(mod, 0), token("]"));
+                expr = a(token("f64"), token("["), silver_element(a, 0), token("]"));
                 mdl = au_lookup("f64");
             } else {
                 verify(false, "implement literal %s in read_model", isa(lit)->ident);
             }
-            mod->cursor++;
+            a->cursor++;
         }
     }
 
-    bool explicit_sign = !mdl && silver_read_if(mod, "signed") != null;
-    bool explicit_un   = !mdl && !explicit_sign && silver_read_if(mod, "unsigned") != null;
-    Au_t prim_mdl = null;
+    bool explicit_sign = !mdl && silver_read_if(a, "signed") != null;
+    bool explicit_un   = !mdl && !explicit_sign && silver_read_if(a, "unsigned") != null;
+    etype prim_mdl = null;
 
     if (!mdl && !explicit_un) {
-        if (silver_read_if(mod, "char"))        prim_mdl = au_lookup("i8");
-        else if (silver_read_if(mod, "short"))  prim_mdl = au_lookup("i16");
-        else if (silver_read_if(mod, "int"))    prim_mdl = au_lookup("i32");
-        else if (silver_read_if(mod, "long"))   prim_mdl = silver_read_if(mod, "long") ? au_lookup("i64") : au_lookup("i32");
-        else if (explicit_sign)                 prim_mdl = au_lookup("i32");
+        if (silver_read_if(a, "char"))        prim_mdl = etype_lookup("i8");
+        else if (silver_read_if(a, "short"))  prim_mdl = etype_lookup("i16");
+        else if (silver_read_if(a, "int"))    prim_mdl = etype_lookup("i32");
+        else if (silver_read_if(a, "long"))   prim_mdl = silver_read_if(a, "long") ? 
+            etype_lookup("i64") : etype_lookup("i32");
+        else if (explicit_sign)                 prim_mdl = etype_lookup("i32");
         if (prim_mdl)
-            prim_mdl = model_adj(mod, prim_mdl);
+            prim_mdl = model_adj(a, prim_mdl);
 
-        mdl = prim_mdl ? prim_mdl : read_named_model(mod);
+        mdl = prim_mdl ? prim_mdl : read_named_model(a);
 
-        if (!mod->cmode && meta && next_is(mod, "<")) {
-            meta = read_meta(mod);
+        if (!a->cmode && meta && next_is(a, "<")) {
+            meta = read_meta(a);
         }
 
-        if (!mod->cmode && next_is(mod, "[")) {
+        if (!a->cmode && next_is(a, "[")) {
             body_set = true;
-            expr = read_within(mod);
+            expr = read_within(a);
         }
 
     } else if (!mdl && explicit_un) {
-        if (silver_read_if(mod, "char"))  prim_mdl = au_lookup("u8");
-        if (silver_read_if(mod, "short")) prim_mdl = au_lookup("u16");
-        if (silver_read_if(mod, "int"))   prim_mdl = au_lookup("u32");
-        if (silver_read_if(mod, "long"))  prim_mdl = silver_read_if(mod, "long") ? au_lookup("u64") : au_lookup("u32");
+        if (silver_read_if(a, "char"))  prim_mdl = etype_lookup("u8");
+        if (silver_read_if(a, "short")) prim_mdl = etype_lookup("u16");
+        if (silver_read_if(a, "int"))   prim_mdl = etype_lookup("u32");
+        if (silver_read_if(a, "long"))  prim_mdl = silver_read_if(a, "long") ? etype_lookup("u64") : etype_lookup("u32");
 
-        prim_mdl = model_adj(mod, prim_mdl ? prim_mdl : au_lookup("u32"));
+        prim_mdl = model_adj(a, prim_mdl ? prim_mdl : etype_lookup("u32"));
     }
 
     // abort if there is assignment following isolated type-like token
-    if (!expr && mod->expr_level == 0 && read_assign(mod, null, null)) {
-        mod->read_model_abort = true;
+    if (!expr && a->expr_level == 0 && silver_read_assign(a, null, null)) {
+        a->read_etype_abort = true;
         mdl = null;
     }
 
     if (p_expr) *p_expr = expr;
 
-    etype t = etype(mod, mod, au, mdl, meta, meta);
+    etype t = etype(mod, a, au, mdl, meta, meta);
     
-    pop_tokens(mod, mdl != null); // if we read a model, we transfer token state
+    pop_tokens(a, mdl != null); // if we read a model, we transfer token state
     return t;
 }
 
@@ -3128,7 +3130,7 @@ static none checkout(import im, path uri, string commit, array prebuild, array p
 }
 
 // build with optional bc path; if no bc path we use the project file system
-i32 silver_build(silver a) {
+none silver_build(silver a) {
     path ll = null, bc = null;
     emit(a, &ll, &bc);
     verify(bc != null, "compilation failed");
@@ -3164,7 +3166,6 @@ i32 silver_build(silver a) {
     verify(exec("%o/bin/clang %s%o.o -o %o -L%o/lib -Wl,--allow-multiple-definition %o %o",
         install, a->is_library ? "-shared " : "", name, name, install, libs, cflags) == 0,
             "link failed");
-    return 0;
 }
 
 bool silver_next_is_neighbor(silver mod) {
@@ -3378,10 +3379,10 @@ enode silver_read_enode(silver mod, etype mdl_expect) {
     int       depth     = 0;
     
     bool skip_member_check = false;
-    bool avoid_model_lookup = mod->read_model_abort;
+    bool avoid_model_lookup = mod->read_etype_abort;
     if (!skip_member_check && module) {
         string alpha = peek_alpha(mod);
-        if (alpha && !mod->read_model_abort) {
+        if (alpha && !mod->read_etype_abort) {
             emember m = lookup2(mod, alpha, null); // silly read as string here in int [ silly.len ]
             etype mdl = m ? m->mdl : null;
             while (mdl && mdl->is_ref)
@@ -3389,7 +3390,7 @@ enode silver_read_enode(silver mod, etype mdl_expect) {
             if (m && m->is_type && mdl && isa(mdl) == typeid(Class))
                 skip_member_check = true;
         }
-        mod->read_model_abort = false; // state var used for this purpose with the singular call to read-model above
+        mod->read_etype_abort = false; // state var used for this purpose with the singular call to read-model above
     }
 
     for (;!skip_member_check;) {
@@ -3483,7 +3484,7 @@ enode silver_read_enode(silver mod, etype mdl_expect) {
     if (mod->expr_level == 0) {
         OPType assign_enum  = OPType__undefined;
         bool   assign_const = false;
-        string assign_type  = read_assign  (mod, &assign_enum, &assign_const);
+        string assign_type  = silver_read_assign  (mod, &assign_enum, &assign_const);
         if (args) {
             validate(mem, "expected emember");
             validate(assign_enum == OPType__assign, "expected : operator in eargs");

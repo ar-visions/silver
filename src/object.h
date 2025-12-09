@@ -22,7 +22,8 @@ enum AU_MEMBER {
     AU_MEMBER_OVERRIDE  = 10,
     AU_MEMBER_IS_ATTR   = 11,
     AU_MEMBER_ARG       = 12,
-    AU_MEMBER_NAMESPACE = 13
+    AU_MEMBER_NAMESPACE = 13,
+    AU_MEMBER_VAR       = 14
 };
 
 typedef enum AU_MEMBER AFlag;
@@ -117,6 +118,12 @@ typedef struct _Au_t {
     Au_t            module; // origin of its module
     Au_t            ptr; // a cache location for the type's pointer
     char*           ident;
+    char*           alt;
+    u32             abi_size;
+    u8              align_bits;
+    ARef            llscope;
+    ARef            lltype;
+    ARef            lldebug;
     i64             index; // index of type in module, or index of member in type
     object          value; // user-data value associated to type
     u8              member_type;

@@ -588,6 +588,22 @@ Au_t Au_register(Au_t type, symbol ident, u32 member_type, u32 traits) {
     return (Au_t)&cur->type;
 }
 
+static none Au_dealloc_iter(Au_t type) {
+    array_dealloc(&type->members);
+    array_dealloc(&type->args);
+    free(type->ident);
+    drop(type);
+}
+
+// intelligently drops the inlay array elements and allocated member data
+none Au_dealloc_type(Au_t type) {
+    Au info = head(type);
+    if (info->refs == 1) {
+        Au_dealloc_iter(type);
+    }
+    drop(type);
+}
+
 Au_t Au_register_type(Au_t type, symbol ident, u32 traits) {
     return Au_register(type, ident, AU_MEMBER_TYPE, traits);
 }

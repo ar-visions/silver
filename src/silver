@@ -12,7 +12,10 @@
     M(X,Y, i, prop,     public, path,   src_loc) \
     M(X,Y, i, prop,     intern, array,  implements) \
     M(X,Y, i, prop,     intern, array,  imports) \
-    M(X,Y, i, prop,     intern, bool,   read_model_abort) \
+    M(X,Y, i, prop,     intern, bool,   read_etype_abort) \
+    M(X,Y, i, method,   public, none,   parse) \
+    M(X,Y, i, method,   public, none,   build) \
+    M(X,Y, i, method,   public, none,   write_header) \
     M(X,Y, i, override, method, init)
 declare_class_3(silver, aether, etype)
 
