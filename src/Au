@@ -140,12 +140,18 @@ typedef double                 *ref_f64;
 
 #define Au_f_members(B) \
     Au_t            context; \
-    union { Au_t src, rtype, type; }; \
+    union { Au_t src, rtype; }; \
     Au_t            schema; \
     Au_t            user; \
     Au_t            module; \
     Au_t            ptr; \
     char*           ident; \
+    char*           alt; \
+    u32             abi_size; \
+    u8              align_bits; \
+    ARef            llscope; \
+    ARef            lltype; \
+    ARef            lldebug; \
     i64             index; \
     object          value; \
     u8              member_type; \
@@ -646,16 +652,17 @@ forward(any)
     t_method(AA,Y, public, Au_t,        find_member,         AFlag, symbol,    bool) \
     t_method(AA,Y, public, Au_t,        member_first,        Au_t, bool) \
     t_method(AA,Y, public, Au_t,        member_type,         AFlag, Au_t,     bool) \
-    t_method(AA,Y, public, Au,           primitive,           raw) \
-    t_method(AA,Y, public, Au,           method,              cstr,    array) \
-    t_method(AA,Y, public, Au,           parse,               cstr, ctx) \
+    t_method(AA,Y, public, Au,          primitive,           raw) \
+    t_method(AA,Y, public, Au,          method,              cstr,    array) \
+    t_method(AA,Y, public, Au,          parse,               cstr, ctx) \
     t_method(AA,Y, public, i32,         alloc_count) \
     t_method(AA,Y, public, none,        push_type) \
-    t_method(AA,Y, public, Au,           typecast,            Au) \
+    s_method(AA,Y, public, none,        dealloc_type,        Au_t) \
+    t_method(AA,Y, public, Au,          typecast,            Au) \
     s_method(AA,Y, public, none,        member_override,     Au_t, Au_t, AFlag) \
     s_method(AA,Y, public, none,        register_init,       func) \
     s_method(AA,Y, public, bool,        is_inlay,            Au_t) \
-    s_method(AA,Y, public, Au_t,       find_type,            symbol, Au_t) \
+    s_method(AA,Y, public, Au_t,        find_type,           symbol, Au_t) \
     s_method(AA,Y, public, map,         arguments,           i32, cstrs, map, Au) \
     s_method(AA,Y, public, ARef,        types,               ref_i64) \
     s_method(AA,Y, public, none,        tap,                 symbol, hook) \
