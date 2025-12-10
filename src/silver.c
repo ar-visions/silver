@@ -1354,7 +1354,11 @@ enode silver_read_node(silver a, Au_t constant_result, etype mdl_expect) {
             validate(mem, "expected emember");
             validate(assign_enum == OPType__assign, "expected : operator in eargs");
             validate(!mem->au, "duplicate member exists in eargs");
-            mem->au = read_etype(a, &expr);
+            etype t = read_etype(a, &expr);
+            if (mem->au->src != t) {
+                if (mem->au->src) drop(mem->au->src);
+                mem->au->src = t ? hold(t->au) : null;
+            }
             validate(expr == null, "unexpected assignment in args");
             validate(mem->au, "cannot read model for arg: %o", mem->au);
         }
@@ -1363,8 +1367,8 @@ enode silver_read_node(silver a, Au_t constant_result, etype mdl_expect) {
 
             // this is where member types are read
             mem->au = read_etype(a, &expr); // given VkInstance intern instance2 (should only read 1 token)
-            validate(mem->mdl, "expected type after ':' in %o, found %o",
-                (rec_top ? (model)rec_top : (model)module)->mem->name, peek(a));
+            validate(mem->au, "expected type after ':' in %o, found %o",
+                (rec_top ? (etype)rec_top : (etype)module)->au, peek(a));
             mem->initializer = hold(expr);
 
             // lets read meta types here, at the record member level
@@ -1375,7 +1379,7 @@ enode silver_read_node(silver a, Au_t constant_result, etype mdl_expect) {
             validate(mem, "member expected before assignment operator");
             expr = parse_assignment(a, mem, assign_type);
             a->expr_level--;
-        } else if (mem && !assign_type && !mem->mdl) {
+        } else if (mem && !assign_type && !mem->au) {
             validate (false, "expected assignment after '%o'", alpha);
         }
     }
@@ -1432,8 +1436,6 @@ enode parse_statement(silver a) {
 }
 
 enode parse_statements(silver a, bool unique_members) {
-    a->statement_count++;
-
     if (unique_members)
         push_scope(a, new(statements, mod, a));
 
@@ -1447,30 +1449,21 @@ enode parse_statements(silver a, bool unique_members) {
     return vr;
 }
 
-void silver_incremental_resolve(silver a) {
+void build_fn(silver a, enode fmem, callback preamble, callback postamble);
+void build_record(silver a, etype mrec);
 
-    pairs(a->userspace->members, i) {
-        emember mem = i->value;
-        if (mem != a->mem_init && instanceof(mem->mdl, typeid(function)) &&
-            !mem->mdl->user_built) {
+void silver_incremental_resolve(silver a) {
+    members(a->au, mem) {
+        if (is_func(mem) && mem->user != a->fn_init && !mem->user->user_built) {
             build_fn(a, mem, null, null);
         }
     }
-
-    pairs(a->userspace->members, i) {
-        emember mem = i->value;
-        Au_t t = isa(mem->mdl);
-        record rec = instanceof(mem->mdl, typeid(record));
-        if (mem->mdl->is_system)
+    members(a->au, mem) {
+        etype rec = (etype)is_rec(mem);
+        if (mem->is_system)
             continue;
-        Class cl = mem->mdl->src ? instanceof(mem->mdl->src, typeid(Class)) : null;
-        if (rec || cl) {
-            if (!rec)
-                rec = (record)cl;
-            if ((!cl || !cl->is_abstract) && rec && !rec->parsing && !rec->user_built) {
-                build_record(a, cl ? pointer(cl) : (model)rec);
-            }
-        }
+        if (rec && !rec->parsing && !rec->user_built)
+            build_record(a, rec);
     }
 }
 
@@ -1504,10 +1497,6 @@ enode parse_fn(silver a, string ident, u8 member_type, u32 traits, OPType assign
         rec_ctx = context_struct(a);
     string fname = rec_ctx ? f(string, "%o_%o", rec_ctx, name) : (string)name;
     au->alt = rec_ctx ? strdup(fname->chars) : null;
-
-    enode fn = function(a, fname, member_type, traits, assign_enum);
-
-    // this is a test
 
     if (!next_is(a, "]")) {
         push_scope(a, au);
@@ -1559,9 +1548,7 @@ enode parse_fn(silver a, string ident, u8 member_type, u32 traits, OPType assign
         cgen, cgen);
 }
 
-etype parse_fn(silver a, AFlag member_type, Au ident, OPType assign_enum);
-
-etype pointer(aether a, Au a);
+etype pointer(aether, Au);
 
 static etype model_adj(silver a, etype mdl) {
     while (a->cmode && silver_read_if(a, "*"))
@@ -1621,7 +1608,7 @@ array read_meta(silver a) {
     return res;
 }
 
-static etype read_etype(silver a, array *p_expr) {
+etype read_etype(silver a, array *p_expr) {
     Au_t mdl = null;
     bool body_set = false;
     bool type_only = false;
@@ -2193,64 +2180,69 @@ i32 read_enum(silver a, i32 def, Au_t etype) {
     return def;
 }
 
+static bool peek_fields(silver a);
 
-static enode typed_expr(silver mod, etype mdl, array meta, array expr) {
-    push_tokens(mod, expr ? expr : mod->tokens, expr ? 0 : mod->cursor);
+static bool class_inherits(etype cl, etype of_cl);
+
+map parse_map(silver a, etype mdl_schema);
+
+static enode typed_expr(silver a, etype mdl, array expr) {
+    push_tokens(a, expr ? (tokens)expr : a->tokens, expr ? 0 : a->cursor);
     
     // function calls
     if (is_func(mdl)) {
         enode f = mdl;
-        map     m      = f->au->args->members;
+        array   m      = &f->au->args;
         int     ln     = len(m), i = 0;
         array   values = array(alloc, 32);
         enode   target = null;
 
-        while (i < ln || f->va_args) {
-            emember arg  = value_by_index(m, i);
-            enode   expr = parse_expression(mod, arg->mdl); // self contained for '{interp}' to cstr!
+        while (i < ln || f->au->is_vargs) {
+
+            etype   arg  = array_get(m, i);
+            enode   expr = parse_expression(a, arg); // self contained for '{interp}' to cstr!
             verify(expr, "invalid expression");
-            model   arg_mdl  = arg ? arg->mdl  : null;
-            if (arg_mdl && expr->mdl != arg_mdl)
-                expr = e_create(mod, arg_mdl, arg_meta, expr);
+            if (arg && canonical(expr) != canonical(arg))
+                expr = e_create(a, arg, expr);
             
-            if (!target && f->instance)
+            if (!target && f->target_arg)
                 target = expr;
             else
                 push(values, expr);
             
-            if (read_if(mod, ","))
+            if (read_if(a, ","))
                 continue;
             
             validate(len(values) >= ln, "expected %i args for function %o", ln, f);
             break;
         }
-        return e_fn_call(mod, f, target, values);
+        return e_fn_call(a, f, target, values);
     }
     
     // this is only suitable if reading a literal constitutes the token stack
     // for example:  i32 100
-    Au  n = read_literal(mod, null);
-    if (n && mod->cursor == len(mod->tokens)) {
-        pop_state(mod, expr ? false : true);
-        return e_operand(mod, n, mdl, meta);
+    Au  n = read_literal(a, null);
+    if (n && a->cursor == len(a->tokens)) {
+        pop_tokens(a, expr ? false : true);
+        return e_operand(a, n, mdl);
     } else if (n) {
         // reset if we read something
-        pop_state(mod, expr ? false : true);
-        push_state(mod, expr ? expr : mod->tokens, expr ? 0 : mod->cursor);
+        pop_tokens(a, expr ? false : true);
+        push_tokens(a, expr ? (tokens)expr : a->tokens, expr ? 0 : a->cursor);
     }
     bool    has_content = !!expr && len(expr); //read_if(mod, "[") && !read(mod, "]");
     enode   r           = null;
     bool    conv        = false;
-    bool    has_init    = peek_fields(mod);
+    bool    has_init    = peek_fields(a);
 
-    mod->expr_level++;
+    a->expr_level++;
     if (!has_content) {
-        r = e_create(mod, mdl, meta, null); // default
+        r = e_create(a, mdl, null); // default
         conv = false;
-    } else if (class_inherits(mdl, emodel("array"))) {
+    } else if (class_inherits(mdl, elookup("array"))) {
         array nodes = array(64);
-        model element_type = mdl->src;
-        shape sh = mdl->shape;
+        etype element_type = mdl->au->src;
+        shape sh = mdl->au->shape;
         validate(sh, "expected shape on array");
         int shape_len = shape_total(sh);
         int top_stride = sh->count ? sh->data[sh->count - 1] : 0;
@@ -2258,33 +2250,33 @@ static enode typed_expr(silver mod, etype mdl, array meta, array expr) {
             "unknown stride information");  
         int num_index = 0; /// shape_len is 0 on [ int 2x2 : 1 0, 2 2 ]
 
-        while (peek(mod)) {
-            token n = peek(mod);
-            enode  e = parse_expression(mod, element_type, null);
-            e = e_create(mod, element_type, null, e);
+        while (peek(a)) {
+            token n = peek(a);
+            enode  e = parse_expression(a, element_type);
+            e = e_create(a, element_type, e);
             push(nodes, e);
             num_index++;
             if (top_stride && (num_index % top_stride == 0)) {
-                validate(read_if(mod, ",") || !peek(mod),
+                validate(read_if(a, ",") || !peek(a),
                     "expected ',' when striding between dimensions (stride size: %o)",
                     top_stride);
             }
         }
-        r = e_create(mod, mdl, meta, nodes);
-    } else if (has_init || class_inherits(mdl, emodel("map"))) {
+        r = e_create(a, mdl, nodes);
+    } else if (has_init || class_inherits(mdl, elookup("map"))) {
         validate(has_init, "invalid initialization of map model");
         conv = true;
-        r    = parse_map(mod, mdl);
+        r    = parse_map(a, mdl);
     } else {
         /// this is a conversion operation
-        r = parse_expression(mod, mdl, meta);
-        conv = r->mdl != mdl;
-        //validate(read_if(mod, "]"), "expected ] after mdl-expr %o", src->name);
+        r = parse_expression(a, mdl);
+        conv = canonical(r) != canonical(mdl);
+        //validate(read_if(a, "]"), "expected ] after mdl-expr %o", src->name);
     }
-    mod->expr_level--;
+    a->expr_level--;
     if (conv)
-        r = e_create(mod, mdl, meta, r);
-    pop_tokens(mod, expr ? false : true);
+        r = e_create(a, mdl, r);
+    pop_tokens(a, expr ? false : true);
     return r;
 }
 
@@ -2315,7 +2307,8 @@ enode silver_read_enode(silver a, etype mdl_expect) {
     u32 mtraits = (is_static ? AU_TRAIT_IMETHOD : AU_TRAIT_IMETHOD);
 
     if (!a->cmode) {
-        context(a, &rec_ctx, &f, typeid(function));
+        rec_ctx = context_class(a); if (!rec_ctx) rec_ctx = context_struct(a);
+        f = context_func(a);
     }
 
     if (is_expr0 && !a->cmode && (module || rec_ctx) && silver_peek_def(a)) {
@@ -2325,7 +2318,7 @@ enode silver_read_enode(silver a, etype mdl_expect) {
                 silver_consume(a);
             token alpha = !is_cast ? silver_read_alpha(a) : null;
             // check if module or record constructor
-            emember rmem = alpha ? lookup2(a, alpha, null) : null;
+            enode rmem = alpha ? lookup2(a, alpha, null) : null;
             if (module && rmem && rmem->mdl == (etype)module) {
                 validate(!is_cast && is_fn, "invalid constructor for module; use func keyword");
                 mtype = AU_MEMBER_CONSTRUCT;
@@ -2341,9 +2334,9 @@ enode silver_read_enode(silver a, etype mdl_expect) {
             mem = parse_fn(a, mtype, mtraits, alpha, OPType__undefined);
 
             if (is_cast) {
-                function f = (function)mem->mdl;
-                validate(len(f->rtype->mem->name), "rtype cannot be anonymous for cast");
-                mem->name = hold(f(string, "cast_%o", f->rtype));
+                enode f = (enode)mem;
+                validate(f->au->rtype, "rtype cannot be unset for cast");
+                mem->name = hold(f(string, "cast_%o", f->au->rtype));
             }
         }
         register_member(a, mem, false); /// do not finalize in push member
@@ -3354,13 +3347,13 @@ map parse_map(silver a, model mdl_schema) {
     return args;
 }
 
-static bool class_inherits(model cl, model of_cl) {
+static bool class_inherits(etype cl, etype of_cl) {
     silver a = cl->mod;
-    model aa = of_cl;
+    etype aa = canonical(of_cl);
     while (cl && cl != aa) {
-        if (!cl->parent)
+        if (!cl->au->context || cl->au->context == cl->au)
             break;
-        cl = cl->parent;
+        cl = cl->au->context->user;
     }
     return cl && cl == aa;
 }

@@ -24,6 +24,8 @@ forward(codegen)
     M(X,Y, i, prop, public,   bool,             is_schema) \
     M(X,Y, i, prop, public,   bool,             is_implemented) \
     M(X,Y, i, prop, public,   bool,             is_elsewhere) \
+    M(X,Y, i, prop, public,   bool,             user_built) \
+    M(X,Y, i, prop, public,   bool,             parsing) \
     M(X,Y, i, prop, public,   path,             imported_from) \
     M(X,Y, i, prop, public,   codegen,          cgen) \
     M(X,Y, i, prop, public,   enode,            type_id) \
@@ -178,6 +180,7 @@ declare_class(code)
     M(X,Y, i, prop, public,   Au_t,             member) \
     M(X,Y, i, prop, public,   Au,               literal) \
     M(X,Y, i, prop, public,   u8,               arg_index) \
+    M(X,Y, i, prop, public,   tokens,           initializer) \
     M(X,Y, i, prop, intern,   LLVMMetadataRef,  last_dbg, as, ARef) \
     M(X,Y, i, prop, intern,   LLVMValueRef,     value,  as, ARef) \
     M(X,Y, i, prop, intern,   LLVMBasicBlockRef, entry,  as, ARef) \

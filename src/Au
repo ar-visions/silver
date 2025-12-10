@@ -682,7 +682,7 @@ forward(any)
     i_final (AA,Y, public, bool,        is_struct) \
     i_final (AA,Y, public, bool,        is_func) \
     i_final (AA,Y, public, bool,        is_imethod) \
-    i_final (AA,Y, public, bool,        is_rec) \
+    i_final (AA,Y, public, Au_t,        is_rec) \
     i_final (AA,Y, public, bool,        is_prim) \
     i_final (AA,Y, public, bool,        is_sign) \
     i_final (AA,Y, public, bool,        is_unsign) \

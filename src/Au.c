@@ -51,7 +51,11 @@ bool is_class   (Au t) { return au_arg(t)->is_class;  }
 bool is_struct  (Au t) { return au_arg(t)->is_struct; }
 bool is_func    (Au t) { return au_arg(t)->member_type == AU_MEMBER_FUNC; }
 bool is_imethod (Au t) { return au_arg(t)->member_type == AU_MEMBER_FUNC && au_arg(t)->is_imethod; }
-bool is_rec     (Au t) { return au_arg(t)->is_class || au_arg(t)->is_struct; }
+Au_t is_rec     (Au t) {
+    Au_t au = au_arg(t);
+    if (au->src && au->src->is_class) return au->src;
+    return (au->is_class || au->is_struct) ? au : null;
+}
 bool is_prim    (Au t) { return au_arg(t)->is_primitive; }
 bool is_sign    (Au t) { return au_arg(t)->is_signed; }
 bool is_unsign  (Au t) { return au_arg(t)->is_unsigned; }
