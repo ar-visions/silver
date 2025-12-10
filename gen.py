@@ -178,7 +178,7 @@ def write_ninja(project, root, import_dir, build_dir, plat):
             non_ext += [str(f) for f in src_dir.iterdir()
                         if f.is_file() and '.' not in f.name]
 
-        print(f'project is not silver {root} != {silver_root}')
+        #print(f'project is not silver {root} != {silver_root}')
     else:
         modules = order_modules(get_modules(root / "src"))
         headers = glob.glob(f"{root}/src/*.h")
@@ -383,6 +383,7 @@ def write_ninja(project, root, import_dir, build_dir, plat):
 
     n.append("default all\n")
     
+    #print(f'project = {project}, {build_dir}')
     build_ninja = build_dir / f'{project}.ninja'
     with open(build_ninja, 'w') as f:
         f.write('\n'.join(n) + '\n')

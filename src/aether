@@ -34,54 +34,59 @@ forward(codegen)
     M(X,Y, i, override, cast,   string)
 declare_class(etype)
 
+#define statements_schema(X,Y,...)
+declare_class_2(statements, etype)
+
 // if we provide a singular function reference, i wonder if it shoudl be then be 'called'
 // its a field syntax that optionally has no : set, and that sets default, or it calls the function
 #define aether_schema(X,Y,...)\
-    M(X,Y, i, prop,  public, string,                 name) \
-    M(X,Y, i, prop,  public, path,                   source) \
-    M(X,Y, i, prop,  public, path,                   project_path) \
-    M(X,Y, i, prop,  public, path,                   current_inc) \
-    M(X,Y, i, prop,  public, map,                    props) \
-    M(X,Y, i, prop,  public, array,                  libs) \
-    M(X,Y, i, prop,  public, array,                  lexical) \
-    M(X,Y, i, prop,  public, bool,                   is_Au_import) \
-    M(X,Y, i, prop,  public, bool,                   in_ref) \
-    M(X,Y, i, prop,  public, Au_t,                   au_module) \
-    M(X,Y, i, prop,  public, array,                  sys_inc_paths) \
-    M(X,Y, i, prop,  public, array,                  sys_exc_paths) \
-    M(X,Y, i, prop,  public, array,                  include_paths) \
-    M(X,Y, i, prop,  public, array,                  framework_paths) \
-    M(X,Y, i, prop,  public, array,                  lib_paths) \
-    M(X,Y, i, prop,  public, path,                   isysroot) \
-    M(X,Y, i, prop,  public, path,                   resource_dir) \
-    M(X,Y, i, prop,  public, path,                   isystem) \
-    M(X,Y, i, prop,  public, bool,                   verbose) \
-    M(X,Y, i, prop,  public, path,                   install) \
-    M(X,Y, i, prop,  public, bool,                   is_library) \
-    M(X,Y, i, prop,  public, bool,                   cmode) \
-    M(X,Y, i, prop,  public, bool,                   no_const) \
-    M(X,Y, i, prop,  public, bool,                   no_build) \
-    M(X,Y, i, prop,  public, bool,                   is_const_op) \
-    M(X,Y, i, prop,  public, bool,                   is_delegate) \
-    M(X,Y, i, prop,  public, callback_extra,         parse_f) \
-    M(X,Y, i, prop,  public, callback_extra,         parse_expr) \
-    M(X,Y, i, prop,  public, callback_extra,         read_etype) \
-    M(X,Y, i, prop,  intern, LLVMExecutionEngineRef, jit,               as, ARef) \
-    M(X,Y, i, prop,  intern, LLVMBasicBlockRef,      current_if_block,  as, ARef) \
-    M(X,Y, i, prop,  intern, LLVMModuleRef,          module,            as, ARef) \
-    M(X,Y, i, prop,  intern, LLVMContextRef,         module_ctx,        as, ARef) \
-    M(X,Y, i, prop,  intern, LLVMBuilderRef,         builder,           as, ARef) \
-    M(X,Y, i, prop,  intern, LLVMMetadataRef,        file,              as, ARef) \
-    M(X,Y, i, prop,  intern, LLVMMetadataRef,        compile_unit,      as, ARef) \
-    M(X,Y, i, prop,  intern, LLVMDIBuilderRef,       dbg_builder,       as, ARef) \
-    M(X,Y, i, prop,  intern, LLVMTargetRef,          target_ref,        as, ARef) \
-    M(X,Y, i, prop,  intern, LLVMTargetDataRef,      target_data,       as, ARef) \
-    M(X,Y, i, prop,  intern, LLVMTargetMachineRef,   target_machine,    as, ARef) \
-    M(X,Y, i, prop,  intern, cstr,                   target_triple) \
-    M(X,Y, i, prop,  intern, array,                  registry) \
-    M(X,Y, i, prop,  public, tokens,                 tokens) \
-    M(X,Y, i, prop,  public, num,                    cursor) \
-    M(X,Y, i, prop,  public, array,                  stack) \
+    M(X,Y, i, prop,  public, string,    name) \
+    M(X,Y, i, prop,  public, path,      source) \
+    M(X,Y, i, prop,  public, path,      project_path) \
+    M(X,Y, i, prop,  public, path,      current_inc) \
+    M(X,Y, i, prop,  public, map,       props) \
+    M(X,Y, i, prop,  public, array,     libs) \
+    M(X,Y, i, prop,  public, array,     lexical) \
+    M(X,Y, i, prop,  public, bool,      is_Au_import) \
+    M(X,Y, i, prop,  public, bool,      in_ref) \
+    M(X,Y, i, prop,  public, Au_t,      au_module) \
+    M(X,Y, i, prop,  public, array,     sys_inc_paths) \
+    M(X,Y, i, prop,  public, array,     sys_exc_paths) \
+    M(X,Y, i, prop,  public, array,     include_paths) \
+    M(X,Y, i, prop,  public, array,     framework_paths) \
+    M(X,Y, i, prop,  public, array,     lib_paths) \
+    M(X,Y, i, prop,  public, path,      isysroot) \
+    M(X,Y, i, prop,  public, path,      resource_dir) \
+    M(X,Y, i, prop,  public, path,      isystem) \
+    M(X,Y, i, prop,  public, bool,      verbose) \
+    M(X,Y, i, prop,  public, path,      install) \
+    M(X,Y, i, prop,  public, bool,      is_library) \
+    M(X,Y, i, prop,  public, bool,      cmode) \
+    M(X,Y, i, prop,  public, bool,      no_const) \
+    M(X,Y, i, prop,  public, bool,      no_build) \
+    M(X,Y, i, prop,  public, bool,      is_const_op) \
+    M(X,Y, i, prop,  public, bool,      is_delegate) \
+    M(X,Y, i, prop,  public, callback_extra, parse_f) \
+    M(X,Y, i, prop,  public, callback_extra, parse_expr) \
+    M(X,Y, i, prop,  public, callback_extra, read_etype) \
+    M(X,Y, i, prop,  intern, LLVMExecutionEngineRef, jit, as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMBasicBlockRef, current_if_block,  as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMModuleRef,     module,            as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMContextRef,    module_ctx,        as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMBuilderRef,    builder,           as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMMetadataRef,   file,              as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMMetadataRef,   compile_unit,      as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMDIBuilderRef,  dbg_builder,       as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMTargetRef,     target_ref,        as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMTargetDataRef, target_data,       as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMTargetMachineRef, target_machine, as, ARef) \
+    M(X,Y, i, prop,  intern, cstr,              target_triple) \
+    M(X,Y, i, prop,  intern, array,             registry) \
+    M(X,Y, i, prop,  public, tokens,            tokens) \
+    M(X,Y, i, prop,  public, num,               cursor) \
+    M(X,Y, i, prop,  public, array,             stack) \
+    M(X,Y, i, prop,  public, Au_t,              top) \
+    M(X,Y, i, method, public,     enode,       function, string, array, u32) \
     M(X,Y, i, method, public,     none,        reinit_startup) \
     M(X,Y, i, method, public,     enode,       initializer) \
     M(X,Y, i, method, public,     none,        e_fn_return,        Au) \
@@ -146,7 +151,7 @@ declare_class(etype)
     M(X,Y, i, method, public, path,   include,        Au, ARef) \
     M(X,Y, i, method, public, Au_t,   top_scope) \
     M(X,Y, i, method, public, none,   push_scope, Au) \
-    M(X,Y, i, method, public, none,   pop_scope) \
+    M(X,Y, i, method, public, Au_t,   pop_scope) \
     M(X,Y, i, method, public, none,   import_models) \
     M(X,Y, i, override, method, init)
 declare_class_2(aether, etype);
@@ -170,11 +175,14 @@ declare_class(code)
     M(X,Y, i, prop, intern,   bool,             registered) \
     M(X,Y, i, prop, public,   Au_t,             member) \
     M(X,Y, i, prop, public,   Au,               literal) \
+    M(X,Y, i, prop, intern,   LLVMMetadataRef,  last_dbg, as, ARef) \
     M(X,Y, i, prop, intern,   LLVMValueRef,     value,  as, ARef) \
-    M(X,Y, i, method, public, enode, access, string) \
-    M(X,Y, i, override, cast, Au_t) \
-    M(X,Y, i, override, method, init) \
-    M(X,Y, i, override, method, dealloc)
+    M(X,Y, i, prop, intern,   LLVMBasicBlockRef, entry,  as, ARef) \
+    M(X,Y, i, method, public, enode,            access, string) \
+    M(X,Y, i, method, public, none,             release) \
+    M(X,Y, i, override, cast,                   Au_t) \
+    M(X,Y, i, override, method,                 init) \
+    M(X,Y, i, override, method,                 dealloc)
 declare_class_2(enode, etype)
 
 #define aclang_cc_schema(X,Y,...) \
