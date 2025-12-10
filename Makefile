@@ -38,6 +38,7 @@ else
 endif
 
 build: bootstrap
+	echo "ninja -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja"
 	ninja -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja
 
 clean:

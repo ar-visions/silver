@@ -3496,7 +3496,6 @@ void aether_Au_import(aether e, path lib, string name) {
     e->current_include = lib ? lib : path("Au");
     e->is_Au_import = true;
     string lib_name = lib ? stem(lib) : null;
-    push(e->shared_libs, lib_name ? lib_name : string("Au"));
 
     map module_filter = m("Au", _bool(true));
     if (lib) set(module_filter, lib_name, _bool(true));
