@@ -15,6 +15,7 @@
     M(X, Y, i, prop, intern, bool, read_etype_abort) \
     M(X, Y, i, prop, public, etype, last_return)     \
     M(X, Y, i, prop, public, bool, left_hand)        \
+    M(X, Y, i, prop, public, map, codegens)          \
     M(X, Y, i, method, public, none, write_header)   \
     M(X, Y, i, method, public,     silver,         load_module, path) \
     M(X, Y, i, method, public,     enode,          parse_member_expr, enode) \
