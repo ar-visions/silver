@@ -1,36 +1,68 @@
 #ifndef _silver_
 #define _silver_
 
-#define silver_schema(X,Y,...)\
-    M(X,Y, i, prop,     public, bool,   build) \
-    M(X,Y, i, prop,     public, i32,    expr_level) \
-    M(X,Y, i, prop,     public, i32,    parens_depth) \
-    M(X,Y, i, prop,     public, string, git_service) \
-    M(X,Y, i, prop,     public, string, git_owner) \
-    M(X,Y, i, prop,     public, string, git_project) \
-    M(X,Y, i, prop,     public, string, source_raw) \
-    M(X,Y, i, prop,     public, path,   src_loc) \
-    M(X,Y, i, prop,     intern, array,  implements) \
-    M(X,Y, i, prop,     intern, array,  imports) \
-    M(X,Y, i, prop,     intern, bool,   read_etype_abort) \
-    M(X,Y, i, prop,     public, etype,  last_return) \
-    M(X,Y, i, method,   public, none,   parse) \
-    M(X,Y, i, method,   public, none,   build) \
-    M(X,Y, i, method,   public, none,   write_header) \
-    M(X,Y, i, override, method, init)
+#define silver_schema(X, Y, ...)                     \
+    M(X, Y, i, prop, public, bool, build)            \
+    M(X, Y, i, prop, public, i32, expr_level)        \
+    M(X, Y, i, prop, public, i32, parens_depth)      \
+    M(X, Y, i, prop, public, string, git_service)    \
+    M(X, Y, i, prop, public, string, git_owner)      \
+    M(X, Y, i, prop, public, string, git_project)    \
+    M(X, Y, i, prop, public, string, source_raw)     \
+    M(X, Y, i, prop, public, path, src_loc)          \
+    M(X, Y, i, prop, intern, array, implements)      \
+    M(X, Y, i, prop, intern, array, imports)         \
+    M(X, Y, i, prop, intern, bool, read_etype_abort) \
+    M(X, Y, i, prop, public, etype, last_return)     \
+    M(X, Y, i, prop, public, bool, left_hand)        \
+    M(X, Y, i, method, public, none, write_header)   \
+    M(X, Y, i, method, public,     silver,         load_module, path) \
+    M(X, Y, i, method, public,     enode,          parse_member_expr, enode) \
+    M(X, Y, i, method, public,     none,           incremental_resolve) \
+    M(X, Y, i, method, public,     token,          next) \
+    M(X, Y, i, method, public,     token,          prev) \
+    M(X, Y, i, method, public,     token,          navigate, i32) \
+    M(X, Y, i, method, public,     token,          consume) \
+    M(X, Y, i, method, public,     token,          peek) \
+    M(X, Y, i, method, public,     token,          element, num) \
+    M(X, Y, i, method, public,     num,            current_line) \
+    M(X, Y, i, method, public,     bool,           next_is_alpha) \
+    M(X, Y, i, method, public,     bool,           next_indent) \
+    M(X, Y, i, method, public,     enode,          read_node, Au_t, etype) \
+    M(X, Y, i, method, public,     enode,          parse_ternary, enode, etype) \
+    M(X, Y, i, method, public,     enode,          parse_assignment, enode, string) \
+    M(X, Y, i, method, public,     token,          read_if, symbol) \
+    M(X, Y, i, method, public,     Au,              read_literal, Au_t) \
+    M(X, Y, i, method, public,     string,         read_string) \
+    M(X, Y, i, method, public,     string,         read_alpha) \
+    M(X, Y, i, method, public,     string,         read_alpha_any) \
+    M(X, Y, i, method, public,     string,         peek_alpha) \
+    M(X, Y, i, method, public,     bool,           next_is_neighbor) \
+    M(X, Y, i, method, public,     etype,          read_def) \
+    M(X, Y, i, method, public,     string,         peek_def) \
+    M(X, Y, i, method, public,     string,         peek_keyword) \
+    M(X, Y, i, method, public,     string,         read_keyword) \
+    M(X, Y, i, method, public,     Au,              read_bool) \
+    M(X, Y, i, method, public,     Au,              read_numeric) \
+    M(X, Y, i, method, public,     array,          parse_const, array) \
+    M(X, Y, i, method, public,     string,         read_assign, ARef, ARef) \
+    M(X, Y, i, method, public,     string,         location) \
+    M(X, Y, i, method, public,     none,           parse) \
+    M(X, Y, i, method, public,     none,           build) \
+    M(X, Y, i, override, method, init)
 declare_class_3(silver, aether, etype)
 
-#define import_schema(X,Y,...) \
-    i_prop(X,Y, public, codegen, codegen) \
-    i_prop(X,Y, public, silver,  external) \
-    i_prop(X,Y, public, array,   tokens) \
-    i_prop(X,Y, public, array,   module_paths) \
-    i_prop(X,Y, public, array,   include_paths) \
-    s_method(X,Y, public, enode, parse, silver)
+#define import_schema(X, Y, ...)                    \
+    M(X, Y, i, prop,  public, codegen, codegen)     \
+    M(X, Y, i, prop,  public, silver, external)     \
+    M(X, Y, i, prop,  public, array, tokens)        \
+    M(X, Y, i, prop,  public, array, module_paths)  \
+    M(X, Y, i, prop,  public, array, include_paths) \
+    M(X, Y, s, method,public, enode, parse, silver)
 declare_class_2(import, etype)
 
-#define chatgpt_schema(X,Y,...) \
-    i_override(X,Y, method, generate_fn)
+#define chatgpt_schema(X, Y, ...) \
+    M(X, Y, i, override, method, generate_fn)
 declare_class_2(chatgpt, codegen)
 
 /*
