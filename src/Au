@@ -476,13 +476,13 @@ void lazy_init(global_init_fn fn, Au_t);
     decl_type(AA)\
     _Pragma("pack(pop)")
 
-#define module_init(fn) \
-    static bool _module_init() { \
+#define initializer(fn) \
+    static bool _initializer() { \
         fn(); \
         return true; \
     } \
     static __attribute__((constructor)) void _module_register() { \
-        Au_register_init((global_init_fn)&_module_init); \
+        Au_register_init((global_init_fn)&_initializer); \
     }
 
 

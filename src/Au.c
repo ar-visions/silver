@@ -3224,6 +3224,7 @@ Au Au_copy(Au a) {
 Au hold(Au a) {
     if (a) {
         Au f = header(a);
+        if (f->refs == 0) return a; // refs of 0 is unmanaged memory (user managed)
         f->refs++;
 
         au_core af = f->type->af;
