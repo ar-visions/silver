@@ -17,7 +17,8 @@
     M(X, Y, i, prop, public, bool, left_hand)        \
     M(X, Y, i, prop, public, map, codegens)          \
     M(X, Y, i, method, public, none, write_header)   \
-    M(X, Y, i, method, public,     silver,         load_module, path) \
+    M(X, Y, i, prop, intern, map, import_cache) \
+    M(X, Y, i, prop, intern, map, instances) \
     M(X, Y, i, method, public,     enode,          parse_member_expr, enode) \
     M(X, Y, i, method, public,     none,           incremental_resolve) \
     M(X, Y, i, method, public,     token,          next) \
@@ -29,7 +30,7 @@
     M(X, Y, i, method, public,     num,            current_line) \
     M(X, Y, i, method, public,     bool,           next_is_alpha) \
     M(X, Y, i, method, public,     bool,           next_indent) \
-    M(X, Y, i, method, public,     enode,          read_node, Au_t, etype) \
+    M(X, Y, i, method, public,     enode,          read_enode, etype) \
     M(X, Y, i, method, public,     enode,          parse_ternary, enode, etype) \
     M(X, Y, i, method, public,     enode,          parse_assignment, enode, string) \
     M(X, Y, i, method, public,     token,          read_if, symbol) \
@@ -50,6 +51,7 @@
     M(X, Y, i, method, public,     string,         location) \
     M(X, Y, i, method, public,     none,           parse) \
     M(X, Y, i, method, public,     none,           build) \
+    M(X, Y, i, ctr,    public,     path) \
     M(X, Y, i, override, method, init)
 declare_class_3(silver, aether, etype)
 
