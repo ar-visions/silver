@@ -49,7 +49,19 @@ bool is_float   (Au t) { return typeid(f32) == au_arg(t); }
 bool is_realistic(Au t) { return au_arg(t)->is_realistic; }
 bool is_class   (Au t) { return au_arg(t)->is_class;  }
 bool is_struct  (Au t) { return au_arg(t)->is_struct; }
-bool is_func    (Au t) { return au_arg(t)->member_type == AU_MEMBER_FUNC; }
+bool is_opaque  (Au t) {
+    Au_t au = au_arg(t);
+    if (au->is_struct && au->members.count == 0) return true;
+    return false;
+}
+bool is_func    (Au t) {
+    Au_t au = au_arg(t);
+    return au->member_type == AU_MEMBER_FUNC && (au->ident || au->alt);
+}
+bool is_func_ptr(Au t) {
+    Au_t au = au_arg(t);
+    return au->member_type == AU_MEMBER_TYPE && au->is_funcptr;
+}
 bool is_imethod (Au t) { return au_arg(t)->member_type == AU_MEMBER_FUNC && au_arg(t)->is_imethod; }
 Au_t is_rec     (Au t) {
     Au_t au = au_arg(t);
@@ -507,6 +519,8 @@ static global_init_fn* call_last;
 static num             call_last_alloc;
 static num             call_last_count;
 
+#pragma pack(push, 1)
+
 typedef struct _Au_combine {
     struct _Au   info;
     struct _Au_t type;
@@ -516,6 +530,8 @@ typedef struct _array_combine {
     struct _Au    info;
     struct _array data;
 } array_combine;
+
+#pragma pack(pop)
 
 static Au_combine* member_pool;
 static int         n_members;
@@ -576,10 +592,21 @@ Au_t Au_register(Au_t type, symbol ident, u32 member_type, u32 traits) {
         memset(member_pool, 0, n_members * sizeof(struct _Au_combine));
     }
     struct _Au_combine* cur = &member_pool[--n_members];
-    cur->info.refs = 1;
+    //cur->info.refs = 1;
 
     Au_t au = &cur->type;
     au->ident = ident ? strdup(ident) : null;
+
+    if (au->ident && strcmp(au->ident, "__routine") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
+
+    if (au->ident && strcmp(au->ident, "__darwin_pthread_handler_rec") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
+    
     au->member_type = member_type;
     au->traits = traits;
 
@@ -625,7 +652,10 @@ Au_t Au_register_func_ptr(Au_t type, symbol ident) {
 }
 
 Au_t Au_register_pointer(Au_t context, Au_t ref, symbol ident) {
-    if (!ref->ptr) ref->ptr = Au_register(context, ident, AU_MEMBER_TYPE, AU_TRAIT_POINTER);
+    if (!ref->ptr) {
+        ref->ptr = Au_register(context, ident, AU_MEMBER_TYPE, AU_TRAIT_POINTER);
+        ref->ptr->src = hold(ref);
+    }
     return ref->ptr;
 }
 
@@ -729,7 +759,7 @@ none push_type(Au_t type) {
         au_t->member_type = AU_MEMBER_TYPE;
         au_t->traits = AU_TRAIT_CLASS;
 
-        Au_register_member(au_t, "context",       typeid(Au_t), AU_MEMBER_PROP, 0);
+        Au_t ctx = Au_register_member(au_t, "context",       typeid(Au_t), AU_MEMBER_PROP, 0);
         Au_register_member(au_t, "src",           typeid(Au_t), AU_MEMBER_PROP, 0);
         Au_register_member(au_t, "user",          typeid(Au_t), AU_MEMBER_PROP, 0);
         Au_register_member(au_t, "module",        typeid(Au_t), AU_MEMBER_PROP, 0);
@@ -3227,10 +3257,12 @@ Au hold(Au a) {
         if (f->refs == 0) return a; // refs of 0 is unmanaged memory (user managed)
         f->refs++;
 
-        au_core af = f->type->af;
-        if (f->af_index > 0) {
-            af->af4[f->af_index] = null;
-            f->af_index = 0;
+        if (f->type) {
+            au_core af = f->type->af;
+            if (f->af_index > 0) {
+                af->af4[f->af_index] = null;
+                f->af_index = 0;
+            }
         }
     }
     return a;
