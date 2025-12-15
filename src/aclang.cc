@@ -51,7 +51,10 @@
 typedef LLVMMetadataRef LLVMScope;
 
 extern "C" {
+
+#pragma pack(push, 1)
 #include <aether/import>
+#pragma pack(pop)
 
 #undef ctx
 #undef str
@@ -63,6 +66,10 @@ extern "C" {
 #undef submit
 
 using namespace clang;
+
+
+Au_t ff;
+Au_t f_arg;
 
 // ============================================================================
 // Helper macros for the new API
@@ -206,7 +213,7 @@ static Au_t map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, aet
     Au_t parent = top_scope(e);
     
     // Create function type
-    Au_t fn = Au_register(parent, null, AU_MEMBER_FUNC, AU_TRAIT_FUNCPTR);
+    Au_t fn = Au_register(parent, null, AU_MEMBER_TYPE, AU_TRAIT_FUNCPTR);
     
     // Return type
     fn->rtype = map_clang_type(fpt->getReturnType(), ctx, e, null);
@@ -238,8 +245,9 @@ static Au_t map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e,
     
     if (const FunctionProtoType* fpt = dyn_cast<FunctionProtoType>(pointee)) {
         Au_t func = map_function_type(fpt, ctx, e);
-        Au_t ptr = Au_register_pointer(null, func, use_name);
-        return ptr;
+        //Au_t ptr = Au_register_pointer(null, func, use_name);
+        verify(!use_name, "expected use_name to be null on this map_function_pointer");
+        return func;
     }
     
     if (const FunctionNoProtoType* fnpt = dyn_cast<FunctionNoProtoType>(pointee)) {
@@ -423,12 +431,23 @@ static void set_fields(RecordDecl* decl, ASTContext& ctx, aether e, Au_t rec) {
             if (field_name.empty()) {
                 field_name = "__anon_" + std::to_string(field_index);
             }
+
+            if (field_name == "__arg") {
+                int test2 = 2;
+                test2    += 2;
+            }
             
             QualType field_type = field->getType();
             Au_t mapped = map_clang_type(field_type, ctx, e, null);
+
             if (!mapped) continue;
             
             Au_t m = Au_register_member(rec, field_name.c_str(), mapped, AU_MEMBER_PROP, 0);
+
+            if (field_name == "__arg") {
+                f_arg = mapped;
+                ff = m;
+            }
 
             uint64_t offset_bits = layout.getFieldOffset(field->getFieldIndex());
             m->offset = offset_bits / 8;
@@ -437,6 +456,10 @@ static void set_fields(RecordDecl* decl, ASTContext& ctx, aether e, Au_t rec) {
         
         rec->size = layout.getSize().getQuantity();
         // alignment could be stored if needed
+    }
+    if (f_arg && f_arg->is_const == 1) {
+        int test2 = 2;
+        test2    += 2;
     }
 }
 
@@ -465,7 +488,10 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     push_scope(e, (Au)rec);
     set_fields(decl, ctx, e, rec);
     pop(e->lexical);
-    
+    if (f_arg && f_arg->is_const == 1) {
+        int test2 = 2;
+        test2    += 2;
+    }
     return rec;
 }
 
@@ -603,7 +629,9 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
     
     Au_t parent = top_scope(e);
     Au_t fn = Au_register(parent, n, AU_MEMBER_FUNC, 0);
-    
+    if (name.length() == 0) {
+        fn = fn;
+    }
     // Return type
     fn->rtype = map_clang_type(decl->getReturnType(), ctx, e, null);
     if (!fn->rtype) fn->rtype = au_lookup("none");
@@ -621,7 +649,7 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
         Au_t mt = map_clang_type(param_type, ctx, e, null);
         if (!mt) continue;
         
-        Au_t arg = Au_register(null, param_name.c_str(), AU_MEMBER_PROP, 0);
+        Au_t arg = Au_register(null, param_name.c_str(), AU_MEMBER_ARG, 0);
         arg->type = mt;
         array_qpush((array)&fn->args, (Au)arg);
     }
@@ -717,6 +745,10 @@ public:
         if (decl->isCompleteDefinition() && !decl->getNameAsString().empty()) {
             create_record(decl, ctx, e, get_name((NamedDecl*)decl));
         }
+        if (f_arg && f_arg->is_const == 1) {
+            int test2 = 2;
+            test2    += 2;
+        }
         return true;
     }
 
@@ -745,6 +777,10 @@ public:
     void HandleTranslationUnit(ASTContext& context) override {
         AetherDeclVisitor2 visitor(context, e);
         visitor.TraverseDecl(context.getTranslationUnitDecl());
+        if (f_arg && f_arg->is_const == 1) {
+            int test2 = 2;
+            test2    += 2;
+        }
     }
 };
 
@@ -1051,6 +1087,12 @@ path aether_include(aether e, Au inc, ARef _instance) {
     if (is_header) {
         AetherASTConsumer2 consumer(e);
         ParseAST(compiler->getPreprocessor(), &consumer, ctx);
+
+        if (f_arg && f_arg->is_const == 1) {
+            int test2 = 2;
+            test2    += 2;
+        }
+
     } else {
         AetherEmitAction2 act(e);
         compiler->ExecuteAction(act);

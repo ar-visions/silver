@@ -29,7 +29,7 @@
 			"problemMatcher": ["$gcc"],
             "command": "${workspaceFolder}/sdk/native/bin/ninja",
             "args": ["-C", "sdk/native/debug", "-v", "-f", "silver.ninja"],
-            "env": { "VERBOSE": "1", "CC": "clang", "IMPORT": "/src/silver/sdk/native" }
+            "env": { "VERBOSE": "1", "CC": "clang", "IMPORT": "/Users/kalen/src/silver/sdk/native" }
         },
         {
             "label": "build-hyperspace",

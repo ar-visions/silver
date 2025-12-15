@@ -1,6 +1,8 @@
 #ifndef _object_h
 #define _object_h
 
+#pragma pack(push, 1)
+
 typedef struct _Au* Au;
 
 typedef none(*func)    ();
@@ -63,9 +65,6 @@ enum AU_TRAIT {
 };
 
 typedef bool(*global_init_fn)();
-
-
-_Pragma("pack(push, 1)")
 
 typedef struct _Au_t *Au_t;
 
@@ -185,6 +184,6 @@ typedef struct _Au_t {
     } ft;
 } *Au_t;
 
-_Pragma("pack(pop)")
+#pragma pack(pop)
 
 #endif

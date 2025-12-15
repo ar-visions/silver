@@ -298,10 +298,6 @@ string model_keyword() {
 
 int main(int argc, cstrs argv) {
     Au_engage(argv);
-    // we can read defaulted args this way
-    // argv is null-term cstr-array, so one does not need argc to read it
-
-    //map a = args(argv, "install", path("."), "source", path());
     silver a = silver(argv);
     return 0;
 }
@@ -3362,7 +3358,6 @@ etype silver_read_def(silver a) {
     if (class_base || is_struct) {
         validate(mtop->au->is_namespace,
             "expected record definition at module level");
-        Au_t tt = isa(mtop);
         array schema = array();
         meta = (class_base && next_is(a, "<")) ? read_meta(a) : null;
 
@@ -3403,7 +3398,9 @@ etype silver_read_def(silver a) {
                 verify(n && n->literal && ((Au_t)isa(n->literal))->is_integral,
                     "expected integral literal");
                 v = n->literal;
-                value = *(i64*)n->literal;
+                u8 sp[64];
+                memcpy(sp, n->literal, isa(n->literal)->abi_size / 8);
+                value = *(i64*)sp; // primitives would need a minimum allocation size in this case
             } else
                 v = primitive(store->au, &value); /// this creates i8 to i64 data, using &value i64 addr
             

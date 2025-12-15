@@ -138,13 +138,13 @@
             "type":       "lldb",
             "request":    "launch",
             "preLaunchTask": "build-silver-ninja",
-            "program":    "/src/silver/sdk/native/bin/silver",
-            "args":     [ "--source", "/src/silver/share/silver/docs/test.ag" ],
-            "cwd":        "/src/silver/sdk/native/lib",
+            "program":    "/Users/kalen/src/silver/sdk/native/bin/silver",
+            "args":     [ "--source", "/Users/kalen/src/silver/share/silver/docs/test.ag" ],
+            "cwd":        "/Users/kalen/src/silver/sdk/native/lib",
             "env":      {
                 "VERBOSE": "1",
-                "LD_LIBRARY_PATH":"/src/silver/sdk/native/lib",
-                "IMPORT":  "/src/silver/sdk/native",
+                "LD_LIBRARY_PATH":"/Users/kalen/src/silver/sdk/native/lib",
+                "IMPORT":  "/Users/kalen/src/silver/sdk/native",
                 "ASAN_OPTIONS": "detect_leaks=0"
             }
         },

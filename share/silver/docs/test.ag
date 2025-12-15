@@ -1,14 +1,14 @@
 import <stdio.h, ctype.h>
 
 class something
-    mem:int[4]
-    fn action[]
+    mem:i32 [ 4 ]
+    func action[]
         puts['something is equal to {mem}']
 
 main aclass
     member : f32 [ 1.2 ] # public is default in silver ([-] verify)
 
-	fn init [ ]
+	func init [ ]
         #str: string-together["an input string"]
         #str += member
 
