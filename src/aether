@@ -49,6 +49,7 @@ declare_class_2(statements, etype)
     M(X,Y, i, prop,  public, path,      source) \
     M(X,Y, i, prop,  public, path,      project_path) \
     M(X,Y, i, prop,  public, path,      current_inc) \
+    M(X,Y, i, prop,  public, Au_t,      current_module) \
     M(X,Y, i, prop,  public, map,       props) \
     M(X,Y, i, prop,  public, array,     libs) \
     M(X,Y, i, prop,  public, array,     lexical) \
@@ -92,11 +93,12 @@ declare_class_2(statements, etype)
     M(X,Y, i, prop,  public, num,               cursor) \
     M(X,Y, i, prop,  public, array,             stack) \
     M(X,Y, i, prop,  public, Au_t,              top) \
+    M(X,Y, i, prop,  public, map,               include_modules) \
+    M(X,Y, i, method, public,     enode,       module_initializer) \
     M(X,Y, i, method, public,     none,        import_Au, path) \
     M(X,Y, i, method, public,     enode,       function, string, array, u8, u32, u8) \
     M(X,Y, i, method, public,     etype,       record, etype, string, u32, array) \
     M(X,Y, i, method, public,     none,        reinit_startup) \
-    M(X,Y, i, method, public,     enode,       initializer) \
     M(X,Y, i, method, public,     none,        e_fn_return,        Au) \
     M(X,Y, i, method, public,     enode,       e_null,             etype) \
     M(X,Y, i, method, public,     enode,       e_default_value,    etype) \
@@ -158,11 +160,11 @@ declare_class_2(statements, etype)
     M(X,Y, i, method, public, none,   push_tokens,    tokens, num) \
     M(X,Y, i, method, public, none,   pop_tokens,     bool) \
     M(X,Y, i, method, public, path,   lookup_include, string) \
-    M(X,Y, i, method, public, path,   include,        Au, ARef) \
+    M(X,Y, i, method, public, path,   include,        Au, string, ARef) \
     M(X,Y, i, method, public, Au_t,   top_scope) \
     M(X,Y, i, method, public, none,   push_scope, Au) \
     M(X,Y, i, method, public, Au_t,   pop_scope) \
-    M(X,Y, i, method, public, none,   import_models) \
+    M(X,Y, i, method, public, none,   import_models, Au_t) \
     M(X,Y, i, override, method, init)
 declare_class_2(aether, etype);
 

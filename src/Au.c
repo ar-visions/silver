@@ -1504,6 +1504,10 @@ none Au_engage(cstrs argv) {
         path sh = path_share_path();
         if (sh) cd(sh);
     }
+
+    // call user-defined module initializers (after we have initialized)
+    for (int i = 0; i < call_last_count; i++)
+        call_last[i]();
     /*
     if (!app_schema) {
         string default_arg = null;
@@ -1586,7 +1590,7 @@ none hold_members(Au a) {
                         continue;
                     Au member_value = *mdata;
                     Au head = header(member_value);
-                    head->refs++;
+                    if (head->refs > 0) head->refs++;
                 }
         }
         type = type->context;
