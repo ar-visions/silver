@@ -41,13 +41,13 @@ Au_t Au_cast_Au_t(Au a) {
     return isa(a);
 }
 
-bool is_generic(Au t) { return typeid(Au) == au_arg(t); }
-bool is_integral(Au t) { return au_arg(t)->is_integral; }
-bool is_void    (Au t) { return typeid(none) == au_arg(t); }
-bool is_double  (Au t) { return typeid(f64) == au_arg(t); }
-bool is_float   (Au t) { return typeid(f32) == au_arg(t); }
-bool is_realistic(Au t) { return au_arg(t)->is_realistic; }
-bool is_class   (Au t) { return au_arg(t)->is_class;  }
+bool is_generic  (Au t) { return t && typeid(Au) == au_arg(t); }
+bool is_integral (Au t) { return t && au_arg(t)->is_integral; }
+bool is_void     (Au t) { return t && typeid(none) == au_arg(t); }
+bool is_double   (Au t) { return t && typeid(f64) == au_arg(t); }
+bool is_float    (Au t) { return t && typeid(f32) == au_arg(t); }
+bool is_realistic(Au t) { return t && au_arg(t)->is_realistic; }
+bool is_class    (Au t) { return t && au_arg(t)->is_class;  }
 bool is_struct  (Au t) { return au_arg(t)->is_struct; }
 bool is_opaque  (Au t) {
     Au_t au = au_arg(t);
@@ -547,7 +547,7 @@ Au_t Au_find_member(Au_t mdl, symbol f, int member_type) {
         for (int i = 0; i < mdl->members.count; i++) {
             Au_t au = mdl->members.origin[i];
             if (!member_type || au->member_type == member_type)
-                if (strcmp(au->ident, f) == 0)
+                if (au->ident && strcmp(au->ident, f) == 0)
                     return au;
         }
         if (mdl->context == mdl) break;

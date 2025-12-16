@@ -370,7 +370,7 @@ static array parse_tokens(silver a, Au input, array output);
 
 Au build_init_preamble(enode f, Au arg) {
     silver a = f->mod;
-    etype rec = resolve(f->target_arg ? (etype)f->target_arg : (etype)a);
+    etype rec = f->target_arg ? resolve((etype)f->target_arg) : (etype)a;
 
     members(rec->au, mem) {
         enode n = instanceof(mem->user, typeid(enode));
@@ -1255,6 +1255,17 @@ enode silver_read_enode(silver a, etype mdl_expect) {
     if (!skip_member_check && module) {
         string alpha = peek_alpha(a);
         if (alpha && !a->read_etype_abort) {
+
+            Au_t tt = Au_global();
+            Au_t v0 = a->lexical->origin[0];
+            Au_t v1 = a->lexical->origin[1];
+            Au_t v2 = a->lexical->origin[2];
+
+            Au_t bb = Au_lexical(a->lexical, "main");
+
+            Au_t aa = Au_find_member(Au_global(), "main", AU_MEMBER_TYPE);
+            aa = aa;
+
             enode m = elookup(alpha->chars); // silly read as string here in int [ silly.len ]
             etype mdl = resolve(m);
             if (m && m->au->member_type == AU_MEMBER_TYPE && is_class(mdl))

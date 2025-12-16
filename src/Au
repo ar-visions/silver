@@ -1407,7 +1407,7 @@ declare_class_3(tokens, array, collective)
     i_method    (X,Y, public, bool,   touch) \
     i_method    (X,Y, public, bool,   create_symlink, path) \
     i_method    (X,Y, public, bool,   is_symlink) \
-    i_method    (X,Y, public, path,   resolve) \
+    M(X,Y, i, guard,  public, path, resolve) \
     i_method    (X,Y, public, bool,   make_dir) \
     i_method    (X,Y, public, bool,   remove_dir) \
     i_method    (X,Y, public, bool,   is_ext, symbol) \
