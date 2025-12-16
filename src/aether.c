@@ -2973,7 +2973,6 @@ none aether_init(aether a) {
         }
     }
     a->stack = array(16);
-    a->include_modules = map(unmanaged, true);
     a->include_paths    = a(f(path, "%o/include", a->install));
     a->sys_inc_paths    = a();
     a->sys_exc_paths    = a();

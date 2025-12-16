@@ -49,7 +49,6 @@ declare_class_2(statements, etype)
     M(X,Y, i, prop,  public, path,      source) \
     M(X,Y, i, prop,  public, path,      project_path) \
     M(X,Y, i, prop,  public, path,      current_inc) \
-    M(X,Y, i, prop,  public, Au_t,      current_module) \
     M(X,Y, i, prop,  public, map,       props) \
     M(X,Y, i, prop,  public, array,     libs) \
     M(X,Y, i, prop,  public, array,     lexical) \
@@ -93,7 +92,6 @@ declare_class_2(statements, etype)
     M(X,Y, i, prop,  public, num,               cursor) \
     M(X,Y, i, prop,  public, array,             stack) \
     M(X,Y, i, prop,  public, Au_t,              top) \
-    M(X,Y, i, prop,  public, map,               include_modules) \
     M(X,Y, i, method, public,     enode,       module_initializer) \
     M(X,Y, i, method, public,     none,        import_Au, path) \
     M(X,Y, i, method, public,     enode,       function, string, array, u8, u32, u8) \

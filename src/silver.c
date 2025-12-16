@@ -386,7 +386,7 @@ void silver_parse(silver a) {
         print_tokens(a, "parse");
         enode res = parse_statement(a);
         validate(res, "unexpected token found for statement: %o", silver_peek(a));
-        incremental_resolve(a);
+        incremental_resolve(a); // too much in the stack afterwards
     }
 
     build_fn(a, init, build_init_preamble, null);
@@ -2504,7 +2504,7 @@ enode import_parse(silver a) {
         au,   mdl->au);
     
     if (!has_cache && !is_codegen) {
-        push_scope(a, mdl);
+        push_scope(a, mdl->au);
         mdl->include_paths = array();
 
         // include each, collecting the clang instance for which we will invoke macros through
@@ -2518,11 +2518,9 @@ enode import_parse(silver a) {
         each(module_paths, path, m) {
             import_Au(a, m);
         }
-
-        if (namespace)
-            pop_scope(a);
     }
 
+    mdl->au->is_closed = true;
     mdl->module_paths = hold(module_paths);
 
     if (is_codegen) {

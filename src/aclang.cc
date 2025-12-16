@@ -921,12 +921,6 @@ path aether_include(aether e, Au inc, string ns, ARef _instance) {
     aclang_cc* instance = (aclang_cc*)_instance;
     path ipath = (Au_t)isa(inc) == typeid(string) ?
         lookup_include(e, (string)inc) : (path)inc;
-    string st = stem(ipath);
-    e->current_module = Au_register_module((ns ? ns : st)->chars);
-    push_scope(e, (Au)e->current_module);
-
-    set(e->include_modules,
-        (Au)string(e->current_module->ident), (Au)e->current_module);
 
     verify(ipath && exists(ipath), "include path does not exist: %o",
         ipath ? (Au)ipath : inc);
@@ -1086,11 +1080,8 @@ path aether_include(aether e, Au inc, string ns, ARef _instance) {
         LLVMLinkModules2(e->module, cMod);
     }
 
-    aether_import_models(e, e->current_module);
-    if (!e->current_module->is_nameless)
-        pop_scope(e);
+    aether_import_models(e, top_scope(e));
 
-    e->current_module->is_closed = true; // this lets us write to non closed namespace, i.e. our user module
     unlink(c->chars);
     e->current_inc = null;
     return ipath;
