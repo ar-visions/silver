@@ -4,6 +4,11 @@
 
 // for Michael
 
+enode parse_statements(silver a, bool unique_members);
+enode parse_statement(silver a);
+void build_fn(silver a, enode fmem, callback preamble, callback postamble);
+static void build_record(silver a, etype mrec);
+
 #define au_lookup(sym) Au_lexical(a->lexical, sym)
 #define elookup(sym) ({              \
     Au_t m = Au_lexical(a->lexical, sym); \
@@ -362,27 +367,38 @@ static enode parse_expression(silver a, etype expect) {
 
 static array parse_tokens(silver a, Au input, array output);
 
-void silver_parse(silver a) {
-    /*
-    emember mem_init = initializer(a); // publish initializer
-    map members = a->members;
 
+Au build_init_preamble(enode f, Au arg) {
+    silver a = f->mod;
+    etype rec = resolve(f->target_arg ? (etype)f->target_arg : (etype)a);
+
+    members(rec->au, mem) {
+        enode n = instanceof(mem->user, typeid(enode));
+        if (n && n->initializer)
+            build_initializer(a, n);
+    }
+    return null;
+}
+
+void silver_parse(silver a) {
+    enode init = module_initializer(a); // publish initializer
     while (silver_peek(a)) {
+        print_tokens(a, "parse");
         enode res = parse_statement(a);
         validate(res, "unexpected token found for statement: %o", silver_peek(a));
         incremental_resolve(a);
     }
 
-    build_fn(a, mem_init, build_init_preamble, null);
-    finalize(mem_init);*/
+    build_fn(a, init, build_init_preamble, null);
+    implement(init);
 }
 
 // im a module!
 void silver_init(silver a) {
     bool is_once = a->build; // -b or --build [ single build, no watching! ]
 
-    a->instances    = hold(map());
-    a->import_cache = hold(map());
+    a->instances    = hold(map(hsize, 16));
+    a->import_cache = hold(map(hsize, 16));
 
     if (!a->source) {
         fault("required argument: source-file");
@@ -1261,7 +1277,7 @@ enode silver_read_enode(silver a, etype mdl_expect) {
         bool ns_found = false;
         if (first && !avoid_model_lookup) {
             members (a->au, im) {
-                if (!im->is_namespace) continue;
+                if (!im->is_namespace || im->is_nameless) continue;
                 if (im->ident && eq(alpha, im->ident)) {
                     string module_name = alpha;
                     validate(read_if(a, "."), "expected . after module-name: %o", alpha);
@@ -1445,9 +1461,6 @@ enode parse_statements(silver a, bool unique_members) {
         pop_scope(a);
     return vr;
 }
-
-void build_fn(silver a, enode fmem, callback preamble, callback postamble);
-static void build_record(silver a, etype mrec);
 
 void silver_incremental_resolve(silver a) {
     members(a->au, mem) {
@@ -2497,7 +2510,7 @@ enode import_parse(silver a) {
         // include each, collecting the clang instance for which we will invoke macros through
         each(includes, string, inc) {
             aclang_cc instance;
-            path i = include(a, inc, &instance);
+            path i = include(a, inc, namespace, &instance);
             push(mdl->include_paths, i);
             set(a->instances, i, instance);
         }
@@ -2722,9 +2735,6 @@ void print_token_array(silver a, array tokens) {
 
 i32 read_enum(silver a, i32 def, Au_t etype);
 
-enode parse_statements(silver a, bool unique_members);
-enode parse_statement(silver a);
-
 static enode typed_expr(silver a, enode src, array expr);
 
 void build_fn(silver a, enode f, callback preamble, callback postamble) {
@@ -2759,18 +2769,6 @@ void build_fn(silver a, enode f, callback preamble, callback postamble) {
     pop_scope(a);
     if (f->target_arg)
         pop_scope(a);
-}
-
-Au build_init_preamble(enode f, Au arg) {
-    silver a = f->mod;
-    etype rec = resolve(f->target_arg ? (etype)f->target_arg : (etype)a);
-
-    members(rec->au, mem) {
-        enode n = instanceof(mem->user, typeid(enode));
-        if (n && n->initializer)
-            build_initializer(a, n);
-    }
-    return null;
 }
 
 static void build_record(silver a, etype mrec) {
@@ -3341,7 +3339,7 @@ etype silver_read_def(silver a) {
         return null;
 
     if (is_type) {
-        struct _etype* (*parser)(silver) = parse_fn->ptr;
+        struct _etype* (*parser)(silver) = parse_fn->value;
         validate(parser, "expected parse fn on member");
         return parser(a);
     }

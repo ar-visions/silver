@@ -457,10 +457,6 @@ static void set_fields(RecordDecl* decl, ASTContext& ctx, aether e, Au_t rec) {
         rec->size = layout.getSize().getQuantity();
         // alignment could be stored if needed
     }
-    if (f_arg && f_arg->is_const == 1) {
-        int test2 = 2;
-        test2    += 2;
-    }
 }
 
 static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::string name) {
@@ -488,10 +484,6 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     push_scope(e, (Au)rec);
     set_fields(decl, ctx, e, rec);
     pop(e->lexical);
-    if (f_arg && f_arg->is_const == 1) {
-        int test2 = 2;
-        test2    += 2;
-    }
     return rec;
 }
 
@@ -923,13 +915,21 @@ path aether_lookup_include(aether e, string include) {
     return null;
 }
 
-void aether_import_models(aether a);
+void aether_import_models(aether a, Au_t);
 
-path aether_include(aether e, Au inc, ARef _instance) {
+path aether_include(aether e, Au inc, string ns, ARef _instance) {
     aclang_cc* instance = (aclang_cc*)_instance;
     path ipath = (Au_t)isa(inc) == typeid(string) ?
         lookup_include(e, (string)inc) : (path)inc;
-    verify(ipath && exists(ipath), "include path does not exist: %o", ipath ? (Au)ipath : inc);
+    string st = stem(ipath);
+    e->current_module = Au_register_module((ns ? ns : st)->chars);
+    push_scope(e, (Au)e->current_module);
+
+    set(e->include_modules,
+        (Au)string(e->current_module->ident), (Au)e->current_module);
+
+    verify(ipath && exists(ipath), "include path does not exist: %o",
+        ipath ? (Au)ipath : inc);
     e->current_inc = ipath;
 
     string incl = string(ipath->chars);
@@ -1020,9 +1020,7 @@ path aether_include(aether e, Au inc, ARef _instance) {
 
     std::unique_ptr<driver::Compilation> comp(
         drv.BuildCompilation(llvm::ArrayRef<symbol>(args)));
-
     std::vector<symbol> compilation_args;
-
     for (clang::driver::Command &cmd : comp->getJobs()) {
         if (e->verbose) llvm::errs() << "command: ";
         if (StringRef(cmd.getCreator().getName()) == "clang") {
@@ -1038,9 +1036,7 @@ path aether_include(aether e, Au inc, ARef _instance) {
     SimpleDiagConsumer* DiagClient = new SimpleDiagConsumer();
     IntrusiveRefCntPtr<DiagnosticsEngine> Diags = 
         new DiagnosticsEngine(DiagID, *DiagOpts, DiagClient);
-
     llvm::ArrayRef<symbol> cmdline_args(compilation_args);
-
     Diags->setSuppressSystemWarnings(true);
     
     CompilerInvocation::CreateFromArgs(
@@ -1050,11 +1046,8 @@ path aether_include(aether e, Au inc, ARef _instance) {
     );
 
     CompilerInstance* compiler = new CompilerInstance(Invocation);
-
     auto& LO = Invocation->getLangOpts();
-
     compiler->setDiagnostics(Diags.get());
-
     compiler->createFileManager();
     compiler->createSourceManager(compiler->getFileManager());
 
@@ -1071,28 +1064,19 @@ path aether_include(aether e, Au inc, ARef _instance) {
     compiler->getSourceManager().setMainFileID(mainFileID);
     compiler->createTarget();
     compiler->createPreprocessor(TU_Complete);
-
     Diags->setIgnoreAllWarnings(true);
     Diags->setSuppressSystemWarnings(true);
     
     *instance = aclang_cc(
         mod, e, compiler, (handle)compiler, PP, (handle)&compiler->getPreprocessor());
-
     compiler->getPreprocessor().addPPCallbacks(
         std::make_unique<MacroCollector2>(*instance));
-    
     compiler->createASTContext();
-
     ASTContext& ctx = compiler->getASTContext();
+
     if (is_header) {
         AetherASTConsumer2 consumer(e);
         ParseAST(compiler->getPreprocessor(), &consumer, ctx);
-
-        if (f_arg && f_arg->is_const == 1) {
-            int test2 = 2;
-            test2    += 2;
-        }
-
     } else {
         AetherEmitAction2 act(e);
         compiler->ExecuteAction(act);
@@ -1102,10 +1086,12 @@ path aether_include(aether e, Au inc, ARef _instance) {
         LLVMLinkModules2(e->module, cMod);
     }
 
-    aether_import_models(e);
+    aether_import_models(e, e->current_module);
+    if (!e->current_module->is_nameless)
+        pop_scope(e);
 
+    e->current_module->is_closed = true; // this lets us write to non closed namespace, i.e. our user module
     unlink(c->chars);
-
     e->current_inc = null;
     return ipath;
 }

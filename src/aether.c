@@ -2827,7 +2827,12 @@ etype aether_context_record(aether a) {
 }
 
 Au_t aether_top_scope(aether a) {
-    return last_element(a->lexical);
+    Au_t open = null;
+    each(a->lexical, Au_t, au_module) {
+        if (!au_module->is_closed)
+            open = au_module;
+    }
+    return open ? open : null;
 }
 
 none aether_push_scope(aether a, Au arg) {
@@ -2838,7 +2843,7 @@ none aether_push_scope(aether a, Au arg) {
         push(a->lexical, au);
 }
 
-void aether_import_models(aether a) {
+void aether_import_models(aether a, Au_t ctx) {
 
     // initialization table for has/not bits, controlling init and implement
     struct filter {
@@ -2856,27 +2861,20 @@ void aether_import_models(aether a) {
         { false, true,  0, AU_TRAIT_ABSTRACT },
     };
 
-    for (int i = len(a->lexical) - 1; i >= 0; i--) {
-        Au_t ctx = a->lexical->origin[i];
-        for (int filter = 0; filter < 8; filter++) {
-            struct filter* ff = &filters[filter];
-            for (num i = 0; i < ctx->members.count; i++) {
-                Au_t m = ctx->members.origin[i];
-                bool proceed = (ff->has_bits & m->traits) == ff->has_bits && 
-                            (ff->not_bits & m->traits) == 0;
-                if (proceed) {
-                    Au_t m_isa = isa(m);
-                    print("init %o", m);
-                    if (ff->init || ff->impl)
-                        src_init(a, m);
-                    if (ff->impl) {
-                        Au_t au = cast(Au_t, m->user);
-                        if (m->ident && strstr(m->ident, "__darwin_pthread_handler_rec")) {
-                            int test2 = 2;
-                            test2    += 2;
-                        }
-                        etype_implement((etype)m->user);
-                    }
+    for (int filter = 0; filter < 8; filter++) {
+        struct filter* ff = &filters[filter];
+        for (num i = 0; i < ctx->members.count; i++) {
+            Au_t m = ctx->members.origin[i];
+            bool proceed = (ff->has_bits & m->traits) == ff->has_bits && 
+                        (ff->not_bits & m->traits) == 0;
+            if (proceed) {
+                Au_t m_isa = isa(m);
+                print("init %o", m);
+                if (ff->init || ff->impl)
+                    src_init(a, m);
+                if (ff->impl) {
+                    Au_t au = cast(Au_t, m->user);
+                    etype_implement((etype)m->user);
                 }
             }
         }
@@ -2887,15 +2885,16 @@ void aether_import_Au(aether a, path lib) {
     a->current_inc   = lib ? lib : path("Au");
     a->is_Au_import  = true;
     string  lib_name = lib ? stem(lib) : null;
+    Au_t    au_module = null;
 
     // register and push new module scope if we are loading from library
-    if (lib) Au_register_module(copy_cstr(lib_name->chars));
-    Au_t current = Au_current_module();
-    if (current != a->au)
-        push_scope(a, current);
+    if (lib) {
+        au_module = Au_register_module(copy_cstr(lib_name->chars));
+        push_scope(a, au_module);
+    } else
+        au_module = Au_global();
 
     Au_t base = au_lookup("Au_t");
-
     if (lib) {
         handle f = dlopen(cstring(lib), RTLD_NOW);
         verify(f, "shared-lib failed to load: %o", lib);
@@ -2910,7 +2909,7 @@ void aether_import_Au(aether a, path lib) {
     etype_ptr(a, au); // Au should be pointer, and we have it as struct; we need to load _Au as what we do, and point to it with Au
     etype_ptr(a, au_t);
 
-    aether_import_models(a);
+    aether_import_models(a, au_module);
 }
 
 void aether_llflag(aether a, symbol flag, i32 ival) {
@@ -2974,6 +2973,7 @@ none aether_init(aether a) {
         }
     }
     a->stack = array(16);
+    a->include_modules = map(unmanaged, true);
     a->include_paths    = a(f(path, "%o/include", a->install));
     a->sys_inc_paths    = a();
     a->sys_exc_paths    = a();
@@ -3041,13 +3041,17 @@ none aether_init(aether a) {
     verify(g != a->au,  "aether using global module");
 
     push_scope(a, g);
-    push_scope(a, a->au);
     import_Au(a, null);
 
+    // i am an ass.
+    a->au->is_namespace = true; // for the 'module' namespace at [1], i think we dont require the name.. or, we set a trait
+    a->au->is_nameless  = false; // we have no names, man. no names. we are nameless! -cereal
+    push_scope(a, a->au);
+
     // todo: test code here
-    aclang_cc instance;
-    path i = include(a, string("stdio.h"), &instance);
-    print("included: %o", i);
+    //aclang_cc instance;
+    //path i = include(a, string("stdio.h"), null, &instance);
+    //print("included: %o", i);
 }
 
 none aether_dealloc(aether a) {
@@ -3711,7 +3715,7 @@ etype aether_record(aether a, etype based, string ident, u32 traits, array meta)
     return n;
 }
 
-enode aether_initializer(aether a) {
+enode aether_module_initializer(aether a) {
     if (a->fn_init) return a->fn_init;
     verify(a, "model given must be module (aether-based)");
 

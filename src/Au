@@ -158,7 +158,7 @@ typedef double                 *ref_f64;
     u8              operator_type; \
     u8              access_type; \
     u8              reserved; \
-    u32             traits; \
+    u64             traits; \
     int             global_count; \
     int             offset; \
     int             size; \
