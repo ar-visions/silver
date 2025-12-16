@@ -318,6 +318,7 @@ LLVMTypeRef lltype(Au a) {
     while (au && !au->lltype) {
         au = au->src;
     }
+
     verify(au && au->lltype, "no type found on %o", prev);
     
     if (au->is_class) {
@@ -325,7 +326,7 @@ LLVMTypeRef lltype(Au a) {
         au = au->ptr;
     }
     LLVMTypeRef res = (LLVMTypeRef)au->lltype;
-    verify(res, "no type found on %o", au);
+    verify(res, "no type found on %o?", au);
     return res;
 }
 
@@ -2910,6 +2911,13 @@ void aether_import_Au(aether a, path lib) {
     etype_ptr(a, au_t);
 
     aether_import_models(a, au_module);
+
+    if (!lib) {
+        Au_t main_cl = Au_register_member(au_module, "main", null, AU_MEMBER_TYPE, AU_TRAIT_CLASS | AU_TRAIT_ABSTRACT);
+        main_cl->context = typeid(Au);
+        main_cl->user = etype(mod, a, au, main_cl);
+        implement(main_cl->user);
+    }
 }
 
 void aether_llflag(aether a, symbol flag, i32 ival) {

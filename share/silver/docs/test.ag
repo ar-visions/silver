@@ -1,5 +1,6 @@
-import <stdio.h, ctype.h>
+main aclass
 
+##
 class something
     mem:i32 [ 4 ]
     func action[]
@@ -17,7 +18,7 @@ main aclass
         puts['i can verify its value is {s.mem}']
 
 
-##
+
 
 # import must come first, and exports are after -- last if you prefer, giving them members you may call at design-time
 #import chatgpt
@@ -52,7 +53,6 @@ main aclass
         # printf [ "actual string: %s with our member %.2f", str, member ]
 # ----------------------------------------------
 
-##
 
 # here we are demonstrating a design mode in silver, using available module data
 const for i in m export images/{i} using chatgpt
