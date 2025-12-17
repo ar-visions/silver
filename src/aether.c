@@ -2167,7 +2167,8 @@ static void aether_finalize_types(aether a, etype module_init_fn) {
             mset(entry, "src",           f->src);
             mset(entry, "ident",         string(f->ident));
             mset(entry, "offset",        _i32(f->offset));
-            mset(entry, "size",          _i32(f->size));
+            mset(entry, "elements",      _i32(f->elements));
+            mset(entry, "typesize",      _i32(f->typesize));
             mset(entry, "isize",         _i32(f->isize));
             mset(entry, "operator_type", _i8(f->operator_type));
             mset(entry, "access_type",   _i8(f->access_type));
@@ -2383,11 +2384,6 @@ none etype_init(etype t) {
     Au_t    au  = t->au;
     bool  named = au && au->ident && strlen(au->ident);
 
-    if (named && strcmp(au->ident, "__sFILE") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
-
     if (isa(t) == typeid(aether) || isa(t)->context == typeid(aether)) {
         a = (aether)t;
         verify(a->source && len(a->source), "no source provided");
@@ -2431,7 +2427,8 @@ none etype_init(etype t) {
             Au_t new_mem      = Au_register(t->au, au_mem->ident, au_mem->member_type, au_mem->traits);
             new_mem->src      = au_mem->src;
             new_mem->isize    = au_mem->isize;
-            new_mem->size     = au_mem->size;
+            new_mem->elements = au_mem->elements;
+            new_mem->typesize = au_mem->typesize;
             new_mem->abi_size = au_mem->abi_size;
             members(au_mem, mem) array_qpush(&new_mem->members, mem);
             args(au_mem, mem)    array_qpush(&new_mem->args,    mem);
@@ -2446,11 +2443,6 @@ none etype_init(etype t) {
     if (!au->member_type)
         au->member_type = AU_MEMBER_TYPE;
     au->user = hold(t);
-
-    if (au->ident && strstr(au->ident, "__sFILE")) {
-        int test2 = 2;
-        test2 += 2;
-    }
 
     if (is_func(au)) {
         etype fn = au->user;
@@ -2615,14 +2607,15 @@ none etype_init(etype t) {
 }
 
 none etype_implement(etype t) {
+    //printf("t pointer = %p\n", t);
     Au_t    au = t->au;
     aether a  = t->mod;
 
-    if (au && au->src && au->src->user)
-        etype_implement(au->src->user);
-
     if (t->is_implemented) return;
     t->is_implemented = true;
+
+    if (au && au->src && au->src->user && !is_prim(au->src) && isa(au->src->user) == typeid(etype))
+        etype_implement(au->src->user);
 
     if (is_rec(t) || au->is_union) {
         array cl = (au->is_union || is_struct(t)) ? array_of(t, 0) : etype_class_list(t);
@@ -2655,10 +2648,24 @@ none etype_implement(etype t) {
                     src_init(a, src);
                     etype_implement(src->user);
                     // get largest union member
-                    members[index] = lltype(src);
+                    if (strcmp(src->ident, "collective_abi") == 0) {
+                        int test2 = 2;
+                        test2    += 2;
+                        Au_t i32_4 = au_lookup("i32");
+                        if (i32_4->elements != 0) {
+                            int test2 = 2;
+                            test2    += 2;
+                        }
+                        LLVMTypeRef ty = lltype(i32_4);
+                        char *type_str = LLVMPrintTypeToString(ty);
+                        printf("type = %s\n", type_str);
+                        LLVMDisposeMessage(type_str); // free when done
+                    }
+
+                    members[index] = lltype(au_lookup("i32"));
                     verify(members[index], "no lltype found for member %s.%s", au->ident, m->ident);
                     printf("verifying abi size of %s\n", m->ident);
-                    int abi_member  = LLVMABISizeOfType(a->target_data, members[index]) * 8;
+                    int abi_member  = LLVMABISizeOfType(a->target_data, members[index]);
                     verify(abi_member, "type has no size");
                     if (au->is_union && src->abi_size > ilargest) {
                         largest  = members[index];
@@ -2678,12 +2685,13 @@ none etype_implement(etype t) {
             for (int i = 0; i < schema->au->members.count; i++) {
                 Au_t m = schema->au->members.origin[i];
                 if (m->member_type == AU_MEMBER_PROP) {
-                    if (m->size)
-                        printf("\t%s %s[%i]\n", m->src->ident, m->ident, m->size);
+                    if (m->elements)
+                        printf("\t%s %s[%i]\n", m->src->ident, m->ident, m->elements);
                     else
                         printf("\t%s %s\n", m->src->ident, m->ident);
                 }
             }
+            
             mt = etype_ptr(a, schema->au);
             mt->au->is_typeid = true;
 
@@ -2694,7 +2702,7 @@ none etype_implement(etype t) {
             string n = f(string, "%s_info", au->ident);
             Au_t type_info = Au_register_type(a->au, n->chars, AU_TRAIT_STRUCT);
             Au_t type_h = Au_register_member(type_info, "info",
-                au_type, AU_MEMBER_PROP, AU_TRAIT_INLAY);
+                au_type, AU_MEMBER_PROP, 0);
             Au_t type_f = Au_register_member(type_info, "type",
                 schema->au, AU_MEMBER_PROP, AU_TRAIT_INLAY);
 
@@ -2703,6 +2711,7 @@ none etype_implement(etype t) {
             enode schema_i = enode(mod, a, au, type_info,
                 name, f(string, "%s_i", au->ident)); // read from is_Au_import; we need to indicate if we are importing, or creating this
             // now we access the addr of type location by access
+            
             t->type_id = access(schema_i, string("type"));
         } else if (count == 0)
              mt = au_lookup("u8")->user;
@@ -2714,6 +2723,7 @@ none etype_implement(etype t) {
             count = 1;
             members[0] = largest;
         }
+        
         LLVMStructSetBody(au->lltype, members, count, 1);
         etype_ptr(a, t->au);
 
@@ -2764,8 +2774,8 @@ none etype_implement(etype t) {
     }
 
     if (!au->is_void && au->member_type != AU_MEMBER_FUNC && !is_opaque(au) && !is_func(au) && au->lltype) {
-        if (au->size) {
-            au->lltype = LLVMArrayType(au->lltype, au->size);
+        if (au->elements) {
+            au->lltype = LLVMArrayType(au->lltype, au->elements);
         }
         if (au->ident && strcmp(au->ident, "__sFILE") == 0) {
             members(au, m) {
@@ -2871,8 +2881,13 @@ void aether_import_models(aether a, Au_t ctx) {
             if (proceed) {
                 Au_t m_isa = isa(m);
                 print("init %o", m);
-                if (ff->init || ff->impl)
+                if (m->ident && strcmp(m->ident, "OPType") == 0) {
+                    int test2 = 2;
+                    test2    += 2;
+                }
+                if (ff->init || ff->impl) {
                     src_init(a, m);
+                }
                 if (ff->impl) {
                     Au_t au = cast(Au_t, m->user);
                     etype_implement((etype)m->user);
@@ -2939,6 +2954,12 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
 
     *ll = form(path, "%o.ll", a);
     *bc = form(path, "%o.bc", a);
+
+    if (LLVMVerifyModule(a->module, LLVMReturnStatusAction, &err)) {
+        fprintf(stderr, "LLVM verify failed:\n%s\n", err);
+        LLVMDisposeMessage(err);
+        abort();
+    }
 
     if (LLVMPrintModuleToFile(a->module, cstring(*ll), &err))
         fault("LLVMPrintModuleToFile failed");
@@ -3080,7 +3101,9 @@ Au_t etype_cast_Au_t(etype t) {
 none enode_init(enode n) {
     aether a = n->mod;
     bool is_const = n->literal != null;
-
+    
+    etype_implement(n);
+    
     if (!n->member && len(n->name) > 0) {
         n->registered = true; // we have control
         n->member = Au_register_member(

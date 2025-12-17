@@ -148,7 +148,8 @@ typedef double                 *ref_f64;
     char*           ident; \
     char*           alt; \
     u32             abi_size; \
-    u8              align_bits; \
+    u32             align_bits; \
+    u32             record_alignment; \
     ARef            llscope; \
     ARef            lltype; \
     ARef            lldebug; \
@@ -161,7 +162,8 @@ typedef double                 *ref_f64;
     u64             traits; \
     int             global_count; \
     int             offset; \
-    int             size; \
+    int             elements; \
+    int             typesize; \
     int             isize; \
     void*           fn; \
     ffi_method_t*   ffi; \
@@ -277,7 +279,7 @@ void lazy_init(global_init_fn fn, Au_t);
         E ## _i.info.refs = 1000; \
         E ## _f* type_ref = &E ## _i.type; \
         Au_t base_ref     = &Au_i.type; \
-        if ((Au_t)type_ref != (Au_t)base_ref && base_ref->size == 0) { \
+        if ((Au_t)type_ref != (Au_t)base_ref && base_ref->typesize == 0) { \
             lazy_init((global_init_fn)&global_##E, (Au_t)base_ref); \
             return false; \
         } else { \
@@ -295,7 +297,7 @@ void lazy_init(global_init_fn fn, Au_t);
             type_ref->context   = (__typeof__(E##_i.type.context))& Au_i.type; \
             type_ref->ident    = #E;                 \
             type_ref->module   = Au_module(MODULE); \
-            type_ref->size     = sizeof(E);          \
+            type_ref->typesize     = sizeof(E);          \
             type_ref->traits   = AU_TRAIT_ENUM;       \
             E##_schema( E, T, IMPL ); \
             push_type((Au_t)type_ref); \
@@ -530,7 +532,7 @@ typedef Au_t* Au_ts;
             type_ref->isize             = 0 TYPE##_schema( TYPE, ISIZE_EXTERN, __VA_ARGS__ ); \
             type_ref->context            = (__typeof__(type_ref->context))&BASE##_i.type; \
             type_ref->module            = Au_module((cstr)MODULE); \
-            type_ref->size              = TYPE_SZ; \
+            type_ref->typesize              = TYPE_SZ; \
             type_ref->traits            = TRAIT; \
             set_meta_array(type_ref, emit_types(__VA_ARGS__)); \
             TYPE##_schema( TYPE, INIT, __VA_ARGS__ ); \
@@ -1407,7 +1409,7 @@ declare_class_3(tokens, array, collective)
     i_method    (X,Y, public, bool,   touch) \
     i_method    (X,Y, public, bool,   create_symlink, path) \
     i_method    (X,Y, public, bool,   is_symlink) \
-    M(X,Y, i, guard,  public, path, resolve) \
+    M(X,Y, i, method,  public, path, resolve) \
     i_method    (X,Y, public, bool,   make_dir) \
     i_method    (X,Y, public, bool,   remove_dir) \
     i_method    (X,Y, public, bool,   is_ext, symbol) \

@@ -32,7 +32,7 @@ forward(codegen)
     M(X,Y, i, prop, public,   enode,            type_id) \
     M(X,Y, i, method, public, none,  implement) \
     M(X,Y, i, method, public, array, class_list) \
-    M(X,Y, i, guard,  public, etype, resolve) \
+    M(X,Y, i, method, public, etype, resolve) \
     M(X,Y, i, method, public, etype, canonical) \
     M(X,Y, i, override, method, init) \
     M(X,Y, i, override, cast,   Au_t) \

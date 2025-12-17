@@ -120,7 +120,8 @@ typedef struct _Au_t {
     char*           ident;
     char*           alt;
     u32             abi_size;
-    u8              align_bits;
+    u32             align_bits;
+    u32             record_alignment;
     ARef            llscope;
     ARef            lltype;
     ARef            lldebug;
@@ -171,7 +172,8 @@ typedef struct _Au_t {
     };
     int             global_count;
     int             offset;
-    int             size;
+    int             elements;
+    int             typesize;
     int             isize;
     void*           fn;
     ffi_method_t*   ffi;
