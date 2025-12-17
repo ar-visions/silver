@@ -249,7 +249,7 @@ none array_push_vdata(array a, Au data, i64 count) {
     verify(a->unmanaged,
         "this method requires unmanaged primitives");
     u8*     cur = data;
-    i64     t_size = t->size;
+    i64     t_size = t->typesize;
 
     while (count < (a->alloc - a->count))
         array_expand(a);
@@ -748,12 +748,12 @@ none push_type(Au_t type) {
         Au_register_member(au_collective, "alloc",     typeid(i32), AU_MEMBER_PROP, 0);
         Au_register_member(au_collective, "hsize",     typeid(i32), AU_MEMBER_PROP, 0);
         Au_register_member(au_collective, "origin",    typeid(ARef), AU_MEMBER_PROP, 0);
-        Au_register_member(au_collective, "first",     typeid(item), AU_MEMBER_PROP, 0); // these are known as referenced types (classes)
-        Au_register_member(au_collective, "last",      typeid(item), AU_MEMBER_PROP, 0);
-        Au_register_member(au_collective, "hlist",     typeid(vector), AU_MEMBER_PROP, 0);
+        Au_register_member(au_collective, "first",     typeid(ARef), AU_MEMBER_PROP, 0); // these are known as referenced types (classes)
+        Au_register_member(au_collective, "last",      typeid(ARef), AU_MEMBER_PROP, 0); 
+        Au_register_member(au_collective, "hlist",     typeid(ARef), AU_MEMBER_PROP, 0);
         Au_register_member(au_collective, "unmanaged", typeid(bool), AU_MEMBER_PROP, 0);
-        Au_register_member(au_collective, "assorted",  typeid(bool), AU_MEMBER_PROP, 0);
-        Au_register_member(au_collective, "last_type", typeid(Au_t), AU_MEMBER_PROP, 0);
+        Au_register_member(au_collective, "assorted",  typeid(bool), AU_MEMBER_PROP, 0); 
+        Au_register_member(au_collective, "last_type", typeid(ARef), AU_MEMBER_PROP, 0);
 
         Au_t au_t = type; // pushed from the first global ctr call
         au_t->member_type = AU_MEMBER_TYPE;
@@ -788,7 +788,7 @@ none push_type(Au_t type) {
         Au_register_member(au_t, "shape", typeid(shape), AU_MEMBER_PROP, 0);
 
         Au_t required_bits  = Au_register_member(au_t, "required_bits",  typeid(u64), AU_MEMBER_PROP, 0);
-        required_bits->size = 2;
+        required_bits->elements = 2;
         Au_t ft             = Au_register(au_t, null,
             AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
         Au_register_member(ft, "_none_", typeid(ARef), AU_MEMBER_PROP, 0);
@@ -865,7 +865,7 @@ Au_t Au_find_type(symbol name, Au_t m) {
 
 AF* AF_bits(Au a) {
     Au_t type = isa(a);
-    u64* fields = (u64*)((i8*)a + type->size - (sizeof(void*) * 2));
+    u64* fields = (u64*)((i8*)a + type->typesize - (sizeof(void*) * 2));
     return fields;
 }
 
@@ -958,7 +958,7 @@ string estring(Au_t type, i32 value) {
     for (num i = 0; i < type->members.count; i++) {
         Au_t mem = type->members.origin[i];
         if (mem->member_type & AU_MEMBER_ENUMV) {
-            if (memcmp((void*)mem->value, (i32*)&value, mem->src->size) == 0)
+            if (memcmp((void*)mem->value, (i32*)&value, mem->src->typesize) == 0)
                 return string(mem->ident); 
         }
     }
@@ -1064,7 +1064,7 @@ numeric numeric_operator__not_equal(numeric a, numeric b) {
 none    numeric_operator__assign(numeric a, numeric b) {
     Au_t type_a = isa(a);
     Au_t type_b = isa(b);
-    num sz = type_a->size < type_b->size ? type_a->size : type_b->size;
+    num sz = type_a->typesize < type_b->typesize ? type_a->typesize : type_b->typesize;
     memcpy(a, b, sz);
 }
 
@@ -1270,7 +1270,7 @@ Au alloc_dbg(Au_t type, num count, cstr source, int line) {
     sz map_sz = sizeof(map);
     sz _sz   = sizeof(struct _Au);
     Au a = alloc_instance(type,
-        _sz + type->size * count, _sz + type->size);
+        _sz + type->typesize * count, _sz + type->typesize);
     a->type       = type;
     a->data       = &a[1];
     a->count      = count;
@@ -1285,7 +1285,7 @@ Au alloc(Au_t type, num count, Au_t* meta) {
     sz map_sz = sizeof(map);
     sz _sz   = sizeof(struct _Au);
     Au a = alloc_instance(type,
-        _sz + type->size * count, _sz + type->size);
+        _sz + type->typesize * count, _sz + type->typesize);
     a->type       = type;
     a->data       = &a[1];
     a->count      = count;
@@ -1313,7 +1313,7 @@ Au alloc2(Au_t type, Au_t scalar, shape s) {
     shape_ft* t2 = &shape_i.type;
     i64 count     = shape_total(s);
     Au a      = alloc_instance(type,
-        _sz + scalar->size * count, _sz + scalar->size);
+        _sz + scalar->typesize * count, _sz + scalar->typesize);
     a->scalar     = scalar;
     a->type       = type;
     a->data       = &a[1];
@@ -1664,8 +1664,8 @@ map Au_arguments(int argc, cstrs argv, map default_values, Au default_key) {
 }
 
 Au primitive(Au_t type, none* data) {
-    Au copy = alloc(type, type->size, null);
-    memcpy(copy, data, type->size);
+    Au copy = alloc(type, 1, null);
+    memcpy(copy, data, type->typesize);
     return copy;
 }
 
@@ -2102,8 +2102,9 @@ bool member_set(Au a, Au_t m, Au value) {
     Au     vinfo        = head(value);
 
     if (is_struct) {
-        verify(m->type->size == vtype->size * vinfo->count, "vector size mismatch for %s", m->ident);
-        memcpy(member_ptr, value, m->type->size);
+        verify(m->type->typesize == vtype->typesize * vinfo->count,
+            "vector size mismatch for %s", m->ident);
+        memcpy(member_ptr, value, m->type->typesize);
     } else if (is_enum || is_inlay || is_primitive) {
         Au_t ref = *m->type->meta.origin;
         verify(!is_struct || vtype == m->type ||
@@ -2111,9 +2112,9 @@ bool member_set(Au a, Au_t m, Au value) {
             "%s: expected vmember_type (%s) to equal isa(value) (%s)",
             m->ident, ref->ident, vtype->ident);
         verify(!is_struct || vtype == m->type ||
-            m->type->size == vtype->size * vinfo->count,
+            m->type->typesize == vtype->typesize * vinfo->count,
             "vector size mismatch for %s", m->ident);
-        int sz = m->type->size < vtype->size ? m->type->size : vtype->size;
+        int sz = m->type->typesize < vtype->typesize ? m->type->typesize : vtype->typesize;
         memcpy(member_ptr, value, sz);
     } else if ((Au)*member_ptr != value) {
         drop(*member_ptr);
@@ -2135,7 +2136,7 @@ Au member_object(Au a, Au_t m) {
     ARef   member_ptr = (cstr)a + m->offset;
     if (is_inlay || is_primitive) {
         result = alloc(m->type, 1, null);
-        memcpy(result, member_ptr, m->type->size);
+        memcpy(result, member_ptr, m->type->typesize);
     } else {
         result = *member_ptr;
     }
@@ -2259,7 +2260,7 @@ i32 Au_compare(Au a, Au b) {
     Au_t au = isa(a);
     Au_t btype = isa(b);
     if (au != btype) return ((ssize_t)au - (ssize_t)btype) < 0 ? -1 : 1;
-    return memcmp(a, b, au->size);
+    return memcmp(a, b, au->typesize);
 }
 
 num parse_formatter(cstr start, cstr res, num sz) {
@@ -3250,7 +3251,7 @@ Au Au_copy(Au a) {
     assert(f->count > 0, "invalid count");
     Au_t type = isa(a);
     Au b = alloc(type, f->count, null);
-    memcpy(b, a, f->type->size * f->count);
+    memcpy(b, a, f->type->typesize * f->count);
     hold_members(b);
     return b;
 }
@@ -3289,7 +3290,7 @@ none Au_free(Au a) {
     
     au_core af = type->af;    
     if (true || !af || af->re_alloc == af->re_count) {
-        memset(aa, 0xff, type->size);
+        memset(aa, 0xff, type->typesize);
         free(aa);
         if (--all_type_alloc < 0) {
             printf("all_type_alloc < 0\n");
@@ -3362,7 +3363,7 @@ Au vdata(Au a) {
 
 i64 vdata_stride(Au a) {
     Au_t t = vdata_type(a);
-    return t->size - (t->traits & AU_TRAIT_PRIMITIVE ? 0 : sizeof(none*));
+    return t->typesize - (t->traits & AU_TRAIT_PRIMITIVE ? 0 : sizeof(none*));
 }
 
 Au_t vdata_type(Au a) {
@@ -3624,15 +3625,15 @@ vector vector_with_path(vector a, path file_path) {
 }
 
 ARef vector_get(vector a, num index) {
-    num location = index * a->type->size;
+    num location = index * a->type->typesize;
     i8* arb = vdata(a);
     return &arb[location];
 }
 
 none vector_set(vector a, num index, ARef element) {
-    num location = index * a->type->size;
+    num location = index * a->type->typesize;
     i8* arb = vdata(a);
-    memcpy(&arb[location], element, a->type->size); 
+    memcpy(&arb[location], element, a->type->typesize); 
 }
 
 Au vector_resize(vector a, sz size) {
@@ -4843,7 +4844,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
                 Au_t e = find_member(
                     type, AU_MEMBER_ENUMV, enum_symbol->chars, false);
                 verify(e, "enum symbol %o not found in type %s", enum_symbol, type->ident);
-                memcpy(evalue, e->value, e->type->size);
+                memcpy(evalue, e->value, e->type->typesize);
 
                 res = evalue;
             } else if (type->traits & AU_TRAIT_STRUCT) {
@@ -5101,8 +5102,8 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
             Au_t itype = isa(o);
             if (itype->traits & AU_TRAIT_PRIMITIVE) {
                 /// parse Au here (which may require additional
-                memcpy(&data[index], o, scalar_type->size);
-                index += scalar_type->size;
+                memcpy(&data[index], o, scalar_type->typesize);
+                index += scalar_type->typesize;
             } else {
                 fault("implement struct parsing");
             }

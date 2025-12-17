@@ -311,7 +311,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
     // Constant array types
     if (const ConstantArrayType* cat = dyn_cast<ConstantArrayType>(type)) {
         QualType elem_type = cat->getElementType();
-        int64_t size = cat->getSize().getSExtValue();
+        int64_t esize = cat->getSize().getSExtValue();
         Au_t elem = map_clang_type(elem_type, ctx, e, null);
         
         if (!elem) return null;
@@ -320,7 +320,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         // For now, create a type with size info
         Au_t arr = Au_register_type(top_scope(e), use_name, 0);
         arr->src = elem;
-        arr->size = size; // store array size
+        arr->elements = esize; // store array size
         if (elem_type.isConstQualified()) {
             arr->traits |= AU_TRAIT_CONST;
         }
@@ -335,7 +335,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         
         Au_t arr = Au_register_type(top_scope(e), use_name, 0);
         arr->src = elem;
-        arr->size = 0; // flexible array
+        arr->elements = 0; // flexible array
         return arr;
     }
     
@@ -454,7 +454,9 @@ static void set_fields(RecordDecl* decl, ASTContext& ctx, aether e, Au_t rec) {
             m->index = field_index++;
         }
         
-        rec->size = layout.getSize().getQuantity();
+        // this needs to be done in implement, less we need to obtain clues on packing and alignment
+        //rec->typesize = layout.getSize().getQuantity();
+
         // alignment could be stored if needed
     }
 }
@@ -481,6 +483,9 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     u32 traits = is_union ? AU_TRAIT_UNION : AU_TRAIT_STRUCT;
     Au_t rec = Au_register_type(parent, n, traits);
     
+    const ASTRecordLayout& layout = ctx.getASTRecordLayout(decl);
+    rec->record_alignment = layout.getAlignment().getQuantity(); // in bytes
+
     push_scope(e, (Au)rec);
     set_fields(decl, ctx, e, rec);
     pop(e->lexical);
@@ -532,7 +537,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
 
     set_fields((RecordDecl*)cxx, ctx, e, rec);
     
-    rec->size = layout.getSize().getQuantity();
+    //rec->typesize = layout.getSize().getQuantity();
 
     // Methods
     for (auto* md : cxx->methods()) {

@@ -473,7 +473,7 @@ void silver_init(silver a) {
                         a->implements = array(2);
                     push(a->implements, files[i]);
                 }
-            parse(a);
+            //parse(a);
             build(a);
 
             if (len(a->implements))

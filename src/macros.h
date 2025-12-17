@@ -746,7 +746,7 @@
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
     m->index       = offsetof(struct X##_fields, N); \
-    m->size        = S; \
+    m->elements    = S; \
 }
 
 #define   i_array_public_PROTO(X, R, S, N)  
@@ -817,7 +817,7 @@
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, 0); \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&R##_i.type; \
-    m->size     = S; \
+    m->elements    = S; \
     m->member_type = AU_MEMBER_PROP; \
 }
 
