@@ -400,7 +400,6 @@ void silver_init(silver a) {
     bool is_once = a->build; // -b or --build [ single build, no watching! ]
     
     a->import_cache = map(hsize, 160);
-    aether_test_write(a);
 
     if (!a->source) {
         fault("required argument: source-file");
@@ -460,6 +459,7 @@ void silver_init(silver a) {
         retry = false;
         a->tokens = tokens(
             target, a, parser, parse_tokens, input, a->source);
+        print_all(a, "all", a->tokens);
         a->stack = array(4);
         a->implements = array();
 
@@ -1478,15 +1478,13 @@ enode parse_statements(silver a, bool unique_members) {
 
 void silver_incremental_resolve(silver a) {
     members(a->au, mem) {
-        if (is_func(mem) && mem->user != a->fn_init && !mem->user->user_built) {
+        if (is_func(mem) && !mem->is_system && mem->user != a->fn_init && !mem->user->user_built) {
             build_fn(a, mem, null, null);
         }
     }
     members(a->au, mem) {
-        etype rec = (etype)is_rec(mem);
-        if (mem->is_system)
-            continue;
-        if (rec && !rec->parsing && !rec->user_built)
+        etype rec = (mem->is_class || mem->is_struct) ? mem->user : null;
+        if (rec && !mem->is_system && !mem->is_schema && !rec->parsing && !rec->user_built)
             build_record(a, rec);
     }
 }
@@ -1633,7 +1631,7 @@ array read_meta(silver a) {
 }
 
 etype read_etype(silver a, array *p_expr) {
-    Au_t mdl = null;
+    etype mdl = null;
     bool body_set = false;
     bool type_only = false;
     etype type = null;
@@ -1651,25 +1649,25 @@ etype read_etype(silver a, array *p_expr) {
             // we support var:1  or var:2.2 or var:'this is a test with {var2}'
             if (isa(lit) == typeid(string)) {
                 expr = a(token("string"), token("["), silver_element(a, 0), token("]"));
-                mdl = au_lookup("string");
+                mdl = elookup("string");
             } else if (isa(lit) == typeid(i64)) {
                 expr = a(token("i64"), token("["), silver_element(a, 0), token("]"));
-                mdl = au_lookup("i64");
+                mdl = elookup("i64");
             } else if (isa(lit) == typeid(u64)) {
                 expr = a(token("u64"), token("["), silver_element(a, 0), token("]"));
-                mdl = au_lookup("u64");
+                mdl = elookup("u64");
             } else if (isa(lit) == typeid(i32)) {
                 expr = a(token("i32"), token("["), silver_element(a, 0), token("]"));
-                mdl = au_lookup("i32");
+                mdl = elookup("i32");
             } else if (isa(lit) == typeid(u32)) {
                 expr = a(token("u32"), token("["), silver_element(a, 0), token("]"));
-                mdl = au_lookup("u32");
+                mdl = elookup("u32");
             } else if (isa(lit) == typeid(f32)) {
                 expr = a(token("f32"), token("["), silver_element(a, 0), token("]"));
-                mdl = au_lookup("f32");
+                mdl = elookup("f32");
             } else if (isa(lit) == typeid(f64)) {
                 expr = a(token("f64"), token("["), silver_element(a, 0), token("]"));
-                mdl = au_lookup("f64");
+                mdl = elookup("f64");
             } else {
                 verify(false, "implement literal %s in read_model", isa(lit)->ident);
             }
@@ -1728,7 +1726,7 @@ etype read_etype(silver a, array *p_expr) {
     if (p_expr)
         *p_expr = expr;
 
-    etype t = etype(mod, a, au, mdl, meta, meta);
+    etype t = etype(mod, a, au, mdl->au, meta, meta);
 
     pop_tokens(a, mdl != null); // if we read a model, we transfer token state
     return t;
@@ -2935,7 +2933,7 @@ enode silver_parse_member_expr(silver a, enode mem) {
 
     /// handle compatible indexing methods and general pointer dereference @ index
     if (indexable && next_is(a, "[")) {
-        etype r = is_rec(mem);
+        etype r = is_rec(mem) ? is_rec(mem)->user : null;
         /// must have an indexing method, or be a reference_pointer
         validate(is_ptr(mem) || r, "no indexing available for model %o",
                  mem->name);

@@ -2123,7 +2123,7 @@ void aether_build_initializer(aether a, etype m) { }
 
 
 static void aether_finalize_types(aether a, etype module_init_fn) {
-    Au_t module_base = a->au_module;
+    Au_t module_base = a->au;
 
     push_scope(a, module_init_fn);
 
@@ -2237,7 +2237,7 @@ static void aether_finalize_types(aether a, etype module_init_fn) {
 }
 
 static void build_module_initializer(aether a, etype module_init_fn) {
-    Au_t module_base = a->au_module;
+    Au_t module_base = a->au;
 
     push_scope(a, module_init_fn);
 
@@ -2295,7 +2295,7 @@ static void set_global_construct(aether a, enode fn) {
 }
 
 static void build_entrypoint(aether a, etype module_init_fn) {
-    Au_t module_base = a->au_module;
+    Au_t module_base = a->au;
 
     etype main_spec  = elookup("main");
     verify(main_spec && is_class(main_spec), "expected main class");
@@ -2392,7 +2392,7 @@ none etype_init(etype t) {
         au->user = hold(t);
         return;
     } else if (t->is_schema) {
-        au = t->au = Au_register(a->au, fmt("__%s_t", au->ident)->chars,
+        au = t->au = Au_register(top_scope(a), fmt("__%s_t", au->ident)->chars,
             AU_MEMBER_TYPE, AU_TRAIT_SCHEMA | AU_TRAIT_STRUCT);
 
         // do this for Au types
@@ -2701,27 +2701,15 @@ none etype_implement(etype t) {
 
             // we need to create the %o_i instance inline struct
             string n = f(string, "%s_info", au->ident);
-            Au_t type_info = Au_register_type(a->au, n->chars, AU_TRAIT_STRUCT);
+            Au_t type_info = Au_register_type(a->au, n->chars, AU_TRAIT_STRUCT | AU_TRAIT_SYSTEM);
             Au_t type_h = Au_register_member(type_info, "info",
                 au_type, AU_MEMBER_PROP, 0);
             Au_t type_f = Au_register_member(type_info, "type",
                 schema->au, AU_MEMBER_PROP, AU_TRAIT_INLAY);
             
-            // needs to create the global value in here
-            // the enode init will see a type, a member, no value, then create an instance
-            static int inc = 0;
-            inc++;
-            if (inc == 5) inc = 1;
-            char* v = inc == 1 ? "a1" : inc == 2 ? "a2" : inc == 3 ? "a3" : "a4";
-            LLVMValueRef G =
-                LLVMAddGlobal(a->module, LLVMInt32Type(), strdup(v));
-
-            //enode schema_i = enode(mod, a, au, type_info,
-            //    name, f(string, "%s_i", au->ident)); // read from is_Au_import; we need to indicate if we are importing, or creating this
-            // now we access the addr of type location by access
-            //return;
-
-            //t->type_id = access(schema_i, string("type"));
+            enode schema_i = enode(mod, a, au, type_info,
+                name, f(string, "%s_i", au->ident));
+            t->type_id = access(schema_i, string("type"));
             
         } else if (count == 0)
              mt = au_lookup("u8")->user;
@@ -2880,9 +2868,6 @@ void aether_import_models(aether a, Au_t ctx) {
         
         for (num i = 0; i < ctx->members.count; i++) {
             // ARef schema creation causes IR error
-            if (filter == 2) {
-                return;
-            }
             Au_t m = ctx->members.origin[i];
             bool proceed = (ff->has_bits & m->traits) == ff->has_bits && 
                         (ff->not_bits & m->traits) == 0;
@@ -2893,18 +2878,8 @@ void aether_import_models(aether a, Au_t ctx) {
                 if (ff->init || ff->impl) {
                     src_init(a, m);
                 }
-                if (ff->impl) {
-                    if (filter == 1 && i == 50) {
-                        int test2 = 2;
-                        test2    += 2;
-                    }
+                if (ff->impl)
                     etype_implement((etype)m->user);
-                    if (filter == 1 && i == 50) {
-                        int test2 = 2;
-                        test2    += 2;
-                        return;
-                    }
-                }
             }
         }
     }
@@ -2942,10 +2917,10 @@ void aether_import_Au(aether a, path lib) {
 
     if (!lib) {
         // this causes a name-related error in IR
-        //Au_t main_cl = Au_register_member(au_module, "main", null, AU_MEMBER_TYPE, AU_TRAIT_CLASS | AU_TRAIT_ABSTRACT);
-        //main_cl->context = typeid(Au);
-        //main_cl->user = etype(mod, a, au, main_cl);
-        //implement(main_cl->user);
+        Au_t main_cl = Au_register_member(au_module, "main", null, AU_MEMBER_TYPE, AU_TRAIT_CLASS | AU_TRAIT_ABSTRACT);
+        main_cl->context = typeid(Au);
+        main_cl->user = etype(mod, a, au, main_cl);
+        implement(main_cl->user);
     }
 }
 
@@ -2969,12 +2944,7 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
     *ll = form(path, "%o.ll", a);
     *bc = form(path, "%o.bc", a);
 
-    LLVMValueRef G =
-        LLVMAddGlobal(a->module, LLVMInt32Type(), "testing112233");
-
     LLVMDumpModule(a->module);
-
-    LLVMPrintModuleToFile(a->module, "crashing.ll", &err);
 
     if (LLVMVerifyModule(a->module, LLVMReturnStatusAction, &err)) {
         fprintf(stderr, "LLVM verify failed:\n%s\n", err);
@@ -3128,8 +3098,6 @@ none enode_init(enode n) {
     aether a = n->mod;
     bool is_const = n->literal != null;
     
-    return;
-
     etype_implement(n);
     
     if (!n->member && len(n->name) > 0) {
@@ -3145,26 +3113,10 @@ none enode_init(enode n) {
             // find the argument index
         } else if (!n->member->context->context) {
             // mod->is_Au_import indicates this is coming from a lib, or we are making a new global
-            char* str = calloc(1, 32);
-            strcpy(str, "test22");
-            static int inc = 0;
-            
-            for (int i = 0; i < inc; i++)
-                str[strlen(str) - 1]++;
-
-            inc++;
-
-            char* v = inc == 1 ? "a1" : inc == 2 ? "a2" : inc == 3 ? "a3" : "a4";
             LLVMValueRef G =
-                LLVMAddGlobal(a->module, LLVMInt32Type(), strdup(v));
-
-            int test2 = 2;
-            test2    += 2;
-            int err = 0;
-            LLVMPrintModuleToFile(a->module, "crashing.ll", &err);
-            
-            //LLVMSetLinkage(G, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
-            //n->value = G;
+                LLVMAddGlobal(a->module, lltype(n), n->name->chars);
+            LLVMSetLinkage(G, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
+            n->value = G;
         }
     }
 }
