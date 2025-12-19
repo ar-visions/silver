@@ -1,6 +1,4 @@
-main aclass
 
-##
 class something
     mem:i32 [ 4 ]
     func action[]
@@ -18,7 +16,7 @@ main aclass
         puts['i can verify its value is {s.mem}']
 
 
-
+##
 
 # import must come first, and exports are after -- last if you prefer, giving them members you may call at design-time
 #import chatgpt
