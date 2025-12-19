@@ -579,7 +579,6 @@ forward(path)
 forward(vector)
 forward(any)
 
-
 // Au must generate defines for sizes for users of it
 #define Au_schema(AA,Y,...) \
     i_prop  (AA,Y, intern, Au_t,        type) \
@@ -713,15 +712,29 @@ declare_base(Au)
 
 forward(item)
 
+/*
+typedef struct _collective_abi {
+    i32             count;
+    i32             alloc;
+    i32             hsize;
+    ARef            origin;
+    struct _item*   first, *last;
+    struct _item*   hlist;
+    bool            unmanaged;
+    bool            assorted;
+    struct _Au_t*   last_type;
+} collective_abi;
+*/
+
 // these methods could-be var-arg, however not recommended?
 #define collective_schema(AA,Y,...) \
     i_prop           (AA,Y, public, i32,     count) \
     i_prop           (AA,Y, public, i32,     alloc) \
     i_prop           (AA,Y, public, i32,     hsize) \
-    i_vprop          (AA,Y, public, Au,      origin) \
+    i_ref            (AA,Y, public, ARef,    origin) \
     i_prop           (AA,Y, public, item,    first) \
     i_prop           (AA,Y, public, item,    last) \
-    i_prop           (AA,Y, public, vector,  hlist) \
+    i_ref            (AA,Y, public, item,    hlist) \
     i_prop           (AA,Y, public, bool,    unmanaged)  \
     i_prop           (AA,Y, public, bool,    assorted) \
     i_prop           (AA,Y, public, Au_t,    last_type) \
@@ -907,7 +920,7 @@ forward(shape)
 #ifndef __cplusplus
 #define shape_schema(AA,YY,...) \
     i_prop  (AA,YY, public, i64, count) \
-    i_vprop (AA,YY, public, i64, data) \
+    i_ref (AA,YY, public, i64, data) \
     i_prop  (AA,YY, public, bool, is_global) \
     i_method(AA,YY, public, shape, with_array, array) \
     i_method(AA,YY, public, i64,   total) \

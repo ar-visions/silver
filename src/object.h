@@ -82,7 +82,7 @@ typedef struct _collective_abi {
     i32             hsize;
     ARef            origin;
     struct _item*   first, *last;
-    struct _vector* hlist;
+    struct _item**  hlist;
     bool            unmanaged;
     bool            assorted;
     struct _Au_t*   last_type;

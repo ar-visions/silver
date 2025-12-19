@@ -222,7 +222,7 @@ array array_reverse(array a) {
 }
 
 none array_expand(array a) {
-    num alloc = 32 + (a->alloc << 1);
+    num alloc = 512 + (a->alloc << 1);
     array_alloc_sz(a, alloc);
 }
 
@@ -407,7 +407,7 @@ num array_compare(array a, array b) {
     if (diff != 0)
         return diff;
     for (num i = 0; i < a->count; i++) {
-        num cmp = compare(a->origin[i], b->origin[i]);
+        num cmp = compare((Au)a->origin[i], (Au)b->origin[i]);
         if (cmp != 0)
             return cmp;
     }
@@ -478,7 +478,7 @@ num array_index_of(array a, Au b) {
         }
     } else {
         for (num i = 0; i < a->count; i++) {
-            if (compare(a->origin[i], b) == 0)
+            if (compare((Au)a->origin[i], b) == 0)
                 return i;
         }
     }
@@ -597,11 +597,6 @@ Au_t Au_register(Au_t type, symbol ident, u32 member_type, u32 traits) {
     Au_t au = &cur->type;
     au->ident = ident ? strdup(ident) : null;
 
-    if (au->ident && strcmp(au->ident, "__routine") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
-    
     au->member_type = member_type;
     au->traits = traits;
 
