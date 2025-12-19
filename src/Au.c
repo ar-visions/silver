@@ -587,22 +587,17 @@ Au_t Au_lexical(array lex, symbol f) {
 
 Au_t Au_register(Au_t type, symbol ident, u32 member_type, u32 traits) {
     if (n_members == 0) {
-        n_members   = 256;
+        n_members   = 2048;
         member_pool = calloc(n_members, sizeof(struct _Au_combine));
         memset(member_pool, 0, n_members * sizeof(struct _Au_combine));
     }
     struct _Au_combine* cur = &member_pool[--n_members];
-    //cur->info.refs = 1;
+    cur->info.refs = 1;
 
     Au_t au = &cur->type;
     au->ident = ident ? strdup(ident) : null;
 
     if (au->ident && strcmp(au->ident, "__routine") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
-
-    if (au->ident && strcmp(au->ident, "__darwin_pthread_handler_rec") == 0) {
         int test2 = 2;
         test2    += 2;
     }
@@ -870,9 +865,9 @@ AF* AF_bits(Au a) {
 }
 
 void AF_set_id(Au a, int id) {
-    Au_t t = isa(a);
-    u64*   f = AF_bits(a);
-    AF_set(f, id);
+    //Au_t t = isa(a);
+    //u64*   f = AF_bits(a);
+    //AF_set(f, id);
 }
 
 void AF_set_name(Au a, cstr name) {
@@ -1108,7 +1103,7 @@ command command_with_cstr(command cmd, cstr buf) {
     int ln = strlen(buf);
     cmd->count = ln;
     cmd->alloc = ln + 1;
-    cmd->chars = malloc(ln + 1);
+    cmd->chars = calloc(1, ln + 1);
     memcpy(cmd->chars, buf, ln + 1);
     return cmd;
 }
@@ -1254,7 +1249,7 @@ Au alloc_instance(Au_t type, int n_bytes, int recycle_size) {
             i64 next_size = af->af_alloc << 1;
             if (next_size == 0) next_size = 1024;
             void* prev = af->af4;
-            af->af4 = malloc(next_size * sizeof(Au*));
+            af->af4 = calloc(1, next_size * sizeof(Au*));
             memcpy(af->af4, prev, prev_size * sizeof(Au*));
             af->af4[0] = 0x00;
             af->af_alloc = next_size;
@@ -5392,7 +5387,7 @@ none shape_dealloc(shape a) {
 
 none shape_push(shape a, i64 i) {
     i64* prev = a->data;
-    a->data = malloc(sizeof(i64) * (a->count + 2));
+    a->data = calloc(sizeof(i64), (a->count + 2));
     a->data[a->count++] = i;
     a->data[a->count]   = 0;
     if (!a->is_global)
@@ -5403,7 +5398,7 @@ none shape_push(shape a, i64 i) {
 none shape_init(shape a) {
     if (!a->is_global) {
         i64 sz = a->count ? a->count : 16;
-        i64* cp = malloc(sizeof(i64) * (sz + 1));
+        i64* cp = calloc(sizeof(i64), (sz + 1));
         if (a->data)
             memcpy(cp, a->data, sizeof(i64) * a->count);
         else
