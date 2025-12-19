@@ -399,7 +399,6 @@ none aether_test_write(aether a);
 void silver_init(silver a) {
     bool is_once = a->build; // -b or --build [ single build, no watching! ]
     
-   map(hsize, 160);
     a->import_cache = map(hsize, 160);
     aether_test_write(a);
 

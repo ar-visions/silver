@@ -617,76 +617,76 @@
 #define M(X,Y,I,T, ...) \
     I##_##T(X, Y, __VA_ARGS__)
 
-#define   i_vprop_interface_F(X, R, N)
-#define   i_vprop_interface_F_EXTERN(X, R, N)
-#define   i_vprop_interface_ISIZE(X, R, N)
-#define   i_vprop_interface_ISIZE_EXTERN(X, R, N)
-#define   i_vprop_interface_INST_U(X, R, N)
-#define   i_vprop_interface_INST_L(X, R, N)
-#define   i_vprop_interface_INST_U_EXTERN(X, R, N)
-#define   i_vprop_interface_INST_L_EXTERN(X, R, N)
-#define   i_vprop_interface_DECL(X, R, N)        i_prop_public_DECL(X, R, N)
-#define   i_vprop_interface_DECL_EXTERN(X, R, N) i_prop_public_DECL(X, R, N)
-#define   i_vprop_interface_GENERICS(X, R, N)
-#define   i_vprop_interface_PROTO(X, R, N)  
-#define   i_vprop_interface_METHOD(X, R, N)
+#define   i_ref_interface_F(X, R, N)
+#define   i_ref_interface_F_EXTERN(X, R, N)
+#define   i_ref_interface_ISIZE(X, R, N)
+#define   i_ref_interface_ISIZE_EXTERN(X, R, N)
+#define   i_ref_interface_INST_U(X, R, N)
+#define   i_ref_interface_INST_L(X, R, N)
+#define   i_ref_interface_INST_U_EXTERN(X, R, N)
+#define   i_ref_interface_INST_L_EXTERN(X, R, N)
+#define   i_ref_interface_DECL(X, R, N)        i_prop_public_DECL(X, R, N)
+#define   i_ref_interface_DECL_EXTERN(X, R, N) i_prop_public_DECL(X, R, N)
+#define   i_ref_interface_GENERICS(X, R, N)
+#define   i_ref_interface_PROTO(X, R, N)  
+#define   i_ref_interface_METHOD(X, R, N)
 
-#define   i_vprop_public_F(X, R, N) u8 N;
-#define   i_vprop_public_F_EXTERN(X, R, N) u8 N;
-#define   i_vprop_public_ISIZE(X, R, N)        
-#define   i_vprop_public_ISIZE_EXTERN(X, R, N) 
-#define   i_vprop_public_INST_U(X, R, N)         R* N;
-#define   i_vprop_public_INST_L(X, R, N)
-#define   i_vprop_public_INST_U_EXTERN(X, R, N)  i_vprop_public_INST_U(X, R, N)
-#define   i_vprop_public_INST_L_EXTERN(X, R, N)
-#define   i_vprop_public_DECL(X, R, N)          i_prop_public_DECL(X, R, N)
-#define   i_vprop_public_DECL_EXTERN(X, R, N)   i_prop_public_DECL(X, R, N)
-#define   i_vprop_public_GENERICS(X, R, N)
-#define   i_vprop_public_INIT(X, R, N) {\
+#define   i_ref_public_F(X, R, N) u8 N;
+#define   i_ref_public_F_EXTERN(X, R, N) u8 N;
+#define   i_ref_public_ISIZE(X, R, N)        
+#define   i_ref_public_ISIZE_EXTERN(X, R, N) 
+#define   i_ref_public_INST_U(X, R, N)         R* N;
+#define   i_ref_public_INST_L(X, R, N)
+#define   i_ref_public_INST_U_EXTERN(X, R, N)  i_ref_public_INST_U(X, R, N)
+#define   i_ref_public_INST_L_EXTERN(X, R, N)
+#define   i_ref_public_DECL(X, R, N)          i_prop_public_DECL(X, R, N)
+#define   i_ref_public_DECL_EXTERN(X, R, N)   i_prop_public_DECL(X, R, N)
+#define   i_ref_public_GENERICS(X, R, N)
+#define   i_ref_public_INIT(X, R, N) {\
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, AU_TRAIT_VPROP); \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&ARef_i.type; \
 }
 
-#define   i_vprop_public_PROTO(X, R, N)  
-#define   i_vprop_public_METHOD(X, R, N)
+#define   i_ref_public_PROTO(X, R, N)  
+#define   i_ref_public_METHOD(X, R, N)
 
-#define   i_vprop_required_F(X, R, N) u8 N;
-#define   i_vprop_required_F_EXTERN(X, R, N) u8 N;
-#define   i_vprop_required_ISIZE(X, R, N)          
-#define   i_vprop_required_ISIZE_EXTERN(X, R, N)          
-#define   i_vprop_required_INST_U(X, R, N)         i_vprop_public_INST_U(X, R, N)
-#define   i_vprop_required_INST_L(X, R, N)
-#define   i_vprop_required_INST_U_EXTERN(X, R, N)  i_vprop_public_INST_U(X, R, N)
-#define   i_vprop_required_INST_L_EXTERN(X, R, N)
-#define   i_vprop_required_DECL(X, R, N)         i_prop_public_DECL(X, R, N)
-#define   i_vprop_required_DECL_EXTERN(X, R, N)  i_prop_public_DECL(X, R, N)
-#define   i_vprop_required_GENERICS(X, R, N)
-#define   i_vprop_required_INIT(X, R, N) {\
+#define   i_ref_required_F(X, R, N) u8 N;
+#define   i_ref_required_F_EXTERN(X, R, N) u8 N;
+#define   i_ref_required_ISIZE(X, R, N)          
+#define   i_ref_required_ISIZE_EXTERN(X, R, N)          
+#define   i_ref_required_INST_U(X, R, N)         i_ref_public_INST_U(X, R, N)
+#define   i_ref_required_INST_L(X, R, N)
+#define   i_ref_required_INST_U_EXTERN(X, R, N)  i_ref_public_INST_U(X, R, N)
+#define   i_ref_required_INST_L_EXTERN(X, R, N)
+#define   i_ref_required_DECL(X, R, N)         i_prop_public_DECL(X, R, N)
+#define   i_ref_required_DECL_EXTERN(X, R, N)  i_prop_public_DECL(X, R, N)
+#define   i_ref_required_GENERICS(X, R, N)
+#define   i_ref_required_INIT(X, R, N) {\
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, AU_TRAIT_VPROP | AU_TRAIT_REQUIRED); \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&ARef_i.type; \
     m->index       = offsetof(struct X##_fields, N); \
 }
 
-#define   i_vprop_required_PROTO(X, R, N)  
-#define   i_vprop_required_METHOD(X, R, N)
+#define   i_ref_required_PROTO(X, R, N)  
+#define   i_ref_required_METHOD(X, R, N)
 
-#define   i_vprop_intern_F(X, R, N) u8 N;
-#define   i_vprop_intern_F_EXTERN(X, R, N)
-#define   i_vprop_intern_ISIZE(X, R, N)          
-#define   i_vprop_intern_ISIZE_EXTERN(X, R, N)   +sizeof(R*)
-#define   i_vprop_intern_INST_U(X, R, N)
-#define   i_vprop_intern_INST_L(X, R, N)           R* N;
-#define   i_vprop_intern_INST_U_EXTERN(X, R, N)
-#define   i_vprop_intern_INST_L_EXTERN(X, R, N)
-#define   i_vprop_intern_DECL(X, R, N)          i_prop_public_DECL(X, R, N)
-#define   i_vprop_intern_DECL_EXTERN(X, R, N)   i_prop_public_DECL(X, R, N)
-#define   i_vprop_intern_GENERICS(X, R, N)
-#define   i_vprop_intern_INIT(X, R, N)
-#define   i_vprop_intern_PROTO(X, R, N)  
-#define   i_vprop_intern_METHOD(X, R, N)  
-#define   i_vprop(X, Y, T, R, N) i_vprop_##T##_##Y(X, R, N)
+#define   i_ref_intern_F(X, R, N) u8 N;
+#define   i_ref_intern_F_EXTERN(X, R, N)
+#define   i_ref_intern_ISIZE(X, R, N)          
+#define   i_ref_intern_ISIZE_EXTERN(X, R, N)   +sizeof(R*)
+#define   i_ref_intern_INST_U(X, R, N)
+#define   i_ref_intern_INST_L(X, R, N)           R* N;
+#define   i_ref_intern_INST_U_EXTERN(X, R, N)
+#define   i_ref_intern_INST_L_EXTERN(X, R, N)
+#define   i_ref_intern_DECL(X, R, N)          i_prop_public_DECL(X, R, N)
+#define   i_ref_intern_DECL_EXTERN(X, R, N)   i_prop_public_DECL(X, R, N)
+#define   i_ref_intern_GENERICS(X, R, N)
+#define   i_ref_intern_INIT(X, R, N)
+#define   i_ref_intern_PROTO(X, R, N)  
+#define   i_ref_intern_METHOD(X, R, N)  
+#define   i_ref(X, Y, T, R, N) i_ref_##T##_##Y(X, R, N)
 
 
 
