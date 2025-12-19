@@ -393,18 +393,22 @@ void silver_parse(silver a) {
     implement(init);
 }
 
+none aether_test_write(aether a);
+
 // im a module!
 void silver_init(silver a) {
     bool is_once = a->build; // -b or --build [ single build, no watching! ]
-
-    a->instances    = hold(map(hsize, 16));
-    a->import_cache = hold(map(hsize, 16));
+    
+   map(hsize, 160);
+    a->import_cache = map(hsize, 160);
+    aether_test_write(a);
 
     if (!a->source) {
         fault("required argument: source-file");
     }
     if (a->source)
         a->source = absolute(a->source);
+
     if (!a->install) {
         cstr import = getenv("IMPORT");
         if (import)
@@ -473,7 +477,7 @@ void silver_init(silver a) {
                         a->implements = array(2);
                     push(a->implements, files[i]);
                 }
-            //parse(a);
+            parse(a);
             build(a);
 
             if (len(a->implements))
