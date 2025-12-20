@@ -70,22 +70,6 @@ declare_class_2(chatgpt, codegen)
 
 /*
 
-#define build_state_schema(E,T,Y,...) \
-    enum_value(E,T,Y, none,       0) \
-    enum_value(E,T,Y, built,      1)
-declare_enum(build_state)
-
-#define language_schema(E,T,Y,...) \
-    enum_value(E,T,Y, silver, 0)
-declare_enum(language)
-
-#define completer_context_schema(X,Y,...) \
-    i_prop(X,Y, required, model,    data) \
-    i_prop(X,Y, required, array,    body)
-declare_class(completer_context)
-
-forward(import)
-
 #define silver_schema(X,Y,...)\
     i_prop    (X,Y, intern,     import,         import) \
     i_prop    (X,Y, intern,     array,          implements) \
@@ -148,46 +132,6 @@ forward(import)
     i_override(X,Y, method,     build_initializer) \
     i_override(X,Y, method,     init)
 declare_class(silver)
-
-
-#define flag_schema(X,Y,...) \
-    i_prop(X,Y, public, string, name) \
-    i_prop(X,Y, public, bool,   is_lib) \
-    i_prop(X,Y, public, bool,   is_cflag) \
-    i_prop(X,Y, public, bool,   is_static) \
-    i_override(X,Y, cast, string)
-declare_class(flag)
-
-#define import_schema(X,Y,...) \
-    i_prop(X,Y, public, codegen, codegen) \
-    i_prop(X,Y, public, silver,  external) \
-    i_prop(X,Y, public, array,   tokens) \
-    i_prop(X,Y, public, array,   module_paths) \
-    i_prop(X,Y, public, array,   include_paths) \
-    s_method(X,Y, public, enode, parse, silver)
-declare_class(import)
-
-
-
-#ifndef __cplusplus
-#define export_schema(X,Y,...) \
-    s_method(X,Y, public, enode, parse, silver)
-declare_class_2(export, model)
-#endif
-
-// major change to model here, with most work on software import happening in import
-// process will perform actions needed by silver-only import
-// does import also perform silver compilation, or stand-alone C compilation?
-// it might make sense to do so; inter-dependency is what is of issue.  import would need
-// to use silver at a binary level in that case (which to me is simpler)
-// it is the interface that we do not have.  for this, do we want .m standard?  (Au-reflect emission)
-// this works for silver, C and possibly others.  the two are what we want to handle for now
-// unclear what the path is for project imports.  clearly there would be multiple .m reflection interfaces
-// in the case of standard C we would use typical Clang Indexer service
-// import url is going to infer the project type, internal to  import
-//     <header> may be part of the syntax, if we are to use a specific header
-// import url -llibrary
-//     include <something>
 
 */
 

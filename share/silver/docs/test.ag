@@ -1,7 +1,7 @@
 
 class something
     mem:i32 [ 4 ]
-    func action[]
+    func action[an_arg:i32, another:i64]
         puts['something is equal to {mem}']
 
 main aclass
@@ -12,7 +12,7 @@ main aclass
         #str += member
 
         s:something[mem:8]
-        s.action[]
+        s.action[1, 2]
         puts['i can verify its value is {s.mem}']
 
 

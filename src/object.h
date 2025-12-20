@@ -63,7 +63,7 @@ typedef enum AU_MEMBER AFlag;
 #define AU_TRAIT_MODINIT   ((int64_t) 1 << 30)
 #define AU_TRAIT_NAMELESS  ((int64_t) 1 << 31)
 #define AU_TRAIT_CLOSED    ((int64_t) 1 << 32)
-
+#define AU_TRAIT_IMPLEMENTED ((int64_t) 1 << 33)
 
 typedef bool(*global_init_fn)();
 
@@ -124,6 +124,7 @@ typedef struct _Au_t {
     u32             record_alignment;
     ARef            llscope;
     ARef            lltype;
+    ARef            llvalue;
     ARef            lldebug;
     i64             index; // index of type in module, or index of member in type
     object          value; // user-data value associated to type
@@ -167,6 +168,7 @@ typedef struct _Au_t {
             u64 is_mod_init  : 1;
             u64 is_nameless  : 1;
             u64 is_closed    : 1;
+            u64 is_implemented : 1;
         };
         u64 traits;
     };

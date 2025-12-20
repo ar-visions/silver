@@ -152,6 +152,7 @@ typedef double                 *ref_f64;
     u32             record_alignment; \
     ARef            llscope; \
     ARef            lltype; \
+    ARef            llvalue; \
     ARef            lldebug; \
     i64             index; \
     object          value; \

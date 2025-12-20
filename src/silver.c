@@ -1009,7 +1009,8 @@ static etype next_is_class(silver a, bool read_token) {
 
 string silver_peek_def(silver a) {
     token n = silver_element(a, 0);
-    etype t = top_scope(a)->user;
+    Au_t top = top_scope(a);
+    etype t = top->user;
     etype rec = is_rec(t) ? t : null;
     if (!rec && next_is_class(a, false))
         return string(n->chars);
@@ -1091,7 +1092,7 @@ static enode typed_expr(silver mod, enode n, array expr);
 
 i32 read_enum(silver a, i32 def, Au_t etype);
 
-enode parse_fn(silver a, string ident, u8 member_type, u32 traits, OPType assign_enum);
+enode parse_func(silver a, string ident, u8 member_type, u32 traits, OPType assign_enum);
 
 enode silver_read_enode(silver a, etype mdl_expect) {
     print_tokens(a, "read-node");
@@ -1132,7 +1133,7 @@ enode silver_read_enode(silver a, etype mdl_expect) {
             bool has_args = is_cast || next_is(a, "[");
             validate(has_args, "expected func args for %o", alpha);
 
-            mem = parse_fn(a, alpha, mtype,
+            mem = parse_func(a, alpha, mtype,
                 is_static ? AU_TRAIT_STATIC : 0, OPType__undefined);
             mem->au->access_type = access;
         }
@@ -1422,6 +1423,8 @@ enode silver_read_enode(silver a, etype mdl_expect) {
     return f ? e_create(a, mdl_expect, mem) : null;
 }
 
+enode parse_switch(silver a);
+
 enode parse_statement(silver a) {
     enode f = context_func(a);
     verify(!f || !f->au->is_mod_init, "unexpected init function");
@@ -1438,18 +1441,13 @@ enode parse_statement(silver a) {
             a->last_return = parse_return(a);
             return a->last_return;
         }
-        if (next_is(a, "break"))
-            return parse_break(a);
-        if (next_is(a, "for"))
-            return parse_for(a);
-        if (next_is(a, "loop"))
-            return parse_loop_while(a);
-        if (next_is(a, "if"))
-            return parse_if_else(a);
-        if (next_is(a, "ifdef"))
-            return parse_ifdef_else(a);
-        if (next_is(a, "loop"))
-            return parse_loop_while(a);
+        if (next_is(a, "break")) return parse_break(a);
+        if (next_is(a, "for"))    return parse_for(a);
+        if (next_is(a, "loop"))   return parse_loop_while(a);
+        if (next_is(a, "if"))     return parse_if_else(a);
+        if (next_is(a, "ifdef"))  return parse_ifdef_else(a);
+        if (next_is(a, "loop"))   return parse_loop_while(a);
+        if (next_is(a, "switch")) return parse_switch(a);
     } else {
         if (next_is(a, "ifdef"))
             return parse_ifdef_else(a);
@@ -1489,7 +1487,11 @@ void silver_incremental_resolve(silver a) {
     }
 }
 
-enode parse_fn(silver a, string ident, u8 member_type, u32 traits, OPType assign_enum) {
+etype pointer(aether, Au);
+
+ARef lltype(Au a);
+
+enode parse_func(silver a, string ident, u8 member_type, u32 traits, OPType assign_enum) {
     etype rtype = null;
     string name = instanceof(ident, typeid(token));
     array body = null;
@@ -1505,9 +1507,8 @@ enode parse_fn(silver a, string ident, u8 member_type, u32 traits, OPType assign
         validate(isa(name) == typeid(string), "expected alpha-identifier");
     }
 
-    validate((is_cast || next_is(a, "[")) || next_is(a, "->"), "expected function args [");
-
-    Au_t au = Au_register(top_scope(a), ident, AU_MEMBER_FUNC, traits);
+    validate(read_if(a, "["), "expected function args [");
+    Au_t au = Au_register(top_scope(a), ident->chars, AU_MEMBER_FUNC, traits);
 
     if (!name) {
         validate(member_type == AU_MEMBER_CAST, "with no name, expected cast");
@@ -1520,57 +1521,61 @@ enode parse_fn(silver a, string ident, u8 member_type, u32 traits, OPType assign
     string fname = rec_ctx ? f(string, "%o_%o", rec_ctx, name) : (string)name;
     au->alt = rec_ctx ? strdup(fname->chars) : null;
 
-    if (!next_is(a, "]")) {
-        push_scope(a, au);
-        // if we push null, then it should not actually create debug info for the members since we dont 'know' what type it is... this wil let us delay setting it on function
-        int statements = 0;
-        for (;;) {
-            // we expect an arg-like statement when we are in this context (eargs)
-            if (next_is(a, "...")) {
-                // finalize this design (it should be a bit more c than .net)
-                silver_consume(a);
-                au->is_vargs = true;
-                continue;
-            }
-            int count0 = au->args.count;
-            print_tokens(a, "parse-args");
-            parse_statement(a);
-            int count1 = au->args.count;
-            verify(count0 == count1 - 1, "arg could not parse");
-            statements++;
-            if (next_is(a, "]"))
-                break;
-        }
-        silver_consume(a);
-        pop_scope(a);
-        // we do not 'show' the instance arg; i do wonder if we add it first?
-        validate(statements == au->args.count, "argument parser mismatch");
-    } else {
-        silver_consume(a);
+    // fill out args in function model
+    bool is_instance = (traits & AU_TRAIT_IMETHOD) != 0 || (member_type == AU_MEMBER_CAST);
+    if (is_instance) {
+        Au_t top = top_scope(a);
+        Au_t rec = is_rec(top);
+        verify(rec, "cannot parse IMETHOD without record in scope");
+        Au_t au_arg = Au_register(null, "a", AU_MEMBER_ARG, 0);
+        au_arg->src = pointer(a, rec);
+        array_qpush(&au->args, au_arg);
     }
 
-    bool has_ret = silver_read_if(a, "->") != null;
-    rtype = has_ret ? read_etype(a, &body) : elookup("none");
-    verify(rtype, "expected return type after ->, found %o", silver_peek(a));
+    push_scope(a, au);
+    push_current(a);
+    bool first = true;
+    for (;;) {
+        if (read_if(a, "]"))
+            break;
+        
+        print_tokens(a, "args");
+        verify(first || read_if(a, ","), "expected comma separator between arguments");
 
-    // check if using ai model
-    codegen cgen = null;
+        token n      = read_alpha(a);
+        token c      = n ? read_if(a, ":") : null;
+        verify(n || !c, "expected alpha-numeric identity for type or name");
+        verify(n ||  c, "expected type separation character ':'");
+        etype t      = read_etype(a, null);
+        Au_t  au_arg = Au_register(null, n ? n->chars : null, AU_MEMBER_ARG, 0);
+        au_arg->src  = t->au;
+        array_qpush(&au->args, au_arg);
+        first = false;
+    }
+    pop_tokens(a, false);
+
+    if (!is_cast && !rtype) {
+        bool has_ret = silver_read_if(a, "->") != null;
+        rtype = has_ret ? read_etype(a, &body) : elookup("none");
+        verify(rtype, "expected return type after ->, found %o", silver_peek(a));
+    }
+    au->rtype = rtype->au;
+    au->is_implemented = true; // this instructs aether to:
+
+    // enode takes the arguments on the function model to complete the function creation
+    enode func = enode(mod, a, au, au, body, null, cgen, null);
+
+    // check if using generative model
     if (silver_read_if(a, "using")) {
         verify(!body, "body already defined in type[expr]");
         token codegen_name = silver_read_alpha(a);
         verify(codegen_name, "expected codegen-identifier after 'using'");
-        cgen = get(a->codegens, codegen_name);
-        verify(cgen, "codegen identifier not found: %o", codegen_name);
+        func->cgen = get(a->codegens, codegen_name);
+        verify(func->cgen, "codegen identifier not found: %o", codegen_name);
     }
 
-    validate(rtype, "rtype not set, void is something we may lookup");
-
-    return enode(
-        mod, a, au, au, body, (body && len(body)) ? body : read_body(a),
-        cgen, cgen);
+    return func;
 }
-
-etype pointer(aether, Au);
 
 static etype model_adj(silver a, etype mdl) {
     while (a->cmode && silver_read_if(a, "*"))
@@ -2185,9 +2190,14 @@ path module_exists(silver a, array idents) {
 }
 
 enode silver_parse_ternary(silver a, enode expr, etype mdl_expect) {
-    if (!silver_read_if(a, "?"))
-        return expr;
+    if (!silver_read_if(a, "?")) {
+        if (!silver_read_if(a, "??"))
+            return expr;
+        enode expr_true = parse_expression(a, mdl_expect);
+        return e_ternary(a, expr, expr_true, null);
+    }
     enode expr_true = parse_expression(a, mdl_expect);
+    verify(silver_read_if(a, ":"), "expected : after expression");
     enode expr_false = parse_expression(a, mdl_expect);
     return e_ternary(a, expr, expr_true, expr_false);
 }
@@ -2794,12 +2804,14 @@ static void build_record(silver a, etype mrec) {
     push_scope(a, mrec);
     while (silver_peek(a)) {
         print_tokens(a, "parse-statement");
-        parse_statement(a); // must not 'build' code here, and should not (just initializer type[expr] for members)
+        parse_statement(a);
     }
     pop_scope(a);
     pop_tokens(a, false);
     rec->parsing = false;
 
+    // if this is a class, we create one, then built init with a preamble that initializes our properties
+    // this is called from Au_initialize
     if (rec->au->is_class) {
         push_scope(a, mrec);
 
@@ -2822,6 +2834,7 @@ static void build_record(silver a, etype mrec) {
     }
 }
 
+// we want to save const for a version 1.00, not 0.88
 array silver_parse_const(silver a, array tokens) {
     array res = array(32);
     push_tokens(a, tokens, 0);
@@ -2855,12 +2868,6 @@ enode parse_break(silver a) {
     return e_break(a, cat);
 }
 
-enode silver_parse_do_while(silver a) {
-    silver_consume(a);
-    enode vr = null;
-    return null;
-}
-
 // read-expression does not pass in 'expected' models, because 100% of the time we run conversion when they differ
 // the idea is to know what model is returning from deeper calls
 static array read_expression(silver a, etype *mdl_res, bool *is_const) {
@@ -2880,7 +2887,7 @@ static array read_expression(silver a, etype *mdl_res, bool *is_const) {
     return exprs;
 }
 
-static enode parse_fn_call(silver, etype, enode);
+static enode parse_func_call(silver, etype, enode);
 
 map parse_map(silver a, etype mdl_schema) {
     map args = map(hsize, 16, assorted, true);

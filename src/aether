@@ -10,7 +10,7 @@ forward(codegen)
 #define members(MDL, VAR) \
     for (int __i = 0; __i < (MDL)->members.count; __i++) \
         for (Au_t VAR = (MDL)->members.origin[__i]; VAR; VAR = NULL)
-
+ 
 #define args(MDL, VAR) \
     for (int __i = 0; __i < (MDL)->args.count; __i++) \
         for (Au_t VAR = (MDL)->args.origin[__i]; VAR; VAR = NULL)
@@ -30,10 +30,10 @@ forward(codegen)
     M(X,Y, i, prop, public,   path,             imported_from) \
     M(X,Y, i, prop, public,   codegen,          cgen) \
     M(X,Y, i, prop, public,   enode,            type_id) \
-    M(X,Y, i, method, public, none,  implement) \
-    M(X,Y, i, method, public, array, class_list) \
-    M(X,Y, i, method, public, etype, resolve) \
-    M(X,Y, i, method, public, etype, canonical) \
+    M(X,Y, i, method, public, none,             implement) \
+    M(X,Y, i, method, public, array,            class_list) \
+    M(X,Y, i, method, public, etype,            resolve) \
+    M(X,Y, i, method, public, etype,            canonical) \
     M(X,Y, i, override, method, init) \
     M(X,Y, i, override, cast,   Au_t) \
     M(X,Y, i, override, cast,   string)
@@ -54,7 +54,6 @@ declare_class_2(statements, etype)
     M(X,Y, i, prop,  public, array,     lexical) \
     M(X,Y, i, prop,  public, bool,      is_Au_import) \
     M(X,Y, i, prop,  public, bool,      in_ref) \
-    M(X,Y, i, prop,  public, Au_t,      au_module) \
     M(X,Y, i, prop,  public, array,     sys_inc_paths) \
     M(X,Y, i, prop,  public, array,     sys_exc_paths) \
     M(X,Y, i, prop,  public, array,     include_paths) \
@@ -184,12 +183,11 @@ declare_class(code)
     M(X,Y, i, prop, public,   enode,            target_arg) \
     M(X,Y, i, prop, public,   string,           name) \
     M(X,Y, i, prop, intern,   bool,             registered) \
-    M(X,Y, i, prop, public,   Au_t,             member) \
     M(X,Y, i, prop, public,   Au,               literal) \
     M(X,Y, i, prop, public,   u8,               arg_index) \
     M(X,Y, i, prop, public,   tokens,           initializer) \
     M(X,Y, i, prop, intern,   LLVMMetadataRef,  last_dbg, as, ARef) \
-    M(X,Y, i, prop, intern,   LLVMValueRef,     value,  as, ARef) \
+    M(X,Y, i, prop, intern,   LLVMValueRef,     value, as, ARef) \
     M(X,Y, i, prop, intern,   LLVMBasicBlockRef, entry,  as, ARef) \
     M(X,Y, i, method, public, enode,            access, string) \
     M(X,Y, i, method, public, none,             release) \
@@ -217,12 +215,12 @@ declare_class(aclang_cc)
 declare_class_2(macro, etype)
 
 #define codegen_schema(X,Y,...) \
-    i_method(X,Y, public, array, generate_fn, Au_t, array) \
+    M(X,Y, i, method, public, array, generate_fn, Au_t, array) \
     M(X,Y, i, prop, public, i32, pad)
 declare_class(codegen)
 
 #define static_array_schema(X,Y,...) \
-    i_prop    (X,Y, intern, bool, placeholder)
+    M(X,Y, i, prop, intern, bool, placeholder)
 declare_class_3(static_array, array, collective)
 
 #endif
