@@ -338,9 +338,18 @@ enode aether_e_add(aether a, Au L, Au R) {
 }
 enode aether_e_sub(aether a, Au L, Au R) { return e_op(a, OPType__sub, string("sub"), L, R); }
 enode aether_e_mul(aether a, Au L, Au R) { return e_op(a, OPType__mul, string("mul"), L, R); }
-enode aether_e_div(aether a, Au L, Au R) { return e_op(a, OPType__div, string("div"), L, R); }
-enode aether_value_default(aether a, Au L, Au R) { return e_op(a, OPType__value_default, string("value_default"), L, R); }
-enode aether_cond_value   (aether a, Au L, Au R) { return e_op(a, OPType__cond_value,    string("cond_value"), L, R); }
+
+enode aether_e_div(aether a, Au L, Au R) {
+    return e_op(a, OPType__div, string("div"), L, R);
+}
+
+enode aether_value_default(aether a, Au L, Au R) {
+    return e_op(a, OPType__value_default, string("value_default"), L, R);
+}
+
+enode aether_cond_value   (aether a, Au L, Au R) {
+    return e_op(a, OPType__cond_value, string("cond_value"), L, R);
+}
 
 
 enode aether_e_inherits(aether a, enode L, Au R) {
@@ -1531,7 +1540,7 @@ etype prefer_mdl(etype m0, etype m1) {
 
 enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_expr) {
     aether mod = a;
-    etype rmdl  = prefer_mdl(true_expr, false_expr);
+    etype rmdl  = false_expr ? prefer_mdl(true_expr, false_expr) : true_expr;
 
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, rmdl);
@@ -1553,7 +1562,8 @@ enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_e
 
     // Step 4: Handle the "else" (false) branch
     LLVMPositionBuilderAtEnd(mod->builder, else_block);
-    LLVMValueRef false_value = false_expr->value;
+    enode default_expr = !false_expr ? e_create(a, true_expr, null) : null;
+    LLVMValueRef false_value = default_expr ? default_expr->value : false_expr->value;
     LLVMBuildBr(mod->builder, merge_block);  // Jump to merge block after the "else" block
 
     // Step 5: Build the "merge" block and add a phi enode to unify values
@@ -1564,7 +1574,7 @@ enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_e
     LLVMAddIncoming(phi_node, &false_value, &else_block, 1);
 
     // Return some enode or result if necessary (a.g., a enode indicating the overall structure)
-    return enode(mod, mod, au, rmdl->au, value, null);
+    return enode(mod, mod, au, rmdl->au, value, phi_node);
 }
 
 enode aether_e_builder(aether a, subprocedure cond_builder) {
@@ -2447,13 +2457,6 @@ none etype_init(etype t) {
     if (is_func(au)) {
         etype fn = au->user;
         // this is when we are binding to .c modules that contain methods
-        fn->is_elsewhere = !fn->cgen && (!fn->body || len(fn->body) == 0);
-        if (fn->is_elsewhere && !fn->au->alt) {
-            etype rec = context_struct(a);
-            if (!rec) rec = context_class(a);
-            if (rec)
-                fn->au->alt = hold(f(string, "%o_%s", rec, fn->au->ident));
-        }
 
         // populate arg types for function
         int n_args = fn->au->args.count;
@@ -2607,20 +2610,12 @@ none etype_init(etype t) {
 }
 
 none etype_implement(etype t) {
-    //printf("t pointer = %p\n", t);
     Au_t    au = t->au;
     aether a  = t->mod;
 
 
     if (t->is_implemented) return;
     t->is_implemented = true;
-
-    static bool is_ARef = false;
-    if (!is_ARef && au && au->ident && strcmp(au->ident, "ARef") == 0) {
-        int test2 = 2;
-        test2    += 2;
-        is_ARef = true;
-    }
 
     if (au && au->src && au->src->user && !is_prim(au->src) && isa(au->src->user) == typeid(etype))
         etype_implement(au->src->user);
@@ -2638,11 +2633,6 @@ none etype_implement(etype t) {
             }
         }
 
-        if (au->ident && strcmp(au->ident, "__darwin_pthread_handler_rec") == 0) {
-            int test2 = 2;
-            test2    += 2;
-        }
-
         LLVMTypeRef* members = calloc(count + 1, sizeof(LLVMTypeRef));
         LLVMTypeRef largest = null;
         int ilargest = 0;
@@ -2654,10 +2644,6 @@ none etype_implement(etype t) {
                     Au_t src = m->src;
                     verify(src, "no src type set for member %o", m);
                     src_init(a, src);
-                    if (src->ident && strcmp(src->ident, "shape") == 0) {
-                        int test2 = 2;
-                        test2    += 2;
-                    }
                     etype_implement(src->user);
                     // get largest union member
                     members[index] = lltype(src);
@@ -2682,16 +2668,6 @@ none etype_implement(etype t) {
             // schema must have it's static_value set to the instance
             etype schema = etype(mod, a, au, t->au, is_schema, true);
             t->schema = schema;
-            print("schema output for %o", schema);
-            for (int i = 0; i < schema->au->members.count; i++) {
-                Au_t m = schema->au->members.origin[i];
-                if (m->member_type == AU_MEMBER_PROP) {
-                    if (m->elements)
-                        printf("\t%s %s[%i]\n", m->src->ident, m->ident, m->elements);
-                    else
-                        printf("\t%s %s\n", m->src->ident, m->ident);
-                }
-            }
             
             mt = etype_ptr(a, schema->au);
             mt->au->is_typeid = true;
@@ -2713,10 +2689,8 @@ none etype_implement(etype t) {
             
         } else if (count == 0)
              mt = au_lookup("u8")->user;
-        if (mt) {
-            printf("%p\n", lltype(mt));
-            members[count++] = lltype(mt);
-        }
+        if (mt) members[count++] = lltype(mt);
+        
         if (au->is_union) {
             count = 1;
             members[0] = largest;
@@ -3100,23 +3074,20 @@ none enode_init(enode n) {
     
     etype_implement(n);
     
-    if (!n->member && len(n->name) > 0) {
+    if (!n->llvalue && len(n->name) > 0) {
         n->registered = true; // we have control
-        n->member = Au_register_member(
-            top_scope(a), n->name->chars, n->au, AU_MEMBER_VAR,
-            is_const ? AU_TRAIT_CONST : 0);
 
         // if module member
-        if (is_func(n->member->context)) {
-            enode fn = n->member->context;
-            n->value = LLVMGetParam(fn->value, n->arg_index);
+        if (is_func(n->au->context)) {
+            enode fn = n->au->context;
+            n->llvalue = LLVMGetParam(fn->au->llvalue, n->arg_index);
             // find the argument index
-        } else if (!n->member->context->context) {
+        } else if (!n->au->context->context) {
             // mod->is_Au_import indicates this is coming from a lib, or we are making a new global
             LLVMValueRef G =
                 LLVMAddGlobal(a->module, lltype(n), n->name->chars);
             LLVMSetLinkage(G, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
-            n->value = G;
+            n->llvalue = G;
         }
     }
 }
