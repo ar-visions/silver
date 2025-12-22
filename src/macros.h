@@ -7,6 +7,7 @@
 #define   enum_value_IMPL(E, T, N, VAL) { \
         static T static_##N = VAL; \
         Au_t m = Au_register_enum_value(&E##_i.type, #N, &static_##N); \
+        m->access_type = interface_public; \
         m->offset   = (i32)(E##_##N);\
         m->type     = (Au_t)&T ## _i.type; \
         m->value    = &static_##N;\
@@ -19,6 +20,7 @@
 #define   enum_method_COUNT(E, T, R, N, ...)
 #define   enum_method_IMPL(E, T, R, N, ...) { \
     Au_t m = Au_register(&E##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_SMETHOD); \
+    m->access_type = interface_public; \
     E##_i.type . ft.N = & E## _ ## N; \
     set_meta_array(m, emit_types(__VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
@@ -36,6 +38,7 @@
 #define   enum_value_v_METHOD(E, T, N, VAL)
 #define   enum_value_v_IMPL(E, T, N, VAL) { \
     Au_t m = Au_register_enum_value(&E##_i.type, #N, &static_##N); \
+    m->access_type = interface_public; \
     static T static_##N = VAL; \
     m->offset   = (i64)E##_##N;\
     m->type     = (Au_t)&T ## _i.type; \
@@ -48,6 +51,7 @@
 #define   enum_value_vargs_IMPL(E, T, N, VAL,...) { \
     static T static_##N = VAL; \
     Au_t m = Au_register_enum_value(&E##_i.type, #N, &static_##N); \
+    m->access_type = interface_public; \
     m->offset   = (i64)E##_##N;\
     m->type     = (Au_t)&T ## _i.type; \
     m->member_type = AU_MEMBER_ENUMV; \
@@ -306,6 +310,7 @@
 
 #define   i_ctr_public_INIT(X, ARG) { \
     Au_t m = Au_register(&X##_i.type, stringify(with_##ARG), AU_MEMBER_CONSTRUCT, 0); \
+    m->access_type = interface_public; \
     X##_i.type.ft.with_##ARG = & X##_with_##ARG; \
     set_meta_array(m, emit_types(X, ARG)); \
     m->type        = (Au_t)&ARG##_i.type; \
@@ -378,6 +383,7 @@
 
 #define   i_prop_public_INIT(X, R, N) { \
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, 0); \
+    m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
     m->member_type = AU_MEMBER_PROP; \
@@ -401,6 +407,7 @@
 #define   i_prop_required_GENERICS(X, R, N)
 #define   i_prop_required_INIT(X, R, N) { \
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, AU_TRAIT_REQUIRED); \
+    m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
     m->index       = offsetof(struct X##_fields, N); \
@@ -451,6 +458,7 @@
 #define   i_prop_public_GENERICS_field(X, R, N, M2)
 #define   i_prop_public_INIT_field(X, R, N, M2) { \
     Au_t m = Au_register(&X##_i.type, #M2, AU_MEMBER_PROP, 0); \
+    m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
     m->id          = offsetof(struct X##_fields, N);    \
@@ -471,6 +479,7 @@
 #define   i_prop_required_GENERICS_field(X, R, N, M2)
 #define   i_prop_required_INIT_field(X, R, N, M2) { \
     Au_t m = Au_register(&X##_i.type, #M2, AU_MEMBER_PROP, AU_TRAIT_REQUIRED); \
+    m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
     m->index       = offsetof(struct X##_fields, N); \
@@ -505,6 +514,7 @@
 #define   i_prop_public_GENERICS_meta(X, R, N, M2)
 #define   i_prop_public_INIT_meta(X, R, N, M2) {\
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, 0); \
+    m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
     m->index       = offsetof(struct X##_fields, N); \
@@ -526,6 +536,7 @@
 #define   i_prop_required_GENERICS_meta(X, R, N, M2)
 #define   i_prop_required_INIT_meta(X, R, N, M2) {\
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, AU_TRAIT_REQUIRED); \
+    m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
     m->index       = offsetof(struct X##_fields, N); \
@@ -644,6 +655,7 @@
 #define   i_ref_public_GENERICS(X, R, N)
 #define   i_ref_public_INIT(X, R, N) {\
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, AU_TRAIT_VPROP); \
+    m->access_type = interface_public; \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&ARef_i.type; \
 }
@@ -664,6 +676,7 @@
 #define   i_ref_required_GENERICS(X, R, N)
 #define   i_ref_required_INIT(X, R, N) {\
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, AU_TRAIT_VPROP | AU_TRAIT_REQUIRED); \
+    m->access_type = interface_public; \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&ARef_i.type; \
     m->index       = offsetof(struct X##_fields, N); \
@@ -703,6 +716,7 @@
 #define i_attr_GENERICS(    X, ENUM, ID, VALUE, ...)
 #define i_attr_INIT(        X, ENUM, ID, VALUE, ...) { \
     Au_t m = Au_register(&X##_i.type, #ID, AU_MEMBER_ATTR, 0); \
+    m->access_type = interface_public; \
     m->index       = ENUM##_##ID; \
     m->value       = VALUE; \
     m->type        = (Au_t)&ENUM##_i.type; \
@@ -743,6 +757,7 @@
 #define   i_array_public_GENERICS(X, R, S, N)
 #define   i_array_public_INIT(X, R, S, N) { \
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, 0); \
+    m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
     m->index       = offsetof(struct X##_fields, N); \
@@ -777,6 +792,7 @@
 #define   i_struct_ctr_GENERICS(X, ARG) ARG*: X##_i.type.ft.with_##ARG,
 #define   i_struct_ctr_INIT(X, ARG) { \
     Au_t m = Au_register(&X##_i.type, stringify(with_##ARG), AU_MEMBER_CONSTRUCT, 0); \
+    m->access_type = interface_public; \
     X##_i.type.ft.with_##ARG = & X##_with_##ARG; \
     m->type        = (Au_t)&ARG##_i.type; \
     /* m->offset      = offsetof(X##_f, with_##ARG); */ \
@@ -797,6 +813,7 @@
 #define   i_struct_ctr_obj_GENERICS(X, ARG) ARG: X##_i.type.ft.with_##ARG,
 #define   i_struct_ctr_obj_INIT(X, ARG) { \
     Au_t m = Au_register(&X##_i.type, stringify(with_##ARG), AU_MEMBER_CONSTRUCT, 0); \
+    m->access_type = interface_public; \
     X##_i.type.ft.with_##ARG = & X##_with_##ARG; \
     m->type        = (Au_t)&ARG##_i.type; \
     m->value       = (void*)& X##_with_##ARG; \
@@ -815,6 +832,7 @@
 #define   i_struct_array_GENERICS(X, R, S, N)
 #define   i_struct_array_INIT(X, R, S, N) { \
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, 0); \
+    m->access_type = interface_public; \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&R##_i.type; \
     m->elements    = S; \
@@ -834,6 +852,7 @@
 #define   i_struct_prop_GENERICS(X, R, N)
 #define   i_struct_prop_INIT(X, R, N) { \
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, 0); \
+    m->access_type = interface_public; \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&R##_i.type; \
 }
@@ -851,6 +870,7 @@
 #define   i_struct_cast_GENERICS(X, R)
 #define   i_struct_cast_INIT(ST, R) { \
     Au_t m = Au_register(&ST##_i.type, stringify(cast_##R), AU_MEMBER_CAST, 0); \
+    m->access_type = interface_public; \
     ST##_i.type.ft.cast_##R = & ST##_cast_##R; \
     set_meta_array(m, emit_types(ST)); \
     m->type    = (Au_t)&R##_i.type; \
@@ -871,6 +891,7 @@
 #define   i_struct_method_GENERICS(X, R, N, ...)
 #define   i_struct_method_INIT(    X, R, N, ...) { \
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
+    m->access_type = interface_public; \
     X##_i.type . ft.N = & X## _ ## N; \
     m->type    = (Au_t)&R##_i.type; \
 }
@@ -889,6 +910,7 @@
 #define   i_struct_static_GENERICS(X, R, N, ...)
 #define   i_struct_static_INIT(    X, R, N, ...) { \
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_SMETHOD); \
+    m->access_type = interface_public; \
     X##_i.type . ft.N = & X## _ ## N; \
     m->type    = (Au_t)&R##_i.type; \
 }
@@ -918,6 +940,7 @@
 #define   i_inlay_public_GENERICS(X, R, N)
 #define   i_inlay_public_INIT(X, R, N) { \
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, AU_TRAIT_INLAY); \
+    m->access_type = interface_public; \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&R##_i.type; \
 }
@@ -938,6 +961,7 @@
 #define   i_inlay_required_GENERICS(X, R, N)
 #define   i_inlay_required_INIT(X, R, N) { \
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_PROP, AU_TRAIT_INLAY | AU_TRAIT_REQUIRED); \
+    m->access_type = interface_public; \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&R##_i.type; \
     m->index    = offsetof(struct X##_fields, N); \
@@ -993,7 +1017,8 @@
 #define   t_method_public_GENERICS(X, R, N, ...)
 #define   t_method_public_INIT(E, R, N, ...) { \
     Au_t m = Au_register(&E##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_TMETHOD); \
-    set_meta_array(m, emit_types(Au_t __VA_OPT__(,) __VA_ARGS__)); \
+    m->access_type = interface_public; \
+    set_meta_array(m, emit_types(__VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
     m->offset  = 0; \
     m->value   = &N; \
@@ -1049,6 +1074,7 @@
 #define   s_method_public_GENERICS(X, R, N, ...)
 #define   s_method_public_INIT(X, R, N, ...) { \
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_SMETHOD); \
+    m->access_type = interface_public; \
     set_meta_array(m, emit_types(__VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
     m->offset  = 0; \
@@ -1101,6 +1127,7 @@
 #define   i_method_public_GENERICS(X, R, N, ...)
 #define   i_method_public_INIT(    X, R, N, ...) { \
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
+    m->access_type = interface_public; \
     X##_i.type . ft.N = & X## _ ## N; \
     set_meta_array(m, emit_types(X __VA_OPT__(,) __VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
@@ -1139,6 +1166,7 @@
 #define   i_final_public_GENERICS(X, R, N, ...)
 #define   i_final_public_INIT(    X, R, N, ...) { \
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_IFINAL); \
+    m->access_type = interface_public; \
     set_meta_array(m, emit_types(__VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
     m->offset  = 0; \
@@ -1191,6 +1219,7 @@
 #define   i_operator_public_GENERICS(X, R, N, ARG)
 #define   i_operator_public_INIT(X, R, N, ARG) { \
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_OPERATOR, 0); \
+    m->access_type = interface_public; \
     X##_i.type  . ft.operator_##N = & X## _operator_ ## N; \
     m->ident   = stringify(operator_##N); \
     set_meta_array(m, emit_types(X)); \
@@ -1245,6 +1274,7 @@
 #define   i_cast_public_GENERICS(X, R)
 #define   i_cast_public_INIT(CL, R) { \
     Au_t m = Au_register(&CL##_i.type, stringify(cast_##R), AU_MEMBER_CAST, 0); \
+    m->access_type = interface_public; \
     CL##_i.type.ft.cast_##R = & CL##_cast_##R; \
     m->value = CL##_i.type.ft.cast_##R; \
     set_meta_array(m, emit_types(CL)); \
@@ -1297,6 +1327,7 @@
 #define i_index_public_GENERICS(X, R, ...)
 #define i_index_public_INIT(X, R, ...) { \
     Au_t m = Au_register(&X##_i.type, stringify(emit_idx_symbol(index, __VA_ARGS__)), AU_MEMBER_INDEX, 0); \
+    m->access_type = interface_public; \
     X##_i.type.ft.emit_idx_symbol(index, __VA_ARGS__) = & emit_idx_symbol(X ## _index, __VA_ARGS__); \
     set_meta_array(m, emit_types(X, __VA_ARGS__)); \
     m->type        = (Au_t)&R##_i.type; \
@@ -1395,6 +1426,7 @@
 #define i_override_method_GENERICS(X, N)
 #define i_override_method_INIT(X, N) { \
     Au_t m = Au_register(&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_OVERRIDE); \
+    m->access_type = interface_undefined; \
     type_ref->ft.N = (__typeof__(type_ref->ft.N))& X## _ ## N; \
     m->value = (void*)& X##_##N; \
     Au_member_override((Au_t)type_ref, m, AU_MEMBER_FUNC); \
@@ -1415,6 +1447,7 @@
 #define i_override_ctr_GENERICS(X, N)                   N: X##_i.type.ft.with_##N,
 #define i_override_ctr_INIT(X, R) { \
     Au_t m = Au_register(&X##_i.type, stringify(with_##R), AU_MEMBER_CONSTRUCT, AU_TRAIT_OVERRIDE); \
+    m->access_type = interface_undefined; \
     type_ref->ft.with_##R = & X##_with_##R; \
     m->value = (void*)& X##_with_##R; \
     Au_member_override((Au_t)type_ref, m, AU_MEMBER_CONSTRUCT); \
@@ -1435,6 +1468,7 @@
 #define i_override_cast_GENERICS(X, N)
 #define i_override_cast_INIT(X, R) { \
     Au_t m = Au_register(&X##_i.type, stringify(cast_##R), AU_MEMBER_CAST, AU_TRAIT_OVERRIDE); \
+    m->access_type = interface_undefined; \
     type_ref->ft.cast_##R = & X##_cast_##R; \
     m->value = (void*)& X##_cast_##R; \
     Au_member_override((Au_t)type_ref, m, AU_MEMBER_CAST); \
@@ -1455,6 +1489,7 @@
 #define i_override_idx_GENERICS(X, R)
 #define i_override_idx_INIT(X, R) { \
     Au_t m = Au_register(&X##_i.type, stringify(idx_##R), AU_MEMBER_INDEX, AU_TRAIT_OVERRIDE); \
+    m->access_type = interface_undefined; \
     type_ref->idx_##R = & X##_idx_##R; \
     m->value = (void*)& X##_idx_##R; \
     Au_member_override(type_ref, m, AU_MEMBER_INDEX); \
@@ -1586,19 +1621,7 @@
 #else
 #define       assert(a, t, ...) do { } while(0)
 #endif
-#define       verify(a, t, ...) \
-    ({ \
-        if (!(a)) { \
-            string res = (string)formatter((Au_t)null, stderr, (Au)true,  (symbol)t, ## __VA_ARGS__); \
-            if (level_err >= fault_level) { \
-                halt(res); \
-            } \
-            false; \
-        } else { \
-            true; \
-        } \
-        true; \
-    })
+#define       verify(a, t, ...) ({ if (!(a)) { string res = (string)formatter((Au_t)null, stderr, (Au)true,  (symbol)t, ## __VA_ARGS__); if (level_err >= fault_level) { halt(res); } false; } else { true; } true; })
 
 #undef min
 #undef max

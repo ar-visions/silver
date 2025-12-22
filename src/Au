@@ -152,7 +152,6 @@ typedef double                 *ref_f64;
     u32             record_alignment; \
     ARef            llscope; \
     ARef            lltype; \
-    ARef            llvalue; \
     ARef            lldebug; \
     i64             index; \
     object          value; \
@@ -612,7 +611,7 @@ forward(any)
     i_final (AA,Y, public, Au,           set_property,        symbol, Au) \
     i_final (AA,Y, public, Au,           get_property,        symbol) \
     i_final (AA,Y, public, Au,           vrealloc,            sz) \
-    s_method(AA,Y, public, Au_t,         find_member,         Au_t, symbol, i32) \
+    s_method(AA,Y, public, Au_t,         find_member,         Au_t, symbol, i32, bool) \
     s_method(AA,Y, public, Au_t,         context,             array, i32, i32) \
     s_method(AA,Y, public, Au_t,         lexical,             array, symbol) \
     s_method(AA,Y, public, Au_t,         register,            Au_t, symbol, u32, u32) \
@@ -746,7 +745,6 @@ typedef struct _collective_abi {
     i_method         (AA,Y, public, Au,      peek, num)
 declare_class(collective)
 
-
 #define numeric_schema(AA,Y,...) \
     i_operator(AA,Y, public, numeric, _add, numeric) \
     i_operator(AA,Y, public, numeric, _sub, numeric) \
@@ -764,7 +762,6 @@ declare_class(collective)
     i_operator(AA,Y, public, none,    _assign,    numeric) \
     i_override(AA,Y, cast, string)
 declare_abstract(numeric)
-
 
 #define string_like_schema(X,Y,...)
 declare_abstract(string_like)
@@ -827,7 +824,6 @@ declare_abstract(imported)
 #define cstrs_schema(X,Y,...)       raw_schema(X,Y,...)
 #define Au_ts_schema(X,Y,...)      raw_schema(X,Y,...)
 #define floats_schema(X,Y,...)      raw_schema(X,Y,...)
-
 
 /// meta gives us access to one token we can override with (F)
 
@@ -902,9 +898,6 @@ declare_primitive(Au_ts,           raw)
 //declare_primitive(Au_t,        raw)
 declare_primitive(ARef,         ref)
 declare_primitive(floats,       raw)
-
-
-
 
 /// lets mimmick the structure in llama.cpp
 #define msg_schema(X,Y,...) \
@@ -1030,8 +1023,6 @@ static struct op_entry op_table[] = {
     enum_value(E,T,Y, _assign_right,      33) \
     enum_value(E,T,Y, _assign_left,       34)
 declare_enum(OPType)
-
-
 
 #define Key_schema(EE,TT,YY) \
     enum_value_v(EE, TT, YY, Undefined,      0) \
@@ -1181,7 +1172,6 @@ declare_class_2(vector, collective)
 
 none vector_init(vector);
 
-
 // let us declare our vector with string
 // Au, user space is simply the cstring
 
@@ -1220,7 +1210,6 @@ declare_enum(interface)
     enum_value(E,T,Y, s_less_than,       40) \
     enum_value(E,T,Y, s_less_than_e,     41)
 declare_enum(comparison)
-
 
 #define array_schema(AA,Y,O,...) \
     s_vargs          (AA,Y, public, array,   array_of,       Au) \
@@ -1304,7 +1293,6 @@ declare_class_3(ctx, map, collective)
     i_prop    (AA,Y,   public, string, content)
 declare_class(ipart)
 
-
 #define string_schema(AA,Y,...) \
     i_prop    (AA,Y,   public, symbol,  chars) \
     i_prop    (AA,Y,   public, num,     alloc) \
@@ -1353,7 +1341,6 @@ declare_class(ipart)
     i_override(AA,Y,   cast,   bool) \
     i_override(AA,Y,   method, copy)
 declare_class(string)
-
 
 #define const_string_schema(AA,Y,...)
 declare_class_2(const_string, string)
@@ -1464,8 +1451,6 @@ declare_class_3(tokens, array, collective)
     i_override  (X,Y, cast,     string)
 declare_class_2(path, string)
 
-
-
 #define subscriber_schema(X,Y,...) \
     i_prop    (X,Y, required, Au,   target) \
     i_prop    (X,Y, required, callback, method)
@@ -1476,7 +1461,6 @@ declare_class(subscriber)
     i_method  (X,Y, public,   none,   add,    Au, callback) \
     i_method  (X,Y, public,   Au, invoke, Au)
 declare_class(subs)
-
 
 #define line_schema(X,Y,...) \
     i_prop(X,Y, public, i32, indent) \
@@ -1490,7 +1474,7 @@ extern FILE* logger;
 cstr copy_cstr(cstr input);
 
 /// useful utility for smooth movement of any variable in a variable-step-rate
-/// used in Hyper Race physics to make adjustments to cars at frame-rate
+/// used in Hyper Race 'physics' to make adjustments to cars at varying-frame-rates
 static inline f32 filter_n(f32 current, f32 goal, f32 amount, f32 rate) {
     f32 decay = powf(1.0f - amount, rate);
     if (goal != 0.0f)

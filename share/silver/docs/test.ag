@@ -1,3 +1,4 @@
+import <stdio.h>
 
 class something
     mem:i32 [ 4 ]
@@ -5,20 +6,15 @@ class something
         puts['something is equal to {mem}']
 
 main aclass
-    member : f32 [ 1.2 ] # public is default in silver ([-] verify)
+    member : f32 [ 1.2 ]
 
 	func init [ ]
-        #str: string-together["an input string"]
-        #str += member
-
         s:something[mem:8]
         s.action[1, 2]
         puts['i can verify its value is {s.mem}']
 
-
 ##
 
-# import must come first, and exports are after -- last if you prefer, giving them members you may call at design-time
 #import chatgpt
 #    model:'gpt-5'
 
@@ -29,13 +25,13 @@ m : array <path>     [ 'car1.spec' 'car2.spec' 'car3.spec' ]
 # return types must be type-expr based, 
 # we cannot take in a 'something' for example, 
 # because it may be the first operation in a none returning fn
-fn string-together [ something:string ] string
+func string-together [ something:string ] string
     return '{something} and {something} else'
 
 main aclass
     member : f32 [ 1.2 ] # public is default in silver ([-] verify)
 
-	fn init [ ]
+	func init [ ]
         str: string-together["an input string"]
 
         i:i32 [ 2 ]
