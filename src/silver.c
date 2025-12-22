@@ -399,7 +399,8 @@ none aether_test_write(aether a);
 void silver_init(silver a) {
     bool is_once = a->build; // -b or --build [ single build, no watching! ]
     
-    a->import_cache = map(hsize, 160);
+    a->instances    = map();
+    a->import_cache = map();
 
     if (!a->source) {
         fault("required argument: source-file");
@@ -1222,7 +1223,7 @@ enode silver_read_enode(silver a, etype mdl_expect) {
 
     // 'typeof' operator
     // should work on instances as well as direct types
-    else if (!cmode && read_if(a, "typeid")) {
+    else if (!cmode && read_if(a, "typeid")) { // todo: merge with isa, eventually implement with a const expression in silver implementation
         bool bracket = false;
         if (next_is(a, "[")) {
             consume(a); // Consume '['
@@ -1251,25 +1252,13 @@ enode silver_read_enode(silver a, etype mdl_expect) {
 
     push_current(a);
     
-    string    alpha     = null;
-    int       depth     = 0;
-    
-    bool skip_member_check = false;
-    bool avoid_model_lookup = a->read_etype_abort;
+    string alpha              = null;
+    int    depth              = 0;
+    bool   skip_member_check  = false;
+    bool   avoid_model_lookup = a->read_etype_abort;
     if (!skip_member_check && module) {
         string alpha = peek_alpha(a);
         if (alpha && !a->read_etype_abort) {
-
-            Au_t tt = Au_global();
-            Au_t v0 = a->lexical->origin[0];
-            Au_t v1 = a->lexical->origin[1];
-            Au_t v2 = a->lexical->origin[2];
-
-            Au_t bb = Au_lexical(a->lexical, "main");
-
-            Au_t aa = Au_find_member(Au_global(), "main", AU_MEMBER_TYPE);
-            aa = aa;
-
             enode m = elookup(alpha->chars); // silly read as string here in int [ silly.len ]
             etype mdl = resolve(m);
             if (m && m->au->member_type == AU_MEMBER_TYPE && is_class(mdl))
@@ -1283,6 +1272,10 @@ enode silver_read_enode(silver a, etype mdl_expect) {
         if (first && (is_fn || is_cast)) consume(a);
         
         alpha = read_alpha(a);
+        if (alpha && eq(alpha, "mem")) {
+            int test2 = 2;
+            test2    += 2;
+        }
         if (!alpha) {
             validate(mem == null, "expected alpha ident after .");
             break;
@@ -1317,7 +1310,7 @@ enode silver_read_enode(silver a, etype mdl_expect) {
 
                 // try implicit 'this' access in instance methods
                 if (!mem && f && f->target_arg) {
-                    Au_t field = Au_find_member(resolve(f->target_arg)->au, alpha->chars, 0);
+                    Au_t field = Au_find_member(resolve(f->target_arg)->au, alpha->chars, 0, true);
                     if (field) {
                         mem = access(f->target_arg, alpha);
                     } else {
@@ -1532,8 +1525,8 @@ enode parse_func(silver a, string ident, u8 member_type, u32 traits, OPType assi
         array_qpush(&au->args, au_arg);
     }
 
+    // create model entries for the args (enodes created on func init)
     push_scope(a, au);
-    push_current(a);
     bool first = true;
     for (;;) {
         if (read_if(a, "]"))
@@ -1552,8 +1545,7 @@ enode parse_func(silver a, string ident, u8 member_type, u32 traits, OPType assi
         array_qpush(&au->args, au_arg);
         first = false;
     }
-    pop_tokens(a, false);
-
+    pop_scope(a);
     if (!is_cast && !rtype) {
         bool has_ret = silver_read_if(a, "->") != null;
         rtype = has_ret ? read_etype(a, &body) : elookup("none");
@@ -1573,6 +1565,9 @@ enode parse_func(silver a, string ident, u8 member_type, u32 traits, OPType assi
         func->cgen = get(a->codegens, codegen_name);
         verify(func->cgen, "codegen identifier not found: %o", codegen_name);
     }
+    if (!body) body = read_body(a);
+    func->body = hold(body);
+    print_all(a, "body", body);
 
     return func;
 }
@@ -2813,23 +2808,23 @@ static void build_record(silver a, etype mrec) {
     // if this is a class, we create one, then built init with a preamble that initializes our properties
     // this is called from Au_initialize
     if (rec->au->is_class) {
-        push_scope(a, mrec);
-
         // if no init, create one (attach preamble for our property inits)
-        Au_t m_init = Au_find_member(rec->au, "init", AU_MEMBER_FUNC);
+        Au_t m_init = Au_find_member(rec->au, "init", AU_MEMBER_FUNC, false);
         if (!m_init) {
+            push_scope(a, mrec);
             m_init = function(a,
-                string("init"), array(), AU_MEMBER_FUNC,
+                string("init"), rec, array(), AU_MEMBER_FUNC,
                 AU_TRAIT_IMETHOD | AU_TRAIT_OVERRIDE, 0)->au;
+            pop_scope(a);
         }
-        pop_scope(a);
 
         build_fn(a, m_init->user, build_init_preamble, null); // we may need to
 
         // build remaining functions
         members(rec->au, m) {
+            Au_t t = isa(m->user);
             enode n = instanceof(m->user, typeid(enode));
-            if (is_func(n)) build_fn(a, n, null, null);
+            if (n && is_func(n)) build_fn(a, n, null, null);
         }
     }
 }
@@ -2901,7 +2896,7 @@ map parse_map(silver a, etype mdl_schema) {
         validate(silver_read_if(a, ":"), "expected : after arg %o", name);
         etype mdl_expect = null;
         if (mdl_schema) {
-            Au_t m = Au_find_member(mdl_schema->au, name->chars, AU_MEMBER_PROP);
+            Au_t m = Au_find_member(mdl_schema->au, name->chars, AU_MEMBER_PROP, true);
             validate(m, "member %o not found on model %o", name, mdl_schema);
             mdl_expect = m->user;
         }
@@ -3339,7 +3334,7 @@ Au_t next_is_keyword(silver a, Au_t *fn) {
     if (!isalpha(t->chars[0]))
         return null;
     Au_t f = Au_find_type((cstr)t->chars, null);
-    if (f && inherits(f, typeid(etype)) && (*fn = Au_find_member(f, "parse", AU_MEMBER_FUNC)))
+    if (f && inherits(f, typeid(etype)) && (*fn = Au_find_member(f, "parse", AU_MEMBER_FUNC, false)))
         return f;
     return null;
 }

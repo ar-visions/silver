@@ -47,7 +47,10 @@ bool is_void     (Au t) { return t && typeid(none) == au_arg(t); }
 bool is_double   (Au t) { return t && typeid(f64) == au_arg(t); }
 bool is_float    (Au t) { return t && typeid(f32) == au_arg(t); }
 bool is_realistic(Au t) { return t && au_arg(t)->is_realistic; }
-bool is_class    (Au t) { return t && au_arg(t)->is_class;  }
+bool is_class    (Au t) {
+    Au_t au = au_arg(t);
+    return au && au != typeid(Au_t) && au->is_class;
+}
 bool is_struct  (Au t) { return au_arg(t)->is_struct; }
 bool is_opaque  (Au t) {
     Au_t au = au_arg(t);
@@ -56,7 +59,9 @@ bool is_opaque  (Au t) {
 }
 bool is_func    (Au t) {
     Au_t au = au_arg(t);
-    return au->member_type == AU_MEMBER_FUNC && (au->ident || au->alt);
+    return (au->member_type == AU_MEMBER_FUNC ||
+            au->member_type == AU_MEMBER_CAST ||
+            au->member_type == AU_MEMBER_CONSTRUCT) && (au->ident || au->alt);
 }
 bool is_func_ptr(Au t) {
     Au_t au = au_arg(t);
@@ -65,6 +70,7 @@ bool is_func_ptr(Au t) {
 bool is_imethod (Au t) { return au_arg(t)->member_type == AU_MEMBER_FUNC && au_arg(t)->is_imethod; }
 Au_t is_rec     (Au t) {
     Au_t au = au_arg(t);
+    if (au == typeid(ARef) || is_func(t)) return null;
     if (au->src && au->src->is_class) return au->src;
     return (au->is_class || au->is_struct) ? au : null;
 }
@@ -172,6 +178,7 @@ none array_alloc_sz(array a, sz alloc) {
 
 none set_meta_array(Au_t type, int count, ...) {
     type->meta.alloc  = count;
+    type->meta.count  = count;
     type->meta.origin = calloc(count, sizeof(Au_t));
 
     va_list args;
@@ -530,7 +537,7 @@ typedef struct _array_combine {
     struct _Au    info;
     struct _array data;
 } array_combine;
-
+ 
 #pragma pack(pop)
 
 static Au_combine* member_pool;
@@ -542,7 +549,7 @@ static array_combine modules;
 static array  scope;
 static bool   started = false;
 
-Au_t Au_find_member(Au_t mdl, symbol f, int member_type) {
+Au_t Au_find_member(Au_t mdl, symbol f, int member_type, bool poly) {
     do {
         for (int i = 0; i < mdl->members.count; i++) {
             Au_t au = mdl->members.origin[i];
@@ -550,7 +557,7 @@ Au_t Au_find_member(Au_t mdl, symbol f, int member_type) {
                 if (au->ident && strcmp(au->ident, f) == 0)
                     return au;
         }
-        if (mdl->context == mdl) break;
+        if (!poly || mdl->context == mdl) break;
         mdl = mdl->context;
     } while (mdl);
     return null;
