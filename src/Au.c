@@ -57,11 +57,11 @@ bool is_opaque  (Au t) {
     if (au->is_struct && au->members.count == 0) return true;
     return false;
 }
-bool is_func    (Au t) {
+bool is_func(Au t) {
     Au_t au = au_arg(t);
-    return (au->member_type == AU_MEMBER_FUNC ||
-            au->member_type == AU_MEMBER_CAST ||
-            au->member_type == AU_MEMBER_CONSTRUCT) && (au->ident || au->alt);
+    return au && (au->member_type == AU_MEMBER_FUNC ||
+                  au->member_type == AU_MEMBER_CAST ||
+                  au->member_type == AU_MEMBER_CONSTRUCT) && (au->ident || au->alt);
 }
 bool is_func_ptr(Au t) {
     Au_t au = au_arg(t);
@@ -176,6 +176,7 @@ none array_alloc_sz(array a, sz alloc) {
     a->alloc = alloc;
 }
 
+// for Au_t set on types, we use meta, which is a direct vector of the Au_t used
 none set_meta_array(Au_t type, int count, ...) {
     type->meta.alloc  = count;
     type->meta.count  = count;
@@ -183,8 +184,25 @@ none set_meta_array(Au_t type, int count, ...) {
 
     va_list args;
     va_start(args, count);
-    for (int i = 0; i < count; i++)
+    for (int i = 0; i < count; i++) {
         type->meta.origin[i] = va_arg(args, Au_t);
+    }
+}
+
+// for function model, we have an arg node with a name; this is to faciltate a separate named user object
+none set_args_array(Au_t type, int count, ...) {
+    type->meta.alloc  = count;
+    type->meta.count  = count;
+    type->meta.origin = calloc(count, sizeof(Au_t));
+
+    va_list args;
+    va_start(args, count);
+    for (int i = 0; i < count; i++) {
+        Au_t au     = va_arg(args, Au_t);
+        Au_t au_arg = Au_register(type, null, AU_MEMBER_VAR, 0);
+        au_arg->src = au;
+        type->meta.origin[i] = au_arg;
+    }
 }
 
 none set_meta_map(Au_t type, int count, ...) {
@@ -272,7 +290,11 @@ Au_t meta_index(Au a, int i) {
     Au_t t = isa(a) ? (Au_t)isa(a) : (Au_t)a;
     if  (t->meta.origin) {
         verify(i >= 0 && i < t->meta.count, "meta index out of type range for %s", t->ident);
-        return (Au_t)t->meta.origin[i];
+        Au_t arg = t->meta.origin[i];
+        if (arg->member_type == AU_MEMBER_VAR)
+            return arg->src;
+        else
+            return arg;
     }
     return null;
 }
@@ -741,54 +763,54 @@ none push_type(Au_t type) {
         // the first ever type we really register is the collective_abi
         Au_t au_collective = Au_register(module, "collective_abi",
             AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
-        Au_register_member(au_collective, "count",     typeid(i32), AU_MEMBER_PROP, 0);
-        Au_register_member(au_collective, "alloc",     typeid(i32), AU_MEMBER_PROP, 0);
-        Au_register_member(au_collective, "hsize",     typeid(i32), AU_MEMBER_PROP, 0);
-        Au_register_member(au_collective, "origin",    typeid(ARef), AU_MEMBER_PROP, 0);
-        Au_register_member(au_collective, "first",     typeid(ARef), AU_MEMBER_PROP, 0); // these are known as referenced types (classes)
-        Au_register_member(au_collective, "last",      typeid(ARef), AU_MEMBER_PROP, 0); 
-        Au_register_member(au_collective, "hlist",     typeid(ARef), AU_MEMBER_PROP, 0);
-        Au_register_member(au_collective, "unmanaged", typeid(bool), AU_MEMBER_PROP, 0);
-        Au_register_member(au_collective, "assorted",  typeid(bool), AU_MEMBER_PROP, 0); 
-        Au_register_member(au_collective, "last_type", typeid(ARef), AU_MEMBER_PROP, 0);
+        Au_register_member(au_collective, "count",     typeid(i32), AU_MEMBER_VAR, 0);
+        Au_register_member(au_collective, "alloc",     typeid(i32), AU_MEMBER_VAR, 0);
+        Au_register_member(au_collective, "hsize",     typeid(i32), AU_MEMBER_VAR, 0);
+        Au_register_member(au_collective, "origin",    typeid(ARef), AU_MEMBER_VAR, 0);
+        Au_register_member(au_collective, "first",     typeid(ARef), AU_MEMBER_VAR, 0); // these are known as referenced types (classes)
+        Au_register_member(au_collective, "last",      typeid(ARef), AU_MEMBER_VAR, 0); 
+        Au_register_member(au_collective, "hlist",     typeid(ARef), AU_MEMBER_VAR, 0);
+        Au_register_member(au_collective, "unmanaged", typeid(bool), AU_MEMBER_VAR, 0);
+        Au_register_member(au_collective, "assorted",  typeid(bool), AU_MEMBER_VAR, 0); 
+        Au_register_member(au_collective, "last_type", typeid(ARef), AU_MEMBER_VAR, 0);
 
         Au_t au_t = type; // pushed from the first global ctr call
         au_t->member_type = AU_MEMBER_TYPE;
         au_t->traits = AU_TRAIT_CLASS;
 
-        Au_t ctx = Au_register_member(au_t, "context",       typeid(Au_t), AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "src",           typeid(Au_t), AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "user",          typeid(Au_t), AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "module",        typeid(Au_t), AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "ptr",           typeid(Au_t), AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "ident",         typeid(cstr), AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "index",         typeid(i64),  AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "value",         typeid(ARef), AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "member_type",   typeid(u8),   AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "operator_type", typeid(u8),   AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "access_type",   typeid(u8),   AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "reserved",      typeid(u8),   AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "traits",        typeid(u32),  AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "global_count",  typeid(i32),  AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "offset",        typeid(i32),  AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "size",          typeid(i32),  AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "isize",         typeid(i32),  AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "ptr",           typeid(ARef), AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "ffi",           typeid(ARef), AU_MEMBER_PROP, 0);
-        Au_register_member(au_t, "af",            typeid(ARef), AU_MEMBER_PROP, 0);
+        Au_t ctx = Au_register_member(au_t, "context",       typeid(Au_t), AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "src",           typeid(Au_t), AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "user",          typeid(Au_t), AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "module",        typeid(Au_t), AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "ptr",           typeid(Au_t), AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "ident",         typeid(cstr), AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "index",         typeid(i64),  AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "value",         typeid(ARef), AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "member_type",   typeid(u8),   AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "operator_type", typeid(u8),   AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "access_type",   typeid(u8),   AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "reserved",      typeid(u8),   AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "traits",        typeid(u32),  AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "global_count",  typeid(i32),  AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "offset",        typeid(i32),  AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "size",          typeid(i32),  AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "isize",         typeid(i32),  AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "ptr",           typeid(ARef), AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "ffi",           typeid(ARef), AU_MEMBER_VAR, 0);
+        Au_register_member(au_t, "af",            typeid(ARef), AU_MEMBER_VAR, 0);
         
-        Au_t minfo = Au_register_member(au_t, "members_info", typeid(Au), AU_MEMBER_PROP, AU_TRAIT_INLAY);
-        Au_register_member(au_t, "members", au_collective, AU_MEMBER_PROP, AU_TRAIT_INLAY);
+        Au_t minfo = Au_register_member(au_t, "members_info", typeid(Au), AU_MEMBER_VAR, AU_TRAIT_INLAY);
+        Au_register_member(au_t, "members", au_collective, AU_MEMBER_VAR, AU_TRAIT_INLAY);
         
-        Au_t metainfo = Au_register_member(au_t, "meta_info", typeid(Au), AU_MEMBER_PROP, AU_TRAIT_INLAY);
-        Au_register_member(au_t, "meta",  au_collective, AU_MEMBER_PROP, AU_TRAIT_INLAY);
-        Au_register_member(au_t, "shape", typeid(shape), AU_MEMBER_PROP, 0);
+        Au_t metainfo = Au_register_member(au_t, "meta_info", typeid(Au), AU_MEMBER_VAR, AU_TRAIT_INLAY);
+        Au_register_member(au_t, "meta",  au_collective, AU_MEMBER_VAR, AU_TRAIT_INLAY);
+        Au_register_member(au_t, "shape", typeid(shape), AU_MEMBER_VAR, 0);
 
-        Au_t required_bits  = Au_register_member(au_t, "required_bits",  typeid(u64), AU_MEMBER_PROP, 0);
+        Au_t required_bits  = Au_register_member(au_t, "required_bits",  typeid(u64), AU_MEMBER_VAR, 0);
         required_bits->elements = 2;
         Au_t ft             = Au_register(au_t, null,
             AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
-        Au_register_member(ft, "_none_", typeid(ARef), AU_MEMBER_PROP, 0);
+        Au_register_member(ft, "_none_", typeid(ARef), AU_MEMBER_VAR, 0);
         Au_register_member(au_t, null, ft, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
         // this process is replicated in schema creation / etype_init
     }
@@ -807,7 +829,7 @@ none push_type(Au_t type) {
     if ((type->traits & AU_TRAIT_ABSTRACT) == 0) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t mem = type->members.origin[i];
-            if ((mem->traits & AU_TRAIT_REQUIRED) != 0 && (mem->member_type == AU_MEMBER_PROP))
+            if ((mem->traits & AU_TRAIT_REQUIRED) != 0 && (mem->member_type == AU_MEMBER_VAR))
                 AF_set(type->required_bits, mem->index);
         }
     }
@@ -874,14 +896,14 @@ void AF_set_id(Au a, int id) {
 
 void AF_set_name(Au a, cstr name) {
     Au_t t = isa(a);
-    Au_t m = find_member(t, AU_MEMBER_PROP, name, true);
+    Au_t m = find_member(t, AU_MEMBER_VAR, name, true);
     u64*   f = AF_bits(a);
     AF_set(f, m->index);
 }
 
 i32 AF_query_name(Au a, cstr name) {
     Au_t t = isa(a);
-    Au_t m = find_member(t, AU_MEMBER_PROP, name, true);
+    Au_t m = find_member(t, AU_MEMBER_VAR, name, true);
     u64* f = AF_bits(a);
     return (i32)AF_get(f, m->index);
 }
@@ -1581,7 +1603,7 @@ none hold_members(Au a) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t mem = type->members.origin[i];
             Au   *mdata = (Au*)((cstr)a + mem->offset);
-            if (mem->member_type == AU_MEMBER_PROP)
+            if (mem->member_type == AU_MEMBER_VAR)
                 if (!Au_is_inlay(mem) && *mdata) {
                     if (mem->meta.origin && *(Au_t*)mem->meta.origin == typeid(weak))
                         continue;
@@ -1596,7 +1618,7 @@ none hold_members(Au a) {
 
 Au set_property(Au a, symbol name, Au value) {
     Au_t type = isa(a);
-    Au_t m = find_member(type, AU_MEMBER_PROP, (cstr)name, true);
+    Au_t m = find_member(type, AU_MEMBER_VAR, (cstr)name, true);
     member_set(a, m, value);
     return value;
 }
@@ -1604,7 +1626,7 @@ Au set_property(Au a, symbol name, Au value) {
 
 Au get_property(Au a, symbol name) {
     Au_t type = isa(a);
-    Au_t m = find_member(type, AU_MEMBER_PROP, (cstr)name, true);
+    Au_t m = find_member(type, AU_MEMBER_VAR, (cstr)name, true);
     verify(m, "%s not found on Au %s", name, type->ident);
     Au *mdata = (Au*)((cstr)a + m->offset);
     Au  value = *mdata;
@@ -1695,7 +1717,7 @@ none drop_members(Au a) {
     while (type != typeid(Au)) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t m = type->members.origin[i];
-            if ((m->member_type == AU_MEMBER_PROP) &&
+            if ((m->member_type == AU_MEMBER_VAR) &&
                     !Au_is_inlay(m)) {
                 if (m->args.origin && *(Au_t*)m->args.origin == typeid(weak))
                     continue;
@@ -1822,7 +1844,7 @@ Au Au_with_cstrs(Au a, cstrs argv) {
             while (type != typeid(Au)) {
                 for (num i = 0; i < type->members.count; i++) {
                     Au_t m = type->members.origin[i];
-                    if ((m->member_type == AU_MEMBER_PROP) && 
+                    if ((m->member_type == AU_MEMBER_VAR) && 
                         ( single &&        m->ident[0] == arg[1]) ||
                         (!single && strcmp(m->ident,     &arg[2]) == 0)) {
                         mem = m;
@@ -1945,7 +1967,7 @@ Au construct_with(Au_t type, Au data, ctx context) {
             } else if (context && result && mdata) {
                 // lets set required properties from context
                 string k = string(mem->ident);
-                if ((mem->traits & AU_TRAIT_REQUIRED) != 0 && (mem->member_type & AU_MEMBER_PROP) && 
+                if ((mem->traits & AU_TRAIT_REQUIRED) != 0 && (mem->member_type == AU_MEMBER_VAR) && 
                     !contains(mdata, k))
                 {
                     Au from_ctx = get(context, k);
@@ -2086,7 +2108,7 @@ none serialize(Au_t type, string res, Au a) {
 }
 
 bool member_set(Au a, Au_t m, Au value) {
-    if (!(m->member_type & AU_MEMBER_PROP))
+    if (!(m->member_type == AU_MEMBER_VAR))
         return false;
 
     Au_t type         = isa(a);
@@ -2123,7 +2145,7 @@ bool member_set(Au a, Au_t m, Au value) {
 
 // try to use this where possible
 Au member_object(Au a, Au_t m) {
-    if (!(m->member_type & AU_MEMBER_PROP))
+    if (!(m->member_type == AU_MEMBER_VAR))
         return null; // we do this so much, that its useful as a filter in for statements
 
     bool is_primitive = (m->type->traits & AU_TRAIT_PRIMITIVE) != 0 || 
@@ -2161,7 +2183,7 @@ string Au_cast_string(Au a) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t m = type->members.origin[i];
             // todo: intern members wont be registered
-            if (m->member_type == AU_MEMBER_PROP) {
+            if (m->member_type == AU_MEMBER_VAR) {
                 if (once)
                     append(res, ", ");
                 u8*    ptr = (u8*)a + m->offset;
@@ -4691,7 +4713,7 @@ string json(Au a) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t mem = type->members.origin[i];
             if (one) push(res, ',');
-            if (!(mem->member_type & AU_MEMBER_PROP)) continue;
+            if (!(mem->member_type == AU_MEMBER_VAR)) continue;
             concat(res, json(string(mem->ident)));
             push  (res, ':');
             Au value = get_property(a, mem->ident);
@@ -4795,7 +4817,7 @@ Au_t member_first(Au_t type, Au_t find, bool poly) {
     }
     for (num i = 0; i < type->members.count; i++) {
         Au_t m = type->members.origin[i];
-        if (!(m->member_type & AU_MEMBER_PROP)) continue;
+        if (!(m->member_type == AU_MEMBER_VAR)) continue;
         if (m->type == type) return m;
     }
     return null;
@@ -4848,7 +4870,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
                 Au svalue = alloc(type, 1, null);
                 for (num i = 0; i < type->members.count; i++) {
                     Au_t m = type->members.origin[i];
-                    if (!(m->member_type & AU_MEMBER_PROP)) continue;
+                    if (!(m->member_type == AU_MEMBER_VAR)) continue;
                     Au f = (Au)((cstr)svalue + m->offset);
                     Au r = parse_object(scan, null, null, &scan, context);
                     verify(r && isa(r) == m->type, "type mismatch while parsing struct %s:%s (read: %s, expect: %s)",
@@ -4963,7 +4985,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
             if (!mem) {
                 json_type = cmp(name, "Type") == 0;
                 mem  = (is_map) ? null : 
-                    find_member(use_schema, AU_MEMBER_PROP, name->chars, true);
+                    find_member(use_schema, AU_MEMBER_VAR, name->chars, true);
             }
 
             if (!json_type && !mem && !is_map && !context) {

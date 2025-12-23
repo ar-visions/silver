@@ -115,10 +115,6 @@ static etype etype_ptr(aether mod, Au_t a) {
     verify(a && !isa((Au)a), "ptr requires Au_t, given %s", isa((Au)a)->ident);
     if (isa(a) == typeid(etype)) return ((etype) a)->au;
     Au_t au = a;
-    if (a->ident && strcmp(a->ident, "ARef") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
     if (au->ptr) return au->ptr->user;
     au->ptr              = Au_register(mod->au, null, AU_MEMBER_TYPE, 0);
     au->ptr->is_pointer  = true;
@@ -129,7 +125,7 @@ static etype etype_ptr(aether mod, Au_t a) {
 
 etype pointer(aether mod, Au a) {
     Au_t au = au_arg(a);
-    if (au->member_type == AU_MEMBER_PROP)
+    if (au->member_type == AU_MEMBER_VAR)
         return etype_ptr(mod, au->src);
     
     return etype_ptr(mod, au);
@@ -152,12 +148,12 @@ LLVMTypeRef lltype(Au a);
 etype etype_traits(Au a, int traits) {
     Au_t au;
     if (isa(a) == typeid(etype)) {
-        verify(lltype(a), "no type found on %o", a);
+        verify(lltype(a), "no type found on %o 1", a);
         au = ((etype) a)->au;
     }
     else if (isa(a) == typeid(enode)) au = ((enode)a)->au;
     else if (!isa(a)) {
-        verify(lltype(a), "no type found on %o", a);
+        verify(lltype(a), "no type found on %o 2", a);
         au = a;
     }
     verify(au, "unhandled input");
@@ -312,7 +308,7 @@ LLVMTypeRef lltype(Au a) {
     else if (!isa(a)) {
         au = a;
     }
-    if (au->member_type == AU_MEMBER_ARG) {
+    if (au->member_type == AU_MEMBER_VAR) {
         au = au->src;
     }
     Au_t prev = au;
@@ -320,7 +316,11 @@ LLVMTypeRef lltype(Au a) {
         au = au->src;
     }
 
-    verify(au && au->lltype, "no type found on %o", prev);
+    if (!au || !au->lltype) {
+        int test2 = 2;
+        test2    += 2;
+    }
+    verify(au && au->lltype, "no type found on %o 3", prev);
     
     if (au->is_class) {
         verify(au->ptr, "expected ptr for class");
@@ -462,7 +462,7 @@ enode aether_e_eq(aether a, enode L, enode R) {
 
         for (int i = 0; i < L->au->members.count; i++) {
             Au_t m = L->au->members.origin[i];
-            if (m->member_type != AU_MEMBER_PROP)
+            if (m->member_type != AU_MEMBER_VAR)
                 continue;
 
             LLVMValueRef lv =
@@ -566,7 +566,7 @@ enode aether_e_eq_prev(aether a, enode L, enode R) {
         
         for (int i = 0; i < L->au->members.count; i++) {
             Au_t mem = L->au->members.origin[i];
-            if (mem->member_type != AU_MEMBER_PROP)
+            if (mem->member_type != AU_MEMBER_VAR)
                 continue;
 
             LLVMValueRef lv  = LLVMBuildExtractValue(a->builder, L->value, mem->index, "lv");
@@ -874,7 +874,7 @@ enode aether_e_fn_call(aether a, enode fn, array args) {
     if (a->no_build) return e_noop(a, fn->au->rtype);
 
     etype_implement(fn);
-    etype target_type = func_target(fn);
+    etype target_type = fn->target;
     enode f = len(args) ? get(args, 0) : null;
     verify(!target_type || canonical(target_type) == canonical(f),
         "target mismatch");
@@ -920,7 +920,7 @@ enode aether_e_fn_call(aether a, enode fn, array args) {
                 verify(fmt, "formatter functions require literal, constant strings");
             }
             // this takes in literals and enodes
-            enode conv = e_create(a, arg_type->user, arg_value);
+            enode conv = e_create(a, arg_type->src->user, arg_value);
             LLVMValueRef vr = arg_values[index] = conv->value;
             i++;
             index++;
@@ -991,7 +991,6 @@ static enode constructable(etype fr, etype to) {
     if (fr == to)
         return (enode)true;
     aether a = fr->mod;
-    enode str = elookup("string");
 
     for (int ii = 0; ii < to->au->members.count; ii++) {
         Au_t mem = to->au->members.origin[ii];
@@ -999,7 +998,7 @@ static enode constructable(etype fr, etype to) {
         if  (!fn) continue;
         verify(fn->au->args.count == 2, "unexpected argument count for constructor"); // target + with-type
         Au_t with_arg = fn->au->args.origin[1];
-        if (with_arg == fr->au)
+        if (with_arg->src == fr->au)
             return mem->user;
     }
     return (enode)false;
@@ -1416,7 +1415,7 @@ enode aether_e_create(aether a, etype t, Au args) {
                 pairs(imap, i) {
                     string  k = i->key;
                     Au_t   t = isa(i->value);
-                    Au_t   m = Au_find_member(rmdl->au, k->chars, AU_MEMBER_PROP, true);
+                    Au_t   m = Au_find_member(rmdl->au, k->chars, AU_MEMBER_VAR, true);
                     i32 index = m->index;
 
                     enode value = e_operand(a, i->value, m->src->user);
@@ -2137,7 +2136,7 @@ void src_init(aether a, Au_t m) {
         src_init(a, m->src);
     if (m && !m->user) {
         int mt = m->member_type;
-        if (is_func(m) || mt == AU_MEMBER_ENUMV || mt == AU_MEMBER_PROP || mt == AU_MEMBER_IS_ATTR)
+        if (is_func(m) || mt == AU_MEMBER_ENUMV || mt == AU_MEMBER_VAR || mt == AU_MEMBER_IS_ATTR)
             m->user = enode(mod, a, au, m);
         else
             m->user = etype(mod, a, au, m);
@@ -2240,7 +2239,7 @@ static void aether_finalize_types(aether a, etype module_init_fn) {
         int internal_size = 0;
         members(mdl->au, f) {
             if (f->access_type == interface_intern &&
-                f->member_type == AU_MEMBER_PROP)
+                f->member_type == AU_MEMBER_VAR)
                 internal_size += f->user->au->abi_size / 8;
         }
 
@@ -2282,7 +2281,7 @@ static void build_module_initializer(aether a, etype module_init_fn) {
     push_scope(a, module_init_fn);
 
     members(module_base, au)
-        if (au->member_type == AU_MEMBER_PROP && au->user->body)
+        if (au->member_type == AU_MEMBER_VAR && au->user->body)
             build_initializer(a, au->user);
 
     e_fn_return(a, null);
@@ -2360,8 +2359,8 @@ static void build_entrypoint(aether a, etype module_init_fn) {
 
     // for apps, build int main(argc, argv)
     Au_t au_f_main = Au_register_member(a->au, "main", au_lookup("i32"),   AU_MEMBER_FUNC, 0);
-    Au_t argc = Au_register_member(au_f_main,  "argc", au_lookup("i32"),   AU_MEMBER_ARG, 0);
-    Au_t argv = Au_register_member(au_f_main,  "argv", au_lookup("cstrs"), AU_MEMBER_ARG, 0);
+    Au_t argc = Au_register_member(au_f_main,  "argc", au_lookup("i32"),   AU_MEMBER_VAR,  0);
+    Au_t argv = Au_register_member(au_f_main,  "argv", au_lookup("cstrs"), AU_MEMBER_VAR,  0);
     array_qpush(&au_f_main->args, argc);
     array_qpush(&au_f_main->args, argv);
 
@@ -2404,6 +2403,8 @@ etype etype_canonical(etype t) {
 // if given an enode, will always resolve the etype instance
 etype etype_resolve(etype t) {
     Au_t au = t->au;
+    if (au->member_type == AU_MEMBER_VAR)
+        au = au->src;
     while (au && !au->is_funcptr && au->src) {
         au = au->src;
         if (au->user && au->lltype)
@@ -2429,7 +2430,7 @@ none etype_init(etype t) {
         verify(a->source && len(a->source), "no source provided");
         a->name = a->name ? a->name : stem(a->source);
         au = t->au = Au_register_module(a->name->chars);
-        au->user = hold(t);
+        if (!au->user) au->user = hold(t);
         return;
     } else if (t->is_schema) {
         au = t->au = Au_register(top_scope(a), fmt("__%s_t", au->ident)->chars,
@@ -2479,10 +2480,15 @@ none etype_init(etype t) {
         // this is the address of the &type_i.type member
         
     }
+    Au_t test_au1 = elookup("none");
+    Au_t test_au2 = typeid(none);
+    Au_t test_au3 = elookup("i32");
     
     if (!au->member_type)
         au->member_type = AU_MEMBER_TYPE;
-    au->user = hold(t);
+
+    if (!au->user)
+        au->user = hold(t);
 
     if (is_func(au)) {
         etype fn = au->user;
@@ -2495,30 +2501,12 @@ none etype_init(etype t) {
         arg_types(fn->au, t)
             arg_types[index++] = lltype(t);
 
-        if (au->ident && strcmp(au->ident, "method_type") == 0) {
-            int test2 = 2;
-            test2    += 2;
-        }
         au->lltype      = LLVMFunctionType(
             au->rtype ? lltype(au->rtype) : LLVMVoidType(),
             arg_types, au->args.count, au->is_vargs);
-
-        // functions, on init, create the arg enodes from the model data
-        index = 0;
-        args(fn->au, arg) {
-            arg->user = enode(mod, a, au, arg, arg_index, index);
-            index++;
-        }
-
         etype_ptr(a, fn->au);
         free(arg_types);
 
-        if (au->is_mod_init) {
-            etype f = au->user;
-            aether_finalize_types(a, f);
-            build_module_initializer(a, f);
-            build_entrypoint(a, f);
-        }
     } else if (is_func_ptr(au)) {
         etype fn = au->user;
 
@@ -2536,8 +2524,8 @@ none etype_init(etype t) {
         free(arg_types);
     } else if (au && au->is_pointer && au->src && !au->src->is_primitive) {
         au->lltype = LLVMPointerType(au->src->lltype, 0);
-    } else if (is_rec(t) || au->is_union || au == typeid(Au_t)) {
-        au->lltype = named ? LLVMStructCreateNamed(a->module_ctx, strdup(au->ident)) : null;
+    } else if (named && (is_rec(t) || au->is_union || au == typeid(Au_t))) {
+        au->lltype = LLVMStructCreateNamed(a->module_ctx, strdup(au->ident));
         if (au != typeid(Au_t))
             etype_ptr(a, t->au);
     } else if (is_enum(t)) {
@@ -2661,7 +2649,7 @@ bool is_accessible(aether a, Au_t m) {
 }
 
 Au_t read_arg_type(Au_t stored_arg) {
-    if (stored_arg->member_type == AU_MEMBER_ARG) return stored_arg->src;
+    if (stored_arg->member_type == AU_MEMBER_VAR) return stored_arg->src;
     return stored_arg;
 }
 
@@ -2671,10 +2659,6 @@ none etype_implement(etype t) {
 
 
     if (au->is_implemented) return;
-    if (au->ident && strcmp(au->ident, "Au") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
     au->is_implemented = true;
 
     bool is_ARef = au == typeid(ARef);
@@ -2682,7 +2666,9 @@ none etype_implement(etype t) {
         if (au->src != typeid(Au_t))
             etype_implement(au->src->user);
 
-    if (is_rec(t) || au->is_union) {
+    if (au->member_type == AU_MEMBER_VAR) {
+        return;
+    } else if (is_rec(t) || au->is_union) {
 
         //etype_ptr(a, t->au);
 
@@ -2694,7 +2680,7 @@ none etype_implement(etype t) {
             //  break;
             for (int i = 0; i < tt->au->members.count; i++) {
                 Au_t m = tt->au->members.origin[i];
-                if (m->member_type == AU_MEMBER_PROP && is_accessible(a, m))
+                if (m->member_type == AU_MEMBER_VAR && is_accessible(a, m))
                     count++;
             }
             if (tt->au != typeid(Au) && !is_accessible(a, tt->au)) {
@@ -2730,7 +2716,7 @@ none etype_implement(etype t) {
                     src_init(a, m);
                     etype_implement(m->user);
                 }
-                else if (m->member_type == AU_MEMBER_PROP && is_accessible(a, m)) {
+                else if (m->member_type == AU_MEMBER_VAR && is_accessible(a, m)) {
                     Au_t src = m->src;
                     verify(src, "no src type set for member %o", m);
                     src_init(a, src);
@@ -2755,11 +2741,6 @@ none etype_implement(etype t) {
         }
 
         etype mt = null;
-        if (t->au->ident && strcmp(t->au->ident, "string") == 0) {
-            Au info = head(t);
-            int test2 = 2;
-            test2    += 2;
-        }
         if (is_class(t) && t->au != au_lookup("Au_t") && (t->au->traits & AU_TRAIT_SCHEMA) == 0) {
             printf("creating schema for %s\n", t->au->ident);
             // schema must have it's static_value set to the instance
@@ -2776,9 +2757,9 @@ none etype_implement(etype t) {
             string n = f(string, "%s_info", au->ident);
             Au_t type_info = Au_register_type(a->au, n->chars, AU_TRAIT_STRUCT | AU_TRAIT_SYSTEM);
             Au_t type_h = Au_register_member(type_info, "info",
-                au_type, AU_MEMBER_PROP, 0);
+                au_type, AU_MEMBER_VAR, 0);
             Au_t type_f = Au_register_member(type_info, "type",
-                schema->au, AU_MEMBER_PROP, AU_TRAIT_INLAY);
+                schema->au, AU_MEMBER_VAR, AU_TRAIT_INLAY);
             
             enode schema_i = enode(mod, a, au, type_info,
                 name, f(string, "%s_i", au->ident));
@@ -2833,7 +2814,7 @@ none etype_implement(etype t) {
                 fault("unsupported enum value: %s", et->ident);
             
             enode evalue = enode(mod, a, au, t->au, value, init);
-            m->user = hold(enode(mod, a, value, evalue, au, m));
+            if (!m->user) m->user = hold(enode(mod, a, value, evalue, au, m));
             LLVMSetInitializer(G, init);
         }
         enum_processing = false;
@@ -2844,7 +2825,26 @@ none etype_implement(etype t) {
         //    f(string, "%s_%s", t->au->context->ident, t->au->ident) : string(t->au->ident);
         cstr n = t->au->alt ? t->au->alt : t->au->ident;
         verify(n, "no name given to function");
-        ((enode)t)->value = LLVMAddFunction(a->module, n, au->lltype);
+
+        enode fn = t;
+        // functions, on init, create the arg enodes from the model data
+
+        ((enode)t)->value  = LLVMAddFunction(a->module, n, au->lltype);
+        Au_t au_target = au->is_imethod ? au->args.origin[0] : null;
+        ((enode)t)->target = au_target ? enode(mod, a, au, au_target ? au_target->src : null, arg_index, 0) : null;
+
+        int index = 0;
+        args(fn->au, arg) {
+            arg->user = enode(mod, a, au, arg->src, arg_index, index);
+            index++;
+        }
+
+        if (au->is_mod_init) {
+            etype f = au->user;
+            aether_finalize_types(a, f);
+            build_module_initializer(a, f);
+            build_entrypoint(a, f);
+        }
     }
 
     if (!au->is_void && au->member_type != AU_MEMBER_FUNC && !is_opaque(au) && !is_func(au) && au->lltype) {
@@ -2912,6 +2912,7 @@ Au_t aether_top_scope(aether a) {
 
 none aether_push_scope(aether a, Au arg) {
     Au_t au = au_arg(arg);
+
     if (au->src && (au->src->is_class || au->src->is_struct))
         push(a->lexical, au->src);
     else
@@ -2944,44 +2945,32 @@ void aether_import_models(aether a, Au_t ctx) {
             bool p1 = (ff->not_bits & m->traits) == 0;
             bool proceed = p0 && p1;
 
-            if (filter == 7)
-                if (m->ident && strcmp(m->ident, "string") == 0) {
-                    int test2 = 2;
-                    test2    += 2;
-                }
-            if (filter == 7)
-                if (m->ident && strcmp(m->ident, "with_symbol") == 0) {
-                    int test2 = 2;
-                    test2    += 2;
-                }
-
             if (proceed) {
                 Au_t m_isa = isa(m);
                 print("init %o", m);
+                if (m->ident && strcmp(m->ident, "none") == 0) {
+                    int test2 = 2;
+                    test2 += 2;
+                }
                 if (ff->init || ff->impl) {
                     src_init(a, m);
                 }
+                if (m->ident && strcmp(m->ident, "puts") == 0) {
+                    enode be_sure = instanceof(m->user, typeid(enode));
+                    int test2 = 2;
+                    test2 += 2;
+                }
                 if (ff->impl) {
-                    if (m->ident && strcmp(m->ident, "string") == 0) {
-                        int test2 = 2;
-                        test2    += 2;
-                    }
                     etype_implement((etype)m->user);
                 }
             }
-            /*
-            if (filter == 8 && (m->is_class || m->is_struct)) {
-                int test2 = 2;
-                test2    += 2;
-                members(m, mem) {
-                    if (mem->member_type == AU_MEMBER_IS_ATTR || mem->member_type == AU_MEMBER_PROP || mem->member_type == AU_MEMBER_FUNC) {
-                        src_init(a, mem);
-                        etype_implement((etype)mem->user);
-                    }
-                }
-            }*/
         }
     }
+    Au_t test_au1 = elookup("none")->au;
+    Au_t test_au2 = typeid(none);
+    Au_t test_au3 = elookup("i32")->au;
+
+    test_au3 = test_au3;
 }
 
 void aether_import_Au(aether a, path lib) {
@@ -3004,7 +2993,6 @@ void aether_import_Au(aether a, path lib) {
         push(a->libs, f);
     }
 
-    Au_t str = typeid(string);
     Au_t au    = typeid(Au);
     au->user   = etype(mod, a, au, au);
     Au_t au_t  = typeid(Au_t);
@@ -3194,11 +3182,17 @@ Au_t etype_cast_Au_t(etype t) {
 }
 
 none enode_init(enode n) {
+    Au_t n_isa = isa(n);
     aether a = n->mod;
     bool is_const = n->literal != null;
+
+    //etype_implement(n);
     
-    etype_implement(n);
-    
+    if (is_func(n->au->context)) {
+        enode fn = n->au->context->user;
+        n->value = LLVMGetParam(fn->value, n->arg_index);
+    }
+
     if (!n->member && len(n->name) > 0) {
         n->registered = true; // we have control
         n->member = Au_register_member(
@@ -3206,17 +3200,16 @@ none enode_init(enode n) {
             is_const ? AU_TRAIT_CONST : 0);
 
         // if module member
-        if (is_func(n->au->context)) {
-            enode fn = n->au->context;
-            n->value = LLVMGetParam(fn->value, n->arg_index);
-            // find the argument index
-        } else if (!n->member->context->context) {
+        if (!n->member->context->context) {
             // mod->is_Au_import indicates this is coming from a lib, or we are making a new global
             LLVMValueRef G =
                 LLVMAddGlobal(a->module, lltype(n), n->name->chars);
             LLVMSetLinkage(G, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
             n->value = G;
         }
+    }
+    if (n->au == typeid(string)) {
+        printf("au->user = %p (%p)\n", n->au->user, n->au);
     }
 }
 
@@ -3821,7 +3814,9 @@ enode aether_function(aether a, string ident, etype rtype, array args, u8 member
     if (!rtype) rtype = elookup("none");
     each(args, Au, arg) {
         Au_t a = au_arg(arg);
-        array_qpush(&au->args, a);
+        Au_t argument = Au_register(au, null, AU_MEMBER_VAR, 0);
+        argument->src = a;
+        array_qpush(&au->args, argument);
     }
     au->src = hold(rtype->au);
     enode n = enode(mod, a, au, au);

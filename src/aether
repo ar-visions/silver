@@ -185,7 +185,6 @@ declare_class(code)
 
 #define enode_schema(X,Y,...)\
     M(X,Y, i, prop, public,   enode,            target) \
-    M(X,Y, i, prop, public,   enode,            target_arg) \
     M(X,Y, i, prop, public,   Au_t,             member) \
     M(X,Y, i, prop, public,   string,           name) \
     M(X,Y, i, prop, intern,   bool,             registered) \

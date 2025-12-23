@@ -131,6 +131,7 @@ static Au_t find_member(Au_t parent, symbol name) {
     return null;
 }
 
+
 static void push_context(NamedDecl* decl, aether e) {
     auto s = namespace_stack((NamespaceDecl*)decl);
     Au_t cur = top_scope(e);
@@ -226,7 +227,7 @@ static Au_t map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, aet
         if (param) {
             char name_buf[32];
             snprintf(name_buf, sizeof(name_buf), "arg_%u", i);
-            Au_t arg = Au_register(null, name_buf, AU_MEMBER_PROP, 0);
+            Au_t arg = Au_register(null, name_buf, AU_MEMBER_VAR, 0);
             arg->type = param;
             array_qpush((array)&fn->args, (Au)arg);
         }
@@ -432,32 +433,16 @@ static void set_fields(RecordDecl* decl, ASTContext& ctx, aether e, Au_t rec) {
                 field_name = "__anon_" + std::to_string(field_index);
             }
 
-            if (field_name == "__arg") {
-                int test2 = 2;
-                test2    += 2;
-            }
-            
             QualType field_type = field->getType();
             Au_t mapped = map_clang_type(field_type, ctx, e, null);
 
             if (!mapped) continue;
             
-            Au_t m = Au_register_member(rec, field_name.c_str(), mapped, AU_MEMBER_PROP, 0);
-
-            if (field_name == "__arg") {
-                f_arg = mapped;
-                ff = m;
-            }
-
+            Au_t m = Au_register_member(rec, field_name.c_str(), mapped, AU_MEMBER_VAR, 0);
             uint64_t offset_bits = layout.getFieldOffset(field->getFieldIndex());
             m->offset = offset_bits / 8;
             m->index = field_index++;
         }
-        
-        // this needs to be done in implement, less we need to obtain clues on packing and alignment
-        //rec->typesize = layout.getSize().getQuantity();
-
-        // alignment could be stored if needed
     }
 }
 
@@ -531,14 +516,12 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
         char bname[32];
         snprintf(bname, sizeof(bname), "__base%d", base_index++);
         
-        Au_t m = Au_register_member(rec, bname, base_rec, AU_MEMBER_PROP, 0);
+        Au_t m = Au_register_member(rec, bname, base_rec, AU_MEMBER_VAR, 0);
         m->offset = layout.getBaseClassOffset(base).getQuantity();
     }
 
     set_fields((RecordDecl*)cxx, ctx, e, rec);
     
-    //rec->typesize = layout.getSize().getQuantity();
-
     // Methods
     for (auto* md : cxx->methods()) {
         if (!md->getIdentifier()) continue;
@@ -561,7 +544,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
                 // Could mark as const
             }
             Au_t self_ptr = Au_register_pointer(null, self_type, null);
-            Au_t self_arg = Au_register(null, "self", AU_MEMBER_PROP, 0);
+            Au_t self_arg = Au_register(null, "self", AU_MEMBER_VAR, 0);
             self_arg->type = self_ptr;
             array_qpush((array)&fn->args, (Au)self_arg);
         }
@@ -576,7 +559,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
             if (pname.empty())
                 pname = "arg_" + std::to_string(i);
 
-            Au_t ap = Au_register(null, pname.c_str(), AU_MEMBER_PROP, 0);
+            Au_t ap = Au_register(null, pname.c_str(), AU_MEMBER_VAR, 0);
             ap->type = mt;
             array_qpush((array)&fn->args, (Au)ap);
         }
@@ -624,6 +607,10 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
 static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string name) {
     symbol n = name.c_str();
     
+    if (strcmp(n, "puts") == 0) {
+        int test2 = 2;
+        test2 += 2;
+    }
     Au_t parent = top_scope(e);
     Au_t fn = Au_register(parent, n, AU_MEMBER_FUNC, 0);
     if (name.length() == 0) {
@@ -646,8 +633,8 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
         Au_t mt = map_clang_type(param_type, ctx, e, null);
         if (!mt) continue;
         
-        Au_t arg = Au_register(null, param_name.c_str(), AU_MEMBER_ARG, 0);
-        arg->type = mt;
+        Au_t arg = Au_register(fn, param_name.c_str(), AU_MEMBER_VAR, 0);
+        arg->src = mt;
         array_qpush((array)&fn->args, (Au)arg);
     }
     
@@ -742,10 +729,6 @@ public:
         if (decl->isCompleteDefinition() && !decl->getNameAsString().empty()) {
             create_record(decl, ctx, e, get_name((NamedDecl*)decl));
         }
-        if (f_arg && f_arg->is_const == 1) {
-            int test2 = 2;
-            test2    += 2;
-        }
         return true;
     }
 
@@ -774,10 +757,6 @@ public:
     void HandleTranslationUnit(ASTContext& context) override {
         AetherDeclVisitor2 visitor(context, e);
         visitor.TraverseDecl(context.getTranslationUnitDecl());
-        if (f_arg && f_arg->is_const == 1) {
-            int test2 = 2;
-            test2    += 2;
-        }
     }
 };
 

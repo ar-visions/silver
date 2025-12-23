@@ -140,7 +140,7 @@ typedef double                 *ref_f64;
 
 #define Au_f_members(B) \
     Au_t            context; \
-    union { Au_t src, rtype; }; \
+    union { Au_t src, rtype, type; }; \
     Au_t            schema; \
     Au_t            user; \
     Au_t            module; \
@@ -530,9 +530,9 @@ typedef Au_t* Au_ts;
             type_ref->ident             = #TYPE; \
             type_ref->af                = &TYPE##_af; \
             type_ref->isize             = 0 TYPE##_schema( TYPE, ISIZE_EXTERN, __VA_ARGS__ ); \
-            type_ref->context            = (__typeof__(type_ref->context))&BASE##_i.type; \
+            type_ref->context           = (__typeof__(type_ref->context))&BASE##_i.type; \
             type_ref->module            = Au_module((cstr)MODULE); \
-            type_ref->typesize              = TYPE_SZ; \
+            type_ref->typesize          = TYPE_SZ; \
             type_ref->traits            = TRAIT; \
             set_meta_array(type_ref, emit_types(__VA_ARGS__)); \
             TYPE##_schema( TYPE, INIT, __VA_ARGS__ ); \
@@ -540,7 +540,6 @@ typedef Au_t* Au_ts;
             return true; \
         } \
     } \
-
 
 #define define_any(A0, A1, SZ, traits, ...) \
     define_arb(A0, A1, SZ, traits, __VA_ARGS__)
@@ -1691,6 +1690,7 @@ vector_rgb8  vector_rgb8_new (shape count, ...);
 vector_rgbf  vector_rgbf_new (shape count, ...);
 
 none set_meta_array(Au_t type, int count, ...);
+none set_args_array(Au_t type, int count, ...);
 none set_meta_map(Au_t type, int count, ...);
 Au_t meta_index(Au a, int i);
 
