@@ -15,7 +15,7 @@ enum AU_MEMBER {
     AU_MEMBER_MODULE    = 1,
     AU_MEMBER_TYPE      = 2,
     AU_MEMBER_CONSTRUCT = 3,
-    AU_MEMBER_PROP      = 4,
+    AU_MEMBER_VAR       = 4,
     AU_MEMBER_FUNC      = 5,
     AU_MEMBER_OPERATOR  = 6,
     AU_MEMBER_CAST      = 7,
@@ -23,9 +23,7 @@ enum AU_MEMBER {
     AU_MEMBER_ENUMV     = 9,
     AU_MEMBER_OVERRIDE  = 10,
     AU_MEMBER_IS_ATTR   = 11,
-    AU_MEMBER_ARG       = 12,
-    AU_MEMBER_NAMESPACE = 13,
-    AU_MEMBER_VAR       = 14
+    AU_MEMBER_NAMESPACE = 12
 };
 
 typedef enum AU_MEMBER AFlag;

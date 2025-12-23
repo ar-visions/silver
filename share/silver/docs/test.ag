@@ -2,7 +2,7 @@ import <stdio.h>
 
 class something
     mem:i32 [ 4 ]
-    func action[an_arg:i32, another:i64]
+    func action[an_arg:i32, another:i64, mem:string]
         puts['something is equal to {mem}']
 
 main aclass
