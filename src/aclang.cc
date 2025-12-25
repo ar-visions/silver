@@ -880,7 +880,7 @@ static inline llvm::Module *unwrap(LLVMModuleRef M) {
 // ============================================================================
 
 path aether_lookup_include(aether e, string include) {
-    array ipaths = a((Au)e->sys_inc_paths, (Au)e->sys_exc_paths, (Au)e->include_paths);
+    array ipaths = a(e->sys_inc_paths, e->sys_exc_paths, e->include_paths);
     each(ipaths, array, includes) {
         if (includes)
             each(includes, path, i) {

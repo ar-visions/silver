@@ -9,15 +9,15 @@ forward(codegen)
 
 #define members(MDL, VAR) \
     for (int __i = 0; __i < (MDL)->members.count; __i++) \
-        for (Au_t VAR = (MDL)->members.origin[__i]; VAR; VAR = NULL)
+        for (Au_t VAR = (Au_t)(MDL)->members.origin[__i]; VAR; VAR = NULL)
  
 #define args(MDL, VAR) \
     for (int __i = 0; __i < (MDL)->args.count; __i++) \
-        for (Au_t VAR = (MDL)->args.origin[__i]; VAR; VAR = NULL)
+        for (Au_t VAR = (Au_t)(MDL)->args.origin[__i]; VAR; VAR = NULL)
 
 #define arg_types(MDL, VAR) \
     for (int __i = 0; __i < (MDL)->args.count; __i++) \
-        for (Au_t VAR = read_arg_type((MDL)->args.origin[__i]); VAR; VAR = NULL)
+        for (Au_t VAR = (Au_t)read_arg_type((Au_t)(MDL)->args.origin[__i]); VAR; VAR = NULL)
 
 Au_t read_arg_type(Au_t stored_arg);
 
@@ -170,6 +170,7 @@ declare_class_2(statements, etype)
     M(X,Y, i, override, method, init)
 declare_class_2(aether, etype);
 
+
 #define catcher_schema(X,Y,...) \
     M(X,Y, i, prop, public, map, team) \
     M(X,Y, i, prop, intern, LLVMBasicBlockRef, block, as, ARef)
@@ -183,11 +184,10 @@ declare_class_2(catcher, etype)
     M(X,Y, i, override, method, init)
 declare_class(code)
 
+forward(evar)
+
 #define enode_schema(X,Y,...)\
     M(X,Y, i, prop, public,   enode,            target) \
-    M(X,Y, i, prop, public,   Au_t,             member) \
-    M(X,Y, i, prop, public,   string,           name) \
-    M(X,Y, i, prop, intern,   bool,             registered) \
     M(X,Y, i, prop, public,   Au,               literal) \
     M(X,Y, i, prop, public,   u8,               arg_index) \
     M(X,Y, i, prop, public,   tokens,           initializer) \
@@ -200,6 +200,10 @@ declare_class(code)
     M(X,Y, i, override, method,                 init) \
     M(X,Y, i, override, method,                 dealloc)
 declare_class_2(enode, etype)
+
+#define evar_schema(X,Y,...) \
+    M(X,Y, i, prop, public, map, placeholder)
+declare_class_3(evar, enode, etype)
 
 #define aclang_cc_schema(X,Y,...) \
     M(X,Y, i, prop, public, aether,   mod) \
@@ -220,7 +224,7 @@ declare_class(aclang_cc)
 declare_class_2(macro, etype)
 
 #define codegen_schema(X,Y,...) \
-    M(X,Y, i, method, public, array, generate_fn, Au_t, array) \
+    M(X,Y, i, method, public, array, generate_fn, enode, array) \
     M(X,Y, i, prop, public, i32, pad)
 declare_class(codegen)
 

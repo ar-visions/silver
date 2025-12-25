@@ -33,10 +33,7 @@ typedef struct _Au_t *Au_t;
 struct _array;
 struct _Au_t;
 
-#define a(...) array_of(__VA_ARGS__ __VA_OPT__(,) null)
-#define m(...)   map_of(__VA_ARGS__ __VA_OPT__(,) null)
-
-#define len(I,...) ({ __typeof__(I) _i_ = I; _i_ ? (num)ftableI(_i_)->ft.len((collective)_i_, ## __VA_ARGS__) : (num)0; })
+//#define len(I,...) ({ __typeof__(I) _i_ = I; _i_ ? (num)ftableI(_i_)->ft.len((collective)_i_, ## __VA_ARGS__) : (num)0; })
 
 
 #undef bool
@@ -278,21 +275,21 @@ void lazy_init(global_init_fn fn, Au_t);
         E ## _i.info.type = (Au_t)&E ## _i.type; \
         E ## _i.info.refs = 1000; \
         E ## _f* type_ref = &E ## _i.type; \
-        Au_t base_ref     = &Au_i.type; \
+        Au_t base_ref     = (Au_t)&Au_i.type; \
         if ((Au_t)type_ref != (Au_t)base_ref && base_ref->typesize == 0) { \
             lazy_init((global_init_fn)&global_##E, (Au_t)base_ref); \
             return false; \
         } else { \
             memset(type_ref, 0, sizeof(E##_i.type)); \
             memcpy(&type_ref->ft, &base_ref->ft, sizeof(__typeof__(base_ref->ft))); \
-            type_ref->members.alloc     = 16; \
+            type_ref->members.alloc     = 64; \
             type_ref->members.assorted  = true; \
             type_ref->members.unmanaged = true; \
-            vector_init(&type_ref->members); \
+            array_init((array)&type_ref->members); \
             type_ref->meta.alloc        = 16; \
             type_ref->meta.assorted  = true; \
             type_ref->meta.unmanaged = true; \
-            array_init(&type_ref->meta); \
+            array_init((array)&type_ref->meta); \
             type_ref->src      = typeid(T); \
             type_ref->context   = (__typeof__(E##_i.type.context))& Au_i.type; \
             type_ref->ident    = #E;                 \
@@ -358,7 +355,7 @@ void lazy_init(global_init_fn fn, Au_t);
         Au_f_members(AA) \
         struct { void(*_ff)(); \
             Au_schema(AA, METHOD, __VA_ARGS__) \
-            BB##_schema (BB, METHOD, __VA_ARGS__) \
+            BB##_schema (AA, METHOD, __VA_ARGS__) \
             AA##_schema (AA, METHOD, __VA_ARGS__) \
         } ft; \
     } AA##_f, *AA##_ft; \
@@ -391,8 +388,8 @@ void lazy_init(global_init_fn fn, Au_t);
         Au_f_members(AA) \
         struct { void(*_ff)(); \
             Au_schema(AA, METHOD, __VA_ARGS__) \
-            CC##_schema (CC, METHOD, __VA_ARGS__) \
-            BB##_schema (BB, METHOD, __VA_ARGS__) \
+            CC##_schema (AA, METHOD, __VA_ARGS__) \
+            BB##_schema (AA, METHOD, __VA_ARGS__) \
             AA##_schema (AA, METHOD, __VA_ARGS__) \
         } ft; \
     } AA##_f, *AA##_ft; \
@@ -432,9 +429,9 @@ void lazy_init(global_init_fn fn, Au_t);
         Au_f_members(AA) \
         struct { void(*_ff)(); \
             Au_schema(AA, METHOD, __VA_ARGS__) \
-            DD##_schema (DD, METHOD, __VA_ARGS__) \
-            CC##_schema (CC, METHOD, __VA_ARGS__) \
-            BB##_schema (BB, METHOD, __VA_ARGS__) \
+            DD##_schema (AA, METHOD, __VA_ARGS__) \
+            CC##_schema (AA, METHOD, __VA_ARGS__) \
+            BB##_schema (AA, METHOD, __VA_ARGS__) \
             AA##_schema (AA, METHOD, __VA_ARGS__) \
         } ft; \
     } AA##_f, *AA##_ft; \
@@ -522,11 +519,11 @@ typedef Au_t* Au_ts;
             type_ref->members.alloc     = 128; \
             type_ref->members.assorted  = true; \
             type_ref->members.unmanaged = true; \
-            array_init(&type_ref->members); \
+            array_init((array)&type_ref->members); \
             type_ref->meta.alloc        = 16; \
             type_ref->meta.assorted     = true; \
             type_ref->meta.unmanaged    = true; \
-            array_init(&type_ref->meta); \
+            array_init((array)&type_ref->meta); \
             type_ref->ident             = #TYPE; \
             type_ref->af                = &TYPE##_af; \
             type_ref->isize             = 0 TYPE##_schema( TYPE, ISIZE_EXTERN, __VA_ARGS__ ); \
@@ -534,7 +531,7 @@ typedef Au_t* Au_ts;
             type_ref->module            = Au_module((cstr)MODULE); \
             type_ref->typesize          = TYPE_SZ; \
             type_ref->traits            = TRAIT; \
-            set_meta_array(type_ref, emit_types(__VA_ARGS__)); \
+            set_meta_array((Au_t)type_ref, emit_types(__VA_ARGS__)); \
             TYPE##_schema( TYPE, INIT, __VA_ARGS__ ); \
             push_type((Au_t)type_ref); \
             return true; \
@@ -578,124 +575,126 @@ forward(path)
 forward(vector)
 forward(any)
 
+
 // Au must generate defines for sizes for users of it
-#define Au_schema(AA,Y,...) \
-    i_prop  (AA,Y, intern, Au_t,        type) \
-    i_prop  (AA,Y, intern, Au_t,        scalar) \
-    i_prop  (AA,Y, intern, i64,         refs) \
-    i_prop  (AA,Y, intern, Au,          data) \
-    i_prop  (AA,Y, intern, shape,       shape) \
-    i_prop  (AA,Y, intern, cstr,        source) \
-    i_prop  (AA,Y, intern, i64,         line) \
-    i_prop  (AA,Y, intern, i64,         alloc) \
-    i_prop  (AA,Y, intern, i64,         count) \
-    i_prop  (AA,Y, intern, i64,         recycle) \
-    i_prop  (AA,Y, intern, i64,         af_index) \
-    i_array (AA,Y, intern, Au,       8,  meta) \
-    i_method(AA,Y, public, none,        init) \
-    i_method(AA,Y, public, none,        dealloc) \
-    i_method(AA,Y, public, i32,         compare,             AA) \
-    i_method(AA,Y, public, u64,         hash) \
-    i_method(AA,Y, public, AA,          copy) \
-    i_final (AA,Y, public, callback,    binding,             Au, bool, Au_t, Au_t, symbol, symbol) \
-    i_final (AA,Y, public, ref_u64,     AF_bits) \
-    i_final (AA,Y, public, none,        AF_set_id,           i32) \
-    i_final (AA,Y, public, none,        AF_set_name,         cstr) \
-    i_final (AA,Y, public, i32,         AF_query_name,       cstr) \
-    i_final (AA,Y, public, Au,           instanceof,          Au_t) \
-    i_final (AA,Y, public, AA,          hold) \
-    i_final (AA,Y, public, none,        drop) \
-    i_final (AA,Y, public, none,        hold_members) \
-    i_final (AA,Y, public, none,        drop_members) \
-    i_final (AA,Y, public, Au,           set_property,        symbol, Au) \
-    i_final (AA,Y, public, Au,           get_property,        symbol) \
-    i_final (AA,Y, public, Au,           vrealloc,            sz) \
-    s_method(AA,Y, public, Au_t,         find_member,         Au_t, symbol, i32, bool) \
-    s_method(AA,Y, public, Au_t,         context,             array, i32, i32) \
-    s_method(AA,Y, public, Au_t,         lexical,             array, symbol) \
-    s_method(AA,Y, public, Au_t,         register,            Au_t, symbol, u32, u32) \
-    s_method(AA,Y, public, Au_t,         register_type,       Au_t, symbol, u32) \
-    s_method(AA,Y, public, Au_t,         register_member,     Au_t, symbol, Au_t, u32, u32) \
-    s_method(AA,Y, public, Au_t,         register_class,      Au_t, symbol) \
-    s_method(AA,Y, public, Au_t,         register_struct,     Au_t, symbol) \
-    s_method(AA,Y, public, Au_t,         register_func_ptr,   Au_t, symbol) \
-    s_method(AA,Y, public, Au_t,         register_pointer,    Au_t, Au_t, symbol) \
-    s_method(AA,Y, public, Au_t,         register_enum,       Au_t, symbol, u32) \
-    s_method(AA,Y, public, Au_t,         register_enum_value, Au_t, symbol, Au) \
-    s_method(AA,Y, public, Au,           initialize,          Au) \
-    s_method(AA,Y, public, Au_t,         module,              symbol) \
-    s_method(AA,Y, public, Au_t,         register_module,     symbol) \
-    s_method(AA,Y, public, Au_t,         global) \
-    s_method(AA,Y, public, Au_t,         scope_lookup,        array, string) \
-    s_method(AA,Y, public, Au_t,         current_module) \
-    i_final (AA,Y, public, Au,           member_object,       Au_t) \
-    i_final (AA,Y, public, bool,        member_set,           Au_t, Au) \
-    i_final (AA,Y, public, Au,           header) \
-    i_final (AA,Y, public, Au,           vdata) \
-    i_final (AA,Y, public, Au_t,       vdata_type) \
-    i_final (AA,Y, public, i64,         vdata_stride) \
-    i_final (AA,Y, public, bool,        is_meta) \
-    i_final (AA,Y, public, bool,        is_meta_compatible,  Au) \
-    t_vargs (AA,Y, public, Au,           formatter,           handle, Au, symbol) \
-    t_method(AA,Y, public, Au,           alloc,               num, Au_ts) \
-    t_method(AA,Y, public, Au,           alloc_new,           num, Au_ts) \
-    t_method(AA,Y, public, Au,           alloc_dbg,           num,     cstr,      i32) \
-    t_method(AA,Y, public, Au,           alloc2,              Au_t,   shape) \
-    t_method(AA,Y, public, string,      estring,             i32) \
-    t_method(AA,Y, public, i32,         evalue,              cstr) \
-    t_method(AA,Y, public, none,        serialize,           string,  Au) \
-    t_method(AA,Y, public, Au,           convert,             Au) \
-    t_method(AA,Y, public, bool,        inherits,            Au_t) \
-    t_method(AA,Y, public, Au,           construct_with,      Au,         ctx) \
-    t_method(AA,Y, public, bool,        constructs_with,     Au_t) \
-    t_method(AA,Y, public, Au_t,        find_ctr,            Au_t, bool) \
-    t_method(AA,Y, public, Au_t,        find_member,         AFlag, symbol,    bool) \
-    t_method(AA,Y, public, Au_t,        member_first,        Au_t, bool) \
-    t_method(AA,Y, public, Au_t,        member_type,         AFlag, Au_t,     bool) \
-    t_method(AA,Y, public, Au,          primitive,           raw) \
-    t_method(AA,Y, public, Au,          method,              cstr,    array) \
-    t_method(AA,Y, public, Au,          parse,               cstr, ctx) \
-    t_method(AA,Y, public, i32,         alloc_count) \
-    t_method(AA,Y, public, none,        push_type) \
-    s_method(AA,Y, public, none,        dealloc_type,        Au_t) \
-    t_method(AA,Y, public, Au,          typecast,            Au) \
-    s_method(AA,Y, public, none,        member_override,     Au_t, Au_t, AFlag) \
-    s_method(AA,Y, public, none,        register_init,       func) \
-    s_method(AA,Y, public, bool,        is_inlay,            Au_t) \
-    s_method(AA,Y, public, Au_t,        find_type,           symbol, Au_t) \
-    s_method(AA,Y, public, map,         arguments,           i32, cstrs, map, Au) \
-    s_method(AA,Y, public, ARef,        types,               ref_i64) \
-    s_method(AA,Y, public, none,        tap,                 symbol, hook) \
-    s_method(AA,Y, public, none,        untap,               symbol) \
-    s_method(AA,Y, public, none,        recycle) \
-    s_method(AA,Y, public, none,        engage,              cstrs) \
-    s_vargs (AA,Y, public, map,         args,                cstrs, symbol) \
-    s_vargs (AA,Y, public, map,         map_of,              symbol) \
-    i_final (AA,Y, public, bool,        is_generic) \
-    i_final (AA,Y, public, bool,        is_integral) \
-    i_final (AA,Y, public, bool,        is_void) \
-    i_final (AA,Y, public, bool,        is_double) \
-    i_final (AA,Y, public, bool,        is_float) \
-    i_final (AA,Y, public, bool,        is_realistic) \
-    i_final (AA,Y, public, bool,        is_bool) \
-    i_final (AA,Y, public, bool,        is_class) \
-    i_final (AA,Y, public, bool,        is_struct) \
-    i_final (AA,Y, public, bool,        is_opaque) \
-    i_final (AA,Y, public, bool,        is_func) \
-    i_final (AA,Y, public, bool,        is_func_ptr) \
-    i_final (AA,Y, public, bool,        is_imethod) \
-    i_final (AA,Y, public, Au_t,        is_rec) \
-    i_final (AA,Y, public, bool,        is_prim) \
-    i_final (AA,Y, public, bool,        is_sign) \
-    i_final (AA,Y, public, bool,        is_unsign) \
-    i_final (AA,Y, public, bool,        is_ptr) \
-    i_final (AA,Y, public, bool,        is_enum) \
-    i_final (AA,Y, public, bool,        is_type) \
-    i_ctr   (AA,Y, public, cereal) \
-    i_ctr(AA,Y, public, cstrs) \
-    i_cast  (AA,Y, public, string) \
-    i_cast  (AA,Y, public, Au_t) \
-    i_cast  (AA,Y, public, bool)
+#define Au_schema(AA,BB,...) \
+    M(AA,BB, i, prop, intern, Au_t, type) \
+    M(AA,BB, i, prop, intern, Au_t, scalar) \
+    M(AA,BB, i, prop, intern, i64, refs) \
+    M(AA,BB, i, prop, intern, Au, data) \
+    M(AA,BB, i, prop, intern, shape, shape) \
+    M(AA,BB, i, prop, intern, cstr, source) \
+    M(AA,BB, i, prop, intern, i64, line) \
+    M(AA,BB, i, prop, intern, i64, alloc) \
+    M(AA,BB, i, prop, intern, i64, count) \
+    M(AA,BB, i, prop, intern, i64, recycle) \
+    M(AA,BB, i, prop, intern, i64, af_index) \
+    M(AA,BB, i, array, intern, Au, 8, meta) \
+    M(AA,BB, i, method, public, none, init) \
+    M(AA,BB, i, method, public, none, dealloc) \
+    M(AA,BB, i, method, public, i32, compare, AA) \
+    M(AA,BB, i, method, public, u64, hash) \
+    M(AA,BB, i, method, public, AA, copy) \
+    M(AA,BB, i, final, public, callback, binding,   Au, Au, bool, Au_t, Au_t, symbol, symbol) \
+    M(AA,BB, i, final, public, ref_u64, AF_bits,    Au) \
+    M(AA,BB, i, final, public, none, AF_set_id,     Au, i32) \
+    M(AA,BB, i, final, public, none, AF_set_name,   Au, cstr) \
+    M(AA,BB, i, final, public, i32, AF_query_name,  Au, cstr) \
+    M(AA,BB, i, final, public, Au, instance_of,     Au, Au_t) \
+    M(AA,BB, i, final, public, AA, hold,            Au) \
+    M(AA,BB, i, final, public, none, drop,          Au) \
+    M(AA,BB, i, final, public, none, hold_members,  Au) \
+    M(AA,BB, i, final, public, none, drop_members,  Au) \
+    M(AA,BB, i, final, public, Au, set_property,    Au, symbol, Au) \
+    M(AA,BB, i, final, public, Au, get_property,    Au, symbol) \
+    M(AA,BB, i, final, public, Au, vrealloc,        Au, sz) \
+    M(AA,BB, i, final, public, Au_t, meta_index,    Au, i32) \
+    M(AA,BB, s, method, public, Au_t, find_member, Au_t, symbol, i32, bool) \
+    M(AA,BB, s, method, public, Au_t, context, array, i32, i32) \
+    M(AA,BB, s, method, public, Au_t, lexical, array, symbol) \
+    M(AA,BB, s, method, public, Au_t, register, Au_t, symbol, u32, u32) \
+    M(AA,BB, s, method, public, Au_t, register_type, Au_t, symbol, u32) \
+    M(AA,BB, s, method, public, Au_t, register_member, Au_t, symbol, Au_t, u32, u32) \
+    M(AA,BB, s, method, public, Au_t, register_class, Au_t, symbol) \
+    M(AA,BB, s, method, public, Au_t, register_struct, Au_t, symbol) \
+    M(AA,BB, s, method, public, Au_t, register_func_ptr, Au_t, symbol) \
+    M(AA,BB, s, method, public, Au_t, register_pointer, Au_t, Au_t, symbol) \
+    M(AA,BB, s, method, public, Au_t, register_enum, Au_t, symbol, u32) \
+    M(AA,BB, s, method, public, Au_t, register_enum_value, Au_t, symbol, Au) \
+    M(AA,BB, s, method, public, Au, initialize, Au) \
+    M(AA,BB, s, method, public, Au_t, module, symbol) \
+    M(AA,BB, s, method, public, Au_t, register_module, symbol) \
+    M(AA,BB, s, method, public, Au_t, global) \
+    M(AA,BB, s, method, public, Au_t, scope_lookup, array, string) \
+    M(AA,BB, s, method, public, Au_t, current_module) \
+    M(AA,BB, i, final, public, Au, member_object, Au, Au_t) \
+    M(AA,BB, i, final, public, bool, member_set, Au, Au_t, Au) \
+    M(AA,BB, i, final, public, Au, header, Au) \
+    M(AA,BB, i, final, public, Au, vdata, Au) \
+    M(AA,BB, i, final, public, Au_t, vdata_type, Au) \
+    M(AA,BB, i, final, public, i64, vdata_stride, Au) \
+    M(AA,BB, i, final, public, bool, is_meta, Au) \
+    M(AA,BB, i, final, public, bool, is_meta_compatible, Au, Au) \
+    M(AA,BB, t, vargs, public, Au, formatter, handle, Au, symbol) \
+    M(AA,BB, t, method, public, Au, alloc, num, Au_ts) \
+    M(AA,BB, t, method, public, Au, alloc_new, num, Au_ts) \
+    M(AA,BB, t, method, public, Au, alloc_dbg, num, cstr, i32) \
+    M(AA,BB, t, method, public, Au, alloc2, Au_t, shape) \
+    M(AA,BB, t, method, public, string, estring, i32) \
+    M(AA,BB, t, method, public, i32, evalue, cstr) \
+    M(AA,BB, t, method, public, none, serialize, string, Au) \
+    M(AA,BB, t, method, public, Au, convert, Au) \
+    M(AA,BB, t, method, public, bool, inherits, Au_t) \
+    M(AA,BB, t, method, public, Au, construct_with, Au, ctx) \
+    M(AA,BB, t, method, public, bool, constructs_with, Au_t) \
+    M(AA,BB, t, method, public, Au_t, find_ctr, Au_t, bool) \
+    M(AA,BB, t, method, public, Au_t, find_member, AFlag, symbol, bool) \
+    M(AA,BB, t, method, public, Au_t, member_first, Au_t, bool) \
+    M(AA,BB, t, method, public, Au_t, member_type, AFlag, Au_t, bool) \
+    M(AA,BB, t, method, public, Au, primitive, raw) \
+    M(AA,BB, t, method, public, Au, method, cstr, array) \
+    M(AA,BB, t, method, public, Au, parse, cstr, ctx) \
+    M(AA,BB, t, method, public, i32, alloc_count) \
+    M(AA,BB, t, method, public, none, push_type) \
+    M(AA,BB, s, method, public, none, dealloc_type, Au_t) \
+    M(AA,BB, t, method, public, Au, typecast, Au) \
+    M(AA,BB, s, method, public, none, member_override, Au_t, Au_t, AFlag) \
+    M(AA,BB, s, method, public, none, register_init, func) \
+    M(AA,BB, s, method, public, bool, is_inlay, Au_t) \
+    M(AA,BB, s, method, public, Au_t, find_type, symbol, Au_t) \
+    M(AA,BB, s, method, public, map, arguments, i32, cstrs, map, Au) \
+    M(AA,BB, s, method, public, ARef, types, ref_i64) \
+    M(AA,BB, s, method, public, none, tap, symbol, hook) \
+    M(AA,BB, s, method, public, none, untap, symbol) \
+    M(AA,BB, s, method, public, none, recycle) \
+    M(AA,BB, s, method, public, none, engage, cstrs) \
+    M(AA,BB, s, vargs, public, map, args, cstrs, symbol) \
+    M(AA,BB, s, vargs, public, map, map_of, symbol) \
+    M(AA,BB, i, final, public, bool, is_generic, Au) \
+    M(AA,BB, i, final, public, bool, is_integral, Au) \
+    M(AA,BB, i, final, public, bool, is_void, Au) \
+    M(AA,BB, i, final, public, bool, is_double, Au) \
+    M(AA,BB, i, final, public, bool, is_float, Au) \
+    M(AA,BB, i, final, public, bool, is_realistic, Au) \
+    M(AA,BB, i, final, public, bool, is_bool, Au) \
+    M(AA,BB, i, final, public, bool, is_class, Au) \
+    M(AA,BB, i, final, public, bool, is_struct, Au) \
+    M(AA,BB, i, final, public, bool, is_opaque, Au) \
+    M(AA,BB, i, final, public, bool, is_func, Au) \
+    M(AA,BB, i, final, public, bool, is_func_ptr, Au) \
+    M(AA,BB, i, final, public, bool, is_imethod, Au) \
+    M(AA,BB, i, final, public, Au_t, is_rec, Au) \
+    M(AA,BB, i, final, public, bool, is_prim, Au) \
+    M(AA,BB, i, final, public, bool, is_sign, Au) \
+    M(AA,BB, i, final, public, bool, is_unsign, Au) \
+    M(AA,BB, i, final, public, bool, is_ptr, Au) \
+    M(AA,BB, i, final, public, bool, is_enum, Au) \
+    M(AA,BB, i, final, public, bool, is_type, Au) \
+    M(AA,BB, i, ctr, public, cereal) \
+    M(AA,BB, i, ctr, public, cstrs) \
+    M(AA,BB, i, cast, public, string) \
+    M(AA,BB, i, cast, public, Au_t) \
+    M(AA,BB, i, cast, public, bool)
 
 #define Au_intern_footer(AA)
 
@@ -703,11 +702,22 @@ forward(any)
 
 //typedef struct _shape *shape;
 forward(shape)
+
 declare_base(Au)
 
+// we need a function table emitted type that C uses in __typeof__ on field set in object.h
+typedef struct _Au_t_f {
+    Au_f_members(Au)
+    struct { void(*_ff)();
+        Au_schema (Au, METHOD)
+    } ft;
+} Au_t_f;
+
+//#define declare_Au_t( AA )
 
 #define typeid(AA)   ((Au_t)&AA##_i.type)
 #define scalarof(AA) head(AA)->scalar
+#define instanceof(I,A) (Au)Au_instance_of((Au)I, typeid(A))
 
 forward(item)
 
@@ -726,40 +736,40 @@ typedef struct _collective_abi {
 */
 
 // these methods could-be var-arg, however not recommended?
-#define collective_schema(AA,Y,...) \
-    i_prop           (AA,Y, public, i32,     count) \
-    i_prop           (AA,Y, public, i32,     alloc) \
-    i_prop           (AA,Y, public, i32,     hsize) \
-    i_ref            (AA,Y, public, ARef,    origin) \
-    i_prop           (AA,Y, public, item,    first) \
-    i_prop           (AA,Y, public, item,    last) \
-    i_ref            (AA,Y, public, item,    hlist) \
-    i_prop           (AA,Y, public, bool,    unmanaged)  \
-    i_prop           (AA,Y, public, bool,    assorted) \
-    i_prop           (AA,Y, public, Au_t,    last_type) \
-    i_prop(AA,Y, public, Au_t,   type) \
-    i_prop(AA,Y, public, shape,   shape) \
-    i_override(AA,Y, method, init) \
-    i_guard          (AA,Y, public, num,     len) \
-    i_method         (AA,Y, public, Au,      peek, num)
+#define collective_schema(AA,BB,...) \
+    M(AA,BB, i, prop, public, i32, count) \
+    M(AA,BB, i, prop, public, i32, alloc) \
+    M(AA,BB, i, prop, public, i32, hsize) \
+    M(AA,BB, i, ref,  public, Au, origin) \
+    M(AA,BB, i, prop, public, item, first) \
+    M(AA,BB, i, prop, public, item, last) \
+    M(AA,BB, i, ref,  public, item, hlist) \
+    M(AA,BB, i, prop, public, bool, unmanaged) \
+    M(AA,BB, i, prop, public, bool, assorted) \
+    M(AA,BB, i, prop, public, Au_t, last_type) \
+    M(AA,BB, i, prop, public, Au_t, type) \
+    M(AA,BB, i, prop, public, shape, shape) \
+    M(AA,BB, i, override, method, init) \
+    M(AA,BB, i, final, public, num, len, collective) \
+    M(AA,BB, i, method, public, Au, peek, num)
 declare_class(collective)
 
-#define numeric_schema(AA,Y,...) \
-    i_operator(AA,Y, public, numeric, _add, numeric) \
-    i_operator(AA,Y, public, numeric, _sub, numeric) \
-    i_operator(AA,Y, public, numeric, _mul, numeric) \
-    i_operator(AA,Y, public, numeric, _div, numeric) \
-    i_operator(AA,Y, public, numeric, _or, numeric) \
-    i_operator(AA,Y, public, numeric, _and, numeric) \
-    i_operator(AA,Y, public, numeric, _xor, numeric) \
-    i_operator(AA,Y, public, numeric, _mod, numeric) \
-    i_operator(AA,Y, public, numeric, _right, numeric) \
-    i_operator(AA,Y, public, numeric, _left,  numeric) \
-    i_operator(AA,Y, public, numeric, _compare,   numeric) \
-    i_operator(AA,Y, public, numeric, _equal,     numeric) \
-    i_operator(AA,Y, public, numeric, _not_equal, numeric) \
-    i_operator(AA,Y, public, none,    _assign,    numeric) \
-    i_override(AA,Y, cast, string)
+#define numeric_schema(AA,BB,...) \
+    M(AA,BB, i, operator, public, numeric, _add, numeric) \
+    M(AA,BB, i, operator, public, numeric, _sub, numeric) \
+    M(AA,BB, i, operator, public, numeric, _mul, numeric) \
+    M(AA,BB, i, operator, public, numeric, _div, numeric) \
+    M(AA,BB, i, operator, public, numeric, _or, numeric) \
+    M(AA,BB, i, operator, public, numeric, _and, numeric) \
+    M(AA,BB, i, operator, public, numeric, _xor, numeric) \
+    M(AA,BB, i, operator, public, numeric, _mod, numeric) \
+    M(AA,BB, i, operator, public, numeric, _right, numeric) \
+    M(AA,BB, i, operator, public, numeric, _left, numeric) \
+    M(AA,BB, i, operator, public, numeric, _compare, numeric) \
+    M(AA,BB, i, operator, public, numeric, _equal, numeric) \
+    M(AA,BB, i, operator, public, numeric, _not_equal, numeric) \
+    M(AA,BB, i, operator, public, none, _assign, numeric) \
+    M(AA,BB, i, override, cast, string)
 declare_abstract(numeric)
 
 #define string_like_schema(X,Y,...)
@@ -899,11 +909,11 @@ declare_primitive(ARef,         ref)
 declare_primitive(floats,       raw)
 
 /// lets mimmick the structure in llama.cpp
-#define msg_schema(X,Y,...) \
-    i_prop(X,Y, public,   cstr, role) \
-    i_prop(X,Y, public,   cstr, content) \
-    i_override(X,Y, method, init) \
-    i_override(X,Y, method, dealloc)
+#define msg_schema(AA,BB,...) \
+    M(AA,BB, i, prop, public, cstr, role) \
+    M(AA,BB, i, prop, public, cstr, content) \
+    M(AA,BB, i, override, method, init) \
+    M(AA,BB, i, override, method, dealloc)
 declare_class(msg)
 
 #undef shape
@@ -911,19 +921,19 @@ declare_class(msg)
 forward(shape)
 
 #ifndef __cplusplus
-#define shape_schema(AA,YY,...) \
-    i_prop  (AA,YY, public, i64, count) \
-    i_ref (AA,YY, public, i64, data) \
-    i_prop  (AA,YY, public, bool, is_global) \
-    i_method(AA,YY, public, shape, with_array, array) \
-    i_method(AA,YY, public, i64,   total) \
-    i_method(AA,YY, public, none,  push, i64) \
-    s_method(AA,YY, public, shape, from, i64, ref_i64) \
-    s_method(AA,YY, public, shape, read, ARef) \
-    s_vargs (AA,YY, public, shape, new_shape,  i64) \
-    i_override(AA,YY, method, compare) \
-    i_override(AA,YY, method, init) \
-    i_override(AA,YY, method, dealloc)
+#define shape_schema(AA,BB,...) \
+    M(AA,BB, i, prop,    public, i64,  count) \
+    M(AA,BB, i, ref,     public, i64,  data) \
+    M(AA,BB, i, prop,    public, bool, is_global) \
+    M(AA,BB, i, method,  public, shape, with_array, array) \
+    M(AA,BB, i, method,  public, i64,   total) \
+    M(AA,BB, i, method,  public, none,  push, i64) \
+    M(AA,BB, s, method,  public, shape, from, i64, ref_i64) \
+    M(AA,BB, s, method,  public, shape, read, ARef) \
+    M(AA,BB, s, vargs,   public, shape, new_shape, i64) \
+    M(AA,BB, i, override, method, compare) \
+    M(AA,BB, i, override, method, init) \
+    M(AA,BB, i, override, method, dealloc)
 declare_class(shape)
 #else
 // shape mysteriously defined in cpp somewhere else
@@ -932,31 +942,31 @@ ARef new_shape(i64, ...);
 
 
 /// doubly-linked item type, integrated key so we dont also need a 'field' type
-#define item_schema(X,Y,...) \
-    i_prop    (X,Y, opaque, X,         next) \
-    i_prop    (X,Y, opaque, X,         prev) \
-    i_prop    (X,Y, opaque, Au,    ref) \
-    i_prop    (X,Y, opaque, Au,    value) \
-    i_prop    (X,Y, opaque, Au,    key) \
-    i_prop    (X,Y, opaque, u64,       h) \
-    i_override(X,Y, method, hash) \
-    i_override(X,Y, method, init)
+#define item_schema(AA,BB,...) \
+    M(AA,BB, i, prop,     opaque, AA,  next) \
+    M(AA,BB, i, prop,     opaque, AA,  prev) \
+    M(AA,BB, i, prop,     opaque, Au,  ref)  \
+    M(AA,BB, i, prop,     opaque, Au,  value) \
+    M(AA,BB, i, prop,     opaque, Au,  key) \
+    M(AA,BB, i, prop,     opaque, u64, h) \
+    M(AA,BB, i, override, method, hash) \
+    M(AA,BB, i, override, method, init)
 declare_class(item)
 
 /// linked-list of elemental data
-#define list_schema(X,Y,...) \
-    i_method(X,Y, public,    Au,      pop) \
-    i_method(X,Y, public,    item,    push, Au) \
-    i_method(X,Y, public,    none,    push_item, item) \
-    i_method(X,Y, public,    item,    insert_after, Au, i32) \
-    i_method(X,Y, public,    num,     index_of, Au) \
-    i_method(X,Y, public,    item,    item_of, Au) \
-    i_method(X,Y, public,    none,    sort,   ARef) \
-    i_method(X,Y, public,    none,    remove, num) \
-    i_method(X,Y, public,    none,    remove_item, item) \
-    i_method(X,Y, public,    Au,  get,  Au) \
-    i_method(X,Y, public,    num,     count) \
-    i_override(X,Y, method, dealloc)
+#define list_schema(AA,BB,...) \
+    M(AA,BB, i, method, public, Au,   pop) \
+    M(AA,BB, i, method, public, item, push, Au) \
+    M(AA,BB, i, method, public, none, push_item, item) \
+    M(AA,BB, i, method, public, item, insert_after, Au, i32) \
+    M(AA,BB, i, method, public, num,  index_of, Au) \
+    M(AA,BB, i, method, public, item, item_of, Au) \
+    M(AA,BB, i, method, public, none, sort, ARef) \
+    M(AA,BB, i, method, public, none, remove, num) \
+    M(AA,BB, i, method, public, none, remove_item, item) \
+    M(AA,BB, i, method, public, Au,   get, Au) \
+    M(AA,BB, i, method, public, num,  count) \
+    M(AA,BB, i, override, method, dealloc)
 declare_class_2(list, collective)
 
 /// array of elemental data
@@ -1155,18 +1165,18 @@ declare_enum(Exists)
 
 forward(array)
 
-#define vector_schema(X,Y,...) \
-    i_prop(X,Y, public, Au, placeholder) \
-    i_method(X,Y, public, none,    concat, ARef, num) \
-    i_method(X,Y, public, ARef,    get,  num) \
-    i_method(X,Y, public, none,    set,  num, ARef) \
-    i_method(X,Y, public, none,    push, Au) \
-    i_method(X,Y, public, vector,  slice, num, num) \
-    i_method(X,Y, public, Au,       resize, sz) \
-    i_method(X,Y, public, Au,       reallocate, sz) \
-    i_override(X,Y, method, init) \
-    i_ctr(X,Y, public, i32) \
-    i_ctr(X,Y, public, path)
+#define vector_schema(AA,BB,...) \
+    M(AA,BB, i, prop,   public, Au,     placeholder2) \
+    M(AA,BB, i, method, public, none,   concat, ARef, num) \
+    M(AA,BB, i, method, public, ARef,   get, num) \
+    M(AA,BB, i, method, public, none,   set, num, ARef) \
+    M(AA,BB, i, method, public, none,   push, Au) \
+    M(AA,BB, i, method, public, vector, slice, num, num) \
+    M(AA,BB, i, method, public, Au,     resize, sz) \
+    M(AA,BB, i, method, public, Au,     reallocate, sz) \
+    M(AA,BB, i, override, method, init) \
+    M(AA,BB, i, ctr,    public, i32) \
+    M(AA,BB, i, ctr,    public, path)
 declare_class_2(vector, collective)
 
 none vector_init(vector);
@@ -1174,11 +1184,11 @@ none vector_init(vector);
 // let us declare our vector with string
 // Au, user space is simply the cstring
 
-#define subprocedure_schema(X,Y,...) \
-    i_prop    (X,Y, required, Au, target) \
-    i_prop    (X,Y, public,   Au, ctx) \
-    i_prop    (X,Y, required, handle, addr) \
-    i_method  (X,Y, public,   Au, invoke, Au)
+#define subprocedure_schema(AA,BB,...) \
+    M(AA,BB, i, prop,   required, Au,     target) \
+    M(AA,BB, i, prop,   public,   Au,     ctx) \
+    M(AA,BB, i, prop,   required, handle, addr) \
+    M(AA,BB, i, method, public,   Au,     invoke, Au)
 declare_class(subprocedure)
 
 #define subproc(targ, faddr, context) new(subprocedure, target, targ, ctx, context, addr, faddr) 
@@ -1210,47 +1220,47 @@ declare_enum(interface)
     enum_value(E,T,Y, s_less_than_e,     41)
 declare_enum(comparison)
 
-#define array_schema(AA,Y,O,...) \
-    s_vargs          (AA,Y, public, array,   array_of,       Au) \
-    s_vargs          (AA,Y, public, array,   array_of_cstr,  cstr) \
-    i_method         (AA,Y, public, array,   mix, array, f32) \
-    i_method         (AA,Y, public, Au,      first_element) \
-    i_method         (AA,Y, public, Au,      last_element) \
-    i_method         (AA,Y, public, Au,      pop) \
-    i_method         (AA,Y, public, array,   shift) \
-    i_method         (AA,Y, public, Au,      qpush, Au) \
-    i_method         (AA,Y, public, string,  join, cstr) \
-    i_method         (AA,Y, public, none,    fill,           Au) \
-    i_method         (AA,Y, public, array,   reverse) \
-    i_method         (AA,Y, public, none,    remove,         num) \
-    i_method         (AA,Y, public, none,    remove_weak,    num) \
-    i_method         (AA,Y, public, none,    push,           Au) \
-    i_method         (AA,Y, public, none,    push_vdata,     Au, i64) \
-    i_method         (AA,Y, public, none,    push_weak,      Au) \
-    i_method         (AA,Y, public, none,    clear) \
-    i_method         (AA,Y, public, none,    concat,         array) \
-    i_method         (AA,Y, public, Au,       get,            num) \
-    i_method         (AA,Y, public, num,     count) \
-    i_method         (AA,Y, public, num,     index_of,       Au) \
-    i_operator       (AA,Y, public, none,    _assign_add,    Au) \
-    i_operator       (AA,Y, public, none,    _assign_sub,    num) \
-    i_cast           (AA,Y, public, map) \
-    i_vargs          (AA,Y, public, none,    push_symbols,   cstr) \
-    i_vargs          (AA,Y, public, none,    push_objects,   Au) \
-    i_index          (AA,Y, public, Au,       num) \
-    i_ctr            (AA,Y, public, i32) \
-    i_override       (AA,Y, method, init) \
-    i_override       (AA,Y, method, dealloc) \
-    i_override       (AA,Y, cast,   bool) \
-    i_override       (AA,Y, cast,   string)
+#define array_schema(AA,BB,O,...) \
+    M(AA,BB, s, vargs,  public, array,  array_of,      Au) \
+    M(AA,BB, s, vargs,  public, array,  array_of_cstr, cstr) \
+    M(AA,BB, i, method, public, array,  mix, array, f32) \
+    M(AA,BB, i, method, public, Au,     first_element) \
+    M(AA,BB, i, method, public, Au,     last_element) \
+    M(AA,BB, i, method, public, Au,     pop) \
+    M(AA,BB, i, method, public, array,  shift) \
+    M(AA,BB, i, method, public, Au,     qpush, Au) \
+    M(AA,BB, i, method, public, string, join, cstr) \
+    M(AA,BB, i, method, public, none,   fill, Au) \
+    M(AA,BB, i, method, public, array,  reverse) \
+    M(AA,BB, i, method, public, none,   remove, num) \
+    M(AA,BB, i, method, public, none,   remove_weak, num) \
+    M(AA,BB, i, method, public, none,   push, Au) \
+    M(AA,BB, i, method, public, none,   push_vdata, Au, i64) \
+    M(AA,BB, i, method, public, none,   push_weak, Au) \
+    M(AA,BB, i, method, public, none,   clear) \
+    M(AA,BB, i, method, public, none,   concat, array) \
+    M(AA,BB, i, method, public, Au,     get, num) \
+    M(AA,BB, i, method, public, num,    count) \
+    M(AA,BB, i, method, public, num,    index_of, Au) \
+    M(AA,BB, i, operator, public, none, _assign_add, Au) \
+    M(AA,BB, i, operator, public, none, _assign_sub, num) \
+    M(AA,BB, i, cast,     public, map) \
+    M(AA,BB, i, vargs,    public, none, push_symbols, cstr) \
+    M(AA,BB, i, vargs,    public, none, push_objects, Au) \
+    M(AA,BB, i, index,    public, Au,    num) \
+    M(AA,BB, i, ctr,      public, i32) \
+    M(AA,BB, i, override, method, init) \
+    M(AA,BB, i, override, method, dealloc) \
+    M(AA,BB, i, override, cast,   bool) \
+    M(AA,BB, i, override, cast,   string)
 declare_class_2(array, collective)
 
 Exists Au_exists(Au);
 
-#define srcfile_schema(X,Y,...) \
-    i_prop           (X,Y, public, Au, obj) \
-    i_ctr            (X,Y, public, Au) \
-    i_override       (X,Y, cast,   string)
+#define srcfile_schema(AA,BB,...) \
+    M(AA,BB, i, prop,    public, Au,     obj) \
+    M(AA,BB, i, ctr,     public, Au) \
+    M(AA,BB, i, override, cast,   string)
 declare_class(srcfile)
 
 extern int fault_level;
@@ -1261,211 +1271,211 @@ extern int fault_level;
     enum_value(E,T,Y, err,         2)
 declare_enum(level)
 
-#define map_schema(X,Y,...) \
-    i_method    (X,Y, public,  none,       set,        Au, Au) \
-    i_method    (X,Y, public,  Au,         get,        Au) \
-    i_method    (X,Y, public,  Au,         value_by_index, num) \
-    i_method    (X,Y, public,  item,       lookup,     Au) \
-    i_method    (X,Y, public,  item,       fetch,      Au) \
-    i_method    (X,Y, public,  none,       rm,         Au) \
-    i_method    (X,Y, public,  none,       rm_item,    item) \
-    i_method    (X,Y, public,  bool,       contains,   Au) \
-    i_method    (X,Y, public,  none,       concat,     map) \
-    i_method    (X,Y, public,  none,       clear) \
-    i_index     (X,Y, public,  Au,         sz) \
-    i_index     (X,Y, public,  Au,         Au) \
-    i_ctr       (X,Y, public,  i32) \
-    i_override  (X,Y, method,  init) \
-    i_override  (X,Y, method,  dealloc) \
-    i_override  (X,Y, cast,    string) \
-    i_override  (X,Y, cast,    bool) \
-    i_override  (X,Y, method,  copy)
+#define map_schema(AA,BB,...) \
+    M(AA,BB, i, method, public, none, set,        Au, Au) \
+    M(AA,BB, i, method, public, Au,   get,        Au) \
+    M(AA,BB, i, method, public, Au,   value_by_index, num) \
+    M(AA,BB, i, method, public, item, lookup,     Au) \
+    M(AA,BB, i, method, public, item, fetch,      Au) \
+    M(AA,BB, i, method, public, none, rm,         Au) \
+    M(AA,BB, i, method, public, none, rm_item,    item) \
+    M(AA,BB, i, method, public, bool, contains,   Au) \
+    M(AA,BB, i, method, public, none, concat,     map) \
+    M(AA,BB, i, method, public, none, clear) \
+    M(AA,BB, i, index,  public, Au,   sz) \
+    M(AA,BB, i, index,  public, Au,   Au) \
+    M(AA,BB, i, ctr,    public, i32) \
+    M(AA,BB, i, override, method, init) \
+    M(AA,BB, i, override, method, dealloc) \
+    M(AA,BB, i, override, cast,   string) \
+    M(AA,BB, i, override, cast,   bool) \
+    M(AA,BB, i, override, method, copy)
 declare_class_2(map, collective)
 
-#define ctx_schema(X,Y,...) \
-    i_prop(X,Y, public, Au, app) \
-    i_prop(X,Y, intern, bool,   establishing, pad, 32)
+#define ctx_schema(AA,BB,...) \
+    M(AA,BB, i, prop, intern, Au,   app) \
+    M(AA,BB, i, prop, intern, bool, establishing, pad, 32)
 declare_class_3(ctx, map, collective)
 
-#define ipart_schema(AA,Y,...) \
-    i_prop    (AA,Y,   public, bool,   is_expr) \
-    i_prop    (AA,Y,   public, string, content)
+#define ipart_schema(AA,BB,...) \
+    M(AA,BB, i, prop, public, bool,   is_expr) \
+    M(AA,BB, i, prop, public, string, content)
 declare_class(ipart)
 
-#define string_schema(AA,Y,...) \
-    i_prop    (AA,Y,   public, symbol,  chars) \
-    i_prop    (AA,Y,   public, num,     alloc) \
-    i_prop    (AA,Y,   public, num,     ref_length) \
-    i_prop    (AA,Y,   public, num,     count) \
-    i_prop    (AA,Y,   public, u64,     h) \
-    i_method  (AA,Y,   public, bool,    is_numeric) \
-    i_method  (AA,Y,   public, i32,     first) \
-    i_method  (AA,Y,   public, i32,     last) \
-    i_method  (AA,Y,   public, f64,     real_value) \
-    i_guard   (AA,Y,   public, sz,      len) \
-    i_method  (AA,Y,   public, string,  ucase) \
-    i_method  (AA,Y,   public, string,  lcase) \
-    i_method  (AA,Y,   public, array,   split, symbol) \
-    i_method  (AA,Y,   public, string,  escape) \
-    i_method  (AA,Y,   public, num,     index_of, symbol) \
-    i_method  (AA,Y,   public, num,     rindex_of, symbol) \
-    i_method  (AA,Y,   public, none,    append, symbol) \
-    i_method  (AA,Y,   public, none,    append_count, symbol, i32) \
-    i_method  (AA,Y,   public, none,    push, u32) \
-    i_method  (AA,Y,   public, none,    concat, string) \
-    i_method  (AA,Y,   public, string,  trim) \
-    i_method  (AA,Y,   public, string,  ltrim) \
-    i_method  (AA,Y,   public, string,  rtrim) \
-    i_method  (AA,Y,   public, string,  mid, num, num) \
-    i_method  (AA,Y,   public, none,    reserve, num) \
-    i_method  (AA,Y,   public, none,    writef, handle, bool) \
-    i_method  (AA,Y,   public, bool,    ends_with, symbol) \
-    i_method  (AA,Y,   public, bool,    starts_with, symbol) \
-    i_method  (AA,Y,   public, num,     cmp, symbol) \
-    i_method  (AA,Y,   public, bool,    eq,  symbol) \
-    i_method  (AA,Y,   public, string,  interpolate, Au) \
-    i_method  (AA,Y,   public, array,   split_parts) \
-    i_cast    (AA,Y,   public, cstr) \
-    i_cast    (AA,Y,   public, sz) \
-    i_cast    (AA,Y,   public, path) \
-    i_ctr     (AA,Y,   public, symbol) \
-    i_ctr     (AA,Y,   public, cstr) \
-    i_ctr     (AA,Y,   public, i32) \
-    i_operator(AA,Y,   public, none,   _assign_add,  string) \
-    i_operator(AA,Y,   public, string, _add,         string) \
-    i_index   (AA,Y,   public, i32, num) \
-    i_override(AA,Y,   method, hash) \
-    i_override(AA,Y,   method, compare) \
-    i_override(AA,Y,   method, init) \
-    i_override(AA,Y,   cast,   bool) \
-    i_override(AA,Y,   method, copy)
+#define string_schema(AA,BB,...) \
+    M(AA,BB, i, prop,    public, cstr,   chars) \
+    M(AA,BB, i, prop,    public, num,    alloc) \
+    M(AA,BB, i, prop,    public, num,    ref_length) \
+    M(AA,BB, i, prop,    public, num,    count) \
+    M(AA,BB, i, prop,    public, u64,    h) \
+    M(AA,BB, i, method,  public, bool,   is_numeric) \
+    M(AA,BB, i, method,  public, i32,    first) \
+    M(AA,BB, i, method,  public, i32,    last) \
+    M(AA,BB, i, method,  public, f64,    real_value) \
+    M(AA,BB, i, guard,   public, sz,     len) \
+    M(AA,BB, i, method,  public, string, ucase) \
+    M(AA,BB, i, method,  public, string, lcase) \
+    M(AA,BB, i, method,  public, array,  split, symbol) \
+    M(AA,BB, i, method,  public, string, escape) \
+    M(AA,BB, i, method,  public, num,    index_of, symbol) \
+    M(AA,BB, i, method,  public, num,    rindex_of, symbol) \
+    M(AA,BB, i, method,  public, none,   append, symbol) \
+    M(AA,BB, i, method,  public, none,   append_count, symbol, i32) \
+    M(AA,BB, i, method,  public, none,   push, u32) \
+    M(AA,BB, i, method,  public, none,   concat, string) \
+    M(AA,BB, i, method,  public, string, trim) \
+    M(AA,BB, i, method,  public, string, ltrim) \
+    M(AA,BB, i, method,  public, string, rtrim) \
+    M(AA,BB, i, method,  public, string, mid, num, num) \
+    M(AA,BB, i, method,  public, none,   reserve, num) \
+    M(AA,BB, i, method,  public, none,   writef, handle, bool) \
+    M(AA,BB, i, method,  public, bool,   ends_with, symbol) \
+    M(AA,BB, i, method,  public, bool,   starts_with, symbol) \
+    M(AA,BB, i, method,  public, num,    cmp, symbol) \
+    M(AA,BB, i, method,  public, bool,   eq, symbol) \
+    M(AA,BB, i, method,  public, string, interpolate, Au) \
+    M(AA,BB, i, method,  public, array,  split_parts) \
+    M(AA,BB, i, cast,    public, cstr) \
+    M(AA,BB, i, cast,    public, sz) \
+    M(AA,BB, i, cast,    public, path) \
+    M(AA,BB, i, ctr,     public, symbol) \
+    M(AA,BB, i, ctr,     public, cstr) \
+    M(AA,BB, i, ctr,     public, i32) \
+    M(AA,BB, i, operator, public, none,   _assign_add,  string) \
+    M(AA,BB, i, operator, public, string, _add,         string) \
+    M(AA,BB, i, index,   public, i32, num) \
+    M(AA,BB, i, override, method, hash) \
+    M(AA,BB, i, override, method, compare) \
+    M(AA,BB, i, override, method, init) \
+    M(AA,BB, i, override, cast,   bool) \
+    M(AA,BB, i, override, method, copy)
 declare_class(string)
+
 
 #define const_string_schema(AA,Y,...)
 declare_class_2(const_string, string)
 
-#define command_schema(X,Y,...) \
-    i_method  (X,Y, public, i32,    exec) \
-    i_method  (X,Y, public, string, run) \
-    s_method  (X,Y, public, i64, last_pid) \
-    i_override(X,Y, ctr, cstr)
+#define command_schema(AA,BB,...) \
+    M(AA,BB, i, method,  public, i32,    exec) \
+    M(AA,BB, i, method,  public, string, run) \
+    M(AA,BB, s, method,  public, i64,    last_pid) \
+    M(AA,BB, i, override, ctr,    cstr)
 declare_class_2(command, string)
 
-#define watch_schema(X,Y,...) \
-    i_prop      (X,Y, public, path, res) \
-    i_prop      (X,Y, public, ARef, callback) \
-    i_prop      (X,Y, public, ARef, argument) \
-    i_method    (X,Y, public, none, pause) \
-    i_method    (X,Y, public, none, start) \
-    i_override  (X,Y, method, init)
+#define watch_schema(AA,BB,...) \
+    M(AA,BB, i, prop,    public, path,  res) \
+    M(AA,BB, i, prop,    public, ARef,  callback) \
+    M(AA,BB, i, prop,    public, ARef,  argument) \
+    M(AA,BB, i, method,  public, none,  pause) \
+    M(AA,BB, i, method,  public, none,  start) \
+    M(AA,BB, i, override, method, init)
 declare_class(watch)
 
-#define mutex_schema(X,Y,...) \
-    i_prop      (X,Y, public, bool, cond) \
-    i_method    (X,Y, public, none, lock) \
-    i_method    (X,Y, public, none, unlock) \
-    i_method    (X,Y, public, none, cond_wait) \
-    i_method    (X,Y, public, none, cond_signal) \
-    i_method    (X,Y, public, none, cond_broadcast) \
-    i_prop      (X,Y, intern, struct mutex_t*, mtx, as, ARef) \
-    i_override  (X,Y, method, init) \
-    i_override  (X,Y, method, dealloc)
+#define mutex_schema(AA,BB,...) \
+    M(AA,BB, i, prop,    public, bool, cond) \
+    M(AA,BB, i, method,  public, none, lock) \
+    M(AA,BB, i, method,  public, none, unlock) \
+    M(AA,BB, i, method,  public, none, cond_wait) \
+    M(AA,BB, i, method,  public, none, cond_signal) \
+    M(AA,BB, i, method,  public, none, cond_broadcast) \
+    M(AA,BB, i, prop,    intern, struct mutex_t*, mtx, as, ARef) \
+    M(AA,BB, i, override, method, init) \
+    M(AA,BB, i, override, method, dealloc)
 declare_class(mutex)
 
-#define async_schema(X,Y,...) \
-    i_prop      (X,Y, public, hook,     work_fn) \
-    i_prop      (X,Y, public, array,    work) \
-    i_prop      (X,Y, intern, mutex,    global) \
-    i_prop      (X,Y, intern, struct thread_t*, threads, as, ARef) \
-    i_method    (X,Y, public, Au,   sync, Au) \
-    i_override  (X,Y, method, init) \
-    i_override  (X,Y, method, dealloc)
+#define async_schema(AA,BB,...) \
+    M(AA,BB, i, prop,    public, hook,  work_fn) \
+    M(AA,BB, i, prop,    public, array, work) \
+    M(AA,BB, i, prop,    intern, mutex, global) \
+    M(AA,BB, i, prop,    intern, struct thread_t*, threads, as, ARef) \
+    M(AA,BB, i, method,  public, Au,   sync, Au) \
+    M(AA,BB, i, override, method, init) \
+    M(AA,BB, i, override, method, dealloc)
 declare_class(async)
 
-#define token_schema(X,Y,...) \
-    i_prop      (X,Y,  public,  path,       source) \
-    i_prop      (X,Y,  public,  num,        line) \
-    i_prop      (X,Y,  public,  num,        column) \
-    i_prop      (X,Y,  public,  num,        indent) \
-    i_prop      (X,Y,  public,  Au,          literal) \
-    i_prop      (X,Y,  public,  bool,      cmode) \
-    i_method    (X,Y,  public,  Au_t,      get_type) \
-    i_method    (X,Y,  public,  string,     location) \
-    i_override  (X,Y,  ctr,     cstr) \
-    i_override  (X,Y,  method,  init) \
-    i_override  (X,Y,  method,  copy)
+#define token_schema(AA,BB,...) \
+    M(AA,BB, i, prop,    public, path,   source) \
+    M(AA,BB, i, prop,    public, num,    line) \
+    M(AA,BB, i, prop,    public, num,    column) \
+    M(AA,BB, i, prop,    public, num,    indent) \
+    M(AA,BB, i, prop,    public, Au,     literal) \
+    M(AA,BB, i, prop,    public, bool,   cmode) \
+    M(AA,BB, i, method,  public, Au_t,   get_type) \
+    M(AA,BB, i, method,  public, string, location) \
+    M(AA,BB, i, override, ctr,    cstr) \
+    M(AA,BB, i, override, method, init) \
+    M(AA,BB, i, override, method, copy)
 declare_class_2(token, string)
 
-#define tokens_schema(X,Y,...) \
-    i_prop      (X,Y,  required,  callback_extra, parser) \
-    i_prop      (X,Y,  required,  Au, target) \
-    i_prop      (X,Y,  required,  Au, input) \
-    i_ctr       (X,Y,  public, cstr) \
-    i_override  (X,Y,  method, init)
+#define tokens_schema(AA,BB,...) \
+    M(AA,BB, i, prop,    required, callback_extra, parser) \
+    M(AA,BB, i, prop,    required, Au,   target) \
+    M(AA,BB, i, prop,    required, Au,   input) \
+    M(AA,BB, i, ctr,     public,   cstr) \
+    M(AA,BB, i, override, method,  init)
 declare_class_3(tokens, array, collective)
- 
-#define path_schema(X,Y,...) \
-    i_method    (X,Y, public, bool,   exists) \
-    i_method    (X,Y, public, bool,   touch) \
-    i_method    (X,Y, public, bool,   create_symlink, path) \
-    i_method    (X,Y, public, bool,   is_symlink) \
-    M(X,Y, i, method,  public, path, resolve) \
-    i_method    (X,Y, public, bool,   make_dir) \
-    i_method    (X,Y, public, bool,   remove_dir) \
-    i_method    (X,Y, public, bool,   is_ext, symbol) \
-    i_method    (X,Y, public, bool,   is_empty) \
-    i_method    (X,Y, public, bool,   is_dir) \
-    i_method    (X,Y, public, none,   cp, path, bool, bool) \
-    i_method    (X,Y, public, path,   directory) \
-    i_method    (X,Y, public, none,   cd) \
-    i_method    (X,Y, public, string, stem) \
-    i_method    (X,Y, public, string, ext) \
-    i_method    (X,Y, public, string, mime) \
-    i_method    (X,Y, public, string, base64) \
-    i_method    (X,Y, public, string, filename) \
-    i_method    (X,Y, public, path,   absolute) \
-    i_method    (X,Y, public, path,   parent_dir) \
-    i_method    (X,Y, public, Au,      load, Au_t, ctx) \
-    i_method    (X,Y, public, bool,   save, Au,     ctx) \
-    i_method    (X,Y, public, path,   change_ext, cstr) \
-    i_method    (X,Y, public, array,  ls, string, bool) \
-    i_method    (X,Y, public, bool,   move, path) \
-    i_method    (X,Y, public, path,   latest_modified, ARef) \
-    i_method    (X,Y, public, i64,    modified_time) \
-    i_method    (X,Y, public, i64,    wait_for_change, i64, i64) \
-    s_method    (X,Y, public, path,   self) \
-    s_method    (X,Y, public, path,   share_path) \
-    s_method    (X,Y, public, path,   cwd) \
-    s_method    (X,Y, public, path,   tempfile, symbol) \
-    i_ctr       (X,Y, public, string) \
-    i_ctr       (X,Y, public, tokens) \
-    i_override  (X,Y, method,   hash) \
-    i_override  (X,Y, method,   init) \
-    i_override  (X,Y, method,   eq) \
-    i_override  (X,Y, ctr,      symbol) \
-    i_override  (X,Y, ctr,      cstr) \
-    i_override  (X,Y, cast,     cstr) \
-    i_override  (X,Y, cast,     sz) \
-    i_override  (X,Y, cast,     bool) \
-    i_override  (X,Y, cast,     string)
+
+#define path_schema(AA,BB,...) \
+    M(AA,BB, i, method,  public, bool,   exists) \
+    M(AA,BB, i, method,  public, bool,   touch) \
+    M(AA,BB, i, method,  public, bool,   create_symlink, path) \
+    M(AA,BB, i, method,  public, bool,   is_symlink) \
+    M(AA,BB, i, method,  public, path,   resolve) \
+    M(AA,BB, i, method,  public, bool,   make_dir) \
+    M(AA,BB, i, method,  public, bool,   remove_dir) \
+    M(AA,BB, i, method,  public, bool,   is_ext, symbol) \
+    M(AA,BB, i, method,  public, bool,   is_empty) \
+    M(AA,BB, i, method,  public, bool,   is_dir) \
+    M(AA,BB, i, method,  public, none,   cp, path, bool, bool) \
+    M(AA,BB, i, method,  public, path,   directory) \
+    M(AA,BB, i, method,  public, none,   cd) \
+    M(AA,BB, i, method,  public, string, stem) \
+    M(AA,BB, i, method,  public, string, ext) \
+    M(AA,BB, i, method,  public, string, mime) \
+    M(AA,BB, i, method,  public, string, base64) \
+    M(AA,BB, i, method,  public, string, filename) \
+    M(AA,BB, i, method,  public, path,   absolute) \
+    M(AA,BB, i, method,  public, path,   parent_dir) \
+    M(AA,BB, i, method,  public, Au,     load, Au_t, ctx) \
+    M(AA,BB, i, method,  public, bool,   save, Au, ctx) \
+    M(AA,BB, i, method,  public, path,   change_ext, cstr) \
+    M(AA,BB, i, method,  public, array,  ls, string, bool) \
+    M(AA,BB, i, method,  public, bool,   move, path) \
+    M(AA,BB, i, method,  public, path,   latest_modified, ARef) \
+    M(AA,BB, i, method,  public, i64,    modified_time) \
+    M(AA,BB, i, method,  public, i64,    wait_for_change, i64, i64) \
+    M(AA,BB, s, method,  public, path,   self) \
+    M(AA,BB, s, method,  public, path,   share_path) \
+    M(AA,BB, s, method,  public, path,   cwd) \
+    M(AA,BB, s, method,  public, path,   tempfile, symbol) \
+    M(AA,BB, i, ctr,     public, string) \
+    M(AA,BB, i, ctr,     public, tokens) \
+    M(AA,BB, i, override, method,   hash) \
+    M(AA,BB, i, override, method,   init) \
+    M(AA,BB, i, override, method,   eq) \
+    M(AA,BB, i, override, ctr,      symbol) \
+    M(AA,BB, i, override, ctr,      cstr) \
+    M(AA,BB, i, override, cast,     cstr) \
+    M(AA,BB, i, override, cast,     sz) \
+    M(AA,BB, i, override, cast,     bool) \
+    M(AA,BB, i, override, cast,     string)
 declare_class_2(path, string)
 
-#define subscriber_schema(X,Y,...) \
-    i_prop    (X,Y, required, Au,   target) \
-    i_prop    (X,Y, required, callback, method)
+#define subscriber_schema(AA,BB,...) \
+    M(AA,BB, i, prop, required, Au,       target) \
+    M(AA,BB, i, prop, required, callback, method)
 declare_class(subscriber)
 
-#define subs_schema(X,Y,...) \
-    i_prop    (X,Y, public,   array,  entries, meta, subscriber) \
-    i_method  (X,Y, public,   none,   add,    Au, callback) \
-    i_method  (X,Y, public,   Au, invoke, Au)
+#define subs_schema(AA,BB,...) \
+    M(AA,BB, i, prop,   public, array, entries, meta, subscriber) \
+    M(AA,BB, i, method, public, none,  add, Au, callback) \
+    M(AA,BB, i, method, public, Au,    invoke, Au)
 declare_class(subs)
 
-#define line_schema(X,Y,...) \
-    i_prop(X,Y, public, i32, indent) \
-    i_prop(X,Y, public, array, text)
-#undef line_intern
-#define line_intern(X,Y,...) line_schema(X,Y,__VA_ARGS__)
+
+#define line_schema(AA,BB,...) \
+    M(AA,BB, i, prop, public, i32,   indent) \
+    M(AA,BB, i, prop, public, array, text)
 declare_class(line)
 
 extern FILE* logger;
@@ -1590,15 +1600,16 @@ declare_struct(vec3f, f32)
     i_struct_prop(O,Y,f32, w)
 declare_struct(quatf)
 
-#define rgba_schema(O, Y, ...) \
-    i_prop(O,Y, public, f32, r) \
-    i_prop(O,Y, public, f32, g) \
-    i_prop(O,Y, public, f32, b) \
-    i_prop(O,Y, public, f32, a) \
-    i_method(O,Y, public, rgba, mix, rgba, f32) \
-    i_ctr(O,Y, public, cstr) \
-    i_ctr(O,Y, public, string)
+#define rgba_schema(AA,BB,...) \
+    M(AA,BB, i, prop,   public, f32,   r) \
+    M(AA,BB, i, prop,   public, f32,   g) \
+    M(AA,BB, i, prop,   public, f32,   b) \
+    M(AA,BB, i, prop,   public, f32,   a) \
+    M(AA,BB, i, method, public, rgba,  mix, rgba, f32) \
+    M(AA,BB, i, ctr,    public, cstr) \
+    M(AA,BB, i, ctr,    public, string)
 declare_class(rgba)
+
 
 f32 degrees(f32 rads);
 f32 radians(f32 degs);
@@ -1689,10 +1700,11 @@ vector_rgbaf vector_rgbaf_new(shape count, ...);
 vector_rgb8  vector_rgb8_new (shape count, ...);
 vector_rgbf  vector_rgbf_new (shape count, ...);
 
+
+
 none set_meta_array(Au_t type, int count, ...);
 none set_args_array(Au_t type, int count, ...);
 none set_meta_map(Au_t type, int count, ...);
-Au_t meta_index(Au a, int i);
 
 none array_init(array);
 

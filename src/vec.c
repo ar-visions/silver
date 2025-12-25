@@ -26,21 +26,21 @@
     } \
     N N##_add(N* a, N* b) { \
         N res = *a; \
-        T* src = a, *src2 = b, *f = &res.x; \
+        T* src = (T*)a, *src2 = (T*)b, *f = &res.x; \
         for (int i = 0; i < C; i++) \
             f[i] = src[i] + src2[i]; \
         return res; \
     } \
     N N##_sub(N* a, N* b) { \
         N res = *a; \
-        T*  src = a, *src2 = b, *f = &res.x; \
+        T*  src = (T*)a, *src2 = (T*)b, *f = &res.x; \
         for (int i = 0; i < C; i++) \
             f[i] = src[i] - src2[i]; \
         return res; \
     } \
     N N##_mul(N* a, N* b) { \
         N res = *a; \
-        T*  src = a, *src2 = b, *f = &res.x; \
+        T*  src = (T*)a, *src2 = (T*)b, *f = &res.x; \
         for (int i = 0; i < C; i++) \
             f[i] = src[i] * src2[i]; \
         return res; \
