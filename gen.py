@@ -210,7 +210,7 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     # compiler flags
     base_flags = ["-Wno-write-strings", "-Wno-incompatible-function-pointer-types",
                   "-Wno-compare-distinct-pointer-types", "-Wno-deprecated-declarations",
-                  "-Wno-incompatible-pointer-types", "-Wno-shift-op-parentheses",
+                  "-Wno-shift-op-parentheses", # "-Wno-incompatible-pointer-types", 
                   "-Wno-nullability-completeness", "-Wno-expansion-to-defined",
                   "-Wfatal-errors", "-fno-omit-frame-pointer"]
     if plat['exe'] == '.exe':

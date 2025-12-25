@@ -223,7 +223,41 @@ def generate_init_header(module, header_file, init_header):
 
 def generate_methods_header(module, header_file, methods_header):
     """Generate methods header"""
+    import re
     umodule = module.upper().replace('-', '_')
+    
+    with open(header_file, 'r') as f:
+        content = f.read()
+    
+    schema_pattern = r'#define\s+([a-zA-Z_]\w*)_schema\s*\([^)]*\)\s*\\?([\s\S]*?)(?=\n#define|\ndefine_|\ndeclare_|\Z)'
+    
+    method_patterns = [
+        (r'M\s*\([^,]*,[^,]*,\s*i\s*,\s*final\s*,[^,]*,[^,]*,\s*([a-zA-Z_]\w*)\s*((?:,\s*[a-zA-Z_]\w*)+)\s*\)', True, True),
+        (r'i_final\s*\(\s*[^,]*\s*,\s*[^,]*\s*,\s*[^,]*\s*,\s*[^,]*\s*,\s*([a-zA-Z_]\w*)\s*((?:,\s*[a-zA-Z_]\w*)+)\s*\)', True, True),
+        (r'i_guard\s*\(\s*[^,]*\s*,\s*[^,]*\s*,\s*[^,]*\s*,\s*[^,]*\s*,\s*([a-zA-Z_]\w*)\s*((?:,\s*[a-zA-Z_]\w*)+)\s*\)', True, True),
+        (r'i_method\s*\([^,]*,[^,]*,[^,]*,[^,]*,\s*([a-zA-Z_]\w*)', False, False),
+        (r'M\s*\([^,]*,[^,]*,\s*i\s*,\s*method\s*,[^,]*,[^,]*,\s*([a-zA-Z_]\w*)', False, False),
+        (r'i_vargs\s*\([^,]*,[^,]*,[^,]*,[^,]*,\s*([a-zA-Z_]\w*)', False, False),
+    ]
+    
+    processed = set()
+    methods = []
+    
+    for schema_match in re.finditer(schema_pattern, content):
+        classname = schema_match.group(1)
+        schema_body = schema_match.group(2)
+        
+        for pattern, null_safe, has_typed_args in method_patterns:
+            for method_match in re.finditer(pattern, schema_body):
+                method = method_match.group(1).strip()
+                if method and method not in processed:
+                    processed.add(method)
+                    arg_types = []
+                    if has_typed_args and method_match.lastindex >= 2:
+                        args_str = method_match.group(2)
+                        if args_str:
+                            arg_types = [t.strip() for t in args_str.split(',') if t.strip()]
+                    methods.append((classname, method, null_safe, arg_types))
     
     with open(methods_header, 'w') as f:
         f.write("/* generated methods */\n")
@@ -231,54 +265,45 @@ def generate_methods_header(module, header_file, methods_header):
         f.write(f"#define _{umodule}_METHODS_H_\n")
         f.write("\n")
         
-        # Track processed methods to avoid duplicates
-        processed_methods = set()
-        
-        # Process i_guard methods
-        guard_pattern = r'i_guard\s*\([^,]*,[^,]*,[^,]*,[^,]*,\s*([a-zA-Z_][a-zA-Z0-9_]*)'
-        guard_matches = find_declarations(header_file, guard_pattern)
-        
-        for method in guard_matches:
-            method = method.strip()
-            if method and method not in processed_methods:
-                processed_methods.add(method)
-                f.write(f"#undef {method}\n")
-                f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; (((Au)_i_ != (Au)0L) ? ftableI(_i_)->ft.{method}(_i_, ## __VA_ARGS__) : (__typeof__(ftableI(_i_)->ft.{method}(_i_, ## __VA_ARGS__)))0) ; }})\n")
-        
-        # Process i_method methods
-        method_pattern = r'i_method\s*\([^,]*,[^,]*,[^,]*,[^,]*,\s*([a-zA-Z_][a-zA-Z0-9_]*)'
-        method_matches = find_declarations(header_file, method_pattern)
-        
-        for method in method_matches:
-            method = method.strip()
-            if method and method not in processed_methods:
-                processed_methods.add(method)
-                f.write(f"#ifndef {method}\n")
-                f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->ft.{method}(_i_, ## __VA_ARGS__); }})\n")
-                f.write(f"#endif\n")
-
-        method_pattern = r'M\s*\([^,]*,[^,]*,\s*i\s*,\s*method\s*,[^,]*,[^,]*,\s*([a-zA-Z_][a-zA-Z0-9_]*)'
-        method_matches = find_declarations(header_file, method_pattern)
-        
-        for method in method_matches:
-            method = method.strip()
-            if method and method not in processed_methods:
-                processed_methods.add(method)
-                f.write(f"#ifndef {method}\n")
-                f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->ft.{method}(_i_, ## __VA_ARGS__); }})\n")
-                f.write(f"#endif\n")
-        
-        # Process i_vargs methods
-        vargs_pattern = r'i_vargs\s*\([^,]*,[^,]*,[^,]*,[^,]*,\s*([a-zA-Z_][a-zA-Z0-9_]*)'
-        vargs_matches = find_declarations(header_file, vargs_pattern)
-        
-        for method in vargs_matches:
-            method = method.strip()
-            if method and method not in processed_methods:
-                processed_methods.add(method)
-                f.write(f"#ifndef {method}\n")
-                f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->ft.{method}(_i_, ## __VA_ARGS__); }})\n")
-                f.write(f"#endif\n")
+        for classname, method, null_safe, arg_types in methods:
+            if len(arg_types) > 1:
+                # Multiple args: I, A1, A2, ...
+                arg_names = ["I"] + [f"A{i}" for i in range(1, len(arg_types))]
+                macro_args = ", ".join(arg_names)
+                cast_args = ", ".join(f"({t}){n}" for t, n in zip(arg_types, arg_names))
+                call = f"ftableI(I)->ft.{method}({cast_args})"
+                
+                if null_safe:
+                    f.write(f"#ifndef {method} /* {classname} */\n")
+                    f.write(f"#define {method}({macro_args}) ((((Au)I != (Au)0L) ? {call} : (__typeof__({call}))0))\n")
+                    f.write(f"#endif\n")
+                else:
+                    f.write(f"#ifndef {method} /* {classname} */\n")
+                    f.write(f"#define {method}({macro_args}) ({call})\n")
+                    f.write(f"#endif\n")
+            elif len(arg_types) == 1:
+                # Single arg (just instance)
+                itype = arg_types[0]
+                call = f"ftableI(I)->ft.{method}(({itype})I)"
+                
+                if null_safe:
+                    f.write(f"#ifndef {method} /* {classname} */\n")
+                    f.write(f"#define {method}(I) ((((Au)I != (Au)0L) ? {call} : (__typeof__({call}))0))\n")
+                    f.write(f"#endif\n")
+                else:
+                    f.write(f"#ifndef {method} /* {classname} */\n")
+                    f.write(f"#define {method}(I) ({call})\n")
+                    f.write(f"#endif\n")
+            else:
+                # No typed args - variadic
+                if null_safe:
+                    f.write(f"#ifndef {method} /* {classname} */\n")
+                    f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; (((Au)_i_ != (Au)0L) ? ftableI(_i_)->ft.{method}((Au)_i_ __VA_OPT__(,) __VA_ARGS__) : (__typeof__(ftableI(_i_)->ft.{method}((Au)_i_ __VA_OPT__(,) __VA_ARGS__)))0); }})\n")
+                    f.write(f"#endif\n")
+                else:
+                    f.write(f"#ifndef {method} /* {classname} */\n")
+                    f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->ft.{method}(_i_ __VA_OPT__(,) __VA_ARGS__); }})\n")
+                    f.write(f"#endif\n")
         
         f.write(f"\n#endif /* _{umodule}_METHODS_H_ */\n")
 

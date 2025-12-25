@@ -108,9 +108,15 @@ typedef struct _object {
 
 typedef struct _ffi_method_t ffi_method_t;
 
+#ifndef LLVM_VERSION_MAJOR
+typedef void* LLVMMetadataRef;
+typedef void* LLVMTypeRef;
+typedef void* LLVMValueRef;
+#endif
+
 // this is the standard _Au_t declaration
 typedef struct _Au_t {
-    Au_t            context;
+    Au_t            context;  
     union { Au_t src, rtype, type; };
     Au_t            schema;
     struct _etype*  user;
@@ -121,8 +127,8 @@ typedef struct _Au_t {
     u32             abi_size;
     u32             align_bits;
     u32             record_alignment;
-    ARef            llscope;
-    ARef            lltype;
+    LLVMMetadataRef llscope;
+    LLVMTypeRef     lltype;
     ARef            lldebug;
     i64             index; // index of type in module, or index of member in type
     object          value; // user-data value associated to type
@@ -184,7 +190,10 @@ typedef struct _Au_t {
     struct _object  meta_info;
     union { struct _collective_abi meta, args; };
     struct _shape*  shape;
-    u64             required_bits[2];
+    union {
+        u64             required_bits[2];
+        struct _Au_t_f* __f[2];
+    };
     struct {
         void* __none__;
     } ft;

@@ -411,7 +411,7 @@ bool message_read_content(message m, sock sc) {
 
     Au o = get(m->headers, cl);
     if (o) {
-        string v = instanceof(o, typeid(string));
+        string v = instanceof(o, string);
         if (v) {
             clen = atoi(v->chars);
         } else {
@@ -683,8 +683,8 @@ bool message_write(message m, sock sc, bool last_message) {
         }
     }
     
-    set(m->headers, string("Content-Length"), string("0"));
-    set(m->headers, string("Connection"),     conn);
+    set(m->headers, (Au)string("Content-Length"), (Au)string("0"));
+    set(m->headers, (Au)string("Connection"),     (Au)conn);
     return write_headers(m, sc);
 }
 
@@ -732,9 +732,9 @@ string dns(string hostname) {
 Au request(uri url, map args) {
     map     st_headers   = new(map);
     Au       null_content = null;
-    map     headers      = contains(args, string("headers")) ? (map)get (args, "headers") : st_headers;
-    Au       content      = contains(args, string("content")) ? get (args, "content") : null_content;
-    web     type         = contains(args, string("method"))  ? e_val(web, get(args, "method")) : web_Get;
+    map     headers      = contains(args, (Au)string("headers")) ? (map)get (args, "headers") : st_headers;
+    Au       content     = contains(args, (Au)string("content")) ? get (args, string("content")) : null_content;
+    web     type         = contains(args, (Au)string("method"))  ? e_val(web, get(args, "method")) : web_Get;
     uri     query        = url;
 
     query->mtype = type;
@@ -747,7 +747,7 @@ Au request(uri url, map args) {
 
     // Send request line
     string method = e_str(web, query->mtype);
-    send_object(client, f(string, "%o %o HTTP/1.1\r\n", method, query->query));
+    send_object(client, (Au)f(string, "%o %o HTTP/1.1\r\n", method, query->query));
 
     // Default headers
     message request = message(content, content, headers, headers, query, query);
@@ -762,9 +762,9 @@ Au request(uri url, map args) {
 uri uri_with_string(uri a, string raw) {
     array sp = split(raw, " ");
     bool has_method = len(sp) > 1;
-    string lcase = len(sp) > 0 ? get(sp, 0) : null;
+    string lcase = len(sp) > 0 ? (string)get(sp, 0) : null;
     web m = e_val(web, has_method ? lcase->chars : "get");
-    string u = get(sp, has_method ? 1 : 0);
+    string u = (string)get(sp, has_method ? 1 : 0);
     a->mtype = m;
 
     // find protocol separator
@@ -793,11 +793,11 @@ uri uri_with_string(uri a, string raw) {
     if (iq > 0) {
         a->resource = uri_decode(mid(u, 0, iq));
         string q = uri_decode(mid(u, iq + 1, len(u) - (iq + 1)));
-        array all = split(q, string("&"));
+        array all = split(q, "&");
         a->args = new(map);
         
         each(all, string, kv) {
-            array sp = split(kv, string("="));
+            array sp = split(kv, "=");
             Au     k = get(sp, 0);
             Au     v = len(sp) > 1 ? get(sp, 1) : k;
             set(a->args, k, v);
@@ -807,7 +807,7 @@ uri uri_with_string(uri a, string raw) {
     }
 
     if (len(sp) >= 3) {
-        a->version = get(sp, 2);
+        a->version = (string)get(sp, 2);
     }
 
     return a;
@@ -828,8 +828,10 @@ string uri_encode(string s) {
     for (sz i = 0; i < len; i++) {
         char c = s->chars[i];
         bool a = ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'));
-        if (!a)
-            a = index_of(chars, string((i32)c)) != -1;
+        if (!a) {
+            char ch[2] = { c, 0 };
+            a = index_of(chars, ch) != -1;
+        }
             
         if (!a) {
             append(v, "%");
