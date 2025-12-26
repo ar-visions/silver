@@ -38,7 +38,7 @@ Au_t read_arg_type(Au_t stored_arg);
     M(X,Y, i, method, public, none,             implement) \
     M(X,Y, i, method, public, array,            class_list) \
     M(X,Y, i, method, public, etype,            resolve) \
-    M(X,Y, i, method, public, etype,            canonical) \
+    M(X,Y, i, guard,  public, etype,            canonical, etype) \
     M(X,Y, i, override, method, init) \
     M(X,Y, i, override, cast,   Au_t) \
     M(X,Y, i, override, cast,   string)

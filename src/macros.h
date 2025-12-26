@@ -25,7 +25,7 @@
 #define a(...) array_of(_N_ARGS_a(a, ## __VA_ARGS__), null)
 
 
-#define TC_m(K, V) ((Au)string(K)), ((Au)(V))
+#define TC_m(K, V) ((symbol)(K)), ((Au)(V))
 #define _ARG_COUNT_IMPL_m(_0,_1,_2,_3,_4,_5,_6,_7,_8,_9,_10,_11,_12,_13,_14,_15,_16,_17,_18,_19,_20,_21,_22,N,...) N
 #define _ARG_COUNT_I_m(...) _ARG_COUNT_IMPL_m(__VA_ARGS__,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0)
 #define _ARG_COUNT_m(...)   _ARG_COUNT_I_m("Au object model", ## __VA_ARGS__)
@@ -1250,7 +1250,7 @@
 (X, Y, T, R, N, ...) t_method_##T##_##Y(X, R, N, Au_t __VA_OPT__(,) __VA_ARGS__)
 
 #define   i_guard\
-(X, Y, T, R, N, ...) i_method_##T##_##Y(X, R, N, X, ## __VA_ARGS__)
+(X, Y, T, R, N, ...) i_method_##T##_##Y(X, R, N, __VA_ARGS__)
 
 #define   i_operator_interface_F(X, R, N, ARG)
 #define   i_operator_interface_F_EXTERN(X, R, N, ARG)
@@ -1649,11 +1649,11 @@
 
 #define         form(T, t, ...)   (T)formatter(typeid(T), null,   (Au)false, (symbol)t, ## __VA_ARGS__)
 #define            f(T, t, ...)   (T)formatter(typeid(T), null,   (Au)false, (symbol)t, ## __VA_ARGS__)
-#define         exec(t, ...)      command_exec(((string)formatter((Au_t)null, null, (Au)false, (symbol)t, ## __VA_ARGS__)))
-#define          run(t, ...)      command_run(((string)formatter((Au_t)null, null, (Au)false, (symbol)t, ## __VA_ARGS__)))
-#define         vexec(n, t, ...)     verify(exec(t __VA_OPT__(,) __VA_ARGS__) == 0, "shell command failed: %s", n);
+#define         exec(t, ...)      command_exec(((command)formatter((Au_t)null, null, (Au)false, (symbol)t, ## __VA_ARGS__)))
+#define          run(t, ...)      command_run(((command)formatter((Au_t)null, null, (Au)false, (symbol)t, ## __VA_ARGS__)))
+#define         vexec(n, t, ...)     verify(exec((string)t __VA_OPT__(,) __VA_ARGS__) == 0, "shell command failed: %s", n);
 
-#define        Au_log(sL, t, ...)   formatter((Au_t)null,      stdout, string(sL),  t, ## __VA_ARGS__)
+#define        Au_log(sL, t, ...)   formatter((Au_t)null, stdout, (Au)string(sL),  t, ## __VA_ARGS__)
 
 #define          put(t,    ...)   formatter((Au_t)null,      stdout, (Au)false, (symbol)t, ## __VA_ARGS__)
 //#define        print(L, t,    ...) formatter((Au_t)null,      stdout, (Au)true,  (symbol)t, ## __VA_ARGS__)
@@ -1668,7 +1668,7 @@
 
 #define fault(t, ...) do {\
     static string _topic = null; \
-    if (!_topic) _topic = (string)Au_hold((Au)string(__func__)); \
+    if (!_topic) _topic = (string)Au_hold((Au)new(string, __func__)); \
      string res = (string)formatter((Au_t)null, stderr, (Au)_topic,  (symbol)t, ## __VA_ARGS__); \
      halt(res); \
     } while(0)
@@ -1714,7 +1714,7 @@
         for (num i = 0, __len = len(arr); i < __len; i++, e = *(E*)peek(arr, i)) \
 
 #define head(o) Au_header((Au)o)
-#define Au_struct(T) alloc(typeid(u8), sizeof(T), (Au_t*)null)
+#define Au_struct(T) (T*)alloc(typeid(u8), sizeof(T), (Au_t*)null)
 #define     e_str(E,I) estring(typeid(E), I)
 #define     e_val(E,S) evalue (typeid(E), S)
 

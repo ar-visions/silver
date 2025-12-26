@@ -158,7 +158,7 @@ vector Session_read_until(Session s, string match, i32 max_len) {
     vector_reallocate(rbytes, max_len + 1);
 
     sz slen = match->count;
-    cstr buf = vdata(rbytes);
+    cstr buf = (cstr)vdata(rbytes);
     
     for (;;) {
         vector_push(rbytes, _i8(0)); // extend buffer size here with a null, giving us space to read
@@ -318,11 +318,11 @@ none message_init(message m) {
     string ae = f(string, "Accept-Encoding");
     string h  = f(string, "Host");
 
-    if (!contains(headers, ua)) set(headers, ua, f(string, "silver"));
-    if (!contains(headers, ac)) set(headers, ac, f(string, "text/html,application/xhtml+xml,application/xml;q=0.9,*;q=0.8"));
-    if (!contains(headers, al)) set(headers, al, f(string, "en-US,en;q=0.9"));
-    if (!contains(headers, ae)) set(headers, ae, f(string, "identity"));
-    if (!contains(headers, h))  set(headers, h,  query->host);
+    if (!contains(headers, (Au)ua)) set(headers, (Au)ua, (Au)f(string, "silver"));
+    if (!contains(headers, (Au)ac)) set(headers, (Au)ac, (Au)f(string, "text/html,application/xhtml+xml,application/xml;q=0.9,*;q=0.8"));
+    if (!contains(headers, (Au)al)) set(headers, (Au)al, (Au)f(string, "en-US,en;q=0.9"));
+    if (!contains(headers, (Au)ae)) set(headers, (Au)ae, (Au)f(string, "identity"));
+    if (!contains(headers, (Au)h))  set(headers, (Au)h,  (Au)query->host);
 }
 
 message message_with_sock(message m, sock sc) {
@@ -330,7 +330,7 @@ message message_with_sock(message m, sock sc) {
     m->headers = map();
     if (read_headers(m, sc)) {
         read_content(m, sc);
-        string status = get(m->headers, string("Status"));
+        string status = (string)get(m->headers, (Au)string("Status"));
         m->code       = atoi(status->chars);
     }
     return m;
@@ -343,7 +343,7 @@ message message_with_i32(message m, i32 code) {
 }
 
 message message_with_string(message m, string text) {
-    m->content = text;
+    m->content = (Au)hold(text);
     m->code = 200;
     return m;
 }
@@ -351,9 +351,9 @@ message message_with_string(message m, string text) {
 message message_with_path(message m, path p, Au modified_since) {
     verify(exists(p) == Exists_file, "path must exist");
     string content = cast(string, load(p, typeid(string), null));
-    m->content = content;
-    string mime = f(string, "text/plain"); // TODO: implement mime_type
-    set(m->headers, string("Content-Type"), mime);
+    m->content = (Au)hold(content);
+    string mime = (string)f(string, "text/plain"); // TODO: implement mime_type
+    set(m->headers, (Au)string("Content-Type"), (Au)mime);
     m->code = 200;
     return m;
 }
@@ -382,20 +382,20 @@ bool message_read_headers(message m, sock sc) {
         if (sz == 2)
             break;
 
-        string raw = string(chars, vdata(rbytes), ref_length, sz - 2);
+        string raw = string(chars, (cstr)vdata(rbytes), ref_length, sz - 2);
 
         if (line++ == 0) {
             m->summary = hold(raw);
             array sp = split(raw, " ");
             // handle response or request line
             if (len(raw) >= 12 && len(sp) >= 3) {
-                set(m->headers, string("Status"), get(sp, 1));
+                set(m->headers, (Au)string("Status"), get(sp, 1));
             }
         } else {
             int    sep = index_of(raw, ":");
             string k   = mid(raw, 0, sep);
             string v   = trim(mid(raw, sep + 1, len(raw) - sep - 1));
-            set(m->headers, k, v);
+            set(m->headers, (Au)k, (Au)v);
         }
     }
     return true;
@@ -406,10 +406,11 @@ bool message_read_content(message m, sock sc) {
     string cl = string("Content-Length");
     string ce = string("Content-Encoding");
     
-    string encoding = contains(m->headers, te) ? get(m->headers, ce) : null;
+    string encoding = contains(m->headers, (Au)te) ?
+        (string)get(m->headers, (Au)ce) : null;
     i32 clen = -1;
 
-    Au o = get(m->headers, cl);
+    Au o = get(m->headers, (Au)cl);
     if (o) {
         string v = instanceof(o, string);
         if (v) {
@@ -419,7 +420,8 @@ bool message_read_content(message m, sock sc) {
         }
     }
     
-    bool chunked = encoding && strcmp(get(m->headers, te), "chunked") == 0;
+    string te_s = (string)get(m->headers, (Au)te);
+    bool chunked = encoding && te_s && eq(te_s, "chunked");
     num content_len = clen;
     num rlen = 0;
     const num r_max = 1024;
@@ -449,7 +451,7 @@ bool message_read_content(message m, sock sc) {
                 }
                 
                 // Parse hex length
-                content_len = strtol(vdata(rbytes), null, 16);
+                content_len = strtol((cstr)vdata(rbytes), null, 16);
                 if (content_len == 0)
                     break;
             }
@@ -461,7 +463,7 @@ bool message_read_content(message m, sock sc) {
                 rlen = recv(sc, buf, rx);
                 
                 if (rlen > 0)
-                    concat(v_data, buf, rlen);
+                    concat(v_data, (ARef)buf, rlen);
                 else if (rlen < 0) {
                     error = !sff;
                     break;
@@ -474,13 +476,13 @@ bool message_read_content(message m, sock sc) {
     }
 
     if (!error) {
-        string ctype = get(m->headers, string("Content-Type"));
+        string ctype = (string)get(m->headers, (Au)string("Content-Type"));
 
         if (ctype && starts_with(ctype, "application/json")) {
-            string js = new(string, chars, vdata(v_data), ref_length, len(v_data));
-            m->content = hold(parse(typeid(map), js->chars, null));
-        } else if (ctype && starts_with(ctype, string("text/"))) {
-            m->content = hold(new(string, chars, vdata(v_data), ref_length, len(v_data)));
+            string js = new(string, chars, (cstr)vdata(v_data), ref_length, len(v_data));
+            m->content = hold((Au)parse((Au_t)typeid(map), (cstr)js->chars, (ctx)null));
+        } else if (ctype && starts_with(ctype, "text/")) {
+            m->content = hold((Au)new(string, chars, (cstr)vdata(v_data), ref_length, len(v_data)));
         } else {
             verify(len(v_data) == 0, "unsupported content type");
             m->content = null;
@@ -522,28 +524,28 @@ symbol code_symbol(i32 code) {
     static map symbols = null;
     if (!symbols) {
         symbols = new(map);
-        set(symbols, i(200), string("OK"));
-        set(symbols, i(201), string("Created"));
-        set(symbols, i(202), string("Accepted"));
-        set(symbols, i(203), string("Non-Authoritative Information"));
-        set(symbols, i(204), string("No Content"));
-        set(symbols, i(205), string("Reset Content"));
-        set(symbols, i(206), string("Partial Content"));
-        set(symbols, i(300), string("Multiple Choices"));
-        set(symbols, i(301), string("Moved Permanently"));
-        set(symbols, i(302), string("Found"));
-        set(symbols, i(303), string("See Other"));
-        set(symbols, i(304), string("Not Modified"));
-        set(symbols, i(307), string("Temporary Redirect"));
-        set(symbols, i(308), string("Permanent Redirect"));
-        set(symbols, i(400), string("Bad Request"));
-        set(symbols, i(402), string("Payment Required"));
-        set(symbols, i(403), string("Forbidden"));
-        set(symbols, i(404), string("Not Found"));
-        set(symbols, i(500), string("Internal Server Error"));
-        set(symbols, i(0),   string("Unknown"));
+        set(symbols, i(200), (Au)string("OK"));
+        set(symbols, i(201), (Au)string("Created"));
+        set(symbols, i(202), (Au)string("Accepted"));
+        set(symbols, i(203), (Au)string("Non-Authoritative Information"));
+        set(symbols, i(204), (Au)string("No Content"));
+        set(symbols, i(205), (Au)string("Reset Content"));
+        set(symbols, i(206), (Au)string("Partial Content"));
+        set(symbols, i(300), (Au)string("Multiple Choices"));
+        set(symbols, i(301), (Au)string("Moved Permanently"));
+        set(symbols, i(302), (Au)string("Found"));
+        set(symbols, i(303), (Au)string("See Other"));
+        set(symbols, i(304), (Au)string("Not Modified"));
+        set(symbols, i(307), (Au)string("Temporary Redirect"));
+        set(symbols, i(308), (Au)string("Permanent Redirect"));
+        set(symbols, i(400), (Au)string("Bad Request"));
+        set(symbols, i(402), (Au)string("Payment Required"));
+        set(symbols, i(403), (Au)string("Forbidden"));
+        set(symbols, i(404), (Au)string("Not Found"));
+        set(symbols, i(500), (Au)string("Internal Server Error"));
+        set(symbols, i(0),   (Au)string("Unknown"));
     }
-    string s_code = get(symbols, i(code));
+    string s_code = (string)get(symbols, i(code));
     string result = s_code ? s_code : (string)get(symbols, i(0));
     return result->chars;
 }
@@ -561,24 +563,24 @@ string message_text(message m) {
 }
 
 map message_cookies(message m) {
-    string cookies = get(m->headers, string("Set-Cookie"));
+    string cookies = (string)get(m->headers, (Au)string("Set-Cookie"));
     if (!cookies)
         return new(map);
 
     string decoded = uri_decode(cookies);
-    array parts = split(decoded, string(","));
-    string all = get(parts, 0);
-    array pairs = split(all, string(";"));
-    map result = new(map);
+    array  parts   = split(decoded, ",");
+    string all     = (string)get(parts, 0);
+    array  pairs   = split(all, ";");
+    map    result  = new(map);
 
     each(pairs, string, pair) {
-        array kv = split(pair, string("="));
+        array kv = split(pair, "=");
         if (len(kv) < 2)
             continue;
             
-        string key = get(kv, 0);
-        string val = get(kv, 1);
-        set(result, key, val);
+        string key = (string)get(kv, 0);
+        string val = (string)get(kv, 1);
+        set(result, (Au)key, (Au)val);
     }
 
     return result;
@@ -588,7 +590,7 @@ map message_cookies(message m) {
 bool message_write_status(message m, sock sc) {
     string status = string("Status");
     i32 code = 0;
-    Au s = get(m->headers, status);
+    Au s = get(m->headers, (Au)status);
     if (s) {
         Au_t t = isa(s);
         int test = 1;
@@ -598,7 +600,7 @@ bool message_write_status(message m, sock sc) {
         code = m->code;
     else
         code = 200;
-    return send_object(sc, f(string, "HTTP/1.1 %i %s\r\n", code, code_symbol(code)));
+    return send_object(sc, (Au)f(string, "HTTP/1.1 %i %s\r\n", code, code_symbol(code)));
 }
 
 
@@ -608,7 +610,7 @@ bool message_write_headers(message m, sock sc) {
         string v = cast(string, ii->value);
         if (strcmp(k->chars, "Status") == 0 || !v)
             continue;
-        if (!send_object(sc, f(string, "%o: %o\r\n", k, v)))
+        if (!send_object(sc, (Au)f(string, "%o: %o\r\n", k, v)))
             return false;
     }
     return send_bytes(sc, "\r\n", 2);
@@ -646,38 +648,38 @@ bool message_write(message m, sock sc, bool last_message) {
         symbol s = code_symbol(ic);
         verify(s, "invalid status code");
         string header = f(string, "HTTP/1.1 %i %s\r\n", ic, s);
-        if (!send_object(sc, header))
+        if (!send_object(sc, (Au)header))
             return false;
     } else {
         // send uri type
         string method = e_str(web, m->query->mtype);
         string header = f(string, "%o %o HTTP/1.1\r\n", ucase(method), m->query->query);
-        if (!send_object(sc, header))
+        if (!send_object(sc, (Au)header))
             return false;
     }
 
     if (m->content) {
         Au_t ct = isa(m->content);
         
-        if (ct && !contains(m->headers, string("Content-Type")))
-            set(m->headers, string("Content-Type"), string("application/json"));
+        if (ct && !contains(m->headers, (Au)string("Content-Type")))
+            set(m->headers, (Au)string("Content-Type"), (Au)string("application/json"));
         
-        set(m->headers, string("Connection"), conn);
+        set(m->headers, (Au)string("Connection"), (Au)conn);
         
-        string headers_ct = get(m->headers, string("Content-Type"));
+        string headers_ct = (string)get(m->headers, (Au)string("Content-Type"));
         if (ct == typeid(map)) {
             string post = json(m->content);
-            set(m->headers, string("Content-Length"), _i64(len(post)));
+            set(m->headers, (Au)string("Content-Length"), (Au)_i64(len(post)));
             //set(m->headers, string("Content-Type"),   string("application/json"));
             write_headers(m, sc);
-            return send_object(sc, post);
+            return send_object(sc, (Au)post);
         } else if (ct == typeid(u8)) {
             num byte_count = header(m->content)->count;
-            set(m->headers, string("Content-Length"), _i64(byte_count));
+            set(m->headers, (Au)string("Content-Length"), (Au)_i64(byte_count));
             return send_bytes(sc, m->content, byte_count);
         } else {
             verify(ct == typeid(string), "unsupported content type");
-            set(m->headers, string("Content-Length"), _i64(len((string)m->content)));
+            set(m->headers, (Au)string("Content-Length"), (Au)_i64(len((string)m->content)));
             write_headers(m, sc);
             return send_object(sc, m->content);
         }
@@ -718,7 +720,7 @@ string dns(string hostname) {
             addr = &(ipv6->sin6_addr);
         }
 
-        char* ip_str = inet_ntop(p->ai_family, addr, ip, sizeof(ip));
+        char* ip_str = (char*)inet_ntop(p->ai_family, addr, ip, sizeof(ip));
         if (ip_str) {
             result = string(ip_str);
             break;
@@ -732,9 +734,10 @@ string dns(string hostname) {
 Au request(uri url, map args) {
     map     st_headers   = new(map);
     Au       null_content = null;
-    map     headers      = contains(args, (Au)string("headers")) ? (map)get (args, "headers") : st_headers;
-    Au       content     = contains(args, (Au)string("content")) ? get (args, string("content")) : null_content;
-    web     type         = contains(args, (Au)string("method"))  ? e_val(web, get(args, "method")) : web_Get;
+    map     headers      = contains(args, (Au)string("headers")) ? (map)get (args, (Au)string("headers")) : st_headers;
+    Au       content     = contains(args, (Au)string("content")) ? get (args, (Au)string("content")) : null_content;
+    web     type         = contains(args, (Au)string("method"))  ?
+        e_val(web, ((string)get(args, (Au)string("method")))->chars) : web_Get;
     uri     query        = url;
 
     query->mtype = type;
@@ -756,7 +759,7 @@ Au request(uri url, map args) {
     message response = message(client);
     close(client);
 
-    return response;
+    return (Au)response;
 }
 
 uri uri_with_string(uri a, string raw) {
@@ -888,7 +891,7 @@ string uri_decode(string e) {
 
 // The handler function signature would be:
 Au handle_client(Au target, Au client_sock, Au context) {
-    sock s = client_sock;
+    sock s = (sock)client_sock;
     // Handle the client socket
     return _bool(true);
 }
@@ -905,11 +908,11 @@ Au sock_listen(uri url, subprocedure handler) {
         // - target from handler->target
         // - client as the data arg 
         // - context from handler->ctx
-        Au result = invoke(handler, client);
+        Au result = invoke(handler, (Au)client);
         if (!cast(bool, result))
             break;
     }
-    return tls;
+    return (Au)tls;
 }
 
 sock sock_with_TLS(sock s, TLS tls) {

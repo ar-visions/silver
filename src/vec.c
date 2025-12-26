@@ -19,28 +19,28 @@
     } \
     N N##_scale(N* a, f32 n) { \
         N res = *a; \
-        T* src = a, *f = &res.x; \
+        T* src = (T*)a, *f = (T*)&res.x; \
         for (int i = 0; i < C; i++) \
             f[i] = src[i] * n; \
         return res; \
     } \
     N N##_add(N* a, N* b) { \
         N res = *a; \
-        T* src = (T*)a, *src2 = (T*)b, *f = &res.x; \
+        T* src = (T*)a, *src2 = (T*)b, *f = (T*)&res.x; \
         for (int i = 0; i < C; i++) \
             f[i] = src[i] + src2[i]; \
         return res; \
     } \
     N N##_sub(N* a, N* b) { \
         N res = *a; \
-        T*  src = (T*)a, *src2 = (T*)b, *f = &res.x; \
+        T*  src = (T*)a, *src2 = (T*)b, *f = (T*)&res.x; \
         for (int i = 0; i < C; i++) \
             f[i] = src[i] - src2[i]; \
         return res; \
     } \
     N N##_mul(N* a, N* b) { \
         N res = *a; \
-        T*  src = (T*)a, *src2 = (T*)b, *f = &res.x; \
+        T*  src = (T*)a, *src2 = (T*)b, *f = (T*)&res.x; \
         for (int i = 0; i < C; i++) \
             f[i] = src[i] * src2[i]; \
         return res; \
@@ -233,7 +233,7 @@ vec3f vec3f_rand() {
         ((float)rand() / (float)RAND_MAX) * 2.0f - 1.0f,
         ((float)rand() / (float)RAND_MAX) * 2.0f - 1.0f
     };
-    return vec3f_normalize(f);
+    return vec3f_normalize((vec3f*)f);
 }
 
 /// vec4f treated as axis x/y/z + theta (w) args
@@ -541,7 +541,7 @@ vector_##T vector_##T##_new(shape vshape, ...) { \
     va_start(args, vshape); \
     vector_##T result = vector_##T(); \
     result->shape = hold(vshape); \
-    T* T##_data = vdata(result); \
+    T* T##_data = (T*)vdata(result); \
     for (int i = 0, count = shape_total(vshape); i < count; i++) { \
         T##_data[i] = (T)va_arg(args, ARG_T); \
     } \

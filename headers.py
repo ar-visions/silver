@@ -178,7 +178,7 @@ def generate_init_header(module, header_file, init_header):
             if decl_type in ["meta", "vector"]:
                 f.write(f"#define _N_ARGS_{class_name}_1( TYPE, a)\n")
             else:
-                f.write(f"#define _N_ARGS_{class_name}_1( TYPE, a) _Generic((a), TYPE##_schema(TYPE, GENERICS, Au) Au_schema(Au, GENERICS, Au) const void *: (void)0)(instance, a)\n")
+                f.write(f"#define _N_ARGS_{class_name}_1( TYPE, a) _Generic((a), TYPE##_schema(TYPE, GENERICS, Au) Au_schema(Au, GENERICS, Au) const void *: (void)0)((TYPE)instance, a)\n")
             
             # Property assignment macros for various argument counts
             for i in range(2, 24, 2):
@@ -232,9 +232,10 @@ def generate_methods_header(module, header_file, methods_header):
     schema_pattern = r'#define\s+([a-zA-Z_]\w*)_schema\s*\([^)]*\)\s*\\?([\s\S]*?)(?=\n#define|\ndefine_|\ndeclare_|\Z)'
     
     method_patterns = [
-        (r'M\s*\([^,]*,[^,]*,\s*i\s*,\s*final\s*,[^,]*,[^,]*,\s*([a-zA-Z_]\w*)\s*((?:,\s*[a-zA-Z_]\w*)+)\s*\)', True, True),
-        (r'i_final\s*\(\s*[^,]*\s*,\s*[^,]*\s*,\s*[^,]*\s*,\s*[^,]*\s*,\s*([a-zA-Z_]\w*)\s*((?:,\s*[a-zA-Z_]\w*)+)\s*\)', True, True),
-        (r'i_guard\s*\(\s*[^,]*\s*,\s*[^,]*\s*,\s*[^,]*\s*,\s*[^,]*\s*,\s*([a-zA-Z_]\w*)\s*((?:,\s*[a-zA-Z_]\w*)+)\s*\)', True, True),
+        (r'M\s*\([^,]*,[^,]*,\s*i\s*,\s*final\s*,[^,]*,[^,]*,\s*([a-zA-Z_]\w*)\s*((?:,\s*[a-zA-Z_]\w*)*)\s*\)', True, True),
+        (r'M\s*\([^,]*,[^,]*,\s*i\s*,\s*guard\s*,[^,]*,[^,]*,\s*([a-zA-Z_]\w*)\s*((?:,\s*[a-zA-Z_]\w*)*)\s*\)', True, True),
+        (r'i_final\s*\(\s*[^,]*\s*,\s*[^,]*\s*,\s*[^,]*\s*,\s*[^,]*\s*,\s*([a-zA-Z_]\w*)\s*((?:,\s*[a-zA-Z_]\w*)*)\s*\)', True, True),
+        (r'i_guard\s*\(\s*[^,]*\s*,\s*[^,]*\s*,\s*[^,]*\s*,\s*[^,]*\s*,\s*([a-zA-Z_]\w*)\s*((?:,\s*[a-zA-Z_]\w*)*)\s*\)', True, True),
         (r'i_method\s*\([^,]*,[^,]*,[^,]*,[^,]*,\s*([a-zA-Z_]\w*)', False, False),
         (r'M\s*\([^,]*,[^,]*,\s*i\s*,\s*method\s*,[^,]*,[^,]*,\s*([a-zA-Z_]\w*)', False, False),
         (r'i_vargs\s*\([^,]*,[^,]*,[^,]*,[^,]*,\s*([a-zA-Z_]\w*)', False, False),
@@ -298,7 +299,7 @@ def generate_methods_header(module, header_file, methods_header):
                 # No typed args - variadic
                 if null_safe:
                     f.write(f"#ifndef {method} /* {classname} */\n")
-                    f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; (((Au)_i_ != (Au)0L) ? ftableI(_i_)->ft.{method}((Au)_i_ __VA_OPT__(,) __VA_ARGS__) : (__typeof__(ftableI(_i_)->ft.{method}((Au)_i_ __VA_OPT__(,) __VA_ARGS__)))0); }})\n")
+                    f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; (((Au)_i_ != (Au)0L) ? ftableI(_i_)->ft.{method}(({classname})_i_ __VA_OPT__(,) __VA_ARGS__) : (__typeof__(ftableI(_i_)->ft.{method}((Au)_i_ __VA_OPT__(,) __VA_ARGS__)))0); }})\n")
                     f.write(f"#endif\n")
                 else:
                     f.write(f"#ifndef {method} /* {classname} */\n")

@@ -595,6 +595,7 @@ forward(any)
     M(AA,BB, i, method, public, i32, compare, AA) \
     M(AA,BB, i, method, public, u64, hash) \
     M(AA,BB, i, method, public, AA, copy) \
+    M(AA,BB, i, guard, public, sz, len, Au) \
     M(AA,BB, i, final, public, callback, binding,   Au, Au, bool, Au_t, Au_t, symbol, symbol) \
     M(AA,BB, i, final, public, ref_u64, AF_bits,    Au) \
     M(AA,BB, i, final, public, none, AF_set_id,     Au, i32) \
@@ -717,7 +718,7 @@ typedef struct _Au_t_f {
 
 #define typeid(AA)   ((Au_t)&AA##_i.type)
 #define scalarof(AA) head(AA)->scalar
-#define instanceof(I,A) (Au)Au_instance_of((Au)I, typeid(A))
+#define instanceof(I,A) (A)Au_instance_of((Au)I, typeid(A))
 
 forward(item)
 
@@ -750,8 +751,8 @@ typedef struct _collective_abi {
     M(AA,BB, i, prop, public, Au_t, type) \
     M(AA,BB, i, prop, public, shape, shape) \
     M(AA,BB, i, override, method, init) \
-    M(AA,BB, i, final, public, num, len, collective) \
-    M(AA,BB, i, method, public, Au, peek, num)
+    M(AA,BB, i, method, public, Au, peek, num) \
+    M(AA,BB, i, override, method, len)
 declare_class(collective)
 
 #define numeric_schema(AA,BB,...) \
@@ -1191,7 +1192,7 @@ none vector_init(vector);
     M(AA,BB, i, method, public,   Au,     invoke, Au)
 declare_class(subprocedure)
 
-#define subproc(targ, faddr, context) new(subprocedure, target, targ, ctx, context, addr, faddr) 
+#define subproc(targ, faddr, context) new(subprocedure, target, (Au)targ, ctx, (Au)context, addr, (handle)faddr) 
 
 typedef Au(*mix_fn)(Au, Au, f32);
 
@@ -1272,7 +1273,7 @@ extern int fault_level;
 declare_enum(level)
 
 #define map_schema(AA,BB,...) \
-    M(AA,BB, i, method, public, none, set,        Au, Au) \
+    M(AA,BB, i, final,  public, none, set,        map, Au, Au) \
     M(AA,BB, i, method, public, Au,   get,        Au) \
     M(AA,BB, i, method, public, Au,   value_by_index, num) \
     M(AA,BB, i, method, public, item, lookup,     Au) \
@@ -1312,7 +1313,6 @@ declare_class(ipart)
     M(AA,BB, i, method,  public, i32,    first) \
     M(AA,BB, i, method,  public, i32,    last) \
     M(AA,BB, i, method,  public, f64,    real_value) \
-    M(AA,BB, i, guard,   public, sz,     len) \
     M(AA,BB, i, method,  public, string, ucase) \
     M(AA,BB, i, method,  public, string, lcase) \
     M(AA,BB, i, method,  public, array,  split, symbol) \
@@ -1344,6 +1344,7 @@ declare_class(ipart)
     M(AA,BB, i, operator, public, none,   _assign_add,  string) \
     M(AA,BB, i, operator, public, string, _add,         string) \
     M(AA,BB, i, index,   public, i32, num) \
+    M(AA,BB, i, override, method, len) \
     M(AA,BB, i, override, method, hash) \
     M(AA,BB, i, override, method, compare) \
     M(AA,BB, i, override, method, init) \
