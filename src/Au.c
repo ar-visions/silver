@@ -86,7 +86,7 @@ bool Au_is_type    (Au t) { return au_arg(t)->member_type == AU_MEMBER_TYPE; }
 shape shape_with_array(shape a, array dims) {
     num count = len(dims);
     each (dims, Au, e) {
-        i64* i = (i64*)instanceof(e, i64);
+        i64* i = (i64*)Au_instance_of(e, typeid(i64));
         a->data[a->count++] = *i;
     }
     return a;
@@ -483,6 +483,10 @@ Au array_get(array a, num i) {
 }
 
 num array_count(array a) {
+    return a->count;
+}
+
+sz string_len(string a) {
     return a->count;
 }
 
@@ -2264,11 +2268,10 @@ Au Au_method(Au_t type, cstr method_name, array args);
 sz Au_len(Au a) {
     if (!a) return 0;
     Au_t t = isa(a);
-    if (t == typeid(string)) return ((string)a)->count;
-    if (t == typeid(array))  return ((array) a)->count;
-    if (t == typeid(map))    return ((map)a)->count;
+    if (instanceof(t, string))     return ((string)a)->count;
+    if (instanceof(t, collective)) return ((array) a)->count;
     if (t == typeid(cstr) || t == typeid(symbol) || t == typeid(cereal))
-        return strlen(a);
+        return strlen((cstr)a);
     Au aa = header(a);
     return aa->count;
 }
@@ -3098,8 +3101,6 @@ none  string_push(string a, u32 b) {
 none  string_concat(string a, string b) {
     string_append(a, b->chars);
 }
-
-sz string_len(string a) { return a->count; }
 
 num   string_index_of(string a, symbol cs) {
     cstr f = strstr(a->chars, cs);
