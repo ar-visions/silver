@@ -1081,7 +1081,7 @@
     set_args_array(m, emit_types(__VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
     m->offset  = 0; \
-    m->value   = &N; \
+    m->value   = (object)&N; \
 }
 
 #define   t_method_public_PROTO(X, R, N, ...)

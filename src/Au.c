@@ -1970,9 +1970,9 @@ Au construct_with(Au_t type, Au data, ctx context) {
                 // lets set required properties from context
                 string k = string(mem->ident);
                 if ((mem->traits & AU_TRAIT_REQUIRED) != 0 && (mem->member_type == AU_MEMBER_VAR) && 
-                    !contains(mdata, k))
+                    !contains(mdata, (Au)k))
                 {
-                    Au from_ctx = get(context, k);
+                    Au from_ctx = get(context, (Au)k);
                     verify(from_ctx,
                         "context requires property: %s (%s) in class %s",
                             mem->ident, mem->type->ident, au->ident);
@@ -1988,7 +1988,7 @@ Au construct_with(Au_t type, Au data, ctx context) {
     if (type->traits & AU_TRAIT_ENUM) {
         i64 v = 0;
         if (data_type->traits & AU_TRAIT_INTEGRAL)
-            v = read_integer(data_type);
+            v = read_integer((Au)data_type);
         else if (data_type == typeid(symbol) || data_type == typeid(cstr))
             v = evalue (type, (cstr)data);
         else if (data_type == typeid(string))
@@ -2008,7 +2008,7 @@ Au construct_with(Au_t type, Au data, ctx context) {
         if (data_type == typeid(string))
             Au_with_cereal(result, (cereal) { .value = (cstr)((string)data)->chars } );
         else
-            Au_with_cereal(result, (cereal) { .value = data });
+            Au_with_cereal(result, (cereal) { .value = (cstr)data });
     }
 
     /// check for compatible constructor
@@ -2037,7 +2037,7 @@ Au construct_with(Au_t type, Au data, ctx context) {
             } else if ((mem->type == typeid(symbol) || mem->type == typeid(cstr)) && 
                        (data_type == typeid(symbol) || data_type == typeid(cstr))) {
                 result = alloc(type, 1, null);
-                ((none(*)(Au, cstr))addr)(result, data);
+                ((none(*)(Au, cstr))addr)(result, (cstr)data);
                 break;
             } else if ((mem->type == typeid(string)) && 
                        (data_type == typeid(symbol) || data_type == typeid(cstr))) {
@@ -2057,7 +2057,7 @@ Au construct_with(Au_t type, Au data, ctx context) {
     if (result && data_type == typeid(map)) {
         map f = (map)data;
         pairs(f, i) {
-            string name = i->key;
+            string name = (string)i->key;
             Au_AF_set_name(result, (cstr)name->chars);
         }
     }
@@ -2118,7 +2118,7 @@ bool Au_member_set(Au a, Au_t m, Au value) {
     bool  is_enum      = (m->type->traits & AU_TRAIT_ENUM)      != 0;
     bool  is_struct    = (m->type->traits & AU_TRAIT_STRUCT)    != 0;
     bool  is_inlay     = (m->type->traits & AU_TRAIT_INLAY)    != 0;
-    ARef  member_ptr   = (cstr)a + m->offset;
+    ARef  member_ptr   = (ARef)((cstr)a + m->offset);
     Au_t vtype        = isa(value);
     Au     vinfo        = head(value);
 
@@ -2127,7 +2127,7 @@ bool Au_member_set(Au a, Au_t m, Au value) {
             "vector size mismatch for %s", m->ident);
         memcpy(member_ptr, value, m->type->typesize);
     } else if (is_enum || is_inlay || is_primitive) {
-        Au_t ref = *m->type->meta.origin;
+        Au_t ref = (Au_t)*m->type->meta.origin;
         verify(!is_struct || vtype == m->type ||
             vtype == ref,
             "%s: expected vmember_type (%s) to equal isa(value) (%s)",
@@ -2154,7 +2154,7 @@ Au Au_member_object(Au a, Au_t m) {
                         (m->type->traits & AU_TRAIT_STRUCT) != 0;
     bool is_inlay     = (m->type->traits & AU_TRAIT_INLAY) != 0;
     Au result;
-    ARef   member_ptr = (cstr)a + m->offset;
+    ARef   member_ptr = (ARef)((cstr)a + m->offset);
     if (is_inlay || is_primitive) {
         result = alloc(m->type, 1, null);
         memcpy(result, member_ptr, m->type->typesize);
@@ -2350,7 +2350,7 @@ Au formatter(Au_t type, handle ff, Au opt, symbol template, ...) {
                 if (!arg) {
                     a = string("null");
                 } else {
-                    Au_t au = arg;
+                    Au_t au = (Au_t)arg;
                     a = string(au->ident);
                 }
             } else
@@ -2413,7 +2413,7 @@ Au formatter(Au_t type, handle ff, Au opt, symbol template, ...) {
     if (f && field) {
         char info[256];
         symbolic_logging = true;
-        Au fvalue = get(log_funcs, field); // make get be harmless to map; null is absolutely fine identity wise to understand that
+        Au fvalue = get(log_funcs, (Au)field); // make get be harmless to map; null is absolutely fine identity wise to understand that
         int    l      = 0;
         string tname  = null;
         string fname  = field;
@@ -2423,10 +2423,10 @@ Au formatter(Au_t type, handle ff, Au opt, symbol template, ...) {
         if ((l = index_of(fname, "_")) > 1) {
             tname = mid(fname, 0, l);
             fname = mid(fname, l + 1, len(fname) - (l + 1));
-            if (!listen && (contains(log_funcs, tname) || contains(log_funcs, fname)))
+            if (!listen && (contains(log_funcs, (Au)tname) || contains(log_funcs, (Au)fname)))
                 listen = true;
         }
-        if (!listen && !contains(log_funcs, asterick)) return null;
+        if (!listen && !contains(log_funcs, (Au)asterick)) return null;
         // write type / function
         if (tname)
             sprintf(info, "\x1b[34m%s::%s:\x1b[21G \x1b[0m", tname->chars, fname->chars);
@@ -2522,7 +2522,7 @@ real clampf(real i, real mn, real mx) {
 none vector_init(vector a);
 
 vector vector_with_i32(vector a, i32 count) {
-    Au_vrealloc(a, count);
+    Au_vrealloc((Au)a, count);
     return a;
 }
 
@@ -3604,9 +3604,9 @@ Au Au_vrealloc(Au a, sz alloc) {
         Au_t type = vdata_type(a);
         sz  size  = vdata_stride(a);
         u8* data  = calloc(alloc, size);
-        u8* prev  = i->data;
+        u8* prev  = (u8*)i->data;
         memcpy(data, prev, i->count * size);
-        i->data  = data;
+        i->data  = (Au)data;
         i->alloc = alloc;
         if ((Au)prev != a) free(prev);
     }
@@ -3621,7 +3621,7 @@ none vector_init(vector a) {
     verify(f->scalar, "scalar not set");
     if (f->shape)
         a->alloc = shape_total(f->shape);
-    Au_vrealloc(a, a->alloc);
+    Au_vrealloc((Au)a, a->alloc);
 }
 
 vector vector_with_path(vector a, path file_path) {
@@ -3644,25 +3644,25 @@ vector vector_with_path(vector a, path file_path) {
 
 ARef vector_get(vector a, num index) {
     num location = index * a->type->typesize;
-    i8* arb = vdata(a);
-    return &arb[location];
+    i8* arb = (i8*)vdata(a);
+    return (ARef)&arb[location];
 }
 
 none vector_set(vector a, num index, ARef element) {
     num location = index * a->type->typesize;
-    i8* arb = vdata(a);
+    i8* arb = (i8*)vdata(a);
     memcpy(&arb[location], element, a->type->typesize); 
 }
 
 Au vector_resize(vector a, sz size) {
-    Au_vrealloc(a, size);
+    Au_vrealloc((Au)a, size);
     Au f = header(a);
     f->count = size;
     return f->data;
 }
 
 Au vector_reallocate(vector a, sz size) {
-    Au_vrealloc(a, size);
+    Au_vrealloc((Au)a, size);
     Au f = header(a);
     return f->data;
 }
@@ -3695,7 +3695,7 @@ vector vector_slice(vector a, num from, num to) {
     num count = (1 + abso(from - to)); // + 31 & ~31;
     Au res = alloc(f->type, 1, null);
     Au res_f = header(res);
-    u8* src   = f->data;
+    u8* src   = (u8*)f->data;
     u8* dst   = null;
     fault("implement vector_slice allocator");
     i64 stride = vdata_stride(a);
@@ -3706,7 +3706,7 @@ vector vector_slice(vector a, num from, num to) {
             memcpy(dst, &src[i * stride], count * stride);
     res_f->data = dst;
     Au_initialize(res);
-    return res;
+    return (vector)res;
 }
 
 sz vector_count(vector a) {
@@ -4018,7 +4018,7 @@ static path _path_latest_modified(path a, ARef mvalue, map visit) {
     cstr canonical = realpath(base_dir, null);
     if (!canonical) return null;
     string k = string(canonical);
-    if (contains(visit, k)) return null;;
+    if (contains(visit, (Au)k)) return null;;
     set(visit, (Au)k, _bool(true));
     
     DIR *dir = opendir(base_dir);
@@ -4046,7 +4046,7 @@ static path _path_latest_modified(path a, ARef mvalue, map visit) {
             } else if (S_ISDIR(statbuf.st_mode)) {
                 path subdir = new(path, chars, abs);
                 i64 sub_latest = 0;
-                path lf = _path_latest_modified(subdir, &sub_latest, visit);
+                path lf = _path_latest_modified(subdir, (ARef)&sub_latest, visit);
                 if (lf && sub_latest > latest) {
                     latest = sub_latest;
                     *((i64*)mvalue) = latest;
@@ -4152,7 +4152,7 @@ i64 path_modified_time(path a) {
 
     if (is_dir(a)) {
         i64  mtime  = 0;
-        path latest = latest_modified(a, &mtime);
+        path latest = latest_modified(a, (ARef)&mtime);
         return mtime;
     } else {
 
@@ -4369,7 +4369,7 @@ Exists Au_exists(Au o) {
     if (type == typeid(string))
         f = cast(path, (string)o);
     else if (type == typeid(path))
-        f = o;
+        f = (path)o;
     assert(f, "type not supported");
     bool is_dir = is_dir(f);
     bool r = exists(f);
@@ -4502,6 +4502,8 @@ bool path_save(path a, Au content, ctx context) {
     return success;
 }
 
+Au Au_parse(Au_t schema, cstr s, ctx context);
+
 Au path_load(path a, Au_t type, ctx context) {
     if (is_dir(a)) return null;
     if (type == typeid(array))
@@ -4518,9 +4520,9 @@ Au path_load(path a, Au_t type, ctx context) {
     assert(n == flen, "could not read enough bytes");
     str->count   = flen;
     if (type == typeid(string))
-        return str;
+        return (Au)str;
     if (is_obj) {
-        Au obj = parse(type, (cstr)str->chars, context);
+        Au obj = Au_parse((Au)type, (cstr)str->chars, context);
         return obj;
     }
     assert(false, "not implemented");
@@ -4654,11 +4656,11 @@ none mutex_unlock(mutex m) {
 }
 
 none mutex_cond_broadcast(mutex m) {
-    pthread_cond_broadcast(&m->mtx->lock);
+    pthread_cond_broadcast(&m->mtx->cond);
 }
 
 none mutex_cond_signal(mutex m) {
-    pthread_cond_signal(&m->mtx->lock);
+    pthread_cond_signal(&m->mtx->cond);
 }
 
 none mutex_cond_wait(mutex m) {
@@ -4693,7 +4695,7 @@ string json(Au a) {
         push(res, ']');
     } else if (instanceof(a, map)) {
         push(res, '{');
-        map ma = a;
+        map ma = (map)a;
         bool first = true;
         pairs (ma, i) {
             if (!first) push(res, ',');
@@ -5002,8 +5004,8 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
                 else
                     scan = ws(&scan[1]);
             }
-            Au value = parse_object(scan, (mem ? mem->type : null),
-                (mem->args.origin ? *mem->args.origin : null), &scan, context);
+            Au value = parse_object(scan, (Au_t)(mem ? mem->type : null),
+                (Au_t)(mem->args.origin ? *mem->args.origin : null), &scan, context);
             
             //if (!value)
             //    return null;
@@ -5012,7 +5014,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
                 set(context, (Au)name, value);
 
             if (json_type) {
-                string type_name = value;
+                string type_name = (string)value;
                 use_schema = Au_find_type(type_name->chars, null);
                 verify(use_schema, "type not found: %o", type_name);
             } else
@@ -5028,13 +5030,13 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
         if (set_ctx && use_schema == typeid(ctx)) // nothing complex; we have a ctx already and will merge these props in
             use_schema = typeid(map);
         
-        res = construct_with(use_schema, props, context); // makes a bit more sense to implement required here
+        res = construct_with(use_schema, (Au)props, context); // makes a bit more sense to implement required here
         if (use_schema != typeid(map))
             drop(props);
         else
             hold(props);
     } else {
-        res = (context && sym) ? get(context, sym) : null;
+        res = (context && sym) ? get(context, (Au)sym) : null;
         if (res) {
             verify(!schema || inherits(isa(res), schema),
                 "variable type mismatch: %s does not match expected %s",
@@ -5049,8 +5051,6 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
 static array parse_array_objects(cstr* s, Au_t element_type, ctx context) {
     cstr scan = *s;
     array res = array(64);
-    static int seq = 0;
-    seq++;
 
     for (;;) {
         if (scan[0] == ']') {
@@ -5076,7 +5076,7 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
     Au res = null;
     if (!schema || (schema == typeid(array) || schema->src == typeid(array))) {
         Au_t element_type = meta_type ? meta_type : (schema ? *(Au_t*)schema->meta.origin : typeid(map));
-        res = parse_array_objects(&scan, element_type, context);
+        res = (Au)parse_array_objects(&scan, element_type, context);
     } else if (schema->meta.count && *(Au_t*)schema->meta.origin == typeid(i64)) { // should support all vector types of i64 (needs type bounds check with vmember_count)
         array arb = parse_array_objects(&scan, typeid(i64), context);
         int vcount = len(arb);
@@ -5101,7 +5101,7 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
     } else if (constructs_with(schema, typeid(array))) {
         // i forget where we use this!
         array arb = parse_array_objects(&scan, typeid(i64), context);
-        res = construct_with(schema, arb, null);
+        res = construct_with(schema, (Au)arb, null);
     } else if (schema->src == typeid(vector)) {
         Au_t scalar_type = *(Au_t*)schema->meta.origin;
         verify(scalar_type, "scalar type required when using vector (define a meta-type of vector with type)");
@@ -5111,10 +5111,10 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
         // this should contain multiple arrays of scalar values; we want to convert each array to our 'scalar_type'
         // for instance, we may parse [[1,2,3,4,5...16],...] mat4x4's; we merely need to validate vmember_count and vmember_type and convert
         // if we have a vmember_count of 0 then we are dealing with a single primitive type
-        vector vres = alloc(schema, 1, null);
+        vector vres = (vector)alloc(schema, 1, null);
         vres->shape = new_shape(count, 0);
-        Au_initialize(vres);
-        i8* data = vdata(vres);
+        Au_initialize((Au)vres);
+        i8* data = (i8*)vdata(vres);
         int index = 0;
         each (prelim, Au, o) {
             Au_t itype = isa(o);
@@ -5126,7 +5126,7 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
                 fault("implement struct parsing");
             }
         }
-        res = vres;
+        res = (Au)vres;
     } else {
         fault("unhandled vector type: %s", schema ? schema->ident : null);
     }
@@ -5182,18 +5182,18 @@ static string extract_context(cstr src, cstr *endptr) {
     return string(chars, start, ref_length, len);
 }
 
-Au parse(Au_t schema, cstr s, ctx context) {
+Au Au_parse(Au_t schema, cstr s, ctx context) {
     printf("parse: %s", s);
     if (context) {
         if (!ctx_checksums) ctx_checksums = hold(map(hsize, 32));
         string key = f(string, "%p", context);
-        u64*   chk = get(ctx_checksums, key);
+        u64*   chk = (u64*)get(ctx_checksums, (Au)key);
         string ctx = extract_context(s, &s);
         u64 h = hash(ctx);
         if (!chk || *chk != h) {
             set(ctx_checksums, (Au)key, _u64(h));
             context->establishing = true;
-            map ctx_update = parse_object((cstr)ctx->chars, null, null, null, context);
+            map ctx_update = (map)parse_object((cstr)ctx->chars, null, null, null, context);
             context->establishing = false;
         }
     }
@@ -5585,15 +5585,15 @@ void tokens_init(tokens a) {
     // the target will change in order, 
     // however its registration will be updated with an init
     // before ctr is ever called; with those, they are within the scope of the user
-    parser_target = a->target;
-    parser_ident(a->target, a->input, a);
+    parser_target = (Au)a->target;
+    parser_ident(a->target, a->input, (Au)a);
 }
 
 // constructors have ability to return whatever data they want, and
 // when doing so, the buffer is kept around for the next user (max of +1)
 tokens tokens_with_cstr(tokens a, cstr cs) {
     a->parser = parser_ident;
-    a->target = parser_target;
+    a->target = (Au)parser_target;
     a->input  = (Au)string(cs);
     return a;
 }

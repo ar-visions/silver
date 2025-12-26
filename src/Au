@@ -651,7 +651,6 @@ forward(any)
     M(AA,BB, t, method, public, Au_t, find_ctr, Au_t, bool) \
     M(AA,BB, t, method, public, Au_t, find_member, AFlag, symbol, bool) \
     M(AA,BB, t, method, public, Au_t, member_first, Au_t, bool) \
-    M(AA,BB, t, method, public, Au_t, member_type, AFlag, Au_t, bool) \
     M(AA,BB, t, method, public, Au, primitive, raw) \
     M(AA,BB, t, method, public, Au, method, cstr, array) \
     M(AA,BB, t, method, public, Au, parse, cstr, ctx) \
