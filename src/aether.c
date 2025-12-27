@@ -113,7 +113,7 @@ none etype_implement(etype t);
 
 static etype etype_ptr(aether mod, Au_t a) {
     verify(a && !isa((Au)a), "ptr requires Au_t, given %s", isa((Au)a)->ident);
-    if (isa(a) == typeid(etype)) return ((etype) a)->au;
+    verify(isa(a) != typeid(etype), "etype_ptr unexpected type");
     Au_t au = a;
     if (au->ptr) return au->ptr->user;
     au->ptr              = Au_register(mod->au, null, AU_MEMBER_TYPE, 0);
@@ -384,7 +384,7 @@ enode aether_e_inherits(aether a, enode L, Au R) {
     // Create the loop condition
     enode not_cmp   = e_not(a, cmp);
     enode not_null  = e_not(a, is_null);
-    enode loop_cond = e_and(a, not_cmp, not_null);
+    enode loop_cond = e_and(a, (Au)not_cmp, (Au)not_null);
 
     // Branch based on the loop condition
     LLVMBuildCondBr(a->builder, loop_cond->value, loop_block, exit_block);
@@ -605,9 +605,9 @@ static void print_all(aether mod, symbol label, array list);
 
 enode aether_e_eval(aether a, string value) {
     array t = (array)tokens(target, (Au)a, parser, a->parse_f, input, (Au)value);
-    push_tokens(a, t, 0);
+    push_tokens(a, (tokens)t, 0);
     print_all(a, "these are tokens", t);
-    enode n = a->parse_expr((Au)a, null, null); 
+    enode n = (enode)a->parse_expr((Au)a, null, null); 
     enode s = e_create(a, elookup("string"), (Au)n);
     pop_tokens(a, false);
     return s;
@@ -624,7 +624,7 @@ enode aether_e_interpolate(aether a, string str) {
     each (sp, ipart, s) {
         enode val = e_create(a, mdl, s->is_expr ?
             (Au)e_eval(a, s->content) : (Au)s->content);
-        accum = accum ? e_add(a, accum, (Au)val) : val;
+        accum = accum ? e_add(a, (Au)accum, (Au)val) : val;
     }
     return accum;
 }
@@ -702,10 +702,10 @@ enode aether_e_operand(aether a, Au op, etype src_model) {
     
     if (isa(op) == typeid(string))
         return e_create(a, src_model,
-            e_interpolate(a, (string)op));
+            (Au)e_interpolate(a, (string)op));
     
     if (isa(op) == typeid(const_string))
-        return e_create(a, src_model, e_operand_primitive(a, op));
+        return e_create(a, src_model, (Au)e_operand_primitive(a, op));
     
     if (isa(op) == typeid(map)) {
         return e_create(a, src_model, op);
@@ -717,7 +717,7 @@ enode aether_e_operand(aether a, Au op, etype src_model) {
     }
 
     enode r = e_operand_primitive(a, op);
-    return src_model ? e_create(a, src_model, r) : r;
+    return src_model ? e_create(a, src_model, (Au)r) : r;
 }
 
 enode aether_e_null(aether a, etype mdl) {
@@ -752,9 +752,9 @@ enode aether_e_meta_ids(aether a, array meta) {
         else if (instanceof(m, shape)) {
             shape s = (shape)m;
             array ar = array(alloc, s->count);
-            push_vdata(ar, s->data, s->count);
+            push_vdata(ar, (Au)s->data, s->count);
             n = e_create(a, elookup("shape"),
-                m("count", s->count,
+                (Au)m("count", s->count,
                   "data",  (e_const_array(a, elookup("i64"), ar))));
         } else {
             verify(false, "unsupported design-time meta type");
@@ -847,7 +847,7 @@ void aether_e_print_node(aether a, enode n) {
     if (a->no_build) return;
     /// would be nice to have a lookup method on import
     /// call it im_lookup or something so we can tell its different
-    enode   printf_fn  = elookup("printf");
+    enode   printf_fn  = (enode)elookup("printf");
     etype   mdl_cstr   = elookup("cstr");
     etype   mdl_symbol = elookup("symbol");
     etype   mdl_i32    = elookup("i32");
@@ -862,16 +862,16 @@ void aether_e_print_node(aether a, enode n) {
     }
     verify(fmt, "eprint_node: unsupported model: %o", n);
     e_fn_call(a, printf_fn, 
-        array_of(e_operand(a, string(fmt), null), n));
+        a(e_operand(a, (Au)string(fmt), (etype)n)));
 }
 
 enode aether_e_fn_call(aether a, enode fn, array args) {
     // we could support an array or map arg here, for args
     // we set this when we do something complex
     a->is_const_op = false; 
-    if (a->no_build) return e_noop(a, fn->au->rtype);
+    if (a->no_build) return e_noop(a, fn->au->rtype->user);
 
-    etype_implement(fn);
+    etype_implement((etype)fn);
     etype target_type = (etype)fn->target;
     enode f = len(args) ? (enode)get(args, 0) : null;
     verify(!target_type || canonical(target_type) == canonical(f),
@@ -1116,7 +1116,7 @@ enode enode_access(enode target, string name) {
     verify(m, "failed to find member %o on type %o", name, target);
     
     verify(is_addressable(target), 
-        "expected target pointer for member access: %i", seq);
+        "expected target pointer for member access");
 
     etype t = resolve(target); // resolves to first type
     verify(t->au->is_struct || t->au->is_class, 
@@ -1133,7 +1133,7 @@ enode enode_access(enode target, string name) {
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, m->user);
 
-    Au_t ptr = pointer(a, m)->au;
+    Au_t ptr = pointer(a, (Au)m)->au;
 
     return enode(
         mod,    a,
@@ -1153,7 +1153,10 @@ enode aether_e_typeid(aether a, etype mdl) {
 /// create is both stack and heap allocation (based on etype->is_ref, a storage enum)
 /// create primitives and objects, constructs with singular args or a map of them when applicable
 enode aether_e_create(aether a, etype t, Au args) {
-    if (!t) return args;
+    if (!t) {
+        verify(instanceof(args, enode), "aether_e_create");
+        return (enode)args;
+    }
 
     string  str  = (string)instanceof(args, string);
     map     imap = (map)instanceof(args, map);

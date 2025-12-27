@@ -178,7 +178,7 @@ def generate_init_header(module, header_file, init_header):
             if decl_type in ["meta", "vector"]:
                 f.write(f"#define _N_ARGS_{class_name}_1( TYPE, a)\n")
             else:
-                f.write(f"#define _N_ARGS_{class_name}_1( TYPE, a) _Generic((a), TYPE##_schema(TYPE, GENERICS, Au) Au_schema(Au, GENERICS, Au) const void *: (void)0)((TYPE)instance, a)\n")
+                f.write(f"#define _N_ARGS_{class_name}_1( TYPE, a) _Generic((a), TYPE##_schema(TYPE, GENERICS, Au) Au_schema(TYPE, GENERICS, Au) const void *: (void)0)((TYPE)(instance), a)\n")
             
             # Property assignment macros for various argument counts
             for i in range(2, 24, 2):

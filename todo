@@ -5,56 +5,45 @@
     [ ] find all memory leaks (there most definitely are!)
         > profile resources in LLVM if possible
 
-[ ] finish integration of map
+[-] finish integration of map
     > give meta args to allocator (update some uses of LLVMBuildMalloc to our own A-type methods in .c)
+    some syntax needs verification (workflow item tonight: A)
 
 [ ] finish integration of array
+    also some syntax needs verification (workflow item tonight: B)
 
-[ ] use Au in all cases, no reproducing results when we may call.  implementation must be kept to a minimum, and in .c
-    > we are producing the header directly from reflection of Au, so this 'is' Au
-    > this so far is uncompiled and must be completed:
-        [ ] init macros must be generated (methods are)
-        [x] method macros
-        [x] class declarations
-        [x] class construction done in silver.o, not .c 
-            (there will be no define_class(cl, meta, meta2))
-
-    > we have been emitting model reflection from silver
-    > this is likely not modular enough, and a better approach would be to output Au schemas,
-          so it's human readible
-        - expanding every type we have in silver is a double-reflection (since we schema translate from Au -> model -> Au ABI compatible C )
-        - the problem is going to be down to the use of intern.  if the user does not 
-          describe intern then we may use public
-
-[ ] formatter logic
+[??] formatter logic
     > %s will perform string cast, then cstr cast for object types (if they give a cstr, no conversion!)
     > %i returns i32 cast
     > %ull returns u64 cast
     > %ll returns i64 cast
     > %f, d, etc
-
+    [x] implemented {expression to string} syntax; its certainly possible to use printf as well, and those functions are made more secure with only ability to give literal "constant, read-only strings with %f inside"
 [ ] guard functions need only register an instance of this, created anew when the incoming is null
     > this is to mimick the -> guard in member access (same token ->)
 
 [-] verify object allocation into c, it must use Au for this
     > no actual allocations done in silver with BuildMAlloc
 
-[ ] e_fn_call needs to perform runtime polymorphism (reading from table  by type's schema_f)
+[x] e_fn_call needs to perform runtime polymorphism (reading from table  by type's schema_f)
     > support method calls on primitives
 
-[ ] statements
-    [ ] while
+[x] statements
+    [x] while
     [x] if
     [x] ifdef
-    [ ] for
-    [ ] loop [ this is loop-while or just loop ]
-        [ ] loop-while
+    [x] for
+    [x] loop [ this is loop-while or just loop ]
+        [x] loop-while
 
-[-] Au model/member reduction into Au_t
+[x] Au model/member reduction into Au_t (after: reduction, ha!)
     [x] register types modules, with default being an exported symbol au, in struct _Au_t
     *** everything is mappable -- with default being a linked-list
         maps are something you request by api and thus we can lazy-load.  we can do this
         easier when we have meta types associated to our use-case members (desc by the user)
-    [-] convert creation and management of model/struct/class/enumeration
+    [x] convert creation and management of model/struct/class/enumeration
 
-    
+[ ] orbiter experience for the user:
+    - we talk to the editor, and it scrolls-to where we want.
+    - ideally we dont have to take our hands off the keyboard for this.
+    - we like the idea of it really performing this on a transition
