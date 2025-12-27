@@ -480,7 +480,7 @@ bool message_read_content(message m, sock sc) {
 
         if (ctype && starts_with(ctype, "application/json")) {
             string js = new(string, chars, (cstr)vdata(v_data), ref_length, len(v_data));
-            m->content = hold((Au)parse((Au_t)typeid(map), (cstr)js->chars, (ctx)null));
+            m->content = hold((Au)Au_parse((Au_t)typeid(map), (cstr)js->chars, (ctx)null));
         } else if (ctype && starts_with(ctype, "text/")) {
             m->content = hold((Au)new(string, chars, (cstr)vdata(v_data), ref_length, len(v_data)));
         } else {

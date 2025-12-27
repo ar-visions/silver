@@ -622,6 +622,7 @@ forward(any)
     M(AA,BB, s, method, public, Au_t, register_pointer, Au_t, Au_t, symbol) \
     M(AA,BB, s, method, public, Au_t, register_enum, Au_t, symbol, u32) \
     M(AA,BB, s, method, public, Au_t, register_enum_value, Au_t, symbol, Au) \
+    M(AA,BB, s, method, public, Au,   parse, Au_t, cstr, ctx) \
     M(AA,BB, s, method, public, Au, initialize, Au) \
     M(AA,BB, s, method, public, Au_t, module, symbol) \
     M(AA,BB, s, method, public, Au_t, register_module, symbol) \
@@ -653,7 +654,6 @@ forward(any)
     M(AA,BB, t, method, public, Au_t, member_first, Au_t, bool) \
     M(AA,BB, t, method, public, Au, primitive, raw) \
     M(AA,BB, t, method, public, Au, method, cstr, array) \
-    M(AA,BB, t, method, public, Au, parse, cstr, ctx) \
     M(AA,BB, t, method, public, i32, alloc_count) \
     M(AA,BB, t, method, public, none, push_type) \
     M(AA,BB, s, method, public, none, dealloc_type, Au_t) \
