@@ -1331,7 +1331,7 @@ enode silver_read_enode(silver a, etype mdl_expect) {
                 // Still not found? Create new evar (this cannot be a mere enode when user-created) 
                 if (!mem) {
                     verify(a->expr_level == 0, "member not found: %o", alpha);
-                    mem = (enode)evar(mod, (aether)a, au, Au_register_member(
+                    mem = (enode)evar(mod, (aether)a, au, def_member(
                         top_scope(a), alpha->chars, null, AU_MEMBER_VAR, 0));
                     if (is_static) mem->au->traits |= AU_TRAIT_STATIC;
                     mem->au->access_type = access;
@@ -1509,7 +1509,7 @@ enode parse_func(silver a, string ident, u8 member_type, u32 traits, OPType assi
     }
 
     validate(read_if(a, "["), "expected function args [");
-    Au_t au = Au_register(top_scope(a), ident->chars, AU_MEMBER_FUNC, traits);
+    Au_t au = def(top_scope(a), ident->chars, AU_MEMBER_FUNC, traits);
 
     if (!name) {
         validate(member_type == AU_MEMBER_CAST, "with no name, expected cast");
@@ -1528,7 +1528,7 @@ enode parse_func(silver a, string ident, u8 member_type, u32 traits, OPType assi
         Au_t top    = top_scope(a);
         Au_t rec    = is_rec(top);
         verify(rec, "cannot parse IMETHOD without record in scope");
-        Au_t au_arg = Au_register(au, "a", AU_MEMBER_VAR, 0);
+        Au_t au_arg = def(au, "a", AU_MEMBER_VAR, 0);
         au_arg->src = pointer((aether)a, (Au)rec)->au;
         array_qpush((array)&au->args, (Au)au_arg);
     }
@@ -1549,7 +1549,7 @@ enode parse_func(silver a, string ident, u8 member_type, u32 traits, OPType assi
         verify(n || !c, "expected alpha-numeric identity for type or name");
         verify(n ||  c, "expected type separation character ':'");
         etype t      = read_etype(a, null);
-        Au_t  au_arg = Au_register(au, n ? n->chars : null, AU_MEMBER_VAR, 0);
+        Au_t  au_arg = def(au, n ? n->chars : null, AU_MEMBER_VAR, 0);
         au_arg->src  = t->au;
         array_qpush((array)&au->args, (Au)au_arg);
         if (first) {
@@ -3399,7 +3399,7 @@ etype silver_read_def(silver a) {
         print_all(a, "enum-tokens", enum_body);
         validate(len(enum_body), "expected body for enum %o", n);
 
-        Au_t enum_au = Au_register(top_scope(a),
+        Au_t enum_au = def(top_scope(a),
             n->chars, AU_MEMBER_TYPE, AU_TRAIT_ENUM);
         enum_au->src = store->au;
         mdl = etype(mod, (aether)a, au, enum_au);
@@ -3426,7 +3426,7 @@ etype silver_read_def(silver a) {
             } else
                 v = primitive(store->au, &value); /// this creates i8 to i64 data, using &value i64 addr
             
-            Au_t enum_v         = Au_register_enum_value(enum_au, e->chars, v);
+            Au_t enum_v         = def_enum_value(enum_au, e->chars, v);
             enum_v->src         = enum_au->src;
             enum_v->value       = (object)hold(v);
             enum_v->member_type = AU_MEMBER_ENUMV;

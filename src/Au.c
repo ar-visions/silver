@@ -199,7 +199,7 @@ none set_args_array(Au_t type, int count, ...) {
     va_start(args, count);
     for (int i = 0; i < count; i++) {
         Au_t au     = va_arg(args, Au_t);
-        Au_t au_arg = Au_register(type, null, AU_MEMBER_VAR, 0);
+        Au_t au_arg = def(type, null, AU_MEMBER_VAR, 0);
         au_arg->src = au;
         type->meta.origin[i] = (Au)au_arg;
     }
@@ -468,7 +468,7 @@ array array_mix(array a, array b, f32 f) {
         verify(expect == at, "disperate types in array during mix");
         verify(at == bt, "types do not match");
 
-        if (!fmix) fmix = find_member(at, AU_MEMBER_FUNC, "mix", false);
+        if (!fmix) fmix = find_member(at, "mix", AU_MEMBER_FUNC, false);
         verify(fmix, "implement mix method for type %s", at->ident);
         Au e = ((mix_fn)fmix->value)(aa, bb, f);
         push(res, e);
@@ -575,7 +575,7 @@ static array_combine modules;
 static array  scope;
 static bool   started = false;
 
-Au_t Au_find_member(Au_t mdl, symbol f, int member_type, bool poly) {
+Au_t find_member(Au_t mdl, symbol f, int member_type, bool poly) {
     do {
         for (int i = 0; i < mdl->members.count; i++) {
             Au_t au = (Au_t)mdl->members.origin[i];
@@ -589,7 +589,7 @@ Au_t Au_find_member(Au_t mdl, symbol f, int member_type, bool poly) {
     return null;
 }
 
-Au_t Au_context(array lex, int member_type, int traits) {
+Au_t find_context(array lex, int member_type, int traits) {
     for (int i = len(lex) - 1; i >= 0; i--) {
         Au_t au = (Au_t)lex->origin[i];
         if (!member_type || au->member_type == member_type) {
@@ -618,7 +618,7 @@ Au_t Au_lexical(array lex, symbol f) {
     return null;
 }
 
-Au_t Au_register(Au_t type, symbol ident, u32 member_type, u32 traits) {
+Au_t def(Au_t type, symbol ident, u32 member_type, u32 traits) {
     if (n_members == 0) {
         n_members   = 2048;
         member_pool = calloc(n_members, sizeof(struct _Au_combine));
@@ -658,42 +658,42 @@ none Au_dealloc_type(Au_t type) {
     Au_drop((Au)type);
 }
 
-Au_t Au_register_type(Au_t type, symbol ident, u32 traits) {
-    return Au_register(type, ident, AU_MEMBER_TYPE, traits);
+Au_t def_type(Au_t type, symbol ident, u32 traits) {
+    return def(type, ident, AU_MEMBER_TYPE, traits);
 }
 
-Au_t Au_register_class(Au_t type, symbol ident) {
-    return Au_register(type, ident, AU_MEMBER_TYPE, AU_TRAIT_CLASS);
+Au_t def_class(Au_t type, symbol ident) {
+    return def(type, ident, AU_MEMBER_TYPE, AU_TRAIT_CLASS);
 }
 
-Au_t Au_register_struct(Au_t type, symbol ident) {
-    return Au_register(type, ident, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
+Au_t def_struct(Au_t type, symbol ident) {
+    return def(type, ident, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
 }
 
-Au_t Au_register_func_ptr(Au_t type, symbol ident) {
-    return Au_register(type, ident, AU_MEMBER_TYPE, AU_TRAIT_FUNCPTR);
+Au_t def_func_ptr(Au_t type, symbol ident) {
+    return def(type, ident, AU_MEMBER_TYPE, AU_TRAIT_FUNCPTR);
 }
 
-Au_t Au_register_pointer(Au_t context, Au_t ref, symbol ident) {
+Au_t def_pointer(Au_t context, Au_t ref, symbol ident) {
     if (!ref->ptr) {
-        ref->ptr = Au_register(context, ident, AU_MEMBER_TYPE, AU_TRAIT_POINTER);
+        ref->ptr = def(context, ident, AU_MEMBER_TYPE, AU_TRAIT_POINTER);
         ref->ptr->src = (Au_t)hold(ref);
     }
     return ref->ptr;
 }
 
-Au_t Au_register_enum(Au_t context, symbol ident, u32 traits) {
-    return Au_register(context, ident, AU_MEMBER_TYPE, AU_TRAIT_ENUM);
+Au_t def_enum(Au_t context, symbol ident, u32 traits) {
+    return def(context, ident, AU_MEMBER_TYPE, AU_TRAIT_ENUM);
 }
 
-Au_t Au_register_enum_value(Au_t context, symbol ident, Au value) {
-    Au_t res = Au_register(context, ident, AU_MEMBER_ENUMV, 0);
+Au_t def_enum_value(Au_t context, symbol ident, Au value) {
+    Au_t res = def(context, ident, AU_MEMBER_ENUMV, 0);
     res->value = (object)value;
     return res;
 }
 
-Au_t Au_register_member(Au_t context, symbol ident, Au_t type_mem, u32 member_type, u32 traits) {
-    Au_t au = Au_register(context, ident, member_type, traits);
+Au_t def_member(Au_t context, symbol ident, Au_t type_mem, u32 member_type, u32 traits) {
+    Au_t au = def(context, ident, member_type, traits);
     au->type = type_mem;
     return au;
 }
@@ -709,7 +709,7 @@ Au Au_header(Au a) {
     return (((struct _Au*)a) - 1);
 }
 
-none Au_register_init(func f) {
+none def_init(func f) {
     if (call_last_count == call_last_alloc) {
         global_init_fn* prev      = call_last;
         num            alloc_prev = call_last_alloc;
@@ -723,20 +723,20 @@ none Au_register_init(func f) {
     call_last[call_last_count++] = f;
 }
 
-Au_t Au_module(symbol name) {
+Au_t Au_module_lookup(symbol name) {
     for (int i = 0; i < modules.data.count; i++) {
         Au_t m = (Au_t)modules.data.origin[i];
         if (strcmp(m->ident, name) == 0)
             return m;
     }
-    return Au_register_module(name);
+    return def_module(name);
 }
 
-Au_t Au_global() {
+Au_t global() {
     return au_module;
 }
 
-Au_t Au_register_module(symbol next_module) {
+Au_t def_module(symbol next_module) {
     struct _Au_combine* combine = calloc(1, sizeof(struct _Au_combine));
     Au_t m = &combine->type;
     m->member_type = AU_MEMBER_MODULE;
@@ -761,61 +761,61 @@ none push_type(Au_t type) {
     // on first call, we register our basic type structures:
     if (type == typeid(Au_t)) {
         has_pushed = true;
-        module = Au_module("Au");
+        module = module_lookup("Au");
         module->members.unmanaged = true;
 
         // the first ever type we really register is the collective_abi
-        Au_t au_collective = Au_register(module, "collective_abi",
+        Au_t au_collective = def(module, "collective_abi",
             AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
-        Au_register_member(au_collective, "count",     typeid(i32), AU_MEMBER_VAR, 0);
-        Au_register_member(au_collective, "alloc",     typeid(i32), AU_MEMBER_VAR, 0);
-        Au_register_member(au_collective, "hsize",     typeid(i32), AU_MEMBER_VAR, 0);
-        Au_register_member(au_collective, "origin",    typeid(ARef), AU_MEMBER_VAR, 0);
-        Au_register_member(au_collective, "first",     typeid(ARef), AU_MEMBER_VAR, 0); // these are known as referenced types (classes)
-        Au_register_member(au_collective, "last",      typeid(ARef), AU_MEMBER_VAR, 0); 
-        Au_register_member(au_collective, "hlist",     typeid(ARef), AU_MEMBER_VAR, 0);
-        Au_register_member(au_collective, "unmanaged", typeid(bool), AU_MEMBER_VAR, 0);
-        Au_register_member(au_collective, "assorted",  typeid(bool), AU_MEMBER_VAR, 0); 
-        Au_register_member(au_collective, "last_type", typeid(ARef), AU_MEMBER_VAR, 0);
+        def_member(au_collective, "count",     typeid(i32), AU_MEMBER_VAR, 0);
+        def_member(au_collective, "alloc",     typeid(i32), AU_MEMBER_VAR, 0);
+        def_member(au_collective, "hsize",     typeid(i32), AU_MEMBER_VAR, 0);
+        def_member(au_collective, "origin",    typeid(ARef), AU_MEMBER_VAR, 0);
+        def_member(au_collective, "first",     typeid(ARef), AU_MEMBER_VAR, 0); // these are known as referenced types (classes)
+        def_member(au_collective, "last",      typeid(ARef), AU_MEMBER_VAR, 0); 
+        def_member(au_collective, "hlist",     typeid(ARef), AU_MEMBER_VAR, 0);
+        def_member(au_collective, "unmanaged", typeid(bool), AU_MEMBER_VAR, 0);
+        def_member(au_collective, "assorted",  typeid(bool), AU_MEMBER_VAR, 0); 
+        def_member(au_collective, "last_type", typeid(ARef), AU_MEMBER_VAR, 0);
 
         Au_t au_t = type; // pushed from the first global ctr call
         au_t->member_type = AU_MEMBER_TYPE;
         au_t->traits = AU_TRAIT_CLASS;
 
-        Au_t ctx = Au_register_member(au_t, "context",       typeid(Au_t), AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "src",           typeid(Au_t), AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "user",          typeid(Au_t), AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "module",        typeid(Au_t), AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "ptr",           typeid(Au_t), AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "ident",         typeid(cstr), AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "index",         typeid(i64),  AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "value",         typeid(ARef), AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "member_type",   typeid(u8),   AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "operator_type", typeid(u8),   AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "access_type",   typeid(u8),   AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "reserved",      typeid(u8),   AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "traits",        typeid(u32),  AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "global_count",  typeid(i32),  AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "offset",        typeid(i32),  AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "size",          typeid(i32),  AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "isize",         typeid(i32),  AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "ptr",           typeid(ARef), AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "ffi",           typeid(ARef), AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, "af",            typeid(ARef), AU_MEMBER_VAR, 0);
+        Au_t ctx = def_member(au_t, "context",       typeid(Au_t), AU_MEMBER_VAR, 0);
+        def_member(au_t, "src",           typeid(Au_t), AU_MEMBER_VAR, 0);
+        def_member(au_t, "user",          typeid(Au_t), AU_MEMBER_VAR, 0);
+        def_member(au_t, "module",        typeid(Au_t), AU_MEMBER_VAR, 0);
+        def_member(au_t, "ptr",           typeid(Au_t), AU_MEMBER_VAR, 0);
+        def_member(au_t, "ident",         typeid(cstr), AU_MEMBER_VAR, 0);
+        def_member(au_t, "index",         typeid(i64),  AU_MEMBER_VAR, 0);
+        def_member(au_t, "value",         typeid(ARef), AU_MEMBER_VAR, 0);
+        def_member(au_t, "member_type",   typeid(u8),   AU_MEMBER_VAR, 0);
+        def_member(au_t, "operator_type", typeid(u8),   AU_MEMBER_VAR, 0);
+        def_member(au_t, "access_type",   typeid(u8),   AU_MEMBER_VAR, 0);
+        def_member(au_t, "reserved",      typeid(u8),   AU_MEMBER_VAR, 0);
+        def_member(au_t, "traits",        typeid(u32),  AU_MEMBER_VAR, 0);
+        def_member(au_t, "global_count",  typeid(i32),  AU_MEMBER_VAR, 0);
+        def_member(au_t, "offset",        typeid(i32),  AU_MEMBER_VAR, 0);
+        def_member(au_t, "size",          typeid(i32),  AU_MEMBER_VAR, 0);
+        def_member(au_t, "isize",         typeid(i32),  AU_MEMBER_VAR, 0);
+        def_member(au_t, "ptr",           typeid(ARef), AU_MEMBER_VAR, 0);
+        def_member(au_t, "ffi",           typeid(ARef), AU_MEMBER_VAR, 0);
+        def_member(au_t, "af",            typeid(ARef), AU_MEMBER_VAR, 0);
         
-        Au_t minfo = Au_register_member(au_t, "members_info", typeid(Au), AU_MEMBER_VAR, AU_TRAIT_INLAY);
-        Au_register_member(au_t, "members", au_collective, AU_MEMBER_VAR, AU_TRAIT_INLAY);
+        Au_t minfo = def_member(au_t, "members_info", typeid(Au), AU_MEMBER_VAR, AU_TRAIT_INLAY);
+        def_member(au_t, "members", au_collective, AU_MEMBER_VAR, AU_TRAIT_INLAY);
         
-        Au_t metainfo = Au_register_member(au_t, "meta_info", typeid(Au), AU_MEMBER_VAR, AU_TRAIT_INLAY);
-        Au_register_member(au_t, "meta",  au_collective, AU_MEMBER_VAR, AU_TRAIT_INLAY);
-        Au_register_member(au_t, "shape", typeid(shape), AU_MEMBER_VAR, 0);
+        Au_t metainfo = def_member(au_t, "meta_info", typeid(Au), AU_MEMBER_VAR, AU_TRAIT_INLAY);
+        def_member(au_t, "meta",  au_collective, AU_MEMBER_VAR, AU_TRAIT_INLAY);
+        def_member(au_t, "shape", typeid(shape), AU_MEMBER_VAR, 0);
 
-        Au_t required_bits  = Au_register_member(au_t, "required_bits",  typeid(u64), AU_MEMBER_VAR, 0);
+        Au_t required_bits  = def_member(au_t, "required_bits",  typeid(u64), AU_MEMBER_VAR, 0);
         required_bits->elements = 2;
-        Au_t ft             = Au_register(au_t, null,
+        Au_t ft             = def(au_t, null,
             AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
-        Au_register_member(ft, "_none_", typeid(ARef), AU_MEMBER_VAR, 0);
-        Au_register_member(au_t, null, ft, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
+        def_member(ft, "_none_", typeid(ARef), AU_MEMBER_VAR, 0);
+        def_member(au_t, null, ft, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
         // this process is replicated in schema creation / etype_init
     }
 
@@ -900,14 +900,14 @@ void Au_AF_set_id(Au a, int id) {
 
 void Au_AF_set_name(Au a, cstr name) {
     Au_t t = isa(a);
-    Au_t m = find_member(t, AU_MEMBER_VAR, name, true);
+    Au_t m = find_member(t, name, AU_MEMBER_VAR, true);
     u64*   f = Au_AF_bits(a);
     AF_set(f, m->index);
 }
 
 i32 Au_AF_query_name(Au a, cstr name) {
     Au_t t = isa(a);
-    Au_t m = find_member(t, AU_MEMBER_VAR, name, true);
+    Au_t m = find_member(t, name, AU_MEMBER_VAR, true);
     u64* f = Au_AF_bits(a);
     return (i32)AF_get(f, m->index);
 }
@@ -1393,7 +1393,7 @@ Au Au_method_call(Au_t m, array args) {
 
 /// this calls type methods
 Au method(Au_t type, cstr method_name, array args) {
-    Au_t mem = find_member(type, AU_MEMBER_FUNC, method_name, false);
+    Au_t mem = find_member(type, method_name, AU_MEMBER_FUNC, false);
     assert(mem->ffi, "method not set");
     Au res = Au_method_call(mem, args);
     return res;
@@ -1428,7 +1428,7 @@ static __attribute__((constructor)) bool Aglobal_AF();
 string Au_cast_string(Au a);
 string numeric_cast_string(numeric a);
 
-none Au_member_override(Au_t type, Au_t type_mem, AFlag f) {
+none member_override(Au_t type, Au_t type_mem, AFlag f) {
     Au_t base = type->context;
     if  (base) base = base->context;
 
@@ -1483,6 +1483,7 @@ none Au_member_override(Au_t type, Au_t type_mem, AFlag f) {
     }
 }
 
+path path_share_path();
 none Au_engage(cstrs argv) {
     Au_t f32_type = typeid(f32);
     if (started) return;
@@ -1542,7 +1543,7 @@ none Au_engage(cstrs argv) {
     */
 }
 
-map Au_args(cstrs argv, symbol default_arg, ...) {
+map args(cstrs argv, symbol default_arg, ...) {
     int argc = 0;
     while (argv[argc]) argc++;
     va_list  args;
@@ -1555,16 +1556,16 @@ map Au_args(cstrs argv, symbol default_arg, ...) {
         arg = va_arg(args, symbol);
     }
     va_end(args);
-    return Au_arguments(argc, argv, defaults,
+    return arguments(argc, argv, defaults,
         (Au)(default_arg ? string(default_arg) : null));
 }
 
-none Au_tap(symbol f, hook sub) {
+none tap(symbol f, hook sub) {
     string fname = string(f);
     set(log_funcs, (Au)fname, sub ? (Au)sub : (Au)_bool(true)); /// if subprocedure, then it may receive calls for the logging
 }
 
-none Au_untap(symbol f) {
+none untap(symbol f) {
     string fname = string(f);
     set(log_funcs, (Au)fname, _bool(false));
 }
@@ -1577,18 +1578,6 @@ Au_t find_ctr(Au_t type, Au_t with, bool poly) {
     }
     if (poly && type->context && type->context != typeid(Au))
         return find_ctr(type->context, with, true);
-    return 0;
-}
-
-
-Au_t find_member(Au_t type, AFlag memflags, symbol name, bool poly) {
-    for (num i = 0; i < type->members.count; i++) {
-        Au_t mem = (Au_t)type->members.origin[i];
-        if ((memflags == 0) || (mem->member_type & memflags) && strcmp(mem->ident, name) == 0)
-            return mem;
-    }
-    if (poly && type->context && type->context != typeid(Au))
-        return find_member(type->context, memflags, name, true);
     return 0;
 }
 
@@ -1620,7 +1609,7 @@ none Au_hold_members(Au a) {
 
 Au Au_set_property(Au a, symbol name, Au value) {
     Au_t type = isa(a);
-    Au_t m = find_member(type, AU_MEMBER_VAR, (cstr)name, true);
+    Au_t m = find_member(type, (cstr)name, AU_MEMBER_VAR, true);
     member_set(a, m, value);
     return value;
 }
@@ -1628,7 +1617,7 @@ Au Au_set_property(Au a, symbol name, Au value) {
 
 Au Au_get_property(Au a, symbol name) {
     Au_t type = isa(a);
-    Au_t m = find_member(type, AU_MEMBER_VAR, (cstr)name, true);
+    Au_t m = find_member(type, (cstr)name, AU_MEMBER_VAR, true);
     verify(m, "%s not found on Au %s", name, type->ident);
     Au *mdata = (Au*)((cstr)a + m->offset);
     Au  value = *mdata;
@@ -2636,17 +2625,17 @@ none map_set(map m, Au k, Au v) {
 
     bool in_fifo = i->ref != null;
     if (!in_fifo) {
-        item ref = list_push(m, m->unmanaged ? v : hold(v));
+        item ref = list_push((list)m, m->unmanaged ? v : hold(v));
         ref->key = hold(k);
-        ref->ref = i; // these reference each other
-        i->ref = ref;
+        ref->ref = (Au)i; // these reference each other
+        i->ref = (Au)ref;
     }
 }
 
 none map_rm_item(map m, item i) {
     drop(i->key);
     drop(i->value);
-    list_remove_item(m, i->ref);
+    list_remove_item((list)m, (item)i->ref);
     drop(i);
 }
 
@@ -2688,7 +2677,7 @@ sz map_len(map a) {
 
 Au map_index_sz(map a, sz index) {
     assert(index >= 0 && index < a->count, "index out of range");
-    item i = (item)list_get(a, (Au)_sz(index));
+    item i = (item)list_get((list)a, (Au)_sz(index));
     return i ? i->value : null;
 }
 
@@ -2878,7 +2867,7 @@ array string_split_parts(string a) {
 
             // flush any literal before the expression
             if (prev) {
-                string lit = const_string(chars, prev, ref_length, (sz)(s - prev));
+                string lit = (string)const_string(chars, prev, ref_length, (sz)(s - prev));
                 ipart p = ipart(is_expr, false, content, lit);
                 push(res, (Au)p);
                 prev = null;
@@ -3363,7 +3352,7 @@ callback Au_binding(Au a, Au target, bool required, Au_t rtype, Au_t arg_type, s
     bool inherits     = instance_of(target, self_type) != null;
     string method     = f(string, "%s%s%s", id ? id : 
         (!inherits ? self_type->ident : ""), (id || !inherits) ? "_" : "", name);
-    Au_t m  = find_member(target_type, AU_MEMBER_FUNC, method->chars, true);
+    Au_t m  = find_member(target_type, method->chars, AU_MEMBER_FUNC, true);
     verify(!required || m, "bind: required method not found: %o", method);
     if (!m) return null;
     callback f       = (callback)m->value;
@@ -3528,9 +3517,9 @@ num list_compare(list a, list b) {
         return diff;
     Au_t ai_t = a->first ? isa(a->first->value) : null;
     if (ai_t) {
-        Au_t m = find_member(ai_t, AU_MEMBER_FUNC, "compare", true);
+        Au_t m = find_member(ai_t, "compare", AU_MEMBER_FUNC, true);
         for (item ai = a->first, bi = b->first; ai; ai = ai->next, bi = bi->next) {
-            num   v  = ((num(*)(Au,Au))(m->value))(ai, bi);
+            num   v  = ((num(*)(Au,Au))(m->value))((Au)ai, (Au)bi);
             if (v != 0) return v;
         }
     }
@@ -3551,7 +3540,7 @@ Au list_pop(list a) {
     drop(l->key);
     a->count--;
     drop(l);
-    return l;
+    return (Au)l;
 }
 
 Au list_get(list a, Au at_index) {
@@ -3634,7 +3623,7 @@ vector vector_with_path(vector a, path file_path) {
     sz flen = ftell(ff);
     fseek(ff, 0, SEEK_SET);
 
-    Au_vrealloc(a, flen);
+    Au_vrealloc((Au)a, flen);
     f->count = flen;
     size_t n = fread(f->data, 1, flen, ff);
     verify(n == flen, "could not read file: %o", f);
@@ -3704,7 +3693,7 @@ vector vector_slice(vector a, num from, num to) {
     else
         for (int i = from; i > to; i--, dst++)
             memcpy(dst, &src[i * stride], count * stride);
-    res_f->data = dst;
+    res_f->data = (Au)dst;
     Au_initialize(res);
     return (vector)res;
 }
@@ -3934,7 +3923,7 @@ path path_with_string(path a, string s) {
 }
 
 path path_with_tokens(path a, tokens s) {
-    return path_with_string(a, s);
+    return path_with_string(a, (string)s);
 }
 
 bool path_create_symlink(path target, path link) {
@@ -4522,7 +4511,7 @@ Au path_load(path a, Au_t type, ctx context) {
     if (type == typeid(string))
         return (Au)str;
     if (is_obj) {
-        Au obj = Au_parse((Au)type, (cstr)str->chars, context);
+        Au obj = Au_parse((Au_t)type, (cstr)str->chars, context);
         return obj;
     }
     assert(false, "not implemented");
@@ -4715,7 +4704,7 @@ string json(Au a) {
             Au_t mem = (Au_t)type->members.origin[i];
             if (one) push(res, ',');
             if (!(mem->member_type == AU_MEMBER_VAR)) continue;
-            concat(res, json(string(mem->ident)));
+            concat(res, json((Au)string(mem->ident)));
             push  (res, ':');
             Au value = Au_get_property(a, mem->ident);
             concat(res, json(value));
@@ -4806,7 +4795,7 @@ static string parse_json_string(cstr origin, cstr* remainder, ctx context) {
         scan++;
     }
     *remainder = scan;
-    return (context && delim == '\'') ? interpolate(res, context) : res;
+    return (context && delim == '\'') ? interpolate(res, (Au)context) : res;
 }
 
 static Au parse_array(cstr s, Au_t schema, Au_t meta, cstr* remainder, ctx context);
@@ -4862,7 +4851,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
                 verify(*scan == ']', "expected ']' after enum symbol");
                 scan++;
                 Au_t e = find_member(
-                    type, AU_MEMBER_ENUMV, enum_symbol->chars, false);
+                    type, enum_symbol->chars, AU_MEMBER_ENUMV, false);
                 verify(e, "enum symbol %o not found in type %s", enum_symbol, type->ident);
                 memcpy(evalue, e->value, e->type->typesize);
 
@@ -4875,7 +4864,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
                     Au f = (Au)((cstr)svalue + m->offset);
                     Au r = parse_object(scan, null, null, &scan, context);
                     verify(r && isa(r) == m->type, "type mismatch while parsing struct %s:%s (read: %s, expect: %s)",
-                        type->ident, m->ident, !r ? "null" : isa(r)->ident, m->type->ident);
+                        type->ident, m->ident, !r ? "null" : (isa(r))->ident, m->type->ident);
                     if (*scan == ',') scan = ws(scan + 1); // these dumb things are optional
                 }
                 scan++;
@@ -4931,7 +4920,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
         origin = scan;
         string js = parse_json_string(origin, &scan, context); // todo: use context for string interpolation
         res = construct_with((schema && schema != typeid(Au)) 
-            ? schema : typeid(string), js, context);
+            ? schema : typeid(string), (Au)js, context);
     }
     else if (*scan == '{') { /// Type will make us convert to the Au, from map, and set is_map back to false; what could possibly get crossed up with this one
         if (sym) {
@@ -4986,7 +4975,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
             if (!mem) {
                 json_type = cmp(name, "Type") == 0;
                 mem  = (is_map) ? null : 
-                    find_member(use_schema, AU_MEMBER_VAR, name->chars, true);
+                    find_member(use_schema, name->chars, AU_MEMBER_VAR, true);
             }
 
             if (!json_type && !mem && !is_map && !context) {
@@ -5011,7 +5000,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
             //    return null;
 
             if (set_ctx && value)
-                set(context, (Au)name, value);
+                set((map)context, (Au)name, (Au)value);
 
             if (json_type) {
                 string type_name = (string)value;
@@ -5179,7 +5168,7 @@ static string extract_context(cstr src, cstr *endptr) {
 
     size_t len = scan - start;
     if (endptr) *endptr = (cstr)scan;
-    return string(chars, start, ref_length, len);
+    return string(chars, (cstr)start, ref_length, len);
 }
 
 Au Au_parse(Au_t schema, cstr s, ctx context) {

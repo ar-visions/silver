@@ -76,7 +76,7 @@ Au_t f_arg;
 // ============================================================================
 
 // Lookup a type by name in lexical scope
-#define au_lookup(N) Au_lexical(e->lexical, N)
+#define au_lookup(N) lexical(e->lexical, N)
 
 // ============================================================================
 // Forward declarations
@@ -214,7 +214,7 @@ static Au_t map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, aet
     Au_t parent = top_scope(e);
     
     // Create function type
-    Au_t fn = Au_register(parent, null, AU_MEMBER_TYPE, AU_TRAIT_FUNCPTR);
+    Au_t fn = def(parent, null, AU_MEMBER_TYPE, AU_TRAIT_FUNCPTR);
     
     // Return type
     fn->rtype = map_clang_type(fpt->getReturnType(), ctx, e, null);
@@ -227,7 +227,7 @@ static Au_t map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, aet
         if (param) {
             char name_buf[32];
             snprintf(name_buf, sizeof(name_buf), "arg_%u", i);
-            Au_t arg = Au_register(null, name_buf, AU_MEMBER_VAR, 0);
+            Au_t arg = def(null, name_buf, AU_MEMBER_VAR, 0);
             arg->type = param;
             array_qpush((array)&fn->args, (Au)arg);
         }
@@ -246,17 +246,17 @@ static Au_t map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e,
     
     if (const FunctionProtoType* fpt = dyn_cast<FunctionProtoType>(pointee)) {
         Au_t func = map_function_type(fpt, ctx, e);
-        //Au_t ptr = Au_register_pointer(null, func, use_name);
+        //Au_t ptr = def_pointer(null, func, use_name);
         verify(!use_name, "expected use_name to be null on this map_function_pointer");
         return func;
     }
     
     if (const FunctionNoProtoType* fnpt = dyn_cast<FunctionNoProtoType>(pointee)) {
         Au_t parent = top_scope(e);
-        Au_t fn = Au_register(parent, null, AU_MEMBER_FUNC, AU_TRAIT_FUNCPTR);
+        Au_t fn = def(parent, null, AU_MEMBER_FUNC, AU_TRAIT_FUNCPTR);
         fn->rtype = map_clang_type(fnpt->getReturnType(), ctx, e, null);
         if (!fn->rtype) fn->rtype = au_lookup("none");
-        Au_t ptr = Au_register_pointer(null, fn, use_name);
+        Au_t ptr = def_pointer(null, fn, use_name);
         return ptr;
     }
 
@@ -282,7 +282,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         
         if (underlying && new_name) {
             // Create alias
-            Au_t alias = Au_register_type(top_scope(e), new_name, AU_TRAIT_ALIAS);
+            Au_t alias = def_type(top_scope(e), new_name, AU_TRAIT_ALIAS);
             alias->src = underlying;
             return alias;
         }
@@ -296,7 +296,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
     if (const BuiltinType* bt = dyn_cast<BuiltinType>(type)) {
         Au_t src = map_builtin_type(bt, e);
         if (src && use_name) {
-            Au_t alias = Au_register_type(top_scope(e), use_name, AU_TRAIT_ALIAS);
+            Au_t alias = def_type(top_scope(e), use_name, AU_TRAIT_ALIAS);
             alias->src = src;
             return alias;
         }
@@ -319,7 +319,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         
         // Create array type - need to represent shape somehow
         // For now, create a type with size info
-        Au_t arr = Au_register_type(top_scope(e), use_name, 0);
+        Au_t arr = def_type(top_scope(e), use_name, 0);
         arr->src = elem;
         arr->elements = esize; // store array size
         if (elem_type.isConstQualified()) {
@@ -334,7 +334,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         Au_t elem = map_clang_type(elem_type, ctx, e, null);
         if (!elem) return null;
         
-        Au_t arr = Au_register_type(top_scope(e), use_name, 0);
+        Au_t arr = def_type(top_scope(e), use_name, 0);
         arr->src = elem;
         arr->elements = 0; // flexible array
         return arr;
@@ -358,7 +358,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         
         verify(base, "could not resolve pointer type");
         
-        Au_t ptr = Au_register_pointer(null, base, use_name);
+        Au_t ptr = def_pointer(null, base, use_name);
         if (pointee.isConstQualified()) {
             ptr->traits |= AU_TRAIT_CONST;
         }
@@ -400,11 +400,11 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
     // References → treat as pointers
     if (auto* L = dyn_cast<LValueReferenceType>(type)) {
         Au_t base = map_clang_type(L->getPointeeType(), ctx, e, null);
-        return Au_register_pointer(null, base, use_name);
+        return def_pointer(null, base, use_name);
     }
     if (auto* R = dyn_cast<RValueReferenceType>(type)) {
         Au_t base = map_clang_type(R->getPointeeType(), ctx, e, null);
-        return Au_register_pointer(null, base, use_name);
+        return def_pointer(null, base, use_name);
     }
 
     // Member pointers — opaque for now
@@ -438,7 +438,7 @@ static void set_fields(RecordDecl* decl, ASTContext& ctx, aether e, Au_t rec) {
 
             if (!mapped) continue;
             
-            Au_t m = Au_register_member(rec, field_name.c_str(), mapped, AU_MEMBER_VAR, 0);
+            Au_t m = def_member(rec, field_name.c_str(), mapped, AU_MEMBER_VAR, 0);
             uint64_t offset_bits = layout.getFieldOffset(field->getFieldIndex());
             m->offset = offset_bits / 8;
             m->index = field_index++;
@@ -459,14 +459,14 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
 
     // Incomplete definition → opaque
     if (!decl->isCompleteDefinition() || decl->isInvalidDecl() || decl->isDependentType()) {
-        Au_t opaque = Au_register_type(parent, n, AU_TRAIT_STRUCT);
+        Au_t opaque = def_type(parent, n, AU_TRAIT_STRUCT);
         opaque->src = au_lookup("ARef");
         return opaque;
     }
 
     // Create struct/union
     u32 traits = is_union ? AU_TRAIT_UNION : AU_TRAIT_STRUCT;
-    Au_t rec = Au_register_type(parent, n, traits);
+    Au_t rec = def_type(parent, n, traits);
     
     const ASTRecordLayout& layout = ctx.getASTRecordLayout(decl);
     rec->record_alignment = layout.getAlignment().getQuantity(); // in bytes
@@ -484,7 +484,7 @@ static Au_t create_opaque_class(CXXRecordDecl* cxx, aether e) {
     Au_t existing = au_lookup(n);
     if (existing) return existing;
 
-    Au_t rec = Au_register_class(top_scope(e), n);
+    Au_t rec = def_class(top_scope(e), n);
     return rec;
 }
 
@@ -498,7 +498,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
     if (existing) return existing;
 
     Au_t parent = top_scope(e);
-    Au_t rec = Au_register_class(parent, n);
+    Au_t rec = def_class(parent, n);
     
     push_scope(e, (Au)rec);
     
@@ -516,7 +516,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
         char bname[32];
         snprintf(bname, sizeof(bname), "__base%d", base_index++);
         
-        Au_t m = Au_register_member(rec, bname, base_rec, AU_MEMBER_VAR, 0);
+        Au_t m = def_member(rec, bname, base_rec, AU_MEMBER_VAR, 0);
         m->offset = layout.getBaseClassOffset(base).getQuantity();
     }
 
@@ -531,7 +531,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
         std::string mg = cxx_mangle(md, ctx);
         std::string method_name = disp + "#" + mg;
         
-        Au_t fn = Au_register(rec, method_name.c_str(), AU_MEMBER_FUNC, 
+        Au_t fn = def(rec, method_name.c_str(), AU_MEMBER_FUNC, 
                               md->isStatic() ? AU_TRAIT_SMETHOD : AU_TRAIT_IMETHOD);
         
         fn->rtype = map_clang_type(md->getReturnType(), ctx, e, null);
@@ -543,8 +543,8 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
             if (md->isConst()) {
                 // Could mark as const
             }
-            Au_t self_ptr = Au_register_pointer(null, self_type, null);
-            Au_t self_arg = Au_register(null, "self", AU_MEMBER_VAR, 0);
+            Au_t self_ptr = def_pointer(null, self_type, null);
+            Au_t self_arg = def(null, "self", AU_MEMBER_VAR, 0);
             self_arg->type = self_ptr;
             array_qpush((array)&fn->args, (Au)self_arg);
         }
@@ -559,7 +559,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
             if (pname.empty())
                 pname = "arg_" + std::to_string(i);
 
-            Au_t ap = Au_register(null, pname.c_str(), AU_MEMBER_VAR, 0);
+            Au_t ap = def(null, pname.c_str(), AU_MEMBER_VAR, 0);
             ap->type = mt;
             array_qpush((array)&fn->args, (Au)ap);
         }
@@ -576,7 +576,7 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
     symbol n = name.length() ? name.c_str() : null;
     
     Au_t parent = top_scope(e);
-    Au_t en = Au_register_enum(parent, n, 0);
+    Au_t en = def_enum(parent, n, 0);
     
     // Set underlying type
     en->src = au_lookup("i32"); // default to i32
@@ -591,11 +591,11 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
         llvm::APSInt val = ec->getInitVal();
         i32* value = (i32*)_i32(val.getSExtValue());
         
-        Au_t ev = Au_register_enum_value(en, cn, (Au)value);
+        Au_t ev = def_enum_value(en, cn, (Au)value);
         
         // For C-style enums, also register in parent scope
         if (!decl->isScoped()) {
-            Au_t parent_ev = Au_register_enum_value(parent, cn, (Au)value);
+            Au_t parent_ev = def_enum_value(parent, cn, (Au)value);
             parent_ev->type = en;
         }
     }
@@ -612,7 +612,7 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
         test2 += 2;
     }
     Au_t parent = top_scope(e);
-    Au_t fn = Au_register(parent, n, AU_MEMBER_FUNC, 0);
+    Au_t fn = def(parent, n, AU_MEMBER_FUNC, 0);
     if (name.length() == 0) {
         fn = fn;
     }
@@ -633,7 +633,7 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
         Au_t mt = map_clang_type(param_type, ctx, e, null);
         if (!mt) continue;
         
-        Au_t arg = Au_register(fn, param_name.c_str(), AU_MEMBER_VAR, 0);
+        Au_t arg = def(fn, param_name.c_str(), AU_MEMBER_VAR, 0);
         arg->src = mt;
         array_qpush((array)&fn->args, (Au)arg);
     }
@@ -679,7 +679,7 @@ static Au_t create_namespace(NamespaceDecl* ns, ASTContext& ctx, aether e) {
                 return existing;
 
             // Create namespace as a struct-like container
-            Au_t ns_au = Au_register_struct(cur, name);
+            Au_t ns_au = def_struct(cur, name);
             // Could add namespace-specific trait if needed
             return ns_au;
         } else {
@@ -850,7 +850,7 @@ public:
             return;
 
         // For now, skip macro processing - would need macro type in new API
-        // The old code created macro objects; new API may need Au_register_macro or similar
+        // The old code created macro objects; new API may need def_macro or similar
         
         // Simple constant macros could be registered as enum values or constants
         // Function-like macros need special handling
