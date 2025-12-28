@@ -112,7 +112,7 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op) {
 none etype_implement(etype t);
 
 static etype etype_ptr(aether mod, Au_t a) {
-    verify(a && !isa((Au)a), "ptr requires Au_t, given %s", isa((Au)a)->ident);
+    verify(a && (isa(a) == typeid(Au_t_f)), "ptr requires Au_t, given %s", isa(a)->ident);
     verify(isa(a) != typeid(etype), "etype_ptr unexpected type");
     Au_t au = a;
     if (au->ptr) return au->ptr->user;
@@ -153,7 +153,7 @@ etype etype_traits(Au a, int traits) {
         au = ((etype) a)->au;
     }
     else if (isa(a) == typeid(enode)) au = ((enode)a)->au;
-    else if (!isa(a)) {
+    else if (isa(a) == typeid(Au_t_f)) {
         verify(lltype(a), "no type found on %o 2", a);
         au = (Au_t)a;
     }
@@ -241,7 +241,6 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) {
 
     /// LV cannot change its type if it is a emember and we are assigning
     enode Lnode = (enode)L;
-    Au_t ltype = isa(L);
     etype rtype = determine_rtype(a, optype, (etype)LV, (etype)RV); // todo: return bool for equal/not_equal/gt/lt/etc, i64 for compare; there are other ones too
 
     LLVMValueRef RES;
@@ -306,7 +305,7 @@ LLVMTypeRef _lltype(Au a) {
     if (instanceof(a, etype)) {
         au = ((etype) a)->au;
     }
-    else if (!isa(a)) {
+    else if (isa(a) == typeid(Au_t_f)) {
         au = (Au_t)a;
     }
     if (au->member_type == AU_MEMBER_VAR) {
@@ -2521,6 +2520,8 @@ none etype_init(etype t) {
 
     if (!au->user)
         au->user = hold(t);
+
+    Au_t_f* au_t = (Au_t_f*)isa(au);
 
     if (is_func((Au)au)) {
         etype fn = au->user;

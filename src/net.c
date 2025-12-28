@@ -161,7 +161,7 @@ vector Session_read_until(Session s, string match, i32 max_len) {
     cstr buf = (cstr)vdata(rbytes);
     
     for (;;) {
-        vector_push(rbytes, _i8(0)); // extend buffer size here with a null, giving us space to read
+        vector_vpush(rbytes, _i8(0)); // extend buffer size here with a null, giving us space to read
         sz sz = rbytes->count;
         verify(sz, "invalid");
         if (!recv(s, &buf[sz - 1], 1))
@@ -463,7 +463,7 @@ bool message_read_content(message m, sock sc) {
                 rlen = recv(sc, buf, rx);
                 
                 if (rlen > 0)
-                    concat(v_data, (ARef)buf, rlen);
+                    vconcat(v_data, (ARef)buf, rlen);
                 else if (rlen < 0) {
                     error = !sff;
                     break;

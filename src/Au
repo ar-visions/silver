@@ -135,11 +135,15 @@ typedef unsigned long long     *ref_u64;
 typedef float                  *ref_f32;
 typedef double                 *ref_f64;
 
+
+
+
+
 #define Au_f_members(B) \
     Au_t            context; \
     union { Au_t src, rtype, type; }; \
     Au_t            schema; \
-    Au_t            user; \
+    Au              user; \
     Au_t            module; \
     Au_t            ptr; \
     char*           ident; \
@@ -282,6 +286,7 @@ void lazy_init(global_init_fn fn, Au_t);
         } else { \
             memset(type_ref, 0, sizeof(E##_i.type)); \
             memcpy(&type_ref->ft, &base_ref->ft, sizeof(__typeof__(base_ref->ft))); \
+            /*type_ref->type = typeid(Au_t_f); */ \
             type_ref->members.alloc     = 64; \
             type_ref->members.assorted  = true; \
             type_ref->members.unmanaged = true; \
@@ -531,6 +536,8 @@ typedef Au_t* Au_ts;
             type_ref->module            = module_lookup((cstr)MODULE); \
             type_ref->typesize          = TYPE_SZ; \
             type_ref->traits            = TRAIT; \
+            head(type_ref)->type = typeid(Au_t_f); \
+            printf("setting type to Au_t_f on %s : %p\n", #TYPE, type_ref); \
             set_meta_array((Au_t)type_ref, emit_types(__VA_ARGS__)); \
             TYPE##_schema( TYPE, INIT, __VA_ARGS__ ); \
             push_type((Au_t)type_ref); \
@@ -704,7 +711,7 @@ forward(shape)
 
 declare_base(Au)
 
-// we need a function table emitted type that C uses in __typeof__ on field set in object.h
+_Pragma("pack(push, 1)")
 typedef struct _Au_t_f {
     Au_f_members(Au)
     struct { void(*_ff)();
@@ -712,7 +719,13 @@ typedef struct _Au_t_f {
     } ft;
 } Au_t_f;
 
-//#define declare_Au_t( AA )
+typedef struct Au_t_f_info {
+    struct _Au     info;
+    Au_t_f         type;
+} Au_t_f_info;
+_Pragma("pack(pop)")
+
+extern Au_t_f_info Au_t_f_i;
 
 #define typeid(AA)   ((Au_t)&AA##_i.type)
 #define scalarof(AA) head(AA)->scalar
@@ -963,7 +976,7 @@ declare_class(item)
     M(AA,BB, i, method, public, none, sort, ARef) \
     M(AA,BB, i, method, public, none, remove, num) \
     M(AA,BB, i, method, public, none, remove_item, item) \
-    M(AA,BB, i, method, public, Au,   get, Au) \
+    M(AA,BB, i, method, public, Au,   value_by_index, Au) \
     M(AA,BB, i, method, public, num,  count) \
     M(AA,BB, i, override, method, dealloc)
 declare_class_2(list, collective)
@@ -1166,11 +1179,11 @@ forward(array)
 
 #define vector_schema(AA,BB,...) \
     M(AA,BB, i, prop,   public, Au,     placeholder2) \
-    M(AA,BB, i, method, public, none,   concat, ARef, num) \
-    M(AA,BB, i, method, public, ARef,   get, num) \
-    M(AA,BB, i, method, public, none,   set, num, ARef) \
-    M(AA,BB, i, method, public, none,   push, Au) \
-    M(AA,BB, i, method, public, vector, slice, num, num) \
+    M(AA,BB, i, method, public, none,   vconcat, ARef, num) \
+    M(AA,BB, i, method, public, ARef,   vget, num) \
+    M(AA,BB, i, method, public, none,   vset, num, ARef) \
+    M(AA,BB, i, method, public, none,   vpush, Au) \
+    M(AA,BB, i, method, public, vector, vslice, num, num) \
     M(AA,BB, i, method, public, Au,     resize, sz) \
     M(AA,BB, i, method, public, Au,     reallocate, sz) \
     M(AA,BB, i, override, method, init) \
@@ -1271,7 +1284,7 @@ extern int fault_level;
 declare_enum(level)
 
 #define map_schema(AA,BB,...) \
-    M(AA,BB, i, final,  public, none, set,        map, Au, Au) \
+    M(AA,BB, i, guard,  public, none, set,        map, Au, Au) \
     M(AA,BB, i, method, public, Au,   get,        Au) \
     M(AA,BB, i, method, public, Au,   value_by_index, num) \
     M(AA,BB, i, method, public, item, lookup,     Au) \
