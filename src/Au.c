@@ -33,7 +33,8 @@ typedef struct _ffi_method_t {
 } ffi_method_t;
 
 Au_t au_arg(Au a) {
-    if (!isa(a) || a == isa(a)) return (Au_t)a;
+    verify(!a || isa(a), "unexpected isa result for Au object");
+    if (isa(a) == typeid(Au_t_f) || a == isa(a)) return (Au_t)a;
     return cast(Au_t, a);
 }
 
@@ -618,7 +619,16 @@ Au_t lexical(array lex, symbol f) {
     return null;
 }
 
+// with all this macro stuff, we can still safely see the type of our type, is here.  'that' is not to be in a macro, but it must exist.
+// if the type is actually a Au_t, it will be this
+_Pragma("pack(push, 1)")
+Au_t_f_info Au_t_f_i;
+_Pragma("pack(pop)")
+
 Au_t def(Au_t type, symbol ident, u32 member_type, u32 traits) {
+    if (ident && strcmp(ident, "Au") == 0) {
+        ident = ident;
+    }
     if (n_members == 0) {
         n_members   = 2048;
         member_pool = calloc(n_members, sizeof(struct _Au_combine));
@@ -626,7 +636,7 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u32 traits) {
     }
     struct _Au_combine* cur = &member_pool[--n_members];
     cur->info.refs = 1;
-
+    cur->info.type = (Au_t)&Au_t_f_i.type;
     Au_t au = &cur->type;
     au->ident = ident ? strdup(ident) : null;
 
@@ -733,6 +743,7 @@ Au_t module_lookup(symbol name) {
 }
  
 Au_t global() {
+    Au_t au_module_t = isa(au_module);
     return au_module;
 }
 
@@ -741,6 +752,7 @@ Au_t def_module(symbol next_module) {
     Au_t m = &combine->type;
     m->member_type = AU_MEMBER_MODULE;
     m->ident = strdup(next_module);
+    combine->info.type  = (Au_t)typeid(Au_t_f);
     if (!au_module) {
         au_module = m;
         module = m;
@@ -758,6 +770,17 @@ static bool has_pushed;
 
 none push_type(Au_t type) {
 
+    if (type == typeid(Au)) {
+        Au_t_f_i.info.type = (Au_t)&Au_t_f_i.type;
+        Au_t_f_i.type.ident = "Au_t";
+        Au_t_f_i.type.traits = AU_TRAIT_SCHEMA;
+        int Au_ft_size   = sizeof(((Au_f*)typeid(Au))->ft);
+        int Au_t_ft_size = sizeof(((Au_t_f*)typeid(Au_t_f))->ft);
+        verify(Au_ft_size == Au_t_ft_size, "Au_f->ft not identical to Au_t_f->ft");
+        memcpy(&Au_t_f_i.type.ft, &typeid(Au)->ft, Au_ft_size);
+        head(typeid(Au_t))->type = Au_t_f_i.info.type;
+    }
+    
     // on first call, we register our basic type structures:
     if (type == typeid(Au_t)) {
         has_pushed = true;
@@ -1100,12 +1123,7 @@ Au Au_initialize(Au a) {
     #endif
     
     init_recur(a, f->type, null);
-    //hold_members(a);
-
-    Au_f* ff = ftableI(a);
-    none(*hm)(Au) = ff->ft.hold_members;
-    hm((Au)a);
-
+    hold_members(a);
     return a;
 }
 
@@ -1469,7 +1487,7 @@ none member_override(Au_t type, Au_t type_mem, AFlag f) {
     while (base) {
         for (num i = 0; i < base->members.count; i++) {
             Au_t m = (Au_t)base->members.origin[i];
-            printf("existing member on type %s = %p\n", base->ident, m);
+            //printf("existing member on type %s = %p\n", base->ident, m);
             if (m->ident && strcmp(m->ident, type_mem->ident) == 0) {
                 type_mem->offset = m->offset; // todo: better idea to use src on type_mem
                 type_mem->args   = m->args;
@@ -1513,8 +1531,7 @@ none engage(cstrs argv) {
     }
  
 #ifndef NDEBUG
-    if (!explicit_listen)
-        set(log_funcs, (Au)string("*"), _bool(true));
+    if (!explicit_listen) set(log_funcs, string("*"), _bool(true));
 #endif
 
     if (len(log_funcs)) {
@@ -2162,9 +2179,12 @@ string Au_cast_string(Au a) {
     Au_t type = isa(a);
     
     // convenient feature of new object abi
-    if (!type) {
+    if (type == typeid(Au_t_f)) {
         type = (Au_t)a;
         return string(type->ident);
+    } else if (!type) {
+        verify(!a, "invalid type");
+        return null;
     }
 
     Au a_header = header(a);
@@ -2340,7 +2360,8 @@ Au formatter(Au_t type, handle ff, Au opt, symbol template, ...) {
             Au arg = va_arg(args, Au);
             string   a;
             Au_t isa_arg = isa(arg);
-            if (isa_arg == null || isa_arg == arg) {
+            verify(!arg || isa_arg, "unexpected null isa on object");
+            if (isa_arg == typeid(Au_t_f) || isa_arg == arg) {
                 if (!arg) {
                     a = string("null");
                 } else {
@@ -2682,7 +2703,7 @@ sz map_len(map a) {
 
 Au map_index_sz(map a, sz index) {
     assert(index >= 0 && index < a->count, "index out of range");
-    item i = (item)list_get((list)a, (Au)_sz(index));
+    item i = (item)list_value_by_index((list)a, (Au)_sz(index));
     return i ? i->value : null;
 }
 
@@ -3548,7 +3569,7 @@ Au list_pop(list a) {
     return (Au)l;
 }
 
-Au list_get(list a, Au at_index) {
+Au list_value_by_index(list a, Au at_index) {
     sz index = 0;
     Au_t itype = isa(at_index);
     sz at = 0;
@@ -3636,13 +3657,13 @@ vector vector_with_path(vector a, path file_path) {
     return a;
 }
 
-ARef vector_get(vector a, num index) {
+ARef vector_vget(vector a, num index) {
     num location = index * a->type->typesize;
     i8* arb = (i8*)vdata(a);
     return (ARef)&arb[location];
 }
 
-none vector_set(vector a, num index, ARef element) {
+none vector_vset(vector a, num index, ARef element) {
     num location = index * a->type->typesize;
     i8* arb = (i8*)vdata(a);
     memcpy(&arb[location], element, a->type->typesize); 
@@ -3661,7 +3682,7 @@ Au vector_reallocate(vector a, sz size) {
     return f->data;
 }
 
-none vector_concat(vector a, ARef any, num count) {
+none vector_vconcat(vector a, ARef any, num count) {
     if (count <= 0) return;
     Au_t type = vdata_type(a);
     Au f = head(a);
@@ -3676,15 +3697,15 @@ none vector_concat(vector a, ARef any, num count) {
         f->shape->data[f->shape->count - 1] = f->count;
 }
 
-none vector_push(vector a, Au any) {
-    vector_concat(a, (ARef)any, 1);
+none vector_vpush(vector a, Au any) {
+    vector_vconcat(a, (ARef)any, 1);
 }
 
 num abso(num i) { 
     return (i < 0) ? -i : i;
 }
 
-vector vector_slice(vector a, num from, num to) {
+vector vector_vslice(vector a, num from, num to) {
     Au      f   = head(a);
     num count = (1 + abso(from - to)); // + 31 & ~31;
     Au res = alloc(f->type, 1, null);
@@ -5653,6 +5674,13 @@ define_class(subscriber, Au)
 define_class(subs, Au)
 
 define_any(Au, Au, sizeof(struct _Au), AU_TRAIT_CLASS);
+
+
+/*
+
+Au_t_f
+*/
+
 
 define_class(watch,   Au)
 define_class(msg,     Au)
