@@ -1111,8 +1111,9 @@ static bool is_addressable(enode e) {
 
 enode enode_access(enode target, string name) {
     aether a = target->mod;
-    Au_t   m = find_member(target->au, name->chars, 0, true);
-    verify(m, "failed to find member %o on type %o", name, target);
+    Au_t rel = target->au->member_type == AU_MEMBER_VAR ? target->au->src : target->au;
+    Au_t   m = find_member(rel, name->chars, 0, true);
+    verify(m, "failed to find member %o on type %o", name, rel);
     
     verify(is_addressable(target), 
         "expected target pointer for member access");
@@ -2787,19 +2788,21 @@ none etype_implement(etype t) {
             mt = etype_ptr(a, schema->au);
             mt->au->is_typeid = true;
 
-            Au_t au_type = au_lookup("Au");
+            Au_t au_type = au_lookup("Au");\
             verify(au_type->ptr, "expected ptr type on Au");
 
             // we need to create the %o_i instance inline struct
             string n = f(string, "%s_info", au->ident);
-            Au_t type_info = def_type(a->au, n->chars, AU_TRAIT_STRUCT | AU_TRAIT_SYSTEM);
-            Au_t type_h = def_member(type_info, "info",
-                au_type, AU_MEMBER_VAR, 0);
-            Au_t type_f = def_member(type_info, "type",
-                schema->au, AU_MEMBER_VAR, AU_TRAIT_INLAY);
+            Au_t type_info = def_type  (a->au, n->chars, AU_TRAIT_STRUCT | AU_TRAIT_SYSTEM);
+            Au_t type_h    = def_member(type_info, "info", au_type, AU_MEMBER_VAR, 0);
+            Au_t type_f    = def_member(type_info, "type", schema->au, AU_MEMBER_VAR, AU_TRAIT_INLAY);
             type_info->user = etype(mod, a, au, type_info);
             etype_implement(type_info->user);
             string name = f(string, "%s_i", au->ident);
+            if (eq(name, "item_i")) {
+                int test2 = 2;
+                test2    += 2;
+            }
             evar schema_i = evar(mod, a, au, def_member(
                         a->au, name->chars, type_info, AU_MEMBER_VAR, 0));
             etype_implement((etype)schema_i);
