@@ -600,7 +600,7 @@ Au_t find_context(array lex, int member_type, int traits) {
     return null;
 }
 
-Au_t Au_lexical(array lex, symbol f) {
+Au_t lexical(array lex, symbol f) {
     for (int i = len(lex) - 1; i >= 0; i--) {
         Au_t au = (Au_t)lex->origin[i];
         while (au) {
@@ -642,7 +642,7 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u32 traits) {
     return (Au_t)&cur->type;
 }
 
-static none Au_dealloc_iter(Au_t type) {
+static none dealloc_iter(Au_t type) {
     array_dealloc((array)&type->members);
     array_dealloc((array)&type->args);
     free(type->ident);
@@ -650,10 +650,10 @@ static none Au_dealloc_iter(Au_t type) {
 }
 
 // intelligently drops the inlay array elements and allocated member data
-none Au_dealloc_type(Au_t type) {
+none dealloc_type(Au_t type) {
     Au info = head(type);
     if (info->refs == 1) {
-        Au_dealloc_iter(type);
+        dealloc_iter(type);
     }
     Au_drop((Au)type);
 }
@@ -705,7 +705,7 @@ cstr copy_cstr(cstr input) {
     return res;
 }
 
-Au Au_header(Au a) {
+Au header(Au a) {
     return (((struct _Au*)a) - 1);
 }
 
@@ -723,7 +723,7 @@ none def_init(func f) {
     call_last[call_last_count++] = f;
 }
 
-Au_t Au_module_lookup(symbol name) {
+Au_t module_lookup(symbol name) {
     for (int i = 0; i < modules.data.count; i++) {
         Au_t m = (Au_t)modules.data.origin[i];
         if (strcmp(m->ident, name) == 0)
@@ -731,7 +731,7 @@ Au_t Au_module_lookup(symbol name) {
     }
     return def_module(name);
 }
-
+ 
 Au_t global() {
     return au_module;
 }
@@ -845,11 +845,11 @@ none push_type(Au_t type) {
     }
 }
 
-Au_t Au_current_module() {
+Au_t current_module() {
     return module;
 }
 
-Au_t Au_scope_lookup(array a, string f) {
+Au_t scope_lookup(array a, string f) {
     cstr s = f->chars;
     for (int i = len(a) - 1; i >= 0; i--) {
         Au_t t = (Au_t)a->origin[i];
@@ -862,12 +862,12 @@ Au_t Au_scope_lookup(array a, string f) {
     return null;
 }
 
-ARef Au_types(ref_i64 length) {
+ARef types(ref_i64 length) {
     *length = module->members.count;
     return module->members.origin;
 }
 
-Au_t Au_find_type(symbol name, Au_t m) {
+Au_t find_type(symbol name, Au_t m) {
     Au_t mod = m ? m : module;
 
     for (int i = 0; i < mod->members.count; i++) {
@@ -1100,7 +1100,12 @@ Au Au_initialize(Au a) {
     #endif
     
     init_recur(a, f->type, null);
-    hold_members(a);
+    //hold_members(a);
+
+    Au_f* ff = ftableI(a);
+    none(*hm)(Au) = ff->ft.hold_members;
+    hm((Au)a);
+
     return a;
 }
 
@@ -1123,7 +1128,7 @@ void halt(string msg) {
 
 pid_t _last_pid = 0;
 
-i64 command_last_pid() {
+i64 last_pid() {
     return (i64)_last_pid;
 }
 
@@ -1367,7 +1372,7 @@ ffi_method_t* method_with_address(handle address, Au_t rtype, array args, Au_t m
     return method;
 }
 
-Au Au_method_call(Au_t m, array args) {
+Au method_call(Au_t m, array args) {
     if (!m->ffi) m->ffi = method_with_address(m->value, m->type, (array)&m->args, m->context);
     ffi_method_t* a = m->ffi;
     const num max_args = 8;
@@ -1395,7 +1400,7 @@ Au Au_method_call(Au_t m, array args) {
 Au method(Au_t type, cstr method_name, array args) {
     Au_t mem = find_member(type, method_name, AU_MEMBER_FUNC, false);
     assert(mem->ffi, "method not set");
-    Au res = Au_method_call(mem, args);
+    Au res = method_call(mem, args);
     return res;
 }
 
@@ -1404,7 +1409,7 @@ Au convert(Au_t type, Au input) {
     return construct_with(type, input, null);
 }
 
-Au Au_method_vargs(Au a, Au_t mem, int n_args, ...) {
+Au method_vargs(Au a, Au_t mem, int n_args, ...) {
     assert(mem->ffi, "method not set");
     ffi_method_t* m = mem->ffi;
     va_list  vargs;
@@ -1416,7 +1421,7 @@ Au Au_method_vargs(Au a, Au_t mem, int n_args, ...) {
         push(args, arg);
     }
     va_end(vargs);
-    Au res = Au_method_call(mem, args);
+    Au res = method_call(mem, args);
     return res;
 }
 
@@ -1484,7 +1489,7 @@ none member_override(Au_t type, Au_t type_mem, AFlag f) {
 }
 
 path path_share_path();
-none Au_engage(cstrs argv) {
+none engage(cstrs argv) {
     Au_t f32_type = typeid(f32);
     if (started) return;
 
@@ -1581,7 +1586,7 @@ Au_t find_ctr(Au_t type, Au_t with, bool poly) {
     return 0;
 }
 
-bool Au_is_inlay(Au_t m) {
+bool is_inlay(Au_t m) {
     return (m->type->traits & AU_TRAIT_STRUCT    | 
             m->type->traits & AU_TRAIT_PRIMITIVE | 
             m->type->traits & AU_TRAIT_ENUM      | 
@@ -1595,7 +1600,7 @@ none Au_hold_members(Au a) {
             Au_t mem = (Au_t)type->members.origin[i];
             Au   *mdata = (Au*)((cstr)a + mem->offset);
             if (mem->member_type == AU_MEMBER_VAR)
-                if (!Au_is_inlay(mem) && *mdata) {
+                if (!is_inlay(mem) && *mdata) {
                     if (mem->meta.origin && *(Au_t*)mem->meta.origin == typeid(weak))
                         continue;
                     Au member_value = *mdata;
@@ -1621,10 +1626,10 @@ Au Au_get_property(Au a, symbol name) {
     verify(m, "%s not found on Au %s", name, type->ident);
     Au *mdata = (Au*)((cstr)a + m->offset);
     Au  value = *mdata;
-    return Au_is_inlay(m) ? primitive(m->type, mdata) : value;
+    return is_inlay(m) ? primitive(m->type, mdata) : value;
 }
 
-map Au_arguments(int argc, cstrs argv, map default_values, Au default_key) {
+map arguments(int argc, cstrs argv, map default_values, Au default_key) {
     map result = new(map, hsize, 16, assorted, true);
     for (item ii = default_values->first; ii; ii = ii->next) {
         Au k = ii->key;
@@ -1709,7 +1714,7 @@ none Au_drop_members(Au a) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t m = (Au_t)type->members.origin[i];
             if ((m->member_type == AU_MEMBER_VAR) &&
-                    !Au_is_inlay(m)) {
+                    !is_inlay(m)) {
                 if (m->args.origin && *(Au_t*)m->args.origin == typeid(weak))
                     continue;
                 //printf("Au_dealloc: drop member %s.%s (%s)\n", type->ident, m->ident, m->type->ident);
@@ -1824,7 +1829,7 @@ string prep_cereal(cereal cs) {
 }
 
 Au Au_with_cstrs(Au a, cstrs argv) {
-    Au_engage(argv);
+    engage(argv);
     int argc = 0;
     while (argv[argc]) { // C standard puts a null char* on end, by law (see: Brannigans law)
         cstr arg = argv[argc];
@@ -2511,12 +2516,12 @@ real clampf(real i, real mn, real mx) {
 none vector_init(vector a);
 
 vector vector_with_i32(vector a, i32 count) {
-    Au_vrealloc((Au)a, count);
+    vrealloc((Au)a, count);
     return a;
 }
 
 sz vector_len(vector a) {
-    return header(a)->count;
+    return header((Au)a)->count;
 }
 
 
@@ -3311,9 +3316,9 @@ none Au_free(Au a) {
     }
 }
 
-none Au_recycle() {
+none recycle() {
     i64   types_len;
-    Au_t* atypes = (Au_t*)Au_types(&types_len);
+    Au_t* atypes = (Au_t*)types(&types_len);
 
     /// iterate through types
     for (num i = 0; i < types_len; i++) {
@@ -3603,18 +3608,18 @@ Au Au_vrealloc(Au a, sz alloc) {
 }
 
 none vector_init(vector a) {
-    Au f = header(a);
+    Au f = head(a);
     f->count = 0;
     f->scalar = (f->type && f->type->meta.origin) ? meta_index(a, 0) : a->type ? a->type : typeid(i8);
     f->shape  = hold(a->shape);
     verify(f->scalar, "scalar not set");
     if (f->shape)
         a->alloc = shape_total(f->shape);
-    Au_vrealloc((Au)a, a->alloc);
+    vrealloc((Au)a, a->alloc);
 }
 
 vector vector_with_path(vector a, path file_path) {
-    Au f = header(a);
+    Au f = head(a);
     f->scalar = typeid(i8);
     
     verify(exists(file_path), "file %o does not exist", file_path);
@@ -3623,7 +3628,7 @@ vector vector_with_path(vector a, path file_path) {
     sz flen = ftell(ff);
     fseek(ff, 0, SEEK_SET);
 
-    Au_vrealloc((Au)a, flen);
+    vrealloc((Au)a, flen);
     f->count = flen;
     size_t n = fread(f->data, 1, flen, ff);
     verify(n == flen, "could not read file: %o", f);
@@ -3644,22 +3649,22 @@ none vector_set(vector a, num index, ARef element) {
 }
 
 Au vector_resize(vector a, sz size) {
-    Au_vrealloc((Au)a, size);
-    Au f = header(a);
+    vrealloc((Au)a, size);
+    Au f = head(a);
     f->count = size;
     return f->data;
 }
 
 Au vector_reallocate(vector a, sz size) {
-    Au_vrealloc((Au)a, size);
-    Au f = header(a);
+    vrealloc((Au)a, size);
+    Au f = head(a);
     return f->data;
 }
 
 none vector_concat(vector a, ARef any, num count) {
     if (count <= 0) return;
     Au_t type = vdata_type(a);
-    Au f = header(a);
+    Au f = head(a);
     if (f->alloc < f->count + count)
         vrealloc(a, (f->alloc << 1) + 32 + count);
     
@@ -3680,10 +3685,10 @@ num abso(num i) {
 }
 
 vector vector_slice(vector a, num from, num to) {
-    Au      f   = header(a);
+    Au      f   = head(a);
     num count = (1 + abso(from - to)); // + 31 & ~31;
     Au res = alloc(f->type, 1, null);
-    Au res_f = header(res);
+    Au res_f = head(res);
     u8* src   = (u8*)f->data;
     u8* dst   = null;
     fault("implement vector_slice allocator");
@@ -3699,7 +3704,7 @@ vector vector_slice(vector a, num from, num to) {
 }
 
 sz vector_count(vector a) {
-    Au f = header(a);
+    Au f = head(a);
     return f->count;
 }
 
@@ -4306,6 +4311,8 @@ path path_self() {
     return path(exe);
 }
 
+Exists resource_exists(Au o);
+
 path path_share_path() {
     path exe    = path_self();
     path parent = path_parent_dir(exe); // verify this folder is bin?
@@ -4352,7 +4359,7 @@ path path_cwd() {
     return a;
 }
 
-Exists Au_exists(Au o) {
+Exists resource_exists(Au o) {
     Au_t type = isa(o);
     path  f = null;
     if (type == typeid(string))
@@ -4361,7 +4368,7 @@ Exists Au_exists(Au o) {
         f = (path)o;
     assert(f, "type not supported");
     bool is_dir = is_dir(f);
-    bool r = exists(f);
+    bool r = path_exists(f);
     if (is_dir)
         return r ? Exists_dir  : Exists_no;
     else
@@ -4491,7 +4498,7 @@ bool path_save(path a, Au content, ctx context) {
     return success;
 }
 
-Au Au_parse(Au_t schema, cstr s, ctx context);
+Au parse(Au_t schema, cstr s, ctx context);
 
 Au path_load(path a, Au_t type, ctx context) {
     if (is_dir(a)) return null;
@@ -4511,7 +4518,7 @@ Au path_load(path a, Au_t type, ctx context) {
     if (type == typeid(string))
         return (Au)str;
     if (is_obj) {
-        Au obj = Au_parse((Au_t)type, (cstr)str->chars, context);
+        Au obj = parse((Au_t)type, (cstr)str->chars, context);
         return obj;
     }
     assert(false, "not implemented");
@@ -4839,7 +4846,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
             // for these special syntax, we cannot take schema & meta_type into account
             // this is effectively 'ason' syntax
             scan = ws(scan + 1);
-            Au_t type = Au_find_type(sym->chars, null);
+            Au_t type = find_type(sym->chars, null);
             verify(type, "type not found: %o", sym);
 
             if (type->traits & AU_TRAIT_ENUM) {
@@ -4928,12 +4935,12 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
                 "expected type: %s, found %o", schema->ident, sym);
 
             if (!schema) {
-                schema = Au_find_type(sym->chars, null);
+                schema = find_type(sym->chars, null);
                 verify(schema, "type not found: %o", sym);
             }
 
             if (schema == typeid(Au)) {
-                schema = Au_find_type(sym->chars, null);
+                schema = find_type(sym->chars, null);
                 verify(schema, "%s not found", sym->chars);
             }
         }
@@ -5004,7 +5011,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
 
             if (json_type) {
                 string type_name = (string)value;
-                use_schema = Au_find_type(type_name->chars, null);
+                use_schema = find_type(type_name->chars, null);
                 verify(use_schema, "type not found: %o", type_name);
             } else
                 set(props, (Au)name, value);
@@ -5171,7 +5178,7 @@ static string extract_context(cstr src, cstr *endptr) {
     return string(chars, (cstr)start, ref_length, len);
 }
 
-Au Au_parse(Au_t schema, cstr s, ctx context) {
+Au parse(Au_t schema, cstr s, ctx context) {
     printf("parse: %s", s);
     if (context) {
         if (!ctx_checksums) ctx_checksums = hold(map(hsize, 32));

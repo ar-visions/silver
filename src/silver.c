@@ -10,10 +10,10 @@ void build_fn(silver a, enode fmem, callback preamble, callback postamble);
 static void build_record(silver a, etype mrec);
 
 // used in more primitive cases
-#define au_lookup(sym) Au_lexical(a->lexical, sym)
+#define au_lookup(sym) lexical(a->lexical, sym)
 
 #define elookup(sym) ({              \
-    Au_t m = Au_lexical(a->lexical, sym); \
+    Au_t m = lexical(a->lexical, sym); \
     m ? m->user : null; \
 })
 
@@ -303,7 +303,7 @@ string model_keyword() {
 }
 
 int main(int argc, cstrs argv) {
-    Au_engage(argv);
+    engage(argv);
     silver a = silver(argv);
     return 0;
 }
@@ -451,7 +451,7 @@ void silver_init(silver a) {
         if (retry) {
             print("awaiting iteration: %o", a->source);
             hold_members(a);
-            Au_recycle();
+            recycle();
             mtime = path_wait_for_change(a->source, mtime, 0);
             print("rebuilding...");
             drop(a->tokens);
@@ -502,7 +502,7 @@ static string op_lang_token(string name) {
     return null;
 }
 
-static void initialize() {
+static void silver_module() {
     keywords = array_of_cstr(
         "class", "struct", "public", "intern",
         "import", "export", "typeid", "context",
@@ -1315,7 +1315,7 @@ enode silver_read_enode(silver a, etype mdl_expect) {
 
                 // try implicit 'this' access in instance methods
                 if (!mem && f && f->target) {
-                    Au_t field = Au_find_member(etype_resolve((etype)f->target)->au, alpha->chars, 0, true);
+                    Au_t field = find_member(etype_resolve((etype)f->target)->au, alpha->chars, 0, true);
                     if (field) {
                         mem = access(f->target, alpha);
                     } else {
@@ -1346,7 +1346,7 @@ enode silver_read_enode(silver a, etype mdl_expect) {
             }
 
             /// Handle macros and function calls
-            if (instanceof(mem, macro) || is_func(mem)) {
+            if (instanceof(mem, macro) || is_func((Au)mem)) {
                 mem = parse_member_expr(a, mem);
             }
         }
@@ -1362,7 +1362,7 @@ enode silver_read_enode(silver a, etype mdl_expect) {
         }
         
         // More chaining - push context for next iteration
-        validate(!is_func(mem), "cannot resolve into function");
+        validate(!is_func((Au)mem), "cannot resolve into function");
         if (mem->au && !module) {
             push_scope(a, (Au)mem);
             depth++;
@@ -1479,7 +1479,7 @@ enode parse_statements(silver a, bool unique_members) {
 
 void silver_incremental_resolve(silver a) {
     members(a->au, mem) {
-        if (is_func(mem) && !mem->is_system && mem->user != a->fn_init && !mem->user->user_built) {
+        if (is_func((Au)mem) && !mem->is_system && mem->user != a->fn_init && !mem->user->user_built) {
             build_fn(a, (enode)mem->user, null, null);
         }
     }
@@ -2230,7 +2230,7 @@ static enode typed_expr(silver a, enode f, array expr) {
     push_tokens(a, expr ? (tokens)expr : a->tokens, expr ? 0 : a->cursor);
     
     // function calls
-    if (is_func(f)) {
+    if (is_func((Au)f)) {
         array   m      = (array)&f->au->args;
         int     ln     = m->count, i = 0;
         array   values = array(alloc, 32);
@@ -2327,7 +2327,7 @@ silver silver_with_path(silver a, path module_path) {
     return a;
 }
 
-enode import_parse(silver a) {
+enode parse_import(silver a) {
     validate(next_is(a, "import"), "expected import keyword");
     silver_consume(a);
 
@@ -2353,7 +2353,7 @@ enode import_parse(silver a) {
         string bb = silver_read_if(a, ":") ? expect_alpha(a) : null;
         string cc = bb && silver_read_if(a, ":") ? expect_alpha(a) : null;
         array mpath = null;
-        Au_t f = Au_find_type((cstr)aa->chars, null);
+        Au_t f = find_type((cstr)aa->chars, null);
 
         if (f && inherits(f, typeid(codegen)))
             is_codegen = f;
@@ -2682,7 +2682,7 @@ void silver_write_header(silver a) {
             fputs(f->chars, module_f);
             members(m, mi) {
                 string mn = cname(string(mi->ident));
-                if (is_func(mi)) {
+                if (is_func((Au)mi)) {
                     enode f = (enode)mi->user;
                     string args = string();
                     args(mi, arg) {
@@ -2737,7 +2737,7 @@ void silver_write_header(silver a) {
     members(a->au, m) {
         if (is_class(m)) {
             members(m, mi) {
-                if (is_func(mi))
+                if (is_func((Au)mi))
                     fputs(fmt("%o\n", method_def((enode)mi->user))->chars, method_f);
             }
         }
@@ -2820,7 +2820,7 @@ static void build_record(silver a, etype mrec) {
     // this is called from Au_initialize
     if (rec->au->is_class) {
         // if no init, create one (attach preamble for our property inits)
-        Au_t m_init = Au_find_member(rec->au, "init", AU_MEMBER_FUNC, false);
+        Au_t m_init = find_member(rec->au, "init", AU_MEMBER_FUNC, false);
         if (!m_init) {
             push_scope(a, (Au)mrec);
             m_init = function(a,
@@ -2835,7 +2835,7 @@ static void build_record(silver a, etype mrec) {
         members(rec->au, m) {
             Au_t t = isa(m->user);
             enode n = instanceof(m->user, enode);
-            if (n && is_func(n)) build_fn(a, n, null, null);
+            if (n && is_func((Au)n)) build_fn(a, n, null, null);
         }
     }
     pop_scope(a);
@@ -2908,7 +2908,7 @@ map parse_map(silver a, etype mdl_schema) {
         validate(silver_read_if(a, ":"), "expected : after arg %o", name);
         etype mdl_expect = null;
         if (mdl_schema) {
-            Au_t m = Au_find_member(mdl_schema->au, name->chars, AU_MEMBER_VAR, true);
+            Au_t m = find_member(mdl_schema->au, name->chars, AU_MEMBER_VAR, true);
             validate(m, "member %o not found on model %o", name, mdl_schema);
             mdl_expect = m->user;
         }
@@ -2942,14 +2942,14 @@ array read_arg(array tokens, int start, int *next_read);
 
 enode silver_parse_member_expr(silver a, enode mem) {
     push_current(a);
-    int indexable = !is_func(mem);
+    int indexable = !is_func((Au)mem);
     bool is_macro = mem && instanceof(mem, macro);
 
     /// handle compatible indexing methods and general pointer dereference @ index
     if (indexable && next_is(a, "[")) {
-        etype r = is_rec(mem) ? is_rec(mem)->user : null;
+        etype r = is_rec((Au)mem) ? is_rec((Au)mem)->user : null;
         /// must have an indexing method, or be a reference_pointer
-        validate(is_ptr(mem) || r, "no indexing available for model %s",
+        validate(is_ptr((Au)mem) || r, "no indexing available for model %s",
                  mem->au->ident);
 
         /// we must read the arguments given to the indexer
@@ -3002,7 +3002,7 @@ enode silver_parse_member_expr(silver a, enode mem) {
         return res;
 
     } else if (mem) {
-        if (is_func(mem) || is_type(mem)) {
+        if (is_func((Au)mem) || is_type((Au)mem)) {
             array expr = read_within(a);
             mem = typed_expr(a, mem, expr); // this, is the construct
         }
@@ -3179,7 +3179,7 @@ enode parse_switch(silver a) {
     enode e_expr = parse_expression(a, null);
     map cases = map(hsize, 16);
     array expr_def = null;
-    bool all_const = is_prim(e_expr);
+    bool all_const = is_prim((Au)e_expr);
 
     while (true) {
         if (silver_read_if(a, "case")) {
@@ -3320,7 +3320,7 @@ enode parse_loop_while(silver a) {
 bool is_model(silver a) {
     token k = silver_peek(a);
     enode m = (enode)elookup(k->chars);
-    return m && is_type(m);
+    return m && is_type((Au)m);
 }
 
 path module_path(silver a, string name) {
@@ -3345,8 +3345,9 @@ Au_t next_is_keyword(silver a, Au_t *fn) {
         return null;
     if (!isalpha(t->chars[0]))
         return null;
-    Au_t f = Au_find_type((cstr)t->chars, null);
-    if (f && inherits(f, typeid(etype)) && (*fn = Au_find_member(f, "parse", AU_MEMBER_FUNC, false)))
+    Au_t f = find_type((cstr)t->chars, null);
+    string kw = f(string, "parse_%o", t);
+    if (f && inherits(f, typeid(etype)) && (*fn = find_member(f, kw->chars, AU_MEMBER_FUNC, false)))
         return f;
     return null;
 }
@@ -3454,4 +3455,4 @@ define_class(chatgpt, codegen)
 define_class(silver, aether)
 define_class(import, etype)
 
-initializer(initialize)
+initializer(silver_module)

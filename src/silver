@@ -61,7 +61,7 @@ declare_class_3(silver, aether, etype)
     M(X, Y, i, prop,  public, array, tokens)        \
     M(X, Y, i, prop,  public, array, module_paths)  \
     M(X, Y, i, prop,  public, array, include_paths) \
-    M(X, Y, s, method,public, enode, parse, silver)
+    M(X, Y, s, method,public, enode, parse_import, silver)
 declare_class_2(import, etype)
 
 #define chatgpt_schema(X, Y, ...) \

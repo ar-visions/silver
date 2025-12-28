@@ -590,63 +590,63 @@ forward(any)
     M(AA,BB, i, prop, intern, i64, recycle) \
     M(AA,BB, i, prop, intern, i64, af_index) \
     M(AA,BB, i, array, intern, Au, 8, meta) \
-    M(AA,BB, i, method, public, none, init) \
-    M(AA,BB, i, method, public, none, dealloc) \
-    M(AA,BB, i, method, public, i32, compare, AA) \
-    M(AA,BB, i, method, public, u64, hash) \
-    M(AA,BB, i, method, public, AA, copy) \
-    M(AA,BB, i, guard, public, sz, len, Au) \
-    M(AA,BB, i, final, public, callback, binding,   Au, Au, bool, Au_t, Au_t, symbol, symbol) \
-    M(AA,BB, i, final, public, ref_u64, AF_bits,    Au) \
-    M(AA,BB, i, final, public, none, AF_set_id,     Au, i32) \
-    M(AA,BB, i, final, public, none, AF_set_name,   Au, cstr) \
-    M(AA,BB, i, final, public, i32, AF_query_name,  Au, cstr) \
-    M(AA,BB, i, final, public, Au, instance_of,     Au, Au_t) \
-    M(AA,BB, i, final, public, AA, hold,            Au) \
-    M(AA,BB, i, final, public, none, drop,          Au) \
-    M(AA,BB, i, final, public, none, hold_members,  Au) \
-    M(AA,BB, i, final, public, none, drop_members,  Au) \
-    M(AA,BB, i, final, public, Au, set_property,    Au, symbol, Au) \
-    M(AA,BB, i, final, public, Au, get_property,    Au, symbol) \
-    M(AA,BB, i, final, public, Au, vrealloc,        Au, sz) \
-    M(AA,BB, i, final, public, Au_t, meta_index,    Au, i32) \
-    M(AA,BB, s, method, public, Au_t, def, Au_t, symbol, u32, u32) \
-    M(AA,BB, s, method, public, Au_t, def_type, Au_t, symbol, u32) \
-    M(AA,BB, s, method, public, Au_t, def_member, Au_t, symbol, Au_t, u32, u32) \
-    M(AA,BB, s, method, public, Au_t, def_class, Au_t, symbol) \
-    M(AA,BB, s, method, public, Au_t, def_struct, Au_t, symbol) \
-    M(AA,BB, s, method, public, Au_t, def_func_ptr, Au_t, symbol) \
-    M(AA,BB, s, method, public, Au_t, def_pointer, Au_t, Au_t, symbol) \
-    M(AA,BB, s, method, public, Au_t, def_enum, Au_t, symbol, u32) \
-    M(AA,BB, s, method, public, Au_t, def_enum_value, Au_t, symbol, Au) \
-    M(AA,BB, s, method, public, Au,   parse, Au_t, cstr, ctx) \
-    M(AA,BB, s, method, public, Au_t, find_member, Au_t, symbol, i32, bool) \
-    M(AA,BB, s, method, public, Au_t, find_context, array, i32, i32) \
-    M(AA,BB, s, method, public, Au_t, lexical, array, symbol) \
-    M(AA,BB, s, method, public, Au, initialize, Au) \
-    M(AA,BB, s, method, public, Au_t, module_lookup, symbol) \
-    M(AA,BB, s, method, public, Au_t, def_module, symbol) \
-    M(AA,BB, s, method, public, Au_t, global) \
-    M(AA,BB, s, method, public, Au_t, scope_lookup, array, string) \
-    M(AA,BB, s, method, public, Au_t, current_module) \
-    M(AA,BB, i, final, public, Au, member_object, Au, Au_t) \
-    M(AA,BB, i, final, public, bool, member_set, Au, Au_t, Au) \
-    M(AA,BB, i, final, public, Au, header, Au) \
-    M(AA,BB, i, final, public, Au, vdata, Au) \
-    M(AA,BB, i, final, public, Au_t, vdata_type, Au) \
-    M(AA,BB, i, final, public, i64, vdata_stride, Au) \
-    M(AA,BB, i, final, public, bool, is_meta, Au) \
-    M(AA,BB, i, final, public, bool, is_meta_compatible, Au, Au) \
-    M(AA,BB, s, vargs, public, Au, formatter, Au_t, handle, Au, symbol) \
-    M(AA,BB, s, method, public, Au, alloc, Au_t, num, Au_ts) \
-    M(AA,BB, s, method, public, Au, alloc_new, Au_t, num, Au_ts) \
-    M(AA,BB, s, method, public, Au, alloc_dbg, Au_t, num, cstr, i32) \
-    M(AA,BB, s, method, public, Au, alloc2, Au_t, Au_t, shape) \
+    M(AA,BB, i, method, public, none,   init) \
+    M(AA,BB, i, method, public, none,   dealloc) \
+    M(AA,BB, i, method, public, i32,    compare, AA) \
+    M(AA,BB, i, method, public, u64,    hash) \
+    M(AA,BB, i, method, public, AA,     copy) \
+    M(AA,BB, i, guard,  public, sz, len, Au) \
+    M(AA,BB, i, method, public, callback, binding,   Au, bool, Au_t, Au_t, symbol, symbol) \
+    M(AA,BB, i, method, public, ref_u64, AF_bits) \
+    M(AA,BB, i, method, public, none,   AF_set_id,      i32) \
+    M(AA,BB, i, method, public, none,   AF_set_name,    cstr) \
+    M(AA,BB, i, method, public, i32,    AF_query_name,  cstr) \
+    M(AA,BB, i, guard,  public, Au,     instance_of,    Au, Au_t) \
+    M(AA,BB, i, guard,  public, AA,     hold,           Au) \
+    M(AA,BB, i, guard,  public, none,   drop,           Au) \
+    M(AA,BB, i, method, public, none,   hold_members) \
+    M(AA,BB, i, method, public, none,   drop_members) \
+    M(AA,BB, i, method, public, Au,     set_property,   symbol, Au) \
+    M(AA,BB, i, method, public, Au,     get_property,   symbol) \
+    M(AA,BB, i, method, public, Au,     vrealloc,       sz) \
+    M(AA,BB, i, method, public, Au_t,   meta_index,     i32) \
+    M(AA,BB, s, method, public, Au_t,   def,            Au_t, symbol, u32, u32) \
+    M(AA,BB, s, method, public, Au_t,   def_type,       Au_t, symbol, u32) \
+    M(AA,BB, s, method, public, Au_t,   def_member,     Au_t, symbol, Au_t, u32, u32) \
+    M(AA,BB, s, method, public, Au_t,   def_class,      Au_t, symbol) \
+    M(AA,BB, s, method, public, Au_t,   def_struct,     Au_t, symbol) \
+    M(AA,BB, s, method, public, Au_t,   def_func_ptr,   Au_t, symbol) \
+    M(AA,BB, s, method, public, Au_t,   def_pointer,    Au_t, Au_t, symbol) \
+    M(AA,BB, s, method, public, Au_t,   def_enum,       Au_t, symbol, u32) \
+    M(AA,BB, s, method, public, Au_t,   def_enum_value, Au_t, symbol, Au) \
+    M(AA,BB, s, method, public, Au,     parse,          Au_t, cstr, ctx) \
+    M(AA,BB, s, method, public, Au_t,   find_member,    Au_t, symbol, i32, bool) \
+    M(AA,BB, s, method, public, Au_t,   find_context,   array, i32, i32) \
+    M(AA,BB, s, method, public, Au_t,   lexical,        array, symbol) \
+    M(AA,BB, i, method, public, Au,     initialize) \
+    M(AA,BB, s, method, public, Au_t,   module_lookup,  symbol) \
+    M(AA,BB, s, method, public, Au_t,   def_module,     symbol) \
+    M(AA,BB, s, method, public, Au_t,   global) \
+    M(AA,BB, s, method, public, Au_t,   scope_lookup,   array, string) \
+    M(AA,BB, s, method, public, Au_t,   current_module) \
+    M(AA,BB, i, method, public, Au,     member_object,  Au_t) \
+    M(AA,BB, i, method, public, bool,   member_set, Au_t, Au) \
+    M(AA,BB, s, method, public, Au,     header, Au) \
+    M(AA,BB, i, method, public, Au,     vdata) \
+    M(AA,BB, i, method, public, Au_t,   vdata_type) \
+    M(AA,BB, i, method, public, i64,    vdata_stride) \
+    M(AA,BB, i, method, public, bool,   is_meta) \
+    M(AA,BB, i, method, public, bool,   is_meta_compatible, Au) \
+    M(AA,BB, s, vargs,  public, Au,     formatter, Au_t, handle, Au, symbol) \
+    M(AA,BB, s, method, public, Au,     alloc, Au_t, num, Au_ts) \
+    M(AA,BB, s, method, public, Au,     alloc_new, Au_t, num, Au_ts) \
+    M(AA,BB, s, method, public, Au,     alloc_dbg, Au_t, num, cstr, i32) \
+    M(AA,BB, s, method, public, Au,     alloc2, Au_t, Au_t, shape) \
     M(AA,BB, s, method, public, string, estring, Au_t, i32) \
-    M(AA,BB, s, method, public, i32, evalue, Au_t, cstr) \
-    M(AA,BB, s, method, public, none, serialize, Au_t, string, Au) \
-    M(AA,BB, s, method, public, Au, convert, Au_t, Au) \
-    M(AA,BB, s, method, public, bool, inherits, Au_t, Au_t) \
+    M(AA,BB, s, method, public, i32,    evalue, Au_t, cstr) \
+    M(AA,BB, s, method, public, none,   serialize, Au_t, string, Au) \
+    M(AA,BB, s, method, public, Au,     convert, Au_t, Au) \
+    M(AA,BB, s, method, public, bool,   inherits, Au_t, Au_t) \
     M(AA,BB, s, method, public, Au, construct_with, Au_t, Au, ctx) \
     M(AA,BB, s, method, public, bool, constructs_with, Au_t, Au_t) \
     M(AA,BB, s, method, public, Au_t, find_ctr, Au_t, Au_t, bool) \
@@ -669,31 +669,31 @@ forward(any)
     M(AA,BB, s, method, public, none, engage, cstrs) \
     M(AA,BB, s, vargs, public, map, args, cstrs, symbol) \
     M(AA,BB, s, vargs, public, map, map_of, symbol) \
-    M(AA,BB, i, final, public, bool, is_generic, Au) \
-    M(AA,BB, i, final, public, bool, is_integral, Au) \
-    M(AA,BB, i, final, public, bool, is_void, Au) \
-    M(AA,BB, i, final, public, bool, is_double, Au) \
-    M(AA,BB, i, final, public, bool, is_float, Au) \
-    M(AA,BB, i, final, public, bool, is_realistic, Au) \
-    M(AA,BB, i, final, public, bool, is_bool, Au) \
-    M(AA,BB, i, final, public, bool, is_class, Au) \
-    M(AA,BB, i, final, public, bool, is_struct, Au) \
-    M(AA,BB, i, final, public, bool, is_opaque, Au) \
-    M(AA,BB, i, final, public, bool, is_func, Au) \
-    M(AA,BB, i, final, public, bool, is_func_ptr, Au) \
-    M(AA,BB, i, final, public, bool, is_imethod, Au) \
-    M(AA,BB, i, final, public, Au_t, is_rec, Au) \
-    M(AA,BB, i, final, public, bool, is_prim, Au) \
-    M(AA,BB, i, final, public, bool, is_sign, Au) \
-    M(AA,BB, i, final, public, bool, is_unsign, Au) \
-    M(AA,BB, i, final, public, bool, is_ptr, Au) \
-    M(AA,BB, i, final, public, bool, is_enum, Au) \
-    M(AA,BB, i, final, public, bool, is_type, Au) \
-    M(AA,BB, i, ctr, public, cereal) \
-    M(AA,BB, i, ctr, public, cstrs) \
-    M(AA,BB, i, cast, public, string) \
-    M(AA,BB, i, cast, public, Au_t) \
-    M(AA,BB, i, cast, public, bool)
+    M(AA,BB, i, guard, public, bool, is_generic,    Au) \
+    M(AA,BB, i, guard, public, bool, is_integral,   Au) \
+    M(AA,BB, i, guard, public, bool, is_void,       Au) \
+    M(AA,BB, i, guard, public, bool, is_double,     Au) \
+    M(AA,BB, i, guard, public, bool, is_float,      Au) \
+    M(AA,BB, i, guard, public, bool, is_realistic,  Au) \
+    M(AA,BB, i, guard, public, bool, is_bool,       Au) \
+    M(AA,BB, i, guard, public, bool, is_class,      Au) \
+    M(AA,BB, i, guard, public, bool, is_struct,     Au) \
+    M(AA,BB, i, guard, public, bool, is_opaque,     Au) \
+    M(AA,BB, i, guard, public, bool, is_func,       Au) \
+    M(AA,BB, i, guard, public, bool, is_func_ptr,   Au) \
+    M(AA,BB, i, guard, public, bool, is_imethod,    Au) \
+    M(AA,BB, i, guard, public, Au_t, is_rec,        Au) \
+    M(AA,BB, i, guard, public, bool, is_prim,       Au) \
+    M(AA,BB, i, guard, public, bool, is_sign,       Au) \
+    M(AA,BB, i, guard, public, bool, is_unsign,     Au) \
+    M(AA,BB, i, guard, public, bool, is_ptr,        Au) \
+    M(AA,BB, i, guard, public, bool, is_enum,       Au) \
+    M(AA,BB, i, guard, public, bool, is_type,       Au) \
+    M(AA,BB, i, ctr,   public, cereal) \
+    M(AA,BB, i, ctr,   public, cstrs) \
+    M(AA,BB, i, cast,  public, string) \
+    M(AA,BB, i, cast,  public, Au_t) \
+    M(AA,BB, i, cast,  public, bool)
 
 #define Au_intern_footer(AA)
 
@@ -1254,7 +1254,7 @@ declare_enum(comparison)
     M(AA,BB, i, override, cast,   string)
 declare_class_2(array, collective)
 
-Exists Au_exists(Au);
+Exists resource_exists(Au);
 
 #define srcfile_schema(AA,BB,...) \
     M(AA,BB, i, prop,    public, Au,     obj) \

@@ -95,8 +95,8 @@ declare_class(Session)
     i_method  (X,Y, public,  bool,    write, sock, bool) \
     i_method  (X,Y, public,  string,  text) \
     i_method  (X,Y, public,  map,     cookies) \
-    s_method  (X,Y, public,  message, query, uri, map, Au) \
-    s_method  (X,Y, public,  message, response, uri, i32, Au, map) \
+    s_method  (X,Y, public,  message, message_query, uri, map, Au) \
+    s_method  (X,Y, public,  message, message_response, uri, i32, Au, map) \
     i_ctr     (X,Y, public,  sock) \
     i_ctr     (X,Y, public,  i32) \
     i_ctr     (X,Y, public,  string) \
