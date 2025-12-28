@@ -1611,8 +1611,8 @@
     } while(0)
 
 
-#define  file_exists(t, ...)     (Au_exists(formatter((Au_t)null, null, (Au)false, (symbol)t, ## __VA_ARGS__)) == Exists_file)
-#define   dir_exists(t, ...)     (Au_exists(formatter((Au_t)null, null, (Au)false, (symbol)t, ## __VA_ARGS__)) == Exists_dir)
+#define  file_exists(t, ...)     (resource_exists(formatter((Au_t)null, null, (Au)false, (symbol)t, ## __VA_ARGS__)) == Exists_file)
+#define   dir_exists(t, ...)     (resource_exists(formatter((Au_t)null, null, (Au)false, (symbol)t, ## __VA_ARGS__)) == Exists_dir)
 #ifndef NDEBUG
 #define       assert(a, t, ...) do { if (!(a)) { formatter((Au_t)null, stderr, (Au)true,  t, ## __VA_ARGS__); exit(1); } } while(0)
 #else
@@ -1650,7 +1650,7 @@
     if (len(arr)) for (E e = *(E*)peek(arr, 0), e0 = 0; e0 == 0; e0++) \
         for (num i = 0, __len = len(arr); i < __len; i++, e = *(E*)peek(arr, i)) \
 
-#define head(o) Au_header((Au)o)
+#define head(o) header((Au)o)
 #define Au_struct(T) (T*)alloc(typeid(u8), sizeof(T), (Au_t*)null)
 #define     e_str(E,I) estring(typeid(E), I)
 #define     e_val(E,S) evalue (typeid(E), S)
