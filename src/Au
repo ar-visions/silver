@@ -301,6 +301,7 @@ void lazy_init(global_init_fn fn, Au_t);
             type_ref->module   = module_lookup(MODULE); \
             type_ref->typesize     = sizeof(E);          \
             type_ref->traits   = AU_TRAIT_ENUM;       \
+            head(type_ref)->type = typeid(Au_t_f); \
             E##_schema( E, T, IMPL ); \
             push_type((Au_t)type_ref); \
             return true; \
