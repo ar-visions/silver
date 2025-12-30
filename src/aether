@@ -54,6 +54,7 @@ declare_class_2(statements, etype)
     M(X,Y, i, prop,  public, path,      source) \
     M(X,Y, i, prop,  public, path,      project_path) \
     M(X,Y, i, prop,  public, path,      current_inc) \
+    M(X,Y, i, prop,  public, etype,     current_import) \
     M(X,Y, i, prop,  public, map,       props) \
     M(X,Y, i, prop,  public, array,     libs) \
     M(X,Y, i, prop,  public, array,     lexical) \
