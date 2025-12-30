@@ -1160,7 +1160,9 @@ enode silver_read_enode(silver a, etype mdl_expect) {
     Au lit = read_literal(a, null);
     if (lit) {
         a->expr_level++;
+        print_tokens(a, "before interpolate");
         enode res = e_operand(a, lit, mdl_expect);
+        print_tokens(a, "after");
         a->expr_level--;
         return e_create(a, mdl_expect, (Au)res);
     }
@@ -1315,11 +1317,11 @@ enode silver_read_enode(silver a, etype mdl_expect) {
 
                 // try implicit 'this' access in instance methods
                 if (!mem && f && f->target) {
-                    Au_t field = find_member(etype_resolve((etype)f->target)->au, alpha->chars, 0, true);
-                    if (field) {
+                    etype ftarg = etype_resolve((etype)f->target);
+                    Au_t field = find_member(ftarg->au, alpha->chars, 0, true);
+                    mem = (enode)elookup(alpha->chars);
+                    if (field && mem && mem->au->context == ftarg->au) {
                         mem = access(f->target, alpha);
-                    } else {
-                        mem = (enode)elookup(alpha->chars);
                     }
                 } else if (!f || !f->target) {
                     each(a->lexical, Au_t, au) {
@@ -1591,18 +1593,24 @@ static etype read_named_model(silver a) {
     etype mdl = null;
     push_current(a);
 
-    bool any = silver_read_if(a, "any") != null;
-    if (any)
+    bool any = silver_read_if(a, "any") != null; // this should be a primitive type, with a trait for any
+    if (any) {
+        pop_tokens(a, true);
         return elookup("Au");
+    }
 
     string alpha = silver_read_alpha(a);
     if (a && !next_is(a, ".")) {
+        if (strcmp(alpha->chars, "mem") == 0) {
+            Au_t m = lexical(a->lexical, "mem");
+            int test2 = 2;
+            test2    += 2;
+        }
         mdl = elookup(alpha->chars);
-        if (instanceof(mdl, evar))
+        if (instanceof(mdl, evar)) {
+            pop_tokens(a, false);
             return null;
-        evar ev_data = instanceof(mdl, evar);
-        if (ev_data)
-            ev_data = ev_data;
+        }
     }
     pop_tokens(a, mdl != null); /// save if we are returning a model
     return mdl;
@@ -2244,12 +2252,10 @@ static enode typed_expr(silver a, enode f, array expr) {
         }
 
         while (i + offset < ln || f->au->is_vargs) {
-            etype   arg  = (etype)array_get(m, i + offset);
-            enode   expr = parse_expression(a, arg); // self contained for '{interp}' to cstr!
+            Au_t   arg  = (Au_t)array_get(m, i + offset);
+            etype  typ  = canonical(arg->user);
+            enode  expr = parse_expression(a, typ); // self contained for '{interp}' to cstr!
             verify(expr, "invalid expression");
-            if (arg && canonical(expr) != canonical(arg))
-                expr = e_create(a, arg, (Au)expr);
-            
             push(values, (Au)expr);
             
             if (read_if(a, ","))
@@ -2524,7 +2530,9 @@ enode parse_import(silver a) {
         set(a->import_cache, (Au)tokens, (Au)mdl);
     }
 
-    mdl->au->ident = strdup(namespace->chars);
+    a->current_import = (etype)mdl;
+
+    mdl->au->alt = namespace ? strdup(namespace->chars) : null;
     // member registration for 'import'
     // needs to be enode
     enode mem = enode(
@@ -2550,6 +2558,7 @@ enode parse_import(silver a) {
 
     mdl->au->is_closed = true;
     mdl->module_paths = hold(module_paths);
+    a->current_import = null;
 
     if (is_codegen) {
         string name = namespace ? (string)namespace : string(is_codegen->ident);
@@ -2826,6 +2835,9 @@ static void build_record(silver a, etype mrec) {
             m_init = function(a,
                 string("init"), rec, a(rec), AU_MEMBER_FUNC,
                 AU_TRAIT_IMETHOD | AU_TRAIT_OVERRIDE, 0)->au;
+            string f = f(string, "%o_init", mrec);
+            m_init->alt = strdup(f->chars);
+            etype_implement((etype)m_init);
             pop_scope(a);
         }
 

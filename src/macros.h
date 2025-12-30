@@ -370,6 +370,7 @@
 
 #define   i_ctr_public_INIT(X, ARG) { \
     Au_t m = def((Au_t)&X##_i.type, stringify(with_##ARG), AU_MEMBER_CONSTRUCT, 0); \
+    m->alt = #X "_with_" #ARG; \
     m->access_type = interface_public; \
     X##_i.type.ft.with_##ARG = & X##_with_##ARG; \
     set_args_array(m, emit_types(X, ARG)); \
@@ -1127,6 +1128,7 @@
 #define   i_method_public_GENERICS(X, R, N, ...)
 #define   i_method_public_INIT(    X, R, N, ...) { \
     Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
+    m->alt = #X "_" #N; \
     m->access_type = interface_public; \
     X##_i.type . ft.N = & X## _ ## N; \
     set_args_array(m, emit_types(X __VA_OPT__(,) __VA_ARGS__)); \
@@ -1166,6 +1168,7 @@
 #define   i_final_public_GENERICS(ORIG,X, R, N, ...)
 #define   i_final_public_INIT(ORIG,    X, R, N, ...) { \
     Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_IFINAL); \
+    m->alt = #X "_" #N; \
     m->access_type = interface_public; \
     set_args_array(m, emit_types(__VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
@@ -1271,6 +1274,7 @@
 #define   i_cast_public_GENERICS(X, R)
 #define   i_cast_public_INIT(CL, R) { \
     Au_t m = def((Au_t)&CL##_i.type, stringify(cast_##R), AU_MEMBER_CAST, 0); \
+    m->alt = #CL "_cast_" #R; \
     m->access_type = interface_public; \
     CL##_i.type.ft.cast_##R = & CL##_cast_##R; \
     m->value = (object)CL##_i.type.ft.cast_##R; \
