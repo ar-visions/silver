@@ -955,6 +955,10 @@ enode aether_e_fn_call(aether a, enode fn, array args) {
     }
     
     bool is_void_ = is_void(fn->au->rtype);
+    
+    // set above:
+    //LLVMTypeRef  F = lltype(fn);
+    //LLVMValueRef V = fn->value;
     fprintf(stderr, "LLVMTypeOf(F) = %s\n", LLVMPrintTypeToString(F));
     fprintf(stderr, "LLVMTypeOf(V) = %s\n", LLVMPrintTypeToString(LLVMTypeOf(V)));
     LLVMValueRef R = LLVMBuildCall2(a->builder, F, V, arg_values, index, is_void_ ? "" : "call");
