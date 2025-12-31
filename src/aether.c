@@ -789,12 +789,19 @@ none aether_e_fn_return(aether a, Au o) {
     a->is_const_op = false;
     if (a->no_build) return;
 
+    verify (!f->au->has_return, "function %o already has return", f);
+    f->au->has_return = true;
+
     if (is_void(f->au->rtype)) {
+
+        enode fn2 = context_func(a);
+        LLVMPositionBuilderAtEnd(a->builder, fn2->entry);
+
         LLVMBuildRetVoid(a->builder);
         return;
     }
-
-    enode conv = e_create(a, (etype)f->au->rtype, o); // e_operand(a, o, null)
+    
+    enode conv = e_create(a, (etype)f->au->rtype, o);
     LLVMBuildRet(a->builder, conv->value);
 }
 
@@ -961,6 +968,9 @@ enode aether_e_fn_call(aether a, enode fn, array args) {
     //LLVMValueRef V = fn->value;
     fprintf(stderr, "LLVMTypeOf(F) = %s\n", LLVMPrintTypeToString(F));
     fprintf(stderr, "LLVMTypeOf(V) = %s\n", LLVMPrintTypeToString(LLVMTypeOf(V)));
+
+   // enode fn2 = context_func(a);
+    //LLVMPositionBuilderAtEnd(a->builder, fn2->entry);
     LLVMValueRef R = LLVMBuildCall2(a->builder, F, V, arg_values, index, is_void_ ? "" : "call");
     free(arg_values);
     return enode(mod, a, au, fn->au->rtype, value, R); //value(fn->au->rtype, R);
@@ -2557,16 +2567,14 @@ none etype_init(etype t) {
         arg_types(fn->au, t)
             arg_types[index++] = lltype(t);
 
-        if (strcmp(au->ident, "alloc_new") == 0) {
-            int test2 = 2;
-            test2    += 2;
+        for (int i = 0; i < au->args.count; i++) {
+            printf("arg[%i] = %s\n", i, LLVMPrintTypeToString(arg_types[i]));
         }
         au->lltype      = LLVMFunctionType(
             au->rtype ? lltype(au->rtype) : LLVMVoidType(),
             arg_types, au->args.count, au->is_vargs);
 
         fprintf(stderr, "LLVMTypeOf(F) = %s\n", LLVMPrintTypeToString(au->lltype));
-
         etype_ptr(a, fn->au);
         free(arg_types);
 
@@ -2719,7 +2727,11 @@ Au_t read_arg_type(Au_t stored_arg) {
 none etype_implement(etype t) {
     Au_t    au = t->au;
     aether a  = t->mod;
-            
+        
+    if (au->ident && strcmp(au->ident, "__va_list_tag") == 0) {
+        a = a;
+    }
+
     if (au->is_implemented) return;
     au->is_implemented = true;
 
@@ -2735,19 +2747,13 @@ none etype_implement(etype t) {
         // if module member, then its a global value
         if (!au->context->context) {
             // mod->is_Au_import indicates this is coming from a lib, or we are making a new global
-            LLVMValueRef G =
-                LLVMAddGlobal(a->module, lltype(au->src), au->ident);
-            if (au->ident && strcmp(au->ident, "alloc_new") == 0) {
-                a = a;
-            }
+            LLVMValueRef G = LLVMAddGlobal(a->module, lltype(au->src), au->ident);
             LLVMSetLinkage(G, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
             n->value = G; // it probably makes more sense to keep llvalue on the node
         }
-
         return;
-    } else if (is_rec(t) || au->is_union) {
 
-        //etype_ptr(a, t->au);
+    } else if (!is_ptr(t) && (is_rec(t) || au->is_union)) {
 
         array cl = (au->is_union || is_struct(t)) ? a(t) : etype_class_list(t);
         int count = 0;
@@ -2850,6 +2856,8 @@ none etype_implement(etype t) {
             count = 1;
             members[0] = largest;
         }
+
+        printf("setting struct body on %s\n", LLVMPrintTypeToString(au->lltype));
         
         LLVMStructSetBody(au->lltype, members, count, 1);
 
@@ -2909,17 +2917,24 @@ none etype_implement(etype t) {
         enode fn = (enode)t;
         // functions, on init, create the arg enodes from the model data
 
+        // make sure the types are ready for use
+        arg_types(au, arg_type) {
+            if (arg_type->user) {
+                verify(arg_type->user, "expected user data on type %s", arg_type->ident);
+                etype_implement((etype)arg_type->user);
+            }
+        }
         fn->value  = LLVMAddFunction(a->module, n, au->lltype);
         Au_t au_target = au->is_imethod ? (Au_t)au->args.origin[0] : null;
         fn->target = au_target ?
             enode(mod, a, au, au_target ? au_target->src : null, arg_index, 0) : null;
         string label = f(string, "%s_entry", au->ident);
-        bool is_user_implement = fn->au->module == a->au;
+        bool is_user_implement = fn->au->module == a->au || fn->user_built;
 
         fn->entry = is_user_implement ? LLVMAppendBasicBlockInContext(
             a->module_ctx, fn->value, label->chars) : null;
 
-        if (strcmp(au->ident, "alloc_new") == 0) {
+        if (au->alt && strcmp(au->alt, "something_action") == 0) {
             a = a;
         }
         LLVMSetLinkage(fn->value,
@@ -3007,7 +3022,7 @@ none aether_push_scope(aether a, Au arg) {
 
     enode prev_fn = context_func(a);
 
-    if (au->src && (au->src->is_class || au->src->is_struct))
+    if (!is_func(au) && au->src && (au->src->is_class || au->src->is_struct))
         push(a->lexical, (Au)au->src);
     else
         push(a->lexical, (Au)au);
@@ -3023,36 +3038,50 @@ void aether_import_models(aether a, Au_t ctx) {
     // initialization table for has/not bits, controlling init and implement
     struct filter {
         bool init, impl;
+        bool additional;
+        bool is_func;
+        bool func_xor;
         u32 has_bits;
         u32 not_bits;
-    } filters[8] = {
-        { true,  true,  AU_TRAIT_PRIMITIVE, AU_TRAIT_POINTER | AU_TRAIT_FUNCPTR },
-        { true,  true,  AU_TRAIT_PRIMITIVE | AU_TRAIT_POINTER, 0 },
-        { true,  true,  AU_TRAIT_PRIMITIVE | AU_TRAIT_FUNCPTR, 0 },
-        { true,  true,  AU_TRAIT_ENUM,   0 },
-        { true,  false, AU_TRAIT_UNION,  0 },
-        { true,  false, AU_TRAIT_STRUCT, 0 },
-        { true,  false, AU_TRAIT_CLASS,  0 },
-        { false, true,  0, AU_TRAIT_ABSTRACT }
+    } filters[9] = {
+        { true,  true,  false, false, false, AU_TRAIT_PRIMITIVE, AU_TRAIT_POINTER | AU_TRAIT_FUNCPTR },
+        { true,  true,  false, false, false, AU_TRAIT_PRIMITIVE | AU_TRAIT_POINTER, 0 },
+        { true,  true,  false, false, false, AU_TRAIT_PRIMITIVE | AU_TRAIT_FUNCPTR, 0 },
+        { true,  true,  false, false, false, AU_TRAIT_ENUM,   0 },
+        { true,  false, false, false, false, AU_TRAIT_UNION,  0 },
+        { true,  false, false, false, false, AU_TRAIT_STRUCT, 0 },
+        { true,  false, false, false, false, AU_TRAIT_CLASS,  0 },
+        { false, true,  true,  false, false, 0, AU_TRAIT_ABSTRACT }, // lets run through non-functions
+        { false, true,  true,  true,  false, 0, AU_TRAIT_ABSTRACT }  // now implement functions, whose args will always be implemented
     };
 
-    for (int filter = 0; filter < 8; filter++) {
+    for (int filter = 0; filter < 9; filter++) {
         struct filter* ff = &filters[filter];
         
         for (num i = 0; i < ctx->members.count; i++) {
             Au_t m  =  (Au_t)ctx->members.origin[i];
             if (m->module != ctx) continue;
-            bool p0 = (ff->has_bits & m->traits) == ff->has_bits;
-            bool p1 = (ff->not_bits & m->traits) == 0;
+
+            bool is_func = m->member_type == AU_MEMBER_FUNC;
+            bool p0      = (ff->has_bits & m->traits) == ff->has_bits;
+            bool p1      = (ff->not_bits & m->traits) == 0;
             bool proceed = p0 && p1;
 
+            if (ff->additional) {
+                bool proceed = (is_func == ff->is_func) ^ ff->func_xor;
+                if (!proceed) continue;
+            }
+            if (strstr(m->ident, "__va_list_tag")) {
+                int test2 = 2;
+                test2    += 2;
+            }
             if (proceed) {
-                Au_t m_isa = isa(m);
-                print("init %o", m);
-                if (strstr(m->ident, "with_")) {
+                if (strstr(m->ident, "__va_list_tag")) {
                     int test2 = 2;
                     test2    += 2;
                 }
+                Au_t m_isa = isa(m);
+                print("init %o", m);
                 if (ff->init || ff->impl) {
                     src_init(a, m);
                 }

@@ -63,6 +63,7 @@ typedef enum AU_MEMBER AFlag;
 #define AU_TRAIT_CLOSED    ((int64_t) 1 << 32)
 #define AU_TRAIT_IMPLEMENTED ((int64_t) 1 << 33)
 #define AU_TRAIT_IS_RESOLVING ((int64_t) 1 << 34)
+#define AU_TRAIT_HAS_RETURN ((int64_t) 1 << 35)
 
 typedef bool(*global_init_fn)();
 
@@ -174,6 +175,7 @@ typedef struct _Au_t {
             u64 is_closed    : 1;
             u64 is_implemented : 1;
             u64 is_resolving : 1;
+            u64 has_return   : 1;
         };
         u64 traits;
     };
