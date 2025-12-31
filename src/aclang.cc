@@ -361,6 +361,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
             return map_function_pointer(pointee, ctx, e, use_name);
 
         Au_t base = map_clang_type(pointee, ctx, e, null);
+        base->module = e->current_import->au;
         if (!base) base = au_lookup("ARef"); // opaque pointer
         
         verify(base, "could not resolve pointer type");
@@ -620,12 +621,12 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
 static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string name) {
     symbol n = name.c_str();
     
-    if (strcmp(n, "puts") == 0) {
-        int test2 = 2;
-        test2 += 2;
-    }
     Au_t parent = top_scope(e);
     Au_t fn = def(parent, n, AU_MEMBER_FUNC, 0);
+    if (n && strcmp(n, "vfprintf") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
     fn->module = e->current_import->au;
     if (name.length() != 0 && name == "puts") {
         fn = fn;

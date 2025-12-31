@@ -2776,8 +2776,8 @@ void build_fn(silver a, enode f, callback preamble, callback postamble) {
     if (f->user_built || (!f->body && !preamble && !postamble))
         return;
     
-    implement(f);
     f->user_built = true;
+    implement(f);
 
     if (f->target)
         push_scope(a, (Au)f->target);
@@ -2790,17 +2790,27 @@ void build_fn(silver a, enode f, callback preamble, callback postamble) {
     if (preamble)
         preamble((Au)f, null);
     array after_const = parse_const(a, (array)f->body);
+
     if (f->cgen) {
         // generate code with cgen delegate imported (todo)
         array gen = generate_fn(f->cgen, f, (array)f->body);
+
     } else {
         push_tokens(a, (tokens)after_const, 0);
         print_tokens(a, "build-fn-statements");
         parse_statements(a, true);
         pop_tokens(a, false);
     }
+
     if (postamble)
         postamble((Au)f, null);
+    
+    validate(f->au->has_return || (!f->au->rtype || is_void(f->au->rtype->user)),
+        "expected return statement in %o", f);
+    
+    if (!f->au->has_return)
+        e_fn_return(a, null);
+    
     pop_scope(a);
     if (f->target)
         pop_scope(a);
@@ -2833,7 +2843,7 @@ static void build_record(silver a, etype mrec) {
         if (!m_init) {
             push_scope(a, (Au)mrec);
             m_init = function(a,
-                string("init"), rec, a(rec), AU_MEMBER_FUNC,
+                string("init"), elookup("none"), a(rec), AU_MEMBER_FUNC,
                 AU_TRAIT_IMETHOD | AU_TRAIT_OVERRIDE, 0)->au;
             string f = f(string, "%o_init", mrec);
             m_init->alt = strdup(f->chars);
