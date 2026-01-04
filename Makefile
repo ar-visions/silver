@@ -47,7 +47,7 @@ ifeq ($(OS),Windows_NT)
 	@if exist $(SILVER)\sdk\native\release rmdir /S /Q $(SILVER)\sdk\native\release\.headers_generated
 else
 	@rm -rf $(SILVER)/sdk/native/debug/.headers_generated
-	@rm -rf $(SILVER)/sdk/native/debug/.headers_generated
+	@rm -rf $(SILVER)/sdk/native/release/.headers_generated
 	@if [ -f "$(BUILD_ROOT)\$(PROJECT_NAME).ninja" ]; then \
 		@ninja -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja clean; \
 	fi

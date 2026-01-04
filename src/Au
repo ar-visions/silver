@@ -176,16 +176,6 @@ typedef double                 *ref_f64;
     struct _shape*  shape; \
     u64             required_bits[2];
 
-typedef struct _au_core {
-    struct _object** af4;
-    i64     af_count;
-    i64     af_alloc;
-    struct _object** re;
-    i64     re_count;
-    i64     re_alloc;
-    void*   arb;
-} *au_core;
-
 #define declare_typedef(X) \
     typedef struct _ ## X* X;
 
@@ -300,7 +290,7 @@ void lazy_init(global_init_fn fn, Au_t);
             type_ref->ident    = #E;                 \
             type_ref->module   = module_lookup(MODULE); \
             type_ref->typesize     = sizeof(E);          \
-            type_ref->traits   = AU_TRAIT_ENUM;       \
+            type_ref->traits   = AU_TRAIT_IS_AU | AU_TRAIT_ENUM; \
             head(type_ref)->type = typeid(Au_t_f); \
             E##_schema( E, T, IMPL ); \
             push_type((Au_t)type_ref); \
@@ -503,17 +493,12 @@ typedef Au_t* Au_ts;
 
 #define define_arb(TYPE, BASE, TYPE_SZ, TRAIT, ...) \
     _Pragma("pack(push, 1)") \
-    __thread struct _au_core TYPE##_af; \
+    static au_core TYPE##_af; \
     TYPE##_info TYPE##_i; \
     _Pragma("pack(pop)") \
     static __attribute__((constructor)) bool Aglobal_##TYPE() { \
         TYPE##_f* type_ref = &TYPE##_i.type; \
         BASE##_f* base_ref = &BASE##_i.type; \
-        if (!Au_t_i.type.ident) { \
-            Au_t_i.type.ident   = "Au_t"; \
-            Au_t_i.type.src    = typeid(Au); \
-            push_type((Au_t)&Au_t_i.type); \
-        } \
         if ((Au_t)type_ref != (Au_t)base_ref && (!base_ref->traits)) { \
             lazy_init((global_init_fn)&Aglobal_##TYPE, (Au_t)base_ref); \
             return false; \
@@ -531,12 +516,12 @@ typedef Au_t* Au_ts;
             type_ref->meta.unmanaged    = true; \
             array_init((array)&type_ref->meta); \
             type_ref->ident             = #TYPE; \
-            type_ref->af                = &TYPE##_af; \
             type_ref->isize             = 0 TYPE##_schema( TYPE, ISIZE_EXTERN, __VA_ARGS__ ); \
             type_ref->context           = (__typeof__(type_ref->context))&BASE##_i.type; \
             type_ref->module            = module_lookup((cstr)MODULE); \
+            printf("looking up module %s\n", MODULE); \
             type_ref->typesize          = TYPE_SZ; \
-            type_ref->traits            = TRAIT; \
+            type_ref->traits            = AU_TRAIT_IS_AU | TRAIT; \
             head(type_ref)->type = typeid(Au_t_f); \
             printf("setting type to Au_t_f on %s : %p\n", #TYPE, type_ref); \
             set_meta_array((Au_t)type_ref, emit_types(__VA_ARGS__)); \
@@ -618,14 +603,19 @@ forward(any)
     M(AA,BB, i, method, public, Au,     get_property,   symbol) \
     M(AA,BB, i, method, public, Au,     vrealloc,       sz) \
     M(AA,BB, i, method, public, Au_t,   meta_index,     i32) \
-    M(AA,BB, s, method, public, Au_t,   def,            Au_t, symbol, u32, u32) \
-    M(AA,BB, s, method, public, Au_t,   def_type,       Au_t, symbol, u32) \
-    M(AA,BB, s, method, public, Au_t,   def_member,     Au_t, symbol, Au_t, u32, u32) \
+    M(AA,BB, s, method, public, Au_t,   emplace_type, Au_t, Au_t, Au_t, Au_t, symbol, u64, u64, u64) \
+    M(AA,BB, s, method, public, Au_t,   def,            Au_t, symbol, u32, u64) \
+    M(AA,BB, s, method, public, Au_t,   def_func,       Au_t, symbol, Au_t, u32, u32, u32, u64, ARef) \
+    M(AA,BB, s, method, public, Au_t,   def_arg,        Au_t, symbol, Au_t) \
+    M(AA,BB, s, method, public, Au_t,   def_meta,       Au_t, symbol, Au_t) \
+    M(AA,BB, s, method, public, Au_t,   def_prop,       Au_t, symbol, Au_t, u64, u32, u32, ARef) \
+    M(AA,BB, s, method, public, Au_t,   def_type,       Au_t, symbol, u64) \
+    M(AA,BB, s, method, public, Au_t,   def_member,     Au_t, symbol, Au_t, u32, u64) \
     M(AA,BB, s, method, public, Au_t,   def_class,      Au_t, symbol) \
     M(AA,BB, s, method, public, Au_t,   def_struct,     Au_t, symbol) \
     M(AA,BB, s, method, public, Au_t,   def_func_ptr,   Au_t, symbol) \
     M(AA,BB, s, method, public, Au_t,   def_pointer,    Au_t, Au_t, symbol) \
-    M(AA,BB, s, method, public, Au_t,   def_enum,       Au_t, symbol, u32) \
+    M(AA,BB, s, method, public, Au_t,   def_enum,       Au_t, symbol, u64) \
     M(AA,BB, s, method, public, Au_t,   def_enum_value, Au_t, symbol, Au) \
     M(AA,BB, s, method, public, Au,     parse,          Au_t, cstr, ctx) \
     M(AA,BB, s, method, public, Au_t,   find_member,    Au_t, symbol, i32, bool) \
@@ -678,6 +668,8 @@ forward(any)
     M(AA,BB, s, vargs, public, map, args, cstrs, symbol) \
     M(AA,BB, s, vargs, public, map, map_of, symbol) \
     M(AA,BB, i, guard, public, bool, is_generic,    Au) \
+    M(AA,BB, i, guard, public, bool, is_au_type,    Au) \
+    M(AA,BB, i, guard, public, bool, is_imported_type, Au) \
     M(AA,BB, i, guard, public, bool, is_integral,   Au) \
     M(AA,BB, i, guard, public, bool, is_void,       Au) \
     M(AA,BB, i, guard, public, bool, is_double,     Au) \

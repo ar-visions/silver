@@ -57,13 +57,17 @@ typedef enum AU_MEMBER AFlag;
 #define AU_TRAIT_VOID      ((int64_t) 1 << 26)
 #define AU_TRAIT_STATIC    ((int64_t) 1 << 27)
 #define AU_TRAIT_FORMATTER ((int64_t) 1 << 28)
-#define AU_TRAIT_TYPEID    ((int64_t) 1 << 29)
-#define AU_TRAIT_MODINIT   ((int64_t) 1 << 30)
-#define AU_TRAIT_NAMELESS  ((int64_t) 1 << 31)
-#define AU_TRAIT_CLOSED    ((int64_t) 1 << 32)
-#define AU_TRAIT_IMPLEMENTED ((int64_t) 1 << 33)
-#define AU_TRAIT_IS_RESOLVING ((int64_t) 1 << 34)
-#define AU_TRAIT_HAS_RETURN ((int64_t) 1 << 35)
+#define AU_TRAIT_NAMESPACE ((int64_t) 1 << 29)
+#define AU_TRAIT_TYPEID    ((int64_t) 1 << 30)
+#define AU_TRAIT_MODINIT   ((int64_t) 1 << 31)
+#define AU_TRAIT_NAMELESS  ((int64_t) 1 << 32)
+#define AU_TRAIT_CLOSED    ((int64_t) 1 << 33)
+#define AU_TRAIT_IMPLEMENTED ((int64_t) 1 << 34)
+#define AU_TRAIT_IS_RESOLVING ((int64_t) 1 << 35)
+#define AU_TRAIT_HAS_RETURN ((int64_t) 1 << 36)
+#define AU_TRAIT_IS_IMPORTED ((int64_t) 1 << 37)
+#define AU_TRAIT_IS_PREPARED ((int64_t) 1 << 38)
+#define AU_TRAIT_IS_AU       ((int64_t) 1 << 39)
 
 typedef bool(*global_init_fn)();
 
@@ -176,6 +180,9 @@ typedef struct _Au_t {
             u64 is_implemented : 1;
             u64 is_resolving : 1;
             u64 has_return   : 1;
+            u64 is_imported  : 1;
+            u64 is_prepared  : 1;
+            u64 is_au        : 1;
         };
         u64 traits;
     };
