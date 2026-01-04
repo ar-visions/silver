@@ -374,7 +374,7 @@
     m->access_type = interface_public; \
     X##_i.type.ft.with_##ARG = & X##_with_##ARG; \
     set_args_array(m, emit_types(X, ARG)); \
-    m->type        = (Au_t)&ARG##_i.type; \
+    m->type        = (Au_t)&X##_i.type; \
     /*m->offset      = offsetof(X##_f.ft, with_##ARG);*/ \
     m->value       = (void*)& X##_with_##ARG; \
     m->index   = offsetof(__typeof__(X##_i.type.ft), with_##ARG) / sizeof(void*); \
@@ -1219,10 +1219,11 @@
 #define   i_operator_public_GENERICS(X, R, N, ARG)
 #define   i_operator_public_INIT(X, R, N, ARG) { \
     Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_OPERATOR, 0); \
+    m->alt = #X "_operator_" #N; \
     m->access_type = interface_public; \
     X##_i.type  . ft.operator_##N = & X## _operator_ ## N; \
     m->ident   = stringify(operator_##N); \
-    set_args_array(m, emit_types(X)); \
+    set_args_array(m, emit_types(X, ARG)); \
     m->type    = (Au_t)&R##_i.type; \
     m->index  = offsetof(__typeof__(X##_i.type.ft), operator_##N) / sizeof(void*); \
     m->member_type = AU_MEMBER_OPERATOR; \
@@ -1328,6 +1329,7 @@
 #define i_index_public_GENERICS(X, R, ...)
 #define i_index_public_INIT(X, R, ...) { \
     Au_t m = def((Au_t)&X##_i.type, stringify(emit_idx_symbol(index, __VA_ARGS__)), AU_MEMBER_INDEX, 0); \
+    m->alt = #X "_idx_" #R; \
     m->access_type = interface_public; \
     X##_i.type.ft.emit_idx_symbol(index, __VA_ARGS__) = & emit_idx_symbol(X ## _index, __VA_ARGS__); \
     set_args_array(m, emit_types(X, __VA_ARGS__)); \
@@ -1427,6 +1429,7 @@
 #define i_override_method_GENERICS(X, N)
 #define i_override_method_INIT(X, N) { \
     Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_OVERRIDE); \
+    m->alt = #X "_" #N; \
     m->access_type = interface_undefined; \
     type_ref->ft.N = (__typeof__(type_ref->ft.N))& X## _ ## N; \
     m->value = (object)& X##_##N; \
@@ -1448,6 +1451,7 @@
 #define i_override_ctr_GENERICS(X, N)                   N: X##_i.type.ft.with_##N,
 #define i_override_ctr_INIT(X, R) { \
     Au_t m = def((Au_t)&X##_i.type, stringify(with_##R), AU_MEMBER_CONSTRUCT, AU_TRAIT_OVERRIDE); \
+    m->alt = #X "_with_" #R; \
     m->access_type = interface_undefined; \
     type_ref->ft.with_##R = & X##_with_##R; \
     m->value = (object)& X##_with_##R; \
@@ -1469,6 +1473,7 @@
 #define i_override_cast_GENERICS(X, N)
 #define i_override_cast_INIT(X, R) { \
     Au_t m = def((Au_t)&X##_i.type, stringify(cast_##R), AU_MEMBER_CAST, AU_TRAIT_OVERRIDE); \
+    m->alt = #X "_cast_" #R; \
     m->access_type = interface_undefined; \
     type_ref->ft.cast_##R = & X##_cast_##R; \
     m->value = (object)& X##_cast_##R; \
@@ -1490,6 +1495,7 @@
 #define i_override_idx_GENERICS(X, R)
 #define i_override_idx_INIT(X, R) { \
     Au_t m = def((Au_t)&X##_i.type, stringify(idx_##R), AU_MEMBER_INDEX, AU_TRAIT_OVERRIDE); \
+    m->alt = #X "_idx_" #R; \
     m->access_type = interface_undefined; \
     type_ref->idx_##R = & X##_idx_##R; \
     m->value = (object)& X##_idx_##R; \

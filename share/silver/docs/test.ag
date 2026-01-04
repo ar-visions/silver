@@ -6,6 +6,7 @@ class something
         puts['something is equal to {mem}']
 
 main aclass
+
     member : f32 [ 1.2 ]
 
 	func init [ ]

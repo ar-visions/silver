@@ -11,7 +11,7 @@ forward(codegen)
     for (int __i = 0; __i < (MDL)->members.count; __i++) \
         for (Au_t VAR = (Au_t)(MDL)->members.origin[__i]; VAR; VAR = NULL)
  
-#define args(MDL, VAR) \
+#define arg_list(MDL, VAR) \
     for (int __i = 0; __i < (MDL)->args.count; __i++) \
         for (Au_t VAR = (Au_t)(MDL)->args.origin[__i]; VAR; VAR = NULL)
 
@@ -55,8 +55,10 @@ declare_class_2(statements, etype)
     M(X,Y, i, prop,  public, path,      project_path) \
     M(X,Y, i, prop,  public, path,      current_inc) \
     M(X,Y, i, prop,  public, etype,     current_import) \
+    M(X,Y, i, prop,  public, bool,      lock_schema) \
     M(X,Y, i, prop,  public, map,       props) \
-    M(X,Y, i, prop,  public, array,     libs) \
+    M(X,Y, i, prop,  public, map,       libs) \
+    M(X,Y, i, prop,  public, map,       user_type_ids) \
     M(X,Y, i, prop,  public, array,     lexical) \
     M(X,Y, i, prop,  public, bool,      is_Au_import) \
     M(X,Y, i, prop,  public, bool,      in_ref) \
@@ -97,6 +99,7 @@ declare_class_2(statements, etype)
     M(X,Y, i, prop,  public, num,               cursor) \
     M(X,Y, i, prop,  public, array,             stack) \
     M(X,Y, i, prop,  public, Au_t,              top) \
+    M(X,Y, i, method, public,     none,        output_schemas, enode) \
     M(X,Y, i, method, public,     enode,       module_initializer) \
     M(X,Y, i, method, public,     none,        import_Au, path) \
     M(X,Y, i, method, public,     enode,       function, string, etype, array, u8, u32, u8) \
@@ -191,6 +194,7 @@ forward(evar)
     M(X,Y, i, prop, public,   enode,            target) \
     M(X,Y, i, prop, public,   Au,               literal) \
     M(X,Y, i, prop, public,   u8,               arg_index) \
+    M(X,Y, i, prop, public,   bool,             used) \
     M(X,Y, i, prop, public,   tokens,           initializer) \
     M(X,Y, i, prop, intern,   LLVMMetadataRef,  last_dbg, as, ARef) \
     M(X,Y, i, prop, intern,   LLVMValueRef,     value, as, ARef) \

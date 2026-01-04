@@ -361,7 +361,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
             return map_function_pointer(pointee, ctx, e, use_name);
 
         Au_t base = map_clang_type(pointee, ctx, e, null);
-        base->module = e->current_import->au;
+        //base->module = e->current_import->au;
         if (!base) base = au_lookup("ARef"); // opaque pointer
         
         verify(base, "could not resolve pointer type");

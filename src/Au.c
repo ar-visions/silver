@@ -15,6 +15,17 @@
 #include <mach-o/dyld.h>
 #endif
 
+typedef struct _au_core {
+    struct _object** af4;
+    i64     af_count;
+    i64     af_alloc;
+    struct _object** re;
+    i64     re_count;
+    i64     re_alloc;
+    void*   arb;
+    pthread_mutex_t lock;
+} *au_core;
+
 Au_t_info        Au_t_i;
 
 #ifndef line
@@ -42,6 +53,16 @@ Au_t Au_cast_Au_t(Au a) {
     return isa(a);
 }
 
+bool Au_is_au_type(Au a) {
+    Au_t au = au_arg(a);
+    return au->module->is_au;
+}
+
+bool Au_is_imported_type(Au a) {
+    Au_t au = au_arg(a);
+    return au->module->is_imported;
+}
+
 bool Au_is_generic  (Au t) { return t && typeid(Au) == au_arg(t); }
 bool Au_is_integral (Au t) { return t && au_arg(t)->is_integral; }
 bool Au_is_void     (Au t) { return t && typeid(none) == au_arg(t); }
@@ -60,8 +81,10 @@ bool Au_is_opaque  (Au t) {
 }
 bool Au_is_func(Au t) {
     Au_t au = au_arg(t);
-    return au && (au->member_type == AU_MEMBER_FUNC ||
-                  au->member_type == AU_MEMBER_CAST ||
+    return au && (au->member_type == AU_MEMBER_FUNC     ||
+                  au->member_type == AU_MEMBER_CAST     ||
+                  au->member_type == AU_MEMBER_INDEX    ||
+                  au->member_type == AU_MEMBER_OPERATOR ||
                   au->member_type == AU_MEMBER_CONSTRUCT) && (au->ident || au->alt);
 }
 bool Au_is_func_ptr(Au t) {
@@ -625,8 +648,61 @@ _Pragma("pack(push, 1)")
 Au_t_f_info Au_t_f_i;
 _Pragma("pack(pop)")
 
-Au_t def(Au_t type, symbol ident, u32 member_type, u32 traits) {
-    if (ident && strcmp(ident, "Au") == 0) {
+static Au_t _push_arg(Au_t type) {
+    if (n_members == 0) {
+        n_members   = 2048;
+        member_pool = calloc(n_members, sizeof(struct _Au_combine));
+        memset(member_pool, 0, n_members * sizeof(struct _Au_combine));
+    }
+    struct _Au_combine* cur = &member_pool[--n_members];
+    cur->info.refs = 1;
+    cur->info.type = (Au_t)&Au_t_f_i.type;
+    Au_t au = &cur->type;
+
+    au->member_type = AU_MEMBER_VAR;
+    //au->module = current_module();
+
+    Au_t new_member = (Au_t)array_qpush((array)&type->args, (Au)&cur->type);
+    new_member->context = type;
+    //printf("new_member on type %s = %p (%i)\n", type->ident, new_member, n_members);
+    return new_member;
+}
+
+Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value) {
+    Au_t prop = def(context, ident, AU_MEMBER_VAR, traits);
+    prop->type      = type;
+    prop->offset    = offset;
+    prop->abi_size  = abi_size;
+    prop->value     = (object)value;
+    return prop;
+}
+
+Au_t def_arg(Au_t context, symbol ident, Au_t arg) {
+    Au_t var = _push_arg(context);
+    var->src = arg;
+    var->ident = strdup(ident);
+    return var;
+}
+
+Au_t def_meta(Au_t context, symbol ident, Au_t arg) {
+    Au_t var = _push_arg(context);
+    var->src = arg;
+    var->ident = strdup(ident);
+    return var;
+}
+
+Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type, u32 access_type, u32 operator_type, u64 traits, ARef value) {
+    Au_t func = def(type, ident, AU_MEMBER_TYPE, traits);
+    func->rtype         = rtype;
+    func->member_type   = member_type;
+    func->operator_type = operator_type;
+    func->access_type   = interface_public;
+    func->value         = (object)value;
+    return func;
+}
+
+Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
+    if (ident && strcmp(ident, "something") == 0) {
         ident = ident;
     }
     if (n_members == 0) {
@@ -642,6 +718,9 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u32 traits) {
 
     au->member_type = member_type;
     au->traits = traits;
+
+    if (type && type->member_type == AU_MEMBER_MODULE)
+        au->module = type;
 
     if (type) {
         Au_t new_member = (Au_t)array_qpush((array)&type->members, (Au)&cur->type);
@@ -668,7 +747,29 @@ none dealloc_type(Au_t type) {
     Au_drop((Au)type);
 }
 
-Au_t def_type(Au_t type, symbol ident, u32 traits) {
+Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, u64 traits, u64 typesize, u64 isize) {
+    type->member_type       = AU_MEMBER_TYPE;
+    type->members.alloc     = 128;
+    type->members.assorted  = true;
+    type->members.unmanaged = true;
+    array_init((array)&type->members);
+    type->meta.alloc        = 16;
+    type->meta.assorted     = true;
+    type->meta.unmanaged    = true;
+    array_init((array)&type->meta);
+    type->context           = context;
+    type->src               = src;
+    type->module            = module;
+    type->ident             = strdup(ident);
+    type->traits            = traits;
+    type->typesize          = typesize;
+    type->isize             = isize;
+    head(type)->type = typeid(Au_t_f);
+    push_type((Au_t)type);
+    return type;
+}
+
+Au_t def_type(Au_t type, symbol ident, u64 traits) {
     return def(type, ident, AU_MEMBER_TYPE, traits);
 }
 
@@ -692,7 +793,7 @@ Au_t def_pointer(Au_t context, Au_t ref, symbol ident) {
     return ref->ptr;
 }
 
-Au_t def_enum(Au_t context, symbol ident, u32 traits) {
+Au_t def_enum(Au_t context, symbol ident, u64 traits) {
     return def(context, ident, AU_MEMBER_TYPE, AU_TRAIT_ENUM);
 }
 
@@ -702,7 +803,7 @@ Au_t def_enum_value(Au_t context, symbol ident, Au value) {
     return res;
 }
 
-Au_t def_member(Au_t context, symbol ident, Au_t type_mem, u32 member_type, u32 traits) {
+Au_t def_member(Au_t context, symbol ident, Au_t type_mem, u32 member_type, u64 traits) {
     Au_t au = def(context, ident, member_type, traits);
     au->type = type_mem;
     return au;
@@ -756,6 +857,7 @@ Au_t def_module(symbol next_module) {
     if (!au_module) {
         au_module = m;
         module = m;
+        module->traits |= AU_TRAIT_IS_AU;
     }
     array_qpush((array)&modules.data, (Au)m);
     return m;
@@ -766,14 +868,25 @@ none collective_init(collective a) {
 
 ffi_method_t* method_with_address(handle address, Au_t rtype, array atypes, Au_t method_owner);
 
-static bool has_pushed;
-
 none push_type(Au_t type) {
+
+    if (type == typeid(none)) {
+        type = type;
+    }
+    if (!Au_t_i.type.ident) {
+        module = module_lookup("Au");
+        Au_t_i.type.ident  = "Au_t";
+        Au_t_i.type.src    = typeid(Au);
+        Au_t_i.type.traits = AU_TRAIT_IS_AU;
+        Au_t_i.type.module = module;
+        push_type((Au_t)&Au_t_i.type);
+    }
 
     if (type == typeid(Au)) {
         Au_t_f_i.info.type = (Au_t)&Au_t_f_i.type;
         Au_t_f_i.type.ident = "Au_t";
-        Au_t_f_i.type.traits = AU_TRAIT_SCHEMA;
+        Au_t_f_i.type.module = module;
+        Au_t_f_i.type.traits = AU_TRAIT_IS_AU | AU_TRAIT_SCHEMA;
         int Au_ft_size   = sizeof(((Au_f*)typeid(Au))->ft);
         int Au_t_ft_size = sizeof(((Au_t_f*)typeid(Au_t_f))->ft);
         verify(Au_ft_size == Au_t_ft_size, "Au_f->ft not identical to Au_t_f->ft");
@@ -783,18 +896,17 @@ none push_type(Au_t type) {
     
     // on first call, we register our basic type structures:
     if (type == typeid(Au_t)) {
-        has_pushed = true;
-        module = module_lookup("Au");
+        module->traits |= AU_TRAIT_IS_AU;
         module->members.unmanaged = true;
 
         // the first ever type we really register is the collective_abi
         Au_t au_collective = def(module, "collective_abi",
-            AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
+            AU_MEMBER_TYPE, AU_TRAIT_STRUCT | AU_TRAIT_SYSTEM);
         def_member(au_collective, "count",     typeid(i32), AU_MEMBER_VAR, 0);
         def_member(au_collective, "alloc",     typeid(i32), AU_MEMBER_VAR, 0);
         def_member(au_collective, "hsize",     typeid(i32), AU_MEMBER_VAR, 0);
         def_member(au_collective, "origin",    typeid(ARef), AU_MEMBER_VAR, 0);
-        def_member(au_collective, "first",     typeid(ARef), AU_MEMBER_VAR, 0); // these are known as referenced types (classes)
+        def_member(au_collective, "first",     typeid(ARef), AU_MEMBER_VAR, 0);
         def_member(au_collective, "last",      typeid(ARef), AU_MEMBER_VAR, 0); 
         def_member(au_collective, "hlist",     typeid(ARef), AU_MEMBER_VAR, 0);
         def_member(au_collective, "unmanaged", typeid(bool), AU_MEMBER_VAR, 0);
@@ -805,7 +917,7 @@ none push_type(Au_t type) {
         au_t->member_type = AU_MEMBER_TYPE;
         au_t->traits = AU_TRAIT_CLASS;
 
-        Au_t ctx = def_member(au_t, "context",       typeid(Au_t), AU_MEMBER_VAR, 0);
+        def_member(au_t, "context",       typeid(Au_t), AU_MEMBER_VAR, 0);
         def_member(au_t, "src",           typeid(Au_t), AU_MEMBER_VAR, 0);
         def_member(au_t, "user",          typeid(Au_t), AU_MEMBER_VAR, 0);
         def_member(au_t, "module",        typeid(Au_t), AU_MEMBER_VAR, 0);
@@ -843,11 +955,11 @@ none push_type(Au_t type) {
     }
 
     array_qpush((array)&module->members, (Au)type);
-
     type->af = (au_core)calloc(1, sizeof(struct _au_core));
+
+    pthread_mutex_init(&type->af->lock, NULL);
     type->af->re_alloc = 1024;
     type->af->re = (object*)(Au*)calloc(1024, sizeof(Au));
-    type->af->arb = primitive_ffi_arb(type);
 
     if ((type->traits & AU_TRAIT_POINTER) != 0) {
         type->src = type->meta.origin ? *(Au_t*)type->meta.origin : null;
@@ -1279,9 +1391,9 @@ int alloc_count(Au_t type) {
 }
 
 Au alloc_instance(Au_t type, int n_bytes, int recycle_size) {
-    Au a = null;
-    au_core af = type->af;
-    bool use_recycler = false; //af && n_bytes == recycle_size;
+    Au      a            = null;
+    bool    use_recycler = false; //af && n_bytes == recycle_size;
+    au_core af           = type->af;
 
     if (use_recycler && af->re_count) {
         a = (Au)af->re[--af->re_count];
@@ -3296,7 +3408,7 @@ Au Au_hold(Au a) {
         f->refs++;
 
         if (f->type) {
-            au_core af = f->type->af;
+            au_core af = (au_core)f->type->af;
             if (f->af_index > 0) {
                 af->af4[f->af_index] = null;
                 f->af_index = 0;

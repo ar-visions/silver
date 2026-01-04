@@ -2,7 +2,7 @@
 #include <limits.h>
 #include <ports.h>
 
-// for Michael
+// for Audrey and Rebecca
 
 enode parse_statements(silver a, bool unique_members);
 enode parse_statement(silver a);
@@ -315,17 +315,17 @@ typedef struct {
 } precedence;
 
 static precedence levels[] = {
-    {{OPType__mul, OPType__div}},
-    {{OPType__add, OPType__sub}},
-    {{OPType__right, OPType__left}},
-    {{OPType__greater, OPType__less}},
-    {{OPType__greater_eq, OPType__less_eq}},
-    {{OPType__equal, OPType__not_equal}},
-    {{OPType__is, OPType__inherits}},
-    {{OPType__xor, OPType__xor}},
-    {{OPType__and, OPType__or}},
-    {{OPType__bitwise_and, OPType__bitwise_or}},
-    {{OPType__value_default, OPType__cond_value}} // i find cond-value to be odd, but ?? (value_default) should work for most
+    {{OPType__mul,              OPType__div}},
+    {{OPType__add,              OPType__sub}},
+    {{OPType__right,            OPType__left}},
+    {{OPType__greater,          OPType__less}},
+    {{OPType__greater_eq,       OPType__less_eq}},
+    {{OPType__equal,            OPType__not_equal}},
+    {{OPType__is,               OPType__inherits}},
+    {{OPType__xor,              OPType__xor}},
+    {{OPType__and,              OPType__or}},
+    {{OPType__bitwise_and,      OPType__bitwise_or}},
+    {{OPType__value_default,    OPType__cond_value}} // i find cond-value to be odd, but ?? (value_default) should work for most
 };
 
 token silver_read_if(silver a, symbol cs);
@@ -390,8 +390,13 @@ void silver_parse(silver a) {
         incremental_resolve(a); // too much in the stack afterwards
     }
 
+    //members(a->au, mem) {
+    //    etype t = instanceof(mem->user, etype);
+    //    if (t)
+    //        etype_implement(t);
+    //}
+
     build_fn(a, init, build_init_preamble, null);
-    implement(init);
 }
 
 none aether_test_write(aether a);
@@ -478,6 +483,7 @@ void silver_init(silver a) {
                         a->implements = array(2);
                     push(a->implements, (Au)files[i]);
                 }
+            
             parse(a);
             build(a);
 
@@ -1512,6 +1518,7 @@ enode parse_func(silver a, string ident, u8 member_type, u32 traits, OPType assi
 
     validate(read_if(a, "["), "expected function args [");
     Au_t au = def(top_scope(a), ident->chars, AU_MEMBER_FUNC, traits);
+    au->module = a->au;
 
     if (!name) {
         validate(member_type == AU_MEMBER_CAST, "with no name, expected cast");
@@ -1567,7 +1574,7 @@ enode parse_func(silver a, string ident, u8 member_type, u32 traits, OPType assi
     au->rtype = rtype->au;
 
     // enode takes the arguments on the function model to complete the function creation
-    enode func = enode(mod, (aether)a, au, au, body, null, cgen, null);
+    enode func = enode(mod, (aether)a, au, au, body, null, cgen, null, used, true);
     
     // check if using generative model
     if (silver_read_if(a, "using")) {
@@ -2145,12 +2152,10 @@ none silver_build(silver a) {
     emit(a, (ARef)&ll, (ARef)&bc);
     verify(bc != null, "compilation failed");
 
-    int error_code = 0;
-    path install = a->install;
-
-    // simplified process for .bc case
-    string name = stem(bc);
-    path cwd = path_cwd();
+    int    error_code = 0;
+    path   install    = a->install;
+    string name       = stem(bc);
+    path   cwd        = path_cwd();
     verify(exec("%o/bin/llc -filetype=obj %o.ll -o %o.o -relocation-model=pic",
                 install, name, name) == 0,
            ".ll -> .o compilation failed");
@@ -2158,7 +2163,12 @@ none silver_build(silver a) {
 
     // create libs, and describe in reverse order from import
     libs = string("");
-    array rlibs = reverse(a->libs);
+    array lib_paths = array();
+    pairs(a->libs, i) {
+        string name = (string)i->key;
+        push(lib_paths, (Au)name);
+    }
+    array rlibs = reverse(lib_paths);
     each(rlibs, string, lib_name) {
         if (len(libs))
             append(libs, " ");
@@ -2493,7 +2503,7 @@ enode parse_import(silver a) {
                  import_config(all_config),
                  import_env(all_config));
         each(all_config, string, t) if (starts_with(t, "-l"))
-            push(a->libs, (Au)mid(t, 2, len(t) - 2));
+            set(a->libs, (Au)mid(t, 2, len(t) - 2), (Au)_bool(true));
     } else if (local_mod)
         external = silver(local_mod);
     else if (is_codegen) {
@@ -2694,7 +2704,7 @@ void silver_write_header(silver a) {
                 if (is_func((Au)mi)) {
                     enode f = (enode)mi->user;
                     string args = string();
-                    args(mi, arg) {
+                    arg_list(mi, arg) {
                         enode a = (enode)arg->user;
                         if (len(args))
                             append(args, ", ");
@@ -2707,7 +2717,7 @@ void silver_write_header(silver a) {
                     string i = !mi->is_static ? string("i") : string("s");
                     bool has_meta = mi->meta.count > 0;
                     string meta = string();
-                    args(mi, m) {
+                    arg_list(mi, m) {
                         string n = type_name((Au)m);
                         if (meta->count)
                             append(meta, ", ");
@@ -2786,6 +2796,10 @@ void build_fn(silver a, enode f, callback preamble, callback postamble) {
 
     enode n = (enode)elookup("mem");
 
+    // we need to initialize the schemas first, then we can actually perform user-based inits
+    if (f->au->is_mod_init)
+        output_schemas(a, f);
+
     // before the preamble we handle guard
     if (preamble)
         preamble((Au)f, null);
@@ -2831,9 +2845,10 @@ static void build_record(silver a, etype mrec) {
         print_tokens(a, "parse-statement");
         parse_statement(a);
     }
-    pop_tokens(a, false);
-    
+    pop_tokens(a, false);   
     rec->parsing = false;
+    
+    etype_implement(mrec);
 
     // if this is a class, we create one, then built init with a preamble that initializes our properties
     // this is called from Au_initialize
@@ -2841,15 +2856,17 @@ static void build_record(silver a, etype mrec) {
         // if no init, create one (attach preamble for our property inits)
         Au_t m_init = find_member(rec->au, "init", AU_MEMBER_FUNC, false);
         if (!m_init) {
-            push_scope(a, (Au)mrec);
+            push_scope(a, (Au)rec);
             m_init = function(a,
                 string("init"), elookup("none"), a(rec), AU_MEMBER_FUNC,
                 AU_TRAIT_IMETHOD | AU_TRAIT_OVERRIDE, 0)->au;
             string f = f(string, "%o_init", mrec);
             m_init->alt = strdup(f->chars);
-            etype_implement((etype)m_init);
+            etype_implement((etype)m_init->user);
             pop_scope(a);
         }
+        Au_t m_init2 = find_member(rec->au, "init", AU_MEMBER_FUNC, false);
+        verify(m_init2, "not registering init");
 
         build_fn(a, (enode)m_init->user, build_init_preamble, null); // we may need to
 

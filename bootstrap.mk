@@ -1,29 +1,54 @@
-MAKEFILE_PATH := $(abspath $(word $(shell expr $(words $(MAKEFILE_LIST)) - 1),$(MAKEFILE_LIST)))
-ifeq ($(MAKEFILE_PATH),)
-    MAKEFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
-endif
+PROJECT := silver
+SDK ?= native
 
-SRC_ROOT           := $(patsubst %/,%,$(dir $(MAKEFILE_PATH)))
-MAKEFILE_PATH_ROOT := $(abspath $(lastword $(MAKEFILE_LIST)))
-IMPORT             ?= $(patsubst %/,%,$(dir $(MAKEFILE_PATH_ROOT)))
-IMPORT_FILE        := $(SRC_ROOT)/build.sf
+MAKEFILE_REALPATH := $(abspath $(lastword $(MAKEFILE_LIST)))
+SILVER := $(patsubst %/,%,$(dir $(shell readlink -f $(lastword $(MAKEFILE_LIST)))))
 
-ifeq (,$(findstring $(PROJECT),$(DBG)))
-BUILD_DIR := $(SRC_ROOT)/release
+PROJECT_PATH := $(CURDIR)
+PROJECT_NAME := $(notdir $(PROJECT_PATH))
+
+BUILD_ROOT ?= $(SILVER)/sdk/$(SDK)/release
+
+export PROJECT_PATH
+export PROJECT_NAME
+
+.PHONY: all bootstrap build clean debug release
+
+all: build
+
+debug:
+	$(MAKE) BUILD_ROOT=$(SILVER)/sdk/$(SDK)/debug build
+
+release:
+	$(MAKE) BUILD_ROOT=$(SILVER)/sdk/$(SDK)/release build
+
+bootstrap:
+ifeq ($(OS),Windows_NT)
+	@case "$(BUILD_ROOT)" in *debug) \
+		"$(SILVER)/bootstrap.bat" --debug "$(SDK)";; \
+	*) \
+		"$(SILVER)/bootstrap.bat" "$(SDK)";; \
+	esac
 else
-BUILD_DIR := $(SRC_ROOT)/debug
+	@case "$(BUILD_ROOT)" in *debug) \
+		"$(SILVER)/bootstrap.sh" --debug "$(SDK)";; \
+	*) \
+		"$(SILVER)/bootstrap.sh" "$(SDK)";; \
+	esac
 endif
 
-IMPORT_BIN := $(IMPORT)/bin/silver-import
-DBG     := $(DBG)
+build: bootstrap
+	echo "ninja -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja"
+	ninja -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja
 
-.PHONY: all import
-all: $(IMPORT_BIN)
-	IMPORT=$(IMPORT) DBG=$(DBG) $(IMPORT_BIN) $(IMPORT_FILE)
-
-$(IMPORT_BIN):
-	@$(MAKE) -C $(IMPORT)
-
-.PHONY: clean
 clean:
-	rm -rf $(BUILD_DIR)
+ifeq ($(OS),Windows_NT)
+	@if exist $(SILVER)\sdk\native\debug rmdir /S /Q $(SILVER)\sdk\native\debug\.headers_generated
+	@if exist $(SILVER)\sdk\native\release rmdir /S /Q $(SILVER)\sdk\native\release\.headers_generated
+else
+	@rm -rf $(SILVER)/sdk/native/debug/.headers_generated
+	@rm -rf $(SILVER)/sdk/native/release/.headers_generated
+	@if [ -f "$(BUILD_ROOT)\$(PROJECT_NAME).ninja" ]; then \
+		@ninja -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja clean; \
+	fi
+endif
