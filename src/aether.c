@@ -1187,10 +1187,6 @@ enode aether_e_typeid(aether a, etype mdl) {
     if (!mdl)
         return e_null(a, elookup("Au_t"));
     
-    if (!is_au_compatible(mdl)) {
-        int test2 = 2;
-        test2    += 2;
-    }
     verify(is_au_compatible(mdl), "typeid not available on external types");
 
     // we go from enode sometimes, which is NOT 
@@ -2890,10 +2886,6 @@ none etype_implement(etype t) {
         enum_processing = false;
     } else if (is_func((Au)t)) {
         Au_t cl = isa(t);
-        if (strcmp(t->au->ident, "action") == 0) {
-            int test2 = 2;
-            test2    += 2;
-        }
         verify(cl == typeid(enode), "expected enode");
         //string n = is_rec(t->au->context) ?
         //    f(string, "%s_%s", t->au->context->ident, t->au->ident) : string(t->au->ident);
@@ -2910,10 +2902,6 @@ none etype_implement(etype t) {
                 etype_implement((etype)arg_type->user);
             }
         }
-        if (strcmp(n, "init") == 0) {
-            int test2 = 2;
-            test2    += 2;
-        }
         fn->value  = LLVMAddFunction(a->module, n, au->lltype);
         Au_t au_target = au->is_imethod ? (Au_t)au->args.origin[0] : null;
         fn->target = au_target ?
@@ -2924,9 +2912,6 @@ none etype_implement(etype t) {
         fn->entry = is_user_implement ? LLVMAppendBasicBlockInContext(
             a->module_ctx, fn->value, label->chars) : null;
 
-        if (au->alt && strcmp(au->alt, "something_action") == 0) {
-            a = a;
-        }
         LLVMSetLinkage(fn->value,
             is_user_implement ? LLVMInternalLinkage : LLVMExternalLinkage);
 
@@ -3349,11 +3334,12 @@ none aether_init(aether a) {
     a->file = LLVMDIBuilderCreateFile(a->dbg_builder, a->name->chars, len(a->name), rel->chars, len(rel));
 
     a->target_data = LLVMCreateTargetDataLayout(a->target_machine);
-    a->compile_unit = LLVMDIBuilderCreateCompileUnit(
+    // todo: add debug back in using reference backup version
+    /*a->compile_unit = LLVMDIBuilderCreateCompileUnit(
         a->dbg_builder, LLVMDWARFSourceLanguageC, a->file,
         "silver", 6, 0, "", 0,
         0, "", 0, LLVMDWARFEmissionFull, 0, 0, 0, "", 0, "", 0);
-    a->au->llscope = a->compile_unit;
+    a->au->llscope = a->compile_unit;*/
     a->builder = LLVMCreateBuilderInContext(a->module_ctx);
 
     // push our module space to the scope
@@ -3365,16 +3351,6 @@ none aether_init(aether a) {
     push_scope(a, (Au)g);
     import_Au(a, null);
 
-    // i am an ass.
-    // more understanding of self-ass'ness:
-    //      the models we import from include are of course different one ones we load at runtime, however the effect of it is strange, both call def() of course
-    //      for now, its best to set an explicit au bit for AU_TRAIT_IS_AU; this applies to all models
-    //      the bottom of our main init function is where we have a little workflow with underpinnings of responses to self-doubt
-    //      its nice to only have a true use-case for 1/40th of LLVM api
-    //      that will likely double if we get into an asm front-end.  to me its a shame that IR api is not so acceptable to write for users HAHA.. sorry -- its just a great format for their abstract, but not a 'general' asm people want to learn.  GNU should offer this as something that translate to these different platforms
-    //      i dont know precisely what this entails because of the need to emit implementation in switch-like expression of architectures supported.
-    //
-    //
     a->au->is_namespace = true; // for the 'module' namespace at [1], i think we dont require the name.. or, we set a trait
     a->au->is_nameless  = false; // we have no names, man. no names. we are nameless! -cereal
     push_scope(a, (Au)a->au);
@@ -3415,14 +3391,6 @@ none enode_init(enode n) {
         }
         enode fn = (enode)n->au->context->user;
         n->value = LLVMGetParam(fn->value, n->arg_index);
-    }
-
-    if (n->value == 0x0005000000000000) {
-        n = n;
-    }
-
-    if (n->au == typeid(string)) {
-        printf("au->user = %p (%p)\n", n->au->user, n->au);
     }
 }
 

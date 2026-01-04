@@ -2613,7 +2613,7 @@ static string uccase(string s) {
 }
 
 static string cname(string s) {
-    string u = copy(s);
+    string u = string(chars, s->chars);
     do {
         int i = index_of(u, "-");
         if (i == -1)
@@ -2624,9 +2624,10 @@ static string cname(string s) {
 }
 
 static string method_def(enode emem) {
+    string name = cname(string(emem->au->ident));
     return f(string,
              "#define %o(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->ft.%o(_i_, ## __VA_ARGS__); }})",
-             cname(string(emem->au->ident)));
+             name, name);
 }
 
 static string type_name(Au a) {
