@@ -1565,8 +1565,10 @@ string numeric_cast_string(numeric a);
 
 none member_override(Au_t type, Au_t type_mem, AFlag f) {
     Au_t base = type->context;
-    if  (base) base = base->context;
 
+    if (strstr(type->ident, "silver")) {
+        type = type;
+    }
     while (base) {
         for (num i = 0; i < base->members.count; i++) {
             Au_t m = (Au_t)base->members.origin[i];
