@@ -2,18 +2,18 @@ import <stdio.h>
 
 class something
     mem:i32 [ 4 ]
+    
+    func outside[an_arg2:i32] -> u64
+
     func action[an_arg:i32, another:i64, mem:string]
         puts['something is equal to {mem}']
 
 main aclass
-
     member : f32 [ 1.2 ]
-
 	func init [ ]
         s:something[mem:8]
         s.action[1, 2]
         puts['i can verify its value is {s.mem}']
-
 ##
 
 #import chatgpt
@@ -59,6 +59,8 @@ see through to the surface in caves on on surface of planet.']],
 
 import <stdio.h, ctype.h>
 
+# 
+# 
 import KhronosGroup:Vulkan-Headers/main
     <vulkan/vulkan.h>
 
@@ -80,7 +82,7 @@ struct a-struct2
 
 something : string[ 'a string of sort..' ]
 
-fn construct-something [ silly:string ] int using chatgpt
+func construct-something [ silly:string ] int using chatgpt
     'construct the silliest string you can come up with given the context'
     done
 
@@ -89,7 +91,7 @@ bb : i32[ 2 ]
 cc : i32[ 3 ]
 ff : string[ string-together['hi'] ]
 
-fn a-function [ e:string ] none
+func a-function [ e:string ] none
     puts[ 'something {e}' ]
 
 class engine

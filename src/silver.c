@@ -1586,6 +1586,8 @@ enode parse_func(silver a, string ident, u8 member_type, u32 traits, OPType assi
     }
     if (!body) body = read_body(a);
     func->body = (tokens)hold(body);
+    func->has_code = len(func->body) || func->cgen; // this determines if 'implement' makes it an external
+
     print_all(a, "body", body);
     return func;
 }
@@ -2183,7 +2185,7 @@ none silver_build(silver a) {
 #endif
 
     // link
-    verify(exec("%o/bin/clang %s%o.o -o %o -L%o/lib -Wl,--allow-multiple-definition %o %o",
+    verify(exec("%o/bin/clang %s%o.o -o %o -L%o/lib -Wl,--no-undefined -Wl,--allow-multiple-definition %o %o",
                 install, a->is_library ? "-shared " : "", name, name, install, libs, cflags) == 0,
            "link failed");
 }
@@ -2580,21 +2582,28 @@ enode parse_import(silver a) {
 
 // works for class inits, and module inits
 void silver_build_initializer(silver a, enode t) {
-    if (t && t->au && t->au->member_type == AU_MEMBER_VAR && t->body) {
+    if (t && t->au && t->au->member_type == AU_MEMBER_VAR && t->initializer) {
         // only override for module members, not class members
         bool   is_module_mem = t->au->context == a->au;
         tokens override      = is_module_mem ? (tokens)get(a->props, (Au)string(t->au->ident)) : null;
-        Au     expr          = override ? (Au)override : (Au)t->body;
-        if (!instanceof(t->body, enode)) {
-            array post_const = parse_const(a, (array)t->body);
+        Au     expr          = override ? (Au)override : (Au)t->initializer;
+        if (!instanceof(t->initializer, enode)) {
+            array post_const = parse_const(a, (array)t->initializer);
             int level = a->expr_level;
             a->expr_level++;
             expr = (Au)typed_expr(a, (enode)t, post_const); // we have tokens for the name pushed to the stack
             a->expr_level = level;
         }
         enode ctx = context_func(a);
-        enode L = (!is_module_mem && ctx) ? 
-            access(ctx->target, string(t->au->ident)) : (enode)t;
+        enode L;
+        
+        if (!is_module_mem && ctx) {
+            evar ar = (evar)((Au_t)ctx->au->args.origin[0])->user;
+            Au_t au_type = isa(ar);
+            L = access((enode)ar, string(t->au->ident));
+        } else
+            L = (enode)t;
+        
         e_assign(a, L, (Au)expr, OPType__assign);
     }
 }
@@ -2784,51 +2793,55 @@ i32 read_enum(silver a, i32 def, Au_t etype);
 static enode typed_expr(silver a, enode src, array expr);
 
 void build_fn(silver a, enode f, callback preamble, callback postamble) {
-    if (f->user_built || (!f->body && !preamble && !postamble))
+    if (f->user_built)
         return;
     
+    f->has_code   = len(f->body) || f->cgen || preamble || postamble;
     f->user_built = true;
+
+    // if there is no code, then this is an external c function; implement must do this
     implement(f);
 
-    if (f->target)
-        push_scope(a, (Au)f->target);
-    a->last_return = null;
-    push_scope(a, (Au)f);
+    if (f->has_code) {
+        if (f->target)
+            push_scope(a, (Au)f->target);
+        
+        a->last_return = null;
+        push_scope(a, (Au)f);
 
-    enode n = (enode)elookup("mem");
+        // we need to initialize the schemas first, then we can actually perform user-based inits
+        if (f->au->is_mod_init)
+            output_schemas(a, f);
 
-    // we need to initialize the schemas first, then we can actually perform user-based inits
-    if (f->au->is_mod_init)
-        output_schemas(a, f);
+        // before the preamble we handle guard
+        if (preamble)
+            preamble((Au)f, null);
+        array after_const = parse_const(a, (array)f->body);
 
-    // before the preamble we handle guard
-    if (preamble)
-        preamble((Au)f, null);
-    array after_const = parse_const(a, (array)f->body);
+        if (f->cgen) {
+            // generate code with cgen delegate imported (todo)
+            array gen = generate_fn(f->cgen, f, (array)f->body);
 
-    if (f->cgen) {
-        // generate code with cgen delegate imported (todo)
-        array gen = generate_fn(f->cgen, f, (array)f->body);
+        } else {
+            push_tokens(a, (tokens)after_const, 0);
+            print_tokens(a, "build-fn-statements");
+            parse_statements(a, true);
+            pop_tokens(a, false);
+        }
 
-    } else {
-        push_tokens(a, (tokens)after_const, 0);
-        print_tokens(a, "build-fn-statements");
-        parse_statements(a, true);
-        pop_tokens(a, false);
-    }
-
-    if (postamble)
-        postamble((Au)f, null);
-    
-    validate(f->au->has_return || (!f->au->rtype || is_void(f->au->rtype->user)),
-        "expected return statement in %o", f);
-    
-    if (!f->au->has_return)
-        e_fn_return(a, null);
-    
-    pop_scope(a);
-    if (f->target)
+        if (postamble)
+            postamble((Au)f, null);
+        
+        validate(f->au->has_return || (!f->au->rtype || is_void(f->au->rtype->user)),
+            "expected return statement in %o", f);
+        
+        if (!f->au->has_return)
+            e_fn_return(a, null);
+        
         pop_scope(a);
+        if (f->target)
+            pop_scope(a);
+    }
 }
 
 static void build_record(silver a, etype mrec) {
@@ -2861,6 +2874,7 @@ static void build_record(silver a, etype mrec) {
             m_init = function(a,
                 string("init"), elookup("none"), a(rec), AU_MEMBER_FUNC,
                 AU_TRAIT_IMETHOD | AU_TRAIT_OVERRIDE, 0)->au;
+            m_init->user->has_code = true;
             string f = f(string, "%o_init", mrec);
             m_init->alt = strdup(f->chars);
             etype_implement((etype)m_init->user);

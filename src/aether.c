@@ -98,7 +98,6 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op) {
             op_table[op - OPType__assign - 1].f_build_op
                 (a->builder, rL->value, rR->value, e_str(OPType, op)->chars));
     }
-
     verify(is_ptr(L), "L-value not a pointer (cannot assign to value)");
     if (res->au != L->au->src) {
         res = e_operand(a, (Au)res, (etype)L);
@@ -722,9 +721,6 @@ enode aether_e_null(aether a, etype mdl) {
     if (!is_ptr(mdl) && mdl->au->is_class) {
         mdl = etype_ptr(a, mdl->au); // we may only do this on a limited set of types, such a struct types
     }
-    if (!is_ptr(mdl)) {
-        mdl = mdl;
-    }
     verify(is_ptr(mdl), "%o not compatible with null value", mdl);
     return enode(mod, a, value, LLVMConstNull(lltype(mdl)), au, mdl->au);
 }
@@ -1127,7 +1123,9 @@ static enode convertible(etype fr, etype to) {
 }
 
 static bool is_addressable(enode e) {
-    if (is_ptr(e)) return true;
+    Au_t au = au_arg((Au)e);
+    if (au->member_type == AU_MEMBER_VAR) au = au->src;
+    if (is_ptr(au) || is_class(au)) return true;
     if (e->value && LLVMIsAGlobalValue(e->value)) return true;
     return false;
 }
@@ -1141,6 +1139,10 @@ enode enode_access(enode target, string name) {
     }
     verify(m, "failed to find member %o on type %o", name, rel);
     
+    if (!is_addressable(target)) {
+        int test2 = 2;
+        test2    += 2;
+    }
     verify(is_addressable(target), 
         "expected target pointer for member access");
 
@@ -1152,12 +1154,14 @@ enode enode_access(enode target, string name) {
     if (is_func((Au)m))
         return enode(mod, a, au, m, target, target);
     
-    if (instanceof(m->user, enode))
+    enode n = instanceof(m->user, enode);
+    if (n && n->value)
         return (enode)m->user; //((enode)m->user)->value; // this should apply to enums
 
     // signal we're doing something non-const
     a->is_const_op = false;
-    if (a->no_build) return e_noop(a, m->user);
+    if (a->no_build)
+        return e_noop(a, m->user);
 
     Au_t ptr = pointer(a, (Au)m)->au;
 
@@ -1165,7 +1169,7 @@ enode enode_access(enode target, string name) {
         mod,    a,
         au,     ptr,
         value,  LLVMBuildStructGEP2(
-            a->builder, lltype(t), target->value,
+            a->builder, t->au->lltype, target->value,
             m->index, "enode_access"));
 }
 
@@ -2290,8 +2294,10 @@ static void build_module_initializer(aether a, etype module_init_fn) {
     push_scope(a, (Au)module_init_fn);
 
     members(module_base, au)
-        if (au->member_type == AU_MEMBER_VAR && au->user->body)
+        if (au->member_type == AU_MEMBER_VAR && au->user->body) {
+            aether_f* et = (aether_f*)isa(a);
             build_initializer(a, au->user);
+        }
 
     e_fn_return(a, null);
     pop_scope(a);
@@ -2441,6 +2447,9 @@ none etype_init(etype t) {
     Au_t    au  = t->au;
     bool  named = au && au->ident && strlen(au->ident);
 
+    if (au->lltype && !t->is_schema)
+        return;
+
     if (isa(t) == typeid(aether) || isa(t)->context == typeid(aether)) {
         a = (aether)t;
         verify(a->source && len(a->source), "no source provided");
@@ -2541,6 +2550,10 @@ none etype_init(etype t) {
     } else if (au && au->is_pointer && au->src && !au->src->is_primitive) {
         au->lltype = LLVMPointerType(au->src->lltype, 0);
     } else if (named && (is_rec((Au)t) || au->is_union || au == typeid(Au_t))) {
+        if (strcmp(au->ident, "something") == 0) {
+            int test2 = 2;
+            test2    += 2;
+        }
         au->lltype = LLVMStructCreateNamed(a->module_ctx, strdup(au->ident));
         if (au != typeid(Au_t))
             etype_ptr(a, t->au);
@@ -2721,6 +2734,11 @@ none etype_implement(etype t) {
     Au_t    au = t->au;
     aether a  = t->mod;
 
+    if (au && au->ident && strcmp(au->ident, "outside") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
+
     if (is_func(t->au) && !((enode)t)->used)
         return;
 
@@ -2813,6 +2831,7 @@ none etype_implement(etype t) {
                     index++;
                 }
             }
+            // lets define this as a form of byte accessible opaque.
             if (tt->au != typeid(Au) && !is_accessible(a, tt->au)) {
                 members[index] = LLVMArrayType(lltype(au_lookup("u8")), tt->au->isize);
                 index++;
@@ -2835,6 +2854,11 @@ none etype_implement(etype t) {
 
         printf("setting struct body on %s\n", LLVMPrintTypeToString(au->lltype));
         LLVMStructSetBody(au->lltype, members, count, 1);
+        printf("setting struct body on %s\n", LLVMPrintTypeToString(au->lltype));
+        if (au->ident && strstr(au->ident, "something")) {
+            au = au;
+        }
+        printf("setting struct body on %s\n", LLVMPrintTypeToString(au->lltype));
 
     } else if (is_enum(t)) {
         Au_t et = au->src;
@@ -2907,8 +2931,10 @@ none etype_implement(etype t) {
         fn->target = au_target ?
             enode(mod, a, au, au_target ? au_target->src : null, arg_index, 0) : null;
         string label = f(string, "%s_entry", au->ident);
-        bool is_user_implement = fn->au->module == a->au || fn->user_built;
-
+        bool is_user_implement = fn->au->module == a->au && fn->has_code;
+        if (fn->au->module == a->au && !is_user_implement) {
+            is_user_implement = is_user_implement;
+        }
         fn->entry = is_user_implement ? LLVMAppendBasicBlockInContext(
             a->module_ctx, fn->value, label->chars) : null;
 
@@ -3354,11 +3380,6 @@ none aether_init(aether a) {
     a->au->is_namespace = true; // for the 'module' namespace at [1], i think we dont require the name.. or, we set a trait
     a->au->is_nameless  = false; // we have no names, man. no names. we are nameless! -cereal
     push_scope(a, (Au)a->au);
-
-    // todo: test code here
-    //aclang_cc instance;
-    //path i = include(a, string("stdio.h"), null, &instance);
-    //print("included: %o", i);
 }
 
 none aether_dealloc(aether a) {
@@ -3382,13 +3403,7 @@ none enode_init(enode n) {
     aether a = n->mod;
     bool is_const = n->literal != null;
 
-    //etype_implement(n);
-    
     if (is_func((Au)n->au->context)) {
-        Au_t ctx = n->au->context;
-        if (strcmp(ctx->ident, "action") == 0) {
-            ctx = ctx;
-        }
         enode fn = (enode)n->au->context->user;
         n->value = LLVMGetParam(fn->value, n->arg_index);
     }
@@ -3980,6 +3995,7 @@ enode aether_module_initializer(aether a) {
     enode init = function(a,
         string("initializer"), elookup("none"), array(),
         AU_MEMBER_FUNC, AU_TRAIT_MODINIT, OPType__undefined);
+    init->has_code = true;
 
     etype_implement((etype)init);
     a->fn_init = init;
@@ -4006,9 +4022,11 @@ define_class(statements, etype)
 define_class(evar,       enode)
 define_class(enode,      etype) // not a member unless member is set (direct, or created with name)
 
-define_class(aether,     etype)
+define_class(emodule,    etype)
+define_class(aether,     emodule)
 
 define_class(aclang_cc,  Au)
 define_class(codegen,    Au)
 define_class(code,       Au)
+
 define_class(static_array, array)
