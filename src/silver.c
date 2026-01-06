@@ -486,9 +486,6 @@ void silver_init(silver a) {
             
             parse(a);
             build(a);
-
-            if (len(a->implements))
-                write_header(a);
         }
         on_error() {
             retry = !is_once;
@@ -1015,7 +1012,12 @@ static etype next_is_class(silver a, bool read_token) {
     return null;
 }
 
-string silver_peek_def(silver a) {
+string silver_peek_etype(silver a) { // we need a peek etype
+    token n = silver_element(a, 0);
+    return null;
+}
+
+string silver_peek_def(silver a) { // we need a peek etype
     token n = silver_element(a, 0);
     Au_t top = top_scope(a);
     etype t = top->user;
@@ -1150,7 +1152,7 @@ enode silver_read_enode(silver a, etype mdl_expect) {
         return mem;
     }
 
-    if (peek && is_alpha(peek)) {
+    if (a->expr_level > 0 && peek && is_alpha(peek)) {
         etype m = elookup(peek->chars);
         if (m && isa(m) != typeid(macro)) {
             etype mdl_found = read_etype(a, &expr);
@@ -1444,9 +1446,29 @@ enode parse_statement(silver a) {
     a->last_return = null;
     a->expr_level = 0;
 
+    enode n = (enode)read_etype(a, null);
+    if (n) {
+        // member name must follow this; statements have no use with a type first
+        // unless its a static member expression (we will see a . accessor)
+        bool is_type = true;
+        while (n) {
+            if (silver_read_if(a, ".")) {
+                is_type = false;
+                string name = read_alpha(a);
+                validate (name, "expected field name after '.'");
+                n = access(n, name);
+            } else
+                break;
+        }
+        if (is_type) {
+            string    new_member = read_alpha(a);
+            validate (new_member, "expected field name after '.'");
+        }
+    }
     if (f) {
         if (next_is(a, "no-op"))
             return e_noop(a, null);
+        
         if (next_is(a, "return")) {
             a->expr_level++;
             a->last_return = parse_return(a);
@@ -1553,17 +1575,15 @@ enode parse_func(silver a, string ident, u8 member_type, u32 traits, OPType assi
         print_tokens(a, "args");
         verify(first || read_if(a, ","), "expected comma separator between arguments");
 
-        string n     = read_alpha(a);
-        token c      = n ? read_if(a, ":") : null;
-        verify(n || !c, "expected alpha-numeric identity for type or name");
-        verify(n ||  c, "expected type separation character ':'");
-        etype t      = read_etype(a, null);
+        etype  t = read_etype(a, null);
+        verify(t, "expected alpha-numeric identity for type or name");
+
+        string n = read_alpha(a); // optional
         Au_t  au_arg = def(au, n ? n->chars : null, AU_MEMBER_VAR, 0);
         au_arg->src  = t->au;
         array_qpush((array)&au->args, (Au)au_arg);
-        if (first) {
+        if (first)
             first = false;
-        }
     }
     pop_scope(a);
     if (!is_cast && !rtype) {
@@ -2158,18 +2178,29 @@ none silver_build(silver a) {
     path   install    = a->install;
     string name       = stem(bc);
     path   cwd        = path_cwd();
+    string libs       = string("");
+    array  lib_paths  = array();
+
     verify(exec("%o/bin/llc -filetype=obj %o.ll -o %o.o -relocation-model=pic",
                 install, name, name) == 0,
            ".ll -> .o compilation failed");
-    string libs, cflags;
+
+#ifndef NDEBUG
+    string cflags = string("");
+    //cflags = string("-fsanitize=address"); // import keyword should publish to these
+#else
+    cflags = string("");
+#endif
+
+    if (len(a->implements))
+        write_header(a);
 
     // create libs, and describe in reverse order from import
-    libs = string("");
-    array lib_paths = array();
     pairs(a->libs, i) {
         string name = (string)i->key;
         push(lib_paths, (Au)name);
     }
+
     array rlibs = reverse(lib_paths);
     each(rlibs, string, lib_name) {
         if (len(libs))
@@ -2177,17 +2208,26 @@ none silver_build(silver a) {
         concat(libs, f(string, "-l%o", lib_name));
     }
 
-    // set cflags
-#ifndef NDEBUG
-    cflags = string("-fsanitize=address"); // import keyword should publish to these
-#else
-    cflags = string("");
-#endif
+    // compile implementation in c/cc, and select for linking
+    string objs = string();
+    each(a->implements, path, i) {
+        string i_name   = stem(i);
+        string ext      = ext(i);
+        cstr   compiler = eq(ext, ".cc") ? "clang++" : "clang";
+        
+        // compile .c/.cc to .o
+        verify(exec("%o/bin/%s -c %o -o %o.o -I%o/include",
+            install, compiler, i, i_name, install) == 0,
+            "failed to compile %o", i);
+        
+        // accumulate object files for linking
+        concat(objs, f(string, " %o.o", i_name));
+    }
 
-    // link
-    verify(exec("%o/bin/clang %s%o.o -o %o -L%o/lib -Wl,--no-undefined -Wl,--allow-multiple-definition %o %o",
-                install, a->is_library ? "-shared " : "", name, name, install, libs, cflags) == 0,
-           "link failed");
+    // link - include the implementation objects
+    verify(exec("%o/bin/clang %s%o.o%o -o %o -L%o/lib -Wl,--no-undefined -Wl,--allow-multiple-definition %o %o",
+        install, a->is_library ? "-shared " : "", name, objs, name, install, libs, cflags) == 0,
+        "link failed");
 }
 
 bool silver_next_is_neighbor(silver a) {
@@ -3444,9 +3484,11 @@ etype silver_read_def(silver a) {
 
     } else if (is_enum) {
         etype store = null, suffix = null;
-        if (silver_read_if(a, ":")) {
+        bool expect_bracket = false;
+        if (silver_read_if(a, "[")) {
             store  = instanceof(read_etype(a, null), etype);
             validate(store, "invalid storage type");
+            validate(silver_read_if(a, "]"), "expected ]");
         } else
             store = elookup("i32");
         

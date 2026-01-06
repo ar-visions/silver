@@ -1,5 +1,5 @@
-#include <test.i>
+#include <test/test>
 
-i64 something_neat( engine e, i32 a ) {
-    return e->state * a + 2;
+u64 something_outside( something a, i32 an_arg2 ) {
+    return a->mem * an_arg2 + 2;
 }
