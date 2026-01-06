@@ -1630,11 +1630,6 @@ static etype read_named_model(silver a) {
 
     string alpha = silver_read_alpha(a);
     if (a && !next_is(a, ".")) {
-        if (strcmp(alpha->chars, "mem") == 0) {
-            Au_t m = lexical(a->lexical, "mem");
-            int test2 = 2;
-            test2    += 2;
-        }
         mdl = elookup(alpha->chars);
         if (instanceof(mdl, evar)) {
             pop_tokens(a, false);
@@ -1681,15 +1676,13 @@ array read_meta(silver a) {
     return res;
 }
 
-etype read_etype(silver a, array *p_expr) {
+etype read_etype(silver a) {
     etype mdl = null;
     bool body_set = false;
     bool type_only = false;
     etype type = null;
     array expr = null;
     array meta = null;
-
-    a->read_etype_abort = false;
 
     push_current(a);
 
@@ -1750,9 +1743,58 @@ etype read_etype(silver a, array *p_expr) {
             meta = read_meta(a);
         }
 
-        if (!a->cmode && next_is(a, "[")) {
+        // conversion to map or array
+        if (mdl && !a->cmode && next_is(a, "[")) {
             body_set = true;
             expr = read_within(a);
+            array types = array();
+            array sizes = array();
+            bool had_comma = false;
+            do {
+                etype e = read_etype(a);
+                if (!e) {
+                    validate(!had_comma, "expected type after comma");
+                    if (len(types) == 0) {
+                        bool had_comma = false;
+                        do {
+                            Au lit = read_literal(a, null);
+                            if (lit && is_integral(lit)) {
+                                push(sizes, lit);
+                                if (next_is(a, ",")) {
+                                    had_comma = true;
+                                    consume(a);
+                                    continue;
+                                }
+                            } else if (len(sizes)) {
+                                validate(false, "expected integral afte comma");
+                            }
+                            break;
+                        }
+                    }
+                    break;
+                }
+                push(types, (Au)e);
+                if (next_is(a, ",")) {
+                    had_comma = true;
+                    consume(a);
+                    continue;
+                }
+                break;
+            }
+
+            if (len(types)) {
+                verify(len(types) == 1, "expected Value[Key] type, found more than one Key");
+                mdl = etype(mod, a, au, elookup("map"),
+                    meta, a(mdl, types->origin[0]));
+                meta = null;
+            } else {
+                mdl = etype(mod, a, au, elookup("array"),
+                    dims, len(sizes) ? sizes : null,
+                    meta, a(mdl));
+                meta = null;
+            }
+
+            // array = no args, or literal
         }
 
     } else if (!mdl && explicit_un) {
@@ -1765,17 +1807,12 @@ etype read_etype(silver a, array *p_expr) {
         if (silver_read_if(a, "long"))
             prim_mdl = silver_read_if(a, "long") ? elookup("u64") : elookup("u32");
 
-        prim_mdl = model_adj(a, prim_mdl ? prim_mdl : elookup("u32"));
+        mdl = model_adj(a, prim_mdl ? prim_mdl : elookup("u32"));
     }
 
     // abort if there is assignment following isolated type-like token
-    if (!expr && a->expr_level == 0 && silver_read_assign(a, null, null)) {
-        a->read_etype_abort = true;
+    if (!expr && a->expr_level == 0 && silver_read_assign(a, null, null))
         mdl = null;
-    }
-
-    if (p_expr)
-        *p_expr = expr;
 
     etype t = (mdl && meta) ? etype(mod, (aether)a, au, mdl->au, meta, meta) : mdl;
 

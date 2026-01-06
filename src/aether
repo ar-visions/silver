@@ -24,6 +24,7 @@ Au_t read_arg_type(Au_t stored_arg);
 #define etype_schema(X,Y,...)\
     M(X,Y, i, prop, public,   Au_t,             au) \
     M(X,Y, i, prop, public,   array,            meta) \
+    M(X,Y, i, prop, public,   array,            dims) \
     M(X,Y, i, prop, public,   aether,           mod) \
     M(X,Y, i, prop, public,   etype,            schema) \
     M(X,Y, i, prop, public,   etype,            suffix) \
