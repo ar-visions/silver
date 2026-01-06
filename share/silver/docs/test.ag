@@ -1,19 +1,26 @@
 import <stdio.h>
 
 class something
-    mem:i32 [ 4 ]
+    i32  mem = 4
+    u64  outside [ i32 an_arg2 ]
+    none action  [ i32 an_arg, i64 another, string mem ]
+        puts[ 'something is equal to {mem}' ]
+
+class aclass [ main ]
+    f32 member = 1.2
+    f64 aconst = 1.4
     
-    func outside[an_arg2:i32] -> u64
+    i32[string] key-values
+        'key':      2
+        'another':  44
 
-    func action[an_arg:i32, another:i64, mem:string]
-        puts['something is equal to {mem}']
-
-main aclass
-    member : f32 [ 1.2 ]
-	func init [ ]
-        s:something[mem:8]
+	init []
+        something s[mem: 8]
         s.action[1, 2]
-        puts['i can verify its value is {s.mem}']
+
+        puts[ 'i can verify its value is {s.mem}' ]
+
+
 ##
 
 #import chatgpt
