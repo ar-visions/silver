@@ -14,6 +14,7 @@
     M(X, Y, i, prop, intern, array, imports)         \
     M(X, Y, i, prop, public, enode, last_return)     \
     M(X, Y, i, prop, public, bool, left_hand)        \
+    M(X, Y, i, prop, public, bool, in_args)          \
     M(X, Y, i, prop, public, map, codegens)          \
     M(X, Y, i, method, public, none, write_header)   \
     M(X, Y, i, prop, intern, map, import_cache) \
@@ -46,6 +47,7 @@
     M(X, Y, i, method, public,     Au,              read_bool) \
     M(X, Y, i, method, public,     Au,              read_numeric) \
     M(X, Y, i, method, public,     array,          parse_const, array) \
+    M(X, Y, i, method, public,     OPType,         read_operator) \
     M(X, Y, i, method, public,     string,         read_assign, ARef, ARef) \
     M(X, Y, i, method, public,     string,         location) \
     M(X, Y, i, method, public,     none,           parse) \

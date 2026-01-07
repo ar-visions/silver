@@ -6,20 +6,24 @@ class something
     none action  [ i32 an_arg, i64 another, string mem ]
         puts[ 'something is equal to {mem}' ]
 
-class aclass [ main ]
-    f32 member = 1.2
+class aclass of main
+    f32 member = 1.2f
     f64 aconst = 1.4
+
+	none init []
+        something s[mem: 8]
+        s.action[1, 2]
+        puts[ 'i can verify its value is {s.mem}' ]
     
-    i32[string] key-values
+    i32[ string ] key-values
         'key':      2
         'another':  44
 
-	init []
-        something s[mem: 8]
-        s.action[1, 2]
+    construct [ f64 m ]
+        aconst = 2.0 * m
 
-        puts[ 'i can verify its value is {s.mem}' ]
-
+    cast f32[ ]
+        return f32[ 1.1f ]
 
 ##
 
