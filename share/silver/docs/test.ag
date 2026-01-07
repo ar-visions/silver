@@ -7,7 +7,7 @@ class something
         puts[ 'something is equal to {mem}' ]
 
 class aclass of main
-    f32 member = 1.2f
+    f32 member = 9.2
     f64 aconst = 1.4
 
 	none init []
@@ -23,7 +23,7 @@ class aclass of main
         aconst = 2.0 * m
 
     cast f32[ ]
-        return f32[ 1.1f ]
+        return f32[ 1.1 ]
 
 ##
 
