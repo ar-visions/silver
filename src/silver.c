@@ -910,6 +910,10 @@ static array parse_tokens(silver a, Au input, array output) {
             if (a->cmode && len(name) == 1 && strncmp(&input_string->chars[index], "##", 2) == 0) {
                 name = string("##");
             }
+            if (strstr(name->chars, "9")) {
+                int test2 = 2;
+                test2    += 2;
+            }
             token t = token(
                 chars, (cstr)name->chars,
                 indent, indent,
@@ -945,6 +949,11 @@ static array parse_tokens(silver a, Au input, array output) {
                 crop = string(&crop->chars[1]);
                 line_start++;
             }
+
+            if (strstr(crop->chars, "9")) {
+                int test2 = 2;
+                test2    += 2;
+            }
             push(tokens, (Au)token(
                              chars, crop->chars,
                              indent, indent,
@@ -955,25 +964,44 @@ static array parse_tokens(silver a, Au input, array output) {
         }
 
         num start = index;
+
+        if (start == 226) {
+            int test2 = 2;
+            test2    += 2;
+        }
         bool is_dim = false;
         bool last_dash = false;
+        i32 st_char = idx(input_string, start);
+        bool start_numeric = st_char == '-' || (st_char >= '0' && st_char <= '9');
+        int seps = 0;
         while (index < length) {
             i32 v = idx(input_string, index);
+            bool is_sep = v == '.';
+            if (is_sep) seps++;
+            bool cont_numeric = (is_sep && seps <= 1) || (v >= '0' && v <= '9');
             char sval[2] = {v, 0};
             bool is_dash = v == '-';
             is_dim = (num_start && v == 'x');
-            if (isspace(v) || index_of(special, sval) >= 0 || is_dim) {
-                if (last_dash && (index - start) > 1) {
-                    i32 vb = idx(input_string, index - 2); // allow the -- sequence, disallow - at end of tokens
-                    index -= vb != '-';
+            int imatch = index_of(special, sval);
+            if (!start_numeric || !cont_numeric)
+                if (isspace(v) || index_of(special, sval) >= 0 || is_dim) {
+                    if (last_dash && (index - start) > 1) {
+                        i32 vb = idx(input_string, index - 2); // allow the -- sequence, disallow - at end of tokens
+                        index -= vb != '-';
+                    }
+                    break;
                 }
-                break;
-            }
             index += 1;
             last_dash = is_dash;
         }
 
         string crop = mid(input_string, start, index - start);
+
+        if (strstr(crop->chars, "9")) {
+            int test2 = 2;
+            test2    += 2;
+        }
+
         push(tokens, (Au)token(
                          chars, crop->chars,
                          indent, indent,
@@ -1461,7 +1489,10 @@ enode parse_statement(silver a) {
             }
         
         if (is_type) {
-            etype      rec_top    = (!a->cmode && is_rec(top)) ? top->user : null;
+            if (is_cast) {
+                is_cast = is_cast;
+            }
+            etype      rec_top    = is_rec(top) ? top->user : null;
             statements in_code    = context_code(a);
             string     new_member = (rtype && (!is_cast && !is_idx)) ? read_alpha(a) : null;
             validate (!is_cast || !is_ctr || new_member, "expected name");
@@ -1477,6 +1508,7 @@ enode parse_statement(silver a) {
 
             if (is_func) {
                 if (module || rec_top) {
+                    print_tokens(a, "pre-parse-func");
                     e = (enode)parse_func(a, (etype)rtype, new_member,
                         is_ctr    ? AU_MEMBER_CONSTRUCT : is_cast ?
                                     AU_MEMBER_CAST      : is_idx  ?
@@ -1520,7 +1552,7 @@ enode parse_statement(silver a) {
         validate(!is_cast, "expected type after cast keyword");
     }
 
-    pop_tokens(a, rtype != null); // if its a type, we consume the tokens, otherwise we let read_enode handle it
+    pop_tokens(a, e != null); // if its a type, we consume the tokens, otherwise we let read_enode handle it
 
     if (!e && peek(a)) {
         if (f) {
@@ -1587,27 +1619,22 @@ enode parse_func(silver a, etype rtype, string ident, u8 member_type, u32 traits
     bool   is_cast = member_type == AU_MEMBER_CAST;
     //etype rec_ctx = context_class(a); if (!rec_ctx) rec_ctx = context_struct(a);
 
-    if (is_cast) {
+    if (is_cast)
         rtype = read_etype(a, &body);
-    } else if (!name) {
-        name = silver_read_alpha(a);
-        validate(isa(name) == typeid(string), "expected alpha-identifier");
-    }
 
+    if (!rtype)
+         rtype = elookup("none");
+    
     validate(read_if(a, "["), "expected function args [");
-    Au_t au = def(top_scope(a), ident->chars, AU_MEMBER_FUNC, traits);
+    Au_t au = def(top_scope(a), ident ? ident->chars : null, AU_MEMBER_FUNC, traits);
     au->module = a->au;
 
-    if (!name) {
-        validate(member_type == AU_MEMBER_CAST, "with no name, expected cast");
+    if (!name && is_cast)
         name = form(string, "cast_%o", rtype);
-    }
 
     etype rec_ctx = context_class(a);
     if (!rec_ctx)
         rec_ctx = context_struct(a);
-    string fname = rec_ctx ? f(string, "%o_%o", rec_ctx, name) : (string)name;
-    au->alt = rec_ctx ? strdup(fname->chars) : null;
 
     // fill out args in function model
     bool is_instance = (traits & AU_TRAIT_IMETHOD) != 0 || (member_type == AU_MEMBER_CAST);
@@ -1632,6 +1659,10 @@ enode parse_func(silver a, etype rtype, string ident, u8 member_type, u32 traits
         verify(first || read_if(a, ","), "expected comma separator between arguments");
 
         etype  t = read_etype(a, null);
+
+        if (member_type == AU_MEMBER_CONSTRUCT && !name)
+            name = form(string, "with_%o", t);
+
         verify(t, "expected alpha-numeric identity for type or name");
 
         string n = read_alpha(a); // optional
@@ -1642,7 +1673,12 @@ enode parse_func(silver a, etype rtype, string ident, u8 member_type, u32 traits
             first = false;
     }
     pop_scope(a);
+
+    au->ident = strdup(name->chars); // free other instance
     au->rtype = rtype->au;
+
+    string fname = rec_ctx ? f(string, "%o_%o", rec_ctx, name) : (string)name;
+    au->alt = rec_ctx ? strdup(fname->chars) : null;
 
     // enode takes the arguments on the function model to complete the function creation
     enode func = enode(mod, (aether)a, au, au, body, null, cgen, null, used, true);
@@ -1799,35 +1835,27 @@ etype read_etype(silver a, array* p_expr) {
         }
 
         // conversion to map or array
+        // must have types only, or with sizes
+        // needs work:
         if (mdl && !a->cmode && next_is(a, "[")) {
+            
+            int cursor_at = a->cursor;
             body_set = true;
             expr = read_within(a);
             array types = array();
             array sizes = array();
             bool had_comma = false;
+            bool reached_end = false;
+            int others = 0;
+
             while (1) {
-                etype e = read_etype(a, null);
-                if (!e) {
-                    validate(!had_comma, "expected type after comma");
-                    if (len(types) == 0) {
-                        bool had_comma = false;
-                        while (1) {
-                            Au lit = read_literal(a, null);
-                            if (lit && is_integral(lit)) {
-                                push(sizes, lit);
-                                if (next_is(a, ",")) {
-                                    had_comma = true;
-                                    consume(a);
-                                    continue;
-                                }
-                            } else if (len(sizes)) {
-                                validate(false, "expected integral afte comma");
-                            }
-                            break;
-                        }
-                    }
+                if (next_is(a, "]")) {
+                    consume(a);
+                    reached_end = true;
                     break;
                 }
+                etype e = read_etype(a, null);
+                if (!e) break;
                 push(types, (Au)e);
                 if (next_is(a, ",")) {
                     had_comma = true;
@@ -1837,14 +1865,13 @@ etype read_etype(silver a, array* p_expr) {
                 break;
             }
 
-            if (len(types)) {
-                verify(len(types) == 1, "expected Value[Key] type, found more than one Key");
+            if (!reached_end || len(types) == 0) {
+                a->cursor = cursor_at; // restore cursor to one reading the expr index
+            } else {
+                
+                verify(len(types) == 1, "expected Value[Key] type, user provided more");
                 mdl = etype(mod, (aether)a, au, au_lookup("map"),
                     meta, a(mdl, types->origin[0]));
-            } else {
-                mdl = etype(mod, (aether)a, au, au_lookup("array"),
-                    dims, len(sizes) ? sizes : null,
-                    meta, a(mdl));
             }
             meta = null;
             // array = no args, or literal
@@ -1862,10 +1889,6 @@ etype read_etype(silver a, array* p_expr) {
 
         mdl = model_adj(a, prim_mdl ? prim_mdl : elookup("u32"));
     }
-
-    // abort if there is assignment following isolated type-like token
-    if (!expr && a->expr_level == 0 && silver_read_assign(a, null, null))
-        mdl = null;
 
     if (mdl && mdl->au->member_type != AU_MEMBER_TYPE)
         mdl = null;
@@ -2409,7 +2432,7 @@ static enode typed_expr(silver a, enode f, array expr) {
             validate(len(values) >= ln, "expected %i args for function %o", ln, f);
             break;
         }
-        
+
         pop_tokens(a, expr ? false : true);
         return e_fn_call(a, f, values);
     }
