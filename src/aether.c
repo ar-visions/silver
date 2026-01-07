@@ -2225,6 +2225,7 @@ void aether_push_tokens(aether a, tokens t, num cursor) {
     tokens_data* state_saved = (tokens_data*)last_element(a->stack);
     a->tokens = hold(t);
     a->cursor = cursor;
+    a->stack_test++;
 }
 
 
@@ -2232,7 +2233,8 @@ void aether_pop_tokens(aether a, bool transfer) {
     int len = a->stack->count;
     assert (len, "expected stack");
     tokens_data* state = (tokens_data*)last_element(a->stack); // we should call this element or ele
-    
+    a->stack_test--;
+
     if(!transfer)
         a->cursor = state->cursor;
     else if (transfer && state->tokens != a->tokens) {
@@ -3047,6 +3049,16 @@ none aether_output_schemas(aether a, enode init) {
         build_module_initializer(a, f);
         build_entrypoint(a, f);
     }
+}
+
+statements aether_context_code(aether a) {
+    for (int i = len(a->lexical) - 1; i >= 0; i--) {
+        Au_t ctx = (Au_t)a->lexical->origin[i];
+        if (instanceof(ctx->user, statements))
+            return (enode)ctx->user;
+        break;
+    }
+    return null;
 }
 
 enode aether_context_func(aether a) {
