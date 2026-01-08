@@ -1132,10 +1132,15 @@ static bool is_addressable(enode e) {
 
 enode enode_access(enode target, string name) {
     aether a = target->mod;
-    Au_t rel = target->au->member_type == AU_MEMBER_VAR ? target->au->src : target->au;
+    Au_t rel = target->au->member_type == AU_MEMBER_VAR ? 
+        resolve(target->au->src->user)->au : target->au;
     Au_t   m = find_member(rel, name->chars, 0, true);
     if (!m) {
         m = m;
+    }
+    if (eq(name, "member")) {
+        int test2 = 2;
+        test2    += 2;
     }
     verify(m, "failed to find member %o on type %o", name, rel);
     
@@ -2460,7 +2465,7 @@ none etype_init(etype t) {
         if (!au->user) au->user = hold(t);
         return;
     } else if (t->is_schema) {
-        au = t->au = def(top_scope(a), fmt("__%s_t", au->ident)->chars,
+        au = t->au = def(a->import_module, fmt("__%s_t", au->ident)->chars,
             AU_MEMBER_TYPE, AU_TRAIT_SCHEMA | AU_TRAIT_STRUCT);
 
         // do this for Au types
@@ -3055,7 +3060,7 @@ statements aether_context_code(aether a) {
     for (int i = len(a->lexical) - 1; i >= 0; i--) {
         Au_t ctx = (Au_t)a->lexical->origin[i];
         if (instanceof(ctx->user, statements))
-            return (enode)ctx->user;
+            return (statements)ctx->user;
         break;
     }
     return null;
@@ -3213,6 +3218,8 @@ void aether_import_Au(aether a, path lib) {
         au_module = global();
         set(a->libs, string("Au"), _bool(true));
     }
+
+    a->import_module = au_module;
 
     Au_t base = au_lookup("Au_t");
     if (lib) {

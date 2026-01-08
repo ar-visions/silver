@@ -1619,9 +1619,6 @@ enode parse_func(silver a, etype rtype, string ident, u8 member_type, u32 traits
     bool   is_cast = member_type == AU_MEMBER_CAST;
     //etype rec_ctx = context_class(a); if (!rec_ctx) rec_ctx = context_struct(a);
 
-    if (is_cast)
-        rtype = read_etype(a, &body);
-
     if (!rtype)
          rtype = elookup("none");
     
@@ -1765,12 +1762,11 @@ array read_meta(silver a) {
 }
 
 etype read_etype(silver a, array* p_expr) {
-    etype mdl = null;
-    bool body_set = false;
-    bool type_only = false;
-    etype type = null;
-    array expr = null;
-    array meta = null;
+    etype mdl   = null;
+    array expr  = null;
+    array meta  = null;
+    array types = array();
+    array sizes = array();
 
     push_current(a);
 
@@ -1838,43 +1834,30 @@ etype read_etype(silver a, array* p_expr) {
         // must have types only, or with sizes
         // needs work:
         if (mdl && !a->cmode && next_is(a, "[")) {
-            
-            int cursor_at = a->cursor;
-            body_set = true;
-            expr = read_within(a);
-            array types = array();
-            array sizes = array();
-            bool had_comma = false;
-            bool reached_end = false;
-            int others = 0;
+            int   cursor_at     = a->cursor;
+            bool  had_comma     = false;
+            bool  reached_end   = false;
+            int   others        = 0;
+            consume(a);
 
-            while (1) {
-                if (next_is(a, "]")) {
-                    consume(a);
-                    reached_end = true;
-                    break;
-                }
+            while (!next_is(a, "]")) {
                 etype e = read_etype(a, null);
                 if (!e) break;
                 push(types, (Au)e);
                 if (next_is(a, ",")) {
                     had_comma = true;
                     consume(a);
-                    continue;
                 }
-                break;
             }
-
+            reached_end = silver_read_if(a, "]") != null;
             if (!reached_end || len(types) == 0) {
-                a->cursor = cursor_at; // restore cursor to one reading the expr index
+                a->cursor = cursor_at; // restore cursor to one reading the expr index (so someone else can do this!)
             } else {
-                
                 verify(len(types) == 1, "expected Value[Key] type, user provided more");
                 mdl = etype(mod, (aether)a, au, au_lookup("map"),
                     meta, a(mdl, types->origin[0]));
             }
             meta = null;
-            // array = no args, or literal
         }
 
     } else if (!mdl && explicit_un) {
@@ -2400,7 +2383,7 @@ static bool peek_fields(silver a);
 
 static bool class_inherits(etype cl, etype of_cl);
 
-map parse_map(silver a, etype mdl_schema);
+enode parse_map(silver a, etype mdl_schema);
 
 static enode typed_expr(silver a, enode f, array expr) {
     push_tokens(a, expr ? (tokens)expr : a->tokens, expr ? 0 : a->cursor);
@@ -2481,9 +2464,8 @@ static enode typed_expr(silver a, enode f, array expr) {
             }
         }
         r = e_create(a, (etype)f, (Au)nodes);
-    } else if (has_init || class_inherits((etype)f, elookup("map"))) {
-        validate(has_init, "invalid initialization of map model");
-        conv = true;
+    } else if (class_inherits((etype)f, elookup("map"))) {
+        conv = false; // parse map will attempt to go direct
         r    = (enode)parse_map(a, (etype)f);
     } else {
         /// this is a conversion operation
@@ -2749,7 +2731,7 @@ void silver_build_initializer(silver a, enode t) {
             array post_const = parse_const(a, (array)t->initializer);
             int level = a->expr_level;
             a->expr_level++;
-            expr = (Au)typed_expr(a, (enode)t, post_const); // we have tokens for the name pushed to the stack
+            expr = (Au)typed_expr(a, (enode)t->au->src->user, post_const); // we have tokens for the name pushed to the stack
             a->expr_level = level;
         }
         enode ctx = context_func(a);
@@ -3028,7 +3010,6 @@ static void build_record(silver a, etype mrec) {
         // if no init, create one (attach preamble for our property inits)
         Au_t m_init = find_member(rec->au, "init", AU_MEMBER_FUNC, false);
         if (!m_init) {
-            push_scope(a, (Au)rec);
             m_init = function(a,
                 string("init"), elookup("none"), a(rec), AU_MEMBER_FUNC,
                 AU_TRAIT_IMETHOD | AU_TRAIT_OVERRIDE, 0)->au;
@@ -3036,10 +3017,17 @@ static void build_record(silver a, etype mrec) {
             string f = f(string, "%o_init", mrec);
             m_init->alt = strdup(f->chars);
             etype_implement((etype)m_init->user);
-            pop_scope(a);
         }
         Au_t m_init2 = find_member(rec->au, "init", AU_MEMBER_FUNC, false);
         verify(m_init2, "not registering init");
+
+        members(rec->au, m) {
+            print("member: %s", m->ident);
+            if (m->ident && strcmp(m->ident, "member") == 0) {
+                int test2 = 2;
+                test2    += 2;
+            }
+        }
 
         build_fn(a, (enode)m_init->user, build_init_preamble, null); // we may need to
 
@@ -3108,27 +3096,72 @@ static array read_expression(silver a, etype *mdl_res, bool *is_const) {
 
 static enode parse_func_call(silver, etype, enode);
 
-map parse_map(silver a, etype mdl_schema) {
-    map args = map(hsize, 16, assorted, true);
-
+// this will have to adapt to parsing into a map, or parsing into a real type
+// for real types, we cannot use the string as its redundant and can be reduced by the user
+//
+enode parse_map(silver a, etype mdl_schema) {
+    print_tokens(a, "parse-map");
+    
     // we need e_create to handle this as well; since its given a map of fields and a is_ref struct it knows to make an alloc
-    if (is_ptr(mdl_schema) && is_struct(mdl_schema->au->src))
+    bool    is_mdl_map  = mdl_schema->au == typeid(map);
+    bool    was_ptr     = false;
+
+    if (is_ptr(mdl_schema) && is_struct(mdl_schema->au->src)) {
+        was_ptr    = true;
         mdl_schema = resolve(mdl_schema);
+    }
+    
+    etype   key         = (etype)get((array)&mdl_schema->au->meta, 0);
+    etype   val         = (etype)get((array)&mdl_schema->au->meta, 1);
+
+    if (!key) key       = elookup("string");
+    if (!val) val       = elookup("Au");
+    enode     rmap      = e_create(a, mdl_schema, null);
+
+    static Au_t sprop; if (!sprop) sprop = find_member(au_lookup("Au"),  "set_property", AU_MEMBER_FUNC, true);
+    static Au_t msetv; if (!msetv) msetv = find_member(au_lookup("map"), "set",          AU_MEMBER_FUNC, true);
 
     while (silver_peek(a)) {
-        string name = silver_read_alpha(a);
-        validate(silver_read_if(a, ":"), "expected : after arg %o", name);
-        etype mdl_expect = null;
-        if (mdl_schema) {
-            Au_t m = find_member(mdl_schema->au, name->chars, AU_MEMBER_VAR, true);
-            validate(m, "member %o not found on model %o", name, mdl_schema);
-            mdl_expect = m->user;
+        Au    k = null;
+        token t = peek(a);
+        bool is_literal = instanceof(t->literal, string) != null;
+        bool is_enode_key = false;
+
+        if (silver_read_if(a, "{")) {
+            k = (Au)parse_expression(a, key); 
+            validate(silver_read_if(a, "}"), "expected }");
+            is_enode_key = true;
+        } else {
+            string name = (string)read_literal(a, typeid(string));
+            validate(is_literal, "expected literal string");
+            k = (Au)const_string(chars, name->chars);
         }
-        enode value = parse_expression(a, mdl_expect);
-        validate(!contains(args, (Au)name), "duplicate initialization of %o", name);
-        set(args, (Au)name, (Au)value);
+        
+        validate(silver_read_if(a, ":"), "expected : after key %o", t);
+        etype mdl_expect = null;
+        enode value = parse_expression(a, null);
+
+        if (!is_mdl_map) {
+            Au_t m = find_member(mdl_schema->au, t->chars, AU_MEMBER_VAR, true);
+            validate(m, "member %o not found on model %o", t, mdl_schema);
+            mdl_expect  = m->src->user;
+
+            if (is_enode_key)
+                e_fn_call(a, (enode)sprop->user, a(rmap, k, value));
+            else {
+                enode prop = access(rmap, (string)k);
+                e_assign(a, prop, (Au)value, OPType__assign);
+            }
+            
+        } else {
+            if (is_enode_key) {
+                //enode rt_key = e_create(a, elookup("string"), k);
+                e_fn_call(a, (enode)msetv->user, a(rmap, k, value));
+            } else
+                e_fn_call(a, (enode)msetv->user, a(rmap, k, value));
+        }
     }
-    return args;
+    return rmap;
 }
 
 static bool class_inherits(etype cl, etype of_cl) {
