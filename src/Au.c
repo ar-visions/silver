@@ -2239,28 +2239,25 @@ bool Au_member_set(Au a, Au_t m, Au value) {
         return false;
 
     Au_t type         = isa(a);
-    bool  is_primitive = (m->type->traits & AU_TRAIT_PRIMITIVE) != 0;
-    bool  is_enum      = (m->type->traits & AU_TRAIT_ENUM)      != 0;
-    bool  is_struct    = (m->type->traits & AU_TRAIT_STRUCT)    != 0;
-    bool  is_inlay     = (m->type->traits & AU_TRAIT_INLAY)    != 0;
-    ARef  member_ptr   = (ARef)((cstr)a + m->offset);
+    ARef member_ptr   = (ARef)((cstr)a + m->offset);
     Au_t vtype        = isa(value);
-    Au     vinfo        = head(value);
+    Au   vinfo        = head(value);
 
-    if (is_struct) {
+    if (m->type->is_struct) {
         verify(m->type->typesize == vtype->typesize * vinfo->count,
             "vector size mismatch for %s", m->ident);
         memcpy(member_ptr, value, m->type->typesize);
-    } else if (is_enum || is_inlay || is_primitive) {
+    } else if (m->type->is_enum || m->type->is_inlay || m->type->is_primitive) {
         Au_t ref = (Au_t)*m->type->meta.origin;
-        verify(!is_struct || vtype == m->type ||
+        verify(!m->type->is_struct || vtype == m->type ||
             vtype == ref,
             "%s: expected vmember_type (%s) to equal isa(value) (%s)",
             m->ident, ref->ident, vtype->ident);
-        verify(!is_struct || vtype == m->type ||
+        verify(!m->type->is_struct || vtype == m->type ||
             m->type->typesize == vtype->typesize * vinfo->count,
             "vector size mismatch for %s", m->ident);
-        int sz = m->type->typesize < vtype->typesize ? m->type->typesize : vtype->typesize;
+        int sz = m->type->typesize < vtype->typesize ? 
+            m->type->typesize : vtype->typesize;
         memcpy(member_ptr, value, sz);
     } else if ((Au)*member_ptr != value) {
         drop(*member_ptr);
