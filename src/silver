@@ -52,7 +52,7 @@
     M(X, Y, i, method, public,     string,         location) \
     M(X, Y, i, method, public,     none,           parse) \
     M(X, Y, i, method, public,     none,           build) \
-    M(X, Y, i, ctr,    public,     path) \
+M(X, Y, i, ctr,    public,     path) \
     M(X, Y, i, override, method, build_initializer) \
     M(X, Y, i, override, method, init)
 declare_class_4(silver, aether, emodule, etype)

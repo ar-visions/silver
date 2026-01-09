@@ -910,10 +910,6 @@ static array parse_tokens(silver a, Au input, array output) {
             if (a->cmode && len(name) == 1 && strncmp(&input_string->chars[index], "##", 2) == 0) {
                 name = string("##");
             }
-            if (strstr(name->chars, "9")) {
-                int test2 = 2;
-                test2    += 2;
-            }
             token t = token(
                 chars, (cstr)name->chars,
                 indent, indent,
@@ -948,11 +944,6 @@ static array parse_tokens(silver a, Au input, array output) {
                                  column, start - line_start));
                 crop = string(&crop->chars[1]);
                 line_start++;
-            }
-
-            if (strstr(crop->chars, "9")) {
-                int test2 = 2;
-                test2    += 2;
             }
             push(tokens, (Au)token(
                              chars, crop->chars,
@@ -1218,6 +1209,7 @@ enode silver_read_enode(silver a, etype mdl_expect) {
         }
     }
 
+    print_tokens(a, "before read_literal");
     Au lit = read_literal(a, null);
     if (lit) {
         a->expr_level++;
@@ -1323,6 +1315,8 @@ enode silver_read_enode(silver a, etype mdl_expect) {
     string alpha              = null;
     int    depth              = 0;
     bool   skip_member_check  = false;
+    bool   loaded             = false;
+
     if (!skip_member_check && module) {
         string alpha = peek_alpha(a);
         if (alpha) {
@@ -1381,7 +1375,8 @@ enode silver_read_enode(silver a, etype mdl_expect) {
                     etype ftarg = etype_resolve((etype)f->target);
                     Au_t field = find_member(ftarg->au, alpha->chars, 0, true);
                     mem = (enode)elookup(alpha->chars);
-                    if (field && mem && mem->au->context == ftarg->au) {
+                    enode n = instanceof(mem, enode);
+                    if (!mem && field) {
                         mem = access(f->target, alpha);
                     }
                 } else if (!f || !f->target) {
@@ -1397,24 +1392,27 @@ enode silver_read_enode(silver a, etype mdl_expect) {
                 verify(mem && mem->au, "cannot resolve from null member");
                 
                 // Load previous member to traverse into it
-                enode loaded = e_load(a, mem, null);
-                mem = access(loaded, alpha);
+                enode prop = e_load(a, mem, null);
+                mem = access(prop, alpha);
+                loaded = false;
             }
 
             /// Handle macros and function calls
             if (instanceof(mem, macro) || is_func((Au)mem)) {
                 mem = parse_member_expr(a, mem);
+                loaded = true; // should be all cases in there
             }
         }
 
         /// Check if there's more chaining
-        if (!read_if(a, ".")) {
+        bool br = read_if(a, ".") == null;
+        if (!loaded) {
             // End of chain - final load if needed
-            if (!a->left_hand) {
-                mem = e_load(a, mem, null);
-            }
-            break;
+            mem = e_load(a, mem, null);
+            loaded = true;
         }
+        if (br)
+            break;
         
         // More chaining - push context for next iteration
         validate(!is_func((Au)mem), "cannot resolve into function");
@@ -1496,7 +1494,7 @@ enode parse_statement(silver a) {
             statements in_code    = context_code(a);
             string     new_member = (rtype && (!is_cast && !is_idx)) ? read_alpha(a) : null;
             validate (!is_cast || !is_ctr || new_member, "expected name");
-            bool       is_func    = next_is(a, "[");
+            bool       is_func    = !f ? next_is(a, "[") : false;
             validate (is_func || (!is_cast && !is_ctr && !is_idx && !is_oper),
                 "expected arguments [] after method identifier");
             validate (!is_ctr || is_func, "expected [ args ] after construct keyword");
@@ -1535,10 +1533,11 @@ enode parse_statement(silver a) {
                 a->left_hand = false;
                 a->expr_level++;
 
-                Au_t m   = def_member(top, new_member->chars, rtype->au, AU_MEMBER_VAR, is_const ? AU_TRAIT_CONST : 0);
+                Au_t m   = def_member(top, new_member->chars, rtype->au, AU_MEMBER_VAR, 0);
                 evar var = evar(mod, (aether)a, au, m);
                 etype_implement((etype)var);
                 e = parse_assignment(a, (enode)var, assign_type);
+                m->is_const = is_const;
                 a->expr_level--;
                 a->left_hand = true;
 
@@ -2385,6 +2384,8 @@ static bool class_inherits(etype cl, etype of_cl);
 
 enode parse_map(silver a, etype mdl_schema);
 
+etype evar_type(evar a);
+
 static enode typed_expr(silver a, enode f, array expr) {
     push_tokens(a, expr ? (tokens)expr : a->tokens, expr ? 0 : a->cursor);
     
@@ -2412,7 +2413,7 @@ static enode typed_expr(silver a, enode f, array expr) {
             if (read_if(a, ","))
                 continue;
             
-            validate(len(values) >= ln, "expected %i args for function %o", ln, f);
+            verify(len(values) >= ln, "expected %i args for function %o", ln, f);
             break;
         }
 
@@ -2464,9 +2465,9 @@ static enode typed_expr(silver a, enode f, array expr) {
             }
         }
         r = e_create(a, (etype)f, (Au)nodes);
-    } else if (class_inherits((etype)f, elookup("map"))) {
+    } else if (peek_fields(a) || class_inherits((etype)f, elookup("map"))) {
         conv = false; // parse map will attempt to go direct
-        r    = (enode)parse_map(a, (etype)f);
+        r    = (enode)parse_map(a, (etype)evar_type((evar)f));
     } else {
         /// this is a conversion operation
         r = (enode)parse_expression(a, (etype)f);
@@ -3101,7 +3102,7 @@ static enode parse_func_call(silver, etype, enode);
 //
 enode parse_map(silver a, etype mdl_schema) {
     print_tokens(a, "parse-map");
-    
+
     // we need e_create to handle this as well; since its given a map of fields and a is_ref struct it knows to make an alloc
     bool    is_mdl_map  = mdl_schema->au == typeid(map);
     bool    was_ptr     = false;
@@ -3111,8 +3112,8 @@ enode parse_map(silver a, etype mdl_schema) {
         mdl_schema = resolve(mdl_schema);
     }
     
-    etype   key         = (etype)get((array)&mdl_schema->au->meta, 0);
-    etype   val         = (etype)get((array)&mdl_schema->au->meta, 1);
+    etype   key         = is_mdl_map ? (etype)array_get((array)&mdl_schema->au->meta, 0) : null;
+    etype   val         = is_mdl_map ? (etype)array_get((array)&mdl_schema->au->meta, 1) : null;
 
     if (!key) key       = elookup("string");
     if (!val) val       = elookup("Au");
@@ -3131,6 +3132,10 @@ enode parse_map(silver a, etype mdl_schema) {
             k = (Au)parse_expression(a, key); 
             validate(silver_read_if(a, "}"), "expected }");
             is_enode_key = true;
+        } else if (!is_mdl_map) {
+            string name = (string)read_alpha(a);
+            validate(name, "expected member identifier");
+            k = (Au)const_string(chars, name->chars);
         } else {
             string name = (string)read_literal(a, typeid(string));
             validate(is_literal, "expected literal string");
@@ -3138,17 +3143,14 @@ enode parse_map(silver a, etype mdl_schema) {
         }
         
         validate(silver_read_if(a, ":"), "expected : after key %o", t);
-        etype mdl_expect = null;
         enode value = parse_expression(a, null);
 
         if (!is_mdl_map) {
-            Au_t m = find_member(mdl_schema->au, t->chars, AU_MEMBER_VAR, true);
-            validate(m, "member %o not found on model %o", t, mdl_schema);
-            mdl_expect  = m->src->user;
-
             if (is_enode_key)
                 e_fn_call(a, (enode)sprop->user, a(rmap, k, value));
             else {
+                Au_t m = find_member(mdl_schema->au, t->chars, AU_MEMBER_VAR, true);
+                validate(m, "member %o not found on model %o", t, mdl_schema);
                 enode prop = access(rmap, (string)k);
                 e_assign(a, prop, (Au)value, OPType__assign);
             }
@@ -3268,9 +3270,10 @@ enode silver_parse_assignment(silver a, enode mem, string oper) {
         if (mem->literal)
             drop(mem->literal);
         mem->literal = hold(R->literal);
-    } else {
+    } else if (mem->au->is_assigned) {
         verify(!eq(oper, "="), "cannot perform constant assign after initial assignment");
     }
+    mem->au->is_assigned = true; // this is fine to set on var Au_t's
     validate(contains(operators, (Au)oper), "%o not an assignment-operator");
     string op_name = (string)get   (operators, (Au)oper);
     string op_form = form  (string, "_%o", op_name);

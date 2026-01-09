@@ -20,7 +20,6 @@ as used in a silver app
 
 import [ KhronosGroup:Vulkan-Tools/main ]
 	-DVULKAN_HEADERS_INSTALL_DIR={install}
-	{linux ?? -DWAYLAND_PROTOCOLS_DIR={install}/checkout/wayland-protocols}
 
 # the above are lines typically found in a Makefile, or two -- 
 # however with silver we wanted the language to build a software install that can define in code.
@@ -31,42 +30,23 @@ import <stdio.h> # lets include C models, and even type/value macros
 # note: macros with matching type definitions are registered as type aliases, similar to how Swift imports types from C
 
 # main is a hard-coded abstract class which sets properties by their 
-main app
-    # this lambda is called as an exception printer, of sort.  otherwise public/intern members may be called to construct their own defaults
-    # please notice this happens in the order of the membership, and please don't think about that too much.
-    required msg:string -> fault 'you have to start with hello'
+class app of main
+    required string msg
 
-    # to keep initialization even more standard, we can do everything by overloading init in one method
-	override fn init[] -> none
-        # we may omit '-> none' by convention.  types are expressed by given return-type of call model, or a simple type name
-        # this is not remotely complicated because we do not interface with C++ yet (will probably require type[ expr ])
+	none init[]
 
-		however = "its args need not be" # const-string, instanced as design-time literal with the use of = over :
-		puts[ "calling a C function with a const string: %s", string[' we only allow formatter args with const-string.. {however} ']]
+        # constant assignment
+		string however: "its args need not be"
 
-		print[ usage ] # an au-type registered va-arg function, registered by reflection into design-time
-			###
-			# once a module has reached compilable state, it may use its own models at design-time, making adaptations to code we output without macros.
-			# silver is here because there is a need to express a kind of model we have a real-control of.
-			  its runtime environment is all c code, and it has the exact same models and capabilities as silver. the worlds are all one.
-              using silver as build tool alone, is quite useful in that it's a cross platform, CMake/Makefile/Ninja replacement.
-              we're still commented because of the double # above ^
-			##
-
-			# rust is quite good but we need more open way of expressing software,
-			# that is, decentralized, independent, git-domain projects as first class imports, its nothing but user:project/branch
-
-			# silver has a tokens type, so the user can effectively take off with their own expressions that allow or disallow unix tools to be used within.
-			# tokens and shell_tokens are the different types that take-in a string.
-			# when your constructor is keyword level, we can express tokens directly into code, with {expressions} possible in both
-			# for zero expression expansion, we use basic_tokens
-
-
+		puts[ "calling a C function with a const string: %s", 
+            ' we only allow formatter args with const-string.. {however} ']
 
 ```
 
 
-Design-time AI watchers generate and cache non-deterministic outputs, keeping authored code separate from LLM-generated dictation while integrating naturally into modules and media.
+Design-time AI watchers generate and cache non-deterministic outputs, keeping 
+authored code separate from LLM-generated dictation while integrating naturally 
+into modules and media.
 
 
 ```python
@@ -101,17 +81,17 @@ This enables natural, readable code with less boilerplate.  When the user does d
 
 linux ?? import [ https://gitlab.freedesktop.org/wayland/wayland-protocols 810f1adaf33521cc55fc510566efba2a1418174f ]
 
-import <vulkan/vulkan.h> [ https://github.com/KhronosGroup/Vulkan-Headers main ]
+import <vulkan/vulkan.h> [ KhronosGroup:Vulkan-Headers/main ]
 
-# short-hand for git -- i think this is a good basis for 'web4' data
+# short-hand for git shared git repo -- a good basis for 'web4' data
 # its git provided, so it costs little to host, and we have our identities as url basis. with project/version, what else could democratize user provided media better in open?
 
 import [ KhronosGroup:Vulkan-Tools/main ]
 	-DVULKAN_HEADERS_INSTALL_DIR={install}
 	{linux ?? -DWAYLAND_PROTOCOLS_DIR={install}/checkout/wayland-protocols}
 
-# = means constant, it cannot be changed by the importer or ourselves, at any member level.
-version = '22'
+# : means constant, it cannot be changed by the importer or ourselves, at any member level.
+version : '22'
 
 class Vulkan
     intern instance : VkInstance
@@ -120,7 +100,7 @@ class Vulkan
     public minor    : i32
     context string  : shared
 
-    fn init[]
+    none init[]
         result : vkCreateInstance [
             [
                 sType : VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
@@ -146,16 +126,17 @@ class Vulkan
 
 
 class Window
-    context vk : Vulkan
-    dimensions : vec2i
+    context Vulkan vk
+    vec2i dimensions
 
-main test_vulkan
-    public  queue_family_index : array 2x4 [ 2 2 2 2, 4 4 4 4 ]
-    intern  an_intern_member   : i64[ 4 ]
-    context an-instance        : Vulkan
-    intern  window             : Window
-    public  shared             : 'a-string'
-    fn init[]
+class test_vulkan of main
+    public  i64[2x4]  queue_family_index = [ 2 2 2 2, 4 4 4 4 ]
+    intern  i64[ 4 ]  an_intern_member
+    context Vulkan    an-instance
+    intern  Window    window
+    public  shared    'a-string'
+
+    none init[]
         an-instance : Vulkan[ major: 1  minor: 1 ]
         window      : Window[ dimensions: [ 444 888 ] ]
         
@@ -164,12 +145,11 @@ main test_vulkan
 
 ![orbiter avatar](core.png "orbiter avatar")
 
-Orbiter
-an IDE being built with silver (was C++)
+Orbiter -- IDE being built with silver (was C++)
 [https://github.com/ar-visions/orbiter.git]
 
 Hyperspace
-spatial dev kit, ai module & training scripts
+spatial dev kit, ai module & training scripts (will be silver)
 [https://github.com/ar-visions/hyperspace.git]
 
 # **import** keyword
@@ -197,49 +177,48 @@ see: [Au project](https://github.com/ar-visions/silver/blob/master/src/Au)
 import a-silver-module [ a-non-const: enum-from-module ]
 
 
-string operator + [ i:int, a:string ] -> string
+string operator + [ i:int, a:string ]
     return '{ a } and { i }'
 
 # context is used when the function is called; as such, the user should have these variables themselves
 # this reduces the payload on lambdas to zero, at expense of keeping membership explicit
-fn some-callback[ i:int, context ctx:Vulkan ] -> int
+int some-callback[ int i; Vulkan ctx ]
     print[ '{ctx}: {i}' ]
     return i + ctx ? ctx.a-member : 0
 
 # methods can exist at module-level, or record.
+nice: some-callback[ null ]
 
-nice: some-callback[ 'a-nice-callback', null ]
-
-func a-function [ a:string ]  -> string
+string a-function [ string a ]
     i : 2 + sz[ a ]
     r : nice[ i ]
     print[ 'called-with: %s. returning: { r }'  a ]
     return r
 
-func a-function [ a:string ] int [2 + sz[ a ]]
+int a-function [ a:string ]
+    return 2 + sz[ a ]
 
 class app
-    public value     : short 1
-    intern something : 2 # default is i64 for numerics, or string type for 'open' and "closed" strings
+    public short value   = 1
+    intern int something = 2
 
-    func make-string [ from: int ] ->
-        'a string with { from }'
+    string make-string [ int from ]
+        return 'a string with { from }'
 
-    cast int
+    cast int[]
         my-func  = ref run
         r:int[ my-func[ 'hi' ] ?? run ] # value or default
         s:make-string[ r ]
         return len[ s ]
     
-    func run[ arg:string ] -> int
+    int run[ arg:string ]
         print['{ arg } ... call own indexing method: { this[ 2 ] }']
         return 1
 
-func module-name[ a:app ] -> int
-    is-const = int[ a ]  # : denotes constant assignment, this calls the cast above
-    val : is-const      # = assignment [mutable]
-
-    val += 1 # we may change the val, because it was declared with :
+int module-name[ a:app ]
+    is-const : int[ a ]  # : denotes constant assignment, this calls the cast above
+    val = is-const       # = assignment [mutable]
+    val += 1             # we may change the val, because it was declared with =
 
     print[ 'using app with value: { is-const } + { val - is-const }' ]
     return (run[a, string[val]] > 0) ? 1 : 0

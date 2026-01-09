@@ -632,8 +632,14 @@
 #define   i_prop_public_DECL_as(X, R, N, M2)        i_prop_public_DECL(X, R, N)
 #define   i_prop_public_DECL_EXTERN_as(X, R, N, M2) i_prop_public_DECL(X, R, N)
 #define   i_prop_public_GENERICS_as(X, R, N, M2)
-#define   i_prop_public_INIT_as(X, R, N, M2) \
-    verify(false, "'as' keyword is used for internals")
+#define   i_prop_public_INIT_as(X, R, N, M2) {\
+    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, 0); \
+    m->access_type = interface_public; \
+    m->offset      = offsetof(struct _##X, N); \
+    m->type        = (Au_t)&X##_i.type; \
+    m->index       = offsetof(struct X##_fields, N); \
+    set_meta_array(m, 1, (Au_t)&X##_i.type); \
+}
 #define   i_prop_public_PROTO_as(X, R, N, M2)  
 #define   i_prop_public_METHOD_as(X, R, N, M2)
 
@@ -1131,7 +1137,7 @@
     m->alt = #X "_" #N; \
     m->access_type = interface_public; \
     X##_i.type . ft.N = & X## _ ## N; \
-    set_args_array(m, emit_types(X __VA_OPT__(,) __VA_ARGS__)); \
+    set_args_array(m, emit_types(__VA_ARGS__)); \
     m->type    = (Au_t)&R##_i.type; \
     /* m->offset  = offsetof(X##_f, N); */ \
     m->index   = offsetof(__typeof__(X##_i.type.ft), N) / sizeof(void*); \

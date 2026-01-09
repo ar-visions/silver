@@ -49,6 +49,11 @@ Au_t au_arg(Au a) {
     return cast(Au_t, a);
 }
 
+Au_t au_arg_type(Au a) {
+    Au_t au = au_arg(a);
+    return au->member_type == AU_MEMBER_VAR ? au->src : au;
+}
+
 Au_t Au_cast_Au_t(Au a) {
     return isa(a);
 }
@@ -101,7 +106,7 @@ Au_t Au_is_rec     (Au t) {
 bool Au_is_prim    (Au t) { return au_arg(t)->is_primitive; }
 bool Au_is_sign    (Au t) { return au_arg(t)->is_signed; }
 bool Au_is_unsign  (Au t) { return au_arg(t)->is_unsigned; }
-bool Au_is_ptr     (Au t) { return au_arg(t)->is_pointer; }
+bool Au_is_ptr     (Au t) { Au_t a = au_arg_type(t); return a->is_class || a->is_pointer; }
 bool Au_is_enum    (Au t) { return au_arg(t)->is_enum; }
 bool Au_is_bool    (Au t) { return typeid(bool) == au_arg(t); }
 bool Au_is_type    (Au t) { return au_arg(t)->member_type == AU_MEMBER_TYPE; }
@@ -603,9 +608,10 @@ Au_t find_member(Au_t mdl, symbol f, int member_type, bool poly) {
     do {
         for (int i = 0; i < mdl->members.count; i++) {
             Au_t au = (Au_t)mdl->members.origin[i];
-            if (!member_type || au->member_type == member_type)
+            if (!member_type || au->member_type == member_type) { 
                 if (au->ident && strcmp(au->ident, f) == 0)
                     return au;
+            }
         }
         if (!poly || mdl->context == mdl) break;
         mdl = mdl->context;
