@@ -5,16 +5,20 @@ class something
     u64  outside [ i32 an_arg2 ]
     none action  [ i32 an_arg, i64 another, string mem ]
         puts[ 'something is equal to {mem}' ]
+    none action2  [ string mem2 ]
+        puts[ 'something is equal to {mem2}' ]
+	none init []
+        printf[ "printing in init\n" ]
 
-class aclass of main
+class aclass of app
     f32 member = 9.2
     f64 aconst = 1.4
 
 	none init []
         something s = [mem: 8]
-        s.action[1, 2, 'an-allocated-one with {s.mem}']
-        puts[ 'i can verify its value is {s.mem}' ]
-    
+        s.action2['an-allocated-one with {s.mem}']
+
+##
     i32[ string ] key-values
         'key':      2
         'another':  44
@@ -24,8 +28,6 @@ class aclass of main
 
     cast f32[ ]
         return f32[ 1.1 ]
-
-##
 
 #import chatgpt
 #    model:'gpt-5'

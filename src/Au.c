@@ -49,6 +49,15 @@ Au_t au_arg(Au a) {
     return cast(Au_t, a);
 }
 
+cstr cstr_copy(cstr f) {
+    if (!f) return null;
+    int l = strlen(f);
+    cstr res = (cstr)calloc(1, l + 1);
+    memcpy(res, f, l);
+    res[l] = 0;
+    return res;
+}
+
 Au_t au_arg_type(Au a) {
     Au_t au = au_arg(a);
     return au->member_type == AU_MEMBER_VAR ? au->src : au;
@@ -686,14 +695,14 @@ Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32
 Au_t def_arg(Au_t context, symbol ident, Au_t arg) {
     Au_t var = _push_arg(context);
     var->src = arg;
-    var->ident = strdup(ident);
+    var->ident = cstr_copy((cstr)ident);
     return var;
 }
 
 Au_t def_meta(Au_t context, symbol ident, Au_t arg) {
     Au_t var = _push_arg(context);
     var->src = arg;
-    var->ident = strdup(ident);
+    var->ident = cstr_copy((cstr)ident);
     return var;
 }
 
@@ -708,7 +717,7 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type, u32 access_t
 }
 
 Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
-    if (ident && strcmp(ident, "something") == 0) {
+    if (ident && strcmp((cstr)ident, "something") == 0) {
         ident = ident;
     }
     if (n_members == 0) {
@@ -720,7 +729,7 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
     cur->info.refs = 1;
     cur->info.type = (Au_t)&Au_t_f_i.type;
     Au_t au = &cur->type;
-    au->ident = ident ? strdup(ident) : null;
+    au->ident = ident ? (symbol)cstr_copy((cstr)ident) : (symbol)null;
 
     au->member_type = member_type;
     au->traits = traits;
@@ -766,7 +775,7 @@ Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, 
     type->context           = context;
     type->src               = src;
     type->module            = module;
-    type->ident             = strdup(ident);
+    type->ident             = cstr_copy((cstr)ident);
     type->traits            = traits;
     type->typesize          = typesize;
     type->isize             = isize;
@@ -858,7 +867,7 @@ Au_t def_module(symbol next_module) {
     struct _Au_combine* combine = calloc(1, sizeof(struct _Au_combine));
     Au_t m = &combine->type;
     m->member_type = AU_MEMBER_MODULE;
-    m->ident = strdup(next_module);
+    m->ident = cstr_copy((cstr)next_module);
     combine->info.type  = (Au_t)typeid(Au_t_f);
     if (!au_module) {
         au_module = m;
@@ -3283,8 +3292,8 @@ u64 string_hash(string a) {
 }
 
 none msg_init(msg a) {
-    a->role = strdup(a->role);
-    a->content = strdup(a->content);
+    a->role    = cstr_copy(a->role);
+    a->content = cstr_copy(a->content);
 }
 
 none msg_dealloc(msg a) {
@@ -4369,16 +4378,16 @@ string path_filename(path a) {
 path path_absolute(path a) {
     path  result   = new(path);
     cstr  rpath    = realpath(a->chars, null);
-    result->chars  = rpath ? strdup(rpath) : copy_cstr("");
+    result->chars  = rpath ? cstr_copy(rpath) : copy_cstr("");
     result->count    = strlen(result->chars);
     return result;
 }
 
 path path_directory(path a) {
     path  result  = new(path);
-    char* cp      = strdup(a->chars);
+    char* cp      = cstr_copy(a->chars);
     char* temp    = dirname(cp);
-    result->chars = strdup(temp);
+    result->chars = cstr_copy(temp);
     result->count   = strlen(result->chars);
     free(cp);
     return result;
@@ -4401,7 +4410,7 @@ path path_parent_dir(path a) {
         memcpy(&cp[len], "/..", 4);
     char *dir_name = dirname(cp);
     path  result   = new(path);
-    result->chars  = strdup(dir_name);
+    result->chars  = cstr_copy(dir_name);
     free(cp);
     return result;
 }
@@ -5803,7 +5812,6 @@ define_class(watch,   Au)
 define_class(msg,     Au)
 define_class(async,   Au)
 
-
 define_abstract(numeric,        0, Au)
 define_abstract(string_like,    0, Au)
 define_abstract(nil,            0, Au)
@@ -5812,8 +5820,7 @@ define_abstract(ref,            0, Au)
 define_abstract(imported,       0, Au)
 define_abstract(weak,           0, Au)
 define_abstract(functional,     0, Au)
- 
-
+define_abstract(app,            AU_TRAIT_CLASS, Au)
 
 define_primitive(ref_u8, numeric, AU_TRAIT_POINTER | AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED, u8)
 define_primitive(ref_u16,    numeric, AU_TRAIT_POINTER | AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED,  u16)

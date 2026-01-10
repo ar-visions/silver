@@ -326,7 +326,7 @@ def import_src(root_dir="src"):
     global NATIVE
     ensure_msys2(NATIVE)
     for path in Path(root_dir).rglob("*.g"):
-        _, _, _, _, imports = parse_g_file(str(path))
+        _, _, _, _, _, imports = parse_g_file(str(path))
         for i in imports:
             print(f'{path.stem:<10} import {i[0]}')
             build_import(i[0], i[1], i[2], i[3], IMPORT, i[4])

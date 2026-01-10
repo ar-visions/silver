@@ -801,7 +801,7 @@ none aether_e_fn_return(aether a, Au o) {
         return;
     }
     
-    enode conv = e_create(a, (etype)f->au->rtype, o);
+    enode conv = e_create(a, (etype)f->au->rtype->user, o);
     LLVMBuildRet(a->builder, conv->value);
 }
 
@@ -883,8 +883,6 @@ etype evar_type(evar a) {
 bool inherits(Au_t src, Au_t check);
 
 enode aether_e_fn_call(aether a, enode fn, array args) {
-    // we could support an array or map arg here, for args
-    // we set this when we do something complex
     if (!fn->used)
          fn->used = true;
     
@@ -892,10 +890,13 @@ enode aether_e_fn_call(aether a, enode fn, array args) {
     if (a->no_build) return e_noop(a, fn->au->rtype->user);
 
     etype_implement((etype)fn);
-    etype user_target_type = evar_type((evar)get(args, 0));
-    etype target_type = fn->target ? (etype)fn->target : (etype)null;
-    enode f = len(args) ? (enode)user_target_type : null;
-    bool is_Au = !target_type || inherits(target_type->au, typeid(Au));
+    Au    arg0             = args ? get(args, 0) : null;
+    enode first_arg        = arg0 ? e_operand(a, arg0, null) : null;
+    etype user_target_type = first_arg ? evar_type((evar)first_arg) : null;
+    etype target_type      = fn->target ? (etype)fn->target : (etype)null;
+    enode f                = len(args) ? (enode)user_target_type : null;
+    bool  is_Au            = !target_type || inherits(target_type->au, typeid(Au));
+
     static int seq = 0;
     seq++;
     if (seq == 8) {
@@ -915,7 +916,10 @@ enode aether_e_fn_call(aether a, enode fn, array args) {
     if (target_type) {
         // we do not 'need' target so we dont have it.
         // we get instance from the fact that its within a class/struct context and is_imethod
-        etype cast_to = ensure_pointer(target_type);
+        Au_t au_type = target_type->au;
+        if (au_type->member_type == AU_MEMBER_VAR) au_type = au_type->src;
+
+        etype cast_to = ensure_pointer(au_type->user);
         arg_values[index++] = e_create(a, cast_to, (Au)f)->value;
     }
 
@@ -933,7 +937,7 @@ enode aether_e_fn_call(aether a, enode fn, array args) {
     if (args) {
         int i = 0;
         each (args, Au, arg_value) {
-            if (target_type && f) {
+            if (target_type && i == 0) {
                 i++;
                 continue;
             }
@@ -983,7 +987,14 @@ enode aether_e_fn_call(aether a, enode fn, array args) {
     }
     
     bool is_void_ = is_void(fn->au->rtype);
-    LLVMValueRef R = LLVMBuildCall2(a->builder, F, V, arg_values, index, is_void_ ? "" : "call");
+    static int seq2 = 0;
+    seq2++;
+    if (V == NULL) {
+        seq2 = seq2;
+    }
+    char call_seq[256];
+    sprintf(call_seq, "call_%i", seq2);
+    LLVMValueRef R = LLVMBuildCall2(a->builder, F, V, arg_values, index, is_void_ ? "" : call_seq);
     free(arg_values);
     return enode(mod, a, au, fn->au->rtype, value, R); //value(fn->au->rtype, R);
 }
@@ -1168,6 +1179,8 @@ enode enode_access(enode target, string name) {
     aether a = target->mod;
     Au_t rel = target->au->member_type == AU_MEMBER_VAR ? 
         resolve(target->au->src->user)->au : target->au;
+    if (rel->is_pointer && rel->src && rel->src->is_class)
+        rel = rel->src;
     Au_t   m = find_member(rel, name->chars, 0, true);
     if (!m) {
         m = m;
@@ -1257,7 +1270,7 @@ enode aether_e_create(aether a, etype t, Au args) {
     if (!t) {
         static int seq = 0;
         seq++;
-        if (seq == 10) {
+        if (seq == 19) {
             int test2 = 2;
             test2    += 2;
         }
@@ -1313,7 +1326,7 @@ enode aether_e_create(aether a, etype t, Au args) {
         
         static int seq = 0;
         seq++;
-        if (seq == 27) {
+        if (seq == 72) {
             seq = seq;
         }
         enode fmem = convertible((etype)input, t);
@@ -2398,15 +2411,15 @@ static void set_global_construct(aether a, enode fn) {
 static void build_entrypoint(aether a, etype module_init_fn) {
     Au_t module_base = a->au;
 
-    etype main_spec  = elookup("main");
-    verify(main_spec && is_class(main_spec), "expected main class");
+    etype main_spec  = elookup("app");
+    verify(main_spec && is_class(main_spec), "expected app class");
 
     etype main_class = null;
     members(module_base, mem) {
         if (is_class(mem)) {
             etype cls = mem->user;
             if (cls->au->context == main_spec->au) {
-                verify(!main_class, "found multiple main classes");
+                verify(!main_class, "found multiple app classes");
                 main_class = cls;
             }
         }
@@ -2420,13 +2433,14 @@ static void build_entrypoint(aether a, etype module_init_fn) {
     }
 
     // for apps, build int main(argc, argv)
-    Au_t au_f_main = def_member(a->au, "main", au_lookup("i32"),   AU_MEMBER_FUNC, 0);
-    Au_t argc = def_member(au_f_main,  "argc", au_lookup("i32"),   AU_MEMBER_VAR,  0);
-    Au_t argv = def_member(au_f_main,  "argv", au_lookup("cstrs"), AU_MEMBER_VAR,  0);
-    array_qpush((array)&au_f_main->args, (Au)argc);
-    array_qpush((array)&au_f_main->args, (Au)argv);
+    Au_t au_f_main = def_member(a->au, "main", au_lookup("i32"), AU_MEMBER_FUNC, 0);
+    Au_t argc = def_arg(au_f_main,  "argc", au_lookup("i32"));
+    Au_t argv = def_arg(au_f_main,  "argv", au_lookup("cstrs"));
 
-    etype main_fn = etype(mod, a, au, au_f_main);
+    au_f_main->is_export = true;
+    enode main_fn = enode(mod, a, au, au_f_main, used, true, has_code, true);
+    etype_implement((etype)main_fn);
+
     push_scope(a, (Au)main_fn);
     e_fn_call(a, (enode)module_init_fn, null);
     enode Au_engage = (enode)find_member(au_lookup("Au"), "engage", AU_MEMBER_FUNC, false)->user; // this is only for setting up logging now, and we should likely emit it after the global construction, and before the user initializers
@@ -2435,7 +2449,6 @@ static void build_entrypoint(aether a, etype module_init_fn) {
     e_fn_return(a, _i32(0));
 
     pop_scope(a);
-    etype_implement(main_fn);
 }
 
 Au_t arg_type(Au_t au) {
@@ -2601,7 +2614,7 @@ none etype_init(etype t) {
             int test2 = 2;
             test2    += 2;
         }
-        au->lltype = LLVMStructCreateNamed(a->module_ctx, strdup(au->ident));
+        au->lltype = LLVMStructCreateNamed(a->module_ctx, cstr_copy(au->ident));
         if (au != typeid(Au_t))
             etype_ptr(a, t->au);
     } else if (is_enum(t)) {
@@ -2785,6 +2798,8 @@ none etype_implement(etype t) {
         int test2 = 2;
         test2    += 2;
     }
+    
+    enode nn = (enode)t;
 
     if (is_func(t->au) && !((enode)t)->used)
         return;
@@ -2980,7 +2995,7 @@ none etype_implement(etype t) {
         fn->value  = LLVMAddFunction(a->module, n, au->lltype);
         Au_t au_target = au->is_imethod ? (Au_t)au->args.origin[0] : null;
         fn->target = au_target ?
-            enode(mod, a, au, au_target ? au_target->src : null, arg_index, 0) : null;
+            enode(mod, a, au, au_target, arg_index, 0) : null;
         string label = f(string, "%s_entry", au->ident);
         bool is_user_implement = fn->au->module == a->au && fn->has_code;
         if (fn->au->module == a->au && !is_user_implement) {
@@ -2989,8 +3004,10 @@ none etype_implement(etype t) {
         fn->entry = is_user_implement ? LLVMAppendBasicBlockInContext(
             a->module_ctx, fn->value, label->chars) : null;
 
+            
         LLVMSetLinkage(fn->value,
-            is_user_implement ? LLVMInternalLinkage : LLVMExternalLinkage);
+            is_user_implement && !au->is_export ? 
+                LLVMInternalLinkage : LLVMExternalLinkage);
 
         int index = 0;
         arg_list(fn->au, arg) {
@@ -3261,6 +3278,7 @@ void aether_import_Au(aether a, path lib) {
     } else {
         au_module = global();
         set(a->libs, string("Au"), _bool(true));
+        a->au_module = au_module;
     }
 
     a->import_module = au_module;
@@ -3283,11 +3301,23 @@ void aether_import_Au(aether a, path lib) {
 
     if (!lib) {
         // this causes a name-related error in IR
-        Au_t main_cl = def_member(au_module, "main", null, AU_MEMBER_TYPE,
+        Au_t f = find_member(au_module, "app", AU_MEMBER_TYPE, AU_TRAIT_ABSTRACT);
+        verify(f, "could not import app abstract");
+
+        if (!f->user) {
+            f->user = etype(mod, a, au, f);
+            implement(f->user);
+        }
+
+        verify(f->context == typeid(Au), "expected Au type context");
+
+        /*
+        Au_t main_cl = def_member(au_module, "app", null, AU_MEMBER_TYPE,
             AU_TRAIT_CLASS | AU_TRAIT_ABSTRACT);
         main_cl->context = typeid(Au);
         main_cl->user = etype(mod, a, au, main_cl);
         implement(main_cl->user);
+        */
     }
     a->is_Au_import  = false;
 
@@ -3472,6 +3502,13 @@ none enode_init(enode n) {
     Au_t n_isa = isa(n);
     aether a = n->mod;
     bool is_const = n->literal != null;
+
+    if (is_ptr(n->au) && is_class(n->au->src)) {
+        if (strcmp(n->au->src->ident, "something") == 0) {
+            int test2 = 2;
+            test2    += 2;
+        }
+    }
 
     if (is_func((Au)n->au->context)) {
         enode fn = (enode)n->au->context->user;
@@ -3928,62 +3965,18 @@ enode aether_e_not(aether a, enode L) {
 }
 
 none enode_release(enode mem) {
-    aether e = mem->mod;
+    aether a = mem->mod;
     etype mdl = (etype)mem;
     if (!is_ptr(mdl))
         return;
 
-    e->is_const_op = false;
-    if (e->no_build) return;
+    a->is_const_op = false;
+    if (a->no_build) return;
 
-    // Compute the base pointer (reference data is 32 bytes before `user`)
-    LLVMValueRef size_A = LLVMConstInt(LLVMInt64Type(), 32, false);
-    LLVMValueRef ref_ptr = LLVMBuildGEP2(e->builder, LLVMInt8Type(), mem->value, &size_A, -1, "ref_ptr");
-
-    // Cast to i64* to read the reference count
-    ref_ptr = LLVMBuildBitCast(e->builder, ref_ptr, LLVMPointerType(LLVMInt64Type(), 0), "ref_count_ptr");
-
-    // Load the current reference count
-    LLVMValueRef ref_count = LLVMBuildLoad2(e->builder, LLVMInt64Type(), ref_ptr, "ref_count");
-
-    // Decrement the reference count
-    LLVMValueRef new_ref_count = LLVMBuildSub(
-        e->builder,
-        ref_count,
-        LLVMConstInt(LLVMInt64Type(), 1, false),
-        "decrement_ref"
-    );
-
-    // Store the decremented reference count back
-    LLVMBuildStore(e->builder, new_ref_count, ref_ptr);
-
-    // Check if the reference count is less than zero
-    LLVMValueRef is_less_than_zero = LLVMBuildICmp(
-        e->builder,
-        LLVMIntSLT,
-        new_ref_count,
-        LLVMConstInt(LLVMInt64Type(), 0, false),
-        "is_less_than_zero"
-    );
-
-    // Conditional free if the reference count is < 0
-    LLVMBasicBlockRef current_block = LLVMGetInsertBlock(e->builder);
-    LLVMBasicBlockRef free_block = LLVMAppendBasicBlock(LLVMGetBasicBlockParent(current_block), "free_block");
-    LLVMBasicBlockRef no_free_block = LLVMAppendBasicBlock(LLVMGetBasicBlockParent(current_block), "no_free_block");
-
-    LLVMBuildCondBr(e->builder, is_less_than_zero, free_block, no_free_block);
-
-    // Free block: Add logic to free the memory
-    LLVMPositionBuilderAtEnd(e->builder, free_block);
-    enode f_dealloc = (enode)find_member(mem->au, "dealloc", AU_MEMBER_FUNC, true)->user;
-    if (f_dealloc) {
-        e_fn_call(e, (enode)f_dealloc, a(mem));
+    if (is_class(mdl)) {
+        enode fn_drop = (enode)find_member(au_lookup("Au"), "drop", AU_MEMBER_FUNC, true)->user;
+        if   (fn_drop) e_fn_call(a, (enode)fn_drop, a(mem));
     }
-    LLVMBuildFree(e->builder, ref_ptr);
-    LLVMBuildBr(e->builder, no_free_block);
-
-    // No-free block: Continue without freeing
-    LLVMPositionBuilderAtEnd(e->builder, no_free_block);
 }
 
 

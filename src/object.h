@@ -69,6 +69,7 @@ typedef enum AU_MEMBER AFlag;
 #define AU_TRAIT_IS_PREPARED ((int64_t) 1 << 38)
 #define AU_TRAIT_IS_AU       ((int64_t) 1 << 39)
 #define AU_TRAIT_IS_ASSIGNED ((int64_t) 1 << 40)
+#define AU_TRAIT_IS_EXPORT   ((int64_t) 1 << 41)
 
 typedef bool(*global_init_fn)();
 
@@ -185,6 +186,7 @@ typedef struct _Au_t {
             u64 is_prepared  : 1;
             u64 is_au        : 1;
             u64 is_assigned  : 1;
+            u64 is_export    : 1;
         };
         u64 traits;
     };
