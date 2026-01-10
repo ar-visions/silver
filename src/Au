@@ -1718,6 +1718,7 @@ none set_meta_map(Au_t type, int count, ...);
 none array_init(array);
 
 Au_t au_arg(Au a);
+Au_t au_arg_type(Au a);
 
 #define weak_schema(X,Y,...)
 declare_abstract(weak)
