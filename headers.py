@@ -8,8 +8,11 @@ import subprocess
 import argparse
 from graph import parse_g_file, get_env_vars
 
+os.system("beep")
+
 project_path = ''
 project = ''
+cache_file = ''
 
 def setup_paths(env_vars):
     """Setup and validate paths"""
@@ -52,7 +55,7 @@ def write_import_header(module, paths, env_vars):
         imports = ["Au"]
     else:
         if os.path.isfile(graph_file):
-            graph_nodes, _, _, _, _ = parse_g_file(graph_file)
+            _, graph_nodes, _, _, _, _ = parse_g_file(graph_file)
             imports = [module] + graph_nodes
         else:
             imports = ["Au", module]
@@ -144,13 +147,13 @@ def generate_init_header(module, header_file, init_header):
     umodule = module.upper().replace('-', '_')
     
     with open(init_header, 'w') as f:
-        f.write("/* generated methods interface */\n")
+        f.write("/* generated init interface - 2 */\n")
         f.write(f"#ifndef _{umodule}_INIT_H_\n")
         f.write(f"#define _{umodule}_INIT_H_\n")
         f.write("\n")
         
         # Process class declarations
-        class_pattern = r'declare_(class|class_2|class_3|class_4|vector)\s*\(\s*([^,)]*)'
+        class_pattern = r'declare_(class|class_2|class_3|class_4|vector|abstract)\s*\(\s*([^,)]*)'
         matches = find_declarations(header_file, class_pattern)
         
         for match in matches:
@@ -158,6 +161,10 @@ def generate_init_header(module, header_file, init_header):
             class_name = class_name.strip()
             
             if not class_name:
+                continue
+
+            if decl_type in ["abstract"]:
+                f.write(f"// found abstract: {decl_type}\n")
                 continue
             
             # Generate TC macro
@@ -344,7 +351,7 @@ def generate_intern_header(module, header_file, intern_header):
         f.write("\n")
         
         # Process class types (not struct)
-        for class_type in ["class", "class_2", "class_3", "class_4"]:
+        for class_type in ["class", "class_2", "class_3", "class_4", "abstract"]:
             pattern = f'declare_{class_type}\\s*\\(\\s*([^,)]*)'
             matches = find_declarations(header_file, pattern)
             
@@ -365,7 +372,7 @@ def process_modules(paths):
     
     # Find modules from both extensionless files and .g files
     module_names = find_modules_for_headers(src_directive)
-    
+
     for module in module_names:
         umodule = module.upper().replace('-', '_')
         
@@ -401,21 +408,32 @@ def process_modules(paths):
         umodule = module.upper().replace('-', '_')
         
         # Generate headers if needed (we need to also check against headers.py modification time)
-        if (not os.path.exists(init_header) or 
-            os.path.getmtime(str(source_file)) > os.path.getmtime(init_header)):
-            generate_init_header(module, str(source_file), init_header)
+        generate_init_header(module, str(source_file), init_header)
         
-        if (not os.path.exists(methods_header) or 
-            os.path.getmtime(str(source_file)) > os.path.getmtime(methods_header)):
-            generate_methods_header(module, str(source_file), methods_header)
+        generate_methods_header(module, str(source_file), methods_header)
         
-        if (not os.path.exists(public_header) or 
-            os.path.getmtime(str(source_file)) > os.path.getmtime(public_header)):
-            generate_public_header(module, str(source_file), public_header)
+        generate_public_header(module, str(source_file), public_header)
         
         #if (not os.path.exists(intern_header) or 
         #    os.path.getmtime(str(source_file)) > os.path.getmtime(intern_header)):
         generate_intern_header(module, str(source_file), intern_header)
+
+        # Check for .g file and get install headers
+        graph_file = Path(src_directive) / f"{module}.g"
+        if graph_file.exists():
+            install_headers, deps, links, cflags, target, imports = parse_g_file(graph_file)
+            
+            # Symlink install headers into the module's generated directory
+            module_gen_dir = os.path.join(gen_dir, module)
+            os.makedirs(module_gen_dir, exist_ok=True)
+            
+            for h_name in install_headers:
+                h_src = Path(src_directive) / h_name
+                h_dest = os.path.join(module_gen_dir, h_name)
+                if h_src.exists():
+                    if os.path.lexists(h_dest):
+                        os.remove(h_dest)
+                    os.symlink(str(h_src), h_dest)
 
 def handle_src_directive(paths, env_vars):
     """Handle src directive symlink creation"""
@@ -451,6 +469,8 @@ def main():
     """Main function"""
     env_vars = get_env_vars()
     global project
+    global cache_file
+    cache_file = env_vars['CACHE_FILE']
     project = env_vars['PROJECT_NAME']
     paths = setup_paths(env_vars)
     # Process utility headers (.h files)

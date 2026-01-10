@@ -28,6 +28,7 @@ def get_env_vars():
     """Get required variables from command line arguments"""
     parser = argparse.ArgumentParser(description='Generate header files')
     parser.add_argument('--project-path',   required=True, help='Project root path')
+    parser.add_argument('--cache-file',     required=False, help='Cache identifier (if exists, the job has previously run)')
     parser.add_argument('--build-path',     required=True, help='Build output path')
     parser.add_argument('--project-name',   required=True, help='Project name')
     parser.add_argument('--import',         required=True, help='Import path')
@@ -43,6 +44,7 @@ def get_env_vars():
         'SILVER':       Path(__file__).resolve().parent,
         'PROJECT_PATH': args.project_path,
         'PROJECT_NAME': args.project_name,
+        'CACHE_FILE':   args.cache_file,
         'DIRECTIVE':    'src',
         'BUILD_PATH':   args.build_path,
         'SDK':          args.sdk,
@@ -72,10 +74,11 @@ def expand_vars(s):
 def parse_g_file(path):
     """parse .g file for deps, link flags, target type, and imports"""
     if not os.path.exists(path):
-        return [], [], [], None, []
+        return [], [], [], [], None, []
 
     domain, owner, _ = git_remote_info(path)
 
+    install_headers = []
     lines = open(path).read().splitlines()
     deps, links, cflags, target, imports = [], [], [], None, []
     current_key = None
@@ -95,6 +98,9 @@ def parse_g_file(path):
             if current_key == "type":
                 target = val
 
+            elif current_key == "install":
+                install_headers.extend(val.split())
+            
             elif current_key == "modules":
                 deps.extend(val.split())
 
@@ -149,4 +155,4 @@ def parse_g_file(path):
 
         i += 1
 
-    return deps, links, cflags, target, imports
+    return install_headers, deps, links, cflags, target, imports

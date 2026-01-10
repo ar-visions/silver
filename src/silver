@@ -31,6 +31,7 @@
     M(X, Y, i, method, public,     bool,           next_is_alpha) \
     M(X, Y, i, method, public,     bool,           next_indent) \
     M(X, Y, i, method, public,     enode,          read_enode, etype) \
+    M(X, Y, i, method, public,     enode,          parse_member) \
     M(X, Y, i, method, public,     enode,          parse_ternary, enode, etype) \
     M(X, Y, i, method, public,     enode,          parse_assignment, enode, string) \
     M(X, Y, i, method, public,     token,          read_if, symbol) \

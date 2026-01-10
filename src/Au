@@ -792,6 +792,9 @@ declare_abstract(ref)
 #define imported_schema(X,Y,...)
 declare_abstract(imported)
 
+#define app_schema(X,Y,...)
+declare_class(app, Au)
+
 #define ARef_schema(X,Y,...)        ref_schema(X,Y,...)
 #define i8_schema(X,Y,...)          numeric_schema(numeric,Y,...)
 #define i16_schema(X,Y,...)         numeric_schema(numeric,Y,...)
@@ -1706,6 +1709,7 @@ vector_rgb8  vector_rgb8_new (shape count, ...);
 vector_rgbf  vector_rgbf_new (shape count, ...);
 
 
+cstr cstr_copy(cstr f);
 
 none set_meta_array(Au_t type, int count, ...);
 none set_args_array(Au_t type, int count, ...);
