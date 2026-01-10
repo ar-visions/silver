@@ -2,17 +2,15 @@ import <stdio.h>
 
 class something
     i64  mem = 4
-    u64  outside [ i32 an_arg2 ]
-    none action  [ i32 an_arg, i64 another, string mem ]
-        puts[ 'something is equal to {mem}' ]
     none action2  [ string mem2 ]
         puts[ 'something is equal to {mem2}' ]
-	none init []
-        printf[ "printing in init\n" ]
 
 class aclass of app
-    f32 member = 9.2
-    f64 aconst = 1.4
+    i8  member1 = 9
+    i16 member2 = 92
+    u32 member3 = 92
+    f32 member4 = 9.2
+    f64 aconst  = 1.4
 
 	none init []
         something s = [mem: 8]

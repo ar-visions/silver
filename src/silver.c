@@ -1167,14 +1167,18 @@ enode parse_for(silver a);
 enode parse_loop_while(silver a);
 enode parse_if_else(silver a);
 enode parse_ifdef_else(silver a);
-
 static enode typed_expr(silver mod, enode n, array expr);
-
 i32 read_enum(silver a, i32 def, Au_t etype);
-
 enode parse_func(silver a, etype rtype, string ident, u8 member_type, u32 traits, OPType assign_enum);
-
 etype etype_resolve(etype t);
+enode enode_value(enode mem);
+
+bool is_loaded(Au n) {
+    Au_t i = isa(n);
+    if (i == typeid(etype)) return false;
+    enode node = (enode)n;
+    return node->loaded;
+}
 
 enode silver_parse_member(silver a) {
     Au_t   top     = top_scope(a);
@@ -1188,7 +1192,6 @@ enode silver_parse_member(silver a) {
     string alpha              = null;
     int    depth              = 0;
     bool   skip_member_check  = false;
-    bool   loaded             = false;
 
     if (module) {
         string alpha = peek_alpha(a);
@@ -1210,6 +1213,9 @@ enode silver_parse_member(silver a) {
         if (!alpha) {
             validate(mem == null, "expected alpha ident after .");
             break;
+        }
+        if (alpha && eq(alpha, "puts")) {
+            alpha = alpha;
         }
 
         /// Namespace resolution (only on first iteration)
@@ -1247,8 +1253,9 @@ enode silver_parse_member(silver a) {
                         Au_t target_isa = isa(f->target);
                         enode target_node = f->target;
                         mem = access(f->target, alpha);
-                    } else
+                    } else {
                         mem = (enode)elookup(alpha->chars);
+                    }
                     
                     /*
                     etype ftarg = etype_resolve((etype)f->target);
@@ -1268,33 +1275,37 @@ enode silver_parse_member(silver a) {
                 }
                 validate(mem, "identifier not found: %o", alpha);
                 
-            } else {
+            } else if (instanceof(mem, enode) && !is_loaded((Au)mem)) {
                 // Subsequent iterations - access from previous member
                 verify(mem && mem->au, "cannot resolve from null member");
                 
                 // Load previous member to traverse into it
                 enode prop = e_load(a, mem, null);
                 mem = access(prop, alpha);
-                loaded = false;
+            } else {
+                mem = access(mem, alpha);
             }
 
             /// Handle macros and function calls
             if (instanceof(mem, macro) || is_func((Au)mem)) {
+                print_tokens(a, "parsing member expr");
                 mem = parse_member_expr(a, mem);
-                loaded = true; // should be all cases in there
             }
         }
 
         /// Check if there's more chaining
         bool br = read_if(a, ".") == null;
-        if (!loaded && isa(mem) != typeid(etype)) {
-            // End of chain - final load if needed
-            Au_t isa_type = isa(mem);
-            mem = isa_type == typeid(evar) ? mem : e_load(a, mem, null);
-            loaded = true;
-        }
-        if (br)
+        if (br) {
+            if (a->in_ref) {
+                break;
+            }
+            // final load if needed
+            if (instanceof(mem, enode) && !is_loaded((Au)mem)) {
+                Au_t isa_type = isa(mem);
+                mem = enode_value(mem);
+            }
             break;
+        }
         
         // More chaining - push context for next iteration
         validate(!is_func((Au)mem), "cannot resolve into function");
@@ -1474,10 +1485,10 @@ enode parse_statement(silver a) {
 
     if (module && peek_def(a)) return (enode)read_def(a);
 
-    push_current(a);
-
     // important to not try to fetch member for global and class records; this is not arbitrary operational space
     enode mem = !module && !is_rec(top) ? parse_member(a) : null;
+
+    push_current(a);
 
     interface access    = !mem ? read_enum(a, interface_undefined, typeid(interface)) : interface_undefined;
     bool      is_static = !mem ? silver_read_if(a, "static") != null : false;
@@ -1674,7 +1685,7 @@ enode parse_func(silver a, etype rtype, string ident, u8 member_type, u32 traits
         Au_t rec    = is_rec(top);
         verify(rec, "cannot parse IMETHOD without record in scope");
         Au_t au_arg = def(au, "a", AU_MEMBER_VAR, 0);
-        au_arg->src = pointer((aether)a, (Au)rec)->au;
+        au_arg->src = is_struct(rec) ? pointer((aether)a, (Au)rec)->au : rec;
         array_qpush((array)&au->args, (Au)au_arg);
     }
 
@@ -2439,10 +2450,10 @@ static enode typed_expr(silver a, enode f, array expr) {
     
     // function calls
     if (is_func((Au)f)) {
-        f = (enode)f->au->user;
-        array   m      = (array)&f->au->args;
+        enode   f_decl = (enode)f->au->user;
+        array   m      = (array)&f_decl->au->args;
         int     ln     = m->count, i = 0;
-        array   values = array(alloc, 32);
+        array   values = array(alloc, 32, assorted, true);
         enode   target = null;
         i32     offset = 0;
 
@@ -2450,9 +2461,10 @@ static enode typed_expr(silver a, enode f, array expr) {
             verify(f->target, "expected target for method call");
             push(values, (Au)f->target);
             offset = 1;
+            verify(f_decl->target, "no target specified on target %o", f_decl);
         }
 
-        while (i + offset < ln || f->au->is_vargs) {
+        while (i + offset < ln || f_decl->au->is_vargs) {
             Au_t   arg  = (Au_t)array_get(m, i + offset);
             etype  typ  = canonical(arg->user);
             enode  expr = parse_expression(a, typ); // self contained for '{interp}' to cstr!
@@ -2467,7 +2479,7 @@ static enode typed_expr(silver a, enode f, array expr) {
         }
 
         pop_tokens(a, expr ? false : true);
-        return e_fn_call(a, f, values);
+        return e_fn_call(a, f_decl, values);
     }
     
     // this is only suitable if reading a literal constitutes the token stack
@@ -3144,9 +3156,17 @@ static void build_record(silver a, etype mrec) {
     array body = rec->body ? (array)rec->body : array();
     push_tokens(a, (tokens)body, 0);
     push_scope(a, (Au)mrec);
+    int index = 0;
     while (silver_peek(a)) {
         print_tokens(a, "parse-statement");
-        parse_statement(a);
+        enode n = parse_statement(a);
+        if (instanceof(n, evar)) {
+            evar mem = (evar)n;
+            if (mem->au->member_type == AU_MEMBER_VAR) {
+                verify(mem->au->index == 0, "unexpected member-index");
+                mem->au->index = index++;
+            }
+        }
     }
     pop_tokens(a, false);   
     rec->parsing = false;
@@ -3265,7 +3285,14 @@ enode parse_map(silver a, etype mdl_schema) {
 
     if (!key) key       = elookup("string");
     if (!val) val       = elookup("Au");
-    enode     rmap      = e_create(a, mdl_schema, null);
+
+    Au_t  Au_type      = au_lookup("Au");
+    etype f_alloc      = find_member(Au_type, "alloc_new", AU_MEMBER_FUNC, false)->user;
+    etype f_initialize = find_member(Au_type, "initialize", AU_MEMBER_FUNC, false)->user;
+
+    enode metas_node = e_meta_ids(a, mdl_schema->meta);
+    enode rmap = e_fn_call(a, (enode)f_alloc, a( e_typeid(a, mdl_schema), _i32(1), metas_node ));
+    rmap->au = mdl_schema->au; // we need a general cast method that does not call function
 
     static Au_t sprop; if (!sprop) sprop = find_member(au_lookup("Au"),  "set_property", AU_MEMBER_FUNC, true);
     static Au_t msetv; if (!msetv) msetv = find_member(au_lookup("map"), "set",          AU_MEMBER_FUNC, true);
@@ -3311,6 +3338,7 @@ enode parse_map(silver a, etype mdl_schema) {
                 e_fn_call(a, (enode)msetv->user, a(rmap, k, value));
         }
     }
+    e_fn_call(a, (enode)f_initialize, a(rmap));
     return rmap;
 }
 
@@ -3398,6 +3426,7 @@ enode silver_parse_member_expr(silver a, enode mem) {
     } else if (mem) {
         if (is_func((Au)mem) || is_type((Au)mem)) {
             array expr = read_within(a);
+            inspect(mem);
             mem = typed_expr(a, mem, expr); // this, is the construct
         }
     }

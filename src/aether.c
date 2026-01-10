@@ -20,25 +20,25 @@ typedef LLVMMetadataRef LLVMScope;
 #define int_value(b,l) \
     enode(mod, a, \
         literal, l, au, au_lookup(stringify(i##b)), \
-        value, LLVMConstInt(lltype(au_lookup(stringify(i##b))), *(i##b*)l, 0))
+        loaded, true, value, LLVMConstInt(lltype(au_lookup(stringify(i##b))), *(i##b*)l, 0))
 
 #define uint_value(b,l) \
     enode(mod, a, \
         literal, l, au, au_lookup(stringify(u##b)), \
-        value, LLVMConstInt(lltype(au_lookup(stringify(u##b))), *(u##b*)l, 0))
+        loaded, true, value, LLVMConstInt(lltype(au_lookup(stringify(u##b))), *(u##b*)l, 0))
 
 #define f32_value(b,l) \
     enode(mod, a, \
         literal, l, au, au_lookup(stringify(f##b)), \
-        value, LLVMConstReal(lltype(au_lookup(stringify(f##b))), *(f##b*)l))
+        loaded, true, value, LLVMConstReal(lltype(au_lookup(stringify(f##b))), *(f##b*)l))
 
 #define f64_value(b,l) \
     enode(mod, a, \
         literal, l, au, au_lookup(stringify(f##b)), \
-        value, LLVMConstReal(lltype(au_lookup(stringify(f##b))), *(f##b*)l))
+        loaded, true, value, LLVMConstReal(lltype(au_lookup(stringify(f##b))), *(f##b*)l))
 
     
-#define value(m,vr) enode(mod, a, value, vr, au, m->au)
+#define value(m,vr) enode(mod, a, value, vr, au, m->au, loaded, true)
 
 typedef struct tokens_data {
     array tokens;
@@ -47,6 +47,28 @@ typedef struct tokens_data {
 
 none bp() {
     return;
+}
+
+LLVMTypeRef _lltype(Au a);
+#define lltype(a) _lltype((Au)(a))
+
+enode enode_value(enode mem) {
+    if (!mem->loaded) {
+        aether a = mem->mod;
+        a->is_const_op = false;
+        if (a->no_build) return e_noop(a, (etype)mem);
+        
+        static int seq = 0;
+        seq++;
+        string id = f(string, "load2_%i", seq);
+        Au info = head(mem);
+        LLVMValueRef loaded = LLVMBuildLoad2(
+            a->builder, lltype(mem->au), mem->value, id->chars);
+        enode  res = enode(mod, a, value, loaded, loaded, true, au, mem->au);
+        return res;
+    } else {
+        return mem;
+    }
 }
 
 
@@ -141,9 +163,6 @@ static int ref_level(Au t) {
     }
     return level;
 }
-
-LLVMTypeRef _lltype(Au a);
-#define lltype(a) _lltype((Au)(a))
 
 etype etype_traits(Au a, int traits) {
     Au_t au;
@@ -695,6 +714,9 @@ enode e_operand_primitive(aether a, Au op) {
 
 
 enode aether_e_operand(aether a, Au op, etype src_model) {
+    if (instanceof(op, enode)) {
+        op = (Au)enode_value((enode)op);
+    }
     if (!op) {
         if (is_ptr(src_model))
             return e_null(a, src_model);
@@ -836,7 +858,7 @@ static etype func_target(etype fn) {
 // often we have either a struct or a class* 
 // and we want to ensure a pointer to either one, in-order to make a target
 static etype ensure_pointer(etype t) {
-    if (!t || t->au->is_pointer) return t;
+    if (!t || t->au->is_pointer || t->au->is_class) return t;
     return etype_ptr(t->mod, t->au);
 }
 
@@ -882,20 +904,33 @@ etype evar_type(evar a) {
 
 bool inherits(Au_t src, Au_t check);
 
+none enode_inspect(enode a) {
+    int test2 = 2;
+    test2    += 2;
+}
+
 enode aether_e_fn_call(aether a, enode fn, array args) {
     if (!fn->used)
          fn->used = true;
     
+    Au_t au = fn->au;
+    if (au->ident && strcmp(au->ident, "action2") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
+
     a->is_const_op = false; 
     if (a->no_build) return e_noop(a, fn->au->rtype->user);
 
     etype_implement((etype)fn);
+
     Au    arg0             = args ? get(args, 0) : null;
+    Au_t  type0 = isa(arg0);
     enode first_arg        = arg0 ? e_operand(a, arg0, null) : null;
     etype user_target_type = first_arg ? evar_type((evar)first_arg) : null;
     etype target_type      = fn->target ? (etype)fn->target : (etype)null;
     enode f                = len(args) ? (enode)user_target_type : null;
-    bool  is_Au            = !target_type || inherits(target_type->au, typeid(Au));
+    bool  is_Au            = !target_type || inherits(au_arg_type((Au)target_type->au), typeid(Au));
 
     static int seq = 0;
     seq++;
@@ -920,7 +955,7 @@ enode aether_e_fn_call(aether a, enode fn, array args) {
         if (au_type->member_type == AU_MEMBER_VAR) au_type = au_type->src;
 
         etype cast_to = ensure_pointer(au_type->user);
-        arg_values[index++] = e_create(a, cast_to, (Au)f)->value;
+        arg_values[index++] = e_create(a, cast_to, (Au)first_arg)->value;
     }
 
     int fmt_idx = -1;
@@ -996,7 +1031,7 @@ enode aether_e_fn_call(aether a, enode fn, array args) {
     sprintf(call_seq, "call_%i", seq2);
     LLVMValueRef R = LLVMBuildCall2(a->builder, F, V, arg_values, index, is_void_ ? "" : call_seq);
     free(arg_values);
-    return enode(mod, a, au, fn->au->rtype, value, R); //value(fn->au->rtype, R);
+    return enode(mod, a, au, fn->au->rtype, loaded, true, value, R); //value(fn->au->rtype, R);
 }
 
 static bool is_same(Au a, Au b) {
@@ -1217,12 +1252,19 @@ enode enode_access(enode target, string name) {
 
     Au_t ptr = pointer(a, (Au)m)->au;
 
+    static int seq = 0;
+    seq++;
+    if (seq == 83) {
+        seq = seq;
+    }
+    string id = f(string, "enode_access_%i", seq);
+
     return enode(
         mod,    a,
         au,     ptr,
         value,  LLVMBuildStructGEP2(
             a->builder, t->au->lltype, target->value,
-            m->index, "enode_access"));
+            m->index, id->chars));
 }
 
 bool is_au_compatible(etype t) {
@@ -1326,7 +1368,7 @@ enode aether_e_create(aether a, etype t, Au args) {
         
         static int seq = 0;
         seq++;
-        if (seq == 72) {
+        if (seq == 168) {
             seq = seq;
         }
         enode fmem = convertible((etype)input, t);
@@ -2175,8 +2217,11 @@ enode aether_e_load(aether a, enode mem, enode target) {
     LLVMValueRef ptr = mem->value;
     verify(is_ptr(mem), "expected pointer to load from, given %o", mem);
     
+    static int seq = 0;
+    seq++;
+    string id = f(string, "eload_%i", seq);
     LLVMValueRef loaded = LLVMBuildLoad2(
-        a->builder, lltype(resolve), mem->value, "load");
+        a->builder, lltype(resolve), mem->value, id->chars);
     enode r = enode(mod, a, value, loaded, au, resolve->au);
     return r;
 }
@@ -2444,7 +2489,8 @@ static void build_entrypoint(aether a, etype module_init_fn) {
     push_scope(a, (Au)main_fn);
     e_fn_call(a, (enode)module_init_fn, null);
     enode Au_engage = (enode)find_member(au_lookup("Au"), "engage", AU_MEMBER_FUNC, false)->user; // this is only for setting up logging now, and we should likely emit it after the global construction, and before the user initializers
-    e_fn_call(a, (enode)Au_engage, a(argv));
+    verify(argv->user != null, "baffled");
+    e_fn_call(a, (enode)Au_engage, a(argv->user));
     e_create(a, main_class, (Au)map()); // a loop would be nice, since none of our members will be ref+1'd yet
     e_fn_return(a, _i32(0));
 
@@ -2794,6 +2840,11 @@ none etype_implement(etype t) {
     Au_t    au = t->au;
     aether a  = t->mod;
 
+    if (au->ident && strcmp(au->ident, "initialize") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
+    
     if (au && au->ident && strcmp(au->ident, "string") == 0) {
         int test2 = 2;
         test2    += 2;
@@ -2825,18 +2876,23 @@ none etype_implement(etype t) {
             if (!a->is_Au_import) {
                 LLVMSetInitializer(G, LLVMConstNull(ty)); // or a real initializer
             }
+            n->loaded = false;
             n->value = G; // it probably makes more sense to keep llvalue on the node
         } else if (!is_func(au->context)) {
             // we likely need to check to see if our context is a function
             verify(!n->value, "unexpected value set in enode");
+            n->loaded = false;
             n->value = LLVMBuildAlloca(a->builder, ty, "evar");
+        } else if (is_func(au->context)) {
+            verify(n->value, "expected evar to be set for arg");
+            verify(isa(t) == typeid(evar), "expected evar instance for arg");
+            n->loaded = true;
         }
         return;
 
     }
 
     if (!t->au->is_pointer && (is_rec(t) || au->is_union)) {
-
         array cl = (au->is_union || is_struct(t)) ? a(t) : etype_class_list(t);
         int count = 0;
         int index = 0;
@@ -2859,8 +2915,13 @@ none etype_implement(etype t) {
         int ilargest = 0;
         each(cl, etype, tt) {
             //if (len(cl) > 1 && tt->au == typeid(Au)) break;
+            int prop_index = 0;
             for (int i = 0; i < tt->au->members.count; i++) {
                 Au_t m = (Au_t)tt->au->members.origin[i];
+                if (m->member_type == AU_MEMBER_VAR) {
+                    //verify(m->index == 0, "expected 0 for member-index");
+                    //m->index = prop_index++;
+                }
                 if (m->member_type == AU_MEMBER_FUNC      || 
                     m->member_type == AU_MEMBER_CONSTRUCT || 
                     m->member_type == AU_MEMBER_INDEX     || 
@@ -2917,14 +2978,7 @@ none etype_implement(etype t) {
             count = 1;
             members[0] = largest;
         }
-
-        printf("setting struct body on %s\n", LLVMPrintTypeToString(au->lltype));
         LLVMStructSetBody(au->lltype, members, count, 1);
-        printf("setting struct body on %s\n", LLVMPrintTypeToString(au->lltype));
-        if (au->ident && strstr(au->ident, "something")) {
-            au = au;
-        }
-        printf("setting struct body on %s\n", LLVMPrintTypeToString(au->lltype));
 
     } else if (is_enum(t)) {
         Au_t et = au->src;
@@ -2981,8 +3035,11 @@ none etype_implement(etype t) {
         //    f(string, "%s_%s", t->au->context->ident, t->au->ident) : string(t->au->ident);
         cstr n = t->au->alt ? t->au->alt : t->au->ident;
         verify(n, "no name given to function");
-
+        if (n && strcmp(n, "initialize") == 0) {
+            n = n;
+        }
         enode fn = (enode)t;
+
         // functions, on init, create the arg enodes from the model data
 
         // make sure the types are ready for use
@@ -3351,14 +3408,14 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
 
     LLVMDumpModule(a->module);
 
+    if (LLVMPrintModuleToFile(a->module, cstring(*ll), &err))
+        fault("LLVMPrintModuleToFile failed");
+
     if (LLVMVerifyModule(a->module, LLVMReturnStatusAction, &err)) {
         fprintf(stderr, "LLVM verify failed:\n%s\n", err);
         LLVMDisposeMessage(err);
         abort();
     }
-
-    if (LLVMPrintModuleToFile(a->module, cstring(*ll), &err))
-        fault("LLVMPrintModuleToFile failed");
 
     if (LLVMVerifyModule(a->module, LLVMPrintMessageAction, &err))
         fault("error verifying module");

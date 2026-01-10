@@ -205,11 +205,13 @@ forward(evar)
     M(X,Y, i, prop, public,   u8,               arg_index) \
     M(X,Y, i, prop, public,   bool,             used) \
     M(X,Y, i, prop, public,   tokens,           initializer) \
+    M(X,Y, i, prop, public,   bool,             loaded) \
     M(X,Y, i, prop, intern,   LLVMMetadataRef,  last_dbg, as, ARef) \
     M(X,Y, i, prop, intern,   LLVMValueRef,     value, as, ARef) \
     M(X,Y, i, prop, intern,   LLVMBasicBlockRef, entry,  as, ARef) \
     M(X,Y, i, method, public, enode,            access, string) \
     M(X,Y, i, method, public, none,             release) \
+    M(X,Y, i, method, public, none,             inspect) \
     M(X,Y, i, override, cast,                   Au_t) \
     M(X,Y, i, override, method,                 init) \
     M(X,Y, i, override, method,                 dealloc)
