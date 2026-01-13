@@ -2861,6 +2861,8 @@ void silver_build_initializer(silver a, enode t) {
             a->expr_level++;
             push_tokens(a, (tokens)post_const, 0);
             // we store the meta field on the var entry, not the var's src type
+            etype meta_arg0 = (etype)array_get(t->meta, 0);
+            shape meta_arg1 = (shape)array_get(t->meta, 1);
             etype recombine = etype(mod, (aether)a, meta, t->meta, au, t->au->src);
             expr = (Au)parse_expression(a, (etype)recombine); // we have tokens for the name pushed to the stack
             pop_tokens(a, false);
@@ -3331,8 +3333,8 @@ enode parse_map(silver a, etype mdl) {
     validate(!is_mdl_map || is_fields, "expected fields for map");
 
     if (is_ptr(mdl) && is_struct(mdl->au->src)) {
-        was_ptr    = true;
-        mdl = resolve(mdl);
+        was_ptr = true;
+        mdl     = resolve(mdl);
     }
     
     etype   key         = is_mdl_map ? (etype)array_get((array)&mdl->au->meta, 0) : null;
@@ -3341,9 +3343,9 @@ enode parse_map(silver a, etype mdl) {
     if (!key) key       = elookup("string");
     if (!val) val       = elookup("Au");
 
-    Au_t  Au_type      = au_lookup("Au");
-    etype f_alloc      = find_member(Au_type, "alloc_new", AU_MEMBER_FUNC, false)->user;
-    etype f_initialize = find_member(Au_type, "initialize", AU_MEMBER_FUNC, false)->user;
+    Au_t  Au_type       = au_lookup("Au");
+    etype f_alloc       = find_member(Au_type, "alloc_new", AU_MEMBER_FUNC, false)->user;
+    etype f_initialize  = find_member(Au_type, "initialize", AU_MEMBER_FUNC, false)->user;
 
     enode metas_node = e_meta_ids(a, mdl->meta);
     enode rmap = e_fn_call(a, (enode)f_alloc, a( e_typeid(a, mdl), _i32(1), metas_node ));
@@ -3351,21 +3353,31 @@ enode parse_map(silver a, etype mdl) {
 
     static Au_t sprop; if (!sprop) sprop = find_member(typeid(Au),  "set_property", AU_MEMBER_FUNC, true);
     static Au_t msetv; if (!msetv) msetv = find_member(typeid(map), "set",          AU_MEMBER_FUNC, true);
-    static Au_t apush; if (!apush) apush = find_member(typeid(array), "push",       AU_MEMBER_FUNC, true);
+    static Au_t apush; if (!apush) apush = find_member(typeid(collective), "push",  AU_MEMBER_FUNC, true);
 
     int iter = 0;
+    
+    shape s = is_mdl_collective ? instanceof(array_get(mdl->meta, 1), shape) : null;
+    int   shape_stride = (s && s->count > 1) ? s->data[s->count - 1] : 0;
+
     while (silver_peek(a)) {
+        if (next_is(a, "]"))
+            break;
+        
         Au    k = null;
         token t = peek(a);
         bool is_literal = instanceof(t->literal, string) != null;
         bool is_enode_key = false;
+
+        print_tokens(a, "during parse-map");
 
         if (is_fields && silver_read_if(a, "{")) {
             k = (Au)parse_expression(a, key); 
             validate(silver_read_if(a, "}"), "expected }");
             is_enode_key = true;
         } else if (!is_fields && is_mdl_collective) {
-            k = (Au)parse_expression(a, key);
+            etype e = (etype)array_get(mdl->meta, 0);
+            k = (Au)parse_expression(a, e);
         } else if (!is_mdl_map) {
             string name = (string)read_alpha(a);
             validate(name, "expected member identifier");
@@ -3419,6 +3431,13 @@ enode parse_map(silver a, etype mdl) {
                 fault("type %o not compatible with array initialization", mdl);
             }
         }
+        token comma = read_if(a, ",");
+        
+        if (shape_stride != 0) {
+            verify( comma && (iter % shape_stride == 0), "expected comma");
+            verify(!comma || (iter % shape_stride != 0), "unexpected comma");
+        }
+
         iter++;
     }
     e_fn_call(a, (enode)f_initialize, a(rmap));

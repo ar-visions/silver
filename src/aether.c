@@ -791,11 +791,13 @@ enode aether_e_meta_ids(aether a, array meta) {
             n = e_typeid(a, (etype)m);
         else if (instanceof(m, shape)) {
             shape s = (shape)m;
-            array ar = array(alloc, s->count, unmanaged, true);
-            push_vdata(ar, (Au)s->data, s->count, typeid(i64));
-            n = e_create(a, typeid(shape)->user,
-                (Au)m("count", s->count,
-                  "data",  (e_const_array(a, elookup("i64"), ar))));
+            array ar = array(alloc, s->count);
+            for (int ii = 0; ii < s->count; ii++)
+                push(ar, _i64(s->data[ii]));
+            n = e_create(a, typeid(shape)->user, (Au)m(
+                "count", _i64(s->count),
+                "data",  e_const_array(a, typeid(i64)->user, ar)
+            ));
         } else {
             verify(false, "unsupported design-time meta type");
         }
@@ -812,9 +814,8 @@ enode aether_e_meta_ids(aether a, array meta) {
     LLVMSetLinkage(G, LLVMInternalLinkage);
     LLVMSetGlobalConstant(G, 1);
     LLVMSetInitializer(G, arr_init);
-
-    enode arr_node = enode(mod, a, loaded, false, value, G, au, atype);
-    return e_addr_of(a, arr_node, atype->user);
+ 
+    return enode(mod, a, loaded, true, value, G, au, etype_ptr(a, atype)->au);
 }
 
 enode aether_e_not_eq(aether a, enode L, enode R) {
@@ -1396,7 +1397,7 @@ enode aether_e_create(aether a, etype t, Au args) {
         
         static int seq = 0;
         seq++;
-        if (seq == 18) {
+        if (seq == 26) {
             seq = seq;
         }
         enode fmem = convertible((etype)input, t);

@@ -1231,34 +1231,34 @@ declare_enum(interface)
 declare_enum(comparison)
 
 #define array_schema(AA,BB,O,...) \
-    M(AA,BB, s, vargs,  public, array,  array_of,      Au) \
-    M(AA,BB, s, vargs,  public, array,  array_of_cstr, cstr) \
-    M(AA,BB, i, method, public, array,  mix, array, f32) \
-    M(AA,BB, i, method, public, Au,     first_element) \
-    M(AA,BB, i, method, public, Au,     last_element) \
-    M(AA,BB, i, method, public, Au,     pop) \
-    M(AA,BB, i, method, public, array,  shift) \
-    M(AA,BB, i, method, public, Au,     qpush, Au) \
-    M(AA,BB, i, method, public, string, join, cstr) \
-    M(AA,BB, i, method, public, none,   fill, Au) \
-    M(AA,BB, i, method, public, array,  reverse) \
-    M(AA,BB, i, method, public, none,   remove, num) \
-    M(AA,BB, i, method, public, none,   remove_weak, num) \
-    M(AA,BB, i, override, method, push) \
-    M(AA,BB, i, method, public, none,   push_vdata, Au, i64, Au_t) \
-    M(AA,BB, i, method, public, none,   push_weak, Au) \
-    M(AA,BB, i, method, public, none,   clear) \
-    M(AA,BB, i, method, public, none,   concat, array) \
-    M(AA,BB, i, method, public, Au,     get, num) \
-    M(AA,BB, i, method, public, num,    count) \
-    M(AA,BB, i, method, public, num,    index_of, Au) \
-    M(AA,BB, i, operator, public, none, _assign_add, Au) \
-    M(AA,BB, i, operator, public, none, _assign_sub, num) \
+    M(AA,BB, i, method,   public, array,  mix,           array, f32) \
+    M(AA,BB, i, method,   public, Au,     first_element) \
+    M(AA,BB, i, method,   public, Au,     last_element) \
+    M(AA,BB, i, method,   public, Au,     pop) \
+    M(AA,BB, i, method,   public, array,  shift) \
+    M(AA,BB, i, method,   public, Au,     qpush,         Au) \
+    M(AA,BB, i, method,   public, string, join,          cstr) \
+    M(AA,BB, i, method,   public, none,   fill,          Au) \
+    M(AA,BB, i, method,   public, array,  reverse) \
+    M(AA,BB, i, method,   public, none,   remove,        num) \
+    M(AA,BB, i, method,   public, none,   remove_weak,   num) \
+    M(AA,BB, i, method,   public, none,   push_vdata,    Au, i64, Au_t) \
+    M(AA,BB, i, method,   public, none,   push_weak,     Au) \
+    M(AA,BB, i, method,   public, none,   clear) \
+    M(AA,BB, i, method,   public, none,   concat,        array) \
+    M(AA,BB, i, method,   public, Au,     get,           num) \
+    M(AA,BB, i, method,   public, num,    count) \
+    M(AA,BB, i, method,   public, num,    index_of,      Au) \
+    M(AA,BB, s, vargs,    public, array,  array_of,      Au) \
+    M(AA,BB, s, vargs,    public, array,  array_of_cstr, cstr) \
+    M(AA,BB, i, vargs,    public, none,   push_symbols,  cstr) \
+    M(AA,BB, i, vargs,    public, none,   push_objects,  Au) \
+    M(AA,BB, i, operator, public, none,  _assign_add,    Au) \
+    M(AA,BB, i, operator, public, none,  _assign_sub,    num) \
     M(AA,BB, i, cast,     public, map) \
-    M(AA,BB, i, vargs,    public, none, push_symbols, cstr) \
-    M(AA,BB, i, vargs,    public, none, push_objects, Au) \
-    M(AA,BB, i, index,    public, Au,    num) \
+    M(AA,BB, i, index,    public, Au,     num) \
     M(AA,BB, i, ctr,      public, i32) \
+    M(AA,BB, i, override, method, push) \
     M(AA,BB, i, override, method, init) \
     M(AA,BB, i, override, method, dealloc) \
     M(AA,BB, i, override, cast,   bool) \
