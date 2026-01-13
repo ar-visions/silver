@@ -527,6 +527,8 @@ array array_mix(array a, array b, f32 f) {
 }
 
 Au array_get(array a, num i) {
+    if (!a || i < 0 || i >= a->count)
+        return null;
     if (i < 0 || i >= a->count)
         fault("out of bounds: %i, len = %i", i, a->count);
     return a->origin[i];
