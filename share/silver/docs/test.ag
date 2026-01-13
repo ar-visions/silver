@@ -2,11 +2,25 @@ import <stdio.h>
 
 class something
     i64  mem = 4
-    none action2  [ string mem2 ]
-        puts[ 'something is equal to {mem2}' ]
+    none action2 [ string mem2 ]
+        puts 'something is equal to {mem2}'
 
 class aclass of app
+##
+    map i32[string] nice_map = [
+        'init-with': 2
+    ]
+##
 
+    array i32[2] nice_array = [
+        2, 4
+    ]
+
+	i32 run []
+        #something s = [ mem: 8 ]
+        #s.action2 ['an-allocated-one with {s.mem}']
+        return 0
+        
 ##
 
 class aclass of app

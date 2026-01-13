@@ -83,7 +83,7 @@ def get_modules(src_dir):
     """get all modules with their info"""
     modules = []
     for src in glob.glob(f"{src_dir}/*.c") + glob.glob(f"{src_dir}/*.cc"):
-        deps, links, cflags, target, _ = parse_g_file(Path(src).with_suffix('.g'))
+        _, deps, links, cflags, target, _ = parse_g_file(Path(src).with_suffix('.g'))
         modules.append({
             'name': Path(src).stem,
             'src': src,
@@ -191,7 +191,7 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     main_mod, target_type = None, None
     project_g = root / "src" / f'{project}.g'
     if project_g.exists():
-        _, links, cflags, target_type, _ = parse_g_file(project_g)
+        _, _, links, cflags, target_type, _ = parse_g_file(project_g)
         if target_type:
             for m in modules:
                 if m['name'] == project:

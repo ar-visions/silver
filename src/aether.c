@@ -786,13 +786,14 @@ enode aether_e_meta_ids(aether a, array meta) {
     for (i32 i = 0; i < ln; i++) {
         Au m = meta->origin[i];
         enode n;
+        Au_t type = isa(m);
         if (instanceof(m, etype))
             n = e_typeid(a, (etype)m);
         else if (instanceof(m, shape)) {
             shape s = (shape)m;
-            array ar = array(alloc, s->count);
-            push_vdata(ar, (Au)s->data, s->count);
-            n = e_create(a, elookup("shape"),
+            array ar = array(alloc, s->count, unmanaged, true);
+            push_vdata(ar, (Au)s->data, s->count, typeid(i64));
+            n = e_create(a, typeid(shape)->user,
                 (Au)m("count", s->count,
                   "data",  (e_const_array(a, elookup("i64"), ar))));
         } else {
@@ -1096,17 +1097,22 @@ static enode constructable(etype fr, etype to) {
     // if its a primitive, and we want to convert to string -> Au_cast_string
     aether a = fr->mod;
 
-    for (int ii = 0; ii < to->au->members.count; ii++) {
-        Au_t mem = (Au_t)to->au->members.origin[ii];
-        if (mem->member_type == AU_MEMBER_CONSTRUCT) {
-            mem = mem;
+    Au_t ctx = to->au;
+    while (ctx) {
+        for (int ii = 0; ii < ctx->members.count; ii++) {
+            Au_t mem = (Au_t)ctx->members.origin[ii];
+            if (mem->member_type == AU_MEMBER_CONSTRUCT) {
+                mem = mem;
+            }
+            etype fn = mem->member_type == AU_MEMBER_CONSTRUCT ? mem->user : null;
+            if  (!fn) continue;
+            verify(fn->au->args.count == 2, "unexpected argument count for constructor"); // target + with-type
+            Au_t with_arg = (Au_t)fn->au->args.origin[1];
+            if (with_arg->src == fr->au)
+                return (enode)mem->user;
         }
-        etype fn = mem->member_type == AU_MEMBER_CONSTRUCT ? mem->user : null;
-        if  (!fn) continue;
-        verify(fn->au->args.count == 2, "unexpected argument count for constructor"); // target + with-type
-        Au_t with_arg = (Au_t)fn->au->args.origin[1];
-        if (with_arg->src == fr->au)
-            return (enode)mem->user;
+        if (ctx == ctx->context) break;
+        ctx = ctx->context;
     }
     return (enode)false;
 }
@@ -1189,7 +1195,7 @@ static enode convertible(etype fr, etype to) {
         Au_t au_type = au_lookup("Au_t");
         if (is_ptr(ma) && ma->au->src == au_type && mb->au == au_type)
             return (enode)true;
-        if (is_subclass((Au)ma, (Au)mb))
+        if (is_subclass((Au)ma, (Au)mb) || is_subclass((Au)mb, (Au)ma))
             return (enode)true;
         enode mcast = castable(ma, mb);
         return mcast ? mcast : constructable(ma, mb);
@@ -1237,7 +1243,7 @@ enode enode_access(enode target, string name) {
     if (!m) {
         m = m;
     }
-    if (eq(name, "member")) {
+    if (eq(name, "type")) {
         int test2 = 2;
         test2    += 2;
     }
@@ -1303,7 +1309,9 @@ enode aether_e_typeid(aether a, etype mdl) {
     if (!mdl)
         return e_null(a, elookup("Au_t"));
     
-    verify(is_au_compatible(mdl), "typeid not available on external types");
+    if (!is_au_compatible(mdl))
+        a = a;
+    verify(is_au_compatible(mdl), "typeid not available on external types: %o", mdl);
 
     // we go from enode sometimes, which is NOT 
     // the base etype (its not brilliant to require etype be unique here but we circle back)
@@ -1388,7 +1396,7 @@ enode aether_e_create(aether a, etype t, Au args) {
         
         static int seq = 0;
         seq++;
-        if (seq == 1) {
+        if (seq == 18) {
             seq = seq;
         }
         enode fmem = convertible((etype)input, t);
@@ -1423,8 +1431,10 @@ enode aether_e_create(aether a, etype t, Au args) {
                         else {
                             char *s = LLVMPrintTypeToString(lltype(t));
                             print("LLVM type: %s", s);
+
                             bool check = (is_prim(src) && is_prim(dst)) ||
-                                etype_inherits((etype)input, t);
+                                etype_inherits((etype)input, t) ||
+                                (is_subclass((Au)ores, (Au)ires) || is_subclass((Au)ires, (Au)ores));
                             
                             if (!check) {
                                 check = check;
@@ -1601,7 +1611,7 @@ enode aether_e_create(aether a, etype t, Au args) {
             if (ctr) {
                 e_fn_call(a, (enode)ctr, a(res, input));
             }
-            e_fn_call(a, (enode)f_initialize, a(res)); // required logic need not emit ops to set the bits when we can check at design time
+            res = e_fn_call(a, (enode)f_initialize, a(res)); // required logic need not emit ops to set the bits when we can check at design time
         }
     } else if (ctr) {
         verify(is_rec(t), "expected record");
@@ -1609,7 +1619,8 @@ enode aether_e_create(aether a, etype t, Au args) {
         
         enode alloc = e_fn_call(a, (enode)f_alloc, a( e_typeid(a, t), _i32(1), metas_node ));
         alloc->au = t->au; // we need a general cast method that does not call function
-        res = e_fn_call(a, (enode)ctr, a(alloc, input));
+        e_fn_call(a, (enode)ctr, a(alloc, input));
+        res = e_fn_call(a, (enode)f_initialize, a(alloc));
     } else {
         array   is_arr        = (array)instanceof(args, array);
         bool    is_ref_struct = is_ptr(t) && is_struct(resolve(t));
@@ -2516,8 +2527,10 @@ static void build_entrypoint(aether a, etype module_init_fn) {
     enode Au_engage = (enode)find_member(au_lookup("Au"), "engage", AU_MEMBER_FUNC, false)->user; // this is only for setting up logging now, and we should likely emit it after the global construction, and before the user initializers
     verify(argv->user != null, "baffled");
     e_fn_call(a, (enode)Au_engage, a(argv->user));
-    e_create(a, main_class, (Au)map()); // a loop would be nice, since none of our members will be ref+1'd yet
-    e_fn_return(a, _i32(0));
+    enode m = e_create(a, main_class, (Au)argv->user); // a loop would be nice, since none of our members will be ref+1'd yet
+    Au_t fn_run = find_member(main_spec->au, "run", AU_MEMBER_FUNC, false);
+    enode r = e_fn_call(a, (enode)fn_run->user, a(m));
+    e_fn_return(a, (Au)r);
 
     pop_scope(a);
 }
@@ -2813,10 +2826,30 @@ Au_t read_arg_type(Au_t stored_arg) {
     return stored_arg;
 }
 
-etype get_type_id(etype t) {
-    if (!is_au_type(t)) {
-        t = t;
-    }
+etype get_type_t_ptr(etype t) {
+    aether a = t->mod;
+
+    bool allow = is_au_type(t) || a->au == t->au->module;
+    if (!allow)
+        allow = allow;
+    verify(allow,
+        "get_type_t_ptr not available on external types");
+
+    if (t->schema)
+        return t->schema->au->ptr->user;
+
+    // schema must have it's static_value set to the instance
+    etype schema = etype(mod, a, au, t->au, is_schema, true);
+    t->schema = schema;
+    
+    etype mt = etype_ptr(a, schema->au);
+    return mt;
+}
+
+etype implement_type_id(etype t) {
+    if (t->schema && t->au->user && t->au->user->type_id)
+        return t->schema->au->ptr->user;
+    
     aether a = t->mod;
     // we must support a use-case where aether calls this on itsself.  a module must have its own identity in space!
     // we do not abstract away identity
@@ -2828,10 +2861,10 @@ etype get_type_id(etype t) {
     Au_t au = t->au;
 
     // schema must have it's static_value set to the instance
-    etype schema = etype(mod, a, au, t->au, is_schema, true);
-    t->schema = schema;
-    
-    etype mt = etype_ptr(a, schema->au);
+    if (!t->schema)
+        t->schema = etype(mod, a, au, t->au, is_schema, true);
+
+    etype mt = etype_ptr(a, t->schema->au);
     mt->au->is_typeid = true;
     mt->au->is_imported = a->is_Au_import;
     
@@ -2843,9 +2876,11 @@ etype get_type_id(etype t) {
     Au_t type_info = def_type  (a->au, n->chars,
         AU_TRAIT_STRUCT | AU_TRAIT_SYSTEM);
     Au_t type_h    = def_member(type_info, "info", au_type,
-        AU_MEMBER_VAR, AU_TRAIT_SYSTEM);
-    Au_t type_f    = def_member(type_info, "type", schema->au,
         AU_MEMBER_VAR, AU_TRAIT_SYSTEM | AU_TRAIT_INLAY);
+    //type_h->elements = typeid(Au)->typesize;
+    Au_t type_f    = def_member(type_info, "type", t->schema->au,
+        AU_MEMBER_VAR, AU_TRAIT_SYSTEM | AU_TRAIT_INLAY);
+    type_f->index = 1;
     type_info->user = etype(mod, a, au, type_info);
     etype_implement(type_info->user);
     string name = f(string, "%s_i", au->ident);
@@ -2862,11 +2897,16 @@ etype get_type_id(etype t) {
     return mt;
 }
 
+#include <stddef.h>
+
 none etype_implement(etype t) {
     Au_t    au = t->au;
     aether a  = t->mod;
 
     if (au->ident && strcmp(au->ident, "something") == 0) {
+        int sz = sizeof(struct _Au);
+        int sz2 = sizeof(__typeof__(etype_i.info));
+        //int sz3 = offsetof(struct etype_info, type);
         int test2 = 2;
         test2    += 2;
     }
@@ -2876,22 +2916,32 @@ none etype_implement(etype t) {
         test2    += 2;
     }
     
-    enode nn = (enode)t;
+    enode nn = (enode)instanceof(t, enode);
 
     if (is_func(t->au) && !((enode)t)->used)
         return;
 
-    if (is_func(t->au) && strcmp(t->au->ident, "cast_string") == 0) {
+    if (au->is_implemented) return;
+    if (au->ident && strcmp(au->ident, "raw") == 0) {
+        au = au;
+    }
+    au->is_implemented = true;
+    
+    if (t->au->ident && strcmp(t->au->ident, "Au") == 0) {
         int test2 = 2;
         test2    += 2;
     }
-    //if (instanceof(m->user, enode)) {
-    //    ((enode)m->user)->used = true;
-    //}
+    if (t->au->ident && strcmp(t->au->ident, "map") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
 
-
-    if (au->is_implemented) return;
-    au->is_implemented = true;
+    // lets bootstrap schema pointer types 
+    // not the static struct yet
+    // just the pointer to the table type (unfinished)
+    bool is_Au = (is_au_type(t) || a->au == t->au->module) &&
+        (!t->au->is_schema && !t->au->is_system);
+    etype type_t_ptr = is_Au ? get_type_t_ptr(t) : null;
 
     bool is_ARef = au == typeid(ARef);
     if (!is_ARef && au && au->src && au->src->user && !is_prim(au->src) && isa(au->src->user) == typeid(etype))
@@ -2929,23 +2979,26 @@ none etype_implement(etype t) {
 
     if (!t->au->is_pointer && (is_rec(t) || au->is_union)) {
         array cl = (au->is_union || is_struct(t)) ? a(t) : etype_class_list(t);
+        bool multi_Au = len(cl) && cl->origin[0] == elookup("Au");
         int count = 0;
         int index = 0;
         each(cl, etype, tt) {
-            //if (len(cl) > 1 && tt->au == typeid(Au)) 
-            //  break;
-            for (int i = 0; i < tt->au->members.count; i++) {
-                Au_t m = (Au_t)tt->au->members.origin[i];
-                if (m->member_type == AU_MEMBER_VAR && is_accessible(a, m))
-                    count++;
-            }
-            if (tt->au != typeid(Au) && !is_accessible(a, tt->au)) {
-                // this would be non-accessible for all of the above
+            if (!multi_Au || tt->au != typeid(Au))
+                for (int i = 0; i < tt->au->members.count; i++) {
+                    Au_t m = (Au_t)tt->au->members.origin[i];
+                    if (m->member_type == AU_MEMBER_VAR && is_accessible(a, m))
+                        count++;
+                }
+            if (is_class(t))
                 count++; // u8 Type_interns[isize]
-            }
         }
 
-        LLVMTypeRef* members = calloc(count + 1, sizeof(LLVMTypeRef));
+        if (t->au->ident && strcmp(t->au->ident, "Au") == 0) {
+            int test2 = 2;
+            test2    += 2;
+        }
+
+        LLVMTypeRef* struct_members = calloc(count + 2, sizeof(LLVMTypeRef));
         LLVMTypeRef largest = null;
         int ilargest = 0;
         each(cl, etype, tt) {
@@ -2953,10 +3006,16 @@ none etype_implement(etype t) {
             int prop_index = 0;
             for (int i = 0; i < tt->au->members.count; i++) {
                 Au_t m = (Au_t)tt->au->members.origin[i];
-                if (m->member_type == AU_MEMBER_VAR) {
-                    //verify(m->index == 0, "expected 0 for member-index");
-                    //m->index = prop_index++;
+
+                if (t->au->ident && strcmp(t->au->ident, "Au") == 0) {
+                    int test2 = 2;
+                    test2    += 2;
                 }
+                if (tt->au->ident && strcmp(tt->au->ident, "Au") == 0) {
+                    int test2 = 2;
+                    test2    += 2;
+                }
+                
                 if (m->member_type == AU_MEMBER_FUNC      || 
                     m->member_type == AU_MEMBER_CONSTRUCT || 
                     m->member_type == AU_MEMBER_INDEX     || 
@@ -2972,9 +3031,6 @@ none etype_implement(etype t) {
                         etype_implement(t->user);
                     }
                     src_init(a, m);
-                    //if (instanceof(m->user, enode)) {
-                    //    ((enode)m->user)->used = true;
-                    //}
                     etype_implement(m->user);
                 }
                 else if (m->member_type == AU_MEMBER_VAR && is_accessible(a, m)) {
@@ -2984,39 +3040,76 @@ none etype_implement(etype t) {
                     etype_implement(src->user);
 
                     // get largest union member
-                    members[index] = lltype(src);
-                    verify(members[index], "no lltype found for member %s.%s", au->ident, m->ident);
+                    if (m->elements > 0) {
+                        m = m;
+                    }
+                    if (m->is_inlay) {
+                        if (strcmp(m->context->ident, "app") == 0 && strcmp(m->ident, "info") == 0) {
+                            m = m;
+                        }
+                        struct_members[index] = src->is_class ? src->lltype : lltype(src);
+                    } else
+                        struct_members[index] = lltype(src);
+
+                    if (m->elements > 0)
+                        struct_members[index] = LLVMArrayType(struct_members[index], m->elements);
+                    
+                        
+                    verify(struct_members[index], "no lltype found for member %s.%s", au->ident, m->ident);
                     //printf("verifying abi size of %s\n", m->ident);
-                    int abi_member  = LLVMABISizeOfType(a->target_data, members[index]);
+                    int abi_member  = LLVMABISizeOfType(a->target_data, struct_members[index]);
+                    if (!abi_member) {
+                        struct_members[index] = lltype(src->src);
+                        int abi_member  = LLVMABISizeOfType(a->target_data, struct_members[index]);
+                        for (int i = 0; i < index; i++) {
+                            printf("member %i = %p\n", i, struct_members[i]);
+                        }
+                        abi_member = abi_member;
+                    }
                     verify(abi_member, "type has no size");
                     if (au->is_union && src->abi_size > ilargest) {
-                        largest  = members[index];
+                        largest  = struct_members[index];
                         ilargest = src->abi_size;
                     }
                     index++;
                 }
             }
+            Au_t au_type = typeid(Au);
+
+            if (t->au->ident && strcmp(t->au->ident, "Au") == 0) {
+                int test2 = 2;
+                test2    += 2;
+            }
+
             // lets define this as a form of byte accessible opaque.
-            if (tt->au != typeid(Au) && !is_accessible(a, tt->au)) {
-                members[index] = LLVMArrayType(lltype(au_lookup("u8")), tt->au->isize);
+            if (is_class(t)) {
+                struct_members[index] = LLVMArrayType(lltype(au_lookup("u8")), tt->au->isize);
                 index++;
             }
         }
 
-        etype mt = null;
-        if (is_class(t) && t->au != au_lookup("Au_t") && !t->au->is_system && (t->au->traits & AU_TRAIT_SCHEMA) == 0) {
-            mt = get_type_id(t);
+        verify(count == index, "member indexing mismatch on %o", t);
 
-        } else if (count == 0)
-             mt = au_lookup("u8")->user;
+        etype type_t_ptr = null;
+        if (is_class(t) && t->au != au_lookup("Au_t") && 
+           !t->au->is_system && !t->au->is_schema) {
+            type_t_ptr = get_type_t_ptr(t);
+
+        } else if (count == 0) {
+            struct_members[count++] = lltype(au_lookup("u8")->user);
+        }
         
-        if (mt) members[count++] = lltype(mt);
+        if (type_t_ptr) {
+            struct_members[count++] = lltype(type_t_ptr);
+            struct_members[count++] = lltype(type_t_ptr);
+        }
         
         if (au->is_union) {
             count = 1;
-            members[0] = largest;
+            struct_members[0] = largest;
         }
-        LLVMStructSetBody(au->lltype, members, count, 1);
+
+        LLVMStructSetBody(au->lltype, struct_members, count, 1);
 
     } else if (is_enum(t)) {
         Au_t et = au->src;
@@ -3111,12 +3204,26 @@ none etype_implement(etype t) {
         }
     }
 
-    if (!au->is_void && au->member_type != AU_MEMBER_FUNC && !is_opaque(au) && !is_func((Au)au) && au->lltype) {
+    if (!au->is_void && !is_opaque(au) && !is_func((Au)au) && au->lltype) {
+
+        int spec  = sizeof(struct _Au);
+        int spec2 = typeid(Au)->typesize;
+
+        if (t->au->ident && strcmp(t->au->ident, "Au") == 0) {
+            int test2 = 2;
+            test2    += 2;
+        }
+
         if (au->elements) {
             au->lltype = LLVMArrayType((LLVMTypeRef)au->lltype, au->elements);
         }
         au->abi_size   = LLVMABISizeOfType(a->target_data, (LLVMTypeRef)au->lltype)      * 8;
         au->align_bits = LLVMABIAlignmentOfType(a->target_data, (LLVMTypeRef)au->lltype) * 8;
+    }
+
+    if (t->au->ident && strcmp(t->au->ident, "Au") == 0) {
+        int test2 = 2;
+        test2    += 2;
     }
 }
 
@@ -3172,6 +3279,8 @@ none aether_output_schemas(aether a, enode init) {
                 
                 if (is_func(mem)) {
                     symbol n = mem->alt ? mem->alt : mem->ident;
+                    ((enode)mem->user)->used = true;
+                    etype_implement((etype)mem->user);
                     LLVMValueRef fn_ptr = ((enode)mem->user)->value;
                     Au_t id_none = typeid(none);
 
@@ -3297,6 +3406,26 @@ none aether_push_scope(aether a, Au arg) {
     }
 }
 
+etype get_type_t_ptr(etype t);
+
+// establishes concrete type identity (can be run multiple times)
+void aether_create_type_members(aether a, Au_t ctx) {
+    ctx = ctx;
+    // we must do this after building records / enums (in silver)
+    members(ctx, mem) {
+        if (mem->member_type == AU_MEMBER_VAR)
+            mem = mem->src;
+        if (mem == typeid(Au_t)) continue;
+        if (mem->ident && strcmp(mem->ident, "aclass") == 0) {
+            mem = mem;
+        }
+        if (mem->ident && is_au_type(mem) && mem->user && !mem->user->type_id && !mem->is_system && !mem->is_schema) {
+            get_type_t_ptr(mem->user);
+            implement_type_id(mem->user);
+        }
+    }
+}
+
 void aether_import_models(aether a, Au_t ctx) {
     // initialization table for has/not bits, controlling init and implement
     struct filter {
@@ -3316,8 +3445,8 @@ void aether_import_models(aether a, Au_t ctx) {
         { true,  false, false, false, false, 0, AU_TRAIT_UNION,  0 },
         { true,  false, false, false, false, 0, AU_TRAIT_STRUCT, 0 },
         { true,  false, false, false, false, 0, AU_TRAIT_CLASS,  0 },
-        { false, true,  true,  false, false, 0, 0, AU_TRAIT_ABSTRACT }, // lets run through non-functions
-        { false, true,  true,  true,  false, 0, 0, AU_TRAIT_ABSTRACT }  // now implement functions, whose args will always be implemented
+        { false, true,  true,  false, false, 0, 0, 0 }, // lets run through non-functions
+        { false, true,  true,  true,  false, 0, 0, 0 }  // now implement functions, whose args will always be implemented
     };
 
     Au_t ty = typeid(i32);
@@ -3344,6 +3473,9 @@ void aether_import_models(aether a, Au_t ctx) {
 
             if (proceed) {
                 print("init %o", m);
+                if (m == typeid(raw)) {
+                    m = m;
+                }
                 if (ff->init || ff->impl) {
                     src_init(a, m);
                 }
@@ -3353,11 +3485,7 @@ void aether_import_models(aether a, Au_t ctx) {
             }
         }
     }
-
-    members(ctx, mem) {
-        if (is_au_type(mem) && mem->user && !mem->user->type_id && !mem->is_system && !mem->is_schema)
-            get_type_id(mem->user);
-    }
+    create_type_members(a, ctx);
 }
 
 void aether_import_Au(aether a, path lib) {
@@ -3415,13 +3543,6 @@ void aether_import_Au(aether a, path lib) {
         */
     }
     a->is_Au_import  = false;
-
-
-    Au_t init_m = find_member(au_lookup("Au"), "initialize", AU_MEMBER_FUNC, false);
-    Au_t is_meta_m = find_member(au_lookup("Au"), "is_meta", AU_MEMBER_FUNC, false);
-    
-    init_m = init_m;
-
 }
 
 void aether_llflag(aether a, symbol flag, i32 ival) {
@@ -3570,6 +3691,8 @@ none aether_init(aether a) {
     verify(g != a->au,  "aether using global module");
 
     push_scope(a, (Au)g);
+
+    a->au->is_au = true;
     import_Au(a, null);
 
     a->au->is_namespace = true; // for the 'module' namespace at [1], i think we dont require the name.. or, we set a trait

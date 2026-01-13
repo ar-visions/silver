@@ -107,6 +107,7 @@ declare_class_2(statements, etype)
     M(X,Y, i, prop,  public, num,               cursor) \
     M(X,Y, i, prop,  public, array,             stack) \
     M(X,Y, i, prop,  public, Au_t,              top) \
+    M(X,Y, i, method, public,     none,        create_type_members, Au_t) \
     M(X,Y, i, method, public,     none,        output_schemas, enode) \
     M(X,Y, i, method, public,     enode,       module_initializer) \
     M(X,Y, i, method, public,     none,        import_Au, path) \

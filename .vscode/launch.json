@@ -149,6 +149,21 @@
             }
         },
         {
+            "name":       "silver / orbiter",
+            "type":       "lldb",
+            "request":    "launch",
+            "preLaunchTask": "build-silver-ninja",
+            "program":    "/src/silver/sdk/native/bin/silver",
+            "args":     [ "--source", "/src/orbiter/src/orbiter.ag" ],
+            "cwd":        "/src",
+            "env":      {
+                "VERBOSE": "1",
+                "LD_LIBRARY_PATH":"/src/silver/sdk/native/lib",
+                "IMPORT":  "/src/silver/sdk/native",
+                "ASAN_OPTIONS": "detect_leaks=0"
+            }
+        },
+        {
             "name":       "run-test",
             "type":       "lldb",
             "request":    "launch",

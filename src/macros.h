@@ -443,7 +443,7 @@
 
 
 #define   i_prop_public_INIT(X, R, N) { \
-    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, 0); \
+    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, AU_TRAIT_IPROP); \
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
@@ -467,7 +467,7 @@
 #define   i_prop_required_DECL_EXTERN(X, R, N)  i_prop_public_DECL(X, R, N)
 #define   i_prop_required_GENERICS(X, R, N)
 #define   i_prop_required_INIT(X, R, N) { \
-    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, AU_TRAIT_REQUIRED); \
+    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, AU_TRAIT_REQUIRED | AU_TRAIT_IPROP); \
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
@@ -518,7 +518,7 @@
 #define   i_prop_public_DECL_EXTERN_field(X, R, N, M2)  i_prop_public_DECL(X, R, N)
 #define   i_prop_public_GENERICS_field(X, R, N, M2)
 #define   i_prop_public_INIT_field(X, R, N, M2) { \
-    Au_t m = def((Au_t)&X##_i.type, #M2, AU_MEMBER_VAR, 0); \
+    Au_t m = def((Au_t)&X##_i.type, #M2, AU_MEMBER_VAR, AU_TRAIT_IPROP); \
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
@@ -539,7 +539,7 @@
 #define   i_prop_required_DECL_EXTERN_field(X, R, N, M2)    i_prop_public_DECL(X, R, N)
 #define   i_prop_required_GENERICS_field(X, R, N, M2)
 #define   i_prop_required_INIT_field(X, R, N, M2) { \
-    Au_t m = def((Au_t)&X##_i.type, #M2, AU_MEMBER_VAR, AU_TRAIT_REQUIRED); \
+    Au_t m = def((Au_t)&X##_i.type, #M2, AU_MEMBER_VAR, AU_TRAIT_REQUIRED | AU_TRAIT_IPROP); \
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
@@ -574,7 +574,7 @@
 #define   i_prop_public_DECL_EXTERN_meta(X, R, N, M2) i_prop_public_DECL(X, R, N)
 #define   i_prop_public_GENERICS_meta(X, R, N, M2)
 #define   i_prop_public_INIT_meta(X, R, N, M2) {\
-    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, 0); \
+    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, AU_TRAIT_IPROP); \
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
@@ -596,7 +596,7 @@
 #define   i_prop_required_DECL_EXTERN_meta(X, R, N, M2) i_prop_public_DECL(X, R, N)
 #define   i_prop_required_GENERICS_meta(X, R, N, M2)
 #define   i_prop_required_INIT_meta(X, R, N, M2) {\
-    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, AU_TRAIT_REQUIRED); \
+    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, AU_TRAIT_REQUIRED | AU_TRAIT_IPROP); \
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&R##_i.type; \
@@ -633,7 +633,7 @@
 #define   i_prop_public_DECL_EXTERN_as(X, R, N, M2) i_prop_public_DECL(X, R, N)
 #define   i_prop_public_GENERICS_as(X, R, N, M2)
 #define   i_prop_public_INIT_as(X, R, N, M2) {\
-    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, 0); \
+    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, AU_TRAIT_IPROP); \
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = (Au_t)&X##_i.type; \
@@ -1602,8 +1602,8 @@
 
 #define         form(T, t, ...)   (T)formatter(typeid(T), null,   (Au)false, (symbol)t, ## __VA_ARGS__)
 #define            f(T, t, ...)   (T)formatter(typeid(T), null,   (Au)false, (symbol)t, ## __VA_ARGS__)
-#define         exec(t, ...)      command_exec(((command)formatter((Au_t)null, null, (Au)false, (symbol)t, ## __VA_ARGS__)))
-#define          run(t, ...)      command_run(((command)formatter((Au_t)null, null, (Au)false, (symbol)t, ## __VA_ARGS__)))
+#define         exec(t, ...)      command_exec(((command)formatter((Au_t)typeid(command), null, (Au)false, (symbol)t, ## __VA_ARGS__)))
+#define          run(t, ...)      command_run(((command)formatter((Au_t)typeid(command), null, (Au)false, (symbol)t, ## __VA_ARGS__)))
 #define         vexec(n, t, ...)     verify(exec((string)t __VA_OPT__(,) __VA_ARGS__) == 0, "shell command failed: %s", n);
 
 #define        Au_log(sL, t, ...)   formatter((Au_t)null, stdout, (Au)string(sL),  t, ## __VA_ARGS__)
