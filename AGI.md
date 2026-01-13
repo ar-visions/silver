@@ -1,6 +1,6 @@
 # AGI Vision
 
-I believe **AGI is us**. AGI, as I see it, is **Aggregated Group Intelligence** — decentralized data aggregated from truly identified sources, backed by cryptographic certification.  
+I believe **AGI is us**. AGI, as I understand it, is **Aggregated Group Intelligence** — decentralized data aggregated from truly identified sources, backed by cryptographic certification.  
 
 Collectively and cooperatively, we offer a superior model to proprietary, somewhat metered contract models; ones that cannot enumerate public IP usage properly. With a proper AGI from the public, we summarize fair usage across IP identities (G) *provably* — a more eco-profitable model in which the public owns collectively. Throughout, we will see this integrated to the level of authorship ability in all devices we use. It’s more free for the user, yet a far more profitable model for corporations to adopt when making products.
 
