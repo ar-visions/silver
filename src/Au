@@ -310,6 +310,7 @@ void lazy_init(global_init_fn fn, Au_t);
     _Pragma("pack(push, 1)") \
     struct AA##_fields { \
         AA##_intern (AA, F, __VA_ARGS__) \
+        void* __none__; \
     }; \
     typedef struct _##AA { \
         AA##_intern (AA, INST_U, __VA_ARGS__) \
@@ -336,6 +337,7 @@ void lazy_init(global_init_fn fn, Au_t);
     struct AA##_fields { \
         BB##_intern (BB, F, __VA_ARGS__) \
         AA##_intern (AA, F, __VA_ARGS__) \
+        void* __none__; \
     }; \
     typedef struct _##AA { \
         BB##_intern (BB, INST_U, __VA_ARGS__) \
@@ -366,6 +368,7 @@ void lazy_init(global_init_fn fn, Au_t);
         CC##_intern (CC, F, __VA_ARGS__) \
         BB##_intern (BB, F, __VA_ARGS__) \
         AA##_intern (AA, F, __VA_ARGS__) \
+        void* __none__; \
     }; \
     typedef struct _##AA { \
         CC##_intern (CC, INST_U, __VA_ARGS__) \
@@ -404,6 +407,7 @@ void lazy_init(global_init_fn fn, Au_t);
         CC##_intern (CC, F, __VA_ARGS__) \
         BB##_intern (BB, F, __VA_ARGS__) \
         AA##_intern (AA, F, __VA_ARGS__) \
+        void* __none__; \
     }; \
     typedef struct _##AA { \
         DD##_intern (DD, INST_U, __VA_ARGS__) \
@@ -519,7 +523,7 @@ typedef Au_t* Au_ts;
             type_ref->isize             = 0 TYPE##_schema( TYPE, ISIZE_EXTERN, __VA_ARGS__ ); \
             type_ref->context           = (__typeof__(type_ref->context))&BASE##_i.type; \
             type_ref->module            = module_lookup((cstr)MODULE); \
-            printf("looking up module %s\n", MODULE); \
+            printf("looking up module %s (%s %s %p)\n", MODULE, #TYPE, type_ref->context->ident, type_ref); \
             type_ref->typesize          = TYPE_SZ; \
             type_ref->traits            = AU_TRAIT_IS_AU | TRAIT; \
             head(type_ref)->type = typeid(Au_t_f); \
@@ -755,6 +759,7 @@ typedef struct _collective_abi {
     M(AA,BB, i, prop, public, Au_t, type) \
     M(AA,BB, i, prop, public, shape, shape) \
     M(AA,BB, i, override, method, init) \
+    M(AA,BB, i, method, public, Au, push, Au) \
     M(AA,BB, i, method, public, Au, peek, num) \
     M(AA,BB, i, override, method, len)
 declare_class(collective)
@@ -791,9 +796,6 @@ declare_abstract(ref)
 
 #define imported_schema(X,Y,...)
 declare_abstract(imported)
-
-#define app_schema(X,Y,...)
-declare_class(app, Au)
 
 #define ARef_schema(X,Y,...)        ref_schema(X,Y,...)
 #define i8_schema(X,Y,...)          numeric_schema(numeric,Y,...)
@@ -964,7 +966,7 @@ declare_class(item)
 /// linked-list of elemental data
 #define list_schema(AA,BB,...) \
     M(AA,BB, i, method, public, Au,   pop) \
-    M(AA,BB, i, method, public, item, push, Au) \
+    M(AA,BB, i, override, method, push) \
     M(AA,BB, i, method, public, none, push_item, item) \
     M(AA,BB, i, method, public, item, insert_after, Au, i32) \
     M(AA,BB, i, method, public, num,  index_of, Au) \
@@ -1242,8 +1244,8 @@ declare_enum(comparison)
     M(AA,BB, i, method, public, array,  reverse) \
     M(AA,BB, i, method, public, none,   remove, num) \
     M(AA,BB, i, method, public, none,   remove_weak, num) \
-    M(AA,BB, i, method, public, none,   push, Au) \
-    M(AA,BB, i, method, public, none,   push_vdata, Au, i64) \
+    M(AA,BB, i, override, method, push) \
+    M(AA,BB, i, method, public, none,   push_vdata, Au, i64, Au_t) \
     M(AA,BB, i, method, public, none,   push_weak, Au) \
     M(AA,BB, i, method, public, none,   clear) \
     M(AA,BB, i, method, public, none,   concat, array) \
@@ -1486,6 +1488,13 @@ declare_class(subs)
     M(AA,BB, i, prop, public, array, text)
 declare_class(line)
 
+#define app_schema(X,Y,...) \
+    M(X,Y,i,method,public,i32,run)
+declare_class(app)
+
+#define aclass2_schema(AA,BB,...)
+declare_class_2(aclass2, app)
+
 extern FILE* logger;
 
 cstr copy_cstr(cstr input);
@@ -1697,6 +1706,8 @@ declare_class_3(vector_rgb8, vector, collective, rgb8)
 
 #define vector_rgbf_schema(X,Y,...)
 declare_class_3(vector_rgbf, vector, collective, rgbf)
+
+
 
 vector_f32   vector_f32_new  (shape count, ...);
 vector_f64   vector_f64_new  (shape count, ...);

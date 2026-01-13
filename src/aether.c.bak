@@ -1860,8 +1860,9 @@ enode aether_e_create(aether e, model mdl, array meta, Au args) {
                 }     
                 e_fn_call(e, f_initialize, null, a(res));
                 if (const_array) {
+                    enode element_type = e_typeid(a, (etype)metas_node->origin[0]);
                     function f_push_vdata = find_member( mdl, string("push_vdata"), null)->mdl;
-                    e_fn_call(e, f_push_vdata, res, a(const_array, n));
+                    e_fn_call(e, f_push_vdata, res, a(const_array, n, element_type));
                 } else {
                     function f_push = find_member(mdl, string("push"), null)->mdl;
                     for (int i = 0; i < ln; i++) {

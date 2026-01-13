@@ -871,7 +871,7 @@ public:
         // Simple constant macros could be registered as enum values or constants
         // Function-like macros need special handling
         
-        // TODO: Implement macro handling for new API
+        // TODO: Implement macro handling for new Au_t, and use etype_infer
     }
 };
 

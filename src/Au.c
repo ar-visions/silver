@@ -69,6 +69,11 @@ Au_t Au_cast_Au_t(Au a) {
 
 bool Au_is_au_type(Au a) {
     Au_t au = au_arg(a);
+    if (au->ident && strlen(au->ident) && au->member_type != AU_MEMBER_TYPE)
+        return false;
+    if (au->ident && strcmp(au->ident, "raw") == 0) {
+        au = au;
+    }
     return au->module->is_au;
 }
 
@@ -305,8 +310,9 @@ array array_with_i32(array a, i32 alloc) {
     return a;
 }
 
-none array_push_vdata(array a, Au data, i64 count) {
-    Au_t   t = isa(a)->meta.origin ? *(Au_t*)isa(a)->meta.origin : null;
+none array_push_vdata(array a, Au data, i64 count, Au_t data_type) {
+    Au_t   t = data_type ? data_type : 
+        isa(a)->meta.origin ? *(Au_t*)isa(a)->meta.origin : null;
     verify(t && t != typeid(Au),
         "method requires meta object with type signature");
     verify(a->unmanaged,
@@ -337,7 +343,12 @@ Au_t Au_meta_index(Au a, int i) {
     return null;
 }
 
-none array_push(array a, Au b) {
+Au collective_push(collective a, Au b) {
+    fault("implement push method on %o", isa(a));
+    return null;
+}
+
+Au array_push(array a, Au b) {
     if (!a->origin || a->alloc == a->count) {
         array_expand(a);
     }
@@ -353,6 +364,7 @@ none array_push(array a, Au b) {
         assert(Au_is_meta_compatible((Au)a, (Au)b), "not meta compatible");
     
     a->origin[a->count++] = (a->unmanaged ? b : Au_hold(b));
+    return b;
 }
 
 Au array_qpush(array a, Au b) {
@@ -729,7 +741,7 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
     cur->info.refs = 1;
     cur->info.type = (Au_t)&Au_t_f_i.type;
     Au_t au = &cur->type;
-    au->ident = ident ? (symbol)cstr_copy((cstr)ident) : (symbol)null;
+    au->ident = ident ? (cstr)cstr_copy((cstr)ident) : (cstr)null;
 
     au->member_type = member_type;
     au->traits = traits;
@@ -763,6 +775,14 @@ none dealloc_type(Au_t type) {
 }
 
 Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, u64 traits, u64 typesize, u64 isize) {
+    if (strcmp(ident, "aclass") == 0) {
+        int au_size = sizeof(struct _Au);
+        Au_t au_type_size = typeid(Au);
+        Au_t app_type_symbol = typeid(app);
+        Au_t app_type = find_member(au_module, "app", AU_MEMBER_TYPE, false);
+        int test2 = 2;
+        test2    += 2;
+    }
     type->member_type       = AU_MEMBER_TYPE;
     type->members.alloc     = 128;
     type->members.assorted  = true;
@@ -1144,6 +1164,7 @@ none debug() {
 }
 
 static none init_recur(Au a, Au_t current, raw last_init) {
+    Au_t map_type = typeid(map);
     if (current == (Au_t)&Au_i.type) return;
     none(*init)(Au) = ((Au_f*)current)->ft.init;
     init_recur(a, current->context, (raw)init);
@@ -2086,21 +2107,22 @@ Au construct_with(Au_t type, Au data, ctx context) {
             
             if (!result && mem->member_type == AU_MEMBER_CONSTRUCT) {
                 none* addr = mem->value;
+                Au_t arg = au_arg_type(array_get((array)&mem->args, 1));
                 /// no meaningful way to do this generically, we prefer to call these first
-                if (mem->type == typeid(path) && data_type == typeid(string)) {
+                if (arg == typeid(path) && data_type == typeid(string)) {
                     result = alloc(type, 1, null);
                     result = ((Au(*)(Au, path))addr)(result, path(((string)data)));
                     verify(Au_validator(result), "invalid Au");
                     break;
                 }
-                if ((mem->type == typeid(cstr) || mem->type == typeid(symbol)) && 
+                if ((arg == typeid(cstr) || arg == typeid(symbol)) && 
                         data_type == typeid(string)) {
                     result = alloc(type, 1, null);
                     result = ((Au(*)(Au, cstr))addr)(result, ((string)data)->chars);
                     verify(Au_validator(result), "invalid Au");
                     break;
                 }
-                if (mem->type == data_type) {
+                if (arg == data_type) {
                     result = alloc(type, 1, null);
                     result = ((Au(*)(Au, Au))addr)(result, data);
                     verify(Au_validator(result), "invalid Au");
@@ -2486,6 +2508,11 @@ Au formatter(Au_t type, handle ff, Au opt, symbol template, ...) {
             Au arg = va_arg(args, Au);
             string   a;
             Au_t isa_arg = isa(arg);
+            bool success = !arg || isa_arg;
+            if (!success) {
+                int test2 = 2;
+                test2    += 2;
+            }
             verify(!arg || isa_arg, "unexpected null isa on object");
             if (isa_arg == typeid(Au_t_f) || isa_arg == arg) {
                 if (!arg) {
@@ -2752,6 +2779,8 @@ Au map_value_by_index(map m, num idx) {
     return null;
 }
 
+Au list_push(list a, Au e);
+
 none map_set(map m, Au k, Au v) {
     if (!m->hlist) m->hlist = (item*)calloc(m->hsize, sizeof(item));
     item i = map_fetch(m, k);
@@ -2777,7 +2806,7 @@ none map_set(map m, Au k, Au v) {
 
     bool in_fifo = i->ref != null;
     if (!in_fifo) {
-        item ref = list_push((list)m, m->unmanaged ? v : hold(v));
+        item ref = (item)list_push((list)m, m->unmanaged ? v : hold(v));
         ref->key = hold(k);
         ref->ref = (Au)i; // these reference each other
         i->ref = (Au)ref;
@@ -2892,8 +2921,6 @@ string srcfile_cast_string(srcfile a) {
 }
 
 define_class(srcfile, Au);
-
-
 
 bool string_is_numeric(string a) {
     return a->chars[0] == '-' ||
@@ -3380,9 +3407,6 @@ bool string_ends_with(string a, symbol value) {
     return strcmp(&a->chars[a->count - ln], value) == 0;
 }
 
-item list_push(list a, Au e);
-
-
 none list_quicksort(list a, i32(*sfn)(Au, Au)) {
     item f = a->first;
     int  n = a->count;
@@ -3562,7 +3586,7 @@ none list_push_item(list a, item i) {
     a->count++;
 }
 
-item list_push(list a, Au e) {
+Au list_push(list a, Au e) {
     item n = item();
     n->value = a->unmanaged ? e : hold(e);
     if (a->last) {
@@ -3573,7 +3597,7 @@ item list_push(list a, Au e) {
     }
     a->last = n;
     a->count++;
-    return n;
+    return (Au)n;
 }
 
 
@@ -5807,6 +5831,25 @@ define_any(Au, Au, sizeof(struct _Au), AU_TRAIT_CLASS);
 Au_t_f
 */
 
+int aclass2_run(aclass2 a) {
+    printf("aclass2 run\n");
+    return 0;
+}
+
+none aclass2_init(aclass2 a) {
+    printf("aclass2\n");
+}
+
+i32 app_run(app a) {
+    return 0;
+}
+
+none app_init(app a) {
+}
+
+define_class   (app, Au)
+
+define_class(aclass2, app)
 
 define_class(watch,   Au)
 define_class(msg,     Au)
@@ -5820,7 +5863,7 @@ define_abstract(ref,            0, Au)
 define_abstract(imported,       0, Au)
 define_abstract(weak,           0, Au)
 define_abstract(functional,     0, Au)
-define_abstract(app,            AU_TRAIT_CLASS, Au)
+
 
 define_primitive(ref_u8, numeric, AU_TRAIT_POINTER | AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED, u8)
 define_primitive(ref_u16,    numeric, AU_TRAIT_POINTER | AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED,  u16)

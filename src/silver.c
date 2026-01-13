@@ -360,10 +360,18 @@ static enode reverse_descent(silver a, etype expect) {
     return L;
 }
 
+enode parse_map(silver a, etype mdl_schema);
+
 static enode parse_expression(silver a, etype expect) {
     print_tokens(a, "parse-expr");
-    enode vr = reverse_descent(a, expect);
-    return vr;
+    // handle array and map types here at this level, and cue in other types through a protocol if possible
+    // our calls below this do not have any idea to use the comma in expression syntax
+    if (expect && inherits(expect->au, typeid(collective)) && read_if(a, "[")) {
+        enode res = parse_map(a, expect);
+        validate(read_if(a, "]"), "expected ] after [ expression...");
+        return res;
+    }
+    return reverse_descent(a, expect);
 }
 
 static array parse_tokens(silver a, Au input, array output);
@@ -433,21 +441,22 @@ void silver_init(silver a) {
 
     verify(exists(a->source), "source (%o) does not exist", a->source);
 
-    cstr _SRC = getenv("SRC");
-    cstr _DBG = getenv("DBG");
+    cstr _SRC    = getenv("SRC");
+    cstr _DBG    = getenv("DBG");
     cstr _IMPORT = getenv("IMPORT");
     verify(_IMPORT, "silver requires IMPORT environment");
 
-    a->mod = (aether)a;
-    a->imports = array(32);
-    a->parse_f = parse_tokens;
-    a->parse_expr = parse_expression;
-    a->read_etype = read_etype;
-    a->src_loc = absolute(path(_SRC ? _SRC : "."));
+    a->mod          = (aether)a;
+    a->imports      = array(32);
+    a->parse_f      = parse_tokens;
+    a->parse_expr   = parse_expression;
+    a->read_etype   = read_etype;
+    a->src_loc      = absolute(path(_SRC ? _SRC : "."));
     verify(dir_exists("%o", a->src_loc), "SRC path does not exist");
 
-    path af = path_cwd();
-    path install = path(_IMPORT);
+    // should only get its parent if its a file
+    path af         = a->source ? directory(a->source) : path_cwd();
+    path install    = path(_IMPORT);
     git_remote_info(af, &a->git_service, &a->git_owner, &a->git_project);
 
     bool retry = false;
@@ -708,6 +717,7 @@ static array read_initializer(silver a, bool* is_inline) {
     if (is_inline && eq(n, "[")) {
         silver_consume(a);
         int depth = 1; // inner expr signals depth 1, and a bracket does too.  we need both togaether sometimes, as in inner expression that has parens
+        push(body, (Au)token("["));
         for (;;) {
             token inner = silver_next(a);
             if (!inner)
@@ -722,10 +732,14 @@ static array read_initializer(silver a, bool* is_inline) {
             }
             break;
         }
+        push(body, (Au)token("]"));
         return body;
     }
     bool mult = !a->in_args && (n->indent > p->indent && n->line > p->line);
-    if  (mult) return read_body(a);
+    if  (mult) {
+        // not sure if we should add brackets back into this; it would normalize initialization
+        return read_body(a);
+    }
     if (!eq(n, "[")) {
         bool is_const = false;
         return read_expression(a, null, &is_const);
@@ -956,11 +970,6 @@ static array parse_tokens(silver a, Au input, array output) {
         }
 
         num start = index;
-
-        if (start == 226) {
-            int test2 = 2;
-            test2    += 2;
-        }
         bool is_dim = false;
         bool last_dash = false;
         i32 st_char = idx(input_string, start);
@@ -988,12 +997,6 @@ static array parse_tokens(silver a, Au input, array output) {
         }
 
         string crop = mid(input_string, start, index - start);
-
-        if (strstr(crop->chars, "9")) {
-            int test2 = 2;
-            test2    += 2;
-        }
-
         push(tokens, (Au)token(
                          chars, crop->chars,
                          indent, indent,
@@ -1024,7 +1027,7 @@ token silver_read_if(silver a, symbol cs) {
 
 Au silver_read_literal(silver a, Au_t of_type) {
     token n = silver_element(a, 0);
-    if (n && n->literal) {
+    if (n && n->literal && (!of_type || inherits(isa(n->literal), of_type))) {
         a->cursor++;
         return n->literal;
     }
@@ -1336,10 +1339,6 @@ enode silver_read_enode(silver a, etype mdl_expect) {
     bool      is_expr0  = !a->cmode && a->expr_level == 0;
     bool      is_static = is_expr0 && read_if(a, "static") != null;
     string    kw        = is_expr0 ? peek_keyword(a) : null;
-    bool      is_oper   = kw && eq(kw, "operator");
-    bool      is_index  = kw && eq(kw, "index");
-    bool      is_cast   = kw && eq(kw, "cast");
-    bool      is_fn     = kw && eq(kw, "func");
     etype     rec_ctx   = context_class(a); if (!rec_ctx) rec_ctx = context_struct(a);
     Au_t      top       = top_scope(a);
     etype     rec_top   = (!a->cmode && is_rec(top)) ? top->user : null;
@@ -1406,8 +1405,8 @@ enode silver_read_enode(silver a, etype mdl_expect) {
         }
         a->parens_depth++;
         enode expr = parse_expression(a, null); // Parse the expression
-        token t = read_if(a, ")");
-        if (t) a->parens_depth--;
+        verify(read_if(a, ")"), "expected ) after expression");
+        a->parens_depth--;
         return e_create(a, mdl_expect, (Au)
             parse_ternary(a, (enode)expr, (etype)mdl_expect));
     }
@@ -1560,8 +1559,11 @@ enode parse_statement(silver a) {
                 verify(!assign_type || expr, "expected expression after %o", assign_type);
                 validate(new_member, "expected member indentifier after type");
                 
+                if (eq(new_member, "nice_array")) {
+                    rtype = rtype;
+                }
                 Au_t m = def_member(top, new_member->chars, rtype->au, AU_MEMBER_VAR, is_const ? AU_TRAIT_CONST : 0);
-                e = (enode)evar(mod, (aether)a, au, m, initializer, (tokens)expr);
+                e = (enode)evar(mod, (aether)a, au, m, meta, rtype->meta, initializer, (tokens)expr);
                 //etype_implement((etype)e);
                 
             } else if (assign_type) {
@@ -1614,7 +1616,7 @@ enode parse_statement(silver a) {
         }
         a->left_hand = true;
         print_tokens(a, "pre-read-node");
-        e = read_enode(a, null); /// at module level, supports keywords
+        e = parse_expression(a, null); /// at module level, supports keywords
         a->left_hand = false;
     }
     return e;
@@ -1641,8 +1643,9 @@ void silver_incremental_resolve(silver a) {
     }
     members(a->au, mem) {
         etype rec = (mem->is_class || mem->is_struct) ? mem->user : null;
-        if (rec && !mem->is_system && !mem->is_schema && !rec->parsing && !rec->user_built)
+        if (rec && !mem->is_system && !mem->is_schema && !rec->parsing && !rec->user_built) {
             build_record(a, rec);
+        }
     }
 }
 
@@ -1659,11 +1662,6 @@ enode parse_func(silver a, etype rtype, string ident, u8 member_type, u32 traits
     if (!rtype)
          rtype = elookup("none");
 
-    if (eq(ident, "init")) {
-        int test2 = 2;
-        test2    += 2;
-    }
-    
     validate(read_if(a, "["), "expected function args [");
     Au_t au = def(top_scope(a), ident ? ident->chars : null, AU_MEMBER_FUNC, traits);
     au->module = a->au;
@@ -1806,6 +1804,45 @@ array read_meta(silver a) {
     return res;
 }
 
+// this shouldnt change the read cursor, its for reading types from c macros
+etype etype_infer(silver a) {
+    push_current(a);
+    etype t = read_etype(a, null);
+    pop_tokens(a, false);
+    if (!t) {
+        push_current(a);
+        Au lit = silver_read_literal(a, null);
+        if (lit) {
+            if      (isa(lit) == typeid(string)) t = elookup("string");
+            else if (isa(lit) == typeid(i64))    t = elookup("i64");
+            else if (isa(lit) == typeid(u64))    t = elookup("u64");
+            else if (isa(lit) == typeid(i32))    t = elookup("i32");
+            else if (isa(lit) == typeid(u32))    t = elookup("u32");
+            else if (isa(lit) == typeid(f32))    t = elookup("f32");
+            else if (isa(lit) == typeid(f64))    t = elookup("f64");
+            else
+                fault("implement literal %s in infer_etype", isa(lit)->ident);
+        }
+        pop_tokens(a, false);
+    }
+    return t;
+}
+
+static shape read_shape(silver a) {
+    shape s = (shape)read_literal(a, typeid(shape));
+    if (!s) {
+        i64* i = (i64*)read_literal(a, typeid(i64));
+        if (i) {
+            i64* cp = (i64*)calloc(1, sizeof(i64));
+            *cp = *i;
+            s = shape_from(1, cp);
+        }
+    } else {
+        s = s;
+    }
+    return s;
+}
+
 etype read_etype(silver a, array* p_expr) {
     etype mdl   = null;
     array expr  = null;
@@ -1813,118 +1850,92 @@ etype read_etype(silver a, array* p_expr) {
     array types = array();
     array sizes = array();
 
+    token f = peek(a);
+    if  (!f || f->literal || !is_alpha(f)) return null;
+
     push_current(a);
-
-    if (!a->cmode) {
-        Au lit = silver_read_literal(a, null); // split this functionality out from our use-case to infer the type from value; call it infer_etype
-        if (lit) {
-            pop_tokens(a, false);
-            return null;
-        }
-
-        if (lit) {
-            a->cursor--;
-            // we support var:1  or var:2.2 or var:'this is a test with {var2}'
-            if (isa(lit) == typeid(string)) {
-                expr = a(token("string"), token("["), silver_element(a, 0), token("]"));
-                mdl = elookup("string");
-            } else if (isa(lit) == typeid(i64)) {
-                expr = a(token("i64"), token("["), silver_element(a, 0), token("]"));
-                mdl = elookup("i64");
-            } else if (isa(lit) == typeid(u64)) {
-                expr = a(token("u64"), token("["), silver_element(a, 0), token("]"));
-                mdl = elookup("u64");
-            } else if (isa(lit) == typeid(i32)) {
-                expr = a(token("i32"), token("["), silver_element(a, 0), token("]"));
-                mdl = elookup("i32");
-            } else if (isa(lit) == typeid(u32)) {
-                expr = a(token("u32"), token("["), silver_element(a, 0), token("]"));
-                mdl = elookup("u32");
-            } else if (isa(lit) == typeid(f32)) {
-                expr = a(token("f32"), token("["), silver_element(a, 0), token("]"));
-                mdl = elookup("f32");
-            } else if (isa(lit) == typeid(f64)) {
-                expr = a(token("f64"), token("["), silver_element(a, 0), token("]"));
-                mdl = elookup("f64");
-            } else {
-                verify(false, "implement literal %s in read_model", isa(lit)->ident);
-            }
-            a->cursor++;
-        }
-    }
-
-    bool explicit_sign = !mdl && silver_read_if(a, "signed") != null;
-    bool explicit_un = !mdl && !explicit_sign && silver_read_if(a, "unsigned") != null;
-    etype prim_mdl = null;
+    bool  explicit_sign = !mdl && read_if(a, "signed") != null;
+    bool  explicit_un   = !mdl && !explicit_sign && read_if(a, "unsigned") != null;
+    etype prim_mdl      = null;
 
     if (!mdl && !explicit_un) {
-        if (silver_read_if(a, "char"))
-            prim_mdl = elookup("i8");
-        else if (silver_read_if(a, "short"))
-            prim_mdl = elookup("i16");
-        else if (silver_read_if(a, "int"))
-            prim_mdl = elookup("i32");
-        else if (silver_read_if(a, "long"))
-            prim_mdl = silver_read_if(a, "long") ? elookup("i64") : elookup("i32");
+        if      (read_if(a, "char"))  prim_mdl = elookup("i8");
+        else if (read_if(a, "short")) prim_mdl = elookup("i16");
+        else if (read_if(a, "int"))   prim_mdl = elookup("i32");
+        else if (read_if(a, "long"))  prim_mdl = read_if(a, "long")?
+            elookup("i64") : elookup("i32");
         else if (explicit_sign)
             prim_mdl = elookup("i32");
-        if (prim_mdl)
-            prim_mdl = model_adj(a, prim_mdl);
-
+        
+        if   (prim_mdl)  prim_mdl = model_adj(a, prim_mdl);
         mdl = prim_mdl ? prim_mdl : read_named_model(a);
+
         if (mdl && mdl->au->member_type != AU_MEMBER_TYPE) {
             pop_tokens(a, false);
             return null;
         }
-        if (!a->cmode && meta && next_is(a, "<")) {
-            meta = read_meta(a);
-        }
 
-        // conversion to map or array
-        // must have types only, or with sizes
-        // needs work:
-        if (mdl && !a->cmode && next_is(a, "[")) {
-            int   cursor_at     = a->cursor;
-            bool  had_comma     = false;
-            bool  reached_end   = false;
-            int   others        = 0;
-            consume(a);
+        if (mdl && mdl->au->meta.count) {
+            // silver is about introducing more syntax only when you require complex containment
+            // this applies to methods with no args at method level 0 and [ args ] at > 0
+            // array map<string[int]> is the same exact way here
+            validate(a->etype_level == 0 || read_if(a, "<"), "expected <meta> containment at depth");
+            Au_t meta0_src = au_arg_type(mdl->au->meta.origin[0]);
+            array meta_args;
 
-            while (!next_is(a, "]")) {
-                static int seq = 0;
-                seq++;
-                if (seq == 2) {
-                    seq = seq;
-                }
-                etype e = read_etype(a, null);
-                if (!e) break;
-                push(types, (Au)e);
-                if (next_is(a, ",")) {
-                    had_comma = true;
-                    consume(a);
-                }
-            }
-            reached_end = silver_read_if(a, "]") != null;
-            if (!reached_end || len(types) == 0) {
-                a->cursor = cursor_at; // restore cursor to one reading the expr index (so someone else can do this!)
-                if (p_expr) *p_expr = read_within(a);
+            // read shape literal, or type 
+            // (to generalize types offering different literals 
+            //  we could express a trait bit take_literally or something)
+            if (meta0_src ==  typeid(shape)) {
+                shape    s =  read_shape(a);
+                validate(s && isa(s) == typeid(shape), "expected shape description, found %o", peek(a));
+                meta_args  =  a(s);
             } else {
-                verify(len(types) == 1, "expected Value[Key] type, user provided more");
-                mdl = etype(mod, (aether)a, au, au_lookup("map"),
-                    meta, a(mdl, types->origin[0]));
+                a->etype_level++;
+                etype t = read_etype(a, null);
+                validate(t, "expected meta type, found %o", peek(a));
+                meta_args = a(t);
+                a->etype_level--;
             }
-            meta = null;
+            int rem = mdl->au->meta.count - 1;
+            if (rem) {
+                // second arg and on are joined within [ ]
+                validate(read_if(a, "["),
+                    "expected [ after first meta type %o", first_element(meta_args));
+                
+                for (int i = 0; i < rem; i++) {
+                    Au_t meta_src =  au_arg_type(mdl->au->meta.origin[1 + i]);
+                    if  (meta_src == typeid(shape)) {
+                        shape    s =  read_shape(a);
+                        validate(s, "expected shape description, found %o", peek(a));
+                        push(meta_args, (Au)s);
+                    } else {
+                        a->etype_level++;
+                        etype imdl = read_etype(a, null);
+                        a->etype_level--;
+                        validate(imdl, "expected type, found %o", peek(a));
+                        push(meta_args, (Au)imdl);
+                    }
+                    validate(i <= (rem - 1) || read_if(a, ","),
+                        "expected comma after meta type %o", last_element(meta_args));
+                }
+                validate(read_if(a, "]"),
+                    "expected [ after last meta type %o", last_element(meta_args));
+            }
+            // we read this at depth, so ajoined vector of types don't get unreadable when depth is to be displayed
+            validate(a->etype_level == 0 || read_if(a, ">"), "expected <meta> containment at depth");
+            
+            // sorry for the mess [/flicks-coin]
+            mdl  = etype(mod, (aether)a, au, mdl->au, meta, meta_args);
+            meta = null; // dont reconstruct our mdl again with more
         }
 
     } else if (!mdl && explicit_un) {
-        if (silver_read_if(a, "char"))
-            prim_mdl = elookup("u8");
-        if (silver_read_if(a, "short"))
-            prim_mdl = elookup("u16");
-        if (silver_read_if(a, "int"))
-            prim_mdl = elookup("u32");
-        if (silver_read_if(a, "long"))
-            prim_mdl = silver_read_if(a, "long") ? elookup("u64") : elookup("u32");
+        if (read_if(a, "char"))  prim_mdl = elookup("u8");
+        if (read_if(a, "short")) prim_mdl = elookup("u16");
+        if (read_if(a, "int"))   prim_mdl = elookup("u32");
+        if (read_if(a, "long"))  prim_mdl = silver_read_if(a, "long")? 
+            elookup("u64") : elookup("u32");
 
         mdl = model_adj(a, prim_mdl ? prim_mdl : elookup("u32"));
     }
@@ -2184,8 +2195,8 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     if (!dir_exists("%o", project_f)) {
         path src_path = f(path, "%o/%o", a->src_loc, name);
         if (dir_exists("%o", src_path)) {
+            vexec("symlink", "ln -s %o %o", src_path, project_f);
             project_f = src_path;
-            vexec("ln -s %o/%o %o", a->src_loc, name, name);
         } else {
             vexec("init", "git init %o", project_f);
             vexec("remote", "git -C %o remote add origin %o", project_f, uri);
@@ -2205,7 +2216,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     path rust_f     = f(path, "%o/Cargo.toml", project_f);
     path meson_f    = f(path, "%o/meson.build", project_f);
     path cmake_f    = f(path, "%o/CMakeLists.txt", project_f);
-    path silver_f   = f(path, "%o/build.ag", project_f);
+    path silver_f   = f(path, "%o/src/%o.ag", project_f, name);
     path gn_f       = f(path, "%o/BUILD.gn", project_f);
     bool is_rust    = file_exists("%o", rust_f);
     bool is_meson   = file_exists("%o", meson_f);
@@ -2444,6 +2455,61 @@ static bool class_inherits(etype cl, etype of_cl);
 enode parse_map(silver a, etype mdl_schema);
 
 etype evar_type(evar a);
+
+int user_arg_count(enode f) {
+    if (f->au->member_type == AU_MEMBER_FUNC) {
+        if (f->au->is_imethod) return f->au->args.count - 1;
+        return f->au->args.count;
+    }
+    if (f->au->member_type == AU_MEMBER_CAST) {
+        return 0;
+    }
+    if (f->au->member_type == AU_MEMBER_OPERATOR) {
+        return f->au->args.count - 1;
+    }
+    if (f->au->member_type == AU_MEMBER_INDEX) {
+        return 1;
+    }
+    return 0;
+}
+
+static enode parse_func_call(silver a, enode f) {
+    push_current(a);
+    validate(is_func((Au)f), "expected function got %o", f);
+    validate(a->expr_level == 0 || (user_arg_count(f) == 0 || read_if(a, "[")),
+        "expected bracket at expression depth");
+    a->expr_level++;
+    enode   f_decl = (enode)f->au->user;
+    array   m      = (array)&f_decl->au->args;
+    int     ln     = m->count, i = 0;
+    array   values = array(alloc, 32, assorted, true);
+    enode   target = null;
+    i32     offset = 0;
+
+    if (f->target) {
+        verify(f->target, "expected target for method call");
+        push(values, (Au)f->target);
+        offset = 1;
+        verify(f_decl->target, "no target specified on target %o", f_decl);
+    }
+
+    while (i + offset < ln || f_decl->au->is_vargs) {
+        Au_t   arg  = (Au_t)array_get(m, i + offset);
+        etype  typ  = canonical(arg->src->user);
+        enode  expr = parse_expression(a, typ); // self contained for '{interp}' to cstr!
+        verify(expr, "invalid expression");
+        push(values, (Au)expr);
+        
+        if (read_if(a, ","))
+            continue;
+        
+        verify(len(values) >= ln, "expected %i args for function %o", ln, f);
+        break;
+    }
+    a->expr_level--;
+    pop_tokens(a, true);
+    return e_fn_call(a, f_decl, values);
+}
 
 static enode typed_expr(silver a, enode f, array expr) {
     push_tokens(a, expr ? (tokens)expr : a->tokens, expr ? 0 : a->cursor);
@@ -2793,7 +2859,11 @@ void silver_build_initializer(silver a, enode t) {
             array post_const = parse_const(a, (array)t->initializer);
             int level = a->expr_level;
             a->expr_level++;
-            expr = (Au)typed_expr(a, (enode)t->au->src->user, post_const); // we have tokens for the name pushed to the stack
+            push_tokens(a, (tokens)post_const, 0);
+            // we store the meta field on the var entry, not the var's src type
+            etype recombine = etype(mod, (aether)a, meta, t->meta, au, t->au->src);
+            expr = (Au)parse_expression(a, (etype)recombine); // we have tokens for the name pushed to the stack
+            pop_tokens(a, false);
             a->expr_level = level;
         }
         enode ctx = context_func(a);
@@ -2837,8 +2907,8 @@ static string cname(string s) {
 static string method_def(enode emem) {
     string name = cname(string(emem->au->ident));
     return f(string,
-             "#define %o(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->ft.%o(_i_, ## __VA_ARGS__); }})",
-             name, name);
+             "#ifndef %o\n\t#define %o(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->ft.%o(_i_, ## __VA_ARGS__); }})\n#endif\n",
+             name, name, name);
 }
 
 static string type_name(Au a) {
@@ -2862,19 +2932,6 @@ void silver_write_header(silver a) {
     string NAME        = uccase(m);
 
     verify(make_dir(module_dir), "could not make dir %o", module_dir);
-
-/*
-
-#define import_schema(X, Y, ...)                    \
-    M(X, Y, i, prop,  public, codegen, codegen)     \
-    M(X, Y, i, prop,  public, silver, external)     \
-    M(X, Y, i, prop,  public, array, tokens)        \
-    M(X, Y, i, prop,  public, array, module_paths)  \
-    M(X, Y, i, prop,  public, array, include_paths) \
-    M(X, Y, s, method,public, enode, parse_import, silver)
-declare_class_2(import, etype)
-
-*/
 
     // we still need to parse aliases where we subclass
     // LA
@@ -2920,7 +2977,6 @@ declare_class_2(import, etype)
         }
     }
     line(public_f, "#endif");
-
 
     // write init header
     line(init_f, "#ifndef _%o_INTERN_", NAME);
@@ -3040,6 +3096,12 @@ declare_class_2(import, etype)
     // write import header
     line(import_f, "#ifndef _%o_IMPORT_",   NAME);
     line(import_f, "#define _%o_IMPORT_\n", NAME);
+
+    each(a->imports, import, im) {
+        each(im->include_paths, path, i)
+            line(import_f, "#include <%o>", i);
+    }
+
     line(import_f, "#include <Au/public>");
     each(a->imports, import, im) {
         if (im->external)
@@ -3092,11 +3154,6 @@ void build_fn(silver a, enode f, callback preamble, callback postamble) {
     if (f->user_built)
         return;
 
-    if (strcmp(f->au->ident, "action2") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
-    
     f->has_code   = len(f->body) || f->cgen || preamble || postamble;
     f->user_built = true;
 
@@ -3173,6 +3230,9 @@ static void build_record(silver a, etype mrec) {
     
     etype_implement(mrec);
 
+    // the functions we write after may access the type-id
+    create_type_members(a, a->au);
+
     // if this is a class, we create one, then built init with a preamble that initializes our properties
     // this is called from Au_initialize
     if (rec->au->is_class) {
@@ -3187,17 +3247,6 @@ static void build_record(silver a, etype mrec) {
             m_init->alt = cstr_copy(f->chars);
             etype_implement((etype)m_init->user);
         }
-        Au_t m_init2 = find_member(rec->au, "init", AU_MEMBER_FUNC, false);
-        verify(m_init2, "not registering init");
-
-        members(rec->au, m) {
-            print("member: %s", m->ident);
-            if (m->ident && strcmp(m->ident, "member") == 0) {
-                int test2 = 2;
-                test2    += 2;
-            }
-        }
-
         build_fn(a, (enode)m_init->user, build_init_preamble, null); // we may need to
 
         // build remaining functions
@@ -3263,25 +3312,31 @@ static array read_expression(silver a, etype *mdl_res, bool *is_const) {
     return exprs;
 }
 
-static enode parse_func_call(silver, etype, enode);
+static enode parse_func_call(silver, enode);
 
 // this will have to adapt to parsing into a map, or parsing into a real type
 // for real types, we cannot use the string as its redundant and can be reduced by the user
 //
-enode parse_map(silver a, etype mdl_schema) {
+enode parse_map(silver a, etype mdl) {
+
+    bool is_fields = peek_fields(a) || inherits(mdl->au, typeid(map));
+
     print_tokens(a, "parse-map");
 
     // we need e_create to handle this as well; since its given a map of fields and a is_ref struct it knows to make an alloc
-    bool    is_mdl_map  = mdl_schema->au == typeid(map);
+    bool    is_mdl_map  = mdl->au == typeid(map);
+    bool    is_mdl_collective = inherits(mdl->au, typeid(collective));
     bool    was_ptr     = false;
 
-    if (is_ptr(mdl_schema) && is_struct(mdl_schema->au->src)) {
+    validate(!is_mdl_map || is_fields, "expected fields for map");
+
+    if (is_ptr(mdl) && is_struct(mdl->au->src)) {
         was_ptr    = true;
-        mdl_schema = resolve(mdl_schema);
+        mdl = resolve(mdl);
     }
     
-    etype   key         = is_mdl_map ? (etype)array_get((array)&mdl_schema->au->meta, 0) : null;
-    etype   val         = is_mdl_map ? (etype)array_get((array)&mdl_schema->au->meta, 1) : null;
+    etype   key         = is_mdl_map ? (etype)array_get((array)&mdl->au->meta, 0) : null;
+    etype   val         = is_mdl_map ? (etype)array_get((array)&mdl->au->meta, 1) : null;
 
     if (!key) key       = elookup("string");
     if (!val) val       = elookup("Au");
@@ -3290,23 +3345,27 @@ enode parse_map(silver a, etype mdl_schema) {
     etype f_alloc      = find_member(Au_type, "alloc_new", AU_MEMBER_FUNC, false)->user;
     etype f_initialize = find_member(Au_type, "initialize", AU_MEMBER_FUNC, false)->user;
 
-    enode metas_node = e_meta_ids(a, mdl_schema->meta);
-    enode rmap = e_fn_call(a, (enode)f_alloc, a( e_typeid(a, mdl_schema), _i32(1), metas_node ));
-    rmap->au = mdl_schema->au; // we need a general cast method that does not call function
+    enode metas_node = e_meta_ids(a, mdl->meta);
+    enode rmap = e_fn_call(a, (enode)f_alloc, a( e_typeid(a, mdl), _i32(1), metas_node ));
+    rmap->au = mdl->au; // we need a general cast method that does not call function
 
-    static Au_t sprop; if (!sprop) sprop = find_member(au_lookup("Au"),  "set_property", AU_MEMBER_FUNC, true);
-    static Au_t msetv; if (!msetv) msetv = find_member(au_lookup("map"), "set",          AU_MEMBER_FUNC, true);
+    static Au_t sprop; if (!sprop) sprop = find_member(typeid(Au),  "set_property", AU_MEMBER_FUNC, true);
+    static Au_t msetv; if (!msetv) msetv = find_member(typeid(map), "set",          AU_MEMBER_FUNC, true);
+    static Au_t apush; if (!apush) apush = find_member(typeid(array), "push",       AU_MEMBER_FUNC, true);
 
+    int iter = 0;
     while (silver_peek(a)) {
         Au    k = null;
         token t = peek(a);
         bool is_literal = instanceof(t->literal, string) != null;
         bool is_enode_key = false;
 
-        if (silver_read_if(a, "{")) {
+        if (is_fields && silver_read_if(a, "{")) {
             k = (Au)parse_expression(a, key); 
             validate(silver_read_if(a, "}"), "expected }");
             is_enode_key = true;
+        } else if (!is_fields && is_mdl_collective) {
+            k = (Au)parse_expression(a, key);
         } else if (!is_mdl_map) {
             string name = (string)read_alpha(a);
             validate(name, "expected member identifier");
@@ -3317,26 +3376,50 @@ enode parse_map(silver a, etype mdl_schema) {
             k = (Au)const_string(chars, name->chars);
         }
         
-        validate(silver_read_if(a, ":"), "expected : after key %o", t);
-        enode value = parse_expression(a, null);
+        if (is_fields) {
+            validate(silver_read_if(a, ":"), "expected : after key %o", t);
+            enode value = parse_expression(a, null);
 
-        if (!is_mdl_map) {
-            if (is_enode_key)
-                e_fn_call(a, (enode)sprop->user, a(rmap, k, value));
-            else {
-                Au_t m = find_member(mdl_schema->au, t->chars, AU_MEMBER_VAR, true);
-                validate(m, "member %o not found on model %o", t, mdl_schema);
-                enode prop = access(rmap, (string)k);
-                e_assign(a, prop, (Au)value, OPType__assign);
+            if (!is_mdl_map) {
+                if (is_enode_key)
+                    e_fn_call(a, (enode)sprop->user, a(rmap, k, value));
+                else {
+                    Au_t m = find_member(mdl->au, t->chars, AU_MEMBER_VAR, true);
+                    validate(m, "member %o not found on model %o", t, mdl);
+                    enode prop = access(rmap, (string)k);
+                    e_assign(a, prop, (Au)value, OPType__assign);
+                }
+            } else {
+                if (is_enode_key) {
+                    //enode rt_key = e_create(a, elookup("string"), k);
+                    e_fn_call(a, (enode)msetv->user, a(rmap, k, value));
+                } else
+                    e_fn_call(a, (enode)msetv->user, a(rmap, k, value));
             }
-            
         } else {
-            if (is_enode_key) {
-                //enode rt_key = e_create(a, elookup("string"), k);
-                e_fn_call(a, (enode)msetv->user, a(rmap, k, value));
-            } else
-                e_fn_call(a, (enode)msetv->user, a(rmap, k, value));
+            if (is_mdl_collective) {
+                e_fn_call(a, (enode)apush->user, a(rmap, k));
+            } else if (is_struct(mdl)) {
+                etype t = canonical(mdl);
+                int id = 0;
+                bool set = false;
+                members(t->au, m) {
+                    if (m->member_type == AU_MEMBER_VAR) {
+                        if (id == iter) {
+                            enode prop = access(rmap, (string)k);
+                            e_assign(a, prop, (Au)k, OPType__assign);
+                            set = false;
+                        }
+                        id++;
+                    }
+                }
+                validate(set, "too many fields specified for type %o", mdl);
+                
+            } else {
+                fault("type %o not compatible with array initialization", mdl);
+            }
         }
+        iter++;
     }
     e_fn_call(a, (enode)f_initialize, a(rmap));
     return rmap;
@@ -3424,7 +3507,10 @@ enode silver_parse_member_expr(silver a, enode mem) {
         return res;
 
     } else if (mem) {
-        if (is_func((Au)mem) || is_type((Au)mem)) {
+        if (is_func((Au)mem)) {
+            mem = parse_func_call(a, mem);
+        }
+        else if (is_type((Au)mem)) {
             array expr = read_within(a);
             inspect(mem);
             mem = typed_expr(a, mem, expr); // this, is the construct
@@ -3837,7 +3923,6 @@ etype silver_read_def(silver a) {
         enum_au->src = store->au;
         mdl = etype(mod, (aether)a, au, enum_au);
 
-
         push_tokens(a, (tokens)enum_body, 0);
         push_scope(a, (Au)mdl);
         validate(enum_au->src->is_integral,
@@ -3851,7 +3936,7 @@ etype silver_read_def(silver a) {
             bool is_explicit = silver_read_if(a, ":") != null;
 
             if (is_explicit) {
-                enode n = read_enode(a, store);
+                enode n = parse_expression(a, store);
                 verify(n && n->literal && ((Au_t)isa(n->literal))->is_integral,
                     "expected integral literal");
                 v = n->literal;
@@ -3875,6 +3960,9 @@ etype silver_read_def(silver a) {
         }
         pop_scope(a);
         pop_tokens(a, false);
+
+        // this should create type data for the enum type
+        create_type_members(a, a->au);
 
     } else {
         fault("unknown error");
