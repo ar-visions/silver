@@ -779,14 +779,15 @@ enode aether_e_meta_ids(aether a, array meta) {
         return e_null(a, atype_vector);
 
     i32 ln = len(meta);
-    
-    LLVMTypeRef arrTy = LLVMArrayType(lltype(atype_vector), ln);
-    LLVMValueRef *elems = calloc(ln, sizeof(LLVMValueRef));
+    LLVMTypeRef elemTy = lltype(atype_vector);
+    LLVMTypeRef arrTy = LLVMArrayType(elemTy, ln);
+    LLVMValueRef* elems = calloc(ln, sizeof(LLVMValueRef));
 
     for (i32 i = 0; i < ln; i++) {
         Au m = meta->origin[i];
         enode n;
         Au_t type = isa(m);
+
         if (instanceof(m, etype))
             n = e_typeid(a, (etype)m);
         else if (instanceof(m, shape)) {
@@ -801,22 +802,29 @@ enode aether_e_meta_ids(aether a, array meta) {
         } else {
             verify(false, "unsupported design-time meta type");
         }
+
         elems[i] = n->value;
     }
 
-    LLVMValueRef arr_init = LLVMConstArray(lltype(atype_vector), elems, ln);
+    // stack allocate: alloca [ln x atype]
+    LLVMValueRef arr_alloc = LLVMBuildAlloca(a->builder, arrTy, "meta_ids");
+
+    // store each element into the allocated array
+    for (i32 i = 0; i < ln; i++) {
+        LLVMValueRef idxs[] = {
+            LLVMConstInt(LLVMInt32Type(), 0, 0), // start of array
+            LLVMConstInt(LLVMInt32Type(), i, 0)  // element index
+        };
+        LLVMValueRef gep = LLVMBuildGEP2(a->builder, arrTy, arr_alloc, idxs, 2, "");
+        LLVMBuildStore(a->builder, elems[i], gep);
+    }
+
     free(elems);
 
-    static int ident = 0;
-    char gname[32];
-    sprintf(gname, "meta_ids_%i", ident++);
-    LLVMValueRef G = LLVMAddGlobal(a->module, arrTy, gname);
-    LLVMSetLinkage(G, LLVMInternalLinkage);
-    LLVMSetGlobalConstant(G, 1);
-    LLVMSetInitializer(G, arr_init);
- 
-    return enode(mod, a, loaded, true, value, G, au, etype_ptr(a, atype)->au);
+    // return pointer to array
+    return enode(mod, a, loaded, true, value, arr_alloc, au, etype_ptr(a, atype)->au);
 }
+
 
 enode aether_e_not_eq(aether a, enode L, enode R) {
     return e_not(a, e_eq(a, L, R));
@@ -1520,7 +1528,6 @@ enode aether_e_create(aether a, etype t, Au args) {
         // we have to call array with an intialization property for size, and data pointer
         // if the data is pre-defined in init and using primitives, it has to be stored prior to this call
         enode metas_node = e_meta_ids(a, t->meta);
-        
         res = e_fn_call(a, (enode)f_alloc, a( e_typeid(a, t), _i32(1), metas_node ));
         res->au = t->au; // we need a general cast method that does not call function
 
@@ -1740,7 +1747,7 @@ enode aether_e_const_array(aether a, etype mdl, array arg) {
 
     i32 ln = len(arg);
     
-    LLVMTypeRef arrTy = LLVMArrayType(lltype(vector_type), ln);
+    LLVMTypeRef arrTy = LLVMArrayType(lltype(mdl), ln);
     LLVMValueRef *elems = calloc(ln, sizeof(LLVMValueRef));
 
     for (i32 i = 0; i < ln; i++) {
@@ -1749,7 +1756,7 @@ enode aether_e_const_array(aether a, etype mdl, array arg) {
         elems[i] = n->value;  // each is an Au_t*
     }
 
-    LLVMValueRef arr_init = LLVMConstArray(lltype(vector_type), elems, ln);
+    LLVMValueRef arr_init = LLVMConstArray(lltype(mdl), elems, ln);
     free(elems);
 
     static int ident = 0;
@@ -1759,7 +1766,7 @@ enode aether_e_const_array(aether a, etype mdl, array arg) {
     LLVMSetLinkage(G, LLVMInternalLinkage);
     LLVMSetGlobalConstant(G, 1);
     LLVMSetInitializer(G, arr_init);
-    return enode(mod, a, loaded, false, value, G, au, mdl->au);
+    return enode(mod, a, loaded, true, value, G, au, vector_type->au);
 }
 
 enode aether_e_default_value(aether a, etype mdl) {
