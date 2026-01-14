@@ -746,10 +746,10 @@ typedef struct _collective_abi {
 
 // these methods could-be var-arg, however not recommended?
 #define collective_schema(AA,BB,...) \
-    M(AA,BB, i, prop, public, i32, count) \
-    M(AA,BB, i, prop, public, i32, alloc) \
-    M(AA,BB, i, prop, public, i32, hsize) \
-    M(AA,BB, i, ref,  public, Au, origin) \
+    M(AA,BB, i, prop, public, i32,  count) \
+    M(AA,BB, i, prop, public, i32,  alloc) \
+    M(AA,BB, i, prop, public, i32,  hsize) \
+    M(AA,BB, i, origin, public, Au, origin) \
     M(AA,BB, i, prop, public, item, first) \
     M(AA,BB, i, prop, public, item, last) \
     M(AA,BB, i, ref,  public, item, hlist) \

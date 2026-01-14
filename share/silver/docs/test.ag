@@ -6,13 +6,16 @@ class something
         puts 'something is equal to {mem2}'
 
 class aclass of app
-##
+
+    string nice_string = 'hi'
+
     map i32[string] nice_map = [
         'init-with': 2
+        {nice_string}: 4
     ]
-##
 
-    array i32[2] nice_array = [
+    # should error
+    array i32[] nice_array = [
         2 2 4 5 8 1 2 3 4 5 6 2 2 4 5 8 1 2 3 4 5 6 2 2 4 5 8 1 2 3 4 5 6 2 2 4 5 8 1 2 3 4 5 6 2 2 4 5 8 1 2 3 4 5 6 
         2 2 4 5 8 1 2 3 4 5 6 2 2 4 5 8 1 2 3 4 5 6 2 2 4 5 8 1 2 3 4 5 6 2 2 4 5 8 1 2 3 4 5 6 2 2 4 5 8 1 2 3 4 5 6 
         2 2 4 5 8 1 2 3 4 5 6 2 2 4 5 8 1 2 3 4 5 6 2 2 4 5 8 1 2 3 4 5 6 2 2 4 5 8 1 2 3 4 5 6 2 2 4 5 8 1 2 3 4 5 6 
