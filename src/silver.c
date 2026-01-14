@@ -360,14 +360,14 @@ static enode reverse_descent(silver a, etype expect) {
     return L;
 }
 
-enode parse_map(silver a, etype mdl_schema);
+enode parse_object(silver a, etype mdl_schema);
 
 static enode parse_expression(silver a, etype expect) {
     print_tokens(a, "parse-expr");
     // handle array and map types here at this level, and cue in other types through a protocol if possible
     // our calls below this do not have any idea to use the comma in expression syntax
     if (expect && inherits(expect->au, typeid(collective)) && read_if(a, "[")) {
-        enode res = parse_map(a, expect);
+        enode res = parse_object(a, expect);
         validate(read_if(a, "]"), "expected ] after [ expression...");
         return res;
     }
@@ -844,7 +844,7 @@ static array parse_tokens(silver a, Au input, array output) {
     a->source_raw = (string)hold(input_string);
 
     list symbols = list();
-    string special = string(".$,<>()![]/+*:=#");
+    string special = string(".{}$,<>()![]/+*:=#");
     i32 special_ln = len(special);
     for (int i = 0; i < special_ln; i++)
         push(symbols, (Au)string((i32)special->chars[i]));
@@ -1185,7 +1185,7 @@ bool is_loaded(Au n) {
 
 enode silver_parse_member(silver a) {
     Au_t   top     = top_scope(a);
-    etype  rec_top = (!a->cmode && is_rec(top)) ? top->user : null;
+    etype  rec_top = context_record(a);
     silver module  =  !a->cmode && (top->is_namespace) ? a : null;
     enode  f       =  !a->cmode ? context_func(a) : null;
 
@@ -1464,6 +1464,8 @@ enode silver_read_enode(silver a, etype mdl_expect) {
 
     print_tokens(a, "before parse_member (in read_enode)");
     mem = parse_member(a);
+
+    Au_t ty = isa(mem);
 
     // this only happens when in a function
     return f ? e_create(a, mdl_expect, (Au)mem) : null;
@@ -1907,8 +1909,10 @@ etype read_etype(silver a, array* p_expr) {
                     Au_t meta_src =  au_arg_type(mdl->au->meta.origin[1 + i]);
                     if  (meta_src == typeid(shape)) {
                         shape    s =  read_shape(a);
-                        validate(s, "expected shape description, found %o", peek(a));
-                        push(meta_args, (Au)s);
+                        if (s) {
+                            validate(s, "expected shape description, found %o", peek(a));
+                            push(meta_args, (Au)s);
+                        }
                     } else {
                         a->etype_level++;
                         etype imdl = read_etype(a, null);
@@ -2452,7 +2456,7 @@ static bool peek_fields(silver a);
 
 static bool class_inherits(etype cl, etype of_cl);
 
-enode parse_map(silver a, etype mdl_schema);
+enode parse_object(silver a, etype mdl_schema);
 
 etype evar_type(evar a);
 
@@ -2594,7 +2598,7 @@ static enode typed_expr(silver a, enode f, array expr) {
         r = e_create(a, (etype)f, (Au)nodes);
     } else if (peek_fields(a) || class_inherits((etype)f, elookup("map"))) {
         conv = false; // parse map will attempt to go direct
-        r    = (enode)parse_map(a, (etype)evar_type((evar)f));
+        r    = (enode)parse_object(a, (etype)evar_type((evar)f));
     } else {
         /// this is a conversion operation
         r = (enode)parse_expression(a, (etype)f);
@@ -3319,60 +3323,55 @@ static enode parse_func_call(silver, enode);
 // this will have to adapt to parsing into a map, or parsing into a real type
 // for real types, we cannot use the string as its redundant and can be reduced by the user
 //
-enode parse_map(silver a, etype mdl) {
 
+bool is_map(etype);
+
+// this must parse into map or array, then hand to e_create
+// in the case where the entire value is given at once, we can back out and perform a direct e_create
+// with that result.. we will do this on the first item.  we merely check for the ] afterwards.
+// as such we might want to lazy load the imap or iarray (intermediates that we give to e_create)
+enode parse_object(silver a, etype mdl) {
     bool is_fields = peek_fields(a) || inherits(mdl->au, typeid(map));
-
     print_tokens(a, "parse-map");
 
-    // we need e_create to handle this as well; since its given a map of fields and a is_ref struct it knows to make an alloc
-    bool    is_mdl_map  = mdl->au == typeid(map);
-    bool    is_mdl_collective = inherits(mdl->au, typeid(collective));
-    bool    was_ptr     = false;
+    bool is_mdl_map = mdl->au == typeid(map);
+    bool is_mdl_collective = inherits(mdl->au, typeid(collective));
+    bool was_ptr = false;
 
     validate(!is_mdl_map || is_fields, "expected fields for map");
 
     if (is_ptr(mdl) && is_struct(mdl->au->src)) {
         was_ptr = true;
-        mdl     = resolve(mdl);
+        mdl = resolve(mdl);
     }
-    
-    etype   key         = is_mdl_map ? (etype)array_get((array)&mdl->au->meta, 0) : null;
-    etype   val         = is_mdl_map ? (etype)array_get((array)&mdl->au->meta, 1) : null;
 
-    if (!key) key       = elookup("string");
-    if (!val) val       = elookup("Au");
+    etype key = is_mdl_map ? (etype)array_get((array)&mdl->meta, 0) : null;
+    etype val = is_mdl_map ? (etype)array_get((array)&mdl->meta, 1) : null;
 
-    Au_t  Au_type       = au_lookup("Au");
-    etype f_alloc       = find_member(Au_type, "alloc_new", AU_MEMBER_FUNC, false)->user;
-    etype f_initialize  = find_member(Au_type, "initialize", AU_MEMBER_FUNC, false)->user;
+    if (!key) key = elookup("string");
+    if (!val) val = elookup("Au");
 
-    enode metas_node = e_meta_ids(a, mdl->meta);
-    enode rmap = e_fn_call(a, (enode)f_alloc, a( e_typeid(a, mdl), _i32(1), metas_node ));
-    rmap->au = mdl->au; // we need a general cast method that does not call function
-
-    static Au_t sprop; if (!sprop) sprop = find_member(typeid(Au),  "set_property", AU_MEMBER_FUNC, true);
-    static Au_t msetv; if (!msetv) msetv = find_member(typeid(map), "set",          AU_MEMBER_FUNC, true);
-    static Au_t apush; if (!apush) apush = find_member(typeid(collective), "push",  AU_MEMBER_FUNC, true);
-
-    int iter = 0;
-    
-    shape s = is_mdl_collective ? instanceof(array_get(mdl->meta, 1), shape) : null;
-    int   shape_stride = (s && s->count > 1) ? s->data[s->count - 1] : 0;
+    // Lazy-initialized containers
+    map   imap   = null;
+    array iarray = null;
+    int   iter   = 0;
+    shape s      = is_mdl_collective ? instanceof(array_get(mdl->meta, 1), shape) : null;
+    int shape_stride = (s && s->count > 1) ? s->data[s->count - 1] : 0;
 
     while (silver_peek(a)) {
         if (next_is(a, "]"))
             break;
-        
+
         Au    k = null;
         token t = peek(a);
-        bool is_literal = instanceof(t->literal, string) != null;
-        bool is_enode_key = false;
+        bool  is_literal = instanceof(t->literal, string) != null;
+        bool  is_enode_key = false;
 
         print_tokens(a, "during parse-map");
 
+        // -- KEY --
         if (is_fields && silver_read_if(a, "{")) {
-            k = (Au)parse_expression(a, key); 
+            k = (Au)parse_expression(a, key);
             validate(silver_read_if(a, "}"), "expected }");
             is_enode_key = true;
         } else if (!is_fields && is_mdl_collective) {
@@ -3383,56 +3382,41 @@ enode parse_map(silver a, etype mdl) {
             validate(name, "expected member identifier");
             k = (Au)const_string(chars, name->chars);
         } else {
+            token t = peek(a);
             string name = (string)read_literal(a, typeid(string));
             validate(is_literal, "expected literal string");
             k = (Au)const_string(chars, name->chars);
         }
-        
+
+        // -- Handle literal short case --
+        if (iter == 0 && next_is(a, "]")) {
+            // single element, return e_create(k)
+            return e_create(a, mdl, k);
+        }
+
+        // -- VALUE --
+        Au v = null;
         if (is_fields) {
             validate(silver_read_if(a, ":"), "expected : after key %o", t);
-            enode value = parse_expression(a, null);
-
-            if (!is_mdl_map) {
-                if (is_enode_key)
-                    e_fn_call(a, (enode)sprop->user, a(rmap, k, value));
-                else {
-                    Au_t m = find_member(mdl->au, t->chars, AU_MEMBER_VAR, true);
-                    validate(m, "member %o not found on model %o", t, mdl);
-                    enode prop = access(rmap, (string)k);
-                    e_assign(a, prop, (Au)value, OPType__assign);
-                }
-            } else {
-                if (is_enode_key) {
-                    //enode rt_key = e_create(a, elookup("string"), k);
-                    e_fn_call(a, (enode)msetv->user, a(rmap, k, value));
-                } else
-                    e_fn_call(a, (enode)msetv->user, a(rmap, k, value));
-            }
-        } else {
-            if (is_mdl_collective) {
-                e_fn_call(a, (enode)apush->user, a(rmap, k));
-            } else if (is_struct(mdl)) {
-                etype t = canonical(mdl);
-                int id = 0;
-                bool set = false;
-                members(t->au, m) {
-                    if (m->member_type == AU_MEMBER_VAR) {
-                        if (id == iter) {
-                            enode prop = access(rmap, (string)k);
-                            e_assign(a, prop, (Au)k, OPType__assign);
-                            set = false;
-                        }
-                        id++;
-                    }
-                }
-                validate(set, "too many fields specified for type %o", mdl);
-                
-            } else {
-                fault("type %o not compatible with array initialization", mdl);
-            }
+            v = (Au)parse_expression(a, null);
         }
-        token comma = read_if(a, ",");
+
+        // -- Lazy allocate --
+        if (!imap && is_fields)
+            imap   = map();
+        else if (!iarray && !is_fields)
+            iarray = array(alloc, 32, assorted, true);
         
+        // -- Insert --
+        if (is_fields) {
+            validate(v, "expected value after key %o", k);
+            validate(!get(imap, k), "duplicate key %o", k);
+            set(imap, k, v); // k's are both strings and enode -- this is so we can eval into both map, struct and class props
+        } else {
+            push(iarray, k);
+        }
+
+        token comma = read_if(a, ",");
         if (shape_stride != 0) {
             verify( comma && (iter % shape_stride == 0), "expected comma");
             verify(!comma || (iter % shape_stride != 0), "unexpected comma");
@@ -3440,9 +3424,22 @@ enode parse_map(silver a, etype mdl) {
 
         iter++;
     }
-    e_fn_call(a, (enode)f_initialize, a(rmap));
-    return rmap;
+
+    // Now create from intermediate container
+    if (imap) return e_create(a, mdl, (Au)imap);
+
+    // validation check
+    if (iarray && mdl->au == typeid(array)) {
+        shape dims = instanceof(array_get(mdl->meta, 1), shape);
+        int max_items = dims ? shape_total(dims) : -1;
+        verify(max_items == -1 || len(iarray) <= max_items,
+            "too many elements (total array size: %i, user provides %i)", max_items, len(iarray));
+    }
+
+    // a default is made if we give a []; if iarray is provided, e_create will iterate through members
+    return e_create(a, mdl, (Au)iarray);
 }
+
 
 static bool class_inherits(etype cl, etype of_cl) {
     silver a = (silver)cl->mod;

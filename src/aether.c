@@ -68,7 +68,7 @@ enode enode_value(enode mem) {
         Au info = head(mem);
         LLVMValueRef loaded = LLVMBuildLoad2(
             a->builder, lltype(mem->au), mem->value, id->chars);
-        enode  res = enode(mod, a, value, loaded, loaded, true, au, mem->au);
+        enode  res = enode(mod, a, value, loaded, loaded, true, au, resolve(mem)->au);
         return res;
     } else {
         return mem;
@@ -965,7 +965,7 @@ enode aether_e_fn_call(aether a, enode fn, array args) {
     int n_args = args ? len(args) : 0;
     verify(n_args == fn->au->args.count ||
         (n_args > fn->au->args.count && fn->au->is_vargs),
-        "arg count mismatch");
+        "arg count mismatch on %o", fn);
     LLVMValueRef* arg_values = calloc(n_args, sizeof(LLVMValueRef));
     LLVMTypeRef  F = lltype(fn);
     LLVMValueRef V = fn->value;
@@ -1341,6 +1341,316 @@ bool is_au_t(Au a) {
     return au == typeid(Au_t);
 }
 
+
+
+
+/*
+enode parse_object(aether a, etype mdl) {
+
+    bool is_fields = peek_fields(a) || inherits(mdl->au, typeid(map));
+
+    print_tokens(a, "parse-map");
+
+    // we need e_create to handle this as well; since its given a map of fields and a is_ref struct it knows to make an alloc
+    bool    is_mdl_map  = mdl->au == typeid(map);
+    bool    is_mdl_collective = inherits(mdl->au, typeid(collective));
+    bool    was_ptr     = false;
+
+    validate(!is_mdl_map || is_fields, "expected fields for map");
+
+    if (is_ptr(mdl) && is_struct(mdl->au->src)) {
+        was_ptr = true;
+        mdl     = resolve(mdl);
+    }
+    
+    etype   key         = is_mdl_map ? (etype)array_get((array)&mdl->au->meta, 0) : null;
+    etype   val         = is_mdl_map ? (etype)array_get((array)&mdl->au->meta, 1) : null;
+
+    if (!key) key       = elookup("string");
+    if (!val) val       = elookup("Au");
+
+    Au_t  Au_type       = au_lookup("Au");
+    etype f_alloc       = find_member(Au_type, "alloc_new", AU_MEMBER_FUNC, false)->user;
+    etype f_initialize  = find_member(Au_type, "initialize", AU_MEMBER_FUNC, false)->user;
+
+    enode metas_node = e_meta_ids(a, mdl->meta);
+    enode rmap = e_fn_call(a, (enode)f_alloc, a( e_typeid(a, mdl), _i32(1), metas_node ));
+    rmap->au = mdl->au; // we need a general cast method that does not call function
+
+    static Au_t sprop; if (!sprop) sprop = find_member(typeid(Au),  "set_property", AU_MEMBER_FUNC, true);
+    static Au_t msetv; if (!msetv) msetv = find_member(typeid(map), "set",          AU_MEMBER_FUNC, true);
+    static Au_t apush; if (!apush) apush = find_member(typeid(collective), "push",  AU_MEMBER_FUNC, true);
+
+    int iter = 0;
+    
+    shape s = is_mdl_collective ? instanceof(array_get(mdl->meta, 1), shape) : null;
+    int   shape_stride = (s && s->count > 1) ? s->data[s->count - 1] : 0;
+
+    while (silver_peek(a)) {
+        if (next_is(a, "]"))
+            break;
+        
+        Au    k = null;
+        token t = peek(a);
+        bool is_literal = instanceof(t->literal, string) != null;
+        bool is_enode_key = false;
+
+        print_tokens(a, "during parse-map");
+
+        if (is_fields && silver_read_if(a, "{")) {
+            k = (Au)parse_expression(a, key); 
+            validate(silver_read_if(a, "}"), "expected }");
+            is_enode_key = true;
+        } else if (!is_fields && is_mdl_collective) {
+            etype e = (etype)array_get(mdl->meta, 0);
+            k = (Au)parse_expression(a, e);
+        } else if (!is_mdl_map) {
+            string name = (string)read_alpha(a);
+            validate(name, "expected member identifier");
+            k = (Au)const_string(chars, name->chars);
+        } else {
+            string name = (string)read_literal(a, typeid(string));
+            validate(is_literal, "expected literal string");
+            k = (Au)const_string(chars, name->chars);
+        }
+        
+        if (is_fields) {
+            validate(silver_read_if(a, ":"), "expected : after key %o", t);
+            enode value = parse_expression(a, null);
+
+            if (!is_mdl_map) {
+                if (is_enode_key)
+                    e_fn_call(a, (enode)sprop->user, a(rmap, k, value));
+                else {
+                    Au_t m = find_member(mdl->au, t->chars, AU_MEMBER_VAR, true);
+                    validate(m, "member %o not found on model %o", t, mdl);
+                    enode prop = access(rmap, (string)k);
+                    e_assign(a, prop, (Au)value, OPType__assign);
+                }
+            } else {
+                if (is_enode_key) {
+                    //enode rt_key = e_create(a, elookup("string"), k);
+                    e_fn_call(a, (enode)msetv->user, a(rmap, k, value));
+                } else
+                    e_fn_call(a, (enode)msetv->user, a(rmap, k, value));
+            }
+        } else {
+            if (is_mdl_collective) {
+                e_fn_call(a, (enode)apush->user, a(rmap, k));
+            } else if (is_struct(mdl)) {
+                etype t = canonical(mdl);
+                int id = 0;
+                bool set = false;
+                members(t->au, m) {
+                    if (m->member_type == AU_MEMBER_VAR) {
+                        if (id == iter) {
+                            enode prop = access(rmap, (string)k);
+                            e_assign(a, prop, (Au)k, OPType__assign);
+                            set = false;
+                        }
+                        id++;
+                    }
+                }
+                validate(set, "too many fields specified for type %o", mdl);
+                
+            } else {
+                fault("type %o not compatible with array initialization", mdl);
+            }
+        }
+        token comma = read_if(a, ",");
+        
+        if (shape_stride != 0) {
+            verify( comma && (iter % shape_stride == 0), "expected comma");
+            verify(!comma || (iter % shape_stride != 0), "unexpected comma");
+        }
+
+        iter++;
+    }
+    e_fn_call(a, (enode)f_initialize, a(rmap));
+    return rmap;
+}
+*/
+
+bool is_map(etype t) {
+    if (instanceof(t, etype) && t->au == typeid(map) || t->au->context == typeid(map)) {
+        return true;
+    }
+    return false;
+}
+
+// find use for this one; i dont believe im literally caling e_create with a map attached
+// e_create had all of the logic inside, and i just thought it too much
+enode e_create_from_map(aether a, etype t, map m) {
+    bool  is_m         = is_map(t);
+    enode f_alloc      = (enode)find_member(typeid(Au),    "alloc_new",    AU_MEMBER_FUNC, false)->user;
+    enode f_initialize = (enode)find_member(typeid(Au),    "initialize",   AU_MEMBER_FUNC, false)->user;
+    enode f_set_prop   = (enode)find_member(typeid(Au),    "set_property", AU_MEMBER_FUNC, false)->user;
+    enode f_mset       = (enode)find_member(typeid(map),   "set",          AU_MEMBER_FUNC, false)->user;
+    enode f_push_vdata = (enode)find_member(typeid(array), "push_vdata",   AU_MEMBER_FUNC, true )->user;
+    enode metas_node   = e_meta_ids(a, t->meta);
+    enode res          = e_fn_call(a, f_alloc, a( e_typeid(a, t), _i32(1), metas_node ));
+    res->au   = t->au;
+    res->meta = hold(t->meta);
+
+    if (is_m) e_fn_call(a, (enode)f_initialize, a(res));
+
+    pairs(m, i) {
+        Au k = i->key;
+        
+        if (is_m) {
+            e_fn_call(a, f_mset, a(res, k, i->value));
+        } else {
+            if (instanceof(k, enode)) {
+                e_fn_call(a, f_set_prop, a(res, k, i->value));
+            } else {
+                enode prop = access(res, (string)k);
+                e_assign(a, prop, i->value, OPType__assign);
+            }
+        }
+    }
+    if (!is_m) e_fn_call(a, (enode)f_initialize, a(res));
+    return res;
+}
+
+enode e_create_from_array(aether a, etype t, array ar) {
+    Au_t  Au_type      = au_lookup("Au");
+    enode f_alloc      = (enode)find_member(Au_type, "alloc_new",  AU_MEMBER_FUNC, false)->user;
+    enode f_initialize = (enode)find_member(Au_type, "initialize", AU_MEMBER_FUNC, false)->user;
+    enode f_push       = (enode)find_member(typeid(collective), "push", AU_MEMBER_FUNC, true)->user;
+    enode f_push_vdata = (enode)find_member(typeid(array), "push_vdata", AU_MEMBER_FUNC, true)->user;
+
+    enode metas_node = e_meta_ids(a, t->meta);
+    enode res = e_fn_call(a, f_alloc, a( e_typeid(a, t), _i32(1), metas_node ));
+    res->au = t->au; // we need a general cast method that does not call function
+    
+    bool  all_const = t->au == typeid(array);
+    int   ln = len(ar);
+    enode array_len = e_operand(a, _i64(ln), elookup("i64"));
+    
+    enode const_vector = null;
+
+    for (int i = 0; i < ln; i++) {
+        enode node = (enode)instanceof(ar->origin[i], enode);
+        if (node && node->literal)
+            continue;
+        all_const = false;
+        break;
+    }
+
+    // read meta args
+    etype element_type = instanceof(array_get((array)t->meta, 0), etype);
+    shape dims         = instanceof(array_get((array)t->meta, 1), shape);
+    if (!element_type) element_type = typeid(Au)->user;
+    int max_items = dims ? dims->count : -1;
+
+    verify(max_items == -1 || ln <= max_items, "too many elements given to array");
+    
+    if (all_const) {
+        etype ptr = pointer(a, (Au)element_type);
+        etype elem_t = resolve(t);   // base element type
+        LLVMValueRef *elems   = malloc(sizeof(LLVMValueRef) * ln);
+        for (int i = 0; i < ln; i++) {
+            enode node = (enode)ar->origin[i];
+            elems[i]   = node->value;
+        }
+        LLVMValueRef const_arr = LLVMConstArray(lltype(elem_t), elems, ln);
+        free(elems);
+        static int ident = 0;
+        char vname[32];
+        sprintf(vname, "const_vector_%i", ident++);
+        LLVMValueRef glob = LLVMAddGlobal(a->module, LLVMTypeOf(const_arr), vname);
+        LLVMSetLinkage(glob, LLVMInternalLinkage);
+        LLVMSetGlobalConstant(glob, 1);
+        LLVMSetInitializer(glob, const_arr);
+        const_vector = enode(mod, a, au, ptr->au, loaded, false, value, glob);
+    }
+
+    enode prop_alloc     = enode_access(res, string("alloc"));
+    enode prop_unmanaged = enode_access(res, string("unmanaged"));
+
+    e_assign(a, prop_alloc, (Au)array_len, OPType__assign);
+    if (const_vector) {
+        enode tru = e_operand(a, _bool(ln), elookup("bool"));
+        e_assign(a, prop_unmanaged, (Au)tru, OPType__assign);
+    }     
+    e_fn_call(a, f_initialize, a(res));
+
+    if (const_vector) {
+        e_fn_call(a, f_push_vdata, a(res, const_vector, array_len, e_typeid(a, element_type)));
+    } else {
+        for (int i = 0; i < ln; i++) {
+            Au element  = ar->origin[i];
+            e_fn_call(a, f_push, a(res, element));
+        }
+    }
+    return res;
+}
+
+
+enode e_convert_or_cast(aether a, etype t, enode input) {
+    LLVMTypeRef typ = LLVMTypeOf(input->value);
+    LLVMTypeKind k = LLVMGetTypeKind(typ);
+
+    // check if these are either Au_t class typeids, or actual compatible instances
+    if (k == LLVMPointerTypeKind) {
+        a->is_const_op = false;
+        if (a->no_build) return e_noop(a, t);
+
+        etype src = canonical(input);
+        etype dst = canonical(t);
+        bool bit_cast = src == dst;
+        if (!bit_cast) {
+            if (src->au->is_schema && dst->au == typeid(Au_t))
+                bit_cast = true;
+            else if (dst->au->is_schema && src->au == typeid(Au_t))
+                bit_cast = true;
+            else if (!is_subclass((Au)src, (Au)dst)) {
+                int   r0   = ref_level((Au)input);
+                int   r1   = ref_level((Au)t);
+                etype ires = resolve(src);
+                etype ores = resolve(dst);
+                if (ores->au == typeid(ARef) && is_ptr(input))
+                    bit_cast = true;
+                else if (r0 == r1 && ires == ores || ores->au->is_schema || ires->au->is_schema)
+                    bit_cast = true;
+                else {
+                    char *s = LLVMPrintTypeToString(lltype(t));
+                    print("LLVM type: %s", s);
+
+                    bool check = (is_prim(src) && is_prim(dst)) ||
+                        etype_inherits((etype)input, t) ||
+                        (is_subclass((Au)ores, (Au)ires) || is_subclass((Au)ires, (Au)ores));
+                    
+                    if (!check) {
+                        check = check;
+                    }
+
+                    if (is_rec(src) || is_rec(dst)) {
+                        Au_t au_type = au_lookup("Au_t");
+                        if (is_ptr(src) && src->au->src == au_type && dst->au == au_type)
+                            check = true;
+                    }
+                    if (!check) {
+                        check = check;
+                    }
+                    static int seq = 0;
+                    seq++;
+                    if (seq == 2) {
+                        seq = seq;
+                    }
+                    verify(check, "models not compatible: %o -> %o %i",
+                            input, t, seq);
+                }
+            }
+        }
+        return value(t,
+            LLVMBuildBitCast(a->builder, input->value, lltype(t), "class_ref_cast"));
+    }
+
+    // fallback to primitive conversion rules
+    return aether_e_primitive_convert(a, input, t);
+}
+
 /// create is both stack and heap allocation (based on etype->is_ref, a storage enum)
 /// create primitives and objects, constructs with singular args or a map of them when applicable
 enode aether_e_create(aether a, etype t, Au args) {
@@ -1405,69 +1715,18 @@ enode aether_e_create(aether a, etype t, Au args) {
         
         static int seq = 0;
         seq++;
-        if (seq == 26) {
+        if (seq == 27) {
             seq = seq;
         }
+        Au_t t_isa = isa(t);
         enode fmem = convertible((etype)input, t);
 
         verify(fmem, "no suitable conversion found for %o -> %o (%i)",
             input, t, seq);
         
         if (fmem == (void*)true) {
-            LLVMTypeRef typ = LLVMTypeOf(input->value);
-            LLVMTypeKind k = LLVMGetTypeKind(typ);
-
-            // check if these are either Au_t class typeids, or actual compatible instances
-            if (k == LLVMPointerTypeKind) {
-                a->is_const_op = false;
-                if (a->no_build) return e_noop(a, t);
-
-                etype src = canonical(input);
-                etype dst = canonical(t);
-                bool bit_cast = src == dst;
-                if (!bit_cast) {
-                    if (src->au->is_schema && dst->au == typeid(Au_t))
-                        bit_cast = true;
-                    else if (dst->au->is_schema && src->au == typeid(Au_t))
-                        bit_cast = true;
-                    else if (!is_subclass((Au)src, (Au)dst)) {
-                        int   r0   = ref_level((Au)input);
-                        int   r1   = ref_level((Au)t);
-                        etype ires = resolve(src);
-                        etype ores = resolve(dst);
-                        if (r0 == r1 && ires == ores || ores->au->is_schema || ires->au->is_schema)
-                            bit_cast = true;
-                        else {
-                            char *s = LLVMPrintTypeToString(lltype(t));
-                            print("LLVM type: %s", s);
-
-                            bool check = (is_prim(src) && is_prim(dst)) ||
-                                etype_inherits((etype)input, t) ||
-                                (is_subclass((Au)ores, (Au)ires) || is_subclass((Au)ires, (Au)ores));
-                            
-                            if (!check) {
-                                check = check;
-                            }
-
-                            if (is_rec(src) || is_rec(dst)) {
-                                Au_t au_type = au_lookup("Au_t");
-                                if (is_ptr(src) && src->au->src == au_type && dst->au == au_type)
-                                    check = true;
-                            }
-                            if (!check) {
-                                check = check;
-                            }
-                            verify(check, "models not compatible: %o -> %o",
-                                    input, t);
-                        }
-                    }
-                }
-                return value(t,
-                    LLVMBuildBitCast(a->builder, input->value, lltype(t), "class_ref_cast"));
-            }
-
-            // fallback to primitive conversion rules
-            return aether_e_primitive_convert(a, input, t);
+            // perform primitive conversion, or a general bitcast
+            return e_convert_or_cast(a, t, input);
         }
         
         // primitive-based conversion goes here
@@ -1525,100 +1784,15 @@ enode aether_e_create(aether a, etype t, Au args) {
         res = enode(mod, a, value, G, loaded, false, au, t->au);
 
     } else if (!ctr && cmdl) {
-        // we have to call array with an intialization property for size, and data pointer
-        // if the data is pre-defined in init and using primitives, it has to be stored prior to this call
-        enode metas_node = e_meta_ids(a, t->meta);
-        res = e_fn_call(a, (enode)f_alloc, a( e_typeid(a, t), _i32(1), metas_node ));
-        res->au = t->au; // we need a general cast method that does not call function
-
-        bool is_array = cmdl && cmdl->au->context == au_lookup("array");
-        if (imap) {
-            
-            pairs(imap, i) {
-                string k = (string)i->key;
-
-                enode i_prop  = enode_access(res, k);
-                enode i_value = e_operand(a, i->value, resolve(i_prop));
-                
-                e_assign(a, i_prop, (Au)i_value, OPType__assign);
-            }
-
-            // this is a static method, with a target of sort, but its not a real target since its not a real instance method
-            e_fn_call(a, (enode)f_initialize, a(res)); // required logic need not emit ops to set the bits when we can check at design time
-            
-        } else if (ar) { // if array is given for args
-
-            // if we are CREATING an array
-            if (is_array) {
-                int   ln = len(ar);
-                enode n  = e_operand(a, _i64(ln), elookup("i64"));
-                bool all_const = ln > 0;
-                enode const_array = null;
-                for (int i = 0; i < ln; i++) {
-                    enode node = (enode)instanceof(ar->origin[i], enode);
-                    if (node && node->literal)
-                        continue;
-                    all_const = false;
-                    break;
-                }
-                if (all_const) {
-                    etype ptr = pointer(a, (Au)t);
-                    etype elem_t = resolve(t);   // base element type
-                    LLVMValueRef *elems   = malloc(sizeof(LLVMValueRef) * ln);
-                    for (int i = 0; i < ln; i++) {
-                        enode node = (enode)ar->origin[i];
-                        elems[i]   = node->value;
-                    }
-                    LLVMValueRef const_arr = LLVMConstArray(lltype(elem_t), elems, ln);
-                    free(elems);
-                    static int ident = 0;
-                    char vname[32];
-                    sprintf(vname, "const_arr_%i", ident++);
-                    LLVMValueRef glob = LLVMAddGlobal(a->module, LLVMTypeOf(const_arr), vname);
-                    LLVMSetLinkage(glob, LLVMInternalLinkage);
-                    LLVMSetGlobalConstant(glob, 1);
-                    LLVMSetInitializer(glob, const_arr);
-                    const_array = enode(mod, a, au, ptr->au, loaded, false, value, glob);
-                }
-                enode prop_alloc     = enode_access(res, string("alloc"));
-                enode prop_unmanaged = enode_access(res, string("unmanaged"));
-                e_assign(a, prop_alloc, (Au)n, OPType__assign);
-                if (const_array) {
-                    enode tru = e_operand(a, _bool(ln), elookup("bool"));
-                    e_assign(a, prop_unmanaged, (Au)tru, OPType__assign);
-                }     
-                e_fn_call(a, (enode)f_initialize, a(res));
-                if (const_array) {
-                    etype f_push_vdata = find_member(t->au, "push_vdata", AU_MEMBER_FUNC, true)->user;
-                    e_fn_call(a, (enode)f_push_vdata, a(res, const_array, n));
-                } else {
-                    etype f_push = find_member(t->au, "push", AU_MEMBER_FUNC, true)->user;
-                    for (int i = 0; i < ln; i++) {
-                        Au      aa = ar->origin[i];
-                        enode   n = e_operand(a, aa, t->au->src->user);
-                        e_fn_call(a, (enode)f_push, a(res, n));
-                    }
-                }
-            } else {
-                fault("unsupported instantiation method");
-                /*
-                // if array given and we are not making an array, this will create fields
-                // theres no silver exposure for this, though -- not unless we adopt braces
-                // why though, lets just make 1 mention of type and have a language that is unambiguous and easier to read
-                array f = field_list(mdl, elookup("Au"), false);
-                for (int i = 0, ln = len(a); i < ln; i++) {
-                    verify(i < len(f), "too many fields provided for object %o", mdl);
-                    emember m = f->origin[i];
-                    enode   n = e_operand(a, a->origin[i], m->mdl);
-                    emember rmem = member_lookup((emember)res, m->name);
-                    e_assign(a, res, rmem, OPType__assign);
-                }
-                e_fn_call(a, f_initialize, res, a());*/
-            }
+        if (instanceof(args, array)) {
+            return e_create_from_array(a, t, (array)args);
+        } else if (instanceof(args, map)) {
+            return e_create_from_map  (a, t, (map)args);
         } else {
-            if (ctr) {
-                e_fn_call(a, (enode)ctr, a(res, input));
-            }
+            fault("this needs work");
+            enode metas_node = e_meta_ids(a, t->meta);
+            res = e_fn_call(a, (enode)f_alloc, a( e_typeid(a, t), _i32(1), metas_node ));
+            res->au = t->au; // we need a general cast method that does not call function
             res = e_fn_call(a, (enode)f_initialize, a(res)); // required logic need not emit ops to set the bits when we can check at design time
         }
     } else if (ctr) {

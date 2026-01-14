@@ -703,11 +703,36 @@
 #define   i_ref_interface_INST_L(X, R, N)
 #define   i_ref_interface_INST_U_EXTERN(X, R, N)
 #define   i_ref_interface_INST_L_EXTERN(X, R, N)
-#define   i_ref_interface_DECL(X, R, N)        i_prop_public_DECL(X, R, N)
-#define   i_ref_interface_DECL_EXTERN(X, R, N) i_prop_public_DECL(X, R, N)
+#define   i_ref_interface_DECL(X, R, N)        
+#define   i_ref_interface_DECL_EXTERN(X, R, N) 
 #define   i_ref_interface_GENERICS(X, R, N)
 #define   i_ref_interface_PROTO(X, R, N)  
 #define   i_ref_interface_METHOD(X, R, N)
+
+
+#define   i_origin_public_F(X, R, N) u8 N;
+#define   i_origin_public_F_EXTERN(X, R, N) u8 N;
+#define   i_origin_public_ISIZE(X, R, N)        
+#define   i_origin_public_ISIZE_EXTERN(X, R, N) 
+#define   i_origin_public_INST_U(X, R, N)         union { Au* N; i8* N##_i8; i16* N##_i16; i32* N##_i32; i64* N##_i64; f64* N##_f64; f32* N##_f32; fp16* N##_f16; };
+#define   i_origin_public_INST_L(X, R, N)
+#define   i_origin_public_INST_U_EXTERN(X, R, N)  i_origin_public_INST_U(X, R, N)
+#define   i_origin_public_INST_L_EXTERN(X, R, N)
+#define   i_origin_public_DECL(X, R, N)          
+#define   i_origin_public_DECL_EXTERN(X, R, N)   
+#define   i_origin_public_GENERICS(X, R, N)
+#define   i_origin_public_INIT(X, R, N) {\
+    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, AU_TRAIT_VPROP); \
+    m->access_type = interface_public; \
+    m->offset   = offsetof(struct _##X, N); \
+    m->type     = (Au_t)&ARef_i.type; \
+}
+
+#define   i_origin_public_PROTO(X, R, N)  
+#define   i_origin_public_METHOD(X, R, N)
+
+#define i_origin(X, Y, ACCESS, TY, N) i_origin_## ACCESS ##_##Y(X, TY, N)
+
 
 #define   i_ref_public_F(X, R, N) u8 N;
 #define   i_ref_public_F_EXTERN(X, R, N) u8 N;
@@ -766,6 +791,7 @@
 #define   i_ref_intern_INIT(X, R, N)
 #define   i_ref_intern_PROTO(X, R, N)  
 #define   i_ref_intern_METHOD(X, R, N)  
+
 #define   i_ref(X, Y, T, R, N) i_ref_##T##_##Y(X, R, N)
 
 
