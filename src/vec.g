@@ -1,2 +1,2 @@
-type:       static
+type:       shared
 modules:    Au

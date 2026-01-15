@@ -2762,9 +2762,11 @@ none etype_init(etype t) {
     if (t->mod == null) t->mod = (aether)instanceof(t, aether);
     aether a = t->mod; // silver's mod will be a delegate to aether, not inherited
 
-    if (t->au && t->au->ident && strstr(t->au->ident, "action")) {
-        t = t;
+    if (t->au && t->au->ident && strcmp(t->au->ident, "vec2f") == 0) {
+        int test2 = 2;
+        test2    += 2;
     }
+
     if (!t->au) {
         // we must also unregister this during watch cycles, upon reinit
         t->au = def(a->au, null, AU_MEMBER_NAMESPACE, 0);
@@ -3011,11 +3013,13 @@ Au_t read_arg_type(Au_t stored_arg) {
 etype get_type_t_ptr(etype t) {
     aether a = t->mod;
 
+    /*
     bool allow = is_au_type(t) || a->au == t->au->module;
     if (!allow)
         allow = allow;
     verify(allow,
         "get_type_t_ptr not available on external types");
+    */
 
     if (t->schema)
         return t->schema->au->ptr->user;
@@ -3639,7 +3643,16 @@ void aether_import_models(aether a, Au_t ctx) {
         for (num i = 0; i < ctx->members.count; i++) {
             Au_t m  =  (Au_t)ctx->members.origin[i];
 
-            if (m->module != ctx) continue;
+            if (m->module != ctx) {
+
+                if (m->ident && strcmp(m->ident, "vec2f") == 0) {
+                    int test2 = 2;
+                    test2    += 2;
+                }
+
+                continue;
+            }
+
             if (ff->member_type && ff->member_type != m->member_type) continue;
 
             bool is_func = m->member_type == AU_MEMBER_FUNC || m->member_type == AU_MEMBER_INDEX || 
@@ -3662,6 +3675,10 @@ void aether_import_models(aether a, Au_t ctx) {
                     src_init(a, m);
                 }
                 if (ff->impl) {
+                    if (m->ident && strcmp(m->ident, "vec2f") == 0) {
+                        int test2 = 2;
+                        test2    += 2;
+                    }
                     etype_implement((etype)m->user);
                 }
             }
@@ -3670,15 +3687,15 @@ void aether_import_models(aether a, Au_t ctx) {
     create_type_members(a, ctx);
 }
 
-void aether_import_Au(aether a, path lib) {
-    a->current_inc   = lib ? lib : path("Au");
+void aether_import_Au(aether a, Au lib) {
+    a->current_inc   = instanceof(lib, Au_t) ? path(((Au_t)lib)->ident) : lib ? (path)lib : path("Au");
     a->is_Au_import  = true;
-    string  lib_name = lib ? stem(lib) : null;
+    string  lib_name = lib && instanceof(lib, path) ? stem((path)lib) : null;
     Au_t    au_module = null;
 
     // register and push new module scope if we are loading from library
     if (lib) {
-        au_module = def_module(copy_cstr(lib_name->chars));
+        au_module = instanceof(lib, path) ? def_module(copy_cstr(lib_name->chars)) : (Au_t)lib;
         push_scope(a, (Au)au_module);
     } else {
         au_module = global();
@@ -3689,10 +3706,11 @@ void aether_import_Au(aether a, path lib) {
     a->import_module = au_module;
 
     Au_t base = au_lookup("Au_t");
-    if (lib) {
-        handle f = dlopen(cstring(lib), RTLD_NOW);
-        verify(f, "shared-lib failed to load: %o", lib);
-        set(a->libs, string(lib->chars), (Au)f);
+    if (instanceof(lib, path)) {
+        string path_str = string(((path)lib)->chars);
+        handle lib_instance = dlopen(cstring(path_str), RTLD_NOW);
+        verify(lib_instance, "shared-lib failed to load: %o", lib);
+        set(a->libs, path_str, (Au)lib_instance);
     }
 
     Au_t au    = typeid(Au);
@@ -3703,7 +3721,9 @@ void aether_import_Au(aether a, path lib) {
     etype_ptr(a, au_t);
 
     aether_import_models(a, au_module);
-
+    if (!au_module->user) {
+        au_module->user = (etype)hold(emodule(mod, a, au, au_module));
+    }
     if (!lib) {
         // this causes a name-related error in IR
         Au_t f = find_member(au_module, "app", AU_MEMBER_TYPE, AU_TRAIT_ABSTRACT);
@@ -3715,14 +3735,6 @@ void aether_import_Au(aether a, path lib) {
         }
 
         verify(f->context == typeid(Au), "expected Au type context");
-
-        /*
-        Au_t main_cl = def_member(au_module, "app", null, AU_MEMBER_TYPE,
-            AU_TRAIT_CLASS | AU_TRAIT_ABSTRACT);
-        main_cl->context = typeid(Au);
-        main_cl->user = etype(mod, a, au, main_cl);
-        implement(main_cl->user);
-        */
     }
     a->is_Au_import  = false;
 }
@@ -3839,7 +3851,7 @@ none aether_init(aether a) {
     push(a->include_paths, (Au)src_path);
 
     a->registry       = array(alloc, 256, assorted, true);
-    a->libs           = map(assorted, true);
+    a->libs           = map(assorted, true, unmanaged, true);
     a->user_type_ids  = map(assorted, true);
     a->lexical        = array(unmanaged, true, assorted, true);
     a->module         = LLVMModuleCreateWithName(a->name->chars);
@@ -3902,13 +3914,6 @@ none enode_init(enode n) {
     Au_t n_isa = isa(n);
     aether a = n->mod;
     bool is_const = n->literal != null;
-
-    if (is_ptr(n->au) && is_class(n->au->src)) {
-        if (strcmp(n->au->src->ident, "something") == 0) {
-            int test2 = 2;
-            test2    += 2;
-        }
-    }
 
     if (is_func((Au)n->au->context)) {
         enode fn = (enode)n->au->context->user;
@@ -4416,8 +4421,8 @@ etype aether_return_type(aether a) {
 }
 
 // ident is optional, and based on 
-enode aether_function(aether a, string ident, etype rtype, array args, u8 member_type, u32 traits, u8 operator_type) {
-    Au_t context = top_scope(a);
+enode aether_function(aether a, etype place, string ident, etype rtype, array args, u8 member_type, u32 traits, u8 operator_type) {
+    Au_t context = place->au;
     Au_t au = def(context, ident->chars, AU_MEMBER_FUNC, traits);
     if (context->member_type == AU_MEMBER_MODULE)
         au->module = context;
@@ -4438,8 +4443,8 @@ enode aether_function(aether a, string ident, etype rtype, array args, u8 member
     return n;
 }
 
-etype aether_record(aether a, etype based, string ident, u32 traits, array meta) {
-    Au_t context = top_scope(a);
+etype aether_record(aether a, etype place, etype based, string ident, u32 traits, array meta) {
+    Au_t context = place->au;
     Au_t au = def(context, ident->chars, AU_MEMBER_TYPE, traits);
     au->context = based ? based->au : elookup("Au")->au;
     each(meta, Au, arg) {
@@ -4455,7 +4460,7 @@ enode aether_module_initializer(aether a) {
     if (a->fn_init) return a->fn_init;
     verify(a, "model given must be module (aether-based)");
 
-    enode init = function(a,
+    enode init = function(a, (etype)a,
         string("initializer"), elookup("none"), array(),
         AU_MEMBER_FUNC, AU_TRAIT_MODINIT, OPType__undefined);
     init->has_code = true;

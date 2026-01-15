@@ -1,5 +1,5 @@
 type:       shared
-modules:    Au aclang allvm
+modules:    Au aclang allvm vec
 link:       -lclang-cpp -lclang -lLLVM -llldb
 import:     LLVM:llvm-project/bd7db754895ed3b51388ec549cd656c770c17587 native
     -S $SILVER/checkout/llvm-project/llvm

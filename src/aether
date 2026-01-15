@@ -110,9 +110,9 @@ declare_class_2(statements, etype)
     M(X,Y, i, method, public,     none,        create_type_members, Au_t) \
     M(X,Y, i, method, public,     none,        output_schemas, enode) \
     M(X,Y, i, method, public,     enode,       module_initializer) \
-    M(X,Y, i, method, public,     none,        import_Au, path) \
-    M(X,Y, i, method, public,     enode,       function, string, etype, array, u8, u32, u8) \
-    M(X,Y, i, method, public,     etype,       record, etype, string, u32, array) \
+    M(X,Y, i, method, public,     none,        import_Au, Au) \
+    M(X,Y, i, method, public,     enode,       function, etype, string, etype, array, u8, u32, u8) \
+    M(X,Y, i, method, public,     etype,       record, etype, etype, string, u32, array) \
     M(X,Y, i, method, public,     none,        reinit_startup) \
     M(X,Y, i, method, public,     none,        e_fn_return,        Au) \
     M(X,Y, i, method, public,     enode,       e_null,             etype) \
