@@ -179,7 +179,7 @@ define_class(rgba, Au)
 
 vec2f rect_xy(rect a) { return vec2f(a->x, a->y); }
 
-rect rect_create_rect(vec2f v0, vec2f v1) {
+rect create_rect(vec2f v0, vec2f v1) {
     rect r = rect();
     r->x = v0.x;
     r->y = v0.y;
@@ -565,6 +565,7 @@ rgbaf rgbaf_with_vec4f(vec4f* v4) {
 }
 
 define_struct(rgb8,   u8,  u8,  u8)
+define_struct(rgbf,   f32, f32, f32, f32)
 define_struct(rgba8,  u8,  u8,  u8,  u8)
 define_struct(rgba16, u16, u16, u16, u16)
 define_struct(rgbaf,  f32, f32, f32, f32)

@@ -662,6 +662,7 @@ forward(any)
     M(AA,BB, s, method, public, none, member_override, Au_t, Au_t, AFlag) \
     M(AA,BB, s, method, public, none, def_init, func) \
     M(AA,BB, s, method, public, bool, is_inlay, Au_t) \
+    M(AA,BB, s, method, public, Au_t, find_module, symbol) \
     M(AA,BB, s, method, public, Au_t, find_type, symbol, Au_t) \
     M(AA,BB, s, method, public, map, arguments, i32, cstrs, map, Au) \
     M(AA,BB, s, method, public, ARef, types, ref_i64) \
@@ -684,6 +685,7 @@ forward(any)
     M(AA,BB, i, guard, public, bool, is_struct,     Au) \
     M(AA,BB, i, guard, public, bool, is_opaque,     Au) \
     M(AA,BB, i, guard, public, bool, is_func,       Au) \
+    M(AA,BB, i, guard, public, bool, is_module,     Au) \
     M(AA,BB, i, guard, public, bool, is_func_ptr,   Au) \
     M(AA,BB, i, guard, public, bool, is_imethod,    Au) \
     M(AA,BB, i, guard, public, Au_t, is_rec,        Au) \

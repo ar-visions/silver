@@ -82,6 +82,13 @@ bool Au_is_imported_type(Au a) {
     return au->module->is_imported;
 }
 
+bool Au_is_module   (Au t) {
+    Au_t au = au_arg(t);
+    if (au && au->member_type == AU_MEMBER_MODULE)
+        return true;
+    return false;
+}
+
 bool Au_is_generic  (Au t) { return t && typeid(Au) == au_arg(t); }
 bool Au_is_integral (Au t) { return t && au_arg(t)->is_integral; }
 bool Au_is_void     (Au t) { return t && typeid(none) == au_arg(t); }
@@ -720,7 +727,8 @@ Au_t def_meta(Au_t context, symbol ident, Au_t arg) {
     return var;
 }
 
-Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type, u32 access_type, u32 operator_type, u64 traits, ARef value) {
+Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
+        u32 access_type, u32 operator_type, u64 traits, ARef value) {
     Au_t func = def(type, ident, AU_MEMBER_TYPE, traits);
     func->rtype         = rtype;
     func->member_type   = member_type;
@@ -731,7 +739,7 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type, u32 access_t
 }
 
 Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
-    if (ident && strcmp((cstr)ident, "something") == 0) {
+    if (ident && strcmp((cstr)ident, "map") == 0) {
         ident = ident;
     }
     if (n_members == 0) {
@@ -801,7 +809,7 @@ Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, 
     type->traits            = traits;
     type->typesize          = typesize;
     type->isize             = isize;
-    head(type)->type = typeid(Au_t_f);
+    head(type)->type = typeid(Au_t_f);             
     push_type((Au_t)type);
     return type;
 }
@@ -905,11 +913,8 @@ none collective_init(collective a) {
 
 ffi_method_t* method_with_address(handle address, Au_t rtype, array atypes, Au_t method_owner);
 
-none push_type(Au_t type) {
+none push_type(Au_t type) {    
 
-    if (type == typeid(none)) {
-        type = type;
-    }
     if (!Au_t_i.type.ident) {
         module = module_lookup("Au");
         Au_t_i.type.ident  = "Au_t";
@@ -929,6 +934,11 @@ none push_type(Au_t type) {
         verify(Au_ft_size == Au_t_ft_size, "Au_f->ft not identical to Au_t_f->ft");
         memcpy(&Au_t_f_i.type.ft, &typeid(Au)->ft, Au_ft_size);
         head(typeid(Au_t))->type = Au_t_f_i.info.type;
+    }
+
+    if (type->ident && strcmp(type->ident, "vec2f") == 0) {
+        int test2 = 2;
+        test2    += 2;
     }
     
     // on first call, we register our basic type structures:
@@ -991,7 +1001,7 @@ none push_type(Au_t type) {
         // this process is replicated in schema creation / etype_init
     }
 
-    array_qpush((array)&module->members, (Au)type);
+    array_qpush((array)&type->module->members, (Au)type);
     type->af = (au_core)calloc(1, sizeof(struct _au_core));
 
     pthread_mutex_init(&type->af->lock, NULL);
@@ -1039,22 +1049,36 @@ ARef types(ref_i64 length) {
     return module->members.origin;
 }
 
-Au_t find_type(symbol name, Au_t m) {
-    Au_t mod = m ? m : module;
-
-    for (int i = 0; i < mod->members.count; i++) {
-        Au_t type = (Au_t)mod->members.origin[i];
-        if (strcmp(name, type->ident) == 0)
-            return type;
-    }
-
-    if (mod != module)
-        for (int i = 0; i < module->members.count; i++) {
-            Au_t type = (Au_t)module->members.origin[i];
-            if (strcmp(name, type->ident) == 0)
-                return type;
+Au_t find_module(symbol name) {
+    for (int i = 0; i < modules.data.count; i++) {
+        Au_t mod = (Au_t)modules.data.origin[i];
+        if (mod->ident && strcmp(mod->ident, name) == 0) {
+            return mod;
         }
-   
+    }
+    return null;
+}
+
+Au_t find_type(symbol name, Au_t m) {
+    /*
+    for (int i = 0; i < modules.data.count; i++) {
+        Au_t mod = (Au_t)modules.data.origin[i];
+        printf("module: %s\n", mod->ident);
+    }
+    */
+    for (int i = 0; i < modules.data.count; i++) {
+        Au_t mod = (Au_t)modules.data.origin[i];
+        if (!m || m == mod) {
+            // skip if not specifically tareting this module, and it has a namespace (not global)
+            if (m != mod && mod->is_namespace && mod->ident && strlen(mod->ident))
+                continue;
+            for (int i = 0; i < mod->members.count; i++) {
+                Au_t type = (Au_t)mod->members.origin[i];
+                if (strcmp(name, type->ident) == 0)
+                    return type;
+            }
+        }
+    }
     return null;
 }
 

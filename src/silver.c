@@ -835,7 +835,7 @@ static array parse_tokens(silver a, Au input, array output) {
     path src = null;
     if (type == typeid(path)) {
         src = (path)input;
-        input_string = (string)load(src, typeid(string), null); // this was read before, but we 'load' files; way less conflict wit posix
+        input_string = (string)load(src, typeid(string), null);
     } else if (type == typeid(string))
         input_string = (string)input;
     else
@@ -880,7 +880,7 @@ static array parse_tokens(silver a, Au input, array output) {
                 line_num += 1;
                 line_start = index + 1;
                 indent = 0;
-            label: /// so we may use break and continue
+            label:
                 chr = idx(input_string, ++index);
                 if (!isspace(chr))
                     continue;
@@ -921,7 +921,6 @@ static array parse_tokens(silver a, Au input, array output) {
 
         string name = scan_map(mapping, input_string, index);
         if (name) {
-            // we could merge these more generically
             if (a->cmode && len(name) == 1 && strncmp(&input_string->chars[index], "##", 2) == 0) {
                 name = string("##");
             }
@@ -970,11 +969,60 @@ static array parse_tokens(silver a, Au input, array output) {
         }
 
         num start = index;
-        bool is_dim = false;
         bool last_dash = false;
         i32 st_char = idx(input_string, start);
         bool start_numeric = st_char == '-' || (st_char >= '0' && st_char <= '9');
         int seps = 0;
+        
+        // check for shape literal: N or NxM or NxMxO etc.
+        if (num_start) {
+            array dims = array(32);
+            num dim_start = index;
+            
+            // parse first dimension
+            while (index < length) {
+                i32 v = idx(input_string, index);
+                if (v < '0' || v > '9') break;
+                index++;
+            }
+            if (index > dim_start) {
+                i64 dim_val = atoll(mid(input_string, dim_start, index - dim_start)->chars);
+                push(dims, (Au)dim_val);
+                
+                // continue parsing xN segments
+                while (index < length && idx(input_string, index) == 'x') {
+                    index++; // skip 'x'
+                    num next_start = index;
+                    while (index < length) {
+                        i32 v = idx(input_string, index);
+                        if (v < '0' || v > '9') break;
+                        index++;
+                    }
+                    if (index > next_start) {
+                        i64 next_val = atoll(mid(input_string, next_start, index - next_start)->chars);
+                        push(dims, (Au)i64(next_val));
+                    } else {
+                        // trailing 'x' with no number
+                        break;
+                    }
+                }
+                
+                string crop = mid(input_string, start, index - start);
+                shape sh = shape(len(dims), dims);
+                token t = token(
+                    chars, crop->chars,
+                    indent, indent,
+                    source, src,
+                    line, line_num,
+                    column, start - line_start,
+                    literal, (Au)sh);
+                push(tokens, (Au)t);
+                continue;
+            }
+        }
+        
+        // regular token parsing (non-numeric)
+        seps = 0;
         while (index < length) {
             i32 v = idx(input_string, index);
             bool is_sep = v == '.';
@@ -982,12 +1030,12 @@ static array parse_tokens(silver a, Au input, array output) {
             bool cont_numeric = (is_sep && seps <= 1) || (v >= '0' && v <= '9');
             char sval[2] = {v, 0};
             bool is_dash = v == '-';
-            is_dim = (num_start && v == 'x');
+
             int imatch = index_of(special, sval);
             if (!start_numeric || !cont_numeric)
-                if (isspace(v) || index_of(special, sval) >= 0 || is_dim) {
+                if (isspace(v) || index_of(special, sval) >= 0) {
                     if (last_dash && (index - start) > 1) {
-                        i32 vb = idx(input_string, index - 2); // allow the -- sequence, disallow - at end of tokens
+                        i32 vb = idx(input_string, index - 2);
                         index -= vb != '-';
                     }
                     break;
@@ -1003,15 +1051,6 @@ static array parse_tokens(silver a, Au input, array output) {
                          source, src,
                          line, line_num,
                          column, start - line_start));
-        if (is_dim) {
-            push(tokens, (Au)token(
-                             chars, "x",
-                             indent, indent,
-                             source, src,
-                             line, line_num,
-                             column, index - line_start));
-            index++;
-        }
     }
     return tokens;
 }
@@ -1482,7 +1521,7 @@ enode parse_statement(silver a) {
     a->expr_level  = 0;
 
     Au_t      top       = top_scope(a);
-    silver    module    = top->is_namespace ? a : null;
+    silver    module    = is_module(top) ? a : null;
 
     if (module && peek_def(a)) return (enode)read_def(a);
 
@@ -1851,6 +1890,8 @@ etype read_etype(silver a, array* p_expr) {
     array meta  = null;
     array types = array();
     array sizes = array();
+
+    print_tokens(a, "read-etype");
 
     token f = peek(a);
     if  (!f || f->literal || !is_alpha(f)) return null;
@@ -2424,6 +2465,13 @@ path is_module_dir(silver a, string ident) {
 // when we load silver files, we should look for and bind corresponding .c files that have implementation
 // this is useful for implementing in C or other languages
 path module_exists(silver a, array idents) {
+    if (len(idents) == 1) {
+        path sf = f(path, "%o/lib/lib%o.so", a->install, idents->origin[0]);
+        //path sf2 = f(path, "%o/%o.ag", a->project_path, to_path);
+        if (file_exists("%o", sf))
+            return sf;
+    }
+
     string to_path = join(idents, "/");
     path sf = f(path, "%o/%o.ag", a->project_path, to_path);
     return file_exists("%o", sf) ? sf : null;
@@ -2632,7 +2680,8 @@ enode parse_import(silver a) {
     Au_t    is_codegen   = null;
     token   commit       = null;
     string  uri          = null;
-
+    Au_t    mod          = null;
+    
     if (t && isalpha(t->chars[0])) {
         bool   cont     = false;
         string service  = a->git_service;
@@ -2642,9 +2691,16 @@ enode parse_import(silver a) {
         string bb       = silver_read_if(a, ":") ? expect_alpha(a) : null;
         string cc       = bb && silver_read_if(a, ":") ? expect_alpha(a) : null;
         array  mpath    = null;
-        Au_t f = find_type((cstr)aa->chars, null);
+        string single   = null;
 
-        if (f && inherits(f, typeid(codegen)))
+        Au_t mod = find_module((cstr)aa->chars);
+        Au_t f = mod ? f : find_type((cstr)aa->chars, null);
+
+        if (mod) {
+            if (!mpath) mpath = array(alloc, 32);
+            push(mpath, (Au)string(mod->ident));
+        }
+        else if (f && inherits(f, typeid(codegen)))
             is_codegen = f;
         else if (next_is(a, ".")) {
             while (silver_read_if(a, ".")) {
@@ -2666,6 +2722,9 @@ enode parse_import(silver a) {
                 array sp = split(f, ".");
                 array sh = shift(sp);
                 push(mpath, (Au)sh);
+            } else if (f) {
+                push(mpath, (Au)f);
+                single = f;
             }
         }
 
@@ -2676,7 +2735,10 @@ enode parse_import(silver a) {
 
             if (aa && !bb && !commit) {
                 local_mod = module_exists(a, mpath);
-                if (!local_mod) {
+                if (mod) {
+                    push(module_paths, (Au)mod); // the Au_t type signals this module is already loaded
+                } else if (!local_mod) {
+                    verify(len(mpath), "invalid module 'path");
                     // push entire directory
                     string j = join(mpath, "/");
                     verify(dir_exists("%o", j), "module/directory not found: %o", j);
@@ -2686,6 +2748,7 @@ enode parse_import(silver a) {
                     each(dir, path, m) {
                         push(module_paths, (Au)m);
                     }
+    
                 } else
                     push(module_paths, (Au)local_mod);
             } else if (aa && !bb) {
@@ -2708,21 +2771,23 @@ enode parse_import(silver a) {
                 project = bb;
             }
 
-            string path_str = string();
-            if (len(mpath)) {
-                string str_mpath = join(mpath, "/") ? cc : string("");
-                path_str = len(str_mpath) ? f(string, "blob/%o/%o", commit, str_mpath) : string("");
+            if (!mod) {
+                string path_str = string();
+                if (len(mpath)) {
+                    string str_mpath = join(mpath, "/") ? cc : string("");
+                    path_str = len(str_mpath) ? f(string, "blob/%o/%o", commit, str_mpath) : string("");
+                }
+
+                verify(project || local_mod, "could not decipher module references from import statement");
+
+                if (local_mod) {
+                    uri = null;
+                    cont = silver_read_if(a, ",") != null;
+                    verify(!cont, "comma not yet supported in import (func needs restructuring to create multiple imoprts in enode)");
+                } else
+                    uri = f(string, "https://%o/%o/%o%s%o", service, user, project,
+                            cast(bool, path_str) ? "/" : "", path_str);
             }
-
-            verify(project || local_mod, "could not decipher module references from import statement");
-
-            if (local_mod) {
-                uri = null;
-                cont = silver_read_if(a, ",") != null;
-                verify(!cont, "comma not yet supported in import (func needs restructuring to create multiple imoprts in enode)");
-            } else
-                uri = f(string, "https://%o/%o/%o%s%o", service, user, project,
-                        cast(bool, path_str) ? "/" : "", path_str);
         }
     }
 
@@ -2777,7 +2842,7 @@ enode parse_import(silver a) {
                  import_env(all_config));
         each(all_config, string, t) if (starts_with(t, "-l"))
             set(a->libs, (Au)mid(t, 2, len(t) - 2), (Au)_bool(true));
-    } else if (local_mod)
+    } else if (local_mod && eq(ext(local_mod), "ag"))
         external = silver(local_mod);
     else if (is_codegen) {
         cg = (codegen)construct_with(is_codegen, (Au)props, null);
@@ -2835,7 +2900,7 @@ enode parse_import(silver a) {
             set(a->instances, (Au)i, (Au)instance);
         }
 
-        each(module_paths, path, m) {
+        each(module_paths, Au, m) {
             import_Au(a, m);
         }
     }
@@ -3245,7 +3310,7 @@ static void build_record(silver a, etype mrec) {
         // if no init, create one (attach preamble for our property inits)
         Au_t m_init = find_member(rec->au, "init", AU_MEMBER_FUNC, false);
         if (!m_init) {
-            m_init = function(a,
+            m_init = function(a, (etype)rec, 
                 string("init"), elookup("none"), a(rec), AU_MEMBER_FUNC,
                 AU_TRAIT_IMETHOD | AU_TRAIT_OVERRIDE, 0)->au;
             m_init->user->has_code = true;
@@ -3900,13 +3965,14 @@ etype silver_read_def(silver a) {
     string n = silver_read_alpha(a);
     validate(n, "expected alpha-numeric identity, found %o", next(a));
 
-    etype mtop = top_scope(a)->user;
+    Au_t top = top_scope(a);
+    etype mtop = top->user;
     enode mem  = null; // = emember(mod, (aether)a, name, n, context, mtop);
     etype mdl  = null;
     array meta = null;
 
     if (is_class || is_struct) {
-        validate(mtop->au->is_namespace,
+        validate(is_module(mtop),
             "expected record definition at module level");
         array schema = array();
         meta = (is_class && next_is(a, "<")) ? read_meta(a) : null;
@@ -3915,7 +3981,7 @@ etype silver_read_def(silver a) {
             is_class = read_etype(a, null);
             validate(is_class, "expected class, found %o", peek(a));
         }
-        mdl = record(a, is_class, n,
+        mdl = record(a, (etype)a, is_class, n,
             is_struct ? AU_TRAIT_STRUCT : AU_TRAIT_CLASS, meta);
         mdl->body = (tokens)read_body(a);
         print_all(a, "class", (array)mdl->body);
