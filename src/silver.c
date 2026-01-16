@@ -1834,42 +1834,6 @@ static etype read_named_model(silver a) {
     return mdl;
 }
 
-array read_meta(silver a) {
-    array res = null;
-    if (silver_read_if(a, "<")) {
-        bool first = true;
-        while (!next_is(a, ">")) {
-            if (!res)
-                res = array(alloc, 32, assorted, true);
-            if (!first)
-                verify(silver_read_if(a, ","), "expected ',' seperator between models");
-            Au n = silver_read_numeric(a);
-            bool f = true;
-            shape s = null;
-            if (n) {
-                s = shape();
-                while (n) {
-                    verify(isa(n) == typeid(i64),
-                           "expected numeric type i64, found %s", isa(n)->ident);
-                    i64 value = *(i64 *)n;
-                    shape_push(s, value);
-                    if (!silver_read_if(a, "x"))
-                        break;
-                    n = silver_read_numeric(a);
-                }
-                push(res, (Au)s);
-            } else {
-                etype mdl = read_named_model(a);
-                verify(mdl, "expected model name, found %o", silver_peek(a));
-                push(res, (Au)mdl);
-            }
-            first = false;
-        }
-        silver_consume(a);
-    }
-    return res;
-}
-
 // this shouldnt change the read cursor, its for reading types from c macros
 etype etype_infer(silver a) {
     push_current(a);
@@ -1915,14 +1879,15 @@ etype read_etype(silver a, array* p_expr) {
     array meta  = null;
     array types = array();
     array sizes = array();
-
+    
     print_tokens(a, "read-etype");
 
     token f = peek(a);
-    if  (!f || f->literal || !is_alpha(f))
+    if  ((!f || f->literal || !is_alpha(f)) && !next_is(a, "ref"))
         return null;
 
     push_current(a);
+    bool is_ref = read_if(a, "ref") != null;
     bool  explicit_sign = !mdl && read_if(a, "signed") != null;
     bool  explicit_un   = !mdl && !explicit_sign && read_if(a, "unsigned") != null;
     etype prim_mdl      = null;
@@ -1939,8 +1904,9 @@ etype read_etype(silver a, array* p_expr) {
         if   (prim_mdl)  prim_mdl = model_adj(a, prim_mdl);
         mdl = prim_mdl ? prim_mdl : read_named_model(a);
 
-        if (mdl && mdl->au->member_type != AU_MEMBER_TYPE) {
+        if (mdl && mdl->au->member_type != AU_MEMBER_TYPE && !mdl->au->is_meta) {
             pop_tokens(a, false);
+            validate(!is_ref, "expected valid type after ref");
             return null;
         }
 
@@ -2013,11 +1979,12 @@ etype read_etype(silver a, array* p_expr) {
         mdl = model_adj(a, prim_mdl ? prim_mdl : elookup("u32"));
     }
 
-    if (mdl && mdl->au->member_type != AU_MEMBER_TYPE)
+    if (mdl && mdl->au->member_type != AU_MEMBER_TYPE && !mdl->au->is_meta)
         mdl = null;
-    
-    etype t = (mdl && meta) ? etype(mod, (aether)a, au, mdl->au, meta, meta) : mdl;
 
+    etype t = (mdl && meta) ? etype(mod, (aether)a, au, mdl->au, meta, meta) : mdl;
+    if (is_ref)
+        t = pointer((aether)a, (Au)t);
     pop_tokens(a, mdl != null); // if we read a model, we transfer token state
     return t;
 }
@@ -4005,8 +3972,8 @@ etype silver_read_def(silver a) {
         return parser(a);
     }
 
-    silver_consume(a);
-    string n = silver_read_alpha(a);
+    consume(a);
+    string n = read_alpha(a);
     validate(n, "expected alpha-numeric identity, found %o", next(a));
 
     Au_t top = top_scope(a);
@@ -4019,14 +3986,37 @@ etype silver_read_def(silver a) {
         validate(is_module(mtop),
             "expected record definition at module level");
         array schema = array();
-        meta = (is_class && next_is(a, "<")) ? read_meta(a) : null;
 
-        if (silver_read_if(a, "of")) {
+        if (read_if(a, "[")) {
             is_class = read_etype(a, null);
             validate(is_class, "expected class, found %o", peek(a));
+            validate(read_if(a, "]"), "expected ] after base type");
         }
+
         mdl = record(a, (etype)a, is_class, n,
-            is_struct ? AU_TRAIT_STRUCT : AU_TRAIT_CLASS, meta);
+            is_struct ? AU_TRAIT_STRUCT : AU_TRAIT_CLASS);
+
+        // read meta args (some of these will permute the type, and others are run-time)
+        if (silver_read_if(a, "<")) {
+            bool first = true;
+            int index = 0;
+            while (!read_if(a, ">")) {
+                if (!first)
+                    verify(silver_read_if(a, ","), "expected ',' seperator between models");
+                string n = read_alpha(a);
+                verify(n, "expected identifier");
+                verify(read_if(a, ":"), "expected : after %o", n);
+                etype type = read_etype(a, null);
+                verify(type, "expected model after :");
+                bool  f   = true;
+                shape s   = null;
+                Au_t  m   = def_member(top, n->chars, type->au, AU_MEMBER_VAR, AU_TRAIT_META);
+                m->user = (etype)emeta(mod, (aether)a, au, m, meta_index, index);
+                array_qpush((array)&mdl->au->meta, (Au)m);
+                first = false;
+            }
+        }
+
         mdl->body = (tokens)read_body(a);
         print_all(a, "class", (array)mdl->body);
 
@@ -4034,9 +4024,10 @@ etype silver_read_def(silver a) {
         etype store = null, suffix = null;
         bool expect_bracket = false;
 
-        if (silver_read_if(a, "of")) {
+        if (read_if(a, "[")) {
             store  = instanceof(read_etype(a, null), etype);
             validate(store, "invalid storage type");
+            validate(read_if(a, "]"), "expected ] after storage type");
         } else
             store = elookup("i32");
         
