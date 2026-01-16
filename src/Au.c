@@ -665,9 +665,18 @@ Au_t find_context(array lex, int member_type, int traits) {
 }
 
 Au_t lexical(array lex, symbol f) {
+    if (strcmp(f, "F") == 0) {
+        f = f;
+    }
     for (int i = len(lex) - 1; i >= 0; i--) {
         Au_t au = (Au_t)lex->origin[i];
         while (au) {
+            if (au->member_type == AU_MEMBER_TYPE)
+                for (int ii = 0; ii < au->meta.count; ii++) {
+                    Au_t m = (Au_t)au->meta.origin[ii];
+                    if (m->ident && strcmp(m->ident, f) == 0)
+                        return m;
+                }
             for (int ii = 0; ii < au->members.count; ii++) {
                 Au_t m = (Au_t)au->members.origin[ii];
                 if (m->ident && strcmp(m->ident, f) == 0)

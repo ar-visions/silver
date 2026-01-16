@@ -2900,10 +2900,6 @@ none etype_init(etype t) {
     } else if (au && au->is_pointer && au->src && !au->src->is_primitive) {
         au->lltype = LLVMPointerType(au->src->lltype, 0);
     } else if (named && (is_rec((Au)t) || au->is_union || au == typeid(Au_t))) {
-        if (strcmp(au->ident, "something") == 0) {
-            int test2 = 2;
-            test2    += 2;
-        }
         au->lltype = LLVMStructCreateNamed(a->module_ctx, cstr_copy(au->ident));
         if (au != typeid(Au_t))
             etype_ptr(a, t->au);
@@ -4468,14 +4464,10 @@ enode aether_function(aether a, etype place, string ident, etype rtype, array ar
     return n;
 }
 
-etype aether_record(aether a, etype place, etype based, string ident, u32 traits, array meta) {
+etype aether_record(aether a, etype place, etype based, string ident, u32 traits) {
     Au_t context = place->au;
     Au_t au = def(context, ident->chars, AU_MEMBER_TYPE, traits);
     au->context = based ? based->au : elookup("Au")->au;
-    each(meta, Au, arg) {
-        Au_t a = au_arg(arg);
-        array_qpush((array)&au->meta, (Au)a);
-    }
     etype n = etype(mod, a, au, au);
     //etype_implement(n);
     return n;
@@ -4525,6 +4517,7 @@ define_class(macro,      etype)
 define_class(catcher,    etype)
 define_class(statements, etype)
 define_class(evar,       enode)
+define_class(emeta,      etype) // we need a type to track the usage of actual meta args in context
 define_class(enode,      etype) // not a member unless member is set (direct, or created with name)
 
 define_class(emodule,    etype)
