@@ -1397,8 +1397,6 @@ enode silver_read_enode(silver a, etype mdl_expect) {
     silver    module    = !a->cmode && (top->is_namespace) ? a : null;
     enode     mem       = null;
 
-    // todo: lost notion of static vs imethod here, reintroduce
-
     if (a->expr_level > 0 && peek && is_alpha(peek)) {
         etype m = elookup(peek->chars);
         if (m && isa(m) != typeid(macro)) {
@@ -1438,6 +1436,16 @@ enode silver_read_enode(silver a, etype mdl_expect) {
         consume(a);
         consume(a);
         fault("shell syntax not implemented for 88");
+    }
+
+    if (!cmode && read_if(a, "new")) {
+        etype mdl = read_etype(a, null);
+        enode sz  = null;
+        if (read_if(a, "[")) {
+            sz = parse_expression(a, typeid(shape)->user);
+            validate(read_if(a, "]"), "expected ] after new Type [");
+        }
+        return e_vector(a, mdl, sz);
     }
 
     if (!cmode && read_if(a, "null"))
@@ -1904,6 +1912,9 @@ etype read_etype(silver a, array* p_expr) {
         if   (prim_mdl)  prim_mdl = model_adj(a, prim_mdl);
         mdl = prim_mdl ? prim_mdl : read_named_model(a);
 
+        if (mdl && mdl->au->is_meta)
+            mdl = pointer((aether)a, (Au)mdl->au->src);
+        
         if (mdl && mdl->au->member_type != AU_MEMBER_TYPE && !mdl->au->is_meta) {
             pop_tokens(a, false);
             validate(!is_ref, "expected valid type after ref");

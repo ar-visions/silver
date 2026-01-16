@@ -157,6 +157,7 @@ declare_class_2(statements, etype)
     M(X,Y, i, method, public,     enode,       e_mul,              Au,          Au) \
     M(X,Y, i, method, public,     enode,       e_div,              Au,          Au) \
     M(X,Y, i, method, public,     enode,       e_create,           etype, Au) \
+    M(X,Y, i, method, public,     enode,       e_vector,           etype, enode) \
     M(X,Y, i, method, public,     enode,       e_zero,               enode) \
     M(X,Y, i, method, public,     enode,       e_assign,             enode,      Au, OPType) \
     M(X,Y, i, method, public,     enode,       e_eq,                 enode,      enode) \

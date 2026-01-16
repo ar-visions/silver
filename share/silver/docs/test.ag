@@ -3,18 +3,10 @@ import vec
 
 class base
 
-# silver does not permute types when we have meta args
-# when used in membership, they must be referenced
-# inside our code we may still perform intelligent lookups on members such as indexing
-# mem[4] in code will build mem + header->meta[0].size * 4
-# we arent out to create the fastest generics, because the trade-off of size almost never makes sense
-# silver is unique here in that it needs to keep sizes down
-# we will not emit reflection information + permute types; not where we want to build light weight apps
-
-class something [base] <F:numeric, M:shape>
-    F mem = 4
+class something [base]
+    i64 mem = 4
     none action2 [ string mem2 ]
-        if M.total == 16: # if our shape comes out to 16 size for any set of dimensions
+        if mem2 == "16":
             puts 'something is equal to {mem2}'
 
 class aclass [app]
