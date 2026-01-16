@@ -210,6 +210,7 @@ forward(evar)
     M(X,Y, i, prop, intern,   LLVMMetadataRef,  last_dbg, as, ARef) \
     M(X,Y, i, prop, intern,   LLVMValueRef,     value, as, ARef) \
     M(X,Y, i, prop, intern,   LLVMBasicBlockRef, entry,  as, ARef) \
+    M(X,Y, i, method, public, Au,               literal_value, Au_t) \
     M(X,Y, i, method, public, enode,            access, string) \
     M(X,Y, i, method, public, none,             release) \
     M(X,Y, i, method, public, none,             inspect) \

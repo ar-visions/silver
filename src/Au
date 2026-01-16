@@ -937,6 +937,7 @@ forward(shape)
     M(AA,BB, i, prop,    public, i64,  count) \
     M(AA,BB, i, ref,     public, i64,  data) \
     M(AA,BB, i, prop,    public, bool, is_global) \
+    M(AA,BB, i, prop,    public, bool, explicit) \
     M(AA,BB, i, method,  public, shape, with_array, array) \
     M(AA,BB, i, method,  public, i64,   total) \
     M(AA,BB, i, method,  public, none,  push, i64) \
@@ -1324,6 +1325,7 @@ declare_class(ipart)
     M(AA,BB, i, method,  public, i32,    first) \
     M(AA,BB, i, method,  public, i32,    last) \
     M(AA,BB, i, method,  public, f64,    real_value) \
+    M(AA,BB, i, method,  public, i64,    integer_value) \
     M(AA,BB, i, method,  public, string, ucase) \
     M(AA,BB, i, method,  public, string, lcase) \
     M(AA,BB, i, method,  public, array,  split, symbol) \
@@ -1414,6 +1416,7 @@ declare_class(async)
     M(AA,BB, i, prop,    public, bool,   cmode) \
     M(AA,BB, i, method,  public, Au_t,   get_type) \
     M(AA,BB, i, method,  public, string, location) \
+    M(AA,BB, i, method,  public, Au, get_literal, Au_t) \
     M(AA,BB, i, override, ctr,    cstr) \
     M(AA,BB, i, override, method, init) \
     M(AA,BB, i, override, method, copy)

@@ -549,6 +549,10 @@ sz string_len(string a) {
     return a->count;
 }
 
+i64 string_integer_value(string a) {
+    return strtoll(a->chars, null, 10);
+}
+
 num collective_len(collective a) {
     return a->count;
 }
@@ -902,8 +906,8 @@ Au_t def_module(symbol next_module) {
     if (!au_module) {
         au_module = m;
         module = m;
-        module->traits |= AU_TRAIT_IS_AU;
     }
+    m->traits |= AU_TRAIT_IS_AU;
     array_qpush((array)&modules.data, (Au)m);
     return m;
 }
@@ -3043,6 +3047,7 @@ bool inherits(Au_t src, Au_t check) {
     if (!src) return false;
     while (src != typeid(Au)) {
         if (src == check) return true;
+        if (src->context == src) break;
         src = src->context;
     }
     if ((src   == typeid(Au) || src   == typeid(Au)) &&
@@ -5604,6 +5609,7 @@ none shape_dealloc(shape a) {
 none shape_push(shape a, i64 i) {
     i64* prev = a->data;
     a->data = calloc(sizeof(i64), (a->count + 2));
+    memcpy(a->data, prev, a->count * sizeof(i64));
     a->data[a->count++] = i;
     a->data[a->count]   = 0;
     if (!a->is_global)
@@ -5634,6 +5640,18 @@ token token_with_cstr(token a, cstr s) {
 
 token token_copy(token a) {
     return token(chars, a->chars, line, a->line, column, a->column);
+}
+
+Au token_get_literal(token a, Au_t of_type) {
+    if (!a) return null;
+    if (a && a->literal && (!of_type || inherits(isa(a->literal), of_type))) {
+        return a->literal;
+    } else if (of_type == typeid(i64) && inherits(isa(a->literal), typeid(shape))) {
+        shape vshape = (shape)a->literal;
+        Au res = _i64(vshape->data[0]);
+        return res;
+    }
+    return null;
 }
 
 
@@ -5799,11 +5817,13 @@ void token_init(token a) {
 
     memcpy(a->chars, prev, length);
 
-    if (a->chars[0] == '\"' || a->chars[0] == '\'') {
-        string crop = string(chars, &a->chars[1], ref_length, length - 2);
-        a->literal = (Au)read_string(crop->chars, a->chars[0] == '\"');
-    } else
-        a->literal = read_numeric(a);
+    if (!a->literal) {
+        if (a->chars[0] == '\"' || a->chars[0] == '\'') {
+            string crop = string(chars, &a->chars[1], ref_length, length - 2);
+            a->literal = (Au)read_string(crop->chars, a->chars[0] == '\"');
+        } else
+            a->literal = read_numeric(a);
+    }
 }
 
 string token_location(token a) {
