@@ -1361,9 +1361,8 @@ enode parse_object(aether a, etype mdl) {
     if (!key) key       = elookup("string");
     if (!val) val       = elookup("Au");
 
-    Au_t  Au_type       = au_lookup("Au");
-    etype f_alloc       = find_member(Au_type, "alloc_new", AU_MEMBER_FUNC, false)->user;
-    etype f_initialize  = find_member(Au_type, "initialize", AU_MEMBER_FUNC, false)->user;
+    etype f_alloc       = find_member(typeid(Au), "alloc_new", AU_MEMBER_FUNC, false)->user;
+    etype f_initialize  = find_member(typeid(Au), "initialize", AU_MEMBER_FUNC, false)->user;
 
     enode metas_node = e_meta_ids(a, mdl->meta);
     enode rmap = e_fn_call(a, (enode)f_alloc, a( e_typeid(a, mdl), _i32(1), metas_node ));
@@ -1505,9 +1504,8 @@ enode e_create_from_map(aether a, etype t, map m) {
 }
 
 enode e_create_from_array(aether a, etype t, array ar) {
-    Au_t  Au_type      = au_lookup("Au");
-    enode f_alloc      = (enode)find_member(Au_type, "alloc_new",  AU_MEMBER_FUNC, false)->user;
-    enode f_initialize = (enode)find_member(Au_type, "initialize", AU_MEMBER_FUNC, false)->user;
+    enode f_alloc      = (enode)find_member(typeid(Au), "alloc_new",  AU_MEMBER_FUNC, false)->user;
+    enode f_initialize = (enode)find_member(typeid(Au), "initialize", AU_MEMBER_FUNC, false)->user;
     enode f_push       = (enode)find_member(typeid(collective), "push", AU_MEMBER_FUNC, true)->user;
     enode f_push_vdata = (enode)find_member(typeid(array), "push_vdata", AU_MEMBER_FUNC, true)->user;
 
@@ -1643,17 +1641,17 @@ enode e_convert_or_cast(aether a, etype t, enode input) {
     return aether_e_primitive_convert(a, input, t);
 }
 
+enode aether_e_vector(aether a, etype t, enode sz) {
+    etype f_alloc    = find_member(typeid(Au), "alloc_new", AU_MEMBER_FUNC, false)->user;
+    enode metas_node = e_meta_ids(a, t->meta);
+    return e_fn_call(a, (enode)f_alloc, a( e_typeid(a, t), sz, metas_node ));
+}
+
 /// create is both stack and heap allocation (based on etype->is_ref, a storage enum)
 /// create primitives and objects, constructs with singular args or a map of them when applicable
 enode aether_e_create(aether a, etype t, Au args) {
     if (!t) {
-        static int seq = 0;
-        seq++;
-        if (seq == 1) {
-            int test2 = 2;
-            test2    += 2;
-        }
-        verify(instanceof(args, enode), "aether_e_create %i", seq);
+        verify(instanceof(args, enode), "aether_e_create");
         return (enode)args;
     }
 
@@ -1746,9 +1744,8 @@ enode aether_e_create(aether a, etype t, Au args) {
 
     etype        cmdl         = etype_traits((Au)t, AU_TRAIT_CLASS);
     etype        smdl         = etype_traits((Au)t, AU_TRAIT_STRUCT);
-    Au_t         Au_type      = au_lookup("Au");
-    etype        f_alloc      = find_member(Au_type, "alloc_new", AU_MEMBER_FUNC, false)->user;
-    etype        f_initialize = find_member(Au_type, "initialize", AU_MEMBER_FUNC, false)->user;
+    etype        f_alloc      = find_member(typeid(Au), "alloc_new", AU_MEMBER_FUNC, false)->user;
+    etype        f_initialize = find_member(typeid(Au), "initialize", AU_MEMBER_FUNC, false)->user;
     enode        res;
 
     if (is_ptr(t) && is_struct(t->au->src) && static_a) {
@@ -1783,7 +1780,7 @@ enode aether_e_create(aether a, etype t, Au args) {
         } else {
             fault("this needs work");
             enode metas_node = e_meta_ids(a, t->meta);
-            res = e_fn_call(a, (enode)f_alloc, a( e_typeid(a, t), _i32(1), metas_node ));
+            res = e_fn_call(a, (enode)f_alloc, a( e_typeid(a, t), _i32(0), metas_node ));
             res->au = t->au; // we need a general cast method that does not call function
             res = e_fn_call(a, (enode)f_initialize, a(res)); // required logic need not emit ops to set the bits when we can check at design time
         }
@@ -1791,7 +1788,7 @@ enode aether_e_create(aether a, etype t, Au args) {
         verify(is_rec(t), "expected record");
         enode metas_node = e_meta_ids(a, t->meta);
         
-        enode alloc = e_fn_call(a, (enode)f_alloc, a( e_typeid(a, t), _i32(1), metas_node ));
+        enode alloc = e_fn_call(a, (enode)f_alloc, a( e_typeid(a, t), _i32(0), metas_node ));
         alloc->au = t->au; // we need a general cast method that does not call function
         e_fn_call(a, (enode)ctr, a(alloc, input));
         res = e_fn_call(a, (enode)f_initialize, a(alloc));
@@ -3157,6 +3154,8 @@ none etype_implement(etype t) {
 
     if (au->member_type == AU_MEMBER_VAR) {
         enode n = (enode)instanceof(t, enode);
+        if (!n)
+            n = n;
         verify(n, "expected enode instance for AU_MEMBER_VAR");
         LLVMTypeRef ty = lltype(au->src);
 
