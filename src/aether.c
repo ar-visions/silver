@@ -1300,12 +1300,6 @@ enode enode_access(enode target, string name) {
             m->index, id->chars));
 }
 
-bool is_au_compatible(etype t) {
-    if (!t) return false;
-    aether a = t->mod;
-    return is_au_type(t) || a->au == t->au->module || t->mod->au == t->au;
-}
-
 enode resolve_typeid(Au mdl) {
     Au_t au = au_arg(mdl);
     if (au->is_pointer && au->src->is_class) {
@@ -1318,9 +1312,7 @@ enode aether_e_typeid(aether a, etype mdl) {
     if (!mdl)
         return e_null(a, elookup("Au_t"));
     
-    if (!is_au_compatible(mdl))
-        a = a;
-    verify(is_au_compatible(mdl), "typeid not available on external types: %o", mdl);
+    verify(mdl->au->module->is_au, "typeid not available on external types: %o", mdl);
 
     // we go from enode sometimes, which is NOT 
     // the base etype (its not brilliant to require etype be unique here but we circle back)
@@ -1541,7 +1533,7 @@ enode e_create_from_array(aether a, etype t, array ar) {
     etype element_type = instanceof(array_get((array)t->meta, 0), etype);
     shape dims         = instanceof(array_get((array)t->meta, 1), shape);
     if (!element_type) element_type = typeid(Au)->user;
-    int max_items = dims ? dims->count : -1;
+    int max_items = dims ? shape_total(dims) : -1;
 
     verify(max_items == -1 || ln <= max_items, "too many elements given to array");
     
@@ -1657,7 +1649,7 @@ enode aether_e_create(aether a, etype t, Au args) {
     if (!t) {
         static int seq = 0;
         seq++;
-        if (seq == 19) {
+        if (seq == 1) {
             int test2 = 2;
             test2    += 2;
         }
@@ -1688,7 +1680,7 @@ enode aether_e_create(aether a, etype t, Au args) {
 
     static int seq = 0;
     seq += 1;
-    if (seq == 25) {
+    if (seq == 6) {
         seq = seq;
     }
 
@@ -1804,23 +1796,52 @@ enode aether_e_create(aether a, etype t, Au args) {
         e_fn_call(a, (enode)ctr, a(alloc, input));
         res = e_fn_call(a, (enode)f_initialize, a(alloc));
     } else {
-        array   is_arr        = (array)instanceof(args, array);
-        bool    is_ref_struct = is_ptr(t) && is_struct(resolve(t));
+        array is_arr        = (array)instanceof(args, array);
+        bool  is_ref_struct = is_ptr(t) && is_struct(resolve(t));
 
-        verify(!is_arr, "no translation for array to etype %o", t);
+        //verify(!is_arr, "no translation for array to %o", t);
+        etype rmdl = resolve(t);
 
         if (is_struct(t) || is_ref_struct) {
-            verify(!is_arr, "unexpected array argument");
+            //verify(!is_arr, "unexpected array argument");
+            int field_count = LLVMCountStructElementTypes(rmdl->au->lltype);
+            LLVMValueRef *fields = calloc(field_count, sizeof(LLVMValueRef));
+            bool  all_const = a->no_const ? false : true;
 
-            if (imap) {
+            if (is_arr) {
+                array ar = (array)args;
+                int ln = len(ar);
+                verify(ln <= field_count, "too many fields given (%i) for %o", len(ar), t);
+                
+                for (int i = 0; i < field_count; i++) {
+                    if (i >= len(ar))
+                        break;
+                    etype field_type = null;
+                    int current_index = 0;
+                    for (int ri = 0; ri < rmdl->au->members.count; ri++) {
+                        Au_t smem = (Au_t)rmdl->au->members.origin[ri];
+                        if (smem->member_type == AU_MEMBER_VAR && smem->is_iprop) {
+                            if (current_index++ == i) {
+                                field_type = smem->user;
+                                break;
+                            }
+                        }
+                    }
+                    Au val = get(ar, i);
+                    enode op = val ? e_operand(a, val, field_type) : 
+                                     e_create(a, field_type, null);
+                    if (!op->literal) all_const = false;
+                    fields[i] = op->value;
+                }
+                if (ln < field_count)
+                    field_count = ln;
+                
+            } else if (imap) {
                 // check if constants are in map, and order fields
-                etype rmdl = is_ref_struct ? resolve(t) : t;
-                int field_count = LLVMCountStructElementTypes(lltype(rmdl));
                 LLVMValueRef *fields = calloc(field_count, sizeof(LLVMValueRef));
                 array field_indices = array(field_count);
                 array field_names   = array(field_count);
                 array field_values  = array(field_count);
-                bool  all_const     = a->no_const ? false : true;
 
                 pairs(imap, i) {
                     string  k = (string)i->key;
@@ -1851,57 +1872,58 @@ enode aether_e_create(aether a, etype t, Au args) {
                             break;
                         }
                     }
+                    int current_index = 0;
                     for (int ri = 0; ri < rmdl->au->members.count; ri++) {
                         Au_t smem = (Au_t)rmdl->au->members.origin[ri];
-                        if (smem->index == i) {
-                            field_type = smem->user;
-                            break;
+                        if (smem->member_type == AU_MEMBER_VAR && smem->is_iprop) {
+                            if (current_index++ == i) {
+                                field_type = smem->user;
+                                break;
+                            }
                         }
                     } // string and cstr strike again -- it should be calling the constructor on string for this, which has been enumerated by Au-type already
                     verify(field_type, "field type lookup failed for %o (index = %i)", t, i);
 
-                    LLVMTypeRef tr = LLVMStructGetTypeAtIndex(lltype(rmdl), i);
+                    LLVMTypeRef tr = LLVMStructGetTypeAtIndex(rmdl->au->lltype, i);
                     LLVMTypeRef expect_ty = lltype(field_type);
                     verify(expect_ty == tr, "field type mismatch");
                     if (!value) value = e_null(a, field_type);
                     fields[i] = value->value;
                 }
+            }
 
-                if (all_const) {
-                    print("all are const, writing %i fields for %o", field_count, t);
-                    LLVMValueRef s_const = LLVMConstNamedStruct(lltype(t), fields, field_count);
-                    res = enode(mod, a, loaded, true, value, s_const, au, t->au);
-                } else {
-                    print("non-const, writing build instructions, %i fields for %o", field_count, t);
-                    res = enode(mod, a, loaded, false, value, LLVMBuildAlloca(a->builder, lltype(t), "alloca-mdl"), au, t->au);
-                    res = enode_value(res);
-                    res = e_zero(a, res);
-                    for (int i = 0; i < field_count; i++) {
-                        if (!LLVMIsNull(fields[i])) {
-                            LLVMValueRef gep = LLVMBuildStructGEP2(a->builder, lltype(t), res->value, i, "");
-                            LLVMBuildStore(a->builder, fields[i], gep);
-                        }
+            /*
+            pairs(imap, i) {
+                string  k = i->key;
+                Au_t t = isa(i->value);
+                //print("%o -> %o", k, i->value ? (cstr)isa(i->value)->ident : "null");
+                emember m = find_member(mdl, i->key, null, true);
+                verify(m, "prop %o not found in %o", mdl, i->key);
+                verify(isa(m) != typeid(function), "%o (function) cannot be initialized", i->key);
+                enode i_value = e_operand(a, i->value, m->mdl)  ; // for handle with a value of 0, it must create a e_null
+                emember i_prop  = resolve((emember)res, i->key) ;
+                e_assign(a, i_prop, i_value, OPType__assign);
+            }*/
+
+
+            if (all_const && !is_ref_struct) {
+                print("all are const, writing %i fields for %o", field_count, t);
+                LLVMValueRef s_const = LLVMConstNamedStruct(rmdl->au->lltype, fields, field_count);
+                res = enode(mod, a, loaded, true, value, s_const, au, t->au);
+            } else {
+                print("non-const, writing build instructions, %i fields for %o", field_count, t);
+                res = enode(mod, a, loaded, false, value, LLVMBuildAlloca(a->builder, lltype(t), "alloca-mdl"), au, t->au);
+                res = enode_value(res);
+                res = e_zero(a, res);
+                for (int i = 0; i < field_count; i++) {
+                    if (!LLVMIsNull(fields[i])) {
+                        LLVMValueRef gep = LLVMBuildStructGEP2(a->builder, lltype(t), res->value, i, "");
+                        LLVMBuildStore(a->builder, fields[i], gep);
                     }
                 }
-
-                free(fields);
-
-                /*
-                pairs(imap, i) {
-                    string  k = i->key;
-                    Au_t t = isa(i->value);
-                    //print("%o -> %o", k, i->value ? (cstr)isa(i->value)->ident : "null");
-                    emember m = find_member(mdl, i->key, null, true);
-                    verify(m, "prop %o not found in %o", mdl, i->key);
-                    verify(isa(m) != typeid(function), "%o (function) cannot be initialized", i->key);
-                    enode i_value = e_operand(a, i->value, m->mdl)  ; // for handle with a value of 0, it must create a e_null
-                    emember i_prop  = resolve((emember)res, i->key) ;
-                    e_assign(a, i_prop, i_value, OPType__assign);
-                }*/
-
-            } else if (ctr) {
-                e_fn_call(a, ctr, a(res, input));
             }
+
+            free(fields);
         } else 
             res = e_operand(a, args, t);
     }
@@ -3037,10 +3059,13 @@ etype implement_type_id(etype t) {
         return t->schema->au->ptr->user;
     
     aether a = t->mod;
+
+    if (strcmp(t->au->ident, "vec2f") == 0) {
+        a = a;
+    }
     // we must support a use-case where aether calls this on itsself.  a module must have its own identity in space!
     // we do not abstract away identity
-    verify(is_au_type(t) || a->au == t->au->module || t->mod->au == t->au,
-        "typeid not available on external types");
+    verify(t->au->module->is_au, "typeid not available on external types");
     
     printf("creating schema for %s\n", t->au->ident);
 
@@ -4454,6 +4479,18 @@ etype aether_record(aether a, etype place, etype based, string ident, u32 traits
     etype n = etype(mod, a, au, au);
     //etype_implement(n);
     return n;
+}
+
+Au enode_literal_value(enode a, Au_t of_type) {
+    if (!a) return null;
+    if (a && a->literal && (!of_type || inherits(isa(a->literal), of_type))) {
+        return a->literal;
+    } else if (of_type == typeid(i64) && inherits(isa(a->literal), typeid(shape))) {
+        shape vshape = (shape)a->literal;
+        Au res = _i64(vshape->data[0]);
+        return res;
+    }
+    return null;
 }
 
 enode aether_module_initializer(aether a) {

@@ -944,7 +944,7 @@
 #define   i_struct_prop_DECL_EXTERN(X, R, N)
 #define   i_struct_prop_GENERICS(X, R, N)
 #define   i_struct_prop_INIT(X, R, N) { \
-    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, 0); \
+    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, AU_TRAIT_IPROP); \
     m->access_type = interface_public; \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&R##_i.type; \

@@ -364,9 +364,14 @@ enode parse_object(silver a, etype mdl_schema);
 
 static enode parse_expression(silver a, etype expect) {
     print_tokens(a, "parse-expr");
+    static int seq = 0;
+    seq++;
+    if (seq == 12) {
+        seq = seq;
+    }
     // handle array and map types here at this level, and cue in other types through a protocol if possible
     // our calls below this do not have any idea to use the comma in expression syntax
-    if (expect && inherits(expect->au, typeid(collective)) && read_if(a, "[")) {
+    if (expect && (is_rec(expect) || inherits(expect->au, typeid(collective))) && read_if(a, "[")) {
         enode res = parse_object(a, expect);
         validate(read_if(a, "]"), "expected ] after [ expression...");
         return res;
@@ -829,13 +834,48 @@ static string scan_map(map m, string source, int index) {
     return last_match;
 }
 
+static shape parse_shape(string str, string* str_res, i64* index) {
+    int ln = len(str);
+    bool single = false;
+    int index_stop = *index;
+    bool explicit = false;
+    for (int i = *index; i < ln; i++) {
+        i32 chr = idx(str, i);
+        bool start = (i == *index);
+        if ((chr == '-' && start) || ((chr == 'x' && !start) || (chr >= '0' && chr <= '9'))) {
+            single |= (chr >= '0' && chr <= '9');
+            explicit |= chr == 'x';
+            index_stop = i;
+            continue;
+        }
+        if (chr == '.')
+            return null;
+        break;
+    }
+    if (single) {
+        int ln = index_stop - *index + 1;
+        string sh = mid(str, *index, ln);
+        array dims = split(sh, "x");
+        shape res = shape(explicit, explicit);
+        *index += ln;
+        each(dims, string, s) {
+            string tr = trim(s);
+            i64 idim = integer_value(tr);
+            shape_push(res, idim);
+        }
+        *str_res = sh;
+        return res;
+    }
+    return null;
+}
+
 static array parse_tokens(silver a, Au input, array output) {
     string input_string;
     Au_t type = isa(input);
     path src = null;
     if (type == typeid(path)) {
         src = (path)input;
-        input_string = (string)load(src, typeid(string), null);
+        input_string = (string)load(src, typeid(string), null); // this was read before, but we 'load' files; way less conflict wit posix
     } else if (type == typeid(string))
         input_string = (string)input;
     else
@@ -880,7 +920,7 @@ static array parse_tokens(silver a, Au input, array output) {
                 line_num += 1;
                 line_start = index + 1;
                 indent = 0;
-            label:
+            label: /// so we may use break and continue
                 chr = idx(input_string, ++index);
                 if (!isspace(chr))
                     continue;
@@ -921,6 +961,7 @@ static array parse_tokens(silver a, Au input, array output) {
 
         string name = scan_map(mapping, input_string, index);
         if (name) {
+            // we could merge these more generically
             if (a->cmode && len(name) == 1 && strncmp(&input_string->chars[index], "##", 2) == 0) {
                 name = string("##");
             }
@@ -972,57 +1013,21 @@ static array parse_tokens(silver a, Au input, array output) {
         bool last_dash = false;
         i32 st_char = idx(input_string, start);
         bool start_numeric = st_char == '-' || (st_char >= '0' && st_char <= '9');
-        int seps = 0;
-        
-        // check for shape literal: N or NxM or NxMxO etc.
-        if (num_start) {
-            array dims = array(32);
-            num dim_start = index;
-            
-            // parse first dimension
-            while (index < length) {
-                i32 v = idx(input_string, index);
-                if (v < '0' || v > '9') break;
-                index++;
-            }
-            if (index > dim_start) {
-                i64 dim_val = atoll(mid(input_string, dim_start, index - dim_start)->chars);
-                push(dims, (Au)dim_val);
-                
-                // continue parsing xN segments
-                while (index < length && idx(input_string, index) == 'x') {
-                    index++; // skip 'x'
-                    num next_start = index;
-                    while (index < length) {
-                        i32 v = idx(input_string, index);
-                        if (v < '0' || v > '9') break;
-                        index++;
-                    }
-                    if (index > next_start) {
-                        i64 next_val = atoll(mid(input_string, next_start, index - next_start)->chars);
-                        push(dims, (Au)i64(next_val));
-                    } else {
-                        // trailing 'x' with no number
-                        break;
-                    }
-                }
-                
-                string crop = mid(input_string, start, index - start);
-                shape sh = shape(len(dims), dims);
-                token t = token(
-                    chars, crop->chars,
-                    indent, indent,
-                    source, src,
-                    line, line_num,
-                    column, start - line_start,
-                    literal, (Au)sh);
-                push(tokens, (Au)t);
-                continue;
-            }
+        string shape_str = null;
+        //printf("tokens: %s\n", mid(input_string, index, 4)->chars);
+        shape shape_literal = start_numeric ? parse_shape(input_string, &shape_str, &index) : null;
+        if (shape_literal) {
+            push(tokens, (Au)token(
+                    chars,   shape_str->chars,
+                    indent,  indent,
+                    source,  src,
+                    line,    line_num,
+                    literal, (Au)shape_literal,
+                    column,  index - line_start));
+            continue;
         }
-        
-        // regular token parsing (non-numeric)
-        seps = 0;
+
+        int seps = 0;
         while (index < length) {
             i32 v = idx(input_string, index);
             bool is_sep = v == '.';
@@ -1030,12 +1035,12 @@ static array parse_tokens(silver a, Au input, array output) {
             bool cont_numeric = (is_sep && seps <= 1) || (v >= '0' && v <= '9');
             char sval[2] = {v, 0};
             bool is_dash = v == '-';
-
+            // R-hand types, L is for members only
             int imatch = index_of(special, sval);
             if (!start_numeric || !cont_numeric)
                 if (isspace(v) || index_of(special, sval) >= 0) {
                     if (last_dash && (index - start) > 1) {
-                        i32 vb = idx(input_string, index - 2);
+                        i32 vb = idx(input_string, index - 2); // allow the -- sequence, disallow - at end of tokens
                         index -= vb != '-';
                     }
                     break;
@@ -1066,16 +1071,17 @@ token silver_read_if(silver a, symbol cs) {
 
 Au silver_read_literal(silver a, Au_t of_type) {
     token n = silver_element(a, 0);
-    if (n && n->literal && (!of_type || inherits(isa(n->literal), of_type))) {
+    Au res = get_literal(n, of_type);
+    if (res) {
         a->cursor++;
-        return n->literal;
+        return res;
     }
     return null;
 }
 
 string silver_read_string(silver a) {
     token n = silver_element(a, 0);
-    if (n && isa(n->literal) == typeid(string)) {
+    if (n && instanceof(n->literal, string)) {
         string token_s = string(n->chars);
         string result = mid(token_s, 1, token_s->count - 2);
         a->cursor++;
@@ -1086,9 +1092,15 @@ string silver_read_string(silver a) {
 
 Au silver_read_numeric(silver a) {
     token n = silver_element(a, 0);
-    if (n && (isa(n->literal) == typeid(f64) || isa(n->literal) == typeid(i64))) {
+    Au_t au = n ? isa(n->literal) : null;
+    if (au == typeid(f64) || au == typeid(i64) || au == typeid(shape)) {
+        shape sh = instanceof(n->literal, shape);
+        Au res = n->literal;
+        if (sh && sh->count == 1) {
+            res = _i64(sh->data[0]);
+        }
         a->cursor++;
-        return n->literal;
+        return res;
     }
     return null;
 }
@@ -1401,6 +1413,17 @@ enode silver_read_enode(silver a, etype mdl_expect) {
     }
 
     print_tokens(a, "before read_literal");
+    shape sh = (shape)read_literal(a, typeid(shape));
+    if (sh && (sh->count == 1 || sh->explicit)) {
+        enode op;
+        if (mdl_expect == typeid(shape)) 
+            op = e_operand(a, (Au)sh, typeid(shape)->user);
+        else
+            op = e_operand(a, _i64(sh->data[0]), mdl_expect);
+        
+        return op; // otherwise interpreted as an i64
+    }
+
     Au lit = read_literal(a, null);
     if (lit) {
         a->expr_level++;
@@ -1507,7 +1530,7 @@ enode silver_read_enode(silver a, etype mdl_expect) {
     Au_t ty = isa(mem);
 
     // this only happens when in a function
-    return f ? e_create(a, mdl_expect, (Au)mem) : null;
+    return (f && mdl_expect) ? e_create(a, mdl_expect, (Au)mem) : (enode)mem;
 }
 
 enode parse_switch(silver a);
@@ -1600,7 +1623,9 @@ enode parse_statement(silver a) {
                 verify(!assign_type || expr, "expected expression after %o", assign_type);
                 validate(new_member, "expected member indentifier after type");
                 
-                if (eq(new_member, "nice_array")) {
+                if (eq(new_member, "nice_vector")) {
+                    etype meta_arg0 = (etype)array_get(rtype->meta, 0);
+                    shape meta_arg1 = (shape)array_get(rtype->meta, 1);
                     rtype = rtype;
                 }
                 Au_t m = def_member(top, new_member->chars, rtype->au, AU_MEMBER_VAR, is_const ? AU_TRAIT_CONST : 0);
@@ -1894,7 +1919,8 @@ etype read_etype(silver a, array* p_expr) {
     print_tokens(a, "read-etype");
 
     token f = peek(a);
-    if  (!f || f->literal || !is_alpha(f)) return null;
+    if  (!f || f->literal || !is_alpha(f))
+        return null;
 
     push_current(a);
     bool  explicit_sign = !mdl && read_if(a, "signed") != null;
@@ -1918,7 +1944,7 @@ etype read_etype(silver a, array* p_expr) {
             return null;
         }
 
-        if (mdl && mdl->au->meta.count) {
+        if (mdl && is_class(mdl) && mdl->au->meta.count) {
             // silver is about introducing more syntax only when you require complex containment
             // this applies to methods with no args at method level 0 and [ args ] at > 0
             // array map<string[int]> is the same exact way here
@@ -1949,6 +1975,8 @@ etype read_etype(silver a, array* p_expr) {
                 for (int i = 0; i < rem; i++) {
                     Au_t meta_src =  au_arg_type(mdl->au->meta.origin[1 + i]);
                     if  (meta_src == typeid(shape)) {
+                        token t = peek(a);
+                        Au_t t_isa = isa(t->literal);
                         shape    s =  read_shape(a);
                         if (s) {
                             validate(s, "expected shape description, found %o", peek(a));
@@ -3391,6 +3419,18 @@ static enode parse_func_call(silver, enode);
 
 bool is_map(etype);
 
+etype prop_value_at(etype a, i64 index) {
+    i64 prop = 0;
+    members(a->au, m) {
+        if (m->member_type == AU_MEMBER_VAR && m->is_iprop) {
+            if (index == prop) {
+                return m->src->user;
+            }
+            prop++;
+        }
+    }
+    return null;
+}
 // this must parse into map or array, then hand to e_create
 // in the case where the entire value is given at once, we can back out and perform a direct e_create
 // with that result.. we will do this on the first item.  we merely check for the ] afterwards.
@@ -3422,7 +3462,7 @@ enode parse_object(silver a, etype mdl) {
     int   iter   = 0;
     shape s      = is_mdl_collective ? instanceof(array_get(mdl->meta, 1), shape) : null;
     int shape_stride = (s && s->count > 1) ? s->data[s->count - 1] : 0;
-
+    
     while (silver_peek(a)) {
         if (next_is(a, "]"))
             break;
@@ -3441,6 +3481,10 @@ enode parse_object(silver a, etype mdl) {
             is_enode_key = true;
         } else if (!is_fields && is_mdl_collective) {
             etype e = (etype)array_get(mdl->meta, 0);
+            k = (Au)parse_expression(a, e);
+        } else if (!is_fields && !is_mdl_map) {
+            etype e = prop_value_at(mdl, iter);
+            validate(e, "cannot find prop for %o at index %i", mdl, iter);
             k = (Au)parse_expression(a, e);
         } else if (!is_mdl_map) {
             string name = (string)read_alpha(a);
@@ -3483,8 +3527,8 @@ enode parse_object(silver a, etype mdl) {
 
         token comma = read_if(a, ",");
         if (shape_stride != 0) {
-            verify( comma && (iter % shape_stride == 0), "expected comma");
-            verify(!comma || (iter % shape_stride != 0), "unexpected comma");
+            verify(( comma && ((iter + 1) % shape_stride == 0)) ||
+                   (!comma || ((iter + 1) % shape_stride != 0)), "check array commas compared to stride");
         }
 
         iter++;
@@ -4019,11 +4063,13 @@ etype silver_read_def(silver a) {
 
             if (is_explicit) {
                 enode n = parse_expression(a, store);
-                verify(n && n->literal && ((Au_t)isa(n->literal))->is_integral,
+                Au lit = n ? literal_value(n,
+                    isa(n->literal) == typeid(shape) ? typeid(i64) : isa(n->literal)) : null;
+                verify(n && ((Au_t)isa(lit))->is_integral,
                     "expected integral literal");
-                v = n->literal;
+                v = lit;
                 u8 sp[64];
-                memcpy(sp, n->literal, ((Au_t)isa(n->literal))->abi_size / 8);
+                memcpy(sp, lit, ((Au_t)isa(lit))->abi_size / 8);
                 value = *(i64*)sp; // primitives would need a minimum allocation size in this case
             } else
                 v = primitive(store->au, &value); /// this creates i8 to i64 data, using &value i64 addr
