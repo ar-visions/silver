@@ -1198,9 +1198,9 @@ none vector_init(vector);
 // Au, user space is simply the cstring
 
 #define subprocedure_schema(AA,BB,...) \
-    M(AA,BB, i, prop,   required, Au,     target) \
+    M(AA,BB, i, prop,   public,   Au,     target) \
     M(AA,BB, i, prop,   public,   Au,     ctx) \
-    M(AA,BB, i, prop,   required, handle, addr) \
+    M(AA,BB, i, prop,   public,   handle, addr) \
     M(AA,BB, i, method, public,   Au,     invoke, Au)
 declare_class(subprocedure)
 
