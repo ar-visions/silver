@@ -1071,6 +1071,7 @@ token silver_read_if(silver a, symbol cs) {
 
 Au silver_read_literal(silver a, Au_t of_type) {
     token n = silver_element(a, 0);
+    if (!n) return null;
     Au res = get_literal(n, of_type);
     if (res) {
         a->cursor++;
@@ -1680,7 +1681,8 @@ enode parse_statement(silver a) {
             if (next_is(a, "break")) return parse_break(a);
             if (next_is(a, "for"))    return parse_for(a);
             if (next_is(a, "loop"))   return parse_loop_while(a);
-            if (next_is(a, "if"))     return parse_if_else(a);
+            if (next_is(a, "if"))
+                return parse_if_else(a);
             if (next_is(a, "ifdef"))  return parse_ifdef_else(a);
             if (next_is(a, "loop"))   return parse_loop_while(a);
             if (next_is(a, "switch")) return parse_switch(a);
@@ -3651,7 +3653,8 @@ enode silver_parse_assignment(silver a, enode mem, string oper) {
 enode cond_builder(silver a, array cond_tokens, Au unused) {
     a->expr_level++; // make sure we are not at 0
     push_tokens(a, (tokens)cond_tokens, 0);
-    enode cond_expr = parse_expression(a, elookup("bool"));
+    print_tokens(a, "cond_builder");
+    enode cond_expr = parse_expression(a, typeid(bool)->user);
     pop_tokens(a, false);
     a->expr_level--;
     return cond_expr;
@@ -3770,7 +3773,7 @@ enode parse_if_else(silver a) {
     array tokens_cond = array(32);
     array tokens_block = array(32);
     while (true) {
-        bool is_if = silver_read_if(a, "if") != null;
+        bool is_if = read_if(a, "if") != null;
         validate(is_if && require_if || !require_if, "expected if");
         array cond = is_if ? read_within(a) : array();
         array block = read_body(a);
@@ -3779,7 +3782,9 @@ enode parse_if_else(silver a) {
         push(tokens_block, (Au)block);
         if (!is_if)
             break;
-        bool next_else = silver_read_if(a, "else") != null;
+        bool next_else = read_if(a, "else") != null;
+        if (!next_else)
+            break;
         require_if = false;
     }
     subprocedure build_cond = subproc(a, cond_builder, null);
@@ -3789,14 +3794,14 @@ enode parse_if_else(silver a) {
 
 enode parse_switch(silver a) {
 
-    validate(silver_read_if(a, "switch") != null, "expected switch");
+    validate(read_if(a, "switch") != null, "expected switch");
     enode e_expr = parse_expression(a, null);
     map cases = map(hsize, 16);
     array expr_def = null;
     bool all_const = is_prim((Au)e_expr);
 
     while (true) {
-        if (silver_read_if(a, "case")) {
+        if (read_if(a, "case")) {
             bool is_const = false;
             etype mdl_read = null;
             array meta_read = null;
@@ -3806,7 +3811,7 @@ enode parse_switch(silver a) {
             //value->deep_compare = true; // tell array when its given a compare to not just do silver_element equation but effectively deep compare (i will do this)
             set(cases, (Au)value, (Au)body);
             continue;
-        } else if (silver_read_if(a, "default")) {
+        } else if (read_if(a, "default")) {
             expr_def = read_body(a);
             continue;
         } else

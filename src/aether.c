@@ -733,7 +733,7 @@ enode aether_e_operand(aether a, Au op, etype src_model) {
     if (!op) {
         if (is_ptr(src_model))
             return e_null(a, src_model);
-        return enode(mod, a, au, au_lookup("none"), value, null);
+        return enode(mod, a, au, au_lookup("none"), loaded, true, value, null);
     }
     
     if (isa(op) == typeid(string))
@@ -946,7 +946,7 @@ enode aether_e_fn_call(aether a, enode fn, array args) {
     if (a->no_build) return e_noop(a, fn->au->rtype->user);
 
     etype_implement((etype)fn);
-
+    
     Au    arg0             = args ? get(args, 0) : null;
     Au_t  type0 = isa(arg0);
     enode first_arg        = arg0 ? e_operand(a, arg0, null) : null;
@@ -1069,7 +1069,7 @@ static bool is_same(Au a, Au b) {
 
 static enode castable(etype fr, etype to) { 
     bool fr_ptr = is_ptr(fr);
-    if ((fr_ptr || is_prim(fr)) && is_bool(to))
+    if (((fr_ptr && !is_class(fr)) || is_prim(fr)) && is_bool(to))
         return (enode)true;
     
     /*
@@ -1090,10 +1090,15 @@ static enode castable(etype fr, etype to) {
         return (enode)true;
 
     /// check cast methods on from
-    for (int i = 0; i < fr->au->members.count; i++) {
-        Au_t mem = (Au_t)fr->au->members.origin[i];
-        if (mem->member_type == AU_MEMBER_CAST && is_same((Au)mem->rtype, (Au)to->au))
-            return (enode)mem->user;
+    Au_t ctx = fr->au;
+    while (ctx) {
+        for (int i = 0; i < ctx->members.count; i++) {
+            Au_t mem = (Au_t)ctx->members.origin[i];
+            if (mem->member_type == AU_MEMBER_CAST && is_same((Au)mem->rtype, (Au)to->au))
+                return (enode)mem->user;
+        }
+        if (ctx->context == ctx) break;
+        ctx = ctx->context;
     }
     return (enode)false;
 }
@@ -1625,7 +1630,7 @@ enode e_convert_or_cast(aether a, etype t, enode input) {
                     }
                     static int seq = 0;
                     seq++;
-                    if (seq == 2) {
+                    if (seq == 1) {
                         seq = seq;
                     }
                     verify(check, "models not compatible: %o -> %o %i",
@@ -1685,8 +1690,10 @@ enode aether_e_create(aether a, etype t, Au args) {
     // construct / cast methods
     Au_t args_type = isa(args);
     enode input = (enode)instanceof(args, enode);
-    if (input && !input->loaded)
+    if (input && !input->loaded) {
+        Au info = head(input);
         input = enode_value(input);
+    }
 
     if (!input && instanceof(args, const_string)) {
         input = e_operand(a, args, t);
@@ -1705,7 +1712,7 @@ enode aether_e_create(aether a, etype t, Au args) {
         
         static int seq = 0;
         seq++;
-        if (seq == 27) {
+        if (seq == 2) {
             seq = seq;
         }
         Au_t t_isa = isa(t);
@@ -2781,7 +2788,7 @@ none etype_init(etype t) {
     if (t->mod == null) t->mod = (aether)instanceof(t, aether);
     aether a = t->mod; // silver's mod will be a delegate to aether, not inherited
 
-    if (t->au && t->au->ident && strcmp(t->au->ident, "vec2f") == 0) {
+    if (t->au && t->au->ident && strstr(t->au->ident, "cast_bool")) {
         int test2 = 2;
         test2    += 2;
     }
@@ -3107,6 +3114,11 @@ none etype_implement(etype t) {
     Au_t    au = t->au;
     aether a  = t->mod;
 
+    if (t->au && t->au->ident && strstr(t->au->ident, "cast_bool")) {
+        int test2 = 2;
+        test2    += 2;
+    }
+
     if (au->ident && strcmp(au->ident, "something") == 0) {
         int sz = sizeof(struct _Au);
         int sz2 = sizeof(__typeof__(etype_i.info));
@@ -3227,6 +3239,10 @@ none etype_implement(etype t) {
                     m->member_type == AU_MEMBER_INDEX     || 
                     m->member_type == AU_MEMBER_OPERATOR  || 
                     m->member_type == AU_MEMBER_CAST) {
+
+                    if (m->member_type == AU_MEMBER_CAST) {
+                        m = m;
+                    }
                     if (m->member_type == AU_MEMBER_CONSTRUCT) {
                         m = m;
                     }
@@ -3662,16 +3678,9 @@ void aether_import_models(aether a, Au_t ctx) {
         
         for (num i = 0; i < ctx->members.count; i++) {
             Au_t m  =  (Au_t)ctx->members.origin[i];
-
-            if (m->module != ctx) {
-
-                if (m->ident && strcmp(m->ident, "vec2f") == 0) {
-                    int test2 = 2;
-                    test2    += 2;
-                }
-
+            
+            if (m->module != ctx)
                 continue;
-            }
 
             if (ff->member_type && ff->member_type != m->member_type) continue;
 
@@ -3687,6 +3696,18 @@ void aether_import_models(aether a, Au_t ctx) {
             }
 
             if (proceed) {
+
+                if (m->ident && strstr(m->ident, "string")) {
+                    int test2 = 2;
+                    test2    += 2;
+                    members(m, strm) {
+                        if (strm->ident && strstr(strm->ident, "cast_bool")) {
+                            Au_t arg0 = strm->args.origin[0];
+                            strm = strm;
+                        }
+                    }
+                }
+
                 print("init %o", m);
                 if (m == typeid(raw)) {
                     m = m;
@@ -3936,7 +3957,7 @@ none enode_init(enode n) {
     bool is_const = n->literal != null;
 
     if (is_func((Au)n->au->context)) {
-        enode fn = (enode)n->au->context->user;
+        enode fn = (enode)au_arg_type((Au)n->au->context)->user;
         n->value = LLVMGetParam(fn->value, n->arg_index);
     }
 }

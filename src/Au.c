@@ -697,7 +697,7 @@ _Pragma("pack(push, 1)")
 Au_t_f_info Au_t_f_i;
 _Pragma("pack(pop)")
 
-static Au_t _push_arg(Au_t type) {
+static Au_t _push_arg(Au_t type, bool add_arg) {
     if (n_members == 0) {
         n_members   = 2048;
         member_pool = calloc(n_members, sizeof(struct _Au_combine));
@@ -707,14 +707,11 @@ static Au_t _push_arg(Au_t type) {
     cur->info.refs = 1;
     cur->info.type = (Au_t)&Au_t_f_i.type;
     Au_t au = &cur->type;
-
     au->member_type = AU_MEMBER_VAR;
-    //au->module = current_module();
-
-    Au_t new_member = (Au_t)array_qpush((array)&type->args, (Au)&cur->type);
-    new_member->context = type;
-    //printf("new_member on type %s = %p (%i)\n", type->ident, new_member, n_members);
-    return new_member;
+    if (add_arg)
+        array_qpush((array)&type->args, (Au)au);
+    au->context = type;
+    return au;
 }
 
 Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value) {
@@ -726,15 +723,22 @@ Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32
     return prop;
 }
 
+Au_t alloc_arg(Au_t context, symbol ident, Au_t arg) {
+    Au_t var = _push_arg(context, false);
+    var->src = arg;
+    var->ident = cstr_copy((cstr)ident);
+    return var;
+}
+
 Au_t def_arg(Au_t context, symbol ident, Au_t arg) {
-    Au_t var = _push_arg(context);
+    Au_t var = _push_arg(context, true);
     var->src = arg;
     var->ident = cstr_copy((cstr)ident);
     return var;
 }
 
 Au_t def_meta(Au_t context, symbol ident, Au_t arg) {
-    Au_t var = _push_arg(context);
+    Au_t var = _push_arg(context, true);
     var->src = arg;
     var->ident = cstr_copy((cstr)ident);
     return var;
@@ -926,7 +930,14 @@ none collective_init(collective a) {
 
 ffi_method_t* method_with_address(handle address, Au_t rtype, array atypes, Au_t method_owner);
 
+#define members(MDL, VAR) \
+    for (int __i = 0; __i < (MDL)->members.count; __i++) \
+        for (Au_t VAR = (Au_t)(MDL)->members.origin[__i]; VAR; VAR = NULL)
+
 none push_type(Au_t type) {    
+
+    if (type == typeid(string))
+        type = type;
 
     if (!Au_t_i.type.ident) {
         module = module_lookup("Au");
@@ -1012,6 +1023,10 @@ none push_type(Au_t type) {
         def_member(ft, "_none_", typeid(ARef), AU_MEMBER_VAR, 0);
         def_member(au_t, null, ft, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
         // this process is replicated in schema creation / etype_init
+    }
+
+    members(type, m) {
+        m->module = type->module;
     }
 
     array_qpush((array)&type->module->members, (Au)type);
@@ -1649,7 +1664,12 @@ none member_override(Au_t type, Au_t type_mem, AFlag f) {
             Au_t m = (Au_t)base->members.origin[i];
             if (m->member_type == f && strcmp(m->ident, type_mem->ident) == 0) {
                 type_mem->offset        = m->offset; // todo: better idea to use src on type_mem
-                type_mem->args          = m->args;
+                for (int ar = 0; ar < m->args.count; ar++) {
+                    Au_t arg = (Au_t)m->args.origin[ar];
+                    verify(arg->member_type == AU_MEMBER_VAR, "unexpected member_type on arg");
+                    def_arg(type_mem, arg->ident, arg->src);
+                }
+                //type_mem->args          = m->args;
                 type_mem->src           = m->type;
                 type_mem->member_type   = m->member_type;// | AU_MEMBER_OVERRIDE;
                 type_mem->is_override   = 1;
@@ -3328,7 +3348,7 @@ num   string_rindex_of(string a, symbol cs) {
 }
 
 bool string_cast_bool(string a) {
-    return a->count > 0;
+    return a && a->count > 0;
 }
 
 sz string_cast_sz(string a) {
