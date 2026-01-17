@@ -3074,6 +3074,8 @@ string string_copy(string a) {
 
 bool inherits(Au_t src, Au_t check) {
     if (!src) return false;
+    if (src->member_type == AU_MEMBER_VAR)
+        src = src->src;
     while (src != typeid(Au)) {
         if (src == check) return true;
         if (src->context == src) break;

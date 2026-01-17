@@ -52,6 +52,8 @@ none bp() {
 LLVMTypeRef _lltype(Au a);
 #define lltype(a) _lltype((Au)(a))
 
+etype save;
+
 enode enode_value(enode mem) {
     if (!mem->loaded) {
         aether a = mem->mod;
@@ -1326,6 +1328,10 @@ enode aether_e_typeid(aether a, etype mdl) {
     a->is_const_op = false;
 
     enode n = resolve_typeid((Au)mdl);
+    if (!n) {
+        resolve_typeid((Au)mdl);
+        n = n;
+    }
     verify(n, "schema instance not found for %o", mdl);
     return n;
 }
@@ -1715,6 +1721,29 @@ enode aether_e_create(aether a, etype t, Au args) {
         if (seq == 2) {
             seq = seq;
         }
+
+        // Handle struct/primitive to Au conversion (boxing)
+        if (t->au == typeid(Au) && (is_struct(input) || is_prim(input))) {
+            a->is_const_op = false;
+            if (a->no_build) return e_noop(a, t);
+            
+            etype input_type = canonical(input);
+            etype f_alloc    = find_member(typeid(Au), "alloc_new", AU_MEMBER_FUNC, false)->user;
+            enode metas_node = e_meta_ids(a, input_type->meta);
+            enode boxed      = e_fn_call(a, (enode)f_alloc, a(
+                e_typeid(a, input_type), 
+                _i32(1), 
+                metas_node
+            ));
+            boxed->au = input_type->au;
+
+            LLVMBuildStore(a->builder, input->value, boxed->value);
+                    
+            // Cast to Au type for return
+            return value(t, 
+                LLVMBuildBitCast(a->builder, boxed->value, lltype(t), "box_to_au"));
+        }
+
         Au_t t_isa = isa(t);
         enode fmem = convertible((etype)input, t);
 
@@ -2344,64 +2373,58 @@ enode aether_e_if_else(
     subprocedure expr_builder)
 {
     int ln_conds = len(conds);
+    bool has_else = len(exprs) > ln_conds;
 
     verify(
         ln_conds == len(exprs) - 1 ||
         ln_conds == len(exprs),
         "mismatch between conditions and expressions");
 
-    // Current insertion block + parent function
     LLVMBasicBlockRef block = LLVMGetInsertBlock(a->builder);
-    LLVMValueRef pb = LLVMGetBasicBlockParent(block);
+    LLVMValueRef      fn    = LLVMGetBasicBlockParent(block);
+    LLVMBasicBlockRef merge = LLVMAppendBasicBlock(fn, "ifcont");
 
-    // Merge block where everything joins back up
-    LLVMBasicBlockRef merge = LLVMAppendBasicBlock(pb, "ifcont");
-
-    // Iterate over the conditions and expressions
     for (int i = 0; i < ln_conds; i++) {
-        // Create the blocks for "then" and "else" (on the FUNCTION)
-        LLVMBasicBlockRef then_block = LLVMAppendBasicBlock(pb, "then");
-        LLVMBasicBlockRef else_block = LLVMAppendBasicBlock(pb, "else");
+        LLVMBasicBlockRef then_block = LLVMAppendBasicBlock(fn, "then");
+        LLVMBasicBlockRef else_block;
+        
+        // Last condition with no else goes directly to merge
+        bool is_last = (i == ln_conds - 1);
+        if (is_last && !has_else)
+            else_block = merge;
+        else
+            else_block = LLVMAppendBasicBlock(fn, "else");
 
-        // Build the condition
-        Au cond_obj      = conds->origin[i];
-        enode cond_node  = (enode)invoke(cond_builder, cond_obj);
-        LLVMValueRef condition =
-            e_create(a, elookup("bool"), (Au)cond_node)->value;
+        // Build condition
+        Au    cond_obj  = conds->origin[i];
+        enode cond_node = (enode)invoke(cond_builder, cond_obj);
+        LLVMValueRef condition = e_create(a, elookup("bool"), (Au)cond_node)->value;
 
-        // Conditional branch to then/else
         LLVMBuildCondBr(a->builder, condition, then_block, else_block);
 
-        // ----- THEN BLOCK -----
+        // Then block
         LLVMPositionBuilderAtEnd(a->builder, then_block);
-
-        Au expr_obj = exprs->origin[i];
-        invoke(expr_builder, (Au)expr_obj);
-
-        // Jump to merge
+        invoke(expr_builder, exprs->origin[i]);
         LLVMBuildBr(a->builder, merge);
 
-        // Continue emitting from the else side
-        LLVMPositionBuilderAtEnd(a->builder, else_block);
-        block = else_block;
+        // Position for next iteration or else
+        if (else_block != merge)
+            LLVMPositionBuilderAtEnd(a->builder, else_block);
     }
 
-    // ----- FINAL ELSE (optional) -----
-    if (len(exprs) > len(conds)) {
-        Au else_expr = exprs->origin[len(conds)];
-        invoke(expr_builder, else_expr);
+    // Else block
+    if (has_else) {
+        invoke(expr_builder, exprs->origin[ln_conds]);
         LLVMBuildBr(a->builder, merge);
     }
 
-    // Move to merge block
     LLVMPositionBuilderAtEnd(a->builder, merge);
 
     return enode(
-        mod,
-        a,
+        mod,    a,
         loaded, false,
-        au, au_lookup("none"),
-        value, null);
+        au,     typeid(none),
+        value,  null);
 }
 
 
@@ -3060,7 +3083,7 @@ etype implement_type_id(etype t) {
     
     aether a = t->mod;
 
-    if (strcmp(t->au->ident, "vec2f") == 0) {
+    if (strcmp(t->au->ident, "Au") == 0) {
         a = a;
     }
     // we must support a use-case where aether calls this on itsself.  a module must have its own identity in space!
@@ -3100,6 +3123,9 @@ etype implement_type_id(etype t) {
                 AU_TRAIT_SYSTEM | (a->is_Au_import ? AU_TRAIT_IS_IMPORTED : 0)));
     etype_implement((etype)schema_i);
     printf("user ptr = %p\n", t->au->user);
+    if (t->au == typeid(Au)) {
+        t = t;
+    }
     t->au->user->type_id = access(schema_i, string("type"));
     t->au->user->type_id->loaded = true;
     if (!a->is_Au_import) {
@@ -3421,6 +3447,7 @@ none etype_implement(etype t) {
 
         int index = 0;
         arg_list(fn->au, arg) {
+            verify(arg != typeid(Au), "unexpected Au");
             arg->user = (etype)evar(mod, a, au, arg, arg_index, index, loaded, true);
             index++;
         }
@@ -3450,6 +3477,11 @@ none etype_implement(etype t) {
 }
 
 none aether_output_schemas(aether a, enode init) {
+
+    if (save != typeid(Au)->user) {
+        save = save;
+    }
+    
     Au_t au = init->au;
     if (au->is_mod_init) {
         etype f = au->user;
@@ -3488,6 +3520,7 @@ none aether_output_schemas(aether a, enode init) {
                     isize += mem->typesize;
             }
 
+            etype au_context_user = au->context ? au->context->user : null;
             // initialize the type and fields
             e_fn_call(a, (enode)fn_emplace->user, a(
                 type_id, e_typeid(a, u(au->context)), e_typeid(a, u(au->src)), module_id,
@@ -3619,7 +3652,7 @@ none aether_push_scope(aether a, Au arg) {
 
     enode fn = context_func(a);
     if (fn && (fn != prev_fn) && !a->no_build) {
-        if (fn->au && fn->au->ident && strstr(fn->au->ident, "action")) {
+        if (fn->au && fn->au->ident && strstr(fn->au->ident, "action2")) {
             fn = fn;
         }
         verify(fn->entry, "expected function entry for %s", fn->au->ident);
@@ -3671,11 +3704,18 @@ void aether_import_models(aether a, Au_t ctx) {
         { false, true,  true,  true,  false, 0, 0, 0 }  // now implement functions, whose args will always be implemented
     };
 
+    Au info = head(typeid(Au)->user);
+
+    save = typeid(Au)->user;
+
     Au_t ty = typeid(i32);
 
     for (int filter = 0; filter < 10; filter++) {
         struct filter* ff = &filters[filter];
         
+        if (save != typeid(Au)->user) {
+            save = save;
+        }
         for (num i = 0; i < ctx->members.count; i++) {
             Au_t m  =  (Au_t)ctx->members.origin[i];
             
@@ -3724,8 +3764,15 @@ void aether_import_models(aether a, Au_t ctx) {
                 }
             }
         }
+
+        if (save != typeid(Au)->user) {
+            save = save;
+        }
     }
     create_type_members(a, ctx);
+    if (save != typeid(Au)->user) {
+        save = save;
+    }
 }
 
 void aether_import_Au(aether a, Au lib) {
@@ -3755,11 +3802,13 @@ void aether_import_Au(aether a, Au lib) {
     }
 
     Au_t au    = typeid(Au);
-    au->user   = etype(mod, a, au, au);
-    Au_t au_t  = typeid(Au_t);
-    au_t->user = etype(mod, a, au, au_t);
-    etype_ptr(a, au); // Au should be pointer, and we have it as struct; we need to load _Au as what we do, and point to it with Au
-    etype_ptr(a, au_t);
+    if (!au->user) {
+        au->user   = etype(mod, a, au, au);
+        Au_t au_t  = typeid(Au_t);
+        au_t->user = etype(mod, a, au, au_t);
+        etype_ptr(a, au); // Au should be pointer, and we have it as struct; we need to load _Au as what we do, and point to it with Au
+        etype_ptr(a, au_t);
+    }
 
     aether_import_models(a, au_module);
     if (!au_module->user) {
@@ -4410,30 +4459,40 @@ enode aether_e_not(aether a, enode L) {
     return value(elookup("bool"), result);
 }
 
-none enode_release(enode mem) {
+enode enode_retain(enode mem) {
     aether a = mem->mod;
     etype mdl = (etype)evar_type((evar)mem);
-    if (!is_ptr(mdl))
-        return;
+    a->is_const_op = false;
+    if (mdl->au->is_class && !a->no_build) {
+        enode fn_hold = (enode)find_member(typeid(Au), "hold", AU_MEMBER_FUNC, true)->user;
+        e_fn_call(a, (enode)fn_hold, a(mem));
+    }
+    return mem;
+}
+
+enode enode_release(enode mem) {
+    aether a = mem->mod;
+    etype mdl = (etype)evar_type((evar)mem);
 
     a->is_const_op = false;
-    if (a->no_build) return;
-
-    if (is_class(mdl)) {
-        enode fn_drop = (enode)find_member(au_lookup("Au"), "drop", AU_MEMBER_FUNC, true)->user;
-        if   (fn_drop) e_fn_call(a, (enode)fn_drop, a(mem));
+    if (mdl->au->is_class && !a->no_build) {
+        enode fn_drop = (enode)find_member(typeid(Au), "drop", AU_MEMBER_FUNC, true)->user;
+        e_fn_call(a, (enode)fn_drop, a(mem));
     }
+    return mem;
 }
 
 
 Au_t aether_pop_scope(aether a) {
     statements st = (statements)instanceof(top_scope(a)->user, statements);
+    /*
+    this builds too much code, and isnt as performant as an AF 
     if (st) {
         members(st->au, mem) {
             if (instanceof(mem->user, enode))
                 release((enode)mem->user);
         }
-    }
+    }*/
     enode prev_fn = context_func(a);
 
     if (prev_fn && !a->no_build)

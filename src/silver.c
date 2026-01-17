@@ -396,6 +396,31 @@ Au build_init_preamble(enode f, Au arg) {
 
 void silver_parse(silver a) {
     enode init = module_initializer(a); // publish initializer
+
+#if defined(__APPLE__)
+    #define SILVER_IS_MAC     1
+    #define SILVER_IS_LINUX   0
+    #define SILVER_IS_WINDOWS 0
+#elif defined(_WIN32)
+    #define SILVER_IS_MAC     0
+    #define SILVER_IS_LINUX   0
+    #define SILVER_IS_WINDOWS 1
+#elif defined(__linux__)
+    #define SILVER_IS_MAC     0
+    #define SILVER_IS_LINUX   1
+    #define SILVER_IS_WINDOWS 0
+#else
+    #error "unsupported platform"
+#endif
+
+    Au_t m_mac = def_member(a->au, "mac",     typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
+    Au_t m_lin = def_member(a->au, "linux",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
+    Au_t m_win = def_member(a->au, "windows", typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
+
+    m_mac->user = (etype)e_operand(a, _bool(SILVER_IS_MAC),     typeid(bool)->user);
+    m_lin->user = (etype)e_operand(a, _bool(SILVER_IS_LINUX),   typeid(bool)->user);
+    m_win->user = (etype)e_operand(a, _bool(SILVER_IS_WINDOWS), typeid(bool)->user);
+    
     while (silver_peek(a)) {
         print_tokens(a, "parse-base");
         enode res = parse_statement(a);
@@ -1674,7 +1699,6 @@ enode parse_statement(silver a) {
                 return e_noop(a, null);
             
             if (next_is(a, "return")) {
-                a->expr_level++;
                 a->last_return = parse_return(a);
                 return a->last_return;
             }
@@ -2689,7 +2713,8 @@ enode parse_import(silver a) {
     token   commit       = null;
     string  uri          = null;
     Au_t    mod          = null;
-    
+    string  module_lib   = null;
+
     if (t && isalpha(t->chars[0])) {
         bool   cont     = false;
         string service  = a->git_service;
@@ -2744,6 +2769,8 @@ enode parse_import(silver a) {
             if (aa && !bb && !commit) {
                 local_mod = module_exists(a, mpath);
                 if (mod) {
+                    module_lib = string(mod->ident);
+                    set(a->libs, module_lib, (Au)_bool(true));
                     push(module_paths, (Au)mod); // the Au_t type signals this module is already loaded
                 } else if (!local_mod) {
                     verify(len(mpath), "invalid module 'path");
@@ -2848,8 +2875,9 @@ enode parse_import(silver a) {
                  import_build_commands(all_config, ">>"),
                  import_config(all_config),
                  import_env(all_config));
-        each(all_config, string, t) if (starts_with(t, "-l"))
-            set(a->libs, (Au)mid(t, 2, len(t) - 2), (Au)_bool(true));
+        each(all_config, string, t)
+            if (starts_with(t, "-l"))
+                set(a->libs, (Au)mid(t, 2, len(t) - 2), (Au)_bool(true));
     } else if (local_mod && eq(ext(local_mod), "ag"))
         external = silver(local_mod);
     else if (is_codegen) {
@@ -3626,12 +3654,18 @@ enode silver_parse_member_expr(silver a, enode mem) {
     return mem;
 }
 
+etype etype_of(enode mem) {
+    if (mem->au->member_type == AU_MEMBER_VAR) {
+        return (etype)mem->au->src->user;
+    }
+    return (etype)mem;
+}
+
 enode silver_parse_assignment(silver a, enode mem, string oper) {
     validate(isa(mem) == typeid(enode) || !mem->au->is_const,
         "mem %s is a constant", mem->au->ident);
     
-    enode L = mem;
-    enode R = parse_expression(a, (etype)mem); /// getting class2 as a struct not a pointer as it should be. we cant lose that pointer info
+    enode R = parse_expression(a, (etype)etype_of(mem)); /// getting class2 as a struct not a pointer as it should be. we cant lose that pointer info
     if (!mem->au) {
         mem->au = (Au_t)hold(R->au);
         mem->au->is_const = eq(oper, "=");
@@ -3641,12 +3675,20 @@ enode silver_parse_assignment(silver a, enode mem, string oper) {
     } else if (mem->au->is_assigned) {
         verify(!eq(oper, "="), "cannot perform constant assign after initial assignment");
     }
+    bool new_var = !mem->au->is_assigned;
     mem->au->is_assigned = true; // this is fine to set on var Au_t's
     validate(contains(operators, (Au)oper), "%o not an assignment-operator");
     string op_name = (string)get   (operators, (Au)oper);
     string op_form = form  (string, "_%o", op_name);
     OPType op_val  = e_val (OPType, cstring(op_form));
-    enode  result  = e_op  (a, op_val, op_name, (Au)L, (Au)R);
+    etype  mdl     = (etype)evar_type((evar)mem);
+    bool   setting_cl = mem->target && mdl->au->is_class && op_val == OPType__assign;
+    enode  prev    = (!new_var && setting_cl) ? enode_value(mem) : null; 
+    enode  result  = e_op  (a, op_val, op_name, (Au)mem, (Au)R);
+    if (setting_cl) {
+        retain(result);
+        if (prev) release(prev);
+    }
     return result;
 }
 

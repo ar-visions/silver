@@ -1,12 +1,20 @@
 import <stdio.h>
 import vec
 
+ifdef mac
+    import KhronosGroup:MoltenVK/main
+        > ./fetchDependencies --macos
+        -DANOTHER=2
+        -DTHIS_IS_HOW_PEOPLE_NORMALLY_SEE_IT=1
+
 class base
 
 class something [base]
     i64 mem = 4
     none action2 [ string mem2 ]
-        if [mem2] puts 'something is equal to {mem2}'
+        if [mem2]
+            puts 'something is equal to {mem2}'
+        puts 'after'
 
 class aclass [app]
     string nice_string = 'hi'
@@ -37,7 +45,7 @@ class aclass [app]
         #vec2f v = nice_vector[0,2]
 
         # this will set 8 as an instance of this as allocation
-        something<i16, 2x4> s = [ mem: 8 ]
+        something s = [ mem: 8 ]
         #s.action2 ['an-allocated-one with {s.mem}']
         return 0
         
