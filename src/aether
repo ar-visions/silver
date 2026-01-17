@@ -214,7 +214,8 @@ forward(evar)
     M(X,Y, i, prop, intern,   LLVMBasicBlockRef, entry,  as, ARef) \
     M(X,Y, i, method, public, Au,               literal_value, Au_t) \
     M(X,Y, i, method, public, enode,            access, string) \
-    M(X,Y, i, method, public, none,             release) \
+    M(X,Y, i, method, public, enode,            retain) \
+    M(X,Y, i, method, public, enode,            release) \
     M(X,Y, i, method, public, none,             inspect) \
     M(X,Y, i, override, cast,                   Au_t) \
     M(X,Y, i, override, method,                 init) \

@@ -1,59 +1,60 @@
 #ifndef _silver_
 #define _silver_
 
-#define silver_schema(X, Y, ...)                     \
-    M(X, Y, i, prop, public, bool, build)            \
-    M(X, Y, i, prop, public, i32, expr_level)        \
-    M(X, Y, i, prop, public, i32, etype_level)       \
-    M(X, Y, i, prop, public, i32, parens_depth)      \
-    M(X, Y, i, prop, public, string, git_service)    \
-    M(X, Y, i, prop, public, string, git_owner)      \
-    M(X, Y, i, prop, public, string, git_project)    \
-    M(X, Y, i, prop, public, string, source_raw)     \
-    M(X, Y, i, prop, public, path, src_loc)          \
-    M(X, Y, i, prop, intern, array, implements)      \
-    M(X, Y, i, prop, intern, array, imports)         \
-    M(X, Y, i, prop, public, enode, last_return)     \
-    M(X, Y, i, prop, public, bool, left_hand)        \
-    M(X, Y, i, prop, public, bool, in_args)          \
+#define silver_schema(X, Y, ...) \
+    M(X, Y, i, prop, public, bool, build) \
+    M(X, Y, i, prop, public, i32, expr_level) \
+    M(X, Y, i, prop, public, i32, etype_level) \
+    M(X, Y, i, prop, public, i32, parens_depth) \
+    M(X, Y, i, prop, public, string, git_service) \
+    M(X, Y, i, prop, public, string, git_owner) \
+    M(X, Y, i, prop, public, string, git_project) \
+    M(X, Y, i, prop, public, string, source_raw) \
+    M(X, Y, i, prop, public, path, src_loc) \
+    M(X, Y, i, prop, intern, array, implements) \
+    M(X, Y, i, prop, intern, array, imports) \
+    M(X, Y, i, prop, public, enode, last_return) \
+    M(X, Y, i, prop, public, bool, left_hand) \
+    M(X, Y, i, prop, public, bool, in_args) \
+    M(X, Y, i, prop, public, map,  defs) \
     M(X, Y, i, prop, public, map, codegens)          \
     M(X, Y, i, method, public, none, write_header)   \
     M(X, Y, i, prop, intern, map, import_cache) \
     M(X, Y, i, prop, intern, map, instances) \
-    M(X, Y, i, method, public,     enode,          parse_member_expr, enode) \
-    M(X, Y, i, method, public,     none,           incremental_resolve) \
-    M(X, Y, i, method, public,     token,          next) \
-    M(X, Y, i, method, public,     token,          prev) \
-    M(X, Y, i, method, public,     token,          navigate, i32) \
-    M(X, Y, i, method, public,     token,          consume) \
-    M(X, Y, i, method, public,     token,          peek) \
-    M(X, Y, i, method, public,     token,          element, num) \
-    M(X, Y, i, method, public,     num,            current_line) \
-    M(X, Y, i, method, public,     bool,           next_is_alpha) \
-    M(X, Y, i, method, public,     bool,           next_indent) \
-    M(X, Y, i, method, public,     enode,          read_enode, etype) \
-    M(X, Y, i, method, public,     enode,          parse_member) \
-    M(X, Y, i, method, public,     enode,          parse_ternary, enode, etype) \
-    M(X, Y, i, method, public,     enode,          parse_assignment, enode, string) \
-    M(X, Y, i, method, public,     token,          read_if, symbol) \
-    M(X, Y, i, method, public,     Au,              read_literal, Au_t) \
-    M(X, Y, i, method, public,     string,         read_string) \
-    M(X, Y, i, method, public,     string,         read_alpha) \
-    M(X, Y, i, method, public,     string,         read_alpha_any) \
-    M(X, Y, i, method, public,     string,         peek_alpha) \
-    M(X, Y, i, method, public,     bool,           next_is_neighbor) \
-    M(X, Y, i, method, public,     etype,          read_def) \
-    M(X, Y, i, method, public,     string,         peek_def) \
-    M(X, Y, i, method, public,     string,         peek_keyword) \
-    M(X, Y, i, method, public,     string,         read_keyword) \
-    M(X, Y, i, method, public,     Au,              read_bool) \
-    M(X, Y, i, method, public,     Au,              read_numeric) \
-    M(X, Y, i, method, public,     array,          parse_const, array) \
-    M(X, Y, i, method, public,     OPType,         read_operator) \
-    M(X, Y, i, method, public,     string,         read_assign, ARef, ARef) \
-    M(X, Y, i, method, public,     string,         location) \
-    M(X, Y, i, method, public,     none,           parse) \
-    M(X, Y, i, method, public,     none,           build) \
+    M(X, Y, i, method, public, enode, parse_member_expr, enode) \
+    M(X, Y, i, method, public, none,  incremental_resolve) \
+    M(X, Y, i, method, public, token, next) \
+    M(X, Y, i, method, public, token, prev) \
+    M(X, Y, i, method, public, token, navigate, i32) \
+    M(X, Y, i, method, public, token, consume) \
+    M(X, Y, i, method, public, token, peek) \
+    M(X, Y, i, method, public, token, element, num) \
+    M(X, Y, i, method, public, num,   current_line) \
+    M(X, Y, i, method, public, bool,  next_is_alpha) \
+    M(X, Y, i, method, public, bool,  next_indent) \
+    M(X, Y, i, method, public, enode, read_enode, etype) \
+    M(X, Y, i, method, public, enode, parse_member) \
+    M(X, Y, i, method, public, enode, parse_ternary, enode, etype) \
+    M(X, Y, i, method, public, enode, parse_assignment, enode, string) \
+    M(X, Y, i, method, public, token, read_if, symbol) \
+    M(X, Y, i, method, public, Au,    read_literal, Au_t) \
+    M(X, Y, i, method, public, string, read_string) \
+    M(X, Y, i, method, public, string, read_alpha) \
+    M(X, Y, i, method, public, string, read_alpha_any) \
+    M(X, Y, i, method, public, string, peek_alpha) \
+    M(X, Y, i, method, public, bool,   next_is_neighbor) \
+    M(X, Y, i, method, public, etype,          read_def) \
+    M(X, Y, i, method, public, string,         peek_def) \
+    M(X, Y, i, method, public, string,         peek_keyword) \
+    M(X, Y, i, method, public, string,         read_keyword) \
+    M(X, Y, i, method, public, Au,              read_bool) \
+    M(X, Y, i, method, public, Au,              read_numeric) \
+    M(X, Y, i, method, public, array,          parse_const, array) \
+    M(X, Y, i, method, public, OPType,         read_operator) \
+    M(X, Y, i, method, public, string,         read_assign, ARef, ARef) \
+    M(X, Y, i, method, public, string,         location) \
+    M(X, Y, i, method, public, none,           parse) \
+    M(X, Y, i, method, public, none,           build) \
 M(X, Y, i, ctr,    public,     path) \
     M(X, Y, i, override, method, build_initializer) \
     M(X, Y, i, override, method, init)
