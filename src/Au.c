@@ -113,6 +113,10 @@ bool Au_is_func(Au t) {
                   au->member_type == AU_MEMBER_OPERATOR ||
                   au->member_type == AU_MEMBER_CONSTRUCT) && (au->ident || au->alt);
 }
+bool Au_is_lambda(Au t) {
+    Au_t au = au_arg(t);
+    return Au_is_func(t) && au->is_lambda;
+}
 bool Au_is_func_ptr(Au t) {
     Au_t au = au_arg(t);
     return au->member_type == AU_MEMBER_TYPE && au->is_funcptr;
@@ -799,6 +803,22 @@ none dealloc_type(Au_t type) {
         dealloc_iter(type);
     }
     Au_drop((Au)type);
+}
+
+Au lambda_call(lambda a, Au args) {
+    return a->fn(args, a->context);
+}
+
+bool lambda_cast_bool(lambda a) {
+    return a != null;
+}
+
+lambda lambda_instance(callback fn, Au target, Au context) {
+    lambda a = (lambda)alloc_new(typeid(lambda), 0, null);
+    a->fn      = fn;
+    a->target  = target;
+    a->context = hold(context);
+    return a;
 }
 
 Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, u64 traits, u64 typesize, u64 isize) {
@@ -5931,6 +5951,7 @@ define_class(aclass2, app)
 define_class(watch,   Au)
 define_class(msg,     Au)
 define_class(async,   Au)
+define_class(lambda,  Au)
 
 define_abstract(numeric,        0, Au)
 define_abstract(string_like,    0, Au)

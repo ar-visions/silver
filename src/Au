@@ -684,6 +684,7 @@ forward(any)
     M(AA,BB, i, guard, public, bool, is_class,      Au) \
     M(AA,BB, i, guard, public, bool, is_struct,     Au) \
     M(AA,BB, i, guard, public, bool, is_opaque,     Au) \
+    M(AA,BB, i, guard, public, bool, is_lambda,     Au) \
     M(AA,BB, i, guard, public, bool, is_func,       Au) \
     M(AA,BB, i, guard, public, bool, is_module,     Au) \
     M(AA,BB, i, guard, public, bool, is_func_ptr,   Au) \
@@ -1267,6 +1268,17 @@ declare_enum(comparison)
     M(AA,BB, i, override, cast,   bool) \
     M(AA,BB, i, override, cast,   string)
 declare_class_2(array, collective)
+
+
+#define lambda_schema(AA,BB,O,...) \
+    M(AA,BB, i, prop,   public, Au,       target) \
+    M(AA,BB, i, prop,   public, Au,       args) \
+    M(AA,BB, i, prop,   public, Au,       context) \
+    M(AA,BB, i, prop,   public, callback, fn) \
+    M(AA,BB, i, method, public, Au, call, Au) \
+    M(AA,BB, s, method, public, lambda, lambda_instance, callback, Au, Au) \
+    M(AA,BB, i, override, cast,   bool)
+declare_class(lambda)
 
 Exists resource_exists(Au);
 
