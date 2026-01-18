@@ -1,20 +1,33 @@
 import <stdio.h>
 import vec
 
+
 ifdef mac
     import KhronosGroup:MoltenVK/main
         > ./fetchDependencies --macos
         -DANOTHER=2
         -DTHIS_IS_HOW_PEOPLE_NORMALLY_SEE_IT=1
+#else
+#    import KhronosGroup:Vulkan-Headers
+#        <vulkan/vulkan.h>
+
 
 class base
 
 class something [base]
     i64 mem = 4
+
+    lambda i32 nice_lambda [ i32 arg1, string arg2 :: i32 i ]
+        puts 'arg1 = {arg1}, arg2 = {arg2} and context is {i}\n'
+        return 2
+        
     none action2 [ string mem2 ]
         if [mem2]
             puts 'something is equal to {mem2}'
         puts 'after'
+        lambda f = nice_lambda[1]
+        f[22, 'hi']
+
 
 class aclass [app]
     string nice_string = 'hi'
