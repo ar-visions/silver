@@ -1593,7 +1593,9 @@ enode parse_statement(silver a) {
     interface access    = !mem ? read_enum(a, interface_undefined, typeid(interface)) : interface_undefined;
     bool      is_static = !mem ? silver_read_if(a, "static") != null : false;
     bool      is_cast   = !mem ? !is_static ? silver_read_if(a, "cast") != null : false : false;
-    bool      is_lambda = !mem ? silver_read_if(a, "lambda") != null : false;
+
+    bool      is_lambda = !mem && is_rec(top) ? silver_read_if(a, "lambda") != null : false;
+
     bool      is_oper   = !mem ? !is_static && !is_cast && !is_lambda ? 
         silver_read_if(a, "operator") != null : false : false;
     bool      is_ctr    = !mem ? !is_static && !is_cast && !is_lambda && !is_oper ? 
@@ -1705,7 +1707,7 @@ enode parse_statement(silver a) {
 
     pop_tokens(a, e != null); // if its a type, we consume the tokens, otherwise we let read_enode handle it
 
-    if (!e && peek(a)) {
+    if (!mem && !e && peek(a)) {
         if (f) {
             if (next_is(a, "no-op"))
                 return e_noop(a, null);
@@ -1765,6 +1767,8 @@ etype pointer(aether, Au);
 
 ARef lltype(Au a);
 
+Au_t alloc_arg(Au_t context, symbol ident, Au_t arg);
+
 enode parse_func(silver a, etype rtype, string ident, u8 member_type, u64 traits, OPType assign_enum) {
     string name    = instanceof(ident, string);
     array  body    = null;
@@ -1794,8 +1798,8 @@ enode parse_func(silver a, etype rtype, string ident, u8 member_type, u64 traits
         Au_t top    = top_scope(a);
         Au_t rec    = is_rec(top);
         verify(rec, "cannot parse IMETHOD without record in scope");
-        Au_t au_arg = def(au, "a", AU_MEMBER_VAR, 0);
-        au_arg->src = is_struct(rec) ? pointer((aether)a, (Au)rec)->au : rec;
+        Au_t au_arg = alloc_arg(au, "a", is_struct(rec) ? pointer((aether)a, (Au)rec)->au : rec);
+        verify(&au->args != &au->members, "what the hell");
         array_qpush((array)&au->args, (Au)au_arg);
     }
 
@@ -1828,8 +1832,7 @@ enode parse_func(silver a, etype rtype, string ident, u8 member_type, u64 traits
 
         string n      = read_alpha(a); // optional
         array  ar     = in_context ? (array)&au->members : (array)&au->args;
-        Au_t   au_arg = def(au, n ? n->chars : null, AU_MEMBER_VAR, 0);
-        au_arg->src   = t->au;
+        Au_t   au_arg = alloc_arg(au, n ? n->chars : null, t->au);
         array_qpush(ar, (Au)au_arg);
         if (first)
             first = false;
@@ -3279,6 +3282,8 @@ i32 read_enum(silver a, i32 def, Au_t etype);
 
 static enode typed_expr(silver a, enode src, array expr);
 
+none push_lambda_members(aether a, enode f);
+
 void build_fn(silver a, enode f, callback preamble, callback postamble) {
     if (f->user_built)
         return;
@@ -3296,6 +3301,9 @@ void build_fn(silver a, enode f, callback preamble, callback postamble) {
         a->last_return = null;
         push_scope(a, (Au)f);
 
+        if (is_lambda((Au)f))
+            push_lambda_members((aether)a, f);
+
         // we need to initialize the schemas first, then we can actually perform user-based inits
         if (f->au->is_mod_init)
             output_schemas(a, f);
@@ -3312,6 +3320,8 @@ void build_fn(silver a, enode f, callback preamble, callback postamble) {
         } else {
             push_tokens(a, (tokens)after_const, 0);
             print_tokens(a, "build-fn-statements");
+            Au_t arg0 = array_get(&f->au->args, 0);
+            Au_t arg1 = array_get(&f->au->args, 1);
             parse_statements(a, true);
             pop_tokens(a, false);
         }
@@ -3322,6 +3332,9 @@ void build_fn(silver a, enode f, callback preamble, callback postamble) {
         validate(f->au->has_return || (!f->au->rtype || is_void(f->au->rtype->user)),
             "expected return statement in %o", f);
         
+        if (is_lambda((Au)f))
+            pop_scope(a);
+
         if (!f->au->has_return)
             e_fn_return(a, null);
         
