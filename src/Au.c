@@ -59,6 +59,7 @@ cstr cstr_copy(cstr f) {
 }
 
 Au_t au_arg_type(Au a) {
+    if (!a) return null;
     Au_t au = au_arg(a);
     return au->member_type == AU_MEMBER_VAR ? au->src : au;
 }
@@ -3097,7 +3098,7 @@ bool inherits(Au_t src, Au_t check) {
     if (!src) return false;
     if (src->member_type == AU_MEMBER_VAR)
         src = src->src;
-    while (src != typeid(Au)) {
+    while (src && src != typeid(Au)) {
         if (src == check) return true;
         if (src->context == src) break;
         src = src->context;
@@ -5952,7 +5953,7 @@ define_class(aclass2, app)
 define_class(watch,   Au)
 define_class(msg,     Au)
 define_class(async,   Au)
-define_class(lambda,  Au)
+define_class(lambda,  Au, none, none, none, none, none, none, none, none)
 
 define_abstract(numeric,        0, Au)
 define_abstract(string_like,    0, Au)
