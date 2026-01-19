@@ -205,7 +205,8 @@ forward(evar)
 
 #define enode_schema(X,Y,...)\
     M(X,Y, i, prop, public,   enode,            target) \
-    M(X,Y, i, prop, public,   symbol,           symbol_name) \
+    M(X,Y, i, prop, public,   string,           symbol_name) \
+    M(X,Y, i, prop, public,   enode,            published_type) \
     M(X,Y, i, prop, public,   Au,               literal) \
     M(X,Y, i, prop, public,   u8,               arg_index) \
     M(X,Y, i, prop, public,   bool,             used) \
