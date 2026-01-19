@@ -1265,13 +1265,6 @@ bool is_loaded(Au n) {
 
 etype evar_type(evar a);
 
-static enode parse_lambda_call(silver a, enode mem) {
-    enode lambda_fn = (enode)evar_type((evar)mem);
-    verify(lambda_fn, "could not resolve type");
-    verify(lambda_fn->published_type, "could not resolve type");
-    return null;
-}
-
 enode silver_parse_member(silver a) {
     Au_t   top     = top_scope(a);
     etype  rec_top = context_record(a);
@@ -1311,9 +1304,6 @@ enode silver_parse_member(silver a) {
             validate(mem == null, "expected alpha ident after .");
             break;
         }
-        if (alpha && eq(alpha, "puts")) {
-            alpha = alpha;
-        }
 
         /// Namespace resolution (only on first iteration)
         bool ns_found = false;
@@ -1336,6 +1326,10 @@ enode silver_parse_member(silver a) {
                     }
                 }
             }
+        }
+
+        if (alpha && eq(alpha, "lambda_instance")) {
+            alpha = alpha;
         }
         
         /// Lookup or resolve member
@@ -1383,10 +1377,7 @@ enode silver_parse_member(silver a) {
                 mem = access(mem, alpha);
             }
 
-            if (inherits(mem->au->src, typeid(lambda)))
-                mem = parse_lambda_call(a, mem);
-            /// Handle macros and function calls
-            else if (instanceof(mem, macro) || is_func((Au)mem) || inherits(mem->au->src, typeid(lambda))) {
+            if (instanceof(mem, macro) || is_func((Au)mem) || inherits(mem->au->src, typeid(lambda))) {
                 print_tokens(a, "parsing member expr");
                 mem = parse_member_expr(a, mem);
             }
@@ -1703,7 +1694,7 @@ enode parse_statement(silver a) {
                 evar var = (evar)mem;
                 if (!var) {
                     Au_t m = def_member(top, new_member->chars, rtype->au, AU_MEMBER_VAR, 0);
-                    var    = evar(mod, (aether)a, au, m);
+                    var    = evar(mod, (aether)a, au, m, meta, rtype->meta);
                     etype_implement((etype)var);
                 }
                 e = parse_assignment(a, (enode)var, assign_type);
@@ -2031,11 +2022,21 @@ etype read_etype(silver a, array* p_expr) {
                         a->etype_level++;
                         etype imdl = read_etype(a, null);
                         a->etype_level--;
+                        if (!imdl && meta_src == typeid(none))
+                            break;
                         validate(imdl, "expected type, found %o", peek(a));
                         push(meta_args, (Au)imdl);
                     }
-                    validate(i <= (rem - 1) || read_if(a, ","),
+                    if (i >= (rem - 1))
+                        break;
+
+                    if (read_if(a, ","))
+                        continue;
+
+                    Au_t meta_src_next = au_arg_type(array_get((array)&mdl->au->meta, 1 + i + 1));
+                    validate(meta_src_next == typeid(none),
                         "expected comma after meta type %o", last_element(meta_args));
+                    break;
                 }
                 validate(read_if(a, "]"),
                     "expected [ after last meta type %o", last_element(meta_args));
@@ -2583,6 +2584,13 @@ enode parse_object(silver a, etype mdl_schema);
 etype evar_type(evar a);
 
 int user_arg_count(enode f) {
+    bool is_lambda_call = inherits(f->au, typeid(lambda));
+
+    if (is_lambda_call) {
+        verify(len(f->meta) > 0, "expected return-type for lambda instance");
+        return len(f->meta) - 1;
+    }
+
     if (f->au->member_type == AU_MEMBER_FUNC) {
         if (f->au->is_imethod) return f->au->args.count - 1;
         return f->au->args.count;
@@ -2597,6 +2605,47 @@ int user_arg_count(enode f) {
         return 1;
     }
     return 0;
+}
+
+static enode parse_lambda_call(silver a, enode mem) {
+    // mem is the lambda instance (evar with lambda type)
+    etype lambda_type = evar_type((evar)mem);
+    array  meta       = mem->meta;
+    
+    verify(meta && len(meta) >= 1, "lambda requires meta with return type");
+    
+    // meta[0] is return type, meta[1..n] are arg types
+    etype rtype = (etype)meta->origin[0];
+    int n_args = len(meta) - 1;
+    
+    // Parse the bracket if needed
+    bool br = false;
+    validate(n_args == 0 || (br = read_if(a, "[") != null) || a->expr_level == 0,
+        "expected bracket for lambda call");
+    
+    a->expr_level++;
+    
+    // Build array of arg values: user args + context at end
+    array call_values = array(alloc, 32);
+    
+    print_tokens(a, "lambda_call");
+    // Parse each user arg
+    for (int i = 0; i < n_args; i++) {
+        etype arg_type = (etype)meta->origin[i + 1];  // skip return type
+        enode arg_expr = parse_expression(a, arg_type);
+        verify(arg_expr, "invalid lambda argument");
+        push(call_values, (Au)arg_expr);
+        
+        if (i < n_args - 1)
+            read_if(a, ",");  // optional comma
+    }
+    
+    if (br)
+        validate(read_if(a, "]"), "expected ] after lambda args");
+    
+    a->expr_level--;
+
+    return lambda_fcall(a, mem, call_values);
 }
 
 static enode parse_func_call(silver a, enode f) {
@@ -2730,6 +2779,9 @@ static enode typed_expr(silver a, enode f, array expr) {
     a->expr_level--;
     if (conv)
         r = e_create(a, (etype)f, (Au)r);
+    if (expr && a->cursor != len(a->tokens) - 1) {
+        validate(false, "unexpected %o after expression", peek(a));
+    }
     pop_tokens(a, expr ? false : true);
     return r;
 }
@@ -3666,8 +3718,10 @@ enode parse_create_lambda(silver a, enode mem) {
 
 enode silver_parse_member_expr(silver a, enode mem) {
     push_current(a);
-    int indexable = !is_func((Au)mem);
+    
     bool is_macro = mem && instanceof(mem, macro);
+    bool is_lambda_call = inherits(mem->au, typeid(lambda));
+    int indexable = !is_func((Au)mem) && !is_lambda_call;
 
     /// handle compatible indexing methods / lambda / and general pointer dereference @ index
     if (indexable && next_is(a, "[")) {
@@ -3725,10 +3779,12 @@ enode silver_parse_member_expr(silver a, enode mem) {
         return res;
 
     } else if (mem) {
-        if (is_func((Au)mem)) {
+        if (is_func((Au)mem) || is_lambda_call) {
 
-            if (is_lambda((Au)mem))
+            if (!is_lambda_call && is_lambda((Au)mem))
                 mem = parse_create_lambda(a, mem);
+            else if (is_lambda_call)
+                mem = parse_lambda_call( a, mem);
             else
                 mem = parse_func_call(a, mem);
         }
