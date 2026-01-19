@@ -55,7 +55,7 @@ LLVMTypeRef _lltype(Au a);
 etype save;
 
 enode enode_value(enode mem) {
-    if (!mem->loaded) {
+    if (!mem->loaded && !mem->au->is_imethod) {
         aether a = mem->mod;
         a->is_const_op = false;
         if (a->no_build) return e_noop(a, (etype)mem);
@@ -1189,6 +1189,10 @@ enode convertible(etype fr, etype to) {
     etype  ma = canonical(fr);
     etype  mb = canonical(to);
 
+    if (ma->au->is_lambda && mb->au == typeid(callback))
+        return (enode)true;
+    if ((!ma->au->is_class && is_ptr(ma)) && ma->au->src->is_struct && mb->au == typeid(Au))
+        return (enode)true;
     if (ma->au->is_schema && mb->au->is_pointer)     return (enode)true;
     if (mb->au->is_schema && ma->au->is_pointer)     return (enode)true;
     if (ma->au->is_schema && mb->au == typeid(Au_t)) return (enode)true;
@@ -1253,7 +1257,7 @@ enode enode_access(enode target, string name) {
     aether a = target->mod;
     Au_t rel = target->au->member_type == AU_MEMBER_VAR ? 
         resolve(target->au->src->user)->au : target->au;
-    if (rel->is_pointer && rel->src && rel->src->is_class)
+    if (rel->is_pointer && rel->src && (rel->src->is_class || rel->src->is_struct))
         rel = rel->src;
     Au_t   m = find_member(rel, name->chars, 0, true);
     if (!m) {
@@ -1587,63 +1591,20 @@ enode e_create_from_array(aether a, etype t, array ar) {
     return res;
 }
 
+none copy_lambda_info(enode mem, enode lambda_fn) {
+    mem->context_node = lambda_fn->context_node; // would be nice to do this earlier
+    mem->args_node    = lambda_fn->args_node;
+    mem->value        = lambda_fn->value;
+}
 
 enode e_convert_or_cast(aether a, etype t, enode input) {
     LLVMTypeRef typ = LLVMTypeOf(input->value);
     LLVMTypeKind k = LLVMGetTypeKind(typ);
 
     // check if these are either Au_t class typeids, or actual compatible instances
-    if (k == LLVMPointerTypeKind) {
+    if (k == LLVMPointerTypeKind) { // this should all be in convertible
         a->is_const_op = false;
         if (a->no_build) return e_noop(a, t);
-
-        etype src = canonical(input);
-        etype dst = canonical(t);
-        bool bit_cast = src == dst;
-        if (!bit_cast) {
-            if (src->au->is_schema && dst->au == typeid(Au_t))
-                bit_cast = true;
-            else if (dst->au->is_schema && src->au == typeid(Au_t))
-                bit_cast = true;
-            else if (!is_subclass((Au)src, (Au)dst)) {
-                int   r0   = ref_level((Au)input);
-                int   r1   = ref_level((Au)t);
-                etype ires = resolve(src);
-                etype ores = resolve(dst);
-                if (ores->au == typeid(ARef) && is_ptr(input))
-                    bit_cast = true;
-                else if (r0 == r1 && ires == ores || ores->au->is_schema || ires->au->is_schema)
-                    bit_cast = true;
-                else {
-                    char *s = LLVMPrintTypeToString(lltype(t));
-                    print("LLVM type: %s", s);
-
-                    bool check = (is_prim(src) && is_prim(dst)) ||
-                        etype_inherits((etype)input, t) ||
-                        (is_subclass((Au)ores, (Au)ires) || is_subclass((Au)ires, (Au)ores));
-                    
-                    if (!check) {
-                        check = check;
-                    }
-
-                    if (is_rec(src) || is_rec(dst)) {
-                        Au_t au_type = au_lookup("Au_t");
-                        if (is_ptr(src) && src->au->src == au_type && dst->au == au_type)
-                            check = true;
-                    }
-                    if (!check) {
-                        check = check;
-                    }
-                    static int seq = 0;
-                    seq++;
-                    if (seq == 1) {
-                        seq = seq;
-                    }
-                    verify(check, "models not compatible: %o -> %o %i",
-                            input, t, seq);
-                }
-            }
-        }
         return value(t,
             LLVMBuildBitCast(a->builder, input->value, lltype(t), "class_ref_cast"));
     }
@@ -1661,7 +1622,9 @@ enode aether_e_vector(aether a, etype t, enode sz) {
 enode aether_e_alloc(aether a, etype mdl) {
     enode metas_node = e_meta_ids(a, mdl->meta);
     etype f_alloc = find_member(typeid(Au), "alloc_new", AU_MEMBER_FUNC, false)->user;
-    return e_fn_call(a, (enode)f_alloc, a( e_typeid(a, mdl), _i32(0), metas_node ));
+    enode res = e_fn_call(a, (enode)f_alloc, a( e_typeid(a, mdl), _i32(0), metas_node ));
+    res->au = mdl->au->is_class ? mdl->au : pointer(a, (Au)mdl)->au;
+    return res;
 }
 
 /// create is both stack and heap allocation (based on etype->is_ref, a storage enum)
@@ -1691,6 +1654,40 @@ enode aether_e_create(aether a, etype mdl, Au args) {
     if (!args) {
         if (is_ptr(mdl))
             return e_null(a, mdl);
+    }
+
+    if (is_lambda((Au)mdl)) {
+        verify(isa(args) == typeid(array), "expected args for lambda");
+
+        enode n_mdl = instanceof(mdl, enode);
+        verify(n_mdl && n_mdl->target, "expected enode with target for lambda function");
+        
+        enode f_create = (enode)find_member(typeid(lambda),
+            "lambda_instance", AU_MEMBER_FUNC, false)->user;
+        
+        // Get the context struct type from the lambda definition
+        etype ctx_type = n_mdl->context_node->au->src->user;  // the struct type (not pointer)
+        
+        // allocate context struct
+        enode ctx_alloc = e_alloc(a, ctx_type);
+        
+        // fill in context values from the parsed expressions (ctx_vals from parse_create_lambda)
+        int ctx_index = 0;
+        verify (len((array)args) == n_mdl->au->members.count,
+            "lambda initialization member-count (%i) != user-provided args (%i)",
+            n_mdl->au->members.count, len((array)args));
+        
+        // assign context members
+        members(n_mdl->au, mem) {
+            if (mem->member_type != AU_MEMBER_VAR) continue;
+            enode ctx_val = (enode)array_get((array)args, ctx_index);
+            enode field_ref = access(ctx_alloc, string(mem->ident));
+            e_assign(a, field_ref, (Au)ctx_val, OPType__assign);
+            ctx_index++;
+        }
+        
+        enode targ = n_mdl->target;
+        return e_fn_call(a, f_create, a(e_typeid(a, (etype)n_mdl), n_mdl, n_mdl->target, ctx_alloc));
     }
 
     static int seq = 0;
@@ -1724,42 +1721,8 @@ enode aether_e_create(aether a, etype mdl, Au args) {
         
         static int seq = 0;
         seq++;
-        if (seq == 77) {
+        if (seq == 82) {
             seq = seq;
-        }
-
-        // creation of lambda instance, args is an array of the struct members
-        if (is_lambda((Au)mdl)) {
-            verify(isa(args) == typeid(array), "expected args for lambda");
-
-            enode n_mdl = instanceof(mdl, enode);
-            verify(n_mdl && n_mdl->target, "expected enode with target for lambda function");
-            
-            enode f_create = (enode)find_member(typeid(lambda),
-                "lambda_instance", AU_MEMBER_FUNC, false)->user;
-            
-            // Get the context struct type from the lambda definition
-            etype ctx_type = n_mdl->context_node->au->src->user;  // the struct type (not pointer)
-            
-            // allocate context struct
-            enode ctx_alloc = e_alloc(a, ctx_type);
-            
-            // fill in context values from the parsed expressions (ctx_vals from parse_create_lambda)
-            int ctx_index = 0;
-            verify (len((array)args) != n_mdl->au->members.count,
-                "lambda initialization member-count () != user-provided args ()",
-                n_mdl->au->members.count, len((array)args));
-            
-            // assign context members
-            members(n_mdl->au, mem) {
-                if (mem->member_type != AU_MEMBER_VAR) continue;
-                enode ctx_val = (enode)array_get((array)args, ctx_index);
-                enode field_ref = access(ctx_alloc, string(mem->ident));
-                e_assign(a, field_ref, (Au)ctx_val, OPType__assign);
-                ctx_index++;
-            }
-            
-            return e_fn_call(a, f_create, a(n_mdl, n_mdl->target, ctx_alloc));
         }
 
         // Handle struct/primitive to Au conversion (boxing)
@@ -2846,13 +2809,13 @@ etype etype_resolve(etype t) {
     return (au->user && lltype(au->user)) ? au->user : null;
 }
 
-etype struct_from_evars(aether a, string name, array evars) {
+etype struct_from_vars(aether a, string name, array vars) {
     Au_t au    = def(a->au, name->chars, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
     int  index = 0;
-    for (int i = 0; i < evars->count; i++) {
-        evar arg = (evar)evars->origin[i];
+    for (int i = 0; i < vars->count; i++) {
+        Au_t arg = (Au_t)vars->origin[i];
         Au_t mem = def_member(
-            au, arg->au->ident, arg->au->src, AU_MEMBER_VAR, 0);
+            au, arg->ident, arg->src, AU_MEMBER_VAR, 0);
         mem->index = index++;
     }
     etype result = etype(mod, a, au, au);
@@ -3019,8 +2982,8 @@ none etype_init(etype t) {
             string args_name    = f(string, "%s_%s_args",    au->context->ident, au->ident);
             string context_name = f(string, "%s_%s_context", au->context->ident, au->ident);
 
-            etype etype_args    = struct_from_evars(a, args_name,    (array)&au->args);    // make struct
-            etype etype_context = struct_from_evars(a, context_name, (array)&au->members); // make struct
+            etype etype_args    = struct_from_vars(a, args_name,    (array)&au->args);    // make struct
+            etype etype_context = struct_from_vars(a, context_name, (array)&au->members); // make struct
 
             fn->args_node    = enode(mod, a, au, pointer(a, (Au)etype_args)->au,    loaded, true, value, null);
             fn->context_node = enode(mod, a, au, pointer(a, (Au)etype_context)->au, loaded, true, value, null);
@@ -3412,7 +3375,8 @@ none etype_implement(etype t) {
                     Au_t src = m->src;
                     verify(src, "no src type set for member %o", m);
                     src_init(a, src);
-                    etype_implement(src->user);
+                    if (!is_class(src))
+                        etype_implement(src->user);
 
                     // get largest union member
                     if (m->elements > 0) {

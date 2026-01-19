@@ -1263,12 +1263,24 @@ bool is_loaded(Au n) {
     return node->loaded;
 }
 
+etype evar_type(evar a);
+
+static enode parse_lambda_call(silver a, enode mem) {
+    enode lambda_fn = (enode)evar_type((evar)mem);
+    verify(lambda_fn, "could not resolve type");
+}
+
 enode silver_parse_member(silver a) {
     Au_t   top     = top_scope(a);
     etype  rec_top = context_record(a);
     silver module  =  !a->cmode && (top->is_namespace) ? a : null;
     enode  f       =  !a->cmode ? context_func(a) : null;
 
+    static int seq = 0;
+    seq++;
+    if (seq == 12) {
+        seq = seq;
+    }
     push_current(a);
     
     enode  mem                = null;
@@ -1369,8 +1381,10 @@ enode silver_parse_member(silver a) {
                 mem = access(mem, alpha);
             }
 
+            if (inherits(mem->au->src, typeid(lambda)))
+                mem = parse_lambda_call(a, mem);
             /// Handle macros and function calls
-            if (instanceof(mem, macro) || is_func((Au)mem)) {
+            else if (instanceof(mem, macro) || is_func((Au)mem) || inherits(mem->au->src, typeid(lambda))) {
                 print_tokens(a, "parsing member expr");
                 mem = parse_member_expr(a, mem);
             }
@@ -1799,6 +1813,7 @@ enode parse_func(silver a, etype rtype, string ident, u8 member_type, u64 traits
         Au_t rec    = is_rec(top);
         verify(rec, "cannot parse IMETHOD without record in scope");
         Au_t au_arg = alloc_arg(au, "a", is_struct(rec) ? pointer((aether)a, (Au)rec)->au : rec);
+        au_arg->is_target = true;
         verify(&au->args != &au->members, "what the hell");
         array_qpush((array)&au->args, (Au)au_arg);
     }
@@ -3320,8 +3335,6 @@ void build_fn(silver a, enode f, callback preamble, callback postamble) {
         } else {
             push_tokens(a, (tokens)after_const, 0);
             print_tokens(a, "build-fn-statements");
-            Au_t arg0 = array_get(&f->au->args, 0);
-            Au_t arg1 = array_get(&f->au->args, 1);
             parse_statements(a, true);
             pop_tokens(a, false);
         }
@@ -3614,15 +3627,19 @@ static bool peek_fields(silver a) {
 
 array read_arg(array tokens, int start, int *next_read);
 
+none copy_lambda_info(enode mem, enode lambda_fn);
+
 enode parse_create_lambda(silver a, enode mem) {
     validate(read_if(a, "["), "expected [ context ] after lambda");
 
     // mem is the lambda function definition
-    etype   lambda_type = evar_type((evar)mem);
-    array   ctx_mem  = (array)&lambda_type->au->members;  // context members after ::
+    enode   lambda_f = (enode)evar_type((evar)mem);
+    array   ctx_mem  = (array)&lambda_f->au->members;  // context members after ::
     int     ctx_ln   = ctx_mem->count;
     array   ctx      = array(alloc, ctx_ln);
     
+    Au_t lt = isa(lambda_f);
+
     // Parse context references - these become pointers in the context struct
     for (int i = 0; i < ctx_ln; i++) {
         Au_t  ctx_arg  = (Au_t)array_get(ctx_mem, i);
@@ -3640,7 +3657,9 @@ enode parse_create_lambda(silver a, enode mem) {
     validate(read_if(a, "]"), "expected ] after lambda context");
     
     // Create lambda instance: packages function pointer + context struct
-    return e_create(a, lambda_type, (Au)ctx);
+    copy_lambda_info(mem, lambda_f);
+
+    return e_create(a, (etype)mem, (Au)ctx);
 }
 
 enode silver_parse_member_expr(silver a, enode mem) {
@@ -3648,7 +3667,7 @@ enode silver_parse_member_expr(silver a, enode mem) {
     int indexable = !is_func((Au)mem);
     bool is_macro = mem && instanceof(mem, macro);
 
-    /// handle compatible indexing methods and general pointer dereference @ index
+    /// handle compatible indexing methods / lambda / and general pointer dereference @ index
     if (indexable && next_is(a, "[")) {
         etype r = is_rec((Au)mem) ? is_rec((Au)mem)->user : null;
         /// must have an indexing method, or be a reference_pointer

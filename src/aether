@@ -163,7 +163,7 @@ declare_class_2(statements, etype)
     M(X,Y, i, method, public,     enode,       e_assign,             enode,      Au, OPType) \
     M(X,Y, i, method, public,     enode,       e_eq,                 enode,      enode) \
     M(X,Y, i, method, public,     enode,       e_not_eq,           enode, enode) \
-    M(X,Y, i, method, public,     enode,       e_fn_call,          enode,      array) \
+    M(X,Y, i, method, public,     enode,       e_fn_call,          enode,      array)  \
     M(X,Y, i, method, public,     enode,       e_is,               enode,      Au) \
     M(X,Y, i, method, public,     enode,       e_inherits,         enode,      Au) \
     M(X,Y, i, method, public,     none,        llflag,             symbol,     i32) \

@@ -25,8 +25,8 @@ class something [base]
         if [mem2]
             puts 'something is equal to {mem2}'
         puts 'after'
-        lambda f = nice_lambda[1]
-        f[22, 'hi']
+        lambda lambda_instance = nice_lambda[1]
+        lambda_instance[22, 'hi']
 
 
 class aclass [app]
