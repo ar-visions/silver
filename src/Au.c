@@ -675,7 +675,7 @@ Au_t lexical(array lex, symbol f) {
     for (int i = len(lex) - 1; i >= 0; i--) {
         Au_t au = (Au_t)lex->origin[i];
         while (au) {
-            if (au->member_type == AU_MEMBER_TYPE)
+            if (au->member_type == AU_MEMBER_TYPE || au->member_type == AU_MEMBER_FUNC)
                 for (int ii = 0; ii < au->meta.count; ii++) {
                     Au_t m = (Au_t)au->meta.origin[ii];
                     if (m->ident && strcmp(m->ident, f) == 0)
@@ -813,8 +813,9 @@ bool lambda_cast_bool(lambda a) {
     return a != null;
 }
 
-lambda lambda_instance(callback fn, Au target, Au context) {
+lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
     lambda a = (lambda)alloc_new(typeid(lambda), 0, null);
+    a->au      = au;
     a->fn      = fn;
     a->target  = target;
     a->context = hold(context);

@@ -1271,12 +1271,13 @@ declare_class_2(array, collective)
 
 
 #define lambda_schema(AA,BB,O,...) \
+    M(AA,BB, i, prop,   public, Au_t,     au) \
     M(AA,BB, i, prop,   public, Au,       target) \
     M(AA,BB, i, prop,   public, Au,       args) \
     M(AA,BB, i, prop,   public, Au,       context) \
     M(AA,BB, i, prop,   public, callback, fn) \
     M(AA,BB, i, method, public, Au, call, Au) \
-    M(AA,BB, s, method, public, lambda, lambda_instance, callback, Au, Au) \
+    M(AA,BB, s, method, public, lambda, lambda_instance, Au_t, callback, Au, Au) \
     M(AA,BB, i, override, cast,   bool)
 declare_class(lambda)
 
