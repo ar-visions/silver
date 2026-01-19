@@ -2810,7 +2810,7 @@ etype etype_resolve(etype t) {
 }
 
 etype struct_from_vars(aether a, string name, array vars) {
-    Au_t au    = def(a->au, name->chars, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
+    Au_t au    = def(a->au, name->chars, AU_MEMBER_TYPE, AU_TRAIT_STRUCT | AU_TRAIT_SYSTEM);
     int  index = 0;
     for (int i = 0; i < vars->count; i++) {
         Au_t arg = (Au_t)vars->origin[i];
@@ -2900,8 +2900,9 @@ none etype_init(etype t) {
 
     Au_t    au  = t->au;
     bool  named = au && au->ident && strlen(au->ident);
+    enode     n = instanceof(t, enode);
 
-    if (au->lltype && !t->is_schema)
+    if (au->lltype && !t->is_schema || (n && n->value && n->symbol_name))
         return;
 
     if (isa(t) == typeid(aether) || isa(t)->context == typeid(aether)) {
@@ -2988,6 +2989,14 @@ none etype_init(etype t) {
             fn->args_node    = enode(mod, a, au, pointer(a, (Au)etype_args)->au,    loaded, true, value, null);
             fn->context_node = enode(mod, a, au, pointer(a, (Au)etype_context)->au, loaded, true, value, null);
 
+            // create published type (we set this global on global initialize)
+            // 
+            string member_symbol = f(string, "%s_type", fn->au->alt);
+            LLVMValueRef G = LLVMAddGlobal(a->module,
+                typeid(Au_t)->ptr->lltype, member_symbol->chars);
+            LLVMSetLinkage(G, LLVMInternalLinkage);
+            fn->published_type = enode(mod, a, symbol_name, member_symbol, value, G, au, au);
+
             if (is_inst) {
                 Au_t fn_parent = fn->au->context;
                 verify(is_class(fn_parent), "expected context to be class on lambda imethod");
@@ -3029,7 +3038,7 @@ none etype_init(etype t) {
         au->lltype = LLVMPointerType(au->src->lltype, 0);
     } else if (named && (is_rec((Au)t) || au->is_union || au == typeid(Au_t))) {
         au->lltype = LLVMStructCreateNamed(a->module_ctx, cstr_copy(au->ident));
-        if (au != typeid(Au_t))
+        if (au != typeid(Au_t) && !au->is_system)
             etype_ptr(a, t->au);
     } else if (is_enum(t)) {
         au->lltype = lltype(au->src ? au->src : typeid(i32));
@@ -3579,6 +3588,7 @@ none aether_output_schemas(aether a, enode init) {
         Au_t module_base = a->au;
         Au_t au_type     = au_lookup("Au");
         Au_t fn_module_lookup = find_member(au_type, "module_lookup", AU_MEMBER_FUNC, false);
+        Au_t fn_find_member = find_member(au_type, "find_member", AU_MEMBER_FUNC, false);
         Au_t fn_emplace  = find_member(au_type, "emplace_type", AU_MEMBER_FUNC, false);
         Au_t fn_def_func = find_member(au_type, "def_func",  AU_MEMBER_FUNC, false);
         Au_t fn_def_prop = find_member(au_type, "def_prop",  AU_MEMBER_FUNC, false);
@@ -3644,6 +3654,16 @@ none aether_output_schemas(aether a, enode init) {
                         e_fn_call(a, (enode)fn_def_arg->user,
                             a(e_mem, const_string(chars, arg->ident), e_typeid(a, arg->src->user)));
                     }
+
+                    // for lambdas, we set a global to the Au_t member
+                    // we may then iterate through this at runtime to use lambda
+                    if (is_lambda((Au)mem)) {
+                        enode n = (enode)mem->user;
+                        verify(n->published_type, "expected published Au_t symbol for lambda");
+                        fault("implement setter for lambda type");
+                        e_assign(a, n->published_type, (Au)e_mem, OPType__assign);
+                    }
+
                 } else if (mem->member_type == AU_MEMBER_VAR) {
                     enode e_mem = e_fn_call(a, (enode)fn_def_prop->user,
                         a(type_id, const_string(chars, mem->ident), e_typeid(a, mem->src->user), 
@@ -4101,11 +4121,11 @@ none enode_init(enode n) {
     if (is_func((Au)n->au->context) && !is_lambda((Au)n->au->context)) {
         enode fn = (enode)au_arg_type((Au)n->au->context)->user;
         n->value = LLVMGetParam(fn->value, n->arg_index);
-    } else if (n->symbol_name) {
-        LLVMValueRef g = LLVMGetNamedGlobal  (a->module, n->symbol_name);
-        if (!g)      g = LLVMGetNamedFunction(a->module, n->symbol_name);
+    } else if (n->symbol_name && !n->value) {
+        LLVMValueRef g = LLVMGetNamedGlobal  (a->module, n->symbol_name->chars);
+        if (!g)      g = LLVMGetNamedFunction(a->module, n->symbol_name->chars);
 
-        verify(g, "global symbol not found: %s", n->symbol_name);
+        verify(g, "global symbol not found: %o", n->symbol_name);
         n->value  = g;
         n->loaded = false; // globals are already addresses
     }

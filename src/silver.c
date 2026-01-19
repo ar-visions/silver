@@ -1268,7 +1268,7 @@ etype evar_type(evar a);
 static enode parse_lambda_call(silver a, enode mem) {
     enode lambda_fn = (enode)evar_type((evar)mem);
     verify(lambda_fn, "could not resolve type");
-    verify(lambda_fn->type_id, "could not resolve type");
+    verify(lambda_fn->published_type, "could not resolve type");
     return null;
 }
 
