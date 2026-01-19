@@ -1687,7 +1687,7 @@ enode aether_e_create(aether a, etype mdl, Au args) {
         }
         
         enode targ = n_mdl->target;
-        return e_fn_call(a, f_create, a(e_typeid(a, (etype)n_mdl), n_mdl, n_mdl->target, ctx_alloc));
+        return e_fn_call(a, f_create, a(n_mdl->type_id, n_mdl, n_mdl->target, ctx_alloc));
     }
 
     static int seq = 0;
@@ -4090,6 +4090,9 @@ Au_t etype_cast_Au_t(etype t) {
     return t->au;
 }
 
+
+
+
 none enode_init(enode n) {
     Au_t n_isa = isa(n);
     aether a = n->mod;
@@ -4098,6 +4101,13 @@ none enode_init(enode n) {
     if (is_func((Au)n->au->context) && !is_lambda((Au)n->au->context)) {
         enode fn = (enode)au_arg_type((Au)n->au->context)->user;
         n->value = LLVMGetParam(fn->value, n->arg_index);
+    } else if (n->symbol_name) {
+        LLVMValueRef g = LLVMGetNamedGlobal  (a->module, n->symbol_name);
+        if (!g)      g = LLVMGetNamedFunction(a->module, n->symbol_name);
+
+        verify(g, "global symbol not found: %s", n->symbol_name);
+        n->value  = g;
+        n->loaded = false; // globals are already addresses
     }
 }
 
