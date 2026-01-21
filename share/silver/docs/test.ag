@@ -14,15 +14,19 @@ ifdef mac
 
 class base
 
-class something [base]
-    i64 mem = 4
+class something [ base ]
+    mem:    i64 [ 4 ]
 
-    lambda i32 nice_lambda [ i32 arg1, string arg2 :: i32 i ]
+    mem2:   map int[ string ]
+        'key':      2
+        'another':  4
+
+    lambda  nice_lambda[ i32 arg1, f64 arg2 :: i64 i ] -> f32
         puts 'arg1 = {arg1}, arg2 = {arg2} and context is {i}\n'
-        return 2
-        
-    none action2 [ string mem2 ]
-        if [mem2]
+        return 2.0
+
+    func    action2[ mem2: string ] -> none
+        if[ mem2 ]
             puts 'something is equal to {mem2}'
         puts 'after'
         lambda i32[ i32, string ] lambda_instance = nice_lambda[1]

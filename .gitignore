@@ -4,6 +4,7 @@ debug
 checkout
 sdk
 build
+.notes
 .chatgpt
 .claude
 .gemini

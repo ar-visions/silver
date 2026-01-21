@@ -330,19 +330,39 @@ static precedence levels[] = {
 
 token silver_read_if(silver a, symbol cs);
 
+
 static enode reverse_descent(silver a, etype expect) {
     bool cmode = a->cmode;
-    enode L = silver_read_enode(a, expect); // build-arg
-    token t = silver_peek(a);
+    enode L = read_enode(a, expect); // build-arg
+    token t = peek(a);
     validate(cmode || L, "unexpected '%o'", t);
     if (!L)
         return null;
     a->expr_level++;
+
     for (int i = 0; i < sizeof(levels) / sizeof(precedence); i++) {
         precedence *level = &levels[i];
         bool m = true;
         while (m) {
             m = false;
+#if 1
+            for (int j = 0; j < 2; j++) {
+                string token = level->token[j];
+                if (!read_if(a, cstring(token)))
+                    continue;
+                OPType op_type = level->ops[j];
+                string method  = level->method[j];
+                
+                if (op_type == OPType__and || op_type == OPType__or) {
+                    L = e_short_circuit(a, op_type, L);
+                } else {
+                    enode R = read_enode(a, null);
+                    L = e_op(a, op_type, method, (Au)L, (Au)R);
+                }
+                m = true;
+                break;
+            }
+#else
             for (int j = 0; j < 2; j++) {
                 string token = level->token[j];
                 if (!silver_read_if(a, cstring(token)))
@@ -354,6 +374,7 @@ static enode reverse_descent(silver a, etype expect) {
                 m = true;
                 break;
             }
+#endif
         }
     }
     a->expr_level--;
@@ -483,6 +504,7 @@ void silver_init(silver a) {
     a->imports      = array(32);
     a->parse_f      = parse_tokens;
     a->parse_expr   = parse_expression;
+    a->parse_enode  = silver_read_enode;
     a->read_etype   = read_etype;
     a->src_loc      = absolute(path(_SRC ? _SRC : "."));
     verify(dir_exists("%o", a->src_loc), "SRC path does not exist");
@@ -683,6 +705,8 @@ token silver_consume(silver a) {
 }
 
 static array read_within(silver a) {
+    //return read_expression(a, null, null);
+
     array body = array(32);
     token n = silver_element(a, 0);
     bool proceed = a->expr_level == 0 ? true : eq(n, "[");
@@ -1265,7 +1289,8 @@ bool is_loaded(Au n) {
 
 etype evar_type(evar a);
 
-enode silver_parse_member(silver a) {
+enode silver_parse_member(silver a, ARef read_assign) {
+    OPType assign_enum = OPType__undefined;
     Au_t   top     = top_scope(a);
     etype  rec_top = context_record(a);
     silver module  =  !a->cmode && (top->is_namespace) ? a : null;
@@ -1334,6 +1359,7 @@ enode silver_parse_member(silver a) {
         
         /// Lookup or resolve member
         if (!ns_found) {
+            // we may only define our own members within our own space
             if (first) {
 
                 // try implicit 'this' access in instance methods
@@ -1347,16 +1373,6 @@ enode silver_parse_member(silver a) {
                     } else {
                         mem = (enode)elookup(alpha->chars);
                     }
-                    
-                    /*
-                    etype ftarg = etype_resolve((etype)f->target);
-                    Au_t field = find_member(ftarg->au, alpha->chars, 0, true);
-                    mem = (enode)elookup(alpha->chars);
-                    enode n = instanceof(mem, enode);
-                    if (!mem && field) {
-                        mem = access(f->target, alpha);
-                    }
-                    */
 
                 } else if (!f || !f->target) {
                     each(a->lexical, Au_t, au) {
@@ -1364,7 +1380,10 @@ enode silver_parse_member(silver a) {
                     }
                     mem = (enode)elookup(alpha->chars);
                 }
-                validate(mem, "identifier not found: %o", alpha);
+
+                Au_t m = def_member(top, alpha->chars, null, AU_MEMBER_DECL, 0); // this is promoted to different sorts of members based on syntax
+                mem = (enode)edecl(mod, (aether)a, au, m, meta, null);
+                break;
                 
             } else if (instanceof(mem, enode) && !is_loaded((Au)mem)) {
                 // Subsequent iterations - access from previous member
@@ -1383,7 +1402,7 @@ enode silver_parse_member(silver a) {
             }
         }
 
-        /// Check if there's more chaining
+        // check if there's more chaining
         bool br = read_if(a, ".") == null;
         if (br) {
             if (a->in_ref) {
@@ -1415,6 +1434,14 @@ enode silver_parse_member(silver a) {
         save_tokens = false;
     }
     pop_tokens(a, save_tokens);
+
+    if (read_assign && mem) {
+        bool   assign_const = false;
+        read_assign(a, (ARef)&assign_enum, (ARef)&assign_const);
+        if (assign_const)
+            mem->au->is_const = true;
+        *((OPType*)read_assign) = assign_enum;
+    }
     return mem;
 }
 
@@ -1527,14 +1554,14 @@ enode silver_read_enode(silver a, etype mdl_expect) {
 
     // handle the logical NOT operator (e.g., '!')
     else if (read_if(a, "!") || (!cmode && read_if(a, "not"))) {
-        enode expr = parse_expression(a, null); // Parse the following expression
+        enode expr = read_enode(a, null); // Parse the following expression
         return e_create(a,
             mdl_expect, (Au)e_not(a, expr));
     }
 
     // bitwise NOT operator
     else if (read_if(a, "~")) {
-        enode expr = parse_expression(a, null);
+        enode expr = read_enode(a, null);
         return e_create(a,
             mdl_expect, (Au)e_bitwise_not(a, expr));
     }
@@ -1559,7 +1586,7 @@ enode silver_read_enode(silver a, etype mdl_expect) {
     // 'ref' operator (reference)
     else if (!cmode && read_if(a, "ref")) {
         a->in_ref = true;
-        enode expr = parse_expression(a, null);
+        enode expr = read_enode(a, null);
         a->in_ref = false;
         return e_create(a,
             mdl_expect, (Au)e_addr_of(a, expr, null));
@@ -1569,7 +1596,8 @@ enode silver_read_enode(silver a, etype mdl_expect) {
     if (cmode) return null;
 
     print_tokens(a, "before parse_member (in read_enode)");
-    mem = parse_member(a);
+    mem = parse_member(a, null); // we never parse assignment here
+    validate(!instanceof(mem, edecl), "unexpected declaration of member %s", mem->au->ident);
 
     Au_t ty = isa(mem);
 
@@ -1579,133 +1607,132 @@ enode silver_read_enode(silver a, etype mdl_expect) {
 
 enode parse_switch(silver a);
 
-enode parse_statement(silver a) {
+
+enode parse_statement(silver a)
+{
     enode f = context_func(a);
     verify(!f || !f->au->is_mod_init, "unexpected init function");
 
     print_tokens(a, "parse-statement");
-    a->last_return = null;
-    a->expr_level  = 0;
+
+    a->last_return      = null;
+    a->expr_level       = 0;
 
     Au_t      top       = top_scope(a);
     silver    module    = is_module(top) ? a : null;
 
-    if (module && peek_def(a)) return (enode)read_def(a);
+    if (module && peek_def(a))
+        return (enode)read_def(a);
 
-    // important to not try to fetch member for global and class records; this is not arbitrary operational space
-    enode mem = !module && !is_rec(top) ? parse_member(a) : null;
+    bool      is_static = silver_read_if(a, "static") != null;
+    interface access    = read_enum(a, interface_undefined, typeid(interface));
+    bool      is_lambda = 
+        silver_read_if(a, "lamb")       != null;
+    bool      is_func   = !is_lambda ?
+        silver_read_if(a, "func")       != null : false;
+    bool      is_cast   = !is_static && !(is_func|is_lambda) ?
+        silver_read_if(a, "cast")       != null : false;
+    bool      is_oper   = !is_static && !(is_func|is_lambda) && !is_cast ?
+        silver_read_if(a, "operator")   != null : false;
+    bool      is_ctr    = !is_static && !(is_func|is_lambda) && !is_cast && !is_oper ?
+        silver_read_if(a, "construct")  != null : false;
+    bool      is_idx    = !is_static && !(is_func|is_lambda) && !is_cast && !is_oper && !is_ctr ?
+        silver_read_if(a, "index")      != null : false;
 
+    OPType assign_enum = OPType__undefined;
+    enode mem = parse_member(a, (ARef)&assign_enum);
+
+    validate(!(is_idx|is_ctr|is_oper|is_cast) || mem,
+        "unexpected member identifier");
+
+    validate(!(is_lambda|is_func) || mem,
+        "expected member identifier to follow function or lambda");
+
+    validate(!is_static || mem,
+        "expected member identifier to follow static");
+
+    validate(!mem || access == interface_undefined,
+        "expected member-name after access '%o'", estring(typeid(interface), access));
+    
     push_current(a);
 
-    interface access    = !mem ? read_enum(a, interface_undefined, typeid(interface)) : interface_undefined;
-    bool      is_static = !mem ? silver_read_if(a, "static") != null : false;
-    bool      is_cast   = !mem ? !is_static ? silver_read_if(a, "cast") != null : false : false;
-
-    bool      is_lambda = !mem && is_rec(top) ? silver_read_if(a, "lambda") != null : false;
-
-    bool      is_oper   = !mem ? !is_static && !is_cast && !is_lambda ? 
-        silver_read_if(a, "operator") != null : false : false;
-    bool      is_ctr    = !mem ? !is_static && !is_cast && !is_lambda && !is_oper ? 
-        silver_read_if(a, "construct") != null : false : false;
-    bool      is_idx    = !mem ? !is_static && !is_cast && !is_lambda && !is_oper && !is_ctr ?
-        silver_read_if(a, "index") != null : false : false;
-    enode     rtype     = !mem ? !is_ctr && !is_idx ? (enode)read_etype(a, null) : null : null;
-    OPType    op_type   = !mem ? is_oper ? read_operator(a) : OPType__undefined : OPType__undefined;
-    enode     e         = null;
-
-    if (is_lambda)
-        validate(rtype, "expected rtype after lambda");
+    OPType op_type = is_oper ? read_operator(a) : OPType__undefined;
+    enode  e       = null;
     
-    // if member definition of sort
-    if (mem || rtype || is_ctr || is_idx || is_oper || is_lambda || is_cast) {
-        validate(!is_cast || rtype, "expected type after cast");
+    // if member declared
+    if (mem!=null || is_ctr || is_idx || is_oper || is_lambda || is_cast)
+    {
+        enode rtype = !mem ? !is_ctr && !is_idx ? (enode)read_etype(a, null) : null : null;
+
+        validate(rtype || !(is_func|is_lambda), "expected rtype after lambda");
+        
         validate(!is_oper || op_type != OPType__undefined, "operator required");
         
         // check if this is a nested, static member (we need to back off and read_enode can handle this)
-        bool is_type = true;
-        if (mem)
-            is_type = false;
-        else if (!is_ctr && !is_idx && !is_oper && !is_cast)
-            while (rtype) {
-                if (silver_read_if(a, ".")) {
-                    validate(!is_static, "unexpected static relative to accessor");
-                    is_type = false;
-                    string name = read_alpha(a);
-                    validate (name, "expected field name after '.'");
-                    rtype = access(rtype, name);
-                } else
-                    break;
+        etype      rec_top    = is_rec(top) ? top->user : null;
+        statements in_code    = context_code(a);
+        string     new_member = !mem ? (rtype && (!is_cast && !is_idx)) ? read_alpha(a) : null : null;
+        validate (!is_cast || !is_ctr || new_member, "expected name");
+        bool       is_func    = (!f && !mem) ? next_is(a, "[") : false;
+        validate (is_func || (!is_cast && !is_ctr && !is_idx && !is_oper),
+            "expected arguments [] after method identifier");
+        validate (!is_ctr || is_func, "expected [ args ] after construct keyword");
+
+        bool   assign_const = false;
+        string assign_type  = (new_member || mem) ? read_assign  (a, (ARef)&assign_enum, (ARef)&assign_const) : null;
+        bool   is_const     = assign_type ? eq(assign_type, ":") : false;
+
+        if (is_func|is_lambda) {
+            if (module || rec_top) {
+                print_tokens(a, "pre-parse-func");
+                u64 traits = (is_static ? AU_TRAIT_STATIC : 
+                             (is_lambda ? 0 : AU_TRAIT_IMETHOD)) | 
+                             (is_lambda ? AU_TRAIT_LAMBDA : 0);
+                e = (enode)parse_func(a, (etype)rtype, new_member,
+                    is_lambda ? AU_MEMBER_FUNC      :
+                    is_ctr    ? AU_MEMBER_CONSTRUCT : is_cast ?
+                                AU_MEMBER_CAST      : is_idx  ?
+                                AU_MEMBER_INDEX     : AU_MEMBER_FUNC,
+                    traits, op_type);
+                e->au->access_type = (u8)access;
             }
-        
-        if (mem || is_type) {
-            if (is_cast) {
-                is_cast = is_cast;
+
+        }
+        else if (rec_top || module) {
+            verify(!mem, "unexpected member state");
+            bool  is_inline = true;
+            print_tokens(a, "before read_initializer");
+            array expr = read_initializer(a, assign_enum ? &is_inline : null); // we allow inline only for assignment operations
+            verify(!assign_enum || expr, "expected expression after %o", assign_enum);
+            validate(new_member, "expected member indentifier after type");
+            
+            if (eq(new_member, "nice_vector")) {
+                etype meta_arg0 = (etype)array_get(rtype->meta, 0);
+                shape meta_arg1 = (shape)array_get(rtype->meta, 1);
+                rtype = rtype;
             }
-            etype      rec_top    = is_rec(top) ? top->user : null;
-            statements in_code    = context_code(a);
-            string     new_member = !mem ? (rtype && (!is_cast && !is_idx)) ? read_alpha(a) : null : null;
-            validate (!is_cast || !is_ctr || new_member, "expected name");
-            bool       is_func    = (!f && !mem) ? next_is(a, "[") : false;
-            validate (is_func || (!is_cast && !is_ctr && !is_idx && !is_oper),
-                "expected arguments [] after method identifier");
-            validate (!is_ctr || is_func, "expected [ args ] after construct keyword");
+            Au_t m = def_member(top, new_member->chars, rtype->au, AU_MEMBER_VAR, is_const ? AU_TRAIT_CONST : 0);
+            e = (enode)evar(mod, (aether)a, au, m, meta, rtype->meta, initializer, (tokens)expr);
+            //etype_implement((etype)e);
+            
+        } else if (assign_enum) {
 
-            OPType assign_enum  = OPType__undefined;
-            bool   assign_const = false;
-            string assign_type  = (new_member || mem) ? read_assign  (a, (ARef)&assign_enum, (ARef)&assign_const) : null;
-            bool   is_const     = assign_type ? eq(assign_type, ":") : false;
-
-            if (is_func) {
-                if (module || rec_top) {
-                    print_tokens(a, "pre-parse-func");
-                    u64 traits = (is_static ? AU_TRAIT_STATIC : 
-                                    AU_TRAIT_IMETHOD) | (is_lambda ? AU_TRAIT_LAMBDA : 0);
-                    e = (enode)parse_func(a, (etype)rtype, new_member,
-                        is_lambda ? AU_MEMBER_FUNC      :
-                        is_ctr    ? AU_MEMBER_CONSTRUCT : is_cast ?
-                                    AU_MEMBER_CAST      : is_idx  ?
-                                    AU_MEMBER_INDEX     : AU_MEMBER_FUNC,
-                        traits, op_type);
-                    e->au->access_type = (u8)access;
-                }
-
+            a->left_hand = false;
+            a->expr_level++;
+            evar var = (evar)mem;
+            if (!var) {
+                Au_t m = def_member(top, new_member->chars, rtype->au, AU_MEMBER_VAR, 0);
+                var    = evar(mod, (aether)a, au, m, meta, rtype->meta);
+                etype_implement((etype)var);
             }
-            else if (rec_top || module) {
-                verify(!mem, "unexpected member state");
-                bool  is_inline = true;
-                print_tokens(a, "before read_initializer");
-                array expr = read_initializer(a, assign_type ? &is_inline : null); // we allow inline only for assignment operations
-                verify(!assign_type || expr, "expected expression after %o", assign_type);
-                validate(new_member, "expected member indentifier after type");
-                
-                if (eq(new_member, "nice_vector")) {
-                    etype meta_arg0 = (etype)array_get(rtype->meta, 0);
-                    shape meta_arg1 = (shape)array_get(rtype->meta, 1);
-                    rtype = rtype;
-                }
-                Au_t m = def_member(top, new_member->chars, rtype->au, AU_MEMBER_VAR, is_const ? AU_TRAIT_CONST : 0);
-                e = (enode)evar(mod, (aether)a, au, m, meta, rtype->meta, initializer, (tokens)expr);
-                //etype_implement((etype)e);
-                
-            } else if (assign_type) {
+            e = parse_assignment(a, (enode)var, assign_enum, assign_const);
+            var->au->is_const = is_const;
+            a->expr_level--;
+            a->left_hand = true;
 
-                a->left_hand = false;
-                a->expr_level++;
-                evar var = (evar)mem;
-                if (!var) {
-                    Au_t m = def_member(top, new_member->chars, rtype->au, AU_MEMBER_VAR, 0);
-                    var    = evar(mod, (aether)a, au, m, meta, rtype->meta);
-                    etype_implement((etype)var);
-                }
-                e = parse_assignment(a, (enode)var, assign_type);
-                var->au->is_const = is_const;
-                a->expr_level--;
-                a->left_hand = true;
-
-            } else {
-                // default
-                verify(!assign_type, "unexpected assignment");
-            }
+        } else {
+            // default
+            verify(!assign_enum, "unexpected assignment");
         }
         
     } else {
@@ -3509,7 +3536,7 @@ static array read_expression(silver a, etype *mdl_res, bool *is_const) {
     int s = a->cursor;
     a->no_build = true;
     a->is_const_op = true; // set this, and it can only &= to true with const ops; any build op sets to false
-    enode n = reverse_descent(a, null);
+    enode n = parse_expression(a, null);
     if (mdl_res)
         *mdl_res = (etype)n;
     a->no_build = false;
@@ -3806,26 +3833,25 @@ etype etype_of(enode mem) {
     return (etype)mem;
 }
 
-enode silver_parse_assignment(silver a, enode mem, string oper) {
+enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const) {
     validate(isa(mem) == typeid(enode) || !mem->au->is_const,
         "mem %s is a constant", mem->au->ident);
     
     enode R = parse_expression(a, (etype)etype_of(mem)); /// getting class2 as a struct not a pointer as it should be. we cant lose that pointer info
     if (!mem->au) {
         mem->au = (Au_t)hold(R->au);
-        mem->au->is_const = eq(oper, "=");
+        mem->au->is_const = is_const;
         if (mem->literal)
             drop(mem->literal);
         mem->literal = hold(R->literal);
     } else if (mem->au->is_assigned) {
-        verify(!eq(oper, "="), "cannot perform constant assign after initial assignment");
+        verify(!is_const, "cannot perform constant assign after initial assignment");
     }
     bool new_var = !mem->au->is_assigned;
     mem->au->is_assigned = true; // this is fine to set on var Au_t's
-    validate(contains(operators, (Au)oper), "%o not an assignment-operator");
-    string op_name = (string)get   (operators, (Au)oper);
-    string op_form = form  (string, "_%o", op_name);
-    OPType op_val  = e_val (OPType, cstring(op_form));
+
+    validate(op_val >= OPType__assign && op_val <= OPType__assign_xor, "not an assignment-operator");
+    string op_name = (string)e_str(OPType, op_val);
     etype  mdl     = (etype)evar_type((evar)mem);
     bool   setting_cl = mem->target && mdl->au->is_class && op_val == OPType__assign;
     enode  prev    = (!new_var && setting_cl) ? enode_value(mem) : null; 

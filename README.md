@@ -52,14 +52,28 @@ into modules and media.
 ```python
 # this is a native component that receives an import construction, thus creating a component-decentral model for implementing keywords in silver
 # in the case of chatgpt, it hooks into function body generation using a 'using' keyword
+
+
+all_globals_immutable: ''
+
+import IEEE:product/version
+    --config-with={}
+
+# native generator-based component packaged in silver runtime
+# will be able to checkout open models as well
 import chatgpt
 	model:'gpt-5'
 
-# chatgpt takes over design-time in that these requested data types are converted for you, when valid
-# with silver we are still programming by taking in these members into a function.
-# for this mode, any tokens are first passed to the chatgpt component.  chatgpt returns a path when valid
-fn do-something[] -> image using chatgpt [ publish:image ]
-	return { please draw me cuddly lion }
+class our-model [based]
+    string  name
+    double  scale
+
+    # these dictations are stored in a folder of the module's stem name (module.ag -> module/our-model.a-method.ai)
+    # this content is used to fill in the method name; in doing so we separate waht is machine-made vs human
+    # however the human always defines the models, method prototypes, and arguments
+    int a-method[string append_to_name, f64 scale_increment] using chatgpt
+        [ 'take a look at this image for inspiration, along with the source provided by protocol; make this update the state based on the argments', image[ 'resource-image.png' ] ]
+        [ 'never allow the name to be more than 10 characters' ] # we append more and save the file in watch-mode to update the cached .ai file
 
 ```
 
