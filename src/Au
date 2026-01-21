@@ -523,11 +523,9 @@ typedef Au_t* Au_ts;
             type_ref->isize             = 0 TYPE##_schema( TYPE, ISIZE_EXTERN, __VA_ARGS__ ); \
             type_ref->context           = (__typeof__(type_ref->context))&BASE##_i.type; \
             type_ref->module            = module_lookup((cstr)MODULE); \
-            printf("looking up module %s (%s %s %p)\n", MODULE, #TYPE, type_ref->context->ident, type_ref); \
             type_ref->typesize          = TYPE_SZ; \
             type_ref->traits            = AU_TRAIT_IS_AU | TRAIT; \
             head(type_ref)->type = typeid(Au_t_f); \
-            printf("setting type to Au_t_f on %s : %p\n", #TYPE, type_ref); \
             set_meta_array((Au_t)type_ref, emit_types(__VA_ARGS__)); \
             TYPE##_schema( TYPE, INIT, __VA_ARGS__ ); \
             push_type((Au_t)type_ref); \

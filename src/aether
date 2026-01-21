@@ -47,6 +47,9 @@ Au_t read_arg_type(Au_t stored_arg);
     M(X,Y, i, override, cast,   string)
 declare_class(etype)
 
+#define edecl_schema(X,Y,...)
+declare_class_2(edecl, etype)
+
 #define emodule_schema(X,Y,...)
 declare_class_2(emodule, etype)
 
@@ -89,6 +92,7 @@ declare_class_2(statements, etype)
     M(X,Y, i, prop,  public, i32,       stack_test) \
     M(X,Y, i, prop,  public, enode,     fn_init) \
     M(X,Y, i, prop,  public, callback_extra, parse_f) \
+    M(X,Y, i, prop,  public, callback,       parse_enode) \
     M(X,Y, i, prop,  public, callback_extra, parse_expr) \
     M(X,Y, i, prop,  public, callback_extra, read_etype) \
     M(X,Y, i, prop,  intern, LLVMExecutionEngineRef, jit, as, ARef) \
@@ -129,7 +133,8 @@ declare_class_2(statements, etype)
     M(X,Y, i, method, public,     none,        e_memcpy,           enode, enode, Au_t) \
     M(X,Y, i, method, public,     enode,       compatible,         etype, string, AFlag, array) \
     M(X,Y, i, method, public,     enode,       e_operand,          Au, etype) \
-    M(X,Y, i, method, public,     enode,       e_op,               OPType,     string, Au, Au) \
+    M(X,Y, i, method, public,     enode,       e_short_circuit,    OPType, enode) \
+    M(X,Y, i, method, public,     enode,       e_op,               OPType, string, Au, Au) \
     M(X,Y, i, method, public,     enode,       e_load,             enode, enode) \
     M(X,Y, i, method, public,     enode,       e_typeid,           etype) \
     M(X,Y, i, method, public,     enode,       e_meta_ids,         array) \
