@@ -15,13 +15,15 @@ ifdef mac
 class base
 
 class something [ base ]
-    mem:    i64 [ 4 ]
+    mem:    4
 
     mem2:   map int[ string ]
         'key':      2
         'another':  4
 
-    lambda  nice_lambda[ i32 arg1, f64 arg2 :: i64 i ] -> f32
+    mem3:   8
+
+    lambda  nice_lambda[ arg1:i32, arg2:f64 <> i:i64 ] -> f32
         puts 'arg1 = {arg1}, arg2 = {arg2} and context is {i}\n'
         return 2.0
 
