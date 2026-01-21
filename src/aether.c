@@ -3466,6 +3466,8 @@ none etype_implement(etype t) {
                 }
                 else if (m->member_type == AU_MEMBER_VAR && is_accessible(a, m)) {
                     Au_t src = m->src;
+                    if (!src)
+                        src = src;
                     verify(src, "no src type set for member %o", m);
                     src_init(a, src);
                     if (!is_class(src))
@@ -3780,7 +3782,7 @@ statements aether_context_code(aether a) {
 enode aether_context_func(aether a) {
     for (int i = len(a->lexical) - 1; i >= 0; i--) {
         Au_t ctx = (Au_t)a->lexical->origin[i];
-        if (ctx->member_type == AU_MEMBER_FUNC)
+        if (ctx->member_type == AU_MEMBER_FUNC && isa(ctx->user) == typeid(enode))
             return (enode)ctx->user;
     }
     return null;
@@ -3842,11 +3844,7 @@ none aether_push_scope(aether a, Au arg) {
         push(a->lexical, (Au)au);
 
     enode fn = context_func(a);
-    if (fn && (fn != prev_fn) && !a->no_build) {
-        if (fn->au && fn->au->ident && strstr(fn->au->ident, "action2")) {
-            fn = fn;
-        }
-        verify(fn->entry, "expected function entry for %s", fn->au->ident);
+    if (fn && isa(fn) == typeid(enode) && (fn != prev_fn) && !a->no_build) {
         LLVMPositionBuilderAtEnd(a->builder, fn->entry);
         LLVMSetCurrentDebugLocation2(a->builder, fn->last_dbg);
     }

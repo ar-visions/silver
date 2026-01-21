@@ -575,7 +575,7 @@ static void silver_module() {
         "class", "struct", "public", "intern",
         "import", "export", "typeid", "context",
         "is", "inherits", "ref", "of",
-        "const", "require", "no-op", "return", "->", "::", "...",
+        "const", "require", "no-op", "return", "->", "::", "...", "<>",
         "asm", "if", "switch", "any", "enum",
         "ifdef", "else", "while", "cast", "forge", "try", "throw", "catch", "finally",
         "for", "loop", "func", "operator", "index", "construct",
@@ -1237,7 +1237,7 @@ string silver_read_assign(silver a, ARef assign_type, ARef is_const) {
     if (found) {
         if (eq(k, ":")) {
             if (is_const)
-                *(bool *)is_const = true;
+                *(bool *)is_const = next_is(a, "const");
             if (assign_type)
                 *(OPType *)assign_type = OPType__assign;
         } else {
@@ -1276,7 +1276,7 @@ enode parse_if_else(silver a);
 enode parse_ifdef_else(silver a);
 static enode typed_expr(silver mod, enode n, array expr);
 i32 read_enum(silver a, i32 def, Au_t etype);
-enode parse_func(silver a, etype rtype, string ident, u8 member_type, u64 traits, OPType assign_enum);
+enode parse_func(silver a, etype rtype, Au_t mem, u8 member_type, u64 traits, OPType assign_enum);
 etype etype_resolve(etype t);
 enode enode_value(enode mem);
 
@@ -1626,8 +1626,9 @@ enode parse_statement(silver a)
 
     bool      is_static = silver_read_if(a, "static") != null;
     interface access    = read_enum(a, interface_undefined, typeid(interface));
+
     bool      is_lambda = 
-        silver_read_if(a, "lamb")       != null;
+        silver_read_if(a, "lambda")     != null;
     bool      is_func   = !is_lambda ?
         silver_read_if(a, "func")       != null : false;
     bool      is_cast   = !is_static && !(is_func|is_lambda) ?
@@ -1640,7 +1641,8 @@ enode parse_statement(silver a)
         silver_read_if(a, "index")      != null : false;
 
     OPType assign_enum = OPType__undefined;
-    enode mem = parse_member(a, (ARef)&assign_enum);
+    enode mem = (!is_cast && !is_oper && !is_idx && !is_ctr) ?
+        parse_member(a, (ARef)&assign_enum) : null;
 
     validate(!(is_idx|is_ctr|is_oper|is_cast) || mem,
         "unexpected member identifier");
@@ -1653,6 +1655,9 @@ enode parse_statement(silver a)
 
     validate(!mem || access == interface_undefined,
         "expected member-name after access '%o'", estring(typeid(interface), access));
+
+    // if no access then full access
+    if (!access) access = interface_public;
     
     push_current(a);
 
@@ -1660,27 +1665,26 @@ enode parse_statement(silver a)
     enode  e       = null;
     
     // if member declared
-    if (mem!=null || is_ctr || is_idx || is_oper || is_lambda || is_cast)
+    if (mem!=null || is_ctr || is_idx || is_oper || is_lambda || is_func || is_cast)
     {
-        enode rtype = !mem ? !is_ctr && !is_idx ? (enode)read_etype(a, null) : null : null;
-
-        validate(rtype || !(is_func|is_lambda), "expected rtype after lambda");
+        enode rtype = mem && (!(is_lambda|is_func) || is_cast) ?
+            (enode)read_etype(a, null) : null;
+        
+        validate(rtype || (is_func|is_lambda),
+            "expected rtype after lambda");
         
         validate(!is_oper || op_type != OPType__undefined, "operator required");
         
         // check if this is a nested, static member (we need to back off and read_enode can handle this)
         etype      rec_top    = is_rec(top) ? top->user : null;
         statements in_code    = context_code(a);
-        string     new_member = !mem ? (rtype && (!is_cast && !is_idx)) ? read_alpha(a) : null : null;
-        validate (!is_cast || !is_ctr || new_member, "expected name");
-        bool       is_func    = (!f && !mem) ? next_is(a, "[") : false;
+
         validate (is_func || (!is_cast && !is_ctr && !is_idx && !is_oper),
             "expected arguments [] after method identifier");
+        
         validate (!is_ctr || is_func, "expected [ args ] after construct keyword");
 
-        bool   assign_const = false;
-        string assign_type  = (new_member || mem) ? read_assign  (a, (ARef)&assign_enum, (ARef)&assign_const) : null;
-        bool   is_const     = assign_type ? eq(assign_type, ":") : false;
+        bool   is_const     = mem && mem->au->is_const;
 
         if (is_func|is_lambda) {
             if (module || rec_top) {
@@ -1688,7 +1692,7 @@ enode parse_statement(silver a)
                 u64 traits = (is_static ? AU_TRAIT_STATIC : 
                              (is_lambda ? 0 : AU_TRAIT_IMETHOD)) | 
                              (is_lambda ? AU_TRAIT_LAMBDA : 0);
-                e = (enode)parse_func(a, (etype)rtype, new_member,
+                e = (enode)parse_func(a, (etype)rtype, mem->au, // for cast, we read the rtype first; for others, its parsed after ->
                     is_lambda ? AU_MEMBER_FUNC      :
                     is_ctr    ? AU_MEMBER_CONSTRUCT : is_cast ?
                                 AU_MEMBER_CAST      : is_idx  ?
@@ -1699,21 +1703,25 @@ enode parse_statement(silver a)
 
         }
         else if (rec_top || module) {
-            verify(!mem, "unexpected member state");
             bool  is_inline = true;
             print_tokens(a, "before read_initializer");
             array expr = read_initializer(a, assign_enum ? &is_inline : null); // we allow inline only for assignment operations
             verify(!assign_enum || expr, "expected expression after %o", assign_enum);
-            validate(new_member, "expected member indentifier after type");
             
+            /*
+            validate(new_member, "expected member indentifier after type");
             if (eq(new_member, "nice_vector")) {
                 etype meta_arg0 = (etype)array_get(rtype->meta, 0);
                 shape meta_arg1 = (shape)array_get(rtype->meta, 1);
                 rtype = rtype;
             }
-            Au_t m = def_member(top, new_member->chars, rtype->au, AU_MEMBER_VAR, is_const ? AU_TRAIT_CONST : 0);
-            e = (enode)evar(mod, (aether)a, au, m, meta, rtype->meta, initializer, (tokens)expr);
-            //etype_implement((etype)e);
+            */
+
+            verify(mem->au->member_type == AU_MEMBER_DECL, "expected declaration state");
+            mem->au->member_type = AU_MEMBER_VAR;
+            mem->au->src = rtype->au;
+            mem->au->user = null;
+            e = (enode)evar(mod, (aether)a, au, mem->au, meta, rtype->meta, initializer, (tokens)expr);
             
         } else if (assign_enum) {
 
@@ -1721,12 +1729,13 @@ enode parse_statement(silver a)
             a->expr_level++;
             evar var = (evar)mem;
             if (!var) {
-                Au_t m = def_member(top, new_member->chars, rtype->au, AU_MEMBER_VAR, 0);
-                var    = evar(mod, (aether)a, au, m, meta, rtype->meta);
+                mem->au->src = rtype->au;
+                mem->au->member_type = AU_MEMBER_VAR;
+                mem->au->user = null; // detatch! [falcon-floats-away-with-garbage] [/leaks-because-fett-adds-ref]
+                var    = evar(mod, (aether)a, au, mem->au, meta, rtype->meta);
                 etype_implement((etype)var);
             }
-            e = parse_assignment(a, (enode)var, assign_enum, assign_const);
-            var->au->is_const = is_const;
+            e = parse_assignment(a, (enode)var, assign_enum, mem->au->is_const);
             a->expr_level--;
             a->left_hand = true;
 
@@ -1803,20 +1812,20 @@ ARef lltype(Au a);
 
 Au_t alloc_arg(Au_t context, symbol ident, Au_t arg);
 
-enode parse_func(silver a, etype rtype, string ident, u8 member_type, u64 traits, OPType assign_enum) {
-    string name    = instanceof(ident, string);
+enode parse_func(silver a, etype rtype, Au_t mem, u8 member_type, u64 traits, OPType assign_enum) {
+    string name    = string(mem->ident);
     array  body    = null;
     bool   is_cast = member_type == AU_MEMBER_CAST;
     //etype rec_ctx = context_class(a); if (!rec_ctx) rec_ctx = context_struct(a);
 
-    if (!rtype)
-         rtype = elookup("none");
-
     validate(read_if(a, "["), "expected function args [");
-    Au_t au = def(top_scope(a), ident ? ident->chars : null, AU_MEMBER_FUNC, traits);
+    Au_t au = mem; //def(top_scope(a), ident ? ident->chars : null, AU_MEMBER_FUNC, traits);
+    verify(mem->member_type == AU_MEMBER_DECL, "unknown declaration found in parsing function");
+    au->member_type = AU_MEMBER_FUNC;
+    au->traits = traits;
     au->module = a->au;
 
-    if (!name && is_cast)
+    if (is_cast)
         name = form(string, "cast_%o", rtype);
 
     etype rec_ctx = context_class(a);
@@ -1852,21 +1861,23 @@ enode parse_func(silver a, etype rtype, string ident, u8 member_type, u64 traits
         print_tokens(a, "args");
         bool skip = false;
 
-        if (!first && is_lambda && read_if(a, "::")) {
+        if (!first && is_lambda && read_if(a, "<>")) {
             skip = true;
             in_context = true;
         }
-        verify(skip || first || read_if(a, ","), "expected comma separator between arguments");
+        validate(skip || first || read_if(a, ","), "expected comma separator between arguments");
 
-        etype  t = read_etype(a, null);
+        string n  = read_alpha(a); // optional
+        array  ar = in_context ? (array)&au->members : (array)&au->args;
+
+        validate(read_if(a, ":"), "expected seperator between name and type");
+        etype  t = read_etype(a, null); // we need to avoid the literal check in here!
 
         if (member_type == AU_MEMBER_CONSTRUCT && !name)
             name = form(string, "with_%o", t);
 
         verify(t, "expected alpha-numeric identity for type or name");
 
-        string n      = read_alpha(a); // optional
-        array  ar     = in_context ? (array)&au->members : (array)&au->args;
         Au_t   au_arg = alloc_arg(au, n ? n->chars : null, t->au);
         array_qpush(ar, (Au)au_arg);
         if (first)
@@ -1875,26 +1886,41 @@ enode parse_func(silver a, etype rtype, string ident, u8 member_type, u64 traits
     pop_scope(a);
 
     au->ident = cstr_copy(name->chars); // free other instance
-    au->rtype = rtype->au;
+    //au->rtype = rtype->au;
 
     string fname = rec_ctx ? f(string, "%o_%o", rec_ctx, name) : (string)name;
     au->alt = rec_ctx ? cstr_copy(fname->chars) : null;
 
     // enode takes the arguments on the function model to complete the function creation
+    au->user = null;
     enode func = enode(mod, (aether)a, au, au, body, null, cgen, null, used, true);
+
+    array expr = null;
+    if (read_if(a, "->")) {
+        validate(!rtype, "unexpected -> after cast type");
+        rtype = read_etype(a, &expr);
+    } else if (!rtype) {
+        // validate it is not a cast
+        rtype = typeid(none)->user;
+    }
+    bool is_using = read_if(a, "using") != null;
+
+    if (!body) {
+        body = read_body(a);
+    }
+    validate(!!expr ^ !!body, "expected one function body");
     
     // check if using generative model
-    if (silver_read_if(a, "using")) {
-        verify(!body, "body already defined in type[expr]");
+    if (is_using) {
         token codegen_name = (token)silver_read_alpha(a);
         verify(codegen_name, "expected codegen-identifier after 'using'");
         func->cgen = (codegen)get(a->codegens, (Au)codegen_name);
         verify(func->cgen, "codegen identifier not found: %o", codegen_name);
     }
-    if (!body)
-         body = read_body(a);
-    func->body = (tokens)hold(body);
+    func->body = (tokens)hold((body ? (array)body : (array)expr));
     func->has_code = len(func->body) || func->cgen; // this determines if 'implement' makes it an external
+
+    au->rtype = rtype->au;
 
     print_all(a, "body", body);
     return func;
@@ -1977,8 +2003,19 @@ etype read_etype(silver a, array* p_expr) {
     print_tokens(a, "read-etype");
 
     token f = peek(a);
-    if  ((!f || f->literal || !is_alpha(f)) && !next_is(a, "ref"))
+    if  ((!f || f->literal || !is_alpha(f)) && !next_is(a, "ref")) {
+        if (f->literal) {
+            Au_t id = isa(f->literal);
+            if (id == typeid(shape)) {
+                shape s = (shape)f->literal;
+                if (s->explicit || s->count > 1)
+                    return typeid(shape)->user;
+                return typeid(i64)->user;
+            }
+            return id->user;
+        }
         return null;
+    }
 
     push_current(a);
     bool is_ref = read_if(a, "ref") != null;
