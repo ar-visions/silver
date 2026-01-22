@@ -1392,8 +1392,9 @@ enode silver_parse_member(silver a, ARef read_assign) {
                         printf("scope type: %s\n", au->ident);
                     }
                     mem = (enode)elookup(alpha->chars);
-                    
-                } else {
+                }
+                
+                if (!mem) {
                     Au_t m = def_member(top, alpha->chars, null, AU_MEMBER_DECL, 0); // this is promoted to different sorts of members based on syntax
                     mem = (enode)edecl(mod, (aether)a, au, m, meta, null);
                     break;
