@@ -794,8 +794,16 @@ static array read_initializer(silver a, bool* is_inline) {
     }
     bool mult = !a->in_args && (n->indent > p->indent && n->line > p->line);
     if  (mult) {
+        array res = read_body(a);
+        if (!eq(n, "[")) {
+            array r = array(alloc, res->count + 2);
+            push(r, (Au)token(chars, "["));
+            concat(r, res);
+            push(r, (Au)token(chars, "]"));
+            return r;
+        }
         // not sure if we should add brackets back into this; it would normalize initialization
-        return read_body(a);
+        return res;
     }
     if (!eq(n, "[")) {
         bool is_const = false;
@@ -1597,6 +1605,7 @@ enode silver_read_enode(silver a, etype mdl_expect) {
 
     print_tokens(a, "before parse_member (in read_enode)");
     mem = parse_member(a, null); // we never parse assignment here
+    Au_t mem_cl = isa(mem);
     validate(!instanceof(mem, edecl), "unexpected declaration of member %s", mem->au->ident);
 
     Au_t ty = isa(mem);
@@ -1843,7 +1852,6 @@ enode parse_func(silver a, etype rtype, Au_t mem, u8 member_type, u64 traits, OP
         verify(rec, "cannot parse IMETHOD without record in scope");
         Au_t au_arg = alloc_arg(au, "a", is_struct(rec) ? pointer((aether)a, (Au)rec)->au : rec);
         au_arg->is_target = true;
-        verify(&au->args != &au->members, "what the hell");
         array_qpush((array)&au->args, (Au)au_arg);
     }
 
@@ -1893,7 +1901,10 @@ enode parse_func(silver a, etype rtype, Au_t mem, u8 member_type, u64 traits, OP
 
     // enode takes the arguments on the function model to complete the function creation
     au->user = null;
-    enode func = enode(mod, (aether)a, au, au, body, null, cgen, null, used, true);
+    enode func = enode(mod, (aether)a, au, au, body, null,
+        cgen, null, used, true, target, null);
+        // ** targets do not get set on the enode in declaration;
+        // ** we probably need another type, because its confusing to have two cases of enode for func
 
     array expr = null;
     if (read_if(a, "->")) {
@@ -3433,6 +3444,7 @@ void build_fn(silver a, enode f, callback preamble, callback postamble) {
         
         a->last_return = null;
         push_scope(a, (Au)f);
+        enode n = (enode)elookup("arg1");
 
         if (is_lambda((Au)f))
             push_lambda_members((aether)a, f);
@@ -3444,15 +3456,16 @@ void build_fn(silver a, enode f, callback preamble, callback postamble) {
         // before the preamble we handle guard
         if (preamble)
             preamble((Au)f, null);
-        array after_const = parse_const(a, (array)f->body);
+        array source_tokens = parse_const(a, (array)f->body);
 
         if (f->cgen) {
             // generate code with cgen delegate imported (todo)
             array gen = generate_fn(f->cgen, f, (array)f->body);
 
         } else {
-            push_tokens(a, (tokens)after_const, 0);
+            push_tokens(a, (tokens)source_tokens, 0);
             print_tokens(a, "build-fn-statements");
+            Au_t arg1 = (Au_t)f->au->args.origin[0];
             parse_statements(a, true);
             pop_tokens(a, false);
         }
