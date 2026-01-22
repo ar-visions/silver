@@ -1826,7 +1826,7 @@ enode aether_e_create(aether a, etype mdl, Au args) {
         
         static int seq = 0;
         seq++;
-        if (seq == 26) {
+        if (seq == 7) {
             seq = seq;
         }
 
@@ -4193,6 +4193,9 @@ none enode_init(enode n) {
     aether a = n->mod;
     bool is_const = n->literal != null;
 
+    if (n->au->ident && strcmp(n->au->ident, "arg1") == 0) {
+        n = n;
+    }
     if (is_func((Au)n->au->context) && !n->symbol_name) {
         int offset = 0;
         if (is_lambda((Au)n->au->context))
