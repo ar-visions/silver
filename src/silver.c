@@ -1370,6 +1370,11 @@ enode silver_parse_member(silver a, ARef read_assign) {
             // we may only define our own members within our own space
             if (first) {
 
+                if (eq(alpha, "arg1")) {
+                    mem = (enode)elookup(alpha->chars);
+                    mem = mem;
+                }
+
                 // try implicit 'this' access in instance methods
                 if (!mem && f && f->target) {
                     etype ftarg = etype_resolve((etype)f->target);
@@ -1387,12 +1392,13 @@ enode silver_parse_member(silver a, ARef read_assign) {
                         printf("scope type: %s\n", au->ident);
                     }
                     mem = (enode)elookup(alpha->chars);
+                    
+                } else {
+                    Au_t m = def_member(top, alpha->chars, null, AU_MEMBER_DECL, 0); // this is promoted to different sorts of members based on syntax
+                    mem = (enode)edecl(mod, (aether)a, au, m, meta, null);
+                    break;
                 }
-
-                Au_t m = def_member(top, alpha->chars, null, AU_MEMBER_DECL, 0); // this is promoted to different sorts of members based on syntax
-                mem = (enode)edecl(mod, (aether)a, au, m, meta, null);
-                break;
-                
+                    
             } else if (instanceof(mem, enode) && !is_loaded((Au)mem)) {
                 // Subsequent iterations - access from previous member
                 verify(mem && mem->au, "cannot resolve from null member");
@@ -3465,7 +3471,7 @@ void build_fn(silver a, enode f, callback preamble, callback postamble) {
         } else {
             push_tokens(a, (tokens)source_tokens, 0);
             print_tokens(a, "build-fn-statements");
-            Au_t arg1 = (Au_t)f->au->args.origin[0];
+            //Au_t arg1 = (Au_t)f->au->args.origin[0];
             parse_statements(a, true);
             pop_tokens(a, false);
         }
