@@ -1147,12 +1147,6 @@ enode aether_e_fn_call(aether a, enode fn, array args) {
         (etype)fn->meta->origin[0] :
         (etype)fn->au->rtype->user;
     
-    static int seq4 = 0;
-    seq4++;
-    printf("seq = %i\n", seq4);
-    if (seq4 == 17) {
-        seq4 = seq4;
-    }
     if (is_fptr_call) F = LLVMFunctionType(lltype(rtype), arg_types, n_args, false);
     
     LLVMValueRef R = LLVMBuildCall2(a->builder, F, V, arg_values, index, is_void_ ? "" : call_seq);
@@ -1792,7 +1786,9 @@ enode aether_e_create(aether a, etype mdl, Au args) {
         
         enode targ = n_mdl->target;
         array args = a(n_mdl->published_type, n_mdl, n_mdl->target, ctx_alloc);
-        return e_fn_call(a, f_create, args);
+        enode res = e_fn_call(a, f_create, args);
+        res->au = mdl->au; // it cannot be just 'lambda'
+        return res;
     }
 
     static int seq = 0;
