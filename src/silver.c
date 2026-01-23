@@ -1303,6 +1303,7 @@ enode silver_parse_member(silver a, ARef read_assign) {
     etype  rec_top = context_record(a);
     silver module  =  !a->cmode && (top->is_namespace) ? a : null;
     enode  f       =  !a->cmode ? context_func(a) : null;
+    bool   in_rec  = rec_top && rec_top->au == top;
 
     static int seq = 0;
     seq++;
@@ -1375,26 +1376,26 @@ enode silver_parse_member(silver a, ARef read_assign) {
                     mem = mem;
                 }
 
-                // try implicit 'this' access in instance methods
-                if (!mem && f && f->target) {
-                    etype ftarg = etype_resolve((etype)f->target);
-                    Au_t field = find_member(ftarg->au, alpha->chars, 0, true);
-                    if (field)  {
-                        Au_t target_isa = isa(f->target);
-                        enode target_node = f->target;
-                        mem = access(f->target, alpha);
-                    } else {
+                if (!in_rec) {
+                    // try implicit 'this' access in instance methods
+                    if (!mem && f && f->target) {
+                        etype ftarg = etype_resolve((etype)f->target);
+                        Au_t field = find_member(ftarg->au, alpha->chars, 0, true);
+                        if (field)  {
+                            Au_t target_isa = isa(f->target);
+                            enode target_node = f->target;
+                            mem = access(f->target, alpha);
+                        } else {
+                            mem = (enode)elookup(alpha->chars);
+                        }
+
+                    } else if (!f || !f->target) {
                         mem = (enode)elookup(alpha->chars);
                     }
-
-                } else if (!f || !f->target) {
-                    each(a->lexical, Au_t, au) {
-                        printf("scope type: %s\n", au->ident);
-                    }
-                    mem = (enode)elookup(alpha->chars);
                 }
                 
                 if (!mem) {
+                    validate(!find_member(top, alpha->chars, 0, false), "duplicate member: %o", alpha);
                     Au_t m = def_member(top, alpha->chars, null, AU_MEMBER_DECL, 0); // this is promoted to different sorts of members based on syntax
                     mem = (enode)edecl(mod, (aether)a, au, m, meta, null);
                     break;
@@ -1640,23 +1641,48 @@ enode parse_statement(silver a)
     if (module && peek_def(a))
         return (enode)read_def(a);
 
+    print_tokens(a, "parse-statement2");
+
+    // standard statements first
+    if (f) {
+        if (next_is(a, "no-op")) {
+            consume(a);
+            return e_noop(a, null);
+        }
+        
+        if (next_is(a, "return")) {
+            a->last_return = parse_return(a);
+            return a->last_return;
+        }
+        if (next_is(a, "break")) return parse_break(a);
+        if (next_is(a, "for"))    return parse_for(a);
+        if (next_is(a, "loop"))   return parse_loop_while(a);
+        if (next_is(a, "if"))
+            return parse_if_else(a);
+        if (next_is(a, "loop"))   return parse_loop_while(a);
+        if (next_is(a, "switch")) return parse_switch(a);
+    }
+    
+    if (next_is(a, "ifdef")) return parse_ifdef_else(a);
+
     bool      is_static = silver_read_if(a, "static") != null;
     interface access    = read_enum(a, interface_undefined, typeid(interface));
 
-    bool      is_lambda = 
-        silver_read_if(a, "lambda")     != null;
-    bool      is_func   = !is_lambda ?
+    bool      is_lambda = !f ?
+        silver_read_if(a, "lambda")     != null : false;
+    bool      is_func   = !f && !is_lambda ?
         silver_read_if(a, "func")       != null : false;
-    bool      is_cast   = !is_static && !(is_func|is_lambda) ?
+    bool      is_cast   = !f && !is_static && !(is_func|is_lambda) ?
         silver_read_if(a, "cast")       != null : false;
-    bool      is_oper   = !is_static && !(is_func|is_lambda) && !is_cast ?
+    bool      is_oper   = !f && !is_static && !(is_func|is_lambda) && !is_cast ?
         silver_read_if(a, "operator")   != null : false;
-    bool      is_ctr    = !is_static && !(is_func|is_lambda) && !is_cast && !is_oper ?
+    bool      is_ctr    = !f && !is_static && !(is_func|is_lambda) && !is_cast && !is_oper ?
         silver_read_if(a, "construct")  != null : false;
-    bool      is_idx    = !is_static && !(is_func|is_lambda) && !is_cast && !is_oper && !is_ctr ?
+    bool      is_idx    = !f && !is_static && !(is_func|is_lambda) && !is_cast && !is_oper && !is_ctr ?
         silver_read_if(a, "index")      != null : false;
 
     OPType assign_enum = OPType__undefined;
+    
     enode mem = (!is_cast && !is_oper && !is_idx && !is_ctr) ?
         parse_member(a, (ARef)&assign_enum) : null;
 
@@ -1680,14 +1706,14 @@ enode parse_statement(silver a)
     OPType op_type = is_oper ? read_operator(a) : OPType__undefined;
     enode  e       = null;
     
-    // if member declared
     if (mem!=null || is_ctr || is_idx || is_oper || is_lambda || is_func || is_cast)
     {
-        enode rtype = mem && (!(is_lambda|is_func) || is_cast) ?
+        // if member declared, we must know its type.  we must be careful not to consume otherwise normal expression tokens
+        enode rtype = (mem && assign_enum == OPType__assign && mem->au->member_type == AU_MEMBER_DECL) && (!(is_lambda|is_func) || is_cast) ?
             (enode)read_etype(a, null) : null;
         
-        validate(rtype || (is_func|is_lambda),
-            "expected rtype after lambda");
+        //validate(assign_enum != OPType__assign || rtype || (is_func|is_lambda),
+        //    "expected type after member:");
         
         validate(!is_oper || op_type != OPType__undefined, "operator required");
         
@@ -1767,26 +1793,6 @@ enode parse_statement(silver a)
     pop_tokens(a, e != null); // if its a type, we consume the tokens, otherwise we let read_enode handle it
 
     if (!mem && !e && peek(a)) {
-        if (f) {
-            if (next_is(a, "no-op"))
-                return e_noop(a, null);
-            
-            if (next_is(a, "return")) {
-                a->last_return = parse_return(a);
-                return a->last_return;
-            }
-            if (next_is(a, "break")) return parse_break(a);
-            if (next_is(a, "for"))    return parse_for(a);
-            if (next_is(a, "loop"))   return parse_loop_while(a);
-            if (next_is(a, "if"))
-                return parse_if_else(a);
-            if (next_is(a, "ifdef"))  return parse_ifdef_else(a);
-            if (next_is(a, "loop"))   return parse_loop_while(a);
-            if (next_is(a, "switch")) return parse_switch(a);
-        } else {
-            if (next_is(a, "ifdef"))
-                return parse_ifdef_else(a);
-        }
         a->left_hand = true;
         print_tokens(a, "pre-read-node");
         e = parse_expression(a, null); /// at module level, supports keywords
@@ -2849,7 +2855,7 @@ static enode typed_expr(silver a, enode f, array expr) {
             }
         }
         r = e_create(a, (etype)f, (Au)nodes);
-    } else if (peek_fields(a) || class_inherits((etype)f, elookup("map"))) {
+    } else if (peek_fields(a) || class_inherits((etype)f, typeid(map)->user)) {
         conv = false; // parse map will attempt to go direct
         r    = (enode)parse_object(a, (etype)evar_type((evar)f));
     } else {
@@ -3770,6 +3776,7 @@ none copy_lambda_info(enode mem, enode lambda_fn);
 enode parse_create_lambda(silver a, enode mem) {
     validate(read_if(a, "["), "expected [ context ] after lambda");
 
+    print_tokens(a, "create_lambda");
     // mem is the lambda function definition
     enode   lambda_f = (enode)evar_type((evar)mem);
     array   ctx_mem  = (array)&lambda_f->au->members;  // context members after ::
