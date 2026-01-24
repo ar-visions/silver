@@ -1787,7 +1787,6 @@ enode aether_e_create(aether a, etype mdl, Au args) {
         enode targ = n_mdl->target;
         array args = a(n_mdl->published_type, n_mdl, n_mdl->target, ctx_alloc);
         enode res = e_fn_call(a, f_create, args);
-        res->au = mdl->au; // it cannot be just 'lambda'
         return res;
     }
 

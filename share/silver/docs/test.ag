@@ -31,8 +31,8 @@ class something [ base ]
         if[ mem2 ]
             puts 'something is equal to {mem2}'
         puts 'after'
-        lambda_instance: nice_lambda[1]
-        lambda_instance[22, 'hi']
+        lambda_variable: nice_lambda[1]
+        lambda_variable[22, 'hi']
 
 
 class aclass [app]
