@@ -29,7 +29,6 @@ static void build_record(silver a, etype mrec);
     } else {                                                                            \
         true;                                                                           \
     }                                                                                   \
-    true;                                                                               \
 })
 
 token silver_element(silver, num);
@@ -84,7 +83,7 @@ static bool is_dbg(import t, string query, cstr name, bool is_remote) {
     char dbg_str[PATH_MAX];
     char name_str[PATH_MAX];
     sprintf(dbg_str, ",%s,", dbg);
-    sprintf(name_str, "%s,", name_str);
+    sprintf(name_str, "%s,", name);
     int name_len = strlen(name);
     int dbg_len = strlen(dbg_str);
     int has_astrick = 0;
@@ -1625,6 +1624,30 @@ enode silver_read_enode(silver a, etype mdl_expect) {
 enode parse_switch(silver a);
 
 
+// this shouldnt change the read cursor, its for reading types from c macros
+etype etype_infer(silver a) {
+    push_current(a);
+    etype t = read_etype(a, null);
+    pop_tokens(a, false);
+    if (!t) {
+        push_current(a);
+        Au lit = silver_read_literal(a, null);
+        if (lit) {
+            if      (isa(lit) == typeid(string)) t = elookup("string");
+            else if (isa(lit) == typeid(i64))    t = elookup("i64");
+            else if (isa(lit) == typeid(u64))    t = elookup("u64");
+            else if (isa(lit) == typeid(i32))    t = elookup("i32");
+            else if (isa(lit) == typeid(u32))    t = elookup("u32");
+            else if (isa(lit) == typeid(f32))    t = elookup("f32");
+            else if (isa(lit) == typeid(f64))    t = elookup("f64");
+            else
+                fault("implement literal %s in infer_etype", isa(lit)->ident);
+        }
+        pop_tokens(a, false);
+    }
+    return t;
+}
+
 enode parse_statement(silver a)
 {
     enode f = context_func(a);
@@ -1767,17 +1790,29 @@ enode parse_statement(silver a)
             
         } else if (assign_enum) {
 
+            validate(mem, "expected member");
+
+            if (!rtype) {
+                rtype = (enode)etype_infer(a);
+                validate(rtype, "unable to infer type");
+            }
+            
+            if (mem->au->member_type == AU_MEMBER_DECL) {
+                mem->au->member_type = AU_MEMBER_VAR;
+                mem->au->src = rtype->au;
+                mem->au->user = null; // detatch! [falcon-floats-away-with-garbage] [/leaks-because-fett-adds-ref]
+                e = (enode)evar(mod, (aether)a, au, mem->au, meta, rtype->meta);
+                mem->au->user = e;
+                
+                // etype_implement((etype)var);
+            } else {
+                verify(isa(mem) == typeid(evar), "expected evar, got %s", isa(var)->ident);
+                e = (enode)mem;
+            }
+
             a->left_hand = false;
             a->expr_level++;
-            evar var = (evar)mem;
-            if (!var) {
-                mem->au->src = rtype->au;
-                mem->au->member_type = AU_MEMBER_VAR;
-                mem->au->user = null; // detatch! [falcon-floats-away-with-garbage] [/leaks-because-fett-adds-ref]
-                var    = evar(mod, (aether)a, au, mem->au, meta, rtype->meta);
-                etype_implement((etype)var);
-            }
-            e = parse_assignment(a, (enode)var, assign_enum, mem->au->is_const);
+            e = parse_assignment(a, (enode)e, assign_enum, mem->au->is_const);
             a->expr_level--;
             a->left_hand = true;
 
@@ -1976,30 +2011,6 @@ static etype read_named_model(silver a) {
     }
     pop_tokens(a, mdl != null); /// save if we are returning a model
     return mdl;
-}
-
-// this shouldnt change the read cursor, its for reading types from c macros
-etype etype_infer(silver a) {
-    push_current(a);
-    etype t = read_etype(a, null);
-    pop_tokens(a, false);
-    if (!t) {
-        push_current(a);
-        Au lit = silver_read_literal(a, null);
-        if (lit) {
-            if      (isa(lit) == typeid(string)) t = elookup("string");
-            else if (isa(lit) == typeid(i64))    t = elookup("i64");
-            else if (isa(lit) == typeid(u64))    t = elookup("u64");
-            else if (isa(lit) == typeid(i32))    t = elookup("i32");
-            else if (isa(lit) == typeid(u32))    t = elookup("u32");
-            else if (isa(lit) == typeid(f32))    t = elookup("f32");
-            else if (isa(lit) == typeid(f64))    t = elookup("f64");
-            else
-                fault("implement literal %s in infer_etype", isa(lit)->ident);
-        }
-        pop_tokens(a, false);
-    }
-    return t;
 }
 
 static shape read_shape(silver a) {
