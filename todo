@@ -37,12 +37,11 @@
         [x] loop-while
 
 [ ] fix and finish chatgpt implementation
-    [ ] requires more net testing, get all functions working
-    [ ] implement a designed token to sign-off on file generated
-        or, we rely on deletion of cache-source from server media response
-        - tokenless is good, because its reduced in nature. 
-        - our boolean is the resource, and not having it will always regenerate
-        - we also are 'over-generating' less with this system.. the user would have to forcibly delete each run
+    [x] requires more net testing, get all functions working
+    [ ] regenerate based on hash value from dictation given
+        - if different hash, or no .ai file we regenerate
+        - its important to note this format ONLY contains the method,
+          and is itself not a stand-alone silver module
 
 [ ] progress testing coverage to entire test.ag module
     [ ] uncomment entire file
@@ -59,4 +58,4 @@
 [ ] orbiter experience for the user:
     - we talk to the editor, and it scrolls-to where we want.
     - ideally we dont have to take our hands off the keyboard for this.
-    - we like the idea of it really performing this on a transition
+    - perform this on a transition (to orbit your project, etc)

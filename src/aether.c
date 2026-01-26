@@ -54,24 +54,9 @@ LLVMTypeRef _lltype(Au a);
 
 etype save;
 
-none enode_set_value(enode a, enode src) {
-    bool   new_var    = !a->au->is_assigned;
-    bool   setting_cl = a->target && a->au->is_class;
-    enode  prev       = (!new_var && setting_cl) ? copy(a) : null; 
-    bool   rel        = prev && src->value != a->value;
-    a->value = src->value;
-    
-    e_assign(a->mod, a, src, OPType__assign);
-
-    if (setting_cl)
-        retain(a);
-    if (rel && setting_cl)
-        release(prev);
-}
-
 etype etype_copy(etype mem) {
     Au_t au = isa(mem);
-    etype n = alloc_new(au, 1, null);
+    etype n = (etype)alloc_new(au, 1, null);
     memcpy(n, mem, au->typesize);
     hold_members((Au)n);
     return n;
@@ -138,6 +123,13 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op) {
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, null); // should never happen in an expression context
 
+
+    enode  src        = instanceof(R, enode);
+    bool   new_var    = !L->au->is_assigned;
+    bool   setting_cl = L->target && L->au->is_class;
+    enode  prev       = (!new_var && setting_cl) ? src : null; 
+    bool   rel        = prev && src && src->value != L->value;
+    
     int v_op = op;
     verify(op >= OPType__assign && op <= OPType__assign_left, "invalid assignment-operator");
     enode rL, rR = e_operand(a, R, null);
@@ -156,6 +148,12 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op) {
     }
 
     LLVMBuildStore(a->builder, res->value, L->value);
+
+    if (setting_cl)
+        retain(L);
+    if (rel && setting_cl)
+        release(prev);
+
     return res;
 }
 
