@@ -54,6 +54,29 @@ LLVMTypeRef _lltype(Au a);
 
 etype save;
 
+none enode_set_value(enode a, enode src) {
+    bool   new_var    = !a->au->is_assigned;
+    bool   setting_cl = a->target && a->au->is_class;
+    enode  prev       = (!new_var && setting_cl) ? copy(a) : null; 
+    bool   rel        = prev && src->value != a->value;
+    a->value = src->value;
+    
+    e_assign(a->mod, a, src, OPType__assign);
+
+    if (setting_cl)
+        retain(a);
+    if (rel && setting_cl)
+        release(prev);
+}
+
+etype etype_copy(etype mem) {
+    Au_t au = isa(mem);
+    etype n = alloc_new(au, 1, null);
+    memcpy(n, mem, au->typesize);
+    hold_members((Au)n);
+    return n;
+}
+
 enode enode_value(enode mem) {
     if (!mem->loaded && !mem->au->is_imethod) {
         aether a = mem->mod;

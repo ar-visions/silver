@@ -42,6 +42,7 @@ Au_t read_arg_type(Au_t stored_arg);
     M(X,Y, i, method, public, array,            class_list) \
     M(X,Y, i, method, public, etype,            resolve) \
     M(X,Y, i, guard,  public, etype,            canonical, etype) \
+    M(X,Y, i, override, method, copy) \
     M(X,Y, i, override, method, init) \
     M(X,Y, i, override, cast,   Au_t) \
     M(X,Y, i, override, cast,   string)
@@ -222,6 +223,7 @@ forward(evar)
     M(X,Y, i, prop, intern,   LLVMValueRef,     value, as, ARef) \
     M(X,Y, i, prop, public,   enode,            context_node, as, ARef) \
     M(X,Y, i, prop, intern,   LLVMBasicBlockRef, entry,  as, ARef) \
+    M(X,Y, i, method, public, none,             set_value, enode) \
     M(X,Y, i, method, public, Au,               literal_value, Au_t) \
     M(X,Y, i, method, public, enode,            access, string) \
     M(X,Y, i, method, public, enode,            retain) \

@@ -1791,24 +1791,23 @@ enode parse_statement(silver a)
         } else if (assign_enum) {
 
             validate(mem, "expected member");
-
-            if (!rtype) {
-                rtype = (enode)etype_infer(a);
-                validate(rtype, "unable to infer type");
-            }
             
+            /*
             if (mem->au->member_type == AU_MEMBER_DECL) {
                 mem->au->member_type = AU_MEMBER_VAR;
                 mem->au->src = rtype->au;
                 mem->au->user = null; // detatch! [falcon-floats-away-with-garbage] [/leaks-because-fett-adds-ref]
                 e = (enode)evar(mod, (aether)a, au, mem->au, meta, rtype->meta);
-                mem->au->user = e;
+                mem->au->user = (etype)e;
                 
                 // etype_implement((etype)var);
             } else {
-                verify(isa(mem) == typeid(evar), "expected evar, got %s", isa(var)->ident);
+                validate(isa(mem) == typeid(evar), "expected evar, got %s", isa(mem)->ident);
                 e = (enode)mem;
             }
+            */
+
+            validate(mem->au->src, "expected source type prior to member assignment");
 
             a->left_hand = false;
             a->expr_level++;
@@ -1818,7 +1817,7 @@ enode parse_statement(silver a)
 
         } else {
             // default
-            verify(!assign_enum, "unexpected assignment");
+            validate(!assign_enum, "unexpected assignment");
         }
         
     } else {
@@ -3922,20 +3921,14 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
     } else if (mem->au->is_assigned) {
         verify(!is_const, "cannot perform constant assign after initial assignment");
     }
-    bool new_var = !mem->au->is_assigned;
-    mem->au->is_assigned = true; // this is fine to set on var Au_t's
-
+    
     validate(op_val >= OPType__assign && op_val <= OPType__assign_xor, "not an assignment-operator");
     string op_name = (string)e_str(OPType, op_val);
-    etype  mdl     = (etype)evar_type((evar)mem);
-    bool   setting_cl = mem->target && mdl->au->is_class && op_val == OPType__assign;
-    enode  prev    = (!new_var && setting_cl) ? enode_value(mem) : null; 
     enode  result  = e_op  (a, op_val, op_name, (Au)mem, (Au)R);
-    if (setting_cl) {
-        retain(result);
-        if (prev) release(prev);
-    }
-    return result;
+    if (op_val == OPType__assign)
+        set_value(mem, result);
+    mem->au->is_assigned = true;
+    return mem;
 }
 
 enode cond_builder(silver a, array cond_tokens, Au unused) {
