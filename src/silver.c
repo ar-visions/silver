@@ -3879,36 +3879,41 @@ enode silver_parse_member_expr(silver a, enode mem) {
     }
     pop_tokens(a, mem != null);
     print_tokens(a, "something...");
-    return mem;
+    return mem;          
 }
 
 etype etype_of(enode mem) {
     if (mem->au->member_type == AU_MEMBER_VAR) {
         return (etype)mem->au->src->user;
     }
+    if (mem->au->member_type == AU_MEMBER_DECL) { // type is inferred down stream
+        return (etype)null;
+    }
     return (etype)mem;
 }
+
 
 enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const) {
     validate(isa(mem) == typeid(enode) || !mem->au->is_const,
         "mem %s is a constant", mem->au->ident);
     
-    enode R = parse_expression(a, (etype)etype_of(mem)); /// getting class2 as a struct not a pointer as it should be. we cant lose that pointer info
-    if (!mem->au) {
-        mem->au = (Au_t)hold(R->au);
+    etype t = (etype)etype_of(mem);
+    enode R = parse_expression(a, t); 
+
+    // Handle Promotion and Inference for AU_MEMBER_DECL
+    if (mem->au->member_type == AU_MEMBER_DECL) {
+
+        // Promote the member to a variable
+        mem->au->member_type = AU_MEMBER_VAR;
+        mem->au->src = R->au;
         mem->au->is_const = is_const;
-        if (mem->literal)
-            drop(mem->literal);
-        mem->literal = hold(R->literal);
-    } else if (mem->au->is_assigned) {
-        verify(!is_const, "cannot perform constant assign after initial assignment");
+        mem = (enode)(mem->au->user = (etype)evar(mod, (aether)a, au, mem->au, meta, R->meta));
+        
+        // Register and allocate the variable in the backend
+        etype_implement((etype)mem);
     }
-    
-    validate(op_val >= OPType__assign && op_val <= OPType__assign_xor, "not an assignment-operator");
-    string op_name = (string)e_str(OPType, op_val);
-    enode  result  = e_op  (a, op_val, op_name, (Au)mem, (Au)R);
-    if (op_val == OPType__assign)
-        e_assign(a, mem, (Au)result, OPType__assign);
+
+    enode result = e_assign(a, mem, (Au)R, op_val);
     mem->au->is_assigned = true;
     return mem;
 }
