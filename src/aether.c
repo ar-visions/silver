@@ -118,44 +118,92 @@ static struct op_entry op_table[] = {
     { LLVMBuildShl,  LLVMConstShl  }
 };
 
-
-enode aether_e_assign(aether a, enode L, Au R, OPType op) {
+enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
     a->is_const_op = false;
-    if (a->no_build) return e_noop(a, null); // should never happen in an expression context
+    if (a->no_build)
+        return e_noop(a, null); // should never happen in expressions
 
+    verify(op_val >= OPType__assign && op_val <= OPType__assign_xor,
+           "invalid assignment operator");
 
-    enode  src        = instanceof(R, enode);
-    bool   new_var    = !L->au->is_assigned;
-    bool   setting_cl = L->target && L->au->is_class;
-    enode  prev       = (!new_var && setting_cl) ? src : null; 
-    bool   rel        = prev && src && src->value != L->value;
-    
-    int v_op = op;
-    verify(op >= OPType__assign && op <= OPType__assign_left, "invalid assignment-operator");
-    enode rL, rR = e_operand(a, R, null);
-    enode res = rR;
-    
-    if (op != OPType__assign) {
-        rL = e_load(a, L, null);
-        res = value(L, 
-            op_table[op - OPType__assign - 1].f_build_op
-                (a->builder, rL->value, rR->value, e_str(OPType, op)->chars));
+    /* ------------------------------------------------------------
+     * Phase 1: normalize operands
+     * ------------------------------------------------------------ */
+    enode rR = e_operand(a, R, null);
+    bool  is_init      = !L->au;
+    bool  is_reassign  = L->au && L->au->is_assigned;
+    bool  is_class_set = L->target && L->au && L->au->is_class;
+
+    enode prev = null;
+    bool  rel  = false;
+
+    if (is_class_set) {
+        prev = instanceof(R, enode);
+        rel  = prev && prev->value != L->value;
     }
+
+    /* ------------------------------------------------------------
+     * Phase 2: validate assignment legality
+     * ------------------------------------------------------------ */
     verify(is_ptr(L), "L-value not a pointer (cannot assign to value)");
-    if (res->au != L->au->src) {
-        res = e_operand(a, (Au)res, (etype)L);
-        //res = e_convert(a, res, L->mdl);
+
+    if (is_reassign)
+        verify(!a->is_const_op,
+               "cannot perform constant assign after initial assignment");
+
+    /* ------------------------------------------------------------
+     * Phase 3: bind L on first assignment
+     * ------------------------------------------------------------ */
+    if (is_init) {
+        L->au = (Au_t)hold(rR->au);
+        L->au->is_const = a->is_const_op;
+
+        if (L->literal)
+            drop(L->literal);
+        L->literal = hold(rR->literal);
     }
 
+    /* ------------------------------------------------------------
+     * Phase 4: compute RHS value
+     * ------------------------------------------------------------ */
+    enode res = null;
+
+    if (op_val == OPType__assign) {
+        res = rR;
+    } else {
+        string op_name = (string)e_str(OPType, op_val);
+        res = value(
+            L,
+            op_table[op_val - OPType__assign - 1].f_build_op(
+                a->builder,
+                L->value,
+                rR->value,
+                op_name->chars));
+    }
+
+    /* ------------------------------------------------------------
+     * Phase 5: type reconciliation
+     * ------------------------------------------------------------ */
+    if (res->au != L->au->src)
+        res = e_operand(a, (Au)res, (etype)L);
+
+    /* ------------------------------------------------------------
+     * Phase 6: store
+     * ------------------------------------------------------------ */
     LLVMBuildStore(a->builder, res->value, L->value);
 
-    if (setting_cl)
+    /* ------------------------------------------------------------
+     * Phase 7: lifetime management
+     * ------------------------------------------------------------ */
+    if (is_class_set) {
         retain(L);
-    if (rel && setting_cl)
-        release(prev);
+        if (rel)
+            release(prev);
+    }
 
     return res;
 }
+
 
 none etype_implement(etype t);
 
@@ -1808,6 +1856,15 @@ enode aether_e_create(aether a, etype mdl, Au args) {
         enode targ = n_mdl->target;
         array args = a(n_mdl->published_type, n_mdl, n_mdl->target, ctx_alloc);
         enode res = e_fn_call(a, f_create, args);
+        res->meta = array(alloc, 32);
+
+        // push return type first
+        push(res->meta, (Au)n_mdl->au->src->user);
+
+        // push args
+        arg_types(n_mdl->au, type)
+            push(res->meta, (Au)type->user);
+        
         return res;
     }
 
