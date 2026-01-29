@@ -205,11 +205,11 @@ string git_remote_info(path path, string *out_service, string *out_owner, string
         *dot = '\0';
 
     if (!*out_service)
-        *out_service = string(domain);
+         *out_service = string(domain);
     if (!*out_owner)
-        *out_owner = string(owner);
+         *out_owner   = string(owner);
     if (!*out_project)
-        *out_project = string(repo);
+         *out_project = string(repo);
 
     return remote; // optional if you want to keep full URL
 }
