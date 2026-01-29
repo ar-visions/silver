@@ -78,6 +78,9 @@ static symbol app_ext = "";
 static symbol platform = "darwin";
 #endif
 
+#define next_is(a, ...) silver_next_is_eq(a, __VA_ARGS__, null)
+
+
 static bool is_dbg(import t, string query, cstr name, bool is_remote) {
     cstr dbg = (cstr)query->chars; // getenv("DBG");
     char dbg_str[PATH_MAX];
@@ -382,18 +385,20 @@ static enode reverse_descent(silver a, etype expect) {
 
 enode parse_object(silver a, etype mdl_schema);
 
+static bool silver_next_is_eq(silver a, symbol first, ...);
+
 static enode parse_expression(silver a, etype expect) {
     print_tokens(a, "parse-expr");
     static int seq = 0;
     seq++;
-    if (seq == 12) {
+    if (seq == 114) {
         seq = seq;
     }
     // handle array and map types here at this level, and cue in other types through a protocol if possible
     // our calls below this do not have any idea to use the comma in expression syntax
-    if (expect && (is_rec(expect) || inherits(expect->au, typeid(collective))) && read_if(a, "[")) {
+    if (expect && (is_rec(expect) || inherits(expect->au, typeid(collective))) && next_is(a, "[")) {
         enode res = parse_object(a, expect);
-        validate(read_if(a, "]"), "expected ] after [ expression...");
+        //validate(read_if(a, "]"), "expected ] after [ expression...");
         return res;
     }
     return reverse_descent(a, expect);
@@ -671,8 +676,6 @@ bool silver_next_indent(silver a) {
     return p && n->indent > p->indent;
 }
 
-#define next_is(a, ...) silver_next_is_eq(a, __VA_ARGS__, null)
-
 static bool silver_next_is_eq(silver a, symbol first, ...) {
     va_list args;
     va_start(args, first);
@@ -765,14 +768,15 @@ static array read_body(silver a) {
 // however we usually have the option to do both (expr-level-0)
 static array read_expression(silver a, etype *mdl_res, bool *is_const);
 
-static array read_initializer(silver a, bool* is_inline) {
+static array read_initializer(silver a) {
     array body = array(32);
     token n    = silver_element(a,  0);
     token p    = silver_element(a, -1);
     if  (!n) return null;
-    if (is_inline && eq(n, "[")) {
+
+    if (eq(n, "[") && n->line == p->line || (n->line > p->line && n->indent == p->indent)) {
         silver_consume(a);
-        int depth = 1; // inner expr signals depth 1, and a bracket does too.  we need both togaether sometimes, as in inner expression that has parens
+        int depth = 1; // inner expr signals depth 1, and a bracket does too.  we need both together sometimes, as in inner expression that has parens
         push(body, (Au)token("["));
         for (;;) {
             token inner = silver_next(a);
@@ -791,24 +795,18 @@ static array read_initializer(silver a, bool* is_inline) {
         push(body, (Au)token("]"));
         return body;
     }
-    bool mult = !a->in_args && (n->indent > p->indent && n->line > p->line);
-    if  (mult) {
+
+    else if (n->indent > p->indent && n->line > p->line) {
         array res = read_body(a);
-        if (!eq(n, "[")) {
-            array r = array(alloc, res->count + 2);
-            push(r, (Au)token(chars, "["));
-            concat(r, res);
-            push(r, (Au)token(chars, "]"));
-            return r;
-        }
-        // not sure if we should add brackets back into this; it would normalize initialization
-        return res;
+        array r = array(alloc, res->count + 2);
+        push(r, (Au)token(chars, "["));
+        concat(r, res);
+        push(r, (Au)token(chars, "]"));
+        return r;
     }
-    if (!eq(n, "[")) {
-        bool is_const = false;
-        return read_expression(a, null, &is_const);
-    }
-    return null;
+
+    bool is_const = false;
+    return read_expression(a, null, &is_const);
 }
 
 num silver_current_line(silver a) {
@@ -1283,7 +1281,7 @@ enode parse_if_else(silver a);
 enode parse_ifdef_else(silver a);
 static enode typed_expr(silver mod, enode n, array expr);
 i32 read_enum(silver a, i32 def, Au_t etype);
-enode parse_func(silver a, etype rtype, Au_t mem, u8 member_type, u64 traits, OPType assign_enum);
+enode parse_func(silver a, Au_t mem, u8 member_type, u64 traits, OPType assign_enum);
 etype etype_resolve(etype t);
 enode enode_value(enode mem);
 
@@ -1477,10 +1475,15 @@ enode silver_read_enode(silver a, etype mdl_expect) {
 
     if (a->expr_level > 0 && peek && is_alpha(peek)) {
         etype m = elookup(peek->chars);
-        if (m && isa(m) != typeid(macro)) {
-            etype mdl_found = read_etype(a, &expr);
+        bool is_enode = instanceof(m, enode) != null;
+        if (!is_enode && m && isa(m) != typeid(macro)) {
+            print_tokens(a, "before-read-type");
+            etype mdl_found = is_enode ? null : read_etype(a, null);
             Au_t mdl_au = isa(mdl_found);
             if (mdl_found) {
+                print_tokens(a, "after-read-type");
+                array expr = is_enode ? null : read_initializer(a);
+                print_tokens(a, "after-read-initializer");
                 printf("mdl_found->user = %p\n", mdl_found->au->user);
                 enode res = typed_expr(a, (enode)mdl_found, (array)expr);
                 return e_create(a, mdl_expect, (Au)res); // we need a 'meta_expect' here
@@ -1731,13 +1734,6 @@ enode parse_statement(silver a)
     
     if (mem!=null || is_ctr || is_idx || is_oper || is_lambda || is_func || is_cast)
     {
-        // if member declared, we must know its type.  we must be careful not to consume otherwise normal expression tokens
-        enode rtype = (mem && assign_enum == OPType__assign && mem->au->member_type == AU_MEMBER_DECL) && (!(is_lambda|is_func) || is_cast) ?
-            (enode)read_etype(a, null) : null;
-        
-        //validate(assign_enum != OPType__assign || rtype || (is_func|is_lambda),
-        //    "expected type after member:");
-        
         validate(!is_oper || op_type != OPType__undefined, "operator required");
         
         // check if this is a nested, static member (we need to back off and read_enode can handle this)
@@ -1757,7 +1753,7 @@ enode parse_statement(silver a)
                 u64 traits = (is_static ? AU_TRAIT_STATIC : 
                              (is_lambda ? 0 : AU_TRAIT_IMETHOD)) | 
                              (is_lambda ? AU_TRAIT_LAMBDA : 0);
-                e = (enode)parse_func(a, (etype)rtype, mem->au, // for cast, we read the rtype first; for others, its parsed after ->
+                e = (enode)parse_func(a, mem->au, // for cast, we read the rtype first; for others, its parsed after ->
                     is_lambda ? AU_MEMBER_FUNC      :
                     is_ctr    ? AU_MEMBER_CONSTRUCT : is_cast ?
                                 AU_MEMBER_CAST      : is_idx  ?
@@ -1769,19 +1765,12 @@ enode parse_statement(silver a)
         }
         else if (rec_top || module) {
             bool  is_inline = true;
+            enode rtype = (mem && assign_enum == OPType__assign && mem->au->member_type == AU_MEMBER_DECL) && (!(is_lambda|is_func) || is_cast) ?
+                (enode)read_etype(a, null) : null;
             print_tokens(a, "before read_initializer");
-            array expr = read_initializer(a, assign_enum ? &is_inline : null); // we allow inline only for assignment operations
+            array expr = read_initializer(a); // we allow inline only for assignment operations
             verify(!assign_enum || expr, "expected expression after %o", assign_enum);
             
-            /*
-            validate(new_member, "expected member indentifier after type");
-            if (eq(new_member, "nice_vector")) {
-                etype meta_arg0 = (etype)array_get(rtype->meta, 0);
-                shape meta_arg1 = (shape)array_get(rtype->meta, 1);
-                rtype = rtype;
-            }
-            */
-
             verify(mem->au->member_type == AU_MEMBER_DECL, "expected declaration state");
             mem->au->member_type = AU_MEMBER_VAR;
             mem->au->src = rtype->au;
@@ -1850,7 +1839,8 @@ ARef lltype(Au a);
 
 Au_t alloc_arg(Au_t context, symbol ident, Au_t arg);
 
-enode parse_func(silver a, etype rtype, Au_t mem, u8 member_type, u64 traits, OPType assign_enum) {
+enode parse_func(silver a, Au_t mem, u8 member_type, u64 traits, OPType assign_enum) {
+    etype  rtype   = null;
     string name    = string(mem->ident);
     array  body    = null;
     bool   is_cast = member_type == AU_MEMBER_CAST;
@@ -1863,8 +1853,10 @@ enode parse_func(silver a, etype rtype, Au_t mem, u8 member_type, u64 traits, OP
     au->traits = traits;
     au->module = a->au;
 
-    if (is_cast)
+    if (is_cast) {
+        rtype = read_etype(a, null);
         name = form(string, "cast_%o", rtype);
+    }
 
     etype rec_ctx = context_class(a);
     if (!rec_ctx)
@@ -1930,25 +1922,29 @@ enode parse_func(silver a, etype rtype, Au_t mem, u8 member_type, u64 traits, OP
 
     // enode takes the arguments on the function model to complete the function creation
     au->user = null;
+
+    if (member_type != AU_MEMBER_CAST && read_if(a, "->")) {
+        validate(!rtype, "unexpected -> after cast type");
+        rtype = read_etype(a, null);
+    } else if (!rtype) {
+        // validate it is not a cast
+        rtype = typeid(none)->user;
+    }
+
+    au->rtype = rtype->au;
+
     enode func = enode(mod, (aether)a, au, au, body, null,
         cgen, null, used, true, target, null);
         // ** targets do not get set on the enode in declaration;
         // ** we probably need another type, because its confusing to have two cases of enode for func
 
-    array expr = null;
-    if (read_if(a, "->")) {
-        validate(!rtype, "unexpected -> after cast type");
-        rtype = read_etype(a, &expr);
-    } else if (!rtype) {
-        // validate it is not a cast
-        rtype = typeid(none)->user;
-    }
+
     bool is_using = read_if(a, "using") != null;
 
     if (!body) {
         body = read_body(a);
     }
-    validate(!!expr ^ !!body, "expected one function body");
+    validate(!!body, "expected one function body");
     
     // check if using generative model
     if (is_using) {
@@ -1957,10 +1953,8 @@ enode parse_func(silver a, etype rtype, Au_t mem, u8 member_type, u64 traits, OP
         func->cgen = (codegen)get(a->codegens, (Au)codegen_name);
         verify(func->cgen, "codegen identifier not found: %o", codegen_name);
     }
-    func->body = (tokens)hold((body ? (array)body : (array)expr));
+    func->body = (tokens)hold((array)body);
     func->has_code = len(func->body) || func->cgen; // this determines if 'implement' makes it an external
-
-    au->rtype = rtype->au;
 
     print_all(a, "body", body);
     return func;
@@ -2060,13 +2054,16 @@ etype read_etype(silver a, array* p_expr) {
             return null;
         }
 
-        if (mdl && is_class(mdl) && mdl->au->meta.count) {
+        // is_class(mdl) && mdl->au->meta.count
+
+        if (mdl) {
             // silver is about introducing more syntax only when you require complex containment
             // this applies to methods with no args at method level 0 and [ args ] at > 0
             // array map<string[int]> is the same exact way here
-            validate(a->etype_level == 0 || read_if(a, "<"), "expected <meta> containment at depth");
-            Au_t meta0_src = au_arg_type(mdl->au->meta.origin[0]);
-            array meta_args;
+            bool has_depth_meta = read_if(a, "<") != null;
+            //validate(mdl->au->meta.count == 0 || a->etype_level == 0 || has_depth_meta, "expected <meta> containment at depth");
+            Au_t meta0_src = (has_depth_meta || a->etype_level == 0) && mdl->au->meta.count ? au_arg_type(mdl->au->meta.origin[0]) : null;
+            array meta_args = null;
 
             // read shape literal, or type 
             // (to generalize types offering different literals 
@@ -2075,7 +2072,7 @@ etype read_etype(silver a, array* p_expr) {
                 shape    s =  read_shape(a);
                 validate(s && isa(s) == typeid(shape), "expected shape description, found %o", peek(a));
                 meta_args  =  a(s);
-            } else {
+            } else if (meta0_src) {
                 a->etype_level++;
                 etype t = read_etype(a, null);
                 validate(t, "expected meta type, found %o", peek(a));
@@ -2083,7 +2080,7 @@ etype read_etype(silver a, array* p_expr) {
                 a->etype_level--;
             }
             int rem = mdl->au->meta.count - 1;
-            if (rem) {
+            if (rem > 0 && (has_depth_meta || a->etype_level == 0) ) {
                 // second arg and on are joined within [ ]
                 validate(read_if(a, "["),
                     "expected [ after first meta type %o", first_element(meta_args));
@@ -2121,11 +2118,12 @@ etype read_etype(silver a, array* p_expr) {
                 validate(read_if(a, "]"),
                     "expected [ after last meta type %o", last_element(meta_args));
             }
+            
             // we read this at depth, so ajoined vector of types don't get unreadable when depth is to be displayed
-            validate(a->etype_level == 0 || read_if(a, ">"), "expected <meta> containment at depth");
+            validate(!has_depth_meta || read_if(a, ">"), "expected <meta> containment at depth");
             
             // sorry for the mess [/flicks-coin]
-            mdl  = etype(mod, (aether)a, au, mdl->au, meta, meta_args);
+            mdl  = meta_args ? etype(mod, (aether)a, au, mdl->au, meta, meta_args) : mdl;
             meta = null; // dont reconstruct our mdl again with more
         }
 
@@ -2145,6 +2143,10 @@ etype read_etype(silver a, array* p_expr) {
     etype t = (mdl && meta) ? etype(mod, (aether)a, au, mdl->au, meta, meta) : mdl;
     if (is_ref)
         t = pointer((aether)a, (Au)t);
+
+    //if (p_expr) {
+    //    *p_expr = read_initializer(a);
+    //}
     pop_tokens(a, mdl != null); // if we read a model, we transfer token state
     return t;
 }
@@ -3628,6 +3630,9 @@ etype prop_value_at(etype a, i64 index) {
 // with that result.. we will do this on the first item.  we merely check for the ] afterwards.
 // as such we might want to lazy load the imap or iarray (intermediates that we give to e_create)
 enode parse_object(silver a, etype mdl) {
+    print_tokens(a, "parse-object");
+    validate(read_if(a, "["), "expected [");
+
     bool is_fields = peek_fields(a) || inherits(mdl->au, typeid(map));
     print_tokens(a, "parse-map");
 
@@ -3672,6 +3677,7 @@ enode parse_object(silver a, etype mdl) {
             validate(silver_read_if(a, "}"), "expected }");
             is_enode_key = true;
         } else if (!is_fields && is_mdl_collective) {
+            // we are parsing individual scalar value f64 -> vec2f
             etype e = (etype)array_get(mdl->meta, 0);
             k = (Au)parse_expression(a, e);
         } else if (!is_fields && !is_mdl_map) {
@@ -3736,6 +3742,8 @@ enode parse_object(silver a, etype mdl) {
         verify(max_items == -1 || len(iarray) <= max_items,
             "too many elements (total array size: %i, user provides %i)", max_items, len(iarray));
     }
+
+    validate(read_if(a, "]"), "expected ]");
 
     // a default is made if we give a []; if iarray is provided, e_create will iterate through members
     return e_create(a, mdl, (Au)iarray);

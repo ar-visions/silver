@@ -25,12 +25,18 @@ class something [ base ]
         2 2
 
     nice_vector2: array vec2f[ 4x2 ]
+    [
         [ 8.0 2 ] [ 2 2 ],
         [ 4.0 2 ] [ 2 2 ],
 
         [ 8.0 2 ] [ 2 2 ],
         [ 4.0 2 ] [ 2 2 ]
-    
+    ]
+
+    nice_vector3: array vec2f[ 1x2 ] [
+        [ 8.0 4 ] [ 2.2 2.4 ]
+    ]
+
     mem3:   8
 
     lambda  nice_lambda[ arg1:i32, arg2:string <> i:i64 ] -> f32
@@ -49,9 +55,8 @@ class aclass [app]
     nice_string: string['hi']
 
     # its nice to write to the keys in either class or map initializers
-    nice_map: map i32[string]
+    nice_map: map i64[string]
         'init-with': 2
-        {nice_string}: 4
 
     # an array that should emit a constant vector of i32 (550)
     nice_array: array i32[]
@@ -59,11 +64,18 @@ class aclass [app]
 
     # shaped matrix (commas are optional when dimensions are 1D; otherwise required at stride!)
     # this means less commas give us more validation
-    nice_vector: array vec2f[ 4x2 ]
+    nice_vector: array vec2f[ 4x2 ] [
         [ 8.0 2 ] [ 2 2 ],
         [ 4.0 2 ] [ 2 2 ],
 
         [ 8.0 2 ] [ 2 2 ],
+        [ 4.0 2 ] [ 2 2 ]
+    ]
+
+    nice_vector2: array vec2f[ 4x2 ]
+        [ 8.0 2 ] [ 2 2 ]
+        [ 4.0 2 ] [ 2 2 ]
+        [ 8.0 2 ] [ 2 2 ]
         [ 4.0 2 ] [ 2 2 ]
 
 	func run [] -> i32
@@ -71,7 +83,11 @@ class aclass [app]
         #vec2f v = nice_vector[0,2]
 
         # this will set 8 as an instance of this as allocation
-        s: something[ mem: 8 ]
+        s: something[ mem: 2 ]
+        
+        #s2: something
+        #    mem: 8
+        
         #s.action2 ['an-allocated-one with {s.mem}']
         return 0
         
