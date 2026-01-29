@@ -1,7 +1,6 @@
 import <stdio.h>
 import vec
 
-
 ifdef mac
     import KhronosGroup:MoltenVK/main
         > ./fetchDependencies --macos
@@ -11,6 +10,20 @@ ifdef mac
 #    import KhronosGroup:Vulkan-Headers
 #        <vulkan/vulkan.h>
 
+import chatgpt
+	model:'gpt-5'
+
+class our-model [ based ]
+    name:   string
+    scale:  double
+
+    # these dictations are stored in a folder of the module's stem name (module.ag -> module/our-model.a-method.ai)
+    # this content is used to fill in the method name; in doing so we separate waht is machine-made vs human
+    # however the human always defines the models, method prototypes, and arguments
+    int a-method[ append_to_name:string, scale_increment:f64 ] using chatgpt
+        [ 'take a look at this image for inspiration, along with the source provided by protocol;' # tokenizer should combine these
+          'make this update the state based on the argments', image 'resource-image.png' ]
+        [ 'never allow the name to be more than 10 characters' ] # we append more and save the file in watch-mode to update the cached .ai file
 
 class base
 
@@ -44,18 +57,19 @@ class something [ base ]
         return 2.0
 
     func action2[ mem2: string ] -> none
-        if[ mem2 ]
-            puts 'something is equal to {mem2}'
+        if[ mem2.len > 2 ] # [ ] only needed when we want to parse an expression, and not a single enode
+            puts '{mem2} length more than 2'
+        
         puts 'after'
-        lambda_variable: nice_lambda[1]
-        lambda_variable[22, 'hi']
+        lambda_variable: nice_lambda[ 1 ]
+        lambda_variable 22, 'hi' # [ ] is not used at expr-level 0 (not optional!) ... it is also not used for methods with no args; this is so we do not need 'properties'
 
 
-class aclass [app]
-    nice_string: string['hi']
+class aclass [ app ]
+    nice_string: string 'hi'
 
     # its nice to write to the keys in either class or map initializers
-    nice_map: map i64[string]
+    nice_map: map i64[ string ]
         'init-with': 2
 
     # an array that should emit a constant vector of i32 (550)
@@ -80,13 +94,13 @@ class aclass [app]
 
 	func run [] -> i32
         # silver is going to let you specify 1 or 2 dimensions
-        #vec2f v = nice_vector[0,2]
+        v: vec2f nice_vector[ 0, 2 ] # needs dimensional indexing in type-expr; to implement your own you have a shaped indexer
 
         # this will set 8 as an instance of this as allocation
         s: something[ mem: 2 ]
         
-        #s2: something
-        #    mem: 8
+        s2: something
+            mem: 8
         
         #s.action2 ['an-allocated-one with {s.mem}']
         return 0
