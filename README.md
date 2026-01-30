@@ -145,7 +145,9 @@ spatial dev kit, ai module & training scripts (will be silver)
 # **export** keyword
 **silver**'s contains export keyword, an invocation into any component, such as 'chatgpt', we may generate and cache a variety of media for our project resources.
 
-As a language, **silver** is fewer moving syntactic parts (no direct requirement of Make, CMake for your projects).  It's fewer tokens, first class methods, and a strong stance against centralized package management.  It's considered a build language first, and tries to do the works after, by facilitating native build targets through standard compilation toolchain LLVM.  In watch mode (or development mode), changes are built immediately, with large C headers kept in memory for faster updates. **silver** is the language target for the Orbiter IDE, which is currently in development.
+As a language, **silver** is fewer moving syntactic parts (no direct requirement of Make, CMake for your projects, although heavily utilized for building others).
+
+**silver** is the language target for the Orbiter IDE, which is currently in development.
 
 # **Au** foundation
 Au is the foundation model of **silver**'s compiler and component system. It provides compatibility and reflection capabilities that enable dynamic behavior and runtime type inspection. With Au, you can write classes in C and seamlessly use them in **silver**, similar to Python's extension protocol. Au makes **silver** adaptable and extensible, integrating deeply with both the language and its C interoperability features.
