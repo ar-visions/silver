@@ -65,6 +65,7 @@ declare_class_2(statements, etype)
     M(X,Y, i, prop,  public, path,      project_path) \
     M(X,Y, i, prop,  public, path,      current_inc) \
     M(X,Y, i, prop,  public, etype,     current_import) \
+    M(X,Y, i, prop,  public, i32,       expr_level) \
     M(X,Y, i, prop,  public, Au_t,      import_module) \
     M(X,Y, i, prop,  public, Au_t,      au_module) \
     M(X,Y, i, prop,  public, bool,      lock_schema) \
@@ -129,6 +130,7 @@ declare_class_2(statements, etype)
     M(X,Y, i, method, public,     enode,       e_element,          enode,      Au) \
     M(X,Y, i, method, public,     none,        e_cmp_code,         enode,      comparison, enode, code, code) \
     M(X,Y, i, method, public,     enode,       e_cmp,              enode, enode) \
+    M(X,Y, i, method, public,     enode,       e_cmp_op,           OPType, enode, enode) \
     M(X,Y, i, method, public,     none,        e_branch,           code) \
     M(X,Y, i, method, public,     enode,       e_break,            catcher) \
     M(X,Y, i, method, public,     none,        e_memcpy,           enode, enode, Au_t) \
@@ -167,8 +169,6 @@ declare_class_2(statements, etype)
     M(X,Y, i, method, public,     enode,       e_vector,           etype, enode) \
     M(X,Y, i, method, public,     enode,       e_zero,               enode) \
     M(X,Y, i, method, public,     enode,       e_assign,             enode,      Au, OPType) \
-    M(X,Y, i, method, public,     enode,       e_eq,                 enode,      enode) \
-    M(X,Y, i, method, public,     enode,       e_not_eq,           enode, enode) \
     M(X,Y, i, method, public,     enode,       e_fn_call,          enode,      array)  \
     M(X,Y, i, method, public,     enode,       lambda_fcall,       enode,      array)  \
     M(X,Y, i, method, public,     enode,       e_is,               enode,      Au) \

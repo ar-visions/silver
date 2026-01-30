@@ -765,23 +765,90 @@ typedef struct _collective_abi {
     M(AA,BB, i, override, method, len)
 declare_class(collective)
 
-#define numeric_schema(AA,BB,...) \
-    M(AA,BB, i, operator, public, numeric, _add, numeric) \
-    M(AA,BB, i, operator, public, numeric, _sub, numeric) \
-    M(AA,BB, i, operator, public, numeric, _mul, numeric) \
-    M(AA,BB, i, operator, public, numeric, _div, numeric) \
-    M(AA,BB, i, operator, public, numeric, _or, numeric) \
-    M(AA,BB, i, operator, public, numeric, _and, numeric) \
-    M(AA,BB, i, operator, public, numeric, _xor, numeric) \
-    M(AA,BB, i, operator, public, numeric, _mod, numeric) \
-    M(AA,BB, i, operator, public, numeric, _right, numeric) \
-    M(AA,BB, i, operator, public, numeric, _left, numeric) \
-    M(AA,BB, i, operator, public, numeric, _compare, numeric) \
-    M(AA,BB, i, operator, public, numeric, _equal, numeric) \
-    M(AA,BB, i, operator, public, numeric, _not_equal, numeric) \
-    M(AA,BB, i, operator, public, none, _assign, numeric) \
-    M(AA,BB, i, override, cast, string)
+
+// keyword methods, is a simple public method idea to elevate it bracket-less status
+// however, the user can define keyword interface, so we can do that.  required is just
+// another one of those interfaces that are used in use-case.
+#define interface_schema(E,T,Y,...) \
+    enum_value       (E,T,Y, undefined,  0) \
+    enum_value       (E,T,Y, intern,     1) \
+    enum_value       (E,T,Y, public,     2) \
+    enum_value       (E,T,Y, guard,      3) \
+    enum_value       (E,T,Y, context,    4) \
+    enum_value       (E,T,Y, keyword,    5)
+declare_enum(interface)
+
+#define comparison_schema(E,T,Y,...) \
+    enum_value(E,T,Y, equals,            32) \
+    enum_value(E,T,Y, not_equals,        33) \
+    enum_value(E,T,Y, u_greater_than,    34) \
+    enum_value(E,T,Y, u_greater_than_e,  35) \
+    enum_value(E,T,Y, u_less_than,       36) \
+    enum_value(E,T,Y, u_less_than_e,     37) \
+    enum_value(E,T,Y, s_greater_than,    38) \
+    enum_value(E,T,Y, s_greater_than_e,  39) \
+    enum_value(E,T,Y, s_less_than,       40) \
+    enum_value(E,T,Y, s_less_than_e,     41)
+declare_enum(comparison)
+
+//forward(shape)
+
+#define array_schema(AA,BB,O,...) \
+    M(AA,BB, i, method,   public, array,  mix,           array, f32) \
+    M(AA,BB, i, method,   public, Au,     first_element) \
+    M(AA,BB, i, method,   public, Au,     last_element) \
+    M(AA,BB, i, method,   public, Au,     pop) \
+    M(AA,BB, i, method,   public, array,  shift) \
+    M(AA,BB, i, method,   public, Au,     qpush,         Au) \
+    M(AA,BB, i, method,   public, string, join,          cstr) \
+    M(AA,BB, i, method,   public, none,   fill,          Au) \
+    M(AA,BB, i, method,   public, array,  reverse) \
+    M(AA,BB, i, method,   public, none,   remove,        num) \
+    M(AA,BB, i, method,   public, none,   remove_weak,   num) \
+    M(AA,BB, i, method,   public, none,   push_vdata,    Au, i64, Au_t) \
+    M(AA,BB, i, method,   public, none,   push_weak,     Au) \
+    M(AA,BB, i, method,   public, none,   clear) \
+    M(AA,BB, i, method,   public, none,   concat,        array) \
+    M(AA,BB, i, method,   public, Au,     get,           num) \
+    M(AA,BB, i, method,   public, num,    count) \
+    M(AA,BB, i, method,   public, num,    index_of,      Au) \
+    M(AA,BB, s, vargs,    public, array,  array_of,      Au) \
+    M(AA,BB, s, vargs,    public, array,  array_of_cstr, cstr) \
+    M(AA,BB, i, vargs,    public, none,   push_symbols,  cstr) \
+    M(AA,BB, i, vargs,    public, none,   push_objects,  Au) \
+    M(AA,BB, i, operator, public, none,  _assign_add,    Au) \
+    M(AA,BB, i, operator, public, none,  _assign_sub,    num) \
+    M(AA,BB, i, cast,     public, map) \
+    M(AA,BB, i, index,    public, Au,     Au) \
+    M(AA,BB, i, index,    public, Au,     num) \
+    M(AA,BB, i, ctr,      public, i32) \
+    M(AA,BB, i, override, method, push) \
+    M(AA,BB, i, override, method, init) \
+    M(AA,BB, i, override, method, dealloc) \
+    M(AA,BB, i, override, cast,   bool) \
+    M(AA,BB, i, override, cast,   string)
+declare_class_2(array, collective)
+
+#define numeric_schema(AA,BB,...)
 declare_abstract(numeric)
+
+#define f64_schema(AA,BB,...) \
+    M(AA,BB, i, method, public, f64, round, i32) \
+    M(AA,BB, i, method, public, f64, is_nan) \
+    M(AA,BB, i, method, public, f64, is_inf) \
+    M(AA,BB, i, method, public, f64, is_finite) \
+    M(AA,BB, i, method, public, f64, is_zero) \
+    M(AA,BB, i, override, cast, string)
+declare_primitive(f64, numeric)
+
+#define f32_schema(AA,BB,...) \
+    M(AA,BB, i, method, public, f32, round, i32) \
+    M(AA,BB, i, method, public, f32, is_nan) \
+    M(AA,BB, i, method, public, f32, is_inf) \
+    M(AA,BB, i, method, public, f32, is_finite) \
+    M(AA,BB, i, method, public, f32, is_zero) \
+    M(AA,BB, i, override, cast, string)
+declare_primitive(f32, numeric)
 
 #define string_like_schema(X,Y,...)
 declare_abstract(string_like)
@@ -809,8 +876,8 @@ declare_abstract(imported)
 #define u64_schema(X,Y,...)         numeric_schema(numeric,Y,...)
 #define fp16_schema(X,Y,...)        numeric_schema(numeric,Y,...)
 #define bf16_schema(X,Y,...)        numeric_schema(numeric,Y,...)
-#define f32_schema(X,Y,...)         numeric_schema(numeric,Y,...)
-#define f64_schema(X,Y,...)         numeric_schema(numeric,Y,...)
+//#define f32_schema(X,Y,...)         numeric_schema(numeric,Y,...)
+//#define f64_schema(X,Y,...)         numeric_schema(numeric,Y,...)
 
 #define fmt(...) ((string)f(string, __VA_ARGS__))
 
@@ -895,8 +962,12 @@ declare_primitive(u32,              numeric)
 declare_primitive(u64,              numeric)
 declare_primitive(fp16,             numeric)
 declare_primitive(bf16,             numeric)
-declare_primitive(f32,              numeric)
-declare_primitive(f64,              numeric)
+//declare_primitive(f32,              numeric)
+//declare_primitive(f64,              numeric)
+
+//declare_primitive(f32, numeric)
+//declare_primitive(f64, numeric)
+
 declare_primitive(AFlag,            numeric)
 declare_primitive(bool,             numeric)
 declare_primitive(num,              numeric)
@@ -926,6 +997,7 @@ declare_primitive(floats,       raw)
     M(AA,BB, i, override, method, init) \
     M(AA,BB, i, override, method, dealloc)
 declare_class(msg)
+
 
 #undef shape
 
@@ -1206,66 +1278,6 @@ declare_class(subprocedure)
 #define subproc(targ, faddr, context) new(subprocedure, target, (Au)targ, ctx, (Au)context, addr, (handle)faddr) 
 
 typedef Au(*mix_fn)(Au, Au, f32);
-
-// keyword methods, is a simple public method idea to elevate it bracket-less status
-// however, the user can define keyword interface, so we can do that.  required is just
-// another one of those interfaces that are used in use-case.
-#define interface_schema(E,T,Y,...) \
-    enum_value       (E,T,Y, undefined,  0) \
-    enum_value       (E,T,Y, intern,     1) \
-    enum_value       (E,T,Y, public,     2) \
-    enum_value       (E,T,Y, guard,      3) \
-    enum_value       (E,T,Y, context,    4) \
-    enum_value       (E,T,Y, keyword,    5)
-declare_enum(interface)
-
-#define comparison_schema(E,T,Y,...) \
-    enum_value(E,T,Y, equals,            32) \
-    enum_value(E,T,Y, not_equals,        33) \
-    enum_value(E,T,Y, u_greater_than,    34) \
-    enum_value(E,T,Y, u_greater_than_e,  35) \
-    enum_value(E,T,Y, u_less_than,       36) \
-    enum_value(E,T,Y, u_less_than_e,     37) \
-    enum_value(E,T,Y, s_greater_than,    38) \
-    enum_value(E,T,Y, s_greater_than_e,  39) \
-    enum_value(E,T,Y, s_less_than,       40) \
-    enum_value(E,T,Y, s_less_than_e,     41)
-declare_enum(comparison)
-
-#define array_schema(AA,BB,O,...) \
-    M(AA,BB, i, method,   public, array,  mix,           array, f32) \
-    M(AA,BB, i, method,   public, Au,     first_element) \
-    M(AA,BB, i, method,   public, Au,     last_element) \
-    M(AA,BB, i, method,   public, Au,     pop) \
-    M(AA,BB, i, method,   public, array,  shift) \
-    M(AA,BB, i, method,   public, Au,     qpush,         Au) \
-    M(AA,BB, i, method,   public, string, join,          cstr) \
-    M(AA,BB, i, method,   public, none,   fill,          Au) \
-    M(AA,BB, i, method,   public, array,  reverse) \
-    M(AA,BB, i, method,   public, none,   remove,        num) \
-    M(AA,BB, i, method,   public, none,   remove_weak,   num) \
-    M(AA,BB, i, method,   public, none,   push_vdata,    Au, i64, Au_t) \
-    M(AA,BB, i, method,   public, none,   push_weak,     Au) \
-    M(AA,BB, i, method,   public, none,   clear) \
-    M(AA,BB, i, method,   public, none,   concat,        array) \
-    M(AA,BB, i, method,   public, Au,     get,           num) \
-    M(AA,BB, i, method,   public, num,    count) \
-    M(AA,BB, i, method,   public, num,    index_of,      Au) \
-    M(AA,BB, s, vargs,    public, array,  array_of,      Au) \
-    M(AA,BB, s, vargs,    public, array,  array_of_cstr, cstr) \
-    M(AA,BB, i, vargs,    public, none,   push_symbols,  cstr) \
-    M(AA,BB, i, vargs,    public, none,   push_objects,  Au) \
-    M(AA,BB, i, operator, public, none,  _assign_add,    Au) \
-    M(AA,BB, i, operator, public, none,  _assign_sub,    num) \
-    M(AA,BB, i, cast,     public, map) \
-    M(AA,BB, i, index,    public, Au,     num) \
-    M(AA,BB, i, ctr,      public, i32) \
-    M(AA,BB, i, override, method, push) \
-    M(AA,BB, i, override, method, init) \
-    M(AA,BB, i, override, method, dealloc) \
-    M(AA,BB, i, override, cast,   bool) \
-    M(AA,BB, i, override, cast,   string)
-declare_class_2(array, collective)
 
 
 #define lambda_schema(AA,BB,O,...) \

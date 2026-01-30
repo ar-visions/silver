@@ -13,7 +13,13 @@ ifdef mac
 import chatgpt
 	model:'gpt-5'
 
-class our-model [ based ]
+class base
+    func base_method[ arg:f32 ] -> bool
+        puts 'you gave around {arg.round[2] / 1}'
+        return true
+
+##
+class our-model [ base ]
     name:   string
     scale:  double
 
@@ -24,8 +30,7 @@ class our-model [ based ]
         [ 'take a look at this image for inspiration, along with the source provided by protocol;' # tokenizer should combine these
           'make this update the state based on the argments', image 'resource-image.png' ]
         [ 'never allow the name to be more than 10 characters' ] # we append more and save the file in watch-mode to update the cached .ai file
-
-class base
+##
 
 class something [ base ]
     mem:    4
@@ -97,10 +102,10 @@ class aclass [ app ]
         v: vec2f nice_vector[ 0, 2 ] # needs dimensional indexing in type-expr; to implement your own you have a shaped indexer
 
         # this will set 8 as an instance of this as allocation
-        s: something[ mem: 2 ]
+        #s: something[ mem: 2 ]
         
-        s2: something
-            mem: 8
+        #s2: something
+        #    mem: 8
         
         #s.action2 ['an-allocated-one with {s.mem}']
         return 0
