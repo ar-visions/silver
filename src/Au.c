@@ -407,6 +407,39 @@ Au array_index_num(array a, num i) {
     return a->origin[i];
 }
 
+Au array_index_Au(array a, Au ai) {
+    num* n = (num*)instance_of(ai, typeid(num));
+    if (n) return array_index_num(a, *n);
+
+    shape i = instanceof(ai, shape);
+    verify(i, "expected shape");
+
+    verify(a->shape, "array has no shape");
+
+    verify(i->count <= a->shape->count,
+           "shape index rank exceeds array rank");
+
+    u64 offset = 0;
+    u64 stride = 1;
+
+    // compute strides from the back (row-major)
+    for (i32 d = a->shape->count - 1; d >= 0; d--) {
+        u64 dim_size = a->shape->data[d];
+        u64 idx = (d < i->count) ? i->data[d] : 0;
+
+        verify(idx < dim_size,
+               "index %llu out of bounds for dimension %i (size %llu)",
+               idx, d, dim_size);
+
+        offset += idx * stride;
+        stride *= dim_size;
+
+        if (d == 0) break; // avoid underflow
+    }
+
+    return a->origin[offset];
+}
+
 none array_remove(array a, num b) {
     for (num i = b; i < a->count; i++) {
         Au prev = a->origin[b];
@@ -648,7 +681,7 @@ Au_t find_member(Au_t mdl, symbol f, int member_type, bool poly) {
         for (int i = 0; i < mdl->members.count; i++) {
             Au_t au = (Au_t)mdl->members.origin[i];
             if (!member_type || au->member_type == member_type) { 
-                if (au->ident && strcmp(au->ident, f) == 0)
+                if (!f || (au->ident && strcmp(au->ident, f) == 0))
                     return au;
             }
         }
@@ -1247,6 +1280,7 @@ static none init_recur(Au a, Au_t current, raw last_init) {
     if (init && init != (none*)last_init) init(a); 
 }
 
+/*
 string numeric_cast_string(numeric a) {
     Au_t t = isa(a);
     if (t == typeid(i8))  return f(string, "%hhi", *(i8*) a);
@@ -1265,78 +1299,36 @@ string numeric_cast_string(numeric a) {
     fault("numeric type not handled in string cast: %s", t->ident);
     return null;
 }
+*/
 
-numeric numeric_operator__add(numeric a, numeric b) {
-    Au_t type_a = isa(a);
-    Au_t type_b = isa(b);
-    
-    if (type_a == type_b) {
-        if (type_a == typeid(i8))  return  _i8(* (i8*)a + * (i8*)b);
-        if (type_a == typeid(i16)) return _i16(*(i16*)a + *(i16*)b);
-        if (type_a == typeid(i32)) return _i32(*(i32*)a + *(i32*)b);
-        if (type_a == typeid(i64)) return _i64(*(i64*)a + *(i64*)b);
-        if (type_a == typeid(f32)) return _f32(*(f32*)a + *(f32*)b);
-        if (type_a == typeid(f64)) return _f64(*(f64*)a + *(f64*)b);
-    } else {
-        fault("implement dislike add");
-    }
-    return null;
+string f32_cast_string(f32* a) { return f(string, "%f",  *(f32*)a); }
+string f64_cast_string(f64* a) { return f(string, "%lf", *(f64*)a); }
+
+// knows pi to a thousand places; got a collection of gigantic maces; 
+// even made a function table for my dog
+f32 f32_round(f32* a, i32 places) {
+    f32 scale   = powf(10.0f, (f32)places);
+    f32 scaled  = *a * scale;
+    f32 rounded = nearbyintf(scaled);
+    return rounded / scale;
 }
 
-numeric numeric_operator__sub(numeric a, numeric b) {
-    return null;
+bool f32_is_nan(f32* a)     { return isnan(*a); }
+bool f32_is_inf(f32* a)     { return isinf(*a); }
+bool f32_is_finite(f32* a)  { return isfinite(*a); }
+bool f32_is_zero(f32* a)    { return *a == 0.0f; }
+
+f64 f64_round(f64* a, i32 places) {
+    f64 scale   = pow(10.0, (f64)places);
+    f64 scaled  = *a * scale;
+    f64 rounded = nearbyint(scaled);
+    return rounded / scale;
 }
 
-numeric numeric_operator__mul(numeric a, numeric b) {
-    return null;
-}
-
-numeric numeric_operator__div(numeric a, numeric b) {
-    return null;
-}
-
-numeric numeric_operator__or(numeric a, numeric b) {
-    return null;
-}
-
-numeric numeric_operator__and(numeric a, numeric b) {
-    return null;
-}
-
-numeric numeric_operator__xor(numeric a, numeric b) {
-    return null;
-}
-
-numeric numeric_operator__mod(numeric a, numeric b) {
-    return null;
-}
-
-numeric numeric_operator__right(numeric a, numeric b) {
-    return null;
-}
-
-numeric numeric_operator__left(numeric a, numeric b) {
-    return null;
-}
-
-numeric numeric_operator__compare(numeric a, numeric b) {
-    return null;
-}
-
-numeric numeric_operator__equal(numeric a, numeric b) {
-    return null;
-}
-
-numeric numeric_operator__not_equal(numeric a, numeric b) {
-    return null;
-}
-
-none    numeric_operator__assign(numeric a, numeric b) {
-    Au_t type_a = isa(a);
-    Au_t type_b = isa(b);
-    num sz = type_a->typesize < type_b->typesize ? type_a->typesize : type_b->typesize;
-    memcpy(a, b, sz);
-}
+bool f64_is_nan(f64* a)     { return isnan(*a); }
+bool f64_is_inf(f64* a)     { return isinf(*a); }
+bool f64_is_finite(f64* a)  { return isfinite(*a); }
+bool f64_is_zero(f64* a)    { return *a == 0.0; }
 
 Au Au_initialize(Au a) {
     Au   f = header(a);

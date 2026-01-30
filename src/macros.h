@@ -1460,7 +1460,7 @@
 #define i_override_method_DECL_EXTERN(X, N)
 #define i_override_method_GENERICS(X, N)
 #define i_override_method_INIT(X, N) { \
-    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_OVERRIDE); \
+    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_FUNC, AU_TRAIT_OVERRIDE | AU_TRAIT_IMETHOD); \
     m->alt = #X "_" #N; \
     m->access_type = interface_undefined; \
     type_ref->ft.N = (__typeof__(type_ref->ft.N))& X## _ ## N; \
