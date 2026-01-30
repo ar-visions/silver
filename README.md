@@ -18,7 +18,7 @@ as used in a silver app
 # for these we want to allow you to use your $(shell) when you wish, as well as {expression} at design-time
 # our silver-app-properties are exposed as module members (install:path for one)
 
-import [ KhronosGroup:Vulkan-Tools/main ]
+import KhronosGroup:Vulkan-Tools/main
 	-DVULKAN_HEADERS_INSTALL_DIR={install}
 
 # the above are lines typically found in a Makefile, or two -- 
