@@ -65,13 +65,13 @@ import chatgpt
 	model:'gpt-5'
 
 class our-model [based]
-    string  name
-    double  scale
+    name:  string
+    scale: double
 
     # these dictations are stored in a folder of the module's stem name (module.ag -> module/our-model.a-method.ai)
     # this content is used to fill in the method name; in doing so we separate waht is machine-made vs human
     # however the human always defines the models, method prototypes, and arguments
-    int a-method[string append_to_name, f64 scale_increment] using chatgpt
+    func a-method[string append_to_name, f64 scale_increment] using chatgpt -> int
         [ 'take a look at this image for inspiration, along with the source provided by protocol; make this update the state based on the argments', image[ 'resource-image.png' ] ]
         [ 'never allow the name to be more than 10 characters' ] # we append more and save the file in watch-mode to update the cached .ai file
 
@@ -93,14 +93,15 @@ This enables natural, readable code with less boilerplate.  When the user does d
 
 ```python
 
-linux ?? import [ https://gitlab.freedesktop.org/wayland/wayland-protocols 810f1adaf33521cc55fc510566efba2a1418174f ]
+linux ?? import wayland-protocols using https://gitlab.freedesktop.org/wayland/wayland-protocols 810f1adaf33521cc55fc510566efba2a1418174f
 
-import <vulkan/vulkan.h> [ KhronosGroup:Vulkan-Headers/main ]
+import KhronosGroup:Vulkan-Headers/main
+    <vulkan/vulkan.h>
 
 # short-hand for git shared git repo -- a good basis for 'web4' data
 # its git provided, so it costs little to host, and we have our identities as url basis. with project/version, what else could democratize user provided media better in open?
 
-import [ KhronosGroup:Vulkan-Tools/main ]
+import KhronosGroup:Vulkan-Tools/main
 	-DVULKAN_HEADERS_INSTALL_DIR={install}
 	{linux ?? -DWAYLAND_PROTOCOLS_DIR={install}/checkout/wayland-protocols}
 
@@ -140,17 +141,19 @@ class Vulkan
 
 
 class Window
-    context Vulkan vk
-    vec2i dimensions
+    context vk: Vulkan
+    dimensions: vec2i
 
-class test_vulkan of main
-    public  i64[2x4]  queue_family_index = [ 2 2 2 2, 4 4 4 4 ]
-    intern  i64[ 4 ]  an_intern_member
-    context Vulkan    an-instance
-    intern  Window    window
-    public  shared    'a-string'
+globals-are-const: i32 [ 22 ]
 
-    none init[]
+class test_vulkan [ app ]
+    public  queue_family_index: array i64[2x4] [ 2 2 2 2, 4 4 4 4 ]
+    intern  an_intern_member:   i64 4
+    context an-instance:        Vulkan
+    intern  window:             Window
+    public  shared:             'a-string initialized with {globals-are-const}'
+
+    func init[] -> none
         an-instance : Vulkan[ major: 1  minor: 1 ]
         window      : Window[ dimensions: [ 444 888 ] ]
         
@@ -178,66 +181,3 @@ As a language, **silver** is fewer moving syntactic parts (no direct requirement
 Au is the foundation model of **silver**'s compiler and component system. It provides compatibility and reflection capabilities that enable dynamic behavior and runtime type inspection. With Au, you can write classes in C and seamlessly use them in **silver**, similar to Python's extension protocol. Au makes **silver** adaptable and extensible, integrating deeply with both the language and its C interoperability features.
 
 see: [Au project](https://github.com/ar-visions/silver/blob/master/src/Au)
-
-```python
-
-##
-# designed for keywords import, class, struct, enum
-# member keywords supported for access-level: [ intern, public ] and store: [ read-only, inlay ]
-# primitives are inlay by default, but one can inlay class so long as we are ok with copying trivially or by method
-# public members can be reflected by map: members [ object ]
-##
-
-import a-silver-module [ a-non-const: enum-from-module ]
-
-
-string operator + [ i:int, a:string ]
-    return '{ a } and { i }'
-
-# context is used when the function is called; as such, the user should have these variables themselves
-# this reduces the payload on lambdas to zero, at expense of keeping membership explicit
-int some-callback[ int i; Vulkan ctx ]
-    print[ '{ctx}: {i}' ]
-    return i + ctx ? ctx.a-member : 0
-
-# methods can exist at module-level, or record.
-nice: some-callback[ null ]
-
-string a-function [ string a ]
-    i : 2 + sz[ a ]
-    r : nice[ i ]
-    print[ 'called-with: %s. returning: { r }'  a ]
-    return r
-
-int a-function [ a:string ]
-    return 2 + sz[ a ]
-
-class app
-    public short value   = 1
-    intern int something = 2
-
-    string make-string [ int from ]
-        return 'a string with { from }'
-
-    cast int[]
-        my-func  = ref run
-        r:int[ my-func[ 'hi' ] ?? run ] # value or default
-        s:make-string[ r ]
-        return len[ s ]
-    
-    int run[ arg:string ]
-        print['{ arg } ... call own indexing method: { this[ 2 ] }']
-        return 1
-
-int module-name[ a:app ]
-    is-const : int[ a ]  # : denotes constant assignment, this calls the cast above
-    val = is-const       # = assignment [mutable]
-    val += 1             # we may change the val, because it was declared with =
-
-    print[ 'using app with value: { is-const } + { val - is-const }' ]
-    return (run[a, string[val]] > 0) ? 1 : 0
-
-```
-
-
-
