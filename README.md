@@ -113,21 +113,14 @@ class Vulkan
         result : vkCreateInstance [
             [
                 sType : VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
-
-                pApplicationInfo [
+                pApplicationInfo
                     sType              : VK_STRUCTURE_TYPE_APPLICATION_INFO
                     pApplicationName   : "trinity"
                     applicationVersion : VK_MAKE_VERSION(1, 0, 0)
                     pEngineName        : 'trinity-v{version}'
- 
-                    # 88 exposes C macro, however we do design-time eval on the tokens, as 'feature'
-                    # const is how we effectively perform silvers macro level
-                    # it can go as far as calling runtime methods we import (not in our own module please, yet!)
-
                     engineVersion      : VK_MAKE_VERSION(const i64[ first[version] ], const i64[ last[version] ], 0)
-
                     apiVersion         : vk_version
-                ]
+                
             ], null, instance ]
 
         # methods at expr-level 0 do not invoke with [ these ] unless the function is variable argument
