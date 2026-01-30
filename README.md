@@ -31,15 +31,13 @@ import <stdio.h> # lets include C models, and even type/value macros
 
 # main is a hard-coded abstract class which sets properties by their 
 class app of main
-    required string msg
+    required msg:string
 
-	none init[]
-
-        # constant assignment
-		string however: "its args need not be"
-
-		puts[ "calling a C function with a const string: %s", 
-            ' we only allow formatter args with const-string.. {however} ']
+	func init[] -> none
+		however: "its args need not be"
+        # silver reads the formatter annotations from Clang, disallowing any variable where templates are used
+        # this makes C functions more secure
+		printf["calling a C function with a const string: %s", ' we only allow formatter args with const-string.. {however} ']
 
 ```
 
