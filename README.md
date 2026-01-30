@@ -65,19 +65,9 @@ silver’s founding vision is an open, decentralized ecosystem where cross-compi
 
 development in progress, with documentation to be added/changed.
 
-Update: context addition to release 88:
-### Context-Aware Members
-
-In silver we describe members that implicitly **pull from context** without requiring explicit passing by user, unless with intent.
-Inherently required arguments, context represents a second level of public member, one that is implicit and allows for syntax reduction
-
-If the context is not available and the user does not specify it, the compiler will require them to either provide it.  Passing null for an object is following that rule.
-
-This enables natural, readable code with less boilerplate.  When the user does describe syntax, it is with clearer intention.
-
 ```python
 
-linux ?? import wayland-protocols from https://gitlab.freedesktop.org/wayland/wayland-protocols 810f1adaf33521cc55fc510566efba2a1418174f
+linux ?? import wayland-protocols/810f1adaf33521cc55fc510566efba2a1418174f from https://gitlab.freedesktop.org/wayland/wayland-protocols
 
 import KhronosGroup:Vulkan-Headers/main
     <vulkan/vulkan.h>
@@ -101,7 +91,6 @@ class Vulkan
     public a-member : i32
     public major    : i32
     public minor    : i32
-    context string  : shared
 
     none init[]
         result : vkCreateInstance [
@@ -121,22 +110,23 @@ class Vulkan
         verify result == VK_SUCCESS, 'could not start vulkan {major}.{minor}'
 
 class Window
-    context vk:   Vulkan
-    public  size: shape
+    intern vk:   Vulkan
+    public size: shape
 
 globals-not-reassignable: 22
 
 class test_vulkan [ app ]
     public  queue_family_index: array i64[2x4] [ 2 2 2 2, 4 4 4 4 ]
     intern  an_intern_member:   i64 4
-    context an-instance:        Vulkan
+    intern  an-instance:        Vulkan
     intern  window:             Window
     public  shared:             'a-string initialized with {globals-not-reassignable}'
 
     func init[] -> none
         an-instance = Vulkan[ major:1  minor:1 ]
         window = Window
-            size: 444x888
+            vk:     an-instance
+            size:   444x888
 
 ```
 
