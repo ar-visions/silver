@@ -6017,7 +6017,7 @@ define_class(const_string, string)
 define_class(ipart,   Au)
 define_class(command, string)
 
-define_class(shape, Au)
+define_class(shape, Au, i64)
 
 define_class(token, string)
 

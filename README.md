@@ -87,10 +87,11 @@ This enables natural, readable code with less boilerplate.  When the user does d
 
 ```python
 
-linux ?? import wayland-protocols using https://gitlab.freedesktop.org/wayland/wayland-protocols 810f1adaf33521cc55fc510566efba2a1418174f
+linux ?? import wayland-protocols from https://gitlab.freedesktop.org/wayland/wayland-protocols 810f1adaf33521cc55fc510566efba2a1418174f
 
 import KhronosGroup:Vulkan-Headers/main
     <vulkan/vulkan.h>
+
 
 # short-hand for git shared git repo -- a good basis for 'web4' data
 # its git provided, so it costs little to host, and we have our identities as url basis. with project/version, what else could democratize user provided media better in open?
@@ -124,26 +125,25 @@ class Vulkan
             ], null, instance ]
 
         # methods at expr-level 0 do not invoke with [ these ] unless the function is variable argument
-        verify result == VK_SUCCESS, 'could not start vulkan {VK_VERSION}'
-
+        verify result == VK_SUCCESS, 'could not start vulkan {major}.{minor}'
 
 class Window
-    context vk: Vulkan
-    dimensions: vec2i
+    context vk:   Vulkan
+    public  size: shape
 
-globals-are-const: i32 [ 22 ]
+globals-not-reassignable: 22
 
 class test_vulkan [ app ]
     public  queue_family_index: array i64[2x4] [ 2 2 2 2, 4 4 4 4 ]
     intern  an_intern_member:   i64 4
     context an-instance:        Vulkan
     intern  window:             Window
-    public  shared:             'a-string initialized with {globals-are-const}'
+    public  shared:             'a-string initialized with {globals-not-reassignable}'
 
     func init[] -> none
-        an-instance : Vulkan[ major: 1  minor: 1 ]
-        window      : Window[ dimensions: [ 444 888 ] ]
-        
+        an-instance = Vulkan[ major:1  minor:1 ]
+        window = Window
+            size: 444x888
 
 ```
 
