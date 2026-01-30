@@ -50,21 +50,18 @@ into modules and media.
 
 
 ```python
-# this is a native component that receives an import construction, thus creating a component-decentral model for implementing keywords in silver
-# in the case of chatgpt, it hooks into function body generation using a 'using' keyword
 
-
-all_globals_immutable: ''
+globals_not_reassignable: "simple way to define constants"
 
 import IEEE:product/version
-    --config-with={}
+    --config-with={globals_not_reassignable}
 
 # native generator-based component packaged in silver runtime
 # will be able to checkout open models as well
 import chatgpt
 	model:'gpt-5'
 
-class our-model [based]
+class our-model [ based ]
     name:  string
     scale: double
 
@@ -74,7 +71,6 @@ class our-model [based]
     func a-method[string append_to_name, f64 scale_increment] using chatgpt -> int
         [ 'take a look at this image for inspiration, along with the source provided by protocol; make this update the state based on the argments', image[ 'resource-image.png' ] ]
         [ 'never allow the name to be more than 10 characters' ] # we append more and save the file in watch-mode to update the cached .ai file
-
 ```
 
 silver’s founding vision is an open, decentralized build ecosystem where cross-compiled toolchains, reflective models, and human-AI co-creation converge into a unified development experience.
