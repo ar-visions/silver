@@ -66,7 +66,7 @@ class our-model [ based ]
     # these dictations are stored in a folder of the module's stem name (module.ag -> module/our-model.a-method.ai)
     # this content is used to fill in the method name; in doing so we separate waht is machine-made vs human
     # however the human always defines the models, method prototypes, and arguments
-    func a-method[string append_to_name, f64 scale_increment] using chatgpt -> int
+    func a-method[ append_to_name:string, scale_increment:f64 ] using chatgpt -> int
         [ 'take a look at this image for inspiration, along with the source provided by protocol; make this update the state based on the argments', image[ 'resource-image.png' ] ]
         [ 'never allow the name to be more than 10 characters' ] # we append more and save the file in watch-mode to update the cached .ai file
 ```
