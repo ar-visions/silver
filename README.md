@@ -13,43 +13,33 @@ This lets developers build native apps in very innovative and modern ways -- to 
 as used in a silver app
 ```python
 
-
 # import is the first keyword that utilizes a tokens string
 # for these we want to allow you to use your $(shell) when you wish, as well as {expression} at design-time
 # our silver-app-properties are exposed as module members (install:path for one)
-
 import KhronosGroup:Vulkan-Tools/main
 	-DVULKAN_HEADERS_INSTALL_DIR={install}
 
-# the above are lines typically found in a Makefile, or two -- 
-# however with silver we wanted the language to build a software install that can define in code.
-# this is keeping with Au's .g technique for graphing dependencies per compile-unit.
+# lets include C models, and even type/value macros
+# note: macros with matching type definitions are registered as type aliases
+import <stdio.h> 
 
-import <stdio.h> # lets include C models, and even type/value macros
-
-# note: macros with matching type definitions are registered as type aliases, similar to how Swift imports types from C
-
-# main is a hard-coded abstract class which sets properties by their 
 class app of main
     required msg:string
 
 	func init[] -> none
 		however: "its args need not be"
-        # silver reads the formatter annotations from Clang, disallowing any variable where templates are used
-        # this makes C functions more secure
-		printf["calling a C function with a const string: %s", ' we only allow formatter args with const-string.. {however} ']
+		printf["calling a C function with a const string: %s",
+            'we only allow formatter args with const-string.. {however} ']
 
 ```
-
 
 Design-time AI watchers generate and cache non-deterministic outputs, keeping 
 authored code separate from LLM-generated dictation while integrating naturally 
 into modules and media.
 
-
 ```python
 
-globals_not_reassignable: "simple way to define constants"
+globals_not_reassignable: "simple way to define primitive constants"
 
 import IEEE:product/version
     --config-with={globals_not_reassignable}
@@ -67,11 +57,11 @@ class our-model [ based ]
     # this content is used to fill in the method name; in doing so we separate waht is machine-made vs human
     # however the human always defines the models, method prototypes, and arguments
     func a-method[ append_to_name:string, scale_increment:f64 ] using chatgpt -> int
-        [ 'take a look at this image for inspiration, along with the source provided by protocol; make this update the state based on the argments', image[ 'resource-image.png' ] ]
+        [ 'take a look at this image for inspiration; make this update the state based on the argments', image[ 'resource-image.png' ] ]
         [ 'never allow the name to be more than 10 characters' ] # we append more and save the file in watch-mode to update the cached .ai file
 ```
 
-silver’s founding vision is an open, decentralized build ecosystem where cross-compiled toolchains, reflective models, and human-AI co-creation converge into a unified development experience.
+silver’s founding vision is an open, decentralized ecosystem where cross-compiled toolchains, reflective models, and human-AI co-creation converge into a unified development experience.
 
 development in progress, with documentation to be added/changed.
 
@@ -95,12 +85,15 @@ import KhronosGroup:Vulkan-Headers/main
 
 # short-hand for git shared git repo -- a good basis for 'web4' data
 # its git provided, so it costs little to host, and we have our identities as url basis. with project/version, what else could democratize user provided media better in open?
-
 import KhronosGroup:Vulkan-Tools/main
 	-DVULKAN_HEADERS_INSTALL_DIR={install}
 	{linux ?? -DWAYLAND_PROTOCOLS_DIR={install}/checkout/wayland-protocols}
 
-# : means constant, it cannot be changed by the importer or ourselves, at any member level.
+# globals assigned at design-time, and cannot be re-assigned
+# globals in effect are our constants when in primitive form
+# cache from lists, maps and other classes remain mutable
+# the reason for class-only mutable policy is to combat 
+# manual state [mis]management with primitives
 version : '22'
 
 class Vulkan
