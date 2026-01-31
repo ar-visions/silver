@@ -50,7 +50,6 @@
     M(X, Y, i, method, public, Au,              read_numeric) \
     M(X, Y, i, method, public, array,          parse_const, array) \
     M(X, Y, i, method, public, OPType,         read_operator) \
-    M(X, Y, i, method, public, string,         read_assign, ARef, ARef) \
     M(X, Y, i, method, public, string,         location) \
     M(X, Y, i, method, public, none,           parse) \
     M(X, Y, i, method, public, none,           build) \
