@@ -1249,6 +1249,7 @@ declare_enum(Exists)
 
 forward(array)
 
+
 #define vector_schema(AA,BB,...) \
     M(AA,BB, i, prop,   public, Au,     placeholder2) \
     M(AA,BB, i, method, public, none,   vconcat, ARef, num) \

@@ -1164,6 +1164,7 @@
     m->access_type = interface_public; \
     X##_i.type . ft.N = & X## _ ## N; \
     set_args_array(m, emit_types(__VA_ARGS__)); \
+    ((Au_t)m->args.origin[0])->is_target = 1; \
     m->type    = (Au_t)&R##_i.type; \
     /* m->offset  = offsetof(X##_f, N); */ \
     m->index   = offsetof(__typeof__(X##_i.type.ft), N) / sizeof(void*); \
@@ -1203,6 +1204,7 @@
     m->alt = #X "_" #N; \
     m->access_type = interface_public; \
     set_args_array(m, emit_types(__VA_ARGS__)); \
+    ((Au_t)m->args.origin[0])->is_target = 1; \
     m->type    = (Au_t)&R##_i.type; \
     m->offset  = 0; \
     m->value   = (object)&X##_##N; \
@@ -1250,12 +1252,13 @@
 #define   i_operator_public_DECL_EXTERN(X, R, N, ARG)
 #define   i_operator_public_GENERICS(X, R, N, ARG)
 #define   i_operator_public_INIT(X, R, N, ARG) { \
-    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_OPERATOR, 0); \
+    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_OPERATOR, AU_TRAIT_IMETHOD); \
     m->alt = #X "_operator_" #N; \
     m->access_type = interface_public; \
     X##_i.type  . ft.operator_##N = & X## _operator_ ## N; \
     m->ident   = stringify(operator_##N); \
     set_args_array(m, emit_types(X, ARG)); \
+    ((Au_t)m->args.origin[0])->is_target = 1; \
     m->type    = (Au_t)&R##_i.type; \
     m->index  = offsetof(__typeof__(X##_i.type.ft), operator_##N) / sizeof(void*); \
     m->member_type = AU_MEMBER_OPERATOR; \
@@ -1306,12 +1309,13 @@
 #define   i_cast_public_DECL_EXTERN(X, R)
 #define   i_cast_public_GENERICS(X, R)
 #define   i_cast_public_INIT(CL, R) { \
-    Au_t m = def((Au_t)&CL##_i.type, stringify(cast_##R), AU_MEMBER_CAST, 0); \
+    Au_t m = def((Au_t)&CL##_i.type, stringify(cast_##R), AU_MEMBER_CAST, AU_TRAIT_IMETHOD); \
     m->alt = #CL "_cast_" #R; \
     m->access_type = interface_public; \
     CL##_i.type.ft.cast_##R = & CL##_cast_##R; \
     m->value = (object)CL##_i.type.ft.cast_##R; \
     set_args_array(m, emit_types(CL)); \
+    ((Au_t)m->args.origin[0])->is_target = 1; \
     m->type    = (Au_t)&R##_i.type; \
     m->index   = offsetof(__typeof(CL##_i.type.ft), cast_##R) / sizeof(void*); \
 }
@@ -1360,11 +1364,12 @@
 #define i_index_public_DECL_EXTERN(X, R, ...)
 #define i_index_public_GENERICS(X, R, ...)
 #define i_index_public_INIT(X, R, ...) { \
-    Au_t m = def((Au_t)&X##_i.type, stringify(emit_idx_symbol(index, __VA_ARGS__)), AU_MEMBER_INDEX, 0); \
-    m->alt = #X "_idx_" #R; \
+    Au_t m = def((Au_t)&X##_i.type, stringify(emit_idx_symbol(index, __VA_ARGS__)), AU_MEMBER_INDEX, AU_TRAIT_IMETHOD); \
+    m->alt = #X "_index_" #R; \
     m->access_type = interface_public; \
     X##_i.type.ft.emit_idx_symbol(index, __VA_ARGS__) = & emit_idx_symbol(X ## _index, __VA_ARGS__); \
     set_args_array(m, emit_types(X, __VA_ARGS__)); \
+    ((Au_t)m->args.origin[0])->is_target = 1; \
     m->type        = (Au_t)&R##_i.type; \
     m->index        = offsetof(__typeof(X##_i.type.ft), emit_idx_symbol(index, __VA_ARGS__)) / sizeof(void*); \
 }
