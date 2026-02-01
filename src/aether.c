@@ -771,7 +771,7 @@ static LLVMValueRef const_cstr(aether a, cstr value, i32 len) {
     LLVMValueRef strConst = LLVMConstString(value, len, /*DontNullTerminate=*/0);
 
     // 2. create a global variable of that array type
-    LLVMValueRef gv = LLVMAddGlobal(a->module, LLVMTypeOf(strConst), "const_cstr");
+    LLVMValueRef gv = LLVMAddGlobal(a->module_ref, LLVMTypeOf(strConst), "const_cstr");
     LLVMSetInitializer(gv, strConst);
     LLVMSetGlobalConstant(gv, 1);
     LLVMSetLinkage(gv, LLVMPrivateLinkage);
@@ -1881,6 +1881,7 @@ enode e_create_from_map(aether a, etype t, map m) {
         Au k = i->key;
         
         if (is_m) {
+            Au_t ivalue = isa(i->value);
             e_fn_call(a, f_mset, a(res, k, i->value));
         } else {
             if (instanceof(k, enode)) {
@@ -1940,7 +1941,7 @@ enode e_create_from_array(aether a, etype t, array ar) {
         static int ident = 0;
         char vname[32];
         sprintf(vname, "const_vector_%i", ident++);
-        LLVMValueRef glob = LLVMAddGlobal(a->module, LLVMTypeOf(const_arr), vname);
+        LLVMValueRef glob = LLVMAddGlobal(a->module_ref, LLVMTypeOf(const_arr), vname);
         LLVMSetLinkage(glob, LLVMInternalLinkage);
         LLVMSetGlobalConstant(glob, 1);
         LLVMSetInitializer(glob, const_arr);
@@ -2093,6 +2094,7 @@ enode aether_e_create(aether a, etype mdl, Au args) {
 
     // construct / cast methods
     Au_t args_type = isa(args);
+    efunc ftest = (efunc)instanceof(args, efunc);
     enode input = (enode)instanceof(args, enode);
     if (input && !input->loaded) {
         Au info = head(input);
@@ -2190,7 +2192,7 @@ enode aether_e_create(aether a, etype mdl, Au args) {
         i64          ln     = len(static_a);
         etype        emdl   = (etype)mdl->au->src->user;
         LLVMTypeRef  arrTy  = LLVMArrayType(lltype(emdl), ln);
-        LLVMValueRef G      = LLVMAddGlobal(a->module, arrTy, name);
+        LLVMValueRef G      = LLVMAddGlobal(a->module_ref, arrTy, name);
         LLVMValueRef *elems = calloc(ln, sizeof(LLVMValueRef));
         LLVMSetLinkage(G, LLVMInternalLinkage);
 
@@ -2389,7 +2391,7 @@ enode aether_e_const_array(aether a, etype mdl, array arg) {
     static int ident = 0;
     char gname[32];
     sprintf(gname, "static_array_%i", ident++);
-    LLVMValueRef G = LLVMAddGlobal(a->module, arrTy, gname);
+    LLVMValueRef G = LLVMAddGlobal(a->module_ref, arrTy, gname);
     LLVMSetLinkage(G, LLVMInternalLinkage);
     LLVMSetGlobalConstant(G, 1);
     LLVMSetInitializer(G, arr_init);
@@ -3137,7 +3139,7 @@ static void build_module_initializer(aether a, efunc module_init_fn) {
 }
 
 static void set_global_construct(aether a, efunc fn) {
-    LLVMModuleRef mod = a->module;
+    LLVMModuleRef mod = a->module_ref;
 
     LLVMValueRef ctor_func = fn->value;  // LLVM function
     LLVMTypeRef  int32_t   = LLVMInt32Type();
@@ -3211,7 +3213,7 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
     Au_t argv = def_arg(au_f_main,  "argv", au_lookup("cstrs"));
 
     au_f_main->is_export = true;
-    enode main_fn = enode(mod, a, au, au_f_main,
+    efunc main_fn = efunc(mod, a, au, au_f_main,
         loaded, true, used, true, has_code, true);
     main_fn->au->user = (etype)main_fn;
     etype_implement((etype)main_fn);
@@ -3348,8 +3350,8 @@ none etype_init(etype t) {
 
     if (isa(t) == typeid(aether) || isa(t)->context == typeid(aether)) {
         a = (aether)t;
-        verify(a->source && len(a->source), "no source provided");
-        a->name = a->name ? a->name : stem(a->source);
+        verify(a->module && len(a->module), "no module provided");
+        a->name = a->name ? a->name : stem(a->module);
         au = t->au = def_module(a->name->chars);
         if (!au->user) au->user = hold(t);
         return;
@@ -3445,7 +3447,7 @@ none etype_init(etype t) {
             // create published type (we set this global on global initialize)
             string member_symbol = f(string, "%s_type", au->alt);
             LLVMTypeRef type = typeid(Au_t)->ptr->lltype;
-            LLVMValueRef G = LLVMAddGlobal(a->module, type, member_symbol->chars);
+            LLVMValueRef G = LLVMAddGlobal(a->module_ref, type, member_symbol->chars);
             LLVMSetLinkage(G, LLVMInternalLinkage);
             LLVMSetInitializer(G, LLVMConstNull(type));
 
@@ -3477,7 +3479,14 @@ none etype_init(etype t) {
         au->lltype = LLVMPointerType(fn_ty, 0);
         free(arg_types);
     } else if (au && au->is_pointer && au->src && !au->src->is_primitive) {
-        au->lltype = LLVMPointerType(au->src->lltype, 0);
+        Au_t src = au->src;
+        while (src && src->src && !src->lltype)
+            src = src->src;
+        if (!src->lltype) {
+            src = src;
+        }
+        verify(src && src->lltype, "resolution failure for type %o", au);
+        au->lltype = LLVMPointerType(src->lltype, 0);
     } else if (named && (is_rec((Au)t) || au->is_union || au == typeid(Au_t))) {
         au->lltype = LLVMStructCreateNamed(a->module_ctx, cstr_copy(au->ident));
         if (au != typeid(Au_t) && !au->is_system)
@@ -3598,7 +3607,7 @@ etype get_type_t_ptr(etype t) {
     aether a = t->mod;
 
     /*
-    bool allow = is_au_type(t) || a->au == t->au->module;
+    bool allow = is_au_type(t) || a->au == t->au->module_ref;
     if (!allow)
         allow = allow;
     verify(allow,
@@ -3713,7 +3722,7 @@ none etype_implement(etype t) {
         // if module member, then its a global value
         if (!au->context->context) {
             // mod->is_Au_import indicates this is coming from a lib, or we are making a new global
-            LLVMValueRef G = LLVMAddGlobal(a->module, ty, au->ident);
+            LLVMValueRef G = LLVMAddGlobal(a->module_ref, ty, au->ident);
             LLVMSetLinkage(G, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
             if (!a->is_Au_import) {
                 LLVMSetInitializer(G, LLVMConstNull(ty)); // or a real initializer
@@ -3889,7 +3898,7 @@ none etype_implement(etype t) {
             string n = f(string, "%s_%s", au->ident, m->ident);
             
             LLVMTypeRef tr = au->lltype;
-            LLVMValueRef G = LLVMAddGlobal(a->module, tr, n->chars);
+            LLVMValueRef G = LLVMAddGlobal(a->module_ref, tr, n->chars);
             
             LLVMSetLinkage(G, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
             LLVMSetGlobalConstant(G, 1);
@@ -3922,6 +3931,9 @@ none etype_implement(etype t) {
         enum_processing = false;
     } else if (is_func((Au)t)) {
         Au_t cl = isa(t);
+        if (cl !=  typeid(efunc)) {
+            cl = cl;
+        }
         verify(cl == typeid(efunc), "expected efunc");
         //string n = is_rec(au->context) ?
         //    f(string, "%s_%s", au->context->ident, au->ident) : string(au->ident);
@@ -3942,7 +3954,7 @@ none etype_implement(etype t) {
             }
         }
 
-        fn->value  = LLVMAddFunction(a->module, n, au->lltype);
+        fn->value  = LLVMAddFunction(a->module_ref, n, au->lltype);
 
         // fill out enode values for our args type pointer 
         // context type pointer (we register these on init)
@@ -4358,7 +4370,7 @@ void aether_llflag(aether a, symbol flag, i32 ival) {
 
     char sflag[64];
     memcpy(sflag, flag, strlen(flag) + 1);
-    LLVMAddModuleFlag(a->module, LLVMModuleFlagBehaviorError, sflag, strlen(sflag), v);
+    LLVMAddModuleFlag(a->module_ref, LLVMModuleFlagBehaviorError, sflag, strlen(sflag), v);
 }
 
 
@@ -4372,21 +4384,21 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
     *ll = form(path, "%o.ll", a);
     *bc = form(path, "%o.bc", a);
 
-    LLVMDumpModule(a->module);
+    LLVMDumpModule(a->module_ref);
 
-    if (LLVMPrintModuleToFile(a->module, cstring(*ll), &err))
+    if (LLVMPrintModuleToFile(a->module_ref, cstring(*ll), &err))
         fault("LLVMPrintModuleToFile failed");
 
-    if (LLVMVerifyModule(a->module, LLVMReturnStatusAction, &err)) {
+    if (LLVMVerifyModule(a->module_ref, LLVMReturnStatusAction, &err)) {
         fprintf(stderr, "LLVM verify failed:\n%s\n", err);
         LLVMDisposeMessage(err);
         abort();
     }
 
-    if (LLVMVerifyModule(a->module, LLVMPrintMessageAction, &err))
+    if (LLVMVerifyModule(a->module_ref, LLVMPrintMessageAction, &err))
         fault("error verifying module");
     
-    if (LLVMWriteBitcodeToFile(a->module, cstring(*bc)) != 0)
+    if (LLVMWriteBitcodeToFile(a->module_ref, cstring(*bc)) != 0)
         fault("LLVMWriteBitcodeToFile failed");
 
     return true;
@@ -4405,7 +4417,7 @@ void aether_reinit_startup(aether a) {
 
 none aether_test_write(aether a) {
     char* err = 0;
-    LLVMPrintModuleToFile(a->module, "crashing.ll", &err);
+    LLVMPrintModuleToFile(a->module_ref, "crashing.ll", &err);
 }
 
 none aether_init(aether a) {
@@ -4413,18 +4425,19 @@ none aether_init(aether a) {
     LLVMInitializeNativeAsmPrinter();
     LLVMInitializeNativeAsmParser();
 
-    if ( a->source) a->source = absolute(a->source);
+    if ( a->module) a->module = absolute(a->module);
     if (!a->install) {
         cstr import = getenv("IMPORT");
-        if (import)
+        if (import) {
             a->install = f(path, "%s", import);
-        else {
+        } else {
             path   exe = path_self();
             path   bin = parent_dir(exe);
             path   install = absolute(f(path, "%o/..", bin));
             a->install = install;
         }
     }
+    a->root_path = absolute(f(path, "%o/../..", a->install));
     a->stack = array(16);
     a->include_paths    = a(f(path, "%o/include", a->install));
     a->sys_inc_paths    = array(alloc, 32);
@@ -4460,16 +4473,16 @@ none aether_init(aether a) {
 
     //push(a->include_paths, f(path, "%o/lib/clang/22/include", a->install));
     push(a->lib_paths, (Au)f(path, "%o/lib", a->install));
-    path src_path = parent_dir(a->source);
+    path src_path = a->module;
     push(a->include_paths, (Au)src_path);
 
     a->registry       = array(alloc, 256, assorted, true);
     a->libs           = map(assorted, true, unmanaged, true);
     a->user_type_ids  = map(assorted, true);
     a->lexical        = array(unmanaged, true, assorted, true);
-    a->module         = LLVMModuleCreateWithName(a->name->chars);
-    a->module_ctx     = LLVMGetModuleContext(a->module);
-    a->dbg_builder    = LLVMCreateDIBuilder(a->module);
+    a->module_ref     = LLVMModuleCreateWithName(a->name->chars);
+    a->module_ctx     = LLVMGetModuleContext(a->module_ref);
+    a->dbg_builder    = LLVMCreateDIBuilder(a->module_ref);
     a->builder        = LLVMCreateBuilderInContext(a->module_ctx);
     a->target_triple  = LLVMGetDefaultTargetTriple();
     cstr err = NULL;
@@ -4479,7 +4492,7 @@ none aether_init(aether a) {
         a->target_ref, a->target_triple, "generic", "",
         LLVMCodeGenLevelDefault, LLVMRelocDefault, LLVMCodeModelDefault);
     
-    path rel = parent_dir(a->source);
+    path rel = parent_dir(a->module);
     a->file = LLVMDIBuilderCreateFile(a->dbg_builder, a->name->chars, len(a->name), rel->chars, len(rel));
 
     a->target_data = LLVMCreateTargetDataLayout(a->target_machine);
@@ -4510,7 +4523,7 @@ none aether_init(aether a) {
 none aether_dealloc(aether a) {
     LLVMDisposeBuilder  (a->builder);
     LLVMDisposeDIBuilder(a->dbg_builder);
-    LLVMDisposeModule   (a->module);
+    LLVMDisposeModule   (a->module_ref);
     LLVMContextDispose  (a->module_ctx);
     LLVMDisposeMessage  (a->target_triple);
 }
@@ -4542,8 +4555,8 @@ none enode_init(enode n) {
         enode fn = (enode)au_arg_type((Au)n->au->context)->user;
         n->value = LLVMGetParam(fn->value, n->arg_index + offset);
     } else if (n->symbol_name && !n->value) {
-        LLVMValueRef g = LLVMGetNamedGlobal  (a->module, n->symbol_name->chars);
-        if (!g)      g = LLVMGetNamedFunction(a->module, n->symbol_name->chars);
+        LLVMValueRef g = LLVMGetNamedGlobal  (a->module_ref, n->symbol_name->chars);
+        if (!g)      g = LLVMGetNamedFunction(a->module_ref, n->symbol_name->chars);
 
         verify(g, "global symbol not found: %o", n->symbol_name);
         n->value  = g;
@@ -5140,7 +5153,7 @@ define_class(evar,       enode)
 define_class(emeta,      etype) // we need a type to track the usage of actual meta args in context
 define_class(enode,      etype) // not a member unless member is set (direct, or created with name)
 define_class(edecl,      etype)
-define_class(efunc,      etype)
+define_class(efunc,      enode)
 
 define_class(emodule,    etype)
 define_class(aether,     emodule)

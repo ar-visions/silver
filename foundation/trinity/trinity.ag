@@ -1,0 +1,1099 @@
+
+# all imports will end up being reflected as headers
+import gltf
+import img
+
+import <vulkan/vulkan.h> [ https://github.com/KhronosGroup/Vulkan-Headers ]
+import [ https://github.com/KhronosGroup/Vulkan-Tools ]
+     -DVULKAN_HEADERS_INSTALL_DIR={silver_install}
+
+alias skia_t   : ref void
+alias handle_t : ref void
+
+func skia_init_vk[ trinity t, handle_t vk_instance, handle_t vma_allocator, handle_t phys, handle_t device, 
+    handle_t queue, unsigned int graphics_family, unsigned int vk_version ] -> skia_t
+
+import chatgpt
+    model:'gpt-5'
+
+class trinity
+    intern      instance            : VkInstance               
+    intern      msaa_samples        : i64                      
+    intern      physical_device     : VkPhysicalDevice         
+    intern      device              : VkDevice                 
+    intern      queue               : VkQueue                  
+    intern      debug               : VkDebugUtilsMessengerEXT 
+    intern      command_pool        : VkCommandPool            
+    intern      allocator           : VmaAllocator                               
+    intern      device_memory       : map                      
+    public      queue_family_index  : i32 -1 
+    public      rt_support          : bool                     
+    public      instance_exts       : array [ alloc:128, unmanaged:true ]
+    public      device_exts         : array [ alloc:128, unmanaged:true ]
+    public   func texture             [ environment image vec3f f32 ]
+
+    func init[ ] -> none
+        verify glfwInit(), "glfw init"
+
+        wsize2 : sizeof(struct _window);
+        bsize2 : sizeof(struct _Basic);
+
+        // this takes 4-5 seconds, and its not needed
+        #ifndef NDEBUG
+        if (!glfwVulkanSupported()) {
+            fault("glfw does not support vulkan");
+            glfwTerminate();
+            return;
+        }
+        #endif
+
+        instance = vk_create[ t ]
+        verify instance, "vk instance failure"
+
+        // enumerate physical devices (adapter in WebGPU)
+        deviceCount : u32 0
+        vkEnumeratePhysicalDevices[ instance, deviceCount, null ]
+        verify deviceCount > 0, "failed to find GPUs with Vulkan support"
+
+        physical_devices : new VkPhysicalDevice[ deviceCount ]
+        vkEnumeratePhysicalDevices[ instance, ref deviceCount, physical_devices ]
+        t->physical_device = physical_devices[0] // Choose the first device or implement selection logic
+
+        // Check for device extensions
+        extension_count : u32 0
+        vkEnumerateDeviceExtensionProperties t->physical_device, null, ref extension_count, null
+        verify extension_count > 0, "failed to find device extensions"
+
+        extensions : new VkExtensionProperties[ extension_count ]
+
+        vkEnumerateDeviceExtensionProperties
+            physical_device
+            null
+            ref extension_count
+            extensions
+        
+        # Check for required extensions
+        swapchain_supported : false
+
+        device_extensions: stack symbol[]
+            VK_KHR_SWAPCHAIN_EXTENSION_NAME
+            # "VK_KHR_sampler_cubic"
+        
+        total_extension_count : sizeof device_extensions / sizeof device_extensions[0]
+        
+        # Track which RT extensions are found
+        found_extensions: stack bool[total_extension_count]
+        # redundant
+        #memset(found_extensions, 0, sizeof(found_extensions));
+        
+        # check which extensions are available
+        pr : getenv[ "VERBOSE" ] != null
+
+        for [ i: 0, i < extension_count, i++ ]
+            push device_exts, strdup[ extensions[i].extensionName ]
+            if [ pr ]
+                puts "[supported] device extension: %s", extensions[i].extensionName
+
+            if [ extensions[i].extensionName == VK_KHR_SWAPCHAIN_EXTENSION_NAME ]
+                swapchain_supported = true
+            
+            for [ j = 0; j < total_extension_count; j++ ]
+                if [ extensions[i].extensionName == device_extensions[j] ]
+                    found_extensions[j] = true;
+                    break
+
+        for [ j : 0, j < total_extension_count, j++ ]
+            verify found_extensions[j], "extension not found: %s", device_extensions[j]
+
+        verify swapchain_supported, "VK_KHR_swapchain extension is not supported by the physical device"
+        
+        bufferDeviceAddressFeatures: VkPhysicalDeviceBufferDeviceAddressFeatures
+            sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES
+            bufferDeviceAddress: VK_TRUE
+
+        features2: VkPhysicalDeviceFeatures2
+            sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2
+            pNext: ref bufferDeviceAddressFeatures
+
+        # t->msaa_samples = max_sample_count(t->physical_device);
+        vkGetPhysicalDeviceFeatures2[ physical_device, ref features2 ] # Fetch the features from the physical device
+
+        // Prepare device extensions
+        queuePriority: float 1.0f
+        verify vkCreateDevice[ t->physical_device, &(VkDeviceCreateInfo ]
+        [
+            [
+                sType                      : VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO
+                pNext                      : ref features2
+                queueCreateInfoCount       : 1
+                pQueueCreateInfos          : [
+                    sType                  : VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
+                    queueFamilyIndex       : 0 # Replace with actual graphics queue family index
+                    queueCount             : 1
+                    pQueuePriorities       : ref queuePriority
+                ]
+                enabledExtensionCount      : 1
+                ppEnabledExtensionNames    : device_extensions
+
+            ], null, ref device
+        ] == VK_SUCCESS, "cannot create logical device"
+
+        verify vmaCreateAllocator[
+            [
+                physicalDevice   : physical_device
+                device           : device
+                instance         : instance
+                vulkanApiVersion : vk_version
+                pVulkanFunctions : NULL
+                flags            : VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT
+            ], ref allocator
+        ] == VK_SUCCESS, "cannot create vma allocator"
+
+    func dealloc [ ]
+    func a-method-dictated[] using chatgpt 
+
+struct mouse_state
+    wheel_delta : vec2f       
+    pos         : vec2f       
+    button      : i32         
+    state       : i32         
+
+struct keyboard_state
+    unicode   : u32     
+    scan_code : u32          
+    state     : i32      
+    meta      : bool     
+    shift     : bool         
+    alt       : bool     
+    text      : string
+
+# we need to support forward declarations, the same way we do with our resolver
+# so this means we must process these the same way, with an different method for generation (make_class -> make_decl)
+class event
+    public  target           : element        
+    public  mouse            : mouse_state    
+    public  key              : keyboard_state 
+    public  prevent_default  : bool           
+    public  stop_propagation : bool           
+    public  func prevent_default  [ ] -> none [ ]      
+    public  func is_default       [ ] -> bool       
+    public  func should_propagate [ ] -> bool       
+    public  func stop_propagation [ ] -> bool       
+    public  func clear            [ ] -> none
+
+# enums can be exported to our A-type 
+enum Ease
+    linear  : 0
+    quad    : 1
+    cubic   : 2
+    quart   : 3
+    quint   : 4
+    sine    : 5
+    expo    : 6
+    circ    : 7
+    back    : 8
+    elastic : 9
+    bounce  : 10
+
+enum Direction
+    in      : 0
+    out     : 1
+    in_out  : 2
+
+class line_info
+    intern data            :  string                      
+    intern len             :  num                        
+    intern adv             :  array f64[]                       
+    intern bounds          :  rect                       
+    intern placement       :  rect                       
+
+class text_sel
+    public column : num   
+    public row    : num   
+
+class text
+    public lines   : array line_info     
+    public replace : text          
+
+
+class style      
+    public  css_path  : path    
+    public  members   : map        
+    public  reloader  : watch    
+    public  base      : array style_block   
+    intern  mtx       : mutex    
+    intern  mod_time  : i64        
+    intern  reloaded  : bool       
+    intern  loaded    : bool 
+
+    public func applicable [ element string array ] -> bool
+    public func process    [ string ] -> none 
+
+    public func cache_members [ ] -> none
+    public func best_match    [ element string array ] -> style_entry
+    public func compute       [ element ] -> map
+    public func check_reload  [ ] -> bool
+    public construct [ path ]
+    public construct [ object ]
+
+class style_block
+    public parent : style_block
+    public quals : array
+    public entries : map
+    public blocks : array
+    public types : array
+    public func score [ element  bool ] -> f32
+    func init [ ]
+
+enum Duration
+    ms : 2
+    ns : 1
+    s  : 3
+
+enum xalign : f32
+    undefined : 0
+    left      : 0.0
+    middle    : 0.5
+    right     : 1.0
+    width     : 2.0
+
+enum yalign : f32
+    undefined : 0
+    top       : 0.0
+    middle    : 0.5
+    bottom    : 1.0
+    height    : 2.0
+
+struct xcoord
+    public x_type   : xalign   
+    public offset   : f32      
+    public relative : bool     
+    public percent  : bool     
+    public construct [ string ]
+
+struct ycoord
+    public y_type   : yalign         
+    public offset   : f32            
+    public relative : bool           
+    public percent  : bool           
+    public construct [ string ]
+
+class region
+    public l : xcoord
+    public t : ycoord
+    public r : xcoord
+    public b : ycoord
+    public set : bool
+    public construct [ rect ]
+    public construct [ f32 ]
+    public construct [ string ]
+    public func rectangle [ rect  rect ] -> rect
+    public func mix [ region  f32 ] -> region
+
+class rotation
+    public axis : vec3f
+    public degs : f32
+    public construct [ vec4f  ]
+    public construct [ string ]
+    public func mix [ rotation  f32 ] -> rotation
+
+class translation
+    public value : vec3f
+    public construct [ vec3f ]
+    public construct [ string ]
+    public func mix [ translation  f32 ] -> translation
+declare_class(translation)
+
+class scaling
+    public value : vec3f
+    public construct [ vec3f ]
+    public construct [ string ]
+    public func mix [ scaling  f32 ] -> scaling
+declare_class(scaling)
+
+# unit tcoord [ Duration ]
+
+class style_transition
+    public easing : Ease
+    public dir : Direction
+    public duration : tcoord
+    intern from : object
+    intern to : object
+    intern start : i64
+    intern invalidate : bool
+    intern reference : style_transition
+    intern is_inlay : bool
+    intern type : Au_t
+    intern location : ref object
+    public construct [ string ]
+    public func pos [ f64 ] -> f64
+    cast bool
+
+
+class style_entry
+    public member : string
+    public value : string
+    public trans : style_transition
+    public bl : style_block
+    public instance : object
+
+
+class style_qualifier
+    intern ty       : Au_t
+    public type     : string
+    public id       : string
+    public state    : string
+    public oper     : string
+    public value    : string
+    public parent   : object
+
+
+class style_selection
+    public from : handle
+    public to : handle
+    public start : i64
+    public end : i64
+    public entry : style_entry
+
+
+class composer
+    public app                  : object
+    public w                    : window
+    intern root_styles          : map
+    public root                 : element
+    public capture              : element
+    public focus                : element
+    public hovered              : element
+    public action_pressed       : element
+    public context_pressed      : element
+    public args                 : map
+    public restyle              : bool
+    public style                : style
+    public mouse                : vec2f
+    public buttons              : array[i32 16x1]
+    public shift                : bool
+    public alt                  : bool
+    public on_render            : hook
+    public apply_args           [ element element ]   -> array
+    public apply_style          [ element map array ] -> array
+    public func animate           [ ]
+    public func bind_subs         [ element element ]
+    public func update            [ element map ]
+    public func update_all        [ map ]
+    public func invalidate        [ ]
+    public func remove_invalid    [ ]
+    public func set_capture       [ element ]
+    public func release_capture   [ element ]
+    public func set_focus         [ element ]
+    public func release_focus     [ element ]
+    public func find_target       [ element, event, element ] -> element
+    public func text_event        [ event ]
+    public func move_event        [ event ]
+    public func key_event         [ event ]
+    public func wheel_event       [ event ]
+    public func press_event       [ event ]
+    public func release_event     [ event ]
+
+// holds onto arg state; its useful to have to facilitate
+// effective config from user (not including style!)
+// also inline data such as structs may hold their data here
+class arg
+    public name     : string
+    public value    : object
+    public offset   : i32
+    public is_inlay : bool
+
+
+enum Fill : f32
+    none      : 0.00f
+    blur      : 0.50f
+    frost     : 1.00
+
+enum Canvas
+    overlay     : 0
+    compose     : 1
+    colorize    : 2
+    glyph       : 3
+
+enum Pattern
+    none : 0
+    repeat_x : 1
+    repeat_y : 2
+    repeat_xy : 3
+
+enum Clip
+    none : 0
+    clip : 1
+    ellipsis : 2
+
+
+class mixable
+    public construct [ string ]
+    public func mix [ mixable  f32 ] -> mixable
+
+mixable shadow
+    public blur : f32
+    public color : rgba
+    public offset : vec2f
+
+mixable glow
+    public blur : f32
+    public color : rgba
+
+// zero reason to apply to general elements; only for background
+// we will never rotate text ROTEXT.VBX is for noob saibots
+mixable transform
+    public offset   : vec2f
+    public scale    : vec2f
+    public rotation : f32
+
+class background
+    public image        : image
+    public transform    : transform
+    public repeat       : Pattern
+    public construct [ string ]
+    public func mix [ background  f32 ] -> background
+
+array radius [ f32 ]
+
+// for all layers, we will construct with field inference
+// that means the constructors need only be Type [ any str ]
+class layer
+    public canvas : Canvas
+    public area : region
+    public radius : radius
+    public shadow : shadow
+    public color : rgba
+    public background : background
+    public overflow : Clip
+    public opacity : f32
+    public construct [ string ]
+    public func mix [ layer  f32 ] -> layer
+
+
+layer text
+    public font : font
+    public xalign : xalign
+    public yalign : yalign
+    public label : string
+
+
+// all can be set by value except miter, the 2nd f32 which we specify miter:v
+layer border
+    public size     : f32
+    public cap      : cap
+    public join     : join
+    public miter    : f32
+    public dash     : array f32
+
+layer fill
+
+// cant inherently scroll in any element that doesnt have a defined children region
+layer children
+    public scroll : vec2f
+
+class element
+    public parent : element
+    public area : region
+    public value : object
+    public id : string
+    public flags : i64
+    public layers : array layer
+    public elements : map
+    public tags : array
+    public group : string
+    public tab_index : i32
+    public ghost : bool
+    public captured : bool
+    public selectable : bool
+    public selected : bool
+    public disabled : bool
+    public hovered : bool
+    public pressed : bool
+    public focused : bool
+    public action : subs
+    public wheel : subs
+    public context : subs
+    public text : subs
+    public hover : subs
+    public leave : subs
+    public key_down : subs
+    public key_up : subs
+    public press : subs
+    public move : subs
+    public release : subs
+    public got_capture : subs
+    public lost_capture : subs
+    public focus : subs
+    public blur : subs
+    public cursor : vec2f
+    intern ux : composer
+    intern style_avail : map
+    intern selections : map
+    intern transitions : map
+    intern restyle : bool
+    public func set_capture [ ] -> none
+    public func release_capture [ ] -> none
+    public func set_focus [ ] -> none
+    public func release_focus [ ] -> none
+    public func draw [ window ] -> none
+    public func render [ array ] -> map
+    func compare [ element ]
+
+element scene
+    public target : target
+    public models : array
+    public render_scale : f32
+    public clear_color : vec4f
+    public rotate    : array rotation
+    public translate : array translation
+    public scale     : array scaling
+    public update : subs
+    func draw[ window ]
+    func init    [ ]
+    func dealloc [ ]
+
+scene stage
+    public frost : bool
+    func init [ ]
+    func dealloc [ ]
+
+element pane
+
+element button
+
+class uniforms
+    public t : trinity
+    expect s : shader
+    public u_memory : array
+    public u_buffers : array
+    public func update [ ] -> none
+    func init [ ]
+
+class shader
+    public t               : trinity
+    public name : string
+    public vert : string
+    public frag : string
+    public comp : string
+    public reloads : i32
+    intern vk_vert : VkShaderModule
+    intern vk_frag : VkShaderModule
+    intern vk_comp : VkShaderModule
+    public func reload [ ARef ] -> bool
+    func init [ ]
+    func dealloc [ ]
+
+shader Basic
+    public proj : mat4f
+    public model : mat4f
+    public view : mat4f
+    attrib Surface [ color ] : 1, rgbaf
+
+
+class IBL
+    public placeholder : i32
+
+
+/// attribute is a type, and a value; name is baked into enumeration
+# lets made class names first class citizens in the syntax of inheritence; that way our [args] may be meta-members only
+shader PBR
+    public pos      : vec4f
+    public dir      : vec4f
+    public model    : mat4f
+    public view     : mat4f
+    public proj     : mat4f
+    attrib Surface [ color ]    : 1, rgba8
+    attrib Surface [ normal ]   : 1, rgba8
+    attrib Surface [ emission ] : 1, rgbaf
+    attrib Surface [ rough ]    : 1, u8
+    attrib Surface [ metal ]    : 1, u8
+    attrib Surface [ height ]   : 1, f32
+    attrib Surface [ ao ]       : 1, u8
+    attrib Surface [ ior ]      : 1, f32
+    attrib Surface [ environment ] : 1, rgbaf, IBL
+    func init [ ]
+
+
+shader Env
+    public view : mat4f
+    public proj : mat4f
+    public roughness_samples : vec2f
+    attrib Surface [ color ] : 1, rgbaf
+    func init [ ]
+
+shader Convolve
+    public env : mat4f
+    public view : mat4f
+    public proj : mat4f
+    public roughness_samples : vec2f
+    attrib Surface [ environment ] : 1, rgbaf
+
+class buffer
+    public t                : trinity
+    expect size             : i64
+    public data             : ARef
+    public u_src            : bool
+    public u_dst            : bool
+    public u_shader         : bool
+    public u_uniform        : bool
+    public u_vertex         : bool
+    public u_index          : bool
+    public u_storage        : bool
+    public m_device_local   : bool
+    public m_host_visible   : bool
+    public m_host_coherent  : bool
+    intern user             : ARef
+    intern vma_alloc        : VmaAllocation
+    intern vk_buffer        : VkBuffer
+    public func update        [ ARef ] -> none
+    public func transfer      [ object ] -> none
+    public func mmap          [ ] -> ARef
+    public func unmap         [ ] -> none
+    func init        [ ]
+    func dealloc     [ ]
+declare_class(buffer)
+
+
+shader BlurV
+    public model : mat4f
+    public view : mat4f
+    public proj : mat4f
+    public reduction_scale : f32
+    attrib Surface [ color ] : 1, rgba8
+
+
+shader Blur
+    public model : mat4f
+    public view : mat4f
+    public proj : mat4f
+    public reduction_scale : f32
+    attrib Surface [ color ] : 1, rgba8
+
+
+shader UVQuad
+    public model : mat4f
+    public view : mat4f
+    public proj : mat4f
+    attrib Surface [ color ] : 1, rgba8
+    func init [ ]
+
+
+shader UVReduce
+    public model    : mat4f
+    public view     : mat4f
+    public proj     : mat4f
+    attrib Surface [ color ] : 1, rgba8
+    func init [ ]
+
+
+enum UXSurface
+    background  : 0
+    frost       : 1
+    blur        : 2
+    compose     : 3
+    colorize    : 4
+    overlay     : 5
+    glyph       : 6
+
+
+shader UXCompose
+    public model        : mat4f
+    public view         : mat4f
+    public proj         : mat4f
+    public low_color    : vec4f
+    public high_color   : vec4f
+    attrib UXSurface [ background ] : 1, rgba8
+    attrib UXSurface [ frost ]      : 1, rgba8
+    attrib UXSurface [ blur ]       : 1, rgba8
+    attrib UXSurface [ compose ]    : 1, rgba8
+    attrib UXSurface [ colorize ]   : 1, rgba8
+    attrib UXSurface [ overlay ]    : 1, rgba8
+    attrib UXSurface [ glyph ]      : 1, rgba8
+    func init [ ]
+
+
+shader UXSimple
+    public model : mat4f
+    public view  : mat4f
+    public proj  : mat4f
+    attrib UXSurface [ background ] : 1, rgba8
+    attrib UXSurface [ colorize ]   : 1, rgba8
+    attrib UXSurface [ overlay ]    : 1, rgba8
+    attrib UXSurface [ glyph ]      : 1, rgba8
+    func init [ ]
+
+
+/// when created with a mere window reference, it will create a texture the size of the window
+/// the last render in list will draw to swap-image; trinity works simply
+/// everything renders to texture (target == texture) or the swap (target == window)
+class target
+    public t               : trinity
+    public w               : window
+    public id               : i32
+    public wscale           : f32
+    public width            : i32
+    public height           : i32
+    public reduce           : bool
+    public models           : array
+    public clear_color      : vec4f
+    public reduction        : texture
+    public color            : texture
+    public depth            : texture
+    intern reduce_model     : model
+    intern vk_command_buffer                : VkCommandBuffer
+    intern vk_swap_image                    : VkImage
+    intern vk_fence                         : VkFence
+    intern vk_semaphore                     : VkSemaphore
+    intern vk_image_available_semaphore     : VkSemaphore
+    intern vk_render_finished_semaphore     : VkSemaphore
+    intern vk_framebuffer                   : array VkFramebuffer [ 2 ]
+    intern vk_render_pass                   : array VkRenderPass  [ 2 ]
+    intern last_width : i32
+    intern last_height : i32
+    public func update [ ] -> none
+    public func draw [ ] -> none
+    public func sync_fence [ ] -> none
+    func init [ ]
+    func dealloc [ ]
+
+class app
+    public w : window
+    public ux : composer
+    public t : trinity
+    public app_context : ctx
+    public ason_path : path
+    public ason_render : map
+    intern ason_modified : i64
+    public style : style
+    intern arg : object
+    public on_render : callback
+    public func initialize [ window ] -> none
+    public func run [ ] -> i32
+    func init [ ]
+    func dealloc [ ]
+
+
+class window
+    intern window               : handle
+    expect width                : u32
+    expect height               : u32
+    public t                    : trinity
+    public mouse                : vec2f
+    public ux                   : composer
+    public element_targets      : map
+    public list                 : array
+    intern swap_renders         : array
+    intern swap_model           : model
+    intern vk_swap_images       : ref VkImage
+    intern surface              : VkSurfaceKHR
+    intern swapchain            : VkSwapchainKHR
+    intern swap_targets         : array
+    intern surface_caps         : ref VkSurfaceCapabilitiesKHR
+    intern surface_format       : VkSurfaceFormatKHR
+    intern present_mode         : VkPresentModeKHR
+    intern extent               : VkExtent2D
+    intern swap_render_current  : target
+    intern semaphore_frame      : target
+    intern swap_image_count     : u32
+    intern swap_image_current   : u32
+    intern ev                   : event
+    public app_object           : app
+    public compose              : sk
+    public colorize             : sk
+    public overlay              : sk
+    public glyph                : sk
+    public format               : Pixel
+    public title                : string
+    public debug_value          : f32
+    public current_swap_index   : i32
+    intern resized              : bool
+    public backbuffer           : bool
+    intern last_target          : target
+    public m_reduce             : model
+    public r_reduce             : target
+    public m_reduce0            : model
+    public r_reduce0            : target
+    public m_reduce1            : model
+    public r_reduce1            : target
+    public m_reduce2            : model
+    public r_reduce2            : target
+    public m_reduce3            : model
+    public r_reduce3            : target
+    public m_blur_v             : model
+    public r_blur_v             : target
+    public m_blur               : model
+    public r_blur               : target
+    public m_frost_v            : model
+    public r_frost_v            : target
+    public m_frost              : model
+    public r_frost              : target
+    public m_view               : model
+    public r_view               : target
+    public func update_canvas [ ] -> none
+    public func resize        [ i32  i32 ] -> none
+    public func final_target  [ ] -> target
+    public func draw          [ ] -> none
+    public func draw_element  [ element ] -> none
+    public cast image
+    func init [ ]
+    func dealloc [ ]
+
+class SVG
+    public w        : f32
+    public h        : f32
+    public rw       : f32
+    public rh       : f32
+    public svg_dom  : handle
+    func dealloc[]
+
+class draw_state
+    public blur_radius          : f32
+    public stroke_size          : f32
+    public stroke_cap           : cap
+    public stroke_join          : join
+    public stroke_miter_limit   : f32
+    public stroke_dash_offset   : f32
+    public font                 : font
+    public tx                   : texture
+    public x                    : f32
+    public y                    : f32
+    public w                    : f32
+    public h                    : f32
+    public fill_color           : u32
+    public stroke_color         : u32
+    public opacity              : f32
+    public func set_default [ ] -> none
+
+image canvas
+    expect t     : trinity
+    public tx    : texture
+    public state : array draw_state
+    interface func save            [ ] -> none
+    interface func restore         [ ] -> none
+    interface func move_to         [ f32  f32 ] -> none
+    interface func line_to         [ f32  f32 ] -> none
+    interface func arc_to          [ f32, f32, f32, f32, f32 ] -> none
+    interface func arc             [ f32, f32, f32, f32, f32 ] -> none
+    interface func rect_to         [ f32 f32 f32 f32 ] -> none
+    interface func rounded_rect_to [ f32, f32, f32, f32, f32, f32 ] -> none
+    interface func fill_color      [ object ] -> none
+    interface func stroke_color    [ object ] -> none
+    interface func clear           [ object ] -> none
+    interface func set_stroke      [ stroke ] -> none
+    interface func set_font        [ font ] -> none
+    interface func cubic           [ f32, f32, f32, f32, f32, f32 ] -> none
+    interface func quadratic       [ f32 f32 f32 f32 ] -> none
+    interface func draw_fill       [ ] -> none
+    interface func draw_stroke     [ ] -> none
+    interface func draw_fill_preserve [ ] -> none
+    interface func draw_stroke_preserve [ ] -> none
+    interface func blur_radius [ f32 ] -> none
+    interface func prepare [ ] -> none
+    interface func set_texture [ texture ] -> none
+    interface func translate [ f32  f32 ] -> none
+    interface func scale [ f32 ] -> none
+    interface func clip [ rect f32 f32 ] -> none
+    interface func stroke_size [ f32 ] -> none
+    interface func stroke_cap [ cap ] -> none
+    interface func stroke_join [ join ] -> none
+    interface func stroke_miter_limit [ f32 ] -> none
+    interface func stroke_dash_offset [ f32 ] -> none
+    resize[]
+
+struct text_metrics
+    w : f32
+    h : f32
+    ascent      : f32
+    descent     : f32
+    line_height : f32
+    cap_height  : f32
+
+# our intern members need not have to resolve to users; we figure out the size once
+
+canvas sk
+    intern sk_context : ARef
+    intern sk_surface : ARef
+    intern sk_canvas : ARef
+    intern sk_path : ARef
+    intern once         : bool
+    intern skia         : ref Skia
+    intern vk_layout    : VkImageLayout
+    public func save            [ ] -> none
+    public func restore         [ ] -> none
+    public func draw_svg        [ SVG rect vec2f vec2f ] -> none
+    public func draw_image      [ image rect vec2f vec2f ] -> none
+    public func measure         [ string ] -> text_metrics
+    public func draw_text       [ string, rect, vec2f, vec2f, bool ] -> rect
+    public func move_to         [ f32  f32 ]                -> none
+    public func line_to         [ f32  f32 ]                -> none
+    public func arc_to          [ f32, f32, f32, f32, f32 ] -> none
+    public func arc             [ f32, f32, f32, f32, f32 ] -> none
+    public func rect_to         [ f32 f32 f32 f32 ]         -> none
+    public func rounded_rect_to [ f32, f32, f32, f32, f32, f32 ] -> none
+    public func fill_color      [ object ] -> none
+    public func clear           [ object ] -> none
+    public func set_font        [ font ]   -> none
+    public func cubic           [ f32, f32, f32, f32, f32, f32 ] -> none
+    public func quadratic       [ f32 f32 f32 f32 ] -> none
+    public func draw_fill       [ ] -> none
+    public func draw_stroke     [ ] -> none
+    public func draw_fill_preserve   [ ] -> none
+    public func draw_stroke_preserve [ ] -> none
+    public func blur_radius [ f32 ] -> none
+    public func prepare [ ] -> none
+    public func translate [ f32  f32 ] -> none
+    public func scale [ f32 ] -> none
+    public func clip [ rect f32 f32 ] -> none
+    public func set_texture [ texture ] -> none
+    public func stroke_color [ object ] -> none
+    public func stroke_size [ f32 ] -> none
+    public func stroke_cap [ cap ] -> none
+    public func stroke_join [ join ] -> none
+    public func stroke_miter_limit [ f32 ] -> none
+    public func stroke_dash_offset [ f32 ] -> none
+    public func opacity [ f32 ] -> none
+    public func ellipsis [ string rect ARef ] -> string
+    static func sync [ ] -> none
+    func resize  [ i32 i32 ]
+    func init    [ ]
+    func dealloc [ ]
+declare_class_3(sk, canvas, image)
+
+none sk_sync_all();
+
+class command
+    public t : trinity
+    intern vk : VkCommandBuffer
+    public func begin [ ] -> none
+    public func submit [ ] -> none
+    func init [ ]
+    func dealloc [ ]
+
+
+class texture
+    expect t : trinity
+    public w : window
+    public format           : Pixel
+    public sampler          : object
+    public width            : i32
+    public height           : i32
+    public swap             : bool
+    public mip_levels       : i32
+    public layer_count      : i32
+    public surface          : Surface
+    public linear           : bool
+    intern vk_layout        : VkImageLayout   
+    intern vk_format        : VkFormat        
+    intern vk_image         : VkImage         
+    intern vk_image_view    : VkImageView     
+    intern vk_sampler       : VkSampler       
+    intern vma_alloc        : VmaAllocation   
+    public func resize        [ i32  i32 ] -> none
+    public func transition    [ i32 ] -> none
+    public cast image
+    func init        [ ]
+    func dealloc     [ ]
+
+enum shader_local
+    _undefined : 0
+
+struct vertex_member_t
+    type    : Au_t
+    ac      : Accessor
+    size    : i64
+    offset  : i64
+
+class gpu
+    public t             : trinity
+    expect name          : cstr
+    public sampler       : image
+    intern tx            : texture
+    public vertex_data   : object
+    public index_data    : object
+    public members       : ref vertex_member_t
+    public member_count  : i32
+    public index_size    : i32
+    public index_count   : i32
+    public vertex_size   : i32
+    public vertex_count  : i32
+    intern vertex        : buffer
+    intern index         : buffer
+    intern vk_image      : VkImage
+    intern vk_image_view : VkImageView
+    intern vk_sampler    : VkSampler
+    intern vma_alloc     : VmaAllocation
+    public compute       : bool
+    public   func sync    [ window ] -> none
+    func init    [ ]
+    func dealloc [ ]
+
+
+class pipeline
+    expect t                : trinity
+    public w                : window
+    expect r                : target
+    expect s                : shader
+    expect name             : string
+    public render_id        : i32
+    public default_model    : mat4f
+    public shader_reloads   : i32
+    public material         : Material
+    public samplers         : map
+    intern resources        : array
+    intern shader_uniforms  : uniforms
+    intern vbo              : gpu
+    intern memory           : gpu
+    intern descriptor_layouts : new VkDescriptorSetLayout [ 2 ] # this works better than doing trickery with the [ inner syntax; and MORE readable ]
+    intern descriptor_sets    : new VkDescriptorSet       [ 2 ]
+    intern descriptor_pool    : VkDescriptorPool
+    intern bind               : VkDescriptorSet
+    intern vk_render          : VkPipeline
+    intern vk_compute         : VkPipeline
+    intern layout             : VkPipelineLayout
+    public   func rebind         [ ] -> none
+    public   func draw           [ handle ] -> none
+    public   func bind_resources [ ] -> none
+    public   func reassemble     [ ] -> none
+    func init           [ ]
+    func dealloc        [ ]
+
+class gltf_part
+    expect id : Primitive
+    public s  : shader
+
+class gltf_node
+    public id    : Node
+    public parts : array gltf_part [] # we should have a 'container-size' defined on members in A-type; so they may initialize to this
+
+// #define node_default null
+
+class model
+    public t                : trinity
+    public w                : window
+    public r                : target
+    intern transforms       : ref mat4f
+    intern transform_count  : i32
+    public id               : Model
+    public nodes            : array
+    public s                : shader
+    public samplers         : map
+    intern pipelines        : array
+    public func rebind_model  [ ] -> none
+    public func finish        [ target, i32 ] -> none
+    func init        [ ]
+    func dealloc     [ ]
+
+class particle
+    public pos      : vec2f
+    public velocity : vec2f
+    public density  : f32
+    public pressure : f32
+
+// user init lets the developer control when the init calls, so they may set properties for mounted components in a tree
+// this, without introducing a 'mount' call in addition to init; which is an anti pattern
+// #define define_element(A0, A1, ...) \
+//    define_any(A0, A1, sizeof(struct _##A0), AU_TRAIT_USER_INIT, __VA_ARGS__)
+
+
+#endif

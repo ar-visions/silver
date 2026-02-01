@@ -63,7 +63,9 @@ forward(efunc)
 // its a field syntax that optionally has no : set, and that sets default, or it calls the function
 #define aether_schema(X,Y,...)\
     M(X,Y, i, prop,  public, string,    name) \
-    M(X,Y, i, prop,  public, path,      source) \
+    M(X,Y, i, prop,  public, path,      module) \
+    M(X,Y, i, prop,  public, path,      module_file) \
+    M(X,Y, i, prop,  public, path,      root_path) \
     M(X,Y, i, prop,  public, path,      project_path) \
     M(X,Y, i, prop,  public, path,      current_inc) \
     M(X,Y, i, prop,  public, etype,     current_import) \
@@ -101,7 +103,7 @@ forward(efunc)
     M(X,Y, i, prop,  public, callback_extra, read_etype) \
     M(X,Y, i, prop,  intern, LLVMExecutionEngineRef, jit, as, ARef) \
     M(X,Y, i, prop,  intern, LLVMBasicBlockRef, current_if_block,  as, ARef) \
-    M(X,Y, i, prop,  intern, LLVMModuleRef,     module,            as, ARef) \
+    M(X,Y, i, prop,  intern, LLVMModuleRef,     module_ref,        as, ARef) \
     M(X,Y, i, prop,  intern, LLVMContextRef,    module_ctx,        as, ARef) \
     M(X,Y, i, prop,  intern, LLVMBuilderRef,    builder,           as, ARef) \
     M(X,Y, i, prop,  intern, LLVMMetadataRef,   file,              as, ARef) \

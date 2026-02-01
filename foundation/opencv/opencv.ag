@@ -1,0 +1,7 @@
+import opencv:opencv/49486f6 <opencv2/core.hpp, opencv2/imgproc.hpp, opencv.h>
+    -DBUILD_LIST=core,imgproc
+
+public void opencv_resize_area   [ ref u8 src, ref u8 dst, int f32, int in_w, int in_h, int channels, int out_w, int out_h ]
+public void opencv_gaussian      [ ref u8 src, ref u8 dst, int f32, int w, int h, int channels, float amount ]
+public void opencv_gaussian_fast [ ref u8 src, ref u8 dst, int f32, int w, int h, int channels, float amount ]
+public void opencv_blur_equirect [ ref u8 input, int w, int h ]

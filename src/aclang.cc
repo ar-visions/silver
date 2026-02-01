@@ -1077,7 +1077,7 @@ path aether_include(aether e, Au inc, string ns, ARef _instance) {
         std::unique_ptr<llvm::Module> M = act.takeModule();
         LLVMModuleRef cMod = M ? wrap(M.release()) : nullptr;
         (*instance)->module = cMod;
-        LLVMLinkModules2(e->module, cMod);
+        LLVMLinkModules2(e->module_ref, cMod);
     }
 
     aether_import_models(e, top_scope(e));

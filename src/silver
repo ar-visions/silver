@@ -62,7 +62,8 @@ declare_class_4(silver, aether, emodule, etype)
     M(X, Y, i, prop,  public, codegen, codegen)     \
     M(X, Y, i, prop,  public, silver, external)     \
     M(X, Y, i, prop,  public, array, tokens)        \
-    M(X, Y, i, prop,  public, array, module_paths)  \
+    M(X, Y, i, prop,  public, path,  lib_path)      \
+    M(X, Y, i, prop,  public, path,  module_source) \
     M(X, Y, i, prop,  public, array, include_paths) \
     M(X, Y, s, method,public, enode, parse_import, silver)
 declare_class_2(import, etype)

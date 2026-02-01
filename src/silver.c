@@ -19,7 +19,7 @@ static void build_record(silver a, etype mrec);
 
 #define validate(cond, t, ...) ({                                                          \
     if (!(cond)) {                                                                         \
-        formatter((Au_t)null, stderr, (Au) true, (symbol) "\n%o:%i:%i " t, a->source, \
+        formatter((Au_t)null, stderr, (Au) true, (symbol) "\n%o:%i:%i " t, a->module_file, \
                   silver_peek(a)->line, silver_peek(a)->column, ##__VA_ARGS__);     \
         if (level_err >= fault_level) {                                                 \
             raise(SIGTRAP);                                                             \
@@ -470,30 +470,17 @@ void silver_init(silver a) {
     a->instances    = map();
     a->import_cache = map();
 
-    if (!a->source) {
-        fault("required argument: source-file");
-    }
-    if (a->source)
-        a->source = absolute(a->source);
+    verify(a->module, "required argument: module (path/to/module)");
 
-    if (!a->install) {
-        cstr import = getenv("IMPORT");
-        if (import)
-            a->install = f(path, "%s", import);
-        else {
-            path exe = path_self();
-            path bin = parent_dir(exe);
-            path install = absolute(f(path, "%o/..", bin));
-            a->install = install;
-        }
-    }
-    a->project_path = parent_dir(a->source);
+    a->project_path = parent_dir(a->module);
+    a->module_file  = f(path, "%o/%o.ag",
+        a->module, stem(a->module));
 
     verify(dir_exists("%o", a->install), "silver-import location not found");
-    verify(len(a->source), "no source given");
-    verify(file_exists("%o", a->source), "source not found: %o", a->source);
+    verify(len(a->module), "no source given");
+    verify(file_exists("%o", a->module_file), "module-source not found: %o", a->module_file);
 
-    verify(exists(a->source), "source (%o) does not exist", a->source);
+    verify(exists(a->module), "source (%o) does not exist", a->module);
 
     cstr _SRC    = getenv("SRC");
     cstr _DBG    = getenv("DBG");
@@ -510,18 +497,18 @@ void silver_init(silver a) {
     verify(dir_exists("%o", a->src_loc), "SRC path does not exist");
 
     // should only get its parent if its a file
-    path af         = a->source ? directory(a->source) : path_cwd();
+    path af         = a->module ? directory(a->module) : path_cwd();
     path install    = path(_IMPORT);
     git_remote_info(af, &a->git_service, &a->git_owner, &a->git_project);
 
     bool retry = false;
-    i64 mtime = modified_time(a->source);
+    i64 mtime = modified_time(a->module);
     do {
         if (retry) {
-            print("awaiting iteration: %o", a->source);
+            print("awaiting iteration: %o", a->module);
             hold_members(a);
             recycle();
-            mtime = path_wait_for_change(a->source, mtime, 0);
+            mtime = path_wait_for_change(a->module, mtime, 0);
             print("rebuilding...");
             drop(a->tokens);
             drop(a->stack);
@@ -530,14 +517,14 @@ void silver_init(silver a) {
         }
         retry = false;
         a->tokens = tokens(
-            target, (Au)a, parser, parse_tokens, input, (Au)a->source);
+            target, (Au)a, parser, parse_tokens, input, (Au)a->module_file);
         print_all(a, "all", (array)a->tokens);
         a->stack = array(4);
         a->implements = array();
 
         // our verify infrastructure is now production useful
         attempt() {
-            string m = stem(a->source);
+            string m = stem(a->module);
             path i_gen = f(path, "%o/%o.i", a->project_path, m);
             path c_file = f(path, "%o/%o.c", a->project_path, m);
             path cc_file = f(path, "%o/%o.cc", a->project_path, m);
@@ -1092,7 +1079,7 @@ static array parse_tokens(silver a, Au input, array output) {
                     source,  src,
                     line,    line_num,
                     literal, (Au)shape_literal,
-                    column,  index - line_start));
+                    column,  start - line_start));
             continue;
         }
 
@@ -2364,15 +2351,11 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     num     sl          = rindex_of(s, "/");
     validate(sl >= 0, "invalid uri");
     string  name        = mid(s, sl + 1, len(s) - sl - 1);
-    path    project_f   = f(path, "%o/checkout/%o", install, name);
+    path    project_f   = f(path, "%o/checkout/%o", a->root_path, name);
     bool    debug       = false;
     string  config      = interpolate(conf, (Au)a);
 
     validate(command_exists("git"), "git required for import feature");
-
-    // we need to check if its full hash
-    validate(len(commit) == 40 || is_branchy(commit),
-             "commit-id must be a full SHA-1 hash or a branch name (short-hand does not work for depth=1 checkouts)");
 
     // checkout or symlink to src
     if (!dir_exists("%o", project_f)) {
@@ -2381,16 +2364,24 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             vexec("symlink", "ln -s %o %o", src_path, project_f);
             project_f = src_path;
         } else {
-            vexec("init", "git init %o", project_f);
-            vexec("remote", "git -C %o remote add origin %o", project_f, uri);
-            if (!commit) {
-                command c = f(command, "git remote show origin");
-                string res = run(c);
-                verify(starts_with(res, "HEAD branch: "), "unexpected result for git remote show origin");
-                commit = mid(res, 13, len(res) - 13);
+            // we need to check if its full hash
+            bool is_short = len(commit) == 7 && !is_branchy(commit);
+
+            if (is_short) {
+                vexec("remote", "git clone %o %o", uri, project_f); // FULL CHECKOUTS with short
+                vexec("checkout", "git -C %o checkout %o", project_f, commit);
+            } else {
+                vexec("init", "git init %o", project_f);
+                vexec("remote", "git -C %o remote add origin %o", project_f, uri);
+                if (!commit) {
+                    command c = f(command, "git remote show origin");
+                    string res = run(c);
+                    verify(starts_with(res, "HEAD branch: "), "unexpected result for git remote show origin");
+                    commit = mid(res, 13, len(res) - 13);
+                }
+                vexec("fetch", "git -C %o fetch origin %o", project_f, commit);
+                vexec("checkout", "git -C %o reset --hard FETCH_HEAD", project_f);
             }
-            vexec("fetch", "git -C %o fetch origin %o", project_f, commit);
-            vexec("checkout", "git -C %o reset --hard FETCH_HEAD", project_f);
         }
     }
 
@@ -2399,7 +2390,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     path rust_f     = f(path, "%o/Cargo.toml", project_f);
     path meson_f    = f(path, "%o/meson.build", project_f);
     path cmake_f    = f(path, "%o/CMakeLists.txt", project_f);
-    path silver_f   = f(path, "%o/src/%o.ag", project_f, name);
+    path silver_f   = f(path, "%o/%o/%o.ag", project_f, name, name);
     path gn_f       = f(path, "%o/BUILD.gn", project_f);
     bool is_rust    = file_exists("%o", rust_f);
     bool is_meson   = file_exists("%o", meson_f);
@@ -2457,7 +2448,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         vexec("rust", "cargo build --%s --manifest-path %o/Cargo.toml --target-dir %o",
               debug ? "debug" : "release", project_f, build_f);
     } else if (is_silver) { // build for Au-type projects
-        silver sf = silver(source, silver_f);
+        silver sf = silver(module, silver_f);
         validate(sf, "silver module compilation failed: %o", silver_f);
     } else {
         /// build for automake
@@ -2602,17 +2593,27 @@ path is_module_dir(silver a, string ident) {
 
 // when we load silver files, we should look for and bind corresponding .c files that have implementation
 // this is useful for implementing in C or other languages
-path module_exists(silver a, array idents) {
-    if (len(idents) == 1) {
-        path sf = f(path, "%o/lib/lib%o.so", a->install, idents->origin[0]);
-        //path sf2 = f(path, "%o/%o.ag", a->project_path, to_path);
-        if (file_exists("%o", sf))
-            return sf;
+path module_exists(silver a, array idents, bool binary_finary, bool* is_bin) {
+    verify(len(idents), "invalid module 'path");
+
+    path to_path = cast(path, join(idents, "/"));
+    path sf = absolute(f(path, "%o/../%o/%o.ag", a->module, stem(to_path), stem(to_path)));
+    if (file_exists("%o", sf)) {
+        *is_bin = false;
+        return sf;
     }
 
-    string to_path = join(idents, "/");
-    path sf = f(path, "%o/%o.ag", a->project_path, to_path);
-    return file_exists("%o", sf) ? sf : null;
+    if (binary_finary && len(idents) == 1) {
+        path sf = f(path, "%o/lib/lib%o.so", a->install, idents->origin[0]);
+        //path sf2 = f(path, "%o/%o.ag", a->project_path, to_path);
+        if (file_exists("%o", sf)) {
+            *is_bin = true;
+            return sf;
+        }
+    }
+
+    *is_bin = false;
+    return null;
 }
 
 enode silver_parse_ternary(silver a, enode expr, etype mdl_expect) {
@@ -2849,9 +2850,31 @@ static enode typed_expr(silver a, enode f, array expr) {
     return r;
 }
 
+// still have not decided if we want to allow instance override in construct; its certainly a viable caching mechanism
+// its certainly a way to control for duplicates, etc
 silver silver_with_path(silver a, path module_path) {
-    a->source = hold(module_path);
+    string e = ext(module_path);
+    a->module = eq(e, "ag") ? parent_dir(module_path) : module_path;
     return a;
+}
+
+token read_compacted(silver a) {
+    token  f = next(a);
+    if (!f) return null;
+    string r = string(f->chars);
+    int len = r->count;
+    int start_col = f->column;
+
+    for (;;) {
+        token n = peek(a);
+        if (!n || n->column != (start_col + len) || n->line != f->line)
+            break;
+        concat(r, (string)n);
+        consume(a);
+        f = n;
+        len += n->count;
+    }
+    return token(chars, r->chars, source, f->source, line, f->line, column, start_col + len);
 }
 
 enode parse_import(silver a) {
@@ -2862,28 +2885,35 @@ enode parse_import(silver a) {
     codegen cg           = null;
     string  namespace    = null;
     array   includes     = array(32);
-    array   module_paths = array(32);
+    path    lib_path     = null;
+    path    module_source = null;
+    bool    is_binary    = false;
     array   module_names = array(32);
-    path    local_mod    = null;
     token   t            = silver_peek(a);
     Au_t    is_codegen   = null;
     token   commit       = null;
     string  uri          = null;
-    Au_t    mod          = null;
     string  module_lib   = null;
+    array   mpath        = null;
+    string  single       = null;
+    Au_t    mod          = null;
+    string  aa           = null;
+    string  bb           = silver_read_if(a, ":") ? expect_alpha(a) : null;
+    string  cc           = bb && silver_read_if(a, ":") ? expect_alpha(a) : null;
+    string  service      = null;
+    string  user         = null;
+    string  project      = null;
 
     if (t && isalpha(t->chars[0])) {
         bool   cont     = false;
-        string service  = a->git_service;
-        string user     = a->git_owner;
-        string project  = null;
-        string aa       = expect_alpha(a); // value of t
-        string bb       = silver_read_if(a, ":") ? expect_alpha(a) : null;
-        string cc       = bb && silver_read_if(a, ":") ? expect_alpha(a) : null;
-        array  mpath    = null;
-        string single   = null;
+        service  = a->git_service;
+        user     = a->git_owner;
+        project  = null;
+        aa       = expect_alpha(a); // value of t
+        bb       = silver_read_if(a, ":") ? expect_alpha(a) : null;
+        cc       = bb && silver_read_if(a, ":") ? expect_alpha(a) : null;
 
-        Au_t mod = find_module((cstr)aa->chars);
+        mod = find_module((cstr)aa->chars);
         Au_t f = mod ? f : find_type((cstr)aa->chars, null);
 
         if (mod) {
@@ -2918,73 +2948,14 @@ enode parse_import(silver a) {
             }
         }
 
-        if (!is_codegen) {
-            // read commit if given
-            if (silver_read_if(a, "/"))
-                commit = next(a);
-
-            if (aa && !bb && !commit) {
-                local_mod = module_exists(a, mpath);
-                if (mod) {
-                    module_lib = string(mod->ident);
-                    set(a->libs, module_lib, (Au)_bool(true));
-                    push(module_paths, (Au)mod); // the Au_t type signals this module is already loaded
-                } else if (!local_mod) {
-                    verify(len(mpath), "invalid module 'path");
-                    // push entire directory
-                    string j = join(mpath, "/");
-                    verify(dir_exists("%o", j), "module/directory not found: %o", j);
-                    path f = f(path, "%o", j);
-                    array dir = ls(f, string("*.ag"), false);
-                    verify(len(dir), "no modules in directory %o", f);
-                    each(dir, path, m) {
-                        push(module_paths, (Au)m);
-                    }
-    
-                } else
-                    push(module_paths, (Au)local_mod);
-            } else if (aa && !bb) {
-                verify(!local_mod, "unexpected import chain containing different methodologies");
-
-                // contains commit, so logically cannot be a singular module
-                // for commit # it must be a project for now, this is not a
-                // constraint that we directly need to mitigate, but it may
-                // be a version difference
-                project = aa;
-                verify(!mpath || len(mpath) == 0, "unexpected path to module (expected 1st arg as project)");
-            } else if (aa && !cc) {
-                verify(!local_mod, "unexpected import chain containing different methodologies");
-                user = aa;
-                project = bb;
-                //verify(!mpath || len(mpath) == 0, "unexpected path to module (expected 2nd arg as project)");
-            } else {
-                verify(!local_mod, "unexpected import chain containing different methodologies");
-                user = aa;
-                project = bb;
-            }
-
-            if (!mod) {
-                string path_str = string();
-                if (len(mpath)) {
-                    string str_mpath = join(mpath, "/") ? cc : string("");
-                    path_str = len(str_mpath) ? f(string, "blob/%o/%o", commit, str_mpath) : string("");
-                }
-
-                verify(project || local_mod, "could not decipher module references from import statement");
-
-                if (local_mod) {
-                    uri = null;
-                    cont = silver_read_if(a, ",") != null;
-                    verify(!cont, "comma not yet supported in import (func needs restructuring to create multiple imoprts in enode)");
-                } else
-                    uri = f(string, "https://%o/%o/%o%s%o", service, user, project,
-                            cast(bool, path_str) ? "/" : "", path_str);
-            }
-        }
+        // read commit if given
+        if (silver_read_if(a, "/"))
+            commit = read_compacted(a);
     }
 
+    // determine includes, uri, and config
     // includes for this import
-    if (silver_read_if(a, "<")) {
+    if (!is_codegen && silver_read_if(a, "<")) {
         for (;;) {
             string f = read_alpha_any(a);
             validate(f, "expected include");
@@ -3009,7 +2980,8 @@ enode parse_import(silver a) {
 
     // this invokes import by git; a local repo may be possible but not very usable
     // arguments / config not stored / used after this
-    if (next_is(a, "[") || next_indent(a)) {
+    if (next_is(a, "[")) {
+        verify(!mod, "run-time module imported -- configuration cannot be applied");
         array b = read_body(a);
         int index = 0;
         while (index < len(b)) {
@@ -3017,8 +2989,6 @@ enode parse_import(silver a) {
             token prop_name  = (token)b->origin[index++];
             token col        = (token)b->origin[index++];
             token prop_value = (token)b->origin[index++];
-            // this will not work for reading {fields}
-            // trouble is the merging of software with build config, and props we set in module.
 
             verify(eq(col, ":"), "expected prop: value for codegen object");
             set(props, (Au)string(prop_name->chars), (Au)string(prop_value->chars));
@@ -3026,6 +2996,44 @@ enode parse_import(silver a) {
     }
 
     silver external = null;
+    if (read_if(a, "from")) {
+        uri = hold(silver_read_alpha(a)); // todo: compact neighboring tokens with https:// and git://
+        validate(uri, "expected uri");
+    }
+
+    if (!is_codegen && aa && !bb && !commit) {
+        path m = module_exists(a, mpath, true, &is_binary); // useful to resolve in either case
+
+        if (!is_binary && m) {
+            module_source = hold(m);
+        } else if (is_binary && m) {
+            lib_path = hold(m);
+        }
+        
+        // if the module is built into our run-time already, we support this
+        if (mod) {
+            set(a->libs, string(mod->ident), (Au)_bool(true));
+
+        } else if (!module_source && !lib_path)
+            fault("could not find module %o", mpath);
+        
+    } else if (aa && !bb) {
+        project     = aa;
+    } else {
+        user        = aa;
+        project     = bb;
+    }
+
+    if (project && !lib_path && !module_source) {
+        string path_str = string();
+        if (len(mpath)) {
+            string str_mpath = join(mpath, "/") ? cc : string("");
+            path_str = len(str_mpath) ? f(string, "blob/%o/%o", commit, str_mpath) : string("");
+        }
+        uri = f(string, "https://%o/%o/%o%s%o", service, user, project,
+                cast(bool, path_str) ? "/" : "", path_str);
+    }
+
     if (uri) {
         checkout(a, path(uri->chars), (string)commit,
                  import_build_commands(all_config, ">"),
@@ -3035,8 +3043,8 @@ enode parse_import(silver a) {
         each(all_config, string, t)
             if (starts_with(t, "-l"))
                 set(a->libs, (Au)mid(t, 2, len(t) - 2), (Au)_bool(true));
-    } else if (local_mod && eq(ext(local_mod), "ag"))
-        external = silver(local_mod);
+    } else if (module_source)
+        external = silver(module_source);
     else if (is_codegen) {
         cg = (codegen)construct_with(is_codegen, (Au)props, null);
     }
@@ -3075,6 +3083,7 @@ enode parse_import(silver a) {
     a->current_import = (etype)mdl;
 
     mdl->au->alt = namespace ? cstr_copy(namespace->chars) : null;
+
     // member registration for 'import'
     // needs to be enode
     enode mem = enode(
@@ -3092,14 +3101,14 @@ enode parse_import(silver a) {
             push(mdl->include_paths, (Au)i);
             set(a->instances, (Au)i, (Au)instance);
         }
-
-        each(module_paths, Au, m) {
-            import_Au(a, m);
-        }
     }
 
+    if (!is_codegen && (mod || lib_path))
+        import_Au(a, mod ? (Au)mod : (Au)lib_path);
+        
     mdl->au->is_closed = true;
-    mdl->module_paths = hold(module_paths);
+    mdl->lib_path = hold(lib_path);
+    mdl->module_source = hold(module_source);
     a->current_import = null;
 
     if (is_codegen) {
