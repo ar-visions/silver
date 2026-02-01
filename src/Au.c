@@ -58,7 +58,7 @@ cstr cstr_copy(cstr f) {
     return res;
 }
 
-bool Au_check(bool ch, string log) {
+bool check(bool ch, string log) {
     if (!ch) {
         printf("%s\n", log->chars);
         return false;
@@ -80,9 +80,6 @@ bool Au_is_au_type(Au a) {
     Au_t au = au_arg(a);
     if (au->ident && strlen(au->ident) && au->member_type != AU_MEMBER_TYPE)
         return false;
-    if (au->ident && strcmp(au->ident, "raw") == 0) {
-        au = au;
-    }
     return au->module->is_au;
 }
 
@@ -5914,6 +5911,11 @@ void token_init(token a) {
     a->count    = length;
 
     memcpy(a->chars, prev, length);
+
+    if (strcmp(a->chars, "bold") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
 
     if (!a->literal) {
         if (a->chars[0] == '\"' || a->chars[0] == '\'') {
