@@ -623,7 +623,7 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
     
     Au_t parent = top_scope(e);
     Au_t fn = def(parent, n, AU_MEMBER_FUNC, 0);
-    if (n && strcmp(n, "vfprintf") == 0) {
+    if (n && strcmp(n, "set_font_manager") == 0) {
         int test2 = 2;
         test2    += 2;
     }
