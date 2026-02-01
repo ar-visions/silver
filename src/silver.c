@@ -1297,8 +1297,8 @@ enode silver_parse_member(silver a, ARef assign_type) {
         string alpha = peek_alpha(a);
         if (alpha) {
             enode m = (enode)elookup(alpha->chars); // silly read as string here in int [ silly.len ]
-            etype mdl = resolve(m);
-            if (m && m->au->member_type == AU_MEMBER_TYPE && is_class(mdl))
+            etype mdl = m ? resolve(m) : null;
+            if (mdl && is_class(mdl))
                 skip_member_check = true; 
                 // might replace type[...] -> i32[array]
                 // specifying a type gives us more types from an open concept
@@ -1636,7 +1636,7 @@ enode parse_statement(silver a)
     Au_t      top       = top_scope(a);
     silver    module    = is_module(top) ? a : null;
 
-    if (module && peek_def(a))
+    if (module && !next_is(a, "func") && peek_def(a))
         return (enode)read_def(a);
 
     // standard statements first
@@ -1676,6 +1676,9 @@ enode parse_statement(silver a)
         silver_read_if(a, "construct")  != null : false;
     bool      is_idx    = !f && !is_static && !(is_func|is_lambda) && !is_cast && !is_oper && !is_ctr ?
         silver_read_if(a, "index")      != null : false;
+
+    if (is_func)
+        is_func = is_func;
 
     OPType assign_enum = OPType__undefined;
     
@@ -1720,7 +1723,7 @@ enode parse_statement(silver a)
         if (is_func|is_lambda) {
             if (module || rec_top) {
                 u64 traits = (is_static ? AU_TRAIT_STATIC : 
-                             (is_lambda ? 0 : AU_TRAIT_IMETHOD)) | 
+                             (is_lambda ? 0 : (rec_top ? AU_TRAIT_IMETHOD : 0))) | 
                              (is_lambda ? AU_TRAIT_LAMBDA : 0);
                 e = (enode)parse_func(a, mem->au, // for cast, we read the rtype first; for others, its parsed after ->
                     is_lambda ? AU_MEMBER_FUNC      :
@@ -1862,11 +1865,15 @@ efunc parse_func(silver a, Au_t mem, u8 member_type, u64 traits, OPType assign_e
         }
         validate(skip || first || read_if(a, ","), "expected comma separator between arguments");
 
-        string n  = read_alpha(a); // optional
+        push_current(a);
+        etype peek_type = read_etype(a, null);
+        pop_tokens(a, peek_type != null);
+        
+        string n  = peek_type ? null : read_alpha(a); // optional
         array  ar = in_context ? (array)&au->members : (array)&au->args;
 
-        validate(read_if(a, ":"), "expected seperator between name and type");
-        etype  t = read_etype(a, null); // we need to avoid the literal check in here!
+        validate(peek_type || read_if(a, ":"), "expected seperator between name and type");
+        etype  t = peek_type ? peek_type : read_etype(a, null); // we need to avoid the literal check in here!
 
         if (member_type == AU_MEMBER_CONSTRUCT && !name)
             name = form(string, "with_%o", t);
@@ -2801,7 +2808,6 @@ static enode typed_expr(silver a, enode f, array expr) {
     bool    has_content = !!expr && len(expr); //read_if(mod, "[") && !read(mod, "]");
     enode   r           = null;
     bool    conv        = false;
-    bool    has_init    = peek_fields(a);
 
     a->expr_level++;
     if (!has_content) {
@@ -3653,6 +3659,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) {
         bool  is_literal = instanceof(t->literal, string) != null;
         bool  is_enode_key = false;
 
+        bool auto_bind = is_fields && read_if(a, ":");
         // -- KEY --
         if (is_fields && silver_read_if(a, "{")) {
             k = (Au)parse_expression(a, key);
@@ -3686,7 +3693,8 @@ enode parse_object(silver a, etype mdl, bool within_expr) {
         // -- VALUE --
         Au v = null;
         if (is_fields) {
-            validate(silver_read_if(a, ":"), "expected : after key %o", t);
+            validate(auto_bind || silver_read_if(a, ":"), "expected : after key %o", t);
+            if (auto_bind) prev(a);
             v = (Au)parse_expression(a, null);
         }
 
@@ -3746,6 +3754,7 @@ static bool class_inherits(etype cl, etype of_cl) {
 static bool peek_fields(silver a) {
     token t0 = silver_element(a, 0);
     token t1 = silver_element(a, 1);
+    if (t0 && eq(t0, ":")) return true; // auto-bind
     if (t0 && is_alpha((Au)t0) && t1 && eq(t1, ":"))
         return true;
     return false;

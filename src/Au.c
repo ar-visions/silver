@@ -58,6 +58,14 @@ cstr cstr_copy(cstr f) {
     return res;
 }
 
+bool Au_check(bool ch, string log) {
+    if (!ch) {
+        printf("%s\n", log->chars);
+        return false;
+    }
+    return true;
+}
+
 Au_t au_arg_type(Au a) {
     if (!a) return null;
     Au_t au = au_arg(a);
