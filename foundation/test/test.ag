@@ -1,0 +1,150 @@
+import <stdio.h>
+import vec
+import img
+
+ifdef mac
+    import KhronosGroup:MoltenVK/main
+        > ./fetchDependencies --macos
+        -DANOTHER=2
+        -DTHIS_IS_HOW_PEOPLE_NORMALLY_SEE_IT=1
+#else
+#    import KhronosGroup:Vulkan-Headers
+#        <vulkan/vulkan.h>
+
+import chatgpt
+	model:'gpt-5'
+
+class base
+    func base_method[ arg:f32 ] -> bool
+        puts 'you gave around {arg.round[2] / 1}'
+        return true
+
+##
+base our-model
+    name:   string
+    scale:  double
+
+    # these dictations are stored in a folder of the module's stem name (module.ag -> module/our-model.a-method.ai)
+    # this content is used to fill in the method name; in doing so we separate waht is machine-made vs human
+    # however the human always defines the models, method prototypes, and arguments
+    int a-method[ append_to_name:string, scale_increment:f64 ] using chatgpt
+        [ 'take a look at this image for inspiration, along with the source provided by protocol;' # tokenizer should combine these
+          'make this update the state based on the argments', image 'resource-image.png' ]
+        [ 'never allow the name to be more than 10 characters' ] # we append more and save the file in watch-mode to update the cached .ai file
+##
+
+base something
+    mem:    4
+
+    mem2:   map int[ string ]
+        'key':      2
+        'another':  4
+    
+    nice_array2: array int[]
+        2 2
+
+    nice_vector2: array vec2f[ 4x2 ]
+    [
+        [ 8.0 2 ] [ 2 2 ],
+        [ 4.0 2 ] [ 2 2 ],
+
+        [ 8.0 2 ] [ 2 2 ],
+        [ 4.0 2 ] [ 2 2 ]
+    ]
+
+    nice_vector3: array vec2f[ 1x2 ] [
+        [ 8.0 4 ] [ 2.2 2.4 ]
+    ]
+
+    mem3:   8
+
+    lambda  nice_lambda[ arg1:int, arg2:string <> i:i64 ] -> f32
+        puts 'arg1 = {arg1}, arg2 = {arg2} and context is {i}\n'
+        return 2.0
+
+    func action2[ mem2: string ] -> int
+        if[ mem2.len > 2 ] # [ ] only needed when we want to parse an expression, and not a single enode
+            puts '{mem2} length more than 2'
+        
+        puts 'after'
+        lambda_variable: nice_lambda[ 1 ]
+        lambda_variable 22, 'hi' # [ ] is not used at expr-level 0 (not optional!) ... it is also not used for methods with no args; this is so we do not need 'properties'
+        return 2
+
+app aclass
+
+    nice_vector2: array vec2f[ 4x2 ]
+        [ 8.0 2 ] [ 2 2 ]
+        [ 4.0 2 ] [ 2 2 ]
+        [ 8.0 2 ] [ 2 2 ]
+        [ 4.0 2 ] [ 2 2 ]
+
+	func run [] -> int
+        # silver is going to let you specify 1 or 2 dimensions
+        v: vec2f nice_vector2[ 0, 2 ] # needs dimensional indexing in type-expr; to implement your own you have a shaped indexer
+        
+        #s.action2 ['an-allocated-one with {s.mem}']
+        return 0
+        
+##
+
+linux ?? import wayland-protocols/810f1adaf33521cc55fc510566efba2a1418174f from https://gitlab.freedesktop.org/wayland/wayland-protocols
+
+import KhronosGroup:Vulkan-Headers/main
+    <vulkan/vulkan.h>
+
+
+# short-hand for git shared git repo -- a good basis for 'web4' data
+# its git provided, so it costs little to host, and we have our identities as url basis. with project/version, what else could democratize user provided media better in open?
+import KhronosGroup:Vulkan-Tools/main
+	-DVULKAN_HEADERS_INSTALL_DIR={install}
+	{linux ?? -DWAYLAND_PROTOCOLS_DIR={install}/checkout/wayland-protocols}
+
+# globals assigned at design-time, and cannot be re-assigned
+# globals in effect are our constants when in primitive form
+# cache from lists, maps and other classes remain mutable
+# the reason for class-only mutable policy is to combat 
+# manual state [mis]management with primitives
+version : '22'
+
+class Vulkan
+    intern instance : VkInstance
+    public a-member : i32
+    public major    : i32
+    public minor    : i32
+
+    none init[]
+        result : vkCreateInstance [
+            [
+                sType : VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
+                pApplicationInfo
+                    sType              : VK_STRUCTURE_TYPE_APPLICATION_INFO
+                    pApplicationName   : "trinity"
+                    applicationVersion : VK_MAKE_VERSION(1, 0, 0)
+                    pEngineName        : 'trinity-v{version}'
+                    engineVersion      : VK_MAKE_VERSION(const i64[ first[version] ], const i64[ last[version] ], 0)
+                    apiVersion         : vk_version
+                
+            ], null, instance ]
+
+        # methods at expr-level 0 do not invoke with [ these ] unless the function is variable argument
+        verify result == VK_SUCCESS, 'could not start vulkan {major}.{minor}'
+
+class Window
+    intern vk:   Vulkan
+    public size: shape
+
+globals-not-reassignable: 22
+
+class test_vulkan [ app ]
+    public  queue_family_index: array i64[2x4] [ 2 2 2 2, 4 4 4 4 ]
+    intern  an_intern_member:   i64 4
+    intern  an-instance:        Vulkan
+    intern  window:             Window
+    public  shared:             'a-string initialized with {globals-not-reassignable}'
+
+    func init[] -> none
+        an-instance = Vulkan[ major:1  minor:1 ]
+        window = Window
+            vk:     an-instance
+            size:   444x888

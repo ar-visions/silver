@@ -4575,6 +4575,51 @@ bool path_is_symlink(path p) {
     return lstat(p->chars, &st) == 0 && S_ISLNK(st.st_mode);
 }
 
+path path_normalize(path p) {
+    const char *s = p->chars;
+    const int is_abs = s[0] == '/';
+
+    const char *parts[256];
+    int depth = 0;
+
+    while (*s) {
+        while (*s == '/') s++;
+        if (!*s) break;
+
+        const char *start = s;
+        while (*s && *s != '/') s++;
+
+        size_t len = s - start;
+
+        if (len == 1 && start[0] == '.') {
+            continue;
+        }
+        if (len == 2 && start[0] == '.' && start[1] == '.') {
+            if (depth > 0) depth--;
+            continue;
+        }
+
+        parts[depth++] = strndup(start, len);
+    }
+
+    // rebuild
+    char buf[4096];
+    char *out = buf;
+
+    if (is_abs) *out++ = '/';
+
+    for (int i = 0; i < depth; i++) {
+        size_t len = strlen(parts[i]);
+        memcpy(out, parts[i], len);
+        out += len;
+        if (i + 1 < depth) *out++ = '/';
+        free((void *)parts[i]);
+    }
+
+    *out = 0;
+    return path(buf);
+}
+
 path path_resolve(path p) {
     char buf[4096];
     ssize_t len = readlink(p->chars, buf, sizeof(buf) - 1);
@@ -4583,10 +4628,10 @@ path path_resolve(path p) {
     return path(buf);
 }
  
-bool path_eq(path a, path b) {
+bool path_eq(path a, symbol b) {
     struct stat sa, sb;
     int ia = stat(a->chars, &sa);
-    int ib = stat(b->chars, &sb);
+    int ib = stat(b,        &sb);
     return ia == 0 &&
            ib == 0 &&
            sa.st_ino == sb.st_ino &&

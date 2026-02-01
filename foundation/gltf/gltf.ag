@@ -1,0 +1,269 @@
+import vec
+
+enum ComponentType
+    NONE           : 0
+    BYTE           : 5120
+    UNSIGNED_BYTE  : 5121
+    SHORT          : 5122
+    UNSIGNED_SHORT : 5123
+    UNSIGNED_INT   : 5125
+    FLOAT          : 5126
+
+enum CompoundType
+    NONE            : 0
+    SCALAR          : 1
+    VEC2            : 2
+    VEC3            : 3
+    VEC4            : 4
+    MAT2            : 5
+    MAT3            : 6
+    MAT4            : 7
+
+enum TargetType
+    NONE            : 0
+    ARRAY_BUFFER    : 34962
+    ELEMENT_BUFFER  : 34963
+
+enum Mode
+    NONE           : 0
+    LINES          : 1
+    LINE_LOOP      : 2
+    TRIANGLES      : 4
+    TRIANGLE_STRIP : 5
+    TRIANGLE_FAN   : 6
+    QUADS          : 7
+
+enum Interpolation
+    LINEAR          : 0
+    STEP            : 1
+    CUBICSPLINE     : 2
+
+class Sampler
+    u64             input
+    u64             output
+    Interpolation   interpolation
+
+class ChannelTarget
+    u64             node
+    string          path
+
+class Channel
+    u64             sampler
+    ChannelTarget   target
+
+class Animation
+    string          name
+    Sampler[...]    samplers
+
+class SparseInfo
+    u64             bufferView
+    ComponentType   componentType
+
+class Sparse
+    u64             count
+    SparseInfo      indices
+    SparseInfo      values
+
+class Accessor
+    bool            normalized
+    u64             bufferView
+    ComponentType   componentType
+    CompoundType    type
+    u64             count
+    vec3f           min
+    vec3f           max
+    Sparse          sparse
+    u64             stride
+    u64             total_bytes
+    u64             vcount[]
+    u64             component_size[]
+    Au_t            member_type[]
+    none init[]
+
+class BufferView
+    u64             buffer
+    u64             byteLength
+    u64             byteOffset
+    TargetType      target
+
+class Skin
+    string          name
+    i64[...]        joints
+    i32             inverseBindMatrices
+    object          extras
+    object          extensions
+
+class JData
+    mat4f[...]      states
+    Transform[...]  transforms
+    mat4f           local
+
+class Transform
+    JData           jdata
+    i32             istate
+    mat4f           local
+    mat4f           local_default
+    i32             iparent
+    i64[...]        ichildren
+    none    multiply[mat4f]
+    none    set[mat4f]
+    none    set_default[]
+    none    propagate[]
+
+class Node
+    string          name
+    Node            parent
+    i32             skin
+    i32             mesh
+    vec3f           translation
+    quatf           rotation
+    vec3f           scale
+    f32[...]        weights
+    i64[...]        children
+    i32             joint_index
+    bool            processed
+    object          mx_joints
+    Primitive primitive[Model, cstr]
+
+class Primitive
+    string          name
+    map             attributes
+    u64             indices
+    i32             material
+    Mode            mode
+    map[...]        targets
+
+class MeshExtras
+    string[...]     target_names
+
+class Mesh
+    string          name
+    Primitive[...]  primitives
+    f32[...]        weights
+    MeshExtras      extras
+    Primitive       primitive[cstr]
+
+class Scene
+    string          name
+    i64[...]        nodes
+
+class AssetDesc
+    string          generator
+    string          copyright
+    string          version
+
+class Buffer
+    u64             byteLength
+    path            uri
+    u8[...]         data
+    none init[]
+
+class TextureInfo
+    i64 index
+    u32 texCoord
+    f32 scale
+
+class pbrMetallicRoughness
+    f32         ior
+    vec4f       baseColorFactor
+    TextureInfo baseColorTexture
+    f32         metallicFactor
+    f32         roughnessFactor
+    TextureInfo metallicRoughnessTexture
+    TextureInfo normalTexture
+    TextureInfo occlusionTexture
+    vec3f       emissiveFactor
+    TextureInfo emissiveTexture
+    vec4f       diffuseFactor
+    vec3f       specularFactor
+    f32         glossinessFactor
+    TextureInfo specularGlossinessTexture
+    vec3f       sheenColorFactor
+    TextureInfo sheenColorTexture
+    f32         sheenRoughnessFactor
+    TextureInfo sheenRoughnessTexture
+    f32         clearcoatFactor
+    TextureInfo clearcoatTexture
+    f32         clearcoatRoughnessFactor
+    TextureInfo clearcoatRoughnessTexture
+    TextureInfo clearcoatNormalTexture
+    f32         transmissionFactor
+    TextureInfo transmissionTexture
+    f32         thicknessFactor
+    TextureInfo thicknessTexture
+    vec3f       attenuationColor
+    f32         attenuationDistance
+    TextureInfo specularTexture
+    vec3f       specularColorFactor
+    TextureInfo specularColorTexture
+    f32         emissiveStrength
+    f32         iridescenceFactor
+    TextureInfo iridescenceTexture
+    f32         iridescenceIor
+    f32         iridescenceThicknessMinimum
+    f32         iridescenceThicknessMaximum
+
+class Material
+    string               name
+    pbrMetallicRoughness pbr
+    TextureInfo          normalTexture
+    TextureInfo          occlusionTexture
+    TextureInfo          emissiveTexture
+    vec3f                emissiveFactor
+    string               alphaMode
+    f32                  alphaCutoff
+    bool                 doubleSided
+
+class Model
+    Node      [...] nodes
+    Skin      [...] skins
+    Accessor  [...] accessors
+    BufferView[...] bufferViews
+    Mesh      [...] meshes
+    Buffer    [...] buffers
+    Animation [...] animations
+    Scene     [...] scenes
+    Material  [...] materials
+    u64             scene
+    AssetDesc       asset
+    Transform node_transform[JData, mat4f, i32, Transform]
+    Node find[cstr]
+    i32 index_of[cstr]
+    Node index[string]
+    JData joints[Node]
+
+enum Polygon
+    undefined : 0
+    tri       : 1
+    quad      : 2
+    wire      : 3
+    mixed     : 4
+    ngon      : 5
+
+enum Asset
+    undefined     : 0
+    color         : 1
+    normal        : 2
+    material      : 3
+    reflect       : 4
+    env           : 5
+    attachment    : 6
+    depth_stencil : 7
+    multisample   : 8
+
+enum Sampling
+    undefined : 0
+    nearest   : 1
+    linear    : 2
+    ansio     : 3
+
+struct HumanVertex
+    vec3f pos
+    vec3f normal
+    vec2f uv0
+    vec2f uv1
+    vec3f tangent
+    vec3f joints0
+    vec3f joints1
+    vec3f weights0
+    vec3f weights1

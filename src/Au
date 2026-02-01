@@ -1460,6 +1460,7 @@ declare_class_3(tokens, array, collective)
     M(AA,BB, i, method,  public, bool,   create_symlink, path) \
     M(AA,BB, i, method,  public, bool,   is_symlink) \
     M(AA,BB, i, method,  public, path,   resolve) \
+    M(AA,BB, i, method,  public, path,   normalize) \
     M(AA,BB, i, method,  public, bool,   make_dir) \
     M(AA,BB, i, method,  public, bool,   remove_dir) \
     M(AA,BB, i, method,  public, bool,   is_ext, symbol) \

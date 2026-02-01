@@ -6,92 +6,92 @@
             "type": "debugpy",
             "args": ["WGPU.si"],
             "request": "launch",
-            "program": "/src/silver/silver/silver44.py",
+            "program": "${workspaceFolder}/silver/silver44.py",
             "console": "integratedTerminal",
-            "cwd": "/src/silver/silver"
+            "cwd": "${workspaceFolder}/silver"
         },
         {
             "name": "Python: vision:annotate",
             "type": "debugpy",
             "args": ["-a", "scale", "-s", "center-offset"],
             "request": "launch",
-            "program": "/src/hyperspace/vision-annotate.py",
+            "program": "${workspaceFolder}/../hyperspace/vision-annotate.py",
             "console": "integratedTerminal",
-            "cwd": "/src/hyperspace/"
+            "cwd": "${workspaceFolder}/../hyperspace/"
         },
         {
             "name": "Python: train:simple",
             "type": "debugpy",
             "args": ["-b", "1", "-m", "simple", "-s", "center-offset", "-i", "32", "-r", "1", "-e", "1", "--learning-rate", "0.0001"],
             "request": "launch",
-            "program": "/src/hyperspace/vision-train.py",
+            "program": "${workspaceFolder}/../hyperspace/vision-train.py",
             "console": "integratedTerminal",
-            "cwd": "/src/hyperspace/"
+            "cwd": "${workspaceFolder}/../hyperspace/"
         },
         {
             "name": "Python: train:base",
             "type": "debugpy",
             "args": ["-b", "1", "-m", "base", "-s", "center-offset", "-i", "32", "-r", "4", "-e", "1", "--learning-rate", "0.0001"],
             "request": "launch",
-            "program": "/src/hyperspace/vision-train.py",
+            "program": "${workspaceFolder}/../hyperspace/vision-train.py",
             "console": "integratedTerminal",
-            "cwd": "/src/hyperspace/"
+            "cwd": "${workspaceFolder}/../hyperspace/"
         },
         {
             "name": "Python: train:target",
             "type": "debugpy",
             "args": ["-b", "1", "-m", "target", "-s", "center-offset", "-i", "32", "-r", "16", "-e", "16", "--learning-rate", "0.0001"],
             "request": "launch",
-            "program": "/src/hyperspace/vision-train.py",
+            "program": "${workspaceFolder}/../hyperspace/vision-train.py",
             "console": "integratedTerminal",
-            "cwd": "/src/hyperspace/"
+            "cwd": "${workspaceFolder}/../hyperspace/"
         },
         {
             "name": "Python: train:eyes",
             "type": "debugpy",
             "args": ["-b", "1", "-m", "eyes", "-s", "center-offset", "-i", "32", "-r", "32", "-e", "8", "--learning-rate", "0.001"],
             "request": "launch",
-            "program": "/src/hyperspace/vision-train.py",
+            "program": "${workspaceFolder}/../hyperspace/vision-train.py",
             "console": "integratedTerminal",
-            "cwd": "/src/hyperspace/"
+            "cwd": "${workspaceFolder}/../hyperspace/"
         },
         {
             "name": "Python: train:track",
             "type": "debugpy",
             "args": ["-b", "2", "-m", "track", "-s", "center-offset", "-i", "32", "-r", "16", "-e", "16", "--learning-rate", "0.001"],
             "request": "launch",
-            "program": "/src/hyperspace/vision-train.py",
+            "program": "${workspaceFolder}/../hyperspace/vision-train.py",
             "console": "integratedTerminal",
-            "cwd": "/src/hyperspace/"
+            "cwd": "${workspaceFolder}/../hyperspace/"
         },
         {
             "name": "Python: vision:record",
             "type": "debugpy",
             "args": ["-s", "vision2", "-f"],
             "request": "launch",
-            "program": "/src/hyperspace/vision-record.py",
+            "program": "${workspaceFolder}/../hyperspace/vision-record.py",
             "console": "integratedTerminal",
-            "cwd": "/src/hyperspace/",
+            "cwd": "${workspaceFolder}/../hyperspace/",
         },
         {
             "name":       "silver-import (orbiter)",
             "type":       "lldb",
             "request":    "launch",
-            "program":    "/src/silver/bin/silver-import",
-            "args":     [ "/src/orbiter" ],
-            "cwd":        "/src/silver",
+            "program":    "${workspaceFolder}/bin/silver-import",
+            "args":     [ "${workspaceFolder}/../orbiter" ],
+            "cwd":        "${workspaceFolder}",
             "env":      { "VERBOSE": "1", "CC": "clang" }
         },
         {
             "name": "silver-import (trinity)",
             "type": "cppdbg",
             "request": "launch",
-            "program": "/src/silver/bin/silver-import",
+            "program": "${workspaceFolder}/bin/silver-import",
             "args": [
-                "/src/trinity"
+                "${workspaceFolder}/../trinity"
             ],
             "stopAtEntry": false,
-            "cwd": "/src/silver",
+            "cwd": "${workspaceFolder}",
             "environment": [
                 {
                     "name": "VERBOSE",
@@ -111,12 +111,12 @@
             "name": "silver-import (mx)",
             "type": "cppdbg",
             "request": "launch",
-            "program": "/src/silver/bin/silver-import",
+            "program": "${workspaceFolder}/bin/silver-import",
             "args": [
-                "/src/mx"
+                "${workspaceFolder}/../mx"
             ],
             "stopAtEntry": false,
-            "cwd": "/src/mx",
+            "cwd": "${workspaceFolder}/../mx",
             "environment": [
                 {
                     "name": "CC",
@@ -128,9 +128,9 @@
             "name":       "silver-import (hyperspace)",
             "type":       "lldb",
             "request":    "launch",
-            "program":    "/src/silver/bin/silver-import",
-            "args":     [ "/src/hyperspace" ],
-            "cwd":        "/src/silver",
+            "program":    "${workspaceFolder}/bin/silver-import",
+            "args":     [ "${workspaceFolder}/../hyperspace" ],
+            "cwd":        "${workspaceFolder}",
             "env":      { "VERBOSE": "1", "CC": "clang" }
         },
         {
@@ -138,13 +138,13 @@
             "type":       "lldb",
             "request":    "launch",
             "preLaunchTask": "build-silver-ninja",
-            "program":    "/src/silver/sdk/native/bin/silver",
-            "args":     [ "--source", "/src/silver/share/silver/docs/test.ag" ],
-            "cwd":        "/src/silver/sdk/native/lib",
+            "program":    "${workspaceFolder}/install/bin/silver",
+            "args":     [ "--module", "${workspaceFolder}/foundation/test" ],
+            "cwd":        "${workspaceFolder}/install/lib",
             "env":      {
                 "VERBOSE": "1",
-                "LD_LIBRARY_PATH":"/src/silver/sdk/native/lib",
-                "IMPORT":  "/src/silver/sdk/native",
+                "LD_LIBRARY_PATH":"${workspaceFolder}/install/lib",
+                "IMPORT":  "${workspaceFolder}/install",
                 "ASAN_OPTIONS": "detect_leaks=0"
             }
         },
@@ -153,13 +153,13 @@
             "type":       "lldb",
             "request":    "launch",
             "preLaunchTask": "build-silver-ninja",
-            "program":    "/src/silver/sdk/native/bin/silver",
-            "args":     [ "--source", "/src/orbiter/src/orbiter.ag" ],
+            "program":    "${workspaceFolder}/install/bin/silver",
+            "args":     [ "--source", "${workspaceFolder}/../orbiter/orbiter" ],
             "cwd":        "/src",
             "env":      {
                 "VERBOSE": "1",
-                "LD_LIBRARY_PATH":"/src/silver/sdk/native/lib",
-                "IMPORT":  "/src/silver/sdk/native",
+                "LD_LIBRARY_PATH":"${workspaceFolder}/install/lib",
+                "IMPORT":  "${workspaceFolder}/install",
                 "ASAN_OPTIONS": "detect_leaks=0"
             }
         },
@@ -168,12 +168,12 @@
             "type":       "lldb",
             "request":    "launch",
             "preLaunchTask": "build-silver-ninja",
-            "program":    "/src/silver/sdk/native/lib/test",
-            "cwd":        "/src/silver/sdk/native/lib",
+            "program":    "${workspaceFolder}/install/lib/test",
+            "cwd":        "${workspaceFolder}/install/lib",
             "env":      {
                 "VERBOSE": "1",
-                "LD_LIBRARY_PATH":"/src/silver/sdk/native/lib",
-                "IMPORT":  "/src/silver/sdk/native",
+                "LD_LIBRARY_PATH":"${workspaceFolder}/install/lib",
+                "IMPORT":  "${workspaceFolder}/install",
                 "ASAN_OPTIONS": "detect_leaks=0"
             }
         },
@@ -181,9 +181,9 @@
             "name": "hyperspace-train",
             "type": "cppdbg",
             "request": "launch",
-            "program": "/src/hyperspace/debug/bin/hyperspace-train",
+            "program": "${workspaceFolder}/../hyperspace/debug/bin/hyperspace-train",
             "stopAtEntry": false,
-            "cwd": "/src/hyperspace/share",
+            "cwd": "${workspaceFolder}/../hyperspace/share",
             "environment": [
             ],
             "MIMode": "gdb"
@@ -192,28 +192,28 @@
             "name": "orbiter",
             "type": "lldb",
             "request": "launch",
-            "program": "/src/silver/bin/orbiter",
-            "cwd": "/src/silver/share/orbiter",
+            "program": "${workspaceFolder}/bin/orbiter",
+            "cwd": "${workspaceFolder}/share/orbiter",
             "args": [],
-            "env": {"LD_LIBRARY_PATH":"/src/silver/lib"},
+            "env": {"LD_LIBRARY_PATH":"${workspaceFolder}/lib"},
         },
         {
             "name": "asnes",
             "type": "lldb",
             "request": "launch",
-            "program": "/src/silver/bin/asnes",
-            "cwd": "/src/silver/share/asnes",
+            "program": "${workspaceFolder}/bin/asnes",
+            "cwd": "${workspaceFolder}/share/asnes",
             "args": ["--rom", "rom/mario.smc", "--spc_rom", "bin/spc700.rom"],
-            "env": {"LD_LIBRARY_PATH":"/src/silver/lib"},
+            "env": {"LD_LIBRARY_PATH":"${workspaceFolder}/lib"},
         },
         {
             "name": "hyperspace",
             "type": "lldb",
             "request": "launch",
-            "program": "/src/silver/bin/hyperspace",
-            "cwd": "/src/silver/share/hyperspace",
+            "program": "${workspaceFolder}/install/bin/hyperspace",
+            "cwd": "${workspaceFolder}/share/hyperspace",
             "args": [],
-            "env": {"LD_LIBRARY_PATH":"/src/silver/lib"},
+            "env": {"LD_LIBRARY_PATH":"${workspaceFolder}/lib"},
         }
     ]
 }
