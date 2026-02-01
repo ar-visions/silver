@@ -135,7 +135,7 @@ class image
         if [ res_dealloc ]
             res_dealloc [ a ]
             info.data = null
-        if [ !a->res_bits ]
+        if [ !res_bits ]
             drop info.data
             info.data = null
 
@@ -144,54 +144,46 @@ class image
         memcpy res.vdata, vdata, byte_count
         return res
 
-    func resize[ input:image, out_w:i32, out_h:i32 ] -> image
-        check input.width > 0 && input.height,    "null image given to resize"
-        check out_w > 0 && out_h > 0,             "invalid size"
+    func resize[ out_w:i32, out_h:i32 ] -> image
+        check width > 0 && height,    "null image given to resize"
+        check out_w > 0 && out_h > 0,  "invalid size"
         
-        in_w : input.width;
-        in_h : input.height;
-
         if [ in_w == out_w && in_h == out_h ]
-            return copy[ input ]
+            return copy
         
-        scale_x : float in_w / out_w;
-        scale_y : float in_h / out_h;
+        scale_x : float width / out_w
+        scale_y : float height / out_h
         output  : image
-            width   :out_w
-            height  :out_h
-            format  :input.format
-            surface :input.surface
-            channels:input.channels
+            width    :out_w,
+            height   :out_h,
+            :format, :surface, :channels
         
-        src : ref u8 input.vdata
+        src : ref u8 vdata
         dst : ref u8 output.vdata
+
         opencv_resize_area
-            src,    dst,
-            input.format == Pixel_rgbaf32,
-            in_w,   in_h,
-            input.channels,
-            out_w,  out_h
+            src,      dst,   format == Pixel_rgbaf32,
+            width,    height,
+            channels, out_w, out_h
         
         return output
 
-    func gaussian[ image input, float amount ] -> image
+    func gaussian[ amount:float ] -> image
         if [ amount < 0.1f ]
-            return input.copy
+            return copy
         
-        w : input.width
-        h : input.height
         output : image
-            width:w, height:h, format:input.format,
-            surface:input.surface, channels:input.channels
+            :width,  :height,
+            :format, :surface, :channels
 
-        src : ref u8 input.vdata
+        src : ref u8 vdata
         dst : ref u8 output.vdata
-        opencv_gaussian src, dst, input.format == Pixel_rgbaf32, w, h, input.channels, amount
+        opencv_gaussian src, dst, input.format == Pixel_rgbaf32, width, height, channels, amount
         return output
 
 
     # save gray or colored png based on channel count; if we want conversion we may just use methods to alter an object
-    func png [ path uri ] -> i32
+    func png [ uri:path ] -> i32
         e : string ext [ uri ]
         success : 1
 
@@ -208,7 +200,7 @@ class image
 
             if [ !setjmp[ png_jmpbuf[ png ]] ]
                 png_init_io png, file
-                png_set_IHDR png, info, width, height, 8, # 8-bit per channel
+                png_t_seIHDR png, info, width, height, 8, # 8-bit per channel
                     (channels == 1) ? PNG_COLOR_TYPE_GRAY :
                     (channels == 3) ? PNG_COLOR_TYPE_RGB  :
                     (channels == 4) ? PNG_COLOR_TYPE_RGBA : PNG_COLOR_TYPE_GRAY_ALPHA,
