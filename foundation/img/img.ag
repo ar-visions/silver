@@ -69,20 +69,20 @@ enum variant
 
 
 class font
-    uri:path            
-    bold:bool            
-    italic:bool            
-    underline:bool            
-    var:variant         
-    size:f32             
-    kerning:f32             
-    res:handle          
-    tf:handle          
+    uri         : path            
+    bold        : bool            
+    italic      : bool            
+    underline   : bool            
+    var         : variant         
+    size        : f32             
+    kerning     : f32             
+    res         : handle          
+    tf          : handle          
     
     intern static font_manager_init    : hook
     intern static font_manager_dealloc : hook
 
-    func set_font_manager[ init:hook, dealloc:hook ] -> none
+    static func set_font_manager[ init:hook, dealloc:hook ] -> none
         font_manager_init    : init
         font_manager_dealloc : dealloc
 
@@ -98,9 +98,8 @@ class font
         font_manager_init a
         return f
 
-    func font_from_path[ uri:path ] -> font
-        a.uri = uri
-        return f
+    construct [ u:path ]
+        uri = u
 
 
 class image
@@ -145,8 +144,8 @@ class image
         return res
 
     func resize[ out_w:i32, out_h:i32 ] -> image
-        check width > 0 && height,    "null image given to resize"
-        check out_w > 0 && out_h > 0,  "invalid size"
+        check width > 0 && height > 0, "null image given to resize"
+        check out_w > 0 && out_h  > 0, "invalid size"
         
         if [ in_w == out_w && in_h == out_h ]
             return copy
@@ -209,7 +208,7 @@ class image
                     PNG_FILTER_TYPE_DEFAULT
 
                 png_write_info png, info
-                rows : ref png_bytep malloc [ sizeof(png_bytep) * height ]
+                rows : new png_bytep [ sizeof(png_bytep) * height ]
                 data : ref u8 vdata
 
                 for [ y : 0, y < a->height, y++ ]
@@ -231,10 +230,10 @@ class image
 
 
     func len[ ] -> num
-        return a->height
+        return height
 
     func byte_count[ ] -> num
-        f : head a
+        f : header
         return f.count * f.scalar.size
 
     func get[ num y ] -> Au

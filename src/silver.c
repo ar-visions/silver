@@ -1699,7 +1699,7 @@ enode parse_statement(silver a)
 
     // if no access then full access
     if (!access) access = interface_public;
-    
+    /
     push_current(a);
 
     OPType op_type = is_oper ? read_operator(a) : OPType__undefined;
@@ -1718,7 +1718,7 @@ enode parse_statement(silver a)
         
         validate (!is_ctr || is_func, "expected [ args ] after construct keyword");
 
-        bool   is_const     = mem && mem->au->is_const;
+        bool is_const = mem && mem->au->is_const;
 
         if (is_func|is_lambda) {
             if (module || rec_top) {
