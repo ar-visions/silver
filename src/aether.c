@@ -123,7 +123,7 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
     if (a->no_build)
         return e_noop(a, null); // should never happen in expressions
 
-    verify(op_val >= OPType__assign && op_val <= OPType__assign_xor,
+    verify(op_val >= OPType__bind && op_val <= OPType__assign_xor,
            "invalid assignment operator");
 
     /* ------------------------------------------------------------
@@ -144,7 +144,7 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
 
     static int seq = 0;
     seq++;
-    if (seq == 30) {
+    if (seq == 1) {
         Au info = head(L);
         seq = seq;
     }
@@ -3733,8 +3733,20 @@ none etype_implement(etype t) {
             // we likely need to check to see if our context is a function
             // these are stack members, and indeed inside functions! they are just not in the 'args'
             verify(!n->value, "unexpected value set in enode");
+            // if au->is_static then we need to create a global for it
             n->loaded = false;
-            n->value = LLVMBuildAlloca(a->builder, ty, "evar");
+            if (au->is_static && au->member_type == AU_MEMBER_VAR) {
+                // this likely may just skip setting value; defer it to be set later
+                evar static_node = instanceof(t, evar);
+                verify(static_node, "expected evar");
+                string c_name = f(string, "%s_%s", au->context->ident, au->ident);
+                LLVMValueRef global = LLVMAddGlobal(a->module_ref, lltype(au->src), c_name->chars);
+                LLVMSetLinkage(global, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
+                if (!a->is_Au_import) LLVMSetInitializer(global, LLVMConstNull(lltype(au->src)));
+                static_node->value = global;
+                static_node->loaded = false;
+            } else if (!au->is_static)
+                n->value = LLVMBuildAlloca(a->builder, ty, "evar");
         } else if (is_func(au->context)) {
             verify(n->value, "expected evar to be set for arg");
             verify(isa(t) == typeid(evar), "expected evar instance for arg");
@@ -3753,7 +3765,7 @@ none etype_implement(etype t) {
             if (!multi_Au || tt->au != typeid(Au))
                 for (int i = 0; i < tt->au->members.count; i++) {
                     Au_t m = (Au_t)tt->au->members.origin[i];
-                    if (m->member_type == AU_MEMBER_VAR && is_accessible(a, m))
+                    if (m->member_type == AU_MEMBER_VAR && !m->is_static && is_accessible(a, m))
                         count++;
                 }
             if (is_class(t))
@@ -3801,54 +3813,66 @@ none etype_implement(etype t) {
                     etype_implement(m->user);
                 }
                 else if (m->member_type == AU_MEMBER_VAR && is_accessible(a, m)) {
+
                     Au_t src = m->src;
                     if (!src)
                         src = src;
-                    verify(src, "no src type set for member %o", m);
-                    src_init(a, src);
-                    if (!is_class(src))
-                        etype_implement(src->user);
+                    
+                    if (m->is_static ) {
+                        string c_name = f(string, "%s_%s", au->ident, m->ident);
+                        if (strcmp(au->ident, "font_manager_init") == 0) {
+                            int test2 = 2;
+                            test2    += 2;
+                        }
+                        LLVMValueRef global = LLVMAddGlobal(a->module_ref, lltype(m->src), c_name->chars);
+                        LLVMSetLinkage(global, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
+                        if (!a->is_Au_import) LLVMSetInitializer(global, LLVMConstNull(lltype(m->src)));
+                        evar static_node = m->user ? (evar)m->user : evar(mod, a, au, m, value, global, loaded, false);
+                        m->user = (etype)static_node;
 
-                    // get largest union member
-                    if (m->elements > 0) {
-                        m = m;
-                    }
-                    if (m->is_inlay) {
-                        if (strcmp(m->context->ident, "app") == 0 && strcmp(m->ident, "info") == 0) {
+                    } else {
+
+                        verify(src, "no src type set for member %o", m);
+                        src_init(a, src);
+                        if (!is_class(src))
+                            etype_implement(src->user);
+
+                        // get largest union member
+                        if (m->elements > 0) {
                             m = m;
                         }
-                        struct_members[index] = src->is_class ? src->lltype : lltype(src);
-                    } else
-                        struct_members[index] = lltype(src);
+                        if (m->is_inlay) {
+                            if (strcmp(m->context->ident, "app") == 0 && strcmp(m->ident, "info") == 0) {
+                                m = m;
+                            }
+                            struct_members[index] = src->is_class ? src->lltype : lltype(src);
+                        } else
+                            struct_members[index] = lltype(src);
 
-                    if (m->elements > 0)
-                        struct_members[index] = LLVMArrayType(struct_members[index], m->elements);
-                    
+                        if (m->elements > 0)
+                            struct_members[index] = LLVMArrayType(struct_members[index], m->elements);
                         
-                    verify(struct_members[index], "no lltype found for member %s.%s", au->ident, m->ident);
-                    //printf("verifying abi size of %s\n", m->ident);
-                    int abi_member  = LLVMABISizeOfType(a->target_data, struct_members[index]);
-                    if (!abi_member) {
-                        struct_members[index] = lltype(src->src);
+                            
+                        verify(struct_members[index], "no lltype found for member %s.%s", au->ident, m->ident);
+                        //printf("verifying abi size of %s\n", m->ident);
                         int abi_member  = LLVMABISizeOfType(a->target_data, struct_members[index]);
-                        for (int i = 0; i < index; i++) {
-                            printf("member %i = %p\n", i, struct_members[i]);
+                        if (!abi_member) {
+                            struct_members[index] = lltype(src->src);
+                            int abi_member  = LLVMABISizeOfType(a->target_data, struct_members[index]);
+                            for (int i = 0; i < index; i++) {
+                                printf("member %i = %p\n", i, struct_members[i]);
+                            }
+                            abi_member = abi_member;
                         }
-                        abi_member = abi_member;
-                    }
-                    verify(abi_member, "type has no size");
-                    if (au->is_union && src->abi_size > ilargest) {
-                        largest  = struct_members[index];
-                        ilargest = src->abi_size;
-                    }
-                    index++;
-                }
-            }
-            Au_t au_type = typeid(Au);
+                        verify(abi_member, "type has no size");
+                        if (au->is_union && src->abi_size > ilargest) {
+                            largest  = struct_members[index];
+                            ilargest = src->abi_size;
+                        }
+                        index++;
 
-            if (au->ident && strcmp(au->ident, "Au") == 0) {
-                int test2 = 2;
-                test2    += 2;
+                    }
+                }
             }
 
             // lets define this as a form of byte accessible opaque.
@@ -3856,6 +3880,11 @@ none etype_implement(etype t) {
                 struct_members[index] = LLVMArrayType(lltype(au_lookup("u8")), tt->au->isize);
                 index++;
             }
+        }
+
+        if (count != index) {
+            int test2 = 2;
+            test2    += 2;
         }
 
         verify(count == index, "member indexing mismatch on %o", t);

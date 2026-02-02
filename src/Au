@@ -499,6 +499,7 @@ typedef Au_t* Au_ts;
     _Pragma("pack(push, 1)") \
     static au_core TYPE##_af; \
     TYPE##_info TYPE##_i; \
+    TYPE##_schema( TYPE, DEF, __VA_ARGS__ ); \
     _Pragma("pack(pop)") \
     static __attribute__((constructor)) bool Aglobal_##TYPE() { \
         TYPE##_f* type_ref = &TYPE##_i.type; \
@@ -585,6 +586,7 @@ forward(any)
     M(AA,BB, i, prop, intern, i64, recycle) \
     M(AA,BB, i, prop, intern, i64, af_index) \
     M(AA,BB, i, array, intern, Au, 8, meta) \
+    M(AA,BB, s, prop,  public, i64, stest) \
     M(AA,BB, i, method, public, none,   init) \
     M(AA,BB, i, method, public, none,   dealloc) \
     M(AA,BB, i, method, public, i32,    compare, AA) \
@@ -1105,17 +1107,18 @@ static struct op_entry op_table[] = {
     enum_value(E,T,Y, _inherits,          21) \
     enum_value(E,T,Y, _value_default,     22) \
     enum_value(E,T,Y, _cond_value,        23) \
-    enum_value(E,T,Y, _assign,            24) \
-    enum_value(E,T,Y, _assign_add,        25) \
-    enum_value(E,T,Y, _assign_sub,        26) \
-    enum_value(E,T,Y, _assign_mul,        27) \
-    enum_value(E,T,Y, _assign_div,        28) \
-    enum_value(E,T,Y, _assign_or,         29) \
-    enum_value(E,T,Y, _assign_and,        30) \
-    enum_value(E,T,Y, _assign_xor,        31) \
-    enum_value(E,T,Y, _assign_mod,        32) \
-    enum_value(E,T,Y, _assign_right,      33) \
-    enum_value(E,T,Y, _assign_left,       34)
+    enum_value(E,T,Y, _bind,              24) \
+    enum_value(E,T,Y, _assign,            25) \
+    enum_value(E,T,Y, _assign_add,        26) \
+    enum_value(E,T,Y, _assign_sub,        27) \
+    enum_value(E,T,Y, _assign_mul,        28) \
+    enum_value(E,T,Y, _assign_div,        29) \
+    enum_value(E,T,Y, _assign_or,         30) \
+    enum_value(E,T,Y, _assign_and,        31) \
+    enum_value(E,T,Y, _assign_xor,        32) \
+    enum_value(E,T,Y, _assign_mod,        33) \
+    enum_value(E,T,Y, _assign_right,      34) \
+    enum_value(E,T,Y, _assign_left,       35)
 declare_enum(OPType)
 
 #define Key_schema(EE,TT,YY) \
