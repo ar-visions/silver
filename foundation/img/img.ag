@@ -123,7 +123,7 @@ class image
     construct [ i:cstr ]
         uri = path i
     
-    construct [ string i ]
+    construct [ i:string ]
         uri = path i
 
     func exr [ path ] -> i32    # implemented in cc
@@ -138,7 +138,7 @@ class image
             drop info.data
             info.data = null
 
-    func copy[] -> image
+    func copy[ ] -> image
         res: image[ :width :height :format :surface ]
         memcpy res.vdata, vdata, byte_count
         return res

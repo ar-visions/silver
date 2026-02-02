@@ -61,6 +61,7 @@
 //#define a(...) array_of(__VA_ARGS__ __VA_OPT__(,) null)
 //#define m(...)   map_of(__VA_ARGS__ __VA_OPT__(,) null)
 
+#define   enum_value_DEF(E, T, N, VAL) 
 #define   enum_value_DECL(E, T, N, VAL)             static const E E##_##N = VAL;
 #define   enum_value_COUNT(E, T, N, VAL)            1,
 #define   enum_value_METHOD(E, T, N, VAL)
@@ -76,6 +77,7 @@
 
 #define   enum_value(E,T,Y, N, VAL)                enum_value_##Y(E, T, N, VAL)
 
+#define   enum_method_DEF(E, T, R, N, ...)
 #define   enum_method_DECL(E, T, R, N, ...)
 #define   enum_method_COUNT(E, T, R, N, ...)
 #define   enum_method_IMPL(E, T, R, N, ...) { \
@@ -92,7 +94,7 @@
 #define   enum_method(E,T,Y,R,N,...)            enum_method_##Y(E,T, R,N __VA_OPT__(,) __VA_ARGS__)
 
 
-
+#define   enum_value_v_DEF(E, T, N, VAL)
 #define   enum_value_v_DECL(E, T, N, VAL)             static const E E##_##N = VAL;
 #define   enum_value_v_COUNT(E, T, N, VAL)            1,
 #define   enum_value_v_METHOD(E, T, N, VAL)
@@ -104,7 +106,7 @@
     m->type     = (Au_t)&T ## _i.type; \
     m->value    = &static_##N;\
 }
-
+#define   enum_value_vargs_DEF(E, T, N, VAL,...)
 #define   enum_value_vargs_DECL(E, T, N, VAL,...)             static const E E##_##N = VAL;
 #define   enum_value_vargs_COUNT(E, T, N, VAL,...)            1,
 #define   enum_value_vargs_METHOD(E, T, N, VAL,...)
@@ -348,6 +350,7 @@
 #define   i_ctr_interface_INST_L(X, ARG)
 #define   i_ctr_interface_INST_U_EXTERN(X, ARG)
 #define   i_ctr_interface_INST_L_EXTERN(X, ARG)
+#define   i_ctr_interface_DEF(X, ARG)
 #define   i_ctr_interface_DECL(X, ARG)
 #define   i_ctr_interface_DECL_EXTERN(X, ARG)
 #define   i_ctr_interface_MEMBER_INDEX(X, ARG)
@@ -364,6 +367,7 @@
 #define   i_ctr_public_INST_L(X, ARG)
 #define   i_ctr_public_INST_U_EXTERN(X, ARG)
 #define   i_ctr_public_INST_L_EXTERN(X, ARG)
+#define   i_ctr_public_DEF(X, ARG)
 #define   i_ctr_public_DECL(X, ARG) X X##_with_##ARG(X, ARG);
 #define   i_ctr_public_DECL_EXTERN(X, ARG) X X##_with_##ARG(X, ARG);
 #define   i_ctr_public_GENERICS(X, ARG) ARG: X##_i.type.ft.with_##ARG,
@@ -406,6 +410,7 @@
 #define   i_prop_opaque_INST_L(X, R, N)
 #define   i_prop_opaque_INST_U_EXTERN(X, R, N)    i_prop_public_INST_U(X, R, N)
 #define   i_prop_opaque_INST_L_EXTERN(X, R, N)
+#define   i_prop_opaque_DEF(X, R, N)
 #define   i_prop_opaque_DECL(X, R, N)           i_prop_public_DECL(X, R, N)
 #define   i_prop_opaque_DECL_EXTERN(X, R, N)    i_prop_public_DECL(X, R, N)
 #define   i_prop_opaque_GENERICS(X, R, N)
@@ -421,6 +426,7 @@
 #define   i_prop_interface_INST_L(X, R, N)
 #define   i_prop_interface_INST_U_EXTERN(X, R, N)
 #define   i_prop_interface_INST_L_EXTERN(X, R, N)
+#define   i_prop_interface_DEF(X, R, N)
 #define   i_prop_interface_DECL(X, R, N)
 #define   i_prop_interface_DECL_EXTERN(X, R, N)
 #define   i_prop_interface_GENERICS(X, R, N)
@@ -437,6 +443,7 @@
 #define   i_prop_public_INST_L(X, R, N)
 #define   i_prop_public_INST_U_EXTERN(X, R, N)    i_prop_public_INST_U(X, R, N)  
 #define   i_prop_public_INST_L_EXTERN(X, R, N)
+#define   i_prop_public_DEF(X, R, N)
 #define   i_prop_public_DECL(X, R, N)           
 #define   i_prop_public_DECL_EXTERN(X, R, N)     
 #define   i_prop_public_GENERICS(X, R, N)
@@ -463,6 +470,7 @@
 #define   i_prop_required_INST_L(X, R, N)
 #define   i_prop_required_INST_U_EXTERN(X, R, N)  i_prop_public_INST_U(X, R, N)
 #define   i_prop_required_INST_L_EXTERN(X, R, N)
+#define   i_prop_required_DEF(X, R, N)
 #define   i_prop_required_DECL(X, R, N)         i_prop_public_DECL(X, R, N)
 #define   i_prop_required_DECL_EXTERN(X, R, N)  i_prop_public_DECL(X, R, N)
 #define   i_prop_required_GENERICS(X, R, N)
@@ -485,6 +493,7 @@
 #define   i_prop_intern_INST_L(X, R, N)           R N;
 #define   i_prop_intern_INST_U_EXTERN(X, R, N)
 #define   i_prop_intern_INST_L_EXTERN(X, R, N)
+#define   i_prop_intern_DEF(X, R, N)
 #define   i_prop_intern_DECL(X, R, N)           i_prop_public_DECL(X, R, N)
 #define   i_prop_intern_DECL_EXTERN(X, R, N)    i_prop_public_DECL(X, R, N)
 #define   i_prop_intern_GENERICS(X, R, N)
@@ -500,6 +509,7 @@
 #define   i_prop_intern_INST_L_pad(X, R, N, M2)           union { R N; char _##N##_pad[M2]; };
 #define   i_prop_intern_INST_U_EXTERN_pad(X, R, N, M2)
 #define   i_prop_intern_INST_L_EXTERN_pad(X, R, N, M2)
+#define   i_prop_intern_DEF_pad(X, R, N, M2)
 #define   i_prop_intern_DECL_pad(X, R, N, M2)           i_prop_public_DECL(X, R, N)
 #define   i_prop_intern_DECL_EXTERN_pad(X, R, N, M2)    i_prop_public_DECL(X, R, N)
 #define   i_prop_intern_GENERICS_pad(X, R, N, M2)
@@ -514,6 +524,7 @@
 #define   i_prop_public_INST_L_field(X, R, N, M2)
 #define   i_prop_public_INST_U_EXTERN_field(X, R, N, M2)  i_prop_public_INST_field(X, R, N, M2)
 #define   i_prop_public_INST_L_EXTERN_field(X, R, N, M2)
+#define   i_prop_public_DEF_field(X, R, N, M2)
 #define   i_prop_public_DECL_field(X, R, N, M2)         i_prop_public_DECL(X, R, N)
 #define   i_prop_public_DECL_EXTERN_field(X, R, N, M2)  i_prop_public_DECL(X, R, N)
 #define   i_prop_public_GENERICS_field(X, R, N, M2)
@@ -535,6 +546,7 @@
 #define   i_prop_required_INST_L_field(X, R, N, M2)
 #define   i_prop_required_INST_U_EXTERN_field(X, R, N, M2)    i_prop_public_INST_field(X, R, N, M2)
 #define   i_prop_required_INST_L_EXTERN_field(X, R, N, M2)
+#define   i_prop_required_DEF_field(X, R, N, M2)
 #define   i_prop_required_DECL_field(X, R, N, M2)           i_prop_public_DECL(X, R, N)
 #define   i_prop_required_DECL_EXTERN_field(X, R, N, M2)    i_prop_public_DECL(X, R, N)
 #define   i_prop_required_GENERICS_field(X, R, N, M2)
@@ -556,6 +568,7 @@
 #define   i_prop_intern_INST_L_field(X, R, N, M2)             R N;
 #define   i_prop_intern_INST_U_EXTERN_field(X, R, N, M2)
 #define   i_prop_intern_INST_L_EXTERN_field(X, R, N, M2)
+#define   i_prop_intern_DEF_field(X, R, N, M2)
 #define   i_prop_intern_DECL_field(X, R, N, M2)        i_prop_public_DECL(X, R, N)
 #define   i_prop_intern_DECL_EXTERN_field(X, R, N, M2) i_prop_public_DECL(X, R, N)
 #define   i_prop_intern_GENERICS_field(X, R, N, M2)
@@ -570,6 +583,7 @@
 #define   i_prop_public_INST_L_meta(X, R, N, M2)          
 #define   i_prop_public_INST_U_EXTERN_meta(X, R, N, M2)   R N;
 #define   i_prop_public_INST_L_EXTERN_meta(X, R, N, M2)
+#define   i_prop_public_DEF_meta(X, R, N, M2)
 #define   i_prop_public_DECL_meta(X, R, N, M2)        i_prop_public_DECL(X, R, N)
 #define   i_prop_public_DECL_EXTERN_meta(X, R, N, M2) i_prop_public_DECL(X, R, N)
 #define   i_prop_public_GENERICS_meta(X, R, N, M2)
@@ -592,6 +606,7 @@
 #define   i_prop_required_INST_L_meta(X, R, N, M2)
 #define   i_prop_required_INST_U_EXTERN_meta(X, R, N, M2) R N;
 #define   i_prop_required_INST_L_EXTERN_meta(X, R, N, M2)
+#define   i_prop_required_DEF_meta(X, R, N, M2)
 #define   i_prop_required_DECL_meta(X, R, N, M2)        i_prop_public_DECL(X, R, N)
 #define   i_prop_required_DECL_EXTERN_meta(X, R, N, M2) i_prop_public_DECL(X, R, N)
 #define   i_prop_required_GENERICS_meta(X, R, N, M2)
@@ -614,6 +629,7 @@
 #define   i_prop_intern_INST_L_meta(X, R, N, M2)           R N;
 #define   i_prop_intern_INST_U_EXTERN_meta(X, R, N, M2)
 #define   i_prop_intern_INST_L_EXTERN_meta(X, R, N, M2)
+#define   i_prop_intern_DEF_meta(X, R, N, M2)
 #define   i_prop_intern_DECL_meta(X, R, N, M2)        i_prop_public_DECL(X, R, N)
 #define   i_prop_intern_DECL_EXTERN_meta(X, R, N, M2) i_prop_public_DECL(X, R, N)
 #define   i_prop_intern_GENERICS_meta(X, R, N, M2)
@@ -629,6 +645,7 @@
 #define   i_prop_public_INST_L_as(X, R, N, M2)
 #define   i_prop_public_INST_U_EXTERN_as(X, R, N, M2)     M2 N;
 #define   i_prop_public_INST_L_EXTERN_as(X, R, N, M2)
+#define   i_prop_public_DEF_as(X, R, N, M2)
 #define   i_prop_public_DECL_as(X, R, N, M2)        i_prop_public_DECL(X, R, N)
 #define   i_prop_public_DECL_EXTERN_as(X, R, N, M2) i_prop_public_DECL(X, R, N)
 #define   i_prop_public_GENERICS_as(X, R, N, M2)
@@ -651,6 +668,7 @@
 #define   i_prop_required_INST_L_as(X, R, N, M2)
 #define   i_prop_required_INST_U_EXTERN_as(X, R, N, M2)   M2 N;
 #define   i_prop_required_INST_L_EXTERN_as(X, R, N, M2) 
+#define   i_prop_required_DEF_as(X, R, N, M2)
 #define   i_prop_required_DECL_as(X, R, N, M2)        i_prop_public_DECL(X, R, N)
 #define   i_prop_required_DECL_EXTERN_as(X, R, N, M2) i_prop_public_DECL(X, R, N)
 #define   i_prop_required_GENERICS_as(X, R, N, M2)
@@ -667,6 +685,7 @@
 #define   i_prop_intern_INST_L_as(X, R, N, M2)           R N;
 #define   i_prop_intern_INST_U_EXTERN_as(X, R, N, M2)
 #define   i_prop_intern_INST_L_EXTERN_as(X, R, N, M2)
+#define   i_prop_intern_DEF_as(X, R, N, M2)
 #define   i_prop_intern_DECL_as(X, R, N, M2)        i_prop_public_DECL(X, R, N)
 #define   i_prop_intern_DECL_EXTERN_as(X, R, N, M2) i_prop_public_DECL(X, R, N)
 #define   i_prop_intern_GENERICS_as(X, R, N, M2)
@@ -675,11 +694,87 @@
 #define   i_prop_intern_METHOD_as(X, R, N, M2)  
 
 
+
+
+#define   s_prop_public_F(X, R, N)
+#define   s_prop_public_F_EXTERN(X, R, N)
+#define   s_prop_public_ISIZE(X, R, N)   
+#define   s_prop_public_ISIZE_EXTERN(X, R, N)     
+#define   s_prop_public_ISIZE_EXTERN_meta(X, R, N, M2, ...) 
+#define   s_prop_public_INST_U(X, R, N)           
+#define   s_prop_public_INST_L(X, R, N)
+#define   s_prop_public_INST_U_EXTERN(X, R, N)    
+#define   s_prop_public_INST_L_EXTERN(X, R, N)
+#define   s_prop_public_DEF(X, R, N)              R X##_##N;
+#define   s_prop_public_DECL(X, R, N)             extern R X##_##N;
+#define   s_prop_public_DECL_EXTERN(X, R, N)      extern R X##_##N;
+#define   s_prop_public_GENERICS(X, R, N)
+#define   s_prop_public_INIT(X, R, N) { \
+    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, AU_TRAIT_STATIC); \
+    m->access_type = interface_public; \
+    m->type        = (Au_t)&R##_i.type; \
+    m->member_type = AU_MEMBER_VAR; \
+}
+
+#define   s_prop_public_PROTO(X, R, N)  
+#define   s_prop_public_METHOD(X, R, N)
+
+#define   s_prop_intern_F(X, R, N)              
+#define   s_prop_intern_F_EXTERN(X, R, N)       
+#define   s_prop_intern_ISIZE(X, R, N)          
+#define   s_prop_intern_ISIZE_EXTERN(X, R, N)   
+#define   s_prop_intern_INST_U(X, R, N)           
+#define   s_prop_intern_INST_L(X, R, N)         
+#define   s_prop_intern_INST_U_EXTERN(X, R, N)
+#define   s_prop_intern_INST_L_EXTERN(X, R, N)
+#define   s_prop_intern_DEF(X, R, N)            R X##_##N;
+#define   s_prop_intern_DECL(X, R, N)           
+#define   s_prop_intern_DECL_EXTERN(X, R, N)    
+#define   s_prop_intern_GENERICS(X, R, N)
+#define   s_prop_intern_INIT(X, R, N)
+#define   s_prop_intern_PROTO(X, R, N)  
+#define   s_prop_intern_METHOD(X, R, N)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #define i_prop_1(X, Y, T, R, N, ...) \
     i_prop_##T##_##Y(X, R, N)
 
 #define i_prop_2(X, Y, T, R, N, MODE2, M2) \
     i_prop_##T##_##Y##_##MODE2(X, R, N, M2)
+
+#define s_prop_1(X, Y, T, R, N, ...) \
+    s_prop_##T##_##Y(X, R, N)
+
+#define s_prop_2(X, Y, T, R, N, MODE2, M2) \
+    s_prop_##T##_##Y##_##MODE2(X, R, N, M2)
 
 #define ARG_COUNT_HELPER(_1, _2, N, ...) N
 #define ARG_COUNT_NO_ZERO(...) \
@@ -690,6 +785,9 @@
 
 #define i_prop(X, Y, T, R, N, ...) \
     CONCAT(i_prop_, ARG_COUNT_NO_ZERO(__VA_ARGS__))(X, Y, T, R, N __VA_OPT__(,) __VA_ARGS__)
+
+#define s_prop(X, Y, T, R, N, ...) \
+    CONCAT(s_prop_, ARG_COUNT_NO_ZERO(__VA_ARGS__))(X, Y, T, R, N __VA_OPT__(,) __VA_ARGS__)
 
 
 #define M(X,Y,I,T, ...) \
@@ -703,6 +801,7 @@
 #define   i_ref_interface_INST_L(X, R, N)
 #define   i_ref_interface_INST_U_EXTERN(X, R, N)
 #define   i_ref_interface_INST_L_EXTERN(X, R, N)
+#define   i_ref_interface_DEF(X, R, N)       
 #define   i_ref_interface_DECL(X, R, N)        
 #define   i_ref_interface_DECL_EXTERN(X, R, N) 
 #define   i_ref_interface_GENERICS(X, R, N)
@@ -718,6 +817,7 @@
 #define   i_origin_public_INST_L(X, R, N)
 #define   i_origin_public_INST_U_EXTERN(X, R, N)  i_origin_public_INST_U(X, R, N)
 #define   i_origin_public_INST_L_EXTERN(X, R, N)
+#define   i_origin_public_DEF(X, R, N) 
 #define   i_origin_public_DECL(X, R, N)          
 #define   i_origin_public_DECL_EXTERN(X, R, N)   
 #define   i_origin_public_GENERICS(X, R, N)
@@ -742,6 +842,7 @@
 #define   i_ref_public_INST_L(X, R, N)
 #define   i_ref_public_INST_U_EXTERN(X, R, N)  i_ref_public_INST_U(X, R, N)
 #define   i_ref_public_INST_L_EXTERN(X, R, N)
+#define   i_ref_public_DEF(X, R, N)
 #define   i_ref_public_DECL(X, R, N)          i_prop_public_DECL(X, R, N)
 #define   i_ref_public_DECL_EXTERN(X, R, N)   i_prop_public_DECL(X, R, N)
 #define   i_ref_public_GENERICS(X, R, N)
@@ -763,6 +864,7 @@
 #define   i_ref_required_INST_L(X, R, N)
 #define   i_ref_required_INST_U_EXTERN(X, R, N)  i_ref_public_INST_U(X, R, N)
 #define   i_ref_required_INST_L_EXTERN(X, R, N)
+#define   i_ref_required_DEF(X, R, N)
 #define   i_ref_required_DECL(X, R, N)         i_prop_public_DECL(X, R, N)
 #define   i_ref_required_DECL_EXTERN(X, R, N)  i_prop_public_DECL(X, R, N)
 #define   i_ref_required_GENERICS(X, R, N)
@@ -785,6 +887,7 @@
 #define   i_ref_intern_INST_L(X, R, N)           R* N;
 #define   i_ref_intern_INST_U_EXTERN(X, R, N)
 #define   i_ref_intern_INST_L_EXTERN(X, R, N)
+#define   i_ref_intern_DEF(X, R, N)
 #define   i_ref_intern_DECL(X, R, N)          i_prop_public_DECL(X, R, N)
 #define   i_ref_intern_DECL_EXTERN(X, R, N)   i_prop_public_DECL(X, R, N)
 #define   i_ref_intern_GENERICS(X, R, N)
@@ -804,6 +907,7 @@
 #define i_attr_INST_L(        X, ENUM, ID, VALUE, ...)
 #define i_attr_INST_U_EXTERN( X, ENUM, ID, VALUE, ...)
 #define i_attr_INST_L_EXTERN( X, ENUM, ID, VALUE, ...)
+#define i_attr_DEF(        X, ENUM, ID, VALUE, ...)
 #define i_attr_DECL(        X, ENUM, ID, VALUE, ...)
 #define i_attr_DECL_EXTERN( X, ENUM, ID, VALUE, ...)
 #define i_attr_GENERICS(    X, ENUM, ID, VALUE, ...)
@@ -829,6 +933,7 @@
 #define   i_array_interface_INST_L(X, R, S, N)
 #define   i_array_interface_INST_U_EXTERN(X, R, S, N)
 #define   i_array_interface_INST_L_EXTERN(X, R, S, N)
+#define   i_array_interface_DEF(X, R, S, N)
 #define   i_array_interface_DECL(X, R, S, N)
 #define   i_array_interface_DECL_EXTERN(X, R, S, N)
 #define   i_array_interface_GENERICS(X, R, S, N)
@@ -845,6 +950,7 @@
 #define   i_array_public_INST_L(X, R, S, N)         
 #define   i_array_public_INST_U_EXTERN(X, R, S, N)  i_array_public_INST_U(X, R, S, N)
 #define   i_array_public_INST_L_EXTERN(X, R, S, N)
+#define   i_array_public_DEF(X, R, S, N)
 #define   i_array_public_DECL(X, R, S, N)           i_prop_public_DECL(X, R, N)
 #define   i_array_public_DECL_EXTERN(X, R, S, N)
 #define   i_array_public_GENERICS(X, R, S, N)
@@ -868,6 +974,7 @@
 #define   i_array_intern_INST_L(X, R, S, N)         R N[S];
 #define   i_array_intern_INST_U_EXTERN(X, R, S, N)
 #define   i_array_intern_INST_L_EXTERN(X, R, S, N)
+#define   i_array_intern_DEF(X, R, S, N)
 #define   i_array_intern_DECL(X, R, S, N)         i_prop_public_DECL(X, R, N)
 #define   i_array_intern_DECL_EXTERN(X, R, S, N)
 #define   i_array_intern_GENERICS(X, R, S, N)
@@ -880,6 +987,7 @@
 #define   i_struct_ctr_ISIZE_EXTERN(X, ARG)
 #define   i_struct_ctr_INST(X, ARG)
 #define   i_struct_ctr_INST_EXTERN(X, ARG)
+#define   i_struct_ctr_DEF(X, ARG)
 #define   i_struct_ctr_DECL(X, ARG)
 #define   i_struct_ctr_DECL_EXTERN(X, ARG)
 #define   i_struct_ctr_GENERICS(X, ARG) ARG*: X##_i.type.ft.with_##ARG,
@@ -901,6 +1009,7 @@
 #define   i_struct_ctr_obj_ISIZE_EXTERN(X, ARG)
 #define   i_struct_ctr_obj_INST(X, ARG)
 #define   i_struct_ctr_obj_INST_EXTERN(X, ARG)
+#define   i_struct_ctr_obj_DEF(X, ARG)
 #define   i_struct_ctr_obj_DECL(X, ARG)
 #define   i_struct_ctr_obj_DECL_EXTERN(X, ARG)
 #define   i_struct_ctr_obj_GENERICS(X, ARG) ARG: X##_i.type.ft.with_##ARG,
@@ -920,6 +1029,7 @@
 #define   i_struct_array_ISIZE_EXTERN(X, R, S, N)
 #define   i_struct_array_INST(X, R, S, N)         R N[S];
 #define   i_struct_array_INST_EXTERN(X, R, S, N)  i_struct_array_INST(X, R, S, N)
+#define   i_struct_array_DEF(X, R, S, N)
 #define   i_struct_array_DECL(X, R, S, N)
 #define   i_struct_array_DECL_EXTERN(X, R, S, N)
 #define   i_struct_array_GENERICS(X, R, S, N)
@@ -940,6 +1050,7 @@
 #define   i_struct_prop_ISIZE_EXTERN(X, R, N)
 #define   i_struct_prop_INST(X, R, N)         R N;
 #define   i_struct_prop_INST_EXTERN(X, R, N)  i_struct_prop_INST(X, R, N)
+#define   i_struct_prop_DEF(X, R, N)
 #define   i_struct_prop_DECL(X, R, N)
 #define   i_struct_prop_DECL_EXTERN(X, R, N)
 #define   i_struct_prop_GENERICS(X, R, N)
@@ -958,6 +1069,7 @@
 #define   i_struct_cast_ISIZE_EXTERN(X, R)
 #define   i_struct_cast_INST(X, R)
 #define   i_struct_cast_INST_EXTERN(X, R)
+#define   i_struct_cast_DEF(X, R)
 #define   i_struct_cast_DECL(X, R)
 #define   i_struct_cast_DECL_EXTERN(X, R)
 #define   i_struct_cast_GENERICS(X, R)
@@ -979,6 +1091,7 @@
 #define   i_struct_method_ISIZE_EXTERN(X, R, N, ...)
 #define   i_struct_method_INST(    X, R, N, ...)
 #define   i_struct_method_INST_EXTERN(    X, R, N, ...)
+#define   i_struct_method_DEF(X, R, N, ...)
 #define   i_struct_method_DECL(X, R, N, ...)        R X##_##N(X* __VA_OPT__(,) __VA_ARGS__);
 #define   i_struct_method_DECL_EXTERN(X, R, N, ...) R X##_##N(X* __VA_OPT__(,) __VA_ARGS__);
 #define   i_struct_method_GENERICS(X, R, N, ...)
@@ -998,6 +1111,7 @@
 #define   i_struct_static_ISIZE_EXTERN(X, R, N, ...)
 #define   i_struct_static_INST(    X, R, N, ...)
 #define   i_struct_static_INST_EXTERN(X, R, N, ...)
+#define   i_struct_static_DEF(    X, R, N, ...)
 #define   i_struct_static_DECL(    X, R, N, ...)            R X##_##N(__VA_ARGS__);
 #define   i_struct_static_DECL_EXTERN(    X, R, N, ...)     R X##_##N(__VA_ARGS__);
 #define   i_struct_static_GENERICS(X, R, N, ...)
@@ -1028,6 +1142,7 @@
 #define   i_inlay_public_INST_L(X, R, N)         
 #define   i_inlay_public_INST_U_EXTERN(X, R, N)  struct _##R N;
 #define   i_inlay_public_INST_L_EXTERN(X, R, N)
+#define   i_inlay_public_DEF(X, R, N)
 #define   i_inlay_public_DECL(X, R, N)
 #define   i_inlay_public_DECL_EXTERN(X, R, N)
 #define   i_inlay_public_GENERICS(X, R, N)
@@ -1049,6 +1164,7 @@
 #define   i_inlay_required_INST_L(X, R, N)         
 #define   i_inlay_required_INST_U_EXTERN(X, R, N)  i_inlay_public_INST_U_EXTERN(X, R, N)
 #define   i_inlay_required_INST_L_EXTERN(X, R, N)
+#define   i_inlay_required_DEF(X, R, N)
 #define   i_inlay_required_DECL(X, R, N)
 #define   i_inlay_required_DECL_EXTERN(X, R, N)
 #define   i_inlay_required_GENERICS(X, R, N)
@@ -1071,6 +1187,7 @@
 #define   i_inlay_intern_INST_L(X, R, N)            struct _##R N;
 #define   i_inlay_intern_INST_U_EXTERN(X, R, N)
 #define   i_inlay_intern_INST_L_EXTERN(X, R, N)
+#define   i_inlay_intern_DEF(X, R, N)
 #define   i_inlay_intern_DECL(X, R, N)
 #define   i_inlay_intern_DECL_EXTERN(X, R, N)
 #define   i_inlay_intern_GENERICS(X, R, N)
@@ -1088,6 +1205,7 @@
 #define   s_method_interface_INST_L(X, R, N, ...)
 #define   s_method_interface_INST_U_EXTERN(X, R, N, ...)
 #define   s_method_interface_INST_L_EXTERN(X, R, N, ...)
+#define   s_method_interface_DEF(X, R, N, ...)
 #define   s_method_interface_DECL(X, R, N, ...)
 #define   s_method_interface_DECL_EXTERN(X, R, N, ...)
 #define   s_method_interface_GENERICS(X, R, N, ...)
@@ -1103,6 +1221,7 @@
 #define   s_method_public_INST_L(X, R, N, ...)
 #define   s_method_public_INST_U_EXTERN(X, R, N, ...)
 #define   s_method_public_INST_L_EXTERN(X, R, N, ...)
+#define   s_method_public_DEF(X, R, N, ...) 
 #define   s_method_public_DECL(X, R, N, ...)        R N(__VA_ARGS__);
 #define   s_method_public_DECL_EXTERN(X, R, N, ...) R N(__VA_ARGS__);
 #define   s_method_public_GENERICS(X, R, N, ...)
@@ -1125,6 +1244,7 @@
 #define   s_method_intern_INST_L(X, R, N, ...)
 #define   s_method_intern_INST_U_EXTERN(X, R, N, ...)
 #define   s_method_intern_INST_L_EXTERN(X, R, N, ...)
+#define   s_method_intern_DEF(X, R, N, ...)
 #define   s_method_intern_DECL(X, R, N, ...)        R N(__VA_ARGS__);
 #define   s_method_intern_DECL_EXTERN(X, R, N, ...)
 #define   s_method_intern_GENERICS(X, R, N, ...)
@@ -1140,6 +1260,7 @@
 #define   i_method_interface_INST_L(X, R, N, ...)
 #define   i_method_interface_INST_U_EXTERN(X, R, N, ...)
 #define   i_method_interface_INST_L_EXTERN(X, R, N, ...)
+#define   i_method_interface_DEF(X, R, N, ...)
 #define   i_method_interface_DECL(X, R, N, ...)
 #define   i_method_interface_DECL_EXTERN(X, R, N, ...)
 #define   i_method_interface_GENERICS(X, R, N, ...)
@@ -1155,6 +1276,7 @@
 #define   i_method_public_INST_L(    X, R, N, ...)
 #define   i_method_public_INST_U_EXTERN(  X, R, N, ...)
 #define   i_method_public_INST_L_EXTERN(  X, R, N, ...)
+#define   i_method_public_DEF(    X, R, N, ...)
 #define   i_method_public_DECL(    X, R, N, ...)           R X##_##N(__VA_ARGS__);
 #define   i_method_public_DECL_EXTERN(    X, R, N, ...)    
 #define   i_method_public_GENERICS(X, R, N, ...)
@@ -1181,6 +1303,7 @@
 #define   i_method_intern_INST_L(    X, R, N, ...)
 #define   i_method_intern_INST_U_EXTERN(  X, R, N, ...)
 #define   i_method_intern_INST_L_EXTERN(  X, R, N, ...)
+#define   i_method_intern_DEF(    X, R, N, ...)
 #define   i_method_intern_DECL(    X, R, N, ...)        R (*N)(__VA_ARGS__);
 #define   i_method_intern_DECL_EXTERN(    X, R, N, ...)
 #define   i_method_intern_GENERICS(X, R, N, ...)
@@ -1196,6 +1319,7 @@
 #define   i_final_public_INST_L(ORIG,    X, R, N, ...)
 #define   i_final_public_INST_U_EXTERN(ORIG,  X, R, N, ...)
 #define   i_final_public_INST_L_EXTERN(ORIG,  X, R, N, ...)
+#define   i_final_public_DEF(ORIG,    X, R, N, ...)
 #define   i_final_public_DECL(ORIG,    X, R, N, ...)           R X##_##N(__VA_ARGS__);
 #define   i_final_public_DECL_EXTERN(ORIG,    X, R, N, ...)    
 #define   i_final_public_GENERICS(ORIG,X, R, N, ...)
@@ -1233,6 +1357,7 @@
 #define   i_operator_interface_INST_L(X, R, N, ARG)
 #define   i_operator_interface_INST_U_EXTERN(X, R, N, ARG)
 #define   i_operator_interface_INST_L_EXTERN(X, R, N, ARG)
+#define   i_operator_interface_DEF(X, R, N, ARG)
 #define   i_operator_interface_DECL(X, R, N, ARG)
 #define   i_operator_interface_DECL_EXTERN(X, R, N, ARG)
 #define   i_operator_interface_GENERICS(X, R, N, ARG)
@@ -1248,6 +1373,7 @@
 #define   i_operator_public_INST_L(X, R, N, ARG)
 #define   i_operator_public_INST_U_EXTERN(X, R, N, ARG)
 #define   i_operator_public_INST_L_EXTERN(X, R, N, ARG)
+#define   i_operator_public_DEF(X, R, N, ARG)
 #define   i_operator_public_DECL(X, R, N, ARG)
 #define   i_operator_public_DECL_EXTERN(X, R, N, ARG)
 #define   i_operator_public_GENERICS(X, R, N, ARG)
@@ -1275,6 +1401,7 @@
 #define   i_operator_intern_INST_L(X, R, N, ARG)
 #define   i_operator_intern_INST_U_EXTERN(X, R, N, ARG)
 #define   i_operator_intern_INST_L_EXTERN(X, R, N, ARG)
+#define   i_operator_intern_DEF(X, R, N, ARG)
 #define   i_operator_intern_DECL(X, R, N, ARG)
 #define   i_operator_intern_DECL_EXTERN(X, R, N, ARG)
 #define   i_operator_intern_GENERICS(X, R, N, ARG)
@@ -1290,6 +1417,7 @@
 #define   i_cast_interface_INST_L(X, R)
 #define   i_cast_interface_INST_U_EXTERN(X, R)
 #define   i_cast_interface_INST_L_EXTERN(X, R)
+#define   i_cast_interface_DEF(X, R)
 #define   i_cast_interface_DECL(X, R)
 #define   i_cast_interface_DECL_EXTERN(X, R)
 #define   i_cast_interface_GENERICS(X, R)
@@ -1305,6 +1433,7 @@
 #define   i_cast_public_INST_L(X, R)
 #define   i_cast_public_INST_U_EXTERN(X, R)
 #define   i_cast_public_INST_L_EXTERN(X, R)
+#define   i_cast_public_DEF(X, R)
 #define   i_cast_public_DECL(X, R)
 #define   i_cast_public_DECL_EXTERN(X, R)
 #define   i_cast_public_GENERICS(X, R)
@@ -1330,6 +1459,7 @@
 #define   i_cast_intern_INST_L(X, R)
 #define   i_cast_intern_INST_U_EXTERN(X, R)
 #define   i_cast_intern_INST_L_EXTERN(X, R)
+#define   i_cast_intern_DEF(X, R)
 #define   i_cast_intern_DECL(X, R)
 #define   i_cast_intern_DECL_EXTERN(X, R)
 #define   i_cast_intern_GENERICS(X, R)
@@ -1345,6 +1475,7 @@
 #define i_index_interface_INST_L(X, R, ...)
 #define i_index_interface_INST_U_EXTERN(X, R, ...)
 #define i_index_interface_INST_L_EXTERN(X, R, ...)
+#define i_index_interface_DEF(X, R, ...)
 #define i_index_interface_DECL(X, R, ...)
 #define i_index_interface_DECL_EXTERN(X, R, ...)
 #define i_index_interface_GENERICS(X, R, ...)
@@ -1360,6 +1491,7 @@
 #define i_index_public_INST_L(X, R, ...)
 #define i_index_public_INST_U_EXTERN(X, R, ...)
 #define i_index_public_INST_L_EXTERN(X, R, ...)
+#define i_index_public_DEF(X, R, ...)
 #define i_index_public_DECL(X, R, ...)
 #define i_index_public_DECL_EXTERN(X, R, ...)
 #define i_index_public_GENERICS(X, R, ...)
@@ -1384,6 +1516,7 @@
 #define i_index_intern_INST_L(X, R, ...)
 #define i_index_intern_INST_U_EXTERN(X, R, ...)
 #define i_index_intern_INST_L_EXTERN(X, R, ...)
+#define i_index_intern_DEF(X, R, ...)
 #define i_index_intern_DECL(X, R, ...)
 #define i_index_intern_DECL_EXTERN(X, R, ...)
 #define i_index_intern_GENERICS(X, R, ...)
@@ -1400,6 +1533,7 @@
 #define i_vargs_public_INST_L(X, R, N, ...)
 #define i_vargs_public_INST_U_EXTERN(X, R, N, ...)
 #define i_vargs_public_INST_L_EXTERN(X, R, N, ...)
+#define i_vargs_public_DEF(X, R, N, ...)
 #define i_vargs_public_DECL(X, R, N, ...)               R X##_##N(X  __VA_OPT__(,) __VA_ARGS__, ...);
 #define i_vargs_public_DECL_EXTERN(X, R, N, ...)        R X##_##N(X, __VA_OPT__(,) __VA_ARGS__, ...);
 #define i_vargs_public_GENERICS(X, R, N, ...)
@@ -1414,6 +1548,7 @@
 #define i_vargs_intern_INST_L(X, R, N, ...)
 #define i_vargs_intern_INST_U_EXTERN(X, R, N, ...)
 #define i_vargs_intern_INST_L_EXTERN(X, R, N, ...)
+#define i_vargs_intern_DEF(X, R, N, ...)
 #define i_vargs_intern_DECL(X, R, N, ...)               static R X##_##N(X __VA_OPT__(,) __VA_ARGS__, ...);
 #define i_vargs_intern_DECL_EXTERN(X, R, N, ...)
 #define i_vargs_intern_GENERICS(X, R, N, ...)
@@ -1430,6 +1565,8 @@
 #define s_vargs_public_INST_L(X, R, N, ...)
 #define s_vargs_public_INST_U_EXTERN(X, R, N, ...)
 #define s_vargs_public_INST_L_EXTERN(X, R, N, ...)
+#define s_vargs_public_DEF(X, R, N, ...)
+#define s_vargs_public_DEF(X, R, N, ...)
 #define s_vargs_public_DECL(X, R, N, ...)               R N(__VA_ARGS__, ...);
 #define s_vargs_public_DECL_EXTERN(X, R, N, ...)        R N(__VA_ARGS__, ...);
 #define s_vargs_public_GENERICS(X, R, N, ...)
@@ -1444,6 +1581,7 @@
 #define s_vargs_intern_INST_L(X, R, N, ...)
 #define s_vargs_intern_INST_U_EXTERN(X, R, N, ...)
 #define s_vargs_intern_INST_L_EXTERN(X, R, N, ...)
+#define s_vargs_intern_DEF(X, R, N, ...) 
 #define s_vargs_intern_DECL(X, R, N, ...)               R N(__VA_ARGS__, ...);
 #define s_vargs_intern_DECL_EXTERN(X, R, N, ...)
 #define s_vargs_intern_GENERICS(X, R, N, ...)
@@ -1461,6 +1599,7 @@
 #define i_override_method_INST_L(X, N)
 #define i_override_method_INST_U_EXTERN(X, N)
 #define i_override_method_INST_L_EXTERN(X, N)
+#define i_override_method_DEF(X, N)
 #define i_override_method_DECL(X, N)
 #define i_override_method_DECL_EXTERN(X, N)
 #define i_override_method_GENERICS(X, N)
@@ -1484,6 +1623,7 @@
 #define i_override_ctr_INST_L(X, R)
 #define i_override_ctr_INST_U_EXTERN(X, N)
 #define i_override_ctr_INST_L_EXTERN(X, N)
+#define i_override_ctr_DEF(X, R)
 #define i_override_ctr_DECL(X, R)
 #define i_override_ctr_GENERICS(X, N)                   N: X##_i.type.ft.with_##N,
 #define i_override_ctr_INIT(X, R) { \
@@ -1506,6 +1646,7 @@
 #define i_override_cast_INST_L(X, R)
 #define i_override_cast_INST_U_EXTERN(X, R)
 #define i_override_cast_INST_L_EXTERN(X, R)
+#define i_override_cast_DEF(X, R)
 #define i_override_cast_DECL(X, R)
 #define i_override_cast_GENERICS(X, N)
 #define i_override_cast_INIT(X, R) { \
@@ -1528,6 +1669,7 @@
 #define i_override_idx_INST_L(X, R)
 #define i_override_idx_INST_U_EXTERN(X, R)
 #define i_override_idx_INST_L_EXTERN(X, R)
+#define i_override_idx_DEF(X, R)
 #define i_override_idx_DECL(X, R)
 #define i_override_idx_GENERICS(X, R)
 #define i_override_idx_INIT(X, R) { \
