@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include <llvm-c/DebugInfo.h>
 #include <llvm-c/Core.h>
 #include <llvm-c/ExecutionEngine.h>
@@ -175,13 +177,13 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
      * ------------------------------------------------------------ */
     enode res = null;
 
-    if (op_val == OPType__assign) {
+    if (op_val <= OPType__assign) { // bind and assign...
         res = rR;
     } else {
         string op_name = (string)e_str(OPType, op_val);
         res = value(
             L,
-            op_table[op_val - OPType__assign - 1].f_build_op(
+            op_table[op_val - OPType__assign_add].f_build_op(
                 a->builder,
                 L->value,
                 rR->value,
@@ -271,7 +273,7 @@ etype etype_traits(Au a, int traits) {
 
 /// C type rules implemented
 etype determine_rtype(aether a, OPType optype, etype L, etype R) {
-    if (optype >= OPType__assign && optype <= OPType__assign_left)
+    if (optype >= OPType__bind && optype <= OPType__assign_left)
         return L;  // Assignment operations always return the type of the left operand
     else if (optype == OPType__value_default ||
              optype == OPType__cond_value    ||
@@ -872,7 +874,7 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) {
     LLVMTypeRef  LV_type = LLVMTypeOf(LV->value);
     LLVMTypeKind vkind = LLVMGetTypeKind(LV_type);
 
-    enode LL = optype == OPType__assign ? LV : e_create(a, rtype, (Au)LV); // we dont need the 'load' in here, or convert even
+    enode LL = optype <= OPType__assign ? LV : e_create(a, rtype, (Au)LV); // we dont need the 'load' in here, or convert even
     enode RL = e_create(a, rtype, (Au)RV);
 
     symbol         N = cstring(op_name);
@@ -900,12 +902,12 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) {
             // we must override the logic here because we're ONLY doing OPType__or, OPType__and
             RES = op->f_build_op(B, LL->value, RL->value, N);
 
-    } else if (optype >= OPType__assign && optype <= OPType__assign_left) {
+    } else if (optype >= OPType__bind && optype <= OPType__assign_left) {
 
         // assignments perform a store
         verify(mL, "left-hand operator must be a emember");
         // already computed in R-value
-        if (optype == OPType__assign) {
+        if (optype <= OPType__assign) {
             RES = RL->value;
             literal = RL->literal;
         } else
@@ -1195,9 +1197,10 @@ enode aether_lambda_fcall(aether a, efunc mem, array user_args) {
     return e_fn_call(a, fn_ptr, args);
 }
 
-// this needs to work on fn ptr's now
+
 enode aether_e_fn_call(aether a, efunc fn, array args) {
-    if (!fn->used)
+    bool funcptr = is_func_ptr((Au)fn);
+    if (!funcptr && !fn->used)
          fn->used = true;
     
     Au_t au = fn->au;
@@ -1205,6 +1208,9 @@ enode aether_e_fn_call(aether a, efunc fn, array args) {
         int test2 = 2;
         test2    += 2;
     }
+
+    static int seq = 0;
+    seq++;
 
     a->is_const_op = false; 
     if (a->no_build) return e_noop(a, fn->au->rtype->user);
@@ -1215,31 +1221,76 @@ enode aether_e_fn_call(aether a, efunc fn, array args) {
     Au_t  type0 = isa(arg0);
     enode first_arg        = arg0 ? e_operand(a, arg0, null) : null;
     etype user_target_type = first_arg ? evar_type((evar)first_arg) : null;
-    etype target_type      = fn->target ? (etype)fn->target : (etype)null;
+    enode target_type      = (!funcptr && fn->target) ? (enode)fn->target : (enode)null;
     enode f                = len(args) ? (enode)user_target_type : null;
     bool  is_Au            = !target_type || inherits(au_arg_type((Au)target_type->au), typeid(Au));
 
-    static int seq = 0;
-    seq++;
-    if (seq == 8) {
-        seq = seq;
-    }
-    verify(!target_type || is_Au || etype_inherits(target_type, (etype)f), "target mismatch %i", seq);
+    verify(!target_type || is_Au || etype_inherits((etype)target_type, (etype)f), "target mismatch %i", seq);
 
     int n_args = args ? len(args) : 0;
-    bool is_fptr_call = !is_func((Au)fn);
-
-    if (is_fptr_call)
-        is_fptr_call = is_fptr_call;
     
-    verify(is_fptr_call || n_args == fn->au->args.count ||
+    verify(funcptr || n_args == fn->au->args.count ||
         (n_args > fn->au->args.count && fn->au->is_vargs),
         "arg count mismatch on %o", fn);
     
+    Au_t type_id = isa(fn);
     LLVMValueRef* arg_values = calloc(n_args, sizeof(LLVMValueRef));
-    LLVMTypeRef*  arg_types  = null;
-    LLVMTypeRef   F          = is_fptr_call ? null : lltype(fn);
+    LLVMTypeRef*  arg_types  = calloc(n_args, sizeof(LLVMValueRef));
+    LLVMTypeRef   F          = funcptr ? null : lltype(fn);
     LLVMValueRef  V          = fn->value;
+
+    // -----------------------------------------------------------------------
+    // Dynamic Dispatch Logic                           ( hold onto your butts )
+    // -----------------------------------------------------------------------
+    // If this is an instance method, we must look up the implementation 
+    // in the runtime type's vtable (ft) rather than using the static symbol.
+    if (fn->au->is_imethod && !funcptr && !(target_type && target_type->target && target_type->target->avoid_ftable)) {
+        verify(n_args > 0, "instance method %o requires 'this' argument", fn);
+        
+        // 1. Get the instance pointer ('this' is always the first argument)
+        // We need the raw value to perform pointer arithmetic
+        Au    arg0       = get(args, 0);
+        enode first_arg  = e_operand(a, arg0, null);
+        LLVMValueRef instance = first_arg->value;
+
+        // 2. Get the Object Header
+        // The ABI defines the header as residing immediately before the object pointer.
+        // header = ((struct _Au*)instance) - 1
+        LLVMTypeRef  i8_ptr_ty  = LLVMPointerType(LLVMInt8Type(), 0);
+        LLVMValueRef i8_this    = LLVMBuildBitCast(a->builder, instance, i8_ptr_ty, "this_i8");
+        
+        // Calculate offset: -sizeof(struct _Au)
+        // We use the compiler's knowledge of the struct size to burn the constant into IR
+        LLVMValueRef offset_neg = LLVMConstInt(LLVMInt64Type(), -(int)sizeof(struct _Au), true);
+        LLVMValueRef header_ptr = LLVMBuildGEP2(a->builder, LLVMInt8Type(), i8_this, &offset_neg, 1, "header_ptr");
+
+        // 3. Load the Runtime Type (Au_t)
+        // The 'type' is the first member of struct _Au
+        LLVMTypeRef  Au_t_ptr_ty = LLVMPointerType(i8_ptr_ty, 0); // void** (pointer to type pointer)
+        LLVMValueRef header_cast = LLVMBuildBitCast(a->builder, header_ptr, Au_t_ptr_ty, "header_cast");
+        LLVMValueRef type_ptr    = LLVMBuildLoad2(a->builder, i8_ptr_ty, header_cast, "type_ptr");
+
+        // 4. Access the Function Table (ft)
+        // The function table is located at `offsetof(struct _Au_f, ft)` within the type object.
+        LLVMValueRef type_i8     = LLVMBuildBitCast(a->builder, type_ptr, i8_ptr_ty, "type_i8");
+        LLVMValueRef ft_offset   = LLVMConstInt(LLVMInt64Type(), offsetof(struct _Au_f, ft), false);
+        LLVMValueRef ft_base     = LLVMBuildGEP2(a->builder, LLVMInt8Type(), type_i8, &ft_offset, 1, "ft_base");
+
+        // 5. Index into the Function Table
+        // Retrieve the specific method index assigned during schema creation
+        int method_index = fn->au->index; 
+        verify(method_index > 0, "method %o has invalid vtable index", fn);
+
+        LLVMValueRef ft_array      = LLVMBuildBitCast(a->builder, ft_base, Au_t_ptr_ty, "ft_array");
+        LLVMValueRef method_idx    = LLVMConstInt(LLVMInt32Type(), method_index, false);
+        LLVMValueRef func_ptr_addr = LLVMBuildGEP2(a->builder, i8_ptr_ty, ft_array, &method_idx, 1, "func_ptr_addr");
+        
+        // 6. Load and Cast the Function Pointer
+        LLVMValueRef func_ptr_void = LLVMBuildLoad2(a->builder, i8_ptr_ty, func_ptr_addr, "func_ptr_void");
+        
+        // Cast the generic void* from vtable to the specific function signature we expect
+        V = LLVMBuildBitCast(a->builder, func_ptr_void, LLVMTypeOf(fn->value), "vmethod");
+    }
 
     int index = 0;
     if (target_type) {
@@ -1271,26 +1322,26 @@ enode aether_e_fn_call(aether a, efunc fn, array args) {
                 continue;
             }
         
-            if (is_fptr_call) {
+            if (is_lambda(fn)) {
                 verify(instanceof(arg_value, enode), "expected enode for runtime function call");
                 enode n = (enode)arg_value;
                 verify(n->value, "expected enode value for arg %i", index);
-                if (!arg_types) arg_types = calloc(n_args, sizeof(LLVMValueRef));
                 arg_values[index] = n->value;
                 arg_types[index] = lltype(n);
             } else {
-                Au_t arg_type = (Au_t)array_get((array)&fn->au->args, i);
+                Au_t fn_decl = funcptr ? au_arg_type((Au)fn->au) : fn->au;
+                Au_t arg_type = (Au_t)array_get((array)&fn_decl->args, i);
                 evar  arg = (evar)arg_type->user;
                 enode n   = (enode)instanceof(arg_value, enode);
                 if (index == fmt_idx) {
                     Au fmt = n ? (Au)instanceof(n->literal, const_string) : null;
                     verify(fmt, "formatter functions require literal, constant strings");
                 }
-                // this takes in literals and enodes
-                Au_t  arg_value_isa = isa(arg_value);
-                enode nn = (enode)arg_value;
-                enode conv = e_create(a, arg_type->src->user, arg_value);
+                etype arg_t = au_arg_type((Au)arg_type)->user;
+                enode conv = e_create(a, arg_t, arg_value);
                 arg_values[index] = conv->value;
+                if (funcptr)
+                    arg_types[index] = lltype(arg_t);
             }
             i++;
             index++;
@@ -1298,9 +1349,9 @@ enode aether_e_fn_call(aether a, efunc fn, array args) {
     }
     int istart = index;
     
-    if (is_fptr_call && fmt_idx >= 0) {
-        Au_t src_type = isa(args->origin[fmt_idx]);
-        enode  fmt_node = (enode) instanceof(args->origin[fmt_idx], enode);
+    if (funcptr && fmt_idx >= 0) {
+        Au_t   src_type = isa(args->origin[fmt_idx]);
+        enode  fmt_node = instanceof(args->origin[fmt_idx], enode);
         string fmt_str  = (string)instanceof(fmt_node->literal, const_string);
         verify(fmt_str, "expected string literal at index %i for format-function: %o",
             fmt_idx, fn->au->ident);
@@ -1334,31 +1385,13 @@ enode aether_e_fn_call(aether a, efunc fn, array args) {
         seq2 = seq2;
     }
 
-    etype rtype = is_fptr_call ?
+    etype rtype = is_lambda(fn) ?
         (etype)fn->meta->origin[0] :
         (etype)fn->au->rtype->user;
     
-    if (is_fptr_call) F = LLVMFunctionType(lltype(rtype), arg_types, n_args, false);
+    if (funcptr) F = LLVMFunctionType(lltype(rtype), arg_types, n_args, false);
     
-
-
-
-
     LLVMValueRef R = LLVMBuildCall2(a->builder, F, V, arg_values, index, is_void_ ? "" : call_seq);
-
-    /*
-    enode func = context_func(a);
-    LLVMValueRef tv =  R;
-    LLVMValueRef tp = LLVMIsAInstruction(tv) ? LLVMGetInstructionParent(tv) : NULL;
-    LLVMValueRef cur = func->value;
-
-    verify(!tp || tp == cur,
-        "target enode value reused: created in %s, used in %s (target=%s)",
-        LLVMGetValueName(tp),
-        LLVMGetValueName(cur),
-        "return value");
-    */
-
     free(arg_values);
     free(arg_types);
 
@@ -1642,7 +1675,8 @@ enode enode_access(enode target, string name) {
         }
         
         // if primitive, we need to make a temp on stack (reserving Au header space), and obtain pointer to it
-        return (enode)efunc(mod, a, au, m, loaded, true, target, n);
+        return (enode)efunc(mod, a, au, m, loaded, true, target,
+            (m->is_static || m->is_smethod) ? null : n);
     }
     
     enode n = instanceof(m->user, enode);
@@ -3420,9 +3454,19 @@ none etype_init(etype t) {
 
     if (is_func((Au)au)) {
         int   is_inst = au->is_imethod;
-        enode fn      = (enode)t;
+        efunc fn      = (efunc)t;
         int   n_args  = fn->au->args.count;
         int   index   = 0;
+        
+        // If this needs a wrapper, append _generated to avoid collision with C function
+        if (t->remote_code && (strcmp(au->alt, "init") == 0 || strcmp(au->alt, "dealloc") == 0)) {
+            fn->remote_func = efunc(mod, a, au,
+                def(au->context, au->ident, au->member_type, au->traits));
+
+            // now we have to modify our own name; our own method implementation will call the user function (after a preamble)
+            au->alt = cstr_copy((cstr)fmt("%s_generated",
+                au->alt ? au->alt : au->ident)->chars);
+        }
 
         LLVMTypeRef* arg_types = calloc(4 + n_args, sizeof(LLVMTypeRef));
 
@@ -3704,7 +3748,7 @@ none etype_implement(etype t) {
 
     bool is_ARef = au == typeid(ARef);
     if (!is_ARef && au && au->src && au->src->user && !is_prim(au->src) && isa(au->src->user) == typeid(etype))
-        if (au->src != typeid(Au_t))
+        if (au->src != typeid(Au_t) && !au->is_funcptr)
             etype_implement(au->src->user);
 
     if (au->member_type == AU_MEMBER_VAR) {
@@ -3756,7 +3800,7 @@ none etype_implement(etype t) {
 
     }
 
-    if (!au->is_pointer && (is_rec(t) || au->is_union)) {
+    if (!au->is_pointer && !au->is_funcptr && (is_rec(t) || au->is_union)) {
         array cl = (au->is_union || is_struct(t)) ? a(t) : etype_class_list(t);
         bool multi_Au = len(cl) && cl->origin[0] == typeid(Au)->user;
         int count = 0;

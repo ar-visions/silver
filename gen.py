@@ -63,7 +63,13 @@ def get_platform_info():
             'ar': f'{silver}/bin/llvm-ar', 'ninja': 'ninja',
             'inc': ['/usr/include', '/usr/include/x86_64-linux-gnu'],
             'lib_dirs': [],
-            'lflags': ['-fuse-ld=lld', '-lstdc++'],
+            'lflags': ['-rdynamic', '-fuse-ld=lld', '-lstdc++',
+                '-lLLVM',        # The core LLVM library (contains the Symbolizer)
+                '-lz',           # REQUIRED: Used by LLVM to read compressed debug info
+                '-lpthread',     # LLVM uses threading
+                '-ldl',          # For dynamic loading (dlopen)
+                '-ltinfo',       # (Optional) Often needed by LLVMSupport for terminal caps
+            ],
             'cflags': ['-D_DLL', '-D_MT', '-fmacro-backtrace-limit=0'],
             'cxxflags': ['-D_DLL', '-D_MT'],
             'libs': ['-lc', '-lm']
