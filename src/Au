@@ -495,7 +495,7 @@ typedef Au_t* Au_ts;
 #define IS_DEBUG 1
 #endif
 
-#define define_arb(TYPE, BASE, TYPE_SZ, TRAIT, ...) \
+#define define_arb(TYPE, BASE, TYPE_SZ, TRAIT, SRC, ...) \
     _Pragma("pack(push, 1)") \
     static au_core TYPE##_af; \
     TYPE##_info TYPE##_i; \
@@ -511,6 +511,7 @@ typedef Au_t* Au_ts;
             memset(type_ref, 0, sizeof(TYPE##_i.type)); \
             if ((Au_t)type_ref != (Au_t)base_ref) \
                 memcpy(&type_ref->ft, &base_ref->ft, sizeof(BASE##_i.type.ft)); \
+            type_ref->src               = SRC; \
             type_ref->member_type       = AU_MEMBER_TYPE; \
             type_ref->members.alloc     = 128; \
             type_ref->members.assorted  = true; \
@@ -534,20 +535,20 @@ typedef Au_t* Au_ts;
         } \
     } \
 
-#define define_any(A0, A1, SZ, traits, ...) \
-    define_arb(A0, A1, SZ, traits, __VA_ARGS__)
-
 #define define_class(A0, A1, ...) \
-    define_any(A0, A1, sizeof(struct _##A0), AU_TRAIT_CLASS, __VA_ARGS__)
+    define_arb(A0, A1, sizeof(struct _##A0), AU_TRAIT_CLASS, null, __VA_ARGS__)
 
 #define define_struct(A0, ...) \
-    define_any(A0, A0, sizeof(struct _##A0), AU_TRAIT_STRUCT, __VA_ARGS__)
+    define_arb(A0, A0, sizeof(struct _##A0), AU_TRAIT_STRUCT, null, __VA_ARGS__)
 
 #define define_primitive(A0, A1, traits, ...) \
-    define_any(A0, A1, sizeof(A0), traits | AU_TRAIT_PRIMITIVE, __VA_ARGS__)
+    define_arb(A0, A1, sizeof(A0), traits | AU_TRAIT_PRIMITIVE, null, __VA_ARGS__)
+
+#define define_func_ptr(A0, RTYPE, ...) \
+    define_arb(A0, raw, sizeof(A0), AU_TRAIT_PRIMITIVE | AU_TRAIT_FUNCPTR, RTYPE, __VA_ARGS__)
 
 #define define_abstract(A0, traits, ...) \
-    define_any(A0, Au, 0, traits | AU_TRAIT_ABSTRACT, __VA_ARGS__)
+    define_arb(A0, Au, 0, traits | AU_TRAIT_ABSTRACT, null, __VA_ARGS__)
 
 struct _sz { i64 value; };
 

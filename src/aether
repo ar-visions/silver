@@ -31,6 +31,7 @@ Au_t read_arg_type(Au_t stored_arg);
     M(X,Y, i, prop, public,   etype,            suffix) \
     M(X,Y, i, prop, public,   tokens,           body) \
     M(X,Y, i, prop, public,   bool,             has_code) \
+    M(X,Y, i, prop, public,   bool,             remote_code) \
     M(X,Y, i, prop, public,   bool,             is_schema) \
     M(X,Y, i, prop, public,   bool,             is_elsewhere) \
     M(X,Y, i, prop, public,   bool,             user_built) \
@@ -216,6 +217,7 @@ forward(evar)
 
 #define enode_schema(X,Y,...)\
     M(X,Y, i, prop, public,   enode,            target) \
+    M(X,Y, i, prop, public,   bool,             avoid_ftable) \
     M(X,Y, i, prop, public,   string,           symbol_name) \
     M(X,Y, i, prop, public,   enode,            published_type) \
     M(X,Y, i, prop, public,   Au,               literal) \
@@ -243,6 +245,7 @@ declare_class_2(enode, etype)
 declare_class_3(evar, enode, etype)
 
 #define efunc_schema(X,Y,...) \
+    M(X,Y, i, prop, public, efunc, remote_func) \
     M(X,Y, i, prop, public, map, placeholder)
 declare_class_3(efunc, enode, etype)
 

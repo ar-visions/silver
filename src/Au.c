@@ -95,14 +95,14 @@ bool Au_is_module   (Au t) {
     return false;
 }
 
-bool Au_is_generic  (Au t) { return t && typeid(Au) == au_arg(t); }
-bool Au_is_integral (Au t) { return t && au_arg(t)->is_integral; }
-bool Au_is_void     (Au t) { return t && typeid(none) == au_arg(t); }
-bool Au_is_double   (Au t) { return t && typeid(f64) == au_arg(t); }
-bool Au_is_float    (Au t) { return t && typeid(f32) == au_arg(t); }
-bool Au_is_realistic(Au t) { return t && au_arg(t)->is_realistic; }
+bool Au_is_generic  (Au t) { return t && typeid(Au) == au_arg_type(t); }
+bool Au_is_integral (Au t) { return t && au_arg_type(t)->is_integral; }
+bool Au_is_void     (Au t) { return t && typeid(none) == au_arg_type(t); }
+bool Au_is_double   (Au t) { return t && typeid(f64) == au_arg_type(t); }
+bool Au_is_float    (Au t) { return t && typeid(f32) == au_arg_type(t); }
+bool Au_is_realistic(Au t) { return t && au_arg_type(t)->is_realistic; }
 bool Au_is_class    (Au t) {
-    Au_t au = au_arg(t);
+    Au_t au = au_arg_type(t);
     return au && au != typeid(Au_t) && au->is_class;
 }
 bool Au_is_struct  (Au t) { return au_arg(t)->is_struct; }
@@ -112,7 +112,7 @@ bool Au_is_opaque  (Au t) {
     return false;
 }
 bool Au_is_func(Au t) {
-    Au_t au = au_arg(t);
+    Au_t au = au_arg_type(t);
     return au && (au->member_type == AU_MEMBER_FUNC     ||
                   au->member_type == AU_MEMBER_CAST     ||
                   au->member_type == AU_MEMBER_INDEX    ||
@@ -120,11 +120,11 @@ bool Au_is_func(Au t) {
                   au->member_type == AU_MEMBER_CONSTRUCT) && (au->ident || au->alt);
 }
 bool Au_is_lambda(Au t) {
-    Au_t au = au_arg(t);
+    Au_t au = au_arg_type(t);
     return Au_is_func(t) && au->is_lambda;
 }
 bool Au_is_func_ptr(Au t) {
-    Au_t au = au_arg(t);
+    Au_t au = au_arg_type(t);
     return au->member_type == AU_MEMBER_TYPE && au->is_funcptr;
 }
 bool Au_is_imethod (Au t) { return au_arg(t)->member_type == AU_MEMBER_FUNC && au_arg(t)->is_imethod; }
@@ -134,13 +134,13 @@ Au_t Au_is_rec     (Au t) {
     if (au->src && au->src->is_class) return au->src;
     return (au->is_class || au->is_struct) ? au : null;
 }
-bool Au_is_prim    (Au t) { return au_arg(t)->is_primitive; }
-bool Au_is_sign    (Au t) { return au_arg(t)->is_signed; }
-bool Au_is_unsign  (Au t) { return au_arg(t)->is_unsigned; }
+bool Au_is_prim    (Au t) { return au_arg_type(t)->is_primitive; }
+bool Au_is_sign    (Au t) { return au_arg_type(t)->is_signed; }
+bool Au_is_unsign  (Au t) { return au_arg_type(t)->is_unsigned; }
 bool Au_is_ptr     (Au t) { Au_t a = au_arg_type(t); return a->is_class || a->is_pointer; }
-bool Au_is_enum    (Au t) { return au_arg(t)->is_enum; }
-bool Au_is_bool    (Au t) { return typeid(bool) == au_arg(t); }
-bool Au_is_type    (Au t) { return au_arg(t)->member_type == AU_MEMBER_TYPE; }
+bool Au_is_enum    (Au t) { return au_arg_type(t)->is_enum; }
+bool Au_is_bool    (Au t) { return typeid(bool) == au_arg_type(t); }
+bool Au_is_type    (Au t) { return au_arg_type(t)->member_type == AU_MEMBER_TYPE; }
 
 
 shape shape_with_array(shape a, array dims) {
@@ -722,6 +722,9 @@ Au_t lexical(array lex, symbol f) {
                 }
             for (int ii = 0; ii < au->members.count; ii++) {
                 Au_t m = (Au_t)au->members.origin[ii];
+                if (strcmp(f, "header") == 0 && m->ident && strcmp(m->ident, "header") == 0) {
+                    m = m;
+                }
                 if (m->ident && strcmp(m->ident, f) == 0)
                     return m;
             }
@@ -2561,7 +2564,7 @@ Au formatter(Au_t type, handle ff, Au opt, symbol template, ...) {
     
     while (*scan) {
         /// format %o as Au's string cast
-        char cmd[2] = { *scan, *(scan + 1) };
+        char cmd[8] = { *scan, *(scan + 1), 0 };
         int column_size = 0;
         int skip = 0;
         int f = cmd[1];
@@ -2569,7 +2572,7 @@ Au formatter(Au_t type, handle ff, Au opt, symbol template, ...) {
         if (cmd[0] == '%' && (cmd[1] == '-' || isdigit(cmd[1]))) {
             /// register to fill this space
             for (int n = 1; n; n++) {
-                if (!isdigit(cmd[1 + n])) {
+                if (cmd[n] && !isdigit(cmd[1 + n])) {
                     int column_digits = 1 + n;
                     verify(column_digits < 32, "column size out of range");
                     char val[32];
@@ -2587,10 +2590,6 @@ Au formatter(Au_t type, handle ff, Au opt, symbol template, ...) {
             string   a;
             Au_t isa_arg = isa(arg);
             bool success = !arg || isa_arg;
-            if (!success) {
-                int test2 = 2;
-                test2    += 2;
-            }
             verify(!arg || isa_arg, "unexpected null isa on object");
             if (isa_arg == typeid(Au_t_f) || isa_arg == arg) {
                 if (!arg) {
@@ -5969,7 +5968,7 @@ array read_arg(array tokens, int start, int* next_read) {
 define_class(subscriber, Au)
 define_class(subs, Au)
 
-define_any(Au, Au, sizeof(struct _Au), AU_TRAIT_CLASS);
+define_arb(Au, Au, sizeof(struct _Au), AU_TRAIT_CLASS, null);
 
 
 /*
@@ -6053,10 +6052,11 @@ define_primitive(ARef,   ref, AU_TRAIT_POINTER, Au)
 define_primitive(Au_ts, ref, AU_TRAIT_POINTER, Au_t)
 define_primitive(floats, raw, AU_TRAIT_POINTER, f32)
 
-define_primitive(func,     raw, AU_TRAIT_FUNCPTR)
-define_primitive(hook,     raw, AU_TRAIT_FUNCPTR)
-define_primitive(callback, raw, AU_TRAIT_FUNCPTR)
-define_primitive(callback_extra, raw, AU_TRAIT_FUNCPTR)
+define_func_ptr(func,           typeid(none))
+define_func_ptr(hook,           typeid(Au), Au)
+define_func_ptr(callback,       typeid(Au), Au, Au)
+define_func_ptr(callback_extra, typeid(Au), Au, Au, Au)
+
 define_primitive(cstrs, raw, AU_TRAIT_POINTER, cstr)
 
 define_class(line, Au)
