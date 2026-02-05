@@ -15,6 +15,15 @@ import glennrp:libpng/07b8803 <png.h>
 import <string.h>
 
 
+# all 4 opencv functions implemented in img.cc
+func opencv_resize_area[ref u8, ref u8, int, int, int, int, int, int] -> none
+
+func opencv_gaussian[ref u8, ref u8, int, int, int, int, float] -> none
+
+func opencv_gaussian_fast[ref u8, ref u8, int, int, int, int , float] -> none
+
+func opencv_blur_equirect[ref u8, int, int] -> none
+
 enum Pixel
     none            : 0
     rgba8           : 1
@@ -89,7 +98,6 @@ class font
 
     func init[] -> none
         font_manager_init a
-        return f
 
     construct [ u:path ]
         uri = u
@@ -106,7 +114,7 @@ class image
     source:         Au
     filter:         Filter
     user:           Au
-    res:            handle
+    res2:           handle
     res_dealloc:    hook
     res_bits:       ARef
 
@@ -125,15 +133,11 @@ class image
 
     func dealloc [ ] -> none # some comment
         info : header[ a ]
-        if [ res_dealloc ]
-            res_dealloc [ a ]
-            info.data = null
-        if [ !res_bits ]
-            drop info.data
-            info.data = null
+        if [ res_dealloc ] res_dealloc [ a ]
 
     func copy[ ] -> image
-        res: image[ :width :height :format :surface ]
+        res: image
+            :width :height :format :surface
         memcpy res.vdata, vdata, byte_count
         return res
 
@@ -141,7 +145,7 @@ class image
         check width > 0 && height > 0, "null image given to resize"
         check out_w > 0 && out_h  > 0, "invalid size"
         
-        if [ in_w == out_w && in_h == out_h ]
+        if [ width == out_w && height == out_h ]
             return copy
         
         scale_x : float width / out_w
@@ -151,12 +155,12 @@ class image
             width    :out_w,
             height   :out_h,
             :format, :surface, :channels
-        
+
         src : ref u8 vdata
         dst : ref u8 output.vdata
 
         opencv_resize_area
-            src,      dst,   format == Pixel_rgbaf32,
+            src,      dst,   format == Pixel.rgbaf32,
             width,    height,
             channels, out_w, out_h
         
@@ -172,13 +176,17 @@ class image
 
         src : ref u8 vdata
         dst : ref u8 output.vdata
-        opencv_gaussian src, dst, input.format == Pixel_rgbaf32, width, height, channels, amount
+
+        opencv_gaussian
+            src, dst, format == Pixel.rgbaf32,
+            width, height, channels, amount
+        
         return output
 
 
     # save gray or colored png based on channel count; if we want conversion we may just use methods to alter an object
     func png [ uri:path ] -> i32
-        e : string ext [ uri ]
+        e       : uri.ext
         success : 1
 
         if [ e == "png" ]
@@ -192,7 +200,7 @@ class image
             info : png_create_info_struct [ png ]
             check info, "could not create PNG info struct"
 
-            if [ !setjmp[ png_jmpbuf[ png ]] ]
+            if [!setjmp[ png_jmpbuf[ png ]]]
                 png_init_io png, file
                 png_t_seIHDR png, info, width, height, 8, # 8-bit per channel
                     (channels == 1) ? PNG_COLOR_TYPE_GRAY :

@@ -24,7 +24,8 @@ enum AU_MEMBER {
     AU_MEMBER_OVERRIDE  = 10,
     AU_MEMBER_IS_ATTR   = 11,
     AU_MEMBER_NAMESPACE = 12,
-    AU_MEMBER_DECL      = 13
+    AU_MEMBER_DECL      = 13,
+    AU_MEMBER_MACRO     = 14
 };
 
 typedef enum AU_MEMBER AFlag;
