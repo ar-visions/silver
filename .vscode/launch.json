@@ -139,7 +139,7 @@
             "request":    "launch",
             "preLaunchTask": "build-silver-ninja",
             "program":    "${workspaceFolder}/install/bin/silver",
-            "args":     [ "--module", "${workspaceFolder}/foundation/test" ],
+            "args":     [ "--module", "${workspaceFolder}/foundation/test", "--breakpoint", "opencv_resize_area" ],
             "cwd":        "${workspaceFolder}/install/lib",
             "env":      {
                 "VERBOSE": "1",
@@ -157,10 +157,10 @@
             "args":     [ "--source", "${workspaceFolder}/../orbiter/orbiter" ],
             "cwd":        "/src",
             "env":      {
-                "VERBOSE": "1",
-                "LD_LIBRARY_PATH":"${workspaceFolder}/install/lib",
-                "IMPORT":  "${workspaceFolder}/install",
-                "ASAN_OPTIONS": "detect_leaks=0"
+                "VERBOSE":          "1",
+                "LD_LIBRARY_PATH":  "${workspaceFolder}/install/lib",
+                "IMPORT":           "${workspaceFolder}/install",
+                "ASAN_OPTIONS":     "detect_leaks=0"
             }
         },
         {

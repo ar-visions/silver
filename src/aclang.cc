@@ -864,14 +864,67 @@ public:
         Au_t existing = au_lookup(n);
         if (existing)
             return;
+        
+        // function-like macros emit tokens for expressions (never L-hand side; those structurally would be etype)
+        // type-like macros are registered as etype
+        // 
+        
+        // TODO: Implement macro handling for new Au_t, and use etype_infer 
+        // (after the module has finished its include!  otherwise, we are 
+        // subject to initialization order (macro types are NOT limited this 
+        // way in C's use-case, so we must load without loss))
 
-        // For now, skip macro processing - would need macro type in new API
-        // The old code created macro objects; new API may need def_macro or similar
-        
-        // Simple constant macros could be registered as enum values or constants
-        // Function-like macros need special handling
-        
-        // TODO: Implement macro handling for new Au_t, and use etype_infer
+
+        // Reconstruct body text
+        std::string body_text;
+#undef tokens
+        for (const auto &tok : mi->tokens()) {
+             if (body_text.length() > 0 && tok.hasLeadingSpace()) 
+                body_text += " ";
+             
+             // Simple spelling
+             body_text += PP->getSpelling(tok);
+        }
+
+        // Create silver string
+        // Note: 'string' is a silver type constructor from 'aether/import'
+        string body_str = string(body_text.c_str());
+
+        // Tokenize body
+        // We need the 'tokens' function. It's likely global or in 'e'.
+    // aether.c uses 'tokens' as a global function (likely from ports.h or silver runtime)
+        // Check aether.c: array t = (array)tokens(...)
+        tokens body_tokens = (tokens)new0(tokens, target, (Au)e, parser, e->parse_f, input, (Au)body_str);
+
+        // Handle Params
+        array params_array = nullptr;
+        bool va_args = mi->isVariadic();
+
+        if (mi->isFunctionLike()) {
+            params_array = array(alloc, mi->getNumParams());
+            for (auto param : mi->params()) {
+                std::string p_name = param->getName().str();
+                Au p_str = (Au)string(p_name.c_str());
+                array p_toks = (array)new0(tokens, target, (Au)e, parser, e->parse_f, input, p_str);
+                if (p_toks && p_toks->count > 0)
+                     push(params_array, p_toks->origin[0]);
+            }
+        }
+
+        // process these after we are done including models
+        // the best idea is likely to update the users on these to etype when it is a type
+        // otherwise, it may stay as token replacement with or without arguments
+        // like C, we must not 'find' it if its a functional macro and we are not hinting at a function!
+        // that must be implemented as well, and wasnt in the prior macro system
+        // its important to keep using ( ) for functional macros, as this is a syntax indicator for macros
+        macro m = macro(
+            mod,        e, 
+            au,         def(top_scope(e), n, AU_MEMBER_MACRO, 0),
+            def,        (array)body_tokens, 
+            params,     params_array, 
+            va_args,    va_args);
+        m->au->user = (etype)m;
+
     }
 };
 

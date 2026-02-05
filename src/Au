@@ -1452,9 +1452,9 @@ declare_class(async)
 declare_class_2(token, string)
 
 #define tokens_schema(AA,BB,...) \
-    M(AA,BB, i, prop,    required, callback_extra, parser) \
-    M(AA,BB, i, prop,    required, Au,   target) \
-    M(AA,BB, i, prop,    required, Au,   input) \
+    M(AA,BB, i, prop,    public, callback_extra, parser) \
+    M(AA,BB, i, prop,    public, Au,   target) \
+    M(AA,BB, i, prop,    public, Au,   input) \
     M(AA,BB, i, ctr,     public,   cstr) \
     M(AA,BB, i, override, method,  init)
 declare_class_3(tokens, array, collective)

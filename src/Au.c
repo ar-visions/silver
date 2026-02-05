@@ -472,13 +472,11 @@ none array_operator__assign_sub(array a, num b) {
 }
 
 Au array_first_element(array a) {
-    assert(a->count, "no items");
-    return a->origin[0];
+    return a && a->count ? a->origin[0] : null;
 }
 
 Au array_last_element(array a) {
-    assert(a->count, "no items");
-    return a->origin[a->count - 1];
+    return a && a->count ? a->origin[a->count - 1] : null;
 }
 
 none array_push_symbols(array a, cstr symbol, ...) {
@@ -526,6 +524,9 @@ array array_of_cstr(cstr first, ...) {
 }
 
 Au array_pop(array a) {
+    if (a->count == 0) {
+        a = a;
+    }
     assert(a->count > 0, "no items");
     if (!a->unmanaged) Au_drop(a->origin[a->count - 1]);
     return a->origin[--a->count];
@@ -1772,7 +1773,8 @@ none engage(cstrs argv) {
                 append(topics, ", ");
             concat(topics, (string)i->key);
         }
-        printf("listening-to: %s\n", topics->chars);
+        if (len(topics) && !eq(topics, "*"))
+            printf("listening-to: %s\n", topics->chars);
     }
 
     if (argv) {
@@ -2099,10 +2101,13 @@ Au Au_with_cstrs(Au a, cstrs argv) {
             }
             verify(mem, "member not found: %s", &arg[1 + !single]);
             cstr value = argv[++argc];
-            verify(value, "expected value after %s", &arg[1 + !single]);
+            bool is_bool = mem->src == typeid(bool);
+            verify(value || is_bool, "expected value after %s", &arg[1 + !single]);
             
-            Au conv = convert(mem->type, (Au)string(value));
+            Au conv = value ? convert(mem->type, (Au)string(value)) : _bool(true);
             Au_set_property(a, mem->ident, conv);
+            if (!value)
+                break;
         }
         argc++;
     }
@@ -2366,7 +2371,7 @@ bool Au_member_set(Au a, Au_t m, Au value) {
             "vector size mismatch for %s", m->ident);
         memcpy(member_ptr, value, m->type->typesize);
     } else if (m->type->is_enum || m->type->is_inlay || m->type->is_primitive) {
-        Au_t ref = (Au_t)*m->type->meta.origin;
+        Au_t ref = (Au_t)(m->type->meta.count ? *m->type->meta.origin : null);
         verify(!m->type->is_struct || vtype == m->type ||
             vtype == ref,
             "%s: expected vmember_type (%s) to equal isa(value) (%s)",
