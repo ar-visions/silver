@@ -21,6 +21,8 @@ forward(codegen)
 
 Au_t read_arg_type(Au_t stored_arg);
 
+forward(enode)
+
 // templates needed
 #define etype_schema(X,Y,...)\
     M(X,Y, i, prop, public,   Au_t,             au) \
@@ -39,6 +41,7 @@ Au_t read_arg_type(Au_t stored_arg);
     M(X,Y, i, prop, public,   path,             imported_from) \
     M(X,Y, i, prop, public,   codegen,          cgen) \
     M(X,Y, i, prop, public,   enode,            type_id) \
+    M(X,Y, i, method, public, enode,            access, string) \
     M(X,Y, i, method, public, none,             implement) \
     M(X,Y, i, method, public, array,            class_list) \
     M(X,Y, i, method, public, etype,            resolve) \
@@ -100,7 +103,7 @@ forward(efunc)
     M(X,Y, i, prop,  public, efunc,     fn_init) \
     M(X,Y, i, prop,  public, callback_extra, parse_f) \
     M(X,Y, i, prop,  public, callback,       parse_enode) \
-    M(X,Y, i, prop,  public, callback_extra, parse_expr) \
+    M(X,Y, i, prop,  public, callback,       parse_expr) \
     M(X,Y, i, prop,  public, callback_extra, read_etype) \
     M(X,Y, i, prop,  intern, LLVMExecutionEngineRef, jit, as, ARef) \
     M(X,Y, i, prop,  intern, LLVMBasicBlockRef, current_if_block,  as, ARef) \
@@ -231,7 +234,6 @@ forward(evar)
     M(X,Y, i, prop, public,   enode,            context_node, as, ARef) \
     M(X,Y, i, prop, intern,   LLVMBasicBlockRef, entry,  as, ARef) \
     M(X,Y, i, method, public, Au,               literal_value, Au_t) \
-    M(X,Y, i, method, public, enode,            access, string) \
     M(X,Y, i, method, public, enode,            retain) \
     M(X,Y, i, method, public, enode,            release) \
     M(X,Y, i, method, public, none,             inspect) \

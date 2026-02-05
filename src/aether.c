@@ -80,7 +80,7 @@ enode enode_value(enode mem) {
         Au info = head(mem);
         LLVMValueRef loaded = LLVMBuildLoad2(
             a->builder, lltype(mem->au), mem->value, id->chars);
-        enode  res = enode(mod, a, value, loaded, loaded, true, au, resolve(mem)->au);
+        enode  res = enode(mod, a, value, loaded, loaded, true, au, mem->au); // resolve(mem)->au);
         return res;
     } else {
         return mem;
@@ -741,7 +741,7 @@ enode aether_e_eval(aether a, string value) {
     if (seq == 2) {
         seq = seq;
     }
-    enode n = (enode)a->parse_expr((Au)a, null, null); // this should not output i32 (2nd time)
+    enode n = (enode)a->parse_expr((Au)a, null); // this should not output i32 (2nd time)
     enode s = e_create(a, typeid(string)->user, (Au)n);
     pop_tokens(a, false);
     return s;
@@ -1035,7 +1035,6 @@ none aether_e_fn_return(aether a, Au o) {
     a->is_const_op = false;
     if (a->no_build) return;
 
-    verify (!f->au->has_return, "function %o already has return", f);
     f->au->has_return = true;
 
     if (is_void(f->au->rtype)) {
@@ -1147,7 +1146,7 @@ enode aether_e_short_circuit(aether a, OPType optype, enode L) {
     
     // eval R block
     LLVMPositionBuilderAtEnd(B, eval_r_block);
-    enode R = (enode)a->parse_enode((Au)a, null);
+    enode R = (enode)a->parse_expr((Au)a, null);
     LLVMBasicBlockRef R_block = LLVMGetInsertBlock(B);
     LLVMBuildBr(B, merge_block);
     
@@ -1531,13 +1530,16 @@ enode convertible(etype fr, etype to) {
         return (enode)true;
 
     // allow Au to convert to primitive/struct
-    if (ma->au == typeid(Au) && (mb->au->is_struct || mb->au->is_primitive))
+    if (ma->au == typeid(Au) && (mb->au->is_struct || mb->au->is_primitive || mb->au->is_pointer))
         return (enode)true;
 
     if (ma->au->is_schema && mb->au->is_pointer)     return (enode)true;
     if (mb->au->is_schema && ma->au->is_pointer)     return (enode)true;
     if (ma->au->is_schema && mb->au == typeid(Au_t)) return (enode)true;
     if (mb->au->is_schema && ma->au == typeid(Au_t)) return (enode)true;
+
+    // allow pointers of any sort, to boolean
+    if  (ma->au->is_pointer && mb->au == typeid(bool)) return (enode)true;
 
     // todo: ref depth must be the same too
     if (resolve(ma) == resolve(mb) && ref_level((Au)ma) == ref_level((Au)mb)) return (enode)true;
@@ -1639,7 +1641,7 @@ enode eshape_from_indices(aether a, array indices) {
     return e_fn_call(a, (efunc)shape_from_fn->user, a(count_node, data_node));
 }
 
-enode enode_access(enode target, string name) {
+enode etype_access(etype target, string name) {
     aether a = target->mod;
     Au_t rel = target->au->member_type == AU_MEMBER_VAR ? 
         resolve(target->au->src->user)->au : target->au;
@@ -1650,11 +1652,8 @@ enode enode_access(enode target, string name) {
         m = m;
     }
     verify(m, "failed to find member %o on type %o", name, rel);
-    
-    if (!is_addressable(target)) {
-        int test2 = 2;
-        test2    += 2;
-    }
+    bool is_enode = instanceof(target, enode) != null;
+
     //verify(is_addressable(target), 
     //    "expected target pointer for member access");
 
@@ -1664,7 +1663,7 @@ enode enode_access(enode target, string name) {
 
     // for functions, we return directly with target passed along
     if (is_func((Au)m)) {
-        enode n = enode_value(target);
+        enode n = enode_value((enode)target);
 
         // primitive method receiver must be addressable
         if (is_prim(n->au->src) && !is_addressable(n)) {
@@ -1677,6 +1676,14 @@ enode enode_access(enode target, string name) {
         // if primitive, we need to make a temp on stack (reserving Au header space), and obtain pointer to it
         return (enode)efunc(mod, a, au, m, loaded, true, target,
             (m->is_static || m->is_smethod) ? null : n);
+    }
+
+    // enum values should already be created
+    if (m->member_type == AU_MEMBER_ENUMV) {
+        // make sure the enum is implemented
+        etype_implement((etype)m->context->user);
+        verify(instanceof(m->user, enode), "expected enode for enum value");
+        return (enode)m->user;
     }
     
     enode n = instanceof(m->user, enode);
@@ -1699,15 +1706,13 @@ enode enode_access(enode target, string name) {
         seq = seq;
     }
     string id = f(string, "enode_access_%i", seq);
-
-    Au target_info = head(target); 
     return enode(
         mod,    a,
         au,     m,
         loaded, false, // loaded false == ptr
         debug_id, id,
         value,  LLVMBuildStructGEP2(
-            a->builder, t->au->lltype, target->value,
+            a->builder, t->au->lltype, ((enode)target)->value,
             m->index, id->chars));
 }
 
@@ -1982,8 +1987,8 @@ enode e_create_from_array(aether a, etype t, array ar) {
         const_vector = enode(mod, a, au, ptr->au, loaded, false, value, glob);
     }
 
-    enode prop_alloc     = enode_access(res, string("alloc"));
-    enode prop_unmanaged = enode_access(res, string("unmanaged"));
+    enode prop_alloc     = etype_access((etype)res, string("alloc"));
+    enode prop_unmanaged = etype_access((etype)res, string("unmanaged"));
 
     e_assign(a, prop_alloc, (Au)array_len, OPType__assign);
     if (const_vector) {
@@ -2152,7 +2157,7 @@ enode aether_e_create(aether a, etype mdl, Au args) {
         
         static int seq = 0;
         seq++;
-        if (seq == 7) {
+        if (seq == 188) {
             seq = seq;
         }
 
@@ -3459,7 +3464,8 @@ none etype_init(etype t) {
         int   index   = 0;
         
         // If this needs a wrapper, append _generated to avoid collision with C function
-        if (t->remote_code && (strcmp(au->alt, "init") == 0 || strcmp(au->alt, "dealloc") == 0)) {
+        if (t->remote_code && au->alt && (strcmp(au->alt, "init") == 0 || strcmp(au->alt, "dealloc") == 0)) {
+            // normal implemented-else-where does not do this; this is for method proxying 
             fn->remote_func = efunc(mod, a, au,
                 def(au->context, au->ident, au->member_type, au->traits));
 
@@ -4608,8 +4614,6 @@ string etype_cast_string(etype t) {
 Au_t etype_cast_Au_t(etype t) {
     return t->au;
 }
-
-
 
 
 none enode_init(enode n) {
