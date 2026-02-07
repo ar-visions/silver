@@ -961,7 +961,7 @@ enode aether_e_null(aether a, etype mdl) {
     if (!is_ptr(mdl) && mdl->au->is_class) {
         mdl = etype_ptr(a, mdl->au); // we may only do this on a limited set of types, such a struct types
     }
-    verify(is_ptr(mdl), "%o not compatible with null value", mdl);
+    verify(is_ptr(mdl) || is_func_ptr(mdl), "%o not compatible with null value", mdl);
     return enode(mod, a, loaded, true, value, LLVMConstNull(lltype(mdl)), au, mdl->au);
 }
 
@@ -1539,7 +1539,7 @@ enode convertible(etype fr, etype to) {
     if (mb->au->is_schema && ma->au == typeid(Au_t)) return (enode)true;
 
     // allow pointers of any sort, to boolean
-    if  (ma->au->is_pointer && mb->au == typeid(bool)) return (enode)true;
+    if  (is_ptr(ma) && mb->au == typeid(bool)) return (enode)true;
 
     // todo: ref depth must be the same too
     if (resolve(ma) == resolve(mb) && ref_level((Au)ma) == ref_level((Au)mb)) return (enode)true;
@@ -2015,6 +2015,7 @@ none copy_lambda_info(enode mem, enode lambda_fn) {
 }
 
 enode e_convert_or_cast(aether a, etype output, enode input) {
+    Au_t itype = isa(input);
     LLVMTypeRef typ = LLVMTypeOf(input->value);
     LLVMTypeKind k = LLVMGetTypeKind(typ);
 
@@ -2157,7 +2158,7 @@ enode aether_e_create(aether a, etype mdl, Au args) {
         
         static int seq = 0;
         seq++;
-        if (seq == 188) {
+        if (seq == 198) {
             seq = seq;
         }
 
@@ -2838,6 +2839,10 @@ enode aether_e_if_else(
         Au    cond_obj  = conds->origin[i];
         enode cond_node = (enode)invoke(cond_builder, cond_obj);
         Au info = head(cond_node);
+        if (cond_node->au == typeid(none)) {
+            int test2 = 2;
+            test2    += 2;
+        }
         LLVMValueRef condition = e_create(a, typeid(bool)->user, (Au)cond_node)->value;
 
         LLVMBuildCondBr(a->builder, condition, then_block, else_block);
@@ -3091,6 +3096,10 @@ void aether_push_tokens(aether a, tokens t, num cursor) {
 
 void aether_pop_tokens(aether a, bool transfer) {
     int len = a->stack->count;
+    if (len == 1) {
+        int test2 = 2;
+        test2    += 2;
+    }
     assert (len, "expected stack");
     tokens_data* state = (tokens_data*)last_element(a->stack); // we should call this element or ele
     a->stack_test--;
@@ -4299,6 +4308,28 @@ void aether_create_type_members(aether a, Au_t ctx) {
     }
 }
 
+static Au_t map_etype(aether a, symbol name, int *out_depth) {
+    Au_t t = (Au_t)elookup(name); // Cast to Au_t directly if your system allows
+    if (!t) return null;
+
+    if (t->member_type == AU_MEMBER_TYPE) return t;
+    if (t->member_type != AU_MEMBER_MACRO) return null;
+
+    macro mac = (macro)t->user;
+    if (mac->au->is_functional || len(mac->def) == 0) return null;
+
+    token f = (token)first_element(mac->def);
+    if (!f || eq(f, name)) return null;
+
+    for (int i = 1; i < mac->def->count; i++) {
+        if (!eq((token)mac->def->origin[i], "*")) return null;
+        (*out_depth)++;
+    }
+    return map_etype(a, f->chars, out_depth);
+}
+
+
+
 void aether_import_models(aether a, Au_t ctx) {
     // initialization table for has/not bits, controlling init and implement
     struct filter {
@@ -4324,16 +4355,8 @@ void aether_import_models(aether a, Au_t ctx) {
 
     Au info = head(typeid(Au)->user);
 
-    save = typeid(Au)->user;
-
-    Au_t ty = typeid(i32);
-
     for (int filter = 0; filter < 10; filter++) {
         struct filter* ff = &filters[filter];
-        
-        if (save != typeid(Au)->user) {
-            save = save;
-        }
         for (num i = 0; i < ctx->members.count; i++) {
             Au_t m  =  (Au_t)ctx->members.origin[i];
             
@@ -4354,38 +4377,33 @@ void aether_import_models(aether a, Au_t ctx) {
             }
 
             if (proceed) {
-
-                if (m->ident && strstr(m->ident, "f32")) {
-                    int test2 = 2;
-                    test2    += 2;
-                    members(m, strm) {
-                        if (strm->ident && strstr(strm->ident, "round")) {
-                            Au_t arg0 = (Au_t)strm->args.origin[0];
-                            strm = strm;
-                        }
-                    }
-                }
-
                 if (ff->init || ff->impl) {
                     src_init(a, m);
                 }
-                if (ff->impl) {
-                    if (m->ident && strcmp(m->ident, "vec2f") == 0) {
-                        int test2 = 2;
-                        test2    += 2;
-                    }
+                if (ff->impl)
                     etype_implement((etype)m->user);
-                }
             }
-        }
-
-        if (save != typeid(Au)->user) {
-            save = save;
         }
     }
     create_type_members(a, ctx);
-    if (save != typeid(Au)->user) {
-        save = save;
+
+    // typed macros to member type aliases
+    members (ctx, m) {
+        if (m->member_type == AU_MEMBER_MACRO && !m->is_functional) {
+            macro mac   = (macro)m->user;
+            int  depth = 0;
+            Au_t base = map_etype(a, m->ident, &depth); // start from self to get full chain
+
+            if (base && base != m) { // found a resolution that isn't just self-pointing
+                m->member_type = AU_MEMBER_TYPE;
+                m->src = base;
+
+                for (int i = 0; i < depth; i++)
+                    m->src = pointer(a, (Au)m->src)->au;
+                
+                m->user = (etype)etype(mod, a, au, m);
+            }
+        }
     }
 }
 
@@ -4650,63 +4668,6 @@ Au_t enode_cast_Au_t(enode a) {
 
 array read_arg(array tokens, int start, int* next_read);
 
-static array expand_tokens(aether a, array tokens, map expanding) {
-    int ln = len(tokens);
-    array res = array(alloc, 32);
-
-    int skip = 1;
-    for (int i = 0; i < ln; i += skip) {
-        skip    = 1;
-        token token_a = (token)tokens->origin[i];
-        token token_b = ln > (i + 1) ? (token)tokens->origin[i + 1] : null;
-        int   n = 2; // after b is 2 ahead of token_a
-
-        if (token_b && eq(token_b, "##")) {
-            if  (ln <= (i + 2)) return null;
-            token c = (token)tokens->origin[i + 2];
-            if  (!c) return null;
-            token  aa = token(alloc, len(token_a) + len(c) + 1);
-            concat(aa, (string)a);
-            concat(aa, (string)c);
-            token_a = aa;
-            n = 4;
-            token_b = ln > (i + 3) ? (token)tokens->origin[i + 3] : null; // can be null
-            skip += 2;
-        }
-
-        // see if this token is a fellow macro
-        macro m = (macro)elookup(token_a->chars);
-        string mname = cast(string, m);
-        if (m && token_b && eq(token_b, "(") && !get(expanding, (Au)mname)) {
-            array args  = array(alloc, 32);
-            int   index = i + n + 1;
-
-            while (true) {
-                int  stop = 0;
-                array arg = read_arg(tokens, index, &stop);
-                if (!arg)
-                    return null;
-                
-                skip += len(arg) + 1; // for the , or )
-                push(args, (Au)arg);
-                token  after = (token)tokens->origin[stop];
-                if (eq(after, ")")) {
-                    index++;
-                    break;
-                }
-            }
-
-            set(expanding, (Au)mname, _bool(true));
-            array exp = macro_expand(m, args, expanding);
-            rm(expanding, (Au)mname);
-
-            concat(res, exp);
-        } else
-            push(res, (Au)a);
-    }
-
-    return res;
-}
 
 static void print_all(aether mod, symbol label, array list) {
     print("[%s] tokens", label);
@@ -4715,11 +4676,8 @@ static void print_all(aether mod, symbol label, array list) {
     put("\n");
 }
 
-array macro_expand(macro m, array args, map expanding) {
-    // we want args with const expression evaluated already from its host language silver
+array macro_expand(macro m, array args) {
     aether a = m->mod;
-
-    // no need for string scanning within args, since tokens are isolated
     int   ln_args   = len(args);
     array r         = array(alloc, 32);
     array args_exp  = array(alloc, 32);
@@ -4732,38 +4690,29 @@ array macro_expand(macro m, array args, map expanding) {
     // now its a simple replacement within the definition
     array initial = array(alloc, 32);
     each(m->def, token, t) {
-        print("token: %o", t);
-        // replace directly in here
+        print("macro_expand token: %o", t);
+
+        // parameter -> arg replacement (each item is a token list)
         bool found = false;
         for (int param = 0; param < ln_params; param++) {
+            print("macro_expand compare: %o", m->params->origin[param]);
+            // if token matches parameter, replace; further replacement happens within silver
             if (compare(t, (token)m->params->origin[param]) == 0) {
+                print_all(a, "adding tokens", (array)args->origin[param]);
                 concat(initial, (array)args->origin[param]);
                 found = true;
                 break;
             } 
         }
-        if (!found)
+        if (!found) {
+            print_all(a, "initial state", initial);
             push(initial, (Au)t);
+        }
     }
-
-    if (!expanding)
-         expanding = map(hsize, 16, assorted, true, unmanaged, true);
-
-    set(expanding, (Au)string(m->au->ident), _bool(true));
 
     // once replaced, we expand those as a flat token list
     print_all(a, "initial", initial);
-    array rr = expand_tokens(a, initial, expanding);
-    print_all(a, "expand", rr);
-    string tstr = string(alloc, 64);
-    each (rr, token, t) { // since literal processing is in token_init we shouldnt need this!
-        if (tstr->count > 0)
-            append(tstr, " ");
-        concat(tstr, (string)t);
-    }
-    return (array)tokens(
-        target, (Au)a, input, (Au)tstr, parser, a->parse_f);
-        // we call this to make silver compatible tokens
+    return initial;
 }
 
 // return tokens for function content (not its surrounding def)
@@ -5064,6 +5013,31 @@ enode aether_e_bitwise_not(aether a, enode L) {
     if (a->no_build) return e_noop(a, typeid(bool)->user);
 
     return value(L, LLVMBuildNot(a->builder, L->value, "bitwise-not"));
+}
+
+enode efunc_fptr(efunc f) {
+    f->used = true;
+    etype_implement((etype)f);
+    etype func_ptr = pointer(f->mod, (Au)f);
+    // in C, we get the address here
+    // merely the f->value, with a type given as f->type or pointer(f->type) ?
+    return enode(mod, f->mod, au, func_ptr->au, loaded, true, value, f->value);
+}
+
+// changes the type out, loads value
+enode enode_deref(enode n) {
+    aether a = n->mod;
+    Au_t src = n->au->src;
+    etype ca = canonical(n);
+
+    while (src && lltype(ca) == lltype(src))
+        src = src->src;
+    
+    verify(!n->literal, "unable to dereference literal %o", isa(n->literal));
+    verify(src, "cannot dereference type %o", n);
+
+    return enode(mod, a, au, src, loaded, true, value,
+        LLVMBuildLoad2(a->builder, lltype(src), n->value, "deref"));
 }
 
 

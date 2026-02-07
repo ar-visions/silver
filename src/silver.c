@@ -35,16 +35,29 @@ static void build_record(silver a, etype mrec);
 token silver_element(silver, num);
 
 void print_tokens(silver a, symbol label) {
-    //print("[%s] tokens: %o %o %o %o %o %o...", label,
-    //      element(a, 0), element(a, 1), element(a, 2), element(a, 3),
-    //      element(a, 4), element(a, 5));
+    print("[%s] %o %o %o %o %o %o...", label,
+          element(a, 0), element(a, 1), element(a, 2), element(a, 3),
+          element(a, 4), element(a, 5));
+}
+
+void print_token_state(silver a, symbol label) {
+    print("[%s] %o %o %o %o %o %o...", label,
+          element(a, 0), element(a, 1), element(a, 2), element(a, 3),
+          element(a, 4), element(a, 5));
 }
 
 static void print_all(silver a, symbol label, array list) {
-    //print("[%s] tokens", label);
-    //each(list, token, t)
-    //    put("%o ", t);
-    //put("\n");
+    print("[%s] tokens", label);
+    each(list, token, t)
+        put("%o ", t);
+    put("\n");
+}
+
+static void print_all_tokens(silver a, symbol label, array list) {
+    print("[%s] tokens", label);
+    each(list, token, t)
+        put("%o ", t);
+    put("\n");
 }
 
 static map operators;
@@ -155,6 +168,11 @@ string silver_read_alpha(silver a) {
         return string(n->chars);
     }
     return null;
+}
+
+bool silver_is_cmode(silver a) {
+    token n = element(a, 0);
+    return (n && n->cmode);
 }
 
 string git_remote_info(path path, string *out_service, string *out_owner, string *out_project) {
@@ -335,7 +353,7 @@ token silver_read_if(silver a, symbol cs);
 
 
 static enode reverse_descent(silver a, etype expect) {
-    bool cmode = a->cmode;
+    bool cmode = is_cmode(a);
     enode L = read_enode(a, expect); // build-arg
     token t = peek(a);
     validate(cmode || L, "unexpected '%o'", t);
@@ -707,7 +725,7 @@ token silver_next(silver a) {
     }
     a->cursor++;
 
-    if (!a->clipping) {
+    if (false && !a->clipping) {
         void *bt[8];
         backtrace(bt, 8);
         char **syms = backtrace_symbols(bt, 8);
@@ -1344,14 +1362,17 @@ enode silver_parse_member(silver a, ARef assign_type) {
     OPType assign_enum = OPType__undefined;
     Au_t   top     = top_scope(a);
     etype  rec_top = context_record(a);
-    silver module  =  !a->cmode && (top->is_namespace) ? a : null;
-    enode  f       =  !a->cmode ? context_func(a) : null;
+    silver module  =  !is_cmode(a) && (top->is_namespace) ? a : null;
+    enode  f       =  !is_cmode(a) ? context_func(a) : null;
     bool   in_rec  = rec_top && rec_top->au == top;
 
     if (assign_type) *(OPType*)assign_type = OPType__undefined;
 
     static int seq = 0;
     seq++;
+    if (seq == 183) {
+        seq = seq;
+    }
 
     push_current(a);
 
@@ -1376,7 +1397,7 @@ enode silver_parse_member(silver a, ARef assign_type) {
         bool first = !mem;
 
         alpha = read_alpha(a);
-        if (alpha && eq(alpha, "file")) {
+        if (alpha && eq(alpha, "longjmp")) {
             alpha = alpha;
         }
         if (!alpha) {
@@ -1413,7 +1434,7 @@ enode silver_parse_member(silver a, ARef assign_type) {
             if (first) {
 
 
-                if (eq(alpha, "header")) {
+                if (eq(alpha, "header")) {\
                     alpha = alpha;
                 }
 
@@ -1440,7 +1461,8 @@ enode silver_parse_member(silver a, ARef assign_type) {
                 }
                 
                 if (!mem) {
-                    validate(assign_type, "unknown identifier %o", alpha);
+                    token tm1 = element(a, -2); // sorry for the mess (coin-flip)
+                    verify(next_is(a, ":") || index_of(keywords, (Au)tm1) >= 0, "unknown identifier %o", alpha);
                     validate(!find_member(top, alpha->chars, 0, false), "duplicate member: %o", alpha);
                     Au_t m = def_member(top, alpha->chars, null, AU_MEMBER_DECL, 0); // this is promoted to different sorts of members based on syntax
                     mem = (enode)edecl(mod, (aether)a, au, m, meta, null);
@@ -1459,6 +1481,7 @@ enode silver_parse_member(silver a, ARef assign_type) {
                 mem = access(mem, alpha);
             }
 
+            Au_t mem_type = isa(mem);
             if (next_is(a, "[") || instanceof(mem, macro) || is_func((Au)mem) || inherits(mem->au->src, typeid(lambda))) {
                 print_tokens(a, "parsing member expr");
                 mem = parse_member_expr(a, mem);
@@ -1512,22 +1535,24 @@ enode silver_parse_member(silver a, ARef assign_type) {
 
 enode silver_read_enode(silver a, etype mdl_expect) {
     print_tokens(a, "read-node");
-    bool      cmode     = a->cmode;
+    bool      cmode     = is_cmode(a);
     array     expr      = null;
     token     peek      = peek(a);
-    bool      is_expr0  = !a->cmode && a->expr_level == 0;
+    bool      is_expr0  = !cmode && a->expr_level == 0;
     bool      is_static = is_expr0 && read_if(a, "static") != null;
     string    kw        = is_expr0 ? peek_keyword(a) : null;
     etype     rec_ctx   = context_class(a); if (!rec_ctx) rec_ctx = context_struct(a);
     Au_t      top       = top_scope(a);
-    etype     rec_top   = (!a->cmode && is_rec(top)) ? top->user : null;
-    enode     f         = !a->cmode ? context_func(a) : null;
-    silver    module    = !a->cmode && (top->is_namespace) ? a : null;
+    etype     rec_top   = (!cmode && is_rec(top)) ? top->user : null;
+    enode     f         = !cmode ? context_func(a) : null;
+    silver    module    = !cmode && (top->is_namespace) ? a : null;
     enode     mem       = null;
 
     static int seq = 0;
     seq++;
-    if (seq == 35) {
+
+    int slen = len(a->stack);
+    if (seq == 132) {
         seq = seq;
     }
     // handle typed operations, converting to our expected model (if no difference, it passes through)
@@ -1569,16 +1594,16 @@ enode silver_read_enode(silver a, etype mdl_expect) {
     }
 
     if (read_if(a, "sizeof")) {
-        bool read_br = read_if(a, "[") != null;
+        bool read_br = (cmode && read_if(a, "(")) || (!cmode && read_if(a, "["));
         etype mdl = read_etype(a, null);
         
         if (read_br)
-            verify(read_if(a, "]"), "expected closing-bracket");
+            verify((cmode && read_if(a, ")")) || (!cmode && read_if(a, "]")), "expected closing-bracket");
         
         return e_operand(a, _i64(mdl->au->typesize), mdl_expect);
     }
 
-    if (read_if(a, "typeof")) {
+    if (!cmode && read_if(a, "typeof")) {
         bool read_br = read_if(a, "[") != null;
         etype mdl = read_etype(a, null);
         
@@ -1600,6 +1625,11 @@ enode silver_read_enode(silver a, etype mdl_expect) {
 
     if (!cmode && read_if(a, "null"))
         return e_null(a, mdl_expect);
+
+    if (cmode && read_if(a, "*")) {
+        enode n = read_enode(a, null);
+        return deref(n);
+    }
 
     // parenthesized expressions
     if (next_is(a, "(")) {
@@ -1641,6 +1671,7 @@ enode silver_read_enode(silver a, etype mdl_expect) {
 
     // handle the logical NOT operator (e.g., '!')
     else if (read_if(a, "!") || (!cmode && read_if(a, "not"))) {
+        token t = peek(a);
         enode expr = read_enode(a, null); // Parse the following expression
         return e_create(a,
             mdl_expect, (Au)e_not(a, expr));
@@ -1679,15 +1710,11 @@ enode silver_read_enode(silver a, etype mdl_expect) {
     }
 
     // we may only support a limited set of C functionality for #define macros
-    if (cmode) return null;
-
     mem = parse_member(a, null); // we never parse assignment here
-    Au_t mem_cl = isa(mem);
+
+    if (!mem && cmode) return null;
     validate(!instanceof(mem, edecl), "unexpected declaration of member %s", mem->au->ident);
 
-    Au_t ty = isa(mem);
-
-    // this only happens when in a function
     return (f && mdl_expect) ? e_create(a, mdl_expect, (Au)mem) : (enode)mem;
 }
 
@@ -1748,8 +1775,12 @@ enode parse_statement(silver a)
         if (next_is(a, "break")) return parse_break(a);
         if (next_is(a, "for"))    return parse_for(a);
         if (next_is(a, "loop"))   return parse_loop_while(a);
-        if (next_is(a, "if"))
+        
+        if (next_is(a, "if")) {
+            print_token_state(a, "if");
             return parse_if_else(a);
+        }
+
         if (next_is(a, "loop"))   return parse_loop_while(a);
         if (next_is(a, "switch")) return parse_switch(a);
     }
@@ -2856,16 +2887,30 @@ static enode parse_lambda_call(silver a, efunc mem) {
     return lambda_fcall(a, mem, call_values);
 }
 
+enode efunc_fptr(efunc f);
+
 static enode parse_func_call(silver a, efunc f) {
+    static int seq = 0;
+    seq++;
+    if (seq == 33) {
+        seq = seq;
+    }
     push_current(a);
     validate(is_func((Au)f) || is_func_ptr((Au)f), "expected function got %o", f);
 
     bool read_br = false;
-
+    bool cmode = false;
     if (is_func_ptr(f))
         read_br = read_if(a, "[") != null;
-    else
-        validate(a->expr_level == 0 || (user_arg_count(f) == 0 || (read_br = read_if(a, "[") != null)),
+    else if (is_cmode(a)) {
+        cmode = true;
+        read_br = read_if(a, "(") != null;
+        if (!read_br) {
+            pop_tokens(a, true);
+            return efunc_fptr(f);
+        }
+    }
+    else validate(a->expr_level == 0 || (user_arg_count(f) == 0 || (read_br = read_if(a, "[") != null)),
             "expected call-bracket [ at expression depth past statement level");
     
     a->expr_level++;
@@ -2878,28 +2923,41 @@ static enode parse_func_call(silver a, efunc f) {
     i32     offset = 0;
 
     if (is_func((Au)f) && f->target) {
-        verify(f->target, "expected target for method call");
         push(values, (Au)f->target);
         offset = 1;
     }
 
+    // how deep is the stack here
+    int slen = len(a->stack);
+    Au stack_last1 = last_element(a->stack);
+
     while (i + offset < ln || fn->au->is_vargs) {
         Au_t   src  = (Au_t)au_arg_type(array_get(m, i + offset));
         etype  typ  = canonical(src->user);
+        token t2 = element(a, 0);
         enode  expr = parse_expression(a, typ); // self contained for '{interp}' to cstr!
         verify(expr, "invalid expression");
         push(values, (Au)expr);
         i++;
 
+        token t = element(a, 0);
+
+        int slen2 = len(a->stack);
+        Au stack_last2 = last_element(a->stack);
+        Au header2 = head(stack_last2);
+        if (slen2 == 13 && slen == 9)
+            slen2 = slen2;
         if (read_if(a, ","))
             continue;
+
         
-        verify(len(values) >= ln, "expected %i args for function %o", ln, f);
+        
+        verify(len(values) >= ln, "expected %i args for function %o (%i)", ln, f, seq);
         break;
     }
 
     a->expr_level--;
-    validate(!read_br || read_if(a, "]"), "expected ] after call");
+    validate(!read_br || read_if(a, cmode ? ")" : "]"), "expected ] after call");
     pop_tokens(a, true);
     return e_fn_call(a, fn, values);
 }
@@ -3624,7 +3682,15 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) {
             array gen = generate_fn(f->cgen, f, (array)f->body);
         } else {
             array source_tokens = parse_const(a, (array)f->body);
+            // between these two, lurks the white whale
+            static int seq = 0;
+            seq++;
+            int f2 = len(a->stack);
             push_tokens(a, (tokens)source_tokens, 0);
+            if (seq == 14) {
+                print_tokens(a, "seq==14");
+                seq = seq;
+            }
             parse_statements(a, true);
             pop_tokens(a, false);
         }
@@ -3982,10 +4048,10 @@ enode eshape_from_indices(aether a, array indices);
 
 enode silver_parse_member_expr(silver a, enode mem) {
     push_current(a);
-    
-    bool is_macro = mem && instanceof(mem, macro);
+
+    macro is_macro = instanceof(mem, macro);
     bool is_lambda_call = inherits(mem->au, typeid(lambda));
-    int indexable = !is_func((Au)mem) && !is_func_ptr((Au)mem) && !is_lambda_call;
+    int indexable = !is_func((Au)mem) && !is_func_ptr((Au)mem) && !is_macro && !is_lambda_call;
 
     /// handle compatible indexing methods / lambda / and general pointer dereference @ index
     if (indexable && next_is(a, "[")) {
@@ -4020,41 +4086,49 @@ enode silver_parse_member_expr(silver a, enode mem) {
         pop_tokens(a, true);
         return index_expr;
     } else if (is_macro) {
-        bool is_functional = next_is(a, "(");
-        array args = array(alloc, 32);
-        if (is_functional) {
-            consume(a);
-            while (!next_is(a, ")")) {
+        verify(!is_macro->params || read_if(a, "("), "expected ( for functional macros");
+        array args = is_macro->params ? array(alloc, 32) : null;
+        macro mac  = (macro)mem;
+
+        // read arguments
+        if (is_macro->params) {
+            while (peek(a) && !next_is(a, ")")) {
                 int next;
                 array arg = read_arg((array)a->tokens, a->cursor, &next);
                 validate(arg, "macro expansion failed");
                 if (arg)
                     push(args, (Au)arg);
                 a->cursor = next;
+                if (!read_if(a, ","))
+                    break;
             }
             validate(read_if(a, ")"), "expected parenthesis to end macro func call");
         }
-        token cur = peek(a);
 
-        // read arguments, and call macro
-        macro m = (macro)mem;
-        array tt = macro_expand(m, is_functional ? args : null, null);
-        push_tokens(a, (tokens)tt, 0); // set these tokens as the parser state, run parse, then return the statement
-        enode res = parse_expression(a, null);
+        print_all_tokens(a, "macro", is_macro->def);
+
+        // expand macro
+        token f = (token)first_element((array)mac->def);
+        array exp = macro_expand(mac, args);
+        print_all_tokens(a, "expanded", exp);
+
+        push_tokens(a, (tokens)exp, 0);
+        bool cmode = a->cmode;
+        a->cmode = true;
+        mem = parse_expression(a, null);
+        a->cmode = cmode;
         pop_tokens(a, false);
-        return res;
 
     } else if (mem) {
         if (is_func((Au)mem) || is_func_ptr((Au)mem) || is_lambda_call) {
-
             if (!is_lambda_call && is_lambda((Au)mem))
                 mem = parse_create_lambda(a, mem);
             else if (is_lambda_call)
                 mem = parse_lambda_call( a, (efunc)mem);
             else
                 mem = parse_func_call(a, (efunc)mem);
-        }
-        else if (is_type((Au)mem)) {
+        
+        } else if (is_type((Au)mem)) {
             array expr = read_within(a);
             inspect(mem);
             mem = typed_expr(a, mem, expr); // this, is the construct
@@ -4065,13 +4139,10 @@ enode silver_parse_member_expr(silver a, enode mem) {
 }
 
 etype etype_of(enode mem) {
-    if (mem->au->member_type == AU_MEMBER_VAR) {
-        return (etype)mem->au->src->user;
-    }
-    if (mem->au->member_type == AU_MEMBER_DECL) { // type is inferred down stream
-        return (etype)null;
-    }
-    return (etype)mem;
+    return (mem->au->member_type == AU_MEMBER_VAR) ?
+                (etype)mem->au->src->user :
+           (mem->au->member_type == AU_MEMBER_DECL) ?
+                (etype)null : (etype)mem;
 }
 
 
@@ -4111,6 +4182,10 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
 enode cond_builder(silver a, array cond_tokens, Au unused) {
     a->expr_level++; // make sure we are not at 0
     push_tokens(a, (tokens)cond_tokens, 0);
+    if (len(cond_tokens) == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
     enode cond_expr = parse_expression(a, typeid(bool)->user);
     pop_tokens(a, false);
     a->expr_level--;
@@ -4246,6 +4321,7 @@ enode parse_if_else(silver a) {
     }
     subprocedure build_cond = subproc(a, cond_builder, null);
     subprocedure build_expr = subproc(a, block_builder, null);
+    // getting a 'none' value from a condition block, somewhere
     return e_if_else(a, tokens_cond, tokens_block, build_cond, build_expr);
 }
 

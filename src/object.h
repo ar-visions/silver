@@ -76,6 +76,7 @@ typedef enum AU_MEMBER AFlag;
 #define AU_TRAIT_META        ((int64_t) 1 << 43)
 #define AU_TRAIT_LAMBDA      ((int64_t) 1 << 44)
 #define AU_TRAIT_IS_TARGET   ((int64_t) 1 << 45)
+#define AU_TRAIT_FUNCTIONAL  ((int64_t) 1 << 46)
 
 typedef bool(*global_init_fn)();
 
@@ -197,6 +198,7 @@ typedef struct _Au_t {
             u64 is_meta      : 1;
             u64 is_lambda    : 1;
             u64 is_target    : 1;
+            u64 is_functional : 1;
         };
         u64 traits;
     };

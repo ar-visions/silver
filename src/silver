@@ -41,6 +41,7 @@
     M(X, Y, i, method, public, token, read_if, symbol) \
     M(X, Y, i, method, public, Au,    read_literal, Au_t) \
     M(X, Y, i, method, public, string, read_string) \
+    M(X, Y, i, method, public, bool,   is_cmode) \
     M(X, Y, i, method, public, string, read_alpha) \
     M(X, Y, i, method, public, string, read_alpha_any) \
     M(X, Y, i, method, public, string, peek_alpha) \
