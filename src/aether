@@ -237,6 +237,7 @@ forward(evar)
     M(X,Y, i, method, public, enode,            retain) \
     M(X,Y, i, method, public, enode,            release) \
     M(X,Y, i, method, public, none,             inspect) \
+    M(X,Y, i, method, public, enode,            deref) \
     M(X,Y, i, override, cast,                   Au_t) \
     M(X,Y, i, override, method,                 init) \
     M(X,Y, i, override, method,                 dealloc)
@@ -248,6 +249,7 @@ declare_class_3(evar, enode, etype)
 
 #define efunc_schema(X,Y,...) \
     M(X,Y, i, prop, public, efunc, remote_func) \
+    M(X,Y, i, prop, public, enode, fptr) \
     M(X,Y, i, prop, public, map, placeholder)
 declare_class_3(efunc, enode, etype)
 
@@ -270,7 +272,7 @@ declare_class(aclang_cc)
     M(X,Y, i, prop, public, array, def) \
     M(X,Y, i, prop, public, array, params) \
     M(X,Y, i, prop, public, bool,  va_args) \
-    M(X,Y, i, method, public, array, expand, array, map)
+    M(X,Y, i, method, public, array, expand, array)
 declare_class_2(macro, etype)
 
 #define codegen_schema(X,Y,...) \

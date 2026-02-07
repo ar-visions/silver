@@ -69,7 +69,10 @@ bool check(bool ch, string log) {
 Au_t au_arg_type(Au a) {
     if (!a) return null;
     Au_t au = au_arg(a);
-    return au->member_type == AU_MEMBER_VAR ? au->src : au;
+    au = au->member_type == AU_MEMBER_VAR ? au->src : au;
+    while (au && au->is_alias && !au->is_pointer && !au->is_funcptr)
+        au = au->src;
+    return au;
 }
 
 Au_t Au_cast_Au_t(Au a) {
@@ -5950,14 +5953,16 @@ array read_arg(array tokens, int start, int* next_read) {
     int   ln    = len(tokens);
     bool  count = ln - start;
     array res   = array(alloc, 32);
+    int   next_level = 0;
 
     for (int i = start; i < ln; i++) {
+        next_level = level;
         token t = (token)get(tokens, i);
 
         if (eq(t, "("))
-            level++;
+            next_level = level + 1;
         else if (eq(t, ")") && level > 0)
-            level--;
+            next_level = level - 1;
 
         if ((eq(t, ",") || eq(t, ")")) && level == 0) {
             *next_read = i + (int)eq(t, ",");
@@ -5965,6 +5970,7 @@ array read_arg(array tokens, int start, int* next_read) {
         }
 
         push(res, (Au)t);
+        level = next_level;
     }
     return count > 0 ? null : res;
 }
