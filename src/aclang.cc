@@ -268,6 +268,10 @@ static Au_t map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e,
 
 static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol use_name) {
     const Type* t = qt.getTypePtr();
+
+    if (use_name && strcmp(use_name, "jmp_buf") == 0) {
+        use_name = use_name;
+    }
     
     // Strip elaborated type
     if (const ElaboratedType* et = dyn_cast<ElaboratedType>(t)) {
@@ -278,6 +282,9 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
     if (const TypedefType* tt = dyn_cast<TypedefType>(t)) {
         std::string name = tt->getDecl()->getName().str();
         Au_t existing = name.length() ? au_lookup(name.c_str()) : null;
+        if (name == "jmp_buf") {
+            name = name;
+        }
         if (existing) return existing;
         
         symbol new_name = use_name ? use_name : (name.length() ? name.c_str() : null);
@@ -719,6 +726,26 @@ private:
 public:
     AetherDeclVisitor2(ASTContext& context, aether ae) : ctx(context), e(ae) {}
     
+    bool VisitTypedefDecl(TypedefDecl* decl) {
+        auto name = decl->getNameAsString();
+        
+        // Integrity check: see if this is our missing target
+        if (name == "jmp_buf") {
+            // You'll finally hit this breakpoint!
+            name = name;
+        }
+
+        // Map the underlying type (the array/struct) to our system
+        Au_t underlying = map_clang_type(decl->getUnderlyingType(), ctx, e, null);
+        
+        if (underlying) {
+            Au_t alias = def_type(top_scope(e), name.c_str(), AU_TRAIT_ALIAS);
+            alias->module = e->current_import->au;
+            alias->src = underlying;
+        }
+        return true;
+    }
+
     bool VisitEnumDecl(EnumDecl* decl) {
         push_context(decl, e);
         if (!decl->getNameAsString().empty()) {
@@ -894,7 +921,10 @@ public:
         // We need the 'tokens' function. It's likely global or in 'e'.
     // aether.c uses 'tokens' as a global function (likely from ports.h or silver runtime)
         // Check aether.c: array t = (array)tokens(...)
+        if (strcmp(n, "setjmp") == 0)
+            n = n;
         tokens body_tokens = (tokens)new0(tokens, target, (Au)e, parser, e->parse_f, input, (Au)body_str);
+        token f = (token)first_element((array)body_tokens);
 
         // Handle Params
         array params_array = nullptr;
@@ -906,8 +936,9 @@ public:
                 std::string p_name = param->getName().str();
                 Au p_str = (Au)string(p_name.c_str());
                 array p_toks = (array)new0(tokens, target, (Au)e, parser, e->parse_f, input, p_str);
-                if (p_toks && p_toks->count > 0)
+                if (p_toks && p_toks->count > 0) {
                      push(params_array, p_toks->origin[0]);
+                }
             }
         }
 
@@ -917,6 +948,10 @@ public:
         // like C, we must not 'find' it if its a functional macro and we are not hinting at a function!
         // that must be implemented as well, and wasnt in the prior macro system
         // its important to keep using ( ) for functional macros, as this is a syntax indicator for macros
+        for (int i = 0; i < body_tokens->count; i++) {
+            token t = (token)body_tokens->origin[i];
+            t->cmode = true;
+        }
         macro m = macro(
             mod,        e, 
             au,         def(top_scope(e), n, AU_MEMBER_MACRO, 0),

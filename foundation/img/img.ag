@@ -89,7 +89,7 @@ class font
         font_manager_dealloc : dealloc
 
     func dealloc[] -> none
-        font_manager_dealloc f
+        font_manager_dealloc a
 
     func copy[ ] -> font
         b : super.copy
@@ -194,35 +194,35 @@ class image
             file : fopen [ uri, "wb" ]
             check file, "could not open file for writing: %o", uri
 
-            png : png_create_write_struct[ PNG_LIBPNG_VER_STRING, null, null, null ]
-            check png, "could not create PNG write struct"
+            png2 : png_create_write_struct[ PNG_LIBPNG_VER_STRING, null, null, null ]
+            check png2, "could not create PNG write struct"
 
-            info : png_create_info_struct [ png ]
+            info : png_create_info_struct [ png2 ]
             check info, "could not create PNG info struct"
 
-            if [!setjmp[ png_jmpbuf[ png ]]]
-                png_init_io png, file
-                png_t_seIHDR png, info, width, height, 8, # 8-bit per channel
-                    (channels == 1) ? PNG_COLOR_TYPE_GRAY :
-                    (channels == 3) ? PNG_COLOR_TYPE_RGB  :
-                    (channels == 4) ? PNG_COLOR_TYPE_RGBA : PNG_COLOR_TYPE_GRAY_ALPHA,
-                    PNG_INTERLACE_NONE,
-                    PNG_COMPRESSION_TYPE_DEFAULT,
-                    PNG_FILTER_TYPE_DEFAULT
+            if [ !setjmp( png_jmpbuf( png2 ) ) ]
+                png_init_io png2, file
 
-                png_write_info png, info
-                rows : new png_bytep [ sizeof(png_bytep) * height ]
+                #png_t_seIHDR
+
+                png_set_IHDR
+                    png2, info, width, height,
+                    8, PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE,
+                    PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT
+
+                png_write_info png2, info
+                rows : new png_bytep [ sizeof png_bytep * height ]
                 data : ref u8 vdata
 
-                for [ y : 0, y < a->height, y++ ]
+                for [ y : 0, y < height, y++ ]
                     rows[y] = ref data [ y * width * channels ]
 
-                png_write_image png, rows
-                png_write_end   png, null
+                png_write_image png2, rows
+                png_write_end   png2, null
             else
                 success = 0
             
-            png_destroy_write_struct ref png, ref info
+            png_destroy_write_struct ref png2, ref info
             fclose file
 
         else
