@@ -434,6 +434,30 @@
 #define   i_prop_interface_PROTO(X, R, N)  
 #define   i_prop_interface_METHOD(X, R, N)
 
+#define   i_prop_Au_public_F(X, R, N)
+#define   i_prop_Au_public_F_EXTERN(X, R, N)
+#define   i_prop_Au_public_ISIZE(X, R, N)   
+#define   i_prop_Au_public_ISIZE_EXTERN(X, R, N)     
+#define   i_prop_Au_public_ISIZE_EXTERN_meta(X, R, N, M2, ...) 
+#define   i_prop_Au_public_INST_U(X, R, N)           R N;
+#define   i_prop_Au_public_INST_L(X, R, N)
+#define   i_prop_Au_public_INST_U_EXTERN(X, R, N)    i_prop_Au_public_INST_U(X, R, N)  
+#define   i_prop_Au_public_INST_L_EXTERN(X, R, N)
+#define   i_prop_Au_public_DEF(X, R, N)
+#define   i_prop_Au_public_DECL(X, R, N)           
+#define   i_prop_Au_public_DECL_EXTERN(X, R, N)     
+#define   i_prop_Au_public_GENERICS(X, R, N)
+#define   i_prop_Au_public_INIT(X, R, N) { \
+    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, AU_TRAIT_IPROP); \
+    m->access_type = interface_public; \
+    m->offset      = offsetof(struct _##X, N); \
+    m->type        = (Au_t)&R##_i.type; \
+    m->member_type = AU_MEMBER_VAR; \
+    m->index       = -1; \
+}
+#define   i_prop_Au_public_PROTO(X, R, N)  
+#define   i_prop_Au_public_METHOD(X, R, N)
+
 #define   i_prop_public_F(X, R, N)              u8 N;
 #define   i_prop_public_F_EXTERN(X, R, N)       u8 N;
 #define   i_prop_public_ISIZE(X, R, N)   
@@ -447,8 +471,6 @@
 #define   i_prop_public_DECL(X, R, N)           
 #define   i_prop_public_DECL_EXTERN(X, R, N)     
 #define   i_prop_public_GENERICS(X, R, N)
-
-
 #define   i_prop_public_INIT(X, R, N) { \
     Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, AU_TRAIT_IPROP); \
     m->access_type = interface_public; \
@@ -962,9 +984,33 @@
     m->index       = offsetof(struct X##_fields, N); \
     m->elements    = S; \
 }
-
 #define   i_array_public_PROTO(X, R, S, N)  
 #define   i_array_public_METHOD(X, R, S, N)
+
+
+#define   i_array_Au_public_F(X, R, S, N)
+#define   i_array_Au_public_F_EXTERN(X, R, S, N)
+#define   i_array_Au_public_ISIZE(X, R, S, N)
+#define   i_array_Au_public_ISIZE_EXTERN(X, R, S, N)
+#define   i_array_Au_public_INST_U(X, R, S, N)         R N[S];  
+#define   i_array_Au_public_INST_L(X, R, S, N)         
+#define   i_array_Au_public_INST_U_EXTERN(X, R, S, N)  i_array_Au_public_INST_U(X, R, S, N)
+#define   i_array_Au_public_INST_L_EXTERN(X, R, S, N)
+#define   i_array_Au_public_DEF(X, R, S, N)
+#define   i_array_Au_public_DECL(X, R, S, N)           i_prop_Au_public_DECL(X, R, N)
+#define   i_array_Au_public_DECL_EXTERN(X, R, S, N)
+#define   i_array_Au_public_GENERICS(X, R, S, N)
+#define   i_array_Au_public_INIT(X, R, S, N) { \
+    Au_t m = def((Au_t)&X##_i.type, #N, AU_MEMBER_VAR, 0); \
+    m->access_type = interface_public; \
+    m->offset      = offsetof(struct _##X, N); \
+    m->type        = (Au_t)&R##_i.type; \
+    m->index       = -1; \
+    m->elements    = S; \
+}
+#define   i_array_Au_public_PROTO(X, R, S, N)  
+#define   i_array_Au_public_METHOD(X, R, S, N)
+
 
 #define   i_array_intern_F(X, R, S, N) u8 N;
 #define   i_array_intern_F_EXTERN(X, R, S, N)

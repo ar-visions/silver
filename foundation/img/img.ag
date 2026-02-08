@@ -24,6 +24,12 @@ func opencv_gaussian_fast[ref u8, ref u8, int, int, int, int , float] -> none
 
 func opencv_blur_equirect[ref u8, int, int] -> none
 
+enum join
+    none           : 0
+    miter           : 1
+    round           : 2
+    bevel           : 3
+
 enum Pixel
     none            : 0
     rgba8           : 1
@@ -53,12 +59,6 @@ enum Surface
     ao              : 7
     ior             : 8
     environment     : 9
-
-enum join
-    none            : 0
-    miter           : 1
-    round           : 2
-    bevel           : 3
 
 enum cap
     none            : 0
@@ -212,10 +212,14 @@ class image
 
                 png_write_info png2, info
                 rows : new png_bytep [ sizeof png_bytep * height ]
-                data : ref u8 vdata
+                data2 : ref u8 vdata # track the way this is registered
 
-                for [ y : 0, y < height, y++ ]
-                    rows[y] = ref data [ y * width * channels ]
+                # indexing method not found on rows (typed_expr)
+                for [ y:0, x:0 :: x < 4 :: x += 1 ]
+                    rows[y] = ref data2 [ y * width * channels ]
+                
+                #for [ y : 0, y < height, y++ ]
+                #    rows[y] = ref data [ y * width * channels ]
 
                 png_write_image png2, rows
                 png_write_end   png2, null
@@ -226,7 +230,7 @@ class image
             fclose file
 
         else
-            fault 'unsupported format: {e}'
+            check false, 'unsupported format: {e}'
             success = 0
         
         return success
