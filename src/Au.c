@@ -5719,6 +5719,13 @@ none shape_push(shape a, i64 i) {
     a->is_global = false;
 }
 
+shape shape_with_i64(shape a, i64 i) {
+    a->data = &head(a)->count; // head wont mind if we redefine its count field for only shape.
+    a->data[0] = i;
+    a->is_global = true; // rename this one
+    return a;
+}
+
 none shape_init(shape a) {
     if (!a->is_global) {
         i64 sz = a->count ? a->count : 16;

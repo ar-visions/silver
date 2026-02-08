@@ -575,18 +575,18 @@ forward(any)
 
 // Au must generate defines for sizes for users of it
 #define Au_schema(AA,BB,...) \
-    M(AA,BB, i, prop, intern, Au_t, type) \
-    M(AA,BB, i, prop, intern, Au_t, scalar) \
-    M(AA,BB, i, prop, intern, i64, refs) \
-    M(AA,BB, i, prop, intern, Au, data) \
-    M(AA,BB, i, prop, intern, shape, shape) \
-    M(AA,BB, i, prop, intern, cstr, source) \
-    M(AA,BB, i, prop, intern, i64, line) \
-    M(AA,BB, i, prop, intern, i64, alloc) \
-    M(AA,BB, i, prop, intern, i64, count) \
-    M(AA,BB, i, prop, intern, i64, recycle) \
-    M(AA,BB, i, prop, intern, i64, af_index) \
-    M(AA,BB, i, array, intern, Au, 8, meta) \
+    M(AA,BB, i, prop, Au_public, Au_t, type) \
+    M(AA,BB, i, prop, Au_public, Au_t, scalar) \
+    M(AA,BB, i, prop, Au_public, i64, refs) \
+    M(AA,BB, i, prop, Au_public, Au, data) \
+    M(AA,BB, i, prop, Au_public, shape, shape) \
+    M(AA,BB, i, prop, Au_public, cstr, source) \
+    M(AA,BB, i, prop, Au_public, i64, line) \
+    M(AA,BB, i, prop, Au_public, i64, alloc) \
+    M(AA,BB, i, prop, Au_public, i64, count) \
+    M(AA,BB, i, prop, Au_public, i64, recycle) \
+    M(AA,BB, i, prop, Au_public, i64, af_index) \
+    M(AA,BB, i, array, Au_public, Au, 8, meta) \
     M(AA,BB, s, prop,  public, i64, stest) \
     M(AA,BB, i, method, public, none,   init) \
     M(AA,BB, i, method, public, none,   dealloc) \
@@ -1019,6 +1019,7 @@ forward(shape)
     M(AA,BB, s, method,  public, shape, shape_from, i64, ref_i64) \
     M(AA,BB, s, method,  public, shape, shape_read, ARef) \
     M(AA,BB, s, vargs,   public, shape, new_shape, i64) \
+    M(AA,BB, i, ctr,     public, i64) \
     M(AA,BB, i, override, method, compare) \
     M(AA,BB, i, override, method, init) \
     M(AA,BB, i, override, method, dealloc)
