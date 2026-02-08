@@ -58,7 +58,7 @@ base something
 
     mem3:   8
 
-    lambda  nice_lambda[ arg1:int, arg2:string <> i:i64 ] -> f32
+    lambda  nice_lambda[ arg1:int, arg2:string :: i:i64 ] -> f32
         puts 'arg1 = {arg1}, arg2 = {arg2} and context is {i}\n'
         return 2.0
 

@@ -1397,7 +1397,7 @@ enode silver_parse_member(silver a, ARef assign_type) {
         bool first = !mem;
 
         alpha = read_alpha(a);
-        if (alpha && eq(alpha, "longjmp")) {
+        if (alpha && eq(alpha, "size")) {
             alpha = alpha;
         }
         if (!alpha) {
@@ -1462,7 +1462,7 @@ enode silver_parse_member(silver a, ARef assign_type) {
                 
                 if (!mem) {
                     token tm1 = element(a, -2); // sorry for the mess (coin-flip)
-                    verify(next_is(a, ":") || index_of(keywords, (Au)tm1) >= 0, "unknown identifier %o", alpha);
+                    verify(next_is(a, ":") || (tm1 && index_of(keywords, (Au)tm1) >= 0), "unknown identifier %o", alpha);
                     validate(!find_member(top, alpha->chars, 0, false), "duplicate member: %o", alpha);
                     Au_t m = def_member(top, alpha->chars, null, AU_MEMBER_DECL, 0); // this is promoted to different sorts of members based on syntax
                     mem = (enode)edecl(mod, (aether)a, au, m, meta, null);
@@ -1533,6 +1533,8 @@ enode silver_parse_member(silver a, ARef assign_type) {
     return mem;
 }
 
+etype pointer(aether, Au);
+
 enode silver_read_enode(silver a, etype mdl_expect) {
     print_tokens(a, "read-node");
     bool      cmode     = is_cmode(a);
@@ -1552,13 +1554,18 @@ enode silver_read_enode(silver a, etype mdl_expect) {
     seq++;
 
     int slen = len(a->stack);
-    if (seq == 132) {
+    if (seq == 248) {
         seq = seq;
+    }
+
+    if (eq(peek, "ref")) {
+        peek = peek;
     }
     // handle typed operations, converting to our expected model (if no difference, it passes through)
     if (a->expr_level > 0 && peek && is_alpha(peek)) {
         etype mdl_found = read_etype(a, null);
         if (mdl_found) {
+            if (a->in_ref) mdl_found = pointer((aether)a, (Au)mdl_found);
             array expr = read_initializer(a);
             push_tokens(a, (tokens)expr, 0);
             enode res0 = read_enode(a, mdl_found);
@@ -1620,7 +1627,9 @@ enode silver_read_enode(silver a, etype mdl_expect) {
             sz = parse_expression(a, typeid(shape)->user);
             validate(read_if(a, "]"), "expected closing-bracket after new Type [");
         }
-        return e_vector(a, mdl, sz);
+        return e_create(a,
+            (etype)pointer((aether)a, (Au)mdl->au),
+            (Au)e_vector(a, mdl, sz));
     }
 
     if (!cmode && read_if(a, "null"))
@@ -1704,9 +1713,13 @@ enode silver_read_enode(silver a, etype mdl_expect) {
     // 'ref' operator (reference)
     else if (!cmode && read_if(a, "ref")) {
         a->in_ref = true;
-        enode expr = read_enode(a, mdl_expect);
+        enode expr = read_enode(a, null);
         a->in_ref = false;
-        return expr;
+
+        if (next_is(a, "["))
+            expr = parse_member_expr(a, expr);
+
+        return e_create(a, mdl_expect, (Au)expr);
     }
 
     // we may only support a limited set of C functionality for #define macros
@@ -1945,7 +1958,6 @@ void silver_incremental_resolve(silver a) {
     }
 }
 
-etype pointer(aether, Au);
 
 ARef lltype(Au a);
 
@@ -2015,7 +2027,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         
         bool skip = false;
 
-        if (!first && is_lambda && read_if(a, "<>")) {
+        if (!first && is_lambda && read_if(a, "::")) {
             skip = true;
             in_context = true;
         }
@@ -2151,6 +2163,9 @@ etype read_etype(silver a, array* p_expr) {
     array sizes = array();
     
     token f = peek(a);
+    if (!f || f->literal) return null;
+
+    /*
     if  ((!f || f->literal || !is_alpha(f)) && !next_is(a, "ref")) {
         if (f->literal) {
             Au_t id = isa(f->literal);
@@ -2163,7 +2178,7 @@ etype read_etype(silver a, array* p_expr) {
             return id->user;
         }
         return null;
-    }
+    }*/
 
     push_current(a);
     bool is_ref = read_if(a, "ref") != null;
@@ -3792,7 +3807,9 @@ enode parse_return(silver a) {
     bool  is_v  = is_void(rtype);
     enode ctx   = context_func(a);
     consume(a);
+    a->expr_level++;
     enode expr  = is_v ? null : parse_expression(a, rtype);
+    a->expr_level--;
     Au_log("return-type", "%o", is_v ? (Au)string("none") : (Au)expr);
 
     Au_t au_top = top_scope(a);
@@ -4065,8 +4082,11 @@ enode silver_parse_member_expr(silver a, enode mem) {
         array args = array(16);
         if (r && mem->target)
             push(args, (Au)mem->target);
+        enode first_index = null;
         while (!next_is(a, "]")) {
             enode expr = parse_expression(a, null);
+            if (!first_index && expr)
+                first_index = expr;
             push(args, (Au)expr);
             validate(next_is(a, "]") || next_is(a, ","), "expected ] or , in index arguments");
             if (next_is(a, ","))
@@ -4081,7 +4101,11 @@ enode silver_parse_member_expr(silver a, enode mem) {
             enode eshape = eshape_from_indices((aether)a, args);
             index_expr = e_fn_call(a, (efunc)idx->user, a(mem, eshape));
         } else {
-            index_expr = e_offset(a, mem, (Au)args);
+            if (len(args) > 1) {
+                enode eshape = eshape_from_indices((aether)a, args);
+                index_expr = e_offset(a, mem, (Au)eshape);
+            } else
+                index_expr = e_offset(a, mem, (Au)first_index);
         }
         pop_tokens(a, true);
         return index_expr;
@@ -4152,7 +4176,7 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
     
     static int seq = 0;
     seq++;
-    if (seq == 20) {
+    if (seq == 24) {
         seq = seq;
     }
     etype t = (etype)etype_of(mem);
@@ -4179,14 +4203,21 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
     return mem;
 }
 
+enode expr_builder(silver a, array cond_tokens, Au unused) {
+    a->expr_level++; // make sure we are not at 0
+    push_tokens(a, (tokens)cond_tokens, 0);
+    enode cond_expr = parse_expression(a, null);
+    validate(a->cursor == len(cond_tokens), "expected condition expression, found remaining: %o", peek(a));
+    pop_tokens(a, false);
+    a->expr_level--;
+    return cond_expr;
+}
+
 enode cond_builder(silver a, array cond_tokens, Au unused) {
     a->expr_level++; // make sure we are not at 0
     push_tokens(a, (tokens)cond_tokens, 0);
-    if (len(cond_tokens) == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
     enode cond_expr = parse_expression(a, typeid(bool)->user);
+    validate(a->cursor == len(cond_tokens), "expected condition expression, found remaining: %o", peek(a));
     pop_tokens(a, false);
     a->expr_level--;
     return cond_expr;
@@ -4208,6 +4239,7 @@ enode block_builder(silver a, array block_tokens, Au unused) {
     a->expr_level = 0;
     enode last = null;
     push_tokens(a, (tokens)block_tokens, 0);
+    print_all_tokens(a, "block_builder", block_tokens);
     last = parse_statements(a, true);
     pop_tokens(a, false);
     a->expr_level = level;
@@ -4215,38 +4247,34 @@ enode block_builder(silver a, array block_tokens, Au unused) {
 }
 
 // we separate this, that:1, other:2 -- thats not an actual statements protocol generally, just used in for
-enode statements_builder(silver a, array expr_groups, Au unused) {
+enode statements_builder(silver a, array expr_tokens, Au unused) {
     int level = a->expr_level;
     a->expr_level = 0;
     enode last = null;
-    each(expr_groups, array, expr_tokens) {
-        push_tokens(a, (tokens)expr_tokens, 0);
+    push_tokens(a, (tokens)expr_tokens, 0);
+    bool first = true;
+    while (peek(a)) {
+        validate(first || read_if(a, ","), "expected comma between statements");
         last = parse_statement(a);
-        pop_tokens(a, false);
+        first = false;
     }
     a->expr_level = level;
     return last;
 }
 
-enode exprs_builder(silver a, array expr_groups, Au unused) {
+enode exprs_builder(silver a, array expr_tokens, Au unused) {
     a->expr_level++; // make sure we are not at 0
     enode last = null;
-    each(expr_groups, array, expr_tokens) {
-        push_tokens(a, (tokens)expr_tokens, 0);
-        last = parse_expression(a, null);
-        pop_tokens(a, false);
-    }
-    a->expr_level--;
-    return last;
-}
-
-enode expr_builder(silver a, array expr_tokens, Au unused) {
-    a->expr_level++; // make sure we are not at 0
     push_tokens(a, (tokens)expr_tokens, 0);
-    enode exprs = parse_expression(a, null);
+    bool first = true;
+    while (peek(a)) {
+        validate(first || read_if(a, ","), "expected comma between statements");
+        last = parse_statement(a);
+        first = false;
+    }
     pop_tokens(a, false);
     a->expr_level--;
-    return exprs;
+    return last;
 }
 
 // we must have separate if/ifdef, since ifdef does not push the variable scope (it cannot by design)
@@ -4359,62 +4387,21 @@ enode parse_switch(silver a) {
         return e_switch(a, e_expr, cases, expr_def, build_expr, build_body);
 }
 
-// improve this to use read_expression (todo: read_expression needs to be able to keep the stack read)
-array read_expression_groups(silver a) {
-    array result = array(8);
-    array current = array(32);
-    int level = 0;
-
-    token f = peek(a);
-    if (!eq(f, "["))
-        return null;
-
-    consume(a);
-
-    while (true) {
-        token t = consume(a);
-        if (!t)
-            break;
-
-        // adjust nesting
-        if (eq(t, "["))
-            level++;
-        else if (eq(t, "]")) {
-            level--;
-            if (level < 0)
-                break;
-        }
-
-        // comma at base-level → end group
-        if (eq(t, ",") && level == 0) {
-            push(result, (Au)current);
-            current = array(32);
-            continue;
-        }
-
-        // normal token inside current expression
-        push(current, (Au)t);
-    }
-
-    // Push final group if not empty
-    if (len(current) > 0)
-        push(result, (Au)current);
-
-    return result;
-}
-
 // we separate this, that:1, other:2 -- thats not an actual statements protocol generally, just used in for
-enode statements_push_builder(silver a, array expr_groups, Au unused) {
+enode statements_push_builder(silver a, array expr_tokens, Au unused) {
     int level = a->expr_level;
     a->expr_level = 0;
     enode last = null;
     statements s_members = statements(mod, (aether)a, au, def(top_scope(a), null, AU_MEMBER_NAMESPACE, 0));
     push_scope(a, (Au)s_members);
-    each(expr_groups, array, expr_tokens) {
-        push_tokens(a, (tokens)expr_tokens, 0);
+    push_tokens(a, (tokens)expr_tokens, 0);
+    bool first = true;
+    while (peek(a)) {
+        validate(first || read_if(a, ","), "expected comma between init expressions");
         last = parse_statement(a);
-        pop_tokens(a, false);
+        first = false;
     }
+    pop_tokens(a, false);
     a->expr_level = level;
     return last;
 }
@@ -4422,18 +4409,28 @@ enode statements_push_builder(silver a, array expr_groups, Au unused) {
 enode parse_for(silver a) {
     validate(read_if(a, "for") != null, "expected for");
 
-    array groups = read_expression_groups(a);
-    validate(groups != null, "expected [ init , cond , step [ , step-b , step-c , ...] ]");
-    validate(len(groups) == 3, "for expects exactly 3 expressions");
+    array all   = read_within(a);
+    verify(all, "expected [ init :: condition :: iterator ]");
+    array init_exprs = array(alloc, 32);
+    array cond_exprs = array(alloc, 32);
+    array step_exprs = array(alloc, 32);
 
-    array init_exprs = (array)groups->origin[0];
-    array cond_expr  = (array)groups->origin[1];
-    array step_exprs = (array)groups->origin[2];
-
-    verify(isa(init_exprs) == typeid(array), "expected array for init exprs");
-    verify(isa(cond_expr) == typeid(array), "expected group of cond expr");
-    cond_expr = cond_expr->count ? (array)cond_expr->origin[0] : null;
-    verify(isa(cond_expr) == typeid(array), "expected array for inner cond expr");
+    int level = 0;
+    array cur = init_exprs;
+    each(all, token, t) {
+        if (eq(t, "::")) {
+            level++;
+            if (level == 1)
+                cur = cond_exprs;
+            else if (level == 2)
+                cur = step_exprs;
+            else {
+                fault("too many :: levels in for-statement (expects max of 2)");
+            }
+        } else {
+            push(cur, (Au)t);
+        }
+    }
 
     array body = read_body(a);
     verify(body, "expected for-body");
@@ -4441,13 +4438,12 @@ enode parse_for(silver a) {
     // drop remaining statements before return, so we encapsulate the members to this transaction.
     subprocedure build_init = subproc(a, statements_push_builder, null);
     subprocedure build_cond = subproc(a, cond_builder, null);
-    subprocedure build_body = subproc(a, expr_builder, null);
     subprocedure build_step = subproc(a, exprs_builder, null);
+    subprocedure build_body = subproc(a, exprs_builder, null);
 
     enode res = e_for(
         a,
-        init_exprs, cond_expr, step_exprs,
-        body,
+        init_exprs, cond_exprs, body, step_exprs,
         build_init, build_cond, build_body, build_step);
     pop_scope(a);
     return res;
