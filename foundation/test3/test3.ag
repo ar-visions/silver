@@ -1,0 +1,2 @@
+func test3_func[ i:i32 ] -> i64
+    return i + 2

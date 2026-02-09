@@ -128,12 +128,18 @@ typedef void* LLVMTypeRef;
 typedef void* LLVMValueRef;
 #endif
 
+typedef struct _Au_t_user {
+    struct _aether* mod;
+    struct _etype*  etype;
+
+} *Au_t_user;
+
 // this is the standard _Au_t declaration
 typedef struct _Au_t {
-    Au_t            context;  
+    Au_t            context;
     union { Au_t src, rtype, type; };
     Au_t            schema;
-    struct _etype*  user;
+    Au_t_user       users;
     Au_t            module; // origin of its module
     Au_t            ptr; // a cache location for the type's pointer
     char*           ident;
