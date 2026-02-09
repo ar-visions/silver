@@ -472,6 +472,10 @@ void silver_parse(silver a) {
     au_register(m_win, (etype)e_operand(a, _bool(SILVER_IS_WINDOWS), etypeid(bool)));
     
     while (peek(a)) {
+        static int seq = 0;
+        seq++;
+        if (seq == 2)
+            seq = seq;
         enode res = parse_statement(a);
         validate(res, "unexpected token found for statement: %o", peek(a));
         incremental_resolve(a);
@@ -1876,6 +1880,8 @@ enode parse_statement(silver a)
                 e = (enode)parse_func(a, au, // for cast, we read the rtype first; for others, its parsed after ->
                     ftype,
                     traits, op_type);
+                Au_t_user u = au_find_user(au);
+                u->etype = (etype)e;
                 e->au->access_type = (u8)access;
             }
 
@@ -1947,6 +1953,7 @@ void silver_incremental_resolve(silver a) {
     members(a->au, mem) {
         etype e = au_etype(mem);
         if (is_func((Au)mem) && !mem->is_system && e != a->fn_init && !e->user_built) {
+            Au_t e_isa = isa(e);
             build_fn(a, (efunc)e, null, null);
         }
     }
@@ -2102,8 +2109,6 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         cgen,   cgen,
         used,   true,
         target, null);
-
-    au_register(func->au, (etype)func);
     
     print_all(a, "body", b);
     return func;
@@ -4177,7 +4182,7 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         mem->au->member_type = AU_MEMBER_VAR;
         mem->au->src = R->au;
         mem->au->is_const = is_const;
-        
+
         // a loaded
         mem = (enode)au_register(mem->au, (etype)evar(mod, (aether)a, au, mem->au, loaded, true, meta, R->meta));
         
