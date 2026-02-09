@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: silver44",
+            "name": "silver44",
             "type": "debugpy",
             "args": ["WGPU.si"],
             "request": "launch",
@@ -11,7 +11,7 @@
             "cwd": "${workspaceFolder}/silver"
         },
         {
-            "name": "Python: vision:annotate",
+            "name": "hyperspace:annotate",
             "type": "debugpy",
             "args": ["-a", "scale", "-s", "center-offset"],
             "request": "launch",
@@ -20,7 +20,7 @@
             "cwd": "${workspaceFolder}/../hyperspace/"
         },
         {
-            "name": "Python: train:simple",
+            "name": "hyperspace:simple",
             "type": "debugpy",
             "args": ["-b", "1", "-m", "simple", "-s", "center-offset", "-i", "32", "-r", "1", "-e", "1", "--learning-rate", "0.0001"],
             "request": "launch",
@@ -29,7 +29,7 @@
             "cwd": "${workspaceFolder}/../hyperspace/"
         },
         {
-            "name": "Python: train:base",
+            "name": "hyperspace:base",
             "type": "debugpy",
             "args": ["-b", "1", "-m", "base", "-s", "center-offset", "-i", "32", "-r", "4", "-e", "1", "--learning-rate", "0.0001"],
             "request": "launch",
@@ -38,7 +38,7 @@
             "cwd": "${workspaceFolder}/../hyperspace/"
         },
         {
-            "name": "Python: train:target",
+            "name": "hyperspace:target",
             "type": "debugpy",
             "args": ["-b", "1", "-m", "target", "-s", "center-offset", "-i", "32", "-r", "16", "-e", "16", "--learning-rate", "0.0001"],
             "request": "launch",
@@ -47,7 +47,7 @@
             "cwd": "${workspaceFolder}/../hyperspace/"
         },
         {
-            "name": "Python: train:eyes",
+            "name": "hyperspace:eyes",
             "type": "debugpy",
             "args": ["-b", "1", "-m", "eyes", "-s", "center-offset", "-i", "32", "-r", "32", "-e", "8", "--learning-rate", "0.001"],
             "request": "launch",
@@ -56,7 +56,7 @@
             "cwd": "${workspaceFolder}/../hyperspace/"
         },
         {
-            "name": "Python: train:track",
+            "name": "hyperspace:track",
             "type": "debugpy",
             "args": ["-b", "2", "-m", "track", "-s", "center-offset", "-i", "32", "-r", "16", "-e", "16", "--learning-rate", "0.001"],
             "request": "launch",
@@ -65,7 +65,7 @@
             "cwd": "${workspaceFolder}/../hyperspace/"
         },
         {
-            "name": "Python: vision:record",
+            "name": "hyperspace:record",
             "type": "debugpy",
             "args": ["-s", "vision2", "-f"],
             "request": "launch",
@@ -139,7 +139,7 @@
             "request":    "launch",
             "preLaunchTask": "build-silver-ninja",
             "program":    "${workspaceFolder}/install/bin/silver",
-            "args":     [ "--module", "${workspaceFolder}/foundation/test", "--breakpoint", "opencv_resize_area" ],
+            "args":     [ "--module", "${workspaceFolder}/foundation/test2", "--breakpoint", "test3_func" ],
             "cwd":        "${workspaceFolder}/install/lib",
             "env":      {
                 "VERBOSE": "1",

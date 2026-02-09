@@ -1,0 +1,4 @@
+import test3
+
+func test2_func[ i:i32 ] -> i64
+    return i + 1

@@ -143,7 +143,7 @@ typedef double                 *ref_f64;
     Au_t            context; \
     union { Au_t src, rtype, type; }; \
     Au_t            schema; \
-    Au              user; \
+    Au_t_user       users; \
     Au_t            module; \
     Au_t            ptr; \
     char*           ident; \

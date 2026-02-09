@@ -768,7 +768,7 @@ Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32
     Au_t prop = def(context, ident, AU_MEMBER_VAR, traits);
     prop->type      = type;
     prop->offset    = offset;
-    prop->abi_size  = abi_size;
+    //prop->abi_size  = abi_size;
     prop->value     = (object)value;
     return prop;
 }

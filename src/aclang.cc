@@ -488,7 +488,7 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     rec->module = e->current_import->au;
 
     const ASTRecordLayout& layout = ctx.getASTRecordLayout(decl);
-    rec->record_alignment = layout.getAlignment().getQuantity(); // in bytes
+    //rec->record_alignment = layout.getAlignment().getQuantity(); // in bytes
 
     push_scope(e, (Au)rec);
     set_fields(decl, ctx, e, rec);
@@ -958,7 +958,9 @@ public:
             def,        (array)body_tokens, 
             params,     params_array, 
             va_args,    va_args);
-        m->au->user = (etype)m;
+
+        aether a = e;
+        au_register(m->au, m);
 
     }
 };
