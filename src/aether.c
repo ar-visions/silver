@@ -254,16 +254,23 @@ static int ref_level(Au t) {
     return level;
 }
 
-etype etype_traits(Au a, int traits) {
+etype etype_traits(Au input, int traits) {
     Au_t au;
-    if (isa(a) == typeid(etype)) {
-        verify(lltype((etype)a), "no type found on %o 1", a);
-        au = ((etype) a)->au;
+    bool is_etype = false;
+    aether a = null;
+    if (isa(input) == typeid(etype)) {
+        verify(lltype((etype)input), "no type found on %o 1", a);
+        au = ((etype)input)->au;
+        a  = ((etype)input)->mod;
+        is_etype = true;
     }
-    else if (isa(a) == typeid(enode)) au = ((enode)a)->au;
-    else if (isa(a) == typeid(Au_t_f)) {
-        verify(lltype(etypeid(Au_t_f)), "no type found on %o 2", a);
-        au = (Au_t)a;
+    else if (isa(input) == typeid(enode)) {
+        au = ((enode)input)->au;
+        a  = ((enode)input)->mod;
+    }
+    else if (isa(input) == typeid(Au_t_f)) { // this wont work at the moment without module context
+        verify(lltype(etypeid(Au_t_f)), "no type found on %o 2", input);
+        au = (Au_t)input;
     }
     verify(au, "unhandled input");
     //if (au->is_class) {
@@ -271,6 +278,7 @@ etype etype_traits(Au a, int traits) {
     //    au = au->ptr;
     //}
     //return (au->traits & traits) == traits ? ((etype)au_etype(au)) : null;
+    verify(a, "type context unknown");
     etype u = au_etype(au);
     return (u->au->traits & traits) == traits ? u : null;
 }
@@ -1401,11 +1409,8 @@ enode aether_e_fn_call(aether a, efunc fn, array args) {
     return enode(mod, a, au, rtype->au, loaded, true, value, R);
 }
 
-static bool is_same(Au a, Au b) {
-    Au_t au_a = au_arg(a);
-    Au_t au_b = au_arg(b);
-    return resolve(au_etype(au_a)) == resolve(au_etype(au_b)) && 
-        ref_level((Au)au_a) == ref_level((Au)au_b);
+static bool is_same(etype a, etype b) {
+    return resolve(a) == resolve(b) && ref_level((Au)a) == ref_level((Au)b);
 }
 
 static enode castable(etype fr, etype to) { 
@@ -1436,7 +1441,7 @@ static enode castable(etype fr, etype to) {
     while (ctx) {
         for (int i = 0; i < ctx->members.count; i++) {
             Au_t mem = (Au_t)ctx->members.origin[i];
-            if (mem->member_type == AU_MEMBER_CAST && is_same((Au)mem->rtype, (Au)to->au))
+            if (mem->member_type == AU_MEMBER_CAST && is_same(au_etype(mem->rtype), to))
                 return (enode)au_etype(mem);
         }
         if (ctx->context == ctx) break;
@@ -3270,7 +3275,6 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
     au_f_main->is_export = true;
     efunc main_fn = efunc(mod, a, au, au_f_main,
         loaded, true, used, true, has_code, true);
-    au_register(main_fn->au, (etype)main_fn);
     etype_implement((etype)main_fn);
 
     push_scope(a, (Au)main_fn);
@@ -3320,7 +3324,7 @@ etype etype_canonical(etype t) {
 etype etype_resolve(etype t) {
     aether a = t->mod;
     Au_t au = t->au;
-    if (is_func(au)) {
+    if (is_func(au) || au->member_type == AU_MEMBER_MACRO) {
         return au_etype(au);
     }
     if (au->member_type == AU_MEMBER_VAR) {
@@ -3404,7 +3408,8 @@ none etype_init(etype t) {
     if (t->mod == null) t->mod = (aether)instanceof(t, aether);
     aether a = t->mod; // silver's mod will be a delegate to aether, not inherited
 
-    if (!t->au) t->au = def(a->au, null, AU_MEMBER_NAMESPACE, 0);
+    bool is_module = isa(t) == typeid(aether) || isa(t)->context == typeid(aether);
+    if (!is_module && !t->au) t->au = def(a->au, null, AU_MEMBER_NAMESPACE, 0);
 
     Au_t    au  = t->au;
     bool  named = au && au->ident && strlen(au->ident);
@@ -3413,7 +3418,7 @@ none etype_init(etype t) {
     if (t->lltype && !t->is_schema || (n && n->value && n->symbol_name))
         return;
 
-    if (isa(t) == typeid(aether) || isa(t)->context == typeid(aether)) {
+    if (is_module) {
         a = (aether)t;
         verify(a->module && len(a->module), "no module provided");
         a->name = a->name ? a->name : stem(a->module);
@@ -3426,7 +3431,7 @@ none etype_init(etype t) {
     } else if (t->is_schema) {
         if (!au->ident)
             au->ident = au->ident;
-        if (strcmp(au->ident, "initializer") == 0) {
+        if (strcmp(au->ident, "size_t") == 0) {
             au = au;
         }
         au = t->au = def(a->import_module, fmt("__%s_t", au->ident)->chars,
@@ -3776,7 +3781,7 @@ none etype_implement(etype t) {
     if (t->is_implemented) return;
     t->is_implemented = true;
 
-    if (strcmp(au->ident, "Au") == 0) {
+    if (au->ident && strcmp(au->ident, "Au") == 0) {
         etype tt = etypeid(Au);
         tt = tt;
     }
@@ -3788,7 +3793,7 @@ none etype_implement(etype t) {
         t = t;
     }
 
-    bool is_Au = is_au_type(resolve(t)) && (!au->is_schema && !au->is_system && !au->is_pointer && au->ident);
+    bool is_Au = !a->import_c && is_au_type(resolve(t)) && (!au->is_schema && !au->is_system && !au->is_pointer && au->ident);
     etype type_t_ptr = is_Au ? get_type_t_ptr(t) : null;
 
     bool is_ARef = au == typeid(ARef);
@@ -4346,7 +4351,7 @@ static Au_t map_etype(aether a, symbol name, int *out_depth) {
 
 
 
-void aether_import_models(aether a, Au_t ctx) {
+void aether_import_models(aether a, Au_t ctx, bool au_mode) {
     // initialization table for has/not bits, controlling init and implement
     struct filter {
         bool init, impl;
@@ -4368,6 +4373,8 @@ void aether_import_models(aether a, Au_t ctx) {
         { false, true,  true,  false, false, 0, 0, 0 }, // lets run through non-functions
         { false, true,  true,  true,  false, 0, 0, 0 }  // now implement functions, whose args will always be implemented
     };
+
+    a->import_c = !au_mode;
 
     Au info = head(etypeid(Au));
 
@@ -4424,6 +4431,8 @@ void aether_import_models(aether a, Au_t ctx) {
             }
         }
     }
+
+    a->import_c = false;
 }
 
 void aether_import_Au(aether a, string ident, Au lib) {
@@ -4457,7 +4466,7 @@ void aether_import_Au(aether a, string ident, Au lib) {
         etype_ptr(a, etype(mod, a, au, typeid(Au_t))->au);
     }
 
-    aether_import_models(a, au_module);
+    aether_import_models(a, au_module, true);
     if (!au_etype(au_module)) {
         emodule(mod, a, au, au_module);
     }

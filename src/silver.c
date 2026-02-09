@@ -1469,6 +1469,9 @@ enode silver_parse_member(silver a, ARef assign_type) {
                     verify(next_is(a, ":") || (tm1 && index_of(keywords, (Au)tm1) >= 0), "unknown identifier %o", alpha);
                     validate(!find_member(top, alpha->chars, 0, false), "duplicate member: %o", alpha);
                     Au_t m = def_member(top, alpha->chars, null, AU_MEMBER_DECL, 0); // this is promoted to different sorts of members based on syntax
+                    if (eq(alpha, "test2_func")) {
+                        alpha = alpha;
+                    }
                     mem = (enode)edecl(mod, (aether)a, au, m, meta, null);
                     break;
                 }
@@ -1874,12 +1877,17 @@ enode parse_statement(silver a)
                     is_ctr    ? AU_MEMBER_CONSTRUCT : is_cast ?
                                 AU_MEMBER_CAST      : is_idx  ?
                                 AU_MEMBER_INDEX     : AU_MEMBER_FUNC;
+
+                Au_t top = top_scope(a);
+                aether top_user;
+
                 if (!au)
                      au = def(top_scope(a), null, AU_MEMBER_DECL, 0);
                 
                 e = (enode)parse_func(a, au, // for cast, we read the rtype first; for others, its parsed after ->
                     ftype,
                     traits, op_type);
+                Au_t e_isa = isa(e);
                 Au_t_user u = au_find_user(au);
                 u->etype = (etype)e;
                 e->au->access_type = (u8)access;
@@ -2100,6 +2108,14 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
 
     array b = (array)read_body(a);
     // all instances of func enode need special handling to bind the unique user space to it; or, we could make efunc
+
+    etype au_t = au_etype(au);
+    Au_t fn_isa = isa(au_t);
+
+    if (strcmp(au->ident, "test2_func") == 0) {
+        a = a; // the function is in decl still
+    }
+
     efunc func = efunc(
         mod,    (aether)a,
         au,     au,
@@ -3318,7 +3334,7 @@ enode parse_import(silver a) {
         au,   mdl->au);
     
     if (!has_cache && !is_codegen) {
-        push_scope(a, (Au)mdl->au);
+        push_scope(a, (Au)(external ? external->au : mdl->au));
         mdl->include_paths = array();
 
         // include each, collecting the clang instance for which we will invoke macros through
@@ -3335,6 +3351,8 @@ enode parse_import(silver a) {
             : mod ? (Au)mod : (Au)lib_path);
     }
         
+    if (external)
+        external->au->is_closed = true;
     mdl->au->is_closed = true;
     mdl->lib_path = hold(lib_path);
     mdl->module_source = hold(module_source);
@@ -3655,6 +3673,10 @@ static enode typed_expr(silver a, enode src, array expr);
 none push_lambda_members(aether a, efunc f);
 
 void build_fn(silver a, efunc f, callback preamble, callback postamble) {
+    if (strcmp(f->au->ident, "test2_func") == 0) {
+        f = f;
+    }
+
     if (f->user_built)
         return;
 
