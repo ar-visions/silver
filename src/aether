@@ -124,6 +124,7 @@ forward(efunc)
     M(X,Y, i, prop,  public, path,      root_path) \
     M(X,Y, i, prop,  public, path,      project_path) \
     M(X,Y, i, prop,  public, path,      current_inc) \
+    M(X, Y, i, prop, public, bool,      debug) \
     M(X,Y, i, prop,  public, etype,     current_import) \
     M(X,Y, i, prop,  public, i32,       expr_level) \
     M(X,Y, i, prop,  public, Au_t,      import_module) \
@@ -177,7 +178,7 @@ forward(efunc)
     M(X,Y, i, method, public,     none,        create_type_members, Au_t) \
     M(X,Y, i, method, public,     none,        output_schemas, enode) \
     M(X,Y, i, method, public,     efunc,       module_initializer) \
-    M(X,Y, i, method, public,     none,        import_Au, Au) \
+    M(X,Y, i, method, public,     none,        import_Au, string, Au) \
     M(X,Y, i, method, public,     efunc,       function, etype, string, etype, array, u8, u32, u8) \
     M(X,Y, i, method, public,     etype,       record, etype, etype, string, u32) \
     M(X,Y, i, method, public,     none,        reinit_startup) \

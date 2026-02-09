@@ -1,2 +1,6 @@
 func test3_func[ i:i32 ] -> i64
     return i + 2
+
+
+func test3_funcomatic[] -> i64
+    return 2
