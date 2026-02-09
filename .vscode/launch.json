@@ -139,8 +139,8 @@
             "request":    "launch",
             "preLaunchTask": "build-silver-ninja",
             "program":    "${workspaceFolder}/install/bin/silver",
-            "args":     [ "--module", "${workspaceFolder}/foundation/test2", "--breakpoint", "test3_func" ],
-            "cwd":        "${workspaceFolder}/install/lib",
+            "args":     [ "--module", "${workspaceFolder}/foundation/test2", "--breakpoint", "test3_func", "--debug" ],
+            "cwd":        "${workspaceFolder}",
             "env":      {
                 "VERBOSE": "1",
                 "LD_LIBRARY_PATH":"${workspaceFolder}/install/lib",

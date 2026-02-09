@@ -2869,7 +2869,7 @@ Au list_push(list a, Au e);
 none map_set(map m, Au k, Au v) {
     if (!m->hlist) m->hlist = (item*)calloc(m->hsize, sizeof(item));
     item i = map_fetch(m, k);
-    Au_t vtype = isa(v);
+    Au_t vtype = m->unmanaged ? null : isa(v);
     Au info = head(m);
 
     bool allowed = m->unmanaged || !m->last_type || m->last_type == vtype || m->assorted;

@@ -488,7 +488,7 @@ none aether_test_write(aether a);
 
 // im a module!
 void silver_init(silver a) {
-    bool is_once = a->build;
+    bool is_once = a->build || a->is_external;
     
     if (a->version) {
         printf("silver 0.8.8\n");
@@ -2641,7 +2641,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         vexec("rust", "cargo build --%s --manifest-path %o/Cargo.toml --target-dir %o",
               debug ? "debug" : "release", project_f, build_f);
     } else if (is_silver) { // build for Au-type projects
-        silver sf = silver(module, silver_f, breakpoint, a->breakpoint);
+        silver sf = silver(module, silver_f, breakpoint, a->breakpoint, debug, a->debug);
         validate(sf, "silver module compilation failed: %o", silver_f);
     } else {
         /// build for automake
@@ -2707,15 +2707,17 @@ none silver_build(silver a) {
     emit(a, (ARef)&ll, (ARef)&bc);
     verify(bc != null, "compilation failed");
 
+    bool   is_debug   = a->debug;
     int    error_code = 0;
     path   install    = a->install;
+    path   build_dir  = f(path, "%o/%s", a->install, is_debug ? "debug" : "release");
     string name       = stem(bc);
     path   cwd        = path_cwd();
     string libs       = string("");
     array  lib_paths  = array();
 
-    verify(exec("%o/bin/llc -filetype=obj %o.ll -o %o.o -relocation-model=pic",
-                install, name, name) == 0,
+    verify(exec("%o/bin/llc -filetype=obj %o/%o.ll -o %o/%o.o -relocation-model=pic",
+                install, build_dir, name, build_dir, name) == 0,
            ".ll -> .o compilation failed");
 
 #ifndef NDEBUG
@@ -2738,7 +2740,10 @@ none silver_build(silver a) {
     each(rlibs, string, lib_name) {
         if (len(libs))
             append(libs, " ");
-        concat(libs, f(string, "-l%o", lib_name));
+        if (file_exists("%o", lib_name))
+            concat(libs, lib_name);
+        else
+            concat(libs, f(string, "-l%o", lib_name));
     }
 
     // compile implementation in c/cc, and select for linking
@@ -2760,8 +2765,12 @@ none silver_build(silver a) {
     }
 
     // link - include the implementation objects
-    verify(exec("%o/bin/clang %s%o.o %o -fsanitize=address -o %o -L%o/lib -Wl,--no-undefined -Wl,--allow-multiple-definition %o %o",
-        install, a->is_library ? "-shared " : "", name, objs, name, install, libs, cflags) == 0,
+    a->product = f(path, "%o/%s%o%s", build_dir, a->is_library ? lib_pre : "", name, a->is_library ? lib_ext : "");
+    verify(exec("%o/bin/clang %s%o/%o.o %o -o %o -L%o -L%o/lib -Wl,--no-undefined -Wl,--allow-multiple-definition %o %o",
+        install, a->is_library ? "-shared " : "", build_dir, name, objs,
+        a->product,
+        build_dir,
+        install, libs, cflags) == 0,
         "link failed");
 }
 
@@ -3261,7 +3270,7 @@ enode parse_import(silver a) {
     } else if (module_source) {
         path module = parent_dir(module_source);
         verify(compare(stem(module_source), stem(module)) == 0, "silver expects identical module stem");
-        external = silver(module, module, breakpoint, a->breakpoint);
+        external = silver(module, module, breakpoint, a->breakpoint, is_external, true, debug, a->debug);
     }
     else if (is_codegen) {
         cg = (codegen)construct_with(is_codegen, (Au)props, null);
@@ -3321,8 +3330,10 @@ enode parse_import(silver a) {
         }
     }
 
-    if (!is_codegen && (mod || lib_path))
-        import_Au(a, mod ? (Au)mod : (Au)lib_path);
+    if (!is_codegen && (external || mod || lib_path)) {
+        import_Au(a, external ? external->name : null, external ? (Au)external->product
+            : mod ? (Au)mod : (Au)lib_path);
+    }
         
     mdl->au->is_closed = true;
     mdl->lib_path = hold(lib_path);

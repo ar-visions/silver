@@ -4426,7 +4426,7 @@ void aether_import_models(aether a, Au_t ctx) {
     }
 }
 
-void aether_import_Au(aether a, Au lib) {
+void aether_import_Au(aether a, string ident, Au lib) {
     a->current_inc   = instanceof(lib, Au_t) ? path(((Au_t)lib)->ident) : lib ? (path)lib : path("Au");
     a->is_Au_import  = true;
     string  lib_name = lib && instanceof(lib, path) ? stem((path)lib) : null;
@@ -4434,7 +4434,8 @@ void aether_import_Au(aether a, Au lib) {
 
     // register and push new module scope if we are loading from library
     if (lib) {
-        au_module = instanceof(lib, path) ? def_module(copy_cstr(lib_name->chars)) : (Au_t)lib;
+        au_module = instanceof(lib, path) ? 
+            def_module(copy_cstr((ident ? ident : lib_name)->chars)) : (Au_t)lib;
         push_scope(a, (Au)au_module);
     } else {
         au_module = global();
@@ -4492,8 +4493,8 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
 
     path c = path_cwd();
 
-    *ll = form(path, "%o.ll", a);
-    *bc = form(path, "%o.bc", a);
+    *ll = form(path, "%o/%s/%o.ll", a->install, a->debug ? "debug" : "release", a);
+    *bc = form(path, "%o/%s/%o.bc", a->install, a->debug ? "debug" : "release", a);
 
     LLVMDumpModule(a->module_ref);
 
@@ -4624,7 +4625,7 @@ none aether_init(aether a) {
     push_scope(a, (Au)g);
 
     a->au->is_au = true;
-    import_Au(a, null);
+    import_Au(a, string("Au"), null);
 
     a->au->is_namespace = true; // for the 'module' namespace at [1], i think we dont require the name.. or, we set a trait
     a->au->is_nameless  = false; // we have no names, man. no names. we are nameless! -cereal
