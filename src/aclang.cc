@@ -959,8 +959,8 @@ public:
             params,     params_array, 
             va_args,    va_args);
 
-        aether a = e;
-        au_register(m->au, m);
+        //aether a = e;
+        //au_register(m->au, m);
 
     }
 };
@@ -1005,7 +1005,7 @@ path aether_lookup_include(aether e, string include) {
     return null;
 }
 
-void aether_import_models(aether a, Au_t);
+void aether_import_models(aether a, Au_t, bool);
 
 path aether_include(aether e, Au inc, string ns, ARef _instance) {
     aclang_cc* instance = (aclang_cc*)_instance;
@@ -1170,7 +1170,7 @@ path aether_include(aether e, Au inc, string ns, ARef _instance) {
         LLVMLinkModules2(e->module_ref, cMod);
     }
 
-    aether_import_models(e, top_scope(e));
+    aether_import_models(e, top_scope(e), false);
 
     unlink(c->chars);
     e->current_inc = null;
