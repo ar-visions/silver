@@ -151,9 +151,6 @@ typedef double                 *ref_f64;
     u32             abi_size; \
     u32             align_bits; \
     u32             record_alignment; \
-    ARef            llscope; \
-    ARef            lltype; \
-    ARef            lldebug; \
     i64             index; \
     object          value; \
     u8              member_type; \

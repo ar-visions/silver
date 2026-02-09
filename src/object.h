@@ -64,19 +64,18 @@ typedef enum AU_MEMBER AFlag;
 #define AU_TRAIT_MODINIT     ((int64_t) 1 << 31)
 #define AU_TRAIT_NAMELESS    ((int64_t) 1 << 32)
 #define AU_TRAIT_CLOSED      ((int64_t) 1 << 33)
-#define AU_TRAIT_IMPLEMENTED ((int64_t) 1 << 34)
-#define AU_TRAIT_IS_RESOLVING ((int64_t) 1 << 35)
-#define AU_TRAIT_HAS_RETURN  ((int64_t) 1 << 36)
-#define AU_TRAIT_IS_IMPORTED ((int64_t) 1 << 37)
-#define AU_TRAIT_IS_PREPARED ((int64_t) 1 << 38)
-#define AU_TRAIT_IS_AU       ((int64_t) 1 << 39)
-#define AU_TRAIT_IS_ASSIGNED ((int64_t) 1 << 40)
-#define AU_TRAIT_IS_EXPORT   ((int64_t) 1 << 41)
-#define AU_TRAIT_IPROP       ((int64_t) 1 << 42)
-#define AU_TRAIT_META        ((int64_t) 1 << 43)
-#define AU_TRAIT_LAMBDA      ((int64_t) 1 << 44)
-#define AU_TRAIT_IS_TARGET   ((int64_t) 1 << 45)
-#define AU_TRAIT_FUNCTIONAL  ((int64_t) 1 << 46)
+#define AU_TRAIT_IS_RESOLVING ((int64_t) 1 << 34)
+#define AU_TRAIT_HAS_RETURN  ((int64_t) 1 << 35)
+#define AU_TRAIT_IS_IMPORTED ((int64_t) 1 << 36)
+#define AU_TRAIT_IS_PREPARED ((int64_t) 1 << 37)
+#define AU_TRAIT_IS_AU       ((int64_t) 1 << 38)
+#define AU_TRAIT_IS_ASSIGNED ((int64_t) 1 << 39)
+#define AU_TRAIT_IS_EXPORT   ((int64_t) 1 << 40)
+#define AU_TRAIT_IPROP       ((int64_t) 1 << 41)
+#define AU_TRAIT_META        ((int64_t) 1 << 42)
+#define AU_TRAIT_LAMBDA      ((int64_t) 1 << 43)
+#define AU_TRAIT_IS_TARGET   ((int64_t) 1 << 44)
+#define AU_TRAIT_FUNCTIONAL  ((int64_t) 1 << 45)
 
 typedef bool(*global_init_fn)();
 
@@ -147,9 +146,6 @@ typedef struct _Au_t {
     u32             abi_size;
     u32             align_bits;
     u32             record_alignment;
-    LLVMMetadataRef llscope;
-    LLVMTypeRef     lltype;
-    ARef            lldebug;
     i64             index; // index of type in module, or index of member in type
     object          value; // user-data value associated to type
     u8              member_type;
@@ -192,7 +188,6 @@ typedef struct _Au_t {
             u64 is_mod_init  : 1;
             u64 is_nameless  : 1;
             u64 is_closed    : 1;
-            u64 is_implemented : 1;
             u64 is_resolving : 1;
             u64 has_return   : 1;
             u64 is_imported  : 1;

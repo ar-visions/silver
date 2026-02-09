@@ -8,12 +8,12 @@ forward(catcher)
 forward(codegen)
 
 #define au_etype(arg) ({ \
-    Au_t au = (Au_t)(arg); \
+    Au_t au_ = (Au_t)(arg); \
     int cur = 0; \
     etype t = null; \
-    while(au && au->users && au->users[cur].mod) { \
-        if (au->users[cur].mod == a) { \
-            t = au->users[cur].etype; \
+    while(au_ && au_->users && au_->users[cur].mod) { \
+        if (au_->users[cur].mod == a) { \
+            t = au_->users[cur].etype; \
         } \
         cur++; \
     } \
@@ -23,12 +23,12 @@ forward(codegen)
 #define etypeid(id) au_etype(typeid(id))
 
 #define au_find_user(arg) ({ \
-    Au_t au = (Au_t)(arg); \
+    Au_t au_ = (Au_t)(arg); \
     int cur = 0; \
     Au_t_user u = null; \
-    while(au && au->users && au->users[cur].mod) { \
-        if (au->users[cur].mod == a) { \
-            u = &au->users[cur]; \
+    while(au_ && au_->users && au_->users[cur].mod) { \
+        if (au_->users[cur].mod == a) { \
+            u = &au_->users[cur]; \
             break; \
         } \
         cur++; \
@@ -37,19 +37,23 @@ forward(codegen)
 })
 
 #define au_register(arg, tt) ({ \
-    Au_t au = (Au_t)(arg); \
-    etype t = (etype)tt; \
+    Au_t au_2 = (Au_t)(arg); \
+    etype t_ = (etype)tt; \
     int cur = 0; \
-    while(au->users && au->users[cur].mod) \
-        verify(au->users[cur++].mod != a, "found duplicate etype registration"); \
-    if (!au->users[cur].mod) { \
-        Au_t_user prev = au->users; \
-        au->users = (Au_t_user)calloc((cur+1)*8, sizeof(struct _Au_t_user)); \
-        memcpy(au->users, prev, sizeof(struct _Au_t_user) * cur); \
-        au->users[cur].mod   = (aether)a; \
-        au->users[cur].etype = (etype)t; \
+    while(au_2->users && au_2->users[cur].mod) { \
+        if (!au_2->users[cur].mod) break; \
+        if (au_2->users[cur].mod == a) __asm__("int3"); \
+        cur++; \
     } \
-    t; \
+    if (!au_2->users || !au_2->users[cur].mod) { \
+        printf("registering type %s\n", au_2->ident); \
+        Au_t_user prev = au_2->users; \
+        au_2->users = (Au_t_user)calloc((cur+1)*8, sizeof(struct _Au_t_user)); \
+        memcpy(au_2->users, prev, sizeof(struct _Au_t_user) * cur); \
+        au_2->users[cur].mod   = (aether)a; \
+        au_2->users[cur].etype = (etype)t_; \
+    } \
+    t_; \
 })
 
 #define members(MDL, VAR) \
@@ -70,6 +74,10 @@ forward(enode)
 
 #define etype_schema(X,Y,...)\
     M(X,Y, i, prop, public,   Au_t,             au) \
+    M(X,Y, i, prop, intern,   LLVMTypeRef,      lltype,  as, ARef) \
+    M(X,Y, i, prop, intern,   LLVMMetadataRef,  llscope, as, ARef) \
+    M(X,Y, i, prop, intern,   LLVMMetadataRef,  lldebug, as, ARef) \
+    M(X,Y, i, prop, intern,   bool,             is_implemented) \
     M(X,Y, i, prop, public,   array,            meta) \
     M(X,Y, i, prop, public,   array,            dims) \
     M(X,Y, i, prop, public,   aether,           mod) \
