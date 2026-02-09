@@ -124,7 +124,8 @@ forward(efunc)
     M(X,Y, i, prop,  public, path,      root_path) \
     M(X,Y, i, prop,  public, path,      project_path) \
     M(X,Y, i, prop,  public, path,      current_inc) \
-    M(X, Y, i, prop, public, bool,      debug) \
+    M(X,Y, i, prop,  public, bool,      import_c) \
+    M(X,Y, i, prop,  public, bool,      debug) \
     M(X,Y, i, prop,  public, etype,     current_import) \
     M(X,Y, i, prop,  public, i32,       expr_level) \
     M(X,Y, i, prop,  public, Au_t,      import_module) \
@@ -251,7 +252,7 @@ forward(efunc)
     M(X,Y, i, method, public, Au_t,   top_scope) \
     M(X,Y, i, method, public, none,   push_scope, Au) \
     M(X,Y, i, method, public, Au_t,   pop_scope) \
-    M(X,Y, i, method, public, none,   import_models, Au_t) \
+    M(X,Y, i, method, public, none,   import_models, Au_t, bool) \
     M(X,Y, i, override, method, init)
 declare_class_3(aether, emodule, etype);
 
