@@ -59,7 +59,7 @@ def get_platform_info():
         },
         'Linux': {
             'exe': '', 'lib_pre': 'lib', 'lib': '.a', 'shared': '.so', 'obj': '.o',
-            'cc': f'{silver}/bin/clang', 'cxx': f'{silver}/bin/clang++',
+            'cc': f'gcc', 'cxx': f'g++',
             'ar': f'{silver}/bin/llvm-ar', 'ninja': 'ninja',
             'inc': ['/usr/include', '/usr/include/x86_64-linux-gnu'],
             'lib_dirs': [],
@@ -70,7 +70,7 @@ def get_platform_info():
                 '-ldl',          # For dynamic loading (dlopen)
                 '-ltinfo',       # (Optional) Often needed by LLVMSupport for terminal caps
             ],
-            'cflags': ['-D_DLL', '-D_MT', '-fmacro-backtrace-limit=0'],
+            'cflags': ['-D_DLL', '-D_MT', '-ftemplate-backtrace-limit=0'],
             'cxxflags': ['-D_DLL', '-D_MT'],
             'libs': ['-lc', '-lm']
         }
@@ -216,7 +216,7 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     # compiler flags
     base_flags = ["-Wno-write-strings", "-Wno-incompatible-function-pointer-types",
                   "-Wno-compare-distinct-pointer-types", "-Wno-deprecated-declarations",
-                  "-Wno-shift-op-parentheses", "-Wno-covered-switch-default", "-fmacro-backtrace-limit=0 "
+                  "-Wno-shift-op-parentheses", "-Wno-covered-switch-default", "-ftemplate-backtrace-limit=0 "
                   "-Wno-nullability-completeness", "-Wno-expansion-to-defined",
                   "-Wfatal-errors", "-fno-omit-frame-pointer"]
     if plat['exe'] == '.exe':

@@ -26,6 +26,7 @@ typedef struct _au_core {
     pthread_mutex_t lock;
 } *au_core;
 
+#define Au_t_module_ Au
 Au_t_info        Au_t_i;
 
 #ifndef line
@@ -43,9 +44,16 @@ typedef struct _ffi_method_t {
     void*           ffi_args; /// ffi-data types for args
 } ffi_method_t;
 
+// with all this macro stuff, we can still safely see the type of our type, is here.  'that' is not to be in a macro, but it must exist.
+// if the type is actually a Au_t, it will be this
+_Pragma("pack(push, 1)")
+#define Au_t_f_module_ Au
+Au_t_f_info Au_Au_t_f_i;
+_Pragma("pack(pop)")
+
 Au_t au_arg(Au a) {
     verify(!a || isa(a), "unexpected isa result for Au object");
-    if (isa(a) == typeid(Au_t_f) || a == isa(a)) return (Au_t)a;
+    if (isa(a) == typeid(Au_t_f) || a == (Au)isa(a)) return (Au_t)a;
     return cast(Au_t, a);
 }
 
@@ -97,6 +105,11 @@ bool Au_is_module   (Au t) {
         return true;
     return false;
 }
+
+//extern Au_info Au_Au_i;
+
+//extern Au_info Au_Au_i;
+
 
 bool Au_is_generic  (Au t) { return t && typeid(Au) == au_arg_type(t); }
 bool Au_is_integral (Au t) { return t && au_arg_type(t)->is_integral; }
@@ -741,12 +754,6 @@ Au_t lexical(array lex, symbol f) {
     return null;
 }
 
-// with all this macro stuff, we can still safely see the type of our type, is here.  'that' is not to be in a macro, but it must exist.
-// if the type is actually a Au_t, it will be this
-_Pragma("pack(push, 1)")
-Au_t_f_info Au_t_f_i;
-_Pragma("pack(pop)")
-
 static Au_t _push_arg(Au_t type, bool add_arg) {
     if (n_members == 0) {
         n_members   = 2048;
@@ -755,7 +762,7 @@ static Au_t _push_arg(Au_t type, bool add_arg) {
     }
     struct _Au_combine* cur = &member_pool[--n_members];
     cur->info.refs = 1;
-    cur->info.type = (Au_t)&Au_t_f_i.type;
+    cur->info.type = (Au_t)&Au_Au_t_f_i.type;
     Au_t au = &cur->type;
     au->member_type = AU_MEMBER_VAR;
     if (add_arg)
@@ -806,7 +813,10 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
 }
 
 Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
-    if (ident && strcmp((cstr)ident, "map") == 0) {
+
+    Au_t au2 = typeid(array);
+
+    if (ident && strcmp((cstr)ident, "test3") == 0) {
         ident = ident;
     }
     if (n_members == 0) {
@@ -816,7 +826,7 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
     }
     struct _Au_combine* cur = &member_pool[--n_members];
     cur->info.refs = 1;
-    cur->info.type = (Au_t)&Au_t_f_i.type;
+    cur->info.type = (Au_t)&Au_Au_t_f_i.type;
     Au_t au = &cur->type;
     au->ident = ident ? (cstr)cstr_copy((cstr)ident) : (cstr)null;
 
@@ -960,7 +970,7 @@ none def_init(func f) {
             free(prev);
         }
     }
-    call_last[call_last_count++] = f;
+    call_last[call_last_count++] = (__typeof__(call_last[0]))f;
 }
 
 Au_t module_lookup(symbol name) {
@@ -1016,15 +1026,15 @@ none push_type(Au_t type) {
     }
 
     if (type == typeid(Au)) {
-        Au_t_f_i.info.type = (Au_t)&Au_t_f_i.type;
-        Au_t_f_i.type.ident = "Au_t";
-        Au_t_f_i.type.module = module;
-        Au_t_f_i.type.traits = AU_TRAIT_IS_AU | AU_TRAIT_SCHEMA;
+        Au_Au_t_f_i.info.type = (Au_t)&Au_Au_t_f_i.type;
+        Au_Au_t_f_i.type.ident = "Au_t";
+        Au_Au_t_f_i.type.module = module;
+        Au_Au_t_f_i.type.traits = AU_TRAIT_IS_AU | AU_TRAIT_SCHEMA;
         int Au_ft_size   = sizeof(((Au_f*)typeid(Au))->ft);
         int Au_t_ft_size = sizeof(((Au_t_f*)typeid(Au_t_f))->ft);
         verify(Au_ft_size == Au_t_ft_size, "Au_f->ft not identical to Au_t_f->ft");
-        memcpy(&Au_t_f_i.type.ft, &typeid(Au)->ft, Au_ft_size);
-        head(typeid(Au_t))->type = Au_t_f_i.info.type;
+        memcpy(&Au_Au_t_f_i.type.ft, &typeid(Au)->ft, Au_ft_size);
+        head(typeid(Au_t))->type = Au_Au_t_f_i.info.type;
     }
 
     if (type->ident && strcmp(type->ident, "vec2f") == 0) {
@@ -1286,7 +1296,7 @@ none debug() {
 
 static none init_recur(Au a, Au_t current, raw last_init) {
     Au_t map_type = typeid(map);
-    if (current == (Au_t)&Au_i.type) return;
+    if (current == (Au_t)&Au_Au_i.type) return;
     none(*init)(Au) = ((Au_f*)current)->ft.init;
     init_recur(a, current->context, (raw)init);
     if (init && init != (none*)last_init) init(a); 
@@ -1708,7 +1718,7 @@ none member_override(Au_t type, Au_t type_mem, AFlag f) {
                  
                 struct _string*(*base_method)(Au) = (void*)((ARef)&base->ft.__none__)[m->index];
                 struct _string*(*ptr_method)(Au) = (void*)m->value;
-                verify(base_method == m->value, "method not stored in base table correctly");
+                verify((void*)base_method == (void*)m->value, "method not stored in base table correctly");
                 return;
             }
         }
@@ -1947,7 +1957,7 @@ Au _i64  (i64 data)  { return primitive(typeid(i64),  &data); }
 Au i      (i64 data)  { return primitive(typeid(i64),  &data); }
 Au _sz   (sz  data)  { return primitive(typeid(sz),   &data); }
 Au _u64  (u64 data)  { return primitive(typeid(u64),  &data); }
-Au _fp16 (fp16* data) { return primitive(typeid(fp16), data); }
+//Au _fp16 (fp16* data) { return primitive(typeid(fp16), data); }
 Au _bf16 (bf16* data) { return primitive(typeid(bf16), data); }
 Au _f32  (f32 data)  { return primitive(typeid(f32),  &data); }
 Au _f64  (f64 data)  { return primitive(typeid(f64),  &data); }
@@ -2599,7 +2609,7 @@ Au formatter(Au_t type, handle ff, Au opt, symbol template, ...) {
             Au_t isa_arg = isa(arg);
             bool success = !arg || isa_arg;
             verify(!arg || isa_arg, "unexpected null isa on object");
-            if (isa_arg == typeid(Au_t_f) || isa_arg == arg) {
+            if (isa_arg == typeid(Au_t_f) || isa_arg == (Au_t)arg) {
                 if (!arg) {
                     a = string("null");
                 } else {
@@ -3005,7 +3015,6 @@ string srcfile_cast_string(srcfile a) {
     return f(string, "%s:%i", i->source, i->line);
 }
 
-define_class(srcfile, Au);
 
 bool string_is_numeric(string a) {
     return a->chars[0] == '-' ||
@@ -3169,6 +3178,7 @@ array string_split_parts(string a) {
 
     return res;
 }
+
 
 string string_interpolate(string a, Au ff) {
     cstr   s    = (cstr)a->chars;
@@ -3554,7 +3564,7 @@ none Au_free(Au a) {
             cur->ft.dealloc(a);
             prev = cur->ft.dealloc;
         }
-        if (cur == &Au_i.type)
+        if (cur == &Au_Au_i.type)
             break;
         cur = (Au_f*)cur->context;
     }
@@ -3622,7 +3632,7 @@ callback Au_binding(Au a, Au target, bool required, Au_t rtype, Au_t arg_type, s
     callback f       = (callback)m->value;
     verify(f, "expected method address");
     verify(m->args.count  == 2, "%s: expected method address with instance, and arg*", name);
-    verify(!arg_type || m->args.origin[1] == arg_type, "%s: expected arg type: %s", name, arg_type->ident);
+    verify(!arg_type || m->args.origin[1] == (Au)arg_type, "%s: expected arg type: %s", name, arg_type->ident);
     verify(!rtype    || m->type == rtype, "%s: expected return type: %s", name, rtype->ident);
     return f;
 }
@@ -4967,8 +4977,6 @@ none mutex_cond_wait(mutex m) {
     pthread_cond_wait(&m->mtx->cond, &m->mtx->lock);
 }
 
-define_class(mutex, Au)
-
 // idea:
 // silver should: swap = and : ... so : is const, and = is mutable-assign
 // we serialize our data with : and we do not think of this as a changeable form, its our data and we want it intact, lol
@@ -5548,7 +5556,7 @@ none async_init(async t) {
         thread->t     = t;
         thread->lock  = mutex(cond, true);
         lock(thread->lock);
-        pthread_create(&thread->obj, null, async_runner, thread);
+        pthread_create(&thread->obj, null, (void*)async_runner, thread);
     }
     for (int i = 0; i < n; i++) {
         thread_t* thread = &t->threads[i];
@@ -5982,11 +5990,6 @@ array read_arg(array tokens, int start, int* next_read) {
     return count > 0 ? null : res;
 }
 
-// this signals an application entry
-define_class(subscriber, Au)
-define_class(subs, Au)
-
-define_arb(Au, Au, sizeof(struct _Au), AU_TRAIT_CLASS, null);
 
 
 /*
@@ -6009,6 +6012,16 @@ i32 app_run(app a) {
 
 none app_init(app a) {
 }
+
+define_arb(Au, Au, sizeof(struct _Au), AU_TRAIT_CLASS, null);
+
+define_class(subscriber, Au)
+
+define_class(subs, Au)
+
+define_class(mutex, Au)
+
+define_class(srcfile, Au);
 
 define_class   (app, Au)
 
@@ -6056,7 +6069,7 @@ define_primitive(bool,   numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED)
 define_primitive(num,    numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_SIGNED)
 define_primitive(sz,     numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_SIGNED)
 define_primitive(bf16,   numeric, AU_TRAIT_REALISTIC)
-define_primitive(fp16,   numeric, AU_TRAIT_REALISTIC)
+//define_primitive(fp16,   numeric, AU_TRAIT_REALISTIC)
 define_primitive(f32,    numeric, AU_TRAIT_REALISTIC)
 define_primitive(f64,    numeric, AU_TRAIT_REALISTIC)
 define_primitive(AFlag,  numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED)
