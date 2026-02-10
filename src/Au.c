@@ -27,7 +27,7 @@ typedef struct _au_core {
 } *au_core;
 
 #define Au_t_module_ Au
-Au_t_info        Au_t_i;
+Au_t_info        Au_Au_t_i;
 
 #ifndef line
 #define line(...)       new(line, __VA_ARGS__)
@@ -1016,13 +1016,13 @@ none push_type(Au_t type) {
     if (type == typeid(string))
         type = type;
 
-    if (!Au_t_i.type.ident) {
+    if (!Au_Au_t_i.type.ident) {
         module = module_lookup("Au");
-        Au_t_i.type.ident  = "Au_t";
-        Au_t_i.type.src    = typeid(Au);
-        Au_t_i.type.traits = AU_TRAIT_IS_AU;
-        Au_t_i.type.module = module;
-        push_type((Au_t)&Au_t_i.type);
+        Au_Au_t_i.type.ident  = "Au_t";
+        Au_Au_t_i.type.src    = typeid(Au);
+        Au_Au_t_i.type.traits = AU_TRAIT_IS_AU;
+        Au_Au_t_i.type.module = module;
+        push_type((Au_t)&Au_Au_t_i.type);
     }
 
     if (type == typeid(Au)) {
