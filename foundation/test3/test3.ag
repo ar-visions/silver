@@ -1,6 +1,11 @@
-func test3_func[ i:i32 ] -> i64
+public func test3_func[ i:i32 ] -> i64
     return i + 2
 
 
-func test3_funcomatic[] -> i64
+public func test3_funcomatic[] -> i64
     return 2
+
+class test3_class
+    test:i64
+    func init [] -> none
+        test:test3_funcomatic

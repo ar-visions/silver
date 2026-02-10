@@ -1,5 +1,4 @@
 import test3
-import <stdio.h>
 
 func test2_func[ i:i32 ] -> i64
     return i + 1 + test3_funcomatic
@@ -7,5 +6,5 @@ func test2_func[ i:i32 ] -> i64
 app test2
     func init [] -> none
         test2_func 1
-        puts 'lets print a line'
+
 

@@ -3742,7 +3742,8 @@ etype implement_type_id(etype t) {
     verify(au_type->ptr, "expected ptr type on Au");
 
     // we need to create the %o_i instance inline struct
-    string n = f(string, "%s_info", au->ident);
+    bool is_module = au->member_type == AU_MEMBER_MODULE;
+    string n = f(string, "%s_%s", au->ident, is_module ? "module" : "info");
     Au_t type_info = def_type  (a->au, n->chars,
         AU_TRAIT_STRUCT | AU_TRAIT_SYSTEM);
     Au_t type_h    = def_member(type_info, "info", au_type,
@@ -3753,7 +3754,8 @@ etype implement_type_id(etype t) {
     type_f->index = 1;
     etype au_t = etype(mod, a, au, type_info);
     etype_implement(au_t);
-    string name = f(string, "%s_i", au->ident);
+    
+    string name = f(string, "%s_%s", au->ident, is_module ? "m" : "i");
     evar schema_i = evar(mod, a, au, def_member(
                 a->au, name->chars, type_info, AU_MEMBER_VAR,
                 AU_TRAIT_SYSTEM | (a->is_Au_import ? AU_TRAIT_IS_IMPORTED : 0)));
@@ -4041,6 +4043,7 @@ none etype_implement(etype t) {
         if (cl !=  typeid(efunc)) {
             cl = cl;
         }
+
         verify(cl == typeid(efunc), "expected efunc");
         //string n = is_rec(au->context) ?
         //    f(string, "%s_%s", au->context->ident, au->ident) : string(au->ident);
@@ -4130,6 +4133,29 @@ none aether_output_schemas(aether a, enode init) {
         push_scope(a, (Au)f);
         enode module_id  = e_fn_call(a, (efunc)au_etype(fn_module_lookup), a(const_string(chars, a->name->chars)));
 
+        members(a->au, mem) {
+            etype mdl = au_etype(mem);
+
+            // add public functions
+            if (is_func(mdl) && mdl->au->access_type != interface_intern) {
+                symbol n = mem->alt ? mem->alt : mem->ident;
+                efunc  f = (efunc)au_etype(mem);
+                f->used = true;
+                etype_implement((etype)f);
+                enode module_id = e_typeid(a, (etype)a);
+
+                // i need the module type_id here, which we must create and associate to the emodule (etype)
+                e_fn_call(a, (efunc)au_etype(fn_def_func), a(
+                    module_id, const_string(chars, mem->ident), e_typeid(a, au_etype(mem->rtype)), 
+                    _u32(mem->member_type),
+                    _u32(mem->access_type),
+                    _u32(mem->operator_type),
+                    _u64(mem->traits),
+                    value(etypeid(ARef), f->value)
+                ));
+            }
+        }
+
         // iterate through user defined type id's
         pairs(a->user_type_ids, i) {
             etype mdl         = instanceof(i->key, etype);
@@ -4137,6 +4163,8 @@ none aether_output_schemas(aether a, enode init) {
             bool  is_class_t  = is_class(mdl);
             bool  is_struct_t = is_struct(mdl);
             bool  is_enum_t   = is_enum(mdl);
+            bool  is_func_t   = is_func(mdl);
+            bool  is_lambda_t = is_lambda(mdl);
             Au_t  au          = mdl->au;
             u64   isize       = 0;
 
@@ -4151,6 +4179,7 @@ none aether_output_schemas(aether a, enode init) {
             }
 
             etype au_context_user = au->context ? au_etype(au->context) : null;
+
             // initialize the type and fields
             bool ctx_module = is_module(au->context);
             e_fn_call(a, (efunc)au_etype(fn_emplace), a(
@@ -4443,6 +4472,10 @@ void aether_import_Au(aether a, string ident, Au lib) {
 
     // register and push new module scope if we are loading from library
     if (lib) {
+        // this is in Addition to the module we also push for externals;
+        // for simplicity we should not do this
+        // the >only< import process into our own module is to create a new module which registers the startup!
+        // DO NOT push the external module;
         au_module = instanceof(lib, path) ? 
             def_module(copy_cstr((ident ? ident : lib_name)->chars)) : (Au_t)lib;
         push_scope(a, (Au)au_module);
@@ -4450,7 +4483,7 @@ void aether_import_Au(aether a, string ident, Au lib) {
         au_module = global();
         set(a->libs, string("Au"), _bool(true));
         a->au_module = au_module;
-    }
+    } 
 
     a->import_module = au_module;
 
@@ -4481,6 +4514,8 @@ void aether_import_Au(aether a, string ident, Au lib) {
         }
 
         verify(f->context == typeid(Au), "expected Au type context");
+    } else {
+        au_module->is_closed = true;
     }
     a->is_Au_import  = false;
 }
@@ -4627,15 +4662,16 @@ none aether_init(aether a) {
 
     // push our module space to the scope
     Au_t g = global();
+    g->is_closed = true;
+
     verify(g,           "globals not registered");
     verify(a->au,       "no module registered for aether");
     verify(g != a->au,  "aether using global module");
 
     push_scope(a, (Au)g);
-
     a->au->is_au = true;
     import_Au(a, string("Au"), null);
-
+    
     a->au->is_namespace = true; // for the 'module' namespace at [1], i think we dont require the name.. or, we set a trait
     a->au->is_nameless  = false; // we have no names, man. no names. we are nameless! -cereal
     push_scope(a, (Au)a->au);
@@ -5203,6 +5239,7 @@ efunc aether_module_initializer(aether a) {
     init->has_code = true;
 
     etype_implement((etype)init);
+    implement_type_id((etype)a);
     a->fn_init = init;
     return init;
 }

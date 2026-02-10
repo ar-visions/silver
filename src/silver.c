@@ -13,23 +13,23 @@ static void build_record(silver a, etype mrec);
 // used in more primitive cases
 #define au_lookup(sym) lexical(a->lexical, sym)
 
-#define elookup(sym) ({              \
+#define elookup(sym) ({ \
     Au_t m = lexical(a->lexical, sym); \
     m ? au_etype(m) : null; \
 })
 
-#define validate(cond, t, ...) ({                                                          \
-    if (!(cond)) {                                                                         \
+#define validate(cond, t, ...) ({ \
+    if (!(cond)) { \
         formatter((Au_t)null, stderr, (Au) true, (symbol) "\n%o:%i:%i " t, a->module_file, \
-                  peek(a)->line, peek(a)->column, ##__VA_ARGS__);     \
-        if (level_err >= fault_level) {                                                 \
-            raise(SIGTRAP);                                                             \
-            exit(1);                                                                    \
-        }                                                                               \
-        false;                                                                          \
-    } else {                                                                            \
-        true;                                                                           \
-    }                                                                                   \
+                  peek(a)->line, peek(a)->column, ##__VA_ARGS__); \
+        if (level_err >= fault_level) { \
+            raise(SIGTRAP); \
+            exit(1); \
+        } \
+        false; \
+    } else { \
+        true; \
+    } \
 })
 
 token silver_element(silver, num);
@@ -1908,7 +1908,7 @@ enode parse_statement(silver a)
             mem->au->is_static = is_static;
 
             e = (enode)evar(mod, (aether)a, au, mem->au, loaded, false, meta, rtype->meta, initializer, (tokens)expr);
-            au_register(e->au, (etype)e);
+            //au_register(e->au, (etype)e);
             if (is_static) {
                 verify(rec_top, "invalid use of static (must be a class member, not a global item -- use intern for module-interns)");
                 mem->au->alt = (cstr)cstr_copy((cstr)((string)(f(string, "%o_%o", rec_top, e))->chars));
@@ -3220,6 +3220,10 @@ enode parse_import(silver a) {
 
     // this invokes import by git; a local repo may be possible but not very usable
     // arguments / config not stored / used after this
+    // run with these, or compile with these?
+    // its obviously a major nightmare to control namespace for configuration of module
+    // it would need to follow the same cache rules below
+    // loading at runtime does seem a better idea
     if (next_is(a, "[")) {
         verify(!mod, "run-time module imported -- configuration cannot be applied");
         array b = read_body(a);
@@ -3326,15 +3330,9 @@ enode parse_import(silver a) {
     a->current_import = (etype)mdl;
 
     mdl->au->alt = namespace ? cstr_copy(namespace->chars) : null;
-
-    // member registration for 'import'
-    // needs to be enode
-    enode mem = enode(
-        mod,  (aether)a,
-        au,   mdl->au);
     
-    if (!has_cache && !is_codegen) {
-        push_scope(a, (Au)(external ? external->au : mdl->au));
+    if (len(includes)) {
+        push_scope(a, (Au)mdl->au);
         mdl->include_paths = array();
 
         // include each, collecting the clang instance for which we will invoke macros through
@@ -3346,13 +3344,14 @@ enode parse_import(silver a) {
         }
     }
 
+    // loads the actual library here -- DO NOT integrate external->au module; we load it direct with our own
+    // and let the runtime register itself
+    // this is so we may be Au-centric, and language agnostic
     if (!is_codegen && (external || mod || lib_path)) {
-        import_Au(a, external ? external->name : null, external ? (Au)external->product
-            : mod ? (Au)mod : (Au)lib_path);
+        import_Au(a, external ? external->name : null,
+            external ? (Au)external->product : mod ? (Au)mod : (Au)lib_path);
     }
-        
-    if (external)
-        external->au->is_closed = true;
+    
     mdl->au->is_closed = true;
     mdl->lib_path = hold(lib_path);
     mdl->module_source = hold(module_source);
@@ -3363,7 +3362,7 @@ enode parse_import(silver a) {
         set(a->codegens, (Au)name, (Au)mdl->codegen);
     }
 
-    return mem;
+    return (enode)mdl;
 }
 
 // works for class inits, and module inits
@@ -4671,6 +4670,6 @@ etype silver_read_def(silver a) {
 
 define_class(chatgpt, codegen)
 define_class(silver, aether)
-define_class(import, etype)
+define_class(import, enode)
 
 initializer(silver_module)
