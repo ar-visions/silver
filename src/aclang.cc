@@ -121,7 +121,7 @@ static std::vector<clang::NamedDecl*> namespace_stack(clang::NamedDecl *decl) {
     return parts;
 }
 
-static Au_t find_member(Au_t parent, symbol name) {
+static Au_t _find_member(Au_t parent, symbol name) {
     if (!parent || !name) return null;
     for (int i = 0; i < parent->members.count; i++) {
         Au_t m = (Au_t)parent->members.origin[i];
@@ -138,7 +138,7 @@ static void push_context(NamedDecl* decl, aether e) {
     for (clang::NamedDecl* n: s) {
         std::basic_string<char> s = n->getNameAsString();
         symbol name = s.c_str();
-        Au_t m = find_member(cur, name);
+        Au_t m = _find_member(cur, name);
         verify(m, "namespace not found: %s", name);
         push_scope(e, (Au)m);
         cur = m;
@@ -695,7 +695,7 @@ static Au_t create_namespace(NamespaceDecl* ns, ASTContext& ctx, aether e) {
         symbol name = ns_name.c_str();
         index++;
         
-        Au_t existing = find_member(cur, name);
+        Au_t existing = _find_member(cur, name);
 
         if (index == (int)s.size()) {
             if (existing)

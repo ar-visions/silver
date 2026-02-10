@@ -82,9 +82,9 @@
 #define   enum_method_DECL(E, T, R, N, ...)
 #define   enum_method_COUNT(E, T, R, N, ...)
 #define   enum_method_IMPL(E, T, R, N, ...) { \
-    Au_t m = def((Au_t)mtypeid(MODULE,E), #N, AU_MEMBER_FUNC, AU_TRAIT_SMETHOD); \
+    Au_t m = def(typeid(E), #N, AU_MEMBER_FUNC, AU_TRAIT_SMETHOD); \
     m->access_type = interface_public; \
-    mtypeid(MODULE,E) -> ft.N = & E## _ ## N; \
+    _typeid(E) -> ft.N = & E## _ ## N; \
     set_args_array(m, emit_types(__VA_ARGS__)); \
     m->type    = typeid(R); \
     m->offset  = offsetof(E##_f, N); \
@@ -102,7 +102,7 @@
 #define   enum_value_v_METHOD(E, T, N, VAL)
 #define   enum_value_v_NMODULE(E, T, N, VAL)
 #define   enum_value_v_IMPL(E, T, N, VAL) { \
-    Au_t m = def_enum_value((Au_t)mtypeid(MODULE,E) #N, &static_##N); \
+    Au_t m = def_enum_value(typeid(E) #N, &static_##N); \
     m->access_type = interface_public; \
     static T static_##N = VAL; \
     m->offset   = (i64)E##_##N;\
@@ -296,8 +296,8 @@
 #define EXPAND_ARGS_6(a, b, c, d, e, f)                6, typeid(a), typeid(b), typeid(c), typeid(d), typeid(e), typeid(f)
 #define EXPAND_ARGS_7(a, b, c, d, e, f, g)             7, typeid(a), typeid(b), typeid(c), typeid(d), typeid(e), typeid(f), typeid(g)
 #define EXPAND_ARGS_8(a, b, c, d, e, f, g, h)          8, typeid(a), typeid(b), typeid(c), typeid(d), typeid(e), typeid(f), typeid(g), typeid(h)
-#define EXPAND_ARGS_9(a, b, c, d, e, f, g, h, ii)      9, typeid(a), typeid(b), typeid(c), typeid(d), typeid(e), typeid(f), typeid(g), typeid(h), typeid(i)
-#define EXPAND_ARGS_10(a, b, c, d, e, f, g, h, ii, j) 10, typeid(a), typeid(b), typeid(c), typeid(d), typeid(e), typeid(f), typeid(g), typeid(h), typeid(i), typeid(j)
+#define EXPAND_ARGS_9(a, b, c, d, e, f, g, h, ii)      9, typeid(a), typeid(b), typeid(c), typeid(d), typeid(e), typeid(f), typeid(g), typeid(h), typeid(ii)
+#define EXPAND_ARGS_10(a, b, c, d, e, f, g, h, ii, j) 10, typeid(a), typeid(b), typeid(c), typeid(d), typeid(e), typeid(f), typeid(g), typeid(h), typeid(ii), typeid(j)
 
 #define EXPAND_ARGS_11(a, b, c, d, e, f, g, h, ii, j, k) \
     11, typeid(a), typeid(b), typeid(c), typeid(d), \
@@ -376,7 +376,7 @@
 #define   i_ctr_public_DEF(X, ARG)
 #define   i_ctr_public_DECL(X, ARG) X X##_with_##ARG(X, ARG);
 #define   i_ctr_public_DECL_EXTERN(X, ARG) X X##_with_##ARG(X, ARG);
-#define   i_ctr_public_GENERICS(X, ARG) ARG: _typeid(X)->ft.with_##ARG,
+#define   i_ctr_public_GENERICS(X, ARG) ARG: Type_i(X).type.ft.with_##ARG,
 
 #define   i_ctr_public_INIT(X, ARG) { \
     Au_t m = def(typeid(X), stringify(with_##ARG), AU_MEMBER_CONSTRUCT, 0); \
@@ -1067,15 +1067,15 @@
 #define   i_struct_ctr_DEF(X, ARG)
 #define   i_struct_ctr_DECL(X, ARG)
 #define   i_struct_ctr_DECL_EXTERN(X, ARG)
-#define   i_struct_ctr_GENERICS(X, ARG) ARG*: X##_i.type.ft.with_##ARG,
+#define   i_struct_ctr_GENERICS(X, ARG) ARG*: Type_i(X).type.ft.with_##ARG,
 #define   i_struct_ctr_INIT(X, ARG) { \
     Au_t m = def(typeid(X), stringify(with_##ARG), AU_MEMBER_CONSTRUCT, 0); \
     m->access_type = interface_public; \
-    X##_i.type.ft.with_##ARG = & X##_with_##ARG; \
+    Type_i(X).type.ft.with_##ARG = & X##_with_##ARG; \
     m->type        = typeid(ARG); \
     /* m->offset      = offsetof(X##_f, with_##ARG); */ \
     m->value       = (void*)& X##_with_##ARG; \
-    m->index       = offsetof(__typeof__(X##_i.type.ft), with_##ARG) / sizeof(void*); \
+    m->index       = offsetof(__typeof__(Type_i(X).type.ft), with_##ARG) / sizeof(void*); \
 }
 
 #define   i_struct_ctr_PROTO(X, ARG)
@@ -1090,11 +1090,11 @@
 #define   i_struct_ctr_obj_DEF(X, ARG)
 #define   i_struct_ctr_obj_DECL(X, ARG)
 #define   i_struct_ctr_obj_DECL_EXTERN(X, ARG)
-#define   i_struct_ctr_obj_GENERICS(X, ARG) ARG: X##_i.type.ft.with_##ARG,
+#define   i_struct_ctr_obj_GENERICS(X, ARG) ARG: Type_i(X).type.ft.with_##ARG,
 #define   i_struct_ctr_obj_INIT(X, ARG) { \
     Au_t m = def(typeid(X), stringify(with_##ARG), AU_MEMBER_CONSTRUCT, 0); \
     m->access_type = interface_public; \
-    X##_i.type.ft.with_##ARG = & X##_with_##ARG; \
+    Type_i(X).type.ft.with_##ARG = & X##_with_##ARG; \
     m->type        = typeid(ARG); \
     m->value       = (void*)& X##_with_##ARG; \
 }
@@ -1155,12 +1155,12 @@
 #define   i_struct_cast_DECL_EXTERN(X, R)
 #define   i_struct_cast_GENERICS(X, R)
 #define   i_struct_cast_INIT(ST, R) { \
-    Au_t m = def(mtypeid(MODULE, ST), stringify(cast_##R), AU_MEMBER_CAST, 0); \
+    Au_t m = def(typeid(ST), stringify(cast_##R), AU_MEMBER_CAST, 0); \
     m->access_type = interface_public; \
-    ST##_i.type.ft.cast_##R = & ST##_cast_##R; \
+    Type_i(ST).type.ft.cast_##R = (__typeof__(Type_i(ST).type.ft.cast_##R)) & ST##_cast_##R; \
     set_args_array(m, emit_types(ST)); \
     m->type    = typeid(R); \
-    m->offset  = offsetof(__typeof(ST##_i.type.ft), cast_##R); \
+    m->offset  = offsetof(__typeof(Type_i(ST).type.ft), cast_##R); \
     m->member_type = AU_MEMBER_CAST; \
 }
 
@@ -1180,7 +1180,7 @@
 #define   i_struct_method_INIT(    X, R, N, ...) { \
     Au_t m = def(typeid(X), #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
     m->access_type = interface_public; \
-    X##_i.type . ft.N = & X## _ ## N; \
+    Type_i(X).type . ft.N = & X## _ ## N; \
     m->type    = typeid(R); \
 }
 
@@ -1201,7 +1201,7 @@
 #define   i_struct_static_INIT(    X, R, N, ...) { \
     Au_t m = def(typeid(X), #N, AU_MEMBER_FUNC, AU_TRAIT_SMETHOD); \
     m->access_type = interface_public; \
-    X##_i.type . ft.N = & X## _ ## N; \
+    Type_i(X).type . ft.N = & X## _ ## N; \
     m->type    = typeid(R); \
 }
 
