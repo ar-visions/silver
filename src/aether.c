@@ -1746,7 +1746,7 @@ enode aether_e_typeid(aether a, etype mdl) {
     if (!mdl)
         return e_null(a, etypeid(Au_t));
     
-    if (!mdl->au->module->is_au) {
+    if (!mdl->type_id && (is_module(mdl->au) || !mdl->au->module->is_au)) {
         implement_type_id(mdl);
     }
     //verify(mdl->au->module->is_au, "typeid not available on external types: %o", mdl);
@@ -3755,7 +3755,9 @@ etype implement_type_id(etype t) {
     etype au_t = etype(mod, a, au, type_info);
     etype_implement(au_t);
     
-    string name = f(string, "%s_%s", au->ident, is_module ? "m" : "i");
+    string name = is_module(au) ?
+        f(string, "%s_m", au->ident) :
+        f(string, "%s_%s_i", au->module->ident, au->ident);
     evar schema_i = evar(mod, a, au, def_member(
                 a->au, name->chars, type_info, AU_MEMBER_VAR,
                 AU_TRAIT_SYSTEM | (a->is_Au_import ? AU_TRAIT_IS_IMPORTED : 0)));

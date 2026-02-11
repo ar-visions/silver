@@ -42,7 +42,7 @@ forward(codegen)
     int cur = 0; \
     while(au_2->users && au_2->users[cur].mod) { \
         if (!au_2->users[cur].mod) break; \
-        if (au_2->users[cur].mod == a) __asm__("int3"); \
+        if (au_2->users[cur].mod == a) __builtin_trap(); \
         cur++; \
     } \
     if (!au_2->users || !au_2->users[cur].mod) { \

@@ -80,16 +80,19 @@ static symbol lib_pre = "lib";
 static symbol lib_ext = ".so";
 static symbol app_ext = "";
 static symbol platform = "linux";
+static symbol shared   = "-shared";
 #elif defined(_WIN32)
 static symbol lib_pre = "";
 static symbol lib_ext = ".dll";
 static symbol app_ext = ".exe";
 static symbol platform = "windows";
+static symbol shared   = "-shared";
 #elif defined(__APPLE__)
 static symbol lib_pre = "lib";
 static symbol lib_ext = ".dylib";
 static symbol app_ext = "";
 static symbol platform = "darwin";
+static symbol shared   = "-dynamiclib";
 #endif
 
 #define next_is(a, ...) silver_next_is_eq(a, __VA_ARGS__, null)
@@ -2782,8 +2785,9 @@ none silver_build(silver a) {
 
     // link - include the implementation objects
     a->product = f(path, "%o/%s%o%s", build_dir, a->is_library ? lib_pre : "", name, a->is_library ? lib_ext : "");
-    verify(exec("%o/bin/clang %s%o/%o.o %o -o %o -L%o -L%o/lib -Wl,--no-undefined -Wl,--allow-multiple-definition %o %o",
-        install, a->is_library ? "-shared " : "", build_dir, name, objs,
+    string isysroot = a->isysroot ? f(string, "-isysroot %o ", a->isysroot) : string("");
+    verify(exec("%o/bin/clang %s %o %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-undefined,error -Wl,-fatal_warnings %o %o",
+        install, a->is_library ? shared : "", isysroot, build_dir, name, objs,
         a->product,
         build_dir,
         install, libs, cflags) == 0,

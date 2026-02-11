@@ -1957,7 +1957,7 @@ Au _i64  (i64 data)  { return primitive(typeid(i64),  &data); }
 Au i      (i64 data)  { return primitive(typeid(i64),  &data); }
 Au _sz   (sz  data)  { return primitive(typeid(sz),   &data); }
 Au _u64  (u64 data)  { return primitive(typeid(u64),  &data); }
-//Au _fp16 (fp16* data) { return primitive(typeid(fp16), data); }
+Au _fp16 (fp16* data) { return primitive(typeid(fp16), data); }
 Au _bf16 (bf16* data) { return primitive(typeid(bf16), data); }
 Au _f32  (f32 data)  { return primitive(typeid(f32),  &data); }
 Au _f64  (f64 data)  { return primitive(typeid(f64),  &data); }
@@ -6069,7 +6069,7 @@ define_primitive(bool,   numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED)
 define_primitive(num,    numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_SIGNED)
 define_primitive(sz,     numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_SIGNED)
 define_primitive(bf16,   numeric, AU_TRAIT_REALISTIC)
-//define_primitive(fp16,   numeric, AU_TRAIT_REALISTIC)
+define_primitive(fp16,   numeric, AU_TRAIT_REALISTIC)
 define_primitive(f32,    numeric, AU_TRAIT_REALISTIC)
 define_primitive(f64,    numeric, AU_TRAIT_REALISTIC)
 define_primitive(AFlag,  numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED)
