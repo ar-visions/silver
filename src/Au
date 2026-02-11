@@ -107,7 +107,7 @@ typedef char*                   cstr;
 typedef const char*             symbol;
 typedef bool                   *ref_bool;
 
-//typedef __fp16                  fp16;
+typedef __fp16                  fp16;
 typedef __bf16                  bf16;
 
 
@@ -1692,7 +1692,7 @@ Au      _sz(sz);
 Au      _u64(u64);
 Au      _f32(f32);
 Au      _f64(f64);
-//Au      _fp16(fp16*);
+Au      _fp16(fp16*);
 Au      _bf16(bf16*);
 Au  float32(f32);
 Au   real64(f64);
