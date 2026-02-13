@@ -190,20 +190,20 @@ for [i: i32 = 0 :: i < 10 :: i += 1]
 
 ### for / while
 
-`for` with a condition is a while-loop. `loop` followed by `while` is do-while:
+`for` with a condition is a while-loop. `for` followed by `while` is a traditional 'do-while':
 
 ```python
 
 # for-condition
-for running
+for [ running ]
     process[]
 
 
 # for-while
-for
+for [ ]
     step
 
-while not done
+while [ not done ]
 
 # for-init-condition-iter
 for [ i : 0 :: running && i < 2 :: i += 1 ]
