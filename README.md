@@ -85,7 +85,7 @@ func add[a: i32, b: i32] -> i32
     return a + b
 
 func greet[name: string]
-    print['hello, {name}']
+    print 'hello, {name}'
 ```
 
 When no `->` is given, the return type is `none`.
@@ -172,11 +172,11 @@ The default storage type is `i32`. Values auto-increment from the last explicit 
 
 ```python
 if [x > 0]
-    print["positive"]
+    print "positive"
 else if [x == 0]
-    print["zero"]
+    print "zero"
 else
-    print["negative"]
+    print "negative"
 ```
 
 ### for
@@ -188,17 +188,32 @@ for [i: i32 = 0 :: i < 10 :: i += 1]
     print['{i}']
 ```
 
-### loop / while
+### for / while
 
-`loop` with a condition is a while-loop. `loop` followed by `while` is do-while:
+`for` with a condition is a while-loop. `loop` followed by `while` is do-while:
 
 ```python
-loop [running]
+
+# for-condition
+for running
     process[]
 
-loop
-    step[]
-while [not done]
+
+# for-while
+for
+    step
+
+while not done
+
+# for-init-condition-iter
+for [ i : 0 :: running && i < 2 :: i += 1 ]
+    process
+
+# for-init-condition
+for [ i : u16 [ 0 ] :: running && i < 2 ]
+    process
+    i += 1
+
 ```
 
 ### switch / case
@@ -405,9 +420,9 @@ The `using` keyword delegates function body generation to a registered codegen b
 
 ```python
 ifdef mac
-    print["running on macOS"]
+    print "running on macOS"
 else
-    print["not macOS"]
+    print "not macOS"
 ```
 
 The boolean constants `mac`, `linux`, and `windows` are available at module scope.
