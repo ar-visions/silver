@@ -28,7 +28,7 @@ silver is unique in that it represents a single module mechanism to express an e
 
 silver source files use the `.ag` extension. A module is a directory containing a source file with the same stem name — `myapp/myapp.ag`. The compiler reads the module path, tokenizes, parses, emits LLVM IR, and links the result into a shared library or executable.
 
-Companion C or C++ files placed alongside the `.ag` source — `mymodule.c` or `mymodule.cc` — are compiled with Clang and linked in automatically. This is the mechanism by which silver interfaces with system APIs, LLVM internals, or any native library. There is no wrapper generation step, no binding language.
+Companion C or C++ files placed alongside the `.ag` source — `mymodule.c` or `mymodule.cc` — are compiled with Clang and linked in automatically. These sub modules integrate directly into the object model of silver (Au), with specific methods offloaded to these langs. There is no wrapper generation step, no binding language.  One merely declares a function with no implementation.  It's implementation is then bound these external languages.
 
 ---
 
