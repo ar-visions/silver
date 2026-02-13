@@ -4396,27 +4396,32 @@ enode parse_ifdef_else(silver a) {
 // if the cond is a constant evaluation then we do not build the condition in with LLVM build, but omit the blocks that are not used
 // and only proceed
 enode parse_if_else(silver a) {
-    bool require_if = true;
-    array tokens_cond = array(32);
+    validate(read_if(a, "if") != null, "expected if");
+
+    array tokens_cond  = array(32);
     array tokens_block = array(32);
-    while (true) {
-        bool is_if = read_if(a, "if") != null;
-        validate(is_if && require_if || !require_if, "expected if");
-        array cond = is_if ? read_within(a) : array();
+
+    // first if
+    array cond  = read_within(a);
+    verify(cond, "expected [condition] after if");
+    array block = read_body(a);
+    verify(block, "expected body");
+    push(tokens_cond,  (Au)cond);
+    push(tokens_block, (Au)block);
+
+    // chain of el [cond] / el
+    while (read_if(a, "el")) {
+        array cond  = read_within(a); // null when no [...] → final else
         array block = read_body(a);
-        verify(block, "expected body");
-        push(tokens_cond, (Au)cond);
+        verify(block, "expected body after el");
+        push(tokens_cond,  (Au)(cond ? cond : array()));
         push(tokens_block, (Au)block);
-        if (!is_if)
-            break;
-        bool next_else = read_if(a, "else") != null;
-        if (!next_else)
-            break;
-        require_if = false;
+        if (!cond)
+            break; // bare el is terminal
     }
+
     subprocedure build_cond = subproc(a, cond_builder, null);
     subprocedure build_expr = subproc(a, block_builder, null);
-    // getting a 'none' value from a condition block, somewhere
     return e_if_else(a, tokens_cond, tokens_block, build_cond, build_expr);
 }
 
