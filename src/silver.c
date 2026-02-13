@@ -433,7 +433,7 @@ Au build_init_preamble(enode f, Au arg) {
     members(rec->au, mem) {
         enode n = (enode)instanceof(au_etype(mem), enode);
         if (n && n->initializer)
-            build_initializer(a, (etype)n);
+            build_user_initializer(a, (etype)n);
     }
     return null;
 }
@@ -463,6 +463,8 @@ Au build_init_preamble(enode f, Au arg) {
     #define SILVER_IS_EMBEDDED 0
 #endif
 
+void implement_type_id(etype);
+
 void silver_parse(silver a) {
     efunc init = module_initializer(a);
 
@@ -484,6 +486,8 @@ void silver_parse(silver a) {
         incremental_resolve(a);
     }
 
+    // when done parsing, we are able to create a module schema (type_id definition) and the evar instance for the type_id (module_m with info/type)
+    implement_type_id((etype)a);
     build_fn(a, init, build_init_preamble, null);
 }
 
@@ -491,6 +495,8 @@ none aether_test_write(aether a);
 
 // im a module!
 void silver_init(silver a) {
+    hold(a);
+
     bool is_once = a->build || a->is_external;
     
     if (a->version) {
@@ -501,7 +507,6 @@ void silver_init(silver a) {
         return;
     }
 
-    a->instances    = map();
     a->import_cache = map();
 
     verify(a->module, "required argument: module (path/to/module)");
@@ -538,11 +543,13 @@ void silver_init(silver a) {
 
     bool retry = false;
     i64 mtime = modified_time(a->module);
+    hold_members(a);
+    
     do {
         if (retry) {
             print("awaiting iteration: %o", a->module);
-            hold_members(a);
-            recycle();
+            
+            auto_free();
             mtime = path_wait_for_change(a->module, mtime, 0);
             print("rebuilding...");
             drop(a->tokens);
@@ -551,11 +558,12 @@ void silver_init(silver a) {
             a->imports = array();
         }
         retry = false;
-        a->tokens = tokens(
-            target, (Au)a, parser, parse_tokens, input, (Au)a->module_file);
+        a->tokens = hold(tokens(
+            target, (Au)a, parser, parse_tokens, input, (Au)a->module_file));
         print_all(a, "all", (array)a->tokens);
-        a->stack = array(4);
-        a->implements = array();
+        a->stack = hold(array(4));
+        a->implements = hold(array());
+
 
         // our verify infrastructure is now production useful
         attempt() {
@@ -571,6 +579,8 @@ void silver_init(silver a) {
                     push(a->implements, (Au)files[i]);
                 }
             
+            string bp = a->breakpoint;
+            Au info = head(bp);
             parse(a);
             build(a);
         }
@@ -2660,8 +2670,9 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         vexec("rust", "cargo build --%s --manifest-path %o/Cargo.toml --target-dir %o",
               debug ? "debug" : "release", project_f, build_f);
     } else if (is_silver) { // build for Au-type projects
-        silver sf = silver(module, silver_f, breakpoint, a->breakpoint, debug, a->debug);
+        silver sf = silver(module, silver_f, breakpoint, a->breakpoint, debug, a->debug, is_external, true);
         validate(sf, "silver module compilation failed: %o", silver_f);
+        drop(sf);
     } else {
         /// build for automake
         if (file_exists("%o/autogen.sh", project_f) ||
@@ -2749,6 +2760,8 @@ none silver_build(silver a) {
     if (len(a->implements))
         write_header(a);
 
+    // now we can unload the imported externs
+
     // create libs, and describe in reverse order from import
     pairs(a->libs, i) {
         string name = (string)i->key;
@@ -2784,7 +2797,8 @@ none silver_build(silver a) {
     }
 
     // link - include the implementation objects
-    a->product = f(path, "%o/%s%o%s", build_dir, a->is_library ? lib_pre : "", name, a->is_library ? lib_ext : "");
+    path product = f(path, "%o/%s%o%s", build_dir, a->is_library ? lib_pre : "", name, a->is_library ? lib_ext : "");
+    a->product = hold(product);
     string isysroot = a->isysroot ? f(string, "-isysroot %o ", a->isysroot) : string("");
     verify(exec("%o/bin/clang %s %o %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-undefined,error -Wl,-fatal_warnings %o %o",
         install, a->is_library ? shared : "", isysroot, build_dir, name, objs,
@@ -3128,11 +3142,9 @@ enode parse_import(silver a) {
     int     from         = a->cursor;
     codegen cg           = null;
     string  namespace    = null;
-    array   includes     = array(32);
     path    lib_path     = null;
     path    module_source = null;
     bool    is_binary    = false;
-    array   module_names = array(32);
     token   t            = peek(a);
     Au_t    is_codegen   = null;
     token   commit       = null;
@@ -3197,6 +3209,8 @@ enode parse_import(silver a) {
             commit = read_compacted(a);
     }
 
+    array includes = array(32);
+
     // determine includes, uri, and config
     // includes for this import
     if (!is_codegen && read_if(a, "<")) {
@@ -3242,8 +3256,10 @@ enode parse_import(silver a) {
             set(props, (Au)string(prop_name->chars), (Au)string(prop_value->chars));
         }
     }
+    
+    string external_name = null;
+    path   external_product = null;
 
-    silver external = null;
     if (read_if(a, "from")) {
         uri = hold(read_alpha(a)); // todo: compact neighboring tokens with https:// and git://
         validate(uri, "expected uri");
@@ -3294,7 +3310,19 @@ enode parse_import(silver a) {
     } else if (module_source) {
         path module = parent_dir(module_source);
         verify(compare(stem(module_source), stem(module)) == 0, "silver expects identical module stem");
-        external = silver(module, module, breakpoint, a->breakpoint, is_external, true, debug, a->debug);
+
+        // we should turn on object tracking here, as to trace which objects are still in memory after we drop
+        silver external = silver(module, module, breakpoint, a->breakpoint, is_external, true, debug, a->debug);
+        
+        // these should be the only two objects remaining.
+        external_name    = hold(external->name); 
+        external_product = hold(external->product);
+
+        Au info = head(external);
+        drop(external);
+        drop(external); // this is to compensate for the initial hold in silver_init
+        external = external;
+        // auto_free(); -- call auto_free at base of run-loop
     }
     else if (is_codegen) {
         cg = (codegen)construct_with(is_codegen, (Au)props, null);
@@ -3320,11 +3348,14 @@ enode parse_import(silver a) {
     import mdl = (import)get(a->import_cache, (Au)tokens);
     bool has_cache = mdl != null;
 
+    Au_t top222 = top_scope(a);
+
     if (!has_cache) {
         mdl = import(
             mod, (aether)a,
             codegen, cg,
-            external, external,
+            external_name, external_name,
+            external_product, external_product,
             tokens, tokens);
 
         set(a->import_cache, (Au)tokens, (Au)mdl);
@@ -3341,20 +3372,23 @@ enode parse_import(silver a) {
 
         // include each, collecting the clang instance for which we will invoke macros through
         each(includes, string, inc) {
-            aclang_cc instance;
-            path i = include(a, (Au)inc, namespace, (ARef)&instance);
+            path i = include(a, (Au)inc, namespace);
             push(mdl->include_paths, (Au)i);
-            set(a->instances, (Au)i, (Au)instance);
         }
     }
+
+    Au_t top22 = top_scope(a);
 
     // loads the actual library here -- DO NOT integrate external->au module; we load it direct with our own
     // and let the runtime register itself
     // this is so we may be Au-centric, and language agnostic
-    if (!is_codegen && (external || mod || lib_path)) {
-        import_Au(a, external ? external->name : null,
-            external ? (Au)external->product : mod ? (Au)mod : (Au)lib_path);
+    if (!is_codegen && (mdl->external_name || mod || lib_path)) {
+        import_Au(a,
+            mdl->external_name,
+            mdl->external_product ? (Au)mdl->external_product : mod ? (Au)mod : (Au)lib_path);
     }
+
+    Au_t top2244 = top_scope(a);
     
     mdl->au->is_closed = true;
     mdl->lib_path = hold(lib_path);
@@ -3366,11 +3400,13 @@ enode parse_import(silver a) {
         set(a->codegens, (Au)name, (Au)mdl->codegen);
     }
 
+    Au_t top2 = top_scope(a);
+
     return (enode)mdl;
 }
 
 // works for class inits, and module inits
-void silver_build_initializer(silver a, enode t) {
+void silver_build_user_initializer(silver a, enode t) {
     if (t && t->au && t->au->member_type == AU_MEMBER_VAR && t->initializer) {
         // only override for module members, not class members
         bool   is_module_mem = t->au->context == a->au;
@@ -3627,13 +3663,13 @@ void silver_write_header(silver a) {
 
     line(import_f, "#include <Au/public>");
     each(a->imports, import, im) {
-        if (im->external)
-            line(import_f, "#include <%o/public>", im->external->name);
+        if (im->external_name)
+            line(import_f, "#include <%o/public>", im->external_name);
     }
     line(import_f, "#include <Au/Au>");
     each(a->imports, import, im) {
-        if (im->external)
-            line(import_f, "#include <%o/%o>", im->external->name, im->external->name);
+        if (im->external_name)
+            line(import_f, "#include <%o/%o>", im->external_name, im->external_name);
     }
     line(import_f, "#include <%o/intern>",  a->name);
     line(import_f, "#include <%o/%o>",      a->name, a->name);
@@ -3642,13 +3678,13 @@ void silver_write_header(silver a) {
     line(import_f, "#undef dealloc");
     line(import_f, "#include <Au/init>");
     each(a->imports, import, im) {
-        if (im->external)
-            line(import_f, "#include <%o/init>", im->external->name);
+        if (im->external_name)
+            line(import_f, "#include <%o/init>", im->external_name);
     }
     line(import_f, "#include <Au/methods>");
     each(a->imports, import, im) {
-        if (im->external)
-            line(import_f, "#include <%o/methods>", im->external->name);
+        if (im->external_name)
+            line(import_f, "#include <%o/methods>", im->external_name);
     }
     line(import_f, "#include <%o/init>", a->name);
     line(import_f, "#endif");
@@ -3676,6 +3712,7 @@ static enode typed_expr(silver a, enode src, array expr);
 none push_lambda_members(aether a, efunc f);
 
 void build_fn(silver a, efunc f, callback preamble, callback postamble) {
+
     if (strcmp(f->au->ident, "test2_func") == 0) {
         f = f;
     }
@@ -3693,6 +3730,11 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) {
     if (f->has_code) {
         if (f->target)
             push_scope(a, (Au)f->target);
+
+        // reasonable convention for silver's debugging facility
+        // if this is a standard for IDE, then we can rely on this to improve productivity
+        evar e_calls = evar(mod, (aether)a,
+            au, def_arg(f->au, "calls", etypeid(i64)->au, AU_TRAIT_STATIC));
         
         a->last_return = null;
         push_scope(a, (Au)f);
@@ -3702,7 +3744,7 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) {
 
         // we need to initialize the schemas first, then we can actually perform user-based inits
         if (f->au->is_mod_init)
-            output_schemas(a, (enode)f);
+            build_module_initializer(a, (enode)f);
 
         // before the preamble we handle guard
         if (preamble)
@@ -4287,6 +4329,7 @@ enode statements_builder(silver a, array expr_tokens, Au unused) {
         first = false;
     }
     a->expr_level = level;
+    pop_tokens(a, false);
     return last;
 }
 

@@ -59,3 +59,7 @@
     - we talk to the editor, and it scrolls-to where we want.
     - ideally we dont have to take our hands off the keyboard for this.
     - perform this on a transition (to orbit your project, etc)
+
+
+[ ] build in line incrementing debug info for functions; so we break at function:5 iteration
+    [ ] must-have 0.88 feature
