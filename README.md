@@ -12,7 +12,7 @@ Copyright (C) 2021 AR Visions — MIT License
 
 ## Why silver Exists
 
-Software development is beautifully complex. There have been many demonstrated languages and build systems that scale. The idea behind silver is to expose all of this great work reliably on all platforms using succinct syntax, integrating their projects and models into a standard universal object model — Au, a C-based middleware approach providing a component model capable of post-init property pairs, single-arg construction, casts, and overrides — to target all devices natively, in a local-first manner, where you and your machine are sufficient to build anything.
+Software development is beautifully complex. There have been many demonstrated languages and build systems that scale. The idea behind silver is to expose all of this great work reliably on all platforms using succinct syntax, integrating their projects and models into a standard universal object model — Au, a C-based run-time providing a component model capable of post-init property pairs, single-arg construction, casts, and overrides — to target all devices natively, in a local-first manner, where you and your machine are sufficient to build anything.
 
 silver does not replace CMake or Cargo or Make — it drives them into top-level modules you build natively for all platforms. Cross-platform is typically a frustrating process, and the goal of silver is to manage SDK environments within.
 
