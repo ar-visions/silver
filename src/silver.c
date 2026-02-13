@@ -477,12 +477,7 @@ void silver_parse(silver a) {
     au_register(m_win, (etype)e_operand(a, _bool(SILVER_IS_WINDOWS), etypeid(bool)));
     
     while (peek(a)) {
-        static int seq = 0;
-        seq++;
-        if (seq == 2)
-            seq = seq;
-        enode res = parse_statement(a);
-        validate(res, "unexpected token found for statement: %o", peek(a));
+        validate(parse_statement(a), "unexpected token found for statement: %o", peek(a));
         incremental_resolve(a);
     }
 
@@ -2800,7 +2795,7 @@ none silver_build(silver a) {
     path product = f(path, "%o/%s%o%s", build_dir, a->is_library ? lib_pre : "", name, a->is_library ? lib_ext : "");
     a->product = hold(product);
     string isysroot = a->isysroot ? f(string, "-isysroot %o ", a->isysroot) : string("");
-    verify(exec("%o/bin/clang %s %o %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-undefined,error -Wl,-fatal_warnings %o %o",
+    verify(exec("%o/bin/clang %s %o %o/%o.o %o -o %o -L%o -L%o/lib %o %o",
         install, a->is_library ? shared : "", isysroot, build_dir, name, objs,
         a->product,
         build_dir,
@@ -3320,9 +3315,10 @@ enode parse_import(silver a) {
 
         Au info = head(external);
         drop(external);
-        drop(external); // this is to compensate for the initial hold in silver_init
+        drop(external); // this is to compensate for the initial hold in silver_init [ quirk for build in init ]
         external = external;
-        // auto_free(); -- call auto_free at base of run-loop
+
+        set(a->libs, (Au)string(external_product->chars), (Au)_bool(true));
     }
     else if (is_codegen) {
         cg = (codegen)construct_with(is_codegen, (Au)props, null);
@@ -3713,7 +3709,7 @@ none push_lambda_members(aether a, efunc f);
 
 void build_fn(silver a, efunc f, callback preamble, callback postamble) {
 
-    if (strcmp(f->au->ident, "test2_func") == 0) {
+    if (strcmp(f->au->ident, "test3_funcomatic") == 0) {
         f = f;
     }
 
@@ -3733,8 +3729,10 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) {
 
         // reasonable convention for silver's debugging facility
         // if this is a standard for IDE, then we can rely on this to improve productivity
+        Au_t au_calls = def(f->au, "calls", AU_MEMBER_VAR, AU_TRAIT_STATIC);
+        au_calls->src = etypeid(i64)->au;
         evar e_calls = evar(mod, (aether)a,
-            au, def_arg(f->au, "calls", etypeid(i64)->au, AU_TRAIT_STATIC));
+            au, au_calls);
         
         a->last_return = null;
         push_scope(a, (Au)f);
@@ -3769,7 +3767,7 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) {
             seq++;
             int f2 = len(a->stack);
             push_tokens(a, (tokens)source_tokens, 0);
-            if (seq == 14) {
+            if (seq == 1) {
                 print_tokens(a, "seq==14");
                 seq = seq;
             }
