@@ -1802,14 +1802,12 @@ enode parse_statement(silver a)
         }
         if (next_is(a, "break")) return parse_break(a);
         if (next_is(a, "for"))    return parse_for(a);
-        if (next_is(a, "loop"))   return parse_loop_while(a);
         
         if (next_is(a, "if")) {
             print_token_state(a, "if");
             return parse_if_else(a);
         }
 
-        if (next_is(a, "loop"))   return parse_loop_while(a);
         if (next_is(a, "switch")) return parse_switch(a);
     }
     
@@ -4478,60 +4476,60 @@ enode statements_push_builder(silver a, array expr_tokens, Au unused) {
 enode parse_for(silver a) {
     validate(read_if(a, "for") != null, "expected for");
 
-    array all   = read_within(a);
-    verify(all, "expected [ init :: condition :: iterator ]");
+    array all = read_within(a); // null if no [...] after for
     array init_exprs = array(alloc, 32);
     array cond_exprs = array(alloc, 32);
     array step_exprs = array(alloc, 32);
+    bool  do_while   = false;
 
-    int level = 0;
-    array cur = init_exprs;
-    each(all, token, t) {
-        if (eq(t, "::")) {
-            level++;
-            if (level == 1)
-                cur = cond_exprs;
-            else if (level == 2)
-                cur = step_exprs;
-            else {
-                fault("too many :: levels in for-statement (expects max of 2)");
+    if (all) {
+        // split on :: to figure out which form
+        int level = 0;
+        array cur = init_exprs;
+        each(all, token, t) {
+            if (eq(t, "::")) {
+                level++;
+                if (level == 1)
+                    cur = cond_exprs;
+                else if (level == 2)
+                    cur = step_exprs;
+                else
+                    fault("too many :: in for (max 2)");
+            } else {
+                push(cur, (Au)t);
             }
-        } else {
-            push(cur, (Au)t);
+        }
+        if (level == 0) {
+            // for [cond] — no ::, so init_exprs actually holds the condition
+            cond_exprs = init_exprs;
+            init_exprs = array(alloc, 32);
         }
     }
 
     array body = read_body(a);
     verify(body, "expected for-body");
 
-    // drop remaining statements before return, so we encapsulate the members to this transaction.
+    if (!all) {
+        // for \n body \n while [cond]  — do-while form
+        validate(read_if(a, "while") != null,
+            "for without [...] requires while [cond] after body");
+        array while_tokens = read_within(a);
+        verify(while_tokens, "expected [cond] after while");
+        cond_exprs = while_tokens;
+        do_while   = true;
+    }
+
     subprocedure build_init = subproc(a, statements_push_builder, null);
     subprocedure build_cond = subproc(a, cond_builder, null);
     subprocedure build_step = subproc(a, exprs_builder, null);
     subprocedure build_body = subproc(a, exprs_builder, null);
 
-    enode res = e_for(
-        a,
+    enode res = e_for(a,
         init_exprs, cond_exprs, body, step_exprs,
-        build_init, build_cond, build_body, build_step);
+        build_init, build_cond, build_body, build_step,
+        do_while);
     pop_scope(a);
     return res;
-}
-
-enode parse_loop_while(silver a) {
-    bool is_loop = read_if(a, "loop") != null;
-    validate(is_loop, "expected loop");
-    array cond = read_within(a);
-    array block = read_body(a);
-    verify(block, "expected body");
-    bool is_loop_while = read_if(a, "while") != null;
-    if (is_loop_while) {
-        verify(!cond, "condition given above conflicts with while below");
-        cond = read_within(a);
-    }
-    subprocedure build_cond = subproc(a, cond_builder, null);
-    subprocedure build_expr = subproc(a, expr_builder, null);
-    return e_loop(a, cond, block, build_cond, build_expr, is_loop_while);
 }
 
 bool is_model(silver a) {
