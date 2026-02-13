@@ -140,11 +140,15 @@ if dog is Animal
 
 ### Generics
 
-Classes accept type parameters with `<>`:
+Meta-driven classes accept type parameters with `<>`:
+These do not expand code, and enable data-validation amongst other use-case.
 
 ```python
-class Container<T: any>
-    value: T
+class Container<M: any>
+    value: object
+    func init[] -> none
+        if not instanceof [ value, M ]
+            puts 'we want a {M.ident}'
 ```
 
 ### Enums
