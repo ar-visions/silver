@@ -97,12 +97,10 @@ class Animal
     name: string
     sound: string
 
-    construct[name: string, sound: string]
-        a.name  = name
-        a.sound = sound
-
     func speak[] -> string
         return a.sound
+
+Animal ani [ name:'John', sound:'sound.wav' ]
 ```
 
 Structs are value types. Classes are reference-counted.  Fields are directly accessed by dot '.'
