@@ -67,7 +67,7 @@ forward(codegen)
         cur++; \
     } \
     if (!set && (!au_2->users || !au_2->users[cur].mod)) { \
-        printf("au_register %s: %s\n", isa(tt)->ident, au_2->ident); \
+        /*printf("au_register %s: %s\n", isa(tt)->ident, au_2->ident); */ \
         Au_t_user prev = au_2->users; \
         au_2->users = (Au_t_user)calloc((cur+1)*8, sizeof(struct _Au_t_user)); \
         memcpy(au_2->users, prev, sizeof(struct _Au_t_user) * cur); \

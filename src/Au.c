@@ -806,7 +806,7 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
         int test2 = 2;
         test2    += 2;
     }
-    printf("def [ context: %s, ident: %s, member_type: %i, traits: %lli ]\n", type ? type->ident : null, ident, member_type, traits);
+    //printf("def [ context: %s, ident: %s, member_type: %i, traits: %lli ]\n", type ? type->ident : null, ident, member_type, traits);
     Au_t au2 = typeid(array);
 
     if (ident && strcmp((cstr)ident, "test3") == 0) {

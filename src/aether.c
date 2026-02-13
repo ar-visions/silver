@@ -3099,24 +3099,22 @@ void aether_push_tokens(aether a, tokens t, num cursor) {
 
 void aether_pop_tokens(aether a, bool transfer) {
     int len = a->stack->count;
-    if (len == 1) {
-        int test2 = 2;
-        test2    += 2;
-    }
-    assert (len, "expected stack");
-    tokens_data state = (tokens_data)last_element(a->stack); // we should call this element or ele
+    assert(len, "expected stack");
+    tokens_data state = (tokens_data)last_element(a->stack);
     a->stack_test--;
 
-    if(!transfer)
+    if (!transfer) {
         a->cursor = state->cursor;
-    else if (transfer && state->tokens_list != a->tokens)
-        a->cursor += state->cursor;
-
-    if (transfer && state->tokens_list != a->tokens) {
-        drop(a->tokens);
-        a->tokens = (tokens)hold(state->tokens_list);
+        if (state->tokens_list != a->tokens) {
+            drop(a->tokens);
+            a->tokens = (tokens)hold(state->tokens_list);
+        }
+    } else {
+        if (state->tokens_list != a->tokens) {
+            a->cursor += state->cursor;
+            drop(state->tokens_list);  // we're keeping a->tokens, so release the saved one
+        }
     }
-
     pop(a->stack);
 }
 
@@ -4036,8 +4034,9 @@ none etype_implement(etype t) {
         fn->entry = is_user_implement ? LLVMAppendBasicBlockInContext(
             a->module_ctx, fn->value, label->chars) : null;
             
+        bool global_public_fn = (is_module(au->context) && au->access_type != interface_intern);
         LLVMSetLinkage(fn->value,
-            is_user_implement && !au->is_export ? 
+            !global_public_fn && is_user_implement && !au->is_export ? 
                 LLVMInternalLinkage : LLVMExternalLinkage);
 
         int index = 0;
@@ -4170,12 +4169,10 @@ none aether_build_module_initializer(aether a, enode init) {
         }
 
         // initialize the type and fields
-        bool ctx_module = tau->context && is_module(tau->context);
-
         e_fn_call(a, fn_emplace, a(
             type_id,
-            ctx_module ? e_null(a, null) : e_typeid(a, u(tau->context)),
-            e_typeid(a, u(tau->src)),
+            tau->context ? e_typeid(a, u(tau->context)) : e_null(a, etypeid(Au_t)),
+            tau->src     ? e_typeid(a, u(tau->src))     : e_null(a, etypeid(Au_t)),
             module_type_id,
             const_string(chars, tau->ident),
             _u64(tau->member_type),
@@ -4185,12 +4182,10 @@ none aether_build_module_initializer(aether a, enode init) {
         ));
 
         members(tau, mem) {
-
             if (mem->access_type == interface_intern)
                 continue;
 
             if (is_func(mem)) {
-
                 efunc mf = (efunc)u(mem);
                 mf->used = true;
                 etype_implement((etype)mf);
@@ -4224,7 +4219,6 @@ none aether_build_module_initializer(aether a, enode init) {
                 }
 
             } else if (mem->member_type == AU_MEMBER_VAR) {
-
                 e_fn_call(a, fn_def_prop, a(
                     type_id,
                     const_string(chars, mem->ident),
@@ -4236,7 +4230,6 @@ none aether_build_module_initializer(aether a, enode init) {
                 ));
 
             } else if (mem->member_type == AU_MEMBER_ENUMV) {
-
                 etype_implement(u(mem->context));
                 enode val = (enode)u(mem);
 
