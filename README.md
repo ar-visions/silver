@@ -224,9 +224,14 @@ for step while not done
 
 ```python
 
+its important to note that break has no application in switch now, this leaves one able to break in statements written behind
+
+another:true
+
 switch value
     case 1
-        print "one"
+        if not another goto default
+        # 'breaks' here -- can never follow-through without a goto [case] statement
     case 2
         print "two"
     case 3
@@ -240,8 +245,17 @@ switch value
 ### break and return
 
 ```python
+
+# applies to for statement only
 break
-return result
+
+# return statement
+func method[] -> i64
+    return result
+
+# short-hand return syntax
+func method[] -> i64 [ result ]
+
 ```
 
 ---
