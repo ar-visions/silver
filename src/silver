@@ -1,6 +1,7 @@
 #ifndef _silver_
 #define _silver_
 
+// Clint M. Strandhagen -- the motivation for orbiter, which we design in silver
 #define silver_schema(X, Y, ...) \
     M(X, Y, i, prop, public, bool, build) \
     M(X, Y, i, prop, intern, bool, is_external) \
@@ -8,7 +9,7 @@
     M(X, Y, i, prop, intern, bool, left_hand) \
     M(X, Y, i, prop, intern, bool, in_args) \
     M(X, Y, i, prop, public, bool, version) \
-    M(X, Y, i, prop, intern, path, product) \
+    M(X, Y, i, prop, iobject, path, product) \
     M(X, Y, i, prop, public, string, breakpoint) \
     M(X, Y, i, prop, public, i32, etype_level) \
     M(X, Y, i, prop, public, i32, parens_depth) \
@@ -17,14 +18,13 @@
     M(X, Y, i, prop, public, string, git_project) \
     M(X, Y, i, prop, public, string, source_raw) \
     M(X, Y, i, prop, public, path, src_loc) \
-    M(X, Y, i, prop, intern, array, implements) \
-    M(X, Y, i, prop, intern, array, imports) \
+    M(X, Y, i, prop, iobject, array, implements) \
+    M(X, Y, i, prop, iobject, array, imports) \
     M(X, Y, i, prop, public, enode, last_return) \
     M(X, Y, i, prop, public, map,  defs) \
     M(X, Y, i, prop, public, map, codegens)          \
     M(X, Y, i, method, public, none, write_header)   \
-    M(X, Y, i, prop, intern, map, import_cache) \
-    M(X, Y, i, prop, intern, map, instances) \
+    M(X, Y, i, prop, iobject, map, import_cache) \
     M(X, Y, i, method, public, enode, parse_member_expr, enode) \
     M(X, Y, i, method, public, none,  incremental_resolve) \
     M(X, Y, i, method, public, token, next) \
@@ -60,13 +60,14 @@
     M(X, Y, i, method, public, none,           parse) \
     M(X, Y, i, method, public, none,           build) \
 M(X, Y, i, ctr,    public,     path) \
-    M(X, Y, i, override, method, build_initializer) \
+    M(X, Y, i, override, method, build_user_initializer) \
     M(X, Y, i, override, method, init)
 declare_class_4(silver, aether, emodule, etype)
 
 #define import_schema(X, Y, ...)                    \
     M(X, Y, i, prop,  public, codegen, codegen)     \
-    M(X, Y, i, prop,  public, silver, external)     \
+    M(X, Y, i, prop,  public, string, external_name) \
+    M(X, Y, i, prop,  public, path,   external_product) \
     M(X, Y, i, prop,  public, array, tokens)        \
     M(X, Y, i, prop,  public, path,  lib_path)      \
     M(X, Y, i, prop,  public, path,  module_source) \

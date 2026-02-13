@@ -266,54 +266,81 @@ def generate_methods_header(module, header_file, methods_header):
                         if args_str:
                             arg_types = [t.strip() for t in args_str.split(',') if t.strip()]
                     methods.append((classname, method, null_safe, arg_types))
-    
+
     with open(methods_header, 'w') as f:
         f.write("/* generated methods */\n")
         f.write(f"#ifndef _{umodule}_METHODS_H_\n")
         f.write(f"#define _{umodule}_METHODS_H_\n")
         f.write("\n")
-        
+
         for classname, method, null_safe, arg_types in methods:
             if len(arg_types) > 1:
                 # Multiple args: I, A1, A2, ...
-                arg_names = ["I"] + [f"A{i}" for i in range(1, len(arg_types))]
+                arg_names  = ["I"] + [f"A{i}" for i in range(1, len(arg_types))]
                 macro_args = ", ".join(arg_names)
-                cast_args = ", ".join(f"({t}){n}" for t, n in zip(arg_types, arg_names))
-                call = f"ftableI(I)->ft.{method}({cast_args})"
-                
+
+                # Cast using the local _i_ (no double-eval of I)
+                cast_args_local = ", ".join(
+                    f"({t}){('_i_' if n == 'I' else n)}"
+                    for t, n in zip(arg_types, arg_names)
+                )
+                call_local = f"ftableI(_i_)->ft.{method}({cast_args_local})"
+
                 if null_safe:
                     f.write(f"#ifndef {method} /* {classname} */\n")
-                    f.write(f"#define {method}({macro_args}) ((((Au)I != (Au)0L) ? {call} : (__typeof__({call}))0))\n")
+                    f.write(f"#define {method}({macro_args}) ({{ \\\n")
+                    f.write(f"    __typeof__(I) _i_ = (I); \\\n")
+                    f.write(f"    (_i_ ? {call_local} : (__typeof__({call_local}))0); \\\n")
+                    f.write(f"}})\n")
                     f.write(f"#endif\n")
                 else:
                     f.write(f"#ifndef {method} /* {classname} */\n")
-                    f.write(f"#define {method}({macro_args}) ({call})\n")
+                    f.write(f"#define {method}({macro_args}) ({{ \\\n")
+                    f.write(f"    __typeof__(I) _i_ = (I); \\\n")
+                    f.write(f"    {call_local}; \\\n")
+                    f.write(f"}})\n")
                     f.write(f"#endif\n")
+
             elif len(arg_types) == 1:
                 # Single arg (just instance)
                 itype = arg_types[0]
-                call = f"ftableI(I)->ft.{method}(({itype})I)"
-                
+                call_local = f"ftableI(_i_)->ft.{method}(({itype})_i_)"
+
                 if null_safe:
                     f.write(f"#ifndef {method} /* {classname} */\n")
-                    f.write(f"#define {method}(I) ((((Au)I != (Au)0L) ? {call} : (__typeof__({call}))0))\n")
+                    f.write(f"#define {method}(I) ({{ \\\n")
+                    f.write(f"    __typeof__(I) _i_ = (I); \\\n")
+                    f.write(f"    (_i_ ? {call_local} : (__typeof__({call_local}))0); \\\n")
+                    f.write(f"}})\n")
                     f.write(f"#endif\n")
                 else:
                     f.write(f"#ifndef {method} /* {classname} */\n")
-                    f.write(f"#define {method}(I) ({call})\n")
+                    f.write(f"#define {method}(I) ({{ \\\n")
+                    f.write(f"    __typeof__(I) _i_ = (I); \\\n")
+                    f.write(f"    {call_local}; \\\n")
+                    f.write(f"}})\n")
                     f.write(f"#endif\n")
+
             else:
-                # No typed args - variadic
+                # No typed args - variadic (already single-eval)
                 if null_safe:
                     f.write(f"#ifndef {method} /* {classname} */\n")
-                    f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; (((Au)_i_ != (Au)0L) ? ftableI(_i_)->ft.{method}(({classname})_i_ __VA_OPT__(,) __VA_ARGS__) : (__typeof__(ftableI(_i_)->ft.{method}((Au)_i_ __VA_OPT__(,) __VA_ARGS__)))0); }})\n")
+                    f.write(
+                        f"#define {method}(I,...) ({{ __typeof__(I) _i_ = (I); "
+                        f"(((Au)_i_ != (Au)0L) ? ftableI(_i_)->ft.{method}(({classname})_i_ __VA_OPT__(,) __VA_ARGS__) "
+                        f": (__typeof__(ftableI(_i_)->ft.{method}((Au)_i_ __VA_OPT__(,) __VA_ARGS__)))0); }})\n"
+                    )
                     f.write(f"#endif\n")
                 else:
                     f.write(f"#ifndef {method} /* {classname} */\n")
-                    f.write(f"#define {method}(I,...) ({{ __typeof__(I) _i_ = I; ftableI(_i_)->ft.{method}(_i_ __VA_OPT__(,) __VA_ARGS__); }})\n")
+                    f.write(
+                        f"#define {method}(I,...) ({{ __typeof__(I) _i_ = (I); "
+                        f"ftableI(_i_)->ft.{method}(_i_ __VA_OPT__(,) __VA_ARGS__); }})\n"
+                    )
                     f.write(f"#endif\n")
-        
+
         f.write(f"\n#endif /* _{umodule}_METHODS_H_ */\n")
+
 
 
 def generate_public_header(module, header_file, public_header):

@@ -36,17 +36,38 @@ forward(codegen)
     u; \
 })
 
+#define au_clear_user(arg) ({ \
+    Au_t au_ = (Au_t)(arg); \
+    int cur = 0; \
+    Au_t_user u = null; \
+    while(au_ && au_->users && au_->users[cur].mod) { \
+        if (au_->users[cur].mod == a) { \
+            u = &au_->users[cur]; \
+            u->mod = (aether)1; \
+            break; \
+        } \
+        cur++; \
+    } \
+    u; \
+})
+
 #define au_register(arg, tt) ({ \
     Au_t au_2 = (Au_t)(arg); \
     etype t_ = (etype)tt; \
     int cur = 0; \
+    bool set = false; \
     while(au_2->users && au_2->users[cur].mod) { \
         if (!au_2->users[cur].mod) break; \
+        if (au_2->users[cur].mod == (aether)1) { \
+            au_2->users[cur].mod = (aether)a; \
+            au_2->users[cur].etype = t_; \
+            set = true; \
+        } \
         if (au_2->users[cur].mod == a) __builtin_trap(); \
         cur++; \
     } \
-    if (!au_2->users || !au_2->users[cur].mod) { \
-        printf("registering type %s\n", au_2->ident); \
+    if (!set && (!au_2->users || !au_2->users[cur].mod)) { \
+        printf("au_register %s: %s\n", isa(tt)->ident, au_2->ident); \
         Au_t_user prev = au_2->users; \
         au_2->users = (Au_t_user)calloc((cur+1)*8, sizeof(struct _Au_t_user)); \
         memcpy(au_2->users, prev, sizeof(struct _Au_t_user) * cur); \
@@ -80,7 +101,7 @@ forward(enode)
     M(X,Y, i, prop, intern,   bool,             is_implemented) \
     M(X,Y, i, prop, public,   array,            meta) \
     M(X,Y, i, prop, public,   array,            dims) \
-    M(X,Y, i, prop, public,   aether,           mod) \
+    M(X,Y, i, prop, public,   aether,           mod, meta, weak) \
     M(X,Y, i, prop, public,   etype,            schema) \
     M(X,Y, i, prop, public,   etype,            suffix) \
     M(X,Y, i, prop, public,   tokens,           body) \
@@ -124,6 +145,7 @@ forward(efunc)
     M(X,Y, i, prop,  public, path,      root_path) \
     M(X,Y, i, prop,  public, path,      project_path) \
     M(X,Y, i, prop,  public, path,      current_inc) \
+    M(X,Y, i, prop,  public, bool,      direct) \
     M(X,Y, i, prop,  public, bool,      import_c) \
     M(X,Y, i, prop,  public, bool,      debug) \
     M(X,Y, i, prop,  public, etype,     current_import) \
@@ -171,13 +193,14 @@ forward(efunc)
     M(X,Y, i, prop,  intern, LLVMTargetDataRef, target_data,       as, ARef) \
     M(X,Y, i, prop,  intern, LLVMTargetMachineRef, target_machine, as, ARef) \
     M(X,Y, i, prop,  intern, cstr,              target_triple) \
-    M(X,Y, i, prop,  intern, array,             registry) \
+    M(X,Y, i, prop,  iobject, array,             registry) \
     M(X,Y, i, prop,  public, tokens,            tokens) \
     M(X,Y, i, prop,  public, num,               cursor) \
     M(X,Y, i, prop,  public, array,             stack) \
     M(X,Y, i, prop,  public, Au_t,              top) \
+    M(X,Y, i, vargs,  public,     none,        eprint, symbol) \
     M(X,Y, i, method, public,     none,        create_type_members, Au_t) \
-    M(X,Y, i, method, public,     none,        output_schemas, enode) \
+    M(X,Y, i, method, public,     none,        build_module_initializer, enode) \
     M(X,Y, i, method, public,     efunc,       module_initializer) \
     M(X,Y, i, method, public,     none,        import_Au, string, Au) \
     M(X,Y, i, method, public,     efunc,       function, etype, string, etype, array, u8, u32, u8) \
@@ -188,7 +211,7 @@ forward(efunc)
     M(X,Y, i, method, public,     enode,       e_null,             etype) \
     M(X,Y, i, method, public,     enode,       e_default_value,    etype) \
     M(X,Y, i, method, public,     enode,       e_builder,          subprocedure) \
-    M(X,Y, i, method, public,     none,        build_initializer,  etype) \
+    M(X,Y, i, method, public,     none,        build_user_initializer,  etype) \
     M(X,Y, i, method, public,     enode,       e_element,          enode,      Au) \
     M(X,Y, i, method, public,     none,        e_cmp_code,         enode,      comparison, enode, code, code) \
     M(X,Y, i, method, public,     enode,       e_cmp,              enode, enode) \
@@ -248,14 +271,21 @@ forward(efunc)
     M(X,Y, i, method, public, none,   push_tokens,    tokens, num) \
     M(X,Y, i, method, public, none,   pop_tokens,     bool) \
     M(X,Y, i, method, public, path,   lookup_include, string) \
-    M(X,Y, i, method, public, path,   include,        Au, string, ARef) \
+    M(X,Y, i, method, public, path,   include,        Au, string) \
     M(X,Y, i, method, public, Au_t,   top_scope) \
     M(X,Y, i, method, public, none,   push_scope, Au) \
     M(X,Y, i, method, public, Au_t,   pop_scope) \
     M(X,Y, i, method, public, none,   import_models, Au_t, bool) \
-    M(X,Y, i, override, method, init)
+    M(X,Y, i, override, method, init) \
+    M(X,Y, i, override, method, dealloc)
 declare_class_3(aether, emodule, etype);
 
+
+#define tokens_data_module_ aether
+#define tokens_data_schema(X,Y,...) \
+    M(X,Y, i, prop, public, array, tokens_list) \
+    M(X,Y, i, prop, public, num,   cursor)
+declare_class(tokens_data)
 
 #define catcher_schema(X,Y,...) \
     M(X,Y, i, prop, public, map, team) \
@@ -264,7 +294,7 @@ declare_class_2(catcher, etype)
 
 #define code_schema(X,Y,...) \
     M(X,Y, i, prop, intern, LLVMBasicBlockRef, block, as, ARef) \
-    M(X,Y, i, prop, public, aether,  mod) \
+    M(X,Y, i, prop, public, aether,  mod, meta, weak) \
     M(X,Y, i, prop, public, symbol, label) \
     M(X,Y, i, method, public, none,   seek_end) \
     M(X,Y, i, override, method, init)
@@ -312,7 +342,7 @@ declare_class_3(efunc, enode, etype)
 declare_class_2(emeta, etype)
 
 #define aclang_cc_schema(X,Y,...) \
-    M(X,Y, i, prop, public, aether,   mod) \
+    M(X,Y, i, prop, public, aether,   mod, meta, weak) \
     M(X,Y, i, prop, public, handle,   compiler) \
     M(X,Y, i, prop, public, handle,   PP) \
     M(X,Y, i, prop, public, handle,   ctx) \
