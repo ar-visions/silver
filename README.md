@@ -176,13 +176,13 @@ The default storage type is `i32`. Values auto-increment from the last explicit 
 
 ```python
 
-if x > 0
+if [ x > 0 ]
     print "positive"
 
-else if x == 0
+el [ x == 0 ]
     print "zero"
 
-else
+el
     print "negative"
 ```
 
@@ -191,32 +191,32 @@ else
 `::` separates init, condition, and step:
 
 ```python
-for i: i32 = 0 :: i < 10 :: i += 1
+for [ i: i32 = 0 :: i < 10 :: i += 1 ]
     print '{i}'
 
 ```
 
 ### for / while
 
-`for` with a condition is a while-loop. `do` followed by `while` is a traditional 'do-while':
+`for` with a condition is a while-loop. `for` followed by `while` is a traditional 'do-while':
 
 ```python
 
 # for-condition
-for running
+for [ running ]
     process
 
 # for-init-condition-iter
-for i : 0 :: running && i < 2 :: i += 1
+for [ i : 0 :: running && i < 2 :: i += 1 ]
     process
 
 # for-init-condition
-for i : u16 [ 0 ] :: running && i < 2
+for [ i : u16 [ 0 ] :: running && i < 2 ]
     process
     i += 1
 
-# do-while
-do step while not done
+# for-while
+for step while not done
 
 ```
 
@@ -333,10 +333,10 @@ class Temperature
     value: f64
 
     cast string
-        return '{a.value}°C'
+        return '{value.round[ 2 ]}°C'
 
     cast f64
-        return a.value
+        return value
 ```
 
 ---
