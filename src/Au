@@ -165,7 +165,6 @@ typedef double                 *ref_f64;
     int             isize; \
     void*           fn; \
     ffi_method_t*   ffi; \
-    au_core         af; \
     struct _object  members_info; \
     struct _collective_abi  members; \
     struct _object  meta_info; \
@@ -512,7 +511,6 @@ typedef Au_t* Au_ts;
 
 #define define_arb(TYPE, BASE, TYPE_SZ, TRAIT, SRC, ...) \
     _Pragma("pack(push, 1)") \
-    static au_core TYPE##_af; \
     TYPE##_info Type_i(TYPE); \
     TYPE##_schema( TYPE, DEF, __VA_ARGS__ ); \
     _Pragma("pack(pop)") \
@@ -596,15 +594,15 @@ forward(any)
 #define Au_schema(AA,BB,...) \
     M(AA,BB, i, prop, Au_public, Au_t, type) \
     M(AA,BB, i, prop, Au_public, Au_t, scalar) \
-    M(AA,BB, i, prop, Au_public, i64, refs) \
+    M(AA,BB, i, prop, Au_public, i32, refs) \
+    M(AA,BB, i, prop, Au_public, i32, managed) \
     M(AA,BB, i, prop, Au_public, Au, data) \
     M(AA,BB, i, prop, Au_public, shape, shape) \
     M(AA,BB, i, prop, Au_public, cstr, source) \
     M(AA,BB, i, prop, Au_public, i64, line) \
     M(AA,BB, i, prop, Au_public, i64, alloc) \
     M(AA,BB, i, prop, Au_public, i64, count) \
-    M(AA,BB, i, prop, Au_public, i64, recycle) \
-    M(AA,BB, i, prop, Au_public, i64, af_index) \
+    M(AA,BB, i, prop, Au_public, bool, members_held) \
     M(AA,BB, i, array, Au_public, Au, 8, meta) \
     M(AA,BB, i, method, public, i32,    compare, AA) \
     M(AA,BB, i, method, public, none,   init) \
@@ -626,10 +624,10 @@ forward(any)
     M(AA,BB, i, method, public, Au,     get_property,   symbol) \
     M(AA,BB, i, method, public, Au,     vrealloc,       sz) \
     M(AA,BB, i, method, public, Au_t,   meta_index,     i32) \
-    M(AA,BB, s, method, public, Au_t,   emplace_type, Au_t, Au_t, Au_t, Au_t, symbol, u64, u64, u64) \
+    M(AA,BB, s, method, public, Au_t,   emplace_type, Au_t, Au_t, Au_t, Au_t, symbol, i32, u64, u64, u64) \
     M(AA,BB, s, method, public, Au_t,   def,            Au_t, symbol, u32, u64) \
     M(AA,BB, s, method, public, Au_t,   def_func,       Au_t, symbol, Au_t, u32, u32, u32, u64, ARef) \
-    M(AA,BB, s, method, public, Au_t,   def_arg,        Au_t, symbol, Au_t) \
+    M(AA,BB, s, method, public, Au_t,   def_arg,        Au_t, symbol, Au_t, u64) \
     M(AA,BB, s, method, public, Au_t,   def_meta,       Au_t, symbol, Au_t) \
     M(AA,BB, s, method, public, Au_t,   def_prop,       Au_t, symbol, Au_t, u64, u32, u32, ARef) \
     M(AA,BB, s, method, public, Au_t,   def_type,       Au_t, symbol, u64) \
@@ -645,7 +643,9 @@ forward(any)
     M(AA,BB, s, method, public, Au_t,   find_context,   array, i32, i32) \
     M(AA,BB, s, method, public, Au_t,   lexical,        array, symbol) \
     M(AA,BB, s, method, public, bool,   check,          bool,  string) \
+    M(AA,BB, s, method, public, none,   auto_free) \
     M(AA,BB, i, method, public, Au,     initialize) \
+    M(AA,BB, s, method, public, none,   module_erase,   Au_t) \
     M(AA,BB, s, method, public, Au_t,   module_lookup,  symbol) \
     M(AA,BB, s, method, public, Au_t,   def_module,     symbol) \
     M(AA,BB, s, method, public, Au_t,   global) \
@@ -688,7 +688,6 @@ forward(any)
     M(AA,BB, s, method, public, ARef, types, ref_i64) \
     M(AA,BB, s, method, public, none, tap, symbol, hook) \
     M(AA,BB, s, method, public, none, untap, symbol) \
-    M(AA,BB, s, method, public, none, recycle) \
     M(AA,BB, s, method, public, none, engage, cstrs) \
     M(AA,BB, s, vargs, public, map, args, cstrs, symbol) \
     M(AA,BB, s, vargs, public, map, map_of, symbol) \
@@ -779,8 +778,8 @@ typedef struct _collective_abi {
     M(AA,BB, i, prop, public, i32,  alloc) \
     M(AA,BB, i, prop, public, i32,  hsize) \
     M(AA,BB, i, origin, public, Au, origin) \
-    M(AA,BB, i, prop, public, item, first) \
-    M(AA,BB, i, prop, public, item, last) \
+    M(AA,BB, i, prop, public, item, first, meta, weak) \
+    M(AA,BB, i, prop, public, item, last,  meta, weak) \
     M(AA,BB, i, ref,  public, item, hlist) \
     M(AA,BB, i, prop, public, bool, unmanaged) \
     M(AA,BB, i, prop, public, bool, assorted) \
@@ -1393,7 +1392,7 @@ none vector_init(vector);
 // Au, user space is simply the cstring
 #define subprocedure_module_ Au
 #define subprocedure_schema(AA,BB,...) \
-    M(AA,BB, i, prop,   public,   Au,     target) \
+    M(AA,BB, i, prop,   public,   Au,     target, meta, weak) \
     M(AA,BB, i, prop,   public,   Au,     ctx) \
     M(AA,BB, i, prop,   public,   handle, addr) \
     M(AA,BB, i, method, public,   Au,     invoke, Au)
@@ -1406,7 +1405,7 @@ typedef Au(*mix_fn)(Au, Au, f32);
 #define lambda_module_ Au
 #define lambda_schema(AA,BB,...) \
     M(AA,BB, i, prop,   public, Au_t,     au) \
-    M(AA,BB, i, prop,   public, Au,       target) \
+    M(AA,BB, i, prop,   public, Au,       target, meta, weak) \
     M(AA,BB, i, prop,   public, Au,       args) \
     M(AA,BB, i, prop,   public, Au,       context) \
     M(AA,BB, i, prop,   public, callback, fn) \
@@ -1567,7 +1566,7 @@ declare_class(async)
 
 #define token_module_ Au
 #define token_schema(AA,BB,...) \
-    M(AA,BB, i, prop,    public, path,   source) \
+    M(AA,BB, i, prop,    public, path,   source, meta, weak) \
     M(AA,BB, i, prop,    public, num,    line) \
     M(AA,BB, i, prop,    public, num,    column) \
     M(AA,BB, i, prop,    public, num,    indent) \
@@ -1584,7 +1583,7 @@ declare_class_2(token, string)
 #define tokens_module_ Au
 #define tokens_schema(AA,BB,...) \
     M(AA,BB, i, prop,    public, callback_extra, parser) \
-    M(AA,BB, i, prop,    public, Au,   target) \
+    M(AA,BB, i, prop,    public, Au,   target, meta, weak) \
     M(AA,BB, i, prop,    public, Au,   input) \
     M(AA,BB, i, ctr,     public,   cstr) \
     M(AA,BB, i, override, method,  init)

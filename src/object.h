@@ -76,13 +76,14 @@ typedef enum AU_MEMBER AFlag;
 #define AU_TRAIT_LAMBDA      ((int64_t) 1 << 43)
 #define AU_TRAIT_IS_TARGET   ((int64_t) 1 << 44)
 #define AU_TRAIT_FUNCTIONAL  ((int64_t) 1 << 45)
+#define AU_TRAIT_IS_HIDDEN   ((int64_t) 1 << 46)
+#define AU_TRAIT_ALLOCATED   ((int64_t) 1 << 47)
 
 typedef bool(*global_init_fn)();
 
 typedef struct _Au_t *Au_t;
 
 // auto-free recycler
-typedef struct _au_core *au_core;
 
 typedef struct _method_t *method_t; 
 
@@ -106,15 +107,15 @@ typedef struct _Au_t *Au_t;
 typedef struct _object {
     Au_t            type;
     Au_t            scalar;
-    i64             refs;
+    i32             refs;
+    i32             managed;
     struct _Au*     data;
     struct _shape*  shape;
     cstr            source;
     i64             line;
     i64             alloc;
     i64             count;
-    i64             recycle;
-    i64             af_index;
+    bool            members_held;
     struct _object* meta[8];
     struct _object* f;
 } *object;
@@ -200,6 +201,8 @@ typedef struct _Au_t {
             u64 is_lambda    : 1;
             u64 is_target    : 1;
             u64 is_functional : 1;
+            u64 is_hidden    : 1;
+            u64 is_allocated : 1;
         };
         u64 traits;
     };
@@ -210,7 +213,6 @@ typedef struct _Au_t {
     int             isize;
     void*           fn;
     ffi_method_t*   ffi;
-    au_core         af; // Au-specific internal members on type
     struct _object  members_info;
     struct _collective_abi  members;
     struct _object  meta_info;

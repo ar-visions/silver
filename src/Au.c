@@ -15,17 +15,6 @@
 #include <mach-o/dyld.h>
 #endif
 
-typedef struct _au_core {
-    struct _object** af4;
-    i64     af_count;
-    i64     af_alloc;
-    struct _object** re;
-    i64     re_count;
-    i64     re_alloc;
-    void*   arb;
-    pthread_mutex_t lock;
-} *au_core;
-
 #define Au_t_module_ Au
 Au_t_info        Au_Au_t_i;
 
@@ -410,6 +399,7 @@ Au array_qpush(array a, Au b) {
 none array_clear(array a) {
     if (!a->unmanaged)
         for (num i = 0; i < a->count; i++) {
+            Au info = head(a);
             Au_drop(a->origin[i]);
             a->origin[i] = null;
         }
@@ -540,9 +530,6 @@ array array_of_cstr(cstr first, ...) {
 }
 
 Au array_pop(array a) {
-    if (a->count == 0) {
-        a = a;
-    }
     assert(a->count > 0, "no items");
     if (!a->unmanaged) Au_drop(a->origin[a->count - 1]);
     return a->origin[--a->count];
@@ -642,8 +629,6 @@ num array_index_of(array a, Au b) {
     return -1;
 }
 
-__thread array     af_stack;
-__thread   AF      af_top;
 
 struct _init_dep {
     Au_t dep;
@@ -761,10 +746,13 @@ static Au_t _push_arg(Au_t type, bool add_arg) {
         memset(member_pool, 0, n_members * sizeof(struct _Au_combine));
     }
     struct _Au_combine* cur = &member_pool[--n_members];
-    cur->info.refs = 1;
+    cur->info.refs = 0;
+    cur->info.managed = 0;
     cur->info.type = (Au_t)&Au_Au_t_f_i.type;
+    
     Au_t au = &cur->type;
     au->member_type = AU_MEMBER_VAR;
+    au->traits = (cur == member_pool ? AU_TRAIT_ALLOCATED : 0); // erasing modules can consist of freeing only pool origined data
     if (add_arg)
         array_qpush((array)&type->args, (Au)au);
     au->context = type;
@@ -787,10 +775,11 @@ Au_t alloc_arg(Au_t context, symbol ident, Au_t arg) {
     return var;
 }
 
-Au_t def_arg(Au_t context, symbol ident, Au_t arg) {
+Au_t def_arg(Au_t context, symbol ident, Au_t arg, u64 traits) {
     Au_t var = _push_arg(context, true);
     var->src = arg;
     var->ident = cstr_copy((cstr)ident);
+    var->traits = traits;
     return var;
 }
 
@@ -813,7 +802,11 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
 }
 
 Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
-
+    if (ident && strcmp(ident, "test3_funcomatic") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
+    printf("def [ context: %s, ident: %s, member_type: %i, traits: %lli ]\n", type ? type->ident : null, ident, member_type, traits);
     Au_t au2 = typeid(array);
 
     if (ident && strcmp((cstr)ident, "test3") == 0) {
@@ -825,14 +818,20 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
         memset(member_pool, 0, n_members * sizeof(struct _Au_combine));
     }
     struct _Au_combine* cur = &member_pool[--n_members];
-    cur->info.refs = 1;
+    cur->info.refs = 0;
+    cur->info.managed = 0;
     cur->info.type = (Au_t)&Au_Au_t_f_i.type;
     Au_t au = &cur->type;
     au->ident = ident ? (cstr)cstr_copy((cstr)ident) : (cstr)null;
-
+    au->traits = (cur == member_pool ? AU_TRAIT_ALLOCATED : 0); // erasing modules can consist of freeing only pool origined data (or we check performance against a simple approach and fallback to non complicated)
     au->member_type = member_type;
-    au->traits = traits;
-
+    au->traits |= traits;
+    static int seq = 0;
+    seq++;
+    if (seq == 12302) {
+        seq = seq;
+    }
+    au->record_alignment = seq;
     if (type && type->member_type == AU_MEMBER_MODULE)
         au->module = type;
 
@@ -855,7 +854,7 @@ static none dealloc_iter(Au_t type) {
 // intelligently drops the inlay array elements and allocated member data
 none dealloc_type(Au_t type) {
     Au info = head(type);
-    if (info->refs == 1) {
+    if (info->managed && info->refs == 1) {
         dealloc_iter(type);
     }
     Au_drop((Au)type);
@@ -878,16 +877,12 @@ lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
     return a;
 }
 
-Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, u64 traits, u64 typesize, u64 isize) {
-    if (strcmp(ident, "aclass") == 0) {
-        int au_size = sizeof(struct _Au);
-        Au_t au_type_size = typeid(Au);
-        Au_t app_type_symbol = typeid(app);
-        Au_t app_type = find_member(au_module, "app", AU_MEMBER_TYPE, false);
+Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, i32 member_type, u64 traits, u64 typesize, u64 isize) {
+    if (strcmp(ident, "test3") == 0) {
         int test2 = 2;
         test2    += 2;
     }
-    type->member_type       = AU_MEMBER_TYPE;
+    type->member_type       = member_type;
     type->members.alloc     = 128;
     type->members.assorted  = true;
     type->members.unmanaged = true;
@@ -903,8 +898,18 @@ Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, 
     type->traits            = traits;
     type->typesize          = typesize;
     type->isize             = isize;
-    head(type)->type = typeid(Au_t_f);             
-    push_type((Au_t)type);
+
+    static int seq = 0;
+    seq += 1000;
+    type->record_alignment  = seq;
+    head(type)->type = typeid(Au_t_f);     
+    
+    if (!context) {
+        verify(type->member_type == AU_MEMBER_MODULE, "expected module when no context is set on Au_t");
+        array_qpush((array)&modules.data, (Au)type); // we should error if we ever find a duplicate here
+    } else
+        push_type((Au_t)type);
+    
     return type;
 }
 
@@ -976,10 +981,22 @@ none def_init(func f) {
 Au_t module_lookup(symbol name) {
     for (int i = 0; i < modules.data.count; i++) {
         Au_t m = (Au_t)modules.data.origin[i];
-        if (strcmp(m->ident, name) == 0)
+        if (m && strcmp(m->ident, name) == 0) // its filled with holes! .. and thats where our geneticists come in
             return m;
     }
     return def_module(name);
+}
+
+void module_erase(Au_t module) {
+    // unregister from list by setting null
+    for (int i = 0; i < modules.data.count; i++) {
+        Au_t m = (Au_t)modules.data.origin[i];
+        printf("module: %s\n", m->ident);
+        if (module == m) {
+            modules.data.origin[i] = null;
+            //return;
+        }
+    }
 }
  
 Au_t global() {
@@ -991,13 +1008,20 @@ Au_t def_module(symbol next_module) {
     struct _Au_combine* combine = calloc(1, sizeof(struct _Au_combine));
     Au_t m = &combine->type;
     m->member_type = AU_MEMBER_MODULE;
-    m->ident = cstr_copy((cstr)next_module);
+    m->traits      = AU_TRAIT_ALLOCATED | AU_TRAIT_IS_AU;
+    m->ident       = cstr_copy((cstr)next_module);
     combine->info.type  = (Au_t)typeid(Au_t_f);
     if (!au_module) {
         au_module = m;
         module = m;
     }
-    m->traits |= AU_TRAIT_IS_AU;
+    for (int i = 0; i < modules.data.count; i++) {
+        Au_t m = (Au_t)modules.data.origin[i];
+        if (!m) {
+            modules.data.origin[i] = m;
+            return m;
+        }
+    }
     array_qpush((array)&modules.data, (Au)m);
     return m;
 }
@@ -1035,11 +1059,6 @@ none push_type(Au_t type) {
         verify(Au_ft_size == Au_t_ft_size, "Au_f->ft not identical to Au_t_f->ft");
         memcpy(&Au_Au_t_f_i.type.ft, &typeid(Au)->ft, Au_ft_size);
         head(typeid(Au_t))->type = Au_Au_t_f_i.info.type;
-    }
-
-    if (type->ident && strcmp(type->ident, "vec2f") == 0) {
-        int test2 = 2;
-        test2    += 2;
     }
     
     // on first call, we register our basic type structures:
@@ -1084,7 +1103,6 @@ none push_type(Au_t type) {
         def_member(au_t, "isize",         typeid(i32),  AU_MEMBER_VAR, 0);
         def_member(au_t, "ptr",           typeid(ARef), AU_MEMBER_VAR, 0);
         def_member(au_t, "ffi",           typeid(ARef), AU_MEMBER_VAR, 0);
-        def_member(au_t, "af",            typeid(ARef), AU_MEMBER_VAR, 0);
         
         Au_t minfo = def_member(au_t, "members_info", typeid(Au), AU_MEMBER_VAR, AU_TRAIT_INLAY);
         def_member(au_t, "members", au_collective, AU_MEMBER_VAR, AU_TRAIT_INLAY);
@@ -1107,11 +1125,8 @@ none push_type(Au_t type) {
     }
 
     array_qpush((array)&type->module->members, (Au)type);
-    type->af = (au_core)calloc(1, sizeof(struct _au_core));
-
-    pthread_mutex_init(&type->af->lock, NULL);
-    type->af->re_alloc = 1024;
-    type->af->re = (object*)(Au*)calloc(1024, sizeof(Au));
+    //type->af->re_alloc = 1024;
+    //type->af->re = (object*)(Au*)calloc(1024, sizeof(Au));
 
     if ((type->traits & AU_TRAIT_POINTER) != 0) {
         type->src = type->meta.origin ? *(Au_t*)type->meta.origin : null;
@@ -1157,23 +1172,17 @@ ARef types(ref_i64 length) {
 Au_t find_module(symbol name) {
     for (int i = 0; i < modules.data.count; i++) {
         Au_t mod = (Au_t)modules.data.origin[i];
-        if (mod->ident && strcmp(mod->ident, name) == 0) {
-            return mod;
+        if (mod && !mod->is_hidden && mod->ident && strcmp(mod->ident, name) == 0) {
+            return mod; // test3 module loaded here after dlopen, however the source of this was not from a dlopen but rather the design-time creation of the namespace module from import()
         }
     }
     return null;
 }
 
 Au_t find_type(symbol name, Au_t m) {
-    /*
     for (int i = 0; i < modules.data.count; i++) {
         Au_t mod = (Au_t)modules.data.origin[i];
-        printf("module: %s\n", mod->ident);
-    }
-    */
-    for (int i = 0; i < modules.data.count; i++) {
-        Au_t mod = (Au_t)modules.data.origin[i];
-        if (!m || m == mod) {
+        if (mod && (!m || m == mod)) {
             // skip if not specifically tareting this module, and it has a namespace (not global)
             if (m != mod && mod->is_namespace && mod->ident && strlen(mod->ident))
                 continue;
@@ -1516,45 +1525,56 @@ int alloc_count(Au_t type) {
     return type ? type->global_count : all_type_alloc;
 }
 
-Au alloc_instance(Au_t type, int n_bytes, int recycle_size) {
-    Au      a            = null;
-    bool    use_recycler = false; //af && n_bytes == recycle_size;
-    au_core af           = type->af;
+ARef af       = null;
+int  af_count = 2; // managed == 1 means its not in the af vector, managed == 0 means we are not managed memory; hold and drop are null ops
+int  af_size  = 0;
 
-    if (use_recycler && af->re_count) {
-        a = (Au)af->re[--af->re_count];
-        memset(a, 0, n_bytes);
-    } else {
-        type->global_count++;
-        all_type_alloc++;
+Au alloc_instance(Au_t type, int n_bytes, bool managed) {
+    Au a = null;
+    //af && n_bytes == recycle_size;
 
-        a = calloc(1, n_bytes);
-        a->recycle = use_recycler;
+    #ifndef NDEBUG
+    type->global_count++;
+    all_type_alloc++;
+    #endif
+
+    a = calloc(1, n_bytes);
+    a->refs = 0;
+    a->managed = managed ? af_count : 0;
+    if (a->managed > 100000) {
+        a = a;
     }
-    a->refs = 1;
-    if (use_recycler) {
-        if ((af->af_count + 1) >= af->af_alloc) {
-            i64 prev_size = af->af_alloc;
-            i64 next_size = af->af_alloc << 1;
-            if (next_size == 0) next_size = 1024;
-            void* prev = af->af4;
-            af->af4 = calloc(1, next_size * sizeof(Au*));
-            memcpy(af->af4, prev, prev_size * sizeof(Au*));
-            af->af4[0] = 0x00;
-            af->af_alloc = next_size;
-        }
-        a->af_index = 1 + af->af_count;
-        af->af4[a->af_index] = (object)a;
-        af->af_count++;
+    if (managed && af_count >= af_size) {
+        ARef af_prev = af;
+        int new_size = (af_size + 16) << 2;
+        af = (ARef)calloc(sizeof(ARef), new_size);
+        if (af_prev)
+            memcpy(af, af_prev, af_size * sizeof(ARef));
+        af_size = new_size;
     }
+    af[af_count++] = a;
+    
     return a;
+}
+
+none Au_free(Au a);
+
+none auto_free() {
+    // only managed objects go into af
+    for (num i = 2; i < af_count; i++) {
+        Au a = af[i];
+        if (a && a->refs == 0)
+            Au_free(&a[1]);
+        else if (a)
+            a->managed = 1; // says i am not in the list, but managed
+    }
+    af_count = 2;
 }
 
 Au alloc_dbg(Au_t type, num count, cstr source, int line) {
     sz map_sz = sizeof(map);
     sz _sz   = sizeof(struct _Au);
-    Au a = alloc_instance(type,
-        _sz + type->typesize * count, _sz + type->typesize);
+    Au a = alloc_instance(type, _sz + type->typesize * count, true);
     a->type       = type;
     a->data       = &a[1];
     a->count      = count;
@@ -1565,11 +1585,30 @@ Au alloc_dbg(Au_t type, num count, cstr source, int line) {
 }
 
 
+static ARef  tracing = null;
+static int   tracing_count = 0;
+
+void alloc_trace() {
+    tracing = calloc(1024 * 100, sizeof(ARef));
+    tracing_count = 0;
+}
+
+void alloc_validate() {
+    for (int i = 0; i < tracing_count; i++) {
+        Au obj  = tracing[i];
+        if (!obj) continue;
+        Au info = head(obj);
+
+        printf("target-remains:%llx, refs:%i, source:%s:%i managed:%i\n",
+            (unsigned long long)(uintptr_t)obj, (int)info->refs, info->source, (int)info->line, info->managed);
+    }
+}
+
 Au alloc(Au_t type, num count, Au_t* meta) {
     sz map_sz = sizeof(map);
     sz _sz   = sizeof(struct _Au);
     Au a = alloc_instance(type,
-        _sz + type->typesize * count, _sz + type->typesize);
+        _sz + type->typesize * count, true);
     a->type       = type;
     a->data       = &a[1];
     a->count      = count;
@@ -1585,6 +1624,12 @@ Au alloc(Au_t type, num count, Au_t* meta) {
             a->meta[i] = (Au)m;
         }
     }
+    if (tracing)
+        tracing[tracing_count++] = a->data;
+    
+    if (a->data == 0x7d0fe89c1759) {
+        a = a;
+    }
     return a->data;
 }
 
@@ -1596,7 +1641,7 @@ Au alloc2(Au_t type, Au_t scalar, shape s) {
     i64 _sz      = sizeof(struct _Au);
     i64 count     = shape_total(s);
     Au a      = alloc_instance(type,
-        _sz + scalar->typesize * count, _sz + scalar->typesize);
+        _sz + scalar->typesize * count, true);
     a->scalar     = scalar;
     a->type       = type;
     a->data       = &a[1];
@@ -1661,7 +1706,9 @@ Au method(Au_t type, cstr method_name, array args) {
 }
 
 Au convert(Au_t type, Au input) {
-    if (type == isa(input)) return input;
+    Au info = head(input);
+    if (type == isa(input))
+        return input;
     return construct_with(type, input, null);
 }
 
@@ -1703,7 +1750,7 @@ none member_override(Au_t type, Au_t type_mem, AFlag f) {
                 for (int ar = 0; ar < m->args.count; ar++) {
                     Au_t arg = (Au_t)m->args.origin[ar];
                     verify(arg->member_type == AU_MEMBER_VAR, "unexpected member_type on arg");
-                    def_arg(type_mem, arg->ident, arg->src);
+                    def_arg(type_mem, arg->ident, arg->src, 0);
                 }
                 //type_mem->args          = m->args;
                 type_mem->src           = m->type;
@@ -1858,6 +1905,9 @@ bool is_inlay(Au_t m) {
 
 none Au_hold_members(Au a) {
     Au_t type = isa(a);
+    Au head = header(a);
+    if (head->members_held) return;
+    head->members_held = true;
     while (type != typeid(Au)) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t mem = (Au_t)type->members.origin[i];
@@ -1868,7 +1918,16 @@ none Au_hold_members(Au a) {
                         continue;
                     Au member_value = *mdata;
                     Au head = header(member_value);
-                    if (head->refs > 0) head->refs++;
+                    if (head->managed) {
+                        if (strcmp(isa(member_value)->ident, "silver") == 0) {
+                            int test2 = 2;
+                            test2    += 2;
+                        }
+                        if (member_value == 0x7d0fe89c1759) {
+                            a = a;
+                        }
+                        head->refs++;
+                    }
                 }
         }
         type = type->context;
@@ -1982,6 +2041,7 @@ none Au_drop_members(Au a) {
                     continue;
                 //printf("Au_dealloc: drop member %s.%s (%s)\n", type->ident, m->ident, m->type->ident);
                 Au*  ref = (Au*)((u8*)a + m->offset);
+                Au info = head(*ref);
                 drop(*ref);
                 *ref = null;
             }
@@ -1991,16 +2051,20 @@ none Au_drop_members(Au a) {
 }
 
 none Au_dealloc(Au a) { 
-    Au        f = header(a);
+    Au   f    = header(a);
     Au_t type = f->type;
+
     if (!(type->traits & AU_TRAIT_USER_INIT)) // composer does this for an 'unmount' operation, and its non-mount results in no holds at all (which is why we must compensate here)
         drop_members(a);
+    
     if ((Au)f->data != (Au)a) {
         drop(f->data);
         f->data = null;
     }
 }
+
 u64  Au_hash      (Au a) { return (u64)(size_t)a; }
+
 bool Au_cast_bool (Au a) {
     Au info = header(a);
     bool has_count = info->count > 0;
@@ -2397,7 +2461,7 @@ bool Au_member_set(Au a, Au_t m, Au value) {
         memcpy(member_ptr, value, sz);
     } else if ((Au)*member_ptr != value) {
         drop(*member_ptr);
-        *member_ptr = hold(value);
+        *member_ptr = value;
     }
     Au_AF_set_name(a, m->ident);
     return true;
@@ -2809,22 +2873,8 @@ map map_copy(map m) {
 }
 
 none map_dealloc(map m) {
-    Au   info  = head(m);
-    item* hlist = m->hlist;
-    if (hlist) {
-        for (int b = 0; b < m->hsize; b++)
-            while (hlist[b]) {
-                item i = hlist[b];
-                item n = i->next;
-                drop(i->key);
-                drop(i->value);
-                drop(i);
-                //drop(i->ref);
-                hlist[b] = n;
-            }
-        drop((Au)hlist);
-        m->hlist = null;
-    }
+    clear(m);
+    free((Au)m->hlist);
 }
 
 item map_lookup(map m, Au k) {
@@ -2859,7 +2909,7 @@ item map_fetch(map m, Au k) {
         u64 h = hash(k);
         i64 b = h % m->hsize;
 
-        ((item*)m->hlist)[b] = i = item(next, ((item*)m->hlist)[b], key, hold(k), h, h);
+        ((item*)m->hlist)[b] = i = hold(item(next, ((item*)m->hlist)[b], key, hold(k), h, h));
         m->count++;
     }
     return i;
@@ -2901,7 +2951,7 @@ none map_set(map m, Au k, Au v) {
 
     bool in_fifo = i->ref != null;
     if (!in_fifo) {
-        item ref = (item)list_push((list)m, m->unmanaged ? v : hold(v));
+        item ref = (item)list_push((list)m, v);
         ref->key = hold(k);
         ref->ref = (Au)i; // these reference each other
         i->ref = (Au)ref;
@@ -2909,6 +2959,8 @@ none map_set(map m, Au k, Au v) {
 }
 
 none map_rm_item(map m, item i) {
+    //drop(((item)i->ref)->key);
+    //drop(((item)i->ref)->value);
     drop(i->key);
     drop(i->value);
     list_remove_item((list)m, (item)i->ref);
@@ -3540,15 +3592,13 @@ Au Au_copy(Au a) {
 Au Au_hold(Au a) {
     if (a) {
         Au f = header(a);
-        if (f->refs == 0) return a; // refs of 0 is unmanaged memory (user managed)
+        if (f->managed == 0) return a; // refs of 0 is unmanaged memory (user managed)
         f->refs++;
-
-        if (f->type) {
-            au_core af = (au_core)f->type->af;
-            if (f->af_index > 0) {
-                af->af4[f->af_index] = null;
-                f->af_index = 0;
-            }
+        if (strcmp(isa(a)->ident, "silver") == 0) {
+            f = f;
+        }
+        if (a == 0x7d0fe89c1759) {
+            a = a;
         }
     }
     return a;
@@ -3569,52 +3619,49 @@ none Au_free(Au a) {
         cur = (Au_f*)cur->context;
     }
     
-    au_core af = type->af;    
-    if (true || !af || af->re_alloc == af->re_count) {
-        memset(aa, 0xff, type->typesize);
-        free(aa);
-        if (--all_type_alloc < 0) {
-            printf("all_type_alloc < 0\n");
-        }
-        if (--type->global_count < 0) {
-            printf("global_count < 0 for type %s\n", type->ident);
-        }
-    } else if (af) {
-        aa->af_index = 0;
-        af->re[af->re_count++] = (object)aa;
-    }
-}
+#ifndef NDEBUG
+    if (tracing)
+        for (int i = 0; i < tracing_count; i++)
+            if (tracing[i] == a)
+                tracing[i] = null;
 
-none recycle() {
-    i64   types_len;
-    Au_t* atypes = (Au_t*)types(&types_len);
+    if (--all_type_alloc < 0)
+        printf("all_type_alloc < 0\n");
+    
+    if (--type->global_count < 0)
+        printf("global_count < 0 for type %s\n", type->ident);
+    
+    aa->refs = -8888;
+    free(aa);
+#else
+    free(aa);
+#endif
 
-    /// iterate through types
-    for (num i = 0; i < types_len; i++) {
-        Au_t type = atypes[i];
-        au_core af = type->af;
-        if (af && af->af_count) {
-            for (int i = 0; i <= af->af_count; i++) {
-                Au a = (Au)af->af4[i];
-                if (a && a->refs > 0 && --a->refs == 0) {
-                    Au_free(&a[1]);
-                }
-            }
-            af->af_count = 0;
-        }
-    }
 }
 
 none Au_drop(Au a) {
     if (!a) return;
     Au info = header(a);
 
-    if (info->refs > 0 && --info->refs == 0) {
+    if (a == 0x7d0fe89c1759) {
+        a = a;
+    }
+    
+    if (info->managed && --info->refs <= 0) {
+        if (info->refs < 0) {
+            info = info;
+        }
+        af[info->managed] = null; // the first 2 managed items are always null, so even if managed == 1 (not using af) then its zero anyway
+        
+        /*
         if (info->af_index > 0) {
             info->type->af->af4[info->af_index] = null;
             info->af_index = 0;
         }
+        */
+        
         Au_free(a);
+
     }
 }
 
@@ -3685,7 +3732,7 @@ none list_push_item(list a, item i) {
 }
 
 Au list_push(list a, Au e) {
-    item n = item();
+    item n = hold(item());
     n->value = a->unmanaged ? e : hold(e);
     if (a->last) {
         a->last->next = n;
@@ -4824,7 +4871,7 @@ Au path_load(path a, Au_t type, ctx context) {
     fseek(f, 0, SEEK_END);
     sz flen = ftell(f);
     fseek(f, 0, SEEK_SET);
-    string str = new(string, alloc, flen + 1);
+    string str = string(alloc, flen + 1);
     size_t n = fread((cstr)str->chars, 1, flen, f);
     fclose(f);
     assert(n == flen, "could not read enough bytes");
@@ -5806,6 +5853,8 @@ string read_string(cstr cs, bool is_const) {
 
 Au read_numeric(token a) {
     cstr cs = (cstr)a->chars;
+    if (cs[0] == '.' && a->count == 1) return null;
+
     if (strcmp(cs, "true") == 0) {
         bool v = true;
         return primitive(typeid(bool), &v);

@@ -219,20 +219,7 @@
 #define _F_ARGS_HELPER2(T, N, ...)  _COMBINE2(_F_ARGS_, N)(T, __VA_ARGS__)
 #define flags(T, ...) _F_ARGS(T, __VA_ARGS__);
 
-#define new(TYPE, ...) \
-    ({ \
-        TYPE instance = (TYPE)alloc(typeid(TYPE), 1, (Au_t*)null); \
-        _N_ARGS(TYPE, ## __VA_ARGS__); \
-        Au_initialize((Au)instance); \
-        instance; \
-    })
-#define new2(TYPE, ...) \
-    ({ \
-        TYPE instance = (TYPE)alloc(typeid(TYPE), 1, (Au_t*)null); \
-        TYPE##_N_ARGS(TYPE, ## __VA_ARGS__); \
-        Au_initialize((Au)instance); \
-        instance; \
-    })
+#define new(TYPE, ...) TYPE(__VA_ARGS__)
 
 /// with construct we give it a dynamic type, symbols and Au-values
 #define construct(type, ...) \
@@ -419,8 +406,8 @@
 #define   i_prop_opaque_INST_U_EXTERN(X, R, N)    i_prop_public_INST_U(X, R, N)
 #define   i_prop_opaque_INST_L_EXTERN(X, R, N)
 #define   i_prop_opaque_DEF(X, R, N)
-#define   i_prop_opaque_DECL(X, R, N)           i_prop_public_DECL(X, R, N)
-#define   i_prop_opaque_DECL_EXTERN(X, R, N)    i_prop_public_DECL(X, R, N)
+#define   i_prop_opaque_DECL(X, R, N)           
+#define   i_prop_opaque_DECL_EXTERN(X, R, N)    
 #define   i_prop_opaque_GENERICS(X, R, N)
 #define   i_prop_opaque_INIT(X, R, N)
 #define   i_prop_opaque_PROTO(X, R, N)  
@@ -505,8 +492,8 @@
 #define   i_prop_required_INST_U_EXTERN(X, R, N)  i_prop_public_INST_U(X, R, N)
 #define   i_prop_required_INST_L_EXTERN(X, R, N)
 #define   i_prop_required_DEF(X, R, N)
-#define   i_prop_required_DECL(X, R, N)         i_prop_public_DECL(X, R, N)
-#define   i_prop_required_DECL_EXTERN(X, R, N)  i_prop_public_DECL(X, R, N)
+#define   i_prop_required_DECL(X, R, N)
+#define   i_prop_required_DECL_EXTERN(X, R, N)
 #define   i_prop_required_GENERICS(X, R, N)
 #define   i_prop_required_INIT(X, R, N) { \
     Au_t m = def(typeid(X), #N, AU_MEMBER_VAR, AU_TRAIT_REQUIRED | AU_TRAIT_IPROP); \
@@ -521,7 +508,7 @@
 #define   i_prop_required_NMODULE(X, R, N)
 
 #define   i_prop_intern_F(X, R, N)              u8 N;
-#define   i_prop_intern_F_EXTERN(X, R, N)       
+#define   i_prop_intern_F_EXTERN(X, R, N)       u8 ___intern_##N;
 #define   i_prop_intern_ISIZE(X, R, N)          
 #define   i_prop_intern_ISIZE_EXTERN(X, R, N)   +sizeof(R)
 #define   i_prop_intern_INST_U(X, R, N)           
@@ -529,16 +516,42 @@
 #define   i_prop_intern_INST_U_EXTERN(X, R, N)
 #define   i_prop_intern_INST_L_EXTERN(X, R, N)
 #define   i_prop_intern_DEF(X, R, N)
-#define   i_prop_intern_DECL(X, R, N)           i_prop_public_DECL(X, R, N)
-#define   i_prop_intern_DECL_EXTERN(X, R, N)    i_prop_public_DECL(X, R, N)
+#define   i_prop_intern_DECL(X, R, N)
+#define   i_prop_intern_DECL_EXTERN(X, R, N)
 #define   i_prop_intern_GENERICS(X, R, N)
 #define   i_prop_intern_INIT(X, R, N)
 #define   i_prop_intern_PROTO(X, R, N)  
 #define   i_prop_intern_METHOD(X, R, N)
 #define   i_prop_intern_NMODULE(X, R, N)
 
+
+#define   i_prop_iobject_F(X, R, N)              u8 N;
+#define   i_prop_iobject_F_EXTERN(X, R, N)       u8 ___intern_##N;
+#define   i_prop_iobject_ISIZE(X, R, N)          
+#define   i_prop_iobject_ISIZE_EXTERN(X, R, N)   +sizeof(R)
+#define   i_prop_iobject_INST_U(X, R, N)           
+#define   i_prop_iobject_INST_L(X, R, N)           R N;
+#define   i_prop_iobject_INST_U_EXTERN(X, R, N)
+#define   i_prop_iobject_INST_L_EXTERN(X, R, N)    
+#define   i_prop_iobject_DEF(X, R, N)
+#define   i_prop_iobject_DECL(X, R, N)
+#define   i_prop_iobject_DECL_EXTERN(X, R, N)
+#define   i_prop_iobject_GENERICS(X, R, N)
+#define   i_prop_iobject_INIT(X, R, N) { \
+    Au_t m = def(typeid(X), #N, AU_MEMBER_VAR, AU_TRAIT_IPROP); \
+    m->access_type = interface_intern; \
+    m->offset      = offsetof(struct _##X, N); \
+    m->type        = typeid(R); \
+    m->index       = offsetof(struct X##_fields, N);    \
+}
+#define   i_prop_iobject_PROTO(X, R, N)  
+#define   i_prop_iobject_METHOD(X, R, N)
+#define   i_prop_iobject_NMODULE(X, R, N)
+
+
+
 #define   i_prop_intern_F_pad(X, R, N, M2)                u8 N;
-#define   i_prop_intern_F_EXTERN_pad(X, R, N, M2)       
+#define   i_prop_intern_F_EXTERN_pad(X, R, N, M2)         u8 ___intern_##N;
 #define   i_prop_intern_ISIZE_pad(X, R, N, M2)            
 #define   i_prop_intern_ISIZE_EXTERN_pad(X, R, N, M2)     + M2
 #define   i_prop_intern_INST_U_pad(X, R, N, M2)           
@@ -546,8 +559,8 @@
 #define   i_prop_intern_INST_U_EXTERN_pad(X, R, N, M2)
 #define   i_prop_intern_INST_L_EXTERN_pad(X, R, N, M2)
 #define   i_prop_intern_DEF_pad(X, R, N, M2)
-#define   i_prop_intern_DECL_pad(X, R, N, M2)           i_prop_public_DECL(X, R, N)
-#define   i_prop_intern_DECL_EXTERN_pad(X, R, N, M2)    i_prop_public_DECL(X, R, N)
+#define   i_prop_intern_DECL_pad(X, R, N, M2)
+#define   i_prop_intern_DECL_EXTERN_pad(X, R, N, M2)
 #define   i_prop_intern_GENERICS_pad(X, R, N, M2)
 #define   i_prop_intern_INIT_pad(X, R, N, M2)
 #define   i_prop_intern_PROTO_pad(X, R, N, M2)  
@@ -562,8 +575,8 @@
 #define   i_prop_public_INST_U_EXTERN_field(X, R, N, M2)  i_prop_public_INST_field(X, R, N, M2)
 #define   i_prop_public_INST_L_EXTERN_field(X, R, N, M2)
 #define   i_prop_public_DEF_field(X, R, N, M2)
-#define   i_prop_public_DECL_field(X, R, N, M2)         i_prop_public_DECL(X, R, N)
-#define   i_prop_public_DECL_EXTERN_field(X, R, N, M2)  i_prop_public_DECL(X, R, N)
+#define   i_prop_public_DECL_field(X, R, N, M2)
+#define   i_prop_public_DECL_EXTERN_field(X, R, N, M2)
 #define   i_prop_public_GENERICS_field(X, R, N, M2)
 #define   i_prop_public_INIT_field(X, R, N, M2) { \
     Au_t m = def(typeid(X), #M2, AU_MEMBER_VAR, AU_TRAIT_IPROP); \
@@ -585,8 +598,8 @@
 #define   i_prop_required_INST_U_EXTERN_field(X, R, N, M2)    i_prop_public_INST_field(X, R, N, M2)
 #define   i_prop_required_INST_L_EXTERN_field(X, R, N, M2)
 #define   i_prop_required_DEF_field(X, R, N, M2)
-#define   i_prop_required_DECL_field(X, R, N, M2)           i_prop_public_DECL(X, R, N)
-#define   i_prop_required_DECL_EXTERN_field(X, R, N, M2)    i_prop_public_DECL(X, R, N)
+#define   i_prop_required_DECL_field(X, R, N, M2)
+#define   i_prop_required_DECL_EXTERN_field(X, R, N, M2)
 #define   i_prop_required_GENERICS_field(X, R, N, M2)
 #define   i_prop_required_INIT_field(X, R, N, M2) { \
     Au_t m = def(typeid(X), #M2, AU_MEMBER_VAR, AU_TRAIT_REQUIRED | AU_TRAIT_IPROP); \
@@ -608,8 +621,8 @@
 #define   i_prop_intern_INST_U_EXTERN_field(X, R, N, M2)
 #define   i_prop_intern_INST_L_EXTERN_field(X, R, N, M2)
 #define   i_prop_intern_DEF_field(X, R, N, M2)
-#define   i_prop_intern_DECL_field(X, R, N, M2)        i_prop_public_DECL(X, R, N)
-#define   i_prop_intern_DECL_EXTERN_field(X, R, N, M2) i_prop_public_DECL(X, R, N)
+#define   i_prop_intern_DECL_field(X, R, N, M2)
+#define   i_prop_intern_DECL_EXTERN_field(X, R, N, M2)
 #define   i_prop_intern_GENERICS_field(X, R, N, M2)
 #define   i_prop_intern_INIT_field(X, R, N, M2)          fault("field is not exposed when intern");
 #define   i_prop_intern_PROTO_field(X, R, N, M2)  
@@ -624,8 +637,8 @@
 #define   i_prop_public_INST_U_EXTERN_meta(X, R, N, M2)   R N;
 #define   i_prop_public_INST_L_EXTERN_meta(X, R, N, M2)
 #define   i_prop_public_DEF_meta(X, R, N, M2)
-#define   i_prop_public_DECL_meta(X, R, N, M2)        i_prop_public_DECL(X, R, N)
-#define   i_prop_public_DECL_EXTERN_meta(X, R, N, M2) i_prop_public_DECL(X, R, N)
+#define   i_prop_public_DECL_meta(X, R, N, M2)
+#define   i_prop_public_DECL_EXTERN_meta(X, R, N, M2)
 #define   i_prop_public_GENERICS_meta(X, R, N, M2)
 #define   i_prop_public_INIT_meta(X, R, N, M2) {\
     Au_t m = def(typeid(X), #N, AU_MEMBER_VAR, AU_TRAIT_IPROP); \
@@ -648,8 +661,8 @@
 #define   i_prop_required_INST_U_EXTERN_meta(X, R, N, M2) R N;
 #define   i_prop_required_INST_L_EXTERN_meta(X, R, N, M2)
 #define   i_prop_required_DEF_meta(X, R, N, M2)
-#define   i_prop_required_DECL_meta(X, R, N, M2)        i_prop_public_DECL(X, R, N)
-#define   i_prop_required_DECL_EXTERN_meta(X, R, N, M2) i_prop_public_DECL(X, R, N)
+#define   i_prop_required_DECL_meta(X, R, N, M2)        
+#define   i_prop_required_DECL_EXTERN_meta(X, R, N, M2) 
 #define   i_prop_required_GENERICS_meta(X, R, N, M2)
 #define   i_prop_required_INIT_meta(X, R, N, M2) {\
     Au_t m = def(typeid(X), #N, AU_MEMBER_VAR, AU_TRAIT_REQUIRED | AU_TRAIT_IPROP); \
@@ -672,8 +685,8 @@
 #define   i_prop_intern_INST_U_EXTERN_meta(X, R, N, M2)
 #define   i_prop_intern_INST_L_EXTERN_meta(X, R, N, M2)
 #define   i_prop_intern_DEF_meta(X, R, N, M2)
-#define   i_prop_intern_DECL_meta(X, R, N, M2)        i_prop_public_DECL(X, R, N)
-#define   i_prop_intern_DECL_EXTERN_meta(X, R, N, M2) i_prop_public_DECL(X, R, N)
+#define   i_prop_intern_DECL_meta(X, R, N, M2)        
+#define   i_prop_intern_DECL_EXTERN_meta(X, R, N, M2) 
 #define   i_prop_intern_GENERICS_meta(X, R, N, M2)
 #define   i_prop_intern_INIT_meta(X, R, N, M2)
 #define   i_prop_intern_PROTO_meta(X, R, N, M2)  
@@ -689,8 +702,8 @@
 #define   i_prop_public_INST_U_EXTERN_as(X, R, N, M2)     M2 N;
 #define   i_prop_public_INST_L_EXTERN_as(X, R, N, M2)
 #define   i_prop_public_DEF_as(X, R, N, M2)
-#define   i_prop_public_DECL_as(X, R, N, M2)        i_prop_public_DECL(X, R, N)
-#define   i_prop_public_DECL_EXTERN_as(X, R, N, M2) i_prop_public_DECL(X, R, N)
+#define   i_prop_public_DECL_as(X, R, N, M2)        
+#define   i_prop_public_DECL_EXTERN_as(X, R, N, M2) 
 #define   i_prop_public_GENERICS_as(X, R, N, M2)
 #define   i_prop_public_INIT_as(X, R, N, M2) {\
     Au_t m = def(typeid(X), #N, AU_MEMBER_VAR, AU_TRAIT_IPROP); \
@@ -713,8 +726,8 @@
 #define   i_prop_required_INST_U_EXTERN_as(X, R, N, M2)   M2 N;
 #define   i_prop_required_INST_L_EXTERN_as(X, R, N, M2) 
 #define   i_prop_required_DEF_as(X, R, N, M2)
-#define   i_prop_required_DECL_as(X, R, N, M2)        i_prop_public_DECL(X, R, N)
-#define   i_prop_required_DECL_EXTERN_as(X, R, N, M2) i_prop_public_DECL(X, R, N)
+#define   i_prop_required_DECL_as(X, R, N, M2)        
+#define   i_prop_required_DECL_EXTERN_as(X, R, N, M2) 
 #define   i_prop_required_GENERICS_as(X, R, N, M2)
 #define   i_prop_required_INIT_as(X, R, N, M2) \
     verify(false, "'as' keyword used with internals and cannot be required");
@@ -723,7 +736,7 @@
 #define   i_prop_required_NMODULE_as(X, R, N, M2)
 
 #define   i_prop_intern_F_as(X, R, N, M2)               u8 N;
-#define   i_prop_intern_F_EXTERN_as(X, R, N, M2)        
+#define   i_prop_intern_F_EXTERN_as(X, R, N, M2)        u8 ___intern_##N;
 #define   i_prop_intern_ISIZE_as(X, R, N, M2)          
 #define   i_prop_intern_ISIZE_EXTERN_as(X, R, N, M2)   +sizeof(M2)
 #define   i_prop_intern_INST_U_as(X, R, N, M2)           
@@ -731,8 +744,8 @@
 #define   i_prop_intern_INST_U_EXTERN_as(X, R, N, M2)
 #define   i_prop_intern_INST_L_EXTERN_as(X, R, N, M2)
 #define   i_prop_intern_DEF_as(X, R, N, M2)
-#define   i_prop_intern_DECL_as(X, R, N, M2)        i_prop_public_DECL(X, R, N)
-#define   i_prop_intern_DECL_EXTERN_as(X, R, N, M2) i_prop_public_DECL(X, R, N)
+#define   i_prop_intern_DECL_as(X, R, N, M2)        
+#define   i_prop_intern_DECL_EXTERN_as(X, R, N, M2) 
 #define   i_prop_intern_GENERICS_as(X, R, N, M2)
 #define   i_prop_intern_INIT_as(X, R, N, M2)
 #define   i_prop_intern_PROTO_as(X, R, N, M2)  
@@ -840,6 +853,10 @@
 #define M(X,Y,I,T, ...) \
     I##_##T(X, Y, __VA_ARGS__)
 
+//#define M(X,Y,I,AA,T ...) \
+//    I##_##T(X, Y, AA __VA_OPT__(,) __VA_ARGS__)
+
+
 #define   i_ref_interface_F(X, R, N)
 #define   i_ref_interface_F_EXTERN(X, R, N)
 #define   i_ref_interface_ISIZE(X, R, N)
@@ -891,8 +908,8 @@
 #define   i_ref_public_INST_U_EXTERN(X, R, N)  i_ref_public_INST_U(X, R, N)
 #define   i_ref_public_INST_L_EXTERN(X, R, N)
 #define   i_ref_public_DEF(X, R, N)
-#define   i_ref_public_DECL(X, R, N)          i_prop_public_DECL(X, R, N)
-#define   i_ref_public_DECL_EXTERN(X, R, N)   i_prop_public_DECL(X, R, N)
+#define   i_ref_public_DECL(X, R, N)          
+#define   i_ref_public_DECL_EXTERN(X, R, N)   
 #define   i_ref_public_GENERICS(X, R, N)
 #define   i_ref_public_INIT(X, R, N) {\
     Au_t m = def(typeid(X), #N, AU_MEMBER_VAR, AU_TRAIT_VPROP); \
@@ -914,8 +931,8 @@
 #define   i_ref_required_INST_U_EXTERN(X, R, N)  i_ref_public_INST_U(X, R, N)
 #define   i_ref_required_INST_L_EXTERN(X, R, N)
 #define   i_ref_required_DEF(X, R, N)
-#define   i_ref_required_DECL(X, R, N)         i_prop_public_DECL(X, R, N)
-#define   i_ref_required_DECL_EXTERN(X, R, N)  i_prop_public_DECL(X, R, N)
+#define   i_ref_required_DECL(X, R, N)         
+#define   i_ref_required_DECL_EXTERN(X, R, N)  
 #define   i_ref_required_GENERICS(X, R, N)
 #define   i_ref_required_INIT(X, R, N) {\
     Au_t m = def(typeid(X), #N, AU_MEMBER_VAR, AU_TRAIT_VPROP | AU_TRAIT_REQUIRED); \
@@ -938,8 +955,8 @@
 #define   i_ref_intern_INST_U_EXTERN(X, R, N)
 #define   i_ref_intern_INST_L_EXTERN(X, R, N)
 #define   i_ref_intern_DEF(X, R, N)
-#define   i_ref_intern_DECL(X, R, N)          i_prop_public_DECL(X, R, N)
-#define   i_ref_intern_DECL_EXTERN(X, R, N)   i_prop_public_DECL(X, R, N)
+#define   i_ref_intern_DECL(X, R, N)          
+#define   i_ref_intern_DECL_EXTERN(X, R, N)   
 #define   i_ref_intern_GENERICS(X, R, N)
 #define   i_ref_intern_INIT(X, R, N)
 #define   i_ref_intern_PROTO(X, R, N)  
@@ -1003,7 +1020,7 @@
 #define   i_array_public_INST_U_EXTERN(X, R, S, N)  i_array_public_INST_U(X, R, S, N)
 #define   i_array_public_INST_L_EXTERN(X, R, S, N)
 #define   i_array_public_DEF(X, R, S, N)
-#define   i_array_public_DECL(X, R, S, N)           i_prop_public_DECL(X, R, N)
+#define   i_array_public_DECL(X, R, S, N)           
 #define   i_array_public_DECL_EXTERN(X, R, S, N)
 #define   i_array_public_GENERICS(X, R, S, N)
 #define   i_array_public_INIT(X, R, S, N) { \
@@ -1051,7 +1068,7 @@
 #define   i_array_intern_INST_U_EXTERN(X, R, S, N)
 #define   i_array_intern_INST_L_EXTERN(X, R, S, N)
 #define   i_array_intern_DEF(X, R, S, N)
-#define   i_array_intern_DECL(X, R, S, N)         i_prop_public_DECL(X, R, N)
+#define   i_array_intern_DECL(X, R, S, N)         
 #define   i_array_intern_DECL_EXTERN(X, R, S, N)
 #define   i_array_intern_GENERICS(X, R, S, N)
 #define   i_array_intern_INIT(X, R, S, N)

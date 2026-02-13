@@ -864,10 +864,6 @@ public:
     }
 };
 
-// ============================================================================
-// Macro Collector
-// ============================================================================
-
 typedef aether silver;
 void print_tokens(silver mod, symbol label);
 
@@ -891,16 +887,6 @@ public:
         Au_t existing = au_lookup(n);
         if (existing)
             return;
-        
-        // function-like macros emit tokens for expressions (never L-hand side; those structurally would be etype)
-        // type-like macros are registered as etype
-        // 
-        
-        // TODO: Implement macro handling for new Au_t, and use etype_infer 
-        // (after the module has finished its include!  otherwise, we are 
-        // subject to initialization order (macro types are NOT limited this 
-        // way in C's use-case, so we must load without loss))
-
 
         // Reconstruct body text
         std::string body_text;
@@ -908,22 +894,12 @@ public:
         for (const auto &tok : mi->tokens()) {
              if (body_text.length() > 0 && tok.hasLeadingSpace()) 
                 body_text += " ";
-             
-             // Simple spelling
              body_text += PP->getSpelling(tok);
         }
 
-        // Create silver string
         // Note: 'string' is a silver type constructor from 'aether/import'
         string body_str = string(body_text.c_str());
-
-        // Tokenize body
-        // We need the 'tokens' function. It's likely global or in 'e'.
-    // aether.c uses 'tokens' as a global function (likely from ports.h or silver runtime)
-        // Check aether.c: array t = (array)tokens(...)
-        if (strcmp(n, "setjmp") == 0)
-            n = n;
-        tokens body_tokens = (tokens)new0(tokens, target, (Au)e, parser, e->parse_f, input, (Au)body_str);
+        tokens body_tokens = new0(tokens, target, (Au)e, parser, e->parse_f, input, (Au)body_str);
         token f = (token)first_element((array)body_tokens);
 
         // Handle Params
@@ -942,12 +918,6 @@ public:
             }
         }
 
-        // process these after we are done including models
-        // the best idea is likely to update the users on these to etype when it is a type
-        // otherwise, it may stay as token replacement with or without arguments
-        // like C, we must not 'find' it if its a functional macro and we are not hinting at a function!
-        // that must be implemented as well, and wasnt in the prior macro system
-        // its important to keep using ( ) for functional macros, as this is a syntax indicator for macros
         for (int i = 0; i < body_tokens->count; i++) {
             token t = (token)body_tokens->origin[i];
             t->cmode = true;
@@ -958,10 +928,6 @@ public:
             def,        (array)body_tokens, 
             params,     params_array, 
             va_args,    va_args);
-
-        //aether a = e;
-        //au_register(m->au, m);
-
     }
 };
 
@@ -1007,8 +973,8 @@ path aether_lookup_include(aether e, string include) {
 
 void aether_import_models(aether a, Au_t, bool);
 
-path aether_include(aether e, Au inc, string ns, ARef _instance) {
-    aclang_cc* instance = (aclang_cc*)_instance;
+path aether_include(aether e, Au inc, string ns) {
+    aclang_cc instance = null;
     path ipath = (Au_t)isa(inc) == typeid(string) ?
         lookup_include(e, (string)inc) : (path)inc;
 
@@ -1151,10 +1117,10 @@ path aether_include(aether e, Au inc, string ns, ARef _instance) {
     Diags->setIgnoreAllWarnings(true);
     Diags->setSuppressSystemWarnings(true);
     
-    *instance = aclang_cc(
+    instance = aclang_cc(
         mod, e, compiler, (handle)compiler, PP, (handle)&compiler->getPreprocessor());
     compiler->getPreprocessor().addPPCallbacks(
-        std::make_unique<MacroCollector2>(*instance));
+        std::make_unique<MacroCollector2>(instance));
     compiler->createASTContext();
     ASTContext& ctx = compiler->getASTContext();
 
@@ -1166,11 +1132,13 @@ path aether_include(aether e, Au inc, string ns, ARef _instance) {
         compiler->ExecuteAction(act);
         std::unique_ptr<llvm::Module> M = act.takeModule();
         LLVMModuleRef cMod = M ? wrap(M.release()) : nullptr;
-        (*instance)->module = cMod;
+        (instance)->module = cMod;
         LLVMLinkModules2(e->module_ref, cMod);
     }
 
     aether_import_models(e, top_scope(e), false);
+
+    Au info = head(e->current_inc);
 
     unlink(c->chars);
     e->current_inc = null;
