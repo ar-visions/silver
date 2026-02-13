@@ -50,16 +50,18 @@ comment
 `:` declares a new member. `=` assigns to an existing one. These are distinct operations. `=` will never create a variable; `:` always does.
 
 ```python
-count: i32          # declare count as i32
-count = 10          # assign to count
-count += 1          # compound assignment
+count: i32 0         # declare count as i32, value of 0
+count = 10           # assign to count
+count += 1           # compound assignment
+count2: 2            # default is i64, 2.0f is float, other-wise double
+count3: bf16 [ 1.0 ] # half-precision better float support
 ```
 
 At module scope, members are configuration inputs and runtime class controllers. Global state is meant to be controlled in this fashion — reducing complexity and increasing production by means of reducing state issues. They cannot be reassigned from within the module. They are set externally by the importer:
 
 ```python
 import mymodule
-    setting: "value"
+    write-to-read-only: "value"
     debug:   true
 ```
 
@@ -71,7 +73,7 @@ Inside functions, `:` declares locals and `=` assigns:
 func example[]
     x: i32          # declare local
     x = 42          # assign
-    name: string = "silver"   # declare and assign inline
+    name: string ["double quote is read-only and " + 'single interpolates: {x}']   # declare and assign inline
 ```
 
 ### Functions
