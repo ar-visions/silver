@@ -220,7 +220,7 @@ for step while not done
 
 ```
 
-### switch / case
+### switch / case / goto
 
 ```python
 
@@ -322,7 +322,7 @@ class Matrix
         # ...
 
     index [ index-value: shape ] -> f64
-        return f64 vdata [ data_shape [ index-value ] ]
+        return ref f64 vdata [ data_shape [ index-value ] ]
         # [ index-expression -- use shape for multi-dimensional access ]
 ```
 
