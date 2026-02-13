@@ -261,8 +261,7 @@ new f32[width * height]
 
 ```python
 sizeof[MyType]     # size in bytes
-typeof[MyType]     # type id node
-typeid[expr]       # runtime type
+typeid[MyType]     # type id node
 ```
 
 ### Null and Defaults
@@ -282,7 +281,7 @@ result = cond ? value_a : value_b
 
 ## Operators
 
-The full operator table is enumerated [below](#full-operator-table-optype).
+The full operator table is enumerated [below](#full-operator-table).
 
 ### Operator Overloading
 
@@ -290,14 +289,17 @@ Any operator can be overloaded on a class or struct:
 
 ```python
 class Matrix
-    operator *[b: Matrix] -> Matrix
+    data_shape : 4x4
+
+    operator * [b: Matrix] -> Matrix
         # ...
 
-    operator ==[b: Matrix] -> bool
+    operator == [b: Matrix] -> bool
         # ...
 
-    index[i: num] -> f64
-        # ...
+    index [ index-value: shape ] -> f64
+        return f64 vdata [ data_shape [ index-value ] ]
+        # [ index-expression -- use shape for multi-dimensional access ]
 ```
 
 ### Cast Methods
@@ -384,7 +386,7 @@ An `as` clause provides namespacing:
 import <GL/gl.h> as gl
 ```
 
-### Codegen Plugins
+### import LLMs
 
 ```python
 import chatgpt as gpt
@@ -437,11 +439,11 @@ We initialize lambdas with context arguments declared after `::`. The call argum
 
 ```python
 try
-    something_risky[]
+    something_risky
 catch
     print 'error occurred'
 finally
-    cleanup[]
+    cleanup
 
 # catch with error argument
 try
@@ -478,7 +480,7 @@ Companion `.c` / `.cc` files are compiled with Clang and linked into the final p
 
 ---
 
-## Full Operator Table (OPType)
+## Full Operator Table
 
 silver's operators are defined in Au as a unified enum (`OPType`). Each has a token form used in source and a named form used in operator overloading. Listed by precedence, highest first:
 
