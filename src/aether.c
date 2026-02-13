@@ -2719,101 +2719,49 @@ enode aether_e_for(aether a,
                    subprocedure init_builder,
                    subprocedure cond_builder,
                    subprocedure body_builder,
-                   subprocedure step_builder)
+                   subprocedure step_builder,
+                   bool do_while)
 {
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, null);
-    
+
     LLVMBasicBlockRef entry = LLVMGetInsertBlock(a->builder);
     LLVMValueRef      fn    = LLVMGetBasicBlockParent(entry);
-    
     LLVMBasicBlockRef cond  = LLVMAppendBasicBlock(fn, "for.cond");
     LLVMBasicBlockRef body  = LLVMAppendBasicBlock(fn, "for.body");
     LLVMBasicBlockRef step  = LLVMAppendBasicBlock(fn, "for.step");
     LLVMBasicBlockRef merge = LLVMAppendBasicBlock(fn, "for.end");
-    
     catcher cat = catcher(mod, a, block, merge);
     push_scope(a, (Au)cat);
-    
+
     // ---- init ----
     if (len(init_exprs))
         invoke(init_builder, (Au)init_exprs);
-    LLVMBuildBr(a->builder, cond);
-    
+
+    if (do_while)
+        LLVMBuildBr(a->builder, body);   // body first
+    else
+        LLVMBuildBr(a->builder, cond);   // condition first
+
     // ---- cond ----
     LLVMPositionBuilderAtEnd(a->builder, cond);
     enode cond_res = (enode)invoke(cond_builder, (Au)cond_exprs);
     LLVMValueRef cond_val = e_create(a, etypeid(bool), (Au)cond_res)->value;
     LLVMBuildCondBr(a->builder, cond_val, body, merge);
-    
+
     // ---- body ----
     LLVMPositionBuilderAtEnd(a->builder, body);
     invoke(body_builder, (Au)body_exprs);
     LLVMBuildBr(a->builder, step);
-    
+
     // ---- step ----
     LLVMPositionBuilderAtEnd(a->builder, step);
-    if (step_exprs)
+    if (len(step_exprs))
         invoke(step_builder, (Au)step_exprs);
     LLVMBuildBr(a->builder, cond);
-    
+
     // ---- end ----
     LLVMPositionBuilderAtEnd(a->builder, merge);
-    pop_scope(a);
-    
-    return e_noop(a, null);
-}
-
-
-
-
-
-
-// we need a bit more api so silver can do this with a bit less, this works fine in a generic sense for aether use-case
-// we may want a property to make it design-time, though -- for const operations, basic unrolling facility etc
-enode aether_e_loop(aether a,
-                     array expr_cond,
-                     array exprs_iterate,
-                     subprocedure cond_builder,
-                     subprocedure expr_builder,
-                     bool loop_while)   // true = while, false = do-while
-{
-    LLVMBasicBlockRef entry   = LLVMGetInsertBlock(a->builder);
-    LLVMValueRef fn = LLVMGetBasicBlockParent(entry);
-    LLVMBasicBlockRef cond    = LLVMAppendBasicBlock(fn, "loop.cond");
-    LLVMBasicBlockRef iterate = LLVMAppendBasicBlock(fn, "loop.body");
-
-    catcher cat = catcher(mod, a, block, LLVMAppendBasicBlock(fn, "loop.end"));
-    push_scope(a, (Au)cat);
-
-    // ---- ENTRY → FIRST JUMP ----
-    if (loop_while) {
-        // while(cond) starts at the condition
-        LLVMBuildBr(a->builder, cond);
-    } else {
-        // do {body} while(cond) starts at the body
-        LLVMBuildBr(a->builder, iterate);
-    }
-
-    // ---- CONDITION BLOCK ----
-    LLVMPositionBuilderAtEnd(a->builder, cond);
-
-    enode cond_result = (enode)invoke(cond_builder, (Au)expr_cond);
-    LLVMValueRef condition = e_create(a, etypeid(bool), (Au)cond_result)->value;
-
-    LLVMBuildCondBr(a->builder, condition, iterate, cat->block);
-
-    // ---- BODY BLOCK ----
-    LLVMPositionBuilderAtEnd(a->builder, iterate);
-
-    invoke(expr_builder, (Au)exprs_iterate);
-
-    // After executing the loop body:
-    // always jump back to the cond block
-    LLVMBuildBr(a->builder, cond);
-
-    // ---- MERGE BLOCK ----
-    LLVMPositionBuilderAtEnd(a->builder, cat->block);
     pop_scope(a);
     return e_noop(a, null);
 }
@@ -2902,40 +2850,6 @@ enode aether_e_offset(aether a, enode n, Au offset) {
          lltype(n), n->value, &i->value, 1, "offset");
     return enode(mod, a, au, au_arg_type((Au)n->au), loaded, true, value, ptr_offset);
 }
-
-/*
-
-    enum_value  (E,T,Y, not_equals,       1) \
-    enum_value  (E,T,Y, u_greater_than,   2) \
-    enum_value  (E,T,Y, u_greater_than_e, 3) \
-    enum_value  (E,T,Y, u_less_than,      4) \
-    enum_value  (E,T,Y, u_less_than_e,    5) \
-    enum_value  (E,T,Y, s_greater_than,   6) \
-    enum_value  (E,T,Y, s_greater_than_e, 7) \
-    enum_value  (E,T,Y, s_less_than,      8) \
-    enum_value  (E,T,Y, s_less_than_e,    9)
-
-*/
-
-/*
-enode aether_e_cmp(aether a, comparison cmp, enode lhs, enode rhs) {
-    LLVMIntPredicate pre = 0;
-
-    switch (cmp) {
-        case comparison_equals:             pre = LLVMIntEQ;  break;
-        case comparison_not_equals:         pre = LLVMIntNE;  break;
-        case comparison_u_greater_than:     pre = LLVMIntUGT; break;
-        case comparison_u_greater_than_e:   pre = LLVMIntUGE; break;
-        case comparison_u_less_than:        pre = LLVMIntULT; break;
-        case comparison_u_less_than_e:      pre = LLVMIntULE; break;
-        case comparison_s_greater_than:     pre = LLVMIntSGT; break;
-        case comparison_s_greater_than_e:   pre = LLVMIntSGE; break;
-        case comparison_s_less_than:        pre = LLVMIntSLT; break;
-        case comparison_s_less_than_e:      pre = LLVMIntSLE; break;
-    }
-    return LLVMBuildICmp(
-        mod->builder, pre, lhs->value, rhs->value, "cmp");
-}*/
 
 enode aether_e_load(aether a, enode mem, enode target) {
     a->is_const_op = false;

@@ -1018,7 +1018,7 @@ Au_t def_module(symbol next_module) {
     for (int i = 0; i < modules.data.count; i++) {
         Au_t m = (Au_t)modules.data.origin[i];
         if (!m) {
-            modules.data.origin[i] = m;
+            modules.data.origin[i] = (Au)m;
             return m;
         }
     }
