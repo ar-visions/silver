@@ -105,7 +105,7 @@ class Animal
         return a.sound
 ```
 
-Structs are value types. Classes are reference-counted.
+Structs are value types. Classes are reference-counted.  Fields are directly accessed by dot '.'
 
 ```python
 struct Vec2
