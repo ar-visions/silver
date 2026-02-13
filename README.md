@@ -60,9 +60,11 @@ count3: bf16 [ 1.0 ] # half-precision better float support
 At module scope, members are configuration inputs and runtime class controllers. Global state is meant to be controlled in this fashion — reducing complexity and increasing production by means of reducing state issues. They cannot be reassigned from within the module. They are set externally by the importer:
 
 ```python
+
 import mymodule
     write-to-read-only: "value"
     debug:   true
+
 ```
 
 The module defines what it accepts. The consumer provides values at import time. This is the interface.
@@ -70,10 +72,12 @@ The module defines what it accepts. The consumer provides values at import time.
 Inside functions, `:` declares locals and `=` assigns:
 
 ```python
+
 func example[]
-    x: i32          # declare local
-    x = 42          # assign
+    x: i32 # declare local
+    x = 42 # assign
     name: string ["double quote is read-only and " + 'single interpolates: {x}']   # declare and assign inline
+
 ```
 
 ### Functions
@@ -81,10 +85,10 @@ func example[]
 Functions are declared with `func`, arguments in `[]`, and a return type after `->`:
 
 ```python
-func add[a: i32, b: i32] -> i32
+func add [a: i32, b: i32] -> i32
     return a + b
 
-func greet[name: string]
+func greet [name: string]
     print 'hello, {name}'
 ```
 
@@ -109,7 +113,7 @@ struct Vec2
     x: f32
     y: f32
 
-    operator +[b: Vec2] -> Vec2
+    operator + [b: Vec2] -> Vec2
         return Vec2[a.x + b.x, a.y + b.y]
 ```
 
@@ -124,7 +128,7 @@ class Animal
     name: string
 
 Animal Dog
-    func init[] -> none
+    func init[]
         puts 'subclass of {typeid[super].name} has value of {name}'
 ```
 
@@ -156,9 +160,9 @@ enum Color
     green
     blue
 
-enum Flags[u32]
-    readable:  1
-    writable:  2
+enum Flags [ u8 ]
+    readable:   1
+    writable:   2
     executable: 4
 ```
 
@@ -171,10 +175,13 @@ The default storage type is `i32`. Values auto-increment from the last explicit 
 ### if / else
 
 ```python
-if [x > 0]
+
+if x > 0
     print "positive"
-else if [x == 0]
+
+else if x == 0
     print "zero"
+
 else
     print "negative"
 ```
@@ -184,8 +191,9 @@ else
 `::` separates init, condition, and step:
 
 ```python
-for [i: i32 = 0 :: i < 10 :: i += 1]
-    print['{i}']
+for i: i32 = 0 :: i < 10 :: i += 1
+    print '{i}'
+
 ```
 
 ### for / while
@@ -196,14 +204,14 @@ for [i: i32 = 0 :: i < 10 :: i += 1]
 
 # for-condition
 for running
-    process[]
+    process
 
 # for-init-condition-iter
-for [ i : 0 :: running && i < 2 :: i += 1 ]
+for i : 0 :: running && i < 2 :: i += 1
     process
 
 # for-init-condition
-for [ i : u16 [ 0 ] :: running && i < 2 ]
+for i : u16 [ 0 ] :: running && i < 2
     process
     i += 1
 
@@ -215,13 +223,18 @@ do step while not done
 ### switch / case
 
 ```python
+
 switch value
-case 1
-    print["one"]
-case 2
-    print["two"]
-default
-    print["other"]
+    case 1
+        print "one"
+    case 2
+        print "two"
+    case 3
+        goto 1
+
+    default
+        print "other"
+
 ```
 
 ### break and return
