@@ -81,7 +81,7 @@ enode enode_value(enode mem) {
             Au info = head(mem);
             seq = seq;
         }
-        string id = f(string, "load2_%i", seq);
+        string id = f(string, "load_%i_%s", seq, mem->au->ident ? mem->au->ident : "");
         Au info = head(mem);
         LLVMValueRef loaded = LLVMBuildLoad2(
             a->builder, lltype(mem), mem->value, id->chars);
@@ -794,7 +794,14 @@ static LLVMValueRef const_cstr(aether a, cstr value, i32 len) {
     LLVMValueRef strConst = LLVMConstString(value, len, /*DontNullTerminate=*/0);
 
     // 2. create a global variable of that array type
-    LLVMValueRef gv = LLVMAddGlobal(a->module_ref, LLVMTypeOf(strConst), "const_cstr");
+    static int seq = 0;
+    seq++;
+    if (seq == 16) {
+        seq = seq;
+    }
+    char id[256];
+    sprintf(id, "const_cstr_%i", seq);
+    LLVMValueRef gv = LLVMAddGlobal(a->module_ref, LLVMTypeOf(strConst), id);
     LLVMSetInitializer(gv, strConst);
     LLVMSetGlobalConstant(gv, 1);
     LLVMSetLinkage(gv, LLVMPrivateLinkage);
@@ -1046,6 +1053,28 @@ enode aether_e_meta_ids(aether a, array meta) {
 
     // return pointer to array
     return enode(mod, a, loaded, true, value, arr_alloc, au, etype_ptr(a, atype)->au);
+}
+
+none aether_e_cond_return(aether a, enode cond, Au value) {
+    a->is_const_op = false;
+    if (a->no_build) return;
+
+    LLVMBasicBlockRef entry = LLVMGetInsertBlock(a->builder);
+    LLVMValueRef      fn    = LLVMGetBasicBlockParent(entry);
+    LLVMBasicBlockRef ret   = LLVMAppendBasicBlock(fn, "cond.ret");
+    LLVMBasicBlockRef cont  = LLVMAppendBasicBlock(fn, "cond.cont");
+
+    // branch: if cond is true, return; otherwise continue
+    LLVMValueRef test = e_create(a, etypeid(bool), (Au)cond)->value;
+    LLVMBuildCondBr(a->builder, test, ret, cont);
+
+    // ---- return block ----
+    LLVMPositionBuilderAtEnd(a->builder, ret);
+    e_fn_return(a, value);
+
+    // ---- continue block ----
+    LLVMPositionBuilderAtEnd(a->builder, cont);
+    // builder is now positioned here, execution continues
 }
 
 none aether_e_fn_return(aether a, Au o) {
@@ -1379,7 +1408,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args) {
     seq2++;
 
     char call_seq[256];
-    sprintf(call_seq, "call_%i", seq2);
+    sprintf(call_seq, "call_%i_%s", seq2, fn->au->ident);
     if (seq2 == 6) {
         seq2 = seq2;
     }
@@ -3374,9 +3403,12 @@ none etype_init(etype t) {
     if (!au->member_type)
         au->member_type = AU_MEMBER_TYPE;
 
-    if (!au_etype(au) && isa(t) != typeid(enode)) // only types are unique enough to be bound globally
-        au_register(au, t); // before we were doing this for literal field lookups in functions
-    
+    if (!au_etype(au) && isa(t) != typeid(enode)) {
+
+        au_register(au, t);
+        // before we were doing this for literal field lookups in functions
+    }
+
     Au_t_f* au_t = (Au_t_f*)isa(au);
 
     if (is_func((Au)au)) {
@@ -3459,7 +3491,7 @@ none etype_init(etype t) {
         }
         etype e_Au = au_etype(src);
         t->lltype = LLVMPointerType(e_Au->lltype, 0);
-    } else if (named && (is_rec((Au)t) || au->is_union || au == typeid(Au_t))) {
+    } else if (named && (!instanceof(t, enode) && (is_rec((Au)t) || au->is_union || au == typeid(Au_t)))) {
         t->lltype = LLVMStructCreateNamed(a->module_ctx, cstr_copy(au->ident));
         if (au != typeid(Au_t) && !au->is_system)
             etype_ptr(a, t->au);
@@ -3696,8 +3728,11 @@ none etype_implement(etype t) {
                 if (!a->is_Au_import) LLVMSetInitializer(global, LLVMConstNull(type));
                 static_node->value = global;
                 static_node->loaded = false;
-            } else if (!au->is_static)
-                n->value = LLVMBuildAlloca(a->builder, type, "evar");
+            } else if (!au->is_static) {
+                char id[256];
+                snprintf(id, 256, "evar_%s", au->ident ? au->ident : "");
+                n->value = LLVMBuildAlloca(a->builder, type, id);
+            }
         } else if (is_func(au->context)) {
             verify(n->value, "expected evar to be set for arg");
             verify(isa(t) == typeid(evar), "expected evar instance for arg");
@@ -3986,6 +4021,124 @@ void aether_eputs(aether a, string output) {
     e_fn_call(a, fn_puts, a(const_string(chars, output->chars)));
 }
 
+enode aether_e_asm(aether a, array body, array input_nodes, etype out_type, string return_name)
+{
+    a->is_const_op = false;
+    bool has_out = out_type != null;
+    int  n_in    = input_nodes ? len(input_nodes) : 0;
+
+    if (a->no_build)
+        return e_noop(a, has_out ? out_type : etypeid(none));
+
+    // ---- check if return target is an input or a register ----
+    int return_input = -1;
+
+    if (return_name)
+        for (int i = 0; i < n_in; i++) {
+            Au input = get(input_nodes, i);
+            enode n = instanceof(input, enode);
+            verify (n, "unexpected member found in asm input: %o", input);
+            if (strcmp(n->au->ident, return_name->chars) == 0) {
+                verify(return_input == -1,
+                    "duplicate member of return found in asm input: %o", return_name);
+                return_input = i;
+            }
+        }
+
+    // ---- build asm text with $N replacement ----
+    string buf = string(alloc, 1024);
+    int    prev_line = -1;
+
+    array input_names = array(alloc, len(input_nodes));
+    each(input_nodes, enode, n)
+        push(input_names, (Au)string(n->au->ident));
+
+    // names : list for input_nodes [ i: object ] if instanceof[ i, enode ] select i
+
+    for (int i = 0; i < len(body); i++) {
+        token t = (token)get(body, i);
+
+        // newline between lines, space between tokens on same line
+        if (prev_line >= 0)
+            append(buf, t->line > prev_line ? "\n" : " ");
+
+        prev_line = t->line;
+
+        // check if this token matches an input name
+        int match = -1;
+        for (int j = 0; j < n_in; j++) {
+            string name = (string)get(input_names, j);
+            if (strcmp(t->chars, name->chars) == 0) {
+                match = j;
+                break;
+            }
+        }
+
+        if (match >= 0) {
+            // replace with $index (inputs start at $1 if output, $0 if no output)
+            int idx = has_out ? match + 1 : match;
+            concat(buf, f(string, "$%d", idx));
+            
+        } else
+            concat(buf, (string)t);
+    }
+
+    // ---- build constraint string ----
+    string constraint = string(alloc, 256);
+    if (has_out) {
+        if (return_input >= 0) {
+            // output goes to a register
+            append(constraint, "=r");
+        } else {
+            // output tied to a specific register (xmm0, rax, etc)
+            concat(constraint, f(string, "={%s}", return_name->chars));
+        }
+    }
+    for (int i = 0; i < n_in; i++) {
+        if (len(constraint))
+            append(constraint, ",");
+        append(constraint, (has_out && i == return_input) ? "0" : "r");
+    }
+
+    // ---- build LLVM types ----
+    LLVMTypeRef   ret    = has_out ? lltype(out_type) : LLVMVoidType();
+    LLVMTypeRef*  params = n_in ? calloc(n_in, sizeof(LLVMTypeRef)) : NULL;
+    LLVMValueRef* args   = n_in ? calloc(n_in, sizeof(LLVMValueRef)) : NULL;
+
+    for (int i = 0; i < n_in; i++) {
+        enode op     = (enode)get(input_nodes, i);
+        enode loaded = enode_value(op);
+        params[i]    = LLVMTypeOf(loaded->value);
+        args[i]      = loaded->value;
+    }
+    
+    LLVMTypeRef fn_type = LLVMFunctionType(ret, params, n_in, false);
+
+    // ---- create inline asm ----
+    LLVMValueRef asm_val = LLVMGetInlineAsm(
+        fn_type,
+        buf->chars,        len(buf),
+        constraint->chars, len(constraint),
+        true,              // side effects
+        true,              // align stack
+        LLVMInlineAsmDialectIntel, // minimal effort needed to support AT&T (but will they support us?)
+        false);            // can't throw
+
+    // ---- call it ----
+    LLVMValueRef result = LLVMBuildCall2(
+        a->builder, fn_type, asm_val,
+        args, n_in,
+        has_out ? "asm_out" : "");
+
+    free(args);
+    free(params);
+
+    if (has_out)
+        return enode(mod, a, au, out_type->au, loaded, true, value, result);
+    
+    return e_noop(a, etypeid(none));
+}
+
 none aether_build_module_initializer(aether a, enode init) {
     Au_t au = init->au;
     if (!au->is_mod_init)
@@ -4176,7 +4329,6 @@ none aether_build_module_initializer(aether a, enode init) {
 
     aether_eputs(a, f(string, "%o: initialized", a));
 
-    e_fn_return(a, null);
     pop_scope(a);
 
     build_entrypoint(a, f);
@@ -4496,78 +4648,8 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
 // todo: adding methods to header does not update the methods header (requires clean)
 void aether_reinit_startup(aether a) {
     a->lexical = hold(array(alloc, 32, assorted, true, unmanaged, true));
-    push_scope(a, (Au)global());
-    push_scope(a, (Au)a->au);
 
-    // todo: we must unregister everything in Au minus its base
-
-} 
-
-none aether_test_write(aether a) {
-    char* err = 0;
-    LLVMPrintModuleToFile(a->module_ref, "crashing.ll", &err);
-}
-
-none aether_init(aether a) {
-    LLVMInitializeNativeTarget();
-    LLVMInitializeNativeAsmPrinter();
-    LLVMInitializeNativeAsmParser();
-
-    if ( a->module) {
-        path prev = a->module;
-        a->module = absolute(prev);
-        drop(prev);
-    }
-    if (!a->install) {
-        cstr import = getenv("IMPORT");
-        if (import) {
-            a->install = f(path, "%s", import);
-        } else {
-            path   exe = path_self();
-            path   bin = parent_dir(exe);
-            path   install = absolute(f(path, "%o/..", bin));
-            a->install = install;
-        }
-    }
-    a->root_path = absolute(f(path, "%o/../..", a->install));
     a->stack = array(16);
-    a->include_paths    = a(f(path, "%o/include", a->install));
-    a->sys_inc_paths    = array(alloc, 32);
-    a->sys_exc_paths    = array(alloc, 32);
-#ifdef _WIN32
-    a->sys_inc_paths = a(
-        f(path, "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/include"),
-        f(path, "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/um"),
-        f(path, "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/ucrt"),
-        f(path, "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/shared"));
-    a->lib_paths = a(
-        f(path, "%o/bin"),
-        f(path, "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/lib/x64"),
-        f(path, "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.22621.0/ucrt/x64"),
-        f(path, "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.22621.0/um/x64"));
-#elif defined(__linux)
-    a->sys_inc_paths = a(f(path, "/usr/include"), f(path, "/usr/include/x86_64-linux-gnu"));
-    a->lib_paths     = array(alloc, 32);
-#elif defined(__APPLE__)
-    string sdk          = run("xcrun --show-sdk-path");
-    string toolchain    = f(string, "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain"); // run("xcrun --show-toolchain-path");
-    a->isystem          =   f(path, "%o/usr/include", toolchain);
-    a->sys_inc_paths    = a(f(path, "%o/usr/include", toolchain),
-                            f(path, "%o/usr/local/include", sdk),
-                            f(path, "%o/usr/lib/clang/14.0.3/include", toolchain));
-    a->sys_exc_paths    = a(f(path, "%o/usr/include", sdk),
-                            f(path, "%o/usr/include", toolchain));
-    a->lib_paths        = a(f(path, "%o/usr/lib", sdk));
-    a->framework_paths  = a(f(path, "%o/System/Library/Frameworks", sdk));
-    a->isysroot         =   f(path, "%o/", sdk);
-    a->resource_dir     =   f(path, "%o/usr/lib/clang/14.0.3", toolchain);
-#endif
-
-    //push(a->include_paths, f(path, "%o/lib/clang/22/include", a->install));
-    push(a->lib_paths, (Au)f(path, "%o/lib", a->install));
-    path src_path = a->module;
-    push(a->include_paths, (Au)src_path);
-
     //a->registry       = array(alloc, 256, assorted, true);
     a->libs           = map(assorted, true, unmanaged, true);
     a->user_type_ids  = map(assorted, true);
@@ -4611,6 +4693,80 @@ none aether_init(aether a) {
     a->au->is_namespace = true; // for the 'module' namespace at [1], i think we dont require the name.. or, we set a trait
     a->au->is_nameless  = false; // we have no names, man. no names. we are nameless! -cereal
     push_scope(a, (Au)a->au);
+
+    //push_scope(a, (Au)global());
+    //push_scope(a, (Au)a->au);
+
+    // todo: we must unregister everything in Au minus its base
+} 
+
+none aether_test_write(aether a) {
+    char* err = 0;
+    LLVMPrintModuleToFile(a->module_ref, "crashing.ll", &err);
+}
+
+none aether_init(aether a) {
+    LLVMInitializeNativeTarget();
+    LLVMInitializeNativeAsmPrinter();
+    LLVMInitializeNativeAsmParser();
+
+    if ( a->module) {
+        path prev = a->module;
+        a->module = absolute(prev);
+        drop(prev);
+    }
+    if (!a->install) {
+        cstr import = getenv("IMPORT");
+        if (import) {
+            a->install = f(path, "%s", import);
+        } else {
+            path   exe = path_self();
+            path   bin = parent_dir(exe);
+            path   install = absolute(f(path, "%o/..", bin));
+            a->install = install;
+        }
+    }
+    a->root_path = absolute(f(path, "%o/../..", a->install));
+    a->include_paths    = a(f(path, "%o/include", a->install));
+    a->sys_inc_paths    = array(alloc, 32);
+    a->sys_exc_paths    = array(alloc, 32);
+
+
+#ifdef _WIN32
+    a->sys_inc_paths = a(
+        f(path, "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/include"),
+        f(path, "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/um"),
+        f(path, "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/ucrt"),
+        f(path, "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/shared"));
+    a->lib_paths = a(
+        f(path, "%o/bin"),
+        f(path, "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/lib/x64"),
+        f(path, "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.22621.0/ucrt/x64"),
+        f(path, "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.22621.0/um/x64"));
+#elif defined(__linux)
+    a->sys_inc_paths = a(f(path, "/usr/include"), f(path, "/usr/include/x86_64-linux-gnu"));
+    a->lib_paths     = array(alloc, 32);
+#elif defined(__APPLE__)
+    string sdk          = run("xcrun --show-sdk-path");
+    string toolchain    = f(string, "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain"); // run("xcrun --show-toolchain-path");
+    a->isystem          =   f(path, "%o/usr/include", toolchain);
+    a->sys_inc_paths    = a(f(path, "%o/usr/include", toolchain),
+                            f(path, "%o/usr/local/include", sdk),
+                            f(path, "%o/usr/lib/clang/14.0.3/include", toolchain));
+    a->sys_exc_paths    = a(f(path, "%o/usr/include", sdk),
+                            f(path, "%o/usr/include", toolchain));
+    a->lib_paths        = a(f(path, "%o/usr/lib", sdk));
+    a->framework_paths  = a(f(path, "%o/System/Library/Frameworks", sdk));
+    a->isysroot         =   f(path, "%o/", sdk);
+    a->resource_dir     =   f(path, "%o/usr/lib/clang/14.0.3", toolchain);
+#endif
+
+    //push(a->include_paths, f(path, "%o/lib/clang/22/include", a->install));
+    push(a->lib_paths, (Au)f(path, "%o/lib", a->install));
+    path src_path = a->module;
+    push(a->include_paths, (Au)src_path);
+
+    aether_reinit_startup(a);
 }
 
 none aether_dealloc(aether a) {

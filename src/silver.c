@@ -20,11 +20,10 @@ static void build_record(silver a, etype mrec);
 
 #define validate(cond, t, ...) ({ \
     if (!(cond)) { \
-        formatter((Au_t)null, stderr, (Au) true, (symbol) "\n%o:%i:%i " t, a->module_file, \
+        string s = (string)formatter((Au_t)null, stderr, (Au) true, (symbol) "\n%o:%i:%i " t, a->module_file, \
                   peek(a)->line, peek(a)->column, ##__VA_ARGS__); \
         if (level_err >= fault_level) { \
-            raise(SIGTRAP); \
-            exit(1); \
+            halt(s); \
         } \
         false; \
     } else { \
@@ -354,6 +353,25 @@ static precedence levels[] = {
 
 token silver_read_if(silver a, symbol cs);
 
+enode parse_object(silver a, etype mdl_schema, bool in_expr);
+
+static bool silver_next_is_eq(silver a, symbol first, ...);
+
+static enode reverse_descent(silver a, etype expect);
+
+static enode parse_expression(silver a, etype expect) {
+    static int seq = 0;
+    seq++;
+    if (seq == 118) {
+        seq = seq;
+    }
+    // handle array and map types here at this level, and cue in other types through a protocol if possible
+    // our calls below this do not have any idea to use the comma in expression syntax
+    if (expect && (is_rec(expect) || inherits(expect->au, typeid(collective))) && next_is(a, "["))
+        return parse_object(a, expect, false);
+    
+    return reverse_descent(a, expect);
+}
 
 static enode reverse_descent(silver a, etype expect) {
     bool cmode = is_cmode(a);
@@ -369,7 +387,6 @@ static enode reverse_descent(silver a, etype expect) {
         bool m = true;
         while (m) {
             m = false;
-#if 1
             for (int j = 0; j < 2; j++) {
                 string token = level->token[j];
                 if (!read_if(a, cstring(token)))
@@ -378,7 +395,21 @@ static enode reverse_descent(silver a, etype expect) {
                 string method  = level->method[j];
                 
                 if (op_type == OPType__and || op_type == OPType__or) {
-                    L = e_short_circuit(a, op_type, L);
+                    
+                    //L = e_short_circuit(a, op_type, L);
+
+                    if (op_type == OPType__or && read_if(a, "return")) {
+                        etype rtype = return_type(a);
+                        enode fallback = peek(a) ? parse_expression(a, rtype) : null;
+                        verify(fallback || is_void(return_type(a)), "expected expression after return");
+                        enode cond = e_not(a, L);
+                        enode ret_node = fallback ? e_create(a, rtype, (Au)fallback) : null;
+                        e_cond_return(a, cond, (Au)ret_node);
+                        // L survives as the expression result for the next line
+                    } else {
+                        L = e_short_circuit(a, op_type, L);
+                    }
+
                 } else {
                     enode R = read_enode(a, null);
                     L = e_op(a, op_type, method, (Au)L, (Au)R);
@@ -386,41 +417,10 @@ static enode reverse_descent(silver a, etype expect) {
                 m = true;
                 break;
             }
-#else
-            for (int j = 0; j < 2; j++) {
-                string token = level->token[j];
-                if (!read_if(a, cstring(token)))
-                    continue;
-                OPType op_type = level->ops[j];
-                string method = level->method[j];
-                enode R = read_enode(a, null);
-                L = e_op(a, op_type, method, (Au)L, (Au)R);
-                m = true;
-                break;
-            }
-#endif
         }
     }
     a->expr_level--;
     return L;
-}
-
-enode parse_object(silver a, etype mdl_schema, bool in_expr);
-
-static bool silver_next_is_eq(silver a, symbol first, ...);
-
-static enode parse_expression(silver a, etype expect) {
-    static int seq = 0;
-    seq++;
-    if (seq == 118) {
-        seq = seq;
-    }
-    // handle array and map types here at this level, and cue in other types through a protocol if possible
-    // our calls below this do not have any idea to use the comma in expression syntax
-    if (expect && (is_rec(expect) || inherits(expect->au, typeid(collective))) && next_is(a, "["))
-        return parse_object(a, expect, false);
-    
-    return reverse_descent(a, expect);
 }
 
 static array parse_tokens(silver a, Au input, array output);
@@ -488,12 +488,51 @@ void silver_parse(silver a) {
 
 none aether_test_write(aether a);
 
+
+// who throws away a Perfectly Good Watch?
+i64 silver_watch(silver mod, path a, i64 last_mod, i64 millis) {
+    int    fd = inotify_init1(IN_NONBLOCK);
+    int    wd = inotify_add_watch(fd, a->chars, IN_MODIFY | IN_CLOSE_WRITE);
+    char   buf[4096];
+    struct stat st;
+
+    while (1) {
+        i64 ark_time = 0;
+        each (mod->artifacts, path, ark) {
+            i64 n = modified_time(ark);
+            if (!ark_time || n > ark_time)
+                ark_time = n;
+        }
+        i64 m = modified_time(a);
+        if ((m > last_mod || ark_time > last_mod) && m != 0) {
+            if (m > last_mod)
+                last_mod = m;
+            if (ark_time > last_mod)
+                last_mod = ark_time;
+            break;
+        }
+        // drain any pending events (old ones)
+        read(fd, buf, sizeof(buf));
+
+        // block until something *new* arrives
+        int ln = read(fd, buf, sizeof(buf));
+        if (ln > 0) continue;
+        usleep(100000); // 100 ms safety
+    }
+
+    inotify_rm_watch(fd, wd);
+    #undef close
+    close(fd);
+    return last_mod;
+}
+
+
 // im a module!
 void silver_init(silver a) {
     hold(a);
 
     bool is_once = a->build || a->is_external;
-    
+
     if (a->version) {
         printf("silver 0.8.8\n");
         printf("Copyright (C) 2021 AR Visions\n");
@@ -502,13 +541,54 @@ void silver_init(silver a) {
         return;
     }
 
+    // this is a means by which we cache configurations of our module, 
+    // and prevent re-compilation when the date of the source is less than the product with name
+    string defs_hash;
+    if (len(a->defs)) {
+        u64 hash = hash(a->defs);
+
+        // lets get the first 6
+        defs_hash = f(string, "%llx", hash);
+        defs_hash = mid(defs_hash, 0, 6);
+    } else
+        defs_hash = string("");
+
+    a->build_dir    = f(path, "%o/%s", a->install, a->debug ? "debug" : "release");
+    a->product_link = f(path, "%o/%o.product", a->build_dir, a->name);
+    a->defs_hash    = defs_hash;
     a->import_cache = map();
+    a->artifacts    = array(32);
+    a->artifacts_path = f(path, "%o/%o.artifacts", a->build_dir, a->name);
 
     verify(a->module, "required argument: module (path/to/module)");
 
     a->project_path = parent_dir(a->module);
     a->module_file  = f(path, "%o/%o.ag",
         a->module, stem(a->module));
+
+    // 1ms resolution time comparison (it could be nano-second based)
+    bool update_product = true;
+    u64  module_file_m  = modified_time(a->module_file);
+    verify(module_file_m, "module file not found: %o", a->module_file);
+
+    if (file_exists("%o", a->product_link) &&
+            modified_time(a->product_link) > module_file_m) {
+
+        if (file_exists("%o", a->artifacts_path)) {
+            fdata f = fdata(read, true, src, a->artifacts_path);
+            u64 newest = 0;
+            while (true) {
+                string art = (string)file_read(f, typeid(string));
+                if (!art) break;
+                path artifact = path(art);
+                u64  m = modified_time(artifact);
+                if  (m > newest) newest = m;
+            }
+            if (newest && newest < module_file_m)
+                update_product = false;
+        } else
+            update_product = false; // it has no build artifacts, so we only use the date on itself 
+    }
 
     verify(dir_exists("%o", a->install), "silver-import location not found");
     verify(len(a->module), "no source given");
@@ -537,7 +617,7 @@ void silver_init(silver a) {
     git_remote_info(af, &a->git_service, &a->git_owner, &a->git_project);
 
     bool retry = false;
-    i64 mtime = modified_time(a->module);
+    i64 mtime = current_time();// modified_time(a->module);
     hold_members(a);
     
     do {
@@ -545,14 +625,16 @@ void silver_init(silver a) {
             print("awaiting iteration: %o", a->module);
             
             auto_free();
-            mtime = path_wait_for_change(a->module, mtime, 0);
+            mtime = silver_watch(a, a->module, mtime, 0); // it was easiest to fork path's implementation and add arks
             print("rebuilding...");
             drop(a->tokens);
             drop(a->stack);
+            // clear(a->artifacts); [ its best to accumulate with dupe-checking -- otherwise design stage fail can result in less hooks on your workflow]
             reinit_startup(a);
             a->imports = array();
         }
         retry = false;
+        a->cursor = 0;
         a->tokens = hold(tokens(
             target, (Au)a, parser, parse_tokens, input, (Au)a->module_file));
         print_all(a, "all", (array)a->tokens);
@@ -581,9 +663,11 @@ void silver_init(silver a) {
         }
         on_error() {
             retry = !is_once;
+            a->error = true;
         }
         finally()
-    } while (retry);
+    } while (!a->is_external && retry); // externals do not watch (your watcher must invoke everything)
+                                        // they handle their own exceptions
 }
 
 static string op_lang_token(string name) {
@@ -598,7 +682,7 @@ static string op_lang_token(string name) {
 }
 
 static void silver_module() {
-    keywords = array_of_cstr(
+    keywords = hold(array_of_cstr(
         "class", "struct", "public", "intern",
         "import", "export", "typeid", "context",
         "is", "inherits", "ref", "of",
@@ -606,18 +690,18 @@ static void silver_module() {
         "asm", "if", "switch", "any", "enum",
         "ifdef", "else", "while", "cast", "forge", "try", "throw", "catch", "finally",
         "for", "loop", "func", "operator", "index", "construct",
-        null);
+        null));
 
-    assign = array_of_cstr(
+    assign = hold(array_of_cstr(
         ":", "=", "+=", "-=", "*=", "/=",
         "|=", "&=", "^=", "%=", ">>=", "<<=",
-        null);
+        null));
 
-    compare = array_of_cstr(
+    compare = hold(array_of_cstr(
         "==", "!=", "<=>", ">=", "<=", ">", "<",
-        null);
+        null));
 
-    operators = map_of( // aether needs some operator bindings
+    operators = hold(map_of( // aether needs some operator bindings
         "+", string("add"),
         "-", string("sub"),
         "*", string("mul"),
@@ -653,7 +737,7 @@ static void silver_module() {
         "!=", string("not_equal"),
         "is", string("is"),
         "inherits", string("inherits"),
-        null);
+        null));
 
     for (int i = 0; i < sizeof(levels) / sizeof(precedence); i++) {
         precedence *level = &levels[i];
@@ -662,8 +746,8 @@ static void silver_module() {
             string e_name = e_str(OPType, op);
             string op_name = mid(e_name, 1, len(e_name) - 1);
             string op_token = op_lang_token(op_name);
-            level->method[j] = op_name; // replace the placeholder; assignment is outside of precedence; the camel has spoken
-            level->token[j] = eq(op_name, "equal") ? string("==") : op_token;
+            level->method[j] = hold(op_name); // replace the placeholder; assignment is outside of precedence; the camel has spoken
+            level->token[j] = eq(op_name, "equal") ? hold(string("==")) : hold(op_token);
         }
     }
 }
@@ -820,6 +904,7 @@ token silver_peek(silver a) {
     return element(a, 0);
 }
 
+
 static array read_body(silver a) {
     a->clipping = true;
     array body = array(32);
@@ -842,6 +927,56 @@ static array read_body(silver a) {
     }
     a->clipping = false;
     return body;
+}
+
+evar read_evar(silver a) {
+    string name = read_alpha(a);
+    if   (!name) return null;
+    etype  mem  = elookup(name->chars);
+    Au_t info = isa(mem);
+    evar   node = instanceof(mem, evar);
+    return node;
+}
+
+enode parse_asm(silver a) {
+    validate(read_if(a, "asm") != null, "expected asm");
+
+    array input_nodes  = array(alloc, 8);
+    array input_tokens = read_within(a);
+    if (input_tokens) {
+        push_tokens(a, (tokens)input_tokens, 0);
+        bool expect_comma = false;
+        while (peek(a)) {
+            validate (!expect_comma || read_if(a, ","), "expected comma");
+            evar node = read_evar(a);
+            validate (node, "expected input var, found %o", peek(a));
+            push     (input_nodes, (Au)node);
+            expect_comma = true;
+        }
+        pop_tokens(a, false);
+    }
+
+    etype rtype = null;
+    if (read_if(a, "->"))
+        rtype = read_etype(a, null);
+
+    array body = read_body(a);
+    verify(body, "expected asm body");
+
+    string return_name = null;
+    for (int i = len(body) - 1; i >= 0; i--) {
+        token t = (token)get(body, i);
+        if (eq(t, "return") && i + 1 < len(body)) {
+            return_name = string(((token)get(body, i + 1))->chars);
+            remove(body, i + 1);
+            remove(body, i);
+            break;
+        }
+    }
+    validate(!rtype || return_name,
+        "asm with output requires return <name>");
+
+    return e_asm(a, body, input_nodes, rtype, return_name);
 }
 
 // inline initializers can have expression continuations  aclass[something:1].something
@@ -1590,6 +1725,9 @@ enode silver_read_enode(silver a, etype mdl_expect) {
         }
     }
 
+    if (next_is(a, "asm"))
+        return e_create(a, mdl_expect, (Au)parse_asm(a));
+
     shape sh = (shape)read_literal(a, typeid(shape));
     if (sh && (sh->count == 1 || sh->explicit)) {
         enode op;
@@ -1773,6 +1911,12 @@ etype etype_infer(silver a) {
     return t;
 }
 
+static tokens map_initializer(silver a, string field, tokens def_tokens) {
+    if (!a->defs || !contains(a->defs, (Au)field)) return def_tokens;
+    tokens value = (tokens)get(a->defs, (Au)field);
+    return value;
+}
+
 enode parse_statement(silver a)
 {
     enode f = context_func(a);
@@ -1796,19 +1940,11 @@ enode parse_statement(silver a)
             return e_noop(a, null);
         }
         
-        if (next_is(a, "return")) {
-            a->last_return = parse_return(a);
-            return a->last_return;
-        }
-        if (next_is(a, "break")) return parse_break(a);
-        if (next_is(a, "for"))    return parse_for(a);
-        
-        if (next_is(a, "if")) {
-            print_token_state(a, "if");
-            return parse_if_else(a);
-        }
-
-        if (next_is(a, "switch")) return parse_switch(a);
+        if (next_is(a, "return")) return parse_return (a);
+        if (next_is(a, "break"))  return parse_break  (a);
+        if (next_is(a, "for"))    return parse_for    (a);
+        if (next_is(a, "if"))     return parse_if_else(a);
+        if (next_is(a, "switch")) return parse_switch (a);
     }
     
     if (next_is(a, "ifdef")) return parse_ifdef_else(a);
@@ -1913,11 +2049,17 @@ enode parse_statement(silver a)
             mem->au->src = rtype->au;
             mem->au->is_static = is_static;
 
-            e = (enode)evar(mod, (aether)a, au, mem->au, loaded, false, meta, rtype->meta, initializer, (tokens)expr);
+            au_clear_user(mem->au);
+            mem = (enode)evar(mod, (aether)a, au, mem->au, loaded, false, meta, rtype->meta, initializer,
+                (tokens)map_initializer(a, string(mem->au->ident), (tokens)expr));
+            e = (enode)mem;
+
             //au_register(e->au, (etype)e);
-            if (is_static) {
-                verify(rec_top, "invalid use of static (must be a class member, not a global item -- use intern for module-interns)");
-                mem->au->alt = (cstr)cstr_copy((cstr)((string)(f(string, "%o_%o", rec_top, e))->chars));
+            if (is_static || module) {
+                if (is_static && rec_top) {
+                    verify(rec_top, "invalid use of static (must be a class member, not a global item -- use intern for module-interns)");
+                    mem->au->alt = (cstr)cstr_copy((cstr)((string)(f(string, "%o_%o", rec_top, e))->chars));
+                }
                 etype_implement((etype)e);
             }
 
@@ -2663,7 +2805,8 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         vexec("rust", "cargo build --%s --manifest-path %o/Cargo.toml --target-dir %o",
               debug ? "debug" : "release", project_f, build_f);
     } else if (is_silver) { // build for Au-type projects
-        silver sf = silver(module, silver_f, breakpoint, a->breakpoint, debug, a->debug, is_external, true);
+        silver sf = silver(module, silver_f, breakpoint, a->breakpoint, debug, a->debug,
+            is_external, a->is_external ? a->is_external : a);
         validate(sf, "silver module compilation failed: %o", silver_f);
         drop(sf);
     } else {
@@ -2730,17 +2873,26 @@ none silver_build(silver a) {
     emit(a, (ARef)&ll, (ARef)&bc);
     verify(bc != null, "compilation failed");
 
-    bool   is_debug   = a->debug;
+    //bool   is_debug   = a->debug;
     int    error_code = 0;
     path   install    = a->install;
-    path   build_dir  = f(path, "%o/%s", a->install, is_debug ? "debug" : "release");
-    string name       = stem(bc);
+    //string name       = stem(bc);
     path   cwd        = path_cwd();
     string libs       = string("");
     array  lib_paths  = array();
 
+    path product    = f(path, "%o/%s%o%s%o%s",
+        a->build_dir, a->is_library ? lib_pre : "", a->name,
+        a->defs_hash ? "-" : "",
+        a->defs_hash,
+        a->is_library ? lib_ext : "");
+    
+    if (a->product)        drop(a->product);
+
+    a->product        = hold(product);
+
     verify(exec("%o/bin/llc -filetype=obj %o/%o.ll -o %o/%o.o -relocation-model=pic",
-                install, build_dir, name, build_dir, name) == 0,
+                install, a->build_dir, a->name, a->build_dir, a->name) == 0,
            ".ll -> .o compilation failed");
 
 #ifndef NDEBUG
@@ -2790,15 +2942,27 @@ none silver_build(silver a) {
     }
 
     // link - include the implementation objects
-    path product = f(path, "%o/%s%o%s", build_dir, a->is_library ? lib_pre : "", name, a->is_library ? lib_ext : "");
-    a->product = hold(product);
     string isysroot = a->isysroot ? f(string, "-isysroot %o ", a->isysroot) : string("");
     verify(exec("%o/bin/clang %s %o %o/%o.o %o -o %o -L%o -L%o/lib %o %o",
-        install, a->is_library ? shared : "", isysroot, build_dir, name, objs,
+        install, a->is_library ? shared : "", isysroot, a->build_dir, a->name, objs,
         a->product,
-        build_dir,
+        a->build_dir,
         install, libs, cflags) == 0,
         "link failed");
+    
+    if (file_exists("%o", a->product_link))
+        unlink(a->product_link->chars);
+    
+    verify(create_symlink(a->product, a->product_link),
+        "could not create product symlink from %o", a->product);
+
+
+    // write out each ark we find
+    fdata ar = fdata(write, true, src, a->artifacts_path);
+    each(a->artifacts, path, ark)
+        file_write(ar, (Au)string(ark->chars));
+
+    file_close(ar);
 }
 
 bool silver_next_is_neighbor(silver a) {
@@ -3128,6 +3292,21 @@ token read_compacted(silver a) {
     return token(chars, r->chars, source, f->source, line, f->line, column, start_col + len);
 }
 
+Au parse_field(silver a, etype key_type) {
+    Au k = null;
+    if (read_if(a, "{")) {
+        // todo: this must be const-controlled for import configuration
+        // also, that config must effectively hash-id the builds (4 or 6 base-16 is fine)
+        k = (Au)parse_expression(a, key_type);
+        validate(read_if(a, "}"), "expected }");
+    } else {
+        string name = (string)read_alpha(a);
+        validate(name, "expected member identifier");
+        k = (Au)const_string(chars, name->chars);
+    }
+    return k;
+}
+
 enode parse_import(silver a) {
     validate(next_is(a, "import"), "expected import keyword");
     consume(a);
@@ -3225,8 +3404,24 @@ enode parse_import(silver a) {
         }
     }
 
-    array c = read_body(a);
-    array all_config = compact_tokens(c);
+    array b = read_body(a);
+    map defs = len(b) ? map() : null;
+    bool is_fields = false;
+    if (defs) {
+        push_tokens(a, (tokens)b, 0);
+        if (peek_fields(a)) {
+            is_fields = true;
+            Au k = parse_field(a, null);
+            verify(read_if(a, ":"), "expected : after field");
+            bool is_const = false;
+            array tokens = read_expression(a, null, &is_const);
+            token token0 = (token)get(tokens, 0);
+            validate(tokens, "expected expression");
+            set(defs, (Au)k, (Au)tokens);
+        }
+        pop_tokens(a, false);
+    }
+    array all_config = is_fields ? array() : compact_tokens(b);
     map props = map();
 
     // this invokes import by git; a local repo may be possible but not very usable
@@ -3305,18 +3500,36 @@ enode parse_import(silver a) {
         verify(compare(stem(module_source), stem(module)) == 0, "silver expects identical module stem");
 
         // we should turn on object tracking here, as to trace which objects are still in memory after we drop
-        silver external = silver(module, module, breakpoint, a->breakpoint, is_external, true, debug, a->debug);
+        // the simple ternary statement allows us to give an og silver
+        // og silver is keeper of artifacts
+        silver og = a->is_external ? a->is_external : a;
+        silver external = silver(module, module, breakpoint, a->breakpoint,
+            is_external, og, debug, a->debug, defs, defs);
         
         // these should be the only two objects remaining.
         external_name    = hold(external->name); 
         external_product = hold(external->product);
 
-        Au info = head(external);
+        if (external_product) {
+            if (index_of(og->artifacts, (Au)external_product) < 0) {
+                push(og->artifacts, (Au)external_product);
+                printf("adding product artifact\n");
+            }
+        }
+
+        if (external->module_file) {
+            if (index_of(og->artifacts, (Au)external->module_file) < 0) {
+                push(og->artifacts, (Au)external->module_file); // throw it all in the [artifacts] gumbo
+                printf("adding module_file artifact\n");
+            }
+        }
+        validate (!external->error, "error importing silver module %o", external);
+
         drop(external);
         drop(external); // this is to compensate for the initial hold in silver_init [ quirk for build in init ]
-        external = external;
 
         set(a->libs, (Au)string(external_product->chars), (Au)_bool(true));
+
     }
     else if (is_codegen) {
         cg = (codegen)construct_with(is_codegen, (Au)props, null);
@@ -3340,7 +3553,7 @@ enode parse_import(silver a) {
     }
 
     import mdl = (import)get(a->import_cache, (Au)tokens);
-    bool has_cache = mdl != null;
+    bool has_cache = false; //mdl != null;
 
     Au_t top222 = top_scope(a);
 
@@ -3404,8 +3617,7 @@ void silver_build_user_initializer(silver a, enode t) {
     if (t && t->au && t->au->member_type == AU_MEMBER_VAR && t->initializer) {
         // only override for module members, not class members
         bool   is_module_mem = t->au->context == a->au;
-        tokens override      = is_module_mem ? (tokens)get(a->props, (Au)string(t->au->ident)) : null;
-        Au     expr          = override ? (Au)override : (Au)t->initializer;
+        Au     expr          = (Au)t->initializer;
         if (!instanceof(t->initializer, enode)) {
             array post_const = parse_const(a, (array)t->initializer);
             int level = a->expr_level;
@@ -3881,7 +4093,8 @@ enode parse_return(silver a) {
     e_fn_return(a, (Au)expr);
     au_top->has_return = true;
     
-    return e_noop(a, (etype)expr);
+    a->last_return = e_noop(a, (etype)expr);
+    return a->last_return;
 }
 
 enode parse_break(silver a) {
@@ -3944,6 +4157,7 @@ etype prop_value_at(etype a, i64 index) {
     }
     return null;
 }
+
 // this must parse into map or array, then hand to e_create
 // in the case where the entire value is given at once, we can back out and perform a direct e_create
 // with that result.. we will do this on the first item.  we merely check for the ] afterwards.
@@ -3989,7 +4203,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) {
         bool auto_bind = is_fields && read_if(a, ":");
         // -- KEY --
         if (is_fields && read_if(a, "{")) {
-            k = (Au)parse_expression(a, key);
+            k = (Au)parse_field(a, key);
             validate(read_if(a, "}"), "expected }");
             is_enode_key = true;
         } else if (!is_fields && is_mdl_collective) {
@@ -4001,6 +4215,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) {
             validate(e, "cannot find prop for %o at index %i", mdl, iter);
             k = (Au)parse_expression(a, e);
         } else if (!is_mdl_map) {
+            //k = (Au)parse_field(a, key); 
             string name = (string)read_alpha(a);
             validate(name, "expected member identifier");
             k = (Au)const_string(chars, name->chars);
@@ -4256,10 +4471,11 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         mem->au->member_type = AU_MEMBER_VAR;
         mem->au->src = R->au;
         mem->au->is_const = is_const;
-
-        // a loaded
-        mem = (enode)au_register(mem->au, (etype)evar(mod, (aether)a, au, mem->au, loaded, true, meta, R->meta));
         
+        au_clear_user(mem->au);
+        Au_t_user u = au_find_user(mem->au);
+        mem = (enode)evar(mod, (aether)a, au, mem->au, loaded, true, meta, R->meta);
+
         // Register and allocate the variable in the backend
         etype_implement((etype)mem);
     }

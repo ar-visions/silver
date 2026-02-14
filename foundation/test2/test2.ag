@@ -1,8 +1,11 @@
 import test3
+    coolteen: 'Tim'
+
 import <stdio.h>
 
 func test2_func[ i:i32 ] -> i64
     return i + 1 + test3_funcomatic
+
 
 app test2
     func init [] -> none

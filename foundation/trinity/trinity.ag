@@ -7,8 +7,11 @@ import <vulkan/vulkan.h> [ https://github.com/KhronosGroup/Vulkan-Headers ]
 import [ https://github.com/KhronosGroup/Vulkan-Tools ]
      -DVULKAN_HEADERS_INSTALL_DIR={silver_install}
 
-alias skia_t   : ref void
-alias handle_t : ref void
+ref void skia_t
+ref void handle_t
+
+#alias skia_t   : ref void
+#alias handle_t : ref void
 
 func skia_init_vk[ trinity t, handle_t vk_instance, handle_t vma_allocator, handle_t phys, handle_t device, 
     handle_t queue, unsigned int graphics_family, unsigned int vk_version ] -> skia_t
@@ -1066,8 +1069,6 @@ class gltf_node
     public id    : Node
     public parts : array gltf_part [] # we should have a 'container-size' defined on members in A-type; so they may initialize to this
 
-// #define node_default null
-
 class model
     public t                : trinity
     public w                : window
@@ -1090,10 +1091,9 @@ class particle
     public density  : f32
     public pressure : f32
 
-// user init lets the developer control when the init calls, so they may set properties for mounted components in a tree
-// this, without introducing a 'mount' call in addition to init; which is an anti pattern
-// #define define_element(A0, A1, ...) \
-//    define_any(A0, A1, sizeof(struct _##A0), AU_TRAIT_USER_INIT, __VA_ARGS__)
+# user init lets the developer control when the init calls, so they may set properties for mounted components in a tree
+# this, without introducing a 'mount' call in addition to init; anti pattern and needless abstract
+# set this trait for classes inheriting elements on initialization; we're allowed to write to Au_t since we know the schema of our schema
+# #define define_element(A0, A1, ...)
+#    define_any(A0, A1, sizeof(struct _##A0), AU_TRAIT_USER_INIT, __VA_ARGS__)
 
-
-#endif
