@@ -1151,6 +1151,12 @@ Au_t current_module() {
     return module;
 }
 
+i64 current_time() {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (i64)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 Au_t scope_lookup(array a, string f) {
     cstr s = f->chars;
     for (int i = len(a) - 1; i >= 0; i--) {
@@ -1627,9 +1633,6 @@ Au alloc(Au_t type, num count, Au_t* meta) {
     if (tracing)
         tracing[tracing_count++] = a->data;
     
-    if (a->data == 0x7d0fe89c1759) {
-        a = a;
-    }
     return a->data;
 }
 
@@ -1918,16 +1921,8 @@ none Au_hold_members(Au a) {
                         continue;
                     Au member_value = *mdata;
                     Au head = header(member_value);
-                    if (head->managed) {
-                        if (strcmp(isa(member_value)->ident, "silver") == 0) {
-                            int test2 = 2;
-                            test2    += 2;
-                        }
-                        if (member_value == 0x7d0fe89c1759) {
-                            a = a;
-                        }
+                    if (head->managed)
                         head->refs++;
-                    }
                 }
         }
         type = type->context;
@@ -2063,7 +2058,15 @@ none Au_dealloc(Au a) {
     }
 }
 
-u64  Au_hash      (Au a) { return (u64)(size_t)a; }
+u64 fnv1a_hash(const none* data, size_t length, u64 hash);
+
+u64  Au_hash(Au a) {
+    Au_t info = isa(a);;
+    string s = cast(string, a);
+    verify(s, "%o cast string required");
+    u64 hash = (u64)fnv1a_hash(s->chars, s->count, OFFSET_BASIS);
+    return (u64)(size_t)hash;
+}
 
 bool Au_cast_bool (Au a) {
     Au info = header(a);
@@ -3185,7 +3188,7 @@ array string_split_parts(string a) {
     cstr prev = null;
 
     while (*s) {
-        if (*s == '{' || s[1] == 0) {
+        if (*s == '{') {
             if (s[1] == '{') {
                 // escaped {{
                 if (!prev) prev = s;
@@ -3226,6 +3229,12 @@ array string_split_parts(string a) {
             if (!prev) prev = s;
             s++;
         }
+    }
+
+    if (prev) {
+        string lit = (string)const_string(chars, prev, ref_length, (sz)(s - prev));
+        ipart p = ipart(is_expr, false, content, lit);
+        push(res, (Au)p);
     }
 
     return res;
@@ -3347,10 +3356,14 @@ none  string_reserve(string a, num extra) {
     string_alloc_sz(a, a->alloc + extra);
 }
 
+none  string_alloc_ahead(string a, i64 extra_space) {
+    if (extra_space + a->count >= a->alloc)
+        string_alloc_sz(a, (a->alloc << 1) + extra_space);
+}
+
 none  string_append(string a, symbol b) {
     sz blen = strlen(b);
-    if (blen + a->count >= a->alloc)
-        string_alloc_sz(a, (a->alloc << 1) + blen);
+    alloc_ahead(a, blen);
     memcpy((cstr)&a->chars[a->count], b, blen);
     a->count += blen;
     a->h = 0; /// mutable operations must clear the hash value
@@ -3358,8 +3371,7 @@ none  string_append(string a, symbol b) {
 }
 
 none  string_append_count(string a, symbol b, i32 blen) {
-    if (blen + a->count >= a->alloc)
-        string_alloc_sz(a, (a->alloc << 1) + blen);
+    alloc_ahead(a, blen);
     memcpy((cstr)&a->chars[a->count], b, blen);
     a->count += blen;
     a->h = 0; /// mutable operations must clear the hash value
@@ -3408,8 +3420,7 @@ string string_operator__add(string a, string b) {
 
 none  string_push(string a, u32 b) {
     sz blen = 1;
-    if (blen + a->count >= a->alloc)
-        string_alloc_sz(a, (a->alloc << 1) + blen);
+    alloc_ahead(a, blen);
     memcpy((cstr)&a->chars[a->count], &b, 1);
     a->count += blen;
     a->h = 0; /// mutable operations must clear the hash value
@@ -3594,12 +3605,6 @@ Au Au_hold(Au a) {
         Au f = header(a);
         if (f->managed == 0) return a; // refs of 0 is unmanaged memory (user managed)
         f->refs++;
-        if (strcmp(isa(a)->ident, "silver") == 0) {
-            f = f;
-        }
-        if (a == 0x7d0fe89c1759) {
-            a = a;
-        }
     }
     return a;
 }
@@ -3642,10 +3647,6 @@ none Au_free(Au a) {
 none Au_drop(Au a) {
     if (!a) return;
     Au info = header(a);
-
-    if (a == 0x7d0fe89c1759) {
-        a = a;
-    }
     
     if (info->managed && --info->refs <= 0) {
         if (info->refs < 0) {
@@ -4032,94 +4033,6 @@ Au subprocedure_invoke(subprocedure a, Au arg) {
     return addr(a->target, arg, a->ctx);
 }
 
-/*
-none file_init(file f) {
-    verify(!(f->read && f->write), "cannot open for both read and write");
-    cstr src = (cstr)(f->src ? f->src->chars : null);
-    if (!f->id && (f->read || f->write)) {
-        verify (src || f->write, "can only create temporary files for write");
-
-        if (!src) {
-            i64    h      = 0;
-            bool   exists = false;
-            string r      = null;
-            path   p      = null;
-            do {
-                h   = (i64)rand() << 32 | (i64)rand();
-                r   = formatter("/tmp/f%p", (none*)h);
-                src = (cstr)r->chars;
-                p   = new(path, chars, r);
-            } while (exists(p));
-        }
-        f->id = fopen(src, f->read ? "rb" : "wb");
-        if (!f->src)
-             f->src = new(path, chars, src);
-    }
-}
-
-bool file_cast_bool(file f) {
-    return f->id != null;
-}
-
-string file_gets(file f) {
-    char buf[2048];
-    if (fgets(buf, 2048, f->id) > 0)
-        return string(buf);
-    return null;
-}
-
-bool file_file_write(file f, Au o) {
-    Au_t type = isa(o);
-    if (type == typeid(string)) {
-        u16 nbytes    = ((string)o)->count;
-        u16 le_nbytes = htole16(nbytes);
-        fwrite(&le_nbytes, 2, 1, f->id);
-        f->size += (num)nbytes;
-        return fwrite(((string)o)->chars, 1, nbytes, f->id) == nbytes;
-    }
-    sz size = isa(o)->size;
-    f->size += (num)size;
-    verify(type->traits & AU_TRAIT_PRIMITIVE, "not a primitive type");
-    return fwrite(o, size, 1, f->id) == 1;
-}
-
-
-
-Au file_file_read(file f, Au_t type) {
-    if (type == typeid(string)) {
-        char bytes[65536];
-        u16  nbytes;
-        if (f->text_mode) {
-            verify(fgets(bytes, sizeof(bytes), f->id), "could not read text");
-            return string(bytes); 
-        }
-        verify(fread(&nbytes, 2, 1, f->id) == 1, "failed to read byte count");
-        nbytes = le16toh(nbytes);
-        f->location += nbytes;
-        verify(nbytes < 1024, "overflow");
-        verify(fread(bytes, 1, nbytes, f->id) == nbytes, "read fail");
-        bytes[nbytes] = 0;
-        return string(bytes); 
-    }
-    Au o = alloc(type, 1, null);
-    sz size = isa(o)->size;
-    f->location += size;
-    verify(type->traits & AU_TRAIT_PRIMITIVE, "not a primitive type");
-    bool success = fread(o, size, 1, f->id) == 1;
-    return success ? o : null;
-}
-
-none file_file_close(file f) {
-    if (f->id) {
-        fclose(f->id);
-        f->id = null;
-    }
-}
-
-none file_dealloc(file f) {
-    file_file_close(f);
-}
-*/
 
 none path_init(path a) {
     cstr arg = (cstr)a->chars;
@@ -4455,7 +4368,7 @@ i64 path_wait_for_change(path a, i64 last_mod, i64 millis) {
 path path_latest_modified(path a, ARef mvalue) {
     return _path_latest_modified(a, mvalue, map(hsize, 64));
 }
- 
+
 i64 path_modified_time(path a) {
     struct stat st;
     if (stat((cstr)a->chars, &st) != 0) return 0;
@@ -6040,6 +5953,141 @@ array read_arg(array tokens, int start, int* next_read) {
 }
 
 
+none fdata_init(fdata f) {
+    verify(!(f->read && f->write), "cannot open for both read and write");
+    cstr src = (cstr)(f->src ? f->src->chars : null);
+    if (!f->id && (f->read || f->write)) {
+        verify (src || f->write, "can only create temporary files for write");
+
+        if (!src) {
+            i64    h      = 0;
+            bool   exists = false;
+            string r      = null;
+            path   p      = null;
+            do {
+                h   = (i64)rand() << 32 | (i64)rand();
+                r   = f(string, "/tmp/f%p", (none*)h);
+                src = (cstr)r->chars;
+                p   = path(r);
+            } while (exists(p));
+        }
+        f->id = fopen(src, f->read ? "rb" : "wb");
+        if (!f->src)
+             f->src = path(src);
+    }
+}
+
+bool fdata_cast_bool(fdata f) {
+    return f->id != null;
+}
+
+
+bool fdata_seek(fdata f, i64 value, bool from_end) {
+    fseek(f->id, value, from_end ? SEEK_END : SEEK_SET);
+    return true;
+}
+
+string fdata_gets(fdata f) {
+    char buf[2048];
+    if (fgets(buf, 2048, f->id) > 0)
+        return string(buf);
+    return null;
+}
+
+bool fdata_file_write(fdata f, Au o) {
+    Au_t type = isa(o);
+    if (type == typeid(string)) {
+        u16 nbytes    = ((string)o)->count;
+        u16 le_nbytes = htole16(nbytes);
+        fwrite(&le_nbytes, 2, 1, f->id);
+        f->fsize += (num)nbytes;
+        return fwrite(((string)o)->chars, 1, nbytes, f->id) == nbytes;
+    }
+    sz size = isa(o)->typesize;
+    f->fsize += (num)size;
+    verify(type->traits & AU_TRAIT_PRIMITIVE, "not a primitive type");
+    return fwrite(o, size, 1, f->id) == 1;
+}
+
+// its very french -- ffin should certainly be standard C
+bool fdata_fin(fdata f) {
+    long cur = ftell(f->id);
+    if (cur < 0) return true;
+    long end;
+    long saved = cur;
+
+    if (fseek(f->id, 0, SEEK_END) != 0)
+        return true;
+
+    end = ftell(f->id);
+    fseek(f->id, saved, SEEK_SET);
+    return cur >= end;
+}
+
+Au fdata_file_read(fdata f, Au_t type) {
+    if (fin(f)) return null;
+    if (type == typeid(string)) {
+        char bytes[65536];
+        u16  nbytes;
+        if (f->text_mode) {
+            verify(fgets(bytes, sizeof(bytes), f->id), "could not read text");
+            return (Au)string(bytes); 
+        }
+        verify(fread(&nbytes, 2, 1, f->id) == 1, "failed to read byte count");
+        nbytes = le16toh(nbytes);
+        f->location += nbytes;
+        verify(nbytes < 1024, "overflow");
+        verify(fread(bytes, 1, nbytes, f->id) == nbytes, "read fail");
+        bytes[nbytes] = 0;
+        return (Au)string(bytes); 
+    }
+    Au o = alloc(type, 1, null);
+    sz size = isa(o)->typesize;
+    f->location += size;
+    verify(type->traits & AU_TRAIT_PRIMITIVE, "not a primitive type");
+    bool success = fread(o, size, 1, f->id) == 1;
+    return success ? o : null;
+}
+
+none fdata_file_close(fdata f) {
+    if (f->id) {
+        fclose(f->id);
+        f->id = null;
+    }
+}
+
+none fdata_dealloc(fdata f) {
+    file_close(f);
+}
+
+i64 fdata_total_bytes(fdata a) {
+    FILE* f = fopen(a->src->chars, "rb");
+    fseek(f, 0, SEEK_END);
+    sz flen = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    fclose(f);
+    return (i64)flen;
+}
+
+u64 fdata_hash(fdata a) {
+    const int sz = 2048;
+    char buf[2048];
+    u64 h = OFFSET_BASIS;
+
+    //a->id = fopen(a->src->chars, "rb");
+    //if (!a->handle)
+    //    return 0;
+    
+    while (true) {
+        int count = fread(buf, 1, sizeof(buf), a->id);
+        if (count == 0)
+            break;
+        h = (u64)fnv1a_hash(buf, count, h);
+    }
+    //fclose(a->id);
+    //a->id = null;
+    return h;
+}
 
 /*
 
@@ -6065,6 +6113,8 @@ none app_init(app a) {
 define_arb(Au, Au, sizeof(struct _Au), AU_TRAIT_CLASS, null);
 
 define_class(subscriber, Au)
+
+define_class(fdata, Au)
 
 define_class(subs, Au)
 

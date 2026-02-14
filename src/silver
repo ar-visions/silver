@@ -4,7 +4,7 @@
 // Clint M. Strandhagen -- the motivation for orbiter, which we design in silver
 #define silver_schema(X, Y, ...) \
     M(X, Y, i, prop, public, bool, build) \
-    M(X, Y, i, prop, intern, bool, is_external) \
+    M(X, Y, i, prop, intern, silver, is_external) \
     M(X, Y, i, prop, intern, bool, clipping) \
     M(X, Y, i, prop, intern, bool, left_hand) \
     M(X, Y, i, prop, intern, bool, in_args) \
@@ -22,6 +22,12 @@
     M(X, Y, i, prop, iobject, array, imports) \
     M(X, Y, i, prop, public, enode, last_return) \
     M(X, Y, i, prop, public, map,  defs) \
+    M(X, Y, i, prop, public, string,  defs_hash) \
+    M(X, Y, i, prop, public, path,    build_dir) \
+    M(X, Y, i, prop, public, path,    product_link) \
+    M(X, Y, i, prop, public, array,   artifacts) \
+    M(X, Y, i, prop, public, path,    artifacts_path) \
+    M(X, Y, i, prop, public, bool,    error) \
     M(X, Y, i, prop, public, map, codegens)          \
     M(X, Y, i, method, public, none, write_header)   \
     M(X, Y, i, prop, iobject, map, import_cache) \
