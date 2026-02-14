@@ -1,5 +1,10 @@
 import <stdio.h>
 
+public coolteen: string 'Clint'
+
+public func test3_func2[ i:i32 ] -> i64
+    return i + 2
+
 public func test3_funcomatic[] -> i64
     return 2
 
@@ -10,3 +15,14 @@ class test3_class
     test:i64
     func init [] -> none
         test:test3_funcomatic
+
+func transform[a: i64, b: i64] -> i64
+    x: i64 [ a + 1 ]
+    
+    puts 'cool: {coolteen}'
+
+    y: asm [ x, b ] -> i64
+        add x, b
+        return x
+    
+    return y * 2

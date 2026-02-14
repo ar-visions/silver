@@ -62,8 +62,10 @@ forward(codegen)
             au_2->users[cur].mod = (aether)a; \
             au_2->users[cur].etype = t_; \
             set = true; \
+        } else if (au_2->users[cur].mod == a) { \
+            printf("duplicate registration for %s\n", au_2->ident); \
+            __builtin_trap(); \
         } \
-        if (au_2->users[cur].mod == a) __builtin_trap(); \
         cur++; \
     } \
     if (!set && (!au_2->users || !au_2->users[cur].mod)) { \
@@ -208,6 +210,7 @@ forward(efunc)
     M(X,Y, i, method, public,     none,        reinit_startup) \
     M(X,Y, i, method, public,     enode,       e_alloc,            etype) \
     M(X,Y, i, method, public,     none,        e_fn_return,        Au) \
+    M(X,Y, i, method, public,     none,        e_cond_return,      enode, Au) \
     M(X,Y, i, method, public,     enode,       e_null,             etype) \
     M(X,Y, i, method, public,     enode,       e_default_value,    etype) \
     M(X,Y, i, method, public,     enode,       e_builder,          subprocedure) \
@@ -275,6 +278,7 @@ forward(efunc)
     M(X,Y, i, method, public, none,   push_scope, Au) \
     M(X,Y, i, method, public, Au_t,   pop_scope) \
     M(X,Y, i, method, public, none,   import_models, Au_t, bool) \
+    M(X,Y, i, method, public, enode,  e_asm, array, array, etype, string) \
     M(X,Y, i, override, method, init) \
     M(X,Y, i, override, method, dealloc)
 declare_class_3(aether, emodule, etype);
