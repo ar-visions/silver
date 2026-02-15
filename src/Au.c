@@ -739,8 +739,17 @@ Au_t lexical(array lex, symbol f) {
     return null;
 }
 
-static Au_t _push_arg(Au_t type, bool add_arg) {
-    if (n_members == 0) {
+Au_t Au_t_alloc(enum AU_MEMBER member_type, u64 traits) {
+    struct _Au_combine* i = calloc(1, sizeof(struct _Au_combine));
+    i->info.type = (Au_t)&Au_Au_t_f_i.type;
+    i->type.member_type = member_type;
+    i->type.traits = traits | AU_TRAIT_ALLOCATED;
+    return &i->type;
+}
+
+#if 0
+Au_t _pool_alloc(bool force_reset) {
+    if (n_members == 0 || force_reset) {
         n_members   = 2048;
         member_pool = calloc(n_members, sizeof(struct _Au_combine));
         memset(member_pool, 0, n_members * sizeof(struct _Au_combine));
@@ -749,10 +758,14 @@ static Au_t _push_arg(Au_t type, bool add_arg) {
     cur->info.refs = 0;
     cur->info.managed = 0;
     cur->info.type = (Au_t)&Au_Au_t_f_i.type;
-    
+    cur->type.traits = n_members == 0 ? AU_TRAIT_ALLOCATED : 0;
     Au_t au = &cur->type;
-    au->member_type = AU_MEMBER_VAR;
-    au->traits = (cur == member_pool ? AU_TRAIT_ALLOCATED : 0); // erasing modules can consist of freeing only pool origined data
+    return au;
+}
+#endif
+
+static Au_t _push_arg(Au_t type, bool add_arg) {
+    Au_t au = Au_t_alloc(AU_MEMBER_VAR, 0);
     if (add_arg)
         array_qpush((array)&type->args, (Au)au);
     au->context = type;
@@ -801,47 +814,27 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
     return func;
 }
 
-Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
-    if (ident && strcmp(ident, "test3_funcomatic") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
-    //printf("def [ context: %s, ident: %s, member_type: %i, traits: %lli ]\n", type ? type->ident : null, ident, member_type, traits);
-    Au_t au2 = typeid(array);
-
-    if (ident && strcmp((cstr)ident, "test3") == 0) {
-        ident = ident;
-    }
-    if (n_members == 0) {
-        n_members   = 2048;
-        member_pool = calloc(n_members, sizeof(struct _Au_combine));
-        memset(member_pool, 0, n_members * sizeof(struct _Au_combine));
-    }
-    struct _Au_combine* cur = &member_pool[--n_members];
-    cur->info.refs = 0;
-    cur->info.managed = 0;
-    cur->info.type = (Au_t)&Au_Au_t_f_i.type;
-    Au_t au = &cur->type;
+Au_t def(Au_t ctx, symbol ident, u32 member_type, u64 traits) {
+    Au_t au = Au_t_alloc(member_type, traits); // reset pool boundary when we create new modules
     au->ident = ident ? (cstr)cstr_copy((cstr)ident) : (cstr)null;
-    au->traits = (cur == member_pool ? AU_TRAIT_ALLOCATED : 0); // erasing modules can consist of freeing only pool origined data (or we check performance against a simple approach and fallback to non complicated)
-    au->member_type = member_type;
-    au->traits |= traits;
     static int seq = 0;
     seq++;
     if (seq == 12302) {
         seq = seq;
     }
-    au->record_alignment = seq;
-    if (type && type->member_type == AU_MEMBER_MODULE)
-        au->module = type;
+    if (ctx && ctx->member_type == AU_MEMBER_MODULE)
+        au->module = ctx;
 
-    if (type) {
-        Au_t new_member = (Au_t)array_qpush((array)&type->members, (Au)&cur->type);
-        new_member->context = type;
+    if (ctx && ctx->member_type == AU_MEMBER_TYPE)
+        au->module = ctx->module;
+
+    if (ctx) {
+        Au_t new_member = (Au_t)array_qpush((array)&ctx->members, (Au)au);
+        new_member->context = ctx;
         //printf("new_member on type %s = %p (%i)\n", type->ident, new_member, n_members);
         return new_member;
     }
-    return (Au_t)&cur->type;
+    return au;
 }
 
 static none dealloc_iter(Au_t type) {
@@ -895,7 +888,7 @@ Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, 
     type->src               = src;
     type->module            = module;
     type->ident             = cstr_copy((cstr)ident);
-    type->traits            = traits;
+    type->traits            = traits & ~AU_TRAIT_ALLOCATED;
     type->typesize          = typesize;
     type->isize             = isize;
 
@@ -987,14 +980,30 @@ Au_t module_lookup(symbol name) {
     return def_module(name);
 }
 
+static void Au_t_free(Au_t ctx, Au_t au) {
+    free(au->users);
+    au->users = null;
+    for (int i = 0; i < au->members.count; i++) {
+        Au_t mem = (Au_t)au->members.origin[i];
+        au->members.origin[i] = null;
+        if (mem->traits & AU_TRAIT_ALLOCATED)   free(head(mem));
+    }
+    au->members.count = 0;
+    for (int i = 0; i < au->args.count; i++) {
+        Au_t arg = (Au_t)au->args.origin[i];
+        au->args.origin[i] = null;
+        if (arg->traits & AU_TRAIT_ALLOCATED)   free(head(arg));
+    }
+    au->args.count = 0;
+    if (au->traits & AU_TRAIT_ALLOCATED)        free(head(au));
+}
+
 void module_erase(Au_t module) {
-    // unregister from list by setting null
     for (int i = 0; i < modules.data.count; i++) {
-        Au_t m = (Au_t)modules.data.origin[i];
-        printf("module: %s\n", m->ident);
-        if (module == m) {
+        Au_t mod = (Au_t)modules.data.origin[i];
+        if (module == mod) {
             modules.data.origin[i] = null;
-            //return;
+            Au_t_free(module, module);
         }
     }
 }
@@ -1005,16 +1014,17 @@ Au_t global() {
 }
 
 Au_t def_module(symbol next_module) {
-    struct _Au_combine* combine = calloc(1, sizeof(struct _Au_combine));
-    Au_t m = &combine->type;
-    m->member_type = AU_MEMBER_MODULE;
-    m->traits      = AU_TRAIT_ALLOCATED | AU_TRAIT_IS_AU;
-    m->ident       = cstr_copy((cstr)next_module);
-    combine->info.type  = (Au_t)typeid(Au_t_f);
+    n_members = 0;
+    member_pool = NULL;
+
+    Au_t m = Au_t_alloc(AU_MEMBER_MODULE, AU_TRAIT_IS_AU);
+    m->ident = cstr_copy((cstr)next_module);
+
     if (!au_module) {
         au_module = m;
         module = m;
     }
+
     for (int i = 0; i < modules.data.count; i++) {
         Au_t m = (Au_t)modules.data.origin[i];
         if (!m) {
