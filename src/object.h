@@ -98,6 +98,7 @@ typedef struct _collective_abi {
     struct _item**  hlist;
     bool            unmanaged;
     bool            assorted;
+    bool            hash_only;
     struct _Au_t*   last_type;
 } collective_abi;
 
@@ -112,7 +113,8 @@ typedef struct _object {
     struct _Au*     data;
     struct _shape*  shape;
     cstr            source;
-    i64             line;
+    i32             line;
+    i32             sequence;
     i64             alloc;
     i64             count;
     bool            members_held;
@@ -128,18 +130,11 @@ typedef void* LLVMTypeRef;
 typedef void* LLVMValueRef;
 #endif
 
-typedef struct _Au_t_user {
-    struct _aether* mod;
-    struct _etype*  etype;
-
-} *Au_t_user;
-
 // this is the standard _Au_t declaration
 typedef struct _Au_t {
     Au_t            context;
     union { Au_t src, rtype, type; };
     Au_t            schema;
-    Au_t_user       users;
     Au_t            module; // origin of its module
     Au_t            ptr; // a cache location for the type's pointer
     char*           ident;

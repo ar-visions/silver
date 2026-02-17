@@ -211,7 +211,7 @@ def generate_init_header(module, header_file, init_header):
             
             # Main constructor macro
             f.write(f"#define {class_name}(...) ({{ \\\n")
-            f.write(f"    {class_name} instance = ({class_name})alloc_dbg(typeid({class_name}), 1, __FILE__, __LINE__); \\\n")
+            f.write(f"    {class_name} instance = ({class_name})alloc_dbg(typeid({class_name}), 1, __FILE__, __LINE__, seq); \\\n")
             f.write(f"    _N_ARGS_{class_name}({class_name}, ## __VA_ARGS__); \\\n")
             f.write(f"    Au_initialize((Au)instance); \\\n")
             f.write(f"    instance; \\\n")
@@ -281,7 +281,7 @@ def generate_methods_header(module, header_file, methods_header):
 
                 # Cast using the local _i_ (no double-eval of I)
                 cast_args_local = ", ".join(
-                    f"({t}){('_i_' if n == 'I' else n)}"
+                    f"({'__typeof__(_i_)' if n == 'I' else t}){('_i_' if n == 'I' else n)}"
                     for t, n in zip(arg_types, arg_names)
                 )
                 call_local = f"ftableI(_i_)->ft.{method}({cast_args_local})"
