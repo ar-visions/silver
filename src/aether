@@ -7,6 +7,9 @@ forward(code)
 forward(catcher)
 forward(codegen)
 
+#define u(E, _au) ((E)(instance_of((Au)get(a->registry, (Au)(_au)), typeid(E))))
+
+/*
 #define au_etype(arg) ({ \
     Au_t au_ = (Au_t)(arg); \
     int cur = 0; \
@@ -19,9 +22,19 @@ forward(codegen)
     } \
     t; \
 })
+*/
 
-#define etypeid(id) au_etype(typeid(id))
+#define efind(E, au, N) ({ \
+    enum AU_MEMBER m = 0; \
+    if      (strcmp(typeid(E)->ident, "efunc") == 0) m = AU_MEMBER_FUNC; \
+    else if (strcmp(typeid(E)->ident, "evar")  == 0) m = AU_MEMBER_VAR; \
+    Au_t f = find_member(au_arg((Au)au), #N, m, false); \
+    (E)u(E, f); \
+})
 
+#define etypeid(ID) u(etype, typeid(ID))
+
+/*
 #define au_find_user(arg) ({ \
     Au_t au_ = (Au_t)(arg); \
     int cur = 0; \
@@ -35,49 +48,7 @@ forward(codegen)
     } \
     u; \
 })
-
-#define au_clear_user(arg) ({ \
-    Au_t au_ = (Au_t)(arg); \
-    int cur = 0; \
-    Au_t_user u = null; \
-    while(au_ && au_->users && au_->users[cur].mod) { \
-        if (au_->users[cur].mod == a) { \
-            u = &au_->users[cur]; \
-            u->mod = (aether)1; \
-            break; \
-        } \
-        cur++; \
-    } \
-    u; \
-})
-
-#define au_register(arg, tt) ({ \
-    Au_t au_2 = (Au_t)(arg); \
-    etype t_ = (etype)tt; \
-    int cur = 0; \
-    bool set = false; \
-    while(au_2->users && au_2->users[cur].mod) { \
-        if (!au_2->users[cur].mod) break; \
-        if (au_2->users[cur].mod == (aether)1) { \
-            au_2->users[cur].mod = (aether)a; \
-            au_2->users[cur].etype = t_; \
-            set = true; \
-        } else if (au_2->users[cur].mod == a) { \
-            printf("duplicate registration for %s\n", au_2->ident); \
-            __builtin_trap(); \
-        } \
-        cur++; \
-    } \
-    if (!set && (!au_2->users || !au_2->users[cur].mod)) { \
-        /*printf("au_register %s: %s\n", isa(tt)->ident, au_2->ident); */ \
-        Au_t_user prev = au_2->users; \
-        au_2->users = (Au_t_user)calloc((cur+1)*8, sizeof(struct _Au_t_user)); \
-        memcpy(au_2->users, prev, sizeof(struct _Au_t_user) * cur); \
-        au_2->users[cur].mod   = (aether)a; \
-        au_2->users[cur].etype = (etype)t_; \
-    } \
-    t_; \
-})
+*/
 
 #define members(MDL, VAR) \
     for (int __i = 0; __i < (MDL)->members.count; __i++) \
@@ -107,6 +78,7 @@ forward(enode)
     M(X,Y, i, prop, public,   etype,            schema) \
     M(X,Y, i, prop, public,   etype,            suffix) \
     M(X,Y, i, prop, public,   tokens,           body) \
+    M(X,Y, i, prop, public,   i32,              iteration) \
     M(X,Y, i, prop, public,   bool,             has_code) \
     M(X,Y, i, prop, public,   bool,             remote_code) \
     M(X,Y, i, prop, public,   bool,             is_schema) \
@@ -154,8 +126,6 @@ forward(efunc)
     M(X,Y, i, prop,  public, i32,       expr_level) \
     M(X,Y, i, prop,  public, Au_t,      import_module) \
     M(X,Y, i, prop,  public, Au_t,      au_module) \
-    M(X,Y, i, prop,  public, bool,      lock_schema) \
-    M(X,Y, i, prop,  public, map,       props) \
     M(X,Y, i, prop,  public, map,       libs) \
     M(X,Y, i, prop,  public, map,       user_type_ids) \
     M(X,Y, i, prop,  public, array,     lexical) \
@@ -195,7 +165,7 @@ forward(efunc)
     M(X,Y, i, prop,  intern, LLVMTargetDataRef, target_data,       as, ARef) \
     M(X,Y, i, prop,  intern, LLVMTargetMachineRef, target_machine, as, ARef) \
     M(X,Y, i, prop,  intern, cstr,              target_triple) \
-    M(X,Y, i, prop,  iobject, array,             registry) \
+    M(X,Y, i, prop,  public, store,             registry) \
     M(X,Y, i, prop,  public, tokens,            tokens) \
     M(X,Y, i, prop,  public, num,               cursor) \
     M(X,Y, i, prop,  public, array,             stack) \
@@ -277,7 +247,6 @@ forward(efunc)
     M(X,Y, i, method, public, Au_t,   top_scope) \
     M(X,Y, i, method, public, none,   push_scope, Au) \
     M(X,Y, i, method, public, Au_t,   pop_scope) \
-    M(X,Y, i, method, public, none,   import_models, Au_t, bool) \
     M(X,Y, i, method, public, enode,  e_asm, array, array, etype, string) \
     M(X,Y, i, override, method, init) \
     M(X,Y, i, override, method, dealloc)
@@ -289,6 +258,10 @@ declare_class_3(aether, emodule, etype);
     M(X,Y, i, prop, public, array, tokens_list) \
     M(X,Y, i, prop, public, num,   cursor)
 declare_class(tokens_data)
+
+#define enamespace_schema(X,Y,...) \
+    M(X,Y, i, prop, public, token, alias)
+declare_class_2(enamespace, etype)
 
 #define catcher_schema(X,Y,...) \
     M(X,Y, i, prop, public, map, team) \

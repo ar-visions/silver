@@ -43,7 +43,7 @@
     M(X, Y, i, method, public, bool,  next_is_alpha) \
     M(X, Y, i, method, public, bool,  next_indent) \
     M(X, Y, i, method, public, enode, read_enode, etype) \
-    M(X, Y, i, method, public, enode, parse_member, ARef) \
+    M(X, Y, i, method, public, enode, parse_member, ARef, Au_t) \
     M(X, Y, i, method, public, enode, parse_ternary, enode, etype) \
     M(X, Y, i, method, public, enode, parse_assignment, enode, OPType, bool) \
     M(X, Y, i, method, public, token, read_if, symbol) \
@@ -79,7 +79,7 @@ declare_class_4(silver, aether, emodule, etype)
     M(X, Y, i, prop,  public, path,  module_source) \
     M(X, Y, i, prop,  public, array, include_paths) \
     M(X, Y, s, method,public, enode, parse_import, silver)
-declare_class_3(import, enode, etype)
+declare_class_3(import, enamespace, etype)
 
 #define chatgpt_schema(X, Y, ...) \
     M(X, Y, i, override, method, generate_fn)

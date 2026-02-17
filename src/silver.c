@@ -15,7 +15,7 @@ static void build_record(silver a, etype mrec);
 
 #define elookup(sym) ({ \
     Au_t m = lexical(a->lexical, sym); \
-    m ? au_etype(m) : null; \
+    m ? u(etype, m) : null; \
 })
 
 #define validate(cond, t, ...) ({ \
@@ -360,11 +360,6 @@ static bool silver_next_is_eq(silver a, symbol first, ...);
 static enode reverse_descent(silver a, etype expect);
 
 static enode parse_expression(silver a, etype expect) {
-    static int seq = 0;
-    seq++;
-    if (seq == 118) {
-        seq = seq;
-    }
     // handle array and map types here at this level, and cue in other types through a protocol if possible
     // our calls below this do not have any idea to use the comma in expression syntax
     if (expect && (is_rec(expect) || inherits(expect->au, typeid(collective))) && next_is(a, "["))
@@ -431,7 +426,7 @@ Au build_init_preamble(enode f, Au arg) {
     etype  rec = f->target ? resolve((etype)f->target) : (etype)a;
 
     members(rec->au, mem) {
-        enode n = (enode)instanceof(au_etype(mem), enode);
+        enode n = u(enode, mem);
         if (n && n->initializer)
             build_user_initializer(a, (etype)n);
     }
@@ -472,9 +467,9 @@ void silver_parse(silver a) {
     Au_t m_lin = def_member(a->au, "linux",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_win = def_member(a->au, "windows", typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
 
-    au_register(m_mac, (etype)e_operand(a, _bool(SILVER_IS_MAC),     etypeid(bool)));
-    au_register(m_lin, (etype)e_operand(a, _bool(SILVER_IS_LINUX),   etypeid(bool)));
-    au_register(m_win, (etype)e_operand(a, _bool(SILVER_IS_WINDOWS), etypeid(bool)));
+    set(a->registry, (Au)m_mac, (Au)hold(e_operand(a, _bool(SILVER_IS_MAC),     etypeid(bool))));
+    set(a->registry, (Au)m_lin, (Au)hold(e_operand(a, _bool(SILVER_IS_LINUX),   etypeid(bool))));
+    set(a->registry, (Au)m_win, (Au)hold(e_operand(a, _bool(SILVER_IS_WINDOWS), etypeid(bool))));
     
     while (peek(a)) {
         validate(parse_statement(a), "unexpected token found for statement: %o", peek(a));
@@ -556,7 +551,7 @@ void silver_init(silver a) {
     a->build_dir    = f(path, "%o/%s", a->install, a->debug ? "debug" : "release");
     a->product_link = f(path, "%o/%o.product", a->build_dir, a->name);
     a->defs_hash    = defs_hash;
-    a->import_cache = map();
+    //a->import_cache = map();
     a->artifacts    = array(32);
     a->artifacts_path = f(path, "%o/%o.artifacts", a->build_dir, a->name);
 
@@ -1423,7 +1418,7 @@ string silver_peek_etype(silver a) { // we need a peek etype
 string silver_peek_def(silver a) { // we need a peek etype
     token n = element(a, 0);
     Au_t top = top_scope(a);
-    etype t = au_etype(top);
+    etype t = u(etype, top);
     etype rec = is_rec(t) ? t : null;
     if (!rec && next_is_class(a, false))
         return string(n->chars);
@@ -1505,7 +1500,7 @@ bool in_context(Au_t au, Au_t ctx) {
     return false;
 }
 
-enode silver_parse_member(silver a, ARef assign_type) {
+enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) {
     OPType assign_enum = OPType__undefined;
     Au_t   top     = top_scope(a);
     etype  rec_top = context_record(a);
@@ -1514,12 +1509,6 @@ enode silver_parse_member(silver a, ARef assign_type) {
     bool   in_rec  = rec_top && rec_top->au == top;
 
     if (assign_type) *(OPType*)assign_type = OPType__undefined;
-
-    static int seq = 0;
-    seq++;
-    if (seq == 183) {
-        seq = seq;
-    }
 
     push_current(a);
 
@@ -1632,7 +1621,7 @@ enode silver_parse_member(silver a, ARef assign_type) {
             }
 
             Au_t mem_type = isa(mem);
-            if (next_is(a, "[") || instanceof(mem, macro) || is_func((Au)mem) || inherits(mem->au->src, typeid(lambda))) {
+            if (!in_decl && (next_is(a, "[") || instanceof(mem, macro) || is_func((Au)mem) || inherits(mem->au->src, typeid(lambda)))) {
                 print_tokens(a, "parsing member expr");
                 mem = parse_member_expr(a, mem);
             }
@@ -1685,7 +1674,7 @@ enode silver_parse_member(silver a, ARef assign_type) {
 
 etype pointer(aether, Au);
 
-enode silver_read_enode(silver a, etype mdl_expect) {
+enode silver_read_enode(silver a, etype mdl_expect) { sequencer
     print_tokens(a, "read-node");
     bool      cmode     = is_cmode(a);
     array     expr      = null;
@@ -1695,18 +1684,12 @@ enode silver_read_enode(silver a, etype mdl_expect) {
     string    kw        = is_expr0 ? peek_keyword(a) : null;
     etype     rec_ctx   = context_class(a); if (!rec_ctx) rec_ctx = context_struct(a);
     Au_t      top       = top_scope(a);
-    etype     rec_top   = (!cmode && is_rec(top)) ? au_etype(top) : null;
+    etype     rec_top   = (!cmode && is_rec(top)) ? u(etype, top) : null;
     enode     f         = !cmode ? context_func(a) : null;
     silver    module    = !cmode && (top->is_namespace) ? a : null;
     enode     mem       = null;
 
-    static int seq = 0;
-    seq++;
-
     int slen = len(a->stack);
-    if (seq == 248) {
-        seq = seq;
-    }
 
     if (eq(peek, "ref")) {
         peek = peek;
@@ -1876,7 +1859,7 @@ enode silver_read_enode(silver a, etype mdl_expect) {
     }
 
     // we may only support a limited set of C functionality for #define macros
-    mem = parse_member(a, null); // we never parse assignment here
+    mem = parse_member(a, null, null); // we never parse assignment here
 
     if (!mem && cmode) return null;
     validate(!instanceof(mem, edecl), "unexpected declaration of member %s", mem->au->ident);
@@ -1971,15 +1954,9 @@ enode parse_statement(silver a)
     OPType assign_enum = OPType__undefined;
     
     enode mem = (!is_cast && !is_oper && !is_idx && !is_ctr) ?
-        parse_member(a, (ARef)&assign_enum) : null;
-
-    if (mem && mem->au->ident && strcmp(mem->au->ident, "file") == 0) {
-        mem = mem;
-    }
-
-    if (mem && mem->au->ident && strcmp(mem->au->ident, "check") == 0) {
-        mem = mem;
-    }
+        parse_member(a, (ARef)&assign_enum, is_func ? typeid(efunc) : null) : null;
+    Au_t mem_info = isa(mem);
+    validate(!is_func || !instanceof(mem, efunc), "redefinition of %o", mem);
 
     validate(!(is_lambda|is_func) || mem,
         "expected member identifier to follow function or lambda");
@@ -2003,9 +1980,9 @@ enode parse_statement(silver a)
         validate(!is_oper || op_type != OPType__undefined, "operator required");
         
         // check if this is a nested, static member (we need to back off and read_enode can handle this)
-        Au_t top_type = isa(au_etype(top));
+        Au_t top_type = isa(u(etype, top));
 
-        etype      rec_top    = is_rec(top) ? au_etype(top) : null;
+        etype      rec_top    = is_rec(top) ? u(etype, top) : null;
         statements in_code    = context_code(a);
         bool       is_const   = mem && mem->au->is_const;
 
@@ -2026,13 +2003,15 @@ enode parse_statement(silver a)
                 if (!au)
                      au = def(top_scope(a), null, AU_MEMBER_DECL, 0);
                 
+                set(a->registry, (Au)au, (Au)null);
                 e = (enode)parse_func(a, au, // for cast, we read the rtype first; for others, its parsed after ->
                     ftype,
                     traits, op_type);
-                Au_t e_isa = isa(e);
-                Au_t_user u = au_find_user(au);
-                u->etype = (etype)e;
                 e->au->access_type = (u8)access;
+                efunc fn = (efunc)get(a->registry, (Au)au);
+                verify(fn && fn == e && fn->au == au, "unexpected registration state");
+                //rm(a->registry, (Au)au);
+                //set(a->registry, (Au)au, (Au)hold(e));
             }
 
         }
@@ -2044,15 +2023,23 @@ enode parse_statement(silver a)
                 (enode)read_etype(a, null) : null;
             array expr = read_initializer(a); // we allow inline only for assignment operations
             //verify(!assign_enum || expr, "expected expression after %i", assign_enum);
-            
+
             mem->au->member_type = AU_MEMBER_VAR;
             mem->au->src = rtype->au;
             mem->au->is_static = is_static;
-
-            au_clear_user(mem->au);
-            mem = (enode)evar(mod, (aether)a, au, mem->au, loaded, false, meta, rtype->meta, initializer,
-                (tokens)map_initializer(a, string(mem->au->ident), (tokens)expr));
+            Au f = get(a->registry, (Au)mem->au);
+            Au_t info = isa(f);
+            //rm(a->registry, (Au)mem->au);
+            Au_t au = mem->au;
+            set(a->registry, (Au)au, null);
+            Au f2 = get(a->registry, (Au)au);
+            Au_t info2 = isa(f2);
+            mem = (enode)evar(mod, (aether)a, au, au, loaded, false, meta, rtype->meta, initializer,
+                (tokens)map_initializer(a, string(au->ident), (tokens)expr));
             e = (enode)mem;
+
+            efunc fn = (efunc)get(a->registry, (Au)e->au);
+            verify(fn && fn == e && fn->au == mem->au, "unexpected registration state");
 
             //au_register(e->au, (etype)e);
             if (is_static || module) {
@@ -2107,14 +2094,14 @@ enode parse_statements(silver a, bool unique_members) {
 
 void silver_incremental_resolve(silver a) {
     members(a->au, mem) {
-        etype e = au_etype(mem);
+        etype e = u(etype, mem);
         if (is_func((Au)mem) && !mem->is_system && e != a->fn_init && !e->user_built) {
             Au_t e_isa = isa(e);
             build_fn(a, (efunc)e, null, null);
         }
     }
     members(a->au, mem) {
-        etype rec = (mem->is_class || mem->is_struct) ? au_etype(mem) : null;
+        etype rec = (mem->is_class || mem->is_struct) ? u(etype, mem) : null;
         if (rec && !mem->is_system && !mem->is_schema && !rec->parsing && !rec->user_built) {
             build_record(a, rec);
         }
@@ -2150,7 +2137,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     validate(read_if(a, "["), "expected function args [");
     Au_t au = mem; //def(top_scope(a), ident ? ident->chars : null, AU_MEMBER_FUNC, traits);
     verify(mem->member_type == AU_MEMBER_DECL, "unknown declaration found in parsing function");
-    au->member_type = AU_MEMBER_FUNC;
+    au->member_type = member_type;
     au->index = rec_ctx ? method_id(rec_ctx->au, au) : 0;
     au->traits = traits;
     au->module = a->au;
@@ -2257,13 +2244,6 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     array b = (array)read_body(a);
     // all instances of func enode need special handling to bind the unique user space to it; or, we could make efunc
 
-    etype au_t = au_etype(au);
-    Au_t fn_isa = isa(au_t);
-
-    if (strcmp(au->ident, "test2_func") == 0) {
-        a = a; // the function is in decl still
-    }
-
     efunc func = efunc(
         mod,    (aether)a,
         au,     au,
@@ -2341,7 +2321,7 @@ etype read_etype(silver a, array* p_expr) {
                     return etypeid(shape);
                 return etypeid(i64);
             }
-            return au_etype(id);
+            return u(etype, id);
         }
         return null;
     }*/
@@ -2519,7 +2499,8 @@ array read_dictation(silver a, array input) {
 }
 
 array chatgpt_generate_fn(chatgpt gpt, Au_t f, array query) {
-    silver a = (silver)au_etype(f)->mod;
+    silver a = (silver)u(efunc, f)->mod;
+    efunc fn = u(efunc, f);    
     array res = array(alloc, 32);
 
     // we need to construct the query for chatgpt from our query tokens
@@ -2572,7 +2553,7 @@ array chatgpt_generate_fn(chatgpt gpt, Au_t f, array query) {
     // now we have 1 line of dictation: ['this is text describing an image', image[ 'file.png' ] ]
     // for each dictation message, there is a response from the server which we also include as assistant
     // it must error if there are missing responses from the servea
-    array dictation = read_dictation(a, (array)au_etype(f)->body);
+    array dictation = read_dictation(a, (array)fn->body);
 
     each(dictation, array, msg) {
         array content = array();
@@ -3106,12 +3087,7 @@ static enode parse_lambda_call(silver a, efunc mem) {
 
 enode efunc_fptr(efunc f);
 
-static enode parse_func_call(silver a, efunc f) {
-    static int seq = 0;
-    seq++;
-    if (seq == 33) {
-        seq = seq;
-    }
+static enode parse_func_call(silver a, efunc f) { sequencer
     push_current(a);
     validate(is_func((Au)f) || is_func_ptr((Au)f), "expected function got %o", f);
 
@@ -3132,7 +3108,7 @@ static enode parse_func_call(silver a, efunc f) {
     
     a->expr_level++;
     Au_t    fmdl   = au_arg_type((Au)f);
-    efunc   fn     = (efunc)(is_func_ptr(f) ? au_etype(f->au) : au_etype(fmdl));
+    efunc   fn     = (efunc)(is_func_ptr(f) ? u(enode, f->au) : u(enode, fmdl));
     array   m      = (array)&fmdl->args;
     int     ln     = m->count, i = 0;
     array   values = array(alloc, 32, assorted, true);
@@ -3146,7 +3122,7 @@ static enode parse_func_call(silver a, efunc f) {
 
     while (i + offset < ln || fn->au->is_vargs) {
         Au_t   src  = (Au_t)au_arg_type(array_get(m, i + offset));
-        etype  typ  = canonical(au_etype(src));
+        etype  typ  = canonical(u(etype, src));
         token t2 = element(a, 0);
         enode  expr = parse_expression(a, typ); // self contained for '{interp}' to cstr!
         verify(expr, "invalid expression");
@@ -3170,8 +3146,8 @@ static enode typed_expr(silver a, enode f, array expr) {
     push_tokens(a, expr ? (tokens)expr : a->tokens, expr ? 0 : a->cursor);
     
     // function calls
-    if (is_func((Au)f)) {
-        efunc   f_decl = (efunc)au_etype(f->au);
+    efunc f_decl = u(efunc, f->au);
+    if (f_decl) {
         array   m      = (array)&f_decl->au->args;
         int     ln     = m->count, i = 0;
         array   values = array(alloc, 32, assorted, true);
@@ -3187,7 +3163,7 @@ static enode typed_expr(silver a, enode f, array expr) {
 
         while (i + offset < ln || f_decl->au->is_vargs) {
             Au_t   arg  = (Au_t)array_get(m, i + offset);
-            etype  typ  = canonical(au_etype(arg));
+            etype  typ  = canonical(u(etype, arg));
             enode  expr = parse_expression(a, typ); // self contained for '{interp}' to cstr!
             verify(expr, "invalid expression");
             push(values, (Au)expr);
@@ -3224,7 +3200,7 @@ static enode typed_expr(silver a, enode f, array expr) {
         conv = false;
     } else if (class_inherits((etype)f, etypeid(array))) {
         array nodes         = array(64);
-        etype element_type  = au_etype(f->au->src);
+        etype element_type  = u(etype, f->au->src);
         shape sh            = f->au->shape;
         validate(sh, "expected shape on array");
         int   shape_len     = shape_total(sh);
@@ -3308,6 +3284,8 @@ Au parse_field(silver a, etype key_type) {
 }
 
 enode parse_import(silver a) {
+    sequencer;
+
     validate(next_is(a, "import"), "expected import keyword");
     consume(a);
 
@@ -3552,21 +3530,12 @@ enode parse_import(silver a) {
         push(tokens, (Au)t);
     }
 
-    import mdl = (import)get(a->import_cache, (Au)tokens);
-    bool has_cache = false; //mdl != null;
-
-    Au_t top222 = top_scope(a);
-
-    if (!has_cache) {
-        mdl = import(
-            mod, (aether)a,
-            codegen, cg,
-            external_name, external_name,
-            external_product, external_product,
-            tokens, tokens);
-
-        set(a->import_cache, (Au)tokens, (Au)mdl);
-    }
+    import mdl = import(
+        mod, (aether)a,
+        codegen, cg,
+        external_name, external_name,
+        external_product, external_product,
+        tokens, tokens);
 
     push(a->imports, (Au)mdl);
     a->current_import = (etype)mdl;
@@ -3635,7 +3604,7 @@ void silver_build_user_initializer(silver a, enode t) {
         enode L;
         
         if (!is_module_mem && ctx) {
-            evar ar = (evar)au_etype((Au_t)ctx->au->args.origin[0]);
+            evar ar = (evar)u(evar, (Au_t)ctx->au->args.origin[0]);
             Au_t au_type = isa(ar);
             L = access((enode)ar, string(t->au->ident));
         } else
@@ -3733,7 +3702,7 @@ void silver_write_header(silver a) {
     line(public_f, "#ifndef _%o_PUBLIC_", NAME);
     line(public_f, "#define _%o_PUBLIC_", NAME);
     members(a->au, m) {
-        etype mdl = au_etype(m);
+        etype mdl = u(etype, m);
         if (is_class(m)) {
             string n = type_name((Au)m);
             line(public_f, "#ifndef %o_intern", n);
@@ -3773,7 +3742,7 @@ void silver_write_header(silver a) {
     members(a->au, m) {
         if (is_class(m)) {
             string n   = cname(type_name((Au)m));
-            array  acl = etype_class_list(au_etype(m));
+            array  acl = etype_class_list(u(etype, m));
 
             write(module_f, "#define %o_schema(A,B,...)", n);
             members(m, mi) {
@@ -3782,7 +3751,7 @@ void silver_write_header(silver a) {
                 string access_type = estring(typeid(interface), mi->access_type ? mi->access_type : interface_public);
 
                 if (is_func((Au)mi)) {
-                    enode f = (enode)au_etype(mi);
+                    enode f = u(enode, mi);
                     string args = string();
                     string i = f->target ? string("i") : string("s");
                     bool first = true;
@@ -3792,13 +3761,13 @@ void silver_write_header(silver a) {
                             continue;
                         }
                         first = false;
-                        enode a = (enode)au_etype(arg);
+                        enode aa = u(enode, arg);
                         if (len(args))
                             append(args, ",");
-                        concat(args, cname(cast(string, a)));
+                        concat(args, cname(cast(string, aa)));
                     }
                     
-                    string rtype = cname(cast(string, au_etype(f->au->rtype)));
+                    string rtype = cname(cast(string, u(etype, f->au->rtype)));
                     bool show_comma = f->target && mi->args.count > 1 ||
                                      !f->target && mi->args.count > 0;
                     if (mi->is_override)
@@ -3849,8 +3818,8 @@ void silver_write_header(silver a) {
     members(a->au, m) {
         if (is_class(m)) {
             members(m, mi) {
-                if (is_func((Au)mi))
-                    line(method_f, "%o", method_def((enode)au_etype(mi)));
+                efunc fn = u(efunc, mi);
+                if   (fn)  line(method_f, "%o", method_def((enode)fn));
             }
         }
     }
@@ -3918,11 +3887,6 @@ static enode typed_expr(silver a, enode src, array expr);
 none push_lambda_members(aether a, efunc f);
 
 void build_fn(silver a, efunc f, callback preamble, callback postamble) {
-
-    if (strcmp(f->au->ident, "test3_funcomatic") == 0) {
-        f = f;
-    }
-
     if (f->user_built)
         return;
 
@@ -3939,7 +3903,7 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) {
 
         // reasonable convention for silver's debugging facility
         // if this is a standard for IDE, then we can rely on this to improve productivity
-        Au_t au_calls = def(f->au, "calls", AU_MEMBER_VAR, AU_TRAIT_STATIC);
+        Au_t au_calls = def(f->au, "sequence", AU_MEMBER_VAR, AU_TRAIT_STATIC);
         au_calls->src = etypeid(i64)->au;
         evar e_calls = evar(mod, (aether)a,
             au, au_calls);
@@ -3965,22 +3929,14 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) {
             if (f->target)
                 push(call_args, (Au)f->target);
             arg_list(f->au, arg) {
-                push(call_args, (Au)au_etype(arg));
+                push(call_args, (Au)u(evar, arg));
             }
             e_fn_call(a, f->remote_func, call_args);
         } else if (f->cgen) {
             array gen = generate_fn(f->cgen, f, (array)f->body);
         } else {
             array source_tokens = parse_const(a, (array)f->body);
-            // between these two, lurks the white whale
-            static int seq = 0;
-            seq++;
-            int f2 = len(a->stack);
             push_tokens(a, (tokens)source_tokens, 0);
-            if (seq == 1) {
-                print_tokens(a, "seq==14");
-                seq = seq;
-            }
             parse_statements(a, true);
             pop_tokens(a, false);
         }
@@ -3988,7 +3944,7 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) {
         if (postamble)
             postamble((Au)f, null);
         
-        validate(f->au->has_return || (!f->au->rtype || is_void(au_etype(f->au->rtype))),
+        validate(f->au->has_return || (!f->au->rtype || is_void(u(etype, f->au->rtype))),
             "expected return statement in %o", f);
         
         if (is_lambda((Au)f))
@@ -4047,13 +4003,12 @@ static void build_record(silver a, etype mrec) {
             etype_implement((etype)f);
             m_init = f->au;
         }
-        build_fn(a, (efunc)au_etype(m_init), build_init_preamble, null); // we may need to
+        build_fn(a, u(efunc, m_init), build_init_preamble, null); // we may need to
 
         // build remaining functions
         members(rec->au, m) {
-            Au_t t = isa(au_etype(m));
-            efunc n = instanceof(au_etype(m), efunc);
-            if (n && is_func((Au)n)) build_fn(a, n, null, null);
+            efunc n = u(efunc, m);
+            if (n) build_fn(a, n, null, null);
         }
     }
     pop_scope(a);
@@ -4145,12 +4100,13 @@ static enode parse_func_call(silver, efunc);
 
 bool is_map(etype);
 
-etype prop_value_at(etype a, i64 index) {
+etype prop_value_at(etype aa, i64 index) {
+    aether a = aa->mod;
     i64 prop = 0;
-    members(a->au, m) {
+    members(aa->au, m) {
         if (m->member_type == AU_MEMBER_VAR && m->is_iprop) {
             if (index == prop) {
-                return au_etype(m->src);
+                return u(etype, m->src);
             }
             prop++;
         }
@@ -4288,7 +4244,7 @@ static bool class_inherits(etype cl, etype of_cl) {
     while (cl && cl != aa) {
         if (!cl->au->context || cl->au->context == cl->au)
             break;
-        cl = au_etype(cl->au->context);
+        cl = u(etype, cl->au->context);
     }
     return cl && cl == aa;
 }
@@ -4320,7 +4276,7 @@ enode parse_create_lambda(silver a, enode mem) {
     // Parse context references - these become pointers in the context struct
     for (int i = 0; i < ctx_ln; i++) {
         Au_t  ctx_arg  = (Au_t)array_get(ctx_mem, i);
-        enode ctx_expr = parse_expression(a, au_etype(ctx_arg->src));
+        enode ctx_expr = parse_expression(a, u(etype, ctx_arg->src));
         
         validate(ctx_expr, "expected context variable for %s", ctx_arg->ident);
 
@@ -4351,7 +4307,7 @@ enode silver_parse_member_expr(silver a, enode mem) {
     /// handle compatible indexing methods / lambda / and general pointer dereference @ index
     if (indexable && next_is(a, "[")) {
         Au_t au_rec = is_rec((Au)mem);
-        etype r = au_etype(au_rec);
+        etype r = u(etype, au_rec);
         /// must have an indexing method, or be a reference_pointer
         validate(is_ptr((Au)mem) || r, "no indexing available for model %s",
                  mem->au->ident);
@@ -4378,7 +4334,7 @@ enode silver_parse_member_expr(silver a, enode mem) {
             Au_t idx = find_member(r->au, null, AU_MEMBER_INDEX, true);
             validate(idx, "index method not found on %o", mem);
             enode eshape = eshape_from_indices((aether)a, args);
-            index_expr = e_fn_call(a, (efunc)au_etype(idx), a(mem, eshape));
+            index_expr = e_fn_call(a, (efunc)u(efunc, idx), a(mem, eshape));
         } else {
             if (len(args) > 1) {
                 enode eshape = eshape_from_indices((aether)a, args);
@@ -4444,7 +4400,7 @@ enode silver_parse_member_expr(silver a, enode mem) {
 etype etype_of(enode mem) {
     aether a = mem->mod;
     return (mem->au->member_type == AU_MEMBER_VAR) ?
-                (etype)au_etype(mem->au->src) :
+                (etype)u(etype, mem->au->src) :
            (mem->au->member_type == AU_MEMBER_DECL) ?
                 (etype)null : (etype)mem;
 }
@@ -4454,11 +4410,6 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
     validate(isa(mem) == typeid(enode) || !mem->au->is_const,
         "mem %s is a constant", mem->au->ident);
     
-    static int seq = 0;
-    seq++;
-    if (seq == 24) {
-        seq = seq;
-    }
     etype t = (etype)etype_of(mem);
     enode R = parse_expression(a, t); 
 
@@ -4471,9 +4422,8 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         mem->au->member_type = AU_MEMBER_VAR;
         mem->au->src = R->au;
         mem->au->is_const = is_const;
-        
-        au_clear_user(mem->au);
-        Au_t_user u = au_find_user(mem->au);
+        rm(a->registry, (Au)mem->au);
+
         mem = (enode)evar(mod, (aether)a, au, mem->au, loaded, true, meta, R->meta);
 
         // Register and allocate the variable in the backend
@@ -4810,7 +4760,7 @@ etype silver_read_def(silver a) {
     validate(n, "expected alpha-numeric identity, found %o", next(a));
 
     Au_t top = top_scope(a);
-    etype mtop = au_etype(top);
+    etype mtop = u(etype, top);
     enode mem  = null; // = emember(mod, (aether)a, name, n, context, mtop);
     etype mdl  = null;
     array meta = null;
@@ -4850,7 +4800,7 @@ etype silver_read_def(silver a) {
                 bool  f   = true;
                 shape s   = null;
                 Au_t  m   = def_member(top, n->chars, type->au, AU_MEMBER_VAR, AU_TRAIT_META);
-                au_register(m, (etype)emeta(mod, (aether)a, au, m, meta_index, index));
+                set(a->registry, (Au)m, (Au)hold(emeta(mod, (aether)a, au, m, meta_index, index)));
                 array_qpush((array)&mdl->au->meta, (Au)m);
                 first = false;
             }
@@ -4912,7 +4862,7 @@ etype silver_read_def(silver a) {
             
             enode enum_node = enode(
                 mod, (aether)a, au, enum_v, literal, v);
-            au_register(enum_v, (etype)enum_node);
+            set(a->registry, (Au)enum_v, (Au)hold(enum_node));
             implement(enum_node); // this should create the value similarly to emember_set_value
             value += 1;
         }
@@ -4934,6 +4884,6 @@ etype silver_read_def(silver a) {
 
 define_class(chatgpt, codegen)
 define_class(silver, aether)
-define_class(import, enode)
+define_class(import, enamespace)
 
 initializer(silver_module)

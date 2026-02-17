@@ -143,7 +143,6 @@ typedef double                 *ref_f64;
     Au_t            context; \
     union { Au_t src, rtype, type; }; \
     Au_t            schema; \
-    Au_t_user       users; \
     Au_t            module; \
     Au_t            ptr; \
     char*           ident; \
@@ -592,16 +591,17 @@ forward(any)
 #define none_module_ Au
 
 #define Au_schema(AA,BB,...) \
-    M(AA,BB, i, prop, Au_public, Au_t, type) \
-    M(AA,BB, i, prop, Au_public, Au_t, scalar) \
-    M(AA,BB, i, prop, Au_public, i32, refs) \
-    M(AA,BB, i, prop, Au_public, i32, managed) \
-    M(AA,BB, i, prop, Au_public, Au, data) \
-    M(AA,BB, i, prop, Au_public, shape, shape) \
-    M(AA,BB, i, prop, Au_public, cstr, source) \
-    M(AA,BB, i, prop, Au_public, i64, line) \
-    M(AA,BB, i, prop, Au_public, i64, alloc) \
-    M(AA,BB, i, prop, Au_public, i64, count) \
+    M(AA,BB, i, prop, Au_public, Au_t,      type) \
+    M(AA,BB, i, prop, Au_public, Au_t,      scalar) \
+    M(AA,BB, i, prop, Au_public, i32,       refs) \
+    M(AA,BB, i, prop, Au_public, i32,       managed) \
+    M(AA,BB, i, prop, Au_public, Au,        data) \
+    M(AA,BB, i, prop, Au_public, shape,     shape) \
+    M(AA,BB, i, prop, Au_public, cstr,      source) \
+    M(AA,BB, i, prop, Au_public, i32,       line) \
+    M(AA,BB, i, prop, Au_public, i32,       sequence) \
+    M(AA,BB, i, prop, Au_public, i64,       alloc) \
+    M(AA,BB, i, prop, Au_public, i64,       count) \
     M(AA,BB, i, prop, Au_public, bool, members_held) \
     M(AA,BB, i, array, Au_public, Au, 8, meta) \
     M(AA,BB, i, method, public, i32,    compare, AA) \
@@ -662,7 +662,7 @@ forward(any)
     M(AA,BB, s, vargs,  public, Au,     formatter, Au_t, handle, Au, symbol) \
     M(AA,BB, s, method, public, Au,     alloc, Au_t, num, Au_ts) \
     M(AA,BB, s, method, public, Au,     alloc_new, Au_t, num, Au_ts) \
-    M(AA,BB, s, method, public, Au,     alloc_dbg, Au_t, num, cstr, i32) \
+    M(AA,BB, s, method, public, Au,     alloc_dbg, Au_t, num, cstr, i32, i32) \
     M(AA,BB, s, method, public, Au,     alloc2, Au_t, Au_t, shape) \
     M(AA,BB, s, method, public, string, estring, Au_t, i32) \
     M(AA,BB, s, method, public, i32,    evalue, Au_t, cstr) \
@@ -783,6 +783,7 @@ typedef struct _collective_abi {
     M(AA,BB, i, ref,  public, item, hlist) \
     M(AA,BB, i, prop, public, bool, unmanaged) \
     M(AA,BB, i, prop, public, bool, assorted) \
+    M(AA,BB, i, prop, public, bool, hash_only) \
     M(AA,BB, i, prop, public, Au_t, last_type) \
     M(AA,BB, i, prop, public, Au_t, type) \
     M(AA,BB, i, prop, public, shape, shape) \
@@ -1169,6 +1170,15 @@ declare_class(item)
     M(AA,BB, i, method, public, num,  count) \
     M(AA,BB, i, override, method, dealloc)
 declare_class_2(list, collective)
+
+#define store_module_ Au
+#define store_schema(AA,BB,...) \
+    M(AA,BB, i, guard,  public, none, set, store, Au, Au) \
+    M(AA,BB, i, guard,  public, Au,   get, store, Au) \
+    M(AA,BB, i, method, public, none, rm, Au) \
+    M(AA,BB, i, override, method, init) \
+    M(AA,BB, i, override, method, dealloc)
+declare_class_2(store, collective)
 
 /// array of elemental data
 /// important to define the same operators here in silver definition of runtime
@@ -1951,6 +1961,10 @@ declare_abstract(functional)
 i64 current_time();
 
 #define cast(T,I) fcall(I, cast_##T)
+
+extern int seq;
+
+#define sequencer static int seq; seq++;
 
 none halt(string);
 
