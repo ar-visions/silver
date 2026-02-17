@@ -1,10 +1,10 @@
-import test3
-    coolteen: 'Tim'
+#import test3
+#    coolteen: 'Tim'
 
 import <stdio.h>
 
 func test2_func[ i:i32 ] -> i64
-    return i + 1 + test3_funcomatic
+    return i + 1
 
 
 app test2
