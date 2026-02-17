@@ -1,5 +1,5 @@
-#import test3
-#    coolteen: 'Tim'
+import test3
+    coolteen: 'Tim'
 
 import <stdio.h>
 

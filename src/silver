@@ -42,7 +42,7 @@
     M(X, Y, i, method, public, num,   current_line) \
     M(X, Y, i, method, public, bool,  next_is_alpha) \
     M(X, Y, i, method, public, bool,  next_indent) \
-    M(X, Y, i, method, public, enode, read_enode, etype) \
+    M(X, Y, i, method, public, enode, read_enode, etype, bool) \
     M(X, Y, i, method, public, enode, parse_member, ARef, Au_t) \
     M(X, Y, i, method, public, enode, parse_ternary, enode, etype) \
     M(X, Y, i, method, public, enode, parse_assignment, enode, OPType, bool) \
