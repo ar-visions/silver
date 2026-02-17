@@ -179,12 +179,13 @@ forward(efunc)
     M(X,Y, i, method, public,     etype,       record, etype, etype, string, u32) \
     M(X,Y, i, method, public,     none,        reinit_startup) \
     M(X,Y, i, method, public,     enode,       e_alloc,            etype) \
-    M(X,Y, i, method, public,     none,        e_fn_return,        Au) \
+    M(X,Y, i, method, public,     bool,        e_fn_return,        Au) \
     M(X,Y, i, method, public,     none,        e_cond_return,      enode, Au) \
     M(X,Y, i, method, public,     enode,       e_null,             etype) \
     M(X,Y, i, method, public,     enode,       e_default_value,    etype) \
     M(X,Y, i, method, public,     enode,       e_builder,          subprocedure) \
     M(X,Y, i, method, public,     none,        build_user_initializer,  etype) \
+    M(X,Y, i, method, public,     enode,       e_subroutine,       etype, array, subprocedure) \
     M(X,Y, i, method, public,     enode,       e_element,          enode,      Au) \
     M(X,Y, i, method, public,     none,        e_cmp_code,         enode,      comparison, enode, code, code) \
     M(X,Y, i, method, public,     enode,       e_cmp,              enode, enode) \
@@ -265,6 +266,8 @@ declare_class_2(enamespace, etype)
 
 #define catcher_schema(X,Y,...) \
     M(X,Y, i, prop, public, map, team) \
+    M(X,Y, i, prop, public, enode, phi) \
+    M(X,Y, i, prop, public, etype, rtype) \
     M(X,Y, i, prop, intern, LLVMBasicBlockRef, block, as, ARef)
 declare_class_2(catcher, etype)
 

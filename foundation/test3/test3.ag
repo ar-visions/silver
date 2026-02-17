@@ -12,17 +12,20 @@ public func test3_func[ i:i32 ] -> i64
     return i + 2
 
 class test3_class
-    test:i64
+    public test:i64
     func init [] -> none
         test:test3_funcomatic
 
 func transform[a: i64, b: i64] -> i64
-    x: i64 [ a + 1 ]
+    public x: i64 [ a + 1 ]
     
     puts 'cool: {coolteen}'
 
-    y: asm [ x, b ] -> i64
+    y: i64 asm [ x, b ]
         add x, b
         return x
     
-    return y * 2
+    z: i32 sub
+        return 2
+
+    return 1

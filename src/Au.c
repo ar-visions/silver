@@ -721,9 +721,6 @@ Au_t find_context(array lex, int member_type, int traits) {
 }
 
 Au_t lexical(array lex, symbol f) {
-    if (strcmp(f, "F") == 0) {
-        f = f;
-    }
     for (int i = len(lex) - 1; i >= 0; i--) {
         Au_t au = (Au_t)lex->origin[i];
         while (au) {
@@ -735,9 +732,7 @@ Au_t lexical(array lex, symbol f) {
                 }
             for (int ii = 0; ii < au->members.count; ii++) {
                 Au_t m = (Au_t)au->members.origin[ii];
-                if (strcmp(f, "header") == 0 && m->ident && strcmp(m->ident, "header") == 0) {
-                    m = m;
-                }
+
                 if (m->ident && strcmp(m->ident, f) == 0)
                     return m;
             }
@@ -994,12 +989,13 @@ Au_t module_lookup(symbol name) {
     return def_module(name);
 }
 
-void module_erase(Au_t module) {
+void module_erase(Au_t module, symbol name) {
+    if (!module) return;
     // unregister from list by setting null
     for (int i = 0; i < modules.data.count; i++) {
         Au_t m = (Au_t)modules.data.origin[i];
         printf("module: %s\n", m->ident);
-        if (module == m) {
+        if (m && module == m || (m->ident && strcmp(m->ident, name) == 0)) {
             modules.data.origin[i] = null;
             m->members.count = 0;
             m->meta.count = 0;
@@ -1020,17 +1016,19 @@ Au_t def_module(symbol next_module) {
     m->traits      = AU_TRAIT_ALLOCATED | AU_TRAIT_IS_AU;
     m->ident       = cstr_copy((cstr)next_module);
     combine->info.type  = (Au_t)typeid(Au_t_f);
+
+    // first module is registered as main
     if (!au_module) {
         au_module = m;
         module    = m;
     }
-    for (int i = 0; i < modules.data.count; i++) {
-        Au_t mem = (Au_t)modules.data.origin[i];
-        if (!mem) {
+
+    for (int i = 0; i < modules.data.count; i++)
+        if (!modules.data.origin[i]) {
             modules.data.origin[i] = (Au)m;
             return m;
         }
-    }
+    
     array_qpush((array)&modules.data, (Au)m);
     return m;
 }
