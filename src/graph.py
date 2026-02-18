@@ -41,7 +41,7 @@ def get_env_vars():
     args = parser.parse_args()
 
     return {
-        'SILVER':       Path(__file__).resolve().parent,
+        'SILVER':       Path(__file__).resolve().parent.parent,
         'PROJECT_PATH': args.project_path,
         'PROJECT_NAME': args.project_name,
         'CACHE_FILE':   args.cache_file,
