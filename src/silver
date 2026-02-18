@@ -5,6 +5,7 @@
 #define silver_schema(X, Y, ...) \
     M(X, Y, i, prop, public, bool, build) \
     M(X, Y, i, prop, intern, silver, is_external) \
+    M(X, Y, i, prop, public, bool, is_project) \
     M(X, Y, i, prop, intern, bool, clipping) \
     M(X, Y, i, prop, intern, bool, left_hand) \
     M(X, Y, i, prop, intern, bool, in_args) \
@@ -78,7 +79,8 @@ declare_class_4(silver, aether, emodule, etype)
     M(X, Y, i, prop,  public, path,  lib_path)      \
     M(X, Y, i, prop,  public, path,  module_source) \
     M(X, Y, i, prop,  public, array, include_paths) \
-    M(X, Y, s, method,public, enode, parse_import, silver)
+    M(X, Y, s, method,public, enode, parse_import, silver) \
+    M(X, Y, s, method,public, enode, parse_export, silver)
 declare_class_3(import, enamespace, etype)
 
 #define chatgpt_schema(X, Y, ...) \
