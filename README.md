@@ -104,7 +104,7 @@ func transform[a: i64, b: i64] -> i64
     # z is now 2
 ```
 
-The `sub` block is scoped to the declaration — `return` inside a `sub` returns into the declared variable, not from the enclosing function.
+The `sub` block is scoped to the declaration — `return` inside a `sub` returns into the declared variable, not from the enclosing function. `break` exits the sub early and assigns the type's default value (zero/null).
 
 ### Inline Assembly
 
@@ -709,5 +709,8 @@ Orbiter -- IDE being built with silver (was C++)
 Hyperspace
 spatial dev kit, ai module & training scripts (will be silver)
 [https://github.com/ar-visions/hyperspace.git]
+
+# **import** keyword
+**silver** starts with **import**. The **import** keyword lets you build and include from projects in any language, with coupled configuration parameters and <comma, separated> includes.  Local source links are prioritized before external checkouts, so you can build externals locally with your own changes.  This is a far better way to collaborate in open source with yourself and others. silver simply gets out of the way when it comes to git for your own source; it's merely importing.  The build process will recognize the various environment variables such as **CC**, **CXX**, **RUSTC**, **CPP**
 
 see: [Au project](https://github.com/ar-visions/silver/blob/master/src/Au)
