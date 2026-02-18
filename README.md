@@ -1,4 +1,3 @@
-
 # **silver** lang
 ![silver-lang](silver-icon.png "silver-lang")
 
@@ -14,7 +13,7 @@ Copyright (C) 2021 AR Visions — MIT License
 
 Software development is beautifully complex. There have been many demonstrated languages and build systems that scale. The idea behind silver is to expose all of this great work reliably on all platforms using succinct syntax, integrating their projects and models into a standard universal object model — Au, a C-based run-time providing a component model capable of post-init property pairs, single-arg construction, casts, and overrides — to target all devices natively, in a local-first manner, where you and your machine are sufficient to build anything.
 
-silver does not replace CMake or Cargo or Make — it drives them into top-level modules you build natively for all platforms. Cross-platform is typically a frustrating process, and the goal of silver is to manage SDK environments within.
+silver drives existing build systems — CMake, Cargo, Make, and others — into top-level modules you build natively for all platforms. Cross-platform is typically a frustrating process, and silver manages SDK environments so that each dependency is built the way its authors intended, then linked into your product through Au.
 
 ### import `User:Project/Commit-or-Branch`
 
@@ -93,6 +92,34 @@ func greet [name: string]
 ```
 
 When no `->` is given, the return type is `none`.
+
+### Subprocedures
+
+`sub` declares an inline subprocedure whose return value is assigned to the variable being declared. This lets you run a block of logic and capture the result without defining a separate function:
+
+```python
+func transform[a: i64, b: i64] -> i64
+    z: i32 sub
+        return 2
+    # z is now 2
+```
+
+The `sub` block is scoped to the declaration — `return` inside a `sub` returns into the declared variable, not from the enclosing function.
+
+### Inline Assembly
+
+`asm` declares an inline assembly block with explicit input variables. Like `sub`, its result is assigned to the variable being declared:
+
+```python
+func transform[a: i64, b: i64] -> i64
+    x: i64 [ a + 1 ]
+    y: i64 asm [ x, b ]
+        add x, b
+        return x
+    # y contains the result of the assembly operation
+```
+
+The bracket list after `asm` specifies which variables are available as inputs to the assembly block. The `return` yields the result into the declared variable.
 
 ### Classes and Structs
 
@@ -682,8 +709,5 @@ Orbiter -- IDE being built with silver (was C++)
 Hyperspace
 spatial dev kit, ai module & training scripts (will be silver)
 [https://github.com/ar-visions/hyperspace.git]
-
-# **import** keyword
-**silver** starts with **import**. The **import** keyword lets you build and include from projects in any language, with coupled configuration parameters and <comma, separated> includes.  Local source links are prioritized before external checkouts, so you can build externals locally with your own changes.  This is a far better way to collaborate in open source with yourself and others. silver simply gets out of the way when it comes to git for your own source; it's merely importing.  The build process will recognize the various environment variables such as **CC**, **CXX**, **RUSTC**, **CPP**
 
 see: [Au project](https://github.com/ar-visions/silver/blob/master/src/Au)
