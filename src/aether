@@ -117,6 +117,7 @@ forward(efunc)
     M(X,Y, i, prop,  public, path,      module) \
     M(X,Y, i, prop,  public, path,      module_file) \
     M(X,Y, i, prop,  public, path,      root_path) \
+    M(X,Y, i, prop,  public, path,      module_path) \
     M(X,Y, i, prop,  public, path,      project_path) \
     M(X,Y, i, prop,  public, path,      current_inc) \
     M(X,Y, i, prop,  public, bool,      direct) \

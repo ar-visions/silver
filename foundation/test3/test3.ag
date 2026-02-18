@@ -1,6 +1,6 @@
 import <stdio.h>
 
-public coolteen: string 'Clint'
+coolteen: string 'Clint'
 
 public func test3_func2[ i:i32 ] -> i64
     return i + 2
