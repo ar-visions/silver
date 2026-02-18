@@ -303,7 +303,7 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     
     # header gen
     n.append("rule headers")
-    n.append(f"  command = $python $silver_root/headers.py --cache-file {build_p}/.headers_generated --project-path $root --build-path $builddir --project-name $project --import $importdir && touch $out")
+    n.append(f"  command = $python $silver_root/src/headers.py --cache-file {build_p}/.headers_generated --project-path $root --build-path $builddir --project-name $project --import $importdir && touch $out")
     n.append("  description = generating headers")
     n.append("  generator = 1")
     n.append("")

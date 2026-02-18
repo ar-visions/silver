@@ -3382,23 +3382,12 @@ Au parse_field(silver a, etype key_type) {
     return k;
 }
 
-path is_git_project(silver a) {
-    // must be repo path: a->project_path
-    // if so, return a->project_path
-    // walk up from project_path to find the git repo root
-    path p = parent_dir(a->module_path);
-    path git_dir = f(path, "%o/.git", p);
-    if (dir_exists("%o", git_dir) || file_exists("%o", git_dir))
-        return p;
-    
-    return null;
-}
-
 enode parse_export(silver a) {
     sequencer;
     validate(read_if(a, "export"), "expected export keyword");
     token version = read_compacted(a);
-    verify(a->is_project, "expected silver invocation into main project module");
+    verify(a->project_path, "expected silver invocation into main project module");
+    return e_noop(a, null);
 }
 
 enode parse_import(silver a) {
