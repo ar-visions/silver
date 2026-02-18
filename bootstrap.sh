@@ -347,6 +347,6 @@ fi
 
 (
     cd $SILVER
-    python3 import.py --import $IMPORT --$TYPE --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
-    python3 gen.py    --import $IMPORT --$TYPE --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
+    python3 src/import.py --import $IMPORT --$TYPE --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
+    python3 src/gen.py    --import $IMPORT --$TYPE --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
 )
