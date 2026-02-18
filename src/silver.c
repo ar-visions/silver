@@ -182,8 +182,7 @@ string git_remote_info(path path, string *out_service, string *out_owner, string
     string cmd = f(string, "git -C %s remote get-url origin", path->chars);
     string remote = command_run((command)cmd);
 
-    if (!remote || !remote->count)
-        error("git_remote_info: failed to get remote url");
+    verify (remote && remote->count, "silver modules must originate in git repository");
 
     cstr url = remote->chars;
 
@@ -195,19 +194,23 @@ string git_remote_info(path path, string *out_service, string *out_owner, string
 
     if (strstr(url, "://")) {
         // HTTPS form: https://github.com/owner/repo.git
-        domain = strstr(url, "://");
-        domain += 3; // skip "://"
+        domain = strstr(url, "://") + 3;
+
+        cstr at = strchr(domain, '@');
+        if (at && at < strpbrk(domain, ":/"))
+            domain = at + 1;
+
     } else if (strchr(url, '@')) {
         // SSH form: git@github.com:owner/repo.git
         domain = strchr(url, '@') + 1;
     } else {
-        error("git_remote_info: unrecognized URL: %s", url);
+        fault("git_remote_info: unrecognized URL: %s", url);
     }
 
     // domain ends at first ':' or '/'
     cstr domain_end = strpbrk(domain, ":/");
     if (!domain_end)
-        error("git_remote_info: malformed URL");
+        fault("git_remote_info: malformed URL");
     *domain_end = '\0';
 
     // next part: owner/repo
@@ -216,7 +219,7 @@ string git_remote_info(path path, string *out_service, string *out_owner, string
 
     cstr slash = strchr(owner, '/');
     if (!slash)
-        error("git_remote_info: missing owner/repo");
+        fault("git_remote_info: missing owner/repo");
     *slash = '\0';
     repo = slash + 1;
 
@@ -521,6 +524,17 @@ i64 silver_watch(silver mod, path a, i64 last_mod, i64 millis) {
     return last_mod;
 }
 
+static path is_git_project(silver a) {
+    // must be repo path: a->project_path
+    // if so, return a->project_path
+    // walk up from project_path to find the git repo root
+    path p = parent_dir(a->module_path);
+    path git_dir = f(path, "%o/.git", p);
+    if (dir_exists("%o", git_dir) || file_exists("%o", git_dir))
+        return p;
+        
+    return null;
+}
 
 // im a module!
 void silver_init(silver a) {
@@ -557,7 +571,7 @@ void silver_init(silver a) {
 
     verify(a->module, "required argument: module (path/to/module)");
 
-    a->project_path = parent_dir(a->module);
+    a->module_path = parent_dir(a->module);
     a->module_file  = f(path, "%o/%o.ag",
         a->module, stem(a->module));
 
@@ -565,6 +579,9 @@ void silver_init(silver a) {
     bool update_product = true;
     u64  module_file_m  = modified_time(a->module_file);
     verify(module_file_m, "module file not found: %o", a->module_file);
+
+    // check if we are the main project of this repository
+    a->project_path = is_git_project(a);
 
     if (file_exists("%o", a->product_link) &&
             modified_time(a->product_link) > module_file_m) {
@@ -640,9 +657,9 @@ void silver_init(silver a) {
         // our verify infrastructure is now production useful
         attempt() {
             string m = stem(a->module);
-            path i_gen = f(path, "%o/%o.i", a->project_path, m);
-            path c_file = f(path, "%o/%o.c", a->project_path, m);
-            path cc_file = f(path, "%o/%o.cc", a->project_path, m);
+            path i_gen = f(path, "%o/%o.i", a->module_path, m);
+            path c_file = f(path, "%o/%o.c", a->module_path, m);
+            path cc_file = f(path, "%o/%o.cc", a->module_path, m);
             path files[2] = {c_file, cc_file};
             for (int i = 0; i < 2; i++)
                 if (exists(files[i])) {
@@ -1424,7 +1441,7 @@ string silver_peek_def(silver a) { // we need a peek etype
         return string(n->chars);
 
     if (n && is_keyword((Au)n))
-        if (eq(n, "import") || eq(n, "func") || eq(n, "cast") ||
+        if (eq(n, "import") || eq(n, "export") || eq(n, "func") || eq(n, "cast") ||
             eq(n, "class") || eq(n, "enum") || eq(n, "struct"))
             return string(n->chars);
     return null;
@@ -3047,13 +3064,6 @@ string expect_alpha(silver a) {
     return string(t->chars);
 }
 
-path is_module_dir(silver a, string ident) {
-    path dir = f(path, "%o/%o", a->project_path, ident);
-    if (dir_exists("%o", dir))
-        return dir;
-    return null;
-}
-
 // when we load silver files, we should look for and bind corresponding .c files that have implementation
 // this is useful for implementing in C or other languages
 path module_exists(silver a, array idents, bool binary_finary, bool* is_bin) {
@@ -3370,6 +3380,25 @@ Au parse_field(silver a, etype key_type) {
         k = (Au)const_string(chars, name->chars);
     }
     return k;
+}
+
+path is_git_project(silver a) {
+    // must be repo path: a->project_path
+    // if so, return a->project_path
+    // walk up from project_path to find the git repo root
+    path p = parent_dir(a->module_path);
+    path git_dir = f(path, "%o/.git", p);
+    if (dir_exists("%o", git_dir) || file_exists("%o", git_dir))
+        return p;
+    
+    return null;
+}
+
+enode parse_export(silver a) {
+    sequencer;
+    validate(read_if(a, "export"), "expected export keyword");
+    token version = read_compacted(a);
+    verify(a->is_project, "expected silver invocation into main project module");
 }
 
 enode parse_import(silver a) {
@@ -4868,7 +4897,11 @@ etype silver_read_def(silver a) {
     etype mdl  = null;
     array meta = null;
 
-    if (is_class || is_struct) {
+    if (eq(n, "export")) {
+        int test2 = 2;
+        test2    += 2;
+    }
+    else if (is_class || is_struct) {
         validate(is_module(mtop),
             "expected record definition at module level");
         array schema = array();

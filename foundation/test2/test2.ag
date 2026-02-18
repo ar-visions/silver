@@ -1,3 +1,6 @@
+# error if its not the main module in repository
+# export 0.8.8
+
 import test3
     coolteen: 'Tim'
 
@@ -5,7 +8,6 @@ import <stdio.h>
 
 func test2_func[ i:i32 ] -> i64
     return i + 1
-
 
 app test2
     func init [] -> none
