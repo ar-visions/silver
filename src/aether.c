@@ -848,7 +848,8 @@ enode e_operand_primitive(aether a, Au op) {
 
 enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) {
     a->is_const_op = false; // we can be granular about this, but its just not worth the complexity for now
-    enode mL = (enode)instanceof(L, enode); 
+    enode mL = (enode)instanceof(L, enode);
+    Au mL_info = head(mL);
     enode LV = e_operand(a, L, null);
     enode RV = e_operand(a, R, null);
 
@@ -879,9 +880,6 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) {
     etype rtype = determine_rtype(a, optype, (etype)LV, (etype)RV); // todo: return bool for equal/not_equal/gt/lt/etc, i64 for compare; there are other ones too
 
     LLVMValueRef RES;
-    LLVMTypeRef  LV_type = LLVMTypeOf(LV->value);
-    LLVMTypeKind vkind = LLVMGetTypeKind(LV_type);
-
     enode LL = optype <= OPType__assign ? LV : e_create(a, rtype, (Au)LV); // we dont need the 'load' in here, or convert even
     enode RL = e_create(a, rtype, (Au)RV);
 
@@ -890,37 +888,45 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) {
     Au literal = null;
 
     if (optype == OPType__or || optype == OPType__and) { // logical operators
-
         // ensure both operands are i1
         rtype = etypeid(bool);
         LL = e_create(a, rtype, (Au)LL); // generate compare != 0 if not already i1
         RL = e_create(a, rtype, (Au)RL);
 
         struct op_entry* op = &op_table[optype - OPType__add];
-        if (LL->literal && RL->literal)
-            RES = op->f_const_op(LL->value, RL->value);
-        else
-            RES = op->f_build_op(B, LL->value, RL->value, N);
+        if (!a->no_build) {
+            if (LL->literal && RL->literal)
+                RES = op->f_const_op(LL->value, RL->value);
+            else
+                RES = op->f_build_op(B, LL->value, RL->value, N);
+        }
         
     } else if (optype >= OPType__add && optype <= OPType__left) {
         struct op_entry* op = &op_table[optype - OPType__add];
-        if (LL->literal && RL->literal)
-            RES = op->f_const_op(LL->value, RL->value);
-        else
-            // we must override the logic here because we're ONLY doing OPType__or, OPType__and
-            RES = op->f_build_op(B, LL->value, RL->value, N);
-
+        if (!a->no_build) {
+            if (LL->literal && RL->literal)
+                RES = op->f_const_op(LL->value, RL->value);
+            else
+                // we must override the logic here because we're ONLY doing OPType__or, OPType__and
+                RES = op->f_build_op(B, LL->value, RL->value, N);
+        }
+ 
     } else if (optype >= OPType__bind && optype <= OPType__assign_left) {
 
         // assignments perform a store
         verify(mL, "left-hand operator must be a emember");
-        // already computed in R-value
-        if (optype <= OPType__assign) {
-            RES = RL->value;
-            literal = RL->literal;
-        } else
-            RES = op_table[optype - OPType__assign_add].f_build_op(B, LL->value, RL->value, N);
-        LLVMBuildStore(B, RES, mL->value);
+        if (!a->no_build) {
+            // already computed in R-value
+            if (optype <= OPType__assign) {
+                RES = a->no_build ? null : RL->value;
+                literal = RL->literal;
+            } else
+                RES = a->no_build ? null : op_table[optype - OPType__assign_add].f_build_op(B, LL->value, RL->value, N);
+            LLVMBuildStore(B, RES, mL->value);
+        } else {
+            if (optype <= OPType__assign)
+                literal = RL->literal;
+        }
 
     } else {
         verify(optype >= OPType__equal && optype <= OPType__less_eq, "invalid comparison operation");
@@ -1859,6 +1865,8 @@ none copy_lambda_info(enode mem, enode lambda_fn) {
 }
 
 enode e_convert_or_cast(aether a, etype output, enode input) {
+    if (a->no_build) return e_noop(a, output);
+
     Au_t itype = isa(input);
     LLVMTypeRef typ = LLVMTypeOf(input->value);
     LLVMTypeKind k = LLVMGetTypeKind(typ);
@@ -2564,7 +2572,7 @@ enode aether_e_for(aether a,
 }
 
 enode aether_e_noop(aether a, etype mdl) {
-    enode op = enode(mod, a, loaded, true, au, mdl ? mdl->au : au_lookup("none"));
+    enode op = enode(mod, a, loaded, true, au, mdl ? mdl->au : etypeid(none)->au);
     return op;
 }
 
@@ -3931,11 +3939,21 @@ none aether_build_module_initializer(aether a, enode init) {
         _u64(module_isize)
     ));
 
+    Au_t m = find_member(module_base, "coolteen", AU_MEMBER_VAR, false);
+    evar var_mdl = u(evar, m);
+
     // define public functions at the module level; this effectively imports
     members(module_base, mem) {
         etype mdl = u(etype, mem);
+        evar var_mdl2 = u(evar, mem);
 
-        if (is_func(mdl) && mem->access_type != interface_intern) {
+        if (mem->is_system || mem->is_schema) continue;
+
+        if (var_mdl2 == var_mdl) {
+            var_mdl = var_mdl;
+        }
+
+        if (is_func(mem) && mem->access_type != interface_intern) {
             efunc mf = (efunc)u(etype, mem);
             mf->used = true;
             etype_implement((etype)mf);
@@ -3950,6 +3968,22 @@ none aether_build_module_initializer(aether a, enode init) {
                 _u32(mem->operator_type),
                 _u64(mem->traits),
                 value(etypeid(ARef), mf->value)
+            ));
+        }
+
+        if (u(evar, mem) && mem->access_type != interface_intern) {
+            evar mvar = (evar)u(evar, mem);
+            mvar->used = true;
+            etype_implement((etype)mvar);
+            e_fn_call(a, fn_def_func, a(
+                module_type_id,
+                const_string(chars, mem->ident),
+                e_typeid(a, u(etype, mem->rtype)),
+                _u32(mem->member_type),
+                _u32(mem->access_type),
+                _u32(mem->operator_type),
+                _u64(mem->traits),
+                e_null(a, null)
             ));
         }
     }
