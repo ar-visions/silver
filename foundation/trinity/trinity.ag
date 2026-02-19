@@ -599,7 +599,7 @@ class IBL
 
 
 /// attribute is a type, and a value; name is baked into enumeration
-# lets made class names first class citizens in the syntax of inheritence; that way our [args] may be meta-members only
+# lets make class names first class citizens in the syntax of inheritence; that way our [args] may be meta-members only
 shader PBR
     public pos      : vec4f
     public dir      : vec4f
@@ -625,12 +625,17 @@ shader Env
     attrib Surface [ color ] : 1, rgbaf
     func init [ ]
 
+class attrib
+    type:   Au_t    # enum values should be able to cast to Au_t, and a typeid we get on initialization
+    count:  int
+    format: Au_t
+
 shader Convolve
     public env : mat4f
     public view : mat4f
     public proj : mat4f
     public roughness_samples : vec2f
-    attrib Surface [ environment ] : 1, rgbaf
+    public environment: attrib [ type:Surface.environment, count:1, format:rgbaf ]
 
 class buffer
     public t                : trinity

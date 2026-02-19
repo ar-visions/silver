@@ -135,6 +135,10 @@ bool Au_is_func(Au t) {
                   au->member_type == AU_MEMBER_OPERATOR ||
                   au->member_type == AU_MEMBER_CONSTRUCT) && (au->ident || au->alt);
 }
+bool Au_is_var(Au t) {
+    Au_t au = au_arg(t);
+    return au && (au->member_type == AU_MEMBER_VAR) && (au->ident || au->alt);
+}
 bool Au_is_lambda(Au t) {
     Au_t au = au_arg_type(t);
     return Au_is_func(t) && au->is_lambda;
@@ -813,7 +817,7 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
     //printf("def [ context: %s, ident: %s, member_type: %i, traits: %lli ]\n", type ? type->ident : null, ident, member_type, traits);
     Au_t au2 = typeid(array);
 
-    if (ident && strcmp((cstr)ident, "test3") == 0) {
+    if (ident && strcmp((cstr)ident, "coolteen") == 0) {
         ident = ident;
     }
 
@@ -994,8 +998,8 @@ void module_erase(Au_t module, symbol name) {
     // unregister from list by setting null
     for (int i = 0; i < modules.data.count; i++) {
         Au_t m = (Au_t)modules.data.origin[i];
-        printf("module: %s\n", m->ident);
-        if (m && module == m || (m->ident && strcmp(m->ident, name) == 0)) {
+        if (m && m->ident) printf("module: %s\n", m->ident);
+        if (m && module == m || (m && m->ident && strcmp(m->ident, name) == 0)) {
             modules.data.origin[i] = null;
             m->members.count = 0;
             m->meta.count = 0;
