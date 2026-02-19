@@ -22,7 +22,9 @@
     M(X, Y, i, prop, iobject, array, implements) \
     M(X, Y, i, prop, iobject, array, imports) \
     M(X, Y, i, prop, public, enode, last_return) \
+    M(X, Y, i, prop, public, enode, last_break) \
     M(X, Y, i, prop, public, map,  defs) \
+    M(X, Y, i, prop, public, map,  defs_used) \
     M(X, Y, i, prop, public, string,  defs_hash) \
     M(X, Y, i, prop, public, path,    build_dir) \
     M(X, Y, i, prop, public, path,    product_link) \

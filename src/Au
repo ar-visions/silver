@@ -705,6 +705,7 @@ forward(any)
     M(AA,BB, i, guard, public, bool, is_opaque,     Au) \
     M(AA,BB, i, guard, public, bool, is_lambda,     Au) \
     M(AA,BB, i, guard, public, bool, is_func,       Au) \
+    M(AA,BB, i, guard, public, bool, is_var,        Au) \
     M(AA,BB, i, guard, public, bool, is_module,     Au) \
     M(AA,BB, i, guard, public, bool, is_func_ptr,   Au) \
     M(AA,BB, i, guard, public, bool, is_imethod,    Au) \
@@ -799,7 +800,6 @@ declare_class(collective)
 // another one of those interfaces that are used in use-case.
 #define interface_module_ Au
 #define interface_schema(E,T,Y,...) \
-    M(E,Y, s, module, public, Au) \
     enum_value       (E,T,Y, undefined,  0) \
     enum_value       (E,T,Y, intern,     1) \
     enum_value       (E,T,Y, public,     2) \
@@ -810,7 +810,6 @@ declare_enum(interface)
 
 #define comparison_module_ Au
 #define comparison_schema(E,T,Y,...) \
-    M(E,Y, s, module, public, Au) \
     enum_value(E,T,Y, equals,            32) \
     enum_value(E,T,Y, not_equals,        33) \
     enum_value(E,T,Y, u_greater_than,    34) \

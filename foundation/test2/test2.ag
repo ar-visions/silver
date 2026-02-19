@@ -1,16 +1,246 @@
 # error if its not the main module in repository
-# export 0.8.8
+export 0.8.8
 
 import test3
-    coolteen: 'Tim'
+    coolteen: 'Tim2'
 
 import <stdio.h>
 
 func test2_func[ i:i32 ] -> i64
     return i + 1
 
+##
 app test2
     func init [] -> none
         test2_func 1
+##
+
+# no assigning external module vars, same as their internal rules
+debug:   bool [ coolteen2 == 'Tim' ]
+debug2:         coolteen == 'Tim'
 
 
+enum Color [ u8 ]
+    red:    1
+    green:  2
+    blue:   3
+    alpha:  4
+
+
+struct Vec2
+    x: f32
+    y: f32
+
+    operator + [ b: Vec2 ] -> Vec2
+        return Vec2 [ x: x + b.x, y: y + b.y ]
+
+    operator == [ b: Vec2   ] -> bool [ x == b.x && y == b.y ]
+    operator /  [ b: double ] -> Vec2 [ x: x / b, y: y / b ]
+    operator *  [ b: double ] -> Vec2 [ x: x * b, y: y * b ]
+
+    cast -> string ['{x}, {y}']
+
+
+class Counter
+    public count: i64
+    public name:  string
+
+    func init [] -> none
+        count = 0
+
+    func increment [] -> none
+        count += 1
+
+    operator += [n: i64] -> i64
+        return add[n]
+
+    func add [n: i64] -> i64
+        count += n
+        return count
+
+    cast -> i64
+        return count
+
+class classy_class
+    public i: i64
+
+Counter DoubleCounter
+    context contextual:classy_class # these we cannot have initializers for, since they must be given
+    func increment [] -> none
+        super.increment
+        count += 1
+        count += contextual.i
+
+
+func math_test[] -> bool
+    a: 10 + 5 * 2
+    b: a  / 5
+    c: a  % 7
+    d: 1 << 3
+    e: d >> 1
+    f: d  & 12
+    g: 1  | 2
+    h: 5  ^ 3
+    return a == 20 && b == 4 && c == 6 && d == 8 && 
+           e == 4  && f == 8 && g == 3 && h == 6
+
+
+func control_flow_test[] -> bool
+    total: i64 [ 0 ]
+
+    # for with init::cond::step
+    for [ i: i32 = 0 :: i < 10 :: i += 1 ]
+        total += 1
+
+    if [ total != 10 ]
+        return false
+
+    # if / el / el
+    x:      i64 5
+    result: i64 0
+    if [ x > 10 ]
+        result = 1
+    el [ x > 3 ]
+        result = 2
+    el
+        result = 3
+
+    if [ result != 2 ]
+        return false
+
+    # switch
+    val: 2
+    switched: i64 0
+    switch val
+        case 1
+            switched = 10
+        case 2
+            switched = 20
+        case 3
+            switched = 30
+        default
+            switched = 99
+
+    if [ switched != 20 ]
+        return false
+
+    # null coalescing
+    s: string [ null ]
+    fallback: string [ s ?? "default" ]
+    if [ fallback != "default" ]
+        return false
+
+    # ternary
+    t: i64 [ (x > 3) ? 100 : 200 ]
+    if [ t != 100 ]
+        return false
+
+    return true
+
+
+func string_test[] -> bool
+    name:       "hello"
+    greeting:   'say {name}'
+    return greeting == "say hello"
+
+func struct_test[] -> bool
+    a: Vec2 [ x: 1.0, y: 2.0 ]
+    b: Vec2 [ x: 3.0, y: 4.0 ]
+    c: Vec2 [ a + b ]
+    return c.x == 4.0 && c.y == 6.0
+
+
+func class_test[] -> bool
+    c: Counter [ name: "test" ]
+
+    for [ i2 : 1, i : 0, i < 3, i += 1 ]
+        c.increment
+
+    c.add 7
+    return c.count == [ 10 - i2 + 1]
+
+
+func inherit_test[ classy_class ctx ] -> bool
+    d: DoubleCounter [ name: "double" ] # gets context from available scope
+    d.increment
+    d.increment
+    return d.count == 4 && d is Counter && d inherits Counter
+
+
+func sub_test[] -> bool
+    z: i32 sub
+        return 42
+    w: i32 sub
+        break
+    return z == 42 && w == 0
+
+func enum_test[] -> bool
+    c: Color [ Color.green ]
+    return c == Color.green
+
+func assign_test[] -> bool
+    x: i64 10
+    x += 5
+    x -= 3
+    x *= 2
+    x /= 4
+    y: f64 x
+    return i64 y == 6
+
+func ref_test[] -> bool
+    x: i64 [ 42 ]
+    r: ref i64 [ ref x ]
+    return r == 42
+
+func compound_test[] -> bool
+    passed: i64 0
+    total:  i64 0
+
+    if math_test
+        passed += 1
+    total += 1
+
+    if control_flow_test
+        passed += 1
+    total += 1
+
+    if string_test
+        passed += 1
+    total += 1
+
+    if struct_test
+        passed += 1
+    total += 1
+
+    if class_test
+        passed += 1
+    total += 1
+
+    if inherit_test
+        passed += 1
+    total += 1
+
+    if sub_test
+        passed += 1
+    total += 1
+
+    if enum_test
+        passed += 1
+    total += 1
+
+    if assign_test
+        passed += 1
+    total += 1
+
+    if ref_test
+        passed += 1
+    total += 1
+
+    puts 'tests passed: {passed}/{total}'
+    return passed == total
+
+app test2
+    func init [] -> none
+        test2_func 1
+        if not compound_test
+            puts "FAIL"
