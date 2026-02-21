@@ -149,7 +149,8 @@ bool Au_is_func_ptr(Au t) {
 }
 bool Au_is_imethod (Au t) { return au_arg(t)->member_type == AU_MEMBER_FUNC && au_arg(t)->is_imethod; }
 Au_t Au_is_rec     (Au t) {
-    Au_t au = au_arg(t);
+    if (!t) return null;
+    Au_t au = au_arg_type(t);
     if (au == typeid(ARef) || Au_is_func(t)) return null;
     if (au->src && au->src->is_class) return au->src;
     return (au->is_class || au->is_struct) ? au : null;
@@ -698,7 +699,9 @@ static array_combine modules;
 static array  scope;
 static bool   started = false;
 
+
 Au_t find_member(Au_t mdl, symbol f, int member_type, bool poly) {
+    if (!mdl) return null;
     do {
         for (int i = 0; i < mdl->members.count; i++) {
             Au_t au = (Au_t)mdl->members.origin[i];
@@ -1996,7 +1999,7 @@ map arguments(int argc, cstrs argv, map default_values, Au default_key) {
                     ( doub && compare(f->key, (Au)s_key) == 0)) {
                     /// inter-op with Au-based Au sells it.
                     /// its also a guide to use the same schema
-                    Au value = formatter(def_type, null, (Au)false, "%o", s_val);
+                    Au value = formatter(def_type, null, (Au)false, seq, "%o", s_val);
                     assert(isa(value) == def_type, "");
                     set(result, (Au)f->key, value);
                 }
@@ -2006,7 +2009,7 @@ map arguments(int argc, cstrs argv, map default_values, Au default_key) {
             string s_val     = new(string, chars, (cstr)arg);
             Au def_value = get(default_values, default_key);
             Au_t  def_type  = isa(def_value);
-            Au value     = formatter(def_type, null, (Au)false, "%o", s_val);
+            Au value     = formatter(def_type, null, (Au)false, seq, "%o", s_val);
             set(result, (Au)default_key, value);
             found_single = true;
         }
@@ -2658,7 +2661,7 @@ static int term_width() {
     return w.ws_col ? w.ws_col : 80;
 }
 
-Au formatter(Au_t type, handle ff, Au opt, symbol template, ...) {
+Au formatter(Au_t type, handle ff, Au opt, int seq, symbol template, ...) {
     va_list args;
     FILE* f = (FILE*)ff;
     va_start(args, template);
@@ -2780,9 +2783,9 @@ Au formatter(Au_t type, handle ff, Au opt, symbol template, ...) {
         if (!listen && !contains(log_funcs, (Au)asterick)) return null;
         // write type / function
         if (tname)
-            sprintf(info, "\x1b[34m%s::%s:\x1b[21G \x1b[0m", tname->chars, fname->chars);
+            sprintf(info, "\x1b[34m%s::%s [%i]\x1b[21G \x1b[0m", tname->chars, fname->chars, seq);
         else
-            sprintf(info, "\x1b[34m%s:\x1b[21G \x1b[0m", fname->chars);
+            sprintf(info, "\x1b[34m%s [%i]\x1b[21G \x1b[0m", fname->chars, seq);
 
         // based on the number of columns left, we need to isue multiple prints starting at 30
         fwrite(info, strlen(info), 1, f);

@@ -659,7 +659,7 @@ forward(any)
     M(AA,BB, i, method, public, i64,    vdata_stride) \
     M(AA,BB, i, method, public, bool,   is_meta) \
     M(AA,BB, i, method, public, bool,   is_meta_compatible, Au) \
-    M(AA,BB, s, vargs,  public, Au,     formatter, Au_t, handle, Au, symbol) \
+    M(AA,BB, s, vargs,  public, Au,     formatter, Au_t, handle, Au, i32, symbol) \
     M(AA,BB, s, method, public, Au,     alloc, Au_t, num, Au_ts) \
     M(AA,BB, s, method, public, Au,     alloc_new, Au_t, num, Au_ts) \
     M(AA,BB, s, method, public, Au,     alloc_dbg, Au_t, num, cstr, i32, i32) \

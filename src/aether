@@ -236,7 +236,7 @@ forward(efunc)
     M(X,Y, i, method, public,     bool,        emit,           ARef,       ARef) \
     M(X,Y, i, method, public,     etype,       return_type) \
     M(X,Y, i, method, public, statements, context_code) \
-    M(X,Y, i, method, public, enode,  context_func) \
+    M(X,Y, i, method, public, efunc,  context_func) \
     M(X,Y, i, method, public, etype,  context_class) \
     M(X,Y, i, method, public, etype,  context_struct) \
     M(X,Y, i, method, public, etype,  context_record) \
