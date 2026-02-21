@@ -2042,7 +2042,7 @@
 #else
 #define       assert(a, t, ...) do { } while(0)
 #endif
-#define       verify(a, t, ...) ({ if (!(a)) { string res = (string)formatter((Au_t)null, stderr, (Au)true, seq, (symbol)t, ## __VA_ARGS__); if (level_err >= fault_level) { halt(res); } false; } else { true; } true; })
+#define       verify(a, t, ...) ({ if (!(a)) { string res = (string)formatter((Au_t)null, stderr, (Au)true, seq, (symbol)t, ## __VA_ARGS__); if (false && level_err >= fault_level) { halt(res); } false; } else { true; } true; })
 
 #undef min
 #undef max

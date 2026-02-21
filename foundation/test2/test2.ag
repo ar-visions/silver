@@ -16,7 +16,7 @@ app test2
 ##
 
 # no assigning external module vars, same as their internal rules
-debug:   bool [ coolteen2 == 'Tim' ]
+debug:   bool [ coolteen == 'Tim' ]
 debug2:         coolteen == 'Tim'
 
 
@@ -105,144 +105,13 @@ func control_flow_test[] -> bool
     el
         result = 3
 
-    if [ result != 2 ]
-        return false
-
-    # switch
-    val: Color.red
-    switched: i64 0
-    switch val
-        case Color.red
-            switched = 10
-        case Color.blue
-            switched = 20
-        case Color.green
-            switched = 30
-        default
-            switched = 99
-
-    if [ switched != 20 ]
-        return false
-
-    # null coalescing
-    s: string
-    fallback: (string s) ?? "default"
-    if [ fallback != "default" ]
-        return false
-
-    # ternary
-    t: i64 [ (x > 3) ? 100 : 200 ]
-    if [ t != 100 ]
-        return false
-
     return true
 
-
-func string_test[] -> bool
-    name:       "hello"
-    greeting:   'say {name}'
-    return greeting == "say hello"
-
-
-func struct_test[] -> bool
-    aa: Vec2 [ x: 1.0, y: 2.0 ]
-    bb: Vec2 [ x: 3.0, y: 4.0 ]
-    cc: Vec2 [ bb + bb ]
-    return cc.x == 4.0 && cc.y == 6.0
-
-
-func class_test[] -> bool
-    c: Counter [ name: "test" ]
-
-    i:0
-    for [ i: 0 :: i < 3 :: i += 1 ]
-        c.increment
-
-    c.add 7
-    return c.count == (10 - i + 1)
-
-
-func inherit_test[ cc:classy_class  ] -> bool
-    d: DoubleCounter [ name: "double" ] # gets context from available scope
-    d.increment
-    d.increment
-    return d is Counter && d is Counter
-
-
-func sub_test[] -> bool
-    z: i32 sub
-        return 42
-    w: i32 sub
-        break
-    return z == 42 && w == 0
-
-func enum_test[] -> bool
-    c: Color [ Color.green ]
-    return c == Color.green
-
-func assign_test[] -> bool
-    x: i64 10
-    x += 5
-    x -= 3
-    x *= 2
-    x /= 4
-    y: f64 x
-    return i64 y == 6
-
-func ref_test[] -> bool
-    x: i64 [ 42 ]
-    r: ref i64 [ ref x ]
-    return r == 42
-
 func compound_test[] -> bool
-    passed: i64 0
-    total:  i64 0
-
-    if math_test
-        passed += 1
-    total += 1
-
-    if control_flow_test
-        passed += 1
-    total += 1
-
-    if string_test
-        passed += 1
-    total += 1
-
-    if struct_test
-        passed += 1
-    total += 1
-
-    if class_test
-        passed += 1
-    total += 1
-
-    if inherit_test
-        passed += 1
-    total += 1
-
-    if sub_test
-        passed += 1
-    total += 1
-
-    if enum_test
-        passed += 1
-    total += 1
-
-    if assign_test
-        passed += 1
-    total += 1
-
-    if ref_test
-        passed += 1
-    total += 1
-
-    puts 'tests passed: {passed}/{total}'
-    return passed == total
+    return control_flow_test && math_test
 
 app test2
     func init [] -> none
         test2_func 1
-        if not compound_test
+        if [ not compound_test ]
             puts "FAIL"

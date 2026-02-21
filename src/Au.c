@@ -2797,6 +2797,16 @@ Au formatter(Au_t type, handle ff, Au opt, int seq, symbol template, ...) {
     if (f) {
         // based on the number of columns left, we need to isue multiple prints starting at 30
         // write message
+        /*
+        string prepend = string(alloc, 32);
+
+        char label[64];
+        snprintf(label, sizeof(label), "[ %i ]", seq);
+        append(prepend, label);
+        concat(prepend, res);
+        res = prepend;
+        */
+
         int n = len(res);
         int tw = max(32, term_width() - 22);
         float lc = (float)n / tw;
