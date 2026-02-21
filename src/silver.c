@@ -1541,7 +1541,7 @@ bool is_loaded(Au n) {
 etype evar_type(evar a);
 
 bool in_context(Au_t au, Au_t ctx) {
-    while (au) {
+    while (ctx && au) {
         if (au->context == ctx) return true;
         if (ctx == ctx->context) break;
         ctx = ctx->context;
@@ -1822,10 +1822,11 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
     int slen = len(a->stack);
 
     if (!cmode && read_if(a, "[")) {
+        print_tokens(a, "after bracket");
         enode n = parse_expression(a, mdl_expect);
         validate(n, "could not read expression");
         validate(read_if(a, "]"),
-            "expected ] after %o expression", u(etype, n->au->src));
+            "expected ] after %o expression %i", u(etype, n->au->src), seq);
         return n;
     }
 
@@ -2290,6 +2291,9 @@ void silver_incremental_resolve(silver a) {
     }
     members(a->au, mem) {
         etype rec = (mem->is_class || mem->is_struct) ? u(etype, mem) : null;
+        if (mem->is_struct && strcmp(mem->ident, "Vec2") == 0) {
+            mem = mem;
+        }
         if (rec && !mem->is_system && !mem->is_schema && !rec->parsing && !rec->user_built) {
             build_record(a, rec);
         }
@@ -2420,6 +2424,13 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     
     bool arrow = read_if(a, "->") != null;
     rtype = arrow ? read_etype(a, null) : null;
+    array inline_expr = null;
+
+    if (next_is(a, "[")) {
+        inline_expr = read_body(a);
+        print_all_tokens(a, "inline_expr", inline_expr);
+        inline_expr = inline_expr;
+    }
 
     if (member_type == AU_MEMBER_CAST) {
         validate(rtype, "expected explicit type for cast");
@@ -2451,13 +2462,14 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     bool is_init    = rec_ctx && eq(name, "init");
     bool is_dealloc = rec_ctx && eq(name, "dealloc");
 
-    array b = (array)read_body(a);
+    array b = inline_expr ? inline_expr : (array)read_body(a);
     // all instances of func enode need special handling to bind the unique user space to it; or, we could make efunc
 
     efunc func = efunc(
         mod,    (aether)a,
         au,     au,
         body,   (tokens)b,
+        inline_return, inline_expr,
         remote_code, !is_using && !len(b),
         has_code,    len(b) || is_init || is_dealloc || cgen,
         cgen,   cgen,
@@ -4101,6 +4113,11 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
     if (f->user_built)
         return;
 
+    print("building function: %o", f);
+    if (strcmp(f->au->ident, "_add") == 0) {
+        f = f;
+    }
+
     bool user_has_code = len(f->body) || f->cgen;
 
     f->user_built = true;
@@ -4145,17 +4162,22 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
             e_fn_call(a, f->remote_func, call_args);
         } else if (f->cgen) {
             array gen = generate_fn(f->cgen, f, (array)f->body);
-        } else {
+        } else if (!f->inline_return) {
             array source_tokens = parse_const(a, (array)f->body);
             push_tokens(a, (tokens)source_tokens, 0);
-            int slen = len(a->stack);
             parse_statements(a, true);
-            int slen2 = len(a->stack);
             pop_tokens(a, false);
         }
 
         if (postamble)
             postamble((Au)f, null);
+
+        if (f->inline_return) {
+            push_tokens(a, (tokens)f->inline_return, 0);
+            e_fn_return(a, len(f->inline_return) ? 
+                (Au)parse_expression(a, u(etype, f->au->rtype)) : null);
+            pop_tokens(a, false);
+        }
         
         validate(f->au->has_return || (!f->au->rtype || is_void(u(etype, f->au->rtype))),
             "expected return statement in %o", f);
@@ -4163,10 +4185,10 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
         if (is_lambda((Au)f))
             pop_scope(a);
 
-        if (!f->au->has_return && !a->last_return)
+        if (!f->inline_return && !f->au->has_return && !a->last_return)
             e_fn_return(a, null);
 
-        int len2 = len(a->lexical);
+        // int len2 = len(a->lexical);
         
         pop_scope(a);
         if (f->target)
@@ -4199,10 +4221,10 @@ static void build_record(silver a, etype mrec) {
 
     // if this is a class, we create one, then built init with a preamble that initializes our properties
     // this is called from Au_initialize
-    if (rec->au->is_class) {
+    if (rec->au->is_class || rec->au->is_struct) {
         // if no init, create one (attach preamble for our property inits)
         Au_t m_init = find_member(rec->au, "init", AU_MEMBER_FUNC, false);
-        if (!m_init) {
+        if (rec->au->is_class && !m_init) {
             efunc f = function(a, (etype)rec, 
                 string("init"), etypeid(none), a(rec), AU_MEMBER_FUNC,
                 AU_TRAIT_IMETHOD | AU_TRAIT_OVERRIDE, 0);
@@ -4211,7 +4233,8 @@ static void build_record(silver a, etype mrec) {
             etype_implement((etype)f);
             m_init = f->au;
         }
-        build_fn(a, u(efunc, m_init), build_init_preamble, null); // we may need to
+        if (m_init)
+            build_fn(a, u(efunc, m_init), build_init_preamble, null); // we may need to
 
         // build remaining functions
         members(rec->au, m) {
