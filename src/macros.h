@@ -2008,41 +2008,41 @@
     for (item EE = (MM && MM->first) ? MM->first : (item)null; EE; EE = EE->next)
 
 
-#define         form(T, t, ...)   (T)formatter(typeid(T), null,   (Au)false, (symbol)t, ## __VA_ARGS__)
-#define            f(T, t, ...)   (T)formatter(typeid(T), null,   (Au)false, (symbol)t, ## __VA_ARGS__)
-#define         exec(t, ...)      command_exec(((command)formatter((Au_t)typeid(command), null, (Au)false, (symbol)t, ## __VA_ARGS__)))
-#define          run(t, ...)      command_run(((command)formatter((Au_t)typeid(command), null, (Au)false, (symbol)t, ## __VA_ARGS__)))
+#define         form(T, t, ...)   (T)formatter(typeid(T), null,   (Au)false, seq, (symbol)t, ## __VA_ARGS__)
+#define            f(T, t, ...)   (T)formatter(typeid(T), null,   (Au)false, seq, (symbol)t, ## __VA_ARGS__)
+#define         exec(t, ...)      command_exec(((command)formatter((Au_t)typeid(command), null, (Au)false, seq, (symbol)t, ## __VA_ARGS__)))
+#define          run(t, ...)      command_run(((command)formatter((Au_t)typeid(command), null, (Au)false, seq, (symbol)t, ## __VA_ARGS__)))
 #define         vexec(n, t, ...)     verify(exec((string)t __VA_OPT__(,) __VA_ARGS__) == 0, "shell command failed: %s", n);
 
-#define        Au_log(sL, t, ...)   formatter((Au_t)null, stdout, (Au)string(sL),  t, ## __VA_ARGS__)
+#define        Au_log(sL, t, ...)   formatter((Au_t)null, stdout, (Au)string(sL),  seq, t, ## __VA_ARGS__)
 
-#define          put(t,    ...)   formatter((Au_t)null,      stdout, (Au)false, (symbol)t, ## __VA_ARGS__)
-//#define        print(L, t,    ...) formatter((Au_t)null,      stdout, (Au)true,  (symbol)t, ## __VA_ARGS__)
-#define        error(t, ...)      formatter((Au_t)null,      stderr, (Au)true,  (symbol)t, ## __VA_ARGS__)
+#define          put(t,    ...)   formatter((Au_t)null,      stdout, (Au)false, seq, (symbol)t, ## __VA_ARGS__)
+//#define        print(L, t,    ...) formatter((Au_t)null,      stdout, (Au)true,  seq, (symbol)t, ## __VA_ARGS__)
+#define        error(t, ...)      formatter((Au_t)null,      stderr, (Au)true,  seq, (symbol)t, ## __VA_ARGS__)
 
 
 #define print(t, ...)   ({\
     static string _topic = null; \
     if (!_topic) _topic = (string)hold((Au)new(string, __func__)); \
-    formatter((Au_t)null, stdout, (Au)_topic, t, ## __VA_ARGS__); \
+    formatter((Au_t)null, stdout, (Au)_topic, seq, t, ## __VA_ARGS__); \
 })
 
 #define fault(t, ...) do {\
     static string _topic = null; \
     if (!_topic) _topic = (string)Au_hold((Au)new(string, __func__)); \
-     string res = (string)formatter((Au_t)null, stderr, (Au)_topic,  (symbol)t, ## __VA_ARGS__); \
+     string res = (string)formatter((Au_t)null, stderr, (Au)_topic,  seq, (symbol)t, ## __VA_ARGS__); \
      halt(res); \
     } while(0)
 
 
-#define  file_exists(t, ...)     (resource_exists(formatter((Au_t)null, null, (Au)false, (symbol)t, ## __VA_ARGS__)) == Exists_file)
-#define   dir_exists(t, ...)     (resource_exists(formatter((Au_t)null, null, (Au)false, (symbol)t, ## __VA_ARGS__)) == Exists_dir)
+#define  file_exists(t, ...)     (resource_exists(formatter((Au_t)null, null, (Au)false, seq, (symbol)t, ## __VA_ARGS__)) == Exists_file)
+#define   dir_exists(t, ...)     (resource_exists(formatter((Au_t)null, null, (Au)false, seq, (symbol)t, ## __VA_ARGS__)) == Exists_dir)
 #ifndef NDEBUG
-#define       assert(a, t, ...) do { if (!(a)) { formatter((Au_t)null, stderr, (Au)true,  t, ## __VA_ARGS__); exit(1); } } while(0)
+#define       assert(a, t, ...) do { if (!(a)) { formatter((Au_t)null, stderr, (Au)true, seq, t, ## __VA_ARGS__); exit(1); } } while(0)
 #else
 #define       assert(a, t, ...) do { } while(0)
 #endif
-#define       verify(a, t, ...) ({ if (!(a)) { string res = (string)formatter((Au_t)null, stderr, (Au)true,  (symbol)t, ## __VA_ARGS__); if (level_err >= fault_level) { halt(res); } false; } else { true; } true; })
+#define       verify(a, t, ...) ({ if (!(a)) { string res = (string)formatter((Au_t)null, stderr, (Au)true, seq, (symbol)t, ## __VA_ARGS__); if (level_err >= fault_level) { halt(res); } false; } else { true; } true; })
 
 #undef min
 #undef max
