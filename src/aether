@@ -313,6 +313,7 @@ declare_class_3(evar, enode, etype)
 
 #define efunc_schema(X,Y,...) \
     M(X,Y, i, prop, public, efunc, remote_func) \
+    M(X,Y, i, prop, public, array, inline_return) \
     M(X,Y, i, prop, public, enode, fptr) \
     M(X,Y, i, prop, public, map, placeholder)
 declare_class_3(efunc, enode, etype)
