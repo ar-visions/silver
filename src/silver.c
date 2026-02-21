@@ -1682,7 +1682,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
 
                 if (eq(alpha, "super")) {
                     validate(rec_top, "super only valid in class context");
-                    mem = (enode)enode(mod, (aether)a, au, rec_top->au->context, avoid_ftable, true, target, f->target, value, f->target->value, loaded, true); // with this node, we must not use the function table associated to the target
+                    mem = (enode)enode(mod, (aether)a, au, rec_top->au->context, avoid_ftable, true, target, f->target, loaded, true); // with this node, we must not use the function table associated to the target
                 }
                 else if (!in_rec) {
                     // try implicit 'this' access in instance methods

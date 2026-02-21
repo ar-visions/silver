@@ -1701,7 +1701,15 @@ enode etype_access(etype target, string name) {
 
     // for functions, we return directly with target passed along
     if (is_func((Au)m)) {
-        enode n = enode_value((enode)target);
+        enode n;
+        enode en_target = (enode)target;
+        if (en_target->avoid_ftable && en_target->target) {
+            // super access: use the actual this pointer from the inner target
+            n = enode_value(en_target->target);
+            n = (enode)enode(mod, a, au, n->au, value, n->value, loaded, true, avoid_ftable, true);
+        } else {
+            n = enode_value((enode)target);
+        }
 
         // primitive method receiver must be addressable
         if (is_prim(n->au->src) && !is_addressable(n)) {
@@ -1710,7 +1718,7 @@ enode etype_access(etype target, string name) {
             LLVMBuildStore(a->builder, n->value, temp);
             n = value(pointer(a, (Au)n->au->src), temp);
         }
-        
+
         // if primitive, we need to make a temp on stack (reserving Au header space), and obtain pointer to it
         return (enode)efunc(mod, a, au, m, loaded, true, target,
             (m->is_static || m->is_smethod) ? null : n);
