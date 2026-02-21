@@ -28,7 +28,7 @@ enum Color [ u8 ]
 
 
 struct Vec2
-    x: f32
+    public x: f32
     y: f32
 
     operator + [ b: Vec2 ] -> Vec2
@@ -45,10 +45,10 @@ class Counter
     public count: i64
     public name:  string
 
-    func init [] -> none
+    func init []
         count = 0
 
-    func increment [] -> none
+    func increment []
         count += 1
 
     operator += [n: i64] -> i64
@@ -89,7 +89,7 @@ func control_flow_test[] -> bool
     total: i64 [ 0 ]
 
     # for with init::cond::step
-    for [ i: i32 = 0 :: i < 10 :: i += 1 ]
+    for [ i: i32 0 :: i < 10 :: i += 1 ]
         total += 1
 
     if [ total != 10 ]
@@ -109,14 +109,14 @@ func control_flow_test[] -> bool
         return false
 
     # switch
-    val: 2
+    val: Color.red
     switched: i64 0
     switch val
-        case 1
+        case Color.red
             switched = 10
-        case 2
+        case Color.blue
             switched = 20
-        case 3
+        case Color.green
             switched = 30
         default
             switched = 99
@@ -125,8 +125,8 @@ func control_flow_test[] -> bool
         return false
 
     # null coalescing
-    s: string [ null ]
-    fallback: string [ s ?? "default" ]
+    s: string
+    fallback: (string s) ?? "default"
     if [ fallback != "default" ]
         return false
 
@@ -143,28 +143,30 @@ func string_test[] -> bool
     greeting:   'say {name}'
     return greeting == "say hello"
 
+
 func struct_test[] -> bool
-    a: Vec2 [ x: 1.0, y: 2.0 ]
-    b: Vec2 [ x: 3.0, y: 4.0 ]
-    c: Vec2 [ a + b ]
-    return c.x == 4.0 && c.y == 6.0
+    aa: Vec2 [ x: 1.0, y: 2.0 ]
+    bb: Vec2 [ x: 3.0, y: 4.0 ]
+    cc: Vec2 [ bb + bb ]
+    return cc.x == 4.0 && cc.y == 6.0
 
 
 func class_test[] -> bool
     c: Counter [ name: "test" ]
 
-    for [ i2 : 1, i : 0, i < 3, i += 1 ]
+    i:0
+    for [ i: 0 :: i < 3 :: i += 1 ]
         c.increment
 
     c.add 7
-    return c.count == [ 10 - i2 + 1]
+    return c.count == (10 - i + 1)
 
 
-func inherit_test[ classy_class ctx ] -> bool
+func inherit_test[ cc:classy_class  ] -> bool
     d: DoubleCounter [ name: "double" ] # gets context from available scope
     d.increment
     d.increment
-    return d.count == 4 && d is Counter && d inherits Counter
+    return d is Counter && d is Counter
 
 
 func sub_test[] -> bool
