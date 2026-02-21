@@ -467,6 +467,13 @@ enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
 
     // 1. Primitive → primitive fast path
     if (is_prim(L) && is_prim(R)) {
+        // normalize types if they differ
+        if (L->au != R->au) {
+            if (L->au->abi_size >= R->au->abi_size)
+                R = aether_e_primitive_convert(a, R, (etype)L);
+            else
+                L = aether_e_primitive_convert(a, L, (etype)R);
+        }
         if (is_realistic(L) || is_realistic(R)) {
             return value(bool_t,
                 LLVMBuildFCmp(a->builder, cmp->fp_pred,
@@ -557,6 +564,13 @@ enode aether_e_eq(aether a, enode L, enode R) {
 
     // 1. Primitive → primitive fast path
     if (is_prim(L) && is_prim(R)) {
+        // normalize types if they differ
+        if (L->au != R->au) {
+            if (L->au->abi_size >= R->au->abi_size)
+                R = aether_e_primitive_convert(a, R, (etype)L);
+            else
+                L = aether_e_primitive_convert(a, L, (etype)R);
+        }
         if (is_realistic(L) || is_realistic(R)) {
             // floating compare
             return value(bool_t,

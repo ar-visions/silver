@@ -1682,7 +1682,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
 
                 if (eq(alpha, "super")) {
                     validate(rec_top, "super only valid in class context");
-                    mem = (enode)enode(mod, (aether)a, au, rec_top->au->context, avoid_ftable, true, target, f->target); // with this node, we must not use the function table associated to the target
+                    mem = (enode)enode(mod, (aether)a, au, rec_top->au->context, avoid_ftable, true, target, f->target, value, f->target->value, loaded, true); // with this node, we must not use the function table associated to the target
                 }
                 else if (!in_rec) {
                     // try implicit 'this' access in instance methods
@@ -4197,7 +4197,7 @@ static void build_record(silver a, etype mrec) {
         // if no init, create one (attach preamble for our property inits)
         Au_t m_init = find_member(rec->au, "init", AU_MEMBER_FUNC, false);
         if (!m_init) {
-            efunc f = function(a, (etype)rec, 
+            efunc f = function(a, (etype)rec,
                 string("init"), etypeid(none), a(rec), AU_MEMBER_FUNC,
                 AU_TRAIT_IMETHOD | AU_TRAIT_OVERRIDE, 0);
             f->has_code = true;
@@ -4206,12 +4206,12 @@ static void build_record(silver a, etype mrec) {
             m_init = f->au;
         }
         build_fn(a, u(efunc, m_init), build_init_preamble, null); // we may need to
+    }
 
-        // build remaining functions
-        members(rec->au, m) {
-            efunc n = u(efunc, m);
-            if (n) build_fn(a, n, null, null);
-        }
+    // build member functions (for both classes and structs)
+    members(rec->au, m) {
+        efunc n = u(efunc, m);
+        if (n) build_fn(a, n, null, null);
     }
     pop_scope(a);
 }
