@@ -884,12 +884,11 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) {
         }
     }
 
-    /// LV cannot change its type if it is a emember and we are assigning
     enode Lnode = (enode)L;
-    etype rtype = determine_rtype(a, optype, (etype)LV, (etype)RV); // todo: return bool for equal/not_equal/gt/lt/etc, i64 for compare; there are other ones too
+    etype rtype = determine_rtype(a, optype, (etype)LV, (etype)RV);
 
     LLVMValueRef RES;
-    enode LL = optype <= OPType__assign ? LV : e_create(a, rtype, (Au)LV); // we dont need the 'load' in here, or convert even
+    enode LL = e_create(a, rtype, (Au)LV);
     enode RL = e_create(a, rtype, (Au)RV);
 
     symbol         N = cstring(op_name);
