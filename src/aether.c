@@ -173,11 +173,15 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
         res = rR;
     } else {
         string op_name = (string)e_str(OPType, op_val);
+
+        LLVMValueRef L_val = LLVMBuildLoad2(a->builder,
+            lltype(L), L->value, "cur");
+
         res = value(
             L,
             op_table[op_val - OPType__assign_add].f_build_op(
                 a->builder,
-                L->value,
+                L_val,
                 rR->value,
                 op_name->chars));
     }
@@ -284,11 +288,26 @@ etype etype_traits(Au input, int traits) {
 etype determine_rtype(aether a, OPType optype, etype L, etype R) {
     if (optype >= OPType__bind && optype <= OPType__assign_left)
         return L;  // Assignment operations always return the type of the left operand
-    else if (optype == OPType__value_default ||
-             optype == OPType__cond_value    ||
-             optype == OPType__or            ||
-             optype == OPType__and           ||
-             optype == OPType__xor) {
+
+    // comparisons ALWAYS return bool
+    switch (optype) {
+        case OPType__equal:
+        case OPType__not_equal:
+        case OPType__less:
+        case OPType__less_eq:
+        case OPType__greater:
+        case OPType__greater_eq:
+            return etypeid(bool);
+
+        default:
+            break;
+    }
+
+    if (optype == OPType__value_default ||
+        optype == OPType__cond_value    ||
+        optype == OPType__or            ||
+        optype == OPType__and           ||
+        optype == OPType__xor) {
         if (is_bool(L) && is_bool(R))
             return etypeid(bool);  // Logical operations on booleans return boolean
         // For bitwise operations, fall through to numeric promotion
@@ -855,7 +874,7 @@ enode e_operand_primitive(aether a, Au op) {
 }
 
 
-enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) {
+enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequencer
     a->is_const_op = false; // we can be granular about this, but its just not worth the complexity for now
     enode mL = (enode)instanceof(L, enode);
     Au mL_info = head(mL);
@@ -912,12 +931,21 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) {
         
     } else if (optype >= OPType__add && optype <= OPType__left) {
         struct op_entry* op = &op_table[optype - OPType__add];
+
+        LL = e_create(a, rtype, (Au)LL); // generate compare != 0 if not already i1
+        RL = e_create(a, rtype, (Au)RL);
+        
         if (!a->no_build) {
             if (LL->literal && RL->literal)
                 RES = op->f_const_op(LL->value, RL->value);
-            else
+            else {
+                Au LL_origin = head(LL);
+                Au RL_origin = head(RL);
+                char id[256];
+                snprintf(id, sizeof(id), "op_%s", N);
                 // we must override the logic here because we're ONLY doing OPType__or, OPType__and
-                RES = op->f_build_op(B, LL->value, RL->value, N);
+                RES = op->f_build_op(B, LL->value, RL->value, id);
+            }
         }
  
     } else if (optype >= OPType__bind && optype <= OPType__assign_left) {
@@ -1756,7 +1784,7 @@ enode e_runtime_type(enode instance) {
     return value(etypeid(Au_t), LLVMBuildLoad2(a->builder, i8_ptr_ty, header_cast, "runtime_type"));
 }
 
-enode aether_e_typeid(aether a, etype mdl) {
+enode aether_e_typeid(aether a, etype mdl) { sequencer
     if (!mdl)
         return e_null(a, etypeid(Au_t));
 
@@ -1771,7 +1799,10 @@ enode aether_e_typeid(aether a, etype mdl) {
     a->is_const_op = false;
 
     enode n = resolve_typeid(a, (Au)mdl);
-    verify(n, "schema instance not found for %o", mdl);
+    if (seq == 23) {
+        seq = seq;
+    }
+    verify(n, "schema instance not found for %o [%i]", mdl, seq);
     return n;
 }
 
@@ -2638,6 +2669,95 @@ enode aether_e_if_else(
     subprocedure cond_builder,
     subprocedure expr_builder)
 {
+    u32 ln_conds = (u32)len(conds);
+
+    // if the parser stored a final `el` as an empty condition entry,
+    // treat that as "final else" and do not compile it as a condition.
+    bool conds_has_empty_tail = false;
+    if (ln_conds > 0) {
+        // in your case conds->origin[i] is itself an array (len == 0 for the final else)
+        array last = (array)conds->origin[ln_conds - 1];
+        if (last && len(last) == 0) {
+            conds_has_empty_tail = true;
+            ln_conds -= 1;
+        }
+    }
+
+    bool has_final_else = (len(exprs) > ln_conds) || conds_has_empty_tail;
+
+    verify(
+        ln_conds == (u32)len(exprs) ||
+        ln_conds + 1 == (u32)len(exprs),
+        "mismatch between conditions and expressions");
+
+    LLVMBasicBlockRef cur_block = LLVMGetInsertBlock(a->builder);
+    LLVMValueRef fn = LLVMGetBasicBlockParent(cur_block);
+    LLVMBasicBlockRef merge = LLVMAppendBasicBlockInContext(a->module_ctx, fn, "ifcont");
+
+    for (u32 i = 0; i < ln_conds; i++) {
+
+        LLVMBasicBlockRef then_block = LLVMAppendBasicBlockInContext(a->module_ctx, fn, "then");
+        LLVMBasicBlockRef else_block = null;
+
+        bool is_last = (i + 1 == ln_conds);
+        if (is_last) {
+            else_block = has_final_else
+                ? LLVMAppendBasicBlockInContext(a->module_ctx, fn, "else")
+                : merge;
+        } else {
+            else_block = LLVMAppendBasicBlockInContext(a->module_ctx, fn, "else");
+        }
+
+        // build condition in the current block
+        enode cond_node = (enode)invoke(cond_builder, conds->origin[i]);
+
+        // coerce to bool and grab value
+        enode cond_bool = e_create(a, etypeid(bool), (Au)cond_node);
+        LLVMValueRef condition = cond_bool->value;
+
+        LLVMBuildCondBr(a->builder, condition, then_block, else_block);
+
+        // then
+        LLVMPositionBuilderAtEnd(a->builder, then_block);
+        invoke(expr_builder, exprs->origin[i]);
+
+        LLVMBasicBlockRef end_then = LLVMGetInsertBlock(a->builder);
+        if (!LLVMGetBasicBlockTerminator(end_then))
+            LLVMBuildBr(a->builder, merge);
+
+        // next condition (or final else)
+        if (else_block != merge)
+            LLVMPositionBuilderAtEnd(a->builder, else_block);
+        else
+            LLVMPositionBuilderAtEnd(a->builder, merge);
+    }
+
+    // final else body (exprs[ln_conds])
+    if (has_final_else) {
+        invoke(expr_builder, exprs->origin[ln_conds]);
+
+        LLVMBasicBlockRef end_else = LLVMGetInsertBlock(a->builder);
+        if (!LLVMGetBasicBlockTerminator(end_else))
+            LLVMBuildBr(a->builder, merge);
+    }
+
+    LLVMPositionBuilderAtEnd(a->builder, merge);
+
+    return enode(
+        mod,    a,          // note: 'mod' must exist in your scope; otherwise replace with your module ref
+        loaded, false,
+        au,     typeid(none),
+        value,  null);
+}
+
+/*
+enode aether_e_if_else(
+    aether a,
+    array conds,
+    array exprs,
+    subprocedure cond_builder,
+    subprocedure expr_builder)
+{
     int ln_conds = len(conds);
     bool has_else = len(exprs) > ln_conds;
 
@@ -2662,8 +2782,8 @@ enode aether_e_if_else(
             else_block = LLVMAppendBasicBlockInContext(a->module_ctx, fn, "else");
 
         // Build condition
-        array tokens_cond0 = (array)first_element(conds);
-        enode cond_node = (enode)invoke(cond_builder, (Au)tokens_cond0);
+        array tokens_cond = (array)conds->origin[i];
+        enode cond_node = (enode)invoke(cond_builder, (Au)tokens_cond);
         LLVMValueRef condition = e_create(a, etypeid(bool), (Au)cond_node)->value;
 
         LLVMBuildCondBr(a->builder, condition, then_block, else_block);
@@ -2671,7 +2791,9 @@ enode aether_e_if_else(
         // Then block
         LLVMPositionBuilderAtEnd(a->builder, then_block);
         invoke(expr_builder, exprs->origin[i]);
-        LLVMBuildBr(a->builder, merge);
+
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(a->builder))) // would the insert b lock be different at this point from where we were before?
+            LLVMBuildBr(a->builder, merge);
 
         // Position for next iteration or else
         if (else_block != merge)
@@ -2681,7 +2803,8 @@ enode aether_e_if_else(
     // Else block
     if (has_else) {
         invoke(expr_builder, exprs->origin[ln_conds]);
-        LLVMBuildBr(a->builder, merge);
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(a->builder)))
+            LLVMBuildBr(a->builder, merge);
     }
 
     LLVMPositionBuilderAtEnd(a->builder, merge);
@@ -2692,7 +2815,7 @@ enode aether_e_if_else(
         au,     typeid(none),
         value,  null);
 }
-
+*/
 
 enode aether_e_addr_of(aether a, enode expr, etype mdl) {
     fault("verify e_create usage e_create(a, (etype)expr, (Au)mdl);");
@@ -4091,10 +4214,14 @@ none aether_build_module_initializer(aether a, enode init) {
                 ));
 
                 arg_list(mem, arg) {
+                    // we are literal about the arg being a pointer to the struct; 
+                    // in silver we pass by pointer.  we may not write to args, 
+                    // so this is without consequence
+                    etype arg_type = resolve(u(etype, arg->src));
                     e_fn_call(a, fn_def_arg, a(
                         e_mem,
                         const_string(chars, arg->ident),
-                        e_typeid(a, u(etype, arg->src)),
+                        e_typeid(a, arg_type),
                         _i64(0)
                     ));
                 }

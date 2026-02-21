@@ -23,7 +23,6 @@ static void build_record(silver a, etype mrec);
         string s = (string)formatter((Au_t)null, stderr, (Au) true, seq, (symbol) "\n%o:%i:%i " t, a->module_file, \
                   peek(a)->line, peek(a)->column, ##__VA_ARGS__); \
         if (level_err >= fault_level) { \
-            raise(SIGTRAP); \
             halt(s); \
         } \
         false; \
@@ -1639,8 +1638,8 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
         bool new_name = in_decl != null || in_rec;
         alpha = read_alpha_macrofilter(a, new_name);
 
-        validate(!first || alpha || new_name,
-            "expected member name, found %o", peek(a));
+        verify(!first || alpha || new_name,
+            "[%i] expected member, found %o ", seq, peek(a));
 
         // general facility for debugging member occurrences by name
         if (alpha && a->debug_member && eq(alpha, a->debug_member->chars)) {
@@ -1822,8 +1821,13 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
 
     int slen = len(a->stack);
 
-    if (!cmode && read_if(a, "["))
-        return parse_expression(a, mdl_expect);
+    if (!cmode && read_if(a, "[")) {
+        enode n = parse_expression(a, mdl_expect);
+        validate(n, "could not read expression");
+        validate(read_if(a, "]"),
+            "expected ] after %o expression", u(etype, n->au->src));
+        return n;
+    }
 
     // handle typed operations, converting to our expected model (if no difference, it passes through)
     if (a->expr_level > 0 && peek && is_alpha(peek)) {
@@ -4159,8 +4163,10 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
         if (is_lambda((Au)f))
             pop_scope(a);
 
-        if (!f->au->has_return)
+        if (!f->au->has_return && !a->last_return)
             e_fn_return(a, null);
+
+        int len2 = len(a->lexical);
         
         pop_scope(a);
         if (f->target)
@@ -4837,7 +4843,10 @@ enode parse_if_else(silver a) {
     array tokens_block = array(32);
 
     // first if
-    array cond  = read_within(a);
+    bool is_const = false;
+    etype mdl_read = null;
+    validate(next_is(a, "["), "expected [ after if");
+    array cond  = read_expression(a, &mdl_read, &is_const);
     verify(cond, "expected [condition] after if");
     array block = read_body(a);
     verify(block, "expected body");
@@ -4846,7 +4855,9 @@ enode parse_if_else(silver a) {
 
     // chain of el [cond] / el
     while (read_if(a, "el")) {
-        array cond  = read_within(a); // null when no [...] → final else
+        bool is_const = false;
+        etype mdl_read = null;
+        array cond  = next_is(a, "[") ? read_expression(a, &mdl_read, &is_const) : null; // null when no [...] → final else
         array block = read_body(a);
         verify(block, "expected body after el");
         push(tokens_cond,  (Au)(cond ? cond : array()));
