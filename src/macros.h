@@ -224,7 +224,7 @@
 /// with construct we give it a dynamic type, symbols and Au-values
 #define construct(type, ...) \
     ({ \
-        T instance = (T)alloc(type, 1, (Au_t*)null); \
+        T instance = (T)alloc(type, 1, null, (Au_t*)null); \
         _N_ARGS(instance, ## __VA_ARGS__); \
         Au_initialize((Au)instance); \
         instance; \
@@ -232,7 +232,7 @@
 
 #define new0(T, ...) \
     ({ \
-        T instance = (T)alloc(typeid(T), 1, (Au_t*)null); \
+        T instance = (T)alloc(typeid(T), 1, null, (Au_t*)null); \
         _N_ARGS(instance, ## __VA_ARGS__); \
         Au_initialize((Au)instance); \
         instance; \
@@ -240,7 +240,7 @@
 
 #define allocate(T, ...) \
     ({ \
-        T instance = (T)alloc(typeid(T), 1, (Au_t*)null); \
+        T instance = (T)alloc(typeid(T), 1, null, (Au_t*)null); \
         _N_ARGS(instance, ## __VA_ARGS__); \
         instance; \
     })

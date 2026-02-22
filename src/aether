@@ -77,6 +77,7 @@ forward(enode)
     M(X,Y, i, prop, public,   aether,           mod, meta, weak) \
     M(X,Y, i, prop, public,   etype,            schema) \
     M(X,Y, i, prop, public,   etype,            suffix) \
+    M(X,Y, i, prop, public,   enode,            eshape) \
     M(X,Y, i, prop, public,   tokens,           body) \
     M(X,Y, i, prop, public,   i32,              iteration) \
     M(X,Y, i, prop, public,   bool,             has_code) \
@@ -285,6 +286,7 @@ forward(evar)
 
 #define enode_schema(X,Y,...)\
     M(X,Y, i, prop, public,   enode,            target) \
+    M(X,Y, i, prop, public,   bool,             is_super) \
     M(X,Y, i, prop, public,   bool,             avoid_ftable) \
     M(X,Y, i, prop, public,   string,           symbol_name) \
     M(X,Y, i, prop, public,   enode,            published_type) \

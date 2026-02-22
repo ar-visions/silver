@@ -592,11 +592,11 @@ forward(any)
 
 #define Au_schema(AA,BB,...) \
     M(AA,BB, i, prop, Au_public, Au_t,      type) \
+    M(AA,BB, i, prop, Au_public, shape,     shape) \
     M(AA,BB, i, prop, Au_public, Au_t,      scalar) \
     M(AA,BB, i, prop, Au_public, i32,       refs) \
     M(AA,BB, i, prop, Au_public, i32,       managed) \
     M(AA,BB, i, prop, Au_public, Au,        data) \
-    M(AA,BB, i, prop, Au_public, shape,     shape) \
     M(AA,BB, i, prop, Au_public, cstr,      source) \
     M(AA,BB, i, prop, Au_public, i32,       line) \
     M(AA,BB, i, prop, Au_public, i32,       sequence) \
@@ -660,8 +660,8 @@ forward(any)
     M(AA,BB, i, method, public, bool,   is_meta) \
     M(AA,BB, i, method, public, bool,   is_meta_compatible, Au) \
     M(AA,BB, s, vargs,  public, Au,     formatter, Au_t, handle, Au, i32, symbol) \
-    M(AA,BB, s, method, public, Au,     alloc, Au_t, num, Au_ts) \
-    M(AA,BB, s, method, public, Au,     alloc_new, Au_t, num, Au_ts) \
+    M(AA,BB, s, method, public, Au,     alloc, Au_t, num, shape, Au_ts) \
+    M(AA,BB, s, method, public, Au,     alloc_new, Au_t, num, shape, Au_ts) \
     M(AA,BB, s, method, public, Au,     alloc_dbg, Au_t, num, cstr, i32, i32) \
     M(AA,BB, s, method, public, Au,     alloc2, Au_t, Au_t, shape) \
     M(AA,BB, s, method, public, string, estring, Au_t, i32) \
@@ -1126,6 +1126,7 @@ forward(shape)
     M(AA,BB, i, method,  public, shape, with_array, array) \
     M(AA,BB, i, method,  public, i64,   total) \
     M(AA,BB, i, method,  public, none,  push, i64) \
+    M(AA,BB, i, method,  public, i64,   flat_index, shape) \
     M(AA,BB, s, method,  public, shape, shape_from, i64, ref_i64) \
     M(AA,BB, s, method,  public, shape, shape_read, ARef) \
     M(AA,BB, s, vargs,   public, shape, new_shape, i64) \
