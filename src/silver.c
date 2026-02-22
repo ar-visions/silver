@@ -3101,7 +3101,7 @@ none silver_build(silver a) {
 
     path product    = f(path, "%o/%s%o%s%o%s",
         a->build_dir, a->is_library ? lib_pre : "", a->name,
-        a->defs_hash ? "-" : "",
+        len(a->defs_hash ? "-" : "",
         a->defs_hash,
         a->is_library ? lib_ext : "");
     
