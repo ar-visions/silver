@@ -1920,14 +1920,46 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
 
     if (!cmode && read_if(a, "new")) {
         etype mdl = read_etype(a, null);
-        enode sz  = null;
+        enode esize = null;
+        shape sh  = null;
         if (read_if(a, "[")) {
-            sz = parse_expression(a, etypeid(shape));
+            esize = parse_expression(a, etypeid(shape));
+            sh = instanceof(esize->literal, shape);
             validate(read_if(a, "]"), "expected closing-bracket after new Type [");
         }
+
+        etype  ptr_type = (etype)pointer((aether)a, (Au)mdl->au);
+        enode  vec      = e_vector(a, mdl, esize);
+ 
+        /// parse optional constant data: new i32[4x4] [ 1 2 3 4, 1 1 1 1, ... ]
+        if (read_if(a, "[")) {
+            int   top_stride = (sh && sh->count > 1) ? sh->data[sh->count - 1] : 0;
+            int   num_index  = 0;
+            array nodes      = array(64);
+ 
+            while (peek(a) && !next_is(a, "]")) {
+                enode e = parse_expression(a, mdl);
+                e = e_create(a, mdl, (Au)e);
+                push(nodes, (Au)e);
+                num_index++;
+                if (top_stride && (num_index % top_stride == 0)) {
+                    validate(read_if(a, ",") || next_is(a, "]"),
+                        "expected ',' between rows (stride: %i)", top_stride);
+                }
+            }
+            validate(read_if(a, "]"), "expected ] after constant data");
+ 
+            /// copy constant data into allocated vector
+            if (len(nodes) > 0)
+                e_vector_init(a, mdl, vec, nodes);
+        }
+        return e_create(a, ptr_type, (Au)vec);
+
+
+
         return e_create(a,
             (etype)pointer((aether)a, (Au)mdl->au),
-            (Au)e_vector(a, mdl, sz));
+            (Au)e_vector(a, mdl, esize));
     }
 
     if (!cmode && read_if(a, "null"))
@@ -3101,7 +3133,7 @@ none silver_build(silver a) {
 
     path product    = f(path, "%o/%s%o%s%o%s",
         a->build_dir, a->is_library ? lib_pre : "", a->name,
-        len(a->defs_hash ? "-" : "",
+        len(a->defs_hash) ? "-" : "",
         a->defs_hash,
         a->is_library ? lib_ext : "");
     
