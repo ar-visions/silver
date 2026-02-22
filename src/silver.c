@@ -1876,7 +1876,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
     shape sh = (shape)read_literal(a, typeid(shape));
     if (sh && (sh->count == 1 || sh->explicit)) {
         enode op;
-        if (mdl_expect == typeid(shape)) 
+        if (mdl_expect == etypeid(shape))
             op = e_operand(a, (Au)sh, etypeid(shape));
         else
             op = e_operand(a, _i64(sh->data[0]), mdl_expect ? mdl_expect : etypeid(i64));
