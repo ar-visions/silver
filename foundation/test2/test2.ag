@@ -96,8 +96,17 @@ func control_flow_test[] -> bool
 
     return true
 
+func array_test[] -> bool
+    puts ['array_test']
+    ar  : array i32[ 4x4 ] [ 1 2 3 4, 1 1 1 1, 2 2 2 2, 3 3 3 3 ]
+    ar2 : new   i32[ 4x4 ] [ 1 2 3 4, 1 1 1 1, 2 2 2 2, 3 3 3 3 ]
+    return true
+
+func map_test[] -> bool
+    return true
+
 func compound_test[] -> bool
-    return control_flow_test && math_test
+    return control_flow_test && math_test && array_test && map_test
 
 app test2
     func init [] -> none
