@@ -15,4 +15,6 @@ build
 *.pyc
 *.o
 *.i
+*.ll
+/*.ag
 sessions
