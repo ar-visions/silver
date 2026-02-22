@@ -2059,6 +2059,58 @@ enode aether_e_vector(aether a, etype t, enode sz) {
     return e_fn_call(a, f_alloc, a( e_typeid(a, t), sz, metas_node ));
 }
 
+/// copy constant primitive data into a vector allocated by e_vector
+/// vec is the result of e_vector (points to data area), const_data is a global constant array
+none aether_e_vector_init(aether a, etype element_type, enode vec, array nodes) {
+    a->is_const_op = false;
+    if (a->no_build) return;
+
+    int ln = len(nodes);
+    if (ln == 0) return;
+
+    /// check if all elements are constant
+    bool all_const = true;
+    for (int i = 0; i < ln; i++) {
+        enode node = (enode)nodes->origin[i];
+        if (!node->literal) { all_const = false; break; }
+    }
+
+    if (all_const) {
+        /// build a global constant array and memcpy into the vector
+        LLVMValueRef *elems = malloc(sizeof(LLVMValueRef) * ln);
+        for (int i = 0; i < ln; i++) {
+            enode node = (enode)nodes->origin[i];
+            elems[i] = node->value;
+        }
+        LLVMValueRef const_arr = LLVMConstArray(lltype(element_type), elems, ln);
+        free(elems);
+
+        static int ident = 0;
+        char gname[32];
+        sprintf(gname, "new_const_%i", ident++);
+        LLVMValueRef G = LLVMAddGlobal(a->module_ref, LLVMTypeOf(const_arr), gname);
+        LLVMSetLinkage(G, LLVMInternalLinkage);
+        LLVMSetGlobalConstant(G, 1);
+        LLVMSetInitializer(G, const_arr);
+
+        /// memcpy from constant global into allocated vector data
+        LLVMTypeRef i8ptr = LLVMPointerTypeInContext(a->module_ctx, 0);
+        LLVMValueRef dst  = LLVMBuildBitCast(B, vec->value, i8ptr, "vec.dst");
+        LLVMValueRef src  = LLVMBuildBitCast(B, G, i8ptr, "const.src");
+        u64 byte_size = (u64)ln * (element_type->au->abi_size / 8);
+        LLVMValueRef sz   = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), byte_size, 0);
+        LLVMBuildMemCpy(B, dst, 0, src, 0, sz);
+    } else {
+        /// store each element individually
+        for (int i = 0; i < ln; i++) {
+            enode node = (enode)nodes->origin[i];
+            LLVMValueRef idx = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), i, 0);
+            LLVMValueRef gep = LLVMBuildGEP2(B, lltype(element_type), vec->value, &idx, 1, "elem.ptr");
+            LLVMBuildStore(B, node->value, gep);
+        }
+    }
+}
+
 enode aether_e_alloc(aether a, etype mdl) {
     enode metas_node = e_meta_ids(a, mdl->meta);
     efunc f_alloc = (efunc)u(efunc, find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, false));

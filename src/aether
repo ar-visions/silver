@@ -226,6 +226,7 @@ forward(efunc)
     M(X,Y, i, method, public,     enode,       e_div,              Au,          Au) \
     M(X,Y, i, method, public,     enode,       e_create,           etype, Au) \
     M(X,Y, i, method, public,     enode,       e_vector,           etype, enode) \
+    M(X,Y, i, method, public,     none,        e_vector_init,      etype, enode, array) \
     M(X,Y, i, method, public,     enode,       e_zero,               enode) \
     M(X,Y, i, method, public,     enode,       e_assign,             enode,      Au, OPType) \
     M(X,Y, i, method, public,     enode,       e_fn_call,          efunc,      array)  \
