@@ -1941,8 +1941,9 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
                 e = e_create(a, mdl, (Au)e);
                 push(nodes, (Au)e);
                 num_index++;
+                token comma = read_if(a, ",");
                 if (top_stride && (num_index % top_stride == 0)) {
-                    validate(read_if(a, ",") || next_is(a, "]"),
+                    validate(comma || next_is(a, "]"),
                         "expected ',' between rows (stride: %i)", top_stride);
                 }
             }
