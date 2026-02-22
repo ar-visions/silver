@@ -172,6 +172,7 @@ forward(efunc)
     M(X,Y, i, prop,  public, array,             stack) \
     M(X,Y, i, prop,  public, Au_t,              top) \
     M(X,Y, i, vargs,  public,     none,        eprint, symbol) \
+    M(X,Y, i, method, public,     none,        e_vector_init, etype, enode, array) \
     M(X,Y, i, method, public,     none,        create_type_members, Au_t) \
     M(X,Y, i, method, public,     none,        build_module_initializer, enode) \
     M(X,Y, i, method, public,     efunc,       module_initializer) \
