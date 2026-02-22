@@ -1937,7 +1937,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
             array nodes      = array(64);
 
             while (peek(a) && !next_is(a, "]")) {
-                enode e = parse_expression(a, mdl);
+                enode e = read_enode(a, mdl, false);
                 e = e_create(a, mdl, (Au)e);
                 push(nodes, (Au)e);
                 num_index++;
