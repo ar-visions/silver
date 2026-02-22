@@ -4725,7 +4725,18 @@ etype etype_of(enode mem) {
 enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const) {
     validate(isa(mem) == typeid(enode) || !mem->au->is_const,
         "mem %s is a constant", mem->au->ident);
-    
+
+    // function args are read-only in silver
+    if (mem->au->member_type != AU_MEMBER_DECL && mem->au->context) {
+        u8 ct = mem->au->context->member_type;
+        validate(ct != AU_MEMBER_FUNC      &&
+                 ct != AU_MEMBER_CAST      &&
+                 ct != AU_MEMBER_INDEX     &&
+                 ct != AU_MEMBER_OPERATOR  &&
+                 ct != AU_MEMBER_CONSTRUCT,
+            "cannot assign to function argument '%s' (read-only)", mem->au->ident);
+    }
+
     etype t = (etype)etype_of(mem);
     enode R = parse_expression(a, t); 
 
