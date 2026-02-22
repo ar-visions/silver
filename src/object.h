@@ -107,11 +107,11 @@ typedef struct _Au_t *Au_t;
 // this is an exact mock type of A's instance
 typedef struct _object {
     Au_t            type;
+    struct _shape*  shape;
     Au_t            scalar;
     i32             refs;
     i32             managed;
     struct _Au*     data;
-    struct _shape*  shape;
     cstr            source;
     i32             line;
     i32             sequence;

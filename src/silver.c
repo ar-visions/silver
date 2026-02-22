@@ -368,7 +368,7 @@ static enode parse_expression(silver a, etype expect) {
         return parse_object(a, expect, false);
     
     enode unbias = reverse_descent(a, null);
-    return e_create(a, expect, (Au)unbias);
+    return e_create(a, expect, (Au)unbias); // parse assignment needs to expect a deref'd type, or, we call it loaded:false, 
 }
 
 static enode reverse_descent(silver a, etype expect) { sequencer
@@ -1611,7 +1611,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
     silver module  =  !is_cmode(a) && (top->is_namespace) ? a : null;
     efunc  f       =  !is_cmode(a) ? context_func(a) : null;
     bool   in_rec  = rec_top && rec_top->au == top;
-    if (seq == 116) {
+    if (seq == 103) {
         seq = seq;
     }
 
@@ -1636,6 +1636,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
         }
     }
 
+    bool is_super = false;
     for (;!skip_member_check;) {
         bool first = !mem;
 
@@ -1686,9 +1687,10 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
             // we may only define our own members within our own space
             if (first) {
 
-                if (eq(alpha, "super")) {
+                if (eq(alpha, "super")) { // take care now
                     validate(rec_top, "super only valid in class context");
                     mem = enode_super(rec_top, f->target);
+                    is_super = true;
                 }
                 else if (!in_rec) {
                     // try implicit 'this' access in instance methods
@@ -1741,7 +1743,10 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
             }
 
             Au_t mem_type = isa(mem);
-            if (!in_decl && (next_is(a, "[") || instanceof(mem, macro) || is_func((Au)mem) || inherits(mem->au->src, typeid(lambda)))) {
+            bool b0, b1, b2, b3, b4;
+            if (in_decl != typeid(efunc) && 
+                in_decl != typeid(macro) && 
+                (next_is(a, "[") || instanceof(mem, macro) || (b0=is_func((Au)mem)) || inherits(mem->au->src, typeid(lambda)))) {
                 print_tokens(a, "parsing member expr");
                 mem = parse_member_expr(a, mem);
             }
@@ -1811,6 +1816,8 @@ enode parse_sub(silver a, etype rtype) {
     return res;
 }
 
+etype shape_pointer(silver, Au, enode);
+
 enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
     print_tokens(a, "read-node");
     bool      cmode     = is_cmode(a);
@@ -1876,8 +1883,8 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
     shape sh = (shape)read_literal(a, typeid(shape));
     if (sh && (sh->count == 1 || sh->explicit)) {
         enode op;
-        if (mdl_expect == typeid(shape)) 
-            op = e_operand(a, (Au)sh, etypeid(shape));
+        if (mdl_expect == etypeid(shape)) 
+            op = e_create(a, etypeid(shape), (Au)sh);
         else
             op = e_operand(a, _i64(sh->data[0]), mdl_expect ? mdl_expect : etypeid(i64));
         
@@ -1923,12 +1930,13 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
         enode esize = null;
         shape sh  = null;
         if (read_if(a, "[")) {
-            esize = parse_expression(a, etypeid(shape));
+            esize = read_enode(a, etypeid(shape), false);
             sh = instanceof(esize->literal, shape);
             validate(read_if(a, "]"), "expected closing-bracket after new Type [");
         }
 
-        etype  ptr_type = (etype)pointer((aether)a, (Au)mdl->au);
+        etype  ptr_type = (etype)shape_pointer(a, (Au)mdl->au, esize);
+
         enode  vec      = e_vector(a, mdl, esize);
  
         /// parse optional constant data: new i32[4x4] [ 1 2 3 4, 1 1 1 1, ... ]
@@ -1938,7 +1946,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
             array nodes      = array(64);
  
             while (peek(a) && !next_is(a, "]")) {
-                enode e = parse_expression(a, mdl);
+                enode e = read_enode(a, mdl, false);
                 e = e_create(a, mdl, (Au)e);
                 push(nodes, (Au)e);
                 num_index++;
@@ -1954,12 +1962,6 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
                 e_vector_init(a, mdl, vec, nodes);
         }
         return e_create(a, ptr_type, (Au)vec);
-
-
-
-        return e_create(a,
-            (etype)pointer((aether)a, (Au)mdl->au),
-            (Au)e_vector(a, mdl, esize));
     }
 
     if (!cmode && read_if(a, "null"))
@@ -4638,6 +4640,8 @@ enode parse_create_lambda(silver a, enode mem) {
 
 enode eshape_from_indices(aether a, array indices);
 
+enode enode_shape(enode);
+
 enode silver_parse_member_expr(silver a, enode mem) {
     push_current(a);
 
@@ -4678,10 +4682,25 @@ enode silver_parse_member_expr(silver a, enode mem) {
             index_expr = e_fn_call(a, (efunc)u(efunc, idx), a(mem, eshape));
         } else {
             if (len(args) > 1) {
-                enode eshape = eshape_from_indices((aether)a, args);
-                index_expr = e_offset(a, mem, (Au)eshape);
+
+                enode eref_shape = eshape_from_indices((aether)a, args);
+
+                // data shape from the member's meta (this can be enode or literal)
+                // we need to read this from the instance
+                // enode edata_shape = (enode)u(etype, mem->au->src)->meta->origin[0];
+                enode edata_shape = enode_shape(mem);
+
+                // call runtime: shape_flat_index(data_shape, idx_shape) -> i64
+                Au_t flat_fn = find_member(typeid(shape), "flat_index", AU_MEMBER_FUNC, false);
+                enode flat_idx = e_fn_call(a, (efunc)u(efunc, flat_fn), a(edata_shape, eref_shape));
+
+                index_expr = e_offset(a, mem, (Au)flat_idx);
             } else
                 index_expr = e_offset(a, mem, (Au)first_index);
+
+            // not lying spock.. exaggerating (negotiating)
+            index_expr->au = index_expr->au->src;
+            index_expr->loaded = false;
         }
         pop_tokens(a, true);
         return index_expr;
