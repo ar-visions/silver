@@ -1923,7 +1923,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
         enode sz  = null;
         shape sh  = null;
         if (read_if(a, "[")) {
-            sz = parse_expression(a, etypeid(shape));
+            sz = read_enode(a, etypeid(shape), false);
             sh = (shape)instanceof(sz->literal, shape);
             validate(read_if(a, "]"), "expected closing-bracket after new Type [");
         }
