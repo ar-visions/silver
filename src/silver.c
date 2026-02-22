@@ -367,7 +367,7 @@ static enode parse_expression(silver a, etype expect) {
     if (is_rec(expect) && next_is(a, "["))
         return parse_object(a, expect, false);
     
-    enode unbias = reverse_descent(a, null);
+    enode unbias = reverse_descent(a, expect);
     return e_create(a, expect, (Au)unbias);
 }
 
@@ -1923,7 +1923,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
         enode sz  = null;
         shape sh  = null;
         if (read_if(a, "[")) {
-            sz = read_enode(a, etypeid(shape), false);
+            sz = parse_expression(a, etypeid(shape));
             sh = (shape)instanceof(sz->literal, shape);
             validate(read_if(a, "]"), "expected closing-bracket after new Type [");
         }
