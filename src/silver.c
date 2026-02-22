@@ -1541,6 +1541,8 @@ bool is_loaded(Au n) {
 etype evar_type(evar a);
 
 bool in_context(Au_t au, Au_t ctx) {
+    if (ctx->is_pointer)
+        ctx = ctx->src;
     while (ctx && au) {
         if (au->context == ctx) return true;
         if (ctx == ctx->context) break;
@@ -1600,6 +1602,8 @@ string read_alpha_macrofilter(silver a, bool is_decl) {
     return use_name ? n : null;
 }
 
+enode enode_super(etype, enode);
+
 enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int seq = 0; seq++;
     OPType assign_enum = OPType__undefined;
     Au_t   top     = top_scope(a);
@@ -1638,6 +1642,9 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
         bool new_name = in_decl != null || in_rec;
         alpha = read_alpha_macrofilter(a, new_name);
 
+        if (alpha && eq(alpha, "x")) {
+            alpha = alpha;
+        }
         verify(!first || alpha || new_name,
             "[%i] expected member, found %o ", seq, peek(a));
 
@@ -1681,7 +1688,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
 
                 if (eq(alpha, "super")) {
                     validate(rec_top, "super only valid in class context");
-                    mem = (enode)enode(mod, (aether)a, au, rec_top->au->context, avoid_ftable, true, target, f->target); // with this node, we must not use the function table associated to the target
+                    mem = enode_super(rec_top, f->target);
                 }
                 else if (!in_rec) {
                     // try implicit 'this' access in instance methods
@@ -2381,10 +2388,11 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     bool first = true;
     Au_t target = null;
 
-    if (seq == 23) {
+    if (seq == 44) {
         seq = seq;
     }
     
+    // parse args (move to generic)
     for (; member_type != AU_MEMBER_CAST ;) {
         if (read_if(a, "]"))
             break;
@@ -2395,17 +2403,16 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
             in_context = true;
         }
         validate(skip || first || read_if(a, ","), "expected comma separator between arguments");
-        push_current(a);
-        etype peek_type = read_etype(a, null);
-        pop_tokens(a, peek_type != null);
         
-        string n  = peek_type ? null : read_alpha(a); // optional
-        array  ar = in_context ? (array)&au->members : (array)&au->args;
-        if (seq == 23) {
-            seq = seq;
-        }
-        validate(peek_type || read_if(a, ":"), "expected seperator between name and type %i", seq);
-        etype  t = peek_type ? peek_type : read_etype(a, null); // we need to avoid the literal check in here!
+        bool    is_inlay  = read_if(a, "inlay") != null;    push_current(a);
+        etype   t = read_etype(a, null);            pop_tokens(a, t != null);
+        string  n         = t ? null : read_alpha(a); // optional
+        array   ar        = in_context ? (array)&au->members : (array)&au->args;
+        
+        validate(t || read_if(a, ":"),
+            "expected seperator between name and type %i", seq);
+        
+        if (!t) t = read_etype(a, null); // we need to avoid the literal check in here!
 
         if (member_type == AU_MEMBER_CONSTRUCT && !len(name))
             name = form(string, "with_%o", t);
@@ -2413,7 +2420,15 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
             name = form(string, "cast_%o", t);
         
         verify(t, "expected alpha-numeric identity for type or name");
-        array_qpush(ar, (Au)alloc_arg(au, n ? n->chars : null, t->au));
+        Au_t arg = alloc_arg(au, n ? n->chars : null, t->au);
+        arg->is_inlay = is_inlay;
+        if (!is_inlay && is_struct(arg->src)) {
+            arg->src = pointer((aether)a, (Au)arg->src)->au;
+        } else if (is_inlay) {
+            validate(is_struct(arg->src),
+                "inlay applies only to struct members in arguments");
+        }
+        array_qpush(ar, (Au)arg);
         if (first)
             first = false;
     }
@@ -4173,7 +4188,11 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
             postamble((Au)f, null);
 
         if (f->inline_return) {
+            if (seq == 10) {
+                seq = seq;
+            }
             push_tokens(a, (tokens)f->inline_return, 0);
+            print_all_tokens(a, "inline-expr", f->inline_return);
             e_fn_return(a, len(f->inline_return) ? 
                 (Au)parse_expression(a, u(etype, f->au->rtype)) : null);
             pop_tokens(a, false);

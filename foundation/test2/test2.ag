@@ -6,19 +6,9 @@ import test3
 
 import <stdio.h>
 
-func test2_func[ i:i32 ] -> i64
-    return i + 1
-
-##
-app test2
-    func init [] -> none
-        test2_func 1
-##
-
 # no assigning external module vars, same as their internal rules
 debug:   bool [ coolteen == 'Tim' ]
 debug2:         coolteen == 'Tim'
-
 
 enum Color [ u8 ]
     red:    1
@@ -26,15 +16,14 @@ enum Color [ u8 ]
     blue:   3
     alpha:  4
 
-
 struct Vec2
     public x: f32
-    y: f32
+    public y: f32
 
     operator + [ b: Vec2 ] -> Vec2
         return Vec2 [ x: x + b.x, y: y + b.y ]
 
-    operator == [ b: Vec2   ] -> bool [ x == b.x && y == b.y ]
+    operator == [ b: Vec2   ] -> bool [ x == b.x ]
     operator /  [ b: double ] -> Vec2 [ x: x / b, y: y / b ]
     operator *  [ b: double ] -> Vec2 [ x: x * b, y: y * b ]
 
