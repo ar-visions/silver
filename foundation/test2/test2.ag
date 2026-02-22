@@ -100,6 +100,9 @@ func array_test[] -> bool
     puts ['array_test']
     ar  : array i32[ 4x4 ] [ 1 2 3 4, 1 1 1 1, 2 2 2 2, 3 3 3 3 ]
     ar2 : new   i32[ 4x4 ] [ 1 2 3 4, 1 1 1 1, 2 2 2 2, 3 3 3 3 ]
+
+    ar2[0,1] = 8
+
     return true
 
 func map_test[] -> bool

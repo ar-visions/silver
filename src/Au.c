@@ -878,7 +878,7 @@ bool lambda_cast_bool(lambda a) {
 }
 
 lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
-    lambda a = (lambda)alloc_new(typeid(lambda), 0, null);
+    lambda a = (lambda)alloc_new(typeid(lambda), 0, null, null);
     a->au      = au;
     a->fn      = fn;
     a->target  = target;
@@ -913,8 +913,7 @@ Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, 
     type->record_alignment  = seq;
     head(type)->type = typeid(Au_t_f);     
     
-    if (!context) {
-        verify(type->member_type == AU_MEMBER_MODULE, "expected module when no context is set on Au_t");
+    if (member_type == AU_MEMBER_MODULE) {
         array_qpush((array)&modules.data, (Au)type); // we should error if we ever find a duplicate here
     } else
         push_type((Au_t)type);
@@ -1633,15 +1632,17 @@ void alloc_validate() {
     }
 }
 
-Au alloc(Au_t type, num count, Au_t* meta) {
+Au alloc(Au_t type, num count, shape shape_data, Au_t* meta) {
     sz map_sz = sizeof(map);
     sz _sz   = sizeof(struct _Au);
+    sz alloc_count = shape_data ? shape_total(shape_data) : count;
     Au a = alloc_instance(type,
-        _sz + type->typesize * count, true);
+        _sz + type->typesize * alloc_count, true);
     a->type       = type;
     a->data       = &a[1];
-    a->count      = count;
+    a->count      = alloc_count;
     a->alloc      = count;
+    a->shape      = hold(shape_data);
     if (meta && type->meta.count > 0) {
         for (int i = 0; i < type->meta.count; i++) {
             Au_t m = meta[i];
@@ -1659,8 +1660,8 @@ Au alloc(Au_t type, num count, Au_t* meta) {
     return a->data;
 }
 
-Au alloc_new(Au_t type, num count, Au_t* meta) {
-    return alloc(type, count, meta);
+Au alloc_new(Au_t type, num count, shape shape_data, Au_t* meta) {
+    return alloc(type, count, shape_data, meta);
 }
 
 Au alloc2(Au_t type, Au_t scalar, shape s) {
@@ -1715,7 +1716,7 @@ Au method_call(Au_t m, array args) {
     if (a->rtype->traits & AU_TRAIT_PRIMITIVE)
         return primitive(a->rtype, result);
     else if (a->rtype->traits & AU_TRAIT_ENUM) {
-        Au res = alloc(a->rtype, 1, null);
+        Au res = alloc(a->rtype, 1, null, null);
         verify(a->rtype->src == typeid(i32), "i32 enums supported");
         *((i32*)res) = *(i32*)result;
         return res;
@@ -2019,7 +2020,7 @@ map arguments(int argc, cstrs argv, map default_values, Au default_key) {
 }
 
 Au primitive(Au_t type, none* data) {
-    Au copy = alloc(type, 1, null);
+    Au copy = alloc(type, 1, null, null);
     memcpy(copy, data, type->typesize);
     return copy;
 }
@@ -2280,7 +2281,7 @@ Au construct_with(Au_t type, Au data, ctx context) {
     /// construct with map of fields
     if (!(type->traits & AU_TRAIT_PRIMITIVE) && data_type == typeid(map)) {
         map m = (map)data;
-        result = alloc(type, 1, null);
+        result = alloc(type, 1, null, null);
         pairs(m, i) {
             verify(isa(i->key) == typeid(string),
                 "expected string key when constructing Au from map");
@@ -2300,20 +2301,20 @@ Au construct_with(Au_t type, Au data, ctx context) {
                 Au_t arg = au_arg_type(array_get((array)&mem->args, 1));
                 /// no meaningful way to do this generically, we prefer to call these first
                 if (arg == typeid(path) && data_type == typeid(string)) {
-                    result = alloc(type, 1, null);
+                    result = alloc(type, 1, null, null);
                     result = ((Au(*)(Au, path))addr)(result, path(((string)data)));
                     verify(Au_validator(result), "invalid Au");
                     break;
                 }
                 if ((arg == typeid(cstr) || arg == typeid(symbol)) && 
                         data_type == typeid(string)) {
-                    result = alloc(type, 1, null);
+                    result = alloc(type, 1, null, null);
                     result = ((Au(*)(Au, cstr))addr)(result, ((string)data)->chars);
                     verify(Au_validator(result), "invalid Au");
                     break;
                 }
                 if (arg == data_type) {
-                    result = alloc(type, 1, null);
+                    result = alloc(type, 1, null, null);
                     result = ((Au(*)(Au, Au))addr)(result, data);
                     verify(Au_validator(result), "invalid Au");
                     break;
@@ -2347,7 +2348,7 @@ Au construct_with(Au_t type, Au data, ctx context) {
             v = evalue (type, (cstr)((string)data)->chars);
         else
             v = evalue (type, null);
-        result = alloc(type, 1, null);
+        result = alloc(type, 1, null, null);
         *((i32*)result) = (i32)v;
     }
 
@@ -2356,7 +2357,7 @@ Au construct_with(Au_t type, Au data, ctx context) {
     if ((type->traits & AU_TRAIT_PRIMITIVE) && (data_type == typeid(string) ||
                                                data_type == typeid(cstr)   ||
                                                data_type == typeid(symbol))) {
-        result = alloc(type, 1, null);
+        result = alloc(type, 1, null, null);
         if (data_type == typeid(string))
             Au_with_cereal(result, (cereal) { .value = (cstr)((string)data)->chars } );
         else
@@ -2374,13 +2375,13 @@ Au construct_with(Au_t type, Au data, ctx context) {
             u64 combine = mem->type->traits & data_type->traits;
             if (combine & AU_TRAIT_INTEGRAL) {
                 i64 v = read_integer(data);
-                result = alloc(type, 1, null);
+                result = alloc(type, 1, null, null);
                      if (mem->type == typeid(i8))   ((none(*)(Au, i8))  addr)(result, (i8)  v);
                 else if (mem->type == typeid(i16))  ((none(*)(Au, i16)) addr)(result, (i16) v);
                 else if (mem->type == typeid(i32))  ((none(*)(Au, i32)) addr)(result, (i32) v);
                 else if (mem->type == typeid(i64))  ((none(*)(Au, i64)) addr)(result, (i64) v);
             } else if (combine & AU_TRAIT_REALISTIC) {
-                result = alloc(type, 1, null);
+                result = alloc(type, 1, null, null);
                 if (mem->type == typeid(f64))
                     ((none(*)(Au, double))addr)(result, (double)*(float*)data);
                 else
@@ -2388,17 +2389,17 @@ Au construct_with(Au_t type, Au data, ctx context) {
                 break;
             } else if ((mem->type == typeid(symbol) || mem->type == typeid(cstr)) && 
                        (data_type == typeid(symbol) || data_type == typeid(cstr))) {
-                result = alloc(type, 1, null);
+                result = alloc(type, 1, null, null);
                 ((none(*)(Au, cstr))addr)(result, (cstr)data);
                 break;
             } else if ((mem->type == typeid(string)) && 
                        (data_type == typeid(symbol) || data_type == typeid(cstr))) {
-                result = alloc(type, 1, null);
+                result = alloc(type, 1, null, null);
                 ((none(*)(Au, string))addr)(result, string((symbol)data));
                 break;
             } else if ((mem->type == typeid(symbol) || mem->type == typeid(cstr)) && 
                        (data_type == typeid(string))) {
-                result = alloc(type, 1, null);
+                result = alloc(type, 1, null, null);
                 ((none(*)(Au, cstr))addr)(result, (cstr)((string)data)->chars);
                 break;
             }
@@ -2505,7 +2506,7 @@ Au Au_member_object(Au a, Au_t m) {
     Au result;
     ARef   member_ptr = (ARef)((cstr)a + m->offset);
     if (is_inlay || is_primitive) {
-        result = alloc(m->type, 1, null);
+        result = alloc(m->type, 1, null, null);
         memcpy(result, member_ptr, m->type->typesize);
     } else {
         result = *member_ptr;
@@ -2844,7 +2845,7 @@ Au formatter(Au_t type, handle ff, Au opt, int seq, symbol template, ...) {
         return primitive(typeid(i32), &v);
     }
     return type ? (Au)
-        ((Au_f*)type)->ft.with_cereal(alloc(type, 1, null), (cereal) { .value = (cstr)res->chars }) :
+        ((Au_f*)type)->ft.with_cereal(alloc(type, 1, null, null), (cereal) { .value = (cstr)res->chars }) :
         (Au)res;
 }
 
@@ -3695,7 +3696,7 @@ Au Au_copy(Au a) {
     Au f = header(a);
     assert(f->count > 0, "invalid count");
     Au_t type = isa(a);
-    Au b = alloc(type, f->count, null);
+    Au b = alloc(type, f->count, null, null);
     memcpy(b, a, f->type->typesize * f->count);
     Au_hold_members(b);
     return b;
@@ -4105,7 +4106,7 @@ num abso(num i) {
 vector vector_vslice(vector a, num from, num to) {
     Au      f   = head(a);
     num count = (1 + abso(from - to)); // + 31 & ~31;
-    Au res = alloc(f->type, 1, null);
+    Au res = alloc(f->type, 1, null, null);
     Au res_f = head(res);
     u8* src   = (u8*)f->data;
     u8* dst   = null;
@@ -5225,7 +5226,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
             if (type->traits & AU_TRAIT_ENUM) {
                 // its possible we could reference a context variable within this enum [ value-area ]
                 // in which case, we could effectively look it up
-                Au evalue = alloc(type, 1, null);
+                Au evalue = alloc(type, 1, null, null);
                 string enum_symbol = parse_symbol(scan, &scan, context);
                 verify(enum_symbol, "enum symbol expected");
                 verify(*scan == ']', "expected ']' after enum symbol");
@@ -5237,7 +5238,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
 
                 res = evalue;
             } else if (type->traits & AU_TRAIT_STRUCT) {
-                Au svalue = alloc(type, 1, null);
+                Au svalue = alloc(type, 1, null, null);
                 for (num i = 0; i < type->members.count; i++) {
                     Au_t m = (Au_t)type->members.origin[i];
                     if (!(m->member_type == AU_MEMBER_VAR)) continue;
@@ -5458,7 +5459,7 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
     } else if (schema->meta.count && *(Au_t*)schema->meta.origin == typeid(f32)) { // should support all vector types of f32 (needs type bounds check with vmember_count)
         array arb = parse_array_objects(&scan, typeid(f32), context);
         int vcount = len(arb);
-        res = alloc(typeid(f32), vcount, null);
+        res = alloc(typeid(f32), vcount, null, null);
         int n = 0;
         each(arb, Au, a) {
             Au_t a_type = isa(a);
@@ -5480,7 +5481,7 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
         // this should contain multiple arrays of scalar values; we want to convert each array to our 'scalar_type'
         // for instance, we may parse [[1,2,3,4,5...16],...] mat4x4's; we merely need to validate vmember_count and vmember_type and convert
         // if we have a vmember_count of 0 then we are dealing with a single primitive type
-        vector vres = (vector)alloc(schema, 1, null);
+        vector vres = (vector)alloc(schema, 1, null, null);
         vres->shape = new_shape(count, 0);
         Au_initialize((Au)vres);
         i8* data = (i8*)vdata(vres);
@@ -5772,6 +5773,16 @@ Au typecast(Au_t type, Au a) {
 }
 
 // ----------------------------------------
+i64 shape_flat_index(shape data_shape, shape index_shape) {
+    i64 flat = 0;
+    i64 stride = 1;
+    for (int d = data_shape->count - 1; d >= 0; d--) {
+        flat += index_shape->data[d] * stride;
+        stride *= data_shape->data[d];
+    }
+    return flat;
+}
+
 none shape_dealloc(shape a) {
     if (!a->is_global)
         free(a->data);
@@ -6142,7 +6153,7 @@ Au fdata_file_read(fdata f, Au_t type) {
         bytes[nbytes] = 0;
         return (Au)string(bytes); 
     }
-    Au o = alloc(type, 1, null);
+    Au o = alloc(type, 1, null, null);
     sz size = isa(o)->typesize;
     f->location += size;
     verify(type->traits & AU_TRAIT_PRIMITIVE, "not a primitive type");
