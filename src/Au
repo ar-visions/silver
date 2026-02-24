@@ -1129,6 +1129,12 @@ forward(shape)
     M(AA,BB, i, method,  public, i64,   flat_index, shape) \
     M(AA,BB, s, method,  public, shape, shape_from, i64, ref_i64) \
     M(AA,BB, s, method,  public, shape, shape_read, ARef) \
+    M(AA,BB, i, operator, public, shape, _left,     num) \
+    M(AA,BB, i, operator, public, shape, _right,    num) \
+    M(AA,BB, i, operator, public, shape, _mul,      num) \
+    M(AA,BB, i, operator, public, shape, _lmul,     num) \
+    M(AA,BB, i, operator, public, shape, _div,      num) \
+    M(AA,BB, i, operator, public, shape, _ldiv,     num) \
     M(AA,BB, s, vargs,   public, shape, new_shape, i64) \
     M(AA,BB, i, ctr,     public, i64) \
     M(AA,BB, i, override, method, compare) \
@@ -1213,38 +1219,40 @@ static struct op_entry op_table[] = {
     enum_value(E,T,Y, _add,               1) \
     enum_value(E,T,Y, _sub,               2) \
     enum_value(E,T,Y, _mul,               3) \
-    enum_value(E,T,Y, _div,               4) \
-    enum_value(E,T,Y, _or,                5) \
-    enum_value(E,T,Y, _and,               6) \
-    enum_value(E,T,Y, _bitwise_or,        7) \
-    enum_value(E,T,Y, _bitwise_and,       8) \
-    enum_value(E,T,Y, _xor,               9) \
-    enum_value(E,T,Y, _mod,               10) \
-    enum_value(E,T,Y, _right,             11) \
-    enum_value(E,T,Y, _left,              12) \
-    enum_value(E,T,Y, _compare,           13) \
-    enum_value(E,T,Y, _equal,             14) \
-    enum_value(E,T,Y, _not_equal,         15) \
-    enum_value(E,T,Y, _greater,           16) \
-    enum_value(E,T,Y, _less,              17) \
-    enum_value(E,T,Y, _greater_eq,        18) \
-    enum_value(E,T,Y, _less_eq,           19) \
-    enum_value(E,T,Y, _is,                20) \
-    enum_value(E,T,Y, _inherits,          21) \
-    enum_value(E,T,Y, _value_default,     22) \
-    enum_value(E,T,Y, _cond_value,        23) \
-    enum_value(E,T,Y, _bind,              24) \
-    enum_value(E,T,Y, _assign,            25) \
-    enum_value(E,T,Y, _assign_add,        26) \
-    enum_value(E,T,Y, _assign_sub,        27) \
-    enum_value(E,T,Y, _assign_mul,        28) \
-    enum_value(E,T,Y, _assign_div,        29) \
-    enum_value(E,T,Y, _assign_or,         30) \
-    enum_value(E,T,Y, _assign_and,        31) \
-    enum_value(E,T,Y, _assign_xor,        32) \
-    enum_value(E,T,Y, _assign_mod,        33) \
-    enum_value(E,T,Y, _assign_right,      34) \
-    enum_value(E,T,Y, _assign_left,       35)
+    enum_value(E,T,Y, _lmul,              4) \
+    enum_value(E,T,Y, _div,               5) \
+    enum_value(E,T,Y, _ldiv,              6) \
+    enum_value(E,T,Y, _or,                7) \
+    enum_value(E,T,Y, _and,               8) \
+    enum_value(E,T,Y, _bitwise_or,        9) \
+    enum_value(E,T,Y, _bitwise_and,       10) \
+    enum_value(E,T,Y, _xor,               11) \
+    enum_value(E,T,Y, _mod,               12) \
+    enum_value(E,T,Y, _right,             13) \
+    enum_value(E,T,Y, _left,              14) \
+    enum_value(E,T,Y, _compare,           15) \
+    enum_value(E,T,Y, _equal,             16) \
+    enum_value(E,T,Y, _not_equal,         17) \
+    enum_value(E,T,Y, _greater,           18) \
+    enum_value(E,T,Y, _less,              19) \
+    enum_value(E,T,Y, _greater_eq,        20) \
+    enum_value(E,T,Y, _less_eq,           21) \
+    enum_value(E,T,Y, _is,                22) \
+    enum_value(E,T,Y, _inherits,          23) \
+    enum_value(E,T,Y, _value_default,     24) \
+    enum_value(E,T,Y, _cond_value,        25) \
+    enum_value(E,T,Y, _bind,              26) \
+    enum_value(E,T,Y, _assign,            27) \
+    enum_value(E,T,Y, _assign_add,        28) \
+    enum_value(E,T,Y, _assign_sub,        29) \
+    enum_value(E,T,Y, _assign_mul,        30) \
+    enum_value(E,T,Y, _assign_div,        31) \
+    enum_value(E,T,Y, _assign_or,         32) \
+    enum_value(E,T,Y, _assign_and,        33) \
+    enum_value(E,T,Y, _assign_xor,        34) \
+    enum_value(E,T,Y, _assign_mod,        35) \
+    enum_value(E,T,Y, _assign_right,      36) \
+    enum_value(E,T,Y, _assign_left,       37)
 declare_enum(OPType)
 
 #define Key_module_ Au

@@ -1,3 +1,4 @@
+
 # error if its not the main module in repository
 export 0.8.8
 
@@ -9,6 +10,25 @@ import <stdio.h>
 # no assigning external module vars, same as their internal rules
 debug:   bool [ coolteen == 'Tim' ]
 debug2:         coolteen == 'Tim'
+
+func test_vbasic[ arg: i32 ] -> bool
+    s: string['hi']
+    
+    if [ s inherits array ]
+        return false
+
+    # arg = 2 # NOT allowed!
+
+    r: ref s
+    r = string['hello']
+
+    r2: string[ 'r2' ]
+    r3: string[ 'r3' ]
+    r4: string[ 'r4' ]
+
+    ss: Au s
+
+    return ss is string
 
 enum Color [ u8 ]
     red:    1
@@ -24,9 +44,10 @@ struct Vec2
         return Vec2 [ x: x + b.x, y: y + b.y ]
 
     operator == [ b: Vec2   ] -> bool [ x == b.x ]
-    operator /  [ b: double ] -> Vec2 [ x: x / b, y: y / b ]
-    operator *  [ b: double ] -> Vec2 [ x: x * b, y: y * b ]
-
+    
+    operator /  [ b: double ] -> Vec2
+        return Vec2 [ x: b + 1, y: b + 1  ]
+    
     cast -> string ['{x}, {y}']
 
 
@@ -100,16 +121,19 @@ func array_test[] -> bool
     puts ['array_test']
     ar  : array i32[ 4x4 ] [ 1 2 3 4, 1 1 1 1, 2 2 2 2, 3 3 3 3 ]
     ar2 : new   i32[ 4x4 ] [ 1 2 3 4, 1 1 1 1, 2 2 2 2, 3 3 3 3 ]
-
-    ar2[0,1] = 8
-
-    return true
+    sh  : shape[ ar2.shape ]
+    return sh == ((4x4 << 1) * 2 >> 1)
 
 func map_test[] -> bool
+    puts 'map_test'
     return true
 
 func compound_test[] -> bool
-    return control_flow_test && math_test && array_test && map_test
+    return control_flow_test &&
+           math_test         &&
+           array_test        &&
+           map_test          &&
+           test_vbasic [ 22 ]
 
 app test2
     func init [] -> none
