@@ -4750,7 +4750,35 @@ enode silver_parse_member_expr(silver a, enode mem) {
         consume(a);
         enode index_expr = null;
         if (r) {
-            Au_t idx = find_member(r->au, null, AU_MEMBER_INDEX, true);
+            /// find the best matching index method based on argument type
+            Au_t idx = null;
+            Au_t idx_fallback = null;
+            Au_t idx_type = first_index ? au_arg_type((Au)first_index) : null;
+            Au_t search = r->au;
+            while (search) {
+                for (int mi = 0; mi < search->members.count; mi++) {
+                    Au_t m = (Au_t)search->members.origin[mi];
+                    if (m->member_type != AU_MEMBER_INDEX) continue;
+                    if (!idx_fallback) idx_fallback = m;
+                    if (idx_type && m->args.count >= 2) {
+                        Au_t m_arg    = (Au_t)m->args.origin[1];
+                        Au_t arg_type = m_arg->member_type == AU_MEMBER_VAR ? m_arg->src : m_arg;
+                        if (!arg_type) continue;
+                        bool exact    = arg_type == idx_type;
+                        bool related  = inherits(idx_type, arg_type);
+                        bool both_num = is_prim((Au)idx_type) && is_prim((Au)arg_type);
+                        if (exact || related || both_num) {
+                            /// prefer more specific match (not Au base type)
+                            if (!idx || (arg_type != typeid(Au)))
+                                idx = m;
+                        }
+                    }
+                }
+                if (idx) break;
+                if (!search->context || search->context == search) break;
+                search = search->context;
+            }
+            if (!idx) idx = idx_fallback;
             validate(idx, "index method not found on %o", mem);
             enode eshape = eshape_from_indices((aether)a, args);
             index_expr = e_fn_call(a, (efunc)u(efunc, idx), a(mem, eshape));

@@ -1722,7 +1722,7 @@
 #define i_index_public_GENERICS(X, R, ...)
 #define i_index_public_INIT(X, R, ...) { \
     Au_t m = def(typeid(X), stringify(emit_idx_symbol(index, __VA_ARGS__)), AU_MEMBER_INDEX, AU_TRAIT_IMETHOD); \
-    m->alt = #X "_index_" #R; \
+    m->alt = stringify(emit_idx_symbol(X ## _index, __VA_ARGS__)); \
     m->access_type = interface_public; \
     Type_i(X).type.ft.emit_idx_symbol(index, __VA_ARGS__) = & emit_idx_symbol(X ## _index, __VA_ARGS__); \
     set_args_array(m, emit_types(X, __VA_ARGS__)); \
