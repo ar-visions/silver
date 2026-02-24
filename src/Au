@@ -1239,20 +1239,22 @@ static struct op_entry op_table[] = {
     enum_value(E,T,Y, _less_eq,           21) \
     enum_value(E,T,Y, _is,                22) \
     enum_value(E,T,Y, _inherits,          23) \
-    enum_value(E,T,Y, _value_default,     24) \
-    enum_value(E,T,Y, _cond_value,        25) \
-    enum_value(E,T,Y, _bind,              26) \
-    enum_value(E,T,Y, _assign,            27) \
-    enum_value(E,T,Y, _assign_add,        28) \
-    enum_value(E,T,Y, _assign_sub,        29) \
-    enum_value(E,T,Y, _assign_mul,        30) \
-    enum_value(E,T,Y, _assign_div,        31) \
-    enum_value(E,T,Y, _assign_or,         32) \
-    enum_value(E,T,Y, _assign_and,        33) \
-    enum_value(E,T,Y, _assign_xor,        34) \
-    enum_value(E,T,Y, _assign_mod,        35) \
-    enum_value(E,T,Y, _assign_right,      36) \
-    enum_value(E,T,Y, _assign_left,       37)
+    enum_value(E,T,Y, _range_exclusive,   24) \
+    enum_value(E,T,Y, _range_inclusive,   25) \
+    enum_value(E,T,Y, _value_default,     26) \
+    enum_value(E,T,Y, _cond_value,        27) \
+    enum_value(E,T,Y, _bind,              28) \
+    enum_value(E,T,Y, _assign,            29) \
+    enum_value(E,T,Y, _assign_add,        30) \
+    enum_value(E,T,Y, _assign_sub,        31) \
+    enum_value(E,T,Y, _assign_mul,        32) \
+    enum_value(E,T,Y, _assign_div,        33) \
+    enum_value(E,T,Y, _assign_or,         34) \
+    enum_value(E,T,Y, _assign_and,        35) \
+    enum_value(E,T,Y, _assign_xor,        36) \
+    enum_value(E,T,Y, _assign_mod,        37) \
+    enum_value(E,T,Y, _assign_right,      38) \
+    enum_value(E,T,Y, _assign_left,       39)
 declare_enum(OPType)
 
 #define Key_module_ Au
@@ -1462,7 +1464,6 @@ declare_enum(level)
     M(AA,BB, i, method, public, bool, contains,   Au) \
     M(AA,BB, i, method, public, none, concat,     map) \
     M(AA,BB, i, method, public, none, clear) \
-    M(AA,BB, i, index,  public, Au,   sz) \
     M(AA,BB, i, index,  public, Au,   Au) \
     M(AA,BB, i, ctr,    public, i32) \
     M(AA,BB, i, override, method, init) \

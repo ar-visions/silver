@@ -1699,10 +1699,6 @@ Au alloc(Au_t type, num count, shape shape_data, Au_t* meta) {
     if (tracing)
         tracing[tracing_count++] = a->data;
     
-    if (a->data == 0x0000555555808ce9) {
-        string s = (string)a->data;
-        a = a;
-    }
     return a->data;
 }
 
@@ -3154,6 +3150,7 @@ sz map_len(map a) {
     return a->count;
 }
 
+// find out how these two get mixed up on import
 Au map_index_sz(map a, sz index) {
     assert(index >= 0 && index < a->count, "index out of range");
     item i = (item)list_value_by_index((list)a, (Au)_sz(index));
