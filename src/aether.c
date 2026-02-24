@@ -920,6 +920,9 @@ static LLVMValueRef const_cstr(aether a, cstr value, i32 len) { sequencer
 
     // 2. create a global variable of that array type
     char id[256];
+    if (seq == 27) {
+        seq = seq;
+    }
     sprintf(id, "const_cstr_%i", seq);
     LLVMValueRef gv = LLVMAddGlobal(a->module_ref, LLVMTypeOf(strConst), id);
     LLVMSetInitializer(gv, strConst);
@@ -1479,6 +1482,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer
     Au    arg0        = args ? get(args, 0) : null;
     enode first_arg   = arg0 ? e_operand(a, arg0, null) : null;
     enode target_type = (!funcptr && fn->target) ? (enode)fn->target : null;
+    bool  first_is_alloc = first_arg && first_arg->is_alloc && !first_arg->is_super;
 
     if (target_type && first_arg) {
         // only check needed: is first_arg's pointer state compatible with target
@@ -1507,7 +1511,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer
     // -----------------------------------------------------------------------
     // If this is an instance method, we must look up the implementation 
     // in the runtime type's vtable (ft) rather than using the static symbol.
-    if (!a->direct && fn->au->is_imethod && !funcptr && !(target_type && target_type->target && target_type->target->avoid_ftable)) {
+    if (!a->direct && target_type && target_type->is_any && !first_is_alloc && fn->au->context != typeid(Au) && fn->au->is_imethod && !funcptr && !(target_type && target_type->target && target_type->target->avoid_ftable)) {
         verify(n_args > 0, "instance method %o requires 'this' argument", fn);
         
         // 1. Get the instance pointer ('this' is always the first argument)
@@ -1813,8 +1817,12 @@ enode convertible(etype fr, etype to) {
     if (is_prim(ma) && is_prim(mb))
         return (enode)true;
 
-    if (is_prim(ma) && inherits(mb->au, typeid(string))) {
-        ma = etypeid(Au); // reduce all primitives to Au; we just need to be sure to get addresses of our data
+    enode mcons = is_rec(mb) ? constructable(ma, mb) : null;
+
+    if (!constructable(ma, mb) && is_prim(ma) && inherits(mb->au, typeid(string))) {
+        static int s2 = 0;
+        s2++;
+        return (enode)true;
     }
 
     if (is_rec(ma) || is_rec(mb)) {
@@ -1823,8 +1831,10 @@ enode convertible(etype fr, etype to) {
             return (enode)true;
         if (is_subclass((Au)ma, (Au)mb) || is_subclass((Au)mb, (Au)ma))
             return (enode)true;
+        if (mcons)
+            return mcons;
         enode mcast = castable(ma, mb);
-        return mcast ? mcast : constructable(ma, mb);
+        return mcast;
     } else {
         // the following check should be made redundant by the code below it
         etype sym = etypeid(symbol);
@@ -1896,6 +1906,13 @@ enode eshape_from_indices(aether a, array indices) {
 
     // Call shape_from(count, data)
     return e_fn_call(a, (efunc)u(efunc, shape_from_fn), a(count_node, data_node));
+}
+
+void aether_eputs(aether a, string output) {
+    if (a->no_build) return;
+
+    efunc  fn_puts = (efunc)elookup("puts");
+    e_fn_call(a, fn_puts, a(const_string(chars, output->chars)));
 }
 
 enode etype_access(etype target, string name) { sequencer
@@ -2208,7 +2225,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         return (enode)args;
     }
 
-    if (seq == 233)
+    if (seq == 222)
         seq = seq;
 
     string  str  = (string)instanceof(args, string);
@@ -2358,6 +2375,10 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         } else if (fn && fn->au->member_type == AU_MEMBER_CAST) {
             // we may call cast straight away, no need for init (which the cast does)
             return e_fn_call(a, fn, a(input));
+            // its not a bad idea to require casts not be polymorphic
+            // membership can also require strict 
+            // just keep in mind this limits what a user can do with an api.
+            // its an optimization flag, and a slight anti pattern
         } else
             fault("unknown error");
         
@@ -2420,6 +2441,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             res = e_fn_call(a, f_alloc, a(
                 e_typeid(a, mdl), _i32(0), e_null(a, etypeid(shape)),metas_node ));
             res->au = mdl->au; // we need a general cast method that does not call function
+            res->is_alloc = !a->building_initializer;
             res = e_fn_call(a, f_initialize, a(res)); // required logic need not emit ops to set the bits when we can check at design time
         }
     } else if (ctr) {
@@ -2428,6 +2450,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         
         enode alloc = e_fn_call(a, f_alloc, a(
             e_typeid(a, mdl), _i32(0), e_null(a, etypeid(shape)),metas_node ));
+        alloc->is_alloc = !a->building_initializer;
         alloc->au = mdl->au; // we need a general cast method that does not call function
         e_fn_call(a, ctr, a(alloc, input));
         res = e_fn_call(a, f_initialize, a(alloc));
@@ -3439,9 +3462,9 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
     }
 
     // for apps, build int main(argc, argv)
-    Au_t au_f_main = def_member(a->au, "main", au_lookup("i32"), AU_MEMBER_FUNC, 0);
-    Au_t argc = def_arg(au_f_main,  "argc", au_lookup("i32"), 0);
-    Au_t argv = def_arg(au_f_main,  "argv", au_lookup("cstrs"), 0);
+    Au_t au_f_main = def_member(a->au, "main", typeid(i32), AU_MEMBER_FUNC, 0);
+    Au_t argc = def_arg(au_f_main,  "argc", typeid(i32), 0);
+    Au_t argv = def_arg(au_f_main,  "argv", typeid(cstrs), 0);
 
     au_f_main->is_export = true;
     efunc main_fn = efunc(mod, a, au, au_f_main,
@@ -3450,12 +3473,21 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
 
     push_scope(a, (Au)main_fn);
     e_fn_call(a, module_init_fn, null);
-    efunc Au_engage = u(efunc, find_member(au_lookup("Au"), "engage", AU_MEMBER_FUNC, false)); // this is only for setting up logging now, and we should likely emit it after the global construction, and before the user initializers
-    verify(u(evar, argv) != null, "baffled");
+    
+    // call engage
+    efunc Au_engage = u(efunc, find_member(typeid(Au), "engage", AU_MEMBER_FUNC, false));
+    aether_eputs(a, f(string, "calling engage"));
     e_fn_call(a, Au_engage, a(u(evar, argv)));
+
+    // create main class ( i think this is not working )
+    aether_eputs(a, f(string, "creating main"));
     enode m = e_create(a, main_class, (Au)u(evar, argv)); // a loop would be nice, since none of our members will be ref+1'd yet
     Au_t fn_run = find_member(main_spec->au, "run", AU_MEMBER_FUNC, false);
+    
+    aether_eputs(a, f(string, "calling run"));
     enode r = e_fn_call(a, (efunc)u(efunc, fn_run), a(m));
+
+    aether_eputs(a, f(string, "return from main"));
     e_fn_return(a, (Au)r);
 
     pop_scope(a);
@@ -3488,7 +3520,8 @@ etype etype_canonical(etype t) {
         au = au->src;
     }
     etype au_user = u(etype, au);
-    return (au_user && lltype(au_user)) ? au_user : null;
+    etype res = (au_user && lltype(au_user)) ? au_user : null;
+    return res;
 }
 
 // if given an enode, will always resolve the etype instance
@@ -4233,13 +4266,6 @@ none etype_implement(etype t) {
 
 void aether_build_user_initializer(aether a, etype m) { }
 
-void aether_eputs(aether a, string output) {
-    if (a->no_build) return;
-
-    efunc  fn_puts = (efunc)elookup("puts");
-    e_fn_call(a, fn_puts, a(const_string(chars, output->chars)));
-}
-
 enode aether_e_asm(aether a, array body, array input_nodes, etype out_type, string return_name)
 {
     a->is_const_op = false;
@@ -4393,6 +4419,8 @@ none aether_build_module_initializer(aether a, enode init) {
             module_isize += mem->typesize;
     }
 
+    aether_eputs(a, f(string, "1"));
+
     // NOTE: module has no context; its src is its base (usually Au/module base)
     e_fn_call(a, fn_emplace, a(
         module_type_id,
@@ -4405,6 +4433,8 @@ none aether_build_module_initializer(aether a, enode init) {
         _u64(module_base->typesize),
         _u64(module_isize)
     ));
+
+    aether_eputs(a, f(string, "2"));
 
     Au_t m = find_member(module_base, "coolteen", AU_MEMBER_VAR, false);
     evar var_mdl = u(evar, m);
@@ -4457,6 +4487,8 @@ none aether_build_module_initializer(aether a, enode init) {
         }
     }
 
+    aether_eputs(a, f(string, "3"));
+
     // iterate through user-defined type id
     pairs(a->user_type_ids, i) {
         etype mdl     = instanceof(i->key,   etype);
@@ -4464,6 +4496,8 @@ none aether_build_module_initializer(aether a, enode init) {
 
         if (!mdl || !type_id)
             continue;
+
+        aether_eputs(a, f(string, "user_type_ids: %s", mdl->au->ident));
 
         bool is_class_t  = is_class(mdl);
         bool is_struct_t = is_struct(mdl);
@@ -4570,19 +4604,26 @@ none aether_build_module_initializer(aether a, enode init) {
             }
         }
 
+        aether_eputs(a, f(string, "pushing type_id: %s", mdl->au->ident));
         e_fn_call(a, fn_push, a(type_id));
     }
 
     // polymorphism works now
-    //aether_eputs(a, f(string, "%o: performing user init", a));
+    aether_eputs(a, f(string, "%o: performing user init", a));
     a->direct = false;
     pop_scope(a);
 
     push_scope(a, (Au)f);
-    members(module_base, au)
-        if (au->member_type == AU_MEMBER_VAR && u(etype, au)->body) {
+    members(module_base, au) {
+        evar var = u(evar, au);
+        if (au->ident && strcmp(au->ident, "u") == 0) {
+            au = au;
+        }
+        if (au->member_type == AU_MEMBER_VAR && var && var->initializer) {
+            aether_eputs(a, f(string, "%o: build_user_initializer", a));
             build_user_initializer(a, u(etype, au));
         }
+    }
 
     //aether_eputs(a, f(string, "%o: initialized", a));
 

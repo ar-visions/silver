@@ -80,6 +80,7 @@ forward(enode)
     M(X,Y, i, prop, public,   enode,            eshape) \
     M(X,Y, i, prop, public,   tokens,           body) \
     M(X,Y, i, prop, public,   i32,              iteration) \
+    M(X,Y, i, prop, public,   bool,             is_any) \
     M(X,Y, i, prop, public,   bool,             has_code) \
     M(X,Y, i, prop, public,   bool,             remote_code) \
     M(X,Y, i, prop, public,   bool,             is_schema) \
@@ -121,6 +122,7 @@ forward(efunc)
     M(X,Y, i, prop,  public, path,      module_path) \
     M(X,Y, i, prop,  public, path,      project_path) \
     M(X,Y, i, prop,  public, path,      current_inc) \
+    M(X,Y, i, prop,  public, bool,      building_initializer) \
     M(X,Y, i, prop,  public, bool,      direct) \
     M(X,Y, i, prop,  public, bool,      import_c) \
     M(X,Y, i, prop,  public, bool,      debug) \
@@ -288,6 +290,7 @@ forward(evar)
     M(X,Y, i, prop, public,   enode,            target) \
     M(X,Y, i, prop, public,   bool,             is_super) \
     M(X,Y, i, prop, public,   bool,             is_explicit_ref) \
+    M(X,Y, i, prop, public,   bool,             is_alloc) \
     M(X,Y, i, prop, public,   bool,             avoid_ftable) \
     M(X,Y, i, prop, public,   string,           symbol_name) \
     M(X,Y, i, prop, public,   enode,            published_type) \
