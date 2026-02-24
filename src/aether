@@ -287,6 +287,7 @@ forward(evar)
 #define enode_schema(X,Y,...)\
     M(X,Y, i, prop, public,   enode,            target) \
     M(X,Y, i, prop, public,   bool,             is_super) \
+    M(X,Y, i, prop, public,   bool,             is_explicit_ref) \
     M(X,Y, i, prop, public,   bool,             avoid_ftable) \
     M(X,Y, i, prop, public,   string,           symbol_name) \
     M(X,Y, i, prop, public,   enode,            published_type) \
