@@ -1,19 +1,24 @@
 {
   "name": "silver-ag",
-  "displayName": "Silver (.ag)",
-  "description": "Syntax highlighting for the Silver language (.ag files)",
+  "displayName": "silver (.ag)",
+  "description": "Syntax highlighting for silver modules (.ag)",
   "version": "0.1.0",
   "engines": {
     "vscode": "^1.75.0"
   },
+  "icon": "icon.png",
   "categories": ["Programming Languages"],
   "contributes": {
     "languages": [
       {
         "id": "ag",
-        "aliases": ["Silver", "ag"],
+        "aliases": ["silver", "ag"],
         "extensions": [".ag"],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "icon-small.png",
+          "dark": "icon-small.png"
+        }
       }
     ],
     "grammars": [

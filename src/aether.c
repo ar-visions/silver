@@ -1134,9 +1134,11 @@ enode aether_e_operand(aether a, Au op, etype src_model) {
         op = (Au)enode_value((enode)op, false);
     }
     if (!op) {
-        if (is_ptr(src_model))
+        if (is_ptr(src_model) || !src_model)
             return e_null(a, src_model);
-        return enode(mod, a, au, au_lookup("none"), loaded, true, value, null);
+
+        return enode(mod, a, au, src_model->au,
+            loaded, true, value, LLVMConstNull(lltype(src_model)));
     }
     
     if (isa(op) == typeid(string))
@@ -1392,6 +1394,43 @@ enode aether_e_is(aether a, enode L, Au R) {
 bool etype_inherits(etype mdl, etype base);
 
 
+// short-circuit two already-evaluated bool enodes
+// combine: OPType__or  -> if L true, skip R  (returns true early)
+//          OPType__and -> if L false, skip R  (returns false early)
+enode e_short_circuit_pair(aether a, OPType combine, enode L, enode R) {
+    etype m_bool = etypeid(bool);
+    if (a->no_build) return e_noop(a, m_bool);
+    
+    enode L_bool = e_create(a, m_bool, (Au)L);
+    enode R_bool = e_create(a, m_bool, (Au)R);
+    
+    LLVMValueRef func = LLVMGetBasicBlockParent(LLVMGetInsertBlock(B));
+    
+    LLVMBasicBlockRef eval_block  = LLVMAppendBasicBlockInContext(a->module_ctx, func, "hat_eval");
+    LLVMBasicBlockRef merge_block = LLVMAppendBasicBlockInContext(a->module_ctx, func, "hat_merge");
+    LLVMBasicBlockRef L_block     = LLVMGetInsertBlock(B);
+    
+    if (combine == OPType__or) {
+        LLVMBuildCondBr(B, L_bool->value, merge_block, eval_block);
+    } else {
+        LLVMBuildCondBr(B, L_bool->value, eval_block, merge_block);
+    }
+    
+    // R side - re-emit R_bool in the eval block
+    LLVMPositionBuilderAtEnd(B, eval_block);
+    LLVMBasicBlockRef R_block = LLVMGetInsertBlock(B);
+    LLVMBuildBr(B, merge_block);
+    
+    // merge
+    LLVMPositionBuilderAtEnd(B, merge_block);
+    LLVMValueRef phi = LLVMBuildPhi(B, LLVMInt1TypeInContext(a->module_ctx), "hat_result");
+    LLVMValueRef      vals[] = { L_bool->value, R_bool->value };
+    LLVMBasicBlockRef bbs[]  = { L_block,       R_block };
+    LLVMAddIncoming(phi, vals, bbs, 2);
+    
+    return enode(mod, a, au, m_bool->au, loaded, true, value, phi);
+}
+
 // no disassemble!
 enode aether_e_short_circuit(aether a, OPType optype, enode L) {
     if (a->no_build) {
@@ -1467,7 +1506,7 @@ enode aether_lambda_fcall(aether a, efunc mem, array user_args) {
     return e_fn_call(a, fn_ptr, args);
 }
 
-enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer
+enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     bool funcptr = is_func_ptr((Au)fn);
     if (!funcptr && !fn->used)
          fn->used = true;
@@ -1597,16 +1636,20 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer
                 arg_values[index] = n->value;
                 arg_types[index] = lltype(n);
             } else {
-                Au_t fn_decl = funcptr ? au_arg_type((Au)fn->au) : fn->au;
-                Au_t arg_type = (Au_t)array_get((array)&fn_decl->args, i);
-                evar  arg = (evar)u(evar, arg_type);
-                enode n   = (enode)instanceof(arg_value, enode);
+                Au_t  fn_decl = funcptr ? au_arg_type((Au)fn->au) : fn->au;
+                Au_t  arg_mem = (Au_t) array_get((array)&fn_decl->args, i);
+                evar  arg     = (evar) u(evar, arg_mem);
+                enode n       = (enode)instanceof(arg_value, enode);
+                if (fn->au->context == typeid(map)) {
+                    int test2 = 2;
+                    test2 += 2;
+                }
                 if (index == fmt_idx) {
                     Au fmt = n ? (Au)instanceof(n->literal, const_string) : null;
                     verify(fmt, "formatter functions require literal, constant strings");
                 }
-                etype arg_t = u(etype, au_arg_type((Au)arg_type));
-                enode conv = e_create(a, arg_t, arg_value);
+                etype arg_t   = u(etype, au_arg_type((Au)arg_mem));
+                enode conv    = e_create(a, arg_t, arg_value);
                 arg_values[index] = conv->value;
                 if (funcptr)
                     arg_types[index] = lltype(arg_t);
@@ -1652,7 +1695,10 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer
         seq = seq;
     }
     sprintf(call_seq, "call_%i_%s", seq2, fn->au->ident);
-
+    if (strcmp(call_seq, "call_86_alloc_new") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
     etype rtype = is_lambda(fn) ?
         (etype)fn->meta->origin[0] :
         (etype)u(etype, fn->au->rtype);
@@ -1707,6 +1753,10 @@ enode constructable(etype fr, etype to) {
 
     // if its a primitive, and we want to convert to string -> Au_cast_string
     aether a = fr->mod;
+
+    if (to == etypeid(Au) && (canonical(fr) == etypeid(symbol) || canonical(fr) == etypeid(cstr))) {
+        to = etypeid(string); // string is Au, so we are not lying here; Au is effectively always shiny
+    }
 
     Au_t ctx = to->au;
     while (ctx) {
@@ -1766,6 +1816,8 @@ bool etype_inherits(etype mdl, etype base) {
 }
 
 static bool is_subclass(Au a0, Au b0) {
+    if (is_prim(a0) || is_prim(b0))
+        return false;
     Au_t a = au_arg((Au)a0);
     Au_t b = au_arg((Au)b0);
     while (a) {
@@ -1829,7 +1881,7 @@ enode convertible(etype fr, etype to) {
         Au_t au_type = au_lookup("Au_t");
         if (is_ptr(ma) && ma->au->src == au_type && mb->au == au_type)
             return (enode)true;
-        if (is_subclass((Au)ma, (Au)mb) || is_subclass((Au)mb, (Au)ma))
+        if (!is_prim(ma) && !is_prim(mb) && is_subclass((Au)ma, (Au)mb) || is_subclass((Au)mb, (Au)ma))
             return (enode)true;
         if (mcons)
             return mcons;
@@ -2076,6 +2128,7 @@ enode e_create_from_map(aether a, etype t, map m) {
         
         if (is_m) {
             Au_t ivalue = isa(i->value);
+            string kk = (string)k;
             e_fn_call(a, f_mset, a(res, k, i->value));
         } else {
             if (instanceof(k, enode)) {
@@ -2225,7 +2278,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         return (enode)args;
     }
 
-    if (seq == 222)
+    if (seq == 738)
         seq = seq;
 
     string  str  = (string)instanceof(args, string);
@@ -2298,6 +2351,10 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
     Au_t args_type = isa(args);
     efunc ftest = (efunc)instanceof(args, efunc);
     enode input = (enode)instanceof(args, enode);
+
+    etype canon = canonical(input);
+    bool input_estr = canon == etypeid(symbol) || canon == etypeid(cstr);
+
     if (input && !input->loaded && !convertible((etype)input, mdl)) {
         Au info = head(input);
         input = enode_value(input, false);
@@ -2319,7 +2376,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         // if both are internally created and these are refs, we can allow conversion
         // Handle struct/primitive to Au conversion (boxing)
         etype input_type = canonical(input);
-        if (mdl->au == typeid(Au) && (is_struct(input) || is_prim(input))) {
+        if (mdl->au == typeid(Au) && !input_estr && (is_struct(input) || is_prim(input))) {
             a->is_const_op = false;
             if (a->no_build) return e_noop(a, mdl);
             
@@ -2447,13 +2504,19 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
     } else if (ctr) {
         verify(is_rec(mdl), "expected record");
         enode metas_node = e_meta_ids(a, mdl->meta);
-        
+
+        if (canonical(mdl) == etypeid(Au) && u(etype, ctr->au->context) != canonical(mdl)) {
+            // up-convert mdl from ctr's selected on other contexts
+            mdl = u(etype, ctr->au->context);
+        }
         enode alloc = e_fn_call(a, f_alloc, a(
             e_typeid(a, mdl), _i32(0), e_null(a, etypeid(shape)),metas_node ));
         alloc->is_alloc = !a->building_initializer;
         alloc->au = mdl->au; // we need a general cast method that does not call function
         e_fn_call(a, ctr, a(alloc, input));
         res = e_fn_call(a, f_initialize, a(alloc));
+        res->au = mdl->au;
+        res->meta = hold(mdl->meta);
     } else {
         array is_arr        = (array)instanceof(args, array);
         bool  is_ref_struct = is_ptr(mdl) && is_struct(resolve(mdl));

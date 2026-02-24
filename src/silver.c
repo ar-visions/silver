@@ -31,6 +31,12 @@ static void build_record(silver a, etype mrec);
     } \
 })
 
+// inline initializers can have expression continuations  aclass[something:1].something
+// ones that are made with indentation do not   aclass
+// however we usually have the option to do both (expr-level-0)
+static array read_expression(silver a, etype *mdl_res, bool *is_const);
+static array read_enode_tokens(silver a);
+
 token silver_element(silver, num);
 
 void print_tokens(silver a, symbol label) {
@@ -371,6 +377,26 @@ static enode parse_expression(silver a, etype expect) {
     return e_create(a, expect, (Au)unbias); // parse assignment needs to expect a deref'd type, or, we call it loaded:false, 
 }
 
+enode e_short_circuit_pair(silver a, OPType combine, enode L, enode R);
+
+static bool is_multi_expression(silver a, OPType match_op) {
+    if (match_op != OPType__equal && match_op != OPType__not_equal)
+        return false;
+    if (!next_is(a, "("))
+        return false;
+    
+    push_current(a);
+    consume(a);
+    bool is_const = false;
+    etype mdl = null;
+    array expr = read_expression(a, &mdl, &is_const);
+    bool positive = next_is(a, "or")  || 
+                    next_is(a, "...") ||
+                    next_is(a, "..<");
+    pop_tokens(a, false);    
+    return positive;
+}
+
 static enode reverse_descent(silver a, etype expect) { sequencer
     bool cmode = is_cmode(a);
     int num_levels = sizeof(levels) / sizeof(precedence);
@@ -379,6 +405,9 @@ static enode reverse_descent(silver a, etype expect) { sequencer
     enode L = read_enode(a, expect, false);
     print_tokens(a, "after enode");
     token t = peek(a);
+    if (!L) {
+        L = L;
+    }
     validate(cmode || L, "unexpected '%o'", t);
     if (!L)
         return null;
@@ -471,6 +500,74 @@ static enode reverse_descent(silver a, etype expect) { sequencer
             } else {
                 L = e_cmp_op(a, OPType__equal, type_L, type_R);
             }
+            continue;
+        }
+        
+        // ---------------------------------------------------------------
+        // Hat operand: b == (1, 2, 3)    -> b == 1 || b == 2 || b == 3
+        //              b != (1, 2, 3)    -> b != 1 && b != 2 && b != 3
+        // Range hat:   b == (2...10)     -> b >= 2 && b <= 10  (inclusive)
+        //              b == (2..<10)     -> b >= 2 && b < 10   (exclusive end)
+        //              b != (2...10)     -> b < 2  || b > 10   (outside range)
+        //              b != (2..<10)     -> b < 2  || b >= 10  (outside range)
+        // Short-circuits: for ==, stops on first true  (||)
+        //                 for !=, stops on first false (&&)
+        // ---------------------------------------------------------------
+        print_tokens(a, "before mexpr");
+        bool is_multi = is_multi_expression(a, match_op);
+        if (is_multi) {
+            consume(a);
+            OPType combine = (match_op == OPType__not_equal) ? OPType__and : OPType__or;
+            
+            // read first operand
+            enode R0 = parse_expression(a, null);
+            
+            // check for range syntax
+            bool is_range_inclusive = read_if(a, "...") != null;
+            bool is_range_exclusive = !is_range_inclusive && read_if(a, "..<") != null;
+            
+            if (is_range_inclusive || is_range_exclusive) {
+                enode R1 = parse_expression(a, null);
+                validate(read_if(a, ")"), "expected ) after range");
+                
+                enode lo_cmp, hi_cmp;
+                if (match_op == OPType__not_equal) {
+                    // b != (2...10) -> b < 2 || b > 10
+                    lo_cmp = e_op(a, OPType__less,
+                        null, (Au)L, (Au)R0);
+                    hi_cmp = e_op(a, is_range_inclusive ? OPType__greater : OPType__greater_eq,
+                        null, (Au)L, (Au)R1);
+                    L = e_short_circuit_pair(a, OPType__or, lo_cmp, hi_cmp);
+                } else {
+                    // b == (2...10) -> b >= 2 && b <= 10
+                    lo_cmp = e_op(a, OPType__greater_eq,
+                        null, (Au)L, (Au)R0);
+                    hi_cmp = e_op(a, is_range_inclusive ? OPType__less_eq : OPType__less,
+                        null, (Au)L, (Au)R1);
+                    L = e_short_circuit_pair(a, OPType__and, lo_cmp, hi_cmp);
+                }
+                continue;
+            }
+            
+            if (next_is(a, "or")) {
+                // regular hat: comma-separated values
+                enode cmp = e_op(a, match_op, match_method, (Au)L, (Au)R0);
+                
+                while (read_if(a, "or")) {
+                    enode Rn      = parse_expression(a, null);
+                    enode next_cmp = e_op(a, match_op, match_method, (Au)L, (Au)Rn);
+                    cmp = e_short_circuit_pair(a, combine, cmp, next_cmp);
+                }
+                
+                validate(read_if(a, ")"), "expected ) after hat operand list");
+                L = cmp;
+                continue;
+            }
+            
+            // not a hat — just a parenthesized expression: b == (expr)
+            // R0 is already parsed, just consume ) and do normal op
+            validate(read_if(a, ")"), "expected )");
+            L = e_op(a, match_op, match_method, (Au)L, (Au)R0);
             continue;
         }
         
@@ -783,7 +880,7 @@ static void silver_module() {
     keywords = hold(array_of_cstr(
         "class",    "struct",   "public",   "intern",
         "import",   "export",   "typeid",   "context",
-        "is",       "inherits", "ref",      "of",
+        "is",       "inherits", "ref",      "of",   "lambda",
         "const",    "expect",   "no-op",    "return", "->", "::", "...", "<>",
         "asm",      "if",       "switch",   "any",
         "enum",     "ifdef",    "else",     "while",
@@ -838,6 +935,8 @@ static void silver_module() {
         "!=", string("not_equal"),
         "is", string("is"),
         "inherits", string("inherits"),
+        "...", string("range_exclusive"),
+        "..<", string("range_inclusive"),
         null));
 
     for (int i = 0; i < sizeof(levels) / sizeof(precedence); i++) {
@@ -1006,7 +1105,6 @@ token silver_peek(silver a) {
     return element(a, 0);
 }
 
-
 static array read_body(silver a) {
     a->clipping = true;
     array body = array(32);
@@ -1029,6 +1127,13 @@ static array read_body(silver a) {
     }
     a->clipping = false;
     return body;
+}
+
+static array peek_body(silver a) {
+    push_current(a);
+    array body = read_body(a);
+    pop_tokens(a, false);
+    return len(body) ? body : null;
 }
 
 evar read_evar(silver a) {
@@ -1080,12 +1185,6 @@ enode parse_asm(silver a, etype rtype) {
 
     return e_asm(a, body, input_nodes, rtype, return_name);
 }
-
-// inline initializers can have expression continuations  aclass[something:1].something
-// ones that are made with indentation do not   aclass
-// however we usually have the option to do both (expr-level-0)
-static array read_expression(silver a, etype *mdl_res, bool *is_const);
-static array read_enode_tokens(silver a);
 
 static array read_initializer(silver a) {
     array body = array(32);
@@ -1265,6 +1364,7 @@ static array parse_tokens(silver a, Au input, array output) {
     i32 special_ln = len(special);
     for (int i = 0; i < special_ln; i++)
         push(symbols, (Au)string((i32)special->chars[i]));
+    push(symbols, (Au)string(".."));
     each(keywords, string, kw) push(symbols, (Au)kw);
     each(assign, string, a) push(symbols, (Au)a);
     each(compare, string, a) push(symbols, (Au)a);
@@ -1907,31 +2007,34 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
         print_tokens(a, "before read_etype");
         etype mdl_found = read_etype(a, null);
         if (mdl_found) {
-            if (a->in_ref) mdl_found = pointer((aether)a, (Au)mdl_found);
-            print_tokens(a, "before read_initializer");
-            array expr = read_initializer(a);
-            if (!expr) {
-                expr = expr;
-            }
+            // here we must 'peek' at a body; which if not available we go default
+            array b = peek_body(a);
             enode res0 = null;
-            if (!len(expr) && read_if(a, "sub")) {
-                res0 = e_create(a, mdl_expect, (Au)parse_sub(a, mdl_found)); 
-            } else if (!len(expr) && read_if(a, "asm")) {
-                res0 = e_create(a, mdl_expect, (Au)parse_asm(a, mdl_found));
-            } else if (expr) {
-                push_tokens(a, (tokens)expr, 0);
-                if (next_is(a, "["))
-                    res0 = parse_expression(a, mdl_found);
-                else
-                    res0 = read_enode(a, mdl_found, false);
-                pop_tokens(a, false);
-            } else {
-                res0 = null; // use default
-                if (!mdl_expect) {
-                    mdl_expect = mdl_found; // not expecting anything, no conversion
-                } else if (mdl_expect != mdl_found) {
-                    res0 = e_create(a, mdl_found, (Au)null); // required conversion
+            if (b) {
+                if (a->in_ref) mdl_found = pointer((aether)a, (Au)mdl_found);
+                print_tokens(a, "before read_initializer");
+                array expr = read_initializer(a);
+                if (!len(expr) && read_if(a, "sub")) {
+                    res0 = e_create(a, mdl_expect, (Au)parse_sub(a, mdl_found)); 
+                } else if (!len(expr) && read_if(a, "asm")) {
+                    res0 = e_create(a, mdl_expect, (Au)parse_asm(a, mdl_found));
+                } else if (expr) {
+                    push_tokens(a, (tokens)expr, 0);
+                    if (next_is(a, "["))
+                        res0 = parse_expression(a, mdl_found);
+                    else
+                        res0 = read_enode(a, mdl_found, false);
+                    pop_tokens(a, false);
+                } else {
+                    res0 = null; // use default
+                    if (!mdl_expect) {
+                        mdl_expect = mdl_found; // not expecting anything, no conversion
+                    } else if (mdl_expect != mdl_found) {
+                        res0 = e_create(a, mdl_found, (Au)null); // required conversion
+                    }
                 }
+            } else {
+                res0 = e_create(a, mdl_found, null);
             }
             enode conv = e_create(a, mdl_expect, (Au)res0);
             return conv;
@@ -1941,7 +2044,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
     shape sh = (shape)read_literal(a, typeid(shape));
     if (sh && (sh->count == 1 || sh->explicit)) {
         enode op;
-        if (mdl_expect == etypeid(shape)) 
+        if (sh->explicit || mdl_expect == etypeid(shape)) 
             op = e_create(a, etypeid(shape), (Au)sh);
         else
             op = e_operand(a, _i64(sh->data[0]), mdl_expect ? mdl_expect : etypeid(i64));
@@ -2223,6 +2326,8 @@ enode parse_statement(silver a)
 
     if (is_oper)
         is_oper = is_oper;
+    if (is_lambda)
+        is_lambda = is_lambda;
 
     OPType assign_enum = OPType__undefined;
     
@@ -2480,7 +2585,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     bool first = true;
     Au_t target = null;
 
-    if (seq == 44) {
+    if (seq == 22) {
         seq = seq;
     }
     
@@ -2494,15 +2599,19 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
             skip = true;
             in_context = true;
         }
-        validate(skip || first || read_if(a, ","), "expected comma separator between arguments");
+        validate(skip || first || read_if(a, ","), "expected comma separator between arguments %i", seq);
         
         bool    is_inlay  = read_if(a, "inlay") != null;    push_current(a);
         etype   t = read_etype(a, null);            pop_tokens(a, t != null);
         string  n         = t ? null : read_alpha(a); // optional
         array   ar        = in_context ? (array)&au->members : (array)&au->args;
-        
-        validate(t || read_if(a, ":"),
-            "expected seperator between name and type %i", seq);
+
+        if (!t)
+            validate(read_if(a, ":"),
+                "expected seperator between name and type %i", seq);
+        else
+            validate(!read_if(a, ":"),
+                "unexpected : after type provided first: %o", t);
         
         if (!t) t = read_etype(a, null); // we need to avoid the literal check in here!
 
@@ -4484,7 +4593,8 @@ enode castable(etype fr, etype to);
 enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
     print_tokens(a, "parse-object");
     validate(within_expr || read_if(a, "["), "expected [");
-
+    if (seq == 11)
+        seq = seq;
     bool is_fields = peek_fields(a) || inherits(mdl->au, typeid(map));
     bool is_mdl_map = mdl->au == typeid(map);
     bool is_mdl_collective = inherits(mdl->au, typeid(collective));
@@ -4738,7 +4848,12 @@ enode silver_parse_member_expr(silver a, enode mem) {
             push(args, (Au)mem->target);
         enode first_index = null;
         while (!next_is(a, "]")) {
-            enode expr = parse_expression(a, null);
+            // if 2 args, the 1 is an indicator of index type 
+            // (map types; collective reserves first for value)
+            etype meta = mem->meta && len(mem->meta) == 2 ?
+                (etype)mem->meta->origin[1] : null; 
+            
+            enode expr = parse_expression(a, meta);
             if (!first_index && expr)
                 first_index = expr;
             push(args, (Au)expr);
@@ -4751,9 +4866,29 @@ enode silver_parse_member_expr(silver a, enode mem) {
         enode index_expr = null;
         if (r) {
             Au_t idx = find_member(r->au, null, AU_MEMBER_INDEX, true);
+            
             validate(idx, "index method not found on %o", mem);
-            enode eshape = eshape_from_indices((aether)a, args);
-            index_expr = e_fn_call(a, (efunc)u(efunc, idx), a(mem, eshape));
+
+            validate(idx->args.count >= 2, "expected target and index args");
+            etype idx_type = u(etype, au_arg_type(idx->args.origin[1]));
+            if (idx_type == etypeid(shape)) {
+                enode eshape = eshape_from_indices((aether)a, args);
+                index_expr = e_fn_call(a, (efunc)u(efunc, idx), a(mem, eshape));
+            } else {
+                validate(len(args) == 1, "index operators are single instance methods, unless a shape type is used");
+                enode inner = (enode)args->origin[0];
+                index_expr = e_fn_call(a, (efunc)u(efunc, idx), a(mem, inner));
+                etype rtype = u(etype, idx->rtype);
+ 
+                // convert with design-time meta type
+                if (rtype && rtype == etypeid(Au) && len(mem->meta)) {
+                    etype m = (etype)mem->meta->origin[0];
+                    verify(instanceof(m, etype), "meta type integrity error");
+                    rtype = (etype)m;
+                    index_expr = e_create(a, rtype, (Au)index_expr);
+                }
+            }
+
         } else {
             if (len(args) > 1) {
 
@@ -4847,13 +4982,18 @@ etype etype_of(enode mem) {
 }
 
 
-enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const) {
+enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const) { sequencer
     validate(isa(mem) == typeid(enode) || !mem->au->is_const,
         "mem %s is a constant", mem->au->ident);
     
     print_tokens(a, "parse_assignment");
     etype t = (etype)etype_of(mem);
     bool is_bind_ref = (op_val == OPType__bind) ? next_is(a, "ref") : false;
+
+    if (strcmp(mem->au->ident, "rtest") == 0) {
+        mem = mem;
+    }
+
     enode R = parse_expression(a, mem->is_explicit_ref ? u(etype, t->au->src) : t); 
 
     // Handle Promotion and Inference for AU_MEMBER_DECL
