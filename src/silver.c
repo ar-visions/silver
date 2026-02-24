@@ -344,7 +344,7 @@ static precedence levels[] = {
     {{OPType__bitwise_and,      OPType__bitwise_or}},
     {{OPType__and,              OPType__or}},
     {{OPType__xor,              OPType__xor}},
-    {{OPType__equal,            OPType__not_equal}},
+    {{OPType__equal,            OPType__not_equal,  OPType__compare}},
     {{OPType__greater,          OPType__less}},
     {{OPType__greater_eq,       OPType__less_eq}},
     {{OPType__right,            OPType__left}},
@@ -375,7 +375,6 @@ static enode reverse_descent(silver a, etype expect) { sequencer
     bool cmode = is_cmode(a);
     int num_levels = sizeof(levels) / sizeof(precedence);
     
-    // read the atom first
     print_tokens(a, "before enode");
     enode L = read_enode(a, expect, false);
     print_tokens(a, "after enode");
@@ -383,53 +382,109 @@ static enode reverse_descent(silver a, etype expect) { sequencer
     validate(cmode || L, "unexpected '%o'", t);
     if (!L)
         return null;
-
-    // now try each precedence level from tightest to loosest
-    // restart from tightest whenever we match, so 10 + 5 * 2 + 3
-    // correctly re-evaluates * before combining with outer +
-    bool matched = true;
-    while (matched) {
-        matched = false;
+    
+    // Iterative precedence climbing without recursion
+    // We use a stack to handle higher-precedence right-hand operands
+    // Stack holds: pending left operands and their operator info
+    #define MAX_DEPTH 64
+    enode   lhs_stack[MAX_DEPTH];
+    OPType  op_stack[MAX_DEPTH];
+    string  method_stack[MAX_DEPTH];
+    int     prec_stack[MAX_DEPTH];
+    int     sp = 0;
+    
+    for (;;) {
+        // find which precedence level the next token matches
+        int     match_level = -1;
+        int     match_j     = -1;
+        OPType  match_op;
+        string  match_method;
+        string  match_tok;
+        
         for (int i = num_levels - 1; i >= 0; i--) {
             precedence *prec = &levels[i];
             for (int j = 0; j < 3; j++) {
                 string tok = prec->token[j];
-                if (!tok || !read_if(a, cstring(tok)))
-                    continue;
-                OPType op_type = prec->ops[j];
-                string method  = prec->method[j];
-                if (op_type == OPType__and || op_type == OPType__or) {
-                    if (op_type == OPType__or && read_if(a, "return")) {
-                        etype rtype = return_type(a);
-                        enode fallback = peek(a) ? parse_expression(a, rtype) : null;
-                        verify(fallback || is_void(return_type(a)), "expected expression after return");
-                        enode cond = e_not(a, L);
-                        enode ret_node = fallback ? e_create(a, rtype, (Au)fallback) : null;
-                        e_cond_return(a, cond, (Au)ret_node);
-                    } else {
-                        L = e_short_circuit(a, op_type, L);
-                    }
-                } else if (op_type == OPType__is || op_type == OPType__inherits) {
-                    etype type = read_etype(a, null);
-                    verify(type, "expected type, got %o", peek(a));
-                    enode type_L = e_typeid(a, (etype)L);
-                    enode type_R = e_typeid(a, (etype)type);
-                    if (op_type == OPType__inherits) {
-                        Au_t f_inherits = find_member(typeid(Au), "inherits", AU_MEMBER_FUNC, false);
-                        L = e_fn_call(a, u(efunc, f_inherits), a(type_L, type_R));
-                    } else
-                        L = e_cmp_op(a, OPType__equal, type_L, type_R);
-                } else {
-                    enode R = read_enode(a, null, false);
-                    L = e_op(a, op_type, method, (Au)L, (Au)R);
+                if (tok && next_is(a, cstring(tok))) {
+                    match_level  = i;
+                    match_j      = j;
+                    match_op     = prec->ops[j];
+                    match_method = prec->method[j];
+                    match_tok    = tok;
+                    goto found;
                 }
-                matched = true;
-                break;
             }
-            if (matched) break;
         }
+        
+    found:
+        if (match_level < 0) {
+            // no operator found — reduce everything on the stack
+            while (sp > 0) {
+                sp--;
+                L = e_op(a, op_stack[sp], method_stack[sp],
+                         (Au)lhs_stack[sp], (Au)L);
+            }
+            return L;
+        }
+        
+        // reduce any stacked operators that are same or tighter precedence
+        // (left-associative: same level reduces left-to-right)
+        while (sp > 0 && prec_stack[sp - 1] >= match_level) {
+            sp--;
+            L = e_op(a, op_stack[sp], method_stack[sp],
+                     (Au)lhs_stack[sp], (Au)L);
+        }
+        
+        // consume the token
+        read_if(a, cstring(match_tok));
+        
+        // handle special operators (and/or, is/inherits) inline
+        if (match_op == OPType__and || match_op == OPType__or) {
+            if (match_op == OPType__or && read_if(a, "return")) {
+                etype rtype = return_type(a);
+                enode fallback = peek(a) ? parse_expression(a, rtype) : null;
+                verify(fallback || is_void(return_type(a)),
+                       "expected expression after return");
+                enode cond = e_not(a, L);
+                enode ret_node = fallback ? e_create(a, rtype, (Au)fallback) : null;
+                e_cond_return(a, cond, (Au)ret_node);
+                // reduce remaining stack
+                while (sp > 0) {
+                    sp--;
+                    L = e_op(a, op_stack[sp], method_stack[sp],
+                             (Au)lhs_stack[sp], (Au)L);
+                }
+                return L;
+            } else {
+                L = e_short_circuit(a, match_op, L);
+                continue;
+            }
+        } else if (match_op == OPType__is || match_op == OPType__inherits) {
+            etype type = read_etype(a, null);
+            verify(type, "expected type, got %o", peek(a));
+            enode type_L = e_typeid(a, (etype)L);
+            enode type_R = e_typeid(a, (etype)type);
+            if (match_op == OPType__inherits) {
+                Au_t f_inherits = find_member(typeid(Au), "inherits",
+                                              AU_MEMBER_FUNC, false);
+                L = e_fn_call(a, u(efunc, f_inherits), a(type_L, type_R));
+            } else {
+                L = e_cmp_op(a, OPType__equal, type_L, type_R);
+            }
+            continue;
+        }
+        
+        // regular binary op: push L and the op onto the stack,
+        // then read the next atom as the new L
+        verify(sp < MAX_DEPTH, "expression too deep");
+        lhs_stack[sp]    = L;
+        op_stack[sp]     = match_op;
+        method_stack[sp]  = match_method;
+        prec_stack[sp]    = match_level;
+        sp++;
+        
+        L = read_enode(a, null, false);
     }
-    return L;
 }
 
 static array parse_tokens(silver a, Au input, array output);
@@ -775,8 +830,8 @@ static void silver_module() {
         ">>=", string("assign_right"),
         "<<=", string("assign_left"),
         "->", string("resolve_member"),
-        "==", string("compare"),
-        "~ ", string("equal"), // placeholder impossible match, just so we have the enum ordering
+        "<=>", string("compare"),
+        "==", string("equal"), // placeholder impossible match, just so we have the enum ordering
         "!=", string("not_equal"),
         "is", string("is"),
         "inherits", string("inherits"),
@@ -1611,7 +1666,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
     silver module  =  !is_cmode(a) && (top->is_namespace) ? a : null;
     efunc  f       =  !is_cmode(a) ? context_func(a) : null;
     bool   in_rec  = rec_top && rec_top->au == top;
-    if (seq == 103) {
+    if (seq == 23) {
         seq = seq;
     }
 
@@ -1643,7 +1698,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
         bool new_name = in_decl != null || in_rec;
         alpha = read_alpha_macrofilter(a, new_name);
 
-        if (alpha && eq(alpha, "x")) {
+        if (alpha && eq(alpha, "s")) {
             alpha = alpha;
         }
         verify(!first || alpha || new_name,
@@ -1974,6 +2029,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
 
     // parenthesized expressions
     if (next_is(a, "(")) {
+        print_tokens(a, "parens");
         consume(a);
         // support C-style cast here, only in cmode (macro definitions)
         if (cmode) {
@@ -1996,7 +2052,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
         }
         a->parens_depth++;
         enode expr = parse_expression(a, null); // Parse the expression
-        verify(read_if(a, ")"), "expected ) after expression");
+        validate(read_if(a, ")"), "expected ) after expression, found %o", peek(a));
         a->parens_depth--;
         return e_create(a, mdl_expect, (Au)
             parse_ternary(a, (enode)expr, (etype)mdl_expect));
@@ -2049,6 +2105,10 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
     // we only allow one reference depth, for multiple we would resort to using defined types
     // this is to make code cleaner, with more explicit definition
     // we must use in-ref state only at neighboring calls
+    // silver doesnt really want to tell you how to code, 
+    // it is reduced in nature, to define line by line rather than add horizontal inline features
+    // its less surface area for complexity
+
     else if (!cmode && read_if(a, "ref")) {
         validate(!from_ref, "unexpected double-ref (use type definitions)");
         a->in_ref = true;
@@ -2058,7 +2118,9 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
         if (next_is(a, "["))
             expr = parse_member_expr(a, expr);
 
-        return e_create(a, mdl_expect, (Au)expr);
+        etype ref_type = pointer((aether)a, (Au)expr->au);
+
+        return e_create(a, mdl_expect ? mdl_expect : ref_type, (Au)expr);
     }
 
     // we may only support a limited set of C functionality for #define macros
@@ -2150,6 +2212,7 @@ enode parse_statement(silver a)
         read_if(a, "cast")       != null : false;
     bool      is_oper   = !f && !is_static && !(is_func|is_lambda) && !is_cast ?
         read_if(a, "operator")   != null : false;
+    bool      is_left   = is_oper ? read_if(a, "left") != null : false;
     bool      is_ctr    = !f && !is_static && !(is_func|is_lambda) && !is_cast && !is_oper ?
         read_if(a, "construct")  != null : false;
     bool      is_idx    = !f && !is_static && !(is_func|is_lambda) && !is_cast && !is_oper && !is_ctr ?
@@ -2186,6 +2249,9 @@ enode parse_statement(silver a)
     string op_name = null;
     OPType op_type = is_oper ? read_operator(a, (ARef)&op_name) : OPType__undefined;
     enode  e       = null;
+
+    if (is_oper && is_left && op_type == OPType__mul) op_type = OPType__lmul;
+    if (is_oper && is_left && op_type == OPType__div) op_type = OPType__ldiv;
     
     if (mem!=null || is_ctr || is_idx || is_oper || is_lambda || is_func || is_cast)
     {
@@ -2285,6 +2351,8 @@ enode parse_statement(silver a)
             a->expr_level++;
             mem->au->is_const = module != null;
             print_tokens(a, "parse_assignment 2");
+            validate (!is_func(mem->au->context), "function arguments are read-only");
+            
             e = parse_assignment(a, (enode)mem, assign_enum, mem->au->is_const);
             print_tokens(a, "after-assign");
             a->expr_level--;
@@ -2325,19 +2393,13 @@ enode parse_statements(silver a, bool unique_members) {
 void silver_incremental_resolve(silver a) {
     members(a->au, mem) {
         etype e = u(etype, mem);
-        if (is_func((Au)mem) && !mem->is_system && e != a->fn_init && !e->user_built) {
-            Au_t e_isa = isa(e);
+        if (is_func((Au)mem) && !mem->is_system && e != a->fn_init && !e->user_built)
             build_fn(a, (efunc)e, null, null);
-        }
     }
     members(a->au, mem) {
         etype rec = (mem->is_class || mem->is_struct) ? u(etype, mem) : null;
-        if (mem->is_struct && strcmp(mem->ident, "Vec2") == 0) {
-            mem = mem;
-        }
-        if (rec && !mem->is_system && !mem->is_schema && !rec->parsing && !rec->user_built) {
+        if (rec && !mem->is_system && !mem->is_schema && !rec->parsing && !rec->user_built)
             build_record(a, rec);
-        }
     }
 }
 
@@ -2648,15 +2710,18 @@ etype read_etype(silver a, array* p_expr) {
                 shape    s =  read_shape(a);
                 validate(s && isa(s) == typeid(shape), "expected shape description, found %o", peek(a));
                 meta_args  =  a(s);
-            } else if (meta0_src) {
+            } else if (meta0_src && mdl->au != typeid(shape)) {
                 a->etype_level++;
                 etype t = read_etype(a, null);
+                if (!t) t = etypeid(Au);
                 validate(t, "expected meta type, found %o", peek(a));
                 meta_args = a(t);
                 a->etype_level--;
             }
             int rem = mdl->au->meta.count - 1;
-            if (rem > 0 && read_meta && (has_depth_meta || a->etype_level == 0) ) {
+            if (next_is(a, "[") && rem > 0 && read_meta && 
+               (has_depth_meta || a->etype_level == 0) )
+            {
                 // second arg and on are joined within [ ]
                 validate(read_if(a, "["),
                     "expected [ after first meta type %o", first_element(meta_args));
@@ -4356,7 +4421,7 @@ enode parse_break(silver a) {
 // the idea is to know what model is returning from deeper calls
 static array read_expression(silver a, etype *mdl_res, bool *is_const) {
     array exprs = array(32);
-    int s = a->cursor;
+    int start = a->cursor;
     a->no_build = true;
     a->is_const_op = true; // set this, and it can only &= to true with const ops; any build op sets to false
     enode n = parse_expression(a, null);
@@ -4364,7 +4429,7 @@ static array read_expression(silver a, etype *mdl_res, bool *is_const) {
         *mdl_res = (etype)n;
     a->no_build = false;
     int e = a->cursor;
-    for (int i = s; i < e; i++) {
+    for (int i = start; i < e; i++) {
         push(exprs, (Au)a->tokens->origin[i]);
     }
     *is_const = a->is_const_op;
@@ -4777,12 +4842,13 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
     validate(isa(mem) == typeid(enode) || !mem->au->is_const,
         "mem %s is a constant", mem->au->ident);
     
+    print_tokens(a, "parse_assignment");
     etype t = (etype)etype_of(mem);
-    enode R = parse_expression(a, t); 
+    bool is_bind_ref = (op_val == OPType__bind) ? next_is(a, "ref") : false;
+    enode R = parse_expression(a, mem->is_explicit_ref ? u(etype, t->au->src) : t); 
 
     // Handle Promotion and Inference for AU_MEMBER_DECL
     if (mem->au->member_type == AU_MEMBER_DECL) {
-
         // Promote the member to a variable
         Au_t ctx = top_scope(a);
         mem->au->context = ctx;
@@ -4791,12 +4857,9 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         mem->au->is_const = is_const;
         rm(a->registry, (Au)mem->au);
 
-        if (is_struct(mem->au->src)) {
-            mem = mem;
-        }
-
         mem = (enode)evar(mod, (aether)a, au, mem->au,
-            loaded, !is_struct(mem->au->src), meta, R->meta);
+            loaded, !is_struct(mem->au->src), meta, R->meta,
+            is_explicit_ref, is_bind_ref);
 
         // Register and allocate the variable in the backend
         etype_implement((etype)mem);

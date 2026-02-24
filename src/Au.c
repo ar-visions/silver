@@ -173,6 +173,47 @@ shape shape_with_array(shape a, array dims) {
     return a;
 }
 
+shape shape_operator__mul(shape a, i64 n) {
+    shape res = shape_from(a->count, a->data);
+    res->data[a->count - 1] *= n;
+    return res;
+}
+
+shape shape_operator__lmul(shape a, i64 n) {
+    shape res = shape_from(a->count, a->data);
+    res->data[0] *= n;
+    return res;
+}
+
+shape shape_operator__div(shape a, i64 n) {
+    i64 reduce = a->data[a->count - 1];
+    verify(reduce % n == 0, "shape not right-divisible by %i", n);
+    shape res = shape_from(a->count, a->data);
+    res->data[a->count - 1] = reduce / n;
+    return res;
+}
+
+shape shape_operator__ldiv(shape a, i64 n) {
+    i64 reduce = a->data[0];
+    verify(reduce % n == 0, "shape not left-divisible by %i", n);
+    shape res = shape_from(a->count, a->data);
+    res->data[0] = reduce / n;
+    return res;
+}
+
+shape shape_operator__left(shape a, i64 n) {
+    shape res = shape_from(a->count + n, null);
+    memcpy(res->data, a->data, sizeof(i64) * a->count);
+    for (int i = 0; i < n; i++)
+        res->data[a->count + i] = 1;
+    return res;
+}
+
+shape shape_operator__right(shape a, i64 n) {
+    verify((a->count - n) >= 1, "cannot reduce shape");
+    return new(shape, count, a->count - n, data, a->data, is_global, false);
+}
+
 i64 shape_total(shape a) {
     i64* data = a->data;
     i64 total = 1;
