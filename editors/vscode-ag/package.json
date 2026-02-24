@@ -1,0 +1,27 @@
+{
+  "name": "silver-ag",
+  "displayName": "Silver (.ag)",
+  "description": "Syntax highlighting for the Silver language (.ag files)",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "ag",
+        "aliases": ["Silver", "ag"],
+        "extensions": [".ag"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ag",
+        "scopeName": "source.ag",
+        "path": "./syntaxes/ag.tmLanguage.json"
+      }
+    ]
+  }
+}
