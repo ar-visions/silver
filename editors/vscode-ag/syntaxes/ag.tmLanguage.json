@@ -1,0 +1,225 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Silver",
+  "scopeName": "source.ag",
+  "patterns": [
+    { "include": "#block-comment" },
+    { "include": "#doc-comment" },
+    { "include": "#line-comment-hash" },
+    { "include": "#line-comment-double-slash" },
+    { "include": "#strings-double" },
+    { "include": "#strings-single" },
+    { "include": "#numbers" },
+    { "include": "#dimension-literal" },
+    { "include": "#declaration-keywords" },
+    { "include": "#control-keywords" },
+    { "include": "#access-modifiers" },
+    { "include": "#storage-keywords" },
+    { "include": "#type-keywords" },
+    { "include": "#builtin-constants" },
+    { "include": "#operator-keywords" },
+    { "include": "#builtin-functions" },
+    { "include": "#import-statement" },
+    { "include": "#export-statement" },
+    { "include": "#arrow-operator" },
+    { "include": "#conditional-import" },
+    { "include": "#operators" },
+    { "include": "#function-call" },
+    { "include": "#member-access" }
+  ],
+  "repository": {
+    "block-comment": {
+      "name": "comment.block.ag",
+      "begin": "^##$",
+      "end": "^##$"
+    },
+    "doc-comment": {
+      "name": "comment.block.documentation.ag",
+      "match": "///.*$"
+    },
+    "line-comment-hash": {
+      "name": "comment.line.hash.ag",
+      "match": "#(?!#).*$"
+    },
+    "line-comment-double-slash": {
+      "name": "comment.line.double-slash.ag",
+      "match": "//(?!/).*$"
+    },
+    "strings-double": {
+      "name": "string.quoted.double.ag",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.ag",
+          "match": "\\\\."
+        },
+        {
+          "name": "meta.interpolation.ag",
+          "match": "\\{[^}]*\\}",
+          "captures": {
+            "0": {
+              "patterns": [
+                {
+                  "name": "punctuation.definition.interpolation.begin.ag",
+                  "match": "\\{"
+                },
+                {
+                  "name": "punctuation.definition.interpolation.end.ag",
+                  "match": "\\}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "strings-single": {
+      "name": "string.quoted.single.ag",
+      "begin": "'",
+      "end": "'",
+      "patterns": [
+        {
+          "name": "constant.character.escape.ag",
+          "match": "\\\\."
+        },
+        {
+          "name": "meta.interpolation.ag",
+          "match": "\\{[^}]*\\}",
+          "captures": {
+            "0": {
+              "patterns": [
+                {
+                  "name": "punctuation.definition.interpolation.begin.ag",
+                  "match": "\\{"
+                },
+                {
+                  "name": "punctuation.definition.interpolation.end.ag",
+                  "match": "\\}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "dimension-literal": {
+      "name": "constant.numeric.dimension.ag",
+      "match": "\\b[0-9]+x[0-9]+\\b"
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.ag",
+          "match": "\\b[0-9]+\\.[0-9]+f?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.ag",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+    "declaration-keywords": {
+      "name": "keyword.declaration.ag",
+      "match": "\\b(class|struct|enum|func|app|operator|cast|lambda|shader|interface)\\b"
+    },
+    "control-keywords": {
+      "name": "keyword.control.ag",
+      "match": "\\b(if|el|for|return|break|import|export|ifdef|using)\\b"
+    },
+    "access-modifiers": {
+      "name": "keyword.other.modifier.ag",
+      "match": "\\b(public|intern|expect|context|static)\\b"
+    },
+    "storage-keywords": {
+      "name": "keyword.other.storage.ag",
+      "match": "\\b(new|ref|array|map|stack|const)\\b"
+    },
+    "type-keywords": {
+      "name": "support.type.ag",
+      "match": "\\b(bool|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|float|double|string|cstr|none|num|int|handle|object|void|shape)\\b"
+    },
+    "builtin-constants": {
+      "name": "constant.language.ag",
+      "match": "\\b(true|false|null|NULL)\\b"
+    },
+    "operator-keywords": {
+      "name": "keyword.operator.word.ag",
+      "match": "\\b(not|inherits|is|and|or|asm|super|Au)\\b"
+    },
+    "builtin-functions": {
+      "name": "support.function.ag",
+      "match": "\\b(puts|verify|sizeof|typeof|getenv|push|strdup|memset)\\b"
+    },
+    "import-statement": {
+      "begin": "\\b(import)\\b",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.import.ag" }
+      },
+      "end": "$",
+      "patterns": [
+        {
+          "name": "string.unquoted.include.ag",
+          "match": "<[^>]+>"
+        },
+        {
+          "name": "entity.name.module.ag",
+          "match": "[a-zA-Z_][a-zA-Z0-9_-]*(?::[a-zA-Z_][a-zA-Z0-9_-]*)?"
+        }
+      ]
+    },
+    "export-statement": {
+      "match": "\\b(export)\\s+([0-9]+(?:\\.[0-9]+)*)",
+      "captures": {
+        "1": { "name": "keyword.control.export.ag" },
+        "2": { "name": "constant.numeric.version.ag" }
+      }
+    },
+    "arrow-operator": {
+      "name": "keyword.operator.arrow.ag",
+      "match": "->"
+    },
+    "conditional-import": {
+      "name": "keyword.operator.conditional.ag",
+      "match": "\\?\\?"
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.comparison.ag",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.logical.ag",
+          "match": "&&|\\|\\|"
+        },
+        {
+          "name": "keyword.operator.assignment.ag",
+          "match": "\\+=|-=|="
+        },
+        {
+          "name": "keyword.operator.bitwise.ag",
+          "match": "<<|>>|&|\\||\\^"
+        },
+        {
+          "name": "keyword.operator.arithmetic.ag",
+          "match": "\\+|-|\\*|/|%"
+        },
+        {
+          "name": "keyword.operator.separator.ag",
+          "match": "::"
+        }
+      ]
+    },
+    "function-call": {
+      "match": "\\b([a-zA-Z_][a-zA-Z0-9_-]*)\\s*(?=\\[)",
+      "captures": {
+        "1": { "name": "entity.name.function.ag" }
+      }
+    },
+    "member-access": {
+      "match": "\\.",
+      "name": "punctuation.accessor.ag"
+    }
+  }
+}
