@@ -113,15 +113,33 @@ func control_flow_test[] -> bool
 
     return true
 
+func true_test[] -> bool [ true ]
+
 func array_test[] -> bool
     puts ['array_test']
     ar  : array i32[ 4x4 ] [ 1 2 3 4, 1 1 1 1, 2 2 2 2, 3 3 3 3 ]
     ar2 : new   i32[ 4x4 ] [ 1 2 3 4, 1 1 1 1, 2 2 2 2, 3 3 3 3 ]
     sh  : shape[ ar2.shape ]
-    return sh == ((4x4 << 1) * 2 >> 1)
+
+    aaa : true_test || return false
+
+    aa : 4x4 * 2
+    bb : 4x4 * 3
+    cc : 4x4 * 4
+
+    return sh == (((4x4 << 1) * 2 >> 1) or 
+                  ((4x4 << 1) * 2 >> 1))
+
+# ((4x4 << 1) * 2 >> 1)
 
 func map_test[] -> bool
     puts 'map_test'
+    ma : map string[ string ] # should populate the map
+        'key': 'value'
+    
+    k : string ma [ 'key' ] # should be doing map_index_Au with the string instance
+    puts k # should cast to const char * from string
+
     return true
 
 func compound_test[] -> bool
@@ -132,7 +150,16 @@ func compound_test[] -> bool
            test_vbasic [ 22 ]
 
 app test2
+
+    lambda a_lambda [ arg:i64 :: ctx2:i16 ] -> i32
+        rtest : int
+        puts 'i love the number {ctx2} so why did you give me {arg}'
+        rtest = 1
+        return rtest
+
     func init [] -> none
         test2_func 1
+        l: a_lambda[ u16 1 ]
+        l [ i64 2 ] 
         if [ not compound_test ]
             puts "FAIL"
