@@ -980,7 +980,7 @@ enode e_operand_primitive(aether a, Au op) {
             mod,     a,
             loaded,  true,
             value,   const_cstr(a, str->chars, str->count),
-            au,      au_lookup("symbol"),
+            au,      au_lookup("cstr"),
             literal, op);
     }
     error("unsupported type in aether_operand %s", t->ident);
@@ -1814,6 +1814,14 @@ enode convertible(etype fr, etype to) {
         return (enode)true;
 
     if (is_prim(ma) && inherits(mb->au, typeid(string))) {
+        // check for a constructor on string that takes this primitive type
+        // before reducing to Au (which would match is_subclass and bypass construction)
+        if (is_rec(mb)) {
+            enode mctr = constructable(ma, mb);
+            if (mctr) return mctr;
+            enode mcast = castable(ma, mb);
+            if (mcast) return mcast;
+        }
         ma = etypeid(Au); // reduce all primitives to Au; we just need to be sure to get addresses of our data
     }
 

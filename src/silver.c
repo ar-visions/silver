@@ -4502,7 +4502,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
             // check if we can perform copies or referenced construction, or convert from/to cast/ctr 
             if (first && !has_more) {
                 enode mcast    = castable(canonical(expr), canonical(mdl));
-                enode mctr     = constructable(canonical(mdl), canonical(expr));
+                enode mctr     = constructable(canonical(expr), canonical(mdl));
                 if (mcast || mctr) {
                     validate(!within_expr || read_if(a, "]"), "expected ]");
                     return e_create(a, mdl, (Au)expr);
