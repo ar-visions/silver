@@ -547,7 +547,10 @@ void silver_parse(silver a) {
 
     // when done parsing, we are able to create a module schema (type_id definition) and the evar instance for the type_id (module_m with info/type)
     implement_type_id((etype)a);
+
+    a->building_initializer = true;
     build_fn(a, init, build_init_preamble, null);
+    a->building_initializer = false;
 }
 
 none aether_test_write(aether a);
@@ -2243,7 +2246,7 @@ enode parse_statement(silver a)
 
     // if no access then full access
     if (!access) access = interface_public;
-    
+
     push_current(a);
 
     string op_name = null;
@@ -2311,13 +2314,6 @@ enode parse_statement(silver a)
             mem->au->member_type = AU_MEMBER_VAR;
             mem->au->src         = rtype->au;
             mem->au->is_static   = is_static;
-
-            for (int i = 0; i < mem->au->context->members.count; i++) {
-                Au_t m = (Au_t)mem->au->context->members.origin[i];
-                if (m == mem->au) {
-                    m = m;
-                }
-            }
 
             Au f = get(a->registry, (Au)mem->au);
             Au_t info = isa(f);
@@ -2690,8 +2686,6 @@ etype read_etype(silver a, array* p_expr) {
             return null;
         }
 
-        // is_class(mdl) && mdl->au->meta.count
-
         if (mdl) {
             // silver is about introducing more syntax only when you require complex containment
             // this applies to methods with no args at method level 0 and [ args ] at > 0
@@ -2781,13 +2775,25 @@ etype read_etype(silver a, array* p_expr) {
     if (mdl && mdl->au->member_type != AU_MEMBER_TYPE && !mdl->au->is_meta)
         mdl = null;
 
-    etype t = (mdl && meta) ? etype(mod, (aether)a, au, mdl->au, meta, meta) : mdl;
+    bool is_any = false;
+    if (!is_cmode(a)) {
+        is_any = read_if(a, "*") != null;
+        if (is_any) {
+            Au_t   top     = top_scope(a);
+            etype  rec_top = context_record(a);
+            bool   in_rec  = rec_top && rec_top->au == top;
+            bool   in_arg  = is_func(top);
+            validate(is_class(mdl) && (in_rec || in_arg),
+                "polymorphic-any (*) applies to classes in argument / record membership");
+        }
+    }
+
+    etype t = (mdl && (meta || is_any)) ? 
+        etype(mod, (aether)a, au, mdl->au, meta, meta, is_any, is_any) : mdl;
+
     if (is_ref)
         t = pointer((aether)a, (Au)t);
 
-    //if (p_expr) {
-    //    *p_expr = read_initializer(a);
-    //}
     pop_tokens(a, mdl != null); // if we read a model, we transfer token state
     return t;
 }
@@ -3929,11 +3935,7 @@ void silver_build_user_initializer(silver a, enode t) {
             int level = a->expr_level;
             a->expr_level++;
             push_tokens(a, (tokens)post_const, 0);
-            // we store the meta field on the var entry, not the var's src type
-            etype meta_arg0 = (etype)array_get(t->meta, 0);
-            shape meta_arg1 = (shape)array_get(t->meta, 1);
-            etype recombine = etype(mod, (aether)a, meta, t->meta, au, t->au->src);
-            expr = (Au)parse_expression(a, (etype)recombine); // we have tokens for the name pushed to the stack
+            expr = (Au)parse_expression(a, (etype)evar_type((evar)t));
             pop_tokens(a, false);
             a->expr_level = level;
         }
@@ -4499,10 +4501,17 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
             enode expr     = parse_expression(a, null);
             bool  has_more = read_if(a, ",") != null;
 
+            etype t0 = canonical(expr);
+            etype t1 = canonical(mdl);
+            
+            if (t0 == t1) {
+                if (first && !has_more) return expr;
+            }
+            else
             // check if we can perform copies or referenced construction, or convert from/to cast/ctr 
             if (first && !has_more) {
-                enode mcast    = castable(canonical(expr), canonical(mdl));
-                enode mctr     = constructable(canonical(mdl), canonical(expr));
+                enode mcast    = castable(t0, t1);
+                enode mctr     = constructable(t0, t1);
                 if (mcast || mctr) {
                     validate(!within_expr || read_if(a, "]"), "expected ]");
                     return e_create(a, mdl, (Au)expr);
