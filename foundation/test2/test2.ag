@@ -40,13 +40,9 @@ struct Vec2
     public x: f32
     public y: f32
 
-    operator + [ b: Vec2 ] -> Vec2
-        return Vec2 [ x: x + b.x, y: y + b.y ]
-
-    operator == [ b: Vec2   ] -> bool [ x == b.x ]
-    
-    operator /  [ b: double ] -> Vec2
-        return Vec2 [ x: b + 1, y: b + 1  ]
+    operator +  [ b: Vec2 ]   -> Vec2 [ x: x + b.x, y: y + b.y ]
+    operator == [ b: Vec2 ]   -> bool [ x == b.x ]
+    operator /  [ b: double ] -> Vec2 [ x: b + 1, y: b + 1 ]
     
     cast -> string ['{x}, {y}']
 

@@ -1676,13 +1676,14 @@ void alloc_validate() {
 Au alloc(Au_t type, num count, shape shape_data, Au_t* meta) {
     sz map_sz = sizeof(map);
     sz _sz   = sizeof(struct _Au);
-    sz alloc_count = shape_data ? shape_total(shape_data) : count;
+
+    sz alloc_count = shape_data ? shape_total(shape_data) : (count ? count : 1);
     Au a = alloc_instance(type,
         _sz + type->typesize * alloc_count, true);
     a->type       = type;
     a->data       = &a[1];
     a->count      = alloc_count;
-    a->alloc      = count;
+    a->alloc      = alloc_count;
     a->shape      = hold(shape_data);
     if (meta && type->meta.count > 0) {
         for (int i = 0; i < type->meta.count; i++) {
@@ -1698,6 +1699,10 @@ Au alloc(Au_t type, num count, shape shape_data, Au_t* meta) {
     if (tracing)
         tracing[tracing_count++] = a->data;
     
+    if (a->data == 0x0000555555808ce9) {
+        string s = (string)a->data;
+        a = a;
+    }
     return a->data;
 }
 
@@ -3634,6 +3639,8 @@ none msg_dealloc(msg a) {
 
 none string_init(string a) {
     cstr value = (cstr)a->chars;
+    if (a->chars && a->alloc) return; // we're allocated already
+
     if (a->alloc)
         a->chars = (char*)calloc(1, 1 + a->alloc);
     if (value) {
@@ -3642,6 +3649,9 @@ none string_init(string a) {
             a->alloc = len;
         if (a->chars == value)
             a->chars = (char*)calloc(1, len + 1);
+        //char buf[256];
+        //snprintf(buf, 256, "string len = %i, chars buf was %p (%s)\n", (int)len, value, value);
+        //puts(buf);
         memcpy((cstr)a->chars, value, len);
         ((cstr)a->chars)[len] = 0;
         a->count = len;
@@ -3687,8 +3697,9 @@ string string_with_i32(string a, i32 value) {
 }
 
 string string_with_cstr(string a, cstr value) {
-    a->count   = value ? strlen(value) : 0;
-    a->chars = calloc(a->count + 1, 1);
+    a->count = value ? strlen(value) : 0;
+    a->alloc = a->count + 1;
+    a->chars = calloc(a->alloc, 1);
     memcpy((cstr)a->chars, value, a->count);
     return a;
 }
@@ -6261,6 +6272,7 @@ i32 app_run(app a) {
 }
 
 none app_init(app a) {
+    puts("app init\n");
 }
 
 define_arb(Au, Au, sizeof(struct _Au), AU_TRAIT_CLASS, null);
