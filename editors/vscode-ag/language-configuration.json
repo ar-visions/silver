@@ -1,0 +1,32 @@
+{
+  "comments": {
+    "lineComment": "#",
+    "blockComment": ["##", "##"]
+  },
+  "brackets": [
+    ["[", "]"],
+    ["(", ")"],
+    ["{", "}"]
+  ],
+  "autoClosingPairs": [
+    { "open": "[", "close": "]" },
+    { "open": "(", "close": ")" },
+    { "open": "{", "close": "}" },
+    { "open": "'", "close": "'", "notIn": ["string", "comment"] },
+    { "open": "\"", "close": "\"", "notIn": ["string", "comment"] }
+  ],
+  "surroundingPairs": [
+    ["[", "]"],
+    ["(", ")"],
+    ["{", "}"],
+    ["'", "'"],
+    ["\"", "\""]
+  ],
+  "indentationRules": {
+    "increaseIndentPattern": "^\\s*(func|if|el|for|class|struct|enum|app|operator|cast|lambda|shader)\\b",
+    "decreaseIndentPattern": "^\\s*(el|return)\\b"
+  },
+  "folding": {
+    "offSide": true
+  }
+}
