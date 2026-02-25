@@ -33,6 +33,8 @@
     M(X, Y, i, prop, public, array,   artifacts) \
     M(X, Y, i, prop, public, path,    artifacts_path) \
     M(X, Y, i, prop, public, bool,    error) \
+    M(X, Y, i, prop, public, string,  export_version) \
+    M(X, Y, i, prop, public, map,     exports) \
     M(X, Y, i, prop, public, map, codegens)          \
     M(X, Y, i, method, public, none, write_header)   \
     M(X, Y, i, prop, iobject, map, import_cache) \

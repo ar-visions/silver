@@ -857,6 +857,20 @@ void silver_init(silver a) {
             }
 
             build(a);
+
+            /// after successful build on main module, apply all export tags at once
+            if (!a->is_external && a->exports && len(a->exports)) {
+                print("applying export tags:");
+                pairs(a->exports, i) {
+                    string mod_name = (string)i->key;
+                    string ver      = (string)i->value;
+                    string tag      = f(string, "%o-%o", mod_name, ver);
+                    print("  tag: %o", tag);
+                    string cmd      = f(string, "git -C %o tag -f %o", a->project_path, tag);
+                    int    rc       = exec("%o", cmd);
+                    verify(rc == 0, "failed to create git tag: %o", tag);
+                }
+            }
         }
         on_error() {
             mtime = current_time();
@@ -3749,7 +3763,18 @@ enode parse_export(silver a) {
     sequencer;
     validate(read_if(a, "export"), "expected export keyword");
     token version = read_compacted(a);
+    validate(version, "expected version after export keyword");
     verify(a->project_path, "expected silver invocation into main project module");
+
+    /// store this module's export version
+    a->export_version = string(version->chars);
+
+    /// register with the main silver instance (og) so tags are collected in one place
+    silver og = a->is_external ? a->is_external : a;
+    if (!og->exports)
+         og->exports = map(hsize, 8);
+    set(og->exports, (Au)string(a->name->chars), (Au)string(version->chars));
+
     return e_noop(a, null);
 }
 
