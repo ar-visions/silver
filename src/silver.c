@@ -390,7 +390,7 @@ static bool is_multi_expression(silver a, OPType match_op) {
     bool is_const = false;
     etype mdl = null;
     array expr = read_expression(a, &mdl, &is_const);
-    bool positive = next_is(a, "or")  || 
+    bool positive = next_is(a, ",")  || 
                     next_is(a, "...") ||
                     next_is(a, "..<");
     pop_tokens(a, false);    
@@ -549,11 +549,11 @@ static enode reverse_descent(silver a, etype expect) { sequencer
                 continue;
             }
             
-            if (next_is(a, "or")) {
+            if (next_is(a, ",")) {
                 // regular hat: comma-separated values
                 enode cmp = e_op(a, match_op, match_method, (Au)L, (Au)R0);
                 
-                while (read_if(a, "or")) {
+                while (read_if(a, ",")) {
                     enode Rn      = parse_expression(a, null);
                     enode next_cmp = e_op(a, match_op, match_method, (Au)L, (Au)Rn);
                     cmp = e_short_circuit_pair(a, combine, cmp, next_cmp);
