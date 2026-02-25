@@ -3331,7 +3331,6 @@ array string_split_parts(string a) {
     array res = array(alloc, 32);
     cstr s = (cstr)a->chars;
     cstr prev = null;
-
     while (*s) {
         if (*s == '{') {
             if (s[1] == '{') {
@@ -3340,7 +3339,6 @@ array string_split_parts(string a) {
                 s += 2;
                 continue;
             }
-
             // flush any literal before the expression
             if (prev) {
                 string lit = (string)const_string(chars, prev, ref_length, (sz)(s - prev));
@@ -3348,22 +3346,21 @@ array string_split_parts(string a) {
                 push(res, (Au)p);
                 prev = null;
             }
-
             if (s[1] == 0)
                 break;
-
             // parse expression content
             s++; // skip '{'
-            cstr start = s;
-            while (*s && *s != '}')
+            while (*s && isspace(*s)) s++;   // skip leading whitespace
+            cstr expr_start = s;
+            cstr expr_end   = s;
+            while (*s && *s != '}') {
+                if (!isspace(*s)) expr_end = s + 1;
                 s++;
-
+            }
             verify(*s == '}', "unterminated interpolation", 1);
-
-            string expr = string(chars, start, ref_length, (sz)(s - start));
+            string expr = string(chars, expr_start, ref_length, (sz)(expr_end - expr_start));
             ipart p = ipart(is_expr, true, content, expr);
             push(res, (Au)p);
-
             s++; // skip '}'
         } else if (*s == '}') {
             // escaped }}
@@ -3375,13 +3372,11 @@ array string_split_parts(string a) {
             s++;
         }
     }
-
     if (prev) {
         string lit = (string)const_string(chars, prev, ref_length, (sz)(s - prev));
         ipart p = ipart(is_expr, false, content, lit);
         push(res, (Au)p);
     }
-
     return res;
 }
 

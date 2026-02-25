@@ -20,7 +20,7 @@ static void build_record(silver a, etype mrec);
 
 #define validate(cond, t, ...) ({ \
     if (!(cond)) { \
-        string s = (string)formatter((Au_t)null, stderr, (Au) true, seq, (symbol) "\n%o:%i:%i " t, a->module_file, \
+        string s = (string)formatter((Au_t)null, stderr, (Au) true, seq, (symbol) "\n[%5i] compiler: %s:%i\n        source:   %o:%i:%i\n        " t, seq, __FILE__, __LINE__, a->module_file, \
                   peek(a)->line, peek(a)->column, ##__VA_ARGS__); \
         if (level_err >= fault_level) { \
             halt(s); \
@@ -39,11 +39,14 @@ static array read_enode_tokens(silver a);
 
 token silver_element(silver, num);
 
-void print_tokens(silver a, symbol label) {
-    print("[%s] %o %o %o %o %o %o...", label,
+void print_tokens_(silver a, int seq, symbol label, cstr file, int line) {
+    print("[ %22s -> %s:%i ]\n        %o %o %o %o %o %o...", label, file, line,
           element(a, 0), element(a, 1), element(a, 2), element(a, 3),
           element(a, 4), element(a, 5));
 }
+
+#define print_tokens(a, label) \
+    print_tokens_(a, seq, label, __FILE__, __LINE__)
 
 void print_token_state(silver a, symbol label) {
     print("[%s] %o %o %o %o %o %o...", label,
@@ -881,7 +884,8 @@ static void silver_module() {
         "class",    "struct",   "public",   "intern",
         "import",   "export",   "typeid",   "context",
         "is",       "inherits", "ref",      "of",   "lambda",
-        "const",    "expect",   "no-op",    "return", "->", "::", "...", "<>",
+        "const",    "expect",   "no-op",    "<>",
+        "return",   "->",       "::",       "...",  
         "asm",      "if",       "switch",   "any",
         "enum",     "ifdef",    "else",     "while",
         "cast",     "try",      "throw",    "catch",
@@ -1799,6 +1803,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
         bool first = !mem;
 
         bool new_name = in_decl != null || in_rec;
+        print_tokens(a, "before read-alpha");
         alpha = read_alpha_macrofilter(a, new_name);
 
         if (alpha && eq(alpha, "s")) {
