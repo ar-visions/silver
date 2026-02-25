@@ -2353,6 +2353,8 @@ enode parse_statement(silver a)
         "expected member-name after access '%o'", estring(typeid(interface), access));
 
     if (access && mem && mem->au) mem->au->access_type = (u8)access;
+    if (access == interface_context && mem && mem->au)
+        mem->au->is_context = true;
 
     // if no access then full access
     if (!access) access = interface_public;

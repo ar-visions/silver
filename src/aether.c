@@ -1177,28 +1177,32 @@ static evar lookup_by_unique_type(aether a, Au_t required_type) {
 // in short i think i am a fan of this since 
 // its the one thing i am not moving away from after years-of-fiddling..
 
-static void resolve_context_members(enode target) {
+static void resolve_context_members(enode target, map user_args) {
     aether a = target->mod;
     if (a->no_build)
         return;
-    
+
     // canonical resolves types from enode, as well as dissolves any aliases
     Au_t type = canonical(target)->au;
 
     if (!is_rec(target->au))
         return;
-    
+
     do {
         members(type, mem) {
             if (mem->member_type != AU_MEMBER_VAR || !mem->is_context)
                 continue;
-            
+
+            // skip if user already provided this context member
+            if (user_args && get(user_args, (Au)string(mem->ident)))
+                continue;
+
             Au_t required_type = mem->src;
             evar scope_var     = lookup_by_unique_type(a, required_type);
             verify(scope_var,
                 "required context member '%s' of type '%s' not found in scope",
                 mem->ident, required_type->ident);
-            
+
             enode prop = access(target, string(mem->ident));
             e_assign(a, prop, (Au)scope_var, OPType__assign);
             print("resolved context: %o -> %o", required_type, scope_var);
@@ -2232,7 +2236,7 @@ enode e_create_from_map(aether a, etype t, map m) {
         }
     }
     if (!is_m) {
-        resolve_context_members(res);
+        resolve_context_members(res, m);
         e_fn_call(a, f_initialize, a(res));
     }
     return res;
@@ -2301,7 +2305,7 @@ enode e_create_from_array(aether a, etype t, array ar) {
         enode tru = e_operand(a, _bool(ln), etypeid(bool));
         e_assign(a, prop_unmanaged, (Au)tru, OPType__assign);
     }
-    resolve_context_members(res);
+    resolve_context_members(res, null);
     e_fn_call(a, f_initialize, a(res));
 
     if (const_vector) {
@@ -2595,7 +2599,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                 e_typeid(a, mdl), _i32(0), e_null(a, etypeid(shape)),metas_node ));
             res->au = mdl->au; // we need a general cast method that does not call function
             res->is_alloc = !a->building_initializer;
-            resolve_context_members(res);
+            resolve_context_members(res, null);
             res = e_fn_call(a, f_initialize, a(res)); // required logic need not emit ops to set the bits when we can check at design time
         }
     } else if (ctr) {
@@ -2611,7 +2615,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         alloc->is_alloc = !a->building_initializer;
         alloc->au = mdl->au; // we need a general cast method that does not call function
         e_fn_call(a, ctr, a(alloc, input));
-        resolve_context_members(alloc);
+        resolve_context_members(alloc, null);
         res = e_fn_call(a, f_initialize, a(alloc));
         res->au = mdl->au;
         res->meta = hold(mdl->meta);
