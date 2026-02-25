@@ -804,8 +804,9 @@ declare_class(collective)
     enum_value       (E,T,Y, intern,     1) \
     enum_value       (E,T,Y, public,     2) \
     enum_value       (E,T,Y, guard,      3) \
-    enum_value       (E,T,Y, context,    4) \
-    enum_value       (E,T,Y, keyword,    5)
+    enum_value       (E,T,Y, expect,     4) \
+    enum_value       (E,T,Y, context,    5) \
+    enum_value       (E,T,Y, keyword,    6)
 declare_enum(interface)
 
 #define comparison_module_ Au

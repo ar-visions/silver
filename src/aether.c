@@ -21,6 +21,19 @@ typedef LLVMMetadataRef LLVMScope;
     (au ? (etype)u(etype, au) : (etype)null); \
 })
 
+#define validate(cond, t, ...) ({ \
+    if (!(cond)) { \
+        string s = (string)formatter((Au_t)null, stderr, (Au) true, seq, (symbol) "\n[%5i] compiler: %s:%i\n        source:   %o:%i:%i\n        " t, seq, __FILE__, __LINE__, a->module_file, \
+                  aether_peek(a)->line, aether_peek(a)->column, ##__VA_ARGS__); \
+        if (level_err >= fault_level) { \
+            halt(s); \
+        } \
+        false; \
+    } else { \
+        true; \
+    } \
+})
+
 LLVMTypeRef _lltype(etype);
 #define lltype(a) _lltype((etype)(a))
 
@@ -206,12 +219,18 @@ static int ref_level(Au t) {
     return level;
 }
 
+static token aether_peek(aether a) {
+    if (a->cursor == len(a->tokens))
+        return null;
+    return (token)a->tokens->origin[a->cursor];
+}
+
 enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
     a->is_const_op = false;
     if (a->no_build)
         return e_noop(a, null); // should never happen in expressions
 
-    verify(op_val >= OPType__bind && op_val <= OPType__assign_xor,
+    validate(op_val >= OPType__bind && op_val <= OPType__assign_xor,
            "invalid assignment operator");
 
     /* ------------------------------------------------------------
@@ -1125,6 +1144,70 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
 
 #define evar_is(n, id) (n->au && n->au->ident && strcmp(n->au->ident, id) == 0)
 
+static evar lookup_by_unique_type(aether a, Au_t required_type) {
+    evar match = null;
+    int  count = 0;
+    
+    for (int i = len(a->lexical) - 1; i >= 0; i--) {
+        Au_t ctx = (Au_t)a->lexical->origin[i];
+        
+        members(ctx, mem) {
+            if (mem->member_type != AU_MEMBER_VAR) continue;
+            evar v = u(evar, mem);
+            if (!v) continue;
+            Au_t var_type = au_arg_type((Au)mem);
+            if (var_type == required_type || inherits(var_type, required_type)) {
+                match = v;
+                count++;
+            }
+        }
+    }
+    
+    verify(count <= 1,
+        "ambiguous context: found %i variables of type %s in scope, explicit binding required",
+        count, required_type->ident);
+    
+    return match;
+}
+
+// resolve all context members on a newly allocated instance 
+// (before our post-init (init; the complexity of this term 
+// ambiguates it as an actual solution to component programming 
+// with the least amount of complexity))
+// in short i think i am a fan of this since 
+// its the one thing i am not moving away from after years-of-fiddling..
+
+static void resolve_context_members(enode target) {
+    aether a = target->mod;
+    if (a->no_build)
+        return;
+    
+    // canonical resolves types from enode, as well as dissolves any aliases
+    Au_t type = canonical(target)->au;
+
+    if (!is_rec(target->au))
+        return;
+    
+    do {
+        members(type, mem) {
+            if (mem->member_type != AU_MEMBER_VAR || !mem->is_context)
+                continue;
+            
+            Au_t required_type = mem->src;
+            evar scope_var     = lookup_by_unique_type(a, required_type);
+            verify(scope_var,
+                "required context member '%s' of type '%s' not found in scope",
+                mem->ident, required_type->ident);
+            
+            enode prop = access(target, string(mem->ident));
+            e_assign(a, prop, (Au)scope_var, OPType__assign);
+            print("resolved context: %o -> %o", required_type, scope_var);
+        }
+        type = type->context;
+
+    } while (type && type != typeid(Au));
+}
+
 enode aether_e_operand(aether a, Au op, etype src_model) {
     if (instanceof(op, enode) || instanceof(op, efunc)) {
         enode n = (enode)op;
@@ -1843,10 +1926,19 @@ enode convertible(etype fr, etype to) {
     if (ma->au == typeid(Au) && (mb->au->is_struct || mb->au->is_primitive || mb->au->is_pointer))
         return (enode)true;
 
-    if (ma->au->is_schema && mb->au->is_pointer)     return (enode)true;
-    if (mb->au->is_schema && ma->au->is_pointer)     return (enode)true;
-    if (ma->au->is_schema && mb->au == typeid(Au_t)) return (enode)true;
-    if (mb->au->is_schema && ma->au == typeid(Au_t)) return (enode)true;
+    // trust the engineer to use their types in normal ways
+    if (ma == etypeid(handle) && (is_class(mb) || mb->au->is_pointer))
+        return (enode)true;
+
+    // schema table conversion
+    if (ma->au->is_schema && mb->au->is_pointer)
+        return (enode)true;
+    if (mb->au->is_schema && ma->au->is_pointer)
+        return (enode)true;
+    if (ma->au->is_schema && mb->au == typeid(Au_t))
+        return (enode)true;
+    if (mb->au->is_schema && ma->au == typeid(Au_t))
+        return (enode)true;
 
     // unloaded enodes are the same as reference enodes of pointer type
     enode fr_node = instanceof(fr, enode);
@@ -2139,7 +2231,10 @@ enode e_create_from_map(aether a, etype t, map m) {
             }
         }
     }
-    if (!is_m) e_fn_call(a, f_initialize, a(res));
+    if (!is_m) {
+        resolve_context_members(res);
+        e_fn_call(a, f_initialize, a(res));
+    }
     return res;
 }
 
@@ -2205,7 +2300,8 @@ enode e_create_from_array(aether a, etype t, array ar) {
     if (const_vector) {
         enode tru = e_operand(a, _bool(ln), etypeid(bool));
         e_assign(a, prop_unmanaged, (Au)tru, OPType__assign);
-    }     
+    }
+    resolve_context_members(res);
     e_fn_call(a, f_initialize, a(res));
 
     if (const_vector) {
@@ -2278,7 +2374,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         return (enode)args;
     }
 
-    if (seq == 738)
+    if (seq == 913)
         seq = seq;
 
     string  str  = (string)instanceof(args, string);
@@ -2499,6 +2595,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                 e_typeid(a, mdl), _i32(0), e_null(a, etypeid(shape)),metas_node ));
             res->au = mdl->au; // we need a general cast method that does not call function
             res->is_alloc = !a->building_initializer;
+            resolve_context_members(res);
             res = e_fn_call(a, f_initialize, a(res)); // required logic need not emit ops to set the bits when we can check at design time
         }
     } else if (ctr) {
@@ -2514,6 +2611,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         alloc->is_alloc = !a->building_initializer;
         alloc->au = mdl->au; // we need a general cast method that does not call function
         e_fn_call(a, ctr, a(alloc, input));
+        resolve_context_members(alloc);
         res = e_fn_call(a, f_initialize, a(alloc));
         res->au = mdl->au;
         res->meta = hold(mdl->meta);
