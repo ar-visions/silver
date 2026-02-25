@@ -4630,17 +4630,7 @@ path path_parent_dir(path a) {
             return new(path, chars, trim->chars);
         }
     }
-    char *cp = calloc(len + 4, 1);
-    memcpy(cp, a->chars, len);
-    if (a->chars[len - 1] == '\\' || a->chars[len - 1] == '/')
-        memcpy(&cp[len], "..", 3);
-    else
-        memcpy(&cp[len], "/..", 4);
-    char *dir_name = dirname(cp);
-    path  result   = new(path);
-    result->chars  = cstr_copy(dir_name);
-    free(cp);
-    return result;
+    return null;
 }
 
 path path_change_ext(path a, cstr ext) {

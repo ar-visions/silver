@@ -693,16 +693,38 @@ i64 silver_watch(silver mod, path a, i64 last_mod, i64 millis) {
     return last_mod;
 }
 
+// not sure what this does on windows without a repo -- probably freezes everything.
 static path is_git_project(silver a) {
+
     // must be repo path: a->project_path
     // if so, return a->project_path
     // walk up from project_path to find the git repo root
-    path p = parent_dir(a->module_path);
-    path git_dir = f(path, "%o/.git", p);
-    if (dir_exists("%o", git_dir) || file_exists("%o", git_dir))
-        return p;
-        
-    return null;
+    path dir = parent_dir(a->module_path);
+    while (len(dir) != 1 && !dir_exists("%o/.git", dir))
+        dir = parent_dir(dir);
+    
+    return len(dir) > 1 ? dir : null;
+}
+
+static void exporter(silver a) {
+    if (a->is_external || !len(a->exports))
+        return;
+    
+    // after successful build on main module, apply all export tags at once
+    print("applying export tags:");
+    pairs(a->exports, i) {
+        string  module      = (string)i->key;
+        exports exp         = (exports)i->value;
+
+        string  tag         = f(string, "%o-%o", i->key, exp->version);
+        string  cmd         = f(string, "git rev-parse %o:%o", tag, exp->module_file);
+        string  rev_parse   = command_run((command)cmd);
+        string  hash_cmd    = f(string, "git hash-object %o", exp->module_file);
+        string  hash        = command_run((command)hash_cmd);
+
+        if (compare(hash, rev_parse) != 0)
+            vexec("git-tag", "git -C %o tag -f %o", a->project_path, tag);
+    }
 }
 
 // im a module!
@@ -731,6 +753,7 @@ void silver_init(silver a) {
     } else
         defs_hash = string("");
 
+    a->exports      = map(hsize, 16);
     a->build_dir    = f(path, "%o/%s", a->install, a->debug ? "debug" : "release");
     a->product_link = f(path, "%o/%o.product", a->build_dir, a->name);
     a->defs_used    = map(hsize, 4);
@@ -741,7 +764,7 @@ void silver_init(silver a) {
 
     verify(a->module, "required argument: module (path/to/module)");
 
-    a->module_path = parent_dir(a->module);
+    a->module_path = hold(a->module);
     a->module_file  = f(path, "%o/%o.ag",
         a->module, stem(a->module));
 
@@ -857,6 +880,8 @@ void silver_init(silver a) {
             }
 
             build(a);
+
+            exporter(a);
         }
         on_error() {
             mtime = current_time();
@@ -1904,8 +1929,8 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
                 
                 array prev = array(alloc, 32);
                 for (int i = 0; i < depth; i++) {
-                    etype mdl = u(etype, top_scope(a));
-                    push(prev, mdl);
+                    etype mm = u(etype, top_scope(a));
+                    push(prev, (Au)mm);
                     pop_scope(a);
                 }
                 prev = reverse(prev);
@@ -1913,8 +1938,8 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
                 // inside this expression, we must have the previous scope; 
                 // we could save it at top and push the top again, but that isnt handled properly
                 for (int i = 0; i < depth; i++) {
-                    etype mdl = (etype)get(prev, i);
-                    push_scope(a, mdl);
+                    etype mm = (etype)get(prev, i);
+                    push_scope(a, (Au)mm);
                 }
             }
         }
@@ -3337,9 +3362,9 @@ none silver_build(silver a) {
         a->defs_hash,
         a->is_library ? lib_ext : "");
     
-    if (a->product)        drop(a->product);
+    if (a->product) drop(a->product);
 
-    a->product        = hold(product);
+    a->product = hold(product);
 
     verify(exec("%o/bin/llc -filetype=obj %o/%o.ll -o %o/%o.o -relocation-model=pic",
                 install, a->build_dir, a->name, a->build_dir, a->name) == 0,
@@ -3748,7 +3773,21 @@ Au parse_field(silver a, etype key_type) {
 enode parse_export(silver a) {
     sequencer;
     validate(read_if(a, "export"), "expected export keyword");
-    token version = read_compacted(a);
+    a->exported_version = read_compacted(a);
+    verify(len(a->exported_version), "expected version");
+
+    // register with the main silver instance (og) so tags are collected in one place
+    silver og = a->is_external ? a->is_external : a;
+    set(og->exports, (Au)string(a->name->chars), (Au)exports(
+        module_path,    a->module_path,
+        module_file,    a->module_file,
+        project_path,   a->project_path,
+        version,        a->exported_version));
+        
+    // a hash can be made of the entire module-dir, 
+    // not so efficient to compute back from git data
+    // encompassing all resources in folder is not what we want, though -- nor would we track artifacts
+
     verify(a->project_path, "expected silver invocation into main project module");
     return e_noop(a, null);
 }
@@ -5485,5 +5524,6 @@ etype silver_read_def(silver a) {
 define_class(chatgpt, codegen)
 define_class(silver, aether)
 define_class(import, enamespace)
+define_class(exports, Au)
 
 initializer(silver_module)
