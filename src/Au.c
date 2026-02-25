@@ -1298,7 +1298,7 @@ bool Au_validator(Au a) {
             if ((m->traits & AU_TRAIT_REQUIRED) != 0 && AF_get(f, m->index) == 0) {
                 u8* ptr = (u8*)a + m->offset;
                 Au* ref = (Au*)ptr;
-                fault("required arg [%s] not set for class %s",
+                fault("expected arg [%s] not set for class %s",
                     m->ident, type->ident);
             }
         }

@@ -1,0 +1,163 @@
+import <math.h>
+import <stdio.h>
+
+# ---- matrix/vector types ----
+
+struct vec3f
+    public x: f32
+    public y: f32
+    public z: f32
+
+    operator + [b: vec3f] -> vec3f [ x: x + b.x, y: y + b.y, z: z + b.z ]
+    operator - [b: vec3f] -> vec3f [ x: x - b.x, y: y - b.y, z: z - b.z ]
+
+    func scale [s: f32] -> vec3f [ x: x * s, y: y * s, z: z * s ]
+
+    func dot [b: vec3f] -> f32
+        return x * b.x + y * b.y + z * b.z
+
+    func cross [b: vec3f] -> vec3f
+        return vec3f [
+            x: y * b.z - z * b.y
+            y: z * b.x - x * b.z
+            z: x * b.y - y * b.x
+        ]
+
+    func length [] -> f32
+        return sqrtf [ x * x + y * y + z * z ]
+
+    func normalize [] -> vec3f
+        len : length
+        return vec3f [ x: x / len, y: y / len, z: z / len ]
+
+    operator == [b: vec3f] -> bool [ x == b.x && y == b.y && z == b.z ]
+
+    cast -> string ['[ {x}, {y}, {z} ]']
+
+
+struct vec4f
+    public x: float
+    public y: float
+    public z: float
+    public w: float
+
+    operator + [b: vec4f] -> vec4f [ x: x + b.x, y: y + b.y, z: z + b.z, w: w + b.w ]
+    operator == [b: vec4f] -> bool [ x == b.x && y == b.y && z == b.z && w == b.w ]
+
+    cast -> string ['[ {x}, {y}, {z}, {w} ]']
+
+
+# ---- test functions ----
+
+# basic vector arithmetic
+func vec3_add_test[] -> bool
+    a : vec3f [ x: 1.0, y: 2.0, z: 3.0 ]
+    b : vec3f [ x: 4.0, y: 5.0, z: 6.0 ]
+    c : a + b
+    if [ c.x != 5.0 ]
+        return false
+    if [ c.y != 7.0 ]
+        return false
+    if [ c.z != 9.0 ]
+        return false
+    return true
+
+
+# vector subtraction
+func vec3_sub_test[] -> bool
+    a : vec3f [ x: 10.0, y: 20.0, z: 30.0 ]
+    b : vec3f [ x: 3.0,  y: 7.0,  z: 11.0 ]
+    c : a - b
+    if [ c.x != 7.0 ]
+        return false
+    if [ c.y != 13.0 ]
+        return false
+    if [ c.z != 19.0 ]
+        return false
+    return true
+
+func dot2[ aa:vec3f, b:vec3f ] -> f32
+    return aa.x * b.x + aa.y * b.y + aa.z * b.z
+
+# dot product
+func vec3_dot_test[] -> bool
+    aa  : vec3f  [ x: 1.0, y: 0.0, z: 0.0 ]
+    aaa : vec3f  [ x: 1.0, y: 0.0, z: 0.0 ]
+    bb  : vec3f  [ x: 0.0, y: 1.0, z: 0.0 ]
+    cc  : dot2 [ aa, aaa ]
+    if [ cc != 0.0 ]
+        return false
+
+    # parallel vectors
+    cc2 : vec3f [ x: 2.0, y: 0.0, z: 0.0 ]
+    d2 : aa.dot [cc2]
+    if [ d2 != 2.0 ]
+        return false
+    return true
+
+
+# cross product
+func vec3_cross_test[] -> bool
+    x_axis : vec3f [ x: 1.0, y: 0.0, z: 0.0 ]
+    y_axis : vec3f [ x: 0.0, y: 1.0, z: 0.0 ]
+    z : x_axis.cross [y_axis]
+    # x cross y = z
+    if [ z.x != 0.0 ]
+        return false
+    if [ z.y != 0.0 ]
+        return false
+    if [ z.z != 1.0 ]
+        return false
+    return true
+
+
+# scale
+func vec3_scale_test[] -> bool
+    a : vec3f [ x: 2.0, y: 3.0, z: 4.0 ]
+    b : a.scale [2.0]
+    if [ b.x != 4.0 ]
+        return false
+    if [ b.y != 6.0 ]
+        return false
+    if [ b.z != 8.0 ]
+        return false
+    return true
+
+
+# vec4 add
+func vec4_add_test[] -> bool
+    a : vec4f [ x: 1.0, y: 2.0, z: 3.0, w: 4.0 ]
+    b : vec4f [ x: 5.0, y: 6.0, z: 7.0, w: 8.0 ]
+    c : a + b
+    if [ c.x != 6.0 ]
+        return false
+    if [ c.y != 8.0 ]
+        return false
+    if [ c.z != 10.0 ]
+        return false
+    if [ c.w != 12.0 ]
+        return false
+    return true
+
+
+# string cast for vectors
+func vec_string_test[] -> bool
+    a : vec3f [ x: 1.0, y: 2.0, z: 3.0 ]
+    s : string a
+    puts 'vec3f: {s}'
+
+    b : vec4f [ x: 1.0, y: 2.0, z: 3.0, w: 4.0 ]
+    s2 : string b
+    puts 'vec4f: {s2}'
+    return true
+
+
+# compound vector/matrix test
+func vector_compound_test[] -> bool
+    return vec3_add_test      &&
+           vec3_sub_test      &&
+           vec3_dot_test      &&
+           vec3_cross_test    &&
+           vec3_scale_test    &&
+           vec4_add_test      &&
+           vec_string_test

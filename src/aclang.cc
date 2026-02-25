@@ -485,6 +485,7 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     // Create struct/union
     u32 traits = is_union ? AU_TRAIT_UNION : AU_TRAIT_STRUCT;
     Au_t rec = def_type(parent, n, traits);
+    rec->is_struct = true;
     rec->module = e->current_import->au;
 
     const ASTRecordLayout& layout = ctx.getASTRecordLayout(decl);
