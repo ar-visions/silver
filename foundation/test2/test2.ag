@@ -71,7 +71,7 @@ class classy_class
     public i: i64
 
 Counter DoubleCounter
-    context contextual:classy_class # these we cannot have initializers for, since they must be given
+    context contextual:classy_class # these are given as argument, or, they are fetched from our variable scope by type matching; in the case of multiple matches, a binding must be given
     func increment [] -> none
         super.increment
         count += 1
@@ -113,41 +113,48 @@ func control_flow_test[] -> bool
 
     return true
 
+
 func true_test[] -> bool [ true ]
+
 
 func array_test[] -> bool
     puts ['array_test']
     ar  : array i32[ 4x4 ] [ 1 2 3 4, 1 1 1 1, 2 2 2 2, 3 3 3 3 ]
     ar2 : new   i32[ 4x4 ] [ 1 2 3 4, 1 1 1 1, 2 2 2 2, 3 3 3 3 ]
     sh  : shape[ ar2.shape ]
-
     aaa : true_test || return false
-
-    aa : 4x4 * 2
-    bb : 4x4 * 3
-    cc : 4x4 * 4
-
-    return sh == (((4x4 << 1) * 2 >> 1) or 
+    aa  : 4x4 * 2
+    bb  : 4x4 * 3
+    cc  : 4x4 * 4
+    return sh == (((4x4 << 1) * 2 >> 1),
                   ((4x4 << 1) * 2 >> 1))
 
-# ((4x4 << 1) * 2 >> 1)
 
 func map_test[] -> bool
     puts 'map_test'
-    ma : map string[ string ] # should populate the map
+    ma : map string[ string ]   # should populate the map
         'key': 'value'
     
-    k : string ma [ 'key' ] # should be doing map_index_Au with the string instance
-    puts k # should cast to const char * from string
+    k : string ma [ 'key' ]     # should be doing map_index_Au with the string instance
+    puts k                      # should cast to const char * from string
 
     return true
+
+
+func classy_test[] -> bool
+    aa : classy_class  [ i:2 ]
+    bb : DoubleCounter [ count:0, name:'Tuvok' ]
+
+    return bb.contextual != null
 
 func compound_test[] -> bool
     return control_flow_test &&
            math_test         &&
            array_test        &&
            map_test          &&
+           classy_test       &&
            test_vbasic [ 22 ]
+
 
 app test2
 
@@ -160,6 +167,10 @@ app test2
     func init [] -> none
         test2_func 1
         l: a_lambda[ u16 1 ]
-        l [ i64 2 ] 
+
+        puts 'lambda result: { a_lambda[ u16 1 ]}'
+
         if [ not compound_test ]
-            puts "FAIL"
+            puts "fail"
+        el
+            puts "works"
