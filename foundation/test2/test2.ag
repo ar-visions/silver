@@ -2,10 +2,11 @@
 # error if its not the main module in repository
 export 0.8.8
 
-import test3
-    coolteen: 'Tim2'
-
 import <stdio.h>
+
+import  vector
+import  test3
+    coolteen: 'Tim2'
 
 # no assigning external module vars, same as their internal rules
 debug:   bool [ coolteen == 'Tim' ]
@@ -19,7 +20,7 @@ func test_vbasic[ arg: i32 ] -> bool
 
     # arg = 2 # NOT allowed!
 
-    r: ref s
+    r : ref s
     r = string['hello']
 
     r2: string[ 'r2' ]
@@ -36,6 +37,7 @@ enum Color [ u8 ]
     blue:   3
     alpha:  4
 
+
 struct Vec2
     public x: f32
     public y: f32
@@ -51,27 +53,26 @@ class Counter
     public count: i64
     public name:  string
 
-    func init []
-        count = 0
-
-    func increment []
-        count += 1
-
+    func init []        count = 0
+    func increment []   count += 1
+    
     operator += [n: i64] -> i64
         return add[n]
-
+    
     func add [n: i64] -> i64
         count += n
         return count
-
     cast -> i64
         return count
+
 
 class classy_class
     public i: i64
 
+
 Counter DoubleCounter
     context contextual:classy_class # these are given as argument, or, they are fetched from our variable scope by type matching; in the case of multiple matches, a binding must be given
+    
     func increment [] -> none
         super.increment
         count += 1
@@ -147,6 +148,7 @@ func classy_test[] -> bool
 
     return bb.contextual != null
 
+
 func compound_test[] -> bool
     return control_flow_test &&
            math_test         &&
@@ -155,6 +157,215 @@ func compound_test[] -> bool
            classy_test       &&
            test_vbasic [ 22 ]
 
+
+# ---- enum tests ----
+func enum_test[] -> bool
+    c1 : Color.red
+    c2 : Color.blue
+    c3 : Color.alpha
+
+    if [ c1 == c2 ]
+        return false
+
+    # enum value checks
+    return c1 == Color.red && c3 == Color.alpha && c2 != c1
+
+
+# ---- struct tests ----
+func struct_test[] -> bool
+    a : Vec2 [ x: 1.0, y: 2.0 ]
+    b : Vec2 [ x: 3.0, y: 4.0 ]
+
+    # operator +
+    c : a + b
+    if [ c.x != 4.0 ]
+        return false
+    if [ c.y != 6.0 ]
+        return false
+
+    # operator ==
+    v : Vec2 [ x: 1.0, y: 99.0 ]
+    if [ not (a != v) ]
+        return false
+
+    # cast to string
+    s : string a
+    puts s
+    return true
+
+
+# ---- class instance method + operator tests ----
+func class_test[] -> bool
+    c : Counter [ count: 0, name: 'TestCounter' ]
+
+    c.increment
+    c.increment
+    c.increment
+
+    if [ c.count != 3 ]
+        return false
+
+    # operator +=
+    c += 7
+
+    if [ c.count != 10 ]
+        return false
+
+    # add method
+    r : c.add[ 5 ]
+    if [ r != 15 ]
+        return false
+
+    # cast to i64
+    v : i64 c
+    return v == 15
+
+
+# ---- polymorphism / DoubleCounter tests ----
+func poly_test[] -> bool
+    user_ctx : classy_class [ i: 10 ]
+    dc       : DoubleCounter [ count: 0, name: 'PolyTest' ]
+
+    # context should auto-resolve ctx
+    if [ dc.contextual == null ]
+        return false
+
+    # DoubleCounter.increment does: super.increment (+1), count += 1, count += contextual.i (+10)
+    # so one increment should add 12
+    dc.increment
+
+    return dc.count == 12
+
+
+# ---- nested if / control flow ----
+func nested_flow_test[] -> bool
+    a : i64 5
+    b : i64 10
+    r : i64 0
+
+    if [ a > 3 ]
+        if [ b > 5 ]
+            r = 1
+        el
+            r = 2
+    el
+        r = 3
+
+    if [ r != 1 ]
+        return false
+
+    # chained comparison with hat
+    return a == (3, 4, 5)
+
+
+# ---- string interpolation tests ----
+func interpolation_test[] -> bool
+    x : i64 42
+    s : string 'the answer is {x}'
+    puts s
+
+    v : Vec2 [ x: 3.14, y: 2.72 ]
+    s2 : string 'vec is {v}'
+    puts s2
+
+    return true
+
+
+# ---- ref tests ----
+func ref_test[] -> bool
+    a : string ['original']
+    r : ref a
+    r = string ['modified']
+
+    # r should now point to 'modified', and since it's a ref to a, a should too
+    puts a
+    return true
+
+
+# ---- map with multiple entries ----
+func map_multi_test[] -> bool
+    m : map string[ string ]
+        'a': 'alpha'
+        'b': 'bravo'
+        'c': 'charlie' # we were looking for a man named charlie
+
+    ka : string m [ 'a' ]
+    kb : string m [ 'b' ]
+    kc : string m [ 'c' ]
+
+    puts ka
+    puts kb
+    puts kc
+
+    return true
+
+
+# ---- shape arithmetic ----
+func shape_arith_test[] -> bool
+    s1 : 4x4
+    s2 : 4x4 * 2
+    s3 : 4x4 << 1
+    s4 : (4x4 << 1) >> 1
+
+    # s4 should equal s1 (shift left then right cancels)
+    return s1 == s4
+
+
+# ---- for loop variants ----
+func loop_test[] -> bool
+    sum : i64 0
+
+    # count to 10
+    for [ i: i32 0 :: i < 10 :: i += 1 ]
+        sum += 1
+
+    if [ sum != 10 ]
+        return false
+
+    # nested loop
+    total : i64 0
+    for [ i: i32 0 :: i < 3 :: i += 1 ]
+        for [ j: i32 0 :: j < 4 :: j += 1 ]
+            total += 1
+
+    return total == 12
+
+
+# ---- short circuit with return ----
+func short_circuit_test[] -> bool
+    a : true_test || return false
+    b : true_test && true_test
+    return b
+
+
+# ---- hat with multiple values ----
+func hat_test[] -> bool
+    x : i64 5
+    y : i64 99
+
+    # x should match one of these
+    r1 : x == (1, 3, 5, 7, 9)
+
+    # y should not match any
+    r2 : y != (1, 2, 3, 4, 5)
+
+    return r1 && r2
+
+
+# ---- combined compound test ----
+func extended_compound_test[] -> bool
+    return enum_test            &&
+           struct_test          &&
+           class_test           &&
+           poly_test            &&
+           nested_flow_test     &&
+           interpolation_test   &&
+           ref_test             &&
+           map_multi_test       &&
+           shape_arith_test     &&
+           loop_test            &&
+           short_circuit_test   &&
+           hat_test
 
 app test2
 
@@ -170,7 +381,13 @@ app test2
 
         puts 'lambda result: { a_lambda[ u16 1 ]}'
 
-        if [ not compound_test ]
+        if [ not [ 
+                compound_test && 
+                extended_compound_test && 
+                vector_compound_test ]]
             puts "fail"
         el
             puts "works"
+
+
+
