@@ -1193,19 +1193,38 @@ static void resolve_context_members(enode target, map user_args) {
             if (mem->member_type != AU_MEMBER_VAR || !mem->is_context)
                 continue;
 
-            // skip if user already provided this context member
-            if (user_args && get(user_args, (Au)string(mem->ident)))
-                continue;
+            Au_t  required_type = mem->src;
+            enode found         = user_args ? (enode)get(user_args, (Au)string(mem->ident)) : null;
+            evar  scope_var     = null;
 
-            Au_t required_type = mem->src;
-            evar scope_var     = lookup_by_unique_type(a, required_type);
-            verify(scope_var,
-                "required context member '%s' of type '%s' not found in scope",
-                mem->ident, required_type->ident);
+            if (!found) {
+                scope_var = lookup_by_unique_type(a, required_type);
+                verify(scope_var,
+                    "required context member '%s' of type '%s' not found in scope",
+                    mem->ident, required_type->ident);
+            }
 
-            enode prop = access(target, string(mem->ident));
-            e_assign(a, prop, (Au)scope_var, OPType__assign);
-            print("resolved context: %o -> %o", required_type, scope_var);
+            enode prop     = access(target, string(mem->ident));
+            enode selected = found ? found : (enode)scope_var;
+
+            // emit null-check: if context member already set (e.g. by constructor), skip
+            LLVMBasicBlockRef block      = LLVMGetInsertBlock(B);
+            LLVMValueRef      fn         = LLVMGetBasicBlockParent(block);
+            LLVMBasicBlockRef assign_blk = LLVMAppendBasicBlockInContext(a->module_ctx, fn, "ctx.assign");
+            LLVMBasicBlockRef merge_blk  = LLVMAppendBasicBlockInContext(a->module_ctx, fn, "ctx.merge");
+            enode             loaded     = enode_value(prop, false);
+            LLVMValueRef      is_null    = LLVMBuildICmp(B, LLVMIntEQ,
+                loaded->value, LLVMConstNull(LLVMTypeOf(loaded->value)), "ctx.null");
+            LLVMBuildCondBr(B, is_null, assign_blk, merge_blk);
+
+            // assign block: set context member from scope or user
+            LLVMPositionBuilderAtEnd(B, assign_blk);
+            e_assign(a, prop, (Au)selected, OPType__assign);
+            LLVMBuildBr(B, merge_blk);
+
+            // continue from merge
+            LLVMPositionBuilderAtEnd(B, merge_blk);
+            print("resolved context: %o -> %o", required_type, selected);
         }
         type = type->context;
 
