@@ -3,7 +3,11 @@ export 0.8.8
 import <stdio.h>
 
 import test3
+    coolteen:'Clint'
+
+import ai
 
 app test-app
     func init [] -> none
         puts 'returned {'something {'inside another'}'}'
+

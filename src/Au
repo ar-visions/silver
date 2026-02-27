@@ -169,7 +169,7 @@ typedef double                 *ref_f64;
     struct _collective_abi  members; \
     struct _object  meta_info; \
     struct _collective_abi  meta; \
-    struct _shape*  shape; \
+    struct _shape*  data_shape; \
     u64             required_bits[2];
 
 #define CAT4(A, B, C, D) A ## B ## C ## D
@@ -595,7 +595,7 @@ forward(any)
 
 #define Au_schema(AA,BB,...) \
     M(AA,BB, i, prop, Au_public, Au_t,      type) \
-    M(AA,BB, i, prop, Au_public, shape,     shape) \
+    M(AA,BB, i, prop, Au_public, shape,     data_shape) \
     M(AA,BB, i, prop, Au_public, Au_t,      scalar) \
     M(AA,BB, i, prop, Au_public, i32,       refs) \
     M(AA,BB, i, prop, Au_public, i32,       managed) \
@@ -791,7 +791,7 @@ typedef struct _collective_abi {
     M(AA,BB, i, prop, public, bool, hash_only) \
     M(AA,BB, i, prop, public, Au_t, last_type) \
     M(AA,BB, i, prop, public, Au_t, type) \
-    M(AA,BB, i, prop, public, shape, shape) \
+    M(AA,BB, i, prop, public, shape, data_shape) \
     M(AA,BB, i, override, method, init) \
     M(AA,BB, i, method, public, Au, push, Au) \
     M(AA,BB, i, method, public, Au, peek, num) \
@@ -847,7 +847,6 @@ declare_enum(comparison)
     M(AA,BB, i, method,   public, none,   clear) \
     M(AA,BB, i, method,   public, none,   concat,        array) \
     M(AA,BB, i, method,   public, Au,     get,           num) \
-    M(AA,BB, i, method,   public, num,    count) \
     M(AA,BB, i, method,   public, num,    index_of,      Au) \
     M(AA,BB, s, vargs,    public, array,  array_of,      Au) \
     M(AA,BB, s, vargs,    public, array,  array_of_cstr, cstr) \
@@ -1120,12 +1119,13 @@ declare_class(msg)
 #undef shape
 
 forward(shape)
+//forward(ref_i64)
 
 #ifndef __cplusplus
 #define shape_module_ Au
 #define shape_schema(AA,BB,...) \
     M(AA,BB, i, prop,    public, i64,  count) \
-    M(AA,BB, i, ref,     public, i64,  data) \
+    M(AA,BB, i, prop,    public, ref_i64,  data) \
     M(AA,BB, i, prop,    public, bool, is_global) \
     M(AA,BB, i, prop,    public, bool, explicit) \
     M(AA,BB, i, method,  public, shape, with_array, array) \
@@ -1136,6 +1136,8 @@ forward(shape)
     M(AA,BB, s, method,  public, shape, shape_read, ARef) \
     M(AA,BB, i, operator, public, shape, _left,     num) \
     M(AA,BB, i, operator, public, shape, _right,    num) \
+    M(AA,BB, i, operator, public, shape, _lleft,    num) \
+    M(AA,BB, i, operator, public, shape, _lright,   num) \
     M(AA,BB, i, operator, public, shape, _mul,      num) \
     M(AA,BB, i, operator, public, shape, _lmul,     num) \
     M(AA,BB, i, operator, public, shape, _div,      num) \
@@ -1155,12 +1157,12 @@ ARef new_shape(i64, ...);
 /// doubly-linked item type, integrated key so we dont also need a 'field' type
 #define item_module_ Au
 #define item_schema(AA,BB,...) \
-    M(AA,BB, i, prop,     opaque, AA,  next) \
-    M(AA,BB, i, prop,     opaque, AA,  prev) \
-    M(AA,BB, i, prop,     opaque, Au,  ref)  \
-    M(AA,BB, i, prop,     opaque, Au,  value) \
-    M(AA,BB, i, prop,     opaque, Au,  key) \
-    M(AA,BB, i, prop,     opaque, u64, h) \
+    M(AA,BB, i, prop,     public, AA,  next,  meta, weak) \
+    M(AA,BB, i, prop,     public, AA,  prev,  meta, weak) \
+    M(AA,BB, i, prop,     public, Au,  ref,   meta, weak)  \
+    M(AA,BB, i, prop,     public, Au,  value, meta, weak) \
+    M(AA,BB, i, prop,     public, Au,  key,   meta, weak) \
+    M(AA,BB, i, prop,     public, u64, h) \
     M(AA,BB, i, override, method, hash) \
     M(AA,BB, i, override, method, init)
 declare_class(item)
@@ -1234,32 +1236,34 @@ static struct op_entry op_table[] = {
     enum_value(E,T,Y, _xor,               11) \
     enum_value(E,T,Y, _mod,               12) \
     enum_value(E,T,Y, _right,             13) \
-    enum_value(E,T,Y, _left,              14) \
-    enum_value(E,T,Y, _compare,           15) \
-    enum_value(E,T,Y, _equal,             16) \
-    enum_value(E,T,Y, _not_equal,         17) \
-    enum_value(E,T,Y, _greater,           18) \
-    enum_value(E,T,Y, _less,              19) \
-    enum_value(E,T,Y, _greater_eq,        20) \
-    enum_value(E,T,Y, _less_eq,           21) \
-    enum_value(E,T,Y, _is,                22) \
-    enum_value(E,T,Y, _inherits,          23) \
-    enum_value(E,T,Y, _range_exclusive,   24) \
-    enum_value(E,T,Y, _range_inclusive,   25) \
-    enum_value(E,T,Y, _value_default,     26) \
-    enum_value(E,T,Y, _cond_value,        27) \
-    enum_value(E,T,Y, _bind,              28) \
-    enum_value(E,T,Y, _assign,            29) \
-    enum_value(E,T,Y, _assign_add,        30) \
-    enum_value(E,T,Y, _assign_sub,        31) \
-    enum_value(E,T,Y, _assign_mul,        32) \
-    enum_value(E,T,Y, _assign_div,        33) \
-    enum_value(E,T,Y, _assign_or,         34) \
-    enum_value(E,T,Y, _assign_and,        35) \
-    enum_value(E,T,Y, _assign_xor,        36) \
-    enum_value(E,T,Y, _assign_mod,        37) \
-    enum_value(E,T,Y, _assign_right,      38) \
-    enum_value(E,T,Y, _assign_left,       39)
+    enum_value(E,T,Y, _lright,            14) \
+    enum_value(E,T,Y, _left,              15) \
+    enum_value(E,T,Y, _lleft,             16) \
+    enum_value(E,T,Y, _compare,           17) \
+    enum_value(E,T,Y, _equal,             18) \
+    enum_value(E,T,Y, _not_equal,         19) \
+    enum_value(E,T,Y, _greater,           20) \
+    enum_value(E,T,Y, _less,              21) \
+    enum_value(E,T,Y, _greater_eq,        22) \
+    enum_value(E,T,Y, _less_eq,           23) \
+    enum_value(E,T,Y, _is,                24) \
+    enum_value(E,T,Y, _inherits,          25) \
+    enum_value(E,T,Y, _range_exclusive,   26) \
+    enum_value(E,T,Y, _range_inclusive,   27) \
+    enum_value(E,T,Y, _value_default,     28) \
+    enum_value(E,T,Y, _cond_value,        29) \
+    enum_value(E,T,Y, _bind,              30) \
+    enum_value(E,T,Y, _assign,            31) \
+    enum_value(E,T,Y, _assign_add,        32) \
+    enum_value(E,T,Y, _assign_sub,        33) \
+    enum_value(E,T,Y, _assign_mul,        34) \
+    enum_value(E,T,Y, _assign_div,        35) \
+    enum_value(E,T,Y, _assign_or,         36) \
+    enum_value(E,T,Y, _assign_and,        37) \
+    enum_value(E,T,Y, _assign_xor,        38) \
+    enum_value(E,T,Y, _assign_mod,        39) \
+    enum_value(E,T,Y, _assign_right,      40) \
+    enum_value(E,T,Y, _assign_left,       41)
 declare_enum(OPType)
 
 #define Key_module_ Au

@@ -576,7 +576,7 @@ vector_##T vector_##T##_new(shape vshape, ...) { \
     va_list args; \
     va_start(args, vshape); \
     vector_##T result = vector_##T(); \
-    result->shape = hold(vshape); \
+    result->data_shape = hold(vshape); \
     T* T##_data = (T*)vdata(result); \
     for (int i = 0, count = shape_total(vshape); i < count; i++) { \
         T##_data[i] = (T)va_arg(args, ARG_T); \

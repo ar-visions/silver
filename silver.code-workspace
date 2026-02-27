@@ -21,6 +21,10 @@
 			"path": "../hyperspace"
 		},
 		{
+			"name": "ai",
+			"path": "../ai"
+		},
+		{
 			"name": "orbiter",
 			"path": "../orbiter"
 		},

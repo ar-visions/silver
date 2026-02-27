@@ -82,6 +82,7 @@ declare_class_2(emodule, etype)
 declare_class_2(statements, etype)
 
 forward(efunc)
+forward(evar)
 
 #define aether_schema(X, Y, ...) \
     M(X, Y, i, prop,     public,  string,                   name) \
@@ -193,7 +194,7 @@ forward(efunc)
     M(X, Y, i, method,   public,  enode,                    e_offset, enode, Au) \
     M(X, Y, i, method,   public,  enode,                    e_switch, enode, map, array, subprocedure, subprocedure) \
     M(X, Y, i, method,   public,  enode,                    e_native_switch, enode, map, array, subprocedure, subprocedure) \
-    M(X, Y, i, method,   public,  enode,                    e_for, array, array, array, array, subprocedure, subprocedure, subprocedure, subprocedure, bool) \
+    M(X, Y, i, method,   public,  enode,                    e_for, array, array, array, array, subprocedure, subprocedure, subprocedure, subprocedure, bool, enode, evar, evar) \
     M(X, Y, i, method,   public,  enode,                    e_if_else, array, array, subprocedure, subprocedure) \
     M(X, Y, i, method,   public,  enode,                    e_ternary, enode, enode, enode) \
     M(X, Y, i, method,   public,  enode,                    e_primitive_convert, enode, etype) \
