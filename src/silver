@@ -2,169 +2,103 @@
 #define _silver_
 
 #define exports_schema(X, Y, ...) \
-    M(X, Y, i, prop, public, token, version) \
-    M(X, Y, i, prop, public, path,  module_file) \
-    M(X, Y, i, prop, public, path,  project_path) \
-    M(X, Y, i, prop, public, path,  module_path)
+    M(X, Y, i, prop,     public,  token,  version) \
+    M(X, Y, i, prop,     public,  path,   module_file) \
+    M(X, Y, i, prop,     public,  path,   project_path) \
+    M(X, Y, i, prop,     public,  path,   module_path)
 declare_class(exports)
 
 // Clint M. Strandhagen -- the motivation for orbiter, which we design in silver
 #define silver_schema(X, Y, ...) \
-    M(X, Y, i, prop, public, bool, build) \
-    M(X, Y, i, prop, intern, silver, is_external) \
-    M(X, Y, i, prop, public, bool, is_project) \
-    M(X, Y, i, prop, intern, bool, clipping) \
-    M(X, Y, i, prop, intern, bool, left_hand) \
-    M(X, Y, i, prop, intern, bool, in_args) \
-    M(X, Y, i, prop, public, bool, version) \
-    M(X, Y, i, prop, iobject, path, product) \
-    M(X, Y, i, prop, public, string, breakpoint) \
-    M(X, Y, i, prop, public, i32, etype_level) \
-    M(X, Y, i, prop, public, i32, parens_depth) \
-    M(X, Y, i, prop, public, string, git_service) \
-    M(X, Y, i, prop, public, string, git_owner) \
-    M(X, Y, i, prop, public, string, git_project) \
-    M(X, Y, i, prop, public, string, source_raw) \
-    M(X, Y, i, prop, public, path, src_loc) \
-    M(X, Y, i, prop, iobject, array, implements) \
-    M(X, Y, i, prop, iobject, array, imports) \
-    M(X, Y, i, prop, public, enode, last_sub_return) \
-    M(X, Y, i, prop, public, enode, last_return) \
-    M(X, Y, i, prop, public, enode, last_break) \
-    M(X, Y, i, prop, public, token, exported_version) \
-    M(X, Y, i, prop, public, map,  exports) \
-    M(X, Y, i, prop, public, map,  defs) \
-    M(X, Y, i, prop, public, map,  defs_used) \
-    M(X, Y, i, prop, public, string,  debug_member) \
-    M(X, Y, i, prop, public, string,  defs_hash) \
-    M(X, Y, i, prop, public, path,    build_dir) \
-    M(X, Y, i, prop, public, path,    product_link) \
-    M(X, Y, i, prop, public, array,   artifacts) \
-    M(X, Y, i, prop, public, path,    artifacts_path) \
-    M(X, Y, i, prop, public, bool,    error) \
-    M(X, Y, i, prop, public, map, codegens)          \
-    M(X, Y, i, method, public, none, write_header)   \
-    M(X, Y, i, prop, iobject, map, import_cache) \
-    M(X, Y, i, method, public, enode, parse_member_expr, enode) \
-    M(X, Y, i, method, public, none,  incremental_resolve) \
-    M(X, Y, i, method, public, token, next) \
-    M(X, Y, i, method, public, token, prev) \
-    M(X, Y, i, method, public, token, navigate, i32) \
-    M(X, Y, i, method, public, token, consume) \
-    M(X, Y, i, method, public, token, peek) \
-    M(X, Y, i, method, public, token, element, num) \
-    M(X, Y, i, method, public, num,   current_line) \
-    M(X, Y, i, method, public, bool,  next_is_alpha) \
-    M(X, Y, i, method, public, bool,  next_indent) \
-    M(X, Y, i, method, public, enode, read_enode, etype, bool) \
-    M(X, Y, i, method, public, enode, parse_member, ARef, Au_t) \
-    M(X, Y, i, method, public, enode, parse_ternary, enode, etype) \
-    M(X, Y, i, method, public, enode, parse_assignment, enode, OPType, bool) \
-    M(X, Y, i, method, public, token, read_if, symbol) \
-    M(X, Y, i, method, public, Au,    read_literal, Au_t) \
-    M(X, Y, i, method, public, string, read_string) \
-    M(X, Y, i, method, public, bool,   is_cmode) \
-    M(X, Y, i, method, public, string, read_alpha) \
-    M(X, Y, i, method, public, string, read_alpha_any) \
-    M(X, Y, i, method, public, string, peek_alpha) \
-    M(X, Y, i, method, public, bool,   next_is_neighbor) \
-    M(X, Y, i, method, public, etype,          read_def) \
-    M(X, Y, i, method, public, string,         peek_def) \
-    M(X, Y, i, method, public, string,         peek_keyword) \
-    M(X, Y, i, method, public, string,         read_keyword) \
-    M(X, Y, i, method, public, Au,              read_bool) \
-    M(X, Y, i, method, public, Au,              read_numeric) \
-    M(X, Y, i, method, public, array,          parse_const, array) \
-    M(X, Y, i, method, public, OPType,         read_operator, ARef) \
-    M(X, Y, i, method, public, string,         location) \
-    M(X, Y, i, method, public, none,           parse) \
-    M(X, Y, i, method, public, none,           build) \
-M(X, Y, i, ctr,    public,     path) \
-    M(X, Y, i, override, method, build_user_initializer) \
-    M(X, Y, i, override, method, init)
+    M(X, Y, i, prop,     public,  bool,   build) \
+    M(X, Y, i, prop,     intern,  silver, is_external) \
+    M(X, Y, i, prop,     public,  bool,   is_project) \
+    M(X, Y, i, prop,     intern,  bool,   clipping) \
+    M(X, Y, i, prop,     intern,  bool,   left_hand) \
+    M(X, Y, i, prop,     intern,  bool,   in_args) \
+    M(X, Y, i, prop,     public,  bool,   version) \
+    M(X, Y, i, prop,     iobject, path,   product) \
+    M(X, Y, i, prop,     public,  string, breakpoint) \
+    M(X, Y, i, prop,     public,  i32,    etype_level) \
+    M(X, Y, i, prop,     public,  i32,    parens_depth) \
+    M(X, Y, i, prop,     public,  string, git_service) \
+    M(X, Y, i, prop,     public,  string, git_owner) \
+    M(X, Y, i, prop,     public,  string, git_project) \
+    M(X, Y, i, prop,     public,  string, source_raw) \
+    M(X, Y, i, prop,     public,  path,   src_loc) \
+    M(X, Y, i, prop,     iobject, array,  implements) \
+    M(X, Y, i, prop,     iobject, array,  imports) \
+    M(X, Y, i, prop,     public,  enode,  last_sub_return) \
+    M(X, Y, i, prop,     public,  enode,  last_return) \
+    M(X, Y, i, prop,     public,  enode,  last_break) \
+    M(X, Y, i, prop,     public,  token,  exported_version) \
+    M(X, Y, i, prop,     public,  map,    exports) \
+    M(X, Y, i, prop,     public,  map,    defs) \
+    M(X, Y, i, prop,     public,  map,    defs_expect) \
+    M(X, Y, i, prop,     public,  map,    defs_used) \
+    M(X, Y, i, prop,     public,  string, debug_member) \
+    M(X, Y, i, prop,     public,  string, defs_hash) \
+    M(X, Y, i, prop,     public,  path,   build_dir) \
+    M(X, Y, i, prop,     public,  path,   product_link) \
+    M(X, Y, i, prop,     public,  array,  artifacts) \
+    M(X, Y, i, prop,     public,  path,   artifacts_path) \
+    M(X, Y, i, prop,     public,  bool,   error) \
+    M(X, Y, i, prop,     public,  map,    codegens) \
+    M(X, Y, i, prop,     iobject, map,    import_cache) \
+    M(X, Y, i, method,   public,  none,   write_header) \
+    M(X, Y, i, method,   public,  enode,  parse_member_expr, enode) \
+    M(X, Y, i, method,   public,  none,   incremental_resolve) \
+    M(X, Y, i, method,   public,  token,  next) \
+    M(X, Y, i, method,   public,  token,  prev) \
+    M(X, Y, i, method,   public,  token,  navigate, i32) \
+    M(X, Y, i, method,   public,  token,  consume) \
+    M(X, Y, i, method,   public,  token,  peek) \
+    M(X, Y, i, method,   public,  token,  element, num) \
+    M(X, Y, i, method,   public,  num,    current_line) \
+    M(X, Y, i, method,   public,  bool,   next_is_alpha) \
+    M(X, Y, i, method,   public,  bool,   next_indent) \
+    M(X, Y, i, method,   public,  enode,  read_enode, etype, bool) \
+    M(X, Y, i, method,   public,  enode,  parse_member, ARef, Au_t) \
+    M(X, Y, i, method,   public,  enode,  parse_ternary, enode, etype) \
+    M(X, Y, i, method,   public,  enode,  parse_assignment, enode, OPType, bool) \
+    M(X, Y, i, method,   public,  token,  read_if, symbol) \
+    M(X, Y, i, method,   public,  Au,     read_literal, Au_t) \
+    M(X, Y, i, method,   public,  string, read_string) \
+    M(X, Y, i, method,   public,  bool,   is_cmode) \
+    M(X, Y, i, method,   public,  string, read_alpha) \
+    M(X, Y, i, method,   public,  string, read_alpha_any) \
+    M(X, Y, i, method,   public,  string, peek_alpha) \
+    M(X, Y, i, method,   public,  bool,   next_is_neighbor) \
+    M(X, Y, i, method,   public,  etype,  read_def) \
+    M(X, Y, i, method,   public,  string, peek_def) \
+    M(X, Y, i, method,   public,  string, peek_keyword) \
+    M(X, Y, i, method,   public,  string, read_keyword) \
+    M(X, Y, i, method,   public,  Au,     read_bool) \
+    M(X, Y, i, method,   public,  Au,     read_numeric) \
+    M(X, Y, i, method,   public,  array,  parse_const, array) \
+    M(X, Y, i, method,   public,  OPType, read_operator, ARef) \
+    M(X, Y, i, method,   public,  string, location) \
+    M(X, Y, i, method,   public,  none,   parse) \
+    M(X, Y, i, method,   public,  none,   build) \
+    M(X, Y, i, ctr,      public,  path) \
+    M(X, Y, i, override, method,  build_user_initializer) \
+    M(X, Y, i, override, method,  init)
 declare_class_4(silver, aether, emodule, etype)
 
-#define import_schema(X, Y, ...)                    \
-    M(X, Y, i, prop,  public, codegen, codegen)     \
-    M(X, Y, i, prop,  public, string, external_name) \
-    M(X, Y, i, prop,  public, path,   external_product) \
-    M(X, Y, i, prop,  public, array, tokens)        \
-    M(X, Y, i, prop,  public, path,  lib_path)      \
-    M(X, Y, i, prop,  public, path,  module_source) \
-    M(X, Y, i, prop,  public, array, include_paths) \
-    M(X, Y, s, method,public, enode, parse_import, silver) \
-    M(X, Y, s, method,public, enode, parse_export, silver)
+#define import_schema(X, Y, ...) \
+    M(X, Y, i, prop,     public,  codegen, codegen) \
+    M(X, Y, i, prop,     public,  string,  external_name) \
+    M(X, Y, i, prop,     public,  path,    external_product) \
+    M(X, Y, i, prop,     public,  array,   tokens) \
+    M(X, Y, i, prop,     public,  path,    lib_path) \
+    M(X, Y, i, prop,     public,  path,    module_source) \
+    M(X, Y, i, prop,     public,  array,   include_paths) \
+    M(X, Y, s, method,   public,  enode,   parse_import, silver) \
+    M(X, Y, s, method,   public,  enode,   parse_export, silver)
 declare_class_3(import, enamespace, etype)
 
 #define chatgpt_schema(X, Y, ...) \
-    M(X, Y, i, override, method, generate_fn)
+    M(X, Y, i, override, method,  generate_fn)
 declare_class_2(chatgpt, codegen)
-
-/*
-
-#define silver_schema(X,Y,...)\
-    i_prop    (X,Y, intern,     import,         import) \
-    i_prop    (X,Y, intern,     array,          implements) \
-    i_prop    (X,Y, intern,     bool,           in_const) \
-    i_prop    (X,Y, intern,     bool,           in_left) \
-    i_prop    (X,Y, intern,     bool,           in_inlay) \
-    i_prop    (X,Y, intern,     bool,           read_model_abort) \
-    i_prop    (X,Y, intern,     emember,        in_assign) \
-    i_prop    (X,Y, intern,     array,          spaces) \
-    i_prop    (X,Y, intern,     map,            include) \
-    i_prop    (X,Y, intern,     int,            expr_level) \
-    i_prop    (X,Y, intern,     int,            parens_depth) \
-    i_prop    (X,Y, intern,     i32,            statement_count) \
-    i_prop    (X,Y, public,     path,           src_loc) \
-    i_prop    (X,Y, public,     path,           file) \
-    i_prop    (X,Y, public,     path,           project_path) \
-    i_prop    (X,Y, public,     language,       std) \
-    i_prop    (X,Y, public,     map,            defs) \
-    i_prop    (X,Y, public,     map,            codegens) \
-    i_prop    (X,Y, public,     string,         git_service) \
-    i_prop    (X,Y, public,     string,         git_owner) \
-    i_prop    (X,Y, public,     string,         git_project) \
-    i_prop    (X,Y, public,     string,         source_raw) \
-    i_prop    (X,Y, public,     bool,           single) \
-    i_prop    (X,Y, public,     map,            import_cache) \
-    i_method  (X,Y, public,     silver,         load_module, path) \
-    i_method  (X,Y, public,     enode,          parse_member_expr, emember) \
-    i_method  (X,Y, public,     none,           incremental_resolve) \
-    i_method  (X,Y, public,     token,          next) \
-    i_method  (X,Y, public,     token,          prev) \
-    i_method  (X,Y, public,     token,          navigate, i32) \
-    i_method  (X,Y, public,     token,          consume) \
-    i_method  (X,Y, public,     token,          peek) \
-    i_method  (X,Y, public,     token,          element, num) \
-    i_method  (X,Y, public,     num,            current_line) \
-    i_method  (X,Y, public,     bool,           next_is_alpha) \
-    i_method  (X,Y, public,     bool,           next_indent) \
-    i_method  (X,Y, public,     enode,          read_node, Au_t, model, array) \
-    i_method  (X,Y, public,     enode,          parse_ternary, enode, model, array) \
-    i_method  (X,Y, public,     enode,          parse_assignment, emember, string) \
-    i_method  (X,Y, public,     token,          read_if, symbol) \
-    i_method  (X,Y, public,     Au,              read_literal, Au_t) \
-    i_method  (X,Y, public,     string,         read_string) \
-    i_method  (X,Y, public,     string,         read_alpha) \
-    i_method  (X,Y, public,     string,         read_alpha_any) \
-    i_method  (X,Y, public,     string,         peek_alpha) \
-    i_method  (X,Y, public,     bool,           next_is_neighbor) \
-    i_method  (X,Y, public,     emember,        read_def) \
-    i_method  (X,Y, public,     string,         peek_def) \
-    i_method  (X,Y, public,     string,         peek_keyword) \
-    i_method  (X,Y, public,     string,         read_keyword) \
-    i_method  (X,Y, public,     Au,              read_bool) \
-    i_method  (X,Y, public,     Au,              read_numeric) \
-    i_method  (X,Y, public,     array,          parse_const, array) \
-    i_method  (X,Y, public,     string,         read_assign, ARef, ARef) \
-    i_method  (X,Y, public,     string,         location) \
-    i_method  (X,Y, public,     none,           parse) \
-    i_method  (X,Y, public,     i32,            build) \
-    i_ctr     (X,Y, public,     path) \
-    i_override(X,Y, method,     build_initializer) \
-    i_override(X,Y, method,     init)
-declare_class(silver)
-
-*/
 
 #endif

@@ -147,6 +147,7 @@ typedef double                 *ref_f64;
     Au_t            ptr; \
     char*           ident; \
     char*           alt; \
+    u32             table_size; \
     u32             abi_size; \
     u32             align_bits; \
     u32             record_alignment; \
@@ -302,6 +303,7 @@ void lazy_init(global_init_fn fn, Au_t);
             type_ref->context   = (__typeof__(Type_i(E).type.context))& Type_i(Au).type; \
             type_ref->ident    = #E;                 \
             type_ref->module   = module_lookup(MODULE); \
+            type_ref->table_size   = sizeof(((E ## _f*)0)->ft); \
             type_ref->typesize     = sizeof(E);          \
             type_ref->traits   = AU_TRAIT_IS_AU | AU_TRAIT_ENUM; \
             head(type_ref)->type = typeid(Au_t_f); \
@@ -534,6 +536,7 @@ typedef Au_t* Au_ts;
             type_ref->meta.unmanaged    = true; \
             array_init((array)&type_ref->meta); \
             type_ref->ident             = #TYPE; \
+            type_ref->table_size        = sizeof(((TYPE ## _f*)0)->ft); \
             type_ref->isize             = 0 TYPE##_schema( TYPE, ISIZE_EXTERN, __VA_ARGS__ ); \
             type_ref->context           = (__typeof__(type_ref->context))base_ref; \
             type_ref->module            = module_lookup((cstr)MODULE); \
@@ -628,6 +631,7 @@ forward(any)
     M(AA,BB, s, method, public, Au_t,   def,            Au_t, symbol, u32, u64) \
     M(AA,BB, s, method, public, Au_t,   def_func,       Au_t, symbol, Au_t, u32, u32, u32, u64, ARef) \
     M(AA,BB, s, method, public, Au_t,   def_arg,        Au_t, symbol, Au_t, u64) \
+    M(AA,BB, s, method, public, Au_t,   def_test,       Au_t, ARef) \
     M(AA,BB, s, method, public, Au_t,   def_meta,       Au_t, symbol, Au_t) \
     M(AA,BB, s, method, public, Au_t,   def_prop,       Au_t, symbol, Au_t, u64, u32, u32, ARef) \
     M(AA,BB, s, method, public, Au_t,   def_type,       Au_t, symbol, u64) \
@@ -659,7 +663,7 @@ forward(any)
     M(AA,BB, i, method, public, i64,    vdata_stride) \
     M(AA,BB, i, method, public, bool,   is_meta) \
     M(AA,BB, i, method, public, bool,   is_meta_compatible, Au) \
-    M(AA,BB, s, vargs,  public, Au,     formatter, Au_t, handle, Au, i32, symbol) \
+    M(AA,BB, s, vargs,  public, Au,     formatter, Au_t, bool, handle, Au, i32, symbol) \
     M(AA,BB, s, method, public, Au,     alloc, Au_t, num, shape, Au_ts) \
     M(AA,BB, s, method, public, Au,     alloc_new, Au_t, num, shape, Au_ts) \
     M(AA,BB, s, method, public, Au,     alloc_dbg, Au_t, num, cstr, i32, i32) \
