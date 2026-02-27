@@ -23,7 +23,7 @@ typedef LLVMMetadataRef LLVMScope;
 
 #define validate(cond, t, ...) ({ \
     if (!(cond)) { \
-        string s = (string)formatter((Au_t)null, stderr, (Au) true, seq, (symbol) "\n[%5i] compiler: %s:%i\n        source:   %o:%i:%i\n        " t, seq, __FILE__, __LINE__, a->module_file, \
+        string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n[%5i] compiler: %s:%i\n        source:   %o:%i:%i\n        " t, seq, __FILE__, __LINE__, a->module_file, \
                   aether_peek(a)->line, aether_peek(a)->column, ##__VA_ARGS__); \
         if (level_err >= fault_level) { \
             halt(s); \
@@ -68,6 +68,256 @@ typedef struct tokens_data {
     num   cursor;
 } tokens_data;
 */
+
+static void print_all(aether mod, symbol label, array list) {
+    #if 0
+    print("[%s] tokens", label);
+    each(list, token, t)
+        put("%o ", t);
+    put("\n");
+    #endif
+}
+
+// coverage probe - one per statements block, just tracks hit count
+typedef struct _coverage_probe {
+    u64     hit_count;      // Number of times block was entered
+    u32     line;           // Start line of block
+    u16     column;         // Start column
+    u16     _pad;
+} coverage_probe;
+
+// function timing data (separate from coverage)
+typedef struct _func_timing {
+    symbol  name;           // Function name
+    symbol  file;           // Source file
+    u32     line;           // Definition line
+    u64     call_count;     // Number of calls
+    u64     total_ns;       // Total time in function
+    u64     min_ns;         // Min single call (optional)
+    u64     max_ns;         // Max single call (optional)
+} func_timing;
+
+// module coverage data
+typedef struct _coverage_module {
+    symbol              name;
+    symbol              source_path;
+    u32                 probe_count;        // Number of statements blocks
+    u32                 func_count;         // Number of timed functions
+    u32                 covered_count;      // Blocks with hit_count > 0
+    coverage_probe*     probes;             // Array indexed by statements->probe_id
+    func_timing*        timings;            // Array indexed by efunc->timing_func_id
+    struct _coverage_module* next;
+} coverage_module;
+
+// emit probe when entering a statements block
+// called from statements initialization or push_scope
+void aether_emit_block_probe(aether a, u32 probe_id) {
+    if (!a->coverage) return;
+    if (a->no_build) return;
+    
+    // Lazily declare the runtime function (must be set to zero on reinit)
+    if (!a->coverage_hit_fn) {
+        LLVMTypeRef fn_type = LLVMFunctionType(
+            LLVMVoidTypeInContext(a->module_ctx),
+            (LLVMTypeRef[]){ LLVMInt32TypeInContext(a->module_ctx) },
+            1, false);
+        a->coverage_hit_fn = LLVMAddFunction(
+            a->module_ref, "__coverage_hit", fn_type);
+    }
+    
+    LLVMValueRef args[1] = {
+        LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), probe_id, 0)
+    };
+    LLVMBuildCall2(B, LLVMGlobalGetValueType(a->coverage_hit_fn),
+                   a->coverage_hit_fn, args, 1, "");
+}
+
+// emit timing start (returns nanosecond timestamp) - FUNCTION LEVEL ONLY
+static LLVMValueRef emit_func_timing_start(aether a, u32 func_id) {
+    if (!a->timing_enabled) return null;
+    if (a->no_build) return null;
+    
+    // Allocate timespec on stack
+    LLVMTypeRef timespec_type = LLVMStructTypeInContext(
+        a->module_ctx,
+        (LLVMTypeRef[]){
+            LLVMInt64TypeInContext(a->module_ctx),  // tv_sec
+            LLVMInt64TypeInContext(a->module_ctx)   // tv_nsec
+        },
+        2, false
+    );
+    
+    LLVMValueRef ts = LLVMBuildAlloca(B, timespec_type, "ts");
+    
+    // Call clock_gettime(CLOCK_MONOTONIC, &ts)
+    LLVMValueRef args[2] = {
+        LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 1, 0), // CLOCK_MONOTONIC
+        ts
+    };
+    
+    LLVMBuildCall2(B, a->clock_gettime_type, a->clock_gettime_fn, args, 2, "");
+    
+    // Load tv_sec and tv_nsec
+    LLVMValueRef sec_ptr = LLVMBuildStructGEP2(B, timespec_type, ts, 0, "sec_ptr");
+    LLVMValueRef nsec_ptr = LLVMBuildStructGEP2(B, timespec_type, ts, 1, "nsec_ptr");
+    
+    LLVMValueRef sec = LLVMBuildLoad2(B, LLVMInt64TypeInContext(a->module_ctx), sec_ptr, "sec");
+    LLVMValueRef nsec = LLVMBuildLoad2(B, LLVMInt64TypeInContext(a->module_ctx), nsec_ptr, "nsec");
+    
+    // Convert to nanoseconds: sec * 1000000000 + nsec
+    LLVMValueRef billion = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), 1000000000ULL, 0);
+    LLVMValueRef sec_ns = LLVMBuildMul(B, sec, billion, "sec_ns");
+    LLVMValueRef total_ns = LLVMBuildAdd(B, sec_ns, nsec, "start_ns");
+    
+    return total_ns;
+}
+
+// emit timing end and accumulate elapsed time - FUNCTION LEVEL ONLY
+static void emit_func_timing_end(aether a, LLVMValueRef start_ns, u32 func_id) {
+    if (!a->timing_enabled || !start_ns) return;
+    if (a->no_build) return;
+    
+    // Get end timestamp
+    LLVMTypeRef timespec_type = LLVMStructTypeInContext(
+        a->module_ctx,
+        (LLVMTypeRef[]){
+            LLVMInt64TypeInContext(a->module_ctx),
+            LLVMInt64TypeInContext(a->module_ctx)
+        },
+        2, false
+    );
+    
+    LLVMValueRef ts = LLVMBuildAlloca(B, timespec_type, "ts_end");
+    LLVMValueRef args[2] = {
+        LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 1, 0),
+        ts
+    };
+    LLVMBuildCall2(B, a->clock_gettime_type, a->clock_gettime_fn, args, 2, "");
+    
+    LLVMValueRef sec = LLVMBuildLoad2(B, LLVMInt64TypeInContext(a->module_ctx),
+        LLVMBuildStructGEP2(B, timespec_type, ts, 0, ""), "sec");
+    LLVMValueRef nsec = LLVMBuildLoad2(B, LLVMInt64TypeInContext(a->module_ctx),
+        LLVMBuildStructGEP2(B, timespec_type, ts, 1, ""), "nsec");
+    
+    LLVMValueRef billion = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), 1000000000ULL, 0);
+    LLVMValueRef end_ns = LLVMBuildAdd(B,
+        LLVMBuildMul(B, sec, billion, ""),
+        nsec, "end_ns");
+    
+    LLVMValueRef elapsed = LLVMBuildSub(B, end_ns, start_ns, "elapsed_ns");
+    
+    // Call runtime: __coverage_record_time(func_id, elapsed_ns)
+    // The runtime maintains the timing array
+    if (!a->coverage_record_time_fn) {
+        LLVMTypeRef fn_type = LLVMFunctionType(
+            LLVMVoidTypeInContext(a->module_ctx),
+            (LLVMTypeRef[]){
+                LLVMInt32TypeInContext(a->module_ctx),  // func_id
+                LLVMInt64TypeInContext(a->module_ctx)   // elapsed_ns
+            },
+            2, false
+        );
+        a->coverage_record_time_fn = LLVMAddFunction(
+            a->module_ref, "__coverage_record_time", fn_type
+        );
+    }
+    
+    LLVMValueRef record_args[2] = {
+        LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), func_id, 0),
+        elapsed
+    };
+    LLVMBuildCall2(B, LLVMGlobalGetValueType(a->coverage_record_time_fn),
+                   a->coverage_record_time_fn, record_args, 2, "");
+}
+
+// this looks leaky, but isnt
+static void report_coverage(aether a) {
+    if (!a->coverage) return;
+
+    // create function type
+    LLVMTypeRef fn_type = LLVMFunctionType(
+        LLVMVoidTypeInContext(a->module_ctx), null, 0, false);
+    
+    // add function
+    LLVMValueRef __coverage_report = LLVMAddFunction(
+        a->module_ref, "__coverage_report", fn_type);
+
+    // build it
+    LLVMBuildCall2(
+        B, fn_type, __coverage_report, null, 0, "");
+}
+
+// this works fine when re-initializing
+static void init_coverage(aether a) {
+    if (!a->coverage) return;
+    
+    // Coverage probe struct: { u64 hit_count, u32 line, u16 column, u16 _pad }
+    a->coverage_probe_lltype = LLVMStructTypeInContext(
+        a->module_ctx,
+        (LLVMTypeRef[]){
+            LLVMInt64TypeInContext(a->module_ctx),  // hit_count
+            LLVMInt32TypeInContext(a->module_ctx),  // line
+            LLVMInt16TypeInContext(a->module_ctx),  // column
+            LLVMInt16TypeInContext(a->module_ctx)   // _pad
+        },
+        4, false
+    );
+    
+    a->next_probe_id = 0;
+    
+    // Function timing setup - we just need clock_gettime, no global array yet
+    if (a->timing_enabled) {
+        a->next_func_id = 0;
+        
+        // Declare clock_gettime
+        LLVMTypeRef timespec_ptr = LLVMPointerTypeInContext(a->module_ctx, 0);
+        a->clock_gettime_type = LLVMFunctionType(
+            LLVMInt32TypeInContext(a->module_ctx),
+            (LLVMTypeRef[]){ LLVMInt32TypeInContext(a->module_ctx), timespec_ptr },
+            2, false
+        );
+        a->clock_gettime_fn = LLVMAddFunction(
+            a->module_ref, "clock_gettime", a->clock_gettime_type
+        );
+        
+        // func_timing struct type (for the global array we create at finalize)
+        a->func_timing_lltype = LLVMStructTypeInContext(
+            a->module_ctx,
+            (LLVMTypeRef[]){
+                LLVMPointerTypeInContext(a->module_ctx, 0),  // name
+                LLVMPointerTypeInContext(a->module_ctx, 0),  // file
+                LLVMInt32TypeInContext(a->module_ctx),       // line
+                LLVMInt64TypeInContext(a->module_ctx),       // call_count
+                LLVMInt64TypeInContext(a->module_ctx),       // total_ns
+                LLVMInt64TypeInContext(a->module_ctx),       // min_ns
+                LLVMInt64TypeInContext(a->module_ctx)        // max_ns
+            },
+            7, false
+        );
+    }
+}
+
+// called in module_initializer
+void finalize_coverage(aether a) {
+    if (!a->coverage) return;
+    
+    if (a->next_probe_id > 0) {
+        LLVMTypeRef array_type = LLVMArrayType(a->coverage_probe_lltype, a->next_probe_id);
+        a->coverage_probes_global = LLVMAddGlobal(a->module_ref, array_type,
+            fmt("__cov_probes_%s", a->name->chars)->chars);
+        LLVMSetInitializer(a->coverage_probes_global, LLVMConstNull(array_type));
+        LLVMSetLinkage(a->coverage_probes_global, LLVMInternalLinkage);
+    }
+    
+    if (a->timing_enabled && a->next_func_id > 0) {
+        LLVMTypeRef array_type = LLVMArrayType(a->func_timing_lltype, a->next_func_id);
+        a->func_timings_global = LLVMAddGlobal(a->module_ref, array_type,
+            fmt("__func_timings_%s", a->name->chars)->chars);
+        LLVMSetInitializer(a->func_timings_global, LLVMConstNull(array_type));
+        LLVMSetLinkage(a->func_timings_global, LLVMInternalLinkage);
+    }
+}
+
 
 none bp() {
     return;
@@ -957,7 +1207,6 @@ static void print_all(aether mod, symbol label, array list);
 enode aether_e_eval(aether a, string value) { sequencer
     array t = (array)tokens(target, (Au)a, parser, a->parse_f, input, (Au)value);
     push_tokens(a, (tokens)t, 0);
-    print_all(a, "these are tokens", t);
     enode n = (enode)a->parse_expr((Au)a, null); // this should not output i32 (2nd time)
     enode s = e_create(a, etypeid(string), (Au)n);
     pop_tokens(a, false);
@@ -973,6 +1222,9 @@ enode aether_e_interpolate(aether a, string str) { sequencer
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, mdl);
 
+    token statement = a->statement_origin;
+    a->statement_origin = null;
+
     a->expr_level++; // this is not normalized, however its not such a problem to store this on aether
     each (sp, ipart, s) {
         enode val = e_create(a, mdl, s->is_expr ?
@@ -980,6 +1232,7 @@ enode aether_e_interpolate(aether a, string str) { sequencer
         accum = accum ? e_add(a, (Au)accum, (Au)val) : val;
     }
     a->expr_level--;
+    a->statement_origin = statement;
     return accum;
 }
 
@@ -1273,11 +1526,10 @@ static void resolve_context_members(enode target, map user_provides) {
             }
 
             // if prop is already set, we should not overwrite it!.. this means some form of branching here
-            enode prop = access(target, string(mem->ident));
+            enode prop = access(target, string(mem->ident), true);
             enode selected = found ? found : scope_var;
 
             e_assign_if_null(a, prop, (Au)selected);
-            print("resolved context: %o -> %o", required_type, selected);
         }
         type = type->context;
 
@@ -1493,7 +1745,10 @@ bool aether_e_fn_return(aether a, Au o) {
         return true;
     } else {
         f->au->has_return = true;
-        
+
+        if (a->timing_enabled && f->timing_start_value)
+            emit_func_timing_end(a, f->timing_start_value, f->timing_func_id);
+
         if (is_void(f->au->rtype))
             LLVMBuildRetVoid(B);
         else {
@@ -1650,8 +1905,8 @@ none enode_inspect(enode a) {
 
 enode aether_lambda_fcall(aether a, efunc mem, array user_args) {
     // access fn and ctx from lambda instance
-    efunc fn_ptr     = (efunc)enode_value(access(mem, string("fn")), false);
-    enode ctx_ptr    = enode_value(access(mem, string("context")), false); // we now have target inside of context
+    efunc fn_ptr     = (efunc)enode_value(access(mem, string("fn"), false), false);
+    enode ctx_ptr    = enode_value(access(mem, string("context"), false), false); // we now have target inside of context
     enode rtype      = (enode)mem->meta->origin[0];
     enode lambda_fn  = (enode)u(enode, mem->au->src);
 
@@ -2002,6 +2257,9 @@ enode convertible(etype fr, etype to) {
     if ((!ma->au->is_class && is_ptr(ma)) && ma->au->src->is_struct && mb->au == typeid(Au))
         return (enode)true;
 
+    if (is_func(ma) && (mb == etypeid(ARef) || mb == etypeid(handle)))
+        return (enode)true;
+
     // allow Au to convert to primitive/struct
     if (ma->au == typeid(Au) && (mb->au->is_struct || mb->au->is_primitive || mb->au->is_pointer))
         return (enode)true;
@@ -2139,11 +2397,11 @@ void aether_eputs(aether a, string output) {
     e_fn_call(a, fn_puts, a(const_string(chars, output->chars)));
 }
 
-enode etype_access(etype target, string name) { sequencer
+enode etype_access(etype target, string name, bool funny_business) { sequencer
     aether a = target->mod;
     Au_t rel = target->au->member_type == AU_MEMBER_VAR ? 
-        resolve(u(etype, target->au->src))->au : target->au;
-    if (rel->is_pointer && rel->src && (rel->src->is_primitive || rel->src->is_class || rel->src->is_struct))
+        (funny_business ? resolve(u(etype, target->au->src))->au : u(etype, target->au->src)->au) : target->au;
+    if (funny_business && rel->is_pointer && rel->src && (rel->src->is_primitive || rel->src->is_class || rel->src->is_struct))
         rel = rel->src;
     Au_t   m = find_member(rel, name->chars, 0, true);
     verify(m, "failed to find member %o on type %o", name, rel);
@@ -2306,7 +2564,7 @@ enode e_create_from_map(aether a, etype t, map m) {
             if (instanceof(k, enode)) {
                 e_fn_call(a, f_set_prop, a(res, k, i->value));
             } else {
-                enode prop = access(res, (string)k);
+                enode prop = access(res, (string)k, true);
                 e_assign(a, prop, i->value, OPType__assign);
             }
         }
@@ -2373,8 +2631,8 @@ enode e_create_from_array(aether a, etype t, array ar) {
         const_vector = enode(mod, a, au, ptr->au, loaded, false, value, glob);
     }
 
-    enode prop_alloc     = etype_access((etype)res, string("alloc"));
-    enode prop_unmanaged = etype_access((etype)res, string("unmanaged"));
+    enode prop_alloc     = etype_access((etype)res, string("alloc"), false);
+    enode prop_unmanaged = etype_access((etype)res, string("unmanaged"), false);
 
     e_assign(a, prop_alloc, (Au)array_len, OPType__assign);
     if (const_vector) {
@@ -2454,7 +2712,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         return (enode)args;
     }
 
-    if (seq == 1155)
+    if (seq == 49)
         seq = seq;
 
     string  str  = (string)instanceof(args, string);
@@ -2503,7 +2761,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         members(n_mdl->au, mem) {
             if (mem->member_type != AU_MEMBER_VAR) continue;
             enode ctx_val = (enode)array_get((array)args, ctx_index);
-            enode field_ref = access(ctx_alloc, string(mem->ident));
+            enode field_ref = access(ctx_alloc, string(mem->ident), true);
             e_assign(a, field_ref, (Au)ctx_val, OPType__assign);
             ctx_index++;
         }
@@ -2799,7 +3057,6 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                 LLVMValueRef s_const = LLVMConstNamedStruct(rmdl->lltype, fields, field_count);
                 res = enode(mod, a, loaded, true, value, s_const, au, mdl->au);
             } else {
-                print("non-const, writing build instructions, %i fields for %o", field_count, mdl);
                 res = enode(mod, a, loaded, false, value, LLVMBuildAlloca(B, lltype(mdl), "alloca-mdl"), au, mdl->au);
                 res = e_zero(a, res);
                 for (int i = 0; i < field_count; i++) {
@@ -3721,20 +3978,18 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
     
     // call engage
     efunc Au_engage = u(efunc, find_member(typeid(Au), "engage", AU_MEMBER_FUNC, false));
-    aether_eputs(a, f(string, "calling engage"));
     e_fn_call(a, Au_engage, a(u(evar, argv)));
 
     // create main class ( i think this is not working )
-    aether_eputs(a, f(string, "creating main"));
     enode m = e_create(a, main_class, (Au)u(evar, argv)); // a loop would be nice, since none of our members will be ref+1'd yet
     Au_t fn_run = find_member(main_spec->au, "run", AU_MEMBER_FUNC, false);
     
-    aether_eputs(a, f(string, "calling run"));
     enode r = e_fn_call(a, (efunc)u(efunc, fn_run), a(m));
 
-    aether_eputs(a, f(string, "return from main"));
-    e_fn_return(a, (Au)r);
+    // give a full-coverage-report to number one
+    report_coverage(a);
 
+    e_fn_return(a, (Au)r);
     pop_scope(a);
 }
 
@@ -3884,49 +4139,68 @@ none etype_init(etype t) {
         if (!au->ident)
             au->ident = au->ident;
 
-        au = t->au = def(a->import_module,
+        if (strstr(au->ident, "test4"))
+            au = au;
+            
+        au = t->au = def(typeid(Au),
             fmt("__%s_%s",
                 au->ident,
                 is_module(au) ? "module_f" : "f")->chars,
             AU_MEMBER_TYPE, AU_TRAIT_SCHEMA | AU_TRAIT_STRUCT);
         
         // do this for Au types
-        Au_t ref = au_lookup("Au_t");
+        Au_t ref = typeid(Au_t);
         for (int i = 0; i < ref->members.count; i++) {
             Au_t au_mem  = (Au_t)ref->members.origin[i];
 
             // this is the last member (function table), if that changes, we no longer break
             if (au_mem->ident && strcmp(au_mem->ident, "ft") == 0) {
-                Au_t new_ft = def(au->schema, "ft", AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
+                Au_t ft_type = def(au, "ft", AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
+                Au_t ft_var = def(au, "ft", AU_MEMBER_VAR, 0);
+                ft_var->src = ft_type;
 
-                array cl = etype_class_list(t);
+                Au_t fn_first = def(ft_type, "_none_", AU_MEMBER_VAR, 0);
+                fn_first->src  = typeid(ARef);
+
+                if (strstr(au->ident, "test4"))
+                    au = au;
+
+                array cl = etype_class_list(t); Au_t ref = typeid(Au_t);
                 each (cl,  etype, tt) {
                     for (int ai = 0; ai < tt->au->members.count; ai++) {
                         Au_t ai_mem = (Au_t)tt->au->members.origin[ai];
-                        if (ai_mem->member_type != AU_MEMBER_FUNC)
+                        if (!is_func(ai_mem))
                             continue;
-                        
-                        Au_t fn = def(new_ft, null, AU_MEMBER_FUNC, AU_TRAIT_FUNCPTR);
-                        fn->traits = ai_mem->traits;
-                        fn->rtype  = ai_mem->rtype;
+
+                        Au_t fn = def(ft_type, ai_mem->ident, AU_MEMBER_VAR, 0);
+                        fn->src = typeid(ARef); // these are effectively opaque in design
+
+                        //set(a->registry, (Au)fn, enode(mod, a, au, fn));
 
                         for (int arg = 0; arg < ai_mem->args.count; arg++) {
                             Au_t arg_src = (Au_t)ai_mem->args.origin[arg];
                             Au_t arg_t   = arg_type(arg_src);
-                            array_qpush((array)&fn->args, (Au)arg_t);
+                            array_qpush((array)&fn->args, (Au)def_arg(fn, arg_src->ident, arg_t, 0));
                         }
                     }
                 }
+
+                etype ft = etype(mod, a, au, ft_type);
                 break;
             }
-            Au_t new_mem      = def(t->au, au_mem->ident, au_mem->member_type, au_mem->traits);
+            Au_t new_mem      = def(au, au_mem->ident, au_mem->member_type, au_mem->traits);
             new_mem->src      = au_mem->src;
             new_mem->isize    = au_mem->isize;
             new_mem->elements = au_mem->elements;
             new_mem->typesize = au_mem->typesize;
             new_mem->abi_size = au_mem->abi_size;
-            members(au_mem, mem) array_qpush((array)&new_mem->members, (Au)mem);
-            arg_list(au_mem, mem)    array_qpush((array)&new_mem->args,    (Au)mem);
+
+            members(au_mem, mem)
+                array_qpush((array)&new_mem->members, (Au)mem);
+
+            arg_list(au_mem, mem)
+                array_qpush((array)&new_mem->args,    (Au)mem);
+            
             new_mem->context = t->au; // copy entire member and reset for our for context
         }
 
@@ -4158,7 +4432,8 @@ etype implement_type_id(etype t) {
     Au_t au = t->au;
 
     // schema must have it's static_value set to the instance
-    t->schema = hold(etype(mod, a, au, t->au, is_schema, true));
+    if (!t->schema)
+        t->schema = hold(etype(mod, a, au, t->au, is_schema, true));
 
     etype mt = etype_ptr(a, t->schema->au, null);
     mt->au->is_typeid = true;
@@ -4175,6 +4450,9 @@ etype implement_type_id(etype t) {
     Au_t type_f    = def_member(type_info, "type", t->schema->au, AU_MEMBER_VAR, AU_TRAIT_SYSTEM | AU_TRAIT_INLAY);
     type_f->index = 1;
     etype au_t = etype(mod, a, au, type_info);
+    if (strcmp(t->au->ident, "test4") == 0) {
+        t = t;
+    }
     etype_implement(au_t);
     
     string name = is_module(au) ?
@@ -4184,10 +4462,14 @@ etype implement_type_id(etype t) {
                 a->au, name->chars, type_info, AU_MEMBER_VAR,
                 AU_TRAIT_SYSTEM | (a->is_Au_import ? AU_TRAIT_IS_IMPORTED : 0)));
     
+    if (strcmp(au->ident, "test4") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
     etype_implement((etype)schema_i);
     
     etype tt = u(etype, t->au);
-    tt->type_id = hold(access(schema_i, string("type")));
+    tt->type_id = hold(access(schema_i, string("type"), true));
     if (!a->is_Au_import && t != a) {
         set(a->user_type_ids, (Au)t, (Au)tt->type_id);
     }
@@ -4346,6 +4628,8 @@ none etype_implement(etype t) {
                         verify(struct_members[index], "no lltype found for member %s.%s", au->ident, m->ident);
                         //printf("verifying abi size of %s\n", m->ident);
                         int abi_member  = LLVMABISizeOfType(a->target_data, struct_members[index]);
+                        if (!abi_member)
+                            abi_member = abi_member;
                         verify(abi_member, "type has no size");
                         if (au->is_union && src->abi_size > ilargest) {
                             largest  = struct_members[index];
@@ -4450,7 +4734,7 @@ none etype_implement(etype t) {
         //    f(string, "%s_%s", au->context->ident, au->ident) : string(au->ident);
         cstr n = au->alt ? au->alt : au->ident;
         verify(n, "no name given to function");
-        enode fn = (enode)t;
+        efunc fn = (efunc)t;
 
         // functions, on init, create the arg enodes from the model data
         // make sure the types are ready for use
@@ -4485,7 +4769,7 @@ none etype_implement(etype t) {
 
         fn->entry = is_user_implement ? LLVMAppendBasicBlockInContext(
             a->module_ctx, fn->value, label->chars) : null;
-            
+
         bool global_public_fn = (is_module(au->context) && au->access_type != interface_intern);
         LLVMSetLinkage(fn->value,
             !global_public_fn && is_user_implement && !au->is_export ? 
@@ -4629,13 +4913,28 @@ enode aether_e_asm(aether a, array body, array input_nodes, etype out_type, stri
     return e_noop(a, etypeid(none));
 }
 
+enode enode_offset(enode ptr, etype offset_type, i64 index) { sequencer
+    aether a = ptr->mod;
+    if (a->no_build) return e_noop(a, (etype)ptr);
+    
+    LLVMValueRef base = ptr->value;
+    
+    char N[32];
+    sprintf(N, "%i_offset", seq);
+    LLVMValueRef idx = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), index, true);
+    LLVMValueRef result = LLVMBuildGEP2(B,
+        lltype(offset_type), base, &idx, 1, N);
+    
+    return enode(mod, a, au, au_arg_type((Au)ptr->au), loaded, false, value, result);
+}
+
 none aether_build_module_initializer(aether a, enode init) {
     Au_t au = init->au;
     if (!au->is_mod_init)
         return;
 
     a->direct = true;
-    aether_eputs(a, f(string, "%o: initializing", a));
+    //aether_eputs(a, f(string, "%o: initializing", a));
     
     efunc f = (efunc)u(efunc, au);
     Au_t  module_base = a->au;
@@ -4651,6 +4950,8 @@ none aether_build_module_initializer(aether a, enode init) {
     efunc fn_def_type      = efind(efunc, etypeid(Au), def_type);
     efunc fn_push          = efind(efunc, etypeid(Au), push_type);
 
+    efunc fn_def_test      = efind(efunc, etypeid(Au), def_test);
+
     push_scope(a, (Au)f);
 
     // module's own published type id (etype container)
@@ -4664,7 +4965,7 @@ none aether_build_module_initializer(aether a, enode init) {
             module_isize += mem->typesize;
     }
 
-    aether_eputs(a, f(string, "1"));
+    //aether_eputs(a, f(string, "1"));
 
     // NOTE: module has no context; its src is its base (usually Au/module base)
     e_fn_call(a, fn_emplace, a(
@@ -4679,7 +4980,7 @@ none aether_build_module_initializer(aether a, enode init) {
         _u64(module_isize)
     ));
 
-    aether_eputs(a, f(string, "2"));
+    //aether_eputs(a, f(string, "2"));
 
     Au_t m = find_member(module_base, "coolteen", AU_MEMBER_VAR, false);
     evar var_mdl = u(evar, m);
@@ -4696,7 +4997,7 @@ none aether_build_module_initializer(aether a, enode init) {
         }
 
         if (is_func(mem) && mem->access_type != interface_intern) {
-            aether_eputs(a, f(string, "%o: function", mem));
+            //aether_eputs(a, f(string, "%o: function", mem));
             efunc mf = (efunc)u(etype, mem);
             mf->used = true;
             etype_implement((etype)mf);
@@ -4715,24 +5016,22 @@ none aether_build_module_initializer(aether a, enode init) {
         }
 
         if (u(evar, mem) && mem->access_type != interface_intern) {
-            aether_eputs(a, f(string, "%o: var", mem));
+            //aether_eputs(a, f(string, "%o: var", mem));
             evar mvar = (evar)u(evar, mem);
             mvar->used = true;
             etype_implement((etype)mvar);
-            e_fn_call(a, fn_def_func, a(
+
+            e_fn_call(a, fn_def_prop, a(
                 module_type_id,
                 const_string(chars, mem->ident),
                 e_typeid(a, u(etype, mem->rtype)),
-                _u32(mem->member_type),
-                _u32(mem->access_type),
-                _u32(mem->operator_type),
                 _u64(mem->traits),
+                _u32(mem->rtype->offset), // offset?
+                _u32(mem->rtype->abi_size),
                 e_null(a, null)
             ));
         }
     }
-
-    aether_eputs(a, f(string, "3"));
 
     // iterate through user-defined type id
     pairs(a->user_type_ids, i) {
@@ -4742,7 +5041,7 @@ none aether_build_module_initializer(aether a, enode init) {
         if (!mdl || !type_id)
             continue;
 
-        aether_eputs(a, f(string, "user_type_ids: %s", mdl->au->ident));
+        //aether_eputs(a, f(string, "user_type_ids: %s", mdl->au->ident));
 
         bool is_class_t  = is_class(mdl);
         bool is_struct_t = is_struct(mdl);
@@ -4752,6 +5051,9 @@ none aether_build_module_initializer(aether a, enode init) {
             continue;
 
         Au_t tau = mdl->au;
+        if (mdl->au->ident && strcmp(mdl->au->ident, "test4") == 0) {
+            mdl = mdl;
+        }
 
         // calculate internal size
         u64 isize = 0;
@@ -4766,7 +5068,7 @@ none aether_build_module_initializer(aether a, enode init) {
             tau = tau;
         }
 
-        aether_eputs(a, f(string, "%o: var", type_id->au));
+        //aether_eputs(a, f(string, "%o: var", type_id->au));
 
         e_fn_call(a, fn_emplace, a(
             type_id,
@@ -4801,11 +5103,21 @@ none aether_build_module_initializer(aether a, enode init) {
                     _u64(mem->traits),
                     fptr
                 ));
+ 
+                if (mem->is_override) {
+                    Au_t m_override = find_member(
+                        mdl->au->context, mem->ident,
+                        mem->member_type, true);
+                    LLVMTargetDataRef layout = LLVMGetModuleDataLayout(a->module_ref);
+                    i64 ptr = LLVMPointerSize(layout);
+                    i64 byte_offset = etypeid(Au_t)->au->abi_size / 8 + ((m_override->index - 2) * ptr);
+                    LLVMValueRef offset = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), byte_offset, false);
+                    LLVMValueRef slot = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx), type_id->value, &offset, 1, "ft_slot");
+                    enode fn_slot = enode(mod, a, au, typeid(ARef), loaded, false, value, slot);
+                    e_assign(a, fn_slot, (Au)mf, OPType__assign);
+                }
 
                 arg_list(mem, arg) {
-                    // we are literal about the arg being a pointer to the struct; 
-                    // in silver we pass by pointer.  we may not write to args, 
-                    // so this is without consequence
                     etype arg_type = resolve(u(etype, arg->src));
                     e_fn_call(a, fn_def_arg, a(
                         e_mem,
@@ -4827,9 +5139,9 @@ none aether_build_module_initializer(aether a, enode init) {
                     const_string(chars, mem->ident),
                     e_typeid(a, u(etype, mem->src)),
                     _u64(mem->traits),
+                    _u32(mem->offset),
                     _u32(mem->abi_size),
-                    _u32(mem->access_type),
-                    _u32(mem->operator_type)
+                    e_null(a, etypeid(ARef))
                 ));
 
             } else if (mem->member_type == AU_MEMBER_ENUMV) {
@@ -4848,16 +5160,12 @@ none aether_build_module_initializer(aether a, enode init) {
                 fault("unsupported member");
             }
         }
-
-        aether_eputs(a, f(string, "pushing type_id: %s", mdl->au->ident));
         e_fn_call(a, fn_push, a(type_id));
     }
 
     // polymorphism works now
-    aether_eputs(a, f(string, "%o: performing user init", a));
     a->direct = false;
     pop_scope(a);
-
     push_scope(a, (Au)f);
     members(module_base, au) {
         evar var = u(evar, au);
@@ -4865,15 +5173,10 @@ none aether_build_module_initializer(aether a, enode init) {
             au = au;
         }
         if (au->member_type == AU_MEMBER_VAR && var && var->initializer) {
-            aether_eputs(a, f(string, "%o: build_user_initializer", a));
             build_user_initializer(a, u(etype, au));
         }
     }
-
-    //aether_eputs(a, f(string, "%o: initialized", a));
-
     pop_scope(a);
-
     build_entrypoint(a, f);
 }
 
@@ -4982,10 +5285,21 @@ none aether_push_scope(aether a, Au arg) {
     else
         push(a->lexical, (Au)au);
 
+    statements st = u(statements, au);
+    if (st && a->coverage && aether_peek(a)) {
+        st->probe_id   = a->next_probe_id++;
+        st->probe_line = aether_peek(a)->line;
+        aether_emit_block_probe(a, st->probe_id);
+    }
+
     efunc fn = context_func(a);
     if (fn && isa(fn) == typeid(efunc) && (fn != prev_fn) && !a->no_build) {
         LLVMPositionBuilderAtEnd(B, fn->entry);
         LLVMSetCurrentDebugLocation2(B, fn->last_dbg);
+        if (a->timing_enabled && !fn->timing_start_value) {
+            fn->timing_func_id = a->next_func_id++;
+            fn->timing_start_value = emit_func_timing_start(a, fn->timing_func_id);
+        }
     }
 }
 
@@ -5098,10 +5412,11 @@ void aether_import_Au(aether a, string ident, Au lib) {
     a->is_Au_import  = true;
     string  lib_name = lib && instanceof(lib, path) ? stem((path)lib) : null;
     Au_t    au_module = null;
+    handle  lib_instance = null;
 
     if (instanceof(lib, path)) {
         string path_str = string(((path)lib)->chars);
-        handle lib_instance = dlopen(cstring(path_str), RTLD_NOW);
+        lib_instance = dlopen(cstring(path_str), RTLD_NOW);
         verify(lib_instance, "shared-lib failed to load: %o", lib);
         set(a->libs, path_str, (Au)lib_instance);
         au_module = find_module(ident->chars); // external silver() (2nd aether) instance exists spawned from our location, and we must take care to not let that module be discovered this way
@@ -5144,10 +5459,32 @@ void aether_import_Au(aether a, string ident, Au lib) {
 
         verify(f->context == typeid(Au), "expected Au type context");
     } else {
+
+        // for imported libraries with required calls, we must invoke them here
+        // when they crash, they crash us -- thats great because when 
+        // we run silver in lldb we arrive at user code
+        //
+        // this is great for advancing language and foundation
+        if (lib_instance) {
+            members(au_module, mem) {
+                if (mem->member_type == AU_MEMBER_FUNC &&
+                    mem->access_type == interface_expect &&
+                    mem->rtype == typeid(bool) &&
+                    mem->args.count == 0)
+                {
+                    bool (*fn)() = dlsym(lib_instance, mem->alt ? mem->alt : mem->ident);
+                    verify(fn,   "[import %s] expect: not-found %s",   au_module->ident, mem->ident);
+                    verify(fn(), "[import %s] expect: %s failed",      au_module->ident, mem->ident);
+                    print       ("[import %s] expect: %s successful",  au_module->ident, mem->ident);
+                }
+            }
+        }
+
         au_module->is_closed = true;
     }
     a->is_Au_import  = false;
     a->current_inc   = null;
+    a->import_module = null;
 }
 
 void aether_llflag(aether a, symbol flag, i32 ival) {
@@ -5170,19 +5507,9 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
     *ll = form(path, "%o/%s/%o.ll", a->install, a->debug ? "debug" : "release", a);
     *bc = form(path, "%o/%s/%o.bc", a->install, a->debug ? "debug" : "release", a);
 
-    LLVMDumpModule(a->module_ref);
-
-    if (LLVMPrintModuleToFile(a->module_ref, cstring(*ll), &err))
-        fault("LLVMPrintModuleToFile failed");
-
-    if (LLVMVerifyModule(a->module_ref, LLVMReturnStatusAction, &err)) {
-        fprintf(stderr, "LLVM verify failed:\n%s\n", err);
-        LLVMDisposeMessage(err);
-        abort();
-    }
-
-    if (LLVMVerifyModule(a->module_ref, LLVMPrintMessageAction, &err))
-        fault("error verifying module");
+    verify (!LLVMPrintModuleToFile(a->module_ref, cstring(*ll),      &err), "print-to-module");
+    verify (!LLVMVerifyModule(a->module_ref, LLVMReturnStatusAction, &err), "verify-module");
+    verify (!LLVMVerifyModule(a->module_ref, LLVMPrintMessageAction, &err), "verify-error");
     
     if (LLVMWriteBitcodeToFile(a->module_ref, cstring(*bc)) != 0)
         fault("LLVMWriteBitcodeToFile failed");
@@ -5208,6 +5535,10 @@ void aether_reinit_startup(aether a) {
     a->user_type_ids  = map(assorted, true);
     a->lexical        = array(alloc, 32, unmanaged, true, assorted, true);
     a->registry       = store();
+    a->next_func_id   = 0;
+    a->next_probe_id  = 0; // send out a class-3 probe
+    a->coverage_hit_fn = null;
+    a->coverage_record_time_fn = null;
 
     // this is so a new external may reset state for itself
     module_erase(a->au, a->name->chars);
@@ -5246,6 +5577,8 @@ void aether_reinit_startup(aether a) {
         0, "", 0, LLVMDWARFEmissionFull, 0, 0, 0, "", 0, "", 0);
     a->au->llscope = a->compile_unit;*/
     B = LLVMCreateBuilderInContext(a->module_ctx);
+
+    init_coverage(a);
 
     // push our module space to the scope
     Au_t g = global();
@@ -5330,6 +5663,8 @@ none aether_init(aether a) {
     path src_path = a->module;
     push(a->include_paths, (Au)src_path);
 
+    a->coverage = a->debug;
+    a->timing_enabled = a->debug;
     aether_reinit_startup(a);
 }
 
@@ -5396,14 +5731,6 @@ Au_t enode_cast_Au_t(enode a) {
 
 array read_arg(array tokens, int start, int* next_read);
 
-
-static void print_all(aether mod, symbol label, array list) {
-    print("[%s] tokens", label);
-    each(list, token, t)
-        put("%o ", t);
-    put("\n");
-}
-
 enode aether_e_subroutine(aether a, etype rtype, array body, subprocedure build_body) {
     if (a->no_build) return e_noop(a, rtype);
 
@@ -5450,28 +5777,22 @@ array macro_expand(macro m, array args) {
     // now its a simple replacement within the definition
     array initial = array(alloc, 32);
     each(m->def, token, t) {
-        print("macro_expand token: %o", t);
-
         // parameter -> arg replacement (each item is a token list)
         bool found = false;
         for (int param = 0; param < ln_params; param++) {
-            print("macro_expand compare: %o", m->params->origin[param]);
             // if token matches parameter, replace; further replacement happens within silver
             if (compare(t, (token)m->params->origin[param]) == 0) {
-                print_all(a, "adding tokens", (array)args->origin[param]);
                 concat(initial, (array)args->origin[param]);
                 found = true;
                 break;
             } 
         }
         if (!found) {
-            print_all(a, "initial state", initial);
             push(initial, (Au)t);
         }
     }
 
     // once replaced, we expand those as a flat token list
-    print_all(a, "initial", initial);
     return initial;
 }
 
@@ -5954,6 +6275,7 @@ Au enode_literal_value(enode a, Au_t of_type) {
 
 efunc aether_module_initializer(aether a) {
     if (a->fn_init) return a->fn_init;
+
     verify(a, "model given must be module (aether-based)");
 
     efunc init = function(a, (etype)a,

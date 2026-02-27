@@ -1,5 +1,6 @@
 
-# error if its not the main module in repository
+# this applies to modules of module-name/module-name.ag
+# for these exports, it is only valid when there is a module-name/test.ag which runs it
 export 0.8.8
 
 import <stdio.h>
@@ -11,6 +12,9 @@ import  test3
 # no assigning external module vars, same as their internal rules
 debug:   bool [ coolteen == 'Tim' ]
 debug2:         coolteen == 'Tim'
+
+public func test2_func[ i:i32 ] -> i64
+    return i + 2
 
 func test_vbasic[ arg: i32 ] -> bool
     s: string['hi']
@@ -353,7 +357,7 @@ func hat_test[] -> bool
 
 
 # ---- combined compound test ----
-func extended_compound_test[] -> bool
+expect func extended_compound_test[] -> bool
     return enum_test            &&
            struct_test          &&
            class_test           &&
@@ -381,10 +385,10 @@ app test2
 
         puts 'lambda result: { a_lambda[ u16 1 ]}'
 
-        if [ not [ 
+        if [ not [
                 compound_test && 
-                extended_compound_test && 
-                vector_compound_test ]]
+                    extended_compound_test && 
+                        vector_compound_test ]]
             puts "fail"
         el
             puts "works"
