@@ -166,6 +166,7 @@ bool Au_is_type    (Au t) { return au_arg_type(t)->member_type == AU_MEMBER_TYPE
 
 shape shape_with_array(shape a, array dims) {
     num count = len(dims);
+    a->data = (i64*)calloc(sizeof(i64), len(dims) + 1);
     each (dims, Au, e) {
         i64* i = (i64*)Au_instance_of(e, typeid(i64));
         a->data[a->count++] = *i;
@@ -212,6 +213,19 @@ shape shape_operator__left(shape a, i64 n) {
 shape shape_operator__right(shape a, i64 n) {
     verify((a->count - n) >= 1, "cannot reduce shape");
     return new(shape, count, a->count - n, data, a->data, is_global, false);
+}
+
+shape shape_operator__lright(shape a, i64 n) {
+    shape res = shape_from(a->count + n, null);
+    for (int i = 0; i < n; i++)
+        res->data[i] = 1;
+    memcpy(res->data + n, a->data, sizeof(i64) * a->count);
+    return res;
+}
+
+shape shape_operator__lleft(shape a, i64 n) {
+    verify((a->count - n) >= 1, "cannot reduce shape from left");
+    return new(shape, count, a->count - n, data, a->data + n, is_global, false);
 }
 
 i64 shape_total(shape a) {
@@ -482,17 +496,17 @@ Au array_index_Au(array a, Au ai) {
     shape i = instanceof(ai, shape);
     verify(i, "expected shape");
 
-    verify(a->shape, "array has no shape");
+    verify(a->data_shape, "array has no shape");
 
-    verify(i->count <= a->shape->count,
+    verify(i->count <= a->data_shape->count,
            "shape index rank exceeds array rank");
 
     u64 offset = 0;
     u64 stride = 1;
 
     // compute strides from the back (row-major)
-    for (i32 d = a->shape->count - 1; d >= 0; d--) {
-        u64 dim_size = a->shape->data[d];
+    for (i32 d = a->data_shape->count - 1; d >= 0; d--) {
+        u64 dim_size = a->data_shape->data[d];
         u64 idx = (d < i->count) ? i->data[d] : 0;
 
         verify(idx < dim_size,
@@ -769,6 +783,10 @@ Au_t find_context(array lex, int member_type, int traits) {
 }
 
 Au_t lexical(array lex, symbol f) {
+
+    if (strcmp(f, "shape") == 0)
+        f = f;
+
     for (int i = len(lex) - 1; i >= 0; i--) {
         Au_t au = (Au_t)lex->origin[i];
         while (au) {
@@ -790,6 +808,11 @@ Au_t lexical(array lex, symbol f) {
             au = au->context;
         }
     }
+
+    //Au_t au_module = typeid(Au)->module;
+    //Au_t ff = find_member(au_module, f, 0, false);
+    //if (ff) return ff;
+
     return null;
 }
 
@@ -1176,7 +1199,7 @@ none push_type(Au_t type) {
         
         Au_t metainfo = def_member(au_t, "meta_info", typeid(Au), AU_MEMBER_VAR, AU_TRAIT_INLAY);
         def_member(au_t, "meta",  au_collective, AU_MEMBER_VAR, AU_TRAIT_INLAY);
-        def_member(au_t, "shape", typeid(shape), AU_MEMBER_VAR, 0);
+        def_member(au_t, "data_shape", typeid(shape), AU_MEMBER_VAR, 0); // this is not required i think!
 
         Au_t required_bits = def_member(au_t, "required_bits",  typeid(u64), AU_MEMBER_VAR, 0);
         required_bits->elements = 2;
@@ -1696,7 +1719,7 @@ Au alloc(Au_t type, num count, shape shape_data, Au_t* meta) {
     a->data       = &a[1];
     a->count      = alloc_count;
     a->alloc      = alloc_count;
-    a->shape      = hold(shape_data);
+    a->data_shape = hold(shape_data);
     if (meta && type->meta.count > 0) {
         for (int i = 0; i < type->meta.count; i++) {
             Au_t m = meta[i];
@@ -1726,7 +1749,7 @@ Au alloc2(Au_t type, Au_t scalar, shape s) {
     a->scalar     = scalar;
     a->type       = type;
     a->data       = &a[1];
-    a->shape      = hold(s);
+    a->data_shape = hold(s);
     a->count      = count;
     a->alloc      = count;
     return a->data;
@@ -3623,7 +3646,7 @@ sz string_cast_sz(string a) {
 }
 
 cstr string_cast_cstr(string a) {
-    return (cstr)a->chars;
+    return (cstr)a ? a->chars : null;
 }
 
 none string_writef(string a, handle f, bool new_line) {
@@ -4100,10 +4123,10 @@ none vector_init(vector a) {
     Au f = head(a);
     f->count = 0;
     f->scalar = (f->type && f->type->meta.origin) ? meta_index(a, 0) : a->type ? a->type : typeid(i8);
-    f->shape  = hold(a->shape);
+    f->data_shape  = hold(a->data_shape);
     verify(f->scalar, "scalar not set");
-    if (f->shape)
-        a->alloc = shape_total(f->shape);
+    if (f->data_shape)
+        a->alloc = shape_total(f->data_shape);
     vrealloc((Au)a, a->alloc);
 }
 
@@ -4161,8 +4184,8 @@ none vector_vconcat(vector a, ARef any, num count) {
     i64 size = vdata_stride(a);
     memcpy(&ptr[f->count * size], any, size * count);
     f->count += count;
-    if (f->shape)
-        f->shape->data[f->shape->count - 1] = f->count;
+    if (f->data_shape)
+        f->data_shape->data[f->data_shape->count - 1] = f->count;
 }
 
 none vector_vpush(vector a, Au any) {
@@ -5542,7 +5565,7 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
         // for instance, we may parse [[1,2,3,4,5...16],...] mat4x4's; we merely need to validate vmember_count and vmember_type and convert
         // if we have a vmember_count of 0 then we are dealing with a single primitive type
         vector vres = (vector)alloc(schema, 1, null, null);
-        vres->shape = new_shape(count, 0);
+        vres->data_shape = new_shape(count, 0);
         Au_initialize((Au)vres);
         i8* data = (i8*)vdata(vres);
         int index = 0;

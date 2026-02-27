@@ -27,4 +27,5 @@ func transform[ a: i64, b: i64 ] -> i64
     return y + z
 
 expect func test3[] -> bool
+    if [coolteen] puts coolteen
     return true
