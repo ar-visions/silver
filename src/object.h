@@ -140,6 +140,7 @@ typedef struct _Au_t {
     Au_t            ptr; // a cache location for the type's pointer
     char*           ident;
     char*           alt;
+    u32             table_size;
     u32             abi_size;
     u32             align_bits;
     u32             record_alignment;

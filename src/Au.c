@@ -91,7 +91,7 @@ bool Au_is_au_type(Au a) {
     Au_t au = au_arg(a);
     if (au->ident && strlen(au->ident) && au->member_type != AU_MEMBER_TYPE)
         return false;
-    return au->module->is_au;
+    return au->module && au->module->is_au;
 }
 
 bool Au_is_imported_type(Au a) {
@@ -826,6 +826,10 @@ Au_t alloc_arg(Au_t context, symbol ident, Au_t arg) {
     return var;
 }
 
+Au_t def_test(Au_t context, ARef arg) {
+    return null;
+}
+
 Au_t def_arg(Au_t context, symbol ident, Au_t arg, u64 traits) {
     Au_t var = _push_arg(context, true);
     var->src = arg;
@@ -928,7 +932,7 @@ lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
 }
 
 Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, i32 member_type, u64 traits, u64 typesize, u64 isize) {
-    if (strcmp(ident, "test3") == 0) {
+    if (strcmp(ident, "test4") == 0) {
         int test2 = 2;
         test2    += 2;
     }
@@ -947,11 +951,11 @@ Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, 
     type->ident             = cstr_copy((cstr)ident);
     type->traits            = traits;
     type->typesize          = typesize;
+    type->table_size        = context ? context->table_size : 0; // [in module-init] increment with additional functions that do not overload
     type->isize             = isize;
+    if (context)
+        memcpy(&type->ft, &context->ft, context->table_size);
 
-    static int seq = 0;
-    seq += 1000;
-    type->record_alignment  = seq;
     head(type)->type = typeid(Au_t_f);     
     
     if (member_type == AU_MEMBER_MODULE) {
@@ -1132,8 +1136,10 @@ none push_type(Au_t type) {
         def_member(au_collective, "hlist",     typeid(ARef), AU_MEMBER_VAR, 0);
         def_member(au_collective, "unmanaged", typeid(bool), AU_MEMBER_VAR, 0);
         def_member(au_collective, "assorted",  typeid(bool), AU_MEMBER_VAR, 0);
-        def_member(au_collective, "hash_check", typeid(bool), AU_MEMBER_VAR, 0); 
+        def_member(au_collective, "hash_only", typeid(bool), AU_MEMBER_VAR, 0); 
         def_member(au_collective, "last_type", typeid(ARef), AU_MEMBER_VAR, 0);
+        //def_member(au_collective, "type",      typeid(ARef), AU_MEMBER_VAR, 0);
+        //def_member(au_collective, "shape",     typeid(ARef), AU_MEMBER_VAR, 0);
 
         Au_t au_t = type; // pushed from the first global ctr call
         au_t->member_type = AU_MEMBER_TYPE;
@@ -1141,11 +1147,12 @@ none push_type(Au_t type) {
 
         def_member(au_t, "context",       typeid(Au_t), AU_MEMBER_VAR, 0);
         def_member(au_t, "src",           typeid(Au_t), AU_MEMBER_VAR, 0);
-        def_member(au_t, "user",          typeid(Au_t), AU_MEMBER_VAR, 0);
+        def_member(au_t, "schema",        typeid(Au_t), AU_MEMBER_VAR, 0);
         def_member(au_t, "module",        typeid(Au_t), AU_MEMBER_VAR, 0);
         def_member(au_t, "ptr",           typeid(Au_t), AU_MEMBER_VAR, 0);
         def_member(au_t, "ident",         typeid(cstr), AU_MEMBER_VAR, 0);
         def_member(au_t, "alt",           typeid(cstr), AU_MEMBER_VAR, 0);
+        def_member(au_t, "table_size",    typeid(u32),  AU_MEMBER_VAR, 0);
         def_member(au_t, "abi_size",      typeid(u32),  AU_MEMBER_VAR, 0);
         def_member(au_t, "align_bits",    typeid(u32),  AU_MEMBER_VAR, 0);
         def_member(au_t, "record_alignment", typeid(u32),  AU_MEMBER_VAR, 0);
@@ -1155,12 +1162,13 @@ none push_type(Au_t type) {
         def_member(au_t, "operator_type", typeid(u8),   AU_MEMBER_VAR, 0);
         def_member(au_t, "access_type",   typeid(u8),   AU_MEMBER_VAR, 0);
         def_member(au_t, "reserved",      typeid(u8),   AU_MEMBER_VAR, 0);
-        def_member(au_t, "traits",        typeid(u32),  AU_MEMBER_VAR, 0);
+        def_member(au_t, "traits",        typeid(u64),  AU_MEMBER_VAR, 0);
         def_member(au_t, "global_count",  typeid(i32),  AU_MEMBER_VAR, 0);
         def_member(au_t, "offset",        typeid(i32),  AU_MEMBER_VAR, 0);
-        def_member(au_t, "size",          typeid(i32),  AU_MEMBER_VAR, 0);
+        def_member(au_t, "elements",      typeid(i32),  AU_MEMBER_VAR, 0);
+        def_member(au_t, "typesize",      typeid(i32),  AU_MEMBER_VAR, 0);
         def_member(au_t, "isize",         typeid(i32),  AU_MEMBER_VAR, 0);
-        def_member(au_t, "ptr",           typeid(ARef), AU_MEMBER_VAR, 0);
+        def_member(au_t, "fn",            typeid(ARef), AU_MEMBER_VAR, 0);
         def_member(au_t, "ffi",           typeid(ARef), AU_MEMBER_VAR, 0);
         
         Au_t minfo = def_member(au_t, "members_info", typeid(Au), AU_MEMBER_VAR, AU_TRAIT_INLAY);
@@ -1170,12 +1178,11 @@ none push_type(Au_t type) {
         def_member(au_t, "meta",  au_collective, AU_MEMBER_VAR, AU_TRAIT_INLAY);
         def_member(au_t, "shape", typeid(shape), AU_MEMBER_VAR, 0);
 
-        Au_t required_bits  = def_member(au_t, "required_bits",  typeid(u64), AU_MEMBER_VAR, 0);
+        Au_t required_bits = def_member(au_t, "required_bits",  typeid(u64), AU_MEMBER_VAR, 0);
         required_bits->elements = 2;
-        Au_t ft             = def(au_t, null,
-            AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
+        Au_t ft = def(au_t, null, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
         def_member(ft, "_none_", typeid(ARef), AU_MEMBER_VAR, 0);
-        def_member(au_t, null, ft, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
+        def_member(au_t, "ft", ft, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
         // this process is replicated in schema creation / etype_init
     }
 
@@ -1371,7 +1378,8 @@ none debug() {
 static none init_recur(Au a, Au_t current, raw last_init) {
     Au_t map_type = typeid(map);
     if (current == (Au_t)&Au_Au_i.type) return;
-    none(*init)(Au) = ((Au_f*)current)->ft.init;
+    Au_f* au_f = ((Au_f*)current);
+    none(*init)(Au) = au_f->ft.init;
     init_recur(a, current->context, (raw)init);
     if (init && init != (none*)last_init) init(a); 
 }
@@ -1433,6 +1441,10 @@ Au Au_initialize(Au a) {
     #ifndef NDEBUG
     Au_validator(a);
     #endif
+
+    if (f->type && strcmp(f->type->ident, "test4") == 0) {
+        f = f;
+    }
     
     init_recur(a, f->type, null);
     hold_members(a);
@@ -2042,7 +2054,7 @@ map arguments(int argc, cstrs argv, map default_values, Au default_key) {
                     ( doub && compare(f->key, (Au)s_key) == 0)) {
                     /// inter-op with Au-based Au sells it.
                     /// its also a guide to use the same schema
-                    Au value = formatter(def_type, null, (Au)false, seq, "%o", s_val);
+                    Au value = formatter(def_type, false, null, (Au)false, seq, "%o", s_val);
                     assert(isa(value) == def_type, "");
                     set(result, (Au)f->key, value);
                 }
@@ -2052,7 +2064,7 @@ map arguments(int argc, cstrs argv, map default_values, Au default_key) {
             string s_val     = new(string, chars, (cstr)arg);
             Au def_value = get(default_values, default_key);
             Au_t  def_type  = isa(def_value);
-            Au value     = formatter(def_type, null, (Au)false, seq, "%o", s_val);
+            Au value     = formatter(def_type, false, null, (Au)false, seq, "%o", s_val);
             set(result, (Au)default_key, value);
             found_single = true;
         }
@@ -2704,7 +2716,7 @@ static int term_width() {
     return w.ws_col ? w.ws_col : 80;
 }
 
-Au formatter(Au_t type, handle ff, Au opt, int seq, symbol template, ...) {
+Au formatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol template, ...) {
     va_list args;
     FILE* f = (FILE*)ff;
     va_start(args, template);
@@ -2807,7 +2819,7 @@ Au formatter(Au_t type, handle ff, Au opt, int seq, symbol template, ...) {
     
     // handle generic logging with type and function name labels, ability to filter based on log_funcs global map
     // map is setup with *:true on debug builds, unless we explicitly listen
-    if (f && field) {
+    if (f && field && print_info) {
         char info[256];
         symbolic_logging = true;
         Au fvalue = get(log_funcs, (Au)field); // make get be harmless to map; null is absolutely fine identity wise to understand that
@@ -2832,6 +2844,8 @@ Au formatter(Au_t type, handle ff, Au opt, int seq, symbol template, ...) {
 
         // based on the number of columns left, we need to isue multiple prints starting at 30
         fwrite(info, strlen(info), 1, f);
+    } else if (f && field) {
+        write_ln = true;
     }
 
     if (f == stderr)
@@ -3334,12 +3348,10 @@ array string_split_parts(string a) {
     while (*s) {
         if (*s == '{') {
             if (s[1] == '{') {
-                // escaped {{
                 if (!prev) prev = s;
                 s += 2;
                 continue;
             }
-            // flush any literal before the expression
             if (prev) {
                 string lit = (string)const_string(chars, prev, ref_length, (sz)(s - prev));
                 ipart p = ipart(is_expr, false, content, lit);
@@ -3348,23 +3360,37 @@ array string_split_parts(string a) {
             }
             if (s[1] == 0)
                 break;
-            // parse expression content
-            s++; // skip '{'
-            while (*s && isspace(*s)) s++;   // skip leading whitespace
+            s++;
+            int depth = 1;
             cstr expr_start = s;
-            cstr expr_end   = s;
-            while (*s && *s != '}') {
-                if (!isspace(*s)) expr_end = s + 1;
+            while (*s && depth > 0) {
+                if (*s == '{') {
+                    if (s[1] == '{') { s += 2; continue; }
+                    depth++;
+                } else if (*s == '}') {
+                    if (s[1] == '}') { s += 2; continue; }
+                    depth--;
+                    if (depth == 0) break;
+                } else if (*s == '\'' || *s == '"') {
+                    char q = *s++;
+                    while (*s && *s != q) {
+                        if (*s == '\\' && s[1] == q) s += 2;
+                        else s++;
+                    }
+                    if (*s) s++;
+                    continue;
+                }
                 s++;
             }
-            verify(*s == '}', "unterminated interpolation", 1);
+            verify(depth == 0, "unterminated interpolation");
+            cstr expr_end = s;
+            while (expr_end > expr_start && isspace(*(expr_end - 1))) expr_end--;
             string expr = string(chars, expr_start, ref_length, (sz)(expr_end - expr_start));
             ipart p = ipart(is_expr, true, content, expr);
             push(res, (Au)p);
-            s++; // skip '}'
+            s++;
         } else if (*s == '}') {
-            // escaped }}
-            verify(s[1] == '}', "single unmatched }", 2);
+            verify(s[1] == '}', "single unmatched }");
             if (!prev) prev = s;
             s += 2;
         } else {
@@ -6256,6 +6282,79 @@ i32 app_run(app a) {
 none app_init(app a) {
     puts("app init\n");
 }
+
+
+
+// Coverage state
+static uint64_t* __cov_probes  = NULL;
+static uint64_t* __cov_timings = NULL;
+static uint32_t  __cov_probe_count = 0;
+static uint32_t  __cov_func_count  = 0;
+
+// Called by module initializer to set up arrays
+void __coverage_init(uint64_t* probes, uint32_t probe_count, 
+                     uint64_t* timings, uint32_t func_count) {
+    __cov_probes      = probes;
+    __cov_probe_count = probe_count;
+    __cov_timings     = timings;
+    __cov_func_count  = func_count;
+}
+
+// Called at each statements block entry
+void __coverage_hit(uint32_t probe_id) {
+    if (__cov_probes && probe_id < __cov_probe_count) {
+        __cov_probes[probe_id]++;
+    }
+}
+
+// Called at function return with elapsed nanoseconds
+void __coverage_record_time(uint32_t func_id, uint64_t elapsed_ns) {
+    if (__cov_timings && func_id < __cov_func_count) {
+        __cov_timings[func_id] += elapsed_ns;
+    }
+}
+
+// called at end of main
+void __coverage_report(void) {
+    if (!__cov_probes) return;
+    
+    uint32_t covered = 0;
+    for (uint32_t i = 0; i < __cov_probe_count; i++) {
+        if (__cov_probes[i] > 0) covered++;
+    }
+    
+    float pct = __cov_probe_count > 0 ? 
+        (100.0f * covered / __cov_probe_count) : 100.0f;
+    
+    fprintf(stderr, "\n══════════════════════════════════════\n");
+    fprintf(stderr, "  COVERAGE: %u/%u blocks (%.1f%%)\n", 
+            covered, __cov_probe_count, pct);
+    
+    if (__cov_timings && __cov_func_count > 0) {
+        fprintf(stderr, "──────────────────────────────────────\n");
+        fprintf(stderr, "  TIMING (top functions):\n");
+        
+        // Find top 5 by time
+        for (int shown = 0; shown < 5 && shown < (int)__cov_func_count; shown++) {
+            uint64_t max_ns = 0;
+            uint32_t max_id = 0;
+            for (uint32_t i = 0; i < __cov_func_count; i++) {
+                if (__cov_timings[i] > max_ns) {
+                    max_ns = __cov_timings[i];
+                    max_id = i;
+                }
+            }
+            if (max_ns == 0) break;
+            
+            double ms = max_ns / 1000000.0;
+            fprintf(stderr, "    func[%u]: %.3f ms\n", max_id, ms);
+            __cov_timings[max_id] = 0; // mark as shown
+        }
+    }
+    
+    fprintf(stderr, "══════════════════════════════════════\n\n");
+}
+
 
 define_arb(Au, Au, sizeof(struct _Au), AU_TRAIT_CLASS, null);
 

@@ -2,6 +2,35 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name":       "silver88",
+            "type":       "lldb",
+            "request":    "launch",
+            "preLaunchTask": "build-silver-ninja",
+            "program":    "${workspaceFolder}/install/bin/silver",
+            "args":     [ "--module", "${workspaceFolder}/foundation/test-app", "--debug" ],
+            "cwd":        "${workspaceFolder}",
+            "env":      {
+                "VERBOSE": "1",
+                "LD_LIBRARY_PATH":"${workspaceFolder}/install/lib",
+                "IMPORT":  "${workspaceFolder}/install",
+                "ASAN_OPTIONS": "detect_leaks=0"
+            }
+        },
+        {
+            "name":       "test-app",
+            "type":       "lldb",
+            "request":    "launch",
+            "preLaunchTask": "build-silver-ninja",
+            "program":    "${workspaceFolder}/install/debug/test-app",
+            "cwd":        "${workspaceFolder}/install/debug",
+            "env":      {
+                "VERBOSE": "1",
+                "LD_LIBRARY_PATH":"${workspaceFolder}/install/lib",
+                "IMPORT":  "${workspaceFolder}/install",
+                "ASAN_OPTIONS": "detect_leaks=0"
+            }
+        },
+        {
             "name": "silver44",
             "type": "debugpy",
             "args": ["WGPU.si"],
@@ -134,21 +163,6 @@
             "env":      { "VERBOSE": "1", "CC": "clang" }
         },
         {
-            "name":       "silver88",
-            "type":       "lldb",
-            "request":    "launch",
-            "preLaunchTask": "build-silver-ninja",
-            "program":    "${workspaceFolder}/install/bin/silver",
-            "args":     [ "--module", "${workspaceFolder}/foundation/test2", "--breakpoint", "test3_func", "--debug" ],
-            "cwd":        "${workspaceFolder}",
-            "env":      {
-                "VERBOSE": "1",
-                "LD_LIBRARY_PATH":"${workspaceFolder}/install/lib",
-                "IMPORT":  "${workspaceFolder}/install",
-                "ASAN_OPTIONS": "detect_leaks=0"
-            }
-        },
-        {
             "name":       "silver / orbiter",
             "type":       "lldb",
             "request":    "launch",
@@ -161,20 +175,6 @@
                 "LD_LIBRARY_PATH":  "${workspaceFolder}/install/lib",
                 "IMPORT":           "${workspaceFolder}/install",
                 "ASAN_OPTIONS":     "detect_leaks=0"
-            }
-        },
-        {
-            "name":       "run-test",
-            "type":       "lldb",
-            "request":    "launch",
-            "preLaunchTask": "build-silver-ninja",
-            "program":    "${workspaceFolder}/install/debug/test2",
-            "cwd":        "${workspaceFolder}/install/debug",
-            "env":      {
-                "VERBOSE": "1",
-                "LD_LIBRARY_PATH":"${workspaceFolder}/install/lib",
-                "IMPORT":  "${workspaceFolder}/install",
-                "ASAN_OPTIONS": "detect_leaks=0"
             }
         },
         {

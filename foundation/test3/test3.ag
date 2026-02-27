@@ -11,20 +11,20 @@ public func test3_funcomatic[] -> i64
 public func test3_func[ i:i32 ] -> i64
     return i + 2
 
-class test3_class
-    public test:i64
-    func init [] -> none
-        test:test3_funcomatic
-
-func transform[a: i64, b: i64] -> i64
+func transform[ a: i64, b: i64 ] -> i64
     public x: i64 [ a + 1 ]
-    
     puts 'cool: {coolteen}'
 
     y: i64 asm [ x, b ]
         add x, b
         return x
     
-    z: i32 sub break
+    z: i32 sub
+        if [ b > 0 ]
+            return b + 1
+        break
+    
+    return y + z
 
-    return 1
+expect func test3[] -> bool
+    return true
