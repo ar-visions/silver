@@ -2276,7 +2276,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
             pop_tokens(a, false);
         }
         a->parens_depth++;
-        enode expr = parse_expression(a, null); // Parse the expression
+        enode expr = parse_expression(a, etypeid(bool)); // Parse the expression
         validate(read_if(a, ")"), "expected ) after expression, found %o", peek(a));
         a->parens_depth--;
         return e_create(a, mdl_expect, (Au)
@@ -4553,7 +4553,7 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
         if (is_lambda((Au)f))
             pop_scope(a);
 
-        if (!f->inline_return && !f->au->has_return && !a->last_return)
+        if (!f->inline_return && !a->last_return)
             e_fn_return(a, null);
 
         // int len2 = len(a->lexical);
@@ -5139,6 +5139,9 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         etype_implement((etype)mem);
     }
 
+    if (op_val == OPType__assign_add) {
+        op_val = op_val;
+    }
     enode result = e_assign(a, mem, (Au)R, op_val);
     mem->au->is_assigned = true;
     return mem;
@@ -5366,10 +5369,6 @@ enode statements_push_builder(silver a, array expr_tokens, Au unused) {
 enode parse_for(silver a) { sequencer
     validate(read_if(a, "for") != null, "expected for");
 
-    if (seq == 47) {
-        seq = seq;
-    }
-
     token after         = null;
     array all           = read_within(a); // null if no [...] after for
     enode in_expr       = read_if(a, "in") ? parse_expression(a, null) : null;
@@ -5410,11 +5409,13 @@ enode parse_for(silver a) { sequencer
             // create key variable in current scope
             Au_t key_mem = def_member(top_scope(a), key_name->chars, key_type->au, AU_MEMBER_VAR, 0);
             key_var = evar(mod, (aether)a, au, key_mem);
+            etype_implement((etype)key_var);
         }
         
         // create value variable in current scope
         Au_t val_mem = def_member(top_scope(a), val_name->chars, val_type->au, AU_MEMBER_VAR, 0);
         val_var = evar(mod, (aether)a, au, val_mem);
+        etype_implement((etype)val_var);
         pop_tokens(a, false);
     }
     else if (all) {

@@ -7,7 +7,7 @@
             "request":    "launch",
             "preLaunchTask": "build-silver-ninja",
             "program":    "${workspaceFolder}/install/bin/silver",
-            "args":     [ "--module", "${workspaceFolder}/foundation/test-app", "--debug" ],
+            "args":     [ "--module", "${workspaceFolder}/foundation/ai", "--debug" ],
             "cwd":        "${workspaceFolder}",
             "env":      {
                 "VERBOSE": "1",
