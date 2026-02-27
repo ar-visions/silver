@@ -360,12 +360,7 @@ enode enode_value(enode mem, bool force_load) { sequencer
     }
 }
 
-
-struct op_entry {
-    LLVMValueRef(*f_build_op)(LLVMBuilderRef, LLVMValueRef L, LLVMValueRef R, symbol);
-    LLVMValueRef(*f_const_op)(LLVMValueRef L, LLVMValueRef R);
-};
-
+// useful otherwise internals we interfaced, then stopped using after a restructuring
 LLVMValueRef LLVMConstMul(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
 LLVMValueRef LLVMConstSDiv(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
 LLVMValueRef LLVMConstUDiv(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
@@ -378,20 +373,6 @@ LLVMValueRef LLVMConstAnd(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
 LLVMValueRef LLVMConstOr(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
 LLVMValueRef LLVMConstXor(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
 
-static struct op_entry op_table[] = {
-    { LLVMBuildAdd,  LLVMConstAdd  },
-    { LLVMBuildSub,  LLVMConstSub  }, 
-    { LLVMBuildMul,  LLVMConstMul  }, 
-    { LLVMBuildSDiv, LLVMConstSDiv },
-    { LLVMBuildOr,   LLVMConstOr   },  // logical or
-    { LLVMBuildAnd,  LLVMConstAnd  }, // logical and
-    { LLVMBuildOr,   LLVMConstOr   },  // bitwise or
-    { LLVMBuildAnd,  LLVMConstAnd  }, // bitwise and
-    { LLVMBuildXor,  LLVMConstXor  },  
-    { LLVMBuildURem, LLVMConstURem },
-    { LLVMBuildAShr, LLVMConstAShr },
-    { LLVMBuildShl,  LLVMConstShl  }
-};
 
 static inline bool is_fp_value(LLVMValueRef v) {
     LLVMTypeRef t = LLVMTypeOf(v);
@@ -416,7 +397,8 @@ static LLVMValueRef build_arith_op(
         case OPType__add:   return fp ? LLVMBuildFAdd(b, L, R, name) : LLVMBuildAdd(b, L, R, name);
         case OPType__sub:   return fp ? LLVMBuildFSub(b, L, R, name) : LLVMBuildSub(b, L, R, name);
         case OPType__mul:   return fp ? LLVMBuildFMul(b, L, R, name) : LLVMBuildMul(b, L, R, name);
-        case OPType__div:   return fp ? LLVMBuildFDiv(b, L, R, name) : LLVMBuildSDiv(b, L, R, name); // or UDiv based on signedness
+        case OPType__div:
+            return fp ? LLVMBuildFDiv(b, L, R, name) : LLVMBuildSDiv(b, L, R, name); // or UDiv based on signedness
         case OPType__mod:   return fp ? LLVMBuildFRem(b, L, R, name) : LLVMBuildSRem(b, L, R, name);
         // shifts/bitwise are integral only:
         case OPType__left:  return LLVMBuildShl(b, L, R, name);
@@ -580,11 +562,9 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
             // coerce RHS to match LHS type
             rR = e_create(a, (etype)canonical(L), (Au)rR);
 
-            // primitive fallback
+            //build_arith_op(B, op_val, L->value, rR->value);
             string op_name = (string)e_str(OPType, op_val);
-            res = value(L,
-                op_table[op_val - OPType__assign_add].f_build_op(
-                    B, cur->value, rR->value, op_name->chars));
+            res = e_op(a, op_val, op_name, (Au)L, (Au)rR);
         }
     }
 
@@ -1388,23 +1368,18 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
     symbol N = cstring(f(string, "%i_%o", seq, op_name));
     Au literal = null;
 
-    if (optype == OPType__or || optype == OPType__and) { // logical operators
+    if (optype >= OPType__add && optype <= OPType__xor) { // logical operators
         // ensure both operands are i1
-        rtype = etypeid(bool);
-        LL = e_create(a, rtype, (Au)LL); // generate compare != 0 if not already i1
-        RL = e_create(a, rtype, (Au)RL);
-
-        struct op_entry* op = &op_table[optype - OPType__add];
-        if (!a->no_build) {
-            if (LL->literal && RL->literal)
-                RES = op->f_const_op(LL->value, RL->value);
-            else
-                RES = op->f_build_op(B, LL->value, RL->value, N);
+        if (optype == OPType__or || optype == OPType__and) {
+            rtype = etypeid(bool);
         }
-        
-    } else if (optype >= OPType__add && optype <= OPType__left) {
-        struct op_entry* op = &op_table[optype - OPType__add];
+        LL = e_create(a, rtype, (Au)LL);
+        RL = e_create(a, rtype, (Au)RL);
+        if (!a->no_build) {
+            RES = build_arith_op(B, optype, LL->value, RL->value, N);
+        }
 
+    } else if (optype >= OPType__add && optype <= OPType__left) {
         LL = e_create(a, rtype, (Au)LL); // generate compare != 0 if not already i1
         RL = e_create(a, rtype, (Au)RL);
         
@@ -1422,12 +1397,13 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
         // assignments perform a store
         verify(mL, "left-hand operator must be a emember");
         if (!a->no_build) {
+            
             // already computed in R-value
             if (optype <= OPType__assign) {
                 RES = a->no_build ? null : RL->value;
                 literal = RL->literal;
             } else
-                RES = a->no_build ? null : op_table[optype - OPType__assign_add].f_build_op(B, LL->value, RL->value, N);
+                RES = a->no_build ? null : build_arith_op(B, optype - OPType__assign_add + OPType__add, LL->value, RL->value, N);
             LLVMBuildStore(B, RES, mL->value);
         } else {
             if (optype <= OPType__assign)
@@ -3230,7 +3206,8 @@ enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_e
 
     // Step 4: Handle the "else" (false) branch
     LLVMPositionBuilderAtEnd(mod->builder, else_block);
-    enode default_expr = !false_expr ? e_create(a, (etype)true_expr, null) : null;
+    enode default_expr = !false_expr ? e_create(a, (etype)rmdl, (Au)true_expr) : null;
+    if (false_expr) false_expr = e_create(a, (etype)rmdl, (Au)false_expr);
     LLVMValueRef false_value = default_expr ? default_expr->value : false_expr->value;
     LLVMBuildBr(mod->builder, merge_block);  // Jump to merge block after the "else" block
 
@@ -3523,7 +3500,8 @@ enode aether_e_for(aether a,
         // ---- cond: idx < count ----
         LLVMPositionBuilderAtEnd(B, cond);
         LLVMValueRef idx_val   = LLVMBuildLoad2(B, i32_type, idx, "idx");
-        LLVMValueRef count_val = count_node->value;
+
+        LLVMValueRef count_val = LLVMBuildLoad2(B, i32_type, count_node->value, "count");
         LLVMValueRef cmp       = LLVMBuildICmp(B, LLVMIntSLT, idx_val, count_val, "idx.lt.count");
         LLVMBuildCondBr(B, cmp, body, merge);
 
@@ -3532,11 +3510,12 @@ enode aether_e_for(aether a,
         LLVMValueRef idx_body = LLVMBuildLoad2(B, i32_type, idx, "idx.body");
         
         // origin[idx] -> Au pointer
+        LLVMTypeRef ptr = LLVMPointerType(LLVMInt8Type(), 0);
         LLVMValueRef elem_ptr = LLVMBuildGEP2(B, 
-            LLVMPointerType(LLVMInt8Type(), 0),
-            origin->value, &idx_body, 1, "elem.ptr");
+            ptr,
+            LLVMBuildLoad2(B, ptr, origin->value, "count"), &idx_body, 1, "elem.ptr");
         LLVMValueRef elem = LLVMBuildLoad2(B,
-            LLVMPointerType(LLVMInt8Type(), 0),
+            ptr,
             elem_ptr, "elem");
 
         if (val_var) {
@@ -3825,7 +3804,7 @@ enode aether_e_load(aether a, enode mem, enode target) { sequencer
     verify(is_ptr(mem) || !mem->loaded, "expected pointer to load from, given %o", mem);
     
     string id = f(string, "eload_%i", seq);
-    if (seq == 5) {
+    if (seq == 169) {
         seq = seq;
     }
     // if the variable holds a pointer (new, alloc), load as ptr, not element type
@@ -6347,7 +6326,11 @@ enode aether_e_not(aether a, enode L) {
 
     LLVMValueRef result;
     etype Lm = canonical(L);
-    if (is_float(Lm)) {
+    if (is_ptr(Lm) || is_class(Lm)) {
+        // for pointers, compare with null
+        result = LLVMBuildICmp(B, LLVMIntEQ, L->value,
+            LLVMConstNull(LLVMTypeOf(L->value)), "ptr-not");
+    } else if (is_float(Lm)) {
         // for floats, compare with 0.0 and return true if > 0.0
         result = LLVMBuildFCmp(B, LLVMRealOLE, L->value,
                                LLVMConstReal(lltype(Lm), 0.0), "float-not");
