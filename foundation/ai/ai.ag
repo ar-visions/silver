@@ -1,0 +1,537 @@
+export 0.8.8
+
+import <stdio.h>
+import <string.h>
+import <math.h>
+
+
+enum Activation
+    _none:  0
+    relu:   1
+    tanh:   2
+
+
+enum Initializer
+    undefined:      0
+    random:         1
+    zeros:          2
+    glorot_uniform: 3
+
+
+enum Padding
+    valid: 0
+    same:  1
+
+
+enum Pooling
+    undefined: 0
+    max:       1
+    min:       2
+    average:   3
+
+
+class tensor
+    public tensor_shape: shape
+    public data:         new i8[0]
+    public realized:     new f32[0]
+    public grad:         new f32[0]
+    public offset:       i32
+    public scale:        f32
+    intern count: u64 [ 0 ]
+
+    func init [] -> none
+        count    = tensor_shape.total
+        realized = new f32[tensor_shape]
+        grad     = new f32[tensor_shape]
+        data     = new i8[tensor_shape]
+
+    func sum [] -> f32
+        s: f32 [0.0]
+
+        #for [ i:i32 ] in (0 ..< 10)
+
+        for [ i: i32 0 :: i < count :: i += 1 ]
+            s += realized[i]
+        return s
+
+    func grad_sum [] -> f32
+        s: f32 [0.0]
+        for [ i: i32 0 :: i < count :: i += 1 ]
+            s += grad[i]
+        return s
+
+    func realize [] -> none
+        src: data
+        dst: realized
+        for [ i: i32 0 :: i < count :: i += 1 ]
+            dst[i] = f32[src[i]] / 255.0
+        offset = 0
+        scale  = 1.0 / 127.0
+
+    func gemm [other: tensor, b: tensor, act: Activation, dest: tensor] -> none
+        m: i32 tensor_shape.data[0]
+        k: i32 tensor_shape.data[1]
+        n: i32 dest.tensor_shape.data[1]
+        other_data:  other.realized
+        dest_data:   dest.realized
+        bias_data:   b.realized
+        a_data:      realized
+
+        if [ act == Activation.relu ]
+            for [ i: i32 0 :: i < m :: i += 1 ]
+                for [ j: i32 0 :: j < n :: j += 1 ]
+                    s: f32 [ bias_data[j] ]
+                    for [ ki: i32 0 :: ki < k :: ki += 1 ]
+                        s += a_data[i * k + ki] * other_data[ki * n + j]
+                    dest_data[i * n + j] = (s > 0.0) ? s : 0.0
+
+        el [ act == Activation.tanh ]
+            for [ i: i32 0 :: i < m :: i += 1 ]
+                for [ j: i32 0 :: j < n :: j += 1 ]
+                    s: f32 [ bias_data[j] ]
+                    for [ ki: i32 0 :: ki < k :: ki += 1 ]
+                        s += a_data[i * k + ki] * other_data[ki * n + j]
+                    dest_data[i * n + j] = tanhf[s]
+        
+        el
+            for [ i: i32 0 :: i < m :: i += 1 ]
+                for [ j: i32 0 :: j < n :: j += 1 ]
+                    s: f32 [ bias_data[j] ]
+                    for [ ki: i32 0 :: ki < k :: ki += 1 ]
+                        s += a_data[i * k + ki] * other_data[ki * n + j]
+                    dest_data[i * n + j] = s
+
+
+class op
+    expect input:      tensor
+    expect name:       string
+    public inputs:     array string
+    public activation: Activation
+    public threshold:  i8
+    intern op_inputs:  array op
+    intern result:     tensor
+    public weights:    tensor
+    public bias:       tensor
+
+    func finalize [] -> none
+        no-op
+
+    func forward [] -> none
+        if [ activation == Activation.relu ]
+            t: input.count
+            for [ i: i32 0 :: i < t :: i += 1 ]
+                v: input.realized[i]
+                result.realized[i] = (v > 0.0) ? v : 0.0
+
+        el [ activation == Activation.tanh ]
+            t: input.count
+            for [ i: i32 0 :: i < t :: i += 1 ]
+                x: f32 [ (input.realized[i] - input.offset) * input.scale ]
+                y: tanhf[x]
+                result.realized[i] = y / result.scale + result.offset
+
+    func back [d_out: tensor] -> tensor
+        return d_out
+
+
+op input_op
+    public source: tensor
+
+
+op output_op
+
+
+op flatten
+    func forward [] -> none
+        result.realized = input.realized
+
+    func back [d_out: tensor] -> tensor
+        t: d_out.count
+        flat: tensor [ tensor_shape: 1 << shape[t] ]
+        memcpy flat.realized, d_out.realized, t * 4
+        return flat
+
+
+op relu_op
+    func init []
+        activation = Activation.relu
+
+
+op concatenate
+    public axis: i32
+
+    func finalize []
+        axis = -1
+
+    func forward [] -> none
+        no-op
+
+    func back [d_out: tensor] -> tensor
+        return null
+
+
+op dense
+    public units:              u32
+    public in_dim:             u32
+    public out_dim:            u32
+    public kernel_initializer: Au
+    public weight_initializer: Au
+
+    func finalize []
+        no-op
+
+    func forward [] -> none
+        input.gemm weights, bias, activation, result
+
+    func back [d_out: tensor] -> tensor
+        d_input: tensor [ tensor_shape: input.tensor_shape ]
+        idim: in_dim
+        odim: out_dim
+        d_out_data: d_out.realized
+        d_in_data:  d_input.realized
+        w:          weights.realized
+        d_w:        weights.grad
+        d_b:        bias.grad
+        inp:        input.realized
+        out:        result.realized
+
+        # activation gradient
+        for [ i: i32 0 :: i < odim :: i += 1 ]
+            if [ activation == Activation.relu ]
+                d_out_data[i] *= (out[i] > 0.0) ? 1.0 : 0.0
+            el [ activation == Activation.tanh ]
+                d_out_data[i] *= 1.0 - out[i] * out[i]
+
+        # dL/dW and dL/db
+        for [ i: i32 0 :: i < odim :: i += 1 ]
+            d_b[i] = d_out_data[i]
+            for [ j: i32 0 :: j < idim :: j += 1 ]
+                d_w[i * idim + j] += d_out_data[i] * inp[j]
+
+        # dL/dInput
+        for [ j: i32 0 :: j < idim :: j += 1 ]
+            d_in_data[j] = 0.0
+            for [ i: i32 0 :: i < odim :: i += 1 ]
+                d_in_data[j] += w[i * idim + j] * d_out_data[i]
+
+        return d_input
+
+
+op conv
+    public axis:           i32
+    expect padding:        Padding
+    expect kernel_size:    shape
+    expect stride_shape:   shape
+    public in_channels:    i32
+    public out_channels:   i32
+    public weights_matrix: tensor
+    public im2col_matrix:  tensor
+
+    func finalize []
+        in_h:     input.tensor_shape.data[0]
+        in_w:     input.tensor_shape.data[1]
+        in_c:     input.tensor_shape.data[2]
+        filter_h: kernel_size.data[0]
+        filter_w: kernel_size.data[1]
+        stride_h: stride_shape.data[0]
+        stride_w: stride_shape.data[1]
+        pad_h:    padding == (Padding.same) ? (filter_h - 1) / 2 : 0
+        pad_w:    padding == (Padding.same) ? (filter_w - 1) / 2 : 0
+        out_h:    (in_h - filter_h + 2 * pad_h) / stride_h + 1
+        out_w:    (in_w - filter_w + 2 * pad_w) / stride_w + 1
+        out_c:    out_channels
+
+    func forward [] -> none
+        in_h:     input.tensor_shape.data[0]
+        in_w:     input.tensor_shape.data[1]
+        in_c:     input.tensor_shape.data[2]
+        filter_h: kernel_size.data[0]
+        filter_w: kernel_size.data[1]
+        out_c:    out_channels
+        stride:   stride_shape.data[0]
+        pad:      padding == (Padding.same) ? (filter_h - 1) / 2 : 0
+        out_h:    result.tensor_shape.data[0]
+        out_w:    result.tensor_shape.data[1]
+        inp:      input.realized
+        w:        weights.realized
+        b:        bias.realized
+        out:      result.realized
+
+        for [ oc: i32 0 :: oc < out_c :: oc += 1 ]
+            for [ oh: i32 0 :: oh < out_h :: oh += 1 ]
+                for [ ow: i32 0 :: ow < out_w :: ow += 1 ]
+                    s: f32 [ b[oc] ]
+                    for [ ic: i32 0 :: ic < in_c :: ic += 1 ]
+                        for [ kh: i32 0 :: kh < filter_h :: kh += 1 ]
+                            for [ kw: i32 0 :: kw < filter_w :: kw += 1 ]
+                                ih: oh * stride - pad + kh
+                                iw: ow * stride - pad + kw
+                                if [ ih >= 0 && iw >= 0 && ih < in_h && iw < in_w ]
+                                    input_idx:  (ih * in_w + iw) * in_c + ic
+                                    weight_idx: ((kh * filter_w + kw) * in_c + ic) * out_c + oc
+                                    s += inp[input_idx] * w[weight_idx]
+                    out[(oh * out_w + ow) * out_c + oc] = (s > 0.0) ? s : 0.0
+
+    func back [d_out: tensor] -> tensor
+        d_input: tensor [ tensor_shape: input.tensor_shape ]
+        in_h:     input.tensor_shape.data[0]
+        in_w:     input.tensor_shape.data[1]
+        in_c:     input.tensor_shape.data[2]
+        filter_h: kernel_size.data[0]
+        filter_w: kernel_size.data[1]
+        out_c:    out_channels
+        stride:   stride_shape.data[0]
+        pad:      padding == (Padding.same) ? (filter_h - 1) / 2 : 0
+        out_h:    result.tensor_shape.data[0]
+        out_w:    result.tensor_shape.data[1]
+        d_out_data: d_out.realized
+        d_in_data:  d_input.realized
+        w:          weights.realized
+        d_w:        weights.grad
+        d_b:        bias.grad
+        inp:        input.realized
+        out:        result.realized
+
+        # zero gradients
+        memset d_in_data, 0, input.count * 4
+        memset d_w,       0, weights.count * 4
+        memset d_b,       0, bias.count * 4
+
+        # activation gradient
+        if [ activation == Activation.relu ]
+            for [ i: i32 0 :: i < result.count :: i += 1 ]
+                d_out_data[i] *= (out[i] > 0.0) ? 1.0 : 0.0
+        el [ activation == Activation.tanh ]
+            for [ i: i32 0 :: i < result.count :: i += 1 ]
+                d_out_data[i] *= 1.0 - out[i] * out[i]
+
+        # bias gradient
+        for [ oc: i32 0 :: oc < out_c :: oc += 1 ]
+            for [ oh: i32 0 :: oh < out_h :: oh += 1 ]
+                for [ ow: i32 0 :: ow < out_w :: ow += 1 ]
+                    oi: (oh * out_w + ow) * out_c + oc
+                    d_b[oc] += d_out_data[oi]
+
+        # weight and input gradient
+        for [ oc: i32 0 :: oc < out_c :: oc += 1 ]
+            for [ oh: i32 0 :: oh < out_h :: oh += 1 ]
+                for [ ow: i32 0 :: ow < out_w :: ow += 1 ]
+                    oi:       (oh * out_w + ow) * out_c + oc
+                    grad_out: d_out_data[oi]
+                    for [ ic: i32 0 :: ic < in_c :: ic += 1 ]
+                        for [ kh: i32 0 :: kh < filter_h :: kh += 1 ]
+                            ih: oh * stride - pad + kh
+                            if [ ih < 0 || ih >= in_h ]
+                                no-op
+                            el
+                                for [ kw: i32 0 :: kw < filter_w :: kw += 1 ]
+                                    iw: ow * stride - pad + kw
+                                    if [ iw >= 0 && iw < in_w ]
+                                        input_idx:  (ih * in_w + iw) * in_c + ic
+                                        weight_idx: ((kh * filter_w + kw) * in_c + ic) * out_c + oc
+                                        d_w[weight_idx] += inp[input_idx] * grad_out
+                                        d_in_data[input_idx] += w[weight_idx] * grad_out
+
+        return d_input
+
+
+op pool
+    public pool_type:    Pooling
+    expect pool_size:    shape
+    public stride_shape: shape
+
+    func finalize []
+        in_h:     input.tensor_shape.data[0]
+        in_w:     input.tensor_shape.data[1]
+        in_c:     input.tensor_shape.data[2]
+        pool_h:   pool_size.data[0]
+        pool_w:   pool_size.data[1]
+        stride_h: stride_shape.data[0]
+        stride_w: stride_shape.data[1]
+        out_h:    (in_h - pool_h) / stride_h + 1
+        out_w:    (in_w - pool_w) / stride_w + 1
+
+    func forward [] -> none
+        in_h:     input.tensor_shape.data[0]
+        in_w:     input.tensor_shape.data[1]
+        in_c:     input.tensor_shape.data[2]
+        pool_h:   pool_size.data[0]
+        pool_w:   pool_size.data[1]
+        stride_h: stride_shape.data[0]
+        stride_w: stride_shape.data[1]
+        out_h:    result.tensor_shape.data[0]
+        out_w:    result.tensor_shape.data[1]
+        inp:      input.realized
+        out:      result.realized
+
+        for [ oh: i32 0 :: oh < out_h :: oh += 1 ]
+            for [ ow: i32 0 :: ow < out_w :: ow += 1 ]
+                for [ c: i32 0 :: c < in_c :: c += 1 ]
+                    max_val: f32 [-99998.0]
+                    for [ kh: i32 0 :: kh < pool_h :: kh += 1 ]
+                        for [ kw: i32 0 :: kw < pool_w :: kw += 1 ]
+                            ih: oh * stride_h + kh
+                            iw: ow * stride_w + kw
+                            if [ ih < in_h && iw < in_w ]
+                                idx: (ih * in_w + iw) * in_c + c
+                                if [ inp[idx] > max_val ]
+                                    max_val = inp[idx]
+                    out_idx: (oh * out_w + ow) * in_c + c
+                    out[out_idx] = max_val
+
+    func back [d_out: tensor] -> tensor
+        d_input: tensor [ tensor_shape: input.tensor_shape ]
+        in_h:     input.tensor_shape.data[0]
+        in_w:     input.tensor_shape.data[1]
+        in_c:     input.tensor_shape.data[2]
+        pool_h:   pool_size.data[0]
+        pool_w:   pool_size.data[1]
+        stride_h: stride_shape.data[0]
+        stride_w: stride_shape.data[1]
+        out_h:    d_out.tensor_shape.data[0]
+        out_w:    d_out.tensor_shape.data[1]
+        inp:      input.realized
+        d_out_data: d_out.realized
+        d_in_data:  d_input.realized
+
+        memset d_in_data, 0, input.count * 4
+
+        for [ oh: i32 0 :: oh < out_h :: oh += 1 ]
+            for [ ow: i32 0 :: ow < out_w :: ow += 1 ]
+                for [ c: i32 0 :: c < in_c :: c += 1 ]
+                    max_idx: i32 [-1]
+                    max_val: f32 [-99999.0]
+                    for [ kh: i32 0 :: kh < pool_h :: kh += 1 ]
+                        for [ kw: i32 0 :: kw < pool_w :: kw += 1 ]
+                            ih: oh * stride_h + kh
+                            iw: ow * stride_w + kw
+                            if [ ih < in_h && iw < in_w ]
+                                idx: (ih * in_w + iw) * in_c + c
+                                if [ inp[idx] > max_val ]
+                                    max_val = inp[idx]
+                                    max_idx = idx
+                    if [ max_idx != -1 ]
+                        gv: d_out_data[(oh * out_w + ow) * in_c + c]
+                        d_in_data[max_idx] += gv / (pool_h * pool_w)
+
+        return d_input
+
+
+class keras
+    expect ident:    string
+    public quality:  num
+    public order:    array op
+    public ops:      array op
+    public k_output: tensor
+    public k_input:  tensor
+    intern op_map:   map op[string]
+
+    
+    func init []
+        # build op map
+        op_map = map op[string]
+        for [ o: op ] in ops
+            op_map[o.name] = o
+
+        # resolve op inputs
+        for [ o: op ] in ops
+            o.op_inputs = array op []
+            # we must read single-lines as read_expr, and tokens must hold onto this parsing attribute (single_expr)
+            # this means we cant be lazy about using array vs tokens now
+            for [ n: string ] in o.inputs
+                res: op [ op_map[n] ]
+                o.op_inputs.push res
+
+        # build execution order
+        order = array op []
+        visited:     map op[string] []
+        in_progress: map op[string] []
+        for [ o: op ] in ops
+            if [ ! visited[o.name] ]
+                topo_visit o, visited, in_progress
+
+        # set input
+        first: op [ order[0] ]
+        k_input = first.input
+
+        # finalize layers
+        for [ o: op ] in ops
+            o.result = find_result[ o ]
+            for [ dep: op ] in o.op_inputs
+                if [ dep is input_op ]
+                    if [ o.input.tensor_shape == dep.input.tensor_shape ]
+                        o.input = dep.input
+            o.finalize
+
+        out_op: op [ op_map['output'] ]
+        k_output = out_op.input
+
+    func topo_visit [current: op, visited: map, in_progress: map] -> none
+        if [ in_progress[current.name] == true ]
+            return
+        if [ visited[current.name] != null ]
+            return
+        in_progress[current.name] = true
+        for [ dep: op ] in current.op_inputs
+            topo_visit dep, visited, in_progress
+        visited[current.name] = true
+        in_progress[current.name] = false
+        order.push current
+
+    func find_result [target: op] -> tensor
+        for [ o: op ] in ops
+            for [ dep: op ] in o.op_inputs
+                if [ dep == target ]
+                    return o.input
+        return null
+
+    func forward [src: tensor] -> tensor
+        memcpy k_input.realized, src.realized, src.count * 4
+        for [ current: op ] in order
+            current.forward
+        res: tensor [ tensor_shape: k_output.tensor_shape ]
+        memcpy res.realized, k_output.realized, k_output.count * 4
+        return res
+
+    func back [d_out: tensor] -> tensor
+        n: i32 [ order.count ]
+        res: tensor [ d_out ]
+        for [ i: i32 n - 1 :: i >= 0 :: i -= 1 ]
+            o: op [ order[i] ]
+            if [ o.weights ] memset o.weights.grad, 0, o.weights.count * 4
+            if [ o.bias    ] memset o.bias.grad,    0, o.bias.count    * 4
+            res = o.back[res]
+        return res
+    
+    func train [epochs: i32, samples: map, learning_rate: f32] -> none
+        for [ epoch: i32 0 :: epoch < epochs :: epoch += 1 ]
+            puts 'epoch {epoch + 1}/{epochs}'
+
+            # 
+            for [ target: tensor, src: tensor ] in samples
+                prediction: forward[src]
+                loss:       f32 [0.0]
+                d_out:      tensor [ tensor_shape: target.tensor_shape ]
+                t:          target.count
+
+                # compute loss off target label
+                for [ i: i32 0 :: i < t :: i += 1 ]
+                    diff: prediction.realized[i] - target.realized[i]
+                    loss += diff * diff
+                    d_out.realized[i] = 2.0 * diff
+                loss /= t
+                puts 'loss: {loss}'
+                d_in: back[d_out]
+
+                # update weights
+                for [ layer: op ] in ops
+                    if [ layer.weights ]
+                        wt: layer.weights.count
+                        for [ i: i32 0 :: i < wt :: i += 1 ]
+                            layer.weights.realized[i] -= learning_rate * layer.weights.grad[i]
+                    if [ layer.bias ]
+                        bt: layer.bias.count
+                        for [ i: i32 0 :: i < bt :: i += 1 ]
+                            layer.bias.realized[i] -= learning_rate * layer.bias.grad[i]
+        
+        puts 'training complete'

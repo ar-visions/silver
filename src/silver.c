@@ -23,7 +23,7 @@ static void build_record(silver a, etype mrec);
 
 #define validate(cond, t, ...) ({ \
     if (!(cond)) { \
-        string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n[%5i] compiler: %s:%i\n        source:   %o:%i:%i\n        " t, seq, __FILE__, __LINE__, a->module_file, \
+        string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%10s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, __FILE__, __LINE__, seq, a->module_file, \
                   peek(a)->line, peek(a)->column, ##__VA_ARGS__); \
         if (level_err >= fault_level) { \
             halt(s); \
@@ -413,10 +413,16 @@ static bool silver_next_is_eq(silver a, symbol first, ...);
 static enode reverse_descent(silver a, etype expect);
 
 static enode parse_expression(silver a, etype expect) {
+
+    //print_tokens2(a, "parse_expression");
+    
     // handle array and map types here at this level, and cue in other types through a protocol if possible
     // our calls below this do not have any idea to use the comma in expression syntax
-    if (is_rec(expect) && next_is(a, "["))
+    if (is_rec(expect) && next_is(a, "[")) {
+        // if we can read in one expression (i believe parse_object does this)
+        // call conversion if there are no other arguments
         return parse_object(a, expect, false);
+    }
     
     enode unbias = reverse_descent(a, null);
     return e_create(a, expect, (Au)unbias); // parse assignment needs to expect a deref'd type, or, we call it loaded:false, 
@@ -1385,7 +1391,7 @@ static shape parse_shape(string str, string* str_res, i64* index) {
     return null;
 }
 
-static array parse_tokens(silver a, Au input, array output) {
+static array parse_tokens(silver a, Au input, array output) { sequencer
     string input_string;
     Au_t type = isa(input);
     path src = null;
@@ -1458,6 +1464,10 @@ static array parse_tokens(silver a, Au input, array output) {
 
         num_start = isdigit(chr) > 0;
 
+        if (seq == 1542 && index == 12020) {
+            seq = seq;
+        }
+
         // comments
         if (!a->cmode && chr == '#') {
             if (index + 1 < length && idx(input_string, index + 1) == '#') {
@@ -1477,7 +1487,16 @@ static array parse_tokens(silver a, Au input, array output) {
             continue;
         }
 
+        if (strncmp(&input_string->chars[index], "99998.0", 7) == 0)
+            input_string = input_string;
+
         string name = scan_map(mapping, input_string, index);
+        if (name && len(name) == 1 && name->chars[0] == '-' && index + 1 < length && isdigit(idx(input_string, index + 1))) {
+            token prev = (token)last_element(tokens);
+            if (!prev || (prev->column + len(prev) < index - line_start) || 
+                    eq(prev, "[") || eq(prev, "(") || eq(prev, ","))
+                name = null; // gap before '-', treat as negative literal
+        }
         if (name) {
             // we could merge these more generically
             if (a->cmode && len(name) == 1 && strncmp(&input_string->chars[index], "##", 2) == 0) {
@@ -1874,17 +1893,22 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
     }
 
     bool is_super = false;
+    string first_alpha = null;
     for (;!skip_member_check;) {
         bool first = !mem;
 
         bool new_name = in_decl != null || in_rec;
         alpha = read_alpha_macrofilter(a, new_name);
+        if (!first_alpha) first_alpha = alpha;
 
-        if (alpha && eq(alpha, "cc2")) {
+        if (next_is(a, "o")) {
+            alpha = alpha;
+        }
+        if (alpha && eq(alpha, "name")) {
             alpha = alpha;
         }
         validate(!first || alpha || new_name,
-            "[%i] expected member, found %o ", seq, peek(a));
+            "[%i] expected member, found %o ", seq, peek(a) ? peek(a) : (token)string("[empty]"));
 
         if (!alpha) {
             validate(mem == null, "expected alpha-ident after .");
@@ -1946,6 +1970,18 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
                 
                 if (!mem) {
                     token tm1 = element(a, -2); // sorry for the mess (coin-flip)
+
+                    if (eq(alpha, "order")) {
+
+                        Au_t b4 = lexical(a->lexical, alpha->chars);
+                        etype should_be_evar = u(etype, b4);
+
+                        mem = (enode)elookup(alpha->chars);
+                        Au_t m = find_member(typeid(Au)->module, "shape", AU_MEMBER_TYPE, false);
+                        etype sh = u(etype, m);
+                        m = m;
+                    }
+
                     validate(next_is(a, ":") || (tm1 && index_of(keywords, (Au)tm1) >= 0), "unknown identifier %o", alpha);
                     validate(!find_member(top, alpha->chars, 0, false), "duplicate member: %o", alpha);
                     Au_t m = def_member(top, alpha->chars, null, AU_MEMBER_DECL, 0); // this is promoted to different sorts of members based on syntax
@@ -1957,6 +1993,9 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
                                 mm = m;
                             }
                         }
+                    }
+                    if (strcmp(m->ident, "order") == 0) {
+                        m = m;
                     }
                     mem = (enode)edecl(mod, (aether)a, au, m, meta, null);
                     break;
@@ -2106,6 +2145,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
                         res0 = parse_expression(a, mdl_found);
                     else
                         res0 = read_enode(a, mdl_found, false);
+
                     pop_tokens(a, false);
                 } else {
                     res0 = null; // use default
@@ -2177,9 +2217,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
             sh = instanceof(esize->literal, shape);
             validate(read_if(a, "]"), "expected closing-bracket after new Type [");
         }
-
         etype  ptr_type = (etype)shape_pointer(a, (Au)mdl->au, esize);
-
         enode  vec      = e_vector(a, mdl, esize);
  
         /// parse optional constant data: new i32[4x4] [ 1 2 3 4, 1 1 1 1, ... ]
@@ -2413,11 +2451,21 @@ enode parse_statement(silver a)
         is_lambda = is_lambda;
 
     OPType assign_enum = OPType__undefined;
+    if (next_is(a, "init")) {
+        int test2 = 2;
+        test2    += 2;
+    }
     enode mem = (!is_cast && !is_oper && !is_idx && !is_ctr) ?
         parse_member(a, (ARef)&assign_enum,
             is_func ? typeid(efunc) : ((access || f || (!!module)) ? typeid(evar) : null)) : null;
     Au_t mem_info = isa(mem);
-    validate(!is_func || !instanceof(mem, efunc), "redefinition of %o", mem);
+
+    if (!(!is_func || !instanceof(mem, efunc))) {
+        int test2 = 2;
+        test2    += 2;
+    }
+    validate(!mem || (!is_func || !instanceof(mem, efunc) || mem->au->context != top),
+        "redefinition of %o", mem);
 
     if (module && mem &&
             mem->au->member_type == AU_MEMBER_VAR &&
@@ -2453,6 +2501,9 @@ enode parse_statement(silver a)
     if (is_oper && is_left && op_type == OPType__mul) op_type = OPType__lmul;
     if (is_oper && is_left && op_type == OPType__div) op_type = OPType__ldiv;
     
+    if (is_oper && is_left && op_type == OPType__left)  op_type = OPType__lleft;
+    if (is_oper && is_left && op_type == OPType__right) op_type = OPType__lright;
+
     if (mem!=null || is_ctr || is_idx || is_oper || is_lambda || is_func || is_cast)
     {
         validate(!is_oper || op_type != OPType__undefined, "operator required");
@@ -2519,6 +2570,9 @@ enode parse_statement(silver a)
             set(a->registry, (Au)au, null);
             Au f2 = get(a->registry, (Au)au);
             Au_t info2 = isa(f2);
+            if (strcmp(au->ident, "order") == 0) {
+                au = au;
+            }
             mem = (enode)evar(mod, (aether)a, au, au, loaded, false, meta, rtype->meta, initializer,
                 (tokens)map_initializer(a, string(au->ident), (tokens)expr, au->access_type));
             mem->au->access_type = (u8)access;
@@ -2570,9 +2624,11 @@ enode parse_statement(silver a)
 
 void aether_emit_block_probe(silver, i32);
 
-enode parse_statements(silver a) {
+enode parse_statements(silver a) { sequencer
     statements st = new(statements, mod, (aether)a, au, def(top_scope(a), null, AU_MEMBER_NAMESPACE, 0));
     push_scope(a, (Au)st);
+    if (seq == 99)
+        seq = seq;
     enode vr = null;
     while (peek(a)) {
         vr = parse_statement(a);
@@ -4152,8 +4208,8 @@ void silver_build_user_initializer(silver a, enode t) {
         enode L;
         
         if (!is_module_mem && ctx) {
-            evar ar = (evar)u(evar, (Au_t)ctx->au->args.origin[0]);
-            Au_t au_type = isa(ar);
+            Au_t f  = (Au_t)ctx->au->args.origin[0];
+            evar ar = (evar)u(enode, (Au_t)f);
             L = access((enode)ar, string(t->au->ident), true);
         } else
             L = (enode)t;
@@ -4666,14 +4722,11 @@ etype prop_value_at(etype aa, i64 index) {
 enode constructable(etype fr, etype to);
 enode castable(etype fr, etype to);
 
-// this must parse into map or array, then hand to e_create
-// in the case where the entire value is given at once, we can back out and perform a direct e_create
-// with that result.. we will do this on the first item.  we merely check for the ] afterwards.
-// as such we might want to lazy load the imap or iarray (intermediates that we give to e_create)
 enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
     validate(within_expr || read_if(a, "["), "expected [");
-    if (seq == 14)
+    if (seq == 6)
         seq = seq;
+    //print("seq %i\n", seq);
     bool is_fields = peek_fields(a) || inherits(mdl->au, typeid(map));
     bool is_mdl_map = mdl->au == typeid(map);
     bool is_mdl_collective = inherits(mdl->au, typeid(collective));
@@ -5062,7 +5115,7 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
     etype t = (etype)etype_of(mem);
     bool is_bind_ref = (op_val == OPType__bind) ? next_is(a, "ref") : false;
 
-    if (strcmp(mem->au->ident, "c") == 0 && op_val == 30) {
+    if (mem->au->ident && strcmp(mem->au->ident, "c") == 0 && op_val == 30) {
         mem = mem;
     }
 
@@ -5310,16 +5363,61 @@ enode statements_push_builder(silver a, array expr_tokens, Au unused) {
     return last;
 }
 
-enode parse_for(silver a) {
+enode parse_for(silver a) { sequencer
     validate(read_if(a, "for") != null, "expected for");
 
-    array all = read_within(a); // null if no [...] after for
-    array init_exprs = array(alloc, 32);
-    array cond_exprs = array(alloc, 32);
-    array step_exprs = array(alloc, 32);
-    bool  do_while   = false;
+    if (seq == 47) {
+        seq = seq;
+    }
 
-    if (all) {
+    token after         = null;
+    array all           = read_within(a); // null if no [...] after for
+    enode in_expr       = read_if(a, "in") ? parse_expression(a, null) : null;
+    array init_exprs    = array(alloc, 32);
+    array cond_exprs    = array(alloc, 32);
+    array step_exprs    = array(alloc, 32);
+    evar  key_var       = null;
+    evar  val_var       = null;
+    bool  do_while      = false;
+
+    statements st = new(statements, mod, (aether)a, au, def(top_scope(a), null, AU_MEMBER_NAMESPACE, 0));
+    push_scope(a, (Au)st);
+
+    // if we use in_expr, then we do not split by :: in a traditional for,
+    // we will read statements within all; each of which should be an enode binding from a : operation
+    // we will use value first, then key.
+    
+    if (in_expr) {
+        // parse bindings from all tokens: [v: Value, k: Key]
+        // first binding is value, second (optional) is key
+        push_tokens(a, (tokens)all, 0);
+        
+        // read first binding: v: Type
+        string val_name = read_alpha(a);
+        validate(val_name, "expected variable name in for-in");
+        validate(read_if(a, ":"), "expected : after variable name");
+        etype val_type = read_etype(a, null);
+        validate(val_type, "expected type after :");
+        
+        // check for second binding (key)
+        if (read_if(a, ",")) {
+            string key_name = read_alpha(a);
+            validate(key_name, "expected key variable name");
+            validate(read_if(a, ":"), "expected : after key name");
+            etype key_type = read_etype(a, null);
+            validate(key_type, "expected type after :");
+            
+            // create key variable in current scope
+            Au_t key_mem = def_member(top_scope(a), key_name->chars, key_type->au, AU_MEMBER_VAR, 0);
+            key_var = evar(mod, (aether)a, au, key_mem);
+        }
+        
+        // create value variable in current scope
+        Au_t val_mem = def_member(top_scope(a), val_name->chars, val_type->au, AU_MEMBER_VAR, 0);
+        val_var = evar(mod, (aether)a, au, val_mem);
+        pop_tokens(a, false);
+    }
+    else if (all) {
         // split on :: to figure out which form
         int level = 0;
         array cur = init_exprs;
@@ -5359,13 +5457,17 @@ enode parse_for(silver a) {
     subprocedure build_init = subproc(a, statements_push_builder, null);
     subprocedure build_cond = subproc(a, cond_builder, null);
     subprocedure build_step = subproc(a, exprs_builder, null);
-    subprocedure build_body = subproc(a, exprs_builder, null);
+    subprocedure build_body = subproc(a, block_builder, null);
 
     enode res = e_for(a,
         init_exprs, cond_exprs, body, step_exprs,
         build_init, build_cond, build_body, build_step,
-        do_while);
+        do_while, in_expr, val_var, key_var);
     pop_scope(a);
+
+    if (!in_expr) // call structure dictates there be an async, only when we make the inits in callback
+        pop_scope(a); // its a good idea to make this better
+
     return res;
 }
 
