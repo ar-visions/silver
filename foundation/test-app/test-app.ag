@@ -10,6 +10,13 @@ import ai
 app test-app
     a_param:int 2
     func init [] -> none
-        #head : header[ a ]
+        val : 'Kilmer'
+        tom : 'Snooze'
+        brad : 417
+        head : header[ a ]
+        brad2 : 418
+        val = 'Kilmer2'
+        head2corrupt_when_break_is_on_puts : header[ a ]
         puts 'this runs? {'something {'inside another'}'}'
+
 
