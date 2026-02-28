@@ -109,11 +109,14 @@ LLVMMetadataRef debug_scope(aether a) {
 
 LLVMMetadataRef debug_type_for      (aether a, Au_t src);
 LLVMMetadataRef debug_struct_type   (aether a, Au_t type_au);
+LLVMMetadataRef debug_enum_type     (aether a, Au_t type_au);
+LLVMMetadataRef debug_pointer_type  (aether a, Au_t type_au);
+LLVMMetadataRef debug_funcptr_type  (aether a, Au_t type_au);
+LLVMMetadataRef debug_subroutine_type(aether a, Au_t fn_au);
 void            emit_debug_function (aether a, efunc fn);
 void            emit_debug_variable (aether a, enode var, u32 arg_no, u32 line);
 LLVMMetadataRef debug_au_header_type(aether a, Au_t schema);
 void emit_debug_params              (aether a, efunc fn);
-void emit_au_header_view            (aether a);
 
 
 void aether_emit_block_probe(aether a, u32 probe_id);
