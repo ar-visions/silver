@@ -1,7 +1,7 @@
 {
   "name": "silver-ag",
   "displayName": "silver (.ag)",
-  "description": "Syntax highlighting for silver modules (.ag)",
+  "description": "Silver language support for .ag modules",
   "version": "0.1.0",
   "engines": {
     "vscode": "^1.75.0"
@@ -26,6 +26,11 @@
         "language": "ag",
         "scopeName": "source.ag",
         "path": "./syntaxes/ag.tmLanguage.json"
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "ag"
       }
     ]
   }
