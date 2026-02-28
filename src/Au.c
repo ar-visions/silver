@@ -426,6 +426,9 @@ none array_push_vdata(array a, Au data, i64 count, Au_t data_type) {
 Au_t Au_meta_index(Au a, int i) {
     Au_t t = isa(a) ? (Au_t)isa(a) : (Au_t)a;
     if  (t->meta.origin) {
+        if (!(i >= 0 && i < t->meta.count)) {
+            a = a;
+        }
         verify(i >= 0 && i < t->meta.count, "meta index out of type range for %s", t->ident);
         Au_t arg = (Au_t)t->meta.origin[i];
         if (arg->member_type == AU_MEMBER_VAR)
@@ -955,7 +958,7 @@ lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
 }
 
 Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, i32 member_type, u64 traits, u64 typesize, u64 isize) {
-    if (strcmp(ident, "test4") == 0) {
+    if (strcmp(ident, "test-app") == 0) {
         int test2 = 2;
         test2    += 2;
     }
@@ -1168,44 +1171,49 @@ none push_type(Au_t type) {
         au_t->member_type = AU_MEMBER_TYPE;
         au_t->traits = AU_TRAIT_CLASS;
 
-        def_member(au_t, "context",       typeid(Au_t), AU_MEMBER_VAR, 0);
-        def_member(au_t, "src",           typeid(Au_t), AU_MEMBER_VAR, 0);
-        def_member(au_t, "schema",        typeid(Au_t), AU_MEMBER_VAR, 0);
-        def_member(au_t, "module",        typeid(Au_t), AU_MEMBER_VAR, 0);
-        def_member(au_t, "ptr",           typeid(Au_t), AU_MEMBER_VAR, 0);
-        def_member(au_t, "ident",         typeid(cstr), AU_MEMBER_VAR, 0);
-        def_member(au_t, "alt",           typeid(cstr), AU_MEMBER_VAR, 0);
-        def_member(au_t, "table_size",    typeid(u32),  AU_MEMBER_VAR, 0);
-        def_member(au_t, "abi_size",      typeid(u32),  AU_MEMBER_VAR, 0);
-        def_member(au_t, "align_bits",    typeid(u32),  AU_MEMBER_VAR, 0);
-        def_member(au_t, "record_alignment", typeid(u32),  AU_MEMBER_VAR, 0);
-        def_member(au_t, "index",         typeid(i64),  AU_MEMBER_VAR, 0);
-        def_member(au_t, "value",         typeid(ARef), AU_MEMBER_VAR, 0);
-        def_member(au_t, "member_type",   typeid(u8),   AU_MEMBER_VAR, 0);
-        def_member(au_t, "operator_type", typeid(u8),   AU_MEMBER_VAR, 0);
-        def_member(au_t, "access_type",   typeid(u8),   AU_MEMBER_VAR, 0);
-        def_member(au_t, "reserved",      typeid(u8),   AU_MEMBER_VAR, 0);
-        def_member(au_t, "traits",        typeid(u64),  AU_MEMBER_VAR, 0);
-        def_member(au_t, "global_count",  typeid(i32),  AU_MEMBER_VAR, 0);
-        def_member(au_t, "offset",        typeid(i32),  AU_MEMBER_VAR, 0);
-        def_member(au_t, "elements",      typeid(i32),  AU_MEMBER_VAR, 0);
-        def_member(au_t, "typesize",      typeid(i32),  AU_MEMBER_VAR, 0);
-        def_member(au_t, "isize",         typeid(i32),  AU_MEMBER_VAR, 0);
-        def_member(au_t, "fn",            typeid(ARef), AU_MEMBER_VAR, 0);
-        def_member(au_t, "ffi",           typeid(ARef), AU_MEMBER_VAR, 0);
+        def_member(au_t, "context",       typeid(Au_t), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, context);
+        def_member(au_t, "src",           typeid(Au_t), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, src);
+        def_member(au_t, "schema",        typeid(Au_t), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, schema);
+        def_member(au_t, "module",        typeid(Au_t), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, module);
+        def_member(au_t, "ptr",           typeid(Au_t), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, ptr);
+        def_member(au_t, "ident",         typeid(cstr), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, ident);
+        def_member(au_t, "alt",           typeid(cstr), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, alt);
+        def_member(au_t, "table_size",    typeid(u32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, table_size);
+        def_member(au_t, "abi_size",      typeid(u32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, abi_size);
+        def_member(au_t, "align_bits",    typeid(u32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, align_bits);
+        def_member(au_t, "record_alignment", typeid(u32), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, record_alignment);
+        def_member(au_t, "index",         typeid(i64),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, index);
+        def_member(au_t, "value",         typeid(ARef), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, value);
+        def_member(au_t, "member_type",   typeid(u8),   AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, member_type);
+        def_member(au_t, "operator_type", typeid(u8),   AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, operator_type);
+        def_member(au_t, "access_type",   typeid(u8),   AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, access_type);
+        def_member(au_t, "reserved",      typeid(u8),   AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, reserved);
+        def_member(au_t, "traits",        typeid(u64),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, traits);
+        def_member(au_t, "global_count",  typeid(i32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, global_count);
+        def_member(au_t, "offset",        typeid(i32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, offset);
+        def_member(au_t, "elements",      typeid(i32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, elements);
+        def_member(au_t, "typesize",      typeid(i32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, typesize);
+        def_member(au_t, "isize",         typeid(i32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, isize);
+        def_member(au_t, "fn",            typeid(ARef), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, fn);
+        def_member(au_t, "ffi",           typeid(ARef), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, ffi);
+                
+        def_member(au_t, "members_info", typeid(Au), AU_MEMBER_VAR, AU_TRAIT_INLAY)
+            ->offset = offsetof(struct _Au_f, members_info);
+
+        def_member(au_t, "members", au_collective, AU_MEMBER_VAR, AU_TRAIT_INLAY)
+            ->offset = offsetof(struct _Au_f, members);
         
-        Au_t minfo = def_member(au_t, "members_info", typeid(Au), AU_MEMBER_VAR, AU_TRAIT_INLAY);
-        def_member(au_t, "members", au_collective, AU_MEMBER_VAR, AU_TRAIT_INLAY);
+        def_member(au_t, "meta_info", typeid(Au), AU_MEMBER_VAR, AU_TRAIT_INLAY)
+            ->offset = offsetof(struct _Au_f, meta_info);
         
-        Au_t metainfo = def_member(au_t, "meta_info", typeid(Au), AU_MEMBER_VAR, AU_TRAIT_INLAY);
-        def_member(au_t, "meta",  au_collective, AU_MEMBER_VAR, AU_TRAIT_INLAY);
-        def_member(au_t, "data_shape", typeid(shape), AU_MEMBER_VAR, 0); // this is not required i think!
+        def_member(au_t, "meta",  au_collective, AU_MEMBER_VAR, AU_TRAIT_INLAY)->offset = offsetof(struct _Au_f, meta);
+        def_member(au_t, "data_shape", typeid(shape), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, data_shape);
 
         Au_t required_bits = def_member(au_t, "required_bits",  typeid(u64), AU_MEMBER_VAR, 0);
         required_bits->elements = 2;
         Au_t ft = def(au_t, null, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
         def_member(ft, "_none_", typeid(ARef), AU_MEMBER_VAR, 0);
-        def_member(au_t, "ft", ft, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
+        def_member(au_t, "ft", ft, AU_MEMBER_TYPE, AU_TRAIT_STRUCT)->offset = offsetof(struct _Au_f, ft);
         // this process is replicated in schema creation / etype_init
     }
 
@@ -2282,14 +2290,42 @@ Au Au_with_cstrs(Au a, cstrs argv) {
                 type = type->context;
             }
             verify(mem, "member not found: %s", &arg[1 + !single]);
-            cstr value = argv[++argc];
             bool is_bool = mem->src == typeid(bool);
-            verify(value || is_bool, "expected value after %s", &arg[1 + !single]);
+            cstr value = null;
+            if (argv[argc + 1] && is_bool && (
+                strcmp(argv[argc + 1], "1") == 0 ||
+                strcmp(argv[argc + 1], "0") == 0 ||
+                strcmp(argv[argc + 1], "true") == 0 ||
+                strcmp(argv[argc + 1], "false") == 0)) {
+                value = argv[++argc];
+            } else if (argv[argc + 1] && argv[argc + 1][0] == '-')
+                value = null; // this case we are providing no value, so default 'given' state which of course is a boolean true
+            else
+                value = argv[++argc];
+
+            bool is_array = mem->src == typeid(array);
+            verify(value || is_bool || is_array,
+                "expected value after %s", &arg[1 + !single]);
             
+            // arrays consume the remaining set; construct from the meta type
+            if (is_array) {
+                array arr = array();
+                argc++;
+                Au_t element = is_meta(a) ? meta_index(a, 0) : null;
+                while (argv[argc]) {
+                    string ar = string(argv[argc]);
+                    if (element && element != typeid(none) && element != typeid(Au))
+                        push(arr, (Au)construct_with(element, (Au)ar, null));
+                    else
+                        push(arr, (Au)ar);
+                    argc++;
+                }
+                Au_set_property(a, mem->ident, (Au)arr);
+                break;
+            }
+
             Au conv = value ? convert(mem->type, (Au)string(value)) : _bool(true);
             Au_set_property(a, mem->ident, conv);
-            if (!value)
-                break;
         }
         argc++;
     }

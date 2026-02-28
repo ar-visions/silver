@@ -36,6 +36,7 @@ declare_class(exports)
     M(X, Y, i, prop,     public,  map,    defs) \
     M(X, Y, i, prop,     public,  map,    defs_expect) \
     M(X, Y, i, prop,     public,  map,    defs_used) \
+    M(X, Y, i, prop,     public,  array,  run) \
     M(X, Y, i, prop,     public,  string, debug_member) \
     M(X, Y, i, prop,     public,  string, defs_hash) \
     M(X, Y, i, prop,     public,  path,   build_dir) \
