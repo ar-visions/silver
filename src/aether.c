@@ -304,29 +304,135 @@ static void emit_debug_loc(aether a, u32 line, u32 column) {
     LLVMSetCurrentDebugLocation2(B, loc);
 }
 
+// map an Au_t primitive to a DWARF basic type encoding
+static LLVMMetadataRef debug_type_for(aether a, Au_t src) {
+    if (!src) return LLVMDIBuilderCreateBasicType(
+        a->dbg_builder, "ptr", 3, 64, 0, LLVMDIFlagZero);
+
+    // pointer / class types → pointer
+    if (src->is_pointer || src->is_class || src->is_funcptr)
+        return LLVMDIBuilderCreatePointerType(
+            a->dbg_builder,
+            LLVMDIBuilderCreateBasicType(a->dbg_builder, "u8", 2, 8, 7, LLVMDIFlagZero),
+            64, 0, 0, src->ident ? src->ident : "ptr",
+            src->ident ? strlen(src->ident) : 3);
+
+    etype et = u(etype, src);
+    u32 bits = et && et->lltype ? LLVMABISizeOfType(a->target_data, et->lltype) * 8 : 64;
+    if (!bits) bits = 64;
+
+    // float/double
+    if (src->is_realistic)
+        return LLVMDIBuilderCreateBasicType(
+            a->dbg_builder, src->ident, strlen(src->ident), bits, 4, LLVMDIFlagZero);
+
+    // signed int
+    if (src->is_signed || (src->is_integral && !src->is_unsigned))
+        return LLVMDIBuilderCreateBasicType(
+            a->dbg_builder, src->ident, strlen(src->ident), bits, 5, LLVMDIFlagZero);
+
+    // unsigned int / bool / enum
+    if (src->is_unsigned || src->is_enum)
+        return LLVMDIBuilderCreateBasicType(
+            a->dbg_builder, src->ident, strlen(src->ident), bits, 7, LLVMDIFlagZero);
+
+    // bool
+    if (src == typeid(bool))
+        return LLVMDIBuilderCreateBasicType(
+            a->dbg_builder, "bool", 4, 8, 2, LLVMDIFlagZero);
+
+    // fallback: pointer-sized opaque
+    return LLVMDIBuilderCreateBasicType(
+        a->dbg_builder, src->ident ? src->ident : "ptr",
+        src->ident ? strlen(src->ident) : 3, bits, 0, LLVMDIFlagZero);
+}
+
+// build or return cached DWARF composite type for a struct/class
+static LLVMMetadataRef debug_struct_type(aether a, Au_t type_au) {
+    if (!a->debug || !a->compile_unit) return null;
+    if (!type_au || !type_au->ident) return null;
+
+    // use lldebug as cache
+    etype et = u(etype, type_au);
+    if (et && et->lldebug) return et->lldebug;
+
+    // count instance members
+    int count = 0;
+    for (int i = 0; i < type_au->members.count; i++) {
+        Au_t m = (Au_t)type_au->members.origin[i];
+        if (m->member_type == AU_MEMBER_VAR && !m->is_static)
+            count++;
+    }
+    if (count == 0) return null;
+
+    u32 total_bits = type_au->abi_size ? type_au->abi_size : 0;
+    u32 align      = type_au->align_bits ? type_au->align_bits : 64;
+
+    // build member metadata array
+    LLVMMetadataRef* members = calloc(count, sizeof(LLVMMetadataRef));
+    int idx = 0;
+    for (int i = 0; i < type_au->members.count; i++) {
+        Au_t m = (Au_t)type_au->members.origin[i];
+        if (m->member_type != AU_MEMBER_VAR || m->is_static) continue;
+
+        LLVMMetadataRef member_type = debug_type_for(a, m->src);
+        etype m_et = u(etype, m->src);
+        u32 m_bits = m_et && m_et->lltype
+            ? LLVMABISizeOfType(a->target_data, m_et->lltype) * 8 : 64;
+        u32 m_align = m_et && m_et->lltype
+            ? LLVMABIAlignmentOfType(a->target_data, m_et->lltype) * 8 : 64;
+        u64 offset_bits = m->offset * 8;
+
+        members[idx++] = LLVMDIBuilderCreateMemberType(
+            a->dbg_builder, a->compile_unit,
+            m->ident, strlen(m->ident),
+            a->file, 0,
+            m_bits, m_align, offset_bits,
+            LLVMDIFlagZero, member_type);
+    }
+
+    LLVMMetadataRef di_struct = LLVMDIBuilderCreateStructType(
+        a->dbg_builder, a->compile_unit,
+        type_au->ident, strlen(type_au->ident),
+        a->file, 0,
+        total_bits, align,
+        LLVMDIFlagZero, null,
+        members, idx, 0, null,
+        type_au->ident, strlen(type_au->ident));
+
+    free(members);
+
+    // cache on etype
+    if (et) et->lldebug = di_struct;
+    return di_struct;
+}
+
 // create a DISubprogram for a function and attach it
 static void emit_debug_function(aether a, efunc fn) {
     if (!a->debug || !a->compile_unit) return;
     Au_t au = fn->au;
     if (!au->ident) return;
 
-    // source file for this function (use module file)
     LLVMMetadataRef file_ref = a->file;
 
-    // build subroutine type (we use a void-returning empty type for now;
-    // LLDB infers param types from LLVM IR)
+    // build subroutine type
     LLVMMetadataRef sr_type = LLVMDIBuilderCreateSubroutineType(
         a->dbg_builder, file_ref, null, 0, LLVMDIFlagZero);
 
-    // determine line; use 0 as fallback (will be updated on first statement)
     u32 line = 0;
-
     cstr name = au->alt ? au->alt : au->ident;
     u32 name_len = strlen(name);
 
+    // for instance methods, scope inside the class DI type if available
+    LLVMMetadataRef scope = a->compile_unit;
+    if (au->is_imethod && au->context) {
+        LLVMMetadataRef class_di = debug_struct_type(a, au->context);
+        if (class_di) scope = class_di;
+    }
+
     LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(
         a->dbg_builder,
-        a->compile_unit,        // scope: compile unit (module-level)
+        scope,
         name, name_len,         // name
         name, name_len,         // linkage name
         file_ref, line,         // file, line
@@ -337,10 +443,9 @@ static void emit_debug_function(aether a, efunc fn) {
         LLVMDIFlagZero,        // flags
         false);                 // is optimized
 
-    etype et = (etype)fn;
-    et->llscope = sp;
+    etype et_fn = (etype)fn;
+    et_fn->llscope = sp;
 
-    // attach the subprogram to the LLVM function value
     if (fn->value)
         LLVMSetSubprogram(fn->value, sp);
 }
@@ -355,9 +460,7 @@ static void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
     cstr name     = var->au->ident;
     u32  name_len = strlen(name);
 
-    // placeholder type; LLDB reads actual type from LLVM IR
-    LLVMMetadataRef di_type = LLVMDIBuilderCreateBasicType(
-        a->dbg_builder, "ptr", 3, 64, 0, LLVMDIFlagZero);
+    LLVMMetadataRef di_type = debug_type_for(a, var->au->src);
 
     LLVMMetadataRef di_var = (arg_no > 0)
         ? LLVMDIBuilderCreateParameterVariable(
@@ -373,6 +476,69 @@ static void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
     LLVMDIBuilderInsertDeclareAtEnd(
         a->dbg_builder, var->value, di_var, expr, loc,
         LLVMGetInsertBlock(B));
+}
+
+// emit parameter debug variables for function args (including self for instance methods)
+// called when entering a function body in push_scope, after builder is positioned at entry
+static void emit_debug_params(aether a, efunc fn) {
+    if (!a->debug || !a->compile_unit || a->no_build) return;
+    if (!fn || !fn->value) return;
+    Au_t au = fn->au;
+    LLVMMetadataRef scope = ((etype)fn)->llscope;
+    if (!scope) return;
+
+    int arg_no = 1; // DWARF arg numbering starts at 1
+    int llvm_param_idx = 0;
+
+    // lambda context is param 0, skip it
+    if (is_lambda(au))
+        llvm_param_idx = 1;
+
+    arg_list(au, arg) {
+        if (!arg->ident) { arg_no++; llvm_param_idx++; continue; }
+
+        // for the self/target param of instance methods, use "self" name
+        bool is_target = (au->is_imethod && arg_no == 1);
+        cstr name      = is_target ? "self" : arg->ident;
+        u32  name_len  = strlen(name);
+
+        // build DI type: for self use struct pointer type if available
+        LLVMMetadataRef di_type;
+        if (is_target && au->context) {
+            LLVMMetadataRef struct_di = debug_struct_type(a, au->context);
+            if (struct_di)
+                di_type = LLVMDIBuilderCreatePointerType(
+                    a->dbg_builder, struct_di, 64, 0, 0,
+                    au->context->ident, strlen(au->context->ident));
+            else
+                di_type = debug_type_for(a, arg->src);
+        } else {
+            di_type = debug_type_for(a, arg->src);
+        }
+
+        LLVMMetadataRef di_param = LLVMDIBuilderCreateParameterVariable(
+            a->dbg_builder, scope, name, name_len,
+            arg_no, a->file, 0, di_type,
+            false, LLVMDIFlagZero);
+
+        // create an alloca shadow for the param so dbg.declare works
+        LLVMValueRef param_val = LLVMGetParam(fn->value, llvm_param_idx);
+        LLVMTypeRef  param_ty  = LLVMTypeOf(param_val);
+        char alloca_name[256];
+        snprintf(alloca_name, sizeof(alloca_name), "%s.addr", name);
+        LLVMValueRef shadow = LLVMBuildAlloca(B, param_ty, alloca_name);
+        LLVMBuildStore(B, param_val, shadow);
+
+        LLVMMetadataRef expr = LLVMDIBuilderCreateExpression(a->dbg_builder, null, 0);
+        LLVMMetadataRef loc  = LLVMDIBuilderCreateDebugLocation(
+            a->module_ctx, 0, 0, scope, null);
+        LLVMDIBuilderInsertDeclareAtEnd(
+            a->dbg_builder, shadow, di_param, expr, loc,
+            LLVMGetInsertBlock(B));
+
+        arg_no++;
+        llvm_param_idx++;
+    }
 }
 
 // emit __au_header(ptr) -> object*  helper for Au-derived classes
@@ -5580,6 +5746,8 @@ none aether_push_scope(aether a, Au arg) {
         // set initial debug location for function entry
         if (a->debug && peek)
             emit_debug_loc(a, peek->line, peek->column);
+        // emit parameter debug variables (self, args) for LLDB locals view
+        emit_debug_params(a, fn);
         if (a->timing_enabled && !fn->timing_start_value) {
             fn->timing_func_id = a->next_func_id++;
             fn->timing_start_value = emit_func_timing_start(a, fn->timing_func_id);
