@@ -673,7 +673,6 @@ Au build_init_preamble(enode f, Au arg) {
 void implement_type_id(etype);
 
 void finalize_coverage(silver);
-void emit_au_header_view(silver);
 
 void silver_parse(silver a) {
     efunc init = module_initializer(a);
@@ -685,7 +684,7 @@ void silver_parse(silver a) {
     set(a->registry, (Au)m_mac, (Au)hold(e_operand(a, _bool(SILVER_IS_MAC),     etypeid(bool))));
     set(a->registry, (Au)m_lin, (Au)hold(e_operand(a, _bool(SILVER_IS_LINUX),   etypeid(bool))));
     set(a->registry, (Au)m_win, (Au)hold(e_operand(a, _bool(SILVER_IS_WINDOWS), etypeid(bool))));
-    
+
     while (peek(a)) {
         validate(parse_statement(a), "unexpected token found for statement: %o", peek(a));
         incremental_resolve(a);
@@ -700,9 +699,6 @@ void silver_parse(silver a) {
 
     // explicit call to finalize the coverage globals
     finalize_coverage(a);
-
-    // emit LLDB Au header view helper (__au_header)
-    emit_au_header_view(a);
 }
 
 none aether_test_write(aether a);
