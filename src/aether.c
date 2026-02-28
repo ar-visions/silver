@@ -473,7 +473,7 @@ static void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
     LLVMMetadataRef expr = LLVMDIBuilderCreateExpression(a->dbg_builder, null, 0);
     LLVMMetadataRef loc  = LLVMDIBuilderCreateDebugLocation(
         a->module_ctx, line, 0, scope, null);
-    LLVMDIBuilderInsertDeclareAtEnd(
+    LLVMDIBuilderInsertDeclareRecordAtEnd(
         a->dbg_builder, var->value, di_var, expr, loc,
         LLVMGetInsertBlock(B));
 }
@@ -532,7 +532,7 @@ static void emit_debug_params(aether a, efunc fn) {
         LLVMMetadataRef expr = LLVMDIBuilderCreateExpression(a->dbg_builder, null, 0);
         LLVMMetadataRef loc  = LLVMDIBuilderCreateDebugLocation(
             a->module_ctx, 0, 0, scope, null);
-        LLVMDIBuilderInsertDeclareAtEnd(
+        LLVMDIBuilderInsertDeclareRecordAtEnd(
             a->dbg_builder, shadow, di_param, expr, loc,
             LLVMGetInsertBlock(B));
 
