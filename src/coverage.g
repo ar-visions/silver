@@ -1,0 +1,2 @@
+type:       static
+modules:    Au
