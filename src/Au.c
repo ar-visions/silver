@@ -1506,7 +1506,7 @@ command command_with_cstr(command cmd, cstr buf) {
     return cmd;
 }
 
-string command_run(command cmd) {
+string command_run(command cmd, bool verbose) {
     int pipe_in[2];   // for writing command input to sh -s
     int pipe_out[2];  // for reading stdout from sh -s
 
@@ -1555,7 +1555,7 @@ string command_run(command cmd) {
     return result;
 }
 
-int command_exec(command cmd) {
+int command_exec(command cmd, bool verbose) {
     if (starts_with(cmd, "export ")) {
         string a = mid(cmd, 7, len(cmd) - 7);
         int i = index_of(a, "=");
@@ -1584,8 +1584,8 @@ int command_exec(command cmd) {
         // parent
         close(pipefd[0]); // close read
         FILE *out = fdopen(pipefd[1], "w");
-        cstr verbose = getenv("VERBOSE");
-        if (verbose && strcmp(verbose, "0") != 0) {
+        cstr verb = getenv("VERBOSE");
+        if ((verb && strcmp(verb, "0") != 0) || verbose) {
             printf("----------------------\n");
             printf("%s\n", cstring(cmd));
         }

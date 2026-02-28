@@ -2010,9 +2010,9 @@
 
 #define         form(T, t, ...)   (T)formatter(typeid(T), false, null, (Au)false, seq, (symbol)t, ## __VA_ARGS__)
 #define            f(T, t, ...)   (T)formatter(typeid(T), false, null, (Au)false, seq, (symbol)t, ## __VA_ARGS__)
-#define         exec(t, ...)      command_exec(((command)formatter((Au_t)typeid(command), false, null, (Au)false, seq, (symbol)t, ## __VA_ARGS__)))
-#define          run(t, ...)      command_run(((command)formatter((Au_t)typeid(command), false, null, (Au)false, seq, (symbol)t, ## __VA_ARGS__)))
-#define         vexec(n, t, ...)     verify(exec((string)t __VA_OPT__(,) __VA_ARGS__) == 0, "shell command failed: %s", n);
+#define         exec(verbose, t, ...)      command_exec(((command)formatter((Au_t)typeid(command), false, null, (Au)false, seq, (symbol)t, ## __VA_ARGS__)), verbose)
+#define          run(verbose, t, ...)      command_run(((command)formatter((Au_t)typeid(command), false, null, (Au)false, seq, (symbol)t, ## __VA_ARGS__)), verbose)
+#define         vexec(verbose, n, t, ...)     verify(exec(verbose, (string)t __VA_OPT__(,) __VA_ARGS__) == 0, "shell command failed: %s", n);
 
 #define        Au_log(sL, t, ...)   formatter((Au_t)null, stdout, (Au)string(sL),  seq, t, ## __VA_ARGS__)
 

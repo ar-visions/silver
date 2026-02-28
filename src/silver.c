@@ -231,7 +231,7 @@ bool silver_is_cmode(silver a) {
 string git_remote_info(path path, string *out_service, string *out_owner, string *out_project) {
     // run git command
     string cmd = f(string, "git -C %s remote get-url origin", path->chars);
-    string remote = command_run((command)cmd);
+    string remote = command_run((command)cmd, false);
 
     verify (remote && remote->count, "silver modules must originate in git repository");
 
@@ -773,12 +773,12 @@ static void exporter(silver a) {
         string rel_mod = mid(mod_file, exp->project_path->count + 1, len(exp->project_path) - exp->project_path->count);
         string  tag         = f(string, "%o-%o", i->key, exp->version);
         string  cmd         = f(string, "git rev-parse %o:%o", tag, rel_mod);
-        string  rev_parse   = command_run((command)cmd);
+        string  rev_parse   = command_run((command)cmd, false);
         string  hash_cmd    = f(string, "git hash-object %o", exp->module_file);
-        string  hash        = command_run((command)hash_cmd);
+        string  hash        = command_run((command)hash_cmd, false);
 
         if (compare(hash, rev_parse) != 0)
-            vexec("git-tag", "git -C %o tag -f %o", a->project_path, tag);
+            vexec(true, "git-tag", "git -C %o tag -f %o", a->project_path, tag);
     }
 }
 
@@ -3280,7 +3280,7 @@ static bool is_branchy(string n) {
     return true;
 }
 
-string command_run(command cmd);
+string command_run(command cmd, bool verbose);
 
 static none checkout(silver a, path uri, string commit, array prebuild, array postbuild, string conf, string env) {
     path    install     = a->install;
@@ -3298,26 +3298,26 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     if (!dir_exists("%o", project_f)) {
         path src_path = f(path, "%o/%o", a->src_loc, name);
         if (dir_exists("%o", src_path)) {
-            vexec("symlink", "ln -s %o %o", src_path, project_f);
+            vexec(a->verbose, "symlink", "ln -s %o %o", src_path, project_f);
             project_f = src_path;
         } else {
             // we need to check if its full hash
             bool is_short = len(commit) == 7 && !is_branchy(commit);
 
             if (is_short) {
-                vexec("remote", "git clone %o %o", uri, project_f); // FULL CHECKOUTS with short
-                vexec("checkout", "git -C %o checkout %o", project_f, commit);
+                vexec(a->verbose, "remote", "git clone %o %o", uri, project_f); // FULL CHECKOUTS with short
+                vexec(a->verbose, "checkout", "git -C %o checkout %o", project_f, commit);
             } else {
-                vexec("init", "git init %o", project_f);
-                vexec("remote", "git -C %o remote add origin %o", project_f, uri);
+                vexec(a->verbose, "init", "git init %o", project_f);
+                vexec(a->verbose, "remote", "git -C %o remote add origin %o", project_f, uri);
                 if (!commit) {
                     command c = f(command, "git remote show origin");
-                    string res = run(c);
+                    string res = run(a->verbose, c);
                     verify(starts_with(res, "HEAD branch: "), "unexpected result for git remote show origin");
                     commit = mid(res, 13, len(res) - 13);
                 }
-                vexec("fetch", "git -C %o fetch origin %o", project_f, commit);
-                vexec("checkout", "git -C %o reset --hard FETCH_HEAD", project_f);
+                vexec(a->verbose, "fetch", "git -C %o fetch origin %o", project_f, commit);
+                vexec(a->verbose, "checkout", "git -C %o reset --hard FETCH_HEAD", project_f);
             }
         }
     }
@@ -3353,7 +3353,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         cd(project_f);
         each(prebuild, string, cmd) {
             string icmd = interpolate(cmd, (Au)a);
-            command_exec((command)icmd);
+            command_exec((command)icmd, a->verbose);
         }
         cd(cw);
     }
@@ -3362,27 +3362,27 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         cstr build = debug ? "Debug" : "Release";
         string opt = a->isysroot ? f(string, "-DCMAKE_OSX_SYSROOT=%o", a->isysroot) : string("");
 
-        vexec("configure",
+        vexec(a->verbose, "configure",
               "%o cmake -B %o -S %o %o -DCMAKE_INSTALL_PREFIX=%o -DCMAKE_BUILD_TYPE=%s %o",
               env, build_f, project_f, opt, install, build, config);
 
-        vexec("build", "%o cmake --build %o -j16", env, build_f);
-        vexec("install", "%o cmake --install %o", env, build_f);
+        vexec(a->verbose, "build", "%o cmake --build %o -j16", env, build_f);
+        vexec(a->verbose, "install", "%o cmake --install %o", env, build_f);
     } else if (is_meson) { // build for meson
         cstr build = debug ? "debug" : "release";
 
-        vexec("setup",
+        vexec(a->verbose, "setup",
               "%o meson setup %o --prefix=%o --buildtype=%s %o",
               env, build_f, install, build, config);
 
-        vexec("compile", "%o meson compile -C %o", env, build_f);
-        vexec("install", "%o meson install -C %o", env, build_f);
+        vexec(a->verbose, "compile", "%o meson compile -C %o", env, build_f);
+        vexec(a->verbose, "install", "%o meson install -C %o", env, build_f);
     } else if (is_gn) {
         cstr is_debug = debug ? "true" : "false";
-        vexec("gen", "gn gen %o --args='is_debug=%s is_official_build=true %o'", build_f, is_debug, config);
-        vexec("ninja", "ninja -C %o -j8", build_f);
+        vexec(a->verbose, "gen", "gn gen %o --args='is_debug=%s is_official_build=true %o'", build_f, is_debug, config);
+        vexec(a->verbose, "ninja", "ninja -C %o -j8", build_f);
     } else if (is_rust) { // todo: copy bin/lib after
-        vexec("rust", "cargo build --%s --manifest-path %o/Cargo.toml --target-dir %o",
+        vexec(a->verbose, "rust", "cargo build --%s --manifest-path %o/Cargo.toml --target-dir %o",
               debug ? "debug" : "release", project_f, build_f);
     } else if (is_silver) { // build for Au-type projects
         silver sf = silver(module, silver_f, breakpoint, a->breakpoint, debug, a->debug,
@@ -3398,18 +3398,18 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
             // fix common race condition with autotools
             if (!file_exists("%o/ltmain.sh", project_f))
-                verify(exec("libtoolize --install --copy --force") == 0, "libtoolize");
+                verify(exec(a->verbose, "libtoolize --install --copy --force") == 0, "libtoolize");
 
             // common preference on these repos
             if (file_exists("%o/autogen.sh", project_f))
-                verify(exec("(cd %o && bash autogen.sh)", project_f) == 0, "autogen");
+                verify(exec(a->verbose, "(cd %o && bash autogen.sh)", project_f) == 0, "autogen");
 
             // generate configuration scripts if available
             else if (!file_exists("%o/configure", project_f) && file_exists("%o/configure.ac", project_f)) {
-                verify(exec("autoupdate --verbose --force --output=%o/configure.ac %o/configure.ac",
+                verify(exec(a->verbose, "autoupdate --verbose --force --output=%o/configure.ac %o/configure.ac",
                             project_f, project_f) == 0,
                        "autoupdate");
-                verify(exec("autoreconf -i %o",
+                verify(exec(a->verbose, "autoreconf -i %o",
                             project_f) == 0,
                        "autoreconf");
             }
@@ -3418,7 +3418,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             path configure = file_exists("%o/configure", project_f) ? f(path, "./configure") : f(path, "./config");
 
             if (file_exists("%o/%o", project_f, configure)) {
-                verify(exec("%o (cd %o && %o%s --prefix=%o %o)",
+                verify(exec(a->verbose, "%o (cd %o && %o%s --prefix=%o %o)",
                             env,
                             project_f,
                             configure,
@@ -3431,7 +3431,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
         path Makefile = f(path, "%o/Makefile", project_f);
         if (file_exists("%o", Makefile))
-            verify(exec("%o (cd %o && make PREFIX=%o -f %o install)", env, project_f, install, Makefile) == 0, "make");
+            verify(exec(a->verbose, "%o (cd %o && make PREFIX=%o -f %o install)", env, project_f, install, Makefile) == 0, "make");
     }
 
     if (postbuild && len(postbuild)) {
@@ -3439,7 +3439,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         cd(build_f);
         each(postbuild, string, cmd) {
             string icmd = interpolate(cmd, (Au)a);
-            command_exec((command)icmd);
+            command_exec((command)icmd, a->verbose);
         }
         cd(cw);
     }
@@ -3471,7 +3471,7 @@ none silver_build(silver a) {
 
     a->product = hold(product);
 
-    verify(exec("%o/bin/llc -filetype=obj %o/%o.ll -o %o/%o.o -relocation-model=pic",
+    verify(exec(a->verbose, "%o/bin/llc -filetype=obj %o/%o.ll -o %o/%o.o -relocation-model=pic",
                 install, a->build_dir, a->name, a->build_dir, a->name) == 0,
            ".ll -> .o compilation failed");
 
@@ -3512,7 +3512,7 @@ none silver_build(silver a) {
         cstr   compiler = eq(ext, ".cc") ? "clang++" : "clang";
         
         // compile .c/.cc to .o
-        verify(exec("%o/bin/%s -c %o -o %o -I%o/include -I%o/include/Au",
+        verify(exec(a->verbose, "%o/bin/%s -c %o -o %o -I%o/include -I%o/include/Au",
             install, compiler, i, i_name, install, install) == 0,
             "failed to compile %o", i);
         
@@ -3523,7 +3523,7 @@ none silver_build(silver a) {
 
     // link - include the implementation objects
     string isysroot = a->isysroot ? f(string, "-isysroot %o ", a->isysroot) : string("");
-    verify(exec("%o/bin/clang %s %o %o/%o.o %o -o %o -L%o -L%o/lib %o %o",
+    verify(exec(a->verbose, "%o/bin/clang %s %o %o/%o.o %o -o %o -L%o -L%o/lib %o %o",
         install, a->is_library ? shared : "", isysroot, a->build_dir, a->name, objs,
         a->product,
         a->build_dir,
