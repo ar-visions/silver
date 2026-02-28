@@ -313,6 +313,7 @@ op conv
                     d_b[oc] += d_out_data[oi]
 
         # weight and input gradient
+        #for [ oc: i32 ] in (0 ..< out_c) += 1
         for [ oc: i32 0 :: oc < out_c :: oc += 1 ]
             for [ oh: i32 0 :: oh < out_h :: oh += 1 ]
                 for [ ow: i32 0 :: ow < out_w :: ow += 1 ]
