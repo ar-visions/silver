@@ -61,63 +61,81 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src) {
         src->ident ? strlen(src->ident) : 3, bits, 0, LLVMDIFlagZero);
 }
 
+// create a single DWARF member type from an Au_t member descriptor
+static LLVMMetadataRef debug_create_member(
+        aether a, Au_t m, LLVMMetadataRef type_override) {
+    LLVMMetadataRef di_type = type_override ? type_override : debug_type_for(a, m->src);
+    etype m_et = u(etype, m->src);
+    u32 m_bits  = m_et && m_et->lltype
+        ? LLVMABISizeOfType(a->target_data, m_et->lltype) * 8 : 64;
+    u32 m_align = m_et && m_et->lltype
+        ? LLVMABIAlignmentOfType(a->target_data, m_et->lltype) * 8 : 64;
+    return LLVMDIBuilderCreateMemberType(
+        a->dbg_builder, a->compile_unit,
+        m->ident, strlen(m->ident),
+        a->file, 0,
+        m_bits, m_align, (u64)m->offset * 8,
+        LLVMDIFlagZero, di_type);
+}
+
 // build or return cached DWARF composite type for a struct/class
+// walks the class hierarchy (context chain) matching aether's etype_class_list
 LLVMMetadataRef debug_struct_type(aether a, Au_t type_au) {
     if (!a->debug || !a->compile_unit) return null;
     if (!type_au || !type_au->ident) return null;
 
-    // use lldebug as cache
     etype et = u(etype, type_au);
     if (et && et->lldebug) return et->lldebug;
 
-    // count instance members
+    // walk context chain to build class hierarchy (most-derived first, then reverse)
+    int class_count = 0;
+    Au_t class_list[64];
+    if (type_au->is_class) {
+        Au_t src = type_au;
+        while (src) {
+            class_list[class_count++] = src;
+            if (src->context == src) break;
+            src = src->context;
+        }
+        // reverse for base-first order (matching etype_class_list)
+        for (int i = 0; i < class_count / 2; i++) {
+            Au_t tmp = class_list[i];
+            class_list[i] = class_list[class_count - 1 - i];
+            class_list[class_count - 1 - i] = tmp;
+        }
+    } else {
+        class_list[0] = type_au;
+        class_count = 1;
+    }
+
+    // skip Au base members when class hierarchy has derived types (matching aether)
+    bool multi_Au = class_count > 1 && class_list[0] == typeid(Au);
+
+    // count instance members across hierarchy
     int count = 0;
-    Au_t b4 = type_au;
-    while (type_au) {
-        for (int i = 0; i < type_au->members.count; i++) {
-            Au_t m = (Au_t)type_au->members.origin[i];
+    for (int ci = 0; ci < class_count; ci++) {
+        Au_t tt = class_list[ci];
+        if (multi_Au && tt == typeid(Au)) continue;
+        members(tt, m)
             if (m->member_type == AU_MEMBER_VAR && !m->is_static)
                 count++;
-        }
-        type_au = type_au->context;
-        if (type_au == typeid(Au))
-            break;
     }
     if (count == 0) return null;
-
-    type_au = b4;
 
     u32 total_bits = type_au->abi_size ? type_au->abi_size : 0;
     u32 align      = type_au->align_bits ? type_au->align_bits : 64;
 
     // build member metadata array
-    LLVMMetadataRef* members = calloc(count, sizeof(LLVMMetadataRef));
+    LLVMMetadataRef* mems = calloc(count, sizeof(LLVMMetadataRef));
     int idx = 0;
-    while (type_au) {
-        for (int i = 0; i < type_au->members.count; i++) {
-            Au_t m = (Au_t)type_au->members.origin[i];
+    for (int ci = 0; ci < class_count; ci++) {
+        Au_t tt = class_list[ci];
+        if (multi_Au && tt == typeid(Au)) continue;
+        members(tt, m) {
             if (m->member_type != AU_MEMBER_VAR || m->is_static) continue;
-
-            LLVMMetadataRef member_type = debug_type_for(a, m->src);
-            etype m_et = u(etype, m->src);
-            u32 m_bits = m_et && m_et->lltype
-                ? LLVMABISizeOfType(a->target_data, m_et->lltype) * 8 : 64;
-            u32 m_align = m_et && m_et->lltype
-                ? LLVMABIAlignmentOfType(a->target_data, m_et->lltype) * 8 : 64;
-            u64 offset_bits = m->offset * 8;
-
-            members[idx++] = LLVMDIBuilderCreateMemberType(
-                a->dbg_builder, a->compile_unit,
-                m->ident, strlen(m->ident),
-                a->file, 0,
-                m_bits, m_align, offset_bits,
-                LLVMDIFlagZero, member_type);
+            mems[idx++] = debug_create_member(a, m, null);
         }
-        type_au = type_au->context;
-        if (type_au == typeid(Au))
-            break;
     }
-    type_au = b4;
 
     LLVMMetadataRef di_struct = LLVMDIBuilderCreateStructType(
         a->dbg_builder, a->compile_unit,
@@ -125,12 +143,11 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au) {
         a->file, 0,
         total_bits, align,
         LLVMDIFlagZero, null,
-        members, idx, 0, null,
+        mems, idx, 0, null,
         type_au->ident, strlen(type_au->ident));
 
-    free(members);
+    free(mems);
 
-    // cache on etype
     if (et) et->lldebug = di_struct;
     return di_struct;
 }
@@ -206,58 +223,68 @@ void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
         LLVMGetInsertBlock(B));
 }
 
+// create _Au debug struct type with schema-aware context/src typing
+// builds a base _Au struct first (for Au_t pointer member pointees),
+// then a schema-specific version where "src" points to the class struct
 LLVMMetadataRef debug_au_header_type(aether a, Au_t schema) {
-    if (schema)
-        schema = schema;
     LLVMMetadataRef schema_type = schema ? debug_struct_type(a, schema) : null;
-    
     Au_t au = typeid(Au);
+
+    // count instance members
     int count = 0;
-    for (int i = 0; i < au->members.count; i++) {
-        Au_t m = (Au_t)au->members.origin[i];
+    members(au, m)
         if (m->member_type == AU_MEMBER_VAR && !m->is_static)
             count++;
-    }
-    
-    LLVMMetadataRef* members = calloc(count, sizeof(LLVMMetadataRef));
-    int idx = 0;
-    for (int i = 0; i < au->members.count; i++) {
-        Au_t m = (Au_t)au->members.origin[i];
+
+    // first pass: build a base _Au struct where Au_t members are simple pointers
+    // this serves as the pointee for context/src/schema/module/ptr fields
+    LLVMMetadataRef* base_mems = calloc(count, sizeof(LLVMMetadataRef));
+    int base_idx = 0;
+    members(au, m) {
         if (m->member_type != AU_MEMBER_VAR || m->is_static) continue;
-        
-        LLVMMetadataRef member_type;
-        if (schema_type && strcmp(m->ident, "type") == 0)
-            member_type = LLVMDIBuilderCreatePointerType(
-                a->dbg_builder, schema_type, LLVMPointerSize(a->target_data) * 8, 0, 0,
-                schema->ident, strlen(schema->ident));
-        else
-            member_type = debug_type_for(a, m->src);
-        
-        etype m_et = u(etype, m->src);
-        u32 m_bits = m_et && m_et->lltype
-            ? LLVMABISizeOfType(a->target_data, m_et->lltype) * 8 : 64;
-        u32 m_align = m_et && m_et->lltype
-            ? LLVMABIAlignmentOfType(a->target_data, m_et->lltype) * 8 : 64;
-        u64 offset_bits = m->offset * 8;
-        
-        members[idx++] = LLVMDIBuilderCreateMemberType(
-            a->dbg_builder, a->compile_unit,
-            m->ident, strlen(m->ident),
-            a->file, 0,
-            m_bits, m_align, offset_bits,
-            LLVMDIFlagZero, member_type);
+        base_mems[base_idx++] = debug_create_member(a, m, null);
     }
-    
+    LLVMMetadataRef au_base = LLVMDIBuilderCreateStructType(
+        a->dbg_builder, a->compile_unit,
+        "_Au", 3, a->file, 0,
+        sizeof(struct _Au) * 8, 64,
+        LLVMDIFlagZero, null,
+        base_mems, base_idx, 0, null,
+        "_Au", 3);
+    free(base_mems);
+
+    // second pass: build schema-specific _Au struct with typed pointers
+    LLVMMetadataRef* mems = calloc(count, sizeof(LLVMMetadataRef));
+    int idx = 0;
+    u32 ptr_bits = LLVMPointerSize(a->target_data) * 8;
+    members(au, m) {
+        if (m->member_type != AU_MEMBER_VAR || m->is_static) continue;
+        LLVMMetadataRef type_override = null;
+
+        // "src" (union with rtype/type) -> pointer to schema struct when available
+        if (schema_type && strcmp(m->ident, "src") == 0)
+            type_override = LLVMDIBuilderCreatePointerType(
+                a->dbg_builder, schema_type, ptr_bits, 0, 0,
+                schema->ident, strlen(schema->ident));
+        // Au_t pointer members (context/schema/module/ptr) -> pointer to base _Au struct
+        else if (m->src == typeid(Au_t))
+            type_override = LLVMDIBuilderCreatePointerType(
+                a->dbg_builder, au_base, ptr_bits, 0, 0,
+                "Au_t", 4);
+
+        mems[idx++] = debug_create_member(a, m, type_override);
+    }
+
     cstr name = schema ? schema->ident : "_Au";
     LLVMMetadataRef result = LLVMDIBuilderCreateStructType(
         a->dbg_builder, a->compile_unit,
         name, strlen(name), a->file, 0,
         sizeof(struct _Au) * 8, 64,
         LLVMDIFlagZero, null,
-        members, idx, 0, null,
+        mems, idx, 0, null,
         name, strlen(name));
-    
-    free(members);
+
+    free(mems);
     return result;
 }
 
@@ -267,10 +294,6 @@ void emit_debug_params(aether a, efunc fn) {
     if (!a->debug || !a->compile_unit || a->no_build) return;
     if (!fn || !fn->value) return;
 
-    if (fn->au->alt && strstr(fn->au->alt, "app")) {
-        int test2 = 2;
-        test2    += 2;
-    }
     Au_t au = fn->au;
     LLVMMetadataRef scope = ((etype)fn)->llscope;
     if (!scope) return;
@@ -324,7 +347,6 @@ void emit_debug_params(aether a, efunc fn) {
         LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(
             a->module_ctx, 0, 0, scope, null);
 
-            
         LLVMDIBuilderInsertDeclareRecordAtEnd(
             a->dbg_builder, shadow, di_param, expr, loc,
             LLVMGetInsertBlock(B));
@@ -333,17 +355,16 @@ void emit_debug_params(aether a, efunc fn) {
             LLVMMetadataRef obj_type = LLVMDIBuilderCreatePointerType(
                 a->dbg_builder, struct_au, 64, 0, 0,
                 au->context->ident, strlen(au->context->ident));
-            
-            // compute header pointer: a - sizeof(_object)
+
+            // compute header pointer: a - sizeof(_Au)
             LLVMTypeRef ll_i8 = LLVMInt8TypeInContext(a->module_ctx);
             LLVMTypeRef ll_i64 = LLVMInt64TypeInContext(a->module_ctx);
             LLVMValueRef neg_off = LLVMConstInt(ll_i64, (u64)(-(i64)sizeof(struct _Au)), true);
             LLVMValueRef header_ptr = LLVMBuildGEP2(B, ll_i8, param_val, &neg_off, 1, "_au.ptr");
-            
-            // alloca to hold it
+
             LLVMValueRef obj_shadow = LLVMBuildAlloca(B, LLVMTypeOf(header_ptr), "_au.addr");
             LLVMBuildStore(B, header_ptr, obj_shadow);
-            
+
             string n = f(string, "%s_au", name);
             LLVMMetadataRef obj_expr = LLVMDIBuilderCreateExpression(a->dbg_builder, null, 0);
             LLVMMetadataRef obj_var = LLVMDIBuilderCreateAutoVariable(
@@ -357,46 +378,4 @@ void emit_debug_params(aether a, efunc fn) {
         arg_no++;
         llvm_param_idx++;
     }
-}
-
-// emit __au_header(ptr) -> object*  helper for Au-derived classes
-// LLDB users can call: expr __au_header(myobj) to see the _object header
-// this offsets ptr by -sizeof(struct _object) to reach the hidden header
-void emit_au_header_view(aether a) {
-    if (!a->debug || !a->compile_unit) return;
-
-    LLVMContextRef ctx = a->module_ctx;
-    LLVMTypeRef    ptr = LLVMPointerTypeInContext(ctx, 0);
-    LLVMTypeRef    ll_i64 = LLVMInt64TypeInContext(ctx);
-    LLVMTypeRef    ll_i8  = LLVMInt8TypeInContext(ctx);
-
-    // void* __au_header(void* obj)
-    LLVMTypeRef fn_type = LLVMFunctionType(ptr, &ptr, 1, false);
-    LLVMValueRef fn = LLVMAddFunction(a->module_ref, "__au_header", fn_type);
-    LLVMSetLinkage(fn, LLVMExternalLinkage);
-
-    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(ctx, fn, "entry");
-    LLVMBuilderRef hb = LLVMCreateBuilderInContext(ctx);
-    LLVMPositionBuilderAtEnd(hb, entry);
-
-    // get sizeof(struct _object) from the Au type system
-    Au_t au_obj = typeid(Au);
-    u64 obj_size = sizeof(struct _object); // fallback
-    // cast to i8*, subtract sizeof(_object), return
-    LLVMValueRef arg     = LLVMGetParam(fn, 0);
-    LLVMValueRef neg_off = LLVMConstInt(ll_i64, (u64)(-(i64)obj_size), true);
-    LLVMValueRef result  = LLVMBuildGEP2(hb, ll_i8, arg, &neg_off, 1, "header");
-    LLVMBuildRet(hb, result);
-    LLVMDisposeBuilder(hb);
-
-    // attach debug subprogram so LLDB can call it
-    LLVMMetadataRef sr_type = LLVMDIBuilderCreateSubroutineType(
-        a->dbg_builder, a->file, null, 0, LLVMDIFlagZero);
-    symbol n = "__au_header";
-    LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(
-        a->dbg_builder, a->compile_unit,
-        n, strlen(n), n, strlen(n),
-        a->file, 0, sr_type,
-        false, true, 0, LLVMDIFlagZero, false);
-    LLVMSetSubprogram(fn, sp);
 }

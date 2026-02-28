@@ -673,8 +673,6 @@ Au build_init_preamble(enode f, Au arg) {
 void implement_type_id(etype);
 
 void finalize_coverage(silver);
-void emit_au_header_view(silver);
-
 void silver_parse(silver a) {
     efunc init = module_initializer(a);
 
@@ -701,8 +699,6 @@ void silver_parse(silver a) {
     // explicit call to finalize the coverage globals
     finalize_coverage(a);
 
-    // emit LLDB Au header view helper (__au_header)
-    emit_au_header_view(a);
 }
 
 none aether_test_write(aether a);
