@@ -2018,8 +2018,8 @@ bool is_inlay(Au_t m) {
 none Au_hold_members(Au a) {
     Au_t type = isa(a);
     Au head = header(a);
-    if (head->members_held) return;
-    head->members_held = true;
+    if (head->iflags & 0x01) return;
+    head->iflags |= 0x01;
     while (type != typeid(Au)) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t mem = (Au_t)type->members.origin[i];

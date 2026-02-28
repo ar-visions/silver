@@ -149,7 +149,7 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src) {
     // null type → opaque pointer
     if (!src)
         return LLVMDIBuilderCreateBasicType(
-            a->dbg_builder, "ptr", 3, 64, DW_ATE_address, LLVMDIFlagZero);
+            a->dbg_builder, "ptr", 3, pointer_bits(a), DW_ATE_address, LLVMDIFlagZero);
 
     etype et = u(etype, src);
     // for struct/class/pointer/enum types, do NOT use the lldebug cache
@@ -162,7 +162,7 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src) {
     bool is_complex = src->is_struct || src->is_class || src->is_enum ||
                       src->is_pointer || src->is_funcptr ||
                       (src->is_alias && src->src && src->src != src);
-    if (et && et->lldebug)
+    if (!is_complex && et && et->lldebug)
         return et->lldebug;
 
     LLVMMetadataRef result = null;
@@ -185,7 +185,10 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src) {
             result = debug_struct_type(a, src);
         }
         if (result) {
-            if (et) et->lldebug = result;
+            // don't cache pointer-wrapped types on et->lldebug:
+            // debug_struct_type owns that slot for the raw struct.
+            // only cache value-type structs here.
+            if (et && !src->is_class && !src->is_pointer) et->lldebug = result;
             return result;
         }
     }
@@ -194,7 +197,7 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src) {
     if (src->is_pointer) {
         result = debug_pointer_type(a, src);
         if (result) {
-            if (et) et->lldebug = result;
+            // don't stomp the raw struct cache
             return result;
         }
     }
@@ -584,8 +587,14 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au) {
                     DW_ATE_signed, LLVMDIFlagZero);
             }
 
-            u32 m_bits  = bits_for_type(a, msrc);
-            u32 m_align = align_for_type(a, msrc);
+            u32 m_bits, m_align;
+            if (msrc && (msrc->is_class || msrc->is_pointer || msrc->is_funcptr)) {
+                m_bits  = pointer_bits(a);
+                m_align = pointer_bits(a);
+            } else {
+                m_bits  = bits_for_type(a, msrc);
+                m_align = align_for_type(a, msrc);
+            }
             u64 offset_bits = (u64)m->offset * 8;
 
             members[midx++] = LLVMDIBuilderCreateMemberType(
@@ -774,12 +783,18 @@ LLVMMetadataRef debug_au_header_type(aether a, Au_t schema) {
         }
 
         // fallback: use the generic type resolver
-        if (!member_type)
+        if (!member_type) {
             member_type = debug_type_for(a, m->src);
+            if (m->src->is_class) {
+                member_type = LLVMDIBuilderCreatePointerType(
+                    a->dbg_builder, member_type,
+                    ptr_bits, 0, 0, m->ident, strlen(m->ident));
+            }
+        }
 
         if (!member_type) {
             member_type = LLVMDIBuilderCreateBasicType(
-                a->dbg_builder, "ptr", 3, 64,
+                a->dbg_builder, "ptr", 3, pointer_bits(a),
                 DW_ATE_address, LLVMDIFlagZero);
         }
 
@@ -841,7 +856,7 @@ static LLVMMetadataRef debug_object_header_type(aether a, Au_t schema) {
         { "sequence",     32,       DW_ATE_signed,   offsetof(struct _object, sequence) * 8,     false },
         { "alloc",        64,       DW_ATE_signed,   offsetof(struct _object, alloc) * 8,        false },
         { "count",        64,       DW_ATE_signed,   offsetof(struct _object, count) * 8,        false },
-        { "members_held", 8,        DW_ATE_boolean,  offsetof(struct _object, members_held) * 8, false },
+        { "iflags",       32,       DW_ATE_unsigned,  offsetof(struct _object, iflags) * 8,      false },
     };
     int n_fields = sizeof(fields) / sizeof(fields[0]);
 
@@ -1077,7 +1092,15 @@ void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
     // use the proper type for structs/classes rather than opaque pointer
     LLVMMetadataRef di_type = null;
     if (var_type && (var_type->is_struct || var_type->is_class)) {
-        if (var_type->is_class || var_type->is_pointer) {
+        if (var_type == typeid(Au)) {
+            LLVMMetadataRef hdr_di = debug_au_header_type(a, null);
+            if (hdr_di) {
+                di_type = LLVMDIBuilderCreatePointerType(
+                    a->dbg_builder, hdr_di,
+                    pointer_bits(a), 0, 0,
+                    "Au", 2);
+            }
+        } else if (var_type->is_class || var_type->is_pointer) {
             // class types are always accessed through pointers
             LLVMMetadataRef struct_di = debug_struct_type(a, var_type);
             if (struct_di) {
@@ -1107,8 +1130,21 @@ void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
     LLVMMetadataRef expr = LLVMDIBuilderCreateExpression(a->dbg_builder, null, 0);
     LLVMMetadataRef loc  = LLVMDIBuilderCreateDebugLocation(
         a->module_ctx, line, 0, scope, null);
+
+    // dbg_declare requires an alloca (address of storage).
+    // if var->value is already an alloca, use it directly.
+    // otherwise create a shadow alloca to hold the value.
+    LLVMValueRef storage = var->value;
+    if (LLVMGetInstructionOpcode(storage) != LLVMAlloca) {
+        char shadow_name[256];
+        snprintf(shadow_name, sizeof(shadow_name), "%s.dbg", name);
+        LLVMValueRef shadow = LLVMBuildAlloca(B, LLVMTypeOf(storage), shadow_name);
+        LLVMBuildStore(B, storage, shadow);
+        storage = shadow;
+    }
+
     LLVMDIBuilderInsertDeclareRecordAtEnd(
-        a->dbg_builder, var->value, di_var, expr, loc,
+        a->dbg_builder, storage, di_var, expr, loc,
         LLVMGetInsertBlock(B));
 }
 
@@ -1189,7 +1225,7 @@ void emit_debug_params(aether a, efunc fn) {
 
         if (!di_type) {
             di_type = LLVMDIBuilderCreateBasicType(
-                a->dbg_builder, "ptr", 3, 64,
+                a->dbg_builder, "ptr", 3, pointer_bits(a),
                 DW_ATE_address, LLVMDIFlagZero);
         }
 

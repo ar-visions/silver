@@ -605,7 +605,7 @@ forward(any)
     M(AA,BB, i, prop, Au_public, i32,       sequence) \
     M(AA,BB, i, prop, Au_public, i64,       alloc) \
     M(AA,BB, i, prop, Au_public, i64,       count) \
-    M(AA,BB, i, prop, Au_public, bool, members_held) \
+    M(AA,BB, i, prop, Au_public, u32,       iflags) \
     M(AA,BB, i, array, Au_public, Au, 8, meta) \
     M(AA,BB, i, method, public, i32,    compare, AA) \
     M(AA,BB, i, method, public, none,   init) \
@@ -667,7 +667,6 @@ forward(any)
     M(AA,BB, s, method, public, Au,     alloc, Au_t, num, shape, Au_ts) \
     M(AA,BB, s, method, public, Au,     alloc_new, Au_t, num, shape, Au_ts) \
     M(AA,BB, s, method, public, Au,     alloc_dbg, Au_t, num, cstr, i32, i32) \
-    M(AA,BB, s, method, public, Au,     alloc2, Au_t, Au_t, shape) \
     M(AA,BB, s, method, public, string, estring, Au_t, i32) \
     M(AA,BB, s, method, public, i32,    evalue, Au_t, cstr) \
     M(AA,BB, s, method, public, none,   serialize, Au_t, string, Au) \
