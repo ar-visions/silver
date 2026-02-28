@@ -1576,8 +1576,8 @@ declare_class_2(const_string, string)
 
 #define command_module_ Au
 #define command_schema(AA,BB,...) \
-    M(AA,BB, i, method,  public, i32,    exec) \
-    M(AA,BB, i, method,  public, string, run) \
+    M(AA,BB, i, method,  public, i32,    exec, bool) \
+    M(AA,BB, i, method,  public, string, run, bool) \
     M(AA,BB, s, method,  public, i64,    last_pid) \
     M(AA,BB, i, override, ctr,    cstr)
 declare_class_2(command, string)
