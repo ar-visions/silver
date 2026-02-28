@@ -132,102 +132,54 @@ void aether_emit_block_probe(aether a, u32 probe_id) {
                    a->coverage_hit_fn, args, 1, "");
 }
 
+// read clock_gettime(CLOCK_MONOTONIC) and return nanosecond timestamp
+static LLVMValueRef emit_clock_ns(aether a, cstr label) {
+    LLVMTypeRef i64t = LLVMInt64TypeInContext(a->module_ctx);
+    LLVMTypeRef timespec_type = LLVMStructTypeInContext(
+        a->module_ctx, (LLVMTypeRef[]){ i64t, i64t }, 2, false);
+    LLVMValueRef ts = LLVMBuildAlloca(B, timespec_type, label);
+    LLVMBuildCall2(B, a->clock_gettime_type, a->clock_gettime_fn,
+        (LLVMValueRef[]){
+            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 1, 0), ts
+        }, 2, "");
+    LLVMValueRef sec  = LLVMBuildLoad2(B, i64t,
+        LLVMBuildStructGEP2(B, timespec_type, ts, 0, ""), "sec");
+    LLVMValueRef nsec = LLVMBuildLoad2(B, i64t,
+        LLVMBuildStructGEP2(B, timespec_type, ts, 1, ""), "nsec");
+    LLVMValueRef billion = LLVMConstInt(i64t, 1000000000ULL, 0);
+    return LLVMBuildAdd(B, LLVMBuildMul(B, sec, billion, ""), nsec, label);
+}
+
 // emit timing start (returns nanosecond timestamp) - FUNCTION LEVEL ONLY
 static LLVMValueRef emit_func_timing_start(aether a, u32 func_id) {
-    if (!a->timing_enabled) return null;
-    if (a->no_build) return null;
-    
-    // Allocate timespec on stack
-    LLVMTypeRef timespec_type = LLVMStructTypeInContext(
-        a->module_ctx,
-        (LLVMTypeRef[]){
-            LLVMInt64TypeInContext(a->module_ctx),  // tv_sec
-            LLVMInt64TypeInContext(a->module_ctx)   // tv_nsec
-        },
-        2, false
-    );
-    
-    LLVMValueRef ts = LLVMBuildAlloca(B, timespec_type, "ts");
-    
-    // Call clock_gettime(CLOCK_MONOTONIC, &ts)
-    LLVMValueRef args[2] = {
-        LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 1, 0), // CLOCK_MONOTONIC
-        ts
-    };
-    
-    LLVMBuildCall2(B, a->clock_gettime_type, a->clock_gettime_fn, args, 2, "");
-    
-    // Load tv_sec and tv_nsec
-    LLVMValueRef sec_ptr = LLVMBuildStructGEP2(B, timespec_type, ts, 0, "sec_ptr");
-    LLVMValueRef nsec_ptr = LLVMBuildStructGEP2(B, timespec_type, ts, 1, "nsec_ptr");
-    
-    LLVMValueRef sec = LLVMBuildLoad2(B, LLVMInt64TypeInContext(a->module_ctx), sec_ptr, "sec");
-    LLVMValueRef nsec = LLVMBuildLoad2(B, LLVMInt64TypeInContext(a->module_ctx), nsec_ptr, "nsec");
-    
-    // Convert to nanoseconds: sec * 1000000000 + nsec
-    LLVMValueRef billion = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), 1000000000ULL, 0);
-    LLVMValueRef sec_ns = LLVMBuildMul(B, sec, billion, "sec_ns");
-    LLVMValueRef total_ns = LLVMBuildAdd(B, sec_ns, nsec, "start_ns");
-    
-    return total_ns;
+    if (!a->timing_enabled || a->no_build) return null;
+    return emit_clock_ns(a, "start_ns");
 }
 
 // emit timing end and accumulate elapsed time - FUNCTION LEVEL ONLY
 static void emit_func_timing_end(aether a, LLVMValueRef start_ns, u32 func_id) {
-    if (!a->timing_enabled || !start_ns) return;
-    if (a->no_build) return;
-    
-    // Get end timestamp
-    LLVMTypeRef timespec_type = LLVMStructTypeInContext(
-        a->module_ctx,
-        (LLVMTypeRef[]){
-            LLVMInt64TypeInContext(a->module_ctx),
-            LLVMInt64TypeInContext(a->module_ctx)
-        },
-        2, false
-    );
-    
-    LLVMValueRef ts = LLVMBuildAlloca(B, timespec_type, "ts_end");
-    LLVMValueRef args[2] = {
-        LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 1, 0),
-        ts
-    };
-    LLVMBuildCall2(B, a->clock_gettime_type, a->clock_gettime_fn, args, 2, "");
-    
-    LLVMValueRef sec = LLVMBuildLoad2(B, LLVMInt64TypeInContext(a->module_ctx),
-        LLVMBuildStructGEP2(B, timespec_type, ts, 0, ""), "sec");
-    LLVMValueRef nsec = LLVMBuildLoad2(B, LLVMInt64TypeInContext(a->module_ctx),
-        LLVMBuildStructGEP2(B, timespec_type, ts, 1, ""), "nsec");
-    
-    LLVMValueRef billion = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), 1000000000ULL, 0);
-    LLVMValueRef end_ns = LLVMBuildAdd(B,
-        LLVMBuildMul(B, sec, billion, ""),
-        nsec, "end_ns");
-    
+    if (!a->timing_enabled || !start_ns || a->no_build) return;
+
+    LLVMValueRef end_ns  = emit_clock_ns(a, "end_ns");
     LLVMValueRef elapsed = LLVMBuildSub(B, end_ns, start_ns, "elapsed_ns");
-    
+
     // Call runtime: __coverage_record_time(func_id, elapsed_ns)
-    // The runtime maintains the timing array
     if (!a->coverage_record_time_fn) {
         LLVMTypeRef fn_type = LLVMFunctionType(
             LLVMVoidTypeInContext(a->module_ctx),
             (LLVMTypeRef[]){
-                LLVMInt32TypeInContext(a->module_ctx),  // func_id
-                LLVMInt64TypeInContext(a->module_ctx)   // elapsed_ns
-            },
-            2, false
-        );
+                LLVMInt32TypeInContext(a->module_ctx),
+                LLVMInt64TypeInContext(a->module_ctx)
+            }, 2, false);
         a->coverage_record_time_fn = LLVMAddFunction(
-            a->module_ref, "__coverage_record_time", fn_type
-        );
+            a->module_ref, "__coverage_record_time", fn_type);
     }
-    
-    LLVMValueRef record_args[2] = {
-        LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), func_id, 0),
-        elapsed
-    };
     LLVMBuildCall2(B, LLVMGlobalGetValueType(a->coverage_record_time_fn),
-                   a->coverage_record_time_fn, record_args, 2, "");
+                   a->coverage_record_time_fn,
+                   (LLVMValueRef[]){
+                       LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), func_id, 0),
+                       elapsed
+                   }, 2, "");
 }
 
 // this looks leaky, but isnt
@@ -321,6 +273,147 @@ void finalize_coverage(aether a) {
 
 none bp() {
     return;
+}
+
+// --- LLDB/DWARF debug info helpers ---
+
+// emit source location from current token (macro to reduce repetition)
+#define debug_loc_here(a) do { \
+    token __t = aether_peek(a); \
+    if (__t) emit_debug_loc(a, __t->line, __t->column); \
+} while(0)
+
+// get the current debug scope: function subprogram or compile_unit fallback
+static LLVMMetadataRef debug_scope(aether a) {
+    for (int i = len(a->lexical) - 1; i >= 0; i--) {
+        Au_t ctx = (Au_t)a->lexical->origin[i];
+        etype ctx_u = u(etype, ctx);
+        if (ctx_u && ctx_u->llscope)
+            return ctx_u->llscope;
+    }
+    return a->compile_unit;
+}
+
+// set debug source location on the IR builder
+static void emit_debug_loc(aether a, u32 line, u32 column) {
+    if (!a->debug || !a->compile_unit || a->no_build) return;
+    LLVMMetadataRef scope = debug_scope(a);
+    if (!scope) return;
+    LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(
+        a->module_ctx, line, column, scope, null);
+    LLVMSetCurrentDebugLocation2(B, loc);
+}
+
+// create a DISubprogram for a function and attach it
+static void emit_debug_function(aether a, efunc fn) {
+    if (!a->debug || !a->compile_unit) return;
+    Au_t au = fn->au;
+    if (!au->ident) return;
+
+    // source file for this function (use module file)
+    LLVMMetadataRef file_ref = a->file;
+
+    // build subroutine type (we use a void-returning empty type for now;
+    // LLDB infers param types from LLVM IR)
+    LLVMMetadataRef sr_type = LLVMDIBuilderCreateSubroutineType(
+        a->dbg_builder, file_ref, null, 0, LLVMDIFlagZero);
+
+    // determine line; use 0 as fallback (will be updated on first statement)
+    u32 line = 0;
+
+    cstr name = au->alt ? au->alt : au->ident;
+    u32 name_len = strlen(name);
+
+    LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(
+        a->dbg_builder,
+        a->compile_unit,        // scope: compile unit (module-level)
+        name, name_len,         // name
+        name, name_len,         // linkage name
+        file_ref, line,         // file, line
+        sr_type,                // subroutine type
+        false,                  // is local to unit
+        true,                   // is definition
+        line,                   // scope line
+        LLVMDIFlagZero,        // flags
+        false);                 // is optimized
+
+    etype et = (etype)fn;
+    et->llscope = sp;
+
+    // attach the subprogram to the LLVM function value
+    if (fn->value)
+        LLVMSetSubprogram(fn->value, sp);
+}
+
+// emit a DW_TAG_auto_variable for a local or argument
+static void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
+    if (!a->debug || !a->compile_unit || a->no_build) return;
+    if (!var->au || !var->au->ident || !var->value) return;
+    LLVMMetadataRef scope = debug_scope(a);
+    if (!scope) return;
+
+    cstr name     = var->au->ident;
+    u32  name_len = strlen(name);
+
+    // placeholder type; LLDB reads actual type from LLVM IR
+    LLVMMetadataRef di_type = LLVMDIBuilderCreateBasicType(
+        a->dbg_builder, "ptr", 3, 64, 0, LLVMDIFlagZero);
+
+    LLVMMetadataRef di_var = (arg_no > 0)
+        ? LLVMDIBuilderCreateParameterVariable(
+              a->dbg_builder, scope, name, name_len,
+              arg_no, a->file, line, di_type, false, LLVMDIFlagZero)
+        : LLVMDIBuilderCreateAutoVariable(
+              a->dbg_builder, scope, name, name_len,
+              a->file, line, di_type, false, LLVMDIFlagZero, 0);
+
+    LLVMMetadataRef expr = LLVMDIBuilderCreateExpression(a->dbg_builder, null, 0);
+    LLVMMetadataRef loc  = LLVMDIBuilderCreateDebugLocation(
+        a->module_ctx, line, 0, scope, null);
+    LLVMDIBuilderInsertDeclareAtEnd(
+        a->dbg_builder, var->value, di_var, expr, loc,
+        LLVMGetInsertBlock(B));
+}
+
+// emit __au_header(ptr) -> object*  helper for Au-derived classes
+// LLDB users can call: expr __au_header(myobj) to see the _object header
+// this offsets ptr by -sizeof(struct _object) to reach the hidden header
+void emit_au_header_view(aether a) {
+    if (!a->debug || !a->compile_unit) return;
+
+    LLVMContextRef ctx = a->module_ctx;
+    LLVMTypeRef    ptr = LLVMPointerTypeInContext(ctx, 0);
+    LLVMTypeRef    i64 = LLVMInt64TypeInContext(ctx);
+    LLVMTypeRef    i8  = LLVMInt8TypeInContext(ctx);
+
+    // void* __au_header(void* obj)
+    LLVMTypeRef fn_type = LLVMFunctionType(ptr, &ptr, 1, false);
+    LLVMValueRef fn = LLVMAddFunction(a->module_ref, "__au_header", fn_type);
+    LLVMSetLinkage(fn, LLVMExternalLinkage);
+
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(ctx, fn, "entry");
+    LLVMBuilderRef hb = LLVMCreateBuilderInContext(ctx);
+    LLVMPositionBuilderAtEnd(hb, entry);
+
+    // get sizeof(struct _object) from the Au type system
+    Au_t au_obj = typeid(Au);
+    u64 obj_size = au_obj->value ? sizeof(struct _object) : 128; // fallback
+    // cast to i8*, subtract sizeof(_object), return
+    LLVMValueRef arg     = LLVMGetParam(fn, 0);
+    LLVMValueRef neg_off = LLVMConstInt(i64, (u64)(-(i64)obj_size), true);
+    LLVMValueRef result  = LLVMBuildGEP2(hb, i8, arg, &neg_off, 1, "header");
+    LLVMBuildRet(hb, result);
+    LLVMDisposeBuilder(hb);
+
+    // attach debug subprogram so LLDB can call it
+    LLVMMetadataRef sr_type = LLVMDIBuilderCreateSubroutineType(
+        a->dbg_builder, a->file, null, 0, LLVMDIFlagZero);
+    LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(
+        a->dbg_builder, a->compile_unit,
+        "__au_header", 13, "__au_header", 13,
+        a->file, 0, sr_type,
+        false, true, 0, LLVMDIFlagZero, false);
+    LLVMSetSubprogram(fn, sp);
 }
 
 etype etype_copy(etype mem) {
@@ -465,6 +558,9 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
     a->is_const_op = false;
     if (a->no_build)
         return e_noop(a, null);
+
+    // set debug location for assignment
+    debug_loc_here(a);
 
     validate(op_val >= OPType__bind && op_val <= OPType__assign_xor,
         "invalid assignment operator");
@@ -1714,6 +1810,9 @@ bool aether_e_fn_return(aether a, Au o) {
     catcher cat = context_catcher(a);
 
     if (a->no_build) return cat && cat->rtype;
+
+    // set debug location for return statement
+    debug_loc_here(a);
     
     if (cat && cat->rtype) {
         enode conv = e_create(a, cat->rtype, o);
@@ -1902,11 +2001,14 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     bool funcptr = is_func_ptr((Au)fn);
     if (!funcptr && !fn->used)
          fn->used = true;
-    
+
     Au_t au = fn->au;
 
-    a->is_const_op = false; 
+    a->is_const_op = false;
     if (a->no_build) return e_noop(a, u(etype, fn->au->rtype));
+
+    // set debug location for call site
+    debug_loc_here(a);
 
     etype_implement((etype)fn);
     
@@ -3242,6 +3344,9 @@ enode aether_e_native_switch(
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, null);
 
+    // set debug location for switch
+    debug_loc_here(a);
+
     LLVMTypeRef       Ty    = LLVMTypeOf(switch_val->value);
     LLVMBasicBlockRef entry = LLVMGetInsertBlock(B);
     LLVMValueRef      fn    = LLVMGetBasicBlockParent(entry);
@@ -3339,6 +3444,9 @@ enode aether_e_switch(
         subprocedure    expr_builder,
         subprocedure    body_builder)
 {
+    // set debug location for switch
+    debug_loc_here(a);
+
     LLVMValueRef entry = LLVMGetBasicBlockParent(LLVMGetInsertBlock(B));
     //LLVMBasicBlockRef entry = LLVMGetInsertBlock(B);
 
@@ -3427,6 +3535,9 @@ enode aether_e_for(aether a,
 {
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, null);
+
+    // set debug location for loop entry
+    debug_loc_here(a);
 
     LLVMBasicBlockRef entry = LLVMGetInsertBlock(B);
     LLVMValueRef      fn    = LLVMGetBasicBlockParent(entry);
@@ -3591,6 +3702,9 @@ enode aether_e_if_else(
     subprocedure cond_builder,
     subprocedure expr_builder)
 {
+    // set debug location for if/else entry
+    debug_loc_here(a);
+
     u32 ln_conds = (u32)len(conds);
 
     // if the parser stored a final `el` as an empty condition entry,
@@ -4698,6 +4812,8 @@ none etype_implement(etype t) {
                 char id[256];
                 snprintf(id, 256, "evar_%s", au->ident ? au->ident : "");
                 n->value = LLVMBuildAlloca(B, type, id);
+                // declare local variable for debugger
+                emit_debug_variable(a, n, 0, 0);
             }
         } else if (is_func(au->context)) {
             verify(n->value, "expected evar to be set for arg");
@@ -4932,8 +5048,12 @@ none etype_implement(etype t) {
 
         bool global_public_fn = (is_module(au->context) && au->access_type != interface_intern);
         LLVMSetLinkage(fn->value,
-            !global_public_fn && is_user_implement && !au->is_export ? 
+            !global_public_fn && is_user_implement && !au->is_export ?
                 LLVMInternalLinkage : LLVMExternalLinkage);
+
+        // attach DWARF subprogram for debugger (breakpoints, stack frames)
+        if (is_user_implement)
+            emit_debug_function(a, fn);
 
         int index = 0;
         arg_list(fn->au, arg) {
@@ -5446,9 +5566,10 @@ none aether_push_scope(aether a, Au arg) {
         push(a->lexical, (Au)au);
 
     statements st = u(statements, au);
-    if (st && a->coverage && aether_peek(a)) {
+    token peek = aether_peek(a);
+    if (st && a->coverage && peek) {
         st->probe_id   = a->next_probe_id++;
-        st->probe_line = aether_peek(a)->line;
+        st->probe_line = peek->line;
         aether_emit_block_probe(a, st->probe_id);
     }
 
@@ -5456,11 +5577,18 @@ none aether_push_scope(aether a, Au arg) {
     if (fn && isa(fn) == typeid(efunc) && (fn != prev_fn) && !a->no_build) {
         LLVMPositionBuilderAtEnd(B, fn->entry);
         LLVMSetCurrentDebugLocation2(B, fn->last_dbg);
+        // set initial debug location for function entry
+        if (a->debug && peek)
+            emit_debug_loc(a, peek->line, peek->column);
         if (a->timing_enabled && !fn->timing_start_value) {
             fn->timing_func_id = a->next_func_id++;
             fn->timing_start_value = emit_func_timing_start(a, fn->timing_func_id);
         }
     }
+
+    // emit debug location for every statements block entry
+    if (a->debug && peek && !a->no_build)
+        emit_debug_loc(a, peek->line, peek->column);
 }
 
 etype get_type_t_ptr(etype t);
@@ -5668,10 +5796,14 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
 
     path c = path_cwd();
 
+    // finalize DWARF debug info before emitting
+    if (a->debug && a->dbg_builder)
+        LLVMDIBuilderFinalize(a->dbg_builder);
+
     *ll = form(path, "%o/%s/%o.ll", a->install, a->debug ? "debug" : "release", a);
     *bc = form(path, "%o/%s/%o.bc", a->install, a->debug ? "debug" : "release", a);
 
-    bool validation_error = false; 
+    bool validation_error = false;
     verify (!LLVMPrintModuleToFile(a->module_ref, cstring(*ll),      &err), "print-to-module");
     validation_error  = LLVMVerifyModule(a->module_ref, LLVMReturnStatusAction, &err);
     validation_error |= LLVMVerifyModule(a->module_ref, LLVMPrintMessageAction, &err);
@@ -5735,12 +5867,18 @@ void aether_reinit_startup(aether a) {
     a->file = LLVMDIBuilderCreateFile(a->dbg_builder, a->name->chars, len(a->name), rel->chars, len(rel));
 
     a->target_data = LLVMCreateTargetDataLayout(a->target_machine);
-    // todo: add debug back in using reference backup version
-    /*a->compile_unit = LLVMDIBuilderCreateCompileUnit(
-        a->dbg_builder, LLVMDWARFSourceLanguageC, a->file,
-        "silver", 6, 0, "", 0,
-        0, "", 0, LLVMDWARFEmissionFull, 0, 0, 0, "", 0, "", 0);
-    a->au->llscope = a->compile_unit;*/
+    if (a->debug) {
+        a->compile_unit = LLVMDIBuilderCreateCompileUnit(
+            a->dbg_builder, LLVMDWARFSourceLanguageC, a->file,
+            "silver", 6, 0, "", 0,
+            0, "", 0, LLVMDWARFEmissionFull, 0, 0, 0, "", 0, "", 0);
+        LLVMAddModuleFlag(a->module_ref, LLVMModuleFlagBehaviorWarning,
+            "Debug Info Version", 18,
+            LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 3, 0)));
+        LLVMAddModuleFlag(a->module_ref, LLVMModuleFlagBehaviorWarning,
+            "Dwarf Version", 13,
+            LLVMValueAsMetadata(LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 4, 0)));
+    }
     B = LLVMCreateBuilderInContext(a->module_ctx);
 
     init_coverage(a);
