@@ -5171,6 +5171,10 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
     if (op_val == OPType__assign_add) {
         op_val = op_val;
     }
+    if (mem->au->ident && strcmp(mem->au->ident, "head") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
     enode result = e_assign(a, mem, (Au)R, op_val);
     mem->au->is_assigned = true;
     return mem;

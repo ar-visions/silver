@@ -118,7 +118,7 @@ typedef struct _object {
     i32             sequence;
     i64             alloc;
     i64             count;
-    bool            members_held;
+    u32             iflags;
     struct _object* meta[8];
     struct _object* f;
 } *object;
