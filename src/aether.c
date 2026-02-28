@@ -5743,9 +5743,9 @@ none aether_push_scope(aether a, Au arg) {
     if (fn && isa(fn) == typeid(efunc) && (fn != prev_fn) && !a->no_build) {
         LLVMPositionBuilderAtEnd(B, fn->entry);
         LLVMSetCurrentDebugLocation2(B, fn->last_dbg);
-        // set initial debug location for function entry
-        if (a->debug && peek)
-            emit_debug_loc(a, peek->line, peek->column);
+        // set debug location: source token if available, line 0 for generated code
+        if (a->debug)
+            emit_debug_loc(a, peek ? peek->line : 0, peek ? peek->column : 0);
         // emit parameter debug variables (self, args) for LLDB locals view
         emit_debug_params(a, fn);
         if (a->timing_enabled && !fn->timing_start_value) {
@@ -5755,8 +5755,8 @@ none aether_push_scope(aether a, Au arg) {
     }
 
     // emit debug location for every statements block entry
-    if (a->debug && peek && !a->no_build)
-        emit_debug_loc(a, peek->line, peek->column);
+    if (a->debug && !a->no_build)
+        emit_debug_loc(a, peek ? peek->line : 0, peek ? peek->column : 0);
 }
 
 etype get_type_t_ptr(etype t);
