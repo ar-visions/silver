@@ -140,13 +140,7 @@ static symbol shared   = "-dynamiclib";
 #define next_is(a, ...) silver_next_is_eq(a, __VA_ARGS__, null)
 
 
-static string symbol_name(Au obj) {
-    string n = copy(cast(string, obj));
-    for (int i = 0; i < n->count; i++)
-        if (n->chars[i] == '-')
-            n->chars[i] = '_';
-    return n;
-}
+string symbol_name(Au obj);
 
 static bool is_dbg(import t, string query, cstr name, bool is_remote) {
     cstr dbg = (cstr)query->chars; // getenv("DBG");
@@ -379,11 +373,15 @@ string model_keyword() {
     return null;
 }
 
+// orbiter could build silver in this way from .c
+// importing 
+#ifndef BUILD_LIBRARY
 int main(int argc, cstrs argv) {
     engage(argv);
     silver a = silver(argv);
     return 0;
 }
+#endif
 
 typedef struct {
     OPType ops[3];
@@ -782,6 +780,10 @@ static void exporter(silver a) {
     }
 }
 
+
+void llvm_reinit(silver);
+void aether_reinit_startup(aether);
+
 // im a module!
 void silver_init(silver a) {
     hold(a);
@@ -823,6 +825,8 @@ void silver_init(silver a) {
     a->module_path = hold(a->module);
     a->module_file  = f(path, "%o/%o.ag",
         a->module, stem(a->module));
+
+    aether_reinit_startup((aether)a);
 
     // 1ms resolution time comparison (it could be nano-second based)
     bool update_product = true;
@@ -942,8 +946,33 @@ void silver_init(silver a) {
             }
 
             build(a);
-
             exporter(a);
+
+            if (a->run) {
+                string arg_str = string(alloc, 32);
+                /* we should stop any previous run we had prior above?
+                each(a->run, arg) {
+                    string ar = cast(string, arg);
+                    if (len(args_str))
+                        append(args_str, " ");
+                    concat(args_str, ar);
+                }*/
+
+                // i want just raw unix api to run this
+                //string run = f(string, "%o %o", a->product, args);
+
+
+                int argc = len(a->run) + 2;
+                char** argv = calloc(argc, sizeof(char*));
+                argv[0] = a->product->chars;
+                int i = 1;
+                each(a->run, Au, arg) {
+                    argv[i++] = cast(string, arg)->chars;
+                }
+                argv[i] = NULL; // Brannigans law
+                execvp(argv[0], argv);
+                //_exit(1);
+            }
         }
         on_error() {
             mtime = current_time();
