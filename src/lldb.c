@@ -143,13 +143,25 @@ static int count_all_methods(Au_t type_au) {
 LLVMMetadataRef debug_type_for(aether a, Au_t src) {
     if (!a->debug || !a->compile_unit) return null;
 
+    if (src && src->ident && strcmp(src->ident, "shape") == 0)
+        src = src;
+
     // null type → opaque pointer
     if (!src)
         return LLVMDIBuilderCreateBasicType(
             a->dbg_builder, "ptr", 3, 64, DW_ATE_address, LLVMDIFlagZero);
 
-    // check for cached debug type
     etype et = u(etype, src);
+    // for struct/class/pointer/enum types, do NOT use the lldebug cache
+    // directly here because debug_struct_type caches the raw composite type
+    // in lldebug, but debug_type_for may need to wrap it in a pointer for
+    // class types.  those helpers have their own internal caching.
+    //
+    // only use lldebug cache for primitive / basic types that are cached
+    // below by this function.
+    bool is_complex = src->is_struct || src->is_class || src->is_enum ||
+                      src->is_pointer || src->is_funcptr ||
+                      (src->is_alias && src->src && src->src != src);
     if (et && et->lldebug)
         return et->lldebug;
 
@@ -440,6 +452,9 @@ LLVMMetadataRef debug_enum_type(aether a, Au_t type_au) {
 LLVMMetadataRef debug_struct_type(aether a, Au_t type_au) {
     if (!a->debug || !a->compile_unit) return null;
     if (!type_au || !type_au->ident) return null;
+
+    if (type_au->ident && strcmp(type_au->ident, "shape") == 0)
+        type_au = type_au;
 
     // use lldebug as cache
     etype et = u(etype, type_au);
@@ -756,71 +771,6 @@ LLVMMetadataRef debug_au_header_type(aether a, Au_t schema) {
             member_type = LLVMDIBuilderCreatePointerType(
                 a->dbg_builder, schema_struct,
                 ptr_bits, 0, 0, sname, strlen(sname));
-        }
-        // for `context`: the parent type in the inheritance chain
-        // resolve to schema struct pointer for navigation in debugger
-        else if (schema_struct && m->ident && strcmp(m->ident, "context") == 0) {
-            Au_t parent = schema->context;
-            if (parent && parent != typeid(Au)) {
-                LLVMMetadataRef parent_di = debug_struct_type(a, parent);
-                if (parent_di) {
-                    cstr pname = parent->ident ? parent->ident : "context";
-                    member_type = LLVMDIBuilderCreatePointerType(
-                        a->dbg_builder, parent_di,
-                        ptr_bits, 0, 0, pname, strlen(pname));
-                }
-            }
-        }
-        // for `schema`: the schema type descriptor
-        else if (schema_struct && m->ident && strcmp(m->ident, "schema") == 0) {
-            if (schema->schema) {
-                LLVMMetadataRef schema_schema_di = debug_struct_type(a, schema->schema);
-                if (schema_schema_di) {
-                    cstr ssn = schema->schema->ident ? schema->schema->ident : "schema";
-                    member_type = LLVMDIBuilderCreatePointerType(
-                        a->dbg_builder, schema_schema_di,
-                        ptr_bits, 0, 0, ssn, strlen(ssn));
-                }
-            }
-        }
-        // for `module`: the owning module type
-        else if (schema_struct && m->ident && strcmp(m->ident, "module") == 0) {
-            if (schema->module) {
-                LLVMMetadataRef mod_di = debug_struct_type(a, schema->module);
-                if (mod_di) {
-                    cstr mn = schema->module->ident ? schema->module->ident : "module";
-                    member_type = LLVMDIBuilderCreatePointerType(
-                        a->dbg_builder, mod_di,
-                        ptr_bits, 0, 0, mn, strlen(mn));
-                }
-            }
-        }
-        // for `src` (aliased as rtype/type in union): the source/return type
-        else if (schema_struct && m->ident && strcmp(m->ident, "src") == 0) {
-            if (schema->src) {
-                LLVMMetadataRef src_di = debug_struct_type(a, schema->src);
-                if (src_di) {
-                    cstr sn = schema->src->ident ? schema->src->ident : "src";
-                    member_type = LLVMDIBuilderCreatePointerType(
-                        a->dbg_builder, src_di,
-                        ptr_bits, 0, 0, sn, strlen(sn));
-                }
-            }
-        }
-        // for `scalar`: scalar type (Au_t)
-        else if (schema_struct && m->ident && strcmp(m->ident, "scalar") == 0) {
-            member_type = au_field_pointer_type(a, m->src, schema, schema_struct, "scalar");
-        }
-        // for `data`: pointer to user instance data
-        else if (schema_struct && m->ident && strcmp(m->ident, "data") == 0) {
-            cstr dn = schema->ident ? schema->ident : "data";
-            member_type = LLVMDIBuilderCreatePointerType(
-                a->dbg_builder, schema_struct,
-                ptr_bits, 0, 0, dn, strlen(dn));
-        }
-        // for `ptr`: cached pointer-to-this type (Au_t)
-        else if (schema_struct && m->ident && strcmp(m->ident, "ptr") == 0) {
-            member_type = au_field_pointer_type(a, m->src, schema, schema_struct, "ptr");
         }
 
         // fallback: use the generic type resolver
