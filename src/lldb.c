@@ -148,9 +148,19 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src) {
         return LLVMDIBuilderCreateBasicType(
             a->dbg_builder, "ptr", 3, 64, DW_ATE_address, LLVMDIFlagZero);
 
-    // check for cached debug type
     etype et = u(etype, src);
-    if (et && et->lldebug)
+
+    // for struct/class/pointer/enum types, do NOT use the lldebug cache
+    // directly here because debug_struct_type caches the raw composite type
+    // in lldebug, but debug_type_for may need to wrap it in a pointer for
+    // class types.  those helpers have their own internal caching.
+    //
+    // only use lldebug cache for primitive / basic types that are cached
+    // below by this function.
+    bool is_complex = src->is_struct || src->is_class || src->is_enum ||
+                      src->is_pointer || src->is_funcptr ||
+                      (src->is_alias && src->src && src->src != src);
+    if (!is_complex && et && et->lldebug)
         return et->lldebug;
 
     LLVMMetadataRef result = null;
@@ -158,10 +168,8 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src) {
     // enum types → proper enumeration
     if (src->is_enum) {
         result = debug_enum_type(a, src);
-        if (result) {
-            if (et) et->lldebug = result;
+        if (result)
             return result;
-        }
         // fall through to basic unsigned if enum emission failed
     }
 
@@ -172,37 +180,29 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src) {
         } else {
             result = debug_struct_type(a, src);
         }
-        if (result) {
-            if (et) et->lldebug = result;
+        if (result)
             return result;
-        }
     }
 
     // pointer types → pointer to pointee
     if (src->is_pointer) {
         result = debug_pointer_type(a, src);
-        if (result) {
-            if (et) et->lldebug = result;
+        if (result)
             return result;
-        }
     }
 
     // function pointer types
     if (src->is_funcptr) {
         result = debug_funcptr_type(a, src);
-        if (result) {
-            if (et) et->lldebug = result;
+        if (result)
             return result;
-        }
     }
 
     // alias types → typedef
     if (src->is_alias && src->src && src->src != src) {
         result = debug_typedef_type(a, src);
-        if (result) {
-            if (et) et->lldebug = result;
+        if (result)
             return result;
-        }
     }
 
     // boolean type
@@ -536,8 +536,12 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au) {
                     a->dbg_builder, fwd_decl,
                     pointer_bits(a), 0, 0,
                     struct_name, name_len);
-            } else if (msrc && (msrc->is_class || msrc->is_pointer)) {
-                // pointer/class member: build pointer to the target type
+            } else if (msrc && msrc->is_struct && m->is_inlay) {
+                // inlined struct (AU_TRAIT_INLAY): build composite directly
+                member_di = debug_struct_type(a, msrc);
+            } else if (msrc && (msrc->is_class || msrc->is_pointer ||
+                       (msrc->is_struct && !m->is_inlay))) {
+                // pointer/class/non-inlay-struct member: emit as pointer
                 LLVMMetadataRef target_di = null;
                 Au_t real_target = msrc->is_pointer ? msrc->src : msrc;
                 if (real_target && (real_target->is_struct || real_target->is_class)) {
@@ -553,9 +557,6 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au) {
                     a->dbg_builder, target_di,
                     pointer_bits(a), 0, 0,
                     ptr_name, strlen(ptr_name));
-            } else if (msrc && msrc->is_struct && !msrc->is_pointer) {
-                // inlined struct: build its composite type directly
-                member_di = debug_struct_type(a, msrc);
             } else if (msrc && msrc->is_enum) {
                 member_di = debug_enum_type(a, msrc);
             } else {
@@ -569,8 +570,12 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au) {
                     DW_ATE_signed, LLVMDIFlagZero);
             }
 
-            u32 m_bits  = bits_for_type(a, msrc);
-            u32 m_align = align_for_type(a, msrc);
+            // for pointer/class members (non-inlay), the member occupies
+            // pointer-sized space, not the full struct size
+            bool is_ptr_member = msrc && (msrc->is_class || msrc->is_pointer ||
+                                 (msrc->is_struct && !m->is_inlay));
+            u32 m_bits  = is_ptr_member ? pointer_bits(a) : bits_for_type(a, msrc);
+            u32 m_align = is_ptr_member ? pointer_bits(a) : align_for_type(a, msrc);
             u64 offset_bits = (u64)m->offset * 8;
 
             members[midx++] = LLVMDIBuilderCreateMemberType(
