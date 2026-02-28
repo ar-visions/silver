@@ -8,6 +8,8 @@ import test3
 import ai
 
 app test-app
+    a_param:int 2
     func init [] -> none
-        puts 'returned {'something {'inside another'}'}'
+        #head : header[ a ]
+        puts 'this runs? {'something {'inside another'}'}'
 

@@ -2,18 +2,22 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name":       "silver88",
+            "name":       "silver 0.88",
             "type":       "lldb",
             "request":    "launch",
             "preLaunchTask": "build-silver-ninja",
             "program":    "${workspaceFolder}/install/bin/silver",
-            "args":     [ "--module", "${workspaceFolder}/foundation/test-app", "--debug" ],
+            "args":     [ "--module", "${workspaceFolder}/foundation/test-app", "--debug", "--run" ],
             "cwd":        "${workspaceFolder}",
+            "stopOnEntry": false,
             "env":      {
                 "LD_LIBRARY_PATH":"${workspaceFolder}/install/lib",
                 "IMPORT":  "${workspaceFolder}/install",
                 "ASAN_OPTIONS": "detect_leaks=0"
-            }
+            },
+            "initCommands": [
+                "settings set target.process.stop-on-exec false"
+            ]
         },
         {
             "name":       "test-app",
