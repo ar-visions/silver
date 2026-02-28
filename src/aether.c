@@ -473,7 +473,7 @@ static void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
     LLVMMetadataRef expr = LLVMDIBuilderCreateExpression(a->dbg_builder, null, 0);
     LLVMMetadataRef loc  = LLVMDIBuilderCreateDebugLocation(
         a->module_ctx, line, 0, scope, null);
-    LLVMDIBuilderInsertDeclareAtEnd(
+    LLVMDIBuilderInsertDeclareRecordAtEnd(
         a->dbg_builder, var->value, di_var, expr, loc,
         LLVMGetInsertBlock(B));
 }
@@ -532,7 +532,7 @@ static void emit_debug_params(aether a, efunc fn) {
         LLVMMetadataRef expr = LLVMDIBuilderCreateExpression(a->dbg_builder, null, 0);
         LLVMMetadataRef loc  = LLVMDIBuilderCreateDebugLocation(
             a->module_ctx, 0, 0, scope, null);
-        LLVMDIBuilderInsertDeclareAtEnd(
+        LLVMDIBuilderInsertDeclareRecordAtEnd(
             a->dbg_builder, shadow, di_param, expr, loc,
             LLVMGetInsertBlock(B));
 
@@ -549,8 +549,8 @@ void emit_au_header_view(aether a) {
 
     LLVMContextRef ctx = a->module_ctx;
     LLVMTypeRef    ptr = LLVMPointerTypeInContext(ctx, 0);
-    LLVMTypeRef    i64 = LLVMInt64TypeInContext(ctx);
-    LLVMTypeRef    i8  = LLVMInt8TypeInContext(ctx);
+    LLVMTypeRef    ll_i64 = LLVMInt64TypeInContext(ctx);
+    LLVMTypeRef    ll_i8  = LLVMInt8TypeInContext(ctx);
 
     // void* __au_header(void* obj)
     LLVMTypeRef fn_type = LLVMFunctionType(ptr, &ptr, 1, false);
@@ -563,20 +563,21 @@ void emit_au_header_view(aether a) {
 
     // get sizeof(struct _object) from the Au type system
     Au_t au_obj = typeid(Au);
-    u64 obj_size = au_obj->value ? sizeof(struct _object) : 128; // fallback
+    u64 obj_size = sizeof(struct _object); // fallback
     // cast to i8*, subtract sizeof(_object), return
     LLVMValueRef arg     = LLVMGetParam(fn, 0);
-    LLVMValueRef neg_off = LLVMConstInt(i64, (u64)(-(i64)obj_size), true);
-    LLVMValueRef result  = LLVMBuildGEP2(hb, i8, arg, &neg_off, 1, "header");
+    LLVMValueRef neg_off = LLVMConstInt(ll_i64, (u64)(-(i64)obj_size), true);
+    LLVMValueRef result  = LLVMBuildGEP2(hb, ll_i8, arg, &neg_off, 1, "header");
     LLVMBuildRet(hb, result);
     LLVMDisposeBuilder(hb);
 
     // attach debug subprogram so LLDB can call it
     LLVMMetadataRef sr_type = LLVMDIBuilderCreateSubroutineType(
         a->dbg_builder, a->file, null, 0, LLVMDIFlagZero);
+    symbol n = "__au_header";
     LLVMMetadataRef sp = LLVMDIBuilderCreateFunction(
         a->dbg_builder, a->compile_unit,
-        "__au_header", 13, "__au_header", 13,
+        n, strlen(n), n, strlen(n),
         a->file, 0, sr_type,
         false, true, 0, LLVMDIFlagZero, false);
     LLVMSetSubprogram(fn, sp);
