@@ -497,9 +497,9 @@ static void emit_debug_params(aether a, efunc fn) {
     arg_list(au, arg) {
         if (!arg->ident) { arg_no++; llvm_param_idx++; continue; }
 
-        // for the self/target param of instance methods, use "self" name
+        // for the instance target param, use "a" (Au convention)
         bool is_target = (au->is_imethod && arg_no == 1);
-        cstr name      = is_target ? "self" : arg->ident;
+        cstr name      = is_target ? "a" : arg->ident;
         u32  name_len  = strlen(name);
 
         // build DI type: for self use struct pointer type if available
