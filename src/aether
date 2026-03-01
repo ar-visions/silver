@@ -131,8 +131,6 @@ forward(evar)
     M(X, Y, i, prop,     public,  callback,                 parse_enode) \
     M(X, Y, i, prop,     public,  callback,                 parse_expr) \
     M(X, Y, i, prop,     public,  callback_extra,           read_etype) \
-    M(X, Y, i, prop,     intern,  LLVMValueRef,             coverage_hit_fn,         as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMValueRef,             coverage_record_time_fn, as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMTypeRef,              func_timing_lltype,      as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMValueRef,             func_timings_global,     as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMTypeRef,              clock_gettime_type,      as, ARef) \

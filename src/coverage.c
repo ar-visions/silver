@@ -51,27 +51,53 @@ typedef struct _coverage_module {
 
 
 
+void emit_coverage_register(aether a) {
+    if ((!a->coverage && !a->timing_enabled) || a->no_build) return;
+
+    LLVMTypeRef fn_type = LLVMFunctionType(
+        LLVMVoidTypeInContext(a->module_ctx),
+        (LLVMTypeRef[]){
+            LLVMPointerTypeInContext(a->module_ctx, 0),
+            LLVMInt32TypeInContext(a->module_ctx),
+            LLVMPointerTypeInContext(a->module_ctx, 0),
+            LLVMInt32TypeInContext(a->module_ctx)
+        }, 4, false);
+    LLVMValueRef coverage_register_fn = LLVMAddFunction(
+        a->module_ref, "__coverage_register", fn_type);
+
+    LLVMValueRef timings = a->func_timings_global
+        ? a->func_timings_global
+        : LLVMConstNull(LLVMPointerTypeInContext(a->module_ctx, 0));
+    LLVMBuildCall2(B, LLVMGlobalGetValueType(coverage_register_fn),
+        coverage_register_fn,
+        (LLVMValueRef[]){
+            a->coverage_probes_global,
+            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), a->next_probe_id, 0),
+            timings,
+            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), a->next_func_id, 0)
+        }, 4, "");
+}
+
 // emit probe when entering a statements block
 // called from statements initialization or push_scope
 void aether_emit_block_probe(aether a, u32 probe_id) {
     if (!a->coverage) return;
     if (a->no_build) return;
-    
-    // Lazily declare the runtime function (must be set to zero on reinit)
-    if (!a->coverage_hit_fn) {
-        LLVMTypeRef fn_type = LLVMFunctionType(
-            LLVMVoidTypeInContext(a->module_ctx),
-            (LLVMTypeRef[]){ LLVMInt32TypeInContext(a->module_ctx) },
-            1, false);
-        a->coverage_hit_fn = LLVMAddFunction(
-            a->module_ref, "__coverage_hit", fn_type);
-    }
-    
-    LLVMValueRef args[1] = {
-        LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), probe_id, 0)
-    };
-    LLVMBuildCall2(B, LLVMGlobalGetValueType(a->coverage_hit_fn),
-                   a->coverage_hit_fn, args, 1, "");
+
+
+    // in aether_emit_block_probe, instead of calling __coverage_hit:
+
+    LLVMValueRef gep = LLVMBuildGEP2(B, 
+        LLVMGlobalGetValueType(a->coverage_probes_global),
+        a->coverage_probes_global,
+        (LLVMValueRef[]){
+            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 0, 0),
+            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), probe_id, 0)
+        }, 2, "probe_ptr");
+    LLVMValueRef cur = LLVMBuildLoad2(B, LLVMInt64TypeInContext(a->module_ctx), gep, "probe_val");
+    LLVMValueRef inc = LLVMBuildAdd(B, cur, 
+        LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), 1, 0), "probe_inc");
+    LLVMBuildStore(B, inc, gep);
 }
 
 // read clock_gettime(CLOCK_MONOTONIC) and return nanosecond timestamp
@@ -106,22 +132,17 @@ void emit_func_timing_end(aether a, LLVMValueRef start_ns, u32 func_id) {
     LLVMValueRef elapsed = LLVMBuildSub(B, end_ns, start_ns, "elapsed_ns");
 
     // Call runtime: __coverage_record_time(func_id, elapsed_ns)
-    if (!a->coverage_record_time_fn) {
-        LLVMTypeRef fn_type = LLVMFunctionType(
-            LLVMVoidTypeInContext(a->module_ctx),
-            (LLVMTypeRef[]){
-                LLVMInt32TypeInContext(a->module_ctx),
-                LLVMInt64TypeInContext(a->module_ctx)
-            }, 2, false);
-        a->coverage_record_time_fn = LLVMAddFunction(
-            a->module_ref, "__coverage_record_time", fn_type);
-    }
-    LLVMBuildCall2(B, LLVMGlobalGetValueType(a->coverage_record_time_fn),
-                   a->coverage_record_time_fn,
-                   (LLVMValueRef[]){
-                       LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), func_id, 0),
-                       elapsed
-                   }, 2, "");
+    // replace emit_func_timing_end's call with inline store:
+    LLVMValueRef gep = LLVMBuildGEP2(B,
+        LLVMGlobalGetValueType(a->func_timings_global),
+        a->func_timings_global,
+        (LLVMValueRef[]){
+            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 0, 0),
+            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), func_id, 0)
+        }, 2, "timing_ptr");
+    LLVMValueRef cur = LLVMBuildLoad2(B, LLVMInt64TypeInContext(a->module_ctx), gep, "timing_val");
+    LLVMValueRef sum = LLVMBuildAdd(B, cur, elapsed, "timing_sum");
+    LLVMBuildStore(B, sum, gep);
 }
 
 // this looks leaky, but isnt
@@ -143,24 +164,41 @@ void report_coverage(aether a) {
 
 // this works fine when re-initializing
 void init_coverage(aether a) {
-    if (!a->coverage) return;
+    if (!a->coverage && !a->timing_enabled) return;
     
-    // Coverage probe struct: { u64 hit_count, u32 line, u16 column, u16 _pad }
-    a->coverage_probe_lltype = LLVMStructTypeInContext(
-        a->module_ctx,
-        (LLVMTypeRef[]){
-            LLVMInt64TypeInContext(a->module_ctx),  // hit_count
-            LLVMInt32TypeInContext(a->module_ctx),  // line
-            LLVMInt16TypeInContext(a->module_ctx),  // column
-            LLVMInt16TypeInContext(a->module_ctx)   // _pad
-        },
-        4, false
-    );
-    
+    if (a->coverage) {
+        #define MAX_PROBES 4096
+        LLVMTypeRef array_type = LLVMArrayType(LLVMInt64TypeInContext(a->module_ctx), MAX_PROBES);
+        a->coverage_probes_global = LLVMAddGlobal(a->module_ref, array_type,
+            fmt("__cov_probes_%s", a->name->chars)->chars);
+        LLVMSetInitializer(a->coverage_probes_global, LLVMConstNull(array_type));
+        LLVMSetLinkage(a->coverage_probes_global, LLVMInternalLinkage);
+
+        // Coverage probe struct: { u64 hit_count, u32 line, u16 column, u16 _pad }
+        a->coverage_probe_lltype = LLVMStructTypeInContext(
+            a->module_ctx,
+            (LLVMTypeRef[]){
+                LLVMInt64TypeInContext(a->module_ctx),  // hit_count
+                LLVMInt32TypeInContext(a->module_ctx),  // line
+                LLVMInt16TypeInContext(a->module_ctx),  // column
+                LLVMInt16TypeInContext(a->module_ctx)   // _pad
+            },
+            4, false
+        );
+    }
+        
     a->next_probe_id = 0;
     
     // Function timing setup - we just need clock_gettime, no global array yet
     if (a->timing_enabled) {
+
+        #define MAX_FUNCS 512
+        LLVMTypeRef timing_array = LLVMArrayType(LLVMInt64TypeInContext(a->module_ctx), MAX_FUNCS);
+        a->func_timings_global = LLVMAddGlobal(a->module_ref, timing_array,
+            fmt("__func_timings_%s", a->name->chars)->chars);
+        LLVMSetInitializer(a->func_timings_global, LLVMConstNull(timing_array));
+        LLVMSetLinkage(a->func_timings_global, LLVMInternalLinkage);
+
         a->next_func_id = 0;
         
         // Declare clock_gettime
@@ -194,20 +232,4 @@ void init_coverage(aether a) {
 // called in module_initializer
 void finalize_coverage(aether a) {
     if (!a->coverage) return;
-    
-    if (a->next_probe_id > 0) {
-        LLVMTypeRef array_type = LLVMArrayType(a->coverage_probe_lltype, a->next_probe_id);
-        a->coverage_probes_global = LLVMAddGlobal(a->module_ref, array_type,
-            fmt("__cov_probes_%s", a->name->chars)->chars);
-        LLVMSetInitializer(a->coverage_probes_global, LLVMConstNull(array_type));
-        LLVMSetLinkage(a->coverage_probes_global, LLVMInternalLinkage);
-    }
-    
-    if (a->timing_enabled && a->next_func_id > 0) {
-        LLVMTypeRef array_type = LLVMArrayType(a->func_timing_lltype, a->next_func_id);
-        a->func_timings_global = LLVMAddGlobal(a->module_ref, array_type,
-            fmt("__func_timings_%s", a->name->chars)->chars);
-        LLVMSetInitializer(a->func_timings_global, LLVMConstNull(array_type));
-        LLVMSetLinkage(a->func_timings_global, LLVMInternalLinkage);
-    }
 }

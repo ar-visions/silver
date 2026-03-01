@@ -6343,74 +6343,70 @@ none app_init(app a) {
 }
 
 
+typedef struct _cov_module {
+    uint64_t*  probes;
+    uint32_t   probe_count;
+    uint64_t*  timings;
+    uint32_t   func_count;
+    struct _cov_module* next;
+} cov_module;
 
-// Coverage state
-static uint64_t* __cov_probes  = NULL;
-static uint64_t* __cov_timings = NULL;
-static uint32_t  __cov_probe_count = 0;
-static uint32_t  __cov_func_count  = 0;
+static cov_module* __cov_modules = NULL;
 
-// Called by module initializer to set up arrays
-void __coverage_init(uint64_t* probes, uint32_t probe_count, 
-                     uint64_t* timings, uint32_t func_count) {
-    __cov_probes      = probes;
-    __cov_probe_count = probe_count;
-    __cov_timings     = timings;
-    __cov_func_count  = func_count;
+
+void __coverage_register(uint64_t* probes, uint32_t probe_count,
+                         uint64_t* timings, uint32_t func_count) {
+    cov_module* m = malloc(sizeof(cov_module));
+    m->probes      = probes;
+    m->probe_count = probe_count;
+    m->timings     = timings;
+    m->func_count  = func_count;
+    m->next        = __cov_modules;
+    __cov_modules  = m;
 }
 
-// Called at each statements block entry
-void __coverage_hit(uint32_t probe_id) {
-    if (__cov_probes && probe_id < __cov_probe_count) {
-        __cov_probes[probe_id]++;
-    }
-}
-
-// Called at function return with elapsed nanoseconds
-void __coverage_record_time(uint32_t func_id, uint64_t elapsed_ns) {
-    if (__cov_timings && func_id < __cov_func_count) {
-        __cov_timings[func_id] += elapsed_ns;
-    }
-}
-
-// called at end of main
 void __coverage_report(void) {
-    if (!__cov_probes) return;
-    
-    uint32_t covered = 0;
-    for (uint32_t i = 0; i < __cov_probe_count; i++) {
-        if (__cov_probes[i] > 0) covered++;
+    if (!__cov_modules) return;
+    uint32_t total_probes = 0, total_covered = 0;
+    for (cov_module* m = __cov_modules; m; m = m->next) {
+        for (uint32_t i = 0; i < m->probe_count; i++) {
+            total_probes++;
+            if (m->probes[i] > 0) total_covered++;
+        }
     }
-    
-    float pct = __cov_probe_count > 0 ? 
-        (100.0f * covered / __cov_probe_count) : 100.0f;
-    
+    float pct = total_probes > 0 ? (100.0f * total_covered / total_probes) : 100.0f;
     fprintf(stderr, "\n══════════════════════════════════════\n");
-    fprintf(stderr, "  COVERAGE: %u/%u blocks (%.1f%%)\n", 
-            covered, __cov_probe_count, pct);
+    fprintf(stderr, "  COVERAGE: %u/%u blocks (%.1f%%)\n",
+            total_covered, total_probes, pct);
     
-    if (__cov_timings && __cov_func_count > 0) {
+    // timing across all modules
+    bool has_timing = false;
+    for (cov_module* m = __cov_modules; m; m = m->next)
+        if (m->timings && m->func_count > 0) { has_timing = true; break; }
+    
+    if (has_timing) {
         fprintf(stderr, "──────────────────────────────────────\n");
         fprintf(stderr, "  TIMING (top functions):\n");
-        
-        // Find top 5 by time
-        for (int shown = 0; shown < 5 && shown < (int)__cov_func_count; shown++) {
+        for (int shown = 0; shown < 5; shown++) {
             uint64_t max_ns = 0;
+            cov_module* max_mod = NULL;
             uint32_t max_id = 0;
-            for (uint32_t i = 0; i < __cov_func_count; i++) {
-                if (__cov_timings[i] > max_ns) {
-                    max_ns = __cov_timings[i];
-                    max_id = i;
+            for (cov_module* m = __cov_modules; m; m = m->next) {
+                if (!m->timings) continue;
+                for (uint32_t i = 0; i < m->func_count; i++) {
+                    if (m->timings[i] > max_ns) {
+                        max_ns = m->timings[i];
+                        max_mod = m;
+                        max_id = i;
+                    }
                 }
             }
             if (max_ns == 0) break;
-            
             double ms = max_ns / 1000000.0;
             fprintf(stderr, "    func[%u]: %.3f ms\n", max_id, ms);
-            __cov_timings[max_id] = 0; // mark as shown
+            max_mod->timings[max_id] = 0;
         }
     }
-    
     fprintf(stderr, "══════════════════════════════════════\n\n");
 }
 

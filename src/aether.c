@@ -126,6 +126,7 @@ void emit_func_timing_end(aether a, LLVMValueRef start_ns, u32 func_id);
 void report_coverage(aether a);
 void init_coverage(aether a);
 void finalize_coverage(aether a);
+void emit_coverage_register(aether);
 
 // set debug source location on the IR builder
 static void emit_debug_loc(aether a, u32 line, u32 column) {
@@ -137,6 +138,13 @@ static void emit_debug_loc(aether a, u32 line, u32 column) {
     LLVMSetCurrentDebugLocation2(B, loc);
 }
 
+LLVMValueRef LLVMFetchGlobal(LLVMModuleRef module_ref, LLVMTypeRef type, cstr name) {
+    LLVMValueRef existing = LLVMGetNamedGlobal(module_ref, name);
+    if (existing) return existing;
+    LLVMValueRef g = LLVMAddGlobal(module_ref, type, name);
+    LLVMSetLinkage(g, LLVMExternalLinkage);
+    return g;
+}
 
 etype etype_copy(etype mem) {
     Au_t au = isa(mem);
@@ -3966,7 +3974,7 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
 
     push_scope(a, (Au)main_fn);
     e_fn_call(a, module_init_fn, null);
-    
+
     // call engage
     efunc Au_engage = u(efunc, find_member(typeid(Au), "engage", AU_MEMBER_FUNC, false));
     e_fn_call(a, Au_engage, a(u(evar, argv)));
@@ -4508,8 +4516,10 @@ none etype_implement(etype t) {
         // if module member, then its a global value
         if (!au->context->context) {
             // mod->is_Au_import indicates this is coming from a lib, or we are making a new global
-            LLVMValueRef G = LLVMAddGlobal(a->module_ref, type, au->ident);
-            LLVMLinkage linkage = ((module && au->access_type == interface_public) || a->is_Au_import || au->is_system) ? 
+            bool is_external = ((module && au->access_type == interface_public) || a->is_Au_import || au->is_system);
+            LLVMValueRef G = is_external ?
+                LLVMFetchGlobal(a->module_ref, type, au->ident) : LLVMAddGlobal(a->module_ref, type, au->ident);
+            LLVMLinkage linkage = is_external ? 
                 LLVMExternalLinkage : LLVMInternalLinkage;
             LLVMSetLinkage(G, linkage);
             if (!a->is_Au_import) {
@@ -4528,7 +4538,9 @@ none etype_implement(etype t) {
                 evar static_node = instanceof(t, evar);
                 verify(static_node, "expected evar");
                 string c_name = f(string, "%s_%s", au->context->ident, au->ident);
-                LLVMValueRef global = LLVMAddGlobal(a->module_ref, type, c_name->chars);
+                LLVMValueRef global = a->is_Au_import ? 
+                    LLVMFetchGlobal(a->module_ref, type, c_name->chars) :
+                    LLVMAddGlobal(a->module_ref, type, c_name->chars);
                 LLVMSetLinkage(global, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
                 if (!a->is_Au_import) LLVMSetInitializer(global, LLVMConstNull(type));
                 static_node->value = global;
@@ -4597,7 +4609,9 @@ none etype_implement(etype t) {
 
                     if (m->is_static ) {
                         string c_name = f(string, "%s_%s", au->ident, m->ident);
-                        LLVMValueRef global = LLVMAddGlobal(a->module_ref, lltype(u(etype, m->src)), c_name->chars);
+                        LLVMValueRef global = a->is_Au_import ?
+                            LLVMFetchGlobal(a->module_ref, lltype(u(etype, m->src)), c_name->chars) :
+                            LLVMAddGlobal(a->module_ref, lltype(u(etype, m->src)), c_name->chars);
                         LLVMSetLinkage(global, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
                         if (!a->is_Au_import) LLVMSetInitializer(global, LLVMConstNull(lltype(u(etype, m->src))));
                         evar static_node = u(evar, m) ? u(evar, m) : evar(mod, a, au, m, value, global, loaded, false);
@@ -4696,7 +4710,9 @@ none etype_implement(etype t) {
             string n = f(string, "%s_%s", au->ident, m->ident);
             
             LLVMTypeRef tr = t->lltype;
-            LLVMValueRef G = LLVMAddGlobal(a->module_ref, tr, n->chars);
+            LLVMValueRef G = a->is_Au_import ?
+                LLVMFetchGlobal(a->module_ref, tr, n->chars) :
+                LLVMAddGlobal(a->module_ref, tr, n->chars);
             
             LLVMSetLinkage(G, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
             LLVMSetGlobalConstant(G, 1);
@@ -4940,6 +4956,8 @@ none aether_build_module_initializer(aether a, enode init) {
 
     a->direct = true;
     //aether_eputs(a, f(string, "%o: initializing", a));
+
+    emit_coverage_register(a);
     
     efunc f = (efunc)u(efunc, au);
     Au_t  module_base = a->au;
@@ -5608,8 +5626,6 @@ void aether_reinit_startup(aether a) {
     a->registry       = store();
     a->next_func_id   = 0;
     a->next_probe_id  = 0; // send out a class-3 probe
-    a->coverage_hit_fn = null;
-    a->coverage_record_time_fn = null;
 
     // this is so a new external may reset state for itself
     module_erase(a->au, a->name->chars);
