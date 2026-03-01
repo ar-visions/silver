@@ -31,7 +31,7 @@ enum Pooling
 
 
 class tensor
-    public tensor_shape: shape
+    expect tensor_shape: shape
     public data:         new i8[0]
     public realized:     new f32[0]
     public grad:         new f32[0]
@@ -40,7 +40,6 @@ class tensor
     intern count: u64 [ 0 ]
 
     func init [] -> none
-        tensor_shape = 4x4
         count    = tensor_shape.total
         realized = new f32[tensor_shape]
         grad     = new f32[tensor_shape]
@@ -49,8 +48,7 @@ class tensor
     func sum [] -> f32
         s: f32 [0.0]
 
-        #for [ i:i32 ] in (0 ..< 10)
-
+        #for [ i:i32 ] in (0 ..< 10) -- better syntax to get for inline iwth our array / map iteration
         for [ i: i32 0 :: i < count :: i += 1 ]
             s += realized[i]
         return s
