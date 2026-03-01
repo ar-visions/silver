@@ -40,6 +40,7 @@ class tensor
     intern count: u64 [ 0 ]
 
     func init [] -> none
+        tensor_shape = 4x4
         count    = tensor_shape.total
         realized = new f32[tensor_shape]
         grad     = new f32[tensor_shape]

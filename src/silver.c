@@ -693,12 +693,13 @@ void silver_parse(silver a) {
     // when done parsing, we are able to create a module schema (type_id definition) and the evar instance for the type_id (module_m with info/type)
     implement_type_id((etype)a);
 
+    // explicit call to finalize the coverage globals
+    // we need to not emit during init
+    finalize_coverage(a);
+
     a->building_initializer = true;
     build_fn(a, init, build_init_preamble, null);
     a->building_initializer = false;
-
-    // explicit call to finalize the coverage globals
-    finalize_coverage(a);
 }
 
 none aether_test_write(aether a);
