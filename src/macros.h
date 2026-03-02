@@ -2037,7 +2037,7 @@
     static string _topic = null; \
     if (!_topic) _topic = (string)Au_hold((Au)new(string, __func__)); \
      string res = (string)formatter((Au_t)null, false, stderr, (Au)_topic,  seq, (symbol)t, ## __VA_ARGS__); \
-     halt(res); \
+     halt(res, null); \
     } while(0)
 
 
@@ -2048,7 +2048,7 @@
 #else
 #define       assert(a, t, ...) do { } while(0)
 #endif
-#define       verify(a, t, ...) ({ if (!(a)) { string res = (string)formatter((Au_t)null, true, stderr, (Au)true, seq, (symbol)t, ## __VA_ARGS__); if (level_err >= fault_level) { halt(res); } false; } else { true; } true; })
+#define       verify(a, t, ...) ({ if (!(a)) { string res = (string)formatter((Au_t)null, true, stderr, (Au)true, seq, (symbol)t, ## __VA_ARGS__); if (level_err >= fault_level) { halt(res, null); } false; } else { true; } true; })
 
 #undef min
 #undef max

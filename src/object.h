@@ -79,6 +79,7 @@ typedef enum AU_MEMBER AFlag;
 #define AU_TRAIT_IS_HIDDEN   ((int64_t) 1 << 46)
 #define AU_TRAIT_ALLOCATED   ((int64_t) 1 << 47)
 #define AU_TRAIT_CONTEXT     ((int64_t) 1 << 48)
+#define AU_TRAIT_EXPLICIT_REF ((int64_t) 1 << 49)
 
 typedef bool(*global_init_fn)();
 
@@ -201,6 +202,7 @@ typedef struct _Au_t {
             u64 is_hidden    : 1;
             u64 is_allocated : 1;
             u64 is_context   : 1;
+            u64 is_explicit_ref : 1;
         };
         u64 traits;
     };

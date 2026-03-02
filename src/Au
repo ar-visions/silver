@@ -56,11 +56,13 @@ struct _Au_t;
 #define OFFSET_BASIS        0xcbf29ce484222325
 
 forward(string)
+forward(token)
 
 typedef struct __error_t {
     jmp_buf env;
     struct __error_t* prev;
     string message;
+    token  tok;
 } __error_t;
 
 extern __thread __error_t* Au_error_top;
@@ -115,7 +117,7 @@ typedef struct cereal { char* value; } cereal;
 
 // typedef struct _object*         Au;
 typedef struct _Au**             ARef; /// registered for a generic raw, but we must transition to use 'raw' in cases where they are not Au-allocations
-typedef float*                  floats;
+typedef float*                  floats_t;
 typedef cstr*                   cstrs;
 typedef void*                   raw;        // abstract types are void*
 typedef void*                   numeric;
@@ -1029,8 +1031,8 @@ declare_abstract(imported)
 #define Au_ts_module_ Au
 #define Au_ts_schema(X,Y,...)      raw_schema(X,Y,...)
 
-#define floats_module_ Au
-#define floats_schema(X,Y,...)      raw_schema(X,Y,...)
+#define floats_t_module_ Au
+#define floats_t_schema(X,Y,...)      raw_schema(X,Y,...)
 
 /// meta gives us access to one token we can override with (F)
 
@@ -1103,7 +1105,7 @@ declare_primitive(Au_ts,           raw)
 /// whatever we can 'name', we can handle as a type of any pointer primitive
 //declare_primitive(Au_t,        raw)
 declare_primitive(ARef,         ref)
-declare_primitive(floats,       raw)
+declare_primitive(floats_t,     raw)
 
 /// lets mimmick the structure in llama.cpp
 #define msg_module_ Au
@@ -1621,6 +1623,7 @@ declare_class(async)
     M(AA,BB, i, prop,    public, num,    line) \
     M(AA,BB, i, prop,    public, num,    column) \
     M(AA,BB, i, prop,    public, num,    indent) \
+    M(AA,BB, i, prop,    public, string, annotation) \
     M(AA,BB, i, prop,    public, Au,     literal) \
     M(AA,BB, i, prop,    public, bool,   cmode) \
     M(AA,BB, i, method,  public, Au_t,   get_type) \
@@ -1765,7 +1768,7 @@ static inline f32 f32_mix(f32 a, f32 b, f32 f) {
 /// use i_struct_ctr_obj for objects or primitives
 /// use i_struct_ctr for structs.. this is because we cannot separate * from the token
 #define vec_methods(O, Y, T, ...) \
-    i_struct_ctr_obj(O,Y, floats) \
+    i_struct_ctr_obj(O,Y, floats_t) \
     i_struct_method(O, Y, T,    length) \
     i_struct_method(O, Y, O,    add,      O*) \
     i_struct_method(O, Y, O,    sub,      O*) \
@@ -1872,7 +1875,7 @@ declare_class(rect)
 
 #define mat4f_schema(O, Y, T, ...) \
     i_struct_array  (O, Y, f32,   16, m) \
-    i_struct_ctr_obj(O, Y, floats) \
+    i_struct_ctr_obj(O, Y, floats_t) \
     i_struct_ctr    (O, Y, quatf) \
     i_struct_method (O, Y, O,        inverse) \
     i_struct_method (O, Y, O,        transpose) \
@@ -1983,7 +1986,7 @@ extern int seq;
 
 #define sequencer static int seq; seq++;
 
-none halt(string);
+none halt(string, token);
 
 #ifdef __cplusplus
 }

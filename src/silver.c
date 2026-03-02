@@ -11,6 +11,8 @@
 enode parse_statements(silver a);
 enode parse_statement(silver a);
 void build_fn(silver a, efunc fmem, callback preamble, callback postamble);
+bool is_explicit_ref(enode);
+
 static void build_record(silver a, etype mrec);
 
 // used in more primitive cases
@@ -21,17 +23,33 @@ static void build_record(silver a, etype mrec);
     m ? u(etype, m) : null; \
 })
 
+#undef error
+#define error(t, ...) ({ \
+    string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%10s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, __FILE__, __LINE__, seq, a->module_file, \
+                peek(a)->line, peek(a)->column, ##__VA_ARGS__); \
+    if (level_err >= fault_level) { \
+        halt(s, peek(a)); \
+    } \
+    false; \
+})
+
 #define validate(cond, t, ...) ({ \
     if (!(cond)) { \
         string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%10s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, __FILE__, __LINE__, seq, a->module_file, \
                   peek(a)->line, peek(a)->column, ##__VA_ARGS__); \
         if (level_err >= fault_level) { \
-            halt(s); \
+            halt(s, peek(a)); \
         } \
         false; \
     } else { \
         true; \
     } \
+})
+
+#define breakpoint(tok, t, ...) ({ \
+    string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%10s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, __FILE__, __LINE__, seq, a->module_file, \
+                tok->line, tok->column, ##__VA_ARGS__); \
+    raise(SIGTRAP); \
 })
 
 // inline initializers can have expression continuations  aclass[something:1].something
@@ -455,7 +473,10 @@ static enode reverse_descent(silver a, etype expect) { sequencer
     if (!L) {
         L = L;
     }
-    validate(cmode || L, "unexpected '%o'", t);
+    if (!cmode && !L) {
+        etype l = t ? elookup(t->chars) : null;
+        error("unexpected %s'%o'", l->au->member_type == AU_MEMBER_TYPE ? "type " : "", t);
+    }
     if (!L)
         return null;
     
@@ -1129,16 +1150,14 @@ bool dbg_addr_to_line(void *addr,
         int *line,
         const char **func);
 
-#define breakpoint(...) ({ \
-    print(__VA_ARGS__); \
-    raise(SIGTRAP); \
-})
-
 
 token silver_next(silver a) {
     if (a->cursor >= len(a->tokens))
         return null;
     token res = element(a, 0);
+    if (!a->clipping && res && res->annotation && strcmp(res->annotation->chars, "#break") == 0) {
+        breakpoint(res, "breaking at %o", res);
+    }
     a->cursor++;
     return res;
 }
@@ -1190,7 +1209,6 @@ static array read_body(silver a) {
         return null;
     token p = a->statement_origin ? a->statement_origin : element(a, -1);
     bool mult = n->line > p->line;
-
     while (1) {
         token k = peek(a);
         if (!k)
@@ -1421,6 +1439,75 @@ static shape parse_shape(string str, string* str_res, i64* index) {
     return null;
 }
 
+// returns null if not a numeric literal
+// handles: 0xFF, 0b1010, 0o77, 123, -45, 3.14, 3.14f, 1.0e-7
+static Au parse_numeric(string str, string* str_res, i64* index) {
+    int ln  = len(str);
+    int i   = *index;
+    i32 chr = idx(str, i);
+    int start = i;
+    
+    // optional leading minus
+    if (chr == '-') {
+        if (i + 1 >= ln || !isdigit(idx(str, i + 1)))
+            return null;
+        i++;
+        chr = idx(str, i);
+    }
+    
+    if (!isdigit(chr))
+        return null;
+    
+    // hex: 0x[0-9a-fA-F]+
+    if (chr == '0' && i + 1 < ln && idx(str, i + 1) == 'x') {
+        i += 2;
+        if (i >= ln || !isxdigit(idx(str, i)))
+            return _i64(0);
+        while (i < ln && isxdigit(idx(str, i)))
+            i++;
+        string crop = mid(str, start, i - start);
+        *str_res = crop;
+        *index = i;
+        return _i64(strtoll(crop->chars, NULL, 16));
+    }
+    
+    // binary: 0b[01]+
+    if (chr == '0' && i + 1 < ln && idx(str, i + 1) == 'b') {
+        i += 2;
+        if (i >= ln || (idx(str, i) != '0' && idx(str, i) != '1'))
+            return _i64(0);
+        while (i < ln && (idx(str, i) == '0' || idx(str, i) == '1'))
+            i++;
+        string crop = mid(str, start, i - start);
+        *str_res = crop;
+        *index = i;
+        return _i64(strtoll(crop->chars + 2, NULL, 2));
+    }
+    
+    // octal: 0o[0-7]+
+    if (chr == '0' && i + 1 < ln && idx(str, i + 1) == 'o') {
+        i += 2;
+        if (i >= ln || idx(str, i) < '0' || idx(str, i) > '7')
+            return _i64(0);
+        while (i < ln && idx(str, i) >= '0' && idx(str, i) <= '7')
+            i++;
+        string crop = mid(str, start, i - start);
+        *str_res = crop;
+        *index = i;
+        return _i64(strtoll(crop->chars + 2, NULL, 8));
+    }
+    
+    return null;
+}
+
+string trim_annotation(string input) {
+    string annotation = trim(input);
+    int i = index_of(annotation, " ");
+    if (i >= 0)
+        annotation = mid(annotation, 0, i);
+    return annotation;
+}
+
 static array parse_tokens(silver a, Au input, array output) { sequencer
     string input_string;
     Au_t type = isa(input);
@@ -1510,9 +1597,31 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
                 }
                 index += 2;
             } else {
-                // single-line
-                while (index < length && idx(input_string, index) != '\n')
+                // single-line / #annotations [ this is why hash-tag comments are brilliant; its not just for looks ]
+                string annotation = null;
+                int    start = index;
+                while (index < length && idx(input_string, index) != '\n') {
                     index += 1;
+                }
+                annotation = trim_annotation(mid(input_string, start, index - start));
+                token last = (token)last_element(tokens);
+                if (last) {
+                    if (!eq(annotation, "#break-last")) { // break will break on first-token, and break-last breaks on the last
+                        int line_ref = last->line;
+                        int offset = 1;
+                        while (offset < len(tokens)) {
+                            token t = (token)tokens->origin[len(tokens) - offset];
+                            if (t->line != line_ref)
+                                break;
+                            last = t;
+                            offset++;
+                        }
+                        annotation = trim_annotation(annotation);
+                    } else {
+                        annotation = annotation;
+                    }
+                    last->annotation = hold(new(string, chars, annotation->chars));
+                }
             }
             continue;
         }
@@ -1636,14 +1745,21 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
         i32     st_char         = idx(input_string, start);
         bool    start_numeric   = st_char == '-' || (st_char >= '0' && st_char <= '9');
         string  shape_str       = null;
-        shape shape_literal = start_numeric ? parse_shape(input_string, &shape_str, &index) : null;
-        if (shape_literal) {
+        bool    is_b16          = start_numeric && st_char == '0' && 
+                    index + 1 < length && idx(input_string, index + 1) == 'x' &&
+                    index + 2 < length && isxdigit(idx(input_string, index + 2));
+        Au      literal         = (start_numeric && !is_b16) ? (Au)parse_shape(input_string, &shape_str, &index) : null;
+
+        if (start_numeric && is_b16) {
+            literal = parse_numeric(input_string, &shape_str, &index);
+        }
+        if (literal) {
             push(tokens, (Au)token(
                     chars,   shape_str->chars,
                     indent,  indent,
                     source,  src,
                     line,    line_num,
-                    literal, (Au)shape_literal,
+                    literal, literal,
                     column,  start - line_start));
             continue;
         }
@@ -1931,7 +2047,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
         alpha = read_alpha_macrofilter(a, new_name);
         if (!first_alpha) first_alpha = alpha;
 
-        if (next_is(a, "o")) {
+        if (alpha && eq(alpha, "state")) {
             alpha = alpha;
         }
         if (alpha && eq(alpha, "name")) {
@@ -1991,25 +2107,20 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
                         }
 
                     } else if (!f || !f->target) {
-                        //mem = (enode)elookup(alpha->chars);
                         mem = (enode)elookup(alpha->chars);
-                        Au minfo = head(mem);
-                        minfo = minfo;
                     }
+                } else if (!in_decl) {
+                    mem = (enode)elookup(alpha->chars);
                 }
                 
                 if (!mem) {
                     token tm1 = element(a, -2); // sorry for the mess (coin-flip)
 
-                    if (eq(alpha, "order")) {
+                    if (eq(alpha, "Initializer")) {
 
                         Au_t b4 = lexical(a->lexical, alpha->chars);
-                        etype should_be_evar = u(etype, b4);
-
-                        mem = (enode)elookup(alpha->chars);
-                        Au_t m = find_member(typeid(Au)->module, "shape", AU_MEMBER_TYPE, false);
-                        etype sh = u(etype, m);
-                        m = m;
+                        etype should_be_etype = u(etype, b4);
+                        b4 = b4;
                     }
 
                     validate(next_is(a, ":") || (tm1 && index_of(keywords, (Au)tm1) >= 0), "unknown identifier %o", alpha);
@@ -2055,6 +2166,9 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
                     pop_scope(a);
                 }
                 prev = reverse(prev);
+                if (seq == 50) {
+                    seq = seq;
+                }
                 mem = parse_member_expr(a, mem);
                 // inside this expression, we must have the previous scope; 
                 // we could save it at top and push the top again, but that isnt handled properly
@@ -2431,18 +2545,10 @@ enode parse_statement(silver a)
     silver    module    = is_module(top) ? a : null;
     
 
-    if (module && !next_is(a, "func") && peek_def(a))
-        return (enode)read_def(a);
-
-    // standard statements first
+    // standard statements first, only in context of functions
     if (f) {
-        if (next_is(a, "no-op")) {
-            consume(a);
-            return e_noop(a, null);
-        }
-        
-        if (next_is(a, "return")) return parse_return (a); // reading an expression from here, expecting a bool will force data conversion on inner expression nodes, and we only want to convert after the nodes run without the argument
-        
+        if (read_if(a, "no-op"))  return e_noop(a, null);
+        if (next_is(a, "return")) return parse_return (a);
         if (next_is(a, "break"))  return parse_break  (a);
         if (next_is(a, "for"))    return parse_for    (a);
         if (next_is(a, "if"))     return parse_if_else(a);
@@ -2451,12 +2557,21 @@ enode parse_statement(silver a)
     
     if (next_is(a, "ifdef")) return parse_ifdef_else(a);
 
-    interface access    = read_enum(a, interface_undefined, typeid(interface));
+    verify(!next_is(a, "undefined"), "undefined is invalid access-level");
+    interface access = read_enum(a, interface_undefined, typeid(interface));
+    bool has_access = access != interface_undefined;
 
-    if (access == interface_context) {
-        access = access;
+    if (module && !next_is(a, "func") && peek_def(a)) {
+        verify(!has_access || (access == interface_public || access == interface_intern),
+            "undefined is invalid access-level");
+
+        return (enode)read_def(a, access);
     }
-    bool      is_static = read_if(a, "static") != null;
+
+    if (access == interface_context)
+        access = access;
+    
+    bool is_static = read_if(a, "static") != null;
 
     validate(!is_struct(top) || (!access || access == interface_public),
         "unexpected access level found in struct");
@@ -2481,7 +2596,7 @@ enode parse_statement(silver a)
         is_lambda = is_lambda;
 
     OPType assign_enum = OPType__undefined;
-    if (next_is(a, "init")) {
+    if (next_is(a, "state")) {
         int test2 = 2;
         test2    += 2;
     }
@@ -2713,6 +2828,9 @@ static int next_function_index(Au_t mdl) {
 
 efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPType op_type, string op_name) {
     sequencer
+    if (seq == 6) {
+        seq = seq;
+    }
     etype  rtype   = null;
     string name    = string(mem->ident);
     bool   is_cast = member_type == AU_MEMBER_CAST;
@@ -2760,10 +2878,6 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     push_scope(a, (Au)mem);
     bool first = true;
     Au_t target = null;
-
-    if (seq == 22) {
-        seq = seq;
-    }
     
     // parse args (move to generic)
     for (; member_type != AU_MEMBER_CAST ;) {
@@ -2799,6 +2913,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         verify(t, "expected alpha-numeric identity for type or name");
         Au_t arg = alloc_arg(au, n ? n->chars : null, t->au);
         arg->is_inlay = is_inlay;
+        arg->is_explicit_ref = t->is_explicit_ref;
         if (!is_inlay && is_struct(arg->src)) {
             arg->src = pointer((aether)a, (Au)arg->src)->au;
         } else if (is_inlay) {
@@ -3041,7 +3156,7 @@ etype read_etype(silver a, array* p_expr) {
             validate(!has_depth_meta || read_if(a, ">"), "expected <meta> containment at depth");
             
             // sorry for the mess [/flicks-coin]
-            mdl  = meta_args ? etype(mod, (aether)a, au, mdl->au, meta, meta_args) : mdl;
+            mdl  = meta_args ? etype(mod, (aether)a, au, mdl->au, is_explicit_ref, is_ref, meta, meta_args) : mdl;
             meta = null; // dont reconstruct our mdl again with more
         }
 
@@ -3068,14 +3183,19 @@ etype read_etype(silver a, array* p_expr) {
             bool   in_arg  = is_func(top);
             validate(is_class(mdl) && (in_rec || in_arg),
                 "polymorphic-any (*) applies to classes in argument / record membership");
+            validate(mdl->au->access_type != interface_intern, "polymorphic types cannot be defined internal");
         }
     }
 
-    etype t = (mdl && (meta || is_any)) ? 
-        etype(mod, (aether)a, au, mdl->au, meta, meta, is_any, is_any) : mdl;
+    etype t = (mdl && (meta || is_any || is_ref)) ? 
+        etype(mod, (aether)a, au,
+            is_ref ? pointer((aether)a, (Au)mdl->au)->au : mdl->au,
+            is_explicit_ref, is_ref, meta, meta, is_any, is_any) : mdl;
 
-    if (is_ref)
-        t = pointer((aether)a, (Au)t);
+    // identity of pointer is not as trivial; we should init the primitive refs as explicit-ref though
+    //if (is_ref) {
+    //    t = pointer((aether)a, (Au)t);
+    //}
 
     pop_tokens(a, mdl != null); // if we read a model, we transfer token state
     return t;
@@ -3083,7 +3203,7 @@ etype read_etype(silver a, array* p_expr) {
 
 // return tokens for function content (not its surrounding def)
 array codegen_generate_fn(codegen a, efunc f, array query) {
-    fault("must subclass codegen for usable code generation");
+    fault("implement generate_fn");
     return null;
 }
 
@@ -3121,6 +3241,18 @@ array read_dictation(silver a, array input) {
     verify(len(result), "expected dictation message");
     pop_tokens(a, false);
     return result;
+}
+
+array gemini_generate_fn(gemini google, Au_t f, array query) {
+    silver a = (silver)u(efunc, f)->mod;
+    error("implement gemini");
+    return null;
+}
+
+array claude_generate_fn(claude jean, Au_t f, array query) {
+    silver a = (silver)u(efunc, f)->mod;
+    error("implement claude");
+    return null;
 }
 
 array chatgpt_generate_fn(chatgpt gpt, Au_t f, array query) {
@@ -3192,7 +3324,7 @@ array chatgpt_generate_fn(chatgpt gpt, Au_t f, array query) {
             } else if (instanceof(info, string)) {
                 item = m("type", "text", "text", info);
             } else {
-                fault("unknown type in dictation: %s", isa(info)->ident);
+                error("unknown type in dictation: %s", isa(info)->ident);
             }
             push(content, (Au)item);
         }
@@ -4085,7 +4217,7 @@ enode parse_import(silver a) {
             set(a->libs, string(mod->ident), (Au)_bool(true));
 
         } else if (!module_source && !lib_path)
-            fault("could not find module %o", mpath);
+            error("could not find module %o", mpath);
         
     } else if (aa && !bb) {
         project     = aa;
@@ -4149,6 +4281,7 @@ enode parse_import(silver a) {
     }
     else if (is_codegen) {
         cg = (codegen)construct_with(is_codegen, (Au)props, null);
+        cg->mod = (aether)a;
     }
 
     if (next_is(a, "as")) {
@@ -5067,9 +5200,10 @@ enode silver_parse_member_expr(silver a, enode mem) {
             } else
                 index_expr = e_offset(a, mem, (Au)first_index);
 
-            // not lying spock.. exaggerating (negotiating)
-            index_expr->au = index_expr->au->src;
-            index_expr->loaded = false;
+            if (!mem->is_explicit_ref) {
+                index_expr->au = index_expr->au->src;
+                index_expr->loaded = false;
+            }
         }
         pop_tokens(a, true);
         return index_expr;
@@ -5141,15 +5275,15 @@ etype etype_of(enode mem) {
 enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const) { sequencer
     validate(isa(mem) == typeid(enode) || !mem->au->is_const,
         "mem %s is a constant", mem->au->ident);
-    
+    if (seq == 11 || seq == 12) {
+        mem = mem;
+    }
     etype t = (etype)etype_of(mem);
     bool is_bind_ref = (op_val == OPType__bind) ? next_is(a, "ref") : false;
 
-    if (mem->au->ident && strcmp(mem->au->ident, "c") == 0 && op_val == 30) {
-        mem = mem;
-    }
 
-    enode R = parse_expression(a, mem->is_explicit_ref ? u(etype, t->au->src) : null); 
+
+    enode R = parse_expression(a, is_explicit_ref(mem) ? u(etype, t->au->src) : null); 
 
     // Handle Promotion and Inference for AU_MEMBER_DECL
     if (mem->au->member_type == AU_MEMBER_DECL) {
@@ -5464,7 +5598,7 @@ enode parse_for(silver a) { sequencer
                 else if (level == 2)
                     cur = step_exprs;
                 else
-                    fault("too many :: in for (max 2)");
+                    error("too many :: in for (max 2)");
             } else {
                 push(cur, (Au)t);
             }
@@ -5540,7 +5674,7 @@ Au_t next_is_keyword(silver a, Au_t *fn) {
 }
 
 /// called after : or before, where the user has access
-etype silver_read_def(silver a) {
+etype silver_read_def(silver a, interface access) {
     Au_t  parse_fn  = null;
     Au_t  is_type   = next_is_keyword(a, &parse_fn);
     etype is_class  = !is_type ? next_is_class(a, false) : null;
@@ -5552,12 +5686,14 @@ etype silver_read_def(silver a) {
         return null;
 
     if (is_type) {
+        validate(!access, "unexpected access level");
         struct _etype* (*parser)(silver) = (void*)parse_fn->value;
         validate(parser, "expected parse fn on member");
         return parser(a);
     }
 
     if (is_export) {
+        validate(!access, "unexpected access level");
         return (etype)parse_export(a);
     }
 
@@ -5576,6 +5712,7 @@ etype silver_read_def(silver a) {
 
         mdl = record(a, (etype)a, is_class, n,
             is_struct ? AU_TRAIT_STRUCT : AU_TRAIT_CLASS);
+        mdl->au->access_type = access;
 
         // read meta args (some of these will permute the type, and others are run-time)
         if (read_if(a, "<")) {
@@ -5616,6 +5753,7 @@ etype silver_read_def(silver a) {
 
         Au_t enum_au = def(top_scope(a),
             n->chars, AU_MEMBER_TYPE, AU_TRAIT_ENUM);
+        enum_au->access_type = access;
         enum_au->src = store->au;
         mdl = etype(mod, (aether)a, au, enum_au);
 
@@ -5658,10 +5796,12 @@ etype silver_read_def(silver a) {
         }
         pop_scope(a);
         pop_tokens(a, false);
+
+        etype_implement(mdl);
         create_type_members(a, a->au);
 
     } else {
-        fault("unknown error");
+        error("unknown error");
     }
 
     validate(mdl && len(n),
@@ -5671,6 +5811,8 @@ etype silver_read_def(silver a) {
 }
 
 define_class(chatgpt, codegen)
+define_class(claude,  codegen)
+define_class(gemini,  codegen)
 define_class(silver, aether)
 define_class(import, enamespace)
 define_class(exports, Au)
