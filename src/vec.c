@@ -9,7 +9,7 @@
 #define vec3f_(...) structure_of(vec3f __VA_OPT__(,) __VA_ARGS__)
 
 #define vec_define_methods(N, T, C) \
-    N N##_with_floats(T* f) { \
+    N N##_with_floats_t(T* f) { \
         N result = {}; \
         if (f) \
             memcpy(&result, f, sizeof(T) * C); \
@@ -224,7 +224,7 @@ rect create_rect(vec2f v0, vec2f v1) {
     return r;
 }
 
-mat4f mat4f_with_floats(f32* f) {
+mat4f mat4f_with_floats_t(f32* f) {
     mat4f a = {};
     if (f)
         memcpy(&a, f, sizeof(f32) * 16);
@@ -237,7 +237,7 @@ mat4f mat4f_with_floats(f32* f) {
     return a;
 }
 
-quatf quatf_with_floats(f32* f) {
+quatf quatf_with_floats_t(f32* f) {
     quatf a = {};
     a.x = f[0];
     a.y = f[1];
@@ -259,7 +259,7 @@ vec3f vec3f_cross(vec3f* a, vec3f* b) {
         a->z * b->x - a->x * b->z,
         a->x * b->y - a->y * b->x
     };
-    vec3f v = vec3f((floats)f);
+    vec3f v = vec3f((floats_t)f);
     return v;
 }
 
@@ -492,7 +492,7 @@ mat4f mat4f_inverse(mat4f* mat) {
 }
 
 mat4f mat4f_identity() {
-    return mat4f((floats)null);
+    return mat4f((floats_t)null);
 }
 
 mat4f mat4f_perspective(f32 y_fov, f32 aspect, f32 n, f32 f) {

@@ -21,18 +21,38 @@ typedef LLVMMetadataRef LLVMScope;
     (au ? (etype)u(etype, au) : (etype)null); \
 })
 
+#undef fault
+#define fault(t, ...) ({ \
+    string s = (string)formatter( \
+        (Au_t)null, false, stderr, (Au) true, \
+        seq, (symbol) "\n[%5i] compiler: %s:%i\n        source:   %o:%i:%i\n        " t, \
+        seq, __FILE__, __LINE__, a->module_file, \
+        aether_peek_safe(a)->line, \
+        aether_peek_safe(a)->column __VA_OPT__(,) __VA_ARGS__); \
+    if (level_err >= fault_level) { \
+        halt(s, aether_peek(a)); \
+    } \
+    false; \
+})
+
 #define validate(cond, t, ...) ({ \
     if (!(cond)) { \
-        string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n[%5i] compiler: %s:%i\n        source:   %o:%i:%i\n        " t, seq, __FILE__, __LINE__, a->module_file, \
-                  aether_peek(a)->line, aether_peek(a)->column, ##__VA_ARGS__); \
-        if (level_err >= fault_level) { \
-            halt(s); \
-        } \
+        fault(t __VA_OPT__(,) __VA_ARGS__); \
         false; \
     } else { \
         true; \
     } \
 })
+
+#undef verify
+#define verify(cond, t, ...) ({ \
+    if (!(cond)) { \
+        fault(t __VA_OPT__(,) __VA_ARGS__); \
+        false; \
+    } \
+    true; \
+})
+
 
 LLVMTypeRef _lltype(etype);
 #define lltype(a) _lltype((etype)(a))
@@ -197,6 +217,21 @@ LLVMValueRef LLVMConstOr(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
 LLVMValueRef LLVMConstXor(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant);
 
 
+static token aether_peek(aether a) {
+    if (a->cursor == len(a->tokens))
+        return null;
+    return (token)a->tokens->origin[a->cursor];
+}
+
+static token aether_peek_safe(aether a) {
+    if (a->cursor == len(a->tokens)) {
+        if (!a->cursor)
+            return token("[none]");
+        return (token)a->tokens->origin[a->cursor - 1];
+    }
+    return (token)a->tokens->origin[a->cursor];
+}
+
 static inline bool is_fp_value(LLVMValueRef v) {
     LLVMTypeRef t = LLVMTypeOf(v);
     if (LLVMGetTypeKind(t) == LLVMPointerTypeKind) t = LLVMGetElementType(t);
@@ -210,6 +245,7 @@ static inline bool is_fp_type(LLVMTypeRef t) {
 }
 
 static LLVMValueRef build_arith_op(
+    aether a,
     LLVMBuilderRef b, OPType optype,
     LLVMValueRef L, LLVMValueRef R,
     symbol name
@@ -278,10 +314,8 @@ static int ref_level(Au t) {
     return level;
 }
 
-static token aether_peek(aether a) {
-    if (a->cursor == len(a->tokens))
-        return null;
-    return (token)a->tokens->origin[a->cursor];
+bool is_explicit_ref(enode arg) {
+    return arg->is_explicit_ref;
 }
 
 enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
@@ -338,7 +372,7 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
     etype mem_type = evar_type((evar)L);
 
     LLVMValueRef store_target = L->value;
-    if (L->is_explicit_ref && op_val > OPType__bind) {
+    if (is_explicit_ref(L) && op_val > OPType__bind) {
         etype t = u(etype, mem_type->au->src);
         store_target = LLVMBuildLoad2(B, lltype(t), L->value, "ref_target");
     }
@@ -398,7 +432,7 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
         /* ------------------------------------------------------------
         * Phase 5: type reconciliation
         * ------------------------------------------------------------ */
-        if ((!L->is_explicit_ref && ref_level((Au)res) != ref_level((Au)mem_type)) ||
+        if ((!is_explicit_ref(L) && ref_level((Au)res) != ref_level((Au)mem_type)) ||
             resolve(res) != resolve(mem_type))
             res = e_operand(a, (Au)res, (etype)L);
 
@@ -1202,7 +1236,7 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
         LL = e_create(a, rtype, (Au)LL);
         RL = e_create(a, rtype, (Au)RL);
         if (!a->no_build) {
-            RES = build_arith_op(B, optype, LL->value, RL->value, N);
+            RES = build_arith_op(a, B, optype, LL->value, RL->value, N);
         }
 
     } else if (optype >= OPType__add && optype <= OPType__left) {
@@ -1215,7 +1249,7 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
                 N = N;
             }
 
-            RES = build_arith_op(B, optype, LL->value, RL->value, N);
+            RES = build_arith_op(a, B, optype, LL->value, RL->value, N);
         }
  
     } else if (optype >= OPType__bind && optype <= OPType__assign_left) {
@@ -1229,7 +1263,8 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
                 RES = a->no_build ? null : RL->value;
                 literal = RL->literal;
             } else
-                RES = a->no_build ? null : build_arith_op(B, optype - OPType__assign_add + OPType__add, LL->value, RL->value, N);
+                RES = a->no_build ? null :
+                    build_arith_op(a, B, optype - OPType__assign_add + OPType__add, LL->value, RL->value, N);
             LLVMBuildStore(B, RES, mL->value);
         } else {
             if (optype <= OPType__assign)
@@ -2460,7 +2495,6 @@ bool is_map(etype t) {
 enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input) {
     if (a->no_build) return alloc;
 
-    // 
     efunc f_initialize = (efunc)u(efunc,
         find_member(etypeid(Au)->au, "initialize", AU_MEMBER_FUNC, false));
 
@@ -2754,6 +2788,8 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         }
 
         Au_t  t_isa = isa(mdl);
+        if (seq == 280)
+            seq = seq;
         enode fmem  = convertible((etype)input, mdl);
 
         verify(fmem, "no suitable conversion found for %o -> %o (%i)",
@@ -3664,7 +3700,10 @@ enode aether_e_offset(aether a, enode n, Au offset) { sequencer
     sprintf(N, "%i_offset", seq);
     LLVMValueRef ptr_offset = LLVMBuildGEP2(B,
         elem_ty, base, &i->value, 1, N);
-    return enode(mod, a, au, au, loaded, false, value, ptr_offset);
+
+    Au_t arg_type = au_arg_type((Au)n);
+    
+    return enode(mod, a, au, n->is_explicit_ref ? arg_type->src : arg_type, loaded, false, value, ptr_offset);
 }
 
 enode aether_e_load(aether a, enode mem, enode target) { sequencer
@@ -4029,7 +4068,7 @@ Au_t arg_type(Au_t au) {
         }
         break;
     }
-    verify(res, "argument not resolving type: %s", au);
+    //verify(res, "argument not resolving type: %s", au);
     return res;
 }
 
@@ -4276,8 +4315,12 @@ none etype_init(etype t) {
         
         arg_list(au, arg) {
             Au_t t = arg->src;
-            if (!u(etype, t))
-                etype(mod, a, au, t);
+
+            // register type if we have not
+            if (!u(etype, t)) etype(mod, a, au, t);
+
+            // register arg node
+            //enode arg_enode = evar(mod, a, au, arg, is_explicit_ref, arg->is_explicit_ref);
             
             bool convert_prim_target = is_prim(t) && arg->is_target;
             arg_types[index++] = lltype(convert_prim_target ? pointer(a, (Au)t) : u(etype, t));
@@ -4357,7 +4400,7 @@ none etype_init(etype t) {
         };
         LLVMStructSetBody(cereal_type, members, 1, 1);
         t->lltype = cereal_type;
-    } else if (au == typeid(floats)) {
+    } else if (au == typeid(floats_t)) {
         t->lltype = LLVMPointerTypeInContext(a->module_ctx, 0);
     } else if (au == typeid(func)) {
         LLVMTypeRef fn_type = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx), NULL, 0, 0);
@@ -4505,7 +4548,7 @@ etype implement_type_id(etype t) {
     
     etype tt = u(etype, t->au);
     tt->type_id = hold(access(schema_i, string("type"), true));
-    if (!a->is_Au_import && t != a) {
+    if (!a->is_Au_import && t != a && au->access_type != interface_intern) {
         set(a->user_type_ids, (Au)t, (Au)tt->type_id);
     }
     return mt;
@@ -4827,9 +4870,11 @@ none etype_implement(etype t) {
         int index = 0;
         arg_list(fn->au, arg) {
             verify(arg != typeid(Au), "unexpected Au");
-            etype t = u(etype, arg);
-            if (!t)
-                evar(mod, a, au, arg, arg_index, index, loaded, true);
+            evar t = u(evar, arg);
+            if (!t) {
+                bool is_explicit_ref = arg->is_explicit_ref;
+                t = evar(mod, a, au, arg, is_explicit_ref, is_explicit_ref, arg_index, index, loaded, true);
+            }
             index++;
         }
     }
@@ -5099,6 +5144,10 @@ none aether_build_module_initializer(aether a, enode init) {
         bool is_enum_t   = is_enum(mdl);
 
         if (!is_class_t && !is_struct_t && !is_enum_t)
+            continue;
+
+        // these 
+        if (mdl->au->access_type == interface_intern)
             continue;
 
         Au_t tau = mdl->au;
@@ -5880,7 +5929,8 @@ array macro_expand(macro m, array args) {
 }
 
 // return tokens for function content (not its surrounding def)
-array codegen_generate_fn(codegen a, efunc f, array query) {
+array codegen_generate_fn(codegen code, efunc f, array query) {
+    aether a = code->mod;
     fault("must subclass codegen for usable code generation");
     return null;
 }

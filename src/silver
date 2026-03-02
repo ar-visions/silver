@@ -70,7 +70,7 @@ declare_class(exports)
     M(X, Y, i, method,   public,  string, read_alpha_any) \
     M(X, Y, i, method,   public,  string, peek_alpha) \
     M(X, Y, i, method,   public,  bool,   next_is_neighbor) \
-    M(X, Y, i, method,   public,  etype,  read_def) \
+    M(X, Y, i, method,   public,  etype,  read_def, interface) \
     M(X, Y, i, method,   public,  string, peek_def) \
     M(X, Y, i, method,   public,  string, peek_keyword) \
     M(X, Y, i, method,   public,  string, read_keyword) \
@@ -98,8 +98,22 @@ declare_class_4(silver, aether, emodule, etype)
     M(X, Y, s, method,   public,  enode,   parse_export, silver)
 declare_class_3(import, enamespace, etype)
 
+#define chatgpt_module_ silver
 #define chatgpt_schema(X, Y, ...) \
-    M(X, Y, i, override, method,  generate_fn)
+    M(X, Y, i, override, method,  generate_fn) \
+    M(X, Y, i, prop,     public,  string, model)
 declare_class_2(chatgpt, codegen)
+
+#define claude_module_ silver
+#define claude_schema(X, Y, ...) \
+    M(X, Y, i, override, method,  generate_fn) \
+    M(X, Y, i, prop,     public,  string, model)
+declare_class_2(claude, codegen)
+
+#define gemini_module_ silver
+#define gemini_schema(X, Y, ...) \
+    M(X, Y, i, override, method,  generate_fn) \
+    M(X, Y, i, prop,     public,  string, model)
+declare_class_2(gemini, codegen)
 
 #endif

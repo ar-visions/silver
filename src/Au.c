@@ -1484,7 +1484,7 @@ Au Au_initialize(Au a) {
 
 __thread __error_t* Au_error_top = NULL;
 
-void halt(string msg) {
+void halt(string msg, token tok) {
     if (!Au_error_top) {
 #ifndef NDEBUG
         raise(SIGTRAP);
@@ -1494,6 +1494,7 @@ void halt(string msg) {
 #endif
     }
     Au_error_top->message = msg;
+    Au_error_top->tok     = tok;
     longjmp(Au_error_top->env, 1);
 }
 
@@ -6483,7 +6484,7 @@ define_primitive(none,   nil, AU_TRAIT_VOID)
 define_primitive(handle, raw, AU_TRAIT_POINTER, u8)
 define_primitive(ARef,   ref, AU_TRAIT_POINTER, Au)
 define_primitive(Au_ts, ref, AU_TRAIT_POINTER, Au_t)
-define_primitive(floats, raw, AU_TRAIT_POINTER, f32)
+define_primitive(floats_t, raw, AU_TRAIT_POINTER, f32)
 
 define_func_ptr(func,           typeid(none))
 define_func_ptr(hook,           typeid(Au), Au)
