@@ -1,0 +1,105 @@
+# ============================================================================
+# xoshiro256++ — state of the art PRNG
+# Blackman & Vigna (2018), sub-nanosecond, passes all known statistical tests
+# 256-bit state, period 2^256-1
+# ============================================================================
+
+import <time.h>
+
+# --- xoshiro256++ state (module-level) ---
+# intern classes have no exported type-id and no introspection
+intern class rng
+    state:  new u64[ 4 ] # new is vector, because the arg given to construct-with is a shape -- NO inits are called because NO inner elements are constructed from the call
+    seeded: bool [ false ]
+
+# silver does have internal module state with interface to it, 
+# however we must init these classes once, only
+# we do not 'mutate' the member values in global, 
+# so module-level members are read-only but may have their own state
+intern rng_state: rng[]
+
+# SplitMix64 — expands a single u64 seed into decorrelated state words
+intern func splitmix64 [state: ref u64] -> u64
+    state[0] += 0x9e3779b97f4a7c15
+    z: u64 [ state[0] ]
+    z =   (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9
+    z =   (z ^ (z >> 27)) * 0x94d049bb133111eb
+    return z ^ (z >> 31)
+
+
+# native rotate via x86 rol instruction
+intern func rotl23 [input: u64] -> u64
+    result: u64 asm [ input ]
+        mov rax, input
+        rol rax, 23
+        return rax
+    return result
+
+
+intern func rotl45 [input: u64] -> u64
+    result: u64 asm [ input ]
+        mov rax, input
+        rol rax, 45
+        return rax
+    return result
+
+
+# seed from a u64 (SplitMix64 expands to 4 state words)
+func rng_seed [seed: u64] -> none
+    sm: u64 [ seed ]
+    rng_state.state[0] = splitmix64[ref sm]
+    rng_state.state[1] = splitmix64[ref sm]
+    rng_state.state[2] = splitmix64[ref sm]
+    rng_state.state[3] = splitmix64[ref sm]
+    rng_seeded = true
+
+
+# auto-seed from clock on first use
+intern func ensure_seeded [] -> none
+    if [ rng_seeded ]
+        return
+    
+    rng_seed u64 [ time[null] ] ^ u64[ clock ] * 6364136223846793005
+
+
+# xoshiro256++ core — returns uniform u64
+func rng_next [] -> u64
+    ensure_seeded
+    s: rng_state.state
+    result: u64 [ rotl23[s[0] + s[3]] + s[0] ]
+    t:      u64 [ s[1] << 17 ]
+    s[2] ^= s[0]
+    s[3] ^= s[1]
+    s[1] ^= s[2]
+    s[0] ^= s[3]
+    s[2] ^= t
+    s[3]  = rotl45[s[3]]
+    return result
+
+
+# --- distributions ---
+
+# uniform f32 [0, 1) — upper 24 bits, full mantissa precision
+func randf [] -> f32
+    return f32[rng_next[] >> 40] * 0x1.0p-24
+
+# uniform f64 [0, 1) — upper 53 bits
+func randf64 [] -> f64
+    return f64[rng_next[] >> 11] * 0x1.0p-53
+
+# uniform u64 [0, bound)
+func rng_range [bound: u64] -> u64
+    return rng_next[] % bound
+
+# standard normal (mean=0, stddev=1) via Box-Muller
+func randn [] -> f32
+    u1: randf
+    u2: randf
+    if [ u1 < 1.0e-7 ]
+        u1 = 1.0e-7
+    return sqrtf[ -2.0 * logf[u1] ] * cosf[ 6.283185307 * u2 ]
+
+# normal with specified mean and stddev
+func randn_params [mean: f32, stddev: f32] -> f32
+    return randn[] * stddev + mean
+

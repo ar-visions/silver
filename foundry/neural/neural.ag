@@ -1,0 +1,215 @@
+export 0.8.8
+import <stdio.h>
+import <math.h>
+import <string.h>
+
+import ai
+import random
+
+# ============================================================================
+# Neural Foundation Module
+# Advanced AI extensions for Silver
+# ============================================================================
+
+# --- Loss Functions ---
+
+class Loss
+    func compute [prediction: tensor, target: tensor] -> f32
+        return 0.0
+    
+    func gradient [prediction: tensor, target: tensor] -> tensor
+        return null
+
+
+class MseLoss : Loss
+    func compute [prediction: tensor, target: tensor] -> f32
+        l: f32 [ 0.0 ]
+        t: prediction.count
+        for [ i: i32 0 :: i < t :: i += 1 ]
+            diff: prediction.realized[i] - target.realized[i]
+            l += diff * diff
+        return l / f32[t]
+
+    func gradient [prediction: tensor, target: tensor] -> tensor
+        t: prediction.count
+        grad: tensor [ tensor_shape: prediction.tensor_shape ]
+        for [ i: i32 0 :: i < t :: i += 1 ]
+            grad.realized[i] = 2.0 * (prediction.realized[i] - target.realized[i]) / f32[t]
+        return grad
+
+
+class CrossEntropyLoss : Loss
+    func compute [prediction: tensor, target: tensor] -> f32
+        l: f32 [ 0.0 ]
+        t: prediction.count
+        for [ i: i32 0 :: i < t :: i += 1 ]
+            p: prediction.realized[i]
+            # stability epsilon
+            if [ p < 1.0e-12 ] p = 1.0e-12
+            if [ p > 1.0 - 1.0e-12 ] p = 1.0 - 1.0e-12
+            l -= target.realized[i] * logf[p]
+        return l / f32[t]
+
+    func gradient [prediction: tensor, target: tensor] -> tensor
+        t: prediction.count
+        grad: tensor [ tensor_shape: prediction.tensor_shape ]
+        for [ i: i32 0 :: i < t :: i += 1 ]
+            p: prediction.realized[i]
+            if [ p < 1.0e-12 ] p = 1.0e-12
+            if [ p > 1.0 - 1.0e-12 ] p = 1.0 - 1.0e-12
+            grad.realized[i] = -target.realized[i] / (p * f32[t])
+        return grad
+
+
+# --- Optimizers ---
+
+class Optimizer
+    public learning_rate: f32 [ 0.001 ]
+    
+    func update [model: keras] -> none
+        no-op
+
+
+class AdamOptimizer : Optimizer
+    public beta1:   f32 [ 0.9 ]
+    public beta2:   f32 [ 0.999 ]
+    public epsilon: f32 [ 1.0e-7 ]
+    intern t:       i32 [ 0 ]
+    intern m:       map tensor[string]
+    intern v:       map tensor[string]
+
+    func update [model: keras] -> none
+        t += 1
+        if [ ! m ] m = map tensor[string] []
+        if [ ! v ] v = map tensor[string] []
+
+        for [ layer: op ] in model.ops
+            if [ layer.weights ]
+                update_param layer.name + "_w", layer.weights
+            if [ layer.bias ]
+                update_param layer.name + "_b", layer.bias
+
+    func update_param [id: string, p: tensor] -> none
+        if [ ! m[id] ]
+            m[id] = tensor [ tensor_shape: p.tensor_shape, initializer: Initializer.zeros ]
+            v[id] = tensor [ tensor_shape: p.tensor_shape, initializer: Initializer.zeros ]
+        
+        mv: m[id].realized
+        vv: v[id].realized
+        g:  p.grad
+        params: p.realized
+        count: p.count
+        
+        b1t: f32 [ powf[beta1, f32[t]] ]
+        b2t: f32 [ powf[beta2, f32[t]] ]
+        
+        for [ i: i32 0 :: i < count :: i += 1 ]
+            # Update biased first moment estimate
+            mv[i] = beta1 * mv[i] + (1.0 - beta1) * g[i]
+            # Update biased second raw moment estimate
+            vv[i] = beta2 * vv[i] + (1.0 - beta2) * g[i] * g[i]
+            
+            # Compute bias-corrected first moment estimate
+            m_hat: f32 [ mv[i] / (1.0 - b1t) ]
+            # Compute bias-corrected second raw moment estimate
+            v_hat: f32 [ vv[i] / (1.0 - b2t) ]
+            
+            # Update parameters
+            params[i] -= learning_rate * m_hat / (sqrtf[v_hat] + epsilon)
+
+
+# --- Additional Layers ---
+
+op SoftmaxLayer
+    func forward [] -> none
+        t: input.count
+        max_val: f32 [ -99999.0 ]
+        # find max for numerical stability
+        for [ i: i32 0 :: i < t :: i += 1 ]
+            if [ input.realized[i] > max_val ] max_val = input.realized[i]
+        
+        sum: f32 [ 0.0 ]
+        for [ i: i32 0 :: i < t :: i += 1 ]
+            result.realized[i] = expf[input.realized[i] - max_val]
+            sum += result.realized[i]
+            
+        for [ i: i32 0 :: i < t :: i += 1 ]
+            result.realized[i] /= sum
+
+    func back [d_out: tensor] -> tensor
+        t: result.count
+        d_in: tensor [ tensor_shape: input.tensor_shape ]
+        memset d_in.realized, 0, t * 4
+        
+        for [ i: i32 0 :: i < t :: i += 1 ]
+            for [ j: i32 0 :: j < t :: j += 1 ]
+                if [ i == j ]
+                    d_in.realized[i] += d_out.realized[j] * result.realized[i] * (1.0 - result.realized[i])
+                el
+                    d_in.realized[i] -= d_out.realized[j] * result.realized[i] * result.realized[j]
+        return d_in
+
+
+op DropoutLayer
+    public rate: f32 [ 0.5 ]
+    intern mask: tensor
+    
+    func forward [] -> none
+        if [ ! mask ] mask = tensor [ tensor_shape: input.tensor_shape ]
+        t: input.count
+        scale: f32 [ 1.0 / (1.0 - rate) ]
+        for [ i: i32 0 :: i < t :: i += 1 ]
+            if [ randf[] > rate ]
+                mask.realized[i] = 1.0
+                result.realized[i] = input.realized[i] * scale
+            el
+                mask.realized[i] = 0.0
+                result.realized[i] = 0.0
+
+    func back [d_out: tensor] -> tensor
+        t: input.count
+        d_in: tensor [ tensor_shape: input.tensor_shape ]
+        scale: f32 [ 1.0 / (1.0 - rate) ]
+        for [ i: i32 0 :: i < t :: i += 1 ]
+            d_in.realized[i] = d_out.realized[i] * mask.realized[i] * scale
+        return d_in
+
+
+# --- Training Framework ---
+
+class NeuralTrainer
+    public model:     keras
+    public optimizer: Optimizer
+    public loss:      Loss
+
+    func step [x: tensor, y: tensor] -> f32
+        # forward pass
+        prediction: model.forward[x]
+        
+        # calculate loss
+        l: f32 [ loss.compute[prediction, y] ]
+        
+        # backward pass
+        d_out: tensor [ loss.gradient[prediction, y] ]
+        model.back[d_out]
+        
+        # apply optimization
+        optimizer.update model
+        
+        return l
+
+    func fit [samples: map tensor[tensor], epochs: i32] -> none
+        for [ epoch: i32 0 :: epoch < epochs :: epoch += 1 ]
+            total_loss: f32 [ 0.0 ]
+            count:      i32 [ 0 ]
+            
+            for [ target: tensor, src: tensor ] in samples
+                total_loss += step[src, target]
+                count += 1
+            
+            avg_loss: total_loss / f32[count]
+            puts "epoch %d/%d - loss: %f", epoch + 1, epochs, avg_loss
+
+    func evaluate [x: tensor, y: tensor] -> f32
+        prediction: model.forward[x]
+        return loss.compute[prediction, y]

@@ -47,10 +47,14 @@ class tensor
 
     func sum [] -> f32
         s: f32 [0.0]
+        s += 1.0f
 
         #for [ i:i32 ] in (0 ..< 10) -- better syntax to get for inline iwth our array / map iteration
         for [ i: i32 0 :: i < count :: i += 1 ]
+            s2 : realized[i] #break not set to float
+            s2 += 1.0f       #break
             s += realized[i]
+        
         return s
 
     func grad_sum [] -> f32
