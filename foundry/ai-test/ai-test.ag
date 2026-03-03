@@ -1,0 +1,99 @@
+
+export 0.8.8
+
+import <stdio.h>
+import <string.h>
+import <math.h>
+import ai
+import random
+
+
+app ai-test
+    func init [] -> none
+        rng_seed 42
+        puts 'ai-test: average color predictor'
+        puts 'network: conv(8) -> conv(16) -> pool(2x2) -> dense(64) -> dense(1)'
+
+        # --- input tensors for each layer position ---
+        # keras wiring sets op.result = next_op.input, so each
+        # op needs an input tensor with the correct shape
+        t_in:     tensor [tensor_shape: 32x32x1]
+        t_conv1:  tensor [tensor_shape: 32x32x1]
+        t_conv2:  tensor [tensor_shape: 32x32x8]
+        t_pool:   tensor [tensor_shape: 32x32x16]
+        t_flat:   tensor [tensor_shape: 16x16x16]
+        t_dense1: tensor [tensor_shape: 1x4096]
+        t_dense2: tensor [tensor_shape: 1x64]
+        t_out:    tensor [tensor_shape: 1x1]
+
+        # --- weight and bias tensors ---
+        # conv weights are flat-indexed, dense weights need 2D shape for gemm
+        w_conv1:  tensor [tensor_shape: 72x1,     initializer: Initializer.glorot_uniform]
+        b_conv1:  tensor [tensor_shape: 8x1,      initializer: Initializer.zeros]
+        w_conv2:  tensor [tensor_shape: 1152x1,   initializer: Initializer.glorot_uniform]
+        b_conv2:  tensor [tensor_shape: 16x1,     initializer: Initializer.zeros]
+        w_dense1: tensor [tensor_shape: 4096x64,  initializer: Initializer.glorot_uniform]
+        b_dense1: tensor [tensor_shape: 1x64,     initializer: Initializer.zeros]
+        w_dense2: tensor [tensor_shape: 64x1,     initializer: Initializer.glorot_uniform]
+        b_dense2: tensor [tensor_shape: 1x1,      initializer: Initializer.zeros]
+
+        # --- construct ops ---
+        op_in:  input_op [input: t_in,     name: 'input']
+        op_c1:  conv     [input: t_conv1,  name: 'conv1',
+                          padding: Padding.same, kernel_size: 3x3, stride_shape: 1x1,
+                          out_channels: 8, activation: Activation.relu,
+                          weights: w_conv1, bias: b_conv1]
+        op_c2:  conv     [input: t_conv2,  name: 'conv2',
+                          padding: Padding.same, kernel_size: 3x3, stride_shape: 1x1,
+                          out_channels: 16, activation: Activation.relu,
+                          weights: w_conv2, bias: b_conv2]
+        op_p:   pool     [input: t_pool,   name: 'pool',
+                          pool_size: 2x2, pool_type: Pooling.max,
+                          stride_shape: 2x2]
+        op_f:   flatten  [input: t_flat,   name: 'flatten']
+        op_d1:  dense    [input: t_dense1, name: 'dense1',
+                          units: 64, in_dim: 4096, out_dim: 64,
+                          activation: Activation.relu,
+                          weights: w_dense1, bias: b_dense1]
+        op_d2:  dense    [input: t_dense2, name: 'dense2',
+                          units: 1, in_dim: 64, out_dim: 1,
+                          weights: w_dense2, bias: b_dense2]
+        op_out: output_op [input: t_out,   name: 'output']
+
+        # --- wire upstream dependencies ---
+        op_c1.inputs  = array string [ 'input' ]
+        op_c2.inputs  = array string [ 'conv1' ]
+        op_p.inputs   = array string [ 'conv2' ]
+        op_f.inputs   = array string [ 'pool' ]
+        op_d1.inputs  = array string [ 'flatten' ]
+        op_d2.inputs  = array string [ 'dense1' ]
+        op_out.inputs = array string [ 'dense2' ]
+
+        # --- create keras model ---
+        all_ops: array op [ op_in, op_c1, op_c2, op_p, op_f, op_d1, op_d2, op_out ]
+        model: keras [ident: 'ai-test', ops: all_ops]
+
+        # --- generate training data ---
+        # random grayscale 32x32 images, label = average pixel value
+        num_samples: i32 [20]
+        samples: map tensor[tensor] []
+        pixels:  i32 [1024]
+
+        puts 'generating {num_samples} training samples...'
+        for [ s: i32 0 :: s < num_samples :: s += 1 ]
+            img: tensor [tensor_shape: 32x32x1]
+            avg: f32 [0.0]
+            for [ i: i32 0 :: i < pixels :: i += 1 ]
+                v: randf
+                img.floats[i] = v
+                avg += v
+            avg /= 1024.0
+            target: tensor [tensor_shape: 1x1]
+            target.floats[0] = avg
+            samples[img] = target
+
+        # --- train ---
+        puts 'training...'
+        model.train 10, samples, 0.001
+
+        puts 'ai-test complete'

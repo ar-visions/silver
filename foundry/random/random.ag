@@ -3,8 +3,10 @@
 # Blackman & Vigna (2018), sub-nanosecond, passes all known statistical tests
 # 256-bit state, period 2^256-1
 # ============================================================================
-
+import <stdio.h>
 import <time.h>
+import <math.h>
+
 
 # --- xoshiro256++ state (module-level) ---
 # intern classes have no exported type-id and no introspection
@@ -12,11 +14,13 @@ intern class rng
     state:  new u64[ 4 ] # new is vector, because the arg given to construct-with is a shape -- NO inits are called because NO inner elements are constructed from the call
     seeded: bool [ false ]
 
+
 # silver does have internal module state with interface to it, 
 # however we must init these classes once, only
 # we do not 'mutate' the member values in global, 
 # so module-level members are read-only but may have their own state
 intern rng_state: rng[]
+
 
 # SplitMix64 — expands a single u64 seed into decorrelated state words
 intern func splitmix64 [state: ref u64] -> u64
@@ -45,18 +49,18 @@ intern func rotl45 [input: u64] -> u64
 
 
 # seed from a u64 (SplitMix64 expands to 4 state words)
-func rng_seed [seed: u64] -> none
+public func rng_seed [seed: u64] -> none
     sm: u64 [ seed ]
     rng_state.state[0] = splitmix64[ref sm]
     rng_state.state[1] = splitmix64[ref sm]
     rng_state.state[2] = splitmix64[ref sm]
     rng_state.state[3] = splitmix64[ref sm]
-    rng_seeded = true
+    rng_state.seeded = true
 
 
 # auto-seed from clock on first use
 intern func ensure_seeded [] -> none
-    if [ rng_seeded ]
+    if [ rng_state.seeded ]
         return
     
     rng_seed u64 [ time[null] ] ^ u64[ clock ] * 6364136223846793005
@@ -81,15 +85,15 @@ func rng_next [] -> u64
 
 # uniform f32 [0, 1) — upper 24 bits, full mantissa precision
 func randf [] -> f32
-    return f32[rng_next[] >> 40] * 0x1.0p-24
+    return f32[rng_next >> 40] * 0x1.0p-24
 
 # uniform f64 [0, 1) — upper 53 bits
 func randf64 [] -> f64
-    return f64[rng_next[] >> 11] * 0x1.0p-53
+    return f64[rng_next >> 11] * 0x1.0p-53
 
 # uniform u64 [0, bound)
 func rng_range [bound: u64] -> u64
-    return rng_next[] % bound
+    return rng_next % bound
 
 # standard normal (mean=0, stddev=1) via Box-Muller
 func randn [] -> f32
@@ -101,5 +105,5 @@ func randn [] -> f32
 
 # normal with specified mean and stddev
 func randn_params [mean: f32, stddev: f32] -> f32
-    return randn[] * stddev + mean
+    return randn * stddev + mean
 

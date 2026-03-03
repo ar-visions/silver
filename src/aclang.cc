@@ -866,7 +866,6 @@ public:
 };
 
 typedef aether silver;
-void print_tokens(silver mod, symbol label);
 
 class MacroCollector2 : public clang::PPCallbacks {
 public:
