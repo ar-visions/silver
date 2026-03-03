@@ -1675,42 +1675,35 @@ enode aether_e_short_circuit(aether a, OPType optype, enode L) {
     }
     LLVMValueRef func = LLVMGetBasicBlockParent(LLVMGetInsertBlock(B));
     
-    // get L's actual value and its bool conversion
+    // figure out common type and convert L before branching
+    etype rtype = (etype)evar_type((evar)L);
     etype m_bool = etypeid(bool);
-    enode L_bool = e_create(a, m_bool, (Au)L);  // for branching
-    // but keep L->value as the actual value to return
-    
+    enode L_conv = e_create(a, rtype, (Au)L);
+    enode L_bool = e_create(a, m_bool, (Au)L);
+
     LLVMBasicBlockRef eval_r_block = LLVMAppendBasicBlockInContext(a->module_ctx, func, "eval_r");
     LLVMBasicBlockRef merge_block  = LLVMAppendBasicBlockInContext(a->module_ctx, func, "merge");
-    LLVMBasicBlockRef L_block      = LLVMGetInsertBlock(B);
-    
+    LLVMBasicBlockRef L_final      = LLVMGetInsertBlock(B);
+
     if (optype == OPType__or) {
-        // or: if L truthy, return L; else evaluate and return R
         LLVMBuildCondBr(B, L_bool->value, merge_block, eval_r_block);
     } else {
-        // and: if L falsy, return L; else evaluate and return R
         LLVMBuildCondBr(B, L_bool->value, eval_r_block, merge_block);
     }
-    
+
     // eval R block
     LLVMPositionBuilderAtEnd(B, eval_r_block);
     enode R = (enode)a->parse_expr((Au)a, null);
+    enode R_conv = e_create(a, rtype, (Au)R);
     LLVMBasicBlockRef R_block = LLVMGetInsertBlock(B);
     LLVMBuildBr(B, merge_block);
-    
-    // figure out common type
-    etype rtype = (etype)evar_type((evar)L);
-    
+
     // merge block with PHI - returning actual values, not bools
     LLVMPositionBuilderAtEnd(B, merge_block);
     LLVMValueRef phi = LLVMBuildPhi(B, lltype(rtype), "sc_result");
-    
-    // convert both to common type if needed
-    enode L_conv = e_create(a, rtype, (Au)L);
-    enode R_conv = e_create(a, rtype, (Au)R);
-    
+
     LLVMValueRef      vals[] = { L_conv->value, R_conv->value };
-    LLVMBasicBlockRef bbs[]  = { L_block,       R_block };
+    LLVMBasicBlockRef bbs[]  = { L_final,       R_block };
     LLVMAddIncoming(phi, vals, bbs, 2);
     
     return enode(
@@ -1789,7 +1782,9 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     // -----------------------------------------------------------------------
     // If this is an instance method, we must look up the implementation 
     // in the runtime type's vtable (ft) rather than using the static symbol.
-    if (!a->direct && target_type && target_type->is_any && !first_is_alloc && fn->au->context != typeid(Au) && fn->au->is_imethod && !funcptr && !(target_type && target_type->target && target_type->target->avoid_ftable)) {
+    if (!a->direct && target_type && target_type->is_any && !first_is_alloc && 
+         fn->au->context != typeid(Au) && fn->au->is_imethod && !funcptr && 
+         !(target_type && target_type->target && target_type->target->avoid_ftable)) {
         verify(n_args > 0, "instance method %o requires 'this' argument", fn);
         
         // 1. Get the instance pointer ('this' is always the first argument)
@@ -2489,8 +2484,20 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
     // 3. resolve context members from scope (user-provided props override scope lookup)
     resolve_context_members(alloc, props);
 
-    // 4. call initialize (walks init chain via ftable or direct)
-    enode res = e_fn_call(a, f_initialize, a(alloc));
+    // 4. call init chain — direct for concrete types, Au_initialize for polymorphic
+    enode res = alloc;
+    if (a->direct || !alloc->is_any) {
+        // walk context chain, collect init functions, call base-first
+        array chain = etype_class_list(canonical((etype)alloc));
+        each(chain, etype, mdl) {
+            Au_t init_mem = find_member(mdl->au, "init", AU_MEMBER_FUNC, false);
+            efunc  init_f = u(efunc, init_mem);
+            if (init_f) e_fn_call(a, init_f, a(alloc));
+        }
+
+    } else {
+        res = e_fn_call(a, f_initialize, a(alloc));
+    }
     res->au   = alloc->au;
     res->meta = alloc->meta ? hold(alloc->meta) : null;
     return res;
@@ -2633,6 +2640,11 @@ enode e_convert_or_cast(aether a, etype output, enode input) {
     if (k == LLVMPointerTypeKind) { // this should all be in convertible
         a->is_const_op = false;
         if (a->no_build) return e_noop(a, output);
+        if (output->au == typeid(bool)) {
+            return value(output,
+                LLVMBuildICmp(B, LLVMIntNE, input->value,
+                    LLVMConstNull(LLVMPointerTypeInContext(a->module_ctx, 0)), "ptr_to_bool"));
+        }
         bool loaded = !(!(is_ptr(output) || is_func_ptr(output)) && (is_struct(output) || is_prim(output)));
         Au output_info = head(output);
         enode res = value(output,
@@ -2668,7 +2680,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             LLVMBuildBitCast(B, n->value, lltype(mdl), "is_au_t_cast"));
     }
 
-    if (!args && is_ptr(mdl))
+    if (!args && is_ptr(mdl) && !is_class(mdl))
         return e_null(a, mdl);
 
     // lambda creation (unchanged)
@@ -2734,7 +2746,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         
         // boxing: struct/prim to Au
         etype input_type = canonical(input);
-        if (mdl->au == typeid(Au) && !input_estr && (is_struct(input) || is_prim(input))) {
+        if (mdl->au == typeid(Au) && !input_estr && (is_enum(canonical(input)) || is_struct(input) || is_prim(input))) {
             a->is_const_op = false;
             if (a->no_build) return e_noop(a, mdl);
             
@@ -2757,7 +2769,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         }
 
         Au_t  t_isa = isa(mdl);
-        if (seq == 280)
+        if (seq == 532)
             seq = seq;
         enode fmem  = convertible((etype)input, mdl);
 
@@ -3228,9 +3240,6 @@ enode aether_e_switch(
     // default block, and obtain insertion block for first case
     catcher def_cat = def_block ? catcher(mod, a, block, LLVMAppendBasicBlockInContext(a->module_ctx, entry, "default")) : null;
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(B);
-    int total = cases->count;
-    int idx = 0;
-
 
     pairs(case_blocks, i) {
         array   key_expr = (array)  i->key;
@@ -3240,17 +3249,18 @@ enode aether_e_switch(
         LLVMPositionBuilderAtEnd(B, cur);
         // enode aether_e_cmp(aether a, enode L, enode R)
         enode case_val = (enode)invoke(expr_builder, (Au)key_expr);
-        enode eq = e_cmp(a, switch_val, case_val);
+        enode cmp = e_cmp(a, switch_val, case_val);
+        LLVMValueRef eq = LLVMBuildICmp(B, LLVMIntEQ, cmp->value,
+            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 0, 0), "case.eq");
 
         // next block in chain
         LLVMBasicBlockRef next =
-            (idx + 1 < total)
+            (i->next)
                 ? LLVMAppendBasicBlockInContext(a->module_ctx, entry, "case.next")
                 : (def_cat ? def_cat->block : switch_cat->block);
 
-        LLVMBuildCondBr(B, eq->value, case_cat->block, next);
+        LLVMBuildCondBr(B, eq, case_cat->block, next);
         cur = next;
-        idx++;
     }
 
     // ---- CASE bodies ----
@@ -3262,9 +3272,9 @@ enode aether_e_switch(
         array body_tokens = (array)value_by_index(cases, i++);
         invoke(body_builder, (Au)body_tokens);
 
-        // we should have a last node, but see return statement returns its own thing, not a return
         // if the case didn’t terminate (break/return), jump to merge
-        LLVMBuildBr(B, switch_cat->block);
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B)))
+            LLVMBuildBr(B, switch_cat->block);
     }
 
     // ---- DEFAULT body ----
@@ -3823,6 +3833,8 @@ enode aether_e_primitive_convert(aether a, enode expr, etype rtype) {
             V = LLVMBuildAlloca(B, lltype(F), "prim_addr");
             LLVMBuildStore(B, expr->value, V);
         }
+        if (!make_temp)
+            make_temp = make_temp;
         verify(make_temp, "unsupported cast");
     }
 
@@ -4044,6 +4056,8 @@ Au_t arg_type(Au_t au) {
 etype etype_canonical(etype t) {
     aether a = t->mod;
     Au_t au = t->au;
+    if (au->member_type == AU_MEMBER_ENUMV)
+        return u(etype, au->src);
     if (au->member_type == AU_MEMBER_VAR)
         au = au->src;
     if (au->is_typeid && au->src)
@@ -4533,9 +4547,30 @@ none etype_implement(etype t) {
     if (au->member_type == AU_MEMBER_NAMESPACE || (is_func(au) && !((enode)t)->used && !a->is_Au_import))
         return;
     Au commander_solo = head(t);
+
+    if (au->traits & AU_TRAIT_ENUM) {
+        if (!lltype(t) && au->src)
+            t->lltype = lltype(u(etype, au->src));
+        for (int i = 0; i < au->members.count; i++) {
+            Au_t mem = (Au_t)au->members.origin[i];
+            if (mem->member_type != AU_MEMBER_ENUMV) continue;
+            enode n = u(enode, mem);
+            if (n && !n->value) {
+                Au lit = n->literal;
+                if (!lit && mem->value && au->src)
+                    lit = primitive(au->src, mem->value);
+                if (lit) {
+                    enode prim = e_operand_primitive(a, lit);
+                    n->value   = e_create(a, u(etype, au->src), (Au)prim)->value;
+                    n->loaded  = true;
+                }
+            }
+        }
+    }
+
     if (t->is_implemented) return;
     t->is_implemented = true;
-    
+
     bool is_Au = !a->import_c && is_au_type(resolve(t)) && (!au->is_schema && !au->is_system && !au->is_pointer && au->ident);
     etype type_t_ptr = is_Au ? get_type_t_ptr(t) : null;
 
@@ -4797,7 +4832,9 @@ none etype_implement(etype t) {
             }
         }
 
-        fn->value  = LLVMAddFunction(a->module_ref, n, t->lltype);
+        fn->value  = LLVMGetNamedFunction(a->module_ref, n);
+        if (!fn->value)
+            fn->value = LLVMAddFunction(a->module_ref, n, t->lltype);
 
         // fill out enode values for our args type pointer 
         // context type pointer (we register these on init)
@@ -4820,7 +4857,7 @@ none etype_implement(etype t) {
         fn->entry = is_user_implement ? LLVMAppendBasicBlockInContext(
             a->module_ctx, fn->value, label->chars) : null;
 
-        bool global_public_fn = (is_module(au->context) && au->access_type != interface_intern);
+        bool global_public_fn = au->access_type != interface_intern;
         LLVMSetLinkage(fn->value,
             !global_public_fn && is_user_implement && !au->is_export ?
                 LLVMInternalLinkage : LLVMExternalLinkage);
@@ -5204,7 +5241,7 @@ none aether_build_module_initializer(aether a, enode init) {
 
             } else if (mem->member_type == AU_MEMBER_ENUMV) {
                 etype_implement(u(etype, mem->context));
-                enode val = (enode)u(etype, mem);
+                enode val = (enode)u(enode, mem);
 
                 e_fn_call(a, fn_def_enum, a(
                     type_id,
@@ -5227,7 +5264,7 @@ none aether_build_module_initializer(aether a, enode init) {
     push_scope(a, (Au)f);
     members(module_base, au) {
         evar var = u(evar, au);
-        if (au->ident && strcmp(au->ident, "u") == 0) {
+        if (au->ident && strcmp(au->ident, "rng_state") == 0) {
             au = au;
         }
         if (au->member_type == AU_MEMBER_VAR && var && var->initializer) {
@@ -6215,6 +6252,15 @@ enode aether_e_bitwise_not(aether a, enode L) {
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, etypeid(bool));
     return value(L, LLVMBuildNot(B, L->value, "bitwise-not"));
+}
+
+enode aether_e_neg(aether a, enode L) {
+    a->is_const_op = false;
+    etype Lm = canonical(L);
+    if (a->no_build) return e_noop(a, Lm);
+    if (Lm->au->is_realistic)
+        return value(L, LLVMBuildFNeg(B, L->value, "neg"));
+    return value(L, LLVMBuildNeg(B, L->value, "neg"));
 }
 
 enode efunc_fptr(efunc f) {
