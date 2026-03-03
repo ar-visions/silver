@@ -202,6 +202,7 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_addr_of, enode, etype) \
     M(X, Y, i, method,   public,  enode,                    e_bitwise_not, enode) \
     M(X, Y, i, method,   public,  enode,                    e_not, enode) \
+    M(X, Y, i, method,   public,  enode,                    e_neg, enode) \
     M(X, Y, i, method,   public,  none,                     e_inc, enode, num) \
     M(X, Y, i, method,   public,  none,                     e_print_node, enode) \
     M(X, Y, i, method,   public,  enode,                    e_or, Au, Au) \

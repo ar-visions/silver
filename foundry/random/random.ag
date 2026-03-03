@@ -19,7 +19,7 @@ intern class rng
 # however we must init these classes once, only
 # we do not 'mutate' the member values in global, 
 # so module-level members are read-only but may have their own state
-intern rng_state: rng[]
+intern rng_state: rng[] #break
 
 
 # SplitMix64 — expands a single u64 seed into decorrelated state words
@@ -56,6 +56,7 @@ public func rng_seed [seed: u64] -> none
     rng_state.state[2] = splitmix64[ref sm]
     rng_state.state[3] = splitmix64[ref sm]
     rng_state.seeded = true
+
 
 
 # auto-seed from clock on first use
