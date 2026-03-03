@@ -867,7 +867,6 @@ void silver_init(silver a) {
         a->stack = hold(array(4));
         a->implements = hold(array());
 
-
         // our verify infrastructure is now production useful
         attempt() {
             string m = stem(a->module);
@@ -914,18 +913,6 @@ void silver_init(silver a) {
 
             if (a->run) {
                 string arg_str = string(alloc, 32);
-                /* we should stop any previous run we had prior above?
-                each(a->run, arg) {
-                    string ar = cast(string, arg);
-                    if (len(args_str))
-                        append(args_str, " ");
-                    concat(args_str, ar);
-                }*/
-
-                // i want just raw unix api to run this
-                //string run = f(string, "%o %o", a->product, args);
-
-
                 int argc = len(a->run) + 2;
                 char** argv = calloc(argc, sizeof(char*));
                 argv[0] = a->product->chars;
@@ -966,7 +953,7 @@ static string op_lang_token(string name) {
 
 static void silver_module() {
     keywords = hold(array_of_cstr(
-        "class",    "struct",   "expect",   "abstract", "context",  "public",   "intern",   "eldef",
+        "class",    "struct",   "expect",   "abstract", "context",  "public",   "intern",
         "import",   "export",   "typeid",   
         "is",       "inherits", "ref",      "in",   "lambda",
         "const",       "no-op",    "<>",
@@ -5333,20 +5320,29 @@ enode exprs_builder(silver a, array expr_tokens, Au unused) {
 }
 
 enode parse_ifdef_else(silver a) {
-    bool require_if = true;
     bool one_truth = false;
-    bool expect_last = false;
     enode statements = null;
 
     verify(a->expr_level == 0, "unexpected expression level at ifdef");
 
-    while (true) {
-        validate(!expect_last, "continuation after else");
-        bool is_if = read_if(a, "ifdef") != null || read_if(a, "eldef") != null;
-        validate(is_if && require_if || !require_if, "expected if");
+    // first ifdef [cond]
+    validate(read_if(a, "ifdef"), "expected ifdef");
+    a->expr_level++;
+    enode n_cond = parse_expression(a, null);
+    a->expr_level--;
+    array block = read_body(a);
+    Au const_v = n_cond ? n_cond->literal : null;
+    if (const_v && cast(bool, const_v)) {
+        push_tokens(a, (tokens)block, 0);
+        statements = parse_statements(a);
+        pop_tokens(a, false);
+        one_truth = true;
+    }
+
+    // chain of el [cond] / el
+    while (read_if(a, "el")) {
         a->expr_level++;
-        enode n_cond = is_if ? parse_expression(a, null
-        ) : null;
+        enode n_cond = next_is(a, "[") ? parse_expression(a, null) : null;
         a->expr_level--;
         array block = read_body(a);
         if (n_cond) {
@@ -5358,18 +5354,11 @@ enode parse_ifdef_else(silver a) {
                 one_truth = true;
             }
         } else if (!one_truth) {
-            validate(!is_if, "if statement incorrect");
             push_tokens(a, (tokens)block, 0);
             statements = parse_statements(a);
             pop_tokens(a, false);
-            expect_last = true;
+            break; // bare el is terminal
         }
-        if (!is_if)
-            break;
-        bool next_else = read_if(a, "el") != null || next_is(a, "eldef");
-        if (!next_else)
-            break;
-        require_if = false;
     }
 
     verify(a->expr_level == 0, "unexpected expression level after ifdef");
