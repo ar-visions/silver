@@ -408,6 +408,9 @@ static enode reverse_descent(silver a, etype expect) { sequencer
     bool cmode = is_cmode(a);
     int num_levels = sizeof(levels) / sizeof(precedence);
     
+    if (seq == 154)
+        seq = seq;
+
     enode L = read_enode(a, expect, false);
     token t = peek(a);
     if (!L) {
@@ -1098,7 +1101,7 @@ token silver_next(silver a) {
     if (a->cursor >= len(a->tokens))
         return null;
     token res = element(a, 0);
-    if (!a->clipping && res && res->annotation && strcmp(res->annotation->chars, "#break") == 0) {
+    if (res && res->annotation && strcmp(res->annotation->chars, "#break") == 0) {
         breakpoint(res, "breaking at %o", res);
     }
     a->cursor++;
@@ -1224,7 +1227,7 @@ enode parse_asm(silver a, etype rtype) {
     return e_asm(a, body, input_nodes, rtype, return_name);
 }
 
-static array read_initializer(silver a) {
+static array read_initializer(silver a) { sequencer
     array body = array(32);
     token n    = element(a,  0);
     if  (!n || eq(n, "sub") || eq(n, "asm")) return null;
@@ -1975,7 +1978,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
     silver module  =  !is_cmode(a) && (top->is_namespace) ? a : null;
     efunc  f       =  !is_cmode(a) ? context_func(a) : null;
     bool   in_rec  = rec_top && rec_top->au == top;
-    if (seq == 140) {
+    if (seq == 95) {
         seq = seq;
     }
 
@@ -2009,10 +2012,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
         alpha = read_alpha_macrofilter(a, new_name);
         if (!first_alpha) first_alpha = alpha;
 
-        if (alpha && eq(alpha, "state")) {
-            alpha = alpha;
-        }
-        if (alpha && eq(alpha, "name")) {
+        if (alpha && eq(alpha, "initializer")) {
             alpha = alpha;
         }
         validate(!first || alpha || new_name,
@@ -2402,6 +2402,15 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
             mdl_expect, (Au)e_bitwise_not(a, expr));
     }
 
+    // unary negation
+    else if (read_if(a, "-")) {
+        enode expr = read_enode(a, null, false);
+        validate(canonical(expr)->au->is_integral || canonical(expr)->au->is_realistic,
+            "negation requires numeric type");
+        return e_create(a,
+            mdl_expect, (Au)e_neg(a, expr));
+    }
+
     // 'typeof' operator
     // should work on instances as well as direct types
     else if (!cmode && read_if(a, "typeid")) { // todo: merge with isa, eventually implement with a const expression in silver implementation
@@ -2545,6 +2554,10 @@ enode parse_statement(silver a)
         parse_member(a, (ARef)&assign_enum,
             is_func ? typeid(efunc) : ((access || f || (!!module)) ? typeid(evar) : null)) : null;
     Au_t mem_info = isa(mem);
+
+    if (mem && mem->au->ident && strcmp(mem->au->ident, "rng_state") == 0) {
+        seq = seq;
+    }
 
     validate(!mem || (!is_func || !instanceof(mem, efunc) || mem->au->context != top),
         "redefinition of %o", mem);
@@ -2955,7 +2968,7 @@ static shape read_shape(silver a) {
     return s;
 }
 
-etype read_etype(silver a, array* p_expr) {
+etype read_etype(silver a, array* p_expr) { sequencer
     etype mdl   = null;
     array expr  = null;
     array meta  = null;
@@ -3011,6 +3024,9 @@ etype read_etype(silver a, array* p_expr) {
             return null;
         }
 
+        if (seq == 1095)
+            seq = seq;
+
         if (mdl) {
             // silver is about introducing more syntax only when you require complex containment
             // this applies to methods with no args at method level 0 and [ args ] at > 0
@@ -3037,46 +3053,48 @@ etype read_etype(silver a, array* p_expr) {
                 meta_args = a(t);
                 a->etype_level--;
             }
-            int rem = mdl->au->meta.count - 1;
-            if (next_is(a, "[") && rem > 0 && read_meta && 
+            // read shape-typed remaining meta args inline (not bracket-wrapped)
+            int rem = 0;
+            if (read_meta && (has_depth_meta || a->etype_level == 0)) {
+                for (int i = 1; i < mdl->au->meta.count; i++) {
+                    if (au_arg_type(mdl->au->meta.origin[i]) == typeid(shape)) {
+                        shape s = read_shape(a);
+                        if (s) push(meta_args, (Au)s);
+                    } else
+                        rem++;
+                }
+            }
+            if (next_is(a, "[") && rem > 0 && read_meta &&
                (has_depth_meta || a->etype_level == 0) )
             {
-                // second arg and on are joined within [ ]
+                // remaining type meta args are joined within [ ]
                 validate(read_if(a, "["),
                     "expected [ after first meta type %o", first_element(meta_args));
-                
-                for (int i = 0; i < rem; i++) {
-                    Au_t meta_src =  au_arg_type(mdl->au->meta.origin[1 + i]);
-                    if  (meta_src == typeid(shape)) {
-                        token t = peek(a);
-                        Au_t t_isa = isa(t->literal);
-                        shape    s =  read_shape(a);
-                        if (s) {
-                            validate(s, "expected shape description, found %o", peek(a));
-                            push(meta_args, (Au)s);
-                        }
-                    } else {
-                        a->etype_level++;
-                        etype imdl = read_etype(a, null);
-                        a->etype_level--;
-                        if (!imdl && meta_src == typeid(none))
-                            break;
-                        validate(imdl, "expected type, found %o", peek(a));
-                        push(meta_args, (Au)imdl);
-                    }
-                    if (i >= (rem - 1))
-                        break;
 
+                int ri = 0;
+                for (int i = 1; i < mdl->au->meta.count; i++) {
+                    Au_t meta_src = au_arg_type(mdl->au->meta.origin[i]);
+                    if (meta_src == typeid(shape)) continue;
+                    a->etype_level++;
+                    etype imdl = read_etype(a, null);
+                    a->etype_level--;
+                    if (!imdl && meta_src == typeid(none))
+                        break;
+                    validate(imdl, "expected type, found %o", peek(a));
+                    push(meta_args, (Au)imdl);
+                    if (++ri >= rem)
+                        break;
                     if (read_if(a, ","))
                         continue;
-
-                    Au_t meta_src_next = au_arg_type(array_get((array)&mdl->au->meta, 1 + i + 1));
-                    validate(meta_src_next == typeid(none),
-                        "expected comma after meta type %o", last_element(meta_args));
+                    if (i + 1 < mdl->au->meta.count) {
+                        Au_t meta_src_next = au_arg_type(mdl->au->meta.origin[i + 1]);
+                        validate(meta_src_next == typeid(none) || meta_src_next == typeid(shape),
+                            "expected comma after meta type %o", last_element(meta_args));
+                    }
                     break;
                 }
                 validate(read_if(a, "]"),
-                    "expected [ after last meta type %o", last_element(meta_args));
+                    "expected ] after last meta type %o [%i]", last_element(meta_args), seq);
             }
             
             // we read this at depth, so ajoined vector of types don't get unreadable when depth is to be displayed
@@ -3471,7 +3489,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
               debug ? "debug" : "release", project_f, build_f);
     } else if (is_silver) { // build for Au-type projects
         silver sf = silver(module, silver_f, breakpoint, a->breakpoint, debug, a->debug,
-            is_external, a->is_external ? a->is_external : a);
+            verbose, a->verbose, is_external, a->is_external ? a->is_external : a);
         validate(sf, "silver module compilation failed: %o", silver_f);
         drop(sf);
     } else {
@@ -3608,11 +3626,11 @@ none silver_build(silver a) {
 
     // link - include the implementation objects
     string isysroot = a->isysroot ? f(string, "-isysroot %o ", a->isysroot) : string("");
-    verify(exec(a->verbose, "%o/bin/clang %s %o %o/%o.o %o -o %o -L%o -L%o/lib %o %o",
+    verify(exec(a->verbose, "%o/bin/clang %s %o %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o",
         install, a->is_library ? shared : "", isysroot, a->build_dir, a->name, objs,
         a->product,
         a->build_dir,
-        install, libs, cflags) == 0,
+        install, a->build_dir, install, libs, cflags) == 0,
         "link failed");
     
     if (file_exists("%o", a->product_link))
@@ -4140,10 +4158,10 @@ enode parse_import(silver a) {
         }
         
         // if the module is built into our run-time already, we support this
-        if (mod) {
+        if (mod && !module_source) {
             set(a->libs, string(mod->ident), (Au)_bool(true));
 
-        } else if (!module_source && !lib_path)
+        } else if (!mod && !module_source && !lib_path)
             error("could not find module %o", mpath);
         
     } else if (aa && !bb) {
@@ -4181,7 +4199,7 @@ enode parse_import(silver a) {
         // og silver is keeper of artifacts
         silver og = a->is_external ? a->is_external : a;
         silver external = silver(module, module, breakpoint, a->breakpoint,
-            is_external, og, debug, a->debug, defs, defs);
+            verbose, a->verbose, is_external, og, debug, a->debug, defs, defs);
         
         // these should be the only two objects remaining.
         external_name    = hold(external->name); 
@@ -4814,7 +4832,7 @@ enode castable(etype fr, etype to);
 
 enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
     validate(within_expr || read_if(a, "["), "expected [");
-    if (seq == 6)
+    if (seq == 1)
         seq = seq;
     //print("seq %i\n", seq);
     bool is_fields = peek_fields(a) || inherits(mdl->au, typeid(map));
@@ -5703,7 +5721,7 @@ etype silver_read_def(silver a, interface access) {
                 v = primitive(store->au, &value);
             
             Au_t enum_v         = def_enum_value(enum_au, e->chars, v);
-            enum_v->src         = enum_au->src;
+            enum_v->src         = enum_au;
             enum_v->value       = (object)hold(v);
             enum_v->member_type = AU_MEMBER_ENUMV;
             enum_v->is_const    = true;
