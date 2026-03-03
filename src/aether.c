@@ -82,20 +82,7 @@ LLVMTypeRef _lltype(etype);
 
 #define B a->builder
 
-/*
-typedef struct tokens_data {
-    array tokens;
-    num   cursor;
-} tokens_data;
-*/
-
 static void print_all(aether mod, symbol label, array list) {
-    #if 0
-    print("[%s] tokens", label);
-    each(list, token, t)
-        put("%o ", t);
-    put("\n");
-    #endif
 }
 
 string symbol_name(Au obj) {
@@ -104,10 +91,6 @@ string symbol_name(Au obj) {
         if (n->chars[i] == '-')
             n->chars[i] = '_';
     return n;
-}
-
-none bp() {
-    return;
 }
 
 // emit source location from current token (macro to reduce repetition)
@@ -178,10 +161,6 @@ enode enode_value(enode mem, bool force_load) { sequencer
     if (mem && mem->is_super)
         return mem->target;
 
-    if (mem->au->ident && strcmp(mem->au->ident, "abc") == 0) {
-        mem = mem;
-    }
-    
     if (!mem->loaded && (force_load || !is_struct(canonical(mem))) && !mem->au->is_imethod) {
         aether a = mem->mod;
         a->is_const_op = false;
@@ -248,7 +227,7 @@ static LLVMValueRef build_arith_op(
     aether a,
     LLVMBuilderRef b, OPType optype,
     LLVMValueRef L, LLVMValueRef R,
-    symbol name
+    symbol name, bool is_signed
 ) {
     bool fp = is_fp_value(L) || is_fp_value(R);
 
@@ -257,11 +236,14 @@ static LLVMValueRef build_arith_op(
         case OPType__sub:   return fp ? LLVMBuildFSub(b, L, R, name) : LLVMBuildSub(b, L, R, name);
         case OPType__mul:   return fp ? LLVMBuildFMul(b, L, R, name) : LLVMBuildMul(b, L, R, name);
         case OPType__div:
-            return fp ? LLVMBuildFDiv(b, L, R, name) : LLVMBuildSDiv(b, L, R, name); // or UDiv based on signedness
-        case OPType__mod:   return fp ? LLVMBuildFRem(b, L, R, name) : LLVMBuildSRem(b, L, R, name);
+            return fp ? LLVMBuildFDiv(b, L, R, name) :
+                is_signed ? LLVMBuildSDiv(b, L, R, name) : LLVMBuildUDiv(b, L, R, name);
+        case OPType__mod:
+            return fp ? LLVMBuildFRem(b, L, R, name) :
+                is_signed ? LLVMBuildSRem(b, L, R, name) : LLVMBuildURem(b, L, R, name);
         // shifts/bitwise are integral only:
         case OPType__left:  return LLVMBuildShl(b, L, R, name);
-        case OPType__right: return LLVMBuildAShr(b, L, R, name);
+        case OPType__right: return is_signed ? LLVMBuildAShr(b, L, R, name) : LLVMBuildLShr(b, L, R, name);
         case OPType__xor:   return LLVMBuildXor(b, L, R, name);
         case OPType__or:    return LLVMBuildOr(b, L, R, name);
         case OPType__and:   return LLVMBuildAnd(b, L, R, name);
@@ -280,20 +262,6 @@ static LLVMValueRef build_arith_op(
     }
 }
 
-#if 0
-static LLVMValueRef const_arith_op(OPType optype, LLVMValueRef L, LLVMValueRef R) {
-    bool fp = is_fp_type(LLVMTypeOf(L)) || is_fp_type(LLVMTypeOf(R));
-
-    switch (optype) {
-        case OPType__add: return fp ? LLVMConstFAdd(L, R) : LLVMConstAdd(L, R);
-        case OPType__sub: return fp ? LLVMConstFSub(L, R) : LLVMConstSub(L, R);
-        case OPType__mul: return fp ? LLVMConstFMul(L, R) : LLVMConstMul(L, R);
-        case OPType__div: return fp ? LLVMConstFDiv(L, R) : LLVMConstSDiv(L, R);
-        case OPType__mod: return fp ? LLVMConstFRem(L, R) : LLVMConstSRem(L, R);
-        default: verify(false, "const_arith_op: unsupported optype"); return NULL;
-    }
-}
-#endif
 
 etype evar_type(evar aa) {
     aether a = aa->mod;
@@ -326,7 +294,7 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
     // set debug location for assignment
     debug_loc_here(a);
 
-    validate(op_val >= OPType__bind && op_val <= OPType__assign_xor,
+    validate(op_val >= OPType__bind && op_val <= OPType__assign_left,
         "invalid assignment operator");
 
     /* ------------------------------------------------------------
@@ -379,11 +347,6 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
 
     enode res = null;
     bool  no_store = false;
-
-    if (L->au->ident && strcmp(L->au->ident, "cc") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
 
     if (op_val <= OPType__assign) {
         res = rR;
@@ -1229,6 +1192,10 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
     Au literal = null;
 
     if (optype >= OPType__add && optype <= OPType__xor) { // logical operators
+
+        if (optype == OPType__xor) {
+            optype = optype;
+        }
         // ensure both operands are i1
         if (optype == OPType__or || optype == OPType__and) {
             rtype = etypeid(bool);
@@ -1236,20 +1203,20 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
         LL = e_create(a, rtype, (Au)LL);
         RL = e_create(a, rtype, (Au)RL);
         if (!a->no_build) {
-            RES = build_arith_op(a, B, optype, LL->value, RL->value, N);
+            RES = build_arith_op(a, B, optype, LL->value, RL->value, N, is_sign(rtype));
         }
 
     } else if (optype >= OPType__add && optype <= OPType__left) {
         LL = e_create(a, rtype, (Au)LL); // generate compare != 0 if not already i1
         RL = e_create(a, rtype, (Au)RL);
-        
+
         if (!a->no_build) {
 
             if (strcmp(N, "7_add") == 0) {
                 N = N;
             }
 
-            RES = build_arith_op(a, B, optype, LL->value, RL->value, N);
+            RES = build_arith_op(a, B, optype, LL->value, RL->value, N, is_sign(rtype));
         }
  
     } else if (optype >= OPType__bind && optype <= OPType__assign_left) {
@@ -1262,9 +1229,25 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
             if (optype <= OPType__assign) {
                 RES = a->no_build ? null : RL->value;
                 literal = RL->literal;
-            } else
+            } else {
+                // map compound assign op to its base arithmetic op
+                OPType base_op;
+                switch (optype) {
+                    case OPType__assign_add:   base_op = OPType__add;         break;
+                    case OPType__assign_sub:   base_op = OPType__sub;         break;
+                    case OPType__assign_mul:   base_op = OPType__mul;         break;
+                    case OPType__assign_div:   base_op = OPType__div;         break;
+                    case OPType__assign_or:    base_op = OPType__bitwise_or;  break;
+                    case OPType__assign_and:   base_op = OPType__bitwise_and; break;
+                    case OPType__assign_xor:   base_op = OPType__xor;         break;
+                    case OPType__assign_mod:   base_op = OPType__mod;         break;
+                    case OPType__assign_right: base_op = OPType__right;       break;
+                    case OPType__assign_left:  base_op = OPType__left;        break;
+                    default: verify(false, "invalid compound assignment"); base_op = 0;
+                }
                 RES = a->no_build ? null :
-                    build_arith_op(a, B, optype - OPType__assign_add + OPType__add, LL->value, RL->value, N);
+                    build_arith_op(a, B, base_op, LL->value, RL->value, N, is_sign(rtype));
+            }
             LLVMBuildStore(B, RES, mL->value);
         } else {
             if (optype <= OPType__assign)
@@ -1378,9 +1361,6 @@ static void resolve_context_members(enode target, map user_provides) {
 enode aether_e_operand(aether a, Au op, etype src_model) {
     if (instanceof(op, enode) || instanceof(op, efunc)) {
         enode n = (enode)op;
-        if (evar_is(n, "bb")) {
-            n = n;
-        }
         op = (Au)enode_value((enode)op, false);
     }
     if (!op) {
@@ -1899,10 +1879,6 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
                 Au_t  arg_mem = (Au_t) array_get((array)&fn_decl->args, i);
                 evar  arg     = (evar) u(evar, arg_mem);
                 enode n       = (enode)instanceof(arg_value, enode);
-                if (fn->au->context == typeid(map)) {
-                    int test2 = 2;
-                    test2 += 2;
-                }
                 if (index == fmt_idx) {
                     Au fmt = n ? (Au)instanceof(n->literal, const_string) : null;
                     verify(fmt, "formatter functions require literal, constant strings");
@@ -1954,14 +1930,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     seq2++;
 
     char call_seq[256];
-    if (seq2 == 32) {
-        seq = seq;
-    }
     sprintf(call_seq, "call_%i_%s", seq2, fn->au->ident);
-    if (strcmp(call_seq, "call_86_alloc_new") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
     etype rtype = is_lambda(fn) ?
         (etype)fn->meta->origin[0] :
         (etype)u(etype, fn->au->rtype);
@@ -4561,7 +4530,7 @@ none etype_implement(etype t) {
     Au_t      top       = top_scope(a);
     aether    module    = is_module(top) ? a : null;
 
-    if (au->member_type == AU_MEMBER_NAMESPACE || (is_func(au) && !((enode)t)->used))
+    if (au->member_type == AU_MEMBER_NAMESPACE || (is_func(au) && !((enode)t)->used && !a->is_Au_import))
         return;
     Au commander_solo = head(t);
     if (t->is_implemented) return;
@@ -4579,10 +4548,6 @@ none etype_implement(etype t) {
         enode n = (enode)instanceof(t, enode);
         verify(n, "expected enode instance for AU_MEMBER_VAR");
         LLVMTypeRef type = lltype(u(etype, au->src));
-
-        if (strcmp(n->au->ident, "coolteen") == 0) {
-            n = n;
-        }
 
         // if module member, then its a global value
         if (!au->context->context) {
@@ -4712,10 +4677,7 @@ none etype_implement(etype t) {
                             struct_members[index] = LLVMArrayType(struct_members[index], m->elements);
                         
                         verify(struct_members[index], "no lltype found for member %s.%s", au->ident, m->ident);
-                        //printf("verifying abi size of %s\n", m->ident);
                         int abi_member  = LLVMABISizeOfType(a->target_data, struct_members[index]);
-                        if (!abi_member)
-                            abi_member = abi_member;
                         verify(abi_member, "type has no size");
                         if (au->is_union && src->abi_size > ilargest) {
                             largest  = struct_members[index];
@@ -5088,12 +5050,8 @@ none aether_build_module_initializer(aether a, enode init) {
 
         if (mem->is_system || mem->is_schema) continue;
 
-        if (var_mdl2 == var_mdl) {
-            var_mdl = var_mdl;
-        }
-
         if (is_func(mem) && mem->access_type != interface_intern) {
-            //aether_eputs(a, f(string, "%o: function", mem));
+            aether_eputs(a, f(string, "%o: function", mem));
             efunc mf = (efunc)u(etype, mem);
             mf->used = true;
             etype_implement((etype)mf);
@@ -5596,9 +5554,6 @@ void aether_import_Au(aether a, string ident, Au lib) {
     a->current_inc   = null;
     a->import_module = null;
 
-    //Au_t m = find_member(typeid(Au)->module, "shape", AU_MEMBER_TYPE, false);
-    //etype sh = u(etype, m);
-    //m = m;
 }
 
 void aether_llflag(aether a, symbol flag, i32 ival) {
@@ -5627,6 +5582,7 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
 
     bool validation_error = false;
     verify (!LLVMPrintModuleToFile(a->module_ref, cstring(*ll),      &err), "print-to-module");
+    print("wrote %s", cstring(*ll));
     validation_error  = LLVMVerifyModule(a->module_ref, LLVMReturnStatusAction, &err);
     validation_error |= LLVMVerifyModule(a->module_ref, LLVMPrintMessageAction, &err);
     

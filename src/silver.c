@@ -60,65 +60,6 @@ static array read_enode_tokens(silver a);
 
 token silver_element(silver, num);
 
-void print_tokens_(silver a, int seq, symbol label, cstr file, int line) {
-    #if 0
-    print("[ %22s -> %s:%i ]\n        %o %o %o %o %o %o...", label, file, line,
-          element(a, 0), element(a, 1), element(a, 2), element(a, 3),
-          element(a, 4), element(a, 5));
-    #endif
-}
-
-void print_tokens2_(silver a, int seq, symbol label, cstr file, int line) {
-    #if 1
-    print("[ %22s -> %s:%i ]\n        %o %o %o %o %o %o...", label, file, line,
-          element(a, 0), element(a, 1), element(a, 2), element(a, 3),
-          element(a, 4), element(a, 5));
-    #endif
-}
-
-#define print_tokens(a, label) \
-    print_tokens_(a, seq, label, __FILE__, __LINE__)
-
-#define print_tokens2(a, label) \
-    print_tokens2_(a, seq, label, __FILE__, __LINE__)
-
-void print_token_state(silver a, symbol label) {
-    #if 0
-    print("[%s] %o %o %o %o %o %o...", label,
-          element(a, 0), element(a, 1), element(a, 2), element(a, 3),
-          element(a, 4), element(a, 5));
-    #endif
-}
-
-static void print_all(silver a, symbol label, array list) {
-    #if 0
-    print("[%s] tokens", label);
-    each(list, token, t)
-        put("%o ", t);
-    put("\n");
-    #endif
-}
-
-static void print_all_tokens(silver a, symbol label, array list) {
-    #if 0
-    print("[%s] tokens", label);
-    each(list, token, t)
-        put("%o ", t);
-    put("\n");
-    #endif
-}
-
-void print_token_array(silver a, array tokens) {
-    #if 0
-    string res = string();
-    for (int i = 0, ln = len(tokens); i < ln; i++) {
-        token t = (token)tokens->origin[i];
-        append(res, t->chars);
-        append(res, " ");
-    }
-    print("tokens = %o", res);
-    #endif
-}
 
 static map operators;
 static array keywords;
@@ -430,7 +371,6 @@ static enode reverse_descent(silver a, etype expect);
 
 static enode parse_expression(silver a, etype expect) {
 
-    //print_tokens2(a, "parse_expression");
     
     // handle array and map types here at this level, and cue in other types through a protocol if possible
     // our calls below this do not have any idea to use the comma in expression syntax
@@ -916,6 +856,7 @@ void silver_init(silver a) {
             reinit_startup(a);
             a->imports = array();
         }
+
         retry = false;
         a->cursor = 0;
         a->tokens = hold(tokens(
@@ -963,7 +904,9 @@ void silver_init(silver a) {
                 fault("defs not found in %o: %o", a->name, unused);
             }
 
+            print("building %o", a);
             build(a);
+            print("built %o", a);
             exporter(a);
 
             if (a->run) {
@@ -1459,17 +1402,36 @@ static Au parse_numeric(string str, string* str_res, i64* index) {
         return null;
     
     // hex: 0x[0-9a-fA-F]+
+    // hex: 0x[0-9a-fA-F]+ or hex float:0x[0-9a-fA-F]*.[0-9a-fA-F]*p[+-]?[0-9]+
     if (chr == '0' && i + 1 < ln && idx(str, i + 1) == 'x') {
         i += 2;
         if (i >= ln || !isxdigit(idx(str, i)))
             return _i64(0);
         while (i < ln && isxdigit(idx(str, i)))
             i++;
+        // hex float: 0x1.0p-24 style
+        if (i < ln && idx(str, i) == '.') {
+            i++;
+            while (i < ln && isxdigit(idx(str, i)))
+                i++;
+            if (i < ln && (idx(str, i) == 'p' || idx(str, i) == 'P')) {
+                i++;
+                if (i < ln && (idx(str, i) == '+' || idx(str, i) == '-'))
+                    i++;
+                while (i < ln && isdigit(idx(str, i)))
+                    i++;
+            }
+            string crop = mid(str, start, i - start);
+            *str_res = crop;
+            *index = i;
+            return _f64(strtod(crop->chars, NULL));
+        }
         string crop = mid(str, start, i - start);
         *str_res = crop;
         *index = i;
-        return _i64(strtoll(crop->chars, NULL, 16));
+        return _i64((i64)strtoull(crop->chars, NULL, 16));
     }
+
     
     // binary: 0b[01]+
     if (chr == '0' && i + 1 < ln && idx(str, i + 1) == 'b') {
@@ -2126,18 +2088,6 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
                     validate(next_is(a, ":") || (tm1 && index_of(keywords, (Au)tm1) >= 0), "unknown identifier %o", alpha);
                     validate(!find_member(top, alpha->chars, 0, false), "duplicate member: %o", alpha);
                     Au_t m = def_member(top, alpha->chars, null, AU_MEMBER_DECL, 0); // this is promoted to different sorts of members based on syntax
-                    if (eq(alpha, "coolteen")) {
-                        alpha = alpha;
-                        for (int i = 0; i < top->members.count; i++) {
-                            Au_t mm = (Au_t)top->members.origin[i];
-                            if (mm == m) {
-                                mm = m;
-                            }
-                        }
-                    }
-                    if (strcmp(m->ident, "order") == 0) {
-                        m = m;
-                    }
                     mem = (enode)edecl(mod, (aether)a, au, m, meta, null);
                     break;
                 }
@@ -2420,7 +2370,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
             pop_tokens(a, false);
         }
         a->parens_depth++;
-        enode expr = parse_expression(a, etypeid(bool)); // Parse the expression
+        enode expr = parse_expression(a, null); // Parse the expression
         validate(read_if(a, ")"), "expected ) after expression, found %o", peek(a));
         a->parens_depth--;
         return e_create(a, mdl_expect, (Au)
@@ -2590,25 +2540,12 @@ enode parse_statement(silver a)
     bool      is_idx    = !f && !is_static && !(is_func|is_lambda) && !is_cast && !is_oper && !is_ctr ?
         read_if(a, "index")      != null : false;
 
-    if (is_oper)
-        is_oper = is_oper;
-    if (is_lambda)
-        is_lambda = is_lambda;
-
     OPType assign_enum = OPType__undefined;
-    if (next_is(a, "state")) {
-        int test2 = 2;
-        test2    += 2;
-    }
     enode mem = (!is_cast && !is_oper && !is_idx && !is_ctr) ?
         parse_member(a, (ARef)&assign_enum,
             is_func ? typeid(efunc) : ((access || f || (!!module)) ? typeid(evar) : null)) : null;
     Au_t mem_info = isa(mem);
 
-    if (!(!is_func || !instanceof(mem, efunc))) {
-        int test2 = 2;
-        test2    += 2;
-    }
     validate(!mem || (!is_func || !instanceof(mem, efunc) || mem->au->context != top),
         "redefinition of %o", mem);
 
@@ -2684,8 +2621,6 @@ enode parse_statement(silver a)
                 e->au->access_type = (u8)access;
                 efunc fn = (efunc)get(a->registry, (Au)au);
                 verify(fn && fn == e && fn->au == au, "unexpected registration state");
-                //rm(a->registry, (Au)au);
-                //set(a->registry, (Au)au, (Au)hold(e));
             }
 
         }
@@ -2708,16 +2643,8 @@ enode parse_statement(silver a)
             mem->au->src         = rtype->au;
             mem->au->is_static   = is_static;
 
-            Au f = get(a->registry, (Au)mem->au);
-            Au_t info = isa(f);
-            //rm(a->registry, (Au)mem->au);
             Au_t au = mem->au;
             set(a->registry, (Au)au, null);
-            Au f2 = get(a->registry, (Au)au);
-            Au_t info2 = isa(f2);
-            if (strcmp(au->ident, "order") == 0) {
-                au = au;
-            }
             mem = (enode)evar(mod, (aether)a, au, au, loaded, false, meta, rtype->meta, initializer,
                 (tokens)map_initializer(a, string(au->ident), (tokens)expr, au->access_type));
             mem->au->access_type = (u8)access;
@@ -5303,13 +5230,6 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         etype_implement((etype)mem);
     }
 
-    if (op_val == OPType__assign_add) {
-        op_val = op_val;
-    }
-    if (mem->au->ident && strcmp(mem->au->ident, "head") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
     enode result = e_assign(a, mem, (Au)R, op_val);
     mem->au->is_assigned = true;
     return mem;
@@ -5508,7 +5428,7 @@ enode parse_switch(silver a) {
     }
 
     subprocedure build_expr = subproc(a, expr_builder, null);
-    subprocedure build_body = subproc(a, statements_builder, null);
+    subprocedure build_body = subproc(a, block_builder, null);
     if (all_const)
         return e_native_switch(a, e_expr, cases, expr_def, build_expr, build_body);
     else
