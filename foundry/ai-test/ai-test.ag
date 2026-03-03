@@ -17,6 +17,7 @@ app ai-test
         # --- input tensors for each layer position ---
         # keras wiring sets op.result = next_op.input, so each
         # op needs an input tensor with the correct shape
+
         t_in:     tensor [tensor_shape: 32x32x1]
         t_conv1:  tensor [tensor_shape: 32x32x1]
         t_conv2:  tensor [tensor_shape: 32x32x8]
@@ -69,15 +70,24 @@ app ai-test
         op_d2.inputs  = array string [ 'dense1' ]
         op_out.inputs = array string [ 'dense2' ]
 
+        puts '22'
+
         # --- create keras model ---
         all_ops: array op [ op_in, op_c1, op_c2, op_p, op_f, op_d1, op_d2, op_out ]
+
+        puts '22.1'
+
         model: keras [ident: 'ai-test', ops: all_ops]
+
+        puts '22.2'
 
         # --- generate training data ---
         # random grayscale 32x32 images, label = average pixel value
         num_samples: i32 [20]
         samples: map tensor[tensor] []
         pixels:  i32 [1024]
+
+        puts '3'
 
         puts 'generating {num_samples} training samples...'
         for [ s: i32 0 :: s < num_samples :: s += 1 ]

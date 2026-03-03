@@ -1412,7 +1412,7 @@ static none init_recur(Au a, Au_t current, raw last_init) {
     Au_f* au_f = ((Au_f*)current);
     none(*init)(Au) = au_f->ft.init;
     init_recur(a, current->context, (raw)init);
-    if (init && init != (none*)last_init) init(a); 
+    if (init && init != (none*)last_init) init(a);
 }
 
 /*
@@ -1734,7 +1734,7 @@ Au alloc(Au_t type, num count, shape shape_data, Au_t* meta) {
             Au_t m = meta[i];
             Au_t object_type = isa(m);
             Au_t ref = ((Au_t*)&type->meta)[i];
-            if (object_type) {
+            if (object_type && !object_type->is_schema) {
                 verify (inherits(object_type, ref), "expected object of compatible-type %s", m->ident);
             }
             a->meta[i] = (Au)m;
