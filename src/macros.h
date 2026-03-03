@@ -1377,6 +1377,36 @@
 #define   i_method_interface_METHOD(X, R, N, ...)
 #define   i_method_interface_NMODULE(X, R, N, ...)
 
+#define   i_method_abstract_F(    X, R, N, ...)
+#define   i_method_abstract_F_EXTERN(    X, R, N, ...)
+#define   i_method_abstract_ISIZE(X, R, N, ...)
+#define   i_method_abstract_ISIZE_EXTERN(X, R, N, ...)
+#define   i_method_abstract_INST_U(    X, R, N, ...)
+#define   i_method_abstract_INST_L(    X, R, N, ...)
+#define   i_method_abstract_INST_U_EXTERN(  X, R, N, ...)
+#define   i_method_abstract_INST_L_EXTERN(  X, R, N, ...)
+#define   i_method_abstract_DEF(    X, R, N, ...)
+#define   i_method_abstract_DECL(    X, R, N, ...)           R X##_##N(__VA_ARGS__);
+#define   i_method_abstract_DECL_EXTERN(    X, R, N, ...)    
+#define   i_method_abstract_GENERICS(X, R, N, ...)
+#define   i_method_abstract_INIT(    X, R, N, ...) { \
+    Au_t m = def(typeid(X), #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD | AU_TRAIT_ABSTRACT); \
+    m->alt = #X "_" #N; \
+    m->access_type = interface_abstract; \
+    Type_i(X).type . ft.N = (__typeof__(Type_i(X).type . ft.N))& X## _ ## N; \
+    m->type    = typeid(R); \
+    set_args_array(m, emit_types(__VA_ARGS__)); \
+    ((Au_t)m->args.origin[0])->is_target = 1; \
+    m->type    = typeid(R); \
+    /* m->offset  = offsetof(X##_f, N); */ \
+    m->index   = offsetof(__typeof__(Type_i(X).type.ft), N) / sizeof(void*); \
+    m->value   = (object)Type_i(X).type . ft.N; \
+}
+#define   i_method_abstract_PROTO(X, R, N, ...)
+#define   i_method_abstract_METHOD(X, R, N, ...)          R (*N)(__VA_ARGS__);
+#define   i_method_abstract_NMODULE(X, R, N, ...)
+
+
 #define   i_method_public_F(    X, R, N, ...)
 #define   i_method_public_F_EXTERN(    X, R, N, ...)
 #define   i_method_public_ISIZE(X, R, N, ...)
@@ -1402,7 +1432,6 @@
     m->index   = offsetof(__typeof__(Type_i(X).type.ft), N) / sizeof(void*); \
     m->value   = (object)Type_i(X).type . ft.N; \
 }
-
 #define   i_method_public_PROTO(X, R, N, ...)
 #define   i_method_public_METHOD(X, R, N, ...)          R (*N)(__VA_ARGS__);
 #define   i_method_public_NMODULE(X, R, N, ...)

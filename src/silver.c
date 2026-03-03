@@ -966,13 +966,13 @@ static string op_lang_token(string name) {
 
 static void silver_module() {
     keywords = hold(array_of_cstr(
-        "class",    "struct",   "expect",   "context",  "public",   "intern",
+        "class",    "struct",   "expect",   "abstract", "context",  "public",   "intern",   "eldef",
         "import",   "export",   "typeid",   
         "is",       "inherits", "ref",      "in",   "lambda",
         "const",       "no-op",    "<>",
         "return",   "->",       "::",       "...",  
         "asm",      "if",       "switch",   "any",
-        "enum",     "ifdef",    "else",     "while",
+        "enum",     "ifdef",    "el",     "while",
         "cast",     "try",      "throw",    "catch",
         "finally",  "for",      "func",     "attrib",
         "operator", "index",    "construct",
@@ -2578,7 +2578,12 @@ enode parse_statement(silver a)
         "expected member-name after access '%o'", estring(typeid(interface), access));
 
     if (access && mem && mem->au) {
-        mem->au->access_type = (u8)access;
+        if (access == interface_abstract) {
+            mem->au->is_abstract = true;
+            mem->au->access_type = interface_public;
+        } else {
+            mem->au->access_type = (u8)access;
+        }
         if (access == interface_expect || access == interface_context)
             mem->au->is_required = true;
         mem->au->is_context = access == interface_context;
@@ -5337,7 +5342,7 @@ enode parse_ifdef_else(silver a) {
 
     while (true) {
         validate(!expect_last, "continuation after else");
-        bool is_if = read_if(a, "ifdef") != null;
+        bool is_if = read_if(a, "ifdef") != null || read_if(a, "eldef") != null;
         validate(is_if && require_if || !require_if, "expected if");
         a->expr_level++;
         enode n_cond = is_if ? parse_expression(a, null
@@ -5361,7 +5366,7 @@ enode parse_ifdef_else(silver a) {
         }
         if (!is_if)
             break;
-        bool next_else = read_if(a, "else") != null;
+        bool next_else = read_if(a, "el") != null || next_is(a, "eldef");
         if (!next_else)
             break;
         require_if = false;

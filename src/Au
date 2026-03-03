@@ -794,8 +794,8 @@ typedef struct _collective_abi {
     M(AA,BB, i, prop, public, Au_t, type) \
     M(AA,BB, i, prop, public, shape, data_shape) \
     M(AA,BB, i, override, method, init) \
-    M(AA,BB, i, method, public, Au, push, Au) \
-    M(AA,BB, i, method, public, Au, peek, num) \
+    M(AA,BB, i, method, abstract, Au, push, Au) \
+    M(AA,BB, i, method, abstract, Au, peek, num) \
     M(AA,BB, i, override, method, len)
 declare_class(collective)
 
@@ -810,8 +810,9 @@ declare_class(collective)
     enum_value       (E,T,Y, public,     2) \
     enum_value       (E,T,Y, guard,      3) \
     enum_value       (E,T,Y, expect,     4) \
-    enum_value       (E,T,Y, context,    5) \
-    enum_value       (E,T,Y, keyword,    6)
+    enum_value       (E,T,Y, abstract,   5) \
+    enum_value       (E,T,Y, context,    6) \
+    enum_value       (E,T,Y, keyword,    7)
 declare_enum(interface)
 
 #define comparison_module_ Au
