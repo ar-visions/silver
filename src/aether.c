@@ -1742,6 +1742,10 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
 
     Au_t au = fn->au;
 
+    if (strcmp(fn->au->ident, "push") == 0) {
+        seq = seq;
+    }
+
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, u(etype, fn->au->rtype));
 
@@ -1777,14 +1781,26 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     LLVMTypeRef   F          = funcptr ? null : lltype(fn);
     LLVMValueRef  V          = fn->value;
 
+    bool is_abstract = fn->au->is_abstract;
+    Au_t ctx = fn->au->context;
+    while (ctx) {
+        Au_t m = find_member(ctx, fn->au->ident, 0, false);
+        if (m && m->is_abstract) {
+            is_abstract = true;
+            break;
+        }
+        if (ctx == typeid(Au))
+            break;
+        ctx = ctx->context;
+    }
     // -----------------------------------------------------------------------
     // Dynamic Dispatch Logic                           ( hold onto your butts )
     // -----------------------------------------------------------------------
     // If this is an instance method, we must look up the implementation 
     // in the runtime type's vtable (ft) rather than using the static symbol.
-    if (!a->direct && target_type && target_type->is_any && !first_is_alloc && 
+    if (is_abstract || (!a->direct && target_type && target_type->is_any && !first_is_alloc && 
          fn->au->context != typeid(Au) && fn->au->is_imethod && !funcptr && 
-         !(target_type && target_type->target && target_type->target->avoid_ftable)) {
+         !(target_type && target_type->target && target_type->target->avoid_ftable))) {
         verify(n_args > 0, "instance method %o requires 'this' argument", fn);
         
         // 1. Get the instance pointer ('this' is always the first argument)
