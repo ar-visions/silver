@@ -32,16 +32,16 @@ LLVMMetadataRef debug_scope(aether a);
 // ────────────────────────────────────────────────────────────────────────────
 // forward declarations
 // ────────────────────────────────────────────────────────────────────────────
-LLVMMetadataRef debug_type_for        (aether a, Au_t src);
-LLVMMetadataRef debug_struct_type     (aether a, Au_t type_au);
+LLVMMetadataRef debug_type_for        (aether a, Au_t src, bool);
+LLVMMetadataRef debug_struct_type     (aether a, Au_t type_au, bool);
 LLVMMetadataRef debug_enum_type       (aether a, Au_t type_au);
 LLVMMetadataRef debug_pointer_type    (aether a, Au_t type_au);
 LLVMMetadataRef debug_funcptr_type    (aether a, Au_t type_au);
 LLVMMetadataRef debug_array_type      (aether a, Au_t type_au);
 LLVMMetadataRef debug_typedef_type    (aether a, Au_t type_au);
 LLVMMetadataRef debug_au_header_type  (aether a, Au_t schema);
-LLVMMetadataRef debug_subroutine_type (aether a, Au_t fn_au);
-void            emit_debug_function   (aether a, efunc fn);
+LLVMMetadataRef debug_subroutine_type (aether a, Au_t fn_au, bool);
+void            emit_debug_function   (aether a, efunc fn, bool);
 void            emit_debug_variable   (aether a, enode var, u32 arg_no, u32 line);
 void            emit_debug_params     (aether a, efunc fn);
 
@@ -140,8 +140,10 @@ static int count_all_methods(Au_t type_au) {
 // ────────────────────────────────────────────────────────────────────────────
 // debug_type_for - map an Au_t to a DWARF type metadata ref
 // ────────────────────────────────────────────────────────────────────────────
-LLVMMetadataRef debug_type_for(aether a, Au_t src) {
+LLVMMetadataRef debug_type_for(aether a, Au_t src, bool w) {
     if (!a->debug || !a->compile_unit) return null;
+
+    //if (w) return null;
 
     if (src && src->ident && strcmp(src->ident, "shape") == 0)
         src = src;
@@ -182,7 +184,7 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src) {
         if (src->is_pointer || src->is_class) {
             result = debug_pointer_type(a, src);
         } else {
-            result = debug_struct_type(a, src);
+            result = debug_struct_type(a, src, false);
         }
         if (result) {
             // don't cache pointer-wrapped types on et->lldebug:
@@ -295,10 +297,10 @@ LLVMMetadataRef debug_pointer_type(aether a, Au_t type_au) {
     LLVMMetadataRef pointee_di = null;
     if (pointee && (pointee->is_struct || pointee->is_class)) {
         // build the underlying struct type (this caches on lldebug)
-        pointee_di = debug_struct_type(a, pointee);
+        pointee_di = debug_struct_type(a, pointee, false);
     } else if (pointee) {
         // recurse for the pointee type
-        pointee_di = debug_type_for(a, pointee);
+        pointee_di = debug_type_for(a, pointee, false);
     }
 
     if (!pointee_di) {
@@ -325,7 +327,7 @@ LLVMMetadataRef debug_funcptr_type(aether a, Au_t type_au) {
     u32 name_len = strlen(name);
 
     // build the subroutine type from the function's argument and return types
-    LLVMMetadataRef sr_type = debug_subroutine_type(a, type_au);
+    LLVMMetadataRef sr_type = debug_subroutine_type(a, type_au, false);
     if (!sr_type) {
         sr_type = LLVMDIBuilderCreateSubroutineType(
             a->dbg_builder, a->file, null, 0, LLVMDIFlagZero);
@@ -344,7 +346,7 @@ LLVMMetadataRef debug_array_type(aether a, Au_t type_au) {
     if (!a->debug || !a->compile_unit) return null;
     if (!type_au || !type_au->src) return null;
 
-    LLVMMetadataRef elem_di = debug_type_for(a, type_au->src);
+    LLVMMetadataRef elem_di = debug_type_for(a, type_au->src, false);
     if (!elem_di) return null;
 
     i64 count = type_au->elements > 0 ? type_au->elements : 0;
@@ -370,7 +372,7 @@ LLVMMetadataRef debug_typedef_type(aether a, Au_t type_au) {
     Au_t underlying = type_au->src;
     if (!underlying || underlying == type_au) return null;
 
-    LLVMMetadataRef underlying_di = debug_type_for(a, underlying);
+    LLVMMetadataRef underlying_di = debug_type_for(a, underlying, false);
     if (!underlying_di) return null;
 
     return LLVMDIBuilderCreateTypedef(
@@ -452,7 +454,7 @@ LLVMMetadataRef debug_enum_type(aether a, Au_t type_au) {
 // and DW_TAG_subprogram entries for methods attached to the type.
 // uses a forward-declaration placeholder to break circular references.
 // ────────────────────────────────────────────────────────────────────────────
-LLVMMetadataRef debug_struct_type(aether a, Au_t type_au) {
+LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
     if (!a->debug || !a->compile_unit) return null;
     if (!type_au || !type_au->ident) return null;
 
@@ -471,7 +473,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au) {
     u32 align      = type_au->align_bits ? type_au->align_bits : 64;
 
     // if etype has an lltype, use it for accurate size
-    if (et && et->lltype) {
+    if (!w && et && et->lltype) {
         u32 ll_bits = LLVMABISizeOfType(a->target_data, et->lltype) * 8;
         if (ll_bits) total_bits = ll_bits;
         u32 ll_align = LLVMABIAlignmentOfType(a->target_data, et->lltype) * 8;
@@ -559,7 +561,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au) {
                 LLVMMetadataRef target_di = null;
                 Au_t real_target = msrc->is_pointer ? msrc->src : msrc;
                 if (real_target && (real_target->is_struct || real_target->is_class)) {
-                    target_di = debug_struct_type(a, real_target);
+                    target_di = debug_struct_type(a, real_target, false);
                 }
                 if (!target_di) {
                     target_di = LLVMDIBuilderCreateBasicType(
@@ -573,11 +575,11 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au) {
                     ptr_name, strlen(ptr_name));
             } else if (msrc && msrc->is_struct && !msrc->is_pointer) {
                 // inlined struct: build its composite type directly
-                member_di = debug_struct_type(a, msrc);
+                member_di = debug_struct_type(a, msrc, false);
             } else if (msrc && msrc->is_enum) {
                 member_di = debug_enum_type(a, msrc);
             } else {
-                member_di = debug_type_for(a, msrc);
+                member_di = debug_type_for(a, msrc, false);
             }
 
             if (!member_di) {
@@ -615,7 +617,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au) {
             cstr fname     = m->alt ? m->alt : (m->ident ? m->ident : "_fn");
             u32  fname_len = strlen(fname);
 
-            LLVMMetadataRef sr_type = debug_subroutine_type(a, m);
+            LLVMMetadataRef sr_type = debug_subroutine_type(a, m, false);
             if (!sr_type) {
                 sr_type = LLVMDIBuilderCreateSubroutineType(
                     a->dbg_builder, a->file, null, 0, LLVMDIFlagZero);
@@ -659,7 +661,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au) {
 // for Au_t fn descriptors: the return type comes from fn->src (rtype),
 // and parameter types come from the fn->args list.
 // ────────────────────────────────────────────────────────────────────────────
-LLVMMetadataRef debug_subroutine_type(aether a, Au_t fn_au) {
+LLVMMetadataRef debug_subroutine_type(aether a, Au_t fn_au, bool w) {
     if (!a->debug || !a->compile_unit) return null;
     if (!fn_au) return null;
 
@@ -672,7 +674,7 @@ LLVMMetadataRef debug_subroutine_type(aether a, Au_t fn_au) {
     // return type (null = void)
     Au_t rtype = fn_au->src; // also aliased as rtype in the union
     if (rtype && !rtype->is_void)
-        type_array[0] = debug_type_for(a, rtype);
+        type_array[0] = debug_type_for(a, rtype, w);
     else
         type_array[0] = null;
 
@@ -680,7 +682,7 @@ LLVMMetadataRef debug_subroutine_type(aether a, Au_t fn_au) {
     for (int i = 0; i < n_args; i++) {
         Au_t arg = (Au_t)fn_au->args.origin[i];
         Au_t arg_type = arg ? arg->src : null;
-        type_array[1 + i] = debug_type_for(a, arg_type);
+        type_array[1 + i] = debug_type_for(a, arg_type, w);
     }
 
     LLVMMetadataRef sr_type = LLVMDIBuilderCreateSubroutineType(
@@ -731,7 +733,7 @@ static LLVMMetadataRef au_field_pointer_type(aether a, Au_t field_src,
         // fallback: build Au_t as a struct type from typeid(Au_t)
         Au_t au_t_type = typeid(Au_t);
         if (au_t_type) {
-            LLVMMetadataRef au_t_di = debug_struct_type(a, au_t_type);
+            LLVMMetadataRef au_t_di = debug_struct_type(a, au_t_type, false);
             if (au_t_di) {
                 return LLVMDIBuilderCreatePointerType(
                     a->dbg_builder, au_t_di,
@@ -757,7 +759,7 @@ static LLVMMetadataRef au_field_pointer_type(aether a, Au_t field_src,
 LLVMMetadataRef debug_au_header_type(aether a, Au_t schema) {
     if (!a->debug || !a->compile_unit) return null;
 
-    LLVMMetadataRef schema_struct = schema ? debug_struct_type(a, schema) : null;
+    LLVMMetadataRef schema_struct = schema ? debug_struct_type(a, schema, false) : null;
 
     Au_t au = typeid(Au);
     int count = count_instance_vars(au);
@@ -784,7 +786,7 @@ LLVMMetadataRef debug_au_header_type(aether a, Au_t schema) {
 
         // fallback: use the generic type resolver
         if (!member_type) {
-            member_type = debug_type_for(a, m->src);
+            member_type = debug_type_for(a, m->src, false);
             if (m->src->is_class) {
                 member_type = LLVMDIBuilderCreatePointerType(
                     a->dbg_builder, member_type,
@@ -840,7 +842,7 @@ LLVMMetadataRef debug_au_header_type(aether a, Au_t schema) {
 static LLVMMetadataRef debug_object_header_type(aether a, Au_t schema) {
     if (!a->debug || !a->compile_unit) return null;
 
-    LLVMMetadataRef schema_struct = schema ? debug_struct_type(a, schema) : null;
+    LLVMMetadataRef schema_struct = schema ? debug_struct_type(a, schema, false) : null;
     u32 ptr_bits = pointer_bits(a);
 
     // struct _object fields - manually specified to match object.h
@@ -975,7 +977,7 @@ static LLVMMetadataRef debug_combined_type(aether a, Au_t schema) {
     if (!schema) return null;
 
     LLVMMetadataRef header_di   = debug_object_header_type(a, schema);
-    LLVMMetadataRef instance_di = debug_struct_type(a, schema);
+    LLVMMetadataRef instance_di = debug_struct_type(a, schema, false);
 
     if (!header_di || !instance_di) return null;
 
@@ -1027,7 +1029,7 @@ static LLVMMetadataRef debug_combined_type(aether a, Au_t schema) {
 // signature.  for instance methods, scopes the subprogram inside the class
 // DI type if available.
 // ────────────────────────────────────────────────────────────────────────────
-void emit_debug_function(aether a, efunc fn) {
+void emit_debug_function(aether a, efunc fn, bool w) {
     if (!a->debug || !a->compile_unit) return;
     Au_t au = fn->au;
     if (!au->ident) return;
@@ -1035,7 +1037,7 @@ void emit_debug_function(aether a, efunc fn) {
     LLVMMetadataRef file_ref = a->file;
 
     // build the subroutine type with actual parameter types
-    LLVMMetadataRef sr_type = debug_subroutine_type(a, au);
+    LLVMMetadataRef sr_type = debug_subroutine_type(a, au, w);
     if (!sr_type) {
         sr_type = LLVMDIBuilderCreateSubroutineType(
             a->dbg_builder, file_ref, null, 0, LLVMDIFlagZero);
@@ -1048,7 +1050,7 @@ void emit_debug_function(aether a, efunc fn) {
     // for instance methods, scope inside the class DI type if available
     LLVMMetadataRef scope = a->compile_unit;
     if (au->is_imethod && au->context) {
-        LLVMMetadataRef class_di = debug_struct_type(a, au->context);
+        LLVMMetadataRef class_di = debug_struct_type(a, au->context, false);
         if (class_di) scope = class_di;
     }
 
@@ -1102,7 +1104,7 @@ void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
             }
         } else if (var_type->is_class || var_type->is_pointer) {
             // class types are always accessed through pointers
-            LLVMMetadataRef struct_di = debug_struct_type(a, var_type);
+            LLVMMetadataRef struct_di = debug_struct_type(a, var_type, false);
             if (struct_di) {
                 cstr tname = var_type->ident ? var_type->ident : "ptr";
                 di_type = LLVMDIBuilderCreatePointerType(
@@ -1112,11 +1114,11 @@ void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
             }
         } else {
             // value-type struct: use the struct type directly
-            di_type = debug_struct_type(a, var_type);
+            di_type = debug_struct_type(a, var_type, false);
         }
     }
     if (!di_type)
-        di_type = debug_type_for(a, var_type);
+        di_type = debug_type_for(a, var_type, false);
     if (!di_type) return;
 
     LLVMMetadataRef di_var = (arg_no > 0)
@@ -1184,7 +1186,7 @@ void emit_debug_params(aether a, efunc fn) {
 
         if (is_target && au->context) {
             // for the self parameter, type it as a pointer to the class struct
-            LLVMMetadataRef user_struct = debug_struct_type(a, au->context);
+            LLVMMetadataRef user_struct = debug_struct_type(a, au->context, false);
             if (user_struct) {
                 di_type = LLVMDIBuilderCreatePointerType(
                     a->dbg_builder, user_struct,
@@ -1196,19 +1198,19 @@ void emit_debug_params(aether a, efunc fn) {
                 if (e && e->schema)
                     struct_au = debug_au_header_type(a, e->schema->au);
             } else {
-                di_type = debug_type_for(a, arg->src);
+                di_type = debug_type_for(a, arg->src, false);
             }
         } else {
             // regular parameter: use proper type
             Au_t arg_type = arg->src;
             if (arg_type && (arg_type->is_struct || !arg_type->is_pointer &&
                             !arg_type->is_class)) {
-                di_type = debug_type_for(a, arg_type);
+                di_type = debug_type_for(a, arg_type, false);
             } else if (arg_type && (arg_type->is_class || arg_type->is_pointer)) {
                 LLVMMetadataRef target_di = null;
                 Au_t real_target = arg_type->is_pointer ? arg_type->src : arg_type;
                 if (real_target && (real_target->is_struct || real_target->is_class))
-                    target_di = debug_struct_type(a, real_target);
+                    target_di = debug_struct_type(a, real_target, false);
                 if (target_di) {
                     cstr tname = arg_type->ident ? arg_type->ident : "ptr";
                     di_type = LLVMDIBuilderCreatePointerType(
@@ -1216,10 +1218,10 @@ void emit_debug_params(aether a, efunc fn) {
                         pointer_bits(a), 0, 0,
                         tname, strlen(tname));
                 } else {
-                    di_type = debug_type_for(a, arg_type);
+                    di_type = debug_type_for(a, arg_type, false);
                 }
             } else {
-                di_type = debug_type_for(a, arg_type);
+                di_type = debug_type_for(a, arg_type, false);
             }
         }
 
@@ -1295,7 +1297,7 @@ void emit_debug_global(aether a, Au_t var_au, LLVMValueRef global_val) {
     cstr name     = var_au->ident;
     u32  name_len = strlen(name);
 
-    LLVMMetadataRef di_type = debug_type_for(a, var_au->src);
+    LLVMMetadataRef di_type = debug_type_for(a, var_au->src, false);
     if (!di_type) return;
 
     LLVMMetadataRef expr = LLVMDIBuilderCreateExpression(a->dbg_builder, null, 0);
@@ -1347,7 +1349,7 @@ void debug_emit_type_metadata(aether a, Au_t module_au) {
 
         if (m->member_type == AU_MEMBER_TYPE) {
             if (m->is_struct || m->is_class) {
-                debug_struct_type(a, m);
+                debug_struct_type(a, m, false);
             } else if (m->is_enum) {
                 debug_enum_type(a, m);
             }
@@ -1365,12 +1367,12 @@ LLVMMetadataRef debug_emit_inheritance(aether a, Au_t derived, Au_t base) {
     if (!a->debug || !a->compile_unit) return null;
     if (!derived || !base) return null;
 
-    LLVMMetadataRef base_di = debug_struct_type(a, base);
+    LLVMMetadataRef base_di = debug_struct_type(a, base, false);
     if (!base_di) return null;
 
     return LLVMDIBuilderCreateInheritance(
         a->dbg_builder,
-        debug_struct_type(a, derived),
+        debug_struct_type(a, derived, false),
         base_di,
         0,        // offset
         0,        // vbptr offset
@@ -1460,7 +1462,7 @@ void debug_emit_au_fields_for_type(aether a, Au_t type_au) {
 
     // pre-build the struct type so it's cached for debugger use
     if (type_au->is_struct || type_au->is_class)
-        debug_struct_type(a, type_au);
+        debug_struct_type(a, type_au, false);
     else if (type_au->is_enum)
         debug_enum_type(a, type_au);
 }

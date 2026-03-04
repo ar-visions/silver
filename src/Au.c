@@ -958,7 +958,7 @@ lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
 }
 
 Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, i32 member_type, u64 traits, u64 typesize, u64 isize) {
-    if (strcmp(ident, "test-app") == 0) {
+    if (strcmp(ident, "tensor") == 0) {
         int test2 = 2;
         test2    += 2;
     }
@@ -3053,6 +3053,8 @@ none store_set(store a, Au key, Au val) {
     }
     *loc = i;
     a->count++;
+
+    store_get(a, null);
 }
 
 none store_rm(store a, Au key) {
