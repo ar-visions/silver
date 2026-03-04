@@ -38,7 +38,6 @@ class tensor2
         puts 'hi'
 
 class tensor
-    public scale:        f32
     expect tensor_shape: shape
     public initializer:  Initializer.undefined
     public quants:       ref i8
@@ -46,8 +45,12 @@ class tensor
     public grad:         ref f32
     public offset:       i32
     intern count:        u64
-
+    public scale:        f32
+    
     func init [] -> none
+        # it should error when we do not give const to printf
+        printf ["tensor-scale: %f\n", scale]
+
         has_f32: bool [ floats ]
         count   = tensor_shape.total
         floats  = floats || new f32[tensor_shape]
@@ -68,7 +71,9 @@ class tensor
 
         if [ initializer || has_f32 ]
             quantize
-        scale = 1.0f
+        el
+            scale  = 1.0f
+            offset = 0
 
     func quantize [] -> none
         max_abs: f32 [ 0.0 ]
@@ -154,6 +159,9 @@ class op
     intern result:     tensor
     public weights:    tensor
     public bias:       tensor
+
+    func init[] -> none
+        puts 'op: {name}'
 
     func finalize [] -> none
         no-op
@@ -463,6 +471,9 @@ class keras
 
     func init []
         op_map = map op[string]
+
+        op_map["key"] = null # errors here 
+
         for [ o: op ] in ops
             op_map[o.name] = o
 

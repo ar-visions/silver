@@ -18,7 +18,12 @@ app ai-test
         # keras wiring sets op.result = next_op.input, so each
         # op needs an input tensor with the correct shape
 
-        t_in:     tensor [tensor_shape: 32x32x1, scale:2.2]
+        scale2: f32[ 2.4f ]
+        printf "scale2 %f\n", scale2
+
+        t_in: tensor [tensor_shape: 32x32x1, scale:2.2f]
+
+        puts 'loaded tensor'
         #t_in.scale = 1.2
 
         t_conv1:  tensor [tensor_shape: 32x32x1]
@@ -42,11 +47,12 @@ app ai-test
 
         # --- construct ops ---
         op_in:  input_op [input: t_in,     name: 'input']
-        t_in.scale = 1.2
+
         op_c1:  conv     [input: t_conv1,  name: 'conv1',
                           padding: Padding.same, kernel_size: 3x3, stride_shape: 1x1,
                           out_channels: 8, activation: Activation.relu,
                           weights: w_conv1, bias: b_conv1]
+        
         op_c2:  conv     [input: t_conv2,  name: 'conv2',
                           padding: Padding.same, kernel_size: 3x3, stride_shape: 1x1,
                           out_channels: 16, activation: Activation.relu,
@@ -64,7 +70,6 @@ app ai-test
                           weights: w_dense2, bias: b_dense2]
         op_out: output_op[input: t_out,   name: 'output']
 
-        puts '22.1'
         # --- wire upstream dependencies ---
         op_c1.inputs  = array string [ 'input' ]
         op_c2.inputs  = array string [ 'conv1' ]
@@ -74,21 +79,12 @@ app ai-test
         op_d2.inputs  = array string [ 'dense1' ]
         op_out.inputs = array string [ 'dense2' ]
 
-        puts '22.2'
-
-        all_ops2: array op [ string['hi'], string['yo'] ]
-
-        puts '22.3'
-
         # --- create keras model ---
         all_ops: array op [ op_in, op_c1, op_c2, op_p, op_f, op_d1, op_d2, op_out ]
 
-        puts '22.4'
-
+        puts 'i figured since i gone this far...'
         model: keras [ident: 'ai-test', ops: all_ops]
-
-        puts '22.5'
-
+        ##
         # --- generate training data ---
         # random grayscale 32x32 images, label = average pixel value
         num_samples: i32 [20]
@@ -115,3 +111,4 @@ app ai-test
         model.train 10, samples, 0.001
 
         puts 'ai-test complete'
+

@@ -11,8 +11,15 @@ import <math.h>
 # --- xoshiro256++ state (module-level) ---
 # intern classes have no exported type-id and no introspection
 intern class rng
-    state:  new u64[ 4 ] # new is vector, because the arg given to construct-with is a shape -- NO inits are called because NO inner elements are constructed from the call
+    test1:  1
+    test2:  2
+    test3:  3
+    test4:  4
+    state:  new u64[ 4 ] 
     seeded: bool [ false ]
+
+# new is vector, because the arg given to construct-with is a shape
+# NO inits are called because NO inner elements are constructed from the call
 
 
 # silver does have internal module state with interface to it, 

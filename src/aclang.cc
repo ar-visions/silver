@@ -631,7 +631,7 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
     
     Au_t parent = top_scope(e);
     Au_t fn = def(parent, n, AU_MEMBER_FUNC, 0);
-    if (n && strcmp(n, "set_font_manager") == 0) {
+    if (n && strcmp(n, "printf") == 0) {
         int test2 = 2;
         test2    += 2;
     }
@@ -674,7 +674,24 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
             if (idx > 0 && idx <= (int)fn->args.count) {
                 Au_t arg = (Au_t)fn->args.origin[idx - 1];
                 arg->is_formatter = true;
-                arg->value = (object)_i32(attr->getFirstArg() - 1);
+            }
+        }
+    } else if (n && decl->isVariadic()) {
+        string st = stem(e->current_inc);
+        if (eq(st, "stdio")) {
+            // glibc removed __attribute__((format)) from these; patch it in
+            static const struct { const char* name; int fmt_arg; } fmt_table[] = {
+                {"printf",  0}, {"fprintf", 1}, {"sprintf", 1},
+                {"scanf",   0}, {"fscanf",  1}, {"sscanf",  1},
+                {NULL, 0}
+            };
+            for (int t = 0; fmt_table[t].name; t++) {
+                if (strcmp(n, fmt_table[t].name) == 0 && fn->args.count > fmt_table[t].fmt_arg) {
+                    Au_t f = (Au_t)fn->args.origin[fmt_table[t].fmt_arg];
+                    if (f->src == typeid(ref_i8))
+                        f->is_formatter = true;
+                    break;
+                }
             }
         }
     }
