@@ -83,6 +83,26 @@ Au_t au_arg_type(Au a) {
     return au;
 }
 
+Au_t typeid_string(Au_t check) {
+    Au_t expected = typeid(string);
+    if (check != expected) {
+        fprintf(stderr, "typeid_string mismatch: got %p (%s) expected %p (%s)\n",
+            (void*)check, check ? check->ident : "(null)",
+            (void*)expected, expected->ident);
+    }
+    verify(check == expected, "typeid_string: mismatch");
+    return expected;
+}
+
+none validate_meta(Au_t actual, Au_t expected) {
+    if (actual != expected) {
+        fprintf(stderr, "meta mismatch: got %p (%s) expected %p (%s)\n",
+            (void*)actual, actual ? actual->ident : "(null)",
+            (void*)expected, expected ? expected->ident : "(null)");
+        verify(false, "validate_meta: mismatch");
+    }
+}
+
 Au_t Au_cast_Au_t(Au a) {
     return isa(a);
 }
@@ -227,6 +247,7 @@ shape shape_operator__lleft(shape a, i64 n) {
     verify((a->count - n) >= 1, "cannot reduce shape from left");
     return new(shape, count, a->count - n, data, a->data + n, is_global, false);
 }
+
 
 i64 shape_total(shape a) {
     i64* data = a->data;
@@ -976,7 +997,8 @@ Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, 
     type->module            = module;
     type->ident             = cstr_copy((cstr)ident);
     type->traits            = traits;
-    type->typesize          = typesize;
+    if (!type->typesize)
+        type->typesize      = typesize;
     type->table_size        = context ? context->table_size : 0; // [in module-init] increment with additional functions that do not overload
     type->isize             = isize;
     if (context)
@@ -1686,7 +1708,7 @@ none auto_free() {
 Au alloc_dbg(Au_t type, num count, cstr source, int line, int sequence) {
     sz map_sz = sizeof(map);
     sz _sz   = sizeof(struct _Au);
-    Au a = alloc_instance(type, _sz + type->typesize * count, true);
+    Au a = alloc_instance(type, _sz + (type->typesize << 1) * count, true);
     a->type       = type;
     a->data       = &a[1];
     a->count      = count;
@@ -1732,8 +1754,9 @@ Au alloc(Au_t type, num count, shape shape_data, Au_t* meta) {
     if (meta && type->meta.count > 0) {
         for (int i = 0; i < type->meta.count; i++) {
             Au_t m = meta[i];
+            if (!m) break; // optional meta args not provided
+            Au_t ref = (Au_t)type->meta.origin[i];
             Au_t object_type = isa(m);
-            Au_t ref = ((Au_t*)&type->meta)[i];
             if (object_type && !object_type->is_schema) {
                 verify (inherits(object_type, ref), "expected object of compatible-type %s", m->ident);
             }
@@ -3013,6 +3036,8 @@ sz vector_len(vector a) {
 
 // we want hashmap to do less memory refs than map; also no ordering needed
 none store_init(store a) {
+    Au_t au = isa(a);
+    int sz = sizeof(struct _store);
     if (a->hsize <= 0) a->hsize = 256;
     if (a->hsize) a->hlist = (item*)calloc(a->hsize, sizeof(item));
 }
@@ -3046,7 +3071,7 @@ none store_set(store a, Au key, Au val) {
             return;
         }
     }
-    item i = hold(item(key, key, value, val));
+    item i = item(key, key, value, val);
     if (f) {
         i->next = *loc;
         (*loc)->prev = i;
@@ -6416,7 +6441,7 @@ void __coverage_report(void) {
 
 define_arb(Au, Au, sizeof(struct _Au), AU_TRAIT_CLASS, null);
 
-define_class(store, Au)
+define_class(store, collective)
 
 define_class(subscriber, Au)
 

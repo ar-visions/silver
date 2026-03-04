@@ -652,6 +652,8 @@ forward(any)
     M(AA,BB, s, method, public, none,   auto_free) \
     M(AA,BB, i, method, public, Au,     initialize) \
     M(AA,BB, s, method, public, none,   module_erase,   Au_t, symbol) \
+    M(AA,BB, s, method, public, Au_t,   typeid_string,  Au_t) \
+    M(AA,BB, s, method, public, none,   validate_meta,  Au_t, Au_t) \
     M(AA,BB, s, method, public, Au_t,   module_lookup,  symbol) \
     M(AA,BB, s, method, public, Au_t,   def_module,     symbol) \
     M(AA,BB, s, method, public, Au_t,   global) \
@@ -1970,6 +1972,8 @@ none array_init(array);
 
 Au_t au_arg(Au a);
 Au_t au_arg_type(Au a);
+Au_t typeid_string(Au_t check);
+none validate_meta(Au_t actual, Au_t expected);
 
 #define weak_module_ Au
 #define weak_schema(X,Y,...)

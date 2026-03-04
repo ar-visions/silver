@@ -1302,7 +1302,7 @@ void emit_debug_global(aether a, Au_t var_au, LLVMValueRef global_val) {
 
     LLVMMetadataRef expr = LLVMDIBuilderCreateExpression(a->dbg_builder, null, 0);
 
-    LLVMDIBuilderCreateGlobalVariableExpression(
+    LLVMMetadataRef gv_expr = LLVMDIBuilderCreateGlobalVariableExpression(
         a->dbg_builder,
         a->compile_unit,
         name, name_len,
@@ -1312,6 +1312,9 @@ void emit_debug_global(aether a, Au_t var_au, LLVMValueRef global_val) {
         false,  // is local
         expr,
         null, 0);
+
+    unsigned dbg_kind = LLVMGetMDKindIDInContext(a->module_ctx, "dbg", 3);
+    LLVMGlobalSetMetadata(global_val, dbg_kind, gv_expr);
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -23,14 +23,25 @@ typedef LLVMMetadataRef LLVMScope;
 
 #undef fault
 #define fault(t, ...) ({ \
-    string s = (string)formatter( \
-        (Au_t)null, false, stderr, (Au) true, \
-        seq, (symbol) "\n[%5i] compiler: %s:%i\n        source:   %o:%i:%i\n        " t, \
-        seq, __FILE__, __LINE__, a->module_file, \
-        aether_peek_safe(a)->line, \
-        aether_peek_safe(a)->column __VA_OPT__(,) __VA_ARGS__); \
-    if (level_err >= fault_level) { \
-        halt(s, aether_peek(a)); \
+    token pk = aether_peek_safe(a); \
+    string s; \
+    if (pk->line == 0) { \
+        s = (string)formatter( \
+            (Au_t)null, false, stderr, (Au) true, seq, \
+            (symbol) \
+            "\n%s:%i :: " t, \
+            __FILE__, __LINE__ \
+            __VA_OPT__(,) __VA_ARGS__); \
+    } else { \
+        s = (string)formatter( \
+            (Au_t)null, false, stderr, (Au) true, seq, \
+            (symbol) "\n%s:%i%o / %o:%i:%i :: " t, \
+            __FILE__, __LINE__, seq ? f(string, "@%i", seq) : string(""), a->module_file, \
+            aether_peek_safe(a)->line, \
+            aether_peek_safe(a)->column __VA_OPT__(,) __VA_ARGS__); \
+        if (level_err >= fault_level) { \
+            halt(s, aether_peek(a)); \
+        } \
     } \
     false; \
 })
@@ -120,7 +131,7 @@ void            emit_debug_function (aether a, efunc fn, bool);
 void            emit_debug_variable (aether a, enode var, u32 arg_no, u32 line);
 LLVMMetadataRef debug_au_header_type(aether a, Au_t schema);
 void emit_debug_params              (aether a, efunc fn);
-
+void emit_debug_global              (aether a, Au_t var_au, LLVMValueRef global_val);
 
 void aether_emit_block_probe(aether a, u32 probe_id);
 LLVMValueRef emit_clock_ns(aether a, cstr label);
@@ -202,7 +213,7 @@ static token aether_peek(aether a) {
     return (token)a->tokens->origin[a->cursor];
 }
 
-static token aether_peek_safe(aether a) {
+token aether_peek_safe(aether a) {
     if (a->cursor == len(a->tokens)) {
         if (!a->cursor)
             return token("[none]");
@@ -1458,7 +1469,7 @@ none aether_e_vector_init(aether a, etype element_type, enode vec, array nodes) 
     }
 }
 
-enode aether_e_meta_ids(aether a, array meta) {
+enode aether_e_meta_ids(aether a, array meta, i32 alloc_count) {
     Au_t atype = au_lookup("Au_t");
     etype atype_vector = etype_ptr(a, atype, null);
 
@@ -1469,8 +1480,10 @@ enode aether_e_meta_ids(aether a, array meta) {
         return e_null(a, atype_vector);
 
     i32 ln = len(meta);
+    // allocate at least alloc_count slots so alloc() doesn't read past the array
+    i32 slots = alloc_count > ln ? alloc_count : ln;
     LLVMTypeRef elemTy = lltype(atype_vector);
-    LLVMTypeRef arrTy = LLVMArrayType(elemTy, ln);
+    LLVMTypeRef arrTy = LLVMArrayType(elemTy, slots);
     LLVMValueRef* elems = calloc(ln, sizeof(LLVMValueRef));
 
     for (i32 i = 0; i < ln; i++) {
@@ -1478,9 +1491,9 @@ enode aether_e_meta_ids(aether a, array meta) {
         enode n;
         Au_t type = isa(m);
 
-        if (instanceof(m, etype))
+        if (instanceof(m, etype)) {
             n = e_typeid(a, (etype)m);
-        else if (instanceof(m, shape)) {
+        } else if (instanceof(m, shape)) {
             shape s = (shape)m;
             array ar = array(alloc, s->count);
             for (int ii = 0; ii < s->count; ii++)
@@ -1497,8 +1510,10 @@ enode aether_e_meta_ids(aether a, array meta) {
         elems[i] = n->value;
     }
 
-    // stack allocate: alloca [ln x atype]
+    // stack allocate: alloca [ln x atype], null-initialized so alloc
+    // can detect absent optional meta args (e.g. shape on array)
     LLVMValueRef arr_alloc = LLVMBuildAlloca(B, arrTy, "meta_ids");
+    LLVMBuildStore(B, LLVMConstNull(arrTy), arr_alloc);
 
     // store each element into the allocated array
     for (i32 i = 0; i < ln; i++) {
@@ -1878,7 +1893,9 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
                 i++;
                 continue;
             }
-        
+            if (fmt_idx >= 0 && i > fmt_idx)
+                break;
+
             if (is_lambda(fn)) {
                 verify(instanceof(arg_value, enode), "expected enode for runtime function call");
                 enode n = (enode)arg_value;
@@ -1891,13 +1908,14 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
                 evar  arg     = (evar) u(evar, arg_mem);
                 enode n       = (enode)instanceof(arg_value, enode);
                 if (index == fmt_idx) {
+                    Au_t au_str = isa(n->literal);
                     Au fmt = n ? (Au)instanceof(n->literal, const_string) : null;
                     verify(fmt, "formatter functions require literal, constant strings");
                 }
                 etype arg_t   = u(etype, au_arg_type((Au)arg_mem));
                 enode conv    = e_create(a, arg_t, arg_value);
 
-                if (arg_mem->is_inlay) // honor the inlay attribute; 'must pass by value and not just think we are'
+                if (arg_mem && arg_mem->is_inlay) // honor the inlay attribute; 'must pass by value and not just think we are'
                     conv = enode_value(conv, true);
                 
                 arg_values[index] = conv->value;
@@ -1910,7 +1928,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     }
     int istart = index;
     
-    if (funcptr && fmt_idx >= 0) {
+    if (fmt_idx >= 0) {
         Au_t   src_type = isa(args->origin[fmt_idx]);
         enode  fmt_node = instanceof(args->origin[fmt_idx], enode);
         string fmt_str  = (string)instanceof(fmt_node->literal, const_string);
@@ -2528,7 +2546,7 @@ enode e_create_from_map(aether a, etype t, map m) {
     bool  is_m = is_map(t);
     efunc f_alloc    = (efunc)u(efunc, find_member(etypeid(Au)->au, "alloc_new",  AU_MEMBER_FUNC, false));
     efunc f_mset     = (efunc)u(efunc, find_member(etypeid(map)->au, "set",       AU_MEMBER_FUNC, false));
-    enode metas_node = e_meta_ids(a, t->meta);
+    enode metas_node = e_meta_ids(a, t->meta, t->au->meta.count);
 
     efunc cur = context_func(a);
     enode res = e_fn_call(a, f_alloc, a(
@@ -2563,7 +2581,7 @@ enode e_create_from_array(aether a, etype t, array ar) {
     efunc f_push       = (efunc)u(efunc, find_member(etypeid(collective)->au, "push", AU_MEMBER_FUNC, true));
     efunc f_push_vdata = (efunc)u(efunc, find_member(etypeid(array)->au, "push_vdata", AU_MEMBER_FUNC, true));
 
-    enode metas_node = e_meta_ids(a, t->meta);
+    enode metas_node = e_meta_ids(a, t->meta, t->au->meta.count);
     enode res = e_fn_call(a, f_alloc, a(
         e_typeid(a, t), _i32(1), e_null(a, etypeid(shape)), metas_node));
     res->au = t->au;
@@ -2612,10 +2630,17 @@ enode e_create_from_array(aether a, etype t, array ar) {
     }
 
     if (t->au == typeid(array)) {
-        // set alloc size and unmanaged flag before init
+        // set alloc size, unmanaged, and assorted flags before init
         enode prop_alloc     = etype_access((etype)res, string("alloc"), false);
         enode prop_unmanaged = etype_access((etype)res, string("unmanaged"), false);
         e_assign(a, prop_alloc, (Au)array_len, OPType__assign);
+        // mark assorted if element type is a class (subtypes may differ)
+        if (element_type && element_type->au &&
+            (element_type->au->traits & AU_TRAIT_CLASS)) {
+            enode prop_assorted = etype_access((etype)res, string("assorted"), false);
+            enode tru = e_operand(a, _bool(true), etypeid(bool));
+            e_assign(a, prop_assorted, (Au)tru, OPType__assign);
+        }
         if (const_vector) {
             enode tru = e_operand(a, _bool(ln), etypeid(bool));
             e_assign(a, prop_unmanaged, (Au)tru, OPType__assign);
@@ -2772,7 +2797,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
 
             efunc f_alloc    = (efunc)u(efunc,
                 find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, false));
-            enode metas_node = e_meta_ids(a, input_type->meta);
+            enode metas_node = e_meta_ids(a, input_type->meta, input_type->au->meta.count);
             enode boxed      = e_fn_call(a, f_alloc, a(
                 e_typeid(a, input_type), 
                 _i32(1), 
@@ -2993,12 +3018,12 @@ none copy_lambda_info(enode mem, enode lambda_fn) {
 enode aether_e_vector(aether a, etype t, enode shape_data) {
     efunc f_alloc    = (efunc)u(efunc,
         find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, false));
-    enode metas_node = e_meta_ids(a, t->meta);
+    enode metas_node = e_meta_ids(a, t->meta, t->au->meta.count);
     return e_fn_call(a, f_alloc, a( e_typeid(a, t), _i32(0), shape_data, metas_node ));
 }
 
 enode aether_e_alloc(aether a, etype mdl) {
-    enode metas_node = e_meta_ids(a, mdl->meta);
+    enode metas_node = e_meta_ids(a, mdl->meta, mdl->au->meta.count);
     efunc f_alloc = (efunc)u(efunc,
         find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, false));
     enode res = e_fn_call(a, f_alloc, a(
@@ -4183,6 +4208,7 @@ none etype_init(etype t) {
     aether a = t->mod; // silver's mod will be a delegate to aether, not inherited
 
     t->iteration = a->iteration;
+    Au_t au_store = typeid(store);
     if (!a->registry)
         a->registry = store();
 
@@ -4545,7 +4571,7 @@ etype implement_type_id(etype t) {
     
     etype tt = u(etype, t->au);
     tt->type_id = hold(access(schema_i, string("type"), true));
-    if (!a->is_Au_import && t != a && au->access_type != interface_intern) {
+    if (!a->is_Au_import && t != a) {
         set(a->user_type_ids, (Au)t, (Au)tt->type_id);
     }
     return mt;
@@ -4561,6 +4587,10 @@ none etype_implement(etype t, bool w) {
     if (au->member_type == AU_MEMBER_NAMESPACE || (is_func(au) && !((enode)t)->used && !a->is_Au_import))
         return;
     Au commander_solo = head(t);
+
+    if (au->ident && strcmp(au->ident, "rng") == 0) {
+        au = au;
+    }
 
     if (au->traits & AU_TRAIT_ENUM) {
         if (!lltype(t) && au->src)
@@ -4613,6 +4643,8 @@ none etype_implement(etype t, bool w) {
             }
             n->loaded = false;
             n->value = G; // it probably makes more sense to keep llvalue on the node
+            if (!is_external)
+                emit_debug_global(a, au, G);
         } else if (!is_func(au->context) || au->is_static) {
             // we likely need to check to see if our context is a function
             // these are stack members, and indeed inside functions! they are just not in the 'args'
@@ -4661,7 +4693,7 @@ none etype_implement(etype t, bool w) {
                         count++;
                 }
 
-            if (is_class(t))
+            if (is_class(t) && (!multi_Au || tt->au != typeid(Au)))
                 count++; // u8 Type_interns[isize]
         }
 
@@ -4730,7 +4762,7 @@ none etype_implement(etype t, bool w) {
 
                         if (m->elements > 0)
                             struct_members[index] = LLVMArrayType(struct_members[index], m->elements);
-                        
+
                         verify(struct_members[index], "no lltype found for member %s.%s", au->ident, m->ident);
                         int abi_member  = LLVMABISizeOfType(a->target_data, struct_members[index]);
                         verify(abi_member, "type has no size");
@@ -4744,7 +4776,7 @@ none etype_implement(etype t, bool w) {
             }
 
             // lets define this as a form of byte accessible opaque.
-            if (is_class(t)) {
+            if (is_class(t) && (!multi_Au || tt->au != typeid(Au))) {
                 struct_members[index] = LLVMArrayType(lltype(etypeid(u8)), tt->au->isize);
                 index++;
             }
@@ -4898,7 +4930,8 @@ none etype_implement(etype t, bool w) {
         if (au->elements) t->lltype = LLVMArrayType(t->lltype, au->elements);
         /// /// /// /// /// /// /// /// /// /// /// /// /// /// /// /// /// 
         au->abi_size   = LLVMABISizeOfType(a->target_data, t->lltype) * 8;
-        au->typesize   = LLVMABISizeOfType(a->target_data, t->lltype);
+        if (!au->typesize)
+            au->typesize = LLVMABISizeOfType(a->target_data, t->lltype);
         au->align_bits = LLVMABIAlignmentOfType(a->target_data, t->lltype) * 8;
     }
 }
@@ -5044,7 +5077,14 @@ none aether_build_module_initializer(aether a, enode init) {
         return;
 
     a->direct = true;
-    //aether_eputs(a, f(string, "%o: initializing", a));
+    aether_eputs(a, f(string, "%o: initializing", a));
+
+    // verify typeid(string) matches between compiler and runtime
+    {
+        efunc fn_check = efind(efunc, etypeid(Au), typeid_string);
+        enode str_tid  = e_typeid(a, etypeid(string));
+        e_fn_call(a, fn_check, a(str_tid));
+    }
 
     emit_coverage_register(a);
     
@@ -5157,9 +5197,7 @@ none aether_build_module_initializer(aether a, enode init) {
         if (!is_class_t && !is_struct_t && !is_enum_t)
             continue;
 
-        // these 
-        if (mdl->au->access_type == interface_intern)
-            continue;
+        // intern classes still need emplace for typesize
 
         Au_t tau = mdl->au;
         if (mdl->au->ident && strcmp(mdl->au->ident, "test4") == 0) {
@@ -6433,7 +6471,7 @@ efunc aether_module_initializer(aether a) {
     verify(a, "model given must be module (aether-based)");
 
     efunc init = function(a, (etype)a,
-        string("initializer"), etypeid(none), array(),
+        f(string, "%s_initializer", a->au->ident), etypeid(none), array(),
         AU_MEMBER_FUNC, AU_TRAIT_MODINIT, OPType__undefined);
     init->au->access_type = interface_intern;
     init->has_code = true;

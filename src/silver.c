@@ -23,37 +23,48 @@ static void build_record(silver a, etype mrec);
     m ? u(etype, m) : null; \
 })
 
+token aether_peek_safe(silver);
+
 #undef error
 #define error(t, ...) ({ \
-    string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%10s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, __FILE__, __LINE__, seq, a->module_file, \
-                peek(a)->line, peek(a)->column, ##__VA_ARGS__); \
-    if (level_err >= fault_level) { \
-        halt(s, peek(a)); \
+    struct _token* pk = aether_peek_safe(a); \
+    string s; \
+    if (pk->line == 0) { \
+        s = (string)formatter( \
+            (Au_t)null, false, stderr, (Au) true, seq, \
+            (symbol)"\n%s:%i\n" t, __FILE__, __LINE__ \
+            __VA_OPT__(,) __VA_ARGS__); \
+        if (level_err >= fault_level) { \
+            halt(s, pk); \
+        } \
+    } else { \
+        s = (string)formatter( \
+            (Au_t)null, false, stderr, (Au) true, seq, \
+            (symbol) "\n%s:%i%o :: %o:%i:%i\n" t, \
+            __FILE__, __LINE__, seq ? f(string, "@%i", seq) : string(""), a->module_file, \
+            pk->line, pk->column __VA_OPT__(,) __VA_ARGS__); \
+        if (level_err >= fault_level) { \
+            halt(s, aether_peek_safe(a)); \
+        } \
     } \
     false; \
 })
 
 #define log_tokens(t, ...) ({ \
-    string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%10s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, __FILE__, __LINE__, seq, a->module_file, \
+    string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, __FILE__, __LINE__, seq, a->module_file, \
                 peek(a)->line, peek(a)->column, ##__VA_ARGS__); \
 })
 
-
 #define validate(cond, t, ...) ({ \
     if (!(cond)) { \
-        string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%10s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, __FILE__, __LINE__, seq, a->module_file, \
-                  peek(a)->line, peek(a)->column, ##__VA_ARGS__); \
-        if (level_err >= fault_level) { \
-            halt(s, peek(a)); \
-        } \
-        false; \
+        error(t __VA_OPT__(,) __VA_ARGS__); \
     } else { \
         true; \
     } \
 })
 
 #define breakpoint(tok, t, ...) ({ \
-    string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%10s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, __FILE__, __LINE__, seq, a->module_file, \
+    string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, __FILE__, __LINE__, seq, a->module_file, \
                 tok->line, tok->column, ##__VA_ARGS__); \
     raise(SIGTRAP); \
 })
@@ -831,7 +842,10 @@ void silver_init(silver a) {
     cstr _SRC    = getenv("SRC");
     cstr _DBG    = getenv("DBG");
     cstr _IMPORT = getenv("IMPORT");
+
+    if (!_IMPORT) _IMPORT = cstr_copy(path_cwd()->chars);
     verify(_IMPORT, "silver requires IMPORT environment");
+    _IMPORT = cstr_copy(absolute(path(_IMPORT))->chars);
 
     a->mod          = (aether)a;
     a->imports      = array(32);
@@ -1964,6 +1978,12 @@ string read_alpha_macrofilter(silver a, bool is_decl) {
 
 enode enode_super(etype, enode);
 
+none print_tokens(silver a, int seq) {
+    log_tokens("%o %o %o %o %o %o - %i",
+        element(a, 0), element(a, 1), element(a, 2),
+        element(a, 3), element(a, 4), element(a, 5), seq);
+}
+
 enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int seq = 0; seq++;
     OPType assign_enum = OPType__undefined;
     Au_t   top     = top_scope(a);
@@ -1971,9 +1991,13 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
     silver module  =  !is_cmode(a) && (top->is_namespace) ? a : null;
     efunc  f       =  !is_cmode(a) ? context_func(a) : null;
     bool   in_rec  = rec_top && rec_top->au == top;
+
+    
     if (seq == 95) {
         seq = seq;
     }
+
+    //print_tokens(a, seq);
 
     if (assign_type) *(OPType*)assign_type = OPType__undefined;
 
@@ -2527,7 +2551,13 @@ enode parse_statement(silver a)
 
     validate(!is_struct(top) || (!access || access == interface_public),
         "unexpected access level found in struct");
-    
+
+    // not yet sold on needing override; its less arguments but you can do that with func init, too
+    // also override would need to require the cast and operator
+    // no args would mean override.. thats not difficult to implement..
+
+    //bool      is_override = !f ?
+    //    read_if(a, "override")   != null : false;
     bool      is_lambda = !f ?
         read_if(a, "lambda")     != null : false;
     bool      is_func   = !f && !is_lambda ?
@@ -2610,8 +2640,8 @@ enode parse_statement(silver a)
 
         if (is_func|is_lambda|is_ctr|is_idx|is_cast|is_oper) {
             if (module || rec_top) {
-                u64 traits = (is_static ? AU_TRAIT_STATIC : 
-                             (is_lambda ? 0 : (rec_top ? AU_TRAIT_IMETHOD : 0))) | 
+                u64 traits = (is_static ? AU_TRAIT_STATIC :
+                             (is_lambda ? 0 : (rec_top ? AU_TRAIT_IMETHOD : 0))) |
                              (is_lambda ? AU_TRAIT_LAMBDA : 0);
                 Au_t au = mem ? mem->au : null;
                 enum AU_MEMBER ftype = is_lambda ? AU_MEMBER_FUNC      :
@@ -2811,12 +2841,12 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
 
     bool is_lambda = (traits & AU_TRAIT_LAMBDA) != 0;
     bool in_context = false;
-    
+
     // create model entries for the args (enodes created on func init)
     push_scope(a, (Au)mem);
     bool first = true;
     Au_t target = null;
-    
+
     // parse args (move to generic)
     for (; member_type != AU_MEMBER_CAST ;) {
         if (read_if(a, "]"))
@@ -3613,8 +3643,8 @@ none silver_build(silver a) {
         cstr   compiler = eq(ext, ".cc") ? "clang++" : "clang";
         
         // compile .c/.cc to .o
-        verify(exec(a->verbose, "%o/bin/%s -c %o -o %o -I%o/include -I%o/include/Au",
-            install, compiler, i, i_name, install, install) == 0,
+        verify(exec(a->verbose, "%o/bin/%s %o -c %o -o %o -I%o/include -I%o/include/Au",
+            install, compiler, cflags, i, i_name, install, install) == 0,
             "failed to compile %o", i);
         
         // accumulate object files for linking
@@ -3631,11 +3661,10 @@ none silver_build(silver a) {
         install, a->build_dir, install, libs, cflags) == 0,
         "link failed");
     
-    if (file_exists("%o", a->product_link))
-        unlink(a->product_link->chars);
-    
+    unlink(a->product_link->chars);
+
     verify(create_symlink(a->product, a->product_link),
-        "could not create product symlink from %o", a->product);
+        "could not create product symlink from %o -> %o", a->product_link, a->product);
 
 
     // write out each ark we find
@@ -3786,9 +3815,18 @@ static enode parse_func_call(silver a, efunc f) { sequencer
 
     bool read_br = false;
     bool cmode = false;
-    if (is_func_ptr(f))
-        read_br = read_if(a, "[") != null;
-    else if (is_cmode(a)) {
+
+    // lets see if the user insists on brackets as syntax only
+    // if single arg, silver handles it in read_enode
+    bool user_likes_brackets = false;
+    if (a->expr_level == 0 && next_is(a, "[") && (f->au->is_vargs || user_arg_count(f) > 1)) {
+        push_current(a);
+        read_body(a);
+        user_likes_brackets = !next_is(a, ",");
+        pop_tokens(a, false);
+    }
+
+    if (is_cmode(a)) {
         cmode = true;
         read_br = read_if(a, "(") != null;
         if (!read_br) {
@@ -3796,7 +3834,8 @@ static enode parse_func_call(silver a, efunc f) { sequencer
             return efunc_fptr(f);
         }
     }
-    else validate(a->expr_level == 0 || (user_arg_count(f) == 0 || (read_br = read_if(a, "[") != null)),
+    else validate((a->expr_level == 0 && !user_likes_brackets) || 
+                  (user_arg_count(f) == 0 || (read_br = read_if(a, "[") != null)),
             "expected call-bracket [ at expression depth past statement level");
     
     a->expr_level++;
@@ -3814,9 +3853,9 @@ static enode parse_func_call(silver a, efunc f) { sequencer
     }
 
     while (i + offset < ln || fn->au->is_vargs) {
-        Au_t   src  = (Au_t)au_arg_type(array_get(m, i + offset));
-        etype  typ  = canonical(u(etype, src));
-        token t2 = element(a, 0);
+        Au_t   arg_decl = (Au_t)array_get(m, i + offset);
+        Au_t   src  = (Au_t)au_arg_type((Au)arg_decl);
+        etype  typ  = (arg_decl && arg_decl->is_formatter) ? null : canonical(u(etype, src));
         enode  expr = parse_expression(a, typ); // self contained for '{interp}' to cstr!
         verify(expr, "invalid expression");
         push(values, (Au)expr);
@@ -5062,13 +5101,7 @@ enode eshape_from_indices(aether a, array indices);
 
 enode enode_shape(enode);
 
-none print_tokens(silver a) {
-    log_tokens("%o %o %o %o %o %o",
-        element(a, 0), element(a, 1), element(a, 2),
-        element(a, 3), element(a, 4), element(a, 5));
-}
-
-enode silver_parse_member_expr(silver a, enode mem) {
+enode silver_parse_member_expr(silver a, enode mem) { sequencer
     push_current(a);
 
     macro is_macro = instanceof(mem, macro);
@@ -5078,7 +5111,7 @@ enode silver_parse_member_expr(silver a, enode mem) {
     /// handle compatible indexing methods / lambda / and general pointer dereference @ index
     if (indexable && next_is(a, "[")) {
         Au_t au_rec = is_rec((Au)mem);
-        print_tokens(a);
+        //print_tokens(a);
         if (!au_rec)
             au_rec = au_rec;
         etype r = u(etype, au_rec);
@@ -5202,8 +5235,9 @@ enode silver_parse_member_expr(silver a, enode mem) {
                 mem = parse_create_lambda(a, mem);
             else if (is_lambda_call)
                 mem = parse_lambda_call( a, (efunc)mem);
-            else
+            else {
                 mem = parse_func_call(a, (efunc)mem);
+            }
         
         } else if (is_type((Au)mem)) {
             array expr = read_within(a);
