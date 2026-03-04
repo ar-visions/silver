@@ -33,6 +33,12 @@ static void build_record(silver a, etype mrec);
     false; \
 })
 
+#define log_tokens(t, ...) ({ \
+    string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%10s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, __FILE__, __LINE__, seq, a->module_file, \
+                peek(a)->line, peek(a)->column, ##__VA_ARGS__); \
+})
+
+
 #define validate(cond, t, ...) ({ \
     if (!(cond)) { \
         string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%10s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, __FILE__, __LINE__, seq, a->module_file, \
@@ -2665,7 +2671,7 @@ enode parse_statement(silver a)
                     verify(rec_top, "invalid use of static (must be a class member, not a global item -- use intern for module-interns)");
                     mem->au->alt = (cstr)cstr_copy((cstr)((string)(f(string, "%o_%o", symbol_name((Au)rec_top), e))->chars));
                 }
-                etype_implement((etype)e);
+                etype_implement((etype)e, false);
             }
 
         } else if (assign_enum) {
@@ -4588,7 +4594,7 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
     f->user_built = true;
 
     // if there is no code, then this is an external c function; implement must do this
-    implement(f);
+    implement(f, false);
 
     if (f->has_code) {
         if (f->target)
@@ -4680,7 +4686,7 @@ static void build_record(silver a, etype mrec) {
     pop_tokens(a, false);   
     rec->parsing = false;
     
-    etype_implement(mrec);
+    etype_implement(mrec, false);
 
     // the functions we write after may access the type-id
     create_type_members(a, a->au);
@@ -4696,7 +4702,7 @@ static void build_record(silver a, etype mrec) {
                 AU_TRAIT_IMETHOD | AU_TRAIT_OVERRIDE, 0);
             f->has_code = true;
             f->au->alt = cstr_copy(((string)f(string, "%o_init", symbol_name((Au)mrec)))->chars);
-            etype_implement((etype)f);
+            etype_implement((etype)f, false);
             m_init = f->au;
         }
         if (m_init)
@@ -5056,6 +5062,12 @@ enode eshape_from_indices(aether a, array indices);
 
 enode enode_shape(enode);
 
+none print_tokens(silver a) {
+    log_tokens("%o %o %o %o %o %o",
+        element(a, 0), element(a, 1), element(a, 2),
+        element(a, 3), element(a, 4), element(a, 5));
+}
+
 enode silver_parse_member_expr(silver a, enode mem) {
     push_current(a);
 
@@ -5066,6 +5078,9 @@ enode silver_parse_member_expr(silver a, enode mem) {
     /// handle compatible indexing methods / lambda / and general pointer dereference @ index
     if (indexable && next_is(a, "[")) {
         Au_t au_rec = is_rec((Au)mem);
+        print_tokens(a);
+        if (!au_rec)
+            au_rec = au_rec;
         etype r = u(etype, au_rec);
         /// must have an indexing method, or be a reference_pointer
         validate(is_ptr((Au)mem) || r, "no indexing available for model %s",
@@ -5237,7 +5252,7 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
             is_explicit_ref, is_bind_ref);
 
         // Register and allocate the variable in the backend
-        etype_implement((etype)mem);
+        etype_implement((etype)mem, false);
     }
 
     enode result = e_assign(a, mem, (Au)R, op_val);
@@ -5509,13 +5524,13 @@ enode parse_for(silver a) { sequencer
             // create key variable in current scope
             Au_t key_mem = def_member(top_scope(a), key_name->chars, key_type->au, AU_MEMBER_VAR, 0);
             key_var = evar(mod, (aether)a, au, key_mem);
-            etype_implement((etype)key_var);
+            etype_implement((etype)key_var, false);
         }
         
         // create value variable in current scope
         Au_t val_mem = def_member(top_scope(a), val_name->chars, val_type->au, AU_MEMBER_VAR, 0);
         val_var = evar(mod, (aether)a, au, val_mem);
-        etype_implement((etype)val_var);
+        etype_implement((etype)val_var, false);
         pop_tokens(a, false);
     }
     else if (all) {
@@ -5723,13 +5738,13 @@ etype silver_read_def(silver a, interface access) {
             enode enum_node = enode(
                 mod, (aether)a, au, enum_v, literal, v);
             set(a->registry, (Au)enum_v, (Au)hold(enum_node));
-            implement(enum_node); // this should create the value similarly to emember_set_value
+            implement(enum_node, false); // this should create the value similarly to emember_set_value
             value += 1;
         }
         pop_scope(a);
         pop_tokens(a, false);
 
-        etype_implement(mdl);
+        etype_implement(mdl, false);
         create_type_members(a, a->au);
 
     } else {
