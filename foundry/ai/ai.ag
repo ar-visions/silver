@@ -31,15 +31,20 @@ enum Pooling
     min:       2
     average:   3
 
+class tensor2
+    public scale: i32[1]
+
+    static func init2 [t:tensor2] -> none
+        puts 'hi'
 
 class tensor
+    public scale:        f32
     expect tensor_shape: shape
     public initializer:  Initializer.undefined
     public quants:       ref i8
     public floats:       ref f32
     public grad:         ref f32
     public offset:       i32
-    public scale:        f32
     intern count:        u64
 
     func init [] -> none
@@ -63,6 +68,7 @@ class tensor
 
         if [ initializer || has_f32 ]
             quantize
+        scale = 1.0f
 
     func quantize [] -> none
         max_abs: f32 [ 0.0 ]

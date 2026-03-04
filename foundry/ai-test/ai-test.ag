@@ -18,7 +18,9 @@ app ai-test
         # keras wiring sets op.result = next_op.input, so each
         # op needs an input tensor with the correct shape
 
-        t_in:     tensor [tensor_shape: 32x32x1]
+        t_in:     tensor [tensor_shape: 32x32x1, scale:2.2]
+        #t_in.scale = 1.2
+
         t_conv1:  tensor [tensor_shape: 32x32x1]
         t_conv2:  tensor [tensor_shape: 32x32x8]
         t_pool:   tensor [tensor_shape: 32x32x16]
@@ -40,6 +42,7 @@ app ai-test
 
         # --- construct ops ---
         op_in:  input_op [input: t_in,     name: 'input']
+        t_in.scale = 1.2
         op_c1:  conv     [input: t_conv1,  name: 'conv1',
                           padding: Padding.same, kernel_size: 3x3, stride_shape: 1x1,
                           out_channels: 8, activation: Activation.relu,
@@ -59,8 +62,9 @@ app ai-test
         op_d2:  dense    [input: t_dense2, name: 'dense2',
                           units: 1, in_dim: 64, out_dim: 1,
                           weights: w_dense2, bias: b_dense2]
-        op_out: output_op [input: t_out,   name: 'output']
+        op_out: output_op[input: t_out,   name: 'output']
 
+        puts '22.1'
         # --- wire upstream dependencies ---
         op_c1.inputs  = array string [ 'input' ]
         op_c2.inputs  = array string [ 'conv1' ]
@@ -70,16 +74,20 @@ app ai-test
         op_d2.inputs  = array string [ 'dense1' ]
         op_out.inputs = array string [ 'dense2' ]
 
-        puts '22'
+        puts '22.2'
+
+        all_ops2: array op [ string['hi'], string['yo'] ]
+
+        puts '22.3'
 
         # --- create keras model ---
         all_ops: array op [ op_in, op_c1, op_c2, op_p, op_f, op_d1, op_d2, op_out ]
 
-        puts '22.1'
+        puts '22.4'
 
         model: keras [ident: 'ai-test', ops: all_ops]
 
-        puts '22.2'
+        puts '22.5'
 
         # --- generate training data ---
         # random grayscale 32x32 images, label = average pixel value
