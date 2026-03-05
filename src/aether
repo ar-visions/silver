@@ -186,7 +186,7 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_op, OPType, string, Au, Au) \
     M(X, Y, i, method,   public,  enode,                    e_load, enode, enode) \
     M(X, Y, i, method,   public,  enode,                    e_typeid, etype) \
-    M(X, Y, i, method,   public,  enode,                    e_meta_ids, array, i32) \
+    M(X, Y, i, method,   public,  enode,                    e_meta_ids, array) \
     M(X, Y, i, method,   public,  enode,                    e_eval, string) \
     M(X, Y, i, method,   public,  enode,                    e_interpolate, string) \
     M(X, Y, i, method,   public,  enode,                    e_const_array, etype, array) \

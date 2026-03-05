@@ -334,6 +334,14 @@ int     select(int nfds, _fd_set_* readfds, _fd_set_* writefds, _fd_set_* except
 
 #ifndef __APPLE__
 typedef __int64_t ssize_t;
+#else
+#include <libkern/OSByteOrder.h>
+#define htole16(x) OSSwapHostToLittleInt16(x)
+#define htole32(x) OSSwapHostToLittleInt32(x)
+#define htole64(x) OSSwapHostToLittleInt64(x)
+#define le16toh(x) OSSwapLittleToHostInt16(x)
+#define le32toh(x) OSSwapLittleToHostInt32(x)
+#define le64toh(x) OSSwapLittleToHostInt64(x)
 #endif
 typedef fd_set  _fd_set_;
 

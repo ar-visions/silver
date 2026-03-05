@@ -167,10 +167,9 @@ typedef double                 *ref_f64;
     int             isize; \
     void*           fn; \
     ffi_method_t*   ffi; \
-    struct _object  members_info; \
-    struct _collective_abi  members; \
-    struct _object  meta_info; \
-    struct _collective_abi  meta; \
+    micro           members; \
+    micro           args; \
+    struct { struct _Au_t* a; struct _Au* b; } meta; \
     struct _shape*  data_shape; \
     u64             required_bits[2];
 
@@ -293,14 +292,8 @@ void lazy_init(global_init_fn fn, Au_t);
             memset(type_ref, 0, sizeof(Type_i(E).type)); \
             memcpy(&type_ref->ft, &base_ref->ft, sizeof(__typeof__(base_ref->ft))); \
             /*type_ref->type = typeid(Au_t_f); */ \
-            type_ref->members.alloc     = 64; \
-            type_ref->members.assorted  = true; \
-            type_ref->members.unmanaged = true; \
-            array_init((array)&type_ref->members); \
-            type_ref->meta.alloc        = 16; \
-            type_ref->meta.assorted  = true; \
-            type_ref->meta.unmanaged = true; \
-            array_init((array)&type_ref->meta); \
+            memset(&type_ref->members, 0, sizeof(micro)); \
+            memset(&type_ref->args,    0, sizeof(micro)); \
             type_ref->src      = typeid(T); \
             type_ref->context   = (__typeof__(Type_i(E).type.context))& Type_i(Au).type; \
             type_ref->ident    = #E;                 \
@@ -529,14 +522,8 @@ typedef Au_t* Au_ts;
                 memcpy(&type_ref->ft, &base_ref->ft, sizeof(Type_i(BASE).type.ft)); \
             type_ref->src               = SRC; \
             type_ref->member_type       = AU_MEMBER_TYPE; \
-            type_ref->members.alloc     = 128; \
-            type_ref->members.assorted  = true; \
-            type_ref->members.unmanaged = true; \
-            array_init((array)&type_ref->members); \
-            type_ref->meta.alloc        = 16; \
-            type_ref->meta.assorted     = true; \
-            type_ref->meta.unmanaged    = true; \
-            array_init((array)&type_ref->meta); \
+            memset(&type_ref->members, 0, sizeof(micro)); \
+            memset(&type_ref->args,    0, sizeof(micro)); \
             type_ref->ident             = #TYPE; \
             type_ref->table_size        = sizeof(((TYPE ## _f*)0)->ft); \
             type_ref->isize             = 0 TYPE##_schema( TYPE, ISIZE_EXTERN, __VA_ARGS__ ); \

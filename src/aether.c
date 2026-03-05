@@ -1469,7 +1469,7 @@ none aether_e_vector_init(aether a, etype element_type, enode vec, array nodes) 
     }
 }
 
-enode aether_e_meta_ids(aether a, array meta, i32 alloc_count) {
+enode aether_e_meta_ids(aether a, array meta) {
     Au_t atype = au_lookup("Au_t");
     etype atype_vector = etype_ptr(a, atype, null);
 
@@ -1480,16 +1480,17 @@ enode aether_e_meta_ids(aether a, array meta, i32 alloc_count) {
         return e_null(a, atype_vector);
 
     i32 ln = len(meta);
-    // allocate at least alloc_count slots so alloc() doesn't read past the array
-    i32 slots = alloc_count > ln ? alloc_count : ln;
+    verify(ln <= 2, "meta supports at most 2 entries (a and b)");
+
+    // build a 2-slot array: meta.a and meta.b
     LLVMTypeRef elemTy = lltype(atype_vector);
-    LLVMTypeRef arrTy = LLVMArrayType(elemTy, slots);
-    LLVMValueRef* elems = calloc(ln, sizeof(LLVMValueRef));
+    LLVMTypeRef arrTy  = LLVMArrayType(elemTy, 2);
+    LLVMValueRef arr_alloc = LLVMBuildAlloca(B, arrTy, "meta_ids");
+    LLVMBuildStore(B, LLVMConstNull(arrTy), arr_alloc);
 
     for (i32 i = 0; i < ln; i++) {
         Au m = meta->origin[i];
         enode n;
-        Au_t type = isa(m);
 
         if (instanceof(m, etype)) {
             n = e_typeid(a, (etype)m);
@@ -1507,27 +1508,15 @@ enode aether_e_meta_ids(aether a, array meta, i32 alloc_count) {
             verify(false, "unsupported design-time meta type");
         }
 
-        elems[i] = n->value;
-    }
-
-    // stack allocate: alloca [ln x atype], null-initialized so alloc
-    // can detect absent optional meta args (e.g. shape on array)
-    LLVMValueRef arr_alloc = LLVMBuildAlloca(B, arrTy, "meta_ids");
-    LLVMBuildStore(B, LLVMConstNull(arrTy), arr_alloc);
-
-    // store each element into the allocated array
-    for (i32 i = 0; i < ln; i++) {
         LLVMValueRef idxs[] = {
-            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 0, 0), // start of array
-            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), i, 0)  // element index
+            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 0, 0),
+            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), i, 0)
         };
         LLVMValueRef gep = LLVMBuildGEP2(B, arrTy, arr_alloc, idxs, 2, "");
-        LLVMBuildStore(B, elems[i], gep);
+        LLVMBuildStore(B, n->value, gep);
     }
 
-    free(elems);
-
-    // return pointer to array
+    // return pointer to 2-slot meta array
     return enode(mod, a, loaded, true, value, arr_alloc, au, etype_ptr(a, atype, null)->au);
 }
 
@@ -2546,7 +2535,7 @@ enode e_create_from_map(aether a, etype t, map m) {
     bool  is_m = is_map(t);
     efunc f_alloc    = (efunc)u(efunc, find_member(etypeid(Au)->au, "alloc_new",  AU_MEMBER_FUNC, false));
     efunc f_mset     = (efunc)u(efunc, find_member(etypeid(map)->au, "set",       AU_MEMBER_FUNC, false));
-    enode metas_node = e_meta_ids(a, t->meta, t->au->meta.count);
+    enode metas_node = e_meta_ids(a, t->meta);
 
     efunc cur = context_func(a);
     enode res = e_fn_call(a, f_alloc, a(
@@ -2581,7 +2570,7 @@ enode e_create_from_array(aether a, etype t, array ar) {
     efunc f_push       = (efunc)u(efunc, find_member(etypeid(collective)->au, "push", AU_MEMBER_FUNC, true));
     efunc f_push_vdata = (efunc)u(efunc, find_member(etypeid(array)->au, "push_vdata", AU_MEMBER_FUNC, true));
 
-    enode metas_node = e_meta_ids(a, t->meta, t->au->meta.count);
+    enode metas_node = e_meta_ids(a, t->meta);
     enode res = e_fn_call(a, f_alloc, a(
         e_typeid(a, t), _i32(1), e_null(a, etypeid(shape)), metas_node));
     res->au = t->au;
@@ -2797,7 +2786,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
 
             efunc f_alloc    = (efunc)u(efunc,
                 find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, false));
-            enode metas_node = e_meta_ids(a, input_type->meta, input_type->au->meta.count);
+            enode metas_node = e_meta_ids(a, input_type->meta);
             enode boxed      = e_fn_call(a, f_alloc, a(
                 e_typeid(a, input_type), 
                 _i32(1), 
@@ -3018,12 +3007,12 @@ none copy_lambda_info(enode mem, enode lambda_fn) {
 enode aether_e_vector(aether a, etype t, enode shape_data) {
     efunc f_alloc    = (efunc)u(efunc,
         find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, false));
-    enode metas_node = e_meta_ids(a, t->meta, t->au->meta.count);
+    enode metas_node = e_meta_ids(a, t->meta);
     return e_fn_call(a, f_alloc, a( e_typeid(a, t), _i32(0), shape_data, metas_node ));
 }
 
 enode aether_e_alloc(aether a, etype mdl) {
-    enode metas_node = e_meta_ids(a, mdl->meta, mdl->au->meta.count);
+    enode metas_node = e_meta_ids(a, mdl->meta);
     efunc f_alloc = (efunc)u(efunc,
         find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, false));
     enode res = e_fn_call(a, f_alloc, a(
@@ -5823,7 +5812,7 @@ none aether_init(aether a) {
     a->sys_inc_paths = a(f(path, "/usr/include"), f(path, "/usr/include/x86_64-linux-gnu"));
     a->lib_paths     = array(alloc, 32);
 #elif defined(__APPLE__)
-    string sdk          = run("xcrun --show-sdk-path");
+    string sdk          = run(false, "xcrun --show-sdk-path");
     string toolchain    = f(string, "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain"); // run("xcrun --show-toolchain-path");
     a->isystem          =   f(path, "%o/usr/include", toolchain);
     a->sys_inc_paths    = a(f(path, "%o/usr/include", toolchain),
