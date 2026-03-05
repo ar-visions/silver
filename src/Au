@@ -112,7 +112,6 @@ typedef bool                   *ref_bool;
 typedef __fp16                  fp16;
 typedef __bf16                  bf16;
 
-
 typedef struct cereal { char* value; } cereal;
 
 // typedef struct _object*         Au;
@@ -169,8 +168,7 @@ typedef double                 *ref_f64;
     ffi_method_t*   ffi; \
     micro           members; \
     micro           args; \
-    struct { struct _Au_t* a; struct _Au* b; } meta; \
-    struct _shape*  data_shape; \
+    meta_t          meta; \
     u64             required_bits[2];
 
 #define CAT4(A, B, C, D) A ## B ## C ## D
@@ -992,6 +990,12 @@ declare_abstract(imported)
 #define cereal_module_ Au
 #define cereal_schema(X,Y,...)      raw_schema(X,Y,...)
 
+#define meta_t_module_ Au
+#define meta_t_schema(X,Y,...)      raw_schema(X,Y,...)
+
+#define micro_module_ Au
+#define micro_schema(X,Y,...)      raw_schema(X,Y,...)
+
 #define none_schema(X,Y,...)        nil_schema(X,Y,...)
 
 #define raw_t_module_ Au
@@ -1083,6 +1087,8 @@ declare_primitive(cstr,             string_like)
 declare_primitive(symbol,           string_like)
 declare_primitive(none,             nil)
 declare_primitive(cereal,           raw)
+declare_primitive(micro,            raw)
+declare_primitive(meta_t,           raw)
 declare_primitive(raw_t,            raw)
 declare_primitive(handle,           raw)
 declare_primitive(func,             raw)

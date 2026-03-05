@@ -42,7 +42,8 @@ forward(enode)
     M(X, Y, i, prop,     intern,  LLVMMetadataRef, lldebug, as, ARef) \
     M(X, Y, i, prop,     intern,  bool,            is_implemented) \
     M(X, Y, i, prop,     public,  bool,            is_explicit_ref) \
-    M(X, Y, i, prop,     public,  array,           meta) \
+    M(X, Y, i, prop,     public,  enode,           meta_a) \
+    M(X, Y, i, prop,     public,  Au,              meta_b) \
     M(X, Y, i, prop,     public,  array,           dims) \
     M(X, Y, i, prop,     public,  aether,          mod, meta, weak) \
     M(X, Y, i, prop,     public,  etype,           schema) \
@@ -173,7 +174,6 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_builder, subprocedure) \
     M(X, Y, i, method,   public,  none,                     build_user_initializer, etype) \
     M(X, Y, i, method,   public,  enode,                    e_subroutine, etype, array, subprocedure) \
-    M(X, Y, i, method,   public,  enode,                    e_element, enode, Au) \
     M(X, Y, i, method,   public,  none,                     e_cmp_code, enode, comparison, enode, code, code) \
     M(X, Y, i, method,   public,  enode,                    e_cmp, enode, enode) \
     M(X, Y, i, method,   public,  enode,                    e_cmp_op, OPType, enode, enode) \
@@ -186,7 +186,7 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_op, OPType, string, Au, Au) \
     M(X, Y, i, method,   public,  enode,                    e_load, enode, enode) \
     M(X, Y, i, method,   public,  enode,                    e_typeid, etype) \
-    M(X, Y, i, method,   public,  enode,                    e_meta_ids, array) \
+    M(X, Y, i, method,   public,  enode,                    e_meta_ids, enode, Au) \
     M(X, Y, i, method,   public,  enode,                    e_eval, string) \
     M(X, Y, i, method,   public,  enode,                    e_interpolate, string) \
     M(X, Y, i, method,   public,  enode,                    e_const_array, etype, array) \

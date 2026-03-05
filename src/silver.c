@@ -2128,7 +2128,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
                     validate(next_is(a, ":") || (tm1 && index_of(keywords, (Au)tm1) >= 0), "unknown identifier %o", alpha);
                     validate(!find_member(top, alpha->chars, 0, false), "duplicate member: %o", alpha);
                     Au_t m = def_member(top, alpha->chars, null, AU_MEMBER_DECL, 0); // this is promoted to different sorts of members based on syntax
-                    mem = (enode)edecl(mod, (aether)a, au, m, meta, null);
+                    mem = (enode)edecl(mod, (aether)a, au, m);
                     break;
                 }
                     
@@ -2709,8 +2709,9 @@ enode parse_statement(silver a)
 
             Au_t au = mem->au;
             set(a->registry, (Au)au, null);
-            mem = (enode)evar(mod, (aether)a, au, au, loaded, false, meta, rtype->meta, initializer,
-                (tokens)map_initializer(a, string(au->ident), (tokens)expr, au->access_type));
+            mem = (enode)evar(mod, (aether)a, au, au, loaded, false,
+                meta_a, rtype->meta_a, meta_b, rtype->meta_b,
+                initializer, (tokens)map_initializer(a, string(au->ident), (tokens)expr, au->access_type));
             mem->au->access_type = (u8)access;
             e = (enode)mem;
             set(a->registry, (Au)au, mem);
@@ -2859,7 +2860,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         verify(rec, "cannot parse IMETHOD without record in scope");
         Au_t au_arg = alloc_arg(au, "a", is_struct(rec) ? pointer((aether)a, (Au)rec)->au : rec);
         au_arg->is_target = true;
-        array_qpush((array)&au->args, (Au)au_arg);
+        micro_push(&au->args, (Au)au_arg);
     }
 
     bool is_lambda = (traits & AU_TRAIT_LAMBDA) != 0;
@@ -2885,7 +2886,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         bool    is_inlay  = read_if(a, "inlay") != null;    push_current(a);
         etype   t = read_etype(a, null);            pop_tokens(a, t != null);
         string  n         = t ? null : read_alpha(a); // optional
-        array   ar        = in_context ? (array)&au->members : (array)&au->args;
+        micro*  ar        = in_context ? (micro*)&au->members : (micro*)&au->args;
 
         if (!t)
             validate(read_if(a, ":"),
@@ -2911,7 +2912,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
             validate(is_struct(arg->src),
                 "inlay applies only to struct members in arguments");
         }
-        array_qpush(ar, (Au)arg);
+        micro_push(ar, (Au)arg);
         if (first)
             first = false;
     }
@@ -3022,27 +3023,9 @@ static shape read_shape(silver a) {
 etype read_etype(silver a, array* p_expr) { sequencer
     etype mdl   = null;
     array expr  = null;
-    array meta  = null;
-    array types = array();
-    array sizes = array();
     
     token f = peek(a);
     if (!f || f->literal) return null;
-
-    /*
-    if  ((!f || f->literal || !is_alpha(f)) && !next_is(a, "ref")) {
-        if (f->literal) {
-            Au_t id = isa(f->literal);
-            if (id == typeid(shape)) {
-                shape s = (shape)f->literal;
-                if (s->explicit || s->count > 1)
-                    return etypeid(shape);
-                return etypeid(i64);
-            }
-            return u(etype, id);
-        }
-        return null;
-    }*/
 
     push_current(a);
     bool is_ref = read_if(a, "ref") != null;
@@ -3075,85 +3058,43 @@ etype read_etype(silver a, array* p_expr) { sequencer
             return null;
         }
 
-        if (seq == 1095)
-            seq = seq;
-
         if (mdl) {
-            // silver is about introducing more syntax only when you require complex containment
-            // this applies to methods with no args at method level 0 and [ args ] at > 0
-            // array map<string[int]> is the same exact way here
             bool has_depth_meta = read_if(a, "<") != null;
-            //validate(mdl->au->args.count == 0 || a->etype_level == 0 || has_depth_meta, "expected <meta> containment at depth");
-            bool read_meta =  mdl->au->args.count && is_class(mdl);
-            Au_t meta0_src = (has_depth_meta || a->etype_level == 0) && read_meta ? 
-                au_arg_type(mdl->au->args.origin[0]) : null;
-            array meta_args = null;
+            bool read_meta = mdl->au->meta.a && is_class(mdl) &&
+                             (has_depth_meta || a->etype_level == 0);
 
-            // read shape literal, or type 
-            // (to generalize types offering different literals 
-            //  we could express a trait bit take_literally or something)
-            if (meta0_src ==  typeid(shape)) {
-                shape    s =  read_shape(a);
-                validate(s && isa(s) == typeid(shape), "expected shape description, found %o", peek(a));
-                meta_args  =  a(s);
-            } else if (meta0_src && mdl->au != typeid(shape)) {
+            Au meta_a_val = null;
+            Au meta_b_val = null;
+
+            if (read_meta) {
+                // meta_a: always a type
                 a->etype_level++;
                 etype t = read_etype(a, null);
                 if (!t) t = etypeid(Au);
-                validate(t, "expected meta type, found %o", peek(a));
-                meta_args = a(t);
+                meta_a_val = (Au)t;
                 a->etype_level--;
-            }
-            // read shape-typed remaining meta args inline (not bracket-wrapped)
-            int rem = 0;
-            if (read_meta && (has_depth_meta || a->etype_level == 0)) {
-                for (int i = 1; i < mdl->au->args.count; i++) {
-                    if (au_arg_type(mdl->au->args.origin[i]) == typeid(shape)) {
-                        shape s = read_shape(a);
-                        if (s) push(meta_args, (Au)s);
-                    } else
-                        rem++;
-                }
-            }
-            if (next_is(a, "[") && rem > 0 && read_meta &&
-               (has_depth_meta || a->etype_level == 0) )
-            {
-                // remaining type meta args are joined within [ ]
-                validate(read_if(a, "["),
-                    "expected [ after first meta type %o", first_element(meta_args));
 
-                int ri = 0;
-                for (int i = 1; i < mdl->au->args.count; i++) {
-                    Au_t meta_src = au_arg_type(mdl->au->args.origin[i]);
-                    if (meta_src == typeid(shape)) continue;
-                    a->etype_level++;
-                    etype imdl = read_etype(a, null);
-                    a->etype_level--;
-                    if (!imdl && meta_src == typeid(none))
-                        break;
-                    validate(imdl, "expected type, found %o", peek(a));
-                    push(meta_args, (Au)imdl);
-                    if (++ri >= rem)
-                        break;
-                    if (read_if(a, ","))
-                        continue;
-                    if (i + 1 < mdl->au->args.count) {
-                        Au_t meta_src_next = au_arg_type(mdl->au->args.origin[i + 1]);
-                        validate(meta_src_next == typeid(none) || meta_src_next == typeid(shape),
-                            "expected comma after meta type %o", last_element(meta_args));
+                // meta_b: shape or bracketed type, optional
+                if (mdl->au->meta.b) {
+                    if (mdl->au->meta.b == typeid(shape)) {
+                        shape s = read_shape(a);
+                        if (s) meta_b_val = (Au)s;
+                    } else if (next_is(a, "[")) {
+                        read_if(a, "[");
+                        a->etype_level++;
+                        etype imdl = read_etype(a, null);
+                        a->etype_level--;
+                        validate(imdl, "expected type for meta_b, found %o", peek(a));
+                        meta_b_val = (Au)imdl;
+                        validate(read_if(a, "]"), "expected ] after meta_b type");
                     }
-                    break;
                 }
-                validate(read_if(a, "]"),
-                    "expected ] after last meta type %o [%i]", last_element(meta_args), seq);
             }
-            
-            // we read this at depth, so ajoined vector of types don't get unreadable when depth is to be displayed
-            validate(!has_depth_meta || read_if(a, ">"), "expected <meta> containment at depth");
-            
-            // sorry for the mess [/flicks-coin]
-            mdl  = meta_args ? etype(mod, (aether)a, au, mdl->au, is_explicit_ref, is_ref, meta, meta_args) : mdl;
-            meta = null; // dont reconstruct our mdl again with more
+
+            validate(!has_depth_meta || read_if(a, ">"), "expected > to close <meta>");
+
+            mdl = meta_a_val ? etype(mod, (aether)a, au, mdl->au,
+                is_explicit_ref, is_ref, meta_a, (enode)meta_a_val, meta_b, (Au)meta_b_val) : mdl;
         }
 
     } else if (!mdl && explicit_un) {
@@ -3183,15 +3124,10 @@ etype read_etype(silver a, array* p_expr) { sequencer
         }
     }
 
-    etype t = (mdl && (meta || is_any || is_ref)) ? 
+    etype t = (mdl && (is_any || is_ref)) ?
         etype(mod, (aether)a, au,
             is_ref ? pointer((aether)a, (Au)mdl->au)->au : mdl->au,
-            is_explicit_ref, is_ref, meta, meta, is_any, is_any) : mdl;
-
-    // identity of pointer is not as trivial; we should init the primitive refs as explicit-ref though
-    //if (is_ref) {
-    //    t = pointer((aether)a, (Au)t);
-    //}
+            is_explicit_ref, is_ref, is_any, is_any) : mdl;
 
     pop_tokens(a, mdl != null); // if we read a model, we transfer token state
     return t;
