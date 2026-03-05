@@ -687,6 +687,7 @@ none aether_test_write(aether a);
 
 
 // who throws away a Perfectly Good Watch?
+#ifdef __linux__
 i64 silver_watch(silver mod, path a, i64 last_mod, i64 millis) {
     int    fd = inotify_init1(IN_NONBLOCK);
     int    wd = inotify_add_watch(fd, a->chars, IN_MODIFY | IN_CLOSE_WRITE);
@@ -722,6 +723,28 @@ i64 silver_watch(silver mod, path a, i64 last_mod, i64 millis) {
     close(fd);
     return last_mod;
 }
+#else
+i64 silver_watch(silver mod, path a, i64 last_mod, i64 millis) {
+    while (1) {
+        i64 ark_time = 0;
+        each (mod->artifacts, path, ark) {
+            i64 n = modified_time(ark);
+            if (!ark_time || n > ark_time)
+                ark_time = n;
+        }
+        i64 m = modified_time(a);
+        if ((m > last_mod || ark_time > last_mod) && m != 0) {
+            if (m > last_mod)
+                last_mod = m;
+            if (ark_time > last_mod)
+                last_mod = ark_time;
+            break;
+        }
+        usleep(100000); // 100 ms poll
+    }
+    return last_mod;
+}
+#endif
 
 // not sure what this does on windows without a repo -- probably freezes everything.
 static path is_git_project(silver a) {
@@ -1942,8 +1965,8 @@ string read_alpha_macrofilter(silver a, bool is_decl) {
         Au_t au = (Au_t)a->lexical->origin[i];
         while (au) {
             if (au->member_type == AU_MEMBER_TYPE || au->member_type == AU_MEMBER_FUNC)
-                for (int ii = 0; ii < au->meta.count; ii++) {
-                    Au_t m = (Au_t)au->meta.origin[ii];
+                for (int ii = 0; ii < au->args.count; ii++) {
+                    Au_t m = (Au_t)au->args.origin[ii];
                     if (m->ident && strcmp(m->ident, n->chars) == 0) {
                         mem = m;
                         goto mem_set;
@@ -3060,10 +3083,10 @@ etype read_etype(silver a, array* p_expr) { sequencer
             // this applies to methods with no args at method level 0 and [ args ] at > 0
             // array map<string[int]> is the same exact way here
             bool has_depth_meta = read_if(a, "<") != null;
-            //validate(mdl->au->meta.count == 0 || a->etype_level == 0 || has_depth_meta, "expected <meta> containment at depth");
-            bool read_meta =  mdl->au->meta.count && is_class(mdl);
+            //validate(mdl->au->args.count == 0 || a->etype_level == 0 || has_depth_meta, "expected <meta> containment at depth");
+            bool read_meta =  mdl->au->args.count && is_class(mdl);
             Au_t meta0_src = (has_depth_meta || a->etype_level == 0) && read_meta ? 
-                au_arg_type(mdl->au->meta.origin[0]) : null;
+                au_arg_type(mdl->au->args.origin[0]) : null;
             array meta_args = null;
 
             // read shape literal, or type 
@@ -3084,8 +3107,8 @@ etype read_etype(silver a, array* p_expr) { sequencer
             // read shape-typed remaining meta args inline (not bracket-wrapped)
             int rem = 0;
             if (read_meta && (has_depth_meta || a->etype_level == 0)) {
-                for (int i = 1; i < mdl->au->meta.count; i++) {
-                    if (au_arg_type(mdl->au->meta.origin[i]) == typeid(shape)) {
+                for (int i = 1; i < mdl->au->args.count; i++) {
+                    if (au_arg_type(mdl->au->args.origin[i]) == typeid(shape)) {
                         shape s = read_shape(a);
                         if (s) push(meta_args, (Au)s);
                     } else
@@ -3100,8 +3123,8 @@ etype read_etype(silver a, array* p_expr) { sequencer
                     "expected [ after first meta type %o", first_element(meta_args));
 
                 int ri = 0;
-                for (int i = 1; i < mdl->au->meta.count; i++) {
-                    Au_t meta_src = au_arg_type(mdl->au->meta.origin[i]);
+                for (int i = 1; i < mdl->au->args.count; i++) {
+                    Au_t meta_src = au_arg_type(mdl->au->args.origin[i]);
                     if (meta_src == typeid(shape)) continue;
                     a->etype_level++;
                     etype imdl = read_etype(a, null);
@@ -3114,8 +3137,8 @@ etype read_etype(silver a, array* p_expr) { sequencer
                         break;
                     if (read_if(a, ","))
                         continue;
-                    if (i + 1 < mdl->au->meta.count) {
-                        Au_t meta_src_next = au_arg_type(mdl->au->meta.origin[i + 1]);
+                    if (i + 1 < mdl->au->args.count) {
+                        Au_t meta_src_next = au_arg_type(mdl->au->args.origin[i + 1]);
                         validate(meta_src_next == typeid(none) || meta_src_next == typeid(shape),
                             "expected comma after meta type %o", last_element(meta_args));
                     }
@@ -4533,7 +4556,7 @@ void silver_write_header(silver a) {
                             append(meta, ", ");
                         concat(meta, n);
                     }
-                    bool   has_meta = mi->meta.count > 0;
+                    bool   has_meta = mi->args.count > 0;
                     string prop_type   = cname(type_name((Au)mi));
                     write(module_f, "M(A,B, %o,prop,%o,%o,%o%s%o)",
                         i, access_type, prop_type, mn, has_meta ? "," : "", meta);
@@ -5711,7 +5734,7 @@ etype silver_read_def(silver a, interface access) {
                 shape s   = null;
                 Au_t  m   = def_member(top, n->chars, type->au, AU_MEMBER_VAR, AU_TRAIT_META);
                 set(a->registry, (Au)m, (Au)hold(emeta(mod, (aether)a, au, m, meta_index, index)));
-                array_qpush((array)&mdl->au->meta, (Au)m);
+                micro_push(&mdl->au->args, (Au)m);
                 first = false;
             }
         }

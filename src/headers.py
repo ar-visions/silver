@@ -381,14 +381,14 @@ def generate_intern_header(module, header_file, intern_header):
         for class_type in ["class", "class_2", "class_3", "class_4", "abstract"]:
             pattern = f'declare_{class_type}\\s*\\(\\s*([^,)]*)'
             matches = find_declarations(header_file, pattern)
-            
+
             for match in matches:
                 class_name = match.strip() if isinstance(match, str) else match[0].strip()
                 if class_name:
                     f.write(f"#undef {class_name}_intern\n")
                     f.write(f"#define {class_name}_intern(AA,YY,...) AA##_schema(AA,YY, __VA_ARGS__)\n")
             f.write("\n")
-        
+
         f.write(f"#endif /* _{umodule}_INTERN_H_ */\n")
 
 
