@@ -28,7 +28,7 @@ i64 epoch_millis();
 int seq;
 
 typedef struct _ffi_method_t {
-    struct _array*  atypes;
+    micro*          atypes;
     Au_t            rtype;
     void*           address;
     void*           ffi_cif;  /// ffi-calling info
@@ -333,24 +333,25 @@ none array_alloc_sz(array a, sz alloc) {
     a->alloc = alloc;
 }
 
-// for Au_t set on types, we use meta, which is a direct vector of the Au_t used
-none set_meta_array(Au_t type, int count, ...) {
-    type->meta.alloc  = count;
-    type->meta.count  = count;
-    type->meta.origin = calloc(count, sizeof(Au_t));
-
-    va_list args;
-    va_start(args, count);
-    for (int i = 0; i < count; i++) {
-        type->meta.origin[i] = (Au)va_arg(args, Au_t);
-    }
+// set meta type pair on Au_t: a = primary type (element/key), b = optional (value type, shape, etc.)
+none set_meta(Au_t type, Au_t a, Au b) {
+    type->meta.a = a;
+    type->meta.b = b;
 }
 
-// for function model, we have an arg node with a name; this is to faciltate a separate named user object
+none set_meta_array(Au_t type, int count, ...) {
+    va_list args;
+    va_start(args, count);
+    type->meta.a = (count > 0) ? va_arg(args, Au_t) : null;
+    type->meta.b = (count > 1) ? (Au)va_arg(args, Au_t) : null;
+    va_end(args);
+}
+
+// for function model, we have an arg node with a name
 none set_args_array(Au_t type, int count, ...) {
-    type->meta.alloc  = count;
-    type->meta.count  = count;
-    type->meta.origin = calloc(count, sizeof(Au_t));
+    type->args.alloc  = count;
+    type->args.count  = count;
+    type->args.origin = calloc(count, sizeof(Au));
 
     va_list args;
     va_start(args, count);
@@ -358,12 +359,8 @@ none set_args_array(Au_t type, int count, ...) {
         Au_t au     = va_arg(args, Au_t);
         Au_t au_arg = def(type, null, AU_MEMBER_VAR, 0);
         au_arg->src = au;
-        type->meta.origin[i] = (Au)au_arg;
+        type->args.origin[i] = (Au)au_arg;
     }
-}
-
-none set_meta_map(Au_t type, int count, ...) {
-    verify(false, "todo... implement primitive allocations in map_init");
 }
 
 none array_init(array a) {
@@ -425,8 +422,7 @@ array array_with_i32(array a, i32 alloc) {
 }
 
 none array_push_vdata(array a, Au data, i64 count, Au_t data_type) {
-    Au_t   t = data_type ? data_type : 
-        isa(a)->meta.origin ? *(Au_t*)isa(a)->meta.origin : null;
+    Au_t   t = data_type ? data_type : isa(a)->meta.a;
     verify(t && t != typeid(Au),
         "method requires meta object with type signature");
     verify(a->unmanaged,
@@ -446,17 +442,8 @@ none array_push_vdata(array a, Au data, i64 count, Au_t data_type) {
 
 Au_t Au_meta_index(Au a, int i) {
     Au_t t = isa(a) ? (Au_t)isa(a) : (Au_t)a;
-    if  (t->meta.origin) {
-        if (!(i >= 0 && i < t->meta.count)) {
-            a = a;
-        }
-        verify(i >= 0 && i < t->meta.count, "meta index out of type range for %s", t->ident);
-        Au_t arg = (Au_t)t->meta.origin[i];
-        if (arg->member_type == AU_MEMBER_VAR)
-            return arg->src;
-        else
-            return arg;
-    }
+    if (i == 0) return t->meta.a;
+    if (i == 1) return (Au_t)t->meta.b;
     return null;
 }
 
@@ -815,8 +802,8 @@ Au_t lexical(array lex, symbol f) {
         Au_t au = (Au_t)lex->origin[i];
         while (au) {
             if (au->member_type == AU_MEMBER_TYPE || au->member_type == AU_MEMBER_FUNC)
-                for (int ii = 0; ii < au->meta.count; ii++) {
-                    Au_t m = (Au_t)au->meta.origin[ii];
+                for (int ii = 0; ii < au->args.count; ii++) {
+                    Au_t m = (Au_t)au->args.origin[ii];
                     if (m->ident && strcmp(m->ident, f) == 0)
                         return m;
                 }
@@ -852,7 +839,7 @@ static Au_t _push_arg(Au_t type, bool add_arg) {
     au->context = type;
 
     if (add_arg)
-        array_qpush((array)&type->args, (Au)au);
+        micro_push(&type->args, (Au)au);
     
     return au;
 }
@@ -937,7 +924,7 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
         au->module = type;
 
     if (type) {
-        Au_t new_member = (Au_t)array_qpush((array)&type->members, (Au)&cur->type);
+        Au_t new_member = (Au_t)micro_push(&type->members, (Au)&cur->type);
         new_member->context = type;
         //printf("new_member on type %s = %p (%i)\n", type->ident, new_member, n_members);
         return new_member;
@@ -946,8 +933,8 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
 }
 
 static none dealloc_iter(Au_t type) {
-    array_dealloc((array)&type->members);
-    array_dealloc((array)&type->args);
+    micro_clear(&type->members);
+    micro_clear(&type->args);
     free(type->ident);
     Au_drop((Au)type);
 }
@@ -984,14 +971,8 @@ Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, 
         test2    += 2;
     }
     type->member_type       = member_type;
-    type->members.alloc     = 128;
-    type->members.assorted  = true;
-    type->members.unmanaged = true;
-    array_init((array)&type->members);
-    type->meta.alloc        = 16;
-    type->meta.assorted     = true;
-    type->meta.unmanaged    = true;
-    array_init((array)&type->meta);
+    memset(&type->members, 0, sizeof(micro));
+    memset(&type->args,    0, sizeof(micro));
     type->context           = context;
     type->src               = src;
     type->module            = module;
@@ -1097,7 +1078,7 @@ void module_erase(Au_t module, symbol name) {
         if (m && module == m || (m && m->ident && strcmp(m->ident, name) == 0)) {
             modules.data.origin[i] = null;
             m->members.count = 0;
-            m->meta.count = 0;
+            m->args.count = 0;
             //return;
         }
     }
@@ -1135,7 +1116,7 @@ Au_t def_module(symbol next_module) {
 none collective_init(collective a) {
 }
 
-ffi_method_t* method_with_address(handle address, Au_t rtype, array atypes, Au_t method_owner);
+ffi_method_t* method_with_address(handle address, Au_t rtype, micro* atypes, Au_t method_owner);
 
 #define members(MDL, VAR) \
     for (int __i = 0; __i < (MDL)->members.count; __i++) \
@@ -1170,7 +1151,7 @@ none push_type(Au_t type) {
     // on first call, we register our basic type structures:
     if (type == typeid(Au_t)) {
         module->traits |= AU_TRAIT_IS_AU;
-        module->members.unmanaged = true;
+        // micro needs no special init flags
 
         // the first ever type we really register is the collective_abi
         Au_t au_collective = def(module, "collective_abi",
@@ -1219,16 +1200,14 @@ none push_type(Au_t type) {
         def_member(au_t, "fn",            typeid(ARef), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, fn);
         def_member(au_t, "ffi",           typeid(ARef), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, ffi);
                 
-        def_member(au_t, "members_info", typeid(Au), AU_MEMBER_VAR, AU_TRAIT_INLAY)
-            ->offset = offsetof(struct _Au_f, members_info);
-
-        def_member(au_t, "members", au_collective, AU_MEMBER_VAR, AU_TRAIT_INLAY)
+        def_member(au_t, "members", typeid(ARef), AU_MEMBER_VAR, AU_TRAIT_INLAY)
             ->offset = offsetof(struct _Au_f, members);
-        
-        def_member(au_t, "meta_info", typeid(Au), AU_MEMBER_VAR, AU_TRAIT_INLAY)
-            ->offset = offsetof(struct _Au_f, meta_info);
-        
-        def_member(au_t, "meta",  au_collective, AU_MEMBER_VAR, AU_TRAIT_INLAY)->offset = offsetof(struct _Au_f, meta);
+
+        def_member(au_t, "args", typeid(ARef), AU_MEMBER_VAR, AU_TRAIT_INLAY)
+            ->offset = offsetof(struct _Au_f, args);
+
+        def_member(au_t, "meta", typeid(ARef), AU_MEMBER_VAR, AU_TRAIT_INLAY)
+            ->offset = offsetof(struct _Au_f, meta);
         def_member(au_t, "data_shape", typeid(shape), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, data_shape);
 
         Au_t required_bits = def_member(au_t, "required_bits",  typeid(u64), AU_MEMBER_VAR, 0);
@@ -1243,12 +1222,12 @@ none push_type(Au_t type) {
         m->module = type->module;
     }
 
-    array_qpush((array)&type->module->members, (Au)type);
+    micro_push(&type->module->members, (Au)type);
     //type->af->re_alloc = 1024;
     //type->af->re = (object*)(Au*)calloc(1024, sizeof(Au));
 
     if ((type->traits & AU_TRAIT_POINTER) != 0) {
-        type->src = type->meta.origin ? *(Au_t*)type->meta.origin : null;
+        type->src = type->meta.a ? type->meta.a : null;
     }
 
     if ((type->traits & AU_TRAIT_ABSTRACT) == 0) {
@@ -1751,17 +1730,9 @@ Au alloc(Au_t type, num count, shape shape_data, Au_t* meta) {
     a->count      = alloc_count;
     a->alloc      = alloc_count;
     a->data_shape = hold(shape_data);
-    if (meta && type->meta.count > 0) {
-        for (int i = 0; i < type->meta.count; i++) {
-            Au_t m = meta[i];
-            if (!m) break; // optional meta args not provided
-            Au_t ref = (Au_t)type->meta.origin[i];
-            Au_t object_type = isa(m);
-            if (object_type && !object_type->is_schema) {
-                verify (inherits(object_type, ref), "expected object of compatible-type %s", m->ident);
-            }
-            a->meta[i] = (Au)m;
-        }
+    if (meta && type->meta.a) {
+        if (meta[0]) a->meta[0] = (Au)meta[0];
+        if (meta[1]) a->meta[1] = (Au)meta[1];
     }
     if (tracing)
         tracing[tracing_count++] = a->data;
@@ -1787,7 +1758,7 @@ Au alloc2(Au_t type, Au_t scalar, shape s) {
     return a->data;
 }
 
-ffi_method_t* method_with_address(handle address, Au_t rtype, array args, Au_t method_owner) {
+ffi_method_t* method_with_address(handle address, Au_t rtype, micro* args, Au_t method_owner) {
     const num max_args = 16;
     ffi_method_t* method = calloc(1, sizeof(ffi_method_t));
     method->ffi_cif  = calloc(1,        sizeof(ffi_cif));
@@ -1810,7 +1781,7 @@ ffi_method_t* method_with_address(handle address, Au_t rtype, array args, Au_t m
 }
 
 Au method_call(Au_t m, array args) {
-    if (!m->ffi) m->ffi = method_with_address(m->value, m->type, (array)&m->args, m->context);
+    if (!m->ffi) m->ffi = method_with_address(m->value, m->type, &m->args, m->context);
     ffi_method_t* a = m->ffi;
     const num max_args = 8;
     none* arg_values[max_args];
@@ -2050,7 +2021,7 @@ none Au_hold_members(Au a) {
             Au   *mdata = (Au*)((cstr)a + mem->offset);
             if (mem->member_type == AU_MEMBER_VAR)
                 if (!is_inlay(mem) && *mdata) {
-                    if (mem->meta.origin && *(Au_t*)mem->meta.origin == typeid(weak))
+                    if (mem->meta.a == typeid(weak))
                         continue;
                     Au member_value = *mdata;
                     Au head = header(member_value);
@@ -2165,7 +2136,7 @@ none Au_drop_members(Au a) {
             Au_t m = (Au_t)type->members.origin[i];
             if ((m->member_type == AU_MEMBER_VAR) &&
                     !is_inlay(m)) {
-                if (m->args.origin && *(Au_t*)m->args.origin == typeid(weak))
+                if (m->meta.a == typeid(weak))
                     continue;
                 //printf("Au_dealloc: drop member %s.%s (%s)\n", type->ident, m->ident, m->type->ident);
                 Au*  ref = (Au*)((u8*)a + m->offset);
@@ -2435,7 +2406,7 @@ Au construct_with(Au_t type, Au data, ctx context) {
             
             if (!result && mem->member_type == AU_MEMBER_CONSTRUCT) {
                 none* addr = mem->value;
-                Au_t arg = au_arg_type(array_get((array)&mem->args, 1));
+                Au_t arg = au_arg_type(micro_get(&mem->args, 1));
                 /// no meaningful way to do this generically, we prefer to call these first
                 if (arg == typeid(path) && data_type == typeid(string)) {
                     result = alloc(type, 1, null, null);
@@ -2613,7 +2584,7 @@ bool Au_member_set(Au a, Au_t m, Au value) {
             "vector size mismatch for %s", m->ident);
         memcpy(member_ptr, value, m->type->typesize);
     } else if (m->type->is_enum || m->type->is_inlay || m->type->is_primitive) {
-        Au_t ref = (Au_t)(m->type->meta.count ? *m->type->meta.origin : null);
+        Au_t ref = m->type->meta.a;
         verify(!m->type->is_struct || vtype == m->type ||
             vtype == ref,
             "%s: expected vmember_type (%s) to equal isa(value) (%s)",
@@ -4150,20 +4121,17 @@ num list_count(list a) {
 
 bool Au_is_meta(Au a) {
     Au_t t = isa(a);
-    return t->meta.count > 0;
+    return t->meta.a != null;
 }
 
 bool Au_is_meta_compatible(Au a, Au b) {
     Au_t t = isa(a);
-    if (is_meta(a)) {
+    if (t->meta.a) {
         Au_t bt = isa(b);
-        num found = 0;
-        for (num i = 0; i < t->meta.count; i++) {
-            Au_t mt = meta_index(a, i);
-            if (inherits(bt, mt))
-                found++;
-        }
-        return found > 0;
+        if (inherits(bt, t->meta.a))
+            return true;
+        if (t->meta.b && inherits(bt, (Au_t)t->meta.b))
+            return true;
     }
     return false;
 }
@@ -4186,7 +4154,7 @@ Au Au_vrealloc(Au a, sz alloc) {
 none vector_init(vector a) {
     Au f = head(a);
     f->count = 0;
-    f->scalar = (f->type && f->type->meta.origin) ? meta_index(a, 0) : a->type ? a->type : typeid(i8);
+    f->scalar = (f->type && f->type->meta.a) ? meta_index(a, 0) : a->type ? a->type : typeid(i8);
     f->data_shape  = hold(a->data_shape);
     verify(f->scalar, "scalar not set");
     if (f->data_shape)
@@ -5522,7 +5490,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
                     scan = ws(&scan[1]);
             }
             Au value = parse_object(scan, (Au_t)(mem ? mem->type : null),
-                (Au_t)(mem->args.origin ? *mem->args.origin : null), &scan, context);
+                mem->meta.a, &scan, context);
             
             //if (!value)
             //    return null;
@@ -5592,9 +5560,9 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
     scan = ws(&scan[1]);
     Au res = null;
     if (!schema || (schema == typeid(array) || schema->src == typeid(array))) {
-        Au_t element_type = meta_type ? meta_type : (schema ? *(Au_t*)schema->meta.origin : typeid(map));
+        Au_t element_type = meta_type ? meta_type : (schema ? schema->meta.a : typeid(map));
         res = (Au)parse_array_objects(&scan, element_type, context);
-    } else if (schema->meta.count && *(Au_t*)schema->meta.origin == typeid(i64)) { // should support all vector types of i64 (needs type bounds check with vmember_count)
+    } else if (schema->meta.a == typeid(i64)) { // should support all vector types of i64 (needs type bounds check with vmember_count)
         array arb = parse_array_objects(&scan, typeid(i64), context);
         int vcount = len(arb);
         res = alloc2(schema, typeid(i64), new_shape(vcount, 0));
@@ -5603,7 +5571,7 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
             verify(isa(a) == typeid(i64), "expected i64");
             ((i64*)res)[n++] = *(i64*)a;
         }
-    } else if (schema->meta.count && *(Au_t*)schema->meta.origin == typeid(f32)) { // should support all vector types of f32 (needs type bounds check with vmember_count)
+    } else if (schema->meta.a == typeid(f32)) { // should support all vector types of f32 (needs type bounds check with vmember_count)
         array arb = parse_array_objects(&scan, typeid(f32), context);
         int vcount = len(arb);
         res = alloc(typeid(f32), vcount, null, null);
@@ -5620,7 +5588,7 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
         array arb = parse_array_objects(&scan, typeid(i64), context);
         res = construct_with(schema, (Au)arb, null);
     } else if (schema->src == typeid(vector)) {
-        Au_t scalar_type = *(Au_t*)schema->meta.origin;
+        Au_t scalar_type = schema->meta.a;
         verify(scalar_type, "scalar type required when using vector (define a meta-type of vector with type)");
         
         array prelim = parse_array_objects(&scan, null, context);

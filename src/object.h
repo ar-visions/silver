@@ -104,6 +104,32 @@ typedef struct _collective_abi {
     struct _Au_t*   last_type;
 } collective_abi;
 
+typedef struct _micro {
+    struct _Au**    origin;
+    i32             count;
+    i32             alloc;
+} micro;
+
+static inline struct _Au* micro_push(micro* m, struct _Au* value) {
+    if (m->count == m->alloc) {
+        m->alloc = m->alloc ? m->alloc * 2 : 8;
+        m->origin = (struct _Au**)realloc(m->origin, m->alloc * sizeof(struct _Au*));
+    }
+    m->origin[m->count++] = value;
+    return value;
+}
+
+static inline struct _Au* micro_get(micro* m, i32 index) {
+    return (index >= 0 && index < m->count) ? m->origin[index] : 0;
+}
+
+static inline void micro_clear(micro* m) {
+    if (m->origin) free(m->origin);
+    m->origin = 0;
+    m->count  = 0;
+    m->alloc  = 0;
+}
+
 typedef struct _Au_t *Au_t;
 
 // this is an exact mock type of A's instance
@@ -213,10 +239,12 @@ typedef struct _Au_t {
     int             isize;
     void*           fn;
     ffi_method_t*   ffi;
-    struct _object  members_info;
-    struct _collective_abi  members;
-    struct _object  meta_info;
-    union { struct _collective_abi meta, args; };
+    micro           members;
+    micro           args;
+    struct {
+        struct _Au_t*   a; // element/key type
+        struct _Au*     b; // flexible: value type, shape, etc.
+    }               meta;
     struct _shape*  shape;
     union {
         u64             required_bits[2];
