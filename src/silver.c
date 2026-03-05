@@ -1918,6 +1918,7 @@ string silver_peek_alpha(silver a) {
 
 enode parse_return(silver a);
 enode parse_break(silver a);
+enode parse_expect(silver a);
 enode parse_for(silver a);
 enode parse_loop_while(silver a);
 enode parse_if_else(silver a);
@@ -2146,6 +2147,9 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
 
             Au_t mem_type = isa(mem);
             bool b0, b1, b2, b3, b4;
+            if (seq == 1096) {
+                seq = seq;
+            }
             if (in_decl != typeid(efunc) && 
                 in_decl != typeid(macro) && 
                 (next_is(a, "[") || instanceof(mem, macro) || (b0=is_func((Au)mem)) || inherits(mem->au->src, typeid(lambda)))) {
@@ -2156,9 +2160,6 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
                     pop_scope(a);
                 }
                 prev = reverse(prev);
-                if (seq == 50) {
-                    seq = seq;
-                }
                 mem = parse_member_expr(a, mem);
                 // inside this expression, we must have the previous scope; 
                 // we could save it at top and push the top again, but that isnt handled properly
@@ -2425,6 +2426,12 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
         return r;
     }
 
+    // expect: inline verify with debug break on failure
+    else if (!cmode && read_if(a, "expect")) {
+        enode cond = read_enode(a, null, false);
+        return e_expect(a, cond, null);
+    }
+
     // handle the logical NOT operator (e.g., '!')
     else if (read_if(a, "!") || (!cmode && read_if(a, "not"))) {
         validate(!from_ref, "unexpected not after ref");
@@ -2535,6 +2542,22 @@ static tokens map_initializer(silver a, string field, tokens def_tokens, interfa
 enode parse_statement(silver a)
 {
     sequencer
+#ifndef NDEBUG
+    {
+        token tk = peek(a);
+        if (tk) {
+            num line = tk->line;
+            fprintf(stderr, "[%4lld] ", line);
+            for (int s = 0; s < tk->indent; s++) fputc(' ', stderr);
+            for (int i = a->cursor; i < len(a->tokens); i++) {
+                token t = (token)a->tokens->origin[i];
+                if (t->line != line) break;
+                fprintf(stderr, "%s ", t->chars);
+            }
+            fprintf(stderr, "\n");
+        }
+    }
+#endif
     efunc f = context_func(a);
     verify(!f || !f->au->is_mod_init, "unexpected init function");
     a->last_return      = null;
@@ -2549,6 +2572,7 @@ enode parse_statement(silver a)
         if (read_if(a, "no-op"))  return e_noop(a, null);
         if (next_is(a, "return")) return parse_return (a);
         if (next_is(a, "break"))  return parse_break  (a);
+        if (next_is(a, "expect")) return parse_expect (a);
         if (next_is(a, "for"))    return parse_for    (a);
         if (next_is(a, "if"))     return parse_if_else(a);
         if (next_is(a, "switch")) return parse_switch (a);
@@ -3071,7 +3095,7 @@ etype read_etype(silver a, array* p_expr) { sequencer
                 a->etype_level++;
                 etype t = read_etype(a, null);
                 if (!t) t = etypeid(Au);
-                meta_a_val = (Au)t;
+                meta_a_val = (Au)t->au;
                 a->etype_level--;
 
                 // meta_b: shape or bracketed type, optional
@@ -3085,7 +3109,7 @@ etype read_etype(silver a, array* p_expr) { sequencer
                         etype imdl = read_etype(a, null);
                         a->etype_level--;
                         validate(imdl, "expected type for meta_b, found %o", peek(a));
-                        meta_b_val = (Au)imdl;
+                        meta_b_val = (Au)imdl->au;
                         validate(read_if(a, "]"), "expected ] after meta_b type");
                     }
                 }
@@ -3094,7 +3118,7 @@ etype read_etype(silver a, array* p_expr) { sequencer
             validate(!has_depth_meta || read_if(a, ">"), "expected > to close <meta>");
 
             mdl = meta_a_val ? etype(mod, (aether)a, au, mdl->au,
-                is_explicit_ref, is_ref, meta_a, (enode)meta_a_val, meta_b, (Au)meta_b_val) : mdl;
+                is_explicit_ref, is_ref, meta_a, meta_a_val, meta_b, meta_b_val) : mdl;
         }
 
     } else if (!mdl && explicit_un) {
@@ -3567,7 +3591,7 @@ none silver_build(silver a) {
 
 #ifndef NDEBUG
     string cflags = string("");
-    //cflags = string("-fsanitize=address"); // import keyword should publish to these
+    cflags = string("-fsanitize=address"); // import keyword should publish to these
 #else
     cflags = string("");
 #endif
@@ -3703,11 +3727,11 @@ enode parse_object(silver a, etype mdl_schema, bool in_expr);
 etype evar_type(evar a);
 
 int user_arg_count(efunc f) {
+    aether a = f->mod;
     bool is_lambda_call = inherits(f->au, typeid(lambda));
 
     if (is_lambda_call) {
-        verify(len(f->meta) > 0, "expected return-type for lambda instance");
-        return len(f->meta) - 1;
+        return user_arg_count(u(efunc, f->au->src));
     }
 
     if (f->au->member_type == AU_MEMBER_FUNC) {
@@ -3726,34 +3750,79 @@ int user_arg_count(efunc f) {
     return 0;
 }
 
+
+array read_arg(array tokens, int start, int *next_read);
+
+none copy_lambda_info(enode mem, enode lambda_fn);
+
+enode eshape_from_indices(aether a, array indices);
+
+enode enode_shape(enode);
+
+static enode parse_create_lambda(silver a, enode mem) {
+    validate(read_if(a, "["), "expected [ context ] after lambda");
+
+    // mem is the lambda function definition
+    enode   lambda_f = (enode)evar_type((evar)mem);
+    micro*  ctx_mem  = (micro*)&lambda_f->au->members;  // context members after ::
+    int     ctx_ln   = ctx_mem->count;
+    array   ctx      = array(alloc, ctx_ln);
+    
+    Au_t lt = isa(lambda_f);
+
+    // Parse context references - these become pointers in the context struct
+    for (int i = 0; i < ctx_ln; i++) {
+        Au_t  ctx_arg  = (Au_t)micro_get(ctx_mem, i);
+        enode ctx_expr = parse_expression(a, u(etype, ctx_arg->src));
+        
+        validate(ctx_expr, "expected context variable for %s", ctx_arg->ident);
+
+        // Take address of the expression to store in context struct
+        push(ctx, (Au)ctx_expr);
+        
+        if (i < ctx_ln - 1)
+            validate(read_if(a, ","), "expected comma between context values");
+    }
+    
+    validate(read_if(a, "]"), "expected ] after lambda context");
+    
+    // Create lambda instance: packages function pointer + context struct
+    copy_lambda_info(mem, lambda_f);
+
+    return e_create(a, (etype)mem, (Au)ctx);
+}
+
 static enode parse_lambda_call(silver a, efunc mem) {
-    // mem is the lambda instance (evar with lambda type)
-    etype lambda_type = evar_type((evar)mem);
+    // get arg info from underlying func via src
+    efunc  src_fn = u(efunc, mem->au->src);
+    int    n_args = user_arg_count(src_fn);
 
     // Parse the bracket if needed
     bool br = false;
     validate(n_args == 0 || (br = read_if(a, "[") != null) || a->expr_level == 0,
         "expected bracket for lambda call");
-    
+
     a->expr_level++;
-    
+
     // Build array of arg values: user args + context at end
     array call_values = array(alloc, 32);
-    
-    // Parse each user arg
+
+    // Parse each user arg using src func's arg types
+    int arg_offset = src_fn->au->is_imethod ? 1 : 0;
     for (int i = 0; i < n_args; i++) {
-        etype arg_type = (etype)meta->origin[i + 1];  // skip return type
+        Au_t  arg_decl = (Au_t)src_fn->au->args.origin[i + arg_offset];
+        etype arg_type = u(etype, arg_decl->src);
         enode arg_expr = parse_expression(a, arg_type);
         verify(arg_expr, "invalid lambda argument");
         push(call_values, (Au)arg_expr);
-        
+
         if (i < n_args - 1)
             read_if(a, ",");  // optional comma
     }
-    
+
     if (br)
         validate(read_if(a, "]"), "expected ] after lambda args");
-    
+
     a->expr_level--;
 
     return lambda_fcall(a, mem, call_values);
@@ -3793,7 +3862,7 @@ static enode parse_func_call(silver a, efunc f) { sequencer
     a->expr_level++;
     Au_t    fmdl   = au_arg_type((Au)f);
     efunc   fn     = (efunc)(is_func_ptr(f) ? u(enode, f->au) : u(enode, fmdl));
-    array   m      = (array)&fmdl->args;
+    micro*  m      = (micro*)&fmdl->args;
     int     ln     = m->count, i = 0;
     array   values = array(alloc, 32, assorted, true);
     enode   target = null;
@@ -3805,7 +3874,7 @@ static enode parse_func_call(silver a, efunc f) { sequencer
     }
 
     while (i + offset < ln || fn->au->is_vargs) {
-        Au_t   arg_decl = (Au_t)array_get(m, i + offset);
+        Au_t   arg_decl = (Au_t)micro_get(m, i + offset);
         Au_t   src  = (Au_t)au_arg_type((Au)arg_decl);
         etype  typ  = (arg_decl && arg_decl->is_formatter) ? null : canonical(u(etype, src));
         enode  expr = parse_expression(a, typ); // self contained for '{interp}' to cstr!
@@ -3832,7 +3901,7 @@ static enode typed_expr(silver a, enode f, array expr) {
     // function calls
     efunc f_decl = u(efunc, f->au);
     if (f_decl) {
-        array   m      = (array)&f_decl->au->args;
+        micro*  m      = (micro*)&f_decl->au->args;
         int     ln     = m->count, i = 0;
         array   values = array(alloc, 32, assorted, true);
         enode   target = null;
@@ -3846,7 +3915,7 @@ static enode typed_expr(silver a, enode f, array expr) {
         }
 
         while (i + offset < ln || f_decl->au->is_vargs) {
-            Au_t   arg  = (Au_t)array_get(m, i + offset);
+            Au_t   arg  = (Au_t)micro_get(m, i + offset);
             etype  typ  = canonical(u(etype, arg));
             enode  expr = parse_expression(a, typ); // self contained for '{interp}' to cstr!
             verify(expr, "invalid expression");
@@ -3885,13 +3954,13 @@ static enode typed_expr(silver a, enode f, array expr) {
     } else if (class_inherits((etype)f, etypeid(array))) {
         array nodes         = array(64);
         etype element_type  = u(etype, f->au->src);
-        shape sh            = f->au->shape;
+        shape sh            = instanceof(f->au->meta.b, shape);
         validate(sh, "expected shape on array");
         int   shape_len     = shape_total(sh);
         int   top_stride    = sh->count ? sh->data[sh->count - 1] : 0;
         validate((!top_stride && shape_len == 0) || (top_stride && shape_len),
             "unknown stride information");  
-        int   num_index     = 0; /// shape_len is 0 on [ int 2x2 : 1 0, 2 2 ]
+        int   num_index     = 0;
 
         while (peek(a)) {
             token n = peek(a);
@@ -4753,6 +4822,14 @@ enode parse_return(silver a) {
 
 catcher context_catcher(silver);
 
+enode parse_expect(silver a) {
+    consume(a); // consume 'expect'
+    a->expr_level++;
+    enode cond = read_enode(a, null, false);
+    a->expr_level--;
+    return e_expect(a, cond, null);
+}
+
 enode parse_break(silver a) {
     consume(a);
     catcher cat = context_catcher(a);
@@ -4874,8 +4951,8 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
         mdl = resolve(mdl);
     }
 
-    etype key = is_mdl_map ? (etype)array_get((array)mdl->meta, 0) : null;
-    etype val = is_mdl_map ? (etype)array_get((array)mdl->meta, 1) : null;
+    etype key = is_mdl_map ? u(etype, mdl->meta_a) : null;
+    etype val = is_mdl_map ? u(etype, mdl->meta_b) : null;
 
     if (!key) key = etypeid(string);
     if (!val) val = etypeid(Au);
@@ -4883,7 +4960,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
     // Lazy-initialized containers
     map   imap   = null;
     array iarray = null;
-    shape s      = is_mdl_collective ? instanceof(array_get(mdl->meta, 1), shape) : null;
+    shape s      = is_mdl_collective ? instanceof(mdl->meta_b, shape) : null;
     int shape_stride = (s && s->count > 1) ? s->data[s->count - 1] : 0;
     
     while (peek(a)) {
@@ -4903,7 +4980,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
             is_enode_key = true;
         } else if (!is_fields && is_mdl_collective) {
             // we are parsing individual scalar value f64 -> vec2f
-            etype e = (etype)array_get(mdl->meta, 0);
+            etype e = u(etype, mdl->meta_a);
             k = (Au)parse_expression(a, e);
         } else if (!is_fields && !is_mdl_map) {
             etype e = prop_value_at(mdl, iter);
@@ -4979,7 +5056,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
 
     // validation check
     if (iarray && mdl->au == typeid(array)) {
-        shape dims = instanceof(array_get(mdl->meta, 1), shape);
+        shape dims = instanceof(mdl->meta_b, shape);
         int max_items = dims ? shape_total(dims) : -1;
         verify(max_items == -1 || len(iarray) <= max_items,
             "too many elements (total array size: %i, user provides %i)", max_items, len(iarray));
@@ -5012,47 +5089,6 @@ static bool peek_fields(silver a) {
     return false;
 }
 
-array read_arg(array tokens, int start, int *next_read);
-
-none copy_lambda_info(enode mem, enode lambda_fn);
-
-enode parse_create_lambda(silver a, enode mem) {
-    validate(read_if(a, "["), "expected [ context ] after lambda");
-
-    // mem is the lambda function definition
-    enode   lambda_f = (enode)evar_type((evar)mem);
-    array   ctx_mem  = (array)&lambda_f->au->members;  // context members after ::
-    int     ctx_ln   = ctx_mem->count;
-    array   ctx      = array(alloc, ctx_ln);
-    
-    Au_t lt = isa(lambda_f);
-
-    // Parse context references - these become pointers in the context struct
-    for (int i = 0; i < ctx_ln; i++) {
-        Au_t  ctx_arg  = (Au_t)array_get(ctx_mem, i);
-        enode ctx_expr = parse_expression(a, u(etype, ctx_arg->src));
-        
-        validate(ctx_expr, "expected context variable for %s", ctx_arg->ident);
-
-        // Take address of the expression to store in context struct
-        push(ctx, (Au)ctx_expr);
-        
-        if (i < ctx_ln - 1)
-            validate(read_if(a, ","), "expected comma between context values");
-    }
-    
-    validate(read_if(a, "]"), "expected ] after lambda context");
-    
-    // Create lambda instance: packages function pointer + context struct
-    copy_lambda_info(mem, lambda_f);
-
-    return e_create(a, (etype)mem, (Au)ctx);
-}
-
-enode eshape_from_indices(aether a, array indices);
-
-enode enode_shape(enode);
-
 enode silver_parse_member_expr(silver a, enode mem) { sequencer
     push_current(a);
 
@@ -5080,10 +5116,8 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
         while (!next_is(a, "]")) {
             // if 2 args, the 1 is an indicator of index type 
             // (map types; collective reserves first for value)
-            etype meta = mem->meta && len(mem->meta) == 2 ?
-                (etype)mem->meta->origin[1] : null; 
-            
-            enode expr = parse_expression(a, meta);
+            etype meta_key_shape = u(etype, mem->meta_b);
+            enode expr = parse_expression(a, meta_key_shape);
             if (!first_index && expr)
                 first_index = expr;
             push(args, (Au)expr);
@@ -5111,10 +5145,10 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
                 etype rtype = u(etype, idx->rtype);
  
                 // convert with design-time meta type
-                if (rtype && rtype == etypeid(Au) && len(mem->meta)) {
-                    etype m = (etype)mem->meta->origin[0];
-                    verify(instanceof(m, etype), "meta type integrity error");
-                    rtype = (etype)m;
+                if (rtype && rtype == etypeid(Au) && mem->meta_a) {
+                    etype m = u(etype, mem->meta_a);
+                    verify(m, "meta type integrity error");
+                    rtype = m;
                     index_expr = e_create(a, rtype, (Au)index_expr);
                 }
             }
@@ -5234,7 +5268,7 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         rm(a->registry, (Au)mem->au);
 
         mem = (enode)evar(mod, (aether)a, au, mem->au,
-            loaded, !is_struct(mem->au->src), meta, R->meta,
+            loaded, !is_struct(mem->au->src), meta_a, R->meta_a, meta_b, R->meta_b,
             is_explicit_ref, is_bind_ref);
 
         // Register and allocate the variable in the backend
@@ -5740,6 +5774,7 @@ etype silver_read_def(silver a, interface access) {
     validate(mdl && len(n),
              "name required for model: %s", isa(mdl)->ident);
 
+    set(a->registry, (Au)mdl->au, (Au)hold(mdl));
     return mdl;
 }
 
