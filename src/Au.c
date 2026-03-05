@@ -748,11 +748,6 @@ typedef struct _Au_combine {
     struct _Au   info;
     struct _Au_t type;
 } Au_combine;
-
-typedef struct _array_combine {
-    struct _Au    info;
-    struct _array data;
-} array_combine;
  
 #pragma pack(pop)
 
@@ -761,7 +756,7 @@ static int         n_members;
 
 static Au_t   au_module;
 static Au_t   module;
-static array_combine modules;
+static micro  modules;
 static array  scope;
 static bool   started = false;
 
@@ -892,16 +887,8 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
 
 Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
     static int seq; seq++;
-    if (ident && strcmp(ident, "test3_funcomatic") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
-    //printf("def [ context: %s, ident: %s, member_type: %i, traits: %lli ]\n", type ? type->ident : null, ident, member_type, traits);
-    Au_t au2 = typeid(array);
 
-    if (ident && strcmp((cstr)ident, "coolteen") == 0) {
-        ident = ident;
-    }
+    //printf("def [ context: %s, ident: %s, member_type: %i, traits: %lli ]\n", type ? type->ident : null, ident, member_type, traits);
 
     struct _Au_combine* cur = calloc(1, sizeof(struct _Au_combine));
     cur->info.refs = 0;
@@ -909,17 +896,10 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
     cur->info.type = (Au_t)&Au_Au_t_f_i.type;
 
     Au_t au = &cur->type;
-    if (au == (Au_t)0x0000555556b01e19) {
-        int test2 = 2;
-        test2    += 2;
-    }
     au->ident = ident ? (cstr)cstr_copy((cstr)ident) : (cstr)null;
     au->traits = traits | AU_TRAIT_ALLOCATED; // erasing modules can consist of freeing only pool origined data (or we check performance against a simple approach and fallback to non complicated)
     au->member_type = member_type;
 
-    if (seq == 12302) {
-        seq = seq;
-    }
     if (type && type->member_type == AU_MEMBER_MODULE)
         au->module = type;
 
@@ -988,7 +968,7 @@ Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, 
     head(type)->type = typeid(Au_t_f);     
     
     if (member_type == AU_MEMBER_MODULE) {
-        array_qpush((array)&modules.data, (Au)type); // we should error if we ever find a duplicate here
+        micro_push(&modules, (Au)type); // we should error if we ever find a duplicate here
     } else
         push_type((Au_t)type);
     
@@ -1061,8 +1041,8 @@ none def_init(func f) {
 }
 
 Au_t module_lookup(symbol name) {
-    for (int i = 0; i < modules.data.count; i++) {
-        Au_t m = (Au_t)modules.data.origin[i];
+    for (int i = 0; i < modules.count; i++) {
+        Au_t m = (Au_t)modules.origin[i];
         if (m && strcmp(m->ident, name) == 0) // its filled with holes! .. and thats where our geneticists come in
             return m;
     }
@@ -1072,11 +1052,11 @@ Au_t module_lookup(symbol name) {
 void module_erase(Au_t module, symbol name) {
     if (!module) return;
     // unregister from list by setting null
-    for (int i = 0; i < modules.data.count; i++) {
-        Au_t m = (Au_t)modules.data.origin[i];
+    for (int i = 0; i < modules.count; i++) {
+        Au_t m = (Au_t)modules.origin[i];
         if (m && m->ident) printf("module: %s\n", m->ident);
         if (m && module == m || (m && m->ident && strcmp(m->ident, name) == 0)) {
-            modules.data.origin[i] = null;
+            modules.origin[i] = null;
             m->members.count = 0;
             m->args.count = 0;
             //return;
@@ -1103,13 +1083,13 @@ Au_t def_module(symbol next_module) {
         module    = m;
     }
 
-    for (int i = 0; i < modules.data.count; i++)
-        if (!modules.data.origin[i]) {
-            modules.data.origin[i] = (Au)m;
+    for (int i = 0; i < modules.count; i++)
+        if (!modules.origin[i]) {
+            modules.origin[i] = (Au)m;
             return m;
         }
     
-    array_qpush((array)&modules.data, (Au)m);
+    micro_push(&modules, (Au)m);
     return m;
 }
 
@@ -1200,16 +1180,15 @@ none push_type(Au_t type) {
         def_member(au_t, "fn",            typeid(ARef), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, fn);
         def_member(au_t, "ffi",           typeid(ARef), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, ffi);
                 
-        def_member(au_t, "members", typeid(ARef), AU_MEMBER_VAR, AU_TRAIT_INLAY)
+        def_member(au_t, "members", typeid(micro), AU_MEMBER_VAR, AU_TRAIT_INLAY)
             ->offset = offsetof(struct _Au_f, members);
 
-        def_member(au_t, "args", typeid(ARef), AU_MEMBER_VAR, AU_TRAIT_INLAY)
+        def_member(au_t, "args", typeid(micro), AU_MEMBER_VAR, AU_TRAIT_INLAY)
             ->offset = offsetof(struct _Au_f, args);
 
-        def_member(au_t, "meta", typeid(ARef), AU_MEMBER_VAR, AU_TRAIT_INLAY)
+        def_member(au_t, "meta", typeid(meta_t), AU_MEMBER_VAR, AU_TRAIT_INLAY)
             ->offset = offsetof(struct _Au_f, meta);
-        def_member(au_t, "data_shape", typeid(shape), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, data_shape);
-
+ 
         Au_t required_bits = def_member(au_t, "required_bits",  typeid(u64), AU_MEMBER_VAR, 0);
         required_bits->elements = 2;
         Au_t ft = def(au_t, null, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
@@ -1274,8 +1253,8 @@ ARef types(ref_i64 length) {
 }
 
 Au_t find_module(symbol name) {
-    for (int i = 0; i < modules.data.count; i++) {
-        Au_t mod = (Au_t)modules.data.origin[i];
+    for (int i = 0; i < modules.count; i++) {
+        Au_t mod = (Au_t)modules.origin[i];
         if (mod && !mod->is_hidden && mod->ident && strcmp(mod->ident, name) == 0) {
             return mod; // test3 module loaded here after dlopen, however the source of this was not from a dlopen but rather the design-time creation of the namespace module from import()
         }
@@ -1284,8 +1263,8 @@ Au_t find_module(symbol name) {
 }
 
 Au_t find_type(symbol name, Au_t m) {
-    for (int i = 0; i < modules.data.count; i++) {
-        Au_t mod = (Au_t)modules.data.origin[i];
+    for (int i = 0; i < modules.count; i++) {
+        Au_t mod = (Au_t)modules.origin[i];
         if (mod && (!m || m == mod)) {
             // skip if not specifically tareting this module, and it has a namespace (not global)
             if (m != mod && mod->is_namespace && mod->ident && strlen(mod->ident))
@@ -6474,6 +6453,8 @@ define_primitive(AFlag,  numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED)
 define_primitive(cstr,   string_like, AU_TRAIT_POINTER, i8)
 define_primitive(symbol, string_like, AU_TRAIT_CONST | AU_TRAIT_POINTER, i8)
 define_primitive(cereal, raw, 0)
+define_primitive(micro,  raw, 0)
+define_primitive(meta_t, raw, 0)
 define_primitive(none,   nil, AU_TRAIT_VOID)
 //define_primitive(Au_t,  raw, 0)
 define_primitive(handle, raw, AU_TRAIT_POINTER, u8)
