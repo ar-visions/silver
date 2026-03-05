@@ -455,8 +455,9 @@ static etype etype_ptr(aether a, Au_t au, enode eshape) {
 
     if (!u(etype, au_ptr)) {
         etype t = etype(mod, a, au, au_ptr);
-        if (eshape)
-            t->meta = hold(a(eshape));
+        if (eshape) {
+            t->meta_b = (Au)hold(eshape);
+        }
     }
 
     return u(etype, au_ptr);
@@ -1469,54 +1470,51 @@ none aether_e_vector_init(aether a, etype element_type, enode vec, array nodes) 
     }
 }
 
-enode aether_e_meta_ids(aether a, array meta) {
+enode aether_e_meta_ids(aether a, enode meta_a, Au meta_b) {
     Au_t atype = au_lookup("Au_t");
     etype atype_vector = etype_ptr(a, atype, null);
 
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, atype_vector);
 
-    if (!meta || !len(meta))
+    if (!meta_a && !meta_b)
         return e_null(a, atype_vector);
 
-    i32 ln = len(meta);
-    verify(ln <= 2, "meta supports at most 2 entries (a and b)");
+    // convert shape to enode if needed
+    enode meta_b_node = null;
+    if (meta_b) {
+        if (instanceof(meta_b, enode)) {
+            meta_b_node = (enode)meta_b;
+        } else if (instanceof(meta_b, shape)) {
+            shape s = (shape)meta_b;
+            array ar = array(alloc, s->count);
+            for (int ii = 0; ii < s->count; ii++)
+                push(ar, _i64(s->data[ii]));
+            meta_b_node = e_create(a, etypeid(shape), (Au)m(
+                "count", _i64(s->count),
+                "data",  e_const_array(a, etypeid(i64), ar)
+            ));
+        } else {
+            verify(false, "unsupported meta_b type");
+        }
+    }
 
-    // build a 2-slot array: meta.a and meta.b
+    enode metas[] = { meta_a, meta_b_node };
     LLVMTypeRef elemTy = lltype(atype_vector);
     LLVMTypeRef arrTy  = LLVMArrayType(elemTy, 2);
     LLVMValueRef arr_alloc = LLVMBuildAlloca(B, arrTy, "meta_ids");
     LLVMBuildStore(B, LLVMConstNull(arrTy), arr_alloc);
 
-    for (i32 i = 0; i < ln; i++) {
-        Au m = meta->origin[i];
-        enode n;
-
-        if (instanceof(m, etype)) {
-            n = e_typeid(a, (etype)m);
-        } else if (instanceof(m, shape)) {
-            shape s = (shape)m;
-            array ar = array(alloc, s->count);
-            for (int ii = 0; ii < s->count; ii++)
-                push(ar, _i64(s->data[ii]));
-            efunc fn = context_func(a);
-            n = e_create(a, etypeid(shape), (Au)m(
-                "count", _i64(s->count),
-                "data",  e_const_array(a, etypeid(i64), ar)
-            ));
-        } else {
-            verify(false, "unsupported design-time meta type");
-        }
-
+    for (int i = 0; i < 2; i++) {
+        if (!metas[i]) continue;
         LLVMValueRef idxs[] = {
             LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 0, 0),
             LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), i, 0)
         };
         LLVMValueRef gep = LLVMBuildGEP2(B, arrTy, arr_alloc, idxs, 2, "");
-        LLVMBuildStore(B, n->value, gep);
+        LLVMBuildStore(B, metas[i]->value, gep);
     }
 
-    // return pointer to 2-slot meta array
     return enode(mod, a, loaded, true, value, arr_alloc, au, etype_ptr(a, atype, null)->au);
 }
 
@@ -1726,8 +1724,8 @@ enode aether_lambda_fcall(aether a, efunc mem, array user_args) {
     // access fn and ctx from lambda instance
     efunc fn_ptr     = (efunc)enode_value(access(mem, string("fn"), false), false);
     enode ctx_ptr    = enode_value(access(mem, string("context"), false), false); // we now have target inside of context
-    enode rtype      = (enode)mem->meta->origin[0];
-    enode lambda_fn  = (enode)u(enode, mem->au->src);
+    enode rtype      = mem->meta_a;
+    enode lambda_fn  = u(enode, mem->au->src);
 
     array args = array(alloc, 32, assorted, true);
 
@@ -1735,7 +1733,8 @@ enode aether_lambda_fcall(aether a, efunc mem, array user_args) {
     each(user_args, Au, arg)
         push(args, arg);
     
-    fn_ptr->meta = hold(mem->meta);
+    fn_ptr->meta_a = hold(mem->meta_a);
+    fn_ptr->meta_b = hold(mem->meta_b);
     return e_fn_call(a, fn_ptr, args);
 }
 
@@ -1893,7 +1892,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
                 arg_types[index] = lltype(n);
             } else {
                 Au_t  fn_decl = funcptr ? au_arg_type((Au)fn->au) : fn->au;
-                Au_t  arg_mem = (Au_t) array_get((array)&fn_decl->args, i);
+                Au_t  arg_mem = (Au_t) micro_get(&fn_decl->args, i);
                 evar  arg     = (evar) u(evar, arg_mem);
                 enode n       = (enode)instanceof(arg_value, enode);
                 if (index == fmt_idx) {
@@ -1950,7 +1949,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     char call_seq[256];
     sprintf(call_seq, "call_%i_%s", seq2, fn->au->ident);
     etype rtype = is_lambda(fn) ?
-        (etype)fn->meta->origin[0] :
+        (etype)fn->meta_a :
         (etype)u(etype, fn->au->rtype);
     
     if (funcptr) F = LLVMFunctionType(lltype(rtype), arg_types, n_args, false);
@@ -2522,8 +2521,9 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
     } else {
         res = e_fn_call(a, f_initialize, a(alloc));
     }
-    res->au   = alloc->au;
-    res->meta = alloc->meta ? hold(alloc->meta) : null;
+    res->au     = alloc->au;
+    res->meta_a = hold(alloc->meta_a);
+    res->meta_b = hold(alloc->meta_b);
     return res;
 }
 
@@ -2535,13 +2535,14 @@ enode e_create_from_map(aether a, etype t, map m) {
     bool  is_m = is_map(t);
     efunc f_alloc    = (efunc)u(efunc, find_member(etypeid(Au)->au, "alloc_new",  AU_MEMBER_FUNC, false));
     efunc f_mset     = (efunc)u(efunc, find_member(etypeid(map)->au, "set",       AU_MEMBER_FUNC, false));
-    enode metas_node = e_meta_ids(a, t->meta);
+    enode metas_node = e_meta_ids(a, t->meta_a, t->meta_b);
 
     efunc cur = context_func(a);
     enode res = e_fn_call(a, f_alloc, a(
         e_typeid(a, t), _i32(1), e_null(a, etypeid(shape)), metas_node));
     res->au   = t->au;
-    res->meta = hold(t->meta);
+    res->meta_a = hold(t->meta_a);
+    res->meta_b = hold(t->meta_b);
 
     if (is_m) {
         // map type: initialize first, then populate entries
@@ -2570,7 +2571,7 @@ enode e_create_from_array(aether a, etype t, array ar) {
     efunc f_push       = (efunc)u(efunc, find_member(etypeid(collective)->au, "push", AU_MEMBER_FUNC, true));
     efunc f_push_vdata = (efunc)u(efunc, find_member(etypeid(array)->au, "push_vdata", AU_MEMBER_FUNC, true));
 
-    enode metas_node = e_meta_ids(a, t->meta);
+    enode metas_node = e_meta_ids(a, t->meta_a, t->meta_b);
     enode res = e_fn_call(a, f_alloc, a(
         e_typeid(a, t), _i32(1), e_null(a, etypeid(shape)), metas_node));
     res->au = t->au;
@@ -2591,8 +2592,8 @@ enode e_create_from_array(aether a, etype t, array ar) {
         }
 
     // read meta args
-    etype element_type = instanceof(array_get((array)t->meta, 0), etype);
-    shape dims         = instanceof(array_get((array)t->meta, 1), shape);
+    etype element_type = u(etype, t->meta_a);
+    shape dims         = instanceof(t->meta_b, shape);
     if (!element_type) element_type = etypeid(Au);
     int max_items = dims ? shape_total(dims) : -1;
 
@@ -2743,10 +2744,8 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         enode targ = n_mdl->target;
         array args = a(n_mdl->published_type, n_mdl, n_mdl->target, ctx_alloc);
         enode res = e_fn_call(a, f_create, args);
-        res->meta = array(alloc, 32);
-        push(res->meta, (Au)u(etype, n_mdl->au->src));
-        arg_types(n_mdl->au, type)
-            push(res->meta, (Au)u(etype, type));
+        res->meta_a = hold(n_mdl->meta_a);
+        res->meta_b = hold(n_mdl->meta_b);
         return res;
     }
 
@@ -2786,7 +2785,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
 
             efunc f_alloc    = (efunc)u(efunc,
                 find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, false));
-            enode metas_node = e_meta_ids(a, input_type->meta);
+            enode metas_node = e_meta_ids(a, input_type->meta_a, input_type->meta_b);
             enode boxed      = e_fn_call(a, f_alloc, a(
                 e_typeid(a, input_type), 
                 _i32(1), 
@@ -2873,7 +2872,8 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             // default class creation: alloc + e_init
             enode alloc = e_alloc(a, mdl);
             alloc->is_alloc = !a->building_initializer;
-            alloc->meta     = hold(mdl->meta);
+            alloc->meta_a   = hold(mdl->meta_a);
+            alloc->meta_b   = hold(mdl->meta_b);
             res = e_init(a, alloc, null, null, null);
         }
 
@@ -2887,7 +2887,8 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
 
         enode alloc = e_alloc(a, mdl);
         alloc->is_alloc = !a->building_initializer;
-        alloc->meta     = hold(mdl->meta);
+        alloc->meta_a   = hold(mdl->meta_a);
+        alloc->meta_b   = hold(mdl->meta_b);
         res = e_init(a, alloc, null, ctr, input);
 
     } else {
@@ -3007,12 +3008,12 @@ none copy_lambda_info(enode mem, enode lambda_fn) {
 enode aether_e_vector(aether a, etype t, enode shape_data) {
     efunc f_alloc    = (efunc)u(efunc,
         find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, false));
-    enode metas_node = e_meta_ids(a, t->meta);
+    enode metas_node = e_meta_ids(a, t->meta_a, t->meta_b);
     return e_fn_call(a, f_alloc, a( e_typeid(a, t), _i32(0), shape_data, metas_node ));
 }
 
 enode aether_e_alloc(aether a, etype mdl) {
-    enode metas_node = e_meta_ids(a, mdl->meta);
+    enode metas_node = e_meta_ids(a, mdl->meta_a, mdl->meta_b);
     efunc f_alloc = (efunc)u(efunc,
         find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, false));
     enode res = e_fn_call(a, f_alloc, a(
@@ -4266,7 +4267,7 @@ none etype_init(etype t) {
                         for (int arg = 0; arg < ai_mem->args.count; arg++) {
                             Au_t arg_src = (Au_t)ai_mem->args.origin[arg];
                             Au_t arg_t   = arg_type(arg_src);
-                            array_qpush((array)&fn->args, (Au)def_arg(fn, arg_src->ident, arg_t, 0));
+                            micro_push(&fn->args, (Au)def_arg(fn, arg_src->ident, arg_t, 0));
                         }
                     }
                 }
@@ -4283,10 +4284,10 @@ none etype_init(etype t) {
             new_mem->offset   = au_mem->offset;
 
             members(au_mem, mem)
-                array_qpush((array)&new_mem->members, (Au)mem);
+                micro_push(&new_mem->members, (Au)mem);
 
             arg_list(au_mem, mem)
-                array_qpush((array)&new_mem->args,    (Au)mem);
+                micro_push(&new_mem->args,    (Au)mem);
             
             new_mem->context = t->au; // copy entire member and reset for our for context
         }
@@ -6097,17 +6098,6 @@ void aether_e_cmp_code(aether a, enode l, comparison comp, enode r, code lcode, 
     LLVMBuildCondBr(B, cond, lcode->block, rcode->block);
 }
 
-enode aether_e_element(aether a, enode array, Au index) {
-    etype imdl = (etype)(len(array->meta) ? 
-        (etype)array->meta->origin[0] : etypeid(Au));
-    a->is_const_op = false;
-    if (a->no_build) return e_noop(a, imdl);
-    enode i = e_operand(a, index, null);
-    enode element_v = value(imdl, LLVMBuildInBoundsGEP2(
-        B, lltype(array), array->value, &i->value, 1, "eelement"));
-    return e_load(a, element_v, null);
-}
-
 void aether_e_inc(aether a, enode v, num amount) {
     a->is_const_op = false;
     if (a->no_build) return;
@@ -6427,7 +6417,7 @@ efunc aether_function(aether a, etype place, string ident, etype rtype, array ar
         Au_t a = au_arg(arg);
         Au_t argument = def(au, null, AU_MEMBER_VAR, 0);
         argument->src = a;
-        array_qpush((array)&au->args, (Au)argument);
+        micro_push(&au->args, (Au)argument);
     }
     au->src = (Au_t)hold(rtype->au);
     efunc f = efunc(mod, a, au, au, used, true, loaded, true);

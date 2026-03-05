@@ -230,7 +230,7 @@ static Au_t map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, aet
             Au_t arg = def(null, name_buf, AU_MEMBER_VAR, 0);
             arg->module = e->current_import->au;
             arg->type = param;
-            array_qpush((array)&fn->args, (Au)arg);
+            micro_push(&fn->args, (Au)arg);
         }
     }
     
@@ -568,7 +568,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
             Au_t self_ptr = def_pointer(null, self_type, null);
             Au_t self_arg = def(null, "self", AU_MEMBER_VAR, 0);
             self_arg->type = self_ptr;
-            array_qpush((array)&fn->args, (Au)self_arg);
+            micro_push(&fn->args, (Au)self_arg);
         }
         
         // Parameters
@@ -583,7 +583,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
 
             Au_t ap = def(null, pname.c_str(), AU_MEMBER_VAR, 0);
             ap->type = mt;
-            array_qpush((array)&fn->args, (Au)ap);
+            micro_push(&fn->args, (Au)ap);
         }
         
         // Store mangled name for linking

@@ -158,6 +158,11 @@ typedef void* LLVMTypeRef;
 typedef void* LLVMValueRef;
 #endif
 
+typedef struct meta_t {
+    struct _Au_t*   a; // element/key type
+    struct _Au*     b; // flexible: value type, shape, etc.
+} meta_t;
+
 // this is the standard _Au_t declaration
 typedef struct _Au_t {
     Au_t            context;
@@ -241,11 +246,7 @@ typedef struct _Au_t {
     ffi_method_t*   ffi;
     micro           members;
     micro           args;
-    struct {
-        struct _Au_t*   a; // element/key type
-        struct _Au*     b; // flexible: value type, shape, etc.
-    }               meta;
-    struct _shape*  shape;
+    meta_t          meta;
     union {
         u64             required_bits[2];
         struct _Au_t_f* __f[2];
