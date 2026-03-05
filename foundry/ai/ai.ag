@@ -203,7 +203,7 @@ op flatten
 
 
 op relu_op
-    func init []
+    func init [] -> none
         activation = Activation.relu
 
 
@@ -469,14 +469,11 @@ class keras
     public k_input:  tensor
     intern op_map:   map op[string]
 
-    func init []
+    func init [] -> none
         op_map = map op[string]
-
-        op_map["key"] = null # errors here 
-
         for [ o: op ] in ops
             op_map[o.name] = o
-
+        
         for [ o: op ] in ops
             o.op_inputs = array op []
             for [ n: string ] in o.inputs

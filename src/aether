@@ -42,7 +42,7 @@ forward(enode)
     M(X, Y, i, prop,     intern,  LLVMMetadataRef, lldebug, as, ARef) \
     M(X, Y, i, prop,     intern,  bool,            is_implemented) \
     M(X, Y, i, prop,     public,  bool,            is_explicit_ref) \
-    M(X, Y, i, prop,     public,  enode,           meta_a) \
+    M(X, Y, i, prop,     public,  Au,              meta_a) \
     M(X, Y, i, prop,     public,  Au,              meta_b) \
     M(X, Y, i, prop,     public,  array,           dims) \
     M(X, Y, i, prop,     public,  aether,          mod, meta, weak) \
@@ -178,6 +178,7 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_cmp, enode, enode) \
     M(X, Y, i, method,   public,  enode,                    e_cmp_op, OPType, enode, enode) \
     M(X, Y, i, method,   public,  none,                     e_branch, code) \
+    M(X, Y, i, method,   public,  enode,                    e_expect, enode, string) \
     M(X, Y, i, method,   public,  enode,                    e_break, catcher) \
     M(X, Y, i, method,   public,  none,                     e_memcpy, enode, enode, Au_t) \
     M(X, Y, i, method,   public,  enode,                    compatible, etype, string, AFlag, array) \
@@ -186,7 +187,7 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_op, OPType, string, Au, Au) \
     M(X, Y, i, method,   public,  enode,                    e_load, enode, enode) \
     M(X, Y, i, method,   public,  enode,                    e_typeid, etype) \
-    M(X, Y, i, method,   public,  enode,                    e_meta_ids, enode, Au) \
+    M(X, Y, i, method,   public,  enode,                    e_meta_ids, Au, Au) \
     M(X, Y, i, method,   public,  enode,                    e_eval, string) \
     M(X, Y, i, method,   public,  enode,                    e_interpolate, string) \
     M(X, Y, i, method,   public,  enode,                    e_const_array, etype, array) \
