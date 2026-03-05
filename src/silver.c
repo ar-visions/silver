@@ -3729,14 +3729,7 @@ int user_arg_count(efunc f) {
 static enode parse_lambda_call(silver a, efunc mem) {
     // mem is the lambda instance (evar with lambda type)
     etype lambda_type = evar_type((evar)mem);
-    array  meta       = mem->meta;
-    
-    verify(meta && len(meta) >= 1, "lambda requires meta with return type");
-    
-    // meta[0] is return type, meta[1..n] are arg types
-    etype rtype = (etype)meta->origin[0];
-    int n_args = len(meta) - 1;
-    
+
     // Parse the bracket if needed
     bool br = false;
     validate(n_args == 0 || (br = read_if(a, "[") != null) || a->expr_level == 0,
