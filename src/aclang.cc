@@ -215,7 +215,7 @@ static Au_t map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, aet
     
     // Create function type
     Au_t fn = def(parent, null, AU_MEMBER_TYPE, AU_TRAIT_FUNCPTR);
-    fn->module = e->current_import->au;
+    //fn->module = e->current_import->au;
     // Return type
     fn->rtype = map_clang_type(fpt->getReturnType(), ctx, e, null);
     if (!fn->rtype) fn->rtype = au_lookup("none");
@@ -228,7 +228,7 @@ static Au_t map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, aet
             char name_buf[32];
             snprintf(name_buf, sizeof(name_buf), "arg_%u", i);
             Au_t arg = def(null, name_buf, AU_MEMBER_VAR, 0);
-            arg->module = e->current_import->au;
+            //arg->module = e->current_import->au;
             arg->type = param;
             micro_push(&fn->args, (Au)arg);
         }
@@ -255,11 +255,11 @@ static Au_t map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e,
     if (const FunctionNoProtoType* fnpt = dyn_cast<FunctionNoProtoType>(pointee)) {
         Au_t parent = top_scope(e);
         Au_t fn = def(parent, null, AU_MEMBER_FUNC, AU_TRAIT_FUNCPTR);
-        fn->module = e->current_import->au;
+        //fn->module = e->current_import->au;
         fn->rtype = map_clang_type(fnpt->getReturnType(), ctx, e, null);
         if (!fn->rtype) fn->rtype = au_lookup("none");
         Au_t ptr = def_pointer(null, fn, use_name);
-        ptr->module = e->current_import->au;
+        //ptr->module = e->current_import->au;
         return ptr;
     }
 
@@ -293,7 +293,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         if (underlying && new_name) {
             // Create alias
             Au_t alias = def_type(top_scope(e), new_name, AU_TRAIT_ALIAS);
-            alias->module = e->current_import->au;
+            //alias->module = e->current_import->au;
             alias->src = underlying;
             return alias;
         }
@@ -308,7 +308,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         Au_t src = map_builtin_type(bt, e);
         if (src && use_name) {
             Au_t alias = def_type(top_scope(e), use_name, AU_TRAIT_ALIAS);
-            alias->module = e->current_import->au;
+            //alias->module = e->current_import->au;
             alias->src = src;
             return alias;
         }
@@ -332,7 +332,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         // Create array type - need to represent shape somehow
         // For now, create a type with size info
         Au_t arr = def_type(top_scope(e), use_name, 0);
-        arr->module = e->current_import->au;
+        //arr->module = e->current_import->au;
         arr->src = elem;
         arr->elements = esize; // store array size
         if (elem_type.isConstQualified()) {
@@ -348,7 +348,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         if (!elem) return null;
         
         Au_t arr = def_type(top_scope(e), use_name, 0);
-        arr->module = e->current_import->au;
+        //arr->module = e->current_import->au;
         arr->src = elem;
         arr->elements = 0; // flexible array
         return arr;
@@ -374,10 +374,10 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         verify(base, "could not resolve pointer type");
         
         Au_t ptr = def_pointer(null, base, use_name);
-        ptr->module = e->current_import->au;
-        if (pointee.isConstQualified()) {
-            ptr->traits |= AU_TRAIT_CONST;
-        }
+        //ptr->module = e->current_import->au;
+        //if (pointee.isConstQualified()) {
+        //    ptr->traits |= AU_TRAIT_CONST;
+        //}
         return ptr;
     }
     
@@ -456,7 +456,7 @@ static void set_fields(RecordDecl* decl, ASTContext& ctx, aether e, Au_t rec) {
             
             Au_t m = def_member(rec, field_name.c_str(), mapped, AU_MEMBER_VAR, 0);
             uint64_t offset_bits = layout.getFieldOffset(field->getFieldIndex());
-            m->module = e->current_import->au;
+            //m->module = e->current_import->au;
             m->offset = offset_bits / 8;
             m->index = field_index++;
         }
@@ -477,7 +477,7 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     // Incomplete definition → opaque
     if (!decl->isCompleteDefinition() || decl->isInvalidDecl() || decl->isDependentType()) {
         Au_t opaque = def_type(parent, n, AU_TRAIT_STRUCT);
-        opaque->module = e->current_import->au;
+        //opaque->module = e->current_import->au;
         opaque->src = au_lookup("ARef");
         return opaque;
     }
@@ -486,7 +486,7 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     u32 traits = is_union ? AU_TRAIT_UNION : AU_TRAIT_STRUCT;
     Au_t rec = def_type(parent, n, traits);
     rec->is_struct = true;
-    rec->module = e->current_import->au;
+    //rec->module = e->current_import->au;
 
     const ASTRecordLayout& layout = ctx.getASTRecordLayout(decl);
     //rec->record_alignment = layout.getAlignment().getQuantity(); // in bytes
@@ -505,7 +505,7 @@ static Au_t create_opaque_class(CXXRecordDecl* cxx, aether e) {
     if (existing) return existing;
 
     Au_t rec = def_class(top_scope(e), n);
-    rec->module = e->current_import->au;
+    //rec->module = e->current_import->au;
     return rec;
 }
 
@@ -520,7 +520,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
 
     Au_t parent = top_scope(e);
     Au_t rec = def_class(parent, n);
-    rec->module = e->current_import->au;
+    //rec->module = e->current_import->au;
     push_scope(e, (Au)rec);
     
     // Handle bases
@@ -538,7 +538,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
         snprintf(bname, sizeof(bname), "__base%d", base_index++);
         
         Au_t m = def_member(rec, bname, base_rec, AU_MEMBER_VAR, 0);
-        m->module = e->current_import->au;
+        //m->module = e->current_import->au;
         m->offset = layout.getBaseClassOffset(base).getQuantity();
     }
 
@@ -555,7 +555,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
         
         Au_t fn = def(rec, method_name.c_str(), AU_MEMBER_FUNC, 
                               md->isStatic() ? AU_TRAIT_SMETHOD : AU_TRAIT_IMETHOD);
-        fn->module = e->current_import->au;
+        //fn->module = e->current_import->au;
         fn->rtype = map_clang_type(md->getReturnType(), ctx, e, null);
         if (!fn->rtype) fn->rtype = au_lookup("none");
         
@@ -599,7 +599,7 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
     
     Au_t parent = top_scope(e);
     Au_t en = def_enum(parent, n, 0);
-    en->module = e->current_import->au;
+    //en->module = e->current_import->au;
     en->src = au_lookup("i32");
     
     push_scope(e, (Au)en);
@@ -613,11 +613,11 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
         i32* value = (i32*)_i32(val.getSExtValue());
         
         Au_t ev = def_enum_value(en, cn, (Au)value);
-        ev->module = e->current_import->au;
+        //ev->module = e->current_import->au;
         // For C-style enums, also register in parent scope
         if (!decl->isScoped()) {
             Au_t parent_ev = def_enum_value(parent, cn, (Au)value);
-            parent_ev->module = e->current_import->au;
+            //parent_ev->module = e->current_import->au;
             parent_ev->type = en;
         }
     }
@@ -635,7 +635,7 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
         int test2 = 2;
         test2    += 2;
     }
-    fn->module = e->current_import->au;
+    //fn->module = e->current_import->au;
     if (name.length() != 0 && name == "puts") {
         fn = fn;
     }
@@ -657,7 +657,7 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
         if (!mt) continue;
         
         Au_t arg = def(fn, param_name.c_str(), AU_MEMBER_VAR, 0);
-        arg->module = e->current_import->au;
+        //arg->module = e->current_import->au;
         arg->src = mt;
         micro_push((micro*)&fn->args, (Au)arg);
     }
@@ -721,7 +721,7 @@ static Au_t create_namespace(NamespaceDecl* ns, ASTContext& ctx, aether e) {
 
             // todo: fix
             Au_t ns_au = def_struct(cur, name);
-            ns_au->module = e->current_import->au;
+            //ns_au->module = e->current_import->au;
             return ns_au;
         } else {
             verify(existing, "expected namespace: %s", name);
@@ -758,7 +758,7 @@ public:
         
         if (underlying) {
             Au_t alias = def_type(top_scope(e), name.c_str(), AU_TRAIT_ALIAS);
-            alias->module = e->current_import->au;
+            //alias->module = e->current_import->au;
             alias->src = underlying;
         }
         return true;
@@ -1149,7 +1149,7 @@ path aether_include(aether e, Au inc, string ns) {
         compiler->ExecuteAction(act);
         std::unique_ptr<llvm::Module> M = act.takeModule();
         LLVMModuleRef cMod = M ? wrap(M.release()) : nullptr;
-        (instance)->module = cMod;
+        //(instance)->module = cMod;
         LLVMLinkModules2(e->module_ref, cMod);
     }
 

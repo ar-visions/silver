@@ -49,33 +49,64 @@ typedef struct _coverage_module {
     struct _coverage_module* next;
 } coverage_module;
 
+static char* __func_name_table[512];
 
+void coverage_set_func_name(u32 func_id, char* name) {
+    if (func_id < 512)
+        __func_name_table[func_id] = name;
+}
 
 void emit_coverage_register(aether a) {
     if ((!a->coverage && !a->timing_enabled) || a->no_build) return;
 
+    LLVMTypeRef ptr_type = LLVMPointerTypeInContext(a->module_ctx, 0);
+    LLVMTypeRef i32_type = LLVMInt32TypeInContext(a->module_ctx);
+
     LLVMTypeRef fn_type = LLVMFunctionType(
         LLVMVoidTypeInContext(a->module_ctx),
-        (LLVMTypeRef[]){
-            LLVMPointerTypeInContext(a->module_ctx, 0),
-            LLVMInt32TypeInContext(a->module_ctx),
-            LLVMPointerTypeInContext(a->module_ctx, 0),
-            LLVMInt32TypeInContext(a->module_ctx)
-        }, 4, false);
+        (LLVMTypeRef[]){ ptr_type, i32_type, ptr_type, i32_type, ptr_type },
+        5, false);
     LLVMValueRef coverage_register_fn = LLVMAddFunction(
         a->module_ref, "__coverage_register", fn_type);
 
     LLVMValueRef timings = a->func_timings_global
         ? a->func_timings_global
-        : LLVMConstNull(LLVMPointerTypeInContext(a->module_ctx, 0));
+        : LLVMConstNull(ptr_type);
+
+    // build func names global array
+    LLVMValueRef names = LLVMConstNull(ptr_type);
+    if (a->timing_enabled && a->next_func_id > 0) {
+        u32 n = a->next_func_id;
+        LLVMValueRef* name_values = calloc(n, sizeof(LLVMValueRef));
+        for (u32 i = 0; i < n; i++) {
+            char* nm = __func_name_table[i];
+            if (nm) {
+                name_values[i] = LLVMBuildGlobalStringPtr(B, nm, "");
+            } else {
+                name_values[i] = LLVMConstNull(ptr_type);
+            }
+        }
+        LLVMTypeRef names_array = LLVMArrayType(ptr_type, n);
+        a->func_names_global = LLVMAddGlobal(a->module_ref, names_array,
+            fmt("__func_names_%s", a->name->chars)->chars);
+        LLVMSetInitializer(a->func_names_global,
+            LLVMConstArray(ptr_type, name_values, n));
+        LLVMSetLinkage(a->func_names_global, LLVMInternalLinkage);
+        names = a->func_names_global;
+        free(name_values);
+    }
+
     LLVMBuildCall2(B, LLVMGlobalGetValueType(coverage_register_fn),
         coverage_register_fn,
         (LLVMValueRef[]){
             a->coverage_probes_global,
-            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), a->next_probe_id, 0),
+            LLVMConstInt(i32_type, a->next_probe_id, 0),
             timings,
-            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), a->next_func_id, 0)
-        }, 4, "");
+            LLVMConstInt(i32_type, a->next_func_id, 0),
+            names
+        }, 5, "");
+
+    memset(__func_name_table, 0, sizeof(__func_name_table));
 }
 
 // emit probe when entering a statements block
@@ -189,7 +220,7 @@ void init_coverage(aether a) {
         
     a->next_probe_id = 0;
     
-    // Function timing setup - we just need clock_gettime, no global array yet
+    // Function timing setup
     if (a->timing_enabled) {
 
         #define MAX_FUNCS 512
