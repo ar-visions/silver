@@ -562,6 +562,7 @@ i64 epoch_millis();
 Au Au_initialize(Au);
 none Au_init_recur(Au a, Au_t current, raw last_init);
 
+
 /// Au properties are not user-accessible, 
 /// so they are declared as opaque
 /// the methods Are, accessible
@@ -620,7 +621,7 @@ forward(any)
     M(AA,BB, s, method, public, Au_t,   def_arg,        Au_t, symbol, Au_t, u64) \
     M(AA,BB, s, method, public, Au_t,   def_test,       Au_t, ARef) \
     M(AA,BB, s, method, public, Au_t,   def_meta,       Au_t, symbol, Au_t) \
-    M(AA,BB, s, method, public, Au_t,   def_prop,       Au_t, symbol, Au_t, u64, u32, u32, ARef) \
+    M(AA,BB, s, method, public, Au_t,   def_prop,       Au_t, symbol, Au_t, u64, u32, u32, ARef, Au_t, Au) \
     M(AA,BB, s, method, public, Au_t,   def_type,       Au_t, symbol, u64) \
     M(AA,BB, s, method, public, Au_t,   def_member,     Au_t, symbol, Au_t, u32, u64) \
     M(AA,BB, s, method, public, Au_t,   def_class,      Au_t, symbol) \
@@ -630,7 +631,7 @@ forward(any)
     M(AA,BB, s, method, public, Au_t,   def_enum,       Au_t, symbol, u64) \
     M(AA,BB, s, method, public, Au_t,   def_enum_value, Au_t, symbol, Au) \
     M(AA,BB, s, method, public, Au,     parse,          Au_t, cstr, ctx) \
-    M(AA,BB, s, method, public, Au_t,   find_member,    Au_t, symbol, i32, bool) \
+    M(AA,BB, s, method, public, Au_t,   find_member,    Au_t, symbol, i32, u64, bool) \
     M(AA,BB, s, method, public, Au_t,   find_context,   array, i32, i32) \
     M(AA,BB, s, method, public, Au_t,   lexical,        array, symbol) \
     M(AA,BB, s, method, public, bool,   check,          bool,  string) \
@@ -1131,6 +1132,7 @@ forward(shape)
     M(AA,BB, i, method,  public, i64,   flat_index, shape) \
     M(AA,BB, s, method,  public, shape, shape_from, i64, ref_i64) \
     M(AA,BB, s, method,  public, shape, shape_read, ARef) \
+    M(AA,BB, i, index,    public, i64, i64) \
     M(AA,BB, i, operator, public, shape, _left,     num) \
     M(AA,BB, i, operator, public, shape, _right,    num) \
     M(AA,BB, i, operator, public, shape, _lleft,    num) \
@@ -1260,7 +1262,8 @@ static struct op_entry op_table[] = {
     enum_value(E,T,Y, _assign_xor,       38) \
     enum_value(E,T,Y, _assign_mod,       39) \
     enum_value(E,T,Y, _assign_right,     40) \
-    enum_value(E,T,Y, _assign_left,      41)
+    enum_value(E,T,Y, _assign_left,      41) \
+    enum_value(E,T,Y, _setter,           42)
 declare_enum(OPType)
 
 #define Key_module_ Au
@@ -1471,6 +1474,7 @@ declare_enum(level)
     M(AA,BB, i, method, public, none, concat,     map) \
     M(AA,BB, i, method, public, none, clear) \
     M(AA,BB, i, index,  public, Au,   Au) \
+    M(AA,BB, i, setter, public, none) \
     M(AA,BB, i, ctr,    public, i32) \
     M(AA,BB, i, override, method, init) \
     M(AA,BB, i, override, method, dealloc) \

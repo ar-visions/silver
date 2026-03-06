@@ -5,30 +5,6 @@
 			"path": "."
 		},
 		{
-			"name": "mx",
-			"path": "../mx"
-		},
-		{
-			"name": "trinity",
-			"path": "../trinity"
-		},
-		{
-			"name": "asnes",
-			"path": "../asnes"
-		},
-		{
-			"name": "hyperspace",
-			"path": "../hyperspace"
-		},
-		{
-			"name": "ai",
-			"path": "../ai"
-		},
-		{
-			"name": "orbiter",
-			"path": "../orbiter"
-		},
-		{
 			"name": "ark",
 			"path": "../ark"
 		}

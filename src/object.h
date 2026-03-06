@@ -20,12 +20,13 @@ enum AU_MEMBER {
     AU_MEMBER_OPERATOR  = 6,
     AU_MEMBER_CAST      = 7,
     AU_MEMBER_INDEX     = 8,
-    AU_MEMBER_ENUMV     = 9,
-    AU_MEMBER_OVERRIDE  = 10,
-    AU_MEMBER_IS_ATTR   = 11,
-    AU_MEMBER_NAMESPACE = 12,
-    AU_MEMBER_DECL      = 13,
-    AU_MEMBER_MACRO     = 14
+    AU_MEMBER_SETTER    = 9,
+    AU_MEMBER_ENUMV     = 10,
+    AU_MEMBER_OVERRIDE  = 11,
+    AU_MEMBER_IS_ATTR   = 12,
+    AU_MEMBER_NAMESPACE = 13,
+    AU_MEMBER_DECL      = 14,
+    AU_MEMBER_MACRO     = 15
 };
 
 typedef enum AU_MEMBER AFlag;
@@ -80,6 +81,7 @@ typedef enum AU_MEMBER AFlag;
 #define AU_TRAIT_ALLOCATED   ((int64_t) 1 << 47)
 #define AU_TRAIT_CONTEXT     ((int64_t) 1 << 48)
 #define AU_TRAIT_EXPLICIT_REF ((int64_t) 1 << 49)
+#define AU_TRAIT_IS_DEFAULT  ((int64_t) 1 << 50)
 
 typedef bool(*global_init_fn)();
 
@@ -234,6 +236,7 @@ typedef struct _Au_t {
             u64 is_allocated : 1;
             u64 is_context   : 1;
             u64 is_explicit_ref : 1;
+            u64 is_default   : 1;
         };
         u64 traits;
     };

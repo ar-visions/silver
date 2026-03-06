@@ -8,6 +8,8 @@ import ai
 import random
 
 
+alias lol: array string
+
 app ai-test
     func init [] -> none
         rng_seed 42
@@ -17,15 +19,7 @@ app ai-test
         # --- input tensors for each layer position ---
         # keras wiring sets op.result = next_op.input, so each
         # op needs an input tensor with the correct shape
-
-        scale2: f32[ 2.4f ]
-        printf "scale2 %f\n", scale2
-
-        t_in: tensor [tensor_shape: 32x32x1, scale:2.2f]
-
-        puts 'loaded tensor'
-        #t_in.scale = 1.2
-
+        t_in: tensor [tensor_shape: 32x32x1]
         t_conv1:  tensor [tensor_shape: 32x32x1]
         t_conv2:  tensor [tensor_shape: 32x32x8]
         t_pool:   tensor [tensor_shape: 32x32x16]
@@ -71,7 +65,8 @@ app ai-test
         op_out: output_op[input: t_out,   name: 'output']
 
         # --- wire upstream dependencies ---
-        op_c1.inputs  = array string [ 'input' ]
+        op_in.inputs  = lol []
+        op_c1.inputs  = [ 'input' ]
         op_c2.inputs  = array string [ 'conv1' ]
         op_p.inputs   = array string [ 'conv2' ]
         op_f.inputs   = array string [ 'pool' ]
@@ -82,30 +77,32 @@ app ai-test
         # --- create keras model ---
         all_ops: array op [ op_in, op_c1, op_c2, op_p, op_f, op_d1, op_d2, op_out ]
 
-        puts 'i figured since i gone this far...'
         model: keras [ident: 'ai-test', ops: all_ops]
-        ##
+
         # --- generate training data ---
         # random grayscale 32x32 images, label = average pixel value
         num_samples: i32 [20]
         samples: map tensor[tensor] []
         pixels:  i32 [1024]
 
-        puts '3'
-
         puts 'generating {num_samples} training samples...'
-        for [ s: i32 0 :: s < num_samples :: s += 1 ]
+
+        for [ s: i32 0, s < num_samples, s += 1 ]
             img: tensor [tensor_shape: 32x32x1]
             avg: f32 [0.0]
-            for [ i: i32 0 :: i < pixels :: i += 1 ]
+            for [ i: i32 0, i < pixels, i += 1 ]
                 v: randf
                 img.floats[i] = v
                 avg += v
             avg /= 1024.0
+            
             target: tensor [tensor_shape: 1x1]
+
+            he: header[ target ]
+
             target.floats[0] = avg
             samples[img] = target
-
+##
         # --- train ---
         puts 'training...'
         model.train 10, samples, 0.001

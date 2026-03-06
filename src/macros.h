@@ -251,6 +251,15 @@
 // see: javascript; returns null if its not an instance-of; faults if you give it a null
 //#define instanceof(left, type)      Au_instanceof(left, type)
 #define ftableI(I)                  ((__typeof__((I)->__f[0])) ((Au)(I))[-1].type)
+#define implements(I, M)            ({ __typeof__(I) _ii_ = I; ((Au)(_ii_))[-1].type->context && ftableI(_ii_)->ft.M != ((__typeof__((_ii_)->__f[0]))(((Au)(_ii_))[-1].type->context))->ft.M; })
+
+#define typeidI(I)                  __typeof__((I)->__f[0])
+
+//#define implements(I, METHOD) \
+//    (ftableI(I)->METHOD != \
+//     (typeidI(I)((Au)isa(I)->context))->ft.METHOD
+
+
 #define fcall(I,M,...)              ({ __typeof__(I) _i_ = I; ftableI(_i_)->ft.M(_i_, ## __VA_ARGS__); })
 #define mcall(I,M,...)              ({ __typeof__(I) _i_ = I; (_i_) ? ftableI(_i_)->ft.M(_i_, ## __VA_ARGS__) : 0; })
 #define cstring(I)                  cast(cstr, I)
@@ -502,10 +511,39 @@
     m->type        = typeid(R); \
     m->index       = offsetof(struct X##_fields, N); \
 };
-
 #define   i_prop_required_PROTO(X, R, N)  
 #define   i_prop_required_METHOD(X, R, N)
 #define   i_prop_required_NMODULE(X, R, N)
+
+
+
+#define   i_prop_def_F(X, R, N)            u8 N;
+#define   i_prop_def_F_EXTERN(X, R, N)     u8 N;
+#define   i_prop_def_ISIZE(X, R, N)     
+#define   i_prop_def_ISIZE_EXTERN(X, R, N)    
+#define   i_prop_def_ISIZE_EXTERN_meta(X, R, N, M2, ...)    
+#define   i_prop_def_INST_U(X, R, N)         i_prop_public_INST_U(X, R, N)
+#define   i_prop_def_INST_L(X, R, N)
+#define   i_prop_def_INST_U_EXTERN(X, R, N)  i_prop_public_INST_U(X, R, N)
+#define   i_prop_def_INST_L_EXTERN(X, R, N)
+#define   i_prop_def_DEF(X, R, N)
+#define   i_prop_def_DECL(X, R, N)
+#define   i_prop_def_DECL_EXTERN(X, R, N)
+#define   i_prop_def_GENERICS(X, R, N)
+#define   i_prop_def_INIT(X, R, N) { \
+    Au_t m = def(typeid(X), #N, AU_MEMBER_VAR, AU_TRAIT_REQUIRED | AU_TRAIT_IS_DEFAULT | AU_TRAIT_IPROP); \
+    m->access_type = interface_public; \
+    m->offset      = offsetof(struct _##X, N); \
+    m->type        = typeid(R); \
+    m->member_type = AU_MEMBER_VAR; \
+    m->index       = offsetof(struct X##_fields, N); \
+};
+
+#define   i_prop_def_PROTO(X, R, N)  
+#define   i_prop_def_METHOD(X, R, N)
+#define   i_prop_def_NMODULE(X, R, N)
+
+
 
 #define   i_prop_intern_F(X, R, N)              u8 N;
 #define   i_prop_intern_F_EXTERN(X, R, N)       u8 ___intern_##N;
@@ -1597,6 +1635,40 @@
 #define   i_guard\
 (X, Y, T, R, N, ...) i_method_##T##_##Y(X, R, N, __VA_ARGS__)
 
+
+
+
+#define   i_setter_public_F(X, R)
+#define   i_setter_public_F_EXTERN(X, R)
+#define   i_setter_public_ISIZE(X, R)
+#define   i_setter_public_ISIZE_EXTERN(X, R)
+#define   i_setter_public_INST_U(X, R)
+#define   i_setter_public_INST_L(X, R)
+#define   i_setter_public_INST_U_EXTERN(X, R)
+#define   i_setter_public_INST_L_EXTERN(X, R)
+#define   i_setter_public_DEF(X, R)
+#define   i_setter_public_DECL(X, R)
+#define   i_setter_public_DECL_EXTERN(X, R)
+#define   i_setter_public_GENERICS(X, R)
+#define   i_setter_public_INIT(X, R) { \
+    Au_t m          = def(typeid(X), "setter", AU_MEMBER_SETTER, AU_TRAIT_IMETHOD); \
+    m->alt          = #X "_setter"; \
+    m->access_type  = interface_public; \
+    Type_i(X).type  . ft.setter = & X## _setter; \
+    m->ident        = stringify(setter); \
+    set_args_array(m, emit_types(X, Au, Au, OPType)); \
+    ((Au_t)m->args.origin[0])->is_target = 1; \
+    m->type         = typeid(R); \
+    m->index        = offsetof(__typeof__(Type_i(X).type.ft), setter) / sizeof(void*); \
+}
+#define   i_setter_public_PROTO(X, R)
+#define   i_setter_public_METHOD(X, R)    R (*setter)(X, Au, Au, OPType);
+#define   i_setter_public_NMODULE(X, R)
+
+#define i_setter(X, Y, T, R, ...) i_setter_##T##_##Y(X, R)
+
+
+
 #define   i_operator_interface_F(X, R, N, ARG)
 #define   i_operator_interface_F_EXTERN(X, R, N, ARG)
 #define   i_operator_interface_ISIZE(X, R, N, ARG)
@@ -1751,7 +1823,7 @@
 #define i_index_public_GENERICS(X, R, ...)
 #define i_index_public_INIT(X, R, ...) { \
     Au_t m = def(typeid(X), stringify(emit_idx_symbol(index, __VA_ARGS__)), AU_MEMBER_INDEX, AU_TRAIT_IMETHOD); \
-    m->alt = #X "_index_" #R; \
+    m->alt = stringify(emit_idx_symbol(X ## _index, __VA_ARGS__)); \
     m->access_type = interface_public; \
     Type_i(X).type.ft.emit_idx_symbol(index, __VA_ARGS__) = & emit_idx_symbol(X ## _index, __VA_ARGS__); \
     set_args_array(m, emit_types(X, __VA_ARGS__)); \

@@ -118,6 +118,7 @@ fi
 # defaults
 export SDK="native"
 export TYPE="debug"
+ASAN=""
 
 # parse command-line args
 for arg in "$@"; do
@@ -127,6 +128,10 @@ for arg in "$@"; do
             ;;
         --release)
             TYPE="release"
+            ;;
+        --asan)
+            ASAN="--asan"
+            TYPE="debug"
             ;;
         *)
             SDK="$arg"
@@ -347,6 +352,6 @@ fi
 
 (
     cd $SILVER
-    python3 src/import.py --import $IMPORT --$TYPE --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
-    python3 src/gen.py    --import $IMPORT --$TYPE --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
+    python3 src/import.py --import $IMPORT --$TYPE $ASAN --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
+    python3 src/gen.py    --import $IMPORT --$TYPE $ASAN --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
 )

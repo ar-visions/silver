@@ -6,6 +6,10 @@ import <math.h>
 
 import random
 
+func fnv1a_hash [ ref u8, size_t, u64 ] -> u64
+FNV_PRIME:    u64 0x100000001b3
+OFFSET_BASIS: u64 0xcbf29ce484222325
+
 
 enum Activation
     _none:  0
@@ -31,11 +35,6 @@ enum Pooling
     min:       2
     average:   3
 
-class tensor2
-    public scale: i32[1]
-
-    static func init2 [t:tensor2] -> none
-        puts 'hi'
 
 class tensor
     expect tensor_shape: shape
@@ -49,7 +48,6 @@ class tensor
     
     func init [] -> none
         # it should error when we do not give const to printf
-        printf ["tensor-scale: %f\n", scale]
 
         has_f32: bool [ floats ]
         count   = tensor_shape.total
@@ -59,14 +57,14 @@ class tensor
 
         switch [ initializer ]
         case Initializer.random
-            for [ i: i32 0 :: i < count :: i += 1 ]
+            for [ i: i32 0, i < count, i += 1 ]
                 floats[i] = randf
         case Initializer.zeros
-            for [ i: i32 0 :: i < count :: i += 1 ]
+            for [ i: i32 0, i < count, i += 1 ]
                 floats[i] = 0.0f
         case Initializer.glorot_uniform
             std: sqrtf[ 6.0f / count ]
-            for [ i: i32 0 :: i < count :: i += 1 ]
+            for [ i: i32 0, i < count, i += 1 ]
                 floats[i] = (randf * 2.0f - 1.0f) * std
 
         if [ initializer || has_f32 ]
@@ -77,7 +75,7 @@ class tensor
 
     func quantize [] -> none
         max_abs: f32 [ 0.0 ]
-        for [ i: i32 0 :: i < count :: i += 1 ]
+        for [ i: i32 0, i < count, i += 1 ]
             v: floats[i]
             abs_v: (v > 0.0) ? v : -v
             if [ abs_v > max_abs ]
@@ -87,7 +85,7 @@ class tensor
             scale = 1.0e-7
         offset = 0
         inv: f32 [ 1.0 / scale ]
-        for [ i: i32 0 :: i < count :: i += 1 ]
+        for [ i: i32 0, i < count, i += 1 ]
             q: i32 [ i32[floats[i] * inv + 0.5] ]
             if [ q > 127 ]
                 q = 127
@@ -98,53 +96,56 @@ class tensor
     func realize [] -> none
         src: quants
         dst: floats
-        for [ i: i32 0 :: i < count :: i += 1 ]
+        for [ i: i32 0, i < count, i += 1 ]
             dst[i] = f32[src[i]] / 255.0f
         offset = 0
         scale  = 1.0f / 127.0f
 
+    func hash [] -> u64
+        return fnv1a_hash [ quants, count, OFFSET_BASIS ]
+
     func sum [] -> f32
         s: f32 [ 0.0 ]
-        for [ i: i32 0 :: i < count :: i += 1 ]
+        for [ i: i32 0, i < count, i += 1 ]
             s += floats[i]
         return s
 
     func grad_sum [] -> f32
         s: f32 [ 0.0 ]
-        for [ i: i32 0 :: i < count :: i += 1 ]
+        for [ i: i32 0, i < count, i += 1 ]
             s += grad[i]
         return s
 
     func gemm [other: tensor, b: tensor, act: Activation, dest: tensor] -> none
-        m: i32 tensor_shape.data[0]
-        k: i32 tensor_shape.data[1]
-        n: i32 dest.tensor_shape.data[1]
+        m: i32 tensor_shape[0]
+        k: i32 tensor_shape[1]
+        n: i32 dest.tensor_shape[1]
         other_f: other.floats
         dest_f:  dest.floats
         bias_f:  b.floats
         a_f:     floats
 
         if [ act == Activation.relu ]
-            for [ i: i32 0 :: i < m :: i += 1 ]
-                for [ j: i32 0 :: j < n :: j += 1 ]
+            for [ i: i32 0, i < m, i += 1 ]
+                for [ j: i32 0, j < n, j += 1 ]
                     s: f32 [ bias_f[j] ]
-                    for [ ki: i32 0 :: ki < k :: ki += 1 ]
+                    for [ ki: i32 0, ki < k, ki += 1 ]
                         s += a_f[i * k + ki] * other_f[ki * n + j]
                     dest_f[i * n + j] = (s > 0.0) ? s : 0.0
 
         el [ act == Activation.tanh ]
-            for [ i: i32 0 :: i < m :: i += 1 ]
-                for [ j: i32 0 :: j < n :: j += 1 ]
+            for [ i: i32 0, i < m, i += 1 ]
+                for [ j: i32 0, j < n, j += 1 ]
                     s: f32 [ bias_f[j] ]
-                    for [ ki: i32 0 :: ki < k :: ki += 1 ]
+                    for [ ki: i32 0, ki < k, ki += 1 ]
                         s += a_f[i * k + ki] * other_f[ki * n + j]
                     dest_f[i * n + j] = tanhf[s]
 
         el
-            for [ i: i32 0 :: i < m :: i += 1 ]
-                for [ j: i32 0 :: j < n :: j += 1 ]
+            for [ i: i32 0, i < m, i += 1 ]
+                for [ j: i32 0, j < n, j += 1 ]
                     s: f32 [ bias_f[j] ]
-                    for [ ki: i32 0 :: ki < k :: ki += 1 ]
+                    for [ ki: i32 0, ki < k, ki += 1 ]
                         s += a_f[i * k + ki] * other_f[ki * n + j]
                     dest_f[i * n + j] = s
 
@@ -160,8 +161,6 @@ class op
     public weights:    tensor
     public bias:       tensor
 
-    func init[] -> none
-        puts 'op: {name}'
 
     func finalize [] -> none
         no-op
@@ -169,13 +168,13 @@ class op
     func forward [] -> none
         if [ activation == Activation.relu ]
             t: input.count
-            for [ i: i32 0 :: i < t :: i += 1 ]
+            for [ i: i32 0, i < t, i += 1 ]
                 v: input.floats[i]
                 result.floats[i] = (v > 0.0) ? v : 0.0
 
         el [ activation == Activation.tanh ]
             t: input.count
-            for [ i: i32 0 :: i < t :: i += 1 ]
+            for [ i: i32 0, i < t, i += 1 ]
                 x: f32 [ (input.floats[i] - input.offset) * input.scale ]
                 y: tanhf[x]
                 result.floats[i] = y / result.scale + result.offset
@@ -245,20 +244,20 @@ op dense
         inp:     input.floats
         out:     result.floats
 
-        for [ i: i32 0 :: i < odim :: i += 1 ]
+        for [ i: i32 0, i < odim, i += 1 ]
             if [ activation == Activation.relu ]
                 d_out_f[i] *= (out[i] > 0.0) ? 1.0 : 0.0
             el [ activation == Activation.tanh ]
                 d_out_f[i] *= 1.0 - out[i] * out[i]
 
-        for [ i: i32 0 :: i < odim :: i += 1 ]
+        for [ i: i32 0, i < odim, i += 1 ]
             d_b[i] = d_out_f[i]
-            for [ j: i32 0 :: j < idim :: j += 1 ]
+            for [ j: i32 0, j < idim, j += 1 ]
                 d_w[i * idim + j] += d_out_f[i] * inp[j]
 
-        for [ j: i32 0 :: j < idim :: j += 1 ]
+        for [ j: i32 0, j < idim, j += 1 ]
             d_in_f[j] = 0.0
-            for [ i: i32 0 :: i < odim :: i += 1 ]
+            for [ i: i32 0, i < odim, i += 1 ]
                 d_in_f[j] += w[i * idim + j] * d_out_f[i]
 
         return d_input
@@ -275,13 +274,13 @@ op conv
     public im2col_matrix:  tensor
 
     func finalize []
-        in_h:     input.tensor_shape.data[0]
-        in_w:     input.tensor_shape.data[1]
-        in_c:     input.tensor_shape.data[2]
-        filter_h: kernel_size.data[0]
-        filter_w: kernel_size.data[1]
-        stride_h: stride_shape.data[0]
-        stride_w: stride_shape.data[1]
+        in_h:     input.tensor_shape[0]
+        in_w:     input.tensor_shape[1]
+        in_c:     input.tensor_shape[2]
+        filter_h: kernel_size[0]
+        filter_w: kernel_size[1]
+        stride_h: stride_shape[0]
+        stride_w: stride_shape[1]
         pad_h:    (padding == Padding.same) ? (filter_h - 1) / 2 : 0
         pad_w:    (padding == Padding.same) ? (filter_w - 1) / 2 : 0
         out_h:    (in_h - filter_h + 2 * pad_h) / stride_h + 1
@@ -289,28 +288,28 @@ op conv
         out_c:    out_channels
 
     func forward [] -> none
-        in_h:     input.tensor_shape.data[0]
-        in_w:     input.tensor_shape.data[1]
-        in_c:     input.tensor_shape.data[2]
-        filter_h: kernel_size.data[0]
-        filter_w: kernel_size.data[1]
+        in_h:     input.tensor_shape[0]
+        in_w:     input.tensor_shape[1]
+        in_c:     input.tensor_shape[2]
+        filter_h: kernel_size[0]
+        filter_w: kernel_size[1]
         out_c:    out_channels
-        stride:   stride_shape.data[0]
+        stride:   stride_shape[0]
         pad:      (padding == Padding.same) ? (filter_h - 1) / 2 : 0
-        out_h:    result.tensor_shape.data[0]
-        out_w:    result.tensor_shape.data[1]
+        out_h:    result.tensor_shape[0]
+        out_w:    result.tensor_shape[1]
         inp:      input.floats
         w:        weights.floats
         b:        bias.floats
         out:      result.floats
 
-        for [ oc: i32 0 :: oc < out_c :: oc += 1 ]
-            for [ oh: i32 0 :: oh < out_h :: oh += 1 ]
-                for [ ow: i32 0 :: ow < out_w :: ow += 1 ]
+        for [ oc: i32 0, oc < out_c, oc += 1 ]
+            for [ oh: i32 0, oh < out_h, oh += 1 ]
+                for [ ow: i32 0, ow < out_w, ow += 1 ]
                     s: f32 [ b[oc] ]
-                    for [ ic: i32 0 :: ic < in_c :: ic += 1 ]
-                        for [ kh: i32 0 :: kh < filter_h :: kh += 1 ]
-                            for [ kw: i32 0 :: kw < filter_w :: kw += 1 ]
+                    for [ ic: i32 0, ic < in_c, ic += 1 ]
+                        for [ kh: i32 0, kh < filter_h, kh += 1 ]
+                            for [ kw: i32 0, kw < filter_w, kw += 1 ]
                                 ih: oh * stride - pad + kh
                                 iw: ow * stride - pad + kw
                                 if [ ih >= 0 && iw >= 0 && ih < in_h && iw < in_w ]
@@ -321,16 +320,16 @@ op conv
 
     func back [d_out: tensor] -> tensor
         d_input: tensor [ tensor_shape: input.tensor_shape ]
-        in_h:     input.tensor_shape.data[0]
-        in_w:     input.tensor_shape.data[1]
-        in_c:     input.tensor_shape.data[2]
-        filter_h: kernel_size.data[0]
-        filter_w: kernel_size.data[1]
+        in_h:     input.tensor_shape[0]
+        in_w:     input.tensor_shape[1]
+        in_c:     input.tensor_shape[2]
+        filter_h: kernel_size[0]
+        filter_w: kernel_size[1]
         out_c:    out_channels
-        stride:   stride_shape.data[0]
+        stride:   stride_shape[0]
         pad:      (padding == Padding.same) ? (filter_h - 1) / 2 : 0
-        out_h:    result.tensor_shape.data[0]
-        out_w:    result.tensor_shape.data[1]
+        out_h:    result.tensor_shape[0]
+        out_w:    result.tensor_shape[1]
         d_out_f:  d_out.floats
         d_in_f:   d_input.floats
         w:        weights.floats
@@ -344,30 +343,30 @@ op conv
         memset d_b,    0, bias.count * 4
 
         if [ activation == Activation.relu ]
-            for [ i: i32 0 :: i < result.count :: i += 1 ]
+            for [ i: i32 0, i < result.count, i += 1 ]
                 d_out_f[i] *= (out[i] > 0.0) ? 1.0 : 0.0
         el [ activation == Activation.tanh ]
-            for [ i: i32 0 :: i < result.count :: i += 1 ]
+            for [ i: i32 0, i < result.count, i += 1 ]
                 d_out_f[i] *= 1.0 - out[i] * out[i]
 
-        for [ oc: i32 0 :: oc < out_c :: oc += 1 ]
-            for [ oh: i32 0 :: oh < out_h :: oh += 1 ]
-                for [ ow: i32 0 :: ow < out_w :: ow += 1 ]
+        for [ oc: i32 0, oc < out_c, oc += 1 ]
+            for [ oh: i32 0, oh < out_h, oh += 1 ]
+                for [ ow: i32 0, ow < out_w, ow += 1 ]
                     oi: (oh * out_w + ow) * out_c + oc
                     d_b[oc] += d_out_f[oi]
 
-        for [ oc: i32 0 :: oc < out_c :: oc += 1 ]
-            for [ oh: i32 0 :: oh < out_h :: oh += 1 ]
-                for [ ow: i32 0 :: ow < out_w :: ow += 1 ]
+        for [ oc: i32 0, oc < out_c, oc += 1 ]
+            for [ oh: i32 0, oh < out_h, oh += 1 ]
+                for [ ow: i32 0, ow < out_w, ow += 1 ]
                     oi:       (oh * out_w + ow) * out_c + oc
                     grad_out: d_out_f[oi]
-                    for [ ic: i32 0 :: ic < in_c :: ic += 1 ]
-                        for [ kh: i32 0 :: kh < filter_h :: kh += 1 ]
+                    for [ ic: i32 0, ic < in_c, ic += 1 ]
+                        for [ kh: i32 0, kh < filter_h, kh += 1 ]
                             ih: oh * stride - pad + kh
                             if [ ih < 0 || ih >= in_h ]
                                 no-op
                             el
-                                for [ kw: i32 0 :: kw < filter_w :: kw += 1 ]
+                                for [ kw: i32 0, kw < filter_w, kw += 1 ]
                                     iw: ow * stride - pad + kw
                                     if [ iw >= 0 && iw < in_w ]
                                         input_idx:  (ih * in_w + iw) * in_c + ic
@@ -384,35 +383,35 @@ op pool
     public stride_shape: shape
 
     func finalize []
-        in_h:     input.tensor_shape.data[0]
-        in_w:     input.tensor_shape.data[1]
-        in_c:     input.tensor_shape.data[2]
-        pool_h:   pool_size.data[0]
-        pool_w:   pool_size.data[1]
-        stride_h: stride_shape.data[0]
-        stride_w: stride_shape.data[1]
+        in_h:     input.tensor_shape[0]
+        in_w:     input.tensor_shape[1]
+        in_c:     input.tensor_shape[2]
+        pool_h:   pool_size[0]
+        pool_w:   pool_size[1]
+        stride_h: stride_shape[0]
+        stride_w: stride_shape[1]
         out_h:    (in_h - pool_h) / stride_h + 1
         out_w:    (in_w - pool_w) / stride_w + 1
 
     func forward [] -> none
-        in_h:     input.tensor_shape.data[0]
-        in_w:     input.tensor_shape.data[1]
-        in_c:     input.tensor_shape.data[2]
-        pool_h:   pool_size.data[0]
-        pool_w:   pool_size.data[1]
-        stride_h: stride_shape.data[0]
-        stride_w: stride_shape.data[1]
-        out_h:    result.tensor_shape.data[0]
-        out_w:    result.tensor_shape.data[1]
+        in_h:     input.tensor_shape[0]
+        in_w:     input.tensor_shape[1]
+        in_c:     input.tensor_shape[2]
+        pool_h:   pool_size[0]
+        pool_w:   pool_size[1]
+        stride_h: stride_shape[0]
+        stride_w: stride_shape[1]
+        out_h:    result.tensor_shape[0]
+        out_w:    result.tensor_shape[1]
         inp:      input.floats
         out:      result.floats
 
-        for [ oh: i32 0 :: oh < out_h :: oh += 1 ]
-            for [ ow: i32 0 :: ow < out_w :: ow += 1 ]
-                for [ c: i32 0 :: c < in_c :: c += 1 ]
+        for [ oh: i32 0, oh < out_h, oh += 1 ]
+            for [ ow: i32 0, ow < out_w, ow += 1 ]
+                for [ c: i32 0, c < in_c, c += 1 ]
                     max_val: f32 [ -99998.0 ]
-                    for [ kh: i32 0 :: kh < pool_h :: kh += 1 ]
-                        for [ kw: i32 0 :: kw < pool_w :: kw += 1 ]
+                    for [ kh: i32 0, kh < pool_h, kh += 1 ]
+                        for [ kw: i32 0, kw < pool_w, kw += 1 ]
                             ih: oh * stride_h + kh
                             iw: ow * stride_w + kw
                             if [ ih < in_h && iw < in_w ]
@@ -424,28 +423,28 @@ op pool
 
     func back [d_out: tensor] -> tensor
         d_input: tensor [ tensor_shape: input.tensor_shape ]
-        in_h:     input.tensor_shape.data[0]
-        in_w:     input.tensor_shape.data[1]
-        in_c:     input.tensor_shape.data[2]
-        pool_h:   pool_size.data[0]
-        pool_w:   pool_size.data[1]
-        stride_h: stride_shape.data[0]
-        stride_w: stride_shape.data[1]
-        out_h:    d_out.tensor_shape.data[0]
-        out_w:    d_out.tensor_shape.data[1]
+        in_h:     input.tensor_shape[0]
+        in_w:     input.tensor_shape[1]
+        in_c:     input.tensor_shape[2]
+        pool_h:   pool_size[0]
+        pool_w:   pool_size[1]
+        stride_h: stride_shape[0]
+        stride_w: stride_shape[1]
+        out_h:    d_out.tensor_shape[0]
+        out_w:    d_out.tensor_shape[1]
         inp:      input.floats
         d_out_f:  d_out.floats
         d_in_f:   d_input.floats
 
         memset d_in_f, 0, input.count * 4
 
-        for [ oh: i32 0 :: oh < out_h :: oh += 1 ]
-            for [ ow: i32 0 :: ow < out_w :: ow += 1 ]
-                for [ c: i32 0 :: c < in_c :: c += 1 ]
+        for [ oh: i32 0, oh < out_h, oh += 1 ]
+            for [ ow: i32 0, ow < out_w, ow += 1 ]
+                for [ c: i32 0, c < in_c, c += 1 ]
                     max_idx: i32 [ -1 ]
                     max_val: f32 [ -99999.0 ]
-                    for [ kh: i32 0 :: kh < pool_h :: kh += 1 ]
-                        for [ kw: i32 0 :: kw < pool_w :: kw += 1 ]
+                    for [ kh: i32 0, kh < pool_h, kh += 1 ]
+                        for [ kw: i32 0, kw < pool_w, kw += 1 ]
                             ih: oh * stride_h + kh
                             iw: ow * stride_w + kw
                             if [ ih < in_h && iw < in_w ]
@@ -459,7 +458,6 @@ op pool
 
         return d_input
 
-
 class keras
     expect ident:    string
     public quality:  num
@@ -471,12 +469,12 @@ class keras
 
     func init [] -> none
         op_map = map op[string]
+
         for [ o: op ] in ops
             op_map[o.name] = o
-        
         for [ o: op ] in ops
             o.op_inputs = array op []
-            for [ n: string ] in o.inputs
+            for [ n: string ] in o.inputs # crashes in here somehow.. not sure where -- its still faulting at line 0
                 res: op [ op_map[n] ]
                 o.op_inputs.push res
 
@@ -489,13 +487,13 @@ class keras
 
         first: op [ order[0] ]
         k_input = first.input
-
         for [ o: op ] in ops
             o.result = find_result[ o ]
             for [ dep: op ] in o.op_inputs
                 if [ dep is input_op ]
                     if [ o.input.tensor_shape == dep.input.tensor_shape ]
                         o.input = dep.input
+            
             o.finalize
 
         out_op: op [ op_map['output'] ]
@@ -531,7 +529,7 @@ class keras
     func back [d_out: tensor] -> tensor
         n: i32 [ order.count ]
         res: tensor [ d_out ]
-        for [ i: i32 n - 1 :: i >= 0 :: i -= 1 ]
+        for [ i: i32 n - 1, i >= 0, i -= 1 ]
             o: op [ order[i] ]
             if [ o.weights ] memset o.weights.grad, 0, o.weights.count * 4
             if [ o.bias    ] memset o.bias.grad,    0, o.bias.count    * 4
@@ -539,7 +537,7 @@ class keras
         return res
 
     func train [epochs: i32, samples: map, learning_rate: f32] -> none
-        for [ epoch: i32 0 :: epoch < epochs :: epoch += 1 ]
+        for [ epoch: i32 0, epoch < epochs, epoch += 1 ]
             puts 'epoch {epoch + 1}/{epochs}'
 
             for [ target: tensor, src: tensor ] in samples
@@ -548,7 +546,7 @@ class keras
                 d_out:      tensor [ tensor_shape: target.tensor_shape ]
                 t:          target.count
 
-                for [ i: i32 0 :: i < t :: i += 1 ]
+                for [ i: i32 0, i < t, i += 1 ]
                     diff: prediction.floats[i] - target.floats[i]
                     loss += diff * diff
                     d_out.floats[i] = 2.0 * diff
@@ -559,11 +557,11 @@ class keras
                 for [ layer: op ] in ops
                     if [ layer.weights ]
                         wt: layer.weights.count
-                        for [ i: i32 0 :: i < wt :: i += 1 ]
+                        for [ i: i32 0, i < wt, i += 1 ]
                             layer.weights.floats[i] -= learning_rate * layer.weights.grad[i]
                     if [ layer.bias ]
                         bt: layer.bias.count
-                        for [ i: i32 0 :: i < bt :: i += 1 ]
+                        for [ i: i32 0, i < bt, i += 1 ]
                             layer.bias.floats[i] -= learning_rate * layer.bias.grad[i]
 
         puts 'training complete'
