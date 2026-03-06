@@ -8,7 +8,8 @@ from pathlib import Path
 from graph import parse_g_file, get_env_vars
 
 args            = get_env_vars()
-is_debug        = args['DEBUG']
+is_asan         = args['ASAN']
+is_debug        = args['DEBUG'] or is_asan
 sdk             = args['SDK']
 fname           = "debug" if is_debug else "release"
 system          = platform.system()
@@ -228,9 +229,9 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     global is_debug
     opt_flags = ["-g", "-O0"] if is_debug else ["-O2"]
 
-    opt_flags.extend(["-fsanitize=address"])
-    plat['lflags'].append("-fsanitize=address")
-    #plat['libs'].append("-lasan")
+    if is_asan:
+        opt_flags.extend(["-fsanitize=address"])
+        plat['lflags'].append("-fsanitize=address")
 
     includes = [f"-I{build_p}/src/silver", f"-I{build_p}/src/{project}", 
                 f"-I{root_p}/src", f"-I{silver_root_p}/src", 

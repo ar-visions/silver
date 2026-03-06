@@ -121,7 +121,7 @@
     },
     "declaration-keywords": {
       "name": "keyword.declaration.ag",
-      "match": "\\b(class|struct|enum|func|app|operator|cast|lambda|shader|interface)\\b"
+      "match": "\\b(class|struct|alias|enum|func|app|operator|cast|lambda|shader|interface)\\b"
     },
     "control-keywords": {
       "name": "keyword.control.ag",
@@ -149,7 +149,7 @@
     },
     "builtin-functions": {
       "name": "support.function.ag",
-      "match": "\\b(puts|verify|sizeof|typeof|getenv|push|strdup|memset)\\b"
+      "match": "\\b(puts|expect|sizeof|typeid|getenv|push|strdup|memset)\\b"
     },
     "import-statement": {
       "begin": "\\b(import)\\b",

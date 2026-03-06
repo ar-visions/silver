@@ -12,7 +12,7 @@ BUILD_ROOT ?= $(SILVER)/sdk/$(SDK)/release
 export PROJECT_PATH
 export PROJECT_NAME
 
-.PHONY: all bootstrap build clean debug release
+.PHONY: all bootstrap build clean debug release asan
 
 all: build
 
@@ -22,18 +22,21 @@ debug:
 release:
 	$(MAKE) BUILD_ROOT=$(SILVER)/sdk/$(SDK)/release build
 
+asan:
+	$(MAKE) BUILD_ROOT=$(SILVER)/sdk/$(SDK)/debug ASAN=--asan build
+
 bootstrap:
 ifeq ($(OS),Windows_NT)
 	@case "$(BUILD_ROOT)" in *debug) \
-		"$(SILVER)/bootstrap.bat" --debug "$(SDK)";; \
+		"$(SILVER)/bootstrap.bat" --debug $(ASAN) "$(SDK)";; \
 	*) \
-		"$(SILVER)/bootstrap.bat" "$(SDK)";; \
+		"$(SILVER)/bootstrap.bat" $(ASAN) "$(SDK)";; \
 	esac
 else
 	@case "$(BUILD_ROOT)" in *debug) \
-		"$(SILVER)/bootstrap.sh" --debug "$(SDK)";; \
+		"$(SILVER)/bootstrap.sh" --debug $(ASAN) "$(SDK)";; \
 	*) \
-		"$(SILVER)/bootstrap.sh" "$(SDK)";; \
+		"$(SILVER)/bootstrap.sh" $(ASAN) "$(SDK)";; \
 	esac
 endif
 

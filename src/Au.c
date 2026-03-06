@@ -149,10 +149,11 @@ bool Au_is_opaque  (Au t) {
 }
 bool Au_is_func(Au t) {
     Au_t au = au_arg_type(t);
-    return au && (au->member_type == AU_MEMBER_FUNC     ||
-                  au->member_type == AU_MEMBER_CAST     ||
-                  au->member_type == AU_MEMBER_INDEX    ||
-                  au->member_type == AU_MEMBER_OPERATOR ||
+    return au && (au->member_type == AU_MEMBER_FUNC          ||
+                  au->member_type == AU_MEMBER_CAST          ||
+                  au->member_type == AU_MEMBER_INDEX         ||
+                  au->member_type == AU_MEMBER_SETTER        ||
+                  au->member_type == AU_MEMBER_OPERATOR      ||
                   au->member_type == AU_MEMBER_CONSTRUCT) && (au->ident || au->alt);
 }
 bool Au_is_var(Au t) {
@@ -255,6 +256,10 @@ i64 shape_total(shape a) {
     for (int i = 0; i < a->count; i++)
         total *= data[i];
     return total;
+}
+
+i64 shape_index_i64(shape a, i64 i) {
+    return a->data[i];
 }
 
 i64 shape_compare(shape a, shape b) {
@@ -366,6 +371,7 @@ none set_args_array(Au_t type, int count, ...) {
 none array_init(array a) {
     if (a->alloc)
         array_alloc_sz(a, a->alloc);
+    a->assorted = true;
 }
 
 none array_dealloc(array a) {
@@ -654,7 +660,7 @@ array array_mix(array a, array b, f32 f) {
         verify(expect == at, "disperate types in array during mix");
         verify(at == bt, "types do not match");
 
-        if (!fmix) fmix = find_member(at, "mix", AU_MEMBER_FUNC, false);
+        if (!fmix) fmix = find_member(at, "mix", AU_MEMBER_FUNC, 0, false);
         verify(fmix, "implement mix method for type %s", at->ident);
         Au e = ((mix_fn)fmix->value)(aa, bb, f);
         push(res, e);
@@ -761,14 +767,16 @@ static array  scope;
 static bool   started = false;
 
 
-Au_t find_member(Au_t mdl, symbol f, int member_type, bool poly) {
+Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool poly) {
     if (!mdl) return null;
     do {
         for (int i = 0; i < mdl->members.count; i++) {
             Au_t au = (Au_t)mdl->members.origin[i];
-            if (!member_type || au->member_type == member_type) { 
-                if (!f || (au->ident && strcmp(au->ident, f) == 0))
-                    return au;
+            if (!member_type || au->member_type == member_type) {
+                if (!traits || (au->traits & traits) == traits) {
+                    if (!f || (au->ident && strcmp(au->ident, f) == 0))
+                        return au;
+                }
             }
         }
         if (!poly || mdl->context == mdl) break;
@@ -839,12 +847,21 @@ static Au_t _push_arg(Au_t type, bool add_arg) {
     return au;
 }
 
-Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value) {
+Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value, Au_t meta_a, Au meta_b) {
+    if (strcmp(ident, "inputs") == 0) {
+        ident = ident;
+    }
+
     Au_t prop = def(context, ident, AU_MEMBER_VAR, traits);
     prop->type      = type;
+    if (strcmp(ident, "quants") == 0)
+        fprintf(stderr, "  def_prop quants: context=%s(%p) src/type=%s(%p)\n",
+            context->ident, (void*)context, type ? type->ident : "(null)", (void*)type);
     prop->offset    = offset;
     //prop->abi_size  = abi_size;
     prop->value     = (object)value;
+    prop->meta.a    = meta_a;
+    prop->meta.b    = meta_b && !instanceof(meta_b, Au_t) ? hold(meta_b) : meta_b;
     return prop;
 }
 
@@ -896,12 +913,18 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
     cur->info.type = (Au_t)&Au_Au_t_f_i.type;
 
     Au_t au = &cur->type;
+
     au->ident = ident ? (cstr)cstr_copy((cstr)ident) : (cstr)null;
     au->traits = traits | AU_TRAIT_ALLOCATED; // erasing modules can consist of freeing only pool origined data (or we check performance against a simple approach and fallback to non complicated)
     au->member_type = member_type;
 
-    if (type && type->member_type == AU_MEMBER_MODULE)
+    if (type && type->member_type == AU_MEMBER_MODULE) {
+        if (au->module && au->module != type) {
+            fprintf(stderr, "MODULE OVERWRITE [def_member]: %s (%p) module %p -> %p\n", au->ident, au, au->module, type);
+            exit(1);
+        }
         au->module = type;
+    }
 
     if (type) {
         Au_t new_member = (Au_t)micro_push(&type->members, (Au)&cur->type);
@@ -946,15 +969,23 @@ lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
 }
 
 Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, i32 member_type, u64 traits, u64 typesize, u64 isize) {
-    if (strcmp(ident, "tensor") == 0) {
-        int test2 = 2;
-        test2    += 2;
+    if (ident && strcmp(ident, "input_op") == 0) {
+        printf("input_op is being emplaced: %p\n", type);
+        ident = ident;
+    }
+    if (ident && strcmp(ident, "op") == 0) {
+        printf("op is being emplaced: %p\n", type);
+        ident = ident;
     }
     type->member_type       = member_type;
     memset(&type->members, 0, sizeof(micro));
     memset(&type->args,    0, sizeof(micro));
     type->context           = context;
     type->src               = src;
+    if (type->module && type->module != module) {
+        fprintf(stderr, "MODULE OVERWRITE [def]: %s (%p) module %p -> %p\n", type->ident, type, type->module, module);
+        exit(1);
+    }
     type->module            = module;
     type->ident             = cstr_copy((cstr)ident);
     type->traits            = traits;
@@ -1054,6 +1085,7 @@ void module_erase(Au_t module, symbol name) {
     // unregister from list by setting null
     for (int i = 0; i < modules.count; i++) {
         Au_t m = (Au_t)modules.origin[i];
+        if (m && !m->ident) continue;
         if (m && m->ident) printf("module: %s\n", m->ident);
         if (m && module == m || (m && m->ident && strcmp(m->ident, name) == 0)) {
             modules.origin[i] = null;
@@ -1102,7 +1134,9 @@ ffi_method_t* method_with_address(handle address, Au_t rtype, micro* atypes, Au_
     for (int __i = 0; __i < (MDL)->members.count; __i++) \
         for (Au_t VAR = (Au_t)(MDL)->members.origin[__i]; VAR; VAR = NULL)
 
-none push_type(Au_t type) {    
+none push_type(Au_t type) {
+    if (type->ident && strcmp(type->ident, "input_op") == 0)
+        printf("  push_type: %s  ptr=%p\n", type->ident, (void*)type);
 
     if (type == typeid(string))
         type = type;
@@ -1198,6 +1232,10 @@ none push_type(Au_t type) {
     }
 
     members(type, m) {
+        if (m->module && m->module != type->module) {
+            fprintf(stderr, "MODULE OVERWRITE [etype_define]: %s (%p) module %p -> %p\n", m->ident, m, m->module, type->module);
+            exit(1);
+        }
         m->module = type->module;
     }
 
@@ -1293,14 +1331,14 @@ void Au_AF_set_id(Au a, int id) {
 
 void Au_AF_set_name(Au a, cstr name) {
     Au_t t = isa(a);
-    Au_t m = find_member(t, name, AU_MEMBER_VAR, true);
+    Au_t m = find_member(t, name, AU_MEMBER_VAR, 0, true);
     u64*   f = Au_AF_bits(a);
     AF_set(f, m->index);
 }
 
 i32 Au_AF_query_name(Au a, cstr name) {
     Au_t t = isa(a);
-    Au_t m = find_member(t, name, AU_MEMBER_VAR, true);
+    Au_t m = find_member(t, name, AU_MEMBER_VAR, 0, true);
     u64* f = Au_AF_bits(a);
     return (i32)AF_get(f, m->index);
 }
@@ -1785,7 +1823,7 @@ Au method_call(Au_t m, array args) {
 
 /// this calls type methods
 Au method(Au_t type, cstr method_name, array args) {
-    Au_t mem = find_member(type, method_name, AU_MEMBER_FUNC, false);
+    Au_t mem = find_member(type, method_name, AU_MEMBER_FUNC, 0, false);
     assert(mem->ffi, "method not set");
     Au res = method_call(mem, args);
     return res;
@@ -2014,7 +2052,7 @@ none Au_hold_members(Au a) {
 
 Au Au_set_property(Au a, symbol name, Au value) {
     Au_t type = isa(a);
-    Au_t m = find_member(type, (cstr)name, AU_MEMBER_VAR, true);
+    Au_t m = find_member(type, (cstr)name, AU_MEMBER_VAR, 0, true);
     member_set(a, m, value);
     return value;
 }
@@ -2022,7 +2060,7 @@ Au Au_set_property(Au a, symbol name, Au value) {
 
 Au Au_get_property(Au a, symbol name) {
     Au_t type = isa(a);
-    Au_t m = find_member(type, (cstr)name, AU_MEMBER_VAR, true);
+    Au_t m = find_member(type, (cstr)name, AU_MEMBER_VAR, 0, true);
     verify(m, "%s not found on Au %s", name, type->ident);
     Au *mdata = (Au*)((cstr)a + m->offset);
     Au  value = *mdata;
@@ -2143,13 +2181,20 @@ none Au_dealloc(Au a) {
 
 u64 fnv1a_hash(const none* data, size_t length, u64 hash);
 
+// auto-wash
 u64  Au_hash(Au a) {
     Au_t info = isa(a);
     if (info == typeid(Au_t)) return (u64)(size_t)a;
-    string s = cast(string, a);
-    verify(s, "%o cast string required");
-    u64 hash = (u64)fnv1a_hash(s->chars, s->count, OFFSET_BASIS);
-    return (u64)(size_t)hash;
+
+    u64 hash = 0;
+    if (((Au_f*)info)->ft.hash != ((Au_f*)typeid(Au))->ft.hash) {
+        hash = hash(a);
+    } else {
+        string s = cast(string, a);
+        verify(s, "%o cast string required");
+        hash = (u64)fnv1a_hash(s->chars, s->count, OFFSET_BASIS);
+    }
+    return hash;
 }
 
 bool Au_cast_bool (Au a) {
@@ -2244,7 +2289,8 @@ string prep_cereal(cereal cs) {
 
 Au Au_with_cstrs(Au a, cstrs argv) {
     engage(argv);
-    int argc = 0;
+    int argc = argv[0] ? 1 : 0; // skip executable
+    Au_t rtype = isa(a);
     while (argv[argc]) { // C standard puts a null char* on end, by law (see: Brannigans law)
         cstr arg = argv[argc];
         if (arg[0] == '-') {
@@ -2300,8 +2346,25 @@ Au Au_with_cstrs(Au a, cstrs argv) {
 
             Au conv = value ? convert(mem->type, (Au)string(value)) : _bool(true);
             Au_set_property(a, mem->ident, conv);
+        } else {
+            Au_t def  = find_member(rtype, null, AU_MEMBER_VAR, AU_TRAIT_IS_DEFAULT, true);
+            Au   conv = def ? convert(def->type, (Au)string(arg)) : null;
+            if  (conv) Au_set_property(a, def->ident, (Au)conv);
         }
         argc++;
+    }
+
+    // verify all required properties were given
+    while (rtype && rtype != typeid(Au)) {
+        for (num i = 0; i < rtype->members.count; i++) {
+            Au_t m = (Au_t)rtype->members.origin[i];
+            if (m->member_type == AU_MEMBER_VAR && m->is_required && m->offset) {
+                Au val = *(Au*)((cstr)a + m->offset);
+                verify(val, "expected %s", m->ident);
+            }
+        }
+        if (rtype->context == rtype) break;
+        rtype = rtype->context;
     }
     return a;
 }
@@ -3057,6 +3120,7 @@ none store_rm(store a, Au key) {
 none map_init(map m) {
     if (m->hsize <= 0) m->hsize = 8;
     if (m->hsize) m->hlist = (item*)calloc(m->hsize, sizeof(item));
+    m->assorted = true;
 }
 
 map map_copy(map m) {
@@ -3210,6 +3274,16 @@ Au map_index_sz(map a, sz index) {
 
 Au map_index_Au(map a, Au key) {
     return map_get(a, key);
+}
+
+none map_setter(map a, Au key, Au value, i32 op) {
+    if (op == OPType__assign) {
+        map_set(a, key, value);
+    } else {
+        Au existing = map_get(a, key);
+        verify(existing, "setter: key not found for compound assignment");
+        map_set(a, key, value);
+    }
 }
 
 map map_with_i32(map a, i32 size) {
@@ -3631,7 +3705,8 @@ none  string_push(string a, u32 b) {
 }
 
 none  string_concat(string a, string b) {
-    string_append(a, b->chars);
+    if (b)
+        string_append(a, b->chars);
 }
 
 num   string_index_of(string a, symbol cs) {
@@ -3883,7 +3958,7 @@ callback Au_binding(Au a, Au target, bool required, Au_t rtype, Au_t arg_type, s
     bool inherits     = instance_of(target, self_type) != null;
     string method     = f(string, "%s%s%s", id ? id : 
         (!inherits ? self_type->ident : ""), (id || !inherits) ? "_" : "", name);
-    Au_t m  = find_member(target_type, method->chars, AU_MEMBER_FUNC, true);
+    Au_t m  = find_member(target_type, method->chars, AU_MEMBER_FUNC, 0, true);
     verify(!required || m, "bind: required method not found: %o", method);
     if (!m) return null;
     callback f       = (callback)m->value;
@@ -4048,7 +4123,7 @@ num list_compare(list a, list b) {
         return diff;
     Au_t ai_t = a->first ? isa(a->first->value) : null;
     if (ai_t) {
-        Au_t m = find_member(ai_t, "compare", AU_MEMBER_FUNC, true);
+        Au_t m = find_member(ai_t, "compare", AU_MEMBER_FUNC, 0, true);
         for (item ai = a->first, bi = b->first; ai; ai = ai->next, bi = bi->next) {
             num   v  = ((num(*)(Au,Au))(m->value))((Au)ai, (Au)bi);
             if (v != 0) return v;
@@ -5326,7 +5401,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
                 verify(*scan == ']', "expected ']' after enum symbol");
                 scan++;
                 Au_t e = find_member(
-                    type, enum_symbol->chars, AU_MEMBER_ENUMV, false);
+                    type, enum_symbol->chars, AU_MEMBER_ENUMV, 0, false);
                 verify(e, "enum symbol %o not found in type %s", enum_symbol, type->ident);
                 memcpy(evalue, e->value, e->type->typesize);
 
@@ -5449,8 +5524,8 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
             
             if (!mem) {
                 json_type = cmp(name, "Type") == 0;
-                mem  = (is_map) ? null : 
-                    find_member(use_schema, name->chars, AU_MEMBER_VAR, true);
+                mem  = (is_map) ? null :
+                    find_member(use_schema, name->chars, AU_MEMBER_VAR, 0, true);
             }
 
             if (!json_type && !mem && !is_map && !context) {
@@ -6094,6 +6169,31 @@ tokens tokens_with_cstr(tokens a, cstr cs) {
     return a;
 }
 
+string tokens_cast_string(tokens a) {
+    string result = string(alloc, 1024);
+    int n    = len(a);
+    int line = 0;
+    for (int i = 0; i < n; i++) {
+        token t = (token)a->origin[i];
+        if (i == 0) {
+            line = t->line;
+            for (int j = 0; j < t->indent; j++)
+                append(result, " ");
+        } else if (t->line > line) {
+            while (line < t->line) {
+                append(result, "\n");
+                line++;
+            }
+            for (int j = 0; j < t->indent; j++)
+                append(result, " ");
+        } else {
+            append(result, " ");
+        }
+        append(result, t->chars);
+    }
+    return result;
+}
+
 void token_init(token a) {
     cstr prev = a->chars;
     sz length = a->count ? a->count : strlen(prev);
@@ -6323,6 +6423,7 @@ typedef struct _cov_module {
     uint32_t   probe_count;
     uint64_t*  timings;
     uint32_t   func_count;
+    char**     func_names;
     struct _cov_module* next;
 } cov_module;
 
@@ -6330,12 +6431,14 @@ static cov_module* __cov_modules = NULL;
 
 
 void __coverage_register(uint64_t* probes, uint32_t probe_count,
-                         uint64_t* timings, uint32_t func_count) {
+                         uint64_t* timings, uint32_t func_count,
+                         char** func_names) {
     cov_module* m = malloc(sizeof(cov_module));
     m->probes      = probes;
     m->probe_count = probe_count;
     m->timings     = timings;
     m->func_count  = func_count;
+    m->func_names  = func_names;
     m->next        = __cov_modules;
     __cov_modules  = m;
 }
@@ -6378,7 +6481,9 @@ void __coverage_report(void) {
             }
             if (max_ns == 0) break;
             double ms = max_ns / 1000000.0;
-            fprintf(stderr, "    func[%u]: %.3f ms\n", max_id, ms);
+            char* name = (max_mod->func_names && max_mod->func_names[max_id])
+                ? max_mod->func_names[max_id] : "?";
+            fprintf(stderr, "    %-22s %.3f ms\n", name, ms);
             max_mod->timings[max_id] = 0;
         }
     }
