@@ -85,8 +85,8 @@ app ai-test
         samples: map tensor[tensor] []
         pixels:  i32 [1024]
 
+        # lets generate the images
         puts 'generating {num_samples} training samples...'
-
         for [ s: i32 0, s < num_samples, s += 1 ]
             img: tensor [tensor_shape: 32x32x1]
             avg: f32 [0.0]
@@ -95,17 +95,12 @@ app ai-test
                 img.floats[i] = v
                 avg += v
             avg /= 1024.0
-            
             target: tensor [tensor_shape: 1x1]
-
-            he: header[ target ]
-
             target.floats[0] = avg
             samples[img] = target
-##
+
         # --- train ---
         puts 'training...'
-        model.train 10, samples, 0.001
-
+        model.train 1000, samples, 0.001
         puts 'ai-test complete'
 

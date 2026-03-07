@@ -7,6 +7,7 @@ import <stdio.h>
 import <time.h>
 import <math.h>
 
+import rand1 as r1
 
 # --- xoshiro256++ state (module-level) ---
 # intern classes have no exported type-id and no introspection
@@ -90,9 +91,10 @@ func rng_next [] -> u64
 
 
 # --- distributions ---
-
 # uniform f32 [0, 1) — upper 24 bits, full mantissa precision
 func randf [] -> f32
+    #i:rando
+    #i2:rando
     return f32[rng_next >> 40] * 0x1.0p-24
 
 # uniform f64 [0, 1) — upper 53 bits
@@ -114,4 +116,3 @@ func randn [] -> f32
 # normal with specified mean and stddev
 func randn_params [mean: f32, stddev: f32] -> f32
     return randn * stddev + mean
-

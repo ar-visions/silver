@@ -520,6 +520,8 @@ class keras
 
     func forward [src: tensor] -> tensor
         memcpy k_input.floats, src.floats, src.count * 4
+        printf "order = %p\n", order
+        puts 'count of order is {order.count}'
         for [ current: op ] in order
             current.forward
         res: tensor [ tensor_shape: k_output.tensor_shape ]
@@ -536,12 +538,20 @@ class keras
             res = o.back[res]
         return res
 
-    func train [epochs: i32, samples: map, learning_rate: f32] -> none
+    
+    func train [epochs: i32, samples: map tensor[tensor], learning_rate: f32] -> none
+        # -- it doesnt matter how much space, a break point CANNOT be inserted at aa:1, it dissappears at run, only bb:2 can se it; and THIS break does NOT show me aa, it ONLY shows it when we arrive at cc
+        aa:1
+        bb:2
+        cc:3
         for [ epoch: i32 0, epoch < epochs, epoch += 1 ]
             puts 'epoch {epoch + 1}/{epochs}'
 
-            for [ target: tensor, src: tensor ] in samples
+            for [ target: tensor, src: tensor ] in samples # when it gets here, it steps upwards ONCE.. this must be a side effect of either the for peek, or the timing
+                #x:1
+                #y:2
                 prediction: forward[src]
+##
                 loss:       f32 [ 0.0 ]
                 d_out:      tensor [ tensor_shape: target.tensor_shape ]
                 t:          target.count
@@ -563,5 +573,5 @@ class keras
                         bt: layer.bias.count
                         for [ i: i32 0, i < bt, i += 1 ]
                             layer.bias.floats[i] -= learning_rate * layer.bias.grad[i]
-
+##
         puts 'training complete'
