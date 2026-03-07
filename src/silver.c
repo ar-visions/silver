@@ -147,6 +147,12 @@ static bool is_dbg(import t, string query, cstr name, bool is_remote) {
            (has_astrick && has_astrick == (int)is_local);
 }
 
+none print_tokens(silver a, int seq) {
+    log_tokens("%o %o %o %o %o %o - %i",
+        element(a, 0), element(a, 1), element(a, 2),
+        element(a, 3), element(a, 4), element(a, 5), seq);
+}
+
 etype read_etype(silver a, array*);
 
 num index_of_cstr(Au a, cstr f) {
@@ -389,7 +395,7 @@ static bool silver_next_is_eq(silver a, symbol first, ...);
 static enode reverse_descent(silver a, etype expect);
 
 static enode parse_expression(silver a, etype expect) { sequencer
-    if (seq == 1248)
+    if (seq == 968)
         seq = seq;
     if (is_rec(expect) && next_is(a, "[")) {
         // collections go straight to parse_object — [ ] is always element data
@@ -398,8 +404,11 @@ static enode parse_expression(silver a, etype expect) { sequencer
             return res;
         }
 
+        //print_tokens(a, seq);
+
         push_current(a);
-        next(a);
+        
+        consume(a);
         token pk = peek(a);
         bool is_default = eq(pk, "]");
         bool is_field = peek_fields(a);
@@ -2046,12 +2055,6 @@ string read_alpha_macrofilter(silver a, bool is_decl) {
 
 enode enode_super(etype, enode);
 
-none print_tokens(silver a, int seq) {
-    log_tokens("%o %o %o %o %o %o - %i",
-        element(a, 0), element(a, 1), element(a, 2),
-        element(a, 3), element(a, 4), element(a, 5), seq);
-}
-
 enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int seq = 0; seq++;
     OPType assign_enum = OPType__undefined;
     Au_t   top     = top_scope(a);
@@ -2336,6 +2339,8 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
             array b = peek_body(a);
             enode res0 = null;
             if (b) {
+                if (seq == 1387)
+                    seq = seq;
                 if (a->in_ref) mdl_found = pointer((aether)a, (Au)mdl_found);
                 array expr = read_initializer(a);
                 if (!len(expr) && read_if(a, "sub")) {
@@ -5100,6 +5105,8 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
         bool  is_literal = instanceof(t->literal, string) != null;
         bool  is_enode_key = false;
 
+        a->statement_origin = peek(a);
+
         bool auto_bind = is_fields && read_if(a, ":");
         // -- KEY --
         if (is_fields && read_if(a, "{")) {
@@ -5119,9 +5126,14 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
             string name = (string)read_alpha(a);
             validate(name, "expected member identifier");
             k = (Au)const_string(chars, name->chars);
+        } else if (key && key != etypeid(string)) {
+            k = (Au)parse_expression(a, key);
+            is_enode_key = true;
         } else {
             token t = peek(a);
             string name = (string)read_literal(a, typeid(string));
+            if (!name)
+                name = name;
             validate(name, "expected literal string");
             k = (Au)const_string(chars, name->chars);
         }
@@ -5151,7 +5163,10 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
                 mdl_field = val; // the map's value type from meta
             }
     
+            a->statement_origin = peek(a);
             v = (Au)parse_expression(a, mdl_field);
+        } else {
+            a->statement_origin = peek(a);
         }
 
         // -- Lazy allocate --
