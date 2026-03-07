@@ -1371,7 +1371,7 @@ static void resolve_context_members(enode target, map user_provides) {
         members(type, mem) {
             if (mem->member_type != AU_MEMBER_VAR || !mem->is_context)
                 continue;
-            
+
             enode found     = user_provides ? (enode)get(user_provides, (Au)string(mem->ident)) : null;
             enode scope_var = null;
             Au_t  required_type = mem->src;
@@ -2064,9 +2064,15 @@ enode castable(etype fr, etype to) {
         return (enode)true;
 
     /// check cast methods on from
-    poly_members(fr->au, mem) {
-        if (mem->member_type == AU_MEMBER_CAST && is_same(u(etype, mem->rtype), to))
-            return (enode)u(enode, mem);
+    Au_t ctx = fr->au;
+    while (ctx) {
+        for (int i = 0; i < ctx->members.count; i++) {
+            Au_t mem = (Au_t)ctx->members.origin[i];
+            if (mem->member_type == AU_MEMBER_CAST && is_same(u(etype, mem->rtype), to))
+                return (enode)u(enode, mem);
+        }
+        if (ctx->context == ctx) break;
+        ctx = ctx->context;
     }
     return (enode)false;
 }
@@ -2088,21 +2094,27 @@ enode constructable(etype fr, etype to) {
     Au_t realistic       = null;
     int  realistic_count = 0;
 
-    poly_members(to->au, mem) {
-        etype fn = mem->member_type == AU_MEMBER_CONSTRUCT ? u(etype, mem) : null;
-        if  (!fn) continue;
-        verify(fn->au->args.count == 2, "unexpected argument count for constructor"); // target + with-type
-        Au_t with_arg = (Au_t)fn->au->args.origin[1];
-        if (with_arg->rtype->is_realistic) {
-            if (!realistic) realistic = mem;
-            realistic_count++;
+    Au_t ctx             = to->au;
+    while (ctx) {
+        for (int ii = 0; ii < ctx->members.count; ii++) {
+            Au_t mem = (Au_t)ctx->members.origin[ii];
+            etype fn = mem->member_type == AU_MEMBER_CONSTRUCT ? u(etype, mem) : null;
+            if  (!fn) continue;
+            verify(fn->au->args.count == 2, "unexpected argument count for constructor"); // target + with-type
+            Au_t with_arg = (Au_t)fn->au->args.origin[1];
+            if (with_arg->rtype->is_realistic) {
+                if (!realistic) realistic = mem;
+                realistic_count++;
+            }
+            if (with_arg->rtype->is_integral) {
+                if (!integral) integral = mem;
+                integral_count++;
+            }
+            if (with_arg->src == fr->au)
+                return (enode)u(enode, mem);
         }
-        if (with_arg->rtype->is_integral) {
-            if (!integral) integral = mem;
-            integral_count++;
-        }
-        if (with_arg->src == fr->au)
-            return (enode)u(enode, mem);
+        if (ctx == ctx->context) break;
+        ctx = ctx->context;
     }
 
     if (realistic_count == 1 && fr->au->is_realistic)
