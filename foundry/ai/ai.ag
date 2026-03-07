@@ -245,7 +245,7 @@ op concatenate
 
         cat_offset: i32 [ 0 ]
         for [ dep: op ] in op_inputs
-            src:      dep.result ?? dep.input
+            src:      (dep.result) ?? dep.input
             src_f:    src.floats
             cat_size: src.tensor_shape[axis]
             out_cat:  rs[axis]
@@ -253,7 +253,11 @@ op concatenate
                 for [ c: i32 0, c < cat_size, c += 1 ]
                     dst_idx: (o * out_cat + cat_offset + c) * inner
                     src_idx: (o * cat_size + c) * inner
-                    memcpy ref f32[ref u8[dst] + dst_idx * 4], ref f32[ref u8[src_f] + src_idx * 4], inner * 4
+                    memcpy [
+                        ref dst  [dst_idx],
+                        ref src_f[src_idx],
+                        inner * sizeof[ f32 ]
+                    ]
             cat_offset += cat_size
 
     func back [d_out: tensor] -> tensor
@@ -270,14 +274,18 @@ op concatenate
 
         cat_offset: i32 [ 0 ]
         for [ dep: op ] in op_inputs
-            src:      dep.result ?? dep.input
+            src:      (dep.result) ?? dep.input
             cat_size: src.tensor_shape[axis]
             out_cat:  rs[axis]
             for [ o: i32 0, o < outer, o += 1 ]
                 for [ c: i32 0, c < cat_size, c += 1 ]
                     dst_idx: (o * cat_size + c) * inner
                     src_idx: (o * out_cat + cat_offset + c) * inner
-                    memcpy ref f32[ref u8[src.grad] + dst_idx * 4], ref f32[ref u8[d_out_f] + src_idx * 4], inner * 4
+                    memcpy [
+                        ref src.grad[dst_idx],
+                        ref d_out_f [src_idx],
+                        inner * sizeof[ f32 ]
+                    ]
             cat_offset += cat_size
         return null
 
