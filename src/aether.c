@@ -3494,7 +3494,9 @@ enode aether_e_for(aether a,
 
         LLVMTypeRef  cursor_type = LLVMPointerType(item_type->lltype, 0);
         LLVMValueRef cursor      = LLVMBuildAlloca(B, cursor_type, "cursor");
-        LLVMBuildStore(B, first_node->value, cursor);
+        LLVMValueRef first_val   = first_node->loaded ? first_node->value :
+            LLVMBuildLoad2(B, cursor_type, first_node->value, "first.val");
+        LLVMBuildStore(B, first_val, cursor);
         LLVMBuildBr(B, cond);
 
         // ---- cond: cursor != null ----
@@ -3514,12 +3516,14 @@ enode aether_e_for(aether a,
 
         if (val_var) {
             enode val_node = etype_access((etype)cur_enode, string("value"), true);
+            val_node = enode_value(val_node, false);
             enode val_cast = e_create(a, canonical(val_var), (Au)val_node);
             LLVMBuildStore(B, val_cast->value, val_var->value);
         }
 
         if (key_var) {
             enode key_node = etype_access((etype)cur_enode, string("key"), true);
+            key_node = enode_value(key_node, false);
             enode key_cast = e_create(a, canonical(key_var), (Au)key_node);
             LLVMBuildStore(B, key_cast->value, key_var->value);
         }
@@ -3537,7 +3541,9 @@ enode aether_e_for(aether a,
         enode step_enode = value(pointer(a, (Au)item_type->au),
             LLVMBuildLoad2(B, cursor_type, cursor, "cur.step"));
         enode next_node = etype_access((etype)step_enode, string("next"), true);
-        LLVMBuildStore(B, next_node->value, cursor);
+        LLVMValueRef next_val = next_node->loaded ? next_node->value :
+            LLVMBuildLoad2(B, cursor_type, next_node->value, "next.val");
+        LLVMBuildStore(B, next_val, cursor);
         LLVMBuildBr(B, cond);
 
     } else if (in_expr && inherits(in_expr->au, typeid(array))) {
