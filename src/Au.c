@@ -848,15 +848,8 @@ static Au_t _push_arg(Au_t type, bool add_arg) {
 }
 
 Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value, Au_t meta_a, Au meta_b) {
-    if (strcmp(ident, "inputs") == 0) {
-        ident = ident;
-    }
-
     Au_t prop = def(context, ident, AU_MEMBER_VAR, traits);
     prop->type      = type;
-    if (strcmp(ident, "quants") == 0)
-        fprintf(stderr, "  def_prop quants: context=%s(%p) src/type=%s(%p)\n",
-            context->ident, (void*)context, type ? type->ident : "(null)", (void*)type);
     prop->offset    = offset;
     //prop->abi_size  = abi_size;
     prop->value     = (object)value;
@@ -970,14 +963,6 @@ lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
 }
 
 Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, i32 member_type, u64 traits, u64 typesize, u64 isize) {
-    if (ident && strcmp(ident, "input_op") == 0) {
-        printf("input_op is being emplaced: %p\n", type);
-        ident = ident;
-    }
-    if (ident && strcmp(ident, "op") == 0) {
-        printf("op is being emplaced: %p\n", type);
-        ident = ident;
-    }
     type->member_type       = member_type;
     memset(&type->members, 0, sizeof(micro));
     memset(&type->args,    0, sizeof(micro));
@@ -1090,7 +1075,7 @@ void module_erase(Au_t module, symbol name) {
         if (m && !m->ident) continue;
         
         if (m && module == m || (name && m->ident && strcmp(m->ident, name) == 0)) {
-            printf("erase: %s\n", m->ident);
+            //printf("erase: %s\n", m->ident);
             modules.origin[i] = null;
             m->members.count = 0;
             m->args.count = 0;
@@ -1138,12 +1123,6 @@ ffi_method_t* method_with_address(handle address, Au_t rtype, micro* atypes, Au_
         for (Au_t VAR = (Au_t)(MDL)->members.origin[__i]; VAR; VAR = NULL)
 
 none push_type(Au_t type) {
-    if (type->ident && strcmp(type->ident, "input_op") == 0)
-        printf("  push_type: %s  ptr=%p\n", type->ident, (void*)type);
-
-    if (type == typeid(string))
-        type = type;
-
     if (!Au_Au_t_i.type.ident) {
         module = module_lookup("Au");
         Au_Au_t_i.type.ident  = "Au_t";
@@ -3833,6 +3812,13 @@ string string_with_i64(string a, i64 value) {
     a->alloc = 64;
     a->chars = calloc(a->alloc, 1);
     a->count = snprintf(a->chars, 64, "%lli", value);
+    return a;
+}
+
+string string_with_f64(string a, f64 value) {
+    a->alloc = 64;
+    a->chars = calloc(a->alloc, 1);
+    a->count = snprintf(a->chars, 64, "%g", value);
     return a;
 }
 
