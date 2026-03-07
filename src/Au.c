@@ -892,13 +892,14 @@ Au_t def_meta(Au_t context, symbol ident, Au_t arg) {
 }
 
 Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
-        u32 access_type, u32 operator_type, u64 traits, ARef value) {
+        u32 access_type, u32 operator_type, u64 traits, ARef value, symbol alt) {
     Au_t func = def(type, ident, AU_MEMBER_TYPE, traits);
     func->rtype         = rtype;
     func->member_type   = member_type;
     func->operator_type = operator_type;
     func->access_type   = interface_public;
     func->value         = (object)value;
+    func->alt           = alt ? cstr_copy((cstr)alt) : null;
     return func;
 }
 
@@ -1036,6 +1037,7 @@ Au_t def_enum(Au_t context, symbol ident, u64 traits) {
 
 Au_t def_enum_value(Au_t context, symbol ident, Au value) {
     Au_t res = def(context, ident, AU_MEMBER_ENUMV, 0);
+    res->src   = context;
     res->value = (object)value;
     return res;
 }
@@ -1086,8 +1088,9 @@ void module_erase(Au_t module, symbol name) {
     for (int i = 0; i < modules.count; i++) {
         Au_t m = (Au_t)modules.origin[i];
         if (m && !m->ident) continue;
-        if (m && m->ident) printf("module: %s\n", m->ident);
-        if (m && module == m || (m && m->ident && strcmp(m->ident, name) == 0)) {
+        
+        if (m && module == m || (name && m->ident && strcmp(m->ident, name) == 0)) {
+            printf("erase: %s\n", m->ident);
             modules.origin[i] = null;
             m->members.count = 0;
             m->args.count = 0;
@@ -3788,7 +3791,7 @@ none string_init(string a) {
     }
 }
 
-string string_with_i32(string a, i32 value) {
+string string_with_uchar(string a, uchar value) {
     // Check if the value is within the BMP (U+0000 - U+FFFF)
     if (value <= 0xFFFF) {
         a->count = 1;
@@ -3823,6 +3826,13 @@ string string_with_i32(string a, i32 value) {
         a->chars = calloc(len + 1, 1);
         memcpy((cstr)a->chars, buf, len);
     }
+    return a;
+}
+
+string string_with_i64(string a, i64 value) {
+    a->alloc = 64;
+    a->chars = calloc(a->alloc, 1);
+    a->count = snprintf(a->chars, 64, "%lli", value);
     return a;
 }
 
@@ -6554,6 +6564,7 @@ define_primitive(bf16,   numeric, AU_TRAIT_REALISTIC)
 define_primitive(fp16,   numeric, AU_TRAIT_REALISTIC)
 define_primitive(f32,    numeric, AU_TRAIT_REALISTIC)
 define_primitive(f64,    numeric, AU_TRAIT_REALISTIC)
+define_primitive(uchar,  numeric, 0) // stricter type matching with this
 define_primitive(AFlag,  numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED)
 define_primitive(cstr,   string_like, AU_TRAIT_POINTER, i8)
 define_primitive(symbol, string_like, AU_TRAIT_CONST | AU_TRAIT_POINTER, i8)
