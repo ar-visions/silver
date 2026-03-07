@@ -106,8 +106,8 @@ string symbol_name(Au obj) {
 
 // emit source location from current token (macro to reduce repetition)
 #define debug_emit(a) do { \
-    token __t = aether_peek(a); \
-    if (!__t) __t = a->statement_origin; \
+    token __t = a->statement_origin; \
+    if (!__t) __t = aether_peek(a); \
     if (__t) emit_debug_loc(a, __t->line, __t->column); \
 } while(0)
 
@@ -416,6 +416,12 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
         * Phase 6: store
         * ------------------------------------------------------------ */
         LLVMBuildStore(B, res->value, store_target);
+
+        // sync load so LLDB sees stored value
+        if (a->debug) {
+            LLVMBuildLoad2(B, LLVMTypeOf(res->value), store_target, "dbg.sync");
+            debug_emit(a);
+        }
     }
 
     /* ------------------------------------------------------------
@@ -1039,6 +1045,8 @@ enode aether_e_eval(aether a, string value) { sequencer
 }
 
 
+enode e_convert_or_cast(aether a, etype output, enode input);
+
 enode aether_e_interpolate(aether a, string str) { sequencer
     enode accum = null;
     array sp    = split_parts(str);
@@ -1050,10 +1058,15 @@ enode aether_e_interpolate(aether a, string str) { sequencer
     token statement = a->statement_origin;
     a->statement_origin = null;
 
-    a->expr_level++; // this is not normalized, however its not such a problem to store this on aether
+    a->expr_level++;
     each (sp, ipart, s) {
-        enode val = e_create(a, mdl, s->is_expr ?
-            (Au)e_eval(a, s->content) : (Au)s->content);
+        enode val;
+        if (s->is_expr) {
+            enode expr = e_eval(a, s->content);
+            val = e_create(a, mdl, (Au)expr);
+        } else {
+            val = e_create(a, mdl, (Au)s->content);
+        }
         accum = accum ? e_add(a, (Au)accum, (Au)val) : val;
     }
     a->expr_level--;
@@ -1618,7 +1631,7 @@ bool aether_e_fn_return(aether a, Au o) {
 
     // set debug location for return statement
     debug_emit(a);
-    
+
     if (cat && cat->rtype) {
         enode conv = e_create(a, cat->rtype, o);
         LLVMAddIncoming(cat->phi->value, &conv->value, 
@@ -1628,8 +1641,11 @@ bool aether_e_fn_return(aether a, Au o) {
     } else {
         f->au->has_return = true;
 
-        if (a->timing_enabled && f->timing_start_value)
+        if (a->timing_enabled && f->timing_start_value) {
+            // use last statement's debug loc for epilogue, not stale peek
+            debug_emit(a);
             emit_func_timing_end(a, f->timing_start_value, f->timing_func_id);
+        }
 
         if (is_void(f->au->rtype))
             LLVMBuildRetVoid(B);
@@ -2315,7 +2331,7 @@ void aether_eputs(aether a, string output) {
 }
 
 enode etype_access(etype target, string name, bool funny_business) { sequencer
-    if (seq == 891)
+    if (seq == 828)
         seq = seq;
     aether a = target->mod;
     Au_t rel = target->au->member_type == AU_MEMBER_VAR ? 
@@ -2427,7 +2443,7 @@ enode aether_e_typeid(aether a, etype mdl) { sequencer
         fprintf(stderr, "  e_typeid[quants]: mdl=%s(%p) module=%s ptr=%d is_ptr=%d is_rec=%d\n",
              mdl->au->ident, (void*)mdl->au,
             mdl->au->module ? mdl->au->module->ident : "(null)",
-            mdl->au->is_pointer, is_ptr(mdl), is_rec(mdl));
+            mdl->au->is_pointer, is_ptr(mdl), (int)(uintptr_t)is_rec(mdl));
         a->debug_typeid = false;
     }
 
@@ -3421,7 +3437,10 @@ enode aether_e_for(aether a,
     LLVMBasicBlockRef merge = LLVMAppendBasicBlockInContext(a->module_ctx, fn, "for.end");
 
     catcher cat = catcher(mod, a, block, merge);
+    bool saved_cov = a->coverage;
+    a->coverage = false;
     push_scope(a, (Au)cat);
+    a->coverage = saved_cov;
 
     if (in_expr && (inherits(in_expr->au, typeid(map)) || inherits(in_expr->au, typeid(array)))) {
         debug_emit(a);
@@ -3436,6 +3455,8 @@ enode aether_e_for(aether a,
             LLVMPositionBuilderAtEnd(B, not_null);
         }
     }
+
+    statements st = context_code(a);
 
     if (in_expr && inherits(in_expr->au, typeid(map))) {
         // ---- map iteration via item linked list ----
@@ -3457,27 +3478,34 @@ enode aether_e_for(aether a,
 
         // ---- body: extract key/value, bind, run user body ----
         LLVMPositionBuilderAtEnd(B, body);
-        
-        enode cur_enode = value(pointer(a, (Au)item_type->au), 
+
+        // keep for-header debug loc for iteration var stores
+        // so LLDB sees them populated before the body's first line
+        enode cur_enode = value(pointer(a, (Au)item_type->au),
             LLVMBuildLoad2(B, cursor_type, cursor, "cur.body"));
-        
+
         if (val_var) {
             enode val_node = etype_access((etype)cur_enode, string("value"), true);
             enode val_cast = e_create(a, canonical(val_var), (Au)val_node);
             LLVMBuildStore(B, val_cast->value, val_var->value);
         }
-        
+
         if (key_var) {
             enode key_node = etype_access((etype)cur_enode, string("key"), true);
             enode key_cast = e_create(a, canonical(key_var), (Au)key_node);
             LLVMBuildStore(B, key_cast->value, key_var->value);
         }
 
+        if (st && a->coverage) aether_emit_block_probe(a, st->probe_id);
+
+        token saved_origin = a->statement_origin;
         invoke(body_builder, (Au)body_exprs);
+        a->statement_origin = saved_origin;
         LLVMBuildBr(B, step);
 
         // ---- step: cursor = cursor->next ----
         LLVMPositionBuilderAtEnd(B, step);
+        debug_emit(a);
         enode step_enode = value(pointer(a, (Au)item_type->au),
             LLVMBuildLoad2(B, cursor_type, cursor, "cur.step"));
         enode next_node = etype_access((etype)step_enode, string("next"), true);
@@ -3506,6 +3534,8 @@ enode aether_e_for(aether a,
 
         // ---- body: extract element, bind, run user body ----
         LLVMPositionBuilderAtEnd(B, body);
+        if (st && a->coverage) aether_emit_block_probe(a, st->probe_id);
+
         LLVMValueRef idx_body = LLVMBuildLoad2(B, i32_type, idx, "idx.body");
         
         // origin[idx] -> Au pointer
@@ -3533,11 +3563,14 @@ enode aether_e_for(aether a,
             LLVMBuildStore(B, idx_cast->value, key_var->value);
         }
 
+        token saved_origin = a->statement_origin;
         invoke(body_builder, (Au)body_exprs);
+        a->statement_origin = saved_origin;
         LLVMBuildBr(B, step);
 
         // ---- step: idx += 1 ----
         LLVMPositionBuilderAtEnd(B, step);
+        debug_emit(a);
         LLVMValueRef idx_step = LLVMBuildLoad2(B, i32_type, idx, "idx.step");
         LLVMValueRef idx_next = LLVMBuildAdd(B, idx_step, 
             LLVMConstInt(i32_type, 1, false), "idx.inc");
@@ -3562,11 +3595,15 @@ enode aether_e_for(aether a,
 
         // ---- body ----
         LLVMPositionBuilderAtEnd(B, body);
+        if (st && a->coverage) aether_emit_block_probe(a, st->probe_id);
+        token saved_origin = a->statement_origin;
         invoke(body_builder, (Au)body_exprs);
+        a->statement_origin = saved_origin;
         LLVMBuildBr(B, step);
 
         // ---- step ----
         LLVMPositionBuilderAtEnd(B, step);
+        debug_emit(a);
         if (len(step_exprs))
             invoke(step_builder, (Au)step_exprs);
         LLVMBuildBr(B, cond);
@@ -4483,7 +4520,7 @@ none etype_init(etype t) {
         t->lltype = LLVMInt8TypeInContext(a->module_ctx);
     else if (au == typeid(i16) || au == typeid(u16))
         t->lltype = LLVMInt16TypeInContext(a->module_ctx);
-    else if (au == typeid(i32) || au == typeid(u32) || au == typeid(AFlag))
+    else if (au == typeid(i32) || au == typeid(u32) || au == typeid(AFlag) || au == typeid(uchar))
         t->lltype = LLVMInt32TypeInContext(a->module_ctx);
     else if (au == typeid(i64) || au == typeid(u64) || au == typeid(num))
         t->lltype = LLVMInt64TypeInContext(a->module_ctx);
@@ -5255,7 +5292,8 @@ none aether_build_module_initializer(aether a, enode init) {
                 _u32(mem->access_type),
                 _u32(mem->operator_type),
                 _u64(mem->traits),
-                value(etypeid(ARef), mf->value)
+                value(etypeid(ARef), mf->value),
+                mem->alt ? (Au)const_string(chars, mem->alt) : (Au)e_null(a, etypeid(cstr))
             ));
         }
 
@@ -5357,7 +5395,8 @@ none aether_build_module_initializer(aether a, enode init) {
                     _u32(mem->access_type),
                     _u32(mem->operator_type),
                     _u64(mem->traits),
-                    fptr
+                    fptr,
+                    mem->alt ? (Au)const_string(chars, mem->alt) : (Au)e_null(a, etypeid(cstr))
                 ));
  
                 if (mem->is_override) {
@@ -5563,10 +5602,11 @@ none aether_push_scope(aether a, Au arg) {
         push(a->lexical, (Au)au);
 
     statements st = u(statements, au);
-    token peek = aether_peek(a);
+    token peek = a->statement_origin ? a->statement_origin : aether_peek(a);
     if (st && a->coverage && peek) {
         st->probe_id   = a->next_probe_id++;
         st->probe_line = peek->line;
+        debug_emit(a);
         aether_emit_block_probe(a, st->probe_id);
     }
 
@@ -5582,6 +5622,7 @@ none aether_push_scope(aether a, Au arg) {
             emit_debug_loc(a, peek ? peek->line : 0, peek ? peek->column : 0);
         // emit parameter debug variables (self, args) for LLDB locals view
         emit_debug_params(a, fn);
+        a->coverage_seq_local = null; // reset per-function __seq alloca
         if (a->timing_enabled && !fn->timing_start_value) {
             fn->timing_func_id = a->next_func_id++;
             fn->timing_start_value = emit_func_timing_start(a, fn->timing_func_id);
@@ -5708,11 +5749,14 @@ void aether_import_Au(aether a, string ident, Au lib) {
     handle  lib_instance = null;
 
     if (instanceof(lib, path)) {
-        string path_str = string(((path)lib)->chars);
-        lib_instance = dlopen(cstring(path_str), RTLD_NOW);
-        verify(lib_instance, "shared-lib failed to load: %o", lib);
-        set(a->libs, path_str, (Au)lib_instance);
-        au_module = find_module(ident->chars); // external silver() (2nd aether) instance exists spawned from our location, and we must take care to not let that module be discovered this way
+        au_module = find_module(ident->chars);
+        if (!au_module) {
+            string path_str = string(((path)lib)->chars);
+            lib_instance = dlopen(cstring(path_str), RTLD_NOW);
+            verify(lib_instance, "shared-lib failed to load: %o", lib);
+            set(a->libs, path_str, (Au)lib_instance);
+            au_module = find_module(ident->chars);
+        }
 
     } else if (!lib) {
         // Au is loaded already in global()
@@ -5865,6 +5909,12 @@ void llvm_reinit(aether a) {
 }
 
 
+void aether_unload_libs(aether a) {
+    // don't dlclose — types registered by constructors are still
+    // referenced across the type system. dlopen will reuse the
+    // already-loaded library and constructors re-register via emplace.
+}
+
 // todo: adding methods to header does not update the methods header (requires clean)
 void aether_reinit_startup(aether a) {
     a->iteration++;
@@ -5878,6 +5928,7 @@ void aether_reinit_startup(aether a) {
     a->expr_level     = 0;
     a->cursor         = 0;
     a->is_implemented = false;
+    aether_unload_libs(a);
     a->libs           = map(assorted, true, unmanaged, true);
     a->user_type_ids  = map(assorted, true);
     a->lexical        = array(alloc, 32, unmanaged, true, assorted, true);
@@ -5886,7 +5937,7 @@ void aether_reinit_startup(aether a) {
     a->next_probe_id  = 0; // send out a class-3 probe
 
     // this is so a new external may reset state for itself
-    module_erase(a->au, a->name->chars);
+    module_erase(a->au, null);
     
     a->au = def_module(a->name->chars);
     set(a->registry, (Au)a->au, (Au)hold(a));
@@ -6001,7 +6052,7 @@ none aether_dealloc(aether a) {
     LLVMContextDispose  (a->module_ctx);
     LLVMDisposeMessage  (a->target_triple);
 
-    module_erase(a->au, a->name->chars);
+    module_erase(a->au, null);
 }
 
 string etype_cast_string(etype t) {

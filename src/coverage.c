@@ -17,6 +17,8 @@ typedef LLVMMetadataRef LLVMScope;
 // --- LLDB/DWARF debug info helpers ---
 
 #define B a->builder
+#define MAX_PROBES  4096
+#define TRACE_SIZE  1024
 
 // coverage probe - one per statements block, just tracks hit count
 typedef struct _coverage_probe {
@@ -115,20 +117,59 @@ void aether_emit_block_probe(aether a, u32 probe_id) {
     if (!a->coverage) return;
     if (a->no_build) return;
 
+    LLVMTypeRef i64t = LLVMInt64TypeInContext(a->module_ctx);
+    LLVMTypeRef i32t = LLVMInt32TypeInContext(a->module_ctx);
 
-    // in aether_emit_block_probe, instead of calling __coverage_hit:
+    // increment global sequence counter
+    LLVMValueRef seq_val = LLVMBuildLoad2(B, i64t, a->coverage_seq_global, "seq");
+    LLVMValueRef seq_inc = LLVMBuildAdd(B, seq_val,
+        LLVMConstInt(i64t, 1, 0), "seq_inc");
+    LLVMBuildStore(B, seq_inc, a->coverage_seq_global);
 
-    LLVMValueRef gep = LLVMBuildGEP2(B, 
+    // store block hit count into probes[probe_id]
+    LLVMValueRef probe_gep = LLVMBuildGEP2(B,
         LLVMGlobalGetValueType(a->coverage_probes_global),
         a->coverage_probes_global,
         (LLVMValueRef[]){
-            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 0, 0),
-            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), probe_id, 0)
+            LLVMConstInt(i32t, 0, 0),
+            LLVMConstInt(i32t, probe_id, 0)
         }, 2, "probe_ptr");
-    LLVMValueRef cur = LLVMBuildLoad2(B, LLVMInt64TypeInContext(a->module_ctx), gep, "probe_val");
-    LLVMValueRef inc = LLVMBuildAdd(B, cur, 
-        LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), 1, 0), "probe_inc");
-    LLVMBuildStore(B, inc, gep);
+    LLVMValueRef hit = LLVMBuildLoad2(B, i64t, probe_gep, "hit");
+    LLVMValueRef hit_inc = LLVMBuildAdd(B, hit,
+        LLVMConstInt(i64t, 1, 0), "hit_inc");
+    LLVMBuildStore(B, hit_inc, probe_gep);
+
+    // emit debug-visible local '__seq' — shows this block's own hit count
+    // one alloca per function in entry block, updated by each probe
+    if (!a->coverage_seq_local) {
+        LLVMBasicBlockRef cur_block = LLVMGetInsertBlock(B);
+        LLVMValueRef fn = LLVMGetBasicBlockParent(cur_block);
+        LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(fn);
+        LLVMValueRef first_inst = LLVMGetFirstInstruction(entry);
+        if (first_inst)
+            LLVMPositionBuilderBefore(B, first_inst);
+        else
+            LLVMPositionBuilderAtEnd(B, entry);
+        a->coverage_seq_local = LLVMBuildAlloca(B, i64t, "__seq");
+        LLVMPositionBuilderAtEnd(B, cur_block);
+        LLVMMetadataRef scope = LLVMGetCurrentDebugLocation2(B) ?
+            LLVMDILocationGetScope(LLVMGetCurrentDebugLocation2(B)) : a->compile_unit;
+        if (scope) {
+            LLVMMetadataRef di_type = LLVMDIBuilderCreateBasicType(
+                a->dbg_builder, "i64", 3, 64, 0x05, LLVMDIFlagZero);
+            LLVMMetadataRef di_var = LLVMDIBuilderCreateAutoVariable(
+                a->dbg_builder, scope, "__seq", 5,
+                a->file, 0, di_type, true, LLVMDIFlagZero, 0);
+            LLVMMetadataRef expr = LLVMDIBuilderCreateExpression(a->dbg_builder, null, 0);
+            LLVMMetadataRef loc = LLVMGetCurrentDebugLocation2(B);
+            if (loc) {
+                LLVMDIBuilderInsertDeclareRecordAtEnd(
+                    a->dbg_builder, a->coverage_seq_local, di_var, expr, loc,
+                    LLVMGetInsertBlock(B));
+            }
+        }
+    }
+    LLVMBuildStore(B, hit_inc, a->coverage_seq_local);
 }
 
 // read clock_gettime(CLOCK_MONOTONIC) and return nanosecond timestamp
@@ -196,14 +237,20 @@ void report_coverage(aether a) {
 // this works fine when re-initializing
 void init_coverage(aether a) {
     if (!a->coverage && !a->timing_enabled) return;
-    
+
     if (a->coverage) {
-        #define MAX_PROBES 4096
-        LLVMTypeRef array_type = LLVMArrayType(LLVMInt64TypeInContext(a->module_ctx), MAX_PROBES);
+        LLVMTypeRef i64t = LLVMInt64TypeInContext(a->module_ctx);
+        LLVMTypeRef i32t = LLVMInt32TypeInContext(a->module_ctx);
+
+        LLVMTypeRef array_type = LLVMArrayType(i64t, MAX_PROBES);
         a->coverage_probes_global = LLVMAddGlobal(a->module_ref, array_type,
             fmt("__cov_probes_%s", a->name->chars)->chars);
         LLVMSetInitializer(a->coverage_probes_global, LLVMConstNull(array_type));
         LLVMSetLinkage(a->coverage_probes_global, LLVMInternalLinkage);
+
+        // global sequence counter (external linkage so LLDB can see it)
+        a->coverage_seq_global = LLVMAddGlobal(a->module_ref, i64t, "__cov_seq");
+        LLVMSetInitializer(a->coverage_seq_global, LLVMConstInt(i64t, 0, 0));
 
         // Coverage probe struct: { u64 hit_count, u32 line, u16 column, u16 _pad }
         a->coverage_probe_lltype = LLVMStructTypeInContext(

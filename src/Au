@@ -117,6 +117,8 @@ typedef struct cereal { char* value; } cereal;
 // typedef struct _object*         Au;
 typedef struct _Au**             ARef; /// registered for a generic raw, but we must transition to use 'raw' in cases where they are not Au-allocations
 typedef float*                  floats_t;
+typedef i32                     uchar;
+
 typedef cstr*                   cstrs;
 typedef void*                   raw;        // abstract types are void*
 typedef void*                   numeric;
@@ -617,7 +619,7 @@ forward(any)
     M(AA,BB, i, method, public, Au_t,   meta_index,     i32) \
     M(AA,BB, s, method, public, Au_t,   emplace_type, Au_t, Au_t, Au_t, Au_t, symbol, i32, u64, u64, u64) \
     M(AA,BB, s, method, public, Au_t,   def,            Au_t, symbol, u32, u64) \
-    M(AA,BB, s, method, public, Au_t,   def_func,       Au_t, symbol, Au_t, u32, u32, u32, u64, ARef) \
+    M(AA,BB, s, method, public, Au_t,   def_func,       Au_t, symbol, Au_t, u32, u32, u32, u64, ARef, symbol) \
     M(AA,BB, s, method, public, Au_t,   def_arg,        Au_t, symbol, Au_t, u64) \
     M(AA,BB, s, method, public, Au_t,   def_test,       Au_t, ARef) \
     M(AA,BB, s, method, public, Au_t,   def_meta,       Au_t, symbol, Au_t) \
@@ -1006,28 +1008,32 @@ declare_abstract(imported)
 #define handle_schema(X,Y,...)      raw_schema(X,Y,...)
 
 #define Au_t_module_ Au
-#define Au_t_schema(X,Y,...)       raw_schema(X,Y,...)
+#define Au_t_schema(X,Y,...)            raw_schema(X,Y,...)
 
 #define func_module_ Au
-#define func_schema(X,Y,...)        raw_schema(X,Y,...)
+#define func_schema(X,Y,...)            raw_schema(X,Y,...)
 
 #define hook_module_ Au
-#define hook_schema(X,Y,...)        raw_schema(X,Y,...)
+#define hook_schema(X,Y,...)            raw_schema(X,Y,...)
 
 #define callback_module_ Au
-#define callback_schema(X,Y,...)    raw_schema(X,Y,...)
+#define callback_schema(X,Y,...)        raw_schema(X,Y,...)
 
 #define callback_extra_module_ Au
-#define callback_extra_schema(X,Y,...)    raw_schema(X,Y,...)
+#define callback_extra_schema(X,Y,...)  raw_schema(X,Y,...)
 
 #define cstrs_module_ Au
-#define cstrs_schema(X,Y,...)       raw_schema(X,Y,...)
+#define cstrs_schema(X,Y,...)           raw_schema(X,Y,...)
 
 #define Au_ts_module_ Au
-#define Au_ts_schema(X,Y,...)      raw_schema(X,Y,...)
+#define Au_ts_schema(X,Y,...)           raw_schema(X,Y,...)
 
 #define floats_t_module_ Au
-#define floats_t_schema(X,Y,...)      raw_schema(X,Y,...)
+#define floats_t_schema(X,Y,...)        raw_schema(X,Y,...)
+
+#define uchar_module_ Au
+#define uchar_schema(X,Y,...)           raw_schema(X,Y,...)
+
 
 /// meta gives us access to one token we can override with (F)
 
@@ -1074,18 +1080,16 @@ declare_primitive(u32,              numeric)
 declare_primitive(u64,              numeric)
 declare_primitive(fp16,             numeric)
 declare_primitive(bf16,             numeric)
-//declare_primitive(f32,              numeric)
-//declare_primitive(f64,              numeric)
-
-//declare_primitive(f32, numeric)
-//declare_primitive(f64, numeric)
 
 declare_primitive(AFlag,            numeric)
 declare_primitive(bool,             numeric)
 declare_primitive(num,              numeric)
 declare_primitive(sz,               numeric)
+declare_primitive(uchar,            numeric)
+
 declare_primitive(cstr,             string_like)
 declare_primitive(symbol,           string_like)
+
 declare_primitive(none,             nil)
 declare_primitive(cereal,           raw)
 declare_primitive(micro,            raw)
@@ -1097,12 +1101,9 @@ declare_primitive(hook,             raw)
 declare_primitive(callback,         raw)
 declare_primitive(callback_extra,   raw)
 declare_primitive(cstrs,            raw)
-declare_primitive(Au_ts,           raw)
-
-/// whatever we can 'name', we can handle as a type of any pointer primitive
-//declare_primitive(Au_t,        raw)
-declare_primitive(ARef,         ref)
-declare_primitive(floats_t,     raw)
+declare_primitive(Au_ts,            raw)
+declare_primitive(ARef,             ref)
+declare_primitive(floats_t,         raw)
 
 /// lets mimmick the structure in llama.cpp
 #define msg_module_ Au
@@ -1558,7 +1559,8 @@ declare_class(ipart)
     M(AA,BB, i, cast,    public, path) \
     M(AA,BB, i, ctr,     public, symbol) \
     M(AA,BB, i, ctr,     public, cstr) \
-    M(AA,BB, i, ctr,     public, i32) \
+    M(AA,BB, i, ctr,     public, uchar) \
+    M(AA,BB, i, ctr,     public, i64) \
     M(AA,BB, i, operator, public, none,   _assign_add,  string) \
     M(AA,BB, i, operator, public, string, _add,         string) \
     M(AA,BB, i, index,   public, i32, num) \
