@@ -105,6 +105,12 @@ string symbol_name(Au obj) {
 }
 
 // emit source location from current token (macro to reduce repetition)
+#define poly_members(TYPE, VAR) \
+    for (Au_t __ctx = (TYPE); __ctx && __ctx != typeid(Au); \
+         __ctx = (__ctx->context == __ctx) ? null : __ctx->context) \
+        for (int __i = 0; __i < __ctx->members.count; __i++) \
+            for (Au_t VAR = (Au_t)__ctx->members.origin[__i]; VAR; VAR = null)
+
 #define debug_emit(a) do { \
     token __t = a->statement_origin; \
     if (!__t) __t = aether_peek(a); \
@@ -1056,7 +1062,6 @@ enode aether_e_interpolate(aether a, string str) { sequencer
     if (a->no_build) return e_noop(a, mdl);
 
     token statement = a->statement_origin;
-    a->statement_origin = null;
 
     a->expr_level++;
     each (sp, ipart, s) {
@@ -2059,15 +2064,9 @@ enode castable(etype fr, etype to) {
         return (enode)true;
 
     /// check cast methods on from
-    Au_t ctx = fr->au;
-    while (ctx) {
-        for (int i = 0; i < ctx->members.count; i++) {
-            Au_t mem = (Au_t)ctx->members.origin[i];
-            if (mem->member_type == AU_MEMBER_CAST && is_same(u(etype, mem->rtype), to))
-                return (enode)u(enode, mem);
-        }
-        if (ctx->context == ctx) break;
-        ctx = ctx->context;
+    poly_members(fr->au, mem) {
+        if (mem->member_type == AU_MEMBER_CAST && is_same(u(etype, mem->rtype), to))
+            return (enode)u(enode, mem);
     }
     return (enode)false;
 }
@@ -2084,32 +2083,26 @@ enode constructable(etype fr, etype to) {
         to = etypeid(string); // string is Au, so we are not lying here; Au is effectively always shiny
     }
 
-    Au_t ctx             = to->au;
     Au_t integral        = null;
     int  integral_count  = 0;
     Au_t realistic       = null;
     int  realistic_count = 0;
 
-    while (ctx) {
-        for (int ii = 0; ii < ctx->members.count; ii++) {
-            Au_t mem = (Au_t)ctx->members.origin[ii];
-            etype fn = mem->member_type == AU_MEMBER_CONSTRUCT ? u(etype, mem) : null;
-            if  (!fn) continue;
-            verify(fn->au->args.count == 2, "unexpected argument count for constructor"); // target + with-type
-            Au_t with_arg = (Au_t)fn->au->args.origin[1];
-            if (with_arg->rtype->is_realistic) {
-                if (!realistic) realistic = mem;
-                realistic_count++;
-            }
-            if (with_arg->rtype->is_integral) {
-                if (!integral) integral = mem;
-                integral_count++;
-            }
-            if (with_arg->src == fr->au)
-                return (enode)u(enode, mem);
+    poly_members(to->au, mem) {
+        etype fn = mem->member_type == AU_MEMBER_CONSTRUCT ? u(etype, mem) : null;
+        if  (!fn) continue;
+        verify(fn->au->args.count == 2, "unexpected argument count for constructor"); // target + with-type
+        Au_t with_arg = (Au_t)fn->au->args.origin[1];
+        if (with_arg->rtype->is_realistic) {
+            if (!realistic) realistic = mem;
+            realistic_count++;
         }
-        if (ctx == ctx->context) break;
-        ctx = ctx->context;
+        if (with_arg->rtype->is_integral) {
+            if (!integral) integral = mem;
+            integral_count++;
+        }
+        if (with_arg->src == fr->au)
+            return (enode)u(enode, mem);
     }
 
     if (realistic_count == 1 && fr->au->is_realistic)
@@ -2584,6 +2577,23 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
                 enode prop = access(alloc, (string)k, true);
                 e_assign(a, prop, i->value, OPType__assign);
             }
+        }
+    }
+
+    // 2b. verify required members were provided
+    poly_members(alloc->au, mb) {
+        if (mb->member_type == AU_MEMBER_VAR && mb->is_required) {
+            bool provided = ctr_input != null;
+            if (!provided && props) {
+                pairs(props, p) {
+                    string k = (string)instanceof(p->key, string);
+                    if (k && strcmp(k->chars, mb->ident) == 0) {
+                        provided = true; break;
+                    }
+                }
+            }
+            validate(provided, "required member '%s' not provided for %s",
+                mb->ident, alloc->au->ident);
         }
     }
 
