@@ -2055,7 +2055,7 @@ string read_alpha_macrofilter(silver a, bool is_decl) {
 
 enode enode_super(etype, enode);
 
-enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int seq = 0; seq++;
+enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_mdl) { static int seq = 0; seq++;
     OPType assign_enum = OPType__undefined;
     Au_t   top     = top_scope(a);
     etype  rec_top = context_record(a);
@@ -2167,15 +2167,14 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl) { static int
                     mem = (enode)elookup(alpha->chars);
                 }
                 
+                if (!mem && scope_mdl) {
+                    Au_t sm = find_member(scope_mdl->au, alpha->chars, 0, 0, true);
+                    if (sm)
+                        mem = access((enode)scope_mdl, alpha, true);
+                }
+
                 if (!mem) {
                     token tm1 = element(a, -2); // sorry for the mess (coin-flip)
-
-                    if (eq(alpha, "Initializer")) {
-
-                        Au_t b4 = lexical(a->lexical, alpha->chars);
-                        etype should_be_etype = u(etype, b4);
-                        b4 = b4;
-                    }
 
                     validate(next_is(a, ":") || (tm1 && index_of(keywords, (Au)tm1) >= 0), "unknown identifier %o", alpha);
                     validate(!find_member(top, alpha->chars, 0, 0, false), "duplicate member: %o", alpha);
@@ -2573,7 +2572,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
 
     // we may only support a limited set of C functionality for #define macros
     int slen1 = len(a->lexical);
-    mem = parse_member(a, null, null); // we never parse assignment here
+    mem = parse_member(a, null, null, mdl_expect); // we never parse assignment here
     int slen12 = len(a->lexical);
     verify(slen1 == slen12, "stack state");
 
@@ -2698,7 +2697,7 @@ enode parse_statement(silver a)
     OPType assign_enum = OPType__undefined;
     enode mem = (!is_cast && !is_oper && !is_idx && !is_ctr) ?
         parse_member(a, (ARef)&assign_enum,
-            is_func ? typeid(efunc) : ((access || f || (!!module)) ? typeid(evar) : null)) : null;
+            is_func ? typeid(efunc) : ((access || f || (!!module)) ? typeid(evar) : null), null) : null;
     Au_t mem_info = isa(mem);
 
     if (mem && mem->au->ident && strcmp(mem->au->ident, "rng_state") == 0) {
