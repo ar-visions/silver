@@ -1,5 +1,47 @@
 # silver changelog
 
+## LLDB debug info member offsets (lldb.c)
+- `m->offset` is a runtime field, always 0 at compile time — LLDB showed corrupt values
+- fix: use `LLVMOffsetOfElement(target_data, struct_type, m->index)` for actual byte offsets
+- purely debug info fix, no runtime impact
+
+## string_with_f64 constructor (Au.c, Au header)
+- `string_with_f64(string, f64)` using `snprintf(buf, 64, "%g", value)`
+- enables float-to-string interpolation for f64 members
+- registered in string_schema as `M(AA,BB, i, ctr, public, f64)`
+
+## fault macro halt fix (aether.c)
+- `fault` with `pk->line == 0` printed error but never called `halt()`
+- errors were silently continuing past the fault
+- fix: added `halt(s, null)` to the `line == 0` branch
+
+## is_required compile-time validation (aether.c)
+- `e_init` now validates that `expect` members are provided during construction
+- walks context chain checking `is_required` members against provided props
+- skips map/array types
+
+## e_convert_or_cast canonical fix (aether.c)
+- `is_prim(input)` on unloaded member enodes returned false (got `typeid(enode)`)
+- fix: `is_prim(canonical(input))` to get the semantic type
+
+## tensor_init scale overwrite (ai.ag)
+- `tensor_init` else branch unconditionally set `scale = 1.0f` when initializer undefined
+- clobbered user-provided scale values
+- root cause of "scale shows 1" bug — not a compiler conversion issue
+
+## dlopen/dlclose for imported modules (aether.c, Au.c)
+- `dlopen` only runs constructors on first load; `module_erase` nulled module from array
+- second import: dlopen bumps refcount but constructors don't re-run
+- fix: `aether_unload_libs(a)` calls `dlclose` on all lib handles before `module_erase`
+- `a->libs` map keys are lib paths, values are raw dlopen handles cast to `(Au)`
+- Au entry keyed as `"Au"` with `_bool(true)` — skip via `eq(key, "Au")`
+
+## C import module stomping fix (aclang.cc)
+- aclang.cc was setting `->module` on all types parsed from C headers
+- `def_pointer` caches pointer types on `ref->ptr` — second import overwrites module
+- fix: removed all `->module =` assignments in aclang.cc
+- C headers are not modules
+
 ## vtable override offset fix (aether.c)
 - removed stale `-2` from override index calculation
 - Au_t was compacted (shape removed, etc) but offset compensation wasn't updated

@@ -35,16 +35,24 @@ enum Pooling
     min:       2
     average:   3
 
+class tensor2
+    public aa: i32
+    public b: i32
+    public c: i32
 
 class tensor
-    expect tensor_shape: shape
-    public initializer:  Initializer.undefined
-    public quants:       ref i8
+    public aaa : tensor2
+    public bbb : string
     public floats:       ref f32
+    public quants:       ref i8
+    public initializer:  Initializer.undefined
     public grad:         ref f32
     public offset:       i32
-    intern count:        u64
+    expect tensor_shape: shape
     public scale:        f32
+    
+
+    intern count:        u64
     
     func init [] -> none
         # it should error when we do not give const to printf
@@ -541,12 +549,17 @@ class keras
     
     func train [epochs: i32, samples: map tensor[tensor], learning_rate: f32] -> none
 
+        ff_scale:f64 1.4
+        t_key: tensor [ scale:2.2f, tensor_shape:1x1 ]
+        puts 't_key scale = {t_key.scale}'
+
         test2: map tensor[tensor] [
-            tensor [ scale:1.2f ] : tensor[scale:2.2f]
+            t_key : tensor[scale:2.2f, tensor_shape:32x2]
         ]
+        t_test: test2[ t_key ]
 
         for [ target: tensor, src: tensor ] in test2
-            puts 'epoch'
+            puts 'tensor scale: {src.scale}'
 
         for [ epoch: i32 0, epoch < epochs, epoch += 1 ]
             puts 'epoch {epoch + 1}/{epochs}'
