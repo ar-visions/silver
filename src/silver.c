@@ -4,9 +4,8 @@
 #include <ports.h>
 
 // designed for Audrey and Rebecca
-// to be a model of a language that works succinctly, 
-// with syntax and import features that make programming enjoyable and exciting
-// when silver is finished, we'll finally be able to start work on these things
+// with syntax that makes programming enjoyable
+// designed to express intent per module
 
 enode parse_statements(silver a);
 enode parse_statement(silver a);
@@ -2405,7 +2404,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
         return e_operand(a, _i64(mdl->au->typesize), mdl_expect);
     }
 
-    if (!cmode && read_if(a, "typeof")) {
+    if (!cmode && read_if(a, "typeid")) {
         bool read_br = read_if(a, "[") != null;
         etype mdl = read_etype(a, null);
         
@@ -2528,24 +2527,6 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
             "negation requires numeric type");
         return e_create(a,
             mdl_expect, (Au)e_neg(a, expr));
-    }
-
-    // 'typeof' operator
-    // should work on instances as well as direct types
-    else if (!cmode && read_if(a, "typeid")) { // todo: merge with isa, eventually implement with a const expression in silver implementation
-        validate(!from_ref, "unexpected typeid after ref");
-        bool bracket = false;
-        if (next_is(a, "[")) {
-            consume(a); // Consume '['
-            bracket = true;
-        }
-        enode expr = parse_expression(a, null); // Parse the type expression
-        if (bracket) {
-            assert(next_is(a, "]"), "Expected ']' after type expression");
-            consume(a); // Consume ']'
-        }
-        return e_create(a,
-            mdl_expect, (Au)expr); // Return the type reference
     }
 
     // 'ref' operator (reference)

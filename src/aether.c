@@ -3219,6 +3219,11 @@ enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_e
 
     // Step 2: Build the conditional branch based on the condition
     LLVMValueRef condition_value = cond_expr->value;
+    if (!false_expr) {
+        // ?? operator: branch on whether cond is non-null
+        condition_value = LLVMBuildICmp(mod->builder, LLVMIntNE,
+            condition_value, LLVMConstNull(LLVMTypeOf(condition_value)), "coalesce.nonnull");
+    }
     LLVMBuildCondBr(mod->builder, condition_value, then_block, else_block);
 
     // Step 3: Handle the "then" (true) branch
