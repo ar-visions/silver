@@ -540,10 +540,14 @@ class keras
 
     
     func train [epochs: i32, samples: map tensor[tensor], learning_rate: f32] -> none
-        # -- it doesnt matter how much space, a break point CANNOT be inserted at aa:1, it dissappears at run, only bb:2 can se it; and THIS break does NOT show me aa, it ONLY shows it when we arrive at cc
-        aa:1
-        bb:2
-        cc:3
+
+        test2: map tensor[tensor] [
+            tensor [ scale:1.2f ] : tensor[scale:2.2f]
+        ]
+
+        for [ target: tensor, src: tensor ] in test2
+            puts 'epoch'
+
         for [ epoch: i32 0, epoch < epochs, epoch += 1 ]
             puts 'epoch {epoch + 1}/{epochs}'
 
