@@ -32,6 +32,7 @@ typedef LLVMMetadataRef LLVMScope;
             "\n%s:%i :: " t, \
             __FILE__, __LINE__ \
             __VA_OPT__(,) __VA_ARGS__); \
+        halt(s, null); \
     } else { \
         s = (string)formatter( \
             (Au_t)null, false, stderr, (Au) true, seq, \
@@ -105,12 +106,6 @@ string symbol_name(Au obj) {
 }
 
 // emit source location from current token (macro to reduce repetition)
-#define poly_members(TYPE, VAR) \
-    for (Au_t __ctx = (TYPE); __ctx && __ctx != typeid(Au); \
-         __ctx = (__ctx->context == __ctx) ? null : __ctx->context) \
-        for (int __i = 0; __i < __ctx->members.count; __i++) \
-            for (Au_t VAR = (Au_t)__ctx->members.origin[__i]; VAR; VAR = null)
-
 #define debug_emit(a) do { \
     token __t = a->statement_origin; \
     if (!__t) __t = aether_peek(a); \
@@ -2119,10 +2114,10 @@ enode constructable(etype fr, etype to) {
 
     if (realistic_count == 1 && fr->au->is_realistic)
         return (enode)u(enode, realistic);
-    
+
     if (integral_count == 1 && fr->au->is_integral)
         return (enode)u(enode, integral);
-    
+
     return (enode)false;
 }
 
@@ -2593,19 +2588,30 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
     }
 
     // 2b. verify required members were provided
-    poly_members(alloc->au, mb) {
-        if (mb->member_type == AU_MEMBER_VAR && mb->is_required) {
-            bool provided = ctr_input != null;
-            if (!provided && props) {
-                pairs(props, p) {
-                    string k = (string)instanceof(p->key, string);
-                    if (k && strcmp(k->chars, mb->ident) == 0) {
-                        provided = true; break;
+    Au_t alloc_type = alloc->au;
+    if (alloc_type && alloc_type->is_class &&
+        !inherits(alloc_type, typeid(map)) &&
+        !inherits(alloc_type, typeid(array))) {
+        Au_t ctx = alloc_type;
+        while (ctx && ctx != typeid(Au)) {
+            for (int i = 0; i < ctx->members.count; i++) {
+                Au_t mb = (Au_t)ctx->members.origin[i];
+                if (mb->member_type == AU_MEMBER_VAR && mb->is_required) {
+                    bool provided = ctr_input != null;
+                    if (!provided && props) {
+                        pairs(props, p) {
+                            string k = (string)instanceof(p->key, string);
+                            if (k && strcmp(k->chars, mb->ident) == 0) {
+                                provided = true; break;
+                            }
+                        }
                     }
+                    verify(provided, "required member '%s' not provided for %s",
+                        mb->ident, alloc_type->ident);
                 }
             }
-            validate(provided, "required member '%s' not provided for %s",
-                mb->ident, alloc->au->ident);
+            if (ctx->context == ctx) break;
+            ctx = ctx->context;
         }
     }
 
@@ -2766,10 +2772,10 @@ enode e_convert_or_cast(aether a, etype output, enode input) {
     if (a->no_build) return e_noop(a, output);
 
     // if input is an unloaded primitive, load it first so we can do proper conversion
-    if (!input->loaded && is_prim(input) && is_prim(output)) {
+    if (!input->loaded && is_prim(canonical(input)) && is_prim(output)) {
         input = enode_value(input, false);  // load it
     }
-    
+
     Au_t itype = isa(input);
     LLVMTypeRef typ = LLVMTypeOf(input->value);
     LLVMTypeKind k = LLVMGetTypeKind(typ);
@@ -4941,14 +4947,14 @@ none etype_implement(etype t, bool w) {
         verify(count == index, "member indexing mismatch on %o", t);
 
         etype type_t_ptr = null;
-        if (is_class(t) && au != etypeid(Au_t) && 
+        if (is_class(t) && au != etypeid(Au_t) &&
            !au->is_system && !au->is_schema) {
             type_t_ptr = get_type_t_ptr(t);
 
         } else if (count == 0) {
             struct_members[count++] = lltype(etypeid(u8));
         }
-        
+
         if (type_t_ptr) {
             struct_members[count++] = lltype(type_t_ptr);
             struct_members[count++] = lltype(type_t_ptr);
@@ -5452,11 +5458,6 @@ none aether_build_module_initializer(aether a, enode init) {
                 }
 
             } else if (mem->member_type == AU_MEMBER_VAR) {
-                if (mem->meta.a || mem->meta.b)
-                    printf("  emit meta: %s.%s  a=%s  b=%s\n",
-                        tau->ident, mem->ident,
-                        mem->meta.a ? mem->meta.a->ident : "(null)",
-                        mem->meta.b ? isa(mem->meta.b)->ident : "(null)");
                 enode e_meta_b = e_null(a, etypeid(Au));
                 if (mem->meta.b) {
                     if (instanceof(mem->meta.b, Au_t))
@@ -5873,7 +5874,8 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
 
     bool validation_error = false;
     verify (!LLVMPrintModuleToFile(a->module_ref, cstring(*ll),      &err), "print-to-module");
-    print("wrote %s", cstring(*ll));
+    if (a->verbose)
+        print("wrote %s", cstring(*ll));
     validation_error  = LLVMVerifyModule(a->module_ref, LLVMReturnStatusAction, &err);
     validation_error |= LLVMVerifyModule(a->module_ref, LLVMPrintMessageAction, &err);
     
