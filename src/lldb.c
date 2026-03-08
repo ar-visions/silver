@@ -1047,7 +1047,10 @@ void emit_debug_function(aether a, efunc fn, bool w) {
             a->dbg_builder, file_ref, null, 0, LLVMDIFlagZero);
     }
 
-    u32 line = 0;
+    efunc efn = instanceof(fn, efunc);
+    u32 line = (efn && efn->origin_token) ? efn->origin_token->line :
+               a->statement_origin ? a->statement_origin->line : 0;
+    u32 scope_line = line;
     cstr name = au->alt ? au->alt : au->ident;
     u32 name_len = strlen(name);
 
@@ -1063,11 +1066,11 @@ void emit_debug_function(aether a, efunc fn, bool w) {
         scope,
         name, name_len,         // name
         name, name_len,         // linkage name
-        file_ref, line,         // file, line
+        file_ref, line,         // file, line (declaration)
         sr_type,                // subroutine type
         false,                  // is local to unit
         true,                   // is definition
-        line,                   // scope line
+        scope_line,             // scope line (first body statement)
         LLVMDIFlagZero,        // flags
         false);                 // is optimized
 

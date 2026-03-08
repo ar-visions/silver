@@ -20,11 +20,11 @@
             ]
         },
         {
-            "name":       "test-app",
+            "name":       "ai-test",
             "type":       "lldb",
             "request":    "launch",
             "preLaunchTask": "build-silver-ninja",
-            "program":    "${workspaceFolder}/install/debug/test-app",
+            "program":    "${workspaceFolder}/install/debug/ai-test",
             "cwd":        "${workspaceFolder}/install/debug",
             "env":      {
                 "VERBOSE": "1",
