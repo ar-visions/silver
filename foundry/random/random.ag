@@ -39,21 +39,12 @@ intern func splitmix64 [state: ref u64] -> u64
     return z ^ (z >> 31)
 
 
-# native rotate via x86 rol instruction
+# rotate left
 intern func rotl23 [input: u64] -> u64
-    result: u64 asm [ input ]
-        mov rax, input
-        rol rax, 23
-        return rax
-    return result
-
+    return (input << 23) | (input >> 41)
 
 intern func rotl45 [input: u64] -> u64
-    result: u64 asm [ input ]
-        mov rax, input
-        rol rax, 45
-        return rax
-    return result
+    return (input << 45) | (input >> 19)
 
 
 # seed from a u64 (SplitMix64 expands to 4 state words)

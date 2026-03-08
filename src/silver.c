@@ -1141,6 +1141,8 @@ exts get_exts() {
 }
 
 token silver_element(silver a, num rel) {
+    if (!a->tokens || !len(a->tokens))
+        return null;
     int r = a->cursor + rel;
     if (r < 0 || r > a->tokens->count - 1)
         return null;
@@ -3736,7 +3738,13 @@ none silver_build(silver a) {
     string isysroot = a->isysroot ? f(string, "-isysroot %o ", a->isysroot) : string("");
     verify(exec(a->verbose, "%o/bin/clang %s %s %s %o %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o",
         install, a->is_library ? shared : "", a->debug ? "-g" : "",
-        a->is_library ? "-Wl,-Bsymbolic" : "", isysroot, a->build_dir, a->name, objs,
+
+#ifdef __linux__
+        a->is_library ? "-Wl,-Bsymbolic" : "",
+#else
+        "",
+#endif
+        isysroot, a->build_dir, a->name, objs,
         a->product,
         a->build_dir,
         install, a->build_dir, install, libs, cflags) == 0,
