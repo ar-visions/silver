@@ -46,17 +46,13 @@ class tensor2
     public c: i32
 
 class tensor
-    public aaa : tensor2
-    public bbb : string
+    expect tensor_shape: shape
     public floats:       ref f32
     public quants:       ref i8
     public initializer:  Initializer.undefined
     public grad:         ref f32
     public offset:       i32
-    expect tensor_shape: shape
     public scale:        f32
-    
-
     intern count:        u64
     
     func init [] -> none
@@ -72,9 +68,11 @@ class tensor
         case Initializer.random
             for [ i: i32 0, i < count, i += 1 ]
                 floats[i] = randf
+        
         case Initializer.zeros
             for [ i: i32 0, i < count, i += 1 ]
                 floats[i] = 0.0f
+
         case Initializer.glorot_uniform
             std: sqrtf[ 6.0f / count ]
             for [ i: i32 0, i < count, i += 1 ]
@@ -187,6 +185,7 @@ class op
             t: input.count
             for [ i: i32 0, i < t, i += 1 ]
                 v: input.floats[i]
+                rtotal: result.tensor_shape.total
                 result.floats[i] = (v > 0.0) ? v : 0.0
 
         el [ activation == Activation.tanh ]
@@ -666,12 +665,13 @@ class keras
 
         for [ o: op ] in ops
             op_map[o.name] = o
+        
         for [ o: op ] in ops
             o.op_inputs = array op []
-            for [ n: string ] in o.inputs # crashes in here somehow.. not sure where -- its still faulting at line 0
+            for [ n: string ] in o.inputs
                 res: op [ op_map[n] ]
                 o.op_inputs.push res
-
+        
         order = array op []
         visited:     map op[string] []
         in_progress: map op[string] []
@@ -681,6 +681,7 @@ class keras
 
         first: op [ order[0] ]
         k_input = first.input
+        
         for [ o: op ] in ops
             o.result = find_result[ o ]
             for [ dep: op ] in o.op_inputs
@@ -689,9 +690,11 @@ class keras
                         o.input = dep.input
             
             o.finalize
-
+        
         out_op: op [ op_map['output'] ]
+        printf "out_op = %p\n", out_op
         k_output = out_op.input
+        printf "k_output = %p\n", k_output
 
     func topo_visit [current: op, visited: map, in_progress: map] -> none
         if [ in_progress[current.name] == true ]
@@ -713,17 +716,25 @@ class keras
         return null
 
     func forward [src: tensor] -> tensor
-        for [ current: op ] in order
+        printf "k_output in forward is %p\n", k_output
+        k_output.tensor_shape.total
+        for [ current: op* ] in order
             if [ current is input_op ]
                 inp: input_op [ current ]
                 if [ inp.source ]
                     memcpy inp.input.floats, inp.source.floats, inp.input.count * 4
                 el
                     memcpy inp.input.floats, src.floats, src.count * 4
+            puts 'trying {current.name}'
             current.forward
+            k_output.tensor_shape.total
+        
+        printf "k_output in forward is %p\n", k_output
+        k_output.tensor_shape.total
         res: tensor [ tensor_shape: k_output.tensor_shape ]
         memcpy res.floats, k_output.floats, k_output.count * 4
         return res
+
 
     func back [d_out: tensor] -> tensor
         n: i32 [ order.count ]
@@ -734,28 +745,15 @@ class keras
             if [ o.bias    ] memset o.bias.grad,    0, o.bias.count    * 4
             res = o.back[res]
         return res
-
     
     func train [epochs: i32, samples: map tensor[tensor], learning_rate: f32] -> none
-
-        ff_scale:f64 1.4
-        t_key: tensor [ scale:2.2f, tensor_shape:1x1 ]
-        puts 't_key scale = {t_key.scale}'
-
-        test2: map tensor[tensor] [
-            t_key : tensor[scale:2.2f, tensor_shape:32x2]
-        ]
-        t_test: test2[ t_key ]
-
-        for [ target: tensor, src: tensor ] in test2
-            puts 'tensor scale: {src.scale}'
-
+        printf "train: a = %p\n", a
+        
         for [ epoch: i32 0, epoch < epochs, epoch += 1 ]
             puts 'epoch {epoch + 1}/{epochs}'
-
+            
+            #total2:k_output.total
             for [ target: tensor, src: tensor ] in samples # when it gets here, it steps upwards ONCE.. this must be a side effect of either the for peek, or the timing
-                #x:1
-                #y:2
                 prediction: forward[src]
 ##
                 loss:       f32 [ 0.0 ]

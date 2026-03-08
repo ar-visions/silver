@@ -2063,7 +2063,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
     bool   in_rec  = rec_top && rec_top->au == top;
 
     
-    if (seq == 1377) {
+    if (seq == 1697) {
         seq = seq;
     }
 
@@ -2097,8 +2097,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
 
         bool new_name = in_decl != null || in_rec;
         alpha = read_alpha_macrofilter(a, new_name);
-        if (alpha && eq(alpha, "inputs")) {
-            etype et = elookup("input_op");
+        if (alpha && eq(alpha, "forward")) {
             alpha = alpha;
         }
         if (!first_alpha) first_alpha = alpha;
@@ -2661,6 +2660,7 @@ enode parse_statement(silver a)
 
     //bool      is_override = !f ?
     //    read_if(a, "override")   != null : false;
+    token entry = peek(a);
     bool      is_lambda = !f ?
         read_if(a, "lambda")     != null : false;
     bool      is_func   = !f && !is_lambda ?
@@ -2766,6 +2766,7 @@ enode parse_statement(silver a)
                 e = (enode)parse_func(a, au, // for cast, we read the rtype first; for others, its parsed after ->
                     ftype,
                     traits, op_type, op_name);
+                ((efunc)e)->origin_token = entry;
                 e->au->access_type = (u8)access;
                 efunc fn = (efunc)get(a->registry, (Au)au);
                 verify(fn && fn == e && fn->au == au, "unexpected registration state");
@@ -2903,8 +2904,11 @@ static none next_function_index_update(Au_t mdl, int* index) {
 
     for (int i = 0; i < mdl->members.count; i++) {
         Au_t au = (Au_t)mdl->members.origin[i];
+        if (au->is_smethod || au->is_static || au->is_override) continue;
         if (au->member_type == AU_MEMBER_FUNC       || 
             au->member_type == AU_MEMBER_OPERATOR   ||
+            au->member_type == AU_MEMBER_INDEX      ||
+            au->member_type == AU_MEMBER_SETTER     ||
             au->member_type == AU_MEMBER_CAST       ||
             au->member_type == AU_MEMBER_CONSTRUCT) { 
             (*index)++;
@@ -2924,6 +2928,9 @@ static int next_function_index(Au_t mdl) {
 
 efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPType op_type, string op_name) {
     sequencer
+    if (strcmp(mem->ident, "forward") == 0) {
+        mem = mem;
+    }
     if (seq == 6) {
         seq = seq;
     }
@@ -2938,7 +2945,11 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     Au_t au = mem; //def(top_scope(a), ident ? ident->chars : null, AU_MEMBER_FUNC, traits);
     verify(mem->member_type == AU_MEMBER_DECL, "already defined: %o", mem); // since we allow for prop-style invocation of functions, the design must be no clashing with var names
 
-    au->index = rec_ctx ? next_function_index(rec_ctx->au) : 0;
+    if (strcmp(mem->ident, "hash") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
+
     au->member_type = member_type;
     au->operator_type = op_type;
     au->traits = traits;
@@ -2956,6 +2967,11 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
             rec_ctx->au->context, name->chars,
             member_type, 0, true);
         au->is_override = override != null;
+        if (au->is_override) {
+            au->index = override->index;
+        } else {
+            au->index = next_function_index(rec_ctx->au);
+        }
     }
 
     // fill out args in function model
@@ -3226,8 +3242,8 @@ etype read_etype(silver a, array* p_expr) { sequencer
             etype  rec_top = context_record(a);
             bool   in_rec  = rec_top && rec_top->au == top;
             bool   in_arg  = is_func(top);
-            validate(is_class(mdl) && (in_rec || in_arg),
-                "polymorphic-any (*) applies to classes in argument / record membership");
+            validate(is_class(mdl),
+                "polymorphic-any (*) applies to classes");
             validate(mdl->au->access_type != interface_intern, "polymorphic types cannot be defined internal");
         }
     }
@@ -3718,8 +3734,9 @@ none silver_build(silver a) {
 
     // link - include the implementation objects
     string isysroot = a->isysroot ? f(string, "-isysroot %o ", a->isysroot) : string("");
-    verify(exec(a->verbose, "%o/bin/clang %s %o %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o",
-        install, a->is_library ? shared : "", isysroot, a->build_dir, a->name, objs,
+    verify(exec(a->verbose, "%o/bin/clang %s %s %s %o %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o",
+        install, a->is_library ? shared : "", a->debug ? "-g" : "",
+        a->is_library ? "-Wl,-Bsymbolic" : "", isysroot, a->build_dir, a->name, objs,
         a->product,
         a->build_dir,
         install, a->build_dir, install, libs, cflags) == 0,
@@ -4759,10 +4776,23 @@ static enode typed_expr(silver a, enode src, array expr);
 
 none push_lambda_members(aether a, efunc f);
 
+void print_all(array tokens) {
+    if (!tokens) { fprintf(stderr, "(null tokens)\n"); return; }
+    fprintf(stderr, "--- tokens (%i) ---\n", (int)len(tokens));
+    each(tokens, token, t) {
+        fprintf(stderr, "  L%i C%i I%i: %s\n", (int)t->line, (int)t->column, (int)t->indent, t->chars);
+    }
+    fprintf(stderr, "---\n");
+}
+
 void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequencer
     if (f->user_built)
         return;
 
+    if (f->au->alt && strcmp(f->au->alt, "keras_init") == 0) {
+        print_all((array)f->body);
+        f = f;
+    }
     bool user_has_code = len(f->body) || f->cgen;
     f->user_built = true;
 
@@ -4775,12 +4805,14 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
 
         // reasonable convention for silver's debugging facility
         // if this is a standard for IDE, then we can rely on this to improve productivity
-        Au_t au_calls = def(f->au, "sequence", AU_MEMBER_VAR, AU_TRAIT_STATIC);
-        au_calls->src = etypeid(i64)->au;
-        evar e_calls = evar(mod, (aether)a,
-            au, au_calls);
+        //Au_t au_calls = def(f->au, "sequence", AU_MEMBER_VAR, AU_TRAIT_STATIC);
+        //au_calls->src = etypeid(i64)->au;
+        //evar e_calls = evar(mod, (aether)a,
+        //    au, au_calls);
         
         a->last_return = null;
+        if (len(f->body))
+            a->statement_origin = (token)f->body->origin[0];
         push_scope(a, (Au)f);
 
         if (is_lambda((Au)f))
@@ -5734,6 +5766,7 @@ enode parse_for(silver a) { sequencer
         // create value variable in current scope
         Au_t val_mem = def_member(top_scope(a), val_name->chars, val_type->au, AU_MEMBER_VAR, 0);
         val_var = evar(mod, (aether)a, au, val_mem);
+        val_var->is_any = val_type->is_any;
         etype_implement((etype)val_var, false);
         pop_tokens(a, false);
     }

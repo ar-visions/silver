@@ -2169,6 +2169,7 @@ u64  Au_hash(Au a) {
     if (info == typeid(Au_t)) return (u64)(size_t)a;
 
     u64 hash = 0;
+    Au_f* fn = (Au_f*)info;
     if (((Au_f*)info)->ft.hash != ((Au_f*)typeid(Au))->ft.hash) {
         hash = hash(a);
     } else {

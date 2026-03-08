@@ -149,7 +149,8 @@ void coverage_set_func_name(u32 func_id, char* name);
 static void emit_debug_loc(aether a, u32 line, u32 column) {
     if (!a->debug || !a->compile_unit || a->no_build) return;
     LLVMMetadataRef scope = debug_scope(a);
-    if (!scope) return;
+    if (!scope)
+        return;
     LLVMMetadataRef loc = LLVMDIBuilderCreateDebugLocation(
         a->module_ctx, line, column, scope, null);
     LLVMSetCurrentDebugLocation2(B, loc);
@@ -1819,7 +1820,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
 
     Au_t au = fn->au;
 
-    if (strcmp(fn->au->ident, "push") == 0) {
+    if (strcmp(fn->au->ident, "forward") == 0) {
         seq = seq;
     }
 
@@ -1875,8 +1876,8 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     // -----------------------------------------------------------------------
     // If this is an instance method, we must look up the implementation 
     // in the runtime type's vtable (ft) rather than using the static symbol.
-    if (is_abstract || (!a->direct && target_type && target_type->is_any && !first_is_alloc && 
-         fn->au->context != typeid(Au) && fn->au->is_imethod && !funcptr && 
+    if (is_abstract || (!a->direct && first_arg && first_arg->is_any && !first_is_alloc &&
+         fn->au->context != typeid(Au) && fn->au->is_imethod && !funcptr &&
          !(target_type && target_type->target && target_type->target->avoid_ftable))) {
         verify(n_args > 0, "instance method %o requires 'this' argument", fn);
         
@@ -2331,7 +2332,7 @@ void aether_eputs(aether a, string output) {
 }
 
 enode etype_access(etype target, string name, bool funny_business) { sequencer
-    if (seq == 828)
+    if (seq == 814)
         seq = seq;
     aether a = target->mod;
     Au_t rel = target->au->member_type == AU_MEMBER_VAR ? 
@@ -2911,11 +2912,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                 LLVMBuildBitCast(B, boxed->value, lltype(canonical(mdl)), "box_to_au"));
         }
 
-        Au_t  t_isa = isa(mdl);
-        if (seq == 532)
-            seq = seq;
         enode fmem  = convertible((etype)input, mdl);
-
         verify(fmem, "no suitable conversion found for %o -> %o (%i)",
             input, mdl, seq);
         
@@ -3893,13 +3890,13 @@ enode aether_e_load(aether a, enode mem, enode target) { sequencer
     if (mem_au->is_pointer) {
         LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
         LLVMValueRef loaded = LLVMBuildLoad2(B, ptr_ty, mem->value, id->chars);
-        enode r = enode(mod, a, loaded, true, value, loaded, au, mem_au);
+        enode r = enode(mod, a, loaded, true, value, loaded, au, mem_au, is_any, mem->is_any);
         return r;
     }
-    
+
     LLVMValueRef loaded = LLVMBuildLoad2(
         B, lltype(resolve), mem->value, id->chars);
-    enode r = enode(mod, a, loaded, true, value, loaded, au, resolve->au);
+    enode r = enode(mod, a, loaded, true, value, loaded, au, resolve->au, is_any, mem->is_any);
     return r;
 }
 
@@ -4758,10 +4755,6 @@ none etype_implement(etype t, bool w) {
         return;
     Au commander_solo = head(t);
 
-    if (au->ident && strcmp(au->ident, "rng") == 0) {
-        au = au;
-    }
-
     if (au->traits & AU_TRAIT_ENUM) {
         if (!lltype(t) && au->src)
             t->lltype = lltype(u(etype, au->src));
@@ -4785,6 +4778,10 @@ none etype_implement(etype t, bool w) {
 
     if (t->is_implemented) return;
     t->is_implemented = true;
+
+    if (au->ident && strcmp(au->ident, "Au_t") == 0) {
+        au = au;
+    }
 
     bool is_Au = !a->import_c && is_au_type(resolve(t)) && (!au->is_schema && !au->is_system && !au->is_pointer && au->ident);
     etype type_t_ptr = is_Au ? get_type_t_ptr(t) : null;
@@ -4836,7 +4833,17 @@ none etype_implement(etype t, bool w) {
             } else if (!au->is_static) {
                 char id[256];
                 snprintf(id, 256, "evar_%s", au->ident ? au->ident : "");
+                // emit alloca in entry block so LLDB can track the variable
+                LLVMBasicBlockRef current_block = LLVMGetInsertBlock(B);
+                LLVMBasicBlockRef entry_block   = LLVMGetEntryBasicBlock(
+                    LLVMGetBasicBlockParent(current_block));
+                LLVMValueRef first_instr = LLVMGetFirstInstruction(entry_block);
+                if (first_instr)
+                    LLVMPositionBuilderBefore(B, first_instr);
+                else
+                    LLVMPositionBuilderAtEnd(B, entry_block);
                 n->value = LLVMBuildAlloca(B, type, id);
+                LLVMPositionBuilderAtEnd(B, current_block);
                 // declare local variable for debugger
                 emit_debug_variable(a, n, 0, 0);
             }
@@ -5087,6 +5094,8 @@ none etype_implement(etype t, bool w) {
             !global_public_fn && is_user_implement && !au->is_export ?
                 LLVMInternalLinkage : LLVMExternalLinkage);
 
+
+
         int index = 0;
         arg_list(fn->au, arg) {
             verify(arg != typeid(Au), "unexpected Au");
@@ -5259,7 +5268,8 @@ none aether_build_module_initializer(aether a, enode init) {
         e_fn_call(a, fn_check, a(str_tid));
     }
 
-    emit_coverage_register(a);
+    if (a->coverage)
+        emit_coverage_register(a);
     
     efunc f = (efunc)u(efunc, au);
     Au_t  module_base = a->au;
@@ -5438,19 +5448,16 @@ none aether_build_module_initializer(aether a, enode init) {
                     mem->alt ? (Au)const_string(chars, mem->alt) : (Au)e_null(a, etypeid(cstr))
                 ));
  
-                if (mem->is_override) {
-                    
-                    Au_t m_override = find_member(
-                        mdl->au->context, mem->ident,
-                        mem->member_type, 0, true);
-                    LLVMTargetDataRef layout = LLVMGetModuleDataLayout(a->module_ref);
-                    i64 ptr = LLVMPointerSize(layout);
-                    i64 byte_offset = etypeid(Au_t)->au->abi_size / 8 + (m_override->index * ptr);
-                    LLVMValueRef offset = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), byte_offset, false);
-                    LLVMValueRef slot = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx), type_id->value, &offset, 1, "ft_slot");
-                    enode fn_slot = enode(mod, a, au, typeid(ARef), loaded, false, value, slot);
-                    e_assign(a, fn_slot, (Au)mf, OPType__assign);
-                }
+                LLVMTargetDataRef layout = LLVMGetModuleDataLayout(a->module_ref);
+                i64 ptr = LLVMPointerSize(layout);
+                int idx_adj = -2;
+                int au_t_sz = etypeid(Au_t)->au->typesize;
+                i64 byte_offset = etypeid(Au_t)->au->typesize + (ptr * 2) +
+                        ((mem->index + idx_adj) * ptr);
+                LLVMValueRef offset = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), byte_offset, false);
+                LLVMValueRef slot = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx), type_id->value, &offset, 1, "ft_slot");
+                enode fn_slot = enode(mod, a, au, typeid(ARef), loaded, false, value, slot);
+                e_assign(a, fn_slot, (Au)mf, OPType__assign);
 
                 arg_list(mem, arg) {
                     etype arg_type = resolve(u(etype, arg->src));
@@ -5651,22 +5658,26 @@ none aether_push_scope(aether a, Au arg) {
             emit_debug_function(a, fn, false);
         LLVMPositionBuilderAtEnd(B, fn->entry);
         LLVMSetCurrentDebugLocation2(B, fn->last_dbg);
-        // set initial debug location for function entry
-        if (a->debug)
-            emit_debug_loc(a, peek ? peek->line : 0, peek ? peek->column : 0);
+        // preamble at the func declaration line
+        if (a->debug) {
+            token ot = fn->origin_token;
+            emit_debug_loc(a, ot ? ot->line : 0, ot ? ot->column : 0);
+        }
         // emit parameter debug variables (self, args) for LLDB locals view
         emit_debug_params(a, fn);
         a->coverage_seq_local = null; // reset per-function __seq alloca
         if (a->timing_enabled && !fn->timing_start_value) {
             fn->timing_func_id = a->next_func_id++;
             fn->timing_start_value = emit_func_timing_start(a, fn->timing_func_id);
-            coverage_set_func_name(fn->timing_func_id, fn->au->alt ? fn->au->alt : fn->au->ident);
+            if (a->coverage)
+                coverage_set_func_name(fn->timing_func_id, fn->au->alt ? fn->au->alt : fn->au->ident);
         }
-    }
 
-    // emit debug location for every statements block entry
-    if (a->debug && !a->no_build)
-        emit_debug_loc(a, peek ? peek->line : 0, peek ? peek->column : 0);
+        // set debug location to first body statement BEFORE any user code
+        // runs — otherwise sub-expression GEPs inherit the preamble line
+        if (a->debug && a->statement_origin)
+            emit_debug_loc(a, a->statement_origin->line, a->statement_origin->column);
+    }
 }
 
 etype get_type_t_ptr(etype t);
@@ -6063,8 +6074,8 @@ none aether_init(aether a) {
     path src_path = a->module;
     push(a->include_paths, (Au)src_path);
 
-    a->coverage = a->debug;
-    a->timing_enabled = a->debug;
+    a->coverage = false; //a->debug;
+    a->timing_enabled = false; //a->debug;
 }
 
 none aether_dealloc(aether a) {

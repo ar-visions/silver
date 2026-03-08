@@ -8,7 +8,7 @@ import ai
 import random
 
 
-alias lol: array string
+alias astrings: array string
 
 app ai-test
     func init [] -> none
@@ -65,7 +65,7 @@ app ai-test
         op_out: output_op[input: t_out,   name: 'output']
 
         # --- wire upstream dependencies ---
-        op_in.inputs  = lol []
+        op_in.inputs  = astrings []
         op_c1.inputs  = [ 'input' ]
         op_c2.inputs  = array string [ 'conv1' ]
         op_p.inputs   = array string [ 'conv2' ]
