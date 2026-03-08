@@ -4530,7 +4530,7 @@ none etype_init(etype t) {
         int n_args = au->args.count;
         LLVMTypeRef* arg_types = calloc(4 + n_args, sizeof(LLVMTypeRef));
         int index = 0;
-        arg_list(au, arg)
+        arg_types(au, arg)
             arg_types[index++] = lltype(u(etype, arg));
 
         LLVMTypeRef fn_ty = LLVMFunctionType(
