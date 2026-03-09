@@ -213,7 +213,7 @@ op flatten
     func back [d_out: tensor] -> tensor
         t: d_out.count
         flat: tensor [ tensor_shape: 1 << shape[t] ]
-        memcpy flat.floats, d_out.floats, t * 4
+        memcpy[ flat.floats, d_out.floats, t * 4 ]
         return flat
 
 
@@ -722,9 +722,9 @@ class keras
             if [ current is input_op ]
                 inp: input_op [ current ]
                 if [ inp.source ]
-                    memcpy inp.input.floats, inp.source.floats, inp.input.count * 4
+                    memcpy[inp.input.floats, inp.source.floats, inp.input.count * 4]
                 el
-                    memcpy inp.input.floats, src.floats, src.count * 4
+                    memcpy[inp.input.floats, src.floats, src.count * 4]
             puts 'trying {current.name}'
             current.forward
             k_output.tensor_shape.total
@@ -732,7 +732,7 @@ class keras
         printf "k_output in forward is %p\n", k_output
         k_output.tensor_shape.total
         res: tensor [ tensor_shape: k_output.tensor_shape ]
-        memcpy res.floats, k_output.floats, k_output.count * 4
+        memcpy[res.floats, k_output.floats, k_output.count * 4]
         return res
 
 
