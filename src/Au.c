@@ -6244,13 +6244,13 @@ array read_arg(array tokens, int start, int* next_read) {
         next_level = level;
         token t = (token)get(tokens, i);
 
-        if (eq(t, "("))
+        if (eq(t, "["))
             next_level = level + 1;
-        else if (eq(t, ")") && level > 0)
+        else if (eq(t, "]") && level > 0)
             next_level = level - 1;
 
-        if ((eq(t, ",") || eq(t, ")")) && level == 0) {
-            *next_read = i + (int)eq(t, ",");
+        if ((eq(t, ",") || eq(t, "]")) && level == 0) {
+            *next_read = i;
             return res;
         }
 
