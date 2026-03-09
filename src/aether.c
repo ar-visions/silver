@@ -6065,11 +6065,6 @@ none aether_init(aether a) {
     LLVMInitializeNativeAsmPrinter();
     LLVMInitializeNativeAsmParser();
 
-    if ( a->module) {
-        path prev = a->module;
-        a->module = absolute(prev);
-        drop(prev);
-    }
     if (!a->install) {
         cstr import = getenv("IMPORT");
         if (import) {
@@ -6118,8 +6113,8 @@ none aether_init(aether a) {
 
     //push(a->include_paths, f(path, "%o/lib/clang/22/include", a->install));
     push(a->lib_paths, (Au)f(path, "%o/lib", a->install));
-    path src_path = a->module;
-    push(a->include_paths, (Au)src_path);
+    //path src_path = a->module;
+    //push(a->include_paths, (Au)src_path);
 
     a->coverage = false; //a->debug;
     a->timing_enabled = false; //a->debug;
