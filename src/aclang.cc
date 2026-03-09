@@ -1,3 +1,5 @@
+#undef IMPORT
+
 #include <iostream>
 
 #include <llvm-c/DebugInfo.h>

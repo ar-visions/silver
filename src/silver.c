@@ -820,8 +820,8 @@ void silver_init(silver a) {
     bool is_once = a->build || a->is_external;
 
     if (a->version) {
-        printf("silver 0.8.8\n");
-        printf("Copyright (C) 2021 AR Visions\n");
+        printf("silver 0.88\n");
+        printf("Copyright (C) 2017 Kalen Novis White\n");
         printf("This is free software; see the source for LICENSE.  There is NO\n");
         printf("warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n");
         return;
@@ -852,26 +852,41 @@ void silver_init(silver a) {
     a->artifacts    = array(32);
     a->artifacts_path = f(path, "%o/%o.artifacts", a->build_dir, a->name);
 
-    verify(a->module, "required argument: module (path/to/module)");
+    verify(a->module && len(a->module), "required argument: module (path/to/module)");
 
     // aether_init already resolves module to absolute path
     // accept dir or .ag file
+    bool retry_path = false;
     if (cmp(ext(a->module), "ag") == 0) {
-        a->module_file = hold(a->module);
-        a->module      = parent_dir(a->module);
+        a->module_file = hold(absolute(a->module));
+        a->module      = parent_dir(a->module_file);
     } else {
         string m_stem  = stem(a->module);
+        a->module      = absolute(a->module);
         a->module_file = f(path, "%o/%o.ag", a->module, m_stem);
+        retry_path = true;
     }
 
     a->module_path = hold(a->module);
+    u64  module_file_m  = modified_time(a->module_file);
+
+    // see if we are specifying the module by its name alone, while inside the module folder
+    // in that case we validate its parent folder to be the same name
+    if (!module_file_m && retry_path && file_exists("%o.ag", a->module)) {
+        a->module_file = absolute(f(path, "%o.ag", a->module));
+        a->module      = parent_dir(a->module_file);
+        drop(a->module_path);
+        a->module_path = hold(a->module);
+        module_file_m  = modified_time(a->module_file);
+    }
 
     aether_reinit_startup((aether)a);
 
     // 1ms resolution time comparison (it could be nano-second based)
     bool update_product = true;
-    u64  module_file_m  = modified_time(a->module_file);
+
     verify(module_file_m, "module file not found: %o", a->module_file);
+    push(a->include_paths, (Au)a->module); // add include folder just for our module (this was in aether's init, interfering with our filter logic)
 
     // check if we are the main project of this repository
     a->project_path = is_git_project(a);
@@ -903,11 +918,10 @@ void silver_init(silver a) {
 
     cstr _SRC    = getenv("SRC");
     cstr _DBG    = getenv("DBG");
-    cstr _IMPORT = getenv("IMPORT");
-
-    if (!_IMPORT) _IMPORT = cstr_copy(path_cwd()->chars);
-    verify(_IMPORT, "silver requires IMPORT environment");
-    _IMPORT = cstr_copy(absolute(path(_IMPORT))->chars);
+    //cstr _IMPORT = getenv("IMPORT");
+    //if (!_IMPORT) _IMPORT = cstr_copy(path_cwd()->chars);
+    verify(dir_exists("%s", SILVER), "silver environment moved; please re-build for secure builds");
+    cstr _SILVER = cstr_copy(absolute(path(SILVER))->chars);
 
     a->mod          = (aether)a;
     a->imports      = array(32);
@@ -921,7 +935,7 @@ void silver_init(silver a) {
 
     // should only get its parent if its a file
     path af         = a->module ? directory(a->module) : path_cwd();
-    path install    = path(_IMPORT);
+    path install    = f(path, "%o/install", _SILVER);
     git_remote_info(af, &a->git_service, &a->git_owner, &a->git_project);
 
     bool retry = false;
