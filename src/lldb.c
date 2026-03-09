@@ -804,8 +804,14 @@ LLVMMetadataRef debug_au_header_type(aether a, Au_t schema) {
                 DW_ATE_address, LLVMDIFlagZero);
         }
 
-        u32 m_bits  = bits_for_type(a, m->src);
-        u32 m_align = align_for_type(a, m->src);
+        u32 m_bits, m_align;
+        if (m->src->is_class || m->src->is_pointer || m->src->is_funcptr) {
+            m_bits  = pointer_bits(a);
+            m_align = pointer_bits(a);
+        } else {
+            m_bits  = bits_for_type(a, m->src);
+            m_align = align_for_type(a, m->src);
+        }
         u64 offset_bits = (u64)m->offset * 8;
 
         members[idx++] = LLVMDIBuilderCreateMemberType(

@@ -1820,10 +1820,6 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
 
     Au_t au = fn->au;
 
-    if (strcmp(fn->au->ident, "forward") == 0) {
-        seq = seq;
-    }
-
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, u(etype, fn->au->rtype));
 
@@ -1876,9 +1872,14 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     // -----------------------------------------------------------------------
     // If this is an instance method, we must look up the implementation 
     // in the runtime type's vtable (ft) rather than using the static symbol.
-    if (is_abstract || (!a->direct && first_arg && first_arg->is_any && !first_is_alloc &&
+    if (is_abstract || (!a->direct && first_arg && !first_is_alloc &&
          fn->au->context != typeid(Au) && fn->au->is_imethod && !funcptr &&
          !(target_type && target_type->target && target_type->target->avoid_ftable))) {
+
+        if (strcmp(fn->au->ident, "finalize") == 0) {
+            seq = seq;
+        }
+
         verify(n_args > 0, "instance method %o requires 'this' argument", fn);
         
         // 1. Get the instance pointer ('this' is always the first argument)
@@ -1914,7 +1915,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
         // Retrieve the specific method index assigned during schema creation
         int method_index = fn->au->index; 
         Au f_info = head(fn);
-        verify(method_index > 0, "method %o has invalid vtable index", fn);
+        verify(method_index >= 0, "method %o has invalid vtable index", fn);
 
         LLVMValueRef ft_array      = LLVMBuildBitCast(B, ft_base, Au_t_ptr_ty, "ft_array");
         LLVMValueRef method_idx    = LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), method_index, false);
@@ -1922,7 +1923,27 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
         
         // 6. Load and Cast the Function Pointer
         LLVMValueRef func_ptr_void = LLVMBuildLoad2(B, i8_ptr_ty, func_ptr_addr, "func_ptr_void");
-        
+
+        // debug: print vtable dispatch info
+#if 0
+        if (a->debug) {
+            LLVMTypeRef  printf_args[] = { i8_ptr_ty };
+            LLVMTypeRef  printf_ty     = LLVMFunctionType(LLVMInt32TypeInContext(a->module_ctx), printf_args, 1, true);
+            LLVMValueRef printf_fn     = LLVMGetNamedFunction(a->module_ref, "printf");
+            if (!printf_fn)
+                printf_fn = LLVMAddFunction(a->module_ref, "printf", printf_ty);
+            char fmt_str[256];
+            sprintf(fmt_str, "vtable dispatch: %%s.%s [%%d] type=%%p ft=%%p fn=%%p\n\n", fn->au->ident);
+            LLVMValueRef fmt = LLVMBuildGlobalStringPtr(B, fmt_str, "vtable_fmt");
+            // load type->ident (first field of Au_t after header is ident at offset 8)
+            LLVMValueRef ident_ptr = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx), type_ptr,
+                &(LLVMValueRef){LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), offsetof(struct _Au_f, ident), false)}, 1, "ident_ptr");
+            LLVMValueRef ident_val = LLVMBuildLoad2(B, i8_ptr_ty, ident_ptr, "ident_val");
+            LLVMValueRef printf_call_args[] = { fmt, ident_val, method_idx, type_ptr, ft_base, func_ptr_void };
+            LLVMBuildCall2(B, printf_ty, printf_fn, printf_call_args, 6, "");
+        }
+#endif
+
         // Cast the generic void* from vtable to the specific function signature we expect
         V = LLVMBuildBitCast(B, func_ptr_void, LLVMTypeOf(fn->value), "vmethod");
     }
@@ -2483,6 +2504,9 @@ enode aether_e_typeid(aether a, etype mdl) { sequencer
 
     a->is_const_op = false;
     enode n = resolve_typeid(a, (Au)mdl);
+    if (!n) {
+        n = n;
+    }
     verify(n, "schema instance not found for %o [%i]", mdl, seq);
     return n;
 }
@@ -4394,13 +4418,16 @@ none etype_init(etype t) {
                 symbol_name((Au)string(au->ident)),
                 is_module(au) ? "module_f" : "f")->chars,
             AU_MEMBER_TYPE, AU_TRAIT_SCHEMA | AU_TRAIT_STRUCT);
-        
+
         // do this for Au types
         Au_t ref = typeid(Au_t);
         for (int i = 0; i < ref->members.count; i++) {
             Au_t au_mem  = (Au_t)ref->members.origin[i];
 
             // this is the last member (function table), if that changes, we no longer break
+            if (au_mem->ident && strcmp(au_mem->ident, "ft_space") == 0) {
+                continue;
+            }
             if (au_mem->ident && strcmp(au_mem->ident, "ft") == 0) {
                 Au_t ft_type = def(au, "ft", AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
                 Au_t ft_var = def(au, "ft", AU_MEMBER_VAR, 0);
@@ -4716,7 +4743,7 @@ etype implement_type_id(etype t) {
     bool is_module = au->member_type == AU_MEMBER_MODULE;
     string n = f(string, "%s_%s", au->ident, is_module ? "module" : "info");
     Au_t type_info = def_type  (a->au, n->chars, AU_TRAIT_STRUCT | AU_TRAIT_SYSTEM);
-    Au_t type_h    = def_member(type_info, "info", au_type, AU_MEMBER_VAR, AU_TRAIT_SYSTEM | AU_TRAIT_INLAY);
+    Au_t type_h    = def_member(type_info, "base", au_type, AU_MEMBER_VAR, AU_TRAIT_SYSTEM | AU_TRAIT_INLAY);
     Au_t type_f    = def_member(type_info, "type", t->schema->au, AU_MEMBER_VAR, AU_TRAIT_SYSTEM | AU_TRAIT_INLAY);
     type_f->index = 1;
     etype au_t = etype(mod, a, au, type_info);
@@ -4735,7 +4762,7 @@ etype implement_type_id(etype t) {
         test2    += 2;
     }
     etype_implement((etype)schema_i, false);
-    
+
     etype tt = u(etype, t->au);
     tt->type_id = hold(access(schema_i, string("type"), true));
     if (!a->is_Au_import && t != a) {
@@ -5425,6 +5452,7 @@ none aether_build_module_initializer(aether a, enode init) {
             _u64(isize)
         ));
 
+        i64 max_ft_end = 0;
         members(tau, mem) {
             if (mem->access_type == interface_intern)
                 continue;
@@ -5447,17 +5475,21 @@ none aether_build_module_initializer(aether a, enode init) {
                     fptr,
                     mem->alt ? (Au)const_string(chars, mem->alt) : (Au)e_null(a, etypeid(cstr))
                 ));
- 
+
                 LLVMTargetDataRef layout = LLVMGetModuleDataLayout(a->module_ref);
                 i64 ptr = LLVMPointerSize(layout);
-                int idx_adj = -2;
+                int idx_adj = -1;
                 int au_t_sz = etypeid(Au_t)->au->typesize;
-                i64 byte_offset = etypeid(Au_t)->au->typesize + (ptr * 2) +
+                i64 byte_offset = etypeid(Au_t)->au->typesize +
                         ((mem->index + idx_adj) * ptr);
                 LLVMValueRef offset = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), byte_offset, false);
                 LLVMValueRef slot = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx), type_id->value, &offset, 1, "ft_slot");
                 enode fn_slot = enode(mod, a, au, typeid(ARef), loaded, false, value, slot);
                 e_assign(a, fn_slot, (Au)mf, OPType__assign);
+
+                // track max ftable end for table_size update
+                i64 ft_end = byte_offset - offsetof(struct _Au_f, ft) + ptr;
+                if (ft_end > max_ft_end) max_ft_end = ft_end;
 
                 arg_list(mem, arg) {
                     etype arg_type = resolve(u(etype, arg->src));
@@ -5476,6 +5508,8 @@ none aether_build_module_initializer(aether a, enode init) {
                 }
 
             } else if (mem->member_type == AU_MEMBER_VAR) {
+                if (mem->is_system)
+                    continue;
                 enode e_meta_b = e_null(a, etypeid(Au));
                 if (mem->meta.b) {
                     if (instanceof(mem->meta.b, Au_t))
@@ -5517,6 +5551,19 @@ none aether_build_module_initializer(aether a, enode init) {
                 fault("unsupported member");
             }
         }
+
+        // update table_size on schema so child emplace_type copies full ftable
+        if (max_ft_end > 0) {
+            LLVMValueRef ts_offset = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx),
+                offsetof(struct _Au_f, table_size), false);
+            LLVMValueRef ts_ptr = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx),
+                type_id->value, &ts_offset, 1, "table_size_ptr");
+            LLVMValueRef ts_slot = LLVMBuildBitCast(B, ts_ptr,
+                LLVMPointerType(LLVMInt32TypeInContext(a->module_ctx), 0), "table_size_slot");
+            LLVMValueRef ts_val = LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), max_ft_end, false);
+            LLVMBuildStore(B, ts_val, ts_slot);
+        }
+
         e_fn_call(a, fn_push, a(type_id));
     }
 
@@ -6648,6 +6695,11 @@ etype aether_return_type(aether a) {
 efunc aether_function(aether a, etype place, string ident, etype rtype, array args, u8 member_type, u32 traits, u8 operator_type) {
     Au_t context = place->au;
     Au_t au = def(context, ident->chars, AU_MEMBER_FUNC, traits);
+    if (traits & AU_TRAIT_OVERRIDE) {
+        Au_t parent = find_member(context->context, ident->chars, member_type, 0, true);
+        if (parent)
+            au->index = parent->index;
+    }
     if (context->member_type == AU_MEMBER_MODULE) {
         if (au->module && au->module != context) {
             fprintf(stderr, "MODULE OVERWRITE [aether_function]: %s (%p) module %p -> %p\n", au->ident, au, au->module, context);
@@ -6677,6 +6729,7 @@ efunc aether_function(aether a, etype place, string ident, etype rtype, array ar
 etype aether_record(aether a, etype place, etype based, string ident, u32 traits) { sequencer
     Au_t au = def(place->au, ident->chars, AU_MEMBER_TYPE, traits);
     au->context = (traits & AU_TRAIT_STRUCT) ? null : (based ? based->au : etypeid(Au)->au);
+
     etype n = etype(mod, a, au, au);
     return n;
 }
