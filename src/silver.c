@@ -856,7 +856,7 @@ void silver_init(silver a) {
 
     // aether_init already resolves module to absolute path
     // accept dir or .ag file
-    if (cmp(ext(a->module), ".ag") == 0) {
+    if (cmp(ext(a->module), "ag") == 0) {
         a->module_file = hold(a->module);
         a->module      = parent_dir(a->module);
     } else {
@@ -2920,7 +2920,7 @@ static none next_function_index_update(Au_t mdl, int* index) {
 
 static int next_function_index(Au_t mdl) {
     if (!mdl) return 0;
-    int index = 1;
+    int index = 0;
     next_function_index_update(mdl, &index);
     return index;
 }
@@ -2930,7 +2930,7 @@ static int next_function_index(Au_t mdl) {
 
 efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPType op_type, string op_name) {
     sequencer
-    if (strcmp(mem->ident, "forward") == 0) {
+    if (strcmp(mem->ident, "init") == 0) {
         mem = mem;
     }
     if (seq == 6) {
@@ -2961,6 +2961,15 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     }
     au->module = a->au;
 
+    int sz2 = sizeof(struct _Au_t);
+
+    if (rec_ctx && strcmp(rec_ctx->au->ident, "op") == 0) {
+        mem = mem;
+    }
+    if (rec_ctx && strcmp(rec_ctx->au->ident, "conv") == 0 && strcmp(mem->ident, "init") == 0) {
+        mem = mem;
+    }
+
     Au_t override = null;
     if (!rec_ctx)
         rec_ctx = context_struct(a);
@@ -2968,7 +2977,13 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         override = find_member(
             rec_ctx->au->context, name->chars,
             member_type, 0, true);
+
         au->is_override = override != null;
+
+        if (strcmp(rec_ctx->au->ident, "conv") == 0 && strcmp(mem->ident, "init") == 0) {
+            mem = mem;
+        }
+
         if (au->is_override) {
             au->index = override->index;
         } else {
