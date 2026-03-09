@@ -1207,6 +1207,11 @@ none push_type(Au_t type) {
  
         Au_t required_bits = def_member(au_t, "required_bits",  typeid(u64), AU_MEMBER_VAR, 0);
         required_bits->elements = 2;
+
+        // we are having trouble creating the space inside an inlay struct at the tail of Au_t; this is to compensate
+        def_member(au_t, "ft_space", typeid(ARef), AU_MEMBER_VAR, 0)
+            ->offset = offsetof(struct _Au_f, ft);
+    
         Au_t ft = def(au_t, null, AU_MEMBER_TYPE, AU_TRAIT_STRUCT);
         def_member(ft, "_none_", typeid(ARef), AU_MEMBER_VAR, 0);
         def_member(au_t, "ft", ft, AU_MEMBER_TYPE, AU_TRAIT_STRUCT)->offset = offsetof(struct _Au_f, ft);
