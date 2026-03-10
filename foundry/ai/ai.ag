@@ -40,10 +40,6 @@ enum Pooling
     min:       2
     average:   3
 
-class tensor2
-    public aa: i32
-    public b: i32
-    public c: i32
 
 class tensor
     expect tensor_shape: shape
@@ -171,11 +167,22 @@ class op
     intern result:     tensor
     public weights:    tensor
     public bias:       tensor
-    public w_m:        tensor
-    public w_v:        tensor
-    public b_m:        tensor
-    public b_v:        tensor
 
+    intern w_m:        tensor
+    intern w_v:        tensor
+    intern b_m:        tensor
+    intern b_v:        tensor
+
+
+    func set_optimizer [opt:Optimizer] -> none
+        if [ opt == adam ]
+            if [ weights ]
+                w_m = tensor [ initializer: zeros, tensor_shape: weights.tensor_shape ]
+                w_v = tensor [ initializer: Initializer.zeros, tensor_shape: weights.tensor_shape ]
+            
+            if [ bias ]
+                b_m = tensor [ initializer: Initializer.zeros, tensor_shape: bias.tensor_shape ]
+                b_v = tensor [ initializer: Initializer.zeros, tensor_shape: bias.tensor_shape ]
 
     func finalize [] -> none
         no-op
@@ -211,8 +218,10 @@ op flatten
         result.floats = input.floats
 
     func back [d_out: tensor] -> tensor
-        t: d_out.count
-        flat: tensor [ tensor_shape: 1 << shape[t] ]
+        t : d_out.count
+        s : shape[t] << 1
+        #puts 's = {s}'
+        flat: tensor [ tensor_shape: s ]
         memcpy[ flat.floats, d_out.floats, t * 4 ]
         return flat
 
@@ -343,10 +352,16 @@ op conv
     public weights_matrix: tensor
     public im2col_matrix:  tensor
 
+    func test2 []
+        filter_h: kernel_size[0]
+        filter_w: kernel_size[1]
+    
     func finalize []
         in_h:     input.tensor_shape[0]
         in_w:     input.tensor_shape[1]
         in_c:     input.tensor_shape[2]
+
+        #kernel_size = 3x3 -- setting it before hand works
         filter_h: kernel_size[0]
         filter_w: kernel_size[1]
         stride_h: stride_shape[0]
@@ -716,7 +731,6 @@ class keras
         return null
 
     func forward [src: tensor] -> tensor
-        printf "k_output in forward is %p\n", k_output
         k_output.tensor_shape.total
         for [ current: op* ] in order
             if [ current is input_op ]
@@ -725,16 +739,13 @@ class keras
                     memcpy[inp.input.floats, inp.source.floats, inp.input.count * 4]
                 el
                     memcpy[inp.input.floats, src.floats, src.count * 4]
-            puts 'trying {current.name}'
             current.forward
             k_output.tensor_shape.total
         
-        printf "k_output in forward is %p\n", k_output
         k_output.tensor_shape.total
         res: tensor [ tensor_shape: k_output.tensor_shape ]
         memcpy[res.floats, k_output.floats, k_output.count * 4]
         return res
-
 
     func back [d_out: tensor] -> tensor
         n: i32 [ order.count ]
@@ -749,13 +760,14 @@ class keras
     func train [epochs: i32, samples: map tensor[tensor], learning_rate: f32] -> none
         printf "train: a = %p\n", a
         
+        for [ layer: op ] in ops
+            layer.set_optimizer optimizer
+        
         for [ epoch: i32 0, epoch < epochs, epoch += 1 ]
             puts 'epoch {epoch + 1}/{epochs}'
-            
-            #total2:k_output.total
-            for [ target: tensor, src: tensor ] in samples # when it gets here, it steps upwards ONCE.. this must be a side effect of either the for peek, or the timing
+            ltotal: f64 0
+            for [ target: tensor, src: tensor ] in samples
                 prediction: forward[src]
-##
                 loss:       f32 [ 0.0 ]
                 d_out:      tensor [ tensor_shape: target.tensor_shape ]
                 t:          target.count
@@ -765,10 +777,12 @@ class keras
                     loss += diff * diff
                     d_out.floats[i] = 2.0 * diff
                 loss /= t
-                puts 'loss: {loss}'
+                ltotal += loss
+
                 d_in: back[d_out]
 
                 step += 1
+
                 for [ layer: op ] in ops
                     if [ layer.weights ]
                         wt: layer.weights.count
@@ -777,9 +791,6 @@ class keras
                             for [ i: i32 0, i < wt, i += 1 ]
                                 layer.weights.floats[i] -= learning_rate * layer.weights.grad[i]
                         case Optimizer.adam
-                            if [ !layer.w_m ]
-                                layer.w_m = tensor [ initializer: Initializer.zeros, tensor_shape: layer.weights.tensor_shape ]
-                                layer.w_v = tensor [ initializer: Initializer.zeros, tensor_shape: layer.weights.tensor_shape ]
                             bc1: f32 [ 1.0 - powf[beta1, step] ]
                             bc2: f32 [ 1.0 - powf[beta2, step] ]
                             for [ i: i32 0, i < wt, i += 1 ]
@@ -796,9 +807,6 @@ class keras
                             for [ i: i32 0, i < bt, i += 1 ]
                                 layer.bias.floats[i] -= learning_rate * layer.bias.grad[i]
                         case Optimizer.adam
-                            if [ !layer.b_m ]
-                                layer.b_m = tensor [ initializer: Initializer.zeros, tensor_shape: layer.bias.tensor_shape ]
-                                layer.b_v = tensor [ initializer: Initializer.zeros, tensor_shape: layer.bias.tensor_shape ]
                             bc1: f32 [ 1.0 - powf[beta1, step] ]
                             bc2: f32 [ 1.0 - powf[beta2, step] ]
                             for [ i: i32 0, i < bt, i += 1 ]
@@ -808,5 +816,8 @@ class keras
                                 mh: layer.b_m.floats[i] / bc1
                                 vh: layer.b_v.floats[i] / bc2
                                 layer.bias.floats[i] -= learning_rate * mh / (sqrtf[vh] + epsilon)
-##
+
+                lavg: ltotal / samples.count
+                puts 'loss-avg: {lavg}'
+
         puts 'training complete'

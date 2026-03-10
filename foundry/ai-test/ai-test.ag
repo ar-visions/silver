@@ -47,6 +47,8 @@ app ai-test
                           out_channels: 8, activation: Activation.relu,
                           weights: w_conv1, bias: b_conv1]
         
+        #op_c1.test2 # lets access it right away, see if the problem is within init
+
         op_c2:  conv     [input: t_conv2,  name: 'conv2',
                           padding: Padding.same, kernel_size: 3x3, stride_shape: 1x1,
                           out_channels: 16, activation: Activation.relu,
