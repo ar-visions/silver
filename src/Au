@@ -619,7 +619,7 @@ forward(any)
     M(AA,BB, i, method, public, Au_t,   meta_index,     i32) \
     M(AA,BB, s, method, public, Au_t,   emplace_type, Au_t, Au_t, Au_t, Au_t, symbol, i32, u64, u64, u64) \
     M(AA,BB, s, method, public, Au_t,   def,            Au_t, symbol, u32, u64) \
-    M(AA,BB, s, method, public, Au_t,   def_func,       Au_t, symbol, Au_t, u32, u32, u32, u64, ARef, symbol) \
+    M(AA,BB, s, method, public, Au_t,   def_func,       Au_t, symbol, Au_t, u32, u32, u32, u64, ARef, symbol, i32) \
     M(AA,BB, s, method, public, Au_t,   def_arg,        Au_t, symbol, Au_t, u64) \
     M(AA,BB, s, method, public, Au_t,   def_test,       Au_t, ARef) \
     M(AA,BB, s, method, public, Au_t,   def_meta,       Au_t, symbol, Au_t) \
@@ -1142,8 +1142,9 @@ forward(shape)
     M(AA,BB, i, operator, public, shape, _lmul,     num) \
     M(AA,BB, i, operator, public, shape, _div,      num) \
     M(AA,BB, i, operator, public, shape, _ldiv,     num) \
-    M(AA,BB, s, vargs,   public, shape, new_shape, i64) \
-    M(AA,BB, i, ctr,     public, i64) \
+    M(AA,BB, s, vargs,    public, shape, new_shape, i64) \
+    M(AA,BB, i, ctr,      public, i64) \
+    M(AA,BB, i, override, cast,   string) \
     M(AA,BB, i, override, method, compare) \
     M(AA,BB, i, override, method, init) \
     M(AA,BB, i, override, method, dealloc)

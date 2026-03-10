@@ -249,6 +249,16 @@ shape shape_operator__lleft(shape a, i64 n) {
     return new(shape, count, a->count - n, data, a->data + n, is_global, false);
 }
 
+string shape_cast_string(shape a) {
+    string r = string(alloc, 32);
+    for (int i = 0; i < a->count; i++) {
+        if (r->count)
+            append(r, "x");
+        concat(r, f(string, "%lli", a->data[i]));
+    }
+    return r;
+}
+
 
 i64 shape_total(shape a) {
     i64* data = a->data;
@@ -885,7 +895,7 @@ Au_t def_meta(Au_t context, symbol ident, Au_t arg) {
 }
 
 Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
-        u32 access_type, u32 operator_type, u64 traits, ARef value, symbol alt) {
+        u32 access_type, u32 operator_type, u64 traits, ARef value, symbol alt, i32 index) {
     Au_t func = def(type, ident, AU_MEMBER_TYPE, traits);
     func->rtype         = rtype;
     func->member_type   = member_type;
@@ -893,6 +903,7 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
     func->access_type   = interface_public;
     func->value         = (object)value;
     func->alt           = alt ? cstr_copy((cstr)alt) : null;
+    func->index         = index;
     return func;
 }
 
@@ -5971,9 +5982,10 @@ none shape_push(shape a, i64 i) {
 }
 
 shape shape_with_i64(shape a, i64 i) {
-    a->data = &head(a)->count; // head wont mind if we redefine its count field for only shape.
-    a->data[0] = i;
-    a->is_global = true; // rename this one
+    a->data         = &head(a)->count; // head wont mind if we redefine its count field for only shape.
+    a->data[0]      = i;
+    a->count        = 1;
+    a->is_global    = true;
     return a;
 }
 

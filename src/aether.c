@@ -146,7 +146,7 @@ void emit_coverage_register(aether);
 void coverage_set_func_name(u32 func_id, char* name);
 
 // set debug source location on the IR builder
-static void emit_debug_loc(aether a, u32 line, u32 column) {
+void emit_debug_loc(aether a, u32 line, u32 column) {
     if (!a->debug || !a->compile_unit || a->no_build) return;
     LLVMMetadataRef scope = debug_scope(a);
     if (!scope)
@@ -306,7 +306,6 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
     if (a->no_build)
         return e_noop(a, null);
 
-    // set debug location for assignment
     debug_emit(a);
 
     validate(op_val >= OPType__bind && op_val <= OPType__assign_left,
@@ -420,10 +419,10 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
         LLVMBuildStore(B, res->value, store_target);
 
         // sync load so LLDB sees stored value
-        if (a->debug) {
-            LLVMBuildLoad2(B, LLVMTypeOf(res->value), store_target, "dbg.sync");
-            debug_emit(a);
-        }
+        //if (a->debug) {
+        //    debug_emit(a);
+        //    LLVMBuildLoad2(B, LLVMTypeOf(res->value), store_target, "dbg.sync");
+        //}
     }
 
     /* ------------------------------------------------------------
@@ -4893,7 +4892,7 @@ none etype_implement(etype t, bool w) {
             if (!multi_Au || tt->au != typeid(Au))
                 for (int i = 0; i < tt->au->members.count; i++) {
                     Au_t m = (Au_t)tt->au->members.origin[i];
-                    if (m->member_type == AU_MEMBER_VAR && !m->is_static && is_accessible(a, m))
+                    if (m->member_type == AU_MEMBER_VAR && !m->is_static)
                         count++;
                 }
 
@@ -4912,11 +4911,15 @@ none etype_implement(etype t, bool w) {
             Au    tt_info  = head(tt_entry);
             //if (len(cl) > 1 && tt->au == typeid(Au)) break;
             int prop_index = 0;
+
+            // two passes: accessible vars first, then intern vars
+            // this ensures intern members sit at the end (matching isize block position)
+            for (int pass = 0; pass < 2; pass++) {
             for (int i = 0; i < tt->au->members.count; i++) {
                 Au_t m = (Au_t)tt->au->members.origin[i];
                 etype m_entry = u(etype, m);
                 Au    m_info  = head(m_entry);
-                
+
                 if (m->member_type == AU_MEMBER_FUNC          ||
                     m->member_type == AU_MEMBER_CONSTRUCT     ||
                     m->member_type == AU_MEMBER_INDEX         ||
@@ -4924,6 +4927,7 @@ none etype_implement(etype t, bool w) {
                     m->member_type == AU_MEMBER_OPERATOR      ||
                     m->member_type == AU_MEMBER_CAST) {
 
+                    if (pass == 1) continue;
                     src_init(a, m->rtype);
                     etype_implement(u(etype, m->rtype), false);
 
@@ -4935,9 +4939,14 @@ none etype_implement(etype t, bool w) {
                     src_init(a, m);
                     etype_implement(u(etype, m), false);
                 }
-                else if (m->member_type == AU_MEMBER_VAR && is_accessible(a, m)) {
+                else if (m->member_type == AU_MEMBER_VAR) {
+                    bool is_intern = m->access_type == interface_intern;
+                    if (( is_intern && pass == 0) ||
+                        (!is_intern && pass == 1))
+                        continue;
 
                     if (m->is_static ) {
+                        if (pass == 1) continue;
                         string c_name = f(string, "%s_%s", au->ident, m->ident);
                         LLVMValueRef global = a->is_Au_import ?
                             LLVMFetchGlobal(a->module_ref, lltype(u(etype, m->src)), c_name->chars) :
@@ -4973,6 +4982,7 @@ none etype_implement(etype t, bool w) {
                         verify(struct_members[index], "no lltype found for member %s.%s", au->ident, m->ident);
                         int abi_member  = LLVMABISizeOfType(a->target_data, struct_members[index]);
                         verify(abi_member, "type has no size");
+                        m->typesize = abi_member;
                         if (au->is_union && src->abi_size > ilargest) {
                             largest  = struct_members[index];
                             ilargest = src->abi_size;
@@ -4980,6 +4990,7 @@ none etype_implement(etype t, bool w) {
                         m->index = index++;
                     }
                 }
+            }
             }
 
             // lets define this as a form of byte accessible opaque.
@@ -5369,7 +5380,8 @@ none aether_build_module_initializer(aether a, enode init) {
                 _u32(mem->operator_type),
                 _u64(mem->traits),
                 value(etypeid(ARef), mf->value),
-                mem->alt ? (Au)const_string(chars, mem->alt) : (Au)e_null(a, etypeid(cstr))
+                mem->alt ? (Au)const_string(chars, mem->alt) : (Au)e_null(a, etypeid(cstr)),
+                _i32(mem->index)
             ));
         }
 
@@ -5433,8 +5445,9 @@ none aether_build_module_initializer(aether a, enode init) {
         u64 isize = 0;
         members(tau, mem) {
             if (mem->member_type == AU_MEMBER_VAR &&
-                mem->access_type == interface_intern)
+                mem->access_type == interface_intern) {
                 isize += mem->typesize;
+            }
         }
 
         //aether_eputs(a, f(string, "%o: var", type_id->au));
@@ -5473,7 +5486,8 @@ none aether_build_module_initializer(aether a, enode init) {
                     _u32(mem->operator_type),
                     _u64(mem->traits),
                     fptr,
-                    mem->alt ? (Au)const_string(chars, mem->alt) : (Au)e_null(a, etypeid(cstr))
+                    mem->alt ? (Au)const_string(chars, mem->alt) : (Au)e_null(a, etypeid(cstr)),
+                    _i32(mem->index)
                 ));
 
                 LLVMTargetDataRef layout = LLVMGetModuleDataLayout(a->module_ref);

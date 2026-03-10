@@ -393,7 +393,7 @@ static bool silver_next_is_eq(silver a, symbol first, ...);
 
 static enode reverse_descent(silver a, etype expect);
 
-static enode parse_expression(silver a, etype expect) { sequencer
+static enode parse_expression(silver a, etype expect, bool hint) { sequencer
     if (seq == 968)
         seq = seq;
     if (is_rec(expect) && next_is(a, "[")) {
@@ -406,7 +406,7 @@ static enode parse_expression(silver a, etype expect) { sequencer
         //print_tokens(a, seq);
 
         push_current(a);
-        
+
         consume(a);
         token pk = peek(a);
         bool is_default = eq(pk, "]");
@@ -424,9 +424,9 @@ static enode parse_expression(silver a, etype expect) { sequencer
         if (is_default || is_field || !eq(l, "]")) // field parser
             return parse_object(a, expect, false);
     }
-    
-    enode unbias = reverse_descent(a, null);
-    return e_create(a, expect, (Au)unbias); // parse assignment needs to expect a deref'd type, or, we call it loaded:false, 
+
+    enode unbias = reverse_descent(a, hint ? expect : null);
+    return e_create(a, expect, (Au)unbias); // parse assignment needs to expect a deref'd type, or, we call it loaded:false,
 }
 
 enode e_short_circuit_pair(silver a, OPType combine, enode L, enode R);
@@ -527,7 +527,7 @@ static enode reverse_descent(silver a, etype expect) { sequencer
         if (match_op == OPType__and || match_op == OPType__or) {
             if (match_op == OPType__or && read_if(a, "return")) {
                 etype rtype = return_type(a);
-                enode fallback = peek(a) ? parse_expression(a, rtype) : null;
+                enode fallback = peek(a) ? parse_expression(a, rtype, false) : null;
                 verify(fallback || is_void(return_type(a)),
                        "expected expression after return");
                 enode cond = e_not(a, L);
@@ -575,14 +575,14 @@ static enode reverse_descent(silver a, etype expect) { sequencer
             OPType combine = (match_op == OPType__not_equal) ? OPType__and : OPType__or;
             
             // read first operand
-            enode R0 = parse_expression(a, null);
+            enode R0 = parse_expression(a, null, false);
             
             // check for range syntax
             bool is_range_inclusive = read_if(a, "...") != null;
             bool is_range_exclusive = !is_range_inclusive && read_if(a, "..<") != null;
             
             if (is_range_inclusive || is_range_exclusive) {
-                enode R1 = parse_expression(a, null);
+                enode R1 = parse_expression(a, null, false);
                 validate(read_if(a, ")"), "expected ) after range");
                 
                 enode lo_cmp, hi_cmp;
@@ -609,7 +609,7 @@ static enode reverse_descent(silver a, etype expect) { sequencer
                 enode cmp = e_op(a, match_op, match_method, (Au)L, (Au)R0);
                 
                 while (read_if(a, ",")) {
-                    enode Rn      = parse_expression(a, null);
+                    enode Rn      = parse_expression(a, null, false);
                     enode next_cmp = e_op(a, match_op, match_method, (Au)L, (Au)Rn);
                     cmp = e_short_circuit_pair(a, combine, cmp, next_cmp);
                 }
@@ -635,7 +635,8 @@ static enode reverse_descent(silver a, etype expect) { sequencer
         prec_stack[sp]    = match_level;
         sp++;
         
-        L = read_enode(a, null, false);
+        L = read_enode(a, (match_op == OPType__equal || match_op == OPType__not_equal) ?
+            canonical(L) : null, false);
     }
 }
 
@@ -812,6 +813,7 @@ static void exporter(silver a) {
 
 void llvm_reinit(silver);
 void aether_reinit_startup(aether);
+void emit_debug_loc(aether, u32, u32);
 
 // im a module!
 static void write_target_cmake(path sdk_path, cstr system_name, cstr processor,
@@ -845,68 +847,6 @@ static void write_target_cmake(path sdk_path, cstr system_name, cstr processor,
         triple, triple);
     fdata fd = fdata(write, true, src, cmake_path);
     file_write(fd, (Au)content);
-}
-
-static void ensure_sdk(silver a) {
-    if (!a->sdk) return;
-    path sdk_path   = f(path, "%o/sdk/%o", a->install, a->sdk);
-    path clang_bin  = f(path, "%o/sdk/native/bin", a->install);
-    if (dir_exists("%o", sdk_path)) return;
-
-    // android targets: fetch NDK and extract sysroot
-    if (cmp(a->sdk, "android-arm64") == 0 || cmp(a->sdk, "android-x86_64") == 0) {
-        cstr ndk_ver    = "r27";
-        cstr api_level  = "33";
-        bool is_arm64   = cmp(a->sdk, "android-arm64") == 0;
-        cstr arch       = is_arm64 ? "aarch64" : "x86_64";
-        cstr processor  = is_arm64 ? "aarch64" : "x86_64";
-        char triple[64];
-        snprintf(triple, sizeof(triple), "%s-linux-android%s", arch, api_level);
-
-        // determine host platform for NDK download
-#ifdef __APPLE__
-        cstr host = "darwin";
-#elif defined(__linux__)
-        cstr host = "linux";
-#else
-        verify(false, "unsupported host platform for android SDK fetch");
-#endif
-
-        path ndk_zip  = f(path, "%o/sdk/android-ndk-%s-%s.zip", a->install, ndk_ver, host);
-        path ndk_dir  = f(path, "%o/sdk/android-ndk-%s",        a->install, ndk_ver);
-
-        // download NDK if not cached
-        if (!file_exists("%o", ndk_zip)) {
-            vexec(true, "ndk-fetch",
-                "curl -L -o %o "
-                "https://dl.google.com/android/repository/android-ndk-%s-%s.zip",
-                ndk_zip, ndk_ver, host);
-            verify(file_exists("%o", ndk_zip), "NDK download failed");
-        }
-
-        // extract if not already
-        if (!dir_exists("%o", ndk_dir)) {
-            vexec(true, "ndk-extract", "unzip -q %o -d %o/sdk", ndk_zip, a->install);
-            verify(dir_exists("%o", ndk_dir), "NDK extraction failed");
-        }
-
-        // create sdk target dir with symlink to sysroot
-        vexec(true, "sdk-mkdir", "mkdir -p %o", sdk_path);
-        char sysroot[512];
-        snprintf(sysroot, sizeof(sysroot),
-            "%s/toolchains/llvm/prebuilt/%s-x86_64/sysroot",
-            ndk_dir->chars, host);
-        verify(dir_exists("%s", sysroot), "NDK sysroot not found at %s", sysroot);
-
-        // symlink sysroot into our sdk dir
-        vexec(true, "sdk-sysroot", "ln -s %s %o/sysroot", sysroot, sdk_path);
-
-        // generate target.cmake
-        write_target_cmake(sdk_path, "Android", processor, triple, sysroot, clang_bin);
-        return;
-    }
-
-    verify(false, "unknown sdk target: %o", a->sdk);
 }
 
 void silver_init(silver a) {
@@ -2208,6 +2148,11 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
 
         bool new_name = in_decl != null || in_rec;
         alpha = read_alpha_macrofilter(a, new_name);
+        if (!alpha && first && scope_mdl) {
+            string bare = peek_alpha(a);
+            if (bare && find_member(scope_mdl->au, bare->chars, 0, 0, true))
+                alpha = read_alpha(a);
+        }
         if (alpha && eq(alpha, "forward")) {
             alpha = alpha;
         }
@@ -2432,7 +2377,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
     int slen = len(a->stack);
 
     if (!cmode && read_if(a, "[")) {
-        enode n = parse_expression(a, mdl_expect);
+        enode n = parse_expression(a, mdl_expect, false);
         validate(n, "could not read expression");
         validate(read_if(a, "]"),
             "expected ] after %o expression %i", u(etype, n->au->src), seq);
@@ -2458,7 +2403,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
                 } else if (expr) {
                     push_tokens(a, (tokens)expr, 0);
                     if (next_is(a, "["))
-                        res0 = parse_expression(a, mdl_found);
+                        res0 = parse_expression(a, mdl_found, false);
                     else
                         res0 = read_enode(a, mdl_found, false);
 
@@ -2581,7 +2526,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
                 if (next_is(a, ")")) {
                     consume(a);
                     pop_tokens(a, true);
-                    enode res = e_create(a, inner, (Au)parse_expression(a, inner));
+                    enode res = e_create(a, inner, (Au)parse_expression(a, inner, false));
                     return e_create(a, mdl_expect, (Au)res);
                 } else {
                     pop_tokens(a, false);
@@ -2592,7 +2537,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
             pop_tokens(a, false);
         }
         a->parens_depth++;
-        enode expr = parse_expression(a, null); // Parse the expression
+        enode expr = parse_expression(a, null, false); // Parse the expression
         validate(read_if(a, ")"), "expected ) after expression, found %o", peek(a));
         a->parens_depth--;
         return e_create(a, mdl_expect, (Au)
@@ -2684,7 +2629,7 @@ etype etype_infer(silver a) {
     if (!t) {
         push_current(a);
         a->no_build = true;
-        enode n = parse_expression(a, null);
+        enode n = parse_expression(a, null, false);
         a->no_build = false;
         if (n) t = (etype)n;
         pop_tokens(a, false);
@@ -2728,9 +2673,11 @@ enode parse_statement(silver a)
     a->setter_key_tokens = null;
     a->setter_fn        = null;
     a->statement_origin = peek(a);
+    if (f && a->statement_origin && !a->no_build)
+        emit_debug_loc((aether)a, a->statement_origin->line, a->statement_origin->column);
     Au_t      top       = top_scope(a);
     silver    module    = is_module(top) ? a : null;
-    
+    etype     rec_top   = is_rec(top) ? u(etype, top) : null;
 
     // standard statements first, only in context of functions
     if (f) {
@@ -2746,8 +2693,22 @@ enode parse_statement(silver a)
     if (next_is(a, "ifdef")) return parse_ifdef_else(a);
 
     verify(!next_is(a, "undefined"), "undefined is invalid access-level");
-    interface access = read_enum(a, interface_undefined, typeid(interface));
-    bool is_default = !access ? read_if(a, "default") != null : false;
+
+    
+
+    u64 traits = 0;
+    interface access = interface_undefined;
+
+    if (rec_top && next_is(a, "flux")) { // adds more capacity to objects
+        access = interface_public;
+        traits = AU_TRAIT_IS_FLUX;
+    } else if (rec_top && next_is(a, "context")) {
+        access = interface_public;
+        traits = AU_TRAIT_IS_CONTEXT;
+    } else
+        access = read_enum(a, interface_undefined, typeid(interface));
+
+    //bool is_default = !access ? read_if(a, "default") != null : false;
     bool has_access = access != interface_undefined;
 
     if (module && !next_is(a, "func") && peek_def(a)) {
@@ -2821,14 +2782,18 @@ enode parse_statement(silver a)
         } else {
             mem->au->access_type = (u8)access;
         }
-        if (access == interface_expect || access == interface_context)
+        if (access == interface_expect || !!(traits & AU_TRAIT_IS_CONTEXT))
             mem->au->is_required = true;
         mem->au->is_context = access == interface_context;
     }
-    if (is_default && mem && mem->au) {
-        mem->au->is_default  = true;
-        mem->au->is_required = true;
-    }
+
+    if (mem)
+        mem->au->traits |= traits;
+
+    //if (is_default && mem && mem->au) {
+    //    mem->au->is_default  = true;
+    //    mem->au->is_required = true;
+    //}
 
     // if no access then full access
     if (!access) access = interface_public;
@@ -2852,7 +2817,7 @@ enode parse_statement(silver a)
         // check if this is a nested, static member (we need to back off and read_enode can handle this)
         Au_t top_type = isa(u(etype, top));
 
-        etype      rec_top    = is_rec(top) ? u(etype, top) : null;
+        
         statements in_code    = context_code(a);
         bool       is_const   = mem && mem->au->is_const;
 
@@ -2965,7 +2930,7 @@ enode parse_statement(silver a)
 
     if (!mem && !e && peek(a)) {
         a->left_hand = true;
-        e = parse_expression(a, null); /// at module level, supports keywords
+        e = parse_expression(a, null, false); /// at module level, supports keywords
         a->left_hand = false;
     }
     return e;
@@ -3937,12 +3902,12 @@ enode silver_parse_ternary(silver a, enode expr, etype mdl_expect) {
     if (!read_if(a, "?")) {
         if (!read_if(a, "??"))
             return expr;
-        enode expr_true = parse_expression(a, mdl_expect);
+        enode expr_true = parse_expression(a, mdl_expect, false);
         return e_ternary(a, expr, expr_true, null);
     }
-    enode expr_true = parse_expression(a, mdl_expect);
+    enode expr_true = parse_expression(a, mdl_expect, false);
     verify(read_if(a, ":"), "expected : after expression");
-    enode expr_false = parse_expression(a, mdl_expect);
+    enode expr_false = parse_expression(a, mdl_expect, false);
     return e_ternary(a, expr, expr_true, expr_false);
 }
 
@@ -4011,7 +3976,7 @@ static enode parse_create_lambda(silver a, enode mem) {
     // Parse context references - these become pointers in the context struct
     for (int i = 0; i < ctx_ln; i++) {
         Au_t  ctx_arg  = (Au_t)micro_get(ctx_mem, i);
-        enode ctx_expr = parse_expression(a, u(etype, ctx_arg->src));
+        enode ctx_expr = parse_expression(a, u(etype, ctx_arg->src), false);
         
         validate(ctx_expr, "expected context variable for %s", ctx_arg->ident);
 
@@ -4050,7 +4015,7 @@ static enode parse_lambda_call(silver a, efunc mem) {
     for (int i = 0; i < n_args; i++) {
         Au_t  arg_decl = (Au_t)src_fn->au->args.origin[i + arg_offset];
         etype arg_type = u(etype, arg_decl->src);
-        enode arg_expr = parse_expression(a, arg_type);
+        enode arg_expr = parse_expression(a, arg_type, false);
         verify(arg_expr, "invalid lambda argument");
         push(call_values, (Au)arg_expr);
 
@@ -4115,7 +4080,7 @@ static enode parse_func_call(silver a, efunc f) { sequencer
         Au_t   arg_decl = (Au_t)micro_get(m, i + offset);
         Au_t   src  = (Au_t)au_arg_type((Au)arg_decl);
         etype  typ  = (arg_decl && arg_decl->is_formatter) ? null : canonical(u(etype, src));
-        enode  expr = parse_expression(a, typ); // self contained for '{interp}' to cstr!
+        enode  expr = parse_expression(a, typ, false); // self contained for '{interp}' to cstr!
         verify(expr, "invalid expression");
         push(values, (Au)expr);
         i++;
@@ -4155,7 +4120,7 @@ static enode typed_expr(silver a, enode f, array expr) {
         while (i + offset < ln || f_decl->au->is_vargs) {
             Au_t   arg  = (Au_t)micro_get(m, i + offset);
             etype  typ  = canonical(u(etype, arg));
-            enode  expr = parse_expression(a, typ); // self contained for '{interp}' to cstr!
+            enode  expr = parse_expression(a, typ, false); // self contained for '{interp}' to cstr!
             verify(expr, "invalid expression");
             push(values, (Au)expr);
             
@@ -4202,7 +4167,7 @@ static enode typed_expr(silver a, enode f, array expr) {
 
         while (peek(a)) {
             token n = peek(a);
-            enode e = parse_expression(a, element_type);
+            enode e = parse_expression(a, element_type, false);
             e = e_create(a, element_type, (Au)e);
             push(nodes, (Au)e);
             num_index++;
@@ -4218,7 +4183,7 @@ static enode typed_expr(silver a, enode f, array expr) {
         r    = (enode)parse_object(a, (etype)evar_type((evar)f), true);
     } else {
         /// this is a conversion operation
-        r = (enode)parse_expression(a, (etype)f);
+        r = (enode)parse_expression(a, (etype)f, false);
         conv = canonical(r) != canonical(f);
         //validate(read_if(a, "]"), "expected ] after f-expr %o", src->name);
     }
@@ -4264,7 +4229,7 @@ Au parse_field(silver a, etype key_type) {
     if (read_if(a, "{")) {
         // todo: this must be const-controlled for import configuration
         // also, that config must effectively hash-id the builds (4 or 6 base-16 is fine)
-        k = (Au)parse_expression(a, key_type);
+        k = (Au)parse_expression(a, key_type, false);
         validate(read_if(a, "}"), "expected }");
     } else {
         string name = (string)read_alpha(a);
@@ -4628,7 +4593,7 @@ void silver_build_user_initializer(silver a, enode t) {
             int level = a->expr_level;
             a->expr_level++;
             push_tokens(a, (tokens)post_const, 0);
-            expr = (Au)parse_expression(a, (etype)evar_type((evar)t));
+            expr = (Au)parse_expression(a, (etype)evar_type((evar)t), false);
             pop_tokens(a, false);
             a->expr_level = level;
         }
@@ -4986,7 +4951,7 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
             }
             push_tokens(a, (tokens)f->inline_return, 0);
             e_fn_return(a, len(f->inline_return) ? 
-                (Au)parse_expression(a, u(etype, f->au->rtype)) : null);
+                (Au)parse_expression(a, u(etype, f->au->rtype), false) : null);
             pop_tokens(a, false);
         }
         
@@ -5078,7 +5043,7 @@ enode parse_return(silver a) {
     efunc ctx   = context_func(a);
     consume(a);
     a->expr_level++;
-    enode expr  = is_v ? null : parse_expression(a, rtype);
+    enode expr  = is_v ? null : parse_expression(a, rtype, false);
     a->expr_level--;
 
     Au_t au_top = top_scope(a);
@@ -5122,7 +5087,7 @@ static array read_expression(silver a, etype *mdl_res, bool *is_const) {
     int start = a->cursor;
     a->no_build = true;
     a->is_const_op = true; // set this, and it can only &= to true with const ops; any build op sets to false
-    enode n = parse_expression(a, null);
+    enode n = parse_expression(a, mdl_res ? *mdl_res : null, false);
     if (mdl_res)
         *mdl_res = (etype)n;
     a->no_build = false;
@@ -5191,7 +5156,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
             if (first && ((!peek(a) && within_expr) || read_if(a, "]"))) {
                 return e_create(a, mdl, (Au)null);
             }
-            enode expr     = parse_expression(a, null);
+            enode expr     = parse_expression(a, null, false);
             bool  has_more = read_if(a, ",") != null;
 
             etype t0 = canonical(expr);
@@ -5260,18 +5225,18 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
         } else if (!is_fields && is_mdl_collective) {
             // we are parsing individual scalar value f64 -> vec2f
             etype e = u(etype, mdl->meta_a);
-            k = (Au)parse_expression(a, e);
+            k = (Au)parse_expression(a, e, false);
         } else if (!is_fields && !is_mdl_map) {
             etype e = prop_value_at(mdl, iter);
             validate(e, "cannot find prop for %o at index %i", mdl, iter);
-            k = (Au)parse_expression(a, e);
+            k = (Au)parse_expression(a, e, false);
         } else if (!is_mdl_map) {
             //k = (Au)parse_field(a, key); 
             string name = (string)read_alpha(a);
             validate(name, "expected member identifier");
             k = (Au)const_string(chars, name->chars);
         } else if (key && key != etypeid(string)) {
-            k = (Au)parse_expression(a, key);
+            k = (Au)parse_expression(a, key, false);
             is_enode_key = true;
         } else {
             token t = peek(a);
@@ -5308,7 +5273,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
             }
     
             a->statement_origin = peek(a);
-            v = (Au)parse_expression(a, mdl_field);
+            v = (Au)parse_expression(a, mdl_field, true);
         } else {
             a->statement_origin = peek(a);
         }
@@ -5404,7 +5369,7 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
             // if 2 args, the 1 is an indicator of index type 
             // (map types; collective reserves first for value)
             etype meta_key_shape = u(etype, mem->meta_b);
-            enode expr = parse_expression(a, meta_key_shape);
+            enode expr = parse_expression(a, meta_key_shape, false);
             if (!first_index && expr)
                 first_index = expr;
             push(args, (Au)expr);
@@ -5527,7 +5492,7 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
         push_tokens(a, (tokens)exp, 0);
         bool cmode = a->cmode;
         a->cmode = true;
-        mem = parse_expression(a, null);
+        mem = parse_expression(a, null, false);
         a->cmode = cmode;
         pop_tokens(a, false);
 
@@ -5570,9 +5535,9 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         a->setter_fn         = null;
 
         push_tokens(a, (tokens)key_tokens, 0);
-        enode key = parse_expression(a, null);
+        enode key = parse_expression(a, null, false);
         pop_tokens(a, false);
-        enode R = parse_expression(a, null); 
+        enode R = parse_expression(a, null, false); 
         efunc fn = (efunc)u(efunc, setter);
         validate(fn, "setter function not found in registry");
         return e_fn_call(a, fn, a(mem, key, R, _i32(op_val)));
@@ -5597,7 +5562,7 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
     }
     
     enode R = parse_expression(a, is_explicit_ref(mem) ? u(etype, t->au->src) :
-        next_is(a, "[") ? t_expect : null);
+        next_is(a, "[") ? t_expect : null, false);
 
     // Handle Promotion and Inference for AU_MEMBER_DECL
     if (mem->au->member_type == AU_MEMBER_DECL) {
@@ -5626,7 +5591,7 @@ enode expr_builder(silver a, array cond_tokens, Au unused) {
     a->expr_level++; // make sure we are not at 0
     push_tokens(a, (tokens)cond_tokens, 0);
     a->statement_origin = peek(a);
-    enode cond_expr = parse_expression(a, null);
+    enode cond_expr = parse_expression(a, null, false);
     validate(a->cursor == len(cond_tokens), "expected condition expression, found remaining: %o", peek(a));
     pop_tokens(a, false);
     a->expr_level--;
@@ -5637,7 +5602,7 @@ enode cond_builder(silver a, array cond_tokens, Au unused) {
     a->expr_level++; // make sure we are not at 0
     push_tokens(a, (tokens)cond_tokens, 0);
     a->statement_origin = peek(a);
-    enode cond_expr = parse_expression(a, etypeid(bool));
+    enode cond_expr = parse_expression(a, etypeid(bool), false);
     validate(a->cursor == len(cond_tokens), "expected condition expression, found remaining: %o", peek(a));
     pop_tokens(a, false);
     a->expr_level--;
@@ -5711,7 +5676,7 @@ enode parse_ifdef_else(silver a) {
     // first ifdef [cond]
     validate(read_if(a, "ifdef"), "expected ifdef");
     a->expr_level++;
-    enode n_cond = parse_expression(a, null);
+    enode n_cond = parse_expression(a, null, false);
     a->expr_level--;
     array block = read_body(a);
     Au const_v = n_cond ? n_cond->literal : null;
@@ -5725,7 +5690,7 @@ enode parse_ifdef_else(silver a) {
     // chain of el [cond] / el
     while (read_if(a, "el")) {
         a->expr_level++;
-        enode n_cond = next_is(a, "[") ? parse_expression(a, null) : null;
+        enode n_cond = next_is(a, "[") ? parse_expression(a, null, false) : null;
         a->expr_level--;
         array block = read_body(a);
         if (n_cond) {
@@ -5761,7 +5726,7 @@ enode parse_if_else(silver a) {
     bool is_const = false;
     etype mdl_read = null;
     validate(next_is(a, "["), "expected [ after if");
-    array cond  = read_expression(a, &mdl_read, &is_const);
+    array cond  = read_within(a);
     verify(cond, "expected [condition] after if");
     array block = read_body(a);
     verify(block, "expected body");
@@ -5772,7 +5737,7 @@ enode parse_if_else(silver a) {
     while (read_if(a, "el")) {
         bool is_const = false;
         etype mdl_read = null;
-        array cond  = next_is(a, "[") ? read_expression(a, &mdl_read, &is_const) : null; // null when no [...] → final else
+        array cond  = next_is(a, "[") ? read_within(a) : null; // null when no [...] → final else
         array block = read_body(a);
         verify(block, "expected body after el");
         push(tokens_cond,  (Au)(cond ? cond : array()));
@@ -5789,7 +5754,7 @@ enode parse_if_else(silver a) {
 enode parse_switch(silver a) {
 
     validate(read_if(a, "switch") != null, "expected switch");
-    enode e_expr = parse_expression(a, null);
+    enode e_expr = parse_expression(a, null, false);
     map cases = map(hsize, 16);
     array expr_def = null;
     bool all_const = is_prim((Au)e_expr);
@@ -5803,7 +5768,7 @@ enode parse_switch(silver a) {
             // read comma-separated case values
             do {
                 bool is_const = false;
-                etype mdl_read = null;
+                etype mdl_read = canonical(e_expr)->au->is_enum ? canonical(e_expr) : null;
                 array value = read_expression(a, &mdl_read, &is_const);
                 all_const &= is_const && (canonical(mdl_read) == canonical(e_expr));
                 push(values, (Au)value);
@@ -5856,7 +5821,7 @@ enode parse_for(silver a) { sequencer
 
     token after         = null;
     array all           = read_within(a); // null if no [...] after for
-    enode in_expr       = read_if(a, "in") ? parse_expression(a, null) : null;
+    enode in_expr       = read_if(a, "in") ? parse_expression(a, null, false) : null;
     array init_exprs    = array(alloc, 32);
     array cond_exprs    = array(alloc, 32);
     array step_exprs    = array(alloc, 32);
@@ -6121,7 +6086,7 @@ etype silver_read_def(silver a, interface access) {
             bool is_explicit = read_if(a, ":") != null;
 
             if (is_explicit) {
-                enode n = parse_expression(a, store);
+                enode n = parse_expression(a, store, false);
                 Au lit = n ? literal_value(n,
                     isa(n->literal) == typeid(shape) ? typeid(i64) : isa(n->literal)) : null;
                 verify(n && ((Au_t)isa(lit))->is_integral,
