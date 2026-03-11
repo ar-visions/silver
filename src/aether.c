@@ -2526,48 +2526,58 @@ bool is_map(etype t) {
 }
 
 
+// no one will ever use more than 128 props -not gates
+enode is_set(enode n, evar prop) {
+    int index  = prop->au->index;
+    int word   = index / 64; // for birds
+    int index0 = index % 64;
+    aether a = n->mod;
+    etype i64_type = etypeid(i64);
+    etype t = canonical((etype)n);
+    int fcount = LLVMCountStructElementTypes(t->lltype); // we dont use lltype(t) for classes, since that would return its pointer
+    LLVMValueRef gep   = LLVMBuildStructGEP2(B, t->lltype, n->value, fcount - 2 + word, "fbits");
+    LLVMValueRef fbits = LLVMBuildLoad2(B, i64_type->lltype, gep, "fbits_load");
+    LLVMValueRef mask  = LLVMConstInt(i64_type->lltype, 1ULL << index0, 0);
+    LLVMValueRef zero  = LLVMConstInt(i64_type->lltype, 0, 0);
+    LLVMValueRef chk   = LLVMBuildAnd(B, fbits, mask, "ftest");
+    return enode(mod, a, au, etypeid(bool)->au, value, 
+        word < 2 ? LLVMBuildICmp(B, LLVMIntNE, chk, zero, "fset") : zero);
+}
 
 
+// mark props as set in the __f bitfield — takes pre-built masks
+void mark_set(enode n, u64 mask0, u64 mask1) {
+    aether a = n->mod;
+    etype i64_type = etypeid(i64);
+    etype t = canonical((etype)n);
+    int fcount = LLVMCountStructElementTypes(t->lltype);
+    if (mask0) {
+        LLVMValueRef gep   = LLVMBuildStructGEP2(B, t->lltype, n->value, fcount - 2, "fbits");
+        LLVMValueRef fbits = LLVMBuildLoad2(B, i64_type->lltype, gep, "fbits_load");
+        LLVMValueRef ored  = LLVMBuildOr(B, fbits, LLVMConstInt(i64_type->lltype, mask0, 0), "fbits_set");
+        LLVMBuildStore(B, ored, gep);
+    }
+    if (mask1) {
+        LLVMValueRef gep   = LLVMBuildStructGEP2(B, t->lltype, n->value, fcount - 1, "fbits");
+        LLVMValueRef fbits = LLVMBuildLoad2(B, i64_type->lltype, gep, "fbits_load");
+        LLVMValueRef ored  = LLVMBuildOr(B, fbits, LLVMConstInt(i64_type->lltype, mask1, 0), "fbits_set");
+        LLVMBuildStore(B, ored, gep);
+    }
+}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+// assign default only if prop was not set by constructor
+void assign_if_cond(aether a, enode targ, enode cond, subprocedure expr_builder) {
+    LLVMBasicBlockRef cur = LLVMGetInsertBlock(B);
+    LLVMValueRef fn = LLVMGetBasicBlockParent(cur);
+    LLVMBasicBlockRef apply_bb = LLVMAppendBasicBlockInContext(a->module_ctx, fn, "default_apply");
+    LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(a->module_ctx, fn, "default_merge");
+    LLVMBuildCondBr(B, cond->value, merge_bb, apply_bb);
+    LLVMPositionBuilderAtEnd(B, apply_bb);
+    Au expr = subprocedure_invoke(expr_builder, (Au)targ);
+    e_assign(a, targ, expr, OPType__assign);
+    LLVMBuildBr(B, merge_bb);
+    LLVMPositionBuilderAtEnd(B, merge_bb);
+}
 
 
 // ============================================================================
@@ -2589,6 +2599,13 @@ bool is_map(etype t) {
 enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input) {
     if (a->no_build) return alloc;
 
+    pairs(props, i) {
+        string k = (string)i->key;
+        if (eq(k, "lr_scale")) {
+            k = k;
+        }
+    }
+
     efunc f_initialize = (efunc)u(efunc,
         find_member(etypeid(Au)->au, "initialize", AU_MEMBER_FUNC, 0, false));
 
@@ -2600,15 +2617,26 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
     if (props) {
         efunc f_set_prop = (efunc)u(efunc,
             find_member(etypeid(Au)->au, "set_property", AU_MEMBER_FUNC, 0, false));
+        u64 mask0 = 0, mask1 = 0;
         pairs(props, i) {
             Au k = i->key;
             if (instanceof(k, enode)) {
                 e_fn_call(a, f_set_prop, a(alloc, k, i->value));
             } else {
+                if (eq((string)k, "lr_scale")) {
+                    k = k;
+                }
                 enode prop = access(alloc, (string)k, true);
                 e_assign(a, prop, i->value, OPType__assign);
+                Au_t mem = find_member(alloc->au, ((string)k)->chars, AU_MEMBER_VAR, 0, true);
+                if (mem) {
+                    int idx = mem->index;
+                    if (idx < 64)  mask0 |= 1ULL << idx;
+                    else           mask1 |= 1ULL << (idx % 64);
+                }
             }
         }
+        if (mask0 || mask1) mark_set(alloc, mask0, mask1);
     }
 
     // 2b. verify required members were provided
@@ -2825,15 +2853,28 @@ enode e_convert_or_cast(aether a, etype output, enode input) {
     return aether_e_primitive_convert(a, input, output);
 }
 
+etype base_model(etype m) {
+    if (!m) return null;
+    aether a  = m->mod;
+    Au_t   au = m->au;
+    while (au && au->src) {
+        au = au->src;
+    }
+    return u(etype, au);
+}
+
 // ============================================================================
 // revised e_create — class init paths now delegate to e_init
 // ============================================================================
 enode aether_e_create(aether a, etype mdl, Au args) { sequencer
-    if (!mdl) {
-        verify(instanceof(args, enode), "aether_e_create");
-        return (enode)args;
+    enode input = (enode)instanceof(args, enode);
+    etype base = base_model(mdl);
+    if (!mdl || (base == etypeid(none) && input)) {
+        // never perform any conversion for any level of none, if we already have enode data
+        // strings and other operands may convert, though
+        verify(input, "unsupported conversion");
+        return input;
     }
-
 
     string  str      = (string)instanceof(args, string);
     map     imap     = (map)instanceof(args, map);
@@ -2887,24 +2928,13 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
     }
 
     // construct / cast lookup
-    Au_t  args_type = isa(args);
-    efunc ftest     = (efunc)instanceof(args, efunc);
-    enode input     = (enode)instanceof(args, enode);
-    etype canon     = canonical(input);
-    bool  input_estr = canon == etypeid(symbol) || canon == etypeid(cstr);
-
     if (input && !input->loaded && !convertible((etype)input, mdl)) {
         Au info = head(input);
         input = enode_value(input, false);
     }
 
-    if (!input && instanceof(args, const_string)) {
-        input = e_operand(a, args, mdl);
-        args  = (Au)input;
-    }
-
     if (!input && instanceof(args, string)) {
-        input = e_operand(a, args, etypeid(string));
+        input = e_operand(a, args, mdl);
         args  = (Au)input;
     }
 
@@ -2913,6 +2943,8 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         
         // boxing: struct/prim to Au
         etype input_type = canonical(input);
+        etype canon     = canonical(input);
+        bool  input_estr = canon == etypeid(symbol) || canon == etypeid(cstr);
         if (!is_ptr(input) && mdl->au == typeid(Au) && !input_estr && (is_enum(canonical(input)) || is_struct(input) || is_prim(input))) {
             a->is_const_op = false;
             if (a->no_build) return e_noop(a, mdl);
@@ -5140,7 +5172,8 @@ none etype_implement(etype t, bool w) {
             evar t = u(evar, arg);
             if (!t) {
                 bool is_explicit_ref = arg->is_explicit_ref;
-                t = evar(mod, a, au, arg, is_explicit_ref, is_explicit_ref, arg_index, index, loaded, true);
+                t = evar(mod, a, au, arg, is_explicit_ref, is_explicit_ref, arg_index, index,
+                    loaded, !is_struct(arg->src) && !arg->is_inlay);
             }
             index++;
         }
@@ -6173,11 +6206,16 @@ none enode_init(enode n) {
 
     if (is_func((Au)n->au->context) && !n->symbol_name) {
         int offset = 0;
+
+        if (n->au->ident && strcmp(n->au->ident, "learning_rate2") == 0) {
+            n = n;
+        }
         if (is_lambda((Au)n->au->context))
             offset += 1;
-        
+
         enode fn = (enode)u(enode, au_arg_type((Au)n->au->context));
-        n->value = LLVMGetParam(fn->value, n->arg_index + offset);
+        n->value  = LLVMGetParam(fn->value, n->arg_index + offset);
+        //n->loaded = !is_struct(n->au->src) && !n->au->is_inlay; already given
     } else if (n->symbol_name && !n->value) {
         LLVMValueRef g = LLVMGetNamedGlobal  (a->module_ref, n->symbol_name->chars);
         if (!g)      g = LLVMGetNamedFunction(a->module_ref, n->symbol_name->chars);
