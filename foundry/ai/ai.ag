@@ -61,15 +61,15 @@ class tensor
         grad    = grad   || new f32[tensor_shape]
 
         switch [ initializer ]
-        case Initializer.random
+        case random
             for [ i: i32 0, i < count, i += 1 ]
                 floats[i] = randf
         
-        case Initializer.zeros
+        case zeros
             for [ i: i32 0, i < count, i += 1 ]
                 floats[i] = 0.0f
 
-        case Initializer.glorot_uniform
+        case glorot_uniform
             std: sqrtf[ 6.0f / count ]
             for [ i: i32 0, i < count, i += 1 ]
                 floats[i] = (randf * 2.0f - 1.0f) * std
@@ -160,6 +160,7 @@ class tensor
 class op
     expect input:      tensor
     expect name:       string
+    public lr_scale:   f32 1.0f
     public inputs:     array string
     public activation: Activation
     public threshold:  i8
@@ -178,11 +179,11 @@ class op
         if [ opt == adam ]
             if [ weights ]
                 w_m = tensor [ initializer: zeros, tensor_shape: weights.tensor_shape ]
-                w_v = tensor [ initializer: Initializer.zeros, tensor_shape: weights.tensor_shape ]
+                w_v = tensor [ initializer: zeros, tensor_shape: weights.tensor_shape ]
             
             if [ bias ]
-                b_m = tensor [ initializer: Initializer.zeros, tensor_shape: bias.tensor_shape ]
-                b_v = tensor [ initializer: Initializer.zeros, tensor_shape: bias.tensor_shape ]
+                b_m = tensor [ initializer: zeros, tensor_shape: bias.tensor_shape ]
+                b_v = tensor [ initializer: zeros, tensor_shape: bias.tensor_shape ]
 
     func finalize [] -> none
         no-op
@@ -657,7 +658,7 @@ op pool
                                     max_idx = idx
                     if [ max_idx != -1 ]
                         gv: d_out_f[(oh * out_w + ow) * in_c + c]
-                        d_in_f[max_idx] += gv / (pool_h * pool_w)
+                        d_in_f[max_idx] += gv # / (pool_h * pool_w)
 
         return d_input
 
@@ -668,7 +669,6 @@ class keras
     public ops:      array op
     public k_output: tensor
     public k_input:  tensor
-    public optimizer: Optimizer.adam
     public beta1:    f32 0.9f
     public beta2:    f32 0.999f
     public epsilon:  f32 1.0e-8
@@ -757,7 +757,8 @@ class keras
             res = o.back[res]
         return res
     
-    func train [epochs: i32, samples: map tensor[tensor], learning_rate: f32] -> none
+
+    func train [epochs: i32, samples: map tensor[tensor], learning_rate: f32, optimizer: Optimizer] -> none
         printf "train: a = %p\n", a
         
         for [ layer: op ] in ops
@@ -776,20 +777,20 @@ class keras
                     diff: prediction.floats[i] - target.floats[i]
                     loss += diff * diff
                     d_out.floats[i] = 2.0 * diff
-                loss /= t
+                
+                loss   /= t
                 ltotal += loss
-
-                d_in: back[d_out]
-
-                step += 1
+                d_in   :  back[d_out]
+                step   += 1
 
                 for [ layer: op ] in ops
+                    r : learning_rate * layer.lr_scale
                     if [ layer.weights ]
                         wt: layer.weights.count
                         switch [ optimizer ]
                         case Optimizer.sgd
                             for [ i: i32 0, i < wt, i += 1 ]
-                                layer.weights.floats[i] -= learning_rate * layer.weights.grad[i]
+                                layer.weights.floats[i] -= r * layer.weights.grad[i]
                         case Optimizer.adam
                             bc1: f32 [ 1.0 - powf[beta1, step] ]
                             bc2: f32 [ 1.0 - powf[beta2, step] ]
@@ -799,13 +800,13 @@ class keras
                                 layer.w_v.floats[i] = beta2 * layer.w_v.floats[i] + (1.0 - beta2) * g * g
                                 mh: layer.w_m.floats[i] / bc1
                                 vh: layer.w_v.floats[i] / bc2
-                                layer.weights.floats[i] -= learning_rate * mh / (sqrtf[vh] + epsilon)
+                                layer.weights.floats[i] -= r * mh / (sqrtf[vh] + epsilon)
                     if [ layer.bias ]
                         bt: layer.bias.count
                         switch [ optimizer ]
                         case Optimizer.sgd
                             for [ i: i32 0, i < bt, i += 1 ]
-                                layer.bias.floats[i] -= learning_rate * layer.bias.grad[i]
+                                layer.bias.floats[i] -= r * layer.bias.grad[i]
                         case Optimizer.adam
                             bc1: f32 [ 1.0 - powf[beta1, step] ]
                             bc2: f32 [ 1.0 - powf[beta2, step] ]
@@ -815,7 +816,7 @@ class keras
                                 layer.b_v.floats[i] = beta2 * layer.b_v.floats[i] + (1.0 - beta2) * g * g
                                 mh: layer.b_m.floats[i] / bc1
                                 vh: layer.b_v.floats[i] / bc2
-                                layer.bias.floats[i] -= learning_rate * mh / (sqrtf[vh] + epsilon)
+                                layer.bias.floats[i] -= r * mh / (sqrtf[vh] + epsilon)
 
                 lavg: ltotal / samples.count
                 puts 'loss-avg: {lavg}'
