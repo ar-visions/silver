@@ -6,7 +6,8 @@ import <math.h>
 
 import random
 
-func fnv1a_hash [ ref u8, size_t, u64 ] -> u64
+intern func fnv1a_hash [ ref u8, size_t, u64 ] -> u64
+
 FNV_PRIME:    u64 0x100000001b3
 OFFSET_BASIS: u64 0xcbf29ce484222325
 
@@ -16,23 +17,19 @@ enum Activation
     relu:   1
     tanh:   2
 
-
 enum Initializer
     undefined:      0
     random:         1
     zeros:          2
     glorot_uniform: 3
 
-
 enum Padding
     valid: 0
     same:  1
 
-
 enum Optimizer
     sgd:  0
     adam: 1
-
 
 enum Pooling
     undefined: 0
@@ -93,7 +90,7 @@ class tensor
         offset = 0
         inv: f32 [ 1.0 / scale ]
         for [ i: i32 0, i < count, i += 1 ]
-            q: i32 [ i32[floats[i] * inv + 0.5] ]
+            q: i32 [ i32[roundf[floats[i] * inv]] ]
             if [ q > 127 ]
                 q = 127
             el [ q < -128 ]
@@ -104,9 +101,8 @@ class tensor
         src: quants
         dst: floats
         for [ i: i32 0, i < count, i += 1 ]
-            dst[i] = f32[src[i]] / 255.0f
+            dst[i] = f32[src[i]] * scale
         offset = 0
-        scale  = 1.0f / 127.0f
 
     func hash [] -> u64
         return fnv1a_hash [ quants, count, OFFSET_BASIS ]
@@ -157,6 +153,7 @@ class tensor
                     dest_f[i * n + j] = s
 
 
+
 class op
     expect input:      tensor
     expect name:       string
@@ -169,6 +166,7 @@ class op
     public weights:    tensor
     public bias:       tensor
 
+    intern d_result:   tensor
     intern w_m:        tensor
     intern w_v:        tensor
     intern b_m:        tensor
@@ -280,21 +278,25 @@ op concatenate
         for [ d: i32 0, d < ndim, d += 1 ]
             if [ d > axis ]
                 inner *= rs[d]
-
         cat_offset: i32 [ 0 ]
         for [ dep: op ] in op_inputs
             src:      (dep.result) ?? dep.input
             cat_size: src.tensor_shape[axis]
             out_cat:  rs[axis]
-            for [ o: i32 0, o < outer, o += 1 ]
-                for [ c: i32 0, c < cat_size, c += 1 ]
-                    dst_idx: (o * cat_size + c) * inner
-                    src_idx: (o * out_cat + cat_offset + c) * inner
-                    memcpy [
-                        ref src.grad[dst_idx],
-                        ref d_out_f [src_idx],
-                        inner * sizeof[ f32 ]
-                    ]
+            if [ dep.d_result ]
+                for [ o: i32 0, o < outer, o += 1 ]
+                    for [ c: i32 0, c < cat_size, c += 1 ]
+                        dst_idx: (o * cat_size + c) * inner
+                        src_idx: (o * out_cat + cat_offset + c) * inner
+                        for [ k: i32 0, k < inner, k += 1 ]
+                            dep.d_result.floats[dst_idx + k] += d_out_f[src_idx + k]
+            el
+                for [ o: i32 0, o < outer, o += 1 ]
+                    for [ c: i32 0, c < cat_size, c += 1 ]
+                        dst_idx: (o * cat_size + c) * inner
+                        src_idx: (o * out_cat + cat_offset + c) * inner
+                        for [ k: i32 0, k < inner, k += 1 ]
+                            src.grad[dst_idx + k] += d_out_f[src_idx + k]
             cat_offset += cat_size
         return null
 
@@ -310,7 +312,57 @@ op dense
         no-op
 
     func forward [] -> none
-        input.gemm weights, bias, activation, result
+        forward_avx2
+
+    # AVX2/FMA3 vectorized forward — processes 8 output columns at a time
+    func forward_avx2 [] -> none
+        m:       i32 input.tensor_shape[0]
+        k:       i32 input.tensor_shape[1]
+        n:       i32 result.tensor_shape[1]
+        a_f:     input.floats
+        other_f: weights.floats
+        dest_f:  result.floats
+        bias_f:  bias.floats
+        n8:      i32 [ (n / 8) * 8 ]
+
+        for [ i: i32 0, i < m, i += 1 ]
+            # --- AVX2 bias init (8 floats at a time) ---
+            for [ j: i32 0, j < n8, j += 8 ]
+                bi_off: i64 [ j * 4 ]
+                di_off: i64 [ (i * n + j) * 4 ]
+                bx: i64 asm
+                    vmovups ymm0, ymmword ptr [bias_f + bi_off]
+                    vmovups ymmword ptr [dest_f + di_off], ymm0
+                    xor rax, rax
+                    return rax
+            for [ j: i32 n8, j < n, j += 1 ]
+                dest_f[i * n + j] = bias_f[j]
+
+            # --- AVX2 FMA (broadcast a, multiply 8 b values, accumulate into dest) ---
+            for [ ki: i32 0, ki < k, ki += 1 ]
+                for [ j: i32 0, j < n8, j += 8 ]
+                    a_off: i64 [ (i * k + ki) * 4 ]
+                    b_off: i64 [ (ki * n + j) * 4 ]
+                    d_off: i64 [ (i * n + j) * 4 ]
+                    fx: i64 asm
+                        vbroadcastss ymm1, dword ptr [a_f + a_off]
+                        vmovups ymm2, ymmword ptr [other_f + b_off]
+                        vmovups ymm0, ymmword ptr [dest_f + d_off]
+                        vfmadd231ps ymm0, ymm1, ymm2
+                        vmovups ymmword ptr [dest_f + d_off], ymm0
+                        xor rax, rax
+                        return rax
+                for [ j: i32 n8, j < n, j += 1 ]
+                    dest_f[i * n + j] += a_f[i * k + ki] * other_f[ki * n + j]
+
+            # --- activation ---
+            if [ activation == Activation.relu ]
+                for [ j: i32 0, j < n, j += 1 ]
+                    v: dest_f[i * n + j]
+                    dest_f[i * n + j] = (v > 0.0) ? v : 0.0
+            el [ activation == Activation.tanh ]
+                for [ j: i32 0, j < n, j += 1 ]
+                    dest_f[i * n + j] = tanhf[ dest_f[i * n + j] ]
 
     func back [d_out: tensor] -> tensor
         d_input: tensor [ tensor_shape: input.tensor_shape ]
@@ -697,19 +749,42 @@ class keras
         first: op [ order[0] ]
         k_input = first.input
         
+        # find which ops feed into multi-input ops (need own result)
+        needs_own_result: map bool[string] []
+        for [ o: op ] in ops
+            if [ o.op_inputs.count > 1 ]
+                for [ dep: op ] in o.op_inputs
+                    needs_own_result[dep.name] = true
+
         for [ o: op ] in ops
             o.result = find_result[ o ]
             for [ dep: op ] in o.op_inputs
                 if [ dep is input_op ]
                     if [ o.input.tensor_shape == dep.input.tensor_shape ]
                         o.input = dep.input
-            
+
             o.finalize
+
+        # allocate own result for ops feeding multi-input ops
+        for [ o: op ] in ops
+            if [ needs_own_result[o.name] ]
+                if [ o is conv ]
+                    c: conv [ o ]
+                    in_h:     c.input.tensor_shape[0]
+                    in_w:     c.input.tensor_shape[1]
+                    filter_h: c.kernel_size[0]
+                    filter_w: c.kernel_size[1]
+                    stride_h: c.stride_shape[0]
+                    stride_w: c.stride_shape[1]
+                    pad_h:    (c.padding == Padding.same) ? (filter_h - 1) / 2 : 0
+                    pad_w:    (c.padding == Padding.same) ? (filter_w - 1) / 2 : 0
+                    out_h:    (in_h - filter_h + 2 * pad_h) / stride_h + 1
+                    out_w:    (in_w - filter_w + 2 * pad_w) / stride_w + 1
+                    o.result = tensor [ tensor_shape: c.input.tensor_shape * c.out_channels ]
+
         
         out_op: op [ op_map['output'] ]
-        printf "out_op = %p\n", out_op
         k_output = out_op.input
-        printf "k_output = %p\n", k_output
 
     func topo_visit [current: op, visited: map, in_progress: map] -> none
         if [ in_progress[current.name] == true ]
@@ -741,7 +816,7 @@ class keras
                     memcpy[inp.input.floats, src.floats, src.count * 4]
             current.forward
             k_output.tensor_shape.total
-        
+
         k_output.tensor_shape.total
         res: tensor [ tensor_shape: k_output.tensor_shape ]
         memcpy[res.floats, k_output.floats, k_output.count * 4]
@@ -749,18 +824,64 @@ class keras
 
     func back [d_out: tensor] -> tensor
         n: i32 [ order.count ]
-        res: tensor [ d_out ]
+
+        # check if topology is non-linear (DAG)
+        is_dag: bool [ false ]
+        for [ o: op ] in order
+            # multiple inputs means branching (e.g. concatenate)
+            if [ o.op_inputs.count > 1 ]
+                is_dag = true
+            # multiple consumers means fan-out
+            consumers: i32 [ 0 ]
+            for [ o2: op ] in order
+                for [ dep: op ] in o2.op_inputs
+                    if [ dep == o ]
+                        consumers += 1
+            if [ consumers > 1 ]
+                is_dag = true
+
+        # linear chain: simple pass-through
+        if [ ! is_dag ]
+            res: tensor [ d_out ]
+            for [ i: i32 n - 1, i >= 0, i -= 1 ]
+                o: op [ order[i] ]
+                if [ o.weights ] memset o.weights.grad, 0, o.weights.count * 4
+                if [ o.bias    ] memset o.bias.grad,    0, o.bias.count    * 4
+                res = o.back[res]
+            return res
+
+        # DAG: accumulate gradients
+        for [ o: op ] in order
+            if [ o.result ]
+                o.d_result = tensor [ tensor_shape: o.result.tensor_shape, initializer: zeros ]
+
         for [ i: i32 n - 1, i >= 0, i -= 1 ]
             o: op [ order[i] ]
             if [ o.weights ] memset o.weights.grad, 0, o.weights.count * 4
             if [ o.bias    ] memset o.bias.grad,    0, o.bias.count    * 4
-            res = o.back[res]
-        return res
+
+            grad_in: tensor
+            if [ o.d_result ]
+                grad_in = o.d_result
+            el
+                grad_in = d_out
+
+            d_input: o.back[grad_in]
+
+            if [ d_input ]
+                for [ dep: op ] in o.op_inputs
+                    if [ dep.d_result ]
+                        dt: dep.d_result.count
+                        for [ j: i32 0, j < dt, j += 1 ]
+                            dep.d_result.floats[j] += d_input.floats[j]
+
+        first: op [ order[0] ]
+        if [ first.d_result ]
+            return first.d_result
+        return d_out
     
 
     func train [epochs: i32, samples: map tensor[tensor], learning_rate: f32, optimizer: Optimizer] -> none
-        printf "train: a = %p\n", a
-        
         for [ layer: op ] in ops
             layer.set_optimizer optimizer
         

@@ -394,7 +394,7 @@ static bool silver_next_is_eq(silver a, symbol first, ...);
 static enode reverse_descent(silver a, etype expect);
 
 static enode parse_expression(silver a, etype expect, bool hint) { sequencer
-    if (seq == 412)
+    if (seq == 1230)
         seq = seq;
     if (is_rec(expect) && next_is(a, "[")) {
         // collections go straight to parse_object — [ ] is always element data
@@ -1342,6 +1342,26 @@ enode parse_asm(silver a, etype rtype) {
 
     array body = read_body(a);
     verify(body, "expected asm body");
+
+    // auto-gather: if no [ inputs ] given, scan body for in-scope variables
+    if (!input_tokens) {
+        for (int i = 0; i < len(body); i++) {
+            token t = (token)get(body, i);
+            if (!t->chars[0] || !isalpha(t->chars[0]))
+                continue;
+            Au_t m = lexical(a->lexical, t->chars);
+            if (!m) continue;
+            evar node = instanceof(u(etype, m), evar);
+            if (!node) continue;
+            // check if already added
+            bool found = false;
+            for (int j = 0; j < len(input_nodes); j++)
+                if (get(input_nodes, j) == (Au)node)
+                    { found = true; break; }
+            if (!found)
+                push(input_nodes, (Au)node);
+        }
+    }
 
     string return_name = null;
     for (int i = len(body) - 1; i >= 0; i--) {
@@ -2416,6 +2436,8 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
                         res0 = e_create(a, mdl_found, (Au)null); // required conversion
                     }
                 }
+            } else if (a->assign_type == OPType__bind && is_class(mdl_found)) {
+                res0 = e_null(a, mdl_found);
             } else {
                 res0 = e_create(a, mdl_found, null);
             }
@@ -2670,6 +2692,7 @@ enode parse_statement(silver a)
     verify(!f || !f->au->is_mod_init, "unexpected init function");
     a->last_return      = null;
     a->expr_level       = 0;
+    a->assign_type      = OPType__undefined;
     a->setter_key_tokens = null;
     a->setter_fn        = null;
     a->statement_origin = peek(a);
@@ -2902,19 +2925,23 @@ enode parse_statement(silver a)
             if (seq == 544)
                 seq = seq;
             a->expr_level++;
+            a->assign_type = assign_enum;
             e = parse_assignment(a, (enode)mem, assign_enum, false);
             a->expr_level--;
+            a->assign_type = OPType__undefined;
 
         } else if (assign_enum) {
             validate(mem, "expected member");
 
             a->left_hand = false;
             a->expr_level++;
+            a->assign_type = assign_enum;
             mem->au->is_const = module != null;
             validate (!is_func(mem->au->context), "function arguments are read-only");
 
             e = parse_assignment(a, (enode)mem, assign_enum, mem->au->is_const);
             a->expr_level--;
+            a->assign_type = OPType__undefined;
             a->left_hand = true;
 
         } else {
