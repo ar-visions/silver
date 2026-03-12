@@ -440,12 +440,6 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
 
 none etype_implement(etype t, bool);
 
-void something() {
-    aether a = null;
-    Au_t au_type = typeid(Au);
-    etype e = u(etype, au_type);
-}
-
 static etype etype_ptr(aether a, Au_t au, enode eshape) {
     verify(au && (isa(au) == typeid(Au_t_f)), "ptr requires Au_t, given %s", isa(au)->ident);
     verify(isa(au) != typeid(etype), "etype_ptr unexpected type");
@@ -1432,11 +1426,9 @@ enode aether_e_operand(aether a, Au op, etype src_model) {
 
 enode aether_e_null(aether a, etype mdl) {
     if (!mdl) mdl = etypeid(handle);
-    if (!is_ptr(mdl) && mdl->au->is_class) {
-        mdl = etype_ptr(a, mdl->au, null); // we may only do this on a limited set of types, such a struct types
-    }
     verify(is_ptr(mdl) || is_func_ptr(mdl), "%o not compatible with null value", mdl);
-    return enode(mod, a, loaded, true, value, LLVMConstNull(lltype(mdl)), au, mdl->au);
+    return enode(mod, a, loaded, true, value, LLVMConstNull(lltype(mdl)), au, mdl->au,
+        meta_a, mdl->meta_a, meta_b, mdl->meta_b);
 }
 
 enode aether_e_primitive_convert(aether a, enode expr, etype rtype);
@@ -2658,6 +2650,9 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
                             }
                         }
                     }
+                    if (!provided) {
+                        provided = provided;
+                    }
                     verify(provided, "required member '%s' not provided for %s",
                         mb->ident, alloc_type->ident);
                 }
@@ -3275,19 +3270,23 @@ enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_e
         // ?? operator: branch on whether cond is non-null
         condition_value = LLVMBuildICmp(mod->builder, LLVMIntNE,
             condition_value, LLVMConstNull(LLVMTypeOf(condition_value)), "coalesce.nonnull");
+    } else if (LLVMGetTypeKind(LLVMTypeOf(condition_value)) == LLVMPointerTypeKind) {
+        // pointer condition: convert to bool via null check
+        condition_value = LLVMBuildICmp(mod->builder, LLVMIntNE,
+            condition_value, LLVMConstNull(LLVMTypeOf(condition_value)), "ternary.nonnull");
     }
     LLVMBuildCondBr(mod->builder, condition_value, then_block, else_block);
 
     // Step 3: Handle the "then" (true) branch
     LLVMPositionBuilderAtEnd(mod->builder, then_block);
-    LLVMValueRef true_value = true_expr->value;
+    LLVMValueRef true_value = !false_expr ? cond_expr->value : true_expr->value;
     LLVMBuildBr(mod->builder, merge_block);  // Jump to merge block after the "then" block
 
     // Step 4: Handle the "else" (false) branch
     LLVMPositionBuilderAtEnd(mod->builder, else_block);
     enode default_expr = !false_expr ? e_create(a, (etype)rmdl, (Au)true_expr) : null;
     if (false_expr) false_expr = e_create(a, (etype)rmdl, (Au)false_expr);
-    LLVMValueRef false_value = default_expr ? default_expr->value : false_expr->value;
+    LLVMValueRef false_value = !false_expr ? true_expr->value : false_expr->value;
     LLVMBuildBr(mod->builder, merge_block);  // Jump to merge block after the "else" block
 
     // Step 5: Build the "merge" block and add a phi enode to unify values
@@ -4936,8 +4935,6 @@ none etype_implement(etype t, bool w) {
         LLVMTypeRef largest = null;
         int ilargest = 0;
 
-        Au_t mtest = (Au_t) 0x7ffff7eb7c30;
-
         each(cl, etype, tt) {
             etype tt_entry = u(etype, tt);
             Au    tt_info  = head(tt_entry);
@@ -5125,6 +5122,13 @@ none etype_implement(etype t, bool w) {
 
         // functions, on init, create the arg enodes from the model data
         // make sure the types are ready for use
+
+        
+        arg_list(au, arg) {
+            if (arg->ident && strcmp(arg->ident, "optimizer") == 0) {
+                arg = arg;
+            }
+        }
 
         arg_types(au, arg_type) {
             etype t = u(etype, arg_type);
@@ -5404,7 +5408,7 @@ none aether_build_module_initializer(aether a, enode init) {
             etype_implement((etype)mf, false);
 
             // register as module global
-            e_fn_call(a, fn_def_func, a(
+            enode fn = e_fn_call(a, fn_def_func, a(
                 module_type_id,
                 const_string(chars, mem->ident),
                 e_typeid(a, u(etype, mem->rtype)),
@@ -5416,6 +5420,24 @@ none aether_build_module_initializer(aether a, enode init) {
                 mem->alt ? (Au)const_string(chars, mem->alt) : (Au)e_null(a, etypeid(cstr)),
                 _i32(mem->index)
             ));
+
+            arg_list(mem, arg) {
+                etype arg_type = u(etype, arg->src);
+                
+                static int i = 0;
+                i++;
+                //if (i == 6)
+                //    arg_type = arg_type;
+                //if (i >= 6)
+                //    arg_type = resolve(arg_type);
+                
+                e_fn_call(a, fn_def_arg, a(
+                    fn,
+                    const_string(chars, arg->ident),
+                    e_typeid(a, arg_type),
+                    _i64(0)
+                ));
+            }
         }
 
         if (u(evar, mem) && mem->access_type != interface_intern) {
@@ -5539,7 +5561,7 @@ none aether_build_module_initializer(aether a, enode init) {
                 if (ft_end > max_ft_end) max_ft_end = ft_end;
 
                 arg_list(mem, arg) {
-                    etype arg_type = resolve(u(etype, arg->src));
+                    etype arg_type = u(etype, arg->src);
                     e_fn_call(a, fn_def_arg, a(
                         e_mem,
                         const_string(chars, arg->ident),

@@ -15,6 +15,7 @@ declare_class(exports)
     M(X, Y, i, prop,     public,  bool,   is_project) \
     M(X, Y, i, prop,     intern,  bool,   clipping) \
     M(X, Y, i, prop,     intern,  bool,   left_hand) \
+    M(X, Y, i, prop,     public,  OPType, assign_type) \
     M(X, Y, i, prop,     intern,  bool,   in_args) \
     M(X, Y, i, prop,     public,  bool,   version) \
     M(X, Y, i, prop,     iobject, path,   product) \
