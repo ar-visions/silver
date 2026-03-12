@@ -116,5 +116,9 @@ app ai-test
 
         # --- train ---
         puts 'training...'
-        model.train 1000, samples, 0.001f, adam
+        model.train 100, samples, 0.001f, adam
+
+        # --- quantize and eval ---
+        model.quantize_model
+        model.eval_q8 samples
         puts 'ai-test complete'

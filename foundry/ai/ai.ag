@@ -107,51 +107,6 @@ class tensor
     func hash [] -> u64
         return fnv1a_hash [ quants, count, OFFSET_BASIS ]
 
-    func sum [] -> f32
-        s: f32 [ 0.0 ]
-        for [ i: i32 0, i < count, i += 1 ]
-            s += floats[i]
-        return s
-
-    func grad_sum [] -> f32
-        s: f32 [ 0.0 ]
-        for [ i: i32 0, i < count, i += 1 ]
-            s += grad[i]
-        return s
-
-    func gemm [other: tensor, b: tensor, act: Activation, dest: tensor] -> none
-        m: i32 tensor_shape[0]
-        k: i32 tensor_shape[1]
-        n: i32 dest.tensor_shape[1]
-        other_f: other.floats
-        dest_f:  dest.floats
-        bias_f:  b.floats
-        a_f:     floats
-
-        if [ act == Activation.relu ]
-            for [ i: i32 0, i < m, i += 1 ]
-                for [ j: i32 0, j < n, j += 1 ]
-                    s: f32 [ bias_f[j] ]
-                    for [ ki: i32 0, ki < k, ki += 1 ]
-                        s += a_f[i * k + ki] * other_f[ki * n + j]
-                    dest_f[i * n + j] = (s > 0.0) ? s : 0.0
-
-        el [ act == Activation.tanh ]
-            for [ i: i32 0, i < m, i += 1 ]
-                for [ j: i32 0, j < n, j += 1 ]
-                    s: f32 [ bias_f[j] ]
-                    for [ ki: i32 0, ki < k, ki += 1 ]
-                        s += a_f[i * k + ki] * other_f[ki * n + j]
-                    dest_f[i * n + j] = tanhf[s]
-
-        el
-            for [ i: i32 0, i < m, i += 1 ]
-                for [ j: i32 0, j < n, j += 1 ]
-                    s: f32 [ bias_f[j] ]
-                    for [ ki: i32 0, ki < k, ki += 1 ]
-                        s += a_f[i * k + ki] * other_f[ki * n + j]
-                    dest_f[i * n + j] = s
-
 
 
 class op
@@ -161,6 +116,7 @@ class op
     public inputs:     array string
     public activation: Activation
     public threshold:  i8
+    public quantized:  bool
     intern op_inputs:  array op
     intern result:     tensor
     public weights:    tensor
@@ -187,19 +143,31 @@ class op
         no-op
 
     func forward [] -> none
-        if [ activation == Activation.relu ]
-            t: input.count
-            for [ i: i32 0, i < t, i += 1 ]
-                v: input.floats[i]
-                rtotal: result.tensor_shape.total
-                result.floats[i] = (v > 0.0) ? v : 0.0
-
-        el [ activation == Activation.tanh ]
-            t: input.count
-            for [ i: i32 0, i < t, i += 1 ]
-                x: f32 [ (input.floats[i] - input.offset) * input.scale ]
-                y: tanhf[x]
-                result.floats[i] = y / result.scale + result.offset
+        if [ quantized ]
+            if [ activation == Activation.relu ]
+                t: input.count
+                for [ i: i32 0, i < t, i += 1 ]
+                    result.quants[i] = (input.quants[i] > 0) ? input.quants[i] : i8[0]
+                result.scale = input.scale
+            el [ activation == Activation.tanh ]
+                t: input.count
+                for [ i: i32 0, i < t, i += 1 ]
+                    v: f32 [ f32[input.quants[i]] * input.scale ]
+                    y: tanhf[v]
+                    result.floats[i] = y
+                result.quantize
+        el
+            if [ activation == Activation.relu ]
+                t: input.count
+                for [ i: i32 0, i < t, i += 1 ]
+                    v: input.floats[i]
+                    result.floats[i] = (v > 0.0) ? v : 0.0
+            el [ activation == Activation.tanh ]
+                t: input.count
+                for [ i: i32 0, i < t, i += 1 ]
+                    x: f32 [ (input.floats[i] - input.offset) * input.scale ]
+                    y: tanhf[x]
+                    result.floats[i] = y / result.scale + result.offset
 
     func back [d_out: tensor] -> tensor
         return d_out
@@ -214,7 +182,11 @@ op output_op
 
 op flatten
     func forward [] -> none
-        result.floats = input.floats
+        if [ quantized ]
+            result.quants = input.quants
+            result.scale  = input.scale
+        el
+            result.floats = input.floats
 
     func back [d_out: tensor] -> tensor
         t : d_out.count
@@ -239,6 +211,12 @@ op concatenate
             axis = ndim + axis
 
     func forward [] -> none
+        if [ quantized ]
+            forward_q8
+        el
+            forward_f32
+
+    func forward_f32 [] -> none
         dst:      result.floats
         rs:       result.tensor_shape
         ndim:     rs.count
@@ -266,6 +244,36 @@ op concatenate
                         inner * sizeof[ f32 ]
                     ]
             cat_offset += cat_size
+
+    func forward_q8 [] -> none
+        dst:      result.quants
+        rs:       result.tensor_shape
+        ndim:     rs.count
+        outer:    i32 [ 1 ]
+        inner:    i32 [ 1 ]
+        for [ d: i32 0, d < axis, d += 1 ]
+            outer *= rs[d]
+        for [ d: i32 0, d < ndim, d += 1 ]
+            if [ d > axis ]
+                inner *= rs[d]
+
+        cat_offset: i32 [ 0 ]
+        for [ dep: op ] in op_inputs
+            src:      (dep.result) ?? dep.input
+            src_q:    src.quants
+            cat_size: src.tensor_shape[axis]
+            out_cat:  rs[axis]
+            for [ o: i32 0, o < outer, o += 1 ]
+                for [ c: i32 0, c < cat_size, c += 1 ]
+                    dst_idx: (o * out_cat + cat_offset + c) * inner
+                    src_idx: (o * cat_size + c) * inner
+                    memcpy [
+                        ref dst  [dst_idx],
+                        ref src_q[src_idx],
+                        inner
+                    ]
+            cat_offset += cat_size
+        result.scale = input.scale
 
     func back [d_out: tensor] -> tensor
         d_out_f:  d_out.floats
@@ -312,7 +320,35 @@ op dense
         no-op
 
     func forward [] -> none
-        forward_avx2
+        if [ quantized ]
+            forward_q8
+        el
+            forward_avx2
+
+    func forward_q8 [] -> none
+        m:       i32 input.tensor_shape[0]
+        k:       i32 input.tensor_shape[1]
+        n:       i32 result.tensor_shape[1]
+        a_q:     input.quants
+        w_q:     weights.quants
+        b_f:     bias.floats
+        dest_f:  result.floats
+        s_a:     input.scale
+        s_w:     weights.scale
+
+        for [ i: i32 0, i < m, i += 1 ]
+            for [ j: i32 0, j < n, j += 1 ]
+                acc: i32 [ 0 ]
+                for [ ki: i32 0, ki < k, ki += 1 ]
+                    acc += i32[a_q[i * k + ki]] * i32[w_q[ki * n + j]]
+                v: f32 [ f32[acc] * s_a * s_w + b_f[j] ]
+                if [ activation == Activation.relu ]
+                    dest_f[i * n + j] = (v > 0.0) ? v : 0.0
+                el [ activation == Activation.tanh ]
+                    dest_f[i * n + j] = tanhf[v]
+                el
+                    dest_f[i * n + j] = v
+        result.quantize
 
     # AVX2/FMA3 vectorized forward — processes 8 output columns at a time
     func forward_avx2 [] -> none
@@ -330,11 +366,9 @@ op dense
             for [ j: i32 0, j < n8, j += 8 ]
                 bi_off: i64 [ j * 4 ]
                 di_off: i64 [ (i * n + j) * 4 ]
-                bx: i64 asm
+                asm x86_64
                     vmovups ymm0, ymmword ptr [bias_f + bi_off]
                     vmovups ymmword ptr [dest_f + di_off], ymm0
-                    xor rax, rax
-                    return rax
             for [ j: i32 n8, j < n, j += 1 ]
                 dest_f[i * n + j] = bias_f[j]
 
@@ -344,14 +378,12 @@ op dense
                     a_off: i64 [ (i * k + ki) * 4 ]
                     b_off: i64 [ (ki * n + j) * 4 ]
                     d_off: i64 [ (i * n + j) * 4 ]
-                    fx: i64 asm
+                    asm
                         vbroadcastss ymm1, dword ptr [a_f + a_off]
                         vmovups ymm2, ymmword ptr [other_f + b_off]
                         vmovups ymm0, ymmword ptr [dest_f + d_off]
                         vfmadd231ps ymm0, ymm1, ymm2
                         vmovups ymmword ptr [dest_f + d_off], ymm0
-                        xor rax, rax
-                        return rax
                 for [ j: i32 n8, j < n, j += 1 ]
                     dest_f[i * n + j] += a_f[i * k + ki] * other_f[ki * n + j]
 
@@ -365,6 +397,9 @@ op dense
                     dest_f[i * n + j] = tanhf[ dest_f[i * n + j] ]
 
     func back [d_out: tensor] -> tensor
+        return back_avx2[d_out]
+
+    func back_ref [d_out: tensor] -> tensor
         d_input: tensor [ tensor_shape: input.tensor_shape ]
         idim: in_dim
         odim: out_dim
@@ -390,6 +425,69 @@ op dense
         for [ j: i32 0, j < idim, j += 1 ]
             d_in_f[j] = 0.0
             for [ i: i32 0, i < odim, i += 1 ]
+                d_in_f[j] += w[i * idim + j] * d_out_f[i]
+
+        return d_input
+
+    # AVX2/FMA3 vectorized backward pass
+    func back_avx2 [d_out: tensor] -> tensor
+        d_input: tensor [ tensor_shape: input.tensor_shape ]
+        idim: i32 in_dim
+        odim: i32 out_dim
+        d_out_f: d_out.floats
+        d_in_f:  d_input.floats
+        w:       weights.floats
+        d_w:     weights.grad
+        d_b:     bias.grad
+        inp:     input.floats
+        out:     result.floats
+        idim8:   i32 [ (idim / 8) * 8 ]
+
+        # --- activation derivative (scalar, odim is typically small) ---
+        for [ i: i32 0, i < odim, i += 1 ]
+            if [ activation == Activation.relu ]
+                d_out_f[i] *= (out[i] > 0.0) ? 1.0 : 0.0
+            el [ activation == Activation.tanh ]
+                d_out_f[i] *= 1.0 - out[i] * out[i]
+
+        # --- bias gradient + weight gradient: d_w[i*idim+j] += d_out_f[i] * inp[j] ---
+        for [ i: i32 0, i < odim, i += 1 ]
+            d_b[i] = d_out_f[i]
+            do_off: i64 [ i * 4 ]
+            for [ j: i32 0, j < idim8, j += 8 ]
+                dw_off: i64 [ (i * idim + j) * 4 ]
+                in_off: i64 [ j * 4 ]
+                asm
+                    vbroadcastss ymm1, dword ptr [d_out_f + do_off]
+                    vmovups ymm2, ymmword ptr [inp + in_off]
+                    vmovups ymm0, ymmword ptr [d_w + dw_off]
+                    vfmadd231ps ymm0, ymm1, ymm2
+                    vmovups ymmword ptr [d_w + dw_off], ymm0
+            for [ j: i32 idim8, j < idim, j += 1 ]
+                d_w[i * idim + j] += d_out_f[i] * inp[j]
+
+        # --- input gradient: d_in_f[j] += w[i*idim+j] * d_out_f[i] ---
+        # zero d_in_f
+        for [ j: i32 0, j < idim8, j += 8 ]
+            di_off: i64 [ j * 4 ]
+            asm
+                vxorps ymm0, ymm0, ymm0
+                vmovups ymmword ptr [d_in_f + di_off], ymm0
+        for [ j: i32 idim8, j < idim, j += 1 ]
+            d_in_f[j] = 0.0
+
+        for [ i: i32 0, i < odim, i += 1 ]
+            do_off: i64 [ i * 4 ]
+            for [ j: i32 0, j < idim8, j += 8 ]
+                w_off:  i64 [ (i * idim + j) * 4 ]
+                di_off: i64 [ j * 4 ]
+                asm
+                    vbroadcastss ymm1, dword ptr [d_out_f + do_off]
+                    vmovups ymm2, ymmword ptr [w + w_off]
+                    vmovups ymm0, ymmword ptr [d_in_f + di_off]
+                    vfmadd231ps ymm0, ymm1, ymm2
+                    vmovups ymmword ptr [d_in_f + di_off], ymm0
+            for [ j: i32 idim8, j < idim, j += 1 ]
                 d_in_f[j] += w[i * idim + j] * d_out_f[i]
 
         return d_input
@@ -425,7 +523,187 @@ op conv
         out_w:    (in_w - filter_w + 2 * pad_w) / stride_w + 1
         out_c:    out_channels
 
+
     func forward [] -> none
+        if [ quantized ]
+            forward_q8
+        el
+            forward_im2col
+
+    func forward_q8 [] -> none
+        forward_q8_im2col
+
+    # reference scalar q8 im2col
+    func forward_q8_ref [] -> none
+        in_h:     input.tensor_shape[0]
+        in_w:     input.tensor_shape[1]
+        in_c:     input.tensor_shape[2]
+        filter_h: kernel_size[0]
+        filter_w: kernel_size[1]
+        out_c:    out_channels
+        stride_v: stride_shape[0]
+        pad:      (padding == Padding.same) ? (filter_h - 1) / 2 : 0
+        out_h:    result.tensor_shape[0]
+        out_w:    result.tensor_shape[1]
+        inp:      input.quants
+        w_q:      weights.quants
+        b_f:      bias.floats
+        out:      result.floats
+        s_i:      input.scale
+        s_w:      weights.scale
+        col_k:    i32 [ filter_h * filter_w * in_c ]
+        out_hw:   i32 [ out_h * out_w ]
+        col_sz:   i32 [ out_hw * col_k ]
+        col:      new i8 [ col_sz ]
+
+        # --- im2col: unroll input patches into i8 matrix ---
+        for [ oh: i32 0, oh < out_h, oh += 1 ]
+            for [ ow: i32 0, ow < out_w, ow += 1 ]
+                row: i32 [ oh * out_w + ow ]
+                k_idx: i32 [ 0 ]
+                for [ ic: i32 0, ic < in_c, ic += 1 ]
+                    for [ kh: i32 0, kh < filter_h, kh += 1 ]
+                        for [ kw: i32 0, kw < filter_w, kw += 1 ]
+                            ih: oh * stride_v - pad + kh
+                            iw: ow * stride_v - pad + kw
+                            if [ ih >= 0 && iw >= 0 && ih < in_h && iw < in_w ]
+                                col[row * col_k + k_idx] = inp[(ih * in_w + iw) * in_c + ic]
+                            el
+                                col[row * col_k + k_idx] = i8[0]
+                            k_idx += 1
+
+        # --- int8 gemm: col @ weights + bias ---
+        for [ i: i32 0, i < out_hw, i += 1 ]
+            for [ oc: i32 0, oc < out_c, oc += 1 ]
+                acc: i32 [ 0 ]
+                for [ ki: i32 0, ki < col_k, ki += 1 ]
+                    acc += i32[col[i * col_k + ki]] * i32[w_q[ki * out_c + oc]]
+                v: f32 [ f32[acc] * s_i * s_w + b_f[oc] ]
+                if [ activation == Activation.relu ]
+                    out[i * out_c + oc] = (v > 0.0) ? v : 0.0
+                el [ activation == Activation.tanh ]
+                    out[i * out_c + oc] = tanhf[v]
+                el
+                    out[i * out_c + oc] = v
+        result.quantize
+
+    # AVX2 int8 im2col + gemm forward
+    # im2col fill is scalar (runs once), gemm uses vpmovsxbw + vpmaddwd + vpaddd
+    # weights repacked to w_pk[oc * col_k + ki] so both operands are contiguous along k
+    # processes 16 i8 multiply-adds per asm block
+    func forward_q8_im2col [] -> none
+        in_h:     input.tensor_shape[0]
+        in_w:     input.tensor_shape[1]
+        in_c:     input.tensor_shape[2]
+        filter_h: kernel_size[0]
+        filter_w: kernel_size[1]
+        out_c:    out_channels
+        stride_v: stride_shape[0]
+        pad:      (padding == Padding.same) ? (filter_h - 1) / 2 : 0
+        out_h:    result.tensor_shape[0]
+        out_w:    result.tensor_shape[1]
+        inp:      input.quants
+        w_q:      weights.quants
+        b_f:      bias.floats
+        out:      result.floats
+        s_i:      input.scale
+        s_w:      weights.scale
+        col_k:    i32 [ filter_h * filter_w * in_c ]
+        out_hw:   i32 [ out_h * out_w ]
+        col_sz:   i32 [ out_hw * col_k ]
+        col:      new i8 [ col_sz ]
+        wk_sz:    i32 [ out_c * col_k ]
+        w_pk:     new i8 [ wk_sz ]
+        w_sum:    new f32 [ out_c ]
+        k32:      i32 [ (col_k / 32) * 32 ]
+
+        # --- repack weights: w_q[ki * out_c + oc] -> w_pk[oc * col_k + ki] ---
+        # and compute weight column sums for u8 bias compensation
+        for [ oc: i32 0, oc < out_c, oc += 1 ]
+            ws: i32 [ 0 ]
+            for [ ki: i32 0, ki < col_k, ki += 1 ]
+                wv: i8 [ w_q[ki * out_c + oc] ]
+                w_pk[oc * col_k + ki] = wv
+                ws += i32[wv]
+            w_sum[oc] = f32[ws]
+
+        # --- im2col: unroll input patches into i8 matrix ---
+        for [ oh: i32 0, oh < out_h, oh += 1 ]
+            for [ ow: i32 0, ow < out_w, ow += 1 ]
+                row: i32 [ oh * out_w + ow ]
+                k_idx: i32 [ 0 ]
+                for [ ic: i32 0, ic < in_c, ic += 1 ]
+                    for [ kh: i32 0, kh < filter_h, kh += 1 ]
+                        for [ kw: i32 0, kw < filter_w, kw += 1 ]
+                            ih: oh * stride_v - pad + kh
+                            iw: ow * stride_v - pad + kw
+                            if [ ih >= 0 && iw >= 0 && ih < in_h && iw < in_w ]
+                                col[row * col_k + k_idx] = inp[(ih * in_w + iw) * in_c + ic]
+                            el
+                                col[row * col_k + k_idx] = i8[0]
+                            k_idx += 1
+
+        # --- int8 gemm with AVX2 (32-wide vpmaddubsw) ---
+        # vpmaddubsw(u8, i8) -> 16 i16, then vpmaddwd -> 8 i32
+        # col values biased to u8 via vpxor 0x80 (adds 128)
+        # compensation: result -= 128 * sum(weights_for_oc)
+        for [ i: i32 0, i < out_hw, i += 1 ]
+            for [ oc: i32 0, oc < out_c, oc += 1 ]
+                acc_mem: i64 [ 0 ]
+                acc_hi:  i64 [ 0 ]
+
+                # AVX2: 32 i8 multiply-adds per iteration
+                for [ ki: i32 0, ki < k32, ki += 32 ]
+                    c_off: i64 [ i * col_k + ki ]
+                    w_off: i64 [ oc * col_k + ki ]
+                    asm x86_64
+                        # load 32 col bytes and bias to unsigned: xor with 0x80
+                        vmovdqu  ymm0, ymmword ptr [col + c_off]
+                        vpcmpeqd ymm5, ymm5, ymm5
+                        vpsllw   ymm5, ymm5, 7
+                        vpxor    ymm5, ymm5, ymm5
+                        mov      eax, 0x80808080
+                        vmovd    xmm5, eax
+                        vpbroadcastd ymm5, xmm5
+                        vpxor    ymm0, ymm0, ymm5
+                        # load 32 weight bytes (signed)
+                        vmovdqu  ymm1, ymmword ptr [w_pk + w_off]
+                        # 32 u8 * 32 i8 -> 16 i16 (adjacent pairs summed)
+                        vpmaddubsw ymm2, ymm0, ymm1
+                        # 16 i16 -> 8 i32 (adjacent pairs summed)
+                        vpcmpeqd ymm6, ymm6, ymm6
+                        vpsrlw   ymm6, ymm6, 15
+                        vpmaddwd ymm2, ymm2, ymm6
+                        # horizontal sum ymm2 (8 x i32) -> scalar i32
+                        vextracti128 xmm3, ymm2, 1
+                        vpaddd   xmm2, xmm2, xmm3
+                        vpshufd  xmm3, xmm2, 0x4E
+                        vpaddd   xmm2, xmm2, xmm3
+                        vpshufd  xmm3, xmm2, 0xB1
+                        vpaddd   xmm2, xmm2, xmm3
+                        # accumulate into memory
+                        vmovd    xmm4, dword ptr [acc_mem]
+                        vpaddd   xmm2, xmm2, xmm4
+                        vmovd    dword ptr [acc_mem], xmm2
+
+                acc: i32 [ i32[acc_mem] ]
+                # scalar remainder
+                for [ ki: i32 k32, ki < col_k, ki += 1 ]
+                    # use u8 bias + compensation for consistency
+                    u_val: i32 [ i32[col[i * col_k + ki]] + 128 ]
+                    acc += u_val * i32[w_pk[oc * col_k + ki]]
+
+                # compensate for the +128 bias: subtract 128 * sum(weights)
+                v: f32 [ (f32[acc] - 128.0 * w_sum[oc]) * s_i * s_w + b_f[oc] ]
+                if [ activation == Activation.relu ]
+                    out[i * out_c + oc] = (v > 0.0) ? v : 0.0
+                el [ activation == Activation.tanh ]
+                    out[i * out_c + oc] = tanhf[v]
+                el
+                    out[i * out_c + oc] = v
+        result.quantize
+
+    func forward_ref [] -> none
         in_h:     input.tensor_shape[0]
         in_w:     input.tensor_shape[1]
         in_c:     input.tensor_shape[2]
@@ -461,7 +739,151 @@ op conv
                     el
                         out[(oh * out_w + ow) * out_c + oc] = s
 
+    # AVX2 conv forward — vectorizes across output channels (8 at a time)
+    func forward_avx2 [] -> none
+        in_h:     input.tensor_shape[0]
+        in_w:     input.tensor_shape[1]
+        in_c:     input.tensor_shape[2]
+        filter_h: kernel_size[0]
+        filter_w: kernel_size[1]
+        out_c:    out_channels
+        stride:   stride_shape[0]
+        pad:      (padding == Padding.same) ? (filter_h - 1) / 2 : 0
+        out_h:    result.tensor_shape[0]
+        out_w:    result.tensor_shape[1]
+        inp:      input.floats
+        w:        weights.floats
+        b:        bias.floats
+        out:      result.floats
+        oc8:      i32 [ (out_c / 8) * 8 ]
+
+        for [ oh: i32 0, oh < out_h, oh += 1 ]
+            for [ ow: i32 0, ow < out_w, ow += 1 ]
+                out_base: i64 [ (oh * out_w + ow) * out_c ]
+
+                # --- AVX2 bias init (8 output channels at a time) ---
+                for [ oc: i32 0, oc < oc8, oc += 8 ]
+                    b_off: i64 [ oc * 4 ]
+                    o_off: i64 [ (out_base + oc) * 4 ]
+                    asm
+                        vmovups ymm0, ymmword ptr [b + b_off]
+                        vmovups ymmword ptr [out + o_off], ymm0
+                for [ oc: i32 oc8, oc < out_c, oc += 1 ]
+                    out[out_base + oc] = b[oc]
+
+                # --- AVX2 conv accumulate: broadcast input, FMA across 8 output channels ---
+                for [ ic: i32 0, ic < in_c, ic += 1 ]
+                    for [ kh: i32 0, kh < filter_h, kh += 1 ]
+                        ih: oh * stride - pad + kh
+                        if [ ih >= 0 && ih < in_h ]
+                            for [ kw: i32 0, kw < filter_w, kw += 1 ]
+                                iw: ow * stride - pad + kw
+                                if [ iw >= 0 && iw < in_w ]
+                                    inp_off: i64 [ ((ih * in_w + iw) * in_c + ic) * 4 ]
+                                    w_base:  i64 [ ((kh * filter_w + kw) * in_c + ic) * out_c ]
+                                    for [ oc: i32 0, oc < oc8, oc += 8 ]
+                                        w_off: i64 [ (w_base + oc) * 4 ]
+                                        o_off: i64 [ (out_base + oc) * 4 ]
+                                        asm
+                                            vbroadcastss ymm1, dword ptr [inp + inp_off]
+                                            vmovups ymm2, ymmword ptr [w + w_off]
+                                            vmovups ymm0, ymmword ptr [out + o_off]
+                                            vfmadd231ps ymm0, ymm1, ymm2
+                                            vmovups ymmword ptr [out + o_off], ymm0
+                                    for [ oc: i32 oc8, oc < out_c, oc += 1 ]
+                                        weight_idx: w_base + oc
+                                        out[out_base + oc] += inp[(ih * in_w + iw) * in_c + ic] * w[weight_idx]
+
+                # --- activation ---
+                if [ activation == Activation.relu ]
+                    for [ oc: i32 0, oc < out_c, oc += 1 ]
+                        idx: out_base + oc
+                        v: out[idx]
+                        out[idx] = (v > 0.0) ? v : 0.0
+                el [ activation == Activation.tanh ]
+                    for [ oc: i32 0, oc < out_c, oc += 1 ]
+                        idx: out_base + oc
+                        out[idx] = tanhf[ out[idx] ]
+
+    # im2col + gemm forward — replaces 6-nested-loop conv with matrix multiply
+    func forward_im2col [] -> none
+        in_h:     input.tensor_shape[0]
+        in_w:     input.tensor_shape[1]
+        in_c:     input.tensor_shape[2]
+        filter_h: kernel_size[0]
+        filter_w: kernel_size[1]
+        out_c:    out_channels
+        stride_v: stride_shape[0]
+        pad:      (padding == Padding.same) ? (filter_h - 1) / 2 : 0
+        out_h:    result.tensor_shape[0]
+        out_w:    result.tensor_shape[1]
+        inp:      input.floats
+        w:        weights.floats
+        b:        bias.floats
+        res:      result.floats
+        col_k:    i32 [ filter_h * filter_w * in_c ]
+        out_hw:   i32 [ out_h * out_w ]
+        col_sz:   i32 [ out_hw * col_k ]
+        col:      new f32 [ col_sz ]
+        oc8:      i32 [ (out_c / 8) * 8 ]
+
+        # --- im2col: unroll input patches into matrix ---
+        for [ oh: i32 0, oh < out_h, oh += 1 ]
+            for [ ow: i32 0, ow < out_w, ow += 1 ]
+                row: i32 [ oh * out_w + ow ]
+                k_idx: i32 [ 0 ]
+                for [ ic: i32 0, ic < in_c, ic += 1 ]
+                    for [ kh: i32 0, kh < filter_h, kh += 1 ]
+                        for [ kw: i32 0, kw < filter_w, kw += 1 ]
+                            ih: oh * stride_v - pad + kh
+                            iw: ow * stride_v - pad + kw
+                            if [ ih >= 0 && iw >= 0 && ih < in_h && iw < in_w ]
+                                col[row * col_k + k_idx] = inp[(ih * in_w + iw) * in_c + ic]
+                            el
+                                col[row * col_k + k_idx] = 0.0
+                            k_idx += 1
+
+        # --- gemm: result = col @ weights + bias ---
+        # col (out_hw x col_k) @ weights (col_k x out_c) = result (out_hw x out_c)
+        for [ i: i32 0, i < out_hw, i += 1 ]
+            # bias init
+            for [ oc: i32 0, oc < oc8, oc += 8 ]
+                b_off: i64 [ oc * 4 ]
+                r_off: i64 [ (i * out_c + oc) * 4 ]
+                asm
+                    vmovups ymm0, ymmword ptr [b + b_off]
+                    vmovups ymmword ptr [res + r_off], ymm0
+            for [ oc: i32 oc8, oc < out_c, oc += 1 ]
+                res[i * out_c + oc] = b[oc]
+
+            # FMA
+            for [ ki: i32 0, ki < col_k, ki += 1 ]
+                for [ oc: i32 0, oc < oc8, oc += 8 ]
+                    c_off: i64 [ (i * col_k + ki) * 4 ]
+                    w_off: i64 [ (ki * out_c + oc) * 4 ]
+                    r_off: i64 [ (i * out_c + oc) * 4 ]
+                    asm
+                        vbroadcastss ymm1, dword ptr [col + c_off]
+                        vmovups ymm2, ymmword ptr [w + w_off]
+                        vmovups ymm0, ymmword ptr [res + r_off]
+                        vfmadd231ps ymm0, ymm1, ymm2
+                        vmovups ymmword ptr [res + r_off], ymm0
+                for [ oc: i32 oc8, oc < out_c, oc += 1 ]
+                    res[i * out_c + oc] += col[i * col_k + ki] * w[ki * out_c + oc]
+
+        # --- activation ---
+        if [ activation == Activation.relu ]
+            for [ i: i32 0, i < out_hw * out_c, i += 1 ]
+                v: res[i]
+                res[i] = (v > 0.0) ? v : 0.0
+        el [ activation == Activation.tanh ]
+            for [ i: i32 0, i < out_hw * out_c, i += 1 ]
+                res[i] = tanhf[ res[i] ]
+
     func back [d_out: tensor] -> tensor
+        return back_avx2[d_out]
+
+    func back_ref [d_out: tensor] -> tensor
         d_input: tensor [ tensor_shape: input.tensor_shape ]
         in_h:     input.tensor_shape[0]
         in_w:     input.tensor_shape[1]
@@ -514,6 +936,106 @@ op conv
                                     if [ iw >= 0 && iw < in_w ]
                                         input_idx:  (ih * in_w + iw) * in_c + ic
                                         weight_idx: ((kh * filter_w + kw) * in_c + ic) * out_c + oc
+                                        d_w[weight_idx] += inp[input_idx] * grad_out
+                                        d_in_f[input_idx] += w[weight_idx] * grad_out
+
+        return d_input
+
+    # AVX2 conv backward — vectorizes across output channels
+    func back_avx2 [d_out: tensor] -> tensor
+        d_input: tensor [ tensor_shape: input.tensor_shape ]
+        in_h:     input.tensor_shape[0]
+        in_w:     input.tensor_shape[1]
+        in_c:     input.tensor_shape[2]
+        filter_h: kernel_size[0]
+        filter_w: kernel_size[1]
+        out_c:    out_channels
+        stride:   stride_shape[0]
+        pad:      (padding == Padding.same) ? (filter_h - 1) / 2 : 0
+        out_h:    result.tensor_shape[0]
+        out_w:    result.tensor_shape[1]
+        d_out_f:  d_out.floats
+        d_in_f:   d_input.floats
+        w:        weights.floats
+        d_w:      weights.grad
+        d_b:      bias.grad
+        inp:      input.floats
+        out:      result.floats
+        oc8:      i32 [ (out_c / 8) * 8 ]
+
+        memset d_in_f, 0, input.count * 4
+        memset d_w,    0, weights.count * 4
+        memset d_b,    0, bias.count * 4
+
+        # --- activation derivative ---
+        if [ activation == Activation.relu ]
+            for [ i: i32 0, i < result.count, i += 1 ]
+                d_out_f[i] *= (out[i] > 0.0) ? 1.0 : 0.0
+        el [ activation == Activation.tanh ]
+            for [ i: i32 0, i < result.count, i += 1 ]
+                d_out_f[i] *= 1.0 - out[i] * out[i]
+
+        # --- bias gradient: d_b[oc] += sum over spatial of d_out_f ---
+        for [ oh: i32 0, oh < out_h, oh += 1 ]
+            for [ ow: i32 0, ow < out_w, ow += 1 ]
+                oi_base: i64 [ (oh * out_w + ow) * out_c ]
+                for [ oc: i32 0, oc < oc8, oc += 8 ]
+                    db_off: i64 [ oc * 4 ]
+                    do_off: i64 [ (oi_base + oc) * 4 ]
+                    asm
+                        vmovups ymm0, ymmword ptr [d_b + db_off]
+                        vmovups ymm1, ymmword ptr [d_out_f + do_off]
+                        vaddps ymm0, ymm0, ymm1
+                        vmovups ymmword ptr [d_b + db_off], ymm0
+                for [ oc: i32 oc8, oc < out_c, oc += 1 ]
+                    d_b[oc] += d_out_f[oi_base + oc]
+
+        # --- weight + input gradients ---
+        for [ oh: i32 0, oh < out_h, oh += 1 ]
+            for [ ow: i32 0, ow < out_w, ow += 1 ]
+                oi_base: i64 [ (oh * out_w + ow) * out_c ]
+                for [ ic: i32 0, ic < in_c, ic += 1 ]
+                    for [ kh: i32 0, kh < filter_h, kh += 1 ]
+                        ih: oh * stride - pad + kh
+                        if [ ih >= 0 && ih < in_h ]
+                            for [ kw: i32 0, kw < filter_w, kw += 1 ]
+                                iw: ow * stride - pad + kw
+                                if [ iw >= 0 && iw < in_w ]
+                                    input_idx: (ih * in_w + iw) * in_c + ic
+                                    inp_off:   i64 [ input_idx * 4 ]
+                                    w_base:    i64 [ ((kh * filter_w + kw) * in_c + ic) * out_c ]
+                                    do_off:    i64 [ oi_base * 4 ]
+
+                                    # AVX2 weight gradient: d_w[w_base+oc] += inp[input_idx] * d_out_f[oi_base+oc]
+                                    for [ oc: i32 0, oc < oc8, oc += 8 ]
+                                        dw_off: i64 [ (w_base + oc) * 4 ]
+                                        oi_off: i64 [ (oi_base + oc) * 4 ]
+                                        asm
+                                            vbroadcastss ymm1, dword ptr [inp + inp_off]
+                                            vmovups ymm2, ymmword ptr [d_out_f + oi_off]
+                                            vmovups ymm0, ymmword ptr [d_w + dw_off]
+                                            vfmadd231ps ymm0, ymm1, ymm2
+                                            vmovups ymmword ptr [d_w + dw_off], ymm0
+
+                                    # AVX2 input gradient: d_in_f[input_idx] += dot(w[w_base..+oc], d_out_f[oi_base..+oc])
+                                    for [ oc: i32 0, oc < oc8, oc += 8 ]
+                                        w_off:  i64 [ (w_base + oc) * 4 ]
+                                        oi_off: i64 [ (oi_base + oc) * 4 ]
+                                        asm
+                                            vmovups ymm0, ymmword ptr [w + w_off]
+                                            vmovups ymm1, ymmword ptr [d_out_f + oi_off]
+                                            vmulps ymm0, ymm0, ymm1
+                                            vextractf128 xmm1, ymm0, 1
+                                            vaddps xmm0, xmm0, xmm1
+                                            vhaddps xmm0, xmm0, xmm0
+                                            vhaddps xmm0, xmm0, xmm0
+                                            vaddss xmm0, xmm0, dword ptr [d_in_f + inp_off]
+                                            vmovss dword ptr [d_in_f + inp_off], xmm0
+
+                                    # scalar remainder for both
+                                    for [ oc: i32 oc8, oc < out_c, oc += 1 ]
+                                        weight_idx: w_base + oc
+                                        grad_out:   d_out_f[oi_base + oc]
                                         d_w[weight_idx] += inp[input_idx] * grad_out
                                         d_in_f[input_idx] += w[weight_idx] * grad_out
 
@@ -650,6 +1172,41 @@ op pool
         out_w:    (in_w - pool_w) / stride_w + 1
 
     func forward [] -> none
+        if [ quantized ]
+            forward_q8
+        el
+            forward_avx2
+
+    func forward_q8 [] -> none
+        in_h:     input.tensor_shape[0]
+        in_w:     input.tensor_shape[1]
+        in_c:     input.tensor_shape[2]
+        pool_h:   pool_size[0]
+        pool_w:   pool_size[1]
+        stride_h: stride_shape[0]
+        stride_w: stride_shape[1]
+        out_h:    result.tensor_shape[0]
+        out_w:    result.tensor_shape[1]
+        inp:      input.quants
+        out:      result.quants
+
+        for [ oh: i32 0, oh < out_h, oh += 1 ]
+            for [ ow: i32 0, ow < out_w, ow += 1 ]
+                for [ c: i32 0, c < in_c, c += 1 ]
+                    max_val: i8 [ -128 ]
+                    for [ kh: i32 0, kh < pool_h, kh += 1 ]
+                        for [ kw: i32 0, kw < pool_w, kw += 1 ]
+                            ih: oh * stride_h + kh
+                            iw: ow * stride_w + kw
+                            if [ ih < in_h && iw < in_w ]
+                                idx: (ih * in_w + iw) * in_c + c
+                                if [ inp[idx] > max_val ]
+                                    max_val = inp[idx]
+                    out_idx: (oh * out_w + ow) * in_c + c
+                    out[out_idx] = max_val
+        result.scale = input.scale
+
+    func forward_ref [] -> none
         in_h:     input.tensor_shape[0]
         in_w:     input.tensor_shape[1]
         in_c:     input.tensor_shape[2]
@@ -676,6 +1233,55 @@ op pool
                                     max_val = inp[idx]
                     out_idx: (oh * out_w + ow) * in_c + c
                     out[out_idx] = max_val
+
+    # AVX2 max pool forward — processes 8 channels at a time
+    func forward_avx2 [] -> none
+        in_h:     input.tensor_shape[0]
+        in_w:     input.tensor_shape[1]
+        in_c:     input.tensor_shape[2]
+        pool_h:   pool_size[0]
+        pool_w:   pool_size[1]
+        stride_h: stride_shape[0]
+        stride_w: stride_shape[1]
+        out_h:    result.tensor_shape[0]
+        out_w:    result.tensor_shape[1]
+        inp:      input.floats
+        out:      result.floats
+        c8:       i32 [ (in_c / 8) * 8 ]
+
+        for [ oh: i32 0, oh < out_h, oh += 1 ]
+            for [ ow: i32 0, ow < out_w, ow += 1 ]
+                out_base: i64 [ (oh * out_w + ow) * in_c ]
+
+                # --- AVX2 path: init output to -inf, then vmaxps each pool position ---
+                for [ c: i32 0, c < c8, c += 8 ]
+                    for [ ci: i32 0, ci < 8, ci += 1 ]
+                        out[out_base + c + ci] = -99998.0
+                    o_off: i64 [ (out_base + c) * 4 ]
+                    for [ kh: i32 0, kh < pool_h, kh += 1 ]
+                        for [ kw: i32 0, kw < pool_w, kw += 1 ]
+                            ih: oh * stride_h + kh
+                            iw: ow * stride_w + kw
+                            if [ ih < in_h && iw < in_w ]
+                                i_off: i64 [ ((ih * in_w + iw) * in_c + c) * 4 ]
+                                asm
+                                    vmovups ymm0, ymmword ptr [out + o_off]
+                                    vmovups ymm1, ymmword ptr [inp + i_off]
+                                    vmaxps ymm0, ymm0, ymm1
+                                    vmovups ymmword ptr [out + o_off], ymm0
+
+                # --- scalar remainder ---
+                for [ c: i32 c8, c < in_c, c += 1 ]
+                    max_val: f32 [ -99998.0 ]
+                    for [ kh: i32 0, kh < pool_h, kh += 1 ]
+                        for [ kw: i32 0, kw < pool_w, kw += 1 ]
+                            ih: oh * stride_h + kh
+                            iw: ow * stride_w + kw
+                            if [ ih < in_h && iw < in_w ]
+                                idx: (ih * in_w + iw) * in_c + c
+                                if [ inp[idx] > max_val ]
+                                    max_val = inp[idx]
+                    out[out_base + c] = max_val
 
     func back [d_out: tensor] -> tensor
         d_input: tensor [ tensor_shape: input.tensor_shape ]
@@ -826,11 +1432,11 @@ class keras
         n: i32 [ order.count ]
 
         # check if topology is non-linear (DAG)
-        is_dag: bool [ false ]
+        is_multi: bool [ false ]
         for [ o: op ] in order
             # multiple inputs means branching (e.g. concatenate)
             if [ o.op_inputs.count > 1 ]
-                is_dag = true
+                is_multi = true
             # multiple consumers means fan-out
             consumers: i32 [ 0 ]
             for [ o2: op ] in order
@@ -838,10 +1444,10 @@ class keras
                     if [ dep == o ]
                         consumers += 1
             if [ consumers > 1 ]
-                is_dag = true
+                is_multi = true
 
         # linear chain: simple pass-through
-        if [ ! is_dag ]
+        if [ ! is_multi ]
             res: tensor [ d_out ]
             for [ i: i32 n - 1, i >= 0, i -= 1 ]
                 o: op [ order[i] ]
@@ -939,7 +1545,31 @@ class keras
                                 vh: layer.b_v.floats[i] / bc2
                                 layer.bias.floats[i] -= r * mh / (sqrtf[vh] + epsilon)
 
-                lavg: ltotal / samples.count
-                puts 'loss-avg: {lavg}'
+            lavg: ltotal / samples.count
+            puts 'loss-avg: {lavg}'
 
         puts 'training complete'
+
+    func quantize_model [] -> none
+        for [ layer: op ] in ops
+            if [ layer.weights ]
+                layer.weights.quantize
+            if [ layer.bias ]
+                layer.bias.quantize
+            layer.quantized = true
+        puts 'model quantized to int8'
+
+    func eval_q8 [samples: map tensor[tensor]] -> none
+        ltotal: f64 0
+        for [ target: tensor, src: tensor ] in samples
+            src.quantize
+            prediction: forward[src]
+            loss: f32 [ 0.0 ]
+            t:    target.count
+            for [ i: i32 0, i < t, i += 1 ]
+                diff: prediction.floats[i] - target.floats[i]
+                loss += diff * diff
+            loss   /= t
+            ltotal += loss
+        lavg: ltotal / samples.count
+        puts 'q8 eval loss: {lavg}'

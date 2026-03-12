@@ -687,13 +687,17 @@ void finalize_coverage(silver);
 void silver_parse(silver a) {
     efunc init = module_initializer(a);
 
-    Au_t m_mac = def_member(a->au, "mac",     typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
-    Au_t m_lin = def_member(a->au, "linux",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
-    Au_t m_win = def_member(a->au, "windows", typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
+    Au_t m_mac   = def_member(a->au, "mac",     typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
+    Au_t m_lin   = def_member(a->au, "linux",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
+    Au_t m_win   = def_member(a->au, "windows", typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
+    Au_t m_x86   = def_member(a->au, "x86_64",  typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
+    Au_t m_arm64 = def_member(a->au, "arm64",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
 
-    set(a->registry, (Au)m_mac, (Au)hold(e_operand(a, _bool(SILVER_IS_MAC),     etypeid(bool))));
-    set(a->registry, (Au)m_lin, (Au)hold(e_operand(a, _bool(SILVER_IS_LINUX),   etypeid(bool))));
-    set(a->registry, (Au)m_win, (Au)hold(e_operand(a, _bool(SILVER_IS_WINDOWS), etypeid(bool))));
+    set(a->registry, (Au)m_mac,   (Au)hold(e_operand(a, _bool(SILVER_IS_MAC),     etypeid(bool))));
+    set(a->registry, (Au)m_lin,   (Au)hold(e_operand(a, _bool(SILVER_IS_LINUX),   etypeid(bool))));
+    set(a->registry, (Au)m_win,   (Au)hold(e_operand(a, _bool(SILVER_IS_WINDOWS), etypeid(bool))));
+    set(a->registry, (Au)m_x86,   (Au)hold(e_operand(a, _bool(strcmp(arch, "x86_64") == 0), etypeid(bool))));
+    set(a->registry, (Au)m_arm64, (Au)hold(e_operand(a, _bool(strcmp(arch, "arm64")  == 0), etypeid(bool))));
 
     while (peek(a)) {
         validate(parse_statement(a), "unexpected token found for statement: %o", peek(a));
@@ -1321,8 +1325,23 @@ evar read_evar(silver a) {
 enode parse_asm(silver a, etype rtype) {
     //validate(read_if(a, "asm") != null, "expected asm");
 
+    // conditional asm: asm <define>  — skip block if define is falsy
+    // the define must be on the same line as 'asm'
+    token asm_tok = element(a, -1);
+    token pk = peek(a);
+    if (pk && pk->line == asm_tok->line && isalpha(pk->chars[0]) && !next_is(a, "[")) {
+        string cond_name = read_alpha(a);
+        Au_t   cond_mem  = lexical(a->lexical, cstring(cond_name));
+        enode  cond_node = cond_mem ? (enode)get(a->registry, (Au)cond_mem) : null;
+        Au     const_v   = cond_node ? cond_node->literal : null;
+        if (!const_v || !cast(bool, const_v)) {
+            read_body(a); // consume and discard the body
+            return enode(mod, (aether)a, au, null);
+        }
+    }
+
     array input_nodes  = array(alloc, 8);
-    array input_tokens = read_within(a);
+    array input_tokens = next_is(a, "[") ? read_within(a) : null;
     if (input_tokens) {
         push_tokens(a, (tokens)input_tokens, 0);
         bool expect_comma = false;
@@ -2711,6 +2730,7 @@ enode parse_statement(silver a)
         if (next_is(a, "for"))    return parse_for    (a);
         if (next_is(a, "if"))     return parse_if_else(a);
         if (next_is(a, "switch")) return parse_switch (a);
+        if (read_if(a, "asm"))    return parse_asm    (a, null);
     }
     
     if (next_is(a, "ifdef")) return parse_ifdef_else(a);
@@ -5808,8 +5828,8 @@ enode parse_switch(silver a) {
             // read comma-separated case values
             do {
                 bool is_const = false;
-                etype hint = (etype)e_expr;
-                etype mdl_read = hint->au->is_enum ? hint : null;
+                etype hint = canonical(e_expr);
+                etype mdl_read = hint && hint->au->is_enum ? hint : null;
                 if (first) {
                     hint_mdl = mdl_read;
                     first = false;
