@@ -904,6 +904,9 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
     func->value         = (object)value;
     func->alt           = alt ? cstr_copy((cstr)alt) : null;
     func->index         = index;
+    if (alt && strcmp(alt, "keras_train") == 0) {
+        alt = alt;
+    }
     return func;
 }
 
