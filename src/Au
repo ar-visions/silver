@@ -1773,14 +1773,14 @@ static inline f32 f32_mix(f32 a, f32 b, f32 f) {
 /// use i_struct_ctr for structs.. this is because we cannot separate * from the token
 #define vec_methods(O, Y, T, ...) \
     i_struct_ctr_obj(O,Y, floats_t) \
-    i_struct_method(O, Y, T,    length) \
-    i_struct_method(O, Y, O,    add,      O*) \
-    i_struct_method(O, Y, O,    sub,      O*) \
-    i_struct_method(O, Y, O,    mul,      O*) \
-    i_struct_method(O, Y, O,    scale,    f32) \
-    i_struct_method(O, Y, T,    dot,      O*) \
-    i_struct_method(O, Y, O,    normalize) \
-    i_struct_method(O, Y, O,    mix,      O*, f64) \
+    i_struct_method(O, Y, T,      length) \
+    i_struct_method_1(O, Y, O,    add,       O) \
+    i_struct_method_1(O, Y, O,    sub,       O) \
+    i_struct_method_1(O, Y, O,    mul,       O) \
+    i_struct_method(O, Y, O,      scale,     f32) \
+    i_struct_method_1(O, Y, T,    dot,       O) \
+    i_struct_method(O, Y, O,      normalize) \
+    i_struct_method_1(O, Y, O,    mix,       O, f64) \
     i_struct_cast  (O, Y, string)
 
 #define rgb8_schema(O, Y, ...) \
@@ -1832,7 +1832,7 @@ declare_struct(rgbaf)
     i_struct_prop  (O, Y, T, x) \
     i_struct_prop  (O, Y, T, y) \
     i_struct_prop  (O, Y, T, z) \
-    i_struct_method(O, Y, O, cross, O*) \
+    i_struct_method_1(O, Y, O, cross, O) \
     i_struct_static(O, Y, O, rand) \
     vec_methods(O, Y, T)
 declare_struct(vec3f, f32)
@@ -1886,13 +1886,13 @@ declare_class(rect)
     i_struct_static (O, Y, O,        identity) \
     i_struct_static (O, Y, O,        perspective, f32, f32, f32, f32) \
     i_struct_static (O, Y, O,        ortho,      f32, f32, f32, f32, f32, f32) \
-    i_struct_static (O, Y, O,        look_at,    vec3f*, vec3f*, vec3f*) \
-    i_struct_method (O, Y, O,        scale,      vec3f*) \
-    i_struct_method (O, Y, O,        translate,  vec3f*) \
-    i_struct_method (O, Y, O,        rotate,     quatf*) \
-    i_struct_method (O, Y, vec4f,    mul_v4,     vec4f*) \
+    i_struct_static_3(O, Y, O,       look_at,    vec3f) \
+    i_struct_method_1(O, Y, O,       scale,      vec3f) \
+    i_struct_method_1(O, Y, O,       translate,  vec3f) \
+    i_struct_method_1(O, Y, O,       rotate,     quatf) \
+    i_struct_method_1(O, Y, vec4f,   mul_v4,     vec4f) \
     i_struct_method (O, Y, none,     set_identity) \
-    i_struct_method (O, Y, O,        mul,        O*) \
+    i_struct_method_1(O, Y, O,       mul,        O) \
     i_struct_cast   (O, Y, string)
 declare_struct(mat4f, f32)
 

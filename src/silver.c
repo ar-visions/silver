@@ -2669,6 +2669,15 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
 
         etype ref_type = pointer((aether)a, (Au)expr->au);
 
+        // when expr is unloaded, its value is already the address (GEP) —
+        // return it directly as a loaded pointer rather than going through
+        // e_create which would load and inttoptr the dereferenced value
+        if (!expr->loaded && !mdl_expect) {
+            expr->au     = ref_type->au;
+            expr->loaded = true;
+            return expr;
+        }
+
         return e_create(a, mdl_expect ? mdl_expect : ref_type, (Au)expr);
     }
 
