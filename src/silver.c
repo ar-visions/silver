@@ -13,6 +13,9 @@ void build_fn(silver a, efunc fmem, callback preamble, callback postamble);
 bool is_explicit_ref(enode);
 
 static void build_record(silver a, etype mrec);
+static void build_record_parse(silver a, etype mrec);
+static void build_record_implement(silver a, etype mrec);
+static void build_record_functions(silver a, etype mrec);
 
 // used in more primitive cases
 #define au_lookup(sym) lexical(a->lexical, sym)
@@ -704,6 +707,37 @@ void silver_parse(silver a) {
         incremental_resolve(a);
     }
 
+    /// phase 1: parse all record bodies so every class/struct name and member is registered
+    members(a->au, mem) {
+        etype rec = (mem->is_class || mem->is_struct) ? u(etype, mem) : null;
+        if (rec && !mem->is_system && !mem->is_schema && !rec->parsing && !rec->user_built)
+            build_record_parse(a, rec);
+    }
+
+    /// phase 2: implement all LLVM types (records and free functions)
+    members(a->au, mem) {
+        etype rec = (mem->is_class || mem->is_struct) ? u(etype, mem) : null;
+        if (rec && !mem->is_system && !mem->is_schema && rec->user_built)
+            build_record_implement(a, rec);
+    }
+    members(a->au, mem) {
+        etype e = u(etype, mem);
+        if (is_func((Au)mem) && !mem->is_system && e != a->fn_init && !e->user_built)
+            implement(e, false);
+    }
+
+    /// phase 3: build all functions (all LLVM types now complete)
+    members(a->au, mem) {
+        etype rec = (mem->is_class || mem->is_struct) ? u(etype, mem) : null;
+        if (rec && !mem->is_system && !mem->is_schema && rec->user_built)
+            build_record_functions(a, rec);
+    }
+    members(a->au, mem) {
+        etype e = u(etype, mem);
+        if (is_func((Au)mem) && !mem->is_system && e != a->fn_init && !e->user_built)
+            build_fn(a, (efunc)e, null, null);
+    }
+
     // when done parsing, we are able to create a module schema (type_id definition) and the evar instance for the type_id (module_m with info/type)
     implement_type_id((etype)a);
 
@@ -1100,7 +1134,7 @@ static string op_lang_token(string name) {
 
 static void silver_module() {
     keywords = hold(array_of_cstr(
-        "class",    "struct",   "expect",   "abstract", "context",  "public",   "intern",
+        "class",    "struct",   "expect",   "fault",    "abstract", "context",  "public",   "intern",
         "import",   "export",   "typeid",   
         "is",       "inherits", "ref",      "in",   "lambda",
         "const",       "no-op",    "<>",
@@ -1109,7 +1143,7 @@ static void silver_module() {
         "enum",     "ifdef",    "el",     "while",
         "cast",     "try",      "throw",    "catch",
         "finally",  "for",      "func",     "attrib",
-        "operator", "index",    "construct", "alias",
+        "operator", "indexer",  "construct", "alias",
         null));
 
     assign = hold(array_of_cstr(
@@ -2624,6 +2658,12 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
         return e_expect(a, cond, null);
     }
 
+    // fault: unconditional abort with message
+    else if (!cmode && read_if(a, "fault")) {
+        enode msg = read_enode(a, etypeid(string), false);
+        return e_fault(a, msg);
+    }
+
     // handle the logical NOT operator (e.g., '!')
     else if (read_if(a, "!") || (!cmode && read_if(a, "not"))) {
         validate(!from_ref, "unexpected not after ref");
@@ -2823,7 +2863,7 @@ enode parse_statement(silver a)
     bool      is_ctr    = !f && !is_static && !(is_func|is_lambda) && !is_cast && !is_oper ?
         read_if(a, "construct")  != null : false;
     bool      is_idx    = !f && !is_static && !(is_func|is_lambda) && !is_cast && !is_oper && !is_ctr ?
-        read_if(a, "index")      != null : false;
+        read_if(a, "indexer")    != null : false;
 
     OPType assign_enum = OPType__undefined;
     enode mem = (!is_cast && !is_oper && !is_idx && !is_ctr) ?
@@ -3038,16 +3078,7 @@ enode parse_statements(silver a) { sequencer
 }
 
 void silver_incremental_resolve(silver a) {
-    members(a->au, mem) {
-        etype e = u(etype, mem);
-        if (is_func((Au)mem) && !mem->is_system && e != a->fn_init && !e->user_built)
-            build_fn(a, (efunc)e, null, null);
-    }
-    members(a->au, mem) {
-        etype rec = (mem->is_class || mem->is_struct) ? u(etype, mem) : null;
-        if (rec && !mem->is_system && !mem->is_schema && !rec->parsing && !rec->user_built)
-            build_record(a, rec);
-    }
+    // type implementation and function building are deferred to after parsing
 }
 
 
@@ -3086,10 +3117,10 @@ static int next_function_index(Au_t mdl) {
 
 efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPType op_type, string op_name) {
     sequencer
-    if (strcmp(mem->ident, "train") == 0) {
+    if (mem->ident && strcmp(mem->ident, "init") == 0) {
         mem = mem;
     }
-    if (seq == 6) {
+    if (seq == 9) {
         seq = seq;
     }
     etype  rtype   = null;
@@ -4144,13 +4175,11 @@ static enode parse_func_call(silver a, efunc f) { sequencer
         offset = 1;
     }
 
-#define typeis(ty, n) (ty && ty->au && ty->au->ident && strcmp(ty->au->ident, #n) == 0)
-
     while (i + offset < ln || fn->au->is_vargs) {
         Au_t   arg_decl = (Au_t)micro_get(m, i + offset);
         Au_t   src  = (Au_t)au_arg_type((Au)arg_decl);
         etype  typ  = (arg_decl && arg_decl->is_formatter) ? null : u(etype, src);
-        if (typeis(typ, Optimizer)) {
+        if (typeis(typ->au, Optimizer)) {
             typ = typ;
         }
         if (seq == 98) {
@@ -4988,7 +5017,7 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
     // if there is no code, then this is an external c function; implement must do this
     implement(f, false);
 
-    if (f->has_code) {
+    if (f->has_code && (f->inline_return || f->body || preamble)) {
         if (f->target)
             push_scope(a, (Au)f->target);
 
@@ -5064,51 +5093,73 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
     }
 }
 
-static void build_record(silver a, etype mrec) {
-    etype rec = resolve(mrec);
-    if (rec->user_built) return;
-    rec->user_built = true;
-    rec->parsing = true;
-    verify(rec->au->is_class || rec->au->is_struct, "not a record");
-    array body = rec->body ? (array)rec->body : array();
+/// phase 1: parse the record body so all members are registered
+static void build_record_parse(silver a, etype mrec) {
+    if (mrec->user_built) return;
+    mrec->user_built = true;
+    mrec->parsing = true;
+    verify(mrec->au->is_class || mrec->au->is_struct, "not a record");
+    array body = mrec->body ? (array)mrec->body : array();
     push_tokens(a, (tokens)body, 0);
     push_scope(a, (Au)mrec);
-    
+
     while (peek(a)) {
         parse_statement(a);
     }
-    pop_tokens(a, false);   
-    rec->parsing = false;
-    
-    etype_implement(mrec, false);
+    pop_tokens(a, false);
+    mrec->parsing = false;
+    pop_scope(a);
+}
 
-    // the functions we write after may access the type-id
+/// phase 2: implement LLVM types for a record (all records already parsed)
+static void build_record_implement(silver a, etype mrec) {
+    if (mrec->is_elsewhere) return;
+    mrec->is_elsewhere = true;
+
+    push_scope(a, (Au)mrec);
+    etype_implement(mrec, false);
     create_type_members(a, a->au);
 
-    // if this is a class, we create one, then built init with a preamble that initializes our properties
-    // this is called from Au_initialize
-    if (rec->au->is_class || rec->au->is_struct) {
-        // if no init, create one (attach preamble for our property inits)
-        Au_t m_init = find_member(rec->au, "init", AU_MEMBER_FUNC, 0, false);
-        if (rec->au->is_class && !m_init) {
-            efunc f = function(a, (etype)rec, 
-                string("init"), etypeid(none), a(rec), AU_MEMBER_FUNC,
+    // if no init, create one (but don't build it yet)
+    if (mrec->au->is_class) {
+        Au_t m_init = find_member(mrec->au, "init", AU_MEMBER_FUNC, 0, false);
+        if (!m_init) {
+            efunc f = function(a, mrec,
+                string("init"), etypeid(none), a(mrec), AU_MEMBER_FUNC,
                 AU_TRAIT_IMETHOD | AU_TRAIT_OVERRIDE, 0);
             f->has_code = true;
             f->au->alt = cstr_copy(((string)f(string, "%o_init", symbol_name((Au)mrec)))->chars);
             etype_implement((etype)f, false);
-            m_init = f->au;
         }
+    }
+
+    // implement all member function etypes (so they have LLVM types before phase 3)
+    members(mrec->au, m) {
+        efunc n = u(efunc, m);
+        if (n) implement(n, false);
+    }
+    pop_scope(a);
+}
+
+/// phase 3: build init and member functions (all LLVM types now complete)
+static void build_record_functions(silver a, etype mrec) {
+    if (mrec->au->is_class || mrec->au->is_struct) {
+        push_scope(a, (Au)mrec);
+        Au_t m_init = find_member(mrec->au, "init", AU_MEMBER_FUNC, 0, false);
         if (m_init)
             build_fn(a, u(efunc, m_init), build_init_preamble, null);
-
-        // build remaining functions
-        members(rec->au, m) {
+        members(mrec->au, m) {
             efunc n = u(efunc, m);
             if (n) build_fn(a, n, null, null);
         }
+        pop_scope(a);
     }
-    pop_scope(a);
+}
+
+static void build_record(silver a, etype mrec) {
+    build_record_parse(a, mrec);
+    build_record_implement(a, mrec);
+    build_record_functions(a, mrec);
 }
 
 // we want to save const for a version 1.00, not 0.88
