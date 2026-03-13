@@ -937,7 +937,6 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
     if (type) {
         Au_t new_member = (Au_t)micro_push(&type->members, (Au)&cur->type);
         new_member->context = type;
-        //printf("new_member on type %s = %p (%i)\n", type->ident, new_member, n_members);
         return new_member;
     }
     return (Au_t)&cur->type;

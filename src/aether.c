@@ -1603,6 +1603,41 @@ enode aether_e_expect(aether a, enode cond, string msg) {
     return e_noop(a, etypeid(bool));
 }
 
+enode aether_e_fault(aether a, enode msg) {
+    a->is_const_op = false;
+    if (a->no_build) return e_noop(a, etypeid(none));
+
+    // emit the message as a print to stderr
+    enode str_msg = e_create(a, etypeid(string), (Au)msg);
+    LLVMValueRef msg_val = str_msg->value;
+
+    // call puts to print the message (convert string to cstr)
+    enode cstr_msg = e_create(a, etypeid(cstr), (Au)str_msg);
+
+    // declare fprintf and stderr
+    LLVMTypeRef i8ptr   = LLVMPointerTypeInContext(a->module_ctx, 0);
+    LLVMTypeRef i32_ty  = LLVMInt32TypeInContext(a->module_ctx);
+
+    // use puts for simplicity, then trap
+    LLVMTypeRef  puts_args[] = { i8ptr };
+    LLVMTypeRef  puts_ty = LLVMFunctionType(i32_ty, puts_args, 1, 0);
+    LLVMValueRef puts_fn = LLVMGetNamedFunction(a->module_ref, "puts");
+    if (!puts_fn)
+        puts_fn = LLVMAddFunction(a->module_ref, "puts", puts_ty);
+    LLVMValueRef args[] = { cstr_msg->value };
+    LLVMBuildCall2(B, puts_ty, puts_fn, args, 1, "");
+
+    // abort
+    LLVMTypeRef  abort_ty = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx), null, 0, 0);
+    LLVMValueRef abort_fn = LLVMGetNamedFunction(a->module_ref, "abort");
+    if (!abort_fn)
+        abort_fn = LLVMAddFunction(a->module_ref, "abort", abort_ty);
+    LLVMBuildCall2(B, abort_ty, abort_fn, null, 0, "");
+    LLVMBuildUnreachable(B);
+
+    return e_noop(a, etypeid(none));
+}
+
 catcher context_catcher(aether a);
 
 
@@ -2497,6 +2532,7 @@ enode aether_e_typeid(aether a, etype mdl) { sequencer
     enode n = resolve_typeid(a, (Au)mdl);
     if (!n) {
         n = n;
+        n = resolve_typeid(a, (Au)etypeid(Au)); // for schema objects and such
     }
     verify(n, "schema instance not found for %o [%i]", mdl, seq);
     return n;
@@ -4133,6 +4169,10 @@ etype get_type_t_ptr(etype t);
 
 void aether_create_type_members(aether a, Au_t ctx) {
     ctx = ctx;
+
+    if (typeis(ctx, vec3f)) {
+        ctx = ctx;
+    }
 
     // we must do this after building records / enums (in silver)
     members(ctx, mem) {
@@ -5849,6 +5889,10 @@ none aether_import_models(aether a, Au_t ctx, bool au_mode) {
             
             //if (m->module != ctx)
             //    continue;
+
+            if (typeis(m, vec3f)) {
+                m = m;
+            }
 
             if (ff->member_type && ff->member_type != m->member_type) continue;
 
