@@ -1220,9 +1220,10 @@
 }
 
 #define   i_struct_cast_PROTO(X, R)
-#define   i_struct_cast_METHOD(X, R)        R (*cast_##R)(X);   
+#define   i_struct_cast_METHOD(X, R)                R (*cast_##R)(X);   
 #define   i_struct_cast_NMODULE(X, R)      
-#define   i_struct_cast(X, Y, R)                i_struct_cast_##Y(X, R)
+#define   i_struct_cast(X, Y, R)                    i_struct_cast_##Y(X, R)
+
 
 #define   i_struct_method_ISIZE(    X, R, N, ...)
 #define   i_struct_method_ISIZE_EXTERN(X, R, N, ...)
@@ -1237,12 +1238,82 @@
     m->access_type = interface_public; \
     Type_i(X).type . ft.N = & X## _ ## N; \
     m->type    = typeid(R); \
+    set_args_array(m, emit_types(X __VA_OPT__(,) __VA_ARGS__)); \
+    ((Au_t)m->args.origin[0])->is_target = 1; \
 }
-
 #define   i_struct_method_PROTO(X, R, N, ...)
 #define   i_struct_method_METHOD(X, R, N, ...)      R (*N)(X* __VA_OPT__(,) __VA_ARGS__);
 #define   i_struct_method_NMODULE(X, R, N, ...)
 #define   i_struct_method(X, Y, R, N, ...)          i_struct_method_##Y(X, R, N, __VA_ARGS__)
+
+
+
+#define   i_struct_method_1_ISIZE(    X, R, N, A, ...)
+#define   i_struct_method_1_ISIZE_EXTERN(X, R, N, A, ...)
+#define   i_struct_method_1_INST(    X, R, N, A, ...)
+#define   i_struct_method_1_INST_EXTERN(    X, R, N, A, ...)
+#define   i_struct_method_1_DEF(X, R, N, A, ...)
+#define   i_struct_method_1_DECL(X, R, N, A, ...)        R X##_##N(X*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_1_DECL_EXTERN(X, R, N, A, ...) R X##_##N(X*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_1_GENERICS(X, R, N, A, ...)
+#define   i_struct_method_1_INIT(    T, R, N, A, ...) { \
+    Au_t m = def(typeid(T), #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
+    m->access_type = interface_public; \
+    Type_i(T).type . ft.N = & T## _ ## N; \
+    m->type    = typeid(R); \
+    set_args_array(m, emit_types(T, A __VA_OPT__(,) __VA_ARGS__)); \
+    ((Au_t)m->args.origin[0])->is_target = 1; \
+}
+#define   i_struct_method_1_PROTO(X, R, N, A, ...)
+#define   i_struct_method_1_METHOD(X, R, N, A, ...)      R (*N)(X*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_1_NMODULE(X, R, N, A, ...)
+#define   i_struct_method_1(X, Y, R, N, A, ...)          i_struct_method_1_##Y(X, R, N, A, __VA_ARGS__)
+//
+//
+//
+#define   i_struct_method_2_ISIZE(    X, R, N, A, ...)
+#define   i_struct_method_2_ISIZE_EXTERN(X, R, N, A, ...)
+#define   i_struct_method_2_INST(    X, R, N, A, ...)
+#define   i_struct_method_2_INST_EXTERN(    X, R, N, A, ...)
+#define   i_struct_method_2_DEF(X, R, N, A, ...)
+#define   i_struct_method_2_DECL(X, R, N, A, ...)        R X##_##N(X*, A*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_2_DECL_EXTERN(X, R, N, A, ...) R X##_##N(X*, A*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_2_GENERICS(X, R, N, A, ...)
+#define   i_struct_method_2_INIT(    T, R, N, A, ...) { \
+    Au_t m = def(typeid(T), #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
+    m->access_type = interface_public; \
+    Type_i(T).type . ft.N = & T## _ ## N; \
+    m->type    = typeid(R); \
+    set_args_array(m, emit_types(T, A, A __VA_OPT__(,) __VA_ARGS__)); \
+    ((Au_t)m->args.origin[0])->is_target = 1; \
+}
+#define   i_struct_method_2_PROTO(X, R, N, A, ...)
+#define   i_struct_method_2_METHOD(X, R, N, A, ...)      R (*N)(X*, A*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_2_NMODULE(X, R, N, A, ...)
+#define   i_struct_method_2(X, Y, R, N, A, ...)          i_struct_method_2_##Y(X, R, N, A, __VA_ARGS__)
+
+
+#define   i_struct_method_3_ISIZE(    X, R, N, A, ...)
+#define   i_struct_method_3_ISIZE_EXTERN(X, R, N, A, ...)
+#define   i_struct_method_3_INST(    X, R, N, A, ...)
+#define   i_struct_method_3_INST_EXTERN(    X, R, N, A, ...)
+#define   i_struct_method_3_DEF(X, R, N, A, ...)
+#define   i_struct_method_3_DECL(X, R, N, A, ...)        R X##_##N(X*, A*, A*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_3_DECL_EXTERN(X, R, N, A, ...) R X##_##N(X*, A*, A*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_3_GENERICS(X, R, N, A, ...)
+#define   i_struct_method_3_INIT(    T, R, N, A, ...) { \
+    Au_t m = def(typeid(T), #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
+    m->access_type = interface_public; \
+    Type_i(T).type . ft.N = & T## _ ## N; \
+    m->type    = typeid(R); \
+    set_args_array(m, emit_types(T, A, A, A __VA_OPT__(,) __VA_ARGS__)); \
+    ((Au_t)m->args.origin[0])->is_target = 1; \
+}
+#define   i_struct_method_3_PROTO(X, R, N, A, ...)
+#define   i_struct_method_3_METHOD(X, R, N, A, ...)      R (*N)(X*, A*, A*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_method_3_NMODULE(X, R, N, A, ...)
+#define   i_struct_method_3(X, Y, R, N, A, ...)          i_struct_method_3_##Y(X, R, N, A, __VA_ARGS__)
+
 
 
 #define   i_struct_static_ISIZE(    X, R, N, ...)
@@ -1257,6 +1328,7 @@
     Au_t m = def(typeid(X), #N, AU_MEMBER_FUNC, AU_TRAIT_SMETHOD); \
     m->access_type = interface_public; \
     Type_i(X).type . ft.N = & X## _ ## N; \
+    set_args_array(m, emit_types(__VA_ARGS__)); \
     m->type    = typeid(R); \
 }
 
@@ -1264,6 +1336,29 @@
 #define   i_struct_static_METHOD(X, R, N, ...)      R (*N)(__VA_ARGS__);
 #define   i_struct_static_NMODULE(X, R, N, ...) 
 #define   i_struct_static(X, Y, R, N, ...)          i_struct_static_##Y(X, R, N, __VA_ARGS__)
+
+
+
+#define   i_struct_static_3_ISIZE(    X, R, N, A, ...)
+#define   i_struct_static_3_ISIZE_EXTERN(X, R, N, A, ...)
+#define   i_struct_static_3_INST(    X, R, N, A, ...)
+#define   i_struct_static_3_INST_EXTERN(X, R, N, A, ...)
+#define   i_struct_static_3_DEF(    X, R, N, A, ...)
+#define   i_struct_static_3_DECL(    X, R, N, A, ...)            R X##_##N(A*, A*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_static_3_DECL_EXTERN(    X, R, N, A, ...)     R X##_##N(A*, A*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_static_3_GENERICS(X, R, N, A, ...)
+#define   i_struct_static_3_INIT(    T, R, N, A, ...) { \
+    Au_t m = def(typeid(T), #N, AU_MEMBER_FUNC, AU_TRAIT_SMETHOD); \
+    m->access_type = interface_public; \
+    Type_i(T).type . ft.N = & T## _ ## N; \
+    set_args_array(m, emit_types(T, A, A, A __VA_OPT__(,) __VA_ARGS__)); \
+    m->type    = typeid(R); \
+}
+
+#define   i_struct_static_3_PROTO(X, R, N, A, ...)
+#define   i_struct_static_3_METHOD(X, R, N, A, ...)      R (*N)(A*, A*, A* __VA_OPT__(,) __VA_ARGS__);
+#define   i_struct_static_3_NMODULE(X, R, N, A, ...) 
+#define   i_struct_static_3(X, Y, R, N, A, ...)       i_struct_static_3_##Y(X, R, N, A __VA_OPT__(,) __VA_ARGS__)
 
 
 
