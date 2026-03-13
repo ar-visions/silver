@@ -320,10 +320,16 @@ op dense
         no-op
 
     func forward [] -> none
-        if [ quantized ]
-            forward_q8
+        ifdef [ x86_64 ]
+            if [ quantized ]
+                forward_q8
+            el
+                forward_avx2
         el
-            forward_avx2
+            if [ quantized ]
+                forward_q8
+            el
+                forward_ref
 
     func forward_q8 [] -> none
         m:       i32 input.tensor_shape[0]
@@ -378,7 +384,7 @@ op dense
                     a_off: i64 [ (i * k + ki) * 4 ]
                     b_off: i64 [ (ki * n + j) * 4 ]
                     d_off: i64 [ (i * n + j) * 4 ]
-                    asm
+                    asm x86_64
                         vbroadcastss ymm1, dword ptr [a_f + a_off]
                         vmovups ymm2, ymmword ptr [other_f + b_off]
                         vmovups ymm0, ymmword ptr [dest_f + d_off]
@@ -457,7 +463,7 @@ op dense
             for [ j: i32 0, j < idim8, j += 8 ]
                 dw_off: i64 [ (i * idim + j) * 4 ]
                 in_off: i64 [ j * 4 ]
-                asm
+                asm x86_64
                     vbroadcastss ymm1, dword ptr [d_out_f + do_off]
                     vmovups ymm2, ymmword ptr [inp + in_off]
                     vmovups ymm0, ymmword ptr [d_w + dw_off]
@@ -470,7 +476,7 @@ op dense
         # zero d_in_f
         for [ j: i32 0, j < idim8, j += 8 ]
             di_off: i64 [ j * 4 ]
-            asm
+            asm x86_64
                 vxorps ymm0, ymm0, ymm0
                 vmovups ymmword ptr [d_in_f + di_off], ymm0
         for [ j: i32 idim8, j < idim, j += 1 ]
@@ -481,7 +487,7 @@ op dense
             for [ j: i32 0, j < idim8, j += 8 ]
                 w_off:  i64 [ (i * idim + j) * 4 ]
                 di_off: i64 [ j * 4 ]
-                asm
+                asm x86_64
                     vbroadcastss ymm1, dword ptr [d_out_f + do_off]
                     vmovups ymm2, ymmword ptr [w + w_off]
                     vmovups ymm0, ymmword ptr [d_in_f + di_off]
@@ -525,11 +531,17 @@ op conv
 
 
     func forward [] -> none
-        if [ quantized ]
-            forward_q8
+        ifdef [ x86_64 ]
+            if [ quantized ]
+                forward_q8
+            el
+                forward_im2col
         el
-            forward_im2col
-
+            if [ quantized ]
+                forward_q8_ref
+            el
+                forward_ref
+    
     func forward_q8 [] -> none
         forward_q8_im2col
 
@@ -765,7 +777,7 @@ op conv
                 for [ oc: i32 0, oc < oc8, oc += 8 ]
                     b_off: i64 [ oc * 4 ]
                     o_off: i64 [ (out_base + oc) * 4 ]
-                    asm
+                    asm x86_64
                         vmovups ymm0, ymmword ptr [b + b_off]
                         vmovups ymmword ptr [out + o_off], ymm0
                 for [ oc: i32 oc8, oc < out_c, oc += 1 ]
@@ -784,7 +796,7 @@ op conv
                                     for [ oc: i32 0, oc < oc8, oc += 8 ]
                                         w_off: i64 [ (w_base + oc) * 4 ]
                                         o_off: i64 [ (out_base + oc) * 4 ]
-                                        asm
+                                        asm x86_64
                                             vbroadcastss ymm1, dword ptr [inp + inp_off]
                                             vmovups ymm2, ymmword ptr [w + w_off]
                                             vmovups ymm0, ymmword ptr [out + o_off]
@@ -850,7 +862,7 @@ op conv
             for [ oc: i32 0, oc < oc8, oc += 8 ]
                 b_off: i64 [ oc * 4 ]
                 r_off: i64 [ (i * out_c + oc) * 4 ]
-                asm
+                asm x86_64
                     vmovups ymm0, ymmword ptr [b + b_off]
                     vmovups ymmword ptr [res + r_off], ymm0
             for [ oc: i32 oc8, oc < out_c, oc += 1 ]
@@ -862,7 +874,7 @@ op conv
                     c_off: i64 [ (i * col_k + ki) * 4 ]
                     w_off: i64 [ (ki * out_c + oc) * 4 ]
                     r_off: i64 [ (i * out_c + oc) * 4 ]
-                    asm
+                    asm x86_64
                         vbroadcastss ymm1, dword ptr [col + c_off]
                         vmovups ymm2, ymmword ptr [w + w_off]
                         vmovups ymm0, ymmword ptr [res + r_off]
@@ -982,7 +994,7 @@ op conv
                 for [ oc: i32 0, oc < oc8, oc += 8 ]
                     db_off: i64 [ oc * 4 ]
                     do_off: i64 [ (oi_base + oc) * 4 ]
-                    asm
+                    asm x86_64
                         vmovups ymm0, ymmword ptr [d_b + db_off]
                         vmovups ymm1, ymmword ptr [d_out_f + do_off]
                         vaddps ymm0, ymm0, ymm1
@@ -1010,7 +1022,7 @@ op conv
                                     for [ oc: i32 0, oc < oc8, oc += 8 ]
                                         dw_off: i64 [ (w_base + oc) * 4 ]
                                         oi_off: i64 [ (oi_base + oc) * 4 ]
-                                        asm
+                                        asm x86_64
                                             vbroadcastss ymm1, dword ptr [inp + inp_off]
                                             vmovups ymm2, ymmword ptr [d_out_f + oi_off]
                                             vmovups ymm0, ymmword ptr [d_w + dw_off]
@@ -1021,7 +1033,7 @@ op conv
                                     for [ oc: i32 0, oc < oc8, oc += 8 ]
                                         w_off:  i64 [ (w_base + oc) * 4 ]
                                         oi_off: i64 [ (oi_base + oc) * 4 ]
-                                        asm
+                                        asm x86_64
                                             vmovups ymm0, ymmword ptr [w + w_off]
                                             vmovups ymm1, ymmword ptr [d_out_f + oi_off]
                                             vmulps ymm0, ymm0, ymm1
@@ -1172,10 +1184,16 @@ op pool
         out_w:    (in_w - pool_w) / stride_w + 1
 
     func forward [] -> none
-        if [ quantized ]
-            forward_q8
+        ifdef [ x86_64 ]
+            if [ quantized ]
+                forward_q8
+            el
+                forward_avx2
         el
-            forward_avx2
+            if [ quantized ]
+                forward_q8
+            el
+                forward_ref
 
     func forward_q8 [] -> none
         in_h:     input.tensor_shape[0]
@@ -1264,7 +1282,7 @@ op pool
                             iw: ow * stride_w + kw
                             if [ ih < in_h && iw < in_w ]
                                 i_off: i64 [ ((ih * in_w + iw) * in_c + c) * 4 ]
-                                asm
+                                asm x86_64
                                     vmovups ymm0, ymmword ptr [out + o_off]
                                     vmovups ymm1, ymmword ptr [inp + i_off]
                                     vmaxps ymm0, ymm0, ymm1

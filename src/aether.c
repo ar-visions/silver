@@ -6842,6 +6842,32 @@ none aether_e_memcpy(aether a, enode _dst, enode _src, Au_t au_size) {
     LLVMBuildMemCpy(B, dst, 0, src, 0, sz);
 }
 
+/// memcpy/memset with runtime size — called from silver parser for builtin interception
+enode aether_e_memop(aether a, enode dst, enode arg2, enode size, bool is_memcpy) {
+    if (a->no_build) return e_noop(a, null);
+    a->is_const_op = false;
+
+    LLVMTypeRef  i8ptr = LLVMPointerTypeInContext(a->module_ctx, 0);
+    LLVMTypeRef  i64   = LLVMInt64TypeInContext(a->module_ctx);
+    LLVMValueRef vdst  = LLVMBuildBitCast(B, dst->value, i8ptr, "dst");
+    LLVMValueRef vsz   = size->value;
+
+    if (LLVMTypeOf(vsz) != i64)
+        vsz = LLVMBuildZExt(B, vsz, i64, "sz64");
+
+    if (is_memcpy) {
+        LLVMValueRef vsrc = LLVMBuildBitCast(B, arg2->value, i8ptr, "src");
+        LLVMBuildMemCpy(B, vdst, 0, vsrc, 0, vsz);
+    } else {
+        LLVMValueRef vval = arg2->value;
+        LLVMTypeRef  i8   = LLVMInt8TypeInContext(a->module_ctx);
+        if (LLVMTypeOf(vval) != i8)
+            vval = LLVMBuildTrunc(B, vval, i8, "val8");
+        LLVMBuildMemSet(B, vdst, vval, vsz, 0);
+    }
+    return dst;
+}
+
 define_class(etype,      Au)
 // its nice to have an args scope + function scope, but we get the same with a statements + function too
 // plus we have .args on the au, we also don't need a list for args when we have Au-t.args

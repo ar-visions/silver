@@ -1322,6 +1322,34 @@ evar read_evar(silver a) {
     return node;
 }
 
+/// check if a platform define is truthy (used by asm conditional and ifdef)
+static bool eval_define(silver a, string name) {
+    Au_t  mem  = lexical(a->lexical, cstring(name));
+    enode node = mem ? (enode)get(a->registry, (Au)mem) : null;
+    Au    val  = node ? node->literal : null;
+    return val && cast(bool, val);
+}
+
+enode aether_e_memop(aether, enode, enode, enode, bool);
+
+/// parse memcpy/memset — emit LLVM intrinsics directly, bypassing C macro resolution
+static enode parse_memop(silver a) { sequencer
+    bool is_memcpy = read_if(a, "memcpy") != null;
+    if (!is_memcpy) verify(read_if(a, "memset"), "expected memcpy or memset");
+
+    bool read_br = read_if(a, "[") != null;
+    a->expr_level++;
+    enode dst  = parse_expression(a, null, true);
+    validate(read_if(a, ","), "expected , after dst");
+    enode arg2 = parse_expression(a, null, true);
+    validate(read_if(a, ","), "expected , after %s", is_memcpy ? "src" : "val");
+    enode size = parse_expression(a, null, true);
+    a->expr_level--;
+    if (read_br) validate(read_if(a, "]"), "expected ] after %s", is_memcpy ? "memcpy" : "memset");
+
+    return aether_e_memop((aether)a, dst, arg2, size, is_memcpy);
+}
+
 enode parse_asm(silver a, etype rtype) {
     //validate(read_if(a, "asm") != null, "expected asm");
 
@@ -1331,10 +1359,7 @@ enode parse_asm(silver a, etype rtype) {
     token pk = peek(a);
     if (pk && pk->line == asm_tok->line && isalpha(pk->chars[0]) && !next_is(a, "[")) {
         string cond_name = read_alpha(a);
-        Au_t   cond_mem  = lexical(a->lexical, cstring(cond_name));
-        enode  cond_node = cond_mem ? (enode)get(a->registry, (Au)cond_mem) : null;
-        Au     const_v   = cond_node ? cond_node->literal : null;
-        if (!const_v || !cast(bool, const_v)) {
+        if (!eval_define(a, cond_name)) {
             read_body(a); // consume and discard the body
             return enode(mod, (aether)a, au, null);
         }
@@ -2731,6 +2756,7 @@ enode parse_statement(silver a)
         if (next_is(a, "if"))     return parse_if_else(a);
         if (next_is(a, "switch")) return parse_switch (a);
         if (read_if(a, "asm"))    return parse_asm    (a, null);
+        if (next_is(a, "memcpy") || next_is(a, "memset")) return parse_memop(a);
     }
     
     if (next_is(a, "ifdef")) return parse_ifdef_else(a);
@@ -5734,12 +5760,13 @@ enode parse_ifdef_else(silver a) {
 
     // first ifdef [cond]
     validate(read_if(a, "ifdef"), "expected ifdef");
-    a->expr_level++;
-    enode n_cond = parse_expression(a, null, false);
-    a->expr_level--;
+    validate(read_if(a, "["), "expected [ after ifdef");
+    string def_name = read_alpha(a);
+    validate(def_name, "expected identifier after ifdef [");
+    bool cond = eval_define(a, def_name);
+    validate(read_if(a, "]"), "expected ] after ifdef condition");
     array block = read_body(a);
-    Au const_v = n_cond ? n_cond->literal : null;
-    if (const_v && cast(bool, const_v)) {
+    if (cond) {
         push_tokens(a, (tokens)block, 0);
         statements = parse_statements(a);
         pop_tokens(a, false);
@@ -5748,13 +5775,18 @@ enode parse_ifdef_else(silver a) {
 
     // chain of el [cond] / el
     while (read_if(a, "el")) {
-        a->expr_level++;
-        enode n_cond = next_is(a, "[") ? parse_expression(a, null, false) : null;
-        a->expr_level--;
+        bool has_cond = false;
+        bool el_cond  = false;
+        if (read_if(a, "[")) {
+            string el_name = read_alpha(a);
+            validate(el_name, "expected identifier after el [");
+            el_cond  = eval_define(a, el_name);
+            has_cond = true;
+            validate(read_if(a, "]"), "expected ] after ifdef el condition");
+        }
         array block = read_body(a);
-        if (n_cond) {
-            Au const_v = n_cond->literal;
-            if (!one_truth && const_v && cast(bool, const_v)) {
+        if (has_cond) {
+            if (!one_truth && el_cond) {
                 push_tokens(a, (tokens)block, 0);
                 statements = parse_statements(a);
                 pop_tokens(a, false);
