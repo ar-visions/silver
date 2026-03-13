@@ -1473,7 +1473,7 @@ none aether_e_vector_init(aether a, etype element_type, enode vec, array nodes) 
         LLVMValueRef src  = LLVMBuildBitCast(B, G, i8ptr, "const.src");
         u64 byte_size = (u64)ln * (element_type->au->abi_size / 8);
         LLVMValueRef sz   = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), byte_size, 0);
-        LLVMBuildMemCpy(B, dst, 0, src, 0, sz);
+        LLVMBuildMemCpy(B, dst, 1, src, 1, sz);
     } else {
         /// store each element individually
         for (int i = 0; i < ln; i++) {
@@ -3227,7 +3227,7 @@ enode aether_e_zero(aether a, enode n) {
     if (a->no_build) return e_noop(a, mdl);
     LLVMValueRef zero   = LLVMConstInt(LLVMInt8TypeInContext(a->module_ctx), 0, 0);          // value for memset (0)
     LLVMValueRef size   = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), mdl->au->abi_size / 8, 0); // size of alloc
-    LLVMValueRef memset = LLVMBuildMemSet(B, v, zero, size, 0);
+    LLVMValueRef memset = LLVMBuildMemSet(B, v, zero, size, 1);
     return n;
 }
 
@@ -3986,7 +3986,7 @@ enode aether_e_primitive_convert(aether a, enode expr, etype rtype) {
         // Zero the whole thing
         LLVMValueRef zero = LLVMConstInt(LLVMInt8TypeInContext(a->module_ctx), 0, 0);
         LLVMValueRef size_val = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), total_size, 0);
-        LLVMBuildMemSet(B, temp_alloca, zero, size_val, 0);
+        LLVMBuildMemSet(B, temp_alloca, zero, size_val, 1);
         
         // Set type field (index 0) directly
         LLVMValueRef type_gep = LLVMBuildStructGEP2(B, au_struct_type, au_ptr, 0, "type_ptr");
@@ -5924,9 +5924,13 @@ void aether_import_Au(aether a, string ident, Au lib) {
         au_module = global();
         set(a->libs, string("Au"), _bool(true));
     } else {
-        // filter through registration data already here
-        cstr built_in = cast(cstr, (string)lib);
-        au_module = find_module(built_in);
+        Au_t t = isa(lib);
+        if (t && t->ident && strcmp(t->ident, "Au_t") == 0) {
+            au_module = (Au_t)lib;
+        } else if (t == typeid(string)) {
+            cstr built_in = cast(cstr, (string)lib);
+            au_module = find_module(built_in);
+        }
     }
 
     if (lib)
@@ -6838,14 +6842,17 @@ none aether_e_memcpy(aether a, enode _dst, enode _src, Au_t au_size) {
     LLVMValueRef dst  = LLVMBuildBitCast(B, _dst->value, i8ptr, "dst");
     LLVMValueRef src  = LLVMBuildBitCast(B, _src->value, i8ptr, "src");
     LLVMValueRef sz   = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), au_size->abi_size / 8, 0);
-    LLVMValueRef align = LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 8, 0); // your alignment
-    LLVMBuildMemCpy(B, dst, 0, src, 0, sz);
+    LLVMBuildMemCpy(B, dst, 1, src, 1, sz);
 }
 
 /// memcpy/memset with runtime size — called from silver parser for builtin interception
 enode aether_e_memop(aether a, enode dst, enode arg2, enode size, bool is_memcpy) {
     if (a->no_build) return e_noop(a, null);
     a->is_const_op = false;
+
+    dst  = enode_value(dst,  true);
+    arg2 = enode_value(arg2, true);
+    size = enode_value(size, true);
 
     LLVMTypeRef  i8ptr = LLVMPointerTypeInContext(a->module_ctx, 0);
     LLVMTypeRef  i64   = LLVMInt64TypeInContext(a->module_ctx);
@@ -6857,13 +6864,13 @@ enode aether_e_memop(aether a, enode dst, enode arg2, enode size, bool is_memcpy
 
     if (is_memcpy) {
         LLVMValueRef vsrc = LLVMBuildBitCast(B, arg2->value, i8ptr, "src");
-        LLVMBuildMemCpy(B, vdst, 0, vsrc, 0, vsz);
+        LLVMBuildMemCpy(B, vdst, 1, vsrc, 1, vsz);
     } else {
         LLVMValueRef vval = arg2->value;
         LLVMTypeRef  i8   = LLVMInt8TypeInContext(a->module_ctx);
         if (LLVMTypeOf(vval) != i8)
             vval = LLVMBuildTrunc(B, vval, i8, "val8");
-        LLVMBuildMemSet(B, vdst, vval, vsz, 0);
+        LLVMBuildMemSet(B, vdst, vval, vsz, 1);
     }
     return dst;
 }

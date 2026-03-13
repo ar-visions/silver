@@ -320,16 +320,10 @@ op dense
         no-op
 
     func forward [] -> none
-        ifdef [ x86_64 ]
-            if [ quantized ]
-                forward_q8
-            el
-                forward_avx2
+        if [ quantized ]
+            forward_q8
         el
-            if [ quantized ]
-                forward_q8
-            el
-                forward_ref
+            forward_avx2
 
     func forward_q8 [] -> none
         m:       i32 input.tensor_shape[0]
@@ -375,6 +369,7 @@ op dense
                 asm x86_64
                     vmovups ymm0, ymmword ptr [bias_f + bi_off]
                     vmovups ymmword ptr [dest_f + di_off], ymm0
+                def 
             for [ j: i32 n8, j < n, j += 1 ]
                 dest_f[i * n + j] = bias_f[j]
 
@@ -541,11 +536,10 @@ op conv
                 forward_q8_ref
             el
                 forward_ref
-    
+
     func forward_q8 [] -> none
         forward_q8_im2col
 
-    # reference scalar q8 im2col
     func forward_q8_ref [] -> none
         in_h:     input.tensor_shape[0]
         in_w:     input.tensor_shape[1]
@@ -1184,16 +1178,10 @@ op pool
         out_w:    (in_w - pool_w) / stride_w + 1
 
     func forward [] -> none
-        ifdef [ x86_64 ]
-            if [ quantized ]
-                forward_q8
-            el
-                forward_avx2
+        if [ quantized ]
+            forward_q8
         el
-            if [ quantized ]
-                forward_q8
-            el
-                forward_ref
+            forward_avx2
 
     func forward_q8 [] -> none
         in_h:     input.tensor_shape[0]
@@ -1438,6 +1426,8 @@ class keras
                     memcpy[inp.input.floats, inp.source.floats, inp.input.count * 4]
                 el
                     memcpy[inp.input.floats, src.floats, src.count * 4]
+                if [ current.quantized ]
+                    inp.input.quantize
             current.forward
             k_output.tensor_shape.total
 
@@ -1501,7 +1491,7 @@ class keras
 
         first: op [ order[0] ]
         if [ first.d_result ]
-            return first.d_result
+            return first .d_result
         return d_out
     
 
@@ -1533,10 +1523,10 @@ class keras
                     if [ layer.weights ]
                         wt: layer.weights.count
                         switch [ optimizer ]
-                        case Optimizer.sgd
+                        case sgd
                             for [ i: i32 0, i < wt, i += 1 ]
                                 layer.weights.floats[i] -= r * layer.weights.grad[i]
-                        case Optimizer.adam
+                        case adam
                             bc1: f32 [ 1.0 - powf[beta1, step] ]
                             bc2: f32 [ 1.0 - powf[beta2, step] ]
                             for [ i: i32 0, i < wt, i += 1 ]
@@ -1549,10 +1539,10 @@ class keras
                     if [ layer.bias ]
                         bt: layer.bias.count
                         switch [ optimizer ]
-                        case Optimizer.sgd
+                        case sgd
                             for [ i: i32 0, i < bt, i += 1 ]
                                 layer.bias.floats[i] -= r * layer.bias.grad[i]
-                        case Optimizer.adam
+                        case adam
                             bc1: f32 [ 1.0 - powf[beta1, step] ]
                             bc2: f32 [ 1.0 - powf[beta2, step] ]
                             for [ i: i32 0, i < bt, i += 1 ]

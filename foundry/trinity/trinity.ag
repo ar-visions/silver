@@ -38,12 +38,10 @@ class trinity
     func init[ ] -> none
         expect glfwInit, "glfw init"
 
-        #ifndef NDEBUG
         if [ !glfwVulkanSupported ]
             fault "glfw does not support vulkan"
             glfwTerminate
             return
-        #endif
 
         instance = vk_create[ t ]
         expect instance, "vk instance failure"
