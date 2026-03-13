@@ -1,269 +1,411 @@
 import vec
+import <stdio.h>
 
 enum ComponentType
-    NONE           : 0
-    BYTE           : 5120
-    UNSIGNED_BYTE  : 5121
-    SHORT          : 5122
-    UNSIGNED_SHORT : 5123
-    UNSIGNED_INT   : 5125
-    FLOAT          : 5126
+    NONE:           0
+    BYTE:           5120
+    UNSIGNED_BYTE:  5121
+    SHORT:          5122
+    UNSIGNED_SHORT: 5123
+    UNSIGNED_INT:   5125
+    FLOAT:          5126
 
 enum CompoundType
-    NONE            : 0
-    SCALAR          : 1
-    VEC2            : 2
-    VEC3            : 3
-    VEC4            : 4
-    MAT2            : 5
-    MAT3            : 6
-    MAT4            : 7
+    NONE:            0
+    SCALAR:          1
+    VEC2:            2
+    VEC3:            3
+    VEC4:            4
+    MAT2:            5
+    MAT3:            6
+    MAT4:            7
 
 enum TargetType
-    NONE            : 0
-    ARRAY_BUFFER    : 34962
-    ELEMENT_BUFFER  : 34963
+    NONE:            0
+    ARRAY_BUFFER:    34962
+    ELEMENT_BUFFER:  34963
 
 enum Mode
-    NONE           : 0
-    LINES          : 1
-    LINE_LOOP      : 2
-    TRIANGLES      : 4
-    TRIANGLE_STRIP : 5
-    TRIANGLE_FAN   : 6
-    QUADS          : 7
+    NONE:           0
+    LINES:          1
+    LINE_LOOP:      2
+    TRIANGLES:      4
+    TRIANGLE_STRIP: 5
+    TRIANGLE_FAN:   6
+    QUADS:          7
 
 enum Interpolation
-    LINEAR          : 0
-    STEP            : 1
-    CUBICSPLINE     : 2
+    LINEAR:                 0
+    STEP:                   1
+    CUBICSPLINE:            2
 
 class Sampler
-    u64             input
-    u64             output
-    Interpolation   interpolation
+    public input:          u64
+    public output:         u64
+    public interpolation:  Interpolation
 
 class ChannelTarget
-    u64             node
-    string          path
+    public node:           u64
+    public path:           string
 
 class Channel
-    u64             sampler
-    ChannelTarget   target
+    public sampler:        u64
+    public target:         ChannelTarget
 
 class Animation
-    string          name
-    Sampler[...]    samplers
+    public name:           string
+    public samplers:       array Sampler
 
 class SparseInfo
-    u64             bufferView
-    ComponentType   componentType
+    public bufferView:     u64
+    public componentType:  ComponentType
 
 class Sparse
-    u64             count
-    SparseInfo      indices
-    SparseInfo      values
+    public count:          u64
+    public indices:        SparseInfo
+    public values:         SparseInfo
 
 class Accessor
-    bool            normalized
-    u64             bufferView
-    ComponentType   componentType
-    CompoundType    type
-    u64             count
-    vec3f           min
-    vec3f           max
-    Sparse          sparse
-    u64             stride
-    u64             total_bytes
-    u64             vcount[]
-    u64             component_size[]
-    Au_t            member_type[]
-    none init[]
+    public normalized:      bool
+    public bufferView:      u64
+    public componentType:   ComponentType
+    public type:            CompoundType
+    public count:           u64
+    public min:             vec3f
+    public max:             vec3f
+    public sparse:          Sparse
+    public stride:          u64
+    public total_bytes:     u64
+    public vcount:          array u64
+    public component_size:  array u64
+    public member_type:     array Au_t
+
+    func vcount_val [] -> u64
+        vsize: u64 [0]
+        switch [type]
+        case CompoundType.SCALAR
+            vsize = 1
+        case CompoundType.VEC2
+            vsize = 2
+        case CompoundType.VEC3
+            vsize = 3
+        case CompoundType.VEC4
+            vsize = 4
+        case CompoundType.MAT2
+            vsize = 4
+        case CompoundType.MAT3
+            vsize = 9
+        case CompoundType.MAT4
+            vsize = 16
+        default
+            fault 'invalid CompoundType2'
+        return vsize
+
+    func component_size_val [] -> u64
+        scalar_sz: u64 [0]
+        switch [componentType]
+        case ComponentType.BYTE
+            scalar_sz = 1
+        case ComponentType.UNSIGNED_BYTE
+            scalar_sz = 1
+        case ComponentType.SHORT
+            scalar_sz = 2
+        case ComponentType.UNSIGNED_SHORT
+            scalar_sz = 2
+        case ComponentType.UNSIGNED_INT
+            scalar_sz = 4
+        case ComponentType.FLOAT
+            scalar_sz = 4
+        default
+            fault 'invalid ComponentType'
+        return scalar_sz
+
+    func init [] -> none
+        stride      = vcount_val * component_size_val
+        total_bytes = stride * vcount_val
 
 class BufferView
-    u64             buffer
-    u64             byteLength
-    u64             byteOffset
-    TargetType      target
+    public buffer:          u64
+    public byteLength:      u64
+    public byteOffset:      u64
+    public target:          TargetType
 
 class Skin
-    string          name
-    i64[...]        joints
-    i32             inverseBindMatrices
-    object          extras
-    object          extensions
-
-class JData
-    mat4f[...]      states
-    Transform[...]  transforms
-    mat4f           local
+    public name:            string
+    public joints:          array i64
+    public inverseBindMatrices: i32
+    public extras:          Au
+    public extensions:      Au
 
 class Transform
-    JData           jdata
-    i32             istate
-    mat4f           local
-    mat4f           local_default
-    i32             iparent
-    i64[...]        ichildren
-    none    multiply[mat4f]
-    none    set[mat4f]
-    none    set_default[]
-    none    propagate[]
+    public jdata:           JData
+    public istate:          i32
+    public local:           mat4f
+    public local_default:   mat4f
+    public iparent:         i32
+    public ichildren:       array i64
+    func propagate [] -> none
+        ident: mat4f.identity
+        m: mat4f
+        m2: mat4f
+        m3: mat4f
+        m4: mat4f
+        if [iparent != -1]
+            m = jdata.states[iparent]
+        el
+            m = ident
+        jdata.states[istate] = local * m
+        for [i: i64] in ichildren
+            t: Transform jdata.transforms[i]
+            t.propagate
+
+    func multiply [m: mat4f] -> none
+        local = local * m
+        propagate
+
+    func set [m: mat4f] -> none
+        local = m
+        propagate
+
+    func set_default [] -> none
+        local = local_default
+        propagate
+
+class JData
+    public states:          array mat4f
+    public transforms:      array Transform
+    public local:           mat4f
 
 class Node
-    string          name
-    Node            parent
-    i32             skin
-    i32             mesh
-    vec3f           translation
-    quatf           rotation
-    vec3f           scale
-    f32[...]        weights
-    i64[...]        children
-    i32             joint_index
-    bool            processed
-    object          mx_joints
-    Primitive primitive[Model, cstr]
+    public name:            string
+    public parent:          Node
+    public skin:            i32
+    public mesh:            i32
+    public translation:     vec3f
+    public rotation:        quatf
+    public scale:           vec3f
+    public weights:         array f32
+    public children:        array i64
+    public joint_index:     i32
+    public processed:       bool
+    public mx_joints:       Au
+    func primitive [mdl: Model, name: cstr] -> Primitive
+        m: mdl.meshes[mesh]
+        if [m]
+            return m.primitive [name]
+        return null
 
 class Primitive
-    string          name
-    map             attributes
-    u64             indices
-    i32             material
-    Mode            mode
-    map[...]        targets
+    public name:            string
+    public attributes:      map
+    public indices:         u64
+    public material:        i32
+    public mode:            Mode
+    public targets:         array map
 
 class MeshExtras
-    string[...]     target_names
+    public target_names:    array string
 
 class Mesh
-    string          name
-    Primitive[...]  primitives
-    f32[...]        weights
-    MeshExtras      extras
-    Primitive       primitive[cstr]
+    public name:            string
+    public primitives:      array Primitive
+    public weights:         array f32
+    public extras:          MeshExtras
+    func primitive [name: cstr] -> Primitive
+        for [p: Primitive] in primitives
+            if [strcmp [p.name, name] == 0]
+                return p
+        return null
 
 class Scene
-    string          name
-    i64[...]        nodes
+    public name:            string
+    public nodes:           array i64
 
 class AssetDesc
-    string          generator
-    string          copyright
-    string          version
+    public generator:       string
+    public copyright:       string
+    public version:         string
 
 class Buffer
-    u64             byteLength
-    path            uri
-    u8[...]         data
-    none init[]
+    public byteLength:      u64
+    public uri:             path
+    public data:            array u8
+    func init [] -> none
+        data = vector_with_path [vector [], uri]
 
 class TextureInfo
-    i64 index
-    u32 texCoord
-    f32 scale
+    public index:           i64
+    public texCoord:        u32
+    public scale:           f32
 
 class pbrMetallicRoughness
-    f32         ior
-    vec4f       baseColorFactor
-    TextureInfo baseColorTexture
-    f32         metallicFactor
-    f32         roughnessFactor
-    TextureInfo metallicRoughnessTexture
-    TextureInfo normalTexture
-    TextureInfo occlusionTexture
-    vec3f       emissiveFactor
-    TextureInfo emissiveTexture
-    vec4f       diffuseFactor
-    vec3f       specularFactor
-    f32         glossinessFactor
-    TextureInfo specularGlossinessTexture
-    vec3f       sheenColorFactor
-    TextureInfo sheenColorTexture
-    f32         sheenRoughnessFactor
-    TextureInfo sheenRoughnessTexture
-    f32         clearcoatFactor
-    TextureInfo clearcoatTexture
-    f32         clearcoatRoughnessFactor
-    TextureInfo clearcoatRoughnessTexture
-    TextureInfo clearcoatNormalTexture
-    f32         transmissionFactor
-    TextureInfo transmissionTexture
-    f32         thicknessFactor
-    TextureInfo thicknessTexture
-    vec3f       attenuationColor
-    f32         attenuationDistance
-    TextureInfo specularTexture
-    vec3f       specularColorFactor
-    TextureInfo specularColorTexture
-    f32         emissiveStrength
-    f32         iridescenceFactor
-    TextureInfo iridescenceTexture
-    f32         iridescenceIor
-    f32         iridescenceThicknessMinimum
-    f32         iridescenceThicknessMaximum
+    public ior:                          f32
+    public baseColorFactor:              vec4f
+    public baseColorTexture:             TextureInfo
+    public metallicFactor:               f32
+    public roughnessFactor:              f32
+    public metallicRoughnessTexture:     TextureInfo
+    public normalTexture:                TextureInfo
+    public occlusionTexture:             TextureInfo
+    public emissiveFactor:               vec3f
+    public emissiveTexture:              TextureInfo
+    public diffuseFactor:                vec4f
+    public specularFactor:               vec3f
+    public glossinessFactor:             f32
+    public specularGlossinessTexture:    TextureInfo
+    public sheenColorFactor:             vec3f
+    public sheenColorTexture:            TextureInfo
+    public sheenRoughnessFactor:         f32
+    public sheenRoughnessTexture:        TextureInfo
+    public clearcoatFactor:              f32
+    public clearcoatTexture:             TextureInfo
+    public clearcoatRoughnessFactor:     f32
+    public clearcoatRoughnessTexture:    TextureInfo
+    public clearcoatNormalTexture:       TextureInfo
+    public transmissionFactor:           f32
+    public transmissionTexture:          TextureInfo
+    public thicknessFactor:              f32
+    public thicknessTexture:             TextureInfo
+    public attenuationColor:             vec3f
+    public attenuationDistance:           f32
+    public specularTexture:              TextureInfo
+    public specularColorFactor:          vec3f
+    public specularColorTexture:         TextureInfo
+    public emissiveStrength:             f32
+    public iridescenceFactor:            f32
+    public iridescenceTexture:           TextureInfo
+    public iridescenceIor:               f32
+    public iridescenceThicknessMinimum:  f32
+    public iridescenceThicknessMaximum:  f32
 
 class Material
-    string               name
-    pbrMetallicRoughness pbr
-    TextureInfo          normalTexture
-    TextureInfo          occlusionTexture
-    TextureInfo          emissiveTexture
-    vec3f                emissiveFactor
-    string               alphaMode
-    f32                  alphaCutoff
-    bool                 doubleSided
+    public name:             string
+    public pbr:              pbrMetallicRoughness
+    public normalTexture:    TextureInfo
+    public occlusionTexture: TextureInfo
+    public emissiveTexture:  TextureInfo
+    public emissiveFactor:   vec3f
+    public alphaMode:        string
+    public alphaCutoff:      f32
+    public doubleSided:      bool
 
 class Model
-    Node      [...] nodes
-    Skin      [...] skins
-    Accessor  [...] accessors
-    BufferView[...] bufferViews
-    Mesh      [...] meshes
-    Buffer    [...] buffers
-    Animation [...] animations
-    Scene     [...] scenes
-    Material  [...] materials
-    u64             scene
-    AssetDesc       asset
-    Transform node_transform[JData, mat4f, i32, Transform]
-    Node find[cstr]
-    i32 index_of[cstr]
-    Node index[string]
-    JData joints[Node]
+    public nodes:            array Node
+    public skins:            array Skin
+    public accessors:        array Accessor
+    public bufferViews:      array BufferView
+    public meshes:           array Mesh
+    public buffers:          array Buffer
+    public animations:       array Animation
+    public scenes:           array Scene
+    public materials:        array Material
+    public scene:            u64
+    public asset:            AssetDesc
+    func find [name: cstr] -> Node
+        for [node: Node] in nodes
+            if [strcmp [node.name, name] == 0]
+                return node
+        return null
+
+    func index_of [name: cstr] -> i32
+        index: i32 [0]
+        for [node: Node] in nodes
+            if [strcmp [node.name, name] == 0]
+                return index
+            index += 1
+        return -1
+
+    func index [name: string] -> Node
+        return find [name]
+
+    func node_transform [joints: JData, parent_mat: mat4f, node_index: i32, parent: Transform] -> Transform
+        node: nodes[node_index]
+        node.processed = true
+        transform: Transform
+        if [node.joint_index >= 0]
+            transform.jdata = joints
+            rotation_m4: mat4f [node.rotation]
+            transform.local = mat4f []
+            transform.local = transform.local.translate [node.translation]
+            transform.local = transform.local * rotation_m4
+            transform.local = transform.local.scale[ node.scale ]
+            transform.local_default = transform.local
+            transform.iparent = parent.istate
+            transform.istate  = node.joint_index
+            state_mat: parent_mat * transform.local_default
+            joints.states[transform.istate] = state_mat
+            for [child_idx: i64] in node.children
+                ch: joints.transform[ state_mat, child_idx, transform]
+                if [ch]
+                    transform.ichildren += ch.istate
+            joints.transforms += transform
+        return transform
+
+    func joints [node: Node] -> JData
+        if [node.mx_joints]
+            return node.mx_joints
+        joints: JData
+        ident: mat4f.identity
+        if [node.skin != -1]
+            skin: skins[node.skin]
+            all_children: map
+            for [node_idx: i64] in skin.joints
+                n: nodes[node_idx]
+                for [i: i64] in n.children
+                    all_children.set [i, true]
+            j_index: i32 [0]
+            for [node_idx: i64] in skin.joints
+                n: nodes[node_idx]
+                n.joint_index = j_index
+                j_index += 1
+            n: i32 [skin.joints.count]
+            joints.transforms = array Transform []
+            joints.states     = array mat4f []
+            for [i: i32 0, i < n, i += 1]
+                joints.states.push [ident]
+            for [node_idx: i64] in skin.joints
+                if [all_children.contains [node_idx]]
+                    continue
+                node_transform [joints, ident, node_idx, null]
+        el
+            n: i32 [joints.states.count]
+            for [i: i32 0, i < n, i += 1]
+                joints.states.push [ident]
+        node.mx_joints = joints
+        return joints
 
 enum Polygon
-    undefined : 0
-    tri       : 1
-    quad      : 2
-    wire      : 3
-    mixed     : 4
-    ngon      : 5
+    undefined: 0
+    tri:       1
+    quad:      2
+    wire:      3
+    mixed:     4
+    ngon:      5
 
 enum Asset
-    undefined     : 0
-    color         : 1
-    normal        : 2
-    material      : 3
-    reflect       : 4
-    env           : 5
-    attachment    : 6
-    depth_stencil : 7
-    multisample   : 8
+    undefined:     0
+    color:         1
+    normal:        2
+    material:      3
+    reflect:       4
+    env:           5
+    attachment:    6
+    depth_stencil: 7
+    multisample:   8
 
 enum Sampling
-    undefined : 0
-    nearest   : 1
-    linear    : 2
-    ansio     : 3
+    undefined: 0
+    nearest:   1
+    linear:    2
+    ansio:     3
 
 struct HumanVertex
-    vec3f pos
-    vec3f normal
-    vec2f uv0
-    vec2f uv1
-    vec3f tangent
-    vec3f joints0
-    vec3f joints1
-    vec3f weights0
-    vec3f weights1
+    public pos:       vec3f
+    public normal:    vec3f
+    public uv0:       vec2f
+    public uv1:       vec2f
+    public tangent:   vec3f
+    public joints0:   vec3f
+    public joints1:   vec3f
+    public weights0:  vec3f
+    public weights1:  vec3f

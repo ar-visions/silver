@@ -1680,6 +1680,13 @@ class draw_state
     public stroke_color         : u32
     public opacity              : f32
     public func set_default [ ] -> none
+        font         = hold[ font [ size: 22, uri: path 'fonts/Sofia-Sans-Condensed.ttf' ] ]
+        stroke_cap   = cap_round
+        stroke_join  = join_round
+        stroke_size  = 0
+        fill_color   = sk_color[ object[ string[ "#000" ] ] ]
+        stroke_color = sk_color[ object[ string[ "#000" ] ] ]
+        opacity      = 1.0
 
 image canvas
     expect t     : trinity
@@ -2484,4 +2491,896 @@ class particle
 # set trait for element-inheriting classes on init
 # #define define_element(A0, A1, ...)
 #    define_any(A0, A1, sizeof(struct _##A0), AU_TRAIT_USER_INIT, __VA_ARGS__)
+
+# -------------------------------------------------------
+# free functions (converted from trinity.c)
+# -------------------------------------------------------
+
+func set_queue_index [ t: trinity, w: window ] -> none
+    queue_family_count: u32 [ 0 ]
+    vkGetPhysicalDeviceQueueFamilyProperties[ t.physical_device, ref queue_family_count, null ]
+    expect queue_family_count > 0, "failed to find queue families"
+    queue_families: new VkQueueFamilyProperties [ queue_family_count ]
+    vkGetPhysicalDeviceQueueFamilyProperties[ t.physical_device, ref queue_family_count, queue_families ]
+    found: false
+    if [ !w.surface ]
+        t.queue_family_index = 0
+        found = true
+    el
+        for [ i: u32 0, i < queue_family_count, i += 1 ]
+            present_support: VkBool32 [ VK_FALSE ]
+            vkGetPhysicalDeviceSurfaceSupportKHR[ t.physical_device, i, w.surface, ref present_support ]
+            if [ queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT && present_support ]
+                t.queue_family_index = i
+                found = true
+                break
+    free[ queue_families ]
+    expect found, "failed to find a suitable graphics and presentation queue family"
+
+func find_memory_type [ t: trinity, type_filter: u32, flags: VkMemoryPropertyFlags ] -> u32
+    props: VkPhysicalDeviceMemoryProperties
+    vkGetPhysicalDeviceMemoryProperties[ t.physical_device, ref props ]
+    for [ i: u32 0, i < props.memoryTypeCount, i += 1 ]
+        if [ (type_filter & (1 << i)) && (props.memoryTypes[i].propertyFlags & flags) == flags ]
+            return i
+    fault "could not find memory type"
+    return UINT32_MAX
+
+struct Layout
+    public layout : VkImageLayout
+    public access : VkAccessFlags
+    public stage  : VkPipelineStageFlags
+
+# layout defaults stored as static array
+func layout_find [ l: VkImageLayout ] -> ref Layout
+    static defaults: Layout[7]
+    static initialized: bool
+    if [ !initialized ]
+        initialized = true
+        defaults[0] = Layout [ layout: VK_IMAGE_LAYOUT_UNDEFINED,                access: 0,                                                                stage: VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT ]
+        defaults[1] = Layout [ layout: VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,     access: VK_ACCESS_TRANSFER_WRITE_BIT,                                     stage: VK_PIPELINE_STAGE_TRANSFER_BIT ]
+        defaults[2] = Layout [ layout: VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,     access: VK_ACCESS_TRANSFER_READ_BIT,                                      stage: VK_PIPELINE_STAGE_TRANSFER_BIT ]
+        defaults[3] = Layout [ layout: VK_IMAGE_LAYOUT_GENERAL,                  access: VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,            stage: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT ]
+        defaults[4] = Layout [ layout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, access: VK_ACCESS_SHADER_READ_BIT,                                        stage: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT ]
+        defaults[5] = Layout [ layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, access: VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,                              stage: VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
+        defaults[6] = Layout [ layout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,          access: VK_ACCESS_MEMORY_READ_BIT,                                        stage: VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT ]
+    for [ i: 0, i < 7, i += 1 ]
+        if [ defaults[i].layout == l ]
+            return ref defaults[i]
+    return null
+
+func transition_image_layout [ t: trinity, image: VkImage, old_layout: VkImageLayout, new_layout: VkImageLayout, baseMipLevel: i32, level_count: i32, base_array_layer: i32, layer_count: i32, is_depth: bool ] -> none
+    cmd: command [ t: t ]
+    begin[ cmd ]
+    barrier: VkImageMemoryBarrier [
+        sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        oldLayout:           old_layout,
+        newLayout:           new_layout,
+        srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+        dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+        image:               image,
+        subresourceRange:    VkImageSubresourceRange [
+            aspectMask:       is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+            baseMipLevel:     baseMipLevel,
+            levelCount:       level_count,
+            baseArrayLayer:   base_array_layer,
+            layerCount:       layer_count
+        ]
+    ]
+    src: ref Layout [ layout_find[ old_layout ] ]
+    dst: ref Layout [ layout_find[ new_layout ] ]
+    expect src && dst, "layout not found"
+    barrier.srcAccessMask = src.access
+    barrier.dstAccessMask = dst.access
+    vkCmdPipelineBarrier[ cmd.vk, src.stage, dst.stage, 0, 0, null, 0, null, 1, ref barrier ]
+    submit[ cmd ]
+    drop[ cmd ]
+
+func get_required_extensions [ t: trinity, extensions: ref ref symbol, extension_count: ref u32 ] -> none
+    glfw_extensions: ref symbol [ glfwGetRequiredInstanceExtensions[ extension_count ] ]
+    result: ref symbol [ malloc[ (*extension_count + 4) * sizeof[ ref symbol ] ] ]
+    memcpy[ result, glfw_extensions, *extension_count * sizeof[ ref symbol ] ]
+    asm [ !windows ]
+        # VK_KHR_portability_enumeration
+    if [ !windows ]
+        result[*extension_count] = "VK_KHR_portability_enumeration"
+        *extension_count += 1
+    if [ mac ]
+        result[*extension_count] = "VK_KHR_get_physical_device_properties2"
+        *extension_count += 1
+    if [ enable_validation ]
+        result[*extension_count] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME
+        *extension_count += 1
+    verbose: getenv[ "VERBOSE" ] != null
+    for [ i: i32 0, i < *extension_count, i += 1 ]
+        push[ t.instance_exts, strdup[ result[i] ] ]
+        if [ verbose ]
+            print "instance extension: %s", result[i]
+
+func vk_create [ t: trinity ] -> VkInstance
+    extensions: ref ref symbol [ null ]
+    extension_count: u32 [ 0 ]
+    get_required_extensions[ t, ref extensions, ref extension_count ]
+    validation_layer: symbol [ enable_validation ? "VK_LAYER_KHRONOS_validation" : null ]
+    instance: VkInstance
+    app_info: VkApplicationInfo [
+        sType:              VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        pApplicationName:   "trinity",
+        applicationVersion: VK_MAKE_VERSION[ 1, 0, 0 ],
+        pEngineName:        "trinity",
+        engineVersion:      VK_MAKE_VERSION[ 1, 0, 0 ],
+        apiVersion:         vk_version
+    ]
+    result: vkCreateInstance[ VkInstanceCreateInfo [
+        sType:                   VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        pApplicationInfo:        ref app_info,
+        enabledExtensionCount:   t.instance_exts.len,
+        ppEnabledExtensionNames: t.instance_exts.origin,
+        enabledLayerCount:       u32[ enable_validation ],
+        ppEnabledLayerNames:     ref validation_layer
+    ], null, ref instance ]
+    expect result == VK_SUCCESS, "failed to create Vulkan instance, error: %d", result
+    if [ enable_validation ]
+        _vkCreateDebugUtilsMessengerEXT = vkGetInstanceProcAddr[ instance, "vkCreateDebugUtilsMessengerEXT" ]
+        expect _vkCreateDebugUtilsMessengerEXT, "cannot find vk debug function"
+    return instance
+
+func trinity_finish [ t: trinity, w: window ] -> none
+    if [ t.queue_family_index == -1 ]
+        set_queue_index[ t, w ]
+        vkGetDeviceQueue[ t.device, t.queue_family_index, 0, ref t.queue ]
+        expect t.queue, "Failed to retrieve graphics queue"
+        if [ _vkCreateDebugUtilsMessengerEXT ]
+            result: _vkCreateDebugUtilsMessengerEXT[ t.instance, VkDebugUtilsMessengerCreateInfoEXT [
+                sType:           VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+                messageSeverity: VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+                messageType:     VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT     |
+                                 VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT  |
+                                 VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+                pfnUserCallback: trinity_log,
+                pUserData:       t
+            ], null, ref t.debug ]
+            expect result == VK_SUCCESS, "debug messenger"
+        pool_info: VkCommandPoolCreateInfo [
+            sType:            VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            queueFamilyIndex: t.queue_family_index,
+            flags:            VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+        ]
+        result: vkCreateCommandPool[ t.device, pool_info, null, ref t.command_pool ]
+        expect result == VK_SUCCESS, "failed to create command pool"
+
+func quad_shader [ t: trinity ] -> UVQuad
+    q: UVQuad [ t: t, name: 'uv-quad' ]
+    q.model = mat4f_ident[]
+    eye:    vec3f [ 0.0, 0.0, 2.0 ]
+    center: vec3f [ 0.0, 0.0, 0.0 ]
+    up:     vec3f [ 0.0, 1.0, 0.0 ]
+    q.view = mat4f_look_at[ ref eye, ref center, ref up ]
+    q.proj = mat4f_ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
+    return q
+
+func reduce_shader [ t: trinity ] -> UVReduce
+    q: UVReduce [ t: t, name: 'uv-reduce' ]
+    q.model = mat4f_ident[]
+    eye:    vec3f [ 0.0, 0.0, 2.0 ]
+    center: vec3f [ 0.0, 0.0, 0.0 ]
+    up:     vec3f [ 0.0, 1.0, 0.0 ]
+    q.view = mat4f_look_at[ ref eye, ref center, ref up ]
+    q.proj = mat4f_ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
+    return q
+
+# --- GLFW callbacks ---
+
+func handle_glfw_framebuffer_size [ glfw_window: ref GLFWwindow, width: i32, height: i32 ] -> none
+    if [ width == 0 && height == 0 ]
+        return
+    w: window [ glfwGetWindowUserPointer[ glfw_window ] ]
+    resize[ w, width, height ]
+
+func handle_glfw_key [ glfw_window: ref GLFWwindow, key: i32, scan_code: i32, action: i32, mods: i32 ] -> none
+    w: window [ glfwGetWindowUserPointer[ glfw_window ] ]
+    if [ action == GLFW_PRESS && (key == GLFW_KEY_UP || key == GLFW_KEY_DOWN) ]
+        w.debug_value += key == GLFW_KEY_UP ? 1.0 : -1.0
+    clear[ w.ev ]
+    w.ev.key.unicode   = key
+    w.ev.key.scan_code = scan_code
+    w.ev.key.state     = action == GLFW_PRESS
+    w.ev.key.meta      = (mods & GLFW_MOD_SUPER) != 0
+    w.ev.key.shift     = (mods & GLFW_MOD_SHIFT) != 0
+    w.ev.key.alt       = (mods & GLFW_MOD_ALT)   != 0
+    key_event[ w.ux, w.ev ]
+
+func handle_glfw_scroll [ win: ref GLFWwindow, x: f64, y: f64 ] -> none
+    w: window [ glfwGetWindowUserPointer[ win ] ]
+    clear[ w.ev ]
+    w.ev.mouse.pos.x         = w.mouse.x
+    w.ev.mouse.pos.y         = w.mouse.y
+    w.ev.mouse.wheel_delta.y = y
+    wheel_event[ w.ux, w.ev ]
+
+func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods: i32 ] -> none
+    w: window [ glfwGetWindowUserPointer[ win ] ]
+    clear[ w.ev ]
+    w.ev.mouse.pos.x  = w.mouse.x
+    w.ev.mouse.pos.y  = w.mouse.y
+    w.ev.mouse.button = id - GLFW_MOUSE_BUTTON_LEFT
+    w.ev.mouse.state  = action == GLFW_PRESS
+    if [ w.ev.mouse.state ]
+        press_event[ w.ux, w.ev ]
+    el
+        release_event[ w.ux, w.ev ]
+
+func handle_glfw_char [ win: ref GLFWwindow, code_point: u32 ] -> none
+    w: window [ glfwGetWindowUserPointer[ win ] ]
+    expect !w.ev.key.text, "unexpected text state"
+    clear[ w.ev ]
+    w.ev.key.text = hold[ string[ i32[ code_point ] ] ]
+    text_event[ w.ux, w.ev ]
+
+func handle_glfw_cursor [ win: ref GLFWwindow, x: f64, y: f64 ] -> none
+    w: window [ glfwGetWindowUserPointer[ win ] ]
+    clear[ w.ev ]
+    w.mouse.x = x
+    w.mouse.y = y
+    w.ev.mouse.pos.x = w.mouse.x
+    w.ev.mouse.pos.y = w.mouse.y
+    move_event[ w.ux, w.ev ]
+
+# --- model pipeline init ---
+
+func model_init_pipeline [ m: model, n: Node, prim: Primitive, s: shader ] -> none
+    mdl:      m.id
+    t:        m.t
+    r:        m.r
+    vbo:      gpu    [ null ]
+    mdl_mat:  mat4f  [ mat4f_ident[] ]
+    material: Material [ null ]
+    if [ n ]
+        members: ref vertex_member_t [ calloc[ 16, sizeof[ vertex_member_t ] ] ]
+        name:    prim && prim.name ? prim.name : string[ 'default' ]
+        indices: prim.indices
+        ai:      Accessor   [ get[ mdl.accessors,  indices ] ]
+        mat_id:  prim.material
+        itype:   Au_t [ Accessor_member_type[ ai ] ]
+        iview:   BufferView [ get[ mdl.bufferViews, ai.bufferView ] ]
+        ibuffer: Buffer     [ get[ mdl.buffers,     iview.buffer ] ]
+        material = mdl.materials && len[ mdl.materials ] > mat_id ?
+            get[ mdl.materials, mat_id ] :
+            mdl.materials ? first[ mdl.materials ] : null
+        index:        0
+        vertex_size:  0
+        vertex_count: 0
+        member_count: 0
+        index_size:   itype.size
+        index_count:  i32[ iview.byteLength / itype.size ]
+        pairs [ prim.attributes, i ]
+            a_name:   string [ i.key ]
+            ac_index: i64    [ *(ref i64[ i.value ]) ]
+            ac:       Accessor   [ get[ mdl.accessors,  ac_index ] ]
+            bv:       BufferView [ get[ mdl.bufferViews, ac.bufferView ] ]
+            b:        Buffer     [ get[ mdl.buffers, bv.buffer ] ]
+            members[member_count].type   = Accessor_member_type[ ac ]
+            members[member_count].ac     = ac
+            members[member_count].size   = members[member_count].type.size
+            members[member_count].offset = vertex_size
+            vertex_size += members[member_count].type.size
+            expect ac.count, "count not set on accessor"
+            expect !vertex_count || ac.count == vertex_count, "invalid vbo data"
+            vertex_count = ac.count
+            member_count += 1
+        vbo = gpu [ t: t, name: copy_cstr[ name.chars ],
+            members: members, member_count: member_count,
+            vertex_size: vertex_size, vertex_count: vertex_count,
+            index_size: index_size, index_count: index_count ]
+        vdata: ref i8 [ vbo.vertex_data ]
+        idata: ref i8 [ vbo.index_data ]
+        for [ k: 0, k < member_count, k += 1 ]
+            mem: ref vertex_member_t [ ref members[k] ]
+            bv:  BufferView [ get[ mdl.bufferViews, mem.ac.bufferView ] ]
+            b:   Buffer     [ get[ mdl.buffers, bv.buffer ] ]
+            src: ref i8     [ ref (ref i8[ data[ b.data ] ])[bv.byteOffset] ]
+            stride: mem.ac.stride
+            for [ j: 0, j < vertex_count, j += 1 ]
+                dst:  ref i8 [ ref vdata[j * vertex_size + mem.offset] ]
+                src0: ref i8 [ ref src[j * stride] ]
+                memcpy[ dst, src0, mem.size ]
+        i_src: ref i8 [ ref (ref i8[ data[ ibuffer.data ] ])[iview.byteOffset] ]
+        memcpy[ idata, i_src, iview.byteLength ]
+        if [ n.scale.x != 0 || n.scale.y != 0 || n.scale.z != 0 ]
+            mdl_mat = mat4f_scale[ ref mdl_mat, ref n.scale ]
+        mdl_mat = mat4f_rotate[ ref mdl_mat, ref n.rotation ]
+        mdl_mat = mat4f_translate[ ref mdl_mat, ref n.translation ]
+    pipe: pipeline [ t: t, w: m.w, name: n ? n.name : null,
+        r: m.r, s: s, vbo: vbo, default_model: mdl_mat,
+        material: material, samplers: m.samplers ]
+    push[ m.pipelines, pipe ]
+
+# --- mipmap generation ---
+
+func create_mipmaps [ t: trinity, vk_image: VkImage, w: i32, h: i32, mips: i32, layers: i32 ] -> none
+    if [ mips > 1 ]
+        mipWidth:  w
+        mipHeight: h
+        for [ f: 0, f < layers, f += 1 ]
+            transition_image_layout[ t, vk_image,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, 1, f, 1, false ]
+        for [ i: u32 1, i < mips, i += 1 ]
+            for [ f: 0, f < layers, f += 1 ]
+                transition_image_layout[ t, vk_image,
+                    VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, i, 1, f, 1, false ]
+                cmd: command [ t: t ]
+                begin[ cmd ]
+                vkCmdBlitImage[ cmd.vk,
+                    vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1, VkImageBlit [
+                        srcSubresource: VkImageSubresourceLayers [
+                            aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: i - 1, baseArrayLayer: f, layerCount: 1 ],
+                        srcOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ mipWidth, mipHeight, 1 ] ],
+                        dstSubresource: VkImageSubresourceLayers [
+                            aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: i, baseArrayLayer: f, layerCount: 1 ],
+                        dstOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ max[ 1, mipWidth / 2 ], max[ 1, mipHeight / 2 ], 1 ] ]
+                    ], VK_FILTER_LINEAR ]
+                submit[ cmd ]
+                transition_image_layout[ t, vk_image,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i, 1, f, 1, false ]
+            mipWidth  = max[ 1, mipWidth / 2 ]
+            mipHeight = max[ 1, mipHeight / 2 ]
+        for [ f: 0, f < layers, f += 1 ]
+            transition_image_layout[ t, vk_image,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, mips, f, 1, false ]
+    el
+        transition_image_layout[ t, vk_image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1, 0, 1, false ]
+
+# --- environment cubemap generation ---
+
+func environment [ t: trinity, img: image, r_axis: vec3f, rotation: f32 ] -> texture
+    if [ img.user ]
+        return img.user
+    size: 256
+    mip_levels: 8
+    cube_count: mip_levels
+    w: window [ t: t, format: Pixel_rgbaf32, backbuffer: true, width: size, height: size ]
+    resize[ w, w.extent.width, w.extent.height ]
+    clone: image [ source: data[ img ], width: img.width, height: img.height,
+        format: Pixel_rgbaf32, surface: Surface_color ]
+    gltf_path: path 'models/env.gltf'
+    mdl_data:  Model [ read[ gltf_path, typeid[ Model ], null ] ]
+    e:         Env [ t: t, name: 'env' ]
+    samplers:  map_of[ "color", clone, null ]
+    m_env:     model [ t: t, w: w, id: mdl_data, s: e, samplers: samplers ]
+    r_env:     target [ t: t, w: w, width: size, height: size, models: a[ m_env ] ]
+    e.proj = mat4f_perspective[ radians[ 90.0 ], 1.0, 0.1, 10.0 ]
+    dirs: vec3f[6]
+    dirs[0] = vec3f [  1,  0,  0 ]
+    dirs[1] = vec3f [ -1,  0,  0 ]
+    dirs[2] = vec3f [  0,  1,  0 ]
+    dirs[3] = vec3f [  0, -1,  0 ]
+    dirs[4] = vec3f [  0,  0,  1 ]
+    dirs[5] = vec3f [  0,  0, -1 ]
+    ups: vec3f[6]
+    ups[0] = vec3f [  0, -1,  0 ]
+    ups[1] = vec3f [  0, -1,  0 ]
+    ups[2] = vec3f [  0,  0,  1 ]
+    ups[3] = vec3f [  0,  0, -1 ]
+    ups[4] = vec3f [  0, -1,  0 ]
+    ups[5] = vec3f [  0, -1,  0 ]
+    eye: vec3f [ 0, 0, 0 ]
+    vk_image:  VkImage[2]
+    vma_alloc: VmaAllocation[2]
+    image_info: VkImageCreateInfo [
+        sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        imageType:     VK_IMAGE_TYPE_2D,
+        format:        w.surface_format.format,
+        extent:        VkExtent3D [ w.width, w.height, 1 ],
+        mipLevels:     mip_levels,
+        samples:       VK_SAMPLE_COUNT_1_BIT,
+        tiling:        VK_IMAGE_TILING_OPTIMAL,
+        usage:         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        flags:         VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
+        initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
+    ]
+    alloc_info: VmaAllocationCreateInfo [ usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE ]
+    for [ i: 0, i < 2, i += 1 ]
+        image_info.arrayLayers = i == 0 ? 6 : 6 * cube_count
+        res: vmaCreateImage[ t.allocator, image_info, alloc_info, ref vk_image[i], ref vma_alloc[i], null ]
+        expect res == VK_SUCCESS, "could not create image with vmaCreateImage"
+    cmd: command [ t: t ]
+    w.list = hold[ a[ r_env ] ]
+    w.last_target = last[ w.list ]
+    for [ f: 0, f < 6, f += 1 ]
+        e.view = mat4f_look_at[ ref eye, ref dirs[f], ref ups[f] ]
+        draw[ w ]
+        final: w.last_target
+        transition[ final.color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
+        transition_image_layout[ t, vk_image[0],
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 1, f, 1, false ]
+        region: VkImageCopy [
+            srcSubresource: VkImageSubresourceLayers [ aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0, baseArrayLayer: 0, layerCount: 1 ],
+            dstSubresource: VkImageSubresourceLayers [ aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0, baseArrayLayer: f, layerCount: 1 ],
+            extent:         VkExtent3D [ size, size, 1 ]
+        ]
+        begin[ cmd ]
+        vkCmdCopyImage[ cmd.vk,
+            final.color.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            vk_image[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1, ref region ]
+        submit[ cmd ]
+        transition[ final.color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+    create_mipmaps[ t, vk_image[0], size, size, mip_levels, 6 ]
+    cube: texture [ t: t, vk_image: vk_image[0], surface: Surface_environment,
+        vk_format: w.surface_format.format, mip_levels: mip_levels, layer_count: 6 ]
+    conv_shader: Convolve [ t: t, name: 'conv', proj: e.proj ]
+    conv_samplers: map_of[ "environment", cube, null ]
+    m_conv: model [ t: t, w: w, id: mdl_data, s: conv_shader, samplers: conv_samplers ]
+    r_conv: target [ t: t, w: w, width: size, height: size, models: a[ m_conv ] ]
+    v: vec4f [ r_axis.x, r_axis.y, r_axis.z, radians[ 90.0 ] ]
+    q: quatf [ ref v ]
+    conv_shader.env = mat4f_ident[]
+    conv_shader.env = mat4f_rotate[ ref conv_shader.env, ref q ]
+    drop[ w.list ]
+    w.list = hold[ a[ r_conv ] ]
+    w.last_target = last[ w.list ]
+    for [ a_i: 0, a_i < cube_count, a_i += 1 ]
+        roughness: f32[ a_i ] / f32[ mip_levels - 1 ]
+        conv_shader.roughness_samples = vec2f [ roughness, 1024.0 ]
+        for [ f: 0, f < 6, f += 1 ]
+            face_id: a_i * 6 + f
+            conv_shader.view = mat4f_look_at[ ref eye, ref dirs[f], ref ups[f] ]
+            final: w.last_target
+            draw[ w ]
+            transition[ final.color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
+            transition_image_layout[ t, vk_image[1],
+                VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 1, face_id, 1, false ]
+            region: VkImageCopy [
+                srcSubresource: VkImageSubresourceLayers [ aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0, baseArrayLayer: 0,       layerCount: 1 ],
+                dstSubresource: VkImageSubresourceLayers [ aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0, baseArrayLayer: face_id, layerCount: 1 ],
+                extent:         VkExtent3D [ size, size, 1 ]
+            ]
+            begin[ cmd ]
+            vkCmdCopyImage[ cmd.vk,
+                final.color.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                vk_image[1], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1, ref region ]
+            submit[ cmd ]
+            for [ mi: u32 1, mi < mip_levels, mi += 1 ]
+                mip_size_src: size >> (mi - 1)
+                mip_size_dst: size >> mi
+                transition_image_layout[ t, vk_image[1],
+                    mi == 1 ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, mi - 1, 1, face_id, 1, false ]
+                transition_image_layout[ t, vk_image[1],
+                    VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mi, 1, face_id, 1, false ]
+                begin[ cmd ]
+                vkCmdBlitImage[ cmd.vk,
+                    vk_image[1], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    vk_image[1], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1, VkImageBlit [
+                        srcSubresource: VkImageSubresourceLayers [
+                            aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: mi - 1, baseArrayLayer: face_id, layerCount: 1 ],
+                        srcOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ mip_size_src, mip_size_src, 1 ] ],
+                        dstSubresource: VkImageSubresourceLayers [
+                            aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: mi, baseArrayLayer: face_id, layerCount: 1 ],
+                        dstOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ mip_size_dst, mip_size_dst, 1 ] ]
+                    ], VK_FILTER_LINEAR ]
+                submit[ cmd ]
+            transition[ final.color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+    for [ face_id: 0, face_id < 6 * cube_count, face_id += 1 ]
+        for [ mi: 0, mi < mip_levels, mi += 1 ]
+            transition_image_layout[ t, vk_image[1],
+                mi == mip_levels - 1 ?
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL :
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                mi, 1, face_id, 1, false ]
+    convolve: hold[ texture [ t: t, vk_image: vk_image[1], vma_alloc: vma_alloc[1],
+        surface: Surface_environment, vk_format: w.surface_format.format,
+        mip_levels: mip_levels, layer_count: 6 * cube_count ] ]
+    drop[ cmd ]
+    drop[ w ]
+    drop[ cube ]
+    drop[ clone ]
+    img.user = hold[ convolve ]
+    return img.user
+
+# --- uniform helpers ---
+
+func A_virtual_size [ m: ref type_member_t ] -> i64
+    if [ m.args.meta_0 == typeid[ functional ] ]
+        return 0
+    type_size: i64 [ m.type.size ]
+    if [ !(m.type.traits & AU_TRAIT_STRUCT || m.type.traits & AU_TRAIT_PRIMITIVE) ]
+        type_size -= sizeof[ ARef ]
+    return type_size
+
+func uniform_size [ type: Au_t ] -> num
+    total: num [ 0 ]
+    ty: Au_t [ type ]
+    while [ ty ]
+        for [ m: 0, m < ty.member_count, m += 1 ]
+            mem: ref type_member_t [ ref ty.members[m] ]
+            inlay: mem.member_type == A_MEMBER_INLAY
+            if [ mem.member_type == A_MEMBER_PROP || inlay ]
+                total += A_virtual_size[ mem ]
+        ty = ty.parent_type
+        if [ ty == typeid[ shader ] ]
+            break
+    return total
+
+func uniform_transfer [ instance: shader, data: ref u8, type: Au_t ] -> i64
+    expect instanceof[ instance, shader ], "shader instance not provided"
+    index: num [ 0 ]
+    src: ref u8 [ instance ]
+    for [ m: 0, m < type.member_count, m += 1 ]
+        mem: ref type_member_t [ ref type.members[m] ]
+        inlay: mem.member_type == A_MEMBER_INLAY
+        if [ mem.member_type == A_MEMBER_PROP || inlay ]
+            type_size: A_virtual_size[ mem ]
+            if [ type_size == 0 ]
+                continue
+            if [ inlay || mem.type.traits & AU_TRAIT_STRUCT || mem.type.traits & AU_TRAIT_PRIMITIVE ]
+                memcpy[ ref data[index], ref src[mem.offset], type_size ]
+            el
+                memcpy[ ref data[index], vdata[ ref object[ ref src[mem.offset] ] ], type_size ]
+            index += type_size
+    return index
+
+# --- format conversion ---
+
+func vk_format_fn [ f: Pixel, linear: bool ] -> VkFormat
+    result: VkFormat [
+        f == Pixel_f32     ? VK_FORMAT_R32_SFLOAT :
+        f == Pixel_rgbaf32 ? VK_FORMAT_R32G32B32A32_SFLOAT :
+        f == Pixel_rgbf32  ? VK_FORMAT_R32G32B32_SFLOAT :
+        f == Pixel_rgba8   ? linear ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB :
+        f == Pixel_rgb8    ? linear ? VK_FORMAT_R8G8B8_UNORM   : VK_FORMAT_R8G8B8_SRGB :
+        f == Pixel_u8      ? VK_FORMAT_R8_UNORM : 0 ]
+    expect result, "incompatible image format"
+    return result
+
+func placeholder_image [ sampler: object, size: i32, fill: ref u8, sampler_size: ref i32, format: ref Pixel ] -> none
+    v_i8:    instanceof[ sampler, vector_i8 ]
+    v_f32:   instanceof[ sampler, vector_f32 ]
+    v_rgb8:  instanceof[ sampler, vector_rgb8 ]
+    v_rgbf:  instanceof[ sampler, vector_rgbf ]
+    v_rgba8: instanceof[ sampler, vector_rgba8 ]
+    v_rgbaf: instanceof[ sampler, vector_rgbaf ]
+    data_i8:    ref i8    [ v_i8    ? data[ v_i8 ]    : null ]
+    data_f32:   ref f32   [ v_f32   ? data[ v_f32 ]   : null ]
+    data_rgb8:  ref rgb8  [ v_rgb8  ? data[ v_rgb8 ]  : null ]
+    data_rgbf:  ref rgbf  [ v_rgbf  ? data[ v_rgbf ]  : null ]
+    data_rgba8: ref rgba8 [ v_rgba8 ? data[ v_rgba8 ] : null ]
+    data_rgbaf: ref rgbaf [ v_rgbaf ? data[ v_rgbaf ] : null ]
+    s: i32 [ size * size ]
+    if [ data_f32 ]
+        f32_fill: ref f32 [ fill ]
+        for [ i: 0, i < s, i += 1 ]
+            f32_fill[i] = *data_f32
+        *format = Pixel_f32
+        *sampler_size = s * sizeof[ f32 ]
+    el [ data_i8 ]
+        u8_fill: ref u8 [ fill ]
+        for [ i: 0, i < s, i += 1 ]
+            u8_fill[i] = *data_i8
+        *format = Pixel_u8
+        *sampler_size = s * sizeof[ u8 ]
+    el [ data_rgbf ]
+        v3_fill: ref rgbf [ fill ]
+        for [ i: 0, i < s, i += 1 ]
+            v3_fill[i] = *data_rgbf
+        *format = Pixel_rgbf32
+        *sampler_size = s * sizeof[ rgbf ]
+    el [ data_rgb8 ]
+        v3_fill: ref rgb8 [ fill ]
+        for [ i: 0, i < s, i += 1 ]
+            v3_fill[i] = *data_rgb8
+        *format = Pixel_rgb8
+        *sampler_size = s * sizeof[ rgb8 ]
+    el [ data_rgbaf ]
+        v4_fill: ref rgbaf [ fill ]
+        for [ i: 0, i < s, i += 1 ]
+            v4_fill[i] = *data_rgbaf
+        *format = Pixel_rgbaf32
+        *sampler_size = s * sizeof[ rgbaf ]
+    el [ data_rgba8 ]
+        v4_fill: ref rgba8 [ fill ]
+        for [ i: 0, i < s, i += 1 ]
+            v4_fill[i] = *data_rgba8
+        *format = Pixel_rgba8
+        *sampler_size = s * sizeof[ rgba8 ]
+    el
+        fault "sampler data required"
+
+func image_release_buffer [ a: image ] -> object
+    b: buffer [ a.res ]
+    t: trinity [ b.t ]
+    vmaUnmapMemory[ t.allocator, b.vma_alloc ]
+    vmaDestroyBuffer[ t.allocator, b.vk_buffer, b.vma_alloc ]
+    drop[ b ]
+    return null
+
+func pixel_from_format [ f: VkFormat, channels: ref i32 ] -> Pixel
+    pixel: Pixel [
+        (f == VK_FORMAT_R8G8B8A8_UNORM || f == VK_FORMAT_B8G8R8A8_UNORM ||
+         f == VK_FORMAT_R8G8B8A8_SRGB  || f == VK_FORMAT_B8G8R8A8_SRGB)  ? Pixel_rgba8 :
+        (f == VK_FORMAT_R8G8B8_UNORM   || f == VK_FORMAT_B8G8R8_UNORM   ||
+         f == VK_FORMAT_R8G8B8_SRGB    || f == VK_FORMAT_B8G8R8_SRGB)    ? Pixel_rgb8 :
+        f == VK_FORMAT_R8_UNORM            ? Pixel_u8 :
+        f == VK_FORMAT_R32_SFLOAT          ? Pixel_f32 :
+        f == VK_FORMAT_R32G32B32A32_SFLOAT ? Pixel_rgbaf32 : 0 ]
+    if [ channels ]
+        switch [ pixel ]
+            case Pixel_rgbaf32
+                *channels = 4
+            case Pixel_rgba8
+                *channels = 4
+            case Pixel_rgb8
+                *channels = 3
+            case Pixel_f32
+                *channels = 1
+            case Pixel_u8
+                *channels = 1
+            default
+                *channels = 0
+    return pixel
+
+func gpu_index_type [ a: gpu ] -> VkIndexType
+    return a.index_size == 1 ? VK_INDEX_TYPE_UINT8_KHR :
+           a.index_size == 2 ? VK_INDEX_TYPE_UINT16     : VK_INDEX_TYPE_UINT32
+
+func pbr_defaults [] -> pbrMetallicRoughness
+    static pbr: pbrMetallicRoughness
+    if [ !pbr ]
+        pbr = pbrMetallicRoughness[]
+        pbr.baseColorFactor            = vec4f [ 1, 0, 0, 1 ]
+        pbr.metallicFactor             = 1.0
+        pbr.roughnessFactor            = 1.0
+        pbr.emissiveFactor             = vec3f [ 0, 0, 0 ]
+        pbr.diffuseFactor              = vec4f [ 1, 1, 1, 1 ]
+        pbr.specularFactor             = vec3f [ 1, 1, 1 ]
+        pbr.glossinessFactor           = 1.0
+        pbr.sheenColorFactor           = vec3f [ 0, 0, 0 ]
+        pbr.sheenRoughnessFactor       = 0.0
+        pbr.clearcoatFactor            = 0.0
+        pbr.clearcoatRoughnessFactor   = 0.0
+        pbr.transmissionFactor         = 0.0
+        pbr.thicknessFactor            = 0.0
+        pbr.attenuationColor           = vec3f [ 1, 1, 1 ]
+        pbr.attenuationDistance        = 1e20
+        pbr.ior                        = 1.5
+        pbr.specularColorFactor        = vec3f [ 1, 1, 1 ]
+        pbr.emissiveStrength           = 1.0
+        pbr.iridescenceFactor          = 0.0
+        pbr.iridescenceIor             = 1.3
+        pbr.iridescenceThicknessMinimum = 100.0
+        pbr.iridescenceThicknessMaximum = 400.0
+    return pbr
+
+func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, p: pipeline ] -> array
+    res: gpu [ null ]
+    t: p.t
+    result: array [ alloc: 32 ]
+    pairs [ p.samplers, i ]
+        name: string [ i.key ]
+        img:  image  [ i.value ]
+        ev:   i32    [ *evalue[ surface_enum_type, name.chars ] ]
+        tx:   texture [ instanceof[ object[ img ], texture ] ]
+        re:   target  [ instanceof[ object[ img ], target ] ]
+        if [ re ]
+            tx = re.color
+        if [ ev == surface_value ]
+            expect tx || instanceof[ img, image ], "expected texture or image"
+            res = gpu [ t: t, name: cstring[ e_str[ Surface, surface_value ] ],
+                sampler: object[ tx ? object[ hold[ tx ] ] : object[ hold[ img ] ] ] ]
+            push[ result, res ]
+    pbr_default: pbr_defaults[]
+    pbr: p.material ? p.material.pbr : pbr_default
+    if [ !len[ result ] ]
+        f_normal: rgbaf [ 0.5, 0.5, 1.0, 1.0 ]
+        f_zero:   rgbaf [ 0.0, 0.0, 0.0, 0.0 ]
+        f_one:    rgbaf [ 1.0, 1.0, 1.0, 1.0 ]
+        f_color:  rgbaf [ ref pbr.baseColorFactor ]
+        single:   hold[ shape_new[ 1, 0 ] ]
+        switch [ surface_value ]
+            case Surface_normal
+                res = gpu [ t: t, name: "normal",      sampler: vector_rgbaf_new[ single, f_normal ] ]
+            case Surface_metal
+                res = gpu [ t: t, name: "metal",       sampler: vector_f32_new[ single, pbr.metallicFactor ] ]
+            case Surface_rough
+                res = gpu [ t: t, name: "rough",       sampler: vector_f32_new[ single, pbr.roughnessFactor ] ]
+            case Surface_emission
+                expect pbr.emissiveStrength / 8.0 <= 1.0, "refactor emissiveStrength"
+                res = gpu [ t: t, name: "emission",    sampler: vector_rgbaf_new[ single, f_zero ] ]
+            case Surface_height
+                res = gpu [ t: t, name: "height",      sampler: vector_f32_new[ single, 0.5 ] ]
+            case Surface_ao
+                res = gpu [ t: t, name: "ao",          sampler: vector_f32_new[ single, 1.0 ] ]
+            case Surface_ior
+                res = gpu [ t: t, name: "ior",         sampler: vector_f32_new[ single, pbr.ior ] ]
+            case Surface_color
+                res = gpu [ t: t, name: "color",       sampler: vector_rgbaf_new[ single, f_color ] ]
+            case Surface_environment
+                res = gpu [ t: t, name: "environment", sampler: vector_rgbaf_new[ single, f_one ] ]
+            default
+                expect false, "Unhandled Surface enum value"
+        push[ result, res ]
+    return result
+
+func rectangle_offset [ area: region, rel: rect ] -> rect
+    reg: region [ null ]
+    if [ !area ]
+        reg = region [ 0.0 ]
+        area = reg
+    r: rectangle[ area, rel, null ]
+    if [ reg ]
+        drop[ reg ]
+    return r
+
+func sk_canvas [ a: window, ct: Canvas ] -> sk
+    switch [ ct ]
+        case Canvas_overlay
+            return a.overlay
+        case Canvas_compose
+            return a.compose
+        case Canvas_colorize
+            return a.colorize
+        case Canvas_glyph
+            return a.glyph
+        default
+            return a.overlay
+
+func app_render [ a: app ] -> none
+    w:        a.w
+    ux:       w.ux
+    elements: a.ason_render
+    if [ a.on_render ]
+        elements = a.on_render[ a, a.w ]
+    el [ !a.ason_render || modified_time[ a.ason_path ] > a.ason_modified ]
+        a.ason_modified = modified_time[ a.ason_path ]
+        if [ !a.app_context ]
+            a.app_context = hold[ ctx [ hsize: 32 ] ]
+        type: Au_t [ isa[ a ] ]
+        ty: Au_t [ type ]
+        while [ ty != typeid[ Au ] ]
+            for [ m: num 0, m < ty.member_count, m += 1 ]
+                mem: ref type_member_t [ ref ty.members[m] ]
+                from: object [ A_member_object[ a, mem ] ]
+                if [ !from ]
+                    continue
+                ctx_val: object [ get[ a.app_context, mem.sname ] ]
+                if [ from && !ctx_val || compare[ from, ctx_val ] != 0 ]
+                    set[ a.app_context, mem.sname, from ]
+            ty = ty.parent_type
+        ason_render: map [ read[ a.ason_path, typeid[ map ], a.app_context ] ]
+        ty = type
+        while [ ty != typeid[ Au ] ]
+            for [ m: num 0, m < ty.member_count, m += 1 ]
+                mem: ref type_member_t [ ref ty.members[m] ]
+                if [ !(mem.member_type & A_MEMBER_PROP) ]
+                    continue
+                member: object [ A_member_object[ a, mem ] ]
+                to:     object [ get[ a.app_context, mem.sname ] ]
+                if [ (!member && to) || (!to && member) || (member && to && A_memcmp[ member, to ] != 0) ]
+                    A_member_set[ a, mem, to ]
+            ty = ty.parent_type
+        a.ason_render = hold[ ason_render ]
+        elements = a.ason_render
+    if [ elements ]
+        update_all[ w.ux, elements ]
+    animate[ ux ]
+    if [ w.compose && w.colorize && w.glyph ]
+        clear[ w.compose,  string[ "#000" ] ]
+        clear[ w.colorize, string[ "#000" ] ]
+        clear[ w.glyph,    string[ "#000" ] ]
+    clear[ w.overlay, string[ "#0000" ] ]
+    draw_element[ w, ux.root ]
+    sk_sync[]
+    draw[ w ]
+
+# --- shader include preprocessor ---
+
+func replace_includes [ src: cstr, dst: cstr ] -> none
+    src_file: ref FILE [ fopen[ src, "r" ] ]
+    expect src_file, "source not found"
+    dst_file: ref FILE [ fopen[ dst, "w" ] ]
+    expect dst_file, "destination not found"
+    buf: i8[4096]
+    while [ fgets[ buf, 4096, src_file ] ]
+        include_start: ref i8 [ strstr[ buf, "#include <" ] ]
+        if [ include_start ]
+            include_end: ref i8 [ strstr[ include_start, ">" ] ]
+            if [ include_end ]
+                import_name: i8[256]
+                name_length: include_end - (include_start + 10)
+                if [ name_length >= 256 ]
+                    fprintf[ stderr, "Error: Import name too long\n" ]
+                    exit[ 2 ]
+                strncpy[ import_name, include_start + 10, name_length ]
+                import_name[name_length] = 0
+                import_path: string [ 'shaders/{import_name}' ]
+                import_file: ref FILE [ fopen[ import_path.chars, "r" ] ]
+                if [ !import_file ]
+                    fprintf[ stderr, "Error: Failed to open import file: %s\n", import_name ]
+                    exit[ 2 ]
+                while [ fgets[ buf, 4096, import_file ] ]
+                    fputs[ buf, dst_file ]
+                fclose[ import_file ]
+                continue
+        fputs[ buf, dst_file ]
+    fclose[ src_file ]
+    fclose[ dst_file ]
+
+# --- color conversion ---
+
+func nib [ n: i8 ] -> u8
+    return n >= '0' && n <= '9' ?       u8[ n - '0' ] :
+           n >= 'a' && n <= 'f' ? u8[ 10 + (n - 'a') ] :
+           n >= 'A' && n <= 'F' ? u8[ 10 + (n - 'A') ] : 0
+
+func sk_color [ any: object ] -> u32
+    type: Au_t [ isa[ any ] ]
+    ia: i32 [ 255 ]
+    ir: i32
+    ig: i32
+    ib: i32
+    if [ type == typeid[ string ] ]
+        s: string [ any ]
+        h: symbol [ s.chars ]
+        if [ h[0] == '#' ]
+            sz: len[ s ]
+            switch [ sz ]
+                case 5
+                    ia = nib[ h[4] ] << 4 | nib[ h[4] ]
+                    ir = nib[ h[1] ] << 4 | nib[ h[1] ]
+                    ig = nib[ h[2] ] << 4 | nib[ h[2] ]
+                    ib = nib[ h[3] ] << 4 | nib[ h[3] ]
+                case 4
+                    ir = nib[ h[1] ] << 4 | nib[ h[1] ]
+                    ig = nib[ h[2] ] << 4 | nib[ h[2] ]
+                    ib = nib[ h[3] ] << 4 | nib[ h[3] ]
+                case 9
+                    ia = nib[ h[7] ] << 4 | nib[ h[8] ]
+                    ir = nib[ h[1] ] << 4 | nib[ h[2] ]
+                    ig = nib[ h[3] ] << 4 | nib[ h[4] ]
+                    ib = nib[ h[5] ] << 4 | nib[ h[6] ]
+                case 7
+                    ir = nib[ h[1] ] << 4 | nib[ h[2] ]
+                    ig = nib[ h[3] ] << 4 | nib[ h[4] ]
+                    ib = nib[ h[5] ] << 4 | nib[ h[6] ]
+    el [ type == typeid[ rgba8 ] ]
+        c: rgba [ any ]
+        ir = c.r
+        ig = c.g
+        ib = c.b
+        ia = c.a
+    el [ type == typeid[ rgba ] || type == typeid[ rgbaf ] ]
+        c: rgba [ any ]
+        ir = c.r * 255.0
+        ig = c.g * 255.0
+        ib = c.b * 255.0
+        ia = c.a * 255.0
+    el
+        expect false, "sk_color: implement color conversion for type %s", type.name
+    return u32[ ib | (ig << 8) | (ir << 16) | (ia << 24) ]
+
+# --- globals ---
+
+enable_validation: i32 [ 0 ]
+vk_version: u32 [ VK_API_VERSION_1_2 ]
+_vkCreateDebugUtilsMessengerEXT: PFN_vkCreateDebugUtilsMessengerEXT
+
+func trinity_log [ severity: VkDebugUtilsMessageSeverityFlagBitsEXT, types: VkDebugUtilsMessageTypeFlagsEXT, callbackData: ref VkDebugUtilsMessengerCallbackDataEXT, userData: ref void ] -> VkBool32
+    print "[vulkan] %s", callbackData.pMessage
+    return VK_FALSE
 

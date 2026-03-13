@@ -527,7 +527,7 @@ typedef Au_t* Au_ts;
             type_ref->ident             = #TYPE; \
             type_ref->table_size        = sizeof(((TYPE ## _f*)0)->ft); \
             type_ref->isize             = 0 TYPE##_schema( TYPE, ISIZE_EXTERN, __VA_ARGS__ ); \
-            type_ref->context           = (__typeof__(type_ref->context))base_ref; \
+            type_ref->context           = (base_ref != type_ref) ? (__typeof__(type_ref->context))base_ref : null; \
             type_ref->module            = module_lookup((cstr)MODULE); \
             type_ref->typesize          = TYPE_SZ; \
             type_ref->traits            = AU_TRAIT_IS_AU | TRAIT; \
@@ -1993,6 +1993,8 @@ extern int seq;
 #define sequencer static int seq; seq++;
 
 none halt(string, token);
+
+#define typeis(au, n) (au && au->ident && strcmp(au->ident, #n) == 0)
 
 #ifdef __cplusplus
 }
