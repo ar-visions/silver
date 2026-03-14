@@ -3097,7 +3097,9 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             int field_count = LLVMCountStructElementTypes(rmdl->lltype);
             LLVMValueRef *fields = calloc(field_count, sizeof(LLVMValueRef));
             bool all_const = a->no_const ? false : true;
-
+            if (rmdl->au->ident && strcmp(rmdl->au->ident, "mat4f") == 0) {
+                rmdl = rmdl;
+            }
             if (is_arr) {
                 array ar = (array)args;
                 int ln = len(ar);
@@ -3169,10 +3171,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                     verify(field_type, "field type lookup failed for %o (index = %i)", mdl, i);
 
                     LLVMTypeRef tr = LLVMStructGetTypeAtIndex(rmdl->lltype, i);
-                    LLVMTypeRef expect_ty = lltype(field_type);
-                    verify(expect_ty == tr, "field type mismatch");
-                    if (!value) value = e_null(a, field_type);
-                    fields[i] = value->value;
+                    fields[i] = value ? value->value : LLVMConstNull(tr);
                 }
             }
 
@@ -3181,7 +3180,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                 LLVMBuildAlloca(B, lltype(mdl), "alloca-mdl"), au, mdl->au);
             res = e_zero(a, res);
             for (int i = 0; i < field_count; i++) {
-                if (!LLVMIsNull(fields[i])) {
+                if (fields[i] && !LLVMIsNull(fields[i])) {
                     LLVMValueRef gep = LLVMBuildStructGEP2(B, lltype(mdl), res->value, i, "");
                     LLVMBuildStore(B, fields[i], gep);
                 }
@@ -4848,6 +4847,10 @@ none etype_implement(etype t, bool w) {
     Au_t      top       = top_scope(a);
     aether    module    = is_module(top) ? a : null;
 
+    if (t->au->ident && strcmp(t->au->ident, "mat4f") == 0) {
+        t = t;
+    }
+
     if (au->member_type == AU_MEMBER_NAMESPACE || (is_func(au) && !((enode)t)->used && !a->is_Au_import))
         return;
     Au commander_solo = head(t);
@@ -5090,6 +5093,9 @@ none etype_implement(etype t, bool w) {
             struct_members[0] = largest;
         }
 
+        if (t->au->ident && strcmp(t->au->ident, "mat4f") == 0) {
+            t = t;
+        }
         LLVMStructSetBody(t->lltype, struct_members, count, 1);
 
 

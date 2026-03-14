@@ -456,7 +456,7 @@ static enode reverse_descent(silver a, etype expect) { sequencer
     bool cmode = is_cmode(a);
     int num_levels = sizeof(levels) / sizeof(precedence);
     
-    if (seq == 154)
+    if (seq == 104)
         seq = seq;
 
     enode L = read_enode(a, expect, false);
