@@ -1,0 +1,122 @@
+import <time.h>
+import <stdio.h>
+import <stdlib.h>
+import <math.h>
+import <alsa/asoundlib.h>
+
+class spectra
+    public size:        i32
+    public sample_rate: i32
+    public channels:    i32
+    public device:      cstr
+    public handle:      ref snd_pcm_t
+    public re:          ref f32
+    public im:          ref f32
+    public buf:         ref i16
+    public bins:        ref f32
+
+    func init [ size: i32, sample_rate: i32, device: cstr ] -> none
+        self.size        = size
+        self.sample_rate = sample_rate
+        self.channels    = 1
+        self.device      = device
+        re  = new f32 [ size ]
+        im  = new f32 [ size ]
+        buf = new i16 [ size ]
+        bins = new f32 [ size / 2 ]
+
+    func open [] -> bool
+        rc: i32 [ snd_pcm_open [ handle, device, 0, 0 ] ]
+        if [ rc < 0 ]
+            printf [ "cannot open: %s\n", snd_strerror [ rc ] ]
+            return false
+        params: ref snd_pcm_hw_params_t
+        snd_pcm_hw_params_malloc [ params ]
+        snd_pcm_hw_params_any    [ handle, params ]
+        snd_pcm_hw_params_set_access   [ handle, params, 3 ]
+        snd_pcm_hw_params_set_format   [ handle, params, 2 ]
+        snd_pcm_hw_params_set_channels [ handle, params, channels ]
+        rate: u32 [ sample_rate ]
+        snd_pcm_hw_params_set_rate_near        [ handle, params, rate, 0 ]
+        snd_pcm_hw_params_set_period_size_near [ handle, params, size, 0 ]
+        rc = snd_pcm_hw_params [ handle, params ]
+        snd_pcm_hw_params_free [ params ]
+        if [ rc < 0 ]
+            printf [ "hw params failed: %s\n", snd_strerror [ rc ] ]
+            return false
+        return true
+
+    func capture [] -> bool
+        frames: i32 [ snd_pcm_readi [ handle, buf, size ] ]
+        if [ frames < 0 ]
+            snd_pcm_prepare [ handle ]
+            return false
+        for [ i: i32 0, i < size, i += 1 ]
+            re[i] = buf[i] / 32768.0
+            im[i] = 0.0
+        fft [ re, im, size ]
+        half: i32 [ size / 2 ]
+        for [ i: i32 0, i < half, i += 1 ]
+            bins[i] = sqrt [ re[i] * re[i] + im[i] * im[i] ]
+        return true
+
+    func close [] -> none
+        snd_pcm_close [ handle ]
+
+func fft [ re: ref f32, im: ref f32, n: i32 ] -> none
+    if [ n <= 1 ]
+        return
+    half: i32 [ n / 2 ]
+    re_even: new f32 [ half ]
+    im_even: new f32 [ half ]
+    re_odd:  new f32 [ half ]
+    im_odd:  new f32 [ half ]
+    for [ i: i32 0, i < half, i += 1 ]
+        re_even[i] = re[i * 2]
+        im_even[i] = im[i * 2]
+        re_odd[i]  = re[i * 2 + 1]
+        im_odd[i]  = im[i * 2 + 1]
+    fft [ re_even, im_even, half ]
+    fft [ re_odd,  im_odd,  half ]
+    for [ i: i32 0, i < half, i += 1 ]
+        angle: f32 [ -6.28318530718 * i / n ]
+        wr: f32 [ cos [ angle ] ]
+        wi: f32 [ sin [ angle ] ]
+        tr: f32 [ wr * re_odd[i] - wi * im_odd[i] ]
+        ti: f32 [ wi * re_odd[i] + wr * im_odd[i] ]
+        re[i]        = re_even[i] + tr
+        im[i]        = im_even[i] + ti
+        re[i + half] = re_even[i] - tr
+        im[i + half] = im_even[i] - ti
+    free [ re_even ]
+    free [ im_even ]
+    free [ re_odd ]
+    free [ im_odd ]
+
+# coverage is an abstract class;
+coverage test
+     i:i32
+     func run[] -> Au
+        i:2
+        puts 'ive done it all'
+        return true
+
+func main [] -> i32
+    s: spectra [ 1024, 44100, 'hw:5,0' ]
+    if [ !s.open ]
+        return 1
+    half: i32 [ 512 ]
+    for
+        if [ s.capture ]
+            for [ i: i32 0, i < half, i += 1 ]
+                if [ i % 16 == 0 ]
+                    printf "%5d Hz |", i * 44100 / 1024
+                    bar: i32 [ s.bins[i] * 50.0 ]
+                    if [ bar > 50 ]
+                        bar = 50
+                    for [ j: i32 0, j < bar, j += 1 ]
+                        printf "#"
+                    printf "\n"
+            printf "\033[%dA", half / 16
+    s.close
+    return 0

@@ -151,7 +151,7 @@ bool Au_is_func(Au t) {
     Au_t au = au_arg_type(t);
     return au && (au->member_type == AU_MEMBER_FUNC          ||
                   au->member_type == AU_MEMBER_CAST          ||
-                  au->member_type == AU_MEMBER_INDEX         ||
+                  au->member_type == AU_MEMBER_GETTER        ||
                   au->member_type == AU_MEMBER_SETTER        ||
                   au->member_type == AU_MEMBER_OPERATOR      ||
                   au->member_type == AU_MEMBER_CONSTRUCT) && (au->ident || au->alt);
@@ -268,7 +268,7 @@ i64 shape_total(shape a) {
     return total;
 }
 
-i64 shape_index_i64(shape a, i64 i) {
+i64 shape_getter_i64(shape a, i64 i) {
     return a->data[i];
 }
 
@@ -508,45 +508,74 @@ none array_concat(array a, array b) {
     each(b, Au, e) array_push(a, e);
 }
 
-Au array_index_num(array a, num i) {
-    if (i < 0)
-        i += a->count;
-    if (i >= a->count)
-        return 0;
+Au array_getter_num(array a, num i) {
+    if (i < 0 || i >= a->count)
+        return null;
     return a->origin[i];
 }
 
-Au array_index_Au(array a, Au ai) {
+static Au* array_indexer(array a, Au ai) {
     num* n = (num*)instance_of(ai, typeid(num));
-    if (n) return array_index_num(a, *n);
+    num offset = 0;
+    if (n) {
+        offset = *n;
+    } else {
+        shape i = instanceof(ai, shape);
+        verify(i, "expected shape");
 
-    shape i = instanceof(ai, shape);
-    verify(i, "expected shape");
+        verify(a->data_shape, "array has no shape");
 
-    verify(a->data_shape, "array has no shape");
+        verify(i->count <= a->data_shape->count,
+            "shape index rank exceeds array rank");
 
-    verify(i->count <= a->data_shape->count,
-           "shape index rank exceeds array rank");
+        u64 offset = 0;
+        u64 stride = 1;
 
-    u64 offset = 0;
-    u64 stride = 1;
+        // compute strides from the back (row-major)
+        for (i32 d = a->data_shape->count - 1; d >= 0; d--) {
+            u64 dim_size = a->data_shape->data[d];
+            u64 idx = (d < i->count) ? i->data[d] : 0;
 
-    // compute strides from the back (row-major)
-    for (i32 d = a->data_shape->count - 1; d >= 0; d--) {
-        u64 dim_size = a->data_shape->data[d];
-        u64 idx = (d < i->count) ? i->data[d] : 0;
+            verify(idx < dim_size,
+                "index %llu out of bounds for dimension %i (size %llu)",
+                idx, d, dim_size);
 
-        verify(idx < dim_size,
-               "index %llu out of bounds for dimension %i (size %llu)",
-               idx, d, dim_size);
+            offset += idx * stride;
+            stride *= dim_size;
 
-        offset += idx * stride;
-        stride *= dim_size;
-
-        if (d == 0) break; // avoid underflow
+            if (d == 0) break; // avoid underflow
+        }
     }
+    if (offset < 0 || offset >= a->count)
+        return null;
 
-    return a->origin[offset];
+    return &a->origin[offset];
+}
+
+Au array_getter_Au(array a, Au ai) {
+    Au* n = array_indexer(a, ai);
+    return n ? *n : null;
+}
+
+
+/// assign to an Au* slot with reference management and compound ops
+/// for compound ops, the slot value is treated as numeric (i64/f64)
+static void Au_assign(Au* slot, Au value, i32 op, bool unmanaged) {
+    if (op == OPType__assign) {
+        if (*slot != value) {
+            if (!unmanaged) drop(*slot);
+            if (!unmanaged) hold(value);
+            *slot = value;
+        }
+    } else {
+        fault("not implemented");
+    }
+}
+
+none array_setter(array a, Au key, Au value, i32 op) {
+    Au* val = array_indexer(a, key);
+    verify(val, "array setter: index out of bounds");
+    Au_assign(val, value, op, a->unmanaged);
 }
 
 none array_remove(array a, num b) {
@@ -3267,13 +3296,13 @@ sz map_len(map a) {
 }
 
 // find out how these two get mixed up on import
-Au map_index_sz(map a, sz index) {
+Au map_getter_sz(map a, sz index) {
     assert(index >= 0 && index < a->count, "index out of range");
     item i = (item)list_value_by_index((list)a, (Au)_sz(index));
     return i ? i->value : null;
 }
 
-Au map_index_Au(map a, Au key) {
+Au map_getter_Au(map a, Au key) {
     return map_get(a, key);
 }
 
@@ -3586,7 +3615,7 @@ string string_interpolate(string a, Au ff) {
     return res;
 }
 
-i32   string_index_num(string a, num index) {
+i32   string_getter_num(string a, num index) {
     if (index < 0)
         index += a->count;
     if (index >= a->count)
@@ -6429,6 +6458,10 @@ i32 app_run(app a) {
     return 0;
 }
 
+Au coverage_run(coverage a) {
+    return null;
+}
+
 none app_init(app a) {
     puts("app init\n");
 }
@@ -6524,6 +6557,8 @@ define_class(srcfile, Au);
 define_class   (app, Au)
 
 define_class(aclass2, app)
+
+define_class(coverage, Au)
 
 define_class(watch,   Au)
 define_class(msg,     Au)

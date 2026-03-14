@@ -144,23 +144,21 @@ class Transform
     public local_default:   mat4f
     public iparent:         i32
     public ichildren:       array i64
+
     func propagate [] -> none
-        ident: mat4f.identity
-        m: mat4f
-        m2: mat4f
-        m3: mat4f
-        m4: mat4f
-        if [iparent != -1]
-            m = jdata.states[iparent]
-        el
-            m = ident
-        jdata.states[istate] = local * m
+        m: (iparent != -1) ? mat4f[ jdata.states[iparent] ] : mat4f.identity
+        jdata.states[istate] = local.mul[ m ]
         for [i: i64] in ichildren
-            t: Transform jdata.transforms[i]
-            t.propagate
+            jdata.transforms[i].propagate
 
     func multiply [m: mat4f] -> none
-        local = local * m
+        local = local.mul[ m ]
+        local = local.mul[ m ]
+        local = local.mul[ m ]
+        local = local.mul[ m ]
+        local = local.mul[ m ]
+        local = local.mul[ m ]
+        local = local.mul[ m ]
         propagate
 
     func set [m: mat4f] -> none
@@ -327,12 +325,12 @@ class Model
             rotation_m4: mat4f [node.rotation]
             transform.local = mat4f []
             transform.local = transform.local.translate [node.translation]
-            transform.local = transform.local * rotation_m4
+            transform.local = transform.local.mul[ rotation_m4 ]
             transform.local = transform.local.scale[ node.scale ]
             transform.local_default = transform.local
             transform.iparent = parent.istate
             transform.istate  = node.joint_index
-            state_mat: parent_mat * transform.local_default
+            state_mat: parent_mat.mul[ transform.local_default ]
             joints.states[transform.istate] = state_mat
             for [child_idx: i64] in node.children
                 ch: joints.transform[ state_mat, child_idx, transform]
