@@ -19,7 +19,7 @@ enum AU_MEMBER {
     AU_MEMBER_FUNC      = 5,
     AU_MEMBER_OPERATOR  = 6,
     AU_MEMBER_CAST      = 7,
-    AU_MEMBER_INDEX     = 8,
+    AU_MEMBER_GETTER    = 8,
     AU_MEMBER_SETTER    = 9,
     AU_MEMBER_ENUMV     = 10,
     AU_MEMBER_OVERRIDE  = 11,

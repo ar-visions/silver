@@ -7,7 +7,7 @@
             "request":    "launch",
             "preLaunchTask": "build-silver-ninja",
             "program":    "${workspaceFolder}/install/bin/silver",
-            "args":     [ "./foundry/trinity", "--sdk", "android-arm64", "--debug", "--build", "-v", "--run" ],
+            "args":     [ "./foundry/spectra", "--sdk", "android-arm64", "--debug", "--build", "-v", "--run" ],
             "cwd":        "${workspaceFolder}",
             "stopOnEntry": false,
             "env":      {
