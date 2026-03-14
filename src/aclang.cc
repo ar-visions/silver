@@ -1031,6 +1031,7 @@ path aether_include(aether e, Au inc, string ns) {
         "-x",
         "c",
         "-std=c11",
+        "-D_POSIX_C_SOURCE=200809L",
         "-fdiagnostics-show-option",
         "-Wno-nullability-completeness"
     };

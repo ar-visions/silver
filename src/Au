@@ -821,6 +821,55 @@ declare_enum(comparison)
 
 //forward(shape)
 
+
+#define OPType_module_ Au
+
+#define OPType_schema(E,T,Y,...) \
+    enum_value(E,T,Y, _undefined,        0) \
+    enum_value(E,T,Y, _lmul,             1) \
+    enum_value(E,T,Y, _ldiv,             2) \
+    enum_value(E,T,Y, _lright,           3) \
+    enum_value(E,T,Y, _lleft,            4) \
+    enum_value(E,T,Y, _add,              5) \
+    enum_value(E,T,Y, _sub,              6) \
+    enum_value(E,T,Y, _mul,              7) \
+    enum_value(E,T,Y, _div,              8) \
+    enum_value(E,T,Y, _or,               9) \
+    enum_value(E,T,Y, _and,              10) \
+    enum_value(E,T,Y, _bitwise_or,       11) \
+    enum_value(E,T,Y, _bitwise_and,      12) \
+    enum_value(E,T,Y, _xor,              13) \
+    enum_value(E,T,Y, _mod,              14) \
+    enum_value(E,T,Y, _right,            15) \
+    enum_value(E,T,Y, _left,             16) \
+    enum_value(E,T,Y, _compare,          17) \
+    enum_value(E,T,Y, _equal,            18) \
+    enum_value(E,T,Y, _not_equal,        19) \
+    enum_value(E,T,Y, _greater,          20) \
+    enum_value(E,T,Y, _less,             21) \
+    enum_value(E,T,Y, _greater_eq,       22) \
+    enum_value(E,T,Y, _less_eq,          23) \
+    enum_value(E,T,Y, _is,               24) \
+    enum_value(E,T,Y, _inherits,         25) \
+    enum_value(E,T,Y, _range_exclusive,  26) \
+    enum_value(E,T,Y, _range_inclusive,  27) \
+    enum_value(E,T,Y, _value_default,    28) \
+    enum_value(E,T,Y, _cond_value,       29) \
+    enum_value(E,T,Y, _bind,             30) \
+    enum_value(E,T,Y, _assign,           31) \
+    enum_value(E,T,Y, _assign_add,       32) \
+    enum_value(E,T,Y, _assign_sub,       33) \
+    enum_value(E,T,Y, _assign_mul,       34) \
+    enum_value(E,T,Y, _assign_div,       35) \
+    enum_value(E,T,Y, _assign_or,        36) \
+    enum_value(E,T,Y, _assign_and,       37) \
+    enum_value(E,T,Y, _assign_xor,       38) \
+    enum_value(E,T,Y, _assign_mod,       39) \
+    enum_value(E,T,Y, _assign_right,     40) \
+    enum_value(E,T,Y, _assign_left,      41) \
+    enum_value(E,T,Y, _setter,           42)
+declare_enum(OPType)
+
 #define array_module_ Au
 #define array_schema(AA,BB,...) \
     M(AA,BB, i, method,   public, array,  mix,           array, f32) \
@@ -847,8 +896,9 @@ declare_enum(comparison)
     M(AA,BB, i, operator, public, none,  _assign_add,    Au) \
     M(AA,BB, i, operator, public, none,  _assign_sub,    num) \
     M(AA,BB, i, cast,     public, map) \
-    M(AA,BB, i, index,    public, Au,     Au) \
-    M(AA,BB, i, index,    public, Au,     num) \
+    M(AA,BB, i, getter,   public, Au,     Au) \
+    M(AA,BB, i, getter,   public, Au,     num) \
+    M(AA,BB, i, setter,   public, none) \
     M(AA,BB, i, ctr,      public, i32) \
     M(AA,BB, i, override, method, push) \
     M(AA,BB, i, override, method, init) \
@@ -1133,7 +1183,7 @@ forward(shape)
     M(AA,BB, i, method,  public, i64,   flat_index, shape) \
     M(AA,BB, s, method,  public, shape, shape_from, i64, ref_i64) \
     M(AA,BB, s, method,  public, shape, shape_read, ARef) \
-    M(AA,BB, i, index,    public, i64, i64) \
+    M(AA,BB, i, getter,  public, i64, i64) \
     M(AA,BB, i, operator, public, shape, _left,     num) \
     M(AA,BB, i, operator, public, shape, _right,    num) \
     M(AA,BB, i, operator, public, shape, _lleft,    num) \
@@ -1219,54 +1269,6 @@ static struct op_entry op_table[] = {
     { LLVMBuildShl }
 };
 */
-
-#define OPType_module_ Au
-
-#define OPType_schema(E,T,Y,...) \
-    enum_value(E,T,Y, _undefined,        0) \
-    enum_value(E,T,Y, _lmul,             1) \
-    enum_value(E,T,Y, _ldiv,             2) \
-    enum_value(E,T,Y, _lright,           3) \
-    enum_value(E,T,Y, _lleft,            4) \
-    enum_value(E,T,Y, _add,              5) \
-    enum_value(E,T,Y, _sub,              6) \
-    enum_value(E,T,Y, _mul,              7) \
-    enum_value(E,T,Y, _div,              8) \
-    enum_value(E,T,Y, _or,               9) \
-    enum_value(E,T,Y, _and,              10) \
-    enum_value(E,T,Y, _bitwise_or,       11) \
-    enum_value(E,T,Y, _bitwise_and,      12) \
-    enum_value(E,T,Y, _xor,              13) \
-    enum_value(E,T,Y, _mod,              14) \
-    enum_value(E,T,Y, _right,            15) \
-    enum_value(E,T,Y, _left,             16) \
-    enum_value(E,T,Y, _compare,          17) \
-    enum_value(E,T,Y, _equal,            18) \
-    enum_value(E,T,Y, _not_equal,        19) \
-    enum_value(E,T,Y, _greater,          20) \
-    enum_value(E,T,Y, _less,             21) \
-    enum_value(E,T,Y, _greater_eq,       22) \
-    enum_value(E,T,Y, _less_eq,          23) \
-    enum_value(E,T,Y, _is,               24) \
-    enum_value(E,T,Y, _inherits,         25) \
-    enum_value(E,T,Y, _range_exclusive,  26) \
-    enum_value(E,T,Y, _range_inclusive,  27) \
-    enum_value(E,T,Y, _value_default,    28) \
-    enum_value(E,T,Y, _cond_value,       29) \
-    enum_value(E,T,Y, _bind,             30) \
-    enum_value(E,T,Y, _assign,           31) \
-    enum_value(E,T,Y, _assign_add,       32) \
-    enum_value(E,T,Y, _assign_sub,       33) \
-    enum_value(E,T,Y, _assign_mul,       34) \
-    enum_value(E,T,Y, _assign_div,       35) \
-    enum_value(E,T,Y, _assign_or,        36) \
-    enum_value(E,T,Y, _assign_and,       37) \
-    enum_value(E,T,Y, _assign_xor,       38) \
-    enum_value(E,T,Y, _assign_mod,       39) \
-    enum_value(E,T,Y, _assign_right,     40) \
-    enum_value(E,T,Y, _assign_left,      41) \
-    enum_value(E,T,Y, _setter,           42)
-declare_enum(OPType)
 
 #define Key_module_ Au
 #define Key_schema(EE,TT,YY) \
@@ -1475,7 +1477,7 @@ declare_enum(level)
     M(AA,BB, i, method, public, bool, contains,   Au) \
     M(AA,BB, i, method, public, none, concat,     map) \
     M(AA,BB, i, method, public, none, clear) \
-    M(AA,BB, i, index,  public, Au,   Au) \
+    M(AA,BB, i, getter, public, Au,   Au) \
     M(AA,BB, i, setter, public, none) \
     M(AA,BB, i, ctr,    public, i32) \
     M(AA,BB, i, override, method, init) \
@@ -1565,7 +1567,7 @@ declare_class(ipart)
     M(AA,BB, i, ctr,     public, f64) \
     M(AA,BB, i, operator, public, none,   _assign_add,  string) \
     M(AA,BB, i, operator, public, string, _add,         string) \
-    M(AA,BB, i, index,   public, i32, num) \
+    M(AA,BB, i, getter,   public, i32, num) \
     M(AA,BB, i, override, method, len) \
     M(AA,BB, i, override, method, hash) \
     M(AA,BB, i, override, method, compare) \
@@ -1722,6 +1724,11 @@ declare_class(app)
 #define aclass2_schema(AA,BB,...)
 
 declare_class_2(aclass2, app)
+
+#define coverage_module_ Au
+#define coverage_schema(X,Y,...) \
+    M(X,Y, i, method, public, Au, run)
+declare_class(coverage)
 
 extern FILE* logger;
 

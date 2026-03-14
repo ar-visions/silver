@@ -440,7 +440,7 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
 
 none etype_implement(etype t, bool);
 
-static etype etype_ptr(aether a, Au_t au, enode eshape) {
+etype etype_ptr(aether a, Au_t au, enode eshape) {
     verify(au && (isa(au) == typeid(Au_t_f)), "ptr requires Au_t, given %s", isa(au)->ident);
     verify(isa(au) != typeid(etype), "etype_ptr unexpected type");
     Au_t au_ptr = au->ptr;
@@ -1074,9 +1074,6 @@ static LLVMValueRef const_cstr(aether a, cstr value, i32 len) { sequencer
 
     // 2. create a global variable of that array type
     char id[256];
-    if (seq == 27) {
-        seq = seq;
-    }
     sprintf(id, "const_cstr_%i", seq);
     LLVMValueRef gv = LLVMAddGlobal(a->module_ref, LLVMTypeOf(strConst), id);
     LLVMSetInitializer(gv, strConst);
@@ -1150,9 +1147,6 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
     enode mL = (enode)instanceof(L, enode);
     Au mL_info = head(mL);
 
-    if (seq == 57) {
-        seq = seq;
-    }
     enode LV = e_operand(a, L, null);
     enode RV = e_operand(a, R, null);
 
@@ -1211,9 +1205,6 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
     enode Lnode = (enode)L;
     etype rtype = determine_rtype(a, optype, (etype)LV, (etype)RV); // todo: return bool for equal/not_equal/gt/lt/etc, i64 for compare; there are other ones too
 
-    if (seq == 9) {
-        seq = seq;
-    }
     LLVMValueRef RES;
     enode LL = (enode)LV; // optype <= OPType__assign ? LV : e_create(a, rtype, (Au)LV); // we dont need the 'load' in here, or convert even
     enode RL = (enode)RV; // e_create(a, rtype, (Au)RV);
@@ -1221,10 +1212,6 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
     Au literal = null;
 
     if (optype >= OPType__add && optype <= OPType__xor) { // logical operators
-
-        if (optype == OPType__xor) {
-            optype = optype;
-        }
         // ensure both operands are i1
         if (optype == OPType__or || optype == OPType__and) {
             rtype = etypeid(bool);
@@ -1240,11 +1227,6 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
         RL = e_create(a, rtype, (Au)RL);
 
         if (!a->no_build) {
-
-            if (strcmp(N, "7_add") == 0) {
-                N = N;
-            }
-
             RES = build_arith_op(a, B, optype, LL->value, RL->value, N, is_sign(rtype));
         }
  
@@ -1863,7 +1845,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
         // only check needed: is first_arg's pointer state compatible with target
         Au info_target_instance = head(arg0);
         bool arg_is_ptr    = is_ptr((Au)first_arg) || !first_arg->loaded;
-        bool target_is_ptr = is_ptr((Au)target_type) || !target_type->loaded;
+        bool target_is_ptr = is_ptr((Au)target_type) || !target_type->loaded || target_type->au->is_target;
         verify(arg_is_ptr == target_is_ptr, "target pointer mismatch on %o %i", fn, seq);
     }
 
@@ -2143,6 +2125,9 @@ enode constructable(etype fr, etype to) {
             Au_t mem = (Au_t)ctx->members.origin[ii];
             etype fn = mem->member_type == AU_MEMBER_CONSTRUCT ? u(etype, mem) : null;
             if  (!fn) continue;
+            if (fn->au->args.count != 2) {
+                fn->au->args.count = fn->au->args.count;
+            }
             verify(fn->au->args.count == 2, "unexpected argument count for constructor"); // target + with-type
             Au_t with_arg = (Au_t)fn->au->args.origin[1];
             if (with_arg->rtype->is_realistic) {
@@ -2280,13 +2265,8 @@ enode convertible(etype fr, etype to) {
     if (is_prim(ma) && is_prim(mb))
         return (enode)true;
 
-    enode mcons = is_rec(mb) ? constructable(ma, mb) : null;
-
-    if (!constructable(ma, mb) && is_prim(ma) && inherits(mb->au, typeid(string))) {
-        static int s2 = 0;
-        s2++;
+    if (!constructable(ma, mb) && is_prim(ma) && inherits(mb->au, typeid(string)))
         return (enode)true;
-    }
 
     if (is_rec(ma) || is_rec(mb)) {
         Au_t au_type = au_lookup("Au_t");
@@ -2294,6 +2274,7 @@ enode convertible(etype fr, etype to) {
             return (enode)true;
         if (!is_prim(ma) && !is_prim(mb) && is_subclass((Au)ma, (Au)mb) || is_subclass((Au)mb, (Au)ma))
             return (enode)true;
+        enode mcons = is_rec(mb) ? constructable(ma, mb) : null;
         if (mcons)
             return mcons;
         enode mcast = castable(ma, mb);
@@ -2379,26 +2360,16 @@ void aether_eputs(aether a, string output) {
 }
 
 enode etype_access(etype target, string name, bool funny_business) { sequencer
-    if (seq == 814)
-        seq = seq;
     aether a = target->mod;
     Au_t rel = target->au->member_type == AU_MEMBER_VAR ? 
         (funny_business ? resolve(u(etype, target->au->src))->au : u(etype, target->au->src)->au) : target->au;
     if (funny_business && rel->is_pointer && rel->src && (rel->src->is_primitive || rel->src->is_class || rel->src->is_struct))
         rel = rel->src;
-    if (eq(name, "value")) {
-        name = name;
-    }
     Au_t   m = find_member(rel, name->chars, 0, 0, true);
-    if (!m) {
-        m = m;
-    }
     verify(m, "failed to find member %o on type %o", name, rel);
     bool is_enode = instanceof(target, enode) != null;
 
     etype t = canonical(target); // resolves to non-alias type
-    if (seq == 277)
-        seq = seq;
     if (is_ptr(t) && !is_class(t)) t = u(etype, t->au->src); // check source; t must always be a is_class or is_struct
 
     // for functions, we return directly with target passed along
@@ -2531,7 +2502,6 @@ enode aether_e_typeid(aether a, etype mdl) { sequencer
     a->is_const_op = false;
     enode n = resolve_typeid(a, (Au)mdl);
     if (!n) {
-        n = n;
         n = resolve_typeid(a, (Au)etypeid(Au)); // for schema objects and such
     }
     verify(n, "schema instance not found for %o [%i]", mdl, seq);
@@ -2627,13 +2597,6 @@ void assign_if_cond(aether a, enode targ, enode cond, subprocedure expr_builder)
 enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input) {
     if (a->no_build) return alloc;
 
-    pairs(props, i) {
-        string k = (string)i->key;
-        if (eq(k, "lr_scale")) {
-            k = k;
-        }
-    }
-
     efunc f_initialize = (efunc)u(efunc,
         find_member(etypeid(Au)->au, "initialize", AU_MEMBER_FUNC, 0, false));
 
@@ -2651,9 +2614,6 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
             if (instanceof(k, enode)) {
                 e_fn_call(a, f_set_prop, a(alloc, k, i->value));
             } else {
-                if (eq((string)k, "lr_scale")) {
-                    k = k;
-                }
                 enode prop = access(alloc, (string)k, true);
                 e_assign(a, prop, i->value, OPType__assign);
                 Au_t mem = find_member(alloc->au, ((string)k)->chars, AU_MEMBER_VAR, 0, true);
@@ -4284,10 +4244,52 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
         }
     }
 
-    // no main for library
+    // no app class: check for coverage tests, otherwise library
     if (!main_class) {
-        set_global_construct(a, module_init_fn);
-        a->is_library = true;
+        etype cov_spec = etypeid(coverage);
+        array cov_classes = null;
+        if (cov_spec) {
+            members(module_base, mem) {
+                if (is_class(mem)) {
+                    etype cls = u(etype, mem);
+                    if (cls->au->context == cov_spec->au) {
+                        if (!cov_classes) cov_classes = array(16);
+                        push(cov_classes, (Au)cls);
+                    }
+                }
+            }
+        }
+
+        if (!cov_classes) {
+            set_global_construct(a, module_init_fn);
+            a->is_library = true;
+            return;
+        }
+
+        // build test main that runs each coverage subclass
+        Au_t au_f_main = def_member(a->au, "main", typeid(i32), AU_MEMBER_FUNC, 0);
+        Au_t argc = def_arg(au_f_main, "argc", typeid(i32), 0);
+        Au_t argv = def_arg(au_f_main, "argv", typeid(cstrs), 0);
+
+        au_f_main->is_export = true;
+        efunc main_fn = efunc(mod, a, au, au_f_main,
+            loaded, true, used, true, has_code, true);
+        etype_implement((etype)main_fn, false);
+
+        push_scope(a, (Au)main_fn);
+        e_fn_call(a, module_init_fn, null);
+
+        Au_t fn_run = find_member(cov_spec->au, "run", AU_MEMBER_FUNC, 0, false);
+        verify(fn_run, "coverage abstract missing run method");
+
+        each(cov_classes, etype, cls) {
+            enode inst = e_create(a, cls, null);
+            e_fn_call(a, (efunc)u(efunc, fn_run), a(inst));
+        }
+
+        report_coverage(a);
+        e_fn_return(a, (Au)e_operand(a, _i32(0), etypeid(i32)));
+        pop_scope(a);
         return;
     }
 
@@ -4840,7 +4842,7 @@ etype implement_type_id(etype t) {
     return mt;
 }
 
-none etype_implement(etype t, bool w) {
+none etype_implement(etype t, bool w) { sequencer
     Au_t    au = t->au;
     aether a  = t->mod;
     enode nn = (enode)instanceof(t, enode);
@@ -4879,9 +4881,12 @@ none etype_implement(etype t, bool w) {
     if (t->is_implemented) return;
     t->is_implemented = true;
 
-    if (au->ident && strcmp(au->ident, "Au_t") == 0) {
+    if (au->ident && strcmp(au->ident, "vec3f") == 0) {
         au = au;
     }
+
+    static int seq2 = 0;
+    seq2++;
 
     bool is_Au = !a->import_c && is_au_type(resolve(t)) && (!au->is_schema && !au->is_system && !au->is_pointer && au->ident);
     etype type_t_ptr = is_Au ? get_type_t_ptr(t) : null;
@@ -4893,6 +4898,9 @@ none etype_implement(etype t, bool w) {
 
     if (au->member_type == AU_MEMBER_VAR) {
         enode n = (enode)instanceof(t, enode);
+        if (!n) {
+            n = n;
+        }
         verify(n, "expected enode instance for AU_MEMBER_VAR");
         LLVMTypeRef type = lltype(u(etype, au->src));
 
@@ -4949,6 +4957,10 @@ none etype_implement(etype t, bool w) {
             }
         } else if (is_func(au->context)) {
             verify(n->value, "expected evar to be set for arg");
+            if (isa(t) != typeid(evar)) {
+                int test2 = 2;
+                test2    += 2;
+            }
             verify(isa(t) == typeid(evar), "expected evar instance for arg");
 
             n->loaded = true;
@@ -4977,7 +4989,10 @@ none etype_implement(etype t, bool w) {
         LLVMTypeRef* struct_members = calloc(count + 2, sizeof(LLVMTypeRef));
         LLVMTypeRef largest = null;
         int ilargest = 0;
-
+        if (seq2 == 3677) {
+            seq2 = seq2;
+        }
+        printf("seq2 = %i\n", seq2);
         each(cl, etype, tt) {
             etype tt_entry = u(etype, tt);
             Au    tt_info  = head(tt_entry);
@@ -4992,18 +5007,18 @@ none etype_implement(etype t, bool w) {
                 etype m_entry = u(etype, m);
                 Au    m_info  = head(m_entry);
 
-                if (m->member_type == AU_MEMBER_FUNC          ||
-                    m->member_type == AU_MEMBER_CONSTRUCT     ||
-                    m->member_type == AU_MEMBER_INDEX         ||
-                    m->member_type == AU_MEMBER_SETTER        ||
-                    m->member_type == AU_MEMBER_OPERATOR      ||
-                    m->member_type == AU_MEMBER_CAST) {
+                if (is_func((Au)m)) {
 
                     if (pass == 1) continue;
                     src_init(a, m->rtype);
                     etype_implement(u(etype, m->rtype), false);
 
                     arg_types (m, t) {
+                        if (t->is_pointer && t->src && !u(etype, t)) {
+                            src_init(a, t->src);
+                            etype_implement(u(etype, t->src), false);
+                            etype_ptr(a, t->src, null);
+                        }
                         src_init(a, t);
                         etype_implement(u(etype, t), false);
                     }
@@ -5046,18 +5061,22 @@ none etype_implement(etype t, bool w) {
                             enum AU_MEMBER memtype = s->au->member_type;
                             Au info = head(s);
                             struct_members[index] = lltype(s);
+                            if (!struct_members[index])
+                                struct_members[index] = struct_members[index];
                         }
 
                         if (m->elements > 0)
                             struct_members[index] = LLVMArrayType(struct_members[index], m->elements);
 
+                        if (!struct_members[index])
+                            struct_members[index] = struct_members[index];
                         verify(struct_members[index], "no lltype found for member %s.%s", au->ident, m->ident);
                         int abi_member  = LLVMABISizeOfType(a->target_data, struct_members[index]);
                         verify(abi_member, "type has no size");
                         m->typesize = abi_member;
-                        if (au->is_union && src->abi_size > ilargest) {
+                        if (au->is_union && abi_member > ilargest) {
                             largest  = struct_members[index];
-                            ilargest = src->abi_size;
+                            ilargest = abi_member;
                         }
                         m->index = index++;
                     }
@@ -5068,10 +5087,14 @@ none etype_implement(etype t, bool w) {
             // lets define this as a form of byte accessible opaque.
             if (is_class(t) && (!multi_Au || tt->au != typeid(Au))) {
                 struct_members[index] = LLVMArrayType(lltype(etypeid(u8)), tt->au->isize);
+                if (!struct_members[index])
+                    struct_members[index] = struct_members[index];
                 index++;
             }
         }
-
+        if (seq2 == 3677) {
+            seq2 = seq2;
+        }
         verify(count == index, "member indexing mismatch on %o", t);
 
         etype type_t_ptr = null;
@@ -5096,6 +5119,10 @@ none etype_implement(etype t, bool w) {
         if (t->au->ident && strcmp(t->au->ident, "mat4f") == 0) {
             t = t;
         }
+        fprintf(stderr, "StructSetBody seq2=%d type=%s count=%d is_union=%d largest=%p lltype=%p\n",
+            seq2, au->ident ? au->ident : "(null)", count,
+            au->is_union, (void*)largest, (void*)t->lltype);
+        fflush(stderr);
         LLVMStructSetBody(t->lltype, struct_members, count, 1);
 
 
@@ -5188,7 +5215,7 @@ none etype_implement(etype t, bool w) {
         if (!fn->value)
             fn->value = LLVMAddFunction(a->module_ref, n, t->lltype);
 
-        // fill out enode values for our args type pointer 
+        // fill out enode values for our args type pointer
         // context type pointer (we register these on init)
         if (is_lambda(au)) {
             LLVMValueRef value_ctx  = LLVMGetParam(fn->value, 0); // we have one more than args for the context
@@ -5902,7 +5929,7 @@ none aether_import_models(aether a, Au_t ctx, bool au_mode) {
 
             if (ff->member_type && ff->member_type != m->member_type) continue;
 
-            bool is_func = m->member_type == AU_MEMBER_FUNC || m->member_type == AU_MEMBER_INDEX ||
+            bool is_func = m->member_type == AU_MEMBER_FUNC || m->member_type == AU_MEMBER_GETTER ||
                            m->member_type == AU_MEMBER_SETTER ||
                            m->member_type == AU_MEMBER_CAST || m->member_type == AU_MEMBER_OPERATOR;
             bool p0      = (ff->has_bits & m->traits) == ff->has_bits;
@@ -6010,6 +6037,15 @@ void aether_import_Au(aether a, string ident, Au lib) {
         }
 
         verify(f->context == typeid(Au), "expected Au type context");
+
+        Au_t cov = find_member(au_module, "coverage", AU_MEMBER_TYPE, 0, false);
+        if (cov) {
+            if (!u(etype, cov)) {
+                etype t = etype(mod, a, au, cov);
+                set(a->registry, (Au)cov, (Au)hold(t));
+                implement(t, false);
+            }
+        }
     } else {
 
         // for imported libraries with required calls, we must invoke them here
@@ -6289,7 +6325,13 @@ none enode_init(enode n) {
         if (is_lambda((Au)n->au->context))
             offset += 1;
 
-        enode fn = (enode)u(enode, au_arg_type((Au)n->au->context));
+        
+
+        enode fn = (enode)u(enode, (Au)n->au->context);
+        if (!fn) {
+            fn = (enode)efunc(mod, a, au, n->au->context);
+            etype_implement((etype)fn, false);
+        }
         n->value  = LLVMGetParam(fn->value, n->arg_index + offset);
         //n->loaded = !is_struct(n->au->src) && !n->au->is_inlay; already given
     } else if (n->symbol_name && !n->value) {

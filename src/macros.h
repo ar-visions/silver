@@ -264,9 +264,9 @@
 #define mcall(I,M,...)              ({ __typeof__(I) _i_ = I; (_i_) ? ftableI(_i_)->ft.M(_i_, ## __VA_ARGS__) : 0; })
 #define cstring(I)                  cast(cstr, I)
 #define val(T,V)                    primitive(typeid(T), (&(T){V}))
-#define idx_1(I,T1,V1)              fcall(I, index ##_## T1, V1)
-#define idx_2(I,T1,T2,V1,V2)        fcall(I, index ##_## T1 ##_## T2, V1, V2)
-#define idx(I,V1)                   fcall(I, index ##_## num, V1)
+#define idx_1(I,T1,V1)              fcall(I, getter ##_## T1, V1)
+#define idx_2(I,T1,T2,V1,V2)        fcall(I, getter ##_## T1 ##_## T2, V1, V2)
+#define idx(I,V1)                   fcall(I, getter ##_## num, V1)
 #define meta_t(I,IDX)               isa(I) -> meta.origin[IDX]
 #define ctr(T,WITH,...)             Au_initialize(_typeid(T)->ft.with_##WITH(alloc(typeid(T), 1, (Au_t*)null), ## __VA_ARGS__))
 #define ctr1(T,WITH,...)            Au_initialize(_typeid(T)->ft.with_##WITH(alloc(typeid(T), 1, (Au_t*)null), ## __VA_ARGS__))
@@ -339,7 +339,7 @@
 #define EXPAND_ARGS2_6(a, b, c, d, e, f)         a##_##b##_##c##_##d##_e##_##f
 #define EXPAND_ARGS2_7(a, b, c, d, e, f, g)      a##_##b##_##c##_##d##_e##_##f##_##g
 #define EXPAND_ARGS2_8(a, b, c, d, e, f, g, h)   a##_##b##_##c##_##d##_e##_##f##_##g##_##h
-#define emit_idx_symbol(...)             EXPAND_ARGS2(__VA_ARGS__)
+#define emit_getter_symbol(...)             EXPAND_ARGS2(__VA_ARGS__)
 #define EXPAND_ARGS2(...)            EXPAND_ARGS_HELPER2(COUNT_ARGS(__VA_ARGS__), __VA_ARGS__)
 #define EXPAND_ARGS_HELPER2(N, ...)  combine_tokens(EXPAND_ARGS2_, N)(__VA_ARGS__)
 
@@ -1240,6 +1240,7 @@
     m->type    = typeid(R); \
     set_args_array(m, emit_types(X __VA_OPT__(,) __VA_ARGS__)); \
     ((Au_t)m->args.origin[0])->is_target = 1; \
+    m->args.origin[0] = (Au)def_pointer(m, (Au_t)m->args.origin[0], null); \
 }
 #define   i_struct_method_PROTO(X, R, N, ...)
 #define   i_struct_method_METHOD(X, R, N, ...)      R (*N)(X* __VA_OPT__(,) __VA_ARGS__);
@@ -1262,7 +1263,9 @@
     Type_i(T).type . ft.N = & T## _ ## N; \
     m->type    = typeid(R); \
     set_args_array(m, emit_types(T, A __VA_OPT__(,) __VA_ARGS__)); \
-    ((Au_t)m->args.origin[0])->is_target = 1; \
+    ((Au_t)m->args.origin[0])->is_target  = 1; \
+    m->args.origin[0] = (Au)def_pointer(m, (Au_t)m->args.origin[0], null); \
+    m->args.origin[1] = (Au)def_pointer(m, (Au_t)m->args.origin[1], null); \
 }
 #define   i_struct_method_1_PROTO(X, R, N, A, ...)
 #define   i_struct_method_1_METHOD(X, R, N, A, ...)      R (*N)(X*, A* __VA_OPT__(,) __VA_ARGS__);
@@ -1285,7 +1288,10 @@
     Type_i(T).type . ft.N = & T## _ ## N; \
     m->type    = typeid(R); \
     set_args_array(m, emit_types(T, A, A __VA_OPT__(,) __VA_ARGS__)); \
-    ((Au_t)m->args.origin[0])->is_target = 1; \
+    m->args.origin[0]->is_target  = 1; \
+    m->args.origin[0] = (Au)def_pointer(m, (Au_t)m->args.origin[0], null); \
+    m->args.origin[1] = (Au)def_pointer(m, (Au_t)m->args.origin[1], null); \
+    m->args.origin[2] = (Au)def_pointer(m, (Au_t)m->args.origin[2], null); \
 }
 #define   i_struct_method_2_PROTO(X, R, N, A, ...)
 #define   i_struct_method_2_METHOD(X, R, N, A, ...)      R (*N)(X*, A*, A* __VA_OPT__(,) __VA_ARGS__);
@@ -1308,6 +1314,10 @@
     m->type    = typeid(R); \
     set_args_array(m, emit_types(T, A, A, A __VA_OPT__(,) __VA_ARGS__)); \
     ((Au_t)m->args.origin[0])->is_target = 1; \
+    m->args.origin[0] = (Au)def_pointer(m, (Au_t)m->args.origin[0], null); \
+    m->args.origin[1] = (Au)def_pointer(m, (Au_t)m->args.origin[1], null); \
+    m->args.origin[2] = (Au)def_pointer(m, (Au_t)m->args.origin[2], null); \
+    m->args.origin[3] = (Au)def_pointer(m, (Au_t)m->args.origin[3], null); \
 }
 #define   i_struct_method_3_PROTO(X, R, N, A, ...)
 #define   i_struct_method_3_METHOD(X, R, N, A, ...)      R (*N)(X*, A*, A*, A* __VA_OPT__(,) __VA_ARGS__);
@@ -1888,65 +1898,65 @@
 #define   i_cast_public_NMODULE(X, R)    
 #define   i_cast(X, Y, T, R)                i_cast_##T##_##Y(X, R)
 
-#define i_index_interface_F(X, R, ...)
-#define i_index_interface_F_EXTERN(X, R, ...)
-#define i_index_interface_ISIZE(X, R, ...)
-#define i_index_interface_INST_U(X, R, ...)
-#define i_index_interface_INST_L(X, R, ...)
-#define i_index_interface_INST_U_EXTERN(X, R, ...)
-#define i_index_interface_INST_L_EXTERN(X, R, ...)
-#define i_index_interface_DEF(X, R, ...)
-#define i_index_interface_DECL(X, R, ...)
-#define i_index_interface_DECL_EXTERN(X, R, ...)
-#define i_index_interface_GENERICS(X, R, ...)
-#define i_index_interface_INIT(X, R, ...)
-#define i_index_interface_PROTO(X, R, ...)
-#define i_index_interface_METHOD(X, R, ...)
-#define i_index_interface_NMODULE(X, R, ...)
+#define i_getter_interface_F(X, R, ...)
+#define i_getter_interface_F_EXTERN(X, R, ...)
+#define i_getter_interface_ISIZE(X, R, ...)
+#define i_getter_interface_INST_U(X, R, ...)
+#define i_getter_interface_INST_L(X, R, ...)
+#define i_getter_interface_INST_U_EXTERN(X, R, ...)
+#define i_getter_interface_INST_L_EXTERN(X, R, ...)
+#define i_getter_interface_DEF(X, R, ...)
+#define i_getter_interface_DECL(X, R, ...)
+#define i_getter_interface_DECL_EXTERN(X, R, ...)
+#define i_getter_interface_GENERICS(X, R, ...)
+#define i_getter_interface_INIT(X, R, ...)
+#define i_getter_interface_PROTO(X, R, ...)
+#define i_getter_interface_METHOD(X, R, ...)
+#define i_getter_interface_NMODULE(X, R, ...)
 
-#define i_index_public_F(X, R, ...)
-#define i_index_public_F_EXTERN(X, R, ...)
-#define i_index_public_ISIZE(X, R, ...)
-#define i_index_public_ISIZE_EXTERN(X, R, ...)
-#define i_index_public_INST_U(X, R, ...)
-#define i_index_public_INST_L(X, R, ...)
-#define i_index_public_INST_U_EXTERN(X, R, ...)
-#define i_index_public_INST_L_EXTERN(X, R, ...)
-#define i_index_public_DEF(X, R, ...)
-#define i_index_public_DECL(X, R, ...)
-#define i_index_public_DECL_EXTERN(X, R, ...)
-#define i_index_public_GENERICS(X, R, ...)
-#define i_index_public_INIT(X, R, ...) { \
-    Au_t m = def(typeid(X), stringify(emit_idx_symbol(index, __VA_ARGS__)), AU_MEMBER_INDEX, AU_TRAIT_IMETHOD); \
-    m->alt = stringify(emit_idx_symbol(X ## _index, __VA_ARGS__)); \
+#define i_getter_public_F(X, R, ...)
+#define i_getter_public_F_EXTERN(X, R, ...)
+#define i_getter_public_ISIZE(X, R, ...)
+#define i_getter_public_ISIZE_EXTERN(X, R, ...)
+#define i_getter_public_INST_U(X, R, ...)
+#define i_getter_public_INST_L(X, R, ...)
+#define i_getter_public_INST_U_EXTERN(X, R, ...)
+#define i_getter_public_INST_L_EXTERN(X, R, ...)
+#define i_getter_public_DEF(X, R, ...)
+#define i_getter_public_DECL(X, R, ...)
+#define i_getter_public_DECL_EXTERN(X, R, ...)
+#define i_getter_public_GENERICS(X, R, ...)
+#define i_getter_public_INIT(X, R, ...) { \
+    Au_t m = def(typeid(X), stringify(emit_getter_symbol(getter, __VA_ARGS__)), AU_MEMBER_GETTER, AU_TRAIT_IMETHOD); \
+    m->alt = stringify(emit_getter_symbol(X ## _getter, __VA_ARGS__)); \
     m->access_type = interface_public; \
-    Type_i(X).type.ft.emit_idx_symbol(index, __VA_ARGS__) = & emit_idx_symbol(X ## _index, __VA_ARGS__); \
+    Type_i(X).type.ft.emit_getter_symbol(getter, __VA_ARGS__) = & emit_getter_symbol(X ## _getter, __VA_ARGS__); \
     set_args_array(m, emit_types(X, __VA_ARGS__)); \
     ((Au_t)m->args.origin[0])->is_target = 1; \
     m->type        = typeid(R); \
-    m->index        = offsetof(__typeof(Type_i(X).type.ft), emit_idx_symbol(index, __VA_ARGS__)) / sizeof(void*); \
+    m->index        = offsetof(__typeof(Type_i(X).type.ft), emit_getter_symbol(getter, __VA_ARGS__)) / sizeof(void*); \
 }
 
-#define i_index_public_PROTO(X, R, ...)
-#define i_index_public_METHOD(X, R, ...)                R (*emit_idx_symbol(index,__VA_ARGS__))(X, ##__VA_ARGS__);
-#define i_index_public_NMODULE(X, R, ...) 
+#define i_getter_public_PROTO(X, R, ...)
+#define i_getter_public_METHOD(X, R, ...)                R (*emit_getter_symbol(getter,__VA_ARGS__))(X, ##__VA_ARGS__);
+#define i_getter_public_NMODULE(X, R, ...) 
 
-#define i_index_intern_F(X, R, ...)
-#define i_index_intern_F_EXTERN(X, R, ...)
-#define i_index_intern_ISIZE(X, R, ...)
-#define i_index_intern_INST_U(X, R, ...)
-#define i_index_intern_INST_L(X, R, ...)
-#define i_index_intern_INST_U_EXTERN(X, R, ...)
-#define i_index_intern_INST_L_EXTERN(X, R, ...)
-#define i_index_intern_DEF(X, R, ...)
-#define i_index_intern_DECL(X, R, ...)
-#define i_index_intern_DECL_EXTERN(X, R, ...)
-#define i_index_intern_GENERICS(X, R, ...)
-#define i_index_intern_INIT(X, R, ...)
-#define i_index_intern_PROTO(X, R, ...)
-#define i_index_intern_METHOD(X, R, ...)                R (*emit_idx_symbol(index, __VA_ARGS__))(X, ##__VA_ARGS__);
-#define i_index_intern_NMODULE(X, R, ...)
-#define i_index(X, Y, T, R, ...)                        i_index_##T##_##Y(X, R, ##__VA_ARGS__)
+#define i_getter_intern_F(X, R, ...)
+#define i_getter_intern_F_EXTERN(X, R, ...)
+#define i_getter_intern_ISIZE(X, R, ...)
+#define i_getter_intern_INST_U(X, R, ...)
+#define i_getter_intern_INST_L(X, R, ...)
+#define i_getter_intern_INST_U_EXTERN(X, R, ...)
+#define i_getter_intern_INST_L_EXTERN(X, R, ...)
+#define i_getter_intern_DEF(X, R, ...)
+#define i_getter_intern_DECL(X, R, ...)
+#define i_getter_intern_DECL_EXTERN(X, R, ...)
+#define i_getter_intern_GENERICS(X, R, ...)
+#define i_getter_intern_INIT(X, R, ...)
+#define i_getter_intern_PROTO(X, R, ...)
+#define i_getter_intern_METHOD(X, R, ...)                R (*emit_getter_symbol(index, __VA_ARGS__))(X, ##__VA_ARGS__);
+#define i_getter_intern_NMODULE(X, R, ...)
+#define i_getter(X, Y, T, R, ...)                        i_getter_##T##_##Y(X, R, ##__VA_ARGS__)
 
 #define i_vargs_public_F(X, R, N, ...)
 #define i_vargs_public_F_EXTERN(X, R, N, ...)
@@ -2092,28 +2102,28 @@
 #define i_override_cast_METHOD(X, R)
 #define i_override_cast_NMODULE(X, R)
 
-#define i_override_idx_F(X, R)
-#define i_override_idx_F_EXTERN(X, R)
-#define i_override_idx_ISIZE(X, R)
-#define i_override_idx_INST_U(X, R)
-#define i_override_idx_INST_L(X, R)
-#define i_override_idx_INST_U_EXTERN(X, R)
-#define i_override_idx_INST_L_EXTERN(X, R)
-#define i_override_idx_DEF(X, R)
-#define i_override_idx_DECL(X, R)
-#define i_override_idx_GENERICS(X, R)
-#define i_override_idx_INIT(X, R) { \
-    Au_t m = def(typeid(X), stringify(idx_##R), AU_MEMBER_INDEX, AU_TRAIT_OVERRIDE); \
-    m->alt = #X "_idx_" #R; \
+#define i_override_getter_F(X, R)
+#define i_override_getter_F_EXTERN(X, R)
+#define i_override_getter_ISIZE(X, R)
+#define i_override_getter_INST_U(X, R)
+#define i_override_getter_INST_L(X, R)
+#define i_override_getter_INST_U_EXTERN(X, R)
+#define i_override_getter_INST_L_EXTERN(X, R)
+#define i_override_getter_DEF(X, R)
+#define i_override_getter_DECL(X, R)
+#define i_override_getter_GENERICS(X, R)
+#define i_override_getter_INIT(X, R) { \
+    Au_t m = def(typeid(X), stringify(idx_##R), AU_MEMBER_GETTER, AU_TRAIT_OVERRIDE); \
+    m->alt = #X "_getter_" #R; \
     m->access_type = interface_undefined; \
-    type_ref->idx_##R = & X##_idx_##R; \
-    m->value = (object)& X##_idx_##R; \
-    member_override(type_ref, m, AU_MEMBER_INDEX); \
+    type_ref->idx_##R = & X##_getter_##R; \
+    m->value = (object)& X##_getter_##R; \
+    member_override(type_ref, m, AU_MEMBER_GETTER); \
 }
 
-#define i_override_idx_PROTO(X, R)
-#define i_override_idx_METHOD(X, R)
-#define i_override_idx_NMODULE(X, R)
+#define i_override_getter_PROTO(X, R)
+#define i_override_getter_METHOD(X, R)
+#define i_override_getter_NMODULE(X, R)
 
 #define i_override_1(X, Y, OT, N, ...) \
     i_override_##OT##_##Y(X, N)

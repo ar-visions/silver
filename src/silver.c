@@ -2212,7 +2212,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
     bool   in_rec  = rec_top && rec_top->au == top;
 
     
-    if (seq == 129) {
+    if (seq == 224) {
         seq = seq;
     }
 
@@ -2349,7 +2349,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
 
             Au_t mem_type = isa(mem);
             bool b0, b1, b2, b3, b4;
-            if (seq == 1081) {
+            if (seq == 224) {
                 seq = seq;
             }
 
@@ -2862,11 +2862,13 @@ enode parse_statement(silver a)
     bool      is_left   = is_oper ? read_if(a, "left") != null : false;
     bool      is_ctr    = !f && !is_static && !(is_func|is_lambda) && !is_cast && !is_oper ?
         read_if(a, "construct")  != null : false;
-    bool      is_idx    = !f && !is_static && !(is_func|is_lambda) && !is_cast && !is_oper && !is_ctr ?
-        read_if(a, "indexer")    != null : false;
+    bool      is_getter = !f && !is_static && !(is_func|is_lambda) && !is_cast && !is_oper && !is_ctr ?
+        read_if(a, "getter")     != null : false;
+    bool      is_setter = !f && !is_static && !(is_func|is_lambda) && !is_cast && !is_oper && !is_ctr && !is_getter ?
+        read_if(a, "setter")     != null : false;
 
     OPType assign_enum = OPType__undefined;
-    enode mem = (!is_cast && !is_oper && !is_idx && !is_ctr) ?
+    enode mem = (!is_cast && !is_oper && !is_getter && !is_setter && !is_ctr) ?
         parse_member(a, (ARef)&assign_enum,
             is_func ? typeid(efunc) : ((access || f || (!!module)) ? typeid(evar) : null), null) : null;
     Au_t mem_info = isa(mem);
@@ -2928,7 +2930,7 @@ enode parse_statement(silver a)
     if (is_oper && is_left && op_type == OPType__left)  op_type = OPType__lleft;
     if (is_oper && is_left && op_type == OPType__right) op_type = OPType__lright;
 
-    if (mem!=null || is_ctr || is_idx || is_oper || is_lambda || is_func || is_cast)
+    if (mem!=null || is_ctr || is_getter || is_setter || is_oper || is_lambda || is_func || is_cast)
     {
         validate(!is_oper || op_type != OPType__undefined, "operator required");
         
@@ -2939,7 +2941,7 @@ enode parse_statement(silver a)
         statements in_code    = context_code(a);
         bool       is_const   = mem && mem->au->is_const;
 
-        if (is_func|is_lambda|is_ctr|is_idx|is_cast|is_oper) {
+        if (is_func|is_lambda|is_ctr|is_getter|is_setter|is_cast|is_oper) {
             if (module || rec_top) {
                 u64 traits = (is_static ? AU_TRAIT_STATIC :
                              (is_lambda ? 0 : (rec_top ? AU_TRAIT_IMETHOD : 0))) |
@@ -2947,8 +2949,9 @@ enode parse_statement(silver a)
                 Au_t au = mem ? mem->au : null;
                 enum AU_MEMBER ftype = is_lambda ? AU_MEMBER_FUNC      :
                     is_ctr    ? AU_MEMBER_CONSTRUCT : is_cast ?
-                                AU_MEMBER_CAST      : is_idx  ?
-                                AU_MEMBER_INDEX     : AU_MEMBER_FUNC;
+                                AU_MEMBER_CAST      : is_getter ?
+                                AU_MEMBER_GETTER    : is_setter ?
+                                AU_MEMBER_SETTER    : AU_MEMBER_FUNC;
 
                 Au_t top = top_scope(a);
                 aether top_user;
@@ -2969,7 +2972,7 @@ enode parse_statement(silver a)
         }
         else if (rec_top || module) {
 
-            bool is_f = is_idx|is_ctr|is_lambda|is_func|is_cast;
+            bool is_f = is_getter|is_ctr|is_lambda|is_func|is_cast;
             verify(assign_enum == OPType__bind || is_f, "invalid member syntax, expected member:type[ initializer ]");
             if (seq == 81)
                 seq = seq;
@@ -3096,7 +3099,7 @@ static none next_function_index_update(Au_t mdl, int* index) {
         if (au->is_smethod || au->is_static || au->is_override) continue;
         if (au->member_type == AU_MEMBER_FUNC       || 
             au->member_type == AU_MEMBER_OPERATOR   ||
-            au->member_type == AU_MEMBER_INDEX      ||
+            au->member_type == AU_MEMBER_GETTER      ||
             au->member_type == AU_MEMBER_SETTER     ||
             au->member_type == AU_MEMBER_CAST       ||
             au->member_type == AU_MEMBER_CONSTRUCT) { 
@@ -3165,9 +3168,10 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     }
 
     // fill out args in function model
-    bool is_instance = (traits & AU_TRAIT_IMETHOD) != 0 || 
-        (member_type == AU_MEMBER_CAST) || 
-        (member_type == AU_MEMBER_INDEX);
+    bool is_instance = (traits & AU_TRAIT_IMETHOD) != 0 ||
+        (member_type == AU_MEMBER_CAST) ||
+        (member_type == AU_MEMBER_GETTER) ||
+        (member_type == AU_MEMBER_SETTER);
     if (is_instance) {
         Au_t top    = top_scope(a);
         Au_t rec    = is_rec(top);
@@ -3247,9 +3251,13 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     if (member_type == AU_MEMBER_CAST) {
         validate(rtype, "expected explicit type for cast");
         name = f(string, "cast_%o", rtype);
-    } else if (member_type == AU_MEMBER_INDEX) {
+    } else if (member_type == AU_MEMBER_GETTER) {
         validate(rtype, "expected explicit type for index");
         name = f(string, "index_%o", rtype);
+    } else if (member_type == AU_MEMBER_SETTER) {
+        if (!rtype) rtype = etypeid(none);
+        if (!name || !len(name))
+            name = string("setter");
     } else if (!rtype)
         rtype = etypeid(none); // functional programmers would want to return target type
 
@@ -4046,7 +4054,7 @@ int user_arg_count(efunc f) {
     if (f->au->member_type == AU_MEMBER_OPERATOR) {
         return f->au->args.count - 1;
     }
-    if (f->au->member_type == AU_MEMBER_INDEX) {
+    if (f->au->member_type == AU_MEMBER_GETTER) {
         return 1;
     }
     return 0;
@@ -4132,12 +4140,18 @@ static enode parse_lambda_call(silver a, efunc mem) {
 
 enode efunc_fptr(efunc f);
 
+etype etype_ptr(aether a, Au_t au, enode eshape);
+
 static enode parse_func_call(silver a, efunc f) { sequencer
     push_current(a);
     validate(is_func((Au)f) || is_func_ptr((Au)f), "expected function got %o", f);
-
+    enode caller_target = f->target;
     bool read_br = false;
     bool cmode = false;
+
+    if (seq == 5) {
+        seq = seq;
+    }
 
     // lets see if the user insists on brackets as syntax only
     // if single arg, silver handles it in read_enode
@@ -4170,8 +4184,8 @@ static enode parse_func_call(silver a, efunc f) { sequencer
     enode   target = null;
     i32     offset = 0;
 
-    if (is_func((Au)f) && f->target) {
-        push(values, (Au)f->target);
+    if (is_func((Au)f) && (caller_target || f->target)) {
+        push(values, caller_target ? (Au)caller_target : (Au)f->target);
         offset = 1;
     }
 
@@ -4179,12 +4193,9 @@ static enode parse_func_call(silver a, efunc f) { sequencer
         Au_t   arg_decl = (Au_t)micro_get(m, i + offset);
         Au_t   src  = (Au_t)au_arg_type((Au)arg_decl);
         etype  typ  = (arg_decl && arg_decl->is_formatter) ? null : u(etype, src);
-        if (typeis(typ->au, Optimizer)) {
-            typ = typ;
-        }
-        if (seq == 98) {
-            seq = seq;
-        }
+
+        // if its a struct argument and not inlay, we reference these.  this is because arguments are always read-only
+        // it is crossing the streams to modify arguments.  only vader alters the deal
         enode  expr = parse_expression(a, typ, true); // self contained for '{interp}' to cstr!
         verify(expr, "invalid expression");
         push(values, (Au)expr);
@@ -4196,7 +4207,6 @@ static enode parse_func_call(silver a, efunc f) { sequencer
         verify(len(values) >= ln, "expected %i args for function %o (%i)", ln, f, seq);
         break;
     }
-
     a->expr_level--;
     validate(!read_br || read_if(a, cmode ? ")" : "]"), "expected ] after call");
     pop_tokens(a, true);
@@ -5536,7 +5546,7 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
                 do {
                     for (int i = 0; i < scan->members.count; i++) {
                         Au_t m = (Au_t)scan->members.origin[i];
-                        if (m->member_type != AU_MEMBER_INDEX || m->args.count < 2)
+                        if (m->member_type != AU_MEMBER_GETTER || m->args.count < 2)
                             continue;
                         Au_t p = au_arg_type(m->args.origin[1]);
                         if (p == typeid(Au)) {
@@ -5552,7 +5562,7 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
                 } while (scan && scan != scan->context);
                 if (!idx) idx = fallback;
             }
-            if (!idx) idx = find_member(r->au, null, AU_MEMBER_INDEX, 0, true);
+            if (!idx) idx = find_member(r->au, null, AU_MEMBER_GETTER, 0, true);
 
             validate(idx, "index method not found on %o", mem);
 
@@ -5564,15 +5574,13 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
             } else {
                 validate(len(args) == 1, "index operators are single instance methods, unless a shape type is used");
                 enode inner = (enode)args->origin[0];
-                index_expr = e_fn_call(a, (efunc)u(efunc, idx), a(mem, inner));
+                index_expr  = e_fn_call(a, (efunc)u(efunc, idx), a(mem, inner));
                 etype rtype = u(etype, idx->rtype);
- 
-                // convert with design-time meta type
-                if (rtype && rtype == etypeid(Au) && mem->meta_a) {
-                    etype m = u(etype, mem->meta_a);
-                    verify(m, "meta type integrity error");
-                    rtype = m;
-                    index_expr = e_create(a, rtype, (Au)index_expr);
+
+                // propagate design-time meta type for member access
+                // convert Au -> meta_a
+                if (rtype && rtype == etypeid(Au) && mem->au->meta.a) {
+                    index_expr->au = mem->au->meta.a;
                 }
             }
 
