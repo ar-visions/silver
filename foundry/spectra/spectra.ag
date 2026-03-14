@@ -15,15 +15,15 @@ class spectra
     public buf:         ref i16
     public bins:        ref f32
 
-    func init [ size: i32, sample_rate: i32, device: cstr ] -> none
-        self.size        = size
-        self.sample_rate = sample_rate
-        self.channels    = 1
-        self.device      = device
-        re  = new f32 [ size ]
-        im  = new f32 [ size ]
-        buf = new i16 [ size ]
-        bins = new f32 [ size / 2 ]
+    func init [ sz: i32, rate: i32, dev: cstr ] -> none
+        size        = sz
+        sample_rate = rate
+        channels    = 1
+        device      = dev
+        re  = new f32 [ sz ]
+        im  = new f32 [ sz ]
+        buf = new i16 [ sz ]
+        bins = new f32 [ sz / 2 ]
 
     func open [] -> bool
         rc: i32 [ snd_pcm_open [ handle, device, 0, 0 ] ]
