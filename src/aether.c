@@ -4989,10 +4989,6 @@ none etype_implement(etype t, bool w) { sequencer
         LLVMTypeRef* struct_members = calloc(count + 2, sizeof(LLVMTypeRef));
         LLVMTypeRef largest = null;
         int ilargest = 0;
-        if (seq2 == 3677) {
-            seq2 = seq2;
-        }
-        printf("seq2 = %i\n", seq2);
         each(cl, etype, tt) {
             etype tt_entry = u(etype, tt);
             Au    tt_info  = head(tt_entry);
@@ -5072,7 +5068,12 @@ none etype_implement(etype t, bool w) { sequencer
                             struct_members[index] = struct_members[index];
                         verify(struct_members[index], "no lltype found for member %s.%s", au->ident, m->ident);
                         int abi_member  = LLVMABISizeOfType(a->target_data, struct_members[index]);
-                        verify(abi_member, "type has no size");
+                        if (!abi_member && a->import_c) {
+                            // C-imported opaque/union members may have zero size; skip
+                            m->index = index++;
+                            continue;
+                        }
+                        verify(abi_member, "type has no size: %s.%s", au->ident, m->ident);
                         m->typesize = abi_member;
                         if (au->is_union && abi_member > ilargest) {
                             largest  = struct_members[index];
@@ -5091,9 +5092,6 @@ none etype_implement(etype t, bool w) { sequencer
                     struct_members[index] = struct_members[index];
                 index++;
             }
-        }
-        if (seq2 == 3677) {
-            seq2 = seq2;
         }
         verify(count == index, "member indexing mismatch on %o", t);
 
@@ -5119,10 +5117,6 @@ none etype_implement(etype t, bool w) { sequencer
         if (t->au->ident && strcmp(t->au->ident, "mat4f") == 0) {
             t = t;
         }
-        fprintf(stderr, "StructSetBody seq2=%d type=%s count=%d is_union=%d largest=%p lltype=%p\n",
-            seq2, au->ident ? au->ident : "(null)", count,
-            au->is_union, (void*)largest, (void*)t->lltype);
-        fflush(stderr);
         LLVMStructSetBody(t->lltype, struct_members, count, 1);
 
 
