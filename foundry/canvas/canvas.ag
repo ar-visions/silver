@@ -33,22 +33,6 @@ shader canvas_ui
 	attrib Surface [ color ] : 1, rgba8
 
 
-# ---- constants ----
-
-AA_STEPS  : i32 [ 8 ]
-AA_INV    : f32 [ 0.125 ]
-
-
-# ---- edge for scanline rasterizer ----
-
-struct edge
-	public x_cur : f32
-	public dx    : f32
-	public y_top : f32
-	public y_bot : f32
-	public dir   : i32
-
-
 # ---- path command tags ----
 
 enum path_cmd
@@ -70,13 +54,6 @@ struct path_pt
 	public cy1 : f32
 	public cx2 : f32
 	public cy2 : f32
-
-
-# ---- fill rule ----
-
-enum fill_rule
-	non_zero : 0
-	even_odd : 1
 
 
 # ---- 2d affine transform [ a b tx ; c d ty ; 0 0 1 ] ----
@@ -150,52 +127,6 @@ func color_b [ c: u32 ] -> u8 [ u8 c >> 16 & 0xFF ]
 func color_a [ c: u32 ] -> u8 [ u8 c >> 24 & 0xFF ]
 
 
-# alpha blend src over dst, coverage [0..255]
-func blend_pixel [ dst: ref u8, src_color: u32, coverage: i32 ] -> none
-	if [ coverage <= 0 ]
-		return
-
-	sr : i32 [ color_r [ src_color ] ]
-	sg : i32 [ color_g [ src_color ] ]
-	sb : i32 [ color_b [ src_color ] ]
-	sa : i32 [ color_a [ src_color ] ]
-
-	# modulate source alpha by coverage
-	alpha : i32 [ sa * coverage / 255 ]
-	if [ alpha <= 0 ]
-		return
-
-	if [ alpha >= 255 ]
-		dst[0] = u8 sr
-		dst[1] = u8 sg
-		dst[2] = u8 sb
-		dst[3] = 255
-		return
-
-	inv : i32 [ 255 - alpha ]
-	dr  : i32 [ dst[0] ]
-	dg  : i32 [ dst[1] ]
-	db  : i32 [ dst[2] ]
-	da  : i32 [ dst[3] ]
-
-	dst[0] = u8 [ sr * alpha + dr * inv + 127 ] / 255
-	dst[1] = u8 [ sg * alpha + dg * inv + 127 ] / 255
-	dst[2] = u8 [ sb * alpha + db * inv + 127 ] / 255
-	dst[3] = u8 [ sa * coverage + da * inv + 127 ] / 255
-
-
-# blend a horizontal span at pixel row
-func blend_span [ pixels: ref u8, stride: i32, x0: i32, x1: i32, y: i32, color: u32, coverage: i32 ] -> none
-	if [ coverage <= 0 ]
-		return
-	if [ x0 >= x1 ]
-		return
-	off : i32 [ y * stride + x0 * 4 ]
-	for [ x: i32 x0, x < x1, x += 1 ]
-		blend_pixel [ ref u8 pixels + off, color, coverage ]
-		off += 4
-
-
 # ---- clamp helpers ----
 
 func clampf [ v: f32, lo: f32, hi: f32 ] -> f32
@@ -231,10 +162,6 @@ func maxf [ x: f32, y: f32 ] -> f32
 	if [ x > y ]
 		return x
 	return y
-
-func smoothstep [ lo: f32, hi: f32, v: f32 ] -> f32
-	t : clampf [ v - lo / hi - lo, 0.0, 1.0 ]
-	return t * t * 3.0 - 2.0 * t
 
 
 # ---- bezier flattening ----
@@ -469,8 +396,6 @@ class canvas_path
 			is_closed = true
 
 
-# ---- edge generation from flattened path ----
-
 # flatten all curves in path, return flat line-only path
 func path_flatten [ src: canvas_path, tol: f32 ] -> array path_pt
 	flat : array path_pt []
@@ -505,331 +430,6 @@ func path_flatten [ src: canvas_path, tol: f32 ] -> array path_pt
 				px = pt.x
 				py = pt.y
 	return flat
-
-
-# generate monotonic edges from flattened line-only path
-func edges_from_flat [ flat: array path_pt ] -> array edge
-	edges : array edge []
-	n     : i32 len [ flat ]
-	px    : f32 [ 0.0 ]
-	py    : f32 [ 0.0 ]
-
-	for [ i: i32 0, i < n, i += 1 ]
-		pt : path_pt flat[i]
-		if [ pt.cmd == path_cmd.move ]
-			px = pt.x
-			py = pt.y
-		el
-			# line from (px,py) to (pt.x, pt.y)
-			x0 : px
-			y0 : py
-			x1 : pt.x
-			y1 : pt.y
-			px = x1
-			py = y1
-
-			if [ y0 == y1 ]
-				# horizontal edge, skip (contributes nothing to scanline)
-				# but continue
-			el
-				# ensure y_top < y_bot
-				d : i32 [ 1 ]
-				if [ y0 > y1 ]
-					# swap
-					tmp : x0
-					x0 = x1
-					x1 = tmp
-					tmp = y0
-					y0 = y1
-					y1 = tmp
-					d = -1
-
-				dxdy : x1 - x0 / y1 - y0
-				e : edge [
-					x_cur: x0,
-					dx: dxdy,
-					y_top: y0,
-					y_bot: y1,
-					dir: d
-				]
-				push [ edges, e ]
-	return edges
-
-
-# ---- insertion sort edges by y_top ----
-
-func sort_edges_y [ edges: array edge ] -> none
-	n : i32 len [ edges ]
-	for [ i: i32 1, i < n, i += 1 ]
-		key : edge edges[i]
-		j   : i32 [ i - 1 ]
-		for [ , j >= 0 && edges[j].y_top > key.y_top, j -= 1 ]
-			edges[j + 1] = edges[j]
-		edges[j + 1] = key
-
-
-# ---- scanline rasterizer ----
-
-# coverage buffer: one i32 per pixel column, accumulates sub-scanline hits
-# AA_STEPS sub-scanlines per pixel row
-
-func raster_fill [ pixels: ref u8, width: i32, height: i32, stride: i32, edges: array edge, color: u32, rule: fill_rule, clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32 ] -> none
-	n_edges : i32 len [ edges ]
-	if [ n_edges == 0 ]
-		return
-
-	sort_edges_y [ edges ]
-
-	# coverage buffer for one pixel row
-	cov : new i32 [ width ]
-
-	# active edge table indices
-	aet_cap : i32 [ 64 ]
-	aet     : new edge [ aet_cap ]
-	aet_n   : i32 [ 0 ]
-
-	edge_idx : i32 [ 0 ]
-
-	# determine y bounds
-	y_min : i32 [ maxi [ i32 floorf [ edges[0].y_top ], clip_y ] ]
-	y_max_f : f32 [ 0.0 ]
-	for [ i: i32 0, i < n_edges, i += 1 ]
-		if [ edges[i].y_bot > y_max_f ]
-			y_max_f = edges[i].y_bot
-	y_max : i32 [ mini [ i32 ceilf [ y_max_f ], clip_y + clip_h ] ]
-
-	for [ row: i32 y_min, row < y_max, row += 1 ]
-		# clear coverage
-		memset [ cov, 0, width * 4 ]
-
-		for [ sub: i32 0, sub < AA_STEPS, sub += 1 ]
-			scan_y : f32 row + f32 sub + 0.5 * AA_INV
-
-			# add new edges
-			for [ , edge_idx < n_edges && edges[edge_idx].y_top <= scan_y, edge_idx += 1 ]
-				# grow aet if needed
-				if [ aet_n >= aet_cap ]
-					aet_cap = aet_cap * 2
-					new_aet : new edge [ aet_cap ]
-					memcpy [ new_aet, aet, aet_n * 80 ]
-					free [ aet ]
-					aet = new_aet
-				aet[aet_n] = edges[edge_idx]
-				# advance x to scan_y
-				aet[aet_n].x_cur = aet[aet_n].x_cur + aet[aet_n].dx * scan_y - aet[aet_n].y_top
-				aet_n += 1
-
-			# remove expired edges
-			j : i32 [ 0 ]
-			for [ i: i32 0, i < aet_n, i += 1 ]
-				if [ aet[i].y_bot > scan_y ]
-					aet[j] = aet[i]
-					j += 1
-			aet_n = j
-
-			# insertion sort active edges by x_cur
-			for [ i: i32 1, i < aet_n, i += 1 ]
-				key : edge aet[i]
-				k   : i32 [ i - 1 ]
-				for [ , k >= 0 && aet[k].x_cur > key.x_cur, k -= 1 ]
-					aet[k + 1] = aet[k]
-				aet[k + 1] = key
-
-			# walk active edges, accumulate winding into coverage
-			winding : i32 [ 0 ]
-			for [ i: i32 0, i < aet_n, i += 1 ]
-				x0 : aet[i].x_cur
-				winding += aet[i].dir
-				inside : bool [ false ]
-				if [ rule == fill_rule.non_zero ]
-					inside = winding != 0
-				el
-					inside = winding & 1 != 0
-
-				if [ inside && i + 1 < aet_n ]
-					x1 : aet[i + 1].x_cur
-					ix0 : i32 [ maxi [ i32 floorf [ x0 ], clip_x ] ]
-					ix1 : i32 [ mini [ i32 ceilf  [ x1 ], clip_x + clip_w ] ]
-					for [ px: i32 ix0, px < ix1, px += 1 ]
-						cov[px] += 1
-
-			# advance x for next sub-scanline
-			for [ i: i32 0, i < aet_n, i += 1 ]
-				aet[i].x_cur = aet[i].x_cur + aet[i].dx * AA_INV
-
-		# emit pixel row from coverage
-		for [ x: i32 clip_x, x < clip_x + clip_w, x += 1 ]
-			if [ cov[x] > 0 ]
-				alpha : i32 [ cov[x] * 255 / AA_STEPS ]
-				if [ alpha > 255 ]
-					alpha = 255
-				off : i32 [ row * stride + x * 4 ]
-				blend_pixel [ ref u8 pixels + off, color, alpha ]
-
-	free [ cov ]
-	free [ aet ]
-
-
-# ---- fast rect fill (no edges, direct spans) ----
-
-func fill_rect [ pixels: ref u8, width: i32, height: i32, stride: i32, x: f32, y: f32, w: f32, h: f32, color: u32, opacity: f32, clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32 ] -> none
-	ix0 : i32 [ maxi [ i32 floorf [ x ], clip_x ] ]
-	iy0 : i32 [ maxi [ i32 floorf [ y ], clip_y ] ]
-	ix1 : i32 [ mini [ i32 ceilf  [ x + w ], clip_x + clip_w ] ]
-	iy1 : i32 [ mini [ i32 ceilf  [ y + h ], clip_y + clip_h ] ]
-
-	if [ ix0 >= ix1 || iy0 >= iy1 ]
-		return
-
-	alpha : i32 [ i32 opacity * 255.0 ]
-	if [ alpha > 255 ]
-		alpha = 255
-
-	# sub-pixel coverage for edges of rect
-	for [ row: i32 iy0, row < iy1, row += 1 ]
-		# vertical coverage
-		vc : f32 [ 1.0 ]
-		if [ row == iy0 ]
-			vc = f32 row + 1 - y
-			if [ vc > 1.0 ]
-				vc = 1.0
-		if [ row == iy1 - 1 ]
-			bot : f32 [ y + h - f32 row ]
-			if [ bot < vc ]
-				vc = bot
-
-		for [ col: i32 ix0, col < ix1, col += 1 ]
-			# horizontal coverage
-			hc : f32 [ 1.0 ]
-			if [ col == ix0 ]
-				hc = f32 col + 1 - x
-				if [ hc > 1.0 ]
-					hc = 1.0
-			if [ col == ix1 - 1 ]
-				rt : f32 [ x + w - f32 col ]
-				if [ rt < hc ]
-					hc = rt
-
-			cov : i32 [ i32 vc * hc * f32 alpha ]
-			off : i32 [ row * stride + col * 4 ]
-			blend_pixel [ ref u8 pixels + off, color, cov ]
-
-
-# ---- fast rounded rect fill ----
-
-func fill_rounded_rect [ pixels: ref u8, width: i32, height: i32, stride: i32, x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f32, color: u32, opacity: f32, clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32 ] -> none
-	if [ rx <= 0.0 && ry <= 0.0 ]
-		fill_rect [ pixels, width, height, stride, x, y, w, h, color, opacity, clip_x, clip_y, clip_w, clip_h ]
-		return
-
-	# clamp radii
-	rxx : minf [ rx, w * 0.5 ]
-	ryy : minf [ ry, h * 0.5 ]
-
-	ix0 : i32 [ maxi [ i32 floorf [ x ], clip_x ] ]
-	iy0 : i32 [ maxi [ i32 floorf [ y ], clip_y ] ]
-	ix1 : i32 [ mini [ i32 ceilf  [ x + w ], clip_x + clip_w ] ]
-	iy1 : i32 [ mini [ i32 ceilf  [ y + h ], clip_y + clip_h ] ]
-
-	alpha_f : f32 [ opacity * 255.0 ]
-
-	for [ row: i32 iy0, row < iy1, row += 1 ]
-		fy : f32 [ f32 row + 0.5 ]
-		for [ col: i32 ix0, col < ix1, col += 1 ]
-			fx : f32 [ f32 col + 0.5 ]
-
-			# distance to rounded rect interior
-			# fold to corner quadrant
-			dx : f32 [ maxf [ fabsf [ fx - x - w * 0.5 ] - w * 0.5 + rxx, 0.0 ] ]
-			dy : f32 [ maxf [ fabsf [ fy - y - h * 0.5 ] - h * 0.5 + ryy, 0.0 ] ]
-
-			dist : sqrtf [ dx * dx + dy * dy ] - rxx
-			# negative = inside, positive = outside
-			# AA: coverage transitions over ~1 pixel
-			cov : clampf [ 0.5 - dist, 0.0, 1.0 ]
-
-			if [ cov > 0.001 ]
-				c : i32 [ i32 cov * alpha_f ]
-				off : i32 [ row * stride + col * 4 ]
-				blend_pixel [ ref u8 pixels + off, color, c ]
-
-
-# ---- stroke rendering (distance-based feathering) ----
-
-# distance from point to line segment
-func dist_to_segment [ px: f32, py: f32, x0: f32, y0: f32, x1: f32, y1: f32 ] -> f32
-	dx : x1 - x0
-	dy : y1 - y0
-	len_sq : dx * dx + dy * dy
-	if [ len_sq < 0.0001 ]
-		ddx : px - x0
-		ddy : py - y0
-		return sqrtf [ ddx * ddx + ddy * ddy ]
-	t : clampf [ (px - x0) * dx + (py - y0) * dy / len_sq, 0.0, 1.0 ]
-	nx : x0 + t * dx
-	ny : y0 + t * dy
-	ddx : px - nx
-	ddy : py - ny
-	return sqrtf [ ddx * ddx + ddy * ddy ]
-
-
-func stroke_path [ pixels: ref u8, width: i32, height: i32, stride: i32, flat: array path_pt, stroke_width: f32, color: u32, opacity: f32, clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32 ] -> none
-	n : i32 len [ flat ]
-	if [ n < 2 ]
-		return
-
-	half_w : f32 [ stroke_width * 0.5 ]
-	alpha_f : f32 [ opacity * 255.0 ]
-
-	# compute bounding box of path + stroke expansion
-	bx0 : f32 [ 999999.0 ]
-	by0 : f32 [ 999999.0 ]
-	bx1 : f32 [ -999999.0 ]
-	by1 : f32 [ -999999.0 ]
-	for [ i: i32 0, i < n, i += 1 ]
-		pt : path_pt flat[i]
-		if [ pt.x - half_w < bx0 ]
-			bx0 = pt.x - half_w
-		if [ pt.y - half_w < by0 ]
-			by0 = pt.y - half_w
-		if [ pt.x + half_w > bx1 ]
-			bx1 = pt.x + half_w
-		if [ pt.y + half_w > by1 ]
-			by1 = pt.y + half_w
-
-	ix0 : i32 [ maxi [ i32 floorf [ bx0 ] - 1, clip_x ] ]
-	iy0 : i32 [ maxi [ i32 floorf [ by0 ] - 1, clip_y ] ]
-	ix1 : i32 [ mini [ i32 ceilf  [ bx1 ] + 1, clip_x + clip_w ] ]
-	iy1 : i32 [ mini [ i32 ceilf  [ by1 ] + 1, clip_y + clip_h ] ]
-
-	# for each pixel in stroke bounding box
-	for [ row: i32 iy0, row < iy1, row += 1 ]
-		fy : f32 [ f32 row + 0.5 ]
-		for [ col: i32 ix0, col < ix1, col += 1 ]
-			fx : f32 [ f32 col + 0.5 ]
-
-			# find minimum distance to any path segment
-			min_dist : f32 [ 999999.0 ]
-			px : f32 [ 0.0 ]
-			py : f32 [ 0.0 ]
-			for [ i: i32 0, i < n, i += 1 ]
-				pt : path_pt flat[i]
-				if [ pt.cmd == path_cmd.move ]
-					px = pt.x
-					py = pt.y
-				el
-					d : dist_to_segment [ fx, fy, px, py, pt.x, pt.y ]
-					if [ d < min_dist ]
-						min_dist = d
-					px = pt.x
-					py = pt.y
-
-			# feathered coverage
-			cov : clampf [ half_w + 0.5 - min_dist, 0.0, 1.0 ]
-			if [ cov > 0.001 ]
-				c : i32 [ i32 cov * alpha_f ]
-				off : i32 [ row * stride + col * 4 ]
-				blend_pixel [ ref u8 pixels + off, color, c ]
 
 
 # ---- gradient types ----
@@ -970,158 +570,6 @@ func conic_gradient [ cx: f32, cy: f32, start_angle: f32 ] -> gradient
 	return g
 
 
-# ---- gradient-aware fill functions ----
-
-# fill rect with gradient
-func fill_rect_gradient [ pixels: ref u8, width: i32, height: i32, stride: i32, x: f32, y: f32, w: f32, h: f32, grad: gradient, opacity: f32, clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32 ] -> none
-	ix0 : i32 [ maxi [ i32 floorf [ x ], clip_x ] ]
-	iy0 : i32 [ maxi [ i32 floorf [ y ], clip_y ] ]
-	ix1 : i32 [ mini [ i32 ceilf  [ x + w ], clip_x + clip_w ] ]
-	iy1 : i32 [ mini [ i32 ceilf  [ y + h ], clip_y + clip_h ] ]
-
-	if [ ix0 >= ix1 || iy0 >= iy1 ]
-		return
-
-	for [ row: i32 iy0, row < iy1, row += 1 ]
-		fy : f32 [ f32 row + 0.5 ]
-		# vertical sub-pixel coverage at edges
-		vc : f32 [ 1.0 ]
-		if [ row == iy0 ]
-			vc = clampf [ f32 row + 1.0 - y, 0.0, 1.0 ]
-		if [ row == iy1 - 1 ]
-			bot : f32 [ y + h - f32 row ]
-			if [ bot < vc ]
-				vc = bot
-
-		for [ col: i32 ix0, col < ix1, col += 1 ]
-			fx : f32 [ f32 col + 0.5 ]
-			# horizontal sub-pixel coverage
-			hc : f32 [ 1.0 ]
-			if [ col == ix0 ]
-				hc = clampf [ f32 col + 1.0 - x, 0.0, 1.0 ]
-			if [ col == ix1 - 1 ]
-				rt : f32 [ x + w - f32 col ]
-				if [ rt < hc ]
-					hc = rt
-
-			gc  : u32 grad.color_at [ fx, fy ]
-			cov : i32 [ i32 vc * hc * opacity * 255.0 ]
-			off : i32 [ row * stride + col * 4 ]
-			blend_pixel [ ref u8 pixels + off, gc, cov ]
-
-
-# fill rounded rect with gradient
-func fill_rounded_rect_gradient [ pixels: ref u8, width: i32, height: i32, stride: i32, x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f32, grad: gradient, opacity: f32, clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32 ] -> none
-	rxx : minf [ rx, w * 0.5 ]
-	ryy : minf [ ry, h * 0.5 ]
-
-	ix0 : i32 [ maxi [ i32 floorf [ x ], clip_x ] ]
-	iy0 : i32 [ maxi [ i32 floorf [ y ], clip_y ] ]
-	ix1 : i32 [ mini [ i32 ceilf  [ x + w ], clip_x + clip_w ] ]
-	iy1 : i32 [ mini [ i32 ceilf  [ y + h ], clip_y + clip_h ] ]
-
-	for [ row: i32 iy0, row < iy1, row += 1 ]
-		fy : f32 [ f32 row + 0.5 ]
-		for [ col: i32 ix0, col < ix1, col += 1 ]
-			fx : f32 [ f32 col + 0.5 ]
-			dx : f32 [ maxf [ fabsf [ fx - x - w * 0.5 ] - w * 0.5 + rxx, 0.0 ] ]
-			dy : f32 [ maxf [ fabsf [ fy - y - h * 0.5 ] - h * 0.5 + ryy, 0.0 ] ]
-			dist : sqrtf [ dx * dx + dy * dy ] - rxx
-			cov  : clampf [ 0.5 - dist, 0.0, 1.0 ]
-			if [ cov > 0.001 ]
-				gc  : u32 grad.color_at [ fx, fy ]
-				c   : i32 [ i32 cov * opacity * 255.0 ]
-				off : i32 [ row * stride + col * 4 ]
-				blend_pixel [ ref u8 pixels + off, gc, c ]
-
-
-# scanline fill with gradient (general path)
-func raster_fill_gradient [ pixels: ref u8, width: i32, height: i32, stride: i32, edges: array edge, grad: gradient, opacity: f32, rule: fill_rule, clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32 ] -> none
-	n_edges : i32 len [ edges ]
-	if [ n_edges == 0 ]
-		return
-
-	sort_edges_y [ edges ]
-
-	cov     : new i32 [ width ]
-	aet_cap : i32 [ 64 ]
-	aet     : new edge [ aet_cap ]
-	aet_n   : i32 [ 0 ]
-	edge_idx : i32 [ 0 ]
-
-	y_min : i32 [ maxi [ i32 floorf [ edges[0].y_top ], clip_y ] ]
-	y_max_f : f32 [ 0.0 ]
-	for [ i: i32 0, i < n_edges, i += 1 ]
-		if [ edges[i].y_bot > y_max_f ]
-			y_max_f = edges[i].y_bot
-	y_max : i32 [ mini [ i32 ceilf [ y_max_f ], clip_y + clip_h ] ]
-
-	for [ row: i32 y_min, row < y_max, row += 1 ]
-		memset [ cov, 0, width * 4 ]
-
-		for [ sub: i32 0, sub < AA_STEPS, sub += 1 ]
-			scan_y : f32 row + f32 sub + 0.5 * AA_INV
-
-			for [ , edge_idx < n_edges && edges[edge_idx].y_top <= scan_y, edge_idx += 1 ]
-				if [ aet_n >= aet_cap ]
-					aet_cap = aet_cap * 2
-					new_aet : new edge [ aet_cap ]
-					memcpy [ new_aet, aet, aet_n * 80 ]
-					free [ aet ]
-					aet = new_aet
-				aet[aet_n] = edges[edge_idx]
-				aet[aet_n].x_cur = aet[aet_n].x_cur + aet[aet_n].dx * scan_y - aet[aet_n].y_top
-				aet_n += 1
-
-			j : i32 [ 0 ]
-			for [ i: i32 0, i < aet_n, i += 1 ]
-				if [ aet[i].y_bot > scan_y ]
-					aet[j] = aet[i]
-					j += 1
-			aet_n = j
-
-			for [ i: i32 1, i < aet_n, i += 1 ]
-				key : edge aet[i]
-				k   : i32 [ i - 1 ]
-				for [ , k >= 0 && aet[k].x_cur > key.x_cur, k -= 1 ]
-					aet[k + 1] = aet[k]
-				aet[k + 1] = key
-
-			winding : i32 [ 0 ]
-			for [ i: i32 0, i < aet_n, i += 1 ]
-				x0 : aet[i].x_cur
-				winding += aet[i].dir
-				inside : bool [ false ]
-				if [ rule == fill_rule.non_zero ]
-					inside = winding != 0
-				el
-					inside = winding & 1 != 0
-				if [ inside && i + 1 < aet_n ]
-					x1  : aet[i + 1].x_cur
-					ix0 : i32 [ maxi [ i32 floorf [ x0 ], clip_x ] ]
-					ix1 : i32 [ mini [ i32 ceilf  [ x1 ], clip_x + clip_w ] ]
-					for [ px: i32 ix0, px < ix1, px += 1 ]
-						cov[px] += 1
-
-			for [ i: i32 0, i < aet_n, i += 1 ]
-				aet[i].x_cur = aet[i].x_cur + aet[i].dx * AA_INV
-
-		fy : f32 [ f32 row + 0.5 ]
-		for [ x: i32 clip_x, x < clip_x + clip_w, x += 1 ]
-			if [ cov[x] > 0 ]
-				alpha : i32 [ cov[x] * 255 / AA_STEPS ]
-				if [ alpha > 255 ]
-					alpha = 255
-				fx  : f32 [ f32 x + 0.5 ]
-				gc  : u32 grad.color_at [ fx, fy ]
-				a2  : i32 [ i32 f32 alpha * opacity ]
-				off : i32 [ row * stride + x * 4 ]
-				blend_pixel [ ref u8 pixels + off, gc, a2 ]
-
-	free [ cov ]
-	free [ aet ]
-
-
 # ---- canvas state entry ----
 
 struct canvas_state
@@ -1139,42 +587,30 @@ struct canvas_state
 	public stroke_grad     : gradient
 
 
-# ---- canvas class ----
+# ---- canvas class (GPU draw-list builder) ----
 
 class canvas
-	public pixels    : ref u8
 	public width     : i32
 	public height    : i32
-	public stride    : i32
 	public path      : canvas_path
 	public states    : array canvas_state
 	public depth     : i32
 	public font      : canvas_font
+	public shader    : canvas_ui
 
 	construct [ w: i32, h: i32 ]
 		width  = w
 		height = h
-		stride = w * 4
-		sz : i32 [ stride * height ]
-		pixels = new u8 [ sz ]
-		memset [ pixels, 255, sz ]
 		path   = canvas_path []
 		states = array canvas_state []
 		depth  = 0
+		shader = canvas_ui []
 		# push initial state
 		save
 
-	func dealloc [] -> none
-		free [ pixels ]
-
 	func resize [ w: i32, h: i32 ] -> none
-		free [ pixels ]
 		width  = w
 		height = h
-		stride = w * 4
-		sz : i32 [ stride * height ]
-		pixels = new u8 [ sz ]
-		memset [ pixels, 255, sz ]
 
 	# ---- state stack ----
 
@@ -1327,20 +763,102 @@ class canvas
 			start_angle, end_angle
 		]
 
+	# ---- GPU draw helpers ----
+
+	func color_to_vec4 [ c: u32 ] -> vec4f
+		return vec4f [
+			f32 color_r [ c ] / 255.0,
+			f32 color_g [ c ] / 255.0,
+			f32 color_b [ c ] / 255.0,
+			f32 color_a [ c ] / 255.0
+		]
+
+	func setup_shader [ st: canvas_state, rx: f32, ry: f32, rw: f32, rh: f32 ] -> none
+		shader.viewport = vec2f [ f32 width, f32 height ]
+		shader.rect     = vec4f [ rx, ry, rw, rh ]
+		shader.fill_color = color_to_vec4 [ st.fill_color ]
+		shader.stroke_clr = color_to_vec4 [ st.stroke_color ]
+		shader.params   = vec4f [ st.stroke_width, st.opacity, st.blur_rad, 0.0 ]
+		shader.radii    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+		shader.grad0    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+		shader.grad_c0  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+		shader.grad_c1  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+
+	func setup_gradient [ st: canvas_state ] -> f32
+		if [ st.fill_grad && st.fill_grad.kind != gradient_type.none ]
+			g : gradient st.fill_grad
+			shader.grad0 = vec4f [ g.x0, g.y0, g.x1, g.y1 ]
+			n : i32 len [ g.stops ]
+			if [ n >= 1 ]
+				shader.grad_c0 = color_to_vec4 [ g.stops[0].color ]
+			if [ n >= 2 ]
+				shader.grad_c1 = color_to_vec4 [ g.stops[n - 1].color ]
+			return f32 g.kind
+		return 0.0
+
 	# ---- drawing ----
+
+	func fill_rect_fast [ x: f32, y: f32, w: f32, h: f32 ] -> none
+		st : canvas_state states[depth - 1]
+		tx : st.transform.apply_x [ x, y ]
+		ty : st.transform.apply_y [ x, y ]
+		tw : w * st.transform.ma
+		th : h * st.transform.md
+		setup_shader [ st, tx, ty, tw, th ]
+		mode : f32 setup_gradient [ st ]
+		shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, mode ]
+		shader.draw
+
+	func fill_rounded_rect_fast [ x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f32 ] -> none
+		st : canvas_state states[depth - 1]
+		tx : st.transform.apply_x [ x, y ]
+		ty : st.transform.apply_y [ x, y ]
+		tw : w * st.transform.ma
+		th : h * st.transform.md
+		sr : rx * st.transform.ma
+		setup_shader [ st, tx, ty, tw, th ]
+		shader.radii = vec4f [ sr, sr, sr, sr ]
+		mode : f32 setup_gradient [ st ]
+		shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, mode ]
+		shader.draw
+
+	func clip_rect [ r_x: f32, r_y: f32, r_w: f32, r_h: f32, rx: f32, ry: f32 ] -> none
+		st : canvas_state states[depth - 1]
+		tx : i32 [ i32 st.transform.apply_x [ r_x, r_y ] ]
+		ty : i32 [ i32 st.transform.apply_y [ r_x, r_y ] ]
+		tw : i32 [ i32 r_w * st.transform.ma ]
+		th : i32 [ i32 r_h * st.transform.md ]
+		set_clip [ tx, ty, tw, th ]
 
 	func draw_fill [] -> none
 		draw_fill_preserve
 		path.reset
 
 	func draw_fill_preserve [] -> none
-		st : canvas_state states[depth - 1]
-		flat  : path_flatten [ path, 0.25 ]
-		edges : edges_from_flat [ flat ]
-		if [ st.fill_grad && st.fill_grad.kind != gradient_type.none ]
-			raster_fill_gradient [ pixels, width, height, stride, edges, st.fill_grad, st.opacity, fill_rule.non_zero, st.clip_x, st.clip_y, st.clip_w, st.clip_h ]
-		el
-			raster_fill [ pixels, width, height, stride, edges, st.fill_color, fill_rule.non_zero, st.clip_x, st.clip_y, st.clip_w, st.clip_h ]
+		# for general paths, compute bounding box and submit as rect
+		st   : canvas_state states[depth - 1]
+		flat : path_flatten [ path, 0.25 ]
+		n    : i32 len [ flat ]
+		if [ n == 0 ]
+			return
+		bx0 : f32 [ 999999.0 ]
+		by0 : f32 [ 999999.0 ]
+		bx1 : f32 [ -999999.0 ]
+		by1 : f32 [ -999999.0 ]
+		for [ i: i32 0, i < n, i += 1 ]
+			pt : path_pt flat[i]
+			if [ pt.x < bx0 ]
+				bx0 = pt.x
+			if [ pt.y < by0 ]
+				by0 = pt.y
+			if [ pt.x > bx1 ]
+				bx1 = pt.x
+			if [ pt.y > by1 ]
+				by1 = pt.y
+		setup_shader [ st, bx0, by0, bx1 - bx0, by1 - by0 ]
+		mode : f32 setup_gradient [ st ]
+		shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, mode ]
+		shader.draw
 
 	func draw_stroke [] -> none
 		draw_stroke_preserve
@@ -1351,82 +869,28 @@ class canvas
 		if [ st.stroke_width <= 0.0 ]
 			return
 		flat : path_flatten [ path, 0.25 ]
-		# todo: stroke_path_gradient for gradient strokes
-		stroke_path [ pixels, width, height, stride, flat, st.stroke_width, st.stroke_color, st.opacity, st.clip_x, st.clip_y, st.clip_w, st.clip_h ]
-
-	func clear [ c: u32 ] -> none
-		n : i32 [ width * height ]
-		r : u8 [ color_r [ c ] ]
-		g : u8 [ color_g [ c ] ]
-		b : u8 [ color_b [ c ] ]
-		al : u8 [ color_a [ c ] ]
+		n    : i32 len [ flat ]
+		if [ n == 0 ]
+			return
+		bx0 : f32 [ 999999.0 ]
+		by0 : f32 [ 999999.0 ]
+		bx1 : f32 [ -999999.0 ]
+		by1 : f32 [ -999999.0 ]
+		half_w : f32 [ st.stroke_width * 0.5 ]
 		for [ i: i32 0, i < n, i += 1 ]
-			off : i32 [ i * 4 ]
-			pixels[off]     = r
-			pixels[off + 1] = g
-			pixels[off + 2] = b
-			pixels[off + 3] = al
-
-	func clear_white [] -> none
-		memset [ pixels, 255, stride * height ]
-
-	# ---- fast path: filled rect (bypasses edge rasterizer) ----
-
-	func fill_rect_fast [ x: f32, y: f32, w: f32, h: f32 ] -> none
-		st : canvas_state states[depth - 1]
-		tx : st.transform.apply_x [ x, y ]
-		ty : st.transform.apply_y [ x, y ]
-		tw : w * st.transform.ma
-		th : h * st.transform.md
-		if [ st.fill_grad && st.fill_grad.kind != gradient_type.none ]
-			fill_rect_gradient [ pixels, width, height, stride, tx, ty, tw, th, st.fill_grad, st.opacity, st.clip_x, st.clip_y, st.clip_w, st.clip_h ]
-		el
-			fill_rect [ pixels, width, height, stride, tx, ty, tw, th, st.fill_color, st.opacity, st.clip_x, st.clip_y, st.clip_w, st.clip_h ]
-
-	# ---- fast path: filled rounded rect ----
-
-	func fill_rounded_rect_fast [ x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f32 ] -> none
-		st : canvas_state states[depth - 1]
-		tx : st.transform.apply_x [ x, y ]
-		ty : st.transform.apply_y [ x, y ]
-		tw : w * st.transform.ma
-		th : h * st.transform.md
-		sr : rx * st.transform.ma
-		if [ st.fill_grad && st.fill_grad.kind != gradient_type.none ]
-			fill_rounded_rect_gradient [ pixels, width, height, stride, tx, ty, tw, th, sr, ry * st.transform.md, st.fill_grad, st.opacity, st.clip_x, st.clip_y, st.clip_w, st.clip_h ]
-		el
-			fill_rounded_rect [ pixels, width, height, stride, tx, ty, tw, th, sr, ry * st.transform.md, st.fill_color, st.opacity, st.clip_x, st.clip_y, st.clip_w, st.clip_h ]
-
-	# ---- clip with rounded rect ----
-
-	func clip_rect [ r_x: f32, r_y: f32, r_w: f32, r_h: f32, rx: f32, ry: f32 ] -> none
-		st : canvas_state states[depth - 1]
-		tx : i32 [ i32 st.transform.apply_x [ r_x, r_y ] ]
-		ty : i32 [ i32 st.transform.apply_y [ r_x, r_y ] ]
-		tw : i32 [ i32 r_w * st.transform.ma ]
-		th : i32 [ i32 r_h * st.transform.md ]
-		set_clip [ tx, ty, tw, th ]
-
-	# ---- image drawing (blit RGBA8 source into canvas) ----
-
-	func draw_image_rgba [ src: ref u8, src_w: i32, src_h: i32, dst_x: i32, dst_y: i32, dst_w: i32, dst_h: i32 ] -> none
-		st : canvas_state states[depth - 1]
-
-		for [ row: i32 0, row < dst_h, row += 1 ]
-			dy : i32 [ dst_y + row ]
-			if [ dy < st.clip_y || dy >= st.clip_y + st.clip_h ]
-				# skip
-			el
-				sy : i32 [ row * src_h / dst_h ]
-				for [ col: i32 0, col < dst_w, col += 1 ]
-					dx : i32 [ dst_x + col ]
-					if [ dx >= st.clip_x && dx < st.clip_x + st.clip_w ]
-						sx : i32 [ col * src_w / dst_w ]
-						s_off : i32 [ sy * src_w + sx * 4 ]
-						d_off : i32 [ dy * stride + dx * 4 ]
-						sa : i32 [ src[s_off + 3] ]
-						cov : i32 [ i32 f32 sa * st.opacity ]
-						blend_pixel [ ref u8 pixels + d_off, color_pack [ src[s_off], src[s_off + 1], src[s_off + 2], 255 ], cov ]
+			pt : path_pt flat[i]
+			if [ pt.x - half_w < bx0 ]
+				bx0 = pt.x - half_w
+			if [ pt.y - half_w < by0 ]
+				by0 = pt.y - half_w
+			if [ pt.x + half_w > bx1 ]
+				bx1 = pt.x + half_w
+			if [ pt.y + half_w > by1 ]
+				by1 = pt.y + half_w
+		setup_shader [ st, bx0, by0, bx1 - bx0, by1 - by0 ]
+		shader.fill_color = color_to_vec4 [ st.stroke_color ]
+		shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, 0.0 ]
+		shader.draw
 
 
 # ---- text rendering with FreeType ----
@@ -1601,41 +1065,6 @@ func measure_text [ fnt: canvas_font, text: string ] -> text_metrics
 	]
 
 
-# ---- text drawing into pixel buffer ----
-
-func draw_text_line [ pixels: ref u8, buf_w: i32, buf_h: i32, stride: i32, fnt: canvas_font, text: string, x: f32, y: f32, color: u32, opacity: f32, clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32 ] -> f32
-	n       : i32 len [ text ]
-	pen_x   : f32 [ x ]
-	baseline : f32 [ y + fnt.ascent ]
-	alpha_f  : f32 [ opacity * 255.0 ]
-
-	for [ i: i32 0, i < n, i += 1 ]
-		cp : u32 [ text[i] ]
-		g  : glyph_entry fnt.get_glyph [ cp ]
-		if [ !g.cached ]
-			pen_x += f32 fnt.size_px * 0.5
-		el
-			# glyph destination
-			gx : i32 [ i32 pen_x + f32 g.bearing_x ]
-			gy : i32 [ i32 baseline - f32 g.bearing_y ]
-
-			# blit glyph alpha bitmap
-			for [ row: i32 0, row < g.bmp_h, row += 1 ]
-				dy : i32 [ gy + row ]
-				if [ dy >= clip_y && dy < clip_y + clip_h ]
-					for [ col: i32 0, col < g.bmp_w, col += 1 ]
-						dx : i32 [ gx + col ]
-						if [ dx >= clip_x && dx < clip_x + clip_w ]
-							# glyph alpha from FT bitmap
-							ga : i32 [ g.bitmap[row * g.bmp_w + col] ]
-							if [ ga > 0 ]
-								cov : i32 [ i32 f32 ga * alpha_f / 255.0 ]
-								off : i32 [ dy * stride + dx * 4 ]
-								blend_pixel [ ref u8 pixels + off, color, cov ]
-			pen_x += f32 g.advance
-	return pen_x - x
-
-
 # ---- ellipsis helper ----
 
 func text_ellipsis [ fnt: canvas_font, text: string, max_w: f32 ] -> string
@@ -1662,76 +1091,9 @@ func text_ellipsis [ fnt: canvas_font, text: string, max_w: f32 ] -> string
 
 # ---- canvas text methods ----
 
-# extend canvas with font and text support
-# these are written as free functions operating on canvas
-
 func canvas_set_font [ c: canvas, fnt: canvas_font ] -> none
 	c.font = fnt
 
 func canvas_measure [ c: canvas, text: string ] -> text_metrics
 	check c.font, 'no font set on canvas'
 	return measure_text [ c.font, text ]
-
-func canvas_draw_text [ c: canvas, text: string, rx: f32, ry: f32, rw: f32, rh: f32, align_x: f32, align_y: f32, ellip: bool ] -> none
-	check c.font, 'no font set on canvas'
-	st : canvas_state c.states[c.depth - 1]
-	fnt : canvas_font c.font
-
-	draw_text : string [ text ]
-	if [ ellip ]
-		draw_text = text_ellipsis [ fnt, text, rw ]
-
-	tm : text_metrics measure_text [ fnt, draw_text ]
-
-	# align within rect
-	tx : f32 [ rx + rw - tm.w * align_x ]
-	ty : f32 [ ry + rh - tm.h * align_y ]
-
-	# apply transform
-	fx : f32 st.transform.apply_x [ tx, ty ]
-	fy : f32 st.transform.apply_y [ tx, ty ]
-
-	draw_text_line [ c.pixels, c.width, c.height, c.stride, fnt, draw_text, fx, fy, st.fill_color, st.opacity, st.clip_x, st.clip_y, st.clip_w, st.clip_h ]
-
-
-# ---- basic tests ----
-
-func canvas_test [] -> bool
-	c : canvas [ 128, 128 ]
-
-	# test rect fill
-	c.set_fill_color [ color_pack [ 255, 0, 0, 255 ] ]
-	c.fill_rect_fast [ 10.0, 10.0, 50.0, 50.0 ]
-
-	# test rounded rect
-	c.set_fill_color [ color_pack [ 0, 128, 255, 255 ] ]
-	c.fill_rounded_rect_fast [ 20.0, 20.0, 80.0, 60.0, 8.0, 8.0 ]
-
-	# test path fill
-	c.set_fill_color [ color_pack [ 0, 200, 0, 200 ] ]
-	c.move_to [ 64.0, 10.0 ]
-	c.line_to [ 118.0, 100.0 ]
-	c.line_to [ 10.0, 100.0 ]
-	c.path.close_path
-	c.draw_fill
-
-	# test stroke
-	c.set_stroke_color [ color_pack [ 255, 255, 0, 255 ] ]
-	c.set_stroke_width [ 2.0 ]
-	c.move_to [ 10.0, 120.0 ]
-	c.line_to [ 120.0, 120.0 ]
-	c.draw_stroke
-
-	# test text (requires font file)
-	lib : handle ft_init
-	fnt : canvas_font [ lib, 'fonts/Sofia-Sans-Condensed.ttf', 16 ]
-	c.font = fnt
-	c.set_fill_color [ color_pack [ 0, 0, 0, 255 ] ]
-	canvas_draw_text [ c, 'hello canvas', 4.0, 4.0, 120.0, 20.0, 0.0, 0.0, false ]
-
-	# verify center pixel of red rect is red
-	off : i32 [ 35 * c.stride + 35 * 4 ]
-	r : u8 [ c.pixels[off] ]
-	puts 'canvas test: pixel at (35,35) r={r}'
-
-	return true
