@@ -2867,6 +2867,10 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         return input;
     }
 
+    if (seq == 181) {
+        seq = seq;
+    }
+ 
     string  str      = (string)instanceof(args, string);
     map     imap     = (map)instanceof(args, map);
     array   ar       = (array)instanceof(args, array);
@@ -5059,6 +5063,11 @@ none etype_implement(etype t, bool w) { sequencer
                             struct_members[index] = lltype(s);
                             if (!struct_members[index])
                                 struct_members[index] = struct_members[index];
+                        }
+
+                        if (!src->abi_size && struct_members[index]) {
+                            int base_size = LLVMABISizeOfType(a->target_data, struct_members[index]);
+                            if (base_size) src->abi_size = base_size * 8;
                         }
 
                         if (m->elements > 0)

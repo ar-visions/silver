@@ -2489,10 +2489,8 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
             // here we must 'peek' at a body; which if not available we go default
             array b = peek_body(a);
             enode res0 = null;
+            if (from_ref) mdl_found = pointer((aether)a, (Au)mdl_found);
             if (b) {
-                if (seq == 1387)
-                    seq = seq;
-                if (a->in_ref) mdl_found = pointer((aether)a, (Au)mdl_found);
                 array expr = read_initializer(a);
                 if (!len(expr) && read_if(a, "sub")) {
                     res0 = e_create(a, mdl_expect, (Au)parse_sub(a, mdl_found)); 
@@ -2514,7 +2512,8 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
                         res0 = e_create(a, mdl_found, (Au)null); // required conversion
                     }
                 }
-            } else if (a->assign_type == OPType__bind && is_class(mdl_found)) {
+            } else if (a->assign_type == OPType__bind &&
+                    (from_ref || is_class(mdl_found) || is_ptr(mdl_found))) {
                 res0 = e_null(a, mdl_found);
             } else {
                 res0 = e_create(a, mdl_found, null);
@@ -2574,7 +2573,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
         enode esize = null;
         shape sh  = null;
         if (read_if(a, "[")) {
-            esize = read_enode(a, etypeid(shape), false);
+            esize = parse_expression(a, etypeid(shape), false);
             sh = instanceof(esize->literal, shape);
             validate(read_if(a, "]"), "expected closing-bracket after new Type [");
         }
@@ -2699,6 +2698,11 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
     // its less surface area for complexity
 
     else if (!cmode && read_if(a, "ref")) {
+        static int seq2;
+        seq2++;
+        if (seq2 == 1) {
+            seq2 = seq2;
+        }
         validate(!from_ref, "unexpected double-ref (use type definitions)");
         a->in_ref = true;
         enode expr = read_enode(a, null, true);
@@ -3212,6 +3216,15 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         else
             validate(!read_if(a, ":"),
                 "unexpected : after type provided first: %o", t);
+
+        // verify arg name does not shadow a class member
+        if (n) {
+            etype rec = context_record(a);
+            if (rec) {
+                Au_t found = find_member(rec->au, cstring(n), AU_MEMBER_VAR, 0, false);
+                validate(!found, "argument '%o' shadows member of %s", n, rec->au->ident);
+            }
+        }
         
         if (!t) t = read_etype(a, null); // we need to avoid the literal check in here!
 
@@ -3659,13 +3672,12 @@ string import_env(array input) {
     return env;
 }
 
-string import_libs(array input) {
+string import_libs(array input, map output) {
     string libs = string(alloc, 128);
     each(input, string, t) {
         if (starts_with(t, "-l")) {
-            if (len(libs))
-                append(libs, " ");
-            concat(libs, (string)t);
+            string n = mid(t, 2, len(t) - 2);
+            set(output, n, _bool(true));
         }
     }
     return libs;
@@ -3908,8 +3920,6 @@ none silver_build(silver a) {
 
     if (len(a->implements))
         write_header(a);
-
-    // now we can unload the imported externs
 
     // create libs, and describe in reverse order from import
     pairs(a->libs, i) {
@@ -4476,6 +4486,9 @@ enode parse_import(silver a) {
     }
 
     array b = read_body(a);
+    if (len(b))
+        import_libs(compact_tokens(b), a->libs);
+
     map defs = len(b) ? map() : null;
     bool is_fields = false;
     if (defs) {
@@ -4493,6 +4506,7 @@ enode parse_import(silver a) {
         pop_tokens(a, false);
     }
     array all_config = (is_fields || (!b || !b->count)) ? array() : compact_tokens(b);
+
     map props = map();
 
     // this invokes import by git; a local repo may be possible but not very usable
@@ -5713,11 +5727,19 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         t = t;
     }
     
-    enode R = parse_expression(a, is_explicit_ref(mem) ? u(etype, t->au->src) :
+    bool is_explicit = is_explicit_ref(mem);
+    enode R = parse_expression(a, is_explicit ? u(etype, t->au->src) :
         next_is(a, "[") ? t_expect : null, false);
 
     // Handle Promotion and Inference for AU_MEMBER_DECL
     if (mem->au->member_type == AU_MEMBER_DECL) {
+        // verify name is not a type alias
+        array name_tokens = a(token(mem->au->ident));
+        push_tokens(a, (tokens)name_tokens, 0);
+        etype name_type = read_etype(a, null);
+        pop_tokens(a, false);
+        validate(!name_type, "%s is a defined type", mem->au->ident);
+
         // Promote the member to a variable
         Au_t ctx = top_scope(a);
         mem->au->context = ctx;
@@ -6103,8 +6125,8 @@ enode parse_for(silver a) { sequencer
         do_while, in_expr, val_var, key_var);
     pop_scope(a);
 
-    if (!in_expr) // call structure dictates there be an async, only when we make the inits in callback
-        pop_scope(a); // its a good idea to make this better
+    if (!in_expr && len(init_exprs)) // only pop init scope when init vars were declared
+        pop_scope(a);
 
     return res;
 }
