@@ -615,13 +615,6 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
         i32* value = (i32*)_i32(val.getSExtValue());
         
         Au_t ev = def_enum_value(en, cn, (Au)value);
-        //ev->module = e->current_import->au;
-        // For C-style enums, also register in parent scope
-        if (!decl->isScoped()) {
-            Au_t parent_ev = def_enum_value(parent, cn, (Au)value);
-            //parent_ev->module = e->current_import->au;
-            parent_ev->type = en;
-        }
     }
     
     pop(e->lexical);

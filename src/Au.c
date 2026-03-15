@@ -862,9 +862,19 @@ Au_t lexical(array lex, symbol f) {
         }
     }
 
-    //Au_t au_module = typeid(Au)->module;
-    //Au_t ff = find_member(au_module, f, 0, false);
-    //if (ff) return ff;
+    // fallback: search inside C-imported enum types for unscoped enum values
+    for (int i = len(lex) - 1; i >= 0; i--) {
+        Au_t au = (Au_t)lex->origin[i];
+        for (int ii = 0; ii < au->members.count; ii++) {
+            Au_t m = (Au_t)au->members.origin[ii];
+            if (!(m->traits & AU_TRAIT_ENUM)) continue;
+            for (int jj = 0; jj < m->members.count; jj++) {
+                Au_t ev = (Au_t)m->members.origin[jj];
+                if (ev->ident && strcmp(ev->ident, f) == 0)
+                    return ev;
+            }
+        }
+    }
 
     return null;
 }
