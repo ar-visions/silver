@@ -11,6 +11,7 @@ enode parse_statements(silver a);
 enode parse_statement(silver a);
 void build_fn(silver a, efunc fmem, callback preamble, callback postamble);
 bool is_explicit_ref(enode);
+enode enode_ref(aether, enode, etype);
 
 static void build_record(silver a, etype mrec);
 static void build_record_parse(silver a, etype mrec);
@@ -2212,7 +2213,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
     bool   in_rec  = rec_top && rec_top->au == top;
 
     
-    if (seq == 224) {
+    if (seq == 41) {
         seq = seq;
     }
 
@@ -2302,9 +2303,13 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                 }
                 else if (!in_rec) {
                     // try implicit 'this' access in instance methods
+                    if (alpha && strstr(alpha->chars, "SND_PCM_STREAM") != NULL) {
+                        seq = seq; // breakpoint: SND_PCM_STREAM lookup
+                    }
                     if (!mem && f && f->target) {
-                        //mem = (enode)elookup(alpha->chars);
+                        //mem = (enode)elookup(alpha->chars);]
                         mem = (enode)elookup(alpha->chars);
+                        Au info = mem ? head(mem) : null;
                         if (mem && !mem->au->is_static) {
                             etype ftarg = etype_resolve((etype)f->target);
                             if (ftarg && in_context(mem->au, ftarg->au)) {
@@ -2512,10 +2517,10 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
                         res0 = e_create(a, mdl_found, (Au)null); // required conversion
                     }
                 }
-            } else if (a->assign_type == OPType__bind &&
-                    (from_ref || is_class(mdl_found) || is_ptr(mdl_found))) {
-                res0 = e_null(a, mdl_found);
-            } else {
+            } //else if (a->assign_type == OPType__bind &&
+            //        (from_ref || is_class(mdl_found) || is_ptr(mdl_found))) {
+            //    res0 = e_null(a, mdl_found);
+            else {
                 res0 = e_create(a, mdl_found, null);
             }
             enode conv = e_create(a, mdl_expect, (Au)res0);
@@ -2700,7 +2705,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
     else if (!cmode && read_if(a, "ref")) {
         static int seq2;
         seq2++;
-        if (seq2 == 1) {
+        if (seq2 == 2) {
             seq2 = seq2;
         }
         validate(!from_ref, "unexpected double-ref (use type definitions)");
@@ -2716,13 +2721,12 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
         // when expr is unloaded, its value is already the address (GEP) —
         // return it directly as a loaded pointer rather than going through
         // e_create which would load and inttoptr the dereferenced value
-        if (!expr->loaded && !mdl_expect) {
-            expr->au     = ref_type->au;
-            expr->loaded = true;
-            return expr;
+        if (expr->loaded) {
+            expr->loaded = expr->loaded;
         }
-
-        return e_create(a, mdl_expect ? mdl_expect : ref_type, (Au)expr);
+        validate(!expr->loaded, "cannot take ref of loaded value");
+        enode ref_node = enode_ref((aether)a, expr, ref_type);
+        return mdl_expect ? e_create(a, mdl_expect, (Au)ref_node) : ref_node;
     }
 
     // we may only support a limited set of C functionality for #define macros
@@ -5512,6 +5516,9 @@ static bool peek_fields(silver a) {
 enode silver_parse_member_expr(silver a, enode mem) { sequencer
     push_current(a);
 
+    if (seq == 5) {
+        seq = seq;
+    }
     macro is_macro = instanceof(mem, macro);
     bool is_lambda_call = inherits(mem->au, typeid(lambda));
     int indexable = !is_func((Au)mem) && !is_func_ptr((Au)mem) && !is_macro && !is_lambda_call;
@@ -5749,9 +5756,12 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         rm(a->registry, (Au)mem->au);
 
         mem = (enode)evar(mod, (aether)a, au, mem->au,
-            loaded, !is_struct(mem->au->src), meta_a, R->meta_a, meta_b, R->meta_b,
+            loaded, false, meta_a, R->meta_a, meta_b, R->meta_b,
             is_explicit_ref, is_bind_ref);
 
+        if (seq == 7) {
+            seq = seq;
+        }
         // Register and allocate the variable in the backend
         etype_implement((etype)mem, false);
     }

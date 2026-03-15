@@ -11,7 +11,7 @@ class spectra
     public sample_rate: i32
     public channels:    i32
     public device:      cstr
-    public pcm:      ref snd_pcm_t
+    public pcm:         ref snd_pcm_t
     public re:          ref f32
     public im:          ref f32
     public buf:         ref i16
@@ -25,21 +25,26 @@ class spectra
         bins = new f32 [ size / 2 ]
 
     func open [] -> bool
-        rc: i32 [ snd_pcm_open [ ref pcm, device, 0, 0 ] ]
+        rc: snd_pcm_open [ ref pcm, device, SND_PCM_STREAM_CAPTURE, 0 ]
         if [ rc < 0 ]
             printf [ "cannot open: %s\n", snd_strerror [ rc ] ]
             return false
-        params: ref snd_pcm_hw_params_t
-        snd_pcm_hw_params_malloc [ ref params ]
-        snd_pcm_hw_params_any    [ pcm, params ]
-        snd_pcm_hw_params_set_access   [ pcm, params, 3 ]
-        snd_pcm_hw_params_set_format   [ pcm, params, 2 ]
-        snd_pcm_hw_params_set_channels [ pcm, params, channels ]
-        rate: u32 [ sample_rate ]
-        snd_pcm_hw_params_set_rate_near        [ pcm, params, rate, 0 ]
-        snd_pcm_hw_params_set_period_size_near [ pcm, params, size, 0 ]
-        rc = snd_pcm_hw_params [ pcm, params ]
-        snd_pcm_hw_params_free [ params ]
+        params2: ref snd_pcm_hw_params_t
+        snd_pcm_hw_params_malloc       [ ref params2 ]
+        snd_pcm_hw_params_any          [ pcm, params2 ]
+        snd_pcm_hw_params_set_access   [ pcm, params2, SND_PCM_ACCESS_RW_INTERLEAVED ]
+        snd_pcm_hw_params_set_format   [ pcm, params2, SND_PCM_FORMAT_S16_LE ]
+        snd_pcm_hw_params_set_channels [ pcm, params2, channels ]
+
+        rate:           u32 [ sample_rate ]
+        dir2:           i32 [ 0 ]
+        snd_pcm_hw_params_set_rate_near        [ pcm, params2, ref rate, ref dir2 ]
+        
+        period_size:    i32 size
+        dir_period:     i32 0
+        snd_pcm_hw_params_set_period_size_near [ pcm, params2, ref period_size, ref dir_period ]
+        rc = snd_pcm_hw_params [ pcm, params2 ]
+        snd_pcm_hw_params_free [ params2 ]
         if [ rc < 0 ]
             printf [ "hw params failed: %s\n", snd_strerror [ rc ] ]
             return false
@@ -47,12 +52,15 @@ class spectra
 
     func capture [] -> bool
         frames: i32 [ snd_pcm_readi [ pcm, buf, size ] ]
+        
         if [ frames < 0 ]
             snd_pcm_prepare [ pcm ]
             return false
+        
         for [ i: i32 0, i < size, i += 1 ]
             re[i] = buf[i] / 32768.0
             im[i] = 0.0
+        
         fft [ re, im, size ]
         half2: i32 [ size / 2 ]
         for [ i: i32 0, i < half2, i += 1 ]
@@ -62,21 +70,26 @@ class spectra
     func close [] -> none
         snd_pcm_close [ pcm ]
 
+
 func fft [ re: ref f32, im: ref f32, n: i32 ] -> none
     if [ n <= 1 ]
         return
+    
     half2: i32 [ n / 2 ]
     re_even: new f32 [ half2 ]
     im_even: new f32 [ half2 ]
     re_odd:  new f32 [ half2 ]
     im_odd:  new f32 [ half2 ]
+
     for [ i: i32 0, i < half2, i += 1 ]
         re_even[i] = re[i * 2]
         im_even[i] = im[i * 2]
         re_odd[i]  = re[i * 2 + 1]
         im_odd[i]  = im[i * 2 + 1]
+    
     fft [ re_even, im_even, half2 ]
     fft [ re_odd,  im_odd,  half2 ]
+
     for [ i: i32 0, i < half2, i += 1 ]
         angle: f32 [ -6.28318530718 * i / n ]
         wr: f32 [ cos [ angle ] ]
@@ -87,6 +100,7 @@ func fft [ re: ref f32, im: ref f32, n: i32 ] -> none
         im[i]        = im_even[i] + ti
         re[i + half2] = re_even[i] - tr
         im[i + half2] = im_even[i] - ti
+    
     free [ re_even ]
     free [ im_even ]
     free [ re_odd ]
@@ -103,7 +117,7 @@ coverage test
 
 app main
     func run[] -> int
-        s: spectra [ size: 1024, sample_rate: 44100, device: 'hw:5,0' ]
+        s: spectra [ size: 1024, sample_rate: 48000, device: 'hw:1,0' ]
         if [ !s.open ]
             return 1
         half2: s.size / 2
@@ -111,7 +125,7 @@ app main
             if [ s.capture ]
                 for [ i: i32 0, i < half2, i += 1 ]
                     if [ i % 16 == 0 ]
-                        printf "%5d Hz |", i * 44100 / 1024
+                        printf "%5d Hz |", i * s.sample_rate / s.size
                         bar: i32 [ s.bins[i] * 50.0 ]
                         if [ bar > 50 ]
                             bar = 50
