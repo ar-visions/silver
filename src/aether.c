@@ -4172,6 +4172,29 @@ void aether_create_type_members(aether a, Au_t ctx) {
     }
 }
 
+/// materialize Au_t to its etype/efunc/evar, creating and registering if needed
+etype aether_e_materialize(aether a, Au_t m) {
+    if (!m) return null;
+    etype existing = u(etype, m);
+    if (existing) return existing;
+
+    int mt = m->member_type;
+    if (mt == AU_MEMBER_ENUMV)
+        return null; // enum values handled by their parent enum
+
+    if (is_func((Au)m) || is_func_ptr((Au)m))
+        return (etype)efunc(mod, a, loaded, true, au, m);
+
+    if (mt == AU_MEMBER_VAR || mt == AU_MEMBER_IS_ATTR) {
+        enode n = enode(mod, a, loaded, false, au, m);
+        set(a->registry, (Au)m, (Au)hold(n));
+        return (etype)n;
+    }
+
+    etype t = etype(mod, a, au, m);
+    return t;
+}
+
 void src_init(aether a, Au_t m) { sequencer
     if (m && m->src)
         src_init(a, m->src);
@@ -4187,7 +4210,7 @@ void src_init(aether a, Au_t m) { sequencer
             // skip — enum values are handled in etype_implement
             mt = mt;
         }
-        else if (is_func((Au)m)) {
+        else if (is_func((Au)m) || is_func_ptr((Au)m)) {
             efunc(mod, a, loaded, true,  au, m);
         }
         else if (mt == AU_MEMBER_VAR || mt == AU_MEMBER_IS_ATTR)
