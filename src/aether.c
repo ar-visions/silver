@@ -172,11 +172,18 @@ etype etype_copy(etype mem) {
     return n;
 }
 
+enode enode_ref(aether a, enode expr, etype ref_type) {
+    return enode(mod, a, value, expr->value, loaded, true, au, ref_type->au);
+}
+
 enode enode_value(enode mem, bool force_load) { sequencer
     if (mem && mem->is_super)
         return mem->target;
 
     if (!mem->loaded && (force_load || !is_struct(canonical(mem))) && !mem->au->is_imethod) {
+        if (mem->au->ident && strstr(mem->au->ident, "SND_PCM_STREAM") != NULL) {
+            mem = mem; // breakpoint: loading SND_PCM_STREAM enum
+        }
         aether a = mem->mod;
         a->is_const_op = false;
         if (a->no_build) return e_noop(a, (etype)mem);
@@ -1826,6 +1833,10 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     if (!funcptr && !fn->used)
          fn->used = true;
 
+    if (strcmp(fn->au->ident, "snd_pcm_hw_params_any") == 0) {
+        fn = fn;
+    }
+
     Au_t au = fn->au;
 
     a->is_const_op = false;
@@ -2391,10 +2402,17 @@ enode etype_access(etype target, string name, bool funny_business) { sequencer
 
     // enum values should already be created
     if (m->member_type == AU_MEMBER_ENUMV) {
-        // make sure the enum is implemented
-        etype_implement((etype)u(etype, m->context), false);
-        verify(u(enode, m), "expected enode for enum value");
-        return u(enode, m);
+        // for C enum values registered in parent scope, redirect to the actual enum type
+        Au_t enum_ctx = m->context;
+        Au_t real_m   = m;
+        if (enum_ctx && !(enum_ctx->traits & AU_TRAIT_ENUM) && m->type && (m->type->traits & AU_TRAIT_ENUM)) {
+            enum_ctx = m->type;
+            Au_t found = find_member(enum_ctx, m->ident, AU_MEMBER_ENUMV, 0, false);
+            if (found) real_m = found;
+        }
+        etype_implement(u(etype, enum_ctx), false);
+        verify(u(enode, real_m), "expected enode for enum value");
+        return u(enode, real_m);
     }
     
     enode n = u(enode, m);
@@ -2867,7 +2885,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         return input;
     }
 
-    if (seq == 181) {
+    if (seq == 106) {
         seq = seq;
     }
  
@@ -2885,8 +2903,8 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             LLVMBuildBitCast(B, n->value, lltype(mdl), "is_au_t_cast"));
     }
 
-    if (!args && is_ptr(mdl) && !is_class(mdl))
-        return e_null(a, mdl);
+    //if (!args && is_ptr(mdl) && !is_class(mdl))
+    //    return e_null(a, mdl);
 
     // lambda creation (unchanged)
     if (is_lambda((Au)mdl)) {
@@ -3150,6 +3168,10 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                 }
             }
             free(fields);
+        } else if (is_ptr(mdl) && !args) {
+            res = enode(mod, a, loaded, false, value,
+                LLVMBuildAlloca(B, lltype(mdl), "alloca-ptr"), au, mdl->au);
+            LLVMBuildStore(B, LLVMConstNull(lltype(mdl)), res->value);
         } else 
             res = e_operand(a, args, mdl);
     }
@@ -4158,10 +4180,17 @@ void src_init(aether a, Au_t m) { sequencer
     if (m && !tm) {
         int mt = m->member_type;
 
-        if (is_func((Au)m)) {
+        if (mt == AU_MEMBER_ENUMV) {
+            if (strcmp(m->ident, "SND_PCM_STREAM_CAPTURE") == 0) {
+                m = m;
+            }
+            // skip — enum values are handled in etype_implement
+            mt = mt;
+        }
+        else if (is_func((Au)m)) {
             efunc(mod, a, loaded, true,  au, m);
         }
-        else if (mt == AU_MEMBER_ENUMV || mt == AU_MEMBER_VAR || mt == AU_MEMBER_IS_ATTR)
+        else if (mt == AU_MEMBER_VAR || mt == AU_MEMBER_IS_ATTR)
             set(a->registry, (Au)m, (Au)hold(enode(mod, a, loaded, false, au, m)));
         else {
             etype t = etype(mod, a, au, m); // this should be held in it's init
@@ -4856,31 +4885,13 @@ none etype_implement(etype t, bool w) { sequencer
     if (t->au->ident && strcmp(t->au->ident, "mat4f") == 0) {
         t = t;
     }
+    if (t->au->ident && strcmp(t->au->ident, "params2") == 0) {
+        t = t; // breakpoint: params2 implement
+    }
 
     if (au->member_type == AU_MEMBER_NAMESPACE || (is_func(au) && !((enode)t)->used && !a->is_Au_import))
         return;
     Au commander_solo = head(t);
-
-    if (au->traits & AU_TRAIT_ENUM) {
-        if (!lltype(t) && au->src)
-            t->lltype = lltype(u(etype, au->src));
-        au->typesize = au->src->typesize;
-        for (int i = 0; i < au->members.count; i++) {
-            Au_t mem = (Au_t)au->members.origin[i];
-            if (mem->member_type != AU_MEMBER_ENUMV) continue;
-            enode n = u(enode, mem);
-            if (n && !n->value) {
-                Au lit = n->literal;
-                if (!lit && mem->value && au->src)
-                    lit = primitive(au->src, mem->value);
-                if (lit) {
-                    enode prim = e_operand_primitive(a, lit);
-                    n->value   = e_create(a, u(etype, au->src), (Au)prim)->value;
-                    n->loaded  = true;
-                }
-            }
-        }
-    }
 
     if (t->is_implemented) return;
     t->is_implemented = true;
@@ -5131,6 +5142,42 @@ none etype_implement(etype t, bool w) { sequencer
 
     } else if (is_enum(t)) {
 
+
+        if (au->ident && strcmp(au->ident, "_snd_pcm_stream") == 0) {
+            au = au; // breakpoint: _snd_pcm_stream enum implement
+        }
+
+        /*
+        if (au->traits & AU_TRAIT_ENUM) {
+            if (!lltype(t) && au->src)
+                t->lltype = lltype(u(etype, au->src));
+            au->typesize = au->src->typesize;
+            for (int i = 0; i < au->members.count; i++) {
+                Au_t mem = (Au_t)au->members.origin[i];
+                if (mem->member_type != AU_MEMBER_ENUMV) continue;
+                enode n = u(enode, mem);
+                if (!n) {
+                    // C-imported enum values have no enode — create one
+                    Au lit = mem->value ? primitive(au->src, mem->value) : null;
+                    int *lit_i = (int*)lit;
+                    n = enode(mod, a, au, mem, literal, lit);
+                    set(a->registry, (Au)mem, (Au)hold(n));
+                }
+                if (n && !n->value) {
+                    Au lit = n->literal;
+                    if (!lit && mem->value && au->src)
+                        lit = primitive(au->src, mem->value);
+                    if (lit) {
+                        enode prim = e_operand_primitive(a, lit);
+                        n->value   = e_create(a, u(etype, au->src), (Au)prim)->value;
+                        n->loaded  = true;
+                    }
+                }
+            }
+        }*/
+
+
+
         Au_t et = au->src;
         static bool enum_processing = false;
         if (enum_processing) {
@@ -5153,13 +5200,15 @@ none etype_implement(etype t, bool w) { sequencer
             string n = f(string, "%s_%s", au->ident, m->ident);
             
             LLVMTypeRef tr = t->lltype;
-            LLVMValueRef G = a->is_Au_import ?
-                LLVMFetchGlobal(a->module_ref, tr, n->chars) :
-                LLVMAddGlobal(a->module_ref, tr, n->chars);
+            //LLVMValueRef G = a->is_Au_import ?
+            //    LLVMFetchGlobal(a->module_ref, tr, n->chars) :
+            //    LLVMAddGlobal(a->module_ref, tr, n->chars);
             
-            LLVMSetLinkage(G, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
-            LLVMSetGlobalConstant(G, 1);
-
+            //LLVMSetLinkage(G, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
+            //LLVMSetGlobalConstant(G, 1);
+            if (strstr(m->ident, "SND_PCM_STREAM_CAPTURE") != NULL) {
+                seq = seq; // breakpoint: SND_PCM_STREAM lookup
+            }
             if (!a->is_Au_import) {
                 LLVMValueRef init;
                 if (et == typeid(i32))
@@ -5181,9 +5230,9 @@ none etype_implement(etype t, bool w) { sequencer
                 else 
                     fault("unsupported enum value: %s", et->ident);
                 
-                nn->value = G;
-                nn->loaded = false;
-                LLVMSetInitializer(G, init);
+                nn->value = init;
+                nn->loaded = true;
+                //LLVMSetInitializer(G, init);
             }
         }
         enum_processing = false;
@@ -5931,6 +5980,7 @@ none aether_import_models(aether a, Au_t ctx, bool au_mode) {
             }
 
             if (ff->member_type && ff->member_type != m->member_type) continue;
+            if (m->member_type == AU_MEMBER_ENUMV) continue; // enum values handled via their enum type's etype_implement
 
             bool is_func = m->member_type == AU_MEMBER_FUNC || m->member_type == AU_MEMBER_GETTER ||
                            m->member_type == AU_MEMBER_SETTER ||
