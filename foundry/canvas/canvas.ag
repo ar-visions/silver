@@ -1,0 +1,1737 @@
+import freetype:freetype/VER-2-13-3 <ft2build.h, freetype/freetype.h>
+import trinity
+
+import <math.h>
+import <stdio.h>
+import <stdlib.h>
+
+
+# ---- draw mode enum (matches fragment shader) ----
+
+enum draw_mode
+	solid       : 0
+	linear_grad : 1
+	radial_grad : 2
+	conic_grad  : 3
+	text        : 4
+	image       : 5
+
+
+# ---- GPU shader for UI rendering ----
+# members become uniforms, name maps to shaders/canvas_ui.vert/.frag
+
+shader canvas_ui
+	public viewport   : vec2f
+	public rect       : vec4f
+	public radii      : vec4f
+	public fill_color : vec4f
+	public stroke_clr : vec4f
+	public params     : vec4f     # stroke_width, opacity, blur, mode
+	public grad0      : vec4f     # gradient endpoints / tex rect
+	public grad_c0    : vec4f     # gradient stop color 0
+	public grad_c1    : vec4f     # gradient stop color 1
+	attrib Surface [ color ] : 1, rgba8
+
+
+# ---- constants ----
+
+AA_STEPS  : i32 [ 8 ]
+AA_INV    : f32 [ 0.125 ]
+
+
+# ---- edge for scanline rasterizer ----
+
+struct edge
+	public x_cur : f32
+	public dx    : f32
+	public y_top : f32
+	public y_bot : f32
+	public dir   : i32
+
+
+# ---- path command tags ----
+
+enum path_cmd
+	move    : 0
+	line    : 1
+	quad    : 2
+	cubic   : 3
+	arc     : 4
+	close   : 5
+
+
+# ---- path point with optional control points ----
+
+struct path_pt
+	public cmd : path_cmd
+	public x   : f32
+	public y   : f32
+	public cx1 : f32
+	public cy1 : f32
+	public cx2 : f32
+	public cy2 : f32
+
+
+# ---- fill rule ----
+
+enum fill_rule
+	non_zero : 0
+	even_odd : 1
+
+
+# ---- 2d affine transform [ a b tx ; c d ty ; 0 0 1 ] ----
+
+struct affine
+	public ma : f32
+	public mb : f32
+	public mc : f32
+	public md : f32
+	public tx : f32
+	public ty : f32
+
+	func apply_x [ px: f32, py: f32 ] -> f32
+		return ma * px + mb * py + tx
+
+	func apply_y [ px: f32, py: f32 ] -> f32
+		return mc * px + md * py + ty
+
+
+func affine_identity [] -> affine
+	return affine [ ma: 1.0, mb: 0.0, mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
+
+
+func affine_translate [ t: affine, dx: f32, dy: f32 ] -> affine
+	return affine [
+		ma: t.ma, mb: t.mb, mc: t.mc, md: t.md,
+		tx: t.tx + t.ma * dx + t.mb * dy,
+		ty: t.ty + t.mc * dx + t.md * dy
+	]
+
+
+func affine_scale [ t: affine, s: f32 ] -> affine
+	return affine [
+		ma: t.ma * s, mb: t.mb * s,
+		mc: t.mc * s, md: t.md * s,
+		tx: t.tx, ty: t.ty
+	]
+
+
+func affine_rotate [ t: affine, radians: f32 ] -> affine
+	cs : cosf [ radians ]
+	sn : sinf [ radians ]
+	return affine [
+		ma: t.ma * cs + t.mb * sn,
+		mb: t.mb * cs - t.ma * sn,
+		mc: t.mc * cs + t.md * sn,
+		md: t.md * cs - t.mc * sn,
+		tx: t.tx, ty: t.ty
+	]
+
+
+func affine_multiply [ p: affine, q: affine ] -> affine
+	return affine [
+		ma: p.ma * q.ma + p.mb * q.mc,
+		mb: p.ma * q.mb + p.mb * q.md,
+		mc: p.mc * q.ma + p.md * q.mc,
+		md: p.mc * q.mb + p.md * q.md,
+		tx: p.ma * q.tx + p.mb * q.ty + p.tx,
+		ty: p.mc * q.tx + p.md * q.ty + p.ty
+	]
+
+
+# ---- color helpers ----
+
+func color_pack [ r: u8, g: u8, b: u8, alpha: u8 ] -> u32
+	return u32 alpha << 24 | u32 b << 16 | u32 g << 8 | u32 r
+
+func color_r [ c: u32 ] -> u8 [ u8 c & 0xFF ]
+func color_g [ c: u32 ] -> u8 [ u8 c >> 8 & 0xFF ]
+func color_b [ c: u32 ] -> u8 [ u8 c >> 16 & 0xFF ]
+func color_a [ c: u32 ] -> u8 [ u8 c >> 24 & 0xFF ]
+
+
+# alpha blend src over dst, coverage [0..255]
+func blend_pixel [ dst: ref u8, src_color: u32, coverage: i32 ] -> none
+	if [ coverage <= 0 ]
+		return
+
+	sr : i32 [ color_r [ src_color ] ]
+	sg : i32 [ color_g [ src_color ] ]
+	sb : i32 [ color_b [ src_color ] ]
+	sa : i32 [ color_a [ src_color ] ]
+
+	# modulate source alpha by coverage
+	alpha : i32 [ sa * coverage / 255 ]
+	if [ alpha <= 0 ]
+		return
+
+	if [ alpha >= 255 ]
+		dst[0] = u8 sr
+		dst[1] = u8 sg
+		dst[2] = u8 sb
+		dst[3] = 255
+		return
+
+	inv : i32 [ 255 - alpha ]
+	dr  : i32 [ dst[0] ]
+	dg  : i32 [ dst[1] ]
+	db  : i32 [ dst[2] ]
+	da  : i32 [ dst[3] ]
+
+	dst[0] = u8 [ sr * alpha + dr * inv + 127 ] / 255
+	dst[1] = u8 [ sg * alpha + dg * inv + 127 ] / 255
+	dst[2] = u8 [ sb * alpha + db * inv + 127 ] / 255
+	dst[3] = u8 [ sa * coverage + da * inv + 127 ] / 255
+
+
+# blend a horizontal span at pixel row
+func blend_span [ pixels: ref u8, stride: i32, x0: i32, x1: i32, y: i32, color: u32, coverage: i32 ] -> none
+	if [ coverage <= 0 ]
+		return
+	if [ x0 >= x1 ]
+		return
+	off : i32 [ y * stride + x0 * 4 ]
+	for [ x: i32 x0, x < x1, x += 1 ]
+		blend_pixel [ ref u8 pixels + off, color, coverage ]
+		off += 4
+
+
+# ---- clamp helpers ----
+
+func clampf [ v: f32, lo: f32, hi: f32 ] -> f32
+	if [ v < lo ]
+		return lo
+	if [ v > hi ]
+		return hi
+	return v
+
+func clampi [ v: i32, lo: i32, hi: i32 ] -> i32
+	if [ v < lo ]
+		return lo
+	if [ v > hi ]
+		return hi
+	return v
+
+func mini [ x: i32, y: i32 ] -> i32
+	if [ x < y ]
+		return x
+	return y
+
+func maxi [ x: i32, y: i32 ] -> i32
+	if [ x > y ]
+		return x
+	return y
+
+func minf [ x: f32, y: f32 ] -> f32
+	if [ x < y ]
+		return x
+	return y
+
+func maxf [ x: f32, y: f32 ] -> f32
+	if [ x > y ]
+		return x
+	return y
+
+func smoothstep [ lo: f32, hi: f32, v: f32 ] -> f32
+	t : clampf [ v - lo / hi - lo, 0.0, 1.0 ]
+	return t * t * 3.0 - 2.0 * t
+
+
+# ---- bezier flattening ----
+
+# flatten quadratic bezier to line segments, appending to edges
+# p0 -> p1 (control) -> p2
+func flatten_quad [ pts: array path_pt, x0: f32, y0: f32, cx: f32, cy: f32, x1: f32, y1: f32, tol: f32 ] -> none
+	# midpoint check for flatness
+	mx : 0.5 * x0 + x1 - cx
+	my : 0.5 * y0 + y1 - cy
+	if [ mx * mx + my * my < tol * tol ]
+		pt : path_pt [ cmd: path_cmd.line, x: x1, y: y1 ]
+		push [ pts, pt ]
+		return
+
+	# subdivide at t=0.5
+	ax : 0.5 * x0 + cx
+	ay : 0.5 * y0 + cy
+	bx : 0.5 * cx + x1
+	by : 0.5 * cy + y1
+	abx : 0.5 * ax + bx
+	aby : 0.5 * ay + by
+
+	flatten_quad [ pts, x0, y0, ax, ay, abx, aby, tol ]
+	flatten_quad [ pts, abx, aby, bx, by, x1, y1, tol ]
+
+
+# flatten cubic bezier to line segments
+# p0 -> c1 -> c2 -> p1
+func flatten_cubic [ pts: array path_pt, x0: f32, y0: f32, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x1: f32, y1: f32, tol: f32 ] -> none
+	# flatness test: max deviation of control points from line p0-p1
+	dx : x1 - x0
+	dy : y1 - y0
+	d2 : fabsf [ c1x - x0 - dx * 0.333 ] + fabsf [ c1y - y0 - dy * 0.333 ]
+	d3 : fabsf [ c2x - x0 - dx * 0.667 ] + fabsf [ c2y - y0 - dy * 0.667 ]
+
+	if [ d2 + d3 < tol ]
+		pt : path_pt [ cmd: path_cmd.line, x: x1, y: y1 ]
+		push [ pts, pt ]
+		return
+
+	# de casteljau at t=0.5
+	m01x  : 0.5 * x0 + c1x
+	m01y  : 0.5 * y0 + c1y
+	m12x  : 0.5 * c1x + c2x
+	m12y  : 0.5 * c1y + c2y
+	m23x  : 0.5 * c2x + x1
+	m23y  : 0.5 * c2y + y1
+	m012x : 0.5 * m01x + m12x
+	m012y : 0.5 * m01y + m12y
+	m123x : 0.5 * m12x + m23x
+	m123y : 0.5 * m12y + m23y
+	mx    : 0.5 * m012x + m123x
+	my    : 0.5 * m012y + m123y
+
+	flatten_cubic [ pts, x0, y0, m01x, m01y, m012x, m012y, mx, my, tol ]
+	flatten_cubic [ pts, mx, my, m123x, m123y, m23x, m23y, x1, y1, tol ]
+
+
+# flatten arc to line segments
+# center cx,cy  radius r  from angle0 to angle1 (radians)
+func flatten_arc [ pts: array path_pt, cx: f32, cy: f32, r: f32, angle0: f32, angle1: f32 ] -> none
+	sweep : angle1 - angle0
+	if [ sweep < 0.0 ]
+		sweep = sweep + 6.2831853
+	steps : i32 [ ceilf [ fabsf [ sweep ] * r * 0.5 ] ]
+	if [ steps < 4 ]
+		steps = 4
+	if [ steps > 256 ]
+		steps = 256
+	dt : sweep / f32 steps
+	for [ i: i32 1, i <= steps, i += 1 ]
+		t  : angle0 + dt * f32 i
+		px : cx + r * cosf [ t ]
+		py : cy + r * sinf [ t ]
+		pt : path_pt [ cmd: path_cmd.line, x: px, y: py ]
+		push [ pts, pt ]
+
+
+# ---- path class ----
+
+class canvas_path
+	public points    : array path_pt
+	public start_x   : f32
+	public start_y   : f32
+	public cursor_x  : f32
+	public cursor_y  : f32
+	public is_closed  : bool
+
+	func init [] -> none
+		points = array path_pt []
+
+	func reset [] -> none
+		clear points
+		start_x  = 0.0
+		start_y  = 0.0
+		cursor_x = 0.0
+		cursor_y = 0.0
+		is_closed = false
+
+	func move_to [ x: f32, y: f32 ] -> none
+		pt : path_pt [ cmd: path_cmd.move, x: x, y: y ]
+		push [ points, pt ]
+		start_x  = x
+		start_y  = y
+		cursor_x = x
+		cursor_y = y
+		is_closed = false
+
+	func line_to [ x: f32, y: f32 ] -> none
+		pt : path_pt [ cmd: path_cmd.line, x: x, y: y ]
+		push [ points, pt ]
+		cursor_x = x
+		cursor_y = y
+
+	func quad_to [ cx: f32, cy: f32, x: f32, y: f32 ] -> none
+		pt : path_pt [ cmd: path_cmd.quad, x: x, y: y, cx1: cx, cy1: cy ]
+		push [ points, pt ]
+		cursor_x = x
+		cursor_y = y
+
+	func cubic_to [ c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32 ] -> none
+		pt : path_pt [ cmd: path_cmd.cubic, x: x, y: y, cx1: c1x, cy1: c1y, cx2: c2x, cy2: c2y ]
+		push [ points, pt ]
+		cursor_x = x
+		cursor_y = y
+
+	func arc_to [ x1: f32, y1: f32, x2: f32, y2: f32, radius: f32 ] -> none
+		# compute arc tangent to lines (cursor->x1,y1) and (x1,y1->x2,y2)
+		dx0 : cursor_x - x1
+		dy0 : cursor_y - y1
+		dx1 : x2 - x1
+		dy1 : y2 - y1
+		len0 : sqrtf [ dx0 * dx0 + dy0 * dy0 ]
+		len1 : sqrtf [ dx1 * dx1 + dy1 * dy1 ]
+		if [ len0 < 0.001 || len1 < 0.001 ]
+			line_to [ x1, y1 ]
+			return
+
+		dx0 = dx0 / len0
+		dy0 = dy0 / len0
+		dx1 = dx1 / len1
+		dy1 = dy1 / len1
+
+		cross : dx0 * dy1 - dy0 * dx1
+		if [ fabsf [ cross ] < 0.001 ]
+			line_to [ x1, y1 ]
+			return
+
+		# tangent length
+		tl : radius / tanf [ acosf [ clampf [ dx0 * dx1 + dy0 * dy1, -1.0, 1.0 ] ] * 0.5 ]
+
+		# tangent points
+		t0x : x1 + dx0 * tl
+		t0y : y1 + dy0 * tl
+		t1x : x1 + dx1 * tl
+		t1y : y1 + dy1 * tl
+
+		# center
+		sign : f32 [ 1.0 ]
+		if [ cross < 0.0 ]
+			sign = -1.0
+		ncx : x1 + dx0 * tl - dy0 * radius * sign
+		ncy : y1 + dy0 * tl + dx0 * radius * sign
+
+		a0 : atan2f [ t0y - ncy, t0x - ncx ]
+		a1 : atan2f [ t1y - ncy, t1x - ncx ]
+
+		line_to [ t0x, t0y ]
+		flatten_arc [ points, ncx, ncy, radius, a0, a1 ]
+		cursor_x = t1x
+		cursor_y = t1y
+
+	func add_arc [ cx: f32, cy: f32, radius: f32, start_angle: f32, end_angle: f32 ] -> none
+		sx : cx + radius * cosf [ start_angle ]
+		sy : cy + radius * sinf [ start_angle ]
+		move_to [ sx, sy ]
+		flatten_arc [ points, cx, cy, radius, start_angle, end_angle ]
+		ex : cx + radius * cosf [ end_angle ]
+		ey : cy + radius * sinf [ end_angle ]
+		cursor_x = ex
+		cursor_y = ey
+
+	func add_rect [ x: f32, y: f32, w: f32, h: f32 ] -> none
+		move_to [ x, y ]
+		line_to [ x + w, y ]
+		line_to [ x + w, y + h ]
+		line_to [ x, y + h ]
+		close_path
+
+	func add_rounded_rect [ x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f32 ] -> none
+		# clamp radii
+		rxx : minf [ rx, w * 0.5 ]
+		ryy : minf [ ry, h * 0.5 ]
+		PI  : f32 [ 3.14159265 ]
+		HP  : f32 [ 1.57079632 ]
+
+		# top edge (left to right)
+		move_to [ x + rxx, y ]
+		line_to [ x + w - rxx, y ]
+		# top-right corner
+		flatten_arc [ points, x + w - rxx, y + ryy, rxx, -HP, 0.0 ]
+		cursor_x = x + w
+		cursor_y = y + ryy
+
+		# right edge
+		line_to [ x + w, y + h - ryy ]
+		# bottom-right corner
+		flatten_arc [ points, x + w - rxx, y + h - ryy, rxx, 0.0, HP ]
+		cursor_x = x + w - rxx
+		cursor_y = y + h
+
+		# bottom edge (right to left)
+		line_to [ x + rxx, y + h ]
+		# bottom-left corner
+		flatten_arc [ points, x + rxx, y + h - ryy, rxx, HP, PI ]
+		cursor_x = x
+		cursor_y = y + h - ryy
+
+		# left edge
+		line_to [ x, y + ryy ]
+		# top-left corner
+		flatten_arc [ points, x + rxx, y + ryy, rxx, PI, PI + HP ]
+		cursor_x = x + rxx
+		cursor_y = y
+
+		close_path
+
+	func close_path [] -> none
+		if [ !is_closed ]
+			line_to [ start_x, start_y ]
+			is_closed = true
+
+
+# ---- edge generation from flattened path ----
+
+# flatten all curves in path, return flat line-only path
+func path_flatten [ src: canvas_path, tol: f32 ] -> array path_pt
+	flat : array path_pt []
+	n    : i32 len [ src.points ]
+	px   : f32 [ 0.0 ]
+	py   : f32 [ 0.0 ]
+
+	for [ i: i32 0, i < n, i += 1 ]
+		pt : path_pt src.points[i]
+		switch [ pt.cmd ]
+			case move
+				fpt : path_pt [ cmd: path_cmd.move, x: pt.x, y: pt.y ]
+				push [ flat, fpt ]
+				px = pt.x
+				py = pt.y
+			case line
+				fpt : path_pt [ cmd: path_cmd.line, x: pt.x, y: pt.y ]
+				push [ flat, fpt ]
+				px = pt.x
+				py = pt.y
+			case quad
+				flatten_quad [ flat, px, py, pt.cx1, pt.cy1, pt.x, pt.y, tol ]
+				px = pt.x
+				py = pt.y
+			case cubic
+				flatten_cubic [ flat, px, py, pt.cx1, pt.cy1, pt.cx2, pt.cy2, pt.x, pt.y, tol ]
+				px = pt.x
+				py = pt.y
+			case close
+				fpt : path_pt [ cmd: path_cmd.close, x: pt.x, y: pt.y ]
+				push [ flat, fpt ]
+				px = pt.x
+				py = pt.y
+	return flat
+
+
+# generate monotonic edges from flattened line-only path
+func edges_from_flat [ flat: array path_pt ] -> array edge
+	edges : array edge []
+	n     : i32 len [ flat ]
+	px    : f32 [ 0.0 ]
+	py    : f32 [ 0.0 ]
+
+	for [ i: i32 0, i < n, i += 1 ]
+		pt : path_pt flat[i]
+		if [ pt.cmd == path_cmd.move ]
+			px = pt.x
+			py = pt.y
+		el
+			# line from (px,py) to (pt.x, pt.y)
+			x0 : px
+			y0 : py
+			x1 : pt.x
+			y1 : pt.y
+			px = x1
+			py = y1
+
+			if [ y0 == y1 ]
+				# horizontal edge, skip (contributes nothing to scanline)
+				# but continue
+			el
+				# ensure y_top < y_bot
+				d : i32 [ 1 ]
+				if [ y0 > y1 ]
+					# swap
+					tmp : x0
+					x0 = x1
+					x1 = tmp
+					tmp = y0
+					y0 = y1
+					y1 = tmp
+					d = -1
+
+				dxdy : x1 - x0 / y1 - y0
+				e : edge [
+					x_cur: x0,
+					dx: dxdy,
+					y_top: y0,
+					y_bot: y1,
+					dir: d
+				]
+				push [ edges, e ]
+	return edges
+
+
+# ---- insertion sort edges by y_top ----
+
+func sort_edges_y [ edges: array edge ] -> none
+	n : i32 len [ edges ]
+	for [ i: i32 1, i < n, i += 1 ]
+		key : edge edges[i]
+		j   : i32 [ i - 1 ]
+		for [ , j >= 0 && edges[j].y_top > key.y_top, j -= 1 ]
+			edges[j + 1] = edges[j]
+		edges[j + 1] = key
+
+
+# ---- scanline rasterizer ----
+
+# coverage buffer: one i32 per pixel column, accumulates sub-scanline hits
+# AA_STEPS sub-scanlines per pixel row
+
+func raster_fill [ pixels: ref u8, width: i32, height: i32, stride: i32, edges: array edge, color: u32, rule: fill_rule, clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32 ] -> none
+	n_edges : i32 len [ edges ]
+	if [ n_edges == 0 ]
+		return
+
+	sort_edges_y [ edges ]
+
+	# coverage buffer for one pixel row
+	cov : new i32 [ width ]
+
+	# active edge table indices
+	aet_cap : i32 [ 64 ]
+	aet     : new edge [ aet_cap ]
+	aet_n   : i32 [ 0 ]
+
+	edge_idx : i32 [ 0 ]
+
+	# determine y bounds
+	y_min : i32 [ maxi [ i32 floorf [ edges[0].y_top ], clip_y ] ]
+	y_max_f : f32 [ 0.0 ]
+	for [ i: i32 0, i < n_edges, i += 1 ]
+		if [ edges[i].y_bot > y_max_f ]
+			y_max_f = edges[i].y_bot
+	y_max : i32 [ mini [ i32 ceilf [ y_max_f ], clip_y + clip_h ] ]
+
+	for [ row: i32 y_min, row < y_max, row += 1 ]
+		# clear coverage
+		memset [ cov, 0, width * 4 ]
+
+		for [ sub: i32 0, sub < AA_STEPS, sub += 1 ]
+			scan_y : f32 row + f32 sub + 0.5 * AA_INV
+
+			# add new edges
+			for [ , edge_idx < n_edges && edges[edge_idx].y_top <= scan_y, edge_idx += 1 ]
+				# grow aet if needed
+				if [ aet_n >= aet_cap ]
+					aet_cap = aet_cap * 2
+					new_aet : new edge [ aet_cap ]
+					memcpy [ new_aet, aet, aet_n * 80 ]
+					free [ aet ]
+					aet = new_aet
+				aet[aet_n] = edges[edge_idx]
+				# advance x to scan_y
+				aet[aet_n].x_cur = aet[aet_n].x_cur + aet[aet_n].dx * scan_y - aet[aet_n].y_top
+				aet_n += 1
+
+			# remove expired edges
+			j : i32 [ 0 ]
+			for [ i: i32 0, i < aet_n, i += 1 ]
+				if [ aet[i].y_bot > scan_y ]
+					aet[j] = aet[i]
+					j += 1
+			aet_n = j
+
+			# insertion sort active edges by x_cur
+			for [ i: i32 1, i < aet_n, i += 1 ]
+				key : edge aet[i]
+				k   : i32 [ i - 1 ]
+				for [ , k >= 0 && aet[k].x_cur > key.x_cur, k -= 1 ]
+					aet[k + 1] = aet[k]
+				aet[k + 1] = key
+
+			# walk active edges, accumulate winding into coverage
+			winding : i32 [ 0 ]
+			for [ i: i32 0, i < aet_n, i += 1 ]
+				x0 : aet[i].x_cur
+				winding += aet[i].dir
+				inside : bool [ false ]
+				if [ rule == fill_rule.non_zero ]
+					inside = winding != 0
+				el
+					inside = winding & 1 != 0
+
+				if [ inside && i + 1 < aet_n ]
+					x1 : aet[i + 1].x_cur
+					ix0 : i32 [ maxi [ i32 floorf [ x0 ], clip_x ] ]
+					ix1 : i32 [ mini [ i32 ceilf  [ x1 ], clip_x + clip_w ] ]
+					for [ px: i32 ix0, px < ix1, px += 1 ]
+						cov[px] += 1
+
+			# advance x for next sub-scanline
+			for [ i: i32 0, i < aet_n, i += 1 ]
+				aet[i].x_cur = aet[i].x_cur + aet[i].dx * AA_INV
+
+		# emit pixel row from coverage
+		for [ x: i32 clip_x, x < clip_x + clip_w, x += 1 ]
+			if [ cov[x] > 0 ]
+				alpha : i32 [ cov[x] * 255 / AA_STEPS ]
+				if [ alpha > 255 ]
+					alpha = 255
+				off : i32 [ row * stride + x * 4 ]
+				blend_pixel [ ref u8 pixels + off, color, alpha ]
+
+	free [ cov ]
+	free [ aet ]
+
+
+# ---- fast rect fill (no edges, direct spans) ----
+
+func fill_rect [ pixels: ref u8, width: i32, height: i32, stride: i32, x: f32, y: f32, w: f32, h: f32, color: u32, opacity: f32, clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32 ] -> none
+	ix0 : i32 [ maxi [ i32 floorf [ x ], clip_x ] ]
+	iy0 : i32 [ maxi [ i32 floorf [ y ], clip_y ] ]
+	ix1 : i32 [ mini [ i32 ceilf  [ x + w ], clip_x + clip_w ] ]
+	iy1 : i32 [ mini [ i32 ceilf  [ y + h ], clip_y + clip_h ] ]
+
+	if [ ix0 >= ix1 || iy0 >= iy1 ]
+		return
+
+	alpha : i32 [ i32 opacity * 255.0 ]
+	if [ alpha > 255 ]
+		alpha = 255
+
+	# sub-pixel coverage for edges of rect
+	for [ row: i32 iy0, row < iy1, row += 1 ]
+		# vertical coverage
+		vc : f32 [ 1.0 ]
+		if [ row == iy0 ]
+			vc = f32 row + 1 - y
+			if [ vc > 1.0 ]
+				vc = 1.0
+		if [ row == iy1 - 1 ]
+			bot : f32 [ y + h - f32 row ]
+			if [ bot < vc ]
+				vc = bot
+
+		for [ col: i32 ix0, col < ix1, col += 1 ]
+			# horizontal coverage
+			hc : f32 [ 1.0 ]
+			if [ col == ix0 ]
+				hc = f32 col + 1 - x
+				if [ hc > 1.0 ]
+					hc = 1.0
+			if [ col == ix1 - 1 ]
+				rt : f32 [ x + w - f32 col ]
+				if [ rt < hc ]
+					hc = rt
+
+			cov : i32 [ i32 vc * hc * f32 alpha ]
+			off : i32 [ row * stride + col * 4 ]
+			blend_pixel [ ref u8 pixels + off, color, cov ]
+
+
+# ---- fast rounded rect fill ----
+
+func fill_rounded_rect [ pixels: ref u8, width: i32, height: i32, stride: i32, x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f32, color: u32, opacity: f32, clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32 ] -> none
+	if [ rx <= 0.0 && ry <= 0.0 ]
+		fill_rect [ pixels, width, height, stride, x, y, w, h, color, opacity, clip_x, clip_y, clip_w, clip_h ]
+		return
+
+	# clamp radii
+	rxx : minf [ rx, w * 0.5 ]
+	ryy : minf [ ry, h * 0.5 ]
+
+	ix0 : i32 [ maxi [ i32 floorf [ x ], clip_x ] ]
+	iy0 : i32 [ maxi [ i32 floorf [ y ], clip_y ] ]
+	ix1 : i32 [ mini [ i32 ceilf  [ x + w ], clip_x + clip_w ] ]
+	iy1 : i32 [ mini [ i32 ceilf  [ y + h ], clip_y + clip_h ] ]
+
+	alpha_f : f32 [ opacity * 255.0 ]
+
+	for [ row: i32 iy0, row < iy1, row += 1 ]
+		fy : f32 [ f32 row + 0.5 ]
+		for [ col: i32 ix0, col < ix1, col += 1 ]
+			fx : f32 [ f32 col + 0.5 ]
+
+			# distance to rounded rect interior
+			# fold to corner quadrant
+			dx : f32 [ maxf [ fabsf [ fx - x - w * 0.5 ] - w * 0.5 + rxx, 0.0 ] ]
+			dy : f32 [ maxf [ fabsf [ fy - y - h * 0.5 ] - h * 0.5 + ryy, 0.0 ] ]
+
+			dist : sqrtf [ dx * dx + dy * dy ] - rxx
+			# negative = inside, positive = outside
+			# AA: coverage transitions over ~1 pixel
+			cov : clampf [ 0.5 - dist, 0.0, 1.0 ]
+
+			if [ cov > 0.001 ]
+				c : i32 [ i32 cov * alpha_f ]
+				off : i32 [ row * stride + col * 4 ]
+				blend_pixel [ ref u8 pixels + off, color, c ]
+
+
+# ---- stroke rendering (distance-based feathering) ----
+
+# distance from point to line segment
+func dist_to_segment [ px: f32, py: f32, x0: f32, y0: f32, x1: f32, y1: f32 ] -> f32
+	dx : x1 - x0
+	dy : y1 - y0
+	len_sq : dx * dx + dy * dy
+	if [ len_sq < 0.0001 ]
+		ddx : px - x0
+		ddy : py - y0
+		return sqrtf [ ddx * ddx + ddy * ddy ]
+	t : clampf [ (px - x0) * dx + (py - y0) * dy / len_sq, 0.0, 1.0 ]
+	nx : x0 + t * dx
+	ny : y0 + t * dy
+	ddx : px - nx
+	ddy : py - ny
+	return sqrtf [ ddx * ddx + ddy * ddy ]
+
+
+func stroke_path [ pixels: ref u8, width: i32, height: i32, stride: i32, flat: array path_pt, stroke_width: f32, color: u32, opacity: f32, clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32 ] -> none
+	n : i32 len [ flat ]
+	if [ n < 2 ]
+		return
+
+	half_w : f32 [ stroke_width * 0.5 ]
+	alpha_f : f32 [ opacity * 255.0 ]
+
+	# compute bounding box of path + stroke expansion
+	bx0 : f32 [ 999999.0 ]
+	by0 : f32 [ 999999.0 ]
+	bx1 : f32 [ -999999.0 ]
+	by1 : f32 [ -999999.0 ]
+	for [ i: i32 0, i < n, i += 1 ]
+		pt : path_pt flat[i]
+		if [ pt.x - half_w < bx0 ]
+			bx0 = pt.x - half_w
+		if [ pt.y - half_w < by0 ]
+			by0 = pt.y - half_w
+		if [ pt.x + half_w > bx1 ]
+			bx1 = pt.x + half_w
+		if [ pt.y + half_w > by1 ]
+			by1 = pt.y + half_w
+
+	ix0 : i32 [ maxi [ i32 floorf [ bx0 ] - 1, clip_x ] ]
+	iy0 : i32 [ maxi [ i32 floorf [ by0 ] - 1, clip_y ] ]
+	ix1 : i32 [ mini [ i32 ceilf  [ bx1 ] + 1, clip_x + clip_w ] ]
+	iy1 : i32 [ mini [ i32 ceilf  [ by1 ] + 1, clip_y + clip_h ] ]
+
+	# for each pixel in stroke bounding box
+	for [ row: i32 iy0, row < iy1, row += 1 ]
+		fy : f32 [ f32 row + 0.5 ]
+		for [ col: i32 ix0, col < ix1, col += 1 ]
+			fx : f32 [ f32 col + 0.5 ]
+
+			# find minimum distance to any path segment
+			min_dist : f32 [ 999999.0 ]
+			px : f32 [ 0.0 ]
+			py : f32 [ 0.0 ]
+			for [ i: i32 0, i < n, i += 1 ]
+				pt : path_pt flat[i]
+				if [ pt.cmd == path_cmd.move ]
+					px = pt.x
+					py = pt.y
+				el
+					d : dist_to_segment [ fx, fy, px, py, pt.x, pt.y ]
+					if [ d < min_dist ]
+						min_dist = d
+					px = pt.x
+					py = pt.y
+
+			# feathered coverage
+			cov : clampf [ half_w + 0.5 - min_dist, 0.0, 1.0 ]
+			if [ cov > 0.001 ]
+				c : i32 [ i32 cov * alpha_f ]
+				off : i32 [ row * stride + col * 4 ]
+				blend_pixel [ ref u8 pixels + off, color, c ]
+
+
+# ---- gradient types ----
+
+enum gradient_type
+	none    : 0
+	linear  : 1
+	radial  : 2
+	conic   : 3
+
+# gradient stop: color at a position [0..1]
+struct gradient_stop
+	public pos   : f32
+	public color : u32
+
+# gradient definition
+class gradient
+	public kind     : gradient_type
+	public stops    : array gradient_stop
+	# linear: start/end points
+	public x0       : f32
+	public y0       : f32
+	public x1       : f32
+	public y1       : f32
+	# radial: center + radius (x0,y0 = center, x1 = inner radius, y1 = outer radius)
+	# conic:  x0,y0 = center, x1 = start angle
+
+	func init [] -> none
+		stops = array gradient_stop []
+		kind  = gradient_type.none
+
+	func add_stop [ pos: f32, color: u32 ] -> none
+		s : gradient_stop [ pos: pos, color: color ]
+		push [ stops, s ]
+
+	# sample color at position t [0..1]
+	func sample [ t: f32 ] -> u32
+		n : i32 len [ stops ]
+		if [ n == 0 ]
+			return 0xFF000000
+		if [ n == 1 ]
+			return stops[0].color
+
+		tc : f32 [ clampf [ t, 0.0, 1.0 ] ]
+
+		# find surrounding stops
+		if [ tc <= stops[0].pos ]
+			return stops[0].color
+		if [ tc >= stops[n - 1].pos ]
+			return stops[n - 1].color
+
+		for [ i: i32 1, i < n, i += 1 ]
+			if [ tc <= stops[i].pos ]
+				s0 : gradient_stop stops[i - 1]
+				s1 : gradient_stop stops[i]
+				# lerp factor between stops
+				span : f32 [ s1.pos - s0.pos ]
+				if [ span < 0.0001 ]
+					return s1.color
+				frac : f32 [ tc - s0.pos / span ]
+				return color_lerp [ s0.color, s1.color, frac ]
+
+		return stops[n - 1].color
+
+	# evaluate gradient at pixel position, return t
+	func eval [ px: f32, py: f32 ] -> f32
+		switch [ kind ]
+			case linear
+				dx : x1 - x0
+				dy : y1 - y0
+				len_sq : dx * dx + dy * dy
+				if [ len_sq < 0.0001 ]
+					return 0.0
+				return clampf [ (px - x0) * dx + (py - y0) * dy / len_sq, 0.0, 1.0 ]
+			case radial
+				dx  : px - x0
+				dy  : py - y0
+				d   : sqrtf [ dx * dx + dy * dy ]
+				# x1 = inner radius, y1 = outer radius
+				span : f32 [ y1 - x1 ]
+				if [ span < 0.0001 ]
+					return 0.0
+				return clampf [ d - x1 / span, 0.0, 1.0 ]
+			case conic
+				dx : px - x0
+				dy : py - y0
+				angle : atan2f [ dy, dx ] - x1
+				PI2 : f32 [ 6.2831853 ]
+				# normalize to [0..1]
+				if [ angle < 0.0 ]
+					angle += PI2
+				return clampf [ angle / PI2, 0.0, 1.0 ]
+			default
+				return 0.0
+
+	# sample color at pixel position
+	func color_at [ px: f32, py: f32 ] -> u32
+		t : eval [ px, py ]
+		return sample [ t ]
+
+
+# lerp between two packed RGBA colors
+func color_lerp [ c0: u32, c1: u32, t: f32 ] -> u32
+	inv : f32 [ 1.0 - t ]
+	r : u8 [ u8 f32 color_r [ c0 ] * inv + f32 color_r [ c1 ] * t ]
+	g : u8 [ u8 f32 color_g [ c0 ] * inv + f32 color_g [ c1 ] * t ]
+	b : u8 [ u8 f32 color_b [ c0 ] * inv + f32 color_b [ c1 ] * t ]
+	al: u8 [ u8 f32 color_a [ c0 ] * inv + f32 color_a [ c1 ] * t ]
+	return color_pack [ r, g, b, al ]
+
+
+# constructors for common gradients
+
+func linear_gradient [ x0: f32, y0: f32, x1: f32, y1: f32 ] -> gradient
+	g : gradient []
+	g.kind = gradient_type.linear
+	g.x0 = x0
+	g.y0 = y0
+	g.x1 = x1
+	g.y1 = y1
+	return g
+
+func radial_gradient [ cx: f32, cy: f32, inner_r: f32, outer_r: f32 ] -> gradient
+	g : gradient []
+	g.kind = gradient_type.radial
+	g.x0 = cx
+	g.y0 = cy
+	g.x1 = inner_r
+	g.y1 = outer_r
+	return g
+
+func conic_gradient [ cx: f32, cy: f32, start_angle: f32 ] -> gradient
+	g : gradient []
+	g.kind = gradient_type.conic
+	g.x0 = cx
+	g.y0 = cy
+	g.x1 = start_angle
+	return g
+
+
+# ---- gradient-aware fill functions ----
+
+# fill rect with gradient
+func fill_rect_gradient [ pixels: ref u8, width: i32, height: i32, stride: i32, x: f32, y: f32, w: f32, h: f32, grad: gradient, opacity: f32, clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32 ] -> none
+	ix0 : i32 [ maxi [ i32 floorf [ x ], clip_x ] ]
+	iy0 : i32 [ maxi [ i32 floorf [ y ], clip_y ] ]
+	ix1 : i32 [ mini [ i32 ceilf  [ x + w ], clip_x + clip_w ] ]
+	iy1 : i32 [ mini [ i32 ceilf  [ y + h ], clip_y + clip_h ] ]
+
+	if [ ix0 >= ix1 || iy0 >= iy1 ]
+		return
+
+	for [ row: i32 iy0, row < iy1, row += 1 ]
+		fy : f32 [ f32 row + 0.5 ]
+		# vertical sub-pixel coverage at edges
+		vc : f32 [ 1.0 ]
+		if [ row == iy0 ]
+			vc = clampf [ f32 row + 1.0 - y, 0.0, 1.0 ]
+		if [ row == iy1 - 1 ]
+			bot : f32 [ y + h - f32 row ]
+			if [ bot < vc ]
+				vc = bot
+
+		for [ col: i32 ix0, col < ix1, col += 1 ]
+			fx : f32 [ f32 col + 0.5 ]
+			# horizontal sub-pixel coverage
+			hc : f32 [ 1.0 ]
+			if [ col == ix0 ]
+				hc = clampf [ f32 col + 1.0 - x, 0.0, 1.0 ]
+			if [ col == ix1 - 1 ]
+				rt : f32 [ x + w - f32 col ]
+				if [ rt < hc ]
+					hc = rt
+
+			gc  : u32 grad.color_at [ fx, fy ]
+			cov : i32 [ i32 vc * hc * opacity * 255.0 ]
+			off : i32 [ row * stride + col * 4 ]
+			blend_pixel [ ref u8 pixels + off, gc, cov ]
+
+
+# fill rounded rect with gradient
+func fill_rounded_rect_gradient [ pixels: ref u8, width: i32, height: i32, stride: i32, x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f32, grad: gradient, opacity: f32, clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32 ] -> none
+	rxx : minf [ rx, w * 0.5 ]
+	ryy : minf [ ry, h * 0.5 ]
+
+	ix0 : i32 [ maxi [ i32 floorf [ x ], clip_x ] ]
+	iy0 : i32 [ maxi [ i32 floorf [ y ], clip_y ] ]
+	ix1 : i32 [ mini [ i32 ceilf  [ x + w ], clip_x + clip_w ] ]
+	iy1 : i32 [ mini [ i32 ceilf  [ y + h ], clip_y + clip_h ] ]
+
+	for [ row: i32 iy0, row < iy1, row += 1 ]
+		fy : f32 [ f32 row + 0.5 ]
+		for [ col: i32 ix0, col < ix1, col += 1 ]
+			fx : f32 [ f32 col + 0.5 ]
+			dx : f32 [ maxf [ fabsf [ fx - x - w * 0.5 ] - w * 0.5 + rxx, 0.0 ] ]
+			dy : f32 [ maxf [ fabsf [ fy - y - h * 0.5 ] - h * 0.5 + ryy, 0.0 ] ]
+			dist : sqrtf [ dx * dx + dy * dy ] - rxx
+			cov  : clampf [ 0.5 - dist, 0.0, 1.0 ]
+			if [ cov > 0.001 ]
+				gc  : u32 grad.color_at [ fx, fy ]
+				c   : i32 [ i32 cov * opacity * 255.0 ]
+				off : i32 [ row * stride + col * 4 ]
+				blend_pixel [ ref u8 pixels + off, gc, c ]
+
+
+# scanline fill with gradient (general path)
+func raster_fill_gradient [ pixels: ref u8, width: i32, height: i32, stride: i32, edges: array edge, grad: gradient, opacity: f32, rule: fill_rule, clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32 ] -> none
+	n_edges : i32 len [ edges ]
+	if [ n_edges == 0 ]
+		return
+
+	sort_edges_y [ edges ]
+
+	cov     : new i32 [ width ]
+	aet_cap : i32 [ 64 ]
+	aet     : new edge [ aet_cap ]
+	aet_n   : i32 [ 0 ]
+	edge_idx : i32 [ 0 ]
+
+	y_min : i32 [ maxi [ i32 floorf [ edges[0].y_top ], clip_y ] ]
+	y_max_f : f32 [ 0.0 ]
+	for [ i: i32 0, i < n_edges, i += 1 ]
+		if [ edges[i].y_bot > y_max_f ]
+			y_max_f = edges[i].y_bot
+	y_max : i32 [ mini [ i32 ceilf [ y_max_f ], clip_y + clip_h ] ]
+
+	for [ row: i32 y_min, row < y_max, row += 1 ]
+		memset [ cov, 0, width * 4 ]
+
+		for [ sub: i32 0, sub < AA_STEPS, sub += 1 ]
+			scan_y : f32 row + f32 sub + 0.5 * AA_INV
+
+			for [ , edge_idx < n_edges && edges[edge_idx].y_top <= scan_y, edge_idx += 1 ]
+				if [ aet_n >= aet_cap ]
+					aet_cap = aet_cap * 2
+					new_aet : new edge [ aet_cap ]
+					memcpy [ new_aet, aet, aet_n * 80 ]
+					free [ aet ]
+					aet = new_aet
+				aet[aet_n] = edges[edge_idx]
+				aet[aet_n].x_cur = aet[aet_n].x_cur + aet[aet_n].dx * scan_y - aet[aet_n].y_top
+				aet_n += 1
+
+			j : i32 [ 0 ]
+			for [ i: i32 0, i < aet_n, i += 1 ]
+				if [ aet[i].y_bot > scan_y ]
+					aet[j] = aet[i]
+					j += 1
+			aet_n = j
+
+			for [ i: i32 1, i < aet_n, i += 1 ]
+				key : edge aet[i]
+				k   : i32 [ i - 1 ]
+				for [ , k >= 0 && aet[k].x_cur > key.x_cur, k -= 1 ]
+					aet[k + 1] = aet[k]
+				aet[k + 1] = key
+
+			winding : i32 [ 0 ]
+			for [ i: i32 0, i < aet_n, i += 1 ]
+				x0 : aet[i].x_cur
+				winding += aet[i].dir
+				inside : bool [ false ]
+				if [ rule == fill_rule.non_zero ]
+					inside = winding != 0
+				el
+					inside = winding & 1 != 0
+				if [ inside && i + 1 < aet_n ]
+					x1  : aet[i + 1].x_cur
+					ix0 : i32 [ maxi [ i32 floorf [ x0 ], clip_x ] ]
+					ix1 : i32 [ mini [ i32 ceilf  [ x1 ], clip_x + clip_w ] ]
+					for [ px: i32 ix0, px < ix1, px += 1 ]
+						cov[px] += 1
+
+			for [ i: i32 0, i < aet_n, i += 1 ]
+				aet[i].x_cur = aet[i].x_cur + aet[i].dx * AA_INV
+
+		fy : f32 [ f32 row + 0.5 ]
+		for [ x: i32 clip_x, x < clip_x + clip_w, x += 1 ]
+			if [ cov[x] > 0 ]
+				alpha : i32 [ cov[x] * 255 / AA_STEPS ]
+				if [ alpha > 255 ]
+					alpha = 255
+				fx  : f32 [ f32 x + 0.5 ]
+				gc  : u32 grad.color_at [ fx, fy ]
+				a2  : i32 [ i32 f32 alpha * opacity ]
+				off : i32 [ row * stride + x * 4 ]
+				blend_pixel [ ref u8 pixels + off, gc, a2 ]
+
+	free [ cov ]
+	free [ aet ]
+
+
+# ---- canvas state entry ----
+
+struct canvas_state
+	public fill_color      : u32
+	public stroke_color    : u32
+	public stroke_width    : f32
+	public opacity         : f32
+	public transform       : affine
+	public clip_x          : i32
+	public clip_y          : i32
+	public clip_w          : i32
+	public clip_h          : i32
+	public blur_rad        : f32
+	public fill_grad       : gradient
+	public stroke_grad     : gradient
+
+
+# ---- canvas class ----
+
+class canvas
+	public pixels    : ref u8
+	public width     : i32
+	public height    : i32
+	public stride    : i32
+	public path      : canvas_path
+	public states    : array canvas_state
+	public depth     : i32
+	public font      : canvas_font
+
+	construct [ w: i32, h: i32 ]
+		width  = w
+		height = h
+		stride = w * 4
+		sz : i32 [ stride * height ]
+		pixels = new u8 [ sz ]
+		memset [ pixels, 255, sz ]
+		path   = canvas_path []
+		states = array canvas_state []
+		depth  = 0
+		# push initial state
+		save
+
+	func dealloc [] -> none
+		free [ pixels ]
+
+	func resize [ w: i32, h: i32 ] -> none
+		free [ pixels ]
+		width  = w
+		height = h
+		stride = w * 4
+		sz : i32 [ stride * height ]
+		pixels = new u8 [ sz ]
+		memset [ pixels, 255, sz ]
+
+	# ---- state stack ----
+
+	func current_state [] -> canvas_state
+		return states[depth - 1]
+
+	func save [] -> none
+		if [ depth == 0 ]
+			st : canvas_state [
+				fill_color:   0xFF000000,
+				stroke_color: 0xFF000000,
+				stroke_width: 0.0,
+				opacity:      1.0,
+				transform:    affine_identity [],
+				clip_x: 0, clip_y: 0,
+				clip_w: width, clip_h: height,
+				blur_rad: 0.0
+			]
+			push [ states, st ]
+		el
+			prev : canvas_state states[depth - 1]
+			push [ states, prev ]
+		depth += 1
+
+	func restore [] -> none
+		if [ depth > 1 ]
+			pop states
+			depth -= 1
+
+	# ---- state setters ----
+
+	func set_fill_color [ c: u32 ] -> none
+		states[depth - 1].fill_color = c
+
+	func set_stroke_color [ c: u32 ] -> none
+		states[depth - 1].stroke_color = c
+
+	func set_stroke_width [ w: f32 ] -> none
+		states[depth - 1].stroke_width = w
+
+	func set_opacity [ o: f32 ] -> none
+		states[depth - 1].opacity = o
+
+	func set_blur_radius [ r: f32 ] -> none
+		states[depth - 1].blur_rad = r
+
+	func set_fill_gradient [ g: gradient ] -> none
+		states[depth - 1].fill_grad = g
+
+	func set_stroke_gradient [ g: gradient ] -> none
+		states[depth - 1].stroke_grad = g
+
+	func clear_fill_gradient [] -> none
+		states[depth - 1].fill_grad = null
+
+	func clear_stroke_gradient [] -> none
+		states[depth - 1].stroke_grad = null
+
+	func set_clip [ x: i32, y: i32, w: i32, h: i32 ] -> none
+		# intersect with parent clip
+		st : canvas_state states[depth - 1]
+		nx0 : i32 [ maxi [ x, st.clip_x ] ]
+		ny0 : i32 [ maxi [ y, st.clip_y ] ]
+		nx1 : i32 [ mini [ x + w, st.clip_x + st.clip_w ] ]
+		ny1 : i32 [ mini [ y + h, st.clip_y + st.clip_h ] ]
+		states[depth - 1].clip_x = nx0
+		states[depth - 1].clip_y = ny0
+		states[depth - 1].clip_w = maxi [ nx1 - nx0, 0 ]
+		states[depth - 1].clip_h = maxi [ ny1 - ny0, 0 ]
+
+	# ---- transform ----
+
+	func translate [ tx: f32, ty: f32 ] -> none
+		states[depth - 1].transform = affine_translate [ states[depth - 1].transform, tx, ty ]
+
+	func scale [ s: f32 ] -> none
+		states[depth - 1].transform = affine_scale [ states[depth - 1].transform, s ]
+
+	func rotate [ radians: f32 ] -> none
+		states[depth - 1].transform = affine_rotate [ states[depth - 1].transform, radians ]
+
+	# ---- path building (delegate to canvas_path) ----
+
+	func move_to [ x: f32, y: f32 ] -> none
+		st : canvas_state states[depth - 1]
+		tx : st.transform.apply_x [ x, y ]
+		ty : st.transform.apply_y [ x, y ]
+		path.move_to [ tx, ty ]
+
+	func line_to [ x: f32, y: f32 ] -> none
+		st : canvas_state states[depth - 1]
+		tx : st.transform.apply_x [ x, y ]
+		ty : st.transform.apply_y [ x, y ]
+		path.line_to [ tx, ty ]
+
+	func quad_to [ cx: f32, cy: f32, x: f32, y: f32 ] -> none
+		st : canvas_state states[depth - 1]
+		path.quad_to [
+			st.transform.apply_x [ cx, cy ],
+			st.transform.apply_y [ cx, cy ],
+			st.transform.apply_x [ x, y ],
+			st.transform.apply_y [ x, y ]
+		]
+
+	func cubic_to [ c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32 ] -> none
+		st : canvas_state states[depth - 1]
+		path.cubic_to [
+			st.transform.apply_x [ c1x, c1y ],
+			st.transform.apply_y [ c1x, c1y ],
+			st.transform.apply_x [ c2x, c2y ],
+			st.transform.apply_y [ c2x, c2y ],
+			st.transform.apply_x [ x, y ],
+			st.transform.apply_y [ x, y ]
+		]
+
+	func arc_to [ x1: f32, y1: f32, x2: f32, y2: f32, radius: f32 ] -> none
+		st : canvas_state states[depth - 1]
+		path.arc_to [
+			st.transform.apply_x [ x1, y1 ],
+			st.transform.apply_y [ x1, y1 ],
+			st.transform.apply_x [ x2, y2 ],
+			st.transform.apply_y [ x2, y2 ],
+			radius * st.transform.ma
+		]
+
+	func rect_to [ x: f32, y: f32, w: f32, h: f32 ] -> none
+		st : canvas_state states[depth - 1]
+		tx : st.transform.apply_x [ x, y ]
+		ty : st.transform.apply_y [ x, y ]
+		# approximate width/height under transform
+		tw : w * st.transform.ma
+		th : h * st.transform.md
+		path.add_rect [ tx, ty, tw, th ]
+
+	func rounded_rect_to [ x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f32 ] -> none
+		st : canvas_state states[depth - 1]
+		tx : st.transform.apply_x [ x, y ]
+		ty : st.transform.apply_y [ x, y ]
+		tw : w * st.transform.ma
+		th : h * st.transform.md
+		sr : rx * st.transform.ma
+		path.add_rounded_rect [ tx, ty, tw, th, sr, ry * st.transform.md ]
+
+	func arc [ cx: f32, cy: f32, radius: f32, start_angle: f32, end_angle: f32 ] -> none
+		st : canvas_state states[depth - 1]
+		path.add_arc [
+			st.transform.apply_x [ cx, cy ],
+			st.transform.apply_y [ cx, cy ],
+			radius * st.transform.ma,
+			start_angle, end_angle
+		]
+
+	# ---- drawing ----
+
+	func draw_fill [] -> none
+		draw_fill_preserve
+		path.reset
+
+	func draw_fill_preserve [] -> none
+		st : canvas_state states[depth - 1]
+		flat  : path_flatten [ path, 0.25 ]
+		edges : edges_from_flat [ flat ]
+		if [ st.fill_grad && st.fill_grad.kind != gradient_type.none ]
+			raster_fill_gradient [ pixels, width, height, stride, edges, st.fill_grad, st.opacity, fill_rule.non_zero, st.clip_x, st.clip_y, st.clip_w, st.clip_h ]
+		el
+			raster_fill [ pixels, width, height, stride, edges, st.fill_color, fill_rule.non_zero, st.clip_x, st.clip_y, st.clip_w, st.clip_h ]
+
+	func draw_stroke [] -> none
+		draw_stroke_preserve
+		path.reset
+
+	func draw_stroke_preserve [] -> none
+		st : canvas_state states[depth - 1]
+		if [ st.stroke_width <= 0.0 ]
+			return
+		flat : path_flatten [ path, 0.25 ]
+		# todo: stroke_path_gradient for gradient strokes
+		stroke_path [ pixels, width, height, stride, flat, st.stroke_width, st.stroke_color, st.opacity, st.clip_x, st.clip_y, st.clip_w, st.clip_h ]
+
+	func clear [ c: u32 ] -> none
+		n : i32 [ width * height ]
+		r : u8 [ color_r [ c ] ]
+		g : u8 [ color_g [ c ] ]
+		b : u8 [ color_b [ c ] ]
+		al : u8 [ color_a [ c ] ]
+		for [ i: i32 0, i < n, i += 1 ]
+			off : i32 [ i * 4 ]
+			pixels[off]     = r
+			pixels[off + 1] = g
+			pixels[off + 2] = b
+			pixels[off + 3] = al
+
+	func clear_white [] -> none
+		memset [ pixels, 255, stride * height ]
+
+	# ---- fast path: filled rect (bypasses edge rasterizer) ----
+
+	func fill_rect_fast [ x: f32, y: f32, w: f32, h: f32 ] -> none
+		st : canvas_state states[depth - 1]
+		tx : st.transform.apply_x [ x, y ]
+		ty : st.transform.apply_y [ x, y ]
+		tw : w * st.transform.ma
+		th : h * st.transform.md
+		if [ st.fill_grad && st.fill_grad.kind != gradient_type.none ]
+			fill_rect_gradient [ pixels, width, height, stride, tx, ty, tw, th, st.fill_grad, st.opacity, st.clip_x, st.clip_y, st.clip_w, st.clip_h ]
+		el
+			fill_rect [ pixels, width, height, stride, tx, ty, tw, th, st.fill_color, st.opacity, st.clip_x, st.clip_y, st.clip_w, st.clip_h ]
+
+	# ---- fast path: filled rounded rect ----
+
+	func fill_rounded_rect_fast [ x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f32 ] -> none
+		st : canvas_state states[depth - 1]
+		tx : st.transform.apply_x [ x, y ]
+		ty : st.transform.apply_y [ x, y ]
+		tw : w * st.transform.ma
+		th : h * st.transform.md
+		sr : rx * st.transform.ma
+		if [ st.fill_grad && st.fill_grad.kind != gradient_type.none ]
+			fill_rounded_rect_gradient [ pixels, width, height, stride, tx, ty, tw, th, sr, ry * st.transform.md, st.fill_grad, st.opacity, st.clip_x, st.clip_y, st.clip_w, st.clip_h ]
+		el
+			fill_rounded_rect [ pixels, width, height, stride, tx, ty, tw, th, sr, ry * st.transform.md, st.fill_color, st.opacity, st.clip_x, st.clip_y, st.clip_w, st.clip_h ]
+
+	# ---- clip with rounded rect ----
+
+	func clip_rect [ r_x: f32, r_y: f32, r_w: f32, r_h: f32, rx: f32, ry: f32 ] -> none
+		st : canvas_state states[depth - 1]
+		tx : i32 [ i32 st.transform.apply_x [ r_x, r_y ] ]
+		ty : i32 [ i32 st.transform.apply_y [ r_x, r_y ] ]
+		tw : i32 [ i32 r_w * st.transform.ma ]
+		th : i32 [ i32 r_h * st.transform.md ]
+		set_clip [ tx, ty, tw, th ]
+
+	# ---- image drawing (blit RGBA8 source into canvas) ----
+
+	func draw_image_rgba [ src: ref u8, src_w: i32, src_h: i32, dst_x: i32, dst_y: i32, dst_w: i32, dst_h: i32 ] -> none
+		st : canvas_state states[depth - 1]
+
+		for [ row: i32 0, row < dst_h, row += 1 ]
+			dy : i32 [ dst_y + row ]
+			if [ dy < st.clip_y || dy >= st.clip_y + st.clip_h ]
+				# skip
+			el
+				sy : i32 [ row * src_h / dst_h ]
+				for [ col: i32 0, col < dst_w, col += 1 ]
+					dx : i32 [ dst_x + col ]
+					if [ dx >= st.clip_x && dx < st.clip_x + st.clip_w ]
+						sx : i32 [ col * src_w / dst_w ]
+						s_off : i32 [ sy * src_w + sx * 4 ]
+						d_off : i32 [ dy * stride + dx * 4 ]
+						sa : i32 [ src[s_off + 3] ]
+						cov : i32 [ i32 f32 sa * st.opacity ]
+						blend_pixel [ ref u8 pixels + d_off, color_pack [ src[s_off], src[s_off + 1], src[s_off + 2], 255 ], cov ]
+
+
+# ---- text rendering with FreeType ----
+
+struct glyph_metrics
+	public advance   : f32
+	public bearing_x : f32
+	public bearing_y : f32
+	public glyph_w   : i32
+	public glyph_h   : i32
+
+
+struct text_metrics
+	public w           : f32
+	public h           : f32
+	public ascent      : f32
+	public descent     : f32
+	public line_height : f32
+	public cap_height  : f32
+
+
+# glyph cache entry: pre-rendered bitmap + metrics for one codepoint at one size
+struct glyph_entry
+	public codepoint  : u32
+	public size_px    : i32
+	public bitmap     : ref u8
+	public bmp_w      : i32
+	public bmp_h      : i32
+	public bearing_x  : i32
+	public bearing_y  : i32
+	public advance    : i32
+	public cached      : bool
+
+
+# font face wrapper around FreeType
+class canvas_font
+	public ft_face    : handle
+	public size_px    : i32
+	public ascent     : f32
+	public descent    : f32
+	public line_height : f32
+	public cap_height : f32
+	public cache      : array glyph_entry
+	public cache_size : i32
+
+	construct [ ft_lib: handle, uri: string, size: i32 ]
+		face : handle [ null ]
+		err  : i32 FT_New_Face [ ft_lib, uri, 0, ref handle face ]
+		check err == 0, 'failed to load font: {uri}'
+		ft_face  = face
+		size_px  = size
+		FT_Set_Pixel_Sizes [ ft_face, 0, size ]
+
+		# extract metrics from face
+		fm : ref FT_FaceRec_ ft_face
+		ascent      = f32 fm.size.metrics.ascender / 64.0
+		descent     = f32 fm.size.metrics.descender / 64.0
+		line_height = f32 fm.size.metrics.height / 64.0
+
+		# approximate cap height from 'H' glyph
+		gi : u32 FT_Get_Char_Index [ ft_face, 72 ]
+		if [ gi > 0 ]
+			FT_Load_Glyph [ ft_face, gi, 0 ]
+			cap_height = f32 ref FT_FaceRec_ ft_face .glyph.metrics.horiBearingY / 64.0
+		el
+			cap_height = ascent * 0.7
+
+		# init glyph cache (128 ascii slots to start)
+		cache_size = 128
+		cache = array glyph_entry []
+
+	func dealloc [] -> none
+		# free cached bitmaps
+		n : i32 len [ cache ]
+		for [ i: i32 0, i < n, i += 1 ]
+			g : glyph_entry cache[i]
+			if [ g.cached && g.bitmap ]
+				free [ g.bitmap ]
+		FT_Done_Face [ ft_face ]
+
+	func set_size [ size: i32 ] -> none
+		if [ size != size_px ]
+			size_px = size
+			FT_Set_Pixel_Sizes [ ft_face, 0, size ]
+			fm : ref FT_FaceRec_ ft_face
+			ascent      = f32 fm.size.metrics.ascender / 64.0
+			descent     = f32 fm.size.metrics.descender / 64.0
+			line_height = f32 fm.size.metrics.height / 64.0
+			# invalidate cache
+			n : i32 len [ cache ]
+			for [ i: i32 0, i < n, i += 1 ]
+				g : glyph_entry cache[i]
+				if [ g.cached && g.bitmap ]
+					free [ g.bitmap ]
+			clear cache
+
+	# render and cache a glyph, return its entry
+	func get_glyph [ codepoint: u32 ] -> glyph_entry
+		# search cache
+		n : i32 len [ cache ]
+		for [ i: i32 0, i < n, i += 1 ]
+			g : glyph_entry cache[i]
+			if [ g.cached && g.codepoint == codepoint && g.size_px == size_px ]
+				return g
+
+		# render with freetype
+		gi  : u32 FT_Get_Char_Index [ ft_face, codepoint ]
+		err : i32 FT_Load_Glyph [ ft_face, gi, 0 ]
+		if [ err != 0 ]
+			return glyph_entry [ cached: false ]
+
+		FT_Render_Glyph [ ref FT_FaceRec_ ft_face .glyph, 0 ]
+
+		slot : ref FT_GlyphSlotRec_ ref FT_FaceRec_ ft_face .glyph
+		bw   : i32 [ slot.bitmap.width ]
+		bh   : i32 [ slot.bitmap.rows ]
+
+		# copy bitmap (FT reuses its internal buffer)
+		bmp : ref u8 [ null ]
+		if [ bw > 0 && bh > 0 ]
+			sz  : i32 [ bw * bh ]
+			bmp = new u8 [ sz ]
+			# FT bitmap may have pitch != width, copy row by row
+			for [ row: i32 0, row < bh, row += 1 ]
+				src_off : i32 [ row * slot.bitmap.pitch ]
+				dst_off : i32 [ row * bw ]
+				memcpy [ ref u8 bmp + dst_off, ref u8 slot.bitmap.buffer + src_off, bw ]
+
+		entry : glyph_entry [
+			codepoint: codepoint,
+			size_px:   size_px,
+			bitmap:    bmp,
+			bmp_w:     bw,
+			bmp_h:     bh,
+			bearing_x: slot.bitmap_left,
+			bearing_y: slot.bitmap_top,
+			advance:   i32 slot.advance.x / 64,
+			cached:    true
+		]
+		push [ cache, entry ]
+		return entry
+
+
+# ---- FreeType library singleton ----
+
+intern ft_library : handle [ null ]
+
+func ft_init [] -> handle
+	if [ !ft_library ]
+		err : i32 FT_Init_FreeType [ ref handle ft_library ]
+		check err == 0, 'FreeType init failed'
+	return ft_library
+
+
+# ---- text measurement ----
+
+func measure_text [ fnt: canvas_font, text: string ] -> text_metrics
+	n   : i32 len [ text ]
+	w   : f32 [ 0.0 ]
+	for [ i: i32 0, i < n, i += 1 ]
+		cp : u32 [ text[i] ]
+		g  : glyph_entry fnt.get_glyph [ cp ]
+		if [ g.cached ]
+			w += f32 g.advance
+	return text_metrics [
+		w:           w,
+		h:           fnt.ascent - fnt.descent,
+		ascent:      fnt.ascent,
+		descent:     fnt.descent,
+		line_height: fnt.line_height,
+		cap_height:  fnt.cap_height
+	]
+
+
+# ---- text drawing into pixel buffer ----
+
+func draw_text_line [ pixels: ref u8, buf_w: i32, buf_h: i32, stride: i32, fnt: canvas_font, text: string, x: f32, y: f32, color: u32, opacity: f32, clip_x: i32, clip_y: i32, clip_w: i32, clip_h: i32 ] -> f32
+	n       : i32 len [ text ]
+	pen_x   : f32 [ x ]
+	baseline : f32 [ y + fnt.ascent ]
+	alpha_f  : f32 [ opacity * 255.0 ]
+
+	for [ i: i32 0, i < n, i += 1 ]
+		cp : u32 [ text[i] ]
+		g  : glyph_entry fnt.get_glyph [ cp ]
+		if [ !g.cached ]
+			pen_x += f32 fnt.size_px * 0.5
+		el
+			# glyph destination
+			gx : i32 [ i32 pen_x + f32 g.bearing_x ]
+			gy : i32 [ i32 baseline - f32 g.bearing_y ]
+
+			# blit glyph alpha bitmap
+			for [ row: i32 0, row < g.bmp_h, row += 1 ]
+				dy : i32 [ gy + row ]
+				if [ dy >= clip_y && dy < clip_y + clip_h ]
+					for [ col: i32 0, col < g.bmp_w, col += 1 ]
+						dx : i32 [ gx + col ]
+						if [ dx >= clip_x && dx < clip_x + clip_w ]
+							# glyph alpha from FT bitmap
+							ga : i32 [ g.bitmap[row * g.bmp_w + col] ]
+							if [ ga > 0 ]
+								cov : i32 [ i32 f32 ga * alpha_f / 255.0 ]
+								off : i32 [ dy * stride + dx * 4 ]
+								blend_pixel [ ref u8 pixels + off, color, cov ]
+			pen_x += f32 g.advance
+	return pen_x - x
+
+
+# ---- ellipsis helper ----
+
+func text_ellipsis [ fnt: canvas_font, text: string, max_w: f32 ] -> string
+	tm : text_metrics measure_text [ fnt, text ]
+	if [ tm.w <= max_w ]
+		return text
+	n : i32 len [ text ]
+	dots : text_metrics measure_text [ fnt, '...' ]
+	if [ dots.w >= max_w ]
+		return '.'
+	target : f32 [ max_w - dots.w ]
+	w : f32 [ 0.0 ]
+	cut : i32 [ 0 ]
+	for [ i: i32 0, i < n, i += 1 ]
+		cp : u32 [ text[i] ]
+		g  : glyph_entry fnt.get_glyph [ cp ]
+		if [ g.cached ]
+			w += f32 g.advance
+		if [ w > target ]
+			cut = i
+			return mid [ text, 0, cut ] + '...'
+	return text
+
+
+# ---- canvas text methods ----
+
+# extend canvas with font and text support
+# these are written as free functions operating on canvas
+
+func canvas_set_font [ c: canvas, fnt: canvas_font ] -> none
+	c.font = fnt
+
+func canvas_measure [ c: canvas, text: string ] -> text_metrics
+	check c.font, 'no font set on canvas'
+	return measure_text [ c.font, text ]
+
+func canvas_draw_text [ c: canvas, text: string, rx: f32, ry: f32, rw: f32, rh: f32, align_x: f32, align_y: f32, ellip: bool ] -> none
+	check c.font, 'no font set on canvas'
+	st : canvas_state c.states[c.depth - 1]
+	fnt : canvas_font c.font
+
+	draw_text : string [ text ]
+	if [ ellip ]
+		draw_text = text_ellipsis [ fnt, text, rw ]
+
+	tm : text_metrics measure_text [ fnt, draw_text ]
+
+	# align within rect
+	tx : f32 [ rx + rw - tm.w * align_x ]
+	ty : f32 [ ry + rh - tm.h * align_y ]
+
+	# apply transform
+	fx : f32 st.transform.apply_x [ tx, ty ]
+	fy : f32 st.transform.apply_y [ tx, ty ]
+
+	draw_text_line [ c.pixels, c.width, c.height, c.stride, fnt, draw_text, fx, fy, st.fill_color, st.opacity, st.clip_x, st.clip_y, st.clip_w, st.clip_h ]
+
+
+# ---- basic tests ----
+
+func canvas_test [] -> bool
+	c : canvas [ 128, 128 ]
+
+	# test rect fill
+	c.set_fill_color [ color_pack [ 255, 0, 0, 255 ] ]
+	c.fill_rect_fast [ 10.0, 10.0, 50.0, 50.0 ]
+
+	# test rounded rect
+	c.set_fill_color [ color_pack [ 0, 128, 255, 255 ] ]
+	c.fill_rounded_rect_fast [ 20.0, 20.0, 80.0, 60.0, 8.0, 8.0 ]
+
+	# test path fill
+	c.set_fill_color [ color_pack [ 0, 200, 0, 200 ] ]
+	c.move_to [ 64.0, 10.0 ]
+	c.line_to [ 118.0, 100.0 ]
+	c.line_to [ 10.0, 100.0 ]
+	c.path.close_path
+	c.draw_fill
+
+	# test stroke
+	c.set_stroke_color [ color_pack [ 255, 255, 0, 255 ] ]
+	c.set_stroke_width [ 2.0 ]
+	c.move_to [ 10.0, 120.0 ]
+	c.line_to [ 120.0, 120.0 ]
+	c.draw_stroke
+
+	# test text (requires font file)
+	lib : handle ft_init
+	fnt : canvas_font [ lib, 'fonts/Sofia-Sans-Condensed.ttf', 16 ]
+	c.font = fnt
+	c.set_fill_color [ color_pack [ 0, 0, 0, 255 ] ]
+	canvas_draw_text [ c, 'hello canvas', 4.0, 4.0, 120.0, 20.0, 0.0, 0.0, false ]
+
+	# verify center pixel of red rect is red
+	off : i32 [ 35 * c.stride + 35 * 4 ]
+	r : u8 [ c.pixels[off] ]
+	puts 'canvas test: pixel at (35,35) r={r}'
+
+	return true
