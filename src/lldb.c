@@ -528,6 +528,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
         Au_t cur = type_au;
         while (cur && chain_len < 64) {
             chain[chain_len++] = cur;
+            if (!cur->is_class) break; // C structs have no inheritance chain
             cur = cur->context;
             if (cur == typeid(Au)) break;
         }
