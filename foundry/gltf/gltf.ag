@@ -1,5 +1,6 @@
 import vec
 import <stdio.h>
+import <string.h>
 
 enum ComponentType
     NONE:           0
@@ -153,12 +154,6 @@ class Transform
 
     func multiply [m: mat4f] -> none
         local = local.mul[ m ]
-        local = local.mul[ m ]
-        local = local.mul[ m ]
-        local = local.mul[ m ]
-        local = local.mul[ m ]
-        local = local.mul[ m ]
-        local = local.mul[ m ]
         propagate
 
     func set [m: mat4f] -> none
@@ -187,10 +182,10 @@ class Node
     public joint_index:     i32
     public processed:       bool
     public mx_joints:       Au
-    func primitive [mdl: Model, name: cstr] -> Primitive
+    func primitive [mdl: Model, n: cstr] -> Primitive
         m: mdl.meshes[mesh]
         if [m]
-            return m.primitive [name]
+            return m.primitive [n]
         return null
 
 class Primitive
@@ -209,9 +204,9 @@ class Mesh
     public primitives:      array Primitive
     public weights:         array f32
     public extras:          MeshExtras
-    func primitive [name: cstr] -> Primitive
+    func primitive [n: cstr] -> Primitive
         for [p: Primitive] in primitives
-            if [strcmp [p.name, name] == 0]
+            if [strcmp [p.name, n] == 0]
                 return p
         return null
 
@@ -227,9 +222,9 @@ class AssetDesc
 class Buffer
     public byteLength:      u64
     public uri:             path
-    public data:            array u8
+    public data:            vector
     func init [] -> none
-        data = vector_with_path [vector [], uri]
+        data = vector [ uri ]
 
 class TextureInfo
     public index:           i64
@@ -299,22 +294,22 @@ class Model
     public materials:        array Material
     public scene:            u64
     public asset:            AssetDesc
-    func find [name: cstr] -> Node
+    func find [n: cstr] -> Node
         for [node: Node] in nodes
-            if [strcmp [node.name, name] == 0]
+            if [strcmp [node.name, n] == 0]
                 return node
         return null
 
-    func index_of [name: cstr] -> i32
-        index: i32 [0]
+    func index_of [n: cstr] -> i32
+        i: i32 [0]
         for [node: Node] in nodes
-            if [strcmp [node.name, name] == 0]
-                return index
-            index += 1
+            if [strcmp [node.name, n] == 0]
+                return i
+            i += 1
         return -1
 
-    func index [name: string] -> Node
-        return find [name]
+    func index [n: string] -> Node
+        return find [n]
 
     func node_transform [joints: JData, parent_mat: mat4f, node_index: i32, parent: Transform] -> Transform
         node: nodes[node_index]
@@ -333,7 +328,7 @@ class Model
             state_mat: parent_mat.mul[ transform.local_default ]
             joints.states[transform.istate] = state_mat
             for [child_idx: i64] in node.children
-                ch: joints.transform[ state_mat, child_idx, transform]
+                ch: node_transform[ joints, state_mat, child_idx, transform]
                 if [ch]
                     transform.ichildren += ch.istate
             joints.transforms += transform
@@ -342,7 +337,7 @@ class Model
     func joints [node: Node] -> JData
         if [node.mx_joints]
             return node.mx_joints
-        joints: JData
+        j: JData[]
         ident: mat4f.identity
         if [node.skin != -1]
             skin: skins[node.skin]
@@ -357,20 +352,20 @@ class Model
                 n.joint_index = j_index
                 j_index += 1
             n: i32 [skin.joints.count]
-            joints.transforms = array Transform []
-            joints.states     = array mat4f []
+            j.transforms = array Transform []
+            j.states     = array mat4f []
             for [i: i32 0, i < n, i += 1]
-                joints.states.push [ident]
+                j.states.push [ident]
             for [node_idx: i64] in skin.joints
                 if [all_children.contains [node_idx]]
                     continue
-                node_transform [joints, ident, node_idx, null]
+                node_transform [j, ident, node_idx, null]
         el
-            n: i32 [joints.states.count]
+            n: i32 [j.states.count]
             for [i: i32 0, i < n, i += 1]
-                joints.states.push [ident]
-        node.mx_joints = joints
-        return joints
+                j.states.push [ident]
+        node.mx_joints = j
+        return j
 
 enum Polygon
     undefined: 0

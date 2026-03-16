@@ -2,18 +2,18 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name":       "silver 0.88",
-            "type":       "lldb",
-            "request":    "launch",
-            "preLaunchTask": "build-silver-ninja",
-            "program":    "${workspaceFolder}/install/bin/silver",
-            "args":     [ "./foundry/spectra", "--sdk", "android-arm64", "--debug", "--build", "-v", "--run" ],
-            "cwd":        "${workspaceFolder}",
-            "stopOnEntry": false,
-            "env":      {
-                "LD_LIBRARY_PATH":"${workspaceFolder}/install/lib",
-                "IMPORT":  "${workspaceFolder}/install",
-                "ASAN_OPTIONS": "detect_leaks=0"
+            "name":             "silver 0.88",
+            "type":             "lldb",
+            "request":          "launch",
+            "preLaunchTask":    "build-silver-ninja",
+            "program":          "${workspaceFolder}/install/bin/silver",
+            "args":             [ "./foundry/trinity", "--debug", "--build", "-v", "--run" ],
+            "cwd":              "${workspaceFolder}",
+            "stopOnEntry":      false,
+            "env": {
+                "LD_LIBRARY_PATH":  "${workspaceFolder}/install/lib",
+                "IMPORT":           "${workspaceFolder}/install",
+                "ASAN_OPTIONS":     "detect_leaks=0"
             },
             "initCommands": [
                 "settings set target.process.stop-on-exec false"

@@ -890,7 +890,7 @@ static Au_t _push_arg(Au_t type, bool add_arg) {
     au->traits = AU_TRAIT_ALLOCATED;
     au->context = type;
 
-    if (add_arg)
+    if (add_arg && type)
         micro_push(&type->args, (Au)au);
     
     return au;
@@ -1063,7 +1063,7 @@ Au_t def_func_ptr(Au_t type, symbol ident) {
 Au_t def_pointer(Au_t context, Au_t ref, symbol ident) {
     if (!ref->ptr) {
         ref->ptr = def(context, ident, AU_MEMBER_TYPE, AU_TRAIT_POINTER);
-        ref->ptr->src = (Au_t)hold(ref);
+        ref->ptr->src = (Au_t)ref;
     }
     return ref->ptr;
 }

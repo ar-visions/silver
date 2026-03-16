@@ -598,9 +598,9 @@ class canvas
 	public font      : canvas_font
 	public shader    : canvas_ui
 
-	construct [ w: i32, h: i32 ]
-		width  = w
-		height = h
+	construct [ s:shape ]
+		width  = s[1]
+		height = s[0]
 		path   = canvas_path []
 		states = array canvas_state []
 		depth  = 0

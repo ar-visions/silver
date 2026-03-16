@@ -188,21 +188,26 @@
 
 //#define _N_STRUCT_ARGS_0( TYPE) _N_ARGS_2( TYPE )
 #define _N_STRUCT_ARGS_1( TYPE, a) \
-    ({ TYPE instance = _Generic((a), TYPE##_schema(TYPE, GENERICS, Au) const void *: (void)0)(a); instance; }) 
+    ({ TYPE instance; _Generic((a), TYPE##_schema(TYPE, GENERICS, Au) const void *: (void)0)(&instance, a); instance; }) 
 
-#define _N_STRUCT_ARGS_2( TYPE, ...) ({ TYPE instance = (TYPE) { __VA_ARGS__ }; instance; })
-#define _N_STRUCT_ARGS_3( TYPE, ...) _N_STRUCT_ARGS_2( TYPE, __VA_ARGS__ )
-#define _N_STRUCT_ARGS_4( TYPE, ...) _N_STRUCT_ARGS_2( TYPE, __VA_ARGS__ )
-#define _N_STRUCT_ARGS_5( TYPE, ...) _N_STRUCT_ARGS_2( TYPE, __VA_ARGS__ )
-#define _N_STRUCT_ARGS_6( TYPE, ...) _N_STRUCT_ARGS_2( TYPE, __VA_ARGS__ )
-#define _N_STRUCT_ARGS_7( TYPE, ...) _N_STRUCT_ARGS_2( TYPE, __VA_ARGS__ )
-#define _N_STRUCT_ARGS_8( TYPE, ...) _N_STRUCT_ARGS_2( TYPE, __VA_ARGS__ )
-#define _N_STRUCT_ARGS_9( TYPE, ...) _N_STRUCT_ARGS_2( TYPE, __VA_ARGS__ )
-#define _N_STRUCT_ARGS_10(TYPE, ...) _N_STRUCT_ARGS_2( TYPE, __VA_ARGS__ )
+#define _N_STRUCT_ARGS_2( TYPE, target, ...) *(target) = (TYPE) { __VA_ARGS__ }
+#define _N_STRUCT_ARGS_3( TYPE, target, ...) _N_STRUCT_ARGS_2( TYPE, target, __VA_ARGS__ )
+#define _N_STRUCT_ARGS_4( TYPE, target, ...) _N_STRUCT_ARGS_2( TYPE, target, __VA_ARGS__ )
+#define _N_STRUCT_ARGS_5( TYPE, target, ...) _N_STRUCT_ARGS_2( TYPE, target, __VA_ARGS__ )
+#define _N_STRUCT_ARGS_6( TYPE, target, ...) _N_STRUCT_ARGS_2( TYPE, target, __VA_ARGS__ )
+#define _N_STRUCT_ARGS_7( TYPE, target, ...) _N_STRUCT_ARGS_2( TYPE, target, __VA_ARGS__ )
+#define _N_STRUCT_ARGS_8( TYPE, target, ...) _N_STRUCT_ARGS_2( TYPE, target, __VA_ARGS__ )
+#define _N_STRUCT_ARGS_9( TYPE, target, ...) _N_STRUCT_ARGS_2( TYPE, target, __VA_ARGS__ )
+#define _N_STRUCT_ARGS_10(TYPE, target, ...) _N_STRUCT_ARGS_2( TYPE, target, __VA_ARGS__ )
 #define _N_STRUCT_ARGS_HELPER2(TYPE, N, ...)  _COMBINE(_N_STRUCT_ARGS_, N)(TYPE, ## __VA_ARGS__)
-#define _N_STRUCT_ARGS(TYPE,...)    _N_STRUCT_ARGS_HELPER2(TYPE, _ARG_COUNT(__VA_ARGS__), ## __VA_ARGS__)
+#define _N_STRUCT_ARGS(TYPE, target, ...)    _N_STRUCT_ARGS_HELPER2(TYPE, _ARG_COUNT(target, __VA_ARGS__), target, ## __VA_ARGS__)
 
-#define structure_of(TYPE, ...) _N_STRUCT_ARGS(TYPE, __VA_ARGS__);
+#define _STRUCT_OF_1(TYPE, a)      _N_STRUCT_ARGS_1(TYPE, a)
+#define _STRUCT_OF_N(TYPE, ...)    ({ TYPE _s; _N_STRUCT_ARGS(TYPE, &_s, __VA_ARGS__); _s; })
+#define _STRUCT_OF_SEL(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, NAME, ...) NAME
+#define structure_of(TYPE, ...)    _STRUCT_OF_SEL(__VA_ARGS__, \
+    _STRUCT_OF_N, _STRUCT_OF_N, _STRUCT_OF_N, _STRUCT_OF_N, _STRUCT_OF_N, \
+    _STRUCT_OF_N, _STRUCT_OF_N, _STRUCT_OF_N, _STRUCT_OF_N, _STRUCT_OF_1)(TYPE, __VA_ARGS__)
 
 #define _ARG_COUNT_IMPL2(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20, _21, _22, N, ...) N
 #define _ARG_COUNT2(...)        _ARG_COUNT_IMPL2(__VA_ARGS__, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1)
@@ -1122,42 +1127,50 @@
 #define   i_struct_ctr_DEF(X, ARG)
 #define   i_struct_ctr_DECL(X, ARG)
 #define   i_struct_ctr_DECL_EXTERN(X, ARG)
-#define   i_struct_ctr_GENERICS(X, ARG) ARG*: Type_i(X).type.ft.with_##ARG,
+#define   i_struct_ctr_GENERICS(X, ARG) ARG: Type_i(X).type.ft.with_##ARG,
 #define   i_struct_ctr_INIT(X, ARG) { \
-    Au_t m = def(typeid(X), stringify(with_##ARG), AU_MEMBER_CONSTRUCT, 0); \
+    Au_t m = def(typeid(X), stringify(with_##ARG), AU_MEMBER_CONSTRUCT, AU_TRAIT_IMETHOD); \
     m->access_type = interface_public; \
     Type_i(X).type.ft.with_##ARG = & X##_with_##ARG; \
     m->type        = typeid(ARG); \
     /* m->offset      = offsetof(X##_f, with_##ARG); */ \
     m->value       = (void*)& X##_with_##ARG; \
     m->index       = offsetof(__typeof__(Type_i(X).type.ft), with_##ARG) / sizeof(void*); \
+    set_args_array(m, emit_types(X, ARG)); \
+    m->args.origin[0] = (Au)def_arg(null, null, typeid(X), AU_TRAIT_IS_TARGET); \
+    ((Au_t)m->args.origin[0])->context = m; \
 }
 
 #define   i_struct_ctr_PROTO(X, ARG)
-#define   i_struct_ctr_METHOD(X, ARG)      X (*with_##ARG)(ARG*);
+#define   i_struct_ctr_METHOD(X, ARG)      none (*with_##ARG)(X*, ARG);
 #define   i_struct_ctr_NMODULE(X, ARG)
 #define   i_struct_ctr(X, Y, ARG)          i_struct_ctr_##Y(X, ARG)
 
-#define   i_struct_ctr_obj_ISIZE(X, ARG)
-#define   i_struct_ctr_obj_ISIZE_EXTERN(X, ARG)
-#define   i_struct_ctr_obj_INST(X, ARG)
-#define   i_struct_ctr_obj_INST_EXTERN(X, ARG)
-#define   i_struct_ctr_obj_DEF(X, ARG)
-#define   i_struct_ctr_obj_DECL(X, ARG)
-#define   i_struct_ctr_obj_DECL_EXTERN(X, ARG)
-#define   i_struct_ctr_obj_GENERICS(X, ARG) ARG: Type_i(X).type.ft.with_##ARG,
-#define   i_struct_ctr_obj_INIT(X, ARG) { \
-    Au_t m = def(typeid(X), stringify(with_##ARG), AU_MEMBER_CONSTRUCT, 0); \
+#define   i_struct_ctr_struct_ISIZE(X, ARG)
+#define   i_struct_ctr_struct_ISIZE_EXTERN(X, ARG)
+#define   i_struct_ctr_struct_INST(X, ARG)
+#define   i_struct_ctr_struct_INST_EXTERN(X, ARG)
+#define   i_struct_ctr_struct_DEF(X, ARG)
+#define   i_struct_ctr_struct_DECL(X, ARG)
+#define   i_struct_ctr_struct_DECL_EXTERN(X, ARG)
+#define   i_struct_ctr_struct_GENERICS(X, ARG) ARG*: Type_i(X).type.ft.with_##ARG,
+#define   i_struct_ctr_struct_INIT(X, ARG) { \
+    Au_t m = def(typeid(X), stringify(with_##ARG), AU_MEMBER_CONSTRUCT, AU_TRAIT_IMETHOD); \
     m->access_type = interface_public; \
     Type_i(X).type.ft.with_##ARG = & X##_with_##ARG; \
     m->type        = typeid(ARG); \
     m->value       = (void*)& X##_with_##ARG; \
+    set_args_array(m, emit_types(X, ARG)); \
+    m->args.origin[0] = (Au)def_arg(null, null, typeid(X), AU_TRAIT_IS_TARGET); \
+    ((Au_t)m->args.origin[0])->context = m; \
+    m->args.origin[1] = (Au)def_arg(null, null, typeid(ARG), 0); \
+    ((Au_t)m->args.origin[1])->context = m; \
 }
 
-#define   i_struct_ctr_obj_PROTO(X, ARG)
-#define   i_struct_ctr_obj_METHOD(X, ARG)      X (*with_##ARG)(ARG);
-#define   i_struct_ctr_obj_NMODULE(X, ARG)
-#define   i_struct_ctr_obj(X, Y, ARG)          i_struct_ctr_obj_##Y(X, ARG)
+#define   i_struct_ctr_struct_PROTO(X, ARG)
+#define   i_struct_ctr_struct_METHOD(X, ARG)      none (*with_##ARG)(X*, ARG*);
+#define   i_struct_ctr_struct_NMODULE(X, ARG)
+#define   i_struct_ctr_struct(X, Y, ARG)          i_struct_ctr_struct_##Y(X, ARG)
 
 #define   i_struct_array_ISIZE(X, R, S, N)
 #define   i_struct_array_ISIZE_EXTERN(X, R, S, N)
@@ -1239,8 +1252,8 @@
     Type_i(X).type . ft.N = & X## _ ## N; \
     m->type    = typeid(R); \
     set_args_array(m, emit_types(X __VA_OPT__(,) __VA_ARGS__)); \
-    ((Au_t)m->args.origin[0])->is_target = 1; \
-    m->args.origin[0] = (Au)def_pointer(m, (Au_t)m->args.origin[0], null); \
+    m->args.origin[0] = (Au)def_arg(null, null, typeid(X), AU_TRAIT_IS_TARGET); \
+    ((Au_t)m->args.origin[0])->context = m; \
 }
 #define   i_struct_method_PROTO(X, R, N, ...)
 #define   i_struct_method_METHOD(X, R, N, ...)      R (*N)(X* __VA_OPT__(,) __VA_ARGS__);
@@ -1263,9 +1276,10 @@
     Type_i(T).type . ft.N = & T## _ ## N; \
     m->type    = typeid(R); \
     set_args_array(m, emit_types(T, A __VA_OPT__(,) __VA_ARGS__)); \
-    ((Au_t)m->args.origin[0])->is_target  = 1; \
-    m->args.origin[0] = (Au)def_pointer(m, (Au_t)m->args.origin[0], null); \
-    m->args.origin[1] = (Au)def_pointer(m, (Au_t)m->args.origin[1], null); \
+    m->args.origin[0] = (Au)def_arg(null, null, typeid(T), AU_TRAIT_IS_TARGET); \
+    m->args.origin[1] = (Au)def_arg(null, null, typeid(A), 0); \
+    ((Au_t)m->args.origin[0])->context = m; \
+    ((Au_t)m->args.origin[1])->context = m; \
 }
 #define   i_struct_method_1_PROTO(X, R, N, A, ...)
 #define   i_struct_method_1_METHOD(X, R, N, A, ...)      R (*N)(X*, A* __VA_OPT__(,) __VA_ARGS__);
@@ -1288,10 +1302,12 @@
     Type_i(T).type . ft.N = & T## _ ## N; \
     m->type    = typeid(R); \
     set_args_array(m, emit_types(T, A, A __VA_OPT__(,) __VA_ARGS__)); \
-    m->args.origin[0]->is_target  = 1; \
-    m->args.origin[0] = (Au)def_pointer(m, (Au_t)m->args.origin[0], null); \
-    m->args.origin[1] = (Au)def_pointer(m, (Au_t)m->args.origin[1], null); \
-    m->args.origin[2] = (Au)def_pointer(m, (Au_t)m->args.origin[2], null); \
+    m->args.origin[0] = (Au)def_arg(null, null, typeid(T), AU_TRAIT_IS_TARGET); \
+    m->args.origin[1] = (Au)def_arg(null, null, typeid(A), 0); \
+    m->args.origin[2] = (Au)def_arg(null, null, typeid(A), 0); \
+    ((Au_t)m->args.origin[0])->context = m; \
+    ((Au_t)m->args.origin[1])->context = m; \
+    ((Au_t)m->args.origin[2])->context = m; \
 }
 #define   i_struct_method_2_PROTO(X, R, N, A, ...)
 #define   i_struct_method_2_METHOD(X, R, N, A, ...)      R (*N)(X*, A*, A* __VA_OPT__(,) __VA_ARGS__);
@@ -1313,11 +1329,14 @@
     Type_i(T).type . ft.N = & T## _ ## N; \
     m->type    = typeid(R); \
     set_args_array(m, emit_types(T, A, A, A __VA_OPT__(,) __VA_ARGS__)); \
-    ((Au_t)m->args.origin[0])->is_target = 1; \
-    m->args.origin[0] = (Au)def_pointer(m, (Au_t)m->args.origin[0], null); \
-    m->args.origin[1] = (Au)def_pointer(m, (Au_t)m->args.origin[1], null); \
-    m->args.origin[2] = (Au)def_pointer(m, (Au_t)m->args.origin[2], null); \
-    m->args.origin[3] = (Au)def_pointer(m, (Au_t)m->args.origin[3], null); \
+    m->args.origin[0] = (Au)def_arg(null, null, typeid(T), AU_TRAIT_IS_TARGET); \
+    m->args.origin[1] = (Au)def_arg(null, null, typeid(A), 0); \
+    m->args.origin[2] = (Au)def_arg(null, null, typeid(A), 0); \
+    m->args.origin[3] = (Au)def_arg(null, null, typeid(A), 0); \
+    ((Au_t)m->args.origin[0])->context = m; \
+    ((Au_t)m->args.origin[1])->context = m; \
+    ((Au_t)m->args.origin[2])->context = m; \
+    ((Au_t)m->args.origin[3])->context = m; \
 }
 #define   i_struct_method_3_PROTO(X, R, N, A, ...)
 #define   i_struct_method_3_METHOD(X, R, N, A, ...)      R (*N)(X*, A*, A*, A* __VA_OPT__(,) __VA_ARGS__);
