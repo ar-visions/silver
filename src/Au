@@ -1779,7 +1779,7 @@ static inline f32 f32_mix(f32 a, f32 b, f32 f) {
 /// use i_struct_ctr_obj for objects or primitives
 /// use i_struct_ctr for structs.. this is because we cannot separate * from the token
 #define vec_methods(O, Y, T, ...) \
-    i_struct_ctr_obj(O,Y, floats_t) \
+    i_struct_ctr(O,Y, floats_t) \
     i_struct_method(O, Y, T,      length) \
     i_struct_method_1(O, Y, O,    add,       O) \
     i_struct_method_1(O, Y, O,    sub,       O) \
@@ -1819,7 +1819,7 @@ declare_struct(rgba16)
 typedef struct _vec3f vec3f;
 
 #define vec4f_schema(O, Y, T, ...) \
-    i_struct_ctr(O,Y, vec3f) \
+    i_struct_ctr_struct(O,Y, vec3f) \
     i_struct_prop  (O, Y, T, x) \
     i_struct_prop  (O, Y, T, y) \
     i_struct_prop  (O, Y, T, z) \
@@ -1828,7 +1828,7 @@ typedef struct _vec3f vec3f;
 declare_struct(vec4f, f32)
 
 #define rgbaf_schema(O, Y, ...) \
-    i_struct_ctr(O,Y, vec4f) \
+    i_struct_ctr_struct(O,Y, vec4f) \
     i_struct_prop(O,Y, f32, r) \
     i_struct_prop(O,Y, f32, g) \
     i_struct_prop(O,Y, f32, b) \
@@ -1845,7 +1845,7 @@ declare_struct(rgbaf)
 declare_struct(vec3f, f32)
 
 #define quatf_schema(O, Y, ...) \
-    i_struct_ctr(O,Y, vec4f) \
+    i_struct_ctr_struct(O,Y, vec4f) \
     i_struct_prop(O,Y,f32, x) \
     i_struct_prop(O,Y,f32, y) \
     i_struct_prop(O,Y,f32, z) \
@@ -1886,8 +1886,8 @@ declare_class(rect)
 
 #define mat4f_schema(O, Y, T, ...) \
     i_struct_array  (O, Y, f32,   16, m) \
-    i_struct_ctr_obj(O, Y, floats_t) \
-    i_struct_ctr    (O, Y, quatf) \
+    i_struct_ctr(O, Y, floats_t) \
+    i_struct_ctr(O, Y, quatf) \
     i_struct_method (O, Y, O,        inverse) \
     i_struct_method (O, Y, O,        transpose) \
     i_struct_static (O, Y, O,        identity) \

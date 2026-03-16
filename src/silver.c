@@ -398,7 +398,7 @@ static bool silver_next_is_eq(silver a, symbol first, ...);
 static enode reverse_descent(silver a, etype expect);
 
 static enode parse_expression(silver a, etype expect, bool hint) { sequencer
-    if (seq == 1230)
+    if (seq == 160)
         seq = seq;
     if (is_rec(expect) && next_is(a, "[")) {
         // collections go straight to parse_object — [ ] is always element data
@@ -457,7 +457,7 @@ static enode reverse_descent(silver a, etype expect) { sequencer
     bool cmode = is_cmode(a);
     int num_levels = sizeof(levels) / sizeof(precedence);
     
-    if (seq == 104)
+    if (seq == 164)
         seq = seq;
 
     enode L = read_enode(a, expect, false);
@@ -685,6 +685,7 @@ Au build_init_preamble(enode f, Au arg) {
 #endif
 
 void implement_type_id(etype);
+void etype_register(aether, Au, Au, bool);
 
 void finalize_coverage(silver);
 
@@ -697,11 +698,11 @@ void silver_parse(silver a) {
     Au_t m_x86   = def_member(a->au, "x86_64",  typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_arm64 = def_member(a->au, "arm64",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
 
-    set(a->registry, (Au)m_mac,   (Au)hold(e_operand(a, _bool(SILVER_IS_MAC),     etypeid(bool))));
-    set(a->registry, (Au)m_lin,   (Au)hold(e_operand(a, _bool(SILVER_IS_LINUX),   etypeid(bool))));
-    set(a->registry, (Au)m_win,   (Au)hold(e_operand(a, _bool(SILVER_IS_WINDOWS), etypeid(bool))));
-    set(a->registry, (Au)m_x86,   (Au)hold(e_operand(a, _bool(strcmp(arch, "x86_64") == 0), etypeid(bool))));
-    set(a->registry, (Au)m_arm64, (Au)hold(e_operand(a, _bool(strcmp(arch, "arm64")  == 0), etypeid(bool))));
+    etype_register((aether)a, (Au)m_mac,   (Au)hold(e_operand(a, _bool(SILVER_IS_MAC),     etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_lin,   (Au)hold(e_operand(a, _bool(SILVER_IS_LINUX),   etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_win,   (Au)hold(e_operand(a, _bool(SILVER_IS_WINDOWS), etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_x86,   (Au)hold(e_operand(a, _bool(strcmp(arch, "x86_64") == 0), etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_arm64, (Au)hold(e_operand(a, _bool(strcmp(arch, "arm64")  == 0), etypeid(bool))), false);
 
     while (peek(a)) {
         validate(parse_statement(a), "unexpected token found for statement: %o", peek(a));
@@ -925,6 +926,7 @@ void silver_init(silver a) {
     //a->import_cache = map();
     a->artifacts    = array(32);
     a->artifacts_path = f(path, "%o/%o.artifacts", a->build_dir, a->name);
+    a->resources    = array(32);
 
     verify(a->module && len(a->module), "required argument: module (path/to/module)");
 
@@ -955,6 +957,23 @@ void silver_init(silver a) {
     }
 
     aether_reinit_startup((aether)a);
+
+    // discover resource folders within module directory and register on root instance
+    {
+        silver og = a->is_external ? a->is_external : a;
+        DIR *dir = opendir(a->module_path->chars);
+        if (dir) {
+            struct dirent *entry;
+            while ((entry = readdir(dir)) != NULL) {
+                if (entry->d_name[0] == '.') continue;
+                if (entry->d_type != DT_DIR)  continue;
+                path res = form(path, "%o/%s", a->module_path, entry->d_name);
+                if (index_of(og->resources, (Au)res) < 0)
+                    push(og->resources, (Au)hold(res));
+            }
+            closedir(dir);
+        }
+    }
 
     // 1ms resolution time comparison (it could be nano-second based)
     bool update_product = true;
@@ -1138,13 +1157,13 @@ static void silver_module() {
         "class",    "struct",   "expect",   "fault",    "abstract", "context",  "public",   "intern",
         "import",   "export",   "typeid",   
         "is",       "inherits", "ref",      "in",   "lambda",
-        "const",       "no-op",    "<>",
+        "const",    "no-op",    "<>",
         "return",   "->",       "::",       "...",  
         "asm",      "if",       "switch",   "any",
-        "enum",     "ifdef",    "el",     "while",
+        "enum",     "ifdef",    "el",       "while",
         "cast",     "try",      "throw",    "catch",
         "finally",  "for",      "func",     "attrib",
-        "operator", "indexer",  "construct", "alias",
+        "operator", "construct", "alias",   "getter", "setter",
         null));
 
     assign = hold(array_of_cstr(
@@ -2120,6 +2139,7 @@ string silver_peek_alpha(silver a) {
 
 enode parse_return(silver a);
 enode parse_break(silver a);
+enode parse_continue(silver a);
 enode parse_expect(silver a);
 enode parse_for(silver a);
 enode parse_loop_while(silver a);
@@ -2204,7 +2224,7 @@ string read_alpha_macrofilter(silver a, bool is_decl) {
 
 enode enode_super(etype, enode);
 
-enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_mdl) { static int seq = 0; seq++;
+enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_mdl, bool in_ref) { static int seq = 0; seq++;
     OPType assign_enum = OPType__undefined;
     Au_t   top     = top_scope(a);
     etype  rec_top = context_record(a);
@@ -2400,9 +2420,9 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
         // check if there's more chaining
         bool br = read_if(a, ".") == null;
         if (br) {
-            if (a->in_ref) {
+            if (in_ref)
                 break;
-            }
+            
             // final load if needed [ assign_type, when set, indicates a L-hand side parse ]
             if (instanceof(mem, enode) && !is_loaded((Au)mem) && !assign_type) {
                 mem = enode_value(mem, false); // validate the LLVMValueRef we have for these; it should be the memory location (so in effect we have a struct* used as target)
@@ -2731,13 +2751,13 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref) { sequencer
 
     // we may only support a limited set of C functionality for #define macros
     int slen1 = len(a->lexical);
-    mem = parse_member(a, null, null, mdl_expect); // we never parse assignment here
+    mem = parse_member(a, null, null, mdl_expect, from_ref); // we never parse assignment here
     int slen12 = len(a->lexical);
     verify(slen1 == slen12, "stack state");
 
     if (!mem && cmode) return null;
     validate(!instanceof(mem, edecl), "unexpected declaration of member %s", mem->au->ident);
-
+    Au info = head(mem);
     return (f && mdl_expect) ? e_create(a, mdl_expect, (Au)mem) : (enode)mem;
 }
 
@@ -2807,7 +2827,8 @@ enode parse_statement(silver a)
     if (f) {
         if (read_if(a, "no-op"))  return e_noop(a, null);
         if (next_is(a, "return")) return parse_return (a);
-        if (next_is(a, "break"))  return parse_break  (a);
+        if (next_is(a, "break"))    return parse_break   (a);
+        if (next_is(a, "continue")) return parse_continue(a);
         if (next_is(a, "expect")) return parse_expect (a);
         if (next_is(a, "for"))    return parse_for    (a);
         if (next_is(a, "if"))     return parse_if_else(a);
@@ -2878,7 +2899,7 @@ enode parse_statement(silver a)
     OPType assign_enum = OPType__undefined;
     enode mem = (!is_cast && !is_oper && !is_getter && !is_setter && !is_ctr) ?
         parse_member(a, (ARef)&assign_enum,
-            is_func ? typeid(efunc) : ((access || f || (!!module)) ? typeid(evar) : null), null) : null;
+            is_func ? typeid(efunc) : ((access || f || (!!module)) ? typeid(evar) : null), null, false) : null;
     Au_t mem_info = isa(mem);
 
     if (mem && mem->au->ident && strcmp(mem->au->ident, "rng_state") == 0) {
@@ -2967,7 +2988,7 @@ enode parse_statement(silver a)
                 if (!au)
                      au = def(top_scope(a), null, AU_MEMBER_DECL, 0);
                 
-                set(a->registry, (Au)au, (Au)null);
+                etype_register((aether)a, (Au)au, (Au)null, true);
                 e = (enode)parse_func(a, au, // for cast, we read the rtype first; for others, its parsed after ->
                     ftype,
                     traits, op_type, op_name);
@@ -3006,13 +3027,13 @@ enode parse_statement(silver a)
             }
 
             Au_t au = mem->au;
-            set(a->registry, (Au)au, null);
+            etype_register((aether)a, (Au)au, null, true);
             mem = (enode)evar(mod, (aether)a, au, au, loaded, false,
                 meta_a, rtype->meta_a, meta_b, rtype->meta_b,
                 initializer, (tokens)map_initializer(a, string(au->ident), (tokens)expr, au->access_type));
             mem->au->access_type = (u8)access;
             e = (enode)mem;
-            set(a->registry, (Au)au, mem);
+            etype_register((aether)a, (Au)au, (Au)mem, true);
 
             efunc fn = (efunc)get(a->registry, (Au)e->au);
             verify(fn && fn == e && fn->au == mem->au, "unexpected registration state");
@@ -3184,7 +3205,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         Au_t top    = top_scope(a);
         Au_t rec    = is_rec(top);
         verify(rec, "cannot parse IMETHOD without record in scope");
-        Au_t au_arg = alloc_arg(au, "a", is_struct(rec) ? pointer((aether)a, (Au)rec)->au : rec);
+        Au_t au_arg = alloc_arg(au, "a", rec);
         au_arg->is_target = true;
         micro_push(&au->args, (Au)au_arg);
     }
@@ -3241,9 +3262,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         Au_t arg = alloc_arg(au, n ? n->chars : null, t->au);
         arg->is_inlay = is_inlay;
         arg->is_explicit_ref = t->is_explicit_ref;
-        if (!is_inlay && is_struct(arg->src)) {
-            arg->src = pointer((aether)a, (Au)arg->src)->au;
-        } else if (is_inlay) {
+        if (is_inlay) {
             validate(is_struct(arg->src),
                 "inlay applies only to struct members in arguments");
         }
@@ -3891,6 +3910,42 @@ string compile_implements(silver a, array files, string cflags) {
     return objs;
 }
 
+// recursively deploy resource files from src into dst
+// directories merge; duplicate files are an error
+// only copies when filesize or mtime differs; preserves original timestamp
+static void deploy_resources(path src, path dst) {
+    DIR *dir = opendir(src->chars);
+    if (!dir) return;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        path s = form(path, "%o/%s", src, entry->d_name);
+        path d = form(path, "%o/%s", dst, entry->d_name);
+        if (entry->d_type == DT_DIR) {
+            make_dir(d);
+            deploy_resources(s, d);
+        } else {
+            struct stat ss;
+            verify(stat(s->chars, &ss) == 0, "cannot stat resource: %o", s);
+            struct stat ds;
+            if (stat(d->chars, &ds) == 0) {
+                // dest exists: skip if same size and same mtime (already deployed)
+                if (ss.st_size == ds.st_size && ss.st_mtime == ds.st_mtime)
+                    continue;
+                // different size with same mtime = collision from another module
+                verify(ss.st_mtime != ds.st_mtime,
+                    "resource file collision: %o", d);
+            }
+            cp(s, d, false, false);
+            struct utimbuf ut;
+            ut.actime  = ss.st_atime;
+            ut.modtime = ss.st_mtime;
+            utime(d->chars, &ut);
+        }
+    }
+    closedir(dir);
+}
+
 // build with optional bc path; if no bc path we use the project file system
 none silver_build(silver a) {
     path ll = null, bc = null;
@@ -3965,6 +4020,15 @@ none silver_build(silver a) {
     verify(create_symlink(a->product, a->product_link),
         "could not create product symlink from %o -> %o", a->product_link, a->product);
 
+    // deploy resource files into share/{app-name}/
+    // directories merge across modules; file collisions are an error
+    if (len(a->resources) && !a->is_library) {
+        path share = f(path, "%o/share/%o", install, a->name);
+        make_dir(share);
+        each(a->resources, path, res) {
+            deploy_resources(res, share);
+        }
+    }
 
     // write out each ark we find
     fdata ar = fdata(write, true, src, a->artifacts_path);
@@ -4907,10 +4971,11 @@ void silver_write_header(silver a) {
                             continue;
                         }
                         first = false;
-                        enode aa = u(enode, arg);
+                        etype aa = u(etype, arg);
                         if (len(args))
                             append(args, ",");
-                        concat(args, cname(cast(string, aa)));
+                        string ss = cast(string, aa);
+                        concat(args, cname(ss));
                     }
                     
                     string rtype = cname(cast(string, u(etype, f->au->rtype)));
@@ -5234,6 +5299,7 @@ enode parse_return(silver a) {
 }
 
 catcher context_catcher(silver);
+catcher context_catcher_depth(silver, int);
 
 enode parse_expect(silver a) {
     consume(a); // consume 'expect'
@@ -5245,10 +5311,35 @@ enode parse_expect(silver a) {
 
 enode parse_break(silver a) {
     consume(a);
-    catcher cat = context_catcher(a);
-    verify(cat, "expected cats");
+    int depth = 0;
+    array within = read_within(a);
+    if (within) {
+        push_tokens(a, (tokens)within, 0);
+        Au extra = read_numeric(a);
+        verify(isa(extra) == typeid(i64), "expected constant numeric argument");
+        depth = *(int*)extra;
+        pop_tokens(a, false);
+    }
+    catcher cat = context_catcher_depth(a, depth);
+    verify(cat, "expected catcher at depth %i", depth);
     a->last_break = e_break(a, cat);
     return a->last_break;
+}
+
+enode parse_continue(silver a) {
+    consume(a);
+    int depth = 0;
+    array within = next_is(a, "[") ? read_within(a) : null;
+    if (within) {
+        push_tokens(a, (tokens)within, 0);
+        Au extra = read_numeric(a);
+        depth = *(int*)extra;
+        pop_tokens(a, false);
+    }
+    catcher cat = context_catcher_depth(a, depth);
+    verify(cat, "continue: no loop at depth %i", depth);
+    a->last_continue = e_continue(a, cat);
+    return a->last_continue;
 }
 
 // read-expression does not pass in 'expected' models, because 100% of the time we run conversion when they differ
@@ -5700,6 +5791,10 @@ etype etype_of(enode mem) {
 
 enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const) { sequencer
 
+    if (strcmp(mem->au->ident, "rotation_m4") == 0) {
+        mem = mem;
+    }
+    
     // handle setter logic, state set by parse_member
     if (a->setter_key_tokens && a->setter_fn) {
         array  key_tokens    = a->setter_key_tokens;
@@ -5749,6 +5844,9 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
 
         // Promote the member to a variable
         Au_t ctx = top_scope(a);
+        if (strcmp(mem->au->ident, "rotation_m4") == 0) {
+            mem = mem;
+        }
         mem->au->context = ctx;
         mem->au->member_type = AU_MEMBER_VAR;
         mem->au->src = au_arg_type((Au)R);
@@ -6208,7 +6306,7 @@ etype silver_read_def(silver a, interface access) {
         validate(target, "expected type after alias %o:", alias_name);
         Au_t top = top_scope(a);
         Au_t alias_au = def(top, alias_name->chars, AU_MEMBER_TYPE, AU_TRAIT_ALIAS);
-        set(a->registry, (Au)alias_au, (Au)hold(target));
+        etype_register((aether)a, (Au)alias_au, (Au)hold(target), false);
         return target;
     }
 
@@ -6244,7 +6342,7 @@ etype silver_read_def(silver a, interface access) {
                 bool  f   = true;
                 shape s   = null;
                 Au_t  m   = def_member(top, n->chars, type->au, AU_MEMBER_VAR, AU_TRAIT_META);
-                set(a->registry, (Au)m, (Au)hold(emeta(mod, (aether)a, au, m, meta_index, index)));
+                etype_register((aether)a, (Au)m, (Au)hold(emeta(mod, (aether)a, au, m, meta_index, index)), false);
                 micro_push(&mdl->au->args, (Au)m);
                 first = false;
             }
@@ -6305,8 +6403,8 @@ etype silver_read_def(silver a, interface access) {
             
             enode enum_node = enode(
                 mod, (aether)a, au, enum_v, literal, v);
-            set(a->registry, (Au)enum_v, (Au)hold(enum_node));
-            implement(enum_node, false); // this should create the value similarly to emember_set_value
+            etype_register((aether)a, (Au)enum_v, (Au)hold(enum_node), false);
+            implement(mdl, false);
             value += 1;
         }
         pop_scope(a);
@@ -6322,7 +6420,8 @@ etype silver_read_def(silver a, interface access) {
     validate(mdl && len(n),
              "name required for model: %s", isa(mdl)->ident);
 
-    set(a->registry, (Au)mdl->au, (Au)hold(mdl));
+    if (!get(a->registry, (Au)mdl->au))
+    etype_register((aether)a, (Au)mdl->au, (Au)hold(mdl), false);
     return mdl;
 }
 

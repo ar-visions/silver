@@ -190,6 +190,7 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_expect, enode, string) \
     M(X, Y, i, method,   public,  enode,                    e_fault, enode) \
     M(X, Y, i, method,   public,  enode,                    e_break, catcher) \
+    M(X, Y, i, method,   public,  enode,                    e_continue, catcher) \
     M(X, Y, i, method,   public,  none,                     e_memcpy, enode, enode, Au_t) \
     M(X, Y, i, method,   public,  enode,                    compatible, etype, string, AFlag, array) \
     M(X, Y, i, method,   public,  enode,                    e_operand, Au, etype) \
@@ -268,7 +269,8 @@ declare_class_2(enamespace, etype)
     M(X, Y, i, prop,     public,  map,             team) \
     M(X, Y, i, prop,     public,  enode,           phi) \
     M(X, Y, i, prop,     public,  etype,           rtype) \
-    M(X, Y, i, prop,     intern,  LLVMBasicBlockRef, block, as, ARef)
+    M(X, Y, i, prop,     intern,  LLVMBasicBlockRef, block, as, ARef) \
+    M(X, Y, i, prop,     intern,  LLVMBasicBlockRef, continue_block, as, ARef)
 declare_class_2(catcher, etype)
 
 #define code_schema(X, Y, ...) \
