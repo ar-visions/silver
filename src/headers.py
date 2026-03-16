@@ -224,7 +224,7 @@ def generate_init_header(module, header_file, init_header):
         for match in struct_matches:
             struct_name = match.strip() if isinstance(match, str) else match[0].strip()
             if struct_name:
-                f.write(f"#define {struct_name}(...) structure_of({struct_name} __VA_OPT__(,) __VA_ARGS__) _N_STRUCT_ARGS({struct_name}, __VA_ARGS__);\n")
+                f.write(f"#define {struct_name}(...) structure_of({struct_name} __VA_OPT__(,) __VA_ARGS__)\n")
         
         f.write(f"\n#endif /* _{module}_INIT_H_ */\n")
 
