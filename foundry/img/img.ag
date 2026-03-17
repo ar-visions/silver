@@ -104,14 +104,15 @@ class font
 
 
 class image
+    height:         i32 0
     uri:            path
     surface:        Surface
     format:         Pixel
-    pixel_size:     i32
-    width:          i32
-    height:         i32
-    channels:       i32
-    source:         Au
+    pixel_size:     i32 0
+    width:          i32 0
+    
+    channels:       i32 0
+    source:         Au null
     filter:         Filter
     user:           Au
     res2:           handle
@@ -136,8 +137,7 @@ class image
         if [ res_dealloc ] res_dealloc [ a ]
 
     func copy[ ] -> image
-        res: image
-            :width :height :format :surface
+        res: image[ width:1, height:2, format:format, surface:surface ]
         memcpy res.vdata, vdata, byte_count
         return res
 
@@ -157,6 +157,8 @@ class image
             :format, :surface, :channels
 
         src : ref u8 vdata
+        src2 : ref u8 vdata
+        src3 : ref u8 vdata
         dst : ref u8 output.vdata
 
         opencv_resize_area
@@ -185,14 +187,14 @@ class image
 
 
     # save gray or colored png based on channel count; if we want conversion we may just use methods to alter an object
-    func png [ uri:path ] -> i32
-        e       : uri.ext
+    func png [ image_uri:path ] -> i32
+        e       : image_uri.ext
         success : 1
 
         if [ e == "png" ]
             # lets support libpng only, so only "png" ext from path
-            file : fopen [ uri, "wb" ]
-            check file, "could not open file for writing: %o", uri
+            expect file : fopen [ image_uri, "wb" ],
+                'could not open file for writing: {image_uri}'
 
             png2 : png_create_write_struct[ PNG_LIBPNG_VER_STRING, null, null, null ]
             check png2, "could not create PNG write struct"

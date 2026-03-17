@@ -1131,6 +1131,7 @@
 #define   i_struct_ctr_INIT(X, ARG) { \
     Au_t m = def(typeid(X), stringify(with_##ARG), AU_MEMBER_CONSTRUCT, AU_TRAIT_IMETHOD); \
     m->access_type = interface_public; \
+    m->alt = #X "_with_" #ARG; \
     Type_i(X).type.ft.with_##ARG = & X##_with_##ARG; \
     m->type        = typeid(ARG); \
     /* m->offset      = offsetof(X##_f, with_##ARG); */ \
@@ -1157,6 +1158,7 @@
 #define   i_struct_ctr_struct_INIT(X, ARG) { \
     Au_t m = def(typeid(X), stringify(with_##ARG), AU_MEMBER_CONSTRUCT, AU_TRAIT_IMETHOD); \
     m->access_type = interface_public; \
+    m->alt = #X "_with_" #ARG; \
     Type_i(X).type.ft.with_##ARG = & X##_with_##ARG; \
     m->type        = typeid(ARG); \
     m->value       = (void*)& X##_with_##ARG; \
@@ -1225,6 +1227,7 @@
 #define   i_struct_cast_INIT(ST, R) { \
     Au_t m = def(typeid(ST), stringify(cast_##R), AU_MEMBER_CAST, 0); \
     m->access_type = interface_public; \
+    m->alt = #ST "_cast_" #R; \
     Type_i(ST).type.ft.cast_##R = (__typeof__(Type_i(ST).type.ft.cast_##R)) & ST##_cast_##R; \
     set_args_array(m, emit_types(ST)); \
     m->type    = typeid(R); \
@@ -1249,6 +1252,7 @@
 #define   i_struct_method_INIT(    X, R, N, ...) { \
     Au_t m = def(typeid(X), #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
     m->access_type = interface_public; \
+    m->alt = #X "_" #N; \
     Type_i(X).type . ft.N = & X## _ ## N; \
     m->type    = typeid(R); \
     set_args_array(m, emit_types(X __VA_OPT__(,) __VA_ARGS__)); \
@@ -1273,6 +1277,7 @@
 #define   i_struct_method_1_INIT(    T, R, N, A, ...) { \
     Au_t m = def(typeid(T), #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
     m->access_type = interface_public; \
+    m->alt = #T "_" #N; \
     Type_i(T).type . ft.N = & T## _ ## N; \
     m->type    = typeid(R); \
     set_args_array(m, emit_types(T, A __VA_OPT__(,) __VA_ARGS__)); \
@@ -1299,6 +1304,7 @@
 #define   i_struct_method_2_INIT(    T, R, N, A, ...) { \
     Au_t m = def(typeid(T), #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
     m->access_type = interface_public; \
+    m->alt = #T "_" #N; \
     Type_i(T).type . ft.N = & T## _ ## N; \
     m->type    = typeid(R); \
     set_args_array(m, emit_types(T, A, A __VA_OPT__(,) __VA_ARGS__)); \
@@ -1326,6 +1332,7 @@
 #define   i_struct_method_3_INIT(    T, R, N, A, ...) { \
     Au_t m = def(typeid(T), #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
     m->access_type = interface_public; \
+    m->alt = #T "_" #N; \
     Type_i(T).type . ft.N = & T## _ ## N; \
     m->type    = typeid(R); \
     set_args_array(m, emit_types(T, A, A, A __VA_OPT__(,) __VA_ARGS__)); \
@@ -1356,6 +1363,7 @@
 #define   i_struct_static_INIT(    X, R, N, ...) { \
     Au_t m = def(typeid(X), #N, AU_MEMBER_FUNC, AU_TRAIT_SMETHOD); \
     m->access_type = interface_public; \
+    m->alt = #X "_" #N; \
     Type_i(X).type . ft.N = & X## _ ## N; \
     set_args_array(m, emit_types(__VA_ARGS__)); \
     m->type    = typeid(R); \
@@ -1379,6 +1387,7 @@
 #define   i_struct_static_3_INIT(    T, R, N, A, ...) { \
     Au_t m = def(typeid(T), #N, AU_MEMBER_FUNC, AU_TRAIT_SMETHOD); \
     m->access_type = interface_public; \
+    m->alt = #T "_" #N; \
     Type_i(T).type . ft.N = & T## _ ## N; \
     set_args_array(m, emit_types(T, A, A, A __VA_OPT__(,) __VA_ARGS__)); \
     m->type    = typeid(R); \

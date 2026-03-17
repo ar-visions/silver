@@ -602,6 +602,7 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
     Au_t parent = top_scope(e);
     Au_t en = def_enum(parent, n, 0);
     //en->module = e->current_import->au;
+    en->is_c = true;
     en->src = au_lookup("i32");
     
     push_scope(e, (Au)en);

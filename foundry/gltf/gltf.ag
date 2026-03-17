@@ -226,6 +226,9 @@ class Buffer
     func init [] -> none
         data = vector [ uri ]
 
+    # implemented in C as test
+    func test [] -> bool 
+
 class TextureInfo
     public index:           i64
     public texCoord:        u32
