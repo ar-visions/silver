@@ -27,9 +27,9 @@
             },
 			"isBackground": false,
 			"problemMatcher": ["$gcc"],
-            "command": "${workspaceFolder}/sdk/native/bin/ninja",
-            "args": ["-C", "sdk/native/debug", "-v", "-f", "silver.ninja"],
-            "env": { "VERBOSE": "1", "CC": "clang", "IMPORT": "/src/silver/sdk/native" }
+            "command": "${workspaceFolder}/platform/native/bin/ninja",
+            "args": ["-C", "platform/native/debug", "-v", "-f", "silver.ninja"],
+            "env": { "VERBOSE": "1", "CC": "clang", "IMPORT": "/src/silver/platform/native" }
         },
         {
             "label": "build-hyperspace",

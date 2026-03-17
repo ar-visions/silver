@@ -11,16 +11,16 @@ make debug              # builds debug (with -g -O0)
 make clean              # cleans generated headers
 
 # Compile a .ag program
-./sdk/native/bin/silver foundry/ai-test/ai-test.ag
+./platform/native/bin/silver foundry/ai-test/ai-test.ag
 
 # Run the output binary
-./sdk/native/release/ai-test
+./platform/native/release/ai-test
 ```
 
 - `make` runs `bootstrap.sh` then `ninja`. Bootstrap generates `target.cmake` and a `.ninja` build file.
-- The compiler binary is at `sdk/native/bin/silver`.
-- Compiled outputs (`.ll`, `.bc`, `.o`, final binary) go to `sdk/native/release/`.
-- The bootstrap uses the SDK's own clang (`sdk/native/bin/clang`) built from a pinned LLVM commit.
+- The compiler binary is at `platform/native/bin/silver`.
+- Compiled outputs (`.ll`, `.bc`, `.o`, final binary) go to `platform/native/release/`.
+- The bootstrap uses the SDK's own clang (`platform/native/bin/clang`) built from a pinned LLVM commit.
 
 ## Project Structure
 
@@ -44,7 +44,7 @@ foundry/          # Silver application projects (each has a .ag file)
   random/         # Random number generation module
   orbiter/        # Orbiter project
   ...
-sdk/native/       # Built SDK (bin/, lib/, include/)
+platform/native/  # Built SDK (bin/, lib/, include/)
 checkout/         # Vendored dependencies (llvm-project, mbedtls, etc.)
 ```
 
@@ -269,5 +269,5 @@ bool  p = is_prim((Au)some_enode);  // check if primitive
 
 No formal test runner. Test by compiling and running foundry projects:
 ```bash
-make && ./sdk/native/bin/silver foundry/ai-test/ai-test.ag && ./sdk/native/release/ai-test
+make && ./platform/native/bin/silver foundry/ai-test/ai-test.ag && ./platform/native/release/ai-test
 ```

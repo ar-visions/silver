@@ -25,7 +25,8 @@ declare_class(exports)
     M(X, Y, i, prop,     public,  string, git_service) \
     M(X, Y, i, prop,     public,  string, git_owner) \
     M(X, Y, i, prop,     public,  string, git_project) \
-    M(X, Y, i, prop,     public,  string, sdk) \
+    M(X, Y, i, prop,     public,  string, platform) \
+    M(X, Y, i, prop,     intern,  string, docker) \
     M(X, Y, i, prop,     public,  string, source_raw) \
     M(X, Y, i, prop,     public,  path,   src_loc) \
     M(X, Y, i, prop,     iobject, array,  implements) \

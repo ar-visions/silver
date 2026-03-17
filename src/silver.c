@@ -720,17 +720,40 @@ void finalize_coverage(silver);
 void silver_parse(silver a) {
     efunc init = module_initializer(a);
 
+    // determine target arch/os — use --platform if set, otherwise host
+    symbol target_arch = arch;
+    bool   target_mac  = SILVER_IS_MAC;
+    bool   target_lin  = SILVER_IS_LINUX;
+    bool   target_win  = SILVER_IS_WINDOWS;
+
+    if (a->platform && len(a->platform)) {
+        string p = a->platform;
+        // derive OS from platform name
+        target_mac = strstr(p->chars, "mac")   || strstr(p->chars, "ios");
+        target_lin = strstr(p->chars, "linux") || strstr(p->chars, "jetson") ||
+                     strstr(p->chars, "android");
+        target_win = strstr(p->chars, "windows");
+        // derive arch from platform name
+        if      (strstr(p->chars, "x86_64") || strstr(p->chars, "x86-64"))  target_arch = "x86_64";
+        else if (strstr(p->chars, "x86")    || strstr(p->chars, "i686"))    target_arch = "x86";
+        else if (strstr(p->chars, "arm64")  || strstr(p->chars, "aarch64")
+              || strstr(p->chars, "jetson") || strstr(p->chars, "ios"))     target_arch = "arm64";
+        else if (strstr(p->chars, "arm32")  || strstr(p->chars, "armv7"))   target_arch = "arm32";
+        else if (strstr(p->chars, "mips"))                                   target_arch = "mips";
+        else if (strstr(p->chars, "riscv"))                                  target_arch = "riscv64";
+    }
+
     Au_t m_mac   = def_member(a->au, "mac",     typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_lin   = def_member(a->au, "linux",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_win   = def_member(a->au, "windows", typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_x86   = def_member(a->au, "x86_64",  typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_arm64 = def_member(a->au, "arm64",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
 
-    etype_register((aether)a, (Au)m_mac,   (Au)hold(e_operand(a, _bool(SILVER_IS_MAC),     etypeid(bool))), false);
-    etype_register((aether)a, (Au)m_lin,   (Au)hold(e_operand(a, _bool(SILVER_IS_LINUX),   etypeid(bool))), false);
-    etype_register((aether)a, (Au)m_win,   (Au)hold(e_operand(a, _bool(SILVER_IS_WINDOWS), etypeid(bool))), false);
-    etype_register((aether)a, (Au)m_x86,   (Au)hold(e_operand(a, _bool(strcmp(arch, "x86_64") == 0), etypeid(bool))), false);
-    etype_register((aether)a, (Au)m_arm64, (Au)hold(e_operand(a, _bool(strcmp(arch, "arm64")  == 0), etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_mac,   (Au)hold(e_operand(a, _bool(target_mac),                        etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_lin,   (Au)hold(e_operand(a, _bool(target_lin),                        etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_win,   (Au)hold(e_operand(a, _bool(target_win),                        etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_x86,   (Au)hold(e_operand(a, _bool(strcmp(target_arch, "x86_64") == 0), etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_arm64, (Au)hold(e_operand(a, _bool(strcmp(target_arch, "arm64")  == 0), etypeid(bool))), false);
 
     while (peek(a)) {
         validate(parse_statement(a), "unexpected token found for statement: %o", peek(a));
@@ -930,7 +953,35 @@ void silver_init(silver a) {
         return;
     }
 
-    // this is a means by which we cache configurations of our module, 
+    // platform dispatch: build docker prefix for non-native targets
+    // all architecture-specific exec calls get this prepended
+    if (a->platform && len(a->platform) && cmp(a->platform, "native") != 0) {
+        string image = f(string, "silver-platform-%o", a->platform);
+        path   plat  = f(path,   "%o/platform/%o", a->install, a->platform);
+        path   df    = f(path,   "%o/Dockerfile", plat);
+
+        // build docker image if needed
+        if (exec(false, "docker image inspect %o >/dev/null 2>&1", image) != 0) {
+            verify(file_exists("%o", df), "no Dockerfile for platform: %o", a->platform);
+            verify(exec(a->verbose,
+                "docker build -t %o -f %o %o", image, df, a->install) == 0,
+                "docker build failed for platform: %o", a->platform);
+        }
+
+        // prefix for all build commands — mounts checkout, install, and build dirs
+        a->docker = f(string,
+            "docker run --rm "
+            "-v %o/checkout:%o/checkout "
+            "-v %o:%o "
+            "-v %o:%o "
+            "%o",
+            a->root_path, a->root_path,
+            plat, a->install,
+            a->build_dir, a->build_dir,
+            image);
+    }
+
+    // this is a means by which we cache configurations of our module,
     // and prevent re-compilation when the date of the source is less than the product with name
     string defs_hash;
     if (len(a->defs)) {
@@ -1056,7 +1107,9 @@ void silver_init(silver a) {
 
     // should only get its parent if its a file
     path af         = a->module ? directory(a->module) : path_cwd();
-    path install    = f(path, "%s/install", _SILVER);
+    path install    = (a->platform && len(a->platform) && cmp(a->platform, "native") != 0)
+                    ? f(path, "%s/platform/%o", _SILVER, a->platform)
+                    : f(path, "%s/install",     _SILVER);
     git_remote_info(af, &a->git_service, &a->git_owner, &a->git_project);
 
     bool retry = false;
@@ -3779,6 +3832,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     path    project_f   = f(path, "%o/checkout/%o", a->root_path, name);
     bool    debug       = false;
     string  config      = interpolate(conf, (Au)a);
+    string  docker      = a->docker ? f(string, "%o ", a->docker) : string("");
 
     validate(command_exists("git"), "git required for import feature");
 
@@ -3851,27 +3905,27 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         string opt = a->isysroot ? f(string, "-DCMAKE_OSX_SYSROOT=%o", a->isysroot) : string("");
 
         vexec(a->verbose, "configure",
-              "%o cmake -B %o -S %o %o -DCMAKE_INSTALL_PREFIX=%o -DCMAKE_BUILD_TYPE=%s %o",
-              env, build_f, project_f, opt, install, build, config);
+              "%o%o cmake -B %o -S %o %o -DCMAKE_INSTALL_PREFIX=%o -DCMAKE_BUILD_TYPE=%s %o",
+              dk, env, build_f, project_f, opt, install, build, config);
 
-        vexec(a->verbose, "build", "%o cmake --build %o -j16", env, build_f);
-        vexec(a->verbose, "install", "%o cmake --install %o", env, build_f);
+        vexec(a->verbose, "build", "%o%o cmake --build %o -j16", docker, env, build_f);
+        vexec(a->verbose, "install", "%o%o cmake --install %o", docker, env, build_f);
     } else if (is_meson) { // build for meson
         cstr build = debug ? "debug" : "release";
 
         vexec(a->verbose, "setup",
-              "%o meson setup %o --prefix=%o --buildtype=%s %o",
-              env, build_f, install, build, config);
+              "%o%o meson setup %o --prefix=%o --buildtype=%s %o",
+              dk, env, build_f, install, build, config);
 
-        vexec(a->verbose, "compile", "%o meson compile -C %o", env, build_f);
-        vexec(a->verbose, "install", "%o meson install -C %o", env, build_f);
+        vexec(a->verbose, "compile", "%o%o meson compile -C %o", docker, env, build_f);
+        vexec(a->verbose, "install", "%o%o meson install -C %o", docker, env, build_f);
     } else if (is_gn) {
         cstr is_debug = debug ? "true" : "false";
-        vexec(a->verbose, "gen", "gn gen %o --args='is_debug=%s is_official_build=true %o'", build_f, is_debug, config);
-        vexec(a->verbose, "ninja", "ninja -C %o -j8", build_f);
+        vexec(a->verbose, "gen", "%ogn gen %o --args='is_debug=%s is_official_build=true %o'", docker, build_f, is_debug, config);
+        vexec(a->verbose, "ninja", "%oninja -C %o -j8", docker, build_f);
     } else if (is_rust) { // todo: copy bin/lib after
-        vexec(a->verbose, "rust", "cargo build --%s --manifest-path %o/Cargo.toml --target-dir %o",
-              debug ? "debug" : "release", project_f, build_f);
+        vexec(a->verbose, "rust", "%ocargo build --%s --manifest-path %o/Cargo.toml --target-dir %o",
+              dk, debug ? "debug" : "release", project_f, build_f);
     } else if (is_silver) { // build for Au-type projects
         silver sf = silver(module, silver_f, breakpoint, a->breakpoint, debug, a->debug,
             verbose, a->verbose, is_external, a->is_external ? a->is_external : a);
@@ -3886,19 +3940,19 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
             // fix common race condition with autotools
             if (!file_exists("%o/ltmain.sh", project_f))
-                verify(exec(a->verbose, "libtoolize --install --copy --force") == 0, "libtoolize");
+                verify(exec(a->verbose, "%olibtoolize --install --copy --force", docker) == 0, "libtoolize");
 
             // common preference on these repos
             if (file_exists("%o/autogen.sh", project_f))
-                verify(exec(a->verbose, "(cd %o && bash autogen.sh)", project_f) == 0, "autogen");
+                verify(exec(a->verbose, "%o(cd %o && bash autogen.sh)", docker, project_f) == 0, "autogen");
 
             // generate configuration scripts if available
             else if (!file_exists("%o/configure", project_f) && file_exists("%o/configure.ac", project_f)) {
-                verify(exec(a->verbose, "autoupdate --verbose --force --output=%o/configure.ac %o/configure.ac",
-                            project_f, project_f) == 0,
+                verify(exec(a->verbose, "%oautoupdate --verbose --force --output=%o/configure.ac %o/configure.ac",
+                            dk, project_f, project_f) == 0,
                        "autoupdate");
-                verify(exec(a->verbose, "autoreconf -i %o",
-                            project_f) == 0,
+                verify(exec(a->verbose, "%oautoreconf -i %o",
+                            dk, project_f) == 0,
                        "autoreconf");
             }
 
@@ -3906,8 +3960,8 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             path configure = file_exists("%o/configure", project_f) ? f(path, "./configure") : f(path, "./config");
 
             if (file_exists("%o/%o", project_f, configure)) {
-                verify(exec(a->verbose, "%o (cd %o && %o%s --prefix=%o %o)",
-                            env,
+                verify(exec(a->verbose, "%o%o (cd %o && %o%s --prefix=%o %o)",
+                            dk, env,
                             project_f,
                             configure,
                             debug ? " --enable-debug" : "",
@@ -3919,7 +3973,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
         path Makefile = f(path, "%o/Makefile", project_f);
         if (file_exists("%o", Makefile))
-            verify(exec(a->verbose, "%o (cd %o && make PREFIX=%o -f %o install)", env, project_f, install, Makefile) == 0, "make");
+            verify(exec(a->verbose, "%o%o (cd %o && make PREFIX=%o -f %o install)", docker, env, project_f, install, Makefile) == 0, "make");
     }
 
     if (postbuild && len(postbuild)) {
@@ -4012,6 +4066,74 @@ none silver_build(silver a) {
 
     a->product = hold(product);
 
+    // platform dispatch: compile and link inside docker for non-native targets
+    if (a->platform && len(a->platform) && cmp(a->platform, "native") != 0) {
+        string image = f(string, "silver-platform-%o", a->platform);
+        path   plat  = f(path,   "%o/platform/%o", a->install, a->platform);
+        path   df    = f(path,   "%o/Dockerfile", plat);
+
+        // build docker image if it doesn't exist
+        if (exec(false, "docker image inspect %o >/dev/null 2>&1", image) != 0) {
+            verify(file_exists("%o", df), "no Dockerfile for platform: %o", a->platform);
+            verify(exec(a->verbose,
+                "docker build -t %o -f %o %o", image, df, a->install) == 0,
+                "docker build failed for platform: %o", a->platform);
+        }
+
+        // run llc + compile_implements + link inside container
+        // mount: build_dir (has .ll), install (has libs/headers), platform dir as native
+        string docker_pre = f(string,
+            "docker run --rm "
+            "-v %o:%o "
+            "-v %o:/silver/platform/native "
+            "-v %o:%o ",
+            a->build_dir, a->build_dir,
+            plat,
+            a->install, a->install);
+
+        // llc: .ll -> .o
+        verify(exec(a->verbose, "%o /silver/platform/native/bin/llc -filetype=obj %o/%o.ll -o %o/%o.o -relocation-model=pic %s",
+                    docker_pre, a->build_dir, a->name, a->build_dir, a->name,
+                    a->debug ? "-O0" : "") == 0,
+               ".ll -> .o compilation failed (platform: %o)", a->platform);
+
+        string cflags = a->asan ? string("-fsanitize=address") : string("");
+
+        if (len(a->implements))
+            write_header(a);
+
+        // compile .c/.cc implementations inside docker
+        string objs = string();
+        each(a->implements, path, i) {
+            string i_name   = f(string, "%o/%o.o", a->build_dir, filename(i));
+            string ext      = ext(i);
+            cstr   compiler = eq(ext, ".cc") ? "clang++" : "clang";
+            string st       = stem(i);
+            verify(exec(a->verbose, "%o /silver/platform/native/bin/%s %o %s -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au",
+                docker_pre, compiler, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install) == 0,
+                "failed to compile %o (platform: %o)", i, a->platform);
+            if (len(objs)) append(objs, " ");
+            concat(objs, i_name);
+        }
+
+        // link inside docker
+        string isysroot = a->isysroot ? f(string, "-isysroot %o ", a->isysroot) : string("");
+        verify(exec(a->verbose, "%o /silver/platform/native/bin/clang %s %s %s %o %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o",
+            docker_pre,
+            a->is_library ? shared : "", a->debug ? "-g" : "",
+            a->is_library ? "-Wl,-Bsymbolic" : "",
+            isysroot, a->build_dir, a->name, objs,
+            a->product,
+            a->build_dir,
+            install, a->build_dir, install, libs, cflags) == 0,
+            "link failed (platform: %o)", a->platform);
+
+        unlink(a->product_link->chars);
+        verify(create_symlink(a->product, a->product_link),
+            "could not create product symlink from %o -> %o", a->product_link, a->product);
+
+    } else {
+
     verify(exec(a->verbose, "%o/bin/llc -filetype=obj %o/%o.ll -o %o/%o.o -relocation-model=pic %s",
                 install, a->build_dir, a->name, a->build_dir, a->name,
                 a->debug ? "-O0" : "") == 0,
@@ -4061,6 +4183,8 @@ none silver_build(silver a) {
 
     verify(create_symlink(a->product, a->product_link),
         "could not create product symlink from %o -> %o", a->product_link, a->product);
+
+    }
 
     // deploy resource files into share/{app-name}/
     // directories merge across modules; file collisions are an error
