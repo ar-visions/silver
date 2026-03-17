@@ -163,7 +163,7 @@ fi
 
 # defaults
 export SDK="native"
-export TYPE="debug"
+export TYPE="release"
 ASAN=""
 
 # parse command-line args

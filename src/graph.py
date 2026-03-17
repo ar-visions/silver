@@ -32,7 +32,7 @@ def get_env_vars():
     parser.add_argument('--build-path',     required=True, help='Build output path')
     parser.add_argument('--project-name',   required=True, help='Project name')
     parser.add_argument('--import',         required=True, help='Import path')
-    parser.add_argument('--debug',          action='store_true', default=True,  help='debug')
+    parser.add_argument('--debug',          action='store_true', default=False, help='debug')
     parser.add_argument('--release',        action='store_true', default=False, help='release')
     parser.add_argument('--asan',           action='store_true', default=False, help='enable address sanitizer')
     parser.add_argument('sdk', nargs='?', default='native',
