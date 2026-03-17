@@ -829,10 +829,10 @@ make debug              # build with debug symbols
 make clean              # clean generated headers
 
 # compile a .ag program
-./sdk/native/bin/silver foundry/ai-test/ai-test.ag
+./platform/native/bin/silver foundry/ai-test/ai-test.ag
 
 # run the output
-./sdk/native/release/ai-test
+./platform/native/release/ai-test
 ```
 
 ---

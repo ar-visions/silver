@@ -8,7 +8,21 @@ generate_target_cmake() {
     local TARGET_NAME="$2"  # e.g. "native" or "aarch64-linux-gnu"
     local TARGET_TRIPLE SYSTEM_NAME PROCESSOR IS_NATIVE
 
-    if [[ "$TARGET_NAME" == "native" ]]; then
+    if [[ "$TARGET_NAME" == "ios" ]]; then
+        IS_NATIVE="yes"
+        TARGET_TRIPLE="arm64-apple-ios"
+        SYSTEM_NAME="Darwin"
+        PROCESSOR="arm64"
+
+        if ! command -v xcrun >/dev/null 2>&1; then
+            echo "error: iOS SDK requires macOS with Xcode installed"
+            exit 1
+        fi
+
+        IOS_SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)"
+        IOS_MIN_VERSION="15.0"
+
+    elif [[ "$TARGET_NAME" == "native" ]]; then
         IS_NATIVE="yes"
 
         # Derive host triple automatically from clang if available
@@ -63,6 +77,37 @@ if [[ "$IS_NATIVE" != "yes" ]]; then
     echo 'set(CMAKE_SYSROOT "${TARGET_DIR}")' >> "$TARGET_DIR/target.cmake"
 fi
 
+    # iOS uses Xcode's toolchain directly
+    if [[ "$TARGET_NAME" == "ios" ]]; then
+        cat >> "$TARGET_DIR/target.cmake" <<EOF
+set(CMAKE_OSX_SYSROOT "$IOS_SYSROOT")
+set(CMAKE_OSX_DEPLOYMENT_TARGET "$IOS_MIN_VERSION")
+set(CMAKE_OSX_ARCHITECTURES "arm64")
+
+set(CMAKE_C_COMPILER   "$(xcrun --find clang)" CACHE STRING "")
+set(CMAKE_CXX_COMPILER "$(xcrun --find clang++)" CACHE STRING "")
+set(CMAKE_LINKER       "$(xcrun --find ld)" CACHE STRING "")
+
+if(NOT DEFINED CMAKE_C_FLAGS)
+    set(CMAKE_C_FLAGS "" CACHE STRING "")
+endif()
+if(NOT DEFINED CMAKE_CXX_FLAGS)
+    set(CMAKE_CXX_FLAGS "" CACHE STRING "")
+endif()
+
+string(APPEND CMAKE_C_FLAGS   " --target=${TARGET_TRIPLE} -isysroot ${IOS_SYSROOT} -miphoneos-version-min=${IOS_MIN_VERSION} -fPIC")
+string(APPEND CMAKE_CXX_FLAGS " --target=${TARGET_TRIPLE} -isysroot ${IOS_SYSROOT} -miphoneos-version-min=${IOS_MIN_VERSION} -fPIC -stdlib=libc++")
+
+set(CMAKE_FIND_ROOT_PATH "${IOS_SYSROOT}")
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+
+set(SILVER_TARGET_NAME "${TARGET_NAME}")
+set(SILVER_TARGET_TRIPLE "${TARGET_TRIPLE}")
+EOF
+    elif [ -f "${NATIVE}/bin/clang" ]; then
     cat >> "$TARGET_DIR/target.cmake" <<EOF
 set(CMAKE_C_COMPILER   "${NATIVE}/bin/clang" CACHE STRING "")
 set(CMAKE_CXX_COMPILER "${NATIVE}/bin/clang++" CACHE STRING "")
@@ -102,6 +147,7 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 set(SILVER_TARGET_NAME "${TARGET_NAME}")
 set(SILVER_TARGET_TRIPLE "${TARGET_TRIPLE}")
 EOF
+    fi
 }
 
 # install Xcode tools (base clang and sdk)
@@ -139,6 +185,51 @@ for arg in "$@"; do
     esac
 done
 
+# ensure docker is available for non-native/non-ios SDK builds
+if [[ "$SDK" != "native" && "$SDK" != "ios" ]]; then
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "🐳 Docker not found. Installing..."
+        case "$(uname -s)" in
+            Linux*)
+                if command -v apt-get >/dev/null 2>&1; then
+                    sudo apt-get update && sudo apt-get install -y docker.io
+                elif command -v dnf >/dev/null 2>&1; then
+                    sudo dnf install -y docker
+                elif command -v pacman >/dev/null 2>&1; then
+                    sudo pacman -S --noconfirm docker
+                else
+                    echo "error: could not detect package manager — install docker manually"
+                    exit 1
+                fi
+                sudo systemctl start docker
+                sudo systemctl enable docker
+                ;;
+            Darwin*)
+                if command -v brew >/dev/null 2>&1; then
+                    brew install --cask docker
+                    echo "🐳 Docker Desktop installed — open it from Applications to finish setup"
+                    exit 1
+                else
+                    echo "error: install Docker Desktop from https://docker.com/products/docker-desktop"
+                    exit 1
+                fi
+                ;;
+            MINGW*|MSYS*|CYGWIN*)
+                echo "error: install Docker Desktop from https://docker.com/products/docker-desktop"
+                exit 1
+                ;;
+        esac
+    fi
+
+    # ensure current user can run docker without sudo
+    if ! docker info >/dev/null 2>&1; then
+        echo "🐳 Adding $USER to docker group..."
+        sudo usermod -aG docker "$USER"
+        echo "🐳 Group updated — log out and back in, then retry"
+        exit 1
+    fi
+fi
+
 if [ -z "$PROJECT_PATH" ]; then
     export PROJECT_PATH="$(realpath $(pwd))" # we can run bootstrap from another project (silver build is its own host)
     export PROJECT_NAME="$(basename "$PROJECT_PATH")"
@@ -149,8 +240,8 @@ cd "$SELF_PATH"
 
 export SILVER="$(pwd)"
 export CHECKOUT="$PROJECT_PATH/checkout"
-export IMPORT="$SILVER/sdk/$SDK"
-export NATIVE="$SILVER/sdk/native"
+export IMPORT="$SILVER/platform/$SDK"
+export NATIVE="$SILVER/platform/native"
 export BUILD="$IMPORT/$TYPE"
 export PATH="$IMPORT/bin:$PATH"
 export ARCH="$ARCH"
@@ -165,27 +256,34 @@ cd $SILVER
 
 generate_target_cmake "$IMPORT" "$SDK"
 
-if [[ "$SDK" != "native" ]]; then
+if [[ "$SDK" != "native" && "$SDK" != "ios" ]]; then
     if ! [ -f "$NATIVE/bin/clang" ]; then
         echo "please bootstrap native first to build llvm"
         exit 1
     fi
 fi
 
-# download source for ninja and build
+# ensure ninja is available
 if ! [ -f "$NATIVE/bin/ninja" ]; then
-    ninja_f="v1.13.1"
-    NINJA_URL="https://github.com/ninja-build/ninja/archive/refs/tags/${ninja_f}.zip"
-    cd $SILVER/checkout
-    curl -LO $NINJA_URL
-    unzip -o "${ninja_f}.zip"
-    cd ninja-1.13.1
-    cmake -Bbuild-cmake -DBUILD_TESTING=OFF
-    cmake --build build-cmake
-    cp -a build-cmake/ninja $NATIVE/bin/ninja
+    if command -v ninja >/dev/null 2>&1; then
+        ln -sf "$(command -v ninja)" "$NATIVE/bin/ninja"
+    else
+        ninja_f="v1.13.1"
+        NINJA_URL="https://github.com/ninja-build/ninja/archive/refs/tags/${ninja_f}.zip"
+        cd $SILVER/checkout
+        curl -LO $NINJA_URL
+        unzip -o "${ninja_f}.zip"
+        cd ninja-1.13.1
+        cmake -Bbuild-cmake -DBUILD_TESTING=OFF
+        cmake --build build-cmake
+        cp -a build-cmake/ninja $NATIVE/bin/ninja
+    fi
 fi
 
 if ! [ -f "$NATIVE/bin/python3" ]; then
+    if command -v python3 >/dev/null 2>&1; then
+        ln -sf "$(command -v python3)" "$NATIVE/bin/python3"
+    else
     PY_VER="3.11.9"
     PY_SRC="$SILVER/checkout/Python-$PY_VER"
 
@@ -219,6 +317,7 @@ if ! [ -f "$NATIVE/bin/python3" ]; then
 
     make -j$(nproc)
     make install
+    fi
 fi
 
 if [[ "$SDK" != "native" ]]; then
@@ -288,10 +387,10 @@ if [[ "$SDK" != "native" ]]; then
 
         cd "$SILVER/build/glibc-$SDK"
 
-        CC="$SILVER/sdk/native/bin/clang --target=${SDK} --sysroot=$SILVER/sdk/$SDK" \
-        CXX="$SILVER/sdk/native/bin/clang++ --target=${SDK} --sysroot=$SILVER/sdk/$SDK" \
-        AR="$SILVER/sdk/native/bin/llvm-ar" \
-        RANLIB="$SILVER/sdk/native/bin/llvm-ranlib" \
+        CC="$SILVER/platform/native/bin/clang --target=${SDK} --sysroot=$SILVER/platform/$SDK" \
+        CXX="$SILVER/platform/native/bin/clang++ --target=${SDK} --sysroot=$SILVER/platform/$SDK" \
+        AR="$SILVER/platform/native/bin/llvm-ar" \
+        RANLIB="$SILVER/platform/native/bin/llvm-ranlib" \
         "$SILVER/checkout/glibc-2.39/configure" \
             --host=${SDK} \
             --prefix=/usr \
@@ -327,10 +426,10 @@ if [[ "$SDK" != "native" ]]; then
             --enable-shared \
             --disable-bootstrap \
             --enable-languages=c,c++ \
-            CC="$SILVER/sdk/native/bin/clang --target=${SDK} --sysroot=$SILVER/sdk/$SDK" \
-            CXX="$SILVER/sdk/native/bin/clang++ --target=${SDK} --sysroot=$SILVER/sdk/$SDK" \
-            AR="$SILVER/sdk/native/bin/llvm-ar" \
-            RANLIB="$SILVER/sdk/native/bin/llvm-ranlib"
+            CC="$SILVER/platform/native/bin/clang --target=${SDK} --sysroot=$SILVER/platform/$SDK" \
+            CXX="$SILVER/platform/native/bin/clang++ --target=${SDK} --sysroot=$SILVER/platform/$SDK" \
+            AR="$SILVER/platform/native/bin/llvm-ar" \
+            RANLIB="$SILVER/platform/native/bin/llvm-ranlib"
 
         make -j"$(nproc)" all-target-libgcc all-target-libstdc++-v3
         make install-target-libgcc install-target-libstdc++-v3 DESTDIR="$IMPORT"
