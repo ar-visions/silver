@@ -7,7 +7,7 @@ SILVER := $(patsubst %/,%,$(dir $(shell readlink -f $(lastword $(MAKEFILE_LIST))
 PROJECT_PATH := $(CURDIR)
 PROJECT_NAME := $(notdir $(PROJECT_PATH))
 
-BUILD_ROOT ?= $(SILVER)/sdk/$(SDK)/release
+BUILD_ROOT ?= $(SILVER)/platform/$(SDK)/release
 
 export PROJECT_PATH
 export PROJECT_NAME
@@ -17,13 +17,13 @@ export PROJECT_NAME
 all: build
 
 debug:
-	$(MAKE) BUILD_ROOT=$(SILVER)/sdk/$(SDK)/debug build
+	$(MAKE) BUILD_ROOT=$(SILVER)/platform/$(SDK)/debug build
 
 release:
-	$(MAKE) BUILD_ROOT=$(SILVER)/sdk/$(SDK)/release build
+	$(MAKE) BUILD_ROOT=$(SILVER)/platform/$(SDK)/release build
 
 asan:
-	$(MAKE) BUILD_ROOT=$(SILVER)/sdk/$(SDK)/debug ASAN=--asan build
+	$(MAKE) BUILD_ROOT=$(SILVER)/platform/$(SDK)/debug ASAN=--asan build
 
 bootstrap:
 ifeq ($(OS),Windows_NT)
@@ -46,11 +46,11 @@ build: bootstrap
 
 clean:
 ifeq ($(OS),Windows_NT)
-	@if exist $(SILVER)\sdk\native\debug rmdir /S /Q $(SILVER)\sdk\native\debug\.headers_generated
-	@if exist $(SILVER)\sdk\native\release rmdir /S /Q $(SILVER)\sdk\native\release\.headers_generated
+	@if exist $(SILVER)\platform\native\debug rmdir /S /Q $(SILVER)\platform\native\debug\.headers_generated
+	@if exist $(SILVER)\platform\native\release rmdir /S /Q $(SILVER)\platform\native\release\.headers_generated
 else
-	@rm -rf $(SILVER)/sdk/native/debug/.headers_generated
-	@rm -rf $(SILVER)/sdk/native/release/.headers_generated
+	@rm -rf $(SILVER)/platform/native/debug/.headers_generated
+	@rm -rf $(SILVER)/platform/native/release/.headers_generated
 	@if [ -f "$(BUILD_ROOT)\$(PROJECT_NAME).ninja" ]; then \
 		@ninja -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja clean; \
 	fi

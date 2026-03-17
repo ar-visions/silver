@@ -12,4 +12,4 @@ import:     Mbed-TLS:mbedtls/ec40440 as mbedtls
     CC={'clang-cl' if win else 'gcc'}
     >> git submodule update --init --recursive
     >> python3 -m pip install jsonschema jinja2
-    >> { 'scripts\make_generated_files.bat' if win else '' }
+    >> { 'scripts\\make_generated_files.bat' if win else '' }

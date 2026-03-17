@@ -1,0 +1,6 @@
+platform/*/debug/
+platform/*/release/
+platform/native/bin/
+platform/native/lib/
+platform/native/include/
+build/
