@@ -369,7 +369,6 @@ op dense
                 asm x86_64
                     vmovups ymm0, ymmword ptr [bias_f + bi_off]
                     vmovups ymmword ptr [dest_f + di_off], ymm0
-                def 
             for [ j: i32 n8, j < n, j += 1 ]
                 dest_f[i * n + j] = bias_f[j]
 

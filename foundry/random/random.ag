@@ -12,10 +12,10 @@ import rand1 as r1
 # --- xoshiro256++ state (module-level) ---
 # intern classes have no exported type-id and no introspection
 intern class rng
-    test1:  1
-    test2:  2
-    test3:  3
-    test4:  4
+    test1:  i32 1
+    test2:  i32 2
+    test3:  i32 3
+    test4:  i32 4
     state:  new u64[ 4 ] 
     seeded: bool [ false ]
 
@@ -27,7 +27,7 @@ intern class rng
 # however we must init these classes once, only
 # we do not 'mutate' the member values in global, 
 # so module-level members are read-only but may have their own state
-intern rng_state: rng[] #break
+intern rng_state: rng[]
 
 
 # SplitMix64 — expands a single u64 seed into decorrelated state words
@@ -50,12 +50,12 @@ intern func rotl45 [input: u64] -> u64
 # seed from a u64 (SplitMix64 expands to 4 state words)
 public func rng_seed [seed: u64] -> none
     sm: u64 [ seed ]
+    printf "ptr = %p\n", rng_state
     rng_state.state[0] = splitmix64[ref sm]
     rng_state.state[1] = splitmix64[ref sm]
     rng_state.state[2] = splitmix64[ref sm]
     rng_state.state[3] = splitmix64[ref sm]
     rng_state.seeded = true
-
 
 
 # auto-seed from clock on first use

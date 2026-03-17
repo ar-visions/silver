@@ -2,6 +2,7 @@
 set -e
 
 ARCH=""
+export PIP_BREAK_SYSTEM_PACKAGES=1
 
 generate_target_cmake() {
     local TARGET_DIR="$1"
@@ -185,51 +186,6 @@ for arg in "$@"; do
     esac
 done
 
-# ensure docker is available for non-native/non-ios SDK builds
-if [[ "$SDK" != "native" && "$SDK" != "ios" ]]; then
-    if ! command -v docker >/dev/null 2>&1; then
-        echo "🐳 Docker not found. Installing..."
-        case "$(uname -s)" in
-            Linux*)
-                if command -v apt-get >/dev/null 2>&1; then
-                    sudo apt-get update && sudo apt-get install -y docker.io
-                elif command -v dnf >/dev/null 2>&1; then
-                    sudo dnf install -y docker
-                elif command -v pacman >/dev/null 2>&1; then
-                    sudo pacman -S --noconfirm docker
-                else
-                    echo "error: could not detect package manager — install docker manually"
-                    exit 1
-                fi
-                sudo systemctl start docker
-                sudo systemctl enable docker
-                ;;
-            Darwin*)
-                if command -v brew >/dev/null 2>&1; then
-                    brew install --cask docker
-                    echo "🐳 Docker Desktop installed — open it from Applications to finish setup"
-                    exit 1
-                else
-                    echo "error: install Docker Desktop from https://docker.com/products/docker-desktop"
-                    exit 1
-                fi
-                ;;
-            MINGW*|MSYS*|CYGWIN*)
-                echo "error: install Docker Desktop from https://docker.com/products/docker-desktop"
-                exit 1
-                ;;
-        esac
-    fi
-
-    # ensure current user can run docker without sudo
-    if ! docker info >/dev/null 2>&1; then
-        echo "🐳 Adding $USER to docker group..."
-        sudo usermod -aG docker "$USER"
-        echo "🐳 Group updated — log out and back in, then retry"
-        exit 1
-    fi
-fi
-
 if [ -z "$PROJECT_PATH" ]; then
     export PROJECT_PATH="$(realpath $(pwd))" # we can run bootstrap from another project (silver build is its own host)
     export PROJECT_NAME="$(basename "$PROJECT_PATH")"
@@ -240,17 +196,172 @@ cd "$SELF_PATH"
 
 export SILVER="$(pwd)"
 export CHECKOUT="$PROJECT_PATH/checkout"
-export IMPORT="$SILVER/platform/$SDK"
 export NATIVE="$SILVER/platform/native"
-export BUILD="$IMPORT/$TYPE"
-export PATH="$IMPORT/bin:$PATH"
+export IMPORT="$NATIVE"
+export BUILD="$NATIVE/$TYPE"
+export PATH="$NATIVE/bin:$PATH"
 export ARCH="$ARCH"
 
-export LD_LIBRARY_PATH="$IMPORT/lib:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="$NATIVE/lib:$LD_LIBRARY_PATH"
 
-mkdir -p "$IMPORT" "$IMPORT/include" "$IMPORT/bin" "$IMPORT/lib" \
-    "$NATIVE" "$NATIVE/include" "$NATIVE/bin" "$NATIVE/lib" \
+mkdir -p "$NATIVE" "$NATIVE/include" "$NATIVE/bin" "$NATIVE/lib" \
     "$CHECKOUT" "$BUILD" "$SILVER/checkout"
+
+# install symlink → platform/native
+if ! [ -L "$SILVER/install" ]; then
+    ln -sf ./platform/native "$SILVER/install"
+fi
+
+# build docker from source — always available for platform builds
+if ! [ -f "$NATIVE/bin/docker" ]; then
+    echo "🐳 Docker not found. Building from source..."
+
+    GO_VER="1.22.5"
+    GO_ARCH="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
+    RUNC_VER="v1.2.4"
+    CONTAINERD_VER="v1.7.24"
+    MOBY_VER="v27.4.1"
+    CLI_VER="v27.4.1"
+
+    cd "$SILVER/checkout"
+
+    # Go — extract prebuilt into checkout (needed to compile everything)
+    if ! [ -d "$SILVER/checkout/go" ]; then
+        curl -LO "https://go.dev/dl/go${GO_VER}.linux-${GO_ARCH}.tar.gz"
+        tar -C "$SILVER/checkout" -xzf "go${GO_VER}.linux-${GO_ARCH}.tar.gz"
+        rm -f "go${GO_VER}.linux-${GO_ARCH}.tar.gz"
+    fi
+    export PATH="$SILVER/checkout/go/bin:$NATIVE/bin:$PATH"
+    export GOPATH="$SILVER/checkout/gopath"
+
+    # gperf — required by libseccomp
+    if ! [ -f "$NATIVE/bin/gperf" ]; then
+        cd "$SILVER/checkout"
+        GPERF_VER="3.1"
+        if ! [ -d "gperf-$GPERF_VER" ]; then
+            curl -LO "https://ftp.gnu.org/pub/gnu/gperf/gperf-${GPERF_VER}.tar.gz"
+            tar xzf "gperf-${GPERF_VER}.tar.gz"
+        fi
+        cd "gperf-$GPERF_VER"
+        ./configure --prefix="$NATIVE"
+        make -j$(nproc)
+        make install
+    fi
+
+    # libseccomp — required by runc
+    if ! [ -f "$NATIVE/lib/libseccomp.so" ]; then
+        cd "$SILVER/checkout"
+        if ! [ -d libseccomp ]; then
+            git clone --depth 1 --branch v2.5.5 https://github.com/seccomp/libseccomp.git
+        fi
+        cd libseccomp
+        ./autogen.sh
+        ./configure --prefix="$NATIVE"
+        make -j$(nproc)
+        make install
+    fi
+
+    export PKG_CONFIG_PATH="$NATIVE/lib/pkgconfig"
+    export CGO_CFLAGS="-I$NATIVE/include"
+    export CGO_LDFLAGS="-L$NATIVE/lib"
+
+    # runc — OCI container runtime
+    if ! [ -f "$NATIVE/bin/runc" ]; then
+        cd "$SILVER/checkout"
+        if ! [ -d runc ]; then
+            git clone --depth 1 --branch "$RUNC_VER" https://github.com/opencontainers/runc.git
+        fi
+        cd runc
+        make -j$(nproc)
+        cp runc "$NATIVE/bin/"
+    fi
+
+    # containerd — container manager
+    if ! [ -f "$NATIVE/bin/containerd" ]; then
+        cd "$SILVER/checkout"
+        if ! [ -d containerd ]; then
+            git clone --depth 1 --branch "$CONTAINERD_VER" https://github.com/containerd/containerd.git
+        fi
+        cd containerd
+        make -j$(nproc)
+        cp bin/* "$NATIVE/bin/"
+    fi
+
+    # moby — Docker engine (dockerd)
+    if ! [ -f "$NATIVE/bin/dockerd" ]; then
+        cd "$SILVER/checkout"
+        if ! [ -d moby ]; then
+            git clone --depth 1 --branch "$MOBY_VER" https://github.com/moby/moby.git
+        fi
+        cd moby
+        DOCKER_BUILDTAGS="seccomp" hack/make.sh binary
+        cp bundles/binary-daemon/* "$NATIVE/bin/"
+    fi
+
+    # Docker CLI
+    if ! [ -f "$NATIVE/bin/docker" ]; then
+        cd "$SILVER/checkout"
+        if ! [ -d cli ]; then
+            git clone --depth 1 --branch "$CLI_VER" https://github.com/docker/cli.git
+        fi
+        cd cli
+        cp vendor.mod go.mod
+        cp vendor.sum go.sum 2>/dev/null || true
+        GO111MODULE=on go build -mod=vendor -o build/docker ./cmd/docker
+        cp build/docker "$NATIVE/bin/"
+    fi
+
+    echo "🐳 Docker built from source into $NATIVE/bin/"
+fi
+
+# set up docker group and systemd services (requires sudo, one-time)
+# skip if services already configured
+if [ -f "$NATIVE/bin/dockerd" ] && ! [ -f /etc/systemd/system/docker.service ]; then
+    if ! getent group docker >/dev/null 2>&1; then
+        sudo groupadd docker
+    fi
+    sudo usermod -aG docker "$USER"
+
+    if command -v systemctl >/dev/null 2>&1; then
+        sudo tee /etc/systemd/system/containerd.service > /dev/null <<UNIT
+[Unit]
+Description=containerd
+After=network.target
+
+[Service]
+ExecStart=$NATIVE/bin/containerd
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+        sudo tee /etc/systemd/system/docker.service > /dev/null <<UNIT
+[Unit]
+Description=Docker Engine
+After=network.target containerd.service
+Requires=containerd.service
+
+[Service]
+ExecStart=$NATIVE/bin/dockerd --userland-proxy-path=$NATIVE/bin/docker-proxy
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+        sudo systemctl daemon-reload
+        sudo systemctl start containerd
+        sudo systemctl start docker
+        sudo systemctl enable containerd
+        sudo systemctl enable docker
+    else
+        sudo "$NATIVE/bin/containerd" &
+        sleep 2
+        sudo "$NATIVE/bin/dockerd" &
+        sleep 3
+    fi
+
+    echo "🐳 Docker services started. You may need to log out and back in for group permissions."
+fi
 
 cd $SILVER
 
