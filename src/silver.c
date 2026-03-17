@@ -961,25 +961,32 @@ void silver_init(silver a) {
         path   plat  = f(path,   "%o/platform/%o", silver_root, a->platform);
         path   df    = f(path,   "%o/Dockerfile", plat);
 
+        // detect if we need sg docker for permission
+        bool use_sg = exec(false, "docker info >/dev/null 2>&1") != 0
+                   && exec(false, "sg docker -c 'docker info >/dev/null 2>&1'") == 0;
+        string dkpre = use_sg ? string("sg docker -c '") : string("");
+        string dkpost = use_sg ? string("'") : string("");
+
         // build docker image if needed
-        if (exec(false, "docker image inspect %o >/dev/null 2>&1", image) != 0) {
+        if (exec(false, "%odocker image inspect %o >/dev/null 2>&1%o", dkpre, image, dkpost) != 0) {
             verify(file_exists("%o", df), "no Dockerfile for platform: %o", a->platform);
             verify(exec(a->verbose,
-                "docker build -t %o -f %o %o", image, df, silver_root) == 0,
+                "%odocker build -t %o -f %o %o%o", dkpre, image, df, silver_root, dkpost) == 0,
                 "docker build failed for platform: %o", a->platform);
         }
 
-        // prefix for all build commands — mounts checkout, install, and build dirs
+        // prefix for all build commands
+        // mount checkout (shared source) and build_dir (output) but NOT the
+        // full install dir — the toolchain lives inside the image
         a->docker = f(string,
-            "docker run --rm "
+            "%odocker run --rm "
             "-v %o/checkout:%o/checkout "
             "-v %o:%o "
-            "-v %o:%o "
-            "%o",
+            "%o%o",
+            dkpre,
             a->root_path, a->root_path,
-            plat, a->install,
             a->build_dir, a->build_dir,
-            image);
+            image, dkpost);
     }
 
     // this is a means by which we cache configurations of our module,
