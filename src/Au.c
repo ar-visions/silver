@@ -843,7 +843,7 @@ Au_t lexical(array lex, symbol f) {
     for (int i = len(lex) - 1; i >= 0; i--) {
         Au_t au = (Au_t)lex->origin[i];
         while (au) {
-            if (au->member_type == AU_MEMBER_TYPE || au->member_type == AU_MEMBER_FUNC)
+            if (au->member_type == AU_MEMBER_TYPE || is_func(au))
                 for (int ii = 0; ii < au->args.count; ii++) {
                     Au_t m = (Au_t)au->args.origin[ii];
                     if (m->ident && strcmp(m->ident, f) == 0)
@@ -862,12 +862,13 @@ Au_t lexical(array lex, symbol f) {
         }
     }
 
-    // fallback: search inside C-imported enum types for unscoped enum values
+    // fallback: search inside C enum types for unscoped enum values
+    // C enums are unscoped by convention; Silver enums require EnumName.member
     for (int i = len(lex) - 1; i >= 0; i--) {
         Au_t au = (Au_t)lex->origin[i];
         for (int ii = 0; ii < au->members.count; ii++) {
             Au_t m = (Au_t)au->members.origin[ii];
-            if (!(m->traits & AU_TRAIT_ENUM)) continue;
+            if (!(m->traits & AU_TRAIT_ENUM) || !m->is_c) continue;
             for (int jj = 0; jj < m->members.count; jj++) {
                 Au_t ev = (Au_t)m->members.origin[jj];
                 if (ev->ident && strcmp(ev->ident, f) == 0)
@@ -6297,12 +6298,12 @@ array read_arg(array tokens, int start, int* next_read) {
         next_level = level;
         token t = (token)get(tokens, i);
 
-        if (eq(t, "["))
+        if (eq(t, "("))
             next_level = level + 1;
-        else if (eq(t, "]") && level > 0)
+        else if (eq(t, ")") && level > 0)
             next_level = level - 1;
 
-        if ((eq(t, ",") || eq(t, "]")) && level == 0) {
+        if ((eq(t, ",") || eq(t, ")")) && level == 0) {
             *next_read = i;
             return res;
         }

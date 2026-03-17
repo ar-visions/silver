@@ -1790,6 +1790,19 @@ static inline f32 f32_mix(f32 a, f32 b, f32 f) {
     i_struct_method_1(O, Y, O,    mix,       O, f64) \
     i_struct_cast  (O, Y, string)
 
+#define rgb8_module_   vec
+#define rgbf_module_   vec
+#define rgba8_module_  vec
+#define rgba16_module_ vec
+#define rgbaf_module_  vec
+#define quatf_module_  vec
+#define vec4f_module_  vec
+#define vec3f_module_  vec
+#define vec2f_module_  vec
+#define mat4f_module_  vec
+#define rgba_module_   vec
+#define rect_module_   vec
+
 #define rgb8_schema(O, Y, ...) \
     i_struct_prop(O,Y,u8, r) \
     i_struct_prop(O,Y,u8, g) \

@@ -187,7 +187,7 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_cmp, enode, enode) \
     M(X, Y, i, method,   public,  enode,                    e_cmp_op, OPType, enode, enode) \
     M(X, Y, i, method,   public,  none,                     e_branch, code) \
-    M(X, Y, i, method,   public,  enode,                    e_expect, enode, string) \
+    M(X, Y, i, method,   public,  enode,                    e_expect, enode, enode) \
     M(X, Y, i, method,   public,  enode,                    e_fault, enode) \
     M(X, Y, i, method,   public,  enode,                    e_break, catcher) \
     M(X, Y, i, method,   public,  enode,                    e_continue, catcher) \
