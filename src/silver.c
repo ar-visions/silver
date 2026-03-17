@@ -5,7 +5,7 @@
 
 // designed for Audrey and Rebecca
 // with syntax that makes programming enjoyable
-// to express intent clearly in modular development
+// to express intent clearly in modular development, easily targeting all platforms
 
 enode parse_statements(silver a);
 enode parse_statement(silver a);
@@ -940,6 +940,12 @@ static void write_target_cmake(path sdk_path, cstr system_name, cstr processor,
     file_write(fd, (Au)content);
 }
 
+static void prepare_record_cb(Au a_au, Au t_au) {
+    silver a = (silver)a_au;
+    etype  t = (etype)t_au;
+    build_record_parse(a, t);
+}
+
 void silver_init(silver a) {
     hold(a);
 
@@ -1105,11 +1111,12 @@ void silver_init(silver a) {
 
     a->mod          = (aether)a;
     a->imports      = array(32);
-    a->parse_f      = parse_tokens;
-    a->parse_expr   = parse_expression;
+    a->parse_f        = parse_tokens;
+    a->parse_expr     = parse_expression;
     //a->parse_enode  = silver_read_enode;
     //a->reverse_descent = reverse_descent;
-    a->read_etype   = read_etype;
+    a->read_etype     = read_etype;
+    a->prepare_record = (callback)prepare_record_cb;
     a->src_loc      = absolute(path(_SRC ? _SRC : "."));
     verify(dir_exists("%o", a->src_loc), "SRC path does not exist");
 
@@ -2311,10 +2318,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
         seq = seq;
     }
 
-    //print_tokens(a, seq);
-
     if (assign_type) *(OPType*)assign_type = OPType__undefined;
-
     push_current(a);
 
     enode  mem                = null;
@@ -2342,7 +2346,11 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
         bool new_name = in_decl != null || in_rec;
         alpha = read_alpha_macrofilter(a, new_name);
 
-        if (alpha && eq(alpha, "height")) {
+
+
+
+
+        if (alpha && eq(alpha, "test2")) {
             mem = mem;
         }
 
@@ -2404,9 +2412,6 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                 }
                 else if (!in_rec) {
                     // try implicit 'this' access in instance methods
-                    if (alpha && strstr(alpha->chars, "SND_PCM_STREAM") != NULL) {
-                        seq = seq; // breakpoint: SND_PCM_STREAM lookup
-                    }
                     if (!mem && f && f->target) {
                         //mem = (enode)elookup(alpha->chars);]
                         mem = (enode)elookup(alpha->chars);
@@ -2505,7 +2510,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
         if (br) {
             //if (in_ref)
                 break;
-            
+
             // final load if needed [ assign_type, when set, indicates a L-hand side parse ]
             if (instanceof(mem, enode) && !is_loaded((Au)mem) && !assign_type) {
                 mem = enode_value(mem, false); // validate the LLVMValueRef we have for these; it should be the memory location (so in effect we have a struct* used as target)
@@ -2580,8 +2585,6 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     silver    module    = !cmode && (top->is_namespace) ? a : null;
     enode     mem       = null;
 
-    int slen = len(a->stack);
-
     if (!cmode && read_if(a, "[")) {
         enode n = parse_expression(a, mdl_expect, false, true);
         validate(n, "could not read expression");
@@ -2620,10 +2623,10 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
                         res0 = e_create(a, mdl_found, (Au)null); // required conversion
                     }
                 }
-            } //else if (a->assign_type == OPType__bind &&
-            //        (from_ref || is_class(mdl_found) || is_ptr(mdl_found))) {
-            //    res0 = e_null(a, mdl_found);
-            else {
+            } else if (a->assign_type == OPType__bind &&
+                    (from_ref || is_class(mdl_found) || is_ptr(mdl_found))) {
+                res0 = e_null(a, mdl_found);
+            } else {
                 res0 = e_create(a, mdl_found, null);
             }
             enode conv = e_create(a, mdl_expect, (Au)res0);
@@ -2847,14 +2850,8 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     }
 
     // we may only support a limited set of C functionality for #define macros
-    int slen1 = len(a->lexical);
     mem = parse_member(a, null, null, mdl_expect, from_ref); // we never parse assignment here
-    int slen12 = len(a->lexical);
-    verify(slen1 == slen12, "stack state");
 
-    if (seq == 431) {
-        seq = seq;
-    }
     if (!mem && cmode) return null;
     validate(!instanceof(mem, edecl), "unexpected declaration of member %s", mem->au->ident);
     if (load && !is_loaded((Au)mem))
@@ -3004,7 +3001,7 @@ enode parse_statement(silver a)
             is_func ? typeid(efunc) : ((access || f || (!!module)) ? typeid(evar) : null), null, false) : null;
     Au_t mem_info = isa(mem);
 
-    if (mem && mem->au->ident && strcmp(mem->au->ident, "rng_state") == 0) {
+    if (mem && mem->au->ident && strcmp(mem->au->ident, "rng_state2") == 0) {
         seq = seq;
     }
 
@@ -3105,7 +3102,7 @@ enode parse_statement(silver a)
 
             bool is_f = is_getter|is_ctr|is_lambda|is_func|is_cast;
             verify(assign_enum == OPType__bind || is_f, "invalid member syntax, expected member:type[ initializer ]");
-            if (seq == 81)
+            if (seq == 29)
                 seq = seq;
             etype rtype = (mem && mem->au->member_type == AU_MEMBER_DECL) && !is_f ?
                             read_etype(a, null) : null;
@@ -3133,7 +3130,7 @@ enode parse_statement(silver a)
             mem = (enode)evar(mod, (aether)a, au, au, loaded, false,
                 meta_a, rtype->meta_a, meta_b, rtype->meta_b,
                 initializer, (tokens)map_initializer(a, string(au->ident), (tokens)expr, au->access_type));
-            mem->au->access_type = (u8)access;
+            
             e = (enode)mem;
             etype_register((aether)a, (Au)au, (Au)mem, true);
 
@@ -5587,7 +5584,7 @@ enode parse_expect(silver a) {
 enode parse_break(silver a) {
     consume(a);
     int depth = 0;
-    array within = read_within(a);
+    array within = next_is(a, "[") ? read_within(a) : null;
     if (within) {
         push_tokens(a, (tokens)within, 0);
         Au extra = read_numeric(a);

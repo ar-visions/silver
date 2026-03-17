@@ -99,6 +99,7 @@ def eval_braces(s, context=None):
         "lin": sys.platform.startswith("linux"),
         "mac": sys.platform == "darwin",
         "SDK": SDK,
+        "os": os,
         "default_generator": 'Visual Studio 17 2022' if win else 'Ninja'
     })
     def repl(match):
@@ -185,7 +186,12 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
         # make symlink for name -> last_name in the checkout dir (so we dont do double checkouts on these combined projects)
         if last_name and last_name != name:
             target_path = Path(root) / 'checkout' / last_name
-            if not checkout_dir.exists():
+            if not checkout_dir.exists() and not checkout_dir.is_symlink():
+                checkout_dir.symlink_to(target_path, target_is_directory=True)
+            elif checkout_dir.is_symlink():
+                pass  # already linked
+            elif checkout_dir.is_dir():
+                shutil.rmtree(checkout_dir)
                 checkout_dir.symlink_to(target_path, target_is_directory=True)
     elif checkout_dir.exists():
         if commit:
