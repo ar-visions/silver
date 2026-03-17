@@ -726,11 +726,26 @@ static struct cmp_entry* cmp_lookup(OPType op) {
     return null;
 }
 
+bool is_system(Au a) {
+    Au_t au = au_arg(a);
+    return au->is_system || (au->src && au->src->is_system);
+}
+
 enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
     a->is_const_op = false;
     etype bool_t = etypeid(bool);
 
     if (a->no_build) return e_noop(a, bool_t);
+
+    // pointer operands (e.g. typeid comparison for 'is') — compare directly
+    if (is_system((Au)L) || is_system((Au)R)) {
+        struct cmp_entry* cmp = cmp_lookup(optype);
+        verify(cmp, "invalid comparison operator");
+        char N[64];
+        sprintf(N, "actual_op_%i_%s", seq, cmp->name);
+        return value(bool_t,
+            LLVMBuildICmp(B, cmp->ui_pred, L->value, R->value, N));
+    }
 
     // normalize operands to common arithmetic type BEFORE any comparison
     // result is always bool, but operands must match each other
@@ -2957,7 +2972,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         return input;
     }
 
-    if (seq == 4871) {
+    if (seq == 7292) {
         seq = seq;
     }
  
@@ -5019,7 +5034,7 @@ none etype_implement(etype t, bool w) { sequencer
     Au_t      top       = top_scope(a);
     aether    module    = is_module(top) ? a : null;
 
-    if (t->au->ident && strcmp(t->au->ident, "ComponentType") == 0) {
+    if (t->au->ident && strcmp(t->au->ident, "rng") == 0) {
         t = t;
     }
     if (t->au->ident && strcmp(t->au->ident, "params2") == 0) {
@@ -5038,6 +5053,11 @@ none etype_implement(etype t, bool w) { sequencer
 
     bool was_implemented = t->is_implemented;
     if (was_implemented && !is_enum(t)) return;
+
+    // ensure record body is parsed before implementing
+    if (is_rec(t) && t->body && !t->user_built && a->prepare_record)
+        ((void(*)(Au, Au))a->prepare_record)((Au)a, (Au)t);
+
     t->is_implemented = true;
 
     if (au->ident && strcmp(au->ident, "vec3f") == 0) {
@@ -5146,6 +5166,16 @@ none etype_implement(etype t, bool w) { sequencer
 
             if (is_class(t) && (!multi_Au || tt->au != typeid(Au)))
                 count++; // u8 Type_interns[isize]
+        }
+
+        if (au->ident && strcmp(au->ident, "rng") == 0) {
+            printf("etype_implement rng: members.count=%d, count=%d\n", au->members.count, count);
+            for (int i = 0; i < au->members.count; i++) {
+                Au_t m = (Au_t)au->members.origin[i];
+                printf("  [%d] %s member_type=%d is_static=%d src=%s\n",
+                    i, m->ident ? m->ident : "(null)", m->member_type, m->is_static,
+                    m->src ? (m->src->ident ? m->src->ident : "(no ident)") : "(no src)");
+            }
         }
 
         LLVMTypeRef* struct_members = calloc(count + 2, sizeof(LLVMTypeRef));
@@ -6591,7 +6621,7 @@ enode aether_e_subroutine(aether a, etype rtype, array body, subprocedure build_
     
     Au_t au_cat = def(null, "catcher", AU_MEMBER_NAMESPACE, 0);
     catcher cat = catcher(mod, a, block, merge, au, au_cat);
-    etype_register(a, (Au)au_cat, (Au)cat, false);
+    etype_register(a, (Au)au_cat, (Au)cat, true);
     cat->rtype = rtype;  // so return knows the type
     
     // build phi first so return-in-sub can add incoming
