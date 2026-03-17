@@ -729,10 +729,10 @@ void silver_parse(silver a) {
     if (a->platform && len(a->platform)) {
         string p = a->platform;
         // derive OS from platform name
-        target_mac = strstr(p->chars, "mac")   || strstr(p->chars, "ios");
-        target_lin = strstr(p->chars, "linux") || strstr(p->chars, "jetson") ||
-                     strstr(p->chars, "android");
-        target_win = strstr(p->chars, "windows");
+        target_mac = strstr(p->chars, "mac")   != NULL || strstr(p->chars, "ios")     != NULL;
+        target_lin = strstr(p->chars, "linux") != NULL || strstr(p->chars, "jetson")  != NULL ||
+                     strstr(p->chars, "android") != NULL;
+        target_win = strstr(p->chars, "windows") != NULL;
         // derive arch from platform name
         if      (strstr(p->chars, "x86_64") || strstr(p->chars, "x86-64"))  target_arch = "x86_64";
         else if (strstr(p->chars, "x86")    || strstr(p->chars, "i686"))    target_arch = "x86";
@@ -956,15 +956,16 @@ void silver_init(silver a) {
     // platform dispatch: build docker prefix for non-native targets
     // all architecture-specific exec calls get this prepended
     if (a->platform && len(a->platform) && cmp(a->platform, "native") != 0) {
+        path   silver_root = absolute(path(SILVER));
         string image = f(string, "silver-platform-%o", a->platform);
-        path   plat  = f(path,   "%o/platform/%o", a->install, a->platform);
+        path   plat  = f(path,   "%o/platform/%o", silver_root, a->platform);
         path   df    = f(path,   "%o/Dockerfile", plat);
 
         // build docker image if needed
         if (exec(false, "docker image inspect %o >/dev/null 2>&1", image) != 0) {
             verify(file_exists("%o", df), "no Dockerfile for platform: %o", a->platform);
             verify(exec(a->verbose,
-                "docker build -t %o -f %o %o", image, df, a->install) == 0,
+                "docker build -t %o -f %o %o", image, df, silver_root) == 0,
                 "docker build failed for platform: %o", a->platform);
         }
 
@@ -3906,7 +3907,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
         vexec(a->verbose, "configure",
               "%o%o cmake -B %o -S %o %o -DCMAKE_INSTALL_PREFIX=%o -DCMAKE_BUILD_TYPE=%s %o",
-              dk, env, build_f, project_f, opt, install, build, config);
+              docker, env, build_f, project_f, opt, install, build, config);
 
         vexec(a->verbose, "build", "%o%o cmake --build %o -j16", docker, env, build_f);
         vexec(a->verbose, "install", "%o%o cmake --install %o", docker, env, build_f);
@@ -3915,7 +3916,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
         vexec(a->verbose, "setup",
               "%o%o meson setup %o --prefix=%o --buildtype=%s %o",
-              dk, env, build_f, install, build, config);
+              docker, env, build_f, install, build, config);
 
         vexec(a->verbose, "compile", "%o%o meson compile -C %o", docker, env, build_f);
         vexec(a->verbose, "install", "%o%o meson install -C %o", docker, env, build_f);
@@ -3925,7 +3926,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         vexec(a->verbose, "ninja", "%oninja -C %o -j8", docker, build_f);
     } else if (is_rust) { // todo: copy bin/lib after
         vexec(a->verbose, "rust", "%ocargo build --%s --manifest-path %o/Cargo.toml --target-dir %o",
-              dk, debug ? "debug" : "release", project_f, build_f);
+              docker, debug ? "debug" : "release", project_f, build_f);
     } else if (is_silver) { // build for Au-type projects
         silver sf = silver(module, silver_f, breakpoint, a->breakpoint, debug, a->debug,
             verbose, a->verbose, is_external, a->is_external ? a->is_external : a);
@@ -3949,10 +3950,10 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             // generate configuration scripts if available
             else if (!file_exists("%o/configure", project_f) && file_exists("%o/configure.ac", project_f)) {
                 verify(exec(a->verbose, "%oautoupdate --verbose --force --output=%o/configure.ac %o/configure.ac",
-                            dk, project_f, project_f) == 0,
+                            docker, project_f, project_f) == 0,
                        "autoupdate");
                 verify(exec(a->verbose, "%oautoreconf -i %o",
-                            dk, project_f) == 0,
+                            docker, project_f) == 0,
                        "autoreconf");
             }
 
@@ -3961,7 +3962,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
             if (file_exists("%o/%o", project_f, configure)) {
                 verify(exec(a->verbose, "%o%o (cd %o && %o%s --prefix=%o %o)",
-                            dk, env,
+                            docker, env,
                             project_f,
                             configure,
                             debug ? " --enable-debug" : "",
