@@ -209,31 +209,14 @@
     _STRUCT_OF_N, _STRUCT_OF_N, _STRUCT_OF_N, _STRUCT_OF_N, _STRUCT_OF_N, \
     _STRUCT_OF_N, _STRUCT_OF_N, _STRUCT_OF_N, _STRUCT_OF_N, _STRUCT_OF_1)(TYPE, __VA_ARGS__)
 
-#define _ARG_COUNT_IMPL2(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20, _21, _22, N, ...) N
-#define _ARG_COUNT2(...)        _ARG_COUNT_IMPL2(__VA_ARGS__, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1)
-#define _COMBINE_2(A, B)        A##B
-#define _COMBINE2(A, B)         _COMBINE_2(A, B)
-#define _F(T, a,b)              (((1 << (i64)T##_##a) * b)) 
-#define _F_ARGS_0(T)
-#define _F_ARGS_1(T)                  
-#define _F_ARGS_2(T, a,b)                    _F(T, a, b)
-#define _F_ARGS_4(T, a,b, c,d)               _F_ARGS_2 (a,b) | _F(T, c,d)
-#define _F_ARGS_6(T, a,b, c,d, e,f)          _F_ARGS_4 (a,b, c, d) | _F(T, e,f)
-#define _F_ARGS_8(T, a,b, c,d, e,f, g,h)     _F_ARGS_6 (a,b, c, d, e, f) | _F(T, g,h)
-#define _F_ARGS(T,...)    _F_ARGS_HELPER2(T, _ARG_COUNT2(__VA_ARGS__), __VA_ARGS__)
-#define _F_ARGS_HELPER2(T, N, ...)  _COMBINE2(_F_ARGS_, N)(T, __VA_ARGS__)
-#define flags(T, ...) _F_ARGS(T, __VA_ARGS__);
 
-#define new(TYPE, ...) TYPE(__VA_ARGS__)
+#ifndef __cplusplus
+#define new(TYPE, ...) new0(TYPE __VA_OPT__(,) __VA_ARGS__)
+#endif
+
+#define _new(TYPE, ...) new0(TYPE __VA_OPT__(,) __VA_ARGS__)
 
 /// with construct we give it a dynamic type, symbols and Au-values
-#define construct(type, ...) \
-    ({ \
-        T instance = (T)alloc(type, 1, null, (Au_t*)null); \
-        _N_ARGS(instance, ## __VA_ARGS__); \
-        Au_initialize((Au)instance); \
-        instance; \
-    })
 
 #define new0(T, ...) \
     ({ \
@@ -243,7 +226,7 @@
         instance; \
     })
 
-#define allocate(T, ...) \
+#define Au_allocate(T, ...) \
     ({ \
         T instance = (T)alloc(typeid(T), 1, null, (Au_t*)null); \
         _N_ARGS(instance, ## __VA_ARGS__); \
@@ -1558,7 +1541,7 @@
 #define   i_method_abstract_INST_L_EXTERN(  X, R, N, ...)
 #define   i_method_abstract_DEF(    X, R, N, ...)
 #define   i_method_abstract_DECL(    X, R, N, ...)           R X##_##N(__VA_ARGS__);
-#define   i_method_abstract_DECL_EXTERN(    X, R, N, ...)    
+#define   i_method_abstract_DECL_EXTERN(    X, R, N, ...)    R X##_##N(__VA_ARGS__);
 #define   i_method_abstract_GENERICS(X, R, N, ...)
 #define   i_method_abstract_INIT(    X, R, N, ...) { \
     Au_t m = def(typeid(X), #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD | AU_TRAIT_ABSTRACT); \
@@ -1588,7 +1571,7 @@
 #define   i_method_public_INST_L_EXTERN(  X, R, N, ...)
 #define   i_method_public_DEF(    X, R, N, ...)
 #define   i_method_public_DECL(    X, R, N, ...)           R X##_##N(__VA_ARGS__);
-#define   i_method_public_DECL_EXTERN(    X, R, N, ...)    
+#define   i_method_public_DECL_EXTERN(    X, R, N, ...)    R X##_##N(__VA_ARGS__);
 #define   i_method_public_GENERICS(X, R, N, ...)
 #define   i_method_public_INIT(    X, R, N, ...) { \
     Au_t m = def(typeid(X), #N, AU_MEMBER_FUNC, AU_TRAIT_IMETHOD); \
@@ -2241,9 +2224,10 @@
 #define pairs(MM, EE) \
     for (item EE = (MM && MM->first) ? MM->first : (item)null; EE; EE = EE->next)
 
-
 #define         form(T, t, ...)   (T)formatter(typeid(T), false, null, (Au)false, seq, (symbol)t, ## __VA_ARGS__)
 #define            f(T, t, ...)   (T)formatter(typeid(T), false, null, (Au)false, seq, (symbol)t, ## __VA_ARGS__)
+
+#ifndef __cplusplus
 #define         exec(verbose, t, ...)      command_exec(((command)formatter((Au_t)typeid(command), false, null, (Au)false, seq, (symbol)t, ## __VA_ARGS__)), verbose)
 #define          run(verbose, t, ...)      command_run(((command)formatter((Au_t)typeid(command), false, null, (Au)false, seq, (symbol)t, ## __VA_ARGS__)), verbose)
 #define         vexec(verbose, n, t, ...)     verify(exec(verbose, (string)t __VA_OPT__(,) __VA_ARGS__) == 0, "shell command failed: %s", n);
@@ -2253,23 +2237,23 @@
 #define          put(t,    ...)   formatter((Au_t)null, false, stdout, (Au)false, seq, (symbol)t, ## __VA_ARGS__)
 //#define        print(L, t,    ...) formatter((Au_t)null,      stdout, (Au)true,  seq, (symbol)t, ## __VA_ARGS__)
 #define        error(t, ...)      formatter((Au_t)null, false, stderr, (Au)true,  seq, (symbol)t, ## __VA_ARGS__)
-
+#endif
 
 #define print_info(t, ...)   ({\
     static string _topic = null; \
-    if (!_topic) _topic = (string)hold((Au)new(string, __func__)); \
+    if (!_topic) _topic = (string)hold((Au)_new(string, chars, (cstr)__func__)); \
     formatter((Au_t)null, true, stdout, (Au)_topic, seq, t, ## __VA_ARGS__); \
 })
 
 #define print(t, ...)   ({\
     static string _topic = null; \
-    if (!_topic) _topic = (string)hold((Au)new(string, __func__)); \
+    if (!_topic) _topic = (string)hold((Au)_new(string, chars, (cstr)__func__)); \
     formatter((Au_t)null, false, stdout, (Au)_topic, seq, t, ## __VA_ARGS__); \
 })
 
 #define fault(t, ...) do {\
     static string _topic = null; \
-    if (!_topic) _topic = (string)Au_hold((Au)new(string, __func__)); \
+    if (!_topic) _topic = (string)Au_hold((Au)_new(string, chars, (cstr)__func__)); \
      string res = (string)formatter((Au_t)null, false, stderr, (Au)_topic,  seq, (symbol)t, ## __VA_ARGS__); \
      halt(res, null); \
     } while(0)
@@ -2292,6 +2276,8 @@
     a*a \
 })\
 
+#ifndef __cplusplus
+
 #define min(A, B) ({ \
     __typeof__(A) a = A; \
     __typeof__(B) b = B; \
@@ -2305,6 +2291,8 @@
     __typeof__(A) r = a > b ? a : b; \
     r; \
 })
+
+#endif
 
 #define mset(m, k, v) set(m, (Au)string(k), (Au)v)
 #define mget(m, k)    get(m, (Au)string(k))

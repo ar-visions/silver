@@ -58,6 +58,18 @@ extern "C" {
 #include <aether/import>
 #pragma pack(pop)
 
+i64 array_count(array);
+Au  array_get(array, i64);
+bool path_exists(path);
+bool path_save(path, Au, ctx);
+
+#undef each
+#define each(container, E, e) \
+    if (container && array_count((container))) for (E e = (E)array_get(((array)container), 0), e0 = 0; e0 == 0; e0++) \
+        for (num __i = 0, __len = array_count((container)); __i < __len; __i++, e = (E)array_get(((array)container), __i)) \
+
+
+#undef init
 #undef ctx
 #undef str
 #undef render
@@ -136,13 +148,13 @@ static Au_t _find_member(Au_t parent, symbol name) {
 
 static void push_context(NamedDecl* decl, aether e) {
     auto s = namespace_stack((NamespaceDecl*)decl);
-    Au_t cur = top_scope(e);
+    Au_t cur = aether_top_scope(e);
     for (clang::NamedDecl* n: s) {
         std::basic_string<char> s = n->getNameAsString();
         symbol name = s.c_str();
         Au_t m = _find_member(cur, name);
         verify(m, "namespace not found: %s", name);
-        push_scope(e, (Au)m);
+        aether_push_scope(e, (Au)m);
         cur = m;
     }
 }
@@ -150,7 +162,7 @@ static void push_context(NamedDecl* decl, aether e) {
 static void pop_context(NamedDecl* decl, aether e) {
     auto s = namespace_stack((NamespaceDecl*)decl);
     for (size_t i = 0; i < s.size(); i++) {
-        pop(e->lexical); // pop from lexical stack
+        array_pop(e->lexical); // pop from lexical stack
     }
 }
 
@@ -213,7 +225,7 @@ static Au_t map_builtin_type(const BuiltinType* bt, aether e) {
 }
 
 static Au_t map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, aether e) {
-    Au_t parent = top_scope(e);
+    Au_t parent = aether_top_scope(e);
     
     // Create function type
     Au_t fn = def(parent, null, AU_MEMBER_TYPE, AU_TRAIT_FUNCPTR);
@@ -255,7 +267,7 @@ static Au_t map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e,
     }
     
     if (const FunctionNoProtoType* fnpt = dyn_cast<FunctionNoProtoType>(pointee)) {
-        Au_t parent = top_scope(e);
+        Au_t parent = aether_top_scope(e);
         Au_t fn = def(parent, null, AU_MEMBER_FUNC, AU_TRAIT_FUNCPTR);
         //fn->module = e->current_import->au;
         fn->rtype = map_clang_type(fnpt->getReturnType(), ctx, e, null);
@@ -294,7 +306,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         
         if (underlying && new_name) {
             // Create alias
-            Au_t alias = def_type(top_scope(e), new_name, AU_TRAIT_ALIAS);
+            Au_t alias = def_type(aether_top_scope(e), new_name, AU_TRAIT_ALIAS);
             //alias->module = e->current_import->au;
             alias->src = underlying;
             return alias;
@@ -309,7 +321,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
     if (const BuiltinType* bt = dyn_cast<BuiltinType>(type)) {
         Au_t src = map_builtin_type(bt, e);
         if (src && use_name) {
-            Au_t alias = def_type(top_scope(e), use_name, AU_TRAIT_ALIAS);
+            Au_t alias = def_type(aether_top_scope(e), use_name, AU_TRAIT_ALIAS);
             //alias->module = e->current_import->au;
             alias->src = src;
             return alias;
@@ -333,7 +345,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         
         // Create array type - need to represent shape somehow
         // For now, create a type with size info
-        Au_t arr = def_type(top_scope(e), use_name, 0);
+        Au_t arr = def_type(aether_top_scope(e), use_name, 0);
         //arr->module = e->current_import->au;
         arr->src = elem;
         arr->elements = esize; // store array size
@@ -349,7 +361,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         Au_t elem = map_clang_type(elem_type, ctx, e, null);
         if (!elem) return null;
         
-        Au_t arr = def_type(top_scope(e), use_name, 0);
+        Au_t arr = def_type(aether_top_scope(e), use_name, 0);
         //arr->module = e->current_import->au;
         arr->src = elem;
         arr->elements = 0; // flexible array
@@ -474,7 +486,7 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     if (existing) return existing;
 
     bool is_union = decl->isUnion();
-    Au_t parent = top_scope(e);
+    Au_t parent = aether_top_scope(e);
 
     // Incomplete definition → opaque
     if (!decl->isCompleteDefinition() || decl->isInvalidDecl() || decl->isDependentType()) {
@@ -493,9 +505,9 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     const ASTRecordLayout& layout = ctx.getASTRecordLayout(decl);
     //rec->record_alignment = layout.getAlignment().getQuantity(); // in bytes
 
-    push_scope(e, (Au)rec);
+    aether_push_scope(e, (Au)rec);
     set_fields(decl, ctx, e, rec);
-    pop(e->lexical);
+    array_pop(e->lexical);
     return rec;
 }
 
@@ -506,7 +518,7 @@ static Au_t create_opaque_class(CXXRecordDecl* cxx, aether e) {
     Au_t existing = au_lookup(n);
     if (existing) return existing;
 
-    Au_t rec = def_class(top_scope(e), n);
+    Au_t rec = def_class(aether_top_scope(e), n);
     //rec->module = e->current_import->au;
     return rec;
 }
@@ -520,10 +532,10 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
     Au_t existing = au_lookup(n);
     if (existing) return existing;
 
-    Au_t parent = top_scope(e);
+    Au_t parent = aether_top_scope(e);
     Au_t rec = def_class(parent, n);
     //rec->module = e->current_import->au;
-    push_scope(e, (Au)rec);
+    aether_push_scope(e, (Au)rec);
     
     // Handle bases
     const ASTRecordLayout& layout = ctx.getASTRecordLayout(cxx);
@@ -592,20 +604,20 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
         fn->fn = (void*)strdup(mg.c_str()); // store extern name
     }
     
-    pop(e->lexical);
+    array_pop(e->lexical);
     return rec;
 }
 
 static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string name) {
     symbol n = name.length() ? name.c_str() : null;
     
-    Au_t parent = top_scope(e);
+    Au_t parent = aether_top_scope(e);
     Au_t en = def_enum(parent, n, 0);
     //en->module = e->current_import->au;
     en->is_c = true;
     en->src = au_lookup("i32");
     
-    push_scope(e, (Au)en);
+    aether_push_scope(e, (Au)en);
     
     for (auto it = decl->enumerator_begin(); it != decl->enumerator_end(); ++it) {
         EnumConstantDecl* ec = *it;
@@ -618,14 +630,14 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
         Au_t ev = def_enum_value(en, cn, (Au)value);
     }
     
-    pop(e->lexical);
+    array_pop(e->lexical);
     return en;
 }
 
 static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string name) {
     symbol n = name.c_str();
     
-    Au_t parent = top_scope(e);
+    Au_t parent = aether_top_scope(e);
     Au_t fn = def(parent, n, AU_MEMBER_FUNC, 0);
     if (n && strcmp(n, "printf") == 0) {
         int test2 = 2;
@@ -673,8 +685,8 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
             }
         }
     } else if (n && decl->isVariadic()) {
-        string st = stem(e->current_inc);
-        if (eq(st, "stdio")) {
+        string st = path_stem(e->current_inc);
+        if (string_eq(st, "stdio")) {
             // glibc removed __attribute__((format)) from these; patch it in
             static const struct { const char* name; int fmt_arg; } fmt_table[] = {
                 {"printf",  0}, {"fprintf", 1}, {"sprintf", 1},
@@ -701,7 +713,7 @@ static Au_t create_namespace(NamespaceDecl* ns, ASTContext& ctx, aether e) {
     symbol n = qname.c_str();
     auto s = namespace_stack(ns);
 
-    Au_t cur = top_scope(e);
+    Au_t cur = aether_top_scope(e);
     int index = 0;
 
     for (clang::NamedDecl* ndecl: s) {
@@ -753,7 +765,7 @@ public:
         Au_t underlying = map_clang_type(decl->getUnderlyingType(), ctx, e, null);
         
         if (underlying) {
-            Au_t alias = def_type(top_scope(e), name.c_str(), AU_TRAIT_ALIAS);
+            Au_t alias = def_type(aether_top_scope(e), name.c_str(), AU_TRAIT_ALIAS);
             //alias->module = e->current_import->au;
             alias->src = underlying;
         }
@@ -880,6 +892,10 @@ public:
 
 typedef aether silver;
 
+extern "C" {
+none array_push(array, Au);
+}
+
 class MacroCollector2 : public clang::PPCallbacks {
 public:
     aclang_cc instance;
@@ -911,22 +927,22 @@ public:
         }
 
         // Note: 'string' is a silver type constructor from 'aether/import'
-        string body_str = string(body_text.c_str());
+        string body_str = new0(string, chars, (cstr)body_text.c_str());
         tokens body_tokens = new0(tokens, target, (Au)e, parser, e->parse_f, input, (Au)body_str);
-        token f = (token)first_element((array)body_tokens);
+        token f = (token)array_first_element((array)body_tokens);
 
         // Handle Params
         array params_array = nullptr;
         bool va_args = mi->isVariadic();
 
         if (mi->isFunctionLike()) {
-            params_array = array(alloc, mi->getNumParams());
+            params_array = new0(array, alloc, mi->getNumParams());
             for (auto param : mi->params()) {
                 std::string p_name = param->getName().str();
-                Au p_str = (Au)string(p_name.c_str());
+                Au p_str = (Au)new0(string, chars, (cstr)p_name.c_str());
                 array p_toks = (array)new0(tokens, target, (Au)e, parser, e->parse_f, input, p_str);
                 if (p_toks && p_toks->count > 0) {
-                     push(params_array, p_toks->origin[0]);
+                    array_push(params_array, p_toks->origin[0]);
                 }
             }
         }
@@ -935,9 +951,9 @@ public:
             token t = (token)body_tokens->origin[i];
             t->cmode = true;
         }
-        macro m = macro(
+        macro m = new0(macro,
             mod,        e, 
-            au,         def(top_scope(e), n, AU_MEMBER_MACRO, 0),
+            au,         def(aether_top_scope(e), n, AU_MEMBER_MACRO, 0),
             def,        (array)body_tokens, 
             params,     params_array, 
             va_args,    va_args);
@@ -974,11 +990,11 @@ path aether_lookup_include(aether e, string include) {
             each(includes, path, i) {
                 if (e->isysroot) {
                     path r = f(path, "%o/%o/%o", e->isysroot, i, include);
-                    if (exists(r))
+                    if (path_exists(r))
                         return r;
                 }
                 path r = f(path, "%o/%o", i, include);
-                if (exists(r))
+                if (path_exists(r))
                     return r;
             }
     }
@@ -992,15 +1008,15 @@ void aether_import_models(aether a, Au_t, bool);
 path aether_include(aether e, Au inc, string ns) {
     aclang_cc instance = null;
     path ipath = (Au_t)isa(inc) == typeid(string) ?
-        lookup_include(e, (string)inc) : (path)inc;
+        aether_lookup_include(e, (string)inc) : (path)inc;
 
-    verify(ipath && exists(ipath), "include path does not exist: %o",
+    verify(ipath && path_exists(ipath), "include path does not exist: %o",
         ipath ? (Au)ipath : inc);
     e->current_inc = ipath;
 
-    string incl = string(ipath->chars);
-    bool is_header = ends_with(incl, ".h") ||
-                     ends_with(incl, ".hpp");
+    string incl = new0(string, chars, ipath->chars);
+    bool is_header = string_ends_with(incl, ".h") ||
+                     string_ends_with(incl, ".hpp");
 
     auto DiagID(new DiagnosticIDs());
     auto DiagOpts = new DiagnosticOptions();
@@ -1009,9 +1025,9 @@ path aether_include(aether e, Au inc, string ns) {
     auto Invocation = std::make_shared<CompilerInvocation>();
 
     path res = f(path, "%o/lib/clang/22", e->install);
-    path c = f(path, "/tmp/%o.c", stem(ipath));
+    path c = f(path, "/tmp/%o.c", path_stem(ipath));
     string contents = f(string, "#include \"%o\"\n", ipath);
-    save(c, (Au)contents, null);
+    path_save(c, (Au)contents, null);
 
     symbol compile_unit = is_header ? c->chars : ipath->chars;
 
@@ -1134,7 +1150,7 @@ path aether_include(aether e, Au inc, string ns) {
     Diags->setIgnoreAllWarnings(true);
     Diags->setSuppressSystemWarnings(true);
     
-    instance = aclang_cc(
+    instance = new0(aclang_cc,
         mod, e, compiler, (handle)compiler, PP, (handle)&compiler->getPreprocessor());
     compiler->getPreprocessor().addPPCallbacks(
         std::make_unique<MacroCollector2>(instance));
@@ -1153,7 +1169,7 @@ path aether_include(aether e, Au inc, string ns) {
         LLVMLinkModules2(e->module_ref, cMod);
     }
 
-    aether_import_models(e, top_scope(e), false);
+    aether_import_models(e, aether_top_scope(e), false);
 
     Au info = head(e->current_inc);
 

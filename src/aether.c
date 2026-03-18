@@ -185,7 +185,7 @@ enode enode_value(enode mem, bool force_load) { sequencer
             test2    += 2;
         }
 
-    if (!mem->loaded && (force_load || !is_struct(canonical(mem))) && !mem->au->is_imethod) {
+    if (!mem->loaded && (force_load || !is_struct(canonical(mem))) && !mem->au->is_imethod && (!is_func((Au)mem) || is_func_ptr((Au)mem))) {
         if (mem->au->ident && strstr(mem->au->ident, "SND_PCM_STREAM") != NULL) {
             mem = mem; // breakpoint: loading SND_PCM_STREAM enum
         }
@@ -1419,8 +1419,9 @@ void etype_register(aether a, Au key, Au value, bool overwrite) {
 }
 
 enode aether_e_operand(aether a, Au op, etype src_model) {
-    if (instanceof(op, enode) || instanceof(op, efunc)) {
-        enode n = (enode)op;
+    if (instanceof(op, efunc)) {
+        // efuncs are already resolved — don't load
+    } else if (instanceof(op, enode)) {
         op = (Au)enode_value((enode)op, false);
     }
     if (!op) {
@@ -2596,7 +2597,7 @@ enode aether_e_typeid(aether a, etype mdl) { sequencer
     if (!mdl)
         return e_null(a, etypeid(Au_t));
 
-    if (instanceof(mdl, enode)) { // so we can take in member variables
+    if (instanceof(mdl, enode) && ((enode)mdl)->value) { // so we can take in member variables
         return e_runtime_type((enode)mdl);
     }
     
