@@ -454,6 +454,8 @@ LLVMMetadataRef debug_enum_type(aether a, Au_t type_au) {
 // and DW_TAG_subprogram entries for methods attached to the type.
 // uses a forward-declaration placeholder to break circular references.
 // ────────────────────────────────────────────────────────────────────────────
+etype etype_prep(aether, Au_t);
+
 LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
     if (!a->debug || !a->compile_unit) return null;
     if (!type_au || !type_au->ident) return null;
@@ -462,9 +464,9 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
         type_au = type_au;
 
     // use lldebug as cache
-    etype et = u(etype, type_au);
+    etype et = etype_prep(a, type_au);
     if (et && et->lldebug) return et->lldebug;
-
+    
     cstr struct_name = type_au->ident;
     u32  name_len    = strlen(struct_name);
 
@@ -599,7 +601,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
                 m_align = align_for_type(a, msrc);
             }
             u64 offset_bits;
-            if (et && et->lltype)
+            if (et && et->lltype && LLVMGetTypeKind(et->lltype) == LLVMStructTypeKind && !LLVMIsOpaqueStruct(et->lltype))
                 offset_bits = LLVMOffsetOfElement(a->target_data, et->lltype, m->index) * 8;
             else
                 offset_bits = (u64)m->offset * 8;

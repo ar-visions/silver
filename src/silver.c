@@ -7,6 +7,7 @@
 // with syntax that makes programming enjoyable
 // to express intent clearly in modular development, easily targeting all platforms
 
+etype etype_prep(silver, Au_t);
 enode parse_statements(silver a);
 enode parse_statement(silver a);
 void build_fn(silver a, efunc fmem, callback preamble, callback postamble);
@@ -37,8 +38,7 @@ static void build_record_functions(silver a, etype mrec);
 #define au_lookup(sym) lexical(a->lexical, sym)
 
 #define elookup(sym) ({ \
-    Au_t m = lexical(a->lexical, sym); \
-    m ? u(etype, m) : null; \
+    (etype)rlookup((aether)a, string(sym)); \
 })
 
 token aether_peek_safe(silver);
@@ -2307,6 +2307,9 @@ string read_alpha_macrofilter(silver a, bool is_decl) {
 
 enode enode_super(etype, enode);
 
+
+etype etype_create(silver, Au_t);
+
 enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_mdl, bool in_ref) { static int seq = 0; seq++;
     OPType assign_enum = OPType__undefined;
     Au_t   top     = top_scope(a);
@@ -2314,7 +2317,8 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
     silver module  =  !is_cmode(a) && (top->is_namespace) ? a : null;
     efunc  f       =  !is_cmode(a) ? context_func(a) : null;
     bool   in_rec  = rec_top && rec_top->au == top;
-
+    token t1 = element(a, 1);
+    bool new_bind = t1 && eq(t1, ":") != null;
     
     if (seq == 593) {
         seq = seq;
@@ -2352,7 +2356,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
 
 
 
-        if (alpha && eq(alpha, "test2")) {
+        if (alpha && eq(alpha, "res_dealloc")) {
             mem = mem;
         }
 
@@ -2404,6 +2408,10 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
 
         /// Lookup or resolve member
         if (!ns_found) {
+            if (seq == 438) {
+                int test2 = 2;
+                test2    += 2;
+            }
             // we may only define our own members within our own space
             if (first) {
 
@@ -2415,9 +2423,9 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                 else if (!in_rec) {
                     // try implicit 'this' access in instance methods
                     if (!mem && f && f->target) {
-                        //mem = (enode)elookup(alpha->chars);]
-                        mem = (enode)elookup(alpha->chars);
-                        Au info = mem ? head(mem) : null;
+                        mem = (enode)rlookup((aether)a, alpha);
+                        //mem = (enode)elookup(alpha->chars);
+
                         if (mem && !mem->au->is_static) {
                             etype ftarg = etype_resolve((etype)f->target);
                             if (ftarg && in_context(mem->au, ftarg->au)) {
@@ -2426,12 +2434,12 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                         }
 
                     } else if (!f || !f->target) {
-                        mem = (enode)elookup(alpha->chars);
+                        mem = (enode)rlookup((aether)a, alpha);
                     }
                 } else if (in_rec && !in_decl) {
                     Au_t m = find_member(rec_top->au, alpha->chars, 0, 0, false);
                     if (m) mem = (enode)u(etype, m);
-                    else   mem = (enode)elookup(alpha->chars);
+                    else   mem = (enode)rlookup((aether)a, alpha);
                 }
 
                 if (!mem && scope_mdl) {
@@ -2464,7 +2472,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
 
             Au_t mem_type = isa(mem);
             bool b0, b1, b2, b3, b4;
-            if (seq == 224) {
+            if (seq == 438) {
                 seq = seq;
             }
 
@@ -2997,6 +3005,10 @@ enode parse_statement(silver a)
     bool      is_setter = !f && !is_static && !(is_func|is_lambda) && !is_cast && !is_oper && !is_ctr && !is_getter ?
         read_if(a, "setter")     != null : false;
 
+    if (seq == 438) {
+        int test2 = 2;
+        test2    += 2;
+    }
     OPType assign_enum = OPType__undefined;
     enode mem = (!is_cast && !is_oper && !is_getter && !is_setter && !is_ctr) ?
         parse_member(a, (ARef)&assign_enum,
@@ -3104,7 +3116,7 @@ enode parse_statement(silver a)
 
             bool is_f = is_getter|is_ctr|is_lambda|is_func|is_cast;
             verify(assign_enum == OPType__bind || is_f, "invalid member syntax, expected member:type[ initializer ]");
-            if (seq == 29)
+            if (seq == 438)
                 seq = seq;
             etype rtype = (mem && mem->au->member_type == AU_MEMBER_DECL) && !is_f ?
                             read_etype(a, null) : null;
@@ -4450,7 +4462,7 @@ static enode parse_func_call(silver a, efunc f) { sequencer
     
     a->expr_level++;
     Au_t    fmdl   = au_arg_type((Au)f);
-    efunc   fn     = (efunc)(is_func_ptr(f) ? u(enode, f->au) : u(enode, fmdl));
+    efunc   fn     = (efunc)(is_func_ptr(f) ? (enode)f : u(enode, fmdl));
     micro*  m      = (micro*)&fmdl->args;
     int     ln     = m->count, i = 0;
     array   values = array(alloc, 32, assorted, true);
@@ -5977,7 +5989,7 @@ static bool peek_fields(silver a) {
 enode silver_parse_member_expr(silver a, enode mem) { sequencer
     push_current(a);
 
-    if (seq == 5) {
+    if (seq == 37) {
         seq = seq;
     }
     macro is_macro = instanceof(mem, macro);
@@ -6045,6 +6057,8 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
             }
             if (!idx) idx = find_member(r->au, null, AU_MEMBER_GETTER, 0, true);
 
+            if (!idx)
+                idx = idx;
             validate(idx, "index method not found on %o", mem);
 
             validate(idx->args.count >= 2, "expected target and index args");
@@ -6161,7 +6175,7 @@ etype etype_of(enode mem) {
 
 enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const) { sequencer
 
-    if (strcmp(mem->au->ident, "rotation_m4") == 0) {
+    if (strcmp(mem->au->ident, "data") == 0) {
         mem = mem;
     }
     
@@ -6212,7 +6226,7 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
 
         // Promote the member to a variable
         Au_t ctx = top_scope(a);
-        if (strcmp(mem->au->ident, "height") == 0) {
+        if (strcmp(mem->au->ident, "data") == 0) {
             mem = mem;
         }
         mem->au->context = ctx;

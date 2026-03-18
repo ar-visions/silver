@@ -20,6 +20,59 @@ typedef LLVMMetadataRef LLVMScope;
     Au_t au = lexical(a->lexical, sym); \
     (au ? (etype)u(etype, au) : (etype)null); \
 })
+#undef elookup
+
+#define elookup(sym) ({ \
+    (etype)rlookup((aether)a, string(sym)); \
+})
+
+void etype_register(aether a, Au key, Au value, bool overwrite) {
+    if (!overwrite) {
+        Au existing = get(a->registry, key);
+        if (existing) {
+            existing = existing;
+        }
+        verify(!existing, "duplicate registration for %s", ((Au_t)key)->ident);
+    }
+    set(a->registry, key, value);
+}
+
+etype etype_create(aether a, Au_t m) { sequencer
+    if (m && m->src)
+        etype_create(a, m->src);
+    etype tm = u(etype, m);
+
+    if (m && !tm) {
+        int mt = m->member_type;
+
+        if (mt == AU_MEMBER_ENUMV) {
+            // skip — enum values are handled in etype_implement
+            mt = mt;
+        }
+        else if (is_func((Au)m) || is_func_ptr((Au)m)) {
+            return (etype)efunc(mod, a, loaded, true,  au, m);
+        }
+        else if (mt == AU_MEMBER_VAR || mt == AU_MEMBER_IS_ATTR) {
+            enode n = enode(mod, a, loaded, false, au, m);
+            etype_register(a, (Au)m, (Au)hold(n), false);
+            return (etype)n;
+        } else {
+            etype t = etype(mod, a, au, m); // this should be held in it's init
+            return t;
+        }
+    }
+    return tm;
+}
+
+etype etype_prep(aether a, Au_t au) { sequencer
+    etype mdl = u(etype, au);
+    if (!mdl || (!mdl->lltype)) {
+        if (!mdl) mdl = etype_create(a, au);
+        if (mdl && !mdl->is_implemented)
+            etype_implement(mdl, false);
+    }
+    return mdl;
+}
 
 #undef fault
 #define fault(t, ...) ({ \
@@ -1409,17 +1462,6 @@ static void resolve_context_members(enode target, map user_provides) {
     } while (type && type != typeid(Au));
 }
 
-void etype_register(aether a, Au key, Au value, bool overwrite) {
-    if (!overwrite) {
-        Au existing = get(a->registry, key);
-        if (existing) {
-            existing = existing;
-        }
-        verify(!existing, "duplicate registration for %s", ((Au_t)key)->ident);
-    }
-    set(a->registry, key, value);
-}
-
 enode aether_e_operand(aether a, Au op, etype src_model) {
     if (instanceof(op, efunc)) {
         // efuncs are already resolved — don't load
@@ -1898,7 +1940,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     static int seq2 = 0;
     seq2++;
 
-    if (seq2 == 14) {
+    if (seq2 == 472) {
         seq2 = seq2;
     }
 
@@ -1917,6 +1959,8 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     etype_implement((etype)fn, false);
     
     Au    arg0        = args ? get(args, 0) : null;
+    enode ff          = arg0;
+    Au    ff_info = head(ff);
     enode first_arg   = arg0 ? e_operand(a, arg0, null) : null;
     enode target_type = (!funcptr && fn->target) ? (enode)fn->target : null;
     bool  first_is_alloc = first_arg && first_arg->is_alloc && !first_arg->is_super;
@@ -1926,6 +1970,8 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
         Au info_target_instance = head(arg0);
         bool arg_is_ptr    = is_ptr((Au)first_arg) || !first_arg->loaded;
         bool target_is_ptr = is_ptr((Au)target_type) || !target_type->loaded || target_type->au->is_target;
+        if (arg_is_ptr != target_is_ptr)
+            arg_is_ptr = arg_is_ptr;
         verify(arg_is_ptr == target_is_ptr, "target pointer mismatch on %o %i", fn, seq);
     }
 
@@ -1942,6 +1988,10 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     LLVMTypeRef*  arg_types  = calloc(n_args, sizeof(LLVMValueRef));
     LLVMTypeRef   F          = funcptr ? null : lltype(fn);
     LLVMValueRef  V          = fn->value;
+
+    // function pointer members need loading — V is the slot address, not the pointer value
+    if (funcptr && V && !fn->loaded)
+        V = LLVMBuildLoad2(B, LLVMPointerTypeInContext(a->module_ctx, 0), V, "fptr_load");
 
     bool is_abstract = fn->au->is_abstract;
     Au_t ctx = fn->au->context;
@@ -4313,36 +4363,9 @@ etype aether_e_materialize(aether a, Au_t m) {
     return t;
 }
 
-void src_init(aether a, Au_t m) { sequencer
-    if (m && m->src)
-        src_init(a, m->src);
-    etype tm = u(etype, m);
-    Au info = head(tm);
-
-    if (seq == 105217) {
-        seq = seq;
-    }
-    if (m && !tm) {
-        int mt = m->member_type;
-
-        if (mt == AU_MEMBER_ENUMV) {
-            if (strcmp(m->ident, "SND_PCM_STREAM_CAPTURE") == 0) {
-                m = m;
-            }
-            // skip — enum values are handled in etype_implement
-            mt = mt;
-        }
-        else if (is_func((Au)m) || is_func_ptr((Au)m)) {
-            efunc(mod, a, loaded, true,  au, m);
-        }
-        else if (mt == AU_MEMBER_VAR || mt == AU_MEMBER_IS_ATTR)
-            etype_register(a, (Au)m, (Au)hold(enode(mod, a, loaded, false, au, m)), false);
-        else {
-            etype t = etype(mod, a, au, m); // this should be held in it's init
-            Au info = head(t);
-            info = info;
-        }
-    }
+etype rlookup(aether a, string name) {
+    Au_t au = lexical(a->lexical, cstring(name));
+    return etype_prep(a, au);
 }
 
 array etype_class_list(etype t) {
@@ -4350,7 +4373,7 @@ array etype_class_list(etype t) {
     array res = array(alloc, 32, assorted, true);
     Au_t src = t->au;
     while (src) {
-        src_init(a, src);
+        etype_create(a, src);
         verify(u(etype, src), "etype (user) not set for %s", src->ident);
         push(res, (Au)u(etype, src));
         if (src->context == src)
@@ -4483,6 +4506,13 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
 
     push_scope(a, (Au)main_fn);
     e_fn_call(a, module_init_fn, null);
+
+    // phase 2: lock sandbox — no more dlopen/exec from this point
+    Au_t au_sandbox_lock = find_member(typeid(Au), "au_sandbox_lock", AU_MEMBER_FUNC, 0, false);
+    if (au_sandbox_lock) {
+        efunc f_lock = u(efunc, au_sandbox_lock);
+        if (f_lock) e_fn_call(a, f_lock, null);
+    }
 
     // call engage
     efunc Au_engage = u(efunc, find_member(typeid(Au), "engage", AU_MEMBER_FUNC, 0, false));
@@ -4779,7 +4809,15 @@ none etype_init(etype t) {
 
             bool convert_prim_target = is_prim(t) && arg->is_target;
             bool struct_by_ref = is_struct(u(etype, t));
-            arg_types[index++] = lltype(convert_prim_target || struct_by_ref ? pointer(a, (Au)t) : u(etype, t));
+            etype mdl = null;
+            if (!convert_prim_target && !struct_by_ref) {
+                if (t->ident && strstr(t->ident, "bytepp")) {
+                    t = t;
+                }
+                mdl = etype_prep(a, t);
+            }
+            arg_types[index++] = lltype((convert_prim_target || struct_by_ref) ? 
+                pointer(a, (Au)t) : mdl);
         }
 
         if (is_lambda(au)) {
@@ -4814,12 +4852,12 @@ none etype_init(etype t) {
         LLVMTypeRef* fp_args = calloc(4 + n_args, sizeof(LLVMTypeRef));
         int index = 0;
         arg_types(au, arg) {
-            src_init(a, arg);
+            etype_create(a, arg);
             etype ar = u(etype, arg);
             fp_args[index++] = lltype(ar);
         }
 
-        if (au->rtype) src_init(a, au->rtype);
+        if (au->rtype) etype_create(a, au->rtype);
         LLVMTypeRef fn_ty = LLVMFunctionType(
             au->rtype ? lltype(u(etype, au->rtype)) : LLVMVoidTypeInContext(a->module_ctx),
             fp_args, au->args.count, au->is_vargs);
@@ -4829,7 +4867,7 @@ none etype_init(etype t) {
     } else if (au && au->is_pointer && au->src && !au->src->is_primitive) {
         t->lltype = LLVMPointerTypeInContext(a->module_ctx, 0);
     } else if (au->elements > 0 && au->src) {
-        src_init(a, au->src);
+        etype_create(a, au->src);
         t->lltype = LLVMArrayType(lltype(u(etype, au->src)), au->elements);
     } else if (named && (!instanceof(t, enode) && (is_rec((Au)t) || au->is_union || au == typeid(Au_t)))) {
         t->lltype = LLVMStructCreateNamed(a->module_ctx, cstr_copy(au->ident));
@@ -5054,7 +5092,8 @@ none etype_implement(etype t, bool w) { sequencer
     }
 
     
-    if (au->member_type == AU_MEMBER_NAMESPACE || (is_func(au) && !((enode)t)->used && !a->is_Au_import))
+    if (au->member_type == AU_MEMBER_DECL || 
+        au->member_type == AU_MEMBER_NAMESPACE || (is_func(au) && !((enode)t)->used && !a->is_Au_import))
         return;
     Au commander_solo = head(t);
 
@@ -5080,8 +5119,9 @@ none etype_implement(etype t, bool w) { sequencer
 
     bool is_ARef = au == typeid(ARef);
     if (!is_ARef && au && au->src && u(etype, au->src) && !is_prim(au->src) && isa(u(etype, au->src)) == typeid(etype))
-        if (au->src != typeid(Au_t) && !au->is_funcptr)
-            etype_implement(u(etype, au->src), false);
+        if (au->src != typeid(Au_t) && !au->is_funcptr) {
+            etype_prep(a, au->src);
+        }
 
     if (au->member_type == AU_MEMBER_VAR) {
         enode n = (enode)instanceof(t, enode);
@@ -5107,6 +5147,8 @@ none etype_implement(etype t, bool w) { sequencer
             n->value = G; // it probably makes more sense to keep llvalue on the node
             if (!is_external)
                 emit_debug_global(a, au, G);
+        } else if (!au->is_static && (au->context->is_lambda || is_struct(au->context) || is_class(au->context))) {
+            // no value on these (slightly lazy to call them evar -- they should be called eprop)
         } else if (!is_func(au->context) || au->is_static) {
             // we likely need to check to see if our context is a function
             // these are stack members, and indeed inside functions! they are just not in the 'args'
@@ -5128,6 +5170,10 @@ none etype_implement(etype t, bool w) { sequencer
             } else if (!au->is_static) {
                 char id[256];
                 snprintf(id, 256, "evar_%s", au->ident ? au->ident : "");
+                if (strcmp(id, "evar_local") == 0) {
+                    int test2 = 2;
+                    test2    += 2;
+                }
                 // emit alloca in entry block so LLDB can track the variable
                 LLVMBasicBlockRef current_block = LLVMGetInsertBlock(B);
                 LLVMBasicBlockRef entry_block   = LLVMGetEntryBasicBlock(
@@ -5139,6 +5185,11 @@ none etype_implement(etype t, bool w) { sequencer
                     LLVMPositionBuilderAtEnd(B, entry_block);
                 n->value = LLVMBuildAlloca(B, type, id);
                 LLVMPositionBuilderAtEnd(B, current_block);
+
+                if (n->au->src && n->au->src->src) {
+                    etype t1 = etype_prep(a, n->au->src->src);
+                }
+                etype src = etype_prep(a, n->au->src);
                 // declare local variable for debugger
                 emit_debug_variable(a, n, 0, 0);
             }
@@ -5150,9 +5201,9 @@ none etype_implement(etype t, bool w) { sequencer
                 int test2 = 2;
                 test2    += 2;
             }
-            verify(isa(t) == typeid(evar), "expected evar instance for arg");
+            verify(isa(t) == typeid(evar) || isa(t) == typeid(enode), "expected evar/enode instance for arg");
 
-            n->loaded = true;
+            n->loaded = !is_struct(au_arg_type((Au)au));
         }
         return;
 
@@ -5205,20 +5256,20 @@ none etype_implement(etype t, bool w) { sequencer
                 if (is_func((Au)m)) {
 
                     if (pass == 1) continue;
-                    src_init(a, m->rtype);
+                    etype_create(a, m->rtype);
                     etype_implement(u(etype, m->rtype), false);
 
                     arg_types (m, t) {
                         if (t->is_pointer && t->src && !u(etype, t)) {
-                            src_init(a, t->src);
+                            etype_create(a, t->src);
                             etype_implement(u(etype, t->src), false);
                             etype_ptr(a, t->src, null);
                         }
-                        src_init(a, t);
+                        etype_create(a, t);
                         etype_implement(u(etype, t), false);
                     }
 
-                    src_init(a, m);
+                    etype_create(a, m);
                     etype_implement(u(etype, m), false);
                 }
                 else if (m->member_type == AU_MEMBER_VAR) {
@@ -5243,7 +5294,7 @@ none etype_implement(etype t, bool w) { sequencer
                             continue;
 
                         verify(src, "no src type set for member %o", m);
-                        src_init(a, src);
+                        etype_create(a, src);
                         if (!is_class(src))
                             etype_implement(u(etype, src), false);
 
@@ -5501,6 +5552,10 @@ none etype_implement(etype t, bool w) { sequencer
             }
             index++;
         }
+    } else if (au->is_alias && is_ptr(au->src)) {
+        etype src = etype_prep(a, au->src);
+        if (!src->lltype)
+            src->lltype = LLVMPointerTypeInContext(a->module_ctx, 0);
     }
 
     if (!was_implemented)
@@ -5655,6 +5710,14 @@ none aether_build_module_initializer(aether a, enode init) {
         return;
 
     a->direct = true;
+
+    // emit au_sandbox_init() as first call in module initializer
+    Au_t sandbox_init_fn = find_member(typeid(Au), "au_sandbox_init", AU_MEMBER_FUNC, 0, false);
+    if (sandbox_init_fn) {
+        efunc f_sandbox = u(efunc, sandbox_init_fn);
+        if (f_sandbox) e_fn_call(a, f_sandbox, null);
+    }
+
     aether_eputs(a, f(string, "%o: initializing", a));
 
     // verify typeid(string) matches between compiler and runtime
@@ -6176,6 +6239,8 @@ none aether_import_models(aether a, Au_t ctx, bool au_mode) {
     };
 
     a->import_c = !au_mode;
+    if (a->import_c)
+        return;
     for (int filter = 0; filter < 10; filter++) {
         struct filter* ff = &filters[filter];
         for (num i = 0; i < ctx->members.count; i++) {
@@ -6209,7 +6274,7 @@ none aether_import_models(aether a, Au_t ctx, bool au_mode) {
             if (proceed) {
 
                 if (ff->init || ff->impl) {
-                    src_init(a, m);
+                    etype_create(a, m);
                 }
                 if (ff->impl) {
                     etype e = u(etype, m);

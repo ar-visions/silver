@@ -342,7 +342,10 @@ def write_ninja(project, root, import_dir, build_dir, plat):
         output_path = f"$builddir/obj/{stem}{plat['obj']}"
         n.append(f"build {output_path}: {rule} {input_path}")
         global sdk
-        n.append(f"  {flags_var} = -DSDK=\\\"{sdk}\\\" -DMODULE=\\\"{stem}\\\" ${flags_var}")
+        sandbox_install = f'-DAU_SANDBOX_INSTALL=\\\"install:{import_p}\\\"'
+        sandbox_public  = f'-DAU_SANDBOX_PUBLIC=\\\"public:{import_p}\\\"'
+        sandbox_private = f'-DAU_SANDBOX_PRIVATE=\\\"private:{silver_root_p}\\\"'
+        n.append(f"  {flags_var} = -DSDK=\\\"{sdk}\\\" -DMODULE=\\\"{stem}\\\" {sandbox_install} {sandbox_public} {sandbox_private} ${flags_var}")
         module_objs.setdefault("misc", []).append(output_path)
     n.append("")
     

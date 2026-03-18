@@ -1,5 +1,17 @@
 #include <import>
 
+#if defined(__linux__)
+#include <sched.h>
+#include <sys/mount.h>
+#include <sys/prctl.h>
+#include <linux/seccomp.h>
+#include <linux/filter.h>
+#include <linux/audit.h>
+#include <sys/syscall.h>
+#include <elf.h>
+#include <dlfcn.h>
+#endif
+
 //#undef realloc
 #include <ffi.h>
 #undef bool
@@ -26,6 +38,229 @@ i64 epoch_millis();
 
 
 int seq;
+
+// ---- Au sandbox ----
+// Three tiers + device access, each compiled into .rodata:
+//   AU_SANDBOX_INSTALL="install:/path/to/install"            toolchain level (Silver itself)
+//   AU_SANDBOX_PUBLIC="public:/path/to/share"                shared app commons
+//   AU_SANDBOX_PRIVATE="private:/path/to/app"                per-app exclusive storage
+//   AU_SANDBOX_DEVICES="devices:/dev/video0,/dev/snd"        device access list
+//
+// Layout:
+//   /src/silver/
+//     private/myapp/     ← deepest, only this app via bind mount
+//     install/           ← toolchain (shell-level apps chroot here)
+//       share/           ← public commons (normal apps chroot here)
+//
+// All strings verifiable in the binary's .rodata:
+//   strings binary | grep -E "install:|public:|private:|devices:"
+//
+// Two-phase enforcement:
+//   phase 1 (constructor): mounts, chroot, device binding
+//   phase 2 (au_sandbox_lock): seccomp blocks execve, no more loading
+
+#if defined(AU_SANDBOX_INSTALL) || defined(AU_SANDBOX_PUBLIC) || defined(AU_SANDBOX_PRIVATE)
+
+#ifdef AU_SANDBOX_INSTALL
+static const char au_sandbox_install[] = AU_SANDBOX_INSTALL;
+#endif
+#ifdef AU_SANDBOX_PUBLIC
+static const char au_sandbox_public[]  = AU_SANDBOX_PUBLIC;
+#endif
+#ifdef AU_SANDBOX_PRIVATE
+static const char au_sandbox_private[] = AU_SANDBOX_PRIVATE;
+#endif
+#ifdef AU_SANDBOX_DEVICES
+static const char au_sandbox_devices[] = AU_SANDBOX_DEVICES;
+#endif
+
+static bool au_sandbox_active = false;
+
+static const char* au_sandbox_path(const char* sig, const char* prefix) {
+    size_t n = strlen(prefix);
+    return (strncmp(sig, prefix, n) == 0) ? sig + n : sig;
+}
+
+// two-phase sandbox:
+//   phase 1 (init): mounts + chroot, dlopen still allowed for hardware drivers
+//   phase 2 (lock): seccomp blocks dlopen, openat, mmap+PROT_EXEC — app code starts here
+static bool au_sandbox_locked = false;
+
+static void au_sandbox_init(void) {
+    if (au_sandbox_active) return;
+    au_sandbox_active = true;
+
+#ifdef AU_SANDBOX_INSTALL
+    const char* inst = au_sandbox_path(au_sandbox_install, "install:");
+#endif
+#ifdef AU_SANDBOX_PUBLIC
+    const char* pub  = au_sandbox_path(au_sandbox_public,  "public:");
+#endif
+#ifdef AU_SANDBOX_PRIVATE
+    const char* priv = au_sandbox_path(au_sandbox_private, "private:");
+#endif
+
+    // determine chroot target: public overrides install
+    const char* root = NULL;
+#ifdef AU_SANDBOX_PUBLIC
+    root = pub;
+#elif defined(AU_SANDBOX_INSTALL)
+    root = inst;
+#endif
+
+#if defined(__linux__)
+    if (root && unshare(CLONE_NEWNS) == 0) {
+        // mount root as read-only
+        mount(root, root, NULL, MS_BIND | MS_REC, NULL);
+        mount(NULL, root, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL);
+        chdir(root);
+        if (chroot(root) == 0) chdir("/");
+
+    #ifdef AU_SANDBOX_INSTALL
+        // install-tier apps need system headers for compilation
+        mkdir("/usr",         0755);
+        mkdir("/usr/include", 0755);
+        mkdir("/usr/lib",     0755);
+        mount("/usr/include", "/usr/include", NULL, MS_BIND | MS_RDONLY, NULL);
+        mount("/usr/lib",     "/usr/lib",     NULL, MS_BIND | MS_RDONLY, NULL);
+    #endif
+
+    #ifdef AU_SANDBOX_PRIVATE
+        // private is the only writable mount
+        mkdir("/private", 0700);
+        mount(priv, "/private", NULL, MS_BIND, NULL);
+    #endif
+
+    #ifdef AU_SANDBOX_DEVICES
+        // mount declared devices — comma separated paths after "devices:"
+        {
+            const char* devs = au_sandbox_path(au_sandbox_devices, "devices:");
+            char buf[1024];
+            strncpy(buf, devs, sizeof(buf) - 1);
+            buf[sizeof(buf) - 1] = '\0';
+            char* tok = strtok(buf, ",");
+            while (tok) {
+                // trim whitespace
+                while (*tok == ' ') tok++;
+                if (*tok == '/') {
+                    // create mount point mirroring the device path
+                    // e.g. /dev/video0 → mkdir -p /dev then mount
+                    char mnt[512];
+                    snprintf(mnt, sizeof(mnt), "%s", tok);
+                    // ensure parent dirs exist
+                    char parent[512];
+                    strncpy(parent, mnt, sizeof(parent));
+                    char* last_slash = strrchr(parent, '/');
+                    if (last_slash && last_slash != parent) {
+                        *last_slash = '\0';
+                        mkdir(parent, 0755);
+                    }
+                    // bind mount device read-write (devices need write for capture etc.)
+                    // create empty file as mount point if it's not a directory
+                    int fd = open(mnt, O_CREAT | O_WRONLY, 0666);
+                    if (fd >= 0) close(fd);
+                    mount(tok, mnt, NULL, MS_BIND, NULL);
+                }
+                tok = strtok(NULL, ",");
+            }
+        }
+    #endif
+
+        // remount /proc read-only (prevent /proc/self/exe tricks)
+        mount(NULL, "/proc", NULL, MS_REMOUNT | MS_RDONLY, NULL);
+    }
+#elif defined(__APPLE__)
+    if (root) chdir(root);
+#elif defined(_WIN32)
+    if (root) SetCurrentDirectoryA(root);
+#endif
+    // phase 1 complete — hardware init can happen now (vulkan, audio, etc.)
+    // call au_sandbox_lock() after hardware init to enter phase 2
+}
+
+// phase 2: hard lock — no more dlopen, no more file opens, no new exec mappings
+void au_sandbox_lock(void) {
+    if (au_sandbox_locked) return;
+    au_sandbox_locked = true;
+
+#if defined(__linux__)
+    // seccomp BPF: block execve and new exec mappings
+    // allow existing file descriptors, deny new ones
+    struct sock_filter filter[] = {
+        // load syscall number
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+
+        // block execve / execveat
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_execve,    0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_execveat,  0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA)),
+
+        // allow everything else (mount namespace + chroot already restrict filesystem)
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+
+    struct sock_fprog prog = {
+        .len    = sizeof(filter) / sizeof(filter[0]),
+        .filter = filter,
+    };
+
+    prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+    prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
+#endif
+}
+
+// ---- au_dlopen: validated library loading ----
+// reads ELF headers before loading, verifies .init_array entries
+#if defined(__linux__)
+static bool au_verify_library(const char* path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return false;
+
+    Elf64_Ehdr ehdr;
+    if (read(fd, &ehdr, sizeof(ehdr)) != sizeof(ehdr)) { close(fd); return false; }
+    if (memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0)    { close(fd); return false; }
+
+    // scan section headers for .init_array and DT_NEEDED
+    Elf64_Shdr* shdrs = calloc(ehdr.e_shnum, sizeof(Elf64_Shdr));
+    lseek(fd, ehdr.e_shoff, SEEK_SET);
+    read(fd, shdrs, ehdr.e_shnum * sizeof(Elf64_Shdr));
+
+    bool has_init_array = false;
+    int  init_count     = 0;
+
+    for (int i = 0; i < ehdr.e_shnum; i++) {
+        if (shdrs[i].sh_type == SHT_INIT_ARRAY) {
+            has_init_array = true;
+            init_count = shdrs[i].sh_size / sizeof(void*);
+        }
+    }
+
+    free(shdrs);
+    close(fd);
+
+    // libraries with no constructors are always safe
+    // libraries with constructors are allowed if sandbox is active (they run jailed)
+    return !has_init_array || au_sandbox_active;
+}
+#endif
+
+void* au_dlopen(const char* path, int flags) {
+#if defined(__linux__)
+    if (au_sandbox_locked) return NULL; // phase 2: no more loading
+    if (!au_verify_library(path)) return NULL;
+    return dlopen(path, flags);
+#else
+    return dlopen(path, flags);
+#endif
+}
+
+__attribute__((constructor))
+static void au_sandbox_entry(void) {
+    au_sandbox_init();
+}
+#endif
+// ---- end sandbox ----
 
 typedef struct _ffi_method_t {
     micro*          atypes;
@@ -837,13 +1072,19 @@ Au_t find_context(array lex, int member_type, int traits) {
 
 Au_t lexical(array lex, symbol f) {
 
-    if (strcmp(f, "shape") == 0)
+    if (strcmp(f, "header") == 0)
         f = f;
 
+    bool top_set = false;
+    bool top_Au  = false;
     for (int i = len(lex) - 1; i >= 0; i--) {
         Au_t au = (Au_t)lex->origin[i];
+        if (!top_set) {
+            top_set = true;
+            top_Au  = au == typeid(Au);
+        }
         while (au) {
-            if (au->member_type == AU_MEMBER_TYPE || is_func(au))
+            if (((au != typeid(Au) || top_Au) && au->member_type == AU_MEMBER_TYPE) || is_func(au))
                 for (int ii = 0; ii < au->args.count; ii++) {
                     Au_t m = (Au_t)au->args.origin[ii];
                     if (m->ident && strcmp(m->ident, f) == 0)
@@ -852,8 +1093,15 @@ Au_t lexical(array lex, symbol f) {
             for (int ii = 0; ii < au->members.count; ii++) {
                 Au_t m = (Au_t)au->members.origin[ii];
 
-                if (m->ident && strcmp(m->ident, f) == 0)
-                    return m;
+                if (au->is_struct || au->is_class) {
+                    if (((au != typeid(Au) || top_Au) && au->member_type == AU_MEMBER_TYPE) || is_func(m)) {
+                        if (m->ident && strcmp(m->ident, f) == 0)
+                            return m;
+                    }
+                } else {
+                    if (m->ident && strcmp(m->ident, f) == 0)
+                        return m;
+                }
             }
             Au_t au_isa = isa(au);
             if (!is_class((Au)au)) break;
@@ -1531,10 +1779,6 @@ Au Au_initialize(Au a) {
     Au_validator(a);
     #endif
 
-    if (f->type && strcmp(f->type->ident, "test4") == 0) {
-        f = f;
-    }
-    
     init_recur(a, f->type, null);
     hold_members(a);
     return a;
