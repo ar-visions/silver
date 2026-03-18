@@ -2318,7 +2318,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
     efunc  f       =  !is_cmode(a) ? context_func(a) : null;
     bool   in_rec  = rec_top && rec_top->au == top;
     token t1 = element(a, 1);
-    bool new_bind = t1 && eq(t1, ":") != null;
+    bool new_bind = t1 && eq(t1, ":");
     
     if (seq == 593) {
         seq = seq;
@@ -6681,13 +6681,18 @@ etype silver_read_def(silver a, interface access) {
 
     if (is_alias) {
         consume(a);
-        string alias_name = read_alpha(a);
+        string  alias_name = read_alpha(a);
         validate(alias_name, "expected name after alias");
         validate(read_if(a, ":"), "expected ':' after alias name");
-        etype target = read_etype(a, null);
+
+        bool    is_ref = read_if(a, "ref") != null;
+        etype   target = read_etype(a, null);
         validate(target, "expected type after alias %o:", alias_name);
-        Au_t top = top_scope(a);
-        Au_t alias_au = def(top, alias_name->chars, AU_MEMBER_TYPE, AU_TRAIT_ALIAS);
+        
+        Au_t    top = top_scope(a);
+        Au_t    alias_au = def(top, alias_name->chars, AU_MEMBER_TYPE, AU_TRAIT_ALIAS);
+        alias_au->is_pointer = is_ref;
+        
         etype_register((aether)a, (Au)alias_au, (Au)hold(target), false);
         return target;
     }
