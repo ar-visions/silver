@@ -3092,7 +3092,7 @@ sz vector_len(vector a) {
 none store_init(store a) {
     Au_t au = isa(a);
     int sz = sizeof(struct _store);
-    if (a->hsize <= 0) a->hsize = 256;
+    if (a->hsize <= 0) a->hsize = 4096;
     if (a->hsize) a->hlist = (item*)calloc(a->hsize, sizeof(item));
 }
 
@@ -3108,7 +3108,7 @@ none store_dealloc(store a) {
 }
 
 Au store_get(store a, Au key) {
-    item f = a->hlist[(size_t)(uintptr_t)key % a->hsize];
+    item f = a->hlist[((size_t)(uintptr_t)key >> 3) % a->hsize];
     for (item i = f; i; i = i->next) {
         if (i->key == key)
             return i->value;
@@ -3117,7 +3117,7 @@ Au store_get(store a, Au key) {
 }
 
 none store_set(store a, Au key, Au val) {
-    item *loc = &a->hlist[(size_t)(uintptr_t)key % a->hsize];
+    item *loc = &a->hlist[((size_t)(uintptr_t)key >> 3) % a->hsize];
     item f = *loc;
     for (item i = f; i; i = i->next) {
         if (i->key == key) {
@@ -3132,12 +3132,10 @@ none store_set(store a, Au key, Au val) {
     }
     *loc = i;
     a->count++;
-
-    store_get(a, null);
 }
 
 none store_rm(store a, Au key) {
-    item *loc = &a->hlist[(size_t)(uintptr_t)key % a->hsize];
+    item *loc = &a->hlist[((size_t)(uintptr_t)key >> 3) % a->hsize];
     item  f   = *loc;
     for (item i = f; i; i = i->next) {
         if (i->key == key) {
