@@ -2316,7 +2316,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
     bool   in_rec  = rec_top && rec_top->au == top;
 
     
-    if (seq == 535) {
+    if (seq == 593) {
         seq = seq;
     }
 
@@ -4847,9 +4847,18 @@ enode parse_import(silver a) {
                  import_build_commands(all_config, ">>"),
                  import_config(all_config),
                  import_env(all_config));
+        bool has_link = false;
         each(all_config, string, t)
-            if (starts_with(t, "-l"))
+            if (starts_with(t, "-l")) {
                 set(a->libs, (Au)mid(t, 2, len(t) - 2), (Au)_bool(true));
+                has_link = true;
+            }
+        // auto-link: if no -l specified, use the project name (only if lib exists)
+        if (!has_link && project) {
+            string lib_check = f(string, "%o/lib/%s%o%s", a->install, lib_pre, project, lib_ext);
+            if (file_exists("%o", lib_check))
+                set(a->libs, (Au)project, (Au)_bool(true));
+        }
     } else if (module_source) {
         path module = parent_dir(module_source);
         bool ag = eq(ext(module_source), "ag");
@@ -5424,6 +5433,12 @@ void silver_write_header(silver a) {
     //line(import_f, "#include <%o/init>", a->name); // disabled: clang 22 preprocessor bug with large macro parameter lists in included files
     //line(import_f, "#endif");
     line(import_f, "#ifdef __cplusplus");
+    line(import_f, "#undef M");
+    line(import_f, "#undef str");
+    line(import_f, "#undef typeid");
+    line(import_f, "#undef print");
+    line(import_f, "#undef a");
+    line(import_f, "#undef m");
     line(import_f, "}");
     line(import_f, "#endif");
     line(import_f, "#endif");
@@ -5494,11 +5509,7 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
             // the user may implement their own init/dealloc inbetween pre-amble
             // we init our own too but its name is changed on init to facilitate
             array call_args = array(alloc, 32);
-            if (f->target)
-                push(call_args, (Au)f->target);
-            arg_list(f->au, arg) {
-                push(call_args, (Au)u(evar, arg));
-            }
+            push(call_args, (Au)f->target);
             e_fn_call(a, f->remote_func, call_args);
         } else if (f->cgen) {
             array gen = generate_fn(f->cgen, f, (array)f->body);
@@ -5633,6 +5644,9 @@ enode parse_return(silver a) {
     etype rtype = return_type(a);
     bool  is_v  = is_void(rtype);
     efunc ctx   = context_func(a);
+    if (strcmp(ctx->au->ident, "get") == 0) {
+        ctx = ctx;
+    }
     consume(a);
     a->expr_level++;
     enode expr  = is_v ? null : parse_expression(a, rtype, false, true);

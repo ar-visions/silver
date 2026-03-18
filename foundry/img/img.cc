@@ -1,11 +1,5 @@
 #include <import>
 
-#undef typeid
-#undef str
-#undef a
-
-// undef Au macros that conflict with C++ stdlib
-
 #include <OpenEXR/ImfRgbaFile.h>
 #include <OpenEXR/ImfArray.h>
 #include <OpenEXR/ImfInputFile.h>
@@ -13,9 +7,6 @@
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
-#include <opencv.h>
-
-
 
 // read images without conversion; for .png and .exr
 // this facilitates grayscale maps, environment color, 
@@ -25,18 +16,18 @@ extern "C" {
 
 // save gray or colored png based on channel count; if we want conversion we may just use methods to alter an object
 i32 image_exr(image a, path uri) {
-    string e = ext(uri);
-    if (eq(e, "exr")) {
+    string e = path_ext(uri);
+    if (string_eq(e, "exr")) {
         using namespace OPENEXR_IMF_NAMESPACE;
         using namespace IMATH_NAMESPACE;
         using namespace Imf;
 
         if (a->format != Pixel_rgbaf32)
-            verify(false, "Only Pixel_rgbaf32 supported for EXR save");
+            assert(!"Only Pixel_rgbaf32 supported for EXR save");
 
         int width  = a->width;
         int height = a->height;
-        f32* data  = (f32*)vdata((Au)a); // assumes planar RGBA32F
+        f32* data  = (f32*)Au_vdata((Au)a); // assumes planar RGBA32F
 
         Array2D<Rgba> pixels;
         pixels.resizeErase(height, width); // [y][x]
@@ -61,9 +52,12 @@ i32 image_exr(image a, path uri) {
     return 0;
 }
 
+shape shape_from(i64, i64*);
+Au alloc2(Au_t type, Au_t scalar, shape s);
+Au alloc(Au_t type, num count, shape shape_data, Au_t* meta);
 
 none image_init(image a) {
-    A info = header((Au)a);
+    Au info = header((Au)a);
     Pixel f = a->format;
 
     if (!a->channels)
@@ -71,35 +65,40 @@ none image_init(image a) {
                       f == Pixel_u8   ? 1 : f == Pixel_rgbaf32 ? 4 : 1;
     
     if (a->source) {
-        A source_header = header((Au)a->source);
-        info->data    = hold(a->source);
+        Au source_header = header((Au)a->source);
+        info->data    = Au_hold(a->source);
         info->scalar  = source_header->scalar;
         info->count   = source_header->count;
-        info->shape   = (shape)hold((Au)source_header->shape);
+        info->data_shape = (shape)Au_hold((Au)source_header->data_shape);
         return;
     }
 
     if (!a->uri) {
         Au_t pixel_type =
-            f == Pixel_none ? typeid(i8) : f == Pixel_rgba8   ? typeid(rgba8) : f == Pixel_rgbf32 ? typeid(vec3f) :
-            f == Pixel_u8   ? typeid(i8) : f == Pixel_rgbaf32 ? typeid(vec4f) : typeid(f32);
+            f == Pixel_none ? (Au_t)_typeid(i8) : f == Pixel_rgba8   ? 
+                (Au_t)_typeid(rgba8) : f == Pixel_rgbf32 ? (Au_t)_typeid(vec3f) :
+            f == Pixel_u8   ? (Au_t)_typeid(i8) : f == Pixel_rgbaf32 ?
+                (Au_t)_typeid(vec4f) : (Au_t)_typeid(f32);
         Au_t component_type =
-            f == Pixel_none ? typeid(i8) : f == Pixel_rgba8   ? typeid(i8)  : f == Pixel_rgbf32 ? typeid(f32) :
-            f == Pixel_u8   ? typeid(i8) : f == Pixel_rgbaf32 ? typeid(f32) : typeid(f32);
+            f == Pixel_none ? (Au_t)_typeid(i8) : f == Pixel_rgba8   ?
+                (Au_t)_typeid(i8)  : f == Pixel_rgbf32 ? (Au_t)_typeid(f32) :
+            f == Pixel_u8   ? (Au_t)_typeid(i8) : f == Pixel_rgbaf32 ?
+                (Au_t)_typeid(f32) : (Au_t)_typeid(f32);
 
         if (a->res_bits) {
             info->data = (Au)a->res_bits; // we leave this up to res, but may support fallback cases where thats not provided
         } else {
             /// validate with channels if set?
+            i64 dims[] = { a->height, a->width, pixel_type->typesize };
             info->data = alloc2(
-                pixel_type, component_type, shape_new(a->height, a->width, pixel_type->size, 0));
+                pixel_type, component_type, shape_from(3, dims));
         }
         return;
     }
 
-    string ext = ext(a->uri);
+    string ext = path_ext(a->uri);
     symbol uri = (symbol)a->uri->chars;
-    if (eq(ext, "exr")) {
+    if (string_eq(ext, "exr")) {
         using namespace OPENEXR_IMF_NAMESPACE;
         using namespace IMATH_NAMESPACE;
         using namespace Imath;
@@ -118,7 +117,9 @@ none image_init(image a) {
         a->pixel_size = sizeof(f32) * a->channels;
 
         int total_floats = width * height * 4;
-        f32* data = (f32*)alloc2(typeid(rgbaf), typeid(f32), shape_new(height, width, sizeof(f32), 0));
+
+        i64 dims[] = { height, width, sizeof(f32) };
+        f32* data = (f32*)alloc2((Au_t)_typeid(rgbaf), (Au_t)_typeid(f32), shape_from(3, dims));
 
         Imf::Array2D<Rgba> pixels;
         pixels.resizeErase(height, width); // [y][x] format
@@ -138,14 +139,14 @@ none image_init(image a) {
         }
 
         info->count = total_floats;
-        info->scalar = typeid(f32);
+        info->scalar = (Au_t)_typeid(f32);
         info->data = (Au)data;
-    } else if (eq(ext, "png")) {
+    } else if (string_eq(ext, "png")) {
         FILE* file = fopen(uri, "rb");
-        verify (file, "could not open PNG: %o", a->uri);
+        assert (file);
 
         png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-        verify (png, "could not init PNG: %o", a->uri);
+        assert (png);
 
         png_infop png_info = png_create_info_struct(png);
         setjmp (png_jmpbuf(png));
@@ -162,7 +163,8 @@ none image_init(image a) {
         /// store the exact format read
         png_read_update_info (png, png_info);
         png_bytep* rows = (png_bytep*)malloc (sizeof(png_bytep) * a->height);
-        u8*        data = (u8*)alloc(typeid(u8), a->width * a->height * a->channels * (bit_depth / 8));
+        u8*        data = (u8*)alloc(
+            (Au_t)_typeid(u8), a->width * a->height * a->channels * (bit_depth / 8), null, null);
         for (int y = 0; y < a->height; y++) {
             rows[y] = data + (y * a->width * a->channels * (bit_depth / 8));
         }
@@ -175,7 +177,7 @@ none image_init(image a) {
 
         /// Store in header
         info->count  = a->width * a->height * a->channels;
-        info->scalar = (bit_depth == 16) ? typeid(u16) : typeid(u8);
+        info->scalar = (bit_depth == 16) ? (Au_t)_typeid(u16) : (Au_t)_typeid(u8);
         info->data   = (Au)data;
         a->pixel_size  = (bit_depth / 8) * a->channels;
     }

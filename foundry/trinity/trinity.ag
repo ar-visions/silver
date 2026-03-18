@@ -3,15 +3,13 @@
 import gltf
 import img
 
-import <vulkan/vulkan.h> [ https://github.com/KhronosGroup/Vulkan-Headers ]
-import [ https://github.com/KhronosGroup/Vulkan-Tools ]
+import KhronosGroup:Vulkan-Headers/29184b9 <vulkan/vulkan.h>
+
+import KhronosGroup:Vulkan-Tools/734638e
      -DVULKAN_HEADERS_INSTALL_DIR={silver_install}
 
-ref void skia_t
-ref void handle_t
-
-#alias skia_t   : ref void
-#alias handle_t : ref void
+alias skia_t   : ref void
+alias handle_t : ref void
 
 func skia_init_vk[ trinity t, handle_t vk_instance, handle_t vma_allocator, handle_t phys, handle_t device,
     handle_t queue, unsigned int graphics_family, unsigned int vk_version ] -> skia_t

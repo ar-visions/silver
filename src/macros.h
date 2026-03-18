@@ -254,12 +254,16 @@
 #define val(T,V)                    primitive(typeid(T), (&(T){V}))
 #define idx_1(I,T1,V1)              fcall(I, getter ##_## T1, V1)
 #define idx_2(I,T1,T2,V1,V2)        fcall(I, getter ##_## T1 ##_## T2, V1, V2)
+#ifndef __cplusplus
 #define idx(I,V1)                   fcall(I, getter ##_## num, V1)
+#endif
 #define meta_t(I,IDX)               isa(I) -> meta.origin[IDX]
 #define ctr(T,WITH,...)             Au_initialize(_typeid(T)->ft.with_##WITH(alloc(typeid(T), 1, (Au_t*)null), ## __VA_ARGS__))
 #define ctr1(T,WITH,...)            Au_initialize(_typeid(T)->ft.with_##WITH(alloc(typeid(T), 1, (Au_t*)null), ## __VA_ARGS__))
 #define alloc_ctr(T,WITH,...)       Au_initialize(_typeid(T)->ft.with_##WITH(alloc(typeid(T), 1, (Au_t*)null), ## __VA_ARGS__))
+#ifndef __cplusplus
 #define str(CSTR)                   _typeid(string)->with_symbol((string)alloc(typeid(string), 1, (Au_t*)null), (symbol)(CSTR))
+#endif
 #define addr_validateI(I)           ({ \
     __typeof__(I) *addr = &I; \
     I \
