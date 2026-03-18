@@ -1,4 +1,9 @@
 import AcademySoftwareFoundation:Imath/c0396a0 
+    -I{install}/include/Imath
+    -I{install}/include/OpenEXR
+
+import opencv:opencv/1c39583
+    -I{install}/include/opencv4
 
 import AcademySoftwareFoundation:openexr/0b83825
     -DBUILD_SHARED_LIBS=ON
@@ -104,13 +109,12 @@ class font
 
 
 class image
-    height:         i32 0
     uri:            path
     surface:        Surface
     format:         Pixel
     pixel_size:     i32 0
     width:          i32 0
-    
+    height:         i32 0
     channels:       i32 0
     source:         Au null
     filter:         Filter
@@ -217,7 +221,7 @@ class image
                 data2 : ref u8 vdata # track the way this is registered
 
                 # indexing method not found on rows (typed_expr)
-                for [ y:0, x:0 :: x < 4 :: x += 1 ]
+                for [ y:0, x:0, x < 4, x += 1 ]
                     rows[y] = ref data2 [ y * width * channels ]
                 
                 #for [ y : 0, y < height, y++ ]
@@ -225,13 +229,13 @@ class image
 
                 png_write_image png2, rows
                 png_write_end   png2, null
-            else
+            el
                 success = 0
             
             png_destroy_write_struct ref png2, ref info
             fclose file
 
-        else
+        el
             check false, 'unsupported format: {e}'
             success = 0
         
@@ -243,7 +247,7 @@ class image
 
     func byte_count[ ] -> num
         f : header[ a ]
-        return f.count * f.scalar.size
+        return f.count * pixel_size
 
     func get[ y:num ] -> Au
         return ref u8 vdata [ pixel_size * width * y ]

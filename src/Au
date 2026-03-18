@@ -117,7 +117,9 @@ typedef struct cereal { char* value; } cereal;
 // typedef struct _object*         Au;
 typedef struct _Au**             ARef; /// registered for a generic raw, but we must transition to use 'raw' in cases where they are not Au-allocations
 typedef float*                  floats_t;
+#ifndef __cplusplus
 typedef i32                     uchar;
+#endif
 
 typedef cstr*                   cstrs;
 typedef void*                   raw;        // abstract types are void*
@@ -1081,9 +1083,10 @@ declare_abstract(imported)
 #define floats_t_module_ Au
 #define floats_t_schema(X,Y,...)        raw_schema(X,Y,...)
 
+#ifndef __cplusplus
 #define uchar_module_ Au
 #define uchar_schema(X,Y,...)           raw_schema(X,Y,...)
-
+#endif
 
 /// meta gives us access to one token we can override with (F)
 
@@ -1135,7 +1138,10 @@ declare_primitive(AFlag,            numeric)
 declare_primitive(bool,             numeric)
 declare_primitive(num,              numeric)
 declare_primitive(sz,               numeric)
+
+#ifndef __cplusplus
 declare_primitive(uchar,            numeric)
+#endif
 
 declare_primitive(cstr,             string_like)
 declare_primitive(symbol,           string_like)
@@ -1562,7 +1568,6 @@ declare_class(ipart)
     M(AA,BB, i, cast,    public, path) \
     M(AA,BB, i, ctr,     public, symbol) \
     M(AA,BB, i, ctr,     public, cstr) \
-    M(AA,BB, i, ctr,     public, uchar) \
     M(AA,BB, i, ctr,     public, i64) \
     M(AA,BB, i, ctr,     public, f64) \
     M(AA,BB, i, operator, public, none,   _assign_add,  string) \
@@ -2006,7 +2011,11 @@ declare_abstract(functional)
 
 i64 current_time();
 
+#ifndef __cplusplus
 #define cast(T,I) fcall(I, cast_##T)
+#else
+#define _cast(T,I) fcall(I, cast_##T)
+#endif
 
 extern int seq;
 

@@ -1,5 +1,11 @@
 #include <import>
 
+#undef typeid
+#undef str
+#undef a
+
+// undef Au macros that conflict with C++ stdlib
+
 #include <OpenEXR/ImfRgbaFile.h>
 #include <OpenEXR/ImfArray.h>
 #include <OpenEXR/ImfInputFile.h>
@@ -8,6 +14,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv.h>
+
 
 
 // read images without conversion; for .png and .exr
