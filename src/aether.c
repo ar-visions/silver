@@ -196,6 +196,8 @@ enode enode_value(enode mem, bool force_load) { sequencer
         Au_t au = au_arg_type((Au)mem);
         if (!force_load && is_struct(au))
             return mem;
+        if (au->elements > 0)
+            return mem;
         
         string id = f(string, "load_%i_%s", seq, mem->au->ident ? mem->au->ident : "");
         Au info = head(mem);
@@ -1933,7 +1935,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     
     verify(funcptr || n_args == fn->au->args.count ||
         (n_args > fn->au->args.count && fn->au->is_vargs),
-        "arg count mismatch on %o", fn);
+        "arg count mismatch on %o (given %i)", fn, n_args);
     
     Au_t type_id = isa(fn);
     LLVMValueRef* arg_values = calloc(n_args, sizeof(LLVMValueRef));
@@ -4750,14 +4752,18 @@ none etype_init(etype t) {
         int   index   = 0;
         
         // If this needs a wrapper, append _generated to avoid collision with C function
-        if (t->remote_code && au->alt && (strcmp(au->alt, "init") == 0 || strcmp(au->alt, "dealloc") == 0)) {
+        if (t->remote_code && au->ident && (strcmp(au->ident, "init") == 0 || strcmp(au->ident, "dealloc") == 0)) {
             // normal implemented-else-where does not do this; this is for method proxying 
-            fn->remote_func = efunc(mod, a, au,
-                def(au->context, au->ident, au->member_type, au->traits));
+            // save the original symbol name before renaming
+            cstr orig_name = au->alt ? au->alt : au->ident;
+            Au_t remote_au = def(au->context, au->ident, au->member_type, au->traits);
+            remote_au->rtype = au->rtype ? au->rtype : etypeid(none)->au;
+            remote_au->alt   = cstr_copy(orig_name);
+            def_arg(remote_au, "a", au->context, 0);
+            fn->remote_func = efunc(mod, a, au, remote_au);
 
             // now we have to modify our own name; our own method implementation will call the user function (after a preamble)
-            au->alt = cstr_copy((cstr)fmt("%s_generated",
-                au->alt ? au->alt : au->ident)->chars);
+            au->alt = cstr_copy((cstr)fmt("%s_generated", orig_name)->chars);
         }
 
         LLVMTypeRef* arg_types = calloc(4 + n_args, sizeof(LLVMTypeRef));
@@ -5056,7 +5062,7 @@ none etype_implement(etype t, bool w) { sequencer
     if (was_implemented && !is_enum(t)) return;
 
     // ensure record body is parsed before implementing
-    if (is_rec(t) && t->body && !t->user_built && a->prepare_record)
+    if (is_rec(t) && t->body && !t->user_built && !au->is_system && a->prepare_record)
         ((void(*)(Au, Au))a->prepare_record)((Au)a, (Au)t);
 
     t->is_implemented = true;
@@ -6251,7 +6257,7 @@ void aether_import_Au(aether a, string ident, Au lib) {
         if (!au_module) {
             string path_str = string(((path)lib)->chars);
             lib_instance = dlopen(cstring(path_str), RTLD_NOW);
-            verify(lib_instance, "shared-lib failed to load: %o", lib);
+            verify(lib_instance, "shared-lib failed to load: %o\n  %s", lib, dlerror());
             set(a->libs, path_str, (Au)lib_instance);
             au_module = find_module(ident->chars);
         }
@@ -7036,6 +7042,9 @@ enode enode_deref(enode n) {
     if (a->no_build) return e_noop(a, u(etype, src));
     verify(src, "cannot dereference type %o", typed);
     etype src_etype = u(etype, src);
+    // C array decay: dereferencing a pointer to an array type yields the pointer, not a load
+    if (src->elements > 0)
+        return enode(mod, a, au, src, loaded, false, value, n->value);
     return enode(mod, a, au, src, loaded, true, value,
         LLVMBuildLoad2(B, src_etype->lltype, n->value, "deref"));
 }
