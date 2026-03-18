@@ -237,7 +237,7 @@ none TLS_init(TLS tls) {
     //mbedtls_ctr_drbg_init(&tls->ctr_drbg);
 
     static string pers;
-    if (!pers) pers = new(string, "Au-type::net");
+    if (!pers) pers = new(string, chars, "Au-type::net");
 
     u8 random[32];
     i32 status = psa_generate_random(random, sizeof(random));

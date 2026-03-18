@@ -648,7 +648,7 @@ array array_of(Au first, ...) {
 }
 
 array array_of_cstr(cstr first, ...) {
-    array a = allocate(array, alloc, 256);
+    array a = Au_allocate(array, alloc, 256);
     va_list args;
     va_start(args, first);
     for (cstr arg = first; arg; arg = va_arg(args, cstr))
@@ -3829,6 +3829,7 @@ none string_init(string a) {
     }
 }
 
+
 string string_with_uchar(string a, uchar value) {
     // Check if the value is within the BMP (U+0000 - U+FFFF)
     if (value <= 0xFFFF) {
@@ -3865,6 +3866,12 @@ string string_with_uchar(string a, uchar value) {
         memcpy((cstr)a->chars, buf, len);
     }
     return a;
+}
+
+string unicode_char(i32 value) {
+    string s = string();
+    string_with_uchar(s, value);
+    return s;
 }
 
 string string_with_i64(string a, i64 value) {

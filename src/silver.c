@@ -1827,6 +1827,8 @@ string trim_annotation(string input) {
     return annotation;
 }
 
+string unicode_char(i32);
+
 static array parse_tokens(silver a, Au input, array output) { sequencer
     string input_string;
     Au_t type = isa(input);
@@ -1845,7 +1847,7 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
     string special = string(".{}$,<>()![]/+*:=#");
     i32 special_ln = len(special);
     for (int i = 0; i < special_ln; i++)
-        push(symbols, (Au)string((i32)special->chars[i]));
+        push(symbols, (Au)unicode_char((i32)special->chars[i]));
     push(symbols, (Au)string(".."));
     each(keywords, string, kw) push(symbols, (Au)kw);
     each(assign, string, a) push(symbols, (Au)a);
@@ -3773,7 +3775,7 @@ string import_config(array input) {
         } else if (token_line >= 0 && t->line != token_line) {
             token_line = -1;
         }
-        if (token_line == -1 && !starts_with(t, "-l")) {
+        if (token_line == -1 && !starts_with(t, "-l") && !starts_with(t, "-I")) {
             if (len(config))
                 append(config, " ");
             concat(config, (string)t);
@@ -3803,6 +3805,15 @@ string import_libs(array input, map output) {
         }
     }
     return libs;
+}
+
+void import_includes(silver a, array input, array output) {
+    each(input, string, t) {
+        if (starts_with(t, "-I")) {
+            string expanded = interpolate(t, (Au)a);
+            push(output, (Au)expanded);
+        }
+    }
 }
 
 static bool command_exists(cstr cmd) {
@@ -4000,10 +4011,12 @@ string compile_implements(silver a, array files, string cflags) {
     each(files, path, i) {
         string i_name   = f(string, "%o/%o.o", a->build_dir, filename(i));
         string ext      = ext(i);
-        cstr   compiler = eq(ext, ".cc") ? "clang++" : "clang";
+        bool   is_cpp   = eq(ext, "cc") || eq(ext, "cpp");
+        cstr   compiler = is_cpp ? "clang++" : "clang";
+        cstr   std_flag = is_cpp ? "-std=c++17" : "-std=c11";
         string st       = stem(i);
-        verify(exec(a->verbose, "%o/bin/%s %o %s -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au",
-            install, compiler, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install) == 0,
+        verify(exec(a->verbose, "%o/bin/%s %s %o %s -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au",
+            install, compiler, std_flag, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install) == 0,
             "failed to compile %o", i);
         if (len(objs)) append(objs, " ");
         concat(objs, i_name);
@@ -4146,6 +4159,17 @@ none silver_build(silver a) {
 
     string cflags = a->asan ? string("-fsanitize=address") : string("");
 
+    // build compile-only flags (includes + cflags)
+    string ccflags = string(cflags->chars);
+    if (a->include_paths) {
+        each(a->include_paths, string, inc) {
+            if (len(ccflags)) append(ccflags, " ");
+            if (!starts_with(inc, "-I"))
+                append(ccflags, "-I");
+            concat(ccflags, inc);
+        }
+    }
+
     if (len(a->implements))
         write_header(a);
 
@@ -4166,7 +4190,7 @@ none silver_build(silver a) {
     }
 
     // compile implementation in c/cc, and select for linking
-    string objs = compile_implements(a, a->implements, cflags);
+    string objs = compile_implements(a, a->implements, ccflags);
 
     // link - include the implementation objects
     string isysroot = a->isysroot ? f(string, "-isysroot %o ", a->isysroot) : string("");
@@ -4725,8 +4749,13 @@ enode parse_import(silver a) {
     }
 
     array b = read_body(a);
-    if (len(b))
-        import_libs(compact_tokens(b), a->libs);
+    if (len(b)) {
+        array bt = compact_tokens(b);
+        import_libs(bt, a->libs);
+        if (!a->include_paths)
+            a->include_paths = array(16);
+        import_includes(a, bt, a->include_paths);
+    }
 
     map defs = len(b) ? map() : null;
     bool is_fields = false;
@@ -4954,7 +4983,6 @@ enode assign_builder(silver a, enode targ, array post_const) { sequencer
     int level = a->expr_level;
     a->expr_level++;
     push_tokens(a, (tokens)post_const, 0);
-    print_tokens(a, seq);
     enode expr = parse_expression(a, targ ? (etype)evar_type((evar)targ) : null, false, true);
     pop_tokens(a, false);
     a->expr_level = level;
@@ -5094,19 +5122,65 @@ void silver_write_header(silver a) {
     line(public_f, "#endif");
 
     // write init header
-    line(init_f, "#ifndef _%o_INTERN_", NAME);
-    line(init_f, "#define _%o_INTERN_", NAME);
+    line(init_f, "#ifndef _%o_INIT_", NAME);
+    line(init_f, "#define _%o_INIT_", NAME);
+
+    // generate constructor macros for each class
     members(a->au, m) {
         if (is_class(m)) {
             string n = cname(string(m->ident));
-            line(init_f,
-                "#undef %o_intern", n);
-            line(init_f,
-                "#define %o_intern(A,B,...) A##_schema(A,B, __VA_ARGS__)", n);
+            line(init_f, "#define TC_%o(MEMBER, VALUE) ({ AF_set((u64*)&instance->__f, FIELD_ID(%o, MEMBER)); VALUE; })", n, n);
+            fprintf(init_f, "#define _ARG_COUNT_IMPL_%s(_0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20, _21, _22, N, ...) N\n", n->chars);
+            fprintf(init_f, "#define _ARG_COUNT_I_%s(...) _ARG_COUNT_IMPL_%s(__VA_ARGS__, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)\n", n->chars, n->chars);
+            fprintf(init_f, "#define _ARG_COUNT_%s(...)   _ARG_COUNT_I_%s(\"Au object model\", ## __VA_ARGS__)\n", n->chars, n->chars);
+            fprintf(init_f, "#define _COMBINE_%s_(A, B)   A##B\n", n->chars);
+            fprintf(init_f, "#define _COMBINE_%s(A, B)    _COMBINE_%s_(A, B)\n", n->chars, n->chars);
+            fprintf(init_f, "#define _N_ARGS_%s_0( TYPE)\n", n->chars);
+            fprintf(init_f, "#define _N_ARGS_%s_1( TYPE, a) _Generic((a), TYPE##_schema(TYPE, GENERICS, Au) Au_schema(TYPE, GENERICS, Au) const void *: (void)0)((TYPE)(instance), a)\n", n->chars);
+            for (int i = 2; i <= 22; i += 2) {
+                if (i == 2)
+                    fprintf(init_f, "#define _N_ARGS_%s_2( TYPE, a,b) instance->a = TC_%s(a,b);\n", n->chars, n->chars);
+                else {
+                    string args = string();
+                    string prev_args = string();
+                    for (int j = 0; j < i; j += 2) {
+                        char letter = 'a' + j;
+                        char next   = 'a' + j + 1;
+                        if (len(args)) append(args, ", ");
+                        concat(args, f(string, "%c,%c", letter, next));
+                        if (j < i - 2) {
+                            if (len(prev_args)) append(prev_args, ", ");
+                            concat(prev_args, f(string, "%c,%c", letter, next));
+                        }
+                    }
+                    char new_var = 'a' + (i - 2);
+                    char new_val = 'a' + (i - 1);
+                    fprintf(init_f, "#define _N_ARGS_%s_%d( TYPE, %s) _N_ARGS_%s_%d(TYPE, %s) instance->%c = TC_%s(%c,%c);\n",
+                        n->chars, i, args->chars, n->chars, i - 2, prev_args->chars, new_var, n->chars, new_var, new_val);
+                }
+            }
+            fprintf(init_f, "#define _N_ARGS_HELPER2_%s(TYPE, N, ...)  _COMBINE_%s(_N_ARGS_%s_, N)(TYPE, ## __VA_ARGS__)\n", n->chars, n->chars, n->chars);
+            fprintf(init_f, "#define _N_ARGS_%s(TYPE,...)    _N_ARGS_HELPER2_%s(TYPE, _ARG_COUNT_%s(__VA_ARGS__), ## __VA_ARGS__)\n", n->chars, n->chars, n->chars);
+            line(init_f, "#define %o(...) ({ \\", n);
+            line(init_f, "    %o instance = (%o)alloc_dbg(typeid(%o), 1, __FILE__, __LINE__, seq); \\", n, n, n);
+            line(init_f, "    _N_ARGS_%o(%o, ## __VA_ARGS__); \\", n, n);
+            line(init_f, "    Au_initialize((Au)instance); \\");
+            line(init_f, "    instance; \\");
+            line(init_f, "})");
         }
     }
-    line(init_f, "#include <%o/%o>", m, m);
+
+    // generate struct constructors
+    members(a->au, m) {
+        if (m->is_struct && !m->is_system && !m->is_schema) {
+            string n = cname(type_name((Au)m));
+            line(init_f, "#define %o(...) structure_of(%o __VA_OPT__(,) __VA_ARGS__)", n, n);
+        }
+    }
+
     line(init_f, "#endif");
+    line(init_f, "");
+    line(init_f, "");
 
 
     // write module-name header
@@ -5292,9 +5366,10 @@ void silver_write_header(silver a) {
 
     line(module_f, "#endif");
 
-    // write methods
+    // write methods (guarded for C++ — Au macros clash with stdlib)
     line(method_f, "#ifndef _%o_METHODS_", NAME);
     line(method_f, "#define _%o_METHODS_", NAME);
+    line(method_f, "#ifndef __cplusplus");
     members(a->au, m) {
         if (is_class(m)) {
             members(m, mi) {
@@ -5303,6 +5378,7 @@ void silver_write_header(silver a) {
             }
         }
     }
+    line(method_f, "#endif /* __cplusplus */");
     line(method_f, "#endif");
     fclose(method_f);
 
@@ -5310,6 +5386,9 @@ void silver_write_header(silver a) {
     // write import header
     line(import_f, "#ifndef _%o_IMPORT_",   NAME);
     line(import_f, "#define _%o_IMPORT_\n", NAME);
+    line(import_f, "#ifdef __cplusplus");
+    line(import_f, "extern \"C\" {");
+    line(import_f, "#endif");
 
     each(a->imports, import, im) {
         each(im->include_paths, path, i)
@@ -5331,6 +5410,7 @@ void silver_write_header(silver a) {
     line(import_f, "#include <%o/methods>", a->name);
     line(import_f, "#undef init");
     line(import_f, "#undef dealloc");
+    //line(import_f, "#ifndef __cplusplus");
     line(import_f, "#include <Au/init>");
     each(a->imports, import, im) {
         if (im->external_name)
@@ -5341,7 +5421,11 @@ void silver_write_header(silver a) {
         if (im->external_name)
             line(import_f, "#include <%o/methods>", im->external_name);
     }
-    line(import_f, "#include <%o/init>", a->name);
+    //line(import_f, "#include <%o/init>", a->name); // disabled: clang 22 preprocessor bug with large macro parameter lists in included files
+    //line(import_f, "#endif");
+    line(import_f, "#ifdef __cplusplus");
+    line(import_f, "}");
+    line(import_f, "#endif");
     line(import_f, "#endif");
 
     fclose(import_f);
@@ -5889,7 +5973,6 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
     /// handle compatible indexing methods / lambda / and general pointer dereference @ index
     if (indexable && next_is(a, "[")) {
         Au_t au_rec = is_rec((Au)mem);
-        //print_tokens(a);
         if (!au_rec)
             au_rec = au_rec;
         etype r = u(etype, au_rec);
@@ -6020,7 +6103,6 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
                 if (!read_if(a, ","))
                     break;
             }
-            print_tokens(a, seq);
             validate(read_if(a, ")"), "expected parenthesis to end macro func call");
         }
 

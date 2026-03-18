@@ -98,20 +98,24 @@ def write_import_header(module, paths, env_vars):
             # Module-specific includes
             f.write(f"#include <{module}/intern>\n")
             f.write(f"#include <{module}/{module}>\n")
+            f.write(f"#ifndef __cplusplus\n")
             f.write(f"#include <{module}/methods>\n")
+            f.write(f"#endif\n")
             f.write("#undef init\n")
             f.write("#undef dealloc\n")
-            
+
             # Third pass: init headers
             for mod in imports:
                 if os.path.exists(mod_src[mod]) and mod != module:
                     f.write(f"#include <{mod}/init>\n")
-            
-            # Fourth pass: methods headers
+
+            # Fourth pass: methods headers (skip for C++ — Au macros clash with stdlib)
+            f.write("#ifndef __cplusplus\n")
             for mod in imports:
                 if os.path.exists(mod_src[mod]) and mod != module:
                     f.write(f"#include <{mod}/methods>\n")
-            
+            f.write("#endif\n")
+
             f.write(f"#include <{module}/init>\n")
             f.write("\n")
             f.write("#endif\n")
@@ -150,6 +154,7 @@ def generate_init_header(module, header_file, init_header):
         f.write("/* generated init interface - 2 */\n")
         f.write(f"#ifndef _{umodule}_INIT_H_\n")
         f.write(f"#define _{umodule}_INIT_H_\n")
+        f.write(f"#ifndef __cplusplus\n")
         f.write("\n")
         
         # Process class declarations
@@ -226,7 +231,8 @@ def generate_init_header(module, header_file, init_header):
             if struct_name:
                 f.write(f"#define {struct_name}(...) structure_of({struct_name} __VA_OPT__(,) __VA_ARGS__)\n")
         
-        f.write(f"\n#endif /* _{module}_INIT_H_ */\n")
+        f.write(f"\n#endif /* __cplusplus */\n")
+        f.write(f"#endif /* _{module}_INIT_H_ */\n")
 
 def generate_methods_header(module, header_file, methods_header):
     """Generate methods header"""
@@ -271,6 +277,7 @@ def generate_methods_header(module, header_file, methods_header):
         f.write("/* generated methods */\n")
         f.write(f"#ifndef _{umodule}_METHODS_H_\n")
         f.write(f"#define _{umodule}_METHODS_H_\n")
+        f.write(f"#ifndef __cplusplus\n")
         f.write("\n")
 
         for classname, method, null_safe, arg_types in methods:
@@ -339,7 +346,8 @@ def generate_methods_header(module, header_file, methods_header):
                     )
                     f.write(f"#endif\n")
 
-        f.write(f"\n#endif /* _{umodule}_METHODS_H_ */\n")
+        f.write(f"\n#endif /* __cplusplus */\n")
+        f.write(f"#endif /* _{umodule}_METHODS_H_ */\n")
 
 
 
