@@ -1,6 +1,7 @@
 #ifndef _AETHER2_
 #define _AETHER2_
 
+forward(etype)
 forward(aether)
 forward(enode)
 forward(code)
@@ -8,6 +9,7 @@ forward(catcher)
 forward(codegen)
 
 #define u(E, _au) ((E)(instance_of((Au)get(a->registry, (Au)(_au)), typeid(E))))
+etype rlookup(aether a, string name);
 
 #define efind(E, au, N) ({ \
     enum AU_MEMBER m = 0; \

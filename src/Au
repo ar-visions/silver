@@ -566,6 +566,10 @@ i64 epoch_millis();
 Au Au_initialize(Au);
 none Au_init_recur(Au a, Au_t current, raw last_init);
 
+// sandbox API
+void  au_sandbox_lock(void);  // phase 2: block dlopen/exec after hardware init
+void* au_dlopen(const char* path, int flags); // validated library loading
+
 
 /// Au properties are not user-accessible, 
 /// so they are declared as opaque

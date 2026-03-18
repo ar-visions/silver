@@ -212,6 +212,10 @@ if ! [ -L "$SILVER/install" ]; then
     ln -sf ./platform/native "$SILVER/install"
 fi
 
+# private app storage
+mkdir -p "$SILVER/private"
+mkdir -p "$SILVER/private/silver"
+
 # build docker from source — always available for platform builds
 if ! [ -f "$NATIVE/bin/docker" ]; then
     echo "🐳 Docker not found. Building from source..."

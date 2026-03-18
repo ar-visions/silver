@@ -318,7 +318,8 @@ class Model
         node: nodes[node_index]
         node.processed = true
         transform: Transform
-        if [node.joint_index >= 0]
+
+        if [ node.joint_index >= 0 ]
             transform.jdata = joints
             rotation_m4: mat4f [node.rotation]
             transform.local = mat4f []
@@ -330,11 +331,14 @@ class Model
             transform.istate  = node.joint_index
             state_mat: parent_mat.mul[ transform.local_default ]
             joints.states[transform.istate] = state_mat
-            for [child_idx: i64] in node.children
+
+            for [ child_idx: i64 ] in node.children
                 ch: node_transform[ joints, state_mat, child_idx, transform]
                 if [ch]
                     transform.ichildren += ch.istate
+            
             joints.transforms += transform
+        
         return transform
 
     func joints [node: Node] -> JData
