@@ -1621,16 +1621,44 @@ static micro  modules;
 static array  scope;
 static bool   started = false;
 
+u64 au_hash_ident(symbol s) {
+    // 3 more lines to not have a string length prior is best
+    //return fnv1a_hash(a->chars, a->count, OFFSET_BASIS);
+    if (!s) return 0;
+    u64 h = 5381;
+    for (const char* p = s; *p; p++)
+        h = ((h << 5) + h) ^ *p;
+    return h;
+}
 
 Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool poly) {
     if (!mdl) return null;
+    u64 fhash = f ? au_hash_ident(f) : 0;
     do {
-        for (int i = 0; i < mdl->members.count; i++) {
-            Au_t au = (Au_t)mdl->members.origin[i];
-            if (!member_type || au->member_type == member_type) {
-                if (!traits || (au->traits & traits) == traits) {
-                    if (!f || (au->ident && strcmp(au->ident, f) == 0))
-                        return au;
+        // fast path: hash map lookup, then verify filters
+        if (f && fhash && mdl->member_map) {
+            store s = (store)mdl->member_map;
+            size_t idx = ((size_t)fhash >> 3) % s->hsize;
+            for (item it = s->hlist[idx]; it; it = it->next) {
+                if (it->key == (Au)(uintptr_t)fhash) {
+                    Au_t au = (Au_t)it->value;
+                    if (au && au->ident && strcmp(au->ident, f) == 0) {
+                        if ((!member_type || au->member_type == member_type) &&
+                            (!traits || (au->traits & traits) == traits))
+                            return au;
+                    }
+                }
+            }
+        }
+        {
+            // slow path: linear scan with filters
+            for (int i = 0; i < mdl->members.count; i++) {
+                Au_t au = (Au_t)mdl->members.origin[i];
+                if (!member_type || au->member_type == member_type) {
+                    if (!traits || (au->traits & traits) == traits) {
+                        if (!f || (au->ident && strcmp(au->ident, f) == 0))
+                            return au;
+                    }
                 }
             }
         }
@@ -1752,6 +1780,7 @@ Au_t def_arg(Au_t context, symbol ident, Au_t arg, u64 traits) {
     Au_t var = _push_arg(context, true);
     var->src = arg;
     var->ident = cstr_copy((cstr)ident);
+    var->ident_hash = au_hash_ident(ident);
     var->traits = traits;
     return var;
 }
@@ -1760,6 +1789,7 @@ Au_t def_meta(Au_t context, symbol ident, Au_t arg) {
     Au_t var = _push_arg(context, true);
     var->src = arg;
     var->ident = cstr_copy((cstr)ident);
+    var->ident_hash = au_hash_ident(ident);
     return var;
 }
 
@@ -1792,6 +1822,7 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
     Au_t au = &cur->type;
 
     au->ident = ident ? (cstr)cstr_copy((cstr)ident) : (cstr)null;
+    au->ident_hash = au_hash_ident(ident);
     au->traits = traits | AU_TRAIT_ALLOCATED; // erasing modules can consist of freeing only pool origined data (or we check performance against a simple approach and fallback to non complicated)
     au->member_type = member_type;
 
@@ -1806,6 +1837,45 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
     if (type) {
         Au_t new_member = (Au_t)micro_push(&type->members, (Au)&cur->type);
         new_member->context = type;
+
+        // create member_map on first member addition (raw alloc — Au may not be ready)
+        if (!type->member_map) {
+            int hsz = 0;
+            if (type->member_type == AU_MEMBER_MODULE || type->member_type == AU_MEMBER_NAMESPACE)
+                hsz = 1024;
+            else if (type->is_class || type->is_struct)
+                hsz = 256;
+            if (hsz) {
+                store s = calloc(1, sizeof(struct _store) + sizeof(struct _Au));
+                s->hsize = hsz;
+                s->hlist = (item*)calloc(hsz, sizeof(item));
+                type->member_map = (void*)s;
+            }
+        }
+
+        // insert into member_map keyed by ident_hash (raw — no Au object model)
+        if (type->member_map && ident) {
+            store s = (store)type->member_map;
+            size_t idx = ((size_t)new_member->ident_hash >> 3) % s->hsize;
+            // check for existing
+            for (item i = s->hlist[idx]; i; i = i->next) {
+                if (i->key == (Au)(uintptr_t)new_member->ident_hash) {
+                    i->value = (Au)new_member;
+                    goto member_map_done;
+                }
+            }
+            // allocate raw item
+            item ni = calloc(1, sizeof(struct _Au) + sizeof(struct _item));
+            ni = (item)(((struct _Au*)ni) + 1);
+            ni->key   = (Au)(uintptr_t)new_member->ident_hash;
+            ni->value = (Au)new_member;
+            ni->next  = s->hlist[idx];
+            if (s->hlist[idx]) s->hlist[idx]->prev = ni;
+            s->hlist[idx] = ni;
+            s->count++;
+            member_map_done:;
+        }
+
         return new_member;
     }
     return (Au_t)&cur->type;
@@ -2005,9 +2075,14 @@ ffi_method_t* method_with_address(handle address, Au_t rtype, micro* atypes, Au_
         for (Au_t VAR = (Au_t)(MDL)->members.origin[__i]; VAR; VAR = NULL)
 
 none push_type(Au_t type) {
+    // ensure ident_hash is set for all types (static types from declare_class etc.)
+    if (type->ident && !type->ident_hash)
+        type->ident_hash = au_hash_ident(type->ident);
+
     if (!Au_Au_t_i.type.ident) {
         module = module_lookup("Au");
         Au_Au_t_i.type.ident  = "Au_t";
+        Au_Au_t_i.type.ident_hash = au_hash_ident("Au_t");
         Au_Au_t_i.type.src    = typeid(Au);
         Au_Au_t_i.type.traits = AU_TRAIT_IS_AU;
         Au_Au_t_i.type.module = module;
@@ -2075,11 +2150,16 @@ none push_type(Au_t type) {
         def_member(au_t, "elements",      typeid(i32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, elements);
         def_member(au_t, "typesize",      typeid(i32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, typesize);
         def_member(au_t, "isize",         typeid(i32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, isize);
+        def_member(au_t, "ident_hash",   typeid(u64),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, ident_hash);
         def_member(au_t, "fn",            typeid(ARef), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, fn);
         def_member(au_t, "ffi",           typeid(ARef), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, ffi);
                 
+        
         def_member(au_t, "members", typeid(micro), AU_MEMBER_VAR, AU_TRAIT_INLAY)
             ->offset = offsetof(struct _Au_f, members);
+
+        def_member(au_t, "member_map", typeid(ARef), AU_MEMBER_VAR, 0)
+            ->offset = offsetof(struct _Au_f, member_map);
 
         def_member(au_t, "args", typeid(micro), AU_MEMBER_VAR, AU_TRAIT_INLAY)
             ->offset = offsetof(struct _Au_f, args);

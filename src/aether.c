@@ -1959,8 +1959,6 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     etype_implement((etype)fn, false);
     
     Au    arg0        = args ? get(args, 0) : null;
-    enode ff          = arg0;
-    Au    ff_info = head(ff);
     enode first_arg   = arg0 ? e_operand(a, arg0, null) : null;
     enode target_type = (!funcptr && fn->target) ? (enode)fn->target : null;
     bool  first_is_alloc = first_arg && first_arg->is_alloc && !first_arg->is_super;
