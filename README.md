@@ -599,8 +599,11 @@ k: string ma [ 'key' ]     # lookup by key
 ### Iteration
 
 ```python
-each(items, type, var)
-    use var
+for [ val:ElementType ] in array_member
+    use val
+
+for [ val:ValueType, key:KeyType ] in map_member
+    use key, val
 ```
 
 ---
