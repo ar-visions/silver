@@ -1435,6 +1435,31 @@ static array read_within(silver a) {
     return body;
 }
 
+// read compacted keyword tokens inside { ... } — returns tokens literal
+static enode read_keywords(silver a) {
+    if (!next_is(a, "{"))
+        return null;
+    consume(a); // consume {
+    array toks = array(16);
+    int depth = 1;
+    for (;;) {
+        token t = peek(a);
+        if (!t) break;
+        if (eq(t, "}")) { depth--; consume(a); if (depth == 0) break; }
+        if (eq(t, "{")) { depth++; }
+        // compact neighboring tokens on the same line (like commit-id parsing)
+        string compacted = string(t->chars);
+        consume(a);
+        while (next_is_neighbor(a) && !next_is(a, "}")) {
+            token nb = peek(a);
+            concat(compacted, (string)nb);
+            consume(a);
+        }
+        push(toks, (Au)compacted);
+    }
+    return e_create(a, etypeid(tokens), (Au)toks);
+}
+
 token silver_peek(silver a) {
     if (a->cursor == len(a->tokens))
         return null;
@@ -2566,10 +2591,28 @@ enode block_builder(silver, array, Au);
 enode parse_sub(silver a, etype rtype) {
     array body = read_body(a);
     validate(len(body), "expected body for sub-routine");
-    
-    // e_sub in aether creates merge block, catcher, 
+
+    // e_sub in aether creates merge block, catcher,
     // parses body via builder callback,
     // builds phi from all return points
+    enode r_last = a->last_sub_return;
+    enode b_last = a->last_break;
+    subprocedure build_body = subproc(a, block_builder, null);
+    enode res = e_subroutine(a, rtype, body, build_body);
+    validate(r_last != a->last_sub_return || b_last != a->last_break,
+        "all paths require return/break in sub-routine");
+
+    // store body tokens on the result for callable re-invocation
+    res->body = (Au)hold(body);
+    return res;
+}
+
+// re-invoke a callable sub — pushes stored body tokens back and re-evaluates
+enode invoke_sub(silver a, enode sub) {
+    verify(sub->body, "sub has no stored body for re-invocation");
+    array body = (array)sub->body;
+    etype rtype = canonical(sub);
+
     enode r_last = a->last_sub_return;
     enode b_last = a->last_break;
     subprocedure build_body = subproc(a, block_builder, null);
@@ -2660,6 +2703,19 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         a->expr_level++;
         enode res = e_operand(a, lit, mdl_expect);
         a->expr_level--;
+
+        // scalar suffix: 200px, 1.5em, 90deg — number immediately followed by type name
+        if (!cmode && next_is_neighbor(a) && peek(a)) {
+            string suffix = peek_alpha(a);
+            if (suffix) {
+                etype scalar_type = rlookup((aether)a, suffix);
+                if (scalar_type && scalar_type->au->is_struct) {
+                    consume(a); // consume the suffix token
+                    return e_create(a, scalar_type, (Au)res);
+                }
+            }
+        }
+
         return e_create(a, mdl_expect, (Au)res);
     }
     
@@ -2762,6 +2818,11 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         a->parens_depth--;
         return e_create(a, mdl_expect, (Au)
             parse_ternary(a, (enode)expr, (etype)mdl_expect, load));
+    }
+
+    // { keyword tokens } — compacted token literals
+    if (!cmode && next_is(a, "{") && mdl_expect && mdl_expect->au == typeid(tokens)->src) {
+        return read_keywords(a);
     }
 
     if (!cmode && next_is(a, "[")) {
@@ -5995,6 +6056,18 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
     macro is_macro = instanceof(mem, macro);
     bool is_lambda_call = inherits(mem->au, typeid(lambda));
     int indexable = !is_func((Au)mem) && !is_func_ptr((Au)mem) && !is_macro && !is_lambda_call;
+
+    // callable sub: x[] re-invokes the sub body stored on the evar
+    if (indexable && next_is(a, "[") && mem->body) {
+        push_current(a);
+        consume(a); // consume [
+        if (read_if(a, "]")) {
+            // x[] — invoke stored sub
+            pop_tokens(a, false);
+            return invoke_sub(a, mem);
+        }
+        pop_tokens(a, true); // not empty [], restore and fall through to indexer
+    }
 
     /// handle compatible indexing methods / lambda / and general pointer dereference @ index
     if (indexable && next_is(a, "[")) {

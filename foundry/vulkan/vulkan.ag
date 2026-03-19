@@ -1,0 +1,787 @@
+export 0.1.0
+
+import KhronosGroup:Vulkan-Headers/29184b9 <vulkan/vulkan.h>
+
+import KhronosGroup:Vulkan-Tools/734638e
+     -DVULKAN_HEADERS_INSTALL_DIR={install}
+
+import img
+
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+
+
+func trinity_log [ severity: VkDebugUtilsMessageSeverityFlagBitsEXT, types: VkDebugUtilsMessageTypeFlagsEXT, callbackData: ref VkDebugUtilsMessengerCallbackDataEXT, userData: ref void ] -> VkBool32
+    if [ severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT ]
+        puts "vulkan: %s", callbackData.pMessage
+    return VK_FALSE
+
+
+class vk_context
+    public  instance            : VkInstance
+    public  physical_device     : VkPhysicalDevice
+    public  device              : VkDevice
+    public  queue               : VkQueue
+    public  command_pool        : VkCommandPool
+    public  queue_family_index  : i32 -1
+    public  rt_support          : bool
+    public  instance_exts       : array [ alloc:128, unmanaged:true ]
+    public  device_exts         : array [ alloc:128, unmanaged:true ]
+    intern  debug               : VkDebugUtilsMessengerEXT
+    public  allocator           : VmaAllocator
+
+    func dealloc [ ]
+        vmaDestroyAllocator[ allocator ]
+        vkDeviceWaitIdle[ device ]
+        vkDestroyDevice[ device, null ]
+        vkDestroyInstance[ instance, null ]
+
+    func set_queue_index [ surface: handle ] -> none
+        queue_family_count: u32 [ 0 ]
+        vkGetPhysicalDeviceQueueFamilyProperties[ physical_device, ref queue_family_count, null ]
+        expect queue_family_count > 0, "failed to find queue families"
+        queue_families: new VkQueueFamilyProperties [ queue_family_count ]
+        vkGetPhysicalDeviceQueueFamilyProperties[ physical_device, ref queue_family_count, queue_families ]
+        found: false
+        if [ !surface ]
+            queue_family_index = 0
+            found = true
+        el
+            for [ i: u32 0, i < queue_family_count, i += 1 ]
+                present_support: VkBool32 [ VK_FALSE ]
+                vkGetPhysicalDeviceSurfaceSupportKHR[ physical_device, i, surface, ref present_support ]
+                if [ queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT && present_support ]
+                    queue_family_index = i
+                    found = true
+                    break
+        free[ queue_families ]
+        expect found, "failed to find a suitable graphics and presentation queue family"
+
+    func find_memory_type [ type_filter: u32, flags: VkMemoryPropertyFlags ] -> u32
+        props: VkPhysicalDeviceMemoryProperties
+        vkGetPhysicalDeviceMemoryProperties[ physical_device, ref props ]
+        for [ i: u32 0, i < props.memoryTypeCount, i += 1 ]
+            if [ (type_filter & (1 << i)) && (props.memoryTypes[i].propertyFlags & flags) == flags ]
+                return i
+        fault "could not find memory type"
+        return UINT32_MAX
+
+    func attach [ surface:handle ] -> none
+        if [ queue_family_index == -1 ]
+            set_queue_index[ surface ]
+            vkGetDeviceQueue[ device, queue_family_index, 0, ref queue ]
+            expect queue, "Failed to retrieve graphics queue"
+            if [ _vkCreateDebugUtilsMessengerEXT ]
+                result: _vkCreateDebugUtilsMessengerEXT[ instance, VkDebugUtilsMessengerCreateInfoEXT [
+                    sType:           VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+                    messageSeverity: VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                                    VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                    VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+                    messageType:     VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT     |
+                                    VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT  |
+                                    VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+                    pfnUserCallback: trinity_log,
+                    pUserData:       vk
+                ], null, ref debug ]
+                expect result == VK_SUCCESS, "debug messenger"
+            pool_info: VkCommandPoolCreateInfo [
+                sType:            VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                queueFamilyIndex: queue_family_index,
+                flags:            VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+            ]
+            result: vkCreateCommandPool[ device, pool_info, null, ref command_pool ]
+            expect result == VK_SUCCESS, "failed to create command pool"
+
+    func create_mipmaps [ vk_image: VkImage, w: i32, h: i32, mips: i32, layers: i32 ] -> none
+        if [ mips > 1 ]
+            mipWidth:  w
+            mipHeight: h
+            for [ f: 0, f < layers, f += 1 ]
+                transition_image_layout[ vk_image,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, 1, f, 1, false ]
+            for [ i: u32 1, i < mips, i += 1 ]
+                for [ f: 0, f < layers, f += 1 ]
+                    transition_image_layout[ vk_image,
+                        VK_IMAGE_LAYOUT_UNDEFINED,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, i, 1, f, 1, false ]
+                    cmd: command [ vk: vk ]
+                    begin[ cmd ]
+                    vkCmdBlitImage[ cmd.vk,
+                        vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        1, VkImageBlit [
+                            srcSubresource: VkImageSubresourceLayers [
+                                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: i - 1, baseArrayLayer: f, layerCount: 1 ],
+                            srcOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ mipWidth, mipHeight, 1 ] ],
+                            dstSubresource: VkImageSubresourceLayers [
+                                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: i, baseArrayLayer: f, layerCount: 1 ],
+                            dstOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ max[ 1, mipWidth / 2 ], max[ 1, mipHeight / 2 ], 1 ] ]
+                        ], VK_FILTER_LINEAR ]
+                    submit[ cmd ]
+                    transition_image_layout[ vk_image,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i, 1, f, 1, false ]
+                mipWidth  = max[ 1, mipWidth / 2 ]
+                mipHeight = max[ 1, mipHeight / 2 ]
+            for [ f: 0, f < layers, f += 1 ]
+                transition_image_layout[ vk_image,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, mips, f, 1, false ]
+        el
+            transition_image_layout[ vk_image,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 1, 0, 1, false ]
+
+
+    # compatibility wrapper for old call sites
+    func transition_image_layout [ image: VkImage, old_layout: VkImageLayout, new_layout: VkImageLayout, baseMipLevel: i32, level_count: i32, base_array_layer: i32, layer_count: i32, is_depth: bool ] -> none
+        src: Layout.find[ old_layout ]
+        dst: Layout.find[ new_layout ]
+        expect src && dst, "layout not found"
+        r: image_range [ base_mip: baseMipLevel, levels: level_count, base_layer: base_array_layer, layers: layer_count, is_depth: is_depth ]
+        src.transition[ a, image, dst, r ]
+
+
+intern func image_release_buffer [ a: image ] -> object
+    b: buffer [ a.res ]
+    vk: vk_context [ b.vk ]
+    vmaUnmapMemory[ vk.allocator, b.vma_alloc ]
+    vmaDestroyBuffer[ vk.allocator, b.vk_buffer, b.vma_alloc ]
+    b.drop[ ]
+    return null
+
+# ---- format conversion ----
+intern func vk_format_fn [ f: Pixel, linear: bool ] -> VkFormat
+    result: VkFormat [
+        f == Pixel_f32     ? VK_FORMAT_R32_SFLOAT :
+        f == Pixel_rgbaf32 ? VK_FORMAT_R32G32B32A32_SFLOAT :
+        f == Pixel_rgbf32  ? VK_FORMAT_R32G32B32_SFLOAT :
+        f == Pixel_rgba8   ? linear ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB :
+        f == Pixel_rgb8    ? linear ? VK_FORMAT_R8G8B8_UNORM   : VK_FORMAT_R8G8B8_SRGB :
+        f == Pixel_u8      ? VK_FORMAT_R8_UNORM : 0 ]
+    expect result, "incompatible image format"
+    return result
+
+intern func pixel_from_format [ f: VkFormat, channels: ref i32 ] -> Pixel
+    pixel: Pixel [
+        (f == VK_FORMAT_R8G8B8A8_UNORM || f == VK_FORMAT_B8G8R8A8_UNORM ||
+         f == VK_FORMAT_R8G8B8A8_SRGB  || f == VK_FORMAT_B8G8R8A8_SRGB)  ? Pixel_rgba8 :
+        (f == VK_FORMAT_R8G8B8_UNORM   || f == VK_FORMAT_B8G8R8_UNORM   ||
+         f == VK_FORMAT_R8G8B8_SRGB    || f == VK_FORMAT_B8G8R8_SRGB)    ? Pixel_rgb8 :
+        f == VK_FORMAT_R8_UNORM            ? Pixel_u8 :
+        f == VK_FORMAT_R32_SFLOAT          ? Pixel_f32 :
+        f == VK_FORMAT_R32G32B32A32_SFLOAT ? Pixel_rgbaf32 : 0 ]
+    if [ channels ]
+        switch [ pixel ]
+            case Pixel_rgbaf32
+                *channels = 4
+            case Pixel_rgba8
+                *channels = 4
+            case Pixel_rgb8
+                *channels = 3
+            case Pixel_f32
+                *channels = 1
+            case Pixel_u8
+                *channels = 1
+            default
+                *channels = 0
+    return pixel
+
+
+# ---- placeholder / fill textures ----
+func placeholder_image [ sampler: object, size: i32, fill: ref u8, sampler_size: ref i32, format: ref Pixel ] -> none
+    v_i8:    instanceof[ sampler, vector_i8 ]
+    v_f32:   instanceof[ sampler, vector_f32 ]
+    v_rgb8:  instanceof[ sampler, vector_rgb8 ]
+    v_rgbf:  instanceof[ sampler, vector_rgbf ]
+    v_rgba8: instanceof[ sampler, vector_rgba8 ]
+    v_rgbaf: instanceof[ sampler, vector_rgbaf ]
+    data_i8:    ref i8    [ v_i8    ? data[ v_i8 ]    : null ]
+    data_f32:   ref f32   [ v_f32   ? data[ v_f32 ]   : null ]
+    data_rgb8:  ref rgb8  [ v_rgb8  ? data[ v_rgb8 ]  : null ]
+    data_rgbf:  ref rgbf  [ v_rgbf  ? data[ v_rgbf ]  : null ]
+    data_rgba8: ref rgba8 [ v_rgba8 ? data[ v_rgba8 ] : null ]
+    data_rgbaf: ref rgbaf [ v_rgbaf ? data[ v_rgbaf ] : null ]
+    s: i32 [ size * size ]
+    if [ data_f32 ]
+        f32_fill: ref f32 [ fill ]
+        for [ i: 0, i < s, i += 1 ]
+            f32_fill[i] = *data_f32
+        *format = Pixel_f32
+        *sampler_size = s * sizeof[ f32 ]
+    el [ data_i8 ]
+        u8_fill: ref u8 [ fill ]
+        for [ i: 0, i < s, i += 1 ]
+            u8_fill[i] = *data_i8
+        *format = Pixel_u8
+        *sampler_size = s * sizeof[ u8 ]
+    el [ data_rgbf ]
+        v3_fill: ref rgbf [ fill ]
+        for [ i: 0, i < s, i += 1 ]
+            v3_fill[i] = *data_rgbf
+        *format = Pixel_rgbf32
+        *sampler_size = s * sizeof[ rgbf ]
+    el [ data_rgb8 ]
+        v3_fill: ref rgb8 [ fill ]
+        for [ i: 0, i < s, i += 1 ]
+            v3_fill[i] = *data_rgb8
+        *format = Pixel_rgb8
+        *sampler_size = s * sizeof[ rgb8 ]
+    el [ data_rgbaf ]
+        v4_fill: ref rgbaf [ fill ]
+        for [ i: 0, i < s, i += 1 ]
+            v4_fill[i] = *data_rgbaf
+        *format = Pixel_rgbaf32
+        *sampler_size = s * sizeof[ rgbaf ]
+    el [ data_rgba8 ]
+        v4_fill: ref rgba8 [ fill ]
+        for [ i: 0, i < s, i += 1 ]
+            v4_fill[i] = *data_rgba8
+        *format = Pixel_rgba8
+        *sampler_size = s * sizeof[ rgba8 ]
+    el
+        fault "sampler data required"
+
+
+struct Layout
+    static defaults : new Layout [7] # layout defaults stored as static array
+    public layout : VkImageLayout
+    public access : VkAccessFlags
+    public stage  : VkPipelineStageFlags
+    
+    static func find [ l: VkImageLayout ] -> Layout
+        static defaults: Layout[7]
+        static initialized: bool
+        if [ !initialized ]
+            initialized = true
+            defaults[0] = Layout [ layout: VK_IMAGE_LAYOUT_UNDEFINED,                access: 0,                                                                stage: VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT ]
+            defaults[1] = Layout [ layout: VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,     access: VK_ACCESS_TRANSFER_WRITE_BIT,                                     stage: VK_PIPELINE_STAGE_TRANSFER_BIT ]
+            defaults[2] = Layout [ layout: VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,     access: VK_ACCESS_TRANSFER_READ_BIT,                                      stage: VK_PIPELINE_STAGE_TRANSFER_BIT ]
+            defaults[3] = Layout [ layout: VK_IMAGE_LAYOUT_GENERAL,                  access: VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,            stage: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT ]
+            defaults[4] = Layout [ layout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, access: VK_ACCESS_SHADER_READ_BIT,                                        stage: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT ]
+            defaults[5] = Layout [ layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, access: VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,                              stage: VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
+            defaults[6] = Layout [ layout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,          access: VK_ACCESS_MEMORY_READ_BIT,                                        stage: VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT ]
+        for [ i: 0, i < 7, i += 1 ]
+            if [ defaults[i].layout == l ]
+                return ref defaults[i]
+        return null
+
+    # transition image from this layout to target layout
+    func transition [ vk: vk_context, image: VkImage, to: Layout, r: image_range ] -> none
+        cmd: command [ vk: vk ]
+        begin[ cmd ]
+        barrier: VkImageMemoryBarrier [
+            sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            oldLayout:           layout,
+            newLayout:           to.layout,
+            srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+            dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+            image:               image,
+            subresourceRange:    VkImageSubresourceRange [
+                aspectMask:       r.is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+                baseMipLevel:     r.base_mip,
+                levelCount:       r.levels,
+                baseArrayLayer:   r.base_layer,
+                layerCount:       r.layers
+            ]
+        ]
+        barrier.srcAccessMask = access
+        barrier.dstAccessMask = to.access
+        vkCmdPipelineBarrier[ cmd.vk, stage, to.stage, 0, 0, null, 0, null, 1, ref barrier ]
+        submit[ cmd ]
+        drop[ cmd ]
+
+
+struct image_range
+    public base_mip    : i32
+    public levels      : i32
+    public base_layer  : i32
+    public layers      : i32
+    public is_depth    : bool
+
+
+func get_required_extensions [ vk: vk_context, extensions: ref ref symbol, extension_count: ref u32 ] -> none
+    glfw_extensions: ref symbol [ glfwGetRequiredInstanceExtensions[ extension_count ] ]
+    result: ref symbol [ malloc[ (*extension_count + 4) * sizeof[ ref symbol ] ] ]
+    memcpy[ result, glfw_extensions, *extension_count * sizeof[ ref symbol ] ]
+    asm [ !windows ]
+        # VK_KHR_portability_enumeration
+    if [ !windows ]
+        result[*extension_count] = "VK_KHR_portability_enumeration"
+        *extension_count += 1
+    if [ mac ]
+        result[*extension_count] = "VK_KHR_get_physical_device_properties2"
+        *extension_count += 1
+    if [ enable_validation ]
+        result[*extension_count] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME
+        *extension_count += 1
+    verbose: getenv[ "VERBOSE" ] != null
+    for [ i: i32 0, i < *extension_count, i += 1 ]
+        push[ vk.instance_exts, strdup[ result[i] ] ]
+        if [ verbose ]
+            print "instance extension: %s", result[i]
+
+func vk_create [ vk: vk_context ] -> VkInstance
+    extensions: ref ref symbol [ null ]
+    extension_count: u32 [ 0 ]
+    get_required_extensions[ vk, ref extensions, ref extension_count ]
+    validation_layer: symbol [ enable_validation ? "VK_LAYER_KHRONOS_validation" : null ]
+    instance: VkInstance
+    app_info: VkApplicationInfo [
+        sType:              VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        pApplicationName:   "trinity",
+        applicationVersion: VK_MAKE_VERSION[ 1, 0, 0 ],
+        pEngineName:        "trinity",
+        engineVersion:      VK_MAKE_VERSION[ 1, 0, 0 ],
+        apiVersion:         vk_version
+    ]
+
+    result: vkCreateInstance[ VkInstanceCreateInfo [
+        sType:                   VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        pApplicationInfo:        ref app_info,
+        enabledExtensionCount:   vk.instance_exts.len,
+        ppEnabledExtensionNames: vk.instance_exts.origin,
+        enabledLayerCount:       u32[ enable_validation ],
+        ppEnabledLayerNames:     ref validation_layer
+    ], null, ref instance ]
+
+    expect result == VK_SUCCESS, "failed to create Vulkan instance, error: %d", result
+
+    if [ enable_validation ]
+        _vkCreateDebugUtilsMessengerEXT = vkGetInstanceProcAddr[ instance, "vkCreateDebugUtilsMessengerEXT" ]
+        expect _vkCreateDebugUtilsMessengerEXT, "cannot find vk debug function"
+    
+    return instance
+
+
+class command
+    public vk : vk_context
+    intern vk : VkCommandBuffer
+
+    public func begin [ ] -> none
+        vkResetCommandBuffer[ vk, 0 ]
+        vkBeginCommandBuffer[ vk, VkCommandBufferBeginInfo [
+            sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+        ]]
+
+    public func submit [ ] -> none
+        vkEndCommandBuffer[ vk ]
+        sub: VkSubmitInfo [
+            sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            commandBufferCount: 1,
+            pCommandBuffers:    ref vk
+        ]
+        vkQueueSubmit[ vk.queue, 1, sub, VK_NULL_HANDLE ]
+        vkQueueWaitIdle[ vk.queue ]
+
+    func init [ ]
+        alloc_info: VkCommandBufferAllocateInfo [
+            sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            commandPool:        vk.command_pool,
+            level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            commandBufferCount: 1
+        ]
+        vkAllocateCommandBuffers[ vk.device, alloc_info, ref vk ]
+
+
+class buffer
+    public vk               : vk_context
+    expect size             : i64
+    public data             : ARef
+    public u_src            : bool
+    public u_dst            : bool
+    public u_shader         : bool
+    public u_uniform        : bool
+    public u_vertex         : bool
+    public u_index          : bool
+    public u_storage        : bool
+    public m_device_local   : bool
+    public m_host_visible   : bool
+    public m_host_coherent  : bool
+    intern user             : ARef
+    intern vma_alloc        : VmaAllocation
+    intern vk_buffer        : VkBuffer
+
+    public func update [ d: ARef ] -> none
+        if [ !size ]
+            return
+        src: d || data
+        m: mmap[]
+        memcpy[ m, src, size ]
+        unmap[]
+
+    public func mmap [ ] -> ARef
+        mapped: ARef
+        result: vmaMapMemory[ vk.allocator, vma_alloc, ref mapped ]
+        expect result == VK_SUCCESS, "failed to map buffer memory"
+        return mapped
+
+    public func unmap [ ] -> none
+        expect vma_alloc, "expected memory"
+        vmaUnmapMemory[ vk.allocator, vma_alloc ]
+
+    func init [ ]
+        usage: VkBufferUsageFlags [ 0 ]
+        props: VkMemoryPropertyFlags [ 0 ]
+        if [ u_uniform ]  usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
+        if [ u_src ]      usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+        if [ u_dst ]      usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT
+        if [ u_shader ]   usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+        if [ u_storage ]  usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        if [ u_vertex ]   usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+        if [ u_index ]    usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT
+        if [ m_device_local ]  props |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+        if [ m_host_visible ]  props |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+        if [ m_host_coherent ] props |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        buffer_info: VkBufferCreateInfo [
+            sType:       VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            size:        size,
+            usage:       usage,
+            sharingMode: VK_SHARING_MODE_EXCLUSIVE
+        ]
+        alloc_info: VmaAllocationCreateInfo [
+            usage: VMA_MEMORY_USAGE_AUTO
+        ]
+        if [ m_device_local ]
+            alloc_info.preferredFlags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+        if [ m_host_visible ]
+            alloc_info.requiredFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+        if [ m_host_coherent ]
+            alloc_info.requiredFlags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        if [ data || m_host_visible ]
+            alloc_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+        result: vmaCreateBuffer[ vk.allocator, buffer_info, alloc_info, ref vk_buffer, ref vma_alloc, null ]
+        expect result == VK_SUCCESS, "failed to create buffer"
+        if [ data ]
+            mapped: mmap[]
+            memcpy[ mapped, data, size ]
+            unmap[]
+
+    func dealloc [ ]
+        vmaDestroyBuffer[ vk.allocator, vk_buffer, vma_alloc ]
+
+
+class texture
+    expect vk : vk_context
+    public format           : Pixel
+    public sampler          : object
+    public width            : i32
+    public height           : i32
+    public swap             : bool
+    public mip_levels       : i32
+    public layer_count      : i32
+    public surface          : Surface
+    public linear           : bool
+    intern vk_layout        : VkImageLayout
+    intern vk_format        : VkFormat
+    intern vk_image         : VkImage
+    intern vk_image_view    : VkImageView
+    intern vk_sampler       : VkSampler
+    intern vma_alloc        : VmaAllocation
+
+    func resize [ w_new: i32, h_new: i32 ] -> none
+        if [ w_new == width && h_new == height ]
+            return
+        width  = w_new
+        height = h_new
+        vkDeviceWaitIdle[ vk.device ]
+        dealloc     [ ]
+        init        [ ]
+        hold_members[ ]
+
+    func transition [ new_layout: i32 ] -> none
+        if [ vk_layout != new_layout ]
+            transition_image_layout[ vk, vk_image, vk_layout, new_layout,
+                0, mip_levels, 0, layer_count, vk_format == VK_FORMAT_D32_SFLOAT ]
+            vk_layout = new_layout
+
+    cast image
+        channels: i32 [ 0 ]
+        pixel: pixel_from_format[ vk_format, ref channels ]
+        expect pixel != 0, "unsupported format for texture_cast_image"
+        b: buffer [ vk: vk, size: width * height * channels,
+            u_dst: true, m_host_visible: true, m_host_coherent: true ]
+        b.transfer a
+        return image [
+            width:    width,
+            height:   height,
+            format:   pixel,
+            res_bits: b.mmap,
+            res:      b.hold,
+            res_dealloc: image_release_buffer
+        ]
+
+    func init [ ]
+        expect vk, "vk_context not specified"
+        img:  instanceof[ sampler, image ]
+        ansio: 4
+        sampler_size: i32 [ 0 ]
+        fill: u8[256]
+        if [ !mip_levels ]
+            mip_levels = 1
+        if [ !layer_count ]
+            layer_count = 1
+        if [ !vk_format && format ]
+            vk_format = vk_format_fn[ format, linear ]
+        is_depth: vk_format == VK_FORMAT_D32_SFLOAT
+        if [ vk_image ]
+            expect vk_format, "expected format"
+        el
+            if [ width > 0 || img ]
+                format      = img ? img.format : format
+                sampler_size = img ? byte_count[ img ] : 0
+                ansio       = img ? 4 : 0
+                if [ img ]
+                    width  = img.width
+                    height = img.height
+            el
+                width  = 4
+                height = 4
+                ansio  = 0
+                placeholder_image[ sampler, 4, fill, ref sampler_size, ref format ]
+                vk_format = vk_format_fn[ format, false ]
+            usage: VkImageUsageFlags [ 0 ]
+            if [ is_depth ]
+                usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+            el [ swap ]
+                usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+            el
+                usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+            if [ !vk_format && format ]
+                vk_format = vk_format_fn[ format, linear ]
+            alloc_info: VmaAllocationCreateInfo [
+                usage:         VMA_MEMORY_USAGE_AUTO,
+                requiredFlags: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+            ]
+            expect vmaCreateImage[ vk.allocator, VkImageCreateInfo [
+                sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                imageType:     VK_IMAGE_TYPE_2D,
+                format:        vk_format,
+                flags:         layer_count >= 6 ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
+                extent:        VkExtent3D [ width, height, 1 ],
+                mipLevels:     mip_levels,
+                arrayLayers:   layer_count,
+                samples:       VK_SAMPLE_COUNT_1_BIT,
+                tiling:        VK_IMAGE_TILING_OPTIMAL,
+                usage:         usage,
+                sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
+                initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
+            ], alloc_info, ref vk_image, ref vma_alloc, null ] == VK_SUCCESS, "Failed to create VkImage"
+            if [ sampler_size > 0 ]
+                transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+                expect !is_depth, "unexpected"
+                cmd: command [ vk: vk ]
+                cmd.begin[ ]
+                staging: buffer [ vk: vk, size: sampler_size, u_src: true, u_shader: true,
+                    m_host_visible: true, m_host_coherent: true,
+                    data: img ? data[ img ] : fill ]
+                vkCmdCopyBufferToImage[ cmd.vk, staging.vk_buffer, vk_image,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, VkBufferImageCopy [
+                        bufferOffset:      0,
+                        bufferRowLength:   0,
+                        bufferImageHeight: 0,
+                        imageSubresource:  VkImageSubresourceLayers [
+                            aspectMask:     is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+                            mipLevel:       0,
+                            baseArrayLayer: 0,
+                            layerCount:     layer_count
+                        ],
+                        imageOffset: VkOffset3D [ 0, 0, 0 ],
+                        imageExtent: VkExtent3D [ width, height, 1 ]
+                    ]]
+                cmd.submit[ ]
+                vkDeviceWaitIdle[ vk.device ]
+                drop[ staging ]
+                vk.create_mipmaps[ vk_image, width, height, mip_levels, layer_count ]
+                vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        if [ !vk_image_view ]
+            view_type: layer_count > 6  ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY :
+                       layer_count == 6 ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D
+            viewInfo: VkImageViewCreateInfo [
+                sType:    VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                image:    vk_image,
+                viewType: view_type,
+                format:   vk_format,
+                components: VkComponentMapping [
+                    r: VK_COMPONENT_SWIZZLE_IDENTITY,
+                    g: VK_COMPONENT_SWIZZLE_IDENTITY,
+                    b: VK_COMPONENT_SWIZZLE_IDENTITY,
+                    a: VK_COMPONENT_SWIZZLE_IDENTITY
+                ],
+                subresourceRange: VkImageSubresourceRange [
+                    aspectMask:     is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+                    baseMipLevel:   0,
+                    levelCount:     mip_levels,
+                    baseArrayLayer: 0,
+                    layerCount:     layer_count
+                ]
+            ]
+            res: vkCreateImageView[ vk.device, viewInfo, null, ref vk_image_view ]
+            expect res == VK_SUCCESS, "Failed to create VkImageView"
+        if [ !vk_sampler ]
+            address_mode: layer_count >= 6 ?
+                VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT
+            samplerInfo: VkSamplerCreateInfo [
+                sType:                   VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                magFilter:               VK_FILTER_LINEAR,
+                minFilter:               VK_FILTER_LINEAR,
+                addressModeU:            address_mode,
+                addressModeV:            address_mode,
+                addressModeW:            address_mode,
+                anisotropyEnable:        ansio > 0 ? VK_TRUE : VK_FALSE,
+                maxAnisotropy:           ansio,
+                minLod:                  0.0,
+                maxLod:                  f32[ mip_levels ],
+                borderColor:             VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
+                unnormalizedCoordinates: VK_FALSE,
+                compareEnable:           VK_FALSE,
+                compareOp:               VK_COMPARE_OP_ALWAYS,
+                mipmapMode:              VK_SAMPLER_MIPMAP_MODE_LINEAR
+            ]
+            r: vkCreateSampler[ vk.device, samplerInfo, null, ref vk_sampler ]
+            expect r == VK_SUCCESS, "Failed to create VkSampler"
+
+    func dealloc [ ]
+        vkDestroySampler[ vk.device, vk_sampler, null ]
+        vkDestroyImageView[ vk.device, vk_image_view, null ]
+        vmaDestroyImage[ vk.allocator, vk_image, vma_alloc ]
+        vk_layout     = VK_IMAGE_LAYOUT_UNDEFINED
+        vma_alloc     = null
+        vk_image      = null
+        vk_image_view = null
+        vk_sampler    = null
+
+
+class shader
+    public vk : vk_context
+    public name : string
+    public vert : string
+    public frag : string
+    public comp : string
+    public reloads : i32
+    intern vk_vert : VkShaderModule
+    intern vk_frag : VkShaderModule
+    intern vk_comp : VkShaderModule
+    func vert [] -> tokens
+    func frag [] -> tokens
+    func comp [] -> tokens
+
+    intern func replace_includes [ src: cstr, dst: cstr ] -> none
+        src_file: ref FILE [ fopen[ src, "r" ] ]
+        expect src_file, "source not found"
+        dst_file: ref FILE [ fopen[ dst, "w" ] ]
+        expect dst_file, "destination not found"
+        buf: i8[4096]
+        while [ fgets[ buf, 4096, src_file ] ]
+            include_start: ref i8 [ strstr[ buf, "#include <" ] ]
+            if [ include_start ]
+                include_end: ref i8 [ strstr[ include_start, ">" ] ]
+                if [ include_end ]
+                    import_name: i8[256]
+                    name_length: include_end - (include_start + 10)
+                    if [ name_length >= 256 ]
+                        fprintf[ stderr, "Error: Import name too long\n" ]
+                        exit[ 2 ]
+                    strncpy[ import_name, include_start + 10, name_length ]
+                    import_name[name_length] = 0
+                    import_path: string [ 'shaders/{import_name}' ]
+                    import_file: ref FILE [ fopen[ import_path.chars, "r" ] ]
+                    if [ !import_file ]
+                        fprintf[ stderr, "Error: Failed to open import file: %s\n", import_name ]
+                        exit[ 2 ]
+                    while [ fgets[ buf, 4096, import_file ] ]
+                        fputs[ buf, dst_file ]
+                    fclose[ import_file ]
+                    continue
+            fputs[ buf, dst_file ]
+        fclose[ src_file ]
+        fclose[ dst_file ]
+
+    intern public func reload [ reloads: ARef ] -> bool
+        r: ref i32 [ reloads ]
+        if [ r && *r < reloads ]
+            *r = reloads
+            return true
+        names: string[3] [ frag, vert, comp ]
+        values: ref VkShaderModule[3] [ ref vk_frag, ref vk_vert, ref vk_comp ]
+        found:      false
+        recompiled: false
+        for [ i: 0, i < 3, i++ ]
+            nm: names[i]
+            if [ !nm ]
+                continue
+            input: path '{nm}'
+            if [ !nm || !file_exists[ "%o", input ] ]
+                continue
+            spv_file: '{nm}.spv'
+            found = true
+            source_stat: struct stat
+            spv_stat:    struct stat
+            src_exists: stat[ input.chars, ref source_stat ] == 0
+            spv_exists: stat[ spv_file.chars, ref spv_stat ] == 0
+            if [ !spv_exists || source_stat.st_mtime > spv_stat.st_mtime ]
+                ext_s: ext[ input ]
+                tmp: tempfile[ ext_s.chars ]
+                replace_includes[ input.chars, tmp.chars ]
+                cmd: 'glslangValidator -V100 --target-env vulkan1.2 {tmp} -o {spv_file}'
+                print "compiling shader: %o", cmd
+                result: system[ cmd.chars ]
+                if [ result != 0 ]
+                    print "shader compilation failed for: %o", nm
+                    exit[ 1 ]
+                recompiled = true
+            el
+                if [ *(values[i]) ]
+                    continue
+            fp: fopen[ spv_file.chars, "rb" ]
+            if [ !fp ]
+                print "failed to open SPIR-V file: %o", spv_file
+                exit[ 1 ]
+            fseek[ fp, 0, SEEK_END ]
+            length: ftell[ fp ]
+            rewind[ fp ]
+            spirv: malloc[ length ]
+            if [ !spirv ]
+                fclose[ fp ]
+                print "Failed to allocate memory for SPIR-V"
+                exit[ 1 ]
+            fread[ spirv, 1, length, fp ]
+            fclose[ fp ]
+            createInfo: VkShaderModuleCreateInfo [
+                sType:    VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                codeSize: length,
+                pCode:    spirv
+            ]
+            mod: VkShaderModule
+            vkResult: vkCreateShaderModule[ vk.device, createInfo, null, ref mod ]
+            if [ vkResult != VK_SUCCESS ]
+                print "Failed to create Vulkan shader module"
+                free[ spirv ]
+                exit[ 1 ]
+            *(values[i]) = mod
+            free[ spirv ]
+        if [ recompiled && r ]
+            reloads += 1
+            *r = reloads
+        expect found, "shader not found: %o", name
+        return recompiled
+
+    func init [ ]
+        if [ !vk ]
+            return
+        frag = 'shaders/{name}.frag'
+        vert = 'shaders/{name}.vert'
+        comp = 'shaders/{name}.comp'
+        if [ !name ]
+            ty: Au_t [ isa[ self ] ]
+            expect ty != typeid[ shader ], "base shader usage requires a shader name"
+            name = string[ ty.name ]
+        reload[ null ]
+
+    func dealloc [ ]
+        vkDestroyShaderModule[ vk.device, vk_vert, null ]
+        vkDestroyShaderModule[ vk.device, vk_frag, null ]
+        vkDestroyShaderModule[ vk.device, vk_comp, null ]

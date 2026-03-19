@@ -1383,3 +1383,57 @@ func canvas_set_font [ c: canvas, fnt: canvas_font ] -> none
 func canvas_measure [ c: canvas, text: string ] -> text_metrics
 	check c.font, 'no font set on canvas'
 	return measure_text [ c.font, text ]
+
+
+# --- color conversion ---
+
+func nib [ n: i8 ] -> u8
+    return n >= '0' && n <= '9' ?       u8[ n - '0' ] :
+           n >= 'a' && n <= 'f' ? u8[ 10 + (n - 'a') ] :
+           n >= 'A' && n <= 'F' ? u8[ 10 + (n - 'A') ] : 0
+
+func sk_color [ any: object ] -> u32
+    type: Au_t [ isa[ any ] ]
+    ia: i32 [ 255 ]
+    ir: i32
+    ig: i32
+    ib: i32
+    if [ type == typeid[ string ] ]
+        s: string [ any ]
+        h: symbol [ s.chars ]
+        if [ h[0] == '#' ]
+            sz: len[ s ]
+            switch [ sz ]
+                case 5
+                    ia = nib[ h[4] ] << 4 | nib[ h[4] ]
+                    ir = nib[ h[1] ] << 4 | nib[ h[1] ]
+                    ig = nib[ h[2] ] << 4 | nib[ h[2] ]
+                    ib = nib[ h[3] ] << 4 | nib[ h[3] ]
+                case 4
+                    ir = nib[ h[1] ] << 4 | nib[ h[1] ]
+                    ig = nib[ h[2] ] << 4 | nib[ h[2] ]
+                    ib = nib[ h[3] ] << 4 | nib[ h[3] ]
+                case 9
+                    ia = nib[ h[7] ] << 4 | nib[ h[8] ]
+                    ir = nib[ h[1] ] << 4 | nib[ h[2] ]
+                    ig = nib[ h[3] ] << 4 | nib[ h[4] ]
+                    ib = nib[ h[5] ] << 4 | nib[ h[6] ]
+                case 7
+                    ir = nib[ h[1] ] << 4 | nib[ h[2] ]
+                    ig = nib[ h[3] ] << 4 | nib[ h[4] ]
+                    ib = nib[ h[5] ] << 4 | nib[ h[6] ]
+    el [ type == typeid[ rgba8 ] ]
+        c: rgba [ any ]
+        ir = c.r
+        ig = c.g
+        ib = c.b
+        ia = c.a
+    el [ type == typeid[ rgba ] || type == typeid[ rgbaf ] ]
+        c: rgba [ any ]
+        ir = c.r * 255.0
+        ig = c.g * 255.0
+        ib = c.b * 255.0
+        ia = c.a * 255.0
+    el
+        expect false, "sk_color: implement color conversion for type %s", type.name
+    return u32[ ib | (ig << 8) | (ir << 16) | (ia << 24) ]
