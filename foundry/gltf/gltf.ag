@@ -361,8 +361,11 @@ class Model
             n: i32 [skin.joints.count]
             j.transforms = array Transform []
             j.states     = array mat4f []
-            for [i: i32 0, i < n, i += 1]
-                j.states.push [ident]
+            
+            for [ i: i32 0, i < n, i += 1 ]
+                j.states.push ident
+
+            
             for [node_idx: i64] in skin.joints
                 if [all_children.contains [node_idx]]
                     continue
