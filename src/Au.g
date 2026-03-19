@@ -1,5 +1,5 @@
 type:       shared
-modules:    ports
+modules:    ports sandbox
 link:       -lffi
 import:     libffi:libffi/e2eda0c
 install:    object.h macros.h
