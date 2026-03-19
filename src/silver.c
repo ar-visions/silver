@@ -2603,7 +2603,7 @@ enode parse_sub(silver a, etype rtype) {
         "all paths require return/break in sub-routine");
 
     // store body tokens on the result for callable re-invocation
-    res->body = (Au)hold(body);
+    res->body = (tokens)hold(body);
     return res;
 }
 
@@ -4309,7 +4309,7 @@ none silver_build(silver a) {
 bool silver_next_is_neighbor(silver a) {
     token b = element(a, -1);
     token c = element(a, 0);
-    return b->column + b->count == c->column;
+    return c && (b->column + b->count == c->column);
 }
 
 string expect_alpha(silver a) {
@@ -4536,8 +4536,9 @@ static enode parse_func_call(silver a, efunc f) { sequencer
     }
 
     // track which args have been matched (for commaless type-matching)
+    // commaless type-matching only applies inside brackets [ ]
     bool* matched = calloc(ln, sizeof(bool));
-    bool  comma_mode = false;
+    bool  comma_mode = !read_br; // no brackets = positional (old behavior)
 
     while (i + offset < ln || fn->au->is_vargs) {
         Au_t   arg_decl = (Au_t)micro_get(m, i + offset);
