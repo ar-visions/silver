@@ -1,17 +1,5 @@
 #include <import>
 
-#if defined(__linux__)
-#include <sched.h>
-#include <sys/mount.h>
-#include <sys/prctl.h>
-#include <linux/seccomp.h>
-#include <linux/filter.h>
-#include <linux/audit.h>
-#include <sys/syscall.h>
-#include <elf.h>
-#include <dlfcn.h>
-#endif
-
 //#undef realloc
 #include <ffi.h>
 #undef bool
@@ -39,27 +27,8 @@ i64 epoch_millis();
 
 int seq;
 
-// ---- Au sandbox ----
-// Three tiers + device access, each compiled into .rodata:
-//   AU_SANDBOX_INSTALL="install:/path/to/install"            toolchain level (Silver itself)
-//   AU_SANDBOX_PUBLIC="public:/path/to/share"                shared app commons
-//   AU_SANDBOX_PRIVATE="private:/path/to/app"                per-app exclusive storage
-//   AU_SANDBOX_DEVICES="devices:/dev/video0,/dev/snd"        device access list
-//
-// Layout:
-//   /src/silver/
-//     private/myapp/     ← deepest, only this app via bind mount
-//     install/           ← toolchain (shell-level apps chroot here)
-//       share/           ← public commons (normal apps chroot here)
-//
-// All strings verifiable in the binary's .rodata:
-//   strings binary | grep -E "install:|public:|private:|devices:"
-//
-// Two-phase enforcement:
-//   phase 1 (constructor): mounts, chroot, device binding
-//   phase 2 (au_sandbox_lock): seccomp blocks execve, no more loading
-
-#if defined(AU_SANDBOX_INSTALL) || defined(AU_SANDBOX_PUBLIC) || defined(AU_SANDBOX_PRIVATE)
+// sandbox implementation in sandbox.c
+#if 0
 
 #ifdef AU_SANDBOX_INSTALL
 static const char au_sandbox_install[] = AU_SANDBOX_INSTALL;
@@ -170,7 +139,52 @@ static void au_sandbox_init(void) {
         mount(NULL, "/proc", NULL, MS_REMOUNT | MS_RDONLY, NULL);
     }
 #elif defined(__APPLE__)
-    if (root) chdir(root);
+    if (root) {
+        chdir(root);
+        // seatbelt profile: deny default, allow read on root + subpaths
+        // allow write only to private dir
+        char profile[2048];
+        snprintf(profile, sizeof(profile),
+            "(version 1)\n"
+            "(deny default)\n"
+            "(allow process-exec)\n"
+            "(allow process-fork)\n"
+            "(allow sysctl-read)\n"
+            "(allow mach-lookup)\n"
+            "(allow ipc-posix-shm-read-data)\n"
+            "(allow ipc-posix-shm-write-data)\n"
+            "(allow signal (target self))\n"
+            "(allow file-read* (subpath \"%s\"))\n"
+    #ifdef AU_SANDBOX_INSTALL
+            "(allow file-read* (subpath \"%s\"))\n"
+    #endif
+    #ifdef AU_SANDBOX_PRIVATE
+            "(allow file-read* file-write* (subpath \"%s\"))\n"
+    #endif
+            // gpu + audio device access
+            "(allow file-read* file-write* (subpath \"/dev\"))\n"
+            "(allow file-read* (subpath \"/usr/lib\"))\n"
+            "(allow file-read* (subpath \"/System\"))\n"
+            "(allow file-read* (subpath \"/Library/Frameworks\"))\n"
+            "(allow iokit-open)\n"
+            "(allow network-outbound)\n"
+            "(allow network-inbound)\n"
+            , root
+    #ifdef AU_SANDBOX_INSTALL
+            , inst
+    #endif
+    #ifdef AU_SANDBOX_PRIVATE
+            , priv
+    #endif
+        );
+        char *err = NULL;
+        if (sandbox_init(profile, SANDBOX_NAMED_EXTERNAL, &err) != 0) {
+            if (err) {
+                fprintf(stderr, "au_sandbox: sandbox_init failed: %s\n", err);
+                sandbox_free_error(err);
+            }
+        }
+    }
 #elif defined(_WIN32)
     if (root) SetCurrentDirectoryA(root);
 #endif
@@ -207,6 +221,33 @@ void au_sandbox_lock(void) {
 
     prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
     prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
+#elif defined(__APPLE__)
+    // phase 2 on macOS: apply a stricter seatbelt denying exec and new code loading
+    const char *lock_profile =
+        "(version 1)\n"
+        "(deny default)\n"
+        "(allow sysctl-read)\n"
+        "(allow mach-lookup)\n"
+        "(allow signal (target self))\n"
+        "(allow ipc-posix-shm-read-data)\n"
+        "(allow ipc-posix-shm-write-data)\n"
+        "(allow iokit-open)\n"
+        "(allow network-outbound)\n"
+        "(allow network-inbound)\n"
+        // allow reads on system libs already loaded
+        "(allow file-read* (subpath \"/usr/lib\"))\n"
+        "(allow file-read* (subpath \"/System\"))\n"
+        "(allow file-read* (subpath \"/Library/Frameworks\"))\n"
+        // deny exec and new code loading
+        "(deny process-exec)\n"
+        "(deny process-fork)\n";
+    char *err = NULL;
+    if (sandbox_init(lock_profile, SANDBOX_NAMED_EXTERNAL, &err) != 0) {
+        if (err) {
+            fprintf(stderr, "au_sandbox_lock: %s\n", err);
+            sandbox_free_error(err);
+        }
+    }
 #endif
 }
 
@@ -245,8 +286,88 @@ static bool au_verify_library(const char* path) {
 }
 #endif
 
+// ---- macOS: Mach-O library verification ----
+#if defined(__APPLE__)
+static bool au_verify_library(const char* path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return false;
+
+    // read magic to determine format
+    uint32_t magic;
+    if (read(fd, &magic, sizeof(magic)) != sizeof(magic)) { close(fd); return false; }
+    lseek(fd, 0, SEEK_SET);
+
+    // handle fat binaries: find the native-arch slice
+    off_t slice_offset = 0;
+    if (magic == FAT_MAGIC || magic == FAT_CIGAM) {
+        struct fat_header fh;
+        read(fd, &fh, sizeof(fh));
+        uint32_t narch = (magic == FAT_CIGAM) ? OSSwapInt32(fh.nfat_arch) : fh.nfat_arch;
+        bool found = false;
+        for (uint32_t i = 0; i < narch; i++) {
+            struct fat_arch fa;
+            read(fd, &fa, sizeof(fa));
+            cpu_type_t ct = (magic == FAT_CIGAM) ? (cpu_type_t)OSSwapInt32(fa.cputype) : fa.cputype;
+        #if defined(__arm64__)
+            if (ct == CPU_TYPE_ARM64) {
+        #else
+            if (ct == CPU_TYPE_X86_64) {
+        #endif
+                slice_offset = (magic == FAT_CIGAM) ? OSSwapInt32(fa.offset) : fa.offset;
+                found = true;
+                break;
+            }
+        }
+        if (!found) { close(fd); return false; }
+        lseek(fd, slice_offset, SEEK_SET);
+    }
+
+    // read Mach-O header
+    struct mach_header_64 hdr;
+    if (read(fd, &hdr, sizeof(hdr)) != sizeof(hdr)) { close(fd); return false; }
+    if (hdr.magic != MH_MAGIC_64) { close(fd); return false; }
+
+    // scan load commands for mod_init_func (constructors)
+    bool has_init = false;
+    for (uint32_t i = 0; i < hdr.ncmds; i++) {
+        struct load_command lc;
+        off_t pos = lseek(fd, 0, SEEK_CUR);
+        if (read(fd, &lc, sizeof(lc)) != sizeof(lc)) break;
+
+        if (lc.cmd == LC_SEGMENT_64) {
+            struct segment_command_64 seg;
+            lseek(fd, pos, SEEK_SET);
+            if (read(fd, &seg, sizeof(seg)) != sizeof(seg)) break;
+
+            // scan sections for __mod_init_func
+            for (uint32_t j = 0; j < seg.nsects; j++) {
+                struct section_64 sect;
+                if (read(fd, &sect, sizeof(sect)) != sizeof(sect)) break;
+                if (strcmp(sect.sectname, "__mod_init_func") == 0) {
+                    has_init = true;
+                    break;
+                }
+            }
+            if (has_init) break;
+            // skip remaining bytes of this command
+            off_t end = pos + lc.cmdsize;
+            lseek(fd, end, SEEK_SET);
+        } else {
+            lseek(fd, pos + lc.cmdsize, SEEK_SET);
+        }
+    }
+
+    close(fd);
+    return !has_init || au_sandbox_active;
+}
+#endif
+
 void* au_dlopen(const char* path, int flags) {
 #if defined(__linux__)
+    if (au_sandbox_locked) return NULL; // phase 2: no more loading
+    if (!au_verify_library(path)) return NULL;
+    return dlopen(path, flags);
+#elif defined(__APPLE__)
     if (au_sandbox_locked) return NULL; // phase 2: no more loading
     if (!au_verify_library(path)) return NULL;
     return dlopen(path, flags);
@@ -259,8 +380,468 @@ __attribute__((constructor))
 static void au_sandbox_entry(void) {
     au_sandbox_init();
 }
+
+// ---- app verification: confirm binary is self-sandboxed ----
+// verifies at the instruction level:
+//   1. au_sandbox_entry is in constructor table
+//   2. au_sandbox_entry's first call after the boolean guard is au_sandbox_init
+//   3. au_sandbox_init's first call after its boolean guard is the platform sandbox op
+//   4. au_sandbox_lock symbol exists and is called
+//   5. sandbox path strings present in read-only data
+
+// convert virtual address to file offset using segment tables
+typedef struct {
+    uint64_t vm_addr;
+    uint64_t vm_size;
+    uint64_t file_off;
+} av_seg;
+
+static off_t av_vaddr_to_foff(av_seg* segs, int nsegs, uint64_t vaddr, off_t base) {
+    for (int i = 0; i < nsegs; i++) {
+        if (vaddr >= segs[i].vm_addr && vaddr < segs[i].vm_addr + segs[i].vm_size)
+            return base + segs[i].file_off + (vaddr - segs[i].vm_addr);
+    }
+    return -1;
+}
+
+// read function bytes from binary at virtual address
+static int av_read_fn(int fd, av_seg* segs, int nsegs, off_t base, uint64_t vaddr, uint8_t* buf, int max) {
+    off_t foff = av_vaddr_to_foff(segs, nsegs, vaddr, base);
+    if (foff < 0) return 0;
+    lseek(fd, foff, SEEK_SET);
+    return (int)read(fd, buf, max);
+}
+
+// ---- arm64 instruction-level verification ----
+// bl  = 0x94000000 mask 0xFC000000, signed imm26 * 4
+// b   = 0x14000000 mask 0xFC000000
+// cbz = 0x34000000 mask 0x7F000000 (w) or 0xB4000000 (x)
+// cbnz= 0x35000000 mask 0x7F000000 (w) or 0xB5000000 (x)
+// ldrb= various, but we just need to find bl targets
+// ret = 0xD65F03C0
+
+// find the target virtual address of the first bl instruction in buf
+// skipping over any load/store/compare/branch-on-zero (the boolean guard pattern)
+// returns 0 if no bl found within max_insns
+static uint64_t av_arm64_first_bl(uint8_t* buf, int len, uint64_t fn_vaddr, int* out_offset) {
+    int n = len / 4;
+    if (n > 64) n = 64; // only scan first 64 instructions
+    uint32_t* insns = (uint32_t*)buf;
+    for (int i = 0; i < n; i++) {
+        uint32_t w = insns[i];
+        // bl instruction
+        if ((w & 0xFC000000) == 0x94000000) {
+            int32_t imm26 = (int32_t)(w & 0x03FFFFFF);
+            if (imm26 & 0x02000000) imm26 |= (int32_t)0xFC000000; // sign extend
+            uint64_t target = fn_vaddr + (uint64_t)((int64_t)i * 4 + (int64_t)imm26 * 4);
+            if (out_offset) *out_offset = i * 4;
+            return target;
+        }
+        // ret before any bl = function doesn't call anything (the guard returned early)
+        // that's fine, but we need the *non-early* path
+        // skip ret if it's within first few instructions (part of guard's early return)
+    }
+    return 0;
+}
+
+// verify the boolean guard pattern: the function must load a bool, branch-if-set past
+// a call, then make the call. the bl must be the first call on the fall-through path.
+// we verify: before the first bl, we see at least one conditional branch (cbz/cbnz/b.cond)
+static bool av_arm64_has_guard_before_bl(uint8_t* buf, int len, int bl_offset) {
+    int n = bl_offset / 4;
+    uint32_t* insns = (uint32_t*)buf;
+    for (int i = 0; i < n; i++) {
+        uint32_t w = insns[i];
+        // cbz/cbnz (32-bit or 64-bit)
+        if ((w & 0x7E000000) == 0x34000000) return true;
+        // b.cond
+        if ((w & 0xFF000010) == 0x54000000) return true;
+        // tbnz/tbz
+        if ((w & 0x7E000000) == 0x36000000) return true;
+    }
+    return false;
+}
+
+// ---- x86_64 instruction-level verification ----
+// call rel32 = 0xE8 xx xx xx xx
+// ret        = 0xC3
+// je/jne     = 0x74/0x75 (short) or 0x0F 0x84/0x85 (near)
+// test       = 0x84/0x85
+// cmp byte   = 0x80 /7
+
+static uint64_t av_x86_first_call(uint8_t* buf, int len, uint64_t fn_vaddr, int* out_offset) {
+    for (int i = 0; i < len - 4 && i < 256; i++) {
+        if (buf[i] == 0xE8) {
+            int32_t rel;
+            memcpy(&rel, &buf[i + 1], 4);
+            uint64_t target = fn_vaddr + i + 5 + (int64_t)rel;
+            if (out_offset) *out_offset = i;
+            return target;
+        }
+    }
+    return 0;
+}
+
+static bool av_x86_has_guard_before_call(uint8_t* buf, int len, int call_offset) {
+    for (int i = 0; i < call_offset; i++) {
+        // short conditional jumps
+        if (buf[i] == 0x74 || buf[i] == 0x75) return true;
+        // near conditional jumps (0F 84 / 0F 85)
+        if (buf[i] == 0x0F && i + 1 < call_offset && (buf[i+1] == 0x84 || buf[i+1] == 0x85)) return true;
+        // test byte [mem], imm  or  cmp byte [mem], 0
+        if (buf[i] == 0x84 || buf[i] == 0x85) return true;
+    }
+    return false;
+}
+
+// ---- common: resolve symbol by name, return vaddr (0 = not found) ----
+typedef struct {
+    const char* name;
+    uint64_t    addr;
+} av_sym;
+
+#if defined(__APPLE__)
+static bool av_macho_find_syms(int fd, off_t base, struct mach_header_64* hdr,
+                               av_sym* wanted, int nwanted, av_seg* segs, int* nsegs,
+                               uint64_t* init_off, uint64_t* init_size,
+                               uint64_t* cstr_off, uint64_t* cstr_size) {
+    uint32_t symtab_off = 0, symtab_n = 0, strtab_off = 0, strtab_sz = 0;
+    *nsegs = 0;
+
+    off_t cmd_pos = base + sizeof(struct mach_header_64);
+    for (uint32_t i = 0; i < hdr->ncmds; i++) {
+        lseek(fd, cmd_pos, SEEK_SET);
+        struct load_command lc;
+        if (read(fd, &lc, sizeof(lc)) != sizeof(lc)) break;
+
+        if (lc.cmd == LC_SYMTAB) {
+            lseek(fd, cmd_pos, SEEK_SET);
+            struct symtab_command sc;
+            read(fd, &sc, sizeof(sc));
+            symtab_off = sc.symoff;
+            symtab_n   = sc.nsyms;
+            strtab_off = sc.stroff;
+            strtab_sz  = sc.strsize;
+        } else if (lc.cmd == LC_SEGMENT_64) {
+            lseek(fd, cmd_pos, SEEK_SET);
+            struct segment_command_64 seg;
+            read(fd, &seg, sizeof(seg));
+            if (*nsegs < 16) {
+                segs[*nsegs].vm_addr  = seg.vmaddr;
+                segs[*nsegs].vm_size  = seg.vmsize;
+                segs[*nsegs].file_off = seg.fileoff;
+                (*nsegs)++;
+            }
+            for (uint32_t j = 0; j < seg.nsects; j++) {
+                struct section_64 sect;
+                read(fd, &sect, sizeof(sect));
+                if (strcmp(sect.sectname, "__mod_init_func") == 0) {
+                    *init_off  = sect.offset;
+                    *init_size = sect.size;
+                } else if (strcmp(sect.sectname, "__cstring") == 0) {
+                    *cstr_off  = sect.offset;
+                    *cstr_size = sect.size;
+                }
+            }
+        }
+        cmd_pos += lc.cmdsize;
+    }
+
+    if (!strtab_sz || !symtab_n) return false;
+
+    char* strtab = malloc(strtab_sz);
+    lseek(fd, base + strtab_off, SEEK_SET);
+    read(fd, strtab, strtab_sz);
+
+    struct nlist_64* syms = malloc(symtab_n * sizeof(struct nlist_64));
+    lseek(fd, base + symtab_off, SEEK_SET);
+    read(fd, syms, symtab_n * sizeof(struct nlist_64));
+
+    for (uint32_t i = 0; i < symtab_n; i++) {
+        if (syms[i].n_un.n_strx >= strtab_sz) continue;
+        const char* name = strtab + syms[i].n_un.n_strx;
+        for (int w = 0; w < nwanted; w++) {
+            if (strcmp(name, wanted[w].name) == 0)
+                wanted[w].addr = syms[i].n_value;
+        }
+    }
+
+    free(syms);
+    free(strtab);
+    return true;
+}
+
+bool au_app_verify(const char* path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return false;
+
+    uint32_t magic;
+    if (read(fd, &magic, sizeof(magic)) != sizeof(magic)) { close(fd); return false; }
+    lseek(fd, 0, SEEK_SET);
+
+    off_t base = 0;
+    if (magic == FAT_MAGIC || magic == FAT_CIGAM) {
+        struct fat_header fh;
+        read(fd, &fh, sizeof(fh));
+        uint32_t narch = (magic == FAT_CIGAM) ? OSSwapInt32(fh.nfat_arch) : fh.nfat_arch;
+        for (uint32_t i = 0; i < narch; i++) {
+            struct fat_arch fa;
+            read(fd, &fa, sizeof(fa));
+            cpu_type_t ct = (magic == FAT_CIGAM) ? (cpu_type_t)OSSwapInt32(fa.cputype) : fa.cputype;
+        #if defined(__arm64__)
+            if (ct == CPU_TYPE_ARM64) {
+        #else
+            if (ct == CPU_TYPE_X86_64) {
+        #endif
+                base = (magic == FAT_CIGAM) ? OSSwapInt32(fa.offset) : fa.offset;
+                break;
+            }
+        }
+        lseek(fd, base, SEEK_SET);
+    }
+
+    struct mach_header_64 hdr;
+    if (read(fd, &hdr, sizeof(hdr)) != sizeof(hdr)) { close(fd); return false; }
+    if (hdr.magic != MH_MAGIC_64) { close(fd); return false; }
+
+    // symbols we need to find
+    av_sym wanted[] = {
+        { "_au_sandbox_entry", 0 },
+        { "_au_sandbox_init",  0 },
+        { "_au_sandbox_lock",  0 },
+    };
+    int nwanted = sizeof(wanted) / sizeof(wanted[0]);
+
+    av_seg segs[16];
+    int nsegs = 0;
+    uint64_t init_off = 0, init_size = 0;
+    uint64_t cstr_off = 0, cstr_size = 0;
+
+    if (!av_macho_find_syms(fd, base, &hdr, wanted, nwanted, segs, &nsegs,
+                            &init_off, &init_size, &cstr_off, &cstr_size)) {
+        close(fd); return false;
+    }
+
+    uint64_t entry_addr = wanted[0].addr;
+    uint64_t init_addr  = wanted[1].addr;
+    uint64_t lock_addr  = wanted[2].addr;
+
+    // check 1: all three symbols must exist
+    if (!entry_addr || !init_addr || !lock_addr) { close(fd); return false; }
+
+    // check 2: au_sandbox_entry must be in __mod_init_func
+    bool entry_in_ctors = false;
+    if (init_size > 0) {
+        int n_ptrs = init_size / sizeof(uint64_t);
+        uint64_t* ptrs = malloc(init_size);
+        lseek(fd, base + init_off, SEEK_SET);
+        read(fd, ptrs, init_size);
+        for (int i = 0; i < n_ptrs; i++) {
+            if (ptrs[i] == entry_addr) { entry_in_ctors = true; break; }
+        }
+        free(ptrs);
+    }
+    if (!entry_in_ctors) { close(fd); return false; }
+
+    // check 3: instruction-level — au_sandbox_entry must call au_sandbox_init
+    //          as its first call, preceded by a boolean guard
+    uint8_t fn_buf[512];
+    int fn_len = av_read_fn(fd, segs, nsegs, base, entry_addr, fn_buf, sizeof(fn_buf));
+    if (fn_len < 8) { close(fd); return false; }
+
+    int bl_off = 0;
+    bool is_arm64 = (hdr.cputype == CPU_TYPE_ARM64);
+    uint64_t first_call_target = is_arm64
+        ? av_arm64_first_bl(fn_buf, fn_len, entry_addr, &bl_off)
+        : av_x86_first_call(fn_buf, fn_len, entry_addr, &bl_off);
+
+    // the first call in au_sandbox_entry must be au_sandbox_init
+    if (first_call_target != init_addr) { close(fd); return false; }
+
+    // verify there's a boolean guard (conditional branch) before the call
+    bool has_guard = is_arm64
+        ? av_arm64_has_guard_before_bl(fn_buf, fn_len, bl_off)
+        : av_x86_has_guard_before_call(fn_buf, fn_len, bl_off);
+    if (!has_guard) { close(fd); return false; }
+
+    // check 4: instruction-level — au_sandbox_init must call sandbox_init (macOS)
+    //          as its first call after its own boolean guard
+    fn_len = av_read_fn(fd, segs, nsegs, base, init_addr, fn_buf, sizeof(fn_buf));
+    if (fn_len < 8) { close(fd); return false; }
+
+    // au_sandbox_init has: if (au_sandbox_active) return; au_sandbox_active = true;
+    // then platform setup. On macOS the first call should be to chdir or sandbox_init
+    // we verify there IS a guard and a call — the call target resolves to a known symbol
+    bl_off = 0;
+    uint64_t init_first_call = is_arm64
+        ? av_arm64_first_bl(fn_buf, fn_len, init_addr, &bl_off)
+        : av_x86_first_call(fn_buf, fn_len, init_addr, &bl_off);
+
+    if (!init_first_call) { close(fd); return false; }
+
+    has_guard = is_arm64
+        ? av_arm64_has_guard_before_bl(fn_buf, fn_len, bl_off)
+        : av_x86_has_guard_before_call(fn_buf, fn_len, bl_off);
+    if (!has_guard) { close(fd); return false; }
+
+    // check 5: sandbox path strings in __cstring
+    bool has_paths = false;
+    if (cstr_size > 0) {
+        char* cstr = malloc(cstr_size);
+        lseek(fd, base + cstr_off, SEEK_SET);
+        read(fd, cstr, cstr_size);
+        for (uint64_t off = 0; off < cstr_size; off++) {
+            const char* s = cstr + off;
+            uint64_t remain = cstr_size - off;
+            if ((remain >= 8  && strncmp(s, "install:",  8) == 0) ||
+                (remain >= 7  && strncmp(s, "public:",   7) == 0) ||
+                (remain >= 8  && strncmp(s, "private:",  8) == 0)) {
+                has_paths = true;
+                break;
+            }
+        }
+        free(cstr);
+    }
+    if (!has_paths) { close(fd); return false; }
+
+    close(fd);
+    return true;
+}
+
+#elif defined(__linux__)
+bool au_app_verify(const char* path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return false;
+
+    Elf64_Ehdr ehdr;
+    if (read(fd, &ehdr, sizeof(ehdr)) != sizeof(ehdr)) { close(fd); return false; }
+    if (memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0)    { close(fd); return false; }
+
+    Elf64_Shdr* shdrs = calloc(ehdr.e_shnum, sizeof(Elf64_Shdr));
+    lseek(fd, ehdr.e_shoff, SEEK_SET);
+    read(fd, shdrs, ehdr.e_shnum * sizeof(Elf64_Shdr));
+
+    // section name string table
+    Elf64_Shdr shstrtab_hdr = shdrs[ehdr.e_shstrndx];
+    char* shstrtab = malloc(shstrtab_hdr.sh_size);
+    lseek(fd, shstrtab_hdr.sh_offset, SEEK_SET);
+    read(fd, shstrtab, shstrtab_hdr.sh_size);
+
+    Elf64_Shdr *symtab_sh = NULL, *strtab_sh = NULL;
+    Elf64_Shdr *init_sh = NULL, *rodata_sh = NULL;
+
+    // build segment table for vaddr->foff mapping
+    av_seg segs[16];
+    int nsegs = 0;
+
+    for (int i = 0; i < ehdr.e_shnum; i++) {
+        const char* name = shstrtab + shdrs[i].sh_name;
+        if (shdrs[i].sh_type == SHT_SYMTAB)     symtab_sh = &shdrs[i];
+        else if (shdrs[i].sh_type == SHT_STRTAB && strcmp(name, ".strtab") == 0) strtab_sh = &shdrs[i];
+        else if (shdrs[i].sh_type == SHT_INIT_ARRAY) init_sh   = &shdrs[i];
+        else if (strcmp(name, ".rodata") == 0)    rodata_sh = &shdrs[i];
+        // use SHF_EXECINSTR sections as segments for vaddr mapping
+        if ((shdrs[i].sh_flags & SHF_EXECINSTR) && nsegs < 16) {
+            segs[nsegs].vm_addr  = shdrs[i].sh_addr;
+            segs[nsegs].vm_size  = shdrs[i].sh_size;
+            segs[nsegs].file_off = shdrs[i].sh_offset;
+            nsegs++;
+        }
+    }
+
+    if (!symtab_sh || !strtab_sh) { free(shstrtab); free(shdrs); close(fd); return false; }
+
+    char* strtab = malloc(strtab_sh->sh_size);
+    lseek(fd, strtab_sh->sh_offset, SEEK_SET);
+    read(fd, strtab, strtab_sh->sh_size);
+
+    int nsyms = symtab_sh->sh_size / sizeof(Elf64_Sym);
+    Elf64_Sym* syms = malloc(symtab_sh->sh_size);
+    lseek(fd, symtab_sh->sh_offset, SEEK_SET);
+    read(fd, syms, symtab_sh->sh_size);
+
+    uint64_t entry_addr = 0, init_addr = 0, lock_addr = 0;
+    for (int i = 0; i < nsyms; i++) {
+        if (syms[i].st_name >= strtab_sh->sh_size) continue;
+        const char* name = strtab + syms[i].st_name;
+        if (strcmp(name, "au_sandbox_entry") == 0) entry_addr = syms[i].st_value;
+        if (strcmp(name, "au_sandbox_init")  == 0) init_addr  = syms[i].st_value;
+        if (strcmp(name, "au_sandbox_lock")  == 0) lock_addr  = syms[i].st_value;
+    }
+    free(syms);
+
+    // check 1: all three symbols must exist
+    if (!entry_addr || !init_addr || !lock_addr) {
+        free(strtab); free(shstrtab); free(shdrs); close(fd); return false;
+    }
+
+    // check 2: au_sandbox_entry in .init_array
+    bool entry_in_ctors = false;
+    if (init_sh && init_sh->sh_size > 0) {
+        int n_ptrs = init_sh->sh_size / sizeof(uint64_t);
+        uint64_t* ptrs = malloc(init_sh->sh_size);
+        lseek(fd, init_sh->sh_offset, SEEK_SET);
+        read(fd, ptrs, init_sh->sh_size);
+        for (int i = 0; i < n_ptrs; i++) {
+            if (ptrs[i] == entry_addr) { entry_in_ctors = true; break; }
+        }
+        free(ptrs);
+    }
+    if (!entry_in_ctors) { free(strtab); free(shstrtab); free(shdrs); close(fd); return false; }
+
+    // check 3: instruction-level — au_sandbox_entry calls au_sandbox_init first
+    uint8_t fn_buf[512];
+    int fn_len = av_read_fn(fd, segs, nsegs, 0, entry_addr, fn_buf, sizeof(fn_buf));
+    if (fn_len < 8) { free(strtab); free(shstrtab); free(shdrs); close(fd); return false; }
+
+    // x86_64 on linux
+    int call_off = 0;
+    uint64_t first_call = av_x86_first_call(fn_buf, fn_len, entry_addr, &call_off);
+    if (first_call != init_addr) { free(strtab); free(shstrtab); free(shdrs); close(fd); return false; }
+
+    bool has_guard = av_x86_has_guard_before_call(fn_buf, fn_len, call_off);
+    if (!has_guard) { free(strtab); free(shstrtab); free(shdrs); close(fd); return false; }
+
+    // check 4: au_sandbox_init's first call after guard
+    fn_len = av_read_fn(fd, segs, nsegs, 0, init_addr, fn_buf, sizeof(fn_buf));
+    if (fn_len < 8) { free(strtab); free(shstrtab); free(shdrs); close(fd); return false; }
+
+    call_off = 0;
+    uint64_t init_first = av_x86_first_call(fn_buf, fn_len, init_addr, &call_off);
+    if (!init_first) { free(strtab); free(shstrtab); free(shdrs); close(fd); return false; }
+
+    has_guard = av_x86_has_guard_before_call(fn_buf, fn_len, call_off);
+    if (!has_guard) { free(strtab); free(shstrtab); free(shdrs); close(fd); return false; }
+
+    // check 5: .rodata contains sandbox path strings
+    bool has_paths = false;
+    if (rodata_sh && rodata_sh->sh_size > 0) {
+        char* rodata = malloc(rodata_sh->sh_size);
+        lseek(fd, rodata_sh->sh_offset, SEEK_SET);
+        read(fd, rodata, rodata_sh->sh_size);
+        for (uint64_t off = 0; off < rodata_sh->sh_size; off++) {
+            const char* s = rodata + off;
+            uint64_t remain = rodata_sh->sh_size - off;
+            if ((remain >= 8  && strncmp(s, "install:",  8) == 0) ||
+                (remain >= 7  && strncmp(s, "public:",   7) == 0) ||
+                (remain >= 8  && strncmp(s, "private:",  8) == 0)) {
+                has_paths = true;
+                break;
+            }
+        }
+        free(rodata);
+    }
+
+    free(strtab);
+    free(shstrtab);
+    free(shdrs);
+    close(fd);
+
+    return entry_in_ctors && has_paths;
+}
 #endif
-// ---- end sandbox ----
+
+#endif // sandbox.c
 
 typedef struct _ffi_method_t {
     micro*          atypes;

@@ -216,8 +216,8 @@ fi
 mkdir -p "$SILVER/private"
 mkdir -p "$SILVER/private/silver"
 
-# build docker from source — always available for platform builds
-if ! [ -f "$NATIVE/bin/docker" ]; then
+# build docker from source — Linux only (seccomp, runc, containerd)
+if [[ "$(uname)" == "Linux" ]] && ! [ -f "$NATIVE/bin/docker" ]; then
     echo "🐳 Docker not found. Building from source..."
 
     GO_VER="1.22.5"
@@ -318,9 +318,9 @@ if ! [ -f "$NATIVE/bin/docker" ]; then
     echo "🐳 Docker built from source into $NATIVE/bin/"
 fi
 
-# set up docker group and systemd services (requires sudo, one-time)
+# set up docker group and systemd services (Linux only, requires sudo, one-time)
 # skip if services already configured
-if [ -f "$NATIVE/bin/dockerd" ] && ! [ -f /etc/systemd/system/docker.service ]; then
+if [[ "$(uname)" == "Linux" ]] && [ -f "$NATIVE/bin/dockerd" ] && ! [ -f /etc/systemd/system/docker.service ]; then
     if ! getent group docker >/dev/null 2>&1; then
         sudo groupadd docker
     fi
