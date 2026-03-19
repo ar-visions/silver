@@ -249,9 +249,11 @@ typedef struct _Au_t {
     int             elements;
     int             typesize;
     int             isize;
+    u64             ident_hash;
     void*           fn;
     ffi_method_t*   ffi;
     micro           members;
+    void*           member_map;
     micro           args;
     meta_t          meta;
     union {

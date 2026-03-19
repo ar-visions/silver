@@ -1776,6 +1776,7 @@
     m->access_type  = interface_public; \
     Type_i(X).type  . ft.setter = & X## _setter; \
     m->ident        = stringify(setter); \
+    m->ident_hash   = au_hash_ident(stringify(setter)); \
     set_args_array(m, emit_types(X, Au, Au, OPType)); \
     ((Au_t)m->args.origin[0])->is_target = 1; \
     m->type         = typeid(R); \
@@ -1822,7 +1823,8 @@
     m->alt = #X "_operator_" #N; \
     m->access_type = interface_public; \
     Type_i(X).type  . ft.operator_##N = & X## _operator_ ## N; \
-    m->ident   = stringify(operator_##N); \
+    m->ident      = stringify(operator_##N); \
+    m->ident_hash = au_hash_ident(stringify(operator_##N)); \
     set_args_array(m, emit_types(X, ARG)); \
     ((Au_t)m->args.origin[0])->is_target = 1; \
     m->type    = typeid(R); \

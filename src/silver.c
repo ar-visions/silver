@@ -6101,16 +6101,59 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
     bool is_lambda_call = inherits(mem->au, typeid(lambda));
     int indexable = !is_func((Au)mem) && !is_func_ptr((Au)mem) && !is_macro && !is_lambda_call;
 
-    // callable sub: x[] re-invokes the sub body stored on the evar
+    // callable sub: x[] or x[ field: value, ... ] re-invokes the sub body
     if (indexable && next_is(a, "[") && mem->body) {
         push_current(a);
         consume(a); // consume [
         if (read_if(a, "]")) {
-            // x[] — invoke stored sub
+            // x[] — invoke stored sub, no overrides
             pop_tokens(a, false);
             return invoke_sub(a, mem);
         }
-        pop_tokens(a, true); // not empty [], restore and fall through to indexer
+        // check for field overrides: x[ name: value, ... ]
+        // peek to see if this is field: value pattern
+        string pk = peek_alpha(a);
+        token  pk2 = pk ? element(a, 1) : null;
+        if (pk && pk2 && eq(pk2, ":")) {
+            pop_tokens(a, false);
+            // find sub's position in statement scope
+            Au_t scope = mem->au->context;
+            int sub_pos = -1;
+            for (int k = 0; k < scope->members.count; k++) {
+                if ((Au_t)scope->members.origin[k] == mem->au) {
+                    sub_pos = k;
+                    break;
+                }
+            }
+            // read and apply field overrides
+            for (;;) {
+                string name = read_alpha(a);
+                validate(name, "expected field name in sub override");
+                validate(read_if(a, ":"), "expected ':' after field name %o", name);
+                // find the member in scope — must be before the sub
+                Au_t field = find_member(scope, cstring(name), AU_MEMBER_VAR, 0, false);
+                validate(field, "unknown variable '%o' in sub scope", name);
+                if (sub_pos >= 0) {
+                    int field_pos = -1;
+                    for (int k = 0; k < scope->members.count; k++) {
+                        if ((Au_t)scope->members.origin[k] == field) {
+                            field_pos = k;
+                            break;
+                        }
+                    }
+                    validate(field_pos < sub_pos,
+                        "cannot override '%o' — declared after sub", name);
+                }
+                // assign the value
+                enode target = (enode)u(enode, field);
+                enode value  = parse_expression(a, canonical(target), true, true);
+                e_assign(a, target, (Au)value, OPType__assign);
+                if (!read_if(a, ",")) break;
+            }
+            validate(read_if(a, "]"), "expected ']' after sub overrides");
+            return invoke_sub(a, mem);
+        }
+        pop_tokens(a, true); // not field overrides, restore and fall through
     }
 
     /// handle compatible indexing methods / lambda / and general pointer dereference @ index
@@ -6686,24 +6729,16 @@ enode parse_for(silver a) { sequencer
         // 1: cond
         // 2: init, cond
         // 3: init, cond, step
-        // 4+: init..., cond, step (group left into init)
+        validate(n <= 3, "for loop accepts at most 3 parts: init, condition, step");
         if (n == 1) {
             cond_exprs = (array)segments->origin[0];
         } else if (n == 2) {
             init_exprs = (array)segments->origin[0];
             cond_exprs = (array)segments->origin[1];
         } else {
-            // first n-2 segments concatenate into init_exprs
-            for (int i = 0; i < n - 2; i++) {
-                array seg =  (array)get(segments, i);
-                each(seg, token, t)
-                    push(init_exprs, (Au)t);
-                // comma between grouped init segments
-                if (i < n - 3)
-                    push(init_exprs, (Au)token(","));
-            }
-            cond_exprs = (array)get(segments, n - 2);
-            step_exprs = (array)get(segments, n - 1);
+            init_exprs = (array)segments->origin[0];
+            cond_exprs = (array)segments->origin[1];
+            step_exprs = (array)segments->origin[2];
         }
     }
 
