@@ -8,8 +8,6 @@ import subprocess
 import argparse
 from graph import parse_g_file, get_env_vars
 
-os.system("beep")
-
 project_path = ''
 project = ''
 cache_file = ''

@@ -88,6 +88,27 @@ void main() {
         return;
     }
 
+    // ---- SDF path: sample distance field texture ----
+    if (mode == 6.0) {
+        vec2 uv     = (v_pos - rect.xy) / rect.zw;
+        uv          = mix(grad0.xy, grad0.zw, uv);
+        float sd    = texture(u_image, uv).r;
+        // R8 texture: 0.5 = boundary, >0.5 = inside, <0.5 = outside
+        float d_sdf = (0.5 - sd) * 2.0;   // remap to signed: negative inside
+        float path_aa;
+        if (stroke_width > 0.0) {
+            // stroke: ring around boundary
+            float half_w = stroke_width * 0.5;
+            float outer  = 1.0 - smoothstep(-0.5, 0.5, abs(d_sdf) - half_w);
+            o_color      = fill_color * vec4(1.0, 1.0, 1.0, outer) * opacity;
+        } else {
+            // fill: inside boundary
+            path_aa = 1.0 - smoothstep(-0.5, 0.5, d_sdf);
+            o_color = fill_color * vec4(1.0, 1.0, 1.0, path_aa) * opacity;
+        }
+        return;
+    }
+
     // ---- fill: solid or gradient ----
     vec4 fill = (mode >= 1.0 && mode <= 3.0)
         ? eval_gradient(v_pos, mode)

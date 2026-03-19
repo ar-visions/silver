@@ -15,6 +15,7 @@ enum draw_mode
 	conic_grad  : 3
 	text        : 4
 	image       : 5
+	sdf_path    : 6
 
 
 # ---- GPU shader for UI rendering ----
@@ -570,6 +571,223 @@ func conic_gradient [ cx: f32, cy: f32, start_angle: f32 ] -> gradient
 	return g
 
 
+# ---- SDF path rendering ----
+# generates signed distance fields from arbitrary paths
+# handles holes via winding number: outer contour CCW, holes CW (or vice versa)
+
+struct sdf_edge
+	public x0 : f32
+	public y0 : f32
+	public x1 : f32
+	public y1 : f32
+
+
+# extract line segments from flattened path (move/line/close only)
+func sdf_extract_edges [ flat: array path_pt ] -> array sdf_edge
+	edges : array sdf_edge []
+	n     : i32 len [ flat ]
+	px    : f32 [ 0.0 ]
+	py    : f32 [ 0.0 ]
+	sx    : f32 [ 0.0 ]
+	sy    : f32 [ 0.0 ]
+	for [ i: i32 0, i < n, i += 1 ]
+		pt : path_pt flat[i]
+		switch [ pt.cmd ]
+			case move
+				# close previous sub-path implicitly if needed
+				if [ i > 0 && (px != sx || py != sy) ]
+					ce : sdf_edge [ x0: px, y0: py, x1: sx, y1: sy ]
+					push [ edges, ce ]
+				sx = pt.x
+				sy = pt.y
+				px = pt.x
+				py = pt.y
+			case line
+				e : sdf_edge [ x0: px, y0: py, x1: pt.x, y1: pt.y ]
+				push [ edges, e ]
+				px = pt.x
+				py = pt.y
+			case close
+				if [ px != sx || py != sy ]
+					e : sdf_edge [ x0: px, y0: py, x1: sx, y1: sy ]
+					push [ edges, e ]
+				px = sx
+				py = sy
+	# close final sub-path if not closed
+	if [ px != sx || py != sy ]
+		ce : sdf_edge [ x0: px, y0: py, x1: sx, y1: sy ]
+		push [ edges, ce ]
+	return edges
+
+
+# distance from point to line segment
+func sdf_seg_dist [ ex0: f32, ey0: f32, ex1: f32, ey1: f32, px: f32, py: f32 ] -> f32
+	dx  : ex1 - ex0
+	dy  : ey1 - ey0
+	len_sq : dx * dx + dy * dy
+	if [ len_sq < 0.00001 ]
+		ddx : px - ex0
+		ddy : py - ey0
+		return sqrtf [ ddx * ddx + ddy * ddy ]
+	t   : clampf [ ((px - ex0) * dx + (py - ey0) * dy) / len_sq, 0.0, 1.0 ]
+	cx  : ex0 + t * dx
+	cy  : ey0 + t * dy
+	ddx : px - cx
+	ddy : py - cy
+	return sqrtf [ ddx * ddx + ddy * ddy ]
+
+
+# winding number at point (non-zero fill rule)
+# positive winding = inside for CCW contours, holes wind CW and cancel
+func sdf_winding [ edges: array sdf_edge, px: f32, py: f32 ] -> i32
+	n  : i32 len [ edges ]
+	wn : i32 [ 0 ]
+	for [ i: i32 0, i < n, i += 1 ]
+		e : sdf_edge edges[i]
+		if [ e.y0 <= py ]
+			if [ e.y1 > py ]
+				# upward crossing: check if point is left of edge
+				cross : (e.x1 - e.x0) * (py - e.y0) - (px - e.x0) * (e.y1 - e.y0)
+				if [ cross > 0.0 ]
+					wn += 1
+		el
+			if [ e.y1 <= py ]
+				# downward crossing: check if point is right of edge
+				cross : (e.x1 - e.x0) * (py - e.y0) - (px - e.x0) * (e.y1 - e.y0)
+				if [ cross < 0.0 ]
+					wn -= 1
+	return wn
+
+
+# generate signed distance field for a path (grid-accelerated)
+# bx,by,bw,bh = world-space bounding box of the path
+# tw,th = SDF texture dimensions
+# pad = extra world-space padding around bounds
+# returns f32 array [tw*th], negative = inside, positive = outside
+func sdf_generate [ flat: array path_pt, bx: f32, by: f32, bw: f32, bh: f32, tw: i32, th: i32, pad: f32 ] -> ref f32
+	edges : sdf_extract_edges [ flat ]
+	ne    : i32 len [ edges ]
+	if [ ne == 0 ]
+		return null
+
+	# world bounds with padding
+	wx : f32 [ bx - pad ]
+	wy : f32 [ by - pad ]
+	ww : f32 [ bw + pad * 2.0 ]
+	wh : f32 [ bh + pad * 2.0 ]
+
+	# grid: cells cover the SDF area, each cell holds edge indices
+	# cell size ~ 8 texels worth of world space for good locality
+	cell_tx : i32 [ 8 ]
+	cell_ty : i32 [ 8 ]
+	gw : i32 [ (tw + cell_tx - 1) / cell_tx ]
+	gh : i32 [ (th + cell_ty - 1) / cell_ty ]
+	gc : i32 [ gw * gh ]
+
+	# world size per cell
+	cw : f32 [ ww / f32 gw ]
+	ch : f32 [ wh / f32 gh ]
+
+	# for each cell, store a list of edge indices that overlap it
+	# use array of arrays for simplicity
+	grid : array array i32 []
+	for [ ci: i32 0, ci < gc, ci += 1 ]
+		cell : array i32 []
+		push [ grid, cell ]
+
+	# bin edges into grid cells (expand by 1 cell for distance queries)
+	for [ ei: i32 0, ei < ne, ei += 1 ]
+		e   : sdf_edge edges[ei]
+		# edge bounding box in world coords
+		ex0 : minf [ e.x0, e.x1 ]
+		ey0 : minf [ e.y0, e.y1 ]
+		ex1 : maxf [ e.x0, e.x1 ]
+		ey1 : maxf [ e.y0, e.y1 ]
+		# map to grid cells with 1-cell expansion for neighbor queries
+		gx0 : clampi [ i32 (ex0 - wx) / cw - 1, 0, gw - 1 ]
+		gy0 : clampi [ i32 (ey0 - wy) / ch - 1, 0, gh - 1 ]
+		gx1 : clampi [ i32 (ex1 - wx) / cw + 1, 0, gw - 1 ]
+		gy1 : clampi [ i32 (ey1 - wy) / ch + 1, 0, gh - 1 ]
+		for [ gy: i32 gy0, gy <= gy1, gy += 1 ]
+			for [ gx: i32 gx0, gx <= gx1, gx += 1 ]
+				push [ grid[gy * gw + gx], ei ]
+
+	# texel to world mapping
+	sx : ww / f32 tw
+	sy : wh / f32 th
+
+	# bin edges by row band for scanline winding
+	# row_edges[r] = list of edge indices that span row r
+	row_edges : array array i32 []
+	for [ r: i32 0, r < th, r += 1 ]
+		re : array i32 []
+		push [ row_edges, re ]
+	for [ ei: i32 0, ei < ne, ei += 1 ]
+		e   : sdf_edge edges[ei]
+		ry0 : clampi [ i32 (minf [ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
+		ry1 : clampi [ i32 (maxf [ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
+		for [ r: i32 ry0, r <= ry1, r += 1 ]
+			push [ row_edges[r], ei ]
+
+	sz  : i32 [ tw * th ]
+	sdf : new f32 [ sz ]
+	spread : f32 [ 8.0 ]
+
+	for [ y: i32 0, y < th, y += 1 ]
+		py   : wy + (f32 y + 0.5) * sy
+		grow : i32 [ clampi [ y / cell_ty, 0, gh - 1 ] ]
+		re   : array i32 row_edges[y]
+		nre  : i32 len [ re ]
+
+		for [ x: i32 0, x < tw, x += 1 ]
+			px   : wx + (f32 x + 0.5) * sx
+			gcol : i32 [ clampi [ x / cell_tx, 0, gw - 1 ] ]
+			cell : array i32 grid[grow * gw + gcol]
+			nc   : i32 len [ cell ]
+
+			# min distance from cell's edge list
+			md : f32 [ 999999.0 ]
+			for [ ci: i32 0, ci < nc, ci += 1 ]
+				e : sdf_edge edges[cell[ci]]
+				d : sdf_seg_dist [ e.x0, e.y0, e.x1, e.y1, px, py ]
+				if [ d < md ]
+					md = d
+
+			# winding from row-binned edges only
+			wn : i32 [ 0 ]
+			for [ ri: i32 0, ri < nre, ri += 1 ]
+				e : sdf_edge edges[re[ri]]
+				if [ e.y0 <= py ]
+					if [ e.y1 > py ]
+						cross : (e.x1 - e.x0) * (py - e.y0) - (px - e.x0) * (e.y1 - e.y0)
+						if [ cross > 0.0 ]
+							wn += 1
+				el
+					if [ e.y1 <= py ]
+						cross : (e.x1 - e.x0) * (py - e.y0) - (px - e.x0) * (e.y1 - e.y0)
+						if [ cross < 0.0 ]
+							wn -= 1
+
+			# clamp distance for texels far from edges
+			if [ md > spread ]
+				md = spread
+			if [ wn != 0 ]
+				sdf[y * tw + x] = -md
+			el
+				sdf[y * tw + x] = md
+	return sdf
+
+
+# convert f32 SDF to R8 texture (maps [-spread..+spread] to [0..255])
+func sdf_to_r8 [ sdf: ref f32, count: i32, spread: f32 ] -> ref u8
+	tex : new u8 [ count ]
+	inv : f32 [ 0.5 / spread ]
+	for [ i: i32 0, i < count, i += 1 ]
+		v : f32 [ clampf [ 0.5 - sdf[i] * inv, 0.0, 1.0 ] ]
+		tex[i] = u8 [ v * 255.0 ]
+	return tex
+
+
 # ---- canvas state entry ----
 
 struct canvas_state
@@ -835,12 +1053,13 @@ class canvas
 		path.reset
 
 	func draw_fill_preserve [] -> none
-		# for general paths, compute bounding box and submit as rect
 		st   : canvas_state states[depth - 1]
-		flat : path_flatten [ path, 0.25 ]
+		flat : path_flatten [ path, 4.0 ]
 		n    : i32 len [ flat ]
 		if [ n == 0 ]
 			return
+
+		# compute bounding box
 		bx0 : f32 [ 999999.0 ]
 		by0 : f32 [ 999999.0 ]
 		bx1 : f32 [ -999999.0 ]
@@ -855,9 +1074,44 @@ class canvas
 				bx1 = pt.x
 			if [ pt.y > by1 ]
 				by1 = pt.y
-		setup_shader [ st, bx0, by0, bx1 - bx0, by1 - by0 ]
-		mode : f32 setup_gradient [ st ]
-		shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, mode ]
+
+		# clip to visible area
+		bx0 = maxf [ bx0, f32 st.clip_x ]
+		by0 = maxf [ by0, f32 st.clip_y ]
+		bx1 = minf [ bx1, f32 st.clip_x + st.clip_w ]
+		by1 = minf [ by1, f32 st.clip_y + st.clip_h ]
+
+		bw : f32 [ bx1 - bx0 ]
+		bh : f32 [ by1 - by0 ]
+		if [ bw < 0.5 || bh < 0.5 ]
+			return
+
+		# generate SDF texture from path edges
+		# texture size proportional to visible bounds, capped for performance
+		pad    : f32 [ 2.0 ]
+		sdf_w  : i32 [ clampi [ i32 bw + 4, 16, 512 ] ]
+		sdf_h  : i32 [ clampi [ i32 bh + 4, 16, 512 ] ]
+		sdf    : ref f32 sdf_generate [ flat, bx0, by0, bw, bh, sdf_w, sdf_h, pad ]
+		if [ !sdf ]
+			return
+
+		# convert to R8 for GPU upload
+		spread : f32 [ 4.0 ]
+		sdf_sz : i32 [ sdf_w * sdf_h ]
+		tex    : ref u8 sdf_to_r8 [ sdf, sdf_sz, spread ]
+		free [ sdf ]
+
+		# upload SDF texture to u_image slot and draw
+		shader.upload_image [ tex, sdf_w, sdf_h, 1 ]
+		free [ tex ]
+
+		# set up covering rect with padding for AA
+		setup_shader [ st, bx0 - pad, by0 - pad, bw + pad * 2.0, bh + pad * 2.0 ]
+		shader.fill_color = color_to_vec4 [ st.fill_color ]
+
+		# UV rect maps covering quad to [0..1] over SDF texture
+		shader.grad0 = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+		shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, f32 draw_mode.sdf_path ]
 		shader.draw
 
 	func draw_stroke [] -> none
@@ -868,10 +1122,12 @@ class canvas
 		st : canvas_state states[depth - 1]
 		if [ st.stroke_width <= 0.0 ]
 			return
-		flat : path_flatten [ path, 0.25 ]
+		flat : path_flatten [ path, 4.0 ]
 		n    : i32 len [ flat ]
 		if [ n == 0 ]
 			return
+
+		# bounding box expanded by stroke width
 		bx0 : f32 [ 999999.0 ]
 		by0 : f32 [ 999999.0 ]
 		bx1 : f32 [ -999999.0 ]
@@ -887,9 +1143,39 @@ class canvas
 				bx1 = pt.x + half_w
 			if [ pt.y + half_w > by1 ]
 				by1 = pt.y + half_w
-		setup_shader [ st, bx0, by0, bx1 - bx0, by1 - by0 ]
+
+		# clip to visible area
+		bx0 = maxf [ bx0, f32 st.clip_x ]
+		by0 = maxf [ by0, f32 st.clip_y ]
+		bx1 = minf [ bx1, f32 st.clip_x + st.clip_w ]
+		by1 = minf [ by1, f32 st.clip_y + st.clip_h ]
+
+		bw : f32 [ bx1 - bx0 ]
+		bh : f32 [ by1 - by0 ]
+		if [ bw < 0.5 || bh < 0.5 ]
+			return
+
+		# SDF for stroke: unsigned distance to path edges
+		# the shader will threshold at stroke_width/2 for the ring
+		pad    : f32 [ 2.0 ]
+		sdf_w  : i32 [ clampi [ i32 bw + 4, 16, 512 ] ]
+		sdf_h  : i32 [ clampi [ i32 bh + 4, 16, 512 ] ]
+		sdf    : ref f32 sdf_generate [ flat, bx0, by0, bw, bh, sdf_w, sdf_h, pad ]
+		if [ !sdf ]
+			return
+
+		spread : f32 [ half_w + 2.0 ]
+		sdf_sz : i32 [ sdf_w * sdf_h ]
+		tex    : ref u8 sdf_to_r8 [ sdf, sdf_sz, spread ]
+		free [ sdf ]
+
+		shader.upload_image [ tex, sdf_w, sdf_h, 1 ]
+		free [ tex ]
+
+		setup_shader [ st, bx0 - pad, by0 - pad, bw + pad * 2.0, bh + pad * 2.0 ]
 		shader.fill_color = color_to_vec4 [ st.stroke_color ]
-		shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, 0.0 ]
+		shader.grad0 = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+		shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, f32 draw_mode.sdf_path ]
 		shader.draw
 
 
