@@ -3,8 +3,8 @@
 
 **A build language. MIT licensed.**
 ```
-silver 0.8.8
-Copyright (C) 2021 AR Visions — MIT License
+silver 0.88
+Copyright (C) 2017 Kalen Novis White — MIT License
 ```
 
 ---
@@ -497,25 +497,27 @@ el
 
 ### for
 
-`::` separates init, condition, and step. `,` also works:
+`,` separates init, condition, and step.
+
+one single expression is condition only
+two expressions mean member assignment and condition, three or more indicate iterator add-ons
+this means for is used in-place of a 'while' when you have a condition alone
 
 ```python
-# three-part with ::
-for [ i: i32 0 :: i < 10 :: i += 1 ]
-    total += 1
 
 # three-part with ,
 for [ i: i32 0, i < count, i += 1 ]
     floats[i] = 0.0f
 
-# nested loops
-for [ i: i32 0 :: i < 3 :: i += 1 ]
-    for [ j: i32 0 :: j < 4 :: j += 1 ]
-        total += 1
-
 # condition-only (while loop)
 for [ running ]
     process
+
+# two-part requires member assignment
+for [ something:1, running && something < 4 ]
+    process
+    something += 1
+
 ```
 
 ### switch / case
@@ -926,7 +928,7 @@ make clean              # clean generated headers
 
 ## License
 
-MIT License. Copyright (C) 2021 AR Visions. See [LICENSE](LICENSE).
+MIT License. Copyright (C) 2017 Kalen Novis White. See [LICENSE](LICENSE).
 
 ![orbiter avatar](core.png "orbiter avatar")
 

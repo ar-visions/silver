@@ -168,9 +168,11 @@ typedef double                 *ref_f64;
     int             elements; \
     int             typesize; \
     int             isize; \
+    u64             ident_hash; \
     void*           fn; \
     ffi_method_t*   ffi; \
     micro           members; \
+    void*           member_map; \
     micro           args; \
     meta_t          meta; \
     u64             required_bits[2];
@@ -565,6 +567,7 @@ real clampf(real, real, real);
 i64 epoch_millis();
 Au Au_initialize(Au);
 none Au_init_recur(Au a, Au_t current, raw last_init);
+u64  au_hash_ident(symbol s);
 
 // sandbox API (implementation in sandbox.c)
 void  au_sandbox_lock(void);                  // phase 2: block dlopen/exec after hardware init
