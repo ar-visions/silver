@@ -1250,7 +1250,7 @@ static string op_lang_token(string name) {
 
 static void silver_module() {
     keywords = hold(array_of_cstr(
-        "class",    "struct",   "expect",   "fault",    "abstract", "context",  "public",   "intern",
+        "class",    "struct",   "scalar",   "expect",   "fault",    "abstract", "context",  "public",   "intern",
         "import",   "export",   "typeid",   
         "is",       "inherits", "ref",      "in",   "lambda",
         "const",    "no-op",    "<>",
@@ -2219,7 +2219,7 @@ string silver_peek_def(silver a) {
     if (n && is_keyword((Au)n))
         if (eq(n, "import") || eq(n, "export") || eq(n, "func") || eq(n, "cast") ||
             eq(n, "attrib") || eq(n, "class")  || eq(n, "enum") || eq(n, "struct") ||
-            eq(n, "alias"))
+            eq(n, "scalar") || eq(n, "alias"))
             return string(n->chars);
     
     return null;
@@ -6732,12 +6732,13 @@ etype silver_read_def(silver a, interface access) {
     Au_t  parse_fn  = null;
     Au_t  is_type   = next_is_keyword(a, &parse_fn);
     etype is_class  = !is_type ? next_is_class(a, false) : null;
-    bool  is_struct = next_is(a, "struct");
-    bool  is_enum   = next_is(a, "enum");
-    bool  is_export = next_is(a, "export");
-    bool  is_alias  = next_is(a, "alias");
+    bool  is_struct  = next_is(a, "struct");
+    bool  is_scalar  = next_is(a, "scalar");
+    bool  is_enum    = next_is(a, "enum");
+    bool  is_export  = next_is(a, "export");
+    bool  is_alias   = next_is(a, "alias");
 
-    if (!is_type && !is_class && !is_struct && !is_enum && !is_export && !is_alias)
+    if (!is_type && !is_class && !is_struct && !is_scalar && !is_enum && !is_export && !is_alias)
         return null;
 
     if (is_type) {
@@ -6809,6 +6810,28 @@ etype silver_read_def(silver a, interface access) {
         }
 
         mdl->body = (tokens)read_body(a);
+
+    } else if (is_scalar) {
+        // scalar px : f32  — struct with single 'value' member, no body
+        validate(is_module(mtop), "expected scalar definition at module level");
+        validate(read_if(a, ":"), "expected ':' after scalar name %o", n);
+        etype value_type = read_etype(a, null);
+        validate(value_type, "expected type after scalar %o:", n);
+
+        Au_t top2 = top_scope(a);
+        mdl = record(a, (etype)a, null, n, AU_TRAIT_STRUCT);
+        if (!mdl) {
+            fault("failed to create scalar type %o", n);
+            return null;
+        }
+        mdl->au->access_type = access;
+        mdl->au->src = value_type->au;
+        mdl->body = null;
+        mdl->user_built = true;
+
+        // create the single 'value' member
+        Au_t val_mem = def_member(mdl->au, "value", value_type->au, AU_MEMBER_VAR, 0);
+        val_mem->access_type = interface_public;
 
     } else if (is_enum) {
         etype store = null, suffix = null;
