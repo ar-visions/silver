@@ -320,7 +320,7 @@ fi
 
 # set up docker group and systemd services (Linux only, requires sudo, one-time)
 # skip if services already configured
-if [[ "$(uname)" == "Linux" ]] && [ -f "$NATIVE/bin/dockerd" ] && ! [ -f /etc/systemd/system/docker.service ]; then
+if [[ "$(uname)" == "Linux" ]] && [ -f "$NATIVE/bin/dockerd" ] && ! [ -f /etc/systemd/system/docker.service ] && command -v sudo >/dev/null 2>&1; then
     if ! getent group docker >/dev/null 2>&1; then
         sudo groupadd docker
     fi
