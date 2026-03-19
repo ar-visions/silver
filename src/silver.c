@@ -4535,24 +4535,67 @@ static enode parse_func_call(silver a, efunc f) { sequencer
         offset = 1;
     }
 
+    // track which args have been matched (for commaless type-matching)
+    bool* matched = calloc(ln, sizeof(bool));
+    bool  comma_mode = false;
+
     while (i + offset < ln || fn->au->is_vargs) {
         Au_t   arg_decl = (Au_t)micro_get(m, i + offset);
         Au_t   src  = (Au_t)au_arg_type((Au)arg_decl);
         etype  typ  = (arg_decl && arg_decl->is_formatter) ? null : u(etype, src);
 
-        // if its a struct argument and not inlay, we reference these.  this is because arguments are always read-only
-        // it is crossing the streams to modify arguments.  only vader alters the deal
-        enode  expr = parse_expression(a, typ, true, true); // self contained for '{interp}' to cstr!
+        enode  expr = parse_expression(a, comma_mode ? typ : null, true, true);
         verify(expr, "invalid expression");
-        push(values, (Au)expr);
+
+        if (!comma_mode && !fn->au->is_vargs) {
+            // commaless: match expr type to best-fit unmatched parameter
+            Au_t expr_type = au_arg_type((Au)expr);
+            int  best = -1;
+            for (int j = 0; j < ln; j++) {
+                if (matched[j]) continue;
+                Au_t ptype = au_arg_type((Au)micro_get(m, j + offset));
+                if (expr_type == ptype || inherits(expr_type, ptype) ||
+                    (expr_type->is_integral && ptype->is_integral) ||
+                    (expr_type->is_realistic && ptype->is_realistic)) {
+                    best = j;
+                    break;
+                }
+            }
+            if (best >= 0) {
+                // convert to expected type and place at matched position
+                Au_t best_decl = (Au_t)micro_get(m, best + offset);
+                etype best_type = u(etype, au_arg_type((Au)best_decl));
+                expr = e_create(a, best_type, (Au)expr);
+                // ensure values array is big enough and place at correct index
+                while (len(values) <= best + offset)
+                    push(values, (Au)null);
+                values->origin[best + offset] = (Au)expr;
+                matched[best] = true;
+            } else {
+                push(values, (Au)expr);
+            }
+        } else {
+            push(values, (Au)expr);
+        }
         i++;
 
-        if (read_if(a, ","))
+        if (read_if(a, ",")) {
+            comma_mode = true; // first comma switches to positional mode
             continue;
+        }
 
-        verify(len(values) >= ln, "expected %i args for function %o (%i)", ln, f, seq);
+        if (comma_mode) {
+            verify(len(values) >= ln, "expected %i args for function %o (%i)", ln, f, seq);
+        }
         break;
     }
+
+    // fill any unmatched slots with null for commaless mode
+    if (!comma_mode) {
+        while (len(values) < ln)
+            push(values, (Au)null);
+    }
+    free(matched);
     a->expr_level--;
     validate(!read_br || read_if(a, cmode ? ")" : "]"), "expected ] after call");
     pop_tokens(a, true);
