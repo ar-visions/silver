@@ -125,6 +125,90 @@ func transform [ a: i64, b: i64 ] -> i64
     return z
 ```
 
+### Callable Subs
+
+A sub's body is stored on the variable. Calling `x[]` re-evaluates the sub with the current scope and returns the result — without reassigning `x`:
+
+```python
+validate: bool sub
+    if [ !ready ]
+        return false
+    return count <= max
+
+# later — re-invoke with current state:
+if [ !validate[] ]
+    bail
+```
+
+This replaces `goto` with a named, returnable, scoped block. The sub is a computation you can revisit.
+
+---
+
+### Commaless Type-Matching (CSS-Style Selectors)
+
+silver functions accept arguments without commas. When commas are absent, the parser matches each argument to the best-fit parameter by type — like CSS shorthand properties. When commas are present, arguments are positional.
+
+```python
+# commaless — type-matched, order flexible:
+set_margin 20px
+set_color red 0.8
+transition 200ms ease_in
+
+# with commas — positional, explicit order:
+resize [ 800, 600 ]
+```
+
+This works because silver has no variadic functions — every parameter has a known type, so every argument can be matched unambiguously. The comma's presence or absence changes the parsing strategy:
+
+- **No commas** → match by type (CSS selector style)
+- **Commas** → match by position (traditional)
+
+The deliberate exclusion of varargs is what enables this. Fixed arity means every type is known. Every argument finds its parameter.
+
+---
+
+### Scalar Types
+
+`scalar` declares a type that wraps a single numeric value. The type name becomes a suffix for numeric literals:
+
+```python
+scalar px  : f32
+scalar em  : f32
+scalar deg : f32
+scalar ms  : i64
+
+# usage — suffix constructs the type:
+width:    200px
+margin:   1.5em
+rotation: 90deg
+delay:    16ms
+```
+
+`200px` is parsed as two neighboring tokens (`200` + `px`). The parser sees the number, checks if the neighbor is a scalar type, and constructs it. No special syntax — the struct name IS the suffix.
+
+Scalar types are type-safe. `200px` and `200em` are different types. Passing `px` where `em` is expected is a compile error:
+
+```python
+func set_margin [ m: px ] -> none
+set_margin 20px    # ok
+set_margin 20em    # error: expected px, got em
+```
+
+---
+
+### Keyword Tokens
+
+Curly braces `{ }` parse as compacted token literals when the expected type is `tokens`. Used for declarative UI properties and layout:
+
+```python
+panel { l0 t0 r0 b0 }
+button "click" { m0 b20 shadow }
+```
+
+Each space-separated value inside `{ }` becomes a token. Neighboring characters are compacted (`blur:4` stays as one token).
+
+---
+
 ### Inline Assembly
 
 `asm` declares an inline assembly block with Intel syntax. Input variables are listed in brackets, and `return` yields the result:
