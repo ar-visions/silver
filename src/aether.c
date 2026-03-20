@@ -46,8 +46,17 @@ etype etype_create(aether a, Au_t m) { sequencer
         int mt = m->member_type;
 
         if (mt == AU_MEMBER_ENUMV) {
-            // skip — enum values are handled in etype_implement
-            mt = mt;
+            // lazily create enode for C enum values
+            // enum value may not have is_c directly, check parent enum
+            bool c_enum = m->is_c || (m->context && m->context->is_c) || (m->src && m->src->is_c);
+            if (c_enum && m->value) {
+                Au_t enum_type = m->src ? m->src : m->context;
+                Au_t store_type = enum_type && enum_type->src ? enum_type->src : typeid(i32);
+                Au lit = m->value ? primitive(store_type, m->value) : null;
+                enode n = enode(mod, a, au, m, literal, lit);
+                etype_register(a, (Au)m, (Au)hold(n), false);
+                return (etype)n;
+            }
         }
         else if (is_func((Au)m) || is_func_ptr((Au)m)) {
             return (etype)efunc(mod, a, loaded, true,  au, m);
@@ -65,9 +74,15 @@ etype etype_create(aether a, Au_t m) { sequencer
 }
 
 etype etype_prep(aether a, Au_t au) { sequencer
+    if (!au) return null;
     etype mdl = u(etype, au);
     if (!mdl || (!mdl->lltype)) {
-        if (!mdl) mdl = etype_create(a, au);
+        if (!mdl) {
+            if (au->ident && strcmp(au->ident, "VK_QUEUE_GRAPHICS_BIT") == 0) {
+                mdl = mdl;
+            }
+            mdl = etype_create(a, au);
+        }
         if (mdl && !mdl->is_implemented)
             etype_implement(mdl, false);
     }
@@ -232,11 +247,6 @@ enode enode_ref(aether a, enode expr, etype ref_type) {
 enode enode_value(enode mem, bool force_load) { sequencer
     if (mem && mem->is_super)
         return mem->target;
-
-        if (mem->au && mem->au->src && mem->au->src->src && strcmp(mem->au->src->src->ident, "mat4f") == 0) {
-            int test2 = 2;
-            test2    += 2;
-        }
 
     if (!mem->loaded && (force_load || !is_struct(canonical(mem))) && !mem->au->is_imethod && (!is_func((Au)mem) || is_func_ptr((Au)mem))) {
         if (mem->au->ident && strstr(mem->au->ident, "SND_PCM_STREAM") != NULL) {
@@ -2656,8 +2666,14 @@ enode aether_e_typeid(aether a, etype mdl) { sequencer
         return e_runtime_type((enode)mdl);
     }
     
-    if (!mdl->type_id && (is_module(mdl->au) || !mdl->au->module->is_au))
-        implement_type_id(mdl);
+    if (!mdl->type_id) {
+        if (mdl->au->is_c) {
+            // external C type: create minimal type registration (size only, no member metadata)
+            implement_type_id(mdl); // registers with typesize, no members emitted
+        } else if (is_module(mdl->au) || !mdl->au->module->is_au) {
+            implement_type_id(mdl);
+        }
+    }
 
     a->is_const_op = false;
     enode n = resolve_typeid(a, (Au)mdl);
@@ -3357,9 +3373,10 @@ none copy_lambda_info(enode mem, enode lambda_fn) {
 
 
 enode aether_e_vector(aether a, etype t, enode shape_data) {
+    etype tc = canonical(t);
+
     efunc f_alloc    = (efunc)u(efunc,
         find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, 0, false));
-    etype tc = canonical(t);
     enode metas_node = e_meta_ids(a, tc->meta_a, tc->meta_b);
     return e_fn_call(a, f_alloc, a( e_typeid(a, tc), _i32(0), shape_data, metas_node ));
 }
@@ -4097,7 +4114,7 @@ enode aether_e_offset(aether a, enode n, Au offset) { sequencer
     if (a->no_build) return e_noop(a, (etype)evar_type((evar)n));
 
     enode  i = e_operand(a, offset, null);
-    verify(is_ptr(n), "offset requires pointer");
+    verify(is_ptr(n) || n->au->elements > 0, "offset requires pointer");
     
     LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
     LLVMValueRef base = n->value;
@@ -4691,11 +4708,10 @@ none etype_init(etype t) {
         //}
         return;
     } else if (t->is_schema) {
-        if (!au->ident)
-            au->ident = au->ident;
+        Au_t source_au = t->au;
 
-        if (au->ident && strstr(au->ident, "test4"))
-            au = au;
+        if (au->ident && strstr(au->ident, "VkQueueFamilyProperties"))
+            source_au = source_au;
             
         au = t->au = def(typeid(Au),
             fmt("__%o_%s",
@@ -4703,7 +4719,11 @@ none etype_init(etype t) {
                 is_module(au) ? "module_f" : "f")->chars,
             AU_MEMBER_TYPE, AU_TRAIT_SCHEMA | AU_TRAIT_STRUCT);
 
-        // do this for Au types
+        if (source_au->is_c) {
+            t->au->is_c = true;
+            t->au->typesize = source_au->typesize;
+        }
+        
         Au_t ref = typeid(Au_t);
         for (int i = 0; i < ref->members.count; i++) {
             Au_t au_mem  = (Au_t)ref->members.origin[i];
@@ -4720,25 +4740,27 @@ none etype_init(etype t) {
                 Au_t fn_first = def(ft_type, "_none_", AU_MEMBER_VAR, 0);
                 fn_first->src  = typeid(ARef);
 
-                if (strstr(au->ident, "test4"))
+                if (strstr(source_au->ident, "VkQueueFamilyProperties"))
                     au = au;
 
-                array cl = etype_class_list(t); Au_t ref = typeid(Au_t);
-                each (cl,  etype, tt) {
-                    for (int ai = 0; ai < tt->au->members.count; ai++) {
-                        Au_t ai_mem = (Au_t)tt->au->members.origin[ai];
-                        if (!is_func(ai_mem))
-                            continue;
+                if (!au->is_c) {
+                    array cl = etype_class_list(t);
+                    each (cl,  etype, tt) {
+                        for (int ai = 0; ai < tt->au->members.count; ai++) {
+                            Au_t ai_mem = (Au_t)tt->au->members.origin[ai];
+                            if (!is_func(ai_mem))
+                                continue;
 
-                        Au_t fn = def(ft_type, ai_mem->ident, AU_MEMBER_VAR, 0);
-                        fn->src = typeid(ARef); // these are effectively opaque in design
+                            Au_t fn = def(ft_type, ai_mem->ident, AU_MEMBER_VAR, 0);
+                            fn->src = typeid(ARef); // these are effectively opaque in design
 
-                        //set(a->registry, (Au)fn, enode(mod, a, au, fn));
+                            //set(a->registry, (Au)fn, enode(mod, a, au, fn));
 
-                        for (int arg = 0; arg < ai_mem->args.count; arg++) {
-                            Au_t arg_src = (Au_t)ai_mem->args.origin[arg];
-                            Au_t arg_t   = arg_type(arg_src);
-                            micro_push(&fn->args, (Au)def_arg(fn, arg_src->ident, arg_t, 0));
+                            for (int arg = 0; arg < ai_mem->args.count; arg++) {
+                                Au_t arg_src = (Au_t)ai_mem->args.origin[arg];
+                                Au_t arg_t   = arg_type(arg_src);
+                                micro_push(&fn->args, (Au)def_arg(fn, arg_src->ident, arg_t, 0));
+                            }
                         }
                     }
                 }
@@ -4762,10 +4784,7 @@ none etype_init(etype t) {
             
             new_mem->context = t->au; // copy entire member and reset for our for context
         }
-
-        // upon implement, we can register the static_value on etype of schema
-        // this is the address of the &type_i.type member
-        
+    
     }
     
     if (!au->member_type)
@@ -5056,15 +5075,12 @@ etype implement_type_id(etype t) {
     
     string name = is_module(au) ?
         f(string, "%s_m", au->ident) :
-        f(string, "%s_%s_i", au->module->ident, au->ident);
+        f(string, "%o_%s_i", symbol_name(
+            (Au)string(au->module ? au->module->ident : a->name->chars)), au->ident);
     evar schema_i = evar(mod, a, au, def_member(
                 a->au, name->chars, type_info, AU_MEMBER_VAR,
                 AU_TRAIT_SYSTEM | (a->is_Au_import ? AU_TRAIT_IS_IMPORTED : 0)));
     
-    if (strcmp(au->ident, "test4") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
     etype_implement((etype)schema_i, false);
 
     etype tt = u(etype, t->au);
@@ -5082,19 +5098,6 @@ none etype_implement(etype t, bool w) { sequencer
     Au_t      top       = top_scope(a);
     aether    module    = is_module(top) ? a : null;
 
-    if (t->au->ident && strcmp(t->au->ident, "rng") == 0) {
-        t = t;
-    }
-    if (t->au->ident && strcmp(t->au->ident, "params2") == 0) {
-        t = t; // breakpoint: params2 implement
-    }
-
-    if (au->ident && strcmp(au->ident, "with_quatf") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
-
-    
     if (au->member_type == AU_MEMBER_DECL || 
         au->member_type == AU_MEMBER_NAMESPACE || (is_func(au) && !((enode)t)->used && !a->is_Au_import))
         return;
@@ -5108,13 +5111,6 @@ none etype_implement(etype t, bool w) { sequencer
         ((void(*)(Au, Au))a->prepare_record)((Au)a, (Au)t);
 
     t->is_implemented = true;
-
-    if (au->ident && strcmp(au->ident, "vec3f") == 0) {
-        au = au;
-    }
-
-    static int seq2 = 0;
-    seq2++;
 
     bool is_Au = !a->import_c && is_au_type(resolve(t)) &&
         (!au->is_schema && !au->is_system && !au->is_pointer && au->ident);
@@ -5198,21 +5194,14 @@ none etype_implement(etype t, bool w) { sequencer
             }
         } else if (is_func(au->context)) {
             verify(n->value, "expected evar to be set for arg");
-            Au_t i = isa(t);
-            Au info = head(t);
-            if (isa(t) != typeid(evar)) {
-                int test2 = 2;
-                test2    += 2;
-            }
             verify(isa(t) == typeid(evar) || isa(t) == typeid(enode), "expected evar/enode instance for arg");
-
             n->loaded = !is_struct(au_arg_type((Au)au));
         }
-        return;
 
+        return;
     }
 
-    if (!au->is_pointer && !au->is_funcptr && (is_rec(t) || au->is_union)) {
+    if (!au->is_pointer && !au->is_c && !au->is_funcptr && (is_rec(t) || au->is_union)) {
         array cl = (au->is_union || is_struct(t)) ? a(t) : etype_class_list(t);
         bool multi_Au = len(cl) > 1 && cl->origin[0] == etypeid(Au);
         int count = 0;
@@ -5227,16 +5216,6 @@ none etype_implement(etype t, bool w) { sequencer
 
             if (is_class(t) && (!multi_Au || tt->au != typeid(Au)))
                 count++; // u8 Type_interns[isize]
-        }
-
-        if (au->ident && strcmp(au->ident, "rng") == 0) {
-            printf("etype_implement rng: members.count=%d, count=%d\n", au->members.count, count);
-            for (int i = 0; i < au->members.count; i++) {
-                Au_t m = (Au_t)au->members.origin[i];
-                printf("  [%d] %s member_type=%d is_static=%d src=%s\n",
-                    i, m->ident ? m->ident : "(null)", m->member_type, m->is_static,
-                    m->src ? (m->src->ident ? m->src->ident : "(no ident)") : "(no src)");
-            }
         }
 
         LLVMTypeRef* struct_members = calloc(count + 2, sizeof(LLVMTypeRef));
@@ -5379,12 +5358,6 @@ none etype_implement(etype t, bool w) { sequencer
 
 
     } else if (is_enum(t)) {
-
-
-        if (au->ident && strcmp(au->ident, "_snd_pcm_stream") == 0) {
-            au = au; // breakpoint: _snd_pcm_stream enum implement
-        }
-
         /*
         if (au->traits & AU_TRAIT_ENUM) {
             if (!lltype(t) && au->src)
@@ -5413,8 +5386,6 @@ none etype_implement(etype t, bool w) { sequencer
                 }
             }
         }*/
-
-
 
         Au_t et = au->src;
         //static bool enum_processing = false;
@@ -5485,8 +5456,6 @@ none etype_implement(etype t, bool w) { sequencer
 
         // functions, on init, create the arg enodes from the model data
         // make sure the types are ready for use
-
-        
         arg_list(au, arg) {
             if (arg->ident && strcmp(arg->ident, "optimizer") == 0) {
                 arg = arg;
@@ -5906,6 +5875,10 @@ none aether_build_module_initializer(aether a, enode init) {
             _u64(mdl->au->typesize),
             _u64(isize)
         ));
+
+        // C-imported types: size-only registration, no member/function metadata
+        if (tau->is_c)
+            continue;
 
         i64 max_ft_end = 0;
         members(tau, mem) {

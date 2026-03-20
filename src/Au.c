@@ -1681,7 +1681,7 @@ Au_t find_context(array lex, int member_type, int traits) {
 
 Au_t lexical(array lex, symbol f) {
 
-    if (strcmp(f, "header") == 0)
+    if (strcmp(f, "VK_QUEUE_GRAPHICS_BIT") == 0)
         f = f;
 
     bool top_set = false;
@@ -1716,21 +1716,6 @@ Au_t lexical(array lex, symbol f) {
             if (!is_class((Au)au)) break;
             if (au->context == au) break;
             au = au->context;
-        }
-    }
-
-    // fallback: search inside C enum types for unscoped enum values
-    // C enums are unscoped by convention; Silver enums require EnumName.member
-    for (int i = len(lex) - 1; i >= 0; i--) {
-        Au_t au = (Au_t)lex->origin[i];
-        for (int ii = 0; ii < au->members.count; ii++) {
-            Au_t m = (Au_t)au->members.origin[ii];
-            if (!(m->traits & AU_TRAIT_ENUM) || !m->is_c) continue;
-            for (int jj = 0; jj < m->members.count; jj++) {
-                Au_t ev = (Au_t)m->members.origin[jj];
-                if (ev->ident && strcmp(ev->ident, f) == 0)
-                    return ev;
-            }
         }
     }
 

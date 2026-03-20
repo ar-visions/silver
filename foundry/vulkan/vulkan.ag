@@ -1,11 +1,11 @@
 export 0.1.0
 
-import KhronosGroup:Vulkan-Headers/29184b9 <vulkan/vulkan.h>
+import KhronosGroup:Vulkan-Headers/29184b9
 
 import KhronosGroup:Vulkan-Loader/e042a3a
      -DVULKAN_HEADERS_INSTALL_DIR={install}
 
-import KhronosGroup:MoltenVK/db445ff
+ifdef [ apple ] import KhronosGroup:MoltenVK/db445ff
 
 import KhronosGroup:Vulkan-Tools/734638e
      -DVULKAN_HEADERS_INSTALL_DIR={install}
@@ -16,12 +16,16 @@ import img
 import <stdio.h>
 import <stdlib.h>
 import <string.h>
+import <vk_mem_alloc.h>
 
-
-func trinity_log [ severity: VkDebugUtilsMessageSeverityFlagBitsEXT, types: VkDebugUtilsMessageTypeFlagsEXT, callbackData: ref VkDebugUtilsMessengerCallbackDataEXT, userData: ref void ] -> VkBool32
+func trinity_log [
+        severity:       VkDebugUtilsMessageSeverityFlagBitsEXT,
+        types:          VkDebugUtilsMessageTypeFlagsEXT,
+        callbackData:   ref VkDebugUtilsMessengerCallbackDataEXT,
+        userData:       handle ] -> bool
     if [ severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT ]
         puts "vulkan: %s", callbackData.pMessage
-    return VK_FALSE
+    return false
 
 
 class vk_context
@@ -36,6 +40,7 @@ class vk_context
     public  device_exts         : array [ alloc:128, unmanaged:true ]
     intern  debug               : VkDebugUtilsMessengerEXT
     public  allocator           : VmaAllocator
+    public  _vkCreateDebugUtilsMessengerEXT : PFN_vkCreateDebugUtilsMessengerEXT
 
     func dealloc [ ]
         vmaDestroyAllocator[ allocator ]
@@ -44,8 +49,9 @@ class vk_context
         vkDestroyInstance[ instance, null ]
 
     func set_queue_index [ surface: handle ] -> none
-        queue_family_count: u32 [ 0 ]
-        vkGetPhysicalDeviceQueueFamilyProperties[ physical_device, ref queue_family_count, null ]
+        queue_family_count: u32 0
+        vkGetPhysicalDeviceQueueFamilyProperties[
+            physical_device, ref queue_family_count, null ]
         expect queue_family_count > 0, "failed to find queue families"
         queue_families: new VkQueueFamilyProperties [ queue_family_count ]
         vkGetPhysicalDeviceQueueFamilyProperties[ physical_device, ref queue_family_count, queue_families ]
@@ -71,7 +77,7 @@ class vk_context
             if [ (type_filter & (1 << i)) && (props.memoryTypes[i].propertyFlags & flags) == flags ]
                 return i
         fault "could not find memory type"
-        return UINT32_MAX
+        return 0
 
     func attach [ surface:handle ] -> none
         if [ queue_family_index == -1 ]
@@ -142,12 +148,15 @@ class vk_context
 
 
     # compatibility wrapper for old call sites
-    func transition_image_layout [ image: VkImage, old_layout: VkImageLayout, new_layout: VkImageLayout, baseMipLevel: i32, level_count: i32, base_array_layer: i32, layer_count: i32, is_depth: bool ] -> none
+    func transition_image_layout [
+            img: VkImage, old_layout: VkImageLayout, new_layout: VkImageLayout,
+            baseMipLevel: i32, level_count: i32, base_array_layer: i32,
+            layer_count: i32, is_depth: bool ] -> none
         src: Layout.find[ old_layout ]
         dst: Layout.find[ new_layout ]
         expect src && dst, "layout not found"
         r: image_range [ base_mip: baseMipLevel, levels: level_count, base_layer: base_array_layer, layers: layer_count, is_depth: is_depth ]
-        src.transition[ a, image, dst, r ]
+        src.transition[ a, img, dst, r ]
 
 
 intern func image_release_buffer [ a: image ] -> object
@@ -275,7 +284,7 @@ struct Layout
         return null
 
     # transition image from this layout to target layout
-    func transition [ vk: vk_context, image: VkImage, to: Layout, r: image_range ] -> none
+    func transition [ vk: vk_context, img: VkImage, to: Layout, r: image_range ] -> none
         cmd: command [ vk: vk ]
         begin[ cmd ]
         barrier: VkImageMemoryBarrier [
@@ -284,7 +293,7 @@ struct Layout
             newLayout:           to.layout,
             srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
             dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
-            image:               image,
+            image:               img,
             subresourceRange:    VkImageSubresourceRange [
                 aspectMask:       r.is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
                 baseMipLevel:     r.base_mip,
@@ -356,29 +365,29 @@ func vk_create [ vk: vk_context ] -> VkInstance
     expect result == VK_SUCCESS, "failed to create Vulkan instance, error: %d", result
 
     if [ enable_validation ]
-        _vkCreateDebugUtilsMessengerEXT = vkGetInstanceProcAddr[ instance, "vkCreateDebugUtilsMessengerEXT" ]
-        expect _vkCreateDebugUtilsMessengerEXT, "cannot find vk debug function"
+        vk._vkCreateDebugUtilsMessengerEXT = vkGetInstanceProcAddr[ instance, "vkCreateDebugUtilsMessengerEXT" ]
+        expect vk._vkCreateDebugUtilsMessengerEXT, "cannot find vk debug function"
     
     return instance
 
 
 class command
-    public vk : vk_context
-    intern vk : VkCommandBuffer
+    public vk  : vk_context
+    intern cmd : VkCommandBuffer
 
     public func begin [ ] -> none
-        vkResetCommandBuffer[ vk, 0 ]
-        vkBeginCommandBuffer[ vk, VkCommandBufferBeginInfo [
+        vkResetCommandBuffer[ cmd, 0 ]
+        vkBeginCommandBuffer[ cmd, VkCommandBufferBeginInfo [
             sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
         ]]
 
     public func submit [ ] -> none
-        vkEndCommandBuffer[ vk ]
+        vkEndCommandBuffer[ cmd ]
         sub: VkSubmitInfo [
             sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
             commandBufferCount: 1,
-            pCommandBuffers:    ref vk
+            pCommandBuffers:    ref cmd
         ]
         vkQueueSubmit[ vk.queue, 1, sub, VK_NULL_HANDLE ]
         vkQueueWaitIdle[ vk.queue ]
@@ -390,7 +399,7 @@ class command
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: 1
         ]
-        vkAllocateCommandBuffers[ vk.device, alloc_info, ref vk ]
+        vkAllocateCommandBuffers[ vk.device, alloc_info, ref cmd ]
 
 
 class buffer
@@ -487,7 +496,7 @@ class texture
     intern vk_image_view    : VkImageView
     intern vk_sampler       : VkSampler
     intern vma_alloc        : VmaAllocation
-
+    
     func resize [ w_new: i32, h_new: i32 ] -> none
         if [ w_new == width && h_new == height ]
             return
@@ -498,13 +507,7 @@ class texture
         init        [ ]
         hold_members[ ]
 
-    func transition [ new_layout: i32 ] -> none
-        if [ vk_layout != new_layout ]
-            transition_image_layout[ vk, vk_image, vk_layout, new_layout,
-                0, mip_levels, 0, layer_count, vk_format == VK_FORMAT_D32_SFLOAT ]
-            vk_layout = new_layout
-
-    cast image
+    cast -> image
         channels: i32 [ 0 ]
         pixel: pixel_from_format[ vk_format, ref channels ]
         expect pixel != 0, "unsupported format for texture_cast_image"
@@ -519,6 +522,12 @@ class texture
             res:      b.hold,
             res_dealloc: image_release_buffer
         ]
+    
+    func transition [ new_layout: i32 ] -> none
+        if [ vk_layout != new_layout ]
+            transition_image_layout[ vk, vk_image, vk_layout, new_layout,
+                0, mip_levels, 0, layer_count, vk_format == VK_FORMAT_D32_SFLOAT ]
+            vk_layout = new_layout
 
     func init [ ]
         expect vk, "vk_context not specified"
@@ -667,26 +676,27 @@ class shader
     public vert : string
     public frag : string
     public comp : string
-    public reloads : i32
+    public reload_count : i32
     intern vk_vert : VkShaderModule
     intern vk_frag : VkShaderModule
     intern vk_comp : VkShaderModule
-    func vert [] -> tokens
-    func frag [] -> tokens
-    func comp [] -> tokens
+
+    func vertex   [] -> tokens
+    func fragment [] -> tokens
+    func compute  [] -> tokens
 
     intern func replace_includes [ src: cstr, dst: cstr ] -> none
-        src_file: ref FILE [ fopen[ src, "r" ] ]
+        src_file: fopen[ src, "r" ]
         expect src_file, "source not found"
-        dst_file: ref FILE [ fopen[ dst, "w" ] ]
+        dst_file: fopen[ dst, "w" ]
         expect dst_file, "destination not found"
-        buf: i8[4096]
+        buf: stack i8[4096]
         while [ fgets[ buf, 4096, src_file ] ]
-            include_start: ref i8 [ strstr[ buf, "#include <" ] ]
+            include_start: strstr[ buf, "#include <" ]
             if [ include_start ]
-                include_end: ref i8 [ strstr[ include_start, ">" ] ]
+                include_end: strstr[ include_start, ">" ]
                 if [ include_end ]
-                    import_name: i8[256]
+                    import_name: stack i8[256]
                     name_length: include_end - (include_start + 10)
                     if [ name_length >= 256 ]
                         fprintf[ stderr, "Error: Import name too long\n" ]
@@ -694,7 +704,7 @@ class shader
                     strncpy[ import_name, include_start + 10, name_length ]
                     import_name[name_length] = 0
                     import_path: string [ 'shaders/{import_name}' ]
-                    import_file: ref FILE [ fopen[ import_path.chars, "r" ] ]
+                    import_file: fopen[ import_path.chars, "r" ]
                     if [ !import_file ]
                         fprintf[ stderr, "Error: Failed to open import file: %s\n", import_name ]
                         exit[ 2 ]
@@ -706,12 +716,8 @@ class shader
         fclose[ src_file ]
         fclose[ dst_file ]
 
-    intern public func reload [ reloads: ARef ] -> bool
-        r: ref i32 [ reloads ]
-        if [ r && *r < reloads ]
-            *r = reloads
-            return true
-        names: string[3] [ frag, vert, comp ]
+    intern func reload [ ] -> bool
+        names: stack string[3] [ fragment, vertex, compute ]
         values: ref VkShaderModule[3] [ ref vk_frag, ref vk_vert, ref vk_comp ]
         found:      false
         recompiled: false
@@ -740,7 +746,7 @@ class shader
                     exit[ 1 ]
                 recompiled = true
             el
-                if [ *(values[i]) ]
+                if [ values[i] ]
                     continue
             fp: fopen[ spv_file.chars, "rb" ]
             if [ !fp ]
@@ -767,11 +773,9 @@ class shader
                 print "Failed to create Vulkan shader module"
                 free[ spirv ]
                 exit[ 1 ]
-            *(values[i]) = mod
+            values[i] = mod
             free[ spirv ]
-        if [ recompiled && r ]
-            reloads += 1
-            *r = reloads
+
         expect found, "shader not found: %o", name
         return recompiled
 
@@ -782,7 +786,7 @@ class shader
         vert = 'shaders/{name}.vert'
         comp = 'shaders/{name}.comp'
         if [ !name ]
-            ty: Au_t [ isa[ self ] ]
+            ty: Au_t [ isa[ a ] ]
             expect ty != typeid[ shader ], "base shader usage requires a shader name"
             name = string[ ty.name ]
         reload[ null ]
