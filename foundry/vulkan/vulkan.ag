@@ -2,8 +2,14 @@ export 0.1.0
 
 import KhronosGroup:Vulkan-Headers/29184b9 <vulkan/vulkan.h>
 
+import KhronosGroup:Vulkan-Loader/e042a3a
+     -DVULKAN_HEADERS_INSTALL_DIR={install}
+
+import KhronosGroup:MoltenVK/db445ff
+
 import KhronosGroup:Vulkan-Tools/734638e
      -DVULKAN_HEADERS_INSTALL_DIR={install}
+     -DMOLTENVK_REPO_ROOT={root_path}/checkout/MoltenVK
 
 import img
 

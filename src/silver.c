@@ -3950,6 +3950,11 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                 vexec(a->verbose, "fetch", "git -C %o fetch origin %o", project_f, commit);
                 vexec(a->verbose, "checkout", "git -C %o reset --hard FETCH_HEAD", project_f);
             }
+
+            // apply module-path diff if one exists (e.g. foundry/vulkan/MoltenVK.diff)
+            path diff_f = f(path, "%o/%o.diff", a->module_path, name);
+            if (file_exists("%o", diff_f))
+                vexec(a->verbose, "patch", "git -C %o apply %o", project_f, diff_f);
         }
     }
 
@@ -4081,6 +4086,11 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 string compile_implements(silver a, array files, string cflags) {
     path   install = a->install;
     string objs    = string();
+#ifdef __APPLE__
+    cstr   sysroot_flag = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk";
+#else
+    cstr   sysroot_flag = "";
+#endif
     each(files, path, i) {
         string i_name   = f(string, "%o/%o.o", a->build_dir, filename(i));
         string ext      = ext(i);
@@ -4088,8 +4098,8 @@ string compile_implements(silver a, array files, string cflags) {
         cstr   compiler = is_cpp ? "clang++" : "clang";
         cstr   std_flag = is_cpp ? "-std=c++17" : "-std=c11";
         string st       = stem(i);
-        verify(exec(a->verbose, "%o/bin/%s %s %o %s -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au",
-            install, compiler, std_flag, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install) == 0,
+        verify(exec(a->verbose, "%o/bin/%s %s %s %o %s -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au",
+            install, compiler, std_flag, sysroot_flag, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install) == 0,
             "failed to compile %o", i);
         if (len(objs)) append(objs, " ");
         concat(objs, i_name);
@@ -4207,16 +4217,23 @@ none silver_build(silver a) {
             concat(objs, i_name);
         }
 
-        // link inside docker
+        // link inside docker; use clang++ when C++ objects are present
+        bool has_cpp_d = false;
+        each(a->implements, path, impl) {
+            string ext_d = ext(impl);
+            if (eq(ext_d, "cc") || eq(ext_d, "cpp")) { has_cpp_d = true; break; }
+        }
+        cstr linker_d  = has_cpp_d ? "clang++" : "clang";
+        cstr cpp_libs_d = has_cpp_d ? "-stdlib=libc++" : "";
         string isysroot = a->isysroot ? f(string, "-isysroot %o ", a->isysroot) : string("");
-        verify(exec(a->verbose, "%o /silver/platform/native/bin/clang %s %s %s %o %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o",
-            docker_pre,
+        verify(exec(a->verbose, "%o /silver/platform/native/bin/%s %s %s %s %o %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o %s",
+            docker_pre, linker_d,
             a->is_library ? shared : "", a->debug ? "-g" : "",
             a->is_library ? "-Wl,-Bsymbolic" : "",
             isysroot, a->build_dir, a->name, objs,
             a->product,
             a->build_dir,
-            install, a->build_dir, install, libs, cflags) == 0,
+            install, a->build_dir, install, libs, cflags, cpp_libs_d) == 0,
             "link failed (platform: %o)", a->platform);
 
         unlink(a->product_link->chars);
@@ -4265,20 +4282,38 @@ none silver_build(silver a) {
     // compile implementation in c/cc, and select for linking
     string objs = compile_implements(a, a->implements, ccflags);
 
-    // link - include the implementation objects
+    // link - include the implementation objects; use clang++ when C++ objects are present
+    bool has_cpp = false;
+    each(a->implements, path, impl) {
+        string ext = ext(impl);
+        if (eq(ext, "cc") || eq(ext, "cpp")) { has_cpp = true; break; }
+    }
+    cstr linker   = has_cpp ? "clang++" : "clang";
+#ifdef __APPLE__
+    cstr cpp_pre   = has_cpp ? "-nostdlib++ -L/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib -lc++ -lc++abi" : "";
+#else
+    cstr cpp_pre   = "";
+    cstr cpp_post  = has_cpp ? "-lstdc++" : "";
+#endif
     string isysroot = a->isysroot ? f(string, "-isysroot %o ", a->isysroot) : string("");
-    verify(exec(a->verbose, "%o/bin/clang %s %s %s %o %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o",
-        install, a->is_library ? shared : "", a->debug ? "-g" : "",
+    verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o %s",
+        install, linker, a->is_library ? shared : "", a->debug ? "-g" : "",
 
 #ifdef __linux__
         a->is_library ? "-Wl,-Bsymbolic" : "",
 #else
         "",
 #endif
-        isysroot, a->build_dir, a->name, objs,
+        isysroot, cpp_pre, a->build_dir, a->name, objs,
         a->product,
         a->build_dir,
-        install, a->build_dir, install, libs, cflags) == 0,
+        install, a->build_dir, install, libs, cflags,
+#ifdef __APPLE__
+        ""
+#else
+        cpp_post
+#endif
+        ) == 0,
         "link failed");
     
     unlink(a->product_link->chars);
@@ -4408,6 +4443,7 @@ int user_arg_count(efunc f) {
 
 
 array read_arg(array tokens, int start, int *next_read);
+array read_arg_br(array tokens, int start, int *next_read, cstr open, cstr close);
 
 none copy_lambda_info(enode mem, enode lambda_fn);
 
@@ -4615,6 +4651,7 @@ static enode typed_expr(silver a, enode f, array expr) {
         enode   target = null;
         i32     offset = 0;
 
+        
         if (f->target) {
             verify(f->target, "expected target for method call");
             push(values, (Au)f->target);
@@ -6273,15 +6310,18 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
         //    return mem;
         //}
 
-        verify(!is_macro->params || read_if(a, "("), "expected ( for functional macros");
+        bool mac_cmode = is_cmode(a);
+        cstr open_br  = mac_cmode ? "(" : "[";
+        cstr close_br = mac_cmode ? ")" : "]";
+        verify(!is_macro->params || read_if(a, open_br), "expected %s for macro call", open_br);
         array args = is_macro->params ? array(alloc, 32) : null;
         macro mac  = (macro)mem;
 
         // read arguments
         if (is_macro->params) {
-            while (peek(a) && !next_is(a, ")")) {
+            while (peek(a) && !next_is(a, close_br)) {
                 int next;
-                array arg = read_arg((array)a->tokens, a->cursor, &next);
+                array arg = read_arg_br((array)a->tokens, a->cursor, &next, open_br, close_br);
                 arg = arg;
                 validate(arg, "macro expansion failed");
                 if (arg)
@@ -6291,7 +6331,7 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
                 if (!read_if(a, ","))
                     break;
             }
-            validate(read_if(a, ")"), "expected parenthesis to end macro func call");
+            validate(read_if(a, close_br), "expected %s to end macro call", close_br);
         }
 
         // expand macro

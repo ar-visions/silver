@@ -7,7 +7,7 @@
             "request":          "launch",
             "preLaunchTask":    "build-silver-ninja",
             "program":          "${workspaceFolder}/install/bin/silver",
-            "args":             [ "./foundry/trinity", "--platform", "jetson", "--debug", "--build", "--run" ],
+            "args":             [ "./foundry/trinity", "--debug", "-v", "--build", "--run" ],
             "cwd":              "${workspaceFolder}",
             "stopOnEntry":      false,
             "env": {

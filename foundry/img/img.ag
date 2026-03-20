@@ -211,7 +211,7 @@ class image
             info : png_create_info_struct [ png2 ]
             check info, "could not create PNG info struct"
 
-            if [ !setjmp( png_jmpbuf( png2 ) ) ]
+            if [ !setjmp[ png_jmpbuf[ png2 ] ] ]
                 png_init_io png2, file
 
                 #png_t_seIHDR

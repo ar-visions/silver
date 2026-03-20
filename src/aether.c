@@ -1677,9 +1677,14 @@ enode aether_e_expect(aether a, enode cond, enode msg) {
         LLVMValueRef fputs_fn = LLVMGetNamedFunction(a->module_ref, "fputs");
         if (!fputs_fn)
             fputs_fn = LLVMAddFunction(a->module_ref, "fputs", fputs_ty);
-        LLVMValueRef stderr_fn = LLVMGetNamedFunction(a->module_ref, "stderr");
+    #ifdef __APPLE__
+        cstr stderr_sym = "__stderrp";
+    #else
+        cstr stderr_sym = "stderr";
+    #endif
+        LLVMValueRef stderr_fn = LLVMGetNamedFunction(a->module_ref, stderr_sym);
         if (!stderr_fn)
-            stderr_fn = LLVMAddGlobal(a->module_ref, i8ptr, "stderr");
+            stderr_fn = LLVMAddGlobal(a->module_ref, i8ptr, stderr_sym);
         LLVMValueRef stderr_val = LLVMBuildLoad2(B, i8ptr, stderr_fn, "stderr_val");
         LLVMValueRef args[] = { cstr_msg->value, stderr_val };
         LLVMBuildCall2(B, fputs_ty, fputs_fn, args, 2, "");
@@ -6681,6 +6686,7 @@ Au_t enode_cast_Au_t(enode a) {
 }
 
 array read_arg(array tokens, int start, int* next_read);
+array read_arg_br(array tokens, int start, int* next_read, cstr open, cstr close);
 
 enode aether_e_subroutine(aether a, etype rtype, array body, subprocedure build_body) {
     if (a->no_build) return e_noop(a, rtype);
