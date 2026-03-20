@@ -53,7 +53,7 @@ void            emit_debug_params     (aether a, efunc fn);
 static u32 bits_for_type(aether a, Au_t src) {
     if (!src) return 64;
     etype et = u(etype, src);
-    if (et && et->lltype) {
+    if (et && et->lltype && LLVMTypeIsSized(et->lltype)) {
         u32 bits = LLVMABISizeOfType(a->target_data, et->lltype) * 8;
         if (bits) return bits;
     }
@@ -66,7 +66,7 @@ static u32 bits_for_type(aether a, Au_t src) {
 static u32 align_for_type(aether a, Au_t src) {
     if (!src) return 64;
     etype et = u(etype, src);
-    if (et && et->lltype) {
+    if (et && et->lltype && LLVMTypeIsSized(et->lltype)) {
         u32 align = LLVMABIAlignmentOfType(a->target_data, et->lltype) * 8;
         if (align) return align;
     }

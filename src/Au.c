@@ -7197,7 +7197,7 @@ Au_t token_is_bool(token a) {
         (Au_t)typeid(bool) : null;
 }
 
-array read_arg(array tokens, int start, int* next_read) {
+array read_arg_br(array tokens, int start, int* next_read, cstr open, cstr close) {
     int   level = 0;
     int   ln    = len(tokens);
     bool  count = ln - start;
@@ -7208,12 +7208,12 @@ array read_arg(array tokens, int start, int* next_read) {
         next_level = level;
         token t = (token)get(tokens, i);
 
-        if (eq(t, "("))
+        if (eq(t, open))
             next_level = level + 1;
-        else if (eq(t, ")") && level > 0)
+        else if (eq(t, close) && level > 0)
             next_level = level - 1;
 
-        if ((eq(t, ",") || eq(t, ")")) && level == 0) {
+        if ((eq(t, ",") || eq(t, close)) && level == 0) {
             *next_read = i;
             return res;
         }
@@ -7222,6 +7222,10 @@ array read_arg(array tokens, int start, int* next_read) {
         level = next_level;
     }
     return count > 0 ? null : res;
+}
+
+array read_arg(array tokens, int start, int* next_read) {
+    return read_arg_br(tokens, start, next_read, "(", ")");
 }
 
 
