@@ -228,7 +228,7 @@ static Au_t map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, aet
     Au_t parent = aether_top_scope(e);
     
     // Create function type
-    Au_t fn = def(parent, null, AU_MEMBER_TYPE, AU_TRAIT_FUNCPTR);
+    Au_t fn = def(parent, null, AU_MEMBER_TYPE, AU_TRAIT_FUNCPTR | AU_TRAIT_IS_C);
     //fn->module = e->current_import->au;
     // Return type
     fn->rtype = map_clang_type(fpt->getReturnType(), ctx, e, null);
@@ -241,7 +241,7 @@ static Au_t map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, aet
         if (param) {
             char name_buf[32];
             snprintf(name_buf, sizeof(name_buf), "arg_%u", i);
-            Au_t arg = def(null, name_buf, AU_MEMBER_VAR, 0);
+            Au_t arg = def(null, name_buf, AU_MEMBER_VAR, AU_TRAIT_IS_C);
             //arg->module = e->current_import->au;
             arg->type = param;
             micro_push(&fn->args, (Au)arg);
@@ -268,7 +268,7 @@ static Au_t map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e,
     
     if (const FunctionNoProtoType* fnpt = dyn_cast<FunctionNoProtoType>(pointee)) {
         Au_t parent = aether_top_scope(e);
-        Au_t fn = def(parent, null, AU_MEMBER_FUNC, AU_TRAIT_FUNCPTR);
+        Au_t fn = def(parent, null, AU_MEMBER_FUNC, AU_TRAIT_FUNCPTR | AU_TRAIT_IS_C);
         //fn->module = e->current_import->au;
         fn->rtype = map_clang_type(fnpt->getReturnType(), ctx, e, null);
         if (!fn->rtype) fn->rtype = au_lookup("none");
@@ -321,7 +321,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
     if (const BuiltinType* bt = dyn_cast<BuiltinType>(type)) {
         Au_t src = map_builtin_type(bt, e);
         if (src && use_name) {
-            Au_t alias = def_type(aether_top_scope(e), use_name, AU_TRAIT_ALIAS);
+            Au_t alias = def_type(aether_top_scope(e), use_name, AU_TRAIT_ALIAS | AU_TRAIT_IS_C);
             //alias->module = e->current_import->au;
             alias->src = src;
             return alias;
@@ -345,7 +345,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         
         // Create array type - need to represent shape somehow
         // For now, create a type with size info
-        Au_t arr = def_type(aether_top_scope(e), use_name, 0);
+        Au_t arr = def_type(aether_top_scope(e), use_name, AU_TRAIT_IS_C);
         //arr->module = e->current_import->au;
         arr->src = elem;
         arr->elements = esize; // store array size
@@ -361,7 +361,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         Au_t elem = map_clang_type(elem_type, ctx, e, null);
         if (!elem) return null;
         
-        Au_t arr = def_type(aether_top_scope(e), use_name, 0);
+        Au_t arr = def_type(aether_top_scope(e), use_name, AU_TRAIT_IS_C);
         //arr->module = e->current_import->au;
         arr->src = elem;
         arr->elements = 0; // flexible array
@@ -468,10 +468,12 @@ static void set_fields(RecordDecl* decl, ASTContext& ctx, aether e, Au_t rec) {
 
             if (!mapped) continue;
             
-            Au_t m = def_member(rec, field_name.c_str(), mapped, AU_MEMBER_VAR, 0);
+            Au_t m = def_member(rec, field_name.c_str(), mapped, AU_MEMBER_VAR, AU_TRAIT_IS_C);
             uint64_t offset_bits = layout.getFieldOffset(field->getFieldIndex());
             //m->module = e->current_import->au;
             m->offset = offset_bits / 8;
+            if (mapped->elements > 0)
+                m->elements = mapped->elements;
             m->index = field_index++;
         }
     }
@@ -490,7 +492,7 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
 
     // Incomplete definition → opaque
     if (!decl->isCompleteDefinition() || decl->isInvalidDecl() || decl->isDependentType()) {
-        Au_t opaque = def_type(parent, n, AU_TRAIT_STRUCT);
+        Au_t opaque = def_type(parent, n, AU_TRAIT_STRUCT | AU_TRAIT_IS_C);
         //opaque->module = e->current_import->au;
         opaque->src = au_lookup("ARef");
         return opaque;
@@ -498,11 +500,12 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
 
     // Create struct/union
     u32 traits = is_union ? AU_TRAIT_UNION : AU_TRAIT_STRUCT;
-    Au_t rec = def_type(parent, n, traits);
+    Au_t rec = def_type(parent, n, traits | AU_TRAIT_IS_C);
     rec->is_struct = true;
     //rec->module = e->current_import->au;
 
     const ASTRecordLayout& layout = ctx.getASTRecordLayout(decl);
+    rec->typesize = layout.getSize().getQuantity(); // size in bytes
     //rec->record_alignment = layout.getAlignment().getQuantity(); // in bytes
 
     aether_push_scope(e, (Au)rec);
@@ -551,7 +554,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
         char bname[32];
         snprintf(bname, sizeof(bname), "__base%d", base_index++);
         
-        Au_t m = def_member(rec, bname, base_rec, AU_MEMBER_VAR, 0);
+        Au_t m = def_member(rec, bname, base_rec, AU_MEMBER_VAR, AU_TRAIT_IS_C);
         //m->module = e->current_import->au;
         m->offset = layout.getBaseClassOffset(base).getQuantity();
     }
@@ -567,8 +570,8 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
         std::string mg = cxx_mangle(md, ctx);
         std::string method_name = disp + "#" + mg;
         
-        Au_t fn = def(rec, method_name.c_str(), AU_MEMBER_FUNC, 
-                              md->isStatic() ? AU_TRAIT_SMETHOD : AU_TRAIT_IMETHOD);
+        Au_t fn = def(rec, method_name.c_str(), AU_MEMBER_FUNC,
+                              (md->isStatic() ? AU_TRAIT_SMETHOD : AU_TRAIT_IMETHOD) | AU_TRAIT_IS_C);
         //fn->module = e->current_import->au;
         fn->rtype = map_clang_type(md->getReturnType(), ctx, e, null);
         if (!fn->rtype) fn->rtype = au_lookup("none");
@@ -580,7 +583,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
                 // Could mark as const
             }
             Au_t self_ptr = def_pointer(null, self_type, null);
-            Au_t self_arg = def(null, "self", AU_MEMBER_VAR, 0);
+            Au_t self_arg = def(null, "self", AU_MEMBER_VAR, AU_TRAIT_IS_C);
             self_arg->type = self_ptr;
             micro_push(&fn->args, (Au)self_arg);
         }
@@ -595,7 +598,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
             if (pname.empty())
                 pname = "arg_" + std::to_string(i);
 
-            Au_t ap = def(null, pname.c_str(), AU_MEMBER_VAR, 0);
+            Au_t ap = def(null, pname.c_str(), AU_MEMBER_VAR, AU_TRAIT_IS_C);
             ap->type = mt;
             micro_push(&fn->args, (Au)ap);
         }
@@ -610,7 +613,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
 
 static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string name) {
     symbol n = name.length() ? name.c_str() : null;
-    
+
     Au_t parent = aether_top_scope(e);
     Au_t en = def_enum(parent, n, 0);
     //en->module = e->current_import->au;
@@ -623,11 +626,34 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
         EnumConstantDecl* ec = *it;
         std::string const_name = ec->getNameAsString();
         symbol cn = const_name.c_str();
-        
+
+        if (const_name == "VK_QUEUE_GRAPHICS_BIT") {
+            n = n;
+        }
         llvm::APSInt val = ec->getInitVal();
         i32* value = (i32*)_i32(val.getSExtValue());
         
         Au_t ev = def_enum_value(en, cn, (Au)value);
+        ev->is_c = true;
+        micro_push(&parent->members, (Au)ev);
+        // insert into parent's member_map for fast lookup
+        if (parent->member_map && ev->ident_hash) {
+            store s = (store)parent->member_map;
+            size_t idx = ((size_t)ev->ident_hash >> 3) % s->hsize;
+            item ni = (item)calloc(1, sizeof(struct _Au) + sizeof(struct _item));
+            ni = (item)(((struct _Au*)ni) + 1);
+            ni->key   = (Au)(uintptr_t)ev->ident_hash;
+            ni->value = (Au)ev;
+            ni->next  = s->hlist[idx];
+            if (s->hlist[idx]) s->hlist[idx]->prev = ni;
+            s->hlist[idx] = ni;
+            s->count++;
+
+            if (const_name == "VK_QUEUE_GRAPHICS_BIT") {
+                Au_t lookup = (Au_t)store_get(s, (Au)ev->ident_hash);
+                n = n;
+            }
+        }
     }
     
     array_pop(e->lexical);
@@ -638,7 +664,7 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
     symbol n = name.c_str();
     
     Au_t parent = aether_top_scope(e);
-    Au_t fn = def(parent, n, AU_MEMBER_FUNC, 0);
+    Au_t fn = def(parent, n, AU_MEMBER_FUNC, AU_TRAIT_IS_C);
     if (n && strcmp(n, "printf") == 0) {
         int test2 = 2;
         test2    += 2;
@@ -664,7 +690,7 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
         Au_t mt = map_clang_type(param_type, ctx, e, null);
         if (!mt) continue;
         
-        Au_t arg = def(fn, param_name.c_str(), AU_MEMBER_VAR, 0);
+        Au_t arg = def(fn, param_name.c_str(), AU_MEMBER_VAR, AU_TRAIT_IS_C);
         //arg->module = e->current_import->au;
         arg->src = mt;
         micro_push((micro*)&fn->args, (Au)arg);
@@ -765,7 +791,7 @@ public:
         Au_t underlying = map_clang_type(decl->getUnderlyingType(), ctx, e, null);
         
         if (underlying) {
-            Au_t alias = def_type(aether_top_scope(e), name.c_str(), AU_TRAIT_ALIAS);
+            Au_t alias = def_type(aether_top_scope(e), name.c_str(), AU_TRAIT_ALIAS | AU_TRAIT_IS_C);
             //alias->module = e->current_import->au;
             alias->src = underlying;
         }
@@ -953,7 +979,7 @@ public:
         }
         macro m = new0(macro,
             mod,        e, 
-            au,         def(aether_top_scope(e), n, AU_MEMBER_MACRO, 0),
+            au,         def(aether_top_scope(e), n, AU_MEMBER_MACRO, AU_TRAIT_IS_C),
             def,        (array)body_tokens, 
             params,     params_array, 
             va_args,    va_args);
