@@ -729,8 +729,8 @@ void silver_parse(silver a) {
     if (a->platform && len(a->platform)) {
         string p = a->platform;
         // derive OS from platform name
-        target_mac = strstr(p->chars, "mac")   != NULL || strstr(p->chars, "ios")     != NULL;
-        target_lin = strstr(p->chars, "linux") != NULL || strstr(p->chars, "jetson")  != NULL ||
+        target_mac = strstr(p->chars, "apple")   != NULL || strstr(p->chars, "ios")     != NULL;
+        target_lin = strstr(p->chars, "linux")   != NULL || strstr(p->chars, "jetson")  != NULL ||
                      strstr(p->chars, "android") != NULL;
         target_win = strstr(p->chars, "windows") != NULL;
         // derive arch from platform name
@@ -743,7 +743,7 @@ void silver_parse(silver a) {
         else if (strstr(p->chars, "riscv"))                                  target_arch = "riscv64";
     }
 
-    Au_t m_mac   = def_member(a->au, "mac",     typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
+    Au_t m_mac   = def_member(a->au, "apple",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_lin   = def_member(a->au, "linux",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_win   = def_member(a->au, "windows", typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_x86   = def_member(a->au, "x86_64",  typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
@@ -2882,7 +2882,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     else if (!cmode && read_if(a, "ref")) {
         static int seq2;
         seq2++;
-        if (seq2 == 1) {
+        if (seq2 == 25) {
             seq2 = seq2;
         }
         validate(!from_ref, "unexpected double-ref (use type definitions)");
@@ -2904,7 +2904,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         // ref expr — take address of expr
         enode expr = read_enode(a, null, true, false);
 
-        if (next_is(a, "[") || next_neighbor(a))
+        if (next_is(a, "[")) //  || next_neighbor(a) <- breaks with comma of course; we have to form syntax differently here and use Multiple Lines.
             expr = parse_member_expr(a, expr);
 
         etype ref_type = pointer((aether)a, (Au)expr->au);
@@ -2999,7 +2999,23 @@ enode parse_statement(silver a)
         if (next_is(a, "return")) return parse_return (a);
         if (next_is(a, "break"))    return parse_break   (a);
         if (next_is(a, "continue")) return parse_continue(a);
-        if (read_if(a, "expect")) { a->expect_state = true; }
+        if (next_is(a, "expect")) {
+            push_current(a);
+            consume(a);
+            string pk = peek_alpha(a);
+            token pk2 = pk ? element(a, 1) : null;
+            bool is_bind = pk && pk2 && index_of(assign, (Au)pk2) >= 0;
+            pop_tokens(a, true);
+            if (is_bind) {
+                read_if(a, "expect");
+                a->expect_state = true;
+            } else {
+                read_if(a, "expect");
+                enode cond = parse_expression(a, null, false, true);
+                enode msg  = read_if(a, ",") ? parse_expression(a, etypeid(string), false, true) : null;
+                return e_expect(a, cond, msg);
+            }
+        }
         if (next_is(a, "for"))    return parse_for    (a);
         if (next_is(a, "if"))     return parse_if_else(a);
         if (next_is(a, "switch")) return parse_switch (a);
@@ -3430,8 +3446,9 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
             }
         }
         
+        bool is_ref = read_if(a, "ref") != null;
         if (!t) t = read_etype(a, null); // we need to avoid the literal check in here!
-
+        if (is_ref) 
         verify(t, "expected alpha-numeric identity for type or name");
         Au_t arg = alloc_arg(au, n ? n->chars : null, t->au);
         arg->is_inlay = is_inlay;
@@ -6195,12 +6212,12 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
 
     /// handle compatible indexing methods / lambda / and general pointer dereference @ index
     if (indexable && next_is(a, "[")) {
+        // C arrays with elements > 0 are indexable like pointers
+        bool is_indexable_ptr = is_ptr((Au)mem) || mem->au->elements > 0;
         Au_t au_rec = is_rec((Au)mem);
-        if (!au_rec)
-            au_rec = au_rec;
-        etype r = u(etype, au_rec);
-        /// must have an indexing method, or be a reference_pointer
-        validate(is_ptr((Au)mem) || r, "no indexing available for model %s",
+        etype r = au_rec ? u(etype, au_rec) : null;
+
+        validate(is_indexable_ptr || r, "no indexing available for model %s",
                  mem->au->ident);
 
         /// we must read the arguments given to the indexer
@@ -6254,8 +6271,6 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
             }
             if (!idx) idx = find_member(r->au, null, AU_MEMBER_GETTER, 0, true);
 
-            if (!idx)
-                idx = idx;
             validate(idx, "index method not found on %o", mem);
 
             validate(idx->args.count >= 2, "expected target and index args");
@@ -6278,7 +6293,6 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
 
         } else {
             if (len(args) > 1) {
-
                 enode eref_shape = eshape_from_indices((aether)a, args);
 
                 // data shape from the member's meta (this can be enode or literal)
