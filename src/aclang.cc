@@ -243,7 +243,7 @@ static Au_t map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, aet
             snprintf(name_buf, sizeof(name_buf), "arg_%u", i);
             Au_t arg = def(null, name_buf, AU_MEMBER_VAR, AU_TRAIT_IS_C);
             //arg->module = e->current_import->au;
-            arg->type = param;
+            arg->src = param;
             micro_push(&fn->args, (Au)arg);
         }
     }
@@ -261,7 +261,6 @@ static Au_t map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e,
     
     if (const FunctionProtoType* fpt = dyn_cast<FunctionProtoType>(pointee)) {
         Au_t func = map_function_type(fpt, ctx, e);
-        //Au_t ptr = def_pointer(null, func, use_name);
         verify(!use_name, "expected use_name to be null on this map_function_pointer");
         return func;
     }
@@ -781,11 +780,6 @@ public:
     bool VisitTypedefDecl(TypedefDecl* decl) {
         auto name = decl->getNameAsString();
         
-        // Integrity check: see if this is our missing target
-        if (name == "jmp_buf") {
-            // You'll finally hit this breakpoint!
-            name = name;
-        }
 
         // Map the underlying type (the array/struct) to our system
         Au_t underlying = map_clang_type(decl->getUnderlyingType(), ctx, e, null);
