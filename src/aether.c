@@ -129,6 +129,7 @@ etype etype_prep(aether a, Au_t au) { sequencer
 #undef verify
 #define verify(cond, t, ...) ({ \
     if (!(cond)) { \
+        raise(SIGTRAP); \
         fault(t __VA_OPT__(,) __VA_ARGS__); \
         false; \
     } \
@@ -3056,6 +3057,7 @@ etype base_model(etype m) {
     return u(etype, au);
 }
 
+
 // ============================================================================
 // revised e_create — class init paths now delegate to e_init
 // ============================================================================
@@ -3327,7 +3329,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                     int current_index = 0;
                     for (int ri = 0; ri < rmdl->au->members.count; ri++) {
                         Au_t smem = (Au_t)rmdl->au->members.origin[ri];
-                        if (smem->member_type == AU_MEMBER_VAR && (smem->is_iprop || rmdl->au->is_c)) {
+                        if (smem->member_type == AU_MEMBER_VAR && smem->is_iprop) {
                             if (current_index++ == i) {
                                 field_type = u(etype, smem);
                                 break;
