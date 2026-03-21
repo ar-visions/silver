@@ -536,7 +536,11 @@ typedef Au_t* Au_ts;
             type_ref->typesize          = TYPE_SZ; \
             type_ref->traits            = AU_TRAIT_IS_AU | TRAIT; \
             head(type_ref)->type = typeid(Au_t_f); \
-            set_meta_array((Au_t)type_ref, emit_types(__VA_ARGS__)); \
+            if (((Au_t)type_ref)->is_funcptr) { \
+                set_args_array((Au_t)type_ref, emit_types(__VA_ARGS__)); \
+            } else { \
+                set_meta_array((Au_t)type_ref, emit_types(__VA_ARGS__)); \
+            } \
             TYPE##_schema( TYPE, INIT, __VA_ARGS__ ); \
             push_type((Au_t)type_ref); \
             return true; \

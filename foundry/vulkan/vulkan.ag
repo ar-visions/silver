@@ -84,19 +84,11 @@ class vk_context
             set_queue_index[ surface ]
             vkGetDeviceQueue[ device, queue_family_index, 0, ref queue ]
             expect queue, "Failed to retrieve graphics queue"
+            vk: handle[ a ]
             if [ _vkCreateDebugUtilsMessengerEXT ]
-                result: _vkCreateDebugUtilsMessengerEXT[ instance, VkDebugUtilsMessengerCreateInfoEXT [
-                    sType:           VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-                    messageSeverity: VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-                                    VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                                    VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
-                    messageType:     VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT     |
-                                    VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT  |
-                                    VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
-                    pfnUserCallback: trinity_log,
-                    pUserData:       vk
-                ], null, ref debug ]
-                expect result == VK_SUCCESS, "debug messenger"
+                result2: _vkCreateDebugUtilsMessengerEXT[ instance, # at base...
+                 VkDebugUtilsMessengerCreateInfoEXT [ sType: VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,messageSeverity: VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,messageType:     VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT     |VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT  |VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,pfnUserCallback: ref trinity_log,pUserData:       vk], null, ref debug ]
+                expect result2 == VK_SUCCESS, "debug messenger" # at base... one above has 1 extra space, and the error shows... i am not sure where to look
             pool_info: VkCommandPoolCreateInfo [
                 sType:            VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                 queueFamilyIndex: queue_family_index,
@@ -112,14 +104,16 @@ class vk_context
             for [ f: 0, f < layers, f += 1 ]
                 transition_image_layout[ vk_image,
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, 1, f, 1, false ]
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    0, 1, f, 1, false ]
             for [ i: u32 1, i < mips, i += 1 ]
                 for [ f: 0, f < layers, f += 1 ]
                     transition_image_layout[ vk_image,
                         VK_IMAGE_LAYOUT_UNDEFINED,
-                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, i, 1, f, 1, false ]
-                    cmd: command [ vk: vk ]
-                    begin[ cmd ]
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        i, 1, f, 1, false ]
+                    cmd: command [ vk: a ]
+                    cmd.begin
                     vkCmdBlitImage[ cmd.vk,
                         vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                         vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -129,9 +123,9 @@ class vk_context
                             srcOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ mipWidth, mipHeight, 1 ] ],
                             dstSubresource: VkImageSubresourceLayers [
                                 aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: i, baseArrayLayer: f, layerCount: 1 ],
-                            dstOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ max[ 1, mipWidth / 2 ], max[ 1, mipHeight / 2 ], 1 ] ]
+                            dstOffsets: [ VkOffset3D [ 0, 0, 0 ], VitskOffset3D [ max[ 1, mipWidth / 2 ], max[ 1, mipHeight / 2 ], 1 ] ]
                         ], VK_FILTER_LINEAR ]
-                    submit[ cmd ]
+                    cmd.submit
                     transition_image_layout[ vk_image,
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, i, 1, f, 1, false ]

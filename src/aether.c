@@ -53,7 +53,9 @@ etype etype_create(aether a, Au_t m) { sequencer
                 Au_t enum_type = m->src ? m->src : m->context;
                 Au_t store_type = enum_type && enum_type->src ? enum_type->src : typeid(i32);
                 Au lit = m->value ? primitive(store_type, m->value) : null;
-                enode n = enode(mod, a, au, m, literal, lit);
+                i32 ival = *(i32*)m->value;
+                LLVMValueRef cval = LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), (unsigned long long)ival, true);
+                enode n = enode(mod, a, au, m, literal, lit, loaded, true, value, cval);
                 etype_register(a, (Au)m, (Au)hold(n), false);
                 return (etype)n;
             }
@@ -814,9 +816,16 @@ enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
 
     // normalize operands to common arithmetic type BEFORE any comparison
     // result is always bool, but operands must match each other
-    etype operand_type = determine_rtype(a, OPType__add, (etype)L, (etype)R);
-    L = e_create(a, operand_type, (Au)L);
-    R = e_create(a, operand_type, (Au)R);
+    // enum operands: compare as their underlying integer type (i32)
+    if (is_enum(L) || is_enum(R)) {
+        etype int_type = etypeid(i32);
+        L = e_create(a, int_type, (Au)L);
+        R = e_create(a, int_type, (Au)R);
+    } else {
+        etype operand_type = determine_rtype(a, OPType__add, (etype)L, (etype)R);
+        L = e_create(a, operand_type, (Au)L);
+        R = e_create(a, operand_type, (Au)R);
+    }
     
     struct cmp_entry* cmp = cmp_lookup(optype);
     verify(cmp, "invalid comparison operator");
@@ -1966,7 +1975,16 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     Au_t au = fn->au;
 
     a->is_const_op = false;
-    if (a->no_build) return e_noop(a, u(etype, fn->au->rtype));
+    if (a->no_build) {
+        Au_t rtype_au = fn->au->rtype;
+        if (fn->au->member_type == AU_MEMBER_VAR) {
+            // funcptr variable: walk src until funcptr, then rtype is return type
+            Au_t fp = fn->au;
+            while (fp && !fp->is_funcptr && fp->src) fp = fp->src;
+            rtype_au = fp->rtype;
+        }
+        return e_noop(a, u(etype, rtype_au));
+    }
 
     // set debug location for call site
     debug_emit(a);
@@ -2201,7 +2219,13 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
         verify((istart + soft_args) == len(args), "%o: formatter args mismatch", fn->au->ident);
     }
     
-    bool is_void_ = is_void(fn->au->rtype);
+    Au_t rtype_au = fn->au->rtype;
+    if (funcptr && fn->au->member_type == AU_MEMBER_VAR) {
+        Au_t fp = fn->au;
+        while (fp && !fp->is_funcptr && fp->src) fp = fp->src;
+        rtype_au = fp->rtype;
+    }
+    bool is_void_ = is_void(rtype_au);
 
 
     char call_seq[256];
@@ -2211,7 +2235,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     sprintf(call_seq, "call_%i_%s", seq2, fn->au->ident);
     etype rtype = is_lambda(fn) ?
         u(etype, fn->meta_a) :
-        u(etype, fn->au->rtype);
+        u(etype, rtype_au);
     
     if (funcptr) F = LLVMFunctionType(lltype(rtype), arg_types, n_args, false);
     
@@ -2386,6 +2410,8 @@ enode convertible(etype fr, etype to) {
         return (enode)true;
 
     if (is_func(ma) && (mb == etypeid(ARef) || mb == etypeid(handle)))
+        return (enode)true;
+    if (ma->au->is_funcptr && mb->au == typeid(bool))
         return (enode)true;
 
     // allow Au to convert to primitive/struct
@@ -3000,7 +3026,7 @@ enode e_convert_or_cast(aether a, etype output, enode input) {
     LLVMTypeKind k = LLVMGetTypeKind(typ);
 
     // check if these are either Au_t class typeids, or actual compatible instances
-    if (k == LLVMPointerTypeKind) { // this should all be in convertible
+    if (k == LLVMPointerTypeKind || input->au->is_funcptr) {
         a->is_const_op = false;
         if (a->no_build) return e_noop(a, output);
         if (output->au == typeid(bool)) {
@@ -3044,9 +3070,6 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         return input;
     }
 
-    if (seq == 7292) {
-        seq = seq;
-    }
  
     string  str      = (string)instanceof(args, string);
     map     imap     = (map)instanceof(args, map);
@@ -3256,8 +3279,32 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
 
 
     } else {
-        // ---- struct / ref-struct / other ----
+        // ---- C fixed-size array (elements > 0) ----
         array is_arr        = (array)instanceof(args, array);
+        if (is_arr && mdl->au->elements > 0 && mdl->au->src) {
+            array ar = (array)args;
+            int ln = len(ar);
+            etype elem_type = u(etype, mdl->au->src);
+            if (!elem_type) elem_type = etype_prep(a, mdl->au->src);
+            LLVMTypeRef elem_lltype = lltype(elem_type);
+            int elems = mdl->au->elements;
+            verify(ln <= elems, "too many elements (%i) for C array[%i]", ln, elems);
+            LLVMValueRef alloc = LLVMBuildAlloca(B, lltype(mdl), "c_array");
+            for (int i = 0; i < ln; i++) {
+                enode val = (enode)ar->origin[i];
+                val = e_create(a, elem_type, (Au)val);
+                LLVMValueRef idx[] = {
+                    LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 0, false),
+                    LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), i, false)
+                };
+                LLVMValueRef gep = LLVMBuildGEP2(B, lltype(mdl), alloc, idx, 2, "c_arr_elem");
+                LLVMBuildStore(B, val->value, gep);
+            }
+            res = enode(mod, a, value, alloc, loaded, false, au, mdl->au);
+            return res;
+        }
+
+        // ---- struct / ref-struct / other ----
         bool  is_ref_struct = is_ptr(mdl) && is_struct(resolve(mdl));
         etype rmdl = resolve(mdl);
 
@@ -3280,7 +3327,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                     int current_index = 0;
                     for (int ri = 0; ri < rmdl->au->members.count; ri++) {
                         Au_t smem = (Au_t)rmdl->au->members.origin[ri];
-                        if (smem->member_type == AU_MEMBER_VAR && smem->is_iprop) {
+                        if (smem->member_type == AU_MEMBER_VAR && (smem->is_iprop || rmdl->au->is_c)) {
                             if (current_index++ == i) {
                                 field_type = u(etype, smem);
                                 break;

@@ -3,6 +3,7 @@
 #include <execinfo.h>
 #include <ports.h>
 
+
 // designed for Audrey and Rebecca
 // with syntax that makes programming enjoyable
 // to express intent clearly in modular development, easily targeting all platforms
@@ -75,6 +76,7 @@ token aether_peek_safe(silver);
 
 #define validate(cond, t, ...) ({ \
     if (!(cond)) { \
+        raise(SIGTRAP); \
         error(t __VA_OPT__(,) __VA_ARGS__); \
     } else { \
         true; \
@@ -1466,7 +1468,10 @@ token silver_peek(silver a) {
     return element(a, 0);
 }
 
-static array read_body(silver a) {
+static array read_body_br(silver a, int bracket_depth);
+static array read_body(silver a) { return read_body_br(a, 0); }
+
+static array read_body_br(silver a, int bracket_depth) {
     a->clipping = true;
     array body = array(32);
     token n = element(a, 0);
@@ -1474,14 +1479,27 @@ static array read_body(silver a) {
         return null;
     token p = a->statement_origin ? a->statement_origin : element(a, -1);
     bool mult = n->line > p->line;
+    int tokens_depth = 0;
     while (1) {
         token k = peek(a);
         if (!k)
             break;
-        if (!mult && k->line > n->line)
-            break;
-        if (mult && k->indent <= p->indent)
-            break;
+        if (eq(k, "{")) tokens_depth++;
+        if (eq(k, "}")) tokens_depth--;
+        if (tokens_depth <= 0) {
+            if (eq(k, "[")) bracket_depth++;
+            if (eq(k, "]")) {
+                if (bracket_depth <= 0)
+                    break; // hit ] without matching [ — belongs to outer scope
+                bracket_depth--;
+            }
+        }
+        if (bracket_depth <= 0 && tokens_depth <= 0) {
+            if (!mult && k->line > n->line)
+                break;
+            if (mult && k->indent <= p->indent)
+                break;
+        }
         push(body, (Au)k);
         consume(a);
     }
@@ -1610,10 +1628,12 @@ static array read_initializer(silver a) { sequencer
     array body = array(32);
     token n    = element(a,  0);
     if  (!n || eq(n, "sub") || eq(n, "asm")) return null;
-    // token p = element(a, -1);
-    token p = a->statement_origin ? a->statement_origin : element(a, -1);
-    
-    if (eq(n, "[") && (n->line == p->line || (n->line > p->line && n->indent == p->indent))) {
+    token prev = element(a, -1);
+    token p    = a->statement_origin ? a->statement_origin : prev;
+
+    // when [ follows a token on the same line, it's always a bracket expr
+    // (use prev, not statement_origin, to detect inline [ after type/func names)
+    if (eq(n, "[") && ((prev && n->line == prev->line) || n->line == p->line || (n->line > p->line && n->indent == p->indent))) {
         consume(a);
         int depth = 1; // inner expr signals depth 1, and a bracket does too.  we need both together sometimes, as in inner expression that has parens
         push(body, (Au)token("["));
@@ -1636,7 +1656,21 @@ static array read_initializer(silver a) { sequencer
     }
 
     else if (n->indent > p->indent && n->line > p->line) {
-        array res = read_body(a);
+        // count open brackets from the line preceding the continuation
+        int pre_brackets = 0;
+        token prev_tok = (a->cursor > 0) ? (token)a->tokens->origin[a->cursor - 1] : null;
+        int prev_line = prev_tok ? prev_tok->line : -1;
+        for (int i = a->cursor - 1; i >= 0; i--) {
+            token t = (token)a->tokens->origin[i];
+            if (t->line != prev_line) break;
+            if (eq(t, "[")) pre_brackets++;
+            if (eq(t, "]")) pre_brackets--;
+        }
+        // if there's an unclosed [ on the preceding line, this is expression
+        // continuation, not a body block — don't wrap in brackets
+        if (pre_brackets > 0)
+            return null;
+        array res = read_body_br(a, pre_brackets);
         array r = array(alloc, res->count + 2);
         push(r, (Au)token(chars, "["));
         concat(r, res);
@@ -2374,6 +2408,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
     for (;!skip_member_check;) {
         bool first = !mem;
 
+        token pkzip = peek(a);
         bool new_name = in_decl != null || in_rec;
         alpha = read_alpha_macrofilter(a, new_name);
 
@@ -2398,6 +2433,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
         if (!first_alpha) first_alpha = alpha;
 
         if (!(!first || alpha || new_name)) {
+            print_tokens(a, seq);
             first = first;
         }
         validate(!first || alpha || new_name,
@@ -2523,19 +2559,27 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
             if (in_decl != typeid(efunc) &&
                 in_decl != typeid(macro) &&
                 (next_is(a, "[") || instanceof(mem, macro) || (b0=is_func((Au)mem)) || inherits(mem->au->src, typeid(lambda)))) {
-                array prev = array(alloc, 32);
-                for (int i = 0; i < depth; i++) {
-                    etype mm = u(etype, top_scope(a));
-                    push(prev, (Au)mm);
-                    pop_scope(a);
-                }
-                prev = reverse(prev);
-                mem = parse_member_expr(a, mem);
-                // inside this expression, we must have the previous scope; 
-                // we could save it at top and push the top again, but that isnt handled \properly
-                for (int i = 0; i < depth; i++) {
-                    etype mm = (etype)get(prev, i);
-                    push_scope(a, (Au)mm);
+                
+                token p0 = peek(a);
+                // pointers to functions require a ref for actual func's, where as func-ptr do not (thats a reference to the memory for it)
+                if (a->expr_level > 0 && !next_is(a, "[") && ((in_ref && is_func((Au)mem)) || (!in_ref && is_func_ptr((Au)mem)))) {
+                    // we are returning the function-pointer, the mem->value direct
+                    mem = enode_value(mem, false);
+                } else {
+                    array prev = array(alloc, 32);
+                    for (int i = 0; i < depth; i++) {
+                        etype mm = u(etype, top_scope(a));
+                        push(prev, (Au)mm);
+                        pop_scope(a);
+                    }
+                    prev = reverse(prev);
+                    mem = parse_member_expr(a, mem);
+                    // inside this expression, we must have the previous scope; 
+                    // we could save it at top and push the top again, but that isnt handled \properly
+                    for (int i = 0; i < depth; i++) {
+                        etype mm = (etype)get(prev, i);
+                        push_scope(a, (Au)mm);
+                    }
                 }
             }
         }
@@ -2639,6 +2683,19 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     enode     mem       = null;
 
     if (!cmode && read_if(a, "[")) {
+        // C fixed-size array: read N elements of the element type
+        if (mdl_expect && mdl_expect->au->elements > 0 && mdl_expect->au->src) {
+            etype elem_type = u(etype, mdl_expect->au->src);
+            if (!elem_type) elem_type = (etype)etype_prep((silver)a, mdl_expect->au->src);
+            array elems = array(alloc, mdl_expect->au->elements);
+            while (!next_is(a, "]")) {
+                enode elem = parse_expression(a, elem_type, true, true);
+                push(elems, (Au)elem);
+                if (!read_if(a, ",")) break;
+            }
+            validate(read_if(a, "]"), "expected ] after array elements");
+            return e_create(a, mdl_expect, (Au)elems);
+        }
         enode n = parse_expression(a, mdl_expect, false, true);
         validate(n, "could not read expression");
         validate(read_if(a, "]"),
@@ -3082,7 +3139,7 @@ enode parse_statement(silver a)
     bool      is_setter = !f && !is_static && !(is_func|is_lambda) && !is_cast && !is_oper && !is_ctr && !is_getter ?
         read_if(a, "setter")     != null : false;
 
-    if (seq == 438) {
+    if (seq == 609) {
         int test2 = 2;
         test2    += 2;
     }
@@ -4455,6 +4512,10 @@ int user_arg_count(efunc f) {
     if (f->au->member_type == AU_MEMBER_GETTER) {
         return 1;
     }
+    if (is_func_ptr((Au)f)) {
+        Au_t fn = au_arg_type((Au)f->au);
+        return fn->args.count;
+    }
     return 0;
 }
 
@@ -4548,7 +4609,9 @@ static enode parse_func_call(silver a, efunc f) { sequencer
     bool read_br = false;
     bool cmode = false;
 
-    if (seq == 52) {
+    token pk00 = peek(a);
+
+    if (seq == 114) {
         seq = seq;
     }
 
@@ -4562,6 +4625,15 @@ static enode parse_func_call(silver a, efunc f) { sequencer
         pop_tokens(a, false);
     }
 
+    int test2 = user_arg_count(f);
+
+    Au_t    fmdl   = au_arg_type((Au)f);
+    efunc   fn     = (efunc)(is_func_ptr(f) ? (enode)f : u(enode, fmdl));
+    micro*  m      = (micro*)&fmdl->args;
+    int     ln     = m->count, i = 0;
+
+    token pk0 = peek(a);
+    
     if (is_cmode(a)) {
         cmode = true;
         read_br = read_if(a, "(") != null;
@@ -4575,10 +4647,7 @@ static enode parse_func_call(silver a, efunc f) { sequencer
             "expected call-bracket [ at expression depth past statement level");
     
     a->expr_level++;
-    Au_t    fmdl   = au_arg_type((Au)f);
-    efunc   fn     = (efunc)(is_func_ptr(f) ? (enode)f : u(enode, fmdl));
-    micro*  m      = (micro*)&fmdl->args;
-    int     ln     = m->count, i = 0;
+
     array   values = array(alloc, 32, assorted, true);
     enode   target = null;
     i32     offset = 0;
@@ -5944,7 +6013,7 @@ enode castable(etype fr, etype to);
 
 enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
     validate(within_expr || read_if(a, "["), "expected [");
-    if (seq == 1)
+    if (seq == 14)
         seq = seq;
     //print("seq %i\n", seq);
     bool is_fields = peek_fields(a) || inherits(mdl->au, typeid(map));
@@ -6060,6 +6129,11 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
         // -- VALUE --
         Au v = null;
         if (is_fields) {
+            static int seq2 = 0;
+            seq2++;
+            if (seq2 == 37) {
+                seq2 = 37;
+            }
             validate(auto_bind || read_if(a, ":"), "expected : after key %o", t);
             if (auto_bind) prev(a);
             // look up the member type for this key if we know it at design time
@@ -6071,6 +6145,27 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
                     Au_t mem = find_member(mdl->au, key_name, AU_MEMBER_VAR, 0, false);
                     if (mem && mem->src)
                         mdl_field = u(etype, mem->src);
+                    // C array fields: handle [ elem, elem, ... ] inline
+                    if (mem && mem->elements > 0 && mem->src && next_is(a, "[")) {
+                        // mem->src is the C array type, mem->src->src is the element type
+                        Au_t elem_au = mem->src->src ? mem->src->src : mem->src;
+                        etype elem_type = u(etype, elem_au);
+                        if (!elem_type) elem_type = (etype)etype_prep((silver)a, elem_au);
+                        consume(a); // consume [
+                        array elems = array(alloc, mem->elements);
+                        while (!next_is(a, "]")) {
+                            enode elem = parse_expression(a, elem_type, true, true);
+                            push(elems, (Au)elem);
+                            if (!read_if(a, ",")) break;
+                        }
+                        validate(read_if(a, "]"), "expected ] after array elements");
+                        // build C array in e_create
+                        a->statement_origin = peek(a);
+                        etype arr_type = u(etype, mem);
+                        if (!arr_type) arr_type = (etype)etype_prep((silver)a, mem);
+                        v = (Au)e_create(a, arr_type ? arr_type : mdl_field, (Au)elems);
+                        goto field_done;
+                    }
                 }
             } else if (is_mdl_map) {
                 mdl_field = val; // the map's value type from meta
@@ -6078,6 +6173,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
     
             a->statement_origin = peek(a);
             v = (Au)parse_expression(a, mdl_field, true, true);
+        field_done:;
         } else {
             a->statement_origin = peek(a);
         }
@@ -6360,6 +6456,7 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
 
     } else if (mem) {
         if (is_func((Au)mem) || is_func_ptr((Au)mem) || is_lambda_call) {
+
             if (!is_lambda_call && is_lambda((Au)mem))
                 mem = parse_create_lambda(a, mem);
             else if (is_lambda_call)
@@ -6367,7 +6464,7 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
             else {
                 mem = parse_func_call(a, (efunc)mem);
             }
-        
+
         } else if (is_type((Au)mem)) {
             array expr = read_within(a);
             inspect(mem);
