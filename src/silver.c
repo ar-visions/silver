@@ -168,9 +168,18 @@ static bool is_dbg(import t, string query, cstr name, bool is_remote) {
 }
 
 none print_tokens(silver a, int seq) {
-    log_tokens("%o %o %o %o %o %o - %i",
+    log_tokens("%o %o %o %o %o %o %o %o - %i",
         element(a, 0), element(a, 1), element(a, 2),
-        element(a, 3), element(a, 4), element(a, 5), seq);
+        element(a, 3), element(a, 4), element(a, 5), element(a, 6), element(a, 7), seq);
+}
+
+void print_all(array tokens) {
+    if (!tokens) { fprintf(stderr, "(null tokens)\n"); return; }
+    fprintf(stderr, "--- tokens (%i) ---\n", (int)len(tokens));
+    each(tokens, token, t) {
+        fprintf(stderr, "%s ", t->chars);
+    }
+    fprintf(stderr, "\n");
 }
 
 etype read_etype(silver a, array*);
@@ -1468,7 +1477,33 @@ token silver_peek(silver a) {
     return element(a, 0);
 }
 
+static array read_body(silver a) {
+    a->clipping = true;
+    array body = array(32);
+    token n = element(a, 0);
+    if (!n)
+        return null;
+    token p = a->statement_origin ? a->statement_origin : element(a, -1);
+    bool mult = n->line > p->line;
+    while (1) {
+        token k = peek(a);
+        if (!k)
+            break;
+        if (!mult && k->line > n->line)
+            break;
+        if (mult && k->indent <= p->indent)
+            break;
+        push(body, (Au)k);
+        consume(a);
+    }
+    a->clipping = false;
+    return body;
+}
+
+  
 static array read_body_br(silver a, int bracket_depth);
+
+/*
 static array read_body(silver a) { return read_body_br(a, 0); }
 
 static array read_body_br(silver a, int bracket_depth) {
@@ -1506,6 +1541,7 @@ static array read_body_br(silver a, int bracket_depth) {
     a->clipping = false;
     return body;
 }
+*/
 
 static array peek_body(silver a) {
     push_current(a);
@@ -1670,7 +1706,7 @@ static array read_initializer(silver a) { sequencer
         // continuation, not a body block — don't wrap in brackets
         if (pre_brackets > 0)
             return null;
-        array res = read_body_br(a, pre_brackets);
+        array res = read_body(a);
         array r = array(alloc, res->count + 2);
         push(r, (Au)token(chars, "["));
         concat(r, res);
@@ -1679,6 +1715,13 @@ static array read_initializer(silver a) { sequencer
     }
 
     return n->line == p->line ? read_enode_tokens(a) : null;
+}
+
+array peek_initializer(silver a) {
+    push_current(a);
+    array result = read_initializer(a);
+    pop_tokens(a, false);
+    return result;
 }
 
 num silver_current_line(silver a) {
@@ -2689,6 +2732,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             if (!elem_type) elem_type = (etype)etype_prep((silver)a, mdl_expect->au->src);
             array elems = array(alloc, mdl_expect->au->elements);
             while (!next_is(a, "]")) {
+                print_tokens(a, seq);
                 enode elem = parse_expression(a, elem_type, true, true);
                 push(elems, (Au)elem);
                 if (!read_if(a, ",")) break;
@@ -2708,7 +2752,9 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         etype mdl_found = read_etype(a, null);
         if (mdl_found) {
             // here we must 'peek' at a body; which if not available we go default
-            array b = peek_body(a);
+            print_tokens(a, seq);
+            array b = peek_initializer(a);
+            print_all(b);
             enode res0 = null;
             if (from_ref) mdl_found = pointer((aether)a, (Au)mdl_found);
             if (b) {
@@ -2719,8 +2765,8 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
                     res0 = e_create(a, mdl_expect, (Au)parse_asm(a, mdl_found));
                 } else if (expr) {
                     push_tokens(a, (tokens)expr, 0);
-                    if (next_is(a, "["))
-                        res0 = parse_expression(a, mdl_found, false, false);
+                    if (next_is(a, "[") && is_rec(mdl_found))
+                        res0 = parse_object(a, mdl_found, false);
                     else
                         res0 = read_enode(a, mdl_found, false, load);
 
@@ -4809,11 +4855,14 @@ static enode typed_expr(silver a, enode f, array expr) {
     } else if (peek_fields(a) || class_inherits((etype)f, etypeid(map))) {
         conv = false; // parse map will attempt to go direct
         r    = (enode)parse_object(a, (etype)evar_type((evar)f), true);
+    } else if (is_struct(f)) {
+        // positional struct construction: Type [ val, val, val ]
+        conv = false;
+        r    = (enode)parse_object(a, (etype)f, true);
     } else {
         /// this is a conversion operation
         r = (enode)parse_expression(a, (etype)f, false, true);
         conv = canonical(r) != canonical(f);
-        //validate(read_if(a, "]"), "expected ] after f-expr %o", src->name);
     }
     a->expr_level--;
     if (conv)
@@ -5695,15 +5744,6 @@ static enode typed_expr(silver a, enode src, array expr);
 
 none push_lambda_members(aether a, efunc f);
 
-void print_all(array tokens) {
-    if (!tokens) { fprintf(stderr, "(null tokens)\n"); return; }
-    fprintf(stderr, "--- tokens (%i) ---\n", (int)len(tokens));
-    each(tokens, token, t) {
-        fprintf(stderr, "  L%i C%i I%i: %s\n", (int)t->line, (int)t->column, (int)t->indent, t->chars);
-    }
-    fprintf(stderr, "---\n");
-}
-
 void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequencer
     if (f->user_built)
         return;
@@ -6023,7 +6063,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
     int  iter = 0;
 
     if (!is_fields && !is_mdl_map) {
-        array fields = array(alloc, 32);
+        array args = array(alloc, 32);
         bool  first = true;
         do {
             if (first && ((!peek(a) && within_expr) || read_if(a, "]"))) {
@@ -6048,12 +6088,12 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
                     return e_create(a, mdl, (Au)expr);
                 }
             }
-            push(fields, (Au)expr);
+            push(args, (Au)expr);
 
             // trivially construct with fields
             if (!has_more) {
                 validate(within_expr || read_if(a, "]"), "expected ]");
-                return e_create(a, mdl, (Au)fields);
+                return aether_e_create((aether)a, mdl, (Au)args);
             }
             first = false;
         } while (1);
@@ -6131,8 +6171,8 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
         if (is_fields) {
             static int seq2 = 0;
             seq2++;
-            if (seq2 == 37) {
-                seq2 = 37;
+            if (seq2 == 47) {
+                seq2 = 47;
             }
             validate(auto_bind || read_if(a, ":"), "expected : after key %o", t);
             if (auto_bind) prev(a);
@@ -6143,28 +6183,10 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
                     ((const_string)k)->chars : null;
                 if (key_name) {
                     Au_t mem = find_member(mdl->au, key_name, AU_MEMBER_VAR, 0, false);
-                    if (mem && mem->src)
+                    if (mem && mem->src) {
                         mdl_field = u(etype, mem->src);
-                    // C array fields: handle [ elem, elem, ... ] inline
-                    if (mem && mem->elements > 0 && mem->src && next_is(a, "[")) {
-                        // mem->src is the C array type, mem->src->src is the element type
-                        Au_t elem_au = mem->src->src ? mem->src->src : mem->src;
-                        etype elem_type = u(etype, elem_au);
-                        if (!elem_type) elem_type = (etype)etype_prep((silver)a, elem_au);
-                        consume(a); // consume [
-                        array elems = array(alloc, mem->elements);
-                        while (!next_is(a, "]")) {
-                            enode elem = parse_expression(a, elem_type, true, true);
-                            push(elems, (Au)elem);
-                            if (!read_if(a, ",")) break;
-                        }
-                        validate(read_if(a, "]"), "expected ] after array elements");
-                        // build C array in e_create
-                        a->statement_origin = peek(a);
-                        etype arr_type = u(etype, mem);
-                        if (!arr_type) arr_type = (etype)etype_prep((silver)a, mem);
-                        v = (Au)e_create(a, arr_type ? arr_type : mdl_field, (Au)elems);
-                        goto field_done;
+                        if (!mdl_field)
+                            mdl_field = (etype)etype_prep((silver)a, mem->src);
                     }
                 }
             } else if (is_mdl_map) {
@@ -6173,7 +6195,6 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
     
             a->statement_origin = peek(a);
             v = (Au)parse_expression(a, mdl_field, true, true);
-        field_done:;
         } else {
             a->statement_origin = peek(a);
         }
