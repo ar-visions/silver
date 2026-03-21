@@ -467,7 +467,7 @@ static void set_fields(RecordDecl* decl, ASTContext& ctx, aether e, Au_t rec) {
 
             if (!mapped) continue;
             
-            Au_t m = def_member(rec, field_name.c_str(), mapped, AU_MEMBER_VAR, AU_TRAIT_IS_C);
+            Au_t m = def_member(rec, field_name.c_str(), mapped, AU_MEMBER_VAR, AU_TRAIT_IS_C | AU_TRAIT_IPROP);
             uint64_t offset_bits = layout.getFieldOffset(field->getFieldIndex());
             //m->module = e->current_import->au;
             m->offset = offset_bits / 8;

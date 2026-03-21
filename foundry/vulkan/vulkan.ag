@@ -123,7 +123,7 @@ class vk_context
                             srcOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ mipWidth, mipHeight, 1 ] ],
                             dstSubresource: VkImageSubresourceLayers [
                                 aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: i, baseArrayLayer: f, layerCount: 1 ],
-                            dstOffsets: [ VkOffset3D [ 0, 0, 0 ], VitskOffset3D [ max[ 1, mipWidth / 2 ], max[ 1, mipHeight / 2 ], 1 ] ]
+                            dstOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ max[ 1, mipWidth / 2 ], max[ 1, mipHeight / 2 ], 1 ] ]
                         ], VK_FILTER_LINEAR ]
                     cmd.submit
                     transition_image_layout[ vk_image,
