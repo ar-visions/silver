@@ -941,9 +941,20 @@ public:
         std::string body_text;
 #undef tokens
         for (const auto &tok : mi->tokens()) {
-             if (body_text.length() > 0 && tok.hasLeadingSpace()) 
+             std::string spelling = PP->getSpelling(tok);
+             // strip C integer suffixes (U, u, L, l, UL, ULL, etc.) from numeric tokens
+             if (!spelling.empty() && (isdigit(spelling[0]) || (spelling[0] == '0' && spelling.size() > 1 && spelling[1] == 'x'))) {
+                 while (!spelling.empty()) {
+                     char c = spelling.back();
+                     if (c == 'U' || c == 'u' || c == 'L' || c == 'l')
+                         spelling.pop_back();
+                     else
+                         break;
+                 }
+             }
+             if (body_text.length() > 0 && tok.hasLeadingSpace())
                 body_text += " ";
-             body_text += PP->getSpelling(tok);
+             body_text += spelling;
         }
 
         // Note: 'string' is a silver type constructor from 'aether/import'
