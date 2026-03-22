@@ -2405,10 +2405,14 @@ enode convertible(etype fr, etype to) {
 
     if (ma == mb)
         return (enode)true;
+    if (ma->au->is_pointer && ma->au->src == mb->au)
+        return (enode)true;
 
     if (ma->au->is_enum && mb->au->is_integral)
         return (enode)true;
     if (mb->au->is_enum && ma->au->is_integral)
+        return (enode)true;
+    if (ma->au->is_integral && (mb->au->is_pointer || mb->au->is_class))
         return (enode)true;
     
     if (ma->au->is_lambda && mb->au == typeid(callback))

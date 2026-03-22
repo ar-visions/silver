@@ -76,8 +76,8 @@ token aether_peek_safe(silver);
 
 #define validate(cond, t, ...) ({ \
     if (!(cond)) { \
-        raise(SIGTRAP); \
         error(t __VA_OPT__(,) __VA_ARGS__); \
+        raise(SIGTRAP); \
     } else { \
         true; \
     } \
@@ -446,8 +446,6 @@ static enode parse_expression(silver a, etype expect, bool hint, bool load) { se
             return expr_load(res, load);
         }
 
-        //print_tokens(a, seq);
-
         push_current(a);
 
         consume(a);
@@ -499,6 +497,7 @@ static enode reverse_descent(silver a, etype expect) { sequencer
     if (seq == 164)
         seq = seq;
 
+    //print_tokens(a, seq);
     enode L = read_enode(a, expect, false, true);
     token t = peek(a);
     if (!L) {
@@ -1947,7 +1946,7 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
     a->source_raw = (string)hold(input_string);
 
     list symbols = list();
-    string special = string(".{}$,<>()![]/+*:=#");
+    string special = string(".{}$,<>()![]/+*:=#~");
     i32 special_ln = len(special);
     for (int i = 0; i < special_ln; i++)
         push(symbols, (Au)unicode_char((i32)special->chars[i]));
@@ -2210,6 +2209,19 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
         }
 
         string crop = mid(input_string, start, index - start);
+        // strip C integer suffixes (U, u, L, l, UL, LL, etc.) — not floats
+        if (num_start && len(crop) > 1 && !strchr(crop->chars, '.')) {
+            int end = len(crop);
+            while (end > 1) {
+                char c = crop->chars[end - 1];
+                if (c == 'U' || c == 'u' || c == 'L' || c == 'l')
+                    end--;
+                else
+                    break;
+            }
+            if (end < len(crop))
+                crop = mid(crop, 0, end);
+        }
         push(tokens, (Au)token(
                          chars, crop->chars,
                          indent, indent,
@@ -2403,7 +2415,7 @@ string read_alpha_macrofilter(silver a, bool is_decl) {
         }
     }
     mem_set:
-    use_name = (is_decl || mem != null);
+    use_name = (is_decl || mem != null || next_is(a, ":"));
     pop_tokens(a, use_name);
     return use_name ? n : null;
 }
@@ -2477,7 +2489,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
         if (!first_alpha) first_alpha = alpha;
 
         if (!(!first || alpha || new_name)) {
-            print_tokens(a, seq);
+            //print_tokens(a, seq);
             first = first;
         }
         validate(!first || alpha || new_name,
@@ -2531,7 +2543,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                         mem = (enode)rlookup((aether)a, alpha);
                         //mem = (enode)elookup(alpha->chars);
 
-                        if (mem && !mem->au->is_static) {
+                        if (mem && !mem->au->is_static && mem->au->member_type != AU_MEMBER_TYPE) {
                             etype ftarg = etype_resolve((etype)f->target);
                             if (ftarg && in_context(mem->au, ftarg->au)) {
                                 mem = access(f->target, alpha, true);
@@ -2552,6 +2564,10 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                     if (sm)
                         mem = access((enode)scope_mdl, alpha, true);
                 }
+
+                // type name followed by : is a new declaration, not a type reference
+                if (mem && mem->au->member_type == AU_MEMBER_TYPE && next_is(a, ":"))
+                    mem = null;
 
                 if (!mem) {
                     token tm1 = element(a, -2); // sorry for the mess (coin-flip)
@@ -2733,7 +2749,6 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             if (!elem_type) elem_type = (etype)etype_prep((silver)a, mdl_expect->au->src);
             array elems = array(alloc, mdl_expect->au->elements);
             while (!next_is(a, "]")) {
-                print_tokens(a, seq);
                 enode elem = parse_expression(a, elem_type, true, true);
                 push(elems, (Au)elem);
                 if (!read_if(a, ",")) break;
@@ -2753,9 +2768,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         etype mdl_found = read_etype(a, null);
         if (mdl_found) {
             // here we must 'peek' at a body; which if not available we go default
-            print_tokens(a, seq);
             array b = peek_initializer(a);
-            print_all(b);
             enode res0 = null;
             if (from_ref) mdl_found = pointer((aether)a, (Au)mdl_found);
             if (b) {
@@ -3059,6 +3072,11 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     mem = parse_member(a, null, null, mdl_expect, from_ref); // we never parse assignment here
 
     if (!mem && cmode) return null;
+    if (!mem) {
+        etype unexpected_type = read_etype(a, null);
+        validate(!unexpected_type, "unexpected type %o", unexpected_type);
+    }
+
     validate(!instanceof(mem, edecl), "unexpected declaration of member %s", mem->au->ident);
     if (load && !is_loaded((Au)mem))
         mem = enode_value(mem, false);
@@ -3179,7 +3197,7 @@ enode parse_statement(silver a)
     //bool is_default = !access ? read_if(a, "default") != null : false;
     bool has_access = access != interface_undefined;
 
-    print_tokens(a, seq);
+    //print_tokens(a, seq);
 
     if (module && !next_is(a, "func") && peek_def(a)) {
         verify(!has_access || (access == interface_public || access == interface_intern),
@@ -3385,7 +3403,7 @@ enode parse_statement(silver a)
             a->assign_type = OPType__undefined;
 
         } else if (assign_enum) {
-            validate(mem, "expected member");
+            validate(mem, "expected member (%o)", peek(a));
 
             a->left_hand = false;
             a->expr_level++;
@@ -3726,7 +3744,8 @@ etype read_etype(silver a, array* p_expr) { sequencer
     etype prim_mdl      = null;
 
     if (!mdl && !explicit_un) {
-        if      (read_if(a, "char"))  prim_mdl = etypeid(i8);
+        if      (read_if(a, "void"))  prim_mdl = etypeid(none);
+        else if (read_if(a, "char"))  prim_mdl = etypeid(i8);
         else if (read_if(a, "short")) prim_mdl = etypeid(i16);
         else if (read_if(a, "int"))   prim_mdl = etypeid(i32);
         else if (read_if(a, "float")) prim_mdl = etypeid(f32);
@@ -4944,7 +4963,7 @@ Au parse_field(silver a, etype key_type) {
         validate(read_if(a, "}"), "expected }");
     } else {
         string name = (string)read_alpha(a);
-        validate(name, "expected member identifier");
+        validate(name, "expected member identifier (%o)", peek(a));
         k = (Au)const_string(chars, name->chars);
     }
     return k;
@@ -5785,10 +5804,6 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
     if (f->user_built)
         return;
 
-    if (f->au->alt && strcmp(f->au->alt, "font_with_path") == 0) {
-        print_all((array)f->body);
-        f = f;
-    }
     bool user_has_code = len(f->body) || f->cgen;
     f->user_built = true;
 
@@ -6183,7 +6198,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
         } else if (!is_mdl_map) {
             //k = (Au)parse_field(a, key); 
             string name = (string)read_alpha(a);
-            validate(name, "expected member identifier");
+            validate(name, "expected member identifier (%o)", peek(a));
             k = (Au)const_string(chars, name->chars);
         } else if (key && key != etypeid(string)) {
             k = (Au)parse_expression(a, key, false, true);
@@ -6396,10 +6411,10 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
         consume(a);
 
         enode index_expr = null;
+        Au_t idx      = null;
+        Au_t fallback = null;
         if (r) {
             // select best indexer overload by matching argument type
-            Au_t idx      = null;
-            Au_t fallback = null;
             if (len(args) == 1) {
                 enode inner      = (enode)args->origin[0];
                 Au_t  inner_type = au_arg_type((Au)inner->au);
@@ -6425,8 +6440,13 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
             }
             if (!idx) idx = find_member(r->au, null, AU_MEMBER_GETTER, 0, true);
 
-            validate(idx, "index method not found on %o", mem);
-
+            if (!idx && is_indexable_ptr && !inherits(au_rec, typeid(collective))) {
+                r = null;
+            } else {
+                validate(idx, "index method not found on %o", mem);
+            }
+        }
+        if (r) {
             validate(idx->args.count >= 2, "expected target and index args");
             etype idx_type = u(etype, au_arg_type(idx->args.origin[1]));
             if (idx_type == etypeid(shape)) {
