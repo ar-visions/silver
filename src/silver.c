@@ -2839,6 +2839,37 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         return e_operand(a, _i64(mdl->au->typesize), mdl_expect);
     }
 
+    // functional macros are only useful for these few built-in's outside of vtable stuff
+    // theres no reason to implement actual macro keyword in silver until its simply a 'better solution in general'
+    if (read_if(a, "min")) {
+        verify(read_if(a, "["), "expected [ after min");
+        enode val_a = parse_expression(a, null, false, false);
+        read_if(a, ",");
+        enode val_b = parse_expression(a, null, false, false);
+        verify(read_if(a, "]"), "expected ]");
+        return e_min(a, val_a, val_b);
+    }
+
+    if (read_if(a, "max")) {
+        verify(read_if(a, "["), "expected [ after max");
+        enode val_a = parse_expression(a, null, false, false);
+        read_if(a, ",");
+        enode val_b = parse_expression(a, null, false, false);
+        verify(read_if(a, "]"), "expected ]");
+        return e_max(a, val_a, val_b);
+    }
+
+    if (read_if(a, "clamp")) {
+        verify(read_if(a, "["), "expected [ after clamp");
+        enode val = parse_expression(a, null, false, false);
+        read_if(a, ",");
+        enode lo  = parse_expression(a, null, false, false);
+        read_if(a, ",");
+        enode hi  = parse_expression(a, null, false, false);
+        verify(read_if(a, "]"), "expected ]");
+        return e_clamp(a, val, lo, hi);
+    }
+
     if (!cmode && read_if(a, "typeid")) {
         bool read_br = read_if(a, "[") != null;
         etype mdl = read_etype(a, null);
@@ -3147,6 +3178,8 @@ enode parse_statement(silver a)
 
     //bool is_default = !access ? read_if(a, "default") != null : false;
     bool has_access = access != interface_undefined;
+
+    print_tokens(a, seq);
 
     if (module && !next_is(a, "func") && peek_def(a)) {
         verify(!has_access || (access == interface_public || access == interface_intern),
