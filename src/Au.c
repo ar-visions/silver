@@ -1,5 +1,7 @@
 #include <import>
 
+int seq;
+
 //#undef realloc
 #include <ffi.h>
 #undef bool
@@ -3601,6 +3603,10 @@ string Au_cast_string(Au a) {
     // convenient feature of new object abi
     if (type == typeid(Au_t_f)) {
         type = (Au_t)a;
+        return f(string, "wtf");
+        if (type->is_pointer && !type->ident) {
+            return f(string, "ref %s", type->src->ident);
+        }
         return string(type->ident);
     } else if (!type) {
         verify(!a, "invalid type");
@@ -3787,7 +3793,10 @@ Au formatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol temp
                     a = string("null");
                 } else {
                     Au_t au = (Au_t)arg;
-                    a = string(au->ident);
+                    if (au->is_pointer && !au->ident && au->src)
+                        a = f(string, "ref %s", au->src->ident ? au->src->ident : "?");
+                    else
+                        a = string(au->ident ? au->ident : "(anon)");
                 }
             } else
                 a = arg ? cast(string, arg) : string((symbol)"null");
