@@ -15,10 +15,6 @@ import madler:zlib/51b7f2a <zlib.h>
     -lz
 
 import glennrp:libpng/07b8803 <png.h>
-    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-    -DZLIB_LIBRARY=$IMPORT/lib/libz.so
-    -DZLIB_INCLUDE_DIR=$IMPORT/include
-    -DCMAKE_C_STANDARD_LIBRARIES="-lm"
     -lpng
 
 import <string.h>

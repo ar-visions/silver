@@ -5,7 +5,11 @@ import KhronosGroup:Vulkan-Headers/29184b9
 import KhronosGroup:Vulkan-Loader/e042a3a
      -DVULKAN_HEADERS_INSTALL_DIR={install}
 
-ifdef [ apple ] import KhronosGroup:MoltenVK/db445ff
+#ifdef [ apple ] 
+
+import KhronosGroup:MoltenVK/db445ff
+    >> mkdir -p {root_path}/checkout/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/
+    >> ln -s {root_path}/platform/native/lib/libMoltenVK.dylib {root_path}/checkout/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
 
 import KhronosGroup:Vulkan-Tools/734638e
      -DVULKAN_HEADERS_INSTALL_DIR={install}

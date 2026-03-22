@@ -1034,6 +1034,7 @@ void silver_init(silver a) {
 
     verify(a->module && len(a->module), "required argument: module (path/to/module)");
 
+    path cwd = path_cwd();
     // aether_init already resolves module to absolute path
     // accept dir or .ag file
     bool retry_path = false;
@@ -5037,7 +5038,10 @@ enode parse_import(silver a) {
         }
     }
 
-    array b = read_body(a);
+    if (bb && eq(bb, "Vulkan-Tools")) {
+        bb =  bb;
+    }
+    array b = hold(read_body(a));
     if (len(b)) {
         array bt = compact_tokens(b);
         import_libs(bt, a->libs);
