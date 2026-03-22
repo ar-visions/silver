@@ -48,7 +48,6 @@ ifeq ($(OS),Windows_NT)
 else
 	@rm -rf $(SILVER)/platform/native/debug/.headers_generated
 	@rm -rf $(SILVER)/platform/native/release/.headers_generated
-	@if [ -f "$(BUILD_ROOT)/$(PROJECT_NAME).ninja" ]; then \
-		ninja -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja clean; \
-	fi
+	@if [ -d "$(SILVER)/platform/native/debug" ]; then rm -f $(SILVER)/platform/native/debug/*.o; fi
+	@if [ -d "$(SILVER)/platform/native/release" ]; then rm -f $(SILVER)/platform/native/release/*.o; fi
 endif

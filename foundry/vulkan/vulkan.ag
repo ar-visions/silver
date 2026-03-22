@@ -3,22 +3,19 @@ export 0.1.0
 import KhronosGroup:Vulkan-Headers/29184b9
 
 import KhronosGroup:Vulkan-Loader/e042a3a
-     -DVULKAN_HEADERS_INSTALL_DIR={install}
 
-#ifdef [ apple ] 
-
-import KhronosGroup:MoltenVK/db445ff
-    >> mkdir -p {root_path}/checkout/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/
-    >> ln -s {root_path}/platform/native/lib/libMoltenVK.dylib {root_path}/checkout/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
+ifdef [ apple ] 
+    import KhronosGroup:MoltenVK/db445ff
+        >> mkdir -p {root_path}/checkout/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/
+        >> ln -s {root_path}/platform/native/lib/libMoltenVK.dylib {root_path}/checkout/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
 
 import KhronosGroup:Vulkan-Tools/734638e
-     -DVULKAN_HEADERS_INSTALL_DIR={install}
-     -DMOLTENVK_REPO_ROOT={root_path}/checkout/MoltenVK
 
 import img
 
 import <stdio.h>
 import <stdlib.h>
+import <math.h>
 import <string.h>
 import <vk_mem_alloc.h>
 
@@ -30,6 +27,55 @@ func trinity_log [
     if [ severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT ]
         puts "vulkan: %s", callbackData.pMessage
     return false
+
+
+class Layout
+    static defaults : new Layout [7] # layout defaults stored as static array
+    public layout : VkImageLayout
+    public access : VkAccessFlags
+    public stage  : VkPipelineStageFlags
+    
+    static func find [ l: VkImageLayout ] -> Layout
+        static defaults: Layout[7]
+        static initialized: bool
+        if [ !initialized ]
+            initialized = true
+            defaults[0] = Layout [ layout: VK_IMAGE_LAYOUT_UNDEFINED,                access: 0,                                                                stage: VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT ]
+            defaults[1] = Layout [ layout: VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,     access: VK_ACCESS_TRANSFER_WRITE_BIT,                                     stage: VK_PIPELINE_STAGE_TRANSFER_BIT ]
+            defaults[2] = Layout [ layout: VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,     access: VK_ACCESS_TRANSFER_READ_BIT,                                      stage: VK_PIPELINE_STAGE_TRANSFER_BIT ]
+            defaults[3] = Layout [ layout: VK_IMAGE_LAYOUT_GENERAL,                  access: VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,            stage: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT ]
+            defaults[4] = Layout [ layout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, access: VK_ACCESS_SHADER_READ_BIT,                                        stage: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT ]
+            defaults[5] = Layout [ layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, access: VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,                              stage: VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
+            defaults[6] = Layout [ layout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,          access: VK_ACCESS_MEMORY_READ_BIT,                                        stage: VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT ]
+        for [ i: 0, i < 7, i += 1 ]
+            if [ defaults[i].layout == l ]
+                return ref defaults[i]
+        return null
+
+    # transition image from this layout to target layout
+    func transition [ vk: vk_context, img: VkImage, to: Layout, r: image_range ] -> none
+        cmd: command [ vk: vk ]
+        begin[ cmd ]
+        barrier: VkImageMemoryBarrier [
+            sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            oldLayout:           layout,
+            newLayout:           to.layout,
+            srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+            dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+            image:               img,
+            subresourceRange:    VkImageSubresourceRange [
+                aspectMask:       r.is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+                baseMipLevel:     r.base_mip,
+                levelCount:       r.levels,
+                baseArrayLayer:   r.base_layer,
+                layerCount:       r.layers
+            ]
+        ]
+        barrier.srcAccessMask = access
+        barrier.dstAccessMask = to.access
+        vkCmdPipelineBarrier[ cmd.vk, stage, to.stage, 0, 0, null, 0, null, 1, ref barrier ]
+        submit[ cmd ]
+        drop[ cmd ]
 
 
 class vk_context
@@ -118,17 +164,19 @@ class vk_context
                         i, 1, f, 1, false ]
                     cmd: command [ vk: a ]
                     cmd.begin
-                    vkCmdBlitImage[ cmd.vk,
-                        vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                        vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                        1, VkImageBlit [
+                    vkCmdBlitImage[
+                        cmd.cmd, vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                        VkImageBlit [
                             srcSubresource: VkImageSubresourceLayers [
                                 aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: i - 1, baseArrayLayer: f, layerCount: 1 ],
-                            srcOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ mipWidth, mipHeight, 1 ] ],
+                            srcOffsets: [
+                                VkOffset3D [ 0, 0, 0 ], VkOffset3D [ mipWidth, mipHeight, 1 ] ],
                             dstSubresource: VkImageSubresourceLayers [
                                 aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: i, baseArrayLayer: f, layerCount: 1 ],
-                            dstOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ max[ 1, mipWidth / 2 ], max[ 1, mipHeight / 2 ], 1 ] ]
-                        ], VK_FILTER_LINEAR ]
+                                dstOffsets: [
+                                    VkOffset3D [ 0, 0, 0 ], VkOffset3D [ max[ 1, mipWidth / 2 ], max[ 1, mipHeight / 2 ], 1 ] ] ],
+                        VK_FILTER_LINEAR ]
                     cmd.submit
                     transition_image_layout[ vk_image,
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -258,55 +306,6 @@ func placeholder_image [ sampler: object, size: i32, fill: ref u8, sampler_size:
         fault "sampler data required"
 
 
-struct Layout
-    static defaults : new Layout [7] # layout defaults stored as static array
-    public layout : VkImageLayout
-    public access : VkAccessFlags
-    public stage  : VkPipelineStageFlags
-    
-    static func find [ l: VkImageLayout ] -> Layout
-        static defaults: Layout[7]
-        static initialized: bool
-        if [ !initialized ]
-            initialized = true
-            defaults[0] = Layout [ layout: VK_IMAGE_LAYOUT_UNDEFINED,                access: 0,                                                                stage: VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT ]
-            defaults[1] = Layout [ layout: VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,     access: VK_ACCESS_TRANSFER_WRITE_BIT,                                     stage: VK_PIPELINE_STAGE_TRANSFER_BIT ]
-            defaults[2] = Layout [ layout: VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,     access: VK_ACCESS_TRANSFER_READ_BIT,                                      stage: VK_PIPELINE_STAGE_TRANSFER_BIT ]
-            defaults[3] = Layout [ layout: VK_IMAGE_LAYOUT_GENERAL,                  access: VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,            stage: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT ]
-            defaults[4] = Layout [ layout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, access: VK_ACCESS_SHADER_READ_BIT,                                        stage: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT ]
-            defaults[5] = Layout [ layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, access: VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,                              stage: VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
-            defaults[6] = Layout [ layout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,          access: VK_ACCESS_MEMORY_READ_BIT,                                        stage: VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT ]
-        for [ i: 0, i < 7, i += 1 ]
-            if [ defaults[i].layout == l ]
-                return ref defaults[i]
-        return null
-
-    # transition image from this layout to target layout
-    func transition [ vk: vk_context, img: VkImage, to: Layout, r: image_range ] -> none
-        cmd: command [ vk: vk ]
-        begin[ cmd ]
-        barrier: VkImageMemoryBarrier [
-            sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            oldLayout:           layout,
-            newLayout:           to.layout,
-            srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
-            dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
-            image:               img,
-            subresourceRange:    VkImageSubresourceRange [
-                aspectMask:       r.is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
-                baseMipLevel:     r.base_mip,
-                levelCount:       r.levels,
-                baseArrayLayer:   r.base_layer,
-                layerCount:       r.layers
-            ]
-        ]
-        barrier.srcAccessMask = access
-        barrier.dstAccessMask = to.access
-        vkCmdPipelineBarrier[ cmd.vk, stage, to.stage, 0, 0, null, 0, null, 1, ref barrier ]
-        submit[ cmd ]
-        drop[ cmd ]
-
-
 struct image_range
     public base_mip    : i32
     public levels      : i32
@@ -373,14 +372,14 @@ class command
     public vk  : vk_context
     intern cmd : VkCommandBuffer
 
-    public func begin [ ] -> none
+    func begin [ ] -> none
         vkResetCommandBuffer[ cmd, 0 ]
         vkBeginCommandBuffer[ cmd, VkCommandBufferBeginInfo [
             sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
         ]]
 
-    public func submit [ ] -> none
+    func submit [ ] -> none
         vkEndCommandBuffer[ cmd ]
         sub: VkSubmitInfo [
             sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,

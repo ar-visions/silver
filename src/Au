@@ -2031,7 +2031,8 @@ i64 current_time();
 
 extern int seq;
 
-#define sequencer static int seq; seq++;
+extern int seq;
+#define sequencer static int _seq; _seq++; int seq = _seq;
 
 none halt(string, token);
 

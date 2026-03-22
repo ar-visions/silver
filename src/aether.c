@@ -76,17 +76,19 @@ etype etype_create(aether a, Au_t m) { sequencer
 }
 
 etype etype_prep(aether a, Au_t au) { sequencer
+    if (au && au->ident && strcmp(au->ident, "VkOffset3D") == 0) {
+        au = au;
+    }
     if (!au) return null;
     etype mdl = u(etype, au);
     if (!mdl || (!mdl->lltype)) {
         if (!mdl) {
-            if (au->ident && strcmp(au->ident, "VK_QUEUE_GRAPHICS_BIT") == 0) {
-                mdl = mdl;
-            }
             mdl = etype_create(a, au);
         }
         if (mdl && !mdl->is_implemented)
             etype_implement(mdl, false);
+    } else if (au->is_c) {
+        etype_implement(mdl, false);
     }
     return mdl;
 }
@@ -129,8 +131,9 @@ etype etype_prep(aether a, Au_t au) { sequencer
 #undef verify
 #define verify(cond, t, ...) ({ \
     if (!(cond)) { \
-        raise(SIGTRAP); \
         fault(t __VA_OPT__(,) __VA_ARGS__); \
+        fflush(stderr); \
+        raise(SIGTRAP); \
         false; \
     } \
     true; \
@@ -2400,6 +2403,9 @@ enode convertible(etype fr, etype to) {
     etype  ma = canonical(fr);
     etype  mb = canonical(to);
 
+    if (ma == mb)
+        return (enode)true;
+
     if (ma->au->is_enum && mb->au->is_integral)
         return (enode)true;
     if (mb->au->is_enum && ma->au->is_integral)
@@ -2413,6 +2419,8 @@ enode convertible(etype fr, etype to) {
     if (is_func(ma) && (mb == etypeid(ARef) || mb == etypeid(handle)))
         return (enode)true;
     if (ma->au->is_funcptr && mb->au == typeid(bool))
+        return (enode)true;
+    if ((ma->au->is_class || ma->au->is_pointer) && mb->au == typeid(bool))
         return (enode)true;
 
     // allow Au to convert to primitive/struct
@@ -3309,6 +3317,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         // ---- struct / ref-struct / other ----
         bool  is_ref_struct = is_ptr(mdl) && is_struct(resolve(mdl));
         etype rmdl = resolve(mdl);
+        etype_prep(a, resolve(rmdl)->au);
 
         if (is_struct(mdl) || is_ref_struct) {
             int field_count = LLVMCountStructElementTypes(rmdl->lltype);
@@ -3332,12 +3341,14 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                         if (smem->member_type == AU_MEMBER_VAR && smem->is_iprop) {
                             if (current_index++ == i) {
                                 field_type = u(etype, smem);
+                                if (!field_type && smem->src)
+                                    field_type = etype_prep(a, smem->src);
                                 break;
                             }
                         }
                     }
                     Au val = get(ar, i);
-                    enode op = val ? e_operand(a, val, field_type) : 
+                    enode op = val ? e_operand(a, val, field_type) :
                                      e_create(a, field_type, null);
                     if (!op->literal) all_const = false;
                     fields[i] = op->value;
@@ -3381,6 +3392,8 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                         if (smem->member_type == AU_MEMBER_VAR && !smem->is_static) {
                             if (current_index++ == i) {
                                 field_type = u(etype, smem);
+                                if (!field_type && smem->src)
+                                    field_type = etype_prep(a, smem->src);
                                 break;
                             }
                         }
@@ -5147,6 +5160,9 @@ none etype_implement(etype t, bool w) { sequencer
     Au_t      top       = top_scope(a);
     aether    module    = is_module(top) ? a : null;
 
+    if (au->ident && strcmp(au->ident, "VkOffset3D") == 0)
+        au = au;
+
     if (au->member_type == AU_MEMBER_DECL || 
         au->member_type == AU_MEMBER_NAMESPACE || (is_func(au) && !((enode)t)->used && !a->is_Au_import))
         return;
@@ -5250,7 +5266,7 @@ none etype_implement(etype t, bool w) { sequencer
         return;
     }
 
-    if (!au->is_pointer && !au->is_c && !au->is_funcptr && (is_rec(t) || au->is_union)) {
+    if (!au->is_pointer && !au->is_funcptr && (is_rec(t) || au->is_union)) {
         array cl = (au->is_union || is_struct(t)) ? a(t) : etype_class_list(t);
         bool multi_Au = len(cl) > 1 && cl->origin[0] == etypeid(Au);
         int count = 0;
@@ -5282,7 +5298,7 @@ none etype_implement(etype t, bool w) { sequencer
             for (int i = 0; i < tt->au->members.count; i++) {
                 Au_t m = (Au_t)tt->au->members.origin[i];
                 etype m_entry = u(etype, m);
-                Au    m_info  = head(m_entry);
+                Au    m_info  = m_entry ? head(m_entry) : null;
 
                 if (is_func((Au)m)) {
 
@@ -6659,7 +6675,7 @@ none aether_dealloc(aether a) {
 }
 
 string etype_cast_string(etype t) {
-    return t->au ? string(t->au->ident) : string("[no-type]");
+    return t->au ? f(string, "%o", t->au) : string("[no-type]");
 }
 
 Au_t etype_cast_Au_t(etype t) {
@@ -7113,6 +7129,63 @@ enode aether_e_neg(aether a, enode L) {
     if (Lm->au->is_realistic)
         return value(L, LLVMBuildFNeg(B, L->value, "neg"));
     return value(L, LLVMBuildNeg(B, L->value, "neg"));
+}
+
+enode aether_e_max(aether a, enode L, enode R) {
+    a->is_const_op = false;
+    etype common = determine_rtype(a, OPType__add, (etype)L, (etype)R);
+    L = e_create(a, common, (Au)L);
+    R = e_create(a, common, (Au)R);
+    if (a->no_build) return e_noop(a, common);
+    LLVMValueRef cmp;
+    if (common->au->is_realistic)
+        cmp = LLVMBuildFCmp(B, LLVMRealOGT, L->value, R->value, "max_cmp");
+    else if (is_unsign(common))
+        cmp = LLVMBuildICmp(B, LLVMIntUGT, L->value, R->value, "max_cmp");
+    else
+        cmp = LLVMBuildICmp(B, LLVMIntSGT, L->value, R->value, "max_cmp");
+    return value(common, LLVMBuildSelect(B, cmp, L->value, R->value, "max"));
+}
+
+enode aether_e_min(aether a, enode L, enode R) {
+    a->is_const_op = false;
+    etype common = determine_rtype(a, OPType__add, (etype)L, (etype)R);
+    L = e_create(a, common, (Au)L);
+    R = e_create(a, common, (Au)R);
+    if (a->no_build) return e_noop(a, common);
+    LLVMValueRef cmp;
+    if (common->au->is_realistic)
+        cmp = LLVMBuildFCmp(B, LLVMRealOLT, L->value, R->value, "min_cmp");
+    else if (is_unsign(common))
+        cmp = LLVMBuildICmp(B, LLVMIntULT, L->value, R->value, "min_cmp");
+    else
+        cmp = LLVMBuildICmp(B, LLVMIntSLT, L->value, R->value, "min_cmp");
+    return value(common, LLVMBuildSelect(B, cmp, L->value, R->value, "min"));
+}
+
+enode aether_e_abs(aether a, enode L) {
+    a->is_const_op = false;
+    etype Lm = canonical(L);
+    if (a->no_build) return e_noop(a, Lm);
+    if (Lm->au->is_realistic) {
+        LLVMValueRef neg = LLVMBuildFNeg(B, L->value, "abs_neg");
+        LLVMValueRef cmp = LLVMBuildFCmp(B, LLVMRealOLT, L->value,
+            LLVMConstReal(lltype(Lm), 0.0), "abs_cmp");
+        return value(Lm, LLVMBuildSelect(B, cmp, neg, L->value, "abs"));
+    }
+    LLVMValueRef neg = LLVMBuildNeg(B, L->value, "abs_neg");
+    LLVMValueRef cmp = LLVMBuildICmp(B, LLVMIntSLT, L->value,
+        LLVMConstInt(lltype(Lm), 0, true), "abs_cmp");
+    return value(Lm, LLVMBuildSelect(B, cmp, neg, L->value, "abs"));
+}
+
+enode aether_e_clamp(aether a, enode val, enode lo, enode hi) {
+    etype common = determine_rtype(a, OPType__add, (etype)val, (etype)lo);
+    common = determine_rtype(a, OPType__add, common, (etype)hi);
+    val = e_create(a, common, (Au)val);
+    lo  = e_create(a, common, (Au)lo);
+    hi  = e_create(a, common, (Au)hi);
+    return aether_e_min(a, aether_e_max(a, val, lo), hi);
 }
 
 enode efunc_fptr(efunc f) {
