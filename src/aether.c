@@ -2422,6 +2422,8 @@ enode convertible(etype fr, etype to) {
 
     if (is_func(ma) && (mb == etypeid(ARef) || mb == etypeid(handle)))
         return (enode)true;
+    if ((is_func(ma) || is_func(resolve(ma)) || ma->au->is_funcptr) && mb->au->is_funcptr)
+        return (enode)true;
     if (ma->au->is_funcptr && mb->au == typeid(bool))
         return (enode)true;
     if ((ma->au->is_class || ma->au->is_pointer) && mb->au == typeid(bool))
@@ -6477,7 +6479,7 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
     *bc = form(path, "%o/%s/%o.bc", a->install, a->debug ? "debug" : "release", a);
 
     bool validation_error = false;
-    verify (!LLVMPrintModuleToFile(a->module_ref, cstring(*ll),      &err), "print-to-module");
+    verify (!LLVMPrintModuleToFile(a->module_ref, cstring(*ll),      &err), "print-to-module: %s (path: %s)", err ? err : "unknown", cstring(*ll));
     if (a->verbose)
         print("wrote %s", cstring(*ll));
     validation_error  = LLVMVerifyModule(a->module_ref, LLVMReturnStatusAction, &err);

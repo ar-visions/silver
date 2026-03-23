@@ -3510,6 +3510,11 @@ Au construct_with(Au_t type, Au data, ctx context) {
     return result ? Au_initialize(result) : null;
 }
 
+Au_t __typeid(Au input) {
+    Au_t i = isa(input);
+    return i;
+}
+
 none serialize(Au_t type, string res, Au a) {
     if (type->traits & AU_TRAIT_PRIMITIVE) {
         char buf[128];

@@ -589,15 +589,17 @@ static enode reverse_descent(silver a, etype expect) { sequencer
         } else if (match_op == OPType__is || match_op == OPType__inherits) {
             etype type = read_etype(a, null);
             verify(type, "expected type, got %o", peek(a));
-            enode type_L = e_typeid(a, (etype)L);
             enode type_R = e_typeid(a, (etype)type);
             if (match_op == OPType__inherits) {
-                Au_t f_inherits = find_member(typeid(Au), "inherits",
+                Au_t f_instanceof = find_member(typeid(Au), "instance_of",
                                               AU_MEMBER_FUNC, 0, false);
-                L = e_fn_call(a, u(efunc, f_inherits), a(type_L, type_R));
+                L = e_fn_call(a, u(efunc, f_instanceof), a(L, type_R));
             } else {
-                L = e_cmp_op(a, OPType__equal, type_L, type_R);
+                enode type_L = e_typeid(a, (etype)L);
+                enode cond   = e_cmp_op(a, OPType__equal, type_L, type_R);
+                L = e_ternary(a, cond, L, e_null(a, type));
             }
+            L->au->src = type->au;
             continue;
         }
         
@@ -2885,12 +2887,20 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     if (!cmode && read_if(a, "typeid")) {
         bool read_br = read_if(a, "[") != null;
+        push_current(a);
         etype mdl = read_etype(a, null);
-        
+        if (mdl) {
+            pop_tokens(a, true);
+            if (read_br)
+                verify(read_if(a, "]"), "expected closing-bracket after typeid");
+            return e_create(a, (etype)mdl_expect, (Au)e_typeid(a, mdl));
+        }
+        pop_tokens(a, false);
+        enode expr = parse_expression(a, null, false, true);
         if (read_br)
-            verify(read_if(a, "]"), "expected closing-bracket after typeof");
-        
-        return e_create(a, (etype)mdl_expect, (Au)e_typeid(a, mdl));
+            verify(read_if(a, "]"), "expected closing-bracket after typeid");
+        Au_t f_typeid = find_member(typeid(Au), "__typeid", AU_MEMBER_FUNC, 0, false);
+        return e_fn_call(a, u(efunc, f_typeid), a(expr));
     }    
 
     if (!cmode && read_if(a, "new")) {
@@ -4741,9 +4751,15 @@ static enode parse_func_call(silver a, efunc f) { sequencer
             return efunc_fptr(f);
         }
     }
-    else validate((a->expr_level == 0 && !user_likes_brackets) || 
-                  (user_arg_count(f) == 0 || (read_br = read_if(a, "[") != null)),
-            "expected call-bracket [ at expression depth past statement level");
+    else {
+        if (user_arg_count(f) == 0 && next_is(a, "[")) {
+            read_if(a, "[");
+            validate(read_if(a, "]"), "expected ] after empty call brackets");
+        } else
+            validate((a->expr_level == 0 && !user_likes_brackets) ||
+                      (user_arg_count(f) == 0 || (read_br = read_if(a, "[") != null)),
+                "expected call-bracket [ at expression depth past statement level");
+    }
     
     a->expr_level++;
 
@@ -6737,7 +6753,8 @@ enode parse_ifdef_else(silver a) {
     array block = read_body(a);
     if (cond) {
         push_tokens(a, (tokens)block, 0);
-        statements = parse_statements(a);
+        while (peek(a))
+            statements = parse_statement(a);
         pop_tokens(a, false);
         one_truth = true;
     }
@@ -6757,13 +6774,15 @@ enode parse_ifdef_else(silver a) {
         if (has_cond) {
             if (!one_truth && el_cond) {
                 push_tokens(a, (tokens)block, 0);
-                statements = parse_statements(a);
+                while (peek(a))
+                    statements = parse_statement(a);
                 pop_tokens(a, false);
                 one_truth = true;
             }
         } else if (!one_truth) {
             push_tokens(a, (tokens)block, 0);
-            statements = parse_statements(a);
+            while (peek(a))
+                statements = parse_statement(a);
             pop_tokens(a, false);
             break; // bare el is terminal
         }
