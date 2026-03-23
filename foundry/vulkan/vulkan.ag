@@ -13,13 +13,18 @@ import KhronosGroup:Vulkan-Tools/734638e
      -DVULKAN_HEADERS_INSTALL_DIR={install}
      -DMOLTENVK_REPO_ROOT={root_path}/checkout/MoltenVK
 
+import glfw:glfw/fdd14e6 <GLFW/glfw3.h>
+    -DGLFW_INCLUDE_VULKAN
+
 import img
+import vec
 
 import <stdio.h>
 import <stdlib.h>
 import <math.h>
 import <string.h>
 import <vk_mem_alloc.h>
+import <sys/stat.h>
 
 func trinity_log [
         severity:       VkDebugUtilsMessageSeverityFlagBitsEXT,
@@ -207,7 +212,9 @@ class vk_context
 
 
 intern func image_release_buffer [ a: image ] -> object
-    b: buffer [ a.res ]
+    test2: handle[ a.res2 ]
+    b: buffer[ handle[ a.res2 ] ]
+    b2: buffer[ handle[ a.res2 ] ]
     vk: vk_context [ b.vk ]
     vmaUnmapMemory[ vk.allocator, b.vma_alloc ]
     vmaDestroyBuffer[ vk.allocator, b.vk_buffer, b.vma_alloc ]
@@ -216,95 +223,51 @@ intern func image_release_buffer [ a: image ] -> object
 # ---- format conversion ----
 intern func vk_format_fn [ f: Pixel, linear: bool ] -> VkFormat
     result: VkFormat [
-        (f == Pixel_f32    ) ? VK_FORMAT_R32_SFLOAT :
-        (f == Pixel_rgbaf32) ? VK_FORMAT_R32G32B32A32_SFLOAT :
-        (f == Pixel_rgbf32 ) ? VK_FORMAT_R32G32B32_SFLOAT :
-        (f == Pixel_rgba8  ) ? (linear) ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB :
-        (f == Pixel_rgb8   ) ? (linear) ? VK_FORMAT_R8G8B8_UNORM   : VK_FORMAT_R8G8B8_SRGB :
-        (f == Pixel_u8     ) ? VK_FORMAT_R8_UNORM : 0 ]
+        (f == Pixel.f32    ) ? VK_FORMAT_R32_SFLOAT :
+        (f == Pixel.rgbaf32) ? VK_FORMAT_R32G32B32A32_SFLOAT :
+        (f == Pixel.rgbf32 ) ? VK_FORMAT_R32G32B32_SFLOAT :
+        (f == Pixel.rgba8  ) ? (linear) ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB :
+        (f == Pixel.rgb8   ) ? (linear) ? VK_FORMAT_R8G8B8_UNORM   : VK_FORMAT_R8G8B8_SRGB :
+        (f == Pixel.u8     ) ? VK_FORMAT_R8_UNORM : 0 ]
     expect result, "incompatible image format"
     return result
 
 intern func pixel_from_format [ f: VkFormat, channels: ref i32 ] -> Pixel
     pixel: Pixel [
         (f == VK_FORMAT_R8G8B8A8_UNORM || f == VK_FORMAT_B8G8R8A8_UNORM ||
-         f == VK_FORMAT_R8G8B8A8_SRGB  || f == VK_FORMAT_B8G8R8A8_SRGB)  ? Pixel_rgba8 :
+         f == VK_FORMAT_R8G8B8A8_SRGB  || f == VK_FORMAT_B8G8R8A8_SRGB)  ? Pixel.rgba8 :
         (f == VK_FORMAT_R8G8B8_UNORM   || f == VK_FORMAT_B8G8R8_UNORM   ||
-         f == VK_FORMAT_R8G8B8_SRGB    || f == VK_FORMAT_B8G8R8_SRGB)    ? Pixel_rgb8 :
-        (f == VK_FORMAT_R8_UNORM)            ? Pixel_u8 :
-        (f == VK_FORMAT_R32_SFLOAT)          ? Pixel_f32 :
-        (f == VK_FORMAT_R32G32B32A32_SFLOAT) ? Pixel_rgbaf32 : 0 ]
+         f == VK_FORMAT_R8G8B8_SRGB    || f == VK_FORMAT_B8G8R8_SRGB)    ? Pixel.rgb8 :
+        (f == VK_FORMAT_R8_UNORM)            ? Pixel.u8 :
+        (f == VK_FORMAT_R32_SFLOAT)          ? Pixel.f32 :
+        (f == VK_FORMAT_R32G32B32A32_SFLOAT) ? Pixel.rgbaf32 : 0 ]
     if [ channels ]
         switch [ pixel ]
-            case Pixel_rgbaf32
-                channels = 4
-            case Pixel_rgba8
-                channels = 4
-            case Pixel_rgb8
-                channels = 3
-            case Pixel_f32
-                channels = 1
-            case Pixel_u8
-                channels = 1
-            default
-                channels = 0
+        case Pixel.rgbaf32
+            channels = 4
+        case Pixel.rgba8
+            channels = 4
+        case Pixel.rgb8
+            channels = 3
+        case Pixel.f32
+            channels = 1
+        case Pixel.u8
+            channels = 1
+        default
+            channels = 0
     return pixel
 
 
 # ---- placeholder / fill textures ----
 func placeholder_image [ sampler: object, size: i32, fill: ref u8, sampler_size: ref i32, format: ref Pixel ] -> none
-    v_i8:    sampler inherits vector_i8
-    v_f32:   sampler inherits vector_f32
-    v_rgb8:  sampler inherits vector_rgb8
-    v_rgbf:  sampler inherits vector_rgbf
-    v_rgba8: sampler inherits vector_rgba8
-    v_rgbaf: sampler inherits vector_rgbaf
-    data_i8:    ref i8    [ (v_i8)    ? data[ v_i8 ]    : VK_NULL_HANDLE ]
-    data_f32:   ref f32   [ (v_f32)   ? data[ v_f32 ]   : VK_NULL_HANDLE ]
-    data_rgb8:  ref rgb8  [ (v_rgb8)  ? data[ v_rgb8 ]  : VK_NULL_HANDLE ]
-    data_rgbf:  ref rgbf  [ (v_rgbf)  ? data[ v_rgbf ]  : VK_NULL_HANDLE ]
-    data_rgba8: ref rgba8 [ (v_rgba8) ? data[ v_rgba8 ] : VK_NULL_HANDLE ]
-    data_rgbaf: ref rgbaf [ (v_rgbaf) ? data[ v_rgbaf ] : VK_NULL_HANDLE ]
+    data_f32:   sampler inherits ref f32
     s: i32 [ size * size ]
     if [ data_f32 ]
         f32_fill: ref f32 [ fill ]
         for [ i: 0, i < s, i += 1 ]
-            f32_fill[i] = *data_f32
-        *format = Pixel_f32
-        *sampler_size = s * sizeof[ f32 ]
-    el [ data_i8 ]
-        u8_fill: ref u8 [ fill ]
-        for [ i: 0, i < s, i += 1 ]
-            u8_fill[i] = *data_i8
-        *format = Pixel_u8
-        *sampler_size = s * sizeof[ u8 ]
-    el [ data_rgbf ]
-        v3_fill: ref rgbf [ fill ]
-        for [ i: 0, i < s, i += 1 ]
-            v3_fill[i] = *data_rgbf
-        *format = Pixel_rgbf32
-        *sampler_size = s * sizeof[ rgbf ]
-    el [ data_rgb8 ]
-        v3_fill: ref rgb8 [ fill ]
-        for [ i: 0, i < s, i += 1 ]
-            v3_fill[i] = *data_rgb8
-        *format = Pixel_rgb8
-        *sampler_size = s * sizeof[ rgb8 ]
-    el [ data_rgbaf ]
-        v4_fill: ref rgbaf [ fill ]
-        for [ i: 0, i < s, i += 1 ]
-            v4_fill[i] = *data_rgbaf
-        *format = Pixel_rgbaf32
-        *sampler_size = s * sizeof[ rgbaf ]
-    el [ data_rgba8 ]
-        v4_fill: ref rgba8 [ fill ]
-        for [ i: 0, i < s, i += 1 ]
-            v4_fill[i] = *data_rgba8
-        *format = Pixel_rgba8
-        *sampler_size = s * sizeof[ rgba8 ]
-    el
-        fault "sampler data required"
-
+            f32_fill[i] = data_f32[0]
+        format = Pixel.f32 # <---  /src/silver/src/aether.c:467 / /src/silver/foundry/vulkan/vulkan.ag:267:8 :: L-value not a pointer (cannot assign to value)
+        sampler_size = s * sizeof[ f32 ]
 
 struct image_range
     public base_mip    : i32
@@ -414,7 +377,6 @@ class buffer
     intern user             : ARef
     intern vma_alloc        : VmaAllocation
     intern vk_buffer        : VkBuffer
-
 
     # the use case of window must be handled by facilitating texture as a delegate of window, with all of the info needed in there
     # in those cases trinity will internally manage that (we cannot understand what a window is in here)
@@ -587,7 +549,9 @@ class texture
 
     func init [ ]
         expect vk, "vk_context not specified"
-        img:  sampler inherits image
+        img2 :  cast [ sampler -> image ]
+        img3 :  cast [ sampler -> image ]
+        img :  sampler inherits image
         ansio: 4
         sampler_size: i32 [ 0 ]
         fill: u8[256]
@@ -730,6 +694,7 @@ class texture
         vk_image_view = VK_NULL_HANDLE
         vk_sampler    = VK_NULL_HANDLE
 
+alias ShaderModuleRef : ref VkShaderModule
 
 class shader
     public vk : vk_context
@@ -751,14 +716,15 @@ class shader
         expect src_file, "source not found"
         dst_file: fopen[ dst, "w" ]
         expect dst_file, "destination not found"
-        buf: stack i8[4096]
+        buf: local i8[4096]
         while [ fgets[ buf, 4096, src_file ] ]
             include_start: strstr[ buf, "#include <" ]
             if [ include_start ]
                 include_end: strstr[ include_start, ">" ]
                 if [ include_end ]
-                    import_name: stack i8[256]
-                    name_length: include_end - (include_start + 10)
+                    import_name: local i8[256]
+                    test2: include_start + 10
+                    name_length: include_end - test2
                     if [ name_length >= 256 ]
                         fprintf[ stderr, "error: import name too long\n" ]
                         exit[ 2 ]
@@ -778,16 +744,16 @@ class shader
         fclose[ dst_file ]
 
     intern func reload [ ] -> bool
-        names:  new string[3]         [ fragment, vertex, compute ]
-        values: new VkShaderModule[3] [ ref vk_frag, ref vk_vert, ref vk_comp ]
+        names:  new string[3]          [ fragment[], vertex[], compute[] ]
+        values: new ShaderModuleRef[3] [ ref vk_frag, ref vk_vert, ref vk_comp ]
         found:      false
         recompiled: false
-        for [ i: 0, i < 3, i++ ]
+        for [ i: 0, i < 3, i += 1 ]
             nm: names[i]
             if [ !nm ]
                 continue
             input: path '{nm}'
-            if [ !nm || !file_exists[ "%o", input ] ]
+            if [ !nm || !input.exists[] ]
                 continue
             spv_file: '{nm}.spv'
             found = true
@@ -795,15 +761,15 @@ class shader
             spv_stat:    struct stat
             src_exists: stat[ input.chars, ref source_stat ] == 0
             spv_exists: stat[ spv_file.chars, ref spv_stat ] == 0
-            if [ !spv_exists || source_stat.st_mtime > spv_stat.st_mtime ]
-                ext_s: ext[ input ]
-                tmp: tempfile[ ext_s.chars ]
+            if [ !spv_exists || source_stat.st_mtim.tv_sec > spv_stat.st_mtim.tv_sec ]
+                ext_s: input.ext[]
+                tmp: path.path_tempfile[ ext_s.chars ]
                 replace_includes[ input.chars, tmp.chars ]
                 cmd: 'glslangValidator -V100 --target-env vulkan1.2 {tmp} -o {spv_file}'
-                print "compiling shader: %o", cmd
+                puts 'compiling shader: {cmd}'
                 result: system[ cmd.chars ]
                 if [ result != 0 ]
-                    print "shader compilation failed for: %o", nm
+                    puts 'shader compilation failed for: {nm}'
                     exit[ 1 ]
                 recompiled = true
             el
@@ -811,7 +777,7 @@ class shader
                     continue
             fp: fopen[ spv_file.chars, "rb" ]
             if [ !fp ]
-                print "failed to open SPIR-V file: %o", spv_file
+                puts 'failed to open SPIR-V file: {spv_file}'
                 exit[ 1 ]
             fseek[ fp, 0, SEEK_END ]
             length: ftell[ fp ]
@@ -819,7 +785,7 @@ class shader
             spirv: malloc[ length ]
             if [ !spirv ]
                 fclose[ fp ]
-                print "Failed to allocate memory for SPIR-V"
+                puts 'failed to allocate memory for SPIR-V'
                 exit[ 1 ]
             fread[ spirv, 1, length, fp ]
             fclose[ fp ]
@@ -831,13 +797,13 @@ class shader
             mod: VkShaderModule
             vkResult: vkCreateShaderModule[ vk.device, createInfo, VK_NULL_HANDLE, ref mod ]
             if [ vkResult != VK_SUCCESS ]
-                print "Failed to create Vulkan shader module"
+                puts "failed to create vulkan shader module"
                 free[ spirv ]
                 exit[ 1 ]
             values[i] = mod
             free[ spirv ]
 
-        expect found, "shader not found: %o", name
+        expect found, 'shader not found: {name}'
         return recompiled
 
     func init [ ]
@@ -850,7 +816,7 @@ class shader
             ty: typeid[ a ]
             expect ty != typeid[ shader ], "base shader usage requires a shader name"
             name = ty.ident
-        reload[ VK_NULL_HANDLE ]
+        reload[ ]
 
     func dealloc [ ]
         vkDestroyShaderModule[ vk.device, vk_vert, VK_NULL_HANDLE ]

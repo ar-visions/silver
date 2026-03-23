@@ -1644,7 +1644,7 @@ Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool poly) {
             for (item it = s->hlist[idx]; it; it = it->next) {
                 if (it->key == (Au)(uintptr_t)fhash) {
                     Au_t au = (Au_t)it->value;
-                    if (au && au->ident && strcmp(au->ident, f) == 0) {
+                    if (au && au->ident && !au->is_expanding && strcmp(au->ident, f) == 0) {
                         if ((!member_type || au->member_type == member_type) &&
                             (!traits || (au->traits & traits) == traits))
                             return au;
@@ -1656,6 +1656,7 @@ Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool poly) {
             // slow path: linear scan with filters
             for (int i = 0; i < mdl->members.count; i++) {
                 Au_t au = (Au_t)mdl->members.origin[i];
+                if (au->is_expanding) continue;
                 if (!member_type || au->member_type == member_type) {
                     if (!traits || (au->traits & traits) == traits) {
                         if (!f || (au->ident && strcmp(au->ident, f) == 0))
@@ -1681,10 +1682,13 @@ Au_t find_context(array lex, int member_type, int traits) {
     return null;
 }
 
-Au_t lexical(array lex, symbol f) {
+Au_t lexical_traits(array lex, symbol f, u64 traits);
 
-    if (strcmp(f, "VK_QUEUE_GRAPHICS_BIT") == 0)
-        f = f;
+Au_t lexical(array lex, symbol f) {
+    return lexical_traits(lex, f, 0);
+}
+
+Au_t lexical_traits(array lex, symbol f, u64 traits) {
 
     bool top_set = false;
     bool top_Au  = false;
@@ -1698,20 +1702,35 @@ Au_t lexical(array lex, symbol f) {
             if (((au != typeid(Au) || top_Au) && au->member_type == AU_MEMBER_TYPE) || is_func(au))
                 for (int ii = 0; ii < au->args.count; ii++) {
                     Au_t m = (Au_t)au->args.origin[ii];
-                    if (m->ident && strcmp(m->ident, f) == 0)
+                    if (m->ident && strcmp(m->ident, f) == 0 && (!traits || (m->traits & traits)))
                         return m;
                 }
             for (int ii = 0; ii < au->members.count; ii++) {
                 Au_t m = (Au_t)au->members.origin[ii];
-
+                if (m->ident && strcmp(m->ident, "stat") == 0) {
+                    m = m;
+                }
                 if (au->is_struct || au->is_class) {
                     if (((au != typeid(Au) || top_Au) && au->member_type == AU_MEMBER_TYPE) || is_func(m)) {
-                        if (m->ident && strcmp(m->ident, f) == 0)
+                        if (m->ident && strcmp(m->ident, f) == 0 && (!traits || (m->traits & traits)))
                             return m;
                     }
                 } else {
-                    if (m->ident && strcmp(m->ident, f) == 0)
+                    if (m->ident && !m->is_expanding && strcmp(m->ident, f) == 0 && (!traits || (m->traits & traits))) {
+                        // prefer functions over types when both exist with same name
+                        if (m->member_type == AU_MEMBER_TYPE && !traits) {
+                            Au_t func_match = null;
+                            for (int jj = ii + 1; jj < au->members.count; jj++) {
+                                Au_t mj = (Au_t)au->members.origin[jj];
+                                if (mj->ident && strcmp(mj->ident, f) == 0 && is_func((Au)mj)) {
+                                    func_match = mj;
+                                    break;
+                                }
+                            }
+                            if (func_match) return func_match;
+                        }
                         return m;
+                    }
                 }
             }
             Au_t au_isa = isa(au);
