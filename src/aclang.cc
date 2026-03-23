@@ -85,6 +85,8 @@ using namespace clang;
 Au_t ff;
 Au_t f_arg;
 
+extern "C" string Au_cast_string(Au a);
+
 // ============================================================================
 // Helper macros for the new API
 // ============================================================================
@@ -399,7 +401,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         RecordDecl* decl = RT->getDecl();
         std::string name = decl->getNameAsString();
         Au_t existing = name.length() ? au_lookup(name.c_str()) : null;
-        if (existing) return existing;
+        if (existing && existing->member_type == AU_MEMBER_TYPE) return existing;
 
         if (auto* CXX = dyn_cast<CXXRecordDecl>(decl)) {
             if (CXX->isCLike()) {
@@ -454,7 +456,7 @@ static void set_fields(RecordDecl* decl, ASTContext& ctx, aether e, Au_t rec) {
 
     if (decl->isCompleteDefinition() && !decl->isInvalidDecl() && !decl->isDependentType()) {
         const ASTRecordLayout& layout = ctx.getASTRecordLayout(decl);
-        
+
         int field_index = 0;
         for (auto field : decl->fields()) {
             std::string field_name = field->getNameAsString();
@@ -464,7 +466,6 @@ static void set_fields(RecordDecl* decl, ASTContext& ctx, aether e, Au_t rec) {
 
             QualType field_type = field->getType();
             Au_t mapped = map_clang_type(field_type, ctx, e, null);
-
             if (!mapped) continue;
             
             Au_t m = def_member(rec, field_name.c_str(), mapped, AU_MEMBER_VAR, AU_TRAIT_IS_C | AU_TRAIT_IPROP);
@@ -482,9 +483,9 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     bool has_name = name.length() > 0;
     symbol n = has_name ? name.c_str() : null;
     
-    // Check if already exists
+    // Check if already exists as a complete type (not empty stub, not function/macro)
     Au_t existing = has_name ? au_lookup(n) : null;
-    if (existing) return existing;
+    if (existing && existing->member_type == AU_MEMBER_TYPE && existing->members.count > 0) return existing;
 
     bool is_union = decl->isUnion();
     Au_t parent = aether_top_scope(e);
@@ -497,10 +498,13 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
         return opaque;
     }
 
-    // Create struct/union
+    // Create struct/union (reuse existing empty stub if present)
     u32 traits = is_union ? AU_TRAIT_UNION : AU_TRAIT_STRUCT;
-    Au_t rec = def_type(parent, n, traits | AU_TRAIT_IS_C);
+    Au_t rec = (existing && existing->member_type == AU_MEMBER_TYPE && existing->members.count == 0 && existing->is_c) ?
+        existing : def_type(parent, n, traits | AU_TRAIT_IS_C);
+    rec->traits |= traits | AU_TRAIT_IS_C;
     rec->is_struct = true;
+    rec->src = null; // clear opaque stub's ARef src
     //rec->module = e->current_import->au;
 
     const ASTRecordLayout& layout = ctx.getASTRecordLayout(decl);
@@ -664,7 +668,7 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
     
     Au_t parent = aether_top_scope(e);
     Au_t fn = def(parent, n, AU_MEMBER_FUNC, AU_TRAIT_IS_C);
-    if (n && strcmp(n, "printf") == 0) {
+    if (n && strcmp(n, "stat") == 0) {
         int test2 = 2;
         test2    += 2;
     }
@@ -813,6 +817,24 @@ public:
         return true;
     }
     
+    bool VisitVarDecl(VarDecl* decl) {
+        if (decl->hasExternalStorage() || decl->hasGlobalStorage()) {
+            std::string var_name = decl->getNameAsString();
+            if (var_name.empty()) return true;
+            symbol n = var_name.c_str();
+            Au_t existing = au_lookup(n);
+            // allow variable alongside macro with same name
+            if (existing && existing->member_type != AU_MEMBER_MACRO) return true;
+            QualType qt = decl->getType();
+            Au_t mapped = map_clang_type(qt, ctx, e, null);
+            if (!mapped) return true;
+            Au_t parent = aether_top_scope(e);
+            Au_t m = def_member(parent, n, mapped, AU_MEMBER_VAR, AU_TRAIT_IS_C);
+            m->is_static = true;
+        }
+        return true;
+    }
+
     bool VisitRecordDecl(RecordDecl* decl) {
         if (isa<CXXRecordDecl>(decl)) return true;
         if (decl->isCompleteDefinition() && !decl->getNameAsString().empty()) {
@@ -1119,6 +1141,23 @@ path aether_include(aether e, Au inc, string ns) {
             string arg = f(string, "-F%o", fw_path);
             args.push_back(arg->chars);
         }
+
+    if (e->define_map) {
+        for (item it = e->define_map->first; it; it = it->next) {
+            Au key = it->key;
+            Au val = it->value;
+            char buf[256];
+            string skey = Au_cast_string(key);
+            if (isa(val) == typeid(bool)) {
+                snprintf(buf, 256, "-D%s", skey->chars);
+                args.push_back(strdup(buf));
+            } else {
+                string sval = Au_cast_string(val);
+                snprintf(buf, 256, "-D%s=%s", skey->chars, sval->chars);
+                args.push_back(strdup(buf));
+            }
+        }
+    }
 
     if (e->include_paths)
         for (int i = 0; i < e->include_paths->count; i++) {

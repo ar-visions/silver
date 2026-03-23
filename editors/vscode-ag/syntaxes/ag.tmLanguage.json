@@ -133,7 +133,7 @@
     },
     "storage-keywords": {
       "name": "keyword.other.storage.ag",
-      "match": "\\b(new|ref|array|map|stack|const)\\b"
+      "match": "\\b(new|ref|array|map|local|const)\\b"
     },
     "type-keywords": {
       "name": "support.type.ag",
