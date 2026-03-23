@@ -651,6 +651,7 @@ forward(any)
     M(AA,BB, s, method, public, Au_t,   find_context,   array, i32, i32) \
     M(AA,BB, s, method, public, Au_t,   lexical,        array, symbol) \
     M(AA,BB, s, method, public, bool,   check,          bool,  string) \
+    M(AA,BB, s, method, public, Au_t,   __typeid,       Au) \
     M(AA,BB, s, method, public, none,   auto_free) \
     M(AA,BB, i, method, public, Au,     initialize) \
     M(AA,BB, s, method, public, none,   module_erase,   Au_t, symbol) \
