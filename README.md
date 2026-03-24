@@ -9,33 +9,40 @@ Copyright (C) 2017 Kalen Novis White — MIT License
 
 ---
 
+
+## Why silver
+
+We have many great languages and many great build systems. silver handles both build and component design with import and Au modeling — a universal object model defined in C, serving C++, and silver.  Python is in development, so one may build a silver module and immediately use it in python without binding code.  Like code-coverage and automated testing, this is built in with LLVM IR operations in a reflective run-time.
+
+One module expresses an entire product — its dependencies, its models, its runtime reflection — with isolation controlled by keywords such as `public` and `intern` access.
+
+Au is a C-based runtime with post-init property pairs, single-arg construction, casts, and overrides.
+
 ## Debug-first. Cross-platform. Native.
 
-silver is built around one principle: **your code must be debuggable on every platform it runs on.** Every build emits full LLDB debug information — source maps, variable inspection, stepping, breakpoints — from desktop to embedded. There are no optimized-out variables, no mystery crashes in release, no "works on my machine." Debug builds are the default because that's where you spend your time.
+**Your code must be debuggable on every platform it runs on.** Every build emits full LLDB debug information — source maps, variable inspection, stepping, breakpoints — from desktop to embedded. Debug is the default because that's where you spend your time.
 
-Cross-platform compilation targets Linux, macOS, Windows, and embedded (Jetson, ARM) from a single source tree. silver manages the SDK, toolchain, and dependencies per platform — you write the code once, debug it anywhere with the same tools.
+silver targets Linux, macOS, Windows, and embedded (Jetson, ARM) from a single source tree. The SDK, toolchain, and dependencies are managed per platform. Write once, debug anywhere.
 
 ---
 
-## Why silver Exists
+### import `User:Project/Commit`
 
-Software development is beautifully complex. There have been many demonstrated languages and build systems that scale. The idea behind silver is to expose all of this great work reliably on all platforms using succinct syntax, integrating their projects and models into a standard universal object model — Au, a C-based run-time providing a component model capable of post-init property pairs, single-arg construction, casts, and overrides — to target all devices natively, in a local-first manner, where you and your machine are sufficient to build anything.
+silver builds from decentralized repositories, not limiting package managers which prove to be more prone to insecurities and social corruption.  what you choose to depend on is entirely up to you, and you can now describe that in one import line. a single import identifies its build system, builds with that system's own tools, and links the result. Each dependency is built the way its authors intended, then imported into design-time.
 
-silver drives existing build systems — CMake, Cargo, Make, and others — into top-level modules you build natively for all platforms. Cross-platform is typically a frustrating process, and silver manages SDK environments so that each dependency is built the way its authors intended, then linked into your product through Au.
-
-### import `User:Project/Commit-or-Branch`
-
-silver clones the repository, identifies its native build system, builds it with that system's own tools, and links the result. Rust stays Rust. C stays C. Each project is built the way its authors intended. The URL defaults to your own relative Git ecosystem — your remote domain, public or private, forms the base address.
-
-silver is unique in that it represents a single module mechanism to express an entire software product — its dependencies, and the models expressed with runtime reflection and dependency isolation trivially controlled with `public` and `intern` access.
+```
+import KhronosGroup:Vulkan-Headers/29184b9
+import glfw:glfw/fdd14e6 <GLFW/glfw3.h>
+    +GLFW_INCLUDE_VULKAN
+```
 
 ---
 
 ## Overview
 
-silver source files use the `.ag` extension. A module is a directory containing a source file with the same stem name — `myapp/myapp.ag`. The compiler reads the module path, tokenizes, parses, emits LLVM IR, and links the result into a shared library or executable.
+silver source files use the `.ag` extension. A module is a directory with a matching source file — `myapp/myapp.ag`. The compiler tokenizes, parses, emits LLVM IR, and links the result into a shared library or executable.
 
-Companion C or C++ files placed alongside the `.ag` source — `mymodule.c` or `mymodule.cc` — are compiled with Clang and linked in automatically. These sub modules integrate directly into the object model of silver (Au), with specific methods offloaded to these langs. There is no wrapper generation step, no binding language. One merely declares a function with no implementation. The method is then bound to these external languages where they have access to all fields as well as their own language facilities.
+C or C++ companion files alongside the `.ag` source — `mymodule.c` or `mymodule.cc` — compile with Clang and link automatically. They integrate directly into Au's object model. Declare a function in silver with no body, implement it in C or C++. No wrappers, no bindings, no codegen. The external code has full access to all fields and its own language facilities.
 
 ---
 
