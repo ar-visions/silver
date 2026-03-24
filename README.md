@@ -12,7 +12,7 @@ Copyright (C) 2017 Kalen Novis White — MIT License
 
 **silver is debuggable.** Every build emits full LLDB debug information — source maps, code-coverage, variable inspection, stepping, breakpoints — on every platform. Debug is the default because that's where you spend your time, and production failures on platforms you can't inspect are the failures that end projects. silver targets Linux, macOS, Windows, and embedded ARM from a single source tree with a self-contained SDK.
 
-**silver is expressive where it matters.** Classes are reference-counted with single inheritance, post-init property pairs, and operator overloading. Structs are value types. Enums infer in switch cases. Inline assembly is platform-conditional on the same line. Functions accept arguments without commas — matched by type like CSS shorthand — or with commas for positional order. Shapes are first-class literals: `new f32 [32x32x1]` allocates a typed tensor. Scalars let you write `200px` or `16ms` as type-safe values. From neural networks to Vulkan renderers to audio DSP, the foundry ships robust, deployable components of an AI PC.
+**silver is expressive where it matters.** Classes are reference-counted with single inheritance, post-init property pairs, and operator overloading. Structs are value types. Enums infer in switch cases. Inline assembly is platform-conditional on the same line. Functions accept arguments without commas — matched by type like CSS shorthand — or with commas for positional order. Shapes are first-class literals: `new f32 [32x32x1]` allocates a typed tensor. Scalars let you write `200px` or `16ms` as type-safe values. From neural networks to Vulkan renderers to audio DSP, the foundry ships robust, deployable components running in AI PCs.
 
 ---
 
