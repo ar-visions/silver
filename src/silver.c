@@ -4864,7 +4864,9 @@ static enode parse_func_call(silver a, efunc f) { sequencer
         Au_t   src  = (Au_t)au_arg_type((Au)arg_decl);
         etype  typ  = (arg_decl && arg_decl->is_formatter) ? null : u(etype, src);
 
-        enode  expr = parse_expression(a, comma_mode ? typ : null, true, true);
+        bool   ref_arg = arg_decl && arg_decl->is_explicit_ref;
+        etype  expr_typ = ref_arg ? null : (comma_mode ? typ : null);
+        enode  expr = parse_expression(a, expr_typ, !ref_arg, !ref_arg);
         verify(expr, "invalid expression");
 
         if (!comma_mode && !fn->au->is_vargs) {

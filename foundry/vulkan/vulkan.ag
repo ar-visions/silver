@@ -579,7 +579,7 @@ class texture
                 width  = 4
                 height = 4
                 ansio  = 0
-                placeholder_image[ sampler, 4, fill, ref sampler_size, ref format ]
+                placeholder_image[ sampler, 4, ref fill, ref sampler_size, ref format ]
                 vk_format = vk_format_fn[ format, false ]
             usage: VkImageUsageFlags [ 0 ]
             if [ is_depth ]
