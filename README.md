@@ -28,7 +28,7 @@ silver targets Linux, macOS, Windows, and embedded (Jetson, ARM) from a single s
 
 ### import `User:Project/Commit`
 
-silver builds from decentralized repositories, not limiting package managers which prove to be more prone to insecurities and social corruption.  what you choose to depend on is entirely up to you, and you can now describe that in one import line. a single import identifies its build system, builds with that system's own tools, and links the result. Each dependency is built the way its authors intended, then imported into design-time.
+silver builds from decentralized repositories, not limiting package managers which prove to be more prone to both insecurities and gate-keeping.  what you choose to depend on is entirely up to you, and you can now describe that in one import line. a single import identifies its build system, builds with that system's own tools, and links the result. Each dependency is built the way its authors intended, then imported into design-time.
 
 ```
 import KhronosGroup:Vulkan-Headers/29184b9
