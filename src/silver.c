@@ -2468,6 +2468,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
     }
 
     bool is_super = false;
+    bool null_guard = false;
     string first_alpha = null;
     for (;!skip_member_check;) {
         bool first = !mem;
@@ -2603,10 +2604,25 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
 
                 // Load previous member to traverse into it
                 enode prop = !is_struct(canonical(mem)) ? e_load(a, mem, null) : mem;
-                mem = access(prop, alpha, true);
+                if (null_guard && is_ptr(prop)) {
+                    // emit null check: if null, short-circuit to default
+                    enode cond = e_not(a, prop);
+                    mem = access(prop, alpha, true);
+                    enode def = e_null(a, canonical(mem));
+                    mem = e_ternary(a, cond, def, mem);
+                } else {
+                    mem = access(prop, alpha, true);
+                }
             } else {
                 Au info = head(mem);
-                mem = access(mem, alpha, true);
+                if (null_guard && is_ptr(mem)) {
+                    enode cond = e_not(a, mem);
+                    enode accessed = access(mem, alpha, true);
+                    enode def = e_null(a, canonical(accessed));
+                    mem = e_ternary(a, cond, def, accessed);
+                } else {
+                    mem = access(mem, alpha, true);
+                }
             }
 
             Au_t mem_type = isa(mem);
@@ -2667,8 +2683,9 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
             }
         }
 
-        // check if there's more chaining
-        bool br = read_if(a, ".") == null;
+        // check if there's more chaining (. or -> for null-guard)
+        null_guard = read_if(a, "->") != null;
+        bool br = !null_guard && read_if(a, ".") == null;
         if (br) {
             //if (in_ref)
                 break;
@@ -4848,8 +4865,8 @@ static enode parse_func_call(silver a, efunc f) { sequencer
     enode   target = null;
     i32     offset = 0;
 
-    if (is_func((Au)f) && (caller_target || f->target)) {
-        push(values, caller_target ? (Au)caller_target : (Au)f->target);
+    if (is_func((Au)f) && caller_target) {
+        push(values, (Au)caller_target);
         offset = 1;
     }
 
