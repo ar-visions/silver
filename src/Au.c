@@ -1818,6 +1818,9 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
 Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
     static int seq; seq++;
 
+    if (ident && strcmp(ident, "remove") == 0) {
+        ident = ident;
+    }
     //printf("def [ context: %s, ident: %s, member_type: %i, traits: %lli ]\n", type ? type->ident : null, ident, member_type, traits);
 
     struct _Au_combine* cur = calloc(1, sizeof(struct _Au_combine));
@@ -4136,7 +4139,8 @@ item map_fetch(map m, Au k) {
         ((item*)m->hlist)[b] = i = hold(
             item(next, ((item*)m->hlist)[b],
                 key, m->unmanaged ? k : hold(k), h, h));
-        m->count++;
+        if (m->hsize == 0)
+            m->count++;
     }
     return i;
 }
