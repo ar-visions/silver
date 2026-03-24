@@ -36,19 +36,6 @@ C or C++ companion files alongside the `.ag` source — `mymodule.c` or `mymodul
 
 ---
 
-## Syntax
-
-silver uses indentation for scoping (tabs), `#` for comments, and square brackets where most languages use parentheses.
-
-```python
-# single-line comment
-
-##
-multi-line
-comment
-##
-```
-
 ### Variables
 
 `:` declares a new member. `=` assigns to an existing one. These are distinct operations. `=` will never create a variable; `:` always does.
@@ -84,6 +71,15 @@ func add [ a: i32, b: i32 ] -> i32
 
 func greet [ name: string ]
     puts 'hello, {name}'
+
+# single-line comment
+
+##
+multi-line
+comment
+##
+```
+
 ```
 
 When no `->` is given, the return type is `none`. At expression level 0 (top of a statement), calls without arguments omit the brackets:
