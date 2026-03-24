@@ -86,6 +86,7 @@ Au_t ff;
 Au_t f_arg;
 
 extern "C" string Au_cast_string(Au a);
+extern "C" Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type);
 
 // ============================================================================
 // Helper macros for the new API
@@ -885,9 +886,8 @@ public:
             std::string var_name = decl->getNameAsString();
             if (var_name.empty()) return true;
             symbol n = var_name.c_str();
-            Au_t existing = au_lookup(n);
-            // allow variable alongside macro with same name
-            if (existing && existing->member_type != AU_MEMBER_MACRO) return true;
+            Au_t existing = lexical_traits(e->lexical, n, 0, AU_MEMBER_VAR);
+            if (existing) return true;
             QualType qt = decl->getType();
             Au_t mapped = map_clang_type(qt, ctx, e, null);
             if (!mapped) return true;

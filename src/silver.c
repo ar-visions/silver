@@ -3,7 +3,7 @@
 #include <execinfo.h>
 #include <ports.h>
 
-Au_t lexical_traits(array lex, symbol f, u64 traits);
+Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type);
 enode e_convert_or_cast(aether a, etype output, enode input);
 
 
@@ -3022,7 +3022,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     }
 
     // { keyword tokens } — compacted token literals
-    if (!cmode && next_is(a, "{") && mdl_expect && mdl_expect->au == typeid(tokens)->src) {
+    if (!cmode && next_is(a, "{")) {
         return read_keywords(a);
     }
 
@@ -3663,8 +3663,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         
         bool is_ref = read_if(a, "ref") != null;
         if (!t) t = read_etype(a, null); // we need to avoid the literal check in here!
-        if (is_ref) 
-        verify(t, "expected alpha-numeric identity for type or name");
+        verify(t, "expected alpha-numeric identity for type or name, found %o", peek(a));
         Au_t arg = alloc_arg(au, n ? n->chars : null, t->au);
         arg->is_inlay = is_inlay;
         arg->is_explicit_ref = is_ref;
@@ -3822,7 +3821,7 @@ etype read_etype(silver a, array* p_expr) { sequencer
         if (is_struct) {
             string alpha = read_alpha(a);
             if (alpha) {
-                Au_t au = lexical_traits(a->lexical, cstring(alpha), AU_TRAIT_STRUCT);
+                Au_t au = lexical_traits(a->lexical, cstring(alpha), AU_TRAIT_STRUCT, 0);
                 if (au)
                     mdl = (etype)etype_prep((silver)a, au);
             }
@@ -4359,7 +4358,7 @@ string compile_implements(silver a, array files, string cflags) {
         cstr   compiler = is_cpp ? "clang++" : "clang";
         cstr   std_flag = is_cpp ? "-std=c++17" : "-std=c11";
         string st       = stem(i);
-        verify(exec(a->verbose, "%o/bin/%s %s %s %o %s -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au",
+        verify(exec(a->verbose, "%o/bin/%s %s %s %o %s -w -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au",
             install, compiler, std_flag, sysroot_flag, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install) == 0,
             "failed to compile %o", i);
         if (len(objs)) append(objs, " ");
