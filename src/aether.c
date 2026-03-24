@@ -1761,7 +1761,7 @@ enode aether_e_expect(aether a, enode cond, enode msg) {
     #else
         cstr stderr_sym = "stderr";
     #endif
-        LLVMValueRef stderr_fn = LLVMGetNamedFunction(a->module_ref, stderr_sym);
+        LLVMValueRef stderr_fn = LLVMGetNamedGlobal(a->module_ref, stderr_sym);
         if (!stderr_fn)
             stderr_fn = LLVMAddGlobal(a->module_ref, i8ptr, stderr_sym);
         LLVMValueRef stderr_val = LLVMBuildLoad2(B, i8ptr, stderr_fn, "stderr_val");
@@ -3103,6 +3103,8 @@ enode e_create_from_array(aether a, etype t, array ar) {
                 e_fn_call(a, f_push, a(res, element));
             }
         }
+    } else if (ln == 0) {
+        return e_create(a, t, (Au)null);
     } else if (ln == 1) {
         return e_create(a, t, ar->origin[0]);
     } else {
@@ -5326,7 +5328,7 @@ none etype_implement(etype t, bool w) { sequencer
             bool is_external = ((module && au->access_type == interface_public) || a->is_Au_import || au->is_system || (au->is_c && au->is_static));
             LLVMValueRef G = is_external ?
                 LLVMFetchGlobal(a->module_ref, type, au->ident) : LLVMAddGlobal(a->module_ref, type, au->ident);
-            LLVMLinkage linkage = is_external ? 
+            LLVMLinkage linkage = is_external ?
                 LLVMExternalLinkage : LLVMInternalLinkage;
             LLVMSetLinkage(G, linkage);
             if (!a->is_Au_import && !(au->is_c && au->is_static)) {
