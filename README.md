@@ -54,16 +54,16 @@ comment
 `:` declares a new member. `=` assigns to an existing one. These are distinct operations. `=` will never create a variable; `:` always does.
 
 ```python
-count: i32 0             # typed with value
-count = 10               # assign existing
-count += 1               # compound assignment
-count2: 2                # inferred i64
-ratio: f32 [ 0.0 ]      # bracketed initializer
-flag: bool [ true ]      # boolean
-name: string [ 'hello' ] # string with single quotes
-p: ref i32               # pointer (reference)
-data: new f32 [ 1024 ]   # heap allocation
-buf: new f32 [ 32x32 ]   # heap allocation with shape
+count  : i32 0                 # typed with value
+count  = 10                    # assign existing
+count += 1                     # compound assignment
+count2 : 2                     # inferred i64
+ratio  : f32 [ 0.0 ]           # bracketed initializer
+flag   : bool [ true ]         # boolean
+name   : string [ 'hello' ]    # string with single quotes
+p      : ref i32               # pointer (reference)
+data   : new f32 [ 1024 ]      # heap allocation
+buf    : new f32 [ 32x32 ]     # heap allocation with shape
 ```
 
 At module scope, members are configuration inputs. They cannot be reassigned from within the module — they are set externally by the importer:
