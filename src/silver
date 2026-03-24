@@ -29,8 +29,8 @@ declare_class(exports)
     M(X, Y, i, prop,     intern,  string, docker) \
     M(X, Y, i, prop,     public,  string, source_raw) \
     M(X, Y, i, prop,     public,  path,   src_loc) \
+    M(X, Y, i, prop,     intern,  bool,   processed_imports) \
     M(X, Y, i, prop,     iobject, array,  implements) \
-    M(X, Y, i, prop,     iobject, array,  imports) \
     M(X, Y, i, prop,     public,  enode,  last_sub_return) \
     M(X, Y, i, prop,     public,  enode,  last_return) \
     M(X, Y, i, prop,     public,  enode,  last_break) \
@@ -91,18 +91,6 @@ declare_class(exports)
     M(X, Y, i, override, method,  build_user_initializer) \
     M(X, Y, i, override, method,  init)
 declare_class_4(silver, aether, emodule, etype)
-
-#define import_schema(X, Y, ...) \
-    M(X, Y, i, prop,     public,  codegen, codegen) \
-    M(X, Y, i, prop,     public,  string,  external_name) \
-    M(X, Y, i, prop,     public,  path,    external_product) \
-    M(X, Y, i, prop,     public,  array,   tokens) \
-    M(X, Y, i, prop,     public,  path,    lib_path) \
-    M(X, Y, i, prop,     public,  path,    module_source) \
-    M(X, Y, i, prop,     public,  array,   include_paths) \
-    M(X, Y, s, method,   public,  enode,   parse_import, silver) \
-    M(X, Y, s, method,   public,  enode,   parse_export, silver)
-declare_class_3(import, enamespace, etype)
 
 #define chatgpt_module_ silver
 #define chatgpt_schema(X, Y, ...) \

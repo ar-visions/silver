@@ -18,7 +18,8 @@ void build_fn(silver a, efunc fmem, callback preamble, callback postamble);
 bool is_explicit_ref(enode);
 enode enode_ref(aether, enode, etype);
 etype evar_type(evar a);
-
+enode parse_import(silver a);
+enode parse_export(silver a);
 enode parse_return(silver a);
 enode parse_break(silver a);
 enode parse_continue(silver a);
@@ -2979,7 +2980,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         etype target = read_etype(a, null);
         validate(target, "expected type after -> in cast");
         validate(read_if(a, "]"), "expected ] after cast");
-        return e_convert_or_cast(a, canonical(target), expr);
+        return e_convert_or_cast((aether)a, canonical(target), expr);
     }
 
     if (!cmode && read_if(a, "null"))
@@ -3197,6 +3198,11 @@ enode parse_statement(silver a)
     Au_t      top       = top_scope(a);
     silver    module    = is_module(top) ? a : null;
     etype     rec_top   = is_rec(top) ? u(etype, top) : null;
+
+    if (!a->processed_imports && !next_is(a, "export") && !next_is(a, "import") && !next_is(a, "ifdef")) {
+        a->processed_imports = true;
+        aether_import_includes((aether)a);
+    }
 
     // standard statements first, only in context of functions
     if (f) {
@@ -4116,7 +4122,7 @@ string import_libs(array input, map output) {
     return libs;
 }
 
-void import_includes(silver a, array input, array output) {
+void import_include_paths(silver a, array input, array output) {
     each(input, string, t) {
         if (starts_with(t, "-I")) {
             string expanded = interpolate(t, (Au)a);
@@ -5106,6 +5112,7 @@ enode parse_import(silver a) {
     string  service      = null;
     string  user         = null;
     string  project      = null;
+    string  name         = null;
 
     if (t && isalpha(t->chars[0])) {
         bool   cont     = false;
@@ -5179,19 +5186,17 @@ enode parse_import(silver a) {
         }
     }
 
-    if (bb && eq(bb, "Vulkan-Tools")) {
-        bb =  bb;
-    }
+    map define_map = null;
     array b = hold(read_body(a));
     if (len(b)) {
         array bt = compact_tokens(b);
         import_libs(bt, a->libs);
         if (!a->include_paths)
             a->include_paths = array(16);
-        if (!a->define_map)
-            a->define_map = map(hsize, 16);
-        import_includes(a, bt, a->include_paths);
-        import_defines(a, bt, a->define_map);
+        if (!define_map)
+            define_map = map(hsize, 16);
+        import_include_paths(a, bt, a->include_paths);
+        import_defines(a, bt, define_map);
     }
 
     map defs = len(b) ? map() : null;
@@ -5371,30 +5376,36 @@ enode parse_import(silver a) {
         push(tokens, (Au)t);
     }
 
+    if (project)
+        name = project;
+    else if (aa)
+        name = aa;
+
     import mdl = import(
         mod, (aether)a,
+        name, name,
         codegen, cg,
         external_name, external_name,
         external_product, external_product,
         tokens, tokens);
 
     push(a->imports, (Au)mdl);
-    a->current_import = (etype)mdl;
 
     mdl->au->alt = namespace ? cstr_copy(symbol_name((Au)namespace)->chars) : null;
     
     if (len(includes)) {
-        push_scope(a, (Au)mdl);
-        mdl->include_paths = array();
+        //push_scope(a, (Au)mdl);
+        mdl->include_paths = hold(array());
 
         // include each, collecting the clang instance for which we will invoke macros through
         each(includes, string, inc) {
-            path i = include(a, (Au)inc, namespace);
-            push(mdl->include_paths, (Au)i);
+            path ipath = (Au_t)isa(inc) == typeid(string) ?
+                aether_lookup_include((aether)a, (string)inc) : (path)inc;
+
+            //path i = aether_lookup_include(a, (Au)ipath);
+            push(mdl->include_paths, (Au)ipath);
         }
     }
-
-    Au_t top22 = top_scope(a);
 
     // loads the actual library here -- DO NOT integrate external->au module; we load it direct with our own
     // and let the runtime register itself
@@ -5405,19 +5416,14 @@ enode parse_import(silver a) {
             mdl->external_product ? (Au)mdl->external_product : mod ? (Au)mod : (Au)lib_path);
     }
 
-    Au_t top2244 = top_scope(a);
-    
     mdl->au->is_closed = true;
     mdl->lib_path = hold(lib_path);
     mdl->module_source = hold(module_source);
-    a->current_import = null;
 
     if (is_codegen) {
         string name = namespace ? (string)namespace : string(is_codegen->ident);
         set(a->codegens, (Au)name, (Au)mdl->codegen);
     }
-
-    Au_t top2 = top_scope(a);
 
     return (enode)mdl;
 }
@@ -7152,9 +7158,10 @@ etype silver_read_def(silver a, interface access) {
     bool  is_scalar  = next_is(a, "scalar");
     bool  is_enum    = next_is(a, "enum");
     bool  is_export  = next_is(a, "export");
+    bool  is_import  = next_is(a, "import");
     bool  is_alias   = next_is(a, "alias");
 
-    if (!is_type && !is_class && !is_struct && !is_scalar && !is_enum && !is_export && !is_alias)
+    if (!is_type && !is_import && !is_class && !is_struct && !is_scalar && !is_enum && !is_export && !is_alias)
         return null;
 
     if (is_type) {
@@ -7167,6 +7174,11 @@ etype silver_read_def(silver a, interface access) {
     if (is_export) {
         validate(!access, "unexpected access level");
         return (etype)parse_export(a);
+    }
+
+    if (is_import) {
+        validate(!access, "unexpected access level");
+        return (etype)parse_import(a);
     }
 
     if (is_alias) {
@@ -7328,7 +7340,6 @@ define_class(chatgpt, codegen)
 define_class(claude,  codegen)
 define_class(gemini,  codegen)
 define_class(silver, aether)
-define_class(import, enamespace)
 define_class(exports, Au)
 
 initializer(silver_module)

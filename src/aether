@@ -95,7 +95,6 @@ forward(evar)
     M(X, Y, i, prop,     public,  path,                     root_path) \
     M(X, Y, i, prop,     public,  path,                     module_path) \
     M(X, Y, i, prop,     public,  path,                     project_path) \
-    M(X, Y, i, prop,     public,  path,                     current_inc) \
     M(X, Y, i, prop,     public,  bool,                     building_initializer) \
     M(X, Y, i, prop,     public,  bool,                     direct) \
     M(X, Y, i, prop,     public,  bool,                     import_c) \
@@ -117,7 +116,6 @@ forward(evar)
     M(X, Y, i, prop,     public,  array,                    sys_inc_paths) \
     M(X, Y, i, prop,     public,  array,                    sys_exc_paths) \
     M(X, Y, i, prop,     public,  array,                    include_paths) \
-    M(X, Y, i, prop,     public,  map,                      define_map) \
     M(X, Y, i, prop,     public,  array,                    framework_paths) \
     M(X, Y, i, prop,     public,  array,                    lib_paths) \
     M(X, Y, i, prop,     public,  path,                     isysroot) \
@@ -169,6 +167,7 @@ forward(evar)
     M(X, Y, i, prop,     public,  num,                      cursor) \
     M(X, Y, i, prop,     public,  array,                    stack) \
     M(X, Y, i, prop,     public,  Au_t,                     top) \
+    M(X, Y, i, prop,     public,  array,                    imports) \
     M(X, Y, i, vargs,    public,  none,                     eprint, symbol) \
     M(X, Y, i, method,   public,  none,                     e_vector_init, etype, enode, array) \
     M(X, Y, i, method,   public,  none,                     create_type_members, Au_t) \
@@ -257,6 +256,7 @@ forward(evar)
     M(X, Y, i, method,   public,  none,                     pop_tokens, bool) \
     M(X, Y, i, method,   public,  path,                     lookup_include, string) \
     M(X, Y, i, method,   public,  path,                     include, Au, string) \
+    M(X, Y, i, method,   public,  none,                     import_includes) \
     M(X, Y, i, method,   public,  Au_t,                     top_scope) \
     M(X, Y, i, method,   public,  none,                     push_scope, Au) \
     M(X, Y, i, method,   public,  Au_t,                     pop_scope) \
@@ -366,5 +366,16 @@ declare_class(codegen)
 #define static_array_schema(X, Y, ...) \
     M(X, Y, i, prop,     intern,  bool,            placeholder)
 declare_class_3(static_array, array, collective)
+
+#define import_schema(X, Y, ...) \
+    M(X, Y, i, prop,     public,  codegen, codegen) \
+    M(X, Y, i, prop,     public,  string,  external_name) \
+    M(X, Y, i, prop,     public,  path,    external_product) \
+    M(X, Y, i, prop,     public,  array,   tokens) \
+    M(X, Y, i, prop,     public,  path,    lib_path) \
+    M(X, Y, i, prop,     public,  path,    module_source) \
+    M(X, Y, i, prop,     public,  array,   include_paths) \
+    M(X, Y, i, prop,     public,  map,     define_map)
+declare_class_3(import, enamespace, etype)
 
 #endif
