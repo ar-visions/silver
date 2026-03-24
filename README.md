@@ -1,11 +1,19 @@
 # **silver** lang
 ![silver-lang](silver-icon.png "silver-lang")
 
-**A build language. MIT licensed.**
+**A native systems language with LLVM backend. Debug everywhere, build everything. MIT licensed.**
 ```
 silver 0.88
 Copyright (C) 2017 Kalen Novis White — MIT License
 ```
+
+---
+
+## Debug-first. Cross-platform. Native.
+
+silver is built around one principle: **your code must be debuggable on every platform it runs on.** Every build emits full LLDB debug information — source maps, variable inspection, stepping, breakpoints — from desktop to embedded. There are no optimized-out variables, no mystery crashes in release, no "works on my machine." Debug builds are the default because that's where you spend your time.
+
+Cross-platform compilation targets Linux, macOS, Windows, and embedded (Jetson, ARM) from a single source tree. silver manages the SDK, toolchain, and dependencies per platform — you write the code once, debug it anywhere with the same tools.
 
 ---
 

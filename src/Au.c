@@ -1682,13 +1682,13 @@ Au_t find_context(array lex, int member_type, int traits) {
     return null;
 }
 
-Au_t lexical_traits(array lex, symbol f, u64 traits);
+Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type);
 
 Au_t lexical(array lex, symbol f) {
-    return lexical_traits(lex, f, 0);
+    return lexical_traits(lex, f, 0, 0);
 }
 
-Au_t lexical_traits(array lex, symbol f, u64 traits) {
+Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type) {
 
     bool top_set = false;
     bool top_Au  = false;
@@ -1702,21 +1702,18 @@ Au_t lexical_traits(array lex, symbol f, u64 traits) {
             if (((au != typeid(Au) || top_Au) && au->member_type == AU_MEMBER_TYPE) || is_func(au))
                 for (int ii = 0; ii < au->args.count; ii++) {
                     Au_t m = (Au_t)au->args.origin[ii];
-                    if (m->ident && strcmp(m->ident, f) == 0 && (!traits || (m->traits & traits)))
+                    if (m->ident && strcmp(m->ident, f) == 0 && (!traits || (m->traits & traits)) && (!member_type || m->member_type == member_type))
                         return m;
                 }
             for (int ii = 0; ii < au->members.count; ii++) {
                 Au_t m = (Au_t)au->members.origin[ii];
-                if (m->ident && strcmp(m->ident, "stat") == 0) {
-                    m = m;
-                }
                 if (au->is_struct || au->is_class) {
                     if (((au != typeid(Au) || top_Au) && au->member_type == AU_MEMBER_TYPE) || is_func(m)) {
-                        if (m->ident && strcmp(m->ident, f) == 0 && (!traits || (m->traits & traits)))
+                        if (m->ident && strcmp(m->ident, f) == 0 && (!traits || (m->traits & traits)) && (!member_type || m->member_type == member_type))
                             return m;
                     }
                 } else {
-                    if (m->ident && !m->is_expanding && strcmp(m->ident, f) == 0 && (!traits || (m->traits & traits))) {
+                    if (m->ident && !m->is_expanding && strcmp(m->ident, f) == 0 && (!traits || (m->traits & traits)) && (!member_type || m->member_type == member_type)) {
                         // prefer functions over types when both exist with same name
                         if (m->member_type == AU_MEMBER_TYPE && !traits) {
                             Au_t func_match = null;
