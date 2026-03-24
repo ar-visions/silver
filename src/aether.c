@@ -257,7 +257,7 @@ enode enode_value(enode mem, bool force_load) { sequencer
     //aether a = mem->mod;
     //etype mdl = etype_prep(a, au_arg_type((Au)mem->au));
 
-    if (!mem->loaded && (force_load || !is_struct(canonical(mem))) && !mem->au->is_imethod && (!is_func((Au)mem) || is_func_ptr((Au)mem))) {
+    if (!mem->loaded && (force_load || !is_struct(canonical(mem))) && !mem->au->is_imethod && mem->au->member_type != AU_MEMBER_TYPE && (!is_func((Au)mem) || is_func_ptr((Au)mem))) {
         if (mem->au->ident && strstr(mem->au->ident, "SND_PCM_STREAM") != NULL) {
             mem = mem; // breakpoint: loading SND_PCM_STREAM enum
         }
@@ -1811,6 +1811,11 @@ enode aether_e_fault(aether a, enode msg) {
         abort_fn = LLVMAddFunction(a->module_ref, "abort", abort_ty);
     LLVMBuildCall2(B, abort_ty, abort_fn, null, 0, "");
     LLVMBuildUnreachable(B);
+
+    // create dead block so subsequent code doesn't append to terminated block
+    LLVMBasicBlockRef dead = LLVMAppendBasicBlockInContext(a->module_ctx,
+        LLVMGetBasicBlockParent(LLVMGetInsertBlock(B)), "post_fault");
+    LLVMPositionBuilderAtEnd(B, dead);
 
     return e_noop(a, etypeid(none));
 }
@@ -4333,8 +4338,10 @@ enode aether_e_load(aether a, enode mem, enode target) { sequencer
         return r;
     }
 
+    LLVMTypeRef load_ty = (mem_au->is_class) ?
+        LLVMPointerTypeInContext(a->module_ctx, 0) : lltype(resolve);
     LLVMValueRef loaded = LLVMBuildLoad2(
-        B, lltype(resolve), mem->value, id->chars);
+        B, load_ty, mem->value, id->chars);
     enode r = enode(mod, a, loaded, true, value, loaded, au, resolve->au, is_any, mem->is_any);
     return r;
 }
@@ -5322,7 +5329,7 @@ none etype_implement(etype t, bool w) { sequencer
             LLVMLinkage linkage = is_external ? 
                 LLVMExternalLinkage : LLVMInternalLinkage;
             LLVMSetLinkage(G, linkage);
-            if (!a->is_Au_import) {
+            if (!a->is_Au_import && !(au->is_c && au->is_static)) {
                 LLVMSetInitializer(G, LLVMConstNull(type)); // or a real initializer
             }
             n->loaded = false;
