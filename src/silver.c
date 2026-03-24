@@ -441,7 +441,7 @@ static inline enode expr_load(enode result, bool load) {
 }
 
 static enode parse_expression(silver a, etype expect, bool hint, bool load) { sequencer
-    if (seq == 323)
+    if (seq == 841)
         seq = seq;
     if (is_rec(expect) && next_is(a, "[")) {
         // collections go straight to parse_object — [ ] is always element data
@@ -4084,12 +4084,15 @@ static array import_build_commands(array input, symbol sym) {
 string import_config(array input) {
     string config = string(alloc, 128);
     int token_line = -1;
-    each(input, token, t) {
+    for (int i = 0; i < len(input); i++) {
+        token t = (token)input->origin[i];
         if (starts_with(t, ">")) {
             token_line = t->line;
         } else if (token_line >= 0 && t->line != token_line) {
             token_line = -1;
         }
+        if (starts_with(t, "+"))
+            continue;
         if (token_line == -1 && !starts_with(t, "-l") && !starts_with(t, "-I")) {
             if (len(config))
                 append(config, " ");
@@ -4132,14 +4135,14 @@ void import_include_paths(silver a, array input, array output) {
 }
 
 void import_defines(silver a, array input, map output) {
-    each(input, string, t) {
-        if (starts_with(t, "-D")) {
-            string def = mid(t, 2, len(t) - 2);
-            int eq_pos = index_of(def, "=");
-            if (eq_pos >= 0) {
-                string key = mid(def, 0, eq_pos);
-                string val = mid(def, eq_pos + 1, len(def) - eq_pos - 1);
-                set(output, (Au)key, (Au)val);
+    for (int i = 0; i < len(input); i++) {
+        string t = (string)input->origin[i];
+        if (eq(t, "+") && i + 1 < len(input)) {
+            string def = (string)input->origin[++i];
+            // check for = in next token
+            if (i + 1 < len(input) && eq((string)input->origin[i + 1], "=") && i + 2 < len(input)) {
+                i += 2; // skip = and value
+                set(output, (Au)def, (Au)input->origin[i]);
             } else {
                 set(output, (Au)def, (Au)_bool(true));
             }
@@ -5164,6 +5167,7 @@ enode parse_import(silver a) {
     }
 
     array includes = array(32);
+    string first_include = null;
 
     // determine includes, uri, and config
     // includes for this import
@@ -5171,6 +5175,9 @@ enode parse_import(silver a) {
         for (;;) {
             string f = read_alpha_any(a);
             validate(f, "expected include");
+
+            if (!first_include)
+                first_include = f;
 
             // we may read: something/is-a.cool\file.hh.h
             while (next_is_neighbor(a) && (!next_is(a, ",") && !next_is(a, ">")))
@@ -5196,7 +5203,7 @@ enode parse_import(silver a) {
         if (!define_map)
             define_map = map(hsize, 16);
         import_include_paths(a, bt, a->include_paths);
-        import_defines(a, bt, define_map);
+        import_defines(a, b, define_map);
     }
 
     map defs = len(b) ? map() : null;
@@ -5376,18 +5383,29 @@ enode parse_import(silver a) {
         push(tokens, (Au)t);
     }
 
-    if (project)
-        name = project;
-    else if (aa)
-        name = aa;
+    bool import_Au = !!external_name;
 
+    if (!external_name) {
+        if (project)
+            external_name = project;
+        else if (aa)
+            external_name = aa;
+        else if (first_include)
+            external_name = first_include;
+        else {
+            fault("no identity found for import");
+        }
+    }
+
+    bool is_au_rt = !module_source || eq(ext(module_source), "ag");
     import mdl = import(
-        mod, (aether)a,
-        name, name,
-        codegen, cg,
-        external_name, external_name,
-        external_product, external_product,
-        tokens, tokens);
+        mod,                (aether)a,
+        codegen,            cg,
+        external_name,      external_name,
+        external_product,   external_product,
+        tokens,             tokens,
+        define_map,         define_map,
+        is_au_rt,           is_au_rt);
 
     push(a->imports, (Au)mdl);
 
@@ -5407,16 +5425,21 @@ enode parse_import(silver a) {
         }
     }
 
+        if (seq == 5) {
+            seq = seq;
+        }
+
     // loads the actual library here -- DO NOT integrate external->au module; we load it direct with our own
     // and let the runtime register itself
     // this is so we may be Au-centric, and language agnostic
-    if (!is_codegen && (mdl->external_name || mod || lib_path)) {
+    if (!is_codegen && (import_Au || mod || lib_path)) {
         import_Au(a,
             mdl->external_name,
             mdl->external_product ? (Au)mdl->external_product : mod ? (Au)mod : (Au)lib_path);
+        mdl->au->is_closed = true;
     }
 
-    mdl->au->is_closed = true;
+    //mdl->au->is_closed = true;
     mdl->lib_path = hold(lib_path);
     mdl->module_source = hold(module_source);
 
@@ -5849,12 +5872,12 @@ void silver_write_header(silver a) {
 
     line(import_f, "#include <Au/public>");
     each(a->imports, import, im) {
-        if (im->external_name)
+        if (im->external_name && !im->is_au_rt)
             line(import_f, "#include <%o/public>", im->external_name);
     }
     line(import_f, "#include <Au/Au>");
     each(a->imports, import, im) {
-        if (im->external_name)
+        if (im->external_name && !im->is_au_rt)
             line(import_f, "#include <%o/%o>", im->external_name, im->external_name);
     }
     line(import_f, "#include <%o/intern>",  a->name);
@@ -5865,12 +5888,12 @@ void silver_write_header(silver a) {
     //line(import_f, "#ifndef __cplusplus");
     line(import_f, "#include <Au/init>");
     each(a->imports, import, im) {
-        if (im->external_name)
+        if (im->external_name && !im->is_au_rt)
             line(import_f, "#include <%o/init>", im->external_name);
     }
     line(import_f, "#include <Au/methods>");
     each(a->imports, import, im) {
-        if (im->external_name)
+        if (im->external_name && !im->is_au_rt)
             line(import_f, "#include <%o/methods>", im->external_name);
     }
     //line(import_f, "#include <%o/init>", a->name); // disabled: clang 22 preprocessor bug with large macro parameter lists in included files
@@ -6280,6 +6303,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
         a->statement_origin = peek(a);
 
         bool auto_bind = is_fields && read_if(a, ":");
+        string name = null;
         // -- KEY --
         if (is_fields && read_if(a, "{")) {
             k = (Au)parse_field(a, key);
@@ -6295,7 +6319,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
             k = (Au)parse_expression(a, e, false, true);
         } else if (!is_mdl_map) {
             //k = (Au)parse_field(a, key); 
-            string name = (string)read_alpha(a);
+            name = (string)read_alpha(a);
             validate(name, "expected member identifier (%o)", peek(a));
             k = (Au)const_string(chars, name->chars);
         } else if (key && key != etypeid(string)) {
@@ -6308,6 +6332,10 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
                 name = name;
             validate(name, "expected literal string");
             k = (Au)const_string(chars, name->chars);
+        }
+        
+        if (name && eq(name, "srcOffsets")) {
+            name = name;
         }
 
         // -- Handle literal short case --

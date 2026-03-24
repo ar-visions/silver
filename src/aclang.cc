@@ -130,12 +130,17 @@ public:
     void HandlePragma(Preprocessor &PP,
                       PragmaIntroducer Introducer,
                       Token &FirstToken) override {
+        std::string name;
         Token Tok;
         PP.Lex(Tok);
-        if (Tok.isAnyIdentifier()) {
-            std::string name = PP.getSpelling(Tok);
+        while (!Tok.is(tok::eod)) {
+            name += PP.getSpelling(Tok);
+            PP.Lex(Tok);
+        }
+        if (name.length() > 0) {
             import found = find_import(e, name.c_str());
             verify(found, "silver_module: import not found: %s", name.c_str());
+            if (!found) exit(0);
             {
                 aether_push_scope(e, (Au)found);
                 // inject defines from the import's define_map
@@ -151,7 +156,7 @@ public:
                             ValTok.startToken();
                             ValTok.setKind(tok::numeric_constant);
                             ValTok.setLiteralData(sval->chars);
-                            ValTok.setLength(strlen(sval->chars));
+                            ValTok.setLength(sval->count);
                             MI->setTokens({ValTok}, PP.getPreprocessorAllocator());
                         }
                         PP.appendDefMacroDirective(II, MI);
@@ -1125,7 +1130,8 @@ none aether_import_includes(aether a) {
     each(a->imports, import, im) {
         if (!im->include_paths || !im->include_paths->count)
             continue;
-        string_concat(contents, f(string, "#pragma silver_module %s\n", im->au->ident));
+        verify(im->external_name, "external_name (import identity) not set");
+        string_concat(contents, f(string, "#pragma silver_module %o\n", im->external_name));
         for (item i = im->define_map ? im->define_map->first : null; i; i = i->next) {
             if (isa(i->value) == typeid(bool))
                 string_concat(contents, f(string, "#define %o\n", i->key));
@@ -1305,9 +1311,10 @@ none aether_import_includes(aether a) {
     // import each
     each(a->imports, import, im) {
         aether_import_models(a, im->au, false);
+        im->au->is_closed = true; // closed against new registrations
     }
 
-    unlink(c->chars);
+    //unlink(c->chars);
 }
 
 path aether_include(aether e, Au inc, string ns) {
