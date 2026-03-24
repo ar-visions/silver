@@ -105,6 +105,64 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
 static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string name);
 
 // ============================================================================
+// Utility: find import by name
+// ============================================================================
+
+static import find_import(aether e, const char *name) {
+    if (!e->imports) return null;
+    for (int i = 0; i < array_count(e->imports); i++) {
+        import im = (import)array_get(e->imports, i);
+        if (im->external_name && strcmp(im->external_name->chars, name) == 0)
+            return im;
+    }
+    return null;
+}
+
+// ============================================================================
+// Pragma handler for #pragma silver_module ModuleName
+// ============================================================================
+
+class SilverModulePragmaHandler : public PragmaHandler {
+public:
+    aether e;
+    SilverModulePragmaHandler(aether e) : PragmaHandler("silver_module"), e(e) {}
+
+    void HandlePragma(Preprocessor &PP,
+                      PragmaIntroducer Introducer,
+                      Token &FirstToken) override {
+        Token Tok;
+        PP.Lex(Tok);
+        if (Tok.isAnyIdentifier()) {
+            std::string name = PP.getSpelling(Tok);
+            import found = find_import(e, name.c_str());
+            verify(found, "silver_module: import not found: %s", name.c_str());
+            {
+                aether_push_scope(e, (Au)found);
+                // inject defines from the import's define_map
+                if (found->define_map) {
+                    for (item it = found->define_map->first; it; it = it->next) {
+                        string skey = Au_cast_string(it->key);
+                        auto *II = PP.getIdentifierInfo(skey->chars);
+                        auto *MI = PP.AllocateMacroInfo(SourceLocation());
+                        if (isa(it->value) != typeid(bool)) {
+                            // define with value: tokenize the value string
+                            string sval = Au_cast_string(it->value);
+                            Token ValTok;
+                            ValTok.startToken();
+                            ValTok.setKind(tok::numeric_constant);
+                            ValTok.setLiteralData(sval->chars);
+                            ValTok.setLength(strlen(sval->chars));
+                            MI->setTokens({ValTok}, PP.getPreprocessorAllocator());
+                        }
+                        PP.appendDefMacroDirective(II, MI);
+                    }
+                }
+            }
+        }
+    }
+};
+
+// ============================================================================
 // Utility functions
 // ============================================================================
 
@@ -714,8 +772,8 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
             }
         }
     } else if (n && decl->isVariadic()) {
-        string st = path_stem(e->current_inc);
-        if (string_eq(st, "stdio")) {
+        //string st = path_stem(e->current_import);
+        //if (string_eq(st, "stdio")) {
             // glibc removed __attribute__((format)) from these; patch it in
             static const struct { const char* name; int fmt_arg; } fmt_table[] = {
                 {"printf",  0}, {"fprintf", 1}, {"sprintf", 1},
@@ -730,7 +788,7 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
                     break;
                 }
             }
-        }
+        //}
     }
 
     return fn;
@@ -1058,14 +1116,208 @@ path aether_lookup_include(aether e, string include) {
 
 void aether_import_models(aether a, Au_t, bool);
 
+// singular clang session per module to perform all imports
+none aether_import_includes(aether a) {
+
+    // build source for all includes with pragma inbetween
+    path c = f(path, "/tmp/import.c");
+    string contents = new0(string, alloc, 1024);
+    each(a->imports, import, im) {
+        if (!im->include_paths || !im->include_paths->count)
+            continue;
+        string_concat(contents, f(string, "#pragma silver_module %s\n", im->au->ident));
+        for (item i = im->define_map ? im->define_map->first : null; i; i = i->next) {
+            if (isa(i->value) == typeid(bool))
+                string_concat(contents, f(string, "#define %o\n", i->key));
+            else
+                string_concat(contents, f(string, "#define %o %o\n", i->key, i->value));
+        }
+        each (im->include_paths, path, ipath) {
+            verify(ipath && path_exists(ipath), "include path does not exist: %o", ipath);
+            string_concat(contents, f(string, "#include \"%o\"\n", ipath));
+        }
+    }
+    path_save(c, (Au)contents, null);
+
+    symbol compile_unit = c->chars;
+    auto DiagID(new DiagnosticIDs());
+    auto DiagOpts = new DiagnosticOptions();
+    TextDiagnosticPrinter *DiagPrinter = new TextDiagnosticPrinter(llvm::errs(), *DiagOpts);
+    auto Invocation = std::make_shared<CompilerInvocation>();
+    DiagnosticsEngine diags(DiagID, *DiagOpts, DiagPrinter);
+    path clang_path = f(path, "%o/bin/clang", a->install);
+    driver::Driver drv(clang_path->chars, llvm::sys::getDefaultTargetTriple(), diags);
+
+    std::vector<symbol> args = {
+        "clang",
+        "-x",
+        "c",
+        "-std=c11",
+        "-D_POSIX_C_SOURCE=200809L",
+        "-fdiagnostics-show-option",
+        "-Wno-nullability-completeness"
+    };
+
+    args.push_back("-w");
+    args.push_back("-Wno-system-headers");
+
+    if (a->isystem) {
+        args.push_back("-isystem");
+        args.push_back(a->isystem->chars);
+    }
+    if (a->resource_dir) {
+        args.push_back("-resource-dir");
+        args.push_back(a->resource_dir->chars);
+    }
+    if (a->isysroot) {
+        args.push_back("-isysroot");
+        args.push_back(a->isysroot->chars);
+    }
+
+    struct {
+        symbol ident;
+        array  paths;
+    } all_paths[] = {
+        { "-isystem", a->sys_inc_paths },
+        { "-isystem", a->sys_exc_paths }
+    };
+
+    for (int i = 0, l = 2; i < l; i++) {
+        symbol ident = all_paths[i].ident;
+        array  paths = all_paths[i].paths;
+        for (int ii = 0; ii < (paths ? paths->count : 0); ii++) {
+            path f = (path)paths->origin[ii];
+            args.push_back(ident);
+            args.push_back(f->chars);
+        }
+    }
+
+    if (a->framework_paths)
+        for (int i = 0; i < a->framework_paths->count; i++) {
+            path fw_path = (path)a->framework_paths->origin[i];
+            string arg = f(string, "-F%o", fw_path);
+            args.push_back(arg->chars);
+        }
+
+    /*
+    if (a->define_map) {
+        for (item it = a->define_map->first; it; it = it->next) {
+            Au key = it->key;
+            Au val = it->value;
+            char buf[256];
+            string skey = Au_cast_string(key);
+            if (isa(val) == typeid(bool)) {
+                snprintf(buf, 256, "-D%s", skey->chars);
+                args.push_back(strdup(buf));
+            } else {
+                string sval = Au_cast_string(val);
+                snprintf(buf, 256, "-D%s=%s", skey->chars, sval->chars);
+                args.push_back(strdup(buf));
+            }
+        }
+    }*/
+
+    if (a->include_paths)
+        for (int i = 0; i < a->include_paths->count; i++) {
+            path inc_path = (path)a->include_paths->origin[i];
+            string arg = f(string, "%o", inc_path);
+            args.push_back("-isystem");
+            args.push_back(arg->chars);
+        }
+
+    args.push_back("-nostdinc++");
+    args.push_back("-c");
+    args.push_back(compile_unit);
+
+    std::unique_ptr<driver::Compilation> comp(
+        drv.BuildCompilation(llvm::ArrayRef<symbol>(args)));
+    std::vector<symbol> compilation_args;
+    for (clang::driver::Command &cmd : comp->getJobs()) {
+        if (a->verbose) llvm::errs() << "command: ";
+        if (StringRef(cmd.getCreator().getName()) == "clang") {
+            for (symbol arg : cmd.getArguments()) {
+                if (a->verbose) llvm::errs() << arg << " ";
+                compilation_args.push_back(arg);
+            }
+            if (a->verbose) llvm::errs() << "\n";
+        }
+        if (a->verbose) llvm::errs() << "\n";
+    }
+
+    SimpleDiagConsumer* DiagClient = new SimpleDiagConsumer();
+    IntrusiveRefCntPtr<DiagnosticsEngine> Diags =
+        new DiagnosticsEngine(DiagID, *DiagOpts, DiagClient);
+    llvm::ArrayRef<symbol> cmdline_args(compilation_args);
+    Diags->setSuppressSystemWarnings(true);
+
+    CompilerInvocation::CreateFromArgs(
+        *Invocation,
+        cmdline_args,
+        *Diags
+    );
+
+    CompilerInstance* compiler = new CompilerInstance(Invocation);
+    auto& LO = Invocation->getLangOpts();
+    compiler->setDiagnostics(Diags.get());
+    compiler->createFileManager();
+    compiler->createSourceManager(compiler->getFileManager());
+
+    auto fe = compiler->getFileManager().getFileRef(c->chars);
+    verify(bool(fe), "cannot find file reference from compiler instance");
+    verify(fe.get(), "clang cannot find TU file: %o", c);
+
+    FileID mainFileID = compiler->getSourceManager().createFileID(
+        fe.get(),
+        SourceLocation(),
+        SrcMgr::C_User
+    );
+
+    compiler->getSourceManager().setMainFileID(mainFileID);
+    compiler->createTarget();
+    compiler->createPreprocessor(TU_Complete);
+    Diags->setIgnoreAllWarnings(true);
+    Diags->setSuppressSystemWarnings(true);
+
+    auto *silver_pragma = new SilverModulePragmaHandler(a);
+    compiler->getPreprocessor().AddPragmaHandler(silver_pragma);
+
+    aclang_cc instance = new0(aclang_cc,
+        mod, a, compiler, (handle)compiler, PP, (handle)&compiler->getPreprocessor());
+    compiler->getPreprocessor().addPPCallbacks(
+        std::make_unique<MacroCollector2>(instance));
+    compiler->createASTContext();
+    ASTContext& ctx = compiler->getASTContext();
+
+    if (true) {
+        AetherASTConsumer2 consumer(a);
+        ParseAST(compiler->getPreprocessor(), &consumer, ctx);
+    } else {
+        /*
+        AetherEmitAction2 act(e);
+        compiler->ExecuteAction(act);
+        std::unique_ptr<llvm::Module> M = act.takeModule();
+        LLVMModuleRef cMod = M ? wrap(M.release()) : nullptr;
+        //(instance)->module = cMod;
+        LLVMLinkModules2(a->module_ref, cMod);
+        */
+    }
+
+    // import each
+    each(a->imports, import, im) {
+        aether_import_models(a, im->au, false);
+    }
+
+    unlink(c->chars);
+}
+
 path aether_include(aether e, Au inc, string ns) {
+/*
     aclang_cc instance = null;
     path ipath = (Au_t)isa(inc) == typeid(string) ?
         aether_lookup_include(e, (string)inc) : (path)inc;
 
     verify(ipath && path_exists(ipath), "include path does not exist: %o",
         ipath ? (Au)ipath : inc);
-    e->current_inc = ipath;
 
     string incl = new0(string, chars, ipath->chars);
     bool is_header = string_ends_with(incl, ".h") ||
@@ -1187,11 +1439,11 @@ path aether_include(aether e, Au inc, string ns) {
     }
 
     SimpleDiagConsumer* DiagClient = new SimpleDiagConsumer();
-    IntrusiveRefCntPtr<DiagnosticsEngine> Diags = 
+    IntrusiveRefCntPtr<DiagnosticsEngine> Diags =
         new DiagnosticsEngine(DiagID, *DiagOpts, DiagClient);
     llvm::ArrayRef<symbol> cmdline_args(compilation_args);
     Diags->setSuppressSystemWarnings(true);
-    
+
     CompilerInvocation::CreateFromArgs(
         *Invocation,
         cmdline_args,
@@ -1209,8 +1461,8 @@ path aether_include(aether e, Au inc, string ns) {
     verify(fe.get(), "clang cannot find TU file: %o", c);
 
     FileID mainFileID = compiler->getSourceManager().createFileID(
-        fe.get(), 
-        SourceLocation(), 
+        fe.get(),
+        SourceLocation(),
         SrcMgr::C_User
     );
 
@@ -1219,7 +1471,10 @@ path aether_include(aether e, Au inc, string ns) {
     compiler->createPreprocessor(TU_Complete);
     Diags->setIgnoreAllWarnings(true);
     Diags->setSuppressSystemWarnings(true);
-    
+
+    auto *silver_pragma = new SilverModulePragmaHandler(e);
+    compiler->getPreprocessor().AddPragmaHandler(silver_pragma);
+
     instance = new0(aclang_cc,
         mod, e, compiler, (handle)compiler, PP, (handle)&compiler->getPreprocessor());
     compiler->getPreprocessor().addPPCallbacks(
@@ -1246,6 +1501,8 @@ path aether_include(aether e, Au inc, string ns) {
     unlink(c->chars);
     e->current_inc = null;
     return ipath;
+*/
+    return null;
 }
 
 } // extern "C"
