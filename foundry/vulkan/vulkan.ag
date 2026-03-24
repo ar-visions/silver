@@ -14,7 +14,8 @@ import KhronosGroup:Vulkan-Tools/734638e
      -DMOLTENVK_REPO_ROOT={root_path}/checkout/MoltenVK
 
 import glfw:glfw/fdd14e6 <GLFW/glfw3.h>
-    -DGLFW_INCLUDE_VULKAN
+    +GLFW_INCLUDE_NONE
+    +GLFW_INCLUDE_VULKAN
 
 import img
 import vec
@@ -277,29 +278,31 @@ struct image_range
     public is_depth    : bool
 
 
-func get_required_extensions [ vk: vk_context, extensions: ref ref symbol, extension_count: ref u32 ] -> none
-    glfw_extensions: ref symbol [ glfwGetRequiredInstanceExtensions[ extension_count ] ]
-    result: ref symbol [ malloc[ (*extension_count + 4) * sizeof[ ref symbol ] ] ]
-    memcpy[ result, glfw_extensions, *extension_count * sizeof[ ref symbol ] ]
+func get_required_extensions [ vk: vk_context ] -> none
+    count : u32 0
+    glfw_extensions: ref symbol [ glfwGetRequiredInstanceExtensions[ count ] ]
+    result: ref symbol [ malloc[ (count + 4) * sizeof[ ref symbol ] ] ]
+    memcpy[ result, glfw_extensions, count * sizeof[ ref symbol ] ]
     if [ !windows ]
-        result[*extension_count] = "VK_KHR_portability_enumeration"
-        *extension_count += 1
-    if [ mac ]
-        result[*extension_count] = "VK_KHR_get_physical_device_properties2"
-        *extension_count += 1
-    if [ enable_validation ]
-        result[*extension_count] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME
-        *extension_count += 1
+        result[count] = "VK_KHR_portability_enumeration"
+        count += 1
+    ifdef [ apple ]
+        result[count] = "VK_KHR_get_physical_device_properties2"
+        count += 1
+    ifdef [ debug ]
+        result[count] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME
+        count += 1
     verbose: getenv[ "VERBOSE" ] != VK_NULL_HANDLE
-    for [ i: i32 0, i < *extension_count, i += 1 ]
+    for [ i: i32 0, i < count, i += 1 ]
         vk.instance_exts.push strdup[ result[i] ]
         if [ verbose ]
-            print "instance extension: %s", result[i]
+            puts "instance extension: {result[i]}"
 
 func vk_create [ vk: vk_context ] -> VkInstance
-    extensions: ref ref symbol [ VK_NULL_HANDLE ]
-    extension_count: u32 [ 0 ]
-    get_required_extensions[ vk, ref extensions, ref extension_count ]
+    get_required_extensions[ vk ]
+    enable_validation: bool false
+    ifdef [ debug ]
+        enable_validation = true
     validation_layer: symbol [ (enable_validation) ? "VK_LAYER_KHRONOS_validation" : VK_NULL_HANDLE ]
     instance: VkInstance
     app_info: VkApplicationInfo [
@@ -308,7 +311,7 @@ func vk_create [ vk: vk_context ] -> VkInstance
         applicationVersion: VK_MAKE_VERSION[ 1, 0, 0 ],
         pEngineName:        "trinity",
         engineVersion:      VK_MAKE_VERSION[ 1, 0, 0 ],
-        apiVersion:         vk_version
+        apiVersion:         VK_API_VERSION_1_2
     ]
 
     result: vkCreateInstance[ VkInstanceCreateInfo [
@@ -320,7 +323,7 @@ func vk_create [ vk: vk_context ] -> VkInstance
         ppEnabledLayerNames:     ref validation_layer
     ], VK_NULL_HANDLE, ref instance ]
 
-    expect result == VK_SUCCESS, "failed to create Vulkan instance, error: %d", result
+    expect result == VK_SUCCESS, 'failed to create Vulkan instance, error: {i32[ result ]}'
 
     if [ enable_validation ]
         vk._vkCreateDebugUtilsMessengerEXT = vkGetInstanceProcAddr[ instance, "vkCreateDebugUtilsMessengerEXT" ]

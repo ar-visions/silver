@@ -104,7 +104,7 @@ forward(evar)
     M(X, Y, i, prop,     public,  bool,                     timing_enabled) \
     M(X, Y, i, prop,     public,  i32,                      next_func_id) \
     M(X, Y, i, prop,     public,  i32,                      next_probe_id) \
-    M(X, Y, i, prop,     public,  etype,                    current_import) \
+    M(X, Y, i, prop,     public,  path,                     current_import) \
     M(X, Y, i, prop,     public,  i32,                      expr_level) \
     M(X, Y, i, prop,     public,  Au_t,                     import_module) \
     M(X, Y, i, prop,     public,  Au_t,                     au_module) \
@@ -375,7 +375,8 @@ declare_class_3(static_array, array, collective)
     M(X, Y, i, prop,     public,  path,    lib_path) \
     M(X, Y, i, prop,     public,  path,    module_source) \
     M(X, Y, i, prop,     public,  array,   include_paths) \
-    M(X, Y, i, prop,     public,  map,     define_map)
+    M(X, Y, i, prop,     public,  map,     define_map) \
+    M(X, Y, i, prop,     public,  bool,    is_au_rt)
 declare_class_3(import, enamespace, etype)
 
 #endif

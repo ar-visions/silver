@@ -1,5 +1,8 @@
 import vec
 import <stdio.h>
+    +LOL=1
+    +HI
+
 import <string.h>
 
 enum ComponentType

@@ -2237,8 +2237,12 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
                     Au fmt = n ? (Au)instanceof(n->literal, const_string) : null;
                     verify(fmt, "formatter functions require literal, constant strings");
                 }
-                etype arg_t   = u(etype, au_arg_type((Au)arg_mem));
-                enode conv    = e_create(a, arg_t, arg_value);
+                etype arg_t   = arg_mem->is_explicit_ref ?
+                    pointer(a, (Au)u(etype, au_arg_type((Au)arg_mem))) :
+                    u(etype, au_arg_type((Au)arg_mem));
+                enode conv    = arg_mem->is_explicit_ref ?
+                    (enode)instanceof(arg_value, enode) :
+                    e_create(a, arg_t, arg_value);
 
                 if (arg_mem && arg_mem->is_inlay) // honor the inlay attribute; 'must pass by value and not just think we are'
                     conv = enode_value(conv, true);
@@ -3119,6 +3123,9 @@ enode e_convert_or_cast(aether a, etype output, enode input) {
     if (k == LLVMPointerTypeKind || input->au->is_funcptr) {
         a->is_const_op = false;
         if (a->no_build) return e_noop(a, output);
+        // C array types: ptr is already correct, just retype
+        if (output->au->elements > 0)
+            return enode(mod, a, value, input->value, loaded, input->loaded, au, output->au);
         if (output->au == typeid(bool)) {
             return value(output,
                 LLVMBuildICmp(B, LLVMIntNE, input->value,
@@ -3450,7 +3457,9 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                     Au_t   m = find_member(rmdl->au, k->chars, AU_MEMBER_VAR, 0, true);
                     i32 index = m->index;
 
-                    enode value = e_operand(a, i->value, u(etype, m->src));
+                    enode value = (m->elements > 0) ?
+                        (enode)instanceof(i->value, enode) :
+                        e_operand(a, i->value, u(etype, m->src));
                     if (all_const && !LLVMIsConstant(value->value))
                         all_const = false;
 
@@ -3492,10 +3501,31 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             res = enode(mod, a, loaded, false, value,
                 LLVMBuildAlloca(B, lltype(mdl), "alloca-mdl"), au, mdl->au);
             res = e_zero(a, res);
+            int mem_idx = 0;
             for (int i = 0; i < field_count; i++) {
                 if (fields[i] && !LLVMIsNull(fields[i])) {
                     LLVMValueRef gep = LLVMBuildStructGEP2(B, lltype(mdl), res->value, i, "");
-                    LLVMBuildStore(B, fields[i], gep);
+                    // find the member to check for C array fields
+                    Au_t smem = null;
+                    int ci = 0;
+                    for (int ri = 0; ri < rmdl->au->members.count; ri++) {
+                        Au_t m = (Au_t)rmdl->au->members.origin[ri];
+                        if (m->member_type == AU_MEMBER_VAR && !m->is_static) {
+                            if (ci++ == i) { smem = m; break; }
+                        }
+                    }
+                    if (smem && smem->elements > 0) {
+                        // C array field: memcpy from alloca into struct field
+                        LLVMTypeRef arr_ty = LLVMStructGetTypeAtIndex(lltype(mdl), i);
+                        u64 sz = LLVMABISizeOfType(a->target_data, arr_ty);
+                        // fields[i] may be bitcasted; get the underlying operand if so
+                        LLVMValueRef src_ptr = fields[i];
+                        if (LLVMIsABitCastInst(src_ptr))
+                            src_ptr = LLVMGetOperand(src_ptr, 0);
+                        LLVMBuildMemCpy(B, gep, 4, src_ptr, 4, LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), sz, false));
+                    } else {
+                        LLVMBuildStore(B, fields[i], gep);
+                    }
                 }
             }
             free(fields);
@@ -5221,6 +5251,7 @@ etype implement_type_id(etype t) {
 
     etype_implement(au_t, false);
     
+    if (!au->ident) return null;
     string name = is_module(au) ?
         f(string, "%s_m", au->ident) :
         f(string, "%o_%s_i", symbol_name(
@@ -5450,7 +5481,7 @@ none etype_implement(etype t, bool w) { sequencer
                             if (base_size) src->abi_size = base_size * 8;
                         }
 
-                        if (m->elements > 0)
+                        if (m->elements > 0 && LLVMGetTypeKind(struct_members[index]) != LLVMArrayTypeKind)
                             struct_members[index] = LLVMArrayType(struct_members[index], m->elements);
 
                         if (!struct_members[index])
@@ -5684,7 +5715,8 @@ none etype_implement(etype t, bool w) { sequencer
 
     if (!was_implemented)
     if (!au->is_void && !is_opaque(au) && !is_func((Au)au) && t->lltype) {
-        if (au->elements) t->lltype = LLVMArrayType(t->lltype, au->elements);
+        if (au->elements && LLVMGetTypeKind(t->lltype) != LLVMArrayTypeKind)
+            t->lltype = LLVMArrayType(t->lltype, au->elements);
         /// /// /// /// /// /// /// /// /// /// /// /// /// /// /// /// /// 
         au->abi_size   = LLVMABISizeOfType(a->target_data, t->lltype) * 8;
         if (!au->typesize || !au->is_au || au->is_c)
