@@ -1,7 +1,6 @@
 # **silver** lang
 ![silver-lang](silver-icon.png "silver-lang")
 
-**A native systems language with LLVM backend. Debug everywhere, build everything. MIT licensed.**
 ```
 silver 0.88
 Copyright (C) 2017 Kalen Novis White — MIT License
@@ -9,20 +8,11 @@ Copyright (C) 2017 Kalen Novis White — MIT License
 
 ---
 
+**silver is a module.** One `.ag` file declares its dependencies, defines its types, and builds to a native binary or shared library — no separate build system, no package manager, no bindings layer. Import a git repository by owner, name, and commit hash; silver detects its build system, builds it with its own tools, and links the result. Import a C header and every macro, struct, and function is available at design time through an integrated libclang frontend. Write a C or C++ companion file alongside your `.ag` source and it compiles and links automatically with full access to your types. The boundary between languages disappears because the object model is shared — Au, a C runtime with reference counting, type reflection, and single-inheritance, serves C, C++, and silver equally.
 
-## Why silver
+**silver is debuggable.** Every build emits full LLDB debug information — source maps, variable inspection, stepping, breakpoints — on every platform, every time. There is no release-only workflow. Debug is the default because that's where you spend your time, and production failures on platforms you can't inspect are the failures that end projects. silver targets Linux, macOS, Windows, and embedded ARM from a single source tree with a self-contained SDK. Code coverage and automated testing are built into the compiler at the LLVM IR level, not bolted on after the fact.
 
-We have many great languages and many great build systems. silver handles both build and component design with import and Au modeling — a universal object model defined in C, serving C++, and silver.  Python is in development, so one may build a silver module and immediately use it in python without binding code.  Like code-coverage and automated testing, this is built in with LLVM IR operations in a reflective run-time.
-
-One module expresses an entire product — its dependencies, its models, its runtime reflection — with isolation controlled by keywords such as `public` and `intern` access.
-
-Au is a C-based runtime with post-init property pairs, single-arg construction, casts, and overrides.
-
-## Debug-first. Cross-platform. Native.
-
-**Your code must be debuggable on every platform it runs on.** Every build emits full LLDB debug information — source maps, variable inspection, stepping, breakpoints — from desktop to embedded. Debug is the default because that's where you spend your time.
-
-silver targets Linux, macOS, Windows, and embedded (Jetson, ARM) from a single source tree. The SDK, toolchain, and dependencies are managed per platform. Write once, debug anywhere.
+**silver is expressive where it matters.** Classes are reference-counted with single inheritance, post-init property pairs, and operator overloading. Structs are value types. Enums infer in switch cases. Inline assembly is platform-conditional on the same line. Functions accept arguments without commas — matched by type like CSS shorthand — or with commas for positional order. Shapes are first-class literals: `new f32 [32x32x1]` allocates a typed tensor. Scalars let you write `200px` or `16ms` as type-safe values. From neural networks to Vulkan renderers to audio DSP, the foundry ships robust, deployable components of an AI PC.
 
 ---
 
