@@ -2959,6 +2959,9 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
             efunc  init_f = u(efunc, init_mem);
             if (init_f) e_fn_call(a, init_f, a(alloc));
         }
+        efunc f_hold_members = (efunc)u(efunc,
+            find_member(etypeid(Au)->au, "hold_members", AU_MEMBER_FUNC, 0, false));
+        e_fn_call(a, f_hold_members, a(alloc));
 
     } else {
         res = e_fn_call(a, f_initialize, a(alloc));
@@ -6436,7 +6439,7 @@ none aether_import_models(aether a, Au_t ctx, bool au_mode) {
 }
 
 void aether_import_Au(aether a, string ident, Au lib) {
-    a->current_inc   = instanceof(lib, Au_t) ? path(((Au_t)lib)->ident) : lib ? (path)lib : path("Au");
+    a->current_import = (path)(instanceof(lib, Au_t) ? path(((Au_t)lib)->ident) : lib ? (path)lib : path("Au"));
     a->is_Au_import  = true;
     string  lib_name = lib && instanceof(lib, path) ? stem((path)lib) : null;
     Au_t    au_module = null;
@@ -6527,7 +6530,6 @@ void aether_import_Au(aether a, string ident, Au lib) {
         au_module->is_closed = true;
     }
     a->is_Au_import  = false;
-    a->current_inc   = null;
     a->import_module = null;
 
 }
@@ -7524,6 +7526,7 @@ define_class(edecl,      etype)
 define_class(efunc,      enode)
 define_class(enamespace, etype)
 define_class(emodule,    etype)
+define_class(import,     enamespace)
 define_class(aether,     emodule)
 
 define_class(aclang_cc,  Au)
