@@ -38,6 +38,182 @@ func trinity_log [
     return false
 
 
+
+/// when created with a mere window reference, it will create a texture the size of the window
+/// the last render in list will draw to swap-image; trinity works simply
+/// everything renders to texture (target == texture) or the swap (target == window)
+class target
+    expect  vk                             : vk_context
+    expect  w                              : window
+    public  id                             : i32
+    public  wscale                         : f32
+    public  width                          : i32
+    public  height                         : i32
+    public  reduce                         : bool
+    public  models                         : array
+    public  clear_color                    : vec4f
+    public  reduction                      : texture
+    public  color                          : texture
+    public  depth                          : texture
+    intern  reduce_model                   : model
+    intern  vk_command_buffer              : VkCommandBuffer
+    intern  vk_swap_image                  : VkImage
+    intern  vk_fence                       : VkFence
+    intern  vk_semaphore                   : VkSemaphore
+    intern  vk_image_available_semaphore   : VkSemaphore
+    intern  vk_render_finished_semaphore   : VkSemaphore
+    intern  vk_framebuffer                 : local VkFramebuffer [2]
+    intern  vk_render_pass                 : local VkRenderPass [2]
+    intern  last_width                     : i32
+    intern  last_height                    : i32
+
+    public func update [ ] -> none
+        backbuffer: !vk_swap_image
+        width  = (wscale > 0) ? w.width  * wscale : width
+        height = (wscale > 0) ? w.height * wscale : height
+        if [ !width || !height ]
+            fault "width / height or wscale not set on render target"
+            exit[ 0 ]
+        if [ width == last_width && height == last_height ]
+            return
+        last_width  = width
+        last_height = height
+        if [ color ]
+            resize[ color, width, height ]
+            resize[ depth, width, height ]
+            if [ reduce ]
+                resize[ reduction, width / 4, height / 4 ]
+        el
+            color = texture [ vk: vk, w: w, width: width, height: height,
+                vk_format: w.surface_format.format, swap: !backbuffer,
+                surface: Surface_color, vk_image: vk_swap_image ]
+            depth = texture [ vk: vk, w: w, width: width, height: height,
+                vk_format: VK_FORMAT_D32_SFLOAT, swap: !backbuffer ]
+            if [ reduce ]
+                reduction = texture [ vk: vk, w: w, width: width / 4, height: height / 4,
+                    vk_format: w.surface_format.format, swap: !backbuffer ]
+        if [ !backbuffer ]
+            transition[ color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+        el
+            transition[ color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+            if [ reduce ]
+                transition[ reduction, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        for [ i: 0, i < 1 + reduce, i += 1 ]
+            vk_view_attachments: local VkImageView [2]
+            vk_view_attachments[0] = (i == 0) ? color.vk_image_view : reduction.vk_image_view
+            vk_view_attachments[1] = depth.vk_image_view
+            result: vkCreateFramebuffer[ vk.device, VkFramebufferCreateInfo [
+                sType:           VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                renderPass:      vk_render_pass[i],
+                attachmentCount: (i == 0) ? 2 : 1,
+                pAttachments:    vk_view_attachments,
+                width:           width  / ((i == 0) ? 1 : 4),
+                height:          height / ((i == 0) ? 1 : 4),
+                layers:          1
+            ], null, ref vk_framebuffer[i] ]
+            expect result == VK_SUCCESS, "Failed to create framebuffer"
+
+    public func draw [ ] -> none
+        index: u32 [ 0 ]
+        for [ i: 0, i < 1 + reduce, i += 1 ]
+            if [ i == 0 && color ]
+                transition[ color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+            el [ i == 1 && reduction ]
+                transition[ reduction, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+                sync_fence[]
+            vkResetFences[ vk.device, 1, ref vk_fence ]
+            frame: VkCommandBuffer [ vk_command_buffer ]
+            vkResetCommandBuffer[ frame, 0 ]
+            vkBeginCommandBuffer[ frame, VkCommandBufferBeginInfo [
+                sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+            ] ]
+            fw: i32 [ (i == 0) ? width : width / 4 ]
+            fh: i32 [ (i == 0) ? height : height / 4 ]
+            vkCmdSetViewport[ frame, 0, 1, VkViewport [
+                x: 0.0, y: 0.0, width: fw, height: fh,
+                minDepth: 0.0, maxDepth: 1.0
+            ] ]
+            vkCmdSetScissor[ frame, 0, 1, VkRect2D [
+                offset: VkOffset2D [ 0, 0 ],
+                extent: VkExtent2D [ fw, fh ]
+            ] ]
+            clear_values: local VkClearValue [2]
+            clear_values[0].color.float32[0] = clear_color.x
+            clear_values[0].color.float32[1] = clear_color.y
+            clear_values[0].color.float32[2] = clear_color.z
+            clear_values[0].color.float32[3] = clear_color.w
+            clear_values[1].depthStencil.depth   = 1.0
+            clear_values[1].depthStencil.stencil = 0
+            vkCmdBeginRenderPass[ frame, VkRenderPassBeginInfo [
+                sType:           VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                renderPass:      vk_render_pass[i],
+                framebuffer:     vk_framebuffer[i],
+                renderArea:      VkRect2D [
+                    offset: VkOffset2D [ 0, 0 ],
+                    extent: VkExtent2D [ fw, fh ]
+                ],
+                clearValueCount: 2,
+                pClearValues:    clear_values
+            ], VK_SUBPASS_CONTENTS_INLINE ]
+            if [ i == 0 ]
+                for [ m: model ] in models
+                    for [ p: pipeline ] in m.pipelines
+                        if [ m.transform_count && instanceof[ p.s, PBR ] ]
+                            s: PBR [ p.s ]
+                            s.model = p.default_model
+                            for [ j: 0, j < m.transform_count, j += 1 ]
+                                s.model = mat4f_mul[ ref m.transforms[j], ref s.model ]
+                        draw[ p, frame ]
+            el
+                for [ p: pipeline ] in reduce_model.pipelines
+                    draw[ p, frame ]
+            vkCmdEndRenderPass[ frame ]
+            vkEndCommandBuffer[ frame ]
+            s_flags: VkPipelineStageFlags [ VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
+            submitInfo: VkSubmitInfo [
+                sType:                VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                commandBufferCount:   1,
+                pCommandBuffers:      ref frame,
+                waitSemaphoreCount:   vk_swap_image ? 1 : 0,
+                pWaitSemaphores:      vk_swap_image ? ref w.semaphore_frame.vk_image_available_semaphore : null,
+                pWaitDstStageMask:    vk_swap_image ? ref s_flags : null,
+                signalSemaphoreCount: vk_swap_image ? 1 : 0,
+                pSignalSemaphores:    vk_swap_image ? ref w.semaphore_frame.vk_render_finished_semaphore : null
+            ]
+            vkQueueSubmit[ vk.queue, 1, ref submitInfo, vk_fence ]
+
+    public func sync_fence [ ] -> none
+        result: vkWaitForFences[ vk.device, 1, ref vk_fence, VK_TRUE, UINT64_MAX ]
+        expect result == VK_SUCCESS, "fence wait failed"
+
+    func init [ ]
+
+    func dealloc [ ]
+        for [ i: 0, i < 2, i += 1 ]
+            vkDestroyFramebuffer[ vk.device, vk_framebuffer[i], null ]
+            vkDestroyRenderPass[ vk.device, vk_render_pass[i], null ]
+        vkDestroyFence[ vk.device, vk_fence, null ]
+        vkDestroySemaphore[ vk.device, vk_image_available_semaphore, null ]
+        vkDestroySemaphore[ vk.device, vk_render_finished_semaphore, null ]
+
+class app
+    public  w          : window
+    public  ux         : composer
+    public  vk         : vk_context
+    public  app_context: ctx
+    public  ason_path  : path
+    public  ason_render: map
+    intern  ason_modified : i64
+    public  style      : style
+    intern  arg        : object
+    public  on_render  : callback
+
+    public func initialize [ w: window ] -> none
+    public func run [ ] -> i32
+    func init [ ]
+    func dealloc [ ]
+
 class Layout
     static defaults : new Layout [7] # layout defaults stored as static array
     public layout : VkImageLayout
@@ -883,7 +1059,7 @@ class window
                 handle_glfw_framebuffer_size[ window, width, height ]
             el
                 expect result == VK_SUCCESS, "failed to acquire swapchain image"
-                swap_render_current = swap_renders.origin[swap_image_current]
+                swap_render_current = swap_renders[swap_image_current]
                 transition[ last_target.color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
                 transition[ swap_render_current.color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 draw[ swap_render_current ]
@@ -896,9 +1072,9 @@ class window
                     waitSemaphoreCount: 1,
                     pWaitSemaphores:    ref semaphore_frame.vk_render_finished_semaphore
                 ]
-                transition[ swap_render_current.color, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ]
+                swap_render_current.color.transition[ VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ]
                 result = vkQueuePresentKHR[ vk.queue, presentInfo ]
-                transition[ swap_render_current.color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+                swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 semaphore_frame = swap_renders.origin[semaphore_frame == first[ swap_renders ]]
                 if [ result != VK_ERROR_OUT_OF_DATE_KHR && result != VK_SUBOPTIMAL_KHR ]
                     expect result == VK_SUCCESS, "present"
@@ -910,11 +1086,13 @@ class window
         rel: e.parent ?
             rect [ x: 0, y: 0, w: e.parent.bounds.w, h: e.parent.bounds.h ] :
             rect [ x: 0, y: 0, w: width, h: height ]
-        drop[ e.bounds ]
-        drop[ e.text_bounds ]
-        drop[ e.border_bounds ]
-        drop[ e.child_bounds ]
-        drop[ e.clip_bounds ]
+        
+        e.bounds.drop[]
+        e.text_bounds.drop[]
+        e.border_bounds.drop[]
+        e.child_bounds.drop[]
+        e.clip_bounds.drop[]
+
         e.bounds        = rectangle_offset[ e.area,        rel ]
         e.text_bounds   = rectangle_offset[ e.text_area,   e.bounds ]
         e.border_bounds = rectangle_offset[ e.border_area, e.bounds ]
