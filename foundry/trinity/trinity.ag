@@ -3,7 +3,7 @@
 import gltf
 import img
 import vulkan2
-
+import canvas
 
 
 display window
@@ -923,14 +923,15 @@ class app
     public style : style
     intern arg : object
     public on_render : callback
-    public func initialize [ win: window ] -> none
+
+    func initialize [ win: window ] -> none
         ux.w = win
         win.ux = ux
         update_canvas[ win ]
         app_render[ self ]
         resize[ win, win.extent.width, win.extent.height ]
 
-    public func run [ ] -> i32
+    func run [ ] -> i32
         next_second: epoch_millis[] / 1000
         frames: 0
         while [ !glfwWindowShouldClose[ w.window ] ]
@@ -974,6 +975,7 @@ class draw_state
     public fill_color           : u32
     public stroke_color         : u32
     public opacity              : f32
+
     public func set_default [ ] -> none
         font         = hold[ font [ size: 22, uri: path 'fonts/Sofia-Sans-Condensed.ttf' ] ]
         stroke_cap   = cap_round
@@ -1076,7 +1078,6 @@ canvas sk
     func resize  [ i32 i32 ]
     func init    [ ]
     func dealloc [ ]
-declare_class_3(sk, canvas, image)
 
 func sk_sync_all [] -> none
 

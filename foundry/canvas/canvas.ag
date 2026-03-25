@@ -1,5 +1,5 @@
 import freetype:freetype/VER-2-13-3 <ft2build.h, freetype/freetype.h>
-import trinity
+import vulkan2
 
 import <math.h>
 import <stdio.h>
@@ -31,7 +31,7 @@ shader canvas_ui
 	public grad0      : vec4f     # gradient endpoints / tex rect
 	public grad_c0    : vec4f     # gradient stop color 0
 	public grad_c1    : vec4f     # gradient stop color 1
-	attrib Surface [ color ] : 1, rgba8
+	public color : attrib [ type:typeid[ Surface ], id: Surface.color, value:1, format:typeid[ rgba8 ] ]
 
 
 # ---- path command tags ----
