@@ -965,7 +965,7 @@ static void prepare_record_cb(Au a_au, Au t_au) {
 void silver_init(silver a) {
     hold(a);
 
-    bool is_once = a->build || a->is_external;
+    bool is_once = !a->watch || a->is_external;
 
     if (a->version) {
         printf("silver 0.88\n");
@@ -1064,6 +1064,28 @@ void silver_init(silver a) {
         drop(a->module_path);
         a->module_path = hold(a->module);
         module_file_m  = modified_time(a->module_file);
+    }
+
+    // search fallback paths if module file not found
+    if (!module_file_m) {
+        path silver_root = absolute(path(SILVER));
+        path search_paths[] = {
+            f(path, "%o/foundry", silver_root),
+            NULL
+        };
+        string m_stem = stem(a->module_file);
+        for (int i = 0; search_paths[i]; i++) {
+            path try = f(path, "%o/%o/%o.ag", search_paths[i], m_stem, m_stem);
+            u64  try_m = modified_time(try);
+            if (try_m) {
+                a->module_file = hold(try);
+                a->module      = parent_dir(a->module_file);
+                drop(a->module_path);
+                a->module_path = hold(a->module);
+                module_file_m  = try_m;
+                break;
+            }
+        }
     }
 
     aether_reinit_startup((aether)a);
@@ -1267,7 +1289,7 @@ static string op_lang_token(string name) {
 
 static void silver_module() {
     keywords = hold(array_of_cstr(
-        "class",    "struct",   "scalar",   "expect",   "fault",    "abstract", "context",  "public",   "intern",
+        "class",    "struct",   "scalar",   "expect",   "fault",    "abstract", "public",   "intern",
         "import",   "export",   "typeid",   
         "is",       "inherits", "ref",      "in",   "lambda",
         "const",    "no-op",    "<>",
@@ -1275,7 +1297,7 @@ static void silver_module() {
         "asm",      "if",       "switch",   "any",
         "enum",     "ifdef",    "el",       "while",
         "cast",     "try",      "throw",    "catch",
-        "finally",  "for",      "func",     "attrib",
+        "finally",  "for",      "func",
         "operator", "construct", "alias",   "getter", "setter",
         "new",      "local",
         null));
@@ -2884,11 +2906,19 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     if (read_if(a, "sizeof")) {
         bool read_br = (cmode && read_if(a, "(")) || (!cmode && read_if(a, "["));
+        push_current(a);
         etype mdl = read_etype(a, null);
-        
+        if (!mdl) {
+            pop_tokens(a, false);
+            enode expr = parse_expression(a, null, false, true);
+            verify(expr, "expected type or expression for sizeof");
+            mdl = canonical(expr);
+        } else {
+            pop_tokens(a, true);
+        }
         if (read_br)
             verify((cmode && read_if(a, ")")) || (!cmode && read_if(a, "]")), "expected closing-bracket");
-        
+
         return e_operand(a, _i64(mdl->au->typesize), mdl_expect);
     }
 
@@ -2958,7 +2988,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             int   top_stride = (sh && sh->count > 1) ? sh->data[sh->count - 1] : 0;
             int   num_index  = 0;
             array nodes      = array(64);
- 
+
             while (peek(a) && !next_is(a, "]")) {
                 enode e = read_enode(a, mdl, false, true);
                 e = e_create(a, mdl, (Au)e);
@@ -2972,7 +3002,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
                     read_if(a, ",");
             }
             validate(read_if(a, "]"), "expected ] after constant data");
- 
+
             /// copy constant data into allocated vector
             if (len(nodes) > 0)
                 e_vector_init(a, mdl, vec, nodes);
@@ -2987,7 +3017,20 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         validate(read_if(a, "]"), "expected ] after local Type [");
         validate(esize->literal, "local requires constant size");
         i64 count = *(i64*)esize->literal;
-        return e_stack_array(a, mdl, count);
+        enode arr = e_stack_array(a, mdl, count);
+        if (read_if(a, "[")) {
+            array nodes = array(64);
+            while (peek(a) && !next_is(a, "]")) {
+                enode e = read_enode(a, mdl, false, true);
+                e = e_create(a, mdl, (Au)e);
+                push(nodes, (Au)e);
+                read_if(a, ",");
+            }
+            validate(read_if(a, "]"), "expected ] after local initializer");
+            if (len(nodes) > 0)
+                e_vector_init(a, mdl, arr, nodes);
+        }
+        return arr;
     }
 
     if (!cmode && read_if(a, "cast")) {
@@ -3694,7 +3737,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
             validate(is_struct(arg->src),
                 "inlay applies only to struct members in arguments");
         }
-        micro_push(ar, (Au)arg);
+        micro_push((micro_*)ar, (Au)arg);
         if (first)
             first = false;
     }
@@ -3866,6 +3909,8 @@ etype read_etype(silver a, array* p_expr) { sequencer
                 // meta_a: always a type
                 a->etype_level++;
                 etype t = read_etype(a, null);
+                if (!t && !is_cmode(a) && !(mdl->au->context && mdl->au->context->meta.a))
+                    validate(false, "type parameter required for %o", mdl);
                 if (!t) t = etypeid(Au);
                 meta_a_val = (Au)t->au;
                 a->etype_level--;
@@ -4298,7 +4343,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         vexec(a->verbose, "rust", "%ocargo build --%s --manifest-path %o/Cargo.toml --target-dir %o",
               docker, debug ? "debug" : "release", project_f, build_f);
     } else if (is_silver) { // build for Au-type projects
-        silver sf = silver(module, silver_f, breakpoint, a->breakpoint, debug, a->debug,
+        silver sf = silver(module, silver_f, breakpoint, a->breakpoint, release, a->release,
             verbose, a->verbose, is_external, a->is_external ? a->is_external : a);
         validate(sf, "silver module compilation failed: %o", silver_f);
         drop(sf);
@@ -4745,7 +4790,7 @@ static enode parse_create_lambda(silver a, enode mem) {
 
     // Parse context references - these become pointers in the context struct
     for (int i = 0; i < ctx_ln; i++) {
-        Au_t  ctx_arg  = (Au_t)micro_get(ctx_mem, i);
+        Au_t  ctx_arg  = (Au_t)micro_get((micro_*)ctx_mem, i);
         enode ctx_expr = parse_expression(a, u(etype, ctx_arg->src), false, true);
         
         validate(ctx_expr, "expected context variable for %s", ctx_arg->ident);
@@ -4865,8 +4910,8 @@ static enode parse_func_call(silver a, efunc f) { sequencer
     enode   target = null;
     i32     offset = 0;
 
-    if (is_func((Au)f) && caller_target) {
-        push(values, (Au)caller_target);
+    if (is_func((Au)f) && (caller_target || f->target)) {
+        push(values, caller_target ? (Au)caller_target : (Au)f->target);
         offset = 1;
     }
 
@@ -4876,7 +4921,7 @@ static enode parse_func_call(silver a, efunc f) { sequencer
     bool  comma_mode = !read_br; // no brackets = positional (old behavior)
 
     while (i + offset < ln || fn->au->is_vargs) {
-        Au_t   arg_decl = (Au_t)micro_get(m, i + offset);
+        Au_t   arg_decl = (Au_t)micro_get((micro_*)m, i + offset);
         Au_t   src  = (Au_t)au_arg_type((Au)arg_decl);
         etype  typ  = (arg_decl && arg_decl->is_formatter) ? null : u(etype, src);
 
@@ -4891,7 +4936,7 @@ static enode parse_func_call(silver a, efunc f) { sequencer
             int  best = -1;
             for (int j = 0; j < ln; j++) {
                 if (matched[j]) continue;
-                Au_t ptype = au_arg_type((Au)micro_get(m, j + offset));
+                Au_t ptype = au_arg_type((Au)micro_get((micro_*)m, j + offset));
                 if (expr_type == ptype || inherits(expr_type, ptype) ||
                     (expr_type->is_integral && ptype->is_integral) ||
                     (expr_type->is_realistic && ptype->is_realistic)) {
@@ -4901,7 +4946,7 @@ static enode parse_func_call(silver a, efunc f) { sequencer
             }
             if (best >= 0) {
                 // convert to expected type and place at matched position
-                Au_t best_decl = (Au_t)micro_get(m, best + offset);
+                Au_t best_decl = (Au_t)micro_get((micro_*)m, best + offset);
                 etype best_type = u(etype, au_arg_type((Au)best_decl));
                 expr = e_create(a, best_type, (Au)expr);
                 // ensure values array is big enough and place at correct index
@@ -4961,7 +5006,7 @@ static enode typed_expr(silver a, enode f, array expr) {
         }
 
         while (i + offset < ln || f_decl->au->is_vargs) {
-            Au_t   arg  = (Au_t)micro_get(m, i + offset);
+            Au_t   arg  = (Au_t)micro_get((micro_*)m, i + offset);
             etype  typ  = u(etype, arg);
             enode  expr = parse_expression(a, typ, true, true); // self contained for '{interp}' to cstr!
             verify(expr, "invalid expression");
@@ -5341,7 +5386,7 @@ enode parse_import(silver a) {
         } else {
             silver og = a->is_external ? a->is_external : a;
             silver external = silver(module, module, breakpoint, a->breakpoint,
-                verbose, a->verbose, is_external, og, debug, a->debug, defs, defs);
+                verbose, a->verbose, is_external, og, release, a->release, defs, defs);
 
             // these should be the only two objects remaining.
             external_name    = hold(external->name);
