@@ -7,7 +7,7 @@
             "request":          "launch",
             "preLaunchTask":    "build-silver-ninja",
             "program":          "${workspaceFolder}/install/bin/silver",
-            "args":             [ "trinity", "-v", "-w", "--run" ],
+            "args":             [ "trinity", "-v", "--run" ],
             "cwd":              "${workspaceFolder}",
             "stopOnEntry":      false,
             "env": {

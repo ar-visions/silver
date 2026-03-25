@@ -2917,7 +2917,12 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             string suffix = peek_alpha(a);
             if (suffix) {
                 etype scalar_type = rlookup((aether)a, suffix);
-                if (scalar_type && scalar_type->au->is_struct) {
+                if (scalar_type && scalar_type->au->is_struct && scalar_type->au->src) {
+                    Au_t storage = scalar_type->au->src;
+                    bool lit_is_float = res->literal && isa(res->literal)->is_realistic;
+                    validate(!lit_is_float || storage->is_realistic,
+                        "scalar %o requires %s value, got float literal",
+                        scalar_type, storage->ident);
                     consume(a); // consume the suffix token
                     return e_create(a, scalar_type, (Au)res);
                 }
@@ -3320,7 +3325,7 @@ enode parse_statement(silver a)
     
     if (next_is(a, "ifdef")) return parse_ifdef_else(a);
 
-    verify(!next_is(a, "undefined"), "undefined is invalid access-level");
+    //verify(!next_is(a, "undefined"), "undefined is invalid access-level");
 
     
 
@@ -3481,6 +3486,20 @@ enode parse_statement(silver a)
                     traits, op_type, op_name);
                 ((efunc)e)->origin_token = entry;
                 e->au->access_type = (u8)access;
+                if (access != interface_intern) {
+                    arg_list(e->au, arg) {
+                        Au_t src = arg->src;
+                        if (src && src->is_c && !src->is_primitive && !src->is_struct && !src->is_enum && !src->typesize)
+                            validate(false,
+                                "public func '%s' exposes C type '%s' in args — use intern func",
+                                e->au->ident, src->ident ? src->ident : "?");
+                    }
+                    Au_t rtype = e->au->rtype;
+                    if (rtype && rtype->is_c && !rtype->is_primitive && !rtype->is_struct && !rtype->is_enum && !rtype->typesize)
+                        validate(false,
+                            "public func '%s' returns C type '%s' — use intern func",
+                            e->au->ident, rtype->ident ? rtype->ident : "?");
+                }
                 efunc fn = (efunc)get(a->registry, (Au)au);
                 verify(fn && fn == e && fn->au == au, "unexpected registration state");
             }
@@ -3505,6 +3524,13 @@ enode parse_statement(silver a)
             mem->au->member_type = AU_MEMBER_VAR;
             mem->au->src         = canonical(rtype)->au;
             mem->au->is_static   = is_static;
+            if (access == interface_public && rec_top) {
+                Au_t src = mem->au->src;
+                if (src && src->is_c && !src->is_primitive && !src->is_struct && !src->is_enum && !src->typesize)
+                    validate(false,
+                        "public member '%s' exposes C type '%s' — use intern",
+                        mem->au->ident, src->ident ? src->ident : "?");
+            }
             if (rtype->meta_a) {
                 mem->au->meta.a = (Au_t)rtype->meta_a;
             }

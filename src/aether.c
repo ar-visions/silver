@@ -855,13 +855,13 @@ enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
     if (a->no_build) return e_noop(a, bool_t);
 
     // pointer operands (e.g. typeid comparison for 'is') — compare directly
-    if (is_system((Au)L) || is_system((Au)R)) {
+    if ((is_system((Au)L) || is_system((Au)R)) &&
+        LLVMTypeOf(L->value) == LLVMTypeOf(R->value)) {
         struct cmp_entry* cmp = cmp_lookup(optype);
         verify(cmp, "invalid comparison operator");
         char N[64];
         sprintf(N, "actual_op_%i_%s", seq, cmp->name);
-        return value(bool_t,
-            LLVMBuildICmp(B, cmp->ui_pred, L->value, R->value, N));
+        return value(bool_t, LLVMBuildICmp(B, cmp->ui_pred, L->value, R->value, N));
     }
 
     // normalize operands to common arithmetic type BEFORE any comparison
@@ -885,21 +885,32 @@ enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
 
     // 1. Primitive → primitive fast path
     if (is_prim(L) && is_prim(R)) {
+        LLVMValueRef Lv = L->value, Rv = R->value;
+        LLVMTypeKind Lk = LLVMGetTypeKind(LLVMTypeOf(Lv));
+        LLVMTypeKind Rk = LLVMGetTypeKind(LLVMTypeOf(Rv));
+        // ensure matching types for ICmp
+        if (Lk == LLVMPointerTypeKind && Rk != LLVMPointerTypeKind)
+            Lv = LLVMBuildPtrToInt(B, Lv, LLVMTypeOf(Rv), "cmp_pti");
+        else if (Rk == LLVMPointerTypeKind && Lk != LLVMPointerTypeKind)
+            Rv = LLVMBuildPtrToInt(B, Rv, LLVMTypeOf(Lv), "cmp_pti");
         if (is_realistic(L) || is_realistic(R)) {
             return value(bool_t,
-                LLVMBuildFCmp(B, cmp->fp_pred,
-                              L->value, R->value, N));
+                LLVMBuildFCmp(B, cmp->fp_pred, Lv, Rv, N));
         }
         LLVMIntPredicate pred = (is_unsign(L) && is_unsign(R)) ? cmp->ui_pred : cmp->si_pred;
-        return value(bool_t,
-            LLVMBuildICmp(B, pred,
-                          L->value, R->value, N));
+        return value(bool_t, LLVMBuildICmp(B, pred, Lv, Rv, N));
     }
 
     if (L->au->is_system || R->au->is_system) {
-        // pointer check for system identities
-        return value(bool_t,
-            LLVMBuildICmp(B, cmp->ui_pred, L->value, R->value, N));
+        // pointer check for system identities — ensure same LLVM type
+        LLVMValueRef Lv = L->value, Rv = R->value;
+        LLVMTypeKind Lk = LLVMGetTypeKind(LLVMTypeOf(Lv));
+        LLVMTypeKind Rk = LLVMGetTypeKind(LLVMTypeOf(Rv));
+        if (Lk == LLVMPointerTypeKind && Rk != LLVMPointerTypeKind)
+            Lv = LLVMBuildPtrToInt(B, Lv, LLVMTypeOf(Rv), "cmp_pti");
+        else if (Rk == LLVMPointerTypeKind && Lk != LLVMPointerTypeKind)
+            Rv = LLVMBuildPtrToInt(B, Rv, LLVMTypeOf(Lv), "cmp_pti");
+        return value(bool_t, LLVMBuildICmp(B, cmp->ui_pred, Lv, Rv, N));
     }
 
     // 2. If types differ, normalize the smaller to the larger
@@ -2737,7 +2748,9 @@ void aether_eputs(aether a, string output) {
 
 enode etype_access(etype target, string name, bool funny_business) { sequencer
     aether a = target->mod;
-    bool is_typeid = (target->au->src && (target->au->src->is_schema || target->au->src == typeid(Au_t)));
+    Au_t target_src = target->au->member_type == AU_MEMBER_VAR ? target->au->src : target->au;
+    bool is_typeid = (target_src && (target_src->is_schema || target_src == typeid(Au_t) ||
+        (target_src->ident && strcmp(target_src->ident, "Au_t") == 0)));
     Au_t rel = is_typeid ? typeid(Au_t) : 
         target->au->member_type == AU_MEMBER_VAR ? 
         (funny_business ? resolve(u(etype, target->au->src))->au : u(etype, target->au->src)->au) : target->au;
@@ -2807,11 +2820,12 @@ enode etype_access(etype target, string name, bool funny_business) { sequencer
             value,  LLVMBuildStructGEP2(B, au->lltype, au_typed, m->index, id->chars));
     }
 
-    LLVMTypeRef gep_type = t->lltype;
-    if (is_typeid) {
-        etype au_t_f = etypeid(Au_t_f);
-        if (au_t_f && au_t_f->lltype)
-            gep_type = au_t_f->lltype;
+    if (is_typeid && m->offset >= 0) {
+        // byte-offset GEP for Au_t member access
+        LLVMTypeRef i8_ty = LLVMInt8TypeInContext(a->module_ctx);
+        LLVMValueRef offset_val = LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), m->offset, 0);
+        LLVMValueRef byte_ptr = LLVMBuildGEP2(B, i8_ty, tnode->value, &offset_val, 1, id->chars);
+        return enode(mod, a, au, m, loaded, false, debug_id, id, value, byte_ptr);
     }
     return enode(
         mod,    a,
@@ -2819,7 +2833,7 @@ enode etype_access(etype target, string name, bool funny_business) { sequencer
         loaded, false,
         debug_id, id,
         value,  LLVMBuildStructGEP2(
-            B, gep_type, tnode->value,
+            B, t->lltype, tnode->value,
             m->index, id->chars));
 }
 
@@ -3914,7 +3928,7 @@ enode aether_e_native_switch(
         array body_tokens = (array)value_by_index(cases, idx++);
         invoke(body_builder, (Au)body_tokens);
 
-        if (!a->last_return)
+        if (!a->last_return && !LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B)))
             LLVMBuildBr(B, switch_cat->block);
     }
 
@@ -3922,7 +3936,8 @@ enode aether_e_native_switch(
     if (def_block) {
         LLVMPositionBuilderAtEnd(B, default_block);
         invoke(body_builder, (Au)def_block);
-        LLVMBuildBr(B, switch_cat->block);
+        if (!a->last_return && !LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B)))
+            LLVMBuildBr(B, switch_cat->block);
     }
 
     // merge
@@ -5149,8 +5164,9 @@ none etype_init(etype t) {
         arg_list(au, arg) {
             Au_t t = arg->src;
 
-            // register type if we have not
-            if (!u(etype, t)) etype(mod, a, au, t);
+            // register type if we have not (skip opaque types for ref args)
+            if (!u(etype, t) && !(arg->is_explicit_ref && !t->typesize))
+                etype(mod, a, au, t);
 
             bool convert_prim_target = is_prim(t) && arg->is_target;
             bool struct_by_ref = is_struct(u(etype, t));
