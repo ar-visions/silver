@@ -8,7 +8,7 @@ Copyright (C) 2017 Kalen Novis White — MIT License
 
 ---
 
-**silver is a build language.** One `.ag` file defines a module, its `import` dependencies by its own git service (default) or from any url. the module defines a robust component model which interpolates in C and CC.  using native, we may build to all devices as binary or shared library. `import` a git repository by `owner:name/commit` ; silver detects its build system, builds it with its own tools, and links the result. `import` a C header, its models and macros are made available at design time through an integrated libclang frontend. 
+**silver is a build language.** One `.ag` file defines a module, its `import` dependencies by its own git service (default) or from any url. silver defines a reflective component model which interpolates in C and CC.  using native, we may build to all devices as binary or shared library. `import` a git repository by `owner:name/commit` ; silver detects its build system, builds it with its own tools, and links the result. `import` a C header, its models and macros are made available at design time through an integrated libclang frontend. 
 
 write .c or .cc compilation-units alongside your `.ag` source to out-source methods for your component, with all fields accessible without wrapping or binding code.  it compiles and links automatically with full access to your types. The boundary between languages disappears because the object model is shared — Au, a C runtime with reference counting, type reflection, and single-inheritance, serves C, C++, and silver equally.
 
