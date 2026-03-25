@@ -601,9 +601,9 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
                 m_align = align_for_type(a, msrc);
             }
             u64 offset_bits;
-            if (et && et->lltype && LLVMGetTypeKind(et->lltype) == LLVMStructTypeKind && !LLVMIsOpaqueStruct(et->lltype))
+            if (et && et->lltype && LLVMGetTypeKind(et->lltype) == LLVMStructTypeKind && !LLVMIsOpaqueStruct(et->lltype)) {
                 offset_bits = LLVMOffsetOfElement(a->target_data, et->lltype, m->index) * 8;
-            else
+            } else
                 offset_bits = (u64)m->offset * 8;
 
             members[midx++] = LLVMDIBuilderCreateMemberType(

@@ -170,29 +170,32 @@ The deliberate exclusion of varargs is what enables this. Fixed arity means ever
 
 ### Scalar Types
 
-`scalar` declares a type that wraps a single numeric value. The type name becomes a suffix for numeric literals:
+`scalar` declares a type that wraps a single numeric value. The type name becomes a suffix for numeric literals. `200px` is parsed as two neighboring tokens — the parser sees the number, checks if the neighbor is a scalar type, and constructs it. No special syntax — the struct name IS the suffix. Scalar types are type-safe: `200px` and `200em` are different types, and passing one where the other is expected is a compile error.
 
 ```python
 scalar px  : f32
 scalar em  : f32
 scalar deg : f32
+scalar rad : f32
 scalar ms  : i64
 
-# usage — suffix constructs the type:
 width:    200px
 margin:   1.5em
 rotation: 90deg
 delay:    16ms
 ```
 
-`200px` is parsed as two neighboring tokens (`200` + `px`). The parser sees the number, checks if the neighbor is a scalar type, and constructs it. No special syntax — the struct name IS the suffix.
-
-Scalar types are type-safe. `200px` and `200em` are different types. Passing `px` where `em` is expected is a compile error:
+Scalars define casts between each other, so unit conversions are built into the type system. The conversion compiles to a single arithmetic instruction — zero overhead, full type safety.
 
 ```python
-func set_margin [ m: px ] -> none
-set_margin 20px    # ok
-set_margin 20em    # error: expected px, got em
+scalar deg : f32
+scalar rad : f32
+    cast -> deg [ a * 57.2958 ]
+    cast -> f32 [ a ]
+
+rotation: 90deg
+r: rad rotation    # converts via cast: 90 * 0.0174533
+angle: f32 r       # extracts raw float
 ```
 
 ---
