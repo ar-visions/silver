@@ -135,6 +135,7 @@ forward(evar)
     M(X, Y, i, prop,     public,  array,                    setter_key_tokens) \
     M(X, Y, i, prop,     public,  Au_t,                     setter_fn) \
     M(X, Y, i, prop,     public,  i32,                      stack_test) \
+    M(X, Y, i, prop,     public,  enode,                    last_return) \
     M(X, Y, i, prop,     public,  efunc,                    fn_init) \
     M(X, Y, i, prop,     public,  callback,                 prepare_record) \
     M(X, Y, i, prop,     public,  callback_extra,           parse_f) \
@@ -280,6 +281,7 @@ declare_class_2(enamespace, etype)
     M(X, Y, i, prop,     public,  map,             team) \
     M(X, Y, i, prop,     public,  enode,           phi) \
     M(X, Y, i, prop,     public,  etype,           rtype) \
+    M(X, Y, i, prop,     public,  bool,            last_return) \
     M(X, Y, i, prop,     intern,  LLVMBasicBlockRef, block, as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMBasicBlockRef, continue_block, as, ARef)
 declare_class_2(catcher, etype)

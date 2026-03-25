@@ -32,7 +32,6 @@ declare_class(exports)
     M(X, Y, i, prop,     intern,  bool,   processed_imports) \
     M(X, Y, i, prop,     iobject, array,  implements) \
     M(X, Y, i, prop,     public,  enode,  last_sub_return) \
-    M(X, Y, i, prop,     public,  enode,  last_return) \
     M(X, Y, i, prop,     public,  enode,  last_break) \
     M(X, Y, i, prop,     public,  enode,  last_continue) \
     M(X, Y, i, prop,     public,  token,  exported_version) \
