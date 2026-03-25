@@ -29,7 +29,7 @@ import <string.h>
 import <vk_mem_alloc.h>
 import <sys/stat.h>
 
-func trinity_log [
+intern func trinity_log [
         severity:       VkDebugUtilsMessageSeverityFlagBitsEXT,
         types:          VkDebugUtilsMessageTypeFlagsEXT,
         callbackData:   ref VkDebugUtilsMessengerCallbackDataEXT,
@@ -237,7 +237,7 @@ class Layout
         return null
 
     # transition image from this layout to target layout
-    func transition [ vk: vk_context, img: VkImage, to: Layout, r: image_range ] -> none
+    intern func transition [ vk: vk_context, img: VkImage, to: Layout, r: image_range ] -> none
         cmd: command [ vk: vk ]
         cmd.begin
         barrier: VkImageMemoryBarrier [
@@ -263,18 +263,18 @@ class Layout
 
 class vk_context
     public  user                : Au
-    public  instance            : VkInstance
-    public  physical_device     : VkPhysicalDevice
-    public  device              : VkDevice
-    public  queue               : VkQueue
-    public  command_pool        : VkCommandPool
+    intern  instance            : VkInstance
+    intern  physical_device     : VkPhysicalDevice
+    intern  device              : VkDevice
+    intern  queue               : VkQueue
+    intern  command_pool        : VkCommandPool
     public  queue_family_index  : i32 -1
     public  rt_support          : bool
     public  instance_exts       : array cstr [ alloc:128, unmanaged:true ]
     public  device_exts         : array cstr [ alloc:128, unmanaged:true ]
     intern  debug               : VkDebugUtilsMessengerEXT
     public  allocator           : VmaAllocator
-    public  _vkCreateDebugUtilsMessengerEXT : PFN_vkCreateDebugUtilsMessengerEXT
+    intern  _vkCreateDebugUtilsMessengerEXT : PFN_vkCreateDebugUtilsMessengerEXT
 
     intern gltf_quad: path [ 'models/uv-quad2.gltf' ]
     intern quad_m:    Model
@@ -360,7 +360,7 @@ class vk_context
         free[ queue_families ]
         expect found, "failed to find a suitable graphics and presentation queue family"
 
-    func find_memory_type [ type_filter: u32, flags: VkMemoryPropertyFlags ] -> u32
+    intern func find_memory_type [ type_filter: u32, flags: VkMemoryPropertyFlags ] -> u32
         props: VkPhysicalDeviceMemoryProperties
         vkGetPhysicalDeviceMemoryProperties[ physical_device, ref props ]
         for [ i: u32 0, i < props.memoryTypeCount, i += 1 ]
@@ -387,7 +387,7 @@ class vk_context
             result: vkCreateCommandPool[ device, pool_info, VK_NULL_HANDLE, ref command_pool ]
             expect result == VK_SUCCESS, "failed to create command pool"
 
-    func create_mipmaps [ vk_image: VkImage, w: i32, h: i32, mips: i32, layers: i32 ] -> none
+    intern func create_mipmaps [ vk_image: VkImage, w: i32, h: i32, mips: i32, layers: i32 ] -> none
         if [ mips > 1 ]
             mipWidth:  w
             mipHeight: h
@@ -434,7 +434,7 @@ class vk_context
 
 
     # compatibility wrapper for old call sites
-    func transition_image_layout [
+    intern func transition_image_layout [
             img: VkImage, old_layout: VkImageLayout, new_layout: VkImageLayout,
             baseMipLevel: i32, level_count: i32, base_array_layer: i32,
             layer_count: i32, is_depth: bool ] -> none
@@ -516,7 +516,7 @@ class gpu
     intern vma_alloc     : VmaAllocation
     public compute       : bool
 
-    func index_type [ ] -> VkIndexType
+    intern func index_type [ ] -> VkIndexType
         return (index_size == 1) ? VK_INDEX_TYPE_UINT8_KHR :
                (index_size == 2) ? VK_INDEX_TYPE_UINT16    : VK_INDEX_TYPE_UINT32
         
@@ -1145,13 +1145,13 @@ class SVG
 
 
 # --- GLFW callbacks ---
-func handle_glfw_framebuffer_size [ glfw_window: ref GLFWwindow, width: i32, height: i32 ] -> none
+intern func handle_glfw_framebuffer_size [ glfw_window: ref GLFWwindow, width: i32, height: i32 ] -> none
     if [ width == 0 && height == 0 ]
         return
     return
 
 
-func handle_glfw_key [ win: ref GLFWwindow, key: i32, scan_code: i32, action: i32, mods: i32 ] -> none
+intern func handle_glfw_key [ win: ref GLFWwindow, key: i32, scan_code: i32, action: i32, mods: i32 ] -> none
     w: (glfwGetWindowUserPointer[ win ]) to display
     if [ action == GLFW_PRESS && (key == GLFW_KEY_UP || key == GLFW_KEY_DOWN) ]
         w.debug_value += (key == GLFW_KEY_UP) ? 1.0 : -1.0
@@ -1165,7 +1165,7 @@ func handle_glfw_key [ win: ref GLFWwindow, key: i32, scan_code: i32, action: i3
     w.ux.key_event[ w.ev ]
 
 
-func handle_glfw_scroll [ win: ref GLFWwindow, x: f64, y: f64 ] -> none
+intern func handle_glfw_scroll [ win: ref GLFWwindow, x: f64, y: f64 ] -> none
     w: (glfwGetWindowUserPointer[ win ]) to display
     w.ev.clear[]
     w.ev.mouse.pos.x         = w.mouse.x
@@ -1174,7 +1174,7 @@ func handle_glfw_scroll [ win: ref GLFWwindow, x: f64, y: f64 ] -> none
     w.ux.wheel_event[ w.ev ]
 
 
-func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods: i32 ] -> none
+intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods: i32 ] -> none
     w: (glfwGetWindowUserPointer[ win ]) to display
     w.ev.clear[]
     w.ev.mouse.pos.x  = w.mouse.x
@@ -1187,7 +1187,7 @@ func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods: i32 ] 
         w.ux.release_event[ w.ev ]
 
 
-func handle_glfw_char [ win: ref GLFWwindow, code_point: u32 ] -> none
+intern func handle_glfw_char [ win: ref GLFWwindow, code_point: u32 ] -> none
     w: (glfwGetWindowUserPointer[ win ]) to display
     expect !w.ev.key.text, "unexpected text state"
     w.ev.clear[]
@@ -1195,7 +1195,7 @@ func handle_glfw_char [ win: ref GLFWwindow, code_point: u32 ] -> none
     w.ux.text_event[ w.ev ]
 
 
-func handle_glfw_cursor [ win: ref GLFWwindow, x: f64, y: f64 ] -> none
+intern func handle_glfw_cursor [ win: ref GLFWwindow, x: f64, y: f64 ] -> none
     w: (glfwGetWindowUserPointer[ win ]) to display
     w.ev.clear[]
     w.mouse.x = x

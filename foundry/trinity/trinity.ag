@@ -139,7 +139,7 @@ display window
 
 app media_app
     public  w          : window
-    public  ux         : composer
+    public  ux         : ux_composer
     public  vk         : vk_context
     public  app_context: ctx
     public  ason_path  : path
@@ -217,15 +217,15 @@ class style
     intern  reloaded  : bool
     intern  loaded    : bool
 
-    public func applicable [ element string array ] -> bool
-    public func process    [ string ] -> none
+    func applicable    [ element string array ] -> bool
+    func process       [ string ] -> none
+    func cache_members [ ] -> none
+    func best_match    [ element string array ] -> style_entry
+    func compute       [ element ] -> map
+    func check_reload  [ ] -> bool
 
-    public func cache_members [ ] -> none
-    public func best_match    [ element string array ] -> style_entry
-    public func compute       [ element ] -> map
-    public func check_reload  [ ] -> bool
-    public construct [ path ]
-    public construct [ object ]
+    construct [ path ]
+    construct [ object ]
 
 class style_block
     public parent : style_block
@@ -293,14 +293,14 @@ class translation
     public construct [ vec3f ]
     public construct [ string ]
     public func mix [ translation  f32 ] -> translation
-declare_class(translation)
+
 
 class scaling
     public value : vec3f
     public construct [ vec3f ]
     public construct [ string ]
     public func mix [ scaling  f32 ] -> scaling
-declare_class(scaling)
+
 
 # unit tcoord [ Duration ]
 
@@ -347,7 +347,7 @@ class style_selection
     public entry : style_entry
 
 
-class composer
+composer ux_composer
     public app                  : object
     public w                    : window
     intern root_styles          : map
@@ -517,7 +517,7 @@ class element
     public focus : subs
     public blur : subs
     public cursor : vec2f
-    intern ux : composer
+    intern ux : ux_composer
     intern style_avail : map
     intern selections : map
     intern transitions : map
@@ -946,7 +946,7 @@ class app
     func init [ ]
         vk    = vk_context[]
         style = style [ object[ self ] ]
-        ux    = composer [ app: self ]
+        ux    = ux_composer [ app: self ]
         ux.style = style
         if [ !on_render ]
             on_render = bind[ self, self, false, typeid[ map ], typeid[ window ], null, "render" ]

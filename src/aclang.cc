@@ -324,10 +324,14 @@ static Au_t map_function_type(const FunctionProtoType* fpt, ASTContext& ctx, aet
 
 static Au_t map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e, symbol use_name) {
     const Type* pointee = pointee_qt.getTypePtr();
-    
+
     if (const FunctionProtoType* fpt = dyn_cast<FunctionProtoType>(pointee)) {
         Au_t func = map_function_type(fpt, ctx, e);
-        verify(!use_name, "expected use_name to be null on this map_function_pointer");
+        printf("map_function_pointer: %s -> funcptr ident=%s member_type=%d is_funcptr=%d\n",
+            use_name ? use_name : "(null)",
+            func->ident ? func->ident : "(null)",
+            func->member_type, func->is_funcptr);
+        fflush(stdout);
         return func;
     }
     
@@ -530,7 +534,17 @@ static void set_fields(RecordDecl* decl, ASTContext& ctx, aether e, Au_t rec) {
 
             QualType field_type = field->getType();
             Au_t mapped = map_clang_type(field_type, ctx, e, null);
-            if (!mapped) continue;
+            if (!mapped) {
+                printf("aclang: field %s on %s mapped to null\n", field_name.c_str(), rec->ident ? rec->ident : "?");
+                fflush(stdout);
+                continue;
+            }
+            if (!mapped->member_type && !mapped->traits) {
+                printf("aclang: field %s on %s has empty Au_t (ident=%s)\n",
+                    field_name.c_str(), rec->ident ? rec->ident : "?",
+                    mapped->ident ? mapped->ident : "(null)");
+                fflush(stdout);
+            }
             
             Au_t m = def_member(rec, field_name.c_str(), mapped, AU_MEMBER_VAR, AU_TRAIT_IS_C | AU_TRAIT_IPROP);
             uint64_t offset_bits = layout.getFieldOffset(field->getFieldIndex());

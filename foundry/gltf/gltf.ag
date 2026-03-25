@@ -116,17 +116,20 @@ class Accessor
             case CompoundType.SCALAR
                 res = typeid[f32]
             case CompoundType.VEC2
-                res = typeid[vec2f]
+                return typeid[vec2f]
             case CompoundType.VEC3
-                res = typeid[vec3f]
+                return typeid[vec3f]
             case CompoundType.VEC4
-                res = typeid[vec4f]
+                return typeid[vec4f]
             #case CompoundType_MAT2
             #   return typeid[mat2f]
             #case CompoundType_MAT3
             #   return typeid[mat3f]
             case CompoundType.MAT4
                 res = typeid[mat4f]
+            break
+        default
+            break
         
         return res
 
