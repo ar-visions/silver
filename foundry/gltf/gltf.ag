@@ -82,7 +82,63 @@ class Accessor
     public total_bytes:     u64
     public vcount:          array u64
     public component_size:  array u64
-    public member_type:     array Au_t
+
+    func member_type [] -> Au_t
+        res : Au_t[null]
+        switch [componentType]
+        case ComponentType.BYTE
+        case ComponentType.UNSIGNED_BYTE
+            switch [type]
+            case CompoundType.SCALAR
+                res = typeid[i8]
+            #case CompoundType_VEC2
+            #    return typeid[vec2i8]
+            #case CompoundType_VEC3
+            #    return typeid[vec3i8]
+            case CompoundType.VEC4
+                res = typeid[rgba8]
+            break
+        case ComponentType.SHORT
+        case ComponentType.UNSIGNED_SHORT
+            switch [type]
+            case CompoundType.SCALAR
+                res = typeid[i16]
+            case CompoundType.VEC4
+                res = typeid[rgba16]
+
+        case ComponentType.UNSIGNED_INT
+            switch [type]
+            case CompoundType.SCALAR
+                res = typeid[i32]
+
+        case ComponentType.FLOAT
+            switch [type]
+            case CompoundType.SCALAR
+                res = typeid[f32]
+            case CompoundType.VEC2
+                res = typeid[vec2f]
+            case CompoundType.VEC3
+                res = typeid[vec3f]
+            case CompoundType.VEC4
+                res = typeid[vec4f]
+            #case CompoundType_MAT2
+            #   return typeid[mat2f]
+            #case CompoundType_MAT3
+            #   return typeid[mat3f]
+            case CompoundType.MAT4
+                res = typeid[mat4f]
+        
+        return res
+
+
+
+
+
+
+
+
+
+
 
     func vcount_val [] -> u64
         vsize: u64 [0]

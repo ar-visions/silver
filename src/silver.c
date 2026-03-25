@@ -1849,7 +1849,7 @@ static shape parse_shape(string str, string* str_res, i64* index) {
             index_stop = i;
             continue;
         }
-        if (chr == '.')
+        if (chr == '.' || chr == 'e' || chr == 'E')
             return null;
         break;
     }
@@ -1947,6 +1947,35 @@ static Au parse_numeric(string str, string* str_res, i64* index) {
         return _i64(strtoll(crop->chars + 2, NULL, 8));
     }
     
+    // decimal integer or float with optional scientific notation: 123, 3.14, 1e20, 1.5e-7
+    while (i < ln && isdigit(idx(str, i)))
+        i++;
+    bool is_float = false;
+    if (i < ln && idx(str, i) == '.') {
+        is_float = true;
+        i++;
+        while (i < ln && isdigit(idx(str, i)))
+            i++;
+    }
+    if (i < ln && (idx(str, i) == 'e' || idx(str, i) == 'E')) {
+        is_float = true;
+        i++;
+        if (i < ln && (idx(str, i) == '+' || idx(str, i) == '-'))
+            i++;
+        while (i < ln && isdigit(idx(str, i)))
+            i++;
+    }
+    // strip C suffix
+    while (i < ln && (idx(str, i) == 'f' || idx(str, i) == 'F' ||
+                      idx(str, i) == 'l' || idx(str, i) == 'L' ||
+                      idx(str, i) == 'u' || idx(str, i) == 'U'))
+        i++;
+    if (i > start) {
+        string crop = mid(str, start, i - start);
+        *str_res = crop;
+        *index = i;
+        return is_float ? _f64(strtod(crop->chars, NULL)) : _i64(strtoll(crop->chars, NULL, 10));
+    }
     return null;
 }
 
@@ -2202,7 +2231,7 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
                     index + 2 < length && isxdigit(idx(input_string, index + 2));
         Au      literal         = (start_numeric && !is_b16) ? (Au)parse_shape(input_string, &shape_str, &index) : null;
 
-        if (start_numeric && is_b16) {
+        if (start_numeric && !literal) {
             literal = parse_numeric(input_string, &shape_str, &index);
         }
         if (literal) {
@@ -3033,15 +3062,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         return arr;
     }
 
-    if (!cmode && read_if(a, "cast")) {
-        validate(read_if(a, "["), "expected [ after cast");
-        enode expr = parse_expression(a, null, false, true);
-        validate(read_if(a, "->"), "expected -> after expression in cast");
-        etype target = read_etype(a, null);
-        validate(target, "expected type after -> in cast");
-        validate(read_if(a, "]"), "expected ] after cast");
-        return e_convert_or_cast((aether)a, canonical(target), expr);
-    }
+    // cast syntax: (expr) to Type — handled in parse_ternary after (expr)
 
     if (!cmode && read_if(a, "null"))
         return e_null(a, mdl_expect);
@@ -3096,7 +3117,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     // expect: inline verify with debug break on failure
     else if (!cmode && read_if(a, "expect")) {
-        enode cond = read_enode(a, null, false, true);
+        enode cond = read_enode(a, etypeid(bool), false, true);
         return e_expect(a, cond, null);
     }
 
@@ -3246,6 +3267,8 @@ enode parse_statement(silver a)
     }
 #endif
     efunc f = context_func(a);
+    //catcher cat = context_catcher(a);
+    //if (cat) cat->last_return = false;
     verify(!f || !f->au->is_mod_init, "unexpected init function");
     a->last_return      = null;
     a->expr_level       = 0;
@@ -3366,9 +3389,9 @@ enode parse_statement(silver a)
             is_func ? typeid(efunc) : ((access || f || (!!module)) ? typeid(evar) : null), null, false) : null;
     Au_t mem_info = isa(mem);
 
-    if (mem && mem->au->ident && strcmp(mem->au->ident, "rng_state2") == 0) {
-        seq = seq;
-    }
+    //if (mem && mem->au->ident && strcmp(mem->au->ident, "rng_state2") == 0) {
+    //    seq = seq;
+    //}
 
     validate(!mem || (!is_func || !instanceof(mem, efunc) || mem->au->context != top),
         "redefinition of %o", mem);
@@ -3909,7 +3932,7 @@ etype read_etype(silver a, array* p_expr) { sequencer
                 // meta_a: always a type
                 a->etype_level++;
                 etype t = read_etype(a, null);
-                if (!t && !is_cmode(a) && !(mdl->au->context && mdl->au->context->meta.a))
+                if (!t && !is_cmode(a) && !(mdl->au->context && mdl->au->context->meta.a) && mdl->au != typeid(shape))
                     validate(false, "type parameter required for %o", mdl);
                 if (!t) t = etypeid(Au);
                 meta_a_val = (Au)t->au;
@@ -4709,6 +4732,11 @@ path module_exists(silver a, array idents, bool binary_finary, bool* is_bin) {
 }
 
 enode silver_parse_ternary(silver a, enode expr, etype mdl_expect, bool load) {
+    if (read_if(a, "to")) {
+        etype target = read_etype(a, null);
+        verify(target, "expected type after 'to'");
+        return e_convert_or_cast((aether)a, canonical(target), expr);
+    }
     if (!read_if(a, "?")) {
         if (!read_if(a, "??"))
             return expr;
@@ -6571,7 +6599,7 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
     /// handle compatible indexing methods / lambda / and general pointer dereference @ index
     if (indexable && next_is(a, "[")) {
         // C arrays with elements > 0 are indexable like pointers
-        bool is_indexable_ptr = is_ptr((Au)mem) || mem->au->elements > 0;
+        bool is_indexable_ptr = is_ptr((Au)mem) || mem->au->elements > 0 || mem->au->is_explicit_ref;
         Au_t au_rec = is_rec((Au)mem);
         etype r = au_rec ? u(etype, au_rec) : null;
 
