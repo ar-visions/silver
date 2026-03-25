@@ -10,7 +10,7 @@ declare_class(exports)
 
 // Clint M. Strandhagen -- the motivation for orbiter, which we design in silver
 #define silver_schema(X, Y, ...) \
-    M(X, Y, i, prop,     public,  bool,   build) \
+    M(X, Y, i, prop,     public,  bool,   watch) \
     M(X, Y, i, prop,     intern,  silver, is_external) \
     M(X, Y, i, prop,     public,  bool,   is_project) \
     M(X, Y, i, prop,     intern,  bool,   clipping) \

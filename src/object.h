@@ -109,13 +109,15 @@ typedef struct _collective_abi {
     struct _Au_t*   last_type;
 } collective_abi;
 
-typedef struct _micro {
+//typedef struct _micro micro;
+
+typedef struct _micro_ {
     struct _Au**    origin;
     i32             count;
     i32             alloc;
-} micro;
+} micro_;
 
-static inline struct _Au* micro_push(micro* m, struct _Au* value) {
+static inline struct _Au* micro_push(micro_* m, struct _Au* value) {
     if (m->count == m->alloc) {
         m->alloc = m->alloc ? m->alloc * 2 : 8;
         m->origin = (struct _Au**)realloc(m->origin, m->alloc * sizeof(struct _Au*));
@@ -124,11 +126,11 @@ static inline struct _Au* micro_push(micro* m, struct _Au* value) {
     return value;
 }
 
-static inline struct _Au* micro_get(micro* m, i32 index) {
+static inline struct _Au* micro_get(micro_* m, i32 index) {
     return (index >= 0 && index < m->count) ? m->origin[index] : 0;
 }
 
-static inline void micro_clear(micro* m) {
+static inline void micro_clear(micro_* m) {
     if (m->origin) free(m->origin);
     m->origin = 0;
     m->count  = 0;
@@ -254,9 +256,9 @@ typedef struct _Au_t {
     u64             ident_hash;
     void*           fn;
     ffi_method_t*   ffi;
-    micro           members;
+    micro_          members;
     void*           member_map;
-    micro           args;
+    micro_          args;
     meta_t          meta;
     union {
         u64             required_bits[2];

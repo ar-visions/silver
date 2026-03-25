@@ -98,6 +98,7 @@ forward(evar)
     M(X, Y, i, prop,     public,  bool,                     building_initializer) \
     M(X, Y, i, prop,     public,  bool,                     direct) \
     M(X, Y, i, prop,     public,  bool,                     import_c) \
+    M(X, Y, i, prop,     public,  bool,                     release) \
     M(X, Y, i, prop,     public,  bool,                     debug) \
     M(X, Y, i, prop,     public,  bool,                     asan) \
     M(X, Y, i, prop,     public,  bool,                     coverage) \
@@ -312,7 +313,7 @@ forward(evar)
     M(X, Y, i, prop,     intern,  LLVMBasicBlockRef, entry, as, ARef) \
     M(X, Y, i, method,   public,  Au,              literal_value, Au_t) \
     M(X, Y, i, method,   public,  enode,           retain) \
-    M(X, Y, i, method,   public,  enode,           release) \
+    M(X, Y, i, method,   public,  enode,           emit_release) \
     M(X, Y, i, method,   public,  none,            inspect) \
     M(X, Y, i, method,   public,  enode,           deref) \
     M(X, Y, i, override, cast,    Au_t) \

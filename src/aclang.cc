@@ -760,7 +760,7 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
         Au_t arg = def(fn, param_name.c_str(), AU_MEMBER_VAR, AU_TRAIT_IS_C);
         //arg->module = e->current_import->au;
         arg->src = mt;
-        micro_push((micro*)&fn->args, (Au)arg);
+        micro_push((micro_*)&fn->args, (Au)arg);
     }
     
     // Variadic - may need a trait for this

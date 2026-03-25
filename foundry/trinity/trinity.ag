@@ -5,11 +5,161 @@ import img
 import vulkan2
 
 
-class trinity
+
+display window
+    public ux                   : Au
+    public app_object           : app
+
+    public compose              : sk
+    public colorize             : sk
+    public overlay              : sk
+    public glyph                : sk
+
+    # this needs to be in trinity in form of a declarative stack for our rendering pipeline
+    # if we can do such a thing for elements, we should be able to express it
+    public m_reduce             : model
+    public r_reduce             : target
+    public m_reduce0            : model
+    public r_reduce0            : target
+    public m_reduce1            : model
+    public r_reduce1            : target
+    public m_reduce2            : model
+    public r_reduce2            : target
+    public m_reduce3            : model
+    public r_reduce3            : target
+    public m_blur_v             : model
+    public r_blur_v             : target
+    public m_blur               : model
+    public r_blur               : target
+    public m_frost_v            : model
+    public r_frost_v            : target
+    public m_frost              : model
+    public r_frost              : target
+    public m_view               : model
+    public r_view               : target
+
+    public func update_canvas [ ] -> none
+        if [ compose ]
+            resize[ compose,  width, height ]
+            resize[ colorize, width, height ]
+            resize[ overlay,  width, height ]
+            resize[ glyph,    width, height ]
+        el
+            compose  = sk [ vk: vk, format: Pixel_rgba8, :width, :height ]
+            colorize = sk [ vk: vk, format: Pixel_rgba8, :width, :height ]
+            overlay  = sk [ vk: vk, format: Pixel_rgba8, :width, :height ]
+            glyph    = sk [ vk: vk, format: Pixel_rgba8, :width, :height ]
+        
+        clear[ compose,  string[ "#008" ] ]
+        clear[ colorize, string[ "#fff" ] ]
+        clear[ overlay,  string[ "#fff0" ] ]
+        clear[ glyph,    string[ "#000" ] ]
+        sk_sync[]
+
+    public func resize [ w: i32, h: i32 ] -> none
+        super.resize[ w, h ]
+        update_canvas[]
+
+    public func draw_element [ e: element* ] -> none
+        expect instanceof[ e, element ], "e is not an element"
+        canvas_arr: new sk[4] [ overlay, compose, colorize, glyph ]
+        rel: e.parent ?
+            rect [ x: 0, y: 0, w: e.parent.bounds.w, h: e.parent.bounds.h ] :
+            rect [ x: 0, y: 0, w: width, h: height ]
+        
+        e.bounds.drop[]
+        e.text_bounds.drop[]
+        e.border_bounds.drop[]
+        e.child_bounds.drop[]
+        e.clip_bounds.drop[]
+
+        e.bounds        = rectangle_offset[ e.area,        rel ]
+        e.text_bounds   = rectangle_offset[ e.text_area,   e.bounds ]
+        e.border_bounds = rectangle_offset[ e.border_area, e.bounds ]
+        e.child_bounds  = rectangle_offset[ e.child_area,  e.bounds ]
+        e.clip_bounds   = rectangle_offset[ e.clip_area,   e.bounds ]
+        if [ e.fill_color ]
+            cv: canvas_arr[e.fill_canvas]
+            b: e.bounds
+            rounded_rect_to[ cv, b.x, b.y, b.w, b.h, e.fill_radius_x, e.fill_radius_y ]
+            save[ cv ]
+            fill_color[ cv, e.fill_color ]
+            blur_radius[ cv, e.fill_blur ]
+            draw_fill[ cv ]
+            blur_radius[ cv, 0 ]
+            restore[ cv ]
+        for [ i: 0, i < 3, i++ ]
+            cv: canvas_arr[i]
+            save[ cv ]
+            translate[ cv, e.clip_bounds.x, e.clip_bounds.y ]
+            r: rect [ x: 0, y: 0, w: e.clip_bounds.w, h: e.clip_bounds.h ]
+            if [ e.border_clip ]
+                clip[ cv, r, e.border_radius_x, e.border_radius_y ]
+        if [ e.border_color && e.border_size > 0 ]
+            cv: canvas_arr[e.border_canvas]
+            save[ cv ]
+            stroke_size[ cv, e.border_size ]
+            stroke_cap[ cv, e.border_cap ]
+            stroke_join[ cv, e.border_join ]
+            b: e.border_bounds
+            rounded_rect_to[ cv, b.x - e.clip_bounds.x, b.y - e.clip_bounds.y,
+                b.w, b.h, e.border_radius_x, e.border_radius_y ]
+            stroke_color[ cv, e.border_color ]
+            stroke_size[ cv, e.border_size ]
+            blur_radius[ cv, e.border_blur ]
+            draw_stroke[ cv ]
+            blur_radius[ cv, 0.0 ]
+            restore[ cv ]
+        content: instanceof[ e.content, string ]
+        if [ content && e.text_color ]
+            cv: glyph
+            save[ cv ]
+            txt: e.text_bounds
+            c: e.clip_bounds
+            r: rect [ x: txt.x - c.x, y: txt.y - c.y, w: txt.w, h: txt.h ]
+            al: vec2f [ e.text_align_x, e.text_align_y ]
+            stroke_size[ cv, 0 ]
+            if [ e.text_shadow_color && e.text_shadow_color.a > 0.0 ]
+                fill_color[ cv, e.text_shadow_color ]
+                offset: vec2f [ e.text_shadow_x, e.text_shadow_y ]
+                blur_radius[ cv, 2.0 ]
+                draw_text[ cv, content, r, al, offset, e.text_ellipsis ]
+            fill_color[ cv, e.text_color ]
+            offset: vec2f [ 0, 0 ]
+            blur_radius[ cv, e.fill_blur ]
+            draw_text[ cv, content, r, al, offset, e.text_ellipsis ]
+            restore[ cv ]
+        draw[ e, self ]
+        for [ ee: element, id: string ] in e.origin
+            draw_element[ self, ee ]
+        for [ i: 0, i < 3, i++ ]
+            cv: canvas_arr[i]
+            restore[ cv ]
+
+
+app media_app
+    public  w          : window
+    public  ux         : composer
+    public  vk         : vk_context
+    public  app_context: ctx
+    public  ason_path  : path
+    public  ason_render: map
+    intern  ason_modified : i64
+    public  style      : style
+    intern  arg        : object
+    public  on_render  : callback
+
+    public func initialize [ w: window ] -> none
+    public func run [ ] -> i32
+    func init [ ]
+    func dealloc [ ]
+
+
+media_app trinity
     expect vk                  : vk_context
     intern msaa_samples        : i64
     intern device_memory       : map
-    public func texture [ environment image vec3f f32 ]
+    public func texture [ environment, image, vec3f, f32 ]
 
     func init[ ] -> none
         expect glfwInit, "glfw init"
@@ -21,47 +171,6 @@ class trinity
 
     func dealloc [ ]
         glfwTerminate[]
-
-struct mouse_state
-    wheel_delta : vec2f
-    pos         : vec2f
-    button      : i32
-    state       : i32
-
-struct keyboard_state
-    unicode   : u32
-    scan_code : u32
-    state     : i32
-    meta      : bool
-    shift     : bool
-    alt       : bool
-    text      : string
-
-# forward declarations need resolver support
-# process same way, different gen method (make_class -> make_decl)
-class event
-    public  target           : element
-    public  mouse            : mouse_state
-    public  key              : keyboard_state
-    public  prevent_default  : bool
-    public  stop_propagation : bool
-    public  func prevent_default  [ ] -> none
-        prevent_default = true
-
-    public  func is_default [ ] -> bool
-        return !prevent_default
-
-    public  func should_propagate [ ] -> bool
-        return !stop_propagation
-
-    public  func stop_propagation [ ] -> bool
-        stop_propagation = true
-        return true
-
-    public  func clear [ ] -> none
-        memset[ self, 0, sizeof[ struct _event ] ]
-        mouse.state  = -1
-        mouse.button = -1
 
 # enums export to A-type
 enum Ease
@@ -421,6 +530,7 @@ class element
     public func render [ array ] -> map
     func compare [ element ]
 
+
 element scene
     public target : target
     public models : array
@@ -442,40 +552,6 @@ scene stage
 element pane
 
 element button
-
-class uniforms
-    public vk : vk_context
-    expect s : shader
-    public u_memory : array
-    public u_buffers : array
-    public func update [ ] -> none
-        for [ b: buffer ] in u_buffers
-            uniform_transfer[ s, b.data, b.user ]
-            update[ b, null ]
-
-    func init [ ]
-        types:  list [ unmanaged: true ]
-        ty:     typeid[ s ]
-        while [ ty != typeid[ shader ] ]
-            insert_after[ types, ty, -1 ]
-            ty = ty.parent_type
-        u_index:  0
-        total_uniform: i32 [ 0 ]
-        for [ i: types.first, i, i = i.next ]
-            ty = i.value
-            u_size: uniform_size[ ty ]
-            total_uniform += u_size
-        u_buffers = array [ 4 ]
-        u_memory  = alloc[ typeid[ u8 ], total_uniform ]
-        src: u8* [ u_memory ]
-        for [ i: types.first, i, i = i.next ]
-            ty = i.value
-            u_size: uniform_size[ ty ]
-            uniform_buf: buffer [ vk: vk, size: u_size,
-                u_uniform: true, u_dst: true, m_host_visible: true, m_host_coherent: true,
-                data: ref src[u_index], user: ty ]
-            push[ u_buffers, uniform_buf ]
-            u_index += u_size
 
 
 shader Basic
@@ -551,34 +627,6 @@ shader Blur
     public proj : mat4f
     public reduction_scale : f32
     attrib Surface [ color ] : 1, rgba8
-
-
-shader UVQuad
-    public model : mat4f
-    public view : mat4f
-    public proj : mat4f
-    attrib Surface [ color ] : 1, rgba8
-    func init [ ]
-        model = mat4f_ident[]
-        eye:    vec3f [ 0.0, 0.0, 2.0 ]
-        center: vec3f [ 0.0, 0.0, 0.0 ]
-        up:     vec3f [ 0.0, 1.0, 0.0 ]
-        view  = mat4f_look_at[ ref eye, ref center, ref up ]
-        proj  = mat4f_ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
-
-
-shader UVReduce
-    public model    : mat4f
-    public view     : mat4f
-    public proj     : mat4f
-    attrib Surface [ color ] : 1, rgba8
-    func init [ ]
-        model = mat4f_ident[]
-        eye:    vec3f [ 0.0, 0.0, 2.0 ]
-        center: vec3f [ 0.0, 0.0, 0.0 ]
-        up:     vec3f [ 0.0, 1.0, 0.0 ]
-        view  = mat4f_look_at[ ref eye, ref center, ref up ]
-        proj  = mat4f_ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
 
 
 enum UXSurface
@@ -1068,26 +1116,6 @@ class particle
     public density  : f32
     public pressure : f32
 
-func quad_shader [ vk: vk_context ] -> UVQuad
-    q: UVQuad [ vk: vk, name: 'uv-quad' ]
-    q.model = mat4f_ident[]
-    eye:    vec3f [ 0.0, 0.0, 2.0 ]
-    center: vec3f [ 0.0, 0.0, 0.0 ]
-    up:     vec3f [ 0.0, 1.0, 0.0 ]
-    q.view = mat4f_look_at[ ref eye, ref center, ref up ]
-    q.proj = mat4f_ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
-    return q
-
-func reduce_shader [ vk: vk_context ] -> UVReduce
-    q: UVReduce [ vk: vk, name: 'uv-reduce' ]
-    q.model = mat4f_ident[]
-    eye:    vec3f [ 0.0, 0.0, 2.0 ]
-    center: vec3f [ 0.0, 0.0, 0.0 ]
-    up:     vec3f [ 0.0, 1.0, 0.0 ]
-    q.view = mat4f_look_at[ ref eye, ref center, ref up ]
-    q.proj = mat4f_ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
-    return q
-
 
 func image_release_buffer [ a: image ] -> object
     b: buffer [ a.res ]
@@ -1122,9 +1150,6 @@ func pixel_from_format [ f: VkFormat, channels: ref i32 ] -> Pixel
                 *channels = 0
     return pixel
 
-func gpu_index_type [ a: gpu ] -> VkIndexType
-    return a.index_size == 1 ? VK_INDEX_TYPE_UINT8_KHR :
-           a.index_size == 2 ? VK_INDEX_TYPE_UINT16     : VK_INDEX_TYPE_UINT32
 
 func pbr_defaults [] -> pbrMetallicRoughness
     static pbr: pbrMetallicRoughness

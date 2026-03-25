@@ -193,7 +193,7 @@ class Node
 
 class Primitive
     public name:            string
-    public attributes:      map
+    public attributes:      map map
     public indices:         u64
     public material:        i32
     public mode:            Mode
@@ -351,7 +351,7 @@ class Model
         ident: mat4f.identity
         if [node.skin != -1]
             skin: skins[node.skin]
-            all_children: map
+            all_children: map bool[i64]
             for [node_idx: i64] in skin.joints
                 n: nodes[node_idx]
                 for [i: i64] in n.children

@@ -6,7 +6,7 @@ SILVER := $(patsubst %/,%,$(dir $(shell readlink -f $(lastword $(MAKEFILE_LIST))
 PROJECT_PATH := $(CURDIR)
 PROJECT_NAME := $(notdir $(PROJECT_PATH))
 
-BUILD_ROOT ?= $(SILVER)/platform/native/release
+BUILD_ROOT ?= $(SILVER)/platform/native/debug
 
 export PROJECT_PATH
 export PROJECT_NAME

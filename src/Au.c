@@ -1943,7 +1943,7 @@ Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, 
     head(type)->type = typeid(Au_t_f);     
     
     if (member_type == AU_MEMBER_MODULE) {
-        micro_push(&modules, (Au)type); // we should error if we ever find a duplicate here
+        micro_push((micro_*)&modules, (Au)type); // we should error if we ever find a duplicate here
     } else
         push_type((Au_t)type);
     
@@ -2067,7 +2067,7 @@ Au_t def_module(symbol next_module) {
             return m;
         }
     
-    micro_push(&modules, (Au)m);
+    micro_push((micro_*)&modules, (Au)m);
     return m;
 }
 
@@ -2110,8 +2110,6 @@ none push_type(Au_t type) {
     // on first call, we register our basic type structures:
     if (type == typeid(Au_t)) {
         module->traits |= AU_TRAIT_IS_AU;
-        // micro needs no special init flags
-
         // the first ever type we really register is the collective_abi
         Au_t au_collective = def(module, "collective_abi",
             AU_MEMBER_TYPE, AU_TRAIT_STRUCT | AU_TRAIT_SYSTEM);
@@ -2749,7 +2747,7 @@ ffi_method_t* method_with_address(handle address, Au_t rtype, micro* args, Au_t 
 }
 
 Au method_call(Au_t m, array args) {
-    if (!m->ffi) m->ffi = method_with_address(m->value, m->type, &m->args, m->context);
+    if (!m->ffi) m->ffi = method_with_address(m->value, m->type, (micro*)&m->args, m->context);
     ffi_method_t* a = m->ffi;
     const num max_args = 8;
     none* arg_values[max_args];
@@ -7554,10 +7552,13 @@ define_primitive(AFlag,  numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED)
 define_primitive(cstr,   string_like, AU_TRAIT_POINTER, i8)
 define_primitive(symbol, string_like, AU_TRAIT_CONST | AU_TRAIT_POINTER, i8)
 define_primitive(cereal, raw, 0)
-define_primitive(micro,  raw, 0)
+//define_primitive(micro,  raw, 0)
 define_primitive(meta_t, raw, 0)
 define_primitive(none,   nil, AU_TRAIT_VOID)
+
 //define_primitive(Au_t,  raw, 0)
+define_struct(micro, ARef, i32, i32)
+
 define_primitive(handle, raw, AU_TRAIT_POINTER, u8)
 define_primitive(ARef,   ref, AU_TRAIT_POINTER, Au)
 define_primitive(Au_ts, ref, AU_TRAIT_POINTER, Au_t)

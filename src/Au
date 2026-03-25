@@ -171,9 +171,9 @@ typedef double                 *ref_f64;
     u64             ident_hash; \
     void*           fn; \
     ffi_method_t*   ffi; \
-    micro           members; \
+    micro_          members; \
     void*           member_map; \
-    micro           args; \
+    micro_          args; \
     meta_t          meta; \
     u64             required_bits[2];
 
@@ -1061,8 +1061,8 @@ declare_abstract(imported)
 #define meta_t_module_ Au
 #define meta_t_schema(X,Y,...)      raw_schema(X,Y,...)
 
-#define micro_module_ Au
-#define micro_schema(X,Y,...)      raw_schema(X,Y,...)
+//#define micro_module_ Au
+//#define micro_schema(X,Y,...)      raw_schema(X,Y,...)
 
 #define none_schema(X,Y,...)        nil_schema(X,Y,...)
 
@@ -1161,7 +1161,7 @@ declare_primitive(symbol,           string_like)
 
 declare_primitive(none,             nil)
 declare_primitive(cereal,           raw)
-declare_primitive(micro,            raw)
+//declare_primitive(micro,            raw)
 declare_primitive(meta_t,           raw)
 declare_primitive(raw_t,            raw)
 declare_primitive(handle,           raw)
@@ -1934,6 +1934,11 @@ declare_class(rect)
     i_struct_cast   (O, Y, string)
 declare_struct(mat4f, f32)
 
+#define micro_schema(O, Y, ...) \
+    i_struct_prop (O, Y, Au_ts, origin) \
+    i_struct_prop (O, Y, i32,  count) \
+    i_struct_prop (O, Y, i32,  alloc)
+declare_struct(micro, Au_ts)
 
 // will need to adjust json serialization to facilitate vector with meta types
 #define vector_mat4f_module_ Au
@@ -1987,8 +1992,6 @@ declare_class_3(vector_rgb8, vector, collective, rgb8)
 #define vector_rgbf_module_ Au
 #define vector_rgbf_schema(X,Y,...)
 declare_class_3(vector_rgbf, vector, collective, rgbf)
-
-
 
 vector_f32   vector_f32_new  (shape count, ...);
 vector_f64   vector_f64_new  (shape count, ...);
