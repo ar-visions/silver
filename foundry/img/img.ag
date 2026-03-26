@@ -22,13 +22,13 @@ import vec
 
 
 # all 4 opencv functions implemented in img.cc
-func opencv_resize_area[ref u8, ref u8, int, int, int, int, int, int] -> none
+func opencv_resize_area[ref u8, ref u8, int, int, int, int, int, int] 
 
-func opencv_gaussian[ref u8, ref u8, int, int, int, int, float] -> none
+func opencv_gaussian[ref u8, ref u8, int, int, int, int, float] 
 
-func opencv_gaussian_fast[ref u8, ref u8, int, int, int, int , float] -> none
+func opencv_gaussian_fast[ref u8, ref u8, int, int, int, int , float] 
 
-func opencv_blur_equirect[ref u8, int, int] -> none
+func opencv_blur_equirect[ref u8, int, int] 
 
 enum join
     none           : 0
@@ -90,11 +90,11 @@ class font
     intern static font_manager_init    : hook
     intern static font_manager_dealloc : hook
 
-    static func set_font_manager[ init:hook, dealloc:hook ] -> none
+    static func set_font_manager[ init:hook, dealloc:hook ] 
         font_manager_init    : init
         font_manager_dealloc : dealloc
 
-    func dealloc[] -> none
+    func dealloc[] 
         font_manager_dealloc a
 
     func copy[ ] -> font
@@ -102,7 +102,7 @@ class font
         font_manager_init b 
         return b
 
-    func init[] -> none
+    func init[] 
         font_manager_init a
 
     construct [ u:path ]
@@ -135,9 +135,9 @@ class image
 
     func exr [ path ] -> i32
 
-    func init    [ ] -> none
+    func init    [ ] 
 
-    func dealloc [ ] -> none # some comment
+    func dealloc [ ]  # some comment
         info : header[ a ]
         if [ res_dealloc ] res_dealloc [ a ]
 

@@ -66,7 +66,7 @@ class CrossEntropyLoss : Loss
 class Optimizer
     public learning_rate: f32 [ 0.001 ]
     
-    func update [model: keras] -> none
+    func update [model: keras] 
         no-op
 
 
@@ -78,7 +78,7 @@ class AdamOptimizer : Optimizer
     intern m:       map tensor[string]
     intern v:       map tensor[string]
 
-    func update [model: keras] -> none
+    func update [model: keras] 
         t += 1
         if [ ! m ] m = map tensor[string] []
         if [ ! v ] v = map tensor[string] []
@@ -89,7 +89,7 @@ class AdamOptimizer : Optimizer
             if [ layer.bias ]
                 update_param layer.name + "_b", layer.bias
 
-    func update_param [id: string, p: tensor] -> none
+    func update_param [id: string, p: tensor] 
         if [ ! m[id] ]
             m[id] = tensor [ tensor_shape: p.tensor_shape, initializer: Initializer.zeros ]
             v[id] = tensor [ tensor_shape: p.tensor_shape, initializer: Initializer.zeros ]
@@ -121,7 +121,7 @@ class AdamOptimizer : Optimizer
 # --- Additional Layers ---
 
 op SoftmaxLayer
-    func forward [] -> none
+    func forward [] 
         t: input.count
         max_val: f32 [ -99999.0 ]
         # find max for numerical stability
@@ -154,7 +154,7 @@ op DropoutLayer
     public rate: f32 [ 0.5 ]
     intern mask: tensor
     
-    func forward [] -> none
+    func forward [] 
         if [ ! mask ] mask = tensor [ tensor_shape: input.tensor_shape ]
         t: input.count
         scale: f32 [ 1.0 / (1.0 - rate) ]
@@ -198,7 +198,7 @@ class NeuralTrainer
         
         return l
 
-    func fit [samples: map tensor[tensor], epochs: i32] -> none
+    func fit [samples: map tensor[tensor], epochs: i32] 
         for [ epoch: i32 0 :: epoch < epochs :: epoch += 1 ]
             total_loss: f32 [ 0.0 ]
             count:      i32 [ 0 ]

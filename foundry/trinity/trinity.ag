@@ -38,7 +38,7 @@ display window
     public m_view               : model
     public r_view               : target
 
-    public func update_canvas [ ] -> none
+    public func update_canvas [ ] 
         if [ compose ]
             resize[ compose,  width, height ]
             resize[ colorize, width, height ]
@@ -56,11 +56,11 @@ display window
         clear[ glyph,    string[ "#000" ] ]
         sk_sync[]
 
-    public func resize [ w: i32, h: i32 ] -> none
+    public func resize [ w: i32, h: i32 ] 
         super.resize[ w, h ]
         update_canvas[]
 
-    public func draw_element [ e: element* ] -> none
+    public func draw_element [ e: element* ] 
         expect instanceof[ e, element ], "e is not an element"
         canvas_arr: new sk[4] [ overlay, compose, colorize, glyph ]
         rel: e.parent ?
@@ -149,7 +149,7 @@ app media_app
     intern  arg        : object
     public  on_render  : callback
 
-    public func initialize [ w: window ] -> none
+    public func initialize [ w: window ] 
     public func run [ ] -> i32
     func init [ ]
     func dealloc [ ]
@@ -161,7 +161,7 @@ media_app trinity
     intern device_memory       : map
     public func texture [ environment, image, vec3f, f32 ]
 
-    func init[ ] -> none
+    func init[ ] 
         expect glfwInit, "glfw init"
         if [ !glfwVulkanSupported ]
             fault "glfw does not support vulkan"
@@ -218,8 +218,8 @@ class style
     intern  loaded    : bool
 
     func applicable    [ element string array ] -> bool
-    func process       [ string ] -> none
-    func cache_members [ ] -> none
+    func process       [ string ] 
+    func cache_members [ ] 
     func best_match    [ element string array ] -> style_entry
     func compute       [ element ] -> map
     func check_reload  [ ] -> bool
@@ -522,11 +522,11 @@ class element
     intern selections : map
     intern transitions : map
     intern restyle : bool
-    public func set_capture [ ] -> none
-    public func release_capture [ ] -> none
-    public func set_focus [ ] -> none
-    public func release_focus [ ] -> none
-    public func draw [ window ] -> none
+    public func set_capture [ ] 
+    public func release_capture [ ] 
+    public func set_focus [ ] 
+    public func release_focus [ ] 
+    public func draw [ window ] 
     public func render [ array ] -> map
     func compare [ element ]
 
@@ -686,7 +686,7 @@ class target
     intern vk_render_pass                   : array VkRenderPass  [ 2 ]
     intern last_width : i32
     intern last_height : i32
-    public func update [ ] -> none
+    public func update [ ] 
         w_width:  wscale > 0 ? w.width  * wscale : width
         w_height: wscale > 0 ? w.height * wscale : height
         width  = w_width
@@ -734,7 +734,7 @@ class target
             ], null, ref vk_framebuffer[i] ]
             expect result == VK_SUCCESS, "Failed to create framebuffer"
 
-    public func draw [ ] -> none
+    public func draw [ ] 
         index: u32 [ 0 ]
         for [ i: 0, i < 1 + i32[reduce], i++ ]
             if [ i == 0 && color ]
@@ -801,7 +801,7 @@ class target
             ]
             vkQueueSubmit[ vk.queue, 1, submitInfo, vk_fence ]
 
-    public func sync_fence [ ] -> none
+    public func sync_fence [ ] 
         result: vkWaitForFences[ vk.device, 1, ref vk_fence, VK_TRUE, UINT64_MAX ]
         expect result == VK_SUCCESS, "fence wait failed"
 
@@ -924,7 +924,7 @@ class app
     intern arg : object
     public on_render : callback
 
-    func initialize [ win: window ] -> none
+    func initialize [ win: window ] 
         ux.w = win
         win.ux = ux
         update_canvas[ win ]
@@ -976,7 +976,7 @@ class draw_state
     public stroke_color         : u32
     public opacity              : f32
 
-    public func set_default [ ] -> none
+    public func set_default [ ] 
         font         = hold[ font [ size: 22, uri: path 'fonts/Sofia-Sans-Condensed.ttf' ] ]
         stroke_cap   = cap_round
         stroke_join  = join_round
@@ -989,36 +989,36 @@ image canvas
     expect vk    : vk_context
     public tx    : texture
     public state : array draw_state
-    interface func save            [ ] -> none
-    interface func restore         [ ] -> none
-    interface func move_to         [ f32  f32 ] -> none
-    interface func line_to         [ f32  f32 ] -> none
-    interface func arc_to          [ f32, f32, f32, f32, f32 ] -> none
-    interface func arc             [ f32, f32, f32, f32, f32 ] -> none
-    interface func rect_to         [ f32 f32 f32 f32 ] -> none
-    interface func rounded_rect_to [ f32, f32, f32, f32, f32, f32 ] -> none
-    interface func fill_color      [ object ] -> none
-    interface func stroke_color    [ object ] -> none
-    interface func clear           [ object ] -> none
-    interface func set_stroke      [ stroke ] -> none
-    interface func set_font        [ font ] -> none
-    interface func cubic           [ f32, f32, f32, f32, f32, f32 ] -> none
-    interface func quadratic       [ f32 f32 f32 f32 ] -> none
-    interface func draw_fill       [ ] -> none
-    interface func draw_stroke     [ ] -> none
-    interface func draw_fill_preserve [ ] -> none
-    interface func draw_stroke_preserve [ ] -> none
-    interface func blur_radius [ f32 ] -> none
-    interface func prepare [ ] -> none
-    interface func set_texture [ texture ] -> none
-    interface func translate [ f32  f32 ] -> none
-    interface func scale [ f32 ] -> none
-    interface func clip [ rect f32 f32 ] -> none
-    interface func stroke_size [ f32 ] -> none
-    interface func stroke_cap [ cap ] -> none
-    interface func stroke_join [ join ] -> none
-    interface func stroke_miter_limit [ f32 ] -> none
-    interface func stroke_dash_offset [ f32 ] -> none
+    interface func save            [ ] 
+    interface func restore         [ ] 
+    interface func move_to         [ f32  f32 ] 
+    interface func line_to         [ f32  f32 ] 
+    interface func arc_to          [ f32, f32, f32, f32, f32 ] 
+    interface func arc             [ f32, f32, f32, f32, f32 ] 
+    interface func rect_to         [ f32 f32 f32 f32 ] 
+    interface func rounded_rect_to [ f32, f32, f32, f32, f32, f32 ] 
+    interface func fill_color      [ object ] 
+    interface func stroke_color    [ object ] 
+    interface func clear           [ object ] 
+    interface func set_stroke      [ stroke ] 
+    interface func set_font        [ font ] 
+    interface func cubic           [ f32, f32, f32, f32, f32, f32 ] 
+    interface func quadratic       [ f32 f32 f32 f32 ] 
+    interface func draw_fill       [ ] 
+    interface func draw_stroke     [ ] 
+    interface func draw_fill_preserve [ ] 
+    interface func draw_stroke_preserve [ ] 
+    interface func blur_radius [ f32 ] 
+    interface func prepare [ ] 
+    interface func set_texture [ texture ] 
+    interface func translate [ f32  f32 ] 
+    interface func scale [ f32 ] 
+    interface func clip [ rect f32 f32 ] 
+    interface func stroke_size [ f32 ] 
+    interface func stroke_cap [ cap ] 
+    interface func stroke_join [ join ] 
+    interface func stroke_miter_limit [ f32 ] 
+    interface func stroke_dash_offset [ f32 ] 
     resize[]
 
 struct text_metrics
@@ -1039,47 +1039,47 @@ canvas sk
     intern once         : bool
     intern skia         : ref Skia
     intern vk_layout    : VkImageLayout
-    public func save            [ ] -> none
-    public func restore         [ ] -> none
-    public func draw_svg        [ SVG rect vec2f vec2f ] -> none
-    public func draw_image      [ image rect vec2f vec2f ] -> none
+    public func save            [ ] 
+    public func restore         [ ] 
+    public func draw_svg        [ SVG rect vec2f vec2f ] 
+    public func draw_image      [ image rect vec2f vec2f ] 
     public func measure         [ string ] -> text_metrics
     public func draw_text       [ string, rect, vec2f, vec2f, bool ] -> rect
-    public func move_to         [ f32  f32 ]                -> none
-    public func line_to         [ f32  f32 ]                -> none
-    public func arc_to          [ f32, f32, f32, f32, f32 ] -> none
-    public func arc             [ f32, f32, f32, f32, f32 ] -> none
-    public func rect_to         [ f32 f32 f32 f32 ]         -> none
-    public func rounded_rect_to [ f32, f32, f32, f32, f32, f32 ] -> none
-    public func fill_color      [ object ] -> none
-    public func clear           [ object ] -> none
-    public func set_font        [ font ]   -> none
-    public func cubic           [ f32, f32, f32, f32, f32, f32 ] -> none
-    public func quadratic       [ f32 f32 f32 f32 ] -> none
-    public func draw_fill       [ ] -> none
-    public func draw_stroke     [ ] -> none
-    public func draw_fill_preserve   [ ] -> none
-    public func draw_stroke_preserve [ ] -> none
-    public func blur_radius [ f32 ] -> none
-    public func prepare [ ] -> none
-    public func translate [ f32  f32 ] -> none
-    public func scale [ f32 ] -> none
-    public func clip [ rect f32 f32 ] -> none
-    public func set_texture [ texture ] -> none
-    public func stroke_color [ object ] -> none
-    public func stroke_size [ f32 ] -> none
-    public func stroke_cap [ cap ] -> none
-    public func stroke_join [ join ] -> none
-    public func stroke_miter_limit [ f32 ] -> none
-    public func stroke_dash_offset [ f32 ] -> none
-    public func opacity [ f32 ] -> none
+    public func move_to         [ f32  f32 ]                
+    public func line_to         [ f32  f32 ]                
+    public func arc_to          [ f32, f32, f32, f32, f32 ] 
+    public func arc             [ f32, f32, f32, f32, f32 ] 
+    public func rect_to         [ f32 f32 f32 f32 ]         
+    public func rounded_rect_to [ f32, f32, f32, f32, f32, f32 ] 
+    public func fill_color      [ object ] 
+    public func clear           [ object ] 
+    public func set_font        [ font ]   
+    public func cubic           [ f32, f32, f32, f32, f32, f32 ] 
+    public func quadratic       [ f32 f32 f32 f32 ] 
+    public func draw_fill       [ ] 
+    public func draw_stroke     [ ] 
+    public func draw_fill_preserve   [ ] 
+    public func draw_stroke_preserve [ ] 
+    public func blur_radius [ f32 ] 
+    public func prepare [ ] 
+    public func translate [ f32  f32 ] 
+    public func scale [ f32 ] 
+    public func clip [ rect f32 f32 ] 
+    public func set_texture [ texture ] 
+    public func stroke_color [ object ] 
+    public func stroke_size [ f32 ] 
+    public func stroke_cap [ cap ] 
+    public func stroke_join [ join ] 
+    public func stroke_miter_limit [ f32 ] 
+    public func stroke_dash_offset [ f32 ] 
+    public func opacity [ f32 ] 
     public func ellipsis [ string rect ARef ] -> string
-    static func sync [ ] -> none
+    static func sync [ ] 
     func resize  [ i32 i32 ]
     func init    [ ]
     func dealloc [ ]
 
-func sk_sync_all [] -> none
+func sk_sync_all [] 
 
 # command class moved to vulkan.ag
 
@@ -1205,7 +1205,7 @@ func sk_canvas [ a: window, ct: Canvas ] -> sk
         default
             return a.overlay
 
-func app_render [ a: app ] -> none
+func app_render [ a: app ] 
     w:        a.w
     ux:       w.ux
     elements: a.ason_render
@@ -1265,7 +1265,7 @@ func app_render [ a: app ] -> none
 # allocates command buffer, creates render pass with color+depth attachments,
 # semaphores, fence, then calls update for framebuffer creation
 
-# func target.init [] -> none
+# func target.init [] 
 #     alloc command buffer from vk.command_pool
 #     create render pass: color attachment (surface format) + depth (D32_SFLOAT)
 #     subpass with color+depth refs
@@ -1276,14 +1276,14 @@ func app_render [ a: app ] -> none
 #     call update
 #     finish all models on their render pass
 
-# func target.update [] -> none
+# func target.update [] 
 #     scale width/height from wscale if set
 #     if color exists: resize color, depth, reduction textures
 #     else: create color texture (surface format), depth (D32_SFLOAT), reduction
 #     transition layouts (color attachment or shader read depending on backbuffer)
 #     create framebuffers for each render pass
 
-# func target.draw [] -> none
+# func target.draw [] 
 #     for each pass (main + reduce):
 #       transition color/reduction to COLOR_ATTACHMENT_OPTIMAL
 #       reset fence, reset command buffer, begin recording
@@ -1293,17 +1293,17 @@ func app_render [ a: app ] -> none
 #       end render pass, end command buffer
 #       submit with semaphore wait/signal if swap image
 
-# func target.sync_fence [] -> none
+# func target.sync_fence [] 
 #     vkWaitForFences on vk_fence
 
-# func target.dealloc [] -> none
+# func target.dealloc [] 
 #     destroy framebuffers, render passes, fence, semaphores
 
 
 # ---- window ----
 # GLFW window creation, Vulkan surface, swapchain, present mode selection
 
-# func window.init [] -> none
+# func window.init [] 
 #     set defaults (format rgba8, width 1200, height 1200)
 #     create event object
 #     if not backbuffer:
@@ -1314,7 +1314,7 @@ func app_render [ a: app ] -> none
 #     choose B8G8R8A8_UNORM format, MAILBOX present mode
 #     set extent from glfw window size
 
-# func window.resize [width: i32, height: i32] -> none
+# func window.resize [width: i32, height: i32] 
 #     vkDeviceWaitIdle
 #     update all targets
 #     rebind models if resized
@@ -1323,20 +1323,20 @@ func app_render [ a: app ] -> none
 #     recreate swap images and swap renders
 #     update canvas
 
-# func window.draw [] -> none
+# func window.draw [] 
 #     if not backbuffer:
 #       acquire next swap image
 #       draw swap render target
 #       present to queue
 #       advance swap image index
 
-# func window.dealloc [] -> none
+# func window.dealloc [] 
 #     destroy swapchain, surface, swap images
 
 # func window.cast_image [] -> image
 #     create transfer buffer, copy color to it, return as image
 
-# func window.update_canvas [] -> none
+# func window.update_canvas [] 
 #     resize or create compose/colorize/overlay/glyph skia surfaces
 #     clear each with default colors
 
@@ -1365,140 +1365,140 @@ func app_render [ a: app ] -> none
 
 # ---- app ----
 
-# func app.init [] -> none
+# func app.init [] 
 #     create vk_context
 #     create style, composer
 #     bind on_render or load ason_path
 
-# func app.initialize [win: window] -> none
+# func app.initialize [win: window] 
 #     set ux.w = win, w.ux = ux
 #     update_canvas, app_render, resize
 
-# func app.run [] -> none
+# func app.run [] 
 #     main loop: glfwPollEvents, render, present
 #     cleanup on exit
 
-# func app.dealloc [] -> none
+# func app.dealloc [] 
 #     cleanup
 
 
 # ---- pipeline ----
 # Vulkan graphics pipeline: descriptor sets, pipeline layout, shaders, vertex input
 
-# func pipeline.init [] -> none
+# func pipeline.init [] 
 #     create descriptor set layout from shader uniforms
 #     create pipeline layout
 #     create graphics pipeline (vert/frag stages, vertex input, rasterizer, multisampling, depth, blend)
 #     allocate descriptor sets
 
-# func pipeline.draw [frame: VkCommandBuffer] -> none
+# func pipeline.draw [frame: VkCommandBuffer] 
 #     update uniforms
 #     bind pipeline, descriptor sets, vertex/index buffers
 #     draw indexed or draw vertices
 
-# func pipeline.bind_resources [] -> none
+# func pipeline.bind_resources [] 
 #     for each descriptor: bind uniform buffers and texture samplers
 #     write descriptor sets
 
-# func pipeline.reassemble [] -> none
+# func pipeline.reassemble [] 
 #     rebuild pipeline on shader reload
 
-# func pipeline.dealloc [] -> none
+# func pipeline.dealloc [] 
 #     destroy pipeline, pipeline layout, descriptor pool/sets
 
 
 # ---- model ----
 # groups pipelines with vertex data, manages gltf scene binding
 
-# func model.finish [r: target, pass_id: i32] -> none
+# func model.finish [r: target, pass_id: i32] 
 #     init_pipeline for each gltf primitive
 #     sync gpu objects
 #     bind resources on all pipelines
 
-# func model.dealloc [] -> none
+# func model.dealloc [] 
 #     cleanup pipelines, gpu objects
 
-# func model.rebind [] -> none
+# func model.rebind [] 
 #     rebind all pipelines
 
 
 # ---- gpu (mesh object) ----
 # vertex/index buffer management for draw calls
 
-# func gpu.init [] -> none
+# func gpu.init [] 
 #     create VBO from vertex_data, IBO from index_data
 #     create texture from sampler if provided
 
-# func gpu.sync [w: window] -> none
+# func gpu.sync [w: window] 
 #     upload vertex/index data to GPU buffers
 
-# func gpu.dealloc [] -> none
+# func gpu.dealloc [] 
 #     destroy VBO, IBO, texture
 
 
 # ---- uniforms ----
 
-# func uniforms.init [] -> none
+# func uniforms.init [] 
 #     create uniform buffers for each shader binding
 #     allocate descriptor pool and sets
 
-# func uniforms.update [] -> none
+# func uniforms.update [] 
 #     map each uniform buffer, memcpy shader data, unmap
 
 
 # ---- shader inits ----
 
-# func UVQuad.init [] -> none
+# func UVQuad.init [] 
 #     model = identity, view = look_at(0,0,2), proj = ortho(-1,1,-1,1,0.1,10)
 
-# func UVReduce.init [] -> none
+# func UVReduce.init [] 
 #     same as UVQuad
 
-# func UXSimple.init [] -> none
+# func UXSimple.init [] 
 #     same as UVQuad
 
-# func UXCompose.init [] -> none
+# func UXCompose.init [] 
 #     same as UVQuad
 
-# func PBR.init [] -> none
+# func PBR.init [] 
 #     shader name "pbr"
 
-# func Env.init [] -> none
+# func Env.init [] 
 #     shader name "env"
 
 
 # ---- canvas stubs ----
 # these are the drawing API — will be implemented in canvas.ag
 
-# func canvas.resize [] -> none
-# func canvas.move_to [x: f32, y: f32] -> none
-# func canvas.line_to [x: f32, y: f32] -> none
-# func canvas.rect_to [x: f32, y: f32, w: f32, h: f32] -> none
-# func canvas.rounded_rect_to [x: f32, y: f32, w: f32, h: f32, r: f32] -> none
-# func canvas.arc_to [x: f32, y: f32, r: f32, start: f32, end: f32] -> none
-# func canvas.arc [cx: f32, cy: f32, r: f32, start: f32, end: f32] -> none
-# func canvas.blur_radius [r: f32] -> none
-# func canvas.set_texture [tx: texture] -> none
-# func canvas.draw_fill [] -> none
-# func canvas.draw_stroke [] -> none
-# func canvas.draw_fill_preserve [] -> none
-# func canvas.draw_stroke_preserve [] -> none
-# func canvas.cubic [cx1: f32, cy1: f32, cx2: f32, cy2: f32, x: f32, y: f32] -> none
-# func canvas.quadratic [cx: f32, cy: f32, x: f32, y: f32] -> none
-# func canvas.save [] -> none
-# func canvas.restore [] -> none
-# func canvas.set_font [f: font] -> none
-# func canvas.stroke_size [s: f32] -> none
-# func canvas.stroke_cap [c: i32] -> none
-# func canvas.stroke_join [j: i32] -> none
-# func canvas.stroke_miter_limit [l: f32] -> none
-# func canvas.stroke_dash_offset [o: f32] -> none
-# func canvas.fill_color [c: object] -> none
-# func canvas.stroke_color [c: object] -> none
-# func canvas.clear [c: object] -> none
-# func canvas.prepare [] -> none
-# func canvas.sync [] -> none
-# func canvas.output_mode [output: bool] -> none
+# func canvas.resize [] 
+# func canvas.move_to [x: f32, y: f32] 
+# func canvas.line_to [x: f32, y: f32] 
+# func canvas.rect_to [x: f32, y: f32, w: f32, h: f32] 
+# func canvas.rounded_rect_to [x: f32, y: f32, w: f32, h: f32, r: f32] 
+# func canvas.arc_to [x: f32, y: f32, r: f32, start: f32, end: f32] 
+# func canvas.arc [cx: f32, cy: f32, r: f32, start: f32, end: f32] 
+# func canvas.blur_radius [r: f32] 
+# func canvas.set_texture [tx: texture] 
+# func canvas.draw_fill [] 
+# func canvas.draw_stroke [] 
+# func canvas.draw_fill_preserve [] 
+# func canvas.draw_stroke_preserve [] 
+# func canvas.cubic [cx1: f32, cy1: f32, cx2: f32, cy2: f32, x: f32, y: f32] 
+# func canvas.quadratic [cx: f32, cy: f32, x: f32, y: f32] 
+# func canvas.save [] 
+# func canvas.restore [] 
+# func canvas.set_font [f: font] 
+# func canvas.stroke_size [s: f32] 
+# func canvas.stroke_cap [c: i32] 
+# func canvas.stroke_join [j: i32] 
+# func canvas.stroke_miter_limit [l: f32] 
+# func canvas.stroke_dash_offset [o: f32] 
+# func canvas.fill_color [c: object] 
+# func canvas.stroke_color [c: object] 
+# func canvas.clear [c: object] 
+# func canvas.prepare [] 
+# func canvas.sync [] 
+# func canvas.output_mode [output: bool] 
 
 
 # ---- environment cubemap ----

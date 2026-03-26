@@ -17,7 +17,7 @@ class spectra
     public buf:         ref i16
     public bins:        ref f32
 
-    func init [] -> none
+    func init [] 
         channels = 1
         re   = new f32 [ size ]
         im   = new f32 [ size ]
@@ -67,11 +67,11 @@ class spectra
             bins[i] = sqrt [ re[i] * re[i] + im[i] * im[i] ]
         return true
 
-    func close [] -> none
+    func close [] 
         snd_pcm_close [ pcm ]
 
 
-func fft [ re: ref f32, im: ref f32, n: i32 ] -> none
+func fft [ re: ref f32, im: ref f32, n: i32 ] 
     if [ n <= 1 ]
         return
     

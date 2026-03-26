@@ -48,7 +48,7 @@ class tensor
     public scale:        f32
     intern count:        u64
     
-    func init [] -> none
+    func init [] 
         # it should error when we do not give const to printf
 
         has_f32: bool [ floats ]
@@ -77,7 +77,7 @@ class tensor
             scale  = 1.0f
             offset = 0
 
-    func quantize [] -> none
+    func quantize [] 
         max_abs: f32 [ 0.0 ]
         for [ i: i32 0, i < count, i += 1 ]
             v: floats[i]
@@ -97,7 +97,7 @@ class tensor
                 q = -128
             quants[i] = i8[q]
 
-    func realize [] -> none
+    func realize [] 
         src: quants
         dst: floats
         for [ i: i32 0, i < count, i += 1 ]
@@ -129,7 +129,7 @@ class op
     intern b_v:        tensor
 
 
-    func set_optimizer [opt:Optimizer] -> none
+    func set_optimizer [opt:Optimizer] 
         if [ opt == adam ]
             if [ weights ]
                 w_m = tensor [ initializer: zeros, tensor_shape: weights.tensor_shape ]
@@ -139,10 +139,10 @@ class op
                 b_m = tensor [ initializer: zeros, tensor_shape: bias.tensor_shape ]
                 b_v = tensor [ initializer: zeros, tensor_shape: bias.tensor_shape ]
 
-    func finalize [] -> none
+    func finalize [] 
         no-op
 
-    func forward [] -> none
+    func forward [] 
         if [ quantized ]
             if [ activation == Activation.relu ]
                 t: input.count
@@ -181,7 +181,7 @@ op output_op
 
 
 op flatten
-    func forward [] -> none
+    func forward [] 
         if [ quantized ]
             result.quants = input.quants
             result.scale  = input.scale
@@ -198,7 +198,7 @@ op flatten
 
 
 op relu_op
-    func init [] -> none
+    func init [] 
         activation = Activation.relu
 
 
@@ -210,13 +210,13 @@ op concatenate
         if [ axis < 0 ]
             axis = ndim + axis
 
-    func forward [] -> none
+    func forward [] 
         if [ quantized ]
             forward_q8
         el
             forward_f32
 
-    func forward_f32 [] -> none
+    func forward_f32 [] 
         dst:      result.floats
         rs:       result.tensor_shape
         ndim:     rs.count
@@ -245,7 +245,7 @@ op concatenate
                     ]
             cat_offset += cat_size
 
-    func forward_q8 [] -> none
+    func forward_q8 [] 
         dst:      result.quants
         rs:       result.tensor_shape
         ndim:     rs.count
@@ -319,13 +319,13 @@ op dense
     func finalize []
         no-op
 
-    func forward [] -> none
+    func forward [] 
         if [ quantized ]
             forward_q8
         el
             forward_avx2
 
-    func forward_q8 [] -> none
+    func forward_q8 [] 
         m:       i32 input.tensor_shape[0]
         k:       i32 input.tensor_shape[1]
         n:       i32 result.tensor_shape[1]
@@ -351,7 +351,7 @@ op dense
         result.quantize
 
     # AVX2/FMA3 vectorized forward — processes 8 output columns at a time
-    func forward_avx2 [] -> none
+    func forward_avx2 [] 
         m:       i32 input.tensor_shape[0]
         k:       i32 input.tensor_shape[1]
         n:       i32 result.tensor_shape[1]
@@ -524,7 +524,7 @@ op conv
         out_c:    out_channels
 
 
-    func forward [] -> none
+    func forward [] 
         ifdef [ x86_64 ]
             if [ quantized ]
                 forward_q8
@@ -536,10 +536,10 @@ op conv
             el
                 forward_ref
 
-    func forward_q8 [] -> none
+    func forward_q8 [] 
         forward_q8_im2col
 
-    func forward_q8_ref [] -> none
+    func forward_q8_ref [] 
         in_h:     input.tensor_shape[0]
         in_w:     input.tensor_shape[1]
         in_c:     input.tensor_shape[2]
@@ -596,7 +596,7 @@ op conv
     # im2col fill is scalar (runs once), gemm uses vpmovsxbw + vpmaddwd + vpaddd
     # weights repacked to w_pk[oc * col_k + ki] so both operands are contiguous along k
     # processes 16 i8 multiply-adds per asm block
-    func forward_q8_im2col [] -> none
+    func forward_q8_im2col [] 
         in_h:     input.tensor_shape[0]
         in_w:     input.tensor_shape[1]
         in_c:     input.tensor_shape[2]
@@ -708,7 +708,7 @@ op conv
                     out[i * out_c + oc] = v
         result.quantize
 
-    func forward_ref [] -> none
+    func forward_ref [] 
         in_h:     input.tensor_shape[0]
         in_w:     input.tensor_shape[1]
         in_c:     input.tensor_shape[2]
@@ -745,7 +745,7 @@ op conv
                         out[(oh * out_w + ow) * out_c + oc] = s
 
     # AVX2 conv forward — vectorizes across output channels (8 at a time)
-    func forward_avx2 [] -> none
+    func forward_avx2 [] 
         in_h:     input.tensor_shape[0]
         in_w:     input.tensor_shape[1]
         in_c:     input.tensor_shape[2]
@@ -811,7 +811,7 @@ op conv
                         out[idx] = tanhf[ out[idx] ]
 
     # im2col + gemm forward — replaces 6-nested-loop conv with matrix multiply
-    func forward_im2col [] -> none
+    func forward_im2col [] 
         in_h:     input.tensor_shape[0]
         in_w:     input.tensor_shape[1]
         in_c:     input.tensor_shape[2]
@@ -1069,7 +1069,7 @@ op depthwise_conv
         out_h:    (in_h - filter_h + 2 * pad_h) / stride_h + 1
         out_w:    (in_w - filter_w + 2 * pad_w) / stride_w + 1
 
-    func forward [] -> none
+    func forward [] 
         in_h:     input.tensor_shape[0]
         in_w:     input.tensor_shape[1]
         in_c:     in_channels
@@ -1176,13 +1176,13 @@ op pool
         out_h:    (in_h - pool_h) / stride_h + 1
         out_w:    (in_w - pool_w) / stride_w + 1
 
-    func forward [] -> none
+    func forward [] 
         if [ quantized ]
             forward_q8
         el
             forward_avx2
 
-    func forward_q8 [] -> none
+    func forward_q8 [] 
         in_h:     input.tensor_shape[0]
         in_w:     input.tensor_shape[1]
         in_c:     input.tensor_shape[2]
@@ -1211,7 +1211,7 @@ op pool
                     out[out_idx] = max_val
         result.scale = input.scale
 
-    func forward_ref [] -> none
+    func forward_ref [] 
         in_h:     input.tensor_shape[0]
         in_w:     input.tensor_shape[1]
         in_c:     input.tensor_shape[2]
@@ -1240,7 +1240,7 @@ op pool
                     out[out_idx] = max_val
 
     # AVX2 max pool forward — processes 8 channels at a time
-    func forward_avx2 [] -> none
+    func forward_avx2 [] 
         in_h:     input.tensor_shape[0]
         in_w:     input.tensor_shape[1]
         in_c:     input.tensor_shape[2]
@@ -1338,7 +1338,7 @@ class keras
     intern op_map:   map op[string]
     intern step:     i32
 
-    func init [] -> none
+    func init [] 
         op_map = map op[string]
 
         for [ o: op ] in ops
@@ -1397,7 +1397,7 @@ class keras
         out_op: op [ op_map['output'] ]
         k_output = out_op.input
 
-    func topo_visit [current: op, visited: map, in_progress: map] -> none
+    func topo_visit [current: op, visited: map, in_progress: map] 
         if [ in_progress[current.name] == true ]
             return
         if [ visited[current.name] != null ]
@@ -1494,7 +1494,7 @@ class keras
         return d_out
     
 
-    func train [epochs: i32, samples: map tensor[tensor], learning_rate: f32, optimizer: Optimizer] -> none
+    func train [epochs: i32, samples: map tensor[tensor], learning_rate: f32, optimizer: Optimizer] 
         for [ layer: op ] in ops
             layer.set_optimizer optimizer
         
@@ -1557,7 +1557,7 @@ class keras
 
         puts 'training complete'
 
-    func quantize_model [] -> none
+    func quantize_model [] 
         for [ layer: op ] in ops
             if [ layer.weights ]
                 layer.weights.quantize
@@ -1566,7 +1566,7 @@ class keras
             layer.quantized = true
         puts 'model quantized to int8'
 
-    func eval_q8 [samples: map tensor[tensor]] -> none
+    func eval_q8 [samples: map tensor[tensor]] 
         ltotal: f64 0
         for [ target: tensor, src: tensor ] in samples
             src.quantize

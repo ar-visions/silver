@@ -183,7 +183,7 @@ class Accessor
             fault 'invalid ComponentType'
         return scalar_sz
 
-    func init [] -> none
+    func init [] 
         stride      = vcount_val * component_size_val
         total_bytes = stride * vcount_val
 
@@ -208,21 +208,21 @@ class Transform
     public iparent:         i32
     public ichildren:       array i64
 
-    func propagate [] -> none
+    func propagate [] 
         m: (iparent != -1) ? mat4f[ jdata.states[iparent] ] : mat4f.identity
         jdata.states[istate] = local_mat.mul[ m ]
         for [i: i64] in ichildren
             jdata.transforms[i].propagate
 
-    func multiply [m: mat4f] -> none
+    func multiply [m: mat4f] 
         local_mat = local_mat.mul[ m ]
         propagate
 
-    func set [m: mat4f] -> none
+    func set [m: mat4f] 
         local_mat = m
         propagate
 
-    func set_default [] -> none
+    func set_default [] 
         local_mat = local_default
         propagate
 
@@ -285,7 +285,7 @@ class Buffer
     public byteLength:      u64
     public uri:             path
     public data:            vector
-    func init [] -> none
+    func init [] 
         data = vector [ uri ]
 
     # implemented in C as test

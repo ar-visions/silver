@@ -77,7 +77,7 @@ class target
     intern  last_width                     : i32
     intern  last_height                    : i32
 
-    public func update [ ] -> none
+    public func update [ ] 
         backbuffer: !vk_swap_image
         width  = (wscale > 0) ? w.width  * wscale : width
         height = (wscale > 0) ? w.height * wscale : height
@@ -129,7 +129,7 @@ class target
             ], null, ref vk_framebuffer[i] ]
             expect result == VK_SUCCESS, "Failed to create framebuffer"
 
-    public func draw [ ] -> none
+    public func draw [ ] 
         index: u32 [ 0 ]
         for [ i: 0, i < 1 + reduce, i += 1 ]
             if [ i == 0 && color ]
@@ -200,7 +200,7 @@ class target
             ]
             vkQueueSubmit[ vk.queue, 1, ref submitInfo, vk_fence ]
 
-    public func sync_fence [ ] -> none
+    public func sync_fence [ ] 
         result: vkWaitForFences[ vk.device, 1, ref vk_fence, VK_TRUE, UINT64_MAX ]
         expect result == VK_SUCCESS, "fence wait failed"
 
@@ -237,7 +237,7 @@ class Layout
         return null
 
     # transition image from this layout to target layout
-    intern func transition [ vk: vk_context, img: VkImage, to: Layout, r: image_range ] -> none
+    intern func transition [ vk: vk_context, img: VkImage, to: Layout, r: image_range ] 
         cmd: command [ vk: vk ]
         cmd.begin
         barrier: VkImageMemoryBarrier [
@@ -338,7 +338,7 @@ class vk_context
         vkDestroyDevice[ device, VK_NULL_HANDLE ]
         vkDestroyInstance[ instance, VK_NULL_HANDLE ]
 
-    func set_queue_index [ surface: handle ] -> none
+    func set_queue_index [ surface: handle ] 
         queue_family_count: u32 0
         vkGetPhysicalDeviceQueueFamilyProperties[
             physical_device, ref queue_family_count, VK_NULL_HANDLE ]
@@ -369,7 +369,7 @@ class vk_context
         fault "could not find memory type"
         return 0
 
-    func attach [ surface:handle ] -> none
+    func attach [ surface:handle ] 
         if [ queue_family_index == -1 ]
             set_queue_index[ surface ]
             vkGetDeviceQueue[ device, queue_family_index, 0, ref queue ]
@@ -387,7 +387,7 @@ class vk_context
             result: vkCreateCommandPool[ device, pool_info, VK_NULL_HANDLE, ref command_pool ]
             expect result == VK_SUCCESS, "failed to create command pool"
 
-    intern func create_mipmaps [ vk_image: VkImage, w: i32, h: i32, mips: i32, layers: i32 ] -> none
+    intern func create_mipmaps [ vk_image: VkImage, w: i32, h: i32, mips: i32, layers: i32 ] 
         if [ mips > 1 ]
             mipWidth:  w
             mipHeight: h
@@ -437,7 +437,7 @@ class vk_context
     intern func transition_image_layout [
             img: VkImage, old_layout: VkImageLayout, new_layout: VkImageLayout,
             baseMipLevel: i32, level_count: i32, base_array_layer: i32,
-            layer_count: i32, is_depth: bool ] -> none
+            layer_count: i32, is_depth: bool ] 
         src: Layout.find[ old_layout ]
         dst: Layout.find[ new_layout ]
         expect src && dst, "layout not found"
@@ -520,7 +520,7 @@ class gpu
         return (index_size == 1) ? VK_INDEX_TYPE_UINT8_KHR :
                (index_size == 2) ? VK_INDEX_TYPE_UINT16    : VK_INDEX_TYPE_UINT32
         
-    func sync [ w: display ] -> none
+    func sync [ w: display ] 
         # vbo/ibo maintained on init only
         if [ vertex_size && !vertex ]
             comp: compute
@@ -560,7 +560,7 @@ class uniforms
     public u_memory  : ref u8
     public u_buffers : array buffer [ ]
 
-    public func update [ ] -> none
+    public func update [ ] 
         for [ b: buffer ] in u_buffers
             s.uniform_transfer[ b.data, b.user ]
             b.update[ null ]
@@ -620,12 +620,12 @@ class pipeline
     intern vk_compute         : VkPipeline
     intern layout             : VkPipelineLayout
 
-    public   func rebind [ ] -> none
+    public   func rebind [ ] 
         if [ resources ]
             resources.drop[  ]
             resources = null
 
-    public   func draw [ f: handle ] -> none
+    public   func draw [ f: handle ] 
         if [ !resources ]
             bind_resources[]
         if [ s.reload[ ] ]
@@ -653,7 +653,7 @@ class pipeline
             el
                 vkCmdDraw[ frame, vbo.vertex_count, 1, 0, 0 ]
 
-    public   func bind_resources [ ] -> none
+    public   func bind_resources [ ] 
         total_samplers: 0
         sampler_binds:  0
         uniform_count:  0
@@ -773,7 +773,7 @@ class pipeline
         vkUpdateDescriptorSets[ vk.device,
             uniform_count + sampler_binds, descriptor_writes, 0, null ]
 
-    public   func reassemble [ ] -> none
+    public   func reassemble [ ] 
         expect vbo, "no vbo or memory provided to form a compute or graphical pipeline"
         pipeline_layout_info: VkPipelineLayoutCreateInfo [
             sType:                  VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -1053,12 +1053,12 @@ class model
     intern pipelines        : array pipeline
 
 
-    public func rebind_model [ ] -> none
+    public func rebind_model [ ] 
         if [ pipelines ]
             for [ p: pipeline ] in pipelines
                 p.rebind[]
 
-    public func finish [ r_target: target, render_id: i32 ] -> none
+    public func finish [ r_target: target, render_id: i32 ] 
         r = r_target
         pipelines = array pipeline [ alloc: 16 ]
         is_clear: !r.models || r.models.count == 0
@@ -1114,7 +1114,7 @@ class event
     public  no_default       : bool
     public  no_propagation   : bool
 
-    public  func prevent_default  [ ] -> none
+    public  func prevent_default  [ ] 
         no_default = true
 
     public  func is_default [ ] -> bool
@@ -1127,7 +1127,7 @@ class event
         no_propagation = true
         return true
 
-    public  func clear [ ] -> none
+    public  func clear [ ] 
         target         = null
         key            = []
         no_default     = false
@@ -1145,13 +1145,13 @@ class SVG
 
 
 # --- GLFW callbacks ---
-intern func handle_glfw_framebuffer_size [ glfw_window: ref GLFWwindow, width: i32, height: i32 ] -> none
+intern func handle_glfw_framebuffer_size [ glfw_window: ref GLFWwindow, width: i32, height: i32 ] 
     if [ width == 0 && height == 0 ]
         return
     return
 
 
-intern func handle_glfw_key [ win: ref GLFWwindow, key: i32, scan_code: i32, action: i32, mods: i32 ] -> none
+intern func handle_glfw_key [ win: ref GLFWwindow, key: i32, scan_code: i32, action: i32, mods: i32 ] 
     w: (glfwGetWindowUserPointer[ win ]) to display
     if [ action == GLFW_PRESS && (key == GLFW_KEY_UP || key == GLFW_KEY_DOWN) ]
         w.debug_value += (key == GLFW_KEY_UP) ? 1.0 : -1.0
@@ -1165,7 +1165,7 @@ intern func handle_glfw_key [ win: ref GLFWwindow, key: i32, scan_code: i32, act
     w.ux.key_event[ w.ev ]
 
 
-intern func handle_glfw_scroll [ win: ref GLFWwindow, x: f64, y: f64 ] -> none
+intern func handle_glfw_scroll [ win: ref GLFWwindow, x: f64, y: f64 ] 
     w: (glfwGetWindowUserPointer[ win ]) to display
     w.ev.clear[]
     w.ev.mouse.pos.x         = w.mouse.x
@@ -1174,7 +1174,7 @@ intern func handle_glfw_scroll [ win: ref GLFWwindow, x: f64, y: f64 ] -> none
     w.ux.wheel_event[ w.ev ]
 
 
-intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods: i32 ] -> none
+intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods: i32 ] 
     w: (glfwGetWindowUserPointer[ win ]) to display
     w.ev.clear[]
     w.ev.mouse.pos.x  = w.mouse.x
@@ -1187,7 +1187,7 @@ intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods:
         w.ux.release_event[ w.ev ]
 
 
-intern func handle_glfw_char [ win: ref GLFWwindow, code_point: u32 ] -> none
+intern func handle_glfw_char [ win: ref GLFWwindow, code_point: u32 ] 
     w: (glfwGetWindowUserPointer[ win ]) to display
     expect !w.ev.key.text, "unexpected text state"
     w.ev.clear[]
@@ -1195,7 +1195,7 @@ intern func handle_glfw_char [ win: ref GLFWwindow, code_point: u32 ] -> none
     w.ux.text_event[ w.ev ]
 
 
-intern func handle_glfw_cursor [ win: ref GLFWwindow, x: f64, y: f64 ] -> none
+intern func handle_glfw_cursor [ win: ref GLFWwindow, x: f64, y: f64 ] 
     w: (glfwGetWindowUserPointer[ win ]) to display
     w.ev.clear[]
     w.mouse.x = x
@@ -1221,7 +1221,7 @@ struct image_range
     public is_depth    : bool
 
 
-func get_required_extensions [ vk: vk_context ] -> none
+func get_required_extensions [ vk: vk_context ] 
     count : u32 0
     glfw_extensions: ref symbol [ glfwGetRequiredInstanceExtensions[ ref count ] ]
     result: new symbol [ count + 4 ]
@@ -1246,14 +1246,14 @@ class command
     public vk  : vk_context
     intern cmd : VkCommandBuffer
 
-    func begin [ ] -> none
+    func begin [ ] 
         vkResetCommandBuffer[ cmd, 0 ]
         vkBeginCommandBuffer[ cmd, VkCommandBufferBeginInfo [
             sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
         ]]
 
-    func submit [ ] -> none
+    func submit [ ] 
         vkEndCommandBuffer[ cmd ]
         si: VkSubmitInfo [
             sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -1293,7 +1293,7 @@ class buffer
 
     # the use case of window must be handled by facilitating texture as a delegate of window, with all of the info needed in there
     # in those cases trinity will internally manage that (we cannot understand what a window is in here)
-    func transfer [ tx: texture ] -> none
+    func transfer [ tx: texture ] 
         expect tx, "expected texture or window (with render pass run prior)"
         image:  tx.vk_image
         buf:    vk_buffer
@@ -1350,7 +1350,7 @@ class buffer
         if [ tx ]
             tx.transition [ prev ] # same thing here -- we do not do this on window (same state as above)
 
-    func update [ d: ARef ] -> none
+    func update [ d: ARef ] 
         if [ !size ]
             return
         src: d || data
@@ -1364,7 +1364,7 @@ class buffer
         expect result == VK_SUCCESS, "failed to map buffer memory"
         return mapped
 
-    func unmap [ ] -> none
+    func unmap [ ] 
         expect vma_alloc, "expected memory"
         vmaUnmapMemory[ vk.allocator, vma_alloc ]
 
@@ -1429,7 +1429,7 @@ class texture
     intern vma_alloc        : VmaAllocation
     
     
-    func resize [ w_new: i32, h_new: i32 ] -> none
+    func resize [ w_new: i32, h_new: i32 ] 
         if [ w_new == width && h_new == height ]
             return
         width  = w_new
@@ -1456,7 +1456,7 @@ class texture
         ]
         return res
     
-    func transition [ new_layout: i32 ] -> none
+    func transition [ new_layout: i32 ] 
         if [ vk_layout != new_layout ]
             vk.transition_image_layout[ vk_image, vk_layout, new_layout,
                 0, mip_levels, 0, layer_count, vk_format == VK_FORMAT_D32_SFLOAT ]
@@ -1647,10 +1647,10 @@ texture display
     public wheel_event          : subs
     intern resized              : bool
     public backbuffer           : bool
-    intern last_target          : target
+    public last_target          : target
 
 
-    func resize [ w_new: i32, h_new: i32 ] -> none
+    func resize [ w_new: i32, h_new: i32 ] 
         vkDeviceWaitIdle[ vk.device ]
         width  = w_new
         height = h_new
@@ -1724,7 +1724,7 @@ texture display
     func final_target [ ] -> target
         return list.last_element[]
 
-    func draw [ ] -> none
+    func draw [ ] 
         for [ r: target, id: string ] in element_targets
             r.draw[]
             r.sync_fence[]
@@ -1883,7 +1883,7 @@ class shader
     func compute  [] -> tokens
         return {}
 
-    intern func replace_includes [ src: cstr, dst: cstr ] -> none
+    intern func replace_includes [ src: cstr, dst: cstr ] 
         src_file: fopen[ src, "r" ]
         expect src_file, "source not found"
         dst_file: fopen[ dst, "w" ]
@@ -2047,7 +2047,7 @@ shader UVReduce
         proj  = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
 
 
-func model_init_pipeline [ m: model, n: Node, prim: Primitive, s: shader ] -> none
+func model_init_pipeline [ m: model, n: Node, prim: Primitive, s: shader ] 
     mdl:      m.id
     vk:       m.vk
     r:        m.r
@@ -2319,7 +2319,7 @@ func uniform_size [ type: Au_t ] -> num
 
 
 # ---- placeholder / fill textures ----
-func placeholder_image [ sampler: object, size: i32, fill: ref u8, sampler_size: ref i32, format: ref Pixel ] -> none
+func placeholder_image [ sampler: object, size: i32, fill: ref u8, sampler_size: ref i32, format: ref Pixel ] 
     data_i8:    sampler inherits ref i8
     data_f32:   sampler inherits ref f32
     data_rgb8:  sampler inherits ref rgb8

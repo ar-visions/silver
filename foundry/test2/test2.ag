@@ -77,7 +77,7 @@ class classy_class
 Counter DoubleCounter
     context contextual:classy_class # these are given as argument, or, they are fetched from our variable scope by type matching; in the case of multiple matches, a binding must be given
     
-    func increment [] -> none
+    func increment [] 
         super.increment
         count += 1
         count += contextual.i
@@ -379,7 +379,7 @@ app test2
         rtest = 1
         return rtest
 
-    func init [] -> none
+    func init [] 
         test2_func 1
         l: a_lambda[ u16 1 ]
 

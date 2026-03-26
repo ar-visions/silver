@@ -11,7 +11,7 @@ import random
 alias astrings: array string
 
 app ai-test
-    func init [] -> none
+    func init [] 
         rng_seed 42
         puts 'ai-test: dual-input average color predictor'
         puts 'network: two conv branches -> concatenate -> pool -> dense(64) -> dense(1)'
