@@ -225,6 +225,7 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_min, enode, enode) \
     M(X, Y, i, method,   public,  enode,                    e_abs, enode) \
     M(X, Y, i, method,   public,  enode,                    e_clamp, enode, enode, enode) \
+    M(X, Y, i, method,   public,  enode,                    e_math, i32, enode) \
     M(X, Y, i, method,   public,  enode,                    e_stack_array, etype, i32) \
     M(X, Y, i, method,   public,  none,                     e_inc, enode, num) \
     M(X, Y, i, method,   public,  none,                     e_print_node, enode) \
@@ -246,6 +247,7 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_inherits, enode, Au) \
     M(X, Y, i, method,   public,  none,                     llflag, symbol, i32) \
     M(X, Y, i, method,   public,  bool,                     emit, ARef, ARef) \
+    M(X, Y, i, method,   public,  bool,                     emit_object, path) \
     M(X, Y, i, method,   public,  etype,                    return_type) \
     M(X, Y, i, method,   public,  statements,               context_code) \
     M(X, Y, i, method,   public,  efunc,                    context_func) \
