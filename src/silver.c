@@ -1311,7 +1311,7 @@ static void silver_module() {
         "enum",     "ifdef",    "el",       "while",
         "cast",     "try",      "throw",    "catch",
         "finally",  "for",      "func",     "sqrt",     "sin",      "cos",      "tan",
-        "asin",     "acos",     "atan",     "exp",      "log",      "floor",    "ceil",     "round",
+        "asin",     "acos",     "atan",     "atan2",    "pow",      "exp",      "log",      "floor",    "ceil",     "round",
         "operator", "construct", "alias",   "getter", "setter",
         "new",      "local",
         null));
@@ -2995,13 +2995,19 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         static struct { cstr name; int op; } math_ops[] = {
             {"sqrt", 0}, {"sin", 1}, {"cos", 2}, {"tan", 3},
             {"asin", 4}, {"acos", 5}, {"atan", 6}, {"exp", 7},
-            {"log", 8}, {"floor", 9}, {"ceil", 10}, {"round", 11},
+            {"log", 8}, {"floor", 9}, {"ceil", 10}, {"round", 11}, {"atan2", 12}, {"pow", 13},
             {null, 0}
         };
         for (int i = 0; math_ops[i].name; i++) {
             if (read_if(a, math_ops[i].name)) {
                 verify(read_if(a, "["), "expected [ after %s", math_ops[i].name);
                 enode val = parse_expression(a, null, false, false);
+                if (math_ops[i].op >= 12) { // atan2, pow are two-arg
+                    read_if(a, ",");
+                    enode val2 = parse_expression(a, null, false, false);
+                    verify(read_if(a, "]"), "expected ] after %s", math_ops[i].name);
+                    return e_math2(a, math_ops[i].op, val, val2);
+                }
                 verify(read_if(a, "]"), "expected ] after %s", math_ops[i].name);
                 return e_math(a, math_ops[i].op, val);
             }
