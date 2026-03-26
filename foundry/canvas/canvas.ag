@@ -1,5 +1,9 @@
 import freetype:freetype/VER-2-13-3 <ft2build.h, freetype/freetype.h>
+    -I{install}/include/freetype2
+
 import vulkan2
+import vec
+import img
 
 import <math.h>
 import <stdio.h>
@@ -31,7 +35,7 @@ shader canvas_ui
 	public grad0      : vec4f     # gradient endpoints / tex rect
 	public grad_c0    : vec4f     # gradient stop color 0
 	public grad_c1    : vec4f     # gradient stop color 1
-	public color : attrib [ type:typeid[ Surface ], id: Surface.color, value:1, format:typeid[ rgba8 ] ]
+	public color : attrib [ type:typeid[ Surface ], id: Surface.color, count:1, format:typeid[ rgba8 ] ]
 
 
 # ---- path command tags ----
@@ -175,7 +179,7 @@ func flatten_quad [ pts: array path_pt, x0: f32, y0: f32, cx: f32, cy: f32, x1: 
 	my : 0.5 * y0 + y1 - cy
 	if [ mx * mx + my * my < tol * tol ]
 		pt : path_pt [ cmd: path_cmd.line, x: x1, y: y1 ]
-		push [ pts, pt ]
+		pts.push[ pt ]
 		return
 
 	# subdivide at t=0.5
@@ -201,7 +205,7 @@ func flatten_cubic [ pts: array path_pt, x0: f32, y0: f32, c1x: f32, c1y: f32, c
 
 	if [ d2 + d3 < tol ]
 		pt : path_pt [ cmd: path_cmd.line, x: x1, y: y1 ]
-		push [ pts, pt ]
+		pts.push[ pt ]
 		return
 
 	# de casteljau at t=0.5
@@ -239,7 +243,7 @@ func flatten_arc [ pts: array path_pt, cx: f32, cy: f32, r: f32, angle0: f32, an
 		px : cx + r * cosf [ t ]
 		py : cy + r * sinf [ t ]
 		pt : path_pt [ cmd: path_cmd.line, x: px, y: py ]
-		push [ pts, pt ]
+		pts.push[ pt ]
 
 
 # ---- path class ----
@@ -265,7 +269,7 @@ class canvas_path
 
 	func move_to [ x: f32, y: f32 ] -> none
 		pt : path_pt [ cmd: path_cmd.move, x: x, y: y ]
-		push [ points, pt ]
+		points.push[ pt ]
 		start_x  = x
 		start_y  = y
 		cursor_x = x
@@ -274,19 +278,19 @@ class canvas_path
 
 	func line_to [ x: f32, y: f32 ] -> none
 		pt : path_pt [ cmd: path_cmd.line, x: x, y: y ]
-		push [ points, pt ]
+		points.push[ pt ]
 		cursor_x = x
 		cursor_y = y
 
 	func quad_to [ cx: f32, cy: f32, x: f32, y: f32 ] -> none
 		pt : path_pt [ cmd: path_cmd.quad, x: x, y: y, cx1: cx, cy1: cy ]
-		push [ points, pt ]
+		points.push[ pt ]
 		cursor_x = x
 		cursor_y = y
 
 	func cubic_to [ c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32 ] -> none
 		pt : path_pt [ cmd: path_cmd.cubic, x: x, y: y, cx1: c1x, cy1: c1y, cx2: c2x, cy2: c2y ]
-		push [ points, pt ]
+		points.push[ pt ]
 		cursor_x = x
 		cursor_y = y
 
@@ -313,7 +317,7 @@ class canvas_path
 			return
 
 		# tangent length
-		tl : radius / tanf [ acosf [ clampf [ dx0 * dx1 + dy0 * dy1, -1.0, 1.0 ] ] * 0.5 ]
+		tl : radius / tan[acos[clamp[ dx0 * dx1 + dy0 * dy1, -1.0, 1.0]] * 0.5]
 
 		# tangent points
 		t0x : x1 + dx0 * tl
@@ -396,6 +400,11 @@ class canvas_path
 			line_to [ start_x, start_y ]
 			is_closed = true
 
+	func clear[] -> none
+		points  = array path_pt []
+		start_x = 0.0
+		start_y = 0.0
+		is_closed = false
 
 # flatten all curves in path, return flat line-only path
 func path_flatten [ src: canvas_path, tol: f32 ] -> array path_pt
@@ -409,12 +418,12 @@ func path_flatten [ src: canvas_path, tol: f32 ] -> array path_pt
 		switch [ pt.cmd ]
 			case move
 				fpt : path_pt [ cmd: path_cmd.move, x: pt.x, y: pt.y ]
-				push [ flat, fpt ]
+				flat.push[ fpt ]
 				px = pt.x
 				py = pt.y
 			case line
 				fpt : path_pt [ cmd: path_cmd.line, x: pt.x, y: pt.y ]
-				push [ flat, fpt ]
+				flat.push[ fpt ]
 				px = pt.x
 				py = pt.y
 			case quad
@@ -427,7 +436,7 @@ func path_flatten [ src: canvas_path, tol: f32 ] -> array path_pt
 				py = pt.y
 			case close
 				fpt : path_pt [ cmd: path_cmd.close, x: pt.x, y: pt.y ]
-				push [ flat, fpt ]
+				flat.push[ fpt ]
 				px = pt.x
 				py = pt.y
 	return flat
@@ -464,7 +473,7 @@ class gradient
 
 	func add_stop [ pos: f32, color: u32 ] -> none
 		s : gradient_stop [ pos: pos, color: color ]
-		push [ stops, s ]
+		stops.push[ s ]
 
 	# sample color at position t [0..1]
 	func sample [ t: f32 ] -> u32
@@ -597,26 +606,26 @@ func sdf_extract_edges [ flat: array path_pt ] -> array sdf_edge
 				# close previous sub-path implicitly if needed
 				if [ i > 0 && (px != sx || py != sy) ]
 					ce : sdf_edge [ x0: px, y0: py, x1: sx, y1: sy ]
-					push [ edges, ce ]
+					edges.push[ ce ]
 				sx = pt.x
 				sy = pt.y
 				px = pt.x
 				py = pt.y
 			case line
 				e : sdf_edge [ x0: px, y0: py, x1: pt.x, y1: pt.y ]
-				push [ edges, e ]
+				edges.push[ e ]
 				px = pt.x
 				py = pt.y
 			case close
 				if [ px != sx || py != sy ]
 					e : sdf_edge [ x0: px, y0: py, x1: sx, y1: sy ]
-					push [ edges, e ]
+					edges.push[ e ]
 				px = sx
 				py = sy
 	# close final sub-path if not closed
 	if [ px != sx || py != sy ]
 		ce : sdf_edge [ x0: px, y0: py, x1: sx, y1: sy ]
-		push [ edges, ce ]
+		edges.push[ ce ]
 	return edges
 
 
@@ -693,7 +702,7 @@ func sdf_generate [ flat: array path_pt, bx: f32, by: f32, bw: f32, bh: f32, tw:
 	grid : array array i32 []
 	for [ ci: i32 0, ci < gc, ci += 1 ]
 		cell : array i32 []
-		push [ grid, cell ]
+		grid.push[ cell ]
 
 	# bin edges into grid cells (expand by 1 cell for distance queries)
 	for [ ei: i32 0, ei < ne, ei += 1 ]
@@ -710,7 +719,7 @@ func sdf_generate [ flat: array path_pt, bx: f32, by: f32, bw: f32, bh: f32, tw:
 		gy1 : clampi [ i32 (ey1 - wy) / ch + 1, 0, gh - 1 ]
 		for [ gy: i32 gy0, gy <= gy1, gy += 1 ]
 			for [ gx: i32 gx0, gx <= gx1, gx += 1 ]
-				push [ grid[gy * gw + gx], ei ]
+				grid[gy * gw + gx].push[ ei ]
 
 	# texel to world mapping
 	sx : ww / f32 tw
@@ -721,13 +730,13 @@ func sdf_generate [ flat: array path_pt, bx: f32, by: f32, bw: f32, bh: f32, tw:
 	row_edges : array array i32 []
 	for [ r: i32 0, r < th, r += 1 ]
 		re : array i32 []
-		push [ row_edges, re ]
+		row_edges.push[ re ]
 	for [ ei: i32 0, ei < ne, ei += 1 ]
 		e   : sdf_edge edges[ei]
 		ry0 : clampi [ i32 (minf [ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
 		ry1 : clampi [ i32 (maxf [ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
 		for [ r: i32 ry0, r <= ry1, r += 1 ]
-			push [ row_edges[r], ei ]
+			row_edges[r].push[ ei ]
 
 	sz  : i32 [ tw * th ]
 	sdf : new f32 [ sz ]
@@ -847,10 +856,10 @@ class canvas
 				clip_w: width, clip_h: height,
 				blur_rad: 0.0
 			]
-			push [ states, st ]
+			states.push[ st ]
 		el
 			prev : canvas_state states[depth - 1]
-			push [ states, prev ]
+			states.push[ prev ]
 		depth += 1
 
 	func restore [] -> none
@@ -1316,7 +1325,7 @@ class canvas_font
 			advance:   i32 slot.advance.x / 64,
 			cached:    true
 		]
-		push [ cache, entry ]
+		cache.push[ entry ]
 		return entry
 
 
@@ -1392,14 +1401,14 @@ func nib [ n: i8 ] -> u8
            n >= 'a' && n <= 'f' ? u8[ 10 + (n - 'a') ] :
            n >= 'A' && n <= 'F' ? u8[ 10 + (n - 'A') ] : 0
 
-func sk_color [ any: object ] -> u32
-    type: Au_t [ isa[ any ] ]
+func sk_color [ clr: Au ] -> u32
+    type: typeid[ clr ]
     ia: i32 [ 255 ]
     ir: i32
     ig: i32
     ib: i32
     if [ type == typeid[ string ] ]
-        s: string [ any ]
+        s: string [ clr ]
         h: symbol [ s.chars ]
         if [ h[0] == '#' ]
             sz: len[ s ]
@@ -1423,13 +1432,13 @@ func sk_color [ any: object ] -> u32
                     ig = nib[ h[3] ] << 4 | nib[ h[4] ]
                     ib = nib[ h[5] ] << 4 | nib[ h[6] ]
     el [ type == typeid[ rgba8 ] ]
-        c: rgba [ any ]
+        c: rgba [ clr ]
         ir = c.r
         ig = c.g
         ib = c.b
         ia = c.a
     el [ type == typeid[ rgba ] || type == typeid[ rgbaf ] ]
-        c: rgba [ any ]
+        c: rgba [ clr ]
         ir = c.r * 255.0
         ig = c.g * 255.0
         ib = c.b * 255.0

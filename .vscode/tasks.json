@@ -10,7 +10,7 @@
             }
         },
         {
-            "label": "build-silver-ninja",
+            "label": "build-silver-debug",
             "type": "shell",
 			"options": {
                 "cwd": "${workspaceFolder}/../silver"
@@ -30,6 +30,28 @@
             "command": "${workspaceFolder}/platform/native/bin/ninja",
             "args": ["-C", "platform/native/debug", "-v", "-f", "silver.ninja"],
             "env": { "VERBOSE": "1", "CC": "clang", "IMPORT": "/src/silver/platform/native" }
+        },
+        {
+            "label": "build-silver-release",
+            "type": "shell",
+			"options": {
+                "cwd": "${workspaceFolder}/../silver"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "group": "build0",
+                "clear": true
+            },
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+            "command": "${workspaceFolder}/platform/native/bin/ninja",
+            "args": ["-C", "platform/native/release", "-v", "-f", "silver.ninja"],
+            "env": { "CC": "clang", "IMPORT": "/src/silver/platform/native" }
         },
         {
             "label": "build-hyperspace",

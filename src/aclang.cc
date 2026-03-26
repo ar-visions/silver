@@ -327,11 +327,15 @@ static Au_t map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e,
 
     if (const FunctionProtoType* fpt = dyn_cast<FunctionProtoType>(pointee)) {
         Au_t func = map_function_type(fpt, ctx, e);
-        printf("map_function_pointer: %s -> funcptr ident=%s member_type=%d is_funcptr=%d\n",
-            use_name ? use_name : "(null)",
-            func->ident ? func->ident : "(null)",
-            func->member_type, func->is_funcptr);
-        fflush(stdout);
+        if (e->verbose) {
+            /*
+            printf("map_function_pointer: %s -> funcptr ident=%s member_type=%d is_funcptr=%d\n",
+                use_name ? use_name : "(null)",
+                func->ident ? func->ident : "(null)",
+                func->member_type, func->is_funcptr);
+            fflush(stdout);
+            */
+        }
         return func;
     }
     
