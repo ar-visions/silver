@@ -2,12 +2,30 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name":             "silver 0.88",
+            "name":             "silver 0.88 debug",
             "type":             "lldb",
             "request":          "launch",
-            "preLaunchTask":    "build-silver-ninja",
-            "program":          "${workspaceFolder}/install/bin/silver",
+            "preLaunchTask":    "build-silver-debug",
+            "program":          "${workspaceFolder}/install/debug/silver",
             "args":             [ "trinity", "-v", "--run" ],
+            "cwd":              "${workspaceFolder}",
+            "stopOnEntry":      false,
+            "env": {
+                "LD_LIBRARY_PATH":  "${workspaceFolder}/install/lib",
+                "IMPORT":           "${workspaceFolder}/install",
+                "ASAN_OPTIONS":     "detect_leaks=0"
+            },
+            "initCommands": [
+                "settings set target.process.stop-on-exec false"
+            ]
+        },
+        {
+            "name":             "silver 0.88 release",
+            "type":             "lldb",
+            "request":          "launch",
+            "preLaunchTask":    "build-silver-release",
+            "program":          "${workspaceFolder}/install/bin/silver",
+            "args":             [ "trinity", "--clean", "--run" ],
             "cwd":              "${workspaceFolder}",
             "stopOnEntry":      false,
             "env": {

@@ -6774,15 +6774,28 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
     *bc = form(path, "%o/%s/%o.bc", a->install, a->debug ? "debug" : "release", a);
 
     bool validation_error = false;
-    verify (!LLVMPrintModuleToFile(a->module_ref, cstring(*ll),      &err), "print-to-module: %s (path: %s)", err ? err : "unknown", cstring(*ll));
-    if (a->verbose)
+    if (a->verbose) {
+        verify (!LLVMPrintModuleToFile(a->module_ref, cstring(*ll), &err), "print-to-module: %s (path: %s)", err ? err : "unknown", cstring(*ll));
         print("wrote %s", cstring(*ll));
+        if (LLVMWriteBitcodeToFile(a->module_ref, cstring(*bc)) != 0)
+            fault("LLVMWriteBitcodeToFile failed");
+    }
     validation_error  = LLVMVerifyModule(a->module_ref, LLVMReturnStatusAction, &err);
     validation_error |= LLVMVerifyModule(a->module_ref, LLVMPrintMessageAction, &err);
-    
-    if (LLVMWriteBitcodeToFile(a->module_ref, cstring(*bc)) != 0)
-        fault("LLVMWriteBitcodeToFile failed");
 
+    return true;
+}
+
+bool aether_emit_object(aether a, path obj_path) {
+    char* err = NULL;
+    if (LLVMTargetMachineEmitToFile(a->target_machine, a->module_ref,
+            (char*)obj_path->chars, LLVMObjectFile, &err)) {
+        if (err) {
+            fault("emit .o failed: %s", err);
+            LLVMDisposeMessage(err);
+        }
+        return false;
+    }
     return true;
 }
 
@@ -6804,8 +6817,11 @@ void llvm_reinit(aether a) {
     if (LLVMGetTargetFromTriple(a->target_triple, &a->target_ref, &err))
         fault("error: %s", err);
     a->target_machine = LLVMCreateTargetMachine(
-        a->target_ref, a->target_triple, "generic", "",
-        LLVMCodeGenLevelDefault, LLVMRelocDefault, LLVMCodeModelDefault);
+        a->target_ref, a->target_triple,
+        a->debug ? "generic" : "x86-64-v3",
+        a->debug ? "" : "+avx2,+fma",
+        a->debug ? LLVMCodeGenLevelNone : LLVMCodeGenLevelAggressive,
+        LLVMRelocPIC, LLVMCodeModelDefault);
     
     // the relative path should be from our cwd, i think.  all choices have loss but this one we can work with
     // silver compiles user code relative to the silver path, better this than having different projects
@@ -7490,6 +7506,117 @@ enode aether_e_clamp(aether a, enode val, enode lo, enode hi) {
     lo  = e_create(a, common, (Au)lo);
     hi  = e_create(a, common, (Au)hi);
     return aether_e_min(a, aether_e_max(a, val, lo), hi);
+}
+
+// math intrinsic IDs (matches LLVM intrinsic naming)
+enum {
+    MATH_SQRT  = 0, MATH_SIN   = 1, MATH_COS   = 2, MATH_TAN    = 3,
+    MATH_ASIN  = 4, MATH_ACOS  = 5, MATH_ATAN   = 6, MATH_EXP    = 7,
+    MATH_LOG   = 8, MATH_FLOOR = 9, MATH_CEIL  = 10, MATH_ROUND  = 11,
+    MATH_POW   = 12
+};
+
+static unsigned math_intrinsic_id(aether a, int op, LLVMTypeRef ty) {
+    bool is_f32 = (ty == LLVMFloatTypeInContext(a->module_ctx));
+    unsigned ids[][2] = {
+        { LLVMLookupIntrinsicID("llvm.sqrt.f32", 14),  LLVMLookupIntrinsicID("llvm.sqrt.f64", 14) },
+        { LLVMLookupIntrinsicID("llvm.sin.f32", 13),   LLVMLookupIntrinsicID("llvm.sin.f64", 13) },
+        { LLVMLookupIntrinsicID("llvm.cos.f32", 13),   LLVMLookupIntrinsicID("llvm.cos.f64", 13) },
+        { 0, 0 }, // tan — no intrinsic, use libm
+        { 0, 0 }, // asin
+        { 0, 0 }, // acos
+        { 0, 0 }, // atan
+        { LLVMLookupIntrinsicID("llvm.exp.f32", 13),   LLVMLookupIntrinsicID("llvm.exp.f64", 13) },
+        { LLVMLookupIntrinsicID("llvm.log.f32", 13),   LLVMLookupIntrinsicID("llvm.log.f64", 13) },
+        { LLVMLookupIntrinsicID("llvm.floor.f32", 15),  LLVMLookupIntrinsicID("llvm.floor.f64", 15) },
+        { LLVMLookupIntrinsicID("llvm.ceil.f32", 14),  LLVMLookupIntrinsicID("llvm.ceil.f64", 14) },
+        { LLVMLookupIntrinsicID("llvm.round.f32", 15),  LLVMLookupIntrinsicID("llvm.round.f64", 15) },
+        { LLVMLookupIntrinsicID("llvm.pow.f32", 13),   LLVMLookupIntrinsicID("llvm.pow.f64", 13) },
+    };
+    return ids[op][is_f32 ? 0 : 1];
+}
+
+enode aether_e_math(aether a, i32 op, enode val) {
+    a->is_const_op = false;
+    if (a->no_build) return e_noop(a, canonical(val));
+
+    Au_t val_au = au_arg_type((Au)val->au);
+    bool is_arr = val_au->elements > 0 && val_au->src && val_au->src->is_realistic;
+
+    Au_t elem_au = is_arr ? val_au->src : val_au;
+    etype elem_ty = u(etype, elem_au);
+    LLVMTypeRef lt = lltype(elem_ty);
+
+    // get or declare the intrinsic/libm function
+    unsigned iid = math_intrinsic_id(a, op, lt);
+    LLVMValueRef math_fn;
+    if (iid) {
+        LLVMTypeRef overload[] = { lt };
+        math_fn = LLVMGetIntrinsicDeclaration(a->module_ref, iid, overload, 1);
+    } else {
+        // fallback to libm (tan, asin, acos, atan)
+        static cstr libm_names[][2] = {
+            {null, null}, {null, null}, {null, null},
+            {"tanf", "tan"}, {"asinf", "asin"}, {"acosf", "acos"}, {"atanf", "atan"},
+        };
+        bool is_f32 = (lt == LLVMFloatTypeInContext(a->module_ctx));
+        cstr fn_name = libm_names[op][is_f32 ? 0 : 1];
+        verify(fn_name, "no math function for op %d", op);
+        math_fn = LLVMGetNamedFunction(a->module_ref, fn_name);
+        if (!math_fn) {
+            LLVMTypeRef fn_ty = LLVMFunctionType(lt, &lt, 1, 0);
+            math_fn = LLVMAddFunction(a->module_ref, fn_name, fn_ty);
+        }
+    }
+
+    if (!is_arr) {
+        // scalar
+        enode v = e_create(a, elem_ty, (Au)val);
+        LLVMValueRef args[] = { v->value };
+        LLVMTypeRef fn_ty = LLVMFunctionType(lt, &lt, 1, 0);
+        LLVMValueRef result = LLVMBuildCall2(B, fn_ty, math_fn, args, 1, "math_op");
+        return enode(mod, a, au, elem_au, loaded, true, value, result);
+    }
+
+    // array: emit loop
+    i32 count = val_au->elements;
+    LLVMTypeRef arr_type = LLVMArrayType(lt, count);
+    LLVMValueRef out = LLVMBuildAlloca(B, arr_type, "math_arr");
+    LLVMTypeRef i32_ty = LLVMInt32TypeInContext(a->module_ctx);
+
+    LLVMBasicBlockRef entry_bb = LLVMGetInsertBlock(B);
+    LLVMValueRef fn_val = LLVMGetBasicBlockParent(entry_bb);
+    LLVMBasicBlockRef loop_bb = LLVMAppendBasicBlock(fn_val, "math_loop");
+    LLVMBasicBlockRef done_bb = LLVMAppendBasicBlock(fn_val, "math_done");
+    LLVMValueRef zero = LLVMConstInt(i32_ty, 0, 0);
+    LLVMValueRef cnt  = LLVMConstInt(i32_ty, count, 0);
+    LLVMBuildBr(B, loop_bb);
+
+    LLVMPositionBuilderAtEnd(B, loop_bb);
+    LLVMValueRef idx = LLVMBuildPhi(B, i32_ty, "idx");
+    LLVMValueRef gep_in = LLVMBuildGEP2(B, lt, val->value, &idx, 1, "in_ptr");
+    LLVMValueRef elem_val = LLVMBuildLoad2(B, lt, gep_in, "in_v");
+    LLVMValueRef args[] = { elem_val };
+    LLVMTypeRef fn_ty = LLVMFunctionType(lt, &lt, 1, 0);
+    LLVMValueRef res_val = LLVMBuildCall2(B, fn_ty, math_fn, args, 1, "math_v");
+    LLVMValueRef gep_out = LLVMBuildGEP2(B, lt, out, &idx, 1, "out_ptr");
+    LLVMBuildStore(B, res_val, gep_out);
+
+    LLVMValueRef one = LLVMConstInt(i32_ty, 1, 0);
+    LLVMValueRef next = LLVMBuildAdd(B, idx, one, "next");
+    LLVMValueRef cond = LLVMBuildICmp(B, LLVMIntULT, next, cnt, "cond");
+    LLVMBuildCondBr(B, cond, loop_bb, done_bb);
+
+    LLVMAddIncoming(idx, &zero, &entry_bb, 1);
+    LLVMAddIncoming(idx, &next, &loop_bb, 1);
+
+    LLVMPositionBuilderAtEnd(B, done_bb);
+
+    Au_t res_au = def(a->au, null, AU_MEMBER_TYPE, 0);
+    res_au->src = elem_au;
+    res_au->elements = count;
+    res_au->is_pointer = true;
+    return enode(mod, a, value, out, loaded, false, au, res_au);
 }
 
 enode aether_e_stack_array(aether a, etype elem_type, i32 count) {

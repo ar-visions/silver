@@ -1116,10 +1116,16 @@ void silver_init(silver a) {
     // check if we are the main project of this repository
     a->project_path = is_git_project(a);
 
-    if (file_exists("%o", a->product_link) &&
-            modified_time(a->product_link) > module_file_m) {
+    bool product_exists = file_exists("%o", a->product_link);
+    u64  product_m      = product_exists ? modified_time(a->product_link) : 0;
+    if (a->is_external)
+        printf("cache: %s product=%s exists=%d product_m=%llu module_m=%llu\n",
+            a->name ? a->name->chars : "?",
+            a->product_link ? a->product_link->chars : "?",
+            product_exists, (unsigned long long)product_m, (unsigned long long)module_file_m);
+    if (product_exists && product_m > module_file_m) {
 
-        if (file_exists("%o", a->artifacts_path)) {
+        if (file_exists("%o", a->artifacts_path) && modified_time(a->artifacts_path) > 0) {
             fdata f = fdata(read, true, src, a->artifacts_path);
             u64 newest = 0;
             while (true) {
@@ -1129,10 +1135,18 @@ void silver_init(silver a) {
                 u64  m = modified_time(artifact);
                 if  (m > newest) newest = m;
             }
-            if (newest && newest < module_file_m)
+            if (!newest || newest < module_file_m)
                 update_product = false;
         } else
-            update_product = false; // it has no build artifacts, so we only use the date on itself 
+            update_product = false; // it has no build artifacts, so we only use the date on itself
+    }
+
+    if (a->clean) update_product = true;
+
+    a->mod = (aether)a;
+    if (!update_product) {
+        a->product = hold(absolute(a->product_link));
+        return;
     }
 
     verify(dir_exists("%o", a->install), "silver-import location not found");
@@ -1148,7 +1162,6 @@ void silver_init(silver a) {
     verify(dir_exists("%s", SILVER), "silver environment moved; please re-build for secure builds");
     cstr _SILVER = cstr_copy(absolute(path(SILVER))->chars);
 
-    a->mod          = (aether)a;
     a->imports      = array(32);
     a->parse_f        = parse_tokens;
     a->parse_expr     = parse_expression;
@@ -1297,7 +1310,8 @@ static void silver_module() {
         "asm",      "if",       "switch",   "any",
         "enum",     "ifdef",    "el",       "while",
         "cast",     "try",      "throw",    "catch",
-        "finally",  "for",      "func",
+        "finally",  "for",      "func",     "sqrt",     "sin",      "cos",      "tan",
+        "asin",     "acos",     "atan",     "exp",      "log",      "floor",    "ceil",     "round",
         "operator", "construct", "alias",   "getter", "setter",
         "new",      "local",
         null));
@@ -2976,6 +2990,24 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         return e_max(a, val_a, val_b);
     }
 
+    // math builtins: sqrt, sin, cos, tan, asin, acos, atan, exp, log, floor, ceil, round
+    {
+        static struct { cstr name; int op; } math_ops[] = {
+            {"sqrt", 0}, {"sin", 1}, {"cos", 2}, {"tan", 3},
+            {"asin", 4}, {"acos", 5}, {"atan", 6}, {"exp", 7},
+            {"log", 8}, {"floor", 9}, {"ceil", 10}, {"round", 11},
+            {null, 0}
+        };
+        for (int i = 0; math_ops[i].name; i++) {
+            if (read_if(a, math_ops[i].name)) {
+                verify(read_if(a, "["), "expected [ after %s", math_ops[i].name);
+                enode val = parse_expression(a, null, false, false);
+                verify(read_if(a, "]"), "expected ] after %s", math_ops[i].name);
+                return e_math(a, math_ops[i].op, val);
+            }
+        }
+    }
+
     if (read_if(a, "clamp")) {
         verify(read_if(a, "["), "expected [ after clamp");
         enode val = parse_expression(a, null, false, false);
@@ -4239,7 +4271,7 @@ void import_include_paths(silver a, array input, array output) {
     each(input, string, t) {
         if (starts_with(t, "-I")) {
             string expanded = interpolate(t, (Au)a);
-            push(output, (Au)expanded);
+            push(output, (Au)f(path, "%s", expanded->chars + 2));
         }
     }
 }
@@ -4393,7 +4425,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
               docker, debug ? "debug" : "release", project_f, build_f);
     } else if (is_silver) { // build for Au-type projects
         silver sf = silver(module, silver_f, breakpoint, a->breakpoint, release, a->release,
-            verbose, a->verbose, is_external, a->is_external ? a->is_external : a);
+            clean, a->clean, verbose, a->verbose, is_external, a->is_external ? a->is_external : a);
         validate(sf, "silver module compilation failed: %o", silver_f);
         drop(sf);
     } else {
@@ -4566,7 +4598,7 @@ none silver_build(silver a) {
         // llc: .ll -> .o
         verify(exec(a->verbose, "%o /silver/platform/native/bin/llc -filetype=obj %o/%o.ll -o %o/%o.o -relocation-model=pic %s",
                     docker_pre, a->build_dir, a->name, a->build_dir, a->name,
-                    a->debug ? "-O0" : "") == 0,
+                    a->debug ? "-O0" : "-O2") == 0,
                ".ll -> .o compilation failed (platform: %o)", a->platform);
 
         string cflags = a->asan ? string("-fsanitize=address") : string("");
@@ -4613,10 +4645,15 @@ none silver_build(silver a) {
 
     } else {
 
-    verify(exec(a->verbose, "%o/bin/llc -filetype=obj %o/%o.ll -o %o/%o.o -relocation-model=pic %s",
-                install, a->build_dir, a->name, a->build_dir, a->name,
-                a->debug ? "-O0" : "") == 0,
-           ".ll -> .o compilation failed");
+    if (!a->debug) {
+        // release: emit .o directly from in-memory LLVM module
+        path obj_path = f(path, "%o/%o.o", a->build_dir, a->name);
+        verify(emit_object(a, obj_path), ".o emission failed");
+    } else {
+        verify(exec(a->verbose, "%o/bin/llc -filetype=obj %o/%o.ll -o %o/%o.o -relocation-model=pic -O0",
+                    install, a->build_dir, a->name, a->build_dir, a->name) == 0,
+               ".ll -> .o compilation failed");
+    }
 
     string cflags = a->asan ? string("-fsanitize=address") : string("");
 
@@ -5440,7 +5477,7 @@ enode parse_import(silver a) {
         } else {
             silver og = a->is_external ? a->is_external : a;
             silver external = silver(module, module, breakpoint, a->breakpoint,
-                verbose, a->verbose, is_external, og, release, a->release, defs, defs);
+                verbose, a->verbose, is_external, og, release, a->release, clean, a->clean, defs, defs);
 
             // these should be the only two objects remaining.
             external_name    = hold(external->name);

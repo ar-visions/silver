@@ -137,7 +137,7 @@ def resolve_deps(modules, deps, plat, root_p, builddir):
             elif dep_mod['target'] == 'shared':
                 out.append(f"{root_p}/lib/{plat['lib_pre']}{d}{plat['shared']}")
             elif dep_mod['target'] == 'app':
-                out.append(f"{root_p}/bin/{d}{plat['exe']}")
+                out.append(f"{builddir}/{d}{plat['exe']}")
             else:
                 out.append(f"{builddir}/{d}{plat['obj']}")
         else:
@@ -358,7 +358,7 @@ def write_ninja(project, root, import_dir, build_dir, plat):
         
         deps = resolve_deps(modules, m['deps'], plat, import_p, "$builddir")
         if m['target'] == 'app':
-            output = f"{import_p}/bin/{m['name']}{plat['exe']}"
+            output = f"$builddir/{m['name']}{plat['exe']}"
             n.append(f"build {output}: link_app {objs} {' '.join(deps)}")
             libs = sorted(set(m['links']))
             if libs:
