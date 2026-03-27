@@ -110,6 +110,7 @@ forward(evar)
     M(X, Y, i, prop,     public,  Au_t,                     import_module) \
     M(X, Y, i, prop,     public,  Au_t,                     au_module) \
     M(X, Y, i, prop,     public,  map,                      libs) \
+    M(X, Y, i, prop,     public,  map,                      frameworks) \
     M(X, Y, i, prop,     public,  map,                      user_type_ids) \
     M(X, Y, i, prop,     public,  array,                    lexical) \
     M(X, Y, i, prop,     public,  bool,                     is_Au_import) \

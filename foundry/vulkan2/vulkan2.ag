@@ -16,7 +16,9 @@ import KhronosGroup:Vulkan-Tools/734638e
 import glfw:glfw/fdd14e6 <GLFW/glfw3.h>
     +GLFW_INCLUDE_NONE
     +GLFW_INCLUDE_VULKAN
-    -lvulkan -lglfw3
+    -lvulkan -lglfw3 
+    -framework Cocoa -framework IOKit -framework CoreFoundation
+    -framework CoreGraphics -framework QuartzCore
 
 import img
 import vec
@@ -1952,7 +1954,10 @@ class shader
             spv_stat:    struct stat
             src_exists: stat[ input.chars, ref source_stat ] == 0
             spv_exists: stat[ spv_file.chars, ref spv_stat ] == 0
-            if [ !spv_exists || source_stat.st_mtim.tv_sec > spv_stat.st_mtim.tv_sec ]
+            make_spv : !spv_exists
+            make_spv |= source_stat.st_mtime > spv_stat.st_mtime
+
+            if [ make_spv ]
                 ext_s: input.ext[]
                 tmp: path.path_tempfile[ ext_s.chars ]
                 replace_includes[ input.chars, tmp.chars ]
