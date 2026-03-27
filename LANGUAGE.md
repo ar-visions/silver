@@ -201,7 +201,7 @@ Same-size structs are convertible: `(my_vec4f) to rgbaf` is a bitcast.
 ## Enums
 
 ```
-enum Color [ u8 ]
+enum Color : u8
     red:   1
     green: 2
     blue:  3
