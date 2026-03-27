@@ -53,7 +53,8 @@ void etype_register(aether a, Au key, Au value, bool overwrite) {
 }
 
 static Au_t au_ancestor(Au_t au) {
-    while (au && au->src && au->src != au) au = au->src;
+    while (au && au->src && au->src != au && !au->is_enum)
+        au = au->src;
     return au;
 }
 
@@ -1642,7 +1643,7 @@ static void resolve_context_members(enode target, map user_provides) {
             }
 
             // if prop is already set, we should not overwrite it!.. this means some form of branching here
-            enode prop = access(target, string(mem->ident), true);
+            enode prop = access(target, string(mem->ident));
             enode selected = found ? found : scope_var;
 
             e_assign_if_null(a, prop, (Au)selected);
@@ -2128,8 +2129,8 @@ none enode_inspect(enode a) {
 
 enode aether_lambda_fcall(aether a, efunc mem, array user_args) {
     // access fn and ctx from lambda instance
-    efunc fn_ptr     = (efunc)enode_value(access(mem, string("fn"), false), false);
-    enode ctx_ptr    = enode_value(access(mem, string("context"), false), false); // we now have target inside of context
+    efunc fn_ptr     = (efunc)enode_value(access(mem, string("fn")), false);
+    enode ctx_ptr    = enode_value(access(mem, string("context")), false); // we now have target inside of context
     etype rtype      = u(etype, mem->meta_a);
     enode lambda_fn  = u(enode, mem->au->src);
 
@@ -2766,19 +2767,15 @@ void aether_eputs(aether a, string output) {
     e_fn_call(a, fn_puts, a(const_string(chars, output->chars)));
 }
 
-enode etype_access(etype target, string name, bool funny_business) { sequencer
-    aether a = target->mod;
+enode etype_access(etype target, string name) { sequencer
+    aether a = target->mod;    
     Au_t target_src = target->au->member_type == AU_MEMBER_VAR ? target->au->src : target->au;
     bool is_typeid = (target_src && (target_src->is_schema || target_src == typeid(Au_t) ||
         (target_src->ident && strcmp(target_src->ident, "Au_t") == 0)));
-    Au_t rel = is_typeid ? typeid(Au_t) : 
-        target->au->member_type == AU_MEMBER_VAR ? 
-        (funny_business ? resolve(u(etype, target->au->src))->au : u(etype, target->au->src)->au) : target->au;
-    // unwrap aliases and pointer typedefs to reach the actual struct
-    while (rel && !rel->members.count && rel->src && rel != rel->src)
-        rel = rel->src;
-    if (funny_business && rel->is_pointer && rel->src && (rel->src->is_primitive || rel->src->is_class || rel->src->is_struct))
-        rel = rel->src;
+    Au_t rel = is_typeid ? typeid(Au_t) :
+        au_ancestor(target->au->member_type == AU_MEMBER_VAR ? target->au->src : target->au);
+    if (!is_typeid && rel && rel->is_c)
+        etype_prep(a, rel);
     Au_t   m = find_member(rel, name->chars, 0, 0, true);
     if (!m) {
         printf("access: looking for '%s' on '%s' (is_ptr=%d is_struct=%d is_c=%d members=%d src=%s)\n",
@@ -2831,7 +2828,7 @@ enode etype_access(etype target, string name, bool funny_business) { sequencer
     // signal we're doing something non-const
     a->is_const_op = false;
     if (a->no_build)
-        return e_noop(a, u(etype, m->src));
+        return e_noop(a, u(etype, au_arg_type(m)));
 
     enode tnode = (enode)target;
     string id = f(string, "enode_access_%i", seq);
@@ -3072,7 +3069,7 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
             if (instanceof(k, enode)) {
                 e_fn_call(a, f_set_prop, a(alloc, k, i->value));
             } else {
-                enode prop = access(alloc, (string)k, true);
+                enode prop = access(alloc, (string)k);
                 e_assign(a, prop, i->value, OPType__assign);
                 Au_t mem = find_member(alloc->au, ((string)k)->chars, AU_MEMBER_VAR, 0, true);
                 if (mem) {
@@ -3237,13 +3234,13 @@ enode e_create_from_array(aether a, etype t, array ar) {
 
     if (t->au == typeid(array)) {
         // set alloc size, unmanaged, and assorted flags before init
-        enode prop_alloc     = etype_access((etype)res, string("alloc"), false);
-        enode prop_unmanaged = etype_access((etype)res, string("unmanaged"), false);
+        enode prop_alloc     = etype_access((etype)res, string("alloc"));
+        enode prop_unmanaged = etype_access((etype)res, string("unmanaged"));
         e_assign(a, prop_alloc, (Au)array_len, OPType__assign);
         // mark assorted if element type is a class (subtypes may differ)
         if (element_type && element_type->au &&
             (element_type->au->traits & AU_TRAIT_CLASS)) {
-            enode prop_assorted = etype_access((etype)res, string("assorted"), false);
+            enode prop_assorted = etype_access((etype)res, string("assorted"));
             enode tru = e_operand(a, _bool(true), etypeid(bool));
             e_assign(a, prop_assorted, (Au)tru, OPType__assign);
         }
@@ -3389,7 +3386,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         members(n_mdl->au, mem) {
             if (mem->member_type != AU_MEMBER_VAR) continue;
             enode ctx_val = (enode)array_get((array)args, ctx_index);
-            enode field_ref = access(ctx_alloc, string(mem->ident), true);
+            enode field_ref = access(ctx_alloc, string(mem->ident));
             e_assign(a, field_ref, (Au)ctx_val, OPType__assign);
             ctx_index++;
         }
@@ -4120,7 +4117,7 @@ enode aether_e_for(aether a,
         // ---- map iteration via item linked list ----
         etype item_type = etypeid(item);
 
-        enode first_node = etype_access((etype)in_expr, string("first"), true);
+        enode first_node = etype_access((etype)in_expr, string("first"));
 
         LLVMTypeRef  cursor_type = LLVMPointerType(item_type->lltype, 0);
         LLVMValueRef cursor      = LLVMBuildAlloca(B, cursor_type, "cursor");
@@ -4145,14 +4142,14 @@ enode aether_e_for(aether a,
             LLVMBuildLoad2(B, cursor_type, cursor, "cur.body"));
 
         if (val_var) {
-            enode val_node = etype_access((etype)cur_enode, string("value"), true);
+            enode val_node = etype_access((etype)cur_enode, string("value"));
             val_node = enode_value(val_node, false);
             enode val_cast = e_create(a, canonical(val_var), (Au)val_node);
             LLVMBuildStore(B, val_cast->value, val_var->value);
         }
 
         if (key_var) {
-            enode key_node = etype_access((etype)cur_enode, string("key"), true);
+            enode key_node = etype_access((etype)cur_enode, string("key"));
             key_node = enode_value(key_node, false);
             enode key_cast = e_create(a, canonical(key_var), (Au)key_node);
             LLVMBuildStore(B, key_cast->value, key_var->value);
@@ -4170,7 +4167,7 @@ enode aether_e_for(aether a,
         debug_emit(a);
         enode step_enode = value(pointer(a, (Au)item_type->au),
             LLVMBuildLoad2(B, cursor_type, cursor, "cur.step"));
-        enode next_node = etype_access((etype)step_enode, string("next"), true);
+        enode next_node = etype_access((etype)step_enode, string("next"));
         LLVMValueRef next_val = next_node->loaded ? next_node->value :
             LLVMBuildLoad2(B, cursor_type, next_node->value, "next.val");
         LLVMBuildStore(B, next_val, cursor);
@@ -4179,8 +4176,8 @@ enode aether_e_for(aether a,
     } else if (in_expr && inherits(in_expr->au, typeid(array))) {
 
         // ---- array iteration via index ----
-        enode count_node = etype_access((etype)in_expr, string("count"), true);
-        enode origin     = etype_access((etype)in_expr, string("origin"), true);
+        enode count_node = etype_access((etype)in_expr, string("count"));
+        enode origin     = etype_access((etype)in_expr, string("origin"));
         
         // alloca for index: i32 = 0
         LLVMTypeRef  i32_type = LLVMInt32Type();
@@ -4280,7 +4277,7 @@ enode aether_e_for(aether a,
 }
 
 enode aether_e_noop(aether a, etype mdl) {
-    enode op = enode(mod, a, loaded, true, au, mdl ? mdl->au : etypeid(none)->au);
+    enode op = enode(mod, a, loaded, false, au, mdl ? mdl->au : etypeid(none)->au);
     return op;
 }
 
@@ -5472,7 +5469,7 @@ etype implement_type_id(etype t) {
     etype_implement((etype)schema_i, false);
 
     etype tt = u(etype, t->au);
-    tt->type_id = hold(access(schema_i, string("type"), true));
+    tt->type_id = hold(access(schema_i, string("type")));
     if (!a->is_Au_import && t != a) {
         set(a->user_type_ids, (Au)t, (Au)tt->type_id);
     }

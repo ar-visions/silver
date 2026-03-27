@@ -2541,7 +2541,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
         token pkzip = peek(a);
         bool new_name = in_decl != null || in_rec;
         alpha = read_alpha_macrofilter(a, new_name);
-        if (alpha && eq(alpha, "ft_face2")) {
+        if (alpha && !first && eq(alpha, "size")) {
             mem = mem;
         }
         if (alpha && eq(alpha, "stat")) {
@@ -2633,7 +2633,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                         if (mem && !mem->au->is_static && mem->au->member_type != AU_MEMBER_TYPE) {
                             etype ftarg = etype_resolve((etype)f->target);
                             if (ftarg && in_context(mem->au, ftarg->au)) {
-                                mem = access(f->target, alpha, true);
+                                mem = access(f->target, alpha);
                             }
                         }
 
@@ -2649,7 +2649,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                 if (!mem && scope_mdl) {
                     Au_t sm = find_member(scope_mdl->au, alpha->chars, 0, 0, true);
                     if (sm)
-                        mem = access((enode)scope_mdl, alpha, true);
+                        mem = access((enode)scope_mdl, alpha);
                 }
 
                 // type name followed by : is a new declaration, not a type reference
@@ -2675,21 +2675,21 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                 if (null_guard && is_ptr(prop)) {
                     // emit null check: if null, short-circuit to default
                     enode cond = e_not(a, prop);
-                    mem = access(prop, alpha, true);
+                    mem = access(prop, alpha);
                     enode def = e_null(a, canonical(mem));
                     mem = e_ternary(a, cond, def, mem);
                 } else {
-                    mem = access(prop, alpha, true);
+                    mem = access(prop, alpha);
                 }
             } else {
                 Au info = head(mem);
                 if (null_guard && is_ptr(mem)) {
                     enode cond = e_not(a, mem);
-                    enode accessed = access(mem, alpha, true);
+                    enode accessed = access(mem, alpha);
                     enode def = e_null(a, canonical(accessed));
                     mem = e_ternary(a, cond, def, accessed);
                 } else {
-                    mem = access(mem, alpha, true);
+                    mem = access(mem, alpha);
                 }
             }
 
@@ -5680,7 +5680,7 @@ void silver_build_user_initializer(silver a, enode prop) {
         if (is_class(prop->au->context)) {
             Au_t    f  = (Au_t)ctx->au->args.origin[0];
             evar instance = (evar)u(enode, (Au_t)f);
-            enode L = access(instance, string(prop->au->ident), true);
+            enode L = access(instance, string(prop->au->ident));
             enode set = is_set((enode)instance, (evar)prop);
             assign_if_cond((aether)a, (enode)L, set, set_if);
             
