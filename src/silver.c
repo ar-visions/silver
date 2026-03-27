@@ -2541,7 +2541,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
         token pkzip = peek(a);
         bool new_name = in_decl != null || in_rec;
         alpha = read_alpha_macrofilter(a, new_name);
-        if (alpha && eq(alpha, "format")) {
+        if (alpha && eq(alpha, "ft_face2")) {
             mem = mem;
         }
         if (alpha && eq(alpha, "stat")) {
@@ -2627,6 +2627,9 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                         mem = (enode)rlookup((aether)a, alpha);
                         //mem = (enode)elookup(alpha->chars);
 
+                        if (eq(alpha, "ft_face2")) {
+                            alpha = alpha;
+                        }
                         if (mem && !mem->au->is_static && mem->au->member_type != AU_MEMBER_TYPE) {
                             etype ftarg = etype_resolve((etype)f->target);
                             if (ftarg && in_context(mem->au, ftarg->au)) {
@@ -3218,6 +3221,13 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         etype ref_cast_type = read_etype(a, null);
         pop_tokens(a, false);
 
+        if (ref_cast_type) {
+            printf("ref-speculative: matched type ident=%s member_type=%d peek=%s\n",
+                ref_cast_type->au->ident ? ref_cast_type->au->ident : "?",
+                ref_cast_type->au->member_type,
+                peek(a) ? peek(a)->chars : "(null)");
+            fflush(stdout);
+        }
         if (ref_cast_type && peek(a)) {
             // ref type expr — cast expr to ref type
             etype cast_type = read_etype(a, null);
@@ -3238,7 +3248,12 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         // return it directly as a loaded pointer rather than going through
         // e_create which would load and inttoptr the dereferenced value
         if (expr->loaded) {
-            expr->loaded = expr->loaded;
+            printf("ref-loaded: ident=%s member_type=%d is_ptr=%d is_class=%d loaded=%d value=%p src=%s\n",
+                expr->au->ident ? expr->au->ident : "?",
+                expr->au->member_type, expr->au->is_pointer, expr->au->is_class,
+                expr->loaded, (void*)NULL,
+                expr->au->src ? (expr->au->src->ident ? expr->au->src->ident : "(no ident)") : "(null)");
+            fflush(stdout);
         }
         validate(!expr->loaded, "cannot take ref of loaded value");
         enode ref_node = enode_ref((aether)a, expr, ref_type);
@@ -4241,6 +4256,10 @@ string import_config(array input) {
         }
         if (starts_with(t, "+"))
             continue;
+        if (starts_with(t, "-framework")) {
+            i++; // skip the framework name that follows
+            continue;
+        }
         if (token_line == -1 && !starts_with(t, "-l") && !starts_with(t, "-I")) {
             if (len(config))
                 append(config, " ");
@@ -4262,12 +4281,16 @@ string import_env(array input) {
     return env;
 }
 
-string import_libs(array input, map output) {
+string import_libs(array input, map output, map fw_output) {
     string libs = string(alloc, 128);
-    each(input, string, t) {
+    for (int i = 0; i < len(input); i++) {
+        string t = (string)input->origin[i];
         if (starts_with(t, "-l")) {
             string n = mid(t, 2, len(t) - 2);
             set(output, n, _bool(true));
+        } else if (starts_with(t, "-framework") && i + 1 < len(input)) {
+            string fw = (string)input->origin[++i];
+            set(fw_output, fw, _bool(true));
         }
     }
     return libs;
@@ -4710,7 +4733,16 @@ none silver_build(silver a) {
     cstr cpp_post  = has_cpp ? "-lstdc++" : "";
 #endif
     string isysroot = a->isysroot ? f(string, "-isysroot %o ", a->isysroot) : string("");
-    verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o %s",
+    string fw_flags = string("");
+#ifdef __APPLE__
+    if (a->frameworks) {
+        pairs(a->frameworks, fw_i) {
+            if (len(fw_flags)) append(fw_flags, " ");
+            concat(fw_flags, f(string, "-framework %o", (string)fw_i->key));
+        }
+    }
+#endif
+    verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o %o %s",
         install, linker, a->is_library ? shared : "", a->debug ? "-g" : "",
 
 #ifdef __linux__
@@ -4721,7 +4753,7 @@ none silver_build(silver a) {
         isysroot, cpp_pre, a->build_dir, a->name, objs,
         a->product,
         a->build_dir,
-        install, a->build_dir, install, libs, cflags,
+        install, a->build_dir, install, libs, cflags, fw_flags,
 #ifdef __APPLE__
         ""
 #else
@@ -5357,7 +5389,9 @@ enode parse_import(silver a) {
     array b = hold(read_body(a));
     if (len(b)) {
         array bt = compact_tokens(b);
-        import_libs(bt, a->libs);
+        if (!a->frameworks)
+            a->frameworks = map(16);
+        import_libs(bt, a->libs, a->frameworks);
         if (!a->include_paths)
             a->include_paths = array(16);
         if (!define_map)
@@ -5457,11 +5491,18 @@ enode parse_import(silver a) {
                  import_config(all_config),
                  import_env(all_config));
         bool has_link = false;
-        each(all_config, string, t)
+        if (!a->frameworks)
+            a->frameworks = map(16);
+        for (int fi = 0; fi < len(all_config); fi++) {
+            string t = (string)all_config->origin[fi];
             if (starts_with(t, "-l")) {
                 set(a->libs, (Au)mid(t, 2, len(t) - 2), (Au)_bool(true));
                 has_link = true;
+            } else if (starts_with(t, "-framework") && fi + 1 < len(all_config)) {
+                string fw = (string)all_config->origin[++fi];
+                set(a->frameworks, fw, _bool(true));
             }
+        }
         // auto-link: if no -l specified, use the project name (only if lib exists)
         if (!has_link && project) {
             string lib_check = f(string, "%o/lib/%s%o%s", a->install, lib_pre, project, lib_ext);
