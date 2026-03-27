@@ -27,17 +27,13 @@ Each dependency is pinned to a commit hash. No version ranges, no lock files, no
 
 ## Principles
 
-**One way to write it.** No style arguments, no config files for formatters. The language shape is the formatting.
+**Native apps and libraries.** A module builds to a shared library or executable. Resources live in the module folder — available during development and packaged for release.
 
-**Vertical over horizontal.** Complex expressions break into named variables. If your line is too long, break it up. The parser enforces this — deeply nested expressions don't parse.
+**Debug-first.** Every build emits full LLDB debug information. Debug is the default. Release builds use `-O2` with AVX2/FMA and emit object files directly from LLVM in-memory.
 
-**Debug-first.** Every build emits LLDB debug information. Debug is the default. Release is the surprise at the end. Release builds use `-O2` with AVX2/FMA on x86-64 and emit object files directly from LLVM in-memory — no intermediate `.ll` files, no separate `llc` process.
+**C interop through Au.** Write `.c` or `.cc` companion files next to your `.ag` source. They compile and link automatically with full access to your types. C headers are parsed through an integrated libclang frontend — macros, structs, functions, and enums are available at design time.
 
-**No ceremony.** If the compiler can figure it out, don't make the user type it. Type inference, implicit returns, bracketless calls at statement level.
-
-**C is a peer.** Silver interoperates with C at the object model level through Au. No bindings, no wrappers, no FFI layer. Write a `.c` or `.cc` file next to your `.ag` file and it compiles and links automatically with full access to your types. C headers are parsed through an integrated libclang frontend — macros, structs, functions, and enums become available at design time.
-
-**The compiler is the toolchain.** Silver includes file watching (`--watch`), build caching, clean builds (`--clean`), and a module search path (searches `foundry/` by default). One binary does everything.
+**Self-contained toolchain.** The silver install includes clang, lld, llvm-ar, and the SDK. File watching (`--watch`), build caching, clean builds (`--clean`), and module search paths are built in. One binary, no external dependencies.
 
 ---
 
