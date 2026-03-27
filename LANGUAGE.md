@@ -25,7 +25,7 @@ Each dependency is pinned to a commit hash. No version ranges, no lock files, no
 
 ---
 
-## Principles
+## Design Elements
 
 **Native apps and libraries.** A module builds to a shared library or executable. Resources live in the module folder — available during development and packaged for release.
 

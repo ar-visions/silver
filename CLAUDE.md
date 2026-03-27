@@ -6,21 +6,25 @@ Silver is a systems programming language with an LLVM backend. It compiles `.ag`
 
 ```bash
 # Build the silver compiler (from /src/silver)
-make                    # builds release
-make debug              # builds debug (with -g -O0)
+make                    # builds debug (default)
+make release            # builds release with -O2
 make clean              # cleans generated headers
 
 # Compile a .ag program
-./platform/native/bin/silver foundry/ai-test/ai-test.ag
+./platform/native/debug/silver foundry/trinity/trinity.ag
 
-# Run the output binary
-./platform/native/release/ai-test
+# With options
+silver --watch foundry/trinity    # file watcher mode
+silver --clean foundry/trinity    # force rebuild all imports
+silver --release foundry/trinity  # release build
 ```
 
-- `make` runs `bootstrap.sh` then `ninja`. Bootstrap generates `target.cmake` and a `.ninja` build file.
-- The compiler binary is at `platform/native/bin/silver`.
-- Compiled outputs (`.ll`, `.bc`, `.o`, final binary) go to `platform/native/release/`.
-- The bootstrap uses the SDK's own clang (`platform/native/bin/clang`) built from a pinned LLVM commit.
+- `make` defaults to debug. Debug binary goes to `platform/native/debug/silver`. Release binary goes to `platform/native/bin/silver`.
+- Bootstrap runs `gen.py` then `ninja`. The ninja file is generated per build type.
+- Build caching: modules with unchanged source skip recompilation (checks `.product` timestamp vs `.ag` timestamp).
+- Release builds: LLVM emits .o directly in-memory via `LLVMTargetMachineEmitToFile` — no .ll file, no llc process. Uses `LLVMCodeGenLevelAggressive` with `+avx2,+fma` on x86-64.
+- Debug builds: emits .ll to disk (for inspection), uses llc with `-O0`, full LLDB debug info.
+- `.ll` and `.bc` files only written when `--verbose` is set.
 
 ## Project Structure
 
@@ -270,7 +274,93 @@ bool  p = is_prim((Au)some_enode);  // check if primitive
 
 ## Testing
 
-No formal test runner. Test by compiling and running foundry projects:
-```bash
-make && ./platform/native/bin/silver foundry/ai-test/ai-test.ag && ./platform/native/release/ai-test
+`expect func` declares a test — the compiler verifies it returns true:
 ```
+expect func test [ vk: vk_context ] -> bool
+    # ... test code ...
+    return result
+```
+
+Test by compiling and running foundry projects:
+```bash
+make && ./platform/native/debug/silver foundry/ai-test/ai-test.ag
+```
+
+## Recent Compiler Discoveries
+
+### Type Resolution
+- **`au_ancestor(au)`**: walks `src` chain to the terminal type. Stops at enums. Used in `etype_access` for member lookup through aliases, pointers, and typedefs.
+- **C type aliases** (e.g. `FT_Face` → `FT_FaceRec_*` → `FT_FaceRec_`): `au_ancestor` + `etype_prep` resolves the full chain even in `no_build` mode.
+- **Au_t member access**: uses `Au_t_f` schema lltype via `au_t_etype->schema->lltype` for GEP. Byte-offset GEP (`getelementptr i8`) for Au_t fields avoids cross-module struct name conflicts.
+- **Union member indices**: all set to 0 (unions have single-element LLVM body). The `index` counter still increments for the member count verify.
+- **Opaque C types** (GLFWwindow, FILE): skipped in type-id registration (`continue` when typesize is 0) and in static variable implementation (`is_c && is_static` skip).
+
+### Convertible Rules Added
+- `Au_t → ARef` (type descriptor is a pointer)
+- `class → ref u8 / ref i8` (object to byte pointer)
+- `ref ptr → Au` (any pointer to generic Au)
+- `enum → f32/f64` (enum to float, via `is_realistic` check)
+- `struct → struct` same size (bitcast, both directions)
+- `ref struct → struct` same size (pointer to same-size struct)
+
+### Short-Circuit `||` / `&&`
+- Preserves values when types are compatible (`a: x || fallback` returns the truthy value).
+- Falls back to `bool` when types don't match (`convertible` check after parsing R).
+- `expect` passes `etypeid(bool)` as expected type to `read_enode`.
+
+### Switch Statement
+- Case blocks check `LLVMGetBasicBlockTerminator` before adding merge branch — prevents double terminators after `fault`/`return`/`break`.
+- `AU_MEMBER_ENUMV` (member_type=10) recognized alongside `is_enum` for constant resolution.
+
+### Public Type Exposure
+- Public members on classes error if the member's `src` is a C type without typesize (`is_c && !is_primitive && !is_struct && !is_enum && !typesize`).
+- Public function args and return types checked the same way.
+- Enforced at parse time so bad type data never reaches import.
+
+### Element-wise Array Operations
+- Primitive arrays (`elements > 0`, `src->is_primitive`) support `+ - * / %` with automatic loop emission.
+- Type promotion via `determine_rtype` + `e_create` per element.
+- Scalar broadcast: one array + one scalar works in either order.
+- `min`/`max`/`clamp` vectorized via `vector_binary_op` helper with function pointer dispatch.
+
+### Math Builtins
+- Single-arg: `sqrt sin cos tan asin acos atan exp log floor ceil round` — LLVM intrinsics or libm fallback.
+- Two-arg: `atan2 pow` via `e_math2` (libm calls).
+- Array versions emit loops — LLVM auto-vectorizes with AVX2 at `-O2`.
+- Keywords registered in parser, dispatched through `e_math`/`e_math2`.
+
+### Build System
+- `make` defaults to debug (`BUILD_ROOT` = `platform/native/debug`).
+- Debug binary → `platform/native/debug/silver`. Release → `platform/native/bin/silver`.
+- `gen.py` updated: app output uses `$builddir/` not `bin/`.
+- Build caching: `update_product` checks `.product` symlink timestamp vs module file. Empty `.artifacts` file no longer triggers rebuild (`!newest` = product is valid).
+- `--clean` flag propagates to all external imports.
+- `--watch` flag replaces old `--build` (watch is opt-in, one-shot is default).
+- `-I` paths stripped of prefix when added to include_paths (was storing `-I/path` instead of `/path`).
+- Module search: if module not found locally, searches `SILVER/foundry/name/name.ag`.
+
+### Cast Syntax
+- `(expr) to Type` — parsed in `parse_ternary` after `(expr)` closes.
+- Shares the `(expr)` prefix with ternary `?` and null-coalesce `??`.
+
+### `local` Keyword
+- Stack-allocated arrays: `local VkClearValue [2]`.
+- Optional inline initializer: `local VkDynamicState [2] [ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR ]`.
+- `etype_implement` called on element type before `LLVMArrayType`.
+
+### Scientific Notation
+- `parse_shape` returns null on `e`/`E` (lets `parse_numeric` handle it).
+- `parse_numeric` handles decimal floats and scientific notation: `1e20`, `1.5e-7`, `3.14f`.
+- C integer suffix stripping (`U`, `u`, `L`, `l`) in `parse_numeric`.
+
+### Scalar Type Safety
+- Float literals rejected for integer scalars: `14.4ms` errors when `scalar ms : i64`.
+- Check in scalar suffix construction path.
+
+### `sizeof` Enhancement
+- Falls back to `parse_expression` + `canonical` when `read_etype` fails — supports `sizeof[member]` not just `sizeof[Type]`.
+
+### `micro` Type
+- Schema registered in Au.c bootstrap with `origin`, `count`, `alloc` members.
+- `etype_init` creates LLVM struct body and sets member indices + `is_implemented`.
+- `Au_ts` (pointer to Au_t array): `is_pointer = true`, `src = typeid(Au_t)` set in etype_init.
