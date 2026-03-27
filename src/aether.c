@@ -14,6 +14,21 @@ typedef LLVMMetadataRef LLVMScope;
 
 #include <aether/import>
 
+static bool has_scalable_vector(LLVMTypeRef ty) {
+    LLVMTypeKind kind = LLVMGetTypeKind(ty);
+    if (kind == LLVMScalableVectorTypeKind)
+        return true;
+    if (kind == LLVMStructTypeKind && !LLVMIsOpaqueStruct(ty)) {
+        unsigned n = LLVMCountStructElementTypes(ty);
+        for (unsigned i = 0; i < n; i++)
+            if (has_scalable_vector(LLVMStructGetTypeAtIndex(ty, i)))
+                return true;
+    }
+    if (kind == LLVMArrayTypeKind)
+        return has_scalable_vector(LLVMGetElementType(ty));
+    return false;
+}
+
 #define au_lookup(sym)    lexical(a->lexical, sym)
 
 #define elookup(sym) ({ \
@@ -2811,7 +2826,7 @@ enode etype_access(etype target, string name, bool funny_business) { sequencer
     }
     
     enode n = u(enode, m);
-    if (n && n->value) return n;
+    if (n && n->value && !n->loaded) return n;
 
     // signal we're doing something non-const
     a->is_const_op = false;
@@ -2839,6 +2854,15 @@ enode etype_access(etype target, string name, bool funny_business) { sequencer
         LLVMValueRef byte_ptr = LLVMBuildGEP2(B, i8_ty, tnode->value, &offset_val, 1, id->chars);
         return enode(mod, a, au, m, loaded, false, debug_id, id, value, byte_ptr);
     }
+    if (t->lltype && has_scalable_vector(t->lltype) && m->offset >= 0) {
+        LLVMTypeRef  i8_ty      = LLVMInt8TypeInContext(a->module_ctx);
+        LLVMValueRef offset_val = LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), m->offset, 0);
+        LLVMValueRef byte_ptr   = LLVMBuildGEP2(B, i8_ty, tnode->value, &offset_val, 1, id->chars);
+        return enode(mod, a, au, m, loaded, false, debug_id, id, value, byte_ptr);
+    }
+    if (t->lltype)
+        t = t;
+    etype_implement(t, false);
     return enode(
         mod,    a,
         au,     m,
@@ -5905,11 +5929,11 @@ none etype_implement(etype t, bool w) { sequencer
         if (au->elements && LLVMGetTypeKind(t->lltype) != LLVMArrayTypeKind)
             t->lltype = LLVMArrayType(t->lltype, au->elements);
         /// /// /// /// /// /// /// /// /// /// /// /// /// /// /// /// ///
-        au->abi_size   = LLVMABISizeOfType(a->target_data, t->lltype) * 8;
-        if (!au->typesize || !au->is_au || au->is_c)
-            au->typesize = LLVMABISizeOfType(a->target_data, t->lltype);
-        au->align_bits = LLVMABIAlignmentOfType(a->target_data, t->lltype) * 8;
-    }
+                    au->abi_size   = LLVMABISizeOfType(a->target_data, t->lltype) * 8;
+            if (!au->typesize || !au->is_au || au->is_c)
+                au->typesize = LLVMABISizeOfType(a->target_data, t->lltype);
+            au->align_bits = LLVMABIAlignmentOfType(a->target_data, t->lltype) * 8;
+        }
 }
 
 void aether_build_user_initializer(aether a, etype m) { }

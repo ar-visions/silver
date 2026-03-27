@@ -49,6 +49,22 @@ void            emit_debug_params     (aether a, efunc fn);
 // helpers
 // ────────────────────────────────────────────────────────────────────────────
 
+// check if an LLVM type contains a scalable vector anywhere in its tree
+static bool has_scalable_vector(LLVMTypeRef ty) {
+    LLVMTypeKind kind = LLVMGetTypeKind(ty);
+    if (kind == LLVMScalableVectorTypeKind)
+        return true;
+    if (kind == LLVMStructTypeKind && !LLVMIsOpaqueStruct(ty)) {
+        unsigned n = LLVMCountStructElementTypes(ty);
+        for (unsigned i = 0; i < n; i++)
+            if (has_scalable_vector(LLVMStructGetTypeAtIndex(ty, i)))
+                return true;
+    }
+    if (kind == LLVMArrayTypeKind)
+        return has_scalable_vector(LLVMGetElementType(ty));
+    return false;
+}
+
 // compute bit-width from an Au_t, using the etype lltype if available
 static u32 bits_for_type(aether a, Au_t src) {
     if (!src) return 64;
@@ -475,7 +491,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
     u32 align      = type_au->align_bits ? type_au->align_bits : 64;
 
     // if etype has an lltype, use it for accurate size
-    if (!w && et && et->lltype) {
+    if (!w && et && et->lltype && !has_scalable_vector(et->lltype)) {
         u32 ll_bits = LLVMABISizeOfType(a->target_data, et->lltype) * 8;
         if (ll_bits) total_bits = ll_bits;
         u32 ll_align = LLVMABIAlignmentOfType(a->target_data, et->lltype) * 8;
@@ -600,11 +616,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
                 m_bits  = bits_for_type(a, msrc);
                 m_align = align_for_type(a, msrc);
             }
-            u64 offset_bits;
-            if (et && et->lltype && LLVMGetTypeKind(et->lltype) == LLVMStructTypeKind && !LLVMIsOpaqueStruct(et->lltype)) {
-                offset_bits = LLVMOffsetOfElement(a->target_data, et->lltype, m->index) * 8;
-            } else
-                offset_bits = (u64)m->offset * 8;
+            u64 offset_bits = (u64)m->offset * 8;
 
             members[midx++] = LLVMDIBuilderCreateMemberType(
                 a->dbg_builder, a->compile_unit,
