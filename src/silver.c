@@ -7491,16 +7491,29 @@ etype silver_read_def(silver a, interface access) {
         val_mem->access_type = interface_public;
 
     } else if (is_enum) {
-        etype store = null, suffix = null;
-        bool expect_bracket = false;
+        etype store = null;
 
-        if (read_if(a, "[")) {
-            store  = instanceof(read_etype(a, null), etype);
-            validate(store, "invalid storage type");
-            validate(read_if(a, "]"), "expected ] after storage type");
+        // storage type after :
+        if (read_if(a, ":")) {
+            store = instanceof(read_etype(a, null), etype);
+            validate(store, "invalid storage type after :");
         } else
             store = etypeid(i32);
-        
+
+        // meta types in [ ]
+        Au meta_a = null, meta_b = null;
+        if (read_if(a, "[")) {
+            a->etype_level++;
+            etype mt = read_etype(a, null);
+            if (mt) meta_a = (Au)mt->au;
+            if (read_if(a, ",")) {
+                etype mt2 = read_etype(a, null);
+                if (mt2) meta_b = (Au)mt2->au;
+            }
+            a->etype_level--;
+            validate(read_if(a, "]"), "expected ] after enum meta types");
+        }
+
         array enum_body = read_body(a);
         validate(len(enum_body), "expected body for enum %o", n);
 
@@ -7508,6 +7521,8 @@ etype silver_read_def(silver a, interface access) {
             n->chars, AU_MEMBER_TYPE, AU_TRAIT_ENUM);
         enum_au->access_type = access;
         enum_au->src = store->au;
+        if (meta_a) enum_au->meta.a = (Au_t)meta_a;
+        if (meta_b) enum_au->meta.b = meta_b;
         mdl = etype(mod, (aether)a, au, enum_au);
 
         push_tokens(a, (tokens)enum_body, 0);
