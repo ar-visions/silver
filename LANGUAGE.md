@@ -27,7 +27,7 @@ Each dependency is pinned to a commit hash. No version ranges, no lock files, no
 
 ## Principles
 
-**One way to write it.** Silver makes decisions so you don't have to. No style arguments, no config files for formatters, no tabs-vs-spaces debates. The language shape IS the formatting.
+**One way to write it.** No style arguments, no config files for formatters. The language shape is the formatting.
 
 **Vertical over horizontal.** Complex expressions break into named variables. If your line is too long, break it up. The parser enforces this — deeply nested expressions don't parse.
 
