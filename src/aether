@@ -63,7 +63,7 @@ forward(enode)
     M(X, Y, i, prop,     public,  path,            imported_from) \
     M(X, Y, i, prop,     public,  codegen,         cgen) \
     M(X, Y, i, prop,     public,  enode,           type_id) \
-    M(X, Y, i, method,   public,  enode,           access, string, bool) \
+    M(X, Y, i, method,   public,  enode,           access, string) \
     M(X, Y, i, method,   public,  none,            implement, bool) \
     M(X, Y, i, method,   public,  array,           class_list) \
     M(X, Y, i, method,   public,  etype,           resolve) \

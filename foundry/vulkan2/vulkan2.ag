@@ -1954,8 +1954,11 @@ class shader
             spv_stat:    struct stat
             src_exists: stat[ input.chars, ref source_stat ] == 0
             spv_exists: stat[ spv_file.chars, ref spv_stat ] == 0
-            make_spv : !spv_exists
-            make_spv |= source_stat.st_mtime > spv_stat.st_mtime
+            #make_spv : !spv_exists || source_stat.st_mtime > spv_stat.st_mtime
+            ifdef [ linux ]
+                make_spv: !spv_exists || source_stat.st_mtim.tv_sec > spv_stat.st_mtim.tv_sec
+            ifdef [ mac ]
+                make_spv: !spv_exists || source_stat.st_mtimespec.tv_sec > spv_stat.st_mtimespec.tv_sec
 
             if [ make_spv ]
                 ext_s: input.ext[]

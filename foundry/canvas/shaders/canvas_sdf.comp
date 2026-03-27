@@ -1,0 +1,73 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// edge data: x0, y0, x1, y1 per edge (vec4 packed)
+layout(std430, binding = 0) readonly buffer EdgeBuffer {
+    vec4 edges[];
+};
+
+// output SDF texture
+layout(r32f, binding = 1) writeonly uniform image2D sdf_out;
+
+// uniforms
+layout(push_constant) uniform Params {
+    float wx, wy, ww, wh;   // world bounds (with padding)
+    int   tw, th;            // texture dimensions
+    int   ne;                // edge count
+    float spread;            // max distance clamp
+};
+
+// point-to-segment distance
+float seg_dist(vec2 p, vec2 a, vec2 b) {
+    vec2 ab = b - a;
+    vec2 ap = p - a;
+    float t = clamp(dot(ap, ab) / dot(ab, ab), 0.0, 1.0);
+    vec2 closest = a + t * ab;
+    return length(p - closest);
+}
+
+void main() {
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= tw || gid.y >= th) return;
+
+    // texel center in world space
+    float sx = ww / float(tw);
+    float sy = wh / float(th);
+    float px = wx + (float(gid.x) + 0.5) * sx;
+    float py = wy + (float(gid.y) + 0.5) * sy;
+    vec2  pt = vec2(px, py);
+
+    // find minimum distance to any edge
+    float md = 999999.0;
+    for (int i = 0; i < ne; i++) {
+        vec2 a = edges[i].xy;
+        vec2 b = edges[i].zw;
+        float d = seg_dist(pt, a, b);
+        md = min(md, d);
+    }
+
+    // winding number for inside/outside
+    int wn = 0;
+    for (int i = 0; i < ne; i++) {
+        vec2 a = edges[i].xy;
+        vec2 b = edges[i].zw;
+        if (a.y <= py) {
+            if (b.y > py) {
+                float cross_val = (b.x - a.x) * (py - a.y) - (px - a.x) * (b.y - a.y);
+                if (cross_val > 0.0) wn++;
+            }
+        } else {
+            if (b.y <= py) {
+                float cross_val = (b.x - a.x) * (py - a.y) - (px - a.x) * (b.y - a.y);
+                if (cross_val < 0.0) wn--;
+            }
+        }
+    }
+
+    // clamp and sign
+    md = min(md, spread);
+    float sdf = (wn != 0) ? -md : md;
+
+    imageStore(sdf_out, gid, vec4(sdf, 0.0, 0.0, 0.0));
+}

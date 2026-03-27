@@ -126,10 +126,10 @@ func affine_multiply [ p: affine, q: affine ] -> affine
 func color_pack [ r: u8, g: u8, b: u8, alpha: u8 ] -> u32
 	return u32 alpha << 24 | u32 b << 16 | u32 g << 8 | u32 r
 
-func color_r [ c: u32 ] -> u8 [ u8 c & 0xFF ]
-func color_g [ c: u32 ] -> u8 [ u8 c >> 8 & 0xFF ]
-func color_b [ c: u32 ] -> u8 [ u8 c >> 16 & 0xFF ]
-func color_a [ c: u32 ] -> u8 [ u8 c >> 24 & 0xFF ]
+func color_r [ c: u32 ] -> u8 [ c 		& 0xFF ]
+func color_g [ c: u32 ] -> u8 [ c >> 8  & 0xFF ]
+func color_b [ c: u32 ] -> u8 [ c >> 16 & 0xFF ]
+func color_a [ c: u32 ] -> u8 [ c >> 24 & 0xFF ]
 
 
 # ---- clamp helpers ----
@@ -416,29 +416,29 @@ func path_flatten [ src: canvas_path, tol: f32 ] -> array path_pt
 	for [ i: i32 0, i < n, i += 1 ]
 		pt : path_pt src.points[i]
 		switch [ pt.cmd ]
-			case move
-				fpt : path_pt [ cmd: path_cmd.move, x: pt.x, y: pt.y ]
-				flat.push[ fpt ]
-				px = pt.x
-				py = pt.y
-			case line
-				fpt : path_pt [ cmd: path_cmd.line, x: pt.x, y: pt.y ]
-				flat.push[ fpt ]
-				px = pt.x
-				py = pt.y
-			case quad
-				flatten_quad [ flat, px, py, pt.cx1, pt.cy1, pt.x, pt.y, tol ]
-				px = pt.x
-				py = pt.y
-			case cubic
-				flatten_cubic [ flat, px, py, pt.cx1, pt.cy1, pt.cx2, pt.cy2, pt.x, pt.y, tol ]
-				px = pt.x
-				py = pt.y
-			case close
-				fpt : path_pt [ cmd: path_cmd.close, x: pt.x, y: pt.y ]
-				flat.push[ fpt ]
-				px = pt.x
-				py = pt.y
+		case path_cmd.move
+			fpt : path_pt [ cmd: path_cmd.move, x: pt.x, y: pt.y ]
+			flat.push[ fpt ]
+			px = pt.x
+			py = pt.y
+		case path_cmd.line
+			fpt : path_pt [ cmd: path_cmd.line, x: pt.x, y: pt.y ]
+			flat.push[ fpt ]
+			px = pt.x
+			py = pt.y
+		case path_cmd.quad
+			flatten_quad [ flat, px, py, pt.cx1, pt.cy1, pt.x, pt.y, tol ]
+			px = pt.x
+			py = pt.y
+		case path_cmd.cubic
+			flatten_cubic [ flat, px, py, pt.cx1, pt.cy1, pt.cx2, pt.cy2, pt.x, pt.y, tol ]
+			px = pt.x
+			py = pt.y
+		case path_cmd.close
+			fpt : path_pt [ cmd: path_cmd.close, x: pt.x, y: pt.y ]
+			flat.push[ fpt ]
+			px = pt.x
+			py = pt.y
 	return flat
 
 
@@ -602,26 +602,26 @@ func sdf_extract_edges [ flat: array path_pt ] -> array sdf_edge
 	for [ i: i32 0, i < n, i += 1 ]
 		pt : path_pt flat[i]
 		switch [ pt.cmd ]
-			case move
-				# close previous sub-path implicitly if needed
-				if [ i > 0 && (px != sx || py != sy) ]
-					ce : sdf_edge [ x0: px, y0: py, x1: sx, y1: sy ]
-					edges.push[ ce ]
-				sx = pt.x
-				sy = pt.y
-				px = pt.x
-				py = pt.y
-			case line
-				e : sdf_edge [ x0: px, y0: py, x1: pt.x, y1: pt.y ]
+		case path_cmd.move
+			# close previous sub-path implicitly if needed
+			if [ i > 0 && (px != sx || py != sy) ]
+				ce : sdf_edge [ x0: px, y0: py, x1: sx, y1: sy ]
+				edges.push[ ce ]
+			sx = pt.x
+			sy = pt.y
+			px = pt.x
+			py = pt.y
+		case path_cmd.line
+			e : sdf_edge [ x0: px, y0: py, x1: pt.x, y1: pt.y ]
+			edges.push[ e ]
+			px = pt.x
+			py = pt.y
+		case path_cmd.close
+			if [ px != sx || py != sy ]
+				e : sdf_edge [ x0: px, y0: py, x1: sx, y1: sy ]
 				edges.push[ e ]
-				px = pt.x
-				py = pt.y
-			case close
-				if [ px != sx || py != sy ]
-					e : sdf_edge [ x0: px, y0: py, x1: sx, y1: sy ]
-					edges.push[ e ]
-				px = sx
-				py = sy
+			px = sx
+			py = sy
 	# close final sub-path if not closed
 	if [ px != sx || py != sy ]
 		ce : sdf_edge [ x0: px, y0: py, x1: sx, y1: sy ]
@@ -1258,7 +1258,7 @@ struct glyph_entry
 
 # font face wrapper around FreeType
 class canvas_font
-	intern ft_face2    : FT_Face
+	intern ft_face    : FT_Face
 	public size_px    : i32
 	public ascent     : f32
 	public descent    : f32
@@ -1268,7 +1268,7 @@ class canvas_font
 	public cache_size : i32
 
 	construct [ ft_lib: handle, uri: string, size: i32 ]
-		err  : i32 FT_New_Face [ ft_lib, uri, 0, ref ft_face2 ]
+		err  : i32 FT_New_Face [ ft_lib, uri, 0, ref ft_face ]
 		check err == 0, 'failed to load font: {uri}'
 		size_px  = size
 		FT_Set_Pixel_Sizes [ ft_face, 0, size ]
@@ -1479,3 +1479,63 @@ func sk_color [ clr: Au ] -> u32
     el
         expect false, "sk_color: implement color conversion for type %s", type.name
     return u32[ ib | (ig << 8) | (ir << 16) | (ia << 24) ]
+
+
+expect func test [ vk: vk_context ] -> bool
+    w: display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 1024, height: 1024 ]
+    c: canvas [ vk: vk, w: w, width: 1024, height: 1024 ]
+    c.update[]
+
+    # outer blob
+    c.path.clear[]
+    c.path.move_to[ 200.0, 200.0 ]
+    c.path.bezier_to[ 400.0, 100.0, 600.0, 300.0, 800.0, 200.0 ]
+    c.path.bezier_to[ 900.0, 500.0, 700.0, 700.0, 500.0, 800.0 ]
+    c.path.bezier_to[ 300.0, 900.0, 100.0, 600.0, 200.0, 200.0 ]
+    c.path.close_path[]
+
+    c.save[]
+    c.set_fill_color[ 0xFF3366AA ]
+    c.fill_path[]
+
+    # inner cutout (opposite winding)
+    c.path.clear[]
+    c.path.move_to[ 450.0, 350.0 ]
+    c.path.bezier_to[ 550.0, 300.0, 650.0, 400.0, 600.0, 500.0 ]
+    c.path.bezier_to[ 550.0, 600.0, 400.0, 550.0, 450.0, 350.0 ]
+    c.path.close_path[]
+    c.set_fill_color[ 0x00000000 ]
+    c.fill_path[]
+    c.restore[]
+
+    # render
+    c.draw[]
+    c.sync_fence[]
+
+    # fetch texture and verify
+    img: (c.color) to image
+    p: path 'canvas_test.png'
+    p.save[ img, null ]
+    puts 'wrote canvas_test.png'
+
+    # average color across image
+    pixels: img.width * img.height
+    data: ref u8 img.vdata[]
+    r_sum: i64 [ 0 ]
+    g_sum: i64 [ 0 ]
+    b_sum: i64 [ 0 ]
+    a_sum: i64 [ 0 ]
+    for [ i: i32 0, i < pixels, i += 1 ]
+        r_sum += data[i * 4 + 0]
+        g_sum += data[i * 4 + 1]
+        b_sum += data[i * 4 + 2]
+        a_sum += data[i * 4 + 3]
+    avg_r: r_sum / pixels
+    avg_g: g_sum / pixels
+    avg_b: b_sum / pixels
+    avg_a: a_sum / pixels
+    puts 'average color: r={avg_r} g={avg_g} b={avg_b} a={avg_a}'
+
+    # the blob should produce non-zero color and non-zero alpha
+    # transparent cutout lowers the averages but doesn't zero them
+    return avg_a > 10 && (avg_r > 0 || avg_g > 0 || avg_b > 0)
