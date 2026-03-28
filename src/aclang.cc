@@ -1178,6 +1178,9 @@ none aether_import_includes(aether a) {
         "c",
         "-std=c11",
         "-D_POSIX_C_SOURCE=200809L",
+#ifdef __APPLE__
+        "-D_DARWIN_C_SOURCE",
+#endif
         "-fdiagnostics-show-option",
         "-Wno-nullability-completeness"
     };
@@ -1372,6 +1375,9 @@ path aether_include(aether e, Au inc, string ns) {
         "c",
         "-std=c11",
         "-D_POSIX_C_SOURCE=200809L",
+#ifdef __APPLE__
+        "-D_DARWIN_C_SOURCE",
+#endif
         "-fdiagnostics-show-option",
         "-Wno-nullability-completeness"
     };
