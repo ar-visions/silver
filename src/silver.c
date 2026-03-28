@@ -2508,7 +2508,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
     token t1 = element(a, 1);
     bool new_bind = t1 && eq(t1, ":");
     
-    if (seq == 593) {
+    if (seq == 2877) {
         seq = seq;
     }
 
@@ -2609,7 +2609,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
 
         /// Lookup or resolve member
         if (!ns_found) {
-            if (seq == 1649) {
+            if (seq == 2877) {
                 int test2 = 2;
                 test2    += 2;
             }
@@ -2736,7 +2736,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                     }
                     prev = reverse(prev);
 
-                    if (strcmp(mem->au->ident, "stat") == 0) {
+                    if (strcmp(mem->au->ident, "sdf") == 0) {
                         f = f;
                     }
 
@@ -3221,13 +3221,6 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         etype ref_cast_type = read_etype(a, null);
         pop_tokens(a, false);
 
-        if (ref_cast_type) {
-            printf("ref-speculative: matched type ident=%s member_type=%d peek=%s\n",
-                ref_cast_type->au->ident ? ref_cast_type->au->ident : "?",
-                ref_cast_type->au->member_type,
-                peek(a) ? peek(a)->chars : "(null)");
-            fflush(stdout);
-        }
         if (ref_cast_type && peek(a)) {
             // ref type expr — cast expr to ref type
             etype cast_type = read_etype(a, null);
@@ -3247,19 +3240,16 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         // when expr is unloaded, its value is already the address (GEP) —
         // return it directly as a loaded pointer rather than going through
         // e_create which would load and inttoptr the dereferenced value
-        if (expr->loaded) {
-            printf("ref-loaded: ident=%s member_type=%d is_ptr=%d is_class=%d loaded=%d value=%p src=%s\n",
-                expr->au->ident ? expr->au->ident : "?",
-                expr->au->member_type, expr->au->is_pointer, expr->au->is_class,
-                expr->loaded, (void*)NULL,
-                expr->au->src ? (expr->au->src->ident ? expr->au->src->ident : "(no ident)") : "(null)");
-            fflush(stdout);
-        }
         validate(!expr->loaded, "cannot take ref of loaded value");
         enode ref_node = enode_ref((aether)a, expr, ref_type);
         return mdl_expect ? e_create(a, mdl_expect, (Au)ref_node) : ref_node;
     }
 
+    printf("seq = %i\n", seq);
+
+    if (seq == 3102) {
+        seq = seq;
+    }
     // we may only support a limited set of C functionality for #define macros
     mem = parse_member(a, null, null, mdl_expect, from_ref); // we never parse assignment here
 
@@ -6644,7 +6634,7 @@ static bool peek_fields(silver a) {
 enode silver_parse_member_expr(silver a, enode mem) { sequencer
     push_current(a);
 
-    if (seq == 37) {
+    if (seq == 392) {
         seq = seq;
     }
     macro is_macro = instanceof(mem, macro);

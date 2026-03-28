@@ -1490,6 +1490,11 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
         if (optype == OPType__or || optype == OPType__and) {
             rtype = etypeid(bool);
         }
+        // load unloaded primitive pointers (e.g. array subscript results)
+        if (!LL->loaded && is_prim(LL->au))
+            LL = e_load(a, LL, null);
+        if (!RL->loaded && is_prim(RL->au))
+            RL = e_load(a, RL, null);
         bool ptr_arith = is_ptr(LL) || is_ptr(RL);
         if (!ptr_arith) {
             LL = e_create(a, rtype, (Au)LL);
@@ -4500,8 +4505,8 @@ enode aether_e_offset(aether a, enode n, Au offset) { sequencer
         elem_ty, base, &i->value, 1, N);
 
     Au_t arg_type = au_arg_type((Au)n);
-    
-    return enode(mod, a, au, n->is_explicit_ref ? arg_type->src : arg_type, loaded, false, value, ptr_offset);
+
+    return enode(mod, a, au, n->is_explicit_ref ? elem_au : arg_type, loaded, false, value, ptr_offset);
 }
 
 enode aether_e_load(aether a, enode mem, enode target) { sequencer
