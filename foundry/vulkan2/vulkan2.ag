@@ -47,6 +47,7 @@ class attrib
     format  : Au_t
 
 class composer
+    w:display
     func key_event    [ event ] return
     func wheel_event  [ event ] return
     func press_event  [ event ] return
@@ -1652,6 +1653,8 @@ texture display
     public last_target          : target
 
 
+    func update_canvas[ ] return
+    
     func resize [ w_new: i32, h_new: i32 ] 
         vkDeviceWaitIdle[ vk.device ]
         width  = w_new
@@ -2374,3 +2377,51 @@ func placeholder_image [ sampler: object, size: i32, fill: ref u8, sampler_size:
         sampler_size = s * sizeof[ rgba8 ]
     el
         fault "sampler data required"
+
+app media_app [ abstract ]
+    public  w          : display*
+    public  ux         : composer*
+    public  vk         : vk_context
+    public  app_context: ctx
+    public  ason_path  : path
+    public  ason_render: map Au[string]
+    intern  ason_modified : i64
+    intern  arg        : object
+    public  on_render  : callback
+
+    public func initialize [ win: display* ]
+        w = win
+        ux.w = win
+        win.update_canvas[] # ?
+        render*[] # should be called before the targets update, so we have a list of targets
+        win.resize[w.width, w.height]
+        
+    public func run [ ] -> i32
+        next_second : i64 epoch_millis[] / 1000;
+        frames      : i64 0
+
+        while [!glfwWindowShouldClose[w.glfw]]
+            glfwPollEvents[];
+            if [next_second != epoch_millis[] / 1000]
+                next_second  = epoch_millis[] / 1000
+                frames = 0;
+            
+            frames += 1
+            render[] // we need to call this prior to app_initialize logic
+            recycle[]
+
+        return 0;
+
+    func render[]
+        return
+    
+    func init[ ] 
+        expect glfwInit[], "glfw init"
+        if [ !glfwVulkanSupported ]
+            fault "glfw does not support vulkan"
+            glfwTerminate[]
+            return
+        expect vk, "vk_context required for trinity"
+
+    func dealloc [ ]
+        glfwTerminate[]

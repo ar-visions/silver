@@ -10,13 +10,13 @@ make                    # builds debug (default)
 make release            # builds release with -O2
 make clean              # cleans generated headers
 
-# Compile a .ag program
-./platform/native/debug/silver foundry/trinity/trinity.ag
+# Compile a .ag program (foundry/ prefix is optional — it's searched first)
+./platform/native/debug/silver trinity
 
-# With options
-silver --watch foundry/trinity    # file watcher mode
-silver --clean foundry/trinity    # force rebuild all imports
-silver --release foundry/trinity  # release build
+# With options (module path first, then flags)
+silver trinity --watch    # file watcher mode
+silver trinity --clean    # force rebuild all imports
+silver trinity --release  # release build
 ```
 
 - `make` defaults to debug. Debug binary goes to `platform/native/debug/silver`. Release binary goes to `platform/native/bin/silver`.

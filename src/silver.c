@@ -441,7 +441,7 @@ static inline enode expr_load(enode result, bool load) {
 }
 
 static enode parse_expression(silver a, etype expect, bool hint, bool load) { sequencer
-    if (seq == 841)
+    if (seq == 2024)
         seq = seq;
     if (is_rec(expect) && next_is(a, "[")) {
         // collections go straight to parse_object — [ ] is always element data
@@ -2205,6 +2205,18 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
 
             index += 1;
             string crop = mid(input_string, start, index - start);
+            // single character in quotes → i8 literal
+            if (len(crop) == 3 && (crop->chars[0] == '\'' || crop->chars[0] == '"')) {
+                i64 char_val = (i64)(u8)crop->chars[1];
+                push(tokens, (Au)token(
+                    chars, crop->chars,
+                    indent, indent,
+                    source, src,
+                    line, line_num,
+                    literal, _i64(char_val),
+                    column, start - line_start));
+                continue;
+            }
             if (crop->chars[0] == '-') {
                 char ch[2] = {crop->chars[0], 0};
                 push(tokens, (Au)token(
@@ -2544,7 +2556,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
         if (alpha && !first && eq(alpha, "size")) {
             mem = mem;
         }
-        if (alpha && eq(alpha, "stat")) {
+        if (alpha && eq(alpha, "x_scale")) {
             mem = mem;
         }
         if (!alpha && mem)
@@ -2609,7 +2621,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
 
         /// Lookup or resolve member
         if (!ns_found) {
-            if (seq == 2877) {
+            if (seq == 1520) {
                 int test2 = 2;
                 test2    += 2;
             }
@@ -2652,15 +2664,17 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                         mem = access((enode)scope_mdl, alpha);
                 }
 
-                // type name followed by : is a new declaration, not a type reference
-                if (mem && mem->au->member_type == AU_MEMBER_TYPE && next_is(a, ":"))
+                // first token + : means new declaration — but only at expression level 0
+                if (first && mem && next_is(a, ":") && a->expr_level == 0)
                     mem = null;
 
                 if (!mem) {
                     token tm1 = element(a, -2); // sorry for the mess (coin-flip)
 
                     validate(next_is(a, ":") || (tm1 && index_of(keywords, (Au)tm1) >= 0), "unknown identifier %o", alpha);
-                    validate(!find_member(top, alpha->chars, 0, 0, false), "duplicate member: %o", alpha);
+                    {   Au_t existing = find_member(top, alpha->chars, 0, 0, false);
+                        validate(!existing || existing->member_type == AU_MEMBER_DECL, "duplicate member: %o", alpha);
+                    }
                     Au_t m = def_member(top, alpha->chars, null, AU_MEMBER_DECL, 0); // this is promoted to different sorts of members based on syntax
                     mem = (enode)edecl(mod, (aether)a, au, m);
                     break;
@@ -3245,7 +3259,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         return mdl_expect ? e_create(a, mdl_expect, (Au)ref_node) : ref_node;
     }
 
-    printf("seq = %i\n", seq);
+    //printf("seq = %i\n", seq);
 
     if (seq == 3102) {
         seq = seq;
@@ -3259,7 +3273,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         validate(!unexpected_type, "unexpected type %o", unexpected_type);
     }
 
-    validate(!instanceof(mem, edecl), "unexpected declaration of member %s", mem->au->ident);
+    validate(!instanceof(mem, edecl), "'%s' parsed as declaration but expected expression (name conflicts with type?)", mem->au->ident);
     if (load && !is_loaded((Au)mem))
         mem = enode_value(mem, false);
     Au info = head(mem);
@@ -3815,7 +3829,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         
         bool is_ref = read_if(a, "ref") != null;
         if (!t) t = read_etype(a, null); // we need to avoid the literal check in here!
-        verify(t, "expected alpha-numeric identity for type or name, found %o", peek(a));
+        validate(t, "expected alpha-numeric identity for type or name, found %o", peek(a));
         Au_t arg = alloc_arg(au, n ? n->chars : null, t->au);
         arg->is_inlay = is_inlay;
         arg->is_explicit_ref = is_ref;
@@ -4969,7 +4983,7 @@ enode efunc_fptr(efunc f);
 
 etype etype_ptr(aether a, Au_t au, enode eshape);
 
-static enode parse_func_call(silver a, efunc f) { sequencer
+static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
     push_current(a);
     validate(is_func((Au)f) || is_func_ptr((Au)f), "expected function got %o", f);
     enode caller_target = f->target;
@@ -4982,7 +4996,7 @@ static enode parse_func_call(silver a, efunc f) { sequencer
         seq = seq;
     }
 
-    if (strcmp(f->au->ident, "stat") == 0) {
+    if (strcmp(f->au->ident, "nib") == 0) {
         f = f;
     }
 
@@ -5101,7 +5115,11 @@ static enode parse_func_call(silver a, efunc f) { sequencer
     a->expr_level--;
     validate(!read_br || read_if(a, cmode ? ")" : "]"), "expected ] after call");
     pop_tokens(a, true);
-    return e_fn_call(a, fn, values);
+    bool saved_direct = a->direct;
+    if (poly) a->direct = false;
+    enode result = e_fn_call(a, fn, values);
+    a->direct = saved_direct;
+    return result;
 }
 
 static enode typed_expr(silver a, enode f, array expr) {
@@ -6390,7 +6408,7 @@ static array read_enode_tokens(silver a) {
     return exprs;
 }
 
-static enode parse_func_call(silver, efunc);
+static enode parse_func_call(silver, efunc, bool);
 
 // this will have to adapt to parsing into a map, or parsing into a real type
 // for real types, we cannot use the string as its redundant and can be reduced by the user
@@ -6859,13 +6877,17 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
 
     } else if (mem) {
         if (is_func((Au)mem) || is_func_ptr((Au)mem) || is_lambda_call) {
+            bool is_poly = read_if(a, "*") != null;
+            if (is_poly)
+                validate(is_func((Au)mem) && !is_func_ptr((Au)mem) && !is_lambda_call,
+                    "poly dispatch (*) only applies to method calls");
 
             if (!is_lambda_call && is_lambda((Au)mem))
                 mem = parse_create_lambda(a, mem);
             else if (is_lambda_call)
                 mem = parse_lambda_call( a, (efunc)mem);
             else {
-                mem = parse_func_call(a, (efunc)mem);
+                mem = parse_func_call(a, (efunc)mem, is_poly);
             }
 
         } else if (is_type((Au)mem)) {
@@ -7151,9 +7173,10 @@ enode parse_switch(silver a) {
     while (true) {
 
         if (read_if(a, "case")) {
+            a->statement_origin = element(a, -1);
             array body = null;
             array values = array(alloc, 4);
-            
+
             // read comma-separated case values
             do {
                 bool is_const = false;
@@ -7177,6 +7200,7 @@ enode parse_switch(silver a) {
                 set(cases, (Au)value, (Au)body);
             continue;
         } else if (read_if(a, "default")) {
+            a->statement_origin = element(a, -1);
             expr_def = read_body(a);
             continue;
         } else
@@ -7435,8 +7459,17 @@ etype silver_read_def(silver a, interface access) {
             is_struct ? AU_TRAIT_STRUCT : AU_TRAIT_CLASS);
         mdl->au->access_type = access;
 
-        // read meta args (some of these will permute the type, and others are run-time)
-        if (read_if(a, "<")) {
+        // [ abstract ] or meta args < name: type, ... >
+        if (read_if(a, "[")) {
+            if (read_if(a, "abstract")) {
+                mdl->au->is_abstract = true;
+                validate(read_if(a, "]"), "expected ] after abstract");
+            } else {
+                // not abstract — must be meta args, switch to < > style parsing
+                // (this shouldn't happen; meta uses < >)
+                validate(false, "expected 'abstract' or ']'");
+            }
+        } else if (read_if(a, "<")) {
             bool first = true;
             int index = 0;
             while (!read_if(a, ">")) {
@@ -7517,9 +7550,11 @@ etype silver_read_def(silver a, interface access) {
 
         push_tokens(a, (tokens)enum_body, 0);
         push_scope(a, (Au)mdl);
-        validate(enum_au->src->is_integral,
-                 "enumeration can only be based on integral types (i32 default)");
+        bool is_float_enum = enum_au->src->traits & AU_TRAIT_REALISTIC;
+        validate(enum_au->src->is_integral || is_float_enum,
+                 "enumeration must be based on integral or float types (i32 default)");
         i64 value = 0;
+        f64 fvalue = 0.0;
         while (true) {
             token e = next(a);
             if  (!e) break;
@@ -7531,26 +7566,55 @@ etype silver_read_def(silver a, interface access) {
                 enode n = parse_expression(a, store, false, true);
                 Au lit = n ? literal_value(n,
                     isa(n->literal) == typeid(shape) ? typeid(i64) : isa(n->literal)) : null;
-                verify(n && ((Au_t)isa(lit))->is_integral,
-                    "expected integral literal");
-                v = lit;
-                u8 sp[64];
-                memcpy(sp, lit, ((Au_t)isa(lit))->abi_size / 8);
-                value = *(i64*)sp;
-            } else
-                v = primitive(store->au, &value);
-            
+                if (is_float_enum) {
+                    verify(n && lit, "expected float literal");
+                    v = lit;
+                    Au_t lt = isa(lit);
+                    if (lt == typeid(f64))       fvalue = *(f64*)lit;
+                    else if (lt == typeid(f32))  fvalue = *(f32*)lit;
+                    else if (lt->is_integral) {
+                        u8 sp[64];
+                        memcpy(sp, lit, lt->abi_size / 8);
+                        fvalue = (f64)*(i64*)sp;
+                    }
+                    if (enum_au->src == typeid(f32)) {
+                        f32 fv = (f32)fvalue;
+                        v = primitive(typeid(f32), &fv);
+                    } else
+                        v = primitive(typeid(f64), &fvalue);
+                } else {
+                    verify(n && ((Au_t)isa(lit))->is_integral,
+                        "expected integral literal");
+                    v = lit;
+                    u8 sp[64];
+                    memcpy(sp, lit, ((Au_t)isa(lit))->abi_size / 8);
+                    value = *(i64*)sp;
+                }
+            } else {
+                if (is_float_enum) {
+                    if (enum_au->src == typeid(f32)) {
+                        f32 fv = (f32)fvalue;
+                        v = primitive(typeid(f32), &fv);
+                    } else
+                        v = primitive(typeid(f64), &fvalue);
+                } else
+                    v = primitive(store->au, &value);
+            }
+
             Au_t enum_v         = def_enum_value(enum_au, e->chars, v);
             enum_v->src         = enum_au;
             enum_v->value       = (object)hold(v);
             enum_v->member_type = AU_MEMBER_ENUMV;
             enum_v->is_const    = true;
-            
+
             enode enum_node = enode(
                 mod, (aether)a, au, enum_v, literal, v);
             etype_register((aether)a, (Au)enum_v, (Au)hold(enum_node), false);
             implement(mdl, false);
-            value += 1;
+            if (is_float_enum)
+                fvalue += 1.0;
+            else
+                value += 1;
         }
         pop_scope(a);
         pop_tokens(a, false);

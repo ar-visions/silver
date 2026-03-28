@@ -278,7 +278,7 @@ enode enode_value(enode mem, bool force_load) { sequencer
     //aether a = mem->mod;
     //etype mdl = etype_prep(a, au_arg_type((Au)mem->au));
 
-    if (!mem->loaded && (force_load || !is_struct(canonical(mem))) && !mem->au->is_imethod && mem->au->member_type != AU_MEMBER_TYPE && (!is_func((Au)mem) || is_func_ptr((Au)mem))) {
+    if (!mem->loaded && (force_load || !is_struct(canonical(mem))) && !mem->au->is_imethod && (force_load || mem->au->member_type != AU_MEMBER_TYPE) && (!is_func((Au)mem) || is_func_ptr((Au)mem))) {
         if (mem->au->ident && strstr(mem->au->ident, "SND_PCM_STREAM") != NULL) {
             mem = mem; // breakpoint: loading SND_PCM_STREAM enum
         }
@@ -1980,7 +1980,12 @@ bool aether_e_fn_return(aether a, Au o) {
             LLVMBuildRetVoid(B);
         else {
             enode conv = e_create(a, (etype)u(etype, f->au->rtype), o);
-            LLVMBuildRet(B, enode_value(conv, true)->value);
+            enode ret_val = enode_value(conv, true);
+            if (!ret_val->loaded && f->au->rtype->is_struct) {
+                etype rtype = (etype)u(etype, f->au->rtype);
+                LLVMBuildRet(B, LLVMBuildLoad2(B, lltype(rtype), ret_val->value, "struct_ret"));
+            } else
+                LLVMBuildRet(B, ret_val->value);
         }
         return false;
     }
@@ -2380,7 +2385,12 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
 
                 if (arg_mem && arg_mem->is_inlay) // honor the inlay attribute; 'must pass by value and not just think we are'
                     conv = enode_value(conv, true);
-                
+
+                // load primitives that are still unloaded (pointer to element)
+                if (!conv->loaded && !arg_mem->is_explicit_ref && !arg_mem->is_pointer &&
+                    is_prim(au_arg_type((Au)arg_mem)))
+                    conv = enode_value(conv, true);
+
                 arg_values[index] = conv->value;
                 if (funcptr)
                     arg_types[index] = lltype(arg_t);
@@ -2865,14 +2875,42 @@ enode etype_access(etype target, string name) { sequencer
     if (t->lltype)
         t = t;
     etype_implement(t, false);
+    // for C structs, m->index may be stale; recompute from member ordinal
+    int gep_index = m->index;
+    if (t->lltype && LLVMGetTypeKind(t->lltype) == LLVMStructTypeKind) {
+        unsigned num_elements = LLVMCountStructElementTypes(t->lltype);
+        if (gep_index >= (int)num_elements) {
+            Au_t parent = m->context ? m->context : t->au;
+            int ordinal = 0;
+            for (int di = 0; di < parent->members.count; di++) {
+                Au_t dm = (Au_t)parent->members.origin[di];
+                if (dm == m) { gep_index = ordinal; break; }
+                if (dm->member_type == AU_MEMBER_VAR && !dm->is_static)
+                    ordinal++;
+            }
+        }
+    }
+    LLVMValueRef base = tnode->value;
+    // loaded struct value (not pointer) — need alloca for GEP or extractvalue
+    bool is_loaded_struct = tnode->loaded && !is_ptr(canonical((enode)target));
+    if (is_loaded_struct) {
+        if (t->lltype && !LLVMIsOpaqueStruct(t->lltype)) {
+            LLVMValueRef tmp = LLVMBuildAlloca(B, t->lltype, "tmp.val");
+            LLVMBuildStore(B, base, tmp);
+            base = tmp;
+        } else {
+            LLVMValueRef extracted = LLVMBuildExtractValue(B, base, gep_index, id->chars);
+            return enode(mod, a, au, m, loaded, true, debug_id, id, value, extracted);
+        }
+    }
     return enode(
         mod,    a,
         au,     m,
         loaded, false,
         debug_id, id,
         value,  LLVMBuildStructGEP2(
-            B, t->lltype, tnode->value,
-            m->index, id->chars));
+            B, t->lltype, base,
+            gep_index, id->chars));
 }
 
 enode resolve_typeid(aether a, Au mdl) {
@@ -3958,6 +3996,7 @@ enode aether_e_native_switch(
     }
 
     // emit each case body
+    bool has_merge = !def_block; // no explicit default → switch default targets switch.end
     int idx = 0;
     pairs(case_blocks, p) {
         LLVMBasicBlockRef case_block = (LLVMBasicBlockRef)p->value;
@@ -3966,20 +4005,26 @@ enode aether_e_native_switch(
         array body_tokens = (array)value_by_index(cases, idx++);
         invoke(body_builder, (Au)body_tokens);
 
-        if (!a->last_return && !LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B)))
+        if (!a->last_return && !LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B))) {
             LLVMBuildBr(B, switch_cat->block);
+            has_merge = true;
+        }
     }
 
     // default body
     if (def_block) {
         LLVMPositionBuilderAtEnd(B, default_block);
         invoke(body_builder, (Au)def_block);
-        if (!a->last_return && !LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B)))
+        if (!a->last_return && !LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B))) {
             LLVMBuildBr(B, switch_cat->block);
+            has_merge = true;
+        }
     }
 
     // merge
     LLVMPositionBuilderAtEnd(B, switch_cat->block);
+    if (!has_merge)
+        LLVMBuildUnreachable(B);
     pop_scope(a);
     return e_noop(a, null);
 }
@@ -4834,12 +4879,13 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
     members(module_base, mem) {
         if (is_class(mem)) {
             etype cls = u(etype, mem);
-            if (cls->au->context == main_spec->au) {
+            if (cls->au->context == main_spec->au && !mem->is_abstract) {
                 verify(!main_class, "found multiple app classes");
                 main_class = cls;
             }
         }
     }
+
 
     // no app class: check for coverage tests, otherwise library
     if (!main_class) {
@@ -5271,7 +5317,16 @@ none etype_init(etype t) {
         etype_create(a, au->src);
         t->lltype = LLVMArrayType(lltype(u(etype, au->src)), au->elements);
     } else if (named && (!instanceof(t, enode) && (is_rec((Au)t) || au->is_union || au == typeid(Au_t)))) {
-        t->lltype = LLVMStructCreateNamed(a->module_ctx, cstr_copy(au->ident));
+        // non-pointer alias: don't create own lltype, resolve from src
+        if (au->src && au->src != au && !au->is_pointer &&
+            (au->src->is_struct || au->src->is_union) &&
+            au->member_type == AU_MEMBER_TYPE) {
+            etype src_e = u(etype, au->src);
+            if (src_e && lltype(src_e))
+                t->lltype = lltype(src_e);
+        }
+        if (!t->lltype)
+            t->lltype = LLVMStructCreateNamed(a->module_ctx, cstr_copy(au->ident));
         if (au != typeid(Au_t) && !au->is_system)
             etype_ptr(a, t->au, null);
     } else if (is_enum(t)) {
@@ -5832,7 +5887,11 @@ none etype_implement(etype t, bool w) { sequencer
                     init = LLVMConstInt(tr, *((i64*)m->value), 1);
                 else if (et == typeid(u64))
                     init = LLVMConstInt(tr, *((u64*)m->value), 0);
-                else 
+                else if (et == typeid(f32))
+                    init = LLVMConstReal(tr, (double)*((f32*)m->value));
+                else if (et == typeid(f64))
+                    init = LLVMConstReal(tr, *((f64*)m->value));
+                else
                     fault("unsupported enum value: %s", et->ident);
                 
                 nn->value = init;

@@ -1,5 +1,8 @@
 import freetype:freetype/VER-2-13-3 <ft2build.h, freetype/freetype.h>
     -I{install}/include/freetype2
+    -lfreetype
+	-DFT_DISABLE_BROTLI=TRUE
+	-DFT_DISABLE_BZIP2=TRUE
 
 import vulkan2
 import vec
@@ -8,7 +11,6 @@ import img
 import <math.h>
 import <stdio.h>
 import <stdlib.h>
-
 
 # ---- draw mode enum (matches fragment shader) ----
 
@@ -845,7 +847,7 @@ struct canvas_state
 	public blur_rad        : f32
 	public fill_grad       : gradient
 	public stroke_grad     : gradient
-
+	public font      	   : canvas_font
 
 # ---- canvas class (GPU draw-list builder) ----
 
@@ -868,6 +870,53 @@ target canvas
 	func resize [ rw: i32, rh: i32 ]
 		width  = rw
 		height = rh
+
+
+	# ---- text measurement ----
+
+	func measure_text [ text: string ] -> text_metrics
+		n   : text.count
+		w   : f32 [ 0.0 ]
+		tw  : f32 [ 0.0 ]
+		for [ i: i32 0, i < n, i += 1 ]
+			cp : u32 [ text[i] ]
+			g  : font.get_glyph [ cp ]
+			if [ g.cached ]
+				tw += f32 g.advance
+		return text_metrics [
+			w:           tw,
+			h:           font.ascent - font.descent,
+			ascent:      font.ascent,
+			descent:     font.descent,
+			line_height: font.line_height,
+			cap_height:  font.cap_height
+		]
+
+
+	# ---- ellipsis helper ----
+
+	func text_ellipsis [ text: string, max_w: f32 ] -> string
+		tm : text_metrics measure_text [ text ]
+		if [ tm.w <= max_w ]
+			return text
+		n : text.count
+		dots : text_metrics measure_text [ '...' ]
+		if [ dots.w >= max_w ]
+			return '.'
+		target : f32 [ max_w - dots.w ]
+		w : f32 [ 0.0 ]
+		cut : i32 [ 0 ]
+		for [ i: i32 0, i < n, i += 1 ]
+			cp : u32 [ text[i] ]
+			g  : font.get_glyph [ cp ]
+			if [ g.cached ]
+				w += f32 g.advance
+			if [ w > target ]
+				cut = i
+				return text.mid [ 0, cut ] + '...'
+		return text
+
+
 
 	# ---- state stack ----
 
@@ -896,6 +945,9 @@ target canvas
 		if [ depth > 1 ]
 			states.pop[]
 			depth -= 1
+
+	func set_font [ c: canvas, fnt: canvas_font ]
+		c.font = fnt
 
 	# ---- state setters ----
 
@@ -1267,13 +1319,16 @@ class canvas_font
 	public cache      : array glyph_entry
 	public cache_size : i32
 
+	
 	construct [ ft_lib: handle, uri: string, size: i32 ]
 		err  : i32 FT_New_Face [ ft_lib, uri, 0, ref ft_face ]
-		check err == 0, 'failed to load font: {uri}'
+		expect err == 0, 'failed to load font: {uri}'
 		size_px  = size
 		FT_Set_Pixel_Sizes [ ft_face, 0, size ]
 
 		# extract metrics from face
+		xscale      : i64 ft_face.size.metrics.x_scale
+		yscale      : i64 ft_face.size.metrics.y_scale
 		ascent      = f32 ft_face.size.metrics.ascender / 64.0
 		descent     = f32 ft_face.size.metrics.descender / 64.0
 		line_height = f32 ft_face.size.metrics.height / 64.0
@@ -1369,70 +1424,16 @@ intern ft_library : handle [ null ]
 func ft_init [] -> handle
 	if [ !ft_library ]
 		err : i32 FT_Init_FreeType [ ref handle ft_library ]
-		check err == 0, 'FreeType init failed'
+		expect err == 0, 'FreeType init failed'
 	return ft_library
-
-
-# ---- text measurement ----
-
-func measure_text [ fnt: canvas_font, text: string ] -> text_metrics
-	n   : text.count
-	w   : f32 [ 0.0 ]
-	for [ i: i32 0, i < n, i += 1 ]
-		cp : u32 [ text[i] ]
-		g  : glyph_entry fnt.get_glyph [ cp ]
-		if [ g.cached ]
-			w += f32 g.advance
-	return text_metrics [
-		w:           w,
-		h:           fnt.ascent - fnt.descent,
-		ascent:      fnt.ascent,
-		descent:     fnt.descent,
-		line_height: fnt.line_height,
-		cap_height:  fnt.cap_height
-	]
-
-
-# ---- ellipsis helper ----
-
-func text_ellipsis [ fnt: canvas_font, text: string, max_w: f32 ] -> string
-	tm : text_metrics measure_text [ fnt, text ]
-	if [ tm.w <= max_w ]
-		return text
-	n : text.count
-	dots : text_metrics measure_text [ fnt, '...' ]
-	if [ dots.w >= max_w ]
-		return '.'
-	target : f32 [ max_w - dots.w ]
-	w : f32 [ 0.0 ]
-	cut : i32 [ 0 ]
-	for [ i: i32 0, i < n, i += 1 ]
-		cp : u32 [ text[i] ]
-		g  : glyph_entry fnt.get_glyph [ cp ]
-		if [ g.cached ]
-			w += f32 g.advance
-		if [ w > target ]
-			cut = i
-			return mid [ text, 0, cut ] + '...'
-	return text
-
-
-# ---- canvas text methods ----
-
-func canvas_set_font [ c: canvas, fnt: canvas_font ]
-	c.font = fnt
-
-func canvas_measure [ c: canvas, text: string ] -> text_metrics
-	check c.font, 'no font set on canvas'
-	return measure_text [ c.font, text ]
 
 
 # --- color conversion ---
 
-func nib [ n: i8 ] -> u8
-    return n >= '0' && n <= '9' ?       u8[ n - '0' ] :
-           n >= 'a' && n <= 'f' ? u8[ 10 + (n - 'a') ] :
-           n >= 'A' && n <= 'F' ? u8[ 10 + (n - 'A') ] : 0
+func nib [ n: i8 ] -> i8
+    return (n >= '0' && n <= '9') ?       n - '0'  :
+           (n >= 'a' && n <= 'f') ? 10 + (n - 'a') :
+           (n >= 'A' && n <= 'F') ? 10 + (n - 'A') : 0
 
 func sk_color [ clr: Au ] -> u32
     type: typeid[ clr ]
@@ -1444,7 +1445,7 @@ func sk_color [ clr: Au ] -> u32
         s: string [ clr ]
         h: symbol [ s.chars ]
         if [ h[0] == '#' ]
-            sz: len[ s ]
+            sz: s.count
             switch [ sz ]
                 case 5
                     ia = nib[ h[4] ] << 4 | nib[ h[4] ]
@@ -1477,7 +1478,7 @@ func sk_color [ clr: Au ] -> u32
         ib = c.b * 255.0
         ia = c.a * 255.0
     el
-        expect false, "sk_color: implement color conversion for type %s", type.name
+        fault 'implement color conversion for type {type.ident}'
     return u32[ ib | (ig << 8) | (ir << 16) | (ia << 24) ]
 
 
@@ -1489,23 +1490,23 @@ expect func test [ vk: vk_context ] -> bool
     # outer blob
     c.path.clear[]
     c.path.move_to[ 200.0, 200.0 ]
-    c.path.bezier_to[ 400.0, 100.0, 600.0, 300.0, 800.0, 200.0 ]
-    c.path.bezier_to[ 900.0, 500.0, 700.0, 700.0, 500.0, 800.0 ]
-    c.path.bezier_to[ 300.0, 900.0, 100.0, 600.0, 200.0, 200.0 ]
+    c.path.cubic_to[ 400.0, 100.0, 600.0, 300.0, 800.0, 200.0 ]
+    c.path.cubic_to[ 900.0, 500.0, 700.0, 700.0, 500.0, 800.0 ]
+    c.path.cubic_to[ 300.0, 900.0, 100.0, 600.0, 200.0, 200.0 ]
     c.path.close_path[]
 
     c.save[]
     c.set_fill_color[ 0xFF3366AA ]
-    c.fill_path[]
+    c.draw_fill[]
 
     # inner cutout (opposite winding)
     c.path.clear[]
     c.path.move_to[ 450.0, 350.0 ]
-    c.path.bezier_to[ 550.0, 300.0, 650.0, 400.0, 600.0, 500.0 ]
-    c.path.bezier_to[ 550.0, 600.0, 400.0, 550.0, 450.0, 350.0 ]
+    c.path.cubic_to[ 550.0, 300.0, 650.0, 400.0, 600.0, 500.0 ]
+    c.path.cubic_to[ 550.0, 600.0, 400.0, 550.0, 450.0, 350.0 ]
     c.path.close_path[]
     c.set_fill_color[ 0x00000000 ]
-    c.fill_path[]
+    c.draw_fill[]
     c.restore[]
 
     # render
