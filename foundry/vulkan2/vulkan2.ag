@@ -1957,7 +1957,7 @@ class shader
             #make_spv : !spv_exists || source_stat.st_mtime > spv_stat.st_mtime
             ifdef [ linux ]
                 make_spv: !spv_exists || source_stat.st_mtim.tv_sec > spv_stat.st_mtim.tv_sec
-            ifdef [ mac ]
+            ifdef [ apple ]
                 make_spv: !spv_exists || source_stat.st_mtimespec.tv_sec > spv_stat.st_mtimespec.tv_sec
 
             if [ make_spv ]
