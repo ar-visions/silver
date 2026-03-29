@@ -854,12 +854,13 @@ struct CanvasState
 
 # ---- Canvas class (GPU draw-list builder) ----
 Target Canvas
-	public path      : CanvasPath
+	public path       : CanvasPath
 	mutable states    : array CanvasState
-	public depth     : i32
-	public font      : CanvasFont
-	intern ui_shader : CanvasUI
-	intern sdf_tex   : Texture
+	public depth      : i32
+	public font       : CanvasFont
+	intern ui_shader  : CanvasUI
+	intern sdf_tex    : Texture
+	public format	  : Pixel[Pixel.rgba8]
 
 	func init [ ]
 		ui_shader = CanvasUI [ vk: vk ]
@@ -924,6 +925,14 @@ Target Canvas
 
 	func current_state [] -> CanvasState
 		return states[depth - 1]
+
+	func clear [ color: object ]
+		save[]
+		set_fill_color[ sk_color[ color ] ]
+		path.clear[]
+		rect_to[ 0.0, 0.0, f32[ width ], f32[ height ] ]
+		draw_fill[]
+		restore[]
 
 	func save []
 		if [ depth == 0 ]

@@ -39,21 +39,15 @@ Display Window
     public r_view               : Target
 
     public func update_canvas [ ]
-        if [ compose ]
-            compose.resize[  width, height ]
-            colorize.resize[ width, height ]
-            overlay.resize[  width, height ]
-            glyph.resize[    width, height ]
-        el
-            compose  = sk [ vk: vk, format: Pixel_rgba8, :width, :height ]
-            colorize = sk [ vk: vk, format: Pixel_rgba8, :width, :height ]
-            overlay  = sk [ vk: vk, format: Pixel_rgba8, :width, :height ]
-            glyph    = sk [ vk: vk, format: Pixel_rgba8, :width, :height ]
-
-        compose.clear[  string[ "#008" ] ]
-        colorize.clear[ string[ "#fff" ] ]
-        overlay.clear[  string[ "#fff0" ] ]
-        glyph.clear[    string[ "#000" ] ]
+        # compose  || (omitting this to show actual issue with parse member not being part of read-enode)
+        compose  = (Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
+        colorize = (colorize || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
+        overlay  = (overlay  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
+        glyph    = (glyph    || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
+        compose .clear[ string[ "#008"  ] ]
+        colorize.clear[ string[ "#fff"  ] ]
+        overlay .clear[ string[ "#fff0" ] ]
+        glyph   .clear[ string[ "#000"  ] ]
         sk_sync[]
 
     public func resize [ w: i32, h: i32 ] 
@@ -62,7 +56,7 @@ Display Window
 
     public func draw_element [ e: element* ]
         expect instanceof[ e, element ], "e is not an element"
-        canvas_arr: new sk[4] [ overlay, compose, colorize, glyph ]
+        canvas_arr: new Canvas[4] [ overlay, compose, colorize, glyph ]
         rel: e.parent ?
             rect [ x: 0, y: 0, w: e.parent.bounds.w, h: e.parent.bounds.h ] :
             rect [ x: 0, y: 0, w: width, h: height ]
@@ -1093,19 +1087,19 @@ Layer Children
     public scroll : vec2f
 
 class element
-    public parent : element
-    public area : Region
-    public value : object
-    public id : string
-    public flags : i64
-    public layers : array Layer
-    public elements : map
-    public tags : array string
-    public group : string
-    public tab_index : i32
-    public ghost : bool
-    public captured : bool
-    public selectable : bool
+    public parent       : element
+    public area         : Region
+    public value        : object
+    public id           : string
+    public flags        : i64
+    public layers       : array Layer
+    public elements     : map
+    public tags         : array string
+    public group        : string
+    public tab_index    : i32
+    public ghost        : bool
+    public captured     : bool
+    public selectable   : bool
     public selected     : bool
     public disabled     : bool
     public hovered      : bool
@@ -1241,7 +1235,7 @@ shader Basic
     public proj : mat4f
     public model : mat4f
     public view : mat4f
-    attrib Surface [ color ] : 1, rgbaf
+    public color : attrib [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgbaf ] ]
 
 
 class IBL
@@ -1281,7 +1275,7 @@ shader BlurV
     mutable view : mat4f
     mutable proj : mat4f
     mutable reduction_scale : f32
-    public color        : attrib [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
+    public color : attrib [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
 
 
 shader Blur
@@ -1289,7 +1283,7 @@ shader Blur
     mutable view : mat4f
     mutable proj : mat4f
     mutable reduction_scale : f32
-    public color        : attrib [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
+    public color : attrib [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
 
 
 enum UXSurface
@@ -1348,12 +1342,12 @@ shader UXSimple
 class DrawState
     public blur_radius          : f32
     public stroke_size          : f32
-    public stroke_cap           : cap
-    public stroke_join          : join
+    public stroke_cap           : Cap
+    public stroke_join          : Join
     public stroke_miter_limit   : f32
     public stroke_dash_offset   : f32
-    public font                 : font
-    public tx                   : texture
+    public font                 : Font
+    public tx                   : Texture
     public x                    : f32
     public y                    : f32
     public w                    : f32
@@ -1364,11 +1358,11 @@ class DrawState
 
     public func set_default [ ] 
         font         = hold[ font [ size: 22, uri: path 'fonts/Sofia-Sans-Condensed.ttf' ] ]
-        stroke_cap   = cap_round
-        stroke_join  = join_round
+        stroke_cap   = Cap.round
+        stroke_join  = Join.round
         stroke_size  = 0
-        fill_color   = sk_color[ object[ string[ "#000" ] ] ]
-        stroke_color = sk_color[ object[ string[ "#000" ] ] ]
+        fill_color   = sk_color[ string[ "#000" ] ]
+        stroke_color = sk_color[ string[ "#000" ] ]
         opacity      = 1.0
 
 

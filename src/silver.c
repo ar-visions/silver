@@ -2884,6 +2884,9 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         validate(n, "could not read expression");
         validate(read_if(a, "]"),
             "expected ] after %o expression %i", u(etype, n->au->src), seq);
+        // (expr).member chain — feed result into parse_member_expr
+        if (next_is(a, "."))
+            n = parse_member_expr(a, n);
         return n;
     }
 
