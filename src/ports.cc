@@ -1393,7 +1393,7 @@ int inotify_close(int fd) {
 #endif
 
 
-__int64_t epoch_millis() {
+__int64_t _epoch_millis() {
     struct _timeval_ tv;
     gettimeofday((struct _timeval_*)&tv, 0L);
     return (__int64_t)(tv.tv_sec) * 1000 + (__int64_t)(tv.tv_usec) / 1000;
