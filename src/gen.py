@@ -19,6 +19,7 @@ project         = args['PROJECT_NAME']
 project_path    = Path(args['PROJECT_PATH'])
 source_dir      = project_path / Path('src')
 source_files    = list(source_dir.glob('**/*.c*'))  # recursively finds .c files
+header_files    = [f for f in source_dir.iterdir() if f.is_file() and (f.suffix == '.h' or f.suffix == '')]
 
 def get_platform_info():
     """get platform-specific settings"""
@@ -307,9 +308,10 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     n.append("  description = generating headers")
     n.append("  generator = 1")
     n.append("")
-    
+
     stamp = "$builddir/.headers_generated"
-    n.append(f"build {stamp}: headers")
+    hdeps = ' '.join(norm_path(f) for f in header_files)
+    n.append(f"build {stamp}: headers | {hdeps}")
     n.append("")
     
     # objects

@@ -2211,7 +2211,8 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
     
     verify(funcptr || n_args == fn->au->args.count ||
         (n_args > fn->au->args.count && fn->au->is_vargs),
-        "arg count mismatch on %o (given %i)", fn, n_args);
+        "arg count mismatch on %s.%s (given %i, expected %i)",
+        fn->au->context ? fn->au->context->ident : "?", fn->au->ident, n_args, fn->au->args.count);
     
     Au_t type_id = isa(fn);
     LLVMValueRef* arg_values = calloc(n_args, sizeof(LLVMValueRef));
@@ -2836,14 +2837,14 @@ enode etype_access(etype target, string name) { sequencer
         verify(u(enode, real_m), "expected enode for enum value");
         return u(enode, real_m);
     }
-    
+
     enode n = u(enode, m);
     if (n && n->value && !n->loaded) return n;
 
     // signal we're doing something non-const
     a->is_const_op = false;
     if (a->no_build)
-        return e_noop(a, u(etype, au_arg_type(m)));
+        return e_noop(a, u(etype, au_arg_type((Au)m)));
 
     enode tnode = (enode)target;
     string id = f(string, "enode_access_%i", seq);
@@ -6187,8 +6188,6 @@ none aether_build_module_initializer(aether a, enode init) {
             module_isize += mem->typesize;
     }
 
-    //aether_eputs(a, f(string, "1"));
-
     // NOTE: module has no context; its src is its base (usually Au/module base)
     e_fn_call(a, fn_emplace, a(
         module_type_id,
@@ -6201,11 +6200,6 @@ none aether_build_module_initializer(aether a, enode init) {
         _u64(module_base->typesize),
         _u64(module_isize)
     ));
-
-    //aether_eputs(a, f(string, "2"));
-
-    Au_t m = find_member(module_base, "coolteen", AU_MEMBER_VAR, 0, false);
-    evar var_mdl = u(evar, m);
 
     // define public functions at the module level; this effectively imports
     members(module_base, mem) {
@@ -6284,6 +6278,7 @@ none aether_build_module_initializer(aether a, enode init) {
         }
     }
 
+    
     // iterate through user-defined type id
     pairs(a->user_type_ids, i) {
         etype mdl     = instanceof(i->key,   etype);
@@ -6292,7 +6287,10 @@ none aether_build_module_initializer(aether a, enode init) {
         if (!mdl || !type_id)
             continue;
 
-        //aether_eputs(a, f(string, "user_type_ids: %s", mdl->au->ident));
+        Au_t mem = mdl->au;
+        if (mem->ident && strcmp(mem->ident, "media_app") == 0) {
+            mem = mem;
+        }
 
         bool is_class_t  = is_class(mdl);
         bool is_struct_t = is_struct(mdl);
@@ -6333,10 +6331,9 @@ none aether_build_module_initializer(aether a, enode init) {
         ));
 
         // C-imported types: size-only registration, no member/function metadata
-        if (tau->is_c)
-            continue;
 
         i64 max_ft_end = 0;
+        if (!tau->is_c)
         members(tau, mem) {
             if (mem->access_type == interface_intern)
                 continue;
@@ -6446,7 +6443,7 @@ none aether_build_module_initializer(aether a, enode init) {
         }
 
         // update table_size on schema so child emplace_type copies full ftable
-        if (max_ft_end > 0) {
+        if (!tau->is_c && max_ft_end > 0) {
             LLVMValueRef ts_offset = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx),
                 offsetof(struct _Au_f, table_size), false);
             LLVMValueRef ts_ptr = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx),
@@ -6457,7 +6454,7 @@ none aether_build_module_initializer(aether a, enode init) {
             LLVMBuildStore(B, ts_val, ts_slot);
         }
 
-        e_fn_call(a, fn_push, a(type_id));
+        e_fn_call(a, fn_push, a(type_id, module_type_id));
     }
 
     // polymorphism works now
@@ -6789,12 +6786,8 @@ void aether_import_Au(aether a, string ident, Au lib) {
     etype Au_t_ = u(etype, typeid(Au_t));
     etype lookup = u(etype, typeid(micro));
     etype_implement(lookup, false);
-    for (int i = 0; i < Au_t_->au->members.count; i++) {
-        Au_t mem = Au_t_->au->members.origin[i];
-        mem = mem;
-    }
 
-    if (!u(etype, au_module)) {
+    if (!u(etype, (Au)au_module)) {
         emodule(mod, a, au, au_module);
     }
     if (!lib) {

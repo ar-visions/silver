@@ -307,7 +307,7 @@ void lazy_init(global_init_fn fn, Au_t);
             type_ref->traits   = AU_TRAIT_IS_AU | AU_TRAIT_ENUM; \
             head(type_ref)->type = typeid(Au_t_f); \
             E##_schema( E, T, IMPL ); \
-            push_type((Au_t)type_ref); \
+            push_type((Au_t)type_ref, type_ref->module); \
             return true; \
         } \
     }
@@ -542,7 +542,7 @@ typedef Au_t* Au_ts;
                 set_meta_array((Au_t)type_ref, emit_types(__VA_ARGS__)); \
             } \
             TYPE##_schema( TYPE, INIT, __VA_ARGS__ ); \
-            push_type((Au_t)type_ref); \
+            push_type((Au_t)type_ref, type_ref->module); \
             return true; \
         } \
     } \
@@ -643,6 +643,7 @@ forward(any)
     M(AA,BB, s, method, public, Au_t,   def_class,      Au_t, symbol) \
     M(AA,BB, s, method, public, Au_t,   def_struct,     Au_t, symbol) \
     M(AA,BB, s, method, public, Au_t,   def_func_ptr,   Au_t, symbol) \
+    M(AA,BB, s, method, public, i64,    epoch_millis) \
     M(AA,BB, s, method, public, Au_t,   def_pointer,    Au_t, Au_t, symbol) \
     M(AA,BB, s, method, public, Au_t,   def_enum,       Au_t, symbol, u64) \
     M(AA,BB, s, method, public, Au_t,   def_enum_value, Au_t, symbol, Au) \
@@ -686,7 +687,7 @@ forward(any)
     M(AA,BB, s, method, public, Au, primitive, Au_t, raw) \
     M(AA,BB, s, method, public, Au, method, Au_t, cstr, array) \
     M(AA,BB, s, method, public, i32, alloc_count, Au_t) \
-    M(AA,BB, s, method, public, none, push_type, Au_t) \
+    M(AA,BB, s, method, public, none, push_type, Au_t, Au_t) \
     M(AA,BB, s, method, public, Au,   typecast, Au_t, Au) \
     M(AA,BB, s, method, public, none, dealloc_type, Au_t) \
     M(AA,BB, s, method, public, none, member_override, Au_t, Au_t, AFlag) \
@@ -813,11 +814,12 @@ declare_class(collective)
     enum_value       (E,T,Y, undefined,  0) \
     enum_value       (E,T,Y, intern,     1) \
     enum_value       (E,T,Y, public,     2) \
-    enum_value       (E,T,Y, guard,      3) \
-    enum_value       (E,T,Y, expect,     4) \
-    enum_value       (E,T,Y, abstract,   5) \
-    enum_value       (E,T,Y, context,    6) \
-    enum_value       (E,T,Y, keyword,    7)
+    enum_value       (E,T,Y, mutable,    3) \
+    enum_value       (E,T,Y, guard,      4) \
+    enum_value       (E,T,Y, expect,     5) \
+    enum_value       (E,T,Y, abstract,   6) \
+    enum_value       (E,T,Y, context,    7) \
+    enum_value       (E,T,Y, keyword,    8)
 declare_enum(interface)
 
 #define comparison_module_ Au

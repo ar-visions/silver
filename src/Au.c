@@ -1944,8 +1944,7 @@ Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, 
     
     if (member_type == AU_MEMBER_MODULE) {
         micro_push((micro_*)&modules, (Au)type); // we should error if we ever find a duplicate here
-    } else
-        push_type((Au_t)type);
+    }
     
     return type;
 }
@@ -2063,7 +2062,7 @@ Au_t def_module(symbol next_module) {
 
     for (int i = 0; i < modules.count; i++)
         if (!modules.origin[i]) {
-            modules.origin[i] = (Au)m;
+            modules.origin[i] = (Au_t)m;
             return m;
         }
     
@@ -2080,8 +2079,14 @@ ffi_method_t* method_with_address(handle address, Au_t rtype, micro* atypes, Au_
     for (int __i = 0; __i < (MDL)->members.count; __i++) \
         for (Au_t VAR = (Au_t)(MDL)->members.origin[__i]; VAR; VAR = NULL)
 
-none push_type(Au_t type) {
+none push_type(Au_t type, Au_t to_mod) {
     // ensure ident_hash is set for all types (static types from declare_class etc.)
+
+    if (type->ident && strcmp(type->ident, "gltf") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
+
     if (type->ident && !type->ident_hash)
         type->ident_hash = au_hash_ident(type->ident);
 
@@ -2092,7 +2097,7 @@ none push_type(Au_t type) {
         Au_Au_t_i.type.src    = typeid(Au);
         Au_Au_t_i.type.traits = AU_TRAIT_IS_AU;
         Au_Au_t_i.type.module = module;
-        push_type((Au_t)&Au_Au_t_i.type);
+        push_type((Au_t)&Au_Au_t_i.type, null);
     }
 
     if (type == typeid(Au)) {
@@ -2193,6 +2198,7 @@ none push_type(Au_t type) {
     }
 
     micro_push(&type->module->members, (Au)type);
+
     //type->af->re_alloc = 1024;
     //type->af->re = (object*)(Au*)calloc(1024, sizeof(Au));
 
@@ -7479,6 +7485,12 @@ void __coverage_report(void) {
         }
     }
     fprintf(stderr, "══════════════════════════════════════\n\n");
+}
+
+__int64_t _epoch_millis();
+
+i64 epoch_millis() {
+    return _epoch_millis();
 }
 
 
