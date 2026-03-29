@@ -184,8 +184,8 @@ class Accessor
         return scalar_sz
 
     func init [] 
-        stride      = vcount_val * component_size_val
-        total_bytes = stride * vcount_val
+        stride      = vcount_val[] * component_size_val[]
+        total_bytes = stride * vcount_val[]
 
 class BufferView
     public buffer:          u64
@@ -200,16 +200,16 @@ class Skin
     public extras:          Au
     public extensions:      Au
 
-class Transform
-    public jdata:           JData
-    public istate:          i32
-    public local_mat:       mat4f
-    public local_default:   mat4f
-    public iparent:         i32
-    public ichildren:       array i64
+class GltfTransform
+    mutable jdata:           JData
+    mutable local_mat:       mat4f
+    mutable local_default:   mat4f
+    mutable istate:          i32
+    mutable iparent:         i32
+    mutable ichildren:       array i64
 
     func propagate [] 
-        m: (iparent != -1) ? mat4f[ jdata.states[iparent] ] : mat4f.identity
+        m: (iparent != -1) ? mat4f[ jdata.states[iparent] ] : mat4f.identity[]
         jdata.states[istate] = local_mat.mul[ m ]
         for [i: i64] in ichildren
             jdata.transforms[i].propagate
@@ -227,9 +227,9 @@ class Transform
         propagate
 
 class JData
-    public states:          array mat4f
-    public transforms:      array Transform
-    public local_mat :      mat4f
+    mutable states:          array mat4f
+    mutable transforms:      array GltfTransform
+    mutable local_mat :      mat4f
 
 class Node
     public name:            string
@@ -241,10 +241,10 @@ class Node
     public scale:           vec3f
     public weights:         array f32
     public children:        array i64
-    public joint_index:     i32
-    public processed:       bool
-    public mx_joints:       Au
-    func primitive [mdl: Model, n: cstr] -> Primitive
+    mutable joint_index:     i32
+    mutable processed:       bool
+    mutable mx_joints:       Au
+    func primitive [mdl: GltfModel, n: cstr] -> Primitive
         m: mdl.meshes[mesh]
         if [m]
             return m.primitive [n]
@@ -347,7 +347,7 @@ class Material
     public alphaCutoff:      f32
     public doubleSided:      bool
 
-class Model
+class GltfModel
     public nodes:            array Node
     public skins:            array Skin
     public accessors:        array Accessor
@@ -376,10 +376,10 @@ class Model
     func index [n: string] -> Node
         return find [n]
 
-    func node_transform [joints: JData, parent_mat: mat4f, node_index: i32, parent: Transform] -> Transform
+    func node_transform [joints: JData, parent_mat: mat4f, node_index: i32, parent: GltfTransform] -> GltfTransform
         node: nodes[node_index]
         node.processed = true
-        transform: Transform
+        transform: GltfTransform
 
         if [ node.joint_index >= 0 ]
             transform.jdata = joints
@@ -407,7 +407,7 @@ class Model
         if [node.mx_joints]
             return node.mx_joints
         j: JData[]
-        ident: mat4f.identity
+        ident: mat4f.identity[]
         if [node.skin != -1]
             skin: skins[node.skin]
             all_children: map bool[i64]
@@ -421,7 +421,7 @@ class Model
                 n.joint_index = j_index
                 j_index += 1
             n: i32 [skin.joints.count]
-            j.transforms = array Transform []
+            j.transforms = array GltfTransform []
             j.states     = array mat4f []
             
             for [ i: i32 0, i < n, i += 1 ]
@@ -465,12 +465,12 @@ enum Sampling
     ansio:     3
 
 struct HumanVertex
-    public pos:       vec3f
-    public normal:    vec3f
-    public uv0:       vec2f
-    public uv1:       vec2f
-    public tangent:   vec3f
-    public joints0:   vec3f
-    public joints1:   vec3f
-    public weights0:  vec3f
-    public weights1:  vec3f
+    pos:       vec3f
+    normal:    vec3f
+    uv0:       vec2f
+    uv1:       vec2f
+    tangent:   vec3f
+    joints0:   vec3f
+    joints1:   vec3f
+    weights0:  vec3f
+    weights1:  vec3f

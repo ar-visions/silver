@@ -30,7 +30,7 @@ func opencv_gaussian_fast[ref u8, ref u8, int, int, int, int , float]
 
 func opencv_blur_equirect[ref u8, int, int] 
 
-enum join
+enum Join
     none           : 0
     miter           : 1
     round           : 2
@@ -66,22 +66,22 @@ enum Surface
     ior             : 8
     environment     : 9
 
-enum cap
+enum Cap
     none            : 0
     round           : 1
     square          : 2
 
-enum variant
+enum Variant
     none            : 0
     small_caps      : 1
     mono            : 2
 
-class font
+class Font
     uri         : path
     bold        : bool
     italic      : bool
     underline   : bool
-    var         : variant
+    var         : Variant
     size        : f32
     kerning     : f32
     res         : handle
@@ -97,19 +97,19 @@ class font
     func dealloc[] 
         font_manager_dealloc a
 
-    func copy[ ] -> font
-        b : super.copy
-        font_manager_init b 
+    func copy[ ] -> Font
+        b : super.copy[]
+        font_manager_init [b] 
         return b
 
     func init[] 
-        font_manager_init a
+        font_manager_init [a]
 
     construct [ u:path ]
         uri = u
 
 
-class image
+class Image
     uri:            path
     surface:        Surface
     format:         Pixel
@@ -141,30 +141,30 @@ class image
         info : header[ a ]
         if [ res_dealloc ] res_dealloc [ a ]
 
-    func copy[ ] -> image
-        res: image[ width:1, height:2, format:format, surface:surface ]
-        memcpy res.vdata, vdata, byte_count
+    func copy[ ] -> Image
+        res: Image[ width:1, height:2, format:format, surface:surface ]
+        memcpy res.vdata[], vdata[], byte_count[]
         return res
 
-    func resize[ out_w:i32, out_h:i32 ] -> image
-        check width > 0 && height > 0, "null image given to resize"
+    func resize[ out_w:i32, out_h:i32 ] -> Image
+        check width > 0 && height > 0, "null Image given to resize"
         check out_w > 0 && out_h  > 0, "invalid size"
         
         if [ width == out_w && height == out_h ]
-            return copy
+            return copy[]
         
         scale_x : float width / out_w
         scale_y : float height / out_h
 
-        output  : image
+        output  : Image
             width    :out_w,
             height   :out_h,
             :format, :surface, :channels
 
-        src : ref u8 vdata
-        src2 : ref u8 vdata
-        src3 : ref u8 vdata
-        dst : ref u8 output.vdata
+        src  : ref u8 vdata[]
+        src2 : ref u8 vdata[]
+        src3 : ref u8 vdata[]
+        dst  : ref u8 output.vdata[]
 
         opencv_resize_area
             src,      dst,   format == Pixel.rgbaf32,
@@ -173,16 +173,16 @@ class image
         
         return output
 
-    func gaussian[ amount:float ] -> image
+    func gaussian[ amount:float ] -> Image
         if [ amount < 0.1f ]
-            return copy
+            return copy[]
         
-        output : image
+        output : Image
             :width,  :height,
             :format, :surface, :channels
 
-        src : ref u8 vdata
-        dst : ref u8 output.vdata
+        src : ref u8 vdata[]
+        dst : ref u8 output.vdata[]
 
         opencv_gaussian
             src, dst, format == Pixel.rgbaf32,
@@ -193,7 +193,7 @@ class image
 
     # save gray or colored png based on channel count; if we want conversion we may just use methods to alter an object
     func png [ image_uri:path ] -> i32
-        e       : image_uri.ext
+        e       : image_uri.ext[]
         success : 1
 
         if [ e == "png" ]
@@ -219,7 +219,7 @@ class image
 
                 png_write_info png2, info
                 rows : new png_bytep [ sizeof png_bytep * height ]
-                data2 : ref u8 vdata
+                data2 : ref u8 vdata[]
                 for [ y : 0, y < height, y += 1 ]
                     rows[y] = ref data2 [ y * width * channels ]
 
@@ -246,5 +246,5 @@ class image
         return f.count * pixel_size
 
     func get[ y:num ] -> Au
-        data : ref u8 vdata
+        data : ref u8 vdata[]
         return ref data [ pixel_size * width * y ]

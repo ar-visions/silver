@@ -51,6 +51,8 @@ token aether_peek_safe(silver);
 #undef error
 #define error(t, ...) ({ \
     struct _token* pk = aether_peek_safe(a); \
+    struct _token* prev = (struct _token*)silver_element(a, -1); \
+    if (prev && pk && prev->line != pk->line) pk = prev; \
     string s; \
     if (pk->line == 0) { \
         s = (string)formatter( \
@@ -2371,7 +2373,7 @@ static etype next_is_class(silver a, bool read_token) {
             consume(a);
         return etypeid(Au);
     }
-    
+
     etype f = elookup(t->chars);
     if (is_class(f)) {
         if (read_token)
@@ -2885,6 +2887,39 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         return n;
     }
 
+    // construct [ arg ] — constructor chaining, must be inside a constructor
+    if (!cmode && next_is(a, "construct")) {
+        consume(a);
+        efunc fn = context_func(a);
+        validate(fn && fn->au->member_type == AU_MEMBER_CONSTRUCT,
+            "construct can only be called inside a constructor");
+        etype rec = context_record(a);
+        validate(rec, "construct requires class context");
+        validate(read_if(a, "["), "expected [ after construct");
+        enode arg = parse_expression(a, null, false, true);
+        validate(arg, "expected argument for construct");
+        validate(read_if(a, "]"), "expected ] after construct argument");
+        // find matching constructor by arg type
+        Au_t arg_type = au_arg_type((Au)arg);
+        Au_t ctr = null;
+        members(rec->au, m) {
+            if (m->member_type == AU_MEMBER_CONSTRUCT && m->args.count >= 2) {
+                Au_t first_arg = au_arg_type(m->args.origin[1]);
+                if (first_arg == arg_type || inherits(arg_type, first_arg)) {
+                    ctr = m;
+                    break;
+                }
+            }
+        }
+        validate(ctr, "no matching constructor for type %s", arg_type->ident);
+        efunc ctr_fn = (efunc)u(efunc, ctr);
+        validate(ctr_fn, "constructor not registered");
+        // call on self — no allocation
+        enode self_node = fn->target ? (enode)fn->target : null;
+        validate(self_node, "no self in constructor context");
+        return e_fn_call(a, ctr_fn, a(self_node, arg));
+    }
+
     // handle typed operations, converting to our expected model (if no difference, it passes through)
     if (a->expr_level > 0 && peek && (is_alpha(peek) || eq(peek, "struct"))) {
         etype mdl_found = read_etype(a, null);
@@ -3274,6 +3309,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     }
 
     validate(!instanceof(mem, edecl), "'%s' parsed as declaration but expected expression (name conflicts with type?)", mem->au->ident);
+    validate(mem, "unexpected token '%o'", peek(a));
     if (load && !is_loaded((Au)mem))
         mem = enode_value(mem, false);
     Au info = head(mem);
@@ -3400,6 +3436,8 @@ enode parse_statement(silver a)
 
     //bool is_default = !access ? read_if(a, "default") != null : false;
     bool has_access = access != interface_undefined;
+    validate(!(has_access && rec_top && is_struct(rec_top)),
+        "access levels are not applicable to struct members");
 
     //print_tokens(a, seq);
 
@@ -3811,10 +3849,14 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         string  n         = t ? null : read_alpha(a); // optional
         micro*  ar        = in_context ? (micro*)&au->members : (micro*)&au->args;
 
-        if (!t)
-            validate(read_if(a, ":"),
-                "expected seperator between name and type %i", seq);
-        else
+        if (!t) {
+            if (!read_if(a, ":")) {
+                // no colon: treat name as a type (C-style declaration)
+                t = elookup(n->chars);
+                validate(t, "unknown type or expected ':' after name '%o'", n);
+                n = null;
+            }
+        } else
             validate(!read_if(a, ":"),
                 "unexpected : after type provided first: %o", t);
 
@@ -3854,6 +3896,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     
     bool arrow = read_if(a, "->") != null;
     rtype = arrow ? read_etype(a, null) : null;
+    validate(!arrow || rtype, "unknown return type after -> (found %o)", peek(a));
     array inline_expr = null;
 
     if (next_is(a, "[")) {
@@ -3991,6 +4034,28 @@ etype read_etype(silver a, array* p_expr) { sequencer
                 if (au)
                     mdl = (etype)etype_prep((silver)a, au);
             }
+        } else if (read_if(a, "lambda")) {
+            // lambda ReturnType [ ArgTypes ]
+            etype rtype = read_etype(a, null);
+            if (!rtype) rtype = etypeid(none);
+            Au_t lambda_au = def(top_scope(a), null, AU_MEMBER_TYPE, AU_TRAIT_LAMBDA);
+            lambda_au->src     = typeid(lambda);
+            lambda_au->rtype   = rtype->au;
+            lambda_au->context = typeid(lambda);
+            lambda_au->is_funcptr = true;
+            // read arg types [ Type, Type, ... ]
+            if (read_if(a, "[")) {
+                if (!read_if(a, "]")) {
+                    do {
+                        etype arg_type = read_etype(a, null);
+                        validate(arg_type, "expected type in lambda args");
+                        def_arg(lambda_au, null, arg_type->au, 0);
+                    } while (read_if(a, ","));
+                    validate(read_if(a, "]"), "expected ] after lambda arg types");
+                }
+            }
+            lambda_au->is_pointer = true;
+            mdl = etype(mod, (aether)a, au, lambda_au);
         } else
             mdl = prim_mdl ? prim_mdl : read_named_model(a);
 
@@ -4015,7 +4080,7 @@ etype read_etype(silver a, array* p_expr) { sequencer
                 // meta_a: always a type
                 a->etype_level++;
                 etype t = read_etype(a, null);
-                if (!t && !is_cmode(a) && !(mdl->au->context && mdl->au->context->meta.a) && mdl->au != typeid(shape))
+                if (!t && !is_cmode(a) && has_depth_meta && !(mdl->au->context && mdl->au->context->meta.a) && mdl->au != typeid(shape))
                     validate(false, "type parameter required for %o", mdl);
                 if (!t) t = etypeid(Au);
                 meta_a_val = (Au)t->au;
@@ -5031,10 +5096,11 @@ static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
         if (user_arg_count(f) == 0 && next_is(a, "[")) {
             read_if(a, "[");
             validate(read_if(a, "]"), "expected ] after empty call brackets");
-        } else
-            validate((a->expr_level == 0 && !user_likes_brackets) ||
-                      (user_arg_count(f) == 0 || (read_br = read_if(a, "[") != null)),
-                "expected call-bracket [ at expression depth past statement level");
+        } else {
+            read_br = read_if(a, "[") != null;
+            validate(read_br || a->expr_level == 0,
+                "expected [ for function call %o", f);
+        }
     }
     
     a->expr_level++;
@@ -5051,6 +5117,7 @@ static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
     // track which args have been matched (for commaless type-matching)
     // commaless type-matching only applies inside brackets [ ]
     bool* matched = calloc(ln, sizeof(bool));
+    if (offset > 0) matched[0] = true; // self/target already placed
     bool  comma_mode = !read_br; // no brackets = positional (old behavior)
 
     while (i + offset < ln || fn->au->is_vargs) {
@@ -5069,7 +5136,7 @@ static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
             int  best = -1;
             for (int j = 0; j < ln; j++) {
                 if (matched[j]) continue;
-                Au_t ptype = au_arg_type((Au)micro_get((micro_*)m, j + offset));
+                Au_t ptype = au_arg_type((Au)micro_get((micro_*)m, j));
                 if (expr_type == ptype || inherits(expr_type, ptype) ||
                     (expr_type->is_integral && ptype->is_integral) ||
                     (expr_type->is_realistic && ptype->is_realistic)) {
@@ -5079,13 +5146,13 @@ static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
             }
             if (best >= 0) {
                 // convert to expected type and place at matched position
-                Au_t best_decl = (Au_t)micro_get((micro_*)m, best + offset);
+                Au_t best_decl = (Au_t)micro_get((micro_*)m, best);
                 etype best_type = u(etype, au_arg_type((Au)best_decl));
                 expr = e_create(a, best_type, (Au)expr);
                 // ensure values array is big enough and place at correct index
-                while (len(values) <= best + offset)
+                while (len(values) <= best)
                     push(values, (Au)null);
-                values->origin[best + offset] = (Au)expr;
+                values->origin[best] = (Au)expr;
                 matched[best] = true;
             } else {
                 push(values, (Au)expr);
@@ -5124,7 +5191,20 @@ static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
 
 static enode typed_expr(silver a, enode f, array expr) {
     push_tokens(a, expr ? (tokens)expr : a->tokens, expr ? 0 : a->cursor);
-    
+
+    // EnumType['string'] — runtime enum lookup by name
+    if (is_enum(f) && expr) {
+        enode str_arg = parse_expression(a, etypeid(string), false, true);
+        pop_tokens(a, expr ? false : true);
+        if (str_arg) {
+            Au_t fn_evalue = find_member(typeid(Au), "evalue", AU_MEMBER_FUNC, 0, false);
+            verify(fn_evalue, "evalue function not found");
+            efunc f_evalue = (efunc)u(efunc, fn_evalue);
+            enode type_id  = e_typeid(a, (etype)f);
+            return e_fn_call(a, f_evalue, a(type_id, str_arg));
+        }
+    }
+
     // function calls
     efunc f_decl = u(efunc, f->au);
     if (f_decl) {
@@ -5903,7 +5983,9 @@ void silver_write_header(silver a) {
             members(m, mi) {
                 line(module_f, "\\", n);
                 string mn = cname(string(mi->ident));
-                string access_type = estring(typeid(interface), mi->access_type ? mi->access_type : interface_public);
+                u8 header_access = mi->access_type ? mi->access_type : interface_public;
+                if (header_access == interface_mutable) header_access = interface_public;
+                string access_type = estring(typeid(interface), header_access);
 
                 if (is_func((Au)mi)) {
                     enode f = u(enode, mi);
@@ -6240,6 +6322,8 @@ static void build_record_implement(silver a, etype mrec) {
 
     push_scope(a, (Au)mrec);
     etype_implement(mrec, false);
+    if (!mrec->type_id && mrec->au->is_class)
+        implement_type_id(mrec);
     create_type_members(a, a->au);
 
     // if no init, create one (but don't build it yet)
@@ -6877,7 +6961,7 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
 
     } else if (mem) {
         if (is_func((Au)mem) || is_func_ptr((Au)mem) || is_lambda_call) {
-            bool is_poly = read_if(a, "*") != null;
+            bool is_poly = !is_cmode(a) && read_if(a, "*") != null;
             if (is_poly)
                 validate(is_func((Au)mem) && !is_func_ptr((Au)mem) && !is_lambda_call,
                     "poly dispatch (*) only applies to method calls");
@@ -6933,6 +7017,32 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
 
     validate(isa(mem) == typeid(enode) || !mem->au->is_const,
         "mem %s is a constant", mem->au->ident);
+    // public members are read-only outside init/construct (use mutable for writable)
+    // structs are value types — always writable
+    if (mem->au->access_type == interface_public && mem->au->context && !mem->au->context->is_struct &&
+        !(mem->au->context->is_system || (mem->au->context->module && mem->au->context->module == typeid(Au)->module))) {
+        efunc fn   = context_func(a);
+        bool in_lifecycle = fn && (fn->au->member_type == AU_MEMBER_CONSTRUCT ||
+            (fn->au->ident && (strcmp(fn->au->ident, "init") == 0 ||
+                               strcmp(fn->au->ident, "dealloc") == 0 ||
+                               strcmp(fn->au->ident, "copy") == 0)));
+        if (!in_lifecycle) {
+            Au_t owner = mem->au->context;
+            Au_t ctx   = context_record(a) ? context_record(a)->au : null;
+            validate(ctx && (ctx == owner || inherits(ctx, owner)),
+                "cannot assign to public member '%s' outside of %s (use mutable)",
+                mem->au->ident, owner->ident);
+        }
+    }
+    // context members are set at construction only
+    if (mem->au->access_type == interface_context && mem->au->context) {
+        Au_t owner = mem->au->context;
+        efunc fn   = context_func(a);
+        bool in_init = fn && (fn->au->member_type == AU_MEMBER_CONSTRUCT ||
+            (fn->au->ident && strcmp(fn->au->ident, "init") == 0));
+        validate(in_init, "cannot assign to context member '%s' outside of init/construct",
+            mem->au->ident);
+    }
     if (seq == 11 || seq == 12) {
         mem = mem;
     }
@@ -7454,6 +7564,11 @@ etype silver_read_def(silver a, interface access) {
     if (is_class || is_struct) {
         validate(is_module(mtop),
             "expected record definition at module level");
+        etype existing = elookup(n->chars);
+        validate(!existing || !is_type((Au)existing),
+            "type '%o' already defined%s%s", n,
+            existing && existing->au->module ? " (from " : "",
+            existing && existing->au->module ? existing->au->module->ident : "");
 
         mdl = record(a, (etype)a, is_class, n,
             is_struct ? AU_TRAIT_STRUCT : AU_TRAIT_CLASS);
@@ -7475,17 +7590,11 @@ etype silver_read_def(silver a, interface access) {
             while (!read_if(a, ">")) {
                 if (!first)
                     verify(read_if(a, ","), "expected ',' seperator between models");
-                string n = read_alpha(a);
-                verify(n, "expected identifier");
-                verify(read_if(a, ":"), "expected : after %o", n);
                 etype type = read_etype(a, null);
-                verify(type, "expected model after :");
-                bool  f   = true;
-                shape s   = null;
-                Au_t  m   = def_member(top, n->chars, type->au, AU_MEMBER_VAR, AU_TRAIT_META);
-                etype_register((aether)a, (Au)m, (Au)hold(emeta(mod, (aether)a, au, m, meta_index, index)), false);
-                micro_push(&mdl->au->args, (Au)m);
+                verify(type, "expected type in < >");
+                micro_push(&mdl->au->args, (Au)type->au);
                 first = false;
+                index++;
             }
         }
 
@@ -7506,12 +7615,13 @@ etype silver_read_def(silver a, interface access) {
         }
         mdl->au->access_type = access;
         mdl->au->src = value_type->au;
-        mdl->body = null;
-        mdl->user_built = true;
 
         // create the single 'value' member
         Au_t val_mem = def_member(mdl->au, "value", value_type->au, AU_MEMBER_VAR, 0);
         val_mem->access_type = interface_public;
+
+        // read body (cast, funcs, etc.)
+        mdl->body = (tokens)read_body(a);
 
     } else if (is_enum) {
         etype store = null;

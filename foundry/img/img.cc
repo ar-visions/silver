@@ -8,14 +8,14 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
-// read images without conversion; for .png and .exr
+// read Images without conversion; for .png and .exr
 // this facilitates grayscale maps, environment color, 
 // color maps, grayscale components for various PBR material attributes
 
 extern "C" {
 
 // save gray or colored png based on channel count; if we want conversion we may just use methods to alter an object
-i32 image_exr(image a, path uri) {
+i32 Image_exr(Image a, path uri) {
     string e = path_ext(uri);
     if (string_eq(e, "exr")) {
         using namespace OPENEXR_IMF_NAMESPACE;
@@ -56,7 +56,7 @@ shape shape_from(i64, i64*);
 Au alloc2(Au_t type, Au_t scalar, shape s);
 Au alloc(Au_t type, num count, shape shape_data, Au_t* meta);
 
-none image_init(image a) {
+none Image_init(Image a) {
     Au info = header((Au)a);
     Pixel f = a->format;
 
@@ -210,7 +210,7 @@ void opencv_gaussian(uint8_t* src, uint8_t* dst, int f32, int w, int h, int chan
 
 }
 
-// we want to reduce the image to w / (amount / 3)
+// we want to reduce the Image to w / (amount / 3)
 // then we blur with a 3x kernel
 // then resize?
 

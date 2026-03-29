@@ -46,8 +46,8 @@ class attrib
     count   : u32
     format  : Au_t
 
-class composer
-    w:display
+class Composer
+    mutable w:Display
     func key_event    [ event ] return
     func wheel_event  [ event ] return
     func press_event  [ event ] return
@@ -55,20 +55,20 @@ class composer
     func text_event   [ event ] return
     func move_event   [ event ] return
 
-class target
+class Target
     expect  vk                             : vk_context
-    expect  w                              : display
+    expect  w                              : Display
     public  id                             : i32
     public  wscale                         : f32
     public  width                          : i32
     public  height                         : i32
     public  reduce                         : bool
-    public  models                         : array model
+    public  models                         : array Model
     public  clear_color                    : vec4f
-    public  reduction                      : texture
-    public  color                          : texture
-    public  depth                          : texture
-    intern  reduce_model                   : model
+    public  reduction                      : Texture
+    public  color                          : Texture
+    public  depth                          : Texture
+    intern  reduce_model                   : Model
     intern  vk_command_buffer              : VkCommandBuffer
     intern  vk_swap_image                  : VkImage
     intern  vk_fence                       : VkFence
@@ -86,7 +86,7 @@ class target
         height = (wscale > 0) ? w.height * wscale : height
 
         if [ !width || !height ]
-            fault "width / height or wscale not set on render target"
+            fault "width / height or wscale not set on render Target"
             exit[ 0 ]
         
         if [ width == last_width && height == last_height ]
@@ -101,13 +101,13 @@ class target
             if [ reduce ]
                 reduction.resize[ width / 4, height / 4 ]
         el
-            color = texture [ vk: vk, w: w, width: width, height: height,
+            color = Texture [ vk: vk, w: w, width: width, height: height,
                 vk_format: w.surface_format.format, swap: !backbuffer,
                 surface: Surface.color, vk_image: vk_swap_image ]
-            depth = texture [ vk: vk, w: w, width: width, height: height,
+            depth = Texture [ vk: vk, w: w, width: width, height: height,
                 vk_format: VK_FORMAT_D32_SFLOAT, swap: !backbuffer ]
             if [ reduce ]
-                reduction = texture [ vk: vk, w: w, width: width / 4, height: height / 4,
+                reduction = Texture [ vk: vk, w: w, width: width / 4, height: height / 4,
                     vk_format: w.surface_format.format, swap: !backbuffer ]
         
         if [ !backbuffer ]
@@ -140,6 +140,7 @@ class target
             el [ i == 1 && reduction ]
                 reduction.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 sync_fence[]
+            
             vkResetFences[ vk.device, 1, ref vk_fence ]
             frame: VkCommandBuffer [ vk_command_buffer ]
             vkResetCommandBuffer[ frame, 0 ]
@@ -147,6 +148,7 @@ class target
                 sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                 flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
             ] ]
+
             fw: i32 [ (i == 0) ? width : width / 4 ]
             fh: i32 [ (i == 0) ? height : height / 4 ]
             vkCmdSetViewport[ frame, 0, 1, VkViewport [
@@ -157,6 +159,7 @@ class target
                 offset: VkOffset2D [ 0, 0 ],
                 extent: VkExtent2D [ fw, fh ]
             ] ]
+
             clear_values: local VkClearValue [2]
             clear_values[0].color.float32[0] = clear_color.x
             clear_values[0].color.float32[1] = clear_color.y
@@ -164,6 +167,7 @@ class target
             clear_values[0].color.float32[3] = clear_color.w
             clear_values[1].depthStencil.depth   = 1.0
             clear_values[1].depthStencil.stencil = 0
+
             vkCmdBeginRenderPass[ frame, VkRenderPassBeginInfo [
                 sType:           VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
                 renderPass:      vk_render_pass[i],
@@ -175,9 +179,10 @@ class target
                 clearValueCount: 2,
                 pClearValues:    clear_values
             ], VK_SUBPASS_CONTENTS_INLINE ]
+
             if [ i == 0 ]
-                for [ m: model ] in models
-                    for [ p: pipeline ] in m.pipelines
+                for [ m: Model ] in models
+                    for [ p: Pipeline ] in m.pipelines
                         # must be done in trinity
                         #if [ m.transform_count && (p.s inherits PBR) ]
                         #    s: PBR [ p.s ]
@@ -186,8 +191,9 @@ class target
                         #        s.model = m.transforms[j].mul[s.model]
                         p.draw[ frame ]
             el
-                for [ p: pipeline ] in reduce_model.pipelines
+                for [ p: Pipeline ] in reduce_model.pipelines
                     p.draw[ frame ]
+            
             vkCmdEndRenderPass[ frame ]
             vkEndCommandBuffer[ frame ]
             s_flags: VkPipelineStageFlags [ VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
@@ -211,10 +217,10 @@ class target
         for [ i: 0, i < 2, i += 1 ]
             vkDestroyFramebuffer[ vk.device, vk_framebuffer[i], null ]
             vkDestroyRenderPass[ vk.device, vk_render_pass[i], null ]
+        
         vkDestroyFence[ vk.device, vk_fence, null ]
         vkDestroySemaphore[ vk.device, vk_image_available_semaphore, null ]
         vkDestroySemaphore[ vk.device, vk_render_finished_semaphore, null ]
-
 
 class Layout
     static defaults : new Layout [7] # layout defaults stored as static array
@@ -225,23 +231,47 @@ class Layout
     static func find [ l: VkImageLayout ] -> Layout
         static defaults: new Layout [7]
         static initialized: bool
+
         if [ !initialized ]
             initialized = true
-            defaults[0] = Layout [ layout: VK_IMAGE_LAYOUT_UNDEFINED,                access: 0,                                                                stage: VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT ]
-            defaults[1] = Layout [ layout: VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,     access: VK_ACCESS_TRANSFER_WRITE_BIT,                                     stage: VK_PIPELINE_STAGE_TRANSFER_BIT ]
-            defaults[2] = Layout [ layout: VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,     access: VK_ACCESS_TRANSFER_READ_BIT,                                      stage: VK_PIPELINE_STAGE_TRANSFER_BIT ]
-            defaults[3] = Layout [ layout: VK_IMAGE_LAYOUT_GENERAL,                  access: VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,            stage: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT ]
-            defaults[4] = Layout [ layout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, access: VK_ACCESS_SHADER_READ_BIT,                                        stage: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT ]
-            defaults[5] = Layout [ layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, access: VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,                              stage: VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
-            defaults[6] = Layout [ layout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,          access: VK_ACCESS_MEMORY_READ_BIT,                                        stage: VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT ]
+            defaults[0] = Layout [
+                layout: VK_IMAGE_LAYOUT_UNDEFINED,
+                access: 0,
+                stage: VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT ]
+            defaults[1] = Layout [
+                layout: VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                access: VK_ACCESS_TRANSFER_WRITE_BIT,
+                stage: VK_PIPELINE_STAGE_TRANSFER_BIT ]
+            defaults[2] = Layout [
+                layout: VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                access: VK_ACCESS_TRANSFER_READ_BIT,
+                stage: VK_PIPELINE_STAGE_TRANSFER_BIT ]
+            defaults[3] = Layout [
+                layout: VK_IMAGE_LAYOUT_GENERAL,
+                access: VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                stage: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT ]
+            defaults[4] = Layout [
+                layout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                access: VK_ACCESS_SHADER_READ_BIT,
+                stage: VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT ]
+            defaults[5] = Layout [
+                layout: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                access: VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                stage: VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
+            defaults[6] = Layout [
+                layout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                access: VK_ACCESS_MEMORY_READ_BIT,
+                stage: VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT ]
+        
         for [ i: 0, i < 7, i += 1 ]
             if [ defaults[i].layout == l ]
                 return ref defaults[i]
+        
         return null
 
-    # transition image from this layout to target layout
+    # transition image from this layout to Target layout
     intern func transition [ vk: vk_context, img: VkImage, to: Layout, r: image_range ] 
-        cmd: command [ vk: vk ]
+        cmd: Command [ vk: vk ]
         cmd.begin
         barrier: VkImageMemoryBarrier [
             sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -260,7 +290,7 @@ class Layout
         ]
         barrier.srcAccessMask = access
         barrier.dstAccessMask = to.access
-        vkCmdPipelineBarrier[ cmd.cmd, stage, to.stage, 0, 0, VK_NULL_HANDLE, 0, VK_NULL_HANDLE, 1, ref barrier ]
+        vkCmdPipelineBarrier[ cmd.cmd, stage, to.stage, 0, 0, null, 0, null, 1, ref barrier ]
         cmd.submit
 
 
@@ -280,14 +310,14 @@ class vk_context
     intern  _vkCreateDebugUtilsMessengerEXT : PFN_vkCreateDebugUtilsMessengerEXT
 
     intern gltf_quad: path [ 'models/uv-quad2.gltf' ]
-    intern quad_m:    Model
+    intern quad_m:    GltfModel
 
     construct [ u: Au ]
         get_required_extensions[ a ]
         enable_validation: bool false
         ifdef [ debug ]
             enable_validation = true
-        validation_layer: symbol [ (enable_validation) ? "VK_LAYER_KHRONOS_validation" : VK_NULL_HANDLE ]
+        validation_layer: symbol [ (enable_validation) ? "VK_LAYER_KHRONOS_validation" : null ]
         instance: VkInstance
         app_info: VkApplicationInfo [
             sType:              VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -305,7 +335,7 @@ class vk_context
             ppEnabledExtensionNames: instance_exts.origin,
             enabledLayerCount:       u32[ enable_validation ],
             ppEnabledLayerNames:     ref validation_layer
-        ], VK_NULL_HANDLE, ref instance ]
+        ], null, ref instance ]
 
         expect result == VK_SUCCESS, 'failed to create Vulkan instance, error: {i32[ result ]}'
 
@@ -313,7 +343,7 @@ class vk_context
             _vkCreateDebugUtilsMessengerEXT = vkGetInstanceProcAddr[ instance, "vkCreateDebugUtilsMessengerEXT" ]
             expect _vkCreateDebugUtilsMessengerEXT, "cannot find vk debug function"
 
-        quad_m = gltf_quad.load[ typeid[ Model ], null ]
+        quad_m = gltf_quad.load[ typeid[ GltfModel ], null ]
 
     func quad_shader [ ] -> UVQuad
         q: UVQuad [ vk: a, name: 'uv-quad' ]
@@ -338,13 +368,13 @@ class vk_context
     func dealloc [ ]
         vmaDestroyAllocator[ allocator ]
         vkDeviceWaitIdle[ device ]
-        vkDestroyDevice[ device, VK_NULL_HANDLE ]
-        vkDestroyInstance[ instance, VK_NULL_HANDLE ]
+        vkDestroyDevice[ device, null ]
+        vkDestroyInstance[ instance, null ]
 
     func set_queue_index [ surface: handle ] 
         queue_family_count: u32 0
         vkGetPhysicalDeviceQueueFamilyProperties[
-            physical_device, ref queue_family_count, VK_NULL_HANDLE ]
+            physical_device, ref queue_family_count, null ]
         expect queue_family_count > 0, "failed to find queue families"
         queue_families: new VkQueueFamilyProperties [ queue_family_count ]
         vkGetPhysicalDeviceQueueFamilyProperties[ physical_device, ref queue_family_count, queue_families ]
@@ -380,14 +410,14 @@ class vk_context
             vk: handle[ a ]
             if [ _vkCreateDebugUtilsMessengerEXT ]
                 result2: _vkCreateDebugUtilsMessengerEXT[ instance, # at base...
-                 VkDebugUtilsMessengerCreateInfoEXT [ sType: VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,messageSeverity: VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,messageType:     VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT     |VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT  |VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,pfnUserCallback: ref trinity_log,pUserData:       vk], VK_NULL_HANDLE, ref debug ]
+                 VkDebugUtilsMessengerCreateInfoEXT [ sType: VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,messageSeverity: VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,messageType:     VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT     |VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT  |VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,pfnUserCallback: ref trinity_log,pUserData:       vk], null, ref debug ]
                 expect result2 == VK_SUCCESS, "debug messenger" # at base... one above has 1 extra space, and the error shows... i am not sure where to look
             pool_info: VkCommandPoolCreateInfo [
                 sType:            VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                 queueFamilyIndex: queue_family_index,
                 flags:            VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
             ]
-            result: vkCreateCommandPool[ device, pool_info, VK_NULL_HANDLE, ref command_pool ]
+            result: vkCreateCommandPool[ device, pool_info, null, ref command_pool ]
             expect result == VK_SUCCESS, "failed to create command pool"
 
     intern func create_mipmaps [ vk_image: VkImage, w: i32, h: i32, mips: i32, layers: i32 ] 
@@ -405,7 +435,7 @@ class vk_context
                         VK_IMAGE_LAYOUT_UNDEFINED,
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                         i, 1, f, 1, false ]
-                    cmd: command [ vk: a ]
+                    cmd: Command [ vk: a ]
                     cmd.begin
                     vkCmdBlitImage[
                         cmd.cmd, vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -448,14 +478,14 @@ class vk_context
         src.transition[ a, img, dst, r ]
 
 
-intern func image_release_buffer [ a: image ] -> object
+intern func image_release_buffer [ a: Image ] -> object
     test2: handle[ a.res2 ]
     b: buffer[ handle[ a.res2 ] ]
     b2: buffer[ handle[ a.res2 ] ]
     vk: vk_context [ b.vk ]
     vmaUnmapMemory[ vk.allocator, b.vma_alloc ]
     vmaDestroyBuffer[ vk.allocator, b.vk_buffer, b.vma_alloc ]
-    return VK_NULL_HANDLE
+    return null
 
 # ---- format conversion ----
 intern func vk_format_fn [ f: Pixel, linear: bool ] -> VkFormat
@@ -502,7 +532,7 @@ class gpu
     public vk            : vk_context
     expect name          : cstr
     public sampler       : Au
-    intern tx            : texture
+    intern tx            : Texture
     public vertex_data   : ref i8
     public index_data    : ref i8
     public members       : ref vertex_member_t
@@ -523,7 +553,7 @@ class gpu
         return (index_size == 1) ? VK_INDEX_TYPE_UINT8_KHR :
                (index_size == 2) ? VK_INDEX_TYPE_UINT16    : VK_INDEX_TYPE_UINT32
         
-    func sync [ w: display ] 
+    func sync [ w: Display ] 
         # vbo/ibo maintained on init only
         if [ vertex_size && !vertex ]
             comp: compute
@@ -537,10 +567,10 @@ class gpu
                     m_host_visible: true, m_host_coherent: true,
                     data: index_data ]
         if [ sampler && !tx ]
-            img:  sampler inherits image
-            t_tx: sampler inherits texture
-            re:   sampler inherits target
-            expect !re, "target given to samplers"
+            img:  sampler inherits Image
+            t_tx: sampler inherits Texture
+            re:   sampler inherits Target
+            expect !re, "Target given to samplers"
             if [ t_tx ]
                 tx = t_tx
             el [ img && img.user ]
@@ -549,7 +579,7 @@ class gpu
                 tx = environment[ vk, img, vec3f [ 0.0, 1.0, 0.0 ], radians[ 90.0 ] ]
             el
                 # this should handle primitive refs
-                tx = texture [ vk: vk, sampler: sampler,
+                tx = Texture [ vk: vk, sampler: sampler,
                     surface: (img) ? img.surface : Surface.color ]
 
     func init [ ]
@@ -599,11 +629,10 @@ class uniforms
             u_index += u_size
 
 
-
-class pipeline
+class Pipeline
     expect vk               : vk_context
-    public w                : display
-    expect r                : target
+    public w                : Display
+    expect r                : Target
     expect s                : shader
     expect name             : string
     public render_id        : i32
@@ -776,7 +805,7 @@ class pipeline
         vkUpdateDescriptorSets[ vk.device,
             uniform_count + sampler_binds, descriptor_writes, 0, null ]
 
-    public   func reassemble [ ] 
+    public func reassemble [ ] 
         expect vbo, "no vbo or memory provided to form a compute or graphical pipeline"
         pipeline_layout_info: VkPipelineLayoutCreateInfo [
             sType:                  VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -918,14 +947,14 @@ class pipeline
                 layout:              layout,
                 renderPass:          r.vk_render_pass[render_id],
                 subpass:             0,
-                basePipelineHandle:  VK_NULL_HANDLE
+                basePipelineHandle:  null
             ]
             puts 'creating pipeline for {name}'
             result = vkCreateGraphicsPipelines[
-                vk.device, VK_NULL_HANDLE, 1, pipeline_info, null, ref vk_render ]
+                vk.device, null, 1, pipeline_info, null, ref vk_render ]
             expect result == VK_SUCCESS, "pipeline creation fail"
             
-        el [ s && s.vk_comp != VK_NULL_HANDLE ]
+        el [ s && s.vk_comp != null ]
             comp_info: VkComputePipelineCreateInfo [
                 sType:  VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                 layout: layout,
@@ -937,7 +966,7 @@ class pipeline
                 ]
             ]
             result = vkCreateComputePipelines[
-                vk.device, VK_NULL_HANDLE, 1, comp_info, null, ref vk_compute ]
+                vk.device, null, 1, comp_info, null, ref vk_compute ]
             expect result == VK_SUCCESS, "failed to create compute pipeline"
 
     func init [ ]
@@ -981,18 +1010,18 @@ func pbr_defaults [] -> pbrMetallicRoughness
     return pbr
 
 
-func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, p: pipeline ] -> array gpu
+func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, p: Pipeline ] -> array gpu
     res: gpu
     result: array gpu [ alloc: 32 ]
 
-    for [ img: image, name: string ] in p.samplers
+    for [ img: Image, name: string ] in p.samplers
         ia: Au.evalue[ surface_enum_type, name ]
-        tx: texture [ img inherits texture ]
-        re: target  [ img inherits target ]
+        tx: Texture [ img inherits Texture ]
+        re: Target  [ img inherits Target ]
         if [ re ]
             tx = re.color
         if [ ia == surface_value ]
-            expect tx || (img inherits image), "expected texture or image"
+            expect tx || (img inherits Image), "expected Texture or Image"
             res = gpu [ vk: p.vk, name: Au.estring[ surface_enum_type, surface_value ],
                 sampler: (tx) ? tx.hold[] : img.hold[] ]
             result.push[ res ]
@@ -1042,35 +1071,34 @@ class gltf_node
     public id    : Node
     public parts : array gltf_part [] # container-size on members
 
-
-class model
+class Model
     public vk               : vk_context
-    public w                : display
-    public r                : target
+    public w                : Display
+    public r                : Target
     intern transforms       : ref mat4f
     intern transform_count  : i32
-    public id               : Model
+    public id               : GltfModel
     public nodes            : array gltf_node
     public s                : shader
     public samplers         : map Au[string] [ ]
-    intern pipelines        : array pipeline
+    public pipelines        : array Pipeline
 
 
     public func rebind_model [ ] 
         if [ pipelines ]
-            for [ p: pipeline ] in pipelines
+            for [ p: Pipeline ] in pipelines
                 p.rebind[]
 
-    public func finish [ r_target: target, render_id: i32 ] 
+    public func finish [ r_target: Target, render_id: i32 ] 
         r = r_target
-        pipelines = array pipeline [ alloc: 16 ]
+        pipelines = array Pipeline [ alloc: 16 ]
         is_clear: !r.models || r.models.count == 0
         
         if [ !s && !is_clear ]
             s = vk.quad_shader[ ]
         
         if [ !id && !is_clear ]
-            # default quad if no model
+            # default quad if no Model
             id = vk.quad_m
         
         if [ is_clear ]
@@ -1111,7 +1139,7 @@ struct keyboard_state
 # forward declarations need resolver support
 # process same way, different gen method (make_class -> make_decl)
 class event
-    public  target           : Au
+    public  Target           : Au
     public  mouse            : mouse_state
     public  key              : keyboard_state
     public  no_default       : bool
@@ -1131,7 +1159,7 @@ class event
         return true
 
     public  func clear [ ] 
-        target         = null
+        Target         = null
         key            = []
         no_default     = false
         no_propagation = false
@@ -1155,7 +1183,7 @@ intern func handle_glfw_framebuffer_size [ glfw_window: ref GLFWwindow, width: i
 
 
 intern func handle_glfw_key [ win: ref GLFWwindow, key: i32, scan_code: i32, action: i32, mods: i32 ] 
-    w: (glfwGetWindowUserPointer[ win ]) to display
+    w: (glfwGetWindowUserPointer[ win ]) to Display
     if [ action == GLFW_PRESS && (key == GLFW_KEY_UP || key == GLFW_KEY_DOWN) ]
         w.debug_value += (key == GLFW_KEY_UP) ? 1.0 : -1.0
     w.ev.clear[]
@@ -1169,7 +1197,7 @@ intern func handle_glfw_key [ win: ref GLFWwindow, key: i32, scan_code: i32, act
 
 
 intern func handle_glfw_scroll [ win: ref GLFWwindow, x: f64, y: f64 ] 
-    w: (glfwGetWindowUserPointer[ win ]) to display
+    w: (glfwGetWindowUserPointer[ win ]) to Display
     w.ev.clear[]
     w.ev.mouse.pos.x         = w.mouse.x
     w.ev.mouse.pos.y         = w.mouse.y
@@ -1178,7 +1206,7 @@ intern func handle_glfw_scroll [ win: ref GLFWwindow, x: f64, y: f64 ]
 
 
 intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods: i32 ] 
-    w: (glfwGetWindowUserPointer[ win ]) to display
+    w: (glfwGetWindowUserPointer[ win ]) to Display
     w.ev.clear[]
     w.ev.mouse.pos.x  = w.mouse.x
     w.ev.mouse.pos.y  = w.mouse.y
@@ -1191,7 +1219,7 @@ intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods:
 
 
 intern func handle_glfw_char [ win: ref GLFWwindow, code_point: u32 ] 
-    w: (glfwGetWindowUserPointer[ win ]) to display
+    w: (glfwGetWindowUserPointer[ win ]) to Display
     expect !w.ev.key.text, "unexpected text state"
     w.ev.clear[]
     w.ev.key.text = i32[ code_point ]
@@ -1199,7 +1227,7 @@ intern func handle_glfw_char [ win: ref GLFWwindow, code_point: u32 ]
 
 
 intern func handle_glfw_cursor [ win: ref GLFWwindow, x: f64, y: f64 ] 
-    w: (glfwGetWindowUserPointer[ win ]) to display
+    w: (glfwGetWindowUserPointer[ win ]) to Display
     w.ev.clear[]
     w.mouse.x = x
     w.mouse.y = y
@@ -1217,11 +1245,11 @@ struct vertex_member_t
 # --- environment cubemap generation ---
 
 struct image_range
-    public base_mip    : i32
-    public levels      : i32
-    public base_layer  : i32
-    public layers      : i32
-    public is_depth    : bool
+    base_mip    : i32
+    levels      : i32
+    base_layer  : i32
+    layers      : i32
+    is_depth    : bool
 
 
 func get_required_extensions [ vk: vk_context ] 
@@ -1238,14 +1266,14 @@ func get_required_extensions [ vk: vk_context ]
     ifdef [ debug ]
         result[count] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME
         count += 1
-    verbose: getenv[ "VERBOSE" ] != VK_NULL_HANDLE
+    verbose: getenv[ "VERBOSE" ] != null
     for [ i: i32 0, i < count, i += 1 ]
         vk.instance_exts.push strdup[ result[i] ]
         if [ verbose ]
             puts "instance extension: {result[i]}"
 
 
-class command
+class Command
     public vk  : vk_context
     intern cmd : VkCommandBuffer
 
@@ -1263,7 +1291,7 @@ class command
             commandBufferCount: 1,
             pCommandBuffers:    ref cmd
         ]
-        vkQueueSubmit[ vk.queue, 1, si, VK_NULL_HANDLE ]
+        vkQueueSubmit[ vk.queue, 1, si, null ]
         vkQueueWaitIdle[ vk.queue ]
 
     func init [ ]
@@ -1294,10 +1322,10 @@ class buffer
     intern vma_alloc        : VmaAllocation
     intern vk_buffer        : VkBuffer
 
-    # the use case of window must be handled by facilitating texture as a delegate of window, with all of the info needed in there
+    # the use case of window must be handled by facilitating Texture as a delegate of window, with all of the info needed in there
     # in those cases trinity will internally manage that (we cannot understand what a window is in here)
-    func transfer [ tx: texture ] 
-        expect tx, "expected texture or window (with render pass run prior)"
+    func transfer [ tx: Texture ] 
+        expect tx, "expected Texture or window (with render pass run prior)"
         image:  tx.vk_image
         buf:    vk_buffer
         wi:     u32 [ tx.width ]
@@ -1347,7 +1375,7 @@ class buffer
         vkQueueSubmit [ vk.queue, 1, VkSubmitInfo [
             sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
             commandBufferCount: 1,
-            pCommandBuffers:    ref cmd ], VK_NULL_HANDLE ]
+            pCommandBuffers:    ref cmd ], null ]
         vkQueueWaitIdle [ vk.queue ]
         vkFreeCommandBuffers [ vk.device, vk.command_pool, 1, ref cmd ]
         if [ tx ]
@@ -1401,20 +1429,20 @@ class buffer
             alloc_info.requiredFlags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
         if [ data || m_host_visible ]
             alloc_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
-        result: vmaCreateBuffer[ vk.allocator, buffer_info, alloc_info, ref vk_buffer, ref vma_alloc, VK_NULL_HANDLE ]
+        result: vmaCreateBuffer[ vk.allocator, buffer_info, alloc_info, ref vk_buffer, ref vma_alloc, null ]
         expect result == VK_SUCCESS, "failed to create buffer"
         if [ data ]
-            mapped: mmap
+            mapped: mmap[]
             memcpy[ mapped, data, size ]
-            unmap
+            unmap[]
 
     func dealloc [ ]
         vmaDestroyBuffer[ vk.allocator, vk_buffer, vma_alloc ]
 
 
-class texture
+class Texture
     expect vk : vk_context
-    public w  : display
+    public w  : Display
     public format           : Pixel
     public sampler          : object
     public width            : i32
@@ -1442,14 +1470,14 @@ class texture
         init        [ ]
         hold_members[ ]
 
-    cast -> image
+    cast -> Image
         channels: i32 [ 0 ]
         pixel: pixel_from_format[ vk_format, ref channels ]
         expect pixel != 0, "unsupported format for texture_cast_image"
         b: buffer [ vk: vk, size: width * height * channels,
             u_dst: true, m_host_visible: true, m_host_coherent: true ]
         b.transfer a
-        res: image [
+        res: Image [
             width:    width,
             height:   height,
             format:   pixel,
@@ -1467,9 +1495,9 @@ class texture
 
     func init [ ]
         expect vk, "vk_context not specified"
-        img2 : (sampler) to image
-        img3 : (sampler) to image
-        img :  sampler inherits image
+        img2 : (sampler) to Image
+        img3 : (sampler) to Image
+        img :  sampler inherits Image
         ansio: 4
         sampler_size: i32 [ 0 ]
         fill: u8[256]
@@ -1485,7 +1513,7 @@ class texture
         el
             if [ width > 0 || img ]
                 format       = (img) ? img.format : format
-                sampler_size = (img) ? img.byte_count : 0
+                sampler_size = (img) ? img.byte_count[] : 0
                 ansio        = (img) ? 4 : 0
                 if [ img ]
                     width  = img.width
@@ -1527,12 +1555,12 @@ class texture
                 usage:         usage,
                 sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
                 initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
-            ], alloc_info, ref vk_image, ref vma_alloc, VK_NULL_HANDLE ] == VK_SUCCESS, "Failed to create VkImage"
+            ], alloc_info, ref vk_image, ref vma_alloc, null ] == VK_SUCCESS, "Failed to create VkImage"
 
             if [ sampler_size > 0 ]
                 transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
                 expect !is_depth, "unexpected"
-                cmd: command [ vk: vk ]
+                cmd: Command [ vk: vk ]
                 cmd.begin[]
                 staging: buffer [ vk: vk, size: sampler_size, u_src: true, u_shader: true,
                     m_host_visible: true, m_host_coherent: true,
@@ -1577,7 +1605,7 @@ class texture
                     layerCount:     layer_count
                 ]
             ]
-            res: vkCreateImageView[ vk.device, viewInfo, VK_NULL_HANDLE, ref vk_image_view ]
+            res: vkCreateImageView[ vk.device, viewInfo, null, ref vk_image_view ]
             expect res == VK_SUCCESS, "Failed to create VkImageView"
         if [ !vk_sampler ]
             address_mode: (layer_count >= 6) ?
@@ -1599,31 +1627,31 @@ class texture
                 compareOp:               VK_COMPARE_OP_ALWAYS,
                 mipmapMode:              VK_SAMPLER_MIPMAP_MODE_LINEAR
             ]
-            r: vkCreateSampler[ vk.device, samplerInfo, VK_NULL_HANDLE, ref vk_sampler ]
+            r: vkCreateSampler[ vk.device, samplerInfo, null, ref vk_sampler ]
             expect r == VK_SUCCESS, "Failed to create VkSampler"
 
     func dealloc [ ]
-        vkDestroySampler[ vk.device, vk_sampler, VK_NULL_HANDLE ]
-        vkDestroyImageView[ vk.device, vk_image_view, VK_NULL_HANDLE ]
+        vkDestroySampler[ vk.device, vk_sampler, null ]
+        vkDestroyImageView[ vk.device, vk_image_view, null ]
         vmaDestroyImage[ vk.allocator, vk_image, vma_alloc ]
         vk_layout     = VK_IMAGE_LAYOUT_UNDEFINED
-        vma_alloc     = VK_NULL_HANDLE
-        vk_image      = VK_NULL_HANDLE
-        vk_image_view = VK_NULL_HANDLE
-        vk_sampler    = VK_NULL_HANDLE
+        vma_alloc     = null
+        vk_image      = null
+        vk_image_view = null
+        vk_sampler    = null
 
 
-texture display
+Texture Display
     intern glfw                 : handle
     expect width                : u32
     expect height               : u32
     public vk                   : vk_context
     public mouse                : vec2f
-    public ux                   : composer
-    public element_targets      : map   target [string]
-    public list                 : array target
-    intern swap_renders         : array target
-    intern swap_model           : model
+    public ux                   : Composer
+    public element_targets      : map   Target [string]
+    mutable list                 : array Target
+    intern swap_renders         : array Target
+    intern swap_model           : Model
     intern vk_swap_images       : ref   VkImage
     intern surface              : VkSurfaceKHR
     intern swapchain            : VkSwapchainKHR
@@ -1631,15 +1659,15 @@ texture display
     intern surface_format       : VkSurfaceFormatKHR
     intern present_mode         : VkPresentModeKHR
     intern extent               : VkExtent2D
-    intern swap_render_current  : target
-    intern semaphore_frame      : target
+    intern swap_render_current  : Target
+    intern semaphore_frame      : Target
     intern swap_image_count     : u32
     intern swap_image_current   : u32
     intern ev                   : event
     public on_surface           : hook
     public format               : Pixel
     public title                : string
-    public debug_value          : f32
+    mutable debug_value          : f32
     public current_swap_index   : i32
     public text_event           : subs
     public move_event           : subs
@@ -1650,7 +1678,7 @@ texture display
     public wheel_event          : subs
     intern resized              : bool
     public backbuffer           : bool
-    public last_target          : target
+    mutable last_target         : Target
 
 
     func update_canvas[ ] return
@@ -1662,15 +1690,15 @@ texture display
         extent.width  = w_new
         extent.height = h_new
 
-        for [ r: target, id: string ] in element_targets
+        for [ r: Target, id: string ] in element_targets
             r.update[ ]
             if [ resized && r.models ]
-                for [ m: model ] in r.models
+                for [ m: Model ] in r.models
                     m.rebind_model[ ]
-        for [ r: target ] in list
+        for [ r: Target ] in list
             r.update[ ]
             if [ resized && r.models ]
-                for [ m: model ] in r.models
+                for [ m: Model ] in r.models
                     m.rebind_model[ ]
         resized = true
         if [ !backbuffer ]
@@ -1695,27 +1723,27 @@ texture display
                 compositeAlpha:        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
                 presentMode:           present_mode,
                 clipped:               VK_TRUE,
-                oldSwapchain:          (old_swapchain != VK_NULL_HANDLE) ? old_swapchain : VK_NULL_HANDLE
+                oldSwapchain:          (old_swapchain != null) ? old_swapchain : null
             ], null, ref swapchain ]
             expect result == VK_SUCCESS, "Failed to create swapchain"
-            if [ old_swapchain != VK_NULL_HANDLE ]
+            if [ old_swapchain != null ]
                 vkDestroySwapchainKHR[ vk.device, old_swapchain, null ]
         
         if [ !backbuffer ]
             if [ !swap_model ]
                 top: last_target
                 expect top, "last_target must be set"
-                swap_model = model [ vk: vk, w: a, samplers: [ "color": top ] ]
+                swap_model = Model [ vk: vk, w: a, samplers: [ "color": top ] ]
             vkGetSwapchainImagesKHR[ vk.device, swapchain, ref swap_image_count, null ]
             if [ !vk_swap_images ]
                 vk_swap_images = new VkImage [ swap_image_count ]
             if [ !swap_renders ]
-                swap_renders = array target [ alloc: swap_image_count ]
+                swap_renders = array Target [ alloc: swap_image_count ]
             vkGetSwapchainImagesKHR[ vk.device, swapchain, ref swap_image_count, vk_swap_images ]
             swap_image_current = 0
             for [ i: 0, i < swap_image_count, i += 1 ]
                 #swap_renders.origin[i].drop[]
-                swap_renders[i] = target [
+                swap_renders[i] = Target [
                     vk:vk,   w:a,
                     width:         width,
                     height:        height,
@@ -1726,19 +1754,19 @@ texture display
             semaphore_frame = swap_renders.first_element[]
             swap_render_current = swap_renders.origin[0]
 
-    func final_target [ ] -> target
+    func final_target [ ] -> Target
         return list.last_element[]
 
     func draw [ ] 
-        for [ r: target, id: string ] in element_targets
+        for [ r: Target, id: string ] in element_targets
             r.draw[]
             r.sync_fence[]
-        for [ r: target ] in list
+        for [ r: Target ] in list
             r.draw[]
             r.sync_fence[]
         if [ swap_renders ]
             result: vkAcquireNextImageKHR[ vk.device, swapchain, UINT64_MAX,
-                semaphore_frame.vk_image_available_semaphore, VK_NULL_HANDLE, ref swap_image_current ]
+                semaphore_frame.vk_image_available_semaphore, null, ref swap_image_current ]
             if [ result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ]
                 handle_glfw_framebuffer_size[ glfw, width, height ]
             el
@@ -1764,14 +1792,14 @@ texture display
                     expect result == VK_SUCCESS, "present"
                     swap_render_current.sync_fence[]
 
-    cast -> image
+    cast -> Image
         color_size: (format == Pixel.rgbaf32) ? 16 : 4
         image_size: width * height * color_size
         b: buffer [ vk: vk, size: image_size,
             u_dst: true, m_host_visible: true, m_host_coherent: true ]
         b.transfer[ a ]
         d: b.mmap[]
-        result: image [
+        result: Image [
             width:   width,
             height:  height,
             format:  format,
@@ -1785,7 +1813,7 @@ texture display
         if [ !format ]
             format = Pixel.rgba8
         if [ !list ]
-            list = array target [ alloc: 32 ]
+            list = array Target [ alloc: 32 ]
         if [ !element_targets ]
             element_targets = map Au[string][]
         ev = event[]
@@ -1997,7 +2025,7 @@ class shader
                 pCode:    spirv
             ]
             mod: VkShaderModule
-            vkResult: vkCreateShaderModule[ vk.device, createInfo, VK_NULL_HANDLE, ref mod ]
+            vkResult: vkCreateShaderModule[ vk.device, createInfo, null, ref mod ]
             if [ vkResult != VK_SUCCESS ]
                 puts "failed to create vulkan shader module"
                 free[ spirv ]
@@ -2021,15 +2049,15 @@ class shader
         reload[ ]
 
     func dealloc [ ]
-        vkDestroyShaderModule[ vk.device, vk_vert, VK_NULL_HANDLE ]
-        vkDestroyShaderModule[ vk.device, vk_frag, VK_NULL_HANDLE ]
-        vkDestroyShaderModule[ vk.device, vk_comp, VK_NULL_HANDLE ]
+        vkDestroyShaderModule[ vk.device, vk_vert, null ]
+        vkDestroyShaderModule[ vk.device, vk_frag, null ]
+        vkDestroyShaderModule[ vk.device, vk_comp, null ]
 
 
 shader UVQuad
-    public model : mat4f
-    public view : mat4f
-    public proj : mat4f
+    mutable model : mat4f
+    mutable view  : mat4f
+    mutable proj  : mat4f
     
     public color : attrib [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
     #attrib Surface [ color ] : 1, rgba8
@@ -2043,9 +2071,9 @@ shader UVQuad
 
 
 shader UVReduce
-    public model    : mat4f
-    public view     : mat4f
-    public proj     : mat4f
+    mutable model    : mat4f
+    mutable view     : mat4f
+    mutable proj     : mat4f
 
     public color : attrib [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
 
@@ -2058,7 +2086,7 @@ shader UVReduce
         proj  = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
 
 
-func model_init_pipeline [ m: model, n: Node, prim: Primitive, s: shader ] 
+func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader ] 
     mdl:      m.id
     vk:       m.vk
     r:        m.r
@@ -2124,7 +2152,7 @@ func model_init_pipeline [ m: model, n: Node, prim: Primitive, s: shader ]
                 src0: (data_src) to ref i8
                 memcpy[ dst, src0, mem.size ]
         
-        # i8* i_src = &((i8*)data(ibuffer->data))[iview->byteOffset];
+        # i8* i_src = &((i8*)data(ibuffer->data))[iview->byteOffset]
         view:  ref i8   [ ibuffer.data.data ] # vector.data
         i_src: ref view [ iview.byteOffset  ]
         
@@ -2136,7 +2164,7 @@ func model_init_pipeline [ m: model, n: Node, prim: Primitive, s: shader ]
         mdl_mat = mdl_mat.rotate[ n.rotation ]
         mdl_mat = mdl_mat.translate[ n.translation ]
     
-    pipe: pipeline [ vk: vk, w: m.w, name: (n) ? n.name : null,
+    pipe: Pipeline [ vk: vk, w: m.w, name: (n) ? n.name : null,
         r: m.r, s: s, vbo: vbo, default_model: mdl_mat,
         material: material, samplers: m.samplers ]
     
@@ -2144,39 +2172,39 @@ func model_init_pipeline [ m: model, n: Node, prim: Primitive, s: shader ]
 
 
 shader Env
-    public view : mat4f.identity[]
-    public proj : mat4f.identity[]
-    public roughness_samples : vec2f
+    mutable view : mat4f.identity[]
+    mutable proj : mat4f.identity[]
+    mutable roughness_samples : vec2f
 
     public color: attrib [ type:typeid[ Surface ], id:Surface.color, count:1, format:typeid[ rgbaf ] ]
     #attrib Surface [ color ] : 1, rgbaf
 
 shader Convolve
-    public env : mat4f
-    public view : mat4f
-    public proj : mat4f
-    public roughness_samples : vec2f
+    mutable env : mat4f
+    mutable view : mat4f
+    mutable proj : mat4f
+    mutable roughness_samples : vec2f
     public environment: attrib [ type:typeid[ Surface.environment ], count:1, format:typeid[ rgbaf ] ]
 
 
-func environment [ vk: vk_context, img: image, r_axis: vec3f, rotation: f32 ] -> texture
+func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] -> Texture
     ii:2
     if [ img.user ]
         return img.user
     size: 256
     mip_levels: 8
     cube_count: mip_levels
-    w: display [ vk: vk, format: Pixel.rgbaf32, backbuffer: true, width: size, height: size ]
+    w: Display [ vk: vk, format: Pixel.rgbaf32, backbuffer: true, width: size, height: size ]
     w.resize[ w.extent.width, w.extent.height ]
-    clone2: image [
+    clone2: Image [
         source: img.vdata[], width: img.width, height: img.height,
         format: Pixel.rgbaf32, surface: Surface.color ]
     gltf_path: path 'models/env.gltf'
-    mdl_data:  Model [ gltf_path.load[ typeid[ Model ], null ] ]
+    mdl_data:  GltfModel [ gltf_path.load[ typeid[ GltfModel ], null ] ]
     e:         Env [ vk: vk, name: 'env' ]
-    samplers:  map image[string] [ 'color': clone2 ]
-    m_env:     model [ vk: vk, w: w, id: mdl_data, s: e, samplers: samplers ]
-    r_env:     target [ vk: vk, w: w, width: size, height: size, models: [ m_env ] ]
+    samplers:  map Image[string] [ 'color': clone2 ]
+    m_env:     Model [ vk: vk, w: w, id: mdl_data, s: e, samplers: samplers ]
+    r_env:     Target [ vk: vk, w: w, width: size, height: size, models: [ m_env ] ]
     e.proj = mat4f.perspective[ radians[ 90.0 ], 1.0, 0.1, 10.0 ]
     dirs: local vec3f[6]
     dirs[0] = vec3f [  1,  0,  0 ]
@@ -2212,8 +2240,8 @@ func environment [ vk: vk_context, img: image, r_axis: vec3f, rotation: f32 ] ->
         image_info.arrayLayers = (i == 0) ? 6 : 6 * cube_count
         res: vmaCreateImage[ vk.allocator, image_info, alloc_info, ref vk_image[i], ref vma_alloc[i], null ]
         expect res == VK_SUCCESS, "could not create image with vmaCreateImage"
-    cmd: command [ vk: vk ]
-    w.list = array target [ r_env ]
+    cmd: Command [ vk: vk ]
+    w.list = array Target [ r_env ]
     w.last_target = w.list.last_element[]
 
     for [ f: 0, f < 6, f += 1 ]
@@ -2236,12 +2264,12 @@ func environment [ vk: vk_context, img: image, r_axis: vec3f, rotation: f32 ] ->
         final.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
 
     vk.create_mipmaps vk_image[0], size, size, mip_levels, 6
-    cube: texture [ vk: vk, vk_image: vk_image[0], surface: Surface.environment,
+    cube: Texture [ vk: vk, vk_image: vk_image[0], surface: Surface.environment,
         vk_format: w.surface_format.format, mip_levels: mip_levels, layer_count: 6 ]
     conv_shader: Convolve [ vk: vk, name: 'conv', proj: e.proj ]
-    conv_samplers: map Au[string] [ 'environment': cube ] # texture, or target? -- its going to convert
-    m_conv: model [ vk: vk, w: w, id: mdl_data, s: conv_shader, samplers: conv_samplers ]
-    r_conv: target [ vk: vk, w: w, width: size, height: size, models: [ m_conv ] ]
+    conv_samplers: map Au[string] [ 'environment': cube ] # Texture, or Target? -- its going to convert
+    m_conv: Model [ vk: vk, w: w, id: mdl_data, s: conv_shader, samplers: conv_samplers ]
+    r_conv: Target [ vk: vk, w: w, width: size, height: size, models: [ m_conv ] ]
     v: vec4f [ r_axis.x, r_axis.y, r_axis.z, radians[ 90.0 ] ]
     q: quatf [ ref v ]
     conv_shader.env = mat4f.identity[]
@@ -2303,7 +2331,7 @@ func environment [ vk: vk_context, img: image, r_axis: vec3f, rotation: f32 ] ->
                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 mi, 1, face_id, 1, false
-    convolve: texture [ vk: vk, vk_image: vk_image[1], vma_alloc: vma_alloc[1],
+    convolve: Texture [ vk: vk, vk_image: vk_image[1], vma_alloc: vma_alloc[1],
         surface: Surface.environment, vk_format: w.surface_format.format,
         mip_levels: mip_levels, layer_count: 6 * cube_count  ]
     #cmd.drop[  ]
@@ -2379,45 +2407,39 @@ func placeholder_image [ sampler: object, size: i32, fill: ref u8, sampler_size:
         fault "sampler data required"
 
 app media_app [ abstract ]
-    public  w          : display*
-    public  ux         : composer*
-    public  vk         : vk_context
-    public  app_context: ctx
-    public  ason_path  : path
-    public  ason_render: map Au[string]
-    intern  ason_modified : i64
-    intern  arg        : object
-    public  on_render  : callback
-
-    public func initialize [ win: display* ]
+    mutable w   : Display*
+    mutable ux  : Composer*
+    mutable vk  : vk_context
+    intern  arg : object
+    
+    func initialize [ win: Display* ]
         w = win
         ux.w = win
         win.update_canvas[] # ?
         render*[] # should be called before the targets update, so we have a list of targets
         win.resize[w.width, w.height]
         
-    public func run [ ] -> i32
-        next_second : i64 epoch_millis[] / 1000;
-        frames      : i64 0
+    func run [ ] -> i32
+        next_second : epoch_millis[] / 1000
+        frames      : 0
 
-        while [!glfwWindowShouldClose[w.glfw]]
-            glfwPollEvents[];
-            if [next_second != epoch_millis[] / 1000]
-                next_second  = epoch_millis[] / 1000
-                frames = 0;
-            
+        while [ !glfwWindowShouldClose[ w.glfw ] ]
+            glfwPollEvents[]
+            second : epoch_millis[] / 1000
+            if [next_second != second]
+                next_second  = second
+                frames = 0
             frames += 1
-            render[] // we need to call this prior to app_initialize logic
-            recycle[]
+            render []
 
-        return 0;
+        return 0
 
-    func render[]
+    func render [ ]
         return
     
-    func init[ ] 
+    func init [ ] 
         expect glfwInit[], "glfw init"
-        if [ !glfwVulkanSupported ]
+        if [ !glfwVulkanSupported[] ]
             fault "glfw does not support vulkan"
             glfwTerminate[]
             return
