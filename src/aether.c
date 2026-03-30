@@ -351,7 +351,7 @@ static LLVMValueRef build_arith_op(
     LLVMBuilderRef b, OPType optype,
     LLVMValueRef L, LLVMValueRef R,
     symbol name, bool is_signed
-) {
+) { sequencer
     LLVMTypeKind Lk = LLVMGetTypeKind(LLVMTypeOf(L));
     LLVMTypeKind Rk = LLVMGetTypeKind(LLVMTypeOf(R));
     bool L_ptr = Lk == LLVMPointerTypeKind;
@@ -384,7 +384,11 @@ static LLVMValueRef build_arith_op(
                 idx = LLVMBuildIntCast2(b, L, i64_ty, is_signed, "idx_cast");
             return LLVMBuildGEP2(b, i8_ty, R, &idx, 1, name);
         }
-        verify(false, "unsupported pointer arithmetic operation");
+        if (seq == 9) {
+            int test2 = 2;
+            test2    += 2;
+        }
+        verify(false, "unsupported pointer arithmetic operation: %i", seq);
     }
 
     bool fp = is_fp_value(L) || is_fp_value(R);
@@ -457,7 +461,7 @@ bool is_explicit_ref(enode arg) {
     return arg->is_explicit_ref;
 }
 
-enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
+enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     a->is_const_op = false;
     if (a->no_build)
         return e_noop(a, null);
@@ -558,10 +562,10 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) {
         }
 
         if (!res) {
-            // coerce RHS to match LHS type
-            rR = e_create(a, (etype)canonical(L), (Au)rR);
+            // coerce RHS to match LHS type — but not for pointer arithmetic
+            if (!is_ptr(canonical(L)))
+                rR = e_create(a, (etype)canonical(L), (Au)rR);
 
-            //build_arith_op(B, op_val, L->value, rR->value);
             string op_name = (string)e_str(OPType, op_val);
             res = e_op(a, op_val, op_name, (Au)L, (Au)rR);
         }
@@ -1396,6 +1400,19 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
         }
     }
 
+    // runtime operator dispatch for generic Au operands
+    if (optype >= OPType__add && optype <= OPType__mod) {
+        bool L_is_au = LV && canonical(LV) && canonical(LV)->au == typeid(Au);
+        bool R_is_au = RV && canonical(RV) && canonical(RV)->au == typeid(Au);
+        if (L_is_au || R_is_au) {
+            Au_t f_op = find_member(typeid(Au), "__op", AU_MEMBER_FUNC, 0, false);
+            if (f_op) {
+                enode op_val = e_operand(a, _i32(optype), etypeid(i32));
+                return e_fn_call(a, u(efunc, f_op), a(op_val, LV, RV));
+            }
+        }
+    }
+
     /// LV cannot change its type if it is a emember and we are assigning
     enode Lnode = (enode)L;
     etype rtype = determine_rtype(a, optype, (etype)LV, (etype)RV); // todo: return bool for equal/not_equal/gt/lt/etc, i64 for compare; there are other ones too
@@ -1491,10 +1508,10 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
         if (optype == OPType__or || optype == OPType__and) {
             rtype = etypeid(bool);
         }
-        // load unloaded primitive pointers (e.g. array subscript results)
-        if (!LL->loaded && is_prim(LL->au))
+        // load unloaded values for arithmetic (primitives and pointers)
+        if (!LL->loaded && (is_prim(LL->au) || is_ptr(LL)))
             LL = e_load(a, LL, null);
-        if (!RL->loaded && is_prim(RL->au))
+        if (!RL->loaded && (is_prim(RL->au) || is_ptr(RL)))
             RL = e_load(a, RL, null);
         bool ptr_arith = is_ptr(LL) || is_ptr(RL);
         if (!ptr_arith) {
@@ -1546,8 +1563,11 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
                     case OPType__assign_left:  base_op = OPType__left;        break;
                     default: verify(false, "invalid compound assignment"); base_op = 0;
                 }
+                // load values for compound assign (e.g. ptr += 1)
+                enode LL_val = !LL->loaded ? e_load(a, LL, null) : LL;
+                enode RL_val = !RL->loaded ? e_load(a, RL, null) : RL;
                 RES = a->no_build ? null :
-                    build_arith_op(a, B, base_op, LL->value, RL->value, N, is_sign(rtype));
+                    build_arith_op(a, B, base_op, LL_val->value, RL_val->value, N, is_sign(rtype));
             }
             LLVMBuildStore(B, RES, mL->value);
         } else {
@@ -2541,7 +2561,9 @@ enode constructable(etype fr, etype to) {
                 if (!integral) integral = mem;
                 integral_count++;
             }
-            if (with_arg->src == fr->au)
+            Au_t with_src = with_arg->is_explicit_ref ? with_arg->src : with_arg->src;
+            Au_t fr_src   = fr->au->is_pointer      ? fr->au->src   : fr->au;
+            if (with_arg->src == fr->au || (with_arg->is_explicit_ref && with_src == fr_src))
                 return (enode)u(enode, mem);
         }
         if (ctx == ctx->context) break;
@@ -3496,11 +3518,20 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                 LLVMBuildBitCast(B, boxed->value, lltype(canonical(mdl)), "box_to_au"));
         }
 
-        if (seq == 20605) {
+        if (seq == 1709) {
             seq = seq;
         }
 
         enode fmem  = convertible((etype)input, mdl);
+        // runtime conversion fallback via __convert (e.g. string -> enum)
+        if (!fmem && canonical(input) && canonical(input)->au == typeid(string)) {
+            Au_t f_convert = find_member(typeid(Au), "__convert", AU_MEMBER_FUNC, 0, false);
+            if (f_convert) {
+                enode type_node = e_typeid(a, mdl);
+                enode result = e_fn_call(a, u(efunc, f_convert), a(type_node, input));
+                return e_convert_or_cast(a, canonical(mdl), result);
+            }
+        }
         verify(fmem, "no suitable conversion found for %o -> %o (%i)",
             input, mdl, seq);
         
@@ -4726,7 +4757,8 @@ enode aether_e_primitive_convert(aether a, enode expr, etype rtype) { sequencer
 
 void aether_push_tokens(aether a, tokens t, num cursor) {
     //struct silver_f* table = isa(a);
-    tokens_data state = tokens_data(tokens_list, (array)a->tokens, cursor, a->cursor);
+    tokens_data state = tokens_data(tokens_list, (array)a->tokens, cursor, a->cursor,
+        saved_origin, a->statement_origin);
     push(a->stack, (Au)state);
 
     if (t != a->tokens) {
@@ -4745,11 +4777,13 @@ void aether_pop_tokens(aether a, bool transfer) {
 
     if (!transfer) {
         a->cursor = state->cursor;
+        a->statement_origin = state->saved_origin;
         if (state->tokens_list != a->tokens) {
             drop(a->tokens);
             a->tokens = (tokens)hold(state->tokens_list);
         }
     } else {
+        a->statement_origin = state->saved_origin;
         if (state->tokens_list != a->tokens) {
             a->cursor += state->cursor;
             drop(state->tokens_list);  // we're keeping a->tokens, so release the saved one

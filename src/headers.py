@@ -278,7 +278,12 @@ def generate_methods_header(module, header_file, methods_header):
         f.write(f"#ifndef __cplusplus\n")
         f.write("\n")
 
+        # methods that should not generate macros (polymorphic dispatch handled by compiler)
+        no_macro = {"mix"}
+
         for classname, method, null_safe, arg_types in methods:
+            if method in no_macro:
+                continue
             if len(arg_types) > 1:
                 # Multiple args: I, A1, A2, ...
                 arg_names  = ["I"] + [f"A{i}" for i in range(1, len(arg_types))]
