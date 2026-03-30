@@ -275,7 +275,8 @@ declare_class_3(aether, emodule, etype);
 #define tokens_data_module_ aether
 #define tokens_data_schema(X, Y, ...) \
     M(X, Y, i, prop,     public,  array,           tokens_list) \
-    M(X, Y, i, prop,     public,  num,             cursor)
+    M(X, Y, i, prop,     public,  num,             cursor) \
+    M(X, Y, i, prop,     public,  token,           saved_origin)
 declare_class(tokens_data)
 
 #define enamespace_schema(X, Y, ...) \

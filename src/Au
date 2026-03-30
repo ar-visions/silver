@@ -597,6 +597,7 @@ forward(any)
 
 #define none_module_ Au
 
+#undef mix
 #define Au_schema(AA,BB,...) \
     M(AA,BB, i, prop, Au_public, Au_t,      type) \
     M(AA,BB, i, prop, Au_public, shape,     data_shape) \
@@ -653,6 +654,9 @@ forward(any)
     M(AA,BB, s, method, public, Au_t,   lexical,        array, symbol) \
     M(AA,BB, s, method, public, bool,   check,          bool,  string) \
     M(AA,BB, s, method, public, Au_t,   __typeid,       Au) \
+    M(AA,BB, s, method, public, Au,     __convert,      Au_t, Au) \
+    M(AA,BB, s, method, public, Au,     __op,           i32, Au, Au) \
+    M(AA,BB, i, method, public, Au,     mix,            Au, f64) \
     M(AA,BB, s, method, public, none,   auto_free) \
     M(AA,BB, i, method, public, Au,     initialize) \
     M(AA,BB, s, method, public, none,   module_erase,   Au_t, symbol) \
@@ -889,7 +893,7 @@ declare_enum(OPType)
 
 #define array_module_ Au
 #define array_schema(AA,BB,...) \
-    M(AA,BB, i, method,   public, array,  mix,           array, f32) \
+    M(AA,BB, i, override, method, mix) \
     M(AA,BB, i, method,   public, Au,     first_element) \
     M(AA,BB, i, method,   public, Au,     last_element) \
     M(AA,BB, i, method,   public, Au,     pop) \
@@ -1890,7 +1894,7 @@ declare_struct(quatf)
     M(AA,BB, i, prop,   public, f32,   g) \
     M(AA,BB, i, prop,   public, f32,   b) \
     M(AA,BB, i, prop,   public, f32,   a) \
-    M(AA,BB, i, method, public, rgba,  mix, rgba, f32) \
+    M(AA,BB, i, override, method, mix) \
     M(AA,BB, i, ctr,    public, cstr) \
     M(AA,BB, i, ctr,    public, string)
 declare_class(rgba)

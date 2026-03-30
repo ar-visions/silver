@@ -31,6 +31,8 @@ declare_class(exports)
     M(X, Y, i, prop,     public,  string, source_raw) \
     M(X, Y, i, prop,     public,  path,   src_loc) \
     M(X, Y, i, prop,     intern,  bool,   processed_imports) \
+    M(X, Y, i, prop,     intern,  bool,   has_module_func) \
+    M(X, Y, i, prop,     intern,  bool,   has_module_type) \
     M(X, Y, i, prop,     iobject, array,  implements) \
     M(X, Y, i, prop,     public,  enode,  last_sub_return) \
     M(X, Y, i, prop,     public,  enode,  last_break) \

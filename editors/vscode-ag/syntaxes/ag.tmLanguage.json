@@ -145,7 +145,7 @@
     },
     "operator-keywords": {
       "name": "keyword.operator.word.ag",
-      "match": "\\b(not|inherits|is|and|or|asm|super|Au)\\b"
+      "match": "\\b(not|to|inherits|is|and|or|asm|super|Au)\\b"
     },
     "builtin-functions": {
       "name": "support.function.ag",
