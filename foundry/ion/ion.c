@@ -169,17 +169,6 @@ define_class(rotation,    Au)
 define_class(scaling,     Au)
 define_class(translation, Au)
 
-
-
-
-
-
-
-
-
-
-
-
 region region_with_f32(region reg, f32 f) {
     reg->l = (xcoord) { .x_type = xalign_left,   .offset = f };
     reg->t = (ycoord) { .y_type = yalign_top,    .offset = f };

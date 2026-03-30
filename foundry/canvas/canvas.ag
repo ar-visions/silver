@@ -13,7 +13,6 @@ import <stdio.h>
 import <stdlib.h>
 
 # ---- draw mode enum (matches fragment shader) ----
-
 enum DrawMode
 	solid       : 0
 	linear_grad : 1
@@ -23,6 +22,21 @@ enum DrawMode
 	image       : 5
 	sdf_path    : 6
 
+# ---- path command tags ----
+enum path_cmd
+	move    : 0
+	line    : 1
+	quad    : 2
+	cubic   : 3
+	arc     : 4
+	close   : 5
+
+# ---- gradient types ----
+enum GradientType
+	none    : 0
+	linear  : 1
+	radial  : 2
+	conic   : 3
 
 # ---- GPU shader for UI rendering ----
 # members become uniforms, name maps to shaders/CanvasUI.vert/.frag
@@ -38,17 +52,6 @@ shader CanvasUI
 	mutable grad_c0    : vec4f     # Gradient stop color 0
 	mutable grad_c1    : vec4f     # Gradient stop color 1
 	public  color : attrib [ type:typeid[ Surface ], id: Surface.color, count:1, format:typeid[ rgba8 ] ]
-
-
-# ---- path command tags ----
-
-enum path_cmd
-	move    : 0
-	line    : 1
-	quad    : 2
-	cubic   : 3
-	arc     : 4
-	close   : 5
 
 
 # ---- path point with optional control points ----
@@ -80,176 +83,7 @@ struct affine
 		return mc * px + md * py + ty
 
 
-func affine_identity [] -> affine
-	return affine [ ma: 1.0, mb: 0.0, mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
-
-
-func affine_translate [ t: affine, dx: f32, dy: f32 ] -> affine
-	return affine [
-		ma: t.ma, mb: t.mb, mc: t.mc, md: t.md,
-		tx: t.tx + t.ma * dx + t.mb * dy,
-		ty: t.ty + t.mc * dx + t.md * dy
-	]
-
-
-func affine_scale [ t: affine, s: f32 ] -> affine
-	return affine [
-		ma: t.ma * s, mb: t.mb * s,
-		mc: t.mc * s, md: t.md * s,
-		tx: t.tx, ty: t.ty
-	]
-
-
-func affine_rotate [ t: affine, radians: f32 ] -> affine
-	cs : cos[ radians ]
-	sn : sin[ radians ]
-	return affine [
-		ma: t.ma * cs + t.mb * sn,
-		mb: t.mb * cs - t.ma * sn,
-		mc: t.mc * cs + t.md * sn,
-		md: t.md * cs - t.mc * sn,
-		tx: t.tx, ty: t.ty
-	]
-
-
-func affine_multiply [ p: affine, q: affine ] -> affine
-	return affine [
-		ma: p.ma * q.ma + p.mb * q.mc,
-		mb: p.ma * q.mb + p.mb * q.md,
-		mc: p.mc * q.ma + p.md * q.mc,
-		md: p.mc * q.mb + p.md * q.md,
-		tx: p.ma * q.tx + p.mb * q.ty + p.tx,
-		ty: p.mc * q.tx + p.md * q.ty + p.ty
-	]
-
-
-# ---- color helpers ----
-
-func color_pack [ r: u8, g: u8, b: u8, alpha: u8 ] -> u32
-	return u32 alpha << 24 | u32 b << 16 | u32 g << 8 | u32 r
-
-func color_r [ c: u32 ] -> u8 [ c 		& 0xFF ]
-func color_g [ c: u32 ] -> u8 [ c >> 8  & 0xFF ]
-func color_b [ c: u32 ] -> u8 [ c >> 16 & 0xFF ]
-func color_a [ c: u32 ] -> u8 [ c >> 24 & 0xFF ]
-
-
-# ---- clamp helpers ----
-
-func clampf [ v: f32, lo: f32, hi: f32 ] -> f32
-	if [ v < lo ]
-		return lo
-	if [ v > hi ]
-		return hi
-	return v
-
-func clampi [ v: i32, lo: i32, hi: i32 ] -> i32
-	if [ v < lo ]
-		return lo
-	if [ v > hi ]
-		return hi
-	return v
-
-func mini [ x: i32, y: i32 ] -> i32
-	if [ x < y ]
-		return x
-	return y
-
-func maxi [ x: i32, y: i32 ] -> i32
-	if [ x > y ]
-		return x
-	return y
-
-func minf [ x: f32, y: f32 ] -> f32
-	if [ x < y ]
-		return x
-	return y
-
-func maxf [ x: f32, y: f32 ] -> f32
-	if [ x > y ]
-		return x
-	return y
-
-
-# ---- bezier flattening ----
-
-# flatten quadratic bezier to line segments, appending to edges
-# p0 -> p1 (control) -> p2
-func flatten_quad [ pts: array PathPt, x0: f32, y0: f32, cx: f32, cy: f32, x1: f32, y1: f32, tol: f32 ]
-	# midpoint check for flatness
-	mx : 0.5 * x0 + x1 - cx
-	my : 0.5 * y0 + y1 - cy
-	if [ mx * mx + my * my < tol * tol ]
-		pt : PathPt [ cmd: path_cmd.line, x: x1, y: y1 ]
-		pts.push[ pt ]
-		return
-
-	# subdivide at t=0.5
-	ax : 0.5 * x0 + cx
-	ay : 0.5 * y0 + cy
-	bx : 0.5 * cx + x1
-	by : 0.5 * cy + y1
-	abx : 0.5 * ax + bx
-	aby : 0.5 * ay + by
-
-	flatten_quad [ pts, x0, y0, ax, ay, abx, aby, tol ]
-	flatten_quad [ pts, abx, aby, bx, by, x1, y1, tol ]
-
-
-# flatten cubic bezier to line segments
-# p0 -> c1 -> c2 -> p1
-func flatten_cubic [ pts: array PathPt, x0: f32, y0: f32, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x1: f32, y1: f32, tol: f32 ]
-	# flatness test: max deviation of control points from line p0-p1
-	dx : x1 - x0
-	dy : y1 - y0
-	d2 : abs[ c1x - x0 - dx * 0.333 ] + abs[ c1y - y0 - dy * 0.333 ]
-	d3 : abs[ c2x - x0 - dx * 0.667 ] + abs[ c2y - y0 - dy * 0.667 ]
-
-	if [ d2 + d3 < tol ]
-		pt : PathPt [ cmd: path_cmd.line, x: x1, y: y1 ]
-		pts.push[ pt ]
-		return
-
-	# de casteljau at t=0.5
-	m01x  : 0.5 * x0 + c1x
-	m01y  : 0.5 * y0 + c1y
-	m12x  : 0.5 * c1x + c2x
-	m12y  : 0.5 * c1y + c2y
-	m23x  : 0.5 * c2x + x1
-	m23y  : 0.5 * c2y + y1
-	m012x : 0.5 * m01x + m12x
-	m012y : 0.5 * m01y + m12y
-	m123x : 0.5 * m12x + m23x
-	m123y : 0.5 * m12y + m23y
-	mx    : 0.5 * m012x + m123x
-	my    : 0.5 * m012y + m123y
-
-	flatten_cubic [ pts, x0, y0, m01x, m01y, m012x, m012y, mx, my, tol ]
-	flatten_cubic [ pts, mx, my, m123x, m123y, m23x, m23y, x1, y1, tol ]
-
-
-# flatten arc to line segments
-# center cx,cy  radius r  from angle0 to angle1 (radians)
-func flatten_arc [ pts: array PathPt, cx: f32, cy: f32, r: f32, angle0: f32, angle1: f32 ]
-	sweep : angle1 - angle0
-	if [ sweep < 0.0 ]
-		sweep = sweep + 6.2831853
-	steps : i32 [ ceil[ abs[ sweep ] * r * 0.5 ] ]
-	if [ steps < 4 ]
-		steps = 4
-	if [ steps > 256 ]
-		steps = 256
-	dt : sweep / f32 steps
-	for [ i: i32 1, i <= steps, i += 1 ]
-		t  : angle0 + dt * f32 i
-		px : cx + r * cos[ t ]
-		py : cy + r * sin[ t ]
-		pt : PathPt [ cmd: path_cmd.line, x: px, y: py ]
-		pts.push[ pt ]
-
-
 # ---- path class ----
-
 class CanvasPath
 	public points    : array PathPt
 	public start_x   : f32
@@ -408,49 +242,6 @@ class CanvasPath
 		start_y = 0.0
 		is_closed = false
 
-# flatten all curves in path, return flat line-only path
-func path_flatten [ src: CanvasPath, tol: f32 ] -> array PathPt
-	flat : array PathPt []
-	n    : src.points.count
-	px   : f32 [ 0.0 ]
-	py   : f32 [ 0.0 ]
-
-	for [ i: i32 0, i < n, i += 1 ]
-		pt : PathPt src.points[i]
-		switch [ pt.cmd ]
-		case path_cmd.move
-			fpt : PathPt [ cmd: path_cmd.move, x: pt.x, y: pt.y ]
-			flat.push[ fpt ]
-			px = pt.x
-			py = pt.y
-		case path_cmd.line
-			fpt : PathPt [ cmd: path_cmd.line, x: pt.x, y: pt.y ]
-			flat.push[ fpt ]
-			px = pt.x
-			py = pt.y
-		case path_cmd.quad
-			flatten_quad [ flat, px, py, pt.cx1, pt.cy1, pt.x, pt.y, tol ]
-			px = pt.x
-			py = pt.y
-		case path_cmd.cubic
-			flatten_cubic [ flat, px, py, pt.cx1, pt.cy1, pt.cx2, pt.cy2, pt.x, pt.y, tol ]
-			px = pt.x
-			py = pt.y
-		case path_cmd.close
-			fpt : PathPt [ cmd: path_cmd.close, x: pt.x, y: pt.y ]
-			flat.push[ fpt ]
-			px = pt.x
-			py = pt.y
-	return flat
-
-
-# ---- gradient types ----
-
-enum GradientType
-	none    : 0
-	linear  : 1
-	radial  : 2
-	conic   : 3
 
 # gradient stop: color at a position [0..1]
 struct GradientStop
@@ -543,48 +334,6 @@ class Gradient
 		return sample[ t ]
 
 
-# lerp between two packed RGBA colors
-func color_lerp[ c0: u32, c1: u32, t: f32 ] -> u32
-	inv : f32 [ 1.0 - t ]
-	r : u8 [ u8 f32 color_r[ c0 ] * inv + f32 color_r [ c1 ] * t ]
-	g : u8 [ u8 f32 color_g[ c0 ] * inv + f32 color_g [ c1 ] * t ]
-	b : u8 [ u8 f32 color_b[ c0 ] * inv + f32 color_b [ c1 ] * t ]
-	al: u8 [ u8 f32 color_a[ c0 ] * inv + f32 color_a [ c1 ] * t ]
-	return color_pack[ r, g, b, al ]
-
-
-# constructors for common gradients
-
-func linear_gradient[ x0: f32, y0: f32, x1: f32, y1: f32 ] -> Gradient
-	g : Gradient [
-		kind:GradientType.linear,
-		:x0,
-		:y0,
-		:x1,
-		:y1
-	]
-	return g
-
-func radial_gradient[ cx: f32, cy: f32, inner_r: f32, outer_r: f32 ] -> Gradient
-	g : Gradient [
-		kind: GradientType.radial,
-		x0:cx,
-		y0:cy,
-		x1:inner_r,
-		y1:outer_r
-	]
-	return g
-
-func conic_gradient[ cx: f32, cy: f32, start_angle: f32 ] -> Gradient
-	g : Gradient [
-		kind: GradientType.conic,
-		x0: cx,
-		y0: cy,
-		x1: start_angle
-	]
-	return g
-
-
 # ---- SDF path rendering ----
 # generates signed distance fields from arbitrary paths
 # handles holes via winding number: outer contour CCW, holes CW (or vice versa)
@@ -596,247 +345,7 @@ struct SDFEdge
 	y1 : f32
 
 
-# extract line segments from flattened path (move/line/close only)
-func sdf_extract_edges [ flat: array PathPt ] -> array SDFEdge
-	edges : array SDFEdge []
-	n     : flat.count
-	px    : f32 [ 0.0 ]
-	py    : f32 [ 0.0 ]
-	sx    : f32 [ 0.0 ]
-	sy    : f32 [ 0.0 ]
-	for [ i: i32 0, i < n, i += 1 ]
-		pt : PathPt flat[i]
-		switch [ pt.cmd ]
-		case path_cmd.move
-			# close previous sub-path implicitly if needed
-			if [ i > 0 && (px != sx || py != sy) ]
-				ce : SDFEdge [ x0: px, y0: py, x1: sx, y1: sy ]
-				edges.push[ ce ]
-			sx = pt.x
-			sy = pt.y
-			px = pt.x
-			py = pt.y
-		case path_cmd.line
-			e : SDFEdge [ x0: px, y0: py, x1: pt.x, y1: pt.y ]
-			edges.push[ e ]
-			px = pt.x
-			py = pt.y
-		case path_cmd.close
-			if [ px != sx || py != sy ]
-				e : SDFEdge [ x0: px, y0: py, x1: sx, y1: sy ]
-				edges.push[ e ]
-			px = sx
-			py = sy
-	# close final sub-path if not closed
-	if [ px != sx || py != sy ]
-		ce : SDFEdge [ x0: px, y0: py, x1: sx, y1: sy ]
-		edges.push[ ce ]
-	return edges
-
-
-# distance from point to line segment
-func sdf_seg_dist [ ex0: f32, ey0: f32, ex1: f32, ey1: f32, px: f32, py: f32 ] -> f32
-	dx  : ex1 - ex0
-	dy  : ey1 - ey0
-	len_sq : dx * dx + dy * dy
-	if [ len_sq < 0.00001 ]
-		ddx : px - ex0
-		ddy : py - ey0
-		return sqrt[ ddx * ddx + ddy * ddy ]
-	t   : clampf [ ((px - ex0) * dx + (py - ey0) * dy) / len_sq, 0.0, 1.0 ]
-	cx  : ex0 + t * dx
-	cy  : ey0 + t * dy
-	ddx : px - cx
-	ddy : py - cy
-	return sqrt[ ddx * ddx + ddy * ddy ]
-
-
-# winding number at point (non-zero fill rule)
-# positive winding = inside for CCW contours, holes wind CW and cancel
-func sdf_winding [ edges: array SDFEdge, px: f32, py: f32 ] -> i32
-	n  : edges.count
-	wn : i32 [ 0 ]
-	for [ i: i32 0, i < n, i += 1 ]
-		e : SDFEdge edges[i]
-		if [ e.y0 <= py ]
-			if [ e.y1 > py ]
-				# upward crossing: check if point is left of edge
-				cross : (e.x1 - e.x0) * (py - e.y0) - (px - e.x0) * (e.y1 - e.y0)
-				if [ cross > 0.0 ]
-					wn += 1
-		el
-			if [ e.y1 <= py ]
-				# downward crossing: check if point is right of edge
-				cross : (e.x1 - e.x0) * (py - e.y0) - (px - e.x0) * (e.y1 - e.y0)
-				if [ cross < 0.0 ]
-					wn -= 1
-	return wn
-
-
-# generate signed distance field for a path (grid-accelerated)
-# bx,by,bw,bh = world-space bounding box of the path
-# tw,th = SDF Texture dimensions
-# pad = extra world-space padding around bounds
-# returns f32 array [tw*th], negative = inside, positive = outside
-func sdf_generate [ flat: array PathPt, bx: f32, by: f32, bw: f32, bh: f32, tw: i32, th: i32, pad: f32 ] -> ref f32
-	edges : sdf_extract_edges [ flat ]
-	ne    : edges.count
-	if [ ne == 0 ]
-		return null
-
-	# world bounds with padding
-	wx : f32 [ bx - pad ]
-	wy : f32 [ by - pad ]
-	ww : f32 [ bw + pad * 2.0 ]
-	wh : f32 [ bh + pad * 2.0 ]
-
-	# grid: cells cover the SDF area, each cell holds edge indices
-	# cell size ~ 8 texels worth of world space for good locality
-	cell_tx : i32 [ 8 ]
-	cell_ty : i32 [ 8 ]
-	gw : i32 [ (tw + cell_tx - 1) / cell_tx ]
-	gh : i32 [ (th + cell_ty - 1) / cell_ty ]
-	gc : i32 [ gw * gh ]
-
-	# world size per cell
-	cw : f32 [ ww / f32 gw ]
-	ch : f32 [ wh / f32 gh ]
-
-	# bin edges into grid cells (CSR: count, then fill)
-	grid_counts : new i32 [ gc ]
-	for [ i: i32 0, i < gc, i += 1 ]
-		grid_counts[i] = 0
-	for [ ei: i32 0, ei < ne, ei += 1 ]
-		e   : SDFEdge edges[ei]
-		ex0 : min [ e.x0, e.x1 ]
-		ey0 : min [ e.y0, e.y1 ]
-		ex1 : max [ e.x0, e.x1 ]
-		ey1 : max [ e.y0, e.y1 ]
-		gx0 : clampi [ i32 (ex0 - wx) / cw - 1, 0, gw - 1 ]
-		gy0 : clampi [ i32 (ey0 - wy) / ch - 1, 0, gh - 1 ]
-		gx1 : clampi [ i32 (ex1 - wx) / cw + 1, 0, gw - 1 ]
-		gy1 : clampi [ i32 (ey1 - wy) / ch + 1, 0, gh - 1 ]
-		for [ gy: i32 gy0, gy <= gy1, gy += 1 ]
-			for [ gx: i32 gx0, gx <= gx1, gx += 1 ]
-				grid_counts[gy * gw + gx] += 1
-	grid_offsets : new i32 [ gc + 1 ]
-	grid_offsets[0] = 0
-	for [ i: i32 0, i < gc, i += 1 ]
-		grid_offsets[i + 1] = grid_offsets[i] + grid_counts[i]
-	total_grid : grid_offsets[gc]
-	grid_data : new i32 [ (total_grid > 0) ? total_grid : 1 ]
-	for [ i: i32 0, i < gc, i += 1 ]
-		grid_counts[i] = 0
-	for [ ei: i32 0, ei < ne, ei += 1 ]
-		e   : SDFEdge edges[ei]
-		ex0 : min [ e.x0, e.x1 ]
-		ey0 : min [ e.y0, e.y1 ]
-		ex1 : max [ e.x0, e.x1 ]
-		ey1 : max [ e.y0, e.y1 ]
-		gx0 : clampi [ i32 (ex0 - wx) / cw - 1, 0, gw - 1 ]
-		gy0 : clampi [ i32 (ey0 - wy) / ch - 1, 0, gh - 1 ]
-		gx1 : clampi [ i32 (ex1 - wx) / cw + 1, 0, gw - 1 ]
-		gy1 : clampi [ i32 (ey1 - wy) / ch + 1, 0, gh - 1 ]
-		for [ gy: i32 gy0, gy <= gy1, gy += 1 ]
-			for [ gx: i32 gx0, gx <= gx1, gx += 1 ]
-				ci : gy * gw + gx
-				grid_data[grid_offsets[ci] + grid_counts[ci]] = ei
-				grid_counts[ci] += 1
-
-	# texel to world mapping
-	sx : ww / f32 tw
-	sy : wh / f32 th
-
-	# bin edges by row band (CSR: count, then fill)
-	row_counts : new i32 [ th ]
-	for [ i: i32 0, i < th, i += 1 ]
-		row_counts[i] = 0
-	for [ ei: i32 0, ei < ne, ei += 1 ]
-		e   : SDFEdge edges[ei]
-		ry0 : clampi [ i32 (min[ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
-		ry1 : clampi [ i32 (max[ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
-		for [ r: i32 ry0, r <= ry1, r += 1 ]
-			row_counts[r] += 1
-	# compute offsets
-	row_offsets : new i32 [ th + 1 ]
-	row_offsets[0] = 0
-	for [ i: i32 0, i < th, i += 1 ]
-		row_offsets[i + 1] = row_offsets[i] + row_counts[i]
-	total_row_entries : i32 [ row_offsets[th] ]
-	row_data : new i32 [ (total_row_entries > 0) ? total_row_entries : 1 ]
-	# reset counts for fill pass
-	for [ i: i32 0, i < th, i += 1 ]
-		row_counts[i] = 0
-	for [ ei: i32 0, ei < ne, ei += 1 ]
-		e   : SDFEdge edges[ei]
-		ry0 : clampi [ i32 (min[ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
-		ry1 : clampi [ i32 (max[ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
-		for [ r: i32 ry0, r <= ry1, r += 1 ]
-			row_data[row_offsets[r] + row_counts[r]] = ei
-			row_counts[r] += 1
-
-	sz  : i32 [ tw * th ]
-	sdf : new f32 [ sz ]
-	spread : f32 [ 8.0 ]
-
-	for [ y: i32 0, y < th, y += 1 ]
-		py   : wy + (f32 y + 0.5) * sy
-		grow : i32 [ clamp [ y / cell_ty, 0, gh - 1 ] ]
-		re_off : row_offsets[y]
-		nre    : row_counts[y]
-
-		for [ x: i32 0, x < tw, x += 1 ]
-			px   : wx + (f32 x + 0.5) * sx
-			gcol : i32 [ clampi [ x / cell_tx, 0, gw - 1 ] ]
-			cell_idx : grow * gw + gcol
-			cell_off : grid_offsets[cell_idx]
-			nc       : grid_counts[cell_idx]
-
-			# min distance from cell's edge list
-			md : f32 [ 999999.0 ]
-			for [ ci: i32 0, ci < nc, ci += 1 ]
-				e : SDFEdge edges[grid_data[cell_off + ci]]
-				d : sdf_seg_dist [ e.x0, e.y0, e.x1, e.y1, px, py ]
-				if [ d < md ]
-					md = d
-
-			# winding from row-binned edges only
-			wn : i32 [ 0 ]
-			for [ ri: i32 0, ri < nre, ri += 1 ]
-				e : SDFEdge edges[row_data[re_off + ri]]
-				if [ e.y0 <= py ]
-					if [ e.y1 > py ]
-						cross : (e.x1 - e.x0) * (py - e.y0) - (px - e.x0) * (e.y1 - e.y0)
-						if [ cross > 0.0 ]
-							wn += 1
-				el
-					if [ e.y1 <= py ]
-						cross : (e.x1 - e.x0) * (py - e.y0) - (px - e.x0) * (e.y1 - e.y0)
-						if [ cross < 0.0 ]
-							wn -= 1
-
-			# clamp distance for texels far from edges
-			if [ md > spread ]
-				md = spread
-			if [ wn != 0 ]
-				sdf[y * tw + x] = -md
-			el
-				sdf[y * tw + x] = md
-	return sdf
-
-
-# convert f32 SDF to R8 Texture (maps [-spread..+spread] to [0..255])
-func sdf_to_r8 [ sdf: ref f32, count: i32, spread: f32 ] -> ref u8
-	tex : new u8 [ count ]
-	inv : f32 [ 0.5 / spread ]
-	for [ i: i32 0, i < count, i += 1 ]
-		v : f32 [ clampf [ 0.5 - sdf[i] * inv, 0.0, 1.0 ] ]
-		tex[i] = u8 [ v * 255.0 ]
-	return tex
-
-
 # ---- Canvas state entry ----
-
 struct CanvasState
 	fill_color      : u32
 	stroke_color    : u32
@@ -1325,97 +834,6 @@ Target Canvas
 		draw[]
 
 
-##
-
-Image Canvas
-    expect vk    : vk_context
-    public tx    : Texture
-    public state : array draw_state
-    interface func save            [ ] 
-    interface func restore         [ ] 
-    interface func move_to         [ f32, f32 ]
-    interface func line_to         [ f32, f32 ]
-    interface func arc_to          [ f32, f32, f32, f32, f32 ]
-    interface func arc             [ f32, f32, f32, f32, f32 ]
-    interface func rect_to         [ f32, f32, f32, f32 ]
-    interface func rounded_rect_to [ f32, f32, f32, f32, f32, f32 ]
-    interface func fill_color      [ object ] 
-    interface func stroke_color    [ object ] 
-    interface func clear           [ object ] 
-    interface func set_stroke      [ stroke ] 
-    interface func set_font        [ font ] 
-    interface func cubic           [ f32, f32, f32, f32, f32, f32 ] 
-    interface func quadratic       [ f32, f32, f32, f32 ] 
-    interface func draw_fill       [ ] 
-    interface func draw_stroke     [ ] 
-    interface func draw_fill_preserve [ ] 
-    interface func draw_stroke_preserve [ ] 
-    interface func blur_radius [ f32 ] 
-    interface func prepare [ ] 
-    interface func set_texture [ Texture ] 
-    interface func translate [ f32, f32 ] 
-    interface func scale [ f32 ] 
-    interface func clip [ rect, f32, f32 ] 
-    interface func stroke_size [ f32 ] 
-    interface func stroke_cap [ cap ] 
-    interface func stroke_join [ join ] 
-    interface func stroke_miter_limit [ f32 ] 
-    interface func stroke_dash_offset [ f32 ] 
-    resize[]
-
-
-canvas sk
-    intern sk_context : ARef
-    intern sk_surface : ARef
-    intern sk_canvas : ARef
-    intern sk_path : ARef
-    intern once         : bool
-    intern skia         : ref Skia
-    intern vk_layout    : VkImageLayout
-    public func save            [ ] 
-    public func restore         [ ] 
-    public func draw_svg        [ SVG, rect, vec2f, vec2f ]
-    public func draw_image      [ Image, rect, vec2f, vec2f ]
-    public func measure         [ string ] -> TextMetrics
-    public func draw_text       [ string, rect, vec2f, vec2f, bool ] -> rect
-    public func move_to         [ f32, f32 ]
-    public func line_to         [ f32, f32 ]
-    public func arc_to          [ f32, f32, f32, f32, f32 ]
-    public func arc             [ f32, f32, f32, f32, f32 ]
-    public func rect_to         [ f32, f32, f32, f32 ]
-    public func rounded_rect_to [ f32, f32, f32, f32, f32, f32 ]
-    public func fill_color      [ object ]
-    public func clear           [ object ]
-    public func set_font        [ font ]
-    public func cubic           [ f32, f32, f32, f32, f32, f32 ]
-    public func quadratic       [ f32, f32, f32, f32 ]
-    public func draw_fill       [ ] 
-    public func draw_stroke     [ ] 
-    public func draw_fill_preserve   [ ] 
-    public func draw_stroke_preserve [ ] 
-    public func blur_radius [ f32 ] 
-    public func prepare [ ] 
-    public func translate [ f32, f32 ]
-    public func scale [ f32 ]
-    public func clip [ rect, f32, f32 ]
-    public func set_texture [ Texture ] 
-    public func stroke_color [ object ] 
-    public func stroke_size [ f32 ] 
-    public func stroke_cap [ cap ] 
-    public func stroke_join [ join ] 
-    public func stroke_miter_limit [ f32 ] 
-    public func stroke_dash_offset [ f32 ] 
-    public func opacity [ f32 ] 
-    public func ellipsis [ string, rect, ARef ] -> string
-    static func sync [ ] 
-    func resize  [ i32, i32 ]
-    func init    [ ]
-    func dealloc [ ]
-
-
-
-##
-
 # ---- text rendering with FreeType ----
 
 struct GlyphMetrics
@@ -1561,6 +979,492 @@ class CanvasFont
 
 intern ft_library : handle [ null ]
 
+
+func affine_identity [] -> affine
+	return affine [ ma: 1.0, mb: 0.0, mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
+
+
+func affine_translate [ t: affine, dx: f32, dy: f32 ] -> affine
+	return affine [
+		ma: t.ma, mb: t.mb, mc: t.mc, md: t.md,
+		tx: t.tx + t.ma * dx + t.mb * dy,
+		ty: t.ty + t.mc * dx + t.md * dy
+	]
+
+
+func affine_scale [ t: affine, s: f32 ] -> affine
+	return affine [
+		ma: t.ma * s, mb: t.mb * s,
+		mc: t.mc * s, md: t.md * s,
+		tx: t.tx, ty: t.ty
+	]
+
+
+func affine_rotate [ t: affine, radians: f32 ] -> affine
+	cs : cos[ radians ]
+	sn : sin[ radians ]
+	return affine [
+		ma: t.ma * cs + t.mb * sn,
+		mb: t.mb * cs - t.ma * sn,
+		mc: t.mc * cs + t.md * sn,
+		md: t.md * cs - t.mc * sn,
+		tx: t.tx, ty: t.ty
+	]
+
+
+func affine_multiply [ p: affine, q: affine ] -> affine
+	return affine [
+		ma: p.ma * q.ma + p.mb * q.mc,
+		mb: p.ma * q.mb + p.mb * q.md,
+		mc: p.mc * q.ma + p.md * q.mc,
+		md: p.mc * q.mb + p.md * q.md,
+		tx: p.ma * q.tx + p.mb * q.ty + p.tx,
+		ty: p.mc * q.tx + p.md * q.ty + p.ty
+	]
+
+
+# ---- color helpers ----
+
+func color_pack [ r: u8, g: u8, b: u8, alpha: u8 ] -> u32
+	return u32 alpha << 24 | u32 b << 16 | u32 g << 8 | u32 r
+
+func color_r [ c: u32 ] -> u8 [ c 		& 0xFF ]
+func color_g [ c: u32 ] -> u8 [ c >> 8  & 0xFF ]
+func color_b [ c: u32 ] -> u8 [ c >> 16 & 0xFF ]
+func color_a [ c: u32 ] -> u8 [ c >> 24 & 0xFF ]
+
+
+# ---- clamp helpers ----
+
+func clampf [ v: f32, lo: f32, hi: f32 ] -> f32
+	if [ v < lo ]
+		return lo
+	if [ v > hi ]
+		return hi
+	return v
+
+func clampi [ v: i32, lo: i32, hi: i32 ] -> i32
+	if [ v < lo ]
+		return lo
+	if [ v > hi ]
+		return hi
+	return v
+
+func mini [ x: i32, y: i32 ] -> i32
+	if [ x < y ]
+		return x
+	return y
+
+func maxi [ x: i32, y: i32 ] -> i32
+	if [ x > y ]
+		return x
+	return y
+
+func minf [ x: f32, y: f32 ] -> f32
+	if [ x < y ]
+		return x
+	return y
+
+func maxf [ x: f32, y: f32 ] -> f32
+	if [ x > y ]
+		return x
+	return y
+
+
+# ---- bezier flattening ----
+
+# flatten quadratic bezier to line segments, appending to edges
+# p0 -> p1 (control) -> p2
+func flatten_quad [ pts: array PathPt, x0: f32, y0: f32, cx: f32, cy: f32, x1: f32, y1: f32, tol: f32 ]
+	# midpoint check for flatness
+	mx : 0.5 * x0 + x1 - cx
+	my : 0.5 * y0 + y1 - cy
+	if [ mx * mx + my * my < tol * tol ]
+		pt : PathPt [ cmd: path_cmd.line, x: x1, y: y1 ]
+		pts.push[ pt ]
+		return
+
+	# subdivide at t=0.5
+	ax : 0.5 * x0 + cx
+	ay : 0.5 * y0 + cy
+	bx : 0.5 * cx + x1
+	by : 0.5 * cy + y1
+	abx : 0.5 * ax + bx
+	aby : 0.5 * ay + by
+
+	flatten_quad [ pts, x0, y0, ax, ay, abx, aby, tol ]
+	flatten_quad [ pts, abx, aby, bx, by, x1, y1, tol ]
+
+
+# flatten cubic bezier to line segments
+# p0 -> c1 -> c2 -> p1
+func flatten_cubic [ pts: array PathPt, x0: f32, y0: f32, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x1: f32, y1: f32, tol: f32 ]
+	# flatness test: max deviation of control points from line p0-p1
+	dx : x1 - x0
+	dy : y1 - y0
+	d2 : abs[ c1x - x0 - dx * 0.333 ] + abs[ c1y - y0 - dy * 0.333 ]
+	d3 : abs[ c2x - x0 - dx * 0.667 ] + abs[ c2y - y0 - dy * 0.667 ]
+
+	if [ d2 + d3 < tol ]
+		pt : PathPt [ cmd: path_cmd.line, x: x1, y: y1 ]
+		pts.push[ pt ]
+		return
+
+	# de casteljau at t=0.5
+	m01x  : 0.5 * x0 + c1x
+	m01y  : 0.5 * y0 + c1y
+	m12x  : 0.5 * c1x + c2x
+	m12y  : 0.5 * c1y + c2y
+	m23x  : 0.5 * c2x + x1
+	m23y  : 0.5 * c2y + y1
+	m012x : 0.5 * m01x + m12x
+	m012y : 0.5 * m01y + m12y
+	m123x : 0.5 * m12x + m23x
+	m123y : 0.5 * m12y + m23y
+	mx    : 0.5 * m012x + m123x
+	my    : 0.5 * m012y + m123y
+
+	flatten_cubic [ pts, x0, y0, m01x, m01y, m012x, m012y, mx, my, tol ]
+	flatten_cubic [ pts, mx, my, m123x, m123y, m23x, m23y, x1, y1, tol ]
+
+
+# flatten arc to line segments
+# center cx,cy  radius r  from angle0 to angle1 (radians)
+func flatten_arc [ pts: array PathPt, cx: f32, cy: f32, r: f32, angle0: f32, angle1: f32 ]
+	sweep : angle1 - angle0
+	if [ sweep < 0.0 ]
+		sweep = sweep + 6.2831853
+	steps : i32 [ ceil[ abs[ sweep ] * r * 0.5 ] ]
+	if [ steps < 4 ]
+		steps = 4
+	if [ steps > 256 ]
+		steps = 256
+	dt : sweep / f32 steps
+	for [ i: i32 1, i <= steps, i += 1 ]
+		t  : angle0 + dt * f32 i
+		px : cx + r * cos[ t ]
+		py : cy + r * sin[ t ]
+		pt : PathPt [ cmd: path_cmd.line, x: px, y: py ]
+		pts.push[ pt ]
+
+
+# flatten all curves in path, return flat line-only path
+func path_flatten [ src: CanvasPath, tol: f32 ] -> array PathPt
+	flat : array PathPt []
+	n    : src.points.count
+	px   : f32 [ 0.0 ]
+	py   : f32 [ 0.0 ]
+
+	for [ i: i32 0, i < n, i += 1 ]
+		pt : PathPt src.points[i]
+		switch [ pt.cmd ]
+		case path_cmd.move
+			fpt : PathPt [ cmd: path_cmd.move, x: pt.x, y: pt.y ]
+			flat.push[ fpt ]
+			px = pt.x
+			py = pt.y
+		case path_cmd.line
+			fpt : PathPt [ cmd: path_cmd.line, x: pt.x, y: pt.y ]
+			flat.push[ fpt ]
+			px = pt.x
+			py = pt.y
+		case path_cmd.quad
+			flatten_quad [ flat, px, py, pt.cx1, pt.cy1, pt.x, pt.y, tol ]
+			px = pt.x
+			py = pt.y
+		case path_cmd.cubic
+			flatten_cubic [ flat, px, py, pt.cx1, pt.cy1, pt.cx2, pt.cy2, pt.x, pt.y, tol ]
+			px = pt.x
+			py = pt.y
+		case path_cmd.close
+			fpt : PathPt [ cmd: path_cmd.close, x: pt.x, y: pt.y ]
+			flat.push[ fpt ]
+			px = pt.x
+			py = pt.y
+	return flat
+
+
+# lerp between two packed RGBA colors
+func color_lerp[ c0: u32, c1: u32, t: f32 ] -> u32
+	inv : f32 [ 1.0 - t ]
+	r : u8 [ u8 f32 color_r[ c0 ] * inv + f32 color_r [ c1 ] * t ]
+	g : u8 [ u8 f32 color_g[ c0 ] * inv + f32 color_g [ c1 ] * t ]
+	b : u8 [ u8 f32 color_b[ c0 ] * inv + f32 color_b [ c1 ] * t ]
+	al: u8 [ u8 f32 color_a[ c0 ] * inv + f32 color_a [ c1 ] * t ]
+	return color_pack[ r, g, b, al ]
+
+
+# constructors for common gradients
+
+func linear_gradient[ x0: f32, y0: f32, x1: f32, y1: f32 ] -> Gradient
+	g : Gradient [
+		kind:GradientType.linear,
+		:x0,
+		:y0,
+		:x1,
+		:y1
+	]
+	return g
+
+func radial_gradient[ cx: f32, cy: f32, inner_r: f32, outer_r: f32 ] -> Gradient
+	g : Gradient [
+		kind: GradientType.radial,
+		x0:cx,
+		y0:cy,
+		x1:inner_r,
+		y1:outer_r
+	]
+	return g
+
+func conic_gradient[ cx: f32, cy: f32, start_angle: f32 ] -> Gradient
+	g : Gradient [
+		kind: GradientType.conic,
+		x0: cx,
+		y0: cy,
+		x1: start_angle
+	]
+	return g
+
+
+
+# extract line segments from flattened path (move/line/close only)
+func sdf_extract_edges [ flat: array PathPt ] -> array SDFEdge
+	edges : array SDFEdge []
+	n     : flat.count
+	px    : f32 [ 0.0 ]
+	py    : f32 [ 0.0 ]
+	sx    : f32 [ 0.0 ]
+	sy    : f32 [ 0.0 ]
+	for [ i: i32 0, i < n, i += 1 ]
+		pt : PathPt flat[i]
+		switch [ pt.cmd ]
+		case path_cmd.move
+			# close previous sub-path implicitly if needed
+			if [ i > 0 && (px != sx || py != sy) ]
+				ce : SDFEdge [ x0: px, y0: py, x1: sx, y1: sy ]
+				edges.push[ ce ]
+			sx = pt.x
+			sy = pt.y
+			px = pt.x
+			py = pt.y
+		case path_cmd.line
+			e : SDFEdge [ x0: px, y0: py, x1: pt.x, y1: pt.y ]
+			edges.push[ e ]
+			px = pt.x
+			py = pt.y
+		case path_cmd.close
+			if [ px != sx || py != sy ]
+				e : SDFEdge [ x0: px, y0: py, x1: sx, y1: sy ]
+				edges.push[ e ]
+			px = sx
+			py = sy
+	# close final sub-path if not closed
+	if [ px != sx || py != sy ]
+		ce : SDFEdge [ x0: px, y0: py, x1: sx, y1: sy ]
+		edges.push[ ce ]
+	return edges
+
+
+# distance from point to line segment
+func sdf_seg_dist [ ex0: f32, ey0: f32, ex1: f32, ey1: f32, px: f32, py: f32 ] -> f32
+	dx  : ex1 - ex0
+	dy  : ey1 - ey0
+	len_sq : dx * dx + dy * dy
+	if [ len_sq < 0.00001 ]
+		ddx : px - ex0
+		ddy : py - ey0
+		return sqrt[ ddx * ddx + ddy * ddy ]
+	t   : clampf [ ((px - ex0) * dx + (py - ey0) * dy) / len_sq, 0.0, 1.0 ]
+	cx  : ex0 + t * dx
+	cy  : ey0 + t * dy
+	ddx : px - cx
+	ddy : py - cy
+	return sqrt[ ddx * ddx + ddy * ddy ]
+
+
+# winding number at point (non-zero fill rule)
+# positive winding = inside for CCW contours, holes wind CW and cancel
+func sdf_winding [ edges: array SDFEdge, px: f32, py: f32 ] -> i32
+	n  : edges.count
+	wn : i32 [ 0 ]
+	for [ i: i32 0, i < n, i += 1 ]
+		e : SDFEdge edges[i]
+		if [ e.y0 <= py ]
+			if [ e.y1 > py ]
+				# upward crossing: check if point is left of edge
+				cross : (e.x1 - e.x0) * (py - e.y0) - (px - e.x0) * (e.y1 - e.y0)
+				if [ cross > 0.0 ]
+					wn += 1
+		el
+			if [ e.y1 <= py ]
+				# downward crossing: check if point is right of edge
+				cross : (e.x1 - e.x0) * (py - e.y0) - (px - e.x0) * (e.y1 - e.y0)
+				if [ cross < 0.0 ]
+					wn -= 1
+	return wn
+
+
+# generate signed distance field for a path (grid-accelerated)
+# bx,by,bw,bh = world-space bounding box of the path
+# tw,th = SDF Texture dimensions
+# pad = extra world-space padding around bounds
+# returns f32 array [tw*th], negative = inside, positive = outside
+func sdf_generate [ flat: array PathPt, bx: f32, by: f32, bw: f32, bh: f32, tw: i32, th: i32, pad: f32 ] -> ref f32
+	edges : sdf_extract_edges [ flat ]
+	ne    : edges.count
+	if [ ne == 0 ]
+		return null
+
+	# world bounds with padding
+	wx : f32 [ bx - pad ]
+	wy : f32 [ by - pad ]
+	ww : f32 [ bw + pad * 2.0 ]
+	wh : f32 [ bh + pad * 2.0 ]
+
+	# grid: cells cover the SDF area, each cell holds edge indices
+	# cell size ~ 8 texels worth of world space for good locality
+	cell_tx : i32 [ 8 ]
+	cell_ty : i32 [ 8 ]
+	gw : i32 [ (tw + cell_tx - 1) / cell_tx ]
+	gh : i32 [ (th + cell_ty - 1) / cell_ty ]
+	gc : i32 [ gw * gh ]
+
+	# world size per cell
+	cw : f32 [ ww / f32 gw ]
+	ch : f32 [ wh / f32 gh ]
+
+	# bin edges into grid cells (CSR: count, then fill)
+	grid_counts : new i32 [ gc ]
+	for [ i: i32 0, i < gc, i += 1 ]
+		grid_counts[i] = 0
+	for [ ei: i32 0, ei < ne, ei += 1 ]
+		e   : SDFEdge edges[ei]
+		ex0 : min [ e.x0, e.x1 ]
+		ey0 : min [ e.y0, e.y1 ]
+		ex1 : max [ e.x0, e.x1 ]
+		ey1 : max [ e.y0, e.y1 ]
+		gx0 : clampi [ i32 (ex0 - wx) / cw - 1, 0, gw - 1 ]
+		gy0 : clampi [ i32 (ey0 - wy) / ch - 1, 0, gh - 1 ]
+		gx1 : clampi [ i32 (ex1 - wx) / cw + 1, 0, gw - 1 ]
+		gy1 : clampi [ i32 (ey1 - wy) / ch + 1, 0, gh - 1 ]
+		for [ gy: i32 gy0, gy <= gy1, gy += 1 ]
+			for [ gx: i32 gx0, gx <= gx1, gx += 1 ]
+				grid_counts[gy * gw + gx] += 1
+	grid_offsets : new i32 [ gc + 1 ]
+	grid_offsets[0] = 0
+	for [ i: i32 0, i < gc, i += 1 ]
+		grid_offsets[i + 1] = grid_offsets[i] + grid_counts[i]
+	total_grid : grid_offsets[gc]
+	grid_data : new i32 [ (total_grid > 0) ? total_grid : 1 ]
+	for [ i: i32 0, i < gc, i += 1 ]
+		grid_counts[i] = 0
+	for [ ei: i32 0, ei < ne, ei += 1 ]
+		e   : SDFEdge edges[ei]
+		ex0 : min [ e.x0, e.x1 ]
+		ey0 : min [ e.y0, e.y1 ]
+		ex1 : max [ e.x0, e.x1 ]
+		ey1 : max [ e.y0, e.y1 ]
+		gx0 : clampi [ i32 (ex0 - wx) / cw - 1, 0, gw - 1 ]
+		gy0 : clampi [ i32 (ey0 - wy) / ch - 1, 0, gh - 1 ]
+		gx1 : clampi [ i32 (ex1 - wx) / cw + 1, 0, gw - 1 ]
+		gy1 : clampi [ i32 (ey1 - wy) / ch + 1, 0, gh - 1 ]
+		for [ gy: i32 gy0, gy <= gy1, gy += 1 ]
+			for [ gx: i32 gx0, gx <= gx1, gx += 1 ]
+				ci : gy * gw + gx
+				grid_data[grid_offsets[ci] + grid_counts[ci]] = ei
+				grid_counts[ci] += 1
+
+	# texel to world mapping
+	sx : ww / f32 tw
+	sy : wh / f32 th
+
+	# bin edges by row band (CSR: count, then fill)
+	row_counts : new i32 [ th ]
+	for [ i: i32 0, i < th, i += 1 ]
+		row_counts[i] = 0
+	for [ ei: i32 0, ei < ne, ei += 1 ]
+		e   : SDFEdge edges[ei]
+		ry0 : clampi [ i32 (min[ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
+		ry1 : clampi [ i32 (max[ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
+		for [ r: i32 ry0, r <= ry1, r += 1 ]
+			row_counts[r] += 1
+	# compute offsets
+	row_offsets : new i32 [ th + 1 ]
+	row_offsets[0] = 0
+	for [ i: i32 0, i < th, i += 1 ]
+		row_offsets[i + 1] = row_offsets[i] + row_counts[i]
+	total_row_entries : i32 [ row_offsets[th] ]
+	row_data : new i32 [ (total_row_entries > 0) ? total_row_entries : 1 ]
+	# reset counts for fill pass
+	for [ i: i32 0, i < th, i += 1 ]
+		row_counts[i] = 0
+	for [ ei: i32 0, ei < ne, ei += 1 ]
+		e   : SDFEdge edges[ei]
+		ry0 : clampi [ i32 (min[ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
+		ry1 : clampi [ i32 (max[ e.y0, e.y1 ] - wy) / sy, 0, th - 1 ]
+		for [ r: i32 ry0, r <= ry1, r += 1 ]
+			row_data[row_offsets[r] + row_counts[r]] = ei
+			row_counts[r] += 1
+
+	sz  : i32 [ tw * th ]
+	sdf : new f32 [ sz ]
+	spread : f32 [ 8.0 ]
+
+	for [ y: i32 0, y < th, y += 1 ]
+		py   : wy + (f32 y + 0.5) * sy
+		grow : i32 [ clamp [ y / cell_ty, 0, gh - 1 ] ]
+		re_off : row_offsets[y]
+		nre    : row_counts[y]
+
+		for [ x: i32 0, x < tw, x += 1 ]
+			px   : wx + (f32 x + 0.5) * sx
+			gcol : i32 [ clampi [ x / cell_tx, 0, gw - 1 ] ]
+			cell_idx : grow * gw + gcol
+			cell_off : grid_offsets[cell_idx]
+			nc       : grid_counts[cell_idx]
+
+			# min distance from cell's edge list
+			md : f32 [ 999999.0 ]
+			for [ ci: i32 0, ci < nc, ci += 1 ]
+				e : SDFEdge edges[grid_data[cell_off + ci]]
+				d : sdf_seg_dist [ e.x0, e.y0, e.x1, e.y1, px, py ]
+				if [ d < md ]
+					md = d
+
+			# winding from row-binned edges only
+			wn : i32 [ 0 ]
+			for [ ri: i32 0, ri < nre, ri += 1 ]
+				e : SDFEdge edges[row_data[re_off + ri]]
+				if [ e.y0 <= py ]
+					if [ e.y1 > py ]
+						cross : (e.x1 - e.x0) * (py - e.y0) - (px - e.x0) * (e.y1 - e.y0)
+						if [ cross > 0.0 ]
+							wn += 1
+				el
+					if [ e.y1 <= py ]
+						cross : (e.x1 - e.x0) * (py - e.y0) - (px - e.x0) * (e.y1 - e.y0)
+						if [ cross < 0.0 ]
+							wn -= 1
+
+			# clamp distance for texels far from edges
+			if [ md > spread ]
+				md = spread
+			if [ wn != 0 ]
+				sdf[y * tw + x] = -md
+			el
+				sdf[y * tw + x] = md
+	return sdf
+
+
+# convert f32 SDF to R8 Texture (maps [-spread..+spread] to [0..255])
+func sdf_to_r8 [ sdf: ref f32, count: i32, spread: f32 ] -> ref u8
+	tex : new u8 [ count ]
+	inv : f32 [ 0.5 / spread ]
+	for [ i: i32 0, i < count, i += 1 ]
+		v : f32 [ clampf [ 0.5 - sdf[i] * inv, 0.0, 1.0 ] ]
+		tex[i] = u8 [ v * 255.0 ]
+	return tex
+
 func ft_init [] -> handle
 	if [ !ft_library ]
 		err : i32 FT_Init_FreeType [ ref handle ft_library ]
@@ -1655,7 +1559,7 @@ expect func test [ vk: vk_context ] -> bool
     c.sync_fence[]
 
     # fetch Texture and verify
-    img: (c.color) to Image
+    img: (c.color to Image)
     p: path 'canvas_test.png'
     p.save[ img, null ]
     puts 'wrote canvas_test.png'

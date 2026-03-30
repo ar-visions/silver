@@ -6,6 +6,79 @@ import img
 import vulkan2
 import canvas
 
+import <ctype.h>
+import <string.h>
+
+# enums export to A-type
+enum Ease
+    linear  : 0
+    quad    : 1
+    cubic   : 2
+    quart   : 3
+    quint   : 4
+    sine    : 5
+    expo    : 6
+    circ    : 7
+    back    : 8
+    elastic : 9
+    bounce  : 10
+
+enum Direction
+    in      : 0
+    out     : 1
+    in_out  : 2
+
+enum Duration
+    ms : 2
+    ns : 1
+    s  : 3
+
+enum XAlign : f32
+    undefined : 0
+    left      : 0.0
+    middle    : 0.5
+    right     : 1.0
+    width     : 2.0
+
+enum YAlign : f32
+    undefined : 0
+    top       : 0.0
+    middle    : 0.5
+    bottom    : 1.0
+    height    : 2.0
+
+enum UXSurface
+    background  : 0
+    frost       : 1
+    blur        : 2
+    compose     : 3
+    colorize    : 4
+    overlay     : 5
+    glyph       : 6
+
+enum Fill : f32
+    none      : 0.00f
+    blur      : 0.50f
+    frost     : 1.00
+
+enum CanvasType
+    overlay     : 0
+    compose     : 1
+    colorize    : 2
+    glyph       : 3
+
+enum Pattern
+    none : 0
+    repeat_x : 1
+    repeat_y : 2
+    repeat_xy : 3
+
+enum Clip
+    none : 0
+    clip : 1
+    ellipsis : 2
+
+
 alias Elements : map    element [ string ]
 alias Render   : lambda Elements[ Display ]
 
@@ -16,19 +89,21 @@ class element
     public value        : object
     public id           : string
     public flags        : i64
+    public ltest : Layer
     public layers       : array Layer
-    public elements     : map
+    public elements     : Elements
     public tags         : array string
     public group        : string
     public tab_index    : i32
-    public ghost        : bool
-    public captured     : bool
-    public selectable   : bool
-    public selected     : bool
-    public disabled     : bool
-    public hovered      : bool
-    public pressed      : bool
-    public focused      : bool
+    mutable scroll       : vec2f
+    mutable ghost        : bool
+    mutable captured     : bool
+    mutable selectable   : bool
+    mutable selected     : bool
+    mutable disabled     : bool
+    mutable hovered      : bool
+    mutable pressed      : bool
+    mutable focused      : bool
     public action       : EventDispatch
     public wheel        : EventDispatch
     public context      : EventDispatch
@@ -46,7 +121,7 @@ class element
     public blur         : EventDispatch
     public cursor       : vec2f
     intern ux           : UXComposer
-    intern style_avail  : map StyleMembers[string]
+    intern style_avail  : map StyleEntries[string]
     intern selections   : map
     intern transitions  : map StyleTransition[string]
     intern restyle : bool
@@ -66,13 +141,46 @@ class element
     public func draw [ w: Window ]
 
     public func render [ changed: array ] -> Render
-        return origin
+        return null
 
+    func invalidate_element [ ]
+        e : a
+        if [ e && e.transitions ]
+            for [ ct: StyleTransition, k: string ] in e.transitions
+                ct.invalidate = true
+
+    func remove_invalid_transitions [ ]
+        e: a
+        found : true
+        while [ found ]
+            found = false
+            for [ ct:StyleTransition, k:object ] in e.transitions
+                if [ ct.invalidate ]
+                    e.transitions.rm[ k ]
+                    found = true
+                    return
+
+    intern func animate_within [ ]
+        if [ transitions ]
+            cur_millis : i64 [ epoch_millis[] ]
+            for [ ct: StyleTransition, k: string ] in transitions
+                dur : i64 [ ct.duration.get_millis[] ]
+                ms  : i64 [ cur_millis - ct.start ]
+                p   : f64 [ ct.pos[ f64[ ms ] / f64[ dur ] ] ]
+                if [ ct.type && ct.from && ct.to ]
+                    mixed : mix[ ct.from, ct.to, p ]
+                    if [ ct.location ]
+                        ct.location = mixed
+        for [ ee: element, id: string ] in elements
+            ee.animate_within[ ]
+
+
+alias StyleTransitions : map StyleTransition[string]
 
 Composer UXComposer
     public app                  : object
     public w                    : Window
-    intern root_styles          : map
+    intern root_styles          : map Style[string]
     public root                 : element
     mutable capture             : element
     mutable focus               : element
@@ -90,31 +198,31 @@ Composer UXComposer
 
     # Au runtime introspection — member iteration for args/style application
     public func apply_args [ inst: element, e: element ] -> array
-        ty      : Au_t [ typeid[ e ] ]
-        changed : array [ alloc: 32 ]
+        ty      : typeid[ e ]
+        changed : array string [ ]
         while [ ty != typeid[ Au ] ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
-                mem : Au_t [ ty.members[m] ]
+                mem : Au_t ty.members.origin[m]
                 if [ mem.member_type != AU_MEMBER_VAR || mem.ident == 'elements' ]
                     continue
-                from_val : object [ member_object[ inst, mem ] ]
-                to_val   : object [ member_object[ e, mem ] ]
+                from_val : inst.member_object[ mem ]
+                to_val   :    e.member_object[ mem ]
                 if [ to_val && from_val != to_val ]
-                    if [ compare[ from_val, to_val ] != 0 ]
-                        member_set[ inst, mem, to_val ]
-                        push[ changed, string[ mem.ident ] ]
+                    if [ from_val.compare[ to_val ] != 0 ]
+                        inst.member_set[ mem, to_val ]
+                        changed.push[ string[ mem.ident ] ]
             ty = ty.context
         return changed
 
-    public func apply_style [ inst: element, style_avail: map StyleMembers[string], exceptions: array string ] -> array
+    public func apply_style [ inst: element, style_avail: map StyleEntries[string], exceptions: array string ] -> array
         ty      : Au_t [ typeid[ inst ] ]
-        changed : array [ alloc: 32 ]
+        changed : array string [ ]
         while [ ty != typeid[ Au ] ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
-                mem : Au_t [ ty.members[m] ]
-                if [ mem.member_type != AU_MEMBER_VAR || mem.ident == 'elements' ]
+                member : Au_t ty.members.origin[m]
+                if [ member.member_type != AU_MEMBER_VAR || member.ident == 'elements' ]
                     continue
-                prop    : string [ mem.ident ]
+                prop    : string [ member.ident ]
                 entries : style_avail [ prop ]
                 if [ !entries ]
                     continue
@@ -125,18 +233,18 @@ Composer UXComposer
                     continue
                 # lazily create instance from string value
                 if [ !best.instance ]
-                    best.instance = format[ mem.src, best.value ]
+                    best.instance = (best.value to typeid[ member.src ]) # convert from string this way
                 expect best.instance, 'instance must be initialized'
-                push[ changed, prop ]
-                cur : object [ member_object[ inst, mem ] ]
+                changed.push[ prop ]
+                cur : inst.member_object[ member ]
                 # transition handling
                 t  : StyleTransition [ best.trans ]
                 ct : StyleTransition [ null ]
                 should_trans : bool [ false ]
                 if [ t ]
                     if [ !inst.transitions ]
-                        inst.transitions = map StyleTransition[string] [ ]
-                    ct = get[ inst.transitions, prop ]
+                        inst.transitions = StyleTransitions [ ]
+                    ct = inst.transitions[ prop ]
                     if [ !ct ]
                         ct = t.copy[]
                         ct.reference = t
@@ -147,56 +255,20 @@ Composer UXComposer
                 el [ inst.transitions ]
                     inst.transitions.rm[ prop ]
                 if [ ct && should_trans ]
-                    ct.from     = cur ? cur : best.instance
+                    ct.from     = (cur) ? cur : best.instance
                     ct.to       = best.instance
                     ct.type     = typeid[ best.instance ]
                     ct.start    = epoch_millis[]
                 el [ !ct ]
-                    Au.member_set[ inst, mem, best.instance ]
+                    inst.member_set[ member, best.instance ]
             ty = ty.context
         return changed
-
-    func invalidate_element [ ]
-        e : a
-        if [ e && e.transitions ]
-            pairs [ e.transitions, i ]
-                ct : StyleTransition [ i.value ]
-                ct.invalidate = true
-
-    func remove_invalid_transitions [ ]
-        e: a
-        found : true
-        while [ found ]
-            found = false
-            for [ ct:StyleTransition, k:object ] in e.transitions
-                if [ ct.invalidate ]
-                    e.transitions.rm[ i.key ]
-                    found = true
-                    return
-
-
-    intern func animate_element [ ]
-        e: a # how elements get in the game
-        if [ e.transitions ]
-            cur_millis : i64 [ epoch_millis[] ]
-            pairs [ e.transitions, i ]
-                ct  : StyleTransition [ i.value ]
-                dur : i64 [ ct.duration.get_millis[] ]
-                ms  : i64 [ cur_millis - ct.start ]
-                p   : f64 [ ct.pos[ f64[ ms ] / f64[ dur ] ] ]
-                if [ ct.type && ct.from && ct.to ]
-                    mixed : ct.type.mix*[ ct.from, ct.to, p ]
-                    if [ ct.location ]
-                        ct.location = mixed
-        pairs [ e.origin, i ]
-            ee : element [ i.value ]
-            animate_element[ ee ]
 
     public func animate []
         if [ !root ]
             return
         invalidate[]
-        animate_element[ root ]
+        root.animate_within[ ]
         remove_invalid[]
 
     public func bind_subs [ instance: element, parent: element ]
@@ -211,8 +283,8 @@ Composer UXComposer
         if [ !restyle ]
             restyle = st.check_reload[]
         if [ restyle ]
-            st.apply_style[ root, root_styles, null ]
-        root.update[ render ]
+            apply_style[ root, root_styles, null ]
+        update[ root, render ]
 
     public func invalidate []
         if [ root ] root.invalidate_element[ ]
@@ -268,14 +340,13 @@ Composer UXComposer
             return null
         ev.mouse.pos.x = lx + e.scroll.x
         ev.mouse.pos.y = ly + e.scroll.y
-        pairs [ e.origin, i ]
-            child : element [ i.value ]
+        for [ child: element, id: string ] in e.elements
             hit   : element [ find_target[ child, ev, must ] ]
             if [ hit ]
                 return hit
         ev.mouse.pos.x = x
         ev.mouse.pos.y = y
-        return !must || must == e ? e : null
+        return (!must || must == e) ? e : null
 
     public func text_event [ ev: Event ]
         if [ focus ]
@@ -287,7 +358,7 @@ Composer UXComposer
 
     public func move_event [ ev: Event ]
         f : element [ find_target[ root, ev, null ] ]
-        a : element [ capture ? find_target[ root, ev, capture ] : f ]
+        a : element [ (capture) ? find_target[ root, ev, capture ] : f ]
         if [ hovered != f ]
             if [ hovered ]
                 hovered.restyle = true
@@ -304,7 +375,7 @@ Composer UXComposer
     public func wheel_event [ ev: Event ]
         for [ f: element find_target[ root, ev, capture ], f, f = f.parent ]
             ux_event[ f, f.wheel, ev ]
-            if [ ev.stop_propagation ]
+            if [ ev.no_propagation ]
                 return
 
     public func press_event [ ev: Event ]
@@ -445,8 +516,10 @@ Display Window
             if [ txt && txt.label ]
                 cv.save[]
                 b : rect [ layer.bounds ]
-                al : vec2f [ txt.xalign, txt.yalign ]
-                offset : vec2f [ 0.0, 0.0 ]
+                x0 : f32 txt.xalign
+                y0 : f32 txt.yalign
+                al : vec2f [ x0, y0 ]
+                offset : vec2f [ x: 0.0, y: 0.0 ]
                 cv.set_fill_color[ sk_color[ layer.color ] ]
                 cv.draw_text[ txt.label, b, al, offset, false ]
                 cv.restore[]
@@ -478,27 +551,9 @@ media_app trinity
             w.colorize.clear [ '#000' ]
             w.glyph   .clear [ '#000' ]
         w.overlay.clear[ '#0000' ]
-        w.draw_element[ ux.root ]
+        w.draw_element[ w.ux.root ]
         w.draw[]
 
-# enums export to A-type
-enum Ease
-    linear  : 0
-    quad    : 1
-    cubic   : 2
-    quart   : 3
-    quint   : 4
-    sine    : 5
-    expo    : 6
-    circ    : 7
-    back    : 8
-    elastic : 9
-    bounce  : 10
-
-enum Direction
-    in      : 0
-    out     : 1
-    in_out  : 2
 
 class LineInfo
     intern data            :  string
@@ -516,17 +571,134 @@ class text
     public replace : text
 
 class StyleEntry
-    public member : string
-    public value : string
-    public trans : StyleTransition
-    public bl : StyleBlock
-    public instance : object
+    mutable member   : string
+    mutable value    : string
+    mutable trans    : StyleTransition
+    mutable bl       : StyleBlock
+    mutable instance : object
 
-alias StyleMembers : array StyleEntry
+alias StyleEntries : array StyleEntry
+
+
+class StyleBlock
+    public parent   : StyleBlock
+    public quals    : array StyleQualifier
+    public entries  : StyleEntries
+    public blocks   : array StyleBlock
+    public types    : array Au_t
+
+    construct [ p_sc: ref cstr ]
+        sc : cstr [ p_sc[0] ]
+        ws[ ref sc ]
+        expect sc[0] == '.' || is_alpha2[sc[0]], 'expected Type[.id], or .id'
+        quals = parse_qualifiers[ a, ref sc ]
+        sc += 1
+        ws[ ref sc ]
+        while [ sc[0] && sc[0] != '}' ]
+            ws[ ref sc ]
+            start : cstr [ sc ]
+            expect scan_to[ ref sc, ';{{}}' ], 'expected member expression or qualifier'
+            if [ sc[0] == '{' ]
+                bl_n : StyleBlock [ ref sc ]
+                blocks.push[ bl_n ]
+                bl_n.parent = a
+                sc = start
+                expect sc[0] == '}', 'expected }}'
+                sc += 1
+                ws[ ref sc ]
+            el [ sc[0] == ';' ]
+                cur : cstr [ start ]
+                expect scan_to[ ref cur, ':' ] && cur < sc, 'expected [member:]value;'
+                member : string [ chars: start, ref_length: distance[ start, cur ] ]
+                for [ i: i32 0, i < member.count, i += 1 ]
+                    if [ member.chars[i] == '-' ]
+                        member.chars[i] = '_'
+                cur += 1
+                ws[ ref cur ]
+                vstart : cstr [ cur ]
+                expect scan_to[ ref cur, ';' ], 'expected member:value[, transition];'
+                vlen     : distance[ vstart, cur ]
+                cb_value : string[ chars: vstart, ref_length: vlen ]
+                cb_value = cb_value.trim[]
+                qs       : cb_value.mid[  0, 1 ] == '"'
+                qe       : cb_value.mid[ -1, 1 ] == '"'
+                if [ qs && qe ]
+                    cs : cstr [ cb_value.chars ]
+                    cb_value = parse_quoted[ ref cs, cb_value.count ]
+                param : string [ null ]
+                value : object [ null ]
+                ai    : num    [ cb_value.index_of[ '[' ] ]
+                ci    : num    [ cb_value.index_of[ ',' ] ]
+                if [ ai != -1 && (ci == -1 || ai < ci) ]
+                    ae    : num[ cb_value.index_of[ ']' ] ]
+                    expect ae != -1, 'expected ] character'
+                    items : cb_value.mid[ ai + 1, ae - 1 ].trim[]
+                    ln    : cb_value.count - ae
+                    param = cb_value.mid[ ae + 1, ln ].trim[]
+                    if [ param.first[] == ',' ]
+                        param = param.mid[ 1, param.count - 1 ].trim[]
+                    el
+                        param = null
+                    sp : items.split[ ',' ]
+                    value = array Au [ sp.count ]
+                    v : array Au[ value ]
+                    for [ raw: string ] in sp
+                        v.push[ raw.trim[] ]
+                el
+                    param = (ci >= 0) ? cb_value.mid[ ci + 1, cb_value.count - (ci + 1) ].trim[] : null
+                    value = (ci >= 0) ? cb_value.mid[ 0, ci ].trim[] : cb_value
+                trans : StyleTransition [ (param) ? StyleTransition[ param ] : null ]
+                expect member, 'member cannot be blank'
+                expect value,  'value cannot be blank'
+                entries[ member ] = StyleEntry [ member: member, value: value, trans: trans, bl: a ]
+                sc += 1
+                ws[ ref sc ]
+        expect !sc[0] || sc[0] == '}', 'expected closed-brace'
+        if [ sc[0] == '}' ]
+            sc += 1
+        p_sc[0] = sc
+
+
+    public func score [ n: element, score_state: bool ] -> f32
+        best_sc : f32 [ 0.0 ]
+        cur     : element [ n ]
+        for [ q: StyleQualifier ] in quals
+            best_this : f32 [ 0.0 ]
+            while [ true ]
+                id_match    : bool [ q.id && q.id == cur.id ]
+                id_reject   : bool [ q.id && !id_match ]
+                type_match  : bool [ q.ty && (typeid[ cur ] inherits typeid[ q.ty ]) ]
+                type_reject : bool [ q.ty && !type_match ]
+                state_match : bool [ score_state && q.state ]
+                if [ state_match ]
+                    expect q.state.count > 0, 'null state'
+                    addr : cur.get_property[ q.state ]
+                    if [ addr ]
+                        state_match = bool[ addr ]
+                state_reject : bool [ score_state && q.state && !state_match ]
+                if [ !id_reject && !type_reject && !state_reject ]
+                    sc : f64 [ i64[ id_match ] << 1 | i64[ type_match ] | i64[ state_match ] << 2 ]
+                    best_this = max[ sc, best_this ]
+                el
+                    best_this = 0.0
+                if [ q.parent && best_this > 0.0 ]
+                    q   = q.parent
+                    cur = (cur.parent) ? cur.parent : element[]
+                el
+                    return 0.0
+            best_sc = max[ best_sc, best_this ]
+        return (best_sc > 0.0) ? 1.0 : 0.0
+
+    func init []
+        if [ !entries ]
+            entries = StyleEntries [ ]
+        if [ !blocks ]
+            blocks = array StyleBlock [ ]
+
 
 class Style
     public  css_path  : path
-    public  members   : map StyleMembers[string]
+    public  members   : map StyleEntries[string]
     public  reloader  : watch
     public  base      : array StyleBlock
     intern  mtx       : mutex
@@ -534,71 +706,68 @@ class Style
     intern  reloaded  : bool
     intern  loaded    : bool
 
-    func cache_b [ bl: StyleBlock ]
-        pairs [ bl.entries, i ]
-            e     : StyleEntry [ i.value ]
-            cache : array [ get[ members, e.member ] ]
+    func cache_block [ bl: StyleBlock ]
+        for [ e: StyleEntry ] in bl.entries
+            cache : members [ e.member ]
             if [ !cache ]
-                cache = array[]
-                set[ members, e.member, cache ]
-            found : bool [ false ]
+                cache = StyleEntries[]
+                members.set[ e.member, cache ]
+            found : false
             for [ cb: StyleBlock ] in cache
                 found |= cb == bl
             if [ !found ]
-                push[ cache, bl ]
+                cache.push[ bl ]
         for [ s: StyleBlock ] in bl.blocks
-            cache_b[ s ]
+            cache_block [ s ]
 
-    func applicable [ n: element, prop_name: string, result: array ] -> bool
-        blocks : get[ members, prop_name ]
-        ty     : Au_t [ typeid[ n ] ]
-        ret    : bool [ false ]
+    func applicable [ n: element, prop_name: string, result: StyleEntries ] -> bool
+        blocks : members[ prop_name ]
+        ty     : typeid[ n ]
+        ret    : false
         result.clear[]
         for [ block: StyleBlock ] in blocks
-            if [ !block.types.count || index_of[ block.types, ty ] >= 0 ]
-                f : StyleEntry [ get[ block.entries, prop_name ] ]
+            if [ !block.types.count || block.types.index_of[ ty ] >= 0 ]
+                f : block.entries[ prop_name ]
                 if [ f && block.score[ n, false ] > 0 ]
-                    push[ result, f ]
+                    result.push[ f ]
                     ret = true
         return ret
 
     func process [ code: string ]
         base = array StyleBlock [ ]
         sc : symbol [ code.chars ]
-        while [ sc && *sc ]
-            n_block : StyleBlock [ ]
-            push[ base, n_block ]
-            parse_block[ n_block, ref sc ]
+        while [ sc && sc[0] ]
+            base.push [ StyleBlock [ ref sc ] ]
 
     func cache_members [ ]
         for [ b: StyleBlock ] in base
-            cache_b[ b ]
+            cache_block[ b ]
 
-    func best_match [ n: element, prop_name: string, entries: array ] -> StyleEntry
+    func best_match [ n: element, prop_name: string, entries: array StyleEntry ] -> StyleEntry
         match      : StyleEntry [ null ]
         best_score : f32 [ 0.0 ]
         for [ e: StyleEntry ] in entries
             bl : StyleBlock [ e.bl ]
             sc : f32 [ bl.score[ n, true ] ]
             if [ sc > 0.0 && sc >= best_score ]
-                match      = get[ bl.entries, prop_name ]
+                match      = bl.entries[ prop_name ]
                 expect match, 'should have matched'
                 best_score = sc
         return match
 
     func compute [ n: element ] -> map
-        avail : map [ hsize: 16 ]
+        avail : map StyleEntries[string]
         ty    : Au_t [ typeid[ n ] ]
         expect n inherits element, 'must inherit element'
         while [ ty != typeid[ Au ] ]
-            all : array [ alloc: 32 ]
+            all : array StyleEntry [ ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
-                mem : Au_t [ ty.members[m] ]
-                if [ mem.member_type != AU_MEMBER_VAR || mem.access_type == interface_intern ]
+                mem : Au_t [ ty.members.origin[m] ]
+                if [ mem.member_type != AU_MEMBER_VAR || mem.access_type == 1 ] # 1 == intern!
                     continue
                 name : string [ mem.ident ]
                 if [ applicable[ n, name, all ] ]
-                    set[ avail, name, all ]
+                    avail[ name ] = all
                     all = array [ alloc: 32 ]
             ty = ty.context
         return avail
@@ -608,7 +777,7 @@ class Style
         m : css_path.modified_time[ ]
         if [ mod_time != m ]
             mod_time = m
-            process[ read[ css_path, typeid[ string ], null ] ]
+            process[ css_path.load[ typeid[ string ], null ] ]
             cache_members[]
             loaded   = true
             reloaded = true
@@ -616,12 +785,12 @@ class Style
         return false
 
     construct [ p: path ]
-        expect exists[ p ], 'css path does not exist'
-        style_str : string [ read[ p, typeid[ string ], null ] ]
-        base      = array [ alloc: 32 ]
+        expect p.exists, 'css path does not exist'
+        style_str : string [ p.load[ typeid[ string ], null ] ]
+        base      = array StyleBlock [ ]
         css_path  = p
-        mod_time  = modified_time[ p ]
-        members   = map [ hsize: 32 ]
+        mod_time  = p.modified_time[ ]
+        members   = map StyleEntries[string] []
         process[ style_str ]
         cache_members[]
         loaded   = true
@@ -634,72 +803,6 @@ class Style
         construct [ p ]
 
 
-class StyleBlock
-    public parent   : StyleBlock
-    public quals    : array
-    public entries  : map
-    public blocks   : array
-    public types    : array
-
-    public func score [ n: element, score_state: bool ] -> f32
-        best_sc : f32 [ 0.0 ]
-        cur     : element [ n ]
-        for [ q: StyleQualifier ] in quals
-            best_this : f32 [ 0.0 ]
-            while [ true ]
-                id_match    : bool [ q.id && eq[ q.id, cur.id ] ]
-                id_reject   : bool [ q.id && !id_match ]
-                type_match  : bool [ q.ty && inherits[ typeid[ cur ], q.ty ] ]
-                type_reject : bool [ q.ty && !type_match ]
-                state_match : bool [ score_state && q.state ]
-                if [ state_match ]
-                    expect q.state.count > 0, 'null state'
-                    addr : object [ get_property[ cur, q.state ] ]
-                    if [ addr ]
-                        state_match = bool[ addr ]
-                state_reject : bool [ score_state && q.state && !state_match ]
-                if [ !id_reject && !type_reject && !state_reject ]
-                    sc : f64 [ i64[ id_match ] << 1 | i64[ type_match ] | i64[ state_match ] << 2 ]
-                    best_this = max[ sc, best_this ]
-                el
-                    best_this = 0.0
-                if [ q.parent && best_this > 0.0 ]
-                    q   = q.parent
-                    cur = cur.parent ? cur.parent : element[]
-                el
-                    return
-            best_sc = max[ best_sc, best_this ]
-        return best_sc > 0.0 ? 1.0 : 0.0
-
-    func init []
-        if [ !entries ]
-            entries = map [ hsize: 16 ]
-        if [ !blocks ]
-            blocks = array [ alloc: 16 ]
-
-
-enum Duration
-    ms : 2
-    ns : 1
-    s  : 3
-
-
-enum XAlign : f32
-    undefined : 0
-    left      : 0.0
-    middle    : 0.5
-    right     : 1.0
-    width     : 2.0
-
-
-enum YAlign : f32
-    undefined : 0
-    top       : 0.0
-    middle    : 0.5
-    bottom    : 1.0
-    height    : 2.0
-
-
 struct XCoord
     x_type   : XAlign
     offset   : f32
@@ -707,17 +810,38 @@ struct XCoord
     percent  : bool
 
     construct [ sx: string ]
-        f         : string [ first[ sx ] ]
+        f         : string [ sx.first[] ]
         x_type    = XAlign[f]
-        sx_offset : string [ mid[ sx, 1, sx.count - 1 ] ]
-        if [ last[ sx_offset ] == '%' ]
-            sx_offset = mid[ sx_offset, 0, sx_offset.count - 1 ]
+        sx_offset : sx.mid[ 1, sx.count - 1 ]
+        if [ sx_offset.last[] == '%' ]
+            sx_offset = sx_offset.mid[ 0, sx_offset.count - 1 ]
             percent   = true
         if [ sx_offset ]
-            if [ last[ sx_offset ] == '+' ]
-                sx_offset = mid[ sx_offset, 0, sx_offset.count - 1 ]
+            if [ sx_offset.last[] == '+' ]
+                sx_offset = sx_offset.mid[ 0, sx_offset.count - 1 ]
                 relative  = true
-        offset = real_value[ sx_offset ]
+        offset = sx_offset.real_value[]
+
+    func plot [ from: f32, vto: f32, left: ref XCoord, left_val: f32, rel: rect ] -> f32
+        val : f32 [ mix[ offset, offset * (vto - from), percent ] ]
+        if [ x_type > XAlign.right ]
+            expect (left.x_type <= XAlign.right), 'invalid left-operand (xcoord)'
+            return left_val + val
+        r : f32 [ (rel && relative) ? rel.w * relative : 0.0 ]
+        hsz : f32 [ (vto - from) / 2.0 ]
+        if [ x_type < XAlign.middle ]
+            M : f32 [ f32[x_type] * 2.0 ]
+            return from + hsz * M + val + r
+        R : f32 [ (f32[x_type] - f32[XAlign.middle]) * 2.0 ]
+        return from + ((hsz + val) * (1.0 - R)) + ((hsz * 2.0 - val) * R) + r
+
+    func mix [ other: XCoord, f: f32 ] -> XCoord
+        return XCoord [
+            x_type:  (mix[ (x_type to f32),   (other.x_type   to f32), f ]) to XAlign,
+            offset:   mix[  offset,            other.offset,           f ],
+            percent: (mix[ (percent to f32),  (other.percent  to f32), f ]) to bool,
+            relative:(mix[ (relative to f32), (other.relative to f32), f ]) to bool
+        ]
 
 
 struct YCoord
@@ -727,17 +851,38 @@ struct YCoord
     percent  : bool
 
     construct [ sy: string ]
-        f         : string [ first[ sy ] ]
-        y_type    = e_val[ YAlign, f.chars ]
-        sy_offset : string [ mid[ sy, 1, sy.count - 1 ] ]
-        if [ last_element[ sy_offset ] == '%' ]
-            sy_offset = mid[ sy_offset, 0, sy_offset.count - 1 ]
+        f         : string [ sy.first[] ]
+        y_type    = YAlign[ f ]
+        sy_offset : sy.mid[ 1, sy.count - 1 ]
+        if [ sy_offset.last[] == '%' ]
+            sy_offset = sy_offset.mid[ 0, sy_offset.count - 1 ]
             percent   = true
         if [ sy_offset ]
-            if [ last_element[ sy_offset ] == '+' ]
-                sy_offset = mid[ sy_offset, 0, sy_offset.count - 1 ]
+            if [ sy_offset.last[] == '+' ]
+                sy_offset = sy_offset.mid[ 0, sy_offset.count - 1 ]
                 relative  = true
-        offset = real_value[ sy_offset ]
+        offset = sy_offset.real_value[]
+
+    func plot [ from: f32, vto: f32, top: ref YCoord, top_val: f32, rel: rect ] -> f32
+        val : f32 [ mix[ offset, offset * (vto - from), percent ] ]
+        if [ y_type > YAlign.bottom ]
+            expect top.y_type <= YAlign.bottom, 'invalid top-operand (ycoord)'
+            return top_val + val
+        r : f32 [ (rel && relative) ? rel.h * relative : 0.0 ]
+        hsz : f32 [ (vto - from) / 2.0 ]
+        if [ y_type < YAlign.middle ]
+            M : f32 [ (y_type to f32) * 2.0 ]
+            return from + hsz * M + val + r
+        R : f32 [ ((y_type to f32) - (YAlign.middle to f32)) * 2.0 ]
+        return from + ((hsz + val) * (1.0 - R)) + ((hsz * 2.0 - val) * R) + r
+
+    func mix [ other: YCoord, f: f32 ] -> YCoord
+        return YCoord [
+            y_type:  (mix[ (y_type   to f32),  (other.y_type   to f32), f ]) to YAlign,
+            offset:   mix[ offset,              other.offset,           f ],
+            percent: (mix[ (percent  to f32),  (other.percent  to f32), f ]) to bool,
+            relative:(mix[ (relative to f32),  (other.relative to f32), f ]) to bool
+        ]
 
 
 class Region
@@ -762,17 +907,17 @@ class Region
         set = true
 
     construct [ s: string ]
-        a : array [ split[ s, ' ' ] ]
+        aa : array string [ s.split[ ' ' ] ]
         if [ a.count == 4 ]
-            l = XCoord [ a[0] ]
-            t = YCoord [ a[1] ]
-            r = XCoord [ a[2] ]
-            b = YCoord [ a[3] ]
+            l = XCoord [ aa[0] ]
+            t = YCoord [ aa[1] ]
+            r = XCoord [ aa[2] ]
+            b = YCoord [ aa[3] ]
         el [ a.count == 1 ]
-            l = XCoord [ a[0] ]
-            t = YCoord [ a[0] ]
-            r = XCoord [ a[0] ]
-            b = YCoord [ a[0] ]
+            l = XCoord [ aa[0] ]
+            t = YCoord [ aa[0] ]
+            r = XCoord [ aa[0] ]
+            b = YCoord [ aa[0] ]
         set = true
 
     func rectangle_offset [ rel: rect ] -> rect
@@ -781,24 +926,22 @@ class Region
         if [ !area ]
             reg = Region [ 0.0 ]
             area = reg
-        r: rectangle[ area, rel, null ]
-        if [ reg ]
-            drop[ reg ]
+        r: area.rectangle[ rel, null ]
         return r
 
     func rectangle [ win: rect, rel: rect ] -> rect
-        lv : f32 [ XCoord_plot[ ref l, win.x, win.x + win.w, null, null, rel ] ]
-        rv : f32 [ XCoord_plot[ ref r, win.x, win.x + win.w, ref l, ref lv, rel ] ]
-        tv : f32 [ YCoord_plot[ ref t, win.y, win.y + win.h, null, null, rel ] ]
-        bv : f32 [ YCoord_plot[ ref b, win.y, win.y + win.h, ref t, ref tv, rel ] ]
+        lv : l.plot[ win.x, win.x + win.w, null,  0.0, rel ]
+        rv : r.plot[ win.x, win.x + win.w, ref l, lv,  rel ]
+        tv : t.plot[ win.y, win.y + win.h, null,  0.0, rel ]
+        bv : b.plot[ win.y, win.y + win.h, ref t, tv,  rel ]
         return rect [ x: lv, y: tv, w: rv - lv, h: bv - tv ]
 
     func mix [ other: Region, f: f32 ] -> Region
         reg : Region [ set: true ]
-        reg.l = XCoord_mix[ ref l, ref other.l, f ]
-        reg.t = YCoord_mix[ ref t, ref other.t, f ]
-        reg.r = XCoord_mix[ ref r, ref other.r, f ]
-        reg.b = YCoord_mix[ ref b, ref other.b, f ]
+        reg.l = l.mix[ other.l, f ]
+        reg.t = t.mix[ other.t, f ]
+        reg.r = r.mix[ other.r, f ]
+        reg.b = b.mix[ other.b, f ]
         return reg
 
 
@@ -813,18 +956,19 @@ class Rotation
         degs   = f.w
 
     construct [ s: string ]
-        sp : array [ split[ s, ' ' ] ]
+        sp : array string [ s.split[ ' ' ] ]
         expect sp.count == 4, 'expected x y z Ndeg'
-        expect ends_with[ sp[3], 'deg' ], 'expected Ndeg'
-        axis.x = real_value[ sp[0] ]
-        axis.y = real_value[ sp[1] ]
-        axis.z = real_value[ sp[2] ]
-        degs   = real_value[ sp[3] ]
+        f : string[ sp[3] ]
+        expect f.ends_with[ 'deg' ], 'expected Ndeg'
+        axis.x = sp[0].real_value[]
+        axis.y = sp[1].real_value[]
+        axis.z = sp[2].real_value[]
+        degs   = sp[3].real_value[]
 
     public func mix [ b: Rotation, f: f32 ] -> Rotation
         return Rotation [
-            axis: vec3f_mix[ ref axis, ref b.axis, f ],
-            degs: f32_mix[ degs, b.degs, f ]
+            axis: axis.mix[ b.axis, f ],
+            degs: mix[ degs, b.degs, f ]
         ]
 
 
@@ -835,15 +979,15 @@ class Translation
         value = f
 
     construct [ s: string ]
-        sp : array [ split[ s, ' ' ] ]
+        sp : array [ s.split[ ' ' ] ]
         expect sp.count == 3, 'expected x y z'
-        value.x = real_value[ sp[0] ]
-        value.y = real_value[ sp[1] ]
-        value.z = real_value[ sp[2] ]
+        value.x = sp[0].real_value[]
+        value.y = sp[1].real_value[]
+        value.z = sp[2].real_value[]
 
     public func mix [ b: Translation, f: f32 ] -> Translation
         return Translation [
-            value: vec3f_mix[ ref value, ref b.value, f ]
+            value: value.mix[ b.value, f ]
         ]
 
 
@@ -854,28 +998,16 @@ class Scaling
         value = f
 
     construct [ s: string ]
-        sp : array [ split[ s, ' ' ] ]
+        sp : array [ s.split[ ' ' ] ]
         expect sp.count == 3, 'expected x y z'
-        value.x = real_value[ sp[0] ]
-        value.y = real_value[ sp[1] ]
-        value.z = real_value[ sp[2] ]
+        value.x = sp[0].real_value[]
+        value.y = sp[1].real_value[]
+        value.z = sp[2].real_value[]
 
     public func mix [ b: Scaling, f: f32 ] -> Scaling
         return Scaling [
-            value: vec3f_mix[ ref value, ref b.value, f ]
+            value: value.mix[ b.value, f ]
         ]
-
-func bounce_out [ x: f64 ] -> f64
-    n1 : f64 [ 7.5625 ]
-    d1 : f64 [ 2.75 ]
-    if [ x < 1.0 / d1 ]
-        return n1 * x * x
-    el [ x < 2.0 / d1 ]
-        return n1 * (x - 1.5 / d1) * x + 0.75
-    el [ x < 2.5 / d1 ]
-        return n1 * (x - 2.25 / d1) * x + 0.9375
-    el
-        return n1 * (x - 2.625 / d1) * x + 0.984375
 
 scalar sec : i64
     cast -> ns  [ a * 1000000000 ]
@@ -918,13 +1050,13 @@ class StyleTransition
     intern location     : ref object
 
     construct [ s: string ]
-        sp : array [ split[ s, ' ' ] ]
+        sp : array [ s.split[ ' ' ] ]
         ln : i32 [ sp.count ]
         # syntax: 500ms [ease [out]]
         dur_string : string [ sp[0] ]
         duration   = TimeCoord [ dur_string ]
-        easing     = ln > 1 ? Ease[ sp[1] ]      : Ease.linear
-        dir        = ln > 2 ? Direction[ sp[2] ]  : Direction.in
+        easing     = (ln > 1) ? Ease[ sp[1] ]      : Ease.linear
+        dir        = (ln > 2) ? Direction[ sp[2] ]  : Direction.in
 
     func pos [ tf: f64 ] -> f64
         x : f64 [ clamp[ tf, 0.0, 1.0 ] ]
@@ -938,7 +1070,7 @@ class StyleTransition
                     case out
                         return 1.0 - (1.0 - x) * (1.0 - x)
                     case in_out
-                        return x < 0.5 ? 2.0 * x * x : 1.0 - pow[ -2.0 * x + 2.0, 2.0 ] / 2.0
+                        return (x < 0.5) ? 2.0 * x * x : 1.0 - pow[ -2.0 * x + 2.0, 2.0 ] / 2.0
             case cubic
                 switch [ dir ]
                     case in
@@ -946,7 +1078,7 @@ class StyleTransition
                     case out
                         return 1.0 - pow[ 1.0 - x, 3.0 ]
                     case in_out
-                        return x < 0.5 ? 4.0 * x * x * x : 1.0 - pow[ -2.0 * x + 2.0, 3.0 ] / 2.0
+                        return (x < 0.5) ? 4.0 * x * x * x : 1.0 - pow[ -2.0 * x + 2.0, 3.0 ] / 2.0
             case quart
                 switch [ dir ]
                     case in
@@ -954,7 +1086,7 @@ class StyleTransition
                     case out
                         return 1.0 - pow[ 1.0 - x, 4.0 ]
                     case in_out
-                        return x < 0.5 ? 8.0 * x * x * x * x : 1.0 - pow[ -2.0 * x + 2.0, 4.0 ] / 2.0
+                        return (x < 0.5) ? 8.0 * x * x * x * x : 1.0 - pow[ -2.0 * x + 2.0, 4.0 ] / 2.0
             case quint
                 switch [ dir ]
                     case in
@@ -962,7 +1094,7 @@ class StyleTransition
                     case out
                         return 1.0 - pow[ 1.0 - x, 5.0 ]
                     case in_out
-                        return x < 0.5 ? 16.0 * x * x * x * x * x : 1.0 - pow[ -2.0 * x + 2.0, 5.0 ] / 2.0
+                        return (x < 0.5) ? 16.0 * x * x * x * x * x : 1.0 - pow[ -2.0 * x + 2.0, 5.0 ] / 2.0
             case sine
                 PI : f64 [ 3.14159265358979323846 ]
                 switch [ dir ]
@@ -975,11 +1107,11 @@ class StyleTransition
             case expo
                 switch [ dir ]
                     case in
-                        return x == 0.0 ? 0.0 : pow[ 2.0, 10.0 * x - 10.0 ]
+                        return (x == 0.0) ? 0.0 : pow[ 2.0, 10.0 * x - 10.0 ]
                     case out
-                        return x == 1.0 ? 1.0 : 1.0 - pow[ 2.0, -10.0 * x ]
+                        return (x == 1.0) ? 1.0 : 1.0 - pow[ 2.0, -10.0 * x ]
                     case in_out
-                        return x == 0.0 ? 0.0 : x == 1.0 ? 1.0 : x < 0.5 ? pow[ 2.0, 20.0 * x - 10.0 ] / 2.0 : (2.0 - pow[ 2.0, -20.0 * x + 10.0 ]) / 2.0
+                        return (x == 0.0) ? 0.0 : (x == 1.0) ? 1.0 : (x < 0.5) ? pow[ 2.0, 20.0 * x - 10.0 ] / 2.0 : (2.0 - pow[ 2.0, -20.0 * x + 10.0 ]) / 2.0
             case circ
                 switch [ dir ]
                     case in
@@ -987,7 +1119,7 @@ class StyleTransition
                     case out
                         return sqrt[ 1.0 - pow[ x - 1.0, 2.0 ] ]
                     case in_out
-                        return x < 0.5 ? (1.0 - sqrt[ 1.0 - pow[ 2.0 * x, 2.0 ] ]) / 2.0 : (sqrt[ 1.0 - pow[ -2.0 * x + 2.0, 2.0 ] ] + 1.0) / 2.0
+                        return (x < 0.5) ? (1.0 - sqrt[ 1.0 - pow[ 2.0 * x, 2.0 ] ]) / 2.0 : (sqrt[ 1.0 - pow[ -2.0 * x + 2.0, 2.0 ] ] + 1.0) / 2.0
             case back
                 c1 : f64 [ 1.70158 ]
                 c2 : f64 [ c1 * 1.525 ]
@@ -998,18 +1130,18 @@ class StyleTransition
                     case out
                         return 1.0 + c3 * pow[ x - 1.0, 3.0 ] + c1 * pow[ x - 1.0, 2.0 ]
                     case in_out
-                        return x < 0.5 ? (pow[ 2.0 * x, 2.0 ] * ((c2 + 1.0) * 2.0 * x - c2)) / 2.0 : (pow[ 2.0 * x - 2.0, 2.0 ] * ((c2 + 1.0) * (x * 2.0 - 2.0) + c2) + 2.0) / 2.0
+                        return (x < 0.5) ? (pow[ 2.0 * x, 2.0 ] * ((c2 + 1.0) * 2.0 * x - c2)) / 2.0 : (pow[ 2.0 * x - 2.0, 2.0 ] * ((c2 + 1.0) * (x * 2.0 - 2.0) + c2) + 2.0) / 2.0
             case elastic
                 PI  : f64 [ 3.14159265358979323846 ]
                 c4  : f64 [ 2.0 * PI / 3.0 ]
                 c5e : f64 [ 2.0 * PI / 4.5 ]
                 switch [ dir ]
                     case in
-                        return x == 0.0 ? 0.0 : x == 1.0 ? 1.0 : -pow[ 2.0, 10.0 * x - 10.0 ] * sin[ (x * 10.0 - 10.75) * c4 ]
+                        return (x == 0.0) ? 0.0 : (x == 1.0) ? 1.0 : -pow[ 2.0, 10.0 * x - 10.0 ] * sin[ (x * 10.0 - 10.75) * c4 ]
                     case out
-                        return x == 0.0 ? 0.0 : x == 1.0 ? 1.0 : pow[ 2.0, -10.0 * x ] * sin[ (x * 10.0 - 0.75) * c4 ] + 1.0
+                        return (x == 0.0) ? 0.0 : (x == 1.0) ? 1.0 : pow[ 2.0, -10.0 * x ] * sin[ (x * 10.0 - 0.75) * c4 ] + 1.0
                     case in_out
-                        return x == 0.0 ? 0.0 : x == 1.0 ? 1.0 : x < 0.5 ? -(pow[ 2.0, 20.0 * x - 10.0 ] * sin[ (20.0 * x - 11.125) * c5e ]) / 2.0 : (pow[ 2.0, -20.0 * x + 10.0 ] * sin[ (20.0 * x - 11.125) * c5e ]) / 2.0 + 1.0
+                        return (x == 0.0) ? 0.0 : (x == 1.0) ? 1.0 : (x < 0.5) ? -(pow[ 2.0, 20.0 * x - 10.0 ] * sin[ (20.0 * x - 11.125) * c5e ]) / 2.0 : (pow[ 2.0, -20.0 * x + 10.0 ] * sin[ (20.0 * x - 11.125) * c5e ]) / 2.0 + 1.0
             case bounce
                 switch [ dir ]
                     case in
@@ -1017,7 +1149,7 @@ class StyleTransition
                     case out
                         return bounce_out[ x ]
                     case in_out
-                        return x < 0.5 ? (1.0 - bounce_out[ 1.0 - 2.0 * x ]) / 2.0 : (1.0 + bounce_out[ 2.0 * x - 1.0 ]) / 2.0
+                        return (x < 0.5) ? (1.0 - bounce_out[ 1.0 - 2.0 * x ]) / 2.0 : (1.0 + bounce_out[ 2.0 * x - 1.0 ]) / 2.0
             default
                 return x
         return x
@@ -1026,9 +1158,9 @@ class StyleTransition
         return duration.get_millis[] > 0
 
 
-
 class StyleQualifier
     intern ty       : Au_t
+    context bl      : StyleBlock
     public type     : string
     public id       : string
     public state    : string
@@ -1045,39 +1177,11 @@ class StyleSelection
     public entry : StyleEntry
 
 
-
-# arg state for config
-# from user (not style)
-# inline struct data held here
 class arg
     public name     : string
     public value    : object
     public offset   : i32
     public is_inlay : bool
-
-
-enum Fill : f32
-    none      : 0.00f
-    blur      : 0.50f
-    frost     : 1.00
-
-enum CanvasType
-    overlay     : 0
-    compose     : 1
-    colorize    : 2
-    glyph       : 3
-
-enum Pattern
-    none : 0
-    repeat_x : 1
-    repeat_y : 2
-    repeat_xy : 3
-
-enum Clip
-    none : 0
-    clip : 1
-    ellipsis : 2
-
 
 class Mixable
     public construct [ string ]
@@ -1141,20 +1245,9 @@ Layer Border
 
 Layer FillLayer
 
-
 # scrolling requires defined children Region
 Layer Children
     public scroll : vec2f
-
-
-func ux_event [ e: element, esubs: subs, ev: Event ]
-    if [ !esubs ]
-        return
-    for [ sub: subscriber ] in esubs.entries
-        ev.target = e
-        sub.method[ sub.target, ev ]
-        if [ ev.stop_propagation ]
-            return
 
 
 element World
@@ -1186,30 +1279,29 @@ element World
         if [ update ]
             invoke[ update, self ]
 
-        at : array [ translate ]
-        ar : array [ rotate ]
-        as : array [ scale ]
+        at : translate
+        ar : rotate
+        as : scale
 
         if [ at || ar || as ]
             for [ m: model ] in target.models
-                free[ m.transforms ]
-                ln0 : i32 [ at ? at.count : 0 ]
-                ln1 : i32 [ ar ? ar.count : 0 ]
-                ln2 : i32 [ as ? as.count : 0 ]
-                ln  : i32 [ ln0 > ln1 && ln0 > ln2 ? ln0 : ln1 > ln0 && ln1 > ln2 ? ln1 : ln2 ]
+                ln0 : i32 [ (at) ? at.count : 0 ]
+                ln1 : i32 [ (ar) ? ar.count : 0 ]
+                ln2 : i32 [ (as) ? as.count : 0 ]
+                ln  : i32 [ (ln0 > ln1 && ln0 > ln2) ? ln0 : (ln1 > ln0 && ln1 > ln2) ? ln1 : ln2 ]
                 m.transforms      = new mat4f [ ln ]
                 m.transform_count = ln
                 for [ i: i32 0, i < ln, i += 1 ]
                     mat : mat4f [ mat4f.identity[] ]
-                    s : Scaling [ as ? peek[ as, i ] : null ]
+                    s : Scaling [ (as) ? peek[ as, i ] : null ]
                     if [ s ]
                         mat = mat4f.scale[ ref mat, ref s.value ]
-                    r : Rotation [ ar ? peek[ ar, i ] : null ]
+                    r : Rotation [ (ar) ? peek[ ar, i ] : null ]
                     if [ r ]
                         v   : vec4f [ r.axis.x, r.axis.y, r.axis.z, radians[ r.degs ] ]
                         q   : quatf [ quatf[ ref v ] ]
                         mat = mat4f.rotate[ ref mat, ref q ]
-                    t : Translation [ at ? peek[ at, i ] : null ]
+                    t : Translation [ (at) ? peek[ at, i ] : null ]
                     if [ t ]
                         mat = mat4f.translate[ ref mat, ref t.value ]
                     m.transforms[i] = mat
@@ -1217,7 +1309,7 @@ element World
         if [ typeid[ self ] == typeid[ background ] ]
             return
 
-        w.overlay.set_texture[ target.reduction ? target.reduction : target.color ]
+        w.overlay.set_texture[ (target.reduction) ? target.reduction : target.color ]
         w.overlay.draw_fill[]
 
     func dealloc []
@@ -1287,16 +1379,6 @@ shader Blur
     public color : attrib [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
 
 
-enum UXSurface
-    background  : 0
-    frost       : 1
-    blur        : 2
-    compose     : 3
-    colorize    : 4
-    overlay     : 5
-    glyph       : 6
-
-
 shader UXCompose
     mutable model        : mat4f
     mutable view         : mat4f
@@ -1358,7 +1440,7 @@ class DrawState
     public opacity              : f32
 
     public func set_default [ ] 
-        font         = hold[ font [ size: 22, uri: path 'fonts/Sofia-Sans-Condensed.ttf' ] ]
+        font         = font[ size: 22, uri: path 'fonts/Sofia-Sans-Condensed.ttf' ].hold[]
         stroke_cap   = Cap.round
         stroke_join  = Join.round
         stroke_size  = 0
@@ -1367,10 +1449,6 @@ class DrawState
         opacity      = 1.0
 
 
-# intern members resolve size once
-
-func sk_sync_all []
-
 class Particle
     public pos      : vec2f
     public velocity : vec2f
@@ -1378,12 +1456,166 @@ class Particle
     public pressure : f32
 
 
+func parse_quoted [ cursor: ref cstr, max_len: sz ] -> string
+    first : cstr [ cursor[0] ]
+    if [ first[0] != '"' ]                                                                                                          
+        return ''
+    cursor[0] += 1                                                                            
+    start : cstr [ cursor[0] ]
+    s     : cstr [ start ]
+    last_slash : false                 
+    while [ s[0] != 0 ]           
+        if [ s[0] == '\\' ]
+            last_slash = true
+        el [ s[0] == '"' && !last_slash ]
+            break
+        else
+            last_slash = false
+        s += 1
+    if [ s[0] == 0 ]
+        return ''                                                                                                                   
+    slen : sz [ s - start ]
+    if [ max_len > 0 && slen > max_len ]                                                                                            
+        return ''                            
+    cursor[0] = ref s[1]
+    return string [ chars: start, ref_length: slen ] 
+
+
+func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
+    expect bl, 'style-block context.. its not set!  dak not steady either'
+    start : cstr   [ p[0] ]
+    end   : cstr   [ null ]
+    scan  : cstr   [ start ]
+    qstr  : string [ null ]
+    while [ scan[0] ]
+        if [ !scan[0] || scan[0] == '{' ]
+            end  = scan
+            qstr = string [ chars: start, ref_length: distance[ start, scan ] ]
+            break
+        scan += 1
+    if [ !qstr ]
+        end = scan
+        p[0] = end
+        return null
+    quals  : array string [ qstr.split[ ',' ] ]
+    result : array StyleQualifier [ ]
+    ops    : array string [ '!=', '>=', '<=', '>', '<', '=' ]
+    for [ qs: string ] in quals
+        qq : string [ qs.trim[] ]
+        if [ !qq.len ]
+            continue
+        v : StyleQualifier[]
+        result.push[ v ]
+        parent_to_child : array [ qq.split[ '/' ] ]
+        processed : StyleQualifier [ null ]
+        for [ i: i32 parent_to_child.count - 1, i >= 0, i -= 1 ]
+            q : string [ parent_to_child[i].trim[] ]
+            if [ processed ]
+                v.parent = StyleQualifier[]
+                v = v.parent
+            idot : q.index_of[ '.' ]
+            icol : q.index_of[ ':' ]
+            tail : string [ null ]
+            if [ idot >= 0 ]
+                sp      : q.split[ '.' ]
+                no_type : q.chars[0] == '.'
+                v.type  = (no_type) ? 'element' : sp[0].trim[]
+                sp2     : sp[ (no_type) ? 0 : 1 ].split[ ':' ]
+                v.id    = sp2[0]
+                if [ icol >= 0 ]
+                    tail = q.mid[ icol + 1, q.len - (icol + 1) ].trim[]
+            el
+                if [ icol >= 0 ]
+                    v.type = q.mid[ 0, icol ].trim[]
+                    tail   = q.mid[ icol + 1, q.len - (icol + 1) ].trim[]
+                el
+                    v.type = q.trim[]
+            if [ v.type ]
+                v.ty = module_lookup[ v.type.chars ]
+                expect v.ty, 'type must exist: {v.type}'
+                if [ bl.types.index_of[ v.ty ] == -1 ]
+                    bl.types.push[ v.ty ]
+            if [ tail ]
+                is_op : false
+                for [ op_name: string ] in ops
+                    if [ tail.index_of[ op_name ] >= 0 ]
+                        is_op = true
+                        sp    : array string [ tail.split[ op_name ] ]
+                        f     : string [ sp[0] ]
+                        v.state = f.trim[]
+                        v.oper  = op_name
+                        istart : i32 [ f.len + op.len ]
+                        v.value = tail.mid[ istart, tail.len - istart ].trim[]
+                        break
+                if [ !is_op ]
+                    v.state = tail
+            processed = v
+            v.hold_members[]
+    p[0] = end
+    return result
+
+
+func ws [ p_cursor: ref cstr ] -> bool
+    cursor : cstr [ p_cursor[0] ]
+    while [ isspace[ cursor[0] ] || is_cmt[ cursor ] ]
+        while [ isspace[ cursor[0] ] ]
+            cursor += 1
+        if [ is_cmt[ cursor ] ]
+            f : cstr [ strstr[ cursor, '*/' ] ]
+            cursor = (f) ? ref f[2] : ref cursor[ strlen[ cursor ] - 1 ]
+    p_cursor[0] = cursor
+    return cursor != 0
+
+
+
+func scan_to [ p_cursor: ref cstr, chars: string ] -> bool
+    sl  : false
+    qt  : false
+    qt2 : false
+    cursor : cstr [ p_cursor[0] ]
+    while [ cursor && cursor[0] ]
+        if [ !sl ]
+            if [ cursor[0] == '"' ]
+                qt = !qt
+            el [ cursor[0] == '\'' ]
+                qt2 = !qt2
+        sl = cursor[0] == '\\'
+        if [ !qt && !qt2 ]
+            if [ chars.index_of[ cursor[0] ] >= 0 ]
+                p_cursor[0] = cursor
+                return true
+        cursor += 1
+    p_cursor[0] = null
+    return false
+
+
+func distance [ a:i8, b:i8 ] -> i64
+    return abs[ sz[ a ] - sz[ b ] ]
+
+
+func is_alpha2 [ c: i8 ] -> bool                                                                                                     
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+
+
+func bounce_out [ x: f64 ] -> f64
+    n1 : f64 [ 7.5625 ]
+    d1 : f64 [ 2.75 ]
+    if [ x < 1.0 / d1 ]
+        return n1 * x * x
+    el [ x < 2.0 / d1 ]
+        return n1 * (x - 1.5 / d1) * x + 0.75
+    el [ x < 2.5 / d1 ]
+        return n1 * (x - 2.25 / d1) * x + 0.9375
+    el
+        return n1 * (x - 2.625 / d1) * x + 0.984375
+
+
 func image_release_buffer [ a: Image ] -> object
     b: buffer [ a.res ]
     vk: vk_context [ b.vk ]
     vmaUnmapMemory[ vk.allocator, b.vma_alloc ]
     vmaDestroyBuffer[ vk.allocator, b.vk_buffer, b.vma_alloc ]
-    drop[ b ]
+    b.drop[]
     return null
 
 # [removed] pixel_from_format — exists in vulkan2.ag
@@ -1412,18 +1644,18 @@ func app_render [ a: app ]
     el [ !a.ason_render || modified_time[ a.ason_path ] > a.ason_modified ]
         a.ason_modified = modified_time[ a.ason_path ]
         if [ !a.app_context ]
-            a.app_context = hold[ ctx [ hsize: 32 ] ]
+            a.app_context = ctx[ hsize: 32 ].hold[]
         type: Au_t [ isa[ a ] ]
         ty: Au_t [ type ]
         while [ ty != typeid[ Au ] ]
             for [ m: num 0, m < ty.member_count, m += 1 ]
                 mem: ref type_member_t [ ref ty.members[m] ]
-                from: object [ A_member_object[ a, mem ] ]
+                from : a.member_object[ mem ]
                 if [ !from ]
                     continue
-                ctx_val: object [ get[ a.app_context, mem.sname ] ]
-                if [ from && !ctx_val || compare[ from, ctx_val ] != 0 ]
-                    set[ a.app_context, mem.sname, from ]
+                ctx_val : a.app_context[ mem.sname ]
+                if [ from && !ctx_val || from.compare[ ctx_val ] != 0 ]
+                    a.app_context.set[ mem.sname, from ]
             ty = ty.parent_type
         ason_render: map [ read[ a.ason_path, typeid[ map ], a.app_context ] ]
         ty = type
@@ -1432,12 +1664,12 @@ func app_render [ a: app ]
                 mem: ref type_member_t [ ref ty.members[m] ]
                 if [ !(mem.member_type & A_MEMBER_PROP) ]
                     continue
-                member: object [ A_member_object[ a, mem ] ]
-                to:     object [ get[ a.app_context, mem.sname ] ]
-                if [ (!member && to) || (!to && member) || (member && to && A_memcmp[ member, to ] != 0) ]
-                    A_member_set[ a, mem, to ]
+                member : a.member_object[ mem ]
+                to    : a.app_context[ mem.sname ]
+                if [ (!member && to) || (!to && member) || (member && to && member.compare[ to ] != 0) ]
+                    a.member_set[ mem, to ]
             ty = ty.parent_type
-        a.ason_render = hold[ ason_render ]
+        a.ason_render = ason_render.hold[]
         elements = a.ason_render
     if [ elements ]
         update_all[ w.ux, elements ]
@@ -1451,260 +1683,9 @@ func app_render [ a: app ]
     sk_sync[]
     draw[ w ]
 
-# --- globals ---
-
-
-# ========================================================================
-# SCRATCH — functions from trinity.c to convert to Silver
-# ========================================================================
-
-
-# ---- target (render pass / framebuffer) ----
-# allocates command buffer, creates render pass with color+depth attachments,
-# semaphores, fence, then calls update for framebuffer creation
-
-# func target.init [] 
-#     alloc command buffer from vk.command_pool
-#     create render pass: color attachment (surface format) + depth (D32_SFLOAT)
-#     subpass with color+depth refs
-#     dependencies for layout transitions
-#     create semaphores (if not backbuffer)
-#     create fence (signaled)
-#     if reduce: create reduce_model with reduce_shader
-#     call update
-#     finish all models on their render pass
-
-# func target.update [] 
-#     scale width/height from wscale if set
-#     if color exists: resize color, depth, reduction textures
-#     else: create color texture (surface format), depth (D32_SFLOAT), reduction
-#     transition layouts (color attachment or shader read depending on backbuffer)
-#     create framebuffers for each render pass
-
-# func target.draw [] 
-#     for each pass (main + reduce):
-#       transition color/reduction to COLOR_ATTACHMENT_OPTIMAL
-#       reset fence, reset command buffer, begin recording
-#       set viewport + scissor
-#       begin render pass with clear values
-#       draw all models/pipelines (pass 0) or reduce model (pass 1)
-#       end render pass, end command buffer
-#       submit with semaphore wait/signal if swap Image
-
-# func target.sync_fence [] 
-#     vkWaitForFences on vk_fence
-
-# func target.dealloc [] 
-#     destroy framebuffers, render passes, fence, semaphores
-
-
-# ---- window ----
-# GLFW window creation, Vulkan surface, swapchain, present mode selection
-
-# func window.init [] 
-#     set defaults (format rgba8, width 1200, height 1200)
-#     create Event object
-#     if not backbuffer:
-#       glfwCreateWindow, set callbacks (key, mouse, scroll, char, cursor, resize)
-#       glfwCreateWindowSurface
-#     call vk.attach[surface]
-#     query surface capabilities, formats, present modes
-#     choose B8G8R8A8_UNORM format, MAILBOX present mode
-#     set extent from glfw window size
-
-# func window.resize [width: i32, height: i32] 
-#     vkDeviceWaitIdle
-#     update all targets
-#     rebind models if resized
-#     query new surface capabilities
-#     recreate swapchain with new dimensions
-#     recreate swap images and swap renders
-#     update canvas
-
-# func window.draw [] 
-#     if not backbuffer:
-#       acquire next swap Image
-#       draw swap render target
-#       present to queue
-#       advance swap Image index
-
-# func window.dealloc [] 
-#     destroy swapchain, surface, swap images
-
-# func window.cast_image [] -> Image
-#     create transfer buffer, copy color to it, return as Image
-
-# func window.update_canvas [] 
-#     resize or create compose/colorize/overlay/glyph skia surfaces
-#     clear each with default colors
-
-
-# ---- GLFW callbacks ----
-# each gets window from glfwGetWindowUserPointer, fills Event, dispatches to ux
-
-# func handle_glfw_framebuffer_size [win, width, height]
-#     if minimized return; call resize
-
-# func handle_glfw_key [win, key, scan_code, action, mods]
-#     fill Event key fields, dispatch key_event to ux
-
-# func handle_glfw_scroll [win, x, y]
-#     fill mouse wheel_delta, dispatch wheel_event
-
-# func handle_glfw_mouse [win, id, action, mods]
-#     fill mouse button/state, dispatch press/release Event
-
-# func handle_glfw_char [win, code_point]
-#     create text string, dispatch text_event
-
-# func handle_glfw_cursor [win, x, y]
-#     update mouse pos, dispatch move_event
-
-
-# ---- app ----
-
-# func app.init [] 
-#     create vk_context
-#     create style, composer
-#     bind on_render or load ason_path
-
-# func app.initialize [win: window] 
-#     set ux.w = win, w.ux = ux
-#     update_canvas, app_render, resize
-
-# func app.run [] 
-#     main loop: glfwPollEvents, render, present
-#     cleanup on exit
-
-# func app.dealloc [] 
-#     cleanup
-
-
-# ---- pipeline ----
-# Vulkan graphics pipeline: descriptor sets, pipeline layout, shaders, vertex input
-
-# func pipeline.init [] 
-#     create descriptor set layout from shader uniforms
-#     create pipeline layout
-#     create graphics pipeline (vert/frag stages, vertex input, rasterizer, multisampling, depth, blend)
-#     allocate descriptor sets
-
-# func pipeline.draw [frame: VkCommandBuffer] 
-#     update uniforms
-#     bind pipeline, descriptor sets, vertex/index buffers
-#     draw indexed or draw vertices
-
-# func pipeline.bind_resources [] 
-#     for each descriptor: bind uniform buffers and texture samplers
-#     write descriptor sets
-
-# func pipeline.reassemble [] 
-#     rebuild pipeline on shader reload
-
-# func pipeline.dealloc [] 
-#     destroy pipeline, pipeline layout, descriptor pool/sets
-
-
-# ---- model ----
-# groups pipelines with vertex data, manages gltf scene binding
-
-# func model.finish [r: target, pass_id: i32] 
-#     init_pipeline for each gltf primitive
-#     sync gpu objects
-#     bind resources on all pipelines
-
-# func model.dealloc [] 
-#     cleanup pipelines, gpu objects
-
-# func model.rebind [] 
-#     rebind all pipelines
-
-
-# ---- gpu (mesh object) ----
-# vertex/index buffer management for draw calls
-
-# func gpu.init [] 
-#     create VBO from vertex_data, IBO from index_data
-#     create texture from sampler if provided
-
-# func gpu.sync [w: window] 
-#     upload vertex/index data to GPU buffers
-
-# func gpu.dealloc [] 
-#     destroy VBO, IBO, texture
-
-
-# ---- uniforms ----
-
-# func uniforms.init [] 
-#     create uniform buffers for each shader binding
-#     allocate descriptor pool and sets
-
-# func uniforms.update [] 
-#     map each uniform buffer, memcpy shader data, unmap
-
-
-# ---- shader inits ----
-
-# func UVQuad.init [] 
-#     model = identity, view = look_at(0,0,2), proj = ortho(-1,1,-1,1,0.1,10)
-
-# func UVReduce.init [] 
-#     same as UVQuad
-
-# func UXSimple.init [] 
-#     same as UVQuad
-
-# func UXCompose.init [] 
-#     same as UVQuad
-
-# func PBR.init [] 
-#     shader name "pbr"
-
-# func Env.init [] 
-#     shader name "env"
-
-
-# ---- canvas stubs ----
-# these are the drawing API — will be implemented in canvas.ag
-
-# func canvas.resize [] 
-# func canvas.move_to [x: f32, y: f32] 
-# func canvas.line_to [x: f32, y: f32] 
-# func canvas.rect_to [x: f32, y: f32, w: f32, h: f32] 
-# func canvas.rounded_rect_to [x: f32, y: f32, w: f32, h: f32, r: f32] 
-# func canvas.arc_to [x: f32, y: f32, r: f32, start: f32, end: f32] 
-# func canvas.arc [cx: f32, cy: f32, r: f32, start: f32, end: f32] 
-# func canvas.blur_radius [r: f32] 
-# func canvas.set_texture [tx: texture] 
-# func canvas.draw_fill [] 
-# func canvas.draw_stroke [] 
-# func canvas.draw_fill_preserve [] 
-# func canvas.draw_stroke_preserve [] 
-# func canvas.cubic [cx1: f32, cy1: f32, cx2: f32, cy2: f32, x: f32, y: f32] 
-# func canvas.quadratic [cx: f32, cy: f32, x: f32, y: f32] 
-# func canvas.save [] 
-# func canvas.restore [] 
-# func canvas.set_font [f: font] 
-# func canvas.stroke_size [s: f32] 
-# func canvas.stroke_cap [c: i32] 
-# func canvas.stroke_join [j: i32] 
-# func canvas.stroke_miter_limit [l: f32] 
-# func canvas.stroke_dash_offset [o: f32] 
-# func canvas.fill_color [c: object] 
-# func canvas.stroke_color [c: object] 
-# func canvas.clear [c: object] 
-# func canvas.prepare [] 
-# func canvas.sync [] 
-# func canvas.output_mode [output: bool] 
-
-
-# ---- environment cubemap ----
-# generates cubemap from equirectangular Image
-# stays in trinity (uses models/shaders)
-
-# func environment [vk: vk_context, img: Image, r_axis: vec3f, Rotation: f32] -> texture
-#     create 6-face cubemap texture
-#     for each face: set up view matrix, render equirect to face
-#     generate mipmaps
-
+func ux_event [ e: element, esubs: EventDispatch, ev: Event ]
+    if [ !esubs ]
+        return
+    ev.target = e
+    esubs.invoke[ ev ]
+    ev.target = null

@@ -288,6 +288,10 @@ buf: new i32 [ 4x4 ]    # allocate with shape
 sizeof [ MyType ]       # size in bytes
 sizeof MyType           # also valid without brackets
 typeid [ MyType ]       # runtime type id
+
+# type casting
+x : (count to f32)      # convert i32 to f32
+p : (obj to ref u8)     # cast object to byte pointer
 ```
 
 ### Aliases

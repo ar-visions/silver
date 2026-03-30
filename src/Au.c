@@ -3538,6 +3538,42 @@ Au_t __typeid(Au input) {
     return i;
 }
 
+Au __convert(Au_t type, Au value) {
+    return formatter(type, false, null, (Au)false, 0, "%o", value);
+}
+
+Au Au_mix(Au a, Au target, f64 amount) {
+    Au t_val = _f64(amount);
+    Au diff  = __op(OPType__sub, target, a);
+    Au scale = __op(OPType__mul, diff, t_val);
+    Au result = __op(OPType__add, a, scale);
+    drop(t_val);
+    return result;
+}
+
+Au __op(i32 optype, Au L, Au R) {
+    Au_t type = isa(L);
+    Au_t op_mem = null;
+    Au_t search = type;
+    while (search && !op_mem) {
+        for (int i = 0; i < search->members.count; i++) {
+            Au_t mem = (Au_t)search->members.origin[i];
+            if (mem->operator_type == optype) {
+                op_mem = mem;
+                break;
+            }
+        }
+        if (search->context == search) break;
+        search = search->context;
+    }
+    assert(op_mem, "operator %d not found on type %s", optype, type->ident ? type->ident : "?");
+    char*  type_bytes = (char*)type;
+    void** ft = (void**)(type_bytes + offsetof(struct _Au_f, ft));
+    typedef Au (*op_fn)(Au, Au);
+    op_fn fn = (op_fn)ft[op_mem->index];
+    return fn(L, R);
+}
+
 none serialize(Au_t type, string res, Au a) {
     if (type->traits & AU_TRAIT_PRIMITIVE) {
         char buf[128];
