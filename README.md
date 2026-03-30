@@ -446,6 +446,29 @@ if [ s inherits array ]
     puts 'it is an array'
 ```
 
+### Elaboration
+
+When a subclass knows that an inherited member is actually a more specific type, it can **elaborate** on that member rather than adding a new one. This narrows the type for the compiler without changing storage or layout — unlike C++, no new member is introduced:
+
+```python
+Display Window
+    public ux       : UXComposer
+    public compose  : Canvas
+
+media_app app
+    w: Display              # base class declares w as Display
+
+media_app trinity
+    elaborate w  : Window       # same member, narrower type
+    elaborate ux : UXComposer   # same member, narrower type
+
+    func render []
+        w.compose.clear [ '#000' ]   # compose is visible because w is Window
+        w.ux.animate []              # ux is visible because w is Window
+```
+
+The `elaborate` keyword signals that no new storage is added — the member shares the same index and visibility as the original. The compiler simply treats it as the narrower type within the declaring class and its methods. The types must be compatible — the elaborated type must inherit from the original.
+
 ### Constructors
 
 Multiple constructors can be overloaded by argument type:

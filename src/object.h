@@ -245,6 +245,7 @@ typedef struct _Au_t {
             u64 is_flux      : 1;
             u64 is_c         : 1;   // AU_TRAIT_IS_C      = 1 << 52
             u64 is_expanding : 1;
+            u64 is_elaborate : 1;
         };
         u64 traits;
     };

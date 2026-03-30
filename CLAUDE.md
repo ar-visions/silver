@@ -217,13 +217,26 @@ each(items, type, var)
 
 ## Compiler Architecture (silver.c)
 
+### Compilation Phases
+
+`silver_parse()` drives compilation in distinct phases:
+
+1. **Statement loop** — parses module-level statements sequentially: imports, exports, aliases, class/struct/enum headers (bodies stashed as token arrays), free functions. `incremental_resolve()` called after each statement (currently a stub).
+2. **Deferred alias resolution** — aliases whose target types weren't available during phase 1 (forward references) are resolved in multi-pass order. Stored as `(Au_t, token array)` pairs in `a->pending_aliases`.
+3. **Phase 1: Record body parse** — `build_record_parse()` replays stashed tokens for each class/struct via `push_tokens`/`pop_tokens`, parsing members and method signatures.
+4. **Phase 2: LLVM type implementation** — `build_record_implement()` calls `etype_implement()` to build LLVM struct bodies, set member indices, create type IDs.
+5. **Phase 3: Function codegen** — `build_record_functions()` and `build_fn()` emit LLVM IR for all method and free function bodies.
+
+This phased approach means: all type names are registered before any body is parsed; all LLVM types exist before any function emits IR.
+
 ### Key Parse Functions
-- `silver_parse()` — entry point, sets up platform defines, loops `parse_statement()`
+- `silver_parse()` — entry point, sets up platform defines, runs all phases
 - `parse_statement()` — dispatches keywords (if/for/switch/return/class/func/etc.)
 - `parse_expression()` → `reverse_descent()` → `read_enode()` — expression parsing with precedence climbing
 - `read_enode()` — reads a single expression node (literals, variables, new, sizeof, etc.)
-- `parse_member()` — resolves member access chains (`a.b.c`), handles scope_mdl hint for enum inference
-- `read_etype()` — reads a type name, handles generics, refs, primitives, C types
+- `silver_parse_member()` — resolves member access chains (`a.b.c`), handles scope_mdl hint for enum inference
+- `read_etype()` — reads a type name, handles generics, refs, primitives, C types. Uses `read_named_model()` → `elookup()` → `rlookup()` → `lexical()` → `etype_prep()` chain.
+- `silver_read_def()` — parses type definitions: class, struct, enum, alias, scalar, import, export
 - `read_expression()` — tokenizing wrapper around `parse_expression`, used in switch/case for deferred build
 - `parse_switch()` — switch statement parser, passes enum hint via `canonical(e_expr)` to case value parsing
 - `parse_asm()` — inline assembly parser, supports conditional `asm <define>` and auto-gather
@@ -237,24 +250,67 @@ each(items, type, var)
 - `e_vector()` — heap array allocation
 - `canonical(enode)` — resolve enode to its underlying etype (follows vars → source type)
 - `is_enum(Au)` — checks if type is enum (uses `au_arg_type` to resolve through vars)
+- `etype_prep(a, au)` — find or create etype for an Au_t, calls `etype_create` + `etype_implement`
+- `etype_create(a, au)` — create etype wrapper for Au_t, register in `a->registry`
+- `etype_implement(t, force)` — build LLVM type body (struct fields, function signatures)
+- `etype_register(a, key, value, overwrite)` — store etype in `a->registry` map
+- `etype_access(target, name)` — member access: `find_member` → GEP at `m->index`
+- `u(etype, au)` — macro: `get(a->registry, (Au)au)` cast to etype. Registry lookup, NOT a field access.
 
 ### Token Navigation
 - `peek(a)` — look at next token without consuming
 - `consume(a)` — consume next token
 - `read_if(a, "keyword")` — consume if matches, return token or null
 - `next_is(a, "token")` — check without consuming
-- `element(a, -1)` — get previously consumed token
+- `element(a, N)` — token at cursor+N (0 = next unconsumed, -1 = last consumed)
 - `read_alpha(a)` — read an alphanumeric identifier
 - `peek_alpha(a)` — peek at next alpha without consuming
-- `push_current(a)` / `pop_tokens(a, keep)` — save/restore cursor for speculative parsing
+- `push_current(a)` / `pop_tokens(a, keep)` — save/restore cursor for speculative parsing. `push_current` is sugar for `push_tokens(a, a->tokens, a->cursor)`.
+- `push_tokens(a, tokens, cursor)` / `pop_tokens(a, keep)` — switch to a different token stream entirely (used for replaying stashed class bodies, deferred aliases, inline expressions). Saves/restores full state on `a->stack`.
 - `read_body(a)` — read an indented block as token array
 
 ### Lexical Scoping
-- `lexical(a->lexical, symbol)` — look up identifier in scope stack (takes `symbol`/`char*`, NOT `string`)
+- `lexical(a->lexical, symbol)` — look up identifier in scope stack (takes `symbol`/`char*`, NOT `string`). Walks `a->lexical` array from end to start; within each scope walks `context` chain (inheritance). Searches both `members` and `args`.
 - `top_scope(a)` — current scope Au_t
 - `context_func(a)` — enclosing function
 - `context_class(a)` / `context_record(a)` — enclosing class/record
-- `elookup(chars)` — look up identifier globally
+- `elookup(chars)` — macro: `(etype)rlookup((aether)a, string(chars))`
+- `rlookup(a, name)` — `lexical()` + `etype_prep()`: finds Au_t by name, then prepares/returns its etype
+
+### Au Object Inheritance in C
+
+Silver (silver.c) inherits from aether (aether.c) which inherits from etype. The `silver*` pointer IS an `aether*` — schema fields from parent classes are accessible via `a->field` in child code. When casting `(aether)a` in silver.c, it references the same object. Schema properties added to `aether_schema` are visible in silver.c; properties on `silver_schema` are NOT visible in aether.c. Place shared flags on the lowest common ancestor.
+
+### Map vs Array for Small Collections
+
+Au `map` uses hash buckets; `pairs(map, i)` iterates via `i->key`/`i->value` linked list. For small ordered collections (< 20 items), prefer `array` with index arithmetic — `pairs` iteration on maps can miss entries when keys have non-trivial hash behavior. Use `array` + stride access (`origin[i*2]`, `origin[i*2+1]`) for paired data.
+
+## Debugging
+
+### Running the compiler under GDB
+```bash
+LD_LIBRARY_PATH=/src/silver/platform/native/lib:$LD_LIBRARY_PATH \
+  gdb --args ./platform/native/debug/silver trinity
+```
+
+### Key debugging techniques
+- **Always use GDB with breakpoints** — never guess from source alone.
+- Set breakpoints on silver.c line numbers: `break silver.c:2670`
+- Conditional breakpoints: `break etype_prep if au && au->is_alias && !au->src`
+- Print Au_t fields: `print au->ident`, `print au->member_type`, `print au->src->ident`
+- Print etype: `print target`, `print target->au->ident`, `print target->lltype`
+- Backtrace: `bt 20` to see call chain through parse → etype_prep → etype_create
+- **Sequencer debugging**: many functions have `static int seq = 0; seq++` — use `break func if seq == N` to catch specific invocations (the seq value appears in error messages as `@N`).
+- **Token stream state**: `print a->cursor`, `print a->tokens->count`, `print ((token)a->tokens->origin[a->cursor])->chars` to see current parse position.
+
+### Common crash patterns
+- **Segfault in `etype_prep`/`etype_create`/`etype_init`**: usually an Au_t with incomplete setup (missing `src`, wrong `member_type`). Check `au->ident`, `au->src`, `au->member_type` in GDB.
+- **"unknown identifier" errors**: the type/variable isn't in lexical scope at parse time. Check `a->lexical->count` and what scopes are active.
+- **"expected member" errors**: token stream is in wrong position — a previous parse consumed too many or too few tokens. Check `push_current`/`pop_tokens` balance.
+- **Double terminator LLVM errors**: a basic block already has a terminator (return/break/fault) — check `LLVMGetBasicBlockTerminator` before adding branch.
+
+### `read_etype` silent fallbacks
+`read_etype` can silently produce wrong types: when meta type resolution fails (e.g., `map element [string]` where `element` isn't defined yet), it falls back to `etypeid(Au)` for the meta parameter. The `deferred_hit` flag on `aether` detects when `etype_prep` encountered an unresolved alias dependency during a `read_etype` call — check this flag after `read_etype` returns to know if the result is trustworthy.
 
 ## Common Patterns
 
