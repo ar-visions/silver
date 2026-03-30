@@ -778,6 +778,34 @@ void silver_parse(silver a) {
         incremental_resolve(a);
     }
 
+    /// resolve deferred aliases (types that weren't available during initial parse)
+    /// multi-pass: aliases may depend on each other
+    if (a->pending_aliases && len(a->pending_aliases)) {
+        int count = len(a->pending_aliases) / 2;
+        int resolved = 1;
+        while (resolved) {
+            resolved = 0;
+            for (int i = 0; i < count; i++) {
+                Au_t  alias_au     = (Au_t)a->pending_aliases->origin[i * 2];
+                if (alias_au->src) continue;
+                array alias_tokens = (array)a->pending_aliases->origin[i * 2 + 1];
+                push_tokens(a, (tokens)alias_tokens, 0);
+                etype target = read_etype(a, null);
+                pop_tokens(a, false);
+                if (target) {
+                    alias_au->src = target->au;
+                    etype_register((aether)a, (Au)alias_au, (Au)hold(target), true);
+                    resolved++;
+                }
+            }
+        }
+        for (int i = 0; i < count; i++) {
+            Au_t alias_au = (Au_t)a->pending_aliases->origin[i * 2];
+            validate(alias_au->src, "could not resolve deferred alias '%s'",
+                alias_au->ident ? alias_au->ident : "?");
+        }
+    }
+
     /// phase 1: parse all record bodies so every class/struct name and member is registered
     members(a->au, mem) {
         etype rec = (mem->is_class || mem->is_struct) ? u(etype, mem) : null;
@@ -1315,7 +1343,7 @@ static void silver_module() {
         "finally",  "for",      "func",     "sqrt",     "sin",      "cos",      "tan",
         "asin",     "acos",     "atan",     "atan2",    "pow",      "exp",      "log",      "floor",    "ceil",     "round",
         "operator", "construct", "alias",   "getter", "setter",
-        "new",      "local",
+        "new",      "local",    "elaborate",
         null));
 
     assign = hold(array_of_cstr(
@@ -2884,9 +2912,18 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         validate(n, "could not read expression");
         validate(read_if(a, "]"),
             "expected ] after %o expression %i", u(etype, n->au->src), seq);
-        // (expr).member chain — feed result into parse_member_expr
-        if (next_is(a, "."))
+        // [expr].member — continue member chain on expression result
+        while (next_is(a, ".") || next_is(a, "->")) {
+            bool null_guard = read_if(a, "->") != null;
+            if (!null_guard) read_if(a, ".");
+            string field = read_alpha(a);
+            validate(field, "expected member name after .");
+            etype t = canonical(n);
+            enode accessed = (enode)access(n, field);
+            validate(accessed, "failed to find member %o on %o", field, t);
+            n = accessed;
             n = parse_member_expr(a, n);
+        }
         return n;
     }
 
@@ -3196,8 +3233,20 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         enode expr = parse_expression(a, null, false, true); // Parse the expression
         validate(read_if(a, ")"), "expected ) after expression, found %o", peek(a));
         a->parens_depth--;
-        return e_create(a, mdl_expect, (Au)
+        enode n = (enode)e_create(a, mdl_expect, (Au)
             parse_ternary(a, (enode)expr, (etype)mdl_expect, load));
+        // (expr).member — continue member chain on parenthesized result
+        while (next_is(a, ".") || next_is(a, "->")) {
+            bool null_guard = read_if(a, "->") != null;
+            if (!null_guard) read_if(a, ".");
+            string field = read_alpha(a);
+            validate(field, "expected member name after .");
+            enode accessed = (enode)access(n, field);
+            validate(accessed, "failed to find member %o on %o", field, n);
+            n = accessed;
+            n = parse_member_expr(a, n);
+        }
+        return n;
     }
 
     // { keyword tokens } — compacted token literals
@@ -3458,6 +3507,24 @@ enode parse_statement(silver a)
 
     validate(!is_struct(top) || (!access || access == interface_public),
         "unexpected access level found in struct");
+
+    // elaborate keyword: narrow an inherited member's type without adding new storage
+    if (rec_top && read_if(a, "elaborate")) {
+        string name = read_alpha(a);
+        validate(name, "expected member name after elaborate");
+        validate(read_if(a, ":"), "expected ':' after elaborate %o", name);
+        etype  rtype = read_etype(a, null);
+        validate(rtype, "expected type after elaborate %o:", name);
+        Au_t   base_m = find_member(rec_top->au->context, cstring(name), AU_MEMBER_VAR, 0, true);
+        validate(base_m, "elaborate: '%o' not found in base class", name);
+        Au_t   m = def_member(top, cstring(name), canonical(rtype)->au, AU_MEMBER_VAR, 0);
+        m->is_elaborate = true;
+        m->access_type  = base_m->access_type;
+        etype_register((aether)a, (Au)m, null, true);
+        enode e = (enode)evar(mod, (aether)a, au, m, loaded, false);
+        etype_register((aether)a, (Au)m, (Au)e, true);
+        return e;
+    }
 
     // not yet sold on needing override; its less arguments but you can do that with func init, too
     // also override would need to require the cast and operator
@@ -3926,6 +3993,12 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     au->alt     = rec_ctx ? cstr_copy(symbol_name((Au)fname)->chars) : null;
     au->ident   = cstr_copy(name->chars); // free other instance
     au->rtype   = rtype->au;
+
+    // validate override return type matches base
+    if (override && override->rtype && rtype->au != override->rtype)
+        validate(inherits(rtype->au, override->rtype),
+            "override '%s' return type '%s' does not match base return type '%s'",
+            au->ident, rtype->au->ident, override->rtype->ident);
 
     bool is_using = read_if(a, "using") != null;
     codegen cgen = null;
@@ -5014,6 +5087,26 @@ static enode parse_create_lambda(silver a, enode mem) {
 static enode parse_lambda_call(silver a, efunc mem) {
     // get arg info from underlying func via src
     efunc  src_fn = u(efunc, mem->au->src);
+    if (!src_fn) {
+        // lambda type member (declared as lambda ReturnType[Args]) — args are on the au directly
+        int n_args = mem->au->args.count;
+        bool br = false;
+        validate(n_args == 0 || (br = read_if(a, "[") != null) || a->expr_level == 0,
+            "expected bracket for lambda call");
+        a->expr_level++;
+        array call_values = array(alloc, 32);
+        for (int i = 0; i < n_args; i++) {
+            Au_t arg = (Au_t)mem->au->args.origin[i];
+            etype arg_type = u(etype, arg);
+            enode arg_expr = parse_expression(a, arg_type, false, true);
+            verify(arg_expr, "invalid lambda argument");
+            push(call_values, (Au)arg_expr);
+            if (i < n_args - 1) read_if(a, ",");
+        }
+        if (br) validate(read_if(a, "]"), "expected ] after lambda args");
+        a->expr_level--;
+        return lambda_fcall(a, mem, call_values);
+    }
     int    n_args = user_arg_count(src_fn);
 
     // Parse the bracket if needed
@@ -7544,15 +7637,42 @@ etype silver_read_def(silver a, interface access) {
         validate(read_if(a, ":"), "expected ':' after alias name");
 
         bool    is_ref = read_if(a, "ref") != null;
-        etype   target = read_etype(a, null);
-        validate(target, "expected type after alias %o:", alias_name);
-        
+
         Au_t    top = top_scope(a);
         Au_t    alias_au = def(top, alias_name->chars, AU_MEMBER_TYPE, AU_TRAIT_ALIAS);
         alias_au->is_pointer = is_ref;
-        
-        etype_register((aether)a, (Au)alias_au, (Au)hold(target), false);
-        return target;
+
+        // try immediate resolution — check all type tokens are consumed
+        // and no unresolved alias dependencies were hit
+        token   type_start = peek(a);
+        a->deferred_hit = false;
+        push_current(a);
+        etype   target = read_etype(a, null);
+        token   after  = peek(a);
+        bool    fully_parsed = target && !a->deferred_hit &&
+                               (!after || !type_start || after->line != type_start->line);
+        a->deferred_hit = false;
+        if (fully_parsed) {
+            pop_tokens(a, true);
+            alias_au->src = target->au;
+            etype_register((aether)a, (Au)alias_au, (Au)hold(target), false);
+            return target;
+        }
+
+        // deferred: capture remaining type tokens for later resolution
+        pop_tokens(a, false);
+        array deferred_tokens = array(alloc, 16);
+        token line_start = peek(a);
+        while (peek(a)) {
+            token t = peek(a);
+            if (t->line != line_start->line) break;
+            push(deferred_tokens, (Au)consume(a));
+        }
+        if (!a->pending_aliases)
+            a->pending_aliases = array(alloc, 16);
+        push(a->pending_aliases, (Au)alias_au);
+        push(a->pending_aliases, (Au)deferred_tokens);
+        return (etype)e_noop(a, null);
     }
 
     consume(a);

@@ -128,6 +128,7 @@ forward(evar)
     M(X, Y, i, prop,     public,  bool,                     is_library) \
     M(X, Y, i, prop,     public,  bool,                     cmode) \
     M(X, Y, i, prop,     public,  bool,                     no_build) \
+    M(X, Y, i, prop,     public,  bool,                     deferred_hit) \
     M(X, Y, i, prop,     public,  bool,                     no_const) \
     M(X, Y, i, prop,     public,  bool,                     is_const_op) \
     M(X, Y, i, prop,     public,  bool,                     iterator_guard) \
