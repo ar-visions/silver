@@ -48,12 +48,14 @@ class attrib
 
 class Composer
     mutable w:Display
-    func key_event    [ event ] return
-    func wheel_event  [ event ] return
-    func press_event  [ event ] return
-    func release_event[ event ] return
-    func text_event   [ event ] return
-    func move_event   [ event ] return
+    func key_event    [ Event  ] return
+    func wheel_event  [ Event  ] return
+    func press_event  [ Event  ] return
+    func release_event[ Event  ] return
+    func text_event   [ Event  ] return
+    func move_event   [ Event  ] return
+    func update_all   [ obj:Au ] return
+    func animate      [ ]        return
 
 class Target
     expect  vk                             : vk_context
@@ -1138,33 +1140,47 @@ struct keyboard_state
 
 # forward declarations need resolver support
 # process same way, different gen method (make_class -> make_decl)
-class event
-    public  Target           : Au
-    public  mouse            : mouse_state
-    public  key              : keyboard_state
-    public  no_default       : bool
-    public  no_propagation   : bool
+class Event
+    public  Target         : Au
+    public  mouse          : mouse_state
+    public  key            : keyboard_state
+    public  no_default     : bool
+    public  no_propagation : bool
 
-    public  func prevent_default  [ ] 
+    func prevent_default  [ ] 
         no_default = true
 
-    public  func is_default [ ] -> bool
+    func is_default [ ] -> bool
         return !no_default
 
-    public  func should_propagate [ ] -> bool
+    func should_propagate [ ] -> bool
         return !no_propagation
 
-    public  func stop_propagation [ ] -> bool
+    func stop_propagation [ ] -> bool
         no_propagation = true
         return true
 
-    public  func clear [ ] 
+    func clear [ ] 
         Target         = null
         key            = []
         no_default     = false
         no_propagation = false
         mouse.state    = -1
         mouse.button   = -1
+
+
+alias EventCallback : lambda none [ Event ]
+
+
+struct EventDispatch
+    callbacks : array EventCallback
+
+    func invoke [ ev : Event ]
+        for [ event_processor : EventCallback ] in callbacks
+            event_processor[ev]
+    
+    operator += [ call : EventCallback ]
+        callbacks += call
 
 
 class SVG
@@ -1460,15 +1476,16 @@ class Texture
     intern vma_alloc        : VmaAllocation
     
     
-    func resize [ w_new: i32, h_new: i32 ] 
+    func resize [ w_new: i32, h_new: i32 ] -> Texture
         if [ w_new == width && h_new == height ]
-            return
+            return a
         width  = w_new
         height = h_new
         vkDeviceWaitIdle[ vk.device ]
         dealloc     [ ]
         init        [ ]
         hold_members[ ]
+        return a
 
     cast -> Image
         channels: i32 [ 0 ]
@@ -1663,7 +1680,7 @@ Texture Display
     intern semaphore_frame      : Target
     intern swap_image_count     : u32
     intern swap_image_current   : u32
-    intern ev                   : event
+    intern ev                   : Event
     public on_surface           : hook
     public format               : Pixel
     public title                : string
@@ -1683,7 +1700,7 @@ Texture Display
 
     func update_canvas[ ] return
     
-    func resize [ w_new: i32, h_new: i32 ] 
+    func resize [ w_new: i32, h_new: i32 ] -> Display
         vkDeviceWaitIdle[ vk.device ]
         width  = w_new
         height = h_new
@@ -1753,6 +1770,7 @@ Texture Display
             swap_renders.count = swap_image_count
             semaphore_frame = swap_renders.first_element[]
             swap_render_current = swap_renders.origin[0]
+        return a
 
     func final_target [ ] -> Target
         return list.last_element[]
@@ -1816,7 +1834,7 @@ Texture Display
             list = array Target [ alloc: 32 ]
         if [ !element_targets ]
             element_targets = map Au[string][]
-        ev = event[]
+        ev = Event[]
 
         if [ !width ]
             width  = 1200
@@ -2408,13 +2426,11 @@ func placeholder_image [ sampler: object, size: i32, fill: ref u8, sampler_size:
 
 app media_app [ abstract ]
     mutable w   : Display*
-    mutable ux  : Composer*
     mutable vk  : vk_context
     intern  arg : object
     
     func initialize [ win: Display* ]
         w = win
-        ux.w = win
         win.update_canvas[] # ?
         render*[] # should be called before the targets update, so we have a list of targets
         win.resize[w.width, w.height]

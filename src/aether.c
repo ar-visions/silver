@@ -101,6 +101,7 @@ etype etype_prep(aether a, Au_t au) { sequencer
         au = au;
     }
     if (!au) return null;
+    if (au->is_alias && !au->src) { a->deferred_hit = true; return null; } // deferred alias — not resolved yet
     etype mdl = u(etype, au);
     if (!mdl || (!mdl->lltype)) {
         if (!mdl) {
@@ -2138,9 +2139,16 @@ none enode_inspect(enode a) {
 }
 
 enode aether_lambda_fcall(aether a, efunc mem, array user_args) {
-    // access fn and ctx from lambda instance
+    // lambda type member (lambda ReturnType[Args]) — simple function pointer call
+    if (!find_member(mem->au, "fn", AU_MEMBER_VAR, 0, false)) {
+        // treat as function pointer call
+        mem->au->is_funcptr = true;
+        return e_fn_call(a, mem, user_args);
+    }
+
+    // declared lambda instance — access fn and ctx
     efunc fn_ptr     = (efunc)enode_value(access(mem, string("fn")), false);
-    enode ctx_ptr    = enode_value(access(mem, string("context")), false); // we now have target inside of context
+    enode ctx_ptr    = enode_value(access(mem, string("context")), false);
     etype rtype      = u(etype, mem->meta_a);
     enode lambda_fn  = u(enode, mem->au->src);
 
@@ -2149,7 +2157,7 @@ enode aether_lambda_fcall(aether a, efunc mem, array user_args) {
     push(args, (Au)ctx_ptr);
     each(user_args, Au, arg)
         push(args, arg);
-    
+
     fn_ptr->meta_a = hold(mem->meta_a);
     fn_ptr->meta_b = hold(mem->meta_b);
     return e_fn_call(a, fn_ptr, args);
@@ -5660,7 +5668,7 @@ none etype_implement(etype t, bool w) { sequencer
             if (!multi_Au || tt->au != typeid(Au))
                 for (int i = 0; i < tt->au->members.count; i++) {
                     Au_t m = (Au_t)tt->au->members.origin[i];
-                    if (m->member_type == AU_MEMBER_VAR && !m->is_static)
+                    if (m->member_type == AU_MEMBER_VAR && !m->is_static && !m->is_elaborate)
                         count++;
                 }
 
@@ -5705,6 +5713,11 @@ none etype_implement(etype t, bool w) { sequencer
                     etype_implement(u(etype, m), false);
                 }
                 else if (m->member_type == AU_MEMBER_VAR) {
+                    if (m->is_elaborate) {
+                        Au_t base_m = find_member(tt->au->context, m->ident, AU_MEMBER_VAR, 0, true);
+                        if (base_m) m->index = base_m->index;
+                        continue;
+                    }
                     bool is_intern = m->access_type == interface_intern;
                     if (( is_intern && pass == 0) ||
                         (!is_intern && pass == 1))
@@ -8030,11 +8043,13 @@ efunc aether_function(aether a, etype place, string ident, etype rtype, array ar
     }
 
     if (!rtype) rtype = etypeid(none);
+    int arg_idx = 0;
     each(args, Au, arg) {
         Au_t a = au_arg(arg);
-        Au_t argument = def(au, null, AU_MEMBER_VAR, 0);
+        Au_t argument = def(au, arg_idx == 0 ? "a" : null, AU_MEMBER_VAR, 0);
         argument->src = a;
         micro_push(&au->args, (Au)argument);
+        arg_idx++;
     }
     au->src = (Au_t)hold(rtype->au);
     efunc f = efunc(mod, a, au, au, used, true, loaded, true);

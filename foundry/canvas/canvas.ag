@@ -841,6 +841,8 @@ struct CanvasState
 	fill_color      : u32
 	stroke_color    : u32
 	stroke_width    : f32
+	stroke_cap      : Cap
+	stroke_join     : Join
 	opacity         : f32
 	transform       : affine
 	clip_x          : i32
@@ -870,9 +872,10 @@ Target Canvas
 		depth  = 0
 		save
 
-	func resize [ rw: i32, rh: i32 ]
+	func resize [ rw: i32, rh: i32 ] -> Canvas
 		width  = rw
 		height = rh
+		return a
 
 
 	# ---- text measurement ----
@@ -970,6 +973,15 @@ Target Canvas
 
 	func set_stroke_width [ sw: f32 ]
 		states[depth - 1].stroke_width = sw
+
+	func set_stroke_size [ sw: f32 ]
+		states[depth - 1].stroke_width = sw
+
+	func set_stroke_cap [ c: Cap ]
+		states[depth - 1].stroke_cap = c
+
+	func set_stroke_join [ j: Join ]
+		states[depth - 1].stroke_join = j
 
 	func set_opacity [ o: f32 ]
 		states[depth - 1].opacity = o
@@ -1082,6 +1094,32 @@ Target Canvas
 			radius * st.transform.ma,
 			start_angle, end_angle
 		]
+
+	func draw_text [ text: string, bounds: rect, align: vec2f, offset: vec2f, use_ellipsis: bool ] -> rect
+		st  : CanvasState [ states[depth - 1] ]
+		fnt : CanvasFont  [ st.font ? st.font : font ]
+		if [ !fnt ]
+			return bounds
+		display : string [ use_ellipsis ? text_ellipsis[ text, bounds.w ] : text ]
+		tm  : TextMetrics [ measure_text[ display ] ]
+		tx  : f32 [ bounds.x + (bounds.w - tm.w) * align.x + offset.x ]
+		ty  : f32 [ bounds.y + tm.ascent + (bounds.h - tm.h) * align.y + offset.y ]
+		save[]
+		translate[ tx, ty ]
+		for [ i: i32 0, i < display.count, i += 1 ]
+			cp : u32 [ display[i] ]
+			g  : fnt.get_glyph[ cp ]
+			if [ g.cached ]
+				gx :  f32[ g.bearing_x ]
+				gy : -f32[ g.bearing_y ]
+				gw :  f32[ g.bmp_w ]
+				gh :  f32[ g.bmp_h ]
+				rect_to[ gx, gy, gw, gh ]
+				draw_fill[]
+				path.clear[]
+				translate[ f32[ g.advance ], 0.0 ]
+		restore[]
+		return rect [ x: tx, y: ty - tm.ascent, w: tm.w, h: tm.h ]
 
 	# ---- GPU draw helpers ----
 

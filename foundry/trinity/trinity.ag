@@ -6,8 +6,354 @@ import img
 import vulkan2
 import canvas
 
+alias Elements : map    element [ string ]
+alias Render   : lambda Elements[ Display ]
+
+class element
+    public parent       : element
+    public area         : Region
+    mutable bounds      : rect
+    public value        : object
+    public id           : string
+    public flags        : i64
+    public layers       : array Layer
+    public elements     : map
+    public tags         : array string
+    public group        : string
+    public tab_index    : i32
+    public ghost        : bool
+    public captured     : bool
+    public selectable   : bool
+    public selected     : bool
+    public disabled     : bool
+    public hovered      : bool
+    public pressed      : bool
+    public focused      : bool
+    public action       : EventDispatch
+    public wheel        : EventDispatch
+    public context      : EventDispatch
+    public text         : EventDispatch
+    public hover        : EventDispatch
+    public leave        : EventDispatch
+    public key_down     : EventDispatch
+    public key_up       : EventDispatch
+    public press        : EventDispatch
+    public move         : EventDispatch
+    public release      : EventDispatch
+    public got_capture  : EventDispatch
+    public lost_capture : EventDispatch
+    public focus        : EventDispatch
+    public blur         : EventDispatch
+    public cursor       : vec2f
+    intern ux           : UXComposer
+    intern style_avail  : map StyleMembers[string]
+    intern selections   : map
+    intern transitions  : map StyleTransition[string]
+    intern restyle : bool
+
+    public func set_capture []
+        ux.set_capture[ a ]
+
+    public func release_capture []
+        ux.release_capture[ a ]
+
+    public func set_focus []
+        ux.set_focus[ a ]
+
+    public func release_focus []
+        ux.release_focus[ a ]
+
+    public func draw [ w: Window ]
+
+    public func render [ changed: array ] -> Render
+        return origin
+
+
+Composer UXComposer
+    public app                  : object
+    public w                    : Window
+    intern root_styles          : map
+    public root                 : element
+    mutable capture             : element
+    mutable focus               : element
+    mutable hovered             : element
+    mutable action_pressed      : element
+    mutable context_pressed     : element
+    mutable restyle             : bool
+    mutable mouse               : vec2f
+    mutable shift               : bool
+    mutable alt                 : bool
+    public args                 : map
+    public st                   : Style
+    public buttons              : array i32[16x1]
+    public on_render            : hook
+
+    # Au runtime introspection — member iteration for args/style application
+    public func apply_args [ inst: element, e: element ] -> array
+        ty      : Au_t [ typeid[ e ] ]
+        changed : array [ alloc: 32 ]
+        while [ ty != typeid[ Au ] ]
+            for [ m: i32 0, m < ty.members.count, m += 1 ]
+                mem : Au_t [ ty.members[m] ]
+                if [ mem.member_type != AU_MEMBER_VAR || mem.ident == 'elements' ]
+                    continue
+                from_val : object [ member_object[ inst, mem ] ]
+                to_val   : object [ member_object[ e, mem ] ]
+                if [ to_val && from_val != to_val ]
+                    if [ compare[ from_val, to_val ] != 0 ]
+                        member_set[ inst, mem, to_val ]
+                        push[ changed, string[ mem.ident ] ]
+            ty = ty.context
+        return changed
+
+    public func apply_style [ inst: element, style_avail: map StyleMembers[string], exceptions: array string ] -> array
+        ty      : Au_t [ typeid[ inst ] ]
+        changed : array [ alloc: 32 ]
+        while [ ty != typeid[ Au ] ]
+            for [ m: i32 0, m < ty.members.count, m += 1 ]
+                mem : Au_t [ ty.members[m] ]
+                if [ mem.member_type != AU_MEMBER_VAR || mem.ident == 'elements' ]
+                    continue
+                prop    : string [ mem.ident ]
+                entries : style_avail [ prop ]
+                if [ !entries ]
+                    continue
+                if [ exceptions && exceptions.index_of[ prop ] >= 0 ]
+                    continue
+                best : st.best_match[ inst, prop, entries ]
+                if [ !best ]
+                    continue
+                # lazily create instance from string value
+                if [ !best.instance ]
+                    best.instance = format[ mem.src, best.value ]
+                expect best.instance, 'instance must be initialized'
+                push[ changed, prop ]
+                cur : object [ member_object[ inst, mem ] ]
+                # transition handling
+                t  : StyleTransition [ best.trans ]
+                ct : StyleTransition [ null ]
+                should_trans : bool [ false ]
+                if [ t ]
+                    if [ !inst.transitions ]
+                        inst.transitions = map StyleTransition[string] [ ]
+                    ct = get[ inst.transitions, prop ]
+                    if [ !ct ]
+                        ct = t.copy[]
+                        ct.reference = t
+                        should_trans = true
+                        inst.transitions[ prop ] = ct
+                    el
+                        should_trans = ct.reference != t
+                el [ inst.transitions ]
+                    inst.transitions.rm[ prop ]
+                if [ ct && should_trans ]
+                    ct.from     = cur ? cur : best.instance
+                    ct.to       = best.instance
+                    ct.type     = typeid[ best.instance ]
+                    ct.start    = epoch_millis[]
+                el [ !ct ]
+                    Au.member_set[ inst, mem, best.instance ]
+            ty = ty.context
+        return changed
+
+    func invalidate_element [ ]
+        e : a
+        if [ e && e.transitions ]
+            pairs [ e.transitions, i ]
+                ct : StyleTransition [ i.value ]
+                ct.invalidate = true
+
+    func remove_invalid_transitions [ ]
+        e: a
+        found : true
+        while [ found ]
+            found = false
+            for [ ct:StyleTransition, k:object ] in e.transitions
+                if [ ct.invalidate ]
+                    e.transitions.rm[ i.key ]
+                    found = true
+                    return
+
+
+    intern func animate_element [ ]
+        e: a # how elements get in the game
+        if [ e.transitions ]
+            cur_millis : i64 [ epoch_millis[] ]
+            pairs [ e.transitions, i ]
+                ct  : StyleTransition [ i.value ]
+                dur : i64 [ ct.duration.get_millis[] ]
+                ms  : i64 [ cur_millis - ct.start ]
+                p   : f64 [ ct.pos[ f64[ ms ] / f64[ dur ] ] ]
+                if [ ct.type && ct.from && ct.to ]
+                    mixed : ct.type.mix*[ ct.from, ct.to, p ]
+                    if [ ct.location ]
+                        ct.location = mixed
+        pairs [ e.origin, i ]
+            ee : element [ i.value ]
+            animate_element[ ee ]
+
+    public func animate []
+        if [ !root ]
+            return
+        invalidate[]
+        animate_element[ root ]
+        remove_invalid[]
+
+    public func bind_subs [ instance: element, parent: element ]
+    public func update    [ parent: element, rendered: map element[string] ]
+
+    public func update_all [ render: map element[string] ]
+        restyle = false
+        if [ !root ]
+            root    = element [ id: string[ 'root' ] ]
+            root_styles = st.compute[ root ]
+            restyle = true
+        if [ !restyle ]
+            restyle = st.check_reload[]
+        if [ restyle ]
+            st.apply_style[ root, root_styles, null ]
+        root.update[ render ]
+
+    public func invalidate []
+        if [ root ] root.invalidate_element[ ]
+
+    public func remove_invalid []
+        if [ root ] root.remove_invalid_transitions[ ]
+
+    public func set_capture [ e: element ]
+        if [ capture != e ]
+            if [ capture ]
+                capture.captured = false
+                capture.restyle  = true
+                ux_event[ capture, capture.lost_capture, null ]
+            if [ e && !e.ghost ]
+                capture = e
+                capture.captured = true
+                capture.restyle  = true
+                ux_event[ capture, e.got_capture, null ]
+
+    public func release_capture [ e: element ]
+        if [ capture && capture == e ]
+            ux_event[ capture, capture.lost_capture, null ]
+            capture = null
+
+    public func set_focus [ e: element ]
+        if [ focus != e ]
+            if [ focus ]
+                focus.focused = false
+                focus.restyle = true
+                ux_event[ focus, focus.blur, null ]
+            if [ e && !e.ghost ]
+                focus = e
+                focus.focused = true
+                focus.restyle = true
+                ux_event[ focus, e.focus, null ]
+
+    public func release_focus [ e: element ]
+        if [ focus && focus == e ]
+            focus.focused = false
+            focus.restyle = true
+            ux_event[ focus, focus.blur, null ]
+            focus = null
+
+    public func find_target [ e: element, ev: Event, must: element ] -> element
+        if [ !e || e.disabled || e.ghost ]
+            return null
+        b : rect  [ e.bounds ]
+        x : f32   [ ev.mouse.pos.x ]
+        y : f32   [ ev.mouse.pos.y ]
+        lx : f32  [ x - b.x ]
+        ly : f32  [ y - b.y ]
+        if [ !must && (lx < 0.0 || ly < 0.0 || lx >= b.w || ly >= b.h) ]
+            return null
+        ev.mouse.pos.x = lx + e.scroll.x
+        ev.mouse.pos.y = ly + e.scroll.y
+        pairs [ e.origin, i ]
+            child : element [ i.value ]
+            hit   : element [ find_target[ child, ev, must ] ]
+            if [ hit ]
+                return hit
+        ev.mouse.pos.x = x
+        ev.mouse.pos.y = y
+        return !must || must == e ? e : null
+
+    public func text_event [ ev: Event ]
+        if [ focus ]
+            ux_event[ focus, focus.text, ev ]
+
+    public func key_event [ ev: Event ]
+        if [ focus ]
+            ux_event[ focus, focus.key_down, ev ]
+
+    public func move_event [ ev: Event ]
+        f : element [ find_target[ root, ev, null ] ]
+        a : element [ capture ? find_target[ root, ev, capture ] : f ]
+        if [ hovered != f ]
+            if [ hovered ]
+                hovered.restyle = true
+                hovered.hovered = false
+                ux_event[ hovered, hovered.leave, ev ]
+            hovered = f
+            if [ f ]
+                hovered.restyle = true
+                hovered.hovered = true
+                ux_event[ f, f.hover, ev ]
+        if [ a ]
+            ux_event[ a, a.move, ev ]
+
+    public func wheel_event [ ev: Event ]
+        for [ f: element find_target[ root, ev, capture ], f, f = f.parent ]
+            ux_event[ f, f.wheel, ev ]
+            if [ ev.stop_propagation ]
+                return
+
+    public func press_event [ ev: Event ]
+        release_capture[ capture ]
+        f : element [ find_target[ root, ev, null ] ]
+        if [ f ]
+            ux_event[ f, f.press, ev ]
+        if [ !capture ]
+            set_capture[ f ]
+        if [ ev.mouse.button == 0 ]
+            if [ action_pressed ]
+                action_pressed.restyle = true
+                action_pressed.pressed = false
+            if [ f ]
+                f.restyle = true
+                f.pressed = true
+            action_pressed = f
+        el [ ev.mouse.button == 1 ]
+            context_pressed = f
+
+    public func release_event [ ev: Event ]
+        f : element [ find_target[ root, ev, capture ] ]
+        if [ f ]
+            ux_event[ f, f.release, ev ]
+        if [ ev.mouse.button == 0 ]
+            if [ action_pressed ]
+                action_pressed.restyle = true
+                action_pressed.pressed = false
+            if [ f ]
+                f.restyle = true
+                f.pressed = false
+            if [ f && action_pressed == f && f.hovered ]
+                ux_event[ f, f.action, ev ]
+            action_pressed  = null
+            context_pressed = null
+        el [ ev.mouse.button == 1 ]
+            if [ f && action_pressed == f && f.hovered ]
+                ux_event[ f, f.context, ev ]
+            action_pressed  = null
+            context_pressed = null
+        if [ !action_pressed && !context_pressed ]
+            release_capture[ capture ]
+
+
+
 Display Window
-    public ux                   : Au
+    
+    ux : UXComposer[w:a]
+
     public app_object           : app
 
     public compose              : Canvas
@@ -38,7 +384,7 @@ Display Window
     public m_view               : Model
     public r_view               : Target
 
-    public func update_canvas [ ]
+    func update_canvas [ ]
         # compose  || (omitting this to show actual issue with parse member not being part of read-enode)
         compose  = (Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
         colorize = (colorize || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
@@ -48,113 +394,91 @@ Display Window
         colorize.clear[ string[ "#fff"  ] ]
         overlay .clear[ string[ "#fff0" ] ]
         glyph   .clear[ string[ "#000"  ] ]
-        sk_sync[]
+        #sk_sync[] -- hopefully no need to have a global flush
 
-    public func resize [ w: i32, h: i32 ] 
+    public func resize [ w: i32, h: i32 ] -> Window
         super.resize[ w, h ]
         update_canvas[]
+        return a
 
     public func draw_element [ e: element* ]
-        expect instanceof[ e, element ], "e is not an element"
-        canvas_arr: new Canvas[4] [ overlay, compose, colorize, glyph ]
-        rel: e.parent ?
+        expect e inherits element, 'e is not an element'
+        canvas_arr : new Canvas[4] [ overlay, compose, colorize, glyph ]
+        rel : rect [ (e.parent) ?
             rect [ x: 0, y: 0, w: e.parent.bounds.w, h: e.parent.bounds.h ] :
-            rect [ x: 0, y: 0, w: width, h: height ]
+            rect [ x: 0, y: 0, w: width, h: height ] ]
 
-        e.bounds.drop[]
-        e.text_bounds.drop[]
-        e.border_bounds.drop[]
-        e.child_bounds.drop[]
-        e.clip_bounds.drop[]
+        # compute element bounds from its area
+        e.bounds = e.area.rectangle[ rel, null ]
 
-        e.bounds        = rectangle_offset[ e.area,        rel ]
-        e.text_bounds   = rectangle_offset[ e.text_area,   e.bounds ]
-        e.border_bounds = rectangle_offset[ e.border_area, e.bounds ]
-        e.child_bounds  = rectangle_offset[ e.child_area,  e.bounds ]
-        e.clip_bounds   = rectangle_offset[ e.clip_area,   e.bounds ]
-        if [ e.fill_color ]
-            cv: canvas_arr[e.fill_canvas]
-            b: e.bounds
-            cv.rounded_rect_to[ b.x, b.y, b.w, b.h, e.fill_radius_x, e.fill_radius_y ]
-            cv.save[]
-            cv.set_fill_color[ e.fill_color ]
-            cv.set_blur_radius[ e.fill_blur ]
-            cv.draw_fill[]
-            cv.set_blur_radius[ 0 ]
-            cv.restore[]
-        for [ i: 0, i < 3, i++ ]
-            cv: canvas_arr[i]
-            cv.save[]
-            cv.translate[ e.clip_bounds.x, e.clip_bounds.y ]
-            r: rect [ x: 0, y: 0, w: e.clip_bounds.w, h: e.clip_bounds.h ]
-            if [ e.border_clip ]
-                cv.clip[ r, e.border_radius_x, e.border_radius_y ]
-        if [ e.border_color && e.border_size > 0 ]
-            cv: canvas_arr[e.border_canvas]
-            cv.save[]
-            cv.set_stroke_size[ e.border_size ]
-            cv.set_stroke_cap[ e.border_cap ]
-            cv.set_stroke_join[ e.border_join ]
-            b: e.border_bounds
-            cv.rounded_rect_to[ b.x - e.clip_bounds.x, b.y - e.clip_bounds.y,
-                b.w, b.h, e.border_radius_x, e.border_radius_y ]
-            cv.set_stroke_color[ e.border_color ]
-            cv.set_stroke_size[ e.border_size ]
-            cv.set_blur_radius[ e.border_blur ]
-            cv.draw_stroke[]
-            cv.set_blur_radius[ 0.0 ]
-            cv.restore[]
-        content: instanceof[ e.content, string ]
-        if [ content && e.text_color ]
-            cv: glyph
-            cv.save[]
-            txt: e.text_bounds
-            c: e.clip_bounds
-            r: rect [ x: txt.x - c.x, y: txt.y - c.y, w: txt.w, h: txt.h ]
-            al: vec2f [ e.text_align_x, e.text_align_y ]
-            cv.set_stroke_size[ 0 ]
-            if [ e.text_shadow_color && e.text_shadow_color.a > 0.0 ]
-                cv.set_fill_color[ e.text_shadow_color ]
-                offset: vec2f [ e.text_shadow_x, e.text_shadow_y ]
-                cv.set_blur_radius[ 2.0 ]
-                cv.draw_text[ content, r, al, offset, e.text_ellipsis ]
-            cv.set_fill_color[ e.text_color ]
-            offset: vec2f [ 0, 0 ]
-            cv.set_blur_radius[ e.fill_blur ]
-            cv.draw_text[ content, r, al, offset, e.text_ellipsis ]
-            cv.restore[]
-        e.draw[ self ]
-        for [ ee: element, id: string ] in e.origin
-            self.draw_element[ ee ]
-        for [ i: 0, i < 3, i++ ]
-            cv: canvas_arr[i]
-            cv.restore[]
+        # compute layer bounds and draw each layer
+        for [ layer: Layer ] in e.layers
+            layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null ] : e.bounds
+            cv : Canvas [ canvas_arr[layer.ctype] ]
+
+            fill : layer inherits FillLayer
+            if [ fill && layer.color ]
+                cv.save[]
+                b : layer.bounds
+                rx:f32 layer.radius[0]
+                ry:f32 layer.radius[1]
+                cv.rounded_rect_to[ b.x, b.y, b.w, b.h, rx, ry ]
+                cv.set_fill_color[ sk_color[ layer.color ] ]
+                cv.draw_fill[]
+                cv.restore[]
+
+            border : layer inherits Border
+            if [ border && border.color && border.size > 0.0 ]
+                cv.save[]
+                cv.set_stroke_size[ border.size ]
+                cv.set_stroke_cap[ border.cap ]
+                cv.set_stroke_join[ border.join ]
+                b : rect [ layer.bounds ]
+                rx:f32 layer.radius[0]
+                ry:f32 layer.radius[1]
+                cv.rounded_rect_to[ b.x, b.y, b.w, b.h, rx, ry ]
+                cv.set_stroke_color[ sk_color[ border.color ] ]
+                cv.draw_stroke[]
+                cv.restore[]
+
+            txt : layer inherits Text
+            if [ txt && txt.label ]
+                cv.save[]
+                b : rect [ layer.bounds ]
+                al : vec2f [ txt.xalign, txt.yalign ]
+                offset : vec2f [ 0.0, 0.0 ]
+                cv.set_fill_color[ sk_color[ layer.color ] ]
+                cv.draw_text[ txt.label, b, al, offset, false ]
+                cv.restore[]
+
+        e.draw[ a ]
+        for [ ee: element, id: string ] in e.elements
+            draw_element[ ee ]
 
 
 media_app trinity
     expect vk           : vk_context
     intern msaa_samples : i64
-    public on_render    : lambda element[]
+    public on_render    : Render
+
+    w : Window 
+    # this is an elaboration; auto-view-cast without actually adding a new member
+    # it may even do an additional run-time instance check; it will have the same visibility
 
     func render[]
-        elements : on_render[ w ]
-
+        elements : on_render[ w ] # type from on_render
+        #render : map element[ string ]
         if [ elements ]
-            ux.update_all[ elements ]
+            #w.ux.update_all[ render ]
+            w.ux.update_all[ elements ]
 
-        ux.animate[]
-
-        # clear canvases
+        w.ux.animate[]
         if [ w.compose && w.colorize && w.glyph ]
-            w.compose.clear[  string[ '#000' ] ]
-            w.colorize.clear[ string[ '#000' ] ]
-            w.glyph.clear[    string[ '#000' ] ]
-        w.overlay.clear[ string[ '#0000' ] ]
-
-        # draw app ux
+            w.compose .clear [ '#000' ]
+            w.colorize.clear [ '#000' ]
+            w.glyph   .clear [ '#000' ]
+        w.overlay.clear[ '#0000' ]
         w.draw_element[ ux.root ]
-
-        sk_sync[]
         w.draw[]
 
 # enums export to A-type
@@ -265,7 +589,7 @@ class Style
     func compute [ n: element ] -> map
         avail : map [ hsize: 16 ]
         ty    : Au_t [ typeid[ n ] ]
-        expect instanceof[ n, element ], 'must inherit element'
+        expect n inherits element, 'must inherit element'
         while [ ty != typeid[ Au ] ]
             all : array [ alloc: 32 ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
@@ -450,6 +774,17 @@ class Region
             r = XCoord [ a[0] ]
             b = YCoord [ a[0] ]
         set = true
+
+    func rectangle_offset [ rel: rect ] -> rect
+        area: a
+        reg: Region [ null ]
+        if [ !area ]
+            reg = Region [ 0.0 ]
+            area = reg
+        r: rectangle[ area, rel, null ]
+        if [ reg ]
+            drop[ reg ]
+        return r
 
     func rectangle [ win: rect, rel: rect ] -> rect
         lv : f32 [ XCoord_plot[ ref l, win.x, win.x + win.w, null, null, rel ] ]
@@ -710,284 +1045,6 @@ class StyleSelection
     public entry : StyleEntry
 
 
-Composer UXComposer
-    public app                  : object
-    public w                    : Window
-    intern root_styles          : map
-    public root                 : element
-    mutable capture             : element
-    mutable focus               : element
-    mutable hovered             : element
-    mutable action_pressed      : element
-    mutable context_pressed     : element
-    mutable restyle             : bool
-    mutable mouse               : vec2f
-    mutable shift               : bool
-    mutable alt                 : bool
-    public args                 : map
-    public st                   : Style
-    public buttons              : array i32[16x1]
-    public on_render            : hook
-
-    # Au runtime introspection — member iteration for args/style application
-    public func apply_args [ inst: element, e: element ] -> array
-        ty      : Au_t [ typeid[ e ] ]
-        changed : array [ alloc: 32 ]
-        while [ ty != typeid[ Au ] ]
-            for [ m: i32 0, m < ty.members.count, m += 1 ]
-                mem : Au_t [ ty.members[m] ]
-                if [ mem.member_type != AU_MEMBER_VAR || mem.ident == 'elements' ]
-                    continue
-                from_val : object [ member_object[ inst, mem ] ]
-                to_val   : object [ member_object[ e, mem ] ]
-                if [ to_val && from_val != to_val ]
-                    if [ compare[ from_val, to_val ] != 0 ]
-                        member_set[ inst, mem, to_val ]
-                        push[ changed, string[ mem.ident ] ]
-            ty = ty.context
-        return changed
-
-    public func apply_style [ inst: element, style_avail: map StyleMembers[string], exceptions: array string ] -> array
-        ty      : Au_t [ typeid[ inst ] ]
-        changed : array [ alloc: 32 ]
-        while [ ty != typeid[ Au ] ]
-            for [ m: i32 0, m < ty.members.count, m += 1 ]
-                mem : Au_t [ ty.members[m] ]
-                if [ mem.member_type != AU_MEMBER_VAR || mem.ident == 'elements' ]
-                    continue
-                prop    : string [ mem.ident ]
-                entries : style_avail [ prop ]
-                if [ !entries ]
-                    continue
-                if [ exceptions && exceptions.index_of[ prop ] >= 0 ]
-                    continue
-                best : st.best_match[ inst, prop, entries ]
-                if [ !best ]
-                    continue
-                # lazily create instance from string value
-                if [ !best.instance ]
-                    best.instance = format[ mem.src, best.value ]
-                expect best.instance, 'instance must be initialized'
-                push[ changed, prop ]
-                cur : object [ member_object[ inst, mem ] ]
-                # transition handling
-                t  : StyleTransition [ best.trans ]
-                ct : StyleTransition [ null ]
-                should_trans : bool [ false ]
-                if [ t ]
-                    if [ !inst.transitions ]
-                        inst.transitions = map StyleTransition[string] [ ]
-                    ct = get[ inst.transitions, prop ]
-                    if [ !ct ]
-                        ct = t.copy[]
-                        ct.reference = t
-                        should_trans = true
-                        inst.transitions[ prop ] = ct
-                    el
-                        should_trans = ct.reference != t
-                el [ inst.transitions ]
-                    inst.transitions.rm[ prop ]
-                if [ ct && should_trans ]
-                    ct.from     = cur ? cur : best.instance
-                    ct.to       = best.instance
-                    ct.type     = typeid[ best.instance ]
-                    ct.start    = epoch_millis[]
-                el [ !ct ]
-                    Au.member_set[ inst, mem, best.instance ]
-            ty = ty.context
-        return changed
-
-    func invalidate_element [ ]
-        e : a
-        if [ e && e.transitions ]
-            pairs [ e.transitions, i ]
-                ct : StyleTransition [ i.value ]
-                ct.invalidate = true
-
-    func remove_invalid_transitions [ ]
-        e: a
-        found : true
-        while [ found ]
-            found = false
-            for [ ct:StyleTransition, k:object ] in e.transitions
-                if [ ct.invalidate ]
-                    e.transitions.rm[ i.key ]
-                    found = true
-                    return
-
-
-    intern func animate_element [ ]
-        e: a # how elements get in the game
-        if [ e.transitions ]
-            cur_millis : i64 [ epoch_millis[] ]
-            pairs [ e.transitions, i ]
-                ct  : StyleTransition [ i.value ]
-                dur : i64 [ ct.duration.get_millis[] ]
-                ms  : i64 [ cur_millis - ct.start ]
-                p   : f64 [ ct.pos[ f64[ ms ] / f64[ dur ] ] ]
-                if [ ct.type && ct.from && ct.to ]
-                    mixed : ct.type.mix*[ ct.from, ct.to, p ]
-                    if [ ct.location ]
-                        ct.location = mixed
-        pairs [ e.origin, i ]
-            ee : element [ i.value ]
-            animate_element[ ee ]
-
-    public func animate []
-        if [ !root ]
-            return
-        invalidate[]
-        animate_element[ root ]
-        remove_invalid[]
-
-    public func bind_subs [ instance: element, parent: element ]
-    public func update    [ parent: element, rendered: map element[string] ]
-
-    public func update_all [ render: map ]
-        restyle = false
-        if [ !root ]
-            root    = element [ id: string[ 'root' ] ]
-            root_styles = st.compute[ root ]
-            restyle = true
-        if [ !restyle ]
-            restyle = st.check_reload[]
-        if [ restyle ]
-            st.apply_style[ root, root_styles, null ]
-        root.update[ render ]
-
-    public func invalidate []
-        if [ root ] root.invalidate_element[ ]
-
-    public func remove_invalid []
-        if [ root ] root.remove_invalid_transitions[ ]
-
-    public func set_capture [ e: element ]
-        if [ capture != e ]
-            if [ capture ]
-                capture.captured = false
-                capture.restyle  = true
-                ux_event[ capture, capture.lost_capture, null ]
-            if [ e && !e.ghost ]
-                capture = e
-                capture.captured = true
-                capture.restyle  = true
-                ux_event[ capture, e.got_capture, null ]
-
-    public func release_capture [ e: element ]
-        if [ capture && capture == e ]
-            ux_event[ capture, capture.lost_capture, null ]
-            capture = null
-
-    public func set_focus [ e: element ]
-        if [ focus != e ]
-            if [ focus ]
-                focus.focused = false
-                focus.restyle = true
-                ux_event[ focus, focus.blur, null ]
-            if [ e && !e.ghost ]
-                focus = e
-                focus.focused = true
-                focus.restyle = true
-                ux_event[ focus, e.focus, null ]
-
-    public func release_focus [ e: element ]
-        if [ focus && focus == e ]
-            focus.focused = false
-            focus.restyle = true
-            ux_event[ focus, focus.blur, null ]
-            focus = null
-
-    public func find_target [ e: element, ev: event, must: element ] -> element
-        if [ !e || e.disabled || e.ghost ]
-            return null
-        b : rect  [ e.bounds ]
-        x : f32   [ ev.mouse.pos.x ]
-        y : f32   [ ev.mouse.pos.y ]
-        lx : f32  [ x - b.x ]
-        ly : f32  [ y - b.y ]
-        if [ !must && (lx < 0.0 || ly < 0.0 || lx >= b.w || ly >= b.h) ]
-            return null
-        ev.mouse.pos.x = lx + e.scroll.x
-        ev.mouse.pos.y = ly + e.scroll.y
-        pairs [ e.origin, i ]
-            child : element [ i.value ]
-            hit   : element [ find_target[ child, ev, must ] ]
-            if [ hit ]
-                return hit
-        ev.mouse.pos.x = x
-        ev.mouse.pos.y = y
-        return !must || must == e ? e : null
-
-    public func text_event [ ev: event ]
-        if [ focus ]
-            ux_event[ focus, focus.text, ev ]
-
-    public func key_event [ ev: event ]
-        if [ focus ]
-            ux_event[ focus, focus.key_down, ev ]
-
-    public func move_event [ ev: event ]
-        f : element [ find_target[ root, ev, null ] ]
-        a : element [ capture ? find_target[ root, ev, capture ] : f ]
-        if [ hovered != f ]
-            if [ hovered ]
-                hovered.restyle = true
-                hovered.hovered = false
-                ux_event[ hovered, hovered.leave, ev ]
-            hovered = f
-            if [ f ]
-                hovered.restyle = true
-                hovered.hovered = true
-                ux_event[ f, f.hover, ev ]
-        if [ a ]
-            ux_event[ a, a.move, ev ]
-
-    public func wheel_event [ ev: event ]
-        for [ f: element find_target[ root, ev, capture ], f, f = f.parent ]
-            ux_event[ f, f.wheel, ev ]
-            if [ ev.stop_propagation ]
-                return
-
-    public func press_event [ ev: event ]
-        release_capture[ capture ]
-        f : element [ find_target[ root, ev, null ] ]
-        if [ f ]
-            ux_event[ f, f.press, ev ]
-        if [ !capture ]
-            set_capture[ f ]
-        if [ ev.mouse.button == 0 ]
-            if [ action_pressed ]
-                action_pressed.restyle = true
-                action_pressed.pressed = false
-            if [ f ]
-                f.restyle = true
-                f.pressed = true
-            action_pressed = f
-        el [ ev.mouse.button == 1 ]
-            context_pressed = f
-
-    public func release_event [ ev: event ]
-        f : element [ find_target[ root, ev, capture ] ]
-        if [ f ]
-            ux_event[ f, f.release, ev ]
-        if [ ev.mouse.button == 0 ]
-            if [ action_pressed ]
-                action_pressed.restyle = true
-                action_pressed.pressed = false
-            if [ f ]
-                f.restyle = true
-                f.pressed = false
-            if [ f && action_pressed == f && f.hovered ]
-                ux_event[ f, f.action, ev ]
-            action_pressed  = null
-            context_pressed = null
-        el [ ev.mouse.button == 1 ]
-            if [ f && action_pressed == f && f.hovered ]
-                ux_event[ f, f.context, ev ]
-            action_pressed  = null
-            context_pressed = null
-        if [ !action_pressed && !context_pressed ]
-            release_capture[ capture ]
 
 # arg state for config
 # from user (not style)
@@ -1048,13 +1105,14 @@ class Background
     public construct [ string ]
     public func mix [ Background, f32 ] -> Background
 
-array Radius <f32>
+alias Radius : array f32
 
 # layers constructed with field inference
 # constructors: Type [ any str ]
 class Layer
     public ctype    : CanvasType
     public area     : Region
+    mutable bounds  : rect
     public radius   : Radius
     public shadow   : Shadow
     public color    : rgba
@@ -1080,73 +1138,16 @@ Layer Border
     public miter    : f32
     public dash     : array f32
 
+
 Layer FillLayer
+
 
 # scrolling requires defined children Region
 Layer Children
     public scroll : vec2f
 
-class element
-    public parent       : element
-    public area         : Region
-    public value        : object
-    public id           : string
-    public flags        : i64
-    public layers       : array Layer
-    public elements     : map
-    public tags         : array string
-    public group        : string
-    public tab_index    : i32
-    public ghost        : bool
-    public captured     : bool
-    public selectable   : bool
-    public selected     : bool
-    public disabled     : bool
-    public hovered      : bool
-    public pressed      : bool
-    public focused      : bool
-    public action       : subs
-    public wheel        : subs
-    public context      : subs
-    public text         : subs
-    public hover        : subs
-    public leave        : subs
-    public key_down     : subs
-    public key_up       : subs
-    public press        : subs
-    public move         : subs
-    public release      : subs
-    public got_capture  : subs
-    public lost_capture : subs
-    public focus        : subs
-    public blur         : subs
-    public cursor       : vec2f
-    intern ux           : UXComposer
-    intern style_avail  : map StyleMembers[string]
-    intern selections   : map
-    intern transitions  : map StyleTransition[string]
-    intern restyle : bool
-    public func set_capture []
-        ux.set_capture[ self ]
 
-    public func release_capture []
-        ux.release_capture[ self ]
-
-    public func set_focus []
-        ux.set_focus[ self ]
-
-    public func release_focus []
-        ux.release_focus[ self ]
-
-    public func draw [ w: Window ]
-
-    public func render [ changed: array ] -> map
-        return origin
-
-    func compare [ other: element ]
-
-
-func ux_event [ e: element, esubs: subs, ev: event ]
+func ux_event [ e: element, esubs: subs, ev: Event ]
     if [ !esubs ]
         return
     for [ sub: subscriber ] in esubs.entries
@@ -1388,16 +1389,6 @@ func image_release_buffer [ a: Image ] -> object
 # [removed] pixel_from_format — exists in vulkan2.ag
 # [removed] Surface_resources — exists in vulkan2.ag
 
-func rectangle_offset [ area: Region, rel: rect ] -> rect
-    reg: Region [ null ]
-    if [ !area ]
-        reg = Region [ 0.0 ]
-        area = reg
-    r: rectangle[ area, rel, null ]
-    if [ reg ]
-        drop[ reg ]
-    return r
-
 # kind of ridiuclous looking but it does work
 func window_canvas [ a: Window, ct: CanvasType ] -> Canvas
     switch [ ct ]
@@ -1512,7 +1503,7 @@ func app_render [ a: app ]
 
 # func window.init [] 
 #     set defaults (format rgba8, width 1200, height 1200)
-#     create event object
+#     create Event object
 #     if not backbuffer:
 #       glfwCreateWindow, set callbacks (key, mouse, scroll, char, cursor, resize)
 #       glfwCreateWindowSurface
@@ -1549,19 +1540,19 @@ func app_render [ a: app ]
 
 
 # ---- GLFW callbacks ----
-# each gets window from glfwGetWindowUserPointer, fills event, dispatches to ux
+# each gets window from glfwGetWindowUserPointer, fills Event, dispatches to ux
 
 # func handle_glfw_framebuffer_size [win, width, height]
 #     if minimized return; call resize
 
 # func handle_glfw_key [win, key, scan_code, action, mods]
-#     fill event key fields, dispatch key_event to ux
+#     fill Event key fields, dispatch key_event to ux
 
 # func handle_glfw_scroll [win, x, y]
 #     fill mouse wheel_delta, dispatch wheel_event
 
 # func handle_glfw_mouse [win, id, action, mods]
-#     fill mouse button/state, dispatch press/release event
+#     fill mouse button/state, dispatch press/release Event
 
 # func handle_glfw_char [win, code_point]
 #     create text string, dispatch text_event
