@@ -49,7 +49,7 @@ class Composer
     func animate      [ ]        return
 
 class Target
-    expect  vk                             : vk_context
+    context vk                             : vk_context
     expect  w                              : Display
     public  id                             : i32
     public  wscale                         : f32
@@ -472,10 +472,10 @@ class vk_context
 
 
 class gpu
-    public vk            : vk_context
+    context vk           : vk_context
     expect name          : cstr
     public sampler       : Au
-    intern tx            : Texture
+    public tx            : Texture
     public vertex_data   : ref i8
     public index_data    : ref i8
     public members       : ref vertex_member_t
@@ -531,7 +531,7 @@ class gpu
 
 
 class uniforms
-    public vk        : vk_context
+    context vk       : vk_context
     expect s         : shader
     public u_memory  : ref u8
     public u_buffers : array Buffer [ ]
@@ -575,7 +575,7 @@ class uniforms
 
 
 class Pipeline
-    expect vk               : vk_context
+    context vk              : vk_context
     public w                : Display
     expect r                : Target
     expect s                : shader
@@ -936,7 +936,7 @@ class gltf_node
     public parts : array gltf_part [] # container-size on members
 
 class Model
-    public vk               : vk_context
+    context vk              : vk_context
     public w                : Display
     public r                : Target
     public transforms       : ref mat4f null
@@ -1070,7 +1070,7 @@ struct image_range
 
 
 class Command
-    public vk  : vk_context
+    context vk : vk_context
     intern cmd : VkCommandBuffer
 
     func begin [ ] 
@@ -1101,7 +1101,7 @@ class Command
 
 
 class Buffer
-    public vk               : vk_context
+    context vk              : vk_context
     expect size             : i64
     public data             : ARef
     public u_src            : bool
@@ -1237,7 +1237,7 @@ class Buffer
 
 
 class Texture
-    expect vk : vk_context
+    context vk : vk_context
     public w  : Display
     public format           : Pixel
     public sampler          : object
@@ -1439,10 +1439,10 @@ class Texture
 
 
 Texture Display
+    context vk                  : vk_context
     intern glfw                 : handle
     expect width                : u32
     expect height               : u32
-    public vk                   : vk_context
     public mouse                : vec2f
     public ux                   : Composer
     intern swap_model           : Model
@@ -1699,7 +1699,7 @@ Texture Display
 alias ShaderModuleRef : ref VkShaderModule
 
 class shader
-    public vk : vk_context
+    context vk : vk_context
     public name : string
     public vert : string
     public frag : string

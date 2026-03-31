@@ -140,6 +140,7 @@ class element
         ux.release_focus[ a ]
 
     public func draw [ w: Window ]
+        return
 
     public func render [ changed: array string ] -> Render
         return null
@@ -271,8 +272,6 @@ Composer UXComposer
         root.animate_within[ ]
         remove_invalid[]
 
-    public func bind_subs [ instance: element, parent: element ]
-
     func update [ parent: element, rendered: map element[string] ]
         target : Au [ app ]
 
@@ -294,7 +293,6 @@ Composer UXComposer
                     instance.parent = parent
                     instance.init[]
                     instance.hold_members[]
-                    #bind_subs[ instance, parent ]
                     restyle = true
 
             changed  : array string [ null ]
@@ -308,7 +306,6 @@ Composer UXComposer
                 instance.parent  = parent
                 instance.init[]
                 instance.hold_members[]
-                #bind_subs[ instance, parent ] -- implement proper callback
                 if [ !parent.elements ]
                     parent.elements = map element[string] [ ]
                 parent.elements[ id ] = instance
@@ -1253,8 +1250,9 @@ class arg
     public is_inlay : bool
 
 class Mixable
-    public construct [ string ]
-    public func mix [ Mixable, f32 ] -> Mixable
+    public func mix [ b:Mixable, f:f32 ] -> Mixable
+        return Mixable[]
+
 
 Mixable Shadow
     public blur : f32
@@ -1275,8 +1273,8 @@ class Background
     public img          : Image
     public trans        : Transform
     public repeat       : Pattern
-    public construct [ string ]
-    public func mix [ Background, f32 ] -> Background
+    #public construct [ string ]
+    #public func mix [ Background, f32 ] -> Background
 
 alias Radius : array f32
 
@@ -1292,8 +1290,8 @@ class Layer
     public background : Background
     public overflow   : Clip
     public opacity    : f32
-    public construct [ string ]
-    public func mix [ Layer, f32 ] -> Layer
+    #public construct [ string ]
+    #public func mix [ Layer, f32 ] -> Layer
 
 
 Layer Text
@@ -1313,6 +1311,7 @@ Layer Border
 
 
 Layer FillLayer
+
 
 # scrolling requires defined children Region
 Layer Children
@@ -1395,12 +1394,86 @@ element World
         w.overlay.set_texture[ (target.reduction) ? target.reduction : target.color ]
         w.overlay.draw_fill[]
 
-    func dealloc []
-
 World Stage
     public frost : bool
-    func init [ ]
-    func dealloc [ ]
+
+    func init []
+        w : Window [ ux.w ]
+        vk: w.vk
+        
+        load[ w ]
+
+        if [ frost ]
+            #sk_set_bs[ target.color ]
+            
+            w.m_reduce  = Model  [ w: w, samplers: map Texture[string] [ 'color': target.color ] ]
+            w.r_reduce  = Target [ vk: vk, w: w, wscale: 1.0, models: array Model [ w.m_reduce ] ]
+
+            w.m_reduce0 = Model  [ w: w, samplers: map Texture[string] [ 'color': w.r_reduce.color ] ]
+            w.r_reduce0 = Target [ vk: vk, w: w, wscale: 0.5, models: array Model [ w.m_reduce0 ] ]
+
+            w.m_reduce1 = Model  [ w: w, samplers: map Texture[string] [ 'color': w.r_reduce0.color ] ]
+            w.r_reduce1 = Target [ vk: vk, w: w, wscale: 0.25, models: array Model [ w.m_reduce1 ] ]
+
+            fbv : BlurV [ vk: w.vk, name: 'blur-v', reduction_scale: 4.0 ]
+            w.m_blur_v  = Model  [ w: w, s: fbv, samplers: map Texture[string] [ 'color': w.r_reduce1.color ] ]
+            w.r_blur_v  = Target [ vk: vk, w: w, wscale: 1.0, models: array Model [ w.m_blur_v ] ]
+
+            fbl : Blur [ vk: w.vk, name: 'blur', reduction_scale: 4.0 ]
+            w.m_blur    = Model  [ w: w, s: fbl, samplers: map Texture[string] [ 'color': w.r_blur_v.color ] ]
+            w.r_blur    = Target [ vk: vk, w: w, wscale: 1.0, models: array Model [ w.m_blur ] ]
+
+            w.m_reduce2 = Model  [ w: w, samplers: map Texture[string] [ 'color': w.r_reduce1.color ] ]
+            w.r_reduce2 = Target [ vk: vk, w: w, wscale: 0.125, models: array Model [ w.m_reduce2 ] ]
+
+            w.m_reduce3 = Model  [ w: w, samplers: map Texture[string] [ 'color': w.r_reduce2.color ] ]
+            w.r_reduce3 = Target [ vk: vk, w: w, wscale: 0.0625, models: array Model [ w.m_reduce3 ] ]
+
+            bv : BlurV [ vk: w.vk, name: 'blur-v', reduction_scale: 16.0 ]
+            w.m_frost_v = Model  [ w: w, s: bv, samplers: map Texture[string] [ 'color': w.r_reduce3.color ] ]
+            w.r_frost_v = Target [ vk: vk, w: w, wscale: 1.0, models: array Model [ w.m_frost_v ] ]
+
+            bl : Blur [ vk: w.vk, name: 'blur', reduction_scale: 16.0 ]
+            w.m_frost   = Model  [ w: w, s: bl, samplers: map Texture[string] [ 'color': w.r_frost_v.color ] ]
+            w.r_frost   = Target [ vk: vk, w: w, wscale: 1.0, models: array Model [ w.m_frost ] ]
+
+            w.m_view    = Model [ w: w, s: UXCompose [ vk: vk, name: 'ux' ],
+                samplers: map Texture[string] [
+                    'background': target.color,
+                    'frost':      w.r_frost.color,
+                    'blur':       w.r_blur.color,
+                    'compose':    w.compose.color,
+                    'colorize':   w.colorize.color,
+                    'overlay':    w.overlay.color,
+                    'glyph':      w.glyph.color
+                ]
+            ]
+
+            w.r_view    = Target [ vk: vk, w: w, wscale: 1.0, clear_color: vec4f [ 1.0, 1.0, 1.0, 1.0 ],
+                models: array Model [ w.m_view ] ]
+
+            ux_shader : UXCompose [ w.m_view.s ]
+            ux_shader.low_color  = vec4f [ 0.0, 0.1, 0.2, 1.0 ]
+            ux_shader.high_color = vec4f [ 1.0, 0.8, 0.8, 1.0 ]
+        el
+            w.m_view = Model [ vk: vk, w: w, s: UXSimple [ vk: vk, name: 'simple' ],
+                samplers: map Texture[string] [
+                    'background': target.color,
+                    'overlay':    w.overlay.color
+                ]
+            ]
+            w.r_view = Target [ vk: vk, w: w, wscale: 1.0, clear_color: vec4f [ 1.0, 1.0, 1.0, 1.0 ],
+                models: array Model [ w.m_view ] ]
+
+        if [ frost ]
+            w.list = array Target [
+                target, w.r_reduce, w.r_reduce0, w.r_reduce1, w.r_blur_v, w.r_blur,
+                w.r_reduce2, w.r_reduce3, w.r_frost_v, w.r_frost,
+                w.r_view ]
+            w.last_target = w.r_view
+        el
+            w.list = array Target [ target, w.r_view ]
+            w.last_target = w.r_view
 
 element Pane
 
@@ -1711,7 +1784,7 @@ func bounce_out [ x: f64 ] -> f64
 
 
 func ux_event [ e: element, esubs: EventDispatch, ev: Event ]
-    if [ !esubs ]
+    if [ !esubs.callbacks ]
         return
     ev.target = e
     esubs.invoke[ ev ]
