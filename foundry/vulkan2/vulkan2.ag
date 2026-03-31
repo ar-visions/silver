@@ -216,7 +216,7 @@ class Target
         vkDestroySemaphore[ vk.device, vk_render_finished_semaphore, null ]
 
 class Layout
-    static defaults : new Layout [7] # layout defaults stored as static array
+    static defaults : new Layout [7] #break
     public layout : VkImageLayout
     public access : VkAccessFlags
     public stage  : VkPipelineStageFlags
@@ -562,6 +562,8 @@ class uniforms
         #u_buffers = [ ]
         u_memory  = new u8 [ total_uniform ]
         
+        data2: ref u_memory[u_index]
+
         for [ i: type_list.first, i, i = i.next ]
             ty = i.value
             u_size: uniform_size[ ty ]
@@ -928,6 +930,7 @@ class gltf_part
     expect id : Primitive
     public s  : shader
 
+
 class gltf_node
     public id    : Node
     public parts : array gltf_part [] # container-size on members
@@ -936,14 +939,13 @@ class Model
     public vk               : vk_context
     public w                : Display
     public r                : Target
-    intern transforms       : ref mat4f
-    intern transform_count  : i32
+    public transforms       : ref mat4f null
+    public transform_count  : i32
     public id               : GltfModel
     public nodes            : array gltf_node
     public s                : shader
     public samplers         : map Au[string] [ ]
     public pipelines        : array Pipeline
-
 
     public func rebind_model [ ] 
         if [ pipelines ]
@@ -1000,7 +1002,7 @@ struct keyboard_state
 # forward declarations need resolver support
 # process same way, different gen method (make_class -> make_decl)
 class Event
-    public  Target         : Au
+    public  target         : Au
     public  mouse          : mouse_state
     public  key            : keyboard_state
     public  no_default     : bool
@@ -1020,7 +1022,7 @@ class Event
         return true
 
     func clear [ ] 
-        Target         = null
+        target         = null
         key            = []
         no_default     = false
         no_propagation = false
@@ -2055,7 +2057,11 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, p: Pip
         f_normal: rgbaf [ 0.5, 0.5, 1.0, 1.0 ]
         f_zero:   rgbaf [ 0.0, 0.0, 0.0, 0.0 ]
         f_one:    rgbaf [ 1.0, 1.0, 1.0, 1.0 ]
-        f_color:  rgbaf [ ref pbr.baseColorFactor ]
+        f_color:  rgbaf [
+            pbr.baseColorFactor.x,
+            pbr.baseColorFactor.y,
+            pbr.baseColorFactor.z,
+            pbr.baseColorFactor.w ]
         zero:     i64 0
         single:   shape.shape_from[ 1, ref zero ]
         switch [ surface_value ]
@@ -2219,8 +2225,8 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader ]
 
         for [ k: 0, k < member_count, k += 1 ]
             mem:        ref members[k]
-            bv:         BufferView [ mdl.bufferViews[ mem.ac.bufferView ] ]
-            b:          Buffer     [ mdl.buffers[ bv.buffer ] ]
+            bv:         mdl.bufferViews[ mem.ac.bufferView ]
+            b:          mdl.buffers[ bv.buffer ]
             src_base:   ref i8[ b.data.data ]
             src:        ref src_base[bv.byteOffset]
             stride:     mem.ac.stride
@@ -2335,7 +2341,7 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] ->
     m_conv: Model [ vk: vk, w: w, id: mdl_data, s: conv_shader, samplers: conv_samplers ]
     r_conv: Target [ vk: vk, w: w, width: size, height: size, models: [ m_conv ] ]
     v: vec4f [ r_axis.x, r_axis.y, r_axis.z, radians[ 90.0 ] ]
-    q: quatf [ ref v ]
+    q: quatf [ v ]
     conv_shader.env = mat4f.identity[]
     conv_shader.env = conv_shader.env.rotate[ q ]
     w.list.drop[]

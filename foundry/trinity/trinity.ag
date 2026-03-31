@@ -1258,14 +1258,28 @@ element World
     public rotate       : array Rotation
     public translate    : array Translation
     public scale        : array Scaling
-    public update       : subs
+    public update       : EventDispatch
 
     func init []
         expect ux, 'ux not set'
 
+    func load [ w: Window ]
+        if [ !target ]
+            width  : int ((bounds) ? (bounds.w) : (w.width))  * render_scale
+            height : int ((bounds) ? (bounds.h) : (w.height)) * render_scale
+            target = Target [
+                vk:             w.vk,
+                w:              w,
+                width:          width,
+                height:         height,
+                reduce:         (render_scale == 4.0) ? true : false,
+                clear_color:    clear_color,
+                models:         models]
+            w.element_targets[id] = target
+        
     func draw [ w: Window ]
-        expect update, 'update subs not set'
-        scene_load[ w ]
+        #expect update, 'update subs not set'
+        load[ w ]
 
         width  : i32 [ bounds.w * render_scale ]
         height : i32 [ bounds.h * render_scale ]
@@ -1275,16 +1289,27 @@ element World
 
         target.update[]
 
-        expect update, '{id}_update sub not declared by the app'
-        if [ update ]
-            invoke[ update, self ]
+        #expect update, '{id}_update sub not declared by the app'
+        ev : Event[ target: a ]
+        update.invoke[ ev ]
 
         at : translate
         ar : rotate
         as : scale
 
+        m222    : ref mat4f
+        m2222   : i32
+        m22222  : i32
+        m222222 : i32
+
+        m222[0] = mat4f.identity[]
+
         if [ at || ar || as ]
-            for [ m: model ] in target.models
+            for [ m: Model ] in target.models
+                
+                m222    = new mat4f [ 1 ]
+                m222[0] = mat4f.identity[]
+
                 ln0 : i32 [ (at) ? at.count : 0 ]
                 ln1 : i32 [ (ar) ? ar.count : 0 ]
                 ln2 : i32 [ (as) ? as.count : 0 ]
@@ -1292,18 +1317,18 @@ element World
                 m.transforms      = new mat4f [ ln ]
                 m.transform_count = ln
                 for [ i: i32 0, i < ln, i += 1 ]
-                    mat : mat4f [ mat4f.identity[] ]
-                    s : Scaling [ (as) ? peek[ as, i ] : null ]
+                    mat : mat4f.identity[]
+                    s : Scaling [ (as) ? as.peek[ i ] : null ]
                     if [ s ]
-                        mat = mat4f.scale[ ref mat, ref s.value ]
-                    r : Rotation [ (ar) ? peek[ ar, i ] : null ]
+                        mat = mat.scale[ s.value ]
+                    r : Rotation [ (ar) ? ar.peek[ i ] : null ]
                     if [ r ]
                         v   : vec4f [ r.axis.x, r.axis.y, r.axis.z, radians[ r.degs ] ]
-                        q   : quatf [ quatf[ ref v ] ]
-                        mat = mat4f.rotate[ ref mat, ref q ]
-                    t : Translation [ (at) ? peek[ at, i ] : null ]
+                        q   : quatf[ v ]
+                        mat = mat.rotate[ q ]
+                    t : Translation [ (at) ? at.peek[ i ] : null ]
                     if [ t ]
-                        mat = mat4f.translate[ ref mat, ref t.value ]
+                        mat = mat.translate[ t.value ]
                     m.transforms[i] = mat
 
         if [ typeid[ self ] == typeid[ background ] ]

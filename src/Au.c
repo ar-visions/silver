@@ -997,7 +997,7 @@ Au_t Au_is_rec     (Au t) {
 bool Au_is_prim    (Au t) { return au_arg_type(t)->is_primitive; }
 bool Au_is_sign    (Au t) { return au_arg_type(t)->is_signed; }
 bool Au_is_unsign  (Au t) { return au_arg_type(t)->is_unsigned; }
-bool Au_is_ptr     (Au t) { Au_t a = au_arg_type(t); return a->is_class || a->is_pointer; }
+bool Au_is_ptr     (Au t) { Au_t a = au_arg(t); return a->is_explicit_ref || au_arg_type(t)->is_class || au_arg_type(t)->is_pointer; }
 bool Au_is_enum    (Au t) { return au_arg_type(t)->is_enum; }
 bool Au_is_bool    (Au t) { return typeid(bool) == au_arg_type(t); }
 bool Au_is_type    (Au t) { return au_arg_type(t)->member_type == AU_MEMBER_TYPE; }
