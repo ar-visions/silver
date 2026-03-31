@@ -384,7 +384,7 @@ static LLVMValueRef build_arith_op(
                 idx = LLVMBuildIntCast2(b, L, i64_ty, is_signed, "idx_cast");
             return LLVMBuildGEP2(b, i8_ty, R, &idx, 1, name);
         }
-        if (seq == 9) {
+        if (seq == 118) {
             int test2 = 2;
             test2    += 2;
         }
@@ -1411,6 +1411,22 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
                 return e_fn_call(a, u(efunc, f_op), a(op_val, LV, RV));
             }
         }
+    }
+
+    // unwrap scalar structs to their primitive value for arithmetic
+    Au_t L_src = LV && LV->au->src ? LV->au->src : null;
+    Au_t R_src = RV && RV->au->src ? RV->au->src : null;
+    if (L_src && L_src->is_scalar && !a->no_build) {
+        etype        vtype = u(etype, L_src->src);
+        LLVMValueRef gep   = LLVMBuildStructGEP2(B, lltype(u(etype, L_src)), LV->value, 0, "scalar_val");
+        LLVMValueRef val   = LLVMBuildLoad2(B, lltype(vtype), gep, "scalar_load");
+        LV = enode(mod, a, au, vtype->au, value, val, loaded, true);
+    }
+    if (R_src && R_src->is_scalar && !a->no_build) {
+        etype        vtype = u(etype, R_src->src);
+        LLVMValueRef gep   = LLVMBuildStructGEP2(B, lltype(u(etype, R_src)), RV->value, 0, "scalar_val");
+        LLVMValueRef val   = LLVMBuildLoad2(B, lltype(vtype), gep, "scalar_load");
+        RV = enode(mod, a, au, vtype->au, value, val, loaded, true);
     }
 
     /// LV cannot change its type if it is a emember and we are assigning
