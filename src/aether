@@ -209,7 +209,7 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_eval, string) \
     M(X, Y, i, method,   public,  enode,                    e_interpolate, string) \
     M(X, Y, i, method,   public,  enode,                    e_const_array, etype, array) \
-    M(X, Y, i, method,   public,  enode,                    e_offset, enode, Au) \
+    M(X, Y, i, method,   public,  enode,                    e_offset, enode, Au, bool) \
     M(X, Y, i, method,   public,  enode,                    e_switch, enode, map, array, subprocedure, subprocedure) \
     M(X, Y, i, method,   public,  enode,                    e_native_switch, enode, map, array, subprocedure, subprocedure) \
     M(X, Y, i, method,   public,  enode,                    e_for, array, array, array, array, subprocedure, subprocedure, subprocedure, subprocedure, bool, enode, evar, evar) \
