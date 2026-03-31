@@ -2661,7 +2661,13 @@ enode convertible(etype fr, etype to) {
     if (ma->au->is_pointer && ma->au->src && ma->au->src->is_struct && mb->au->is_struct &&
         ma->au->src->typesize == mb->au->typesize && mb->au->typesize > 0)
         return (enode)true;
+    if (ma->au->is_struct && mb->au->is_pointer && mb->au->src && mb->au->src->is_struct &&
+        ma->au->typesize == mb->au->src->typesize && ma->au->typesize > 0)
+        return (enode)true;
     if (ma->au->is_pointer && ma->au->src == mb->au)
+        return (enode)true;
+    if (ma->au->is_pointer && mb->au->is_pointer &&
+        au_ancestor(ma->au) == au_ancestor(mb->au))
         return (enode)true;
 
     if (ma->au->is_enum && (mb->au->is_integral || mb->au->is_realistic))
@@ -3411,6 +3417,13 @@ etype base_model(etype m) {
     return u(etype, au);
 }
 
+etype get_etype(enode n) {
+    aether a = n->mod;
+    if (n->au->member_type == AU_MEMBER_VAR && !n->is_explicit_ref)
+        return u(etype, n->au->src);
+    return (etype)n;
+}
+
 
 // ============================================================================
 // revised e_create — class init paths now delegate to e_init
@@ -3534,7 +3547,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                 LLVMBuildBitCast(B, boxed->value, lltype(canonical(mdl)), "box_to_au"));
         }
 
-        if (seq == 1709) {
+        if (seq == 840) {
             seq = seq;
         }
 
@@ -3549,7 +3562,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             }
         }
         verify(fmem, "no suitable conversion found for %o -> %o (%i)",
-            input, mdl, seq);
+            canonical(input), mdl, seq);
         
         if (fmem == (void*)true) {
             return e_convert_or_cast(a, canonical(mdl), input);
@@ -4607,7 +4620,8 @@ enode aether_e_offset(aether a, enode n, Au offset) { sequencer
 
     Au_t arg_type = au_arg_type((Au)n);
 
-    return enode(mod, a, au, n->is_explicit_ref ? elem_au : arg_type, loaded, false, value, ptr_offset);
+    return enode(mod, a, au, n->is_explicit_ref ? elem_au : arg_type,
+        loaded, false, value, ptr_offset, is_explicit_ref, n->is_explicit_ref);
 }
 
 enode aether_e_load(aether a, enode mem, enode target) { sequencer
