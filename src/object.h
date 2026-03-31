@@ -85,6 +85,8 @@ typedef enum AU_MEMBER AFlag;
 #define AU_TRAIT_IS_FLUX     ((int64_t) 1 << 51)
 #define AU_TRAIT_IS_C        ((int64_t) 1 << 52)
 #define AU_TRAIT_EXPANDING   ((int64_t) 1 << 53)
+#define AU_TRAIT_SCALAR      ((int64_t) 1 << 54)
+#define AU_TRAIT_ELABORATE   ((int64_t) 1 << 55)
 
 typedef bool(*global_init_fn)();
 
@@ -245,6 +247,7 @@ typedef struct _Au_t {
             u64 is_flux      : 1;
             u64 is_c         : 1;   // AU_TRAIT_IS_C      = 1 << 52
             u64 is_expanding : 1;
+            u64 is_scalar    : 1;   // AU_TRAIT_SCALAR    = 1 << 54
             u64 is_elaborate : 1;
         };
         u64 traits;
