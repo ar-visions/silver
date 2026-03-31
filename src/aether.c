@@ -424,13 +424,23 @@ static LLVMValueRef build_arith_op(
     }
 }
 
+etype pointer(aether mod, Au a);
 
+#if 0
 etype evar_type(evar aa) {
     aether a = aa->mod;
     if (aa->au->member_type == AU_MEMBER_VAR)
         return u(etype, aa->au->src);
     return u(etype, aa->au);
 }
+#else
+etype evar_type(evar aa) {
+    aether a = aa->mod;
+    if (aa->au->member_type == AU_MEMBER_VAR)
+        return u(etype, aa->au->src);
+    return u(etype, aa->au);
+}
+#endif
 
 static int ref_level(Au t) {
     Au_t a = au_arg(t);
@@ -575,9 +585,11 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
         /* ------------------------------------------------------------
         * Phase 5: type reconciliation
         * ------------------------------------------------------------ */
-        if ((!is_explicit_ref(L) && ref_level((Au)res) != ref_level((Au)mem_type)) ||
-            resolve(res) != resolve(mem_type))
-            res = e_operand(a, (Au)res, (etype)L);
+        if (!is_explicit_ref(L)) {
+            if ((ref_level((Au)res) != ref_level((Au)mem_type)) ||
+                resolve(res) != resolve(mem_type))
+                res = e_operand(a, (Au)res, (etype)L);
+        }
 
         /* ------------------------------------------------------------
         * Phase 6: store
@@ -792,7 +804,7 @@ enode aether_e_inherits(aether a, enode L, Au R) {
     if (a->no_build) return e_noop(a, etypeid(bool));
 
     // Get the type pointer for L
-    enode L_type =  e_offset(a, L, _i64(-sizeof(Au)));
+    enode L_type =  e_offset(a, L, _i64(-sizeof(Au)), false);
     enode L_ptr  =    e_load(a, L, null);
     enode R_ptr  = e_operand(a, R, null);
 
@@ -1612,8 +1624,18 @@ static evar lookup_by_unique_type(aether a, Au_t required_type) {
     
     for (int i = len(a->lexical) - 1; i >= 0; i--) {
         Au_t ctx = (Au_t)a->lexical->origin[i];
-        
+
         members(ctx, mem) {
+            if (mem->member_type != AU_MEMBER_VAR) continue;
+            evar v = u(evar, mem);
+            if (!v) continue;
+            Au_t var_type = au_arg_type((Au)mem);
+            if (var_type == required_type || inherits(var_type, required_type)) {
+                match = v;
+                count++;
+            }
+        }
+        arg_list(ctx, mem) {
             if (mem->member_type != AU_MEMBER_VAR) continue;
             evar v = u(evar, mem);
             if (!v) continue;
@@ -2068,7 +2090,7 @@ enode aether_e_is(aether a, enode L, Au R) {
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, etypeid(bool));
 
-    enode L_type =  e_offset(a, L, _i64(-sizeof(struct _Au)));
+    enode L_type =  e_offset(a, L, _i64(-sizeof(struct _Au)), false);
     enode L_ptr  =    e_load(a, L_type, null); /// must override the mdl type to a ptr, but offset should not perform a unit translation but rather byte-based
     enode R_ptr  = e_operand(a, R, null);
     return aether_e_eq(a, L_ptr, R_ptr);
@@ -2666,6 +2688,8 @@ enode convertible(etype fr, etype to) {
         return (enode)true;
     if (ma->au->is_pointer && ma->au->src == mb->au)
         return (enode)true;
+    if (mb->au->is_pointer && mb->au->src == ma->au)
+        return (enode)true;
     if (ma->au->is_pointer && mb->au->is_pointer &&
         au_ancestor(ma->au) == au_ancestor(mb->au))
         return (enode)true;
@@ -2702,9 +2726,15 @@ enode convertible(etype fr, etype to) {
         (mb->au == typeid(string) || mb->au == typeid(cstr) || mb->au == typeid(symbol)))
         return (enode)true;
 
-    // allow Au to convert to primitive/struct
-    if (ma->au == typeid(Au) && (mb->au->is_struct || mb->au->is_primitive || mb->au->is_pointer))
+    // allow Au/handle to convert to primitive/struct/class
+    if ((ma->au == typeid(Au) || ma->au == typeid(handle)) &&
+        (mb->au->is_struct || mb->au->is_primitive || mb->au->is_pointer || mb->au->is_class))
         return (enode)true;
+
+    // handle/Au into explicit ref targets (pointer storage)
+    if ((ma->au == typeid(handle) || ma->au == typeid(Au)) && to->is_explicit_ref)
+        return (enode)true;
+
 
     // trust the engineer to use their types in normal ways
     if (ma == etypeid(handle) && (is_class(mb) || mb->au->is_pointer))
@@ -3187,7 +3217,7 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
         while (ctx && ctx != typeid(Au)) {
             for (int i = 0; i < ctx->members.count; i++) {
                 Au_t mb = (Au_t)ctx->members.origin[i];
-                if (mb->member_type == AU_MEMBER_VAR && mb->is_required) {
+                if (mb->member_type == AU_MEMBER_VAR && mb->is_required && !mb->is_context) {
                     bool provided = ctr_input != null;
                     if (!provided && props) {
                         pairs(props, p) {
@@ -3547,7 +3577,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                 LLVMBuildBitCast(B, boxed->value, lltype(canonical(mdl)), "box_to_au"));
         }
 
-        if (seq == 840) {
+        if (seq == 16962) {
             seq = seq;
         }
 
@@ -4590,7 +4620,7 @@ enode enode_shape(enode instance) {
     return enode(mod, a, au, typeid(shape), loaded, true, value, shape);
 }
 
-enode aether_e_offset(aether a, enode n, Au offset) { sequencer
+enode aether_e_offset(aether a, enode n, Au offset, bool in_ref) { sequencer
     Au_t au = n->au;
     if (a->no_build) return e_noop(a, (etype)evar_type((evar)n));
 
@@ -4618,10 +4648,16 @@ enode aether_e_offset(aether a, enode n, Au offset) { sequencer
     LLVMValueRef ptr_offset = LLVMBuildGEP2(B,
         elem_ty, base, &i->value, 1, N);
 
-    Au_t arg_type = au_arg_type((Au)n);
+    if (seq == 70) {
+        seq = seq;
+    }
 
+    Au_t arg_type = au_arg_type((Au)n);
+    if (arg_type->is_pointer)
+        arg_type = arg_type->src; // why were we doing member:present_modes (ptr+VkPresentMode); what we RETURN is an loaded:false of that element
+    printf("seq = %i\n", seq);
     return enode(mod, a, au, n->is_explicit_ref ? elem_au : arg_type,
-        loaded, false, value, ptr_offset, is_explicit_ref, n->is_explicit_ref);
+        loaded, false, value, ptr_offset, is_explicit_ref, n->is_explicit_ref || in_ref);
 }
 
 enode aether_e_load(aether a, enode mem, enode target) { sequencer
@@ -7834,6 +7870,7 @@ static unsigned math_intrinsic_id(aether a, int op, LLVMTypeRef ty) {
         { LLVMLookupIntrinsicID("llvm.ceil.f32", 14),  LLVMLookupIntrinsicID("llvm.ceil.f64", 14) },
         { LLVMLookupIntrinsicID("llvm.round.f32", 15),  LLVMLookupIntrinsicID("llvm.round.f64", 15) },
         { LLVMLookupIntrinsicID("llvm.pow.f32", 13),   LLVMLookupIntrinsicID("llvm.pow.f64", 13) },
+        { LLVMLookupIntrinsicID("llvm.fabs.f32", 14),  LLVMLookupIntrinsicID("llvm.fabs.f64", 14) },
     };
     return ids[op][is_f32 ? 0 : 1];
 }
@@ -7843,11 +7880,53 @@ enode aether_e_math(aether a, i32 op, enode val) {
     if (a->no_build) return e_noop(a, canonical(val));
 
     Au_t val_au = au_arg_type((Au)val->au);
-    bool is_arr = val_au->elements > 0 && val_au->src && val_au->src->is_realistic;
+    bool is_arr = val_au->elements > 0 && val_au->src &&
+                  (val_au->src->is_realistic || (op == 14 && val_au->src->is_integral));
 
     Au_t elem_au = is_arr ? val_au->src : val_au;
     etype elem_ty = u(etype, elem_au);
     LLVMTypeRef lt = lltype(elem_ty);
+
+    // integer abs: x < 0 ? -x : x (no intrinsic needed)
+    if (op == 14 && elem_au->is_integral) {
+        if (!is_arr) {
+            enode v = e_create(a, elem_ty, (Au)val);
+            LLVMValueRef zero = LLVMConstInt(lt, 0, 0);
+            LLVMValueRef neg  = LLVMBuildNeg(B, v->value, "neg");
+            LLVMValueRef cmp  = LLVMBuildICmp(B, LLVMIntSLT, v->value, zero, "is_neg");
+            LLVMValueRef result = LLVMBuildSelect(B, cmp, neg, v->value, "abs");
+            return enode(mod, a, au, elem_au, loaded, true, value, result);
+        }
+        // array: emit loop with integer abs
+        i32 count = val_au->elements;
+        LLVMTypeRef arr_type = LLVMArrayType(lt, count);
+        LLVMValueRef out = LLVMBuildAlloca(B, arr_type, "abs_arr");
+        LLVMTypeRef i32_ty = LLVMInt32TypeInContext(a->module_ctx);
+        LLVMBasicBlockRef entry_bb = LLVMGetInsertBlock(B);
+        LLVMValueRef fn_val = LLVMGetBasicBlockParent(entry_bb);
+        LLVMBasicBlockRef loop_bb = LLVMAppendBasicBlock(fn_val, "abs_loop");
+        LLVMBasicBlockRef done_bb = LLVMAppendBasicBlock(fn_val, "abs_done");
+        LLVMValueRef zero = LLVMConstInt(i32_ty, 0, 0);
+        LLVMValueRef cnt  = LLVMConstInt(i32_ty, count, 0);
+        LLVMBuildBr(B, loop_bb);
+        LLVMPositionBuilderAtEnd(B, loop_bb);
+        LLVMValueRef idx = LLVMBuildPhi(B, i32_ty, "idx");
+        LLVMValueRef gep_in  = LLVMBuildGEP2(B, lt, val->value, &idx, 1, "in_ptr");
+        LLVMValueRef elem_val = LLVMBuildLoad2(B, lt, gep_in, "in_v");
+        LLVMValueRef elem_zero = LLVMConstInt(lt, 0, 0);
+        LLVMValueRef neg  = LLVMBuildNeg(B, elem_val, "neg");
+        LLVMValueRef cmp  = LLVMBuildICmp(B, LLVMIntSLT, elem_val, elem_zero, "is_neg");
+        LLVMValueRef sel  = LLVMBuildSelect(B, cmp, neg, elem_val, "abs");
+        LLVMValueRef gep_out = LLVMBuildGEP2(B, lt, out, &idx, 1, "out_ptr");
+        LLVMBuildStore(B, sel, gep_out);
+        LLVMValueRef next = LLVMBuildAdd(B, idx, LLVMConstInt(i32_ty, 1, 0), "next");
+        LLVMValueRef done = LLVMBuildICmp(B, LLVMIntEQ, next, cnt, "done");
+        LLVMBuildCondBr(B, done, done_bb, loop_bb);
+        LLVMAddIncoming(idx, &zero, &entry_bb, 1);
+        LLVMAddIncoming(idx, &next, &loop_bb, 1);
+        LLVMPositionBuilderAtEnd(B, done_bb);
+        return enode(mod, a, au, val_au, loaded, false, value, out);
+    }
 
     // get or declare the intrinsic/libm function
     unsigned iid = math_intrinsic_id(a, op, lt);

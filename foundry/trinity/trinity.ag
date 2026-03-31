@@ -6,6 +6,7 @@ import img
 import vulkan2
 import canvas
 
+import <stdio.h>
 import <ctype.h>
 import <string.h>
 
@@ -83,18 +84,18 @@ alias Elements : map    element [ string ]
 alias Render   : lambda Elements[ Display ]
 
 class element
-    public parent       : element
-    public area         : Region
+    mutable parent      : element
+    mutable area        : Region
     mutable bounds      : rect
-    public value        : object
-    public id           : string
-    public flags        : i64
+    mutable value       : object
+    mutable id          : string
+    mutable flags       : i64
     public ltest : Layer
     public layers       : array Layer
-    public elements     : Elements
-    public tags         : array string
-    public group        : string
-    public tab_index    : i32
+    mutable elements    : Elements
+    mutable tags        : array string
+    mutable group       : string
+    mutable tab_index    : i32
     mutable scroll       : vec2f
     mutable ghost        : bool
     mutable captured     : bool
@@ -271,7 +272,75 @@ Composer UXComposer
         remove_invalid[]
 
     public func bind_subs [ instance: element, parent: element ]
-    public func update    [ parent: element, rendered: map element[string] ]
+
+    func update [ parent: element, rendered: map element[string] ]
+        target : Au [ app ]
+
+        # mark for umount
+        for [ e:element, id:string ] in parent.elements
+            e.flags |= 1
+
+        # iterate through rendered elements
+        for [ e:element, id:string ] in rendered
+            ee : element parent.elements[ id ]
+            instance : element (parent.elements) ? parent.elements[ id ] : null
+            restyle  = restyle || e.restyle
+
+            if [ instance ]
+                instance.flags &= ~1
+                if [ !instance.id ]
+                    instance.id     = id
+                    instance.ux     = a
+                    instance.parent = parent
+                    instance.init[]
+                    instance.hold_members[]
+                    #bind_subs[ instance, parent ]
+                    restyle = true
+
+            changed  : array string [ null ]
+            new_inst : bool [ false ]
+            if [ !instance ]
+                new_inst         = true
+                restyle          = true
+                instance         = e.hold[]
+                instance.id      = id
+                instance.ux      = a
+                instance.parent  = parent
+                instance.init[]
+                instance.hold_members[]
+                #bind_subs[ instance, parent ] -- implement proper callback
+                if [ !parent.elements ]
+                    parent.elements = map element[string] [ ]
+                parent.elements[ id ] = instance
+            el [ !restyle ]
+                changed = apply_args[ instance, e ]
+                restyle = changed.index_of[ 'tags' ] >= 0
+
+            if [ restyle ]
+                e.restyle = false
+                avail     : st.compute[ instance ]
+                styled    : apply_style[ instance, avail, changed ]
+                if [ styled && changed ]
+                    for [ prop: string ] in styled
+                        if [ changed.index_of[ prop ] == -1 ]
+                            changed.push[ prop ]
+
+            irender : instance.render[ changed ]
+            if [ !irender ] irender = instance.elements
+            if [  irender ] update[ instance, irender ]
+
+        # perform umount on elements not updated in render
+        retry : true
+        while [ retry ]
+            retry = false
+            for [ e:element, id:string ] in parent.elements
+                if [ e.flags & 1 ]
+                    e.flags  = 0
+                    retry    = true
+                    e.parent = null
+                    e.drop_members[]
+                    parent.elements.rm[ id ]
+                    break
 
     public func update_all [ render: map element[string] ]
         restyle = false
@@ -580,7 +649,7 @@ alias StyleEntries : array StyleEntry
 
 
 class StyleBlock
-    public parent   : StyleBlock
+    mutable parent  : StyleBlock
     public quals    : array StyleQualifier
     public entries  : StyleEntries
     public blocks   : array StyleBlock
@@ -1161,12 +1230,12 @@ class StyleTransition
 class StyleQualifier
     intern ty       : Au_t
     context bl      : StyleBlock
-    public type     : string
-    public id       : string
-    public state    : string
-    public oper     : string
-    public value    : string
-    public parent   : object
+    mutable type     : string
+    mutable id       : string
+    mutable state    : string
+    mutable oper     : string
+    mutable value    : string
+    mutable parent   : object
 
 
 class StyleSelection
@@ -1297,19 +1366,8 @@ element World
         ar : rotate
         as : scale
 
-        m222    : ref mat4f
-        m2222   : i32
-        m22222  : i32
-        m222222 : i32
-
-        m222[0] = mat4f.identity[]
-
         if [ at || ar || as ]
             for [ m: Model ] in target.models
-                
-                m222    = new mat4f [ 1 ]
-                m222[0] = mat4f.identity[]
-
                 ln0 : i32 [ (at) ? at.count : 0 ]
                 ln1 : i32 [ (ar) ? ar.count : 0 ]
                 ln2 : i32 [ (as) ? as.count : 0 ]
@@ -1331,7 +1389,7 @@ element World
                         mat = mat.translate[ t.value ]
                     m.transforms[i] = mat
 
-        if [ typeid[ self ] == typeid[ background ] ]
+        if [ typeid[ a ] == typeid[ Background ] ]
             return
 
         w.overlay.set_texture[ (target.reduction) ? target.reduction : target.color ]
@@ -1424,7 +1482,7 @@ shader UXCompose
         eye:    vec3f [ 0.0, 0.0, 2.0 ]
         center: vec3f [ 0.0, 0.0, 0.0 ]
         up:     vec3f [ 0.0, 1.0, 0.0 ]
-        view  = mat4f.look_at[ ref eye, ref center, ref up ]
+        view  = mat4f.look_at[ eye, center, up ]
         proj  = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
 
 
@@ -1465,12 +1523,12 @@ class DrawState
     public opacity              : f32
 
     public func set_default [ ] 
-        font         = font[ size: 22, uri: path 'fonts/Sofia-Sans-Condensed.ttf' ].hold[]
+        font         = Font[ size: 22, uri: path 'fonts/Sofia-Sans-Condensed.ttf' ]
         stroke_cap   = Cap.round
         stroke_join  = Join.round
         stroke_size  = 0
-        fill_color   = sk_color[ string[ "#000" ] ]
-        stroke_color = sk_color[ string[ "#000" ] ]
+        fill_color   = sk_color[ "#000" ]
+        stroke_color = sk_color[ "#000" ]
         opacity      = 1.0
 
 
@@ -1508,7 +1566,7 @@ func parse_quoted [ cursor: ref cstr, max_len: sz ] -> string
             last_slash = true
         el [ s[0] == '"' && !last_slash ]
             break
-        else
+        el
             last_slash = false
         s += 1
     if [ s[0] == 0 ]
@@ -1541,9 +1599,9 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
     ops    : array string [ '!=', '>=', '<=', '>', '<', '=' ]
     for [ qs: string ] in quals
         qq : string [ qs.trim[] ]
-        if [ !qq.len ]
+        if [ !qq.count ]
             continue
-        v : StyleQualifier[]
+        v : StyleQualifier[ bl:bl ]
         result.push[ v ]
         parent_to_child : array string [ qq.split[ '/' ] ]
         processed : StyleQualifier [ null ]
@@ -1556,21 +1614,21 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
             icol : q.index_of[ ':' ]
             tail : string [ null ]
             if [ idot >= 0 ]
-                sp      : q.split[ '.' ]
+                sp      : array string q.split[ '.' ]
                 no_type : q.chars[0] == '.'
                 v.type  = (no_type) ? 'element' : sp[0].trim[]
                 sp2     : sp[ (no_type) ? 0 : 1 ].split[ ':' ]
                 v.id    = sp2[0]
                 if [ icol >= 0 ]
-                    tail = q.mid[ icol + 1, q.len - (icol + 1) ].trim[]
+                    tail = q.mid[ icol + 1, q.count - (icol + 1) ].trim[]
             el
                 if [ icol >= 0 ]
                     v.type = q.mid[ 0, icol ].trim[]
-                    tail   = q.mid[ icol + 1, q.len - (icol + 1) ].trim[]
+                    tail   = q.mid[ icol + 1, q.count - (icol + 1) ].trim[]
                 el
                     v.type = q.trim[]
             if [ v.type ]
-                v.ty = module_lookup[ v.type.chars ]
+                v.ty = Au.module_lookup[ v.type.chars ]
                 expect v.ty, 'type must exist: {v.type}'
                 if [ bl.types.index_of[ v.ty ] == -1 ]
                     bl.types.push[ v.ty ]
@@ -1583,8 +1641,8 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
                         f     : string [ sp[0] ]
                         v.state = f.trim[]
                         v.oper  = op_name
-                        istart : i32 [ f.len + op.len ]
-                        v.value = tail.mid[ istart, tail.len - istart ].trim[]
+                        istart : i32 [ f.count + op_name.count ]
+                        v.value = tail.mid[ istart, tail.count - istart ].trim[]
                         break
                 if [ !is_op ]
                     v.state = tail
@@ -1592,6 +1650,9 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
             v.hold_members[]
     p[0] = end
     return result
+
+
+func is_cmt[c: symbol] -> bool [ c[0] == '/' && c[1] == '*' ]
 
 
 func ws [ p_cursor: ref cstr ] -> bool
@@ -1648,79 +1709,6 @@ func bounce_out [ x: f64 ] -> f64
     el
         return n1 * (x - 2.625 / d1) * x + 0.984375
 
-
-func image_release_buffer [ a: Image ] -> object
-    b: buffer [ a.res ]
-    vk: vk_context [ b.vk ]
-    vmaUnmapMemory[ vk.allocator, b.vma_alloc ]
-    vmaDestroyBuffer[ vk.allocator, b.vk_buffer, b.vma_alloc ]
-    b.drop[]
-    return null
-
-# [removed] pixel_from_format — exists in vulkan2.ag
-# [removed] Surface_resources — exists in vulkan2.ag
-
-# kind of ridiuclous looking but it does work
-func window_canvas [ a: Window, ct: CanvasType ] -> Canvas
-    switch [ ct ]
-    case overlay
-        return overlay
-    case compose
-        return compose
-    case colorize
-        return colorize
-    case glyph
-        return glyph
-    default
-        return overlay
-
-func app_render [ a: app ] 
-    w:        a.w
-    ux:       w.ux
-    elements: a.ason_render
-    if [ a.on_render ]
-        elements = a.on_render[ a, a.w ]
-    el [ !a.ason_render || modified_time[ a.ason_path ] > a.ason_modified ]
-        a.ason_modified = modified_time[ a.ason_path ]
-        if [ !a.app_context ]
-            a.app_context = ctx[ hsize: 32 ].hold[]
-        type: Au_t [ isa[ a ] ]
-        ty: Au_t [ type ]
-        while [ ty != typeid[ Au ] ]
-            for [ m: num 0, m < ty.member_count, m += 1 ]
-                mem: ref type_member_t [ ref ty.members[m] ]
-                from : a.member_object[ mem ]
-                if [ !from ]
-                    continue
-                ctx_val : a.app_context[ mem.sname ]
-                if [ from && !ctx_val || from.compare[ ctx_val ] != 0 ]
-                    a.app_context.set[ mem.sname, from ]
-            ty = ty.parent_type
-        ason_render: map [ read[ a.ason_path, typeid[ map ], a.app_context ] ]
-        ty = type
-        while [ ty != typeid[ Au ] ]
-            for [ m: num 0, m < ty.member_count, m += 1 ]
-                mem: ref type_member_t [ ref ty.members[m] ]
-                if [ !(mem.member_type & A_MEMBER_PROP) ]
-                    continue
-                member : a.member_object[ mem ]
-                to    : a.app_context[ mem.sname ]
-                if [ (!member && to) || (!to && member) || (member && to && member.compare[ to ] != 0) ]
-                    a.member_set[ mem, to ]
-            ty = ty.parent_type
-        a.ason_render = ason_render.hold[]
-        elements = a.ason_render
-    if [ elements ]
-        update_all[ w.ux, elements ]
-    animate[ ux ]
-    if [ w.compose && w.colorize && w.glyph ]
-        clear[ w.compose,  string[ "#000" ] ]
-        clear[ w.colorize, string[ "#000" ] ]
-        clear[ w.glyph,    string[ "#000" ] ]
-    clear[ w.overlay, string[ "#0000" ] ]
-    draw_element[ w, ux.root ]
-    sk_sync[]
-    draw[ w ]
 
 func ux_event [ e: element, esubs: EventDispatch, ev: Event ]
     if [ !esubs ]

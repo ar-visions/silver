@@ -216,7 +216,7 @@ class Target
         vkDestroySemaphore[ vk.device, vk_render_finished_semaphore, null ]
 
 class Layout
-    static defaults : new Layout [7] #break
+    static defaults : new Layout [7]
     public layout : VkImageLayout
     public access : VkAccessFlags
     public stage  : VkPipelineStageFlags
@@ -664,7 +664,7 @@ class Pipeline
         shader_schema: typeid[ s ]
         while [ shader_schema != typeid[ shader ] ]
             for [ i: 0, i < shader_schema.members.count, i += 1 ]
-                mem: shader_schema.members.origin[i]
+                mem: Au_t [ shader_schema.members.origin[i] ]
                 # we need to create an instance to get this info
                 if [ mem.src != typeid[ attrib ] ]
                     continue

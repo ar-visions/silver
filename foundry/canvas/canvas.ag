@@ -697,6 +697,9 @@ Target Canvas
 		th : i32 [ i32 r_h * st.transform.md ]
 		set_clip [ tx, ty, tw, th ]
 
+	func set_texture [ tx: Texture ]
+		no-op
+
 	func draw_fill []
 		draw_fill_preserve
 		path.reset
