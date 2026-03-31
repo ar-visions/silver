@@ -1381,8 +1381,7 @@ static void silver_module() {
         "asm",      "if",       "switch",   "any",
         "enum",     "ifdef",    "el",       "while",
         "cast",     "try",      "throw",    "catch",
-        "finally",  "for",      "func",     "sqrt",     "sin",      "cos",      "tan",
-        "asin",     "acos",     "atan",     "atan2",    "pow",      "exp",      "log",      "floor",    "ceil",     "round",
+        "finally",  "for",      "func", 
         "operator", "construct", "alias",   "getter", "setter",
         "new",      "local",    "elaborate",
         null));
@@ -2635,7 +2634,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
             mem = mem;
         }
         if (!alpha && mem)
-            alpha = read_alpha(a);
+            alpha = read_alpha_any(a);
 
 
 
@@ -2788,7 +2787,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
 
             Au_t mem_type = isa(mem);
             bool b0, b1, b2, b3, b4;
-            if (seq == 438) {
+            if (seq == 2241) {
                 seq = seq;
             }
 
@@ -2802,7 +2801,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                     array index_keys = read_within(a);
                     token k = element(a, 0);
                     num assign_index = k ? index_of(assign, (Au)k) : -1;
-                    bool use_setter = assign_index >= 0;
+                    bool use_setter = assign_index > 0; // skip ':' (bind) — could be ternary
                     pop_tokens(a, use_setter);
                     if (use_setter) {
                         a->setter_key_tokens = hold(index_keys);
@@ -3141,14 +3140,14 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         static struct { cstr name; int op; } math_ops[] = {
             {"sqrt", 0}, {"sin", 1}, {"cos", 2}, {"tan", 3},
             {"asin", 4}, {"acos", 5}, {"atan", 6}, {"exp", 7},
-            {"log", 8}, {"floor", 9}, {"ceil", 10}, {"round", 11}, {"atan2", 12}, {"pow", 13},
+            {"log", 8}, {"floor", 9}, {"ceil", 10}, {"round", 11}, {"atan2", 12}, {"pow", 13}, {"abs", 14},
             {null, 0}
         };
         for (int i = 0; math_ops[i].name; i++) {
             if (read_if(a, math_ops[i].name)) {
                 verify(read_if(a, "["), "expected [ after %s", math_ops[i].name);
                 enode val = parse_expression(a, null, false, false);
-                if (math_ops[i].op >= 12) { // atan2, pow are two-arg
+                if (math_ops[i].op == 12 || math_ops[i].op == 13) { // atan2, pow are two-arg
                     read_if(a, ",");
                     enode val2 = parse_expression(a, null, false, false);
                     verify(read_if(a, "]"), "expected ] after %s", math_ops[i].name);
@@ -3411,7 +3410,10 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         // otherwise it's address-of (ref vdata)
         push_current(a);
         etype ref_cast_type = read_etype(a, null);
-        bool  ref_has_expr  = ref_cast_type && (next_is_neighbor(a) || next_is(a, "["));
+        token ref_last = element(a, -1);
+        token ref_next = element(a,  0);
+        bool  ref_has_expr  = ref_cast_type && ref_next &&
+                              (ref_last->line == ref_next->line || next_is(a, "["));
         pop_tokens(a, false);
 
         if (ref_has_expr) {
@@ -7172,9 +7174,9 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
                 Au_t flat_fn = find_member(typeid(shape), "flat_index", AU_MEMBER_FUNC, 0, false);
                 enode flat_idx = e_fn_call(a, (efunc)u(efunc, flat_fn), a(edata_shape, eref_shape));
 
-                index_expr = e_offset(a, mem, (Au)flat_idx);
+                index_expr = e_offset(a, mem, (Au)flat_idx, in_ref);
             } else
-                index_expr = e_offset(a, mem, (Au)first_index);
+                index_expr = e_offset(a, mem, (Au)first_index, in_ref);
 
             if (in_ref) {
                 if (index_expr->au->src)
@@ -7935,10 +7937,6 @@ etype silver_read_def(silver a, interface access) {
         mdl->au->is_scalar    = true;
         mdl->au->access_type  = access;
         mdl->au->src = value_type->au;
-
-        // create the single 'value' member
-        Au_t val_mem = def_member(mdl->au, "value", value_type->au, AU_MEMBER_VAR, 0);
-        val_mem->access_type = interface_public;
 
         // read body (cast, funcs, etc.)
         mdl->body = (tokens)read_body(a);
