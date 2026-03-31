@@ -4260,12 +4260,13 @@ etype read_etype(silver a, array* p_expr) { sequencer
             Au meta_a_val = null;
             Au meta_b_val = null;
 
-            if (read_meta) {
+            if (!is_cmode(a) && read_meta) {
                 // meta_a: always a type
                 a->etype_level++;
                 etype t = read_etype(a, null);
-                if (!t && !is_cmode(a) && has_depth_meta && !(mdl->au->context && mdl->au->context->meta.a) && mdl->au != typeid(shape))
-                    validate(false, "type parameter required for %o", mdl);
+                if (!t && !(mdl->au->context && mdl->au->context->meta.a) && mdl->au != typeid(shape)) {
+                    validate(false, "meta type required for %o, found %o", mdl, peek(a));
+                }
                 if (!t) t = etypeid(Au);
                 meta_a_val = (Au)t->au;
                 a->etype_level--;
@@ -6485,6 +6486,8 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
             if (seq == 10) {
                 seq = seq;
             }
+            if (len(f->inline_return))
+                a->statement_origin = (token)f->inline_return->origin[0];
             push_tokens(a, (tokens)f->inline_return, 0);
             e_fn_return(a, len(f->inline_return) ? 
                 (Au)parse_expression(a, u(etype, f->au->rtype), false, true) : null);
@@ -7800,7 +7803,7 @@ etype silver_read_def(silver a, interface access) {
         token   type_start = peek(a);
         a->deferred_hit = false;
         push_current(a);
-        etype   target = read_etype(a, null);
+        etype   target = null;//read_etype(a, null);
         token   after  = peek(a);
         bool    fully_parsed = target && !a->deferred_hit &&
                                (!after || !type_start || after->line != type_start->line);
@@ -7889,7 +7892,8 @@ etype silver_read_def(silver a, interface access) {
             fault("failed to create scalar type %o", n);
             return null;
         }
-        mdl->au->access_type = access;
+        mdl->au->is_scalar    = true;
+        mdl->au->access_type  = access;
         mdl->au->src = value_type->au;
 
         // create the single 'value' member
