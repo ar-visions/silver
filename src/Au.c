@@ -7525,6 +7525,14 @@ void __coverage_report(void) {
 
 __int64_t _epoch_millis();
 
+#ifdef __APPLE__
+__int64_t _epoch_millis() {
+    struct timeval tv;
+    gettimeofday((struct timeval*)&tv, 0L);
+    return (__int64_t)(tv.tv_sec) * 1000 + (__int64_t)(tv.tv_usec) / 1000;
+}
+#endif
+
 i64 epoch_millis() {
     return _epoch_millis();
 }

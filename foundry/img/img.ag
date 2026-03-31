@@ -20,16 +20,6 @@ import glennrp:libpng/07b8803 <png.h>
 import <string.h>
 import vec
 
-
-# all 4 opencv functions implemented in img.cc
-func opencv_resize_area[ref u8, ref u8, int, int, int, int, int, int] 
-
-func opencv_gaussian[ref u8, ref u8, int, int, int, int, float] 
-
-func opencv_gaussian_fast[ref u8, ref u8, int, int, int, int , float] 
-
-func opencv_blur_equirect[ref u8, int, int] 
-
 enum Join
     none           : 0
     miter           : 1
@@ -238,13 +228,23 @@ class Image
         return success
 
 
-    func len[ ] -> num
+    func len[ ] -> sz
         return height
 
-    func byte_count[ ] -> num
+    func byte_count[ ] -> sz
         f : header[ a ]
         return f.count * pixel_size
 
     func get[ y:num ] -> Au
         data : ref u8 vdata[]
         return ref data [ pixel_size * width * y ]
+
+
+# all 4 opencv functions implemented in img.cc
+func opencv_resize_area[ref u8, ref u8, int, int, int, int, int, int] 
+
+func opencv_gaussian[ref u8, ref u8, int, int, int, int, float] 
+
+func opencv_gaussian_fast[ref u8, ref u8, int, int, int, int , float] 
+
+func opencv_blur_equirect[ref u8, int, int] 

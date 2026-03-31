@@ -43,6 +43,33 @@ enum Interpolation
     STEP:                   1
     CUBICSPLINE:            2
 
+
+enum Polygon
+    undefined: 0
+    tri:       1
+    quad:      2
+    wire:      3
+    mixed:     4
+    ngon:      5
+
+enum Asset
+    undefined:     0
+    color:         1
+    normal:        2
+    material:      3
+    reflect:       4
+    env:           5
+    attachment:    6
+    depth_stencil: 7
+    multisample:   8
+
+enum Sampling
+    undefined: 0
+    nearest:   1
+    linear:    2
+    ansio:     3
+
+
 class Sampler
     public input:          u64
     public output:         u64
@@ -132,16 +159,6 @@ class Accessor
             break
         
         return res
-
-
-
-
-
-
-
-
-
-
 
     func vcount_val [] -> u64
         vsize: u64 [0]
@@ -281,7 +298,7 @@ class AssetDesc
     public copyright:       string
     public version:         string
 
-class Buffer
+class GltfBuffer
     public byteLength:      u64
     public uri:             path
     public data:            vector
@@ -353,7 +370,7 @@ class GltfModel
     public accessors:        array Accessor
     public bufferViews:      array BufferView
     public meshes:           array Mesh
-    public buffers:          array Buffer
+    public buffers:          array GltfBuffer
     public animations:       array Animation
     public scenes:           array Scene
     public materials:        array Material
@@ -438,31 +455,6 @@ class GltfModel
                 j.states.push [ident]
         node.mx_joints = j
         return j
-
-enum Polygon
-    undefined: 0
-    tri:       1
-    quad:      2
-    wire:      3
-    mixed:     4
-    ngon:      5
-
-enum Asset
-    undefined:     0
-    color:         1
-    normal:        2
-    material:      3
-    reflect:       4
-    env:           5
-    attachment:    6
-    depth_stencil: 7
-    multisample:   8
-
-enum Sampling
-    undefined: 0
-    nearest:   1
-    linear:    2
-    ansio:     3
 
 struct HumanVertex
     pos:       vec3f

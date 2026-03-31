@@ -1,6 +1,6 @@
 #include <import>
 
-bool Buffer_test(Buffer b) {
+bool GltfBuffer_test(GltfBuffer b) {
     print("b = %p");
     return true;
 }

@@ -484,8 +484,8 @@ class gpu
     public index_count   : i32
     public vertex_size   : i32
     public vertex_count  : i32
-    intern vertex        : buffer
-    intern index         : buffer
+    intern vertex        : Buffer
+    intern index         : Buffer
     intern vk_image      : VkImage
     intern vk_image_view : VkImageView
     intern vk_sampler    : VkSampler
@@ -500,12 +500,12 @@ class gpu
         # vbo/ibo maintained on init only
         if [ vertex_size && !vertex ]
             comp: compute
-            vertex = buffer [ vk: vk, size: vertex_size * vertex_count,
+            vertex = Buffer [ vk: vk, size: vertex_size * vertex_count,
                 u_storage: comp, u_vertex: !comp, u_dst: !comp, u_shader: !comp,
                 m_host_visible: true, m_host_coherent: true,
                 data: vertex_data ]
             if [ index_size ]
-                index = buffer [ vk: vk, size: index_size * index_count,
+                index = Buffer [ vk: vk, size: index_size * index_count,
                     u_index: true, u_dst: true, u_shader: true,
                     m_host_visible: true, m_host_coherent: true,
                     data: index_data ]
@@ -534,10 +534,10 @@ class uniforms
     public vk        : vk_context
     expect s         : shader
     public u_memory  : ref u8
-    public u_buffers : array buffer [ ]
+    public u_buffers : array Buffer [ ]
 
     public func update [ ] 
-        for [ b: buffer ] in u_buffers
+        for [ b: Buffer ] in u_buffers
             s.uniform_transfer[ b.data, b.user ]
             b.update[ null ]
 
@@ -565,7 +565,7 @@ class uniforms
         for [ i: type_list.first, i, i = i.next ]
             ty = i.value
             u_size: uniform_size[ ty ]
-            uniform_buf: buffer [ vk: vk, size: u_size,
+            uniform_buf: Buffer [ vk: vk, size: u_size,
                 u_uniform: true, u_dst: true, m_host_visible: true, m_host_coherent: true,
                 data: ref u_memory[u_index], user: ty ]
             u_buffers.push [ uniform_buf ]
@@ -644,7 +644,7 @@ class Pipeline
             resources.push[ vbo ]
         stage_flags: VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
         shader_uniforms = uniforms [ vk: vk, s: s ]
-        for [ b: buffer ] in shader_uniforms.u_buffers
+        for [ b: Buffer ] in shader_uniforms.u_buffers
             uniform_bindings[uniform_count] = VkDescriptorSetLayoutBinding [
                 binding:         uniform_count,
                 descriptorType:  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -1098,7 +1098,7 @@ class Command
         vkAllocateCommandBuffers[ vk.device, alloc_info, ref cmd ]
 
 
-class buffer
+class Buffer
     public vk               : vk_context
     expect size             : i64
     public data             : ARef
@@ -1269,7 +1269,7 @@ class Texture
         channels: i32 [ 0 ]
         pixel: pixel_from_format[ vk_format, ref channels ]
         expect pixel != 0, "unsupported format for texture_cast_image"
-        b: buffer [ vk: vk, size: width * height * channels,
+        b: Buffer [ vk: vk, size: width * height * channels,
             u_dst: true, m_host_visible: true, m_host_coherent: true ]
         b.transfer a
         res: Image [
@@ -1357,7 +1357,7 @@ class Texture
                 expect !is_depth, "unexpected"
                 cmd: Command [ vk: vk ]
                 cmd.begin[]
-                staging: buffer [ vk: vk, size: sampler_size, u_src: true, u_shader: true,
+                staging: Buffer [ vk: vk, size: sampler_size, u_src: true, u_shader: true,
                     m_host_visible: true, m_host_coherent: true,
                     data: (img) ? img.data : fill ]
                 vkCmdCopyBufferToImage[ cmd.cmd, staging.vk_buffer, vk_image,
@@ -1443,10 +1443,10 @@ Texture Display
     public vk                   : vk_context
     public mouse                : vec2f
     public ux                   : Composer
+    intern swap_model           : Model
     public element_targets      : map   Target [string]
     mutable list                 : array Target
     intern swap_renders         : array Target
-    intern swap_model           : Model
     intern vk_swap_images       : ref   VkImage
     intern surface              : VkSurfaceKHR
     intern swapchain            : VkSwapchainKHR
@@ -1464,13 +1464,13 @@ Texture Display
     public title                : string
     mutable debug_value          : f32
     public current_swap_index   : i32
-    public text_event           : subs
-    public move_event           : subs
-    public press_event          : subs
-    public key_event            : subs
-    public touch_event          : subs
-    public release_event        : subs
-    public wheel_event          : subs
+    public text_event           : EventDispatch
+    public move_event           : EventDispatch
+    public press_event          : EventDispatch
+    public key_event            : EventDispatch
+    public touch_event          : EventDispatch
+    public release_event        : EventDispatch
+    public wheel_event          : EventDispatch
     intern resized              : bool
     public backbuffer           : bool
     mutable last_target         : Target
@@ -1479,6 +1479,10 @@ Texture Display
     func update_canvas[ ] return
     
     func resize [ w_new: i32, h_new: i32 ] -> Display
+
+        mstr : string 'wow'
+        m2   : array string [ mstr ]
+
         vkDeviceWaitIdle[ vk.device ]
         width  = w_new
         height = h_new
@@ -1543,7 +1547,7 @@ Texture Display
                     width:         width,
                     height:        height,
                     vk_swap_image: vk_swap_images[i],
-                    models:        [ swap_model ]
+                    models:        array Model [ swap_model ]
                 ]
             swap_renders.count = swap_image_count
             semaphore_frame = swap_renders.first_element[]
@@ -1591,7 +1595,7 @@ Texture Display
     cast -> Image
         color_size: (format == Pixel.rgbaf32) ? 16 : 4
         image_size: width * height * color_size
-        b: buffer [ vk: vk, size: image_size,
+        b: Buffer [ vk: vk, size: image_size,
             u_dst: true, m_host_visible: true, m_host_coherent: true ]
         b.transfer[ a ]
         d: b.mmap[]
@@ -1952,8 +1956,8 @@ func radians[f32]
 
 intern func image_release_buffer [ a: Image ] -> object
     test2: handle[ a.res2 ]
-    b: buffer[ handle[ a.res2 ] ]
-    b2: buffer[ handle[ a.res2 ] ]
+    b: Buffer[ handle[ a.res2 ] ]
+    b2: Buffer[ handle[ a.res2 ] ]
     vk: vk_context [ b.vk ]
     vmaUnmapMemory[ vk.allocator, b.vma_alloc ]
     vmaDestroyBuffer[ vk.allocator, b.vk_buffer, b.vma_alloc ]

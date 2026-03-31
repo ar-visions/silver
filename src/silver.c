@@ -504,6 +504,7 @@ static enode reverse_descent(silver a, etype expect) { sequencer
         seq = seq;
 
     //print_tokens(a, seq);
+    token pk2 = peek(a);
     enode L = read_enode(a, expect, false, true);
     token t = peek(a);
     if (!L) {
@@ -2584,6 +2585,7 @@ enode enode_super(etype, enode);
 etype etype_create(silver, Au_t);
 
 enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_mdl, bool in_ref) { static int seq = 0; seq++;
+    token pk1 = peek(a);
     OPType assign_enum = OPType__undefined;
     Au_t   top     = top_scope(a);
     etype  rec_top = context_record(a);
@@ -2658,7 +2660,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
             //print_tokens(a, seq);
             first = first;
         }
-        if (seq == 356) {
+        if (seq == 2004) {
             int test2 = 2;
             test2    += 2;
         }
@@ -6732,11 +6734,14 @@ enode constructable(etype fr, etype to);
 enode castable(etype fr, etype to);
 
 enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
+    token pk4 = peek(a);
     validate(within_expr || read_if(a, "["), "expected [");
+    token pk5 = peek(a);
     if (seq == 20)
         seq = seq;
     //print("seq %i\n", seq);
     bool is_fields = peek_fields(a) || inherits(mdl->au, typeid(map));
+    token pk6 = peek(a);
     bool is_mdl_map = mdl->au == typeid(map);
     bool is_mdl_collective = inherits(mdl->au, typeid(collective));
     bool was_ptr = false;
@@ -6749,6 +6754,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
             if (first && ((!peek(a) && within_expr) || read_if(a, "]"))) {
                 return e_create(a, mdl, (Au)null);
             }
+            token pk3 = peek(a);
             enode expr     = parse_expression(a, null, false, true);
             bool  has_more = read_if(a, ",") != null;
 
@@ -6770,8 +6776,13 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
             }
             push(args, (Au)expr);
 
+            if (mdl->au->src == typeid(collective) && !has_more) {
+                verify(read_within || read_if(a, "]"), "expected ] after collection listing");
+                return e_create(a, mdl, (Au)args);
+            }
+
             // trivially construct with fields
-            if (!has_more) {
+            if (!has_more && is_struct(mdl)) {
                 validate(within_expr || read_if(a, "]"), "expected ]");
                 // for structs, assign positional args to fields
                 if (is_rec(mdl) && !inherits(mdl->au, typeid(collective))) {
