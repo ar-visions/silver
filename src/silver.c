@@ -2595,7 +2595,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
     token t1 = element(a, 1);
     bool new_bind = t1 && eq(t1, ":");
     
-    if (seq == 2877) {
+    if (seq == 956) {
         seq = seq;
     }
 
@@ -2700,7 +2700,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
 
         /// Lookup or resolve member
         if (!ns_found) {
-            if (seq == 1520) {
+            if (seq == 956) {
                 int test2 = 2;
                 test2    += 2;
             }
@@ -2829,11 +2829,11 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                     }
                     prev = reverse(prev);
 
-                    if (strcmp(mem->au->ident, "sdf") == 0) {
+                    if (strcmp(mem->au->ident, "u_memory") == 0) {
                         f = f;
                     }
 
-                    mem = parse_member_expr(a, mem);
+                    mem = parse_member_expr(a, mem, in_ref);
                     // inside this expression, we must have the previous scope; 
                     // we could save it at top and push the top again, but that isnt handled \properly
                     for (int i = 0; i < depth; i++) {
@@ -2943,6 +2943,10 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     silver    module    = !cmode && (top->is_namespace) ? a : null;
     enode     mem       = null;
 
+    if (peek(a)->line == 565) {
+        a = a;
+    }
+
     if (!cmode && read_if(a, "[")) {
         // C fixed-size array: read N elements of the element type
         if (mdl_expect && mdl_expect->au->elements > 0 && mdl_expect->au->src) {
@@ -2971,7 +2975,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             enode accessed = (enode)access(n, field);
             validate(accessed, "failed to find member %o on %o", field, t);
             n = accessed;
-            n = parse_member_expr(a, n);
+            n = parse_member_expr(a, n, from_ref);
         }
         return n;
     }
@@ -3087,6 +3091,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         return e_create(a, mdl_expect, (Au)res);
     }
     
+    // shell script at design and runtime, for a silver 1.0
     if (!cmode && next_is(a, "$", "(")) {
         consume(a);
         consume(a);
@@ -3330,7 +3335,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             enode accessed = (enode)access(n, field);
             validate(accessed, "failed to find member %o on %o", field, n);
             n = accessed;
-            n = parse_member_expr(a, n);
+            n = parse_member_expr(a, n, from_ref);
         }
         return n;
     }
@@ -3397,7 +3402,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     else if (!cmode && read_if(a, "ref")) {
         static int seq2;
         seq2++;
-        if (seq2 == 25) {
+        if (seq2 == 22) {
             seq2 = seq2;
         }
         validate(!from_ref, "unexpected double-ref (use type definitions)");
@@ -3406,9 +3411,10 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         // otherwise it's address-of (ref vdata)
         push_current(a);
         etype ref_cast_type = read_etype(a, null);
+        bool  ref_has_expr  = ref_cast_type && (next_is_neighbor(a) || next_is(a, "["));
         pop_tokens(a, false);
 
-        if (ref_cast_type && peek(a)) {
+        if (ref_has_expr) {
             // ref type expr — cast expr to ref type
             etype cast_type = read_etype(a, null);
             etype ref_type = pointer((aether)a, (Au)cast_type);
@@ -3416,11 +3422,17 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             return e_create(a, ref_type, (Au)expr);
         }
 
+        if (ref_cast_type) {
+            // ref Type with no expr — null pointer
+            etype cast_type = read_etype(a, null);
+            return e_null(a, pointer((aether)a, (Au)cast_type));
+        }
+
         // ref expr — take address of expr
         enode expr = read_enode(a, null, true, false);
 
         if (next_is(a, "[")) //  || next_neighbor(a) <- breaks with comma of course; we have to form syntax differently here and use Multiple Lines.
-            expr = parse_member_expr(a, expr);
+            expr = parse_member_expr(a, expr, from_ref);
 
         etype ref_type = pointer((aether)a, (Au)expr->au);
 
@@ -3491,7 +3503,9 @@ enode parse_statement(silver a)
         token tk = peek(a);
         if (tk) {
             num line = tk->line;
-            fprintf(stderr, "[%4lld] ", line);
+            path src = tk->source;
+            string f = filename(src);
+            fprintf(stderr, "[%s:%4lld] ", f->chars, line);
             for (int s = 0; s < tk->indent; s++) fputc(' ', stderr);
             for (int i = a->cursor; i < len(a->tokens); i++) {
                 token t = (token)a->tokens->origin[i];
@@ -3652,7 +3666,7 @@ enode parse_statement(silver a)
     bool      is_setter = !f && !is_static && !(is_func|is_lambda) && !is_cast && !is_oper && !is_ctr && !is_getter ?
         read_if(a, "setter")     != null : false;
 
-    if (seq == 1087) {
+    if (seq == 1125) {
         int test2 = 2;
         test2    += 2;
     }
@@ -3789,10 +3803,23 @@ enode parse_statement(silver a)
 
             validate(rtype, "could not infer type");
 
+            print("registering: %s ... checking against %o", mem->au->ident, a->debugmember);
+
+            if (a->debugmember && mem->au->ident && eq(a->debugmember, mem->au->ident)) {
+                print("breaking for member registration: %o", a->debugmember);
+                //raise(SIGTRAP);
+            }
+
             mem->au->access_type = (u8)access;
             mem->au->member_type = AU_MEMBER_VAR;
             mem->au->src         = canonical(rtype)->au;
             mem->au->is_static   = is_static;
+
+            if (mem->au->src->is_pointer && rtype->is_explicit_ref) { // this is easier to register and maintain (membership will dictate the start of this ref model)
+                mem->au->is_explicit_ref = true;
+                mem->au->src = mem->au->src->src;
+                mem->is_explicit_ref = true;
+            }
             if (access == interface_public && rec_top) {
                 Au_t src = mem->au->src;
                 if (src && src->is_c && !src->is_primitive && !src->is_struct && !src->is_enum && !src->typesize)
@@ -3887,10 +3914,6 @@ enode parse_statements(silver a) { sequencer
         seq = seq;
     enode vr = null;
     while (peek(a)) {
-        Au_t mod2 = (Au_t)0x7ffff7eb7c30;
-        if (mod2) {
-            mod2 = mod2;
-        }
         vr = parse_statement(a);
     }
     pop_scope(a);
@@ -4709,7 +4732,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         vexec(a->verbose, "rust", "%ocargo build --%s --manifest-path %o/Cargo.toml --target-dir %o",
               docker, debug ? "debug" : "release", project_f, build_f);
     } else if (is_silver) { // build for Au-type projects
-        silver sf = silver(module, silver_f, breakpoint, a->breakpoint, release, a->release,
+        silver sf = silver(debug_type, a->debug_type, debugmember, a->debugmember, module, silver_f, breakpoint, a->breakpoint, release, a->release,
             clean, a->clean, verbose, a->verbose, is_external, a->is_external ? a->is_external : a);
         validate(sf, "silver module compilation failed: %o", silver_f);
         drop(sf);
@@ -5826,7 +5849,8 @@ enode parse_import(silver a) {
         } else {
             silver og = a->is_external ? a->is_external : a;
             silver external = silver(module, module, breakpoint, a->breakpoint,
-                verbose, a->verbose, is_external, og, release, a->release, clean, a->clean, defs, defs);
+                verbose, a->verbose, is_external, og, release, a->release, clean, a->clean,
+                defs, defs, debug_type, a->debug_type, debugmember, a->debugmember);
 
             // these should be the only two objects remaining.
             external_name    = hold(external->name);
@@ -6774,18 +6798,20 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
                     return e_create(a, mdl, (Au)expr);
                 }
             }
+
             push(args, (Au)expr);
 
             if (mdl->au->src == typeid(collective) && !has_more) {
-                verify(read_within || read_if(a, "]"), "expected ] after collection listing");
+                verify(within_expr || read_if(a, "]"), "expected ] after collection listing");
                 return e_create(a, mdl, (Au)args);
             }
 
             // trivially construct with fields
-            if (!has_more && is_struct(mdl)) {
+            if (!has_more) {
                 validate(within_expr || read_if(a, "]"), "expected ]");
+                
                 // for structs, assign positional args to fields
-                if (is_rec(mdl) && !inherits(mdl->au, typeid(collective))) {
+                if (is_struct(mdl) && !inherits(mdl->au, typeid(collective))) {
                     map props = map(assorted, true);
                     int idx = 0;
                     Au_t scan = mdl->au;
@@ -6907,6 +6933,8 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
                 mdl_field = val; // the map's value type from meta
             }
     
+            printf("key = %s\n", ((string)k)->chars);
+
             a->statement_origin = peek(a);
             v = (Au)parse_expression(a, mdl_field, true, true);
         } else {
@@ -6978,10 +7006,10 @@ static bool peek_fields(silver a) {
     return false;
 }
 
-enode silver_parse_member_expr(silver a, enode mem) { sequencer
+enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
     push_current(a);
 
-    if (seq == 392) {
+    if (seq == 111) {
         seq = seq;
     }
     macro is_macro = instanceof(mem, macro);
@@ -7148,8 +7176,9 @@ enode silver_parse_member_expr(silver a, enode mem) { sequencer
             } else
                 index_expr = e_offset(a, mem, (Au)first_index);
 
-            if (!mem->is_explicit_ref) {
-                index_expr->au = index_expr->au->src;
+            if (in_ref) {
+                if (index_expr->au->src)
+                    index_expr->au = index_expr->au->src;
                 index_expr->loaded = false;
             }
         }
@@ -7242,7 +7271,7 @@ etype etype_of(enode mem) {
 
 enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const) { sequencer
 
-    if (strcmp(mem->au->ident, "data") == 0) {
+    if (mem->au->ident && strcmp(mem->au->ident, "data") == 0) {
         mem = mem;
     }
     
@@ -7298,7 +7327,7 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
 
     // for : bind on DECL, peek at explicit type for meta propagation (don't consume)
     etype bind_type = null;
-    if (op_val == OPType__bind && mem->au->member_type == AU_MEMBER_DECL && !is_bind_ref) {
+    if (op_val == OPType__bind && mem->au->member_type == AU_MEMBER_DECL) {
         push_current(a);
         bind_type = read_etype(a, null);
         pop_tokens(a, false); // always revert — don't consume type tokens
@@ -7315,8 +7344,8 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
     bool is_explicit = is_explicit_ref(mem);
     bool is_compound = op_val > OPType__assign && op_val <= OPType__assign_left;
     enode R = parse_expression(a, is_compound ? null :
-        (is_explicit ? u(etype, t->au->src) :
-        next_is(a, "[") ? t_expect : null), false, true);
+        (is_explicit ? t : next_is(a, "[") ? t_expect : null),
+        false, true);
 
     // Handle Promotion and Inference for AU_MEMBER_DECL
     if (mem->au->member_type == AU_MEMBER_DECL) {
@@ -7334,7 +7363,7 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         }
         mem->au->context = ctx;
         mem->au->member_type = AU_MEMBER_VAR;
-        mem->au->src = au_arg_type((Au)R);
+        mem->au->src = (is_bind_ref && bind_type) ? bind_type->au : au_arg_type((Au)R);
         mem->au->is_const = is_const;
         Au meta_a_src = bind_type && bind_type->meta_a ? bind_type->meta_a :
                         (t && t->meta_a ? t->meta_a : R->meta_a);

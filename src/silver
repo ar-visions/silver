@@ -43,7 +43,8 @@ declare_class(exports)
     M(X, Y, i, prop,     public,  map,    defs_expect) \
     M(X, Y, i, prop,     public,  map,    defs_used) \
     M(X, Y, i, prop,     public,  array,  run) \
-    M(X, Y, i, prop,     public,  string, debug_member) \
+    M(X, Y, i, prop,     public,  string, debug_type) \
+    M(X, Y, i, prop,     public,  string, debugmember) \
     M(X, Y, i, prop,     public,  string, defs_hash) \
     M(X, Y, i, prop,     public,  path,   build_dir) \
     M(X, Y, i, prop,     public,  path,   product_link) \
@@ -56,7 +57,7 @@ declare_class(exports)
     M(X, Y, i, prop,     iobject, map,    import_cache) \
     M(X, Y, i, prop,     intern,  array,  pending_aliases) \
     M(X, Y, i, method,   public,  none,   write_header) \
-    M(X, Y, i, method,   public,  enode,  parse_member_expr, enode) \
+    M(X, Y, i, method,   public,  enode,  parse_member_expr, enode, bool) \
     M(X, Y, i, method,   public,  none,   incremental_resolve) \
     M(X, Y, i, method,   public,  token,  next) \
     M(X, Y, i, method,   public,  token,  prev) \
