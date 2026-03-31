@@ -17,6 +17,7 @@ enode parse_statement(silver a);
 void build_fn(silver a, efunc fmem, callback preamble, callback postamble);
 bool is_explicit_ref(enode);
 enode enode_ref(aether, enode, etype);
+void aether_ensure_terminator(aether, enode);
 etype evar_type(evar a);
 enode parse_import(silver a);
 enode parse_export(silver a);
@@ -1179,7 +1180,7 @@ void silver_init(silver a) {
     }
 
     // 1ms resolution time comparison (it could be nano-second based)
-    bool update_product = true;
+    bool update_product = true; //!a->is_external;
 
     verify(module_file_m, "module file not found: %o", a->module_file);
     push(a->include_paths, (Au)a->module); // add include folder just for our module (this was in aether's init, interfering with our filter logic)
@@ -1189,11 +1190,13 @@ void silver_init(silver a) {
 
     bool product_exists = file_exists("%o", a->product_link);
     u64  product_m      = product_exists ? modified_time(a->product_link) : 0;
+    
     if (a->is_external)
         printf("cache: %s product=%s exists=%d product_m=%llu module_m=%llu\n",
             a->name ? a->name->chars : "?",
             a->product_link ? a->product_link->chars : "?",
             product_exists, (unsigned long long)product_m, (unsigned long long)module_file_m);
+        
     if (product_exists && product_m > module_file_m) {
 
         if (file_exists("%o", a->artifacts_path) && modified_time(a->artifacts_path) > 0) {
@@ -3140,7 +3143,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         static struct { cstr name; int op; } math_ops[] = {
             {"sqrt", 0}, {"sin", 1}, {"cos", 2}, {"tan", 3},
             {"asin", 4}, {"acos", 5}, {"atan", 6}, {"exp", 7},
-            {"log", 8}, {"floor", 9}, {"ceil", 10}, {"round", 11}, {"atan2", 12}, {"pow", 13}, {"abs", 14},
+            {"log", 8}, {"floor", 9}, {"ceil", 10}, {"round", 11}, {"atan2", 12}, {"pow", 13},
             {null, 0}
         };
         for (int i = 0; math_ops[i].name; i++) {
@@ -3157,6 +3160,15 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
                 return e_math(a, math_ops[i].op, val);
             }
         }
+    }
+
+    if (read_if(a, "abs")) {
+        verify(read_if(a, "["), "expected [ after abs");
+        enode val = parse_expression(a, null, false, true);
+        verify(read_if(a, "]"), "expected ] after abs");
+        enode neg = e_op(a, OPType__sub, string("-"), (Au)e_operand(a, _i64(0), canonical(val)), (Au)val);
+        enode cmp = e_op(a, OPType__less, string("<"), (Au)val, (Au)e_operand(a, _i64(0), canonical(val)));
+        return e_ternary(a, cmp, neg, val);
     }
 
     if (read_if(a, "clamp")) {
@@ -3804,8 +3816,6 @@ enode parse_statement(silver a)
             a->expr_level--;
 
             validate(rtype, "could not infer type");
-
-            print("registering: %s ... checking against %o", mem->au->ident, a->debugmember);
 
             if (a->debugmember && mem->au->ident && eq(a->debugmember, mem->au->ident)) {
                 print("breaking for member registration: %o", a->debugmember);
@@ -4955,14 +4965,9 @@ none silver_build(silver a) {
 
     } else {
 
-    if (!a->debug) {
-        // release: emit .o directly from in-memory LLVM module
+    {
         path obj_path = f(path, "%o/%o.o", a->build_dir, a->name);
         verify(emit_object(a, obj_path), ".o emission failed");
-    } else {
-        verify(exec(a->verbose, "%o/bin/llc -filetype=obj %o/%o.ll -o %o/%o.o -relocation-model=pic -O0",
-                    install, a->build_dir, a->name, a->build_dir, a->name) == 0,
-               ".ll -> .o compilation failed");
     }
 
     string cflags = a->asan ? string("-fsanitize=address") : string("");
@@ -4975,6 +4980,18 @@ none silver_build(silver a) {
             if (!starts_with(inc, "-I"))
                 append(ccflags, "-I");
             concat(ccflags, inc);
+        }
+    }
+    // add imported Silver module source directories for C header resolution
+    each(a->imports, import, im) {
+        if (im->is_au_rt && im->module_source) {
+            path dir = parent_dir(im->module_source);
+            if (dir) {
+                if (len(ccflags)) append(ccflags, " ");
+                append(ccflags, "-I");
+                string sdir = cast(string, dir);
+                concat(ccflags, sdir);
+            }
         }
     }
 
@@ -5849,30 +5866,45 @@ enode parse_import(silver a) {
         if (c) {
             // handled after 'as' is read
         } else {
-            silver og = a->is_external ? a->is_external : a;
-            silver external = silver(module, module, breakpoint, a->breakpoint,
-                verbose, a->verbose, is_external, og, release, a->release, clean, a->clean,
-                defs, defs, debug_type, a->debug_type, debugmember, a->debugmember);
+            silver og = a;
+            while (og->is_external) og = og->is_external;
 
-            // these should be the only two objects remaining.
-            external_name    = hold(external->name);
-            external_product = hold(external->product);
+            // check if this module was already compiled in this session
+            string mod_name = stem(module_source);
+            exports existing = og->exports ? (exports)get(og->exports, (Au)mod_name) : null;
+            if (existing && existing->module_path && file_exists("%o", existing->module_path)) {
+                // reuse previously compiled module
+                external_name    = hold(mod_name);
+                external_product = hold(existing->module_path);
+            } else {
+                silver external = silver(module, module, breakpoint, a->breakpoint,
+                    verbose, a->verbose, is_external, og, release, a->release, clean, a->clean,
+                    defs, defs, debug_type, a->debug_type, debugmember, a->debugmember);
 
-            if (external_product) {
-                if (index_of(og->artifacts, (Au)external_product) < 0) {
-                    push(og->artifacts, (Au)external_product);
+                // these should be the only two objects remaining.
+                external_name    = hold(external->name);
+                external_product = hold(external->product);
+
+                if (external_product) {
+                    if (index_of(og->artifacts, (Au)external_product) < 0) {
+                        push(og->artifacts, (Au)external_product);
+                    }
                 }
-            }
 
-            if (external->module_file) {
-                if (index_of(og->artifacts, (Au)external->module_file) < 0) {
-                    push(og->artifacts, (Au)external->module_file);
+                if (external->module_file) {
+                    if (index_of(og->artifacts, (Au)external->module_file) < 0) {
+                        push(og->artifacts, (Au)external->module_file);
+                    }
                 }
-            }
-            validate (!external->error, "error importing silver module %o", external);
+                validate (!external->error, "error importing silver module %o", external);
 
-            drop(external);
-            drop(external); // this is to compensate for the initial hold in silver_init [ quirk for build in init ]
+                // register in session cache so we don't recompile for other importers
+                set(og->exports, (Au)mod_name, (Au)exports(
+                    module_path, external_product));
+
+                drop(external);
+                //drop(external); // this is to compensate for the initial hold in silver_init [ quirk for build in init ]
+            }
             set(a->libs, (Au)string(external_product->chars), (Au)_bool(true));
         }
 
@@ -5934,6 +5966,7 @@ enode parse_import(silver a) {
         external_product,   external_product,
         tokens,             tokens,
         define_map,         define_map,
+        module_source,      module_source,
         is_au_rt,           is_au_rt);
 
     push(a->imports, (Au)mdl);
@@ -6537,6 +6570,10 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
         if (f->target)
             pop_scope(a);
     }
+
+    // safety: ensure every function with code has a terminator on its last block
+    if (f->has_code)
+        aether_ensure_terminator((aether)a, (enode)f);
 }
 
 /// phase 1: parse the record body so all members are registered
@@ -6934,9 +6971,6 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
             } else if (is_mdl_map) {
                 mdl_field = val; // the map's value type from meta
             }
-    
-            printf("key = %s\n", ((string)k)->chars);
-
             a->statement_origin = peek(a);
             v = (Au)parse_expression(a, mdl_field, true, true);
         } else {
