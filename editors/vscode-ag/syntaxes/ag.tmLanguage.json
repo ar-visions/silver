@@ -129,7 +129,7 @@
     },
     "access-modifiers": {
       "name": "keyword.other.modifier.ag",
-      "match": "\\b(public|intern|expect|context|static)\\b"
+      "match": "\\b(public|intern|expect|context|static|mutable|attrib)\\b"
     },
     "storage-keywords": {
       "name": "keyword.other.storage.ag",
