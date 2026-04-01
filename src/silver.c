@@ -3068,13 +3068,13 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     }
 
     shape sh = (shape)read_literal(a, typeid(shape));
-    if (sh && (sh->count == 1 || sh->explicit)) {
+    if (sh && (sh->count == 1 || sh->explicit || mdl_expect == etypeid(shape))) {
         enode op;
-        if (sh->explicit || mdl_expect == etypeid(shape)) 
-            op = e_create(a, etypeid(shape), (Au)sh);
+        if (sh->explicit || mdl_expect == etypeid(shape))
+            op = e_operand(a, (Au)sh, etypeid(shape));
         else
             op = e_operand(a, _i64(sh->data[0]), mdl_expect ? mdl_expect : etypeid(i64));
-        
+
         return op; // otherwise interpreted as an i64
     }
 
@@ -3273,10 +3273,16 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     if (!cmode && read_if(a, "local")) {
         etype mdl = read_etype(a, null);
         validate(read_if(a, "["), "expected [ after local Type");
-        enode esize = parse_expression(a, etypeid(i64), false, true);
+        shape sh = (shape)read_literal(a, typeid(shape));
+        i64 count;
+        if (sh) {
+            count = shape_total(sh);
+        } else {
+            enode esize = parse_expression(a, etypeid(i64), true, true);
+            validate(esize->literal, "local requires constant size");
+            count = *(i64*)esize->literal;
+        }
         validate(read_if(a, "]"), "expected ] after local Type [");
-        validate(esize->literal, "local requires constant size");
-        i64 count = *(i64*)esize->literal;
         enode arr = e_stack_array(a, mdl, count);
         if (read_if(a, "[")) {
             array nodes = array(64);
@@ -4121,6 +4127,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     rtype = arrow ? read_etype(a, null) : null;
     validate(!arrow || rtype, "unknown return type after -> (found %o)", peek(a));
     array inline_expr = null;
+    array const_tokens = null;
 
     if (next_is(a, "[")) {
         inline_expr = read_body(a);
@@ -4137,7 +4144,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
             push(raw, (Au)t);
             consume(a);
         }
-        inline_expr = raw;
+        const_tokens = raw;
     }
 
     if (member_type == AU_MEMBER_CAST) {
@@ -4186,7 +4193,8 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     efunc func = efunc(
         mod,    (aether)a,
         au,     au,
-        body,   (tokens)b,
+        body,   const_tokens ? (tokens)b : null,
+        const_tokens, const_tokens,
         inline_return, inline_expr,
         remote_code, !is_using && !len(b),
         has_code,    len(b) || is_init || is_dealloc || cgen,
@@ -6549,7 +6557,11 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
         if (preamble)
             preamble((Au)f, null);
 
-        if (f->remote_func) {
+        if (f->const_tokens) {
+            // return constant string from captured { } tokens
+            enode str = e_operand(a, (Au)f->const_tokens, etypeid(symbol));
+            e_fn_return(a, (Au)str);
+        } else if (f->remote_func) {
             // the user may implement their own init/dealloc inbetween pre-amble
             // we init our own too but its name is changed on init to facilitate
             array call_args = array(alloc, 32);

@@ -6493,6 +6493,13 @@ none aether_build_module_initializer(aether a, enode init) {
             _u64(isize)
         ));
 
+        // export class meta (e.g. GLSL<Au>)
+        if (tau->meta.a) {
+            enode meta_a_access = etype_access((etype)type_id, string("meta"));
+            enode meta_a_field  = access(meta_a_access, string("a"));
+            e_assign(a, meta_a_field, (Au)e_typeid(a, u(etype, tau->meta.a)), OPType__assign);
+        }
+
         // C-imported types: size-only registration, no member/function metadata
 
         i64 max_ft_end = 0;

@@ -38,6 +38,26 @@ class LayoutBinding
     count   : u32
     format  : Au_t
 
+class VertexInput
+    type    : Au_t
+    construct [ t:Au_t ]
+        type = t
+
+class VertexOutput
+    type    : Au_t
+    construct [ t:Au_t ]
+        type = t
+
+class FragmentInput
+    type    : Au_t
+    construct [ t:Au_t ]
+        type = t
+
+class FragmentOutput
+    type    : Au_t
+    construct [ t:Au_t ]
+        type = t
+
 class Composer
     mutable w:Display
     func key_event    [ Event  ] return
@@ -216,6 +236,10 @@ class Target
         vkDestroySemaphore[ vk.device, vk_image_available_semaphore, null ]
         vkDestroySemaphore[ vk.device, vk_render_finished_semaphore, null ]
 
+struct mat3f
+    m : local float[3x3]
+
+    
 class Layout
     static defaults : new Layout [7]
     public layout : VkImageLayout
@@ -574,17 +598,19 @@ class uniforms
             u_buffers.push [ uniform_buf ]
             u_index += u_size
 
+
+##
 alias vmain : ref none
 alias fmain : ref none
+##
 
-class GLSL <Au>
+class GLSL <Au[ tokens ]>
     public body  : tokens
     public rtype : Au_t
     construct [ t:tokens ]
         body  = t
         self  : typeid[ a ]
         rtype = self.meta.a
-
 
 class Pipeline
     context vk              : vk_context
@@ -1721,11 +1747,11 @@ class shader
     intern vk_frag : VkShaderModule
     intern vk_comp : VkShaderModule
 
-    func vertex   [] -> GLSL [{}]
+    func vertex   [] -> GLSL none {}
 
-    func fragment [] -> GLSL [{}]
+    func fragment [] -> GLSL none {}
 
-    func compute  [] -> GLSL [{}]
+    func compute  [] -> GLSL none {}
 
     intern func replace_includes [ src: cstr, dst: cstr ] 
         src_file: fopen[ src, "r" ]
@@ -1951,17 +1977,11 @@ app media_app [ abstract ]
     func dealloc [ ]
         glfwTerminate[]
 
-intern func trinity_log [
-        severity:       VkDebugUtilsMessageSeverityFlagBitsEXT,
-        types:          VkDebugUtilsMessageTypeFlagsEXT,
-        callbackData:   ref VkDebugUtilsMessengerCallbackDataEXT,
-        userData:       handle ] -> bool
+intern func trinity_log [severity: VkDebugUtilsMessageSeverityFlagBitsEXT, types: VkDebugUtilsMessageTypeFlagsEXT, callbackData:   ref VkDebugUtilsMessengerCallbackDataEXT, userData:       handle ] -> bool
     if [ severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT ]
         puts "vulkan: %s", callbackData.pMessage
     return false
 
-func degrees[f32]
-func radians[f32]
 
 intern func image_release_buffer [ a: Image ] -> object
     test2: handle[ a.res2 ]
@@ -1971,6 +1991,9 @@ intern func image_release_buffer [ a: Image ] -> object
     vmaUnmapMemory[ vk.allocator, b.vma_alloc ]
     vmaDestroyBuffer[ vk.allocator, b.vk_buffer, b.vma_alloc ]
     return null
+
+func degrees[f32] -> f32
+func radians[f32] -> f32
 
 # ---- format conversion ----
 intern func vk_format_fn [ f: Pixel, linear: bool ] -> VkFormat
