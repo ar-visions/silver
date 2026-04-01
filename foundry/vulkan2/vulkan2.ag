@@ -573,6 +573,17 @@ class uniforms
             u_buffers.push [ uniform_buf ]
             u_index += u_size
 
+alias vmain : ref none
+alias fmain : ref none
+
+class GLSL <Au>
+    public body  : tokens
+    public rtype : Au_t
+    construct [ t:tokens ]
+        body  = t
+        self  : typeid[ a ]
+        rtype = self.meta.a
+
 
 class Pipeline
     context vk              : vk_context
@@ -1709,14 +1720,11 @@ class shader
     intern vk_frag : VkShaderModule
     intern vk_comp : VkShaderModule
 
-    func vertex   [] -> tokens
-        return {}
+    func vertex   [] -> GLSL [{}]
 
-    func fragment [] -> tokens
-        return {}
+    func fragment [] -> GLSL [{}]
 
-    func compute  [] -> tokens
-        return {}
+    func compute  [] -> GLSL [{}]
 
     intern func replace_includes [ src: cstr, dst: cstr ] 
         src_file: fopen[ src, "r" ]

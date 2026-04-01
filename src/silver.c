@@ -1584,7 +1584,18 @@ static enode read_keywords(silver a) {
         }
         push(toks, (Au)compacted);
     }
-    return e_create(a, etypeid(tokens), (Au)toks);
+    // build tokens object at runtime: alloc + push each string
+    efunc f_alloc = (efunc)u(efunc, find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, 0, false));
+    efunc f_push  = (efunc)u(efunc, find_member(etypeid(collective)->au, "push", AU_MEMBER_FUNC, 0, true));
+    enode res = e_fn_call(a, f_alloc, a(
+        e_typeid(a, etypeid(tokens)), _i32(1), e_null(a, etypeid(shape)), e_null(a, etypeid(Au))));
+    res->au = etypeid(tokens)->au;
+    for (int i = 0; i < len(toks); i++) {
+        string s = (string)toks->origin[i];
+        enode str_const = e_operand(a, (Au)s, etypeid(string));
+        e_fn_call(a, f_push, a(res, str_const));
+    }
+    return res;
 }
 
 token silver_peek(silver a) {
@@ -3594,6 +3605,9 @@ enode parse_statement(silver a)
     if (rec_top && next_is(a, "flux")) { // adds more capacity to objects
         access = interface_public;
         traits = AU_TRAIT_IS_FLUX;
+    } else if (rec_top && read_if(a, "attrib")) {
+        access = interface_public;
+        traits = AU_TRAIT_STATIC | AU_TRAIT_IS_ATTRIB;
     } else if (rec_top && read_if(a, "context")) {
         access = interface_context;
         traits = AU_TRAIT_IS_CONTEXT;
@@ -3860,7 +3874,7 @@ enode parse_statement(silver a)
             verify(fn && fn == e && fn->au == mem->au, "unexpected registration state");
 
             //au_register(e->au, (etype)e);
-            if (is_static || module) {
+            if (is_static || mem->au->is_static || module) {
                 if (is_static && rec_top) {
                     verify(rec_top, "invalid use of static (must be a class member, not a global item -- use intern for module-interns)");
                     mem->au->alt = (cstr)cstr_copy((cstr)((string)(f(string, "%o_%o", symbol_name((Au)rec_top), e))->chars));
@@ -4110,7 +4124,20 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
 
     if (next_is(a, "[")) {
         inline_expr = read_body(a);
-        inline_expr = inline_expr;
+    } else if (next_is(a, "{")) {
+        // capture { ... } as raw tokens for inline return (e.g. -> GLSL { ... })
+        array raw = array(32);
+        push(raw, (Au)peek(a)); // include the {
+        consume(a);
+        int depth = 1;
+        while (depth > 0 && peek(a)) {
+            token t = peek(a);
+            if (eq(t, "{")) depth++;
+            if (eq(t, "}")) depth--;
+            push(raw, (Au)t);
+            consume(a);
+        }
+        inline_expr = raw;
     }
 
     if (member_type == AU_MEMBER_CAST) {

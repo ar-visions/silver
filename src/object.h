@@ -23,10 +23,9 @@ enum AU_MEMBER {
     AU_MEMBER_SETTER    = 9,
     AU_MEMBER_ENUMV     = 10,
     AU_MEMBER_OVERRIDE  = 11,
-    AU_MEMBER_IS_ATTR   = 12,
-    AU_MEMBER_NAMESPACE = 13,
-    AU_MEMBER_DECL      = 14,
-    AU_MEMBER_MACRO     = 15
+    AU_MEMBER_NAMESPACE = 12,
+    AU_MEMBER_DECL      = 13,
+    AU_MEMBER_MACRO     = 14
 };
 
 typedef enum AU_MEMBER AFlag;
@@ -87,6 +86,7 @@ typedef enum AU_MEMBER AFlag;
 #define AU_TRAIT_EXPANDING   ((int64_t) 1 << 53)
 #define AU_TRAIT_SCALAR      ((int64_t) 1 << 54)
 #define AU_TRAIT_ELABORATE   ((int64_t) 1 << 55)
+#define AU_TRAIT_IS_ATTRIB   ((int64_t) 1 << 56)
 
 typedef bool(*global_init_fn)();
 
@@ -167,10 +167,10 @@ typedef void* LLVMTypeRef;
 typedef void* LLVMValueRef;
 #endif
 
-typedef struct meta_t {
+typedef struct meta_t_ {
     struct _Au_t*   a; // element/key type
     struct _Au*     b; // flexible: value type, shape, etc.
-} meta_t;
+} meta_t_;
 
 // this is the standard _Au_t declaration
 typedef struct _Au_t {
@@ -249,6 +249,7 @@ typedef struct _Au_t {
             u64 is_expanding : 1;
             u64 is_scalar    : 1;   // AU_TRAIT_SCALAR    = 1 << 54
             u64 is_elaborate : 1;
+            u64 is_attrib    : 1;
         };
         u64 traits;
     };
@@ -263,7 +264,7 @@ typedef struct _Au_t {
     micro_          members;
     void*           member_map;
     micro_          args;
-    meta_t          meta;
+    meta_t_         meta;
     union {
         u64             required_bits[2];
         struct _Au_t_f* __f[2];
