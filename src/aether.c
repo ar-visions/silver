@@ -1388,7 +1388,7 @@ enode e_operand_primitive(aether a, Au op) {
             au,      au_lookup("symbol"),
             literal, op);
     }
-    error("unsupported type in aether_operand %s", t->ident);
+    validate(false, "unsupported type in aether_operand %s", t->ident);
     return NULL;
 }
 
