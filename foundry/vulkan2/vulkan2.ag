@@ -31,7 +31,8 @@ import <string.h>
 import <vk_mem_alloc.h>
 import <sys/stat.h>
 
-class attrib
+# used with shader type to manage layout-binding
+class LayoutBinding
     type    : Au_t
     id      : int
     count   : u32
@@ -677,17 +678,17 @@ class Pipeline
             for [ i: 0, i < shader_schema.members.count, i += 1 ]
                 mem: Au_t [ shader_schema.members.origin[i] ]
                 # we need to create an instance to get this info
-                if [ mem.src != typeid[ attrib ] ]
+                if [ mem.src != typeid[ LayoutBinding ] ]
                     continue
 
-                at : attrib s.get_property[ mem.ident ]
+                at : LayoutBinding s.get_property[ mem.ident ]
                 enum_type:  at.type
                 enum_value: at.id
                 meta_type:  at.format
                 expect meta_type, "meta data not set on Surface/extension"
                 all: Surface_resources[ enum_type, enum_value, a ]
                 expect mem.value == 0 && all.count == 1 || all.count == mem.value,
-                    "unexpected len(samplers) for value on attrib"
+                    "unexpected len(samplers) for value on LayoutBinding"
                 for [ res: gpu ] in all
                     expect res inherits gpu, "expected gpu resource"
                     res.sync[ w ]
@@ -1869,7 +1870,7 @@ shader UVQuad
     mutable view  : mat4f
     mutable proj  : mat4f
     
-    public color : attrib [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
     #attrib Surface [ color ] : 1, rgba8
     func init [ ]
         model = mat4f.identity[]
@@ -1881,11 +1882,10 @@ shader UVQuad
 
 
 shader UVReduce
-    mutable model    : mat4f
-    mutable view     : mat4f
-    mutable proj     : mat4f
-
-    public color : attrib [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+    mutable model : mat4f
+    mutable view  : mat4f
+    mutable proj  : mat4f
+    attrib  color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
 
     func init [ ]
         model = mat4f.identity[]
@@ -1900,16 +1900,15 @@ shader Env
     mutable view : mat4f.identity[]
     mutable proj : mat4f.identity[]
     mutable roughness_samples : vec2f
+    attrib color: LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format:typeid[ rgbaf ] ]
 
-    public color: attrib [ type:typeid[ Surface ], id:Surface.color, count:1, format:typeid[ rgbaf ] ]
-    #attrib Surface [ color ] : 1, rgbaf
 
 shader Convolve
     mutable env : mat4f
     mutable view : mat4f
     mutable proj : mat4f
     mutable roughness_samples : vec2f
-    public environment: attrib [ type:typeid[ Surface.environment ], count:1, format:typeid[ rgbaf ] ]
+    attrib environment: LayoutBinding [ type:typeid[ Surface ], id:Surface.environment, count:1, format:typeid[ rgbaf ] ]
 
 
 app media_app [ abstract ]

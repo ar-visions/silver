@@ -51,8 +51,9 @@ shader CanvasUI
 	mutable grad0      : vec4f     # Gradient endpoints / tex rect
 	mutable grad_c0    : vec4f     # Gradient stop color 0
 	mutable grad_c1    : vec4f     # Gradient stop color 1
-	public  color : attrib [ type:typeid[ Surface ], id: Surface.color, count:1, format:typeid[ rgba8 ] ]
-
+	attrib  color      : LayoutBinding [
+		type:typeid[ Surface ], id: Surface.color, count:1, format:typeid[ rgba8 ]
+	]
 
 # ---- path point with optional control points ----
 
@@ -82,6 +83,52 @@ struct affine
 	func apply_y [ px: f32, py: f32 ] -> f32
 		return mc * px + md * py + ty
 
+
+	static func identity [] -> affine
+		return affine [ ma: 1.0, mb: 0.0, mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
+
+
+	func translate [ dx: f32, dy: f32 ] -> affine
+		t:a
+		return affine [
+			ma: t.ma, mb: t.mb, mc: t.mc, md: t.md,
+			tx: t.tx + t.ma * dx + t.mb * dy,
+			ty: t.ty + t.mc * dx + t.md * dy
+		]
+
+
+	func scale [ s: f32 ] -> affine
+		t:a
+		return affine [
+			ma: t.ma * s, mb: t.mb * s,
+			mc: t.mc * s, md: t.md * s,
+			tx: t.tx, ty: t.ty
+		]
+
+
+	func rotate [ radians: f32 ] -> affine
+		t  : a
+		cs : cos[ radians ]
+		sn : sin[ radians ]
+		return affine [
+			ma: t.ma * cs + t.mb * sn,
+			mb: t.mb * cs - t.ma * sn,
+			mc: t.mc * cs + t.md * sn,
+			md: t.md * cs - t.mc * sn,
+			tx: t.tx, ty: t.ty
+		]
+
+
+	func multiply [ q: affine ] -> affine
+
+		return affine [
+			ma: a.ma * q.ma + a.mb * q.mc,
+			mb: a.ma * q.mb + a.mb * q.md,
+			mc: a.mc * q.ma + a.md * q.mc,
+			md: a.mc * q.mb + a.md * q.md,
+			tx: a.ma * q.tx + a.mb * q.ty + a.tx,
+			ty: a.mc * q.tx + a.md * q.ty + a.ty
+		]
 
 # ---- path class ----
 class CanvasPath
@@ -453,7 +500,7 @@ Target Canvas
 				stroke_color: 0xFF000000,
 				stroke_width: 0.0,
 				opacity:      1.0,
-				transform:    affine_identity [],
+				transform:    affine.identity [],
 				clip_x: 0, clip_y: 0,
 				clip_w: width, clip_h: height,
 				blur_rad: 0.0
@@ -525,13 +572,13 @@ Target Canvas
 	# ---- transform ----
 
 	func translate [ tx: f32, ty: f32 ]
-		states[depth - 1].transform = affine_translate [ states[depth - 1].transform, tx, ty ]
+		states[depth - 1].transform = states[depth - 1].transform.translate [ tx, ty ]
 
 	func scale [ s: f32 ]
-		states[depth - 1].transform = affine_scale [ states[depth - 1].transform, s ]
+		states[depth - 1].transform = states[depth - 1].transform.scale [ s ]
 
 	func rotate [ radians: f32 ]
-		states[depth - 1].transform = affine_rotate [ states[depth - 1].transform, radians ]
+		states[depth - 1].transform = states[depth - 1].transform.rotate [ radians ]
 
 	# ---- path building (delegate to CanvasPath) ----
 
@@ -981,49 +1028,6 @@ class CanvasFont
 # ---- FreeType library singleton ----
 
 intern ft_library : handle [ null ]
-
-
-func affine_identity [] -> affine
-	return affine [ ma: 1.0, mb: 0.0, mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
-
-
-func affine_translate [ t: affine, dx: f32, dy: f32 ] -> affine
-	return affine [
-		ma: t.ma, mb: t.mb, mc: t.mc, md: t.md,
-		tx: t.tx + t.ma * dx + t.mb * dy,
-		ty: t.ty + t.mc * dx + t.md * dy
-	]
-
-
-func affine_scale [ t: affine, s: f32 ] -> affine
-	return affine [
-		ma: t.ma * s, mb: t.mb * s,
-		mc: t.mc * s, md: t.md * s,
-		tx: t.tx, ty: t.ty
-	]
-
-
-func affine_rotate [ t: affine, radians: f32 ] -> affine
-	cs : cos[ radians ]
-	sn : sin[ radians ]
-	return affine [
-		ma: t.ma * cs + t.mb * sn,
-		mb: t.mb * cs - t.ma * sn,
-		mc: t.mc * cs + t.md * sn,
-		md: t.md * cs - t.mc * sn,
-		tx: t.tx, ty: t.ty
-	]
-
-
-func affine_multiply [ p: affine, q: affine ] -> affine
-	return affine [
-		ma: p.ma * q.ma + p.mb * q.mc,
-		mb: p.ma * q.mb + p.mb * q.md,
-		mc: p.mc * q.ma + p.md * q.mc,
-		md: p.mc * q.mb + p.md * q.md,
-		tx: p.ma * q.tx + p.mb * q.ty + p.tx,
-		ty: p.mc * q.tx + p.md * q.ty + p.ty
-	]
 
 
 # ---- color helpers ----

@@ -1071,20 +1071,6 @@ class Translation
         return Translation []
 
 
-
-
-
-
-
-
-
-
-
-
-
-    
-
-
 class TimeCoord
     millis : i64
 
@@ -1099,7 +1085,6 @@ class TimeCoord
 
     func get_millis [] -> i64
         return millis
-        
 
 
 class StyleTransition
@@ -1481,10 +1466,10 @@ element Button
 
 
 shader Basic
-    public proj : mat4f
+    public proj  : mat4f
     public model : mat4f
-    public view : mat4f
-    public color : attrib [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgbaf ] ]
+    public view  : mat4f
+    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgbaf ] ]
 
 
 class IBL
@@ -1500,15 +1485,15 @@ shader PBR
     mutable view     : mat4f
     mutable proj     : mat4f
 
-    public color        : attrib [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
-    public normal       : attrib [ type:typeid[ Surface ], id:Surface.normal,       count:1, format: typeid[ rgba8 ] ]
-    public emission     : attrib [ type:typeid[ Surface ], id:Surface.emission,     count:1, format: typeid[ rgbaf ] ]
-    public rough        : attrib [ type:typeid[ Surface ], id:Surface.rough,        count:1, format: typeid[ u8 ] ]
-    public metal        : attrib [ type:typeid[ Surface ], id:Surface.metal,        count:1, format: typeid[ u8 ] ]
-    public height       : attrib [ type:typeid[ Surface ], id:Surface.height,       count:1, format: typeid[ f32 ] ]
-    public ao           : attrib [ type:typeid[ Surface ], id:Surface.ao,           count:1, format: typeid[ u8 ] ]
-    public ior          : attrib [ type:typeid[ Surface ], id:Surface.ior,          count:1, format: typeid[ f32 ] ]
-    public environment  : attrib [ type:typeid[ Surface ], id:Surface.environment,  count:1, format: typeid[ rgbaf ] ]
+    attrib color        : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
+    attrib normal       : LayoutBinding [ type:typeid[ Surface ], id:Surface.normal,       count:1, format: typeid[ rgba8 ] ]
+    attrib emission     : LayoutBinding [ type:typeid[ Surface ], id:Surface.emission,     count:1, format: typeid[ rgbaf ] ]
+    attrib rough        : LayoutBinding [ type:typeid[ Surface ], id:Surface.rough,        count:1, format: typeid[ u8 ] ]
+    attrib metal        : LayoutBinding [ type:typeid[ Surface ], id:Surface.metal,        count:1, format: typeid[ u8 ] ]
+    attrib height       : LayoutBinding [ type:typeid[ Surface ], id:Surface.height,       count:1, format: typeid[ f32 ] ]
+    attrib ao           : LayoutBinding [ type:typeid[ Surface ], id:Surface.ao,           count:1, format: typeid[ u8 ] ]
+    attrib ior          : LayoutBinding [ type:typeid[ Surface ], id:Surface.ior,          count:1, format: typeid[ f32 ] ]
+    attrib environment  : LayoutBinding [ type:typeid[ Surface ], id:Surface.environment,  count:1, format: typeid[ rgbaf ] ]
 
     func init [ ]
         proj  = mat4f.identity[]
@@ -1524,7 +1509,7 @@ shader BlurV
     mutable view : mat4f
     mutable proj : mat4f
     mutable reduction_scale : f32
-    public color : attrib [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
+    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
 
 
 shader Blur
@@ -1532,7 +1517,7 @@ shader Blur
     mutable view : mat4f
     mutable proj : mat4f
     mutable reduction_scale : f32
-    public color : attrib [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
+    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
 
 
 shader UXCompose
@@ -1542,13 +1527,13 @@ shader UXCompose
     mutable low_color    : vec4f
     mutable high_color   : vec4f
 
-    public background : attrib [ type:typeid[ UXSurface ], id:UXSurface.background,  count:1, format: typeid[ rgba8 ] ]
-    public frost      : attrib [ type:typeid[ UXSurface ], id:UXSurface.frost,       count:1, format: typeid[ rgba8 ] ]
-    public blur       : attrib [ type:typeid[ UXSurface ], id:UXSurface.overlay,     count:1, format: typeid[ rgba8 ] ]
-    public compose    : attrib [ type:typeid[ UXSurface ], id:UXSurface.compose,     count:1, format: typeid[ rgba8 ] ]
-    public colorize   : attrib [ type:typeid[ UXSurface ], id:UXSurface.colorize,    count:1, format: typeid[ rgba8 ] ]
-    public overlay    : attrib [ type:typeid[ UXSurface ], id:UXSurface.overlay,     count:1, format: typeid[ rgba8 ] ]
-    public glyph      : attrib [ type:typeid[ UXSurface ], id:UXSurface.glyph,       count:1, format: typeid[ rgba8 ] ]
+    attrib background : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.background,  count:1, format: typeid[ rgba8 ] ]
+    attrib frost      : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.frost,       count:1, format: typeid[ rgba8 ] ]
+    attrib blur       : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.overlay,     count:1, format: typeid[ rgba8 ] ]
+    attrib compose    : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.compose,     count:1, format: typeid[ rgba8 ] ]
+    attrib colorize   : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.colorize,    count:1, format: typeid[ rgba8 ] ]
+    attrib overlay    : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.overlay,     count:1, format: typeid[ rgba8 ] ]
+    attrib glyph      : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.glyph,       count:1, format: typeid[ rgba8 ] ]
 
     func init [ ]
         model = mat4f.identity[]
@@ -1564,10 +1549,10 @@ shader UXSimple
     mutable view  : mat4f
     mutable proj  : mat4f
     
-    public background : attrib [ type:typeid[ UXSurface ], id:UXSurface.background,  count:1, format: typeid[ rgba8 ] ]
-    public colorize   : attrib [ type:typeid[ UXSurface ], id:UXSurface.colorize,    count:1, format: typeid[ rgba8 ] ]
-    public overlay    : attrib [ type:typeid[ UXSurface ], id:UXSurface.overlay,     count:1, format: typeid[ rgbaf ] ]
-    public glyph      : attrib [ type:typeid[ UXSurface ], id:UXSurface.glyph,       count:1, format: typeid[ u8 ] ]
+    attrib background : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.background,  count:1, format: typeid[ rgba8 ] ]
+    attrib colorize   : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.colorize,    count:1, format: typeid[ rgba8 ] ]
+    attrib overlay    : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.overlay,     count:1, format: typeid[ rgbaf ] ]
+    attrib glyph      : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.glyph,       count:1, format: typeid[ u8 ] ]
 
     func init [ ]
         model = mat4f.identity[]
