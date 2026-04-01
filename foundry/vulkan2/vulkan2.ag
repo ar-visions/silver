@@ -598,13 +598,15 @@ class uniforms
             u_buffers.push [ uniform_buf ]
             u_index += u_size
 
-
+# lets declare something about how we want to use this meta-A type slot
+alias RType : Au
 ##
 alias vmain : ref none
 alias fmain : ref none
 ##
 
-class GLSL <Au[ tokens ]>
+# the GLSL type is used at design-time to give 
+class GLSL : RType[ tokens ]
     public body  : tokens
     public rtype : Au_t
     construct [ t:tokens ]

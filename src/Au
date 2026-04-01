@@ -1673,6 +1673,10 @@ declare_class_2(token, string)
     M(AA,BB, i, override, method,  init)
 declare_class_3(tokens, array, collective)
 
+#define const_tokens_module_ Au
+#define const_tokens_schema(AA,BB,...)
+declare_class_4(const_tokens, tokens, array, collective)
+
 #define path_module_ Au
 #define path_schema(AA,BB,...) \
     M(AA,BB, i, method,  public, bool,   exists) \
