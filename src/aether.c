@@ -84,7 +84,7 @@ etype etype_create(aether a, Au_t m) { sequencer
         else if (is_func((Au)m) || is_func_ptr((Au)m)) {
             return (etype)efunc(mod, a, loaded, true,  au, m);
         }
-        else if (mt == AU_MEMBER_VAR || mt == AU_MEMBER_IS_ATTR) {
+        else if (mt == AU_MEMBER_VAR) {
             enode n = enode(mod, a, loaded, false, au, m);
             etype_register(a, (Au)m, (Au)hold(n), false);
             return (etype)n;
@@ -4953,7 +4953,7 @@ etype aether_e_materialize(aether a, Au_t m) {
     if (is_func((Au)m) || is_func_ptr((Au)m))
         return (etype)efunc(mod, a, loaded, true, au, m);
 
-    if (mt == AU_MEMBER_VAR || mt == AU_MEMBER_IS_ATTR) {
+    if (mt == AU_MEMBER_VAR) {
         enode n = enode(mod, a, loaded, false, au, m);
         etype_register(a, (Au)m, (Au)hold(n), false);
         return (etype)n;

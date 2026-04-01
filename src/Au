@@ -174,7 +174,7 @@ typedef double                 *ref_f64;
     micro_          members; \
     void*           member_map; \
     micro_          args; \
-    meta_t          meta; \
+    meta_t_         meta; \
     u64             required_bits[2];
 
 #define CAT4(A, B, C, D) A ## B ## C ## D
@@ -1064,8 +1064,8 @@ declare_abstract(imported)
 #define cereal_module_ Au
 #define cereal_schema(X,Y,...)      raw_schema(X,Y,...)
 
-#define meta_t_module_ Au
-#define meta_t_schema(X,Y,...)      raw_schema(X,Y,...)
+//#define meta_t_module_ Au
+//#define meta_t_schema(X,Y,...)      raw_schema(X,Y,...)
 
 //#define micro_module_ Au
 //#define micro_schema(X,Y,...)      raw_schema(X,Y,...)
@@ -1168,7 +1168,7 @@ declare_primitive(symbol,           string_like)
 declare_primitive(none,             nil)
 declare_primitive(cereal,           raw)
 //declare_primitive(micro,            raw)
-declare_primitive(meta_t,           raw)
+//declare_primitive(meta_t,           raw)
 declare_primitive(raw_t,            raw)
 declare_primitive(handle,           raw)
 declare_primitive(func,             raw)
@@ -1945,6 +1945,11 @@ declare_struct(mat4f, f32)
     i_struct_prop (O, Y, i32,  count) \
     i_struct_prop (O, Y, i32,  alloc)
 declare_struct(micro, Au_ts)
+
+#define meta_t_schema(O, Y, ...) \
+    i_struct_prop (O, Y, Au_t, a) \
+    i_struct_prop (O, Y, Au,   b)
+declare_struct(meta_t, Au_t)
 
 // will need to adjust json serialization to facilitate vector with meta types
 #define vector_mat4f_module_ Au
