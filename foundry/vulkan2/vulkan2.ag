@@ -600,16 +600,12 @@ class uniforms
 
 # lets declare something about how we want to use this meta-A type slot
 alias RType : Au
-##
-alias vmain : ref none
-alias fmain : ref none
-##
 
 # the GLSL type is used at design-time to give 
-class GLSL : RType[ tokens ]
-    public body  : tokens
+class GLSL : RType[ symbol ]
+    public body  : symbol
     public rtype : Au_t
-    construct [ t:tokens ]
+    construct [ t:symbol ]
         body  = t
         self  : typeid[ a ]
         rtype = self.meta.a
