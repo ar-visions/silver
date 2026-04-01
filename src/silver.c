@@ -3071,7 +3071,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     if (sh && (sh->count == 1 || sh->explicit || mdl_expect == etypeid(shape))) {
         enode op;
         if (sh->explicit || mdl_expect == etypeid(shape))
-            op = e_operand(a, (Au)sh, etypeid(shape));
+            op = e_create(a, etypeid(shape), (Au)sh);
         else
             op = e_operand(a, _i64(sh->data[0]), mdl_expect ? mdl_expect : etypeid(i64));
 
@@ -4197,7 +4197,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         const_tokens, const_tokens,
         inline_return, inline_expr,
         remote_code, !is_using && !len(b),
-        has_code,    len(b) || is_init || is_dealloc || cgen,
+        has_code,    len(b) || is_init || is_dealloc || cgen || const_tokens,
         cgen,   cgen,
         used,   true,
         target, null);
@@ -4337,7 +4337,7 @@ etype read_etype(silver a, array* p_expr) { sequencer
                 a->etype_level++;
                 etype t = read_etype(a, null);
                 if (!t && !(mdl->au->context && mdl->au->context->meta.a) && mdl->au != typeid(shape)) {
-                    validate(false, "meta type required for %o, found %o", mdl, peek(a));
+                    a->deferred_hit = true;
                 }
                 if (!t) t = etypeid(Au);
                 meta_a_val = (Au)t->au;
@@ -6530,7 +6530,7 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
     // if there is no code, then this is an external c function; implement must do this
     implement(f, false);
 
-    if (f->has_code && (f->inline_return || f->body || preamble)) {
+    if (f->has_code && (f->const_tokens || f->inline_return || f->body || preamble)) {
         if (f->target)
             push_scope(a, (Au)f->target);
 
@@ -6558,9 +6558,34 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
             preamble((Au)f, null);
 
         if (f->const_tokens) {
-            // return constant string from captured { } tokens
-            enode str = e_operand(a, (Au)f->const_tokens, etypeid(symbol));
-            e_fn_return(a, (Au)str);
+            // join all tokens into one string
+            string joined = string();
+            int last_line = -1;
+            for (int i = 0; i < len(f->const_tokens); i++) {
+                token t = (token)f->const_tokens->origin[i];
+                if (last_line >= 0 && t->line != last_line)
+                    append(joined, "\n");
+                else if (len(joined) > 0)
+                    append(joined, " ");
+                concat(joined, string(t->chars));
+                last_line = t->line;
+            }
+            // allocate GLSL with meta, set body, return
+            etype rtype = u(etype, f->au->rtype);
+            Au_t  rtype_au = rtype->au;
+            enode meta_a_node = rtype_au->meta.a ?
+                e_typeid(a, u(etype, rtype_au->meta.a)) : e_null(a, etypeid(Au_t));
+            enode metas = e_meta_ids((aether)a, (Au)meta_a_node, null);
+            efunc f_alloc = (efunc)u(efunc, find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, 0, false));
+            enode glsl = e_fn_call(a, f_alloc, a(
+                e_typeid(a, rtype), _i32(1), e_null(a, etypeid(shape)), metas));
+            glsl->au = rtype_au;
+            glsl = e_init(a, glsl, null, null, null);
+            // set body member
+            enode body_prop = access(glsl, string("body"));
+            enode jstr = const_string(chars, joined->chars);
+            e_assign(a, body_prop, (Au)jstr, OPType__assign);
+            e_fn_return(a, (Au)glsl);
         } else if (f->remote_func) {
             // the user may implement their own init/dealloc inbetween pre-amble
             // we init our own too but its name is changed on init to facilitate
@@ -7918,7 +7943,7 @@ etype silver_read_def(silver a, interface access) {
         token   type_start = peek(a);
         a->deferred_hit = false;
         push_current(a);
-        etype   target = null;//read_etype(a, null);
+        etype   target = read_etype(a, null);
         token   after  = peek(a);
         bool    fully_parsed = target && !a->deferred_hit &&
                                (!after || !type_start || after->line != type_start->line);

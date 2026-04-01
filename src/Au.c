@@ -3275,14 +3275,16 @@ Au Au_with_cstrs(Au a, cstrs argv) {
             verify(mem, "member not found: %s", &arg[1 + !single]);
             bool is_bool = mem->src == typeid(bool);
             cstr value = null;
-            if (argv[argc + 1] && is_bool && (
+            if (is_bool && argv[argc + 1] && (
                 strcmp(argv[argc + 1], "1") == 0 ||
                 strcmp(argv[argc + 1], "0") == 0 ||
                 strcmp(argv[argc + 1], "true") == 0 ||
                 strcmp(argv[argc + 1], "false") == 0)) {
                 value = argv[++argc];
-            } else if (argv[argc + 1] && argv[argc + 1][0] == '-')
-                value = null; // this case we are providing no value, so default 'given' state which of course is a boolean true
+            } else if (is_bool)
+                value = null; // bool flag without explicit value: default true
+            else if (argv[argc + 1] && argv[argc + 1][0] == '-')
+                value = null;
             else
                 value = argv[++argc];
 
@@ -7532,13 +7534,11 @@ void __coverage_report(void) {
 
 __int64_t _epoch_millis();
 
-#ifdef __APPLE__
 __int64_t _epoch_millis() {
     struct timeval tv;
     gettimeofday((struct timeval*)&tv, 0L);
     return (__int64_t)(tv.tv_sec) * 1000 + (__int64_t)(tv.tv_usec) / 1000;
 }
-#endif
 
 i64 epoch_millis() {
     return _epoch_millis();
