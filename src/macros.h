@@ -257,7 +257,7 @@
 #ifndef __cplusplus
 #define idx(I,V1)                   fcall(I, getter ##_## num, V1)
 #endif
-#define meta_t(I,IDX)               isa(I) -> meta.origin[IDX]
+//#define meta_t(I,IDX)               isa(I) -> meta.origin[IDX]
 #define ctr(T,WITH,...)             Au_initialize(_typeid(T)->ft.with_##WITH(alloc(typeid(T), 1, (Au_t*)null), ## __VA_ARGS__))
 #define ctr1(T,WITH,...)            Au_initialize(_typeid(T)->ft.with_##WITH(alloc(typeid(T), 1, (Au_t*)null), ## __VA_ARGS__))
 #define alloc_ctr(T,WITH,...)       Au_initialize(_typeid(T)->ft.with_##WITH(alloc(typeid(T), 1, (Au_t*)null), ## __VA_ARGS__))

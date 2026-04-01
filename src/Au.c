@@ -2175,6 +2175,13 @@ none push_type(Au_t type, Au_t to_mod) {
 
         def_member(au_t, "meta", typeid(meta_t), AU_MEMBER_VAR, AU_TRAIT_INLAY)
             ->offset = offsetof(struct _Au_f, meta);
+
+        // register meta_t members
+        Au_t mt = typeid(meta_t);
+        mt->is_struct  = true;
+        mt->typesize   = sizeof(meta_t);
+        def_member(mt, "a", typeid(Au_t), AU_MEMBER_VAR, 0)->offset = offsetof(meta_t, a);
+        def_member(mt, "b", typeid(Au),   AU_MEMBER_VAR, 0)->offset = offsetof(meta_t, b);
  
         Au_t required_bits = def_member(au_t, "required_bits",  typeid(u64), AU_MEMBER_VAR, 0);
         required_bits->elements = 2;
@@ -7609,11 +7616,12 @@ define_primitive(cstr,   string_like, AU_TRAIT_POINTER, i8)
 define_primitive(symbol, string_like, AU_TRAIT_CONST | AU_TRAIT_POINTER, i8)
 define_primitive(cereal, raw, 0)
 //define_primitive(micro,  raw, 0)
-define_primitive(meta_t, raw, 0)
+//define_primitive(meta_t, raw, AU_TRAIT_STRUCT)
 define_primitive(none,   nil, AU_TRAIT_VOID)
 
 //define_primitive(Au_t,  raw, 0)
 define_struct(micro, ARef, i32, i32)
+define_struct(meta_t, Au_t, Au)
 
 define_primitive(handle, raw, AU_TRAIT_POINTER, u8)
 define_primitive(ARef,   ref, AU_TRAIT_POINTER, Au)
