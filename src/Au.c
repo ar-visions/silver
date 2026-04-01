@@ -7655,6 +7655,8 @@ define_class(token, string)
 // this is defining tokens as array <token> .. the shape, is something the user gives (hard coded in Au)
 define_class(tokens, array, token)
 
+define_class(const_tokens, tokens, token)
+
 define_class(item, Au)
 
 define_class(collective, Au)

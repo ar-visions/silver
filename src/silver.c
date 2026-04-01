@@ -7968,28 +7968,26 @@ etype silver_read_def(silver a, interface access) {
             is_struct ? AU_TRAIT_STRUCT : AU_TRAIT_CLASS);
         mdl->au->access_type = access;
 
-        // [ abstract ] or meta args < name: type, ... >
+        // [ abstract ], meta via < > or :
         if (read_if(a, "[")) {
             if (read_if(a, "abstract")) {
                 mdl->au->is_abstract = true;
                 validate(read_if(a, "]"), "expected ] after abstract");
             } else {
-                // not abstract — must be meta args, switch to < > style parsing
-                // (this shouldn't happen; meta uses < >)
                 validate(false, "expected 'abstract' or ']'");
             }
-        } else if (read_if(a, "<")) {
-            bool first = true;
-            int index = 0;
-            while (!read_if(a, ">")) {
-                if (!first)
-                    verify(read_if(a, ","), "expected ',' seperator between models");
-                etype type = read_etype(a, null);
-                verify(type, "expected type in < >");
-                micro_push(&mdl->au->args, (Au)type->au);
-                first = false;
-                index++;
+        }
+        if (read_if(a, "<") || read_if(a, ":")) {
+            etype meta_a = read_etype(a, null);
+            validate(meta_a, "expected meta type");
+            mdl->au->meta.a = meta_a->au;
+            if (read_if(a, "[")) {
+                etype meta_b = read_etype(a, null);
+                validate(meta_b, "expected meta_b type");
+                mdl->au->meta.b = (Au)meta_b->au;
+                validate(read_if(a, "]"), "expected ] after meta_b type");
             }
+            read_if(a, ">"); // consume > if present (from < > syntax)
         }
 
         mdl->body = (tokens)read_body(a);
