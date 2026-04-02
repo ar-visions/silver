@@ -6,11 +6,6 @@
 Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type);
 enode e_convert_or_cast(aether a, etype output, enode input);
 
-
-// designed for Audrey and Rebecca
-// with syntax that makes programming enjoyable
-// to express intent clearly in modular development, easily targeting all platforms
-
 etype etype_prep(silver, Au_t);
 enode parse_statements(silver a);
 enode parse_statement(silver a);
@@ -141,7 +136,6 @@ static symbol shared   = "-dynamiclib";
 #endif
 
 #define next_is(a, ...) silver_next_is_eq(a, __VA_ARGS__, null)
-
 
 string symbol_name(Au obj);
 
