@@ -603,6 +603,9 @@ abstract media_app trinity
     # this is an elaboration; auto-view-cast without actually adding a new member
     # it may even do an additional run-time instance check; it will have the same visibility
 
+    func run[] -> i32
+        return super.run[]
+
     func render[]
         elements : on_render[ w ] # type from on_render
         #render : map element[ string ]

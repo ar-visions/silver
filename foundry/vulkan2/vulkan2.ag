@@ -1965,12 +1965,14 @@ abstract app media_app
         return
     
     func init [ ] 
-        expect glfwInit[], "glfw init"
+        init_res : glfwInit[]
+        expect init_res, "glfw init"
         if [ !glfwVulkanSupported[] ]
             fault "glfw does not support vulkan"
             glfwTerminate[]
             return
-        expect vk, "vk_context required for trinity"
+        puts 'starting vk'
+        vk = vk_context[]
 
     func dealloc [ ]
         glfwTerminate[]
