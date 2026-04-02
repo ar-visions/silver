@@ -30,8 +30,8 @@
   "repository": {
     "block-comment": {
       "name": "comment.block.ag",
-      "begin": "^##$",
-      "end": "^##$"
+      "begin": "^\\s*##\\s*$",
+      "end": "^\\s*##\\s*$"
     },
     "doc-comment": {
       "name": "comment.block.documentation.ag",
