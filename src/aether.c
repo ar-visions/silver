@@ -390,10 +390,6 @@ static LLVMValueRef build_arith_op(
                 idx = LLVMBuildIntCast2(b, L, i64_ty, is_signed, "idx_cast");
             return LLVMBuildGEP2(b, i8_ty, R, &idx, 1, name);
         }
-        if (seq == 118) {
-            int test2 = 2;
-            test2    += 2;
-        }
         verify(false, "unsupported pointer arithmetic operation: %i", seq);
     }
 
@@ -2265,21 +2261,10 @@ enode aether_lambda_fcall(aether a, efunc mem, array user_args) {
     return e_fn_call(a, fn_ptr, args);
 }
 
-enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
+enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer
     bool funcptr = is_func_ptr((Au)fn);
     if (!funcptr && !fn->used)
          fn->used = true;
-
-    static int seq2 = 0;
-    seq2++;
-
-    if (seq2 == 472) {
-        seq2 = seq2;
-    }
-
-    if (strcmp(fn->au->ident, "snd_pcm_hw_params_any") == 0) {
-        fn = fn;
-    }
 
     Au_t au = fn->au;
 
@@ -2347,22 +2332,18 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
         ctx = ctx->context;
     }
 
-    if (seq == 46) {
-        seq2 = seq2;
-    }
     // -----------------------------------------------------------------------
     // Dynamic Dispatch Logic                           ( hold onto your butts )
     // -----------------------------------------------------------------------
     // If this is an instance method, we must look up the implementation 
     // in the runtime type's vtable (ft) rather than using the static symbol.
     if (!target_type || (!is_struct((Au)target_type->au->src) && !is_struct((Au)target_type)))
+    if (fn->au->ident && strcmp(fn->au->ident, "init") == 0 && fn->au->context && fn->au->context->ident)
+        fprintf(stderr, "e_fn_call init: %s.init is_abstract=%d a->direct=%d is_imethod=%d value=%p\n",
+            fn->au->context->ident, is_abstract, a->direct, fn->au->is_imethod, (void*)fn->value);
     if (is_abstract || (!a->direct && first_arg && !first_is_alloc &&
          fn->au->context != typeid(Au) && fn->au->is_imethod && !funcptr &&
          !(target_type && target_type->target && target_type->target->avoid_ftable))) {
-
-        if (strcmp(fn->au->ident, "finalize") == 0) {
-            seq = seq;
-        }
 
         verify(n_args > 0, "instance method %o requires 'this' argument", fn);
         
@@ -2377,9 +2358,6 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
         // header = ((struct _Au*)instance) - 1
         char name[256];
         sprintf(name, "this_%i", seq);
-        if (seq == 46) {
-            seq = seq;
-        }
         LLVMTypeRef  i8_ptr_ty  = LLVMPointerTypeInContext(a->module_ctx, 0);
         LLVMValueRef i8_this    = LLVMBuildBitCast(B, instance, i8_ptr_ty, name);
         
@@ -2548,9 +2526,6 @@ enode aether_e_fn_call(aether a, efunc fn, array args) { sequencer // 613 @ 87
 
 
     char call_seq[256];
-    if (seq2 == 13) {
-        seq2 = seq2;
-    }
     sprintf(call_seq, "call_%i_%s", seq2, fn->au->ident);
     etype rtype = is_lambda(fn) ?
         u(etype, fn->meta_a) :
@@ -3289,7 +3264,9 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
     // 4. call init chain — direct for concrete types, Au_initialize for polymorphic
     enode res = alloc;
     if (a->direct || !alloc->is_any) {
-        // walk context chain, collect init functions, call base-first
+        // walk context chain, collect init functions, call base-first (direct calls)
+        bool saved_direct = a->direct;
+        a->direct = true;
         array chain = etype_class_list(canonical((etype)alloc));
         each(chain, etype, mdl) {
             if (mdl->au == typeid(Au)) continue;
@@ -3297,6 +3274,7 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
             efunc  init_f = u(efunc, init_mem);
             if (init_f) e_fn_call(a, init_f, a(alloc));
         }
+        a->direct = saved_direct;
         efunc f_hold_members = (efunc)u(efunc,
             find_member(etypeid(Au)->au, "hold_members", AU_MEMBER_FUNC, 0, false));
         e_fn_call(a, f_hold_members, a(alloc));
@@ -5038,7 +5016,7 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
     members(module_base, mem) {
         if (is_class(mem)) {
             etype cls = u(etype, mem);
-            if (cls->au->context == main_spec->au && !mem->is_abstract) {
+            if (inherits(cls->au, main_spec->au) && !mem->is_abstract) {
                 verify(!main_class, "found multiple app classes");
                 main_class = cls;
             }
@@ -5272,6 +5250,13 @@ none etype_init(etype t) {
     bool  named = au && au->ident && strlen(au->ident);
     enode     n = instanceof(t, enode);
 
+#ifndef NDEBUG
+    if (a->dbg_init && au && au->ident && eq(a->dbg_init, au->ident)) {
+        printf("breaking for init of %s\n", a->dbg_init->chars);
+        raise(SIGTRAP);
+    }
+#endif
+    
     if (au && au->ident && strstr(au->ident, "index_num"))
         au = au;
 
@@ -5320,9 +5305,6 @@ none etype_init(etype t) {
 
                 Au_t fn_first = def(ft_type, "_none_", AU_MEMBER_VAR, 0);
                 fn_first->src  = typeid(ARef);
-
-                if (source_au->ident && strstr(source_au->ident, "VkQueueFamilyProperties"))
-                    au = au;
 
                 if (!au->is_c) {
                     array cl = etype_class_list(t);
@@ -5704,6 +5686,13 @@ none etype_implement(etype t, bool w) { sequencer
 
     if (au->ident && strcmp(au->ident, "VkClearValue") == 0)
         au = au;
+
+#ifndef NDEBUG
+    if (a->dbg_implement && au && au->ident && eq(a->dbg_implement, au->ident)) {
+        printf("breaking for implementation of %s\n", a->dbg_implement->chars);
+        raise(SIGTRAP);
+    }
+#endif
 
     if (au->member_type == AU_MEMBER_DECL || 
         au->member_type == AU_MEMBER_NAMESPACE || (is_func(au) && !((enode)t)->used && !a->is_Au_import))
@@ -6917,6 +6906,11 @@ void aether_import_Au(aether a, string ident, Au lib) {
     Au_t    au_module = null;
     handle  lib_instance = null;
 
+    if (eq(ident, "vulkan2")) {
+        int test2 = 2;
+        test2    += 2;
+    }
+
     if (instanceof(lib, path)) {
         au_module = find_module(ident->chars);
         if (!au_module) {
@@ -7236,8 +7230,8 @@ none aether_init(aether a) {
     //path src_path = a->module;
     //push(a->include_paths, (Au)src_path);
 
-    a->coverage = false; //a->debug;
-    a->timing_enabled = false; //a->debug;
+    a->coverage = a->debug;
+    a->timing_enabled = a->debug;
 }
 
 none aether_dealloc(aether a) {
