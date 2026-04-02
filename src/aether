@@ -171,6 +171,8 @@ forward(evar)
     M(X, Y, i, prop,     public,  num,                      cursor) \
     M(X, Y, i, prop,     public,  array,                    stack) \
     M(X, Y, i, prop,     public,  Au_t,                     top) \
+    M(X, Y, i, prop,     public,  string,                   dbg_init) \
+    M(X, Y, i, prop,     public,  string,                   dbg_implement) \
     M(X, Y, i, prop,     public,  array,                    imports) \
     M(X, Y, i, vargs,    public,  none,                     eprint, symbol) \
     M(X, Y, i, method,   public,  none,                     e_vector_init, etype, enode, array) \

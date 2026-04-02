@@ -976,6 +976,8 @@ static void exporter(silver a) {
         string  module      = (string)i->key;
         exports exp         = (exports)i->value;
 
+        if (!exp->module_file || !exp->project_path || !exp->version)
+            continue;
         string mod_file = cast(string, exp->module_file);
         string rel_mod = mid(mod_file, exp->project_path->count + 1, len(exp->project_path) - exp->project_path->count);
         string  tag         = f(string, "%o-%o", i->key, exp->version);
@@ -1218,10 +1220,21 @@ void silver_init(silver a) {
     if (a->clean) update_product = true;
 
     a->mod = (aether)a;
-    if (!update_product) {
+    // prevent duplicate compilation in a session
+    static map silver_compiled = null;
+    if (!silver_compiled) silver_compiled = map(hsize, 16);
+    if (get(silver_compiled, (Au)a->name)) {
         a->product = hold(absolute(a->product_link));
         return;
     }
+
+    if (!update_product) {
+        a->product = hold(absolute(a->product_link));
+        set(silver_compiled, (Au)a->name, (Au)_bool(true));
+        return;
+    }
+
+    set(silver_compiled, (Au)a->name, (Au)_bool(true));
 
     verify(dir_exists("%o", a->install), "silver-import location not found");
     verify(len(a->module), "no source given");
@@ -1257,6 +1270,7 @@ void silver_init(silver a) {
     i64 mtime = current_time();// modified_time(a->module);
     hold_members(a);
     
+    if (update_product)
     do {
         if (retry) {
             print("awaiting iteration: %o", a->module);
@@ -1342,7 +1356,8 @@ void silver_init(silver a) {
                 }
                 argv[i] = NULL; // Brannigans law
                 execvp(argv[0], argv);
-                //_exit(1);
+                fprintf(stderr, "execvp failed for %s: %s\n", argv[0], strerror(errno));
+                _exit(1);
             }
         }
         on_error() {
@@ -3628,7 +3643,7 @@ enode parse_statement(silver a)
     //print_tokens(a, seq);
 
     if (module && !next_is(a, "func") && peek_def(a)) {
-        verify(!has_access || (access == interface_public || access == interface_intern),
+        verify(!has_access || (access == interface_public || access == interface_intern || access == interface_abstract),
             "undefined is invalid access-level");
         {
             string def_name = peek_def(a);
@@ -4193,7 +4208,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     efunc func = efunc(
         mod,    (aether)a,
         au,     au,
-        body,   const_tokens ? (tokens)b : null,
+        body,   (tokens)b,
         const_tokens, const_tokens,
         inline_return, inline_expr,
         remote_code, !is_using && !len(b),
@@ -5840,7 +5855,7 @@ enode parse_import(silver a) {
         // if the module is built into our run-time already, we support this
         if (mod && !module_source) {
             set(a->libs, string(mod->ident), (Au)_bool(true));
-
+            external_name = hold(string(mod->ident));
         } else if (!mod && !module_source && !lib_path) {
             prev(a);
             error("could not find module %o", mpath);
@@ -5904,18 +5919,12 @@ enode parse_import(silver a) {
             silver og = a;
             while (og->is_external) og = og->is_external;
 
-            // check if this module was already compiled in this session
-            string mod_name = stem(module_source);
-            exports existing = og->exports ? (exports)get(og->exports, (Au)mod_name) : null;
-            if (existing && existing->module_path && file_exists("%o", existing->module_path)) {
-                // reuse previously compiled module
-                external_name    = hold(mod_name);
-                external_product = hold(existing->module_path);
-            } else {
+            {
+                Au_t f = find_module("vulkan2");
                 silver external = silver(module, module, breakpoint, a->breakpoint,
                     verbose, a->verbose, is_external, og, release, a->release, clean, a->clean,
                     defs, defs, debug_type, a->debug_type, debugmember, a->debugmember);
-
+                Au_t f2 = find_module("vulkan2");
                 // these should be the only two objects remaining.
                 external_name    = hold(external->name);
                 external_product = hold(external->product);
@@ -5933,11 +5942,9 @@ enode parse_import(silver a) {
                 }
                 validate (!external->error, "error importing silver module %o", external);
 
-                // register in session cache so we don't recompile for other importers
-                set(og->exports, (Au)mod_name, (Au)exports(
-                    module_path, external_product));
-
                 drop(external);
+                Au_t f3 = find_module("vulkan2");
+                Au_t f4 = find_module("vulkan2");
                 //drop(external); // this is to compensate for the initial hold in silver_init [ quirk for build in init ]
             }
             set(a->libs, (Au)string(external_product->chars), (Au)_bool(true));
@@ -7991,17 +7998,14 @@ etype silver_read_def(silver a, interface access) {
 
         mdl = record(a, (etype)a, is_class, n,
             is_struct ? AU_TRAIT_STRUCT : AU_TRAIT_CLASS);
-        mdl->au->access_type = access;
-
-        // [ abstract ], meta via < > or :
-        if (read_if(a, "[")) {
-            if (read_if(a, "abstract")) {
-                mdl->au->is_abstract = true;
-                validate(read_if(a, "]"), "expected ] after abstract");
-            } else {
-                validate(false, "expected 'abstract' or ']'");
-            }
+        if (access == interface_abstract) {
+            mdl->au->is_abstract = true;
+            mdl->au->access_type = interface_public;
+        } else {
+            mdl->au->access_type = access;
         }
+
+        // meta via < > or :
         if (read_if(a, "<") || read_if(a, ":")) {
             etype meta_a = read_etype(a, null);
             validate(meta_a, "expected meta type");

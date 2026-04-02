@@ -71,7 +71,7 @@ class Composer
 
 class Target
     context vk                             : vk_context
-    expect  w                              : Display
+    public  w                              : Display
     public  id                             : i32
     public  wscale                         : f32
     public  width                          : i32
@@ -1935,7 +1935,7 @@ shader Convolve
     attrib environment: LayoutBinding [ type:typeid[ Surface ], id:Surface.environment, count:1, format:typeid[ rgbaf ] ]
 
 
-app media_app [ abstract ]
+abstract app media_app
     mutable w   : Display*
     mutable vk  : vk_context
     intern  arg : object

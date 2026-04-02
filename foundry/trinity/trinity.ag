@@ -594,7 +594,7 @@ Display Window
             draw_element[ ee ]
 
 
-media_app trinity
+abstract media_app trinity
     expect vk           : vk_context
     intern msaa_samples : i64
     public on_render    : Render

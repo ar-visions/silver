@@ -2396,7 +2396,14 @@ static none init_recur(Au a, Au_t current, raw last_init) {
     Au_f* au_f = ((Au_f*)current);
     none(*init)(Au) = au_f->ft.init;
     init_recur(a, current->context, (raw)init);
-    if (init && init != (none*)last_init) init(a);
+    if (init && init != (none*)last_init) {
+        if (current->ident && (strcmp(current->ident, "orbiter") == 0 ||
+            strcmp(current->ident, "trinity") == 0 ||
+            strcmp(current->ident, "media_app") == 0))
+            fprintf(stderr, "init_recur: %s type=%p init=%p last=%p\n",
+                current->ident, (void*)current, (void*)init, (void*)last_init);
+        init(a);
+    }
 }
 
 /*
@@ -3281,9 +3288,8 @@ Au Au_with_cstrs(Au a, cstrs argv) {
                 strcmp(argv[argc + 1], "true") == 0 ||
                 strcmp(argv[argc + 1], "false") == 0)) {
                 value = argv[++argc];
-            } else if (is_bool)
-                value = null; // bool flag without explicit value: default true
-            else if (argv[argc + 1] && argv[argc + 1][0] == '-')
+            }
+            else if (is_bool || !argv[argc + 1] || argv[argc + 1][0] == '-')
                 value = null;
             else
                 value = argv[++argc];
