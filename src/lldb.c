@@ -616,7 +616,27 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
                 m_bits  = bits_for_type(a, msrc);
                 m_align = align_for_type(a, msrc);
             }
-            u64 offset_bits = (u64)m->offset * 8;
+            // compute offset from LLVM struct layout
+            u64 offset_bits;
+            if (et && et->lltype && m->index >= 0 &&
+                LLVMGetTypeKind(et->lltype) == LLVMStructTypeKind &&
+                !LLVMIsOpaqueStruct(et->lltype) &&
+                m->index < (int)LLVMCountStructElementTypes(et->lltype)) {
+                // check this specific struct for scalable vectors before querying offset
+                bool sv = false;
+                unsigned n = LLVMCountStructElementTypes(et->lltype);
+                for (unsigned si = 0; si < n && !sv; si++) {
+                    LLVMTypeRef elt = LLVMStructGetTypeAtIndex(et->lltype, si);
+                    if (elt && LLVMGetTypeKind(elt) == LLVMScalableVectorTypeKind)
+                        sv = true;
+                }
+                if (!sv)
+                    offset_bits = LLVMOffsetOfElement(a->target_data, et->lltype, m->index) * 8;
+                else
+                    offset_bits = (u64)m->offset * 8;
+            } else {
+                offset_bits = (u64)m->offset * 8;
+            }
 
             members[midx++] = LLVMDIBuilderCreateMemberType(
                 a->dbg_builder, a->compile_unit,

@@ -3245,7 +3245,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         enode esize = null;
         shape sh  = null;
         if (read_if(a, "[")) {
-            esize = parse_expression(a, etypeid(shape), false, true);
+            esize = parse_expression(a, null, false, true);
             sh = instanceof(esize->literal, shape);
             validate(read_if(a, "]"), "expected closing-bracket after new Type [");
         }
