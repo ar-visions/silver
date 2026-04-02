@@ -604,7 +604,7 @@ static enode reverse_descent(silver a, etype expect) { sequencer
             if (match_op == OPType__inherits) {
                 Au_t f_instanceof = find_member(typeid(Au), "instance_of",
                                               AU_MEMBER_FUNC, 0, false);
-                enode instanceof_result = e_fn_call(a, u(efunc, f_instanceof), a(L, type_R));
+                enode instanceof_result = e_fn_call(a, u(efunc, f_instanceof), a(L, type_R), false);
                 L = type ? e_direct_cast(a, instanceof_result, type) : instanceof_result;
             } else {
                 enode type_L = e_typeid(a, (etype)L);
@@ -1597,12 +1597,12 @@ static enode read_keywords(silver a) {
     efunc f_alloc = (efunc)u(efunc, find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, 0, false));
     efunc f_push  = (efunc)u(efunc, find_member(etypeid(collective)->au, "push", AU_MEMBER_FUNC, 0, true));
     enode res = e_fn_call(a, f_alloc, a(
-        e_typeid(a, etypeid(tokens)), _i32(1), e_null(a, etypeid(shape)), e_null(a, etypeid(Au))));
+        e_typeid(a, etypeid(tokens)), _i32(1), e_null(a, etypeid(shape)), e_null(a, etypeid(Au))), false);
     res->au = etypeid(tokens)->au;
     for (int i = 0; i < len(toks); i++) {
         string s = (string)toks->origin[i];
         enode str_const = e_operand(a, (Au)s, etypeid(string));
-        e_fn_call(a, f_push, a(res, str_const));
+        e_fn_call(a, f_push, a(res, str_const), false);
     }
     return res;
 }
@@ -2810,7 +2810,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
 
             Au_t mem_type = isa(mem);
             bool b0, b1, b2, b3, b4;
-            if (seq == 2241) {
+            if (seq == 8351) {
                 seq = seq;
             }
 
@@ -2851,7 +2851,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                     }
                     prev = reverse(prev);
 
-                    if (strcmp(mem->au->ident, "u_memory") == 0) {
+                    if (strcmp(mem->au->ident, "run") == 0) {
                         f = f;
                     }
 
@@ -3032,7 +3032,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         // call on self — no allocation
         enode self_node = fn->target ? (enode)fn->target : null;
         validate(self_node, "no self in constructor context");
-        return e_fn_call(a, ctr_fn, a(self_node, arg));
+        return e_fn_call(a, ctr_fn, a(self_node, arg), false);
     }
 
     // handle typed operations, converting to our expected model (if no difference, it passes through)
@@ -3219,7 +3219,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         // for generic Au, dispatch through Au.mix (polymorphic)
         Au_t f_mix = find_member(typeid(Au), "mix", AU_MEMBER_FUNC, 0, false);
         verify(f_mix, "Au.mix not found");
-        return e_fn_call(a, u(efunc, f_mix), a(from, to, t));
+        return e_fn_call(a, u(efunc, f_mix), a(from, to, t), false);
     }
 
     if (!cmode && read_if(a, "typeid")) {
@@ -3237,7 +3237,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         if (read_br)
             verify(read_if(a, "]"), "expected closing-bracket after typeid");
         Au_t f_typeid = find_member(typeid(Au), "__typeid", AU_MEMBER_FUNC, 0, false);
-        return e_fn_call(a, u(efunc, f_typeid), a(expr));
+        return e_fn_call(a, u(efunc, f_typeid), a(expr), false);
     }    
 
     if (!cmode && read_if(a, "new")) {
@@ -3357,7 +3357,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             verify(f_convert, "Au.__convert not found for runtime 'to' conversion");
             validate(read_if(a, ")"), "expected ) after (expr to typeid[...])");
             a->parens_depth--;
-            return e_fn_call(a, u(efunc, f_convert), a(target_type, expr));
+            return e_fn_call(a, u(efunc, f_convert), a(target_type, expr), false);
         }
         validate(read_if(a, ")"), "expected ) after expression, found %o", peek(a));
         a->parens_depth--;
@@ -5184,7 +5184,7 @@ enode silver_parse_ternary(silver a, enode expr, etype mdl_expect, bool load) {
         verify(target_type, "expected type or type expression after 'to'");
         Au_t f_convert = find_member(typeid(Au), "__convert", AU_MEMBER_FUNC, 0, false);
         verify(f_convert, "Au.__convert not found for runtime 'to' conversion");
-        return e_fn_call(a, u(efunc, f_convert), a(target_type, expr));
+        return e_fn_call(a, u(efunc, f_convert), a(target_type, expr), false);
     }
     if (!read_if(a, "?")) {
         if (!read_if(a, "??"))
@@ -5356,7 +5356,7 @@ static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
 
     token pk00 = peek(a);
 
-    if (seq == 114) {
+    if (seq == 857) {
         seq = seq;
     }
 
@@ -5484,7 +5484,7 @@ static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
     pop_tokens(a, true);
     bool saved_direct = a->direct;
     if (poly) a->direct = false;
-    enode result = e_fn_call(a, fn, values);
+    enode result = e_fn_call(a, fn, values, f->is_super);
     a->direct = saved_direct;
     return result;
 }
@@ -5501,7 +5501,7 @@ static enode typed_expr(silver a, enode f, array expr) {
             verify(fn_evalue, "evalue function not found");
             efunc f_evalue = (efunc)u(efunc, fn_evalue);
             enode type_id  = e_typeid(a, (etype)f);
-            return e_fn_call(a, f_evalue, a(type_id, str_arg));
+            return e_fn_call(a, f_evalue, a(type_id, str_arg), false);
         }
     }
 
@@ -5537,7 +5537,7 @@ static enode typed_expr(silver a, enode f, array expr) {
         }
 
         pop_tokens(a, expr ? false : true);
-        return e_fn_call(a, f_decl, values);
+        return e_fn_call(a, f_decl, values, false);
     }
     
     // this is only suitable if reading a literal constitutes the token stack
@@ -6579,12 +6579,12 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
             enode metas = e_meta_ids((aether)a, (Au)meta_a_node, null);
             efunc f_alloc = (efunc)u(efunc, find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, 0, false));
             enode glsl = e_fn_call(a, f_alloc, a(
-                e_typeid(a, rtype), _i32(1), e_null(a, etypeid(shape)), metas));
+                e_typeid(a, rtype), _i32(1), e_null(a, etypeid(shape)), metas), false);
             glsl->au = rtype_au;
             glsl = e_init(a, glsl, null, null, null);
             // set body member
             enode body_prop = access(glsl, string("body"));
-            enode jstr = const_string(chars, joined->chars);
+            const_string jstr = const_string(chars, joined->chars);
             e_assign(a, body_prop, (Au)jstr, OPType__assign);
             e_fn_return(a, (Au)glsl);
         } else if (f->remote_func) {
@@ -6592,7 +6592,7 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
             // we init our own too but its name is changed on init to facilitate
             array call_args = array(alloc, 32);
             push(call_args, (Au)f->target);
-            e_fn_call(a, f->remote_func, call_args);
+            e_fn_call(a, f->remote_func, call_args, false);
         } else if (f->cgen) {
             array gen = generate_fn(f->cgen, f, (array)f->body);
         } else if (!f->inline_return && f->body) {
@@ -7244,11 +7244,11 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
             etype idx_type = u(etype, au_arg_type(idx->args.origin[1]));
             if (idx_type == etypeid(shape)) {
                 enode eshape = eshape_from_indices((aether)a, args);
-                index_expr = e_fn_call(a, (efunc)u(efunc, idx), a(mem, eshape));
+                index_expr = e_fn_call(a, (efunc)u(efunc, idx), a(mem, eshape), false);
             } else {
                 validate(len(args) == 1, "index operators are single instance methods, unless a shape type is used");
                 enode inner = (enode)args->origin[0];
-                index_expr  = e_fn_call(a, (efunc)u(efunc, idx), a(mem, inner));
+                index_expr  = e_fn_call(a, (efunc)u(efunc, idx), a(mem, inner), false);
                 etype rtype = u(etype, idx->rtype);
 
                 // propagate design-time meta type for member access
@@ -7271,7 +7271,7 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
 
                 // call runtime: shape_flat_index(data_shape, idx_shape) -> i64
                 Au_t flat_fn = find_member(typeid(shape), "flat_index", AU_MEMBER_FUNC, 0, false);
-                enode flat_idx = e_fn_call(a, (efunc)u(efunc, flat_fn), a(edata_shape, eref_shape));
+                enode flat_idx = e_fn_call(a, (efunc)u(efunc, flat_fn), a(edata_shape, eref_shape), false);
 
                 index_expr = e_offset(a, mem, (Au)flat_idx, in_ref);
             } else
@@ -7389,7 +7389,7 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         enode R = parse_expression(a, null, false, true); 
         efunc fn = (efunc)u(efunc, setter);
         validate(fn, "setter function not found in registry");
-        return e_fn_call(a, fn, a(mem, key, R, _i32(op_val)));
+        return e_fn_call(a, fn, a(mem, key, R, _i32(op_val)), false);
     }
 
     validate(isa(mem) == typeid(enode) || !mem->au->is_const,
