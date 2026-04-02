@@ -5117,7 +5117,9 @@ none silver_build(silver a) {
         path share = f(path, "%o/share/%o", install, a->name);
         make_dir(share);
         each(a->resources, path, res) {
-            deploy_resources(res, share);
+            path dst = f(path, "%o/%o", share, stem(res));
+            make_dir(dst);
+            deploy_resources(res, dst);
         }
     }
 
@@ -7464,7 +7466,10 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         }
         mem->au->context = ctx;
         mem->au->member_type = AU_MEMBER_VAR;
-        mem->au->src = (is_bind_ref && bind_type) ? bind_type->au : au_arg_type((Au)R);
+        Au_t rhs_type = au_arg_type((Au)R);
+        mem->au->src = (is_bind_ref && bind_type) ? bind_type->au :
+            (bind_type && bind_type->au->is_class && rhs_type && !rhs_type->is_class) ? bind_type->au :
+            rhs_type;
         mem->au->is_const = is_const;
         Au meta_a_src = bind_type && bind_type->meta_a ? bind_type->meta_a :
                         (t && t->meta_a ? t->meta_a : R->meta_a);

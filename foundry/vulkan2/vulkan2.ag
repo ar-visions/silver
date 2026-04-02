@@ -363,7 +363,7 @@ class vk_context
             expect _vkCreateDebugUtilsMessengerEXT, "cannot find vk debug function"
 
         gltf_quad2: path [ 'models/uv-quad2.gltf' ]
-        quad_m = gltf_quad2.load[ typeid[ GltfModel ], null ]
+        quad_m = gltf_quad.load[ typeid[ GltfModel ], null ]
 
     func quad_shader [ ] -> UVQuad
         q: UVQuad [ vk: a, name: 'uv-quad' ]
