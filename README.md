@@ -5,7 +5,6 @@
 silver 0.88
 Copyright (C) 2017 Kalen Novis White — MIT License
 ```
-
 ---
 
 **silver is a build language.** One `.ag` file defines a module, its `import` dependencies by its own git service (default) or from any url. silver defines a reflective component model which interpolates in C and CC.  using native, we may build to all devices as binary or shared library. `import` a git repository by `owner:name/commit` ; silver detects its build system, builds it with its own tools, and links the result. `import` a C header, its models and macros are made available at design time through an integrated libclang frontend. 
@@ -20,8 +19,10 @@ write .c or .cc compilation-units alongside your `.ag` source to out-source meth
 
 **silver is expressive where it matters.** Classes are reference-counted with single inheritance, post-init property pairs, and operator overloading. Structs are value types. Enums infer in switch cases. Inline assembly is platform-conditional on the same line. Functions accept arguments without commas — matched by type like CSS shorthand — or with commas for positional order. Shapes are first-class literals: `new f32 [32x32x1]` allocates a typed tensor. Scalars let you write `200px` or `16ms` as type-safe values. From neural networks to Vulkan renderers to audio DSP, the foundry focuses of media generation and advanced user experience for AI PC domain.  silver's IDE **orbiter** is based on trinity engine, all part of `foundry`, available by make or **import**.
 
----
+### Special note
+# designed for Audrey and Rebecca.  silver is an effort to produce easier to understand code, inspiring more to enjoy the craft.
 
+---
 ### import `User:Project/Commit`
 
 silver builds from decentralized repositories, not limiting package managers which prove to be more prone to both insecurities and gate-keeping.  what you choose to depend on is entirely up to you, and you can now describe that in one import line. a single import identifies its build system, builds with that system's own tools, and links the result. Each dependency is built the way its authors intended, then imported into design-time.
